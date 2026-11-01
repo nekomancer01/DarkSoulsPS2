@@ -33,6 +33,8 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3]);
  * map (no specular). */
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3]);
 extern int map_vu1_batches, map_ee_tris;
+/* near level radius and near / coarse cross-fade half-width, metres (map.c NEAR_DRAW_R / NEAR_FADE; test "near") */
+extern float map_near_r, map_near_fade;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
  * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams) or NULL
  * for a "lite" block that draws only its streamed near cells. col_block: its collision block (ColHit.block), for the

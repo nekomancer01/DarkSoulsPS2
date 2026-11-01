@@ -20,7 +20,7 @@
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_NEAR };
 
 typedef struct {
     unsigned short op, line;
@@ -78,6 +78,8 @@ static int parse(Prog *p, char *text)
         {"save", C_GAME, 0}, {"load", C_GAME, 0}, {"wipe", C_GAME, 0},
         /* EMEVD runtime (event.c event_test_cmd): action, expect flag / obj / hit / treasure / x / y / z, warp, trace */
         {"ev", C_EV, 0},
+        /* near / coarse switch (map.c): "near R F" = map_near_r R, map_near_fade F (0: hard swap) */
+        {"near", C_NEAR, 2},
     };
     int opts = 0, cap = 0, line = 0;
     memset(p, 0, sizeof *p);
@@ -236,6 +238,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_LOG: printf("TEST log %s\n", c->text); break;
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
+        case C_NEAR: map_near_r = c->a[0], map_near_fade = c->a[1]; break;
         case C_LOOP: p->pc = -1; break;
         case C_END:
             p->pc = p->n;

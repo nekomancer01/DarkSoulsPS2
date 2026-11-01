@@ -23,6 +23,9 @@ void vu1_begin(int buffer);
  * batches fade into the fog colour by map.c's cull distance (vu1map2 edge loop, 91 instead of 79 VU1 cycles per
  * triangle; ignored with VU1_CLIP) */
 #define VU1_EDGE 8
+/* VU1_FADE: alpha blending on with the alpha test kept (cut-outs stay cut): map.c's near / coarse cross-fade, ALPHA
+ * with a FIX factor set with vu1_gs_regs */
+#define VU1_FADE 16
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
 /* Map program fog for the following batches: F = clamp(a * view z + b, fmin, fmax), 255 = no fog. Call after

@@ -388,7 +388,8 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     q64(mode & VU1_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47);
     /* PRIM: triangle, gouraud, textured, STQ (perspective-correct), context 1; FGE / ABE per mode. Registers ST,
      * RGBAQ, XYZF2: the program writes the fog factor even when FGE is off */
-    q64(GIF_SET_TAG(clip ? 3 : n, 1, 1, 0x1B | (mode & VU1_FOG ? 0x20 : 0) | (mode & VU1_BLEND ? 0x40 : 0), 0, 3),
+    q64(GIF_SET_TAG(clip ? 3 : n, 1, 1,
+                    0x1B | (mode & VU1_FOG ? 0x20 : 0) | (mode & (VU1_BLEND | VU1_FADE) ? 0x40 : 0), 0, 3),
         0x412);  /* clip program: one triangle per packet */
     /* quantised streams (R3): pos s16x3, st u16x2, colour u8x4; the program converts with ITOF */
     tag((n * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, n, U_FLG | 7));

@@ -68,6 +68,16 @@ typedef struct { int tex; unsigned flags, tris, pos, st, col; float mn[3], mx[3]
                             * Burg p00_082: 85k tris / map 15.3 ms at 24 m, 67k / 13.8 ms at 16 m; 16 m made the near <->
                             * coarse swap visible: Firelink's coarse level is judged from STREAM_D 24 m) */
 #endif
+/* Near / coarse cross-fade (map-37): over the band map_near_r +- map_near_fade (distance to the cell box) a cell draws
+ * both levels, one opaque and the other blended over it afterwards with a FIX alpha and no Z write: inner half near
+ * opaque + coarse fading in, outer half coarse opaque + near fading out, so each level's silhouette (the part in front
+ * of the other) fades instead of swapping in one frame. Both levels are resident while the near blob is loaded (blobs
+ * load out to MS_LOAD_R 40 m). map_near_fade 0: the old hard swap with NEAR_HYST. */
+#ifndef NEAR_FADE
+#define NEAR_FADE 4.0f
+#endif
+#define R_FADE 8       /* draw_chunk: fade pass (VU1_FADE, no relief) */
+#define MAX_BAND 64    /* cells in the fade band per frame */
 #define CHUNK_GRASS 16 /* foliage: bits 8-15 triangles per tuft, 16-23 / 24-31 lowest / highest tuft rank x 255 */
 #define GRASS_D0 10.0f  /* metres: foliage at its exported density up to here, then (GRASS_D0 / d)^2 (export_map.py) */
 #define FOG_RATE 0.06f  /* per frame: fog parameters move this part of the way to the area's row (~0.3 s at 60 fps) */
@@ -462,12 +472,15 @@ static int draw_chunk(const unsigned char *base, const Chunk *c, unsigned n, int
             edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;  /* the backdrop: DSR's fog only */
         }
         vu1_add_ex(t, c->flags & CHUNK_CULL,
-                   (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge, n,
+                   (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | (mode & R_FADE ? VU1_FADE : 0) |
+                       vclip | edge,
+                   n,
                    base + c->pos, base + c->st, base + c->col, c->org,
                    c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, base == streams ? (unsigned)(c - chunks) : NEAR_NO(c, base));
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
+        if (!(mode & (R_BLEND | R_FADE)) &&
+            !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add(cur_inst, base == streams ? (unsigned)(c - chunks) : NEAR_NO(c, base), sqrtf(d2),
                      c->flags & CHUNK_CULL, vclip, n, base + c->pos, base + c->st, base + c->col, c->org,
@@ -734,6 +747,76 @@ int map_block_stream_open(int k, const void *pack)
     return r;
 }
 
+float map_near_r = NEAR_DRAW_R, map_near_fade = NEAR_FADE;
+static struct { float d; const Chunk *c; int cls, k; } fx[MAX_FX];
+static int nfx;
+static struct { unsigned short ci; unsigned char k, lvl, a; } band[MAX_BAND];
+static int nband;
+
+/* one cell's chunks: lvl 0 its level (near when nb, else coarse), 1 only its coarse chunks, 2 only its near chunks;
+ * blended chunks of lvl 0 go to fx */
+static int draw_cell(int k, int ci, const Cell *ce, const unsigned char *nb, int lvl, const float *e, int mode)
+{
+    int drawn = 0;
+    unsigned nnear = nb ? ctab[ci].near : 0, j0 = streams && lvl != 2 ? ce->first : ce->first + ce->count;
+    near_gid = nb ? ctab[ci].pad : 0;
+    for (unsigned j = j0; j < ce->first + ce->count + (lvl == 1 ? 0 : nnear); j++) {
+        int is_near = j >= (unsigned)ce->first + ce->count;
+        const Chunk *c = is_near ? (const Chunk *)nb + (j - ce->first - ce->count) : &chunks[order[j]];
+        if (nb && !is_near && (c->flags & CHUNK_COARSE)) {
+            DBGW(D_SWAP, 0, order[j]);
+            continue;
+        }
+        if (lvl && (c->flags & CHUNK_BLEND || (lvl == 1 && !(c->flags & CHUNK_COARSE))))
+            continue;  /* fade pass: only the other level's opaque chunks */
+#ifndef MAP_DBG_ALL
+        if (!dg_shown(cur_inst, is_near ? NEAR_NO(c, nb) : order[j])) {  /* MSB draw groups (drawgrp.c) */
+            DBGW(D_DG, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
+            continue;
+        }
+        unsigned n = c->flags & CHUNK_GRASS ? grass_tris(c, e) : c->tris;
+#ifdef MAP_PANO_R
+    {
+        float d2 = 0;
+        for (int k = 0; k < 3; k++) {
+            float o = e[k] < c->mn[k] ? c->mn[k] - e[k] : e[k] > c->mx[k] ? e[k] - c->mx[k] : 0;
+            d2 += o * o;
+        }
+        if (d2 < MAP_PANO_R * MAP_PANO_R)
+            n = 0;
+    }
+#endif
+#else
+        unsigned n = c->flags & CHUNK_GRASS ? c->tris : c->tris;
+#endif
+        DBG(D_GRASS, c->tris - n);
+        if (!n) {
+            DBGW(D_GRASS, 0, is_near ? NEAR_NO(c, nb) : order[j]);
+            continue;
+        }
+        int cls = visible(c, e, 0);
+        if (!cls) {
+#ifdef MAP_DBG
+            DBGW(vis_why, n, is_near ? NEAR_NO(c, nb) : order[j]);
+#endif
+            continue;
+        }
+        if (c->flags & CHUNK_BLEND) {
+            if (nfx < MAX_FX) {
+                float d = 0;
+                for (int k = 0; k < 3; k++) {
+                    float m = (c->mn[k] + c->mx[k]) * 0.5f - e[k];
+                    d += m * m;
+                }
+                fx[nfx].d = d, fx[nfx].c = c, fx[nfx].k = k, fx[nfx++].cls = cls;
+            }
+            continue;
+        }
+        drawn += draw_chunk(is_near ? nb : streams, c, n, cls, mode);
+    }
+    return drawn;
+}
+
 int map_draw(V3 eye)
 {
     GSGLOBAL *gs = gsg;
@@ -819,8 +902,7 @@ int map_draw(V3 eye)
     vu1_gs_regs(1, r);
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
-    static struct { float d; const Chunk *c; int cls, k; } fx[MAX_FX];
-    int nfx = 0;
+    nfx = nband = 0;
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
         if (k && !inst[k].on)
             continue;
@@ -851,68 +933,41 @@ int map_draw(V3 eye)
                     d2 += o * o;
                 }
                 /* a lite block (no resident streams) draws its near cells as far as they are loaded */
-                float r = ce->near_on ? NEAR_DRAW_R + NEAR_HYST : NEAR_DRAW_R - NEAR_HYST;
+                float f = map_near_fade, r = map_near_r + (f > 0 ? f : ce->near_on ? NEAR_HYST : -NEAR_HYST);
                 ce->near_on = r > 0 && d2 < r * r;
                 nb = ce->near_on || !streams ? mapstream_get(ci) : NULL;
+                float d;
+                if (nb && streams && f > 0 && (d = sqrtf(d2)) > map_near_r - f && nband < MAX_BAND) {
+                    float s = (d - (map_near_r - f)) / (2 * f);  /* 0..1 across the band */
+                    int outer = s >= 0.5f, a = (int)((outer ? 2 - 2 * s : 2 * s) * 128 + 0.5f);
+                    if (a > 2)
+                        band[nband].ci = ci, band[nband].k = k, band[nband].lvl = outer ? 2 : 1, band[nband++].a = a;
+                    if (outer)
+                        nb = NULL;  /* the coarse level is the opaque one */
+                }
             }
-            unsigned nnear = nb ? ctab[ci].near : 0;
-            near_gid = nb ? ctab[ci].pad : 0;
-            for (unsigned j = streams ? ce->first : ce->first + ce->count; j < ce->first + ce->count + nnear; j++) {
-                int is_near = j >= (unsigned)ce->first + ce->count;
-                const Chunk *c = is_near ? (const Chunk *)nb + (j - ce->first - ce->count) : &chunks[order[j]];
-                if (nb && !is_near && (c->flags & CHUNK_COARSE)) {
-                    DBGW(D_SWAP, 0, order[j]);
-                    continue;
-                }
-#ifndef MAP_DBG_ALL
-                if (!dg_shown(cur_inst, is_near ? NEAR_NO(c, nb) : order[j])) {  /* MSB draw groups (drawgrp.c) */
-                    DBGW(D_DG, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
-                    continue;
-                }
-                unsigned n = c->flags & CHUNK_GRASS ? grass_tris(c, e) : c->tris;
-#ifdef MAP_PANO_R
-            {
-                float d2 = 0;
-                for (int k = 0; k < 3; k++) {
-                    float o = e[k] < c->mn[k] ? c->mn[k] - e[k] : e[k] > c->mx[k] ? e[k] - c->mx[k] : 0;
-                    d2 += o * o;
-                }
-                if (d2 < MAP_PANO_R * MAP_PANO_R)
-                    n = 0;
-            }
-#endif
-#else
-                unsigned n = c->flags & CHUNK_GRASS ? c->tris : c->tris;
-#endif
-                DBG(D_GRASS, c->tris - n);
-                if (!n) {
-                    DBGW(D_GRASS, 0, is_near ? NEAR_NO(c, nb) : order[j]);
-                    continue;
-                }
-                int cls = visible(c, e, 0);
-                if (!cls) {
-#ifdef MAP_DBG
-                    DBGW(vis_why, n, is_near ? NEAR_NO(c, nb) : order[j]);
-#endif
-                    continue;
-                }
-                if (c->flags & CHUNK_BLEND) {
-                    if (nfx < MAX_FX) {
-                        float d = 0;
-                        for (int k = 0; k < 3; k++) {
-                            float m = (c->mn[k] + c->mx[k]) * 0.5f - e[k];
-                            d += m * m;
-                        }
-                        fx[nfx].d = d, fx[nfx].c = c, fx[nfx].k = k, fx[nfx++].cls = cls;
-                    }
-                    continue;
-                }
-                drawn += draw_chunk(is_near ? nb : streams, c, n, cls, fog);
-            }
+            drawn += draw_cell(k, ci, ce, nb, 0, e, fog);
         }
     }
     map_select(0);
     bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
+    /* the fading level of the band cells, over the finished opaque map and its relief
+     * (Z tested, not written) */
+    if (nband) {
+        u64 zr[4] = {0, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32), 0x4E};
+        for (int i = 0; i < nband; i++) {
+            map_select(band[i].k);
+            const unsigned char *nb = mapstream_get(band[i].ci);
+            if (!nb)
+                continue;
+            zr[0] = GS_SETREG_ALPHA(0, 1, 2, 1, band[i].a);  /* (Cs - Cd) x FIX + Cd */
+            vu1_gs_regs(2, zr);
+            drawn += draw_cell(band[i].k, band[i].ci, &cells[band[i].ci], band[i].lvl == 2 ? nb : NULL, band[i].lvl, e,
+                               fog | R_FADE);
+        }
+        blend_regs(gs, 0);
+    }
+    map_select(0);
 
     /* effects after the opaque map: alpha-blended (mist) far to near, then additive (light shafts, order-free);
      * Z tested, not written */
