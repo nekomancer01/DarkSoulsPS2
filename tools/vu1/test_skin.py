@@ -110,6 +110,7 @@ def compare(seeds=20, tris=24):
                     print('seed %d v %d: old %s\n            new %s' % (seed, i, a, b))
     print('vertices %d, differing (>2 units) %d, triangle ADC mismatches %d; cycles old %d new %d (%.2fx)' %
           (tot, bad, adc_mis, cyc_o, cyc_n, cyc_o / cyc_n))
+    return bad + adc_mis
 
 if __name__ == '__main__':
-    compare(int(sys.argv[1]) if len(sys.argv) > 1 else 12)
+    sys.exit(1 if compare(int(sys.argv[1]) if len(sys.argv) > 1 else 12) else 0)

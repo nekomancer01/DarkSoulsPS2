@@ -148,6 +148,7 @@ def main(seeds=12, tris=12):
                 if bad < 5: print('seed', seed, 'd', d, a, {k: b[k] for k in a})
         print('seed %d: %d tris out of %d' % (seed, len(got) // 3, tris))
     print('vertices %d bad %d' % (tot, bad))
+    return bad
 
 if __name__ == '__main__':
-    main()
+    sys.exit(1 if main() else 0)
