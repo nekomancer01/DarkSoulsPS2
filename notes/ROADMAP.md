@@ -1,5 +1,9 @@
 # DSR -> PS2 port: what still needs implementing, by priority
 
+**What this is:** the original priority list for the port (P0 = foundations, P3 = polish), with a starting point for
+each item. It was written on 2026-10-30 and parts of it are done since; for the current status of each system, see
+`notes/PLAYTHROUGH.md`. Terms: EE = the PS2's main CPU, VU1 = its vector unit (draws the 3D), GS = its graphics chip.
+
 Status (2026-10-30): the Warrior (real mesh, textures, Havok animations, TAE timing, R1 combo, roll/dash) walks
 Firelink Shrine (map pieces, textures, navmesh, back-face culling) in PCSX2 at 30 fps with the VU1 renderer. Tooling reads DCX, BND3/BXF3, FMG, PARAMDEF/PARAM,
 TAE, ESD, FLVER2, TPF/DDS (BC1-3, BC7), MSB1, NVM, Havok 2015 tagfiles (skeleton, spline animation, root motion).

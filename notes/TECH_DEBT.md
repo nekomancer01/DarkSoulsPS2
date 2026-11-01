@@ -3,6 +3,11 @@
 Every place where the PS2 port behaves, looks or is built differently from the original game (approximations,
 guesses, hard-coded values, skipped content, placeholder data, workarounds). One row per item.
 
+**How to read it:** each row has an ID (`area-number`, e.g. `map-7`), what the original game does ("DSR"), what the
+port does now ("Port"), a severity and how to fix it. Look up one item with `grep -n '^| map-7 ' notes/TECH_DEBT.md`.
+If you see something wrong in the port, check here first: it may already be known. Fixed items move to "Resolved"
+at the bottom.
+
 **Rules**
 - Every session adds its own items when it reports done (and the coordinator checks before integrating).
 - Append rows at the end of the table for your area; do not rewrite other sessions' rows. IDs: `<area>-<n>`

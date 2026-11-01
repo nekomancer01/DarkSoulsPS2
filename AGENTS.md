@@ -1,7 +1,8 @@
 # Contributing as an AI agent
 
-This file is for AI coding agents (Claude Code, Codex, Cursor, Aider, …) working on this repository, and for the
-humans running them. Human contributors should follow it too. Read it before your first edit.
+This file is for everyone who changes this repository: people, and AI coding agents (Claude Code, Codex, Cursor,
+Aider, …) along with the people running them. Read it before your first edit. New here? Start with `README.md` to
+build and run the port, then come back.
 
 The project ports Dark Souls Remastered (DSR) to the PlayStation 2: a C engine in `ps2/proto` (ps2dev + gsKit,
 VU1 microprograms) fed by Python exporters in `tools/` that read the player's own copy of the game.
@@ -54,7 +55,8 @@ Firelink Shrine is the test area, not the target.
   file sizes. PCSX2 doesn't time VU1, GS fill or the EE cache, so say when a gain can only be confirmed on real
   hardware.
 - **The tree must always build and boot.** Iterate on scratch outputs and copy them in only once a plain build
-  boots. Stay within the budgets in `notes/HANDOFF.md` (EE RAM, VRAM, 60 fps).
+  boots. Stay within the budgets: 30 fps locked in every area, at least 1.5 MB of
+  EE RAM free in the heaviest spot, and no "Not enough VRAM" in the PCSX2 log.
 
 ## 5. Working alongside other agents
 
@@ -63,7 +65,8 @@ Several agents often work in the same tree at once.
 - **Job queue:** every heavy job (make, exporters, PCSX2 tests, Ghidra, whole-game scans) runs as `tools/q [-m GB] <cmd>`.
   It runs jobs one at a time, waits for free RAM and caps each job's memory. Exporters must stream per part or area
   instead of loading everything at once.
-- **Ownership:** the active assignments in `notes/HANDOFF.md` say who owns which files. Outside your own files,
+- **Ownership:** when several agents work at once, the maintainer's working notes (`notes/HANDOFF.md`, kept locally
+  and not in the public repo) say who owns which files. Outside your own files,
   make small, local edits only. Re-read the file right before each edit, and never rewrite or reformat a whole
   file someone else owns. If another owner's file needs a real change, ask for it (issue, PR comment or
   coordinator) rather than making it yourself.
@@ -71,9 +74,9 @@ Several agents often work in the same tree at once.
   someone has changed since.
 - **Generated sources:** don't hand-edit generated files. The VU1 programs (`*.vsm`) come from
   `tools/vu1/gen.py`; run the offline tests in `tools/vu1/` after changing them.
-- **Handoff note:** before reporting a task done, write `notes/threads/<task>.md` covering what works, the files you
-  own, open TECH_DEBT IDs, how to test, and next steps. The next agent starts from `notes/HANDOFF.md` plus that
-  note; assume it has none of your context.
+- **Handoff note:** before reporting a task done, write down what works, the files you own, open TECH_DEBT IDs, how
+  to test, and next steps (in the maintainer's setup: `notes/threads/<task>.md`, local only; for outside
+  contributors: the PR description). Assume the next person has none of your context.
 
 ## 5a. Context and token budget
 
@@ -110,8 +113,8 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 ## 8. Where to start
 
 1. `README.md`: build setup and pointing the build at your copy of the game.
-2. `notes/HANDOFF.md`: current state, build/run commands, budgets, active assignments.
+2. `notes/PLAYTHROUGH.md`: what works now and what's missing, system by system.
 3. `notes/TECH_DEBT.md`: everything that doesn't match DSR yet, by severity. It is large: look up rows with
    `grep -n '^| ID-' notes/TECH_DEBT.md` (one row per ID) instead of reading the whole file.
 4. `notes/ROADMAP.md` and `notes/PORTING.md`: the plan and the format/engine notes.
-5. `notes/research/`: optimisation and tooling research with sources.
+5. `notes/TOOLS.md`: every tool and script, by purpose.

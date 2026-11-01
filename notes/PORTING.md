@@ -1,6 +1,12 @@
 # DSR → PS2 porting project notes
 
-Local, personal-use only. Nothing derived from FromSoftware files leaves this machine.
+**What this is:** the project's engineering log, in the order the work happened (newest at the bottom). It records
+file formats, measurements, gotchas and the reasons behind engine decisions. It's long and written for people working
+on the code; to build and play, read `README.md`, and for what works now, `notes/PLAYTHROUGH.md`. Search it for a
+format or system name (for example `FLVER`, `collision`, `VU1`) rather than reading it top to bottom. Some sections
+are dated session notes ("Resume after restart") and mention local paths from the maintainer's machine.
+
+No game data or decompiled code is included here: only facts (layouts, offsets, sizes, measurements).
 
 ## Target identity
 - `DarkSoulsRemastered.exe` SHA-256 `a45aaa36dd2f6cc151670a639ea5547043cf38ea79ff4178b963c6ed71f98d7b` (`exe.sha256`)

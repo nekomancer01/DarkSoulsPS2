@@ -1,5 +1,11 @@
 # Exe findings: player movement / stamina constants and ESD names (2026-10-30)
 
+**What this is:** values and rules found by studying the game's executable, such as stamina regen, turn rates and the
+names of ESD script functions, so the port can match the original exactly. Each row gives the value, where in the exe
+it lives, how it was found and how confident the finding is. It contains facts only (addresses, offsets, constants,
+formulas), no decompiled code. Terms: VA = virtual address in the exe; `FUN_1403...` = Ghidra's name for the function
+at that address; ESD = the game's state-machine scripts for characters; TAE = per-animation event timelines.
+
 Source: DarkSoulsRemastered.exe (local Ghidra project, read-only). Every address is a VA.
 Object chain used below: `chr` = ChrIns/PlayerIns, `ChrCtrl` = chr+0x68 (PlayerCtrl for the player),
 `ctx` = ESD/EzState context = ChrCtrl+0x48 (ctx+0x10 = ChrCtrl), WalkAnim = ChrCtrl+0x1A8 (player: `WalkAnim_Twist`),

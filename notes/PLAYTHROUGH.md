@@ -1,16 +1,24 @@
-# Path to a full playthrough (2026-10-31)
+# Path to a full playthrough (updated 2026-11-01)
 
-Goal: one large scripted pass exports every area of the game and it plays start to finish. That pass can only succeed
-once every system an area depends on is generic (data-driven, no per-area code) and proven on a vertical slice.
-Status: done / partial / missing, as of 2026-10-31. TECH_DEBT IDs in brackets.
+**What this is:** the checklist of everything the port still needs before Dark Souls plays start to finish, and the
+order to build it in. Each system has a status (done / partial / missing) and what's still missing. IDs in brackets
+like `[enemy-14]` point to rows in `notes/TECH_DEBT.md`.
+
+The plan: first make every engine system generic (driven by the game's data, with no per-area code) in Phase A and
+the exporters safe for every area in Phase B. Then prove it on the game's opening stretch (Phase C). Only then export
+and test the whole game in one scripted pass (Phase D).
+
+Terms: EMEVD = the game's event scripts (doors, fog walls, pickups, boss triggers); ESD = character state-machine
+scripts; MSB = an area's layout file; a block = one area loaded as a unit; EE / VU1 / GS / IOP = the PS2's main CPU,
+vector unit, graphics chip and I/O processor.
 
 ## Phase A: engine systems every area needs (build into the game first)
 
 | # | System | Status | Missing for a playthrough |
 |---|---|---|---|
-| A1 | World streaming between areas | partial: one area per boot; map cells stream within an area (Firelink, Burg) | Block manager over MSB connect collisions; load / unload neighbouring blocks (map, collision, navmesh, objects, enemies, textures, EMEVD) in the background; fixed RAM / VRAM pools per block; far blocks as coarse level only [build-5, build-4, area-1] |
-| A2 | EMEVD runtime | missing (reader exists: tools/emevd.py) | Event interpreter with flags: doors, fog walls, levers, elevators, item pickups, boss triggers, NPC enable / disable, area transitions, warps, cutscene triggers [enemy-14, collision-6] |
-| A3 | Save / flags / progression | missing | Event flags, inventory, stats, bonfire state, killed bosses, NPC states; memory card (tools/ps2-mc.sh) [ROADMAP 17] |
+| A1 | World streaming between areas | partial: Firelink <-> Undead Burg walk with no reboot or loading screen; that block's enemies, objects, effects and events load and unload with it [world-1..5] | More blocks per area, all areas; remaining: block manager over MSB connect collisions; load / unload neighbouring blocks (map, collision, navmesh, objects, enemies, textures, EMEVD) in the background; fixed RAM / VRAM pools per block; far blocks as coarse level only [build-5, build-4, area-1] |
+| A2 | EMEVD runtime | partial: real event scripts run in Firelink and Burg (chests, item pickups, fog walls, hit-switched objects); 80-88 % of instructions handled, the rest stubbed [event-1..14] | Remaining from the event interpreter with flags: doors, fog walls, levers, elevators, item pickups, boss triggers, NPC enable / disable, area transitions, warps, cutscene triggers [enemy-14, collision-6] |
+| A3 | Save / flags / progression | partial: event flags in the game's own id layout, progression state, saves to the memory card (round trip verified) [save-1..10] | Background save writes, souls from kills, stats used by combat; full list: event flags, inventory, stats, bonfire state, killed bosses, NPC states; memory card (tools/ps2-mc.sh) [ROADMAP 17] |
 | A4 | Bonfire / death loop | partial: fall respawn only | Rest (HP / Estus refill, enemy respawn), death -> bloodstain + souls, kindling, warp later [enemy-4, collision-4] |
 | A5 | Player action logic (ESD) | partial: movement, R1, roll, falls | Lock-on, guard / parry / riposte / backstab, two-handing, items, magic / pyromancy / miracles, bows, ladders, gestures, throws [esd-1, esd-2, esd-7, esd-8] |
 | A6 | Combat + stats + equipment | partial: physical damage, enemy hits | Damage types and defences, scaling, poise, SpEffects (rings, buffs, poison / bleed / curse), level-up, equip load tiers, weapon upgrades [combat-2..6, gameplay-13] |

@@ -1,7 +1,12 @@
 # Tool index (2026-10-31)
 
-Every tool built for the DSR -> PS2 port, grouped by purpose. Paths are repo-relative. Usage details, gotchas and
-open items are in the `notes/threads/<thread>.md` of the thread that built each tool. Heavy jobs run through `tools/q`.
+**What this is:** a list of every tool and script in the repository, grouped by what it's for, with one line on what
+each does. Use it to find the right script; most tools print their usage with `--help` or in the comment at the top
+of the file. Paths are relative to the repo root.
+
+You only need a few of these to build and play (see `README.md`). Heavy jobs (exports, builds, emulator tests) should
+run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM. (The maintainer's per-task notes,
+`notes/threads/`, hold extra usage details; they're local and not in the public repo.)
 
 ## Game data readers (`tools/`)
 | Tool | What it does |
