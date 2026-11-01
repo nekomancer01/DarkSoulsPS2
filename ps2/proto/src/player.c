@@ -358,6 +358,25 @@ static void constrain(Player *p, V3 old)
 
 static int esd_action(const Player *p) { return p->state == ST_ATTACK || p->state == ST_ROLL || p->state == ST_JUMP; }
 
+/* Anim an event forced on the player (EMEVD 2003[18], player_event_anim), -1 none */
+static int event_anim = -1;
+
+float player_event_anim(Player *p, int id)
+{
+    for (int i = 0; i < ANIM_COUNT; i++)
+        if (anims[i].key == id) {
+            /* plays as an action outside both ESD groups: their c1_3 anims and stops are ignored until it ends
+             * (ASSUMED: DSR's event anim slot outranks the ESD's, TECH_DEBT event-18) */
+            start_anim(p, ST_ROLL, i, 0);
+            p->esd_group = -1, p->esd_layer = 99;
+            event_anim = i;
+            return anims[i].length;
+        }
+    return 0;
+}
+
+int player_event_anim_playing(const Player *p) { return event_anim >= 0 && esd_action(p) && p->anim == event_anim; }
+
 /* The anim whose TAE drives the flags this frame: the playing one-shot, else the locomotion loop (idle a00_0000 is
  * not exported and has no ChrActionFlags) */
 static int flag_anim(const Player *p)
@@ -525,7 +544,7 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
         p->pos.z += cy * df - sy * ds;
-        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t))
+        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim)
             turn_toward(p, stick_yaw, dt);
         p->invincible = in_window(p->anim, FLAG_INVINCIBLE, p->t);
         p->hitting = in_window(p->anim, -1, p->t);
@@ -536,6 +555,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->state = ST_IDLE;
     }
 
+    /* an event anim has no ESD state to end it: it ends with its TAE */
+    if (player_event_anim_playing(p) && p->t >= anims[p->anim].length)
+        p->state = ST_IDLE;
+    if (!player_event_anim_playing(p))
+        event_anim = -1;
     /* the ESD: may start or end an action (player_esd_cmd) */
     esd.p = esd.chr = p, esd.in = in, esd.dt = dt;
     esd_update(&esd);

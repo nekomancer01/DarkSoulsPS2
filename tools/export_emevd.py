@@ -79,8 +79,8 @@ OPS = [
     # actions
     ("INIT", (2000, 0), "real"), ("NET_SYNC", (2000, 2), "noop"), ("PREFETCH", (2000, 4), "noop"),
     ("SAVE_REQ", (2000, 5), "real"), ("CUTSCENE", (2002, 3), "stub"), ("CUTSCENE_WARP", (2002, 4), "stub"),
-    ("SET_FLAG", (2003, 2), "real"), ("EVENT_STATE", (2003, 8), "real"), ("BOSS_BAR", (2003, 11), "stub"),
-    ("BOSS_DEFEAT", (2003, 12), "stub"), ("NAVMESH", (2003, 13), "stub"), ("MP_TRIGGER", (2003, 16), "noop"),
+    ("SET_FLAG", (2003, 2), "real"), ("EVENT_STATE", (2003, 8), "real"), ("BOSS_BAR", (2003, 11), "real"),
+    ("BOSS_DEFEAT", (2003, 12), "real"), ("NAVMESH", (2003, 13), "stub"), ("MP_TRIGGER", (2003, 16), "noop"),
     ("RAND_FLAG", (2003, 17), "real"), ("ANIM", (2003, 18), "stub"), ("BATCH_FLAGS", (2003, 22), "real"),
     ("RESPAWN", (2003, 23), "real"), ("REMOVE_ITEM", (2003, 24), "real"), ("SUMMON_SIGN", (2003, 25), "noop"),
     ("MSG_VIS", (2003, 26), "stub"), ("ACHIEVE", (2003, 28), "noop"), ("VAGRANT", (2003, 30), "noop"),

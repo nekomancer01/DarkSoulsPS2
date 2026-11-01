@@ -76,5 +76,9 @@ int player_breaks_objects(const Player *p);
 /* TAE id of the attack animation playing (combat.c weapon sweeps), or -1 */
 int player_attack_anim(const Player *p);
 const char *player_state_name(const Player *p);
+/* EMEVD 2003[18] on the player: play c0000 a00 anim `id` (exported ones only, tools/export_player.py) with its root
+ * motion, outside the ESD; its length in s, 0 if this build does not carry it */
+float player_event_anim(Player *p, int id);
+int player_event_anim_playing(const Player *p);
 
 #endif

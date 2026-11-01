@@ -57,6 +57,9 @@ ANIMS = [
     ("GUARD_END", "a00", 101, False),
     ("GUARD_MOVE", "a00", 106, False),
     ("GUARD_MOVE_END", "a00", 116, False),
+    # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
+    # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
+    ("EVENT_FOG_WALK", "a00", 7410, False),
 ]
 # ChrActionFlag (TAE event 0) values the controller reads; names from DSAnimStudio's TAE.Template.DS1.xml
 FLAGS = {4: "RH_ATTACK_CANCEL", 7: "DISABLE_TURNING", 8: "INVINCIBLE", 11: "MOVE_CANCEL", 26: "STEP_CANCEL",

@@ -15,6 +15,7 @@
 #include "ev_obj.h"
 #include "event.h"
 #include "flags.h"
+#include "hud.h"
 #include "fx.h"
 #include "objects.h"
 #include "progress.h"
@@ -696,7 +697,7 @@ static void warp_to(int own, s32 dest)
     int ok = col_floor(p[0], p[2], p[1] + 2, p[1] - 5, COL_SOLID, &h);
     pl->pos = v3(p[0], ok ? h.y : p[1], p[2]);
     if (e)
-        pl->yaw = e->yaw;
+        pl->yaw = e->yaw + 3.14159265f;  /* MSB rotY -> player yaw, as export_map.py's spawn (+ pi) */
     pl->vel = v3(0, 0, 0), pl->airborne = 0, pl->fall_y0 = pl->pos.y;
     printf("EVT warp player -> %d (%.2f %.2f %.2f)\n", (int)dest, pl->pos.x, pl->pos.y, pl->pos.z);
 }
@@ -954,6 +955,12 @@ static void run(Inst *in)
         case OP_EV_CLEAR: flag_value_set(iw[0], iw[1], 0); break;
         case OP_AWARD_LOT: award_lot(iw[0]); break;
         case OP_SAVE_REQ: save_request(); break;
+        case OP_BOSS_BAR: /* 2003[11] (on, entity, slot, NpcParam name id) */
+            hud_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
+            printf("EVT %u/%d boss bar %s %d (slot %d, name %d)\n", (unsigned)ev->id, (int)in->slot,
+                   iw[0] ? "on" : "off", (int)iw[1], (int)iw[2], (int)iw[3]);
+            break;
+        case OP_BOSS_DEFEAT: ev_boss_defeat(iw[0]); break;
         case OP_RESPAWN:  /* 2003[23] Set Player Respawn Point (an MSB SpawnPoint): where a death puts the player */
             prog.respawn = iw[0];
             progress_touch();
@@ -988,7 +995,16 @@ static void run(Inst *in)
         case OP_MAPHITS: if (!ev_chr_flag(EVC_MAPHIT_OFF, iw[0], iw[1] != 0)) stub(in, op); break;
         case OP_DEF_BACKREAD: if (!ev_chr_flag(EVC_ALWAYS_ON, iw[0], iw[1] != 0)) stub(in, op); break;
         case OP_HOME: { float p[3]; if (!ent_pos(in->set, iw[1], p) || !ev_chr_home(iw[0], p)) stub(in, op); break; }
-        case OP_ROTATE: { float p[3]; if (!ent_pos(in->set, iw[1], p) || !ev_chr_rotate(iw[0], p)) stub(in, op); break; }
+        case OP_ROTATE: {
+            float p[3];
+            if (!ent_pos(in->set, iw[1], p))
+                stub(in, op);
+            else if (iw[0] == PLAYER_ENTITY)  /* the player faces the target at once (fog-wall entry: 1012897) */
+                pl->yaw = atan2f(p[0] - pl->pos.x, p[2] - pl->pos.z);
+            else if (!ev_chr_rotate(iw[0], p))
+                stub(in, op);
+            break;
+        }
         case OP_AI_CMD: if (!ev_chr_ai_cmd(iw[0], iw[1], iw[2])) stub(in, op); break;
         case OP_AI_ID: if (!ev_chr_ai_logic(iw[0], iw[1])) stub(in, op); break;
         case OP_AI_REPLAN: case OP_AI_TARGET: if (!ev_chr_replan(iw[0])) stub(in, op); break;
@@ -1012,8 +1028,10 @@ static void run(Inst *in)
         case OP_OBJ_ANIM: if (!ev_obj_end_anim(iw[0], iw[1])) stub(in, op); break;
         case OP_ANIM: {  /* 2003[18] (entity, anim, loop, wait for completion, skip transition): objects here */
             float len = 0;
-            if (!ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len))
-                stub(in, op);  /* characters: E5 / A5 */
+            if (iw[0] == PLAYER_ENTITY)  /* the player (fog-wall walk 7410): player.c, the exported anims only */
+                len = player_event_anim(pl, iw[1]);
+            if (!len && !ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len))
+                stub(in, op);  /* enemies / NPCs: A5 */
             else if (iw[3] && !iw[2])
                 in->wait = len, in->state = I_WAIT_T, clear_conds(in);
             break;
@@ -1289,6 +1307,10 @@ void event_update(Player *p, float dt)
 int event_push_player(float pos[3], float r, float h)
 {
     int touched = 0;
+    /* the fog-wall walk (and any event anim) passes the object colliders, as DSR's 7410 walks through the fog
+     * (ASSUMED: all colliders, not only the fog's; TECH_DEBT event-18) */
+    if (pl && player_event_anim_playing(pl))
+        return 0;
     for (int k = 1; k < EV_SETS; k++) {
         Set *s = &sets[k];
         if (!s->blob)
@@ -1421,6 +1443,18 @@ void event_test_cmd(const char *cmd)
         int got = (int)flag_value_get(id, val), ok = got == want;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect value %d %d %d: %d %s\n", id, val, want, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect bossbar %d %d", &id, &val) == 2) {  /* slot, entity shown (-1 none) */
+        int got = hud_boss_bar_entity(id), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect bossbar %d %d: %d %s\n", id, val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect defeats %d", &val) == 1) {
+        int got = ev_boss_defeats(), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect defeats %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect eventanim %d", &val) == 1) {  /* an event anim plays on the player */
+        int got = pl && player_event_anim_playing(pl), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect eventanim %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
     } else if (sscanf(cmd, "expect bonfires %d", &val) == 1) {
         int got = ev_bonfire_count(), ok = got == val;
         test_pass += ok, test_fail += !ok;

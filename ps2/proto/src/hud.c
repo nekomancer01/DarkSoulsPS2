@@ -1,6 +1,7 @@
 #include <kernel.h>
 #include <string.h>
 #include <stdio.h>
+#include "enemy.h"
 #include "hud.h"
 #include "render.h"
 #include "progress.h"
@@ -180,6 +181,36 @@ static void slot_icon(int layout, int kit)
     hud_sprite(hud_icon(kit), e->x + (e->w - s) / 2, e->y + (e->h - s) / 2, s, s, 0x80, 0x80, 0x80, 0x80);
 }
 
+/* ---- boss bars (EMEVD 2003[11]) ---- */
+static int boss_ent[2] = {-1, -1}, boss_name[2];
+
+void hud_boss_bar(int slot, int entity, int name)
+{
+    for (int i = 0; i < 2; i++)
+        if (slot < 0 || slot == i)
+            boss_ent[i] = entity, boss_name[i] = name;
+}
+
+int hud_boss_bar_entity(int slot) { return slot >= 0 && slot < 2 ? boss_ent[slot] : -1; }
+
+/* ASSUMED layout (TECH_DEBT event-18): DSR's FrpgMenuDlgBossGauge sprites are not exported, so a plain bar centred
+ * near the bottom, slot 1 above slot 0, the name id over it */
+static void boss_bars(void)
+{
+    for (int i = 0; i < 2; i++) {
+        float r = 0;
+        int dead = 0;
+        if (boss_ent[i] < 0 || enemy_entity(boss_ent[i], NULL, &dead, &r, NULL) < 0)
+            continue;
+        float x = 140, y = 392 - i * 30, w = 360, h = 6;
+        hud_fill(x - 1, y - 1, w + 2, h + 2, 0x10, 0x10, 0x10, 0x60);
+        hud_fill(x, y, w * (r < 0 ? 0 : r > 1 ? 1 : r), h, 0xA0, 0x20, 0x18, 0x80);
+        char buf[16];
+        snprintf(buf, sizeof buf, "%d", boss_name[i]);
+        hud_text(x, y - 22, buf, 0x80, 0x80, 0x80, 0);
+    }
+}
+
 void hud_draw(const Player *p, float dt)
 {
     if (!ok) {
@@ -216,6 +247,7 @@ void hud_draw(const Player *p, float dt)
     const HudRect *st = &lay[HUD_SOUL_TEXT];
     snprintf(buf, sizeof buf, "%d", (int)prog.souls);
     hud_text(st->x + st->w, st->y, buf, 0x80, 0x80, 0x80, 1);
+    boss_bars();
     /* YOU DIED: fades in over 1.5 s while the player is dead (DSR F23_YouDied), gone after the respawn */
 #ifdef DIED_TEST  /* screenshot build (make EE_DBGINFOFLAGS=-DDIED_TEST): banner after 3 s */
     static float tt;
