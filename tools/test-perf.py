@@ -70,7 +70,7 @@ def check(hist, elf):
                 a, b = float(r[k]), float(o[k])
             except (TypeError, ValueError):
                 continue
-            delta = (a - b) * sign  # < 0 = worse
+            delta = (b - a) * sign  # < 0 = worse (sign -1: a drop is worse, e.g. fps 30 -> 25 gives -5)
             worse = -delta > max(abs(b) * rel, ab) if rel else -delta > ab
             better = delta > max(abs(b) * rel, ab) if rel else delta > ab
             item = {"area": key[0], "spot": key[1], "field": k, "new": a, "old": b}

@@ -106,13 +106,15 @@ unsigned lua0_heap, lua0_since_gc, lua0_instructions;
 /* Small objects (<= LP_MAX bytes with the header) come from a pool of their own, one free list per 16-byte size
  * class: the VM allocates and frees all the time, and in the general heap its objects pinned holes between the
  * large blocks enemy.c streams (model.bin 379K OUT OF RAM with 3 MB free, world build with two blocks' enemies,
- * 2026-11-01). Larger ones (code, big tables) and a full pool fall back to malloc. 8-byte header: the class. */
+ * 2026-11-01). Larger ones (code, big tables) and a full pool fall back to malloc. 8-byte header: the class, the
+ * size (lua0_malloc_live). TECH_DEBT world-5: with two blocks' AI scripts 394 KB stay live after a sweep, the pool
+ * stays full and up to ~180 KB of garbage per collection goes through malloc (30-minute soak, 2026-11-01). */
 #define LP_SIZE (384u << 10)
 #define LP_MAX 512
 static unsigned char *lp;
 static unsigned lp_used;
 static void *lp_free[LP_MAX / 16 + 1];
-unsigned lua0_pool_used;
+unsigned lua0_pool_used, lua0_pool_free, lua0_malloc_live;  /* pool watermark, bytes on its free lists, fallback bytes */
 
 static void *lmem(unsigned n)
 {
@@ -120,7 +122,7 @@ static void *lmem(unsigned n)
     unsigned char *b = NULL;
     if (c <= LP_MAX / 16) {
         if (lp_free[c])
-            b = lp_free[c], lp_free[c] = *(void **)(b + 8);
+            b = lp_free[c], lp_free[c] = *(void **)(b + 8), lua0_pool_free -= c * 16;
         else if (lp && lp_used + c * 16 <= LP_SIZE)
             b = lp + lp_used, lp_used += c * 16, lua0_pool_used = lp_used;
     }
@@ -130,7 +132,9 @@ static void *lmem(unsigned n)
     }
     if (!b)
         return NULL;
-    *(unsigned *)b = c;
+    ((unsigned *)b)[0] = c, ((unsigned *)b)[1] = n + 8;
+    if (!c)
+        lua0_malloc_live += n + 8;
     return b + 8;
 }
 
@@ -143,7 +147,9 @@ static void lrel(void *p)
     if (c) {
         *(void **)(b + 8) = lp_free[c];
         lp_free[c] = b;
+        lua0_pool_free += c * 16;
     } else {
+        lua0_malloc_live -= ((unsigned *)b)[1];
         free(b);
     }
 }
@@ -876,6 +882,8 @@ void lua0_gc(void (*extra_roots)(void))
 {
     if (nci)
         return;
+    unsigned before = lua0_heap, since = lua0_since_gc, t0;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
     lua0_mark(globals);
     for (int i = 0; i < 8; i++)
         lua0_mark(methods[i]);
@@ -919,6 +927,14 @@ void lua0_gc(void (*extra_roots)(void))
         lrel(o);
     }
     lua0_since_gc = 0;
+    /* one line per collection: the heap-drift check (TECH_DEBT world-5) reads free heap right after a sweep, where
+     * the VM holds only live objects; between sweeps up to 192 KB of garbage (ai.c ai_end_frame) is still held */
+    unsigned t1;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+    struct mallinfo mi = mallinfo();
+    printf("lua0: gc %uK -> %uK (+%uK since) in %u us, pool %uK used %uK free, malloc %uK, heap free %uK in-use %uK\n",
+           before >> 10, lua0_heap >> 10, since >> 10, (t1 - t0) / 295, lua0_pool_used >> 10,
+           lua0_pool_free >> 10, lua0_malloc_live >> 10, (unsigned)mi.fordblks >> 10, (unsigned)mi.uordblks >> 10);
 }
 
 /* ---- base library (what DSR's scripts use: math.abs, table.getn; loadstring is installed by the AI) ---- */
