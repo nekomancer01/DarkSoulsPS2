@@ -4,6 +4,8 @@
   test-report.py <run dir>     reads smoke/smoke.json, regress*.json, perf.json, steps.txt; writes <run dir>/report.html"""
 import html, json, os, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 
 def load(path):
     try:
@@ -17,6 +19,7 @@ def main():
     smoke = load(os.path.join(run, "smoke", "smoke.json"))
     perf = load(os.path.join(run, "perf.json"))
     regs = {n: load(os.path.join(run, n + ".json")) for n in ("regress-last", "regress-baseline")}
+    stamp = load(os.path.join(run, "stamp.json"))
     steps = open(os.path.join(run, "steps.txt")).read() if os.path.exists(os.path.join(run, "steps.txt")) else ""
     e = html.escape
     o = ["<!doctype html><meta charset=utf-8><title>DSR PS2 tests</title><style>body{font:13px sans-serif;"
@@ -25,6 +28,9 @@ def main():
          "td:first-child,th:first-child{text-align:left}.grid{display:flex;flex-wrap:wrap;gap:8px}"
          ".grid div{width:260px}.grid img{width:260px}pre{background:#0d0e10;padding:8px}</style>",
          f"<h1>DSR PS2 test run {e(os.path.basename(os.path.abspath(run)))}</h1><h2>Steps</h2><pre>{e(steps)}</pre>"]
+    if stamp:  # tools/runstamp.py: the tree and ELFs this run tested
+        import runstamp
+        o.append(f"<p>Tested: {e(runstamp.line(stamp))}</p>")
     if perf and "areas" in perf:
         o.append(f"<h2>Perf (build {e(perf['build'])} vs {e(str(perf.get('previous')))})</h2><table><tr><th>area</th>"
                  "<th>spots</th><th>fps mean</th><th>worst frame ms</th><th>RAM min KB</th><th>VRAM min KB</th></tr>")

@@ -1,20 +1,44 @@
 #!/bin/bash
-# Usage: tools/q [-m GB] <command...>  — run a heavy job through the project job queue.
+# Usage: tools/q [-m GB] [-r GB] <command...>  — run a heavy job through the project job queue.
 # Every heavy job (make / exporters, PCSX2 tests, Ghidra, whole-game scans) goes through here (user request
 # 2026-10-31, after three OOM kills of the whole Claude app). Jobs run side by side as long as their memory caps fit:
-# a job starts when the caps of the running jobs plus its own stay within BUDGET GB and the host has GB free. Each job
-# gets an address-space cap so a runaway fails with MemoryError instead of filling swap. `make` jobs also take
-# .build.lock, so builds (which rewrite build/) never overlap each other. A q started inside another q job or inside
-# `flock .build.lock -c ...` does not wait again (that would deadlock on its parent).
-#   -m GB   memory cap for this job (default 10; also its reservation against BUDGET)
-# Env: DSR_Q_BUDGET (default 20 GB of the 31 GB host: leaves room for the desktop, browser, RuneLite and Claude).
+# a job starts when the reservations of the running jobs plus its own stay within BUDGET GB and the host has that much
+# available. Each job gets an address-space cap so a runaway fails with MemoryError instead of filling swap; the cap
+# is address space, not RAM, so the reservation can be lower than it. `make` jobs also take their build dir's
+# .build.lock: two builds of the same dir never overlap, builds of different dirs (BUILD=build/s1, build/s2, see
+# tools/newbuild) run side by side. A q started inside another q job or inside `flock .build.lock -c ...` does not wait
+# again (that would deadlock on its parent).
+#   -m GB   address-space cap for this job (default 10)
+#   -r GB   reservation against BUDGET (default: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB). Real peaks 2026-11-01:
+#           a full make (export_map main process <= 5 GB, forkserver simplify workers small) ~6 GB, a PCSX2 test < 2 GB
+# Env: DSR_Q_BUDGET (default 20 GB of the 31 GB host: leaves room for the desktop, browser, RuneLite and Claude),
+#      DSR_Q_MAKE_GB (default 8). memwatch stays the backstop.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 GB=10
+R=
 Q_BUDGET=${DSR_Q_BUDGET:-20}
-[ "$1" = "-m" ] && { GB=$2; shift 2; }
+while :; do
+    case "$1" in -m) GB=$2; shift 2 ;; -r) R=$2; shift 2 ;; *) break ;; esac
+done
 [ $# -gt 0 ] || { echo "usage: $0 [-m GB] command..."; exit 2; }
-held() {  # an ancestor already holds the queue: DSR_Q_HELD, or a `flock ... .build.lock` parent
-    [ -n "$DSR_Q_HELD" ] && return 0
+B=$(printf '%s\n' "$*" | grep -o 'BUILD=[^ ]*' | head -1); B=${B:-${BUILD:+BUILD=$BUILD}}
+IS_MAKE=
+case " $* " in *" make "*|*"/make "*|" make"*) IS_MAKE=1 ;; esac
+if [ -z "$R" ]; then  # a build, or test-all.sh (its builds and tests run one after another inside it)
+    R=$GB
+    case " $* " in *test-all.sh*) BIG=1 ;; *) BIG=$IS_MAKE ;; esac
+    [ -n "$BIG" ] && [ "$R" -gt "${DSR_Q_MAKE_GB:-8}" ] && R=${DSR_Q_MAKE_GB:-8}
+fi
+# a build rewrites its build dir: one build per dir at a time (fd 8). The main build/ keeps the tree's .build.lock
+# (shared with `flock .build.lock` users and tools/newbuild); another BUILD= dir has its own <dir>/.build.lock
+if [ -n "$IS_MAKE" ]; then
+    LOCK=$ROOT/.build.lock
+    if [ -n "$B" ]; then
+        BD=$(realpath -m -- "${B#BUILD=}")
+        [ "$BD" != "$(realpath -m -- "$ROOT/build")" ] && mkdir -p "$BD" && LOCK=$(realpath -m -- "$BD/.build.lock")
+    fi
+fi
+flock_parent() {  # a `flock ... .build.lock` ancestor
     local p=$PPID
     while [ "$p" -gt 1 ]; do
         tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q 'flock.*\.build\.lock' && return 0
@@ -22,16 +46,29 @@ held() {  # an ancestor already holds the queue: DSR_Q_HELD, or a `flock ... .bu
     done
     return 1
 }
+held() {  # an ancestor already holds the queue: DSR_Q_HELD, or a `flock ... .build.lock` parent
+    [ -n "$DSR_Q_HELD" ] || flock_parent
+}
 if held; then
+    # a make inside a q job that holds no lock for its build dir (test-all.sh: the outer q runs a script, the builds
+    # are nested) takes that lock, so it never overlaps a build of the same dir queued on its own; one inside a
+    # `flock .build.lock` parent or a q holding this lock already has it (taking it again would deadlock)
     # a nested cap can't exceed the outer one (prlimit fails raising it): clamp to the current limit
     CUR=$(ulimit -v); [ "$CUR" != unlimited ] && [ $((GB << 20)) -gt "$CUR" ] && GB=$((CUR >> 20))
+    if [ -n "$IS_MAKE" ] && [ "$LOCK" != "$DSR_Q_LOCK" ] && ! { [ "$LOCK" = "$ROOT/.build.lock" ] && flock_parent; }; then
+        exec 8>"$LOCK"; flock 8
+        DSR_Q_LOCK=$LOCK prlimit --as=$((GB << 30)) -- "$@" 8>&-  # the job gets no copy of the lock fd (see below)
+        exit $?
+    fi
     exec prlimit --as=$((GB << 30)) -- "$@"
 fi
 RES=/tmp/dsr-q; mkdir -p "$RES"
 T0=$(date +%s)
-echo "[q] waiting (cap ${GB} GB, budget ${Q_BUDGET} GB): $*" >&2
-# a build rewrites build/: only one at a time (fd 8, the lock shared with `flock .build.lock` users)
-case " $* " in *" make "*|*"/make "*|" make"*) exec 8>"$ROOT/.build.lock"; flock 8 ;; esac
+echo "[q] waiting (cap ${GB} GB, reserve ${R} GB, budget ${Q_BUDGET} GB): $*" >&2
+# the build lock is taken together with the reservation, never held while waiting for budget: a waiting build then
+# can't block the nested build of an admitted job (test-all.sh) that needs the same lock
+[ -n "$IS_MAKE" ] && { exec 8>"$LOCK"; export DSR_Q_LOCK=$LOCK; }
+GOT=
 # reserve GB against the budget; the mutex (fd 9) makes check + reserve atomic between queued jobs
 exec 9>"$RES/.mutex"
 for i in $(seq 1800); do
@@ -44,18 +81,27 @@ for i in $(seq 1800); do
     done
     AV=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
     # admit when it fits the budget and the host has room; a job bigger than the budget runs alone
-    if { [ $((USED + GB)) -le "$Q_BUDGET" ] || [ "$USED" -eq 0 ]; } && [ "$AV" -ge "$GB" -o "$USED" -eq 0 ]; then
-        touch "$RES/$$.$GB"; flock -u 9; break
+    if { [ $((USED + R)) -le "$Q_BUDGET" ] || [ "$USED" -eq 0 ]; } && [ "$AV" -ge "$R" -o "$USED" -eq 0 ]; then
+        if [ -z "$IS_MAKE" ] || flock -n 8; then touch "$RES/$$.$R"; GOT=1; flock -u 9; break; fi
     fi
     flock -u 9; sleep 2
 done
-[ -e "$RES/$$.$GB" ] || touch "$RES/$$.$GB"  # waited 1 h: run anyway, the cap and memwatch still guard it
-echo "[q] start after $(( $(date +%s) - T0 )) s (${AV} GB free, ${USED} GB reserved, cap ${GB} GB): $*" >&2
-echo "$(date '+%F %T') start pid $$ cap ${GB}G (reserved ${USED}G): $*" >> "$ROOT/notes/jobq.log"
+if [ -z "$GOT" ]; then  # waited 1 h: run anyway (a build still waits for its dir), the cap and memwatch still guard it
+    [ -n "$IS_MAKE" ] && flock 8
+    touch "$RES/$$.$R"
+fi
+T1=$(date +%s)
+echo "[q] start after $(( T1 - T0 )) s (${AV} GB free, ${USED} GB reserved, cap ${GB} GB, reserve ${R} GB): $*" >&2
+# one log for the whole repo: a worktree (tools/worktree.sh) logs into the main tree's notes/
+LOGDIR=$ROOT/notes
+COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -d "${COMMON%/.git}/notes" ] && LOGDIR=${COMMON%/.git}/notes
+WHERE=${ROOT##*/}${B:+ ${B/$ROOT\//}}
+echo "$(date '+%F %T') start pid $$ cap ${GB}G res ${R}G (reserved ${USED}G) wait $(( T1 - T0 )) s [$WHERE]: $*" >> "$LOGDIR/jobq.log"
 # the job gets no copy of the lock fds: a daemon it starts (e.g. Xvfb :99 from pcsx2-run.sh) would otherwise hold
 # them after the job ends (deadlock 2026-10-31 11:47)
 DSR_Q_HELD=1 prlimit --as=$((GB << 30)) -- "$@" 8>&- 9>&-
 RC=$?
-rm -f "$RES/$$.$GB"
-echo "$(date '+%F %T') end   pid $$ rc $RC after $(( $(date +%s) - T0 )) s" >> "$ROOT/notes/jobq.log"
+rm -f "$RES/$$.$R"
+# "after" = wait + run (kept for old readers of the log); run = the job alone
+echo "$(date '+%F %T') end   pid $$ rc $RC after $(( $(date +%s) - T0 )) s run $(( $(date +%s) - T1 )) s" >> "$LOGDIR/jobq.log"
 exit $RC

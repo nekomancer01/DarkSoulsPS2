@@ -18,6 +18,16 @@ OUT = $(or $(BLOCK),$(MAP))
 ifneq ($(BLOCK),)
 export AREA_BLOCK := $(BLOCK)
 endif
+# Tool dependencies by content (TS = $(BUILD)/stamp): exports depend on $(TS)/<tool>.sum, a stamp holding the tool's
+# hash. It is rewritten only when the content changes, so a touch, a checkout or a save without changes no longer
+# re-exports every map (a new stamp takes the tool's own mtime, so adding the stamps rebuilds nothing). Every make
+# re-hashes the tools (FORCE), like $(O)/.cflags; stamps are replaced by rename, so parallel sub-makes never read half a one.
+TS = $(BUILD)/stamp
+$(TS)/%.sum: FORCE
+	@mkdir -p $(@D)
+	@sha1sum < ../../tools/$* > $@.$$$$ && if [ ! -e $@ ]; then touch -r ../../tools/$* $@.$$$$ && mv -f $@.$$$$ $@; \
+	elif cmp -s $@.$$$$ $@; then rm -f $@.$$$$; else mv -f $@.$$$$ $@; fi
+.PRECIOUS: $(TS)/%.sum
 # G = generated files shared by every area (player model / ESD / data headers, menu), O = objects, D = packs
 G = $(BUILD)/gen
 O = $(BUILD)/obj
@@ -99,26 +109,32 @@ $(notdir $(EE_BIN)): all
 # one world block's packs (no ELF): make MAP=<msb> BLOCK=<block> blockpacks
 blockpacks: $(D)/$(OUT).pak $(ENEMIES:%=$(AREA_DATA)/%.pak)  # chr packs with this block's variants (enemy.c)
 .PHONY: blockpacks
+# WORLD_J: blocks exported side by side (default 1). Their exporters run inside this make's queue job and reserve no
+# RAM of their own, so raise it only when each block's export fits the job's -m cap together (simplify workers are
+# small since tools/simplify_pool.py; a cached / C simplify needs ~3-4 GB per export_map)
+WORLD_J ?= 1
 worldpacks:
-	@for b in $(WORLD_BLOCKS); do $(MAKE) --no-print-directory MAP=$${b%%:*} BLOCK=$${b#*:} blockpacks || exit 1; done
+	@$(MAKE) --no-print-directory -j$(WORLD_J) $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblock@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockpacks
 .PHONY: worldpacks
-$(D)/world.pak: worldpacks ../../tools/export_world.py $(AREA_PY) $(A)/collision.bin
+$(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
 	python3 -I ../../tools/pack.py $@ world.bin=$(G)/world.bin
 .PHONY: $(notdir $(EE_BIN))
 
-$(D)/c0000.pak: $(G)/model.bin $(G)/esd.bin ../../tools/pack.py ../../tools/native/lz4pack.c
+$(D)/c0000.pak: $(G)/model.bin $(G)/esd.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ model.bin=$(G)/model.bin esd.bin=$(G)/esd.bin
 
 # The player's action logic: c0000.esd (state groups, conditions, bytecode) packed for src/esd.c
-$(G)/esd.bin: ../../tools/export_esd.py ../../tools/esd.py ../../tools/souls.py
+$(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@
 
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin $(A)/dg.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin ../../tools/pack.py \
-		../../tools/native/lz4pack.c $(A)/fx.bin
+$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin $(A)/dg.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
+		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
 		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin \
@@ -126,7 +142,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin) \
 		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
 # world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background
-$(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin ../../tools/mapsplit.py
+$(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(TS)/mapsplit.py.sum
 	python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin
 
 # Objects: src/*.c -> $(O)/*.o; area-dependent objects of a non-default area go to $(O)/<MAP>/
@@ -141,69 +157,69 @@ endif
 
 # Breakable objects (pots) of the area: intact + pre-fractured models, piece bodies, placements
 # (types over the RAM budget are listed in objects.bin.static and drawn by the map as static objects)
-AREA_PY = ../../tools/area.py
-$(A)/objects.bin: ../../tools/export_objects.py ../../tools/export_model.py ../../tools/souls.py $(AREA_PY)
+AREA_PY = $(TS)/area.py.sum
+$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
 
 # MSB enemy parts of the area (model, NpcParam / ThinkParam ids, position, yaw)
 # EMEVD bytecode (src/event.c): the map's events + entity table (hit ranges of this area / block's collision.bin),
 # common.emevd as evcommon.bin; coverage per map in events.txt
-$(A)/events.bin: ../../tools/export_emevd.py ../../tools/emevd.py ../../tools/export_collision.py ../../tools/havok_collision.py \
-		../../tools/souls.py $(AREA_PY)
+$(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum \
+		$(TS)/souls.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
 $(A)/evcommon.bin: $(A)/events.bin
 
-$(A)/enemies.bin: ../../tools/export_enemies.py ../../tools/souls.py $(AREA_PY)
+$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $@ $(MAP)
 
 # Enemy / NPC character: FLVER, skeleton, anims, TAE windows, one variant per placed NpcParam / ThinkParam pair
-CHR_DEPS = ../../tools/export_chr.py ../../tools/export_model.py ../../tools/export_enemies.py ../../tools/havok_anim.py \
-	../../tools/lua50.py ../../tools/souls.py $(AREA_PY)
+CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/export_model.py.sum $(TS)/export_enemies.py.sum $(TS)/havok_anim.py.sum \
+	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_PY)
 $(A)/c%/chr.bin: $(CHR_DEPS)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_chr.py "$(GAME)" c$* $(MAP) $(A)/c$* $(or $(LOD_c$*),1) $(or $(TEX_c$*),64)
 
-$(AREA_DATA)/c%.pak: $(A)/c%/chr.bin ../../tools/pack.py ../../tools/native/lz4pack.c
+$(AREA_DATA)/c%.pak: $(A)/c%/chr.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ model.bin=$(A)/c$*/model.bin chr.bin=$(A)/c$*/chr.bin
 
 .PRECIOUS: $(A)/c%/chr.bin
 
 # DSR's AI scripts (Lua 5.0 bytecode) re-packed for the lua0 VM
-$(A)/ai_common.lua0: ../../tools/lua50.py ../../tools/souls.py ../../tools/export_enemies.py $(AREA_PY)
+$(A)/ai_common.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(TS)/export_enemies.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/lua50.py --pack --msb "$(GAME)" $(MAP) $@ "$(GAME)/script/aiCommon.luabnd.dcx"
-$(A)/ai_map.lua0: ../../tools/lua50.py ../../tools/souls.py ../../tools/export_enemies.py $(AREA_PY)
+$(A)/ai_map.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(TS)/export_enemies.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/lua50.py --pack --msb "$(GAME)" $(MAP) $@ "$(GAME)/script/$(MAP).luabnd.dcx"
 
 # Shared enemy behaviour: enemyCommon.esd (every enemy's ESD in DS1)
-$(G)/enemyCommon.esd.bin: ../../tools/export_esd.py ../../tools/esd.py ../../tools/souls.py
+$(G)/enemyCommon.esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@ enemyCommon
 
-$(AREA_DATA)/common.pak: $(G)/enemyCommon.esd.bin $(A)/ai_common.lua0 ../../tools/pack.py ../../tools/native/lz4pack.c
+$(AREA_DATA)/common.pak: $(G)/enemyCommon.esd.bin $(A)/ai_common.lua0 $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ esd.bin=$(G)/enemyCommon.esd.bin ai.lua0=$(A)/ai_common.lua0
 
-$(G)/player_data.h: ../../tools/export_player.py ../../tools/souls.py
+$(G)/player_data.h: $(TS)/export_player.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_player.py "$(GAME)" $@
 
 $(O)/player.o: $(G)/player_data.h
 
 # New-game progression (src/progress.c): CharaInitParam of the starting class
-$(G)/progress_data.h: ../../tools/export_progress.py ../../tools/params.py ../../tools/souls.py
+$(G)/progress_data.h: $(TS)/export_progress.py.sum $(TS)/params.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_progress.py "$(GAME)" $@
 
 $(O)/progress.o: $(G)/progress_data.h
 
 # HP / damage core: stats, CalcCorrectGraph rows, weapon dummy polys, AtkParam windows, the debug dummy's NpcParam
-$(G)/combat_data.h: ../../tools/export_combat.py ../../tools/havok_anim.py ../../tools/souls.py
+$(G)/combat_data.h: $(TS)/export_combat.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_combat.py "$(GAME)" $@
 
@@ -215,17 +231,17 @@ $(O)/lua0.o: src/lua0.h
 $(O)/main.o $(O)/player.o: src/model.h
 
 # Real mesh, textures and Havok animations
-$(G)/model.bin: ../../tools/export_model.py ../../tools/havok_anim.py ../../tools/souls.py
+$(G)/model.bin: $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_model.py "$(GAME)" $@
 
 
 # HUD and menus: DSR's menu sprites (menu.drb layout), DSFont24, item icons, English FMG text (tools/export_menu.py)
-$(G)/menu.bin: ../../tools/export_menu.py ../../tools/souls.py
+$(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" $@
 
-$(D)/menu.pak: $(G)/menu.bin ../../tools/pack.py ../../tools/native/lz4pack.c
+$(D)/menu.pak: $(G)/menu.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ menu.bin=$(G)/menu.bin
 
@@ -244,10 +260,11 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # resident (140k tris, map.bin 10.1 MB), near 6 px (3 px was 150k tris within 24 m at the densest smoke point, 15 fps)
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
 MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
-$(A)/map.bin: ../../tools/export_map.py ../../tools/texmap.py ../../tools/simplify.py ../../tools/souls.py ../../tools/export_collision.py \
-		../../tools/export_normal.py ../../tools/dsr_light.py ../../tools/export_effects.py ../../tools/ffx.py \
-		../../tools/drawgroups.py ../../tools/pose_obj.py \
-		../../tools/havok_collision.py $(AREA_PY) $(A)/objects.bin
+$(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
+		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum $(TS)/export_effects.py.sum $(TS)/ffx.py.sum \
+		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
+		$(TS)/native/simplify.c.sum \
+		$(TS)/havok_collision.py.sum $(AREA_PY) $(A)/objects.bin
 	@mkdir -p $(@D)
 	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static $(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
 # normal-map relief (tools/export_normal.py, src/bump.c): written by the map.bin export, same chunk order
@@ -258,13 +275,13 @@ $(A)/dg.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
-$(A)/fx.bin: ../../tools/export_effects.py ../../tools/ffx.py ../../tools/souls.py $(AREA_PY) $(A)/map.bin
+$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/souls.py.sum $(AREA_PY) $(A)/map.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" $@ $(MAP) --tone $(A)/fx_tone.json
 
 
 # Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller): tools/export_collision.py
-$(A)/collision.bin: ../../tools/export_collision.py ../../tools/havok_collision.py ../../tools/souls.py $(AREA_PY)
+$(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
 

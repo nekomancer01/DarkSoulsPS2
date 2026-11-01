@@ -1,5 +1,6 @@
 # Everything generated from the game goes to build/ (see config.mk, notes/oss/audit.md). Nothing game-derived is tracked.
 /build/
+/wt/
 /config.local.mk
 .build.lock
 .job.lock
