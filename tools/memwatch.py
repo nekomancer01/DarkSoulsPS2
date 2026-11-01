@@ -26,7 +26,7 @@ PROC_CAP = 8 * GiB          # one job process above this (RSS + swap) is a runaw
 MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this (wrapper shells free nothing)
 # Pressure trigger (env overrides). PSI "full" = share of time every non-idle task was stalled on memory (avg10, %);
 # systemd-oomd kills a whole scope at 60 % for 30 s, so these act well before it. Disk swap-in = pswpin minus zram's
-# reads, averaged over SWAPIN_WINDOW polls.
+# reads, averaged over SWAPIN_WINDOW polls. Values ASSUMED (TECH_DEBT test-6).
 PSI_PAUSE = float(os.environ.get("MEMWATCH_PSI_PAUSE", 10))     # pause the largest job at this full avg10 ...
 SWAPIN_PAUSE = float(os.environ.get("MEMWATCH_SWAPIN_MB", 20)) * (1 << 20)  # ... or this disk swap-in rate (B/s)
 PSI_KILL = float(os.environ.get("MEMWATCH_PSI_KILL", 30))       # kill the largest job at this full avg10
