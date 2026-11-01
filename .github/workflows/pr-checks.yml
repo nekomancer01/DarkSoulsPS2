@@ -1,0 +1,42 @@
+# PR checks that need no game data (AGENTS.md section 1: game data never leaves the player's machine). The PCSX2
+# suite (tools/test-all.sh, world_* scripts) runs on the maintainer's PC; its results go in the PR checklist
+# (.github/pull_request_template.md). Each job runs the same script you can run locally under tools/ci/.
+name: PR checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  hygiene:
+    name: Hygiene (no game data, personal paths, duplicate TECH_DEBT IDs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I tools/ci/hygiene.py
+  offline:
+    name: Offline (VU1 tests, generated .vsm up to date, Python compiles)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy
+      - run: tools/ci/offline.sh
+  compile:
+    name: Compile (ps2dev v2.0.0, -Werror, data-free sources)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The ps2dev release README.md asks for; bump together with the README when moving toolchains
+    container: ps2dev/ps2dev:v2.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/ci/compile.sh

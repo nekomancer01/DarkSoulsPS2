@@ -109,6 +109,9 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 - Mark AI-assisted work with a `Co-Authored-By:` trailer naming the agent.
 - PR description: what changed, how it was verified (spots, numbers, the headless command), and the TECH_DEBT IDs
   it opens or resolves.
+- Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/offline.sh` and
+  `tools/ci/compile.sh` (no game data, so no PCSX2). Run them locally before pushing. The PCSX2 results go in the
+  PR template's Verification section.
 
 ## 8. Where to start
 

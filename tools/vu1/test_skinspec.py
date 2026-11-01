@@ -127,7 +127,8 @@ def main(seeds=10, tris=24):
         for path, entry in others:
             diff += sum(a != b for a, b in zip(base, run(path, entry, seed, tris, True)[0]))
     print('m = f = 0: %d vertices differ from %s' % (diff, ', '.join(p.split('/')[-1] + ':' + e for p, e in others)))
+    return mb + diff
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(1 if main() else 0)
