@@ -1,5 +1,5 @@
 #!/bin/bash
-# One screen of status for the DSR background jobs. Live view: watch -t -n 5 ~/dsr-ps2/status.sh
+# One screen of status for the DSR background jobs. Live view: watch -t -n 5 ./status.sh (from the repo root)
 D=$(cd "$(dirname "$0")" && pwd)
 running() { pgrep -f "$1" >/dev/null && echo running || echo idle; }
 echo "DSR jobs  $(date +%T)   load $(cut -d' ' -f1-3 /proc/loadavg)"
