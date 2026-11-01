@@ -83,6 +83,7 @@ typedef struct Ai {
     int ez_anim;             /* DoEzAction guard pose (9910) held while ez_goal lives, for ez_life seconds */
     float ez_life;
     void *ez_goal;
+    int ev_req[4];           /* EMEVD 2004[17] AI command per slot (ai:GetEventRequest), -1 none; set by enemy.c */
 } Ai;
 
 enum { AIS_NORMAL, AIS_CAUTION, AIS_FIND, AIS_BATTLE };
@@ -97,6 +98,9 @@ void ai_init(Ai *a, const AiThink *th, int index, unsigned seed);
 void ai_update(Ai *a, const AiFrame *f);
 /* Clear all goals (death) */
 void ai_reset(Ai *a);
+/* EMEVD 2004[20] logic replanning: the top goal's subgoals go, the logic runs again next update; forget (2004[16]
+ * target clear): also what it saw / heard */
+void ai_replan(Ai *a, int forget);
 int ai_goals_in_use(void);  /* goal pool slots held (leak check at world block on / off) */
 /* A noise this frame at pos audible within radius (player footsteps, rolls, attacks): "heard" (ear_dist) */
 void ai_sound(V3 pos, float radius);

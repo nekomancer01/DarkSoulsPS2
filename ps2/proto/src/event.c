@@ -8,6 +8,7 @@
 
 #include "collision.h"
 #include "enemy.h"
+#include "ev_chr.h"
 #include "event.h"
 #include "flags.h"
 #include "objects.h"
@@ -362,8 +363,7 @@ static int static_cond(int op)
     case OP_C_GROUP: case OP_C_FLAG: case OP_C_FLAG_RANGE: case OP_C_COUNT_FLAGS: case OP_C_EVENT_VALUE: case OP_C_MP:
     case OP_C_ONLINE: case OP_C_CYCLE: case OP_C_CLASS: case OP_C_COVENANT: case OP_C_ITEM: case OP_C_ITEM_BBOX:
     case OP_C_TENDENCY: case OP_C_MP_EVENT: case OP_C_MP_COUNT: case OP_C_DROPPED_AREA: case OP_C_DROPPED:
-    case OP_C_DAMAGED: case OP_C_SPEFFECT: case OP_C_PART_HP: case OP_C_EVENT_MSG:
-    case OP_C_CHR_TYPE:
+    case OP_C_EVENT_MSG: case OP_C_CHR_TYPE:
         return 1;
     }
     return 0;
@@ -410,9 +410,12 @@ static int eval_cond(Inst *in, const Reg *r, int depth)
         int in_map = ps && ps->h->map[0] == (u8)iw[2] && ps->h->map[1] == (u8)iw[3];
         return in_map == (iw[1] != 0);
     }
-    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_DAMAGED: case OP_C_SPEFFECT:
-    case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_MP_COUNT:
+    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_EVENT_MSG: case OP_C_MP_COUNT:
         return 0;  /* nothing of that kind happens offline / in the port yet */
+    /* characters (ev_chr.c); the player's SpEffects are A6's: false as before */
+    case OP_C_DAMAGED: return ev_chr_damaged(iw[1], iw[2]) == 1;
+    case OP_C_SPEFFECT: return iw[1] != PLAYER_ENTITY && ev_chr_has_speffect(iw[1], iw[2]) == (iw[3] != 0);
+    case OP_C_PART_HP: { int hp; return ev_chr_part_hp(iw[1], iw[2], &hp) > 0 && cmp(iw[4], hp, iw[3]); }
     case OP_C_OBJ_DESTROYED: {  /* 5[00] (group, destroyed state, object entity): breakables (objects.c) */
         int broken = 0;
         objects_entity(iw[2], NULL, &broken);
@@ -881,10 +884,28 @@ static void run(Inst *in)
                 pl->hp = -1;  /* death camera / respawn as a lethal fall (player.c) */
                 printf("EVT %u/%d kills the player\n", (unsigned)ev->id, (int)in->slot);
             } else
-                enemy_entity_kill(iw[0]);
+                ev_chr_kill(iw[0]);
             break;
-        case OP_CHR_ENABLE: enemy_entity_enable(iw[0], iw[1] != 0, 1); break;
-        case OP_BACKREAD: enemy_entity_enable(iw[0], iw[1] == 0, 2); break;  /* own bit: not an enable */
+        case OP_CHR_ENABLE: ev_chr_enable(iw[0], iw[1] != 0, 1); break;
+        case OP_BACKREAD: ev_chr_enable(iw[0], iw[1] == 0, 2); break;  /* own bit: not an enable */
+        /* character ops (ev_chr.c): stub = the player or a full record table */
+        case OP_AI_STATE: if (!ev_chr_ai(iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_TEAM: case OP_TEAM_EXIT: if (!ev_chr_team(iw[0], (s8)iw[1], op == OP_TEAM_EXIT)) stub(in, op); break;
+        case OP_SPEFFECT: case OP_CLEAR_SPEFFECT: if (!ev_chr_speffect(iw[0], iw[1], op == OP_SPEFFECT)) stub(in, op); break;
+        case OP_SPECIAL_ANIM: if (!ev_chr_special_wait(iw[0], iw + 1)) stub(in, op); break;
+        case OP_GRAVITY: if (!ev_chr_flag(EVC_GRAVITY_OFF, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_IMMORTAL: if (!ev_chr_flag(EVC_IMMORTAL, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_INVINCIBLE: if (!ev_chr_flag(EVC_INVINCIBLE, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_MAPHITS: if (!ev_chr_flag(EVC_MAPHIT_OFF, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_DEF_BACKREAD: if (!ev_chr_flag(EVC_ALWAYS_ON, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_HOME: { float p[3]; if (!ent_pos(in->set, iw[1], p) || !ev_chr_home(iw[0], p)) stub(in, op); break; }
+        case OP_ROTATE: { float p[3]; if (!ent_pos(in->set, iw[1], p) || !ev_chr_rotate(iw[0], p)) stub(in, op); break; }
+        case OP_AI_CMD: if (!ev_chr_ai_cmd(iw[0], iw[1], iw[2])) stub(in, op); break;
+        case OP_AI_ID: if (!ev_chr_ai_logic(iw[0], iw[1])) stub(in, op); break;
+        case OP_AI_REPLAN: case OP_AI_TARGET: if (!ev_chr_replan(iw[0])) stub(in, op); break;
+        case OP_NPC_PART: if (!ev_chr_part(iw[0], iw[1], iw[3])) stub(in, op); break;
+        case OP_DISPMASK: if (!ev_chr_dispmask(iw[0], iw[1], iw[2])) stub(in, op); break;
+        case OP_ANIM_RESET: if (!ev_chr_anim_reset(iw[0])) stub(in, op); break;
         case OP_WARP_FLOOR: case OP_SHORT_WARP: case OP_WARP_COPY:
             if (iw[0] == PLAYER_ENTITY)
                 warp_to(in->set, iw[2]);
@@ -1078,6 +1099,7 @@ void event_update(Player *p, float dt)
     unsigned t0 = ticks();
     pl = p, dtime = dt;
     act_used = 0;
+    ev_chr_update(dt);
     event_stats.prompt = -1;
     if (act_press)
         use_action();
@@ -1234,6 +1256,7 @@ void event_test_cmd(const char *cmd)
         int ok = b[0] == '<' ? got < v : got > v;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect %s %s %.2f: %.2f %s\n", a, b, v, got, ok ? "PASS" : "FAIL");
+    } else if (ev_chr_test(cmd, &test_pass, &test_fail)) {  /* chr ... / expect chr ... (ev_chr.c) */
     } else if (sscanf(cmd, "obj %15s %d", a, &id) == 2) {  /* a breakable by entity id, as the 2005 ops address it */
         int n = !strcmp(a, "destroy")   ? objects_entity_break(id)
                 : !strcmp(a, "restore") ? objects_entity_restore(id)

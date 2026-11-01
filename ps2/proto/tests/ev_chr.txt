@@ -1,0 +1,63 @@
+# EMEVD character ops (src/ev_chr.c), enemies on, driven by the game's own m10_02 events where they exist:
+# 1 AI command: event 11025150 (Restart) sends command 1 in AI slot 3 to six Firelink enemies (1020160 ...) while the
+#   player is in region 1022710 ("where enemies cannot go") and -1 when they leave; their Lua reads it through
+#   ai:GetEventRequest(3).
+# 2 immortality: event 11025050 makes the crow 1020100 immortal; a lethal hit leaves it at 1 HP, its HP <= 30 %
+#   condition fires and the event disables it (DSR: it flies off).
+# 3 c0000 stand-in + damaged-by + team: Crestfallen Warrior 6031 (c0000, placed by npc.c). A player hit to 80 % HP fires
+#   event 11020510 slot 0: flag 1096 on, team 9 (hostile ally).
+# 4 event-12: a Burg enemy disabled by an event keeps that state while the Burg block is off and when it is placed
+#   again; an op on an entity whose block is off applies when the block turns on.
+option hud
+option nodemo
+wait 3
+ev expect chr 6031 placed 1
+ev expect chr 1020100 immortal 1
+ev expect chr 1020160 aireq 3 -1
+spawn -27.1 -50.4 6.1 0
+wait 1.5
+ev expect chr 1020160 aireq 3 1
+ev expect chr 1020166 aireq 3 1
+spawn -47.6 -59.9 53.9 1.6
+wait 1.5
+ev expect chr 1020160 aireq 3 -1
+ev chr 1020100 damage 99999
+wait 0.5
+ev expect chr 1020100 dead 0
+ev expect chr 1020100 off 1
+ev expect flag 1096 0
+ev chr 6031 damage 100
+wait 0.5
+ev expect chr 6031 hp 80
+ev expect flag 1096 1
+ev expect chr 6031 team 9
+shot firelink_npcs
+log burg
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+ev expect chr 1010250 placed 1
+ev chr 1010250 enable 0
+wait 0.3
+ev expect chr 1010250 off 1
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+ev expect chr 1010250 placed 0
+ev chr 1010251 enable 0
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+ev expect chr 1010250 placed 1
+ev expect chr 1010250 off 1
+ev expect chr 1010250 active 0
+ev expect chr 1010251 off 1
+ev expect chr 1010251 active 0
+ev chr 1010250 enable 1
+ev chr 1010251 enable 1
+wait 0.5
+ev expect chr 1010250 off 0
+ev expect chr 1010250 active 1
+ev summary
+end
