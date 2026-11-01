@@ -106,7 +106,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/newbuild` | Seed a new build dir (`make BUILD=...`) from an existing build, so only what changed re-exports |
 | `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
-| `tools/memwatch.py` | Host memory watchdog (memwatch.service); watches jobs in its own checkout, plus folder names in `DSR_MEMWATCH_TREES` |
+| `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
 | `progress.sh` | Status of long background jobs |
 | `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
