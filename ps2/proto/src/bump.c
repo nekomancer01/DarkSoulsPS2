@@ -46,15 +46,19 @@ typedef struct { unsigned short tex; unsigned char cluster, spread; } BumpChunk;
 #endif
 
 static GSGLOBAL *gsg;
-static const unsigned char *bin;
-static const BumpHeader *bh;
-static const BumpChunk *bc;
-static int tex0, on, cluts_sent;
-static u32 clut_vram;
+/* one relief set per map instance (map.c / src/world.c: 0 the boot area, k a world block while it is full) */
+typedef struct {
+    const unsigned char *bin;
+    const BumpHeader *bh;
+    const BumpChunk *bc;
+    int tex0, on, cluts_sent;
+    u32 clut_vram, clut_kb;  /* CLUT VRAM, reserved at the instance's first set (gsKit VRAM is never freed) */
+} BumpSet;
+static BumpSet set[BUMP_INST];
 int bump_batches;
 
 typedef struct {
-    unsigned key;  /* CLUT << 16 | texture: sorted so neighbours share the CLUT (TEX0 CLD 4 reloads on a change) */
+    unsigned key;  /* set << 24 | CLUT << 12 | texture: neighbours share the CLUT (TEX0 CLD 4 reloads on a change) */
     int cull, clip, tris, mip;
     const void *pos, *st, *col;
     const float *org;
@@ -64,41 +68,71 @@ typedef struct {
 static Item items[MAX_CAND];
 static int nitems;
 
-int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
+/* bump.bin of instance k, chunks: its map.bin's resident chunks; with streaming (render-distance, DSM5) bump.bin numbers
+ * the resident ones first, then the streamed near chunks (map.c passes their number from flags bits 8-31). The boot
+ * area's normal maps are tc_add's (a pool of their own); a world block's join its texcache slot (tc_block_bump), in
+ * the same relief pool. */
+static int set_init(int k, const void *blob, unsigned chunks)
 {
-    on = 0;
-    gsg = gs;
-    bin = blob;
-    bh = blob;
-    /* chunks: map.bin's resident chunks; with streaming (render-distance, DSM5) bump.bin numbers the resident ones first,
-     * then the streamed near chunks (map.c passes their number from flags bits 8-31) */
+    BumpSet *b = &set[k];
+    b->on = 0;
+    if (k)
+        tc_block_bump(k - 1, NULL, NULL, 0);  /* the old set's normal maps (blob gone with the block's streams) */
+    b->bin = blob;
+    b->bh = blob;
+    const BumpHeader *bh = blob;
     if (!blob || memcmp(bh->magic, "DSB1", 4) || !bh->chunks || bh->chunks < chunks || !bh->clusters)
         return 0;
-    bc = (const BumpChunk *)(bin + bh->chunk_off);
-    tex0 = tc_add(bin, bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
-    clut_vram = gsKit_vram_alloc(gs, bh->clusters * bh->levels * 1024, GSKIT_ALLOC_USERBUFFER);
-    if (tex0 < 0 || clut_vram == GSKIT_ALLOC_ERROR)
+    b->bc = (const BumpChunk *)(b->bin + bh->chunk_off);
+    b->tex0 = k ? tc_block_bump(k - 1, b->bin, b->bin + bh->tex_off, bh->textures)
+                : tc_add(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
+    unsigned kb = bh->clusters * bh->levels;
+    if (b->tex0 >= 0 && kb > b->clut_kb && !b->clut_kb) {
+        b->clut_vram = gsKit_vram_alloc(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER);
+        b->clut_kb = b->clut_vram == GSKIT_ALLOC_ERROR ? 0 : kb;
+    }
+    if (b->tex0 < 0 || kb > b->clut_kb) {
+        printf("bump: %d: no texture slot / CLUT VRAM (%u KB): no relief\n", k, kb);
+        if (k)
+            tc_block_bump(k - 1, NULL, NULL, 0);
         return 0;
-    cluts_sent = 0;
+    }
+    b->cluts_sent = 0;
     FlushCache(0);
 #ifdef BUMP_OFF  /* A/B builds: same data and VRAM, no relief pass (other systems size themselves to free VRAM) */
     return 0;
 #endif
-    return on = 1;
+    return b->on = 1;
 }
 
-void bump_add(unsigned chunk, float d, int cull, int clip, int tris, const void *pos, const void *st, const void *col,
-              const float *org, float st_k)
+int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
 {
-    if (!on || chunk >= bh->chunks || bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
+    gsg = gs;
+    return set_init(0, blob, chunks);
+}
+
+int bump_block(int k, const void *blob, unsigned chunks)
+{
+    if (k <= 0 || k >= BUMP_INST || !gsg)
+        return 0;
+    nitems = 0;  /* items of this frame may point into the old set (bump_draw runs after the map's batches) */
+    return set_init(k, blob, chunks);
+}
+
+void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, const void *pos, const void *st,
+              const void *col, const float *org, float st_k)
+{
+    const BumpSet *b = &set[k];
+    if (!b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
         return;
     int level = d < BUMP_NEAR ? 0 : 1;
-    if (level >= (int)bh->levels || bc[chunk].spread >> level < BUMP_MIN_SPREAD)
+    if (level >= (int)b->bh->levels || b->bc[chunk].spread >> level < BUMP_MIN_SPREAD)
         return;
     Item *it = &items[nitems++];
-    it->key = (unsigned)(bc[chunk].cluster * bh->levels + level) << 16 | bc[chunk].tex;
+    int tex = b->tex0 + b->bc[chunk].tex;
+    it->key = (unsigned)k << 24 | (unsigned)(b->bc[chunk].cluster * b->bh->levels + level) << 12 | tex;
     /* the half-strength band draws from mip 1 (a quarter of the pool space) */
-    it->cull = cull, it->clip = clip, it->tris = tris, it->mip = level | tc_level(tex0 + bc[chunk].tex, d);
+    it->cull = cull, it->clip = clip, it->tris = tris, it->mip = level | tc_level(tex, d);
     it->pos = pos, it->st = st, it->col = col, it->org = org, it->st_k = st_k, it->d = d;
 }
 
@@ -124,18 +158,24 @@ void bump_draw(void)
     unsigned t_start = ticks();
 #endif
     bump_batches = 0;
-    if (!on || !nitems) {
-        nitems = 0;
+    if (!nitems)
         return;
+    int cap = BUMP_CAP;
+    for (int k = 0; k < BUMP_INST; k++) {
+        BumpSet *b = &set[k];
+        if (!b->on)
+            continue;
+        if (!b->cluts_sent) {  /* a set's first frame: every CLUT (16x16 CT32 = 4 blocks each), resident from then on */
+            const unsigned char *c = b->bin + b->bh->clut_off;
+            for (unsigned i = 0; i < b->bh->clusters * b->bh->levels; i++)
+                vu1_upload_tex((b->clut_vram + i * 1024) / 256, GS_PSM_CT32, 16, 16, c + i * 1024, 1024);
+            b->cluts_sent = 1;
+            vu1_clut_reload();
+        }
+        if (b->bh->cap && (int)b->bh->cap < cap)  /* the smallest per-area cap of the sets drawn */
+            cap = b->bh->cap;
     }
-    if (!cluts_sent) {  /* first frame: every CLUT (16x16 CT32 = 4 blocks each), resident from then on */
-        const unsigned char *c = bin + bh->clut_off;
-        for (unsigned i = 0; i < bh->clusters * bh->levels; i++)
-            vu1_upload_tex((clut_vram + i * 1024) / 256, GS_PSM_CT32, 16, 16, c + i * 1024, 1024);
-        cluts_sent = 1;
-        vu1_clut_reload();
-    }
-    int cand = nitems, cap = bh->cap && bh->cap < BUMP_CAP ? (int)bh->cap : BUMP_CAP;
+    int cand = nitems;
     if (nitems > cap) {  /* keep the cap nearest: distance histogram, cut inside the bin that crosses the cap */
         enum { BINS = 64 };
         int hist[BINS] = {0}, cut = BINS, room = cap;
@@ -160,7 +200,7 @@ void bump_draw(void)
      * never the floor under the camera (Burg spawn in CLUT order: 5 of 142 missed, the cobbles among them) */
     qsort(items, nitems, sizeof *items, dist_cmp);
     for (int i = 0; i < nitems; i++)
-        items[i].t = tc_get(tex0 + (items[i].key & 0xFFFF), items[i].mip);
+        items[i].t = tc_get(items[i].key & 0xFFF, items[i].mip);
     qsort(items, nitems, sizeof *items, item_cmp);
     GSGLOBAL *gs = gsg;
     /* Cd x As (As = CLUT alpha x vertex alpha 0x80; 0x80 = x1, up to ~x2), Z tested, not written */
@@ -175,7 +215,7 @@ void bump_draw(void)
         if (!it->t)
             continue;
         GSTEXTURE tt = *it->t;
-        tt.VramClut = clut_vram + (it->key >> 16) * 1024;
+        tt.VramClut = set[it->key >> 24].clut_vram + (it->key >> 12 & 0xFFF) * 1024;
         tt.ClutPSM = GS_PSM_CT32;
         vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip ? VU1_CLIP : 0), it->tris, it->pos, it->st, it->col, it->org,
                    it->st_k);

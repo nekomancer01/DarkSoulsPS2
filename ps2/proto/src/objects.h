@@ -34,6 +34,13 @@ void objects_break(int i, const float *dir);
 int objects_nearest(const float p[3], float *out);
 /* Push a vertical capsule (feet pos, radius r, height h) out of intact objects; returns 1 if it touched one */
 int objects_push_capsule(float pos[3], float r, float h);
+/* EMEVD hooks (src/event.c): breakables of every loaded block by MSB entity id (objects.bin version 2). objects_entity:
+ * the instance (position, broken state; pointers may be NULL) or -1; _break breaks it as a hit would, _restore puts it
+ * back intact, _enable switches it on / off (off: not drawn, no collision). Each returns the instances changed. */
+int objects_entity(int entity, float *pos, int *broken);
+int objects_entity_break(int entity);
+int objects_entity_restore(int entity);
+int objects_entity_enable(int entity, int on);
 
 /* HUD: instances, broken ones, live / awake pieces, map queries last frame */
 typedef struct { int instances, broken, pieces, awake, queries, us; } ObjectsStats;  /* us: objects_update time */

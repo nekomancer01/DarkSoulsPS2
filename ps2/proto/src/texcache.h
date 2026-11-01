@@ -22,6 +22,10 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb);
 #define TC_BLOCK_CLUT_KB 96  /* largest CLUT set of one block; VRAM is reserved for the first block's own size */
 int tc_block_add(int slot, const unsigned char *base, const void *table, int n);
 void tc_block_drop(int slot);
+/* A world block's normal maps (bump.c, while the block is full): entries as tc_add's (no CLUT), placed after the slot's
+ * map textures, pixels in tc_add's relief pool. n = 0 / table NULL forgets the slot's set. Returns the first index or
+ * -1 (block off, no room, no relief pool). tc_block_drop forgets them too. */
+int tc_block_bump(int slot, const unsigned char *base, const void *table, int n);
 /* Split maps (tools/mapsplit.py): an entry whose pix[0] has TC_RES set keeps its mip 0 in the block's mapres.bin at
  * that offset, present only while the block is full. tc_res gives the textures of slot (-1: the boot map's, else a
  * block slot) that buffer, or NULL: mip 0 is then drawn only while still in VRAM, else mip 1. The caller keeps the old

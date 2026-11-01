@@ -60,11 +60,18 @@ static float mip_d[MAX_TEX];
 /* world blocks (tc_block_add): CLUT VRAM reserved per slot on first use, CLUTs uploaded at the next tc_begin */
 static u32 blk_clut[TC_BLOCKS], blk_clut_blocks[TC_BLOCKS];  /* VRAM reserved at the slot's first use (its block's size) */
 static int blk_n[TC_BLOCKS], blk_clut_due[TC_BLOCKS];
+static int blk_bump[TC_BLOCKS];  /* tc_block_bump: normal maps after the slot's map textures (bump.c relief pool) */
 
 /* pool of a level: 0 map, 1 tc_add's (if it has its own), 2 near levels */
 static int pool_of(int i, int l)
 {
-    return l == 2 ? 2 : i >= nmap && i < TC_BASE && pool2_blk;
+    if (l == 2)
+        return 2;
+    if (i >= TC_BASE) {  /* a world block's normal maps share tc_add's pool */
+        int b = (i - TC_BASE) / TC_BLOCK_TEX;
+        return i - TC_BASE - b * TC_BLOCK_TEX >= blk_n[b] && pool2_blk;
+    }
+    return i >= nmap && pool2_blk;
 }
 
 /* VRAM blocks of a w x h near level, buffer width w (vu1.c TBW): whole pages (PSMT8 128 x 64, PSMT4 128 x 128) */
@@ -75,6 +82,27 @@ static int near_blocks(int psm, int w, int h)
         n *= 2;
     return n;
 }
+/* texture i's near level (same CLUT as mip 0, twice the size; pixels from base, in a world block's maptab), if it has
+ * one: the first allocates the near pool (a world block's too: its textures draw near levels as the boot map's) */
+static void near_level(int i, const unsigned char *base)
+{
+    const TexEntry *e = te[i];
+    Level *v = &lv[i][2];
+    v->t = lv[i][0].t;
+    v->off = -1, v->last = 0, v->size = 0;
+    if (!(e->pad & 1) || !e->near)
+        return;
+    v->t.Width = e->w * 2, v->t.Height = e->h * 2;
+    v->t.Mem = (u32 *)(base + e->near);
+    v->size = near_blocks(e->psm, e->w * 2, e->h * 2);
+    if (!pool3_blk) {  /* first near level: allocate its pool */
+        pool3_blk = TC_NEAR_KB * 4 < POOL_MAX ? TC_NEAR_KB * 4 : POOL_MAX;
+        pool3_vram = gsKit_vram_alloc(gsg, pool3_blk * 256, GSKIT_ALLOC_USERBUFFER);
+        if (pool3_vram == GSKIT_ALLOC_ERROR)
+            pool3_blk = 0;
+    }
+}
+
 static int cluts_sent;
 static int in_frame;
 TcStats tc_stats;
@@ -131,20 +159,7 @@ int tc_init(GSGLOBAL *gs, const unsigned char *base, const void *table, int n, i
             lv[i][l].last = 0;
             lv[i][l].size = e->blocks[l];
         }
-        Level *v = &lv[i][2];  /* near level: same CLUT, twice the size */
-        v->t = lv[i][0].t;
-        v->off = -1, v->last = 0, v->size = 0;
-        if ((e->pad & 1) && e->near) {
-            v->t.Width = e->w * 2, v->t.Height = e->h * 2;
-            v->t.Mem = (u32 *)(bin + e->near);
-            v->size = near_blocks(e->psm, e->w * 2, e->h * 2);
-            if (!pool3_blk) {  /* first near level: allocate its pool */
-                pool3_blk = TC_NEAR_KB * 4 < POOL_MAX ? TC_NEAR_KB * 4 : POOL_MAX;
-                pool3_vram = gsKit_vram_alloc(gs, pool3_blk * 256, GSKIT_ALLOC_USERBUFFER);
-                if (pool3_vram == GSKIT_ALLOC_ERROR)
-                    pool3_blk = 0;
-            }
-        }
+        near_level(i, bin);
         c += clut_blocks(e) * 256;
     }
     cluts_sent = 0;
@@ -236,7 +251,7 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             lv[first + i][l].last = 0;
             lv[first + i][l].size = e->blocks[l];
         }
-        lv[first + i][2].off = -1, lv[first + i][2].size = 0;  /* near levels: block 0 only (TECH_DEBT world-5) */
+        near_level(first + i, base);
         c += clut_blocks(e) * 256;
     }
     blk_n[b] = n;
@@ -250,11 +265,47 @@ void tc_block_drop(int b)
 {
     if (b < 0 || b >= TC_BLOCKS)
         return;
-    for (int i = TC_BASE + b * TC_BLOCK_TEX; i < TC_BASE + b * TC_BLOCK_TEX + blk_n[b]; i++) {
+    for (int i = TC_BASE + b * TC_BLOCK_TEX; i < TC_BASE + b * TC_BLOCK_TEX + blk_n[b] + blk_bump[b]; i++) {
         te[i] = NULL;
         lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
     }
-    blk_n[b] = blk_clut_due[b] = 0;
+    blk_n[b] = blk_clut_due[b] = blk_bump[b] = 0;
+}
+
+int tc_block_bump(int b, const unsigned char *base, const void *table, int n)
+{
+    if (b < 0 || b >= TC_BLOCKS)
+        return -1;
+    int first = TC_BASE + b * TC_BLOCK_TEX + blk_n[b];
+    for (int i = first; i < first + blk_bump[b]; i++) {  /* the old set: forgotten, its pool blocks free */
+        te[i] = NULL;
+        lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
+    }
+    blk_bump[b] = 0;
+    if (!table || !n)
+        return -1;
+    if (!blk_n[b] || blk_n[b] + n > TC_BLOCK_TEX || !pool2_blk)
+        return -1;  /* no map textures in the slot (block off), no room, or no relief pool (the boot area has none) */
+    for (int i = 0; i < n; i++) {  /* as tc_add's entries: no CLUT of their own */
+        const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
+        for (int l = 0; l < 2; l++) {
+            GSTEXTURE *t = &lv[first + i][l].t;
+            memset(t, 0, sizeof *t);
+            t->Width = e->w >> l;
+            t->Height = e->h >> l;
+            t->PSM = e->psm;
+            t->ClutPSM = e->cpsm;
+            t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
+            t->Filter = GS_FILTER_LINEAR;
+            t->Mem = (u32 *)(base + e->pix[l]);
+            lv[first + i][l].off = -1;
+            lv[first + i][l].last = 0;
+            lv[first + i][l].size = e->blocks[l];
+        }
+        lv[first + i][2].off = -1, lv[first + i][2].size = 0;
+    }
+    blk_bump[b] = n;
+    return first;
 }
 
 void tc_res(int slot, const unsigned char *res)
@@ -270,7 +321,7 @@ static int tex_end(void)
 {
     for (int b = TC_BLOCKS - 1; b >= 0; b--)
         if (blk_n[b])
-            return TC_BASE + b * TC_BLOCK_TEX + blk_n[b];
+            return TC_BASE + b * TC_BLOCK_TEX + blk_n[b] + blk_bump[b];
     return ntex;
 }
 

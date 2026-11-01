@@ -10,6 +10,7 @@
 #include "enemy.h"
 #include "event.h"
 #include "flags.h"
+#include "objects.h"
 #include "progress.h"
 #include "world.h"
 
@@ -361,7 +362,7 @@ static int static_cond(int op)
     case OP_C_GROUP: case OP_C_FLAG: case OP_C_FLAG_RANGE: case OP_C_COUNT_FLAGS: case OP_C_EVENT_VALUE: case OP_C_MP:
     case OP_C_ONLINE: case OP_C_CYCLE: case OP_C_CLASS: case OP_C_COVENANT: case OP_C_ITEM: case OP_C_ITEM_BBOX:
     case OP_C_TENDENCY: case OP_C_MP_EVENT: case OP_C_MP_COUNT: case OP_C_DROPPED_AREA: case OP_C_DROPPED:
-    case OP_C_DAMAGED: case OP_C_SPEFFECT: case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_OBJ_DESTROYED:
+    case OP_C_DAMAGED: case OP_C_SPEFFECT: case OP_C_PART_HP: case OP_C_EVENT_MSG:
     case OP_C_CHR_TYPE:
         return 1;
     }
@@ -410,8 +411,13 @@ static int eval_cond(Inst *in, const Reg *r, int depth)
         return in_map == (iw[1] != 0);
     }
     case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_DAMAGED: case OP_C_SPEFFECT:
-    case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_OBJ_DESTROYED: case OP_C_MP_COUNT:
+    case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_MP_COUNT:
         return 0;  /* nothing of that kind happens offline / in the port yet */
+    case OP_C_OBJ_DESTROYED: {  /* 5[00] (group, destroyed state, object entity): breakables (objects.c) */
+        int broken = 0;
+        objects_entity(iw[2], NULL, &broken);
+        return broken == (iw[1] != 0);
+    }
     case OP_C_COUNT_FLAGS: {
         u32 a = flag_of(in, iw[1], iw[2]), b = flag_of(in, iw[1], iw[3]);
         return cmp(iw[4], flag_range_count(a < b ? a : b, a < b ? b : a), iw[5]);
@@ -885,7 +891,20 @@ static void run(Inst *in)
             else
                 stub(in, op);
             break;
-        case OP_OBJ_ENABLE: set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT); break;
+        case OP_OBJ_ENABLE:
+            set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT);
+            objects_entity_enable(iw[0], iw[1] != 0);  /* a breakable of that id (objects.c) */
+            break;
+        case OP_OBJ_DESTROY: case OP_OBJ_REDESTROY:  /* 2005[01] / [08] (entity, ...): breakables break in place */
+            if (!objects_entity_break(iw[0]) && objects_entity(iw[0], NULL, NULL) < 0)
+                stub(in, op);  /* other destructible objects: not simulated (TECH_DEBT event-5) */
+            break;
+        case OP_OBJ_RESTORE:  /* 2005[02] (entity) */
+            if (objects_entity(iw[0], NULL, NULL) >= 0)
+                objects_entity_restore(iw[0]);
+            else
+                stub(in, op);
+            break;
         case OP_TREASURE: treasure_state(iw[0], iw[1] != 0); break;
         case OP_OBJACT_INIT: objact_state(iw[0], 1); break;
         case OP_OBJACT_STATE: objact_state(iw[0], iw[2] != 0); break;
@@ -1215,10 +1234,17 @@ void event_test_cmd(const char *cmd)
         int ok = b[0] == '<' ? got < v : got > v;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect %s %s %.2f: %.2f %s\n", a, b, v, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "obj %15s %d", a, &id) == 2) {  /* a breakable by entity id, as the 2005 ops address it */
+        int n = !strcmp(a, "destroy")   ? objects_entity_break(id)
+                : !strcmp(a, "restore") ? objects_entity_restore(id)
+                                        : objects_entity_enable(id, !strcmp(a, "enable"));
+        printf("TEST ev obj %s %d: %d changed\n", a, id, n);
     } else if (sscanf(cmd, "expect %15s %d %d", a, &id, &val) == 3) {
         int found = 1, got;
         if (!strcmp(a, "flag"))
             got = flag_get(id);
+        else if (!strcmp(a, "objbroken"))  /* breakable entity id: 1 broken (objects.c) */
+            found = objects_entity(id, NULL, &got) >= 0;
         else
             got = find_state(a, id, &found);
         int ok = found && got == val;

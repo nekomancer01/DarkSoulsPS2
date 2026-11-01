@@ -11,13 +11,15 @@ meshes carry group bit BITS_INTACT), bones 1..n = the pieces (bit BITS_BROKEN). 
 are the FLVER's, which equal the Havok bodies' rest transforms (checked here).
 
 objects.bin (little-endian, models 128-byte aligned from the blob start; pack_load gives 128-aligned blobs):
-  header  "DSRB", u32 version 1, u32 types, u32 parts, u32 type_off, u32 part_off, u32 0, u32 0           (32 B)
+  header  "DSRB", u32 version 2, u32 types, u32 parts, u32 type_off, u32 part_off, u32 0, u32 0           (32 B)
   type    i32 model id (1497 = o1497), u32 model_off, u32 model_size, u32 pieces, u32 piece_off, i32 hp,
           i32 defense, f32 cylinder radius, y0, y1 (intact shape, model space, convex radius included),
           f32 friction, restitution, u32 intact bits, u32 broken bits, u32 0, u32 0                       (64 B)
   piece   f32 pos[3], q[4] (x y z w: rest transform, model space), half[3] (box half extents + convex radius),
           f32 centre[3] (box centre in the piece frame), inv_mass, inv_inertia[3] (piece frame), 3 x f32 0 (80 B)
-  part    u16 type, u16 0, f32 pos[3], q[4] (MSB placement; scale is 1 for every breakable at m10_02)    (32 B)
+  part    u16 type, u16 0, f32 pos[3], q[4] (MSB placement; scale is 1 for every breakable at m10_02), i32 MSB
+          entity id (-1 none: EMEVD addresses a breakable by it), u32 0 x 3                                (48 B)
+          (version 1: 32 B parts, no entity id)
 Usage: export_objects.py <game dir> <out objects.bin> <map id e.g. m10_02_00_00>"""
 import os, struct, sys
 
@@ -237,7 +239,7 @@ def main():
             heaps.append(types[-1][-1])
         ti = [t[0] for t in types].index(model)
         assert all(abs(s - 1) < 1e-3 for s in part["scale"]), f"{part['name']}: scaled"
-        parts.append((ti, part["pos"], souls._euler_deg_xzy(*part["rot"])))
+        parts.append((ti, part["pos"], souls._euler_deg_xzy(*part["rot"]), part["entity_id"]))
 
     # RAM budget (HANDOFF: objects runtime <= 0.4 MB): keep the types with the most placements per byte first; the
     # dropped types are listed in <out>.static and export_map.py draws them as static map objects (intact, no break)
@@ -254,18 +256,18 @@ def main():
     remap = {k: i for i, k in enumerate(sorted(kept))}
     types = [types[k] for k in sorted(kept)]
     heaps = [t[-1] for t in types]
-    parts = [(remap[ti], pos, q) for ti, pos, q in parts if ti in remap]
+    parts = [(remap[ti], pos, q, ent) for ti, pos, q, ent in parts if ti in remap]
     with open(out_path + ".static", "w") as f:
         f.write("".join(m + "\n" for m in dropped))
     if dropped:
         print(f"over the {budget / 1048576:.2f} MB budget, drawn as static map objects instead: {' '.join(dropped)}")
 
-    TYPE, PIECE, PART = 64, 80, 32
+    TYPE, PIECE, PART = 64, 80, 48
     type_off = 32
     piece_off = type_off + TYPE * len(types)
     part_off = piece_off + PIECE * sum(len(t[3]) for t in types)
     blob = bytearray(part_off + PART * len(parts))
-    struct.pack_into("<4s7I", blob, 0, b"DSRB", 1, len(types), len(parts), type_off, part_off, 0, 0)
+    struct.pack_into("<4s7I", blob, 0, b"DSRB", 2, len(types), len(parts), type_off, part_off, 0, 0)
     pi = 0
     for k, (model, files, mbin, pieces, cyl, fr, rest, heap) in enumerate(types):
         blob.extend(b"\0" * (-len(blob) % 128))
@@ -282,8 +284,8 @@ def main():
         pi += len(pieces)
         print(f"{model}: {len(pieces)} pieces, cylinder r {cyl[0]:.3f} y {cyl[1]:.3f}..{cyl[2]:.3f}, hp {row.get('hp')}, "
               f"model {len(mbin)} B + skin streams {heap} B, {sum(1 for p in parts if p[0] == k)} parts")
-    for k, (ti, pos, q) in enumerate(parts):
-        struct.pack_into("<HH3f4f", blob, part_off + PART * k, ti, 0, *pos, *q)
+    for k, (ti, pos, q, ent) in enumerate(parts):
+        struct.pack_into("<HH3f4fi3I", blob, part_off + PART * k, ti, 0, *pos, *q, ent, 0, 0, 0)
     with open(out_path, "wb") as f:
         f.write(blob)
     print(f"{len(types)} breakable types, {len(parts)} parts, {len(blob)} bytes -> {out_path}; EE RAM with the skin "

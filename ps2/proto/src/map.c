@@ -127,6 +127,7 @@ static const FogRow *pfog_row;
 static unsigned pfog_rows;
 static void map_select(int k);
 static int map_inst_of(int col_block);
+static int inst_col_block(int k);
 static int pinst;  /* the instance the player stands in (sky, fog rows) */
 
 static void fog_ease(float rate)
@@ -266,15 +267,23 @@ void map_set_player(V3 feet)
     /* DSR's fog follows the collision part under the player (its MSB FogID); in the air the last one stays */
     ColHit h;
     player_feet = feet;
-    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h)) {
-        int k = map_inst_of(h.block);  /* the map block of that collision (src/world.c) */
-        if (k < 0)
-            return;
+    int k = -1;
+    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0)
+        dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
+    /* every other loaded block takes its draw groups from its own collision under the player: at a seam both blocks'
+     * collisions overlap (DSR's ConnectCollision pairs, e.g. Firelink h0029B2 / Burg h1127B1), each map shows what its
+     * own part shows. Elsewhere a block keeps the set of the last of its parts the player stood on (ASSUMED,
+     * TECH_DEBT world-4) */
+    for (int j = 0; j < MAP_INST; j++) {
+        ColHit hj;
+        if (j != k && inst_col_block(j) >= 0 &&
+            col_floor_block(inst_col_block(j), feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &hj))
+            dg_floor(j, hj.tri);
+    }
+    if (k >= 0) {
         int was = cur_inst;
         map_select(k);
         pinst = k;
-        if (!k)  /* draw groups: the boot block's dg.bin only (TECH_DEBT world-5) */
-            dg_floor(h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
         if (fog_rows && fog_ntris == (unsigned)col_block_tris(h.block) && (unsigned)h.tri < fog_ntris &&
             fog_tri[h.tri] < fog_rows) {
             pfog_row = fog_row, pfog_rows = fog_rows;
@@ -458,10 +467,11 @@ static int draw_chunk(const unsigned char *base, const Chunk *c, unsigned n, int
                    c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, base == streams ? (unsigned)(c - chunks) : NEAR_NO(c, base));
-        if (!cur_inst && !(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass
-                                                                                        * (bump.c; boot block only) */
-            bump_add(base == streams ? (unsigned)(c - chunks) : NEAR_NO(c, base), sqrtf(d2), c->flags & CHUNK_CULL, vclip,
-                     n, base + c->pos, base + c->st, base + c->col, c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
+                                                                            * block, and a world block while it is full) */
+            bump_add(cur_inst, base == streams ? (unsigned)(c - chunks) : NEAR_NO(c, base), sqrtf(d2),
+                     c->flags & CHUNK_CULL, vclip, n, base + c->pos, base + c->st, base + c->col, c->org,
+                     c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
     }
     return n;
 }
@@ -564,6 +574,9 @@ typedef struct {
     int on, col_block;
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
+/* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
+ * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
+static void *blk_dg[MAP_INST];
 
 static void save_inst(MapInst *m)
 {
@@ -588,6 +601,12 @@ static void map_select(int k)
     save_inst(&inst[cur_inst]);
     load_inst(&inst[cur_inst = k]);
     mapstream_select(k);
+}
+
+/* the collision block of instance k (0 for the boot area), -1 while it is off */
+static int inst_col_block(int k)
+{
+    return k == 0 ? inst[0].col_block : inst[k].on ? inst[k].col_block : -1;
 }
 
 static int map_inst_of(int col_block)
@@ -646,6 +665,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
             return 0;
         }
         tex_res(k);
+        dg_block_init(k, blk_dg[k], hdr->chunks, (unsigned)col_block_tris(col_block));  /* per-block draw groups */
     }
     map_select(was);
     return 1;
@@ -660,7 +680,21 @@ void map_block_streams(int k, const void *res)
     streams = res;
     if (k || inst[0].on)  /* instance 0 of a world build (single-area builds never call this) */
         tex_res(k);
+    if (k && !res)
+        bump_block(k, NULL, 0);  /* its bump.bin lay in the full pool behind the streams */
     map_select(was);
+}
+
+void map_block_bump(int k, const void *blob)
+{
+    if (k <= 0 || k >= MAP_INST || !inst[k].on)
+        return;
+    int was = cur_inst;
+    map_select(k);
+    int on = bump_block(k, blob, hdr->chunks);
+    map_select(was);
+    if (blob)
+        printf("map: block %d relief %s\n", k, on ? "on" : "off");
 }
 
 void map_block_drop(int k)
@@ -669,7 +703,9 @@ void map_block_drop(int k)
         return;
     int was = cur_inst;
     map_select(k);
+    bump_block(k, NULL, 0);
     tc_block_drop(k - 1);
+    dg_block_drop(k);
     mapstream_close(k);
     free(order), free(sky), free(cells);
     indexed = NULL, order = sky = NULL, cells = NULL, ncells = nsky = 0;
@@ -679,6 +715,12 @@ void map_block_drop(int k)
     hdr = NULL, ctab = NULL, nctab = 0, streams = NULL, ntex = 0;
     inst[k].on = 0;
     map_select(was == k ? 0 : was);
+}
+
+void map_block_dg(int k, void *pack)
+{
+    if (k > 0 && k < MAP_INST && pack && !blk_dg[k])
+        blk_dg[k] = pack_load(pack, "dg.bin", NULL);
 }
 
 int map_block_stream_open(int k, const void *pack)
@@ -743,7 +785,7 @@ int map_draw(V3 eye)
         for (int i = 0; i < nsky; i++) {
             const Chunk *c = &chunks[sky[i]];
             if (!(c->flags & CHUNK_BLEND) != !pass || (c->flags & CHUNK_BACKDROP) ||
-                (!cur_inst && !dg_shown(sky[i])))
+                !dg_shown(cur_inst, sky[i]))
                 continue;
 #ifdef MAP_PANO_R
             continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
@@ -819,7 +861,7 @@ int map_draw(V3 eye)
                     continue;
                 }
 #ifndef MAP_DBG_ALL
-                if (!cur_inst && !dg_shown(is_near ? NEAR_NO(c, nb) : order[j])) {  /* MSB draw groups (drawgrp.c) */
+                if (!dg_shown(cur_inst, is_near ? NEAR_NO(c, nb) : order[j])) {  /* MSB draw groups (drawgrp.c) */
                     DBGW(D_DG, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
                     continue;
                 }

@@ -44,6 +44,8 @@ typedef struct {
     float pos[3], q[4];
     int broken;                /* 0 intact, 1 pieces live, 2 gone (also a free slot: block -1) */
     int block;                 /* world block (src/world.c) it belongs to; 0 the boot area, -1 a free slot */
+    int entity;                /* MSB entity id (EMEVD addresses it: objects_entity_*), -1 none */
+    int off;                   /* switched off by an event: not drawn, no collision, cannot break */
     float t;                   /* seconds since the break */
     short body[MAX_PIECES];
 } Inst;
@@ -55,6 +57,7 @@ static int ntypes, ninst;
 typedef struct {
     unsigned short type;
     float pos[3], q[4];
+    int entity;
 } Part;
 static Part *blk_part[OBJ_BLOCKS];
 static int blk_nparts[OBJ_BLOCKS];
@@ -83,9 +86,10 @@ int objects_init(GSGLOBAL *gs, const void *blob)
     const unsigned *h = blob;
     ntypes = ninst = 0;
     memset(bodies, 0, sizeof bodies);
-    if (!blob || memcmp(blob, "DSRB", 4) || h[1] != 1)
+    if (!blob || memcmp(blob, "DSRB", 4) || (h[1] != 1 && h[1] != 2))
         return 0;
     const unsigned char *b = blob;
+    unsigned ps = h[1] == 2 ? 48 : 32;  /* part record (export_objects.py: version 2 adds the entity id) */
     for (unsigned k = 0; k < h[2] && ntypes < MAX_TYPES; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
         const float *f = (const float *)t;
@@ -104,7 +108,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         ntypes++;
     }
     for (unsigned k = 0; k < h[3] && ninst < MAX_INST; k++) {
-        const unsigned char *p = b + h[5] + 32 * k;
+        const unsigned char *p = b + h[5] + ps * k;
         int ti = *(const unsigned short *)p;
         if (ti >= ntypes)
             continue;
@@ -114,6 +118,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         in->type = ti;
         memcpy(in->pos, p + 4, 12);
         memcpy(in->q, p + 16, 16);
+        in->entity = ps == 48 ? *(const int *)(p + 32) : -1;
     }
     for (int i = 0; i < ninst; i++)
         inst[i].block = 0;
@@ -124,9 +129,10 @@ int objects_init(GSGLOBAL *gs, const void *blob)
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 {
     const unsigned *h = blob;
-    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] != 1)
+    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || (h[1] != 1 && h[1] != 2))
         return 0;
     const unsigned char *b = blob;
+    unsigned ps = h[1] == 2 ? 48 : 32;
     int map[MAX_TYPES * 2];
     for (unsigned k = 0; k < h[2] && k < MAX_TYPES * 2; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
@@ -161,7 +167,7 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
     blk_part[block] = malloc(h[3] * sizeof(Part));
     blk_nparts[block] = 0;
     for (unsigned k = 0; blk_part[block] && k < h[3]; k++) {
-        const unsigned char *p = b + h[5] + 32 * k;
+        const unsigned char *p = b + h[5] + ps * k;
         int ti = *(const unsigned short *)p;
         if (ti >= (int)h[2] || ti >= MAX_TYPES * 2 || map[ti] < 0)
             continue;
@@ -169,6 +175,7 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
         pt->type = map[ti];
         memcpy(pt->pos, p + 4, 12);
         memcpy(pt->q, p + 16, 16);
+        pt->entity = ps == 48 ? *(const int *)(p + 32) : -1;
     }
     printf("objects: block %d: %d placements, %d types loaded\n", block, blk_nparts[block], ntypes);
     return blk_nparts[block];
@@ -193,6 +200,7 @@ void objects_block_add(int block)
         memset(in->body, 0xFF, sizeof in->body);
         in->type = blk_part[block][k].type;
         in->block = block;
+        in->entity = blk_part[block][k].entity;
         memcpy(in->pos, blk_part[block][k].pos, 12);
         memcpy(in->q, blk_part[block][k].q, 16);
     }
@@ -245,7 +253,7 @@ static int make_room(int n)
 
 void objects_break(int i, const float *dir)
 {
-    if (i < 0 || i >= ninst || inst[i].broken)
+    if (i < 0 || i >= ninst || inst[i].broken || inst[i].off || inst[i].block < 0)
         return;
     Inst *in = &inst[i];
     Type *ty = &types[in->type];
@@ -319,7 +327,7 @@ int objects_sweep(const float a[3], const float b[3], float r, float damage, con
     int n = 0;
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
-        if (in->broken)
+        if (in->broken || in->off)
             continue;
         Type *ty = &types[in->type];
         if (damage - ty->defense < ty->hp)
@@ -353,7 +361,7 @@ int objects_nearest(const float p[3], float *out)
     for (int i = 0; i < ninst; i++) {
         float dx = inst[i].pos[0] - p[0], dy = inst[i].pos[1] - p[1], dz = inst[i].pos[2] - p[2];
         float d = dx * dx + dy * dy * 4 + dz * dz;
-        if (!inst[i].broken && d < bd)
+        if (!inst[i].broken && !inst[i].off && d < bd)
             bd = d, best = i;
     }
     if (best >= 0 && out)
@@ -366,7 +374,7 @@ int objects_push_capsule(float pos[3], float r, float h)
     int touched = 0;
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
-        if (in->broken)
+        if (in->broken || in->off)
             continue;
         Type *ty = &types[in->type];
         if (pos[1] + h < in->pos[1] + ty->cyl_y0 || pos[1] > in->pos[1] + ty->cyl_y1 - 0.1f)
@@ -407,7 +415,7 @@ void objects_update(Player *p, float dt)
         int landing = p->airborne && p->vel.y < -2.0f;
         for (int i = 0; i < ninst; i++) {
             Inst *in = &inst[i];
-            if (in->broken)
+            if (in->broken || in->off)
                 continue;
             Type *ty = &types[in->type];
             float dx = in->pos[0] - f[0], dz = in->pos[2] - f[2], rr = 0.4f + ty->cyl_r + 0.1f;
@@ -459,7 +467,7 @@ void objects_draw(void)
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         Type *ty = &types[in->type];
-        if (in->broken == 2)
+        if (in->broken == 2 || in->off)
             continue;
         float dx = in->pos[0] - eye.x, dy = in->pos[1] - eye.y, dz = in->pos[2] - eye.z;
         if (dx * dx + dy * dy + dz * dz > DRAW_DIST * DRAW_DIST || dx * fwd.x + dy * fwd.y + dz * fwd.z < -3)
@@ -479,6 +487,50 @@ void objects_draw(void)
         /* yaw -pi: mdl_world's placement is the identity, so each bone's pose is its world transform */
         mdl_draw(ty->model, pose, v3(0, 0, 0), -3.14159265f, 0);
     }
+}
+
+/* EMEVD hooks (src/event.c): breakables by MSB entity id, in every loaded block */
+int objects_entity(int entity, float *pos, int *broken)
+{
+    for (int i = 0; i < ninst; i++)
+        if (inst[i].block >= 0 && inst[i].entity == entity && entity != -1) {
+            if (pos)
+                memcpy(pos, inst[i].pos, 12);
+            if (broken)
+                *broken = inst[i].broken != 0;
+            return i;
+        }
+    return -1;
+}
+
+int objects_entity_break(int entity)
+{
+    int n = 0;
+    for (int i = 0; i < ninst; i++)
+        if (inst[i].block >= 0 && inst[i].entity == entity && entity != -1 && !inst[i].broken && !inst[i].off)
+            objects_break(i, NULL), n++;
+    return n;
+}
+
+int objects_entity_restore(int entity)
+{
+    int n = 0;
+    for (int i = 0; i < ninst; i++)
+        if (inst[i].block >= 0 && inst[i].entity == entity && entity != -1 && inst[i].broken) {
+            retire(&inst[i]);  /* its pieces go */
+            inst[i].broken = 0, inst[i].t = 0, n++;
+            objects_stats.broken--;
+        }
+    return n;
+}
+
+int objects_entity_enable(int entity, int on)
+{
+    int n = 0;
+    for (int i = 0; i < ninst; i++)
+        if (inst[i].block >= 0 && inst[i].entity == entity && entity != -1)
+            inst[i].off = !on, n++;
+    return n;
 }
 
 #ifdef OBJ_HOST  /* host test harness (fndb/work/ptest/obj): the piece bodies */

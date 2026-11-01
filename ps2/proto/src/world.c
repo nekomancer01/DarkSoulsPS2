@@ -64,7 +64,7 @@ typedef struct {
     Pack pk;
     int open, state, slot, drain;
     void *mem;  /* the lite set's arena block (mapstream_alloc) */
-    unsigned off[NENT], size[NENT], total, res_off, res_size;
+    unsigned off[NENT], size[NENT], total, res_off, res_size, bump_off, bump_size;
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -153,6 +153,8 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
         }
+        if (!i || !pack_entry_raw(&r->pk, "bump.bin", &r->bump_off, &r->bump_size))  /* the boot area's: main.c */
+            r->bump_off = r->bump_size = 0;
         if (!r->open) {
             pack_close(&r->pk);
             if (!i)
@@ -265,6 +267,7 @@ void world_systems(GSGLOBAL *gs)
         free(lua);
         free(p);
         printf("world: block %d types: objects %d, effects %d, enemies %d\n", i, no, nf, ne);
+        map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c), kept from boot */
     }
     if (cur >= 0 && nblk > 1)
         mapstream_arena();  /* now: no enemy model is loaded yet (enemy_init stripped them all) */
@@ -394,6 +397,26 @@ static int start(int i)
     return 1;
 }
 
+/* A full swap reads mapres.bin into the pool, then the block's raw bump.bin behind it when both fit (normal-map relief
+ * while the block is full: map_block_bump); the lent tail starts after them. Read offsets are pool offsets. */
+static unsigned bump_at(const BlockRt *r)
+{
+    return (r->res_size + 127) & ~127u;
+}
+
+static unsigned res_total(const BlockRt *r)
+{
+    return r->bump_size && bump_at(r) + r->bump_size <= full_size ? bump_at(r) + r->bump_size : r->res_size;
+}
+
+/* the next read at pool offset done: bytes, and its offset in the pack */
+static unsigned res_n(const BlockRt *r, unsigned done, unsigned *src)
+{
+    unsigned end = done < r->res_size ? r->res_size : res_total(r);
+    *src = done < r->res_size ? r->res_off + done : r->bump_off + done - bump_at(r);
+    return end - done < WORLD_READ ? end - done : WORLD_READ;
+}
+
 /* The full pool follows the player: the old full block goes lite, WORLD_DRAIN frames later the new one's streams are
  * read into the pool (background, WORLD_READ at a time), then it draws them */
 static void full_step(void)
@@ -420,10 +443,11 @@ static void full_step(void)
     }
     BlockRt *r = &rt[res_blk];
     int res;
+    unsigned src;
     if (res_reading) {
         if (!pack_async_done(&res))
             return;
-        unsigned n = r->res_size - res_done < WORLD_READ ? r->res_size - res_done : WORLD_READ;
+        unsigned n = res_n(r, res_done, &src);
         res_reading = 0;
         world_stats.reading = -1;
         if (res != (int)n) {
@@ -434,12 +458,16 @@ static void full_step(void)
             return;
         }
         InvalidDCache(full_pool + res_done, full_pool + res_done + n - 1);
-        if ((res_done += n) == r->res_size) {
+        if ((res_done += n) == r->res_size && res_total(r) > r->res_size)
+            res_done = bump_at(r);
+        if (res_done == res_total(r)) {
             unsigned t0 = ticks();
             if (rt[res_blk].state == W_ON) {
                 map_block_streams(res_blk, full_pool);
+                if (res_total(r) > r->res_size)
+                    map_block_bump(res_blk, full_pool + bump_at(r));
                 full_blk = world_stats.full = res_blk;
-                lend_tail(r->res_size);
+                lend_tail(res_total(r));
                 world_stats.full_ms = (ticks() - res_t0) / 294912;
                 printf("world: block %d full: %u KB streams in %u ms\n", res_blk, r->res_size >> 10, world_stats.full_ms);
             }
@@ -448,8 +476,8 @@ static void full_step(void)
             return;
         }
     }
-    unsigned n = r->res_size - res_done < WORLD_READ ? r->res_size - res_done : WORLD_READ;
-    if (pack_read_async(&r->pk, r->res_off + res_done, full_pool + res_done, n))
+    unsigned n = res_n(r, res_done, &src);
+    if (pack_read_async(&r->pk, src, full_pool + res_done, n))
         res_reading = 1, world_stats.reading = res_blk;
 }
 

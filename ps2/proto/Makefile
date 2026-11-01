@@ -121,7 +121,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 		../../tools/native/lz4pack.c $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
-		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin \
+		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin \
 		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
 		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin) \
 		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)

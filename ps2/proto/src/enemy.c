@@ -24,17 +24,24 @@
 #include "collision.h"
 #include "pack.h"
 #include "mapstream.h"
+#include "drawgrp.h"
+#include "render.h"
 
 #define PI 3.14159265f
 #define MAX_TYPES 20  /* the boot area's + every world block's (enemy_block_types, at boot) */
 #define ACTIVE_DIST 45.0f   /* characters farther from the player than this are frozen (DSR: by draw group / distance) */
-/* at most this many update a frame, the nearest (3D) first; the rest stay frozen where they are. ASSUMED (EE time:
- * ~0.6 ms per active character; 30 within 45 m at the Burg entry of the world build ran at 20 fps). TECH_DEBT world-4:
- * DSR limits them by draw group, which only the boot block has here */
-#define ACTIVE_MAX 10
-/* at most this many drawn a frame, the nearest to the eye (~0.7 ms of EE each: 24 at the Burg entry cost 16 ms);
- * farther ones are not drawn (pop in as nearer ones die or fall behind). ASSUMED, TECH_DEBT world-4 */
-#define DRAW_MAX 10
+/* DSR runs and draws a character only while its MSB DrawGroups meet those of the collision part under the player
+ * (dg.bin per block, src/drawgrp.c: dg_mask_shown). On top of that, at most ACTIVE_MAX update a frame, the nearest
+ * (3D) first; the rest stay frozen where they are. ASSUMED budget cap (EE time ~0.6 ms per active character), TECH_DEBT
+ * world-4: with draw groups the Burg entry runs MEASURED_ACTIVE (see notes) */
+#ifndef ACTIVE_MAX
+#define ACTIVE_MAX 16
+#endif
+/* at most this many drawn a frame, the nearest to the eye (~0.7 ms of EE each), of those in the view frustum and
+ * shown by draw group; farther ones are not drawn. ASSUMED budget cap, TECH_DEBT world-4 */
+#ifndef DRAW_MAX
+#define DRAW_MAX 16
+#endif
 #define DRAW_DIST 40.0f
 #define DRAW_FADE 8.0f      /* m before DRAW_DIST over which a character fades into the fog colour (vu1_skin_fade) */
 #define CORPSE_TIME 6.0f    /* seconds a dead enemy stays visible (DSR dissolves the corpse) */
@@ -122,6 +129,7 @@ typedef struct {
     int req;  /* the AI's request this frame (ctx+0x528 in the exe): attack / step / combo anim, -1 none */
     float dead_t;
     int block;  /* world block (src/world.c) of the placement: 0 the boot area */
+    int dg;     /* its MSB DrawGroups: piece-mask index in the block's dg.bin (drawgrp.c), -1 always shown */
 } Enemy;
 
 static ChrType types[MAX_TYPES];
@@ -448,6 +456,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     memcpy(f, r + 20, 16);
     e->pos = e->home = v3(f[0], f[1], f[2]);
     e->yaw = e->home_yaw = f[3];
+    e->dg = dg_char(block, f);
     e->act = -1;
     int full;
     e->loco_anim = anim_slot(e, 0, &full);
@@ -883,7 +892,7 @@ void enemy_update(Player *pl, float dt)
         V3 d = v3sub(enemies[i].pos, pl->pos);
         d3[i] = d.x * d.x + d.y * d.y + d.z * d.z;
         nc += enemies[i].ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST &&
-              enemies[i].dead_t <= CORPSE_TIME && !ev_off[i];
+              enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg);
     }
     if (nc > ACTIVE_MAX) {  /* the ACTIVE_MAX-th smallest distance of the candidates */
         float c[MAX_ENEMIES];
@@ -891,7 +900,7 @@ void enemy_update(Player *pl, float dt)
         for (int i = 0; i < nenemies; i++) {
             V3 d = v3sub(enemies[i].pos, pl->pos);
             if (enemies[i].ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST &&
-                enemies[i].dead_t <= CORPSE_TIME && !ev_off[i])
+                enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg))
                 c[m++] = d3[i];
         }
         for (int k = 0; k < ACTIVE_MAX; k++)  /* partial selection sort */
@@ -906,7 +915,7 @@ void enemy_update(Player *pl, float dt)
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, pl->pos);
         int on = e->ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST && e->dead_t <= CORPSE_TIME &&
-                 !ev_off[i] && d3[i] <= lim;
+                 !ev_off[i] && dg_mask_shown(e->block, e->dg) && d3[i] <= lim;
         /* combat slots only for characters near the player (COMBAT_MAX_CHRS is smaller than the roster) */
         int want = on && !e->cc.dead && e->ct->drawable;
         if (want && !e->registered)
@@ -968,9 +977,13 @@ void enemy_draw(void)
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, eye);
-        float z = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z, r = e->var->height + 2;
-        d3[i] = !e->ct->loaded || !e->ct->drawable || e->dead_t > CORPSE_TIME || z < -r || ev_off[i] ||
-                        d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST
+        /* view cone: a box around the capsule with room for limbs and weapons (ASSUMED 1.5 m; poses are not bounded) */
+        float R = e->var->radius + 1.5f;
+        const float mn[3] = {e->pos.x - R, e->pos.y - 0.5f, e->pos.z - R},
+                    mx[3] = {e->pos.x + R, e->pos.y + e->var->height + 1.0f, e->pos.z + R};
+        d3[i] = !e->ct->loaded || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
+                        d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST || !dg_mask_shown(e->block, e->dg) ||
+                        !r_box_classify(mn, mx)
                     ? -1
                     : d.x * d.x + d.y * d.y + d.z * d.z;
         if (d3[i] >= 0)
