@@ -97,6 +97,7 @@ void ai_init(Ai *a, const AiThink *th, int index, unsigned seed);
 void ai_update(Ai *a, const AiFrame *f);
 /* Clear all goals (death) */
 void ai_reset(Ai *a);
+int ai_goals_in_use(void);  /* goal pool slots held (leak check at world block on / off) */
 /* A noise this frame at pos audible within radius (player footsteps, rolls, attacks): "heard" (ear_dist) */
 void ai_sound(V3 pos, float radius);
 /* After all enemies updated: drop this frame's sounds, collect garbage */

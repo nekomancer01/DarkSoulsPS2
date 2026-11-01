@@ -668,6 +668,14 @@ void ai_reset(Ai *a)
     a->out = (AiOut){.req = -1, .guard = -1};
 }
 
+int ai_goals_in_use(void)
+{
+    int n = 0;
+    for (int i = 0; i < POOL; i++)
+        n += pool[i].in_use;
+    return n;
+}
+
 void ai_update(Ai *a, const AiFrame *f)
 {
     a->f = f;
