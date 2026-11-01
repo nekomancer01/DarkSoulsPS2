@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Run one test script in a headless PCSX2 and collect its results (needs Pillow + numpy: the Makefile's PY venv).
+
+  test-run.py <elf> <script> <outdir> [--slot N] [--timeout 300] [--gsdump] [--holes] [--name label]
+
+<script> is a src/testscript.c script (copied next to the ELF as tests/gen/<name>.txt, since host: only sees the ELF's
+folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>, own data dir and Xvfb display). Without
+--slot a free slot in 28110-28199 is taken (lock file /tmp/pcsx2-headless/slot.<n>.lock, held while the run lasts), so
+parallel runs from several sessions never share a socket, display or data dir. Then, over PINE:
+  - every shot marker (mailbox shot_seq): screenshot of the PCSX2 window -> <outdir>/<shot>.png, optional single-frame
+    GS dump (F8 hotkey via xdotool) -> <outdir>/<shot>.gs.zst, magenta "hole" pixel count, then shot_ack
+  - the mailbox every ~0.1 s -> <outdir>/frames.csv (fps, ms, RAM/VRAM free, chain peaks, ...)
+  - a hang (mailbox frame counter stuck 15 s), PCSX2 exiting, or the timeout = failure
+Results: <outdir>/result.json (shots with the ELF's "TEST shot" stats, errors, log lines) and emulog.txt.
+Exit code 0 = script ran to its end without errors."""
+import argparse, csv, fcntl, glob, json, os, re, shutil, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pine
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+DISPLAY = ":99"  # set per run from the PINE slot (tools/pcsx2-run.sh: 100 + slot % 100)
+
+
+def display_for(slot):
+    return f":{100 + slot % 100}"
+
+
+_slot_locks = []
+
+
+def acquire_slot(slot=None, wait=600):
+    """Lock a PINE slot for this process: the given one (waits while another run holds it) or the first free one."""
+    os.makedirs("/tmp/pcsx2-headless", exist_ok=True)
+    t0 = time.time()
+    while True:
+        for n in [slot] if slot else range(28110, 28200):
+            f = open(f"/tmp/pcsx2-headless/slot.{n}.lock", "w")
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                f.close()
+                continue
+            _slot_locks.append(f)
+            return n
+        if time.time() - t0 > wait:
+            raise RuntimeError(f"no free PINE slot after {wait} s")
+        time.sleep(2)
+
+
+def x(cmd, timeout=20, **kw):
+    """subprocess.run on the run's Xvfb display with a timeout (X tools can block on a vanished window)"""
+    try:
+        return subprocess.run(cmd, env=dict(os.environ, DISPLAY=DISPLAY), capture_output=True, text=True,
+                              timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, -1, "", "timeout")
+
+
+LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error",
+                        re.I)
+
+
+def host_home():
+    return subprocess.run(["distrobox-host-exec", "printenv", "HOME"], capture_output=True, text=True,
+                          timeout=60).stdout.strip()
+
+
+def pcsx2_window():
+    """Largest top-level window on the Xvfb display (the PCSX2 main window)."""
+    out = x(["xwininfo", "-root", "-children"]).stdout
+    best = (0, None)
+    for w in re.findall(r"^\s+(0x[0-9a-f]+)", out, re.M):
+        info = x(["xwininfo", "-id", w]).stdout
+        m = re.search(r"Width: (\d+).*?Height: (\d+)", info, re.S)
+        if m and int(m[1]) * int(m[2]) > best[0]:
+            best = (int(m[1]) * int(m[2]), w)
+    return best[1]
+
+
+def capture(path, tries=3):
+    """Screenshot of the PCSX2 window (found again each time: Qt can recreate it); returns the window id or None"""
+    for _ in range(tries):
+        win = pcsx2_window()
+        if win and x(["import", "-window", win, path], timeout=30).returncode == 0:
+            return win
+        time.sleep(0.5)
+    return None
+
+
+def holes(path):
+    """Pixels the map left uncovered: the magenta colour clear of "option holes" (CT16 dither: R,B >= 200, G < 60).
+    The PCSX2 window's menu / status bars are grey, the HUD is not magenta."""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert("RGB")).astype(int)
+    m = (a[..., 0] > 200) & (a[..., 2] > 200) & (a[..., 1] < 60)
+    return int(m.sum()), int(m.size)
+
+
+def gs_dump(win, snaps, before, out, wait=20):
+    """F8 = GSDumpSingleFrame (tools/test-pcsx2-ini.py); the dump appears in the instance's snaps/ folder."""
+    x(["xdotool", "windowfocus", win], timeout=10)  # no --sync: it blocks forever on a window that went away
+    x(["xdotool", "key", "--window", win, "F8"], timeout=10)
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        new = [f for f in glob.glob(os.path.join(snaps, "*.gs*")) if f not in before]
+        if new:
+            f = new[0]
+            for _ in range(50):  # written in the background: wait until the size settles
+                s = os.path.getsize(f)
+                time.sleep(0.2)
+                if s and os.path.getsize(f) == s:
+                    break
+            shutil.copy(f, out)
+            before.add(f)
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def parse_shot_line(line):
+    """'TEST shot <name> seq N frames .. fps .. ms_avg ..' -> dict"""
+    m = re.search(r"TEST shot (\S+) (.*)", line)
+    if not m:
+        return None
+    toks = m[2].split()
+    d = {"name": m[1]}
+    i = 0
+    while i < len(toks) - 1:
+        k = toks[i]
+        if k == "pos":
+            d["pos"] = [float(t) for t in toks[i + 1:i + 4]]
+            i += 4
+            continue
+        try:
+            d[k] = float(toks[i + 1])
+        except ValueError:
+            d[k] = toks[i + 1]
+        i += 2
+    return d
+
+
+def run(a):
+    global DISPLAY
+    a.slot = acquire_slot(a.slot)
+    DISPLAY = display_for(a.slot)
+    elf = os.path.realpath(a.elf)
+    proto = os.path.dirname(elf)
+    name = a.name or os.path.splitext(os.path.basename(a.script))[0]
+    os.makedirs(a.outdir, exist_ok=True)
+    gen = os.path.join(proto, "tests", "gen")
+    os.makedirs(gen, exist_ok=True)
+    rel = f"tests/gen/{name}.txt"
+    if os.path.realpath(a.script) != os.path.join(proto, rel):
+        shutil.copy(a.script, os.path.join(proto, rel))
+    hh = host_home()
+    data = f"{hh}/.var/app/net.pcsx2.PCSX2/test/{a.slot}"
+    log = f"{data}/PCSX2/logs/emulog.txt"  # -datapath <dir> -> <dir>/PCSX2
+    snaps = f"{data}/PCSX2/snaps"
+    os.makedirs(snaps, exist_ok=True)
+    before = set(glob.glob(os.path.join(snaps, "*")))
+    if os.path.exists(log):
+        os.remove(log)
+    env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}")
+    out = subprocess.run([os.path.join(TOOLS, "pcsx2-run.sh"), elf, "0", "-"], env=env, capture_output=True, text=True,
+                         timeout=120)
+    inst = re.search(r"INST=(\S+)", out.stdout)
+    res = {"name": name, "elf": elf, "script": a.script, "shots": [], "errors": [], "log": [], "started": time.time()}
+    if not inst:
+        res["errors"].append("PCSX2 did not start: " + out.stdout + out.stderr)
+        return res
+    inst = inst[1]
+    try:
+        p = pine.connect(a.slot, wait=30)
+        syms = pine.elf_symbols(elf)
+        addr = None
+        t0 = time.time()
+        while addr is None and time.time() - t0 < 60:  # stripped ELF: wait for the boot line in the EE log
+            try:
+                addr = pine.resolve("test_mb", syms, log)[0]
+            except KeyError:
+                time.sleep(0.5)
+        if addr is None:
+            raise RuntimeError("test mailbox not found (no symbol, no 'TEST mailbox' log line)")
+        win = None
+        f = open(os.path.join(a.outdir, "frames.csv"), "w", newline="")
+        w = csv.writer(f)
+        w.writerow(["t"] + pine.MAILBOX_FIELDS)
+        t0 = time.time()
+        last_frame, last_change, acked = -1, time.time(), 0
+        mb = None
+        while True:
+            now = time.time()
+            if now - t0 > a.timeout:
+                res["errors"].append(f"timeout after {a.timeout} s (script line {mb and mb['line']})")
+                break
+            try:
+                mb = pine.read_mailbox(p, addr)
+            except (ValueError, IOError) as e:  # no VM yet (PINE IPC_FAIL) / ELF still loading (magic not set)
+                if isinstance(e, ConnectionError):
+                    raise
+                if mb is not None:
+                    raise
+                last_change = now
+                time.sleep(0.2)
+                continue
+            if mb["frame"] != last_frame:
+                w.writerow([f"{now - t0:.2f}"] + [mb[k] for k in pine.MAILBOX_FIELDS])
+                last_frame, last_change = mb["frame"], now
+            elif now - last_change > 15:
+                res["errors"].append(f"hang: frame {last_frame} for 15 s (script line {mb['line']}, PCSX2 {p.status()})")
+                break
+            if mb["shot_seq"] != acked and mb["state"] == 3:
+                pine.ack_shot(p, addr, mb["shot_seq"] | pine.SHOT_BUSY)  # ELF keeps waiting (60 s) while we capture
+                png = os.path.join(a.outdir, f"{mb['shot_name']}.png")
+                time.sleep(0.15)  # two more frames of the frozen scene reach the window
+                win = capture(png)
+                shot = {"name": mb["shot_name"], "png": png, "seq": mb["shot_seq"]}
+                if not win:
+                    res["errors"].append(f"screenshot failed: {mb['shot_name']}")
+                    acked = mb["shot_seq"]
+                    pine.ack_shot(p, addr, acked)
+                    continue
+                if a.holes:
+                    shot["holes"], shot["pixels"] = holes(png)
+                if a.gsdump:
+                    shot["gsdump"] = gs_dump(win, snaps, before, os.path.join(a.outdir, f"{mb['shot_name']}.gs.zst")) \
+                        and os.path.join(a.outdir, f"{mb['shot_name']}.gs.zst")
+                res["shots"].append(shot)
+                acked = mb["shot_seq"]
+                pine.ack_shot(p, addr, acked)
+                last_change = time.time()
+            if mb["state"] == 2:
+                break
+            time.sleep(0.1)
+        f.close()
+        res["frames"] = last_frame
+    except (ConnectionError, OSError, RuntimeError) as e:
+        res["errors"].append(f"{type(e).__name__}: {e}")
+    finally:
+        time.sleep(0.5)
+        subprocess.run(["distrobox-host-exec", "flatpak", "kill", inst], capture_output=True, timeout=60)
+        try:
+            os.remove(f"/tmp/pcsx2-headless/{inst}")
+        except OSError:
+            pass
+    time.sleep(0.5)
+    if os.path.exists(log):
+        shutil.copy(log, os.path.join(a.outdir, "emulog.txt"))
+        stats = {}
+        for line in open(log, errors="replace"):
+            if "TEST " in line:
+                res["log"].append(line.rstrip())
+                d = parse_shot_line(line)
+                if d:
+                    stats[d["name"]] = d
+            if LOG_ERRORS.search(line):
+                res["errors"].append("log: " + line.strip())
+        for s in res["shots"]:
+            s["stats"] = stats.get(s["name"], {})
+        if not any("TEST DONE" in l for l in res["log"]):
+            res["errors"].append("script did not reach its end (no TEST DONE)")
+    else:
+        res["errors"].append(f"no EE log at {log}")
+    res["seconds"] = round(time.time() - res.pop("started"), 1)
+    json.dump(res, open(os.path.join(a.outdir, "result.json"), "w"), indent=1)
+    return res
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("elf")
+    ap.add_argument("script")
+    ap.add_argument("outdir")
+    ap.add_argument("--slot", type=int, help="PINE slot (default: first free in 28110-28199)")
+    ap.add_argument("--timeout", type=float, default=300)
+    ap.add_argument("--gsdump", action="store_true")
+    ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
+    ap.add_argument("--name")
+    a = ap.parse_args()
+    res = run(a)
+    print(f"{res['name']}: {len(res['shots'])} shots, {res.get('frames', 0)} frames, {res['seconds']} s, "
+          f"{len(res['errors'])} errors")
+    for e in res["errors"][:20]:
+        print("  ERROR", e)
+    sys.exit(1 if res["errors"] else 0)
+
+
+if __name__ == "__main__":
+    main()

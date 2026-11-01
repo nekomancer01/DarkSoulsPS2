@@ -1,0 +1,21 @@
+# Undead Burg (make MAP=m10_01_00_00) spots: bonfire spawn + three spots around it (area-burg); one shot each
+option hud
+option nodemo
+wait 3
+shot A_bonfire
+cam 3.14 0.25
+wait 2
+shot A_bonfire_rev
+spawn 15.0 9.6 -40.0 3.14
+cam 3.14 0.25
+wait 3
+shot B_south_court
+spawn 9.1 17.8 20.0 0
+cam 0 0.25
+wait 3
+shot C_north
+spawn -2.3 9.5 -60.0 3.14
+cam 3.14 0.25
+wait 3
+shot D_southwest
+end

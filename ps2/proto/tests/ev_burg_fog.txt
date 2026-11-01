@@ -1,0 +1,35 @@
+# EMEVD fog wall (src/event.c) in the Undead Burg block of the default world build: the first checkpoint fog wall
+# o1419_0000 (entity 1011700, hkx box collider) at the top of the aqueduct stairs, m10_01 event 11010090 slot 0.
+# Spawning there loads the Burg block (warp settle, src/world.c), which starts m10_01's events. The wall blocks the
+# player until the action button is used inside its front region 1012600; the event then warps the player to that
+# region, switches the object off (collider gone) and ends (flag 11010090 on). Walking on then passes the wall.
+option hud
+option noenemies
+option nodemo
+wait 2
+spawn -50.12 -21.95 -32.52 2.708
+cam 2.708 0.3
+wait 2
+ev expect obj 1011700 1
+ev expect flag 11010090 0
+stick 0 1
+wait 1.5
+stick 0 0
+wait 0.3
+ev expect z > -33.4
+shot fog_blocked
+spawn -50.12 -21.95 -32.52 2.708
+wait 0.5
+ev action
+wait 0.5
+ev expect obj 1011700 0
+ev expect flag 11010090 1
+stick 0 1
+wait 1.5
+stick 0 0
+wait 0.3
+ev expect z < -34.0
+shot fog_passed
+ev waits
+ev summary
+end

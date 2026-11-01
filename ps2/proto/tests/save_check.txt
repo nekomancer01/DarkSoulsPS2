@@ -1,0 +1,25 @@
+# A3 save round trip, part 2 of 2: boots after save_write.txt and checks every value came back from the save.
+option save host savetest
+option noenemies
+wait 1
+check loaded 1
+check souls 12345
+check flag 11010000 1
+check flag 11010001 0
+check flag 60000001 1
+check flag 71010000 1
+check flag 16000000 0
+check flag 50000100 1
+check flag 999 1
+check flags 11015000 11015999 500
+check flags 11015500 11015999 500
+check item 0x400001F4 3
+check item 0x400000C8 1
+# second save in the other slot, then a reload from the device
+souls 777
+save
+souls 1
+load
+check souls 777
+log save_check done
+end

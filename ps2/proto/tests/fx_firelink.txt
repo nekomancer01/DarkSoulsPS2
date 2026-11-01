@@ -1,0 +1,9 @@
+# effects: Firelink spot A (bonfire 5 m ahead), debug HUD (FX line)
+option nodemo
+option hud
+spawn -47.41 -59.82 53.30 5.2185
+cam 5.2185 0.25
+wait 4
+freeze 1
+shot fx_spotA
+end

@@ -1,0 +1,463 @@
+{
+ "source": "DarkSoulsRemastered.exe; EzStateActionEnv FUN_14038b540 (functions), EzStateActionEvent FUN_14038dae0 (commands). ctx = ESD context (ChrCtrl+0x48), ChrCtrl = ctx+0x10, chr = ChrCtrl+0x10. Evaluation: one machine step per group per frame (FUN_140388020 -> FUN_140e5d000(machine, 1)); transition order exit, pass, entry (FUN_140ea0ff0); 0xB7 AbortIfFalse ends the expression with 0 (FUN_140e9c6c0), 0xA6 is a no-op (opcode table 0x141A8C620).",
+ "functions": {
+  "0": {
+   "name": "IsAnimEnd",
+   "args": "(unused)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0 -> FUN_140386410: true when the anim handle at ctx+0x80 (set by c1_3) is invalid/not playing, else ChrCtrl FUN_14037b3e0",
+   "confidence": "medium"
+  },
+  "1": {
+   "name": "IsMoveAnimEnd",
+   "args": "(unused)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 1 -> FUN_1403864b0: same test on ctx+0x78 (anim handle written by c1_4)",
+   "confidence": "medium"
+  },
+  "100": {
+   "name": "IsButtonTriggered",
+   "args": "slot",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 100 -> FUN_140386c10: stamina>=1 gate FUN_140323c60, manipulator(+0x298|+0x88) cur[+0x84+slot]!=0 && prev[+0xb9+slot]==0",
+   "confidence": "high"
+  },
+  "101": {
+   "name": "IsButtonReleased",
+   "args": "slot",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x65 -> FUN_140386cb0: cur[+0x84+slot]==0 && prev[+0xb9+slot]!=0",
+   "confidence": "high"
+  },
+  "102": {
+   "name": "IsActionRequested",
+   "args": "slot (0..52)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x66 -> FUN_140386910: stamina gate FUN_140323c60, ctx+0xF2[slot] (set by the 'Anim Cancel' ChrActionFlags: 4 -> 0, 16 -> 1/19/20/51/52, 26 -> 9-12/15-18/42, 29 -> 2/3, 31 -> 14, 36 -> 7; slots 2/3/14 off while flag 97), latch ctx+0x468[slot] (a press latches only inside its 'Key Input' window ctx+0x1A0[slot]: flags 1 -> 0, 9 -> 1/19/20/51/52, 10 -> 2/3, 25 -> steps, 30 -> 14, 35 -> 7, 87 -> all; latches clear on every new ESD anim and at stamina < 1), and ctx+0x3F4[slot] or timer ctx+0x320[slot] <= 0",
+   "confidence": "high"
+  },
+  "103": {
+   "name": "IsButtonHeld",
+   "args": "slot",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x67 -> FUN_1403867b0: 1.0 while manipulator float +0xF0[slot] (hold time) != 0, else 0.0 (CVTDQ2PS); so c0000's `f103(x) >= 0` tests are always true",
+   "confidence": "high"
+  },
+  "104": {
+   "name": "GetChangedWeaponHoldStyle",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x68 -> FUN_140386d50: manipulator +0x1c8 hold style, 0 when equal to current chr+0x198[0]",
+   "confidence": "medium"
+  },
+  "108": {
+   "name": "IsStepRequested",
+   "args": "slot",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x6c -> FUN_140386af0: same as f102 without the timer test, only slots in mask 0x40000079e00 (9-12, 15-18, 42 = backstep/rolls/jump)",
+   "confidence": "high"
+  },
+  "110": {
+   "name": "GetRollAnimId",
+   "args": "direction 0..5",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x6e -> FUN_14037aae0(ChrCtrl, n): base = ChrCtrl+0x1c0[ChrCtrl+0x210] (movement set index ChrCtrl+0x210), anim id from FUN_14052ddd0/14052dea0; ESD uses n 0-3 rolls, 4 backstep, 5 jump/roll from dash",
+   "confidence": "medium"
+  },
+  "200": {
+   "name": "ShouldFall",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 200 -> FUN_140386850: proxy (ChrCtrl+0x28) +0x32 == 0 (not on ground) && (+0x6D == 0 || +0x1B4 >= 1.0) && ctx+0xA0 bit 13 clear (ChrActionFlag 51); group 0 then plays 1550 / 1500 (states 14 / 15)",
+   "confidence": "high"
+  },
+  "207": {
+   "name": "GetWeaponHoldStyle",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xcf: *(int*)chr+0x198 [0]; 1 one-handed, 2/3 two-handed (FUN_1403261d0 picks slot [1] when 2, [2] when 3)",
+   "confidence": "medium"
+  },
+  "219": {
+   "name": "GetMoveState",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xdb -> FUN_14037bb60: 0 idle, 1 walk, 2 run, 3 dash (WalkAnim_Twist +0x140 gait, dash anim active)",
+   "confidence": "high"
+  },
+  "220": {
+   "name": "IsSlotHeld",
+   "args": "slot",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xdc: byte ctx+0x2e1+slot (held-button array, also used by f243)",
+   "confidence": "medium"
+  },
+  "222": {
+   "name": "GetDamageDirection",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xde: float ctx+0x1e8; damage block ctx+0x1e8..0x1f8 has debug overrides DAT_141c77e9c/94/98 in FUN_140379430; values 0-3",
+   "confidence": "medium"
+  },
+  "225": {
+   "name": "GetWeaponMotionCategory",
+   "args": "hand (0, 1, -1 = two-handed one)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe1 -> FUN_1403261d0(chr, hand): chr+0x198 table; values match EquipParamWeapon.wepmotionCategory (20 dagger ... 23 straight sword, 44 bow, 46 crossbow, 47/48 shields)",
+   "confidence": "high"
+  },
+  "227": {
+   "name": "GetSelectedItemMotionType",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe3 -> FUN_1403239f0: current goods (vt+0x2f8) row byte +0x25, 0xfe when not usable, -1 none",
+   "confidence": "medium"
+  },
+  "231": {
+   "name": "GetSelectedSpellMotionType",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe7 -> FUN_140323b20: current magic (vt+0x308) row byte +0x3e, 0xff when not castable",
+   "confidence": "medium"
+  },
+  "232": {
+   "name": "HasUsableItem",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe8 -> FUN_140323bf0: goods id from vt+0x2f8 resolves and vt+0x390(-1, id) accepts",
+   "confidence": "medium"
+  },
+  "233": {
+   "name": "CanCastSpell",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe9 -> FUN_140325230: magic slot >=0, FUN_1402e05e0 requirement check on the current spell",
+   "confidence": "medium"
+  },
+  "236": {
+   "name": "GetDamageLevel",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xec: int ctx+0x1ec (debug menu 'DmgLv'); values 1-11 select hit-reaction states",
+   "confidence": "medium"
+  },
+  "237": {
+   "name": "GetDamageReactionClass",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xed -> FUN_1402ddda0(ctx+0x1ec, ctx+0x1f0): 12x5 table at 0x141A2B780 [damage level][ctx+0x1f0]",
+   "confidence": "medium"
+  },
+  "241": {
+   "name": "IsActionRequested19",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xf1 -> FUN_1403869d0(ctx, 0x13): f102 test without timer for slot 19 (PadManipulator +0x97, left-hand action chain)",
+   "confidence": "medium"
+  },
+  "242": {
+   "name": "IsActionRequested20",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xf2 -> FUN_1403869d0(ctx, 0x14): same for slot 20",
+   "confidence": "medium"
+  },
+  "243": {
+   "name": "IsSlotHeld21",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xf3 -> FUN_140386a70(ctx, 0x15): FUN_140323c60 gate and held byte ctx+0x2e1+21",
+   "confidence": "medium"
+  },
+  "284": {
+   "name": "GetDamageInfo3",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x11c: float ctx+0x1f4 (third damage-block field); ESD compares 1/2/3",
+   "confidence": "low"
+  },
+  "285": {
+   "name": "GetDamageInfo4",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x11d: float ctx+0x1f8 (fourth damage-block field); ESD compares 2/4/6",
+   "confidence": "low"
+  },
+  "300": {
+   "name": "IsGenericCancel",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 300: ctx+0xA0 bit 20 = ChrActionFlag 32 Generic Anim Cancel (FUN_140340580)",
+   "confidence": "high"
+  },
+  "305": {
+   "name": "HasSpEffectStateInfo",
+   "args": "stateInfo",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x131 -> FUN_140404580(chr+0x278 SpEffect list, id): any active effect whose SpEffectParam.stateInfo (+0x156) == id (skips entry flags 0x800c0003)",
+   "confidence": "high"
+  },
+  "311": {
+   "name": "GetHandWeaponInventoryValue",
+   "args": "hand (-1/0/1)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x137 -> PlayerIns vt+0x3d8 FUN_140358f40 -> FUN_140359170: inventory entry of the hand's weapon, value from FUN_140749fb0 (ESD tests < 0)",
+   "confidence": "low"
+  },
+  "312": {
+   "name": "IsWeaponUsableInHand",
+   "args": "hand (-1/0/1)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x138 -> PlayerIns vt+0x3e0 FUN_140358f90: switch on weapon info byte +0xff (1 right, 2 left, 3 both, 4 right or both, 5 left/right ...)",
+   "confidence": "low"
+  },
+  "1000": {
+   "name": "GetHP",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 1000: int chr+0x3e8",
+   "confidence": "high"
+  },
+  "1001": {
+   "name": "GetStamina",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x3e9: int chr+0x3f8 (setter FUN_140322cf0 clamps to [-50, max])",
+   "confidence": "high"
+  },
+  "1002": {
+   "name": "GetChrStateClass",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x3ea -> FUN_140322760: byte table 0x141A2B190[min(chr+0xd4, 14)]",
+   "confidence": "low"
+  },
+  "1003": {
+   "name": "RandInt",
+   "args": "(min, max)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x3eb: FUN_140339f50 % (max-min+1) + min, clamped; debug override DAT_141c77e88+0xe0",
+   "confidence": "high"
+  },
+  "1004": {
+   "name": "RandFloat",
+   "args": "(min, max)",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x3ec: FUN_140339c70 * (max-min) + min",
+   "confidence": "high"
+  },
+  "112": {
+   "name": "IsAnyRequestActionable",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x70: ctx+0x49D, cleared each frame by FUN_140388020 and set by FUN_140388790 when any slot passes f102 / FUN_1403869d0 / ctx+0x2E1 / f108 / ctx+0x242",
+   "confidence": "high"
+  },
+  "111": {
+   "name": "IsAnyRequestNew",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x6F -> FUN_140386bb0: manipulator byte +0x1C4 (OR of this frame's request bytes)",
+   "confidence": "high"
+  },
+  "201": {
+   "name": "IsOnGround",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xC9 -> FUN_1403868a0: proxy byte +0x32",
+   "confidence": "high"
+  },
+  "238": {
+   "name": "IsButtonTriggered19",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xEE -> FUN_140386c10(ctx, 0x13)",
+   "confidence": "high"
+  },
+  "239": {
+   "name": "IsButtonTriggered20",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xEF -> FUN_140386c10(ctx, 0x14)",
+   "confidence": "high"
+  },
+  "240": {
+   "name": "IsButtonTriggered21",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xF0 -> FUN_140386c10(ctx, 0x15)",
+   "confidence": "high"
+  },
+  "267": {
+   "name": "GetCtxByte1E0",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x10B: ctx+0x1E0, written by c1_133",
+   "confidence": "high"
+  },
+  "271": {
+   "name": "IsSpecialTransition",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x10F: ctx+0xA4 bit 10 = ChrActionFlag 66 Special Transition",
+   "confidence": "high"
+  },
+  "278": {
+   "name": "GetGuardMotionCategory",
+   "args": "hand",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x116 -> FUN_140326220: EquipParamWeapon.guardmotionCategory (+0xE4) of the hand's weapon (0 for a non-shield in the -1 case)",
+   "confidence": "high"
+  },
+  "293": {
+   "name": "GetCtxByte454",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x125: ctx+0x454, written by c1_140 (jump states use 7031 + f293() * 10)",
+   "confidence": "high"
+  },
+  "298": {
+   "name": "IsSpecialTransition2",
+   "args": "()",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0x12A: ctx+0xA4 bit 11 = ChrActionFlag 84",
+   "confidence": "high"
+  }
+ },
+ "commands": {
+  "3": {
+   "name": "SetAnim",
+   "args": "(weaponSel, animId, layer, blendTime, loop)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 3: animId = FUN_140325f70(chr, weaponSel, animId) (adds the hand's weapon-motion offset; ctx+0x440 override from c1_134), then FUN_140385550(ctx, id, layer<0xb/0xd -> tables 0x14132D000/0x14132D030, -1.0, loop) stores the handle in ctx+0x80. blendTime is not passed in the decompile",
+   "confidence": "high (args 4 low)"
+  },
+  "4": {
+   "name": "SetMoveSyncAnim",
+   "args": "(weaponSel, animId, layer, blendTime, loop, syncMode)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 4: same resolve, FUN_140385650 stores the handle in ctx+0x78 and (syncMode) rescales playback by WalkAnim vt+0x70/+0x78 speeds",
+   "confidence": "medium"
+  },
+  "100": {
+   "name": "SetCtxFlag58",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 100 -> FUN_140386590: ctx+0x58",
+   "confidence": "low"
+  },
+  "101": {
+   "name": "SetLocomotionEnabled",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x65 -> FUN_140386ef0 -> FUN_14037b450: ChrCtrl+0x1b0 = arg (read by TurnAnim FUN_14039fcc0 and WalkAnim); ESD sets 0 on entry to rolls/attacks/backsteps, 1 on exit",
+   "confidence": "medium"
+  },
+  "102": {
+   "name": "SetCtxFloat204",
+   "args": "(value)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x66: ctx+0x204",
+   "confidence": "low"
+  },
+  "103": {
+   "name": "SetCtxFloat208",
+   "args": "(value)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x67: ctx+0x208",
+   "confidence": "low"
+  },
+  "107": {
+   "name": "SetCtxFlag1DC_2",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x6b: ctx+0x1DC bit 2",
+   "confidence": "high"
+  },
+  "108": {
+   "name": "SetCtxFloat43c",
+   "args": "(value)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x6c: ctx+0x43c",
+   "confidence": "low"
+  },
+  "109": {
+   "name": "SetChrMotionMode",
+   "args": "(mode -1..12)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x6d -> FUN_140322880: chr+0x270 = mode, vt+0x498 on change; only when chr vt+0x140 (always true for PlayerIns)",
+   "confidence": "low"
+  },
+  "110": {
+   "name": "DisableStaminaRegen",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x6e: ctx+0x1dc bit 3; FUN_14031fca0 skips stamina regen while set (not used by c0000.esd)",
+   "confidence": "high"
+  },
+  "123": {
+   "name": "OnSpellRejected",
+   "args": "()",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x7b: FUN_140c92950(pad, 0x17, 1) + PlayerIns vt+0x330 (obfuscated thunk); ESD calls it when slot 14 is pressed with a castable spell but f113() fails",
+   "confidence": "low"
+  },
+  "124": {
+   "name": "OnItemRejected",
+   "args": "()",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x7c: PlayerIns vt+0x368 (obfuscated thunk); ESD calls it when slot 2/3 is pressed with a usable item but f114() fails",
+   "confidence": "low"
+  },
+  "134": {
+   "name": "SetAnimOverride",
+   "args": "(animId)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x86: ctx+0x440 = max(arg, 0); FUN_140325f70 uses it instead of the c1_3 anim id",
+   "confidence": "medium"
+  },
+  "1001": {
+   "name": "AddStamina",
+   "args": "(delta)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x3e9: FUN_140322cf0(chr, chr+0x3f8 + delta); c0000.esd: rolls -30, backsteps -20, R1/kick-type states -20, 7031+ -30, 7033+ -40, 7504 -100",
+   "confidence": "high"
+  },
+  "1100": {
+   "name": "Nop1100",
+   "args": "(arg)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x44c/0x44d: only reads its argument count, no effect in this dispatcher (used in pairs 1/0 around states 245/246 etc.)",
+   "confidence": "high (no-op here)"
+  },
+  "9000": {
+   "name": "DebugPrint",
+   "args": "(string)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 9000: only when ctx+0x550 debug flag; prints the string",
+   "confidence": "high"
+  },
+  "146": {
+   "name": "AcceptAllInput",
+   "args": "()",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x92: ctx+0x1DC bit 19: every press latches while the state that set it lasts, and new anims keep the latches (FUN_140388790 / FUN_140388670)",
+   "confidence": "high"
+  },
+  "133": {
+   "name": "SetCtxByte1E0",
+   "args": "(value)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x85: ctx+0x1E0 (read by f267)",
+   "confidence": "high"
+  },
+  "140": {
+   "name": "SetCtxByte454",
+   "args": "(value)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x8C: ctx+0x454 (read by f293)",
+   "confidence": "high"
+  },
+  "147": {
+   "name": "SetCtxFlag1DC_20",
+   "args": "()",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x93: ctx+0x1DC bit 20 when chr vt+0x150",
+   "confidence": "high"
+  },
+  "132": {
+   "name": "SetCtxFlag1DC_13",
+   "args": "()",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x84: ctx+0x1DC bit 13",
+   "confidence": "high"
+  },
+  "111": {
+   "name": "SetCtxFlag1DC_4",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x6f: ctx+0x1DC bit 4",
+   "confidence": "high"
+  },
+  "113": {
+   "name": "SetCtxFlag1DC_5",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x71: ctx+0x1DC bit 5",
+   "confidence": "high"
+  },
+  "116": {
+   "name": "SetCtxFlag1DC_6",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x74: ctx+0x1DC bit 6",
+   "confidence": "high"
+  },
+  "117": {
+   "name": "SetCtxFlag1DC_7",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x75: ctx+0x1DC bit 7",
+   "confidence": "high"
+  },
+  "118": {
+   "name": "SetCtxFlag1DC_8",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x76: ctx+0x1DC bit 8",
+   "confidence": "high"
+  },
+  "119": {
+   "name": "SetCtxFlag1DC_10",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x77: ctx+0x1DC bit 10",
+   "confidence": "high"
+  },
+  "130": {
+   "name": "SetCtxFlag1DC_10",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x82: ctx+0x1DC bit 10",
+   "confidence": "high"
+  },
+  "122": {
+   "name": "SetCtxFlag1DC_11",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x7a: ctx+0x1DC bit 11",
+   "confidence": "high"
+  },
+  "138": {
+   "name": "SetCtxFlag1DC_14",
+   "args": "(bool)",
+   "evidence": "EzStateActionEvent::Exec FUN_14038dae0 case 0x8a: ctx+0x1DC bit 14",
+   "confidence": "high"
+  }
+ }
+}

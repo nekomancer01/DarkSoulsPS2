@@ -1,0 +1,9 @@
+# effects: Firelink bonfire close-up beside the player, no HUD
+option nodemo
+spawn -48.9 -60.6 54.1 5.55
+cam 5.55 0.15
+wait 4
+shot fx_close1
+wait 0.3
+shot fx_close2
+end

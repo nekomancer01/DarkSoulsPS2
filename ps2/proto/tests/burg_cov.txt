@@ -1,0 +1,35 @@
+# area-burg-coverage: matched DSR / PS2 views (DSR eye = player + 1.42 up - 4 m along the view; tools/dsr-ref.sh cam --pos)
+option hud
+option nodemo
+option noenemies
+wait 3
+spawn 16.0 9.6 -34.0 3.1416
+cam 3.1416 0.2618
+wait 3
+shot P1_corpses
+spawn 23.9 9.5 -22.5 -2.6354
+cam -2.6354 0.1396
+wait 3
+shot P2_bonfire_sw
+spawn 40.7 11.5 -33.5 3.0194
+cam 3.0194 0.1396
+wait 3
+shot P3_east_south
+spawn 38.1 27.5 32.3 0.0000
+cam 0.0000 0.0873
+wait 3
+shot P4_north
+spawn 15.23 9.08 -35.49 -2.7925
+cam -2.7925 0.3840
+wait 3
+shot P5_corpses_close
+spawn 24.69 9.23 -24.08 0.1745
+cam 0.1745 0.0873
+wait 3
+shot P6_bonfire_n
+# cellar bonfire o0200_0002 (DSR save 1012962): collision present, player stays on the floor
+spawn 0.89 -10.02 -60.62 2.1991
+cam 2.1991 0.2445
+wait 3
+shot P9_cellar
+end

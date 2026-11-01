@@ -1,0 +1,11 @@
+# Breakables 3 (was OBJ_TEST=3): walk into the nearest pot without stopping (push-out, no break)
+option noenemies
+option hud
+option nodemo
+wait 0.5
+approach obj 0.3 0.6
+stick 0 0.6
+wait 1.5
+stick 0 0
+shot obj3_push
+end

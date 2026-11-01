@@ -1,0 +1,17 @@
+[package]
+name = "exe-dearxan"
+version = "0.1.0"
+edition = "2024"
+description = "Offline Arxan decryptor for DarkSoulsRemastered.exe (dearxan analysis, no game process)"
+
+[dependencies]
+# dearxan 0.5.7 (git a14847b), cloned to ~/tools/src/dearxan; analysis only, no Windows disabler
+dearxan = { path = "../../../tools/src/dearxan", default-features = false, features = ["rayon", "internal_api"] }
+pelite = { version = "0.10", default-features = false }
+log = "0.4"
+simplelog = "0.12.2"
+iced-x86 = "1.21"
+rayon = "1.12"
+
+[profile.release]
+opt-level = 3

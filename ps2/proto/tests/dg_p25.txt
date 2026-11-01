@@ -1,0 +1,10 @@
+option holes
+option nodemo
+option hud
+option noenemies
+wait 2
+spawn -16.771 -31.120 -77.663 1.680
+cam 1.680 0.25
+wait 3
+shot p25
+end

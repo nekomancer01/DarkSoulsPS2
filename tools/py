@@ -1,0 +1,7 @@
+#!/bin/bash
+# Usage: tools/py args...  — run the exporters' Python (Pillow + numpy): PY from the environment, else PY in
+# config.local.mk, else .venv/bin/python in the repo root, else python3 (same order as config.mk).
+R=$(cd "$(dirname "$0")/.." && pwd)
+[ -n "$PY" ] || PY=$(sed -n 's/^[[:space:]]*PY[[:space:]]*[:?]\?=[[:space:]]*//p' "$R/config.local.mk" 2>/dev/null | tail -1)
+[ -n "$PY" ] || { [ -x "$R/.venv/bin/python" ] && PY=$R/.venv/bin/python; }
+exec ${PY:-python3} "$@"

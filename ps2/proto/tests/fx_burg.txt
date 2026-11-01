@@ -1,0 +1,9 @@
+# effects: Undead Burg spawn (bonfire o0200_0001 between camera and player), debug HUD
+option nodemo
+option hud
+spawn 23.16 9.5 -24.30 3.6652
+cam 3.6652 0.2445
+wait 4
+freeze 1
+shot fx_burg
+end

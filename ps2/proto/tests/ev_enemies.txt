@@ -1,0 +1,10 @@
+# EMEVD x enemies (src/event.c, enemy.c): which roster entries the game's events disable at a new game, and the cost
+# of the first event_update frames (EE log "enemy: ... by an event", "EVT update ... us").
+option hud
+option nodemo
+wait 3
+ev summary
+spawn -47.6 -59.9 53.9 1.6
+wait 3
+ev summary
+end

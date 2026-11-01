@@ -1,0 +1,46 @@
+# render-distance spots, Firelink (tools/test-run.py): views across the area past the old 90 m cull
+option nodemo
+option noenemies
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.1
+wait 3
+freeze 1
+shot A_bonfire
+freeze 0
+spawn -47.41 -59.82 53.3 0.0
+cam 0.0 0.1
+wait 3
+freeze 1
+shot A_north
+freeze 0
+spawn -40.0 -61.0 120.6 3.14
+cam 3.14 0.1
+wait 3
+freeze 1
+shot M_south
+freeze 0
+spawn -44.9 -73.1 164.4 3.14
+cam 3.14 0.1
+wait 3
+freeze 1
+shot N_south
+freeze 0
+spawn -53.5 -59.8 56.7 5.2185
+cam 5.2185 0.1
+wait 3
+freeze 1
+shot W_arch
+freeze 0
+spawn -51.0 -59.8 55.3 4.4
+cam 4.4 0.05
+wait 3
+freeze 1
+shot W_wall
+freeze 0
+spawn -11.7 -42.5 108.1 4.71
+cam 4.71 0.1
+wait 3
+freeze 1
+shot L_elev
+freeze 0
+end

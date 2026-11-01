@@ -1,0 +1,14 @@
+# render-distance: Undead Burg smoke point p00_082 (densest streamed view), same camera as test-smoke.py, three yaws
+option nodemo
+spawn 2.472 23.073 32.353 2.932
+cam 2.932 0.25
+wait 4
+freeze 1
+shot p082
+cam 1.36 0.25
+wait 2
+shot p082_e
+cam 4.5 0.25
+wait 2
+shot p082_w
+end

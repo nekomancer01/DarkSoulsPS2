@@ -1,0 +1,9 @@
+# effects: Undead Burg spawn bonfire o0200_0001 (inside the area's region), camera at the same offset from it as the
+# DSR burg2 pose from o0200_0002 (both effect 90001): feet = bonfire + (-2.31, 0, 0.57), yaw 126 deg, pitch -14 deg
+option nodemo
+option noenemies
+spawn 22.05 9.50 -21.62 2.1991
+cam 2.1991 0.2445
+wait 4
+shot fx_burg3
+end

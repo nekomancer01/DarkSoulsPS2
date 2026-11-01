@@ -1,0 +1,80 @@
+# World streaming soak (TECH_DEBT world-4/5): enemies ON, the route of a manual-play crash (2026-11-01, user log
+# build/crash-20261101-user-emulog.txt): Firelink bonfire <-> aqueduct <-> Undead Burg entry, repeated, so the Burg
+# block's enemy types unload / reload (enemy.c stream_types, 3D 60 / 75 m) while near cells stream and the full pool
+# swaps. Fails on a crash / hang / EE-log error; shots carry RAM min and frame ms max per segment.
+option hud
+option nodemo
+wait 3
+shot soak_boot
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_0
+stats
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_1
+stats
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_2
+stats
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_3
+stats
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_4
+stats
+spawn -47.6 -59.9 53.9 1.6
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 5
+spawn -44.8 -34.0 -8.4 4.0
+wait 5
+shot soak_5
+stats

@@ -1,0 +1,8 @@
+# effects: Undead Burg bonfire o0200_0002 (DSR save bonfire 1012962) ahead-right of the player (DSR pose: eye -2.24 -7.63 -58.32, yaw 126, pitch -14), debug HUD
+option nodemo
+option noenemies
+spawn 0.89 -10.02 -60.62 2.1991
+cam 2.1991 0.2445
+wait 4
+shot fx_burg_fire
+end

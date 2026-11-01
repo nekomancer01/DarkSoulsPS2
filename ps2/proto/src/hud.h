@@ -1,0 +1,47 @@
+/* DS1 HUD from DSR's own assets (menu.bin, tools/export_menu.py): HP / stamina bars, quick slots, soul counter,
+ * YOU DIED banner (while hp < 0); text in DSFont24. Drawn through gsKit after the 3D scene. */
+#ifndef HUD_H
+#define HUD_H
+
+#include <gsKit.h>
+#include "player.h"
+
+/* menu.bin layout entries, in tools/export_menu.py's LAYOUT order + its two menu pieces (640x448 pixels) */
+enum {
+    HUD_BAR_BG_HP, HUD_BAR_BG_SP, HUD_PLATE_HP, HUD_PLATE_SP, HUD_FILL_HP, HUD_FILL_SP, HUD_FRAME_HP, HUD_FRAME_SP,
+    HUD_END_HP, HUD_END_SP, HUD_BAR_START, HUD_BAR_START1, HUD_SLOT_L_PLATE, HUD_SLOT_L_ICON, HUD_SLOT_R_PLATE,
+    HUD_SLOT_R_ICON, HUD_SLOT_I_FRAME, HUD_SLOT_I_PLATE, HUD_SLOT_I_ICON, HUD_SLOT_I_COUNT, HUD_ITEM_NAME,
+    HUD_SOUL_PLATE, HUD_SOUL_LINE, HUD_SOUL_TEXT, HUD_DIED_BG, HUD_DIED_GRAD0, HUD_DIED_GRAD1, HUD_DIED_BAR,
+    HUD_DIED_TEXT, HUD_MENU_PANEL, HUD_MENU_RULE, HUD_LAYOUT_COUNT
+};
+/* menu.bin strings: the Warrior's kit (CharaInitParam 3000 + Estus), then menu words from the FMGs */
+enum {
+    STR_WEP_R, STR_WEP_L, STR_HELM, STR_ARMOR, STR_GAUNT, STR_LEG, STR_ESTUS, STR_DARKSIGN, STR_CRYSTAL,
+    STR_INVENTORY, STR_EQUIPMENT, STR_STATUS, STR_WEAPONS, STR_ARMOR_WORD, STR_LEVEL, STR_HP, STR_STAMINA, STR_SOULS,
+    STR_COUNT
+};
+#define KIT_COUNT 9  /* icons: one per STR_WEP_R..STR_CRYSTAL */
+
+typedef struct { int sprite; short x, y, w, h; unsigned char r, g, b, a; } HudRect;
+
+/* Parse menu.bin and upload its two atlases (194 KB VRAM); 0 on success, -1 bad data / VRAM full */
+int hud_init(GSGLOBAL *gs, const void *menu_bin);
+/* In-game HUD for the player; souls / Estus charges from the progression state (progress.h) */
+void hud_draw(const Player *p, float dt);
+
+/* Helpers for menu.c */
+const HudRect *hud_rect(int layout);
+const char *hud_string(int s);
+/* sprite (from a layout entry or hud_icon) at x, y, w x h; colour 0x80 = 1.0, a 0x80 = opaque */
+void hud_sprite(int sprite, float x, float y, float w, float h, int r, int g, int b, int a);
+void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a);
+int hud_icon(int kit);
+/* DSFont24 text; returns the width. align: 0 left, 1 right of x */
+float hud_text(float x, float y, const char *s, int r, int g, int b, int align);
+float hud_text_width(const char *s);
+int hud_line_height(void);
+/* Begin / end a batch of HUD draws: alpha blending on, alpha and depth tests off (and back) */
+void hud_begin(void);
+void hud_end(void);
+
+#endif

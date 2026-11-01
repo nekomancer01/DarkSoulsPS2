@@ -1,0 +1,163 @@
+; VU1 microprogram: textured gouraud triangle lists for map chunks (see vu1.c for the memory layout).
+;
+; Constants (absolute, written by vu1_begin and vu1_map_fog): 0-3 view matrix columns (col3 = translation),
+; 4 scale (F, -F, Zs, fog a), 5 offset (screen centre + GS window offset, 0, fog b), 6 clip scale (F/guard, F/guard, 1,
+; fog min), 7 clip bias (0, 0, -2 near, fog max). Fog: F = clamp(a * view z + b, min, max), 255 = no fog.
+; Safety test per vertex: CLIP of (x F/guard, y F/guard, z - 2 near) against w = z flags vertices behind the near
+; plane or outside the guard band; a triangle with any flagged vertex is skipped here and clipped on the EE instead.
+; Per batch (TOPS-relative, double buffered): 0 {tri count, cull mask, st scale K (float), 0}, 1 {chunk origin xyz,
+; position step}, 2 A+D GIF tag, 3 TEX0_1, 4 TEX1_1, 5 TEST_1, 6 PRIM GIF tag (regs ST, RGBAQ, XYZF2), 7.. vertices of
+; 3 qwords each, in: pos s16 / st u16 (integers after VIF V3-16 / V2-16) / colour, out: STQ / RGBAQ / XYZF2 (Z and F
+; are 4 bits up in their words: ftoi4 of the screen z and of F).
+; Each vertex: view = M * pos; q = 1 / view.z; screen = (x q, y q, q) * scale + offset (depth is q itself, so
+; nearer = larger, tested GEQUAL); STQ = (n q, m q, K q) for st = (n, m) / K (the GS divides S, T by Q).
+; Per triangle: z of (C - A) x (B - A) on screen; if the cull mask catches its sign/zero flag, the third vertex gets
+; the ADC bit so the GS skips the triangle (front faces make it positive); its word also carries F (VI09 = 0x8000).
+;
+; Hand scheduled: VF data hazards stall in hardware, Q is read after WAITQ, and FMAND runs 4 cycles after OPMSUB
+; so the MAC flags it reads are those of the cross product.
+
+		.vu
+		.align 4
+		.global	VU1Map_CodeStart
+		.global	VU1Map_CodeEnd
+VU1Map_CodeStart:
+	NOP						lq		VF01,0(VI00)
+	NOP						lq		VF02,1(VI00)
+	NOP						lq		VF03,2(VI00)
+	NOP						lq		VF04,3(VI00)
+	NOP						lq		VF05,4(VI00)
+	NOP						lq		VF06,5(VI00)
+	NOP						lq		VF07,6(VI00)
+	NOP						lq		VF08,7(VI00)
+	NOP						xtop		VI02
+	NOP						NOP
+	NOP						ilw.x		VI04,0(VI02)
+	NOP						ilw.y		VI05,0(VI02)
+	NOP						iaddiu		VI03,VI02,7
+	NOP						iaddiu		VI06,VI02,2
+; ---- R3 input decode: header 0.z = st scale, header 1 = chunk origin xyz + position step w; fold them into the
+; view matrix (VF04 += M * origin, VF01-03 *= step) so a vertex is just ITOF0 of its s16 position
+	NOP						lq		VF09,0(VI02)
+	NOP						lq		VF19,1(VI02)
+	mulax		ACC,VF01,VF19x			NOP
+	madday		ACC,VF02,VF19y			NOP
+	maddaz		ACC,VF03,VF19z			NOP
+	maddw		VF04,VF04,VF00w			NOP
+	mulw		VF01,VF01,VF19w			NOP
+	mulw		VF02,VF02,VF19w			NOP
+	mulw		VF03,VF03,VF19w			NOP
+	NOP						iaddiu		VI09,VI00,0x7fff
+	NOP						iaddiu		VI09,VI09,1
+triLoop:
+; ---- vertex A (VI03 + 0..2) -> screen float VF20
+	NOP						lq		VF10,0(VI03)
+	NOP						lq		VF11,1(VI03)
+	itof0.xyz	VF10,VF10			lq		VF12,2(VI03)
+	itof0.xy	VF11,VF11			NOP
+	mulax		ACC,VF01,VF10x			NOP
+	madday		ACC,VF02,VF10y			NOP
+	maddaz		ACC,VF03,VF10z			NOP
+	maddw		VF10,VF04,VF00w			NOP
+	mul.xyz		VF16,VF10,VF07			NOP
+	mulz.w		VF17,VF00,VF10z			NOP
+	add.xyz		VF16,VF16,VF08			NOP
+	clipw.xyz	VF16xyz,VF17w			div		Q,VF00w,VF10z
+	mulz.w		VF18,VF05,VF10z			NOP
+	add.w		VF18,VF18,VF06			NOP
+	max.w		VF18,VF18,VF07			NOP
+	mini.w		VF18,VF18,VF08			NOP
+	NOP						waitq
+	mulq.xy		VF10,VF10,Q			NOP
+	addq.z		VF10,VF00,Q			NOP
+	mulq.xy		VF11,VF11,Q			NOP
+	mulq.z		VF11,VF09,Q			NOP
+	mul.xyz		VF10,VF10,VF05			NOP
+	add.xyz		VF20,VF10,VF06			NOP
+	addx.w		VF20,VF18,VF00x			NOP
+	ftoi4.xyzw	VF21,VF20			sq		VF11,0(VI03)
+	NOP						sq		VF12,1(VI03)
+	NOP						sq.xyzw		VF21,2(VI03)
+; ---- vertex B (VI03 + 3..5) -> VF22
+	NOP						lq		VF10,3(VI03)
+	NOP						lq		VF11,4(VI03)
+	itof0.xyz	VF10,VF10			lq		VF12,5(VI03)
+	itof0.xy	VF11,VF11			NOP
+	mulax		ACC,VF01,VF10x			NOP
+	madday		ACC,VF02,VF10y			NOP
+	maddaz		ACC,VF03,VF10z			NOP
+	maddw		VF10,VF04,VF00w			NOP
+	mul.xyz		VF16,VF10,VF07			NOP
+	mulz.w		VF17,VF00,VF10z			NOP
+	add.xyz		VF16,VF16,VF08			NOP
+	clipw.xyz	VF16xyz,VF17w			div		Q,VF00w,VF10z
+	mulz.w		VF18,VF05,VF10z			NOP
+	add.w		VF18,VF18,VF06			NOP
+	max.w		VF18,VF18,VF07			NOP
+	mini.w		VF18,VF18,VF08			NOP
+	NOP						waitq
+	mulq.xy		VF10,VF10,Q			NOP
+	addq.z		VF10,VF00,Q			NOP
+	mulq.xy		VF11,VF11,Q			NOP
+	mulq.z		VF11,VF09,Q			NOP
+	mul.xyz		VF10,VF10,VF05			NOP
+	add.xyz		VF22,VF10,VF06			NOP
+	addx.w		VF22,VF18,VF00x			NOP
+	ftoi4.xyzw	VF21,VF22			sq		VF11,3(VI03)
+	NOP						sq		VF12,4(VI03)
+	NOP						sq.xyzw		VF21,5(VI03)
+; ---- vertex C (VI03 + 6..8) -> VF24
+	NOP						lq		VF10,6(VI03)
+	NOP						lq		VF11,7(VI03)
+	itof0.xyz	VF10,VF10			lq		VF12,8(VI03)
+	itof0.xy	VF11,VF11			NOP
+	mulax		ACC,VF01,VF10x			NOP
+	madday		ACC,VF02,VF10y			NOP
+	maddaz		ACC,VF03,VF10z			NOP
+	maddw		VF10,VF04,VF00w			NOP
+	mul.xyz		VF16,VF10,VF07			NOP
+	mulz.w		VF17,VF00,VF10z			NOP
+	add.xyz		VF16,VF16,VF08			NOP
+	clipw.xyz	VF16xyz,VF17w			div		Q,VF00w,VF10z
+	mulz.w		VF18,VF05,VF10z			NOP
+	add.w		VF18,VF18,VF06			NOP
+	max.w		VF18,VF18,VF07			NOP
+	mini.w		VF18,VF18,VF08			NOP
+	NOP						waitq
+	mulq.xy		VF10,VF10,Q			NOP
+	addq.z		VF10,VF00,Q			NOP
+	mulq.xy		VF11,VF11,Q			NOP
+	mulq.z		VF11,VF09,Q			NOP
+	mul.xyz		VF10,VF10,VF05			NOP
+	add.xyz		VF24,VF10,VF06			NOP
+	addx.w		VF24,VF18,VF00x			NOP
+	ftoi4.xyzw	VF21,VF24			sq		VF11,6(VI03)
+	NOP						sq		VF12,7(VI03)
+	NOP						sq.xyz		VF21,8(VI03)
+; ---- back-face test: VF13.z = -((B - A) x (C - A)).z; front faces make it positive, so sign/zero = cull
+	sub.xyz		VF14,VF22,VF20			NOP
+	sub.xyz		VF15,VF24,VF20			NOP
+	opmula.xyz	ACC,VF15,VF14			NOP
+	opmsub.xyz	VF13,VF14,VF15			NOP
+	NOP						NOP
+	NOP						NOP
+	NOP						NOP
+	NOP						fcand		VI01,262143
+	NOP						iadd		VI07,VI01,VI00
+	NOP						fmand		VI01,VI05
+	NOP						ior		VI01,VI01,VI07
+	NOP						iaddiu		VI01,VI01,0x7fff
+	NOP						iand		VI01,VI01,VI09
+	NOP						mtir		VI08,VF21w
+	NOP						ior		VI01,VI01,VI08
+	NOP						isw.w		VI01,8(VI03)
+	NOP						iaddiu		VI03,VI03,9
+	NOP						isubiu		VI04,VI04,1
+	NOP						NOP
+	NOP						ibne		VI04,VI00,triLoop
+	NOP						NOP
+	NOP						xgkick		VI06
+	NOP[E]						NOP
+	NOP						NOP
+		.align 4
+VU1Map_CodeEnd:

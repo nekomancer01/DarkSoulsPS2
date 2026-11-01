@@ -1,0 +1,42 @@
+# EMEVD runtime (src/event.c) on Firelink, all driven by the game's own m10_02 events + flags:
+# 1 chest o0110_0000 (event 11020700 slot 0): the event hides its treasure until the chest's ObjAct (entity 11020700)
+#   is used with the action button; then treasure on, picking it up awards ItemLotParam 1020070 (flag 51020070).
+# 2 catacombs lid (event 11020350): hit h0005B2 (closed, floor -56.3) is on and h0105B2 (open, pit -56.8) off until
+#   flags 11010700 + 11400200; then the hits swap (the lid floor is gone: a hole), the lid object o1480 goes off and o1481 on.
+option hud
+option noenemies
+option nodemo
+wait 2
+ev expect flag 11020700 0
+ev expect treasure 1021650 0
+ev expect hit 1023500 1
+ev expect hit 1023510 0
+ev expect floor -38.5 91.0 -56.3
+spawn -30.1 -53.5 118.6 0
+cam 0 0.3
+wait 1
+shot chest_closed
+ev action
+wait 0.6
+ev expect flag 11020700 1
+ev expect treasure 1021650 1
+ev action
+wait 0.3
+ev expect flag 51020070 1
+ev expect treasure 1021650 3
+check flag 51020070 1
+shot chest_taken
+spawn -38.5 -56.3 89.5 0
+wait 1
+ev expect floor -38.5 91.0 -56.3
+ev flag 11010700 1
+ev flag 11400200 1
+wait 0.5
+ev expect hit 1023500 0
+ev expect hit 1023510 1
+ev expect obj 1021480 0
+ev expect obj 1021481 1
+ev expect nofloor -38.5 91.0 -56.3
+shot lid_open
+ev summary
+end

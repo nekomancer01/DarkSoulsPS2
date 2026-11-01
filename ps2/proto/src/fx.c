@@ -1,0 +1,609 @@
+/* Effects runtime: the area's FFX particle systems (fx.bin, layout in tools/export_effects.py) as EE billboards.
+ *
+ * Each placed instance (bonfire o0200: fire at the part, light at its dummy poly 100; MSB SFX regions) runs its effect's particle systems
+ * while the camera is within FX_RANGE: every system emits per_emit particles each interval up to max_alive, in its
+ * emitter shape (point / disc / sphere / box / cone / square) along its axis, then the particles move (speed,
+ * acceleration, drag), age through the exported size and colour curves (8 samples over the life) and play
+ * their flipbook. A newly active instance is prewarmed by one particle life. Particles face the camera; additive
+ * ones are unfogged (fog would add its colour), alpha ones are sorted far to near and fogged. All of them are depth
+ * tested against the map / characters without writing Z (render.c tri_list, R_BLEND).
+ * Effect lights (FFX action 24, e.g. the bonfire's 90006) light characters by distance with DSR's cubic falloff and
+ * the light's flicker (amb samples precomputed in map_char_light's units, 0x80 = 1.0, for the area's tone map). */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <kernel.h>
+#include <malloc.h>
+#include "fx.h"
+
+#define FX_MAX 384        /* particle pool (all instances) */
+#define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
+#define FX_BATCH 48       /* particles per GS packet */
+#define FX_CURVE 8
+#define FX_TEX_BUCKETS 64 /* additive draw buckets (textures beyond go through the sort) */
+
+typedef struct {
+    char magic[4];
+    u32 version, n_tex, n_sys, n_eff, n_inst, n_light, n_ref;
+    u32 off_tex, off_sys, off_eff, off_inst, off_light, off_ref, pad[2];
+} FxHeader;
+
+typedef struct { u16 w, h, fpr, nframes; u32 pix, clut; } FxTex;
+
+/* = export_effects.SYS_FMT */
+typedef struct {
+    u16 tex;
+    u8 blend, shape;          /* blend 0 additive, 1 alpha; shape 0 point 1 disc 2 sphere 3 box 4 cone 5 square */
+    u16 per_emit, max_alive;
+    float life, life_min, interval, delay;
+    float org[3], axis[3], ext[3];   /* effect frame: offset, emission axis, shape half extents */
+    float spread;                    /* Degree: largest angle from the axis, rad */
+    float speed[3];                  /* speed = s0 x (s1 + s2 U) */
+    float drag, turn, turn_dt;       /* 1/s; turn / turn_dt: movement 84 wobble, unused (0, TECH_DEBT fx-6) */
+    float accel[3];                  /* world, m/s^2 */
+    float size[4];                   /* half extents x, y x (size[2] + size[3] U) */
+    float rot[2], spin[3];           /* rot = r0 + r1 U; spin = s0 x (s1 + s2 U) rad/s */
+    float kx[FX_CURVE], ky[FX_CURVE];  /* size multiplier over the life */
+    u8 rgba[FX_CURVE][4];            /* colour over the life, 0x80 = 1.0 */
+    float frame[2], rate;            /* first frame = f0 + f1 U; frames per second */
+    float total;                     /* emissions (-1 = forever) */
+    float spread_k, dist, dist_sqrt; /* Spread, circle Distribution, 1 = sqrt of the radius (DistributionMode 0) */
+    u16 fpr, nframes;
+    float normal[3];                 /* circle plane normal (the system frame's local Z) */
+    u8 pad2[4];
+} FxSys;
+
+typedef struct { u16 first_ref, n_ref, first_light, n_light; } FxEff;
+typedef struct { u16 sys, pad; } FxRef;
+typedef struct { u16 eff, flags; float pos[3], frame[9], pad[2]; } FxInst;  /* frame: columns local x, y, z */
+typedef struct {
+    u16 flags, pad;
+    float off[3], radius, begin, period;
+    float mean[3], pad1[5];
+    u8 amb[FX_CURVE][3];
+    float pad2;
+} FxLight;
+
+typedef struct {
+    float p[3], v[3];
+    float age, life, sx, sy, rot, spin, f0;
+    u16 sys, inst;
+    u8 set, pad[3];  /* the fx.bin (set) sys / inst index into */
+} Particle;
+
+typedef struct { float timer; int emitted, alive; } EmitState;
+
+FxStats fx_stats;
+static const FxHeader *hdr;
+static const FxTex *tex;
+static const FxSys *sys;
+static const FxEff *eff;
+static const FxRef *ref;
+static const FxInst *inst;
+static const FxLight *light;
+static GSTEXTURE *gtex;
+static EmitState *emit;       /* per instance, per system ref of its effect */
+static int *emit_first;       /* instance -> first EmitState */
+static u8 *inst_on;
+/* one set per fx.bin: 0 the boot area (fx_init), k world block k (fx_block_load at boot, on while the block is) */
+typedef struct {
+    const FxHeader *hdr;
+    const FxTex *tex;
+    const FxSys *sys;
+    const FxEff *eff;
+    const FxRef *ref;
+    const FxInst *inst;
+    const FxLight *light;
+    GSTEXTURE *gtex;
+    EmitState *emit;
+    int *emit_first;
+    u8 *inst_on;
+    int on;
+} FxSet;
+static FxSet fset[FX_SETS];
+static int cur_set;
+
+/* the globals above describe set k */
+static void bind(int k)
+{
+    FxSet *c = &fset[cur_set];
+    c->hdr = hdr, c->tex = tex, c->sys = sys, c->eff = eff, c->ref = ref, c->inst = inst, c->light = light;
+    c->gtex = gtex, c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on;
+    const FxSet *n = &fset[cur_set = k];
+    hdr = n->hdr, tex = n->tex, sys = n->sys, eff = n->eff, ref = n->ref, inst = n->inst, light = n->light;
+    gtex = n->gtex, emit = n->emit, emit_first = n->emit_first, inst_on = n->inst_on;
+}
+static Particle pool[FX_MAX];
+static int n_alive;
+static float clock;
+static u32 seed = 0x2545F491;
+
+static inline float rnd(void)
+{
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) * (1.0f / 16777216.0f);
+}
+
+static int load_set(GSGLOBAL *gs, const void *blob)
+{
+    hdr = blob;
+    if (!blob || memcmp(hdr->magic, "DSFX", 4) || hdr->version != 1 || sizeof(FxSys) != 280 ||
+        sizeof(FxLight) != 88 || sizeof(FxInst) != 60) {
+        printf("DSRPROTO fx: %s\n", blob ? "fx.bin bad" : "no fx.bin");
+        hdr = 0;
+        return 0;
+    }
+    const u8 *b = blob;
+    tex = (const FxTex *)(b + hdr->off_tex);
+    sys = (const FxSys *)(b + hdr->off_sys);
+    eff = (const FxEff *)(b + hdr->off_eff);
+    ref = (const FxRef *)(b + hdr->off_ref);
+    inst = (const FxInst *)(b + hdr->off_inst);
+    light = (const FxLight *)(b + hdr->off_light);
+    gtex = calloc(hdr->n_tex, sizeof *gtex);
+    emit_first = calloc(hdr->n_inst + 1, sizeof *emit_first);
+    inst_on = calloc(hdr->n_inst, 1);
+    int ns = 0;
+    for (u32 i = 0; i < hdr->n_inst; i++)
+        emit_first[i] = ns, ns += eff[inst[i].eff].n_ref;
+    emit_first[hdr->n_inst] = ns;
+    emit = calloc(ns ? ns : 1, sizeof *emit);
+    if (!gtex || !emit_first || !inst_on || !emit) {
+        printf("DSRPROTO fx: out of RAM\n");
+        hdr = 0;
+        return 0;
+    }
+    FlushCache(0);
+    int vram = 0;
+    for (u32 i = 0; i < hdr->n_tex; i++) {
+        GSTEXTURE *t = &gtex[i];
+        t->Width = tex[i].w;
+        t->Height = tex[i].h;
+        t->PSM = GS_PSM_T8;
+        t->ClutPSM = GS_PSM_CT32;
+        t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
+        t->Mem = (u32 *)(b + tex[i].pix);
+        t->Clut = (u32 *)(b + tex[i].clut);
+        t->Filter = GS_FILTER_LINEAR;
+        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM);
+        t->VramClut = r_vram_clut(gs, t->ClutPSM);
+        if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
+            printf("DSRPROTO fx: VRAM full at texture %u, effects off\n", i);
+            hdr = 0;
+            return 0;
+        }
+        gsKit_texture_upload(gs, t);
+        vram += t->Width * t->Height + 1024;
+    }
+    printf("DSRPROTO fx: %u instances, %u effects, %u systems, %u lights, %u textures (%d KB VRAM)\n", hdr->n_inst,
+           hdr->n_eff, hdr->n_sys, hdr->n_light, hdr->n_tex, vram / 1024);
+    return 1;
+}
+
+int fx_init(GSGLOBAL *gs, const void *blob)
+{
+    bind(0);
+    int r = load_set(gs, blob);
+    fset[0].on = r;
+    bind(0);
+    return r;
+}
+
+int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size)
+{
+    if (block <= 0 || block >= FX_SETS || !blob)
+        return 0;
+    int was = cur_set;
+    bind(block);
+    int r = load_set(gs, blob);
+    if (r) {  /* textures are in VRAM: keep the tables (everything before the first pixels / CLUT) */
+        const u8 *b = blob;
+        u32 keep = size;
+        for (u32 i = 0; i < hdr->n_tex; i++)
+            keep = tex[i].clut < keep ? tex[i].clut : keep, keep = tex[i].pix < keep ? tex[i].pix : keep;
+        u8 *t = memalign(16, keep);
+        if (!t) {
+            r = 0;
+        } else {
+            memcpy(t, b, keep);
+            hdr = (const FxHeader *)t;
+            tex = (const FxTex *)(t + hdr->off_tex), sys = (const FxSys *)(t + hdr->off_sys);
+            eff = (const FxEff *)(t + hdr->off_eff), ref = (const FxRef *)(t + hdr->off_ref);
+            inst = (const FxInst *)(t + hdr->off_inst), light = (const FxLight *)(t + hdr->off_light);
+            for (u32 i = 0; i < hdr->n_tex; i++)
+                gtex[i].Mem = gtex[i].Clut = NULL;
+        }
+    }
+    if (!r)
+        hdr = 0;
+    fset[block].on = 0;
+    bind(was);
+    return r;
+}
+
+void fx_block_on(int block, int on)
+{
+    if (block <= 0 || block >= FX_SETS || !fset[block].hdr)
+        return;
+    for (int i = 0; !on && i < n_alive;) {  /* its particles go */
+        if (pool[i].set == block)
+            pool[i] = pool[--n_alive];
+        else
+            i++;
+    }
+    int was = cur_set;
+    bind(block);
+    memset(inst_on, 0, hdr->n_inst);  /* prewarmed again when it comes back */
+    memset(emit, 0, emit_first[hdr->n_inst] * sizeof *emit);
+    fset[block].on = on;
+    bind(was);
+}
+
+static void frame_apply(const FxInst *in, const float l[3], float out[3])
+{
+    for (int k = 0; k < 3; k++)
+        out[k] = in->frame[k] * l[0] + in->frame[3 + k] * l[1] + in->frame[6 + k] * l[2];
+}
+
+/* u, w: unit vectors perpendicular to n and each other */
+static void basis(const float *n, float *u, float *w)
+{
+    float t[3] = {1, 0, 0};
+    if (fabsf(n[0]) > 0.9f)
+        t[0] = 0, t[1] = 1;
+    w[0] = n[1] * t[2] - n[2] * t[1];
+    w[1] = n[2] * t[0] - n[0] * t[2];
+    w[2] = n[0] * t[1] - n[1] * t[0];
+    float l = 1.0f / sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+    for (int k = 0; k < 3; k++)
+        w[k] *= l;
+    u[0] = w[1] * n[2] - w[2] * n[1];
+    u[1] = w[2] * n[0] - w[0] * n[2];
+    u[2] = w[0] * n[1] - w[1] * n[0];
+}
+
+static void spawn(int ii, int si)
+{
+    if (n_alive >= FX_MAX)
+        return;
+    const FxInst *in = &inst[ii];
+    const FxSys *s = &sys[si];
+    Particle *p = &pool[n_alive++];
+    float l[3] = {0, 0, 0};
+    float r = s->ext[0] > s->ext[2] ? s->ext[0] : s->ext[2];
+    switch (s->shape) {
+    case 1: {  /* circle in the system's local XY plane; radius bias from Distribution (FXEmitterUtility.inl) */
+        float a = rnd() * 6.2831853f, u[3], w[3];
+        float d = s->dist <= 0 ? powf(rnd(), 1 + s->dist) : 1 - powf(rnd(), 1 - s->dist);
+        if (s->dist_sqrt > 0)
+            d = sqrtf(d);
+        d *= r;
+        basis(s->normal, u, w);
+        for (int k = 0; k < 3; k++)
+            l[k] = (u[k] * cosf(a) + w[k] * sinf(a)) * d;
+        break;
+    }
+    case 2: {
+        float x, y, z;
+        do
+            x = rnd() * 2 - 1, y = rnd() * 2 - 1, z = rnd() * 2 - 1;
+        while (x * x + y * y + z * z > 1);
+        l[0] = x * r, l[1] = y * r, l[2] = z * r;
+        break;
+    }
+    case 3:
+    case 5:
+        for (int k = 0; k < 3; k++)
+            l[k] = (rnd() * 2 - 1) * s->ext[k];
+        break;
+    }
+    for (int k = 0; k < 3; k++)
+        l[k] += s->org[k];
+    float wp[3];
+    frame_apply(in, l, wp);
+    /* direction (FUN_140f639e0): angle from the axis Degree x U^(1 + Spread) (Spread <= 0) or
+     * Degree x (1 - U^(1 - Spread)), turned by a uniform angle around it */
+    float dir[3] = {s->axis[0], s->axis[1], s->axis[2]};
+    if (s->spread > 0) {
+        float t = s->spread_k <= 0 ? s->spread * powf(rnd(), 1 + s->spread_k)
+                                   : s->spread * (1 - powf(rnd(), 1 - s->spread_k));
+        float a = rnd() * 6.2831853f, u[3], w[3], ct = cosf(t), st = sinf(t);
+        basis(s->axis, u, w);
+        for (int k = 0; k < 3; k++)
+            dir[k] = s->axis[k] * ct + (u[k] * cosf(a) + w[k] * sinf(a)) * st;
+    }
+    float wd[3];
+    frame_apply(in, dir, wd);
+    float sp = s->speed[0] * (s->speed[1] + s->speed[2] * rnd());
+    for (int k = 0; k < 3; k++)
+        p->p[k] = in->pos[k] + wp[k], p->v[k] = wd[k] * sp;
+    p->age = 0;
+    p->life = s->life_min + (s->life - s->life_min) * rnd();
+    float k = s->size[2] + s->size[3] * rnd();
+    p->sx = s->size[0] * k, p->sy = s->size[1] * k;
+    p->rot = s->rot[0] + s->rot[1] * rnd();
+    p->spin = s->spin[0] * (s->spin[1] + s->spin[2] * rnd());
+    p->f0 = s->frame[0] + s->frame[1] * rnd();
+    p->sys = si, p->inst = ii, p->set = cur_set;
+}
+
+static void step(float dt, int emit_on)
+{
+    int was = cur_set;
+    for (int i = 0; i < n_alive;) {
+        Particle *p = &pool[i];
+        if (p->set != cur_set)
+            bind(p->set);
+        const FxSys *s = &sys[p->sys];
+        p->age += dt;
+        if (p->age >= p->life) {
+            int es = emit_first[p->inst];
+            for (int r = 0; r < eff[inst[p->inst].eff].n_ref; r++)
+                if (ref[eff[inst[p->inst].eff].first_ref + r].sys == p->sys) {
+                    emit[es + r].alive--;
+                    break;
+                }
+            *p = pool[--n_alive];
+            continue;
+        }
+        float dr = 1 - s->drag * dt;
+        dr = dr < 0 ? 0 : dr;
+        for (int k = 0; k < 3; k++) {
+            p->v[k] = (p->v[k] + s->accel[k] * dt) * dr;
+            p->p[k] += p->v[k] * dt;
+        }
+        p->rot += p->spin * dt;
+        i++;
+    }
+    for (int k = 0; emit_on && k < FX_SETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+    for (u32 ii = 0; ii < hdr->n_inst; ii++) {
+        if (!inst_on[ii])
+            continue;
+        const FxEff *e = &eff[inst[ii].eff];
+        for (int r = 0; r < e->n_ref; r++) {
+            EmitState *es = &emit[emit_first[ii] + r];
+            int si = ref[e->first_ref + r].sys;
+            const FxSys *s = &sys[si];
+            if (s->total >= 0 && es->emitted >= (int)s->total)
+                continue;
+            es->timer += dt;
+            if (es->timer < s->delay)
+                continue;
+            while (es->timer - s->delay >= s->interval) {
+                es->timer -= s->interval;
+                es->emitted++;
+                for (int n = 0; n < s->per_emit && es->alive < s->max_alive; n++, es->alive++)
+                    spawn(ii, si);
+            }
+        }
+    }
+    }
+    bind(was);
+}
+
+void fx_update(float dt, V3 eye)
+{
+    int any = 0;
+    for (int k = 0; k < FX_SETS; k++)
+        any |= fset[k].on;
+    if (!any)
+        return;
+    unsigned t0;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
+    if (dt > 0.1f)
+        dt = 0.1f;
+    clock += dt;
+    int active = 0;
+    for (int k = 0; k < FX_SETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+    for (u32 ii = 0; ii < hdr->n_inst; ii++) {
+        float dx = inst[ii].pos[0] - eye.x, dy = inst[ii].pos[1] - eye.y, dz = inst[ii].pos[2] - eye.z;
+        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE;
+        if (on && !inst_on[ii]) {  /* prewarm: one life of the longest system in 8 steps */
+            inst_on[ii] = 1;
+            const FxEff *e = &eff[inst[ii].eff];
+            float warm = 0;
+            for (int r = 0; r < e->n_ref; r++) {
+                float l = sys[ref[e->first_ref + r].sys].life;
+                warm = l < 30 && l > warm ? l : warm;
+            }
+            for (int n = 0; n < 8; n++)
+                step(warm / 8, 1);
+        }
+        inst_on[ii] = on;
+        active += on;
+    }
+    }
+    bind(0);
+    step(dt, 1);
+    fx_stats.active = active;
+    fx_stats.particles = n_alive;
+    unsigned t1;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+    fx_stats.ms = (t1 - t0) / 294912.0f;
+}
+
+typedef struct { float z; int i; } Order;
+
+/* sin / cos of a (any range), polynomial per quadrant, |error| < 0.0012: enough for a sprite's roll */
+static void fast_sincos(float a, float *sn, float *cs)
+{
+    float q = a * 0.63661977f;  /* quarter turns */
+    int k = (int)(q < 0 ? q - 1 : q);
+    float x = (q - k) * 1.5707963f, x2 = x * x;
+    float s0 = x * (1 - x2 * (0.16605f - x2 * 0.00761f)), c0 = 1 - x2 * (0.49670f - x2 * 0.03705f);
+    switch (k & 3) {
+    case 0: *sn = s0, *cs = c0; break;
+    case 1: *sn = c0, *cs = -s0; break;
+    case 2: *sn = -s0, *cs = -c0; break;
+    default: *sn = -c0, *cs = s0; break;
+    }
+}
+
+static int by_depth(const void *a, const void *b)
+{
+    float d = ((const Order *)b)->z - ((const Order *)a)->z;
+    return d > 0 ? 1 : d < 0 ? -1 : 0;
+}
+
+void fx_draw(void)
+{
+    bind(0);
+    if (!n_alive) {
+        fx_stats.drawn = fx_stats.batches = 0;
+        return;
+    }
+    unsigned t0;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
+    static Order ord[FX_MAX];
+    static V3 cen[FX_MAX];
+    /* alpha blended: sorted far to near; additive (order-free) after them, bucketed by texture: few GS packets */
+    static int head[FX_TEX_BUCKETS], next[FX_MAX];
+    int n = 0, nb = !hdr ? 0 : hdr->n_tex < FX_TEX_BUCKETS ? hdr->n_tex : FX_TEX_BUCKETS;  /* set 0's textures */
+    for (int t = 0; t < nb; t++)
+        head[t] = -1;
+    for (int i = 0; i < n_alive; i++) {
+        Particle *p = &pool[i];
+        V3 c = r_view(v3(p->p[0], p->p[1], p->p[2]));
+        float rad = (p->sx > p->sy ? p->sx : p->sy) * 3.75f;  /* largest size multiplier in the bonfire curves */
+        if (c.z < R_NEAR - rad)
+            continue;
+        cen[i] = c;
+        if (p->set != cur_set)
+            bind(p->set);
+        int t = sys[p->sys].tex;
+        if (sys[p->sys].blend || t >= nb || p->set)  /* other sets' additive ones: sorted by set and texture */
+            ord[n].z = sys[p->sys].blend ? c.z : -1e6f - t - 256.0f * p->set, ord[n].i = i, n++;
+        else
+            next[i] = head[t], head[t] = i;
+    }
+    bind(0);
+    qsort(ord, n, sizeof *ord, by_depth);
+    for (int t = 0; t < nb; t++)
+        for (int i = head[t]; i >= 0; i = next[i])
+            ord[n].z = -1e6f - t, ord[n].i = i, n++;
+    float focal_px;
+    {
+        V3 e, rt, up, fw;
+        float fy, zs;
+        r_camera_basis(&e, &rt, &up, &fw, &focal_px, &fy, &zs);
+    }
+    static ClipVert cv[FX_BATCH * 6];
+    static float sc[FX_BATCH * 6][3];
+    int nv = 0, cur_tex = -1, cur_mode = 0, drawn = 0, batches = 0;
+    GSTEXTURE *cur_gt = NULL;
+    for (int o = 0; o <= n; o++) {
+        const Particle *p = o < n ? &pool[ord[o].i] : 0;
+        if (p && p->set != cur_set)
+            bind(p->set);
+        const FxSys *s = p ? &sys[p->sys] : 0;
+        int mode = s ? (R_BLEND | (s->blend ? R_FOG : R_ADD)) : 0;
+        if (nv && (!p || &gtex[s->tex] != cur_gt || mode != cur_mode || nv >= FX_BATCH * 6)) {
+            r_tri_list(cur_gt, cur_mode, nv, cv, (const float (*)[3])sc);
+            nv = 0, batches++;
+        }
+        if (!p)
+            break;
+        cur_tex = s->tex, cur_mode = mode, cur_gt = &gtex[s->tex];
+        /* curves at the particle's age */
+        float t = p->age / p->life * (FX_CURVE - 1);
+        int k0 = (int)t;
+        k0 = k0 > FX_CURVE - 2 ? FX_CURVE - 2 : k0;
+        float f = t - k0;
+        float kx = s->kx[k0] + (s->kx[k0 + 1] - s->kx[k0]) * f, ky = s->ky[k0] + (s->ky[k0 + 1] - s->ky[k0]) * f;
+        float col[4];
+        for (int c = 0; c < 4; c++)
+            col[c] = s->rgba[k0][c] + (s->rgba[k0 + 1][c] - s->rgba[k0][c]) * f;
+        if (col[3] < 1)
+            continue;
+        float hx = p->sx * kx, hy = p->sy * ky, cr = 1, sr = 0;
+        if ((hx > hy ? hx : hy) * focal_px > 1.5f * cen[ord[o].i].z)  /* roll only matters above ~1.5 px */
+            fast_sincos(p->rot, &sr, &cr);
+        /* flipbook cell */
+        const FxTex *tx = &tex[s->tex];
+        int nf = tx->nframes ? tx->nframes : 1, fpr = tx->fpr ? tx->fpr : 1, rows = (nf + fpr - 1) / fpr;
+        int fr = (int)(p->f0 + s->rate * p->age) % nf;
+        fr = fr < 0 ? fr + nf : fr;
+        float cw = (float)tx->w / fpr, ch = (float)tx->h / rows;
+        float u0 = (fr % fpr) * cw, v0 = (fr / fpr) * ch;
+        const float qx[4] = {-1, 1, 1, -1}, qy[4] = {1, 1, -1, -1};
+        ClipVert q[4];
+        float qs[4][3], s0[3], s1[3];
+        V3 c = cen[ord[o].i];
+        /* pulled toward the camera by its own half size, same screen size, so the quad is not cut by the surface it
+         * rises from (bonfire ash). ASSUMED stand-in for DSR's per-pixel depth handling, TECH_DEBT fx-5 */
+        float bias = hx > hy ? hx : hy, kz = c.z - bias > R_NEAR + 0.05f ? (c.z - bias) / c.z : 1;
+        c = v3scale(c, kz), hx *= kz, hy *= kz;
+        /* the corners share the centre's view depth: screen = centre + offset x pixels per metre */
+        V3 ext = v3(fabsf(c.x) + hx + hy, fabsf(c.y) + hx + hy, c.z);
+        int inside = r_point_inside(&ext);
+        if (inside) {
+            V3 c1 = v3(c.x + 1, c.y + 1, c.z);
+            r_view_to_screen(&c, s0);
+            r_view_to_screen(&c1, s1);
+            s1[0] -= s0[0], s1[1] -= s0[1];
+        }
+        for (int j = 0; j < 4; j++) {
+            float x = qx[j] * hx, y = qy[j] * hy, ox = x * cr - y * sr, oy = x * sr + y * cr;
+            q[j] = (ClipVert){c.x + ox, c.y + oy, c.z, u0 + (qx[j] > 0 ? cw - 0.5f : 0.5f),
+                              v0 + (qy[j] > 0 ? 0.5f : ch - 0.5f), col[0], col[1], col[2], col[3]};
+            if (inside)
+                qs[j][0] = s0[0] + ox * s1[0], qs[j][1] = s0[1] + oy * s1[1], qs[j][2] = s0[2];
+        }
+        drawn++;
+        if (!inside) {  /* near the camera: clipped triangles, own packets */
+            r_tri_clip(&gtex[s->tex], &q[0], &q[1], &q[2], 0, mode);
+            r_tri_clip(&gtex[s->tex], &q[0], &q[2], &q[3], 0, mode);
+            continue;
+        }
+        static const int tri[6] = {0, 1, 2, 0, 2, 3};
+        for (int j = 0; j < 6; j++) {
+            cv[nv] = q[tri[j]];
+            memcpy(sc[nv], qs[tri[j]], sizeof sc[nv]);
+            nv++;
+        }
+    }
+    bind(0);
+    (void)cur_tex;
+    fx_stats.drawn = drawn;
+    fx_stats.batches = batches;
+    unsigned t1;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+    fx_stats.ms += (t1 - t0) / 294912.0f;
+}
+
+void fx_char_light(V3 pos, float amb[3])
+{
+    for (int k = 0; k < FX_SETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+    for (u32 ii = 0; ii < hdr->n_inst; ii++) {
+        const FxEff *e = &eff[inst[ii].eff];
+        for (int l = 0; l < e->n_light; l++) {
+            const FxLight *L = &light[e->first_light + l];
+            float w[3];
+            frame_apply(&inst[ii], L->off, w);
+            float dx = inst[ii].pos[0] + w[0] - pos.x, dy = inst[ii].pos[1] + w[1] - pos.y - 1.0f,
+                  dz = inst[ii].pos[2] + w[2] - pos.z;  /* character centre ~1 m above the feet */
+            float d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d >= L->radius)
+                continue;
+            float a = (L->radius - d) / (L->radius - L->begin);
+            a = a > 1 ? 1 : a * a * a;  /* DSR: saturate(((end - d) / (end - begin))^3) */
+            float ph = fmodf(clock / (L->period > 0 ? L->period : 1), 1.0f) * FX_CURVE;
+            int k0 = (int)ph % FX_CURVE, k1 = (k0 + 1) % FX_CURVE;
+            float f = ph - (int)ph;
+            for (int c = 0; c < 3; c++)
+                amb[c] += a * (L->amb[k0][c] + (L->amb[k1][c] - L->amb[k0][c]) * f);  /* map_char_light units */
+        }
+    }
+    }
+    bind(0);
+}

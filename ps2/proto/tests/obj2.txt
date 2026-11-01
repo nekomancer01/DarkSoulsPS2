@@ -1,0 +1,15 @@
+# Breakables 2 (was OBJ_TEST=2): walk at the nearest pot, stop 1.9 m from it, roll into it (Circle tap, stick held)
+option noenemies
+option hud
+option nodemo
+wait 0.5
+approach obj 1.9 0.6
+stick 0 1
+circle 1
+wait 0.1
+circle 0
+wait 0.2
+stick 0 0
+wait 2.2
+shot obj2_roll
+end

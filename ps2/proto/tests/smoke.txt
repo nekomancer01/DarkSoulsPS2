@@ -1,0 +1,21 @@
+# Boot smoke test: spawn view, walk a bit, R1, roll; one shot per phase (tools/test-run.py)
+option hud
+option nodemo
+wait 2
+shot boot
+stick 0 1
+wait 1.5
+stick 0 0
+r1
+wait 1.5
+shot walk_r1
+stick 1 0
+circle 1
+wait 0.15
+circle 0
+wait 1.5
+stick 0 0
+cam 3.14 0.3
+wait 1
+shot turn
+end

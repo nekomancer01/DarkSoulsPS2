@@ -1,0 +1,28 @@
+# render-distance spots, Undead Burg (make MAP=m10_01_00_00) (tools/test-run.py): views across the area past the old 90 m cull
+option nodemo
+option noenemies
+spawn 23.16 9.5 -24.3 3.6652
+cam 3.6652 0.1
+wait 3
+freeze 1
+shot A_bonfire
+freeze 0
+spawn 23.16 9.5 -24.3 0.0
+cam 0.0 0.1
+wait 3
+freeze 1
+shot A_north
+freeze 0
+spawn 15.0 9.6 -40.0 3.14
+cam 3.14 0.1
+wait 3
+freeze 1
+shot B_south
+freeze 0
+spawn 9.1 17.8 20.0 0.0
+cam 0.0 0.1
+wait 3
+freeze 1
+shot C_north
+freeze 0
+end

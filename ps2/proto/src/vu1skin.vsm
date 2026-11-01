@@ -1,0 +1,139 @@
+; VU1 microprogram: skinned character triangles (two bones per vertex), lit, projected, culled (see vu1.c for the
+; memory layout and model.c for the streams).
+;
+; Constants: 4 scale (F, -F, Zs, fog a), 5 offset (.w fog b), 6 clip scale (.w fog min), 7 clip bias (.w fog max):
+; vu1map.vsm's layout, re-sent by vu1_skin_begin with the map's current fog terms (XYZF2 Z scale).
+; Bone palette at 8 + 4 b: columns of view * world (col3 = translation); col0-2 .w = light vector in bone space
+; (world light direction rotated into the bone, normalized), so one 3-op MADD chain on .w gives n . L.
+; Per batch (TOPS-relative): 0 {tri count, cull mask}, 1 tint (r, g, b, 128.0), 2 (0.5, 0.75, 0, 255),
+; 3 base colour for textured batches (128, 128, 128, 0), 4 A+D GIF tag, 5 TEX0_1, 6 TEX1_1, 7 TEST_1,
+; 8 PRIM GIF tag (regs STQ, RGBAQ, XYZF2, NOP), 9.. vertices of 4 qwords each:
+;   in:  0 bone A position (s16 x4: x, y, z / 4096, palette offset 4 A), 1 bone B position (same, 4 B),
+;        2 normal (bone A space) + weight of A (s16 x4 / 4096), 3 st (f32 x2) or colour (u8 x4, flat entry)
+;   out: 0 STQ, 1 RGBAQ, 2 XYZF2 (Z and F 4 bits up: ftoi4), 3 untouched (GIF NOP register)
+; view = w A + (1 - w) B with A, B the two bone transforms; colour = min(tint + base (0.5 + 0.75 max(n . L, 0)), 255)
+; (= model.c's old EE light: 0x80 = 1.0 for texture modulation); the rest (Q, STQ, CLIP guard/near test, screen
+; cross product cull via ADC, fog F = clamp(a * view z + b, min, max) with ADC | F on the third vertex) is
+; vu1map.vsm's.
+; Entry points: VU1Skin_Tex (textured, base colour from the header) and VU1Skin_Flat (base colour per vertex).
+
+	.macro VTX o, s, flat
+	NOP						ilw.w		VI08,\o+0(VI03)
+	NOP						ilw.w		VI09,\o+1(VI03)
+	NOP						lq		VF10,\o+0(VI03)
+	NOP						lq		VF11,\o+1(VI03)
+	itof12.xyz	VF10,VF10			lq		VF12,\o+2(VI03)
+	itof12.xyz	VF11,VF11			lq		VF13,\o+3(VI03)
+	itof12		VF12,VF12			iaddiu		VI08,VI08,8
+	.if \flat
+	itof0.xyz	VF04,VF13			iaddiu		VI09,VI09,8
+	.else
+	NOP						iaddiu		VI09,VI09,8
+	.endif
+	NOP						lq		VF20,0(VI08)
+	NOP						lq		VF21,1(VI08)
+	NOP						lq		VF22,2(VI08)
+	NOP						lq		VF23,3(VI08)
+	NOP						lq		VF24,0(VI09)
+	mulax		ACC,VF20,VF10x			lq		VF25,1(VI09)
+	madday		ACC,VF21,VF10y			lq		VF26,2(VI09)
+	maddaz		ACC,VF22,VF10z			lq		VF27,3(VI09)
+	maddw		VF14,VF23,VF00w			NOP
+	mulax		ACC,VF24,VF11x			NOP
+	madday		ACC,VF25,VF11y			NOP
+	maddaz		ACC,VF26,VF11z			NOP
+	maddw		VF15,VF27,VF00w			NOP
+	mulax.w		ACC,VF20,VF12x			NOP
+	madday.w	ACC,VF21,VF12y			NOP
+	maddz.w		VF17,VF22,VF12z			NOP
+	sub.xyz		VF16,VF14,VF15			NOP
+	adda.xyz	ACC,VF15,VF00			NOP
+	maddw.xyz	VF14,VF16,VF12w			NOP
+	mulz.w		VF01,VF05,VF14z			NOP
+	add.w		VF01,VF01,VF06			NOP
+	max.w		VF01,VF01,VF07			NOP
+	mini.w		VF01,VF01,VF08			NOP
+	maxx.w		VF17,VF17,VF00x			NOP
+	muly.w		VF17,VF17,VF03y			NOP
+	addx.w		VF17,VF17,VF03x			NOP
+	mulaw.xyz	ACC,VF02,VF00w			NOP
+	maddw.xyz	VF18,VF04,VF17w			NOP
+	miniw.xyz	VF18,VF18,VF03w			NOP
+	ftoi0		VF19,VF18			NOP
+	mul.xyz		VF16,VF14,VF07			NOP
+	mulz.w		VF17,VF00,VF14z			NOP
+	add.xyz		VF16,VF16,VF08			NOP
+	clipw.xyz	VF16xyz,VF17w			div		Q,VF00w,VF14z
+	NOP						waitq
+	mulq.xy		VF14,VF14,Q			NOP
+	addq.z		VF14,VF00,Q			NOP
+	mulq.xy		VF13,VF13,Q			NOP
+	addq.z		VF13,VF00,Q			NOP
+	mul.xyz		VF14,VF14,VF05			NOP
+	add.xyz		\s,VF14,VF06			NOP
+	addx.w		\s,VF01,VF00x			NOP
+	ftoi4.xyzw	VF09,\s				sq		VF13,\o+0(VI03)
+	NOP						sq		VF19,\o+1(VI03)
+	NOP						sq.xyzw		VF09,\o+2(VI03)
+	.endm
+
+	.macro SKIN flat
+	NOP						lq		VF05,4(VI00)
+	NOP						lq		VF06,5(VI00)
+	NOP						lq		VF07,6(VI00)
+	NOP						lq		VF08,7(VI00)
+	NOP						xtop		VI02
+	NOP						NOP
+	NOP						ilw.x		VI04,0(VI02)
+	NOP						ilw.y		VI05,0(VI02)
+	NOP						lq		VF02,1(VI02)
+	NOP						lq		VF03,2(VI02)
+	NOP						lq		VF04,3(VI02)
+	NOP						iaddiu		VI03,VI02,9
+	addx		VF18,VF02,VF00x			iaddiu		VI06,VI02,4
+	NOP						iaddiu		VI10,VI00,0x7fff
+	NOP						iaddiu		VI10,VI10,1
+1:
+	VTX		0, VF28, \flat
+	VTX		4, VF29, \flat
+	VTX		8, VF30, \flat
+; ---- back-face test as in vu1map.vsm: sign/zero of -((B - A) x (C - A)).z caught by the cull mask
+	sub.xyz		VF14,VF29,VF28			NOP
+	sub.xyz		VF15,VF30,VF28			NOP
+	opmula.xyz	ACC,VF15,VF14			NOP
+	opmsub.xyz	VF13,VF14,VF15			NOP
+	NOP						NOP
+	NOP						NOP
+	NOP						NOP
+	NOP						fcand		VI01,262143
+	NOP						iadd		VI07,VI01,VI00
+	NOP						fmand		VI01,VI05
+	NOP						ior		VI01,VI01,VI07
+	NOP						iaddiu		VI01,VI01,0x7fff
+	NOP						iand		VI01,VI01,VI10
+	NOP						mtir		VI11,VF09w
+	NOP						ior		VI01,VI01,VI11
+	NOP						isw.w		VI01,10(VI03)
+	NOP						iaddiu		VI03,VI03,12
+	NOP						isubiu		VI04,VI04,1
+	NOP						NOP
+	NOP						ibne		VI04,VI00,1b
+	NOP						NOP
+	NOP						xgkick		VI06
+	NOP[E]						NOP
+	NOP						NOP
+	.endm
+
+		.vu
+		.align 4
+		.global	VU1Skin_CodeStart
+		.global	VU1Skin_CodeEnd
+		.global	VU1Skin_Tex
+		.global	VU1Skin_Flat
+VU1Skin_CodeStart:
+VU1Skin_Tex:
+	SKIN 0
+VU1Skin_Flat:
+	SKIN 1
+		.align 4
+VU1Skin_CodeEnd:

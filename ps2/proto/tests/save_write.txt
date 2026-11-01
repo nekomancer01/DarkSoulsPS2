@@ -1,0 +1,27 @@
+# A3 save round trip, part 1 of 2 (tools: ps2/proto/tests/save_roundtrip.sh): new game, set flags / souls / items,
+# write the save. Part 2 (save_check.txt) boots again and checks the values came back.
+# Device: "option save host savetest" here; save_roundtrip.sh rewrites it to "option save mc" for the card run.
+option save host savetest
+option noenemies
+wait 1
+wipe
+check loaded 0
+check souls 0
+check flag 11010000 0
+flag 11010000 1
+flag 60000001 1
+flag 71010000 1
+flag 16000000 1  # area code 600 is not in the layout: ignored, reads 0
+flag 50000100 1
+flag 999 1
+flags 11015000 11015999 1
+flags 11015000 11015499 0
+flag 19905000 1
+souls 12345
+item 0x400001F4 3
+check flags 11015000 11015999 500
+check flag 19905000 0
+check flag 16000000 0
+save
+log save_write done
+end

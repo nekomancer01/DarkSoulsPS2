@@ -1,0 +1,14 @@
+# Breakables 1 (was OBJ_TEST=1): walk at the nearest pot, stop 1.9 m from it, R1 (weapon break), look down at the pieces
+option noenemies
+option hud
+option nodemo
+wait 0.5
+approach obj 1.9 0.6
+r1
+wait 1.0
+shot obj1_hit
+wait 1.5
+pitch 0.95
+wait 0.5
+shot obj1_pieces
+end

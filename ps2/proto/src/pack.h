@@ -1,0 +1,51 @@
+/* Asset packs (tools/pack.py): LZ4 in 64 KB blocks, loaded at runtime from host: (PCSX2 HostFs, root = the ELF's
+ * folder) or cdrom0: later. Reads go to the IOP asynchronously (fio NOWAIT) while the EE decompresses the previous
+ * batch of blocks. */
+#ifndef PACK_H
+#define PACK_H
+
+typedef struct {
+    int fd;
+    unsigned count;
+    struct PackEntry *entries;
+} Pack;
+
+/* Where packs live: "host:data/" under PCSX2 (HostFs on) and ps2link; booted from a disc, pack.c maps these paths
+ * onto cdrom0:\\DATA\\ (`make iso`, tools/ps2-iso.sh) */
+#define PACK_ROOT "host:data/"
+#ifndef CHR_DIR
+#define CHR_DIR ""  /* enemy / common packs of the area, under PACK_ROOT: "" for Firelink, "<area>/" otherwise (Makefile MAP) */
+#endif
+
+/* Open a pack and read its table of contents; 0 on failure */
+int pack_open(Pack *p, const char *path);
+/* Load one entry into a new 128-byte aligned heap buffer (written back from the D-cache, ready for DMA).
+ * Returns NULL if missing or on a read/decompression error; *size = its raw size. Free with free(). */
+void *pack_load(Pack *p, const char *name, unsigned *size);
+/* The same with the output and staging buffers from get / put (sizes rounded: put gets the size get was asked for;
+ * the caller hands the output back with put(out, (*size + 127) & ~127)): enemy.c reads streamed models into the
+ * near-cell arena, so their temporary buffers leave no holes in the heap */
+void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(unsigned), void (*put)(void *, unsigned));
+void pack_close(Pack *p);
+/* Entries stored raw (tools/pack.py name=raw:file) can be read in place: file offset and size of the data; 0 if the
+ * entry is missing or compressed */
+int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size);
+/* Background read of bytes at a file offset into dst (64-byte aligned; written back from the D-cache first). One at a
+ * time: returns 0 while another is pending. pack_async_done: 1 once it finished (*result = bytes read or < 0), then
+ * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */
+int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes);
+int pack_async_done(int *result);
+/* Wait for a pending background read (fio back in WAIT mode; its result stays for pack_async_done). Other fio users
+ * (save.c) call it first. */
+void pack_async_wait(void);
+/* Last load failure ("OUT OF RAM: <entry> needs ..K, free ..K" / "READ ERROR: <entry>"), empty if none; also printed */
+extern char pack_error[96];
+/* 1 when packs come from cdrom0: (boot device, set on the first pack_open), 0 for host:, -1 before */
+extern int pack_cdrom;
+
+/* Totals since boot: compressed bytes read, raw bytes produced, EE ticks (294.912 MHz) spent in pack_load and the
+ * part of those spent waiting for the IOP, heap bytes handed out by pack_load */
+typedef struct { unsigned read, raw, ticks, wait_ticks, heap; } PackStats;
+extern PackStats pack_stats;
+
+#endif

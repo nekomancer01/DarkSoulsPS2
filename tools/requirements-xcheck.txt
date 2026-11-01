@@ -1,0 +1,8 @@
+# tools/xcheck.py only (cross-check against soulstruct); not needed by the build or the exporters.
+#   uv venv -p 3.12 .venv-tools && uv pip install -p .venv-tools/bin/python -r tools/requirements-xcheck.txt
+# The soulstruct 2.3.2 wheel lacks its JSON data files: clone github.com/Grimrukh/soulstruct into ext/soulstruct and
+# copy its non-.py files from src/soulstruct into the installed package (notes/threads/tools-formats.md, Installs).
+# Licences: soulstruct / soulstruct-havok have no licence file (used locally as a reference only).
+soulstruct==2.3.2
+soulstruct-havok==1.2.2
+colorama==0.4.6

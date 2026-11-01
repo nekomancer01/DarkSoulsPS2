@@ -1,0 +1,143 @@
+# World streaming: fast back-and-forth crossings of the Firelink <-> Undead Burg block boundary (user repro of a
+# manual-play crash, 2026-11-01: "ran back and forth between the loading zone", build/crash-20261101-user-emulog.txt).
+# Enemies on, boot at the Firelink bonfire (its types loaded), then 20 rounds over three aqueduct / Burg points with
+# steps under WORLD_WARP (no warp settle: the walking paths) and waits of 0.3-2.5 s, so the 1 s swap delay, the
+# full-pool reads (4.4 / 7.8 MB), the lent-tail reclaim and the enemy type loads / unloads (60 / 75 m) are cut off
+# in every phase. Fails on a crash, hang or EE-log error (OUT OF RAM included).
+option hud
+option nodemo
+wait 3
+shot cross_boot
+spawn -43.5 -33.7 -7.5 4.0
+wait 2
+shot cross_start
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.5
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -52.8 -29.2 -29.2 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -52.8 -29.2 -29.2 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.5
+stats
+shot cross_5
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.5
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.4
+stats
+shot cross_10
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.5
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -52.8 -29.2 -29.2 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -52.8 -29.2 -29.2 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.5
+stats
+shot cross_15
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 0.3
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.8
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.2
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.6
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.5
+spawn -52.8 -29.2 -29.2 4.0
+wait 0.5
+spawn -51.5 -32.0 -12.8 4.0
+wait 1.1
+spawn -43.5 -33.7 -7.5 4.0
+wait 1.4
+spawn -51.5 -32.0 -12.8 4.0
+wait 2.0
+spawn -43.5 -33.7 -7.5 4.0
+wait 0.4
+stats
+shot cross_20
+wait 4
+shot cross_end
