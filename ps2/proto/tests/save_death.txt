@@ -1,18 +1,16 @@
-# save-6: a death autosaves (player.c respawn -> save_request). Runs off the east cliff from the bonfire spawn like
-# make EE_DBGINFOFLAGS=-DCOL_TEST=5 (2.0 rad, lethal fall, ESD fall death, respawn), then checks that one save was
-# written and that it holds the death. Firelink build:
+# save-6: a death autosaves (player.c respawn -> save_request). "kill" sets HP below 0 as EMEVD's kill of the player;
+# the ESD plays the death and the engine respawns, then one save holds it. Firelink build:
 #   tools/q -m 4 python3 tools/test-run.py build/proto.elf ps2/proto/tests/save_death.txt build/test/save_death
+# (A run off the east cliff is not lethal since the world-block merges: two landings, then out of the map, which
+# respawns without counting a death.)
 option save host deathtest
 option noenemies
 wait 1
 wipe
 check seq 0
 check deaths 0
-cam 2.0 0.25
-stick 0 1
-wait 3
-stick 0 0
-wait 10
+kill
+wait 12
 check deaths 1
 check seq 1
 load
