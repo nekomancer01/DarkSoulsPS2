@@ -750,6 +750,7 @@ int map_draw(V3 eye)
             }
     map_select(sk);
     build_index();
+    bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
     map_vu1_batches = map_ee_tris = 0;
 #ifdef MAP_DBG
     static int dbg_init;

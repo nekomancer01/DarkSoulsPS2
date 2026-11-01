@@ -186,7 +186,7 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
     for (int i = 0; i < n; i++)
         cb += ((const TexEntry *)table)[i].clut ? clut_blocks((const TexEntry *)table + i) : 0;
     u32 cv = cb ? gsKit_vram_alloc(gsg, cb * 256, GSKIT_ALLOC_USERBUFFER) : 0;
-    if (cv == GSKIT_ALLOC_ERROR)
+    if (cb && cv == GSKIT_ALLOC_ERROR)  /* GSKIT_ALLOC_ERROR is 0: without CLUTs (bump.c's normal maps) cv = 0 is no error */
         return -1;
     for (int i = 0; i < n; i++, ntex++) {
         const TexEntry *e = te[ntex] = (const TexEntry *)table + i;

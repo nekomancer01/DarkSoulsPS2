@@ -51,10 +51,15 @@ typedef struct {
     const unsigned char *bin;
     const BumpHeader *bh;
     const BumpChunk *bc;
-    int tex0, on, cluts_sent;
-    u32 clut_vram, clut_kb;  /* CLUT VRAM, reserved at the instance's first set (gsKit VRAM is never freed) */
+    int tex0, on;
 } BumpSet;
 static BumpSet set[BUMP_INST];
+/* One CLUT area for every set (96 KB: 48 clusters x 2 levels; with enemies a world build has ~55 KB of VRAM left when a
+ * block goes full, 2026-11-01): it holds the CLUTs of the set of the block the player stands in (bump_owner), uploaded
+ * when that changes; the other sets draw no relief meanwhile (TECH_DEBT world-4) */
+static u32 clut_vram;
+static unsigned clut_kb;
+static int owner, owner_sent = -1;
 int bump_batches;
 
 typedef struct {
@@ -87,17 +92,19 @@ static int set_init(int k, const void *blob, unsigned chunks)
     b->tex0 = k ? tc_block_bump(k - 1, b->bin, b->bin + bh->tex_off, bh->textures)
                 : tc_add(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
     unsigned kb = bh->clusters * bh->levels;
-    if (b->tex0 >= 0 && kb > b->clut_kb && !b->clut_kb) {
-        b->clut_vram = gsKit_vram_alloc(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER);
-        b->clut_kb = b->clut_vram == GSKIT_ALLOC_ERROR ? 0 : kb;
+    if (b->tex0 >= 0 && !clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= kb * 1024) {  /* the first set sizes it */
+        clut_vram = gsKit_vram_alloc(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER);
+        clut_kb = clut_vram == GSKIT_ALLOC_ERROR ? 0 : kb;
     }
-    if (b->tex0 < 0 || kb > b->clut_kb) {
-        printf("bump: %d: no texture slot / CLUT VRAM (%u KB): no relief\n", k, kb);
+    if (b->tex0 < 0 || kb > clut_kb) {
+        printf("bump: %d: no relief: textures %d, CLUT VRAM %u of %u KB (VRAM free %u KB)\n", k, b->tex0, clut_kb, kb,
+               (4 * 1024 * 1024 - gsg->CurrentPointer) >> 10);
         if (k)
             tc_block_bump(k - 1, NULL, NULL, 0);
         return 0;
     }
-    b->cluts_sent = 0;
+    if (owner_sent == k)
+        owner_sent = -1;  /* a new set in the CLUT area's owner: its CLUTs go up again */
     FlushCache(0);
 #ifdef BUMP_OFF  /* A/B builds: same data and VRAM, no relief pass (other systems size themselves to free VRAM) */
     return 0;
@@ -119,11 +126,16 @@ int bump_block(int k, const void *blob, unsigned chunks)
     return set_init(k, blob, chunks);
 }
 
+void bump_owner(int k)
+{
+    owner = k > 0 && k < BUMP_INST && set[k].on ? k : 0;
+}
+
 void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, const void *pos, const void *st,
               const void *col, const float *org, float st_k)
 {
     const BumpSet *b = &set[k];
-    if (!b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
+    if (k != owner || !b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
         return;
     int level = d < BUMP_NEAR ? 0 : 1;
     if (level >= (int)b->bh->levels || b->bc[chunk].spread >> level < BUMP_MIN_SPREAD)
@@ -160,21 +172,15 @@ void bump_draw(void)
     bump_batches = 0;
     if (!nitems)
         return;
-    int cap = BUMP_CAP;
-    for (int k = 0; k < BUMP_INST; k++) {
-        BumpSet *b = &set[k];
-        if (!b->on)
-            continue;
-        if (!b->cluts_sent) {  /* a set's first frame: every CLUT (16x16 CT32 = 4 blocks each), resident from then on */
-            const unsigned char *c = b->bin + b->bh->clut_off;
-            for (unsigned i = 0; i < b->bh->clusters * b->bh->levels; i++)
-                vu1_upload_tex((b->clut_vram + i * 1024) / 256, GS_PSM_CT32, 16, 16, c + i * 1024, 1024);
-            b->cluts_sent = 1;
-            vu1_clut_reload();
-        }
-        if (b->bh->cap && (int)b->bh->cap < cap)  /* the smallest per-area cap of the sets drawn */
-            cap = b->bh->cap;
+    const BumpSet *b = &set[owner];
+    if (owner_sent != owner) {  /* the owner's CLUTs (16x16 CT32 = 4 blocks each), resident until the owner changes */
+        const unsigned char *c = b->bin + b->bh->clut_off;
+        for (unsigned i = 0; i < b->bh->clusters * b->bh->levels; i++)
+            vu1_upload_tex((clut_vram + i * 1024) / 256, GS_PSM_CT32, 16, 16, c + i * 1024, 1024);
+        owner_sent = owner;
+        vu1_clut_reload();
     }
+    int cap = b->bh->cap && b->bh->cap < BUMP_CAP ? (int)b->bh->cap : BUMP_CAP;
     int cand = nitems;
     if (nitems > cap) {  /* keep the cap nearest: distance histogram, cut inside the bin that crosses the cap */
         enum { BINS = 64 };
@@ -215,7 +221,7 @@ void bump_draw(void)
         if (!it->t)
             continue;
         GSTEXTURE tt = *it->t;
-        tt.VramClut = set[it->key >> 24].clut_vram + (it->key >> 12 & 0xFFF) * 1024;
+        tt.VramClut = clut_vram + (it->key >> 12 & 0xFFF) * 1024;
         tt.ClutPSM = GS_PSM_CT32;
         vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip ? VU1_CLIP : 0), it->tris, it->pos, it->st, it->col, it->org,
                    it->st_k);

@@ -13,6 +13,9 @@ int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks);
  * behind mapres.bin), NULL when it goes lite or off. Same return as bump_init. */
 #define BUMP_INST 4  /* >= MAP_INST */
 int bump_block(int k, const void *blob, unsigned chunks);
+/* The map instance the player stands in (map.c, each frame): only its set draws relief (one shared CLUT area); an
+ * instance without a set falls back to the boot area's */
+void bump_owner(int k);
 /* One opaque map chunk of instance k that was just queued (draw_chunk): kept for the relief pass when bump.bin marks it and it lies
  * within BUMP_FAR. d: distance from the eye to the chunk's box. Same streams / origin / st scale as the opaque batch,
  * so VU1 writes the same depth. */

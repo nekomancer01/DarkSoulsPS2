@@ -33,7 +33,8 @@
 /* DSR runs and draws a character only while its MSB DrawGroups meet those of the collision part under the player
  * (dg.bin per block, src/drawgrp.c: dg_mask_shown). On top of that, at most ACTIVE_MAX update a frame, the nearest
  * (3D) first; the rest stay frozen where they are. ASSUMED budget cap (EE time ~0.6 ms per active character), TECH_DEBT
- * world-4: with draw groups the Burg entry runs MEASURED_ACTIVE (see notes) */
+ * world-4. Burg entry of the world build, 2026-11-01 (tests/block_enemies.txt): draw groups leave up to 30 characters
+ * active there (20-25 fps uncapped); at 16 every shot holds 30 fps (was 10 before draw groups) */
 #ifndef ACTIVE_MAX
 #define ACTIVE_MAX 16
 #endif

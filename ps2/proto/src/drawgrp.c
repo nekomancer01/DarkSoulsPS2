@@ -67,6 +67,7 @@ void dg_floor(int k, int tri)
         return;
     d->cur = d->tri_dg[tri];
     const unsigned *c = d->coll[d->cur];
+    printf("drawgrp: %d: groups %08x %08x %08x %08x\n", k, c[0], c[1], c[2], c[3]);  /* tests compare builds by it */
     for (unsigned i = 0; i < d->n_pieces; i++)
         d->shown[i] =
             (d->piece[i][0] & c[0]) | (d->piece[i][1] & c[1]) | (d->piece[i][2] & c[2]) | (d->piece[i][3] & c[3]) ? 1 : 0;
