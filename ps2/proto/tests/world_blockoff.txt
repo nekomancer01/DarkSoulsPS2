@@ -1,0 +1,65 @@
+# World streaming: the Burg block (m10_01_00_00_w) turning off and on again with enemies on, so enemy_block_remove /
+# enemy_block_add run every round (world_cross / world_soak never go past the 80 m unload radius). Six rounds of:
+# Burg player start (block 1 full, its enemies placed and thinking), aqueduct, then far north in Firelink (> 80 m from
+# the Burg bounds: block 1 off), back to the bonfire. Check the EE log lines "enemy: block 1 off: .. goals in use, RAM
+# free ..K": goals in use and free RAM must not trend down over the rounds. Fails on a crash, hang or EE-log error
+# (goal pool exhausted / OUT OF RAM included).
+option hud
+option nodemo
+wait 3
+shot off_boot
+log round 1
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+log round 2
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+log round 3
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+log round 4
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+log round 5
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+log round 6
+spawn -47.8 -21.8 -35.6 4.0
+wait 6
+spawn -44.8 -34.0 -8.4 4.0
+wait 2
+spawn -22.9 -76.2 185.3 3.14
+wait 3
+spawn -47.6 -59.9 53.9 1.6
+wait 2
+shot off_end
