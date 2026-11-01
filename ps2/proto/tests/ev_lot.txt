@@ -1,0 +1,55 @@
+# E2 (src/event.c award_lot, src/ev_misc.c) on Firelink: ItemLotParam draws as DSR's FUN_1403f5d90, flag rules, rest.
+# 1 lot 1020180 (chest 宝箱01) and the row after it, 1020181: one item from each row (weapons 802000, 1360000), get
+#   flag 51020180 shared by both rows goes on after the run; a second award gives nothing (flag on).
+# 2 lot 2030 (corpse 宝死体_event00): rows 2030..2033 = four armour pieces under one flag 50001030 (the run goes on
+#   into 2034, its own flag 50001031, as the exe steps rows until one is missing).
+# 3 EventValue bit order (FUN_1404f2590): the first flag is the value's most significant bit.
+# 4 temporary flags: a rest (event_rest, FUN_1404f20b0) clears 1AAB5xxx / 6xxx of every area, keeps the others.
+# 5 bonfire o0200 (m10_02 event 0: 2009[03] flag 11020992, entity 1021960): registered once (the constructor
+#   registers it twice; with the Burg west block 4 in all), action button in reach lights it, the next press rests
+#   (respawn point = the bonfire).
+option hud
+option noenemies
+option nodemo
+wait 2
+ev lot 1020180
+ev expect inv 0x000C3CD0 1
+ev expect inv 0x0014C080 1
+ev expect flag 51020180 1
+ev lot 1020180
+ev expect inv 0x000C3CD0 1
+ev expect inv 0x0014C080 1
+ev lot 2030
+ev expect inv 0x10061A80 1
+ev expect inv 0x10061E68 1
+ev expect inv 0x10062250 1
+ev expect inv 0x10062638 1
+ev expect flag 50001030 1
+ev lot 2030
+ev expect inv 0x10061A80 1
+ev flag 11025900 1
+ev flag 11025903 1
+ev expect value 11025900 4 9
+ev expect value 11025900 2 2
+ev flag 11015990 1
+ev flag 11026100 1
+ev flag 11027000 1
+ev flag 51020180 1
+ev rest
+ev expect flag 11025900 0
+ev expect flag 11015990 0
+ev expect flag 11026100 0
+ev expect flag 11027000 1
+ev expect flag 51020180 1
+ev expect bonfires 4
+spawn -51.8 -60.6 54.4 0
+wait 1
+ev flag 11020992 0
+ev action
+wait 0.3
+ev expect flag 11020992 1
+ev action
+wait 0.3
+ev expect respawn 1021960
+ev summary
+end

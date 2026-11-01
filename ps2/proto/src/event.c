@@ -10,12 +10,14 @@
 #include "drawgrp.h"
 #include "enemy.h"
 #include "ev_chr.h"
+#include "ev_misc.h"
 #include "ev_obj.h"
 #include "event.h"
 #include "flags.h"
 #include "fx.h"
 #include "objects.h"
 #include "progress.h"
+#include "save.h"
 #include "world.h"
 
 /* Same order as OPS in tools/export_emevd.py (the op byte of each instruction) */
@@ -38,7 +40,7 @@ enum Op {
     OP_ANIM_RESET, OP_TEAM_EXIT, OP_HUMANITY, OP_OBJ_DESTROY, OP_OBJ_RESTORE, OP_OBJ_ENABLE, OP_TREASURE,
     OP_OBJACT_INIT, OP_OBJACT_STATE, OP_OBJ_ANIM, OP_OBJ_REDESTROY, OP_DAMAGE_OBJ, OP_OBJ_INVULN, OP_OBJACT_IDX,
     OP_REROLL, OP_SFX_DEL, OP_SFX_SPAWN, OP_SFX_ONESHOT, OP_SFX_OBJ, OP_SFX_OBJ_DEL, OP_DIALOG, OP_STATUS_MSG,
-    OP_LADDER, OP_BONFIRE, OP_MP_BUFF, OP_BOSS_ENTRY, OP_SE, OP_SOUND_STATE, OP_HIT, OP_MAP_PART,
+    OP_LADDER, OP_BONFIRE, OP_MP_BUFF, OP_BOSS_ENTRY, OP_SE, OP_SOUND_STATE, OP_HIT, OP_MAP_PART, OP_BANNER,
     OP_COUNT
 };
 static const char *const op_names[OP_COUNT] = {
@@ -58,7 +60,7 @@ static const char *const op_names[OP_COUNT] = {
     "WARP_FLOOR", "SHORT_WARP", "WARP_COPY", "ANIM_RESET", "TEAM_EXIT", "HUMANITY", "OBJ_DESTROY", "OBJ_RESTORE",
     "OBJ_ENABLE", "TREASURE", "OBJACT_INIT", "OBJACT_STATE", "OBJ_ANIM", "OBJ_REDESTROY", "DAMAGE_OBJ",
     "OBJ_INVULN", "OBJACT_IDX", "REROLL", "SFX_DEL", "SFX_SPAWN", "SFX_ONESHOT", "SFX_OBJ", "SFX_OBJ_DEL", "DIALOG",
-    "STATUS_MSG", "LADDER", "BONFIRE", "MP_BUFF", "BOSS_ENTRY", "SE", "SOUND_STATE", "HIT", "MAP_PART",
+    "STATUS_MSG", "LADDER", "BONFIRE", "MP_BUFF", "BOSS_ENTRY", "SE", "SOUND_STATE", "HIT", "MAP_PART", "BANNER",
 };
 /* ops that do nothing in DSR offline single player either (network, achievements, multiplayer signs) */
 static int op_noop(int op)
@@ -88,7 +90,8 @@ typedef struct {
     u16 pad2;
     s32 sp_id, sp_id2, pass_flag;  /* the goods; spQualifiedPassEventFlag opens it without them */
 } EvObjAct;
-typedef struct { s32 id, flag; u32 category; s32 item, num; } EvLot;
+typedef struct { s32 id, flag; u16 first; u8 n, pad; } EvLot;  /* ItemLotParam row: getItemFlagId, its weighted items */
+typedef struct { s32 item, flag; u16 point; u8 num, cat; } EvLotItem;  /* cat = lotItemCategory >> 28, 15 = none */
 enum { ENT_OBJECT = 2, ENT_ENEMY = 3, ENT_COLLISION = 5, ENT_REGION = 10 };
 enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
 #define PLAYER_ENTITY 10000
@@ -609,7 +612,7 @@ static void finish(Inst *in, int type)
         restart(in);
         return;
     }
-    if (ev_id(in) >= 1000)  /* not the (pre)constructors 0 / 50: ASSUMED, flag 0 is read by scripts (event-2) */
+    if (ev_id(in) > 98 && in->slot >= 0)  /* FUN_1407d4230: id + slot on, not for ids up to 98 (constructors 0 / 50) */
         flag_set(ev_id(in) + in->slot, 1);
     event_stats.ended++;
     if (trace > 1)
@@ -687,7 +690,7 @@ static void warp_to(int own, s32 dest)
     printf("EVT warp player -> %d (%.2f %.2f %.2f)\n", (int)dest, pl->pos.x, pl->pos.y, pl->pos.z);
 }
 
-static const EvLot *find_lot(s32 id)
+static const EvLot *find_lot(s32 id, const EvLotItem **items)
 {
     for (int k = 0; k < EV_SETS; k++) {
         const Set *s = &sets[k];
@@ -695,26 +698,67 @@ static const EvLot *find_lot(s32 id)
             continue;
         const EvLot *l = SEC(s, S_LOTS, EvLot);
         for (int i = 0; i < NSEC(s, S_LOTS); i++)
-            if (l[i].id == id)
+            if (l[i].id == id) {
+                *items = (const EvLotItem *)(l + NSEC(s, S_LOTS)) + l[i].first;  /* the item pool after the rows */
                 return &l[i];
+            }
     }
     return NULL;
 }
 
-/* ItemLotParam: getItemFlagId goes on, the lot's first item into the inventory (TECH_DEBT event-6) */
+/* An item's get flag: its own getItemFlagId0N, else the row's (< 0: none) */
+static s32 lot_flag(const EvLot *l, const EvLotItem *it) { return it->flag ? it->flag : l->flag; }
+/* Something of the row is still to be had: an item whose flag is off or absent */
+static int lot_left(const EvLot *l, const EvLotItem *it)
+{
+    for (int k = 0; k < l->n; k++)
+        if (lot_flag(l, &it[k]) <= 0 || !flag_get(lot_flag(l, &it[k])))
+            return 1;
+    return 0;
+}
+
+/* ItemLotParam draw as DSR's FUN_1403f5d90 (called through FUN_1403fc940 for AwardItemLot and treasures): the lot and
+ * every row after it (id + 1, ... while one exists) each roll one of their items, weighted by lotItemBasePoint,
+ * leaving out items whose get flag is on; the chosen item is given unless it is "nothing" (lotItemNum 0, id or
+ * category < 0); the get flags of what was given go on after the whole run (rows of one corpse share one flag). Luck
+ * (enableLuck x item discovery) and cumulate counters (cumulateLotPoint / cumulateNumFlagId) are left out: TECH_DEBT
+ * event-6. */
 static void award_lot(s32 id)
 {
-    const EvLot *l = find_lot(id);
+    const EvLotItem *it;
+    const EvLot *l = find_lot(id, &it);
     if (!l) {
         printf("EVT item lot %d: not exported\n", (int)id);
         return;
     }
-    if (l->flag > 0)
-        flag_set(l->flag, 1);
-    u32 item = (l->category & 0xF0000000u) | ((u32)l->item & 0x0FFFFFFFu);  /* lotItemCategory = progress.h ITEM_* */
-    int held = l->item ? inv_add(item, l->num) : 0;
-    printf("EVT item lot %d: item %08x x%d (now %d), flag %d\n", (int)id, (unsigned)item, (int)l->num, held,
-           (int)l->flag);
+    s32 got_flag[16];
+    int ngot = 0;
+    for (s32 r = id; l; l = find_lot(++r, &it)) {
+        int w[8], total = 0, n = l->n < 8 ? l->n : 8;
+        for (int k = 0; k < n; k++) {
+            s32 f = lot_flag(l, &it[k]);
+            w[k] = f > 0 && flag_get(f) ? 0 : it[k].point;
+            total += w[k];
+        }
+        if (!total)
+            continue;
+        int roll = (int)(rnd() % (u32)total), k = 0;
+        while (k < n - 1 && roll >= w[k])
+            roll -= w[k++];
+        const EvLotItem *g = &it[k];
+        if (!g->num || g->item < 0 || g->cat == 15) {
+            printf("EVT item lot %d: nothing\n", (int)r);
+            continue;
+        }
+        u32 item = (u32)g->cat << 28 | ((u32)g->item & 0x0FFFFFFFu);  /* category = progress.h ITEM_* */
+        int held = inv_add(item, g->num);
+        printf("EVT item lot %d: item %08x x%d (now %d), flag %d\n", (int)r, (unsigned)item, g->num, held,
+               (int)lot_flag(l, g));
+        if (lot_flag(l, g) > 0 && ngot < 16)
+            got_flag[ngot++] = lot_flag(l, g);
+    }
+    for (int i = 0; i < ngot; i++)
+        flag_set(got_flag[i], 1);
 }
 
 static void treasure_state(s32 entity, int on)
@@ -866,10 +910,16 @@ static void run(Inst *in)
                 for (int j = 0; sets[e].blob && j < sets[e].nev; j++)
                     if (sets[e].ev[j].id == w[0]) {
                         Inst *t = find_inst(e, j, iw[1]);
-                        if (t && iw[2] == 0)
+                        if (!t)
+                            continue;
+                        /* FUN_1407cb090 -> the instance's FUN_1407d4230: 0 ends it, 1 runs it again from the top;
+                         * both set its flag (id + slot, ids > 98) */
+                        if (iw[2] == 0)
                             t->state = I_STOPPED;
-                        else if (t && iw[2] == 1)
-                            restart(t);  /* ASSUMED: 1 = run again from the top (TECH_DEBT event-2) */
+                        else
+                            restart(t);
+                        if (w[0] > 98 && iw[1] >= 0)
+                            flag_set(w[0] + iw[1], 1);
                     }
             break;
         case OP_RAND_FLAG:
@@ -892,6 +942,21 @@ static void run(Inst *in)
         }
         case OP_EV_CLEAR: flag_value_set(iw[0], iw[1], 0); break;
         case OP_AWARD_LOT: award_lot(iw[0]); break;
+        case OP_SAVE_REQ: save_request(); break;
+        case OP_RESPAWN:  /* 2003[23] Set Player Respawn Point (a region): where A4's death respawn puts the player */
+            prog.bonfire = iw[0];
+            progress_touch();
+            break;
+        case OP_STATUS_MSG: ev_message(0, iw[0]); break;
+        case OP_BANNER: ev_message(1, iw[0]); break;
+        case OP_BONFIRE: {  /* 2009[03] (flag, bonfire object, reaction distance, angle, kindling) */
+            float p[3];
+            if (ent_pos(in->set, iw[1], p))
+                ev_bonfire_register(in->set, iw[0], iw[1], p, wf(w[2]), wf(w[3]), iw[4]);
+            else
+                stub(in, op);
+            break;
+        }
         case OP_KILL:
             if (iw[0] == PLAYER_ENTITY) {
                 pl->hp = -1;  /* death camera / respawn as a lethal fall (player.c) */
@@ -974,7 +1039,7 @@ static void run(Inst *in)
 static int load_set(Set *s, const void *blob, int block)
 {
     const EvHdr *h = blob;
-    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 2) {  /* export_emevd.py VERSION */
+    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 3) {  /* export_emevd.py VERSION */
         printf("EVT bad events blob\n");
         return 0;
     }
@@ -990,8 +1055,9 @@ static int load_set(Set *s, const void *blob, int block)
     for (int i = 0; i < NSEC(s, S_TREASURES); i++) {
         int left = 0;
         for (int k = 0; k < 5; k++) {
-            const EvLot *l = t[i].lot[k] > 0 ? find_lot(t[i].lot[k]) : NULL;
-            left |= l && (l->flag <= 0 || !flag_get(l->flag));
+            const EvLotItem *it;
+            const EvLot *l = t[i].lot[k] > 0 ? find_lot(t[i].lot[k], &it) : NULL;
+            left |= l && lot_left(l, it);
         }
         s->tr_state[i] = (t[i].start_disabled ? 0 : 1) | (left ? 0 : 2);  /* picked up before: taken */
     }
@@ -1023,6 +1089,7 @@ int event_init(const void *common_blob)
     if (!inst || !load_set(&sets[0], common_blob, -1))
         return 0;
     event_stats.prompt = -1;
+    ev_temp_flags_reset(1);  /* the game load (save_boot ran before): DSR's area-load reset, FUN_1404f1fb0 */
     start_ctor(0);
     printf("EVT common: %d events, instance pool %u B\n", sets[0].nev, (unsigned)(EV_MAX_INST * sizeof *inst));
     return 1;
@@ -1039,12 +1106,10 @@ void event_block_on(int block, const void *blob)
     for (int j = 1; j < EV_SETS; j++)  /* another block of the same map runs its events: this one adds entities */
         if (j != k && sets[j].blob && sets[j].live && !memcmp(sets[j].h->map, s->h->map, 4))
             s->live = 0;
-    if (s->live) {
-        /* flags x AA BB 5nnn are cleared on every map load (soulstruct example_with_comments; ASSUMED range, event-1) */
-        u32 base = 10000000 + s->h->map[0] * 100000 + s->h->map[1] * 10000;
-        flag_range_set(base + 5000, base + 5999, 0);
+    /* No flag reset here: DSR clears the temporary flags of every map at a load or rest (ev_temp_flags_reset), not
+     * when a map streams in, so what happened in a block lasts until the next rest (event-1) */
+    if (s->live)
         start_ctor(k);
-    }
     int act = 0;
     for (int i = 0; i < ninst; i++)
         act += inst[i].state != I_FREE;
@@ -1064,6 +1129,7 @@ void event_block_off(int block)
                 free_inst(&inst[i]);
         free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
         memset(s, 0, sizeof *s);
+        ev_bonfire_drop(k);
     }
 }
 
@@ -1152,6 +1218,8 @@ static void use_action(void)
                     award_lot(t[i].lot[j]);
         }
     }
+    if (!act_used && ev_bonfire_action((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw))  /* 2009[03] */
+        act_used = 1;
 }
 
 void event_update(Player *p, float dt)
@@ -1162,6 +1230,7 @@ void event_update(Player *p, float dt)
     pl = p, dtime = dt;
     act_used = 0;
     ev_chr_update(dt);
+    ev_misc_update(dt);
     event_stats.prompt = -1;
     if (act_press)
         use_action();
@@ -1242,6 +1311,7 @@ int event_push_player(float pos[3], float r, float h)
 
 void event_rest(void)
 {
+    ev_temp_flags_reset(0);  /* FUN_1407cb660 (the event manager's rest pass) clears them first: FUN_1404f20b0 */
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         if (in->state == I_FREE)
@@ -1277,6 +1347,7 @@ static int find_state(const char *what, s32 id, int *found)
 
 void event_test_cmd(const char *cmd)
 {
+    int want = 0;
     char a[16] = "", b[16] = "", c[8] = "";
     float v = 0, fx = 0, fz = 0;
     int id = 0, val = 0;
@@ -1323,6 +1394,40 @@ void event_test_cmd(const char *cmd)
         int ok = b[0] == '<' ? got < v : got > v;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect %s %s %.2f: %.2f %s\n", a, b, v, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "lot %d", &id) == 1) {  /* AwardItemLot (2003[36]) of an exported lot */
+        award_lot(id);
+    } else if (sscanf(cmd, "expect inv %i %d", &id, &val) == 2) {  /* item (ITEM_* | row, e.g. 0x40000128) count */
+        int got = inv_count((u32)id), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect inv %08x %d: %d %s\n", (unsigned)id, val, got, ok ? "PASS" : "FAIL");
+    } else if (!strcmp(cmd, "rest")) {  /* what a bonfire rest does to the events and the temporary flags */
+        event_rest();
+    } else if (sscanf(cmd, "expect respawn %d", &val) == 1) {
+        int ok = (s32)prog.bonfire == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect respawn %d: %d %s\n", val, (int)prog.bonfire, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect value %d %d %d", &id, &val, &want) == 3) {  /* EventValue first, bits */
+        int got = (int)flag_value_get(id, val), ok = got == want;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect value %d %d %d: %d %s\n", id, val, want, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect bonfires %d", &val) == 1) {
+        int got = ev_bonfire_count(), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect bonfires %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect region %d %f %f %f %d", &id, &fx, &v, &fz, &val) == 5) {
+        /* region-local point (x along the width, y up from the origin, z along the depth) turned into the world by the
+         * region's yaw: inside 0 / 1 (in_region, the point as feet) */
+        Set *s = NULL;
+        const EvEnt *e = ent_any(1, id, &s);
+        int got = -1;
+        if (e && e->kind == ENT_REGION) {
+            float c = cosf(e->yaw), sn = sinf(e->yaw);  /* inverse of in_region's world -> local */
+            float p[3] = {e->pos[0] + fx * c + fz * sn, e->pos[1] + v, e->pos[2] - fx * sn + fz * c};
+            got = in_region(e, p);
+        }
+        int ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect region %d %.2f %.2f %.2f %d: %d %s\n", id, fx, v, fz, val, got, ok ? "PASS" : "FAIL");
     } else if (ev_chr_test(cmd, &test_pass, &test_fail)) {  /* chr ... / expect chr ... (ev_chr.c) */
     } else if (ev_obj_test(cmd, &test_pass, &test_fail)) {  /* obj ... / expect objanim / objbroken (ev_obj.c) */
     } else if (sscanf(cmd, "expect %15s %d %d", a, &id, &val) == 3) {
@@ -1346,7 +1451,7 @@ void event_test_cmd(const char *cmd)
 
 void event_status(char *buf, int n)
 {
-    snprintf(buf, n, "EVT I%d W%d F%d L%u S%d U%d %uK %dUS%s", event_stats.running, event_stats.waiting,
+    snprintf(buf, n, "EVT I%d W%d F%d L%u S%d U%d %uK %dUS%s%s", event_stats.running, event_stats.waiting,
              event_stats.fired, event_stats.last_id, event_stats.stubs, event_stats.unsupported,
-             event_stats.bytes >> 10, (int)event_stats.us, event_stats.prompt >= 0 ? " ACT" : "");
+             event_stats.bytes >> 10, (int)event_stats.us, event_stats.prompt >= 0 ? " ACT" : "", ev_message_hud());
 }
