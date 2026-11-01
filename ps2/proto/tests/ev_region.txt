@@ -1,0 +1,26 @@
+# E2 region test (src/event.c in_region) against DSR's FrpgRegionBox / FrpgRegionCylinder (FUN_1403f00e0,
+# FUN_1403f0de0): the offset to the region origin turned by -rotY only, then x in (-width/2, width/2), y in (0, height),
+# z in (-depth/2, depth/2). Region-local points across the edges of Firelink box 1022210 (width 3.5, depth 33,
+# height 9, rotY 58 deg) and 1022120 (2 x 2 x 1, rotY 0). Feet below the floor of the box count as inside by the port's
+# capsule tolerance (TECH_DEBT event-3), so the under-test uses -2.5 m.
+option noenemies
+option nodemo
+wait 2
+ev expect region 1022210 0 1 0 1
+ev expect region 1022210 1.70 1 0 1
+ev expect region 1022210 1.80 1 0 0
+ev expect region 1022210 -1.70 1 0 1
+ev expect region 1022210 -1.80 1 0 0
+ev expect region 1022210 0 1 16.4 1
+ev expect region 1022210 0 1 16.6 0
+ev expect region 1022210 0 1 -16.6 0
+ev expect region 1022210 0 8.9 0 1
+ev expect region 1022210 0 9.1 0 0
+ev expect region 1022210 0 -2.5 0 0
+ev expect region 1022210 1.70 1 16.4 1
+ev expect region 1022210 1.80 1 16.4 0
+ev expect region 1022120 0.95 0.5 0.95 1
+ev expect region 1022120 1.05 0.5 0 0
+ev expect region 1022120 0 0.5 1.05 0
+ev summary
+end
