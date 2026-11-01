@@ -593,8 +593,8 @@ void enemy_block_remove(int block)
         if (e->registered)
             combat_unregister(&e->cc), e->registered = 0;
         /* its goal tree goes back to the pool (Lua terminate runs, as at death): place() memsets the slot, and a live
-         * tree was lost there with its pool slots and the Lua values its params pinned (suspect for the heap drift of
-         * ~28 KB per Firelink <-> Burg crossing pair with enemies on, 2026-11-01) */
+         * tree was lost there. tests/world_blockoff.txt, 2026-11-01: ~100 of the 768 pool slots lost per Burg block
+         * off (623 in use after 6 rounds), 49 steady with this */
         ai_reset(&e->ai);
         ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
         e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
