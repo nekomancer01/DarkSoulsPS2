@@ -1,6 +1,8 @@
 /* Breakable MSB objects (pots o1495-o1497 at Firelink; tools/export_objects.py -> objects.bin in the area pack):
  * intact instances with cylinder collision, broken by weapon hits (combat sweeps), rolls / dashes into them and
- * landings on them into their pre-fractured pieces, which physics.c simulates until they settle and sink away. */
+ * landings on them into their pre-fractured pieces, which physics.c simulates until they settle and sink away.
+ * Animated objects (objects.bin v3: doors, levers, gates, chests) play their Havok anims for events / ObjActs; their
+ * hkx boxes ride their bones and push the player (objects_push_capsule). */
 #ifndef OBJECTS_H
 #define OBJECTS_H
 
@@ -41,6 +43,13 @@ int objects_entity(int entity, float *pos, int *broken);
 int objects_entity_break(int entity);
 int objects_entity_restore(int entity);
 int objects_entity_enable(int entity, int on);
+/* Animated objects (objects.bin v3: doors, levers, gates, chests; src/ev_obj.c drives them) by MSB entity id.
+ * _play starts Havok anim `anim` (a00_NNNN id) from its first frame and returns its length in s, -1 if the entity is
+ * no animated object or has no such anim; _end puts it at the anim's last frame (EMEVD 2005[07], open doors after a
+ * load); _state: the anim id last set (-1 reference pose), its time, 1 while it plays. _enable above hides them too. */
+float objects_anim_play(int entity, int anim, int loop);
+int objects_anim_end(int entity, int anim);
+int objects_anim_state(int entity, int *anim, float *t, int *playing);
 
 /* HUD: instances, broken ones, live / awake pieces, map queries last frame */
 typedef struct { int instances, broken, pieces, awake, queries, us; } ObjectsStats;  /* us: objects_update time */

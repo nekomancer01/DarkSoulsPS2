@@ -28,10 +28,16 @@ Layout (little-endian, offsets from the start of the file, version 1):
            sphere r); u32 count (hit ranges); 2 x u32 0                                                   (48 B)
   ranges   u32 first triangle, u32 count (in this block's collision.bin)
   colliders f32 centre[3] (world, box centre), f32 half[3] (object space), f32 yaw (rad), s32 entity    (32 B):
-           the hkx box of an object that events enable / disable (fog walls, gates); solid while the object is on
+           every hkx body of every MSB object (box; cylinders / convex shapes as their bounding box, tilted bodies
+           as their upright bound) but the breakables (src/objects.c cylinders) and the animated objects
+           (objects.bin v3, ANIM_OBJ=<objects.bin.anim>: their boxes move with their bones in objects.c); entity -1
+           = no entity id (always solid), else solid while that object is on (fog walls, gates)
   treasures s32 part entity (-1 none), f32 pos[3], s32 lot[5] (-1 none), u8 in_chest, u8 start_disabled, u16 0 (40 B)
   objacts  s32 objact entity (the flag it sets), s32 part entity, f32 pos[3], f32 yaw, f32 valid distance (m),
-           s32 ObjActParam id, s32 event flag, u8 state, 3 x u8 0                                     (40 B)
+           s32 ObjActParam id, s32 event flag, u8 state, u8 0, s16 objAnimId (the object's anim on use, -1 none),
+           u8 spQualifiedType, u8 spQualifiedType2, u16 0, s32 spQualifiedId, s32 spQualifiedId2,
+           s32 spQualifiedPassEventFlag (key: type 1 = a good in the inventory, the pass flag opens it too)  (56 B)
+Version 2: objacts grew from 40 B (key and anim fields), colliders cover every object.
   lots     s32 lot id, s32 getItemFlagId, u32 category (lotItemCategory01: 0 weapon, 0x10000000 armor, 0x20000000
            ring, 0x40000000 good), s32 item id, s32 count                                             (20 B)
            first item of the lot only (TECH_DEBT event-6)
@@ -41,7 +47,7 @@ import collections, math, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import emevd, gamepath, souls
 
-VERSION = 1
+VERSION = 2
 # Ops: (name, (bank, id) or None, class). class: "real" = wired to a system of the port, "noop" = no effect in DSR
 # offline single player either (network / achievements), "stub" = accepted and logged, its system does not exist yet.
 # Index = op number; keep in the same order as enum Op in ps2/proto/src/event.c.
@@ -90,9 +96,9 @@ OPS = [
     ("FORCE_TREASURE", (2004, 37), "stub"), ("WARP_FLOOR", (2004, 40), "real"), ("SHORT_WARP", (2004, 41), "real"),
     ("WARP_COPY", (2004, 42), "real"), ("ANIM_RESET", (2004, 43), "real"), ("TEAM_EXIT", (2004, 44), "real"),
     ("HUMANITY", (2004, 45), "stub"),
-    ("OBJ_DESTROY", (2005, 1), "stub"), ("OBJ_RESTORE", (2005, 2), "stub"), ("OBJ_ENABLE", (2005, 3), "real"),
+    ("OBJ_DESTROY", (2005, 1), "real"), ("OBJ_RESTORE", (2005, 2), "real"), ("OBJ_ENABLE", (2005, 3), "real"),
     ("TREASURE", (2005, 4), "real"), ("OBJACT_INIT", (2005, 5), "real"), ("OBJACT_STATE", (2005, 6), "real"),
-    ("OBJ_ANIM", (2005, 7), "stub"), ("OBJ_REDESTROY", (2005, 8), "stub"), ("DAMAGE_OBJ", (2005, 9), "stub"),
+    ("OBJ_ANIM", (2005, 7), "real"), ("OBJ_REDESTROY", (2005, 8), "real"), ("DAMAGE_OBJ", (2005, 9), "stub"),
     ("OBJ_INVULN", (2005, 13), "stub"), ("OBJACT_IDX", (2005, 14), "real"), ("REROLL", (2005, 15), "stub"),
     ("SFX_DEL", (2006, 1), "real"), ("SFX_SPAWN", (2006, 2), "real"), ("SFX_ONESHOT", (2006, 3), "stub"),
     ("SFX_OBJ", (2006, 4), "stub"), ("SFX_OBJ_DEL", (2006, 5), "stub"),
@@ -185,40 +191,20 @@ def entities(game, map_id, msb, block_tris):
         if e["type_name"] == "SFX" and e.get("entity_id", -1) >= 0:
             reg = next((r for r in msb["regions"] if r["name"] == e.get("region")), None)
             ents.append([e["entity_id"], ENT_SFX, 0, 0, reg["pos"] if reg else (0, 0, 0), 0.0, (0, 0, 0), 0, None])
-    # colliders: objects that events switch on / off ((De)activate Object targets) with an hkx box body
-    toggled = set()
-    for ev in emevd.load(map_id, game).events:
-        for ins in ev.instrs:
-            if (ins.bank, ins.id) == (2005, 3) and ins.args:
-                toggled.add(ins.args[0])
-            elif (ins.bank, ins.id) == (2000, 0) and ins.args:
-                # targets passed in as event args (fog walls are X0_4 of a slotted event): every int arg
-                toggled.update(v for v in ins.args[2:] + ins.extra if isinstance(v, int))
-    hkx_cache = {}
+    # colliders: every object's hkx bodies (export_objects.py's breakables and animated objects have their own)
+    import area as area_mod
+    keep = area_mod.region(msb, map_id)
+    anim_parts = set(open(os.environ["ANIM_OBJ"]).read().split()) if os.environ.get("ANIM_OBJ") else set()
+    first = {}
+    for p in msb["parts"]:
+        if p["type_name"] != "Object" or p["name"] in anim_parts or not keep(*p["pos"]):
+            continue
+        for wc, half, yaw in object_boxes(game, p):
+            first.setdefault(p.get("entity_id", -1), len(colliders))
+            colliders.append(struct.pack("<3f3ffi", *wc, *half, yaw, p.get("entity_id", -1)))
     for ent in ents:
-        p = ent[8]
-        if p is None or p["type_name"] != "Object" or ent[0] not in toggled:
-            continue
-        model = p["model"]
-        if model not in hkx_cache:
-            try:
-                files = export_objects.objbnd(game, model)
-                h = files.get(model + ".hkx")
-                hkx_cache[model] = [b[7] for b in export_objects.bodies(h)] if h else []
-            except Exception as e:  # objbnd without a readable hkx: no collider (counted in the report)
-                print(f"export_emevd: {model}: no collision body ({type(e).__name__}: {e})")
-                hkx_cache[model] = []
-        boxes = [s for s in hkx_cache[model] if s[0] == "box"]
-        if not boxes:
-            continue
-        _, half, centre, rad = boxes[0]
-        yaw = _yaw(p["rot"])
-        c, s = math.cos(yaw), math.sin(yaw)
-        # MSB yaw turns object space into world space as x' = x cos + z sin, z' = -x sin + z cos (DS1 Y rotation)
-        wc = (p["pos"][0] + centre[0] * c + centre[2] * s, p["pos"][1] + centre[1],
-              p["pos"][2] - centre[0] * s + centre[2] * c)
-        ent[3] = len(colliders)
-        colliders.append(struct.pack("<3f3ffi", *wc, *(h + rad for h in half), yaw, ent[0]))
+        if ent[8] is not None and ent[8]["type_name"] == "Object" and ent[0] in first:
+            ent[3] = first[ent[0]]
     ents.sort(key=lambda e: e[0])
     out = [struct.pack("<iBBH3ff3fI8x", e[0], e[1], e[2], e[3], *e[4], e[5], *e[6], e[7]) for e in ents]
     return out, [struct.pack("<II", *r) for r in ranges], colliders
@@ -263,6 +249,58 @@ def switched_entities(game, map_id, ops=SWITCH_OPS):
     return {e for e in out if e > 0}
 
 
+_bodies = {}
+
+
+def object_boxes(game, p):
+    """[(world centre, half extents, yaw)] of MSB object part p's hkx bodies; [] for breakables, objects without a
+    readable hkx and scaled ones. Body rotations about y add to the part's yaw; tilted bodies become their upright
+    bound. Cylinders: their bounding box; a convex shape: the FLVER mesh bounds when it is the object's only body, else
+    none (TECH_DEBT event-11)."""
+    import export_objects
+    model = p["model"]
+    if model not in _bodies:
+        out = []
+        try:
+            files = export_objects.objbnd(game, model)
+            if not export_objects.is_breakable(files, model) and model + ".hkx" in files:
+                bounds = None
+                bl = export_objects.bodies(files[model + ".hkx"])
+                for _, _, rot, pos, _, _, _, shape in bl:
+                    if shape[0] == "box":
+                        _, half, centre, rad = shape
+                        half = tuple(h + rad for h in half)
+                    elif shape[0] == "cyl":
+                        _, cr, va, vb, crad = shape
+                        centre = tuple((a + b) / 2 for a, b in zip(va, vb))
+                        half = tuple(abs(a - b) / 2 + cr + crad for a, b in zip(va, vb))
+                    elif len(bl) > 1:  # one convex body of several (a door frame's hull): the mesh box would
+                        continue           # close the doorway; skipped (TECH_DEBT event-11)
+                    else:
+                        if bounds is None and model + ".flver" in files:
+                            bounds = export_objects.mesh_bounds(souls.flver(files[model + ".flver"])).get(None)
+                        if not bounds:
+                            continue
+                        lo, hi = bounds
+                        rot, pos = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], (0, 0, 0)
+                        centre, half = tuple((a + b) / 2 for a, b in zip(lo, hi)), tuple((b - a) / 2 for a, b in zip(lo, hi))
+                    c = tuple(pos[r] + sum(rot[r][k] * centre[k] for k in range(3)) for r in range(3))
+                    if abs(rot[1][1]) > 0.999:  # upright: yaw about y (x' = x cos + z sin)
+                        out.append((c, half, math.atan2(rot[0][2], rot[0][0])))
+                    else:
+                        out.append((c, tuple(sum(abs(rot[r][k]) * half[k] for k in range(3)) for r in range(3)), 0.0))
+        except Exception as e:  # objbnd without a readable hkx: no collider
+            print(f"export_emevd: {model}: no collision body ({type(e).__name__}: {e})")
+        _bodies[model] = out
+    if any(abs(s - 1) > 1e-3 for s in p["scale"]) or abs(p["rot"][0]) > 15 or abs(p["rot"][2]) > 15:
+        return []  # ASSUMED: scaled / steeply tilted objects keep no collider; a tilt up to 15 deg is ignored (chests)
+    yaw = _yaw(p["rot"])
+    c, s = math.cos(yaw), math.sin(yaw)
+    # MSB yaw turns object space into world space as x' = x cos + z sin, z' = -x sin + z cos (DS1 Y rotation)
+    return [((p["pos"][0] + bc[0] * c + bc[2] * s, p["pos"][1] + bc[1], p["pos"][2] - bc[0] * s + bc[2] * c), half,
+             yaw + by) for bc, half, by in _bodies[model]]
+
+
 def hit_ranges(game, map_id):
     """{collision part name: [(first tri, count)]} in this area / block's collision.bin numbering (tools/export_collision
     area_collision drops the same triangles build() does)."""
@@ -299,9 +337,12 @@ def treasures_objacts_lots(game, msb, E, common):
             # object's ID"); validDist is in cm (chest o0110: 70)
             row = OP.get(pid if pid > 0 else int(p["model"][1:]))
             dist = (row.validDist / 100.0) if row else 1.0
-            oa.append(struct.pack("<ii3fffiiB3x", e["obj_act_entity_id"], p.get("entity_id", -1), *p["pos"],
+            g = (lambda f, d: row[f] if row else d)
+            oa.append(struct.pack("<ii3fffiiBxhBBHiii", e["obj_act_entity_id"], p.get("entity_id", -1), *p["pos"],
                                   _yaw(p["rot"]), dist, pid if pid > 0 else int(p["model"][1:]), e["event_flag_id"],
-                                  e["obj_act_state"]))
+                                  e["obj_act_state"], g("objAnimId", -1), g("spQualifiedType", 0),
+                                  g("spQualifiedType2", 0), 0, g("spQualifiedId", 0), g("spQualifiedId2", 0),
+                                  g("spQualifiedPassEventFlag", -1)))
     IL = params.params("ItemLotParam")
     for ev in list(E.events) + list(common.events if common else []):  # Award Items literals + int event args
         for ins in ev.instrs:
