@@ -21,13 +21,19 @@ PROC_CAP = 8 * GiB          # one job process above this (RSS + swap) is a runaw
 MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this (wrapper shells free nothing)
 LOW_AVAIL = 4 * GiB         # system-low trigger: MemAvailable below this ...
 LOW_SWAP_PCT = 50           # ... and swap more than this % used (oomd kills at 90 % RAM + swap)
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "notes", "memwatch.log")
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+LOG = os.path.join(ROOT, "notes", "memwatch.log")
 
+# Work trees whose processes are disposable, matched by folder name so the same name works on the host and inside
+# a distrobox (different home paths): this checkout's folder, plus DSR_MEMWATCH_TREES (colon-separated folder names,
+# e.g. an older checkout that still runs jobs while work moves over).
+TREES = [t for t in [os.path.basename(ROOT)] + os.environ.get("DSR_MEMWATCH_TREES", "").split(":") if t] + ["dsr-ref"]
+TREE_RE = "|".join(re.escape(t) for t in dict.fromkeys(TREES))
 DISPOSABLE = re.compile(
-    r"dsr-ps2/|dsr-ref/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
+    r"(?<![\w.-])(?:" + TREE_RE + r")/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
     r"mips64r5900el-ps2-elf-|cc1 |ld\b.*proto\.elf|DarkSoulsRemastered\.exe|wine(server|64|-preloader)|"
     r"gamescope --backend headless|Xvfb :99|net\.pcsx2\.PCSX2|pcsx2-qt")
-JOB_CWD = re.compile(r"/dsr-ps2(/|$)|/dsr-ref(/|$)")
+JOB_CWD = re.compile(r"/(?:" + TREE_RE + r")(/|$)")
 PROTECT = re.compile(
     r"claude-desktop|/claude-code/|/claude |memwatch\.py|firefox|RuneLite|Jagex|steamwebhelper|steamrt64/steam|"
     r"plasmashell|kwin|discord|Discord|systemd|^/usr/bin/(kate|kwrite|code|codium|nvim|vim|gedit|dolphin|konsole)\b|progress\.sh")

@@ -6,7 +6,8 @@ of the file. Paths are relative to the repo root.
 
 You only need a few of these to build and play (see `README.md`). Heavy jobs (exports, builds, emulator tests) should
 run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM. (The maintainer's per-task notes,
-`notes/threads/`, hold extra usage details; they're local and not in the public repo.)
+`notes/threads/`, hold extra usage details; they live in the same checkout but `.gitignore` keeps everything in
+`notes/` except the public docs out of git.)
 
 ## Game data readers (`tools/`)
 | Tool | What it does |
@@ -99,8 +100,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | What it does |
 |---|---|
 | `tools/q` | Job queue with memory caps |
-| `tools/memwatch.py` | Host memory watchdog (memwatch.service) |
+| `tools/memwatch.py` | Host memory watchdog (memwatch.service); watches jobs in its own checkout, plus folder names in `DSR_MEMWATCH_TREES` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
 | `progress.sh` | Status of long background jobs |
-| `notes/oss/check.sh` | Pre-commit check for game-derived / personal files |
+| `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |

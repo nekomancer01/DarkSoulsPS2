@@ -49,14 +49,14 @@ reading the decompiled DSR code as the specification, with game data converted o
 - Lua AI scripts need a Lua 5.1 VM on the EE (feasible, ~200 KB).
 
 ## Resume after restart (2026-10-30)
-- Toolchain: ps2dev v2.0.0 in `~/tools/ps2dev-2.0.0/ps2dev` (tarball sha256 c8e5dedc…c028). `. ~/dsr-ps2/ps2/env.sh`
+- Toolchain: ps2dev v2.0.0 in `~/tools/ps2dev-2.0.0/ps2dev` (tarball sha256 c8e5dedc…c028). `. ps2/env.sh` (from the repo root)
 - Built: `ps2/vu1test/vu1.elf` (ps2sdk VU1 cube sample). `ps2/hello` is an ERL sample, does not link as ELF; ignore.
 - PCSX2: flatpak `net.pcsx2.PCSX2` (--user) installed.
   BIOS on host: `~/Downloads/scph77001-us.bin`.
 - Ghidra: persistent project `$DSR_GHIDRA_PROJECT` (host, default ~/Projects/dsr-ghidra; symlink ghidra/project; Ghidra forbids dot-dirs like .local in project paths).
   Trimmed analyzers via ghidra/scripts/DsrFastAnalysis.java; logs ghidra/logs/. JVM needs JAVA_TOOL_OPTIONS="-XX:-UseContainerSupport -Xlog:os+container=off" inside the Claude app (cgroup warnings break launch.sh).
 - Old REA command (temp project, deleted on exit):
-  `REA_GHIDRA_STARTUP_TIMEOUT_MS=14400000 npx -y rea-agents@6.8.0 analyze "<exe>" --provider ghidra --snapshot ~/dsr-ps2/rea/dsr.snapshot --format json > rea/analyze.json`
+  `REA_GHIDRA_STARTUP_TIMEOUT_MS=14400000 npx -y rea-agents@6.8.0 analyze "<exe>" --provider ghidra --snapshot rea/dsr.snapshot --format json > rea/analyze.json`
   (with GHIDRA_INSTALL_DIR/JAVA_HOME from ~/tools)
 
 ## Function database (fndb/)
@@ -87,7 +87,7 @@ reading the decompiled DSR code as the specification, with game data converted o
 - Resume: labels are committed per function; Ctrl+C / closing the window finishes the in-flight requests and exits
   (second Ctrl+C quits at once). DecompileList flushes each function; batch.sh imports a leftover work/decomp.jsonl first.
   Rerun the same command (`fndb/batch.sh`) to continue. Tested: stop at 12/24 → resume labeled the other 12.
-- Vector lookup: `~/osrs/.venv-wiki/bin/python fndb/fndb.py embed` (batch.sh runs it after labeling; only new/relabeled
+- Vector lookup: `$FNDB_PY fndb/fndb.py embed` (batch.sh runs it after labeling; only new/relabeled
   functions) → `fndb/dsr-functions-vec.sqlite` (bge-small-en-v1.5 384d via fastembed CUDA, sqlite-vec + FTS5).
   `… fndb.py search "load DCX archive" [-k 10] [--subsystem file] [--tier 2]`: hybrid vector + keyword (RRF).
   Test: 24 labels embedded in 0.3 s; a search takes ~1.2–2.4 s, almost all of it loading the embedding model.
@@ -104,7 +104,8 @@ reading the decompiled DSR code as the specification, with game data converted o
 ## Code search (fndb.py embed-code / code-search)
 - `dsr-functions-code.sqlite`: jina-embeddings-v2-base-code vectors (768-dim, max 2048 tokens) of the decompiled C,
   plus FTS5 over the same text. Header lines add name, referenced strings and English for Japanese strings (from jp/).
-- Run with `~/osrs/.venv-wiki/bin/python -I fndb.py ...`. `embed-code` is incremental (decomp_at); 27k functions
+- Run with `$FNDB_PY -I fndb.py ...` (a Python with fastembed + sqlite-vec: `FNDB_PY`, else `.venv-fndb/bin/python` in
+  the repo root, else python3). `embed-code` is incremental (decomp_at); 27k functions
   took ~6 min on the GPU (unload Ollama first: it fills the 8 GB card).
 - `code-search "describe it"` / `code-search --like ENTRY`; `--min-size` (default 120 B) hides stubs, which otherwise
   sit near every query. Good when there are strings / library code (zlib, Havok, ParamMan); weak for string-free
@@ -122,12 +123,12 @@ reading the decompiled DSR code as the specification, with game data converted o
 - Many exe debug strings already carry FromSoftware English glosses: "(Run)走り".
 
 ## Resume after reboot (2026-10-30 evening)
-Translation and the code-index rebuild are both resumable; inside the distrobox:
-1. `~/dsr-ps2/fndb/ollama-up.sh 2`
-2. `cd ~/dsr-ps2/jp && setsid nohup python3 -I translate.py > translate.out 2>&1 < /dev/null &`
-3. `cd ~/dsr-ps2/fndb && setsid nohup ./rebuild-code.sh > work/embed-code.log 2>&1 < /dev/null &`
+Translation and the code-index rebuild are both resumable; inside the distrobox, from the repo root:
+1. `fndb/ollama-up.sh 2`
+2. `(cd jp && setsid nohup python3 -I translate.py > translate.out 2>&1 < /dev/null &)`
+3. `(cd fndb && setsid nohup ./rebuild-code.sh > work/embed-code.log 2>&1 < /dev/null &)`
    (waits for translation, unloads Ollama, rebuilds dsr-functions-code.sqlite)
-4. Watch: `~/dsr-ps2/progress.sh`
+4. Watch: `./progress.sh`
 
 ## Japanese strings → functions (done 2026-10-30)
 - ExportFunctions only sees strings Ghidra typed as string data; it left the Japanese UTF-16/Shift-JIS strings
@@ -160,7 +161,7 @@ Translation and the code-index rebuild are both resumable; inside the distrobox:
 - Right-hand weapon: DS1/DSR flip 180 deg about X and Y (= Z) on R_Weapon (DSAnimStudio NewChrAsm isOldGame rback/rside).
 - Floor is drawn at the farthest depth (flat_z): real floor depths intermittently hid the character's legs.
 - Textures (2026-10-30, third pass): each mesh's DXT1 diffuse, mip <= 256 px (min width 128), quantized to 256
-  colours (Pillow median cut, so model.bin is built with PY = ~/osrs/.venv-wiki/bin/python), PSMT8 + CT32 CLUT in
+  colours (Pillow median cut, so model.bin is built with PY = a venv that has Pillow), PSMT8 + CT32 CLUT in
   CSM1 order, uploaded once into the VRAM left after the 640x448 CT24 frame/Z buffers (6 textures, 442 KB still free).
   Drawn with gsKit_prim_triangle_goraud_texture_3d (affine UVs), modulated by per-vertex light (0x80 = 1.0),
   GS_CMODE_REPEAT because DSR UVs run past 0..1; per-triangle UVs are shifted by whole texture sizes to stay >= 0.

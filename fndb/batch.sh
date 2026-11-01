@@ -5,6 +5,8 @@
 #                                         then label them: whole ctx bucket 4096 (x4), then 8192 (x2), then 16384 (x1)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# Python with fastembed + sqlite-vec for the vector step: FNDB_PY, else .venv-fndb in the repo root, else python3
+FNDB_PY=${FNDB_PY:-$([ -x "$HERE/../.venv-fndb/bin/python" ] && echo "$HERE/../.venv-fndb/bin/python" || echo python3)}
 G=$HERE/../ghidra
 WORK=$HERE/work
 mkdir -p "$WORK"
@@ -44,5 +46,5 @@ fi
 python3 -I "$HERE/fndb.py" status
 [ -n "$DECOMP_ONLY" ] && exit
 python3 -I "$HERE/fndb.py" label --tier "$TIER" "$@"
-"$HOME/osrs/.venv-wiki/bin/python" -I "$HERE/fndb.py" embed  # vectors for `fndb.py search`
+"$FNDB_PY" -I "$HERE/fndb.py" embed  # vectors for `fndb.py search`
 python3 -I "$HERE/fndb.py" status

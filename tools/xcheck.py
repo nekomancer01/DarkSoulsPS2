@@ -1,5 +1,5 @@
 """Cross-check our FromSoft readers (souls.py, havok_collision.py) against soulstruct (github.com/Grimrukh/soulstruct,
-installed in ~/dsr-ps2/.venv-tools) for any DS1R map.
+installed in .venv-tools in the repo root, see tools/requirements-xcheck.txt) for any DS1R map.
 
   .venv-tools/bin/python tools/xcheck.py [msb|col|tae|params|all] [area ...] [--game DIR] [--out report.json] [-v]
 
