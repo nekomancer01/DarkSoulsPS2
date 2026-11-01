@@ -63,6 +63,8 @@ if held; then
     exec prlimit --as=$((GB << 30)) -- "$@"
 fi
 RES=/tmp/dsr-q; mkdir -p "$RES"
+# waiting jobs are listed in /tmp/dsr-q-wait (<pid>.<cap GB>) for tools/qstat.py and the dashboard
+WAITF=/tmp/dsr-q-wait/$$.$GB; mkdir -p /tmp/dsr-q-wait; touch "$WAITF"
 T0=$(date +%s)
 echo "[q] waiting (cap ${GB} GB, reserve ${R} GB, budget ${Q_BUDGET} GB): $*" >&2
 # the build lock is taken together with the reservation, never held while waiting for budget: a waiting build then
@@ -90,11 +92,14 @@ if [ -z "$GOT" ]; then  # waited 1 h: run anyway (a build still waits for its di
     [ -n "$IS_MAKE" ] && flock 8
     touch "$RES/$$.$R"
 fi
+rm -f "$WAITF"
 T1=$(date +%s)
 echo "[q] start after $(( T1 - T0 )) s (${AV} GB free, ${USED} GB reserved, cap ${GB} GB, reserve ${R} GB): $*" >&2
 # one log for the whole repo: a worktree (tools/worktree.sh) logs into the main tree's notes/
 LOGDIR=$ROOT/notes
 COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -d "${COMMON%/.git}/notes" ] && LOGDIR=${COMMON%/.git}/notes
+# DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
+[ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
 WHERE=${ROOT##*/}${B:+ ${B/$ROOT\//}}
 echo "$(date '+%F %T') start pid $$ cap ${GB}G res ${R}G (reserved ${USED}G) wait $(( T1 - T0 )) s [$WHERE]: $*" >> "$LOGDIR/jobq.log"
 # the job gets no copy of the lock fds: a daemon it starts (e.g. Xvfb :99 from pcsx2-run.sh) would otherwise hold

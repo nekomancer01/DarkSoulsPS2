@@ -2,6 +2,7 @@
 /build/
 /wt/
 /config.local.mk
+/tools/hosts.local
 .build.lock
 .job.lock
 *.lock
