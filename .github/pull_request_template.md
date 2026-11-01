@@ -4,13 +4,19 @@
 
 ## Verification
 
-<!-- AGENTS.md section 4. The GitHub checks cover hygiene, the VU1 tests and a data-free compile; everything below
-needs the game data and PCSX2, so it is run on a PC and reported here. -->
+<!-- AGENTS.md section 4. The GitHub checks cover hygiene, the VU1 tests and a data-free compile. The PCSX2 checks below
+need the game data, so they run on a PC and are reported here. Scale the run to the change: a full all-area
+tools/test-all.sh is for releases / public exports or a nightly run, not for every PR. -->
 
-- [ ] Plain build boots: `make -C ps2/proto` (and `MAP=m10_01_00_00` when area code changed)
-- [ ] Headless run: `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` or the relevant `ps2/proto/tests/*.txt` script
-- [ ] `tools/test-all.sh` step summary pasted below (render-base is informational until the baseline is re-accepted)
-- [ ] Budgets hold: 30 fps, at least 1.5 MB free EE RAM in the heaviest spot, no "Not enough VRAM" in the log
+Every PR:
+- [ ] Incremental build boots: `make -C ps2/proto` (plus `MAP=<area>` for each area the change touches); exports stay cached
+- [ ] Scoped smoke run: `tools/test-all.sh --no-build --areas <touched areas> --max 20`, step summary pasted below
+- [ ] Budgets hold at the spots tested: 30 fps, at least 1.5 MB free EE RAM, no "Not enough VRAM" in the log
+
+Only when the change calls for it (tick or delete):
+- [ ] Streaming / world / enemy code: `ps2/proto/tests/world_*.txt` through `tools/test-run.py`
+- [ ] Exporter or file-format change: `make` re-runs the changed exporters (they are Makefile dependencies) for the touched areas and one other area (AGENTS.md section 3), then the scoped run
+- [ ] Rendering change: render-last diff reviewed (render-base is informational until the baseline is re-accepted with `--accept`)
 
 | Spot / test | fps min | frame ms max | free EE RAM min | before → after |
 |---|---|---|---|---|

@@ -111,7 +111,8 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
   it opens or resolves.
 - Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/offline.sh` and
   `tools/ci/compile.sh` (no game data, so no PCSX2). Run them locally before pushing. The PCSX2 results go in the
-  PR template's Verification section.
+  PR template's Verification section, scaled to the change: a scoped `tools/test-all.sh --no-build --areas ...`
+  run per PR, the full all-area suite before a public export or nightly.
 
 ## 8. Where to start
 
