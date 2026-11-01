@@ -1,7 +1,8 @@
 /* DSR -> PS2 character prototype: the Warrior with a Longsword on a white plane.
  * Controls (DualShock 2): left stick move (light tilt walks), Circle tap = roll / hold = dash, R1 = attack,
- * right stick = camera, L3 = helm off / on (debug), Select = debug HUD. With no controller input for 5 s it plays a
- * scripted demo (testscript.c); a test script from argv (test=<file>) drives a test run instead. */
+ * right stick = camera, L3 = helm off / on (debug), Select = debug HUD. A test script from argv (test=<file>) drives a
+ * test run instead. The idle demo walk (testscript.c) is test-only: "option demo" in a script, or a build with
+ * make EE_DBGINFOFLAGS=-DIDLE_DEMO. */
 #include <kernel.h>
 #include <sifrpc.h>
 #include <loadfile.h>
@@ -237,6 +238,9 @@ int main(int argc, char **argv)
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
+#ifdef IDLE_DEMO
+    test_opts |= TEST_DEMO;  /* demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO): the idle demo without a script */
+#endif
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
     unsigned t_load = cpu_ticks();
@@ -386,8 +390,8 @@ int main(int argc, char **argv)
             in = (Input){0};
             idle = 0;
         }
-        int demo = idle > 5 && !(test_opts & TEST_NODEMO) && !test_active();
-        if (test_active() || demo)  /* test script (pad ignored), else the idle demo */
+        int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
+        if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
             test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
 #ifdef COL_TEST
         /* collision / movement check builds (make EE_DBGINFOFLAGS=-DCOL_TEST=n), from the spawn after 0.5 s:

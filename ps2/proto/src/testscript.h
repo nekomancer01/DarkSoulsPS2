@@ -1,12 +1,14 @@
 /* In-ELF test runner (tools/test-*.sh, tools/pine.py). A plain-text script loaded at boot drives the pad, camera,
  * teleports, waits and screenshot markers, so a test needs no rebuild. The script path comes from the ELF's argv
  * (PCSX2 -gameargs 'test=tests/x.txt', ps2client execee host:proto.elf test=...), relative to host: (the ELF's folder).
- * Without one the built-in demo script plays after 5 s without pad input, as before.
+ * Without one the pad drives the player. The built-in demo walk (after 5 s without pad input) is test-only: it plays
+ * only when a script asks for it ("option demo") or in a demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO).
  *
  * Script: one command per line, '#' comments, times in game seconds (the frame dt main.c uses):
- *   option noenemies|hud|holes|nodemo|skipmiss   boot options (top of the file): no enemy roster / debug HUD /
- *                           magenta colour clear so uncovered pixels show / no idle demo / a spawn without collision
- *                           floor skips to the next spawn
+ *   option noenemies|hud|holes|demo|skipmiss   boot options (top of the file): no enemy roster / debug HUD /
+ *                           magenta colour clear so uncovered pixels show / the idle demo walk once the script has
+ *                           ended or has no commands (off otherwise; "nodemo" is still accepted, a no-op) / a spawn
+ *                           without collision floor skips to the next spawn
  *   spawn x y z [yaw]       teleport the player onto the collision floor under (x, y, z) (y + 3 .. y - 10 m)
  *   cam yaw pitch           camera yaw / pitch in rad (absolute), held until "cam off"; "cam off" = pad/script stick
  *   pitch p                 camera pitch only (yaw as the last cam / approach set it)
@@ -37,7 +39,7 @@
 #define TEST_NOENEMIES 1
 #define TEST_HUD 2
 #define TEST_HOLES 4
-#define TEST_NODEMO 8
+#define TEST_DEMO 8  /* "option demo": idle demo walk on (off by default) */
 
 /* Shared with the host (tools/pine.py MAILBOX layout): keep field order and sizes, bump version on change */
 typedef struct {

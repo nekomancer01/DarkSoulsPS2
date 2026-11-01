@@ -125,7 +125,9 @@ make -C ps2/proto iso      # writes build/proto.iso
 | Select | Debug HUD (fps, timings, free memory) |
 | L3 | Debug: helmet off / on |
 
-With no input for 5 seconds, a scripted demo starts. Press any button to take over.
+The player is always under your control. The old idle demo walk is kept for testing only: build with
+`make EE_DBGINFOFLAGS=-DIDLE_DEMO` (or put `option demo` in a test script) and it starts after 5 seconds without input;
+press any button to take over.
 
 ## Troubleshooting
 
