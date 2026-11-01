@@ -3,8 +3,11 @@
 # Bootable PS2 disc image (tools-hwperf): SYSTEM.CNF + the ELF under its boot id + every pack under DATA\, ISO9660
 # level 1 (upper case 8.3 names with ;1, what the BIOS CDVD driver reads). Pack names follow pack.c pack_path():
 # '_' dropped, upper case, names cut to their last 8 chars ("data/m10_01_00_00/c1000.pak" -> DATA/10010000/C1000.PAK).
-# Sector order (xorriso sort_weight): SYSTEM.CNF + ELF first, then the player / menu / area packs, then the rest, each
-# area's packs contiguous. Boots in PCSX2 (tools/ps2-pcsx2.sh iso) and in OPL / on a burnt disc with a modchip (untested).
+# Sector order (xorriso sort_weight, TECH_DEBT world-6): SYSTEM.CNF + ELF first, then the boot packs (menu, world,
+# common, player), then the world blocks of data/world.pak in neighbour order from the boot block (breadth first over
+# its neighbour masks), each block's pack followed by its character packs (top-level c*.pak for the boot block,
+# data/<block>/ for the others), then every other area pack with its directory. Without world.pak: the boot packs,
+# then each area pack with its directory, by name. Boots in PCSX2 (tools/ps2-pcsx2.sh iso) and in OPL / on a burnt disc with a modchip (untested).
 # xorriso: user-local in ~/tools/xorriso (Ubuntu xorriso 1.5.6 debs, see notes/threads/tools-hwperf.md).
 set -e
 ELF=$(realpath "$1"); DATA=$(realpath "$2"); OUT=$(realpath -m "$3"); ID=${4:-DSRP_000.01}
@@ -35,8 +38,64 @@ while IFS= read -r f; do
     mkdir -p "$(dirname "$STAGE/$dst")"; cp "$f" "$STAGE/$dst"
     WEIGHTS+=(-find "/$dst" -exec sort_weight $w --); w=$((w - 1))
     echo "  $rel -> $dst ($(stat -c %s "$f") B)"
-# order: top-level packs (player, menu, the default area) first, then each area directory together
-done < <(find "$DATA" -maxdepth 1 -name '*.pak' | sort; find "$DATA" -mindepth 2 -name '*.pak' | sort)
+done < <(python3 -I - "$DATA" <<'PY'
+import os, struct, sys
+data = sys.argv[1]
+def lz4(src, n):  # LZ4 block format (tools/pack.py entries)
+    out, i = bytearray(), 0
+    while i < len(src):
+        t = src[i]; i += 1
+        l = t >> 4
+        if l == 15:
+            while True:
+                b = src[i]; i += 1; l += b
+                if b != 255: break
+        out += src[i:i + l]; i += l
+        if i >= len(src): break
+        off = src[i] | src[i + 1] << 8; i += 2
+        m = t & 15
+        if m == 15:
+            while True:
+                b = src[i]; i += 1; m += b
+                if b != 255: break
+        for _ in range(m + 4): out.append(out[-off])
+    return bytes(out[:n])
+def world_blocks():  # data/world.pak (tools/export_world.py world.bin): [(pack name, neighbour mask)], boot first
+    try:
+        d = open(os.path.join(data, 'world.pak'), 'rb').read()
+    except OSError:
+        return []
+    off, raw, _, blocks, bs = struct.unpack_from('<5I', d, 16 + 32)
+    cs, p, w = struct.unpack_from(f'<{blocks}I', d, off), off + 4 * blocks, b''
+    for c in cs:
+        k = c & 0x7fffffff
+        w += d[p:p + k] if c >> 31 else lz4(d[p:p + k], min(bs, raw - len(w))); p += k
+    assert w[:4] == b'DSW1', 'world.pak: no world.bin'
+    rows = [struct.unpack_from('<24s16s4f2I', w, 16 + 64 * i) for i in range(struct.unpack_from('<I', w, 8)[0])]
+    return [(r[0].rstrip(b'\0').decode(), r[6] & 1, r[7]) for r in rows]
+paks = sorted(os.path.relpath(os.path.join(r, f), data) for r, _, fs in os.walk(data) for f in fs if f.endswith('.pak'))
+top = [p for p in paks if '/' not in p]
+order = [p for p in ('menu.pak', 'world.pak', 'common.pak', 'c0000.pak') if p in top]
+def area(name, chrs):
+    order.extend(p for p in [name + '.pak'] + chrs if p in paks and p not in order)
+blocks = world_blocks()
+boot = next((i for i, b in enumerate(blocks) if b[1]), None)
+if boot is not None:
+    seen, queue = {boot}, [boot]
+    while queue:
+        i = queue.pop(0)
+        name = blocks[i][0]
+        area(name, [p for p in top if p[0] == 'c'] if i == boot else [p for p in paks if p.startswith(name + '/')])
+        for k in range(len(blocks)):
+            if blocks[i][2] >> k & 1 and k not in seen:
+                seen.add(k), queue.append(k)
+for p in paks:  # other areas (single-area builds' packs), each with its directory; then anything left
+    if '/' not in p and p not in order:
+        area(p[:-4], [q for q in paks if q.startswith(p[:-4] + '/')] if p[0] == 'm' else [])
+order += [p for p in paks if p not in order]
+print('\n'.join(os.path.join(data, p) for p in order))
+PY
+)
 rm -f "$OUT"
 "$XORRISO" -report_about WARNING -outdev "$OUT" -rockridge off -joliet off -compliance iso_9660_level=1 \
     -volid DSRPS2 -system_id PLAYSTATION -application_id "DSR PS2 PROTO" -map "$STAGE" / "${WEIGHTS[@]}" -commit \
