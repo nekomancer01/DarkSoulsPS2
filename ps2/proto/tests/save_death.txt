@@ -1,0 +1,21 @@
+# save-6: a death autosaves (player.c respawn -> save_request). Runs off the east cliff from the bonfire spawn like
+# make EE_DBGINFOFLAGS=-DCOL_TEST=5 (2.0 rad, lethal fall, ESD fall death, respawn), then checks that one save was
+# written and that it holds the death. Firelink build:
+#   tools/q -m 4 python3 tools/test-run.py build/proto.elf ps2/proto/tests/save_death.txt build/test/save_death
+option save host deathtest
+option noenemies
+wait 1
+wipe
+check seq 0
+check deaths 0
+cam 2.0 0.25
+stick 0 1
+wait 3
+stick 0 0
+wait 10
+check deaths 1
+check seq 1
+load
+check seq 1  # the death save is the newest valid slot
+log save_death done
+end

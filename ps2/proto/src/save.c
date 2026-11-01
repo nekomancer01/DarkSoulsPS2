@@ -307,6 +307,10 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("item", inv_count(a), b);
         if (!strcmp(what, "loaded") && sscanf(r, "%lu", &a) == 1)
             return check("loaded", loaded, a);
+        if (!strcmp(what, "deaths") && pl && sscanf(r, "%lu", &a) == 1)
+            return check("deaths", pl->deaths, a);
+        if (!strcmp(what, "seq") && sscanf(r, "%lu", &a) == 1)  /* sequence of the last save written or loaded, 0 after wipe */
+            return check("seq", seq, a);
         printf("TEST error check: bad '%s'\n", line);
         return -1;
     } else {
