@@ -2,8 +2,9 @@
 """This machine's job-queue state (tools/q) as one JSON object, for tools/qd (picks a machine for a job) and the
 dashboard. Stdlib only, reads /proc and /tmp/dsr-q; runs in well under a second.
 Fields (shared with tools/jobdash.py's GET /status):
-  host, t, cpus, budget_gb, reserved_gb, free_gb, mem_avail_gb, mem_total_gb, swap_pct,
-  memwatch: {avail_gb, swap_pct, level: ok|tight|act} or null when memwatch isn't running,
+  host, t, cpus, budget_gb, reserved_gb, free_gb, mem_avail_gb, mem_total_gb, swap_pct, swap_used_gb,
+  memwatch: {avail_gb, swap_gb, swap_pct (null: memwatch's swap trigger is GB used), level: ok|tight|act} or null when
+  memwatch isn't running,
   running: [{pid, res_gb, cap_gb, cmd, tree, build, mem_gb, cpu, since}], waiting: [{pid, cap_gb, cmd, since}]
 A machine fits a job of R GB when free_gb >= R, mem_avail_gb >= R and memwatch.level != act (the rule tools/q
 admits by, plus memwatch). mem_gb / cpu are null here (one snapshot; the dashboard samples them over time).
@@ -74,14 +75,14 @@ def entries(d):
             yield int(m.group(1)), int(m.group(2))
 
 
-def memwatch(avail, swap_pct):
-    """memwatch's view (its thresholds, read from tools/memwatch.py's env overrides) when it is running"""
+def memwatch(avail, swap_gb):
+    """memwatch's view (its thresholds: tools/memwatch.py's defaults and env overrides) when it is running"""
     running = False
     for p in os.listdir("/proc"):
         if p.isdigit():
             try:
                 with open(f"/proc/{p}/cmdline", "rb") as f:
-                    if b"memwatch.py" in f.read():
+                    if any(a.endswith(b"memwatch.py") for a in f.read().split(b"\0")[:3]):
                         running = True
                         break
             except OSError:
@@ -89,14 +90,14 @@ def memwatch(avail, swap_pct):
     if not running:
         return None
     low = float(os.environ.get("MEMWATCH_LOW_GB", 2.5))
-    low_swap = float(os.environ.get("MEMWATCH_LOW_SWAP", 75))
-    if avail < low and swap_pct > low_swap:
+    low_swap = float(os.environ.get("MEMWATCH_LOW_SWAP_GB", 16))
+    if avail < low and swap_gb >= low_swap:
         level = "act"
-    elif avail < low * 1.5 or swap_pct > low_swap * 0.9:
+    elif avail < low * 1.5 or swap_gb >= low_swap * 0.9:
         level = "tight"
     else:
         level = "ok"
-    return {"avail_gb": round(avail, 2), "swap_pct": round(swap_pct, 1), "level": level}
+    return {"avail_gb": round(avail, 2), "swap_gb": round(swap_gb, 2), "swap_pct": None, "level": level}
 
 
 def status():
@@ -104,7 +105,8 @@ def status():
     m = meminfo()
     budget = int(os.environ.get("DSR_Q_BUDGET", 20))
     avail = m["MemAvailable"] / gib
-    swap_pct = 100.0 * (m["SwapTotal"] - m["SwapFree"]) / m["SwapTotal"] if m["SwapTotal"] else 0.0
+    swap_gb = (m["SwapTotal"] - m["SwapFree"]) / gib
+    swap_pct = 100.0 * swap_gb * gib / m["SwapTotal"] if m["SwapTotal"] else 0.0
     running, waiting, reserved = [], [], 0
     for pid, gb in entries(RES):
         p = proc(pid)
@@ -129,7 +131,7 @@ def status():
     return {"host": socket.gethostname(), "t": time.time(), "cpus": os.cpu_count(), "budget_gb": budget,
             "reserved_gb": reserved, "free_gb": max(0, budget - reserved), "mem_avail_gb": round(avail, 2),
             "mem_total_gb": round(m["MemTotal"] / gib, 2), "swap_pct": round(swap_pct, 1),
-            "memwatch": memwatch(avail, swap_pct), "running": running, "waiting": waiting}
+            "swap_used_gb": round(swap_gb, 2), "memwatch": memwatch(avail, swap_gb), "running": running, "waiting": waiting}
 
 
 def fits(s, gb):
