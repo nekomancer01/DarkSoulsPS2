@@ -83,6 +83,11 @@ NEAR = float(os.environ.get("NEAR", 4.0))
 STREAM = os.environ.get("STREAM") == "1"
 EPS_FAR = float(os.environ.get("EPS_FAR", (6 / 568) ** 2))
 STREAM_D = float(os.environ.get("STREAM_D", 32.0))
+# far-only cells (STREAM_FAR, the backdrop): their own coarse error. QEM's point-to-plane error lets vertices slide
+# along a face's plane, so silhouettes move far more than EPS_FAR says: Firelink's ring wall (render-12) rose ~20 px
+# with merlons / pillar caps collapsed and crack pinholes at 8 px, and matches DSR at 3 px. ASSUMED 3 px (finer: 1 px
+# costs Firelink's whole near arena when applied to every coarse cell; backdrop-only it is a few k tris).
+BACKDROP_EPS = float(os.environ.get("BACKDROP_EPS", (3 / 568) ** 2))
 # cells whose centre is farther than this from every navmesh vertex never come within mapstream.c's 40 m load radius
 # (+ half a cell diagonal + margin): one resident level, simplified without cell cuts (only their border with streamed
 # cells stays locked), no near blob
@@ -1253,7 +1258,7 @@ def far_cells(meshes, nav_v):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None):
+                    far=frozenset(), area_k=None, eps_far=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
@@ -1261,7 +1266,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     fit BUDGET triangles (foliage not counted: map.c thins it by distance), or EPS (eps_fixed) if set. Each mesh's
     src triangles (wedge triples) become out = corners (position, wedge). cells (STREAM): each group is cut into
     CHUNK_GRID cells by triangle centroid, positions on the cuts are locked, and out + "_cell" gets each triangle's
-    cell; floor: the view distance floor (NEAR)."""
+    cell; floor: the view distance floor (NEAR); eps_far: the threshold of the far cells' jobs (else the same)."""
     import numpy as np
     import simplify
     import simplify_pool
@@ -1370,7 +1375,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         meshes[mi][out] = []
         meshes[mi][out + "_cell"] = []
     for (pos, _, _, _, _), attr, (T0, steps), c in zip(jobs, attrs, logs, jcell):
-        for t in simplify.replay(T0, steps, eps):
+        for t in simplify.replay(T0, steps, eps_far if c == "far" and eps_far is not None else eps):
             mi = attr[t[0][1]][0]
             meshes[mi][out].append(tuple((pos[p], attr[a][1]) for p, a in t))
             meshes[mi][out + "_cell"].append(c)
@@ -1458,7 +1463,7 @@ def main():
             m["tris_in"] = m["tris"]
         far = far_cells(meshes_in, nav_v)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
-                        floor=STREAM_D, cells=True)
+                        floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS))
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0)
