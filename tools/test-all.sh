@@ -50,7 +50,8 @@ if [ -n "$DO_BUILD" ]; then
         step build-$A tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto MAP=$A && make -C ps2/proto MAP=$A sym"
     done
 fi
-step smoke tools/q -m 3 "$PY" tools/test-smoke.py "$RUN/smoke" --areas "$AREAS" --max "$MAX" $GSDUMP
+# areas side by side (SMOKE_JOBS, default 2; tools/test-smoke.py --jobs): one headless PCSX2 each
+step smoke tools/q -m 4 "$PY" tools/test-smoke.py "$RUN/smoke" --areas "$AREAS" --max "$MAX" $GSDUMP
 LAST=$(readlink -f "$BUILD/test/last" 2>/dev/null)
 if [ -n "$LAST" ] && [ -d "$LAST/smoke" ]; then
     step render-last tools/q -m 3 "$PY" tools/test-gsdump.py compare "$RUN/smoke" "$LAST/smoke" "$RUN/regress-last.html"
@@ -67,6 +68,8 @@ if [ -f "$RUN/smoke/smoke.json" ] && [ -n "$ELFS" ]; then
     "$PY" tools/test-perf.py record "$RUN/smoke" "$BUILD/test/perf-history.csv" $ELFS
     step perf "$PY" tools/test-perf.py check "$BUILD/test/perf-history.csv" $ELFS --json "$RUN/perf.json"
 fi
+# what this run tested (tools/runstamp.py): git revision + uncommitted-change hash, ELF hashes; shown in report.html
+"$PY" tools/runstamp.py $ELFS > "$RUN/stamp.json" 2>/dev/null
 ln -sfn "$RUN" "$BUILD/test/last"
 [ -n "$ACCEPT" ] && ln -sfn "$RUN" "$BUILD/test/baseline"
 "$PY" tools/test-report.py "$RUN" > /dev/null

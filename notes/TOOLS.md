@@ -30,6 +30,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | Output |
 |---|---|
 | `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
 | `export_collision.py` | collision.bin |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
 | `export_chr.py`, `export_enemies.py` | Enemy / NPC models, placements |
@@ -57,7 +58,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `pcsx2-run.sh` | Boot an ELF in PCSX2: headless + screenshot, or a visible window |
 | `test-all.sh` | Build + smoke test + render diff + perf check in one run |
-| `test-run.py` | Run one test script headless |
+| `test-run.py` | Run one test script headless (`--turbo`: no speed limit, for functional runs) |
 | `test-smoke.py` | Autotest smoke test |
 | `test-gsdump.py` | Graphics regression diff |
 | `test-perf.py` | Perf history |
@@ -99,7 +100,10 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 ## Infrastructure
 | Tool | What it does |
 |---|---|
-| `tools/q` | Job queue with memory caps |
+| `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
+| `tools/newbuild` | Seed a new build dir (`make BUILD=...`) from an existing build, so only what changed re-exports |
+| `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
+| `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service); watches jobs in its own checkout, plus folder names in `DSR_MEMWATCH_TREES` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
 | `progress.sh` | Status of long background jobs |

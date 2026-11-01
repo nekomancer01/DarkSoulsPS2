@@ -4,7 +4,8 @@
 Why: on 2026-10-31 systemd-oomd killed the whole Claude desktop scope twice (11:27, 11:35; RAM + swap > 90 %),
 taking every session down with it. oomd picks the biggest cgroup, so one runaway job inside a session kills them
 all. This watchdog acts earlier and kills only disposable job processes:
-  - any disposable process whose RSS + swap exceeds PROC_CAP (runaway job), at once;
+  - any disposable process whose memory (PSS + swap: shared pages split between the processes sharing them, RSS
+    before 2026-11-01) exceeds PROC_CAP (runaway job), at once;
   - when the system is low (MemAvailable < LOW_AVAIL and swap use > LOW_SWAP_PCT), the largest disposable process,
     one per POLL interval, until the system recovers.
 Disposable = command line matches DISPOSABLE and none of PROTECT. The user's apps (Claude, browser, RuneLite,
@@ -19,8 +20,11 @@ GiB = 1 << 30
 POLL = 2.0
 PROC_CAP = 8 * GiB          # one job process above this (RSS + swap) is a runaway
 MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this (wrapper shells free nothing)
-LOW_AVAIL = 4 * GiB         # system-low trigger: MemAvailable below this ...
-LOW_SWAP_PCT = 50           # ... and swap more than this % used (oomd kills at 90 % RAM + swap)
+# system-low trigger: MemAvailable below LOW_AVAIL and swap more than LOW_SWAP_PCT % used (oomd kills at 90 % RAM +
+# swap). Was 4 GB / 50 %: the user's swap sits near 50 % at idle, so it killed map exports at 3.3-4.0 GB available
+# (9 times 2026-10-31 18:41 .. 11-01 13:48); lowered with the user's OK 2026-11-01.
+LOW_AVAIL = int(float(os.environ.get("MEMWATCH_LOW_GB", 2.5)) * GiB)
+LOW_SWAP_PCT = float(os.environ.get("MEMWATCH_LOW_SWAP", 75))
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 LOG = os.path.join(ROOT, "notes", "memwatch.log")
 
@@ -97,6 +101,20 @@ def descendants(ps, root):
     return seen
 
 
+def pss(pid):
+    """Proportional set size + swap of a process (/proc/<pid>/smaps_rollup), or None. Unlike RSS, pages shared between
+    processes count once in total: the forked workers of one job no longer each count the parent's memory as theirs."""
+    try:
+        t = open(f"/proc/{pid}/smaps_rollup").read()
+    except OSError:
+        return None
+    m = re.search(r"^Pss:\s+(\d+)", t, re.M)
+    if not m:
+        return None
+    sw = re.search(r"^SwapPss:\s+(\d+)", t, re.M) or re.search(r"^Swap:\s+(\d+)", t, re.M)
+    return (int(m.group(1)) + (int(sw.group(1)) if sw else 0)) * 1024
+
+
 def disposable(ps):
     """Disposable processes; a headless PCSX2 instance counts with its whole process tree."""
     hl = set()
@@ -115,6 +133,11 @@ def disposable(ps):
         # 24 GB unseen, so a job is also any process whose working directory is inside the project
         if DISPOSABLE.search(c) or JOB_CWD.search(p["cwd"]):
             res.append(p)
+    for p in res:  # RSS overcounts shared pages: measure the candidates that matter by PSS (reading smaps costs more)
+        if p["mem"] >= MIN_KILL:
+            q = pss(p["pid"])
+            if q is not None:
+                p["mem"] = q
     return res
 
 
@@ -150,7 +173,7 @@ def kill(p, why, ps, dry):
 
 def main():
     dry = "--dry-run" in sys.argv
-    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process, low < {LOW_AVAIL / GiB:.0f}G avail + > {LOW_SWAP_PCT}% swap)"
+    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process, low < {LOW_AVAIL / GiB:.1f}G avail + > {LOW_SWAP_PCT}% swap)"
         + (" DRY RUN" if dry else ""))
     while True:
         ps = procs()

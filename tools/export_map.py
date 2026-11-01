@@ -1250,9 +1250,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     src triangles (wedge triples) become out = corners (position, wedge). cells (STREAM): each group is cut into
     CHUNK_GRID cells by triangle centroid, positions on the cuts are locked, and out + "_cell" gets each triangle's
     cell; floor: the view distance floor (NEAR)."""
-    import multiprocessing
     import numpy as np
     import simplify
+    import simplify_pool
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
@@ -1327,14 +1327,10 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
         j[4] = [1.0 / (x * x) for x in d]
-    order = sorted(range(len(jobs)), key=lambda j: -len(jobs[j][2]))
-    # SIMPLIFY_PROCS: fewer workers for big exports (each fork of a 4 GB process can grow; memwatch killed 16 for Burg's
-    # whole MSB)
-    with multiprocessing.Pool(min(int(os.environ.get("SIMPLIFY_PROCS", 16)), os.cpu_count() or 1)) as pool:
-        res = dict(zip(order, pool.map(functools.partial(simplify.run, area_k=area_k), [jobs[j] for j in order],
-                                       chunksize=1)))
+    # cached by job content, run on forkserver workers that are retried when one dies (tools/simplify_pool.py;
+    # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
+    logs = simplify_pool.run_jobs(jobs, area_k=area_k)
     grass = sum(len(m[src]) for m in meshes if m["keep"] and not m["grass"])
-    logs = [res[j] for j in range(len(jobs))]
     full = sum(len(t) for t, _ in logs)
     # every step of every group as (cost, triangles removed): the count at a threshold is one masked sum
     cost = np.array([s[0] for _, steps in logs for s in steps])

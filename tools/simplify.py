@@ -157,7 +157,9 @@ def simplify(pos, wpos, tris, locked, scale, area_k=None):
         distance of u from the surface after the collapse: the planes of its moved triangles and, on a border, the
         new border edges)"""
         removed, keep, amap = [], [], {}
-        for t in vt[u]:
+        # ascending triangle ids: the sums below (area lost, torn area) and the step records then do not depend on
+        # set iteration order, which lets tools/native/simplify.c reproduce every step exactly
+        for t in sorted(vt[u]):
             tp = TP[t]
             if v in tp:
                 removed.append(t)
