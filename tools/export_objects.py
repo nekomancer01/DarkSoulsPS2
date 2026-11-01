@@ -61,7 +61,7 @@ SKIN_BATCH_TRIS, SKIN_BATCH_BYTES = 31, 96 * 32  # model.c: VU1_SKIN_TRIS, SK_V 
 # per block; LOD face set ANIM_LOD (doors are seen up close: 0), textures at TEX like the pots (VRAM is tight)
 ANIM_BUDGET = float(os.environ.get("ANIM_BUDGET", 0.25))  # MB per area / block
 ANIM_LOD = int(os.environ.get("ANIM_LOD", 0))
-ANIM_TEX_H = int(os.environ.get("ANIM_TEX_H", 64))  # texture height (width 128)
+ANIM_TEX_H = int(os.environ.get("ANIM_TEX_H", 16))  # texture height (width 128; VRAM: 2 KB each at 16)
 ANIM_MAX_TRIS = 600  # a type over this takes the next LOD (skin streams ~100 B per triangle)
 # Elevators (A9 moves the platform and the player on it) and objects whose bones leave model.bin's +-8 m range stay
 # static map objects; their anims stay event stubs
@@ -450,7 +450,8 @@ def anim_objects(game, map_id, msb, keep, dds):
 
 def anim_texture(mb, name, d):
     """Shared texture index of DDS d (DXT, or BC7 as the chest o0110's) at 128 x ANIM_TEX_H texels at most (PSMT8 wants
-    128 wide; VRAM: 8 KB each at 64), -1 without one"""
+    128 wide; VRAM: 2 KB each at 16, the default: animated textures stay resident from boot and
+    the Burg block needs > 74 KB free at its load with enemies on; 32 and 64 broke world_cross), -1 without one"""
     if not d:
         return -1
     if name not in mb.tex_index:
