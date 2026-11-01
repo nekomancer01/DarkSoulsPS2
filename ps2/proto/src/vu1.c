@@ -11,6 +11,12 @@
  * OFFSET 386); a skin batch is a 9-qword header + 4 qwords per vertex, <= VU1_SKIN_TRIS triangles. */
 #include <kernel.h>
 #include <dma.h>
+/* gsKit's dmaInit.h (through render.h) defines these again with the same values spelled 0x0 / 0x1, a redefinition
+ * warning; drop ps2sdk's spelling here, gsKit's takes over below */
+#undef DMA_CHANNEL_VIF0
+#undef DMA_CHANNEL_VIF1
+#undef DMA_CHANNEL_GIF
+#undef DMA_CHANNEL_SIF2
 #include <packet2.h>
 #include <packet2_utils.h>
 #include <gif_tags.h>

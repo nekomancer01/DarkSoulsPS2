@@ -468,7 +468,7 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_OBJECTS);
             objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
             event_update(&pl, dt);    /* EMEVD instances (src/event.c), then fog walls / gates block the player */
-            event_push_player(&pl.pos.x, COL_PLAYER_R, COL_PLAYER_H);
+            event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
         }
 
         PROF_MARK(PROF_CAMERA);

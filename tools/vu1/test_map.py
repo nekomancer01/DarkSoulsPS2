@@ -39,6 +39,7 @@ def main(seeds=10, tris=54):
                 bad += 1
                 if bad < 5: print(seed, i, a, b)
     print('vertices compared %d, ADC tris %d, bad %d; cycles old %d new %d (%.2fx)' % (tot, adc, bad, co, cn, co / cn))
+    return bad
 
 if __name__ == '__main__':
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 10)
+    sys.exit(1 if main(int(sys.argv[1]) if len(sys.argv) > 1 else 10) else 0)
