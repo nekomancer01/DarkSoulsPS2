@@ -9,8 +9,15 @@
 # tools/newbuild) run side by side. A q started inside another q job or inside `flock .build.lock -c ...` does not wait
 # again (that would deadlock on its parent).
 #   -m GB   address-space cap for this job (default 10)
-#   -r GB   reservation against BUDGET (default: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB). Real peaks 2026-11-01:
-#           a full make (export_map main process <= 5 GB, forkserver simplify workers small) ~6 GB, a PCSX2 test < 2 GB
+#   -r GB   reservation against BUDGET. Default: the measured peak of earlier runs of the same kind of job (user request
+#           2026-11-01: test jobs reserved 4 GB for a ~1 GB peak), the largest of the last 20 that weren't killed (a long
+#           window, so a run of no-op builds doesn't shrink a build's reservation), + 10 %, rounded up to whole GB.
+#           Without history: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB.
+#           Kind = "make [MAP=..]" for a build, else the first *.py / *.sh in the command (test-run.py, export_map.py,
+#           test-all.sh, ...), else the command's name. tools/qpeak.py samples each job's tree (PSS + swap, plus the
+#           host PCSX2 instances its test drivers run) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
+#           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, Xvfb), so a test
+#           reserves 2 GB instead of 4.
 # Env: DSR_Q_BUDGET (default 20 GB of the 31 GB host: leaves room for the desktop, browser, RuneLite and Claude),
 #      DSR_Q_MAKE_GB (default 8). memwatch stays the backstop.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,10 +31,28 @@ done
 B=$(printf '%s\n' "$*" | grep -o 'BUILD=[^ ]*' | head -1); B=${B:-${BUILD:+BUILD=$BUILD}}
 IS_MAKE=
 case " $* " in *" make "*|*"/make "*|" make"*) IS_MAKE=1 ;; esac
-if [ -z "$R" ]; then  # a build, or test-all.sh (its builds and tests run one after another inside it)
-    R=$GB
-    case " $* " in *test-all.sh*) BIG=1 ;; *) BIG=$IS_MAKE ;; esac
-    [ -n "$BIG" ] && [ "$R" -gt "${DSR_Q_MAKE_GB:-8}" ] && R=${DSR_Q_MAKE_GB:-8}
+# one log for the whole repo: a worktree (tools/worktree.sh) logs into the main tree's notes/
+LOGDIR=$ROOT/notes
+COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -d "${COMMON%/.git}/notes" ] && LOGDIR=${COMMON%/.git}/notes
+# DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
+[ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
+PEAKS=$LOGDIR/jobq-peaks.tsv  # <date time> TAB <kind> TAB <peak MB> TAB <rc>
+if [ -n "$IS_MAKE" ]; then
+    KIND="make $(printf '%s\n' "$*" | grep -o 'MAP=[^ ]*' | head -1)"; KIND=${KIND% }
+else
+    KIND=$(printf '%s\n' "$*" | grep -o '[^ /]*\.\(py\|sh\)\b' | head -1); KIND=${KIND:-${1##*/}}
+fi
+if [ -z "$R" ]; then
+    # largest of the last 20 runs of this kind that weren't killed (rc < 128)
+    HIST=$(awk -F'\t' -v k="$KIND" '$2 == k && $4 < 128 {m[++n] = $3}
+        END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    if [ -n "$HIST" ]; then
+        R=$(( (HIST * 11 / 10 + 1023) / 1024 )); [ "$R" -lt 1 ] && R=1
+    else  # no history: a build, or test-all.sh (its builds and tests run one after another inside it)
+        R=$GB
+        case " $* " in *test-all.sh*) BIG=1 ;; *) BIG=$IS_MAKE ;; esac
+        [ -n "$BIG" ] && [ "$R" -gt "${DSR_Q_MAKE_GB:-8}" ] && R=${DSR_Q_MAKE_GB:-8}
+    fi
 fi
 # a build rewrites its build dir: one build per dir at a time (fd 8). The main build/ keeps the tree's .build.lock
 # (shared with `flock .build.lock` users and tools/newbuild); another BUILD= dir has its own <dir>/.build.lock
@@ -95,18 +120,20 @@ fi
 rm -f "$WAITF"
 T1=$(date +%s)
 echo "[q] start after $(( T1 - T0 )) s (${AV} GB free, ${USED} GB reserved, cap ${GB} GB, reserve ${R} GB): $*" >&2
-# one log for the whole repo: a worktree (tools/worktree.sh) logs into the main tree's notes/
-LOGDIR=$ROOT/notes
-COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -d "${COMMON%/.git}/notes" ] && LOGDIR=${COMMON%/.git}/notes
-# DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
-[ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
 WHERE=${ROOT##*/}${B:+ ${B/$ROOT\//}}
 echo "$(date '+%F %T') start pid $$ cap ${GB}G res ${R}G (reserved ${USED}G) wait $(( T1 - T0 )) s [$WHERE]: $*" >> "$LOGDIR/jobq.log"
 # the job gets no copy of the lock fds: a daemon it starts (e.g. Xvfb :99 from pcsx2-run.sh) would otherwise hold
 # them after the job ends (deadlock 2026-10-31 11:47)
+# peak memory of the job (tools/qpeak.py samples this shell's tree until it is stopped)
+mkdir -p /tmp/dsr-q-peak
+python3 -I "$ROOT/tools/qpeak.py" $$ > /tmp/dsr-q-peak/$$ 2>/dev/null < /dev/null 8>&- 9>&- &
+QP=$!
 DSR_Q_HELD=1 prlimit --as=$((GB << 30)) -- "$@" 8>&- 9>&-
 RC=$?
 rm -f "$RES/$$.$R"
-# "after" = wait + run (kept for old readers of the log); run = the job alone
-echo "$(date '+%F %T') end   pid $$ rc $RC after $(( $(date +%s) - T0 )) s run $(( $(date +%s) - T1 )) s" >> "$LOGDIR/jobq.log"
+kill $QP 2>/dev/null; wait $QP 2>/dev/null
+PEAK=$(cat /tmp/dsr-q-peak/$$ 2>/dev/null); rm -f /tmp/dsr-q-peak/$$
+[ -n "$PEAK" ] && printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$KIND" "$PEAK" "$RC" >> "$PEAKS"
+# "after" = wait + run (kept for old readers of the log); run = the job alone; peak = PSS + swap of the job (qpeak.py)
+echo "$(date '+%F %T') end   pid $$ rc $RC after $(( $(date +%s) - T0 )) s run $(( $(date +%s) - T1 )) s${PEAK:+ peak ${PEAK}M}" >> "$LOGDIR/jobq.log"
 exit $RC
