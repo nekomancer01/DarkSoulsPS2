@@ -65,6 +65,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
 | `winshot.py` | Window screenshot |
+| `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
+| `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
+| `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
 
 ## Real hardware and profiling
 | Tool | What it does |
