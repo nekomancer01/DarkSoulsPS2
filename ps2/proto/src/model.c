@@ -224,12 +224,37 @@ int mdl_upload(Model *m, GSGLOBAL *gs)
         t->Filter = GS_FILTER_LINEAR;
         t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM);
         t->VramClut = r_vram_clut(gs, t->ClutPSM);
-        if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR)
+        if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
+            r_vram_free_tex(t->Vram, t->Width, t->Height, t->PSM);
+            r_vram_free_clut(t->VramClut, t->ClutPSM);
+            mdl_free_textures(m);  /* the ones before it: a failed upload holds no VRAM */
             return -1;
+        }
         gsKit_texture_upload(gs, t);
         t->Clut = NULL;  /* clut16 is reused by the next texture */
     }
-    return 4 * 1024 * 1024 - gs->CurrentPointer;
+    return r_vram_avail(gs);
+}
+
+int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs)
+{
+    const Header *h = m->hdr;
+    const unsigned char *bin = m->bin;
+    m->hdr = blob, m->bin = blob;
+    int r = mdl_upload(m, gs);
+    m->hdr = h, m->bin = bin;
+    for (int i = 0; i < m->ntex; i++)
+        m->tex[i].Mem = m->tex[i].Clut = NULL;
+    return r;
+}
+
+void mdl_free_textures(Model *m)
+{
+    for (int i = 0; i < m->ntex; i++) {
+        r_vram_free_tex(m->tex[i].Vram, m->tex[i].Width, m->tex[i].Height, m->tex[i].PSM);
+        r_vram_free_clut(m->tex[i].VramClut, m->tex[i].ClutPSM);
+    }
+    m->ntex = 0;
 }
 
 int mdl_bones(const Model *m) { return m->hdr->bones; }

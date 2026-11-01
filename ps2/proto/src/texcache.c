@@ -57,8 +57,7 @@ static GSGLOBAL *gsg;
 static Level lv[MAX_TEX][3];  /* mip 0, mip 1, near */
 static unsigned frame = 1;
 static float mip_d[MAX_TEX];
-/* world blocks (tc_block_add): CLUT VRAM reserved per slot on first use, CLUTs uploaded at the next tc_begin */
-static u32 blk_clut[TC_BLOCKS], blk_clut_blocks[TC_BLOCKS];  /* VRAM reserved at the slot's first use (its block's size) */
+/* world blocks (tc_block_add): CLUT VRAM taken while the block is on, CLUTs uploaded at the next tc_begin */
 static int blk_n[TC_BLOCKS], blk_clut_due[TC_BLOCKS];
 static int blk_bump[TC_BLOCKS];  /* tc_block_bump: normal maps after the slot's map textures (bump.c relief pool) */
 
@@ -214,27 +213,24 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
 }
 
 /* world block slot b's textures: indices TC_BASE + b x TC_BLOCK_TEX .. + n, CLUTs in VRAM of their own (reserved
- * at the slot's first use, TC_BLOCK_CLUT_KB), pixels in the map's pool. base: the block's map.bin (texture offsets
+ * while the block is on, one allocation each), pixels in the map's pool. base: the block's map.bin (texture offsets
  * are from it), kept until tc_block_drop. Returns the first index, or -1 (too many textures, VRAM full). */
 int tc_block_add(int b, const unsigned char *base, const void *table, int n)
 {
     if (b < 0 || b >= TC_BLOCKS || n > TC_BLOCK_TEX)
         return -1;
     tc_block_drop(b);
-    int first = TC_BASE + b * TC_BLOCK_TEX, cb = 0;
-    for (int i = 0; i < n; i++)
-        cb += clut_blocks((const TexEntry *)table + i);
-    if (cb * 256 > TC_BLOCK_CLUT_KB * 1024 || (blk_clut[b] && cb > (int)blk_clut_blocks[b]))
-        return -1;
-    if (!blk_clut[b]) {  /* world.c's block i always uses slot i - 1: sized for that block's CLUTs */
-        u32 v = gsKit_vram_alloc(gsg, cb * 256, GSKIT_ALLOC_USERBUFFER);
-        if (v == GSKIT_ALLOC_ERROR)
-            return -1;
-        blk_clut[b] = v, blk_clut_blocks[b] = cb;
-    }
-    u32 c = blk_clut[b];
+    int first = TC_BASE + b * TC_BLOCK_TEX;
     for (int i = 0; i < n; i++) {
         const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
+        /* its CLUT's VRAM, one allocation each (fills the holes characters and blocks leave), until tc_block_drop */
+        u32 c = e->psm == GS_PSM_T4 ? r_vram_lin(gsg, 1) : r_vram_clut(gsg, e->cpsm);
+        if (c == GSKIT_ALLOC_ERROR) {
+            te[first + i] = NULL;
+            blk_n[b] = i;
+            tc_block_drop(b);
+            return -1;
+        }
         for (int l = 0; l < 2; l++) {
             GSTEXTURE *t = &lv[first + i][l].t;
             memset(t, 0, sizeof *t);
@@ -252,7 +248,6 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             lv[first + i][l].size = e->blocks[l];
         }
         near_level(first + i, base);
-        c += clut_blocks(e) * 256;
     }
     blk_n[b] = n;
     blk_clut_due[b] = 1;
@@ -266,6 +261,13 @@ void tc_block_drop(int b)
     if (b < 0 || b >= TC_BLOCKS)
         return;
     for (int i = TC_BASE + b * TC_BLOCK_TEX; i < TC_BASE + b * TC_BLOCK_TEX + blk_n[b] + blk_bump[b]; i++) {
+        if (i < TC_BASE + b * TC_BLOCK_TEX + blk_n[b]) {  /* the block is off: its CLUTs' VRAM goes back */
+            const GSTEXTURE *t = &lv[i][0].t;
+            if (t->PSM == GS_PSM_T4)
+                r_vram_free_lin(t->VramClut, 1);
+            else
+                r_vram_free_clut(t->VramClut, t->ClutPSM);
+        }
         te[i] = NULL;
         lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
     }

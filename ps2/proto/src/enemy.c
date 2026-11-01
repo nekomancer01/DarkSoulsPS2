@@ -49,8 +49,9 @@
 #define DRAW_FADE 8.0f      /* m before DRAW_DIST over which a character fades into the fog colour (vu1_skin_fade) */
 #define CORPSE_TIME 6.0f    /* seconds a dead enemy stays visible (DSR dissolves the corpse) */
 #define BLEND_DEFAULT 0.15f
-/* Character types stream by distance (EE RAM): model data in RAM while a placement is within LOAD_DIST of the
- * player, freed beyond UNLOAD_DIST (textures stay in VRAM from boot, chr.bin stays resident: ~40 KB per type) */
+/* Character types stream by distance: model data in RAM and its textures in VRAM while a placement is within
+ * LOAD_DIST of the player, both freed beyond UNLOAD_DIST (chr.bin stays resident: ~40 KB per type). Only the types
+ * near the player hold VRAM, so every world block's roster fits (TECH_DEBT world-4) */
 #define LOAD_DIST 60.0f
 #define UNLOAD_DIST 75.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
@@ -97,7 +98,7 @@ typedef struct {
     const ChrAnim *anims;
     const ChrWin *wins;
     const float (*root)[3];
-    Model *model;   /* stripped (no streams / anims) while the type is unloaded: keeps the VRAM texture handles */
+    Model *model;   /* NULL while the type is unloaded */
     int loaded;     /* model data in RAM (types load / unload by the player's distance to their placements) */
     float near_d;   /* player's distance to the nearest placement of this type (last frame) */
     int drawable;   /* the model has triangles (c1000, the bonfire dummy, has none) */
@@ -193,7 +194,27 @@ static void arena_put(void *p, unsigned n)
         free(p);
 }
 
-/* (Re)load a type's model.bin: VU1 streams + compact anims; textures uploaded the first time only */
+/* the loaded type that draws with t's VRAM textures (a same-name twin of another block shares them), or NULL */
+static const ChrType *tex_holder(const ChrType *t)
+{
+    for (int i = 0; i < ntypes; i++)
+        if (&types[i] != t && types[i].loaded && !strncmp(types[i].name, t->name, 8))
+            return &types[i];
+    return NULL;
+}
+
+static void unload_model(ChrType *t)
+{
+    if (!t->model)
+        return;
+    t->loaded = 0;
+    if (!tex_holder(t))
+        mdl_free_textures(t->model);
+    mdl_free(t->model);
+    t->model = NULL;
+}
+
+/* Load a type's model.bin: VU1 streams + compact anims, textures uploaded (or a loaded twin's) */
 static int load_model(ChrType *t, GSGLOBAL *gs)
 {
     char path[64];
@@ -214,41 +235,23 @@ static int load_model(ChrType *t, GSGLOBAL *gs)
         printf("enemy: %s: model.bin did not load\n", t->name);
         return 0;
     }
-    const ChrType *twin = NULL;  /* the same character from another world block's packs: same textures */
-    for (int i = 0; i < ntypes && !t->model; i++)
-        if (&types[i] != t && types[i].model && !strncmp(types[i].name, t->name, 8))
-            twin = &types[i];
-    if (!t->model && twin) {
+    const ChrType *twin = tex_holder(t);  /* the same character from another world block's packs: same textures */
+    if (twin) {
         mdl_share_textures(m, twin->model);
-        t->drawable = ((const unsigned *)mb)[3] > 0;
-    } else if (!t->model) {
-        int vram = mdl_upload(m, gs);
-        if (vram < 0) {
-            printf("enemy: %s: textures do not fit in VRAM\n", t->name);
-            mdl_free(m), FREE_MB();
-            return 0;
-        }
-        t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
-    } else {
-        mdl_share_textures(m, t->model);
+    } else if (mdl_upload(m, gs) < 0) {
+        printf("enemy: %s: textures do not fit in VRAM (free %d)\n", t->name, r_vram_avail(gs));
+        mdl_free(m), FREE_MB();
+        return 0;
     }
+    t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
     if (!mdl_compact(m, size)) {
-        /* out of RAM: the type stays unloaded with its old stripped model (VRAM handles). Freeing that one before the
-         * compact left t->model dangling and the retry 2 s later freed it again (manual-play crash in _free_r,
-         * 2026-11-01) */
         printf("enemy: %.5s: no RAM to keep the model, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
-        if (t->model) {
-            mdl_free(m);
-        } else {
-            mdl_strip(m);  /* a first load: keep the texture handles (VRAM is never freed) */
-            t->model = m;
-        }
-        FREE_MB();
+        if (!twin)
+            mdl_free_textures(m);
+        mdl_free(m), FREE_MB();
         return 0;
     }
     FREE_MB();
-    if (t->model)
-        mdl_free(t->model);
     t->model = m;
     t->loaded = 1;
     return 1;
@@ -286,11 +289,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     memcpy(t->name, name, 8);
     t->dir = dir;
     t->chr_size = csize;
-    if (!load_model(t, gs)) {
-        free(cb);
-        return NULL;
-    }
-    ntypes++;
+    ntypes++;  /* its model.bin and textures load once a placement comes near (stream_types) */
     t->h = h;
     t->vars = (const ChrVar *)((const char *)cb + h->var_off);
     t->anims = (const ChrAnim *)((const char *)cb + h->anim_off);
@@ -299,8 +298,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     t->walk_speed = loop_speed(t, 200);
     t->run_speed = loop_speed(t, 500);
     t->near_d = 1e9f;
-    printf("enemy: %s %u variants, %u anims, VRAM free %d, RAM free %uK\n", name, h->variants, h->anims,
-           4 * 1024 * 1024 - gs->CurrentPointer, enemy_ram_free() >> 10);
+    printf("enemy: %s %u variants, %u anims, RAM free %uK\n", name, h->variants, h->anims, enemy_ram_free() >> 10);
     return t;
 }
 
@@ -373,6 +371,9 @@ static int enemy_env(EsdCtx *c, int id, const float *a, int n, float *out)
 static int anim_slot(const Enemy *e, int anim, int *full)
 {
     int s = -1;
+    *full = anim;
+    if (!e->ct->model)  /* type not loaded: update_one picks the loco anim again once it is */
+        return -1;
     if (e->var->anim_offset > 0 && (s = mdl_anim(e->ct->model, anim + e->var->anim_offset)) >= 0) {
         *full = anim + e->var->anim_offset;
         return s;
@@ -544,9 +545,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
             continue;
         place(t, r, nenemies++, 0, i);
     }
-    /* every type starts unloaded (textures stay in VRAM); enemy_update loads the ones near the player */
-    for (int i = 0; i < ntypes; i++)
-        mdl_strip(types[i].model), types[i].loaded = 0;
+    /* every type starts unloaded; enemy_update loads the ones near the player */
     printf("enemy: %d characters of %d types, RAM free %uK after unloading\n", nenemies, ntypes,
            enemy_ram_free() >> 10);
     return nenemies;
@@ -588,8 +587,6 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
         if (!t)
             continue;
         blk_type[block][blk_n[block]] = t;
-        if (t->loaded)
-            mdl_strip(t->model), t->loaded = 0;
         memcpy(blk_rec[block] + 36 * blk_n[block]++, r, 36);
     }
 #ifndef NO_AI_SCRIPTS
@@ -670,12 +667,14 @@ static void stream_types(const Player *pl)
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
         if (t->loaded && t->near_d > UNLOAD_DIST) {
-            mdl_strip(t->model), t->loaded = 0;
-            printf("enemy: %.5s unloaded, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
+            unload_model(t);
+            printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
+                   r_vram_avail(gsg));
         } else if (!t->loaded && t->near_d < LOAD_DIST && (first || !loads) && frame >= t->retry) {
             loads++;
             if (load_model(t, gsg))
-                printf("enemy: %.5s loaded, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
+                printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
+                       r_vram_avail(gsg));
             else
                 t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
         }

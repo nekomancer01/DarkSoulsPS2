@@ -61,10 +61,9 @@ BLOCKS = {
 }
 # Blocks of a world build: the boot area first (the default build's own pack), then the blocks world.c may load
 WORLDS = {
-    # _b / _p are left out until block types load per block (TECH_DEBT world-4): with every block's enemy and breakable
-    # types loaded at boot, the four-block world leaves no VRAM with enemies on (2026-11-01: "Not enough VRAM"; Firelink +
-    # Burg west: 192 KB free). tests/world_route.txt walks all four with them added here and `option noenemies`.
-    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w"],
+    # VRAM: enemy textures load with their types near the player, a block's effect textures and map CLUTs while it is
+    # on (TECH_DEBT world-4)
+    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p"],
 }
 
 def block():

@@ -19,6 +19,10 @@ int mdl_bones(const Model *m);
 /* After mdl_load + mdl_upload: keep only header / parents / ref / groups / anims in an own block so the blob (of
  * blob_size bytes, anims last as export_chr.py writes them) can be freed; 0 if out of memory */
 int mdl_compact(Model *m, unsigned blob_size);
+/* mdl_upload for a compacted model (mdl_compact): its textures from blob, the model.bin it was loaded from */
+int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs);
+/* Give the model's VRAM textures back (render.c r_vram_free_*, between frames) once nothing draws them: ntex = 0 */
+void mdl_free_textures(Model *m);
 /* Free a model (streams, mdl_compact block); its VRAM textures stay allocated */
 void mdl_free(Model *m);
 /* Free everything but the struct (which keeps the VRAM texture handles for mdl_share_textures); not drawable after */

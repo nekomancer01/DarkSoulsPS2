@@ -48,10 +48,15 @@
 #define WORLD_ENEMY_RESERVE (3800u << 10)
 
 /* The lite set of a block, read raw from its pack (tools/pack.py raw: entries, read in place) into its slot.
- * events.bin (A2's tools/export_emevd.py) is optional: a pack without it loads with no events. */
-enum { E_COL, E_TAB, E_EV, NENT };
-static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "events.bin"};
-#define E_OPTIONAL(e) ((e) == E_EV)
+ * events.bin (A2's tools/export_emevd.py) is optional: a pack without it loads with no events. objects.bin and fx.bin
+ * (last) are read again for their texture pixels: uploaded when the block turns on (objects_block_add, fx_block_on;
+ * their tables were kept at boot). They are read into an arena block of their own, freed once the block is on: in the
+ * lite set's block they made it 1.3 MB of one piece, and a warp into the Parish found no room for that (settle loops,
+ * 2026-11-01). */
+enum { E_COL, E_TAB, E_EV, E_OBJ, E_FX, NENT };
+static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "events.bin", "objects.bin", "fx.bin"};
+#define E_OPTIONAL(e) ((e) >= E_EV)
+#define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
 
@@ -74,8 +79,8 @@ enum { W_OFF, W_READING, W_ON, W_DRAIN };
 typedef struct {
     Pack pk;
     int open, state, slot, drain;
-    void *mem;  /* the lite set's arena block (mapstream_alloc) */
-    unsigned off[NENT], size[NENT], total, res_off, res_size, bump_off, bump_size;
+    void *mem, *tex_mem;  /* arena blocks (mapstream_alloc): the lite set, its texture entries (until on) */
+    unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -163,7 +168,9 @@ int world_init(const char *boot_area)
                 printf("world: block %d %s: %s missing or not raw\n", i, tab[i].pack, ENTRIES[e]);
                 r->open = 0;
             }
-            if (i || e == E_TAB)  /* the boot block's collision is main.c's */
+            if (i && e >= E_TEX)  /* the boot block's collision, objects and effects are main.c's */
+                r->tex_total += (r->size[e] + 127) & ~127u;
+            else if (i || e == E_TAB)
                 r->total += (r->size[e] + 127) & ~127u;
         }
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
@@ -249,8 +256,9 @@ int world_current(void) { return cur; }
  * area's resources loaded; the PS2 keeps the types and places the instances per block): each raw entry read into a
  * temporary buffer, handed over, freed. What the types keep (chr.bin, compacted models, fx tables, Lua) lies below
  * the arena, so the heap above it stays free for enemy models streaming in and out (loading them after the arena
- * fragmented it: Firelink smoke 2026-11-01 02:37, model.bin 379K OUT OF RAM with 3 MB free). VRAM and the type data
- * stay for the session (TECH_DEBT world-4). */
+ * fragmented it: Firelink smoke 2026-11-01 02:37, model.bin 379K OUT OF RAM with 3 MB free). The type data stays for
+ * the session; textures are in VRAM only while their block is on (breakables, effects: from the entries turn_on reads
+ * again) or their characters are near (enemy.c), TECH_DEBT world-4. */
 static unsigned char *read_tmp(BlockRt *r, const char *name, unsigned *size)
 {
     unsigned off;
@@ -297,6 +305,15 @@ static void step_time(unsigned t0)
         world_stats.on_us_max = us;
 }
 
+static void free_tex(BlockRt *r)
+{
+    if (r->tex_mem) {
+        mapstream_free(r->tex_mem, r->tex_total);
+        r->tex_mem = NULL;
+        world_stats.pool_used_kb -= r->tex_total >> 10;
+    }
+}
+
 /* A block's lite set is read: hand its blobs to the systems (no copies, no IOP waits) */
 static void turn_on(int i)
 {
@@ -309,17 +326,18 @@ static void turn_on(int i)
                (const char *)r->blob[E_TAB]);
     if (ok) {
         map_block_stream_open(i, &r->pk);
-        objects_block_add(i);
-        fx_block_on(i, 1);
+        objects_block_add(i, r->size[E_OBJ] ? r->blob[E_OBJ] : NULL);
+        fx_block_on(i, 1, r->size[E_FX] ? r->blob[E_FX] : NULL);
         enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
     }
     if (ok)
         event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
+    free_tex(r);  /* uploaded: back to the near cells */
     r->state = W_ON;
     world_stats.loaded++;
     world_stats.loads++;
     world_stats.load_ms = (ticks() - r->t0) / 294912;
-    world_stats.read_kb = r->total >> 10;
+    world_stats.read_kb = (r->total + r->tex_total) >> 10;
     step_time(t0);
     printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB, lent %u KB\n", i,
            tab[i].pack, ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295,
@@ -332,7 +350,7 @@ static void turn_off(int i)
     unsigned t0 = ticks();
     event_block_off(i);  /* before the collision its hit parts point into goes */
     objects_block_remove(i);
-    fx_block_on(i, 0);
+    fx_block_on(i, 0, NULL);
     enemy_block_remove(i);
     col_unload(i);
     map_block_drop(i);
@@ -353,6 +371,7 @@ static void free_slot(int i)
     mapstream_free(r->mem, r->total);
     r->mem = NULL;
     world_stats.pool_used_kb -= r->total >> 10;
+    free_tex(r);
     r->state = W_OFF;
 }
 
@@ -395,23 +414,26 @@ static int start(int i)
         s++;
     if (s == WORLD_SLOTS)
         return 0;
-    unsigned char *p = mapstream_alloc(r->total, feet_now);
+    unsigned char *p = mapstream_alloc(r->total, feet_now), *q = NULL;
+    if (p && r->tex_total && !(q = mapstream_alloc(r->tex_total, feet_now)))
+        mapstream_free(p, r->total), p = NULL;
     if (!p)
         return 0;  /* near cells still being read or drawn: next frame */
-    r->mem = p;
+    r->mem = p, r->tex_mem = q;
     slot_of[s] = i;
     r->slot = s;
     for (unsigned e = 0; e < NENT; e++) {
-        r->blob[e] = p;
-        p += (r->size[e] + 127) & ~127u;
+        unsigned char **at = e < E_TEX ? &p : &q;
+        r->blob[e] = *at;
+        *at += (r->size[e] + 127) & ~127u;
     }
     r->ent = r->done = 0;
     while (r->ent < NENT && !r->size[r->ent])
         r->ent++;
     r->state = W_READING;
     r->t0 = ticks();
-    world_stats.pool_used_kb += r->total >> 10;
-    printf("world: block %d %s loading (%u KB)\n", i, tab[i].pack, r->total >> 10);
+    world_stats.pool_used_kb += (r->total + r->tex_total) >> 10;
+    printf("world: block %d %s loading (%u KB + %u KB textures)\n", i, tab[i].pack, r->total >> 10, r->tex_total >> 10);
     return 1;
 }
 

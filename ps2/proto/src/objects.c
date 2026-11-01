@@ -38,6 +38,7 @@ typedef struct {
     unsigned intact_bits, broken_bits;
     const float *piece;        /* 20 floats each */
     Model *model;
+    int tex_refs;              /* blocks on that place it (its textures are in VRAM while > 0); the boot area's: 1 */
 } Type;
 
 typedef struct {
@@ -62,6 +63,10 @@ typedef struct {
 } Part;
 static Part *blk_part[OBJ_BLOCKS];
 static int blk_nparts[OBJ_BLOCKS];
+/* a block's breakable types and their model.bin offsets in its objects.bin (textures from there when it turns on) */
+static struct { short type; unsigned off; } blk_tm[OBJ_BLOCKS][MAX_TYPES];
+static int blk_ntm[OBJ_BLOCKS];
+static GSGLOBAL *obj_gs;
 static Body bodies[MAX_BODIES];
 ObjectsStats objects_stats;
 
@@ -424,6 +429,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
             continue;
         if (mdl_upload(ty->model, gs) < 0)
             continue;
+        ty->tex_refs = 1;
         ntypes++;
     }
     for (unsigned k = 0; k < h[3] && ninst < MAX_INST; k++) {
@@ -447,42 +453,52 @@ int objects_init(GSGLOBAL *gs, const void *blob)
     return ninst;
 }
 
+/* a breakable type of a block's objects.bin (b, type record t): model compacted (the blob is freed after
+ * objects_block_types), textures not uploaded (objects_block_add does, from the objects.bin read with the block) */
+static int load_block_type(int block, const unsigned char *b, const unsigned *t)
+{
+    const float *f = (const float *)t;
+    Type *ty = &types[ntypes];
+    memset(ty, 0, sizeof *ty);
+    ty->id = (int)t[0];
+    ty->pieces = t[3] < MAX_PIECES ? (int)t[3] : MAX_PIECES;
+    ty->hp = (int)t[5], ty->defense = (int)t[6];
+    ty->cyl_r = f[7], ty->cyl_y0 = f[8], ty->cyl_y1 = f[9], ty->fr = f[10], ty->rest = f[11];
+    ty->intact_bits = t[12], ty->broken_bits = t[13];
+    float *pc = malloc(ty->pieces * 20 * sizeof *pc);  /* the blob goes after objects_block_types */
+    ty->model = mdl_load(b + t[1]);
+    if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || !mdl_compact(ty->model, t[2])) {
+        printf("objects: block %d: o%04d did not load\n", block, ty->id);
+        if (ty->model)
+            mdl_free(ty->model);
+        free(pc);
+        return -1;
+    }
+    memcpy(pc, b + t[4], ty->pieces * 20 * sizeof *pc);
+    ty->piece = pc;
+    return ntypes++;
+}
+
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 {
     const unsigned *h = blob;
     if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 3)
         return 0;
+    obj_gs = gs;
     const unsigned char *b = blob;
     unsigned ps = h[1] >= 2 ? 48 : 32;
     int map[MAX_TYPES * 2];
+    blk_ntm[block] = 0;
     for (unsigned k = 0; k < h[2] && k < MAX_TYPES * 2; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
-        const float *f = (const float *)t;
         map[k] = -1;
         for (int j = 0; j < ntypes; j++)  /* the same object model in another block: one type */
             if (types[j].id == (int)t[0])
                 map[k] = j;
-        if (map[k] >= 0 || ntypes == MAX_TYPES)
-            continue;
-        Type *ty = &types[ntypes];
-        ty->id = (int)t[0];
-        ty->pieces = t[3] < MAX_PIECES ? (int)t[3] : MAX_PIECES;
-        ty->hp = (int)t[5], ty->defense = (int)t[6];
-        ty->cyl_r = f[7], ty->cyl_y0 = f[8], ty->cyl_y1 = f[9], ty->fr = f[10], ty->rest = f[11];
-        ty->intact_bits = t[12], ty->broken_bits = t[13];
-        float *pc = malloc(ty->pieces * 20 * sizeof *pc);  /* the blob goes after this call */
-        ty->model = mdl_load(b + t[1]);
-        if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || mdl_upload(ty->model, gs) < 0 ||
-            !mdl_compact(ty->model, t[2])) {
-            printf("objects: block %d: o%04d did not load\n", block, ty->id);
-            if (ty->model)
-                mdl_free(ty->model);
-            free(pc);
-            continue;
-        }
-        memcpy(pc, b + t[4], ty->pieces * 20 * sizeof *pc);
-        ty->piece = pc;
-        map[k] = ntypes++;
+        if (map[k] < 0 && ntypes < MAX_TYPES)
+            map[k] = load_block_type(block, b, t);
+        if (map[k] >= 0 && blk_ntm[block] < MAX_TYPES)
+            blk_tm[block][blk_ntm[block]].type = map[k], blk_tm[block][blk_ntm[block]++].off = t[1];
     }
     free(blk_part[block]);
     blk_part[block] = malloc(h[3] * sizeof(Part));
@@ -504,10 +520,17 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 
 static void retire(Inst *in);
 
-void objects_block_add(int block)
+void objects_block_add(int block, const void *blob)
 {
     if (block <= 0 || block >= OBJ_BLOCKS)
         return;
+    for (int k = 0; k < blk_ntm[block]; k++) {  /* textures of its types no other block on holds */
+        Type *ty = &types[blk_tm[block][k].type];
+        if (!ty->tex_refs++ && (!blob || mdl_upload_from(ty->model, (const unsigned char *)blob + blk_tm[block][k].off,
+                                                          obj_gs) < 0))
+            printf("objects: block %d: o%04d textures %s (VRAM free %d)\n", block, ty->id,
+                   blob ? "do not fit in VRAM" : "missing", r_vram_avail(obj_gs));
+    }
     int i = 0;
     for (int k = 0; k < blk_nparts[block]; k++) {
         while (i < ninst && inst[i].block >= 0)  /* a free slot, else the end */
@@ -533,8 +556,13 @@ void objects_block_add(int block)
 
 void objects_block_remove(int block)
 {
-    if (block <= 0)
+    if (block <= 0 || block >= OBJ_BLOCKS)
         return;
+    for (int k = 0; k < blk_ntm[block]; k++) {
+        Type *ty = &types[blk_tm[block][k].type];
+        if (ty->tex_refs > 0 && !--ty->tex_refs)
+            mdl_free_textures(ty->model);  /* its instances are gone with the block */
+    }
     for (int i = 0; i < ninst; i++)
         if (inst[i].block == block) {
             retire(&inst[i]);
