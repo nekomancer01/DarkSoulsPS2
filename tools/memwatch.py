@@ -6,7 +6,7 @@ taking every session down with it. oomd picks the biggest cgroup, so one runaway
 all. This watchdog acts earlier and kills only disposable job processes:
   - any disposable process whose memory (PSS + swap: shared pages split between the processes sharing them, RSS
     before 2026-11-01) exceeds PROC_CAP (runaway job), at once;
-  - when the system is low (MemAvailable < LOW_AVAIL and swap use > LOW_SWAP_PCT), the largest disposable process,
+  - when the system is low (MemAvailable < LOW_AVAIL and swap used >= LOW_SWAP), the largest disposable process,
     one per POLL interval, until the system recovers.
 Disposable = command line matches DISPOSABLE and none of PROTECT. The user's apps (Claude, browser, RuneLite,
 Steam, desktop) and the user's visible PCSX2 are never touched; headless test PCSX2 instances are (their flatpak
@@ -20,11 +20,12 @@ GiB = 1 << 30
 POLL = 2.0
 PROC_CAP = 8 * GiB          # one job process above this (RSS + swap) is a runaway
 MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this (wrapper shells free nothing)
-# system-low trigger: MemAvailable below LOW_AVAIL and swap more than LOW_SWAP_PCT % used (oomd kills at 90 % RAM +
-# swap). Was 4 GB / 50 %: the user's swap sits near 50 % at idle, so it killed map exports at 3.3-4.0 GB available
-# (9 times 2026-10-31 18:41 .. 11-01 13:48); lowered with the user's OK 2026-11-01.
+# system-low trigger: MemAvailable below LOW_AVAIL and at least LOW_SWAP of swap in use. Was 4 GB / 50 %: the user's
+# swap sat near 50 % at idle, so it killed map exports at 3.3-4.0 GB available (9 times 2026-10-31 18:41 .. 11-01
+# 13:48); then 2.5 GB / 75 %. Swap is now an absolute amount (user, 2026-11-01): with a 128 GB swap file 75 % would be
+# 96 GB and never fire before the machine stalls.
 LOW_AVAIL = int(float(os.environ.get("MEMWATCH_LOW_GB", 2.5)) * GiB)
-LOW_SWAP_PCT = float(os.environ.get("MEMWATCH_LOW_SWAP", 75))
+LOW_SWAP = int(float(os.environ.get("MEMWATCH_LOW_SWAP_GB", 16)) * GiB)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 LOG = os.path.join(ROOT, "notes", "memwatch.log")
 
@@ -173,7 +174,7 @@ def kill(p, why, ps, dry):
 
 def main():
     dry = "--dry-run" in sys.argv
-    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process, low < {LOW_AVAIL / GiB:.1f}G avail + > {LOW_SWAP_PCT}% swap)"
+    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process, low < {LOW_AVAIL / GiB:.1f}G avail + >= {LOW_SWAP / GiB:.0f}G swap used)"
         + (" DRY RUN" if dry else ""))
     while True:
         ps = procs()
@@ -182,10 +183,10 @@ def main():
             if p["mem"] > PROC_CAP:
                 kill(p, f"over the {PROC_CAP / GiB:.0f} GB per-job cap", ps, dry)
         m = meminfo()
-        swap_pct = 100 * (m["SwapTotal"] - m["SwapFree"]) / max(m["SwapTotal"], 1)
+        swap_used = m["SwapTotal"] - m["SwapFree"]
         big = max((p for p in d if p["mem"] >= MIN_KILL), key=lambda p: p["mem"], default=None)
-        if m["MemAvailable"] < LOW_AVAIL and swap_pct > LOW_SWAP_PCT and big:
-            kill(big, f"system low: {m['MemAvailable'] / GiB:.1f}G available, swap {swap_pct:.0f}% used", ps, dry)
+        if m["MemAvailable"] < LOW_AVAIL and swap_used >= LOW_SWAP and big:
+            kill(big, f"system low: {m['MemAvailable'] / GiB:.1f}G available, swap {swap_used / GiB:.1f}G used", ps, dry)
         if "--once" in sys.argv:
             break
         time.sleep(POLL)
