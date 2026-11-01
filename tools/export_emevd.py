@@ -38,16 +38,19 @@ Layout (little-endian, offsets from the start of the file, version 1):
            u8 spQualifiedType, u8 spQualifiedType2, u16 0, s32 spQualifiedId, s32 spQualifiedId2,
            s32 spQualifiedPassEventFlag (key: type 1 = a good in the inventory, the pass flag opens it too)  (56 B)
 Version 2: objacts grew from 40 B (key and anim fields), colliders cover every object.
-  lots     s32 lot id, s32 getItemFlagId, u32 category (lotItemCategory01: 0 weapon, 0x10000000 armor, 0x20000000
-           ring, 0x40000000 good), s32 item id, s32 count                                             (20 B)
-           first item of the lot only (TECH_DEBT event-6)
+  lots     count = rows: s32 lot id, s32 getItemFlagId, u16 first item, u8 items, u8 0                  (12 B)
+           sorted by id, then the items of all rows: s32 lotItemId, s32 getItemFlagId0N, u16 lotItemBasePoint,
+           u8 lotItemNum, u8 category (lotItemCategory >> 28: 0 weapon, 1 armor, 2 ring, 4 good, 15 = < 0)  (12 B)
+           only the items with a weight (lotItemBasePoint > 0). Every referenced lot comes with the rows that follow
+           it (id + 1, id + 2, ... while they exist): DSR's draw (FUN_1403f5d90) rolls one item from each row of that run
+Version 3: lots carry every weighted item of each row (was: the first item, 20 B).
 """
 import collections, math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import emevd, gamepath, souls
 
-VERSION = 2
+VERSION = 3
 # Ops: (name, (bank, id) or None, class). class: "real" = wired to a system of the port, "noop" = no effect in DSR
 # offline single player either (network / achievements), "stub" = accepted and logged, its system does not exist yet.
 # Index = op number; keep in the same order as enum Op in ps2/proto/src/event.c.
@@ -75,11 +78,11 @@ OPS = [
     ("SKIP_MP", (1003, 5), "real"), ("END_MP", (1003, 6), "real"), ("SKIP_IN_MAP", (1003, 7), "real"),
     # actions
     ("INIT", (2000, 0), "real"), ("NET_SYNC", (2000, 2), "noop"), ("PREFETCH", (2000, 4), "noop"),
-    ("SAVE_REQ", (2000, 5), "stub"), ("CUTSCENE", (2002, 3), "stub"), ("CUTSCENE_WARP", (2002, 4), "stub"),
+    ("SAVE_REQ", (2000, 5), "real"), ("CUTSCENE", (2002, 3), "stub"), ("CUTSCENE_WARP", (2002, 4), "stub"),
     ("SET_FLAG", (2003, 2), "real"), ("EVENT_STATE", (2003, 8), "real"), ("BOSS_BAR", (2003, 11), "stub"),
     ("BOSS_DEFEAT", (2003, 12), "stub"), ("NAVMESH", (2003, 13), "stub"), ("MP_TRIGGER", (2003, 16), "noop"),
     ("RAND_FLAG", (2003, 17), "real"), ("ANIM", (2003, 18), "stub"), ("BATCH_FLAGS", (2003, 22), "real"),
-    ("RESPAWN", (2003, 23), "stub"), ("REMOVE_ITEM", (2003, 24), "real"), ("SUMMON_SIGN", (2003, 25), "noop"),
+    ("RESPAWN", (2003, 23), "real"), ("REMOVE_ITEM", (2003, 24), "real"), ("SUMMON_SIGN", (2003, 25), "noop"),
     ("MSG_VIS", (2003, 26), "stub"), ("ACHIEVE", (2003, 28), "noop"), ("VAGRANT", (2003, 30), "noop"),
     ("EV_INC", (2003, 31), "real"), ("EV_CLEAR", (2003, 32), "real"), ("SNUGGLY_NEXT", (2003, 33), "stub"),
     ("SNUGGLY_SPAWN", (2003, 34), "stub"), ("AWARD_LOT", (2003, 36), "real"), ("UNK_2003_47", (2003, 47), "stub"),
@@ -102,11 +105,12 @@ OPS = [
     ("OBJ_INVULN", (2005, 13), "stub"), ("OBJACT_IDX", (2005, 14), "real"), ("REROLL", (2005, 15), "stub"),
     ("SFX_DEL", (2006, 1), "real"), ("SFX_SPAWN", (2006, 2), "real"), ("SFX_ONESHOT", (2006, 3), "stub"),
     ("SFX_OBJ", (2006, 4), "stub"), ("SFX_OBJ_DEL", (2006, 5), "stub"),
-    ("DIALOG", (2007, 1), "stub"), ("STATUS_MSG", (2007, 3), "stub"),
-    ("LADDER", (2009, 0), "stub"), ("BONFIRE", (2009, 3), "stub"), ("MP_BUFF", (2009, 4), "noop"),
+    ("DIALOG", (2007, 1), "stub"), ("STATUS_MSG", (2007, 3), "real"),
+    ("LADDER", (2009, 0), "stub"), ("BONFIRE", (2009, 3), "real"), ("MP_BUFF", (2009, 4), "noop"),
     ("BOSS_ENTRY", (2009, 6), "noop"),
     ("SE", (2010, 2), "stub"), ("SOUND_STATE", (2010, 3), "stub"),
     ("HIT", (2011, 1), "real"), ("MAP_PART", (2012, 1), "real"),
+    ("BANNER", (2007, 2), "real"),
 ]
 OP_OF = {k: i for i, (_, k, _) in enumerate(OPS) if k}
 ENT_KIND = {"MapPiece": 1, "Object": 2, "Enemy": 3, "Player": 4, "Collision": 5, "Navmesh": 6, "DummyObject": 7,
@@ -350,15 +354,21 @@ def treasures_objacts_lots(game, msb, E, common):
                 lot_ids.add(ins.args[0])
             elif (ins.bank, ins.id) == (2000, 0) and ins.args:
                 lot_ids.update(v for v in ins.args[2:] + ins.extra if isinstance(v, int) and v > 0 and v in IL)
-    lots = []
+    for lid in list(lot_ids):  # the rows after a lot are drawn with it (FUN_1403f5d90 steps id + 1 until none)
+        while lid + 1 in IL:
+            lid += 1
+            lot_ids.add(lid)
+    rows, items = [], []
     for lid in sorted(lot_ids):
         r = IL.get(lid)
         if r is None:
             continue
-        k = next((k for k in range(1, 9) if r[f"lotItemId0{k}"]), 1)
-        lots.append(struct.pack("<iiIii", lid, r.getItemFlagId, r[f"lotItemCategory0{k}"] & 0xFFFFFFFF,
-                                r[f"lotItemId0{k}"], r[f"lotItemNum0{k}"]))
-    return tr, oa, lots
+        its = [struct.pack("<iiHBB", r[f"lotItemId0{k}"], r[f"getItemFlagId0{k}"], r[f"lotItemBasePoint0{k}"],
+                           min(r[f"lotItemNum0{k}"], 255), (r[f"lotItemCategory0{k}"] & 0xFFFFFFFF) >> 28)
+               for k in range(1, 9) if r[f"lotItemBasePoint0{k}"] > 0]
+        rows.append(struct.pack("<iiHBB", lid, r.getItemFlagId, len(items), len(its), 0))
+        items += its
+    return tr, oa, (rows + items, len(rows))
 
 
 def build(sections, map_id):
@@ -376,16 +386,16 @@ def build(sections, map_id):
 def export(game, map_id, with_entities=True):
     E = emevd.load(map_id, game)
     evs, ins_b, sub_b, counts, missing = encode_events(E)
-    ents, ranges, cols, tr, oa, lots = [], [], [], [], [], []
+    ents, ranges, cols, tr, oa, lots = [], [], [], [], [], ([], 0)
     if with_entities:
         msb = souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb"))
         ents, ranges, cols = entities(game, map_id, msb, hit_ranges(game, map_id))
         tr, oa, lots = treasures_objacts_lots(game, msb, E, emevd.load("common", game))
     data = build([(evs, len(evs)), (ins_b, len(ins_b)), (sub_b, len(sub_b) // 8), (ents, len(ents)),
-                  (ranges, len(ranges)), (cols, len(cols)), (tr, len(tr)), (oa, len(oa)), (lots, len(lots))], map_id)
+                  (ranges, len(ranges)), (cols, len(cols)), (tr, len(tr)), (oa, len(oa)), lots], map_id)
     stats = dict(events=len(E.events), instrs=sum(counts.values()), counts=counts, missing=missing, bytes=len(data),
                  entities=len(ents), ranges=len(ranges), colliders=len(cols), treasures=len(tr), objacts=len(oa),
-                 lots=len(lots))
+                 lots=lots[1])
     return data, stats
 
 

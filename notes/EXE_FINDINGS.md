@@ -105,6 +105,20 @@ See PORTING.md "ESD runtime" and TECH_DEBT esd-1..7.
   second handle stored in ctx+0x80; then FUN_140388670 (latch clear) when animId >= 0. c0000 uses layers 2 / 4 / 6 / 7 / 9
   (group 0: falls 7, plunge 6, damage 9; group 1: actions 6, guard 4).
 
+## EMEVD runtime and event flags (2026-11-02, A2 / E2)
+
+| Value | Where (function / constant) | How found | Confidence |
+|---|---|---|---|
+| Event flag manager | `DAT_141c7c5f0`; two flag sets (+0x28 and +0x120, active set +0x218), per id digit group (id / 10^7 % 10) a list of area records of 0xA8 bytes (10 x {ptr, size 0x80} per 1000 flags); record counts per group at **0x141369fc0** (set 0: group 0 one record, groups 1 / 5 / 6 / 7 18 records each) | Lua binding SetEventFlagValue (`FUN_140020a70` -> vtable 0x141a2ff00 -> `FUN_1404b12a0` -> `FUN_1404f57c0`), record lookup `FUN_1404f39a0` | high |
+| Flag bit | flag n = bit 31 - (n % 1000 % 32) of word (n % 1000) / 32 of its chunk (`FUN_1404f22b0` set, `FUN_1404f23d0` get) | decompile | high |
+| EventValue (N flags as a number) | `FUN_1404f2590` get, `FUN_1404f24b0` set: the 64-bit pair of words at the first flag, shift 64 - bit - N: the first flag is the most significant bit; Lua Get/SetEventFlagValue use N = 8 | decompile | high |
+| Temporary flags at an area load | `FUN_1404f1fb0` (called from `FUN_1403ce680` in the load task `FUN_14024f530`): clears chunks 4 + 5 of the group-0 record and chunks 5 + 6 of every group-1 record (flags 4000-5999, 1AAB5000-1AAB6999) | decompile | high (when it runs: medium) |
+| Temporary flags on the event manager's restart pass | `FUN_1404f20b0`, first call of `FUN_1407cb660` (callers `FUN_1407cbf30`, `FUN_1407cc300`): group-0 chunk 5, group-1 chunks 5 + 6 | decompile | high (that this is the rest: medium) |
+| Event instance End / SetEventState | EmkEventIns vtable **0x1413fabf8** +0x28 = `FUN_1407d4230(state)`: 0 ends, else restarts; then sets flag id + slot if id > 98 and slot >= 0. The run loop `FUN_1407d40b0` calls it with 0 at the end; 2003[08] reaches it through `FUN_1407cb090` (instance lists of the event manager, matched by id and slot) | decompile | high |
+| Bank 2003 handler | `FUN_1407d0970` (switch on the instruction index: [02] SetEventFlag, [04] AwardItemLot -> `FUN_1404ab360` -> `FUN_1403fc940`, [08] SetEventState, [11] boss health bar `FUN_1404905f0` (entity, name id, slot), [12] HandleBossDefeat `FUN_1404ab4b0(0xFD2, entity)`); bank 2004 handler `FUN_1407ce820` | decompile | high |
+| Item lot draw | `FUN_1403f5d90` (`FUN_1403f5360` is the online variant): rows id, id + 1, ... while one exists, each rolls one item: weight = basePoint x 100 (cumulate share by the counter, luck items x item discovery else x 1.0 at **0x141615c6c**), items whose get flag (getItemFlagId0N, else the row's) is on are skipped; roll = tempered random x 2^-23 (**0x14130ca90**) x total; "nothing" = lotItemNum 0 or id / category < 0. `FUN_1403fc940` then awards the results and sets their flags | decompile | high (luck factor value: unknown) |
+| Region box / cylinder test | FrpgRegionBox vtable 0x14133d258 +0x18 = `FUN_1403f00e0`: offset turned by -rotY, x in (-w/2, w/2), y in (0, h), z in (-d/2, d/2) (bounds from **0x14133d4e0** / **0x14133d490**, set in `FUN_1403efa00`); FrpgRegionCylinder +0x18 = `FUN_1403f0de0`: y in [0, h], xz distance < r | decompile + constants | high |
+
 ## Still unknown
 - Slot priority inside the anim player (ChrCtrl vt+0x38) when both ESD groups play anims; what f0 sees then (esd-9).
 - Which NpcParam row PlayerIns+0x7E0 points at (PlayerIns ctor is in the obfuscated .text). It no longer matters for
