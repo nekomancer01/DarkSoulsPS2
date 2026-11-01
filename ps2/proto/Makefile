@@ -2,6 +2,13 @@
 # see ../../config.mk and README.md) into $(BUILD) (default ../../build), then builds $(BUILD)/proto.elf.
 # Nothing generated is written to the source tree; ./proto.elf and ./data are convenience links into $(BUILD).
 include ../../config.mk
+# Parallel by default: a plain make runs JOBS recipes side by side (default: every core); make -jN or JOBS=N overrides
+# it. RAM stays within tools/q's make reservation: the only big exporter is export_map, and a build runs at most one per
+# area (boot area + world block side by side, as with -j2 before); a map re-export peaked at ~6 GB either way (2026-11-01).
+JOBS ?= $(shell nproc)
+ifeq ($(filter -j% --jobserver%,$(MAKEFLAGS)),)
+MAKEFLAGS += -j$(JOBS)
+endif
 # exporters run through the job queue (tools/q): one heavy job at a time, 12 GB address-space cap (OOM kills 2026-10-31)
 PY := $(abspath ../../tools/q) -m 12 $(PY)
 # Area to build and load. Firelink (the default) builds proto.elf from $(BUILD)/gen/*.bin and $(BUILD)/data/*.pak;
@@ -109,12 +116,12 @@ $(notdir $(EE_BIN)): all
 # one world block's packs (no ELF): make MAP=<msb> BLOCK=<block> blockpacks
 blockpacks: $(D)/$(OUT).pak $(ENEMIES:%=$(AREA_DATA)/%.pak)  # chr packs with this block's variants (enemy.c)
 .PHONY: blockpacks
-# WORLD_J: blocks exported side by side (default 1). Their exporters run inside this make's queue job and reserve no
-# RAM of their own, so raise it only when each block's export fits the job's -m cap together (simplify workers are
-# small since tools/simplify_pool.py; a cached / C simplify needs ~3-4 GB per export_map)
-WORLD_J ?= 1
+# WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue
+# job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB). WORLD_J=1: one block recipe at a
+# time, as before.
+WORLD_J ?=
 worldpacks:
-	@$(MAKE) --no-print-directory -j$(WORLD_J) $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockpacks
 .PHONY: worldpacks

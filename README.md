@@ -98,7 +98,7 @@ make -C ps2/proto
 ```
 
 The first build converts the game data. It takes several minutes and several GB of RAM. Later builds only redo what
-changed. The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
+changed. `make` uses every CPU core by default; `make -j4` (or `JOBS=4`) limits it. The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
 
 ### 6. Play
 
