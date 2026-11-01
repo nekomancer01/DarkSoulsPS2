@@ -192,6 +192,20 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
 
+The name and layout references are read from fixed paths under `ext/` (or the environment variable, if set). Without
+them the tools still run: param rows keep their Japanese names, TAE events stay raw words, and EMEVD instructions keep
+their Japanese names (106 instruction uses that DSR's own `common.emedf` lacks don't decode). To fetch them:
+
+```sh
+git clone --depth 1 https://github.com/soulsmods/Paramdex ext/Paramdex          # tools/params.py: DS1R/Names, DS1R/Defs ($PARAMDEX)
+git clone --depth 1 https://github.com/AinTunez/DarkScript3 ext/DarkScript3     # tools/emevd.py: DarkScript3/Resources/ds1-common.emedf.json ($DARKSCRIPT3)
+git clone --depth 1 https://github.com/Meowmaritus/DSAnimStudio ext/DSAnimStudio # souls.tae_template, xcheck.py tae: DSAnimStudioNETCore/Res/TAE.Template.DS1*.xml
+```
+
+`tools/xcheck.py` also needs soulstruct in `.venv-tools`: the install steps are at the top of
+`tools/requirements-xcheck.txt` (the PyPI wheel lacks soulstruct's data files, so they come from a clone in
+`ext/soulstruct`). Checked 2026-11-01 against Paramdex ff7245e, DarkScript3 733f024, DSAnimStudio f1bff06.
+
 `tools/native/bcdec.h` (BC texture decoder, MIT / Unlicense) is included with its licence header.
 
 ## Licence
