@@ -1221,6 +1221,13 @@ static void use_action(void)
                 continue;
             }
             s->oa_state[i] = 2 | 4;  /* used: fired this frame, not usable again until an event says so; plays its anim */
+            for (int j = 0; j < EV_SETS; j++) {  /* the same part in another block of the map: playing already, so
+                                                  * objact_flags must not jump it to the end pose */
+                const EvObjAct *o2 = sets[j].blob ? SEC(&sets[j], S_OBJACTS, EvObjAct) : NULL;
+                for (int m = 0; o2 && m < NSEC(&sets[j], S_OBJACTS); m++)
+                    if (o2[m].part == oa[i].part)
+                        sets[j].oa_state[m] |= 4;
+            }
             if (oa[i].entity > 0)
                 flag_set(oa[i].entity, 1);
             if (oa[i].flag > 0)
