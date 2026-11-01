@@ -16,6 +16,7 @@
 #include <kernel.h>
 #include <malloc.h>
 #include "fx.h"
+#include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 
 #define FX_MAX 384        /* particle pool (all instances) */
 #define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
@@ -56,7 +57,8 @@ typedef struct {
 
 typedef struct { u16 first_ref, n_ref, first_light, n_light; } FxEff;
 typedef struct { u16 sys, pad; } FxRef;
-typedef struct { u16 eff, flags; float pos[3], frame[9], pad[2]; } FxInst;  /* frame: columns local x, y, z */
+/* frame: columns local x, y, z; entity: MSB SFX entity id (0 none): off while events deleted it (fx_entity_*) */
+typedef struct { u16 eff, flags; float pos[3], frame[9]; s32 entity; float pad; } FxInst;
 typedef struct {
     u16 flags, pad;
     float off[3], radius, begin, period;
@@ -240,6 +242,30 @@ void fx_block_on(int block, int on)
     bind(was);
 }
 
+int fx_entity_particles(int id, int kill)
+{
+    int was = cur_set, found = 0, n = 0;
+    for (int k = 0; k < FX_SETS; k++) {
+        bind(k);
+        if (!hdr)
+            continue;
+        for (u32 ii = 0; ii < hdr->n_inst; ii++)
+            found |= inst[ii].entity == id;
+        for (int i = 0; i < n_alive;) {
+            if (pool[i].set != k || inst[pool[i].inst].entity != id) {
+                i++;
+            } else if (kill) {
+                pool[i] = pool[--n_alive];
+                n++;
+            } else {
+                i++, n++;
+            }
+        }
+    }
+    bind(was);
+    return found ? n : -1;
+}
+
 static void frame_apply(const FxInst *in, const float l[3], float out[3])
 {
     for (int k = 0; k < 3; k++)
@@ -404,7 +430,8 @@ void fx_update(float dt, V3 eye)
         bind(k);
     for (u32 ii = 0; ii < hdr->n_inst; ii++) {
         float dx = inst[ii].pos[0] - eye.x, dy = inst[ii].pos[1] - eye.y, dz = inst[ii].pos[2] - eye.z;
-        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE;
+        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE &&
+                 !(inst[ii].entity && dg_entity_hidden(inst[ii].entity));  /* Delete Map SFX (event.c) */
         if (on && !inst_on[ii]) {  /* prewarm: one life of the longest system in 8 steps */
             inst_on[ii] = 1;
             const FxEff *e = &eff[inst[ii].eff];

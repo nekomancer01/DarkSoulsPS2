@@ -12,8 +12,9 @@ What is placed (all DATA unless marked):
   1012962): one light at the bonfire +0.42 m (= dummy 0.164 + the effect's offset 0.25 along local Z), end 5 m,
   begin 0, linear colour (10.55, 4.61, 1.17) = 30 x (A x c)^2.2 at A 0.62, inside the curve's 0.565..0.753.
   Every o0200 counts as lit (TECH_DEBT fx-3).
-- MSB SFX events (effect_id at the region; frame = region rotation, local Y up), except ones an event script owns
-  (entity_id != -1: fog walls etc., TECH_DEBT fx-4).
+- MSB SFX events (effect_id at the region; frame = region rotation, local Y up). Ones with an entity id (fog walls
+  etc.) keep it in their instance: event scripts delete / spawn them by it (src/fx.c fx_entity; FX_EVENT_SFX=0 leaves
+  them out as before, TECH_DEBT fx-4 / event-5).
 - MSB Light events: PointLightBank rows at their regions = static point lights (map bake only, static_lights()).
   MEASURED: their shader colour is 3.0 x lin(col, colA) (torch row 15 at Burg, all three channels).
 
@@ -49,7 +50,8 @@ fx.bin (version FX_VERSION, little endian):
   sys  SYS_FMT: see fx.h FxSys (same order)
   eff   8 B: u16 first ref, u16 n sys refs, u16 first light, u16 n lights
   ref   4 B: u16 system index, u16 pad (an effect's systems are refs[first .. first + n))
-  inst 60 B: u16 effect, u16 flags, f32 pos[3], f32 frame[9] (columns = local x, y, z in world), f32 pad[2]
+  inst 60 B: u16 effect, u16 flags, f32 pos[3], f32 frame[9] (columns = local x, y, z in world), s32 MSB entity id
+             (0: none, always on), f32 pad
   light LIGHT_FMT: see fx.h FxLight
 """
 import json, math, os, random, struct, sys
@@ -58,6 +60,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import area, dsr_light, ffx, souls
 
 FX_VERSION = 1
+EVENT_SFX = os.environ.get("FX_EVENT_SFX", "1") == "1"  # MSB SFX with an entity id (event-owned) included
 BONFIRE_FX = (90001, 90006)   # burning bonfire at kindling level 10 + its light (see the docstring)
 # Bonfires whose fire in the reference save is a higher kindling effect (MEASURED: particle counts in the Firelink
 # capture, 15 glow / 77 embers / 12 flames = 90004's maxima 16 / 80 / 12). The save state proper is TECH_DEBT fx-3.
@@ -361,7 +364,7 @@ class Area:
         self.M = souls.msb1(souls.read(os.path.join(game, "map", "MapStudio", map_id + ".msb")))
         keep = area.region(self.M, map_id)
         regs = {r["name"]: r for r in self.M["regions"]}
-        self.inst, self.msb_lights = [], []
+        self.inst, self.msb_lights, self.inst_ent = [], [], {}  # inst_ent: MSB SFX name -> entity id (event-owned)
         up_fwd = bonfire_frame(game)
         for p in self.M["parts"]:
             if p["model"] == area.BONFIRE and keep(*p["pos"]):
@@ -381,10 +384,13 @@ class Area:
             r = regs.get(ev.get("region"))
             if r is None or not keep(*r["pos"]):
                 continue
-            if ev["type_name"] == "SFX" and ev.get("entity_id", -1) == -1 and ev.get("effect_id", -1) > 0:
+            owned = ev.get("entity_id", -1) not in (-1, None)
+            if ev["type_name"] == "SFX" and (not owned or EVENT_SFX) and ev.get("effect_id", -1) > 0:
                 R = _rot_part(r.get("rot", (0, 0, 0)))
                 self.inst.append((ev["effect_id"], list(r["pos"]), [[R[i][j] for i in range(3)] for j in range(3)],
                                   ev["name"]))
+                if owned:
+                    self.inst_ent[ev["name"]] = ev["entity_id"]
             elif ev["type_name"] == "Light" and ev.get("point_light_id", -1) >= 0:
                 self.msb_lights.append((ev["point_light_id"], list(r["pos"]), ev["name"]))
 
@@ -613,8 +619,8 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
     body_sys = b"".join(pack_sys(s, texs[s["tex"]][2:4]) for s in sys_recs)
     body_eff = b"".join(struct.pack("<4H", f, n, fl, nl) for f, n, fl, nl, _ in effects)
     body_ref = b"".join(struct.pack("<HH", r, 0) for r in refs)
-    body_inst = b"".join(struct.pack("<HH3f9f2f", e, 0, *p, *[x for c in fr for x in c], 0.0, 0.0)
-                         for e, p, fr, _ in insts)
+    body_inst = b"".join(struct.pack("<HH3f9fif", e, 0, *p, *[x for c in fr for x in c], A.inst_ent.get(n, 0), 0.0)
+                         for e, p, fr, n in insts)
     body_light = b"".join(light_recs)
     off_tex = HDR
     off_sys = off_tex + 16 * len(texs)

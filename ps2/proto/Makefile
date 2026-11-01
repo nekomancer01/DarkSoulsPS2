@@ -263,7 +263,7 @@ MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 $(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum $(TS)/export_effects.py.sum $(TS)/ffx.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
-		$(TS)/native/simplify.c.sum \
+		$(TS)/native/simplify.c.sum $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(AREA_PY) $(A)/objects.bin
 	@mkdir -p $(@D)
 	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static $(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)

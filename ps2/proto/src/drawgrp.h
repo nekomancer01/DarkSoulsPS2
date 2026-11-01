@@ -18,6 +18,13 @@ void dg_block_drop(int k);
 void dg_floor(int k, int tri);
 /* Chunk number in bump.bin's order (resident index, near chunks: flags >> 8): 1 = draw */
 int dg_shown(int k, unsigned chunk);
+/* Event-switched pieces / objects (TECH_DEBT event-5; dg.bin DGM3 keys their chunks by MSB entity id): (De)activate
+ * Object and Activate Map Part (src/event.c) hide / show every chunk of entity id in every instance, also in blocks
+ * that load later. Returns 1 if a loaded instance has chunks of that id. dg_entity_drawn: 1 drawn, 0 hidden, -1 no
+ * chunk of that id loaded; dg_entity_hidden: id is on the hidden list (map SFX use the same list, src/fx.c). */
+int dg_entity(int id, int on);
+int dg_entity_drawn(int id);
+int dg_entity_hidden(int id);
 /* Characters (src/enemy.c): the piece-mask index of instance k's enemy part at MSB position pos (enemies.bin's
  * floats), -1 = not found (always shown); dg_mask_shown: 1 while that set shares a group with k's current part */
 int dg_char(int k, const float pos[3]);
