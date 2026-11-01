@@ -257,7 +257,8 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     int ok = out && cs && stage[0] && (stage[1] || one), mem_ok = ok;
     if (!ok) {  /* loud: a NULL here used to end up as garbage in a DMA chain */
         struct mallinfo mi = mallinfo();
-        snprintf(pack_error, sizeof pack_error, "OUT OF RAM: %s needs %uK, free %uK", name, (e->raw + 1023) >> 10,
+        snprintf(pack_error, sizeof pack_error, "OUT OF RAM: %s needs %uK (%s), free %uK", name, (e->raw + 1023) >> 10,
+                 !out ? "output" : !cs ? "block sizes" : "staging", /* which allocation failed */
                  (unsigned)(32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks) >> 10);
         printf("pack: %s\n", pack_error);
     }

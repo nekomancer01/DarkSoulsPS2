@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "mapstream.h"
 #include "pack.h"
+#include "vu1.h"
 
 /* Cells whose box is within MS_LOAD_R m of the player are loaded, nearest first, one read at a time; beyond
  * MS_UNLOAD_R they are freed. The blobs live in one arena allocated at the first mapstream_update, i.e. after
@@ -247,26 +248,41 @@ void *mapstream_alloc(unsigned n, const float pos[3])
 {
     if (!ensure_arena())
         return NULL;
-    int was = sel;
+    int was = sel, forced = 0;
+    unsigned forced_kb = 0;
     void *p;
-    while (!(p = arena_alloc(n, 1))) {  /* drop the farthest cell no chain reads (any distance) until n bytes fit */
+    /* drop the farthest cell no chain reads (any distance) until n bytes fit. When every cell left was drawn in the
+     * last frames (the player stands among them), drop drawn ones too: callers run in the update phase (enemy.c
+     * stream_types, world.c), after main.c's end-of-frame vu1_wait and before this frame's map_draw, so once VIF1 is
+     * idle no chain reads a cell not handed out this frame. Without it a 579 KB c2540 model.bin found no room in the
+     * Burg and the heap fallback failed on fragmentation (40-209 OUT OF RAM per 30-minute soak, 2026-11-01). The
+     * dropped cells draw their coarse level until they stream back. */
+    while (!(p = arena_alloc(n, 1))) {
         int far = -1, far_k = 0;
         float fd = -1;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned i = 0; i < ncell; i++)
-                if (state[i] == MS_READY && frame - used[i] > 2) {
+                if (state[i] == MS_READY && (forced ? used[i] != frame : frame - used[i] > 2)) {
                     float d2 = box_d2(&tab[i], pos);
                     if (d2 > fd)
                         far = i, far_k = k, fd = d2;
                 }
         }
+        if (far < 0 && !forced) {
+            vu1_wait();
+            forced = 1;
+            continue;
+        }
         if (far < 0)
             break;
         bind(far_k);
+        forced_kb += forced ? tab[far].bytes >> 10 : 0;
         drop(far);
     }
     bind(was);
+    if (forced)
+        printf("mapstream: alloc %u KB %s, %u KB of drawn cells dropped\n", n >> 10, p ? "ok" : "FAILED", forced_kb);
     if (p)
         mapstream_stats.other_kb += (n + 63) >> 10;
     return p;
