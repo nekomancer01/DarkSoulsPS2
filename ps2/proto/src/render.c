@@ -53,7 +53,7 @@ void r_init(GSGLOBAL *g) { gs = g; }
 
 /* --- V6 VRAM allocator: one bit per 256-byte block that this allocator owns and has not handed out --- */
 static u32 vfree[4 * 1024 * 1024 / 256 / 32];
-int r_vram_used, r_vram_pages, r_vram_gskit;
+int r_vram_used, r_vram_pages, r_vram_gskit, r_vram_holes;
 
 /* block number inside a page: PSMCT32 / PSMT8 (8 x 4 blocks), PSMCT16 (4 x 8 blocks) */
 static const unsigned char BLK32[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23},
@@ -90,7 +90,16 @@ static u32 vram_place(GSGLOBAL *g, const unsigned short *fp, int n)
     for (int i = 0; i < n; i++)
         span = fp[i] + 1 > span ? fp[i] + 1 : span;
     int top = g->CurrentPointer / 256;
+    /* small allocations (CLUTs) first go into pages already in use, so freed textures leave whole pages for the
+     * next texture (enemy / block textures come and go: TECH_DEBT world-4) */
+    for (int pass = span <= 4 ? 0 : 1; pass < 2; pass++)
     for (int base = 0; base + span <= top; base++) {
+        if (!vfree[base >> 5] || (!pass && vfree[base >> 5] == ~0u)) {  /* footprints hold block 0: skip the page */
+            base |= 31;
+            continue;
+        }
+        if (!pass && (base & 31) + span > 32)
+            continue;
         int i = 0;
         while (i < n && vbit(base + fp[i]))
             i++;
@@ -98,6 +107,7 @@ static u32 vram_place(GSGLOBAL *g, const unsigned short *fp, int n)
             for (i = 0; i < n; i++)
                 vfree[(base + fp[i]) >> 5] &= ~(1u << ((base + fp[i]) & 31));
             r_vram_used += n;
+            r_vram_holes -= n;
             return base * 256;
         }
     }
@@ -109,10 +119,21 @@ static u32 vram_place(GSGLOBAL *g, const unsigned short *fp, int n)
         return GSKIT_ALLOC_ERROR;
     }
     for (int b = (g->CurrentPointer + 255) / 256; b < base + pages * 32; b++)
-        vfree[b >> 5] |= 1u << (b & 31);
+        vfree[b >> 5] |= 1u << (b & 31), r_vram_holes++;
     g->CurrentPointer = (base + pages * 32) * 256;
     r_vram_pages += pages;
     return vram_place(g, fp, n);
+}
+
+static int tex_tbw(int w, int psm) { return psm == GS_PSM_T8 ? (w + 127) / 128 * 2 : (w + 63) / 64; }  /* vu1.c / gsKit_setup_tbw */
+
+/* the blocks of an allocation go back to the free set (first fit reuses them) */
+static void vram_release(u32 addr, const unsigned short *fp, int n)
+{
+    int base = addr / 256;
+    for (int i = 0; i < n; i++)
+        if (!vbit(base + fp[i]))
+            vfree[(base + fp[i]) >> 5] |= 1u << ((base + fp[i]) & 31), r_vram_used--, r_vram_holes++;
 }
 
 u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
@@ -121,7 +142,7 @@ u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
     return gsKit_vram_alloc(g, gsKit_texture_size(w, h, psm), GSKIT_ALLOC_USERBUFFER);
 #endif
     static unsigned short fp[4096];
-    int tbw = psm == GS_PSM_T8 ? (w + 127) / 128 * 2 : (w + 63) / 64;  /* vu1.c / gsKit_setup_tbw */
+    int tbw = tex_tbw(w, psm);
     r_vram_gskit += gsKit_texture_size(w, h, psm) / 256;
     if ((w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return GSKIT_ALLOC_ERROR;
@@ -137,6 +158,47 @@ u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
     return vram_place(g, fp, footprint(16, 16, clut_psm, 1, fp));  /* 256 entries, CSM1: 16 x 16 */
 }
+
+u32 r_vram_lin(GSGLOBAL *g, int n)
+{
+    static unsigned short fp[1024];
+    if (n <= 0 || n > (int)(sizeof fp / sizeof *fp))
+        return GSKIT_ALLOC_ERROR;
+    for (int i = 0; i < n; i++)
+        fp[i] = i;
+    return vram_place(g, fp, n);
+}
+
+void r_vram_free_tex(u32 addr, int w, int h, int psm)
+{
+#ifdef V6_OFF
+    return;
+#endif
+    static unsigned short fp[4096];
+    if (addr == GSKIT_ALLOC_ERROR || (w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
+        return;
+    vram_release(addr, fp, footprint(w, h, psm, tex_tbw(w, psm), fp));
+}
+
+void r_vram_free_clut(u32 addr, int clut_psm)
+{
+#ifdef V6_OFF
+    return;
+#endif
+    unsigned short fp[4];
+    if (addr != GSKIT_ALLOC_ERROR)
+        vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
+}
+
+void r_vram_free_lin(u32 addr, int n)
+{
+    for (int i = 0; addr != GSKIT_ALLOC_ERROR && i < n; i++) {
+        unsigned short b = i;
+        vram_release(addr + i * 256, &b, 1);
+    }
+}
+
+int r_vram_avail(const GSGLOBAL *g) { return 4 * 1024 * 1024 - (int)g->CurrentPointer + r_vram_holes * 256; }
 
 void r_camera(V3 eye, V3 target)
 {

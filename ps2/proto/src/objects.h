@@ -13,12 +13,14 @@ struct Player;
 /* objects.bin from the area pack (kept while the area is loaded); uploads the models' textures. Returns the number
  * of breakable instances (0 on a bad blob). */
 int objects_init(GSGLOBAL *gs, const void *blob);
-/* World blocks (src/world.c): at boot, block b's objects.bin: its types are loaded (VRAM, compacted: the blob can be
- * freed) and its placements kept; objects_block_add places them when the block turns on, objects_block_remove takes
- * them away (broken pieces included) when it turns off. */
+/* World blocks (src/world.c): at boot, block b's objects.bin: its types are loaded (compacted: the blob can be freed)
+ * and its placements kept; objects_block_add places them when the block turns on and uploads the textures of its
+ * breakable types no other block on holds (blob: its objects.bin again, read with the block), objects_block_remove
+ * takes them away (broken pieces included) when it turns off and gives those textures back. Animated types keep
+ * theirs from boot (each pack's shared texture model). */
 #define OBJ_BLOCKS 4
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob);
-void objects_block_add(int block);
+void objects_block_add(int block, const void *blob);
 void objects_block_remove(int block);
 /* Per frame after player_update: player push-out from intact objects, roll / dash / landing breaks, piece sim */
 void objects_update(struct Player *p, float dt);

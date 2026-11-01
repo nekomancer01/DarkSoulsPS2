@@ -307,9 +307,9 @@ int main(int argc, char **argv)
     combat_sweep_hook = objects_sweep_hook;  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
-        vram_free = 4 * 1024 * 1024 - gs->CurrentPointer;
-    printf("DSRPROTO vram: free %d, r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
-           4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
+        vram_free = r_vram_avail(gs);
+    printf("DSRPROTO vram: free %d (%d after the last page), r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
+           r_vram_avail(gs), 4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
     /* cut-out foliage: texels with CLUT alpha 0 are dropped (AFAIL keep = neither colour nor depth written) */
     gs->Test->ATE = 1;
     gs->Test->ATST = 5;  /* GEQUAL */
@@ -658,6 +658,8 @@ int main(int argc, char **argv)
         PROF_MARK(PROF_FLIP);
         gsKit_queue_exec(gs);
         flip(gs);
+        if (vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
+            vram_free = r_vram_avail(gs);
         test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
         save_tick(&pl, dt);  /* requested saves + autosave */
         static unsigned log_frames;
