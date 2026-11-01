@@ -1,0 +1,20 @@
+# E6 elevator, event side only (the moving platform is A9's): Firelink's elevator o1460_0000 (entity 1021000) stays a
+# static map object, but its anims take their DSR length (objects.bin v3 static anim lengths), so m10_02 event 11020300
+# (first ride) sets the call flags and waits 21.7 s for ride anim 0 like DSR, then (the player is outside the car
+# regions 1022001 / 1022002) plays the 0.6 s anim 22. Entering region 1022003 starts it.
+option hud
+option noenemies
+option nodemo
+wait 2
+ev expect flag 11020300 0
+ev expect flag 11020302 0
+ev expect objanim 1021000 -1 0
+ev warp 1022003
+wait 1
+ev expect flag 11020300 1
+ev expect flag 11020302 1
+ev expect objanim 1021000 0 1
+wait 22
+ev expect objanim 1021000 22 0
+ev summary
+end

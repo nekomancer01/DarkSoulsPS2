@@ -1,0 +1,20 @@
+# E6 door state across a save / load, part 1 of 2 (part 2: ev_door_save2.txt, next boot from this save): opens the
+# Burg door o1312_0000 and saves. Its MSB state flag 61010512 is in the save; at the next boot event.c puts the door
+# at the end of its ObjAct anim (objact_flags, ev_obj.c).
+option save host doortest
+option hud
+option noenemies
+option nodemo
+wait 1
+wipe
+spawn -14.52 -13.5 -69.75 2.0
+wait 3
+ev action
+wait 4
+ev expect objanim 1011312 0 0
+ev expect flag 61010512 1
+spawn -30.1 -53.5 118.6 0
+wait 3
+save
+ev summary
+end

@@ -1,0 +1,21 @@
+# E6 door state across a save / load, part 2 of 2 (after ev_door_save1.txt): the Burg door o1312_0000 shows open
+# (its ObjAct anim's last frame, not playing) once its block loads, and lets the player through.
+option save host doortest
+option hud
+option noenemies
+option nodemo
+wait 1
+check loaded 1
+check flag 61010512 1
+spawn -14.52 -13.5 -69.75 2.0
+cam 2.0 0.3
+wait 3
+ev expect objanim 1011312 0 0
+shot save_burg_door_open
+stick 0 1
+wait 1
+stick 0 0
+wait 0.3
+ev expect x > -13.2
+ev summary
+end

@@ -10,6 +10,7 @@
 #include <malloc.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "objects.h"
 #include "physics.h"
@@ -64,6 +65,324 @@ static int blk_nparts[OBJ_BLOCKS];
 static Body bodies[MAX_BODIES];
 ObjectsStats objects_stats;
 
+/* ---- animated objects (objects.bin v3: doors, levers, gates, chests). Events and ObjActs play their Havok anims
+ * (objects_anim_*: src/ev_obj.c); each hkx body is a box on a bone that moves with the pose and pushes the player.
+ * Without an anim they hold the reference pose (closed), or the first frame of their MSB init anim (ASSUMED). ---- */
+#define MAX_ATYPES 16
+#define MAX_AINST 48
+#define AMAX_BONES 32  /* export_objects.py keeps types within this (root bone mask) */
+#define STEP_OVER 0.4f /* ASSUMED: object boxes whose top is this close above the feet are walked over, not pushed */
+typedef struct { int bone; float c[3], q[4], half[3]; unsigned pad; } ABody;  /* objects.bin body record (48 B) */
+typedef struct {
+    int id, nbodies;
+    unsigned roots;    /* bit per root bone: the placement rotation goes into their pose */
+    ABody *body;       /* own copy (a block's blob is freed after objects_block_types) */
+    Model *model;
+} AType;
+typedef struct {
+    int type, block, entity, off;
+    float pos[3], q[4];
+    int anim, anim_id, loop, playing;  /* model anim index (-1 reference pose) and its id; playing: t advances */
+    float t;
+} AInst;
+typedef struct { unsigned short type; float pos[3], q[4]; int entity, init; } APart;
+/* Objects the events animate but the port keeps static (elevator o1460: A9): anim lengths only, so an event waiting
+ * for one takes DSR's time; the anim state is kept for tests */
+#define MAX_ASTATIC 8
+typedef struct { int entity, n, block, anim, playing; float t, len, alen[8]; int aid[8]; } AStatic;
+static AStatic astatic[MAX_ASTATIC];
+static AType atypes[MAX_ATYPES];
+static AInst ainst[MAX_AINST];
+static int natypes, nainst;
+static APart *ablk_part[OBJ_BLOCKS];
+static int ablk_nparts[OBJ_BLOCKS];
+
+static void q_mul(const float *a, const float *b, float *o);
+static void q_rot(const float *q, const float *v, float *o);
+
+/* objects.bin v3 animated types of a pack (block 0: the boot area, blob kept; compact: a block's, blob freed after) and
+ * its placements; returns the placements */
+static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
+{
+    const unsigned *h = blob;
+    if (block < 0 || block >= OBJ_BLOCKS || h[1] < 3)
+        return 0;
+    const unsigned char *b = blob;
+    for (unsigned k = 0; k < h[12]; k++) {  /* static ones: lengths only (block -2 - b: block b's, not placed) */
+        int j = 0;
+        while (j < MAX_ASTATIC && astatic[j].entity)
+            j++;
+        if (j == MAX_ASTATIC)
+            break;
+        const int *r = (const int *)(b + h[13] + 72 * k);
+        AStatic *a = &astatic[j];
+        memset(a, 0, sizeof *a);
+        a->entity = r[0], a->n = r[1] < 8 ? r[1] : 8, a->block = -2 - block, a->anim = -1;  /* placed by anim_add */
+        for (int i = 0; i < a->n; i++)
+            a->aid[i] = r[2 + 2 * i], memcpy(&a->alen[i], &r[3 + 2 * i], 4);
+    }
+    if (!h[6])
+        return 0;
+    Model *tex = h[11] ? mdl_load(b + h[11]) : NULL;  /* the pack's shared textures (one bone, no triangles) */
+    if (tex && mdl_upload(tex, gs) < 0)
+        printf("objects: block %d: animated object textures did not fit in VRAM\n", block);
+    int map[MAX_ATYPES];
+    for (unsigned k = 0; k < h[6] && k < MAX_ATYPES; k++) {
+        const unsigned *t = (const unsigned *)(b + h[8] + 32 * k);
+        map[k] = -1;
+        for (int j = 0; j < natypes; j++)
+            if (atypes[j].id == (int)t[0])
+                map[k] = j;
+        if (map[k] >= 0 || natypes == MAX_ATYPES)
+            continue;
+        AType *ty = &atypes[natypes];
+        memset(ty, 0, sizeof *ty);
+        ty->id = (int)t[0], ty->nbodies = (int)t[3], ty->roots = t[6];
+        ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
+        ty->model = mdl_load(b + t[1]);
+        if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || mdl_upload(ty->model, gs) < 0 ||
+            (compact && !mdl_compact(ty->model, t[2]))) {
+            printf("objects: block %d: animated o%04d did not load\n", block, ty->id);
+            if (ty->model)
+                mdl_free(ty->model);
+            free(ty->body);
+            continue;
+        }
+        if (tex)
+            mdl_share_textures(ty->model, tex);
+        memcpy(ty->body, b + h[10] + 48 * t[4], ty->nbodies * sizeof(ABody));
+        map[k] = natypes++;
+    }
+    if (tex)
+        mdl_free(tex);  /* its VRAM textures stay (now the types') */
+    free(ablk_part[block]);
+    ablk_part[block] = malloc(h[7] * sizeof(APart) + 1);
+    ablk_nparts[block] = 0;
+    for (unsigned k = 0; ablk_part[block] && k < h[7]; k++) {
+        const unsigned char *p = b + h[9] + 48 * k;
+        int ti = *(const unsigned short *)p;
+        if (ti >= (int)h[6] || ti >= MAX_ATYPES || map[ti] < 0)
+            continue;
+        APart *pt = &ablk_part[block][ablk_nparts[block]++];
+        pt->type = map[ti];
+        memcpy(pt->pos, p + 4, 12);
+        memcpy(pt->q, p + 16, 16);
+        memcpy(&pt->entity, p + 32, 4);
+        memcpy(&pt->init, p + 36, 4);
+    }
+    printf("objects: block %d: %d animated placements, %d animated types\n", block, ablk_nparts[block], natypes);
+    return ablk_nparts[block];
+}
+
+static void anim_add(int block)
+{
+    for (int j = 0; j < MAX_ASTATIC; j++)
+        if (astatic[j].entity && (astatic[j].block == -2 - block || astatic[j].block == block))
+            astatic[j].block = block, astatic[j].anim = -1, astatic[j].playing = 0;
+    int i = 0;
+    for (int k = 0; k < ablk_nparts[block]; k++) {
+        while (i < nainst && ainst[i].block >= 0)
+            i++;
+        if (i == MAX_AINST)
+            break;
+        if (i == nainst)
+            nainst++;
+        const APart *pt = &ablk_part[block][k];
+        AInst *in = &ainst[i];
+        memset(in, 0, sizeof *in);
+        in->type = pt->type, in->block = block, in->entity = pt->entity;
+        memcpy(in->pos, pt->pos, 12);
+        memcpy(in->q, pt->q, 16);
+        in->anim = pt->init >= 0 ? mdl_anim(atypes[pt->type].model, pt->init) : -1;  /* held at its first frame */
+        in->anim_id = in->anim >= 0 ? pt->init : -1;
+    }
+}
+
+/* Pose of an animated instance with the placement rotation in its root bones (drawn / placed at pos, yaw -pi =
+ * no further rotation) */
+static void anim_pose(const AInst *in, BoneLocal *pose)
+{
+    const AType *ty = &atypes[in->type];
+    mdl_sample(ty->model, in->anim, in->t, in->loop, pose);
+    for (int b = 0; b < mdl_bones(ty->model); b++)
+        if (ty->roots >> b & 1) {
+            float q[4], t[3];
+            q_mul(in->q, pose[b].q, q);
+            q_rot(in->q, pose[b].t, t);
+            memcpy(pose[b].q, q, 16);
+            memcpy(pose[b].t, t, 12);
+        }
+}
+
+/* Push a vertical capsule out of the animated objects' boxes. Each box: its world centre and axes from the bone; the
+ * push works in the horizontal plane on the box's footprint (its projected extents along a horizontal-ish box axis
+ * and the perpendicular: exact for upright boxes such as doors and gates, a bound for tilted ones) */
+static int anim_push(float pos[3], float r, float h)
+{
+    int touched = 0;
+    static BoneLocal pose[MAX_BONES];
+    static float world[MAX_BONES][12];
+    for (int i = 0; i < nainst; i++) {
+        AInst *in = &ainst[i];
+        if (in->block < 0 || in->off)
+            continue;
+        float dx = pos[0] - in->pos[0], dz = pos[2] - in->pos[2];
+        if (dx * dx + dz * dz > 12 * 12)  /* ASSUMED: no object box reaches beyond 12 m of its origin */
+            continue;
+        const AType *ty = &atypes[in->type];
+        anim_pose(in, pose);
+        mdl_world(ty->model, pose, v3(in->pos[0], in->pos[1], in->pos[2]), -3.14159265f, world);
+        for (int k = 0; k < ty->nbodies; k++) {
+            const ABody *bd = &ty->body[k];
+            const float *w = world[bd->bone < mdl_bones(ty->model) ? bd->bone : 0];
+            V3 c = mdl_point(w, bd->c);
+            float ax[3][3];  /* the box's axes in world: bone rotation x box rotation */
+            for (int a = 0; a < 3; a++) {
+                float e[3] = {a == 0, a == 1, a == 2}, l[3];
+                q_rot(bd->q, e, l);
+                for (int j = 0; j < 3; j++)
+                    ax[a][j] = w[3 * j] * l[0] + w[3 * j + 1] * l[1] + w[3 * j + 2] * l[2];
+            }
+            float ey = 0;
+            for (int a = 0; a < 3; a++)
+                ey += fabsf(ax[a][1]) * bd->half[a];
+            if (pos[1] + h < c.y - ey || pos[1] > c.y + ey || c.y + ey < pos[1] + STEP_OVER)
+                continue;
+            int m = fabsf(ax[0][1]) < 0.9f ? 0 : 2;  /* a horizontal-ish axis gives the footprint's direction */
+            float ul = sqrtf(ax[m][0] * ax[m][0] + ax[m][2] * ax[m][2]);
+            if (ul < 1e-4f)
+                continue;
+            float ux = ax[m][0] / ul, uz = ax[m][2] / ul, eu = 0, ev = 0;
+            for (int a = 0; a < 3; a++) {
+                eu += fabsf(ax[a][0] * ux + ax[a][2] * uz) * bd->half[a];
+                ev += fabsf(-ax[a][0] * uz + ax[a][2] * ux) * bd->half[a];
+            }
+            float px = pos[0] - c.x, pz = pos[2] - c.z;
+            float lu = px * ux + pz * uz, lv = -px * uz + pz * ux;
+            float du = eu + r - fabsf(lu), dv = ev + r - fabsf(lv);
+            if (du <= 0 || dv <= 0)
+                continue;
+            if (du < dv)
+                lu += lu < 0 ? -du : du;
+            else
+                lv += lv < 0 ? -dv : dv;
+            pos[0] = c.x + lu * ux - lv * uz;
+            pos[2] = c.z + lu * uz + lv * ux;
+            touched = 1;
+        }
+    }
+    return touched;
+}
+
+static void anim_update(float dt)
+{
+    for (int j = 0; j < MAX_ASTATIC; j++)
+        if (astatic[j].block >= 0 && astatic[j].playing && (astatic[j].t += dt) >= astatic[j].len)
+            astatic[j].t = astatic[j].len, astatic[j].playing = 0;
+    for (int i = 0; i < nainst; i++) {
+        AInst *in = &ainst[i];
+        if (in->block < 0 || !in->playing)
+            continue;
+        in->t += dt;
+        float len = mdl_anim_length(atypes[in->type].model, in->anim);
+        if (!in->loop && in->t >= len)
+            in->t = len, in->playing = 0;
+    }
+}
+
+static void anim_draw(V3 eye, V3 fwd)
+{
+    static BoneLocal pose[MAX_BONES];
+    for (int i = 0; i < nainst; i++) {
+        AInst *in = &ainst[i];
+        if (in->block < 0 || in->off)
+            continue;
+        float dx = in->pos[0] - eye.x, dy = in->pos[1] - eye.y, dz = in->pos[2] - eye.z;
+        if (dx * dx + dy * dy + dz * dz > DRAW_DIST * DRAW_DIST || dx * fwd.x + dy * fwd.y + dz * fwd.z < -6)
+            continue;
+        anim_pose(in, pose);
+        mdl_draw(atypes[in->type].model, pose, v3(in->pos[0], in->pos[1], in->pos[2]), -3.14159265f, 0);
+    }
+}
+
+static AInst *anim_find(int entity)
+{
+    for (int i = 0; entity != -1 && i < nainst; i++)
+        if (ainst[i].block >= 0 && ainst[i].entity == entity)
+            return &ainst[i];
+    return NULL;
+}
+
+static AStatic *static_anim(int entity, int anim, float *len)
+{
+    for (int j = 0; entity != -1 && j < MAX_ASTATIC; j++)
+        if (astatic[j].block >= 0 && astatic[j].entity == entity)
+            for (int i = 0; i < astatic[j].n; i++)
+                if (astatic[j].aid[i] == anim) {
+                    *len = astatic[j].alen[i];
+                    return &astatic[j];
+                }
+    return NULL;
+}
+
+float objects_anim_play(int entity, int anim, int loop)
+{
+    float len;
+    AStatic *st = static_anim(entity, anim, &len);
+    if (st) {  /* not drawn moving: the time passes all the same (loops end at once, ASSUMED harmless) */
+        st->anim = anim, st->t = 0, st->len = loop ? 0 : len, st->playing = !loop;
+        printf("objects: %d anim %d: static object (A9), %.2f s\n", entity, anim, len);
+        return len;
+    }
+    AInst *in = anim_find(entity);
+    int a = in ? mdl_anim(atypes[in->type].model, anim) : -1;
+    if (a < 0)
+        return -1;
+    in->anim = a, in->anim_id = anim, in->t = 0, in->loop = loop != 0, in->playing = 1;
+    return mdl_anim_length(atypes[in->type].model, a);
+}
+
+int objects_anim_end(int entity, int anim)
+{
+    float len;
+    AStatic *st = static_anim(entity, anim, &len);
+    if (st) {
+        st->anim = anim, st->t = st->len = len, st->playing = 0;
+        return 1;
+    }
+    AInst *in = anim_find(entity);
+    int a = in ? mdl_anim(atypes[in->type].model, anim) : -1;
+    if (a < 0)
+        return 0;
+    in->anim = a, in->anim_id = anim, in->loop = 0, in->playing = 0;
+    in->t = mdl_anim_length(atypes[in->type].model, a);
+    return 1;
+}
+
+int objects_anim_state(int entity, int *anim, float *t, int *playing)
+{
+    for (int j = 0; entity != -1 && j < MAX_ASTATIC; j++)
+        if (astatic[j].block >= 0 && astatic[j].entity == entity) {
+            if (anim)
+                *anim = astatic[j].anim;
+            if (t)
+                *t = astatic[j].t;
+            if (playing)
+                *playing = astatic[j].playing;
+            return 1;
+        }
+    AInst *in = anim_find(entity);
+    if (!in)
+        return 0;
+    if (anim)
+        *anim = in->anim_id;
+    if (t)
+        *t = in->t;
+    if (playing)
+        *playing = in->playing;
+    return 1;
+}
+
 static void q_mul(const float *a, const float *b, float *o)
 {
     float x = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
@@ -86,10 +405,10 @@ int objects_init(GSGLOBAL *gs, const void *blob)
     const unsigned *h = blob;
     ntypes = ninst = 0;
     memset(bodies, 0, sizeof bodies);
-    if (!blob || memcmp(blob, "DSRB", 4) || (h[1] != 1 && h[1] != 2))
+    if (!blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 3)
         return 0;
     const unsigned char *b = blob;
-    unsigned ps = h[1] == 2 ? 48 : 32;  /* part record (export_objects.py: version 2 adds the entity id) */
+    unsigned ps = h[1] >= 2 ? 48 : 32;  /* part record (export_objects.py: version 2 adds the entity id) */
     for (unsigned k = 0; k < h[2] && ntypes < MAX_TYPES; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
         const float *f = (const float *)t;
@@ -123,16 +442,18 @@ int objects_init(GSGLOBAL *gs, const void *blob)
     for (int i = 0; i < ninst; i++)
         inst[i].block = 0;
     objects_stats.instances = ninst;
+    anim_load(gs, 0, blob, 0);
+    anim_add(0);
     return ninst;
 }
 
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 {
     const unsigned *h = blob;
-    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || (h[1] != 1 && h[1] != 2))
+    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 3)
         return 0;
     const unsigned char *b = blob;
-    unsigned ps = h[1] == 2 ? 48 : 32;
+    unsigned ps = h[1] >= 2 ? 48 : 32;
     int map[MAX_TYPES * 2];
     for (unsigned k = 0; k < h[2] && k < MAX_TYPES * 2; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
@@ -178,7 +499,7 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
         pt->entity = ps == 48 ? *(const int *)(p + 32) : -1;
     }
     printf("objects: block %d: %d placements, %d types loaded\n", block, blk_nparts[block], ntypes);
-    return blk_nparts[block];
+    return blk_nparts[block] + anim_load(gs, block, blob, 1);
 }
 
 static void retire(Inst *in);
@@ -207,6 +528,7 @@ void objects_block_add(int block)
     objects_stats.instances = 0;
     for (int j = 0; j < ninst; j++)
         objects_stats.instances += inst[j].block >= 0;
+    anim_add(block);
 }
 
 void objects_block_remove(int block)
@@ -221,6 +543,14 @@ void objects_block_remove(int block)
         }
     while (ninst && inst[ninst - 1].block < 0)
         ninst--;
+    for (int i = 0; i < nainst; i++)
+        if (ainst[i].block == block)
+            ainst[i].block = -1;
+    for (int j = 0; j < MAX_ASTATIC; j++)
+        if (astatic[j].entity && astatic[j].block == block)
+            astatic[j].block = -2 - block;  /* back to loaded, not placed */
+    while (nainst && ainst[nainst - 1].block < 0)
+        nainst--;
 }
 
 static void retire(Inst *in)
@@ -371,7 +701,7 @@ int objects_nearest(const float p[3], float *out)
 
 int objects_push_capsule(float pos[3], float r, float h)
 {
-    int touched = 0;
+    int touched = anim_push(pos, r, h);
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         if (in->broken || in->off)
@@ -405,7 +735,8 @@ static unsigned ticks(void)
 
 void objects_update(Player *p, float dt)
 {
-    if (!ninst)
+    anim_update(dt);
+    if (!ninst && !nainst)
         return;
     unsigned t0 = ticks();
     /* the player against intact objects: rolls / dashes and landings break them, anything else is pushed out */
@@ -458,11 +789,12 @@ void objects_update(Player *p, float dt)
 
 void objects_draw(void)
 {
-    if (!ninst)
+    if (!ninst && !nainst)
         return;
     V3 eye, right, up, fwd;
     float focal, focal_y, zscale;
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
+    anim_draw(eye, fwd);
     static BoneLocal pose[MAX_BONES];
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
@@ -530,6 +862,9 @@ int objects_entity_enable(int entity, int on)
     for (int i = 0; i < ninst; i++)
         if (inst[i].block >= 0 && inst[i].entity == entity && entity != -1)
             inst[i].off = !on, n++;
+    for (int i = 0; i < nainst; i++)
+        if (ainst[i].block >= 0 && ainst[i].entity == entity && entity != -1)
+            ainst[i].off = !on, n++;
     return n;
 }
 
