@@ -3,7 +3,9 @@
 dashboard. Stdlib only, reads /proc and /tmp/dsr-q; runs in well under a second.
 Fields (shared with tools/jobdash.py's GET /status):
   host, t, cpus, budget_gb, reserved_gb, free_gb, mem_avail_gb, mem_total_gb, swap_pct,
-  memwatch: {avail_gb, swap_pct, level: ok|tight|act} or null when memwatch isn't running,
+  memwatch: {level: ok|tight|act, psi_full, psi_some, disk_swapin_mbs, avail_gb, zram_gb, disk_swap_gb, paused}
+            or null when memwatch isn't running (level: act = memory pressure, memwatch is pausing or killing jobs;
+            tight = some pressure, or jobs still paused),
   running: [{pid, res_gb, cap_gb, cmd, tree, build, mem_gb, cpu, since}], waiting: [{pid, cap_gb, cmd, since}]
 A machine fits a job of R GB when free_gb >= R, mem_avail_gb >= R and memwatch.level != act (the rule tools/q
 admits by, plus memwatch). mem_gb / cpu are null here (one snapshot; the dashboard samples them over time).
@@ -13,6 +15,7 @@ import json, os, re, socket, sys, time
 
 RES = "/tmp/dsr-q"            # tools/q: <pid>.<reserve GB> per running job
 WAIT = "/tmp/dsr-q-wait"      # tools/q: <pid>.<cap GB> per job waiting for budget
+MEMWATCH = "/tmp/memwatch.json"  # tools/memwatch.py: its view, rewritten every poll
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -74,29 +77,17 @@ def entries(d):
             yield int(m.group(1)), int(m.group(2))
 
 
-def memwatch(avail, swap_pct):
-    """memwatch's view (its thresholds, read from tools/memwatch.py's env overrides) when it is running"""
-    running = False
-    for p in os.listdir("/proc"):
-        if p.isdigit():
-            try:
-                with open(f"/proc/{p}/cmdline", "rb") as f:
-                    if b"memwatch.py" in f.read():
-                        running = True
-                        break
-            except OSError:
-                pass
-    if not running:
+def memwatch():
+    """memwatch's view of memory pressure (the state it writes every poll), or None when it isn't running"""
+    try:
+        with open(MEMWATCH) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
         return None
-    low = float(os.environ.get("MEMWATCH_LOW_GB", 2.5))
-    low_swap = float(os.environ.get("MEMWATCH_LOW_SWAP", 75))
-    if avail < low and swap_pct > low_swap:
-        level = "act"
-    elif avail < low * 1.5 or swap_pct > low_swap * 0.9:
-        level = "tight"
-    else:
-        level = "ok"
-    return {"avail_gb": round(avail, 2), "swap_pct": round(swap_pct, 1), "level": level}
+    if time.time() - st.get("t", 0) > 30:
+        return None                        # stale: memwatch stopped
+    return {k: st.get(k) for k in ("level", "psi_full", "psi_some", "disk_swapin_mbs", "avail_gb", "zram_gb",
+                                   "disk_swap_gb", "paused")}
 
 
 def status():
@@ -129,7 +120,7 @@ def status():
     return {"host": socket.gethostname(), "t": time.time(), "cpus": os.cpu_count(), "budget_gb": budget,
             "reserved_gb": reserved, "free_gb": max(0, budget - reserved), "mem_avail_gb": round(avail, 2),
             "mem_total_gb": round(m["MemTotal"] / gib, 2), "swap_pct": round(swap_pct, 1),
-            "memwatch": memwatch(avail, swap_pct), "running": running, "waiting": waiting}
+            "memwatch": memwatch(), "running": running, "waiting": waiting}
 
 
 def fits(s, gb):
