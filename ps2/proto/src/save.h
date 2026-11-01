@@ -7,8 +7,9 @@
  * pages (flags_save). Two slots are written in turn; boot loads the valid one with the higher sequence, so a write cut
  * short (power off, card pulled) leaves the previous save.
  *
- * When: boot loads; save_request() (rest at a bonfire, area change, death) writes on the next save_tick; save_tick also
- * writes every SAVE_INTERVAL s when flags or progression changed. Writes are synchronous (TECH_DEBT save-3).
+ * When: boot loads; save_request() (rest at a bonfire, EMEVD Save Request, death; area change not yet: save-6) writes
+ * on the next save_tick; save_tick also writes every SAVE_INTERVAL s when flags or progression changed. Writes are
+ * synchronous (TECH_DEBT save-3).
  * Device: argv save=mc|host|off (default: the card if one is formatted in slot 1, else host:); a test script runs with
  * saves off (new game every boot) unless it says "option save mc|host [name]". */
 #ifndef SAVE_H

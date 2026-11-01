@@ -19,6 +19,7 @@
 #include "map.h"
 #include "collision.h"
 #include "combat.h"
+#include "save.h"
 
 #define PI 3.14159265f
 
@@ -258,6 +259,8 @@ static float gravity_scale(const Player *p)
 
 static void respawn(Player *p)
 {
+    if (p->hp < 0)
+        save_request();  /* DSR autosaves on death; the next save_tick writes the respawn spot, full HP, deaths + 1 */
     p->deaths += p->hp < 0;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
     map_spawn(&p->pos, &p->yaw);
     p->hp = p->hp_max;
