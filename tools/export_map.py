@@ -805,8 +805,8 @@ def gather(game, map_id):
     vis = area_mod.visible_groups(msb, M, map_id, {s["part"] for s in export_collision.area_collision(game, map_id)[0]})
     reg_coll = {s["part"] for s in export_collision.area_collision(game, map_id)[0]}
     DG.collisions([p["draw_groups"] for p in M["parts"] if p["type"] == 5 and p["name"] in reg_coll])  # dg.bin
-    map_r = area_mod.config(map_id).get("map_radius")
-    in_map = lambda x, y, z: (x - sp[0]) ** 2 + (z - sp[2]) ** 2 <= map_r * map_r
+    in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
+    map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
     nav_grid = {}  # 2 m xz cells -> navmesh heights, for is_canopy
     for p in nav_pts:

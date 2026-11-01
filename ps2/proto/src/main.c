@@ -627,9 +627,9 @@ int main(int argc, char **argv)
                      (int)((ram_free() & 0xFFFFF) * 10 >> 20));
             r_text_outlined(238, 310, 2, buf);
             if (world_stats.blocks) {  /* world blocks (src/world.c): under the player / full / loaded, reading, pools */
-                snprintf(buf, sizeof buf, "WLD B%d F%d L%d/%d R%d %d/%dK %dMS", world_stats.current, world_stats.full,
-                         world_stats.loaded, world_stats.blocks, world_stats.reading, world_stats.pool_used_kb,
-                         world_stats.pool_kb, world_stats.full_ms);
+                snprintf(buf, sizeof buf, "WLD B%d F%d W%X L%d/%d R%d %d/%dK %dMS", world_stats.current,
+                         world_stats.full, world_stats.want, world_stats.loaded, world_stats.blocks, world_stats.reading,
+                         world_stats.pool_used_kb, world_stats.pool_kb, world_stats.full_ms);
                 r_text_outlined(238, 294, 2, buf);
             }
             /* nearest enemy: AI goal, distance, HP, action anim, ESD states; enemies updated / drawn / spawned */
