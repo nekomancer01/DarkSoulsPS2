@@ -101,6 +101,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | What it does |
 |---|---|
 | `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
+| `tools/qd` | Delegator: same arguments as `tools/q`, runs the job on whichever machine in `tools/hosts.local` (git-ignored) has room, copying the tree there over rsync for another machine; `--fetch PATH` copies results back, `-H NAME` forces a machine |
+| `tools/qstat.py` | This machine's queue state as JSON (budget, reserved, free, MemAvailable, swap, memwatch level, running and waiting jobs); `--fits GB` exits 0 when a job fits now. Used by `tools/qd` |
 | `tools/newbuild` | Seed a new build dir (`make BUILD=...`) from an existing build, so only what changed re-exports |
 | `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
