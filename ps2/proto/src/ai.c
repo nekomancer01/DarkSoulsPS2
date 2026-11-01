@@ -655,6 +655,8 @@ void ai_init(Ai *a, const AiThink *th, int index, unsigned seed)
     a->prev_target_attack = -1;
     a->ez_anim = -1;
     a->out.req = a->out.guard = -1;
+    for (int i = 0; i < 4; i++)
+        a->ev_req[i] = -1;
     for (int i = 0; i < 8; i++)
         a->timer[i] = -1;
 }
@@ -666,6 +668,14 @@ void ai_reset(Ai *a)
         a->root = NULL;
     }
     a->out = (AiOut){.req = -1, .guard = -1};
+}
+
+void ai_replan(Ai *a, int forget)
+{
+    if (a->root)
+        goal_clear_subs(a->root);
+    if (forget)
+        a->seen_t = a->heard_t = 1e6f, a->state = AIS_NORMAL, a->force_battle = 0;
 }
 
 int ai_goals_in_use(void)
@@ -1157,6 +1167,14 @@ static int m_SetNumber(LVal *a, int n, LVal *o, const LVal *up)
     return 0;
 }
 
+/* GetEventRequest([slot]): the AI command an event set for this character (EMEVD 2004[17]), -1 none */
+static int m_GetEventRequest(LVal *a, int n, LVal *o, const LVal *up)
+{
+    (void)up;
+    int s = ARGI(1);
+    RET_NUM(s >= 0 && s < 4 ? SELF_AI->ev_req[s] : -1);
+}
+
 static int m_GetNumber(LVal *a, int n, LVal *o, const LVal *up)
 {
     (void)up;
@@ -1355,6 +1373,7 @@ static const struct { const char *name; LCFunc f; } METHODS[] = {
     {"GetSubGoalNum", m_GetSubGoalNum}, {"GetLastSubGoalResult", m_GetLastSubGoalResult},
     {"SetTimer", m_SetTimer}, {"IsFinishTimer", m_IsFinishTimer}, {"SetNumber", m_SetNumber},
     {"GetNumber", m_GetNumber}, {"SetAttackRequest", m_SetAttackRequest}, {"IsStartAttack", m_IsStartAttack},
+    {"GetEventRequest", m_GetEventRequest},
     {"IsFinishAttack", m_IsFinishAttack}, {"DoEzAction", m_DoEzAction},
     {"IsEnableComboAttack", m_IsEnableComboAttack}, {"IsEnableCancelMove", m_IsEnableCancelMove},
     {"StartDash", m_StartDash}, {"EndDash", m_EndDash}, {"IsForceBattleGoal", m_IsForceBattleGoal},
