@@ -69,8 +69,18 @@ gmon.out
 /tools/liq/
 /tools/lz4hc/build/
 
+# notes/: only the public docs are tracked. Everything else there is the maintainer's local working notes
+# (HANDOFF.md, threads/, research/, milestones/, job and memwatch logs, generated sites), kept in the same checkout
+# but never committed. To publish a new note, add a ! line for it here.
+/notes/*
+!/notes/EXE_FINDINGS.md
+!/notes/PLAYTHROUGH.md
+!/notes/PORTING.md
+!/notes/ROADMAP.md
+!/notes/TECH_DEBT.md
+!/notes/TOOLS.md
+
 # Screenshots / renders of game content, milestone captures, user screenshots
-/notes/milestones/
 *.png
 *.webp
 *.jpg
@@ -81,7 +91,6 @@ gmon.out
 
 # Logs, scratch, environments
 *.log
-/notes/enemy/aitest/aitest
 /tools/scratch/
 .venv/
 .venv-*/

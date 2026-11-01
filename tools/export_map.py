@@ -1215,7 +1215,7 @@ def backdrop_visible(m, tl, nav_s):
 PANO_R = float(os.environ.get("PANO_R", 0))
 PANO_C = [float(v) for v in os.environ["PANO_C"].split(",")] if os.environ.get("PANO_C") else None
 PANO_ONLY = os.environ.get("PANO_ONLY") == "1"
-BACKDROP = os.environ.get("BACKDROP") == "1"  # far-background variant A (render-distance A/B, not the default yet)
+BACKDROP = os.environ.get("BACKDROP", "1") == "1"  # far-only cells as the backdrop (render-distance pick A2); BACKDROP=0: old cut
 BACKDROP_SIDE = int(os.environ.get("BACKDROP_SIDE", 0))  # 0: no back-face pruning (A/B); 1 / -1: front = n.(s-p) > 0 / < 0
 
 
