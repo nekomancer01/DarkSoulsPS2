@@ -100,7 +100,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 ## Infrastructure
 | Tool | What it does |
 |---|---|
-| `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
+| `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (default: the measured peak of earlier runs of the same kind of job + 10 %, from notes/jobq-peaks.tsv, which `tools/qpeak.py` fills; without history builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
 | `tools/qd` | Delegator: same arguments as `tools/q`, runs the job on whichever machine in `tools/hosts.local` (git-ignored) has room, copying the tree there over rsync for another machine; `--fetch PATH` copies results back, `-H NAME` forces a machine |
 | `tools/qstat.py` | This machine's queue state as JSON (budget, reserved, free, MemAvailable, swap, memwatch level, running and waiting jobs); `--fits GB` exits 0 when a job fits now. Used by `tools/qd` |
 | `tools/newbuild` | Seed a new build dir (`make BUILD=...`) from an existing build, so only what changed re-exports |
