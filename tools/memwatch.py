@@ -30,9 +30,10 @@ LOG = os.path.join(ROOT, "notes", "memwatch.log")
 
 # Work trees whose processes are disposable, matched by folder name so the same name works on the host and inside
 # a distrobox (different home paths): this checkout's folder, plus DSR_MEMWATCH_TREES (colon-separated folder names,
-# e.g. an older checkout that still runs jobs while work moves over).
-TREES = [t for t in [os.path.basename(ROOT)] + os.environ.get("DSR_MEMWATCH_TREES", "").split(":") if t] + ["dsr-ref"]
-TREE_RE = "|".join(re.escape(t) for t in dict.fromkeys(TREES))
+# e.g. an older checkout that still runs jobs while work moves over). Sibling clones / worktrees named
+# <this folder>-<suffix> (e.g. DarkSoulsPS2-s2) count as this checkout.
+TREES = [t for t in os.environ.get("DSR_MEMWATCH_TREES", "").split(":") if t] + ["dsr-ref"]
+TREE_RE = "|".join([re.escape(os.path.basename(ROOT)) + r"(?:-[\w.-]+)?"] + [re.escape(t) for t in dict.fromkeys(TREES)])
 DISPOSABLE = re.compile(
     r"(?<![\w.-])(?:" + TREE_RE + r")/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
     r"mips64r5900el-ps2-elf-|cc1 |ld\b.*proto\.elf|DarkSoulsRemastered\.exe|wine(server|64|-preloader)|"
