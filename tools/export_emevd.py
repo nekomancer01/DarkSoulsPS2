@@ -94,13 +94,13 @@ OPS = [
     ("TREASURE", (2005, 4), "real"), ("OBJACT_INIT", (2005, 5), "real"), ("OBJACT_STATE", (2005, 6), "real"),
     ("OBJ_ANIM", (2005, 7), "stub"), ("OBJ_REDESTROY", (2005, 8), "stub"), ("DAMAGE_OBJ", (2005, 9), "stub"),
     ("OBJ_INVULN", (2005, 13), "stub"), ("OBJACT_IDX", (2005, 14), "real"), ("REROLL", (2005, 15), "stub"),
-    ("SFX_DEL", (2006, 1), "stub"), ("SFX_SPAWN", (2006, 2), "stub"), ("SFX_ONESHOT", (2006, 3), "stub"),
+    ("SFX_DEL", (2006, 1), "real"), ("SFX_SPAWN", (2006, 2), "real"), ("SFX_ONESHOT", (2006, 3), "stub"),
     ("SFX_OBJ", (2006, 4), "stub"), ("SFX_OBJ_DEL", (2006, 5), "stub"),
     ("DIALOG", (2007, 1), "stub"), ("STATUS_MSG", (2007, 3), "stub"),
     ("LADDER", (2009, 0), "stub"), ("BONFIRE", (2009, 3), "stub"), ("MP_BUFF", (2009, 4), "noop"),
     ("BOSS_ENTRY", (2009, 6), "noop"),
     ("SE", (2010, 2), "stub"), ("SOUND_STATE", (2010, 3), "stub"),
-    ("HIT", (2011, 1), "real"), ("MAP_PART", (2012, 1), "stub"),
+    ("HIT", (2011, 1), "real"), ("MAP_PART", (2012, 1), "real"),
 ]
 OP_OF = {k: i for i, (_, k, _) in enumerate(OPS) if k}
 ENT_KIND = {"MapPiece": 1, "Object": 2, "Enemy": 3, "Player": 4, "Collision": 5, "Navmesh": 6, "DummyObject": 7,
@@ -222,6 +222,45 @@ def entities(game, map_id, msb, block_tris):
     ents.sort(key=lambda e: e[0])
     out = [struct.pack("<iBBH3ff3fI8x", e[0], e[1], e[2], e[3], *e[4], e[5], *e[6], e[7]) for e in ents]
     return out, [struct.pack("<II", *r) for r in ranges], colliders
+
+
+SWITCH_OPS = {(2005, 3), (2012, 1)}  # (De)activate Object, Activate Map Part: the entity is the first arg
+
+
+def switched_entities(game, map_id, ops=SWITCH_OPS):
+    """Entity ids that the map's events switch with ops (first arg): literal args, and for a substituted one every value
+    an InitializeEvent of the map passes into that event-arg slot, followed through callers that pass their own args
+    on (fog walls are X0_4 of a slotted event, often a common one). For export_map.py's per-entity chunks."""
+    E = emevd.load(map_id, game)
+    evs = list(E.events) + list(emevd._common(game).events)
+    out, want = set(), set()  # want: (event id, event-arg byte offset) whose values are entity ids
+    for ev in evs:
+        for k, ins in enumerate(ev.instrs):
+            if (ins.bank, ins.id) not in ops or len(ins.raw) < 4:
+                continue
+            sub = [src for ii, dst, src, n, _ in ev.params if ii == k and dst == 0]
+            if sub:
+                want.update((ev.id, s) for s in sub)
+            else:
+                out.add(struct.unpack_from("<i", ins.raw, 0)[0])
+    done = set()
+    while want - done:  # InitializeEvent raw: slot, event id, then the event-arg blob (src offsets into it)
+        w = want - done
+        done |= w
+        for ev in evs:
+            for k, ins in enumerate(ev.instrs):
+                if (ins.bank, ins.id) != (2000, 0) or len(ins.raw) < 8:
+                    continue
+                target = struct.unpack_from("<I", ins.raw, 4)[0]
+                for tid, src in w:
+                    if tid != target or len(ins.raw) < 12 + src:
+                        continue
+                    sub = [s for ii, dst, s, n, _ in ev.params if ii == k and dst == 8 + src]
+                    if sub:
+                        want.update((ev.id, s) for s in sub)
+                    else:
+                        out.add(struct.unpack_from("<i", ins.raw, 8 + src)[0])
+    return {e for e in out if e > 0}
 
 
 def hit_ranges(game, map_id):

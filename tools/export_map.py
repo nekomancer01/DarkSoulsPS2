@@ -52,6 +52,7 @@ import dsr_light
 import area as area_mod
 import pose_obj
 import drawgroups
+import export_emevd
 import numpy as np
 
 TEX_MAX = 128
@@ -186,10 +187,14 @@ def pos_scale(lo, hi, org):
 
 CHUNK_TAG = []  # build_chunks: (level, cell) per chunk (STREAM), else None
 CHUNK_DG = []  # build_chunks: draw-group set index per chunk (tools/drawgroups.py, dg.bin)
+CHUNK_ENT = []  # build_chunks: MSB entity id per chunk (0 = none): the part an event switches on / off (dg.bin DGM3)
+# TECH_DEBT event-5: pieces / objects whose entity id the map's events switch ((De)activate Object, Activate Map Part,
+# tools/export_emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
+EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
 
-def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tcell=None, dgk=None):
+def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tcell=None, dgk=None, entk=None):
     """Triangles -> VU1 batches: (texture, flags, tri count, pos bytes, st bytes, colour bytes, min, max, origin, pos
     step, st scale), grouped across meshes by (texture, cull flag, CHUNK_GRID cell of the centroid) and cut into full,
     compact batches (split_batch). Foliage (fol[k] = (rank, tuft, tuft size), else None): whole tufts grouped by
@@ -201,7 +206,8 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     coordinates >= 16); colour u8 x4 (V4-8). bkey: {triangle: normal-map key} (export_normal.assign): triangles
     with different keys never share a chunk; export_normal.CHUNK_BUMP gets each chunk's key. tcell (STREAM): per
     triangle (level, cell) or None: such triangles are grouped by that CHUNK_GRID cell (no coarser far cells) and
-    level; CHUNK_TAG gets each chunk's (level, cell) or None."""
+    level; CHUNK_TAG gets each chunk's (level, cell) or None. dgk / entk: per triangle draw-group set / switched
+    entity id (CHUNK_DG / CHUNK_ENT per chunk); triangles with different ones never share a chunk."""
     groups, tufts, cents = {}, {}, {}
     for ti, fv, vc, ft, tc, fl, lo, hi in meshes:
         for k in range(ft, ft + tc):
@@ -209,7 +215,8 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
             c = [sum(p[a] for p in ps) / 3 for a in range(3)]
             cents[k] = c
             if fol[k]:
-                t = tufts.setdefault(fol[k][1], [ti, fl, fol[k][0], fol[k][2], [0.0] * 3, [], dgk[k] if dgk else 0])
+                t = tufts.setdefault(fol[k][1], [ti, fl, fol[k][0], fol[k][2], [0.0] * 3, [], dgk[k] if dgk else 0,
+                                                 entk[k] if entk else 0])
                 t[4] = [t[4][a] + c[a] for a in range(3)]
                 t[5].append((fv, k))
                 continue
@@ -223,7 +230,7 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
                 g = CHUNK_GRID * (1 << max(0, int(math.log2(max(1.0, dist / (4 * CHUNK_GRID))))))  # coarser far away
                 cell = (g,) + tuple(int(math.floor(c[a] / g)) for a in range(3))
             # dgk: pieces with different draw groups never share a chunk (src/drawgrp.c hides chunks per group)
-            cell += (dgk[k] if dgk else 0,)
+            cell += (dgk[k] if dgk else 0, entk[k] if entk else 0)
             # the coarse level (STREAM level 0) is drawn beyond the relief range: no normal-map split, fuller batches
             bk = bkey.get(k) if bkey and not (tcell and tcell[k] is not None and tcell[k][0] == 0) else None
             groups.setdefault((ti, fl, cell, bk), []).append((fv, k))
@@ -232,17 +239,19 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     export_normal.CHUNK_BUMP.clear()
     CHUNK_TAG.clear()
     CHUNK_DG.clear()
+    CHUNK_ENT.clear()
     for (ti, fl, cell, bk), ks in groups.items():
         fvk = dict((k, fv) for fv, k in ks)
         for part in split_batch([k for _, k in ks], cents):
             batches.append((ti, fl, [(fvk[k], k) for k in part]))
             export_normal.CHUNK_BUMP.append((bk, part) if bk else None)
-            CHUNK_TAG.append((cell[1], cell[2:-1]) if cell[0] == "s" else None)
-            CHUNK_DG.append(cell[-1])
+            CHUNK_TAG.append((cell[1], cell[2:-2]) if cell[0] == "s" else None)
+            CHUNK_DG.append(cell[-2])
+            CHUNK_ENT.append(cell[-1])
     fgroups = {}
     near_r = min(1.0, (GRASS_D0 / GRASS_NEAR_D) ** 2)
-    for ti, fl, r, n, c, ks, dg in tufts.values():
-        cell = tuple(int(math.floor(c[a] / len(ks) / GRASS_GRID)) for a in range(3)) + (dg,)
+    for ti, fl, r, n, c, ks, dg, ent in tufts.values():
+        cell = tuple(int(math.floor(c[a] / len(ks) / GRASS_GRID)) for a in range(3)) + (dg, ent)
         # STREAM: (CHUNK_GRID cell of the tuft centre) for tufts only drawn nearer than GRASS_NEAR_D, else resident
         sc = tuple(int(math.floor(c[a] / len(ks) / CHUNK_GRID)) for a in range(3)) if tcell and r >= near_r else None
         fgroups.setdefault((ti, fl, n, cell, sc), []).append((r, ks))
@@ -256,7 +265,8 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
                             [k for _, ks in part for k in ks]))
             export_normal.CHUNK_BUMP.append(None)
             CHUNK_TAG.append((1, sc) if sc else None)
-            CHUNK_DG.append(cell[-1])
+            CHUNK_DG.append(cell[-2])
+            CHUNK_ENT.append(cell[-1])
     # chunk boxes, origins and steps; then the step of each position = the coarsest among the chunks using it
     info = []
     for ti, fl, part in batches:
@@ -866,6 +876,7 @@ def gather(game, map_id):
     textures, tex_index, meshes = [], {}, []
     flvers, poses = {}, {}
     export_normal.SRC.update(dds=dds, probes=probes, near=near)
+    switched = export_emevd.switched_entities(game, map_id) if EVENT_PARTS else set()
     for pi, (part, (lid, fid)) in enumerate(zip(M["parts"], ids)):
         if part["type"] in (0, 1) and not area_mod.drawn(vis, part["draw_groups"]):
             continue  # never drawn from the area's region
@@ -1046,7 +1057,8 @@ def gather(game, map_id):
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
                                keep=grass or blend or sky or part["model"] in KEEP_MODELS, name=f"{part['name']}/{name}",
-                               dg=DG.add(part["draw_groups"])))
+                               dg=DG.add(part["draw_groups"]),
+                               ent=part["entity_id"] if part["entity_id"] in switched else 0))
 
     rss(f"gather meshes ({len(meshes)})")
     # lit map: auto exposure per tone map row (geometric mean, see the constants), then vertex colour = tone mapped colour / texture mean, so
@@ -1490,7 +1502,7 @@ def main():
     if BACKDROP_STATS[0]:
         print(f"backdrop: {BACKDROP_STATS[1]} of {BACKDROP_STATS[0]} far-cell tris kept (back faces from the navmesh "
               f"dropped: BACKDROP_SIDE {BACKDROP_SIDE})")
-    meshes, verts, tris, uvs, fol, tcells, dgs = [], [], [], [], [], [], []
+    meshes, verts, tris, uvs, fol, tcells, dgs, ents = [], [], [], [], [], [], [], []
     for m in entries:
         tl = m["tris"]
         if not tl:
@@ -1508,6 +1520,7 @@ def main():
         fol += m["fol"] if m["fol"] else [None] * len(tl)
         tcells += m["tcell"] if m["tcell"] else [None] * len(tl)
         dgs += [m["dg"]] * len(tl)
+        ents += [m["ent"]] * len(tl)
         for t in tl:
             tris.append(tuple(remap[c] for c in t))
             if ti >= 0:
@@ -1528,7 +1541,7 @@ def main():
                                 SHADOW_AMB, src.get("probes", {})) if export_normal.BUMP else None
     rss("bump")
     chunks = build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if STREAM else None,
-                          dgs if DRAW_GROUPS else None)
+                          dgs if DRAW_GROUPS else None, ents)
     rss("chunks")
     cells = stream_cells(chunks) if STREAM else None
     if STREAM:  # resident chunks grouped by cell, then the near chunks; bump.bin numbers them in this order
@@ -1536,6 +1549,7 @@ def main():
         order = res_order + [i for c in cells for i in c[2]]
         export_normal.CHUNK_BUMP[:] = [export_normal.CHUNK_BUMP[i] for i in order]
         CHUNK_DG[:] = [CHUNK_DG[i] for i in order]
+        CHUNK_ENT[:] = [CHUNK_ENT[i] for i in order]
         coarse = {i for i, t in enumerate(CHUNK_TAG) if t and t[0] == 0}
         all_chunks = [chunks[i] for i in order]
         chunks = [chunks[i][:1] + (chunks[i][1] | (CHUNK_COARSE if i in coarse else 0),) + chunks[i][2:]
@@ -1599,8 +1613,9 @@ def main():
     import export_collision
     dgn = drawgroups.write(os.path.join(os.path.dirname(os.path.abspath(out)), "dg.bin"), DG, CHUNK_DG,
                            souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb")),
-                           export_collision.area_collision(game, map_id)[0])
-    print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[2]} bytes")
+                           export_collision.area_collision(game, map_id)[0], CHUNK_ENT)
+    print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[3]} switched entities in "
+          f"{sum(1 for e in CHUNK_ENT if e)} chunks, {dgn[2]} bytes")
     export_effects.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
     if STREAM:
         nn = sum(len(c[2]) for c in cells)

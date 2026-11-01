@@ -21,6 +21,11 @@ void fx_char_light(V3 pos, float amb[3]);
 #define FX_SETS 4
 int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size);
 void fx_block_on(int block, int on);
+/* Event-owned map SFX (MSB SFX with an entity id: fog walls): an instance stops emitting while its entity is on
+ * drawgrp.c's hidden list (Delete Map SFX, src/event.c) and starts again (prewarmed) when it comes off (Spawn Map SFX).
+ * fx_entity_particles: alive particles of entity id's instances (-1: no loaded instance has it); kill = 1 removes
+ * them (Delete Map SFX with "root only" 0). */
+int fx_entity_particles(int id, int kill);
 
 typedef struct {
     int particles;   /* alive */

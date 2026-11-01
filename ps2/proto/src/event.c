@@ -7,10 +7,12 @@
 #include <tamtypes.h>
 
 #include "collision.h"
+#include "drawgrp.h"
 #include "enemy.h"
 #include "ev_chr.h"
 #include "event.h"
 #include "flags.h"
+#include "fx.h"
 #include "objects.h"
 #include "progress.h"
 #include "world.h"
@@ -915,6 +917,7 @@ static void run(Inst *in)
         case OP_OBJ_ENABLE:
             set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT);
             objects_entity_enable(iw[0], iw[1] != 0);  /* a breakable of that id (objects.c) */
+            dg_entity(iw[0], iw[1] != 0);              /* a static object baked into map.bin: its chunks (drawgrp.c) */
             break;
         case OP_OBJ_DESTROY: case OP_OBJ_REDESTROY:  /* 2005[01] / [08] (entity, ...): breakables break in place */
             if (!objects_entity_break(iw[0]) && objects_entity(iw[0], NULL, NULL) < 0)
@@ -931,9 +934,14 @@ static void run(Inst *in)
         case OP_OBJACT_STATE: objact_state(iw[0], iw[2] != 0); break;
         case OP_OBJACT_IDX: objact_state(iw[0], iw[3] != 0); break;
         case OP_HIT: set_entity(in->set, iw[0], iw[1] != 0, ENT_COLLISION); break;
-        case OP_SFX_DEL: set_entity(in->set, iw[0], 0, 0); stub(in, op); break;   /* state kept, not drawn */
-        case OP_SFX_SPAWN: set_entity(in->set, iw[0], 1, 0); stub(in, op); break;
-        case OP_MAP_PART: set_entity(in->set, iw[0], iw[1] != 0, 1); stub(in, op); break;  /* draw: event-5 */
+        /* map SFX (fx.c) and map pieces (map chunks keyed by entity, drawgrp.c) by entity id: event-5 */
+        case OP_SFX_DEL:  /* 2006[01] (entity, root only): root only = the emitter stops, its particles live on */
+            set_entity(in->set, iw[0], 0, 0);
+            dg_entity(iw[0], 0);
+            fx_entity_particles(iw[0], iw[1] == 0);
+            break;
+        case OP_SFX_SPAWN: set_entity(in->set, iw[0], 1, 0); dg_entity(iw[0], 1); break;
+        case OP_MAP_PART: set_entity(in->set, iw[0], iw[1] != 0, 1); dg_entity(iw[0], iw[1] != 0); break;
         case OP_CUTSCENE_WARP:
             /* A13 later: the cutscene is skipped; the warp to another map is an area transition (A1) */
             printf("EVT %u/%d cutscene %d skipped, warp to m%02d_%02d point %d\n", (unsigned)ev->id, (int)in->slot,
@@ -1268,6 +1276,10 @@ void event_test_cmd(const char *cmd)
             got = flag_get(id);
         else if (!strcmp(a, "objbroken"))  /* breakable entity id: 1 broken (objects.c) */
             found = objects_entity(id, NULL, &got) >= 0;
+        else if (!strcmp(a, "drawn"))  /* map chunks of a switched piece / object: 1 drawn (drawgrp.c) */
+            found = (got = dg_entity_drawn(id)) >= 0;
+        else if (!strcmp(a, "sfx"))  /* event-owned map SFX: 1 = particles alive (fx.c) */
+            found = (got = fx_entity_particles(id, 0)) >= 0, got = got > 0;
         else
             got = find_state(a, id, &found);
         int ok = found && got == val;
