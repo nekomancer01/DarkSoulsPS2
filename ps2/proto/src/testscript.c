@@ -102,7 +102,7 @@ static int parse(Prog *p, char *text)
                 rest[--len] = 0;
             if (!strcmp(word, "option")) {
                 opts |= !strcmp(rest, "noenemies") ? TEST_NOENEMIES : !strcmp(rest, "hud") ? TEST_HUD
-                      : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "nodemo") ? TEST_NODEMO : 0;
+                      : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "demo") ? TEST_DEMO : 0;
                 skipmiss |= !strcmp(rest, "skipmiss");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
