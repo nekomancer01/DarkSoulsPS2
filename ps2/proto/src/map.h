@@ -38,7 +38,7 @@ extern int map_vu1_batches, map_ee_tris;
  * for a "lite" block that draws only its streamed near cells. col_block: its collision block (ColHit.block), for the
  * fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes texture slot k - 1.
  * Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
-#define MAP_INST 3
+#define MAP_INST 4
 int map_block_init(int k, const void *tab, const void *res, int col_block);
 void map_block_streams(int k, const void *res);  /* lite <-> full */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */

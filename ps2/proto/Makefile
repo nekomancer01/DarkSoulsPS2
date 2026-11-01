@@ -127,7 +127,7 @@ worldblock@%:
 .PHONY: worldpacks
 $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin
 	@mkdir -p $(@D)
-	python3 -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
+	$(PY) -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
 	python3 -I ../../tools/pack.py $@ world.bin=$(G)/world.bin
 .PHONY: $(notdir $(EE_BIN))
 

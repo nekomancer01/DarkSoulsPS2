@@ -13,19 +13,23 @@
 #include "fx.h"
 #include "enemy.h"
 
-/* Load / unload radii from a block's xz bounds. ASSUMED (TECH_DEBT world-3): DSR switches its loaded maps by the
- * ConnectCollision part under the player (MSB type 11) and keeps a whole area load list resident (m10 = m10_00 + m10_01 +
- * m10_02); the PS2 cannot hold that, so neighbours load when the player comes within WORLD_LOAD_R of their bounds and
- * leave beyond WORLD_UNLOAD_R (hysteresis against flicker at the edge). 60 m at dash speed (~6 m/s) leaves ~10 s for
- * the reads, the cdrom0: worst case for a ~3 MB block (tools-hwperf: 6.6 s for the whole boot set). */
-#define WORLD_LOAD_R 60.0f
-#define WORLD_UNLOAD_R 80.0f
+/* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
+ * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
+ * whole) a triangle loads the neighbours within one 32 m cut cell and keeps them within two (ASSUMED lead, TECH_DEBT
+ * world-3). With no floor under the player (a warp into a block not loaded yet, a fall) the blocks whose bounds hold the
+ * feet are wanted too, so a warp settles like DSR's loading screen. */
+/* A block the triangle under the player no longer keeps unloads after WORLD_KEEP_S (ASSUMED): Firelink's aqueduct
+ * ConnectCollision parts are narrow, and stepping off one between stairs unloaded Burg west and read it again 1.3 s
+ * later (world_route.txt 2026-11-01) */
+#define WORLD_KEEP_S 5.0f
 /* Bytes per background read: one at a time through pack.c's async slot, shared with mapstream.c (a near cell waits for
  * at most one of these) */
 #define WORLD_READ (128u << 10)
 /* Blocks resident besides the boot block. Their lite sets live in mapstream.c's near-cell arena (mapstream_alloc drops
- * the farthest near cells to make room), so a world build costs no RAM while no neighbour is loaded (TECH_DEBT world-5) */
-#define WORLD_SLOTS 1
+ * the farthest near cells to make room), so a world build costs no RAM while no neighbour is loaded (TECH_DEBT world-5).
+ * 3: the block under the player plus both neighbours at a seam inside the Burg (the bonfire / bridge block keeps Burg
+ * west and the Parish block); the Burg blocks' streams are smaller than Firelink's, so the full pool lends the rest */
+#define WORLD_SLOTS 3
 /* The block the player stands in is "full" (its map's resident streams in the one full pool, sized for the largest
  * block's mapres.bin); every other loaded block is "lite" (near cells only). A new block becomes full after the player
  * stood in it for WORLD_SWAP_S (no swapping back and forth on a boundary); ASSUMED value. */
@@ -57,6 +61,13 @@ typedef struct {
     unsigned flags, nbr;
 } WorldBlock;
 _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
+/* triangles [first, first + n) of a block's collision.bin want the blocks in load and keep those in keep */
+typedef struct {
+    unsigned first;
+    unsigned short n;
+    unsigned char load, keep;
+} WorldLink;
+_Static_assert(sizeof(WorldLink) == 8, "WorldLink");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 
@@ -72,6 +83,10 @@ typedef struct {
 
 WorldStats world_stats = {.reading = -1, .full = -1};
 static const WorldBlock *tab;
+static const unsigned *lrange;  /* per block: first link, links */
+static const WorldLink *links;
+static unsigned want_m, keep_m;  /* blocks the triangle under the player loads / keeps */
+static float unkept_s[WORLD_MAX];  /* seconds a loaded block has not been in keep_m */
 static BlockRt rt[WORLD_MAX];
 static int nblk, cur = -1, slot_of[WORLD_SLOTS];
 static unsigned char *full_pool;
@@ -118,7 +133,7 @@ int world_init(const char *boot_area)
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
     pack_close(&pk);
     const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || h[1] != 1 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 24)) {
+    if (!h || memcmp(h, "DSW1", 4) || h[1] != 2 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 24)) {
         free(wb);
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
@@ -127,6 +142,8 @@ int world_init(const char *boot_area)
     if (nblk > MAP_INST || nblk > COL_BLOCKS)
         nblk = MAP_INST < COL_BLOCKS ? MAP_INST : COL_BLOCKS;  /* map instance / collision block = block index */
     tab = (const WorldBlock *)(h + 4);
+    lrange = (const unsigned *)(tab + h[2]);
+    links = (const WorldLink *)(lrange + 2 * h[2]);
     /* open every block's pack now (boot time: a pack_open waits for the IOP) and size the pools */
     for (int i = 0; i < nblk; i++) {
         BlockRt *r = &rt[i];
@@ -181,9 +198,9 @@ int world_init(const char *boot_area)
     printf("world: %d blocks, full pool %u KB, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            full_size >> 10, slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
     for (int i = 0; i < nblk; i++)
-        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %x lite %u KB res %u KB%s\n", i, tab[i].pack,
-               tab[i].map, tab[i].mn[0], tab[i].mx[0], tab[i].mn[1], tab[i].mx[1], tab[i].nbr, rt[i].total >> 10,
-               rt[i].res_size >> 10, rt[i].open ? "" : " (no pack)");
+        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %x links %u lite %u KB res %u KB%s\n", i,
+               tab[i].pack, tab[i].map, tab[i].mn[0], tab[i].mx[0], tab[i].mn[1], tab[i].mx[1], tab[i].nbr, lrange[2 * i + 1],
+               rt[i].total >> 10, rt[i].res_size >> 10, rt[i].open ? "" : " (no pack)");
     cur = 0;
     return 1;
 }
@@ -304,8 +321,9 @@ static void turn_on(int i)
     world_stats.load_ms = (ticks() - r->t0) / 294912;
     world_stats.read_kb = r->total >> 10;
     step_time(t0);
-    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us\n", i, tab[i].pack,
-           ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295);
+    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB, lent %u KB\n", i,
+           tab[i].pack, ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295,
+           world_stats.pool_used_kb, lent >> 10);
 }
 
 static void turn_off(int i)
@@ -469,7 +487,8 @@ static void full_step(void)
                 full_blk = world_stats.full = res_blk;
                 lend_tail(res_total(r));
                 world_stats.full_ms = (ticks() - res_t0) / 294912;
-                printf("world: block %d full: %u KB streams in %u ms\n", res_blk, r->res_size >> 10, world_stats.full_ms);
+                printf("world: block %d full: %u KB streams in %u ms; lite sets %u KB, lent %u KB\n", res_blk,
+                       r->res_size >> 10, world_stats.full_ms, world_stats.pool_used_kb, lent >> 10);
             }
             step_time(t0);
             res_blk = -1;
@@ -481,15 +500,47 @@ static void full_step(void)
         res_reading = 1, world_stats.reading = res_blk;
 }
 
+/* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
+static const WorldLink *link_at(int b, unsigned tri)
+{
+    const WorldLink *l = links + lrange[2 * b];
+    int lo = 0, hi = (int)lrange[2 * b + 1] - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) >> 1;
+        if (tri < l[m].first)
+            hi = m - 1;
+        else if (tri >= l[m].first + l[m].n)
+            lo = m + 1;
+        else
+            return &l[m];
+    }
+    return NULL;
+}
+
 static void step(const float *feet, float dt)
 {
-    /* the block under the player: the one whose collision floor is under the feet */
-    ColHit h;
+    /* the block under the player: the one whose collision floor is under the feet; its triangle picks the blocks
+     * wanted (world.bin links) */
+    ColHit h = {.tri = -1};
     int was = cur;
+    unsigned wm = want_m, km = keep_m;
     memcpy(feet_now, feet, sizeof feet_now);
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - 3.0f, COL_SOLID, &h) && h.block < nblk &&
-        rt[h.block].state == W_ON)
+        rt[h.block].state == W_ON) {
         cur = h.block;
+        const WorldLink *l = link_at(h.block, h.tri);
+        wm = l ? l->load : 0, km = l ? l->keep : 0;
+    } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen) */
+        for (int i = 1; i < nblk; i++)
+            if (box_d(&tab[i], feet) <= 0.0f)
+                wm |= 1u << i, km |= 1u << i;
+    }
+    if (wm != want_m || km != keep_m)
+        printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km);
+    want_m = wm, keep_m = km | wm;
+    world_stats.want = want_m;
+    for (int i = 0; i < nblk; i++)
+        unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
     in_cur_s = cur == was ? in_cur_s + dt : 0;
     world_stats.current = cur;
     for (int i = 0; i < nblk; i++)  /* slots of unloaded blocks come free once the chains are done */
@@ -507,11 +558,11 @@ static void step(const float *feet, float dt)
             read_step(i);
             goto unload;
         }
-    {   /* start the nearest wanted neighbour of the current block */
+    {   /* start the nearest wanted block */
         int want = -1;
-        float wd = WORLD_LOAD_R;
+        float wd = 1e30f;
         for (int i = 1; i < nblk; i++)
-            if (rt[i].open && rt[i].state == W_OFF && (tab[cur].nbr >> i & 1)) {
+            if (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)) {
                 float d = box_d(&tab[i], feet);
                 if (d < wd)
                     want = i, wd = d;
@@ -520,9 +571,11 @@ static void step(const float *feet, float dt)
             read_step(want);
     }
 unload:
-    /* unload far blocks (never the boot block or the one under the player, nor the full one) */
+    /* unload blocks the triangle under the player has not kept for WORLD_KEEP_S (never the boot block or the one under the player,
+     * nor the full one) */
     for (int i = 1; i < nblk; i++)
-        if (i != cur && i != full_blk && i != res_blk && rt[i].state == W_ON && box_d(&tab[i], feet) > WORLD_UNLOAD_R)
+        if (i != cur && i != full_blk && i != res_blk && rt[i].state == W_ON && !(keep_m >> i & 1) &&
+            (unkept_s[i] >= WORLD_KEEP_S || warping))
             turn_off(i);
 }
 
@@ -532,8 +585,7 @@ static int settled(const float *feet)
     if (world_stats.reading >= 0 || res_blk >= 0 || (rt[cur].state == W_ON && cur != full_blk))
         return 0;
     for (int i = 1; i < nblk; i++)
-        if (rt[i].state == W_READING || (rt[i].open && rt[i].state == W_OFF && (tab[cur].nbr >> i & 1) &&
-                                         box_d(&tab[i], feet) < WORLD_LOAD_R))
+        if (rt[i].state == W_READING || (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)))
             return 0;
     return 1;
 }
