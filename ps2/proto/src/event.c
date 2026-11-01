@@ -9,6 +9,7 @@
 #include "collision.h"
 #include "enemy.h"
 #include "ev_chr.h"
+#include "ev_obj.h"
 #include "event.h"
 #include "flags.h"
 #include "objects.h"
@@ -75,7 +76,16 @@ typedef struct { s32 id; u8 kind, shape; u16 index; float pos[3], yaw, dim[3]; u
 typedef struct { u32 first, count; } EvRange;
 typedef struct { float c[3], half[3], yaw; s32 entity; } EvCol;
 typedef struct { s32 entity; float pos[3]; s32 lot[5]; u8 in_chest, start_disabled; u16 pad; } EvTreasure;
-typedef struct { s32 entity, part; float pos[3], yaw, dist; s32 param, flag; u8 state, pad[3]; } EvObjAct;
+typedef struct {
+    s32 entity, part;
+    float pos[3], yaw, dist;
+    s32 param, flag;
+    u8 state, pad;
+    s16 anim;            /* ObjActParam objAnimId: the object's anim on use (-1 none) */
+    u8 sp_type, sp_type2;  /* key: spQualifiedType (1 = a good in the inventory), spQualifiedType2 */
+    u16 pad2;
+    s32 sp_id, sp_id2, pass_flag;  /* the goods; spQualifiedPassEventFlag opens it without them */
+} EvObjAct;
 typedef struct { s32 id, flag; u32 category; s32 item, num; } EvLot;
 enum { ENT_OBJECT = 2, ENT_ENEMY = 3, ENT_COLLISION = 5, ENT_REGION = 10 };
 enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
@@ -89,7 +99,8 @@ typedef struct {
     int nev, nent, block, live;  /* live: this set runs the map's events (another block of the same map: entities only) */
     u8 *ent_off;                 /* per entity: 1 = disabled by an event (objects, map parts, SFX, hits) */
     u8 *tr_state;                /* per treasure: bit 0 on, bit 1 taken */
-    u8 *oa_state;                /* per objact: bit 0 usable, bit 1 used this frame */
+    u8 *oa_state;                /* per objact: bit 0 usable, bit 1 used this frame, bit 2 its object shows the state
+                                  * flag's end pose (objact_flags) */
     u16 *ev_live;                /* per event: instances alive (InitializeEvent's duplicate check scans only then) */
 } Set;
 static Set sets[EV_SETS];
@@ -912,20 +923,22 @@ static void run(Inst *in)
             else
                 stub(in, op);
             break;
+        /* object ops (ev_obj.c): stub = no breakable / animated object of that id (elevators: A9) */
         case OP_OBJ_ENABLE:
             set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT);
-            objects_entity_enable(iw[0], iw[1] != 0);  /* a breakable of that id (objects.c) */
+            ev_obj_enable(iw[0], iw[1] != 0);
             break;
-        case OP_OBJ_DESTROY: case OP_OBJ_REDESTROY:  /* 2005[01] / [08] (entity, ...): breakables break in place */
-            if (!objects_entity_break(iw[0]) && objects_entity(iw[0], NULL, NULL) < 0)
-                stub(in, op);  /* other destructible objects: not simulated (TECH_DEBT event-5) */
+        case OP_OBJ_DESTROY: case OP_OBJ_REDESTROY: if (!ev_obj_destroy(iw[0])) stub(in, op); break;
+        case OP_OBJ_RESTORE: if (!ev_obj_restore(iw[0])) stub(in, op); break;
+        case OP_OBJ_ANIM: if (!ev_obj_end_anim(iw[0], iw[1])) stub(in, op); break;
+        case OP_ANIM: {  /* 2003[18] (entity, anim, loop, wait for completion, skip transition): objects here */
+            float len = 0;
+            if (!ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len))
+                stub(in, op);  /* characters: E5 / A5 */
+            else if (iw[3] && !iw[2])
+                in->wait = len, in->state = I_WAIT_T, clear_conds(in);
             break;
-        case OP_OBJ_RESTORE:  /* 2005[02] (entity) */
-            if (objects_entity(iw[0], NULL, NULL) >= 0)
-                objects_entity_restore(iw[0]);
-            else
-                stub(in, op);
-            break;
+        }
         case OP_TREASURE: treasure_state(iw[0], iw[1] != 0); break;
         case OP_OBJACT_INIT: objact_state(iw[0], 1); break;
         case OP_OBJACT_STATE: objact_state(iw[0], iw[2] != 0); break;
@@ -953,7 +966,7 @@ static void run(Inst *in)
 static int load_set(Set *s, const void *blob, int block)
 {
     const EvHdr *h = blob;
-    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 1) {
+    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 2) {  /* export_emevd.py VERSION */
         printf("EVT bad events blob\n");
         return 0;
     }
@@ -975,8 +988,12 @@ static int load_set(Set *s, const void *blob, int block)
         s->tr_state[i] = (t[i].start_disabled ? 0 : 1) | (left ? 0 : 2);  /* picked up before: taken */
     }
     const EvObjAct *oa = SEC(s, S_OBJACTS, EvObjAct);
-    for (int i = 0; i < NSEC(s, S_OBJACTS); i++)
-        s->oa_state[i] = !flag_get(oa[i].entity);  /* ASSUMED: usable until its flag is on (event-4) */
+    for (int i = 0; i < NSEC(s, S_OBJACTS); i++) {
+        int done = oa[i].flag > 0 && flag_get(oa[i].flag);
+        /* ASSUMED: usable until its flag is on (event-4); ObjActs without an entity flag (Burg door o1312: 0) until
+         * their state flag is */
+        s->oa_state[i] = oa[i].entity > 0 ? !flag_get(oa[i].entity) : !done;
+    }
     s->live = 1;
     return 1;
 }
@@ -1051,7 +1068,37 @@ static inline unsigned ticks(void)
     return c;
 }
 
-/* Action button on ObjActs (chests, levers, doors: their flag) and treasures (item lots) */
+/* ObjActParam key (spQualifiedType 1 = a good in the inventory, either of the two; ASSUMED: other types unmet, TECH_DEBT
+ * event-11); spQualifiedPassEventFlag (on once the door was opened from the other side) opens it as well */
+static int objact_key(const EvObjAct *oa)
+{
+    if (!oa->sp_type && !oa->sp_type2)
+        return 1;
+    if (oa->pass_flag > 0 && flag_get(oa->pass_flag))
+        return 1;
+    return (oa->sp_type == 1 && inv_count(ITEM_GOODS | (u32)oa->sp_id) > 0) ||
+           (oa->sp_type2 == 1 && inv_count(ITEM_GOODS | (u32)oa->sp_id2) > 0);
+}
+
+/* Action button on ObjActs (chests, levers, doors: their flag, the object's anim) and treasures (item lots) */
+/* ObjAct state flags (MSB event flag: 6AABBnnn) on: the object holds the end of its ObjAct anim (an opened door after a
+ * load, or one a constructor opens: Firelink's o1465 door, flag 61020120 set by m10_02 event 0); checked every frame
+ * because constructors set them after the block's load (ASSUMED: DSR applies them when the flag is on, event-11) */
+static void objact_flags(void)
+{
+    for (int k = 0; k < EV_SETS; k++) {
+        Set *s = &sets[k];
+        if (!s->blob)
+            continue;
+        const EvObjAct *oa = SEC(s, S_OBJACTS, EvObjAct);
+        for (int i = 0; i < NSEC(s, S_OBJACTS); i++)
+            if (!(s->oa_state[i] & 4) && oa[i].flag > 0 && flag_get(oa[i].flag)) {
+                s->oa_state[i] |= 4;
+                ev_obj_objact(oa[i].part, oa[i].anim, 1);
+            }
+    }
+}
+
 static void use_action(void)
 {
     const float *pp = &pl->pos.x;
@@ -1064,11 +1111,18 @@ static void use_action(void)
             float dx = oa[i].pos[0] - pp[0], dz = oa[i].pos[2] - pp[2], r = oa[i].dist + 0.8f;  /* ASSUMED event-4 */
             if (!(s->oa_state[i] & 1) || dx * dx + dz * dz > r * r || fabsf(oa[i].pos[1] - pp[1]) > 2)
                 continue;
-            s->oa_state[i] = 2;  /* used: fired this frame, not usable again until an event says so */
             act_used = 1;
-            flag_set(oa[i].entity, 1);
+            if (!objact_key(&oa[i])) {  /* locked: DSR shows actionFailedMsgId; the ObjAct stays usable */
+                printf("EVT objact %d (part %d) locked: needs good %d / %d or flag %d\n", (int)oa[i].entity,
+                       (int)oa[i].part, (int)oa[i].sp_id, (int)oa[i].sp_id2, (int)oa[i].pass_flag);
+                continue;
+            }
+            s->oa_state[i] = 2 | 4;  /* used: fired this frame, not usable again until an event says so; plays its anim */
+            if (oa[i].entity > 0)
+                flag_set(oa[i].entity, 1);
             if (oa[i].flag > 0)
                 flag_set(oa[i].flag, 1);
+            ev_obj_objact(oa[i].part, oa[i].anim, 0);
             printf("EVT objact %d (part %d, ObjActParam %d) used\n", (int)oa[i].entity, (int)oa[i].part,
                    (int)oa[i].param);
         }
@@ -1132,6 +1186,7 @@ void event_update(Player *p, float dt)
     for (int k = 0; k < EV_SETS; k++)  /* ObjAct "used this frame" lasts one update */
         for (int i = 0; sets[k].blob && i < NSEC(&sets[k], S_OBJACTS); i++)
             sets[k].oa_state[i] &= ~2;
+    objact_flags();
     act_press = 0;
     event_stats.running = act, event_stats.waiting = waiting;
     if (act > event_stats.peak)
@@ -1152,9 +1207,13 @@ int event_push_player(float pos[3], float r, float h)
             continue;
         const EvCol *c = SEC(s, S_COLS, EvCol);
         for (int i = 0; i < NSEC(s, S_COLS); i++) {
-            const EvEnt *e = find_ent(s, c[i].entity);
-            if (!e || !ent_on(s, e) || pos[1] + h < c[i].c[1] - c[i].half[1] || pos[1] > c[i].c[1] + c[i].half[1])
+            float dx0 = pos[0] - c[i].c[0], dz0 = pos[2] - c[i].c[2], reach = c[i].half[0] + c[i].half[2] + r;
+            if (dx0 * dx0 + dz0 * dz0 > reach * reach)  /* every object has colliders now: cheap reject first */
                 continue;
+            const EvEnt *e = c[i].entity < 0 ? NULL : find_ent(s, c[i].entity);  /* -1: no entity id, always solid */
+            if ((c[i].entity >= 0 && (!e || !ent_on(s, e))) || pos[1] + h < c[i].c[1] - c[i].half[1] ||
+                pos[1] > c[i].c[1] + c[i].half[1] || c[i].c[1] + c[i].half[1] < pos[1] + 0.4f)
+                continue;  /* ASSUMED: tops within 0.4 m above the feet are walked over (objects.c STEP_OVER) */
             float co = cosf(c[i].yaw), sn = sinf(c[i].yaw);
             float dx = pos[0] - c[i].c[0], dz = pos[2] - c[i].c[2];
             float lx = dx * co - dz * sn, lz = dx * sn + dz * co;  /* inverse of the exporter's object -> world */
@@ -1257,17 +1316,11 @@ void event_test_cmd(const char *cmd)
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect %s %s %.2f: %.2f %s\n", a, b, v, got, ok ? "PASS" : "FAIL");
     } else if (ev_chr_test(cmd, &test_pass, &test_fail)) {  /* chr ... / expect chr ... (ev_chr.c) */
-    } else if (sscanf(cmd, "obj %15s %d", a, &id) == 2) {  /* a breakable by entity id, as the 2005 ops address it */
-        int n = !strcmp(a, "destroy")   ? objects_entity_break(id)
-                : !strcmp(a, "restore") ? objects_entity_restore(id)
-                                        : objects_entity_enable(id, !strcmp(a, "enable"));
-        printf("TEST ev obj %s %d: %d changed\n", a, id, n);
+    } else if (ev_obj_test(cmd, &test_pass, &test_fail)) {  /* obj ... / expect objanim / objbroken (ev_obj.c) */
     } else if (sscanf(cmd, "expect %15s %d %d", a, &id, &val) == 3) {
         int found = 1, got;
         if (!strcmp(a, "flag"))
             got = flag_get(id);
-        else if (!strcmp(a, "objbroken"))  /* breakable entity id: 1 broken (objects.c) */
-            found = objects_entity(id, NULL, &got) >= 0;
         else
             got = find_state(a, id, &found);
         int ok = found && got == val;

@@ -49,7 +49,7 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o npc.o)
+	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o npc.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -158,7 +158,10 @@ endif
 # Breakable objects (pots) of the area: intact + pre-fractured models, piece bodies, placements
 # (types over the RAM budget are listed in objects.bin.static and drawn by the map as static objects)
 AREA_PY = $(TS)/area.py.sum
-$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(AREA_PY)
+# + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
+# map leaves out of its static bake and the events out of their static colliders
+$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
+		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_PY)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
 
@@ -166,9 +169,9 @@ $(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/so
 # EMEVD bytecode (src/event.c): the map's events + entity table (hit ranges of this area / block's collision.bin),
 # common.emevd as evcommon.bin; coverage per map in events.txt
 $(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum \
-		$(TS)/souls.py.sum $(AREA_PY)
+		$(TS)/souls.py.sum $(AREA_PY) $(A)/objects.bin
 	@mkdir -p $(@D)
-	$(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
+	ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
 $(A)/evcommon.bin: $(A)/events.bin
 
 $(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_PY)
@@ -266,7 +269,7 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum 
 		$(TS)/native/simplify.c.sum \
 		$(TS)/havok_collision.py.sum $(AREA_PY) $(A)/objects.bin
 	@mkdir -p $(@D)
-	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static $(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
+	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
 # normal-map relief (tools/export_normal.py, src/bump.c): written by the map.bin export, same chunk order
 $(A)/bump.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }

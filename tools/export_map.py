@@ -58,6 +58,9 @@ TEX_MAX = 128
 # breakable types tools/export_objects.py left out for its RAM budget (its <objects.bin>.static list, Makefile passes
 # STATIC_OBJ=<file>): drawn as static map objects (intact model) instead of not at all
 STATIC_BREAKABLES = set(open(os.environ["STATIC_OBJ"]).read().split()) if os.environ.get("STATIC_OBJ") else set()
+# animated objects (doors, levers, gates, chests: export_objects.py's <objects.bin>.anim part names, Makefile passes
+# ANIM_OBJ=<file>): src/objects.c draws them with their anims, so they are not baked
+ANIM_PARTS = set(open(os.environ["ANIM_OBJ"]).read().split()) if os.environ.get("ANIM_OBJ") else set()
 # PS2 triangle budget: most Firelink pieces only have LOD0 (and the game's LOD1/2, where present, are worse than
 # QEM at the same count). Foliage is thinned by whole card / tuft (keep 1 in GRASS_KEEP, each with a rank that map.c
 # compares with a density falling off with distance, see thin_foliage); everything else goes through quadric
@@ -870,6 +873,8 @@ def gather(game, map_id):
         if part["type"] in (0, 1) and not area_mod.drawn(vis, part["draw_groups"]):
             continue  # never drawn from the area's region
         far = part["type"] == 1 and not keep(*part["pos"])
+        if part["type"] == 1 and not far and part["name"] in ANIM_PARTS:
+            continue
         # objects beyond the region but inside map_radius are scenery like the map triangles around them: drawn as
         # static objects, breakables intact (the cropped collision ends at the region, nothing can reach them)
         if far and not (FAR_OBJ and map_r and in_map(*part["pos"])):
