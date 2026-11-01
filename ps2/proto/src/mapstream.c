@@ -281,7 +281,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         drop(far);
     }
     bind(was);
-    if (forced)
+    if (forced_kb)  /* the caller falls back to the heap on NULL */
         printf("mapstream: alloc %u KB %s, %u KB of drawn cells dropped\n", n >> 10, p ? "ok" : "FAILED", forced_kb);
     if (p)
         mapstream_stats.other_kb += (n + 63) >> 10;
