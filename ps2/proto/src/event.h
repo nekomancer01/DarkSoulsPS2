@@ -31,7 +31,8 @@ void event_action(void);
 int event_push_player(float pos[3], float r, float h);
 /* Bonfire rest (A4): Restart-on-rest events start over, End-on-rest ones stop */
 void event_rest(void);
-/* Test scripts ("ev <cmd>", testscript.c): flag ID 0|1, expect flag|obj|hit|treasure ID V, expect x|y|z <|> V,
+/* Test scripts ("ev <cmd>", testscript.c): flag ID 0|1, obj destroy|restore|enable|disable ID (breakables),
+ * expect flag|obj|hit|treasure|objbroken ID V, expect x|y|z <|> V,
  * action, warp ENTITY, trace 0|1|2, summary. Prints "TEST ev ..." lines (PASS / FAIL). */
 void event_test_cmd(const char *cmd);
 /* HUD line: instances running / waiting, conditions fired, last fired event, stubs, action prompt, update time */

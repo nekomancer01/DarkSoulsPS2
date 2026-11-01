@@ -1,0 +1,28 @@
+# Breakables by MSB entity id (objects.bin v2, objects_entity_*): o1132_16 (entity 1011103) of the streamed Burg block,
+# switched the way EMEVD 2005[01] / [02] / [03] address it (ev obj ...), checked with ev expect objbroken.
+option hud
+option nodemo
+option noenemies
+wait 3
+spawn -29.7 -18.9 -71.0 3.14
+cam 3.14 0.4
+wait 3
+ev expect objbroken 1011103 0
+shot o1_intact
+ev obj destroy 1011103
+wait 1
+ev expect objbroken 1011103 1
+shot o2_broken
+ev obj restore 1011103
+wait 0.5
+ev expect objbroken 1011103 0
+ev obj disable 1011103
+wait 0.5
+shot o3_disabled
+ev obj destroy 1011103
+ev expect objbroken 1011103 0
+ev obj enable 1011103
+wait 0.5
+shot o4_enabled
+ev summary
+end

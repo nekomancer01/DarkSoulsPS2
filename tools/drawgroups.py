@@ -7,13 +7,19 @@ all-ones in Undead Burg) draws both on top of each other. Checked on the data: w
 collision part's own floor is covered by a shown piece as often as with no filter at all (Burg 89.4 % of floor samples,
 91.6 % unfiltered; Firelink 93.6 %, 93.6 %); DispGroups leaves the floor of Burg's h1112B1 uncovered.
 
+Characters (MSB enemy parts, type 2) carry DrawGroups too: DSR draws / runs one only while it shares a group with the
+collision part under the player (TECH_DEBT world-4). Their sets join the piece masks; the runtime (src/enemy.c) finds a
+placement's set by its MSB position, which enemies.bin stores as the same f32 values (export_enemies.py), so the two
+files need no common order and a cropped area / block keeps working.
+
 dg.bin (little endian):
-  u32 magic 'DGM1', piece masks P, collision masks C, chunks N, collision triangles T, 0, 0, 0
+  u32 magic 'DGM2', piece masks P, collision masks C, chunks N, collision triangles T, placements E, 0, 0
   P x u32[4]  distinct draw-group sets of the exported pieces / objects (index 0 = all-ones: shown always)
   C x u32[4]  distinct DrawGroups of the area's collision parts
   N x u8      piece mask per chunk, in bump.bin's global chunk order (resident chunks, then near chunks)
   T x u8      collision mask per collision.bin triangle (export_collision.area_collision order)
-  (padded to 4 bytes)"""
+  (padded to 4 bytes)
+  E x {f32 x, y, z; u32 piece mask}  every enemy part of the MSB (DGM1: no section, E = 0)"""
 import struct
 
 ALL = (0xFFFFFFFF,) * 4
@@ -52,12 +58,14 @@ def write(path, table, chunk_dg, M, coll_subs):
             cidx[g] = len(cmasks)
             cmasks.append(g)
         tri += [cidx[g]] * len(s["tris"])
+    chars = [(p["pos"], table.add(p["draw_groups"])) for p in M["parts"] if p["type"] == 2]
     assert len(table.masks) < 256 and len(cmasks) < 256, "dg.bin indices are u8"
-    b = struct.pack("<8I", 0x314D4744, len(table.masks), len(cmasks), len(chunk_dg), len(tri), 0, 0, 0)
+    b = struct.pack("<8I", 0x324D4744, len(table.masks), len(cmasks), len(chunk_dg), len(tri), len(chars), 0, 0)
     b += b"".join(struct.pack("<4I", *g) for g in table.masks)
     b += b"".join(struct.pack("<4I", *g) for g in cmasks)
     b += bytes(chunk_dg) + bytes(tri)
     b += b"\0" * (-len(b) % 4)
+    b += b"".join(struct.pack("<3fI", *pos, g) for pos, g in chars)
     with open(path, "wb") as f:
         f.write(b)
     return len(table.masks), len(cmasks), len(b)
