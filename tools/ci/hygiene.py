@@ -2,6 +2,7 @@
 Fails when a tracked file is, or looks like, game data or personal data, or when notes/TECH_DEBT.md reuses an ID:
   - anything under build/ or ext/, and files with game, image, video, disc or ELF extensions (.bin .pak .flver .dds
     .png .elf .iso ...; screenshots and exports belong in build/, which is git-ignored)
+    The one exception is the README screenshots: .jpg files directly in docs/screenshots/
   - files over 256 KB (a large blob is almost always generated), except ALLOW_LARGE
   - home-directory paths of a real user (/home/<name>/, /Users/<name>/, C:\\Users\\<name>\\); $HOME and ~ are fine
   - the same TECH_DEBT ID twice in "## Open", twice in "## Resolved", or in both
@@ -22,6 +23,9 @@ BANNED_EXT = {
     '.png', '.jpg', '.jpeg', '.bmp', '.tga', '.gif', '.webp', '.mp4', '.mkv', '.webm', '.gs', '.gsdump', '.xz',
     '.iso', '.elf', '.exe', '.dll', '.ps2', '.mc2', '.mcd',
 }
+# README screenshots (AGENTS.md section 1): tracked on purpose, still within MAX_KB
+SCREENSHOT_DIR = 'docs/screenshots/'
+SCREENSHOT_EXT = {'.jpg'}
 # Path -> why it may exceed MAX_KB (third-party, not game data)
 ALLOW_LARGE = {
     'ps2/vu1test/zbyszek.c': 'ps2sdk / gsKit sample texture',
@@ -56,7 +60,8 @@ def main():
         if p.startswith(BANNED_DIRS):
             errors.append('%s: generated / third-party directory, must stay git-ignored' % p)
         ext = os.path.splitext(p)[1].lower()
-        if ext in BANNED_EXT:
+        screenshot = p.startswith(SCREENSHOT_DIR) and p.count('/') == 2 and ext in SCREENSHOT_EXT
+        if ext in BANNED_EXT and not screenshot:
             errors.append('%s: %s files are game data, screenshots or binaries; keep them in build/' % (p, ext))
         if not os.path.isfile(full) or os.path.islink(full):
             continue
@@ -66,6 +71,8 @@ def main():
                           % (p, kb, MAX_KB))
         with open(full, 'rb') as f:
             data = f.read()
+        if screenshot:
+            continue
         if b'\0' in data[:8192]:
             errors.append('%s: binary file' % p)
             continue
