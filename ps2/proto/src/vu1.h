@@ -25,6 +25,10 @@ void vu1_begin(int buffer);
 #define VU1_EDGE 8
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
+/* GS mip chain for the next vu1_add_ex only (opaque batches; texcache.c tc_mip): TEX1 MXL mxl, LINEAR_MIPMAP_NEAREST,
+ * K k (7.4 fixed), MIPTBP1 miptbp1. The batch then sends MIPTBP1 in TEST's A+D slot: the opaque TEST must be set
+ * already (vu1_gs_regs; map.c sets it at the start of its opaque pass) */
+void vu1_mip(int mxl, int k, u64 miptbp1);
 /* Map program fog for the following batches: F = clamp(a * view z + b, fmin, fmax), 255 = no fog. Call after
  * vu1_begin before the first map batch (the map program writes XYZF2 and needs these constants). */
 void vu1_map_fog(float a, float b, float fmin, float fmax);
