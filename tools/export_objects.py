@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import area as area_mod
 import srcsum
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 import havok_anim as ha
 from export_model import MeshBuilder, bind_world, write_model
 
@@ -472,7 +473,7 @@ def anim_texture(mb, name, d):
             img = Image.frombytes("RGBA", dec[:2], dec[2]).convert("RGB")
         w, h = img.size
         h = max(8, min(ANIM_TEX_H, h * 128 // w))
-        img = img.resize((128, h), Image.BILINEAR)
+        img = resample.resize(img, (128, h), Image.BILINEAR)
         mb.tex_index[name] = len(mb.textures)
         mb.textures.append(quantize(128, h, img.tobytes()))
     return mb.tex_index[name]

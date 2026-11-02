@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
 import texmap
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 import export_normal
 import dsr_light
 import area as area_mod
@@ -911,9 +912,9 @@ def quantize_rgba(w, h, rgba, soft=False):
     from PIL import Image
     img = Image.frombytes("RGBA", (w, h), rgba)
     if w < 128:
-        img = img.resize((128, h * 128 // w), Image.BILINEAR)
+        img = resample.resize(img, (128, h * 128 // w), Image.BILINEAR)
     if img.size[1] > 128:  # VRAM budget: 128x128 at most (16 KB each with objects' textures added)
-        img = img.resize((img.size[0], 128), Image.BILINEAR)
+        img = resample.resize(img, (img.size[0], 128), Image.BILINEAR)
     w, h = img.size
     if soft:
         import octree  # Pillow's FASTOCTREE, the same on every platform (TECH_DEBT build-7)

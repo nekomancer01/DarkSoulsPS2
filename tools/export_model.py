@@ -26,6 +26,7 @@ import math, os, re, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
 PARTS = ["HD_M_9360", "BD_M_9360", "AM_M_9360", "LG_M_9360"]
 WEAPON, WEAPON_BONE = "WP_A_0201", "R_Weapon"
@@ -402,7 +403,7 @@ def quantize(w, h, rgb):
     """RGB image -> (w, h, CSM1-ordered RGBA palette bytes, index bytes), PSMT8-ready."""
     from PIL import Image
     if w < 128:  # PSMT8 uploads want a buffer width of at least 128
-        img = Image.frombytes("RGB", (w, h), rgb).resize((128, h * 128 // w), Image.BILINEAR)
+        img = resample.resize(Image.frombytes("RGB", (w, h), rgb), (128, h * 128 // w), Image.BILINEAR)
         w, h, rgb = 128, h * 128 // w, img.tobytes()
     img = Image.frombytes("RGB", (w, h), rgb).quantize(256, method=Image.Quantize.MEDIANCUT)
     pal = img.getpalette()[:768] + [0] * (768 - len(img.getpalette()[:768]))

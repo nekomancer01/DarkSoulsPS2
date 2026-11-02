@@ -18,6 +18,8 @@ Section written by write() (offsets from the start of map.bin):
 import struct
 import numpy as np
 
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
+
 PSMT8, PSMT4, CT32, CT16 = 0x13, 0x14, 0x00, 0x02
 # Colour fidelity first (map-20: the port already looks duller than DSR). Metrics against the source, opaque texels,
 # no fog / light (_metrics). PSMT4 only when the 16-colour version keeps the colour about as well as the 8-bit one:
@@ -31,12 +33,14 @@ T4_CONTRAST = 0.95  # luma standard deviation kept
 CT16_HUE, CT16_TINT, CT16_CHROMA = 1.5, 1.0, 0.02
 # Per-texture override (DDS name -> 4 or 8), applied after the rule; also env TEX_FORCE4 / TEX_FORCE8 (comma lists).
 PSM_OVERRIDE = {}
-# Palette builder for opaque / cut-out textures (env TEX_QUANT): "liq" = libimagequant (tools/liq, speed 1) on the
-# opaque texels, texels mapped to the nearest entry (no dithering); "kmeans" = Pillow median cut, + Lloyd refinement for
-# 16 colours (the quantiser before 2026-10-31). Measured on Firelink's 80 textures with _metrics (tools/liq/bench_quant.py,
-# notes/threads/tools-assets.md): liq 8-bit 54.9 dB / hue 1.44 deg vs 52.4 / 1.92, 4-bit +0.66 dB median; the rule
-# below then picks PSMT4 for 23 instead of 30 textures (+5 % VRAM). Falls back to kmeans if the library is missing.
-QUANT = __import__("os").environ.get("TEX_QUANT", "liq")
+# Palette builder for opaque / cut-out textures (env TEX_QUANT): "kmeans" = Pillow median cut, + Lloyd refinement for
+# 16 colours; "liq" = libimagequant (tools/liq, speed 1) on the opaque texels, texels mapped to the nearest entry (no
+# dithering), falling back to kmeans if the library is missing. Measured on Firelink's 80 textures with _metrics
+# (tools/liq/bench_quant.py, notes/threads/tools-assets.md): liq 8-bit 54.9 dB / hue 1.44 deg vs 52.4 / 1.92, 4-bit
+# +0.66 dB median; the rule below then picks PSMT4 for 23 instead of 30 textures (+5 % VRAM). liq was the default from
+# 2026-10-31; kmeans again since 2026-11-02 so native and in-browser exports give the same packs (the browser converter
+# has no libimagequant, TECH_DEBT build-7).
+QUANT = __import__("os").environ.get("TEX_QUANT", "kmeans")
 REPORT = []  # (name, source, 8-bit, 4-bit images, metrics, chosen) for sheet(); filled by encode
 ENTRY = 32
 # GS mip chain below mip 1 (render-12: far walls shimmer without it): mip 2, mip 3 stored after mip 1, levels = 2 + this.
@@ -248,9 +252,9 @@ def _encode(w, h, rgba, soft=False, name=""):
     from PIL import Image
     img = Image.frombytes("RGBA", (w, h), rgba)
     if w < 128:
-        img = img.resize((128, h * 128 // w), Image.BILINEAR)
+        img = resample.resize(img, (128, h * 128 // w), Image.BILINEAR)
     if img.size[1] > 128:  # VRAM budget: 128x128 at most
-        img = img.resize((img.size[0], 128), Image.BILINEAR)
+        img = resample.resize(img, (img.size[0], 128), Image.BILINEAR)
     w, h = img.size
     half = _half(img)
     if soft:  # blended effects: 256 colours with alpha, CT32 CLUT (alpha 0..0x80)
@@ -347,7 +351,7 @@ def add_near(t, w2, h2, rgba2):
     """Near level for texture record t (opaque / cut-out, from encode): the source at twice mip 0's size, mapped to t's
     palette (texels below 50 % alpha -> the transparent index), packed like mip 0. TECH_DEBT map-2 / texstream-5."""
     from PIL import Image
-    img = Image.frombytes("RGBA", (w2, h2), rgba2).resize((2 * t["w"], 2 * t["h"]), Image.BILINEAR)
+    img = resample.resize(Image.frombytes("RGBA", (w2, h2), rgba2), (2 * t["w"], 2 * t["h"]), Image.BILINEAR)
     n = 16 if t["psm"] == PSMT4 else 256
     pal = np.zeros((n, 3), np.float32)
     for i in range(n):  # palette back from the CLUT (CT16: 5-bit channels as the GS expands them)

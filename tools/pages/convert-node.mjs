@@ -14,6 +14,16 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+// V8 reserves ~10 GB of address space per wasm memory for its out-of-bounds trap handler, which an address-space cap
+// (tools/q's prlimit --as) refuses ("WebAssembly.Memory(): could not allocate memory"): run without it, with explicit
+// bounds checks instead (re-executed with the flag)
+if (!process.execArgv.includes("--disable-wasm-trap-handler")) {
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync(process.execPath, ["--disable-wasm-trap-handler", ...process.execArgv, ...process.argv.slice(1)],
+    { stdio: "inherit" });
+  process.exit(r.status ?? 1);
+}
+
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
 const args = process.argv.slice(2);
 const opt = (k) => { const i = args.indexOf(k); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
