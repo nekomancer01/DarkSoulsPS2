@@ -336,8 +336,10 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     nb = len(batches)
     tb = [len(part) for _, _, part in batches]
     K = np.fromiter((k for _, _, part in batches for k in part), np.int64, sum(tb))
-    cb = np.repeat(np.arange(nb), np.asarray(tb, np.int64) * 3)  # batch of each corner
-    cs = np.concatenate([[0], np.cumsum(tb)[:-1]]).astype(np.int64) * 3  # first corner of each batch
+    # np.intp: repeat / reduceat take counts and indices only as the platform's index type (int32 in the in-browser
+    # converter's 32-bit numpy, which refuses int64 there; int64 natively, so the same arrays)
+    cb = np.repeat(np.arange(nb), np.asarray(tb, np.intp) * 3)  # batch of each corner
+    cs = np.concatenate([[0], np.cumsum(tb)[:-1]]).astype(np.intp) * 3  # first corner of each batch
     CG = G[K].reshape(-1)
     PC = P[CG]
     # chunk boxes (the first of equal values wins, as min() / max() did: the sign of a zero), origins and steps
@@ -668,7 +670,7 @@ def _first_rows(K):
     _, first, inv = np.unique(K, axis=0, return_index=True, return_inverse=True)
     inv = inv.reshape(-1)
     order = np.argsort(first, kind="stable")
-    rank = np.empty(len(order), np.int64)
+    rank = np.empty(len(order), np.intp)  # intp: np.bincount takes no int64 under 32-bit numpy (the browser)
     rank[order] = np.arange(len(order))
     return rank[inv], first[order]
 
