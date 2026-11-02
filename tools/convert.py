@@ -198,7 +198,9 @@ def run(game, build, only=None, log=print, progress=None):
                     continue
                 x = x[1:]
             args.append(x)
-        env = dict(s.env)
+        # DSR_GAME: tools that look the game up themselves (gamepath.game_dir() without an argument, e.g. emevd.py
+        # under export_emevd.py) find it by Steam auto-detect natively, which a browser has none of
+        env = {"DSR_GAME": os.path.abspath(game), **s.env}
         t = time.time()
         log(f"[{i + 1}/{n}] {s.name}")
         run_tool(s.tool, args, env)
