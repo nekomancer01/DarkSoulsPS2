@@ -208,6 +208,14 @@ def free_unneeded(steps, i, build):
 
 def run(game, build, only=None, log=print, progress=None, lean=False):
     """Run the plan; progress(i, n, name) before each step. Returns the seconds each step took. lean: see --lean."""
+    return run_part(game, build, only, log, progress, lean)[0]
+
+
+def run_part(game, build, only=None, log=print, progress=None, lean=False, start=0, pause=None):
+    """run() from step index start (the plan is the same every time, so an index names a step), stopping after any
+    step for which pause() is true -> (seconds per step, index to resume at, or None when the plan is done). The
+    in-browser converter goes on in a fresh Pyodide when its WebAssembly memory, which never shrinks, has grown past
+    what the next map export needs (tools/pages/worker.js)."""
     mv = make_vars()
     steps = plan(game, build, mv)
     times, i = [], 0
@@ -215,6 +223,9 @@ def run(game, build, only=None, log=print, progress=None, lean=False):
         s = steps[i]
         if isinstance(s, tuple):  # enemy list known now
             steps[i:i + 1] = enemy_steps(game, *s[1:], mv)
+            continue
+        if i < start:
+            i += 1
             continue
         n = len(steps)  # grows as enemy lists are expanded
         if progress:
@@ -244,7 +255,9 @@ def run(game, build, only=None, log=print, progress=None, lean=False):
             if freed:
                 log(f"  freed {freed / 1048576:.1f} MB of intermediates")
         i += 1
-    return times
+        if pause and i < len(steps) and pause():
+            return times, i
+    return times, None
 
 
 def compare(a, b):

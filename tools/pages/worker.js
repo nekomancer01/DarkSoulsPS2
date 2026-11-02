@@ -1,7 +1,8 @@
 // In-browser converter (tools/pages): Pyodide runs the port's own exporters (tools/convert.py, the Makefile's steps)
 // on the player's game folder, then tools/iso9660.py packs the game-free ELF from CI and the packs into a disc image.
 // Everything stays in this worker's memory: the game files are read in place (WORKERFS over the File objects the page
-// passes in), nothing is sent anywhere. Messages out: {log}, {progress: [i, n, name]}, {done: ArrayBuffer}, {error}.
+// passes in), nothing is sent anywhere. Messages out: {log}, {progress: [i, n, name]}, {pause: {next, carry}} (go on
+// in a new worker: RESTART_MB), {done: ArrayBuffer}, {error}.
 "use strict";
 let py = null;
 
@@ -41,29 +42,63 @@ function mountGame(files) {
   py.FS.mount(py.FS.filesystems.WORKERFS, { blobs: files.map((f) => ({ name: f.path, data: f.file })) }, "/game");
 }
 
+// WebAssembly memory only grows: once a big map export has taken it to ~3 GB, the next one would run into the 4 GB
+// ceiling (wasm32) and fail inside a C helper. So after any step that leaves more than this much, the worker hands
+// /build (~100 MB, see convert.py --lean) back to the page, which goes on in a fresh worker (convert.run_part).
+const RESTART_MB = 1536;
+
+function buildFiles(dir, out) {
+  // every file under dir in this Pyodide's file system -> [{path, data}] (data: ArrayBuffer, transferable)
+  for (const name of py.FS.readdir(dir)) {
+    if (name === "." || name === "..") continue;
+    const p = dir + "/" + name;
+    if (py.FS.isDir(py.FS.stat(p).mode)) buildFiles(p, out);
+    else out.push({ path: p, data: py.FS.readFile(p).buffer });
+  }
+  return out;
+}
+
 async function convert(msg) {
   const base = msg.base;
   if (!py) await setup(msg.build, base);
   mountGame(msg.files);
+  for (const f of msg.carry || []) {  // the build so far, from the previous worker
+    py.FS.mkdirTree(f.path.slice(0, f.path.lastIndexOf("/")));
+    py.FS.writeFile(f.path, new Uint8Array(f.data));
+  }
+  py.FS.mkdirTree("/build");
   const elf = new Uint8Array(await (await fetch(new URL("proto.elf", base))).arrayBuffer());
   py.FS.writeFile("/proto.elf", elf);
   self.convertProgress = (i, n, name) => post({ progress: [i, n, name] });
-  py.runPython(`
+  self.heapMB = () => py._module.HEAP8.length / 1048576;
+  py.globals.set("START", msg.start || 0);
+  py.globals.set("RESTART_MB", RESTART_MB);
+  const next = py.runPython(`
 import os, sys, time
 sys.path.insert(0, "/src/tools")
 os.environ["SIMPLIFY_PROCS"] = "1"   # no processes in a browser: simplify in this one
 os.environ["SIMPLIFY_CACHE"] = "0"   # its cache would only fill memory
 os.environ["TEX_CACHE"] = "0"        # texmap.encode's cache too (a compressed copy of every texture)
 os.environ["TMPDIR"] = "/tmp"
-import convert, iso9660
-from js import convertProgress
+import convert
+from js import convertProgress, heapMB
 t = time.time()
 # lean: intermediates leave memory once the steps after them no longer need them
-times = convert.run("/game", "/build", progress=lambda i, n, name: convertProgress(i, n, name), lean=True)
-print(f"converted in {time.time() - t:.0f} s; writing the disc image")
+times, nxt = convert.run_part("/game", "/build", progress=lambda i, n, name: convertProgress(i, n, name), lean=True,
+                              start=START, pause=lambda: heapMB() > RESTART_MB)
+if nxt is not None:
+    print(f"memory at {heapMB():.0f} MB after {time.time() - t:.0f} s: going on in a fresh Python")
+nxt
+`);
+  if (next !== undefined && next !== null) {
+    const carry = buildFiles("/build", []);
+    post({ pause: { next, carry } }, carry.map((f) => f.data));
+    return;
+  }
+  py.runPython(`
+import iso9660, shutil
 size = iso9660.build("/proto.elf", "/build/data", "/DarkSoulsPS2.iso")
 print(f"DarkSoulsPS2.iso: {size / 1048576:.1f} MB")
-import shutil
 shutil.rmtree("/build")  # the packs are in the image now: free them before the page gets its copy of it
 `);
   const iso = py.FS.readFile("/DarkSoulsPS2.iso");
