@@ -171,42 +171,55 @@ $("convert").addEventListener("click", () => {
   $("logbox").hidden = false;
   $("log").textContent = "";
   const t0 = Date.now();
-  const w = new Worker("worker.js");
   const log = (s) => {
     const el = $("log");
     const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
     el.textContent += s + "\n";
     if (stick) el.scrollTop = el.scrollHeight;
   };
-  w.onmessage = (ev) => {
-    const m = ev.data;
-    if (m.log !== undefined) log(m.log);
-    if (m.progress) {
-      const [i, n, name] = m.progress;
-      $("bar").max = n; $("bar").value = i;
-      const min = Math.floor((Date.now() - t0) / 60000);
-      $("convstatus").textContent = `Step ${i + 1} of ${n}: ${name} (${min} min so far)`;
-    }
-    if (m.done) {
-      const url = URL.createObjectURL(new Blob([m.done], { type: "application/octet-stream" }));
-      $("save").href = url;
-      $("save").hidden = false;
-      $("bar").value = $("bar").max;
-      $("convstatus").textContent = `Done in ${Math.round((Date.now() - t0) / 60000)} min: ${(m.done.byteLength / 1048576).toFixed(0)} MB.`;
-      w.terminate();
-      $("convert").disabled = false;
-    }
-    if (m.error) {
-      log("ERROR: " + m.error);
-      $("convstatus").innerHTML = `<span class="bad">The conversion stopped.</span> The log above says where. The script
-        below does the same build on your PC.`;
-      $("bar").hidden = true;
-      w.terminate();
-      $("convert").disabled = false;
-    }
+  const stopped = (msg) => {
+    log("ERROR: " + msg);
+    $("convstatus").innerHTML = `<span class="bad">The conversion stopped.</span> The log above says where. The script
+      below does the same build on your PC.`;
+    $("bar").hidden = true;
+    $("convert").disabled = false;
   };
-  w.onerror = (e) => { log("ERROR: " + e.message); $("convstatus").textContent = "The converter crashed (out of memory?)."; };
-  w.postMessage({ convert: { build: BUILD, base: location.href, files: GAME_FILES } });
+  // one worker per stretch of steps: a worker whose memory has grown too far hands the build so far to a fresh one
+  // ({pause}, worker.js RESTART_MB), as WebAssembly memory never shrinks
+  const segment = (start, carry) => {
+    const w = new Worker("worker.js");
+    w.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.log !== undefined) log(m.log);
+      if (m.progress) {
+        const [i, n, name] = m.progress;
+        $("bar").max = n; $("bar").value = i;
+        const min = Math.floor((Date.now() - t0) / 60000);
+        $("convstatus").textContent = `Step ${i + 1} of ${n}: ${name} (${min} min so far)`;
+      }
+      if (m.pause) {
+        w.terminate();
+        segment(m.pause.next, m.pause.carry);
+      }
+      if (m.done) {
+        const url = URL.createObjectURL(new Blob([m.done], { type: "application/octet-stream" }));
+        $("save").href = url;
+        $("save").hidden = false;
+        $("bar").value = $("bar").max;
+        $("convstatus").textContent = `Done in ${Math.round((Date.now() - t0) / 60000)} min: ${(m.done.byteLength / 1048576).toFixed(0)} MB.`;
+        w.terminate();
+        $("convert").disabled = false;
+      }
+      if (m.error) {
+        w.terminate();
+        stopped(m.error);
+      }
+    };
+    w.onerror = (e) => { w.terminate(); stopped(e.message + " (the converter crashed: out of memory?)"); };
+    w.postMessage({ convert: { build: BUILD, base: location.href, files: GAME_FILES, start, carry } },
+                  carry.map((f) => f.data));
+  };
+  segment(0, []);
 });
 
 // --- step 2: the command ---
