@@ -54,9 +54,21 @@ static u32 pool2_vram;
 static int pool3_blk, near_up, near_get, near_want;  /* near levels' pool; near bytes uploaded / drawn / asked this frame */
 static u32 pool3_vram;
 static GSGLOBAL *gsg;
-static Level lv[MAX_TEX][3];  /* mip 0, mip 1, near */
+#define NLV 5
+static Level lv[MAX_TEX][NLV];  /* mip 0, mip 1, near, mip 2, mip 3 (the GS mip chain under mip 0 / 1, tc_mip) */
 static unsigned frame = 1;
 static float mip_d[MAX_TEX];
+static float tc_focal = 487;
+/* chain level bytes uploaded a frame, at most (no hitch when a teleport or a turn brings many textures at once: those
+ * batches draw without a chain until their levels are in; ASSUMED 16 KB, a few textures' mip 1 / 2 / 3) */
+#define TC_MIP_UP (16 * 1024)
+static int mip_up;
+/* tc_mip's LOD bias in levels (ASSUMED 1: the next level once a texel is under 2 pixels by view depth; the GS LOD has
+ * no slope term, so walls seen at a grazing angle need it. Measured at the user's ring-wall spot, render-12: flicker
+ * 17.4k -> 14.7k at 0, 12.8k at 1, 16.1k at -1; near textures as sharp (spawn view gradient 2.75 -> 2.74)) */
+#ifndef MIP_BIAS
+#define MIP_BIAS 1.0f
+#endif
 /* world blocks (tc_block_add): CLUT VRAM taken while the block is on, CLUTs uploaded at the next tc_begin */
 static int blk_n[TC_BLOCKS], blk_clut_due[TC_BLOCKS];
 static int blk_bump[TC_BLOCKS];  /* tc_block_bump: normal maps after the slot's map textures (bump.c relief pool) */
@@ -102,6 +114,51 @@ static void near_level(int i, const unsigned char *base)
     }
 }
 
+/* level i's slots forgotten (not resident), near / chain levels absent */
+static void lv_reset(int i)
+{
+    for (int l = 0; l < NLV; l++)
+        lv[i][l].off = -1, lv[i][l].size = l < 2 ? lv[i][l].size : 0;
+}
+
+/* VRAM blocks of a w x h level at buffer width 128 (texmap.blocks): the highest GS block it touches + 1, rounded up to a
+ * power of two */
+static int level_blocks(int psm, int w, int h)
+{
+    static const unsigned char b8[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23},
+                                           {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}};
+    static const unsigned char b4[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 12, 14}, {5, 7, 13, 15},
+                                           {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
+    int t4 = psm == GS_PSM_T4, bw = t4 ? 32 : 16, ph = t4 ? 128 : 64, top = 0, n = 1;
+    for (int y = 0; y < h; y += 16)
+        for (int x = 0; x < w; x += bw) {
+            int b = y / ph * 32 + (t4 ? b4[y % ph / 16][x % 128 / bw] : b8[y % ph / 16][x % 128 / bw]);
+            top = b + 1 > top ? b + 1 : top;
+        }
+    while (n < top)
+        n *= 2;
+    return n;
+}
+
+/* texture i's mip 2 and 3 (texmap.py MIP_CHAIN: after mip 1, each 16-byte aligned), when its entry has them */
+static void chain_levels(int i, const unsigned char *base)
+{
+    const TexEntry *e = te[i];
+    unsigned off = e->pix[1];
+    for (int m = 2; m < 4; m++) {
+        Level *v = &lv[i][m + 1];
+        v->off = -1, v->last = 0, v->size = 0;
+        if (e->levels <= m)
+            continue;
+        int w = e->w >> (m - 1), h = e->h >> (m - 1);
+        off += ((w * h >> (e->psm == GS_PSM_T4)) + 15) & ~15;  /* past the level before */
+        v->t = lv[i][1].t;
+        v->t.Width = e->w >> m, v->t.Height = e->h >> m;
+        v->t.Mem = (u32 *)(base + off);
+        v->size = level_blocks(e->psm, v->t.Width, v->t.Height);
+    }
+}
+
 static int cluts_sent;
 static int in_frame;
 TcStats tc_stats;
@@ -126,7 +183,7 @@ int tc_init(GSGLOBAL *gs, const unsigned char *base, const void *table, int n, i
     bin = base;
     ntex = n < TC_BASE ? n : TC_BASE;
     for (int i = 0; i < MAX_TEX; i++)
-        lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
+        lv_reset(i);
     for (int i = 0; i < ntex; i++)
         te[i] = (const TexEntry *)table + i;
     pool_blk = pool_kb * 4 < POOL_MAX ? pool_kb * 4 : POOL_MAX;
@@ -159,6 +216,7 @@ int tc_init(GSGLOBAL *gs, const unsigned char *base, const void *table, int n, i
             lv[i][l].size = e->blocks[l];
         }
         near_level(i, bin);
+        chain_levels(i, bin);
         c += clut_blocks(e) * 256;
     }
     cluts_sent = 0;
@@ -205,7 +263,7 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
             lv[ntex][l].last = 0;
             lv[ntex][l].size = e->blocks[l];
         }
-        lv[ntex][2].off = -1, lv[ntex][2].size = 0;
+        lv_reset(ntex);
         if (e->clut)
             cv += clut_blocks(e) * 256;
     }
@@ -248,6 +306,7 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             lv[first + i][l].size = e->blocks[l];
         }
         near_level(first + i, base);
+        chain_levels(first + i, base);
     }
     blk_n[b] = n;
     blk_clut_due[b] = 1;
@@ -269,7 +328,7 @@ void tc_block_drop(int b)
                 r_vram_free_clut(t->VramClut, t->ClutPSM);
         }
         te[i] = NULL;
-        lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
+        lv_reset(i);
     }
     blk_n[b] = blk_clut_due[b] = blk_bump[b] = 0;
 }
@@ -281,7 +340,7 @@ int tc_block_bump(int b, const unsigned char *base, const void *table, int n)
     int first = TC_BASE + b * TC_BLOCK_TEX + blk_n[b];
     for (int i = first; i < first + blk_bump[b]; i++) {  /* the old set: forgotten, its pool blocks free */
         te[i] = NULL;
-        lv[i][0].off = lv[i][1].off = lv[i][2].off = -1, lv[i][2].size = 0;
+        lv_reset(i);
     }
     blk_bump[b] = 0;
     if (!table || !n)
@@ -304,7 +363,7 @@ int tc_block_bump(int b, const unsigned char *base, const void *table, int n)
             lv[first + i][l].last = 0;
             lv[first + i][l].size = e->blocks[l];
         }
-        lv[first + i][2].off = -1, lv[first + i][2].size = 0;
+        lv_reset(first + i);
     }
     blk_bump[b] = n;
     return first;
@@ -340,7 +399,7 @@ static int alloc(int s, int p)
     memset(score, 0, nrun * sizeof *score);
     int nall = tex_end();
     for (int i = 0; i < nall; i++)
-        for (int l = 0; l < 3; l++) {
+        for (int l = 0; l < NLV; l++) {
             const Level *v = &lv[i][l];
             if (v->off < 0 || pool_of(i, l) != p)
                 continue;
@@ -360,7 +419,7 @@ static int alloc(int s, int p)
         return -1;
     int off = best * s;
     for (int i = 0; i < nall; i++)
-        for (int l = 0; l < 3; l++) {
+        for (int l = 0; l < NLV; l++) {
             Level *v = &lv[i][l];
             if (v->off >= 0 && pool_of(i, l) == p && v->off < off + s && v->off + v->size > off)
                 v->off = -1;
@@ -395,7 +454,8 @@ static int load(int tex, int l)
 void tc_begin(float focal)
 {
     frame++;
-    tc_stats.uploads = tc_stats.bytes = tc_stats.fails = 0;
+    tc_focal = focal, mip_up = 0;
+    tc_stats.uploads = tc_stats.bytes = tc_stats.fails = tc_stats.mip_batches = 0;
     near_up = near_get = near_want = 0;
     in_frame = 1;
     /* CT16 CLUT alpha bit 0 -> 0 (cut-out texels, alpha test drops them), 1 -> 0x80 */
@@ -460,6 +520,60 @@ GSTEXTURE *tc_get(int tex, int level)
     return &v->t;
 }
 
+/* GS mip chain under t = tc_get's mip 0 / 1 of tex, drawn from batches whose st scale is st_k (Q = st_k / z): mip levels
+ * level + 1 .. 3 made resident (uploaded if needed) for the frame, at most 3. Returns MXL (0: no chain, draw as
+ * before) with *miptbp1 their addresses (buffer width 128 like TEX0) and *k TEX1.K (7.4 fixed): LOD = log2(z) - log2(st_k)
+ * + K picks the level whose texels are ~1 pixel at view depth z, from the texture's area-weighted density (a batch's
+ * own scale differs; the GS LOD has no slope term, so walls seen at a grazing angle stay under-filtered) */
+static float fast_log2(float x)
+{
+    union { float f; unsigned u; } v = {x};
+    float e = (float)((int)(v.u >> 23 & 255) - 128);
+    v.u = (v.u & 0x007FFFFF) | 0x3F800000;  /* mantissa m in [1, 2): log2(m) ~ (-1/3 m + 2) m - 2/3 */
+    return e + (-0.34484843f * v.f + 2.02466578f) * v.f - 0.67487759f;
+}
+
+int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k)
+{
+    /* per texture and base level, once a frame (chunks come grouped by texture): the chain made resident, its MIPTBP1
+     * and K at st_k 4096 */
+    static struct { unsigned frame; u64 tbp; short k; unsigned char n; } memo[MAX_TEX][2];
+    if (tex < 0 || tex >= MAX_TEX || !te[tex] || te[tex]->levels <= 2 || te[tex]->density <= 0 || !in_frame)
+        return 0;
+    int level = t == &lv[tex][0].t ? 0 : t == &lv[tex][1].t ? 1 : -1;  /* what tc_get gave (near level: no chain) */
+    if (level < 0)
+        return 0;
+    typeof(memo[0][0]) *mo = &memo[tex][level];
+    if (mo->frame != frame) {
+        u32 tbp[3] = {0, 0, 0};
+        int n = 0;
+        for (int m = level + 1; m < 4 && m < te[tex]->levels; m++) {
+            Level *v = &lv[tex][m < 2 ? m : m + 1];
+            if (!v->size)
+                break;
+            if (v->off < 0) {  /* not resident: uploaded unless this frame's chain uploads are spent (a shorter chain) */
+                int bytes = (v->t.Width * v->t.Height) >> (te[tex]->psm == GS_PSM_T4);
+                if (mip_up + bytes > TC_MIP_UP || !load(tex, m < 2 ? m : m + 1))
+                    break;
+                mip_up += bytes;
+            }
+            v->last = frame;
+            tbp[n++] = ((pool_of(tex, 0) ? pool2_vram : pool_vram) + v->off * 256) / 256;
+        }
+        /* log2(density x 4096 / focal) - level + bias; log2 from the float's exponent and a quadratic on its mantissa
+         * (error < 0.005 level) */
+        float kf = fast_log2(te[tex]->density * 4096.0f / tc_focal) - level + MIP_BIAS;
+        mo->frame = frame, mo->n = n, mo->tbp = GS_SETREG_MIPTBP1(tbp[0], 2, tbp[1], 2, tbp[2], 2);
+        mo->k = (short)(kf * 16 + (kf < 0 ? -0.5f : 0.5f));
+    }
+    if (!mo->n)
+        return 0;
+    *miptbp1 = mo->tbp;
+    *k = (mo->k - (st_k < 2048 ? 32 : 0)) & 0xFFF;  /* st_k 1024: log2 two lower */
+    tc_stats.mip_batches++;
+    return mo->n;
+}
+
 void tc_end(void)
 {
     in_frame = 0;
@@ -469,7 +583,7 @@ void tc_end(void)
         tc_stats.max_bytes = tc_stats.bytes;
     int used = 0, now = 0, nall = tex_end();
     for (int i = 0; i < nall; i++)
-        for (int l = 0; l < 3; l++) {
+        for (int l = 0; l < NLV; l++) {
             used += lv[i][l].off >= 0 ? lv[i][l].size : 0;
             now += lv[i][l].off >= 0 && lv[i][l].last == frame ? lv[i][l].size : 0;
         }
@@ -478,9 +592,9 @@ void tc_end(void)
     tc_stats.max_frame_kb = tc_stats.frame_kb > tc_stats.max_frame_kb ? tc_stats.frame_kb : tc_stats.max_frame_kb;
 #ifdef TC_HUD  /* measurement builds: upload numbers on screen and in the EE log */
     char buf[100];
-    snprintf(buf, sizeof buf, "TEX UP %dK MAX %dK 1ST %dK SET %d/%dK RES %d/%dK F%d N%d/%d", tc_stats.bytes / 1024,
+    snprintf(buf, sizeof buf, "TEX UP %dK MAX %dK 1ST %dK SET %d/%dK RES %d/%dK F%d N%d/%d M%d", tc_stats.bytes / 1024,
              tc_stats.max_bytes / 1024, tc_stats.first_bytes / 1024, tc_stats.frame_kb, tc_stats.max_frame_kb,
-             tc_stats.resident, tc_stats.pool, tc_stats.fails, near_get, near_want);
+             tc_stats.resident, tc_stats.pool, tc_stats.fails, near_get, near_want, tc_stats.mip_batches);
     r_text_outlined(30, 230, 2, buf);
     if (!(frame & 63))
         printf("TEXC frame %u: %s\n", frame, buf);

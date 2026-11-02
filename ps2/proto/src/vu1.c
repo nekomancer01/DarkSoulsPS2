@@ -346,14 +346,26 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
     return 1;
 }
 
+static int mip_mxl, mip_k;
+static u64 mip_tbp;
+
+void vu1_mip(int mxl, int k, u64 miptbp1)
+{
+    mip_mxl = mxl, mip_k = k, mip_tbp = miptbp1;
+}
+
 void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k)
 {
 #ifdef VU1_NO_CLIP  /* debug: near / guard-band batches through the plain program (flagged triangles dropped) */
     mode &= ~VU1_CLIP;
 #endif
+    int mxl = mip_mxl;  /* vu1_mip's chain applies to this call only (both halves of a split) */
+    mip_mxl = 0;
     if ((mode & VU1_CLIP) && tris > VU1_CLIP_TRIS) {  /* the clip program keeps scratch after its batch */
+        mip_mxl = mxl;
         vu1_add_ex(t, cull, mode, VU1_CLIP_TRIS, pos, st, col, org, st_k);
+        mip_mxl = mxl;
         vu1_add_ex(t, cull, mode, tris - VU1_CLIP_TRIS, (const char *)pos + VU1_CLIP_TRIS * 18,
                    (const char *)st + VU1_CLIP_TRIS * 12, (const char *)col + VU1_CLIP_TRIS * 12, org, st_k);
         return;
@@ -381,11 +393,17 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
                        t->ClutPSM, 0, 0, cld(t->VramClut)),
         0x06);
-    q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
-    /* TEST_1 set per batch: gsKit leaves the depth test at ALWAYS after its clear until its next primitive, and
-     * PATH1 draws in between. Alpha test GEQUAL 0x40 (cut-outs), depth test GEQUAL (larger Z is nearer). */
-    /* blended batches: no alpha test (soft edges), alpha comes from the CLUT x vertex alpha */
-    q64(mode & VU1_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47);
+    if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
+        q64(GS_SETREG_TEX1(0, mxl, 1, 4, 0, 0, mip_k), 0x14);
+        q64(mip_tbp, 0x34);  /* MIPTBP1_1 */
+    } else {
+        q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
+        /* TEST_1 set per batch: gsKit leaves the depth test at ALWAYS after its clear until its next primitive, and
+         * PATH1 draws in between. Alpha test GEQUAL 0x40 (cut-outs), depth test GEQUAL (larger Z is nearer). */
+        /* blended batches: no alpha test (soft edges), alpha comes from the CLUT x vertex alpha */
+        q64(mode & VU1_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2),
+            0x47);
+    }
     /* PRIM: triangle, gouraud, textured, STQ (perspective-correct), context 1; FGE / ABE per mode. Registers ST,
      * RGBAQ, XYZF2: the program writes the fog factor even when FGE is off */
     q64(GIF_SET_TAG(clip ? 3 : n, 1, 1, 0x1B | (mode & VU1_FOG ? 0x20 : 0) | (mode & VU1_BLEND ? 0x40 : 0), 0, 3),

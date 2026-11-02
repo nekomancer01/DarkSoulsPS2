@@ -174,7 +174,7 @@ int map_init(const void *blob)
 /* world blocks: the selected instance's split textures read mip 0 from its resident streams (NULL while lite) */
 static void tex_res(int k)
 {
-    tc_res(k ? k - 1 : -1, streams);
+    tc_res(k ? map_tex_slot(k) : -1, streams);
 }
 
 int map_upload(GSGLOBAL *gs)
@@ -470,6 +470,13 @@ static int draw_chunk(const unsigned char *base, const Chunk *c, unsigned n, int
             box_depth(c, cam, &zmax, NULL);
             edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;  /* the backdrop: DSR's fog only */
         }
+        float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && c->tex >= 0) {  /* GS mip chain (render-12) */
+            u64 mt;
+            int k, mxl = tc_mip(tex_base + c->tex, t, st_k, &mt, &k);
+            if (mxl)
+                vu1_mip(mxl, k, mt);
+        }
         vu1_add_ex(t, c->flags & CHUNK_CULL,
                    (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge, n,
                    base + c->pos, base + c->st, base + c->col, c->org,
@@ -586,6 +593,14 @@ static MapInst inst[MAP_INST] = {{.on = 0}};
 /* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
  * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
 static void *blk_dg[MAP_INST];
+/* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
+ * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
+static signed char tslot[MAP_INST];
+
+int map_tex_slot(int k)
+{
+    return k > 0 && k < MAP_INST && inst[k].on ? tslot[k] : -1;
+}
 
 static void save_inst(MapInst *m)
 {
@@ -666,7 +681,14 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
             fog_ease(1);
         tex_base = 0;
     } else {
-        tex_base = tc_block_add(k - 1, map_bin, map_bin + hdr->tex_off, ntex);
+        int used = 0;
+        for (int j = 1; j < MAP_INST; j++)
+            if (j != k && inst[j].on)
+                used |= 1 << tslot[j];
+        tslot[k] = 0;
+        while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
+            tslot[k]++;
+        tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], map_bin, map_bin + hdr->tex_off, ntex);
         if (tex_base < 0) {
             printf("map: block %d: no texture slot / CLUT VRAM\n", k);
             inst[k].on = 0;
@@ -713,7 +735,7 @@ void map_block_drop(int k)
     int was = cur_inst;
     map_select(k);
     bump_block(k, NULL, 0);
-    tc_block_drop(k - 1);
+    tc_block_drop(tslot[k]);
     dg_block_drop(k);
     mapstream_close(k);
     free(order), free(sky), free(cells);
@@ -821,11 +843,16 @@ int map_draw(V3 eye)
         drawn += c->tris;
     }
 
-    /* opaque map with the map's main fog row, and the edge fog */
+    /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
+     * send MIPTBP1 in its place) */
     vu1_map_fog(a, b, fmin, 255);
     vu1_map_edge(edge_a2);
     r[0] = col;
     vu1_gs_regs(1, r);
+    {
+        u64 rt[2] = {GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47};
+        vu1_gs_regs(1, rt);
+    }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
     static struct { float d; const Chunk *c; int cls, k; } fx[MAX_FX];

@@ -40,6 +40,9 @@ int tc_level(int tex, float d);
 /* The texture to draw with (between tc_begin and tc_end): resident until the end of the frame, uploaded first if
  * needed. Falls back to the other mip level when the pool has no room for this one; NULL if neither fits. */
 GSTEXTURE *tc_get(int tex, int level);
+/* GS mip chain under t (what tc_get returned for tex: mip 0 or 1; mips 2 and 3 from texmap.py's MIP_CHAIN), resident
+ * for the frame; returns MXL (0: none) and fills MIPTBP1 and TEX1.K for a batch with st scale st_k (see texcache.c) */
+int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k);
 /* End of the map's batches (stats) */
 void tc_end(void);
 
@@ -52,6 +55,7 @@ typedef struct {
     int fails;           /* tc_get calls that returned NULL, this frame */
     int resident;        /* KB of the pool in use */
     int pool;            /* pool KB */
+    int mip_batches;     /* this frame: batches drawn with a GS mip chain (tc_mip) */
 } TcStats;
 extern TcStats tc_stats;
 

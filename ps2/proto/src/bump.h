@@ -11,7 +11,7 @@
 int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks);
 /* World blocks (map.c map_block_bump): instance k's bump.bin while its map is full (blob in world.c's full pool, read
  * behind mapres.bin), NULL when it goes lite or off. Same return as bump_init. */
-#define BUMP_INST 4  /* >= MAP_INST */
+#define BUMP_INST 5  /* >= MAP_INST */
 int bump_block(int k, const void *blob, unsigned chunks);
 /* The map instance the player stands in (map.c, each frame): only its set draws relief (one shared CLUT area); an
  * instance without a set falls back to the boot area's */

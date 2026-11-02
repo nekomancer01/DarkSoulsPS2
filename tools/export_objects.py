@@ -56,6 +56,7 @@ TEX = 64    # EE RAM / VRAM budget (< 0.3 MB for all breakables with the VU1 ski
 # FLVER face set (LOD) per state: LOD2 for both keeps all breakables under 0.3 MB of EE RAM (intact pots 96-124 tris;
 # LOD1 = 292-380 tris would cost 0.384 MB); pieces 176-226 tris for the whole pot
 LOD_INTACT, LOD_BROKEN = 2, 2
+MAX_PIECES = 32  # src/objects.c MAX_PIECES
 OBJ_BUDGET = 0.4  # MB of EE RAM for breakables (HANDOFF RAM table); per area: tools/area.py obj_budget
 SKIN_BATCH_TRIS, SKIN_BATCH_BYTES = 31, 96 * 32  # model.c: VU1_SKIN_TRIS, SK_V x 4 streams x 8 B
 # Animated objects: resident from boot like the breakables (every block's types load at boot, src/world.c), so a budget
@@ -169,14 +170,17 @@ def type_model(game, model, files, dds):
         cen = [pos0[r] + sum(rot0[r][c] * centre[c] for c in range(3)) for r in range(3)]
         cylinder = (min(ext[0], ext[2]), cen[1] - ext[1], cen[1] + ext[1])
 
+    # every broken bone becomes a root piece at its model-space bind. Most broken FLVERs have root bones only; the
+    # Asylum's o8403 parents its 18 pieces to a root bone named like the model, which has a rigid body of its own in
+    # o8403_1.hkx and so is a piece too (its name then maps to that piece; the intact mesh uses bone 0 explicitly)
     names = [model] + [b[0] for b in broken["bones"]]
-    assert all(b[1] < 0 for b in broken["bones"]), "broken FLVER bones must be roots"
     sk = {n: i for i, n in enumerate(names)}
     mb = MeshBuilder(sk)
     pieces = []
     bw_b = bind_world(broken["bones"])
     pb = mesh_bounds(broken)
     for i, (n, _, t, q, _) in enumerate(broken["bones"]):
+        t, q = bw_b[i]
         if n not in pieces_hk:  # a piece without its own rigid body (Undead Burg o1120): mesh bounds + the mean
             # mass / inertia of the type's other bodies (ASSUMED, TECH_DEBT physics-1)
             hb = list(pieces_hk.values())
@@ -535,7 +539,8 @@ def main():
     order = sorted(range(len(types)), key=lambda k: -count[k] / cost[k])
     kept, used = set(), 0
     for k in order:
-        if used + cost[k] <= budget:
+        # objects.c holds MAX_PIECES pieces per type: a type with more (the Asylum's o8610, 51) never loads there
+        if used + cost[k] <= budget and len(types[k][3]) <= MAX_PIECES:
             kept.add(k)
             used += cost[k]
     dropped = sorted(types[k][0] for k in range(len(types)) if k not in kept)
@@ -546,7 +551,8 @@ def main():
     # .static / .anim are rewritten only when they change: map.bin depends on them, not on objects.bin
     srcsum.write_if_changed(out_path + ".static", "".join(m + "\n" for m in dropped))
     if dropped:
-        print(f"over the {budget / 1048576:.2f} MB budget, drawn as static map objects instead: {' '.join(dropped)}")
+        print(f"over the {budget / 1048576:.2f} MB budget or {MAX_PIECES} pieces, drawn as static map objects instead: "
+              f"{' '.join(dropped)}")
 
     atypes, aparts, atex, astatic = anim_objects(game, map_id, msb, keep, dds)
     srcsum.write_if_changed(out_path + ".anim", "".join(p[0] + "\n" for p in aparts))

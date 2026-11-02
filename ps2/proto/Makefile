@@ -284,6 +284,9 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # resident (140k tris, map.bin 10.1 MB), near 6 px (3 px was 150k tris within 24 m at the densest smoke point, 15 fps)
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
 MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
+# Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
+# Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
+MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
 $(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \

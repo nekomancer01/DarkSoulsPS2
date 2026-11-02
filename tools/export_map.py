@@ -94,6 +94,13 @@ BACKDROP_EPS = float(os.environ.get("BACKDROP_EPS", (3 / 568) ** 2))
 # (+ half a cell diagonal + margin): one resident level, simplified without cell cuts (only their border with streamed
 # cells stays locked), no near blob
 STREAM_FAR = float(os.environ.get("STREAM_FAR", 78.0))
+# thin faces of the coarse / backdrop levels (render-12, soften_thin): narrower than SOFT_PX pixels at their nearest
+# view distance, their colour goes toward their surroundings. ASSUMED 2 px (measured on Firelink's ring wall pillars);
+# SOFT_FOCAL = the runtime's horizontal focal length in px (render.c FOCAL_X at 512 px); SOFT_PX=0 turns it off (A/B)
+SOFT_PX = float(os.environ.get("SOFT_PX", 2.0))
+SOFT_FOCAL = 609.0 * 512 / 640
+SOFT_REACH = 40.0  # m: viewpoints for the projected width: navmesh samples within this of the nearest (ASSUMED)
+SOFT_R_PX = float(os.environ.get("SOFT_R_PX", 4.0))  # footprint radius of the colour average, px (ASSUMED)
 CHUNK_COARSE = 64
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
@@ -1243,6 +1250,88 @@ def backdrop_visible(m, tl, nav_s):
     return out
 
 
+SOFT_STATS = [0, 0]  # coarse / backdrop triangles seen, softened
+
+
+def soften_thin(entries, view_s, floor):
+    """Thin faces of the coarse / backdrop levels (render-12): a face drawn narrower than SOFT_PX pixels covers a pixel
+    centre in one frame and misses it in the next, so the narrow lit pillar fronts of Firelink's ring wall (0.3 m, ~2 px
+    from the graveyard) flicker as the camera moves (512 px frame, no anti-aliasing; DSR draws them 4-6 px wide). The
+    width is the triangle's narrowest extent projected toward the viewpoints view_s (navmesh samples), the median over
+    those within SOFT_REACH metres of the nearest one, at their distance - CAM_REACH (at least floor). Its corners'
+    colours are pulled by 1 - width / SOFT_PX toward the mean colour of every coarse / backdrop triangle within SOFT_R_PX
+    pixels of it at that distance (weighted by area seen from the viewpoints, any mesh): a pre-filter like a texture
+    mip, for geometry. entries: the level entries (dicts with tris, wrgb); each softened one gets its own wrgb copy."""
+    import numpy as np
+    if not SOFT_PX or not entries or not len(view_s):
+        return
+    S = np.asarray(view_s, dtype=np.float64)
+    rows = []  # per entry: corners P (n, 3, xyz), wedges W, colour per triangle, area seen, px, footprint (m / px)
+    for e in entries:
+        tl = e["tris"]
+        SOFT_STATS[0] += len(tl)
+        P = np.array([[c[0] for c in t] for t in tl], dtype=np.float64)
+        W = np.array([[c[1] for c in t] for t in tl], dtype=np.int64)
+        E = np.stack([P[:, 1] - P[:, 0], P[:, 2] - P[:, 1], P[:, 0] - P[:, 2]], 1)
+        N = np.cross(E[:, 0], -E[:, 2])
+        area2 = np.linalg.norm(N, axis=1)
+        N /= np.maximum(area2, 1e-12)[:, None]
+        height = area2 / np.maximum(np.linalg.norm(E, axis=2).max(1), 1e-6)  # narrowest extent
+        px, mpp, seen = np.empty(len(tl)), np.empty(len(tl)), np.empty(len(tl))
+        for i in range(0, len(tl), 2048):
+            V = S[None, :, :] - P[i:i + 2048].mean(1)[:, None, :]
+            d = np.linalg.norm(V, axis=2)
+            cos = np.abs((V * N[i:i + 2048, None, :]).sum(2)) / np.maximum(d, 1e-6)
+            dd = np.maximum(d - CAM_REACH, floor)
+            far = d > d.min(1, keepdims=True) + SOFT_REACH
+            w = height[i:i + 2048, None] * cos * SOFT_FOCAL / dd
+            w[far], dd[far], cos[far] = np.nan, np.nan, np.nan
+            px[i:i + 2048] = np.nanmedian(w, 1)
+            mpp[i:i + 2048] = np.nanmedian(dd, 1) / SOFT_FOCAL
+            seen[i:i + 2048] = np.nanmean(cos, 1)
+        C = np.array(e["wrgb"], dtype=np.float64)[W].mean(1) if len(tl) else np.zeros((0, 3))
+        rows.append((P, W, C, area2 * 0.5 * seen, px, mpp))
+    cen = np.concatenate([r[0].mean(1) for r in rows if len(r[0])])
+    col = np.concatenate([r[2] for r in rows if len(r[0])])
+    wt = np.concatenate([r[3] for r in rows if len(r[0])])
+    G = 2.0  # m: grid of triangle centroids for the footprint search
+    gk = np.floor(cen / G).astype(np.int64)
+    grid = {}
+    for i, k in enumerate(map(tuple, gk)):
+        grid.setdefault(k, []).append(i)
+    grid = {k: np.array(v) for k, v in grid.items()}
+    for e, (P, W, C, _, px, mpp) in zip(entries, rows):
+        k = np.clip(1 - px / SOFT_PX, 0, 1) if len(P) else px
+        if not len(P) or not k.any():
+            continue
+        tgt = C.copy()
+        for i in np.nonzero(k > 0)[0]:
+            c, r = P[i].mean(0), SOFT_R_PX * mpp[i]
+            lo, hi = np.floor((c - r) / G).astype(int), np.floor((c + r) / G).astype(int)
+            idx = [grid[q] for q in ((x, y, z) for x in range(lo[0], hi[0] + 1) for y in range(lo[1], hi[1] + 1)
+                                     for z in range(lo[2], hi[2] + 1)) if q in grid]
+            if not idx:
+                continue
+            idx = np.concatenate(idx)
+            idx = idx[((cen[idx] - c) ** 2).sum(1) <= r * r]
+            if len(idx) and wt[idx].sum() > 0:
+                tgt[i] = (col[idx] * wt[idx, None]).sum(0) / wt[idx].sum()
+        # per wedge: the area-weighted mean of its triangles' k and targets
+        ta = np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+        nw = len(e["wrgb"])
+        kw, ww, tw = np.zeros(nw), np.zeros(nw), np.zeros((nw, 3))
+        for j in range(3):
+            np.add.at(kw, W[:, j], k * ta)
+            np.add.at(ww, W[:, j], ta)
+            np.add.at(tw, W[:, j], tgt * ta[:, None])
+        out = list(e["wrgb"])
+        for w in np.nonzero((ww > 0) & (kw > 0))[0]:
+            f, t = kw[w] / ww[w], tw[w] / ww[w]
+            out[w] = [min(255, int(out[w][j] + f * (t[j] - out[w][j]) + 0.5)) for j in range(3)]
+        e["wrgb"] = out
+        SOFT_STATS[1] += int((k > 0).sum())
+
+
 # far panorama (render-distance variant A): PANO_R metres from PANO_C ("x,y,z", default the spawn); PANO_ONLY=1 keeps
 # only the triangles beyond it at full detail (the capture export for tools/pano.py), else they are dropped
 PANO_R = float(os.environ.get("PANO_R", 0))
@@ -1512,14 +1601,19 @@ def main():
             nt = [(t, c) for t, c in zip(m["tris"], m.get("tris_cell", [])) if c != "far"]
             entries.append(dict(m, tris=[t for t, _ in nt], tcell=[(1, c) for _, c in nt]))
             ft = list(zip(m.get("tris_far", []), m.get("tris_far_cell", [])))
-            entries.append(dict(m, tris=[t for t, c in ft if c != "far"], tcell=[(0, c) for _, c in ft if c != "far"]))
+            ct = [t for t, c in ft if c != "far"]
+            entries.append(dict(m, tris=ct, tcell=[(0, c) for _, c in ft if c != "far"], soft=True))
             far_t = [t for t, c in ft if c == "far"]
             bd = backdrop_visible(m, far_t, nav_s) if BACKDROP else far_t
             if bd:  # far-only cells: one resident level; BACKDROP=1: the backdrop, drawn at any distance (map.c)
-                entries.append(dict(m, tris=bd, tcell=[None] * len(bd),
+                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True,
                                     flags=m["flags"] | (CHUNK_BACKDROP if BACKDROP else 0)))
         else:
             entries.append(dict(m, tcell=None))
+    soften_thin([e for e in entries if e.get("soft") and e["tris"]], nav_s, STREAM_D)
+    if SOFT_STATS[0]:
+        print(f"soften: {SOFT_STATS[1]} of {SOFT_STATS[0]} coarse / backdrop tris under {SOFT_PX} px (colour pulled "
+              f"toward their surroundings)")
     if BACKDROP_STATS[0]:
         print(f"backdrop: {BACKDROP_STATS[1]} of {BACKDROP_STATS[0]} far-cell tris kept (back faces from the navmesh "
               f"dropped: BACKDROP_SIDE {BACKDROP_SIDE})")

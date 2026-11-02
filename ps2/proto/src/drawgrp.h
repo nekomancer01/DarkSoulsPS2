@@ -5,7 +5,7 @@
 #ifndef DRAWGRP_H
 #define DRAWGRP_H
 
-#define DG_INST 4  /* >= MAP_INST */
+#define DG_INST 5  /* >= MAP_INST */
 
 /* blob: dg.bin of instance k (kept loaded); chunks: bump.bin's global chunk count it must cover, col_tris: that block's
  * collision.bin triangles. Returns 1 when the filter is on; without a matching blob every chunk stays shown.

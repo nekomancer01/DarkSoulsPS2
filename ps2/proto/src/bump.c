@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include "bump.h"
 #include "texcache.h"
+#include "map.h"
 #include "vu1.h"
 
 /* bump.bin (tools/export_normal.py) */
@@ -82,14 +83,14 @@ static int set_init(int k, const void *blob, unsigned chunks)
     BumpSet *b = &set[k];
     b->on = 0;
     if (k)
-        tc_block_bump(k - 1, NULL, NULL, 0);  /* the old set's normal maps (blob gone with the block's streams) */
+        tc_block_bump(map_tex_slot(k), NULL, NULL, 0);  /* the old set's normal maps (blob gone with the block's streams) */
     b->bin = blob;
     b->bh = blob;
     const BumpHeader *bh = blob;
     if (!blob || memcmp(bh->magic, "DSB1", 4) || !bh->chunks || bh->chunks < chunks || !bh->clusters)
         return 0;
     b->bc = (const BumpChunk *)(b->bin + bh->chunk_off);
-    b->tex0 = k ? tc_block_bump(k - 1, b->bin, b->bin + bh->tex_off, bh->textures)
+    b->tex0 = k ? tc_block_bump(map_tex_slot(k), b->bin, b->bin + bh->tex_off, bh->textures)
                 : tc_add(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
     unsigned kb = bh->clusters * bh->levels;
     if (b->tex0 >= 0 && !clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= kb * 1024) {  /* the first set sizes it */
@@ -100,7 +101,7 @@ static int set_init(int k, const void *blob, unsigned chunks)
         printf("bump: %d: no relief: textures %d, CLUT VRAM %u of %u KB (VRAM free %u KB)\n", k, b->tex0, clut_kb, kb,
                (4 * 1024 * 1024 - gsg->CurrentPointer) >> 10);
         if (k)
-            tc_block_bump(k - 1, NULL, NULL, 0);
+            tc_block_bump(map_tex_slot(k), NULL, NULL, 0);
         return 0;
     }
     if (owner_sent == k)

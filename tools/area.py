@@ -47,7 +47,7 @@ BONFIRE = "o0200"
 # m10_02); x 0..1, z -3..0 the Burg bonfire, the Taurus Demon tower and the bridge's south end; x 0..1, z 1..3 the
 # bridge north to the Parish courtyard (route y 16 -> 28). Row z -4 (Lower Burg, under the street) and the Parish
 # church (z 4, x 2..3) are not blocks yet: map instance / collision block / enemy block index = world block index caps
-# a world build at 4 blocks (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS; TECH_DEBT world-1).
+# a world build at 5 blocks (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS; TECH_DEBT world-1).
 # obj_budget (MB, export_objects.py): every block's breakable types load at boot with their VRAM (world.c
 # world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
 # "Not enough VRAM", block 3's o1230 not loaded). ASSUMED cut until types load per block: the types with the fewest
@@ -58,12 +58,20 @@ BLOCKS = {
     "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=(-4, -3, -1, -1), obj_budget=BLOCK_OBJ_MB),
     "m10_01_00_00_b": dict(map="m10_01_00_00", spawn="c0000_0009", cells=(0, -3, 1, 0), obj_budget=BLOCK_OBJ_MB),
     "m10_01_00_00_p": dict(map="m10_01_00_00", spawn_at=(14.5, 28.5, 102.2), cells=(0, 1, 1, 3), obj_budget=BLOCK_OBJ_MB),
+    # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
+    # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
+    # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
+    # overlapping x / z, so it needs no offset (world.bin keeps each block's height range for warps). Spawn = the
+    # first player start (c0000_0000 / _0001 are both the cell the game starts in). Its ConnectCollision parts h0054B1 /
+    # h0099B1 (the crow's ledge at the north end) load m10_02 while the player stands on them, as in DSR; the crow
+    # event's cutscene warp (EMEVD 2002[04]) then moves the player to Firelink.
+    "m18_01_00_00_a": dict(map="m18_01_00_00"),
 }
 # Blocks of a world build: the boot area first (the default build's own pack), then the blocks world.c may load
 WORLDS = {
     # VRAM: enemy textures load with their types near the player, a block's effect textures and map CLUTs while it is
     # on (TECH_DEBT world-4)
-    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p"],
+    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a"],
 }
 
 def block():

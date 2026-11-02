@@ -39,10 +39,11 @@ extern int map_vu1_batches, map_ee_tris;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
  * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams) or NULL
  * for a "lite" block that draws only its streamed near cells. col_block: its collision block (ColHit.block), for the
- * fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes texture slot k - 1.
+ * fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture slot.
  * Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
-#define MAP_INST 4
+#define MAP_INST 5
 int map_block_init(int k, const void *tab, const void *res, int col_block);
+int map_tex_slot(int k);  /* texcache slot of instance k > 0 while it is on (texcache.h TC_BLOCKS), else -1 */
 void map_block_streams(int k, const void *res);  /* lite <-> full */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */
 void map_block_drop(int k);

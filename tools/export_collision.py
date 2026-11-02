@@ -90,9 +90,16 @@ def area_collision(game, area, detail="h"):
     # build() drops triangles whose corners meet on its 1/SCALE grid; drop them here too, so the per-triangle tables
     # of export_map.py (fog rows, dg.bin) number triangles like collision.bin (Burg: 42220 -> 42129)
     q = lambda p: tuple(round(c / SCALE) for c in p)
+    # the same triangle under both water filters (m18_01: h0399B1 / h0899B1 / h1399B1 / h1699B1 as Water_A 9, the same
+    # model again as _0000 parts with Water_B 16, no entity id): collision.c treats 9 and 16 alike (COL_WATER) and no
+    # event can switch such a part, so the second copy is dropped (Asylum 65572 -> 65404 tris, fits the u16 indices)
+    water, seen = (9, 16), set()
+    dup = lambda s, t: s["hit_filter"] in water and s["msb"]["entity"] < 0 and frozenset(map(q, t)) in seen
     out = []
     for s in subs:
-        tris = [t for t in s["tris"] if any(keep(*p) for p in t) and len({q(p) for p in t}) == 3]
+        tris = [t for t in s["tris"] if any(keep(*p) for p in t) and len({q(p) for p in t}) == 3 and not dup(s, t)]
+        if s["hit_filter"] in water and s["msb"]["entity"] < 0:
+            seen.update(frozenset(map(q, t)) for t in tris)
         if tris:
             out.append(dict(s, tris=tris))
     return out, missing, unused

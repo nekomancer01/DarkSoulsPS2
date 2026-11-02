@@ -19,7 +19,7 @@ void fx_char_light(V3 pos, float amb[3]);
 /* World blocks (src/world.c): at boot, block b's fx.bin tables (kept: the blob can be freed); fx_block_on(b, 1, blob)
  * when the block turns on uploads its textures from blob (its fx.bin again, read with the block), (b, 0, NULL) when
  * it turns off gives their VRAM back (its particles go). Only the blocks on hold VRAM (TECH_DEBT world-4). */
-#define FX_SETS 4
+#define FX_SETS 5
 int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size);
 void fx_block_on(int block, int on, const void *blob);
 /* Event-owned map SFX (MSB SFX with an entity id: fog walls): an instance stops emitting while its entity is on

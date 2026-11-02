@@ -28,7 +28,7 @@ int col_init(const void *blob);
 int col_tris(void);
 /* World blocks (src/world.c): up to COL_BLOCKS collision.bin blobs in one world frame, all queried together.
  * col_init(blob) = col_load(0, blob); col_tris() = block 0's triangles */
-#define COL_BLOCKS 4
+#define COL_BLOCKS 5
 int col_load(int block, const void *blob);
 void col_unload(int block);
 int col_block_tris(int block);

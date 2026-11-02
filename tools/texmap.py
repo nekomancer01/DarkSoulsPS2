@@ -4,14 +4,16 @@ encode(): RGBA from the DDS -> one texture record. Width is scaled to 128 (PSMT8
 at 128 like before. Opaque / cut-out textures: 16 colours (PSMT4) when that keeps PSNR >= T4_PSNR dB on the opaque
 texels, else 255 colours (PSMT8); the last index is transparent (alpha < 50 %). Their CLUT is CT16 (RGBA 5551; the
 GS expands the alpha bit with TEXA TA0 = 0, TA1 = 0x80). Blended effects keep 256 colours with alpha in a CT32 CLUT.
-Mip 1 is the half-size image (box filter on premultiplied colour) mapped to the same palette.
+Mip 1 is the half-size image (box filter on premultiplied colour) mapped to the same palette; mips 2, 3 (MIP_CHAIN)
+the same from mip 1's filtered image, for the GS mip chain.
 
 Section written by write() (offsets from the start of map.bin):
   entry {u16 w, h (mip 0); u8 psm (0x13 PSMT8 / 0x14 PSMT4), clut psm (0 CT32 / 2 CT16), levels, flags (bit 0: near
          level); f32 texels per metre (mip 0, area-weighted over its triangles); u32 clut, pix0, pix1 offsets;
          u16 VRAM blocks (256 B) mip 0, mip 1 (power of two covering every block the level touches, buffer width 128);
          u32 near level pixels (2w x 2h, same palette, for near chunks; texcache.c level 2) or 0}  (32 B)
-  then per texture: CLUT (PSMT8: 16x16 CSM1-ordered, PSMT4: 8x2), mip 0, mip 1 pixels, each 16-byte aligned.
+  then per texture: CLUT (PSMT8: 16x16 CSM1-ordered, PSMT4: 8x2), mip 0, mip 1 (, mip 2, mip 3) pixels, each 16-byte
+  aligned (levels > 2: mip 2 and 3 follow mip 1, texcache.c finds them by size).
 """
 import struct
 import numpy as np
@@ -37,6 +39,9 @@ PSM_OVERRIDE = {}
 QUANT = __import__("os").environ.get("TEX_QUANT", "liq")
 REPORT = []  # (name, source, 8-bit, 4-bit images, metrics, chosen) for sheet(); filled by encode
 ENTRY = 32
+# GS mip chain below mip 1 (render-12: far walls shimmer without it): mip 2, mip 3 stored after mip 1, levels = 2 + this.
+# texcache.c draws them with MXL / MIPTBP1 under a chunk's mip 0 / 1. MIP_CHAIN=0: the old two levels (A/B)
+MIP_CHAIN = int(__import__("os").environ.get("MIP_CHAIN", 2))
 
 # GS block numbers inside a page: PSMT8 page 128x64 (blocks 16x16, 8 x 4), PSMT4 page 128x128 (blocks 32x16, 4 x 8)
 _BLK8 = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23], [8, 9, 12, 13, 24, 25, 28, 29],
@@ -249,16 +254,16 @@ def encode(w, h, rgba, soft=False, name=""):
             struct.pack_into("<H", clut, 2 * j, _ct16(*full[i], i < opaque_n))
         else:
             clut[4 * j:4 * j + 4] = bytes([*full[i], 0x80 if i < opaque_n else 0])
-    # mip 1: same palette (opaque entries), transparent where the averaged alpha is below 50 %
-    m1 = None
-    if h >= 16:
-        hp = half.reshape(-1, 4)
-        m1 = _nearest(np.clip(hp[:, :3] + 0.5, 0, 255), pal[:opaque_n])
-        m1 = np.where(hp[:, 3] >= 128, m1, tr)
-    if colours == 16:
-        mips = [_pack4(idx)] + ([_pack4(m1)] if m1 is not None else [])
-    else:
-        mips = [idx.astype(np.uint8).tobytes()] + ([m1.astype(np.uint8).tobytes()] if m1 is not None else [])
+    # mip 1 (and the GS mip chain below it, MIP_CHAIN levels): same palette (opaque entries), transparent where the
+    # averaged alpha is below 50 %
+    pack = _pack4 if colours == 16 else (lambda x: x.astype(np.uint8).tobytes())
+    mips = [pack(idx)]
+    lv, lh = half, h // 2
+    while lh >= 8 and len(mips) < 2 + MIP_CHAIN:
+        hp = lv.reshape(-1, 4)
+        m = _nearest(np.clip(hp[:, :3] + 0.5, 0, 255), pal[:opaque_n])
+        mips.append(pack(np.where(hp[:, 3] >= 128, m, tr)))
+        lv, lh = _half(lv), lh // 2
     return Tex(w=w, h=h, psm=PSMT4 if colours == 16 else PSMT8, cpsm=CT16 if ct16 else CT32, clut=bytes(clut), mips=mips,
                name=name)
 
