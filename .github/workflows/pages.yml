@@ -1,0 +1,36 @@
+# GitHub Pages: the "build your own ISO" page (tools/pages/). Every push to main redeploys it, so the page and the
+# build-iso.sh it hands out always point at the newest main commit. The site is code and file hashes only: no game data
+# exists in this repository or this job (AGENTS.md section 1). Needs Settings > Pages > Source: GitHub Actions.
+name: Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - run: python3 -I tools/pages/build.py _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
