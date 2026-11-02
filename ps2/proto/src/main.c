@@ -140,22 +140,38 @@ static void z_clear(GSGLOBAL *gs)
     vu1_gs_regs(n, r);
 }
 
-/* V1b: one 448-line draw buffer (gsKit, single-buffered) and a 224-line display buffer shown in FRAME mode (each
- * field scans the same 224 lines). flip(): after vsync, a GS sprite copy resamples the draw buffer into the display
- * buffer in 64-pixel strips: bilinear at v = 2y + 1 averages line pairs (anti-flicker, stable at 30 fps); V1B_FIELD
- * test builds point-sample the current field's lines instead (sharper at 60 fps, shimmers when a frame spans two
- * fields). Same scheme as Jak II / R&C 1 (notes/research/ps2-optimisation.md §11). */
+/* V1b: one 448-line draw buffer (gsKit, single-buffered) and a 224-line display buffer. flip(): after vsync, a GS
+ * sprite copy resamples the draw buffer into the display buffer in 64-pixel strips: bilinear at v = 2y + 1 averages
+ * line pairs (a 2:1 box filter, stable at 30 fps). Same scheme as Jak II / R&C 1 (notes/research/ps2-optimisation.md
+ * §11).
+ * The 224 lines go out as NTSC 240p (non-interlaced, DISPLAY in progressive raster lines). They were shown as 480i
+ * FRAME mode (SMODE2 INT 1, FFMD 1: both fields scan the same 224 lines, the odd one half a line lower), which holds
+ * no more detail but makes emulators deinterlace: PCSX2 forces its adaptive deinterlacer on FFMD 1 output and moves
+ * every other field down by one output line, so upscaled frames came out soft, combed on motion and bobbing
+ * (TECH_DEBT render-7). A full-height 480i frame (FFMD 0) deinterlaces cleanly but needs a 448-line display buffer:
+ * +224 KB VRAM. -DV1B_INTERLACED keeps the old 480i FFMD 1 output (real-hardware A/B, TVs without 240p input);
+ * V1B_FIELD test builds point-sample the current field's lines instead (sharper at 60 fps, shimmers when a frame
+ * spans two fields) and need it. */
+#if defined(V1B_FIELD) && !defined(V1B_INTERLACED)
+#define V1B_INTERLACED
+#endif
 #define DISP_H (R_SCREEN_H / 2)
 static u32 disp_buf;
 
 static void display_init(GSGLOBAL *gs)
 {
     disp_buf = gsKit_vram_alloc(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER);
+    /* gsKit set up 480i for its 448-line buffer: StartY / DH are interlaced raster lines (DY 50, DH 448) */
+#ifdef V1B_INTERLACED
     SetGsCrt(GS_INTERLACED, GS_MODE_NTSC, GS_FRAME);
+    int dy = gs->StartY + gs->StartYOffset, dh = 2 * DISP_H;  /* FFMD 1: DH counts both fields' lines */
+#else
+    SetGsCrt(GS_NONINTERLACED, GS_MODE_NTSC, GS_FRAME);
+    int dy = (gs->StartY + gs->StartYOffset) / 2, dh = DISP_H;  /* 25: gsKit's own 240p centring of 224 lines */
+#endif
     GS_SET_PMODE(0, 1, 0, 1, 0, 0x80);
     GS_SET_DISPFB2(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0, 0);
-    GS_SET_DISPLAY2(gs->StartX + gs->StartXOffset, gs->StartY + gs->StartYOffset, gs->MagH, 0, gs->DW - 1,
-                    gs->DH - 1);
+    GS_SET_DISPLAY2(gs->StartX + gs->StartXOffset, dy, gs->MagH, 0, gs->DW - 1, dh - 1);
 }
 
 /* Frame cap (user, 2026-10-31: 30 fps target): flip at most every FPS_CAP_FIELDS vsyncs. A frame that finished early
