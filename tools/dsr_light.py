@@ -16,7 +16,7 @@ Sources (DarkSoulsRemastered.exe in Ghidra, shader HLSL embedded in shader/FRPG_
   shader has no source): c = ((c - 0.5) x contrast + 0.5) x brightness, then lerp(luma, c, saturation), sRGB.
 - Point lights (FRPG_Deferred_PointLight.fpo, linear falloff mode): saturate((end - d) / (end - begin)) x colour x N.L.
 """
-import ctypes, math, os, struct
+import ctypes, json, math, os, struct
 
 import souls
 
@@ -385,3 +385,37 @@ class Scatter:
     def near_factor(self):
         """Linear-light multiplier of the d = 0 term (lerp(1, reflectance, blend) in gamma space), for the bake"""
         return [(1 - self.blend + self.blend * r) ** 2.2 for r in self.refl]
+
+
+# ---- point lights and the map bake's tone map (export_map.py + export_effects.py) ----
+def cubic_light(pos, begin, end, rgb):
+    """DSR point light (FRPG_Phn_* loop): rgb x saturate(((end - d) / (end - begin))^3) x N.L -> f(p, n)."""
+    k = 1.0 / max(1e-6, end - begin)
+
+    def f(p, n):
+        v = [pos[i] - p[i] for i in range(3)]
+        d = math.sqrt(sum(x * x for x in v)) or 1e-6
+        if d >= end:
+            return (0.0, 0.0, 0.0)
+        att = min(1.0, (k * (end - d)) ** 3)
+        nl = max(0.0, sum(n[i] * v[i] for i in range(3)) / d) if n else 1.0
+        return [c * att * nl for c in rgb]
+    return f
+
+
+def write_tone(path, tone):
+    """export_map.py hook: the lit map's adapted tone map for the effect colours."""
+    if tone is None:
+        return
+    json.dump({"key": tone.key, "lo": tone.lo, "hi": tone.hi, "exposure": tone.exposure, "tc": tone.tc},
+              open(path, "w"))
+
+
+def load_tone(path):
+    if path and os.path.exists(path):
+        j = json.load(open(path))
+        t = Tone({"grayKeyValue": j["key"], "minAdaptedLum": j["lo"], "maxAdapredLum": j["hi"]}, j["tc"],
+                           j["exposure"])
+        return t
+    print("export_effects: no fx_tone.json, effect colours use the bright-scene exposure (re-export map.bin)")
+    return None

@@ -13,7 +13,7 @@ Defaults come from the game's data; AREAS overrides values chosen to fit the PS2
 budget"), each with a comment. An area without an entry is exported whole from its first player start.
 Env overrides for experiments: AREA_SPAWN=<part name>, AREA_RADIUS=<metres> (0 = whole map), AREA_MAP_RADIUS=<metres>,
 AREA_DRAW_FROM=<collision part,...> (export only the map pieces DSR draws while standing on those parts)."""
-import math, os
+import math, os, sys
 
 AREAS = {
     # Firelink Shrine: the whole MSB fits (the test area everything was tuned on). Spawn = first player start, which is
@@ -158,8 +158,58 @@ def drawn(groups, part_dg):
     return groups is None or not any(part_dg) or any(a & b for a, b in zip(groups, part_dg))
 
 
+
+# ---- enemy placements of the area (export_enemies.py, export_chr.py variants, lua50.py) ----
+MAX_ENEMIES = 32  # ps2/proto/src/enemy.h
+
+
+def enemy_parts(b, map_id=None):
+    """[(model, npc, think, entity, pos, rot)] for MSB part type 2 (souls.msb1 named fields); with map_id only those
+    inside the area's region (tools/area.py: the part of the MSB the PS2 build holds)"""
+    import souls
+    M = souls.msb1(b)
+    out = []
+    keep = region(M, map_id) if map_id else (lambda x, y, z: True)
+    for p in M["parts"]:
+        if p["type"] != 2 or not p["model"] or not keep(*p["pos"]):
+            continue
+        out.append((p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]))
+    if map_id and not is_whole(map_id):
+        # cropped area: the runtime roster holds MAX_ENEMIES (enemy.h, 32) parts incl. c0000 (skipped later), so
+        # keep the non-c0000 parts nearest to the spawn (TECH_DEBT build-6)
+        sp = spawn_part(M, map_id)["pos"]
+        rest = sorted((r for r in out if r[0] != "c0000"), key=lambda r: math.dist(r[4], sp))
+        out = rest[:config(map_id).get("max_enemies", MAX_ENEMIES)]
+    return out
+
+
+def npc_parts(b, map_id):
+    """The c0000 parts (human NPCs) inside the area's region, as enemy_parts rows"""
+    import souls
+    M = souls.msb1(b)
+    keep = region(M, map_id)
+    return [(p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]) for p in M["parts"]
+            if p["type"] == 2 and p["model"] == "c0000" and keep(*p["pos"])]
+
+
+def signature(map_id):
+    """What an export of map_id (+ env AREA_BLOCK) takes from this module: its merged config, the env knobs read here
+    and the code with the AREAS / BLOCKS / WORLDS tables left out (tools/srcsum.py). Makefile: $(A)/area.sig, so
+    adding or changing another area's or block's entry re-exports only that one."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import json, srcsum
+    code = srcsum.tree_hash(open(os.path.abspath(__file__).replace(".pyc", ".py")).read(),
+                            skip=("AREAS", "BLOCKS", "WORLDS", "BLOCK_OBJ_MB"))
+    env = {k: os.environ[k] for k in ("AREA_DRAW_FROM", "AREA_DG_FIELD") if k in os.environ}
+    return json.dumps(dict(map=map_id, config=config(map_id), env=env, code=code), sort_keys=True) + "\n"
+
+
 if __name__ == "__main__":
-    import sys
+    # Makefile: `area.py --sig <map> <out>` -> out rewritten only when signature(map) changes
+    if sys.argv[1:2] == ["--sig"]:
+        sig = signature(sys.argv[2])  # puts tools/ on sys.path
+        import srcsum
+        srcsum.write_if_changed(sys.argv[3], sig, first_mtime_of=os.path.abspath(__file__))
     # Makefile: `area.py --world <boot map>` -> "<map>:<block>" for every other block of that world build
     if sys.argv[1:2] == ["--world"]:
         print(" ".join(f"{BLOCKS[b]['map']}:{b}" for b in WORLDS.get(sys.argv[2], [])[1:]))

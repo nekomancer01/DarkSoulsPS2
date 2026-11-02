@@ -47,6 +47,7 @@ import math, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import area as area_mod
+import srcsum
 import havok_anim as ha
 from export_model import MeshBuilder, bind_world, write_model
 
@@ -542,14 +543,13 @@ def main():
     types = [types[k] for k in sorted(kept)]
     heaps = [t[-1] for t in types]
     parts = [(remap[ti], pos, q, ent) for ti, pos, q, ent in parts if ti in remap]
-    with open(out_path + ".static", "w") as f:
-        f.write("".join(m + "\n" for m in dropped))
+    # .static / .anim are rewritten only when they change: map.bin depends on them, not on objects.bin
+    srcsum.write_if_changed(out_path + ".static", "".join(m + "\n" for m in dropped))
     if dropped:
         print(f"over the {budget / 1048576:.2f} MB budget, drawn as static map objects instead: {' '.join(dropped)}")
 
     atypes, aparts, atex, astatic = anim_objects(game, map_id, msb, keep, dds)
-    with open(out_path + ".anim", "w") as f:
-        f.write("".join(p[0] + "\n" for p in aparts))
+    srcsum.write_if_changed(out_path + ".anim", "".join(p[0] + "\n" for p in aparts))
 
     TYPE, PIECE, PART = 64, 80, 48
     type_off = 64

@@ -15,34 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import area
 
-MAX_ENEMIES = 32  # ps2/proto/src/enemy.h
-
-
-def enemy_parts(b, map_id=None):
-    """[(model, npc, think, entity, pos, rot)] for MSB part type 2 (souls.msb1 named fields); with map_id only those
-    inside the area's region (tools/area.py: the part of the MSB the PS2 build holds)"""
-    M = souls.msb1(b)
-    out = []
-    keep = area.region(M, map_id) if map_id else (lambda x, y, z: True)
-    for p in M["parts"]:
-        if p["type"] != 2 or not p["model"] or not keep(*p["pos"]):
-            continue
-        out.append((p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]))
-    if map_id and not area.is_whole(map_id):
-        # cropped area: the runtime roster holds MAX_ENEMIES (enemy.h, 32) parts incl. c0000 (skipped later), so
-        # keep the non-c0000 parts nearest to the spawn (TECH_DEBT build-6)
-        sp = area.spawn_part(M, map_id)["pos"]
-        rest = sorted((r for r in out if r[0] != "c0000"), key=lambda r: math.dist(r[4], sp))
-        out = rest[:area.config(map_id).get("max_enemies", MAX_ENEMIES)]
-    return out
-
-
-def npc_parts(b, map_id):
-    """The c0000 parts (human NPCs) inside the area's region, as enemy_parts rows"""
-    M = souls.msb1(b)
-    keep = area.region(M, map_id)
-    return [(p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]) for p in M["parts"]
-            if p["type"] == 2 and p["model"] == "c0000" and keep(*p["pos"])]
+# enemy_parts / npc_parts / MAX_ENEMIES live in area.py (per-area selection), so export_chr.py and lua50.py do not
+# depend on this file
+from area import MAX_ENEMIES, enemy_parts, npc_parts  # noqa: F401
 
 
 def main():
