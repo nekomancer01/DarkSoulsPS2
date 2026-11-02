@@ -174,7 +174,7 @@ int map_init(const void *blob)
 /* world blocks: the selected instance's split textures read mip 0 from its resident streams (NULL while lite) */
 static void tex_res(int k)
 {
-    tc_res(k ? k - 1 : -1, streams);
+    tc_res(k ? map_tex_slot(k) : -1, streams);
 }
 
 int map_upload(GSGLOBAL *gs)
@@ -577,6 +577,14 @@ static MapInst inst[MAP_INST] = {{.on = 0}};
 /* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
  * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
 static void *blk_dg[MAP_INST];
+/* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
+ * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
+static signed char tslot[MAP_INST];
+
+int map_tex_slot(int k)
+{
+    return k > 0 && k < MAP_INST && inst[k].on ? tslot[k] : -1;
+}
 
 static void save_inst(MapInst *m)
 {
@@ -657,7 +665,14 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
             fog_ease(1);
         tex_base = 0;
     } else {
-        tex_base = tc_block_add(k - 1, map_bin, map_bin + hdr->tex_off, ntex);
+        int used = 0;
+        for (int j = 1; j < MAP_INST; j++)
+            if (j != k && inst[j].on)
+                used |= 1 << tslot[j];
+        tslot[k] = 0;
+        while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
+            tslot[k]++;
+        tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], map_bin, map_bin + hdr->tex_off, ntex);
         if (tex_base < 0) {
             printf("map: block %d: no texture slot / CLUT VRAM\n", k);
             inst[k].on = 0;
@@ -704,7 +719,7 @@ void map_block_drop(int k)
     int was = cur_inst;
     map_select(k);
     bump_block(k, NULL, 0);
-    tc_block_drop(k - 1);
+    tc_block_drop(tslot[k]);
     dg_block_drop(k);
     mapstream_close(k);
     free(order), free(sky), free(cells);

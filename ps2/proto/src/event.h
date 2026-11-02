@@ -11,7 +11,7 @@
 
 #include "player.h"
 
-#define EV_SETS 5       /* set 0 = common.emevd, 1.. = loaded maps (one per world block) */
+#define EV_SETS 6       /* set 0 = common.emevd, 1.. = loaded maps (one per world block) */
 #define EV_MAX_INST 768 /* event instances alive at once, all sets (common + 2 maps start ~610 at most) */
 
 /* Once at boot, before the first map: common events (evcommon.bin, kept by the caller); starts common event 0 / 50 */

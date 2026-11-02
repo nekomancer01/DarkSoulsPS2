@@ -39,6 +39,9 @@
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
 #define WORLD_WARP 20.0f
+/* metres above / below a block's collision that still count as inside it when there is no floor under the feet
+ * (ASSUMED: a fall or a jump out of its range; the blocks of one world are far apart in height or not at all) */
+#define WORLD_Y_MARGIN 10.0f
 /* heap kept out of the near-cell arena beyond MS_RESERVE, for enemy models: world builds allocate the arena at boot
  * (world_systems) while no enemy model is loaded, so this holds every model streamed in later. Single-area builds
  * allocate it on the first frame after the bonfire's types loaded (3.6 MB in Firelink) and keep 3 MB more. Measured
@@ -61,8 +64,8 @@ static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "events
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
 
 typedef struct {
-    char pack[24], map[16];
-    float mn[2], mx[2];
+    char pack[16], map[16];
+    float mn[2], mx[2], y0, y1;  /* xz bounds, height range of the block's collision */
     unsigned flags, nbr;
 } WorldBlock;
 _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
@@ -138,7 +141,7 @@ int world_init(const char *boot_area)
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
     pack_close(&pk);
     const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || h[1] != 2 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 24)) {
+    if (!h || memcmp(h, "DSW1", 4) || h[1] != 3 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
         free(wb);
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
@@ -552,9 +555,12 @@ static void step(const float *feet, float dt)
         cur = h.block;
         const WorldLink *l = link_at(h.block, h.tri);
         wm = l ? l->load : 0, km = l ? l->keep : 0;
-    } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen) */
+    } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen). Their
+               * height range too: the Asylum lies over the Burg and Firelink in x / z, and loading all three at once
+               * left no room in the near arena (settle looped, 2026-11-02) */
         for (int i = 1; i < nblk; i++)
-            if (box_d(&tab[i], feet) <= 0.0f)
+            if (box_d(&tab[i], feet) <= 0.0f && feet[1] >= tab[i].y0 - WORLD_Y_MARGIN &&
+                feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
                 wm |= 1u << i, km |= 1u << i;
     }
     if (wm != want_m || km != keep_m)
