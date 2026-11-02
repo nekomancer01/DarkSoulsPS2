@@ -33,7 +33,7 @@ def source_zip(path, wasm):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for f in files:
             z.write(os.path.join(ROOT, f), f)
-        for m in ("lz4pack", "bcdecode", "simplify"):
+        for m in ("lz4pack", "bcdecode", "simplify", "geom"):
             z.write(os.path.join(wasm, f"lib{m}.so"), f"tools/native/lib{m}.so")
     return os.path.getsize(path)
 

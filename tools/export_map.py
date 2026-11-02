@@ -40,7 +40,14 @@ DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell tabl
           packed raw so it can be read in place): see write_cells. Without STREAM, cells.bin is empty.
 Usage: export_map.py <game dir> <out.bin> [map id] [preview prefix]
        export_map.py --render <map.bin> <preview prefix>   (offline renders of an existing map.bin, see VIEWS)"""
-import functools, json, math, os, struct, sys, time
+import functools, gc, json, math, os, struct, sys, time
+
+# Python's cyclic GC: with the default thresholds the exporter's millions of long-lived tuples / lists were scanned by
+# 45 full collections, 47 s of Firelink's 259 s (profiled 2026-11-02; also most of the simplify cache's load time). The
+# exporter makes almost no reference cycles, so young collections run 100x less often and full ones only every ~500M
+# allocations; gather()'s result is frozen out of later scans (main). EXPORT_GC=default keeps Python's thresholds (A/B).
+if os.environ.get("EXPORT_GC") != "default":
+    gc.set_threshold(70000, 50, 100)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
@@ -943,8 +950,11 @@ def gather(game, map_id):
                     continue
                 P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
-            sky = part["type"] == 0 and m["verts"]["pos"] and is_sky(m["mtd"], [xf_part(part, F, m)(p) for p in
-                                                                                 m["verts"]["pos"]], nav_tree)
+            if part["type"] == 0 and m["verts"]["pos"]:
+                xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
+                sky = is_sky(m["mtd"], [xfm(p) for p in m["verts"]["pos"]], nav_tree)
+            else:
+                sky = False
             if sky and fid in fog_rows:
                 sky_fog = fog_rows[fid]
             water = "water" in m["mtd"].lower()
@@ -981,12 +991,14 @@ def gather(game, map_id):
                 FAR_LOD_STATS[bool(low)] += 1
             fs = lods[max(lods)] if low else lods[min(lods)]
             tl = dedup_tris(souls.triangles(fs), m["verts"])
-            if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
+            if (map_r or PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
                 Vp = m["verts"]["pos"]
-                tl = [t for t in tl if in_map(*(sum(xf(Vp[i])[k] for i in t) / 3 for k in range(3)))]
+                Wp = {i: xf(Vp[i]) for i in {i for t in tl for i in t}}
+            if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
+                tl = [t for t in tl if in_map(*(sum(Wp[i][k] for i in t) / 3 for k in range(3)))]
             if PANO_R and not sky:  # far panorama (tools/pano.py): beyond PANO_R of PANO_C it replaces the map
-                Vp, pc = m["verts"]["pos"], PANO_C or sp
-                far_t = lambda t: sum((sum(xf(Vp[i])[k] for i in t) / 3 - pc[k]) ** 2 for k in range(3)) > PANO_R ** 2
+                pc = PANO_C or sp
+                far_t = lambda t: sum((sum(Wp[i][k] for i in t) / 3 - pc[k]) ** 2 for k in range(3)) > PANO_R ** 2
                 tl = [t for t in tl if far_t(t) == PANO_ONLY]
             fol, gpos = None, None
             if grass:
@@ -1100,16 +1112,21 @@ def gather(game, map_id):
     # the player's reach: navmesh vertices (shadows only matter where characters and the camera go)
     nav_focus = navmesh_points(game, map_id, M, keep)
     if sh and SHADOWS:
-        occ = [[m["pos"][m["wpos"][w]] for w in t] for m in meshes
-               if not m["flags"] & (CHUNK_BLEND | CHUNK_SKY) and not m["grass"] for t in m["tris"]]
         t0 = time.time()
+        occ = [np.asarray(m["pos"], np.float64)[np.asarray(m["wpos"], np.int64)[np.asarray(m["tris"], np.int64)]]
+               for m in meshes if not m["flags"] & (CHUNK_BLEND | CHUNK_SKY) and not m["grass"] and m["tris"]]
+        occ = np.concatenate(occ) if occ else np.zeros((0, 3, 3))
         smap = dsr_light.ShadowMap(occ, dsr_light.light_dir(sh["lightDegRotX"], sh["lightDegRotY"]),
                                    focus=nav_focus or [p for m in meshes for p in m["pos"][::50]])
         export_normal.SRC["smap"] = smap
         lit_n, floor = 0, [0.0, 0]
+        ks = smap.lit_many([v[2] for _, hdr, *_ in pending for v in hdr],
+                           [v[3] for _, hdr, *_ in pending for v in hdr]).tolist()
+        j = 0
         for _, hdr, *_ in pending:
             for i, (e, sun, p, n) in enumerate(hdr):
-                k = smap.lit(p, n)
+                k = ks[j]
+                j += 1
                 lit_n += k
                 if n[1] > 0.7:  # floors: how much of the ground characters stand on is in sun
                     floor[0] += k
@@ -1187,12 +1204,20 @@ def view_distance(points, spawn, nav_v, nav_t, raw=False, floor=None):
     S = np.unique(np.round(np.concatenate(samples) * 2) / 2, axis=0)  # 0.5 m
     allp = np.array([p for ps in points for p in ps], dtype=np.float64)
     cells, inv = np.unique(np.round(allp / 2) * 2, axis=0, return_inverse=True)  # 2 m: only needed coarsely
-    s2 = (S ** 2).sum(1)
     dn = np.empty(len(cells))
-    for i in range(0, len(cells), 4096):
-        c = cells[i:i + 4096]
-        d2 = (c ** 2).sum(1)[:, None] + s2[None, :] - 2 * c @ S.T
-        dn[i:i + 4096] = np.sqrt(np.maximum(d2.min(1), 0))
+    lib = dsr_light.geom_lib()
+    if lib is not None and len(S):  # k-d tree (tools/native/geom.c): Burg / Firelink 103 s of brute force -> < 1 s
+        # cells (2 m) and samples (0.5 m) lie on lattices, so both paths' squared distances are exact: same result
+        Sc, Qc, d2 = np.array(S, np.float64, order="C"), np.ascontiguousarray(cells, np.float64), np.empty(len(cells))
+        if lib.nearest_d2(len(Qc), Qc.ctypes.data, len(Sc), Sc.ctypes.data, d2.ctypes.data):
+            raise MemoryError("nearest_d2")
+        dn[:] = np.sqrt(np.maximum(d2, 0))
+    else:
+        s2 = (S ** 2).sum(1)
+        for i in range(0, len(cells), 4096):
+            c = cells[i:i + 4096]
+            d2 = (c ** 2).sum(1)[:, None] + s2[None, :] - 2 * c @ S.T
+            dn[i:i + 4096] = np.sqrt(np.maximum(d2.min(1), 0))
     dn = dn[inv.ravel()]
     if raw:
         return [dn[k:k + len(ps)].tolist() for k, ps in zip(np.cumsum([0] + [len(ps) for ps in points]), points)]
@@ -1556,6 +1581,11 @@ def main():
     preview = sys.argv[4] if len(sys.argv) > 4 else None
     t_start = time.time()
     meshes_in, textures, nav_v, nav_t, spawn, (fog_id, fog), sky_fog = gather(game, map_id)
+    import havok_collision
+    havok_collision.forget()  # the whole MSB's collision (gather's probes / spawn part); area_collision keeps its own
+    if os.environ.get("EXPORT_GC") != "default":
+        gc.collect()
+        gc.freeze()  # gather's meshes stay alive to the end: no later collection rescans them
     centre = spawn["pos"]
     rss("gather")
     t0 = time.time()
