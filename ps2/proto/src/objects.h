@@ -18,7 +18,7 @@ int objects_init(GSGLOBAL *gs, const void *blob);
  * breakable types no other block on holds (blob: its objects.bin again, read with the block), objects_block_remove
  * takes them away (broken pieces included) when it turns off and gives those textures back. Animated types keep
  * theirs from boot (each pack's shared texture model). */
-#define OBJ_BLOCKS 4
+#define OBJ_BLOCKS 5
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob);
 void objects_block_add(int block, const void *blob);
 void objects_block_remove(int block);

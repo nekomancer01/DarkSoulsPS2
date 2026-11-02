@@ -71,8 +71,9 @@ def world_blocks():  # data/world.pak (tools/export_world.py world.bin): [(pack 
         k = c & 0x7fffffff
         w += d[p:p + k] if c >> 31 else lz4(d[p:p + k], min(bs, raw - len(w))); p += k
     assert w[:4] == b'DSW1', 'world.pak: no world.bin'
-    rows = [struct.unpack_from('<24s16s4f2I', w, 16 + 64 * i) for i in range(struct.unpack_from('<I', w, 8)[0])]
-    return [(r[0].rstrip(b'\0').decode(), r[6] & 1, r[7]) for r in rows]
+    fmt = '<24s16s4f2I' if struct.unpack_from('<I', w, 4)[0] == 2 else '<16s16s6f2I'  # version 3: height range
+    rows = [struct.unpack_from(fmt, w, 16 + 64 * i) for i in range(struct.unpack_from('<I', w, 8)[0])]
+    return [(r[0].rstrip(b'\0').decode(), r[-2] & 1, r[-1]) for r in rows]
 paks = sorted(os.path.relpath(os.path.join(r, f), data) for r, _, fs in os.walk(data) for f in fs if f.endswith('.pak'))
 top = [p for p in paks if '/' not in p]
 order = [p for p in ('menu.pak', 'world.pak', 'common.pak', 'c0000.pak') if p in top]

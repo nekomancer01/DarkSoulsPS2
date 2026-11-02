@@ -1,0 +1,48 @@
+# World streaming: the Undead Asylum block (m18_01_00_00_a, tools/area.py) and the crow back to Firelink.
+# Boot in Firelink, warp into the Asylum cell (the new game's start point, region 1812011): settle() loads the Asylum
+# block (no floor under the feet yet), it turns full after 1 s. Walk in the cell, then the courtyard bonfire
+# (o0200_0000) and the second bonfire (o0200_0001). On the crow's ledge (region 1812000, ConnectCollision h0054B1 ->
+# m10_02) Firelink stays wanted; standing in region 1812000 there runs event 11810000 (cutscene 100225 skipped, warp to
+# Firelink point 1022100), and the Asylum unloads once unkept. Shots carry segment stats (frame ms max, RAM / VRAM min).
+option hud
+option noenemies
+option nodemo
+wait 3
+shot boot
+stats
+# a new game boots in Firelink (TECH_DEBT world-7), where Firelink's event 11020001 marks the crow flight done (flag
+# 11810000, as on DSR's arrival); clear it before the Asylum loads so its event 0 starts the crow event 11810000
+flag 11810000 0
+spawn -15.45 184.7 -46.8 0.6
+wait 4
+shot cell
+stats
+stick 0 1
+wait 1.5
+stick 0 0
+wait 1
+shot cell_walk
+spawn 1.5 195.9 4.5 0
+wait 3
+shot courtyard
+stick 0 1
+wait 1.5
+stick 0 0
+spawn 31.0 196.7 -26.5 1.6
+wait 3
+shot bonfire2
+stats
+spawn 3.5 212.7 -88.0 3.14
+wait 2
+shot ledge
+stats
+approach 3.0,-95.5 0.8 1
+wait 6
+ev expect z > 45
+ev expect y < -50
+shot firelink
+stats
+wait 8
+shot firelink_settled
+stats
+end

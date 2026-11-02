@@ -16,7 +16,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
 /* World blocks (src/world.c): at boot, block b's enemies.bin + map Lua (character packs from PACK_ROOT dir/) (types loaded and stripped, placements kept,
  * Lua run into the shared VM); enemy_block_add places them when the block turns on (before event_block_on), _remove
  * takes them out when it turns off (slots reused; an index is valid while its block is on) */
-#define ENEMY_BLOCKS 4
+#define ENEMY_BLOCKS 5
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, const void *map_lua,
                       int map_lua_size);
 void enemy_block_add(int block);
