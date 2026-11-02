@@ -22,13 +22,23 @@ void ev_misc_update(float dt);
 void ev_boss_defeat(s32 entity);
 int ev_boss_defeats(void);
 
-/* 2009[03] Register Bonfire (lit flag, bonfire object entity, reaction distance m, angle deg, kindling) at the
- * object's position; set = the event set it came from (dropped with its block) */
+/* 2009[03] Register Bonfire (flag, bonfire object entity, reaction distance m, angle deg, kindling) at the
+ * object's position; set = the event set it came from (dropped with its block). A non-zero kindling raises the
+ * bonfire's kindle points to 20 (10 Estus). Kindle points live in prog.kindle (saved), as DSR saves its bonfire list. */
 void ev_bonfire_register(int set, s32 flag, s32 entity, const float pos[3], float dist, float angle, int kindle);
 void ev_bonfire_drop(int set);
 void ev_bonfire_move(int from, int to);  /* the events of a map moved to another block's set */
-/* Action button at pos / yaw: a registered bonfire in reach is lit (its flag off) or rested at. 1 if one was used. */
-int ev_bonfire_action(const float pos[3], float yaw);
 int ev_bonfire_count(void);
+/* Kindle stage 0..4 (0 unlit) of a registered bonfire, -1 when it is not registered (no fire: 2009[03] creates it) */
+int ev_bonfire_level(s32 entity);
+int ev_bonfire_points(s32 entity);
+void ev_bonfire_add_points(s32 entity, int n);  /* capped 0..40 */
+int ev_bonfire_estus(s32 entity);                /* Estus charges a rest there gives (CalcCorrectGraph 150) */
+int ev_bonfire_pos(s32 entity, float pos[3]);    /* object position; 0 if not registered */
+void ev_bonfire_light(s32 entity);               /* lighting: its flag on, 10 points */
+/* The registered bonfire whose prompt shows for the player at pos / yaw (talk ESD reach), 0 none */
+s32 ev_bonfire_near(const float pos[3], float yaw);
+/* Action button at pos / yaw: lights or sits at the bonfire in reach (src/bonfire.c); 1 if the press was used */
+int ev_bonfire_action(const float pos[3], float yaw);
 
 #endif

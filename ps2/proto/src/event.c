@@ -474,7 +474,7 @@ static int eval_cond(Inst *in, const Reg *r, int depth)
             enemy_entity(iw[1], NULL, NULL, &r, NULL);
         return cmpf(iw[2], r, wf(w[3]));
     }
-    case OP_C_CHR_TYPE: return iw[1] == PLAYER_ENTITY && iw[2] == 8;  /* the player is Hollow (TECH_DEBT event-7) */
+    case OP_C_CHR_TYPE: return iw[1] == PLAYER_ENTITY && iw[2] == prog.chr_type;  /* 0 human, 8 Hollow (A4) */
     case OP_C_BACKREAD: {
         int act = 0;
         if (iw[1] == PLAYER_ENTITY)

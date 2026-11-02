@@ -55,9 +55,13 @@ LAYOUT = [
     ("died_bg", "F23_YouDied", "BG"), ("died_grad0", "F23_YouDied", "BG_grad00"),
     ("died_grad1", "F23_YouDied", "BG_grad01"), ("died_bar", "F23_YouDied", "BG_bar"),
     ("died_text", "F23_YouDied", "main_text_youdied"),
+    # BONFIRE LIT (global_event.lua SetTextEffect(TEXT_TYPE_Bonfire = 13)): the same backdrop pieces as YOU DIED
+    ("lit_bg", "F23_Bonfire", "BG"), ("lit_grad0", "F23_Bonfire", "BG_grad00"),
+    ("lit_grad1", "F23_Bonfire", "BG_grad01"), ("lit_bar", "F23_Bonfire", "BG_bar"),
+    ("lit_text", "F23_Bonfire", "main_text_revive"),
 ]
 # stored size factors (x, y) for long / large sprites that are drawn stretched (fits the atlas in 512x256)
-STORE = {"frame_hp": (0.5, 1), "frame_sp": (0.5, 1), "fill_hp": (0.5, 1), "fill_sp": (0.5, 1), "died_text": (0.5, 0.5)}
+STORE = {"frame_hp": (0.5, 1), "frame_sp": (0.5, 1), "fill_hp": (0.5, 1), "fill_sp": (0.5, 1), "died_text": (0.5, 0.5), "lit_text": (0.5, 0.5)}
 # menu panel pieces (not from a DRB dialog: a plain read-only screen built from Menu01's parts): texture, texel rect,
 # 1280x720 screen rect, stored scale (the leather panel is stored small and stretched, it has no fine detail)
 MENU_SPRITES = [
@@ -74,7 +78,11 @@ KIT = [("wep_r", "Weapon_name_.fmg", 201000, "w"), ("wep_l", "Weapon_name_.fmg",
 UI_STRINGS = [("Ingame_menu_.fmg", 110000), ("Ingame_menu_.fmg", 110001), ("Ingame_menu_.fmg", 110003),
               ("Ingame_menu_.fmg", 112010), ("Ingame_menu_.fmg", 112000), ("Menu_general_text_.fmg", 101013),
               ("Menu_general_text_.fmg", 101030), ("Menu_general_text_.fmg", 101032),
-              ("Menu_general_text_.fmg", 101041)]
+              ("Menu_general_text_.fmg", 101041)] + [
+    # bonfire (src/bonfire.c; ids from the bonfire talk ESDs t1xx1xx / t1xx2xx): prompts, menu entries, dialogs
+    ("Event_text_.fmg", i) for i in (10010182, 10010183, 15000100, 15000111, 15000112, 15000120, 15000130, 15000220,
+                                     15000150, 10010744, 15000170, 15000270, 15000005, 10010741, 10010722, 10010723,
+                                     10010724, 10010725, 10010730, 10010731, 10010732)]
 
 
 def drb(b):

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "enemy.h"
 #include "hud.h"
+#include "bonfire.h"
 #include "render.h"
 #include "progress.h"
 
@@ -113,6 +114,8 @@ static void draw_layout(int i, int a)
     else
         hud_fill(e->x, e->y, e->w, e->h, e->r, e->g, e->b, e->a * a / 0x80);
 }
+
+void hud_layout(int i, int a) { draw_layout(i, a); }
 
 float hud_text_width(const char *s)
 {
@@ -263,5 +266,6 @@ void hud_draw(const Player *p, float dt)
         for (int i = HUD_DIED_BG; i <= HUD_DIED_TEXT; i++)
             draw_layout(i, a);
     }
+    bonfire_hud(dt);  /* bonfire prompt, rest menu, dialogs, BONFIRE LIT (src/bonfire.c) */
     hud_end();
 }

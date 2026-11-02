@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "bonfire.h"
+#include "combat_data.h"
 #include "ev_misc.h"
 #include "event.h"
 #include "flags.h"
@@ -62,15 +63,94 @@ void ev_misc_update(float dt)
 
 /* ---- bonfires ---- */
 #define BONFIRE_MAX 16
-typedef struct { s32 flag, entity; float pos[3], dist, angle; s16 kindle; u8 set, used; } Bonfire;
+typedef struct { s32 flag, entity; float pos[3]; u8 set, used; } Bonfire;
 static Bonfire bonfires[BONFIRE_MAX];
+
+/* The talk ESD of every bonfire (t1xx1xx / t1xx2xx, all the same, on the c1000 dummy 0.5 m above the object): the
+ * prompt shows within GetDistanceToPlayer 2.0 m (unlit, "Light bonfire") / 3.4 m (lit, "Rest at bonfire"), player
+ * facing within 45 deg of it (GetRelativeAngleBetweenPlayerAndSelf), GetPlayerYDistance <= 1 m */
+#define TALK_DUMMY_Y 0.5f
+#define REACH_UNLIT 2.0f
+#define REACH_LIT 3.4f
+#define REACH_ANGLE 45.0f
+#define REACH_DY 1.0f
+/* Kindle points: the exe's caps (DAT_141a3372c / 30 / 34 = 40, FUN_1407a3380); lighting and each kindling add 10
+ * (FUN_1407a4380); 2009[03] with a non-zero kindling raises the bonfire to 20 (FUN_1404ccec0 -> FUN_1407a3b70) */
+#define KINDLE_CAP 40
+#define KINDLE_STEP 10
+#define KINDLE_STANDARD 20
+
+static int kindle_slot(s32 entity, int create)
+{
+    for (int i = 0; i < KINDLE_SAVE_MAX; i++)
+        if (prog.kindle[i].entity == (u32)entity)
+            return i;
+    for (int i = 0; create && i < KINDLE_SAVE_MAX; i++)
+        if (!prog.kindle[i].entity) {
+            prog.kindle[i].entity = entity, prog.kindle[i].points = 0;
+            return i;
+        }
+    return -1;
+}
+
+int ev_bonfire_points(s32 entity)
+{
+    int k = kindle_slot(entity, 0);
+    return k < 0 ? 0 : prog.kindle[k].points;
+}
+
+void ev_bonfire_add_points(s32 entity, int n)
+{
+    int k = kindle_slot(entity, 1);
+    if (k < 0)
+        return;
+    int v = prog.kindle[k].points + n;
+    prog.kindle[k].points = v < 0 ? 0 : v > KINDLE_CAP ? KINDLE_CAP : v;
+    progress_touch();
+}
+
+/* CalcCorrectGraph 150 (回復スポットの最大補充数): stageMaxVal 0 / 10 / 20 / 30 / 40 -> stage 0..4, Estus
+ * stageMaxGrowVal 0 / 5 / 10 / 15 / 20, read as steps (FUN_1407a40b0 / FUN_1407a41b0: points clamped to the stage
+ * range, the first stage whose value is >= the points) */
+static int stage_of(int points)
+{
+    const float *g = graph_150;
+    float v = points < g[0] ? g[0] : points > g[4] ? g[4] : points;
+    for (int i = 0; i < 5; i++)
+        if (v <= g[i])
+            return i;
+    return 4;
+}
+
+static Bonfire *find(s32 entity)
+{
+    for (int i = 0; i < BONFIRE_MAX; i++)
+        if (bonfires[i].used && bonfires[i].entity == entity)
+            return &bonfires[i];
+    return NULL;
+}
+
+int ev_bonfire_level(s32 entity)
+{
+    return find(entity) ? stage_of(ev_bonfire_points(entity)) : -1;
+}
+
+int ev_bonfire_estus(s32 entity)
+{
+    return (int)graph_150[5 + stage_of(ev_bonfire_points(entity))];
+}
+
+int ev_bonfire_pos(s32 entity, float pos[3])
+{
+    Bonfire *b = find(entity);
+    if (b)
+        memcpy(pos, b->pos, 12);
+    return b != NULL;
+}
 
 void ev_bonfire_register(int set, s32 flag, s32 entity, const float pos[3], float dist, float angle, int kindle)
 {
-    Bonfire *b = NULL;
-    for (int i = 0; i < BONFIRE_MAX && !b; i++)  /* the constructor registers again (Firelink: kindling 10, then 30) */
-        if (bonfires[i].used && bonfires[i].entity == entity)
-            b = &bonfires[i];
+    Bonfire *b = find(entity);  /* the constructor registers again (Firelink: kindling 10, then 30) */
     for (int i = 0; i < BONFIRE_MAX && !b; i++)
         if (!bonfires[i].used)
             b = &bonfires[i];
@@ -78,11 +158,27 @@ void ev_bonfire_register(int set, s32 flag, s32 entity, const float pos[3], floa
         printf("EVT bonfire %d: list full\n", (int)entity);
         return;
     }
-    b->used = 1, b->set = set, b->flag = flag, b->entity = entity, b->dist = dist, b->angle = angle;
-    b->kindle = kindle;
+    /* reaction distance / angle: the exe keeps them (FUN_1404ccec0: +0x50, cos of the angle at +0x54) but the prompt
+     * and the menu follow the talk ESD's own distances (REACH_*) */
+    (void)dist, (void)angle;
+    b->used = 1, b->set = set, b->flag = flag, b->entity = entity;
     memcpy(b->pos, pos, 12);
-    printf("EVT bonfire %d registered (flag %d %s, kindling %d)\n", (int)entity, (int)flag,
-           flag_get(flag) ? "lit" : "unlit", kindle);
+    if (kindle && ev_bonfire_points(entity) < KINDLE_STANDARD)
+        ev_bonfire_add_points(entity, KINDLE_STANDARD - ev_bonfire_points(entity));
+    if (flag_get(flag) && !ev_bonfire_points(entity))  /* lit in a save from before the kindle points were kept */
+        ev_bonfire_add_points(entity, KINDLE_STEP);
+    printf("EVT bonfire %d registered (flag %d %s, kindling %d, points %d)\n", (int)entity, (int)flag,
+           flag_get(flag) ? "on" : "off", kindle, ev_bonfire_points(entity));
+}
+
+void ev_bonfire_light(s32 entity)
+{
+    Bonfire *b = find(entity);
+    if (b)
+        flag_set(b->flag, 1);  /* the bonfire's flag: its warp / map state in the events */
+    if (!ev_bonfire_points(entity))
+        ev_bonfire_add_points(entity, KINDLE_STEP);  /* Util_RequestLevelUpFirst -> FUN_1407a4380(entity, 0) */
+    printf("EVT bonfire %d lit (points %d)\n", (int)entity, ev_bonfire_points(entity));
 }
 
 void ev_bonfire_drop(int set)
@@ -107,34 +203,32 @@ int ev_bonfire_count(void)
     return n;
 }
 
-int ev_bonfire_action(const float pos[3], float yaw)
+s32 ev_bonfire_near(const float pos[3], float yaw)
 {
     for (int i = 0; i < BONFIRE_MAX; i++) {
         Bonfire *b = &bonfires[i];
         if (!b->used)
             continue;
-        float dx = b->pos[0] - pos[0], dz = b->pos[2] - pos[2], r = b->dist + 0.8f;  /* ASSUMED as ObjActs (event-4) */
-        if (dx * dx + dz * dz > r * r || fabsf(b->pos[1] - pos[1]) > 2)
+        float r = stage_of(ev_bonfire_points(b->entity)) ? REACH_LIT : REACH_UNLIT;
+        float dx = b->pos[0] - pos[0], dy = b->pos[1] + TALK_DUMMY_Y - pos[1], dz = b->pos[2] - pos[2];
+        if (dx * dx + dy * dy + dz * dz > r * r || fabsf(dy) > REACH_DY)
             continue;
-        if (b->angle > 0 && b->angle < 180 && dx * dx + dz * dz > 0.01f) {  /* facing the bonfire */
+        if (dx * dx + dz * dz > 0.01f) {
             float d = atan2f(dx, dz) - yaw;
             while (d > 3.14159265f) d -= 6.2831853f;
             while (d < -3.14159265f) d += 6.2831853f;
-            if (fabsf(d) > b->angle * 3.14159265f / 180)
+            if (fabsf(d) > REACH_ANGLE * 3.14159265f / 180)
                 continue;
         }
-        if (!flag_get(b->flag)) {
-            flag_set(b->flag, 1);  /* lit: the flag the map's events and the kindling read */
-            printf("EVT bonfire %d lit\n", (int)b->entity);
-            ev_message(1, 2);      /* ASSUMED banner type 2 = "BONFIRE LIT" (TECH_DEBT event-16) */
-            return 1;
-        }
-        /* rest (src/bonfire.c): respawn point, HP / Estus, enemies, events restarted / ended on rest and temporary
-         * flags cleared, autosave */
-        bonfire_rest(b->entity);
-        save_request();
-        printf("EVT bonfire %d rest\n", (int)b->entity);
-        return 1;
+        return b->entity;
     }
     return 0;
+}
+
+int ev_bonfire_action(const float pos[3], float yaw)
+{
+    if (bonfire_busy())
+        return 1;  /* sitting / lighting: the button is the menu's (src/bonfire.c) */
+    s32 e = ev_bonfire_near(pos, yaw);
+    return e && bonfire_use(e);
 }

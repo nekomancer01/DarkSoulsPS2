@@ -68,7 +68,7 @@ static float regen_rate(int anim, float t)
         return 1.0f;
     const AnimData *a = &anims[anim];
     for (int i = 0; i < a->nwin; i++)
-        if (a->win[i].type <= -2 && t >= a->win[i].start && t < a->win[i].end)
+        if (a->win[i].type <= -2 && a->win[i].type > EZ_MESSAGE && t >= a->win[i].start && t < a->win[i].end)
             return (-2 - a->win[i].type) / 100.0f;
     return 1.0f;
 }
@@ -379,6 +379,18 @@ float player_event_anim(Player *p, int id)
 
 int player_event_anim_playing(const Player *p) { return event_anim >= 0 && esd_action(p) && p->anim == event_anim; }
 
+int player_event_anim_id(const Player *p) { return player_event_anim_playing(p) ? anims[p->anim].id : -1; }
+
+float player_anim_message(int id, int msg)
+{
+    for (int i = 0; i < ANIM_COUNT; i++)
+        if (anims[i].key == id)
+            for (int w = 0; w < anims[i].nwin; w++)
+                if (anims[i].win[w].type == EZ_MESSAGE - msg)
+                    return anims[i].win[w].start;
+    return -1;
+}
+
 /* The anim whose TAE drives the flags this frame: the playing one-shot, else the locomotion loop (idle a00_0000 is
  * not exported and has no ChrActionFlags) */
 static int flag_anim(const Player *p)
@@ -557,8 +569,8 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->state = ST_IDLE;
     }
 
-    /* an event anim has no ESD state to end it: it ends with its TAE */
-    if (player_event_anim_playing(p) && p->t >= anims[p->anim].length)
+    /* an event anim has no ESD state to end it: it ends with its TAE (a loop plays until another one replaces it) */
+    if (player_event_anim_playing(p) && p->t >= anims[p->anim].length && !anims[p->anim].loop)
         p->state = ST_IDLE;
     if (!player_event_anim_playing(p))
         event_anim = -1;

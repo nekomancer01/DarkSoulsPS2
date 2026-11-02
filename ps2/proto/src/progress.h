@@ -21,6 +21,9 @@ enum { EQ_WEP_L1, EQ_WEP_R1, EQ_WEP_L2, EQ_WEP_R2, EQ_ARROW, EQ_BOLT, EQ_ARROW2,
        EQ_LEG, EQ_RING1, EQ_RING2, EQ_QUICK1, EQ_QUICK2, EQ_QUICK3, EQ_QUICK4, EQ_QUICK5, EQ_SLOTS };
 enum { ST_VIT, ST_ATT, ST_END, ST_STR, ST_DEX, ST_RES, ST_INT, ST_FAI, ST_COUNT };
 
+#define KINDLE_SAVE_MAX 48  /* bonfires with kindle state: the EMEVDs of every map register 45 bonfire objects */
+#define CHR_HUMAN 0
+#define CHR_HOLLOW 8
 #define INV_MAX 256  /* ASSUMED (TECH_DEBT save-4): DSR's inventory holds far more entries */
 
 typedef struct {
@@ -49,6 +52,10 @@ typedef struct {
     u32 stain_map;           /* bloodstain: area it lies in (map_id form), 0 = none */
     float stain_pos[3];
     s32 stain_souls, stain_humanity;
+    /* Bonfire state (src/ev_misc.c), as DSR's save keeps a list of (bonfire object entity, kindle points) (exe list at
+     * DAT_141c8a9a0+0xb68, read back by FUN_1407a37a0); points 0 unlit, 10 lit, +10 per kindling, cap 40 */
+    struct { u32 entity; s16 points, pad; } kindle[KINDLE_SAVE_MAX];
+    s32 chr_type;            /* talk ESD GetPlayerChrType: 0 human, 8 Hollow */
 } Progress;
 
 extern Progress prog;
