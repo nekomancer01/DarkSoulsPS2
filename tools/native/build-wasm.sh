@@ -11,6 +11,7 @@ mkdir -p "$OUT"
 CLANG=${CLANG:-clang}
 WASMLD=${WASMLD:-wasm-ld}
 RES=$("$CLANG" -print-resource-dir)/include
+"$WASMLD" --version
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 for m in lz4pack bcdecode simplify; do
     extra=
@@ -18,6 +19,8 @@ for m in lz4pack bcdecode simplify; do
     # shellcheck disable=SC2086
     "$CLANG" --target=wasm32-unknown-emscripten -fPIC -O2 -fvisibility=default $extra -nostdinc -isystem "$RES" \
         -isystem "$HERE/wasm" -c "$HERE/$m.c" -o "$TMP/$m.o"
-    "$WASMLD" --experimental-pic -shared --export-dynamic -o "$OUT/lib$m.so" "$TMP/$m.o"
+    # --allow-undefined: libc (malloc, calloc, ...) comes from Pyodide at load time; newer wasm-ld refuses undefined
+    # symbols in a shared module without it
+    "$WASMLD" --experimental-pic -shared --export-dynamic --allow-undefined -o "$OUT/lib$m.so" "$TMP/$m.o"
     echo "$OUT/lib$m.so: $(wc -c < "$OUT/lib$m.so") B"
 done
