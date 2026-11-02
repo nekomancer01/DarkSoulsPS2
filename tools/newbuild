@@ -1,0 +1,60 @@
+#!/bin/bash
+# Usage: tools/newbuild <dir> [--from <build dir>] [--force]
+#        tools/newbuild "$PWD/build" --from ~/DarkSoulsPS2/build   (a new clone's own build/, from another tree's build)
+# Seed a scratch / per-segment build dir (make BUILD=<dir>) from an existing build (default: build/ of this tree), so
+# its first make only redoes what differs instead of exporting every map, block and character from the game again
+# (build/s1 from empty: ~60 min). Copies gen/ (without gen/scratch), data/, obj/ and stamp/ with their timestamps (cp -a;
+# reflinks where the filesystem has them, never hard links: exporters rewrite their outputs in place, which would
+# change the source build too). Dependency files (obj/**/*.d) and obj/.cflags name the source build's paths; they are
+# rewritten to <dir>. Waits for a running build of the source (.build.lock) so it never copies a half-written export.
+# stamp/ (the tool hashes, tools/srcsum.py) matters for another tree: a fresh clone's tools have new mtimes, and a
+# missing stamp takes its tool's mtime, which would re-export everything; copied stamps keep the source's times and
+# change only for tools whose code differs between the trees.
+# A relative <dir> without a slash is taken as build/<dir>.
+#   --from DIR  source build (e.g. another segment's)    --force  overwrite an existing non-empty <dir>
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SRC=$ROOT/build; DST=; FORCE=
+while [ $# -gt 0 ]; do
+    case $1 in
+        --from) SRC=$(realpath -m "$2"); shift ;;
+        --force) FORCE=1 ;;
+        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+        -*) echo "newbuild: unknown option $1" >&2; exit 2 ;;
+        *) DST=$1 ;;
+    esac
+    shift
+done
+[ -n "$DST" ] || { sed -n '2p' "$0"; exit 2; }
+case $DST in */*) DST=$(realpath -m "$DST") ;; *) DST=$ROOT/build/$DST ;; esac
+[ -d "$SRC/gen" ] || { echo "newbuild: $SRC has no gen/ (build it first)" >&2; exit 1; }
+[ "$SRC" != "$DST" ] || { echo "newbuild: source and target are the same" >&2; exit 1; }
+if [ -d "$DST" ] && [ -n "$(ls -A "$DST/gen" "$DST/data" "$DST/obj" 2>/dev/null)" ] && [ -z "$FORCE" ]; then
+    echo "newbuild: $DST already holds a build (--force to overwrite)" >&2; exit 1
+fi
+mkdir -p "$DST"
+copy() {
+    T0=$(date +%s)
+    for d in gen data obj stamp; do
+        [ -d "$SRC/$d" ] || continue
+        rm -rf "${DST:?}/$d"; mkdir -p "$DST/$d"
+        for e in "$SRC/$d"/* "$SRC/$d"/.[!.]*; do
+            [ -e "$e" ] || continue
+            [ "$d/${e##*/}" = gen/scratch ] && continue
+            cp -a --reflink=auto "$e" "$DST/$d/" || return 1
+        done
+    done
+    # make dependency files and the flags stamp name absolute build paths: point them at the copy
+    find "$DST/obj" \( -name '*.d' -o -name .cflags \) -type f -print0 2>/dev/null |
+        xargs -0 -r sed -i "s#$SRC/#$DST/#g"
+    echo "newbuild: $SRC -> $DST ($(du -sh "$DST" 2>/dev/null | cut -f1), $(( $(date +%s) - T0 )) s)"
+}
+# the source build's own lock (tools/q takes it for every make): a tree's build/ uses the tree's .build.lock, any other
+# build dir its own <dir>/.build.lock
+if [ "${SRC##*/}" = build ] && [ -d "${SRC%/build}/tools" ]; then LOCK=${SRC%/build}/.build.lock; else LOCK=$SRC/.build.lock; fi
+if [ -n "$DSR_Q_HELD" ]; then
+    copy
+else
+    exec 8>"$LOCK"
+    flock -w 3600 8 || { echo "newbuild: a build has held .build.lock for an hour" >&2; exit 1; }
+    copy
+fi

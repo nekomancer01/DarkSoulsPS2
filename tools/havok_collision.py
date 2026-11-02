@@ -41,6 +41,39 @@ def _qs_apply(qs, v):
     return r[0] + t[0], r[1] + t[1], r[2] + t[2]
 
 
+# hkpExtendedMeshShape::IndexStridingType (TrianglesSubpart.stridingType) -> MeshSubpartStorage array, struct code
+_INDEX_ARRAYS = {1: ("indices8", "B"), 2: ("indices16", "H"), 3: ("indices32", "I")}
+
+
+def _indices(h, ms, M, so_k, sub_t, ntri, stride):
+    """(flat index tuple, indices per triangle) of one subpart. DSR's maps use indices16 with a stride of 8 bytes (3
+    indices + 1 pad); the m99 test maps also have other strides (formats-6). The array is the one stridingType names;
+    when that field is missing or names an empty array, the first non-empty one of indices16 / 32 / 8."""
+    try:
+        order = [_INDEX_ARRAYS[h.get(so_k, sub_t, "stridingType", "B")]]
+    except KeyError:
+        order = []
+    order += [_INDEX_ARRAYS[t] for t in (2, 3, 1)]
+    for field, code in order:
+        try:
+            _, io, ni = h.item(ms, M, field)
+        except KeyError:
+            continue  # no such array in this hkx version
+        if ni or not ntri:
+            break
+    else:
+        raise ValueError(f"subpart with {ntri} triangles has no index array")
+    if not ntri:
+        return (), 3  # empty model: the stride may be anything
+    size = struct.calcsize(code)
+    per = stride // size
+    if stride % size or per < 3:
+        raise ValueError(f"indexStriding {stride} does not fit {field} ({size} B per index)")
+    need = per * (ntri - 1) + 3
+    assert ni >= need, (field, ni, ntri, stride)
+    return struct.unpack_from(f"<{need}{code}", h.data, io), per
+
+
 def hkx_meshes(hkx_bytes):
     """Collision hkx -> [(vertices [(x, y, z)], triangles [(a, b, c)], material id)] one per subpart."""
     h = souls.HkTag(hkx_bytes)
@@ -65,18 +98,16 @@ def hkx_meshes(hkx_bytes):
         for k in range(nsub):
             so_k = sub_o + sub_t.size * k
             ntri = h.get(so_k, sub_t, "numTriangleShapes", "i")
-            assert h.get(so_k, sub_t, "indexStriding", "H") == 8, "expected 4 u16 per triangle"
+            stride = h.get(so_k, sub_t, "indexStriding", "H")  # bytes from one triangle's indices to the next
             toff, _ = sub_t.field("transform")
             qs = struct.unpack_from("<12f", d, so_k + toff)
             ms = h.items[struct.unpack_from("<I", d, ms_o + 8 * k)[0]][1]
             _, vo, nv = h.item(ms, M, "vertices")
-            _, io, ni = h.item(ms, M, "indices16")
-            assert ni >= 4 * ntri, (ni, ntri)
             verts = [struct.unpack_from("<3f", d, vo + 16 * i) for i in range(nv)]
             if qs[:3] != (0, 0, 0) or qs[4:8] != (0, 0, 0, 1) or qs[8:11] != (1, 1, 1):
                 verts = [_qs_apply(qs, v) for v in verts]
-            idx = struct.unpack_from(f"<{4 * ntri}H", d, io)
-            tris = [idx[4 * i:4 * i + 3] for i in range(ntri)]
+            idx, per = _indices(h, ms, M, so_k, sub_t, ntri, stride)
+            tris = [idx[per * i:per * i + 3] for i in range(ntri)]
             mat = -1
             if k < len(mats):
                 C = h.type("CustomMeshParameter")
@@ -93,9 +124,25 @@ def _place(part, v):
     return r[0] + p[0], r[1] + p[1], r[2] + p[2]
 
 
+_MEMO = {}  # the last map_collision result: export_map asks for it several times per export (13.6 s of Burg's)
+
+
 def map_collision(game, area="m10_02_00_00", detail="h"):
     """All MSB-placed collision of a map -> list of dict(part, model, hit_filter, material, tris=[(p0, p1, p2)])
-    with world-space points. Models without a file in the binder are reported in 'missing'."""
+    with world-space points. Models without a file in the binder are reported in 'missing'. The last result is kept
+    (callers must not modify it; forget() drops it)."""
+    key = (game, area, detail)
+    if key not in _MEMO:
+        _MEMO.clear()
+        _MEMO[key] = _map_collision(game, area, detail)
+    return _MEMO[key]
+
+
+def forget():
+    _MEMO.clear()
+
+
+def _map_collision(game, area, detail):
     mdir = f"{game}/map/{area}/{detail}{area[1:]}"
     files = {souls.basename(n).split(".")[0][:7]: b for _, n, b in souls.bxf3(mdir + ".hkxbhd", mdir + ".hkxbdt")}
     parts = msb_collisions(souls.read(f"{game}/map/MapStudio/{area}.msb"))

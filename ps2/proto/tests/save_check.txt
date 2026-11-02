@@ -11,8 +11,8 @@ check flag 71010000 1
 check flag 16000000 0
 check flag 50000100 1
 check flag 999 1
-check flags 11015000 11015999 500
-check flags 11015500 11015999 500
+check flags 11014000 11014999 500
+check flags 11014500 11014999 500
 check item 0x400001F4 3
 check item 0x400000C8 1
 # second save in the other slot, then a reload from the device

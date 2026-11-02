@@ -6,11 +6,20 @@
 #include <string.h>
 #include <tamtypes.h>
 
+#include "bonfire.h"
 #include "collision.h"
+#include "drawgrp.h"
 #include "enemy.h"
+#include "ev_chr.h"
+#include "ev_misc.h"
+#include "ev_obj.h"
 #include "event.h"
 #include "flags.h"
+#include "hud.h"
+#include "fx.h"
+#include "objects.h"
 #include "progress.h"
+#include "save.h"
 #include "world.h"
 
 /* Same order as OPS in tools/export_emevd.py (the op byte of each instruction) */
@@ -33,7 +42,7 @@ enum Op {
     OP_ANIM_RESET, OP_TEAM_EXIT, OP_HUMANITY, OP_OBJ_DESTROY, OP_OBJ_RESTORE, OP_OBJ_ENABLE, OP_TREASURE,
     OP_OBJACT_INIT, OP_OBJACT_STATE, OP_OBJ_ANIM, OP_OBJ_REDESTROY, OP_DAMAGE_OBJ, OP_OBJ_INVULN, OP_OBJACT_IDX,
     OP_REROLL, OP_SFX_DEL, OP_SFX_SPAWN, OP_SFX_ONESHOT, OP_SFX_OBJ, OP_SFX_OBJ_DEL, OP_DIALOG, OP_STATUS_MSG,
-    OP_LADDER, OP_BONFIRE, OP_MP_BUFF, OP_BOSS_ENTRY, OP_SE, OP_SOUND_STATE, OP_HIT, OP_MAP_PART,
+    OP_LADDER, OP_BONFIRE, OP_MP_BUFF, OP_BOSS_ENTRY, OP_SE, OP_SOUND_STATE, OP_HIT, OP_MAP_PART, OP_BANNER,
     OP_COUNT
 };
 static const char *const op_names[OP_COUNT] = {
@@ -53,7 +62,7 @@ static const char *const op_names[OP_COUNT] = {
     "WARP_FLOOR", "SHORT_WARP", "WARP_COPY", "ANIM_RESET", "TEAM_EXIT", "HUMANITY", "OBJ_DESTROY", "OBJ_RESTORE",
     "OBJ_ENABLE", "TREASURE", "OBJACT_INIT", "OBJACT_STATE", "OBJ_ANIM", "OBJ_REDESTROY", "DAMAGE_OBJ",
     "OBJ_INVULN", "OBJACT_IDX", "REROLL", "SFX_DEL", "SFX_SPAWN", "SFX_ONESHOT", "SFX_OBJ", "SFX_OBJ_DEL", "DIALOG",
-    "STATUS_MSG", "LADDER", "BONFIRE", "MP_BUFF", "BOSS_ENTRY", "SE", "SOUND_STATE", "HIT", "MAP_PART",
+    "STATUS_MSG", "LADDER", "BONFIRE", "MP_BUFF", "BOSS_ENTRY", "SE", "SOUND_STATE", "HIT", "MAP_PART", "BANNER",
 };
 /* ops that do nothing in DSR offline single player either (network, achievements, multiplayer signs) */
 static int op_noop(int op)
@@ -73,8 +82,18 @@ typedef struct { s32 id; u8 kind, shape; u16 index; float pos[3], yaw, dim[3]; u
 typedef struct { u32 first, count; } EvRange;
 typedef struct { float c[3], half[3], yaw; s32 entity; } EvCol;
 typedef struct { s32 entity; float pos[3]; s32 lot[5]; u8 in_chest, start_disabled; u16 pad; } EvTreasure;
-typedef struct { s32 entity, part; float pos[3], yaw, dist; s32 param, flag; u8 state, pad[3]; } EvObjAct;
-typedef struct { s32 id, flag; u32 category; s32 item, num; } EvLot;
+typedef struct {
+    s32 entity, part;
+    float pos[3], yaw, dist;
+    s32 param, flag;
+    u8 state, pad;
+    s16 anim;            /* ObjActParam objAnimId: the object's anim on use (-1 none) */
+    u8 sp_type, sp_type2;  /* key: spQualifiedType (1 = a good in the inventory), spQualifiedType2 */
+    u16 pad2;
+    s32 sp_id, sp_id2, pass_flag;  /* the goods; spQualifiedPassEventFlag opens it without them */
+} EvObjAct;
+typedef struct { s32 id, flag; u16 first; u8 n, pad; } EvLot;  /* ItemLotParam row: getItemFlagId, its weighted items */
+typedef struct { s32 item, flag; u16 point; u8 num, cat; } EvLotItem;  /* cat = lotItemCategory >> 28, 15 = none */
 enum { ENT_OBJECT = 2, ENT_ENEMY = 3, ENT_COLLISION = 5, ENT_REGION = 10 };
 enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
 #define PLAYER_ENTITY 10000
@@ -87,7 +106,8 @@ typedef struct {
     int nev, nent, block, live;  /* live: this set runs the map's events (another block of the same map: entities only) */
     u8 *ent_off;                 /* per entity: 1 = disabled by an event (objects, map parts, SFX, hits) */
     u8 *tr_state;                /* per treasure: bit 0 on, bit 1 taken */
-    u8 *oa_state;                /* per objact: bit 0 usable, bit 1 used this frame */
+    u8 *oa_state;                /* per objact: bit 0 usable, bit 1 used this frame, bit 2 its object shows the state
+                                  * flag's end pose (objact_flags) */
     u16 *ev_live;                /* per event: instances alive (InitializeEvent's duplicate check scans only then) */
 } Set;
 static Set sets[EV_SETS];
@@ -108,6 +128,7 @@ typedef struct {
     u32 cond_f;
     u16 cvalid, cval;   /* compiled group results (bit g + 7) from the last MAIN */
     u8 argn, flag_only;  /* MAIN waits only on flags / inventory / constants: re-evaluated when one of those changed */
+    u8 warped;           /* warped the player to another map: finishes even if its block unloads (event_block_off) */
     u32 seen;            /* state_key() at the last evaluation */
     Reg *reg;
     u8 *args;
@@ -189,6 +210,16 @@ static int ent_pos(int own, s32 id, float out[3])
     if (!e)
         return 0;
     memcpy(out, e->pos, 12);
+    return 1;
+}
+
+int event_entity(s32 id, float pos[3], float *yaw)
+{
+    const EvEnt *e = ent_any(0, id, NULL);
+    if (!e)
+        return 0;
+    memcpy(pos, e->pos, 12);
+    *yaw = e->yaw;
     return 1;
 }
 
@@ -361,8 +392,7 @@ static int static_cond(int op)
     case OP_C_GROUP: case OP_C_FLAG: case OP_C_FLAG_RANGE: case OP_C_COUNT_FLAGS: case OP_C_EVENT_VALUE: case OP_C_MP:
     case OP_C_ONLINE: case OP_C_CYCLE: case OP_C_CLASS: case OP_C_COVENANT: case OP_C_ITEM: case OP_C_ITEM_BBOX:
     case OP_C_TENDENCY: case OP_C_MP_EVENT: case OP_C_MP_COUNT: case OP_C_DROPPED_AREA: case OP_C_DROPPED:
-    case OP_C_DAMAGED: case OP_C_SPEFFECT: case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_OBJ_DESTROYED:
-    case OP_C_CHR_TYPE:
+    case OP_C_EVENT_MSG: case OP_C_CHR_TYPE:
         return 1;
     }
     return 0;
@@ -409,9 +439,17 @@ static int eval_cond(Inst *in, const Reg *r, int depth)
         int in_map = ps && ps->h->map[0] == (u8)iw[2] && ps->h->map[1] == (u8)iw[3];
         return in_map == (iw[1] != 0);
     }
-    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_DAMAGED: case OP_C_SPEFFECT:
-    case OP_C_PART_HP: case OP_C_EVENT_MSG: case OP_C_OBJ_DESTROYED: case OP_C_MP_COUNT:
+    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_EVENT_MSG: case OP_C_MP_COUNT:
         return 0;  /* nothing of that kind happens offline / in the port yet */
+    /* characters (ev_chr.c); the player's SpEffects are A6's: false as before */
+    case OP_C_DAMAGED: return ev_chr_damaged(iw[1], iw[2]) == 1;
+    case OP_C_SPEFFECT: return iw[1] != PLAYER_ENTITY && ev_chr_has_speffect(iw[1], iw[2]) == (iw[3] != 0);
+    case OP_C_PART_HP: { int hp; return ev_chr_part_hp(iw[1], iw[2], &hp) > 0 && cmp(iw[4], hp, iw[3]); }
+    case OP_C_OBJ_DESTROYED: {  /* 5[00] (group, destroyed state, object entity): breakables (objects.c) */
+        int broken = 0;
+        objects_entity(iw[2], NULL, &broken);
+        return broken == (iw[1] != 0);
+    }
     case OP_C_COUNT_FLAGS: {
         u32 a = flag_of(in, iw[1], iw[2]), b = flag_of(in, iw[1], iw[3]);
         return cmp(iw[4], flag_range_count(a < b ? a : b, a < b ? b : a), iw[5]);
@@ -587,7 +625,7 @@ static void finish(Inst *in, int type)
         restart(in);
         return;
     }
-    if (ev_id(in) >= 1000)  /* not the (pre)constructors 0 / 50: ASSUMED, flag 0 is read by scripts (event-2) */
+    if (ev_id(in) > 98 && in->slot >= 0)  /* FUN_1407d4230: id + slot on, not for ids up to 98 (constructors 0 / 50) */
         flag_set(ev_id(in) + in->slot, 1);
     event_stats.ended++;
     if (trace > 1)
@@ -660,12 +698,12 @@ static void warp_to(int own, s32 dest)
     int ok = col_floor(p[0], p[2], p[1] + 2, p[1] - 5, COL_SOLID, &h);
     pl->pos = v3(p[0], ok ? h.y : p[1], p[2]);
     if (e)
-        pl->yaw = e->yaw;
+        pl->yaw = e->yaw + 3.14159265f;  /* MSB rotY -> player yaw, as export_map.py's spawn (+ pi) */
     pl->vel = v3(0, 0, 0), pl->airborne = 0, pl->fall_y0 = pl->pos.y;
     printf("EVT warp player -> %d (%.2f %.2f %.2f)\n", (int)dest, pl->pos.x, pl->pos.y, pl->pos.z);
 }
 
-static const EvLot *find_lot(s32 id)
+static const EvLot *find_lot(s32 id, const EvLotItem **items)
 {
     for (int k = 0; k < EV_SETS; k++) {
         const Set *s = &sets[k];
@@ -673,26 +711,67 @@ static const EvLot *find_lot(s32 id)
             continue;
         const EvLot *l = SEC(s, S_LOTS, EvLot);
         for (int i = 0; i < NSEC(s, S_LOTS); i++)
-            if (l[i].id == id)
+            if (l[i].id == id) {
+                *items = (const EvLotItem *)(l + NSEC(s, S_LOTS)) + l[i].first;  /* the item pool after the rows */
                 return &l[i];
+            }
     }
     return NULL;
 }
 
-/* ItemLotParam: getItemFlagId goes on, the lot's first item into the inventory (TECH_DEBT event-6) */
+/* An item's get flag: its own getItemFlagId0N, else the row's (< 0: none) */
+static s32 lot_flag(const EvLot *l, const EvLotItem *it) { return it->flag ? it->flag : l->flag; }
+/* Something of the row is still to be had: an item whose flag is off or absent */
+static int lot_left(const EvLot *l, const EvLotItem *it)
+{
+    for (int k = 0; k < l->n; k++)
+        if (lot_flag(l, &it[k]) <= 0 || !flag_get(lot_flag(l, &it[k])))
+            return 1;
+    return 0;
+}
+
+/* ItemLotParam draw as DSR's FUN_1403f5d90 (called through FUN_1403fc940 for AwardItemLot and treasures): the lot and
+ * every row after it (id + 1, ... while one exists) each roll one of their items, weighted by lotItemBasePoint,
+ * leaving out items whose get flag is on; the chosen item is given unless it is "nothing" (lotItemNum 0, id or
+ * category < 0); the get flags of what was given go on after the whole run (rows of one corpse share one flag). Luck
+ * (enableLuck x item discovery) and cumulate counters (cumulateLotPoint / cumulateNumFlagId) are left out: TECH_DEBT
+ * event-6. */
 static void award_lot(s32 id)
 {
-    const EvLot *l = find_lot(id);
+    const EvLotItem *it;
+    const EvLot *l = find_lot(id, &it);
     if (!l) {
         printf("EVT item lot %d: not exported\n", (int)id);
         return;
     }
-    if (l->flag > 0)
-        flag_set(l->flag, 1);
-    u32 item = (l->category & 0xF0000000u) | ((u32)l->item & 0x0FFFFFFFu);  /* lotItemCategory = progress.h ITEM_* */
-    int held = l->item ? inv_add(item, l->num) : 0;
-    printf("EVT item lot %d: item %08x x%d (now %d), flag %d\n", (int)id, (unsigned)item, (int)l->num, held,
-           (int)l->flag);
+    s32 got_flag[16];
+    int ngot = 0;
+    for (s32 r = id; l; l = find_lot(++r, &it)) {
+        int w[8], total = 0, n = l->n < 8 ? l->n : 8;
+        for (int k = 0; k < n; k++) {
+            s32 f = lot_flag(l, &it[k]);
+            w[k] = f > 0 && flag_get(f) ? 0 : it[k].point;
+            total += w[k];
+        }
+        if (!total)
+            continue;
+        int roll = (int)(rnd() % (u32)total), k = 0;
+        while (k < n - 1 && roll >= w[k])
+            roll -= w[k++];
+        const EvLotItem *g = &it[k];
+        if (!g->num || g->item < 0 || g->cat == 15) {
+            printf("EVT item lot %d: nothing\n", (int)r);
+            continue;
+        }
+        u32 item = (u32)g->cat << 28 | ((u32)g->item & 0x0FFFFFFFu);  /* category = progress.h ITEM_* */
+        int held = inv_add(item, g->num);
+        printf("EVT item lot %d: item %08x x%d (now %d), flag %d\n", (int)r, (unsigned)item, g->num, held,
+               (int)lot_flag(l, g));
+        if (lot_flag(l, g) > 0 && ngot < 16)
+            got_flag[ngot++] = lot_flag(l, g);
+    }
+    for (int i = 0; i < ngot; i++)
+        flag_set(got_flag[i], 1);
 }
 
 static void treasure_state(s32 entity, int on)
@@ -844,10 +923,16 @@ static void run(Inst *in)
                 for (int j = 0; sets[e].blob && j < sets[e].nev; j++)
                     if (sets[e].ev[j].id == w[0]) {
                         Inst *t = find_inst(e, j, iw[1]);
-                        if (t && iw[2] == 0)
+                        if (!t)
+                            continue;
+                        /* FUN_1407cb090 -> the instance's FUN_1407d4230: 0 ends it, 1 runs it again from the top;
+                         * both set its flag (id + slot, ids > 98) */
+                        if (iw[2] == 0)
                             t->state = I_STOPPED;
-                        else if (t && iw[2] == 1)
-                            restart(t);  /* ASSUMED: 1 = run again from the top (TECH_DEBT event-2) */
+                        else
+                            restart(t);
+                        if (w[0] > 98 && iw[1] >= 0)
+                            flag_set(w[0] + iw[1], 1);
                     }
             break;
         case OP_RAND_FLAG:
@@ -870,36 +955,112 @@ static void run(Inst *in)
         }
         case OP_EV_CLEAR: flag_value_set(iw[0], iw[1], 0); break;
         case OP_AWARD_LOT: award_lot(iw[0]); break;
+        case OP_SAVE_REQ: save_request(); break;
+        case OP_BOSS_BAR: /* 2003[11] (on, entity, slot, NpcParam name id) */
+            hud_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
+            printf("EVT %u/%d boss bar %s %d (slot %d, name %d)\n", (unsigned)ev->id, (int)in->slot,
+                   iw[0] ? "on" : "off", (int)iw[1], (int)iw[2], (int)iw[3]);
+            break;
+        case OP_BOSS_DEFEAT: ev_boss_defeat(iw[0]); break;
+        case OP_RESPAWN:  /* 2003[23] Set Player Respawn Point (an MSB SpawnPoint): where a death puts the player */
+            prog.respawn = iw[0];
+            progress_touch();
+            break;
+        case OP_STATUS_MSG: ev_message(0, iw[0]); break;
+        case OP_BANNER: ev_message(1, iw[0]); break;
+        case OP_BONFIRE: {  /* 2009[03] (flag, bonfire object, reaction distance, angle, kindling) */
+            float p[3];
+            if (ent_pos(in->set, iw[1], p))
+                ev_bonfire_register(in->set, iw[0], iw[1], p, wf(w[2]), wf(w[3]), iw[4]);
+            else
+                stub(in, op);
+            break;
+        }
         case OP_KILL:
             if (iw[0] == PLAYER_ENTITY) {
                 pl->hp = -1;  /* death camera / respawn as a lethal fall (player.c) */
                 printf("EVT %u/%d kills the player\n", (unsigned)ev->id, (int)in->slot);
             } else
-                enemy_entity_kill(iw[0]);
+                ev_chr_kill(iw[0]);
             break;
-        case OP_CHR_ENABLE: enemy_entity_enable(iw[0], iw[1] != 0, 1); break;
-        case OP_BACKREAD: enemy_entity_enable(iw[0], iw[1] == 0, 2); break;  /* own bit: not an enable */
+        case OP_CHR_ENABLE: ev_chr_enable(iw[0], iw[1] != 0, 1); break;
+        case OP_BACKREAD: ev_chr_enable(iw[0], iw[1] == 0, 2); break;  /* own bit: not an enable */
+        /* character ops (ev_chr.c): stub = the player or a full record table */
+        case OP_AI_STATE: if (!ev_chr_ai(iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_TEAM: case OP_TEAM_EXIT: if (!ev_chr_team(iw[0], (s8)iw[1], op == OP_TEAM_EXIT)) stub(in, op); break;
+        case OP_SPEFFECT: case OP_CLEAR_SPEFFECT: if (!ev_chr_speffect(iw[0], iw[1], op == OP_SPEFFECT)) stub(in, op); break;
+        case OP_SPECIAL_ANIM: if (!ev_chr_special_wait(iw[0], iw + 1)) stub(in, op); break;
+        case OP_GRAVITY: if (!ev_chr_flag(EVC_GRAVITY_OFF, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_IMMORTAL: if (!ev_chr_flag(EVC_IMMORTAL, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_INVINCIBLE: if (!ev_chr_flag(EVC_INVINCIBLE, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_MAPHITS: if (!ev_chr_flag(EVC_MAPHIT_OFF, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_DEF_BACKREAD: if (!ev_chr_flag(EVC_ALWAYS_ON, iw[0], iw[1] != 0)) stub(in, op); break;
+        case OP_HOME: { float p[3]; if (!ent_pos(in->set, iw[1], p) || !ev_chr_home(iw[0], p)) stub(in, op); break; }
+        case OP_ROTATE: {
+            float p[3];
+            if (!ent_pos(in->set, iw[1], p))
+                stub(in, op);
+            else if (iw[0] == PLAYER_ENTITY)  /* the player faces the target at once (fog-wall entry: 1012897) */
+                pl->yaw = atan2f(p[0] - pl->pos.x, p[2] - pl->pos.z);
+            else if (!ev_chr_rotate(iw[0], p))
+                stub(in, op);
+            break;
+        }
+        case OP_AI_CMD: if (!ev_chr_ai_cmd(iw[0], iw[1], iw[2])) stub(in, op); break;
+        case OP_AI_ID: if (!ev_chr_ai_logic(iw[0], iw[1])) stub(in, op); break;
+        case OP_AI_REPLAN: case OP_AI_TARGET: if (!ev_chr_replan(iw[0])) stub(in, op); break;
+        case OP_NPC_PART: if (!ev_chr_part(iw[0], iw[1], iw[3])) stub(in, op); break;
+        case OP_DISPMASK: if (!ev_chr_dispmask(iw[0], iw[1], iw[2])) stub(in, op); break;
+        case OP_ANIM_RESET: if (!ev_chr_anim_reset(iw[0])) stub(in, op); break;
         case OP_WARP_FLOOR: case OP_SHORT_WARP: case OP_WARP_COPY:
             if (iw[0] == PLAYER_ENTITY)
                 warp_to(in->set, iw[2]);
             else
                 stub(in, op);
             break;
-        case OP_OBJ_ENABLE: set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT); break;
+        /* object ops (ev_obj.c): stub = no breakable / animated object of that id (elevators: A9) */
+        case OP_OBJ_ENABLE:
+            set_entity(in->set, iw[0], iw[1] != 0, ENT_OBJECT);
+            ev_obj_enable(iw[0], iw[1] != 0);
+            dg_entity(iw[0], iw[1] != 0);  /* a static object baked into map.bin: its chunks (drawgrp.c) */
+            break;
+        case OP_OBJ_DESTROY: case OP_OBJ_REDESTROY: if (!ev_obj_destroy(iw[0])) stub(in, op); break;
+        case OP_OBJ_RESTORE: if (!ev_obj_restore(iw[0])) stub(in, op); break;
+        case OP_OBJ_ANIM: if (!ev_obj_end_anim(iw[0], iw[1])) stub(in, op); break;
+        case OP_ANIM: {  /* 2003[18] (entity, anim, loop, wait for completion, skip transition): objects here */
+            float len = 0;
+            if (iw[0] == PLAYER_ENTITY)  /* the player (fog-wall walk 7410): player.c, the exported anims only */
+                len = player_event_anim(pl, iw[1]);
+            if (!len && !ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len))
+                stub(in, op);  /* enemies / NPCs: A5 */
+            else if (iw[3] && !iw[2])
+                in->wait = len, in->state = I_WAIT_T, clear_conds(in);
+            break;
+        }
         case OP_TREASURE: treasure_state(iw[0], iw[1] != 0); break;
         case OP_OBJACT_INIT: objact_state(iw[0], 1); break;
         case OP_OBJACT_STATE: objact_state(iw[0], iw[2] != 0); break;
         case OP_OBJACT_IDX: objact_state(iw[0], iw[3] != 0); break;
         case OP_HIT: set_entity(in->set, iw[0], iw[1] != 0, ENT_COLLISION); break;
-        case OP_SFX_DEL: set_entity(in->set, iw[0], 0, 0); stub(in, op); break;   /* state kept, not drawn */
-        case OP_SFX_SPAWN: set_entity(in->set, iw[0], 1, 0); stub(in, op); break;
-        case OP_MAP_PART: set_entity(in->set, iw[0], iw[1] != 0, 1); stub(in, op); break;  /* draw: event-5 */
+        /* map SFX (fx.c) and map pieces (map chunks keyed by entity, drawgrp.c) by entity id: event-5 */
+        case OP_SFX_DEL:  /* 2006[01] (entity, root only): root only = the emitter stops, its particles live on */
+            set_entity(in->set, iw[0], 0, 0);
+            dg_entity(iw[0], 0);
+            fx_entity_particles(iw[0], iw[1] == 0);
+            break;
+        case OP_SFX_SPAWN: set_entity(in->set, iw[0], 1, 0); dg_entity(iw[0], 1); break;
+        case OP_MAP_PART: set_entity(in->set, iw[0], iw[1] != 0, 1); dg_entity(iw[0], iw[1] != 0); break;
         case OP_CUTSCENE_WARP:
-            /* A13 later: the cutscene is skipped; the warp to another map is an area transition (A1) */
+            /* 2002[04] (cutscene, flags, region, AA, BB): the remo is A13's, so it is skipped and only its warp runs. A
+             * region of another map of this world comes with the map's events.bin (export_emevd.foreign_warp_targets);
+             * setting the player there makes world.c settle the destination block like DSR's loading screen (E7) */
             printf("EVT %u/%d cutscene %d skipped, warp to m%02d_%02d point %d\n", (unsigned)ev->id, (int)in->slot,
                    (int)iw[0], (int)(u8)iw[3], (int)(u8)iw[4], (int)iw[2]);
-            warp_to(in->set, iw[2]);
-            stub(in, op);
+            if (!ent_any(in->set, iw[2], NULL))
+                printf("EVT area transition to m%02d_%02d: not in this world build (A1)\n", (int)(u8)iw[3],
+                       (int)(u8)iw[4]);
+            else
+                warp_to(in->set, iw[2]), in->warped = 1;
             break;
         default:
             if (!op_noop(op))
@@ -913,7 +1074,7 @@ static void run(Inst *in)
 static int load_set(Set *s, const void *blob, int block)
 {
     const EvHdr *h = blob;
-    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 1) {
+    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 3) {  /* export_emevd.py VERSION */
         printf("EVT bad events blob\n");
         return 0;
     }
@@ -929,14 +1090,19 @@ static int load_set(Set *s, const void *blob, int block)
     for (int i = 0; i < NSEC(s, S_TREASURES); i++) {
         int left = 0;
         for (int k = 0; k < 5; k++) {
-            const EvLot *l = t[i].lot[k] > 0 ? find_lot(t[i].lot[k]) : NULL;
-            left |= l && (l->flag <= 0 || !flag_get(l->flag));
+            const EvLotItem *it;
+            const EvLot *l = t[i].lot[k] > 0 ? find_lot(t[i].lot[k], &it) : NULL;
+            left |= l && lot_left(l, it);
         }
         s->tr_state[i] = (t[i].start_disabled ? 0 : 1) | (left ? 0 : 2);  /* picked up before: taken */
     }
     const EvObjAct *oa = SEC(s, S_OBJACTS, EvObjAct);
-    for (int i = 0; i < NSEC(s, S_OBJACTS); i++)
-        s->oa_state[i] = !flag_get(oa[i].entity);  /* ASSUMED: usable until its flag is on (event-4) */
+    for (int i = 0; i < NSEC(s, S_OBJACTS); i++) {
+        int done = oa[i].flag > 0 && flag_get(oa[i].flag);
+        /* ASSUMED: usable until its flag is on (event-4); ObjActs without an entity flag (Burg door o1312: 0) until
+         * their state flag is */
+        s->oa_state[i] = oa[i].entity > 0 ? !flag_get(oa[i].entity) : !done;
+    }
     s->live = 1;
     return 1;
 }
@@ -958,6 +1124,7 @@ int event_init(const void *common_blob)
     if (!inst || !load_set(&sets[0], common_blob, -1))
         return 0;
     event_stats.prompt = -1;
+    ev_temp_flags_reset(1);  /* the game load (save_boot ran before): DSR's area-load reset, FUN_1404f1fb0 */
     start_ctor(0);
     printf("EVT common: %d events, instance pool %u B\n", sets[0].nev, (unsigned)(EV_MAX_INST * sizeof *inst));
     return 1;
@@ -974,12 +1141,10 @@ void event_block_on(int block, const void *blob)
     for (int j = 1; j < EV_SETS; j++)  /* another block of the same map runs its events: this one adds entities */
         if (j != k && sets[j].blob && sets[j].live && !memcmp(sets[j].h->map, s->h->map, 4))
             s->live = 0;
-    if (s->live) {
-        /* flags x AA BB 5nnn are cleared on every map load (soulstruct example_with_comments; ASSUMED range, event-1) */
-        u32 base = 10000000 + s->h->map[0] * 100000 + s->h->map[1] * 10000;
-        flag_range_set(base + 5000, base + 5999, 0);
+    /* No flag reset here: DSR clears the temporary flags of every map at a load or rest (ev_temp_flags_reset), not
+     * when a map streams in, so what happened in a block lasts until the next rest (event-1) */
+    if (s->live)
         start_ctor(k);
-    }
     int act = 0;
     for (int i = 0; i < ninst; i++)
         act += inst[i].state != I_FREE;
@@ -988,18 +1153,84 @@ void event_block_on(int block, const void *blob)
            NSEC(s, S_OBJACTS), s->live ? "" : " (entities only)", act);
 }
 
+static inline unsigned ticks(void);
+
+/* Same events in both sets (blocks of one map: export_emevd.py writes the map's events, instrs and substs alike) */
+static int same_events(const Set *a, const Set *b)
+{
+    for (int k = S_EVENTS; k <= S_SUBSTS; k++) {
+        unsigned n = k == S_EVENTS ? NSEC(a, k) * sizeof(EvEvent) : k == S_INSTRS ? (unsigned)NSEC(a, k)
+                     : NSEC(a, k) * sizeof(EvSubst);
+        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->blob + a->h->sec[k][0], b->blob + b->h->sec[k][0], n))
+            return 0;
+    }
+    return 1;
+}
+
 void event_block_off(int block)
 {
     for (int k = 1; k < EV_SETS; k++) {
         Set *s = &sets[k];
         if (!s->blob || s->block != block)
             continue;
-        for (int i = 0; i < ninst; i++)
-            if (inst[i].state != I_FREE && inst[i].set == k)
+        /* event-10: the map's live set goes, another loaded block of the same map takes its running events over (DSR
+         * runs one event manager per map, whichever part of it is loaded), else they end with the block */
+        int heir = -1;
+        for (int j = 1; j < EV_SETS && s->live && heir < 0; j++)
+            if (j != k && sets[j].blob && !sets[j].live && !memcmp(sets[j].h->map, s->h->map, 4) && same_events(s, &sets[j]))
+                heir = j;
+        int moved = 0;
+        for (int i = 0; i < ninst; i++) {
+            if (inst[i].state == I_FREE || inst[i].set != k)
+                continue;
+            /* an event that warped the player out of this map still runs its lines after the warp (Asylum
+             * 11810000: flag 11810000, respawn point, save request) before its map goes: waits pass at once */
+            for (int n = 0; inst[i].warped && heir < 0 && n < 16 && inst[i].state != I_FREE && inst[i].state != I_DONE &&
+                            inst[i].state != I_STOPPED && inst[i].state != I_MAIN; n++) {
+                if (inst[i].state == I_WAIT_T || inst[i].state == I_WAIT_F)
+                    inst[i].state = I_RUN;
+                run(&inst[i]);
+            }
+            if (inst[i].state == I_FREE)
+                continue;
+            if (heir >= 0)
+                inst[i].set = heir, moved++;
+            else
                 free_inst(&inst[i]);
+        }
+        if (heir >= 0) {
+            memcpy(sets[heir].ev_live, s->ev_live, (s->nev + 1) * sizeof *s->ev_live);
+            sets[heir].live = 1;
+            ev_bonfire_move(k, heir);
+            printf("EVT block %d off: m%02d_%02d events (%d instances) go on in block %d\n", block, s->h->map[0],
+                   s->h->map[1], moved, sets[heir].block);
+        }
         free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
         memset(s, 0, sizeof *s);
+        ev_bonfire_drop(k);
     }
+}
+
+/* event-14: a warp's load (world.c settle) is DSR's loading screen: the constructors of the blocks it turned on and
+ * whatever they start run to their first wait now, not over the next frames' EV_BUDGET_US */
+void event_flush(void)
+{
+    if (!inst || !pl)
+        return;
+    unsigned t0 = ticks();
+    int runs = 0;
+    for (int pass = 0; pass < 16; pass++) {
+        int any = 0;
+        for (int i = 0; i < ninst; i++)
+            if (inst[i].state == I_RUN) {
+                run(&inst[i]);
+                any = 1, runs++;
+            }
+        if (!any)
+            break;
+    }
+    if (runs)
+        printf("EVT flush: %d instance runs in %u us\n", runs, (ticks() - t0) / 295);
 }
 
 void event_action(void) { act_press = 1; }
@@ -1011,7 +1242,37 @@ static inline unsigned ticks(void)
     return c;
 }
 
-/* Action button on ObjActs (chests, levers, doors: their flag) and treasures (item lots) */
+/* ObjActParam key (spQualifiedType 1 = a good in the inventory, either of the two; ASSUMED: other types unmet, TECH_DEBT
+ * event-11); spQualifiedPassEventFlag (on once the door was opened from the other side) opens it as well */
+static int objact_key(const EvObjAct *oa)
+{
+    if (!oa->sp_type && !oa->sp_type2)
+        return 1;
+    if (oa->pass_flag > 0 && flag_get(oa->pass_flag))
+        return 1;
+    return (oa->sp_type == 1 && inv_count(ITEM_GOODS | (u32)oa->sp_id) > 0) ||
+           (oa->sp_type2 == 1 && inv_count(ITEM_GOODS | (u32)oa->sp_id2) > 0);
+}
+
+/* Action button on ObjActs (chests, levers, doors: their flag, the object's anim) and treasures (item lots) */
+/* ObjAct state flags (MSB event flag: 6AABBnnn) on: the object holds the end of its ObjAct anim (an opened door after a
+ * load, or one a constructor opens: Firelink's o1465 door, flag 61020120 set by m10_02 event 0); checked every frame
+ * because constructors set them after the block's load (ASSUMED: DSR applies them when the flag is on, event-11) */
+static void objact_flags(void)
+{
+    for (int k = 0; k < EV_SETS; k++) {
+        Set *s = &sets[k];
+        if (!s->blob)
+            continue;
+        const EvObjAct *oa = SEC(s, S_OBJACTS, EvObjAct);
+        for (int i = 0; i < NSEC(s, S_OBJACTS); i++)
+            if (!(s->oa_state[i] & 4) && oa[i].flag > 0 && flag_get(oa[i].flag)) {
+                s->oa_state[i] |= 4;
+                ev_obj_objact(oa[i].part, oa[i].anim, 1);
+            }
+    }
+}
+
 static void use_action(void)
 {
     const float *pp = &pl->pos.x;
@@ -1024,11 +1285,25 @@ static void use_action(void)
             float dx = oa[i].pos[0] - pp[0], dz = oa[i].pos[2] - pp[2], r = oa[i].dist + 0.8f;  /* ASSUMED event-4 */
             if (!(s->oa_state[i] & 1) || dx * dx + dz * dz > r * r || fabsf(oa[i].pos[1] - pp[1]) > 2)
                 continue;
-            s->oa_state[i] = 2;  /* used: fired this frame, not usable again until an event says so */
             act_used = 1;
-            flag_set(oa[i].entity, 1);
+            if (!objact_key(&oa[i])) {  /* locked: DSR shows actionFailedMsgId; the ObjAct stays usable */
+                printf("EVT objact %d (part %d) locked: needs good %d / %d or flag %d\n", (int)oa[i].entity,
+                       (int)oa[i].part, (int)oa[i].sp_id, (int)oa[i].sp_id2, (int)oa[i].pass_flag);
+                continue;
+            }
+            s->oa_state[i] = 2 | 4;  /* used: fired this frame, not usable again until an event says so; plays its anim */
+            for (int j = 0; j < EV_SETS; j++) {  /* the same part in another block of the map: playing already, so
+                                                  * objact_flags must not jump it to the end pose */
+                const EvObjAct *o2 = sets[j].blob ? SEC(&sets[j], S_OBJACTS, EvObjAct) : NULL;
+                for (int m = 0; o2 && m < NSEC(&sets[j], S_OBJACTS); m++)
+                    if (o2[m].part == oa[i].part)
+                        sets[j].oa_state[m] |= 4;
+            }
+            if (oa[i].entity > 0)
+                flag_set(oa[i].entity, 1);
             if (oa[i].flag > 0)
                 flag_set(oa[i].flag, 1);
+            ev_obj_objact(oa[i].part, oa[i].anim, 0);
             printf("EVT objact %d (part %d, ObjActParam %d) used\n", (int)oa[i].entity, (int)oa[i].part,
                    (int)oa[i].param);
         }
@@ -1050,6 +1325,8 @@ static void use_action(void)
                     award_lot(t[i].lot[j]);
         }
     }
+    if (!act_used && ev_bonfire_action((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw))  /* 2009[03] */
+        act_used = 1;
 }
 
 void event_update(Player *p, float dt)
@@ -1059,6 +1336,8 @@ void event_update(Player *p, float dt)
     unsigned t0 = ticks();
     pl = p, dtime = dt;
     act_used = 0;
+    ev_chr_update(dt);
+    ev_misc_update(dt);
     event_stats.prompt = -1;
     if (act_press)
         use_action();
@@ -1091,6 +1370,7 @@ void event_update(Player *p, float dt)
     for (int k = 0; k < EV_SETS; k++)  /* ObjAct "used this frame" lasts one update */
         for (int i = 0; sets[k].blob && i < NSEC(&sets[k], S_OBJACTS); i++)
             sets[k].oa_state[i] &= ~2;
+    objact_flags();
     act_press = 0;
     event_stats.running = act, event_stats.waiting = waiting;
     if (act > event_stats.peak)
@@ -1105,15 +1385,23 @@ void event_update(Player *p, float dt)
 int event_push_player(float pos[3], float r, float h)
 {
     int touched = 0;
+    /* the fog-wall walk (and any event anim) passes the object colliders, as DSR's 7410 walks through the fog
+     * (ASSUMED: all colliders, not only the fog's; TECH_DEBT event-18) */
+    if (pl && player_event_anim_playing(pl))
+        return 0;
     for (int k = 1; k < EV_SETS; k++) {
         Set *s = &sets[k];
         if (!s->blob)
             continue;
         const EvCol *c = SEC(s, S_COLS, EvCol);
         for (int i = 0; i < NSEC(s, S_COLS); i++) {
-            const EvEnt *e = find_ent(s, c[i].entity);
-            if (!e || !ent_on(s, e) || pos[1] + h < c[i].c[1] - c[i].half[1] || pos[1] > c[i].c[1] + c[i].half[1])
+            float dx0 = pos[0] - c[i].c[0], dz0 = pos[2] - c[i].c[2], reach = c[i].half[0] + c[i].half[2] + r;
+            if (dx0 * dx0 + dz0 * dz0 > reach * reach)  /* every object has colliders now: cheap reject first */
                 continue;
+            const EvEnt *e = c[i].entity < 0 ? NULL : find_ent(s, c[i].entity);  /* -1: no entity id, always solid */
+            if ((c[i].entity >= 0 && (!e || !ent_on(s, e))) || pos[1] + h < c[i].c[1] - c[i].half[1] ||
+                pos[1] > c[i].c[1] + c[i].half[1] || c[i].c[1] + c[i].half[1] < pos[1] + 0.4f)
+                continue;  /* ASSUMED: tops within 0.4 m above the feet are walked over (objects.c STEP_OVER) */
             float co = cosf(c[i].yaw), sn = sinf(c[i].yaw);
             float dx = pos[0] - c[i].c[0], dz = pos[2] - c[i].c[2];
             float lx = dx * co - dz * sn, lz = dx * sn + dz * co;  /* inverse of the exporter's object -> world */
@@ -1134,6 +1422,7 @@ int event_push_player(float pos[3], float r, float h)
 
 void event_rest(void)
 {
+    ev_temp_flags_reset(0);  /* FUN_1407cb660 (the event manager's rest pass) clears them first: FUN_1404f20b0 */
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         if (in->state == I_FREE)
@@ -1169,6 +1458,7 @@ static int find_state(const char *what, s32 id, int *found)
 
 void event_test_cmd(const char *cmd)
 {
+    int want = 0;
     char a[16] = "", b[16] = "", c[8] = "";
     float v = 0, fx = 0, fz = 0;
     int id = 0, val = 0;
@@ -1215,10 +1505,84 @@ void event_test_cmd(const char *cmd)
         int ok = b[0] == '<' ? got < v : got > v;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect %s %s %.2f: %.2f %s\n", a, b, v, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "lot %d", &id) == 1) {  /* AwardItemLot (2003[36]) of an exported lot */
+        award_lot(id);
+    } else if (sscanf(cmd, "expect inv %i %d", &id, &val) == 2) {  /* item (ITEM_* | row, e.g. 0x40000128) count */
+        int got = inv_count((u32)id), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect inv %08x %d: %d %s\n", (unsigned)id, val, got, ok ? "PASS" : "FAIL");
+    } else if (!strcmp(cmd, "rest")) {  /* what a bonfire rest does to the events and the temporary flags */
+        event_rest();
+    } else if (sscanf(cmd, "expect respawn %d", &val) == 1) {
+        int ok = (s32)prog.respawn == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect respawn %d: %d %s\n", val, (int)prog.respawn, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect value %d %d %d", &id, &val, &want) == 3) {  /* EventValue first, bits */
+        int got = (int)flag_value_get(id, val), ok = got == want;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect value %d %d %d: %d %s\n", id, val, want, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect bossbar %d %d", &id, &val) == 2) {  /* slot, entity shown (-1 none) */
+        int got = hud_boss_bar_entity(id), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect bossbar %d %d: %d %s\n", id, val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect defeats %d", &val) == 1) {
+        int got = ev_boss_defeats(), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect defeats %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect eventanim %d", &val) == 1) {  /* an event anim plays on the player */
+        int got = pl && player_event_anim_playing(pl), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect eventanim %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect mapevents %d %d %d", &id, &val, &want) == 3) {
+        /* map mAA_BB: its events run (instances in a live set) in world block `want` (-1: none run) */
+        int got = -1, n = 0;
+        for (int k = 1; k < EV_SETS; k++)
+            if (sets[k].blob && sets[k].live && sets[k].h->map[0] == id && sets[k].h->map[1] == val) {
+                got = sets[k].block;
+                for (int i = 0; i < ninst; i++)
+                    n += inst[i].state != I_FREE && inst[i].set == k;
+            }
+        if (!n)
+            got = -1;
+        int ok = want == -2 ? got >= 0 : got == want;  /* -2: in any block */
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect mapevents m%02d_%02d in block %d: block %d, %d instances %s\n", id, val, want, got, n,
+               ok ? "PASS" : "FAIL");
+    } else if (!strcmp(cmd, "expect settled")) {  /* nothing left to run behind the last warp's load (event-14) */
+        int n = 0;
+        for (int i = 0; i < ninst; i++)
+            n += inst[i].state == I_RUN;
+        test_pass += !n, test_fail += !!n;
+        printf("TEST ev expect settled: %d instances still to run %s\n", n, n ? "FAIL" : "PASS");
+    } else if (sscanf(cmd, "expect bonfires %d", &val) == 1) {
+        int got = ev_bonfire_count(), ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect bonfires %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect region %d %f %f %f %d", &id, &fx, &v, &fz, &val) == 5) {
+        /* region-local point (x along the width, y up from the origin, z along the depth) turned into the world by the
+         * region's yaw: inside 0 / 1 (in_region, the point as feet) */
+        Set *s = NULL;
+        const EvEnt *e = ent_any(1, id, &s);
+        int got = -1;
+        if (e && e->kind == ENT_REGION) {
+            float c = cosf(e->yaw), sn = sinf(e->yaw);  /* inverse of in_region's world -> local */
+            float p[3] = {e->pos[0] + fx * c + fz * sn, e->pos[1] + v, e->pos[2] - fx * sn + fz * c};
+            got = in_region(e, p);
+        }
+        int ok = got == val;
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect region %d %.2f %.2f %.2f %d: %d %s\n", id, fx, v, fz, val, got, ok ? "PASS" : "FAIL");
+    } else if (ev_chr_test(cmd, &test_pass, &test_fail)) {  /* chr ... / expect chr ... (ev_chr.c) */
+    } else if (bonfire_test_cmd(cmd, &test_pass, &test_fail)) {  /* hurt / expect estus, stain ... (bonfire.c) */
+    } else if (ev_obj_test(cmd, &test_pass, &test_fail)) {  /* obj ... / expect objanim / objbroken (ev_obj.c) */
     } else if (sscanf(cmd, "expect %15s %d %d", a, &id, &val) == 3) {
         int found = 1, got;
         if (!strcmp(a, "flag"))
             got = flag_get(id);
+        else if (!strcmp(a, "drawn"))  /* map chunks of a switched piece / object: 1 drawn (drawgrp.c) */
+            found = (got = dg_entity_drawn(id)) >= 0;
+        else if (!strcmp(a, "sfx"))  /* event-owned map SFX: 1 = particles alive (fx.c) */
+            found = (got = fx_entity_particles(id, 0)) >= 0, got = got > 0;
         else
             got = find_state(a, id, &found);
         int ok = found && got == val;
@@ -1232,7 +1596,7 @@ void event_test_cmd(const char *cmd)
 
 void event_status(char *buf, int n)
 {
-    snprintf(buf, n, "EVT I%d W%d F%d L%u S%d U%d %uK %dUS%s", event_stats.running, event_stats.waiting,
+    snprintf(buf, n, "EVT I%d W%d F%d L%u S%d U%d %uK %dUS%s%s", event_stats.running, event_stats.waiting,
              event_stats.fired, event_stats.last_id, event_stats.stubs, event_stats.unsupported,
-             event_stats.bytes >> 10, (int)event_stats.us, event_stats.prompt >= 0 ? " ACT" : "");
+             event_stats.bytes >> 10, (int)event_stats.us, event_stats.prompt >= 0 ? " ACT" : "", ev_message_hud());
 }

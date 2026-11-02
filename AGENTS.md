@@ -14,6 +14,8 @@ These rules have no exceptions. A change that breaks one is rejected however goo
 - **No game files, and nothing derived from them.** That covers textures, models, maps, collision, animations,
   sounds, fonts, params, scripts (ESD, EMEVD, Lua bytecode), the exe and dumps of it, and exported `.bin`/`.pak`
   files. It also covers C headers or tables generated from game data, and screenshots or videos of the game.
+  The one exception is the README screenshots in `docs/screenshots/`: a few JPEGs of the port running in PCSX2,
+  each under 256 KB, added only when the maintainer asks (`tools/ci/hygiene.py` allows exactly these).
   Everything game-derived is generated at build time from the user's copy into the build/asset directory, which is
   git-ignored.
 - **No copied decompiled code.** Describe the behaviour in your own words and implement it yourself. You may cite
@@ -65,6 +67,13 @@ Several agents often work in the same tree at once.
 - **Job queue:** every heavy job (make, exporters, PCSX2 tests, Ghidra, whole-game scans) runs as `tools/q [-m GB] <cmd>`.
   It runs jobs one at a time, waits for free RAM and caps each job's memory. Exporters must stream per part or area
   instead of loading everything at once.
+- **Fast iteration:** a map re-export takes ~4 min, so most of a build-test loop is waiting on exports. A new clone
+  or build dir starts from an existing build: `tools/newbuild "$PWD/build" --from <other tree>/build` (copies the tool
+  stamps too, so only what your tree changes re-exports). Builds depend on what an export takes from another tool, not
+  on its whole file (ps2/proto/Makefile, "Narrow dependencies"): when a new export reads another exporter's code or
+  data, add that to its prerequisites the same way rather than the other tool's whole stamp. Long functional runs
+  (soaks, routes) stop at the first error in the EE log (`tools/test-run.py --keep-going` to run on) and can use
+  `--turbo`; queue the ones that need no answer today with `tools/later add <cmd>` for the night queue.
 - **Ownership:** when several agents work at once, the maintainer's working notes (`notes/HANDOFF.md`, kept locally
   and not in the public repo) say who owns which files. Outside your own files,
   make small, local edits only. Re-read the file right before each edit, and never rewrite or reformat a whole
@@ -109,6 +118,10 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 - Mark AI-assisted work with a `Co-Authored-By:` trailer naming the agent.
 - PR description: what changed, how it was verified (spots, numbers, the headless command), and the TECH_DEBT IDs
   it opens or resolves.
+- Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/offline.sh` and
+  `tools/ci/compile.sh` (no game data, so no PCSX2). Run them locally before pushing. The PCSX2 results go in the
+  PR template's Verification section, scaled to the change: a scoped `tools/test-all.sh --no-build --areas ...`
+  run per PR, the full all-area suite before a public export or nightly.
 
 ## 8. Where to start
 

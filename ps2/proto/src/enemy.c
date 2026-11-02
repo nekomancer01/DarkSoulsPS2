@@ -24,23 +24,34 @@
 #include "collision.h"
 #include "pack.h"
 #include "mapstream.h"
+#include "drawgrp.h"
+#include "render.h"
+#include "ev_chr.h"
+#include "npc.h"
 
 #define PI 3.14159265f
 #define MAX_TYPES 20  /* the boot area's + every world block's (enemy_block_types, at boot) */
 #define ACTIVE_DIST 45.0f   /* characters farther from the player than this are frozen (DSR: by draw group / distance) */
-/* at most this many update a frame, the nearest (3D) first; the rest stay frozen where they are. ASSUMED (EE time:
- * ~0.6 ms per active character; 30 within 45 m at the Burg entry of the world build ran at 20 fps). TECH_DEBT world-4:
- * DSR limits them by draw group, which only the boot block has here */
-#define ACTIVE_MAX 10
-/* at most this many drawn a frame, the nearest to the eye (~0.7 ms of EE each: 24 at the Burg entry cost 16 ms);
- * farther ones are not drawn (pop in as nearer ones die or fall behind). ASSUMED, TECH_DEBT world-4 */
-#define DRAW_MAX 10
+/* DSR runs and draws a character only while its MSB DrawGroups meet those of the collision part under the player
+ * (dg.bin per block, src/drawgrp.c: dg_mask_shown). On top of that, at most ACTIVE_MAX update a frame, the nearest
+ * (3D) first; the rest stay frozen where they are. ASSUMED budget cap (EE time ~0.6 ms per active character), TECH_DEBT
+ * world-4. Burg entry of the world build, 2026-11-01 (tests/block_enemies.txt): draw groups leave up to 30 characters
+ * active there (20-25 fps uncapped); at 16 every shot holds 30 fps (was 10 before draw groups) */
+#ifndef ACTIVE_MAX
+#define ACTIVE_MAX 16
+#endif
+/* at most this many drawn a frame, the nearest to the eye (~0.7 ms of EE each), of those in the view frustum and
+ * shown by draw group; farther ones are not drawn. ASSUMED budget cap, TECH_DEBT world-4 */
+#ifndef DRAW_MAX
+#define DRAW_MAX 16
+#endif
 #define DRAW_DIST 40.0f
 #define DRAW_FADE 8.0f      /* m before DRAW_DIST over which a character fades into the fog colour (vu1_skin_fade) */
 #define CORPSE_TIME 6.0f    /* seconds a dead enemy stays visible (DSR dissolves the corpse) */
 #define BLEND_DEFAULT 0.15f
-/* Character types stream by distance (EE RAM): model data in RAM while a placement is within LOAD_DIST of the
- * player, freed beyond UNLOAD_DIST (textures stay in VRAM from boot, chr.bin stays resident: ~40 KB per type) */
+/* Character types stream by distance: model data in RAM and its textures in VRAM while a placement is within
+ * LOAD_DIST of the player, both freed beyond UNLOAD_DIST (chr.bin stays resident: ~40 KB per type). Only the types
+ * near the player hold VRAM, so every world block's roster fits (TECH_DEBT world-4) */
 #define LOAD_DIST 60.0f
 #define UNLOAD_DIST 75.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
@@ -87,7 +98,7 @@ typedef struct {
     const ChrAnim *anims;
     const ChrWin *wins;
     const float (*root)[3];
-    Model *model;   /* stripped (no streams / anims) while the type is unloaded: keeps the VRAM texture handles */
+    Model *model;   /* NULL while the type is unloaded */
     int loaded;     /* model data in RAM (types load / unload by the player's distance to their placements) */
     float near_d;   /* player's distance to the nearest placement of this type (last frame) */
     int drawable;   /* the model has triangles (c1000, the bonfire dummy, has none) */
@@ -122,6 +133,12 @@ typedef struct {
     int req;  /* the AI's request this frame (ctx+0x528 in the exe): attack / step / combo anim, -1 none */
     float dead_t;
     int block;  /* world block (src/world.c) of the placement: 0 the boot area */
+    int dg;     /* its MSB DrawGroups: piece-mask index in the block's dg.bin (drawgrp.c), -1 always shown */
+    EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
+    int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
+    int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
+    unsigned char rec[36];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
+    int seed_i;
 } Enemy;
 
 static ChrType types[MAX_TYPES];
@@ -179,7 +196,27 @@ static void arena_put(void *p, unsigned n)
         free(p);
 }
 
-/* (Re)load a type's model.bin: VU1 streams + compact anims; textures uploaded the first time only */
+/* the loaded type that draws with t's VRAM textures (a same-name twin of another block shares them), or NULL */
+static const ChrType *tex_holder(const ChrType *t)
+{
+    for (int i = 0; i < ntypes; i++)
+        if (&types[i] != t && types[i].loaded && !strncmp(types[i].name, t->name, 8))
+            return &types[i];
+    return NULL;
+}
+
+static void unload_model(ChrType *t)
+{
+    if (!t->model)
+        return;
+    t->loaded = 0;
+    if (!tex_holder(t))
+        mdl_free_textures(t->model);
+    mdl_free(t->model);
+    t->model = NULL;
+}
+
+/* Load a type's model.bin: VU1 streams + compact anims, textures uploaded (or a loaded twin's) */
 static int load_model(ChrType *t, GSGLOBAL *gs)
 {
     char path[64];
@@ -200,41 +237,23 @@ static int load_model(ChrType *t, GSGLOBAL *gs)
         printf("enemy: %s: model.bin did not load\n", t->name);
         return 0;
     }
-    const ChrType *twin = NULL;  /* the same character from another world block's packs: same textures */
-    for (int i = 0; i < ntypes && !t->model; i++)
-        if (&types[i] != t && types[i].model && !strncmp(types[i].name, t->name, 8))
-            twin = &types[i];
-    if (!t->model && twin) {
+    const ChrType *twin = tex_holder(t);  /* the same character from another world block's packs: same textures */
+    if (twin) {
         mdl_share_textures(m, twin->model);
-        t->drawable = ((const unsigned *)mb)[3] > 0;
-    } else if (!t->model) {
-        int vram = mdl_upload(m, gs);
-        if (vram < 0) {
-            printf("enemy: %s: textures do not fit in VRAM\n", t->name);
-            mdl_free(m), FREE_MB();
-            return 0;
-        }
-        t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
-    } else {
-        mdl_share_textures(m, t->model);
+    } else if (mdl_upload(m, gs) < 0) {
+        printf("enemy: %s: textures do not fit in VRAM (free %d)\n", t->name, r_vram_avail(gs));
+        mdl_free(m), FREE_MB();
+        return 0;
     }
+    t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
     if (!mdl_compact(m, size)) {
-        /* out of RAM: the type stays unloaded with its old stripped model (VRAM handles). Freeing that one before the
-         * compact left t->model dangling and the retry 2 s later freed it again (manual-play crash in _free_r,
-         * 2026-11-01) */
         printf("enemy: %.5s: no RAM to keep the model, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
-        if (t->model) {
-            mdl_free(m);
-        } else {
-            mdl_strip(m);  /* a first load: keep the texture handles (VRAM is never freed) */
-            t->model = m;
-        }
-        FREE_MB();
+        if (!twin)
+            mdl_free_textures(m);
+        mdl_free(m), FREE_MB();
         return 0;
     }
     FREE_MB();
-    if (t->model)
-        mdl_free(t->model);
     t->model = m;
     t->loaded = 1;
     return 1;
@@ -272,11 +291,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     memcpy(t->name, name, 8);
     t->dir = dir;
     t->chr_size = csize;
-    if (!load_model(t, gs)) {
-        free(cb);
-        return NULL;
-    }
-    ntypes++;
+    ntypes++;  /* its model.bin and textures load once a placement comes near (stream_types) */
     t->h = h;
     t->vars = (const ChrVar *)((const char *)cb + h->var_off);
     t->anims = (const ChrAnim *)((const char *)cb + h->anim_off);
@@ -285,8 +300,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     t->walk_speed = loop_speed(t, 200);
     t->run_speed = loop_speed(t, 500);
     t->near_d = 1e9f;
-    printf("enemy: %s %u variants, %u anims, VRAM free %d, RAM free %uK\n", name, h->variants, h->anims,
-           4 * 1024 * 1024 - gs->CurrentPointer, enemy_ram_free() >> 10);
+    printf("enemy: %s %u variants, %u anims, RAM free %uK\n", name, h->variants, h->anims, enemy_ram_free() >> 10);
     return t;
 }
 
@@ -359,6 +373,9 @@ static int enemy_env(EsdCtx *c, int id, const float *a, int n, float *out)
 static int anim_slot(const Enemy *e, int anim, int *full)
 {
     int s = -1;
+    *full = anim;
+    if (!e->ct->model)  /* type not loaded: update_one picks the loco anim again once it is */
+        return -1;
     if (e->var->anim_offset > 0 && (s = mdl_anim(e->ct->model, anim + e->var->anim_offset)) >= 0) {
         *full = anim + e->var->anim_offset;
         return s;
@@ -430,6 +447,24 @@ unsigned enemy_ram_free(void)
     return 32 * 1024 * 1024 - 128 * 1024 - (unsigned)sbrk(0) + mi.fordblks;
 }
 
+/* EMEVD state of its entity (ev_chr.c). placing: the character was just placed (a block turned on): what events did
+ * while it was not there applies now (TECH_DEBT event-12): enable bits, death, a special wait; one-shot ops (turn,
+ * replan, anim reset) are not replayed */
+static void ev_bind(Enemy *e, EvChr *c, int placing)
+{
+    e->ev = c;
+    if (!c)
+        return;
+    e->ev_team = placing ? -2 : c->team;
+    e->ev_sp = c->sp_serial - (placing && c->sp[0] >= 0);
+    e->ev_rot = c->rot_serial, e->ev_replan = c->replan, e->ev_reset = c->anim_reset;
+    if (!placing)
+        return;
+    ev_off[e->index] = c->off;
+    if (c->dead)
+        e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1;  /* killed before: not shown again */
+}
+
 /* enemies.bin record r (type t) into slot i of world block `block`; seed_i: its index in the file (AI seed) */
 static void place(ChrType *t, const unsigned char *r, int i, int block, int seed_i)
 {
@@ -438,6 +473,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     ev_off[i] = 0;  /* a reused slot inherits no event state */
     e->ct = t;
     e->block = block;
+    memcpy(e->rec, r, sizeof e->rec), e->seed_i = seed_i;
     memcpy(&e->npc, r + 8, 4), memcpy(&e->thinkid, r + 12, 4), memcpy(&e->entity, r + 16, 4);
     e->var = &t->vars[0];
     for (unsigned v = 0; v < t->h->variants; v++)
@@ -448,6 +484,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     memcpy(f, r + 20, 16);
     e->pos = e->home = v3(f[0], f[1], f[2]);
     e->yaw = e->home_yaw = f[3];
+    e->dg = dg_char(block, f);
     e->act = -1;
     int full;
     e->loco_anim = anim_slot(e, 0, &full);
@@ -466,6 +503,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
         esd_ctx_init(&e->esd, &esd_prog, ESD_ENEMY, e, enemy_env, enemy_cmd);
         esd_start(&e->esd);
     }
+    ev_bind(e, ev_chr_get(e->entity, 0), 1);
 }
 
 static int inited;  /* enemy_init ran (not with the test option noenemies): the VM / ESD exist */
@@ -501,14 +539,16 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
         if (!strstr(STR(ENEMY_ONLY), name))  /* test builds: DEFS=-DENEMY_ONLY=c2900_c2540 */
             continue;
 #endif
+        if (!strcmp(name, "c0000")) {  /* human NPCs: stand-ins (npc.c) */
+            npc_keep(0, r);
+            continue;
+        }
         ChrType *t = load_type(gs, name, CHR_DIR);
         if (!t)
             continue;
         place(t, r, nenemies++, 0, i);
     }
-    /* every type starts unloaded (textures stay in VRAM); enemy_update loads the ones near the player */
-    for (int i = 0; i < ntypes; i++)
-        mdl_strip(types[i].model), types[i].loaded = 0;
+    /* every type starts unloaded; enemy_update loads the ones near the player */
     printf("enemy: %d characters of %d types, RAM free %uK after unloading\n", nenemies, ntypes,
            enemy_ram_free() >> 10);
     return nenemies;
@@ -534,6 +574,10 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
         memcpy(name, r, 8);
         int npc, think;
         memcpy(&npc, r + 8, 4), memcpy(&think, r + 12, 4);
+        if (!strcmp(name, "c0000")) {
+            npc_keep(block, r);
+            continue;
+        }
         ChrType *t = NULL;
         for (int j = 0; j < ntypes && !t; j++)  /* a loaded type of this character with this placement's variant */
             for (unsigned v = 0; v < types[j].h->variants && !strncmp(types[j].name, name, 8); v++)
@@ -546,8 +590,6 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
         if (!t)
             continue;
         blk_type[block][blk_n[block]] = t;
-        if (t->loaded)
-            mdl_strip(t->model), t->loaded = 0;
         memcpy(blk_rec[block] + 36 * blk_n[block]++, r, 36);
     }
 #ifndef NO_AI_SCRIPTS
@@ -579,7 +621,30 @@ void enemy_block_add(int block)
         place(t, r, i, block, k);
         n++;
     }
-    printf("enemy: block %d on: %d characters (%d slots)\n", block, n, nenemies);
+    npc_block(block, 1);
+    printf("enemy: block %d on: %d characters (%d slots), %d goals in use\n", block, n, nenemies, ai_goals_in_use());
+}
+
+/* Bonfire rest / death (src/bonfire.c): every placed character (all blocks that are on) back to its MSB placement with
+ * full HP, its AI and ESD from the start, as when its block was placed. Event state stays (ev_bind: disabled ones stay
+ * off, ones killed by an event stay dead); the restarted events set the rest again. c0000 NPCs (npc.c) are not
+ * revived: DSR keeps a killed NPC dead through its event flags. */
+void enemy_respawn(void)
+{
+    int n = 0;
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (ev_off[i] & EV_FREE)
+            continue;
+        if (e->registered)
+            combat_unregister(&e->cc);
+        ai_reset(&e->ai);  /* the goal tree back to the pool (place() memsets the slot) */
+        unsigned char r[36];
+        memcpy(r, e->rec, sizeof r);
+        n += e->cc.dead;
+        place(e->ct, r, i, e->block, e->seed_i);
+    }
+    printf("enemy: respawn: %d characters, %d were dead, %d goals in use\n", nenemies, n, ai_goals_in_use());
 }
 
 void enemy_block_remove(int block)
@@ -592,11 +657,19 @@ void enemy_block_remove(int block)
             continue;
         if (e->registered)
             combat_unregister(&e->cc), e->registered = 0;
+        /* its goal tree goes back to the pool (Lua terminate runs, as at death): place() memsets the slot, and a live
+         * tree was lost there. tests/world_blockoff.txt, 2026-11-01: ~100 of the 768 pool slots lost per Burg block
+         * off (623 in use after 6 rounds), 49 steady with this */
+        ai_reset(&e->ai);
+        e->ev = NULL;
         ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
         e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
     }
     while (nenemies && (ev_off[nenemies - 1] & EV_FREE))
         nenemies--;
+    npc_block(block, 0);
+    printf("enemy: block %d off: %d slots, %d goals in use, RAM free %uK\n", block, nenemies, ai_goals_in_use(),
+           enemy_ram_free() >> 10);
 }
 
 /* Load the types whose placements came within LOAD_DIST (all at once on the first frame, then one per frame), free
@@ -619,12 +692,14 @@ static void stream_types(const Player *pl)
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
         if (t->loaded && t->near_d > UNLOAD_DIST) {
-            mdl_strip(t->model), t->loaded = 0;
-            printf("enemy: %.5s unloaded, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
+            unload_model(t);
+            printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
+                   r_vram_avail(gsg));
         } else if (!t->loaded && t->near_d < LOAD_DIST && (first || !loads) && frame >= t->retry) {
             loads++;
             if (load_model(t, gsg))
-                printf("enemy: %.5s loaded, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
+                printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
+                       r_vram_avail(gsg));
             else
                 t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
         }
@@ -664,6 +739,10 @@ static void root_at(const Enemy *e, float t, float *o)
 
 static void move_by(Enemy *e, float dx, float dz)
 {
+    if (e->ev && e->ev->no_maphit) {  /* 2004[31]: through the map */
+        e->pos.x += dx, e->pos.z += dz;
+        return;
+    }
     float p[3] = {e->pos.x, e->pos.y, e->pos.z};
     col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0);
     e->pos = v3(p[0], p[1], p[2]);  /* no floor: stays at its height (no falling for enemies yet) */
@@ -688,7 +767,58 @@ static void attack_sweeps(Enemy *e)
                             .poise_dmg = w->poise, .damage_level = w->dmg_level,
                             .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i};
         memcpy(atk.src_pos, &e->pos, 12);
-        hits_on_player += combat_sweep(fa, fb, w->radius, &atk);
+        int h = combat_sweep(fa, fb, w->radius, &atk);
+        if (h)
+            ev_chr_player_hit(e->entity);  /* EMEVD 4[01] with the player as target */
+        hits_on_player += h;
+    }
+}
+
+/* EMEVD team types the character fights the player in: enemy, strong enemy, angry ally, decoy, intruder (ASSUMED
+ * from the TeamType names) */
+static int team_hostile(int team) { return team == 6 || team == 7 || team == 9 || team == 10 || team == 13; }
+
+/* What events changed since the last frame (ev_chr.c) */
+static void ev_apply(Enemy *e, int new_hit)
+{
+    EvChr *v = e->ev;
+    if (new_hit)
+        v->hit_t = 0;  /* only the player hits enemies */
+    if (v->team != e->ev_team) {
+        e->ev_team = v->team;
+        e->hostile = v->team >= 0 ? team_hostile(v->team) : e->var->team_type != TEAM_NEUTRAL;
+    }
+    if (v->has_home)
+        e->home = v3(v->home[0], v->home[1], v->home[2]);
+    if (v->ai_logic > 0)
+        e->think.logic = v->ai_logic;
+    memcpy(e->ai.ev_req, v->ai_req, sizeof e->ai.ev_req);
+    if (v->replan != e->ev_replan)
+        e->ev_replan = v->replan, ai_replan(&e->ai, 0);
+    if (v->rot_serial != e->ev_rot) {
+        e->ev_rot = v->rot_serial;
+        e->yaw = atan2f(v->rot_to[0] - e->pos.x, v->rot_to[2] - e->pos.z);  /* ASSUMED instant */
+    }
+    if (v->anim_reset != e->ev_reset) {
+        e->ev_reset = v->anim_reset;
+        e->act = -1, e->act_info = 0, e->sp_on = 0;
+    }
+    if (v->sp_serial != e->ev_sp) {
+        e->ev_sp = v->sp_serial;
+        if (v->sp[0] >= 0)
+            start_action(e, v->sp[0], 0, 0.2f, 1), e->sp_on = 1;
+        else if (e->sp_on) {  /* wait over: its cancel anim (the skeletons' 9061 getting up), or back to idle */
+            e->sp_on = 0;
+            if (v->sp[2] >= 0)
+                start_action(e, v->sp[2], 0, 0.2f, 0);
+            else
+                e->act = -1, e->act_info = 0;
+        }
+    }
+    if (e->sp_on && new_hit) {  /* a hit ends the wait (its damage anim if it has one; ASSUMED) */
+        e->sp_on = 0;
+        if (v->sp[1] >= 0)
+            start_action(e, v->sp[1], 0, 0.1f, 0);
     }
 }
 
@@ -717,6 +847,9 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->dead_t += dt;
     }
 
+    if (e->ev)
+        ev_apply(e, new_hit);
+
     /* AI: what it sees this frame */
     AiFrame *f = &e->frame;
     f->pos = e->pos, f->home = e->home, f->yaw = e->yaw, f->home_yaw = e->home_yaw, f->radius = e->var->radius;
@@ -732,8 +865,10 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->damaged = new_hit;
     f->dt = dt;
     const AiOut *o = &e->ai.out;
-    if (!e->cc.dead)
+    if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off))
         ai_update(&e->ai, f);
+    else if (!e->cc.dead)
+        e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
     e->req = e->cc.dead ? -1 : o->req;
     if (esd_ok) {
         e->esd.dt = dt;
@@ -793,7 +928,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
     if (!attacking && (!on_screen || (dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1)))) {
         memcpy(e->cc.pos, &e->pos, 12);
         e->cc.yaw = e->yaw;
-        e->cc.invincible = in_window(e, F_INVINCIBLE);
+        e->cc.invincible = in_window(e, F_INVINCIBLE) || (e->ev && e->ev->invincible);
         e->cc.super_armor = in_window(e, F_SUPER_ARMOR);
         e->blend += e->blend_time > 0 ? dt / e->blend_time : 1;
         return;
@@ -820,7 +955,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
 
     memcpy(e->cc.pos, &e->pos, 12);
     e->cc.yaw = e->yaw;
-    e->cc.invincible = in_window(e, F_INVINCIBLE);
+    e->cc.invincible = in_window(e, F_INVINCIBLE) || (e->ev && e->ev->invincible);
     e->cc.super_armor = in_window(e, F_SUPER_ARMOR);
     attack_sweeps(e);
 }
@@ -855,6 +990,12 @@ static void player_sounds(const Player *pl)
         ai_sound(pl->pos, r);
 }
 
+/* Within ACTIVE_DIST of the player, or always updated by an event (2004[35]) */
+static int near(const Enemy *e, V3 d)
+{
+    return d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST || (e->ev && e->ev->always_on);
+}
+
 void enemy_update(Player *pl, float dt)
 {
     last_player = pl;
@@ -864,6 +1005,12 @@ void enemy_update(Player *pl, float dt)
                enemy_ram_free() >> 10);
     player_sounds(pl);
     stream_types(pl);
+    for (int i = 0; i < nenemies; i++) {  /* 2004[12] immortal: HP stays >= 1 (an event's kill still kills) */
+        Enemy *e = &enemies[i];
+        if (e->ev && e->ev->immortal && !e->ev->dead && e->cc.hp < 1 && e->dead_t == 0)
+            e->cc.hp = 1, e->cc.dead = 0;
+    }
+    npc_update(pl, dt);
     static Ai *team[MAX_ENEMIES];
     static V3 tpos[MAX_ENEMIES];
     for (int i = 0; i < nenemies; i++)
@@ -876,16 +1023,16 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < nenemies; i++) {
         V3 d = v3sub(enemies[i].pos, pl->pos);
         d3[i] = d.x * d.x + d.y * d.y + d.z * d.z;
-        nc += enemies[i].ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST &&
-              enemies[i].dead_t <= CORPSE_TIME && !ev_off[i];
+        nc += enemies[i].ct->loaded && near(&enemies[i], d) &&
+              enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg);
     }
     if (nc > ACTIVE_MAX) {  /* the ACTIVE_MAX-th smallest distance of the candidates */
         float c[MAX_ENEMIES];
         int m = 0;
         for (int i = 0; i < nenemies; i++) {
             V3 d = v3sub(enemies[i].pos, pl->pos);
-            if (enemies[i].ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST &&
-                enemies[i].dead_t <= CORPSE_TIME && !ev_off[i])
+            if (enemies[i].ct->loaded && near(&enemies[i], d) &&
+                enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg))
                 c[m++] = d3[i];
         }
         for (int k = 0; k < ACTIVE_MAX; k++)  /* partial selection sort */
@@ -899,8 +1046,8 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, pl->pos);
-        int on = e->ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST && e->dead_t <= CORPSE_TIME &&
-                 !ev_off[i] && d3[i] <= lim;
+        int on = e->ct->loaded && near(e, d) && e->dead_t <= CORPSE_TIME &&
+                 !ev_off[i] && dg_mask_shown(e->block, e->dg) && d3[i] <= lim;
         /* combat slots only for characters near the player (COMBAT_MAX_CHRS is smaller than the roster) */
         int want = on && !e->cc.dead && e->ct->drawable;
         if (want && !e->registered)
@@ -962,9 +1109,13 @@ void enemy_draw(void)
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, eye);
-        float z = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z, r = e->var->height + 2;
-        d3[i] = !e->ct->loaded || !e->ct->drawable || e->dead_t > CORPSE_TIME || z < -r || ev_off[i] ||
-                        d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST
+        /* view cone: a box around the capsule with room for limbs and weapons (ASSUMED 1.5 m; poses are not bounded) */
+        float R = e->var->radius + 1.5f;
+        const float mn[3] = {e->pos.x - R, e->pos.y - 0.5f, e->pos.z - R},
+                    mx[3] = {e->pos.x + R, e->pos.y + e->var->height + 1.0f, e->pos.z + R};
+        d3[i] = !e->ct->loaded || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
+                        d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST || !dg_mask_shown(e->block, e->dg) ||
+                        !r_box_classify(mn, mx)
                     ? -1
                     : d.x * d.x + d.y * d.y + d.z * d.z;
         if (d3[i] >= 0)
@@ -989,13 +1140,17 @@ void enemy_draw(void)
         V3 d = v3sub(e->pos, eye);
         if (d3[i] < 0 || d3[i] > lim)
             continue;
-        mdl_hide(e->ct->model, e->ct->h->hide_bits & ~e->var->show_bits);  /* #NN# meshes of other variants */
+        unsigned show = e->var->show_bits;
+        if (e->ev)  /* 2004[26] display mask */
+            show = (show | e->ev->disp_on) & ~e->ev->disp_off;
+        mdl_hide(e->ct->model, e->ct->h->hide_bits & ~show);  /* #NN# meshes of other variants */
         /* fade into the fog over the last DRAW_FADE m instead of popping at DRAW_DIST (render-distance; ASSUMED) */
         float fd = (DRAW_DIST - sqrtf(d.x * d.x + d.z * d.z)) / DRAW_FADE;
         vu1_skin_fade(fd < 1 ? 255 * fd : 255);
         mdl_draw(e->ct->model, e->pose, e->pos, e->yaw, 0);
         enemy_drawn++;
     }
+    npc_draw();
 }
 
 int enemy_view(int index, V3 *pos, float *height, float *yaw)
@@ -1045,7 +1200,8 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         if (active) *active = !ev_off[i] && e->ct->loaded && d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST;
         return i;
     }
-    return -1;
+    int k = npc_entity(entity, pos, dead, hp_ratio, active);  /* a c0000 stand-in */
+    return k < 0 ? -1 : MAX_ENEMIES + k;
 }
 
 int enemy_entity_enable(int entity, int on, int bit)
@@ -1062,7 +1218,7 @@ int enemy_entity_enable(int entity, int on, int bit)
             if (!on && enemies[i].registered)
                 combat_unregister(&enemies[i].cc), enemies[i].registered = 0;
         }
-    return n;
+    return n + npc_entity_enable(entity, on, bit);
 }
 
 int enemy_entity_kill(int entity)
@@ -1072,5 +1228,30 @@ int enemy_entity_kill(int entity)
             enemies[i].cc.hp = -1, enemies[i].cc.dead = 1;  /* below 0: the ESD death test f1000() < 0 */
             return 1;
         }
-    return 0;
+    return npc_entity_kill(entity);
+}
+
+int enemy_entity_damage(int entity, int hp)
+{
+    ev_chr_hit(entity);
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (e->entity != entity || e->cc.dead || (e->ev && e->ev->invincible))
+            continue;
+        e->cc.hp -= hp, e->cc.hit_count++;  /* update_one sees a hit (hostile, damage reaction) */
+        if (e->cc.hp <= 0)
+            e->cc.dead = 1;
+        if (e->ev && e->ev->immortal && e->cc.hp < 1)
+            e->cc.hp = 1, e->cc.dead = 0;
+        return 1;
+    }
+    return npc_entity_damage(entity, hp);
+}
+
+void enemy_entity_bind(int entity, EvChr *c)
+{
+    for (int i = 0; i < nenemies; i++)
+        if (enemies[i].entity == entity && !(ev_off[i] & EV_FREE))
+            ev_bind(&enemies[i], c, 0);
+    npc_entity_bind(entity, c);
 }

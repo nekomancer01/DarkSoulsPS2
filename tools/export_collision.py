@@ -80,9 +80,22 @@ def build(subs, cell):
     return dict(origin=origin, verts=verts, tris=tris, x0=x0, z0=z0, cell=cell, gw=gw, gd=gd, cells=cells)
 
 
+_MEMO = {}  # the last area_collision result (export_map.py asks for it four times per export)
+
+
 def area_collision(game, area, detail="h"):
     """havok_collision.map_collision limited to the area's region (tools/area.py): a triangle is kept when one of its
-    corners is inside. Shared with export_map.py (fog rows, light probes, visible draw groups)."""
+    corners is inside. Shared with export_map.py (fog rows, light probes, visible draw groups). The last result is
+    kept for the next call with the same arguments and region (callers must not modify it)."""
+    key = (game, area, detail, os.environ.get("AREA_BLOCK"), os.environ.get("AREA_RADIUS"), os.environ.get("AREA_SPAWN"),
+           os.environ.get("AREA_MAP_RADIUS"))
+    if key not in _MEMO:
+        _MEMO.clear()
+        _MEMO[key] = _area_collision(game, area, detail)
+    return _MEMO[key]
+
+
+def _area_collision(game, area, detail):
     import souls
     subs, missing, unused = havok_collision.map_collision(game, area, detail)
     keep = (lambda x, y, z: True) if area_mod.is_whole(area) else \
@@ -90,9 +103,16 @@ def area_collision(game, area, detail="h"):
     # build() drops triangles whose corners meet on its 1/SCALE grid; drop them here too, so the per-triangle tables
     # of export_map.py (fog rows, dg.bin) number triangles like collision.bin (Burg: 42220 -> 42129)
     q = lambda p: tuple(round(c / SCALE) for c in p)
+    # the same triangle under both water filters (m18_01: h0399B1 / h0899B1 / h1399B1 / h1699B1 as Water_A 9, the same
+    # model again as _0000 parts with Water_B 16, no entity id): collision.c treats 9 and 16 alike (COL_WATER) and no
+    # event can switch such a part, so the second copy is dropped (Asylum 65572 -> 65404 tris, fits the u16 indices)
+    water, seen = (9, 16), set()
+    dup = lambda s, t: s["hit_filter"] in water and s["msb"]["entity"] < 0 and frozenset(map(q, t)) in seen
     out = []
     for s in subs:
-        tris = [t for t in s["tris"] if any(keep(*p) for p in t) and len({q(p) for p in t}) == 3]
+        tris = [t for t in s["tris"] if any(keep(*p) for p in t) and len({q(p) for p in t}) == 3 and not dup(s, t)]
+        if s["hit_filter"] in water and s["msb"]["entity"] < 0:
+            seen.update(frozenset(map(q, t)) for t in tris)
         if tris:
             out.append(dict(s, tris=tris))
     return out, missing, unused

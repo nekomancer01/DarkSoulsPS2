@@ -28,7 +28,7 @@ int col_init(const void *blob);
 int col_tris(void);
 /* World blocks (src/world.c): up to COL_BLOCKS collision.bin blobs in one world frame, all queried together.
  * col_init(blob) = col_load(0, blob); col_tris() = block 0's triangles */
-#define COL_BLOCKS 4
+#define COL_BLOCKS 5
 int col_load(int block, const void *blob);
 void col_unload(int block);
 int col_block_tris(int block);
@@ -41,6 +41,8 @@ extern int col_contacts;
 /* Highest triangle of `mask` under (x, z) whose surface lies in [y_bottom, y_top] (ray cast straight down from
  * y_top). Vertical triangles are ignored. Returns 1 and fills hit (may be NULL) when found. */
 int col_floor(float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit);
+/* col_floor in one world block's collision only (map.c: each block's draw groups follow its own part under the player) */
+int col_floor_block(int block, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit);
 
 /* Push a vertical capsule standing at feet `pos` out of non-floor triangles (normal.y < COL_WALKABLE_NY),
  * horizontally only, so the caller's move slides along walls. The capsule spans pos.y + step .. pos.y + height

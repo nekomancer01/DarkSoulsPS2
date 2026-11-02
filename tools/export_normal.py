@@ -82,10 +82,17 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
         return None
     nw = len(wn)
     T, W = np.zeros((nw, 3)), np.zeros(nw)
-    for vi, w in fvw.items():
-        t = V["tangent"][vi]
-        T[w] += xn(t[:3])
-        W[w] += t[3]
+    if hasattr(xn, "many") and fvw:  # all vertices at once, summed per wedge in the same order (np.add.at)
+        vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
+        ws = np.fromiter(fvw.values(), np.int64, len(fvw))
+        Tv = np.array([V["tangent"][vi] for vi in vs.tolist()], np.float64).reshape(-1, 4)
+        np.add.at(T, ws, xn.many(np.ascontiguousarray(Tv[:, :3])))
+        np.add.at(W, ws, Tv[:, 3])
+    else:
+        for vi, w in fvw.items():
+            t = V["tangent"][vi]
+            T[w] += xn(t[:3])
+            W[w] += t[3]
     N = np.array(wn, np.float64)
     MESH.append(dict(tex=m["bump"], light=light_row, alb=alb, N=N, T=T, W=np.where(W < 0, -1.0, 1.0),
                      probe_of=probe_of))
@@ -182,20 +189,30 @@ class _Response:
 
 
 # ---- normal maps ----
-def _bc4(blk):
-    """(n, 8) BC4 blocks -> (n, 16) values 0..1"""
-    a0, a1 = blk[:, 0].astype(np.float32), blk[:, 1].astype(np.float32)
-    bits = np.zeros(len(blk), np.uint64)
-    for i in range(6):
-        bits |= blk[:, 2 + i].astype(np.uint64) << np.uint64(8 * i)
-    idx = np.stack([(bits >> np.uint64(3 * j)) & np.uint64(7) for j in range(16)], 1).astype(int)
-    pal = np.zeros((len(blk), 8), np.float32)
+_BC4_PAL = []  # (65536, 8) float32: the palette of every (a0, a1) pair, built once with _bc4_pal
+
+
+def _bc4_pal(a0, a1):
+    a0, a1 = a0.astype(np.float32), a1.astype(np.float32)
+    pal = np.zeros((len(a0), 8), np.float32)
     pal[:, 0], pal[:, 1] = a0, a1
     big = a0 > a1
     for i in range(1, 7):
         pal[:, 1 + i] = np.where(big, ((7 - i) * a0 + i * a1) / 7, ((5 - i) * a0 + i * a1) / 5 if i < 5 else 0)
     pal[~big, 6], pal[~big, 7] = 0, 255
-    return np.take_along_axis(pal, idx, 1) / 255.0
+    return pal
+
+
+def _bc4(blk):
+    """(n, 8) BC4 blocks -> (n, 16) values 0..1"""
+    if not _BC4_PAL:
+        ab = np.arange(65536)
+        _BC4_PAL.append(_bc4_pal(ab >> 8, ab & 255))
+    pal = _BC4_PAL[0][blk[:, 0].astype(np.int64) << 8 | blk[:, 1]]
+    # 16 3-bit indices, little-endian over bytes 2..7
+    b = np.unpackbits(np.ascontiguousarray(blk[:, 2:8]), axis=1, bitorder="little").reshape(-1, 16, 3)
+    idx = b[:, :, 0] | b[:, :, 1] << 1 | b[:, :, 2] << 2
+    return np.take_along_axis(pal, idx.astype(np.intp), 1) / 255.0
 
 
 def decode_xy(d, max_dim):
@@ -249,9 +266,13 @@ def _kmeans(x, k, wts=None, iters=20, seed=1):
     c = np.array(c)
     for _ in range(iters):
         lab = _nearest(x, c)
+        # members of each cluster in index order (a stable sort by label: the same rows as the mask lab == j, without
+        # k passes over x)
+        order = np.argsort(lab, kind="stable")
+        bounds = np.searchsorted(lab[order], np.arange(k + 1)).tolist()
         for j in range(k):
-            s = lab == j
-            if s.any():
+            if bounds[j] < bounds[j + 1]:
+                s = order[bounds[j]:bounds[j + 1]]
                 c[j] = (x[s] * wts[s, None]).sum(0) / wts[s].sum()
     return c, _nearest(x, c)
 
@@ -260,7 +281,9 @@ def _nearest(x, c, step=65536):
     out = np.empty(len(x), int)
     cc = (c ** 2).sum(1)
     for i in range(0, len(x), step):
-        out[i:i + step] = np.argmin(cc[None, :] - 2 * x[i:i + step] @ c.T, 1)
+        d = (2 * x[i:i + step]) @ c.T
+        np.subtract(cc, d, out=d)  # cc - 2 x.c in place: the same values without a second (step, k) array
+        out[i:i + step] = d.argmin(1)
     return out
 
 
@@ -302,21 +325,39 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     N, T, W = np.zeros((nt, 3)), np.zeros((nt, 3)), np.zeros(nt)
     ks, area, lid, pid, alb = np.ones(nt), np.zeros(nt), np.zeros(nt, int), np.zeros(nt, int), np.zeros((nt, 3))
     rows, rid, faces = {}, {}, {}
-    for i, (_, e, t) in enumerate(tris):
-        ws = [c[1] for c in t]
-        ps = np.array([c[0] for c in t])
-        N[i], T[i], W[i] = e["N"][ws].sum(0), e["T"][ws].sum(0), e["W"][ws].sum()
-        area[i] = 0.5 * np.linalg.norm(np.cross(ps[1] - ps[0], ps[2] - ps[0]))
-        n = N[i] / (np.linalg.norm(N[i]) + 1e-12)
-        if smap is not None:
-            ks[i] = np.mean([smap.lit(p, n) for p in ps])
-        lid[i] = rid.setdefault(id(e["light"]), len(rid))
-        rows[lid[i]] = e["light"]
-        p = e["probe_of"](tuple(ps.mean(0)))
+    # vectorised per mesh entry (was one numpy call chain per triangle: 68 s of Firelink's export); every element is
+    # computed with the same operations in the same order as before (row sums ((a + b) + c), np.cross, the vector norm
+    # per row), so the clusters and textures are unchanged
+    WS = np.array([[c[1] for c in t] for _, _, t in tris], np.int64).reshape(-1, 3)
+    PS = np.array([[c[0] for c in t] for _, _, t in tris], np.float64).reshape(-1, 3, 3)
+    ent, eix = {}, np.empty(nt, np.int64)
+    for i, (_, e, _) in enumerate(tris):
+        eix[i] = ent.setdefault(id(e), (len(ent), e))[0]
+    for k, e in ent.values():
+        sel = np.nonzero(eix == k)[0]
+        w = WS[sel]
+        N[sel] = e["N"][w[:, 0]] + e["N"][w[:, 1]] + e["N"][w[:, 2]]
+        T[sel] = e["T"][w[:, 0]] + e["T"][w[:, 1]] + e["T"][w[:, 2]]
+        W[sel] = e["W"][w[:, 0]] + e["W"][w[:, 1]] + e["W"][w[:, 2]]
+        lid[sel] = rid.setdefault(id(e["light"]), len(rid))
+        rows[lid[sel[0]]] = e["light"]
+        alb[sel] = [dsr_light.srgb_lin(a) for a in e["alb"]]
+    C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
+    norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
+    area[:] = [0.5 * norm(c) for c in C]
+    Nn = N / (np.array([norm(v) for v in N]).reshape(-1, 1) + 1e-12)
+    if smap is not None:
+        k3 = smap.lit_many(PS.reshape(-1, 3), np.repeat(Nn, 3, axis=0)).reshape(-1, 3)
+        ks[:] = (k3[:, 0] + k3[:, 1] + k3[:, 2]) / 3
+    cen = (PS[:, 0] + PS[:, 1] + PS[:, 2]) / 3
+    if all(hasattr(e["probe_of"], "many") for _, e in ent.values()) and len({id(e["probe_of"]) for _, e in ent.values()}) == 1:
+        pof = tris[0][1]["probe_of"].many(cen)  # one ProbeIndex, queried in the same order
+    else:
+        pof = [e["probe_of"](tuple(c)) for (_, e, _), c in zip(tris, cen.tolist())]
+    for i, p in enumerate(pof):
         pid[i] = p if p is not None else -1
         if pid[i] not in faces and pid[i] in probes:
             faces[pid[i]] = np.array(probes[pid[i]], np.float64)
-        alb[i] = [dsr_light.srgb_lin(a) for a in e["alb"]]
     N, T, B = _frames(N, T, np.where(W < 0, -1.0, 1.0))
     tri = dict(N=N, T=T, B=B, k=ks, alb=alb, lid=lid, pid=pid, rows=rows, probes=faces)
     # check the vectorised light against dsr_light (same row / probe, random normals)
@@ -368,10 +409,11 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         if e is None or e["tex"] not in tex_of:
             continue
         ti = tex_of[e["tex"]]
-        for t in m["tris"]:
-            uv = np.array([m["wuv"][c[1]] for c in t]) * [texs[ti]["w"], texs[ti]["h"]]
-            d1, d2 = uv[1] - uv[0], uv[2] - uv[0]
-            uva[ti] += 0.5 * abs(d1[0] * d2[1] - d1[1] * d2[0])
+        # all triangles at once, added to uva in triangle order (np.add.at) as the per-triangle loop did
+        uv = np.array([[m["wuv"][c[1]] for c in t] for t in m["tris"]], np.float64).reshape(-1, 3, 2) * \
+            np.array([texs[ti]["w"], texs[ti]["h"]])
+        d1, d2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]
+        np.add.at(uva, np.full(len(uv), ti), 0.5 * np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]))
     _STATE["density"] = [float(math.sqrt(u / a)) if a > 0 else 0.0 for u, a in zip(uva, wa)]
     _STATE.update(texs=texs, tri=tri, R=R, area=area, local=local, resp=resp, pal=pal)
     print(f"bump: {nt} triangles ({100 * nt / max(1, k):.0f}%), {len(texs)} textures (<= {BUMP_MAX} px), "

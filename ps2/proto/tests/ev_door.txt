@@ -1,0 +1,73 @@
+# E6 doors, levers, chests by event (src/ev_obj.c, src/objects.c animated objects, objects.bin v3) in the default
+# world build, all from the game's own m10_02 / m10_01 events, ObjActs and ObjActParam rows:
+# 1 Firelink chest o0110_0000 (entity 1021650, ObjAct 11020700): the action button plays its lid anim 0 (objAnimId).
+# 2 Firelink door o1465_0000 (entity 1021465, ObjAct 11020120, ObjActParam 1465: key good 2015 or flag 11020120):
+#   m10_02's constructor sets 11020120 and its MSB state flag 61020120 at a new game, so it shows open (anim 0's end)
+#   and the player walks through.
+# 3 Firelink lever o6100_0000 (entity 1021201, ObjAct 11020202, ObjActParam 6101: objAnimId 1): pulled by the action.
+# 4 Undead Burg door o1312_0000 (entity 1011312, ObjAct without an entity flag, state flag 61010512, no key) in the
+#   streamed Burg block, from inside the house: shut it blocks the player (its hkx box on bone o1312_00), the action
+#   button plays anim 0 (objAnimId), then the player walks out through it.
+option hud
+option noenemies
+option nodemo
+wait 2
+spawn -30.1 -53.5 118.6 0
+cam 0 0.3
+wait 1
+ev expect objanim 1021650 -1 0
+ev action
+wait 0.3
+ev expect flag 11020700 1
+ev expect objanim 1021650 0 1
+wait 2.5
+ev expect objanim 1021650 0 0
+shot chest_open
+spawn -51.10 -74.0 51.50 1.22
+cam 1.22 0.3
+wait 1.5
+ev expect flag 61020120 1
+ev expect objanim 1021465 0 0
+shot door_open
+stick 0 1
+wait 1
+stick 0 0
+wait 0.3
+ev expect x > -49.8
+shot door_passed
+spawn -52.6 -74.0 53.8 0
+wait 0.5
+ev action
+wait 0.3
+ev expect flag 11020202 1
+ev expect objanim 1021201 1 1
+shot lever
+spawn -14.52 -13.5 -69.75 2.0
+cam 2.0 0.3
+wait 3
+ev expect objanim 1011312 -1 0
+stick 0 1
+wait 1
+stick 0 0
+wait 0.3
+ev expect x < -13.85
+shot burg_door_shut
+spawn -14.52 -13.5 -69.75 2.0
+wait 0.5
+ev action
+wait 0.3
+ev expect flag 61010512 1
+ev expect objanim 1011312 0 1
+wait 4
+ev expect objanim 1011312 0 0
+spawn -14.52 -13.5 -69.75 2.0
+wait 0.5
+shot burg_door_open
+stick 0 1
+wait 1
+stick 0 0
+wait 0.3
+ev expect x > -13.2
+shot burg_door_passed
+ev summary
+end

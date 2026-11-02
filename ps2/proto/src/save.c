@@ -239,6 +239,7 @@ void save_tick(const Player *pl, float dt)
     int dirty = flags_changes() != seen_flags || progress_changes() != seen_prog;
     if (request || (dirty && since >= SAVE_INTERVAL)) {
         request = 0;
+        since = 0;  /* also after a failed write (card full or pulled): retry in SAVE_INTERVAL, not every frame */
         save_write(pl);
     }
 }
@@ -307,6 +308,10 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("item", inv_count(a), b);
         if (!strcmp(what, "loaded") && sscanf(r, "%lu", &a) == 1)
             return check("loaded", loaded, a);
+        if (!strcmp(what, "deaths") && pl && sscanf(r, "%lu", &a) == 1)
+            return check("deaths", pl->deaths, a);
+        if (!strcmp(what, "seq") && sscanf(r, "%lu", &a) == 1)  /* sequence of the last save written or loaded, 0 after wipe */
+            return check("seq", seq, a);
         printf("TEST error check: bad '%s'\n", line);
         return -1;
     } else {

@@ -145,6 +145,7 @@ def main(seeds=10, tris=32):
                     print('seed %d diff %.1f\n got %s\n ref %s' % (seed, d, a, {k: b[k] for k in a}))
         print('seed %d: %d triangles out, %d kicks' % (seed, len(got) // 3, len(vu.kicks)))
     print('vertices %d, bad %d' % (tot, bad))
+    return bad
 
 if __name__ == '__main__':
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 10)
+    sys.exit(1 if main(int(sys.argv[1]) if len(sys.argv) > 1 else 10) else 0)

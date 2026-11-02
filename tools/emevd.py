@@ -308,6 +308,46 @@ def check(game=None):
     return counts, problems
 
 
+
+# ---- event-switched entities (export_map.py's per-entity chunks, export_emevd.py) ----
+SWITCH_OPS = {(2005, 3), (2012, 1)}  # (De)activate Object, Activate Map Part: the entity is the first arg
+
+
+def switched_entities(game, map_id, ops=SWITCH_OPS):
+    """Entity ids that the map's events switch with ops (first arg): literal args, and for a substituted one every value
+    an InitializeEvent of the map passes into that event-arg slot, followed through callers that pass their own args
+    on (fog walls are X0_4 of a slotted event, often a common one). For export_map.py's per-entity chunks."""
+    E = load(map_id, game)
+    evs = list(E.events) + list(_common(game).events)
+    out, want = set(), set()  # want: (event id, event-arg byte offset) whose values are entity ids
+    for ev in evs:
+        for k, ins in enumerate(ev.instrs):
+            if (ins.bank, ins.id) not in ops or len(ins.raw) < 4:
+                continue
+            sub = [src for ii, dst, src, n, _ in ev.params if ii == k and dst == 0]
+            if sub:
+                want.update((ev.id, s) for s in sub)
+            else:
+                out.add(struct.unpack_from("<i", ins.raw, 0)[0])
+    done = set()
+    while want - done:  # InitializeEvent raw: slot, event id, then the event-arg blob (src offsets into it)
+        w = want - done
+        done |= w
+        for ev in evs:
+            for k, ins in enumerate(ev.instrs):
+                if (ins.bank, ins.id) != (2000, 0) or len(ins.raw) < 8:
+                    continue
+                target = struct.unpack_from("<I", ins.raw, 4)[0]
+                for tid, src in w:
+                    if tid != target or len(ins.raw) < 12 + src:
+                        continue
+                    sub = [s for ii, dst, s, n, _ in ev.params if ii == k and dst == 8 + src]
+                    if sub:
+                        want.update((ev.id, s) for s in sub)
+                    else:
+                        out.add(struct.unpack_from("<i", ins.raw, 8 + src)[0])
+    return {e for e in out if e > 0}
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if not a or a[0] == "--check":

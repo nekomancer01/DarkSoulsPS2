@@ -5,13 +5,17 @@
 GAME_DIR defaults to tools/gamepath.py (env DSR_GAME, config.local.mk, Steam auto-detect). Exit 0 = supported version,
 1 = no game / missing files, 2 = files present but an unknown version (hashes differ). --allow-unsupported (or env
 DSR_ALLOW_UNSUPPORTED=1) turns 2 into a warning, for trying a newer patch. --quick hashes only the exe. --stamp writes
-the matched version id to FILE (the Makefile uses it so the full check runs once per game folder, not every make).
+the matched version id to FILE.
+
+A supported match is cached per game folder in build/stamp/game-<hash of the folder path>.json with the size and
+mtime of every KEY_FILE: while none of them changed, the check (make's config.mk, and every exporter through
+gamepath.game_dir -> warn_unsupported) only stats the files instead of hashing them.
 
 Supported versions: SUPPORTED below, one entry per known Steam build. Every exporter reads only files in KEY_FILES' folders;
 the hashes are of the files whose layout the exporters depend on. To add a version: run with --print, check that the
 build boots, and paste the printed entry.
 """
-import hashlib, json, os, sys
+import functools, hashlib, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gamepath
@@ -68,6 +72,74 @@ def sha256(path):
     return h.hexdigest()
 
 
+def _stamp_path(game):
+    return os.path.join(gamepath.ROOT, "build", "stamp",
+                        "game-" + hashlib.sha1(os.path.abspath(game).encode()).hexdigest()[:12] + ".json")
+
+
+def _stats(game):
+    out = {}
+    for f in KEY_FILES:
+        try:
+            st = os.stat(os.path.join(game, f))
+            out[f] = [st.st_size, st.st_mtime_ns]
+        except OSError:
+            out[f] = None
+    return out
+
+
+def cached_version(game):
+    """The SUPPORTED entry the cache says this folder matched, if no KEY_FILE changed since; else None."""
+    try:
+        c = json.load(open(_stamp_path(game)))
+    except (OSError, ValueError):
+        return None
+    if c.get("game") != os.path.abspath(game) or c.get("stats") != _stats(game):
+        return None
+    return next((v for v in SUPPORTED if v["id"] == c.get("id")), None)
+
+
+def _cache(game, v):
+    p = _stamp_path(game)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + ".tmp", "w") as f:
+            json.dump({"id": v["id"], "game": os.path.abspath(game), "stats": _stats(game)}, f)
+        os.replace(p + ".tmp", p)  # parallel exporters never read half a stamp
+    except OSError:
+        pass  # read-only tree: the check still works, just uncached
+
+
+def identify(game):
+    """(SUPPORTED entry, "") or (None, what is wrong). Full hash of KEY_FILES unless the cache matches."""
+    v = cached_version(game)
+    if v:
+        return v, ""
+    missing = [f for f in KEY_FILES if not os.path.isfile(os.path.join(game, f))]
+    if missing:
+        return None, "missing " + ", ".join(missing)
+    have = {f: sha256(os.path.join(game, f)) for f in KEY_FILES}
+    for v in SUPPORTED:
+        if all(v["files"].get(f) == have[f] for f in KEY_FILES):
+            _cache(game, v)
+            return v, ""
+    return None, "differs from every supported version: " + ", ".join(
+        f for f in KEY_FILES if all(v["files"].get(f) != have[f] for v in SUPPORTED))
+
+
+@functools.lru_cache(maxsize=None)
+def warn_unsupported(game):
+    """For exporters (gamepath.game_dir): one stderr warning per process when the folder is not a supported version.
+    A warning, not an exit: make has already enforced the check (config.mk), and research tools may point at a
+    reference copy on purpose. DSR_ALLOW_UNSUPPORTED=1 silences it."""
+    if os.environ.get("DSR_ALLOW_UNSUPPORTED") == "1":
+        return
+    v, why = identify(game)
+    if not v:
+        print(f"warning: {game} is not a supported Dark Souls Remastered version, exports may be wrong "
+              f"(tools/verify_game.py): {why}", file=sys.stderr)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     stamp = sys.argv[sys.argv.index("--stamp") + 1] if "--stamp" in sys.argv else None
@@ -75,8 +147,15 @@ def main():
         args.remove(stamp)
     quick = "--quick" in sys.argv
     allow = "--allow-unsupported" in sys.argv or os.environ.get("DSR_ALLOW_UNSUPPORTED") == "1"
-    game = gamepath.game_dir(args[0] if args else None)
+    game = gamepath.game_dir(args[0] if args else None, verify=False)
     print(f"game: {game}")
+    v = None if quick or "--print" in sys.argv else cached_version(game)
+    if v:
+        print(f"ok: {v['name']} ({v['id']}) [cached: key files unchanged since the last full check]")
+        if stamp:
+            os.makedirs(os.path.dirname(os.path.abspath(stamp)), exist_ok=True)
+            open(stamp, "w").write(f"{v['id']}\n{game}\n")
+        return 0
     missing = [f for f in KEY_FILES if not os.path.isfile(os.path.join(game, f))]
     if missing:
         sys.exit("error: the game folder is incomplete, missing:\n  " + "\n  ".join(missing) +
@@ -90,6 +169,8 @@ def main():
         bad = [f for f in files if v["files"].get(f) != have[f]]
         if not bad:
             print(f"ok: {v['name']} ({v['id']}){' [exe only]' if quick else ''}")
+            if not quick:
+                _cache(game, v)
             if stamp:
                 os.makedirs(os.path.dirname(os.path.abspath(stamp)), exist_ok=True)
                 open(stamp, "w").write(f"{v['id']}\n{game}\n")

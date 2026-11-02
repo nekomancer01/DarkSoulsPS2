@@ -1,4 +1,4 @@
-# Path to a full playthrough (updated 2026-11-01)
+# Path to a full playthrough (updated 2026-11-01, afternoon)
 
 **What this is:** the checklist of everything the port still needs before Dark Souls plays start to finish, and the
 order to build it in. Each system has a status (done / partial / missing) and what's still missing. IDs in brackets
@@ -16,21 +16,21 @@ vector unit, graphics chip and I/O processor.
 
 | # | System | Status | Missing for a playthrough |
 |---|---|---|---|
-| A1 | World streaming between areas | partial: Firelink <-> Undead Burg walk with no reboot or loading screen; that block's enemies, objects, effects and events load and unload with it [world-1..5] | More blocks per area, all areas; remaining: block manager over MSB connect collisions; load / unload neighbouring blocks (map, collision, navmesh, objects, enemies, textures, EMEVD) in the background; fixed RAM / VRAM pools per block; far blocks as coarse level only [build-5, build-4, area-1] |
-| A2 | EMEVD runtime | partial: real event scripts run in Firelink and Burg (chests, item pickups, fog walls, hit-switched objects); 80-88 % of instructions handled, the rest stubbed [event-1..14] | Remaining from the event interpreter with flags: doors, fog walls, levers, elevators, item pickups, boss triggers, NPC enable / disable, area transitions, warps, cutscene triggers [enemy-14, collision-6] |
+| A1 | World streaming between areas | partial: Firelink <-> Undead Burg west walk with no reboot or loading screen; that block's enemies, objects, effects and events load and unload with it. Every block is a full citizen (S2): its own draw groups, relief and near textures, enemies filtered by draw group and view. Far background drawn as backdrop cells. Heap drift checked (no leak over a 30-minute soak); disc packs ordered by world adjacency. S1 block graph (blocks on 32 m cells, switch rule from DSR's ConnectCollision parts, Burg bonfire + Parish courtyard blocks) and S4 heap fragmentation fix (soak OUT OF RAM 40 -> 1). In review: textures per block (enemy textures follow their models, a block's effect / breakable textures and map CLUTs only while it is on: the default world is all 4 blocks with enemies on, >= 156 KB VRAM free). Undead Asylum as a fifth block of the same world: streams in by warp or Firelink's cliff, its crow event carries the player back to Firelink [world-1..7] | A far level for lite neighbours so geometry doesn't pop in at the swap (S3) [world-2]; free EE RAM >= 1.5 MB in the soak [world-5]; the remaining areas; LZ4 block entries [world-6]; fixed RAM / VRAM pools per block [build-5, build-4, area-1] |
+| A2 | EMEVD runtime | partial: real event scripts run in Firelink and Burg (chests, item pickups, fog walls, hit-switched objects). Done since: E3 characters by event (AI on / off and commands, team, immortality, special waits, NPC enable / disable / kill), E4 what events switch off disappears (objects, map parts, SFX such as the Burg fog wall), E6 doors / levers / gates / chests animate and block, E2 rules checked in the exe (temporary flag reset, End / SetEventState flags, item-lot draw, regions, EventValue bits) plus save requests, bonfire light / rest, status messages, E5 boss triggers (fog-wall walk 7410, boss bar, defeat: Taurus Demon test), E7 event warps across blocks and maps (crow carry Asylum <-> Firelink, a map's events move between its blocks, warp loads finish the new events). Stub uses down to Firelink 51, Burg 178 (from 127 / 385) [event-1..18] | E2 leftovers [event-2, -3, -4, -6, -9]; boss gauge art / names, other event anims [event-18]; cutscenes [event-13]; the other stubs: sounds, dialogs, bonfire registration, ladders, NPC humanity, ops on the player [event-8, event-15, collision-6] |
 | A3 | Save / flags / progression | partial: event flags in the game's own id layout, progression state, saves to the memory card (round trip verified) [save-1..10] | Background save writes, souls from kills, stats used by combat; full list: event flags, inventory, stats, bonfire state, killed bosses, NPC states; memory card (tools/ps2-mc.sh) [ROADMAP 17] |
-| A4 | Bonfire / death loop | partial: fall respawn only | Rest (HP / Estus refill, enemy respawn), death -> bloodstain + souls, kindling, warp later [enemy-4, collision-4] |
+| A4 | Bonfire / death loop | partial: resting at a lit bonfire refills HP and Estus, respawns the enemies and makes the bonfire's spawn point the respawn point; a death (fall or on the ground) drops a bloodstain with the souls and humanity held, returns the player to that spot and resets the world as a rest does; walking onto the stain gives them back; the stain is saved [a4-1..5] | Kindling and Estus by kindle level, bonfire menu and warp, YOU DIED hold and a full map reload on death, respawn in another area, bloodstain SFX [a4-2..5, enemy-4] |
 | A5 | Player action logic (ESD) | partial: movement, R1, roll, falls | Lock-on, guard / parry / riposte / backstab, two-handing, items, magic / pyromancy / miracles, bows, ladders, gestures, throws [esd-1, esd-2, esd-7, esd-8] |
 | A6 | Combat + stats + equipment | partial: physical damage, enemy hits | Damage types and defences, scaling, poise, SpEffects (rings, buffs, poison / bleed / curse), level-up, equip load tiers, weapon upgrades [combat-2..6, gameplay-13] |
-| A7 | Enemy runtime | partial: Lua AI, ESD, streaming types | Navmesh pathing, falling, line of sight, all native goals, guard, item drops, every chr type in the game, enemy budget per block [enemy-2, enemy-6, enemy-10..13, enemy-15] |
+| A7 | Enemy runtime | partial: Lua AI, ESD, streaming types, active / drawn by draw group (cap 16 active at the Burg entry), event AI commands | Navmesh pathing, falling, line of sight, all native goals, guard, item drops, every chr type in the game, enemy budget per block [enemy-2, enemy-6, enemy-10..13, enemy-15] |
 | A8 | Bosses | missing | Boss arenas (fog walls, health bars, music cues, phase changes), boss-specific ESD / AI, multi-part bosses, cutscene intros |
-| A9 | Objects | partial: breakable pots | Doors, chests, levers, ladders, elevators, item corpses (o0500 posed, animated objects), object collision [map-4, collision-1] |
-| A10 | NPCs, dialogue, shops | missing | Talk ESDs, FMG text, shops / trading, covenants, NPC questlines through flags [enemy-14] |
+| A9 | Objects | partial: breakable pots; doors, levers, gates and chests animate by event and ObjAct, need their key, block the player while shut and stay open across save / load; every MSB object with Havok bodies collides (as boxes) [event-11, collision-1] | Elevator platforms (call / arrive timing is in, the platform doesn't move), ladders, item corpses (o0500 posed, animated objects), exact collision shapes [map-4, collision-1] |
+| A10 | NPCs, dialogue, shops | partial: human NPCs (c0000) placed as stand-ins (player model, idle pose), switched on / off / killed by events [enemy-14] | Equipment look, NPC AI, talk ESDs, FMG text, shops / trading, covenants, NPC questlines through flags [enemy-14] |
 | A11 | Menus / HUD | partial: HUD bars, Estus slot | Inventory, equipment, level-up, bonfire menu, item pickup prompts, boss bar, death screen |
 | A12 | Audio | missing (FEV / FSB readers, ADPCM encoder exist) | SPU2 runtime: SFX by TAE / EMEVD, music per area / boss, ambient; streaming from disc [ROADMAP 16] |
 | A13 | Cutscenes / movies | missing | Remo cutscenes (or skip with state changes applied), intro / ending movies via IPU |
-| A14 | Rendering per area | mostly done: VU1 map, LOD + streaming, fog, lighting bake, normal relief, FFX fire | Sky per area, water, special materials (lava, Ash Lake, Tomb darkness, Anor Londo lighting change), all FFX types, characters lit by area lights [map-13..19, char-4, fx-2] |
-| A15 | Disc / IOP | partial: ISO builds and boots in PCSX2 | Async cdrom0 streaming tuned for seek times; IOP modules for audio / pad / memcard; real-hardware run [build-3, hw-*] |
+| A14 | Rendering per area | mostly done: VU1 map, LOD + streaming, fog, lighting bake, normal relief (back on in every build), FFX fire, far background without sky holes, far ring wall no longer distorted [render-12] | Sky per area, water, special materials (lava, Ash Lake, Tomb darkness, Anor Londo lighting change), all FFX types, characters lit by area lights, near / coarse swap pop, fog wall SFX too white, no anti-aliasing [map-13..19, map-37, char-4, fx-2, fx-12, render-12] |
+| A15 | Disc / IOP | partial: ISO builds and boots in PCSX2; packs ordered by world adjacency (cdrom0: boot 4169 -> 3949 ms) | Async cdrom0 streaming tuned for seek times; IOP modules for audio / pad / memcard; real-hardware run [build-3, hw-*] |
 
 ## Phase B: make the exporters whole-game safe
 
@@ -60,7 +60,15 @@ Gate: completes without crashes on PCSX2 at >= 30 fps, within RAM / VRAM, in an 
 4. Progression test: warp-and-flag script through the boss order; each boss killable (debug damage) and its event flags fire.
 5. Triage the per-block failures into TECH_DEBT, fix the generic code, rerun.
 
+Tooling since the last update: `make` runs in parallel by default, a simplify cache and C simplifier, a RAM-budget job
+queue that can run jobs on another machine (`tools/q`, `tools/qd`), and `tools/memwatch.py` acting on real memory
+pressure. See `notes/TOOLS.md`.
+
 ## Order
 
 A1 + A2 + A3 first (everything else hangs off streaming, events and flags), then A4 / A9 / A11, then A5 / A6 / A7 / A8
 for the slice's fights, then A10 / A12, then the Phase C gate, then B and D. A13 / A14 specials can follow the pass.
+
+Now: A1 S1 and S4 are in review; next are per-block type loading (so the Burg bonfire and Parish blocks join the
+default world with enemies on) and S3 (far level for lite neighbours). In A2, E5 boss triggers and E7 warps are what
+the slice still needs from events.

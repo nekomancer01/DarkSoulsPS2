@@ -7,7 +7,7 @@ Subcommands:
   select --tier T --limit N  print the next entry addresses that need decompiling
   import-decomp FILE.jsonl   decompiled C from DecompileList.java
   label --limit N            label decompiled functions with Ollama, throttled
-  embed                      vectorize new/changed labels (needs ~/osrs/.venv-wiki/bin/python)
+  embed                      vectorize new/changed labels (needs $FNDB_PY: fastembed + sqlite-vec)
   search "query"             hybrid vector + keyword lookup over labels
   status                     counts per tier
 """
@@ -425,7 +425,7 @@ def cmd_label(a):
 
 # ---- vector search --------------------------------------------------------------------------------------
 # Same stack as the OSRS wiki search (~/osrs-wiki-backup/embed_db.py): bge-small via fastembed on CUDA, sqlite-vec,
-# in a separate file so the main DB is never locked. Needs ~/osrs/.venv-wiki/bin/python for embed/search.
+# in a separate file so the main DB is never locked. Needs $FNDB_PY (fndb/batch.sh) for embed/search.
 #   fn_vec(embedding float[384])  rowid = fn_map.rowid        fn_fts(entry, text)  for exact names/strings
 VEC_DB = os.environ.get("FNDB_VEC_DB", os.path.splitext(DB)[0] + "-vec.sqlite")
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"

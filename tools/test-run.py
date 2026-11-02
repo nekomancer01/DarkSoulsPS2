@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Run one test script in a headless PCSX2 and collect its results (needs Pillow + numpy: the Makefile's PY venv).
 
-  test-run.py <elf> <script> <outdir> [--slot N] [--timeout 300] [--gsdump] [--holes] [--name label]
+  test-run.py <elf> <script> <outdir> [--slot N] [--timeout 300] [--gsdump] [--holes] [--name label] [--turbo [x]]
+              [--keep-going]
+
+--turbo: PCSX2 without its speed limit (or at x times speed) for functional runs (world_cross, world_soak, routes):
+the ELF's own frame stats run on emulated time and stay comparable; the wall-clock column of frames.csv does not.
+(A/B 2026-11-02, world_soak.txt: 159 s -> 105 s, same frame count and shot stats.)
 
 <script> is a src/testscript.c script (copied next to the ELF as tests/gen/<name>.txt, since host: only sees the ELF's
 folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>, own data dir and Xvfb display). Without
@@ -11,12 +16,16 @@ parallel runs from several sessions never share a socket, display or data dir. T
     GS dump (F8 hotkey via xdotool) -> <outdir>/<shot>.gs.zst, magenta "hole" pixel count, then shot_ack
   - the mailbox every ~0.1 s -> <outdir>/frames.csv (fps, ms, RAM/VRAM free, chain peaks, ...)
   - a hang (mailbox frame counter stuck 15 s), PCSX2 exiting, or the timeout = failure
-Results: <outdir>/result.json (shots with the ELF's "TEST shot" stats, errors, log lines) and emulog.txt.
+  - the EE log, followed while the run lasts: the first error line (LOG_ERRORS) stops the run FAIL_GRACE s later
+    (fail fast: a 30 min soak with OUT OF RAM at 2 min used to run to its end); --keep-going runs to the end anyway
+  - a progress line every PROGRESS s (elapsed, frame, script line, fps) for long runs
+Results: <outdir>/result.json (shots with the ELF's "TEST shot" stats, errors, log lines, "stamp": git revision + hash of
+uncommitted changes, ELF / script hashes and times, tools/runstamp.py) and emulog.txt.
 Exit code 0 = script ran to its end without errors."""
 import argparse, csv, fcntl, glob, json, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pine
+import pine, runstamp
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 DISPLAY = ":99"  # set per run from the PINE slot (tools/pcsx2-run.sh: 100 + slot % 100)
@@ -57,6 +66,8 @@ def x(cmd, timeout=20, **kw):
         return subprocess.CompletedProcess(cmd, -1, "", "timeout")
 
 
+FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
+PROGRESS = 60.0  # s between progress lines
 LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error",
                         re.I)
 
@@ -163,10 +174,14 @@ def run(a):
     if os.path.exists(log):
         os.remove(log)
     env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}")
+    if a.turbo:  # no speed limit (tools/test-pcsx2-ini.py TURBO)
+        env["TURBO"] = a.turbo
     out = subprocess.run([os.path.join(TOOLS, "pcsx2-run.sh"), elf, "0", "-"], env=env, capture_output=True, text=True,
                          timeout=120)
     inst = re.search(r"INST=(\S+)", out.stdout)
-    res = {"name": name, "elf": elf, "script": a.script, "shots": [], "errors": [], "log": [], "started": time.time()}
+    res = {"name": name, "elf": elf, "script": a.script, "shots": [], "errors": [], "log": [], "started": time.time(),
+           "stamp": runstamp.stamp([elf, a.script]), "turbo": a.turbo or None}  # which tree / ELF / script this result belongs to
+    print(f"[test-run] {name}: {runstamp.line(res['stamp'])}", flush=True)
     if not inst:
         res["errors"].append("PCSX2 did not start: " + out.stdout + out.stderr)
         return res
@@ -190,11 +205,35 @@ def run(a):
         t0 = time.time()
         last_frame, last_change, acked = -1, time.time(), 0
         mb = None
+        log_pos, log_next, first_err, next_progress = 0, t0, None, t0 + PROGRESS
         while True:
             now = time.time()
             if now - t0 > a.timeout:
                 res["errors"].append(f"timeout after {a.timeout} s (script line {mb and mb['line']})")
                 break
+            if now >= log_next and not getattr(a, "keep_going", False) and first_err is None:
+                log_next = now + 1.0  # the EE log so far: errors end the run early (the scan below lists them)
+                try:
+                    with open(log, "rb") as lf:
+                        lf.seek(log_pos)
+                        chunk = lf.read()
+                    chunk = chunk[:chunk.rfind(b"\n") + 1]  # whole lines only
+                    log_pos += len(chunk)
+                    err = next((l for l in chunk.decode(errors="replace").splitlines() if LOG_ERRORS.search(l)), None)
+                    if err:
+                        first_err = (now, err.strip())
+                        print(f"[test-run] {name}: error at {now - t0:.0f} s, stopping in {FAIL_GRACE:.0f} s "
+                              f"(--keep-going to run on): {first_err[1][:160]}", flush=True)
+                except OSError:
+                    pass
+            if first_err and now - first_err[0] > FAIL_GRACE:
+                res["errors"].append(f"stopped early at {now - t0:.0f} s after the first error (script line "
+                                     f"{mb and mb['line']}; --keep-going runs to the end)")
+                break
+            if now >= next_progress and mb is not None:
+                next_progress = now + PROGRESS
+                print(f"[test-run] {name}: {now - t0:.0f} s, frame {mb['frame']}, script line {mb['line']}, "
+                      f"{mb.get('fps', 0):.0f} fps", flush=True)
             try:
                 mb = pine.read_mailbox(p, addr)
             except (ValueError, IOError) as e:  # no VM yet (PINE IPC_FAIL) / ELF still loading (magic not set)
@@ -278,6 +317,10 @@ def main():
     ap.add_argument("--gsdump", action="store_true")
     ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
     ap.add_argument("--name")
+    ap.add_argument("--keep-going", action="store_true",
+                    help="run to the end after an error line in the EE log (default: stop FAIL_GRACE s after it)")
+    ap.add_argument("--turbo", nargs="?", const="1", default=os.environ.get("TURBO", ""),
+                    help="run unthrottled (or at speed x: --turbo 3) for functional tests; not for perf numbers")
     a = ap.parse_args()
     res = run(a)
     print(f"{res['name']}: {len(res['shots'])} shots, {res.get('frames', 0)} frames, {res['seconds']} s, "

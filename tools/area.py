@@ -13,7 +13,7 @@ Defaults come from the game's data; AREAS overrides values chosen to fit the PS2
 budget"), each with a comment. An area without an entry is exported whole from its first player start.
 Env overrides for experiments: AREA_SPAWN=<part name>, AREA_RADIUS=<metres> (0 = whole map), AREA_MAP_RADIUS=<metres>,
 AREA_DRAW_FROM=<collision part,...> (export only the map pieces DSR draws while standing on those parts)."""
-import math, os
+import math, os, sys
 
 AREAS = {
     # Firelink Shrine: the whole MSB fits (the test area everything was tuned on). Spawn = first player start, which is
@@ -33,23 +33,46 @@ BONFIRE = "o0200"
 
 # World blocks (TECH_DEBT build-5, src/world.c): the units the runtime loads and unloads by player position. DSR's own
 # block is the whole MSB, and an area load list keeps several resident (m10: m10_00, m10_01, m10_02, worldgraph.py); the
-# PS2 holds a cropped part of an MSB per block (ASSUMED budget cut, TECH_DEBT world-1). All maps of a world group share
-# one frame (no MapOffset event in m10), so blocks need no offset. Each block is exported like an area (same
-# exporters, same knobs) with the block's entries overriding AREAS: env AREA_BLOCK=<block name> (Makefile BLOCK=).
+# PS2 holds a part of an MSB per block (ASSUMED budget cut, TECH_DEBT world-1). All maps of a world group share one
+# frame (no MapOffset event in m10), so blocks need no offset. Each block is exported like an area (same exporters, same
+# knobs) with the block's entries overriding AREAS: env AREA_BLOCK=<block name> (Makefile BLOCK=).
 # Block name = output directory / pack name. The boot area's block is the plain area export (no entry needed).
-# Keys: map (MSB), spawn (player start the crop is centred on), radius / map_radius as AREAS.
+# Keys: map (MSB); cells (x0, z0, x1, z1): the block is the xz rectangle of CELL m grid cells x0..x1, z0..z1 (inclusive,
+# cell = floor(coordinate / CELL)), the cells export_map.py groups chunks by (CHUNK_GRID), so the blocks of one MSB
+# tile it with no gap or overlap: placed things and map triangles (by centroid) go to exactly one block, collision
+# triangles to every block one of their corners lies in (they meet at the seam). spawn: the player start the exporters
+# bake lighting / LOD around (a part name, or spawn_at (x, y, z) for a block without one).
+# Undead Burg cells (m10_01_00_00; navmesh A* from the aqueduct arrival c0000_0000 to the Burg bonfire o0200_0001 and
+# the Parish bonfire o0200_0005): x -4..-1 the west streets from the aqueduct stairs (h1070B1 / h1095B1 / h1127B1 ->
+# m10_02); x 0..1, z -3..0 the Burg bonfire, the Taurus Demon tower and the bridge's south end; x 0..1, z 1..3 the
+# bridge north to the Parish courtyard (route y 16 -> 28). Row z -4 (Lower Burg, under the street) and the Parish
+# church (z 4, x 2..3) are not blocks yet: map instance / collision block / enemy block index = world block index caps
+# a world build at 5 blocks (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS; TECH_DEBT world-1).
+# obj_budget (MB, export_objects.py): every block's breakable types load at boot with their VRAM (world.c
+# world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
+# "Not enough VRAM", block 3's o1230 not loaded). ASSUMED cut until types load per block: the types with the fewest
+# placements per byte become static map objects (drawn, not breakable).
+CELL = 32.0
+BLOCK_OBJ_MB = 0.12
 BLOCKS = {
-    # Undead Burg, west: the stairs from Firelink's aqueduct (connect collisions h1070B1 / h1095B1 / h1127B1 ->
-    # m10_02) and the first Burg stretch. Centred on the player start c0000_0000 (-47.8, -21.8, -35.6), DSR's arrival
-    # point from the aqueduct. Radii are the RAM budget (world.c full pool + lite slot next to Firelink): radius 70 /
-    # map_radius 100 gave 8.8 MB of resident streams + 3.4 MB lite set and left a 1.3 MB near-cell arena.
-    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", radius=50.0, map_radius=70.0),
+    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=(-4, -3, -1, -1), obj_budget=BLOCK_OBJ_MB),
+    "m10_01_00_00_b": dict(map="m10_01_00_00", spawn="c0000_0009", cells=(0, -3, 1, 0), obj_budget=BLOCK_OBJ_MB),
+    "m10_01_00_00_p": dict(map="m10_01_00_00", spawn_at=(14.5, 28.5, 102.2), cells=(0, 1, 1, 3), obj_budget=BLOCK_OBJ_MB),
+    # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
+    # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
+    # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
+    # overlapping x / z, so it needs no offset (world.bin keeps each block's height range for warps). Spawn = the
+    # first player start (c0000_0000 / _0001 are both the cell the game starts in). Its ConnectCollision parts h0054B1 /
+    # h0099B1 (the crow's ledge at the north end) load m10_02 while the player stands on them, as in DSR; the crow
+    # event's cutscene warp (EMEVD 2002[04]) then moves the player to Firelink.
+    "m18_01_00_00_a": dict(map="m18_01_00_00"),
 }
 # Blocks of a world build: the boot area first (the default build's own pack), then the blocks world.c may load
 WORLDS = {
-    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w"],
+    # VRAM: enemy textures load with their types near the player, a block's effect textures and map CLUTs while it is
+    # on (TECH_DEBT world-4)
+    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a"],
 }
-
 
 def block():
     """The block being exported (env AREA_BLOCK), or None for a plain area export"""
@@ -75,17 +98,28 @@ def spawn_part(M, map_id):
     """The player start (MSB part type 4) to boot at: AREAS 'spawn' by name, else the one nearest to a placed bonfire
     (object part o0200: DSR warps the player to a bonfire's start point), else the first one."""
     c = config(map_id)
+    if c.get("spawn_at"):  # a block with no player start of its own: a point on its navmesh, facing +z
+        return dict(name="spawn_at", type=4, pos=tuple(c["spawn_at"]), rot=(0.0, 0.0, 0.0))
     starts = [p for p in M["parts"] if p["type"] == 4]
-    if c.get("spawn"):
-        return next(p for p in starts if p["name"] == c["spawn"])
+    if c.get("spawn"):  # an AREA_SPAWN experiment may centre the crop on any part (e.g. a boss for an event test)
+        return next((p for p in starts if p["name"] == c["spawn"]), None) or \
+            next(p for p in M["parts"] if p["name"] == c["spawn"])
     fires = [p["pos"] for p in M["parts"] if p["type"] == 1 and p["model"] == BONFIRE]
     if not fires:
         return starts[0]
     return min(starts, key=lambda p: min(math.dist(p["pos"], f) for f in fires))  # min keeps the first on ties
 
 
+def in_cells(cells):
+    """(x0, z0, x1, z1) block cells -> keep(x, y, z)"""
+    x0, z0, x1, z1 = cells
+    return lambda x, y, z: x0 <= math.floor(x / CELL) <= x1 and z0 <= math.floor(z / CELL) <= z1
+
+
 def region(M, map_id):
-    """keep(x, y, z) -> bool for placed things; everything when the area has no radius."""
+    """keep(x, y, z) -> bool for placed things; everything when the area has no radius or cells."""
+    if config(map_id).get("cells"):
+        return in_cells(config(map_id)["cells"])
     r = config(map_id).get("radius")
     if not r:
         return lambda x, y, z: True
@@ -95,7 +129,20 @@ def region(M, map_id):
 
 
 def is_whole(map_id):
-    return not config(map_id).get("radius")
+    return not config(map_id).get("radius") and not config(map_id).get("cells")
+
+
+def map_region(M, map_id):
+    """keep(x, y, z) for map triangles (by centroid) and far scenery objects, or None (no cut): a block's own cells,
+    else map_radius (xz) around the spawn"""
+    c = config(map_id)
+    if c.get("cells"):
+        return in_cells(c["cells"])
+    if not c.get("map_radius"):
+        return None
+    sx, _, sz = spawn_part(M, map_id)["pos"]
+    r2 = c["map_radius"] ** 2
+    return lambda x, y, z: (x - sx) ** 2 + (z - sz) ** 2 <= r2
 
 
 def visible_groups(msb_bytes, M, map_id, coll_parts):
@@ -120,8 +167,58 @@ def drawn(groups, part_dg):
     return groups is None or not any(part_dg) or any(a & b for a, b in zip(groups, part_dg))
 
 
+
+# ---- enemy placements of the area (export_enemies.py, export_chr.py variants, lua50.py) ----
+MAX_ENEMIES = 32  # ps2/proto/src/enemy.h
+
+
+def enemy_parts(b, map_id=None):
+    """[(model, npc, think, entity, pos, rot)] for MSB part type 2 (souls.msb1 named fields); with map_id only those
+    inside the area's region (tools/area.py: the part of the MSB the PS2 build holds)"""
+    import souls
+    M = souls.msb1(b)
+    out = []
+    keep = region(M, map_id) if map_id else (lambda x, y, z: True)
+    for p in M["parts"]:
+        if p["type"] != 2 or not p["model"] or not keep(*p["pos"]):
+            continue
+        out.append((p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]))
+    if map_id and not is_whole(map_id):
+        # cropped area: the runtime roster holds MAX_ENEMIES (enemy.h, 32) parts incl. c0000 (skipped later), so
+        # keep the non-c0000 parts nearest to the spawn (TECH_DEBT build-6)
+        sp = spawn_part(M, map_id)["pos"]
+        rest = sorted((r for r in out if r[0] != "c0000"), key=lambda r: math.dist(r[4], sp))
+        out = rest[:config(map_id).get("max_enemies", MAX_ENEMIES)]
+    return out
+
+
+def npc_parts(b, map_id):
+    """The c0000 parts (human NPCs) inside the area's region, as enemy_parts rows"""
+    import souls
+    M = souls.msb1(b)
+    keep = region(M, map_id)
+    return [(p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]) for p in M["parts"]
+            if p["type"] == 2 and p["model"] == "c0000" and keep(*p["pos"])]
+
+
+def signature(map_id):
+    """What an export of map_id (+ env AREA_BLOCK) takes from this module: its merged config, the env knobs read here
+    and the code with the AREAS / BLOCKS / WORLDS tables left out (tools/srcsum.py). Makefile: $(A)/area.sig, so
+    adding or changing another area's or block's entry re-exports only that one."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import json, srcsum
+    code = srcsum.tree_hash(open(os.path.abspath(__file__).replace(".pyc", ".py")).read(),
+                            skip=("AREAS", "BLOCKS", "WORLDS", "BLOCK_OBJ_MB"))
+    env = {k: os.environ[k] for k in ("AREA_DRAW_FROM", "AREA_DG_FIELD") if k in os.environ}
+    return json.dumps(dict(map=map_id, config=config(map_id), env=env, code=code), sort_keys=True) + "\n"
+
+
 if __name__ == "__main__":
-    import sys
+    # Makefile: `area.py --sig <map> <out>` -> out rewritten only when signature(map) changes
+    if sys.argv[1:2] == ["--sig"]:
+        sig = signature(sys.argv[2])  # puts tools/ on sys.path
+        import srcsum
+        srcsum.write_if_changed(sys.argv[3], sig, first_mtime_of=os.path.abspath(__file__))
     # Makefile: `area.py --world <boot map>` -> "<map>:<block>" for every other block of that world build
     if sys.argv[1:2] == ["--world"]:
         print(" ".join(f"{BLOCKS[b]['map']}:{b}" for b in WORLDS.get(sys.argv[2], [])[1:]))

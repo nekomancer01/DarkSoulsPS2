@@ -445,6 +445,16 @@ int col_floor(float x, float z, float y_top, float y_bottom, unsigned mask, ColH
     return found;
 }
 
+int col_floor_block(int b, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
+{
+    ColHit h;
+    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || !bind(b) || !floor1(x, z, y_top, y_bottom, mask, &h))
+        return 0;
+    if (hit)
+        *hit = h;
+    return 1;
+}
+
 int col_push_capsule(float pos[3], float r, float height, float step, unsigned mask)
 {
     int contacts = 0;

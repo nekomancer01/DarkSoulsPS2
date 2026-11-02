@@ -1,0 +1,36 @@
+# E7 crow carry, both ways, in the default world with the Asylum block (m18_01_00_00_a): event warps across maps.
+# 1 Asylum -> Firelink: on the crow ledge (region 1812000) m18_01 event 11810000 runs Play Cutscene and Warp Player
+#   (cutscene 100225 skipped) to Firelink point 1022100; world.c settles Firelink, the Asylum block unloads once unkept
+#   and its events end; the event's lines after the warp still run as its map goes (flag 11810000, respawn point
+#   1022960). (A new game booting in Firelink marks the flight done: flag 11810000 is cleared first.)
+# 2 Firelink -> Asylum: sitting in Firelink's nest region 1022120 (action, m10_02 event 11020020) starts 11020021,
+#   which after 20 s warps to Asylum point 1812110 while no Asylum block is loaded: the region comes with Firelink's
+#   events.bin (export_emevd.foreign_warp_targets) and the warp loads the Asylum block.
+option hud
+option noenemies
+option nodemo
+wait 3
+flag 11810000 0
+spawn 3.5 212.7 -88.0 3.14
+wait 2
+ev expect mapevents 18 1 -2
+approach 3.0,-95.5 0.8 1
+wait 6
+ev expect flag 11810000 1
+ev expect respawn 1022960
+ev expect y < 0
+ev expect mapevents 10 2 0
+wait 8
+ev expect mapevents 18 1 -1
+shot crow_firelink
+spawn -43.36 -31.35 101.13 0
+wait 2
+ev action
+wait 1
+ev expect flag 11025060 1
+wait 22
+ev expect y > 150
+ev expect mapevents 18 1 -2
+shot crow_asylum
+ev summary
+end

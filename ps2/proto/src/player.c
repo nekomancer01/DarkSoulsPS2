@@ -19,7 +19,11 @@
 #include "map.h"
 #include "collision.h"
 #include "combat.h"
+#include "save.h"
+#include "bonfire.h"
 
+/* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
+#define anims (player_data->anims)
 #define PI 3.14159265f
 
 /* Stamina is an int (chr+0x3F8); the setter FUN_140322cf0 clamps it to [-50, max] */
@@ -258,13 +262,21 @@ static float gravity_scale(const Player *p)
 
 static void respawn(Player *p)
 {
-    p->deaths += p->hp < 0;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
-    map_spawn(&p->pos, &p->yaw);
+    int died = p->hp < 0;
+    if (died) {
+        save_request();    /* DSR autosaves on death; the next save_tick writes the respawn spot, full HP, deaths + 1 */
+        bonfire_death(p);  /* bloodstain with the souls / humanity held */
+    }
+    p->deaths += died;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
+    if (!died || !bonfire_spawn(&p->pos, &p->yaw))  /* a death: the respawn point (last bonfire) */
+        map_spawn(&p->pos, &p->yaw);
     p->hp = p->hp_max;
     p->state = ST_IDLE;
     p->airborne = 0;
     p->vel = v3(0, 0, 0);
     player_esd_reset(p);  /* both ESD groups back to their start states, no pending requests */
+    if (died)
+        bonfire_revive(p);  /* Estus, enemies, events as a rest */
 }
 
 /* For combat.c: the TAE id of the attack animation playing, or -1 */
@@ -347,6 +359,25 @@ static void constrain(Player *p, V3 old)
 /* ---- ESD request model (exe: ESD ctx update FUN_140388020 -> FUN_140388790, TAE flags FUN_140340580) ---- */
 
 static int esd_action(const Player *p) { return p->state == ST_ATTACK || p->state == ST_ROLL || p->state == ST_JUMP; }
+
+/* Anim an event forced on the player (EMEVD 2003[18], player_event_anim), -1 none */
+static int event_anim = -1;
+
+float player_event_anim(Player *p, int id)
+{
+    for (int i = 0; i < ANIM_COUNT; i++)
+        if (anims[i].key == id) {
+            /* plays as an action outside both ESD groups: their c1_3 anims and stops are ignored until it ends
+             * (ASSUMED: DSR's event anim slot outranks the ESD's, TECH_DEBT event-18) */
+            start_anim(p, ST_ROLL, i, 0);
+            p->esd_group = -1, p->esd_layer = 99;
+            event_anim = i;
+            return anims[i].length;
+        }
+    return 0;
+}
+
+int player_event_anim_playing(const Player *p) { return event_anim >= 0 && esd_action(p) && p->anim == event_anim; }
 
 /* The anim whose TAE drives the flags this frame: the playing one-shot, else the locomotion loop (idle a00_0000 is
  * not exported and has no ChrActionFlags) */
@@ -494,8 +525,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         if (p->state == ST_DEAD) {
             /* the ESD switches the death anims; the engine side respawns once the last one has played: 6067 (state 59,
              * death in the air), 6170 (98, lethal landing), 6173 (100, died on a short landing) */
-            if ((p->anim == ANIM_FALL_DEATH_LAND || p->anim == ANIM_ESD_FALL_IMPACT_END ||
-                 p->anim == ANIM_ESD_LAND_DEATH_END) && p->t >= anims[p->anim].length) {
+            /* a death on the ground (enemy hit, hurt): the ESD's death anim, once it ends with the player on the floor
+             * (ASSUMED: DSR fades to the load after YOU DIED, TECH_DEBT a4-4) */
+            int ended = p->t >= anims[p->anim].length;
+            if (ended && (p->anim == ANIM_FALL_DEATH_LAND || p->anim == ANIM_ESD_FALL_IMPACT_END ||
+                          p->anim == ANIM_ESD_LAND_DEATH_END || (p->hp < 0 && !p->airborne && !anims[p->anim].loop))) {
                 respawn(p);
                 old = p->pos;  /* constrain() below resolves from the spawn, not the death site */
             }
@@ -512,7 +546,7 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
         p->pos.z += cy * df - sy * ds;
-        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t))
+        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim)
             turn_toward(p, stick_yaw, dt);
         p->invincible = in_window(p->anim, FLAG_INVINCIBLE, p->t);
         p->hitting = in_window(p->anim, -1, p->t);
@@ -523,6 +557,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->state = ST_IDLE;
     }
 
+    /* an event anim has no ESD state to end it: it ends with its TAE */
+    if (player_event_anim_playing(p) && p->t >= anims[p->anim].length)
+        p->state = ST_IDLE;
+    if (!player_event_anim_playing(p))
+        event_anim = -1;
     /* the ESD: may start or end an action (player_esd_cmd) */
     esd.p = esd.chr = p, esd.in = in, esd.dt = dt;
     esd_update(&esd);

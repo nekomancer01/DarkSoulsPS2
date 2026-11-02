@@ -1,0 +1,19 @@
+# save-6: a death autosaves (player.c respawn -> save_request). "kill" sets HP below 0 as EMEVD's kill of the player;
+# the ESD plays the death and the engine respawns, then one save holds it. Firelink build:
+#   tools/q -m 4 python3 tools/test-run.py build/proto.elf ps2/proto/tests/save_death.txt build/test/save_death
+# (A run off the east cliff is not lethal since the world-block merges: two landings, then out of the map, which
+# respawns without counting a death.)
+option save host deathtest
+option noenemies
+wait 1
+wipe
+check seq 0
+check deaths 0
+kill
+wait 12
+check deaths 1
+check seq 1
+load
+check seq 1  # the death save is the newest valid slot
+log save_death done
+end

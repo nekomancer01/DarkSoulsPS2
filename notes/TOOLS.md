@@ -6,7 +6,8 @@ of the file. Paths are relative to the repo root.
 
 You only need a few of these to build and play (see `README.md`). Heavy jobs (exports, builds, emulator tests) should
 run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM. (The maintainer's per-task notes,
-`notes/threads/`, hold extra usage details; they're local and not in the public repo.)
+`notes/threads/`, hold extra usage details; they live in the same checkout but `.gitignore` keeps everything in
+`notes/` except the public docs out of git.)
 
 ## Game data readers (`tools/`)
 | Tool | What it does |
@@ -29,6 +30,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | Output |
 |---|---|
 | `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
 | `export_collision.py` | collision.bin |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
 | `export_chr.py`, `export_enemies.py` | Enemy / NPC models, placements |
@@ -56,7 +58,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `pcsx2-run.sh` | Boot an ELF in PCSX2: headless + screenshot, or a visible window |
 | `test-all.sh` | Build + smoke test + render diff + perf check in one run |
-| `test-run.py` | Run one test script headless |
+| `test-run.py` | Run one test script headless; stops 5 s after the first EE log error (`--keep-going` runs on), progress line every minute (`--turbo`: no speed limit, for functional runs) |
 | `test-smoke.py` | Autotest smoke test |
 | `test-gsdump.py` | Graphics regression diff |
 | `test-perf.py` | Perf history |
@@ -65,11 +67,15 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
 | `winshot.py` | Window screenshot |
+| `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
+| `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
+| `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
 
 ## Real hardware and profiling
 | Tool | What it does |
 |---|---|
 | `ps2-iso.sh` | Bootable ISO |
+| `build-iso.sh` | One command from the game folder to a playable ISO: downloads the source (or builds this checkout), builds in the ps2dev container (`iso-builder/Dockerfile`, Docker or Podman) or with `--engine native`, writes `DarkSoulsPS2.iso` |
 | `ps2-pcsx2.sh` | Debugger / savestate runs |
 | `ps2-run.sh` | Real PS2 over ps2link (untested on hardware) |
 | `ps2-mc.sh` | Memory card images |
@@ -95,9 +101,21 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 ## Infrastructure
 | Tool | What it does |
 |---|---|
-| `tools/q` | Job queue with memory caps |
-| `tools/memwatch.py` | Host memory watchdog (memwatch.service) |
+| `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (default: the measured peak of earlier runs of the same kind of job + 10 %, from notes/jobq-peaks.tsv, which `tools/qpeak.py` fills; without history builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
+| `tools/qd` | Delegator: same arguments as `tools/q`, runs the job on whichever machine in `tools/hosts.local` (git-ignored) has room, copying the tree there over rsync for another machine; `--fetch PATH` copies results back, `-H NAME` forces a machine |
+| `tools/qstat.py` | This machine's queue state as JSON (budget, reserved, free, MemAvailable, swap, memwatch level, running and waiting jobs); `--fits GB` exits 0 when a job fits now. Used by `tools/qd` |
+| `tools/newbuild` | Seed a new build dir (`make BUILD=...`) or a new clone's `build/` (`--from` another tree's build) from an existing build, stamps included, so only what changed re-exports |
+| `tools/srcsum.py` | The Makefile's tool stamps: hash of a Python tool's syntax tree without comments / docstrings, so comment edits re-export nothing |
+| `tools/later` | Night queue: `later add <cmd>` keeps long jobs (soaks, routes, sweeps) for the idle hours, `later run` starts them through `tools/qd` (exports to the VPS, PCSX2 runs here); `later timer` prints a systemd timer |
+| `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
+| `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
+| `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
 | `progress.sh` | Status of long background jobs |
-| `notes/oss/check.sh` | Pre-commit check for game-derived / personal files |
+| `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |
+| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them |
+| `tools/iso9660.py` | Bootable disc image in pure Python, same layout and pack order as `ps2-iso.sh` (no xorriso) |
+| `tools/gamedata.py` | Layout of the game values the ELF loads at boot (player.gd / combat.gd / progress.gd) and the generator of `src/*_data.h` |
+| `tools/native/build-wasm.sh` | The C helpers as WebAssembly side modules for Pyodide (clang + wasm-ld) |
+| `tools/pages/build.py` | Builds the GitHub Pages site (`.github/workflows/pages.yml`): checks the player's game copy in the browser, hands out `build-iso.sh` pinned to the deployed main commit |

@@ -19,21 +19,36 @@ This is an early prototype, not a playable game yet.
 | Saving and loading on the memory card | Sound and music, cutscenes |
 | HUD (health, stamina, Estus, souls), 30 fps in PCSX2 | Full menus |
 
+### Screenshots
+
+The port running in PCSX2:
+
+| Firelink Shrine bonfire | Firelink Shrine graveyard |
+|---|---|
+| ![The Warrior standing by the Firelink Shrine bonfire, with the HUD showing health, stamina and Estus Flasks](docs/screenshots/firelink-bonfire.jpg) | ![The Warrior in the Firelink Shrine graveyard among the gravestones](docs/screenshots/firelink-graveyard.jpg) |
+
 `notes/PLAYTHROUGH.md` lists every system still needed for a full playthrough, with its status.
 `notes/TECH_DEBT.md` lists every known way the port differs from the original game.
 
 ## Legal note
 
 This repository contains **no game data**: no textures, models, maps, sounds, text, scripts, params or executable
-code from Dark Souls Remastered, and nothing derived from them. It contains no decompiled code either. You need your
-own legally bought copy of Dark Souls Remastered for PC (Steam). The build reads that copy and writes every
-game-derived file into `build/`, which is git-ignored. **Never share or commit anything in `build/`.**
+code from Dark Souls Remastered, and nothing derived from them, apart from the two screenshots above. It contains no
+decompiled code either. You need your own legally bought copy of Dark Souls Remastered for PC (Steam). The build
+reads that copy and writes every game-derived file into `build/`, which is git-ignored. **Never share or commit
+anything in `build/`.**
 
 Dark Souls is a trademark of FromSoftware / Bandai Namco. This project isn't affiliated with or endorsed by them.
 `notes/EXE_FINDINGS.md` records only facts about the game's executable (addresses, offsets, field names, constants,
 formulas), each with its source.
 
 ## Quick start
+
+**Just want to play?** The project page (https://nekomancer01.github.io/DarkSoulsPS2/) converts your game copy into a
+playable ISO of the latest `main` inside your browser: the same Python converter (`tools/convert.py`, run in Pyodide;
+its C helpers built as WebAssembly by `tools/native/build-wasm.sh`) plus the game-free ELF from CI, packed by
+`tools/iso9660.py`. Nothing is uploaded. It also offers `tools/build-iso.sh`, the same build as one local command in a
+Docker or Podman container. The steps below are the full developer setup.
 
 Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or a Linux VM.
 
@@ -98,7 +113,7 @@ make -C ps2/proto
 ```
 
 The first build converts the game data. It takes several minutes and several GB of RAM. Later builds only redo what
-changed. The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
+changed. `make` uses every CPU core by default; `make -j4` (or `JOBS=4`) limits it. The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
 
 ### 6. Play
 
@@ -125,7 +140,9 @@ make -C ps2/proto iso      # writes build/proto.iso
 | Select | Debug HUD (fps, timings, free memory) |
 | L3 | Debug: helmet off / on |
 
-With no input for 5 seconds, a scripted demo starts. Press any button to take over.
+The player is always under your control. The old idle demo walk is kept for testing only: build with
+`make EE_DBGINFOFLAGS=-DIDLE_DEMO` (or put `option demo` in a test script) and it starts after 5 seconds without input;
+press any button to take over.
 
 ## Troubleshooting
 
@@ -191,6 +208,20 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
+
+The name and layout references are read from fixed paths under `ext/` (or the environment variable, if set). Without
+them the tools still run: param rows keep their Japanese names, TAE events stay raw words, and EMEVD instructions keep
+their Japanese names (106 instruction uses that DSR's own `common.emedf` lacks don't decode). To fetch them:
+
+```sh
+git clone --depth 1 https://github.com/soulsmods/Paramdex ext/Paramdex          # tools/params.py: DS1R/Names, DS1R/Defs ($PARAMDEX)
+git clone --depth 1 https://github.com/AinTunez/DarkScript3 ext/DarkScript3     # tools/emevd.py: DarkScript3/Resources/ds1-common.emedf.json ($DARKSCRIPT3)
+git clone --depth 1 https://github.com/Meowmaritus/DSAnimStudio ext/DSAnimStudio # souls.tae_template, xcheck.py tae: DSAnimStudioNETCore/Res/TAE.Template.DS1*.xml
+```
+
+`tools/xcheck.py` also needs soulstruct in `.venv-tools`: the install steps are at the top of
+`tools/requirements-xcheck.txt` (the PyPI wheel lacks soulstruct's data files, so they come from a clone in
+`ext/soulstruct`). Checked 2026-11-01 against Paramdex ff7245e, DarkScript3 733f024, DSAnimStudio f1bff06.
 
 `tools/native/bcdec.h` (BC texture decoder, MIT / Unlicense) is included with its licence header.
 

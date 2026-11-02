@@ -1,7 +1,8 @@
 /* DSR -> PS2 character prototype: the Warrior with a Longsword on a white plane.
  * Controls (DualShock 2): left stick move (light tilt walks), Circle tap = roll / hold = dash, R1 = attack,
- * right stick = camera, L3 = helm off / on (debug), Select = debug HUD. With no controller input for 5 s it plays a
- * scripted demo (testscript.c); a test script from argv (test=<file>) drives a test run instead. */
+ * right stick = camera, L3 = helm off / on (debug), Select = debug HUD. A test script from argv (test=<file>) drives a
+ * test run instead. The idle demo walk (testscript.c) is test-only: "option demo" in a script, or a build with
+ * make EE_DBGINFOFLAGS=-DIDLE_DEMO. */
 #include <kernel.h>
 #include <sifrpc.h>
 #include <loadfile.h>
@@ -32,6 +33,8 @@
 #include "world.h"
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
+#include "bonfire.h"  /* A4: rest, death, bloodstain */
+#include "gamedata.h"  /* player / combat / progress values from c0000.pak (the ELF holds no game data) */
 #include <unistd.h>
 
 #define PI 3.14159265f
@@ -181,9 +184,100 @@ static void display_init(GSGLOBAL *gs)
 #endif
 #define FIELD_TICKS (294912000u / 60)  /* EE ticks per NTSC field (59.94 Hz, rounded) */
 
+/* Far depth of field (DSR DofBank, map_far_dof: blur = mul x saturate((z - begin) / (end - begin)) of view depth z;
+ * the linear ramp is ASSUMED, TECH_DEBT render-13). DSR blurs the distance (Firelink row 20: 10 -> 100 m, 60 %), which
+ * is what keeps its far walls steady; drawn sharp at 512 px, 2-3 px wide pillar faces step and crawl as the camera
+ * moves (render-12). Done in flip() after the sharp copy, as DOF_BANDS depth bands, farthest first: the draw
+ * buffer's alpha bit marks pixels beyond the band's depth (a Z-tested sprite writing alpha only: GEQUAL, larger Z is
+ * nearer, so a sprite at the band's Z passes where the scene is farther), the mark is point-copied into the
+ * display buffer's alpha, and two samples of the draw buffer, offset +-DOF_DX px / +-1 display line, are
+ * blended over the marked pixels (DATE). The marks only grow from band to band, so a pixel beyond band i gets bands
+ * N..i: per-band strengths are set so the product reaches the ramp's value. The HUD writes the nearest Z (hud.c),
+ * so it is never marked. */
+#ifndef DOF_BANDS
+#define DOF_BANDS 3
+#endif
+#define DOF_DX 1  /* px: horizontal offset of the blur taps, whole texels (half-texel offsets band in PCSX2; ASSUMED, judged
+                   * against the DSR frame at the render-12 spot) */
+#define DOF_TEXA 0x3B
+
+static int dof_regs(GSGLOBAL *gs, u64 *p)
+{
+    float b0, b1, mul;
+    if (!map_far_dof(&b0, &b1, &mul))
+        return 0;
+    int n = 0;
+#define REG(v, a) (*p++ = (v), *p++ = (a), n++)
+#define FULL(z)                                                                    \
+    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), 0x05),                         \
+     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), 0x05))
+    const u64 draw_a = GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    const u64 disp_a = GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    const u64 tex = GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 1, 1, 0, 0, 0, 0, 0);
+    /* clear the draw buffer's alpha bits (Z always, not written) */
+    REG(draw_a, 0x4C);
+    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
+    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), 0x01);
+    FULL(0);
+    REG(GS_SETREG_TEXA(0, 0, 0x80), DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
+    REG(0, 0x45);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
+    for (int i = DOF_BANDS; i >= 1; i--) {
+        /* a pixel between bands i and i + 1 gets bands 1..i: 1 - prod (1 - a_j) = mul x i / N */
+        float z = b0 + (b1 - b0) * (i - 0.5f) / DOF_BANDS, s = mul * i / DOF_BANDS, s0 = mul * (i - 1) / DOF_BANDS;
+        float a = 1 - (1 - s) / (1 - s0);
+        float x = 1 - sqrtf(1 - a);  /* two taps blended in turn: 1 - (1 - x)^2 = a */
+        int fix = (int)(x * 128 + 0.5f);
+        /* mark: alpha 1 where the scene lies beyond z */
+        REG(draw_a, 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), 0x01);
+        FULL((u32)(65535.0f * R_NEAR / z));
+        REG(0, 0x3F);  /* TEXFLUSH: the marks are read back as texture */
+        /* marks into the display buffer's alpha (point sampled, line 2y) */
+        REG(disp_a, 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
+        REG(tex, 0x06);
+        REG(GS_SETREG_TEX1(0, 0, 0, 0, 0, 0, 0), 0x14);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+        for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
+            REG(GS_SETREG_UV((x0 << 4) + 8, 8), 0x03);
+            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
+            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), 0x03);
+            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+        }
+        /* two offset bilinear taps over the marked pixels: Cd + (Cs - Cd) x fix / 128 */
+        REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 1, 1, 1, 1), 0x47);
+        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
+        REG(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
+        REG(GS_SETREG_ALPHA(0, 1, 2, 1, fix), 0x42);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0), 0x00);
+        for (int t = 0; t < 2; t++) {
+            /* the sprite moves, not its UV (UV is unsigned: a negative start wraps): tap 0 shows texel x - DOF_DX,
+             * lines 2y - 2 / 2y - 1 at (x, y), tap 1 texel x + DOF_DX, lines 2y + 2 / 2y + 3; the sharp copy has
+             * x, lines 2y / 2y + 1. The uncovered edge column / line keeps the sharp copy. */
+            int dx = (t ? -DOF_DX : DOF_DX) << 4, dy = t ? -16 : 16;
+            for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
+                REG(GS_SETREG_UV(x0 << 4, 16), 0x03);
+                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), 0x05);
+                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), 0x03);
+                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), 0x05);
+            }
+        }
+    }
+    REG(GS_SETREG_TEXA(0x80, 0, 0x80), DOF_TEXA);  /* gsKit's */
+    REG(1, 0x45);  /* DTHE back on (main: gs->Dithering) */
+    REG(gs->PrimAlpha, 0x42);
+#undef FULL
+#undef REG
+    return n;
+}
+
 static void flip(GSGLOBAL *gs)
 {
-    static u64 pk[2 * 64] __attribute__((aligned(64)));
+    static u64 pk[2 * 64 + 2 * 128 * DOF_BANDS] __attribute__((aligned(64)));
     static unsigned last_flip;
     gsKit_vsync_wait();
     for (int f = 1; f < FPS_CAP_FIELDS && cpu_ticks() - last_flip < (unsigned)(f * FIELD_TICKS + FIELD_TICKS / 2); f++)
@@ -210,6 +304,10 @@ static void flip(GSGLOBAL *gs)
         REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
         REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), 0x03);
         REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+    }
+    {
+        int k = dof_regs(gs, p);
+        p += 2 * k, n += k;
     }
     /* back to the draw buffer and the state the frame expects (main's TEST, repeat wrapping) */
     REG(GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
@@ -253,6 +351,14 @@ int main(int argc, char **argv)
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
+#ifdef IDLE_DEMO
+    test_opts |= TEST_DEMO;  /* demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO): the idle demo without a script */
+#endif
+    if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
+        printf("DSRPROTO gamedata: missing or from another build; stopping\n");
+        for (;;)
+            SleepThread();
+    }
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
     unsigned t_load = cpu_ticks();
@@ -323,9 +429,9 @@ int main(int argc, char **argv)
     combat_sweep_hook = objects_sweep_hook;  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
-        vram_free = 4 * 1024 * 1024 - gs->CurrentPointer;
-    printf("DSRPROTO vram: free %d, r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
-           4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
+        vram_free = r_vram_avail(gs);
+    printf("DSRPROTO vram: free %d (%d after the last page), r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
+           r_vram_avail(gs), 4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
     /* cut-out foliage: texels with CLUT alpha 0 are dropped (AFAIL keep = neither colour nor depth written) */
     gs->Test->ATE = 1;
     gs->Test->ATST = 5;  /* GEQUAL */
@@ -341,6 +447,7 @@ int main(int argc, char **argv)
         pl.on_map = 1;
     }
     save_apply_player(&pl);  /* saved position (same area), HP, deaths */
+    bonfire_init(AREA);      /* bloodstain / respawn point (src/bonfire.c, A4) */
 #ifdef TEST_SPAWN
     /* test start (make DEFS='-DTEST_SPAWN=x,y,z,yaw'), e.g. in front of the graveyard skeletons */
     {
@@ -402,8 +509,8 @@ int main(int argc, char **argv)
             in = (Input){0};
             idle = 0;
         }
-        int demo = idle > 5 && !(test_opts & TEST_NODEMO) && !test_active();
-        if (test_active() || demo)  /* test script (pad ignored), else the idle demo */
+        int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
+        if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
             test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
 #ifdef COL_TEST
         /* collision / movement check builds (make EE_DBGINFOFLAGS=-DCOL_TEST=n), from the spawn after 0.5 s:
@@ -484,7 +591,8 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_OBJECTS);
             objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
             event_update(&pl, dt);    /* EMEVD instances (src/event.c), then fog walls / gates block the player */
-            event_push_player(&pl.pos.x, COL_PLAYER_R, COL_PLAYER_H);
+            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
+            event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
         }
 
         PROF_MARK(PROF_CAMERA);
@@ -555,6 +663,7 @@ int main(int argc, char **argv)
 #ifndef MAP_PANO_R
         fx_draw();
 #endif
+        bonfire_draw();  /* the bloodstain marker */
         if (combat_dummy.hp_max) {  /* debug dummy: a box of its hurtbox size, red once dead; the blade capsule axis */
             float r = combat_dummy.radius, h = combat_dummy.height;
             r_box(v3(combat_dummy.pos[0], combat_dummy.pos[1], combat_dummy.pos[2]), m3_rot_y(combat_dummy.yaw),
@@ -643,9 +752,9 @@ int main(int argc, char **argv)
                      (int)((ram_free() & 0xFFFFF) * 10 >> 20));
             r_text_outlined(238, 310, 2, buf);
             if (world_stats.blocks) {  /* world blocks (src/world.c): under the player / full / loaded, reading, pools */
-                snprintf(buf, sizeof buf, "WLD B%d F%d L%d/%d R%d %d/%dK %dMS", world_stats.current, world_stats.full,
-                         world_stats.loaded, world_stats.blocks, world_stats.reading, world_stats.pool_used_kb,
-                         world_stats.pool_kb, world_stats.full_ms);
+                snprintf(buf, sizeof buf, "WLD B%d F%d W%X L%d/%d R%d %d/%dK %dMS", world_stats.current,
+                         world_stats.full, world_stats.want, world_stats.loaded, world_stats.blocks, world_stats.reading,
+                         world_stats.pool_used_kb, world_stats.pool_kb, world_stats.full_ms);
                 r_text_outlined(238, 294, 2, buf);
             }
             /* nearest enemy: AI goal, distance, HP, action anim, ESD states; enemies updated / drawn / spawned */
@@ -674,6 +783,8 @@ int main(int argc, char **argv)
         PROF_MARK(PROF_FLIP);
         gsKit_queue_exec(gs);
         flip(gs);
+        if (vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
+            vram_free = r_vram_avail(gs);
         test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
         save_tick(&pl, dt);  /* requested saves + autosave */
         static unsigned log_frames;

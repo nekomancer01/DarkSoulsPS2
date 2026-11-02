@@ -1,0 +1,20 @@
+# c0000 NPC stand-ins (src/npc.c), new game, m10_02's own constructor: the Crestfallen Warrior 6270 (c0000_0018) is
+# left enabled and sits by the bonfire (shown as the player model in its idle pose); Big Hat Logan 6031 is disabled
+# (flags 1092 / 1096 off), as in DSR. An event-style disable hides the stand-in.
+option hud
+option nodemo
+wait 4
+ev expect chr 6270 placed 1
+ev expect chr 6031 placed 1
+ev expect chr 6031 active 0
+spawn -49.0 -59.7 59.0 -0.48
+cam 0 0.2
+wait 1.5
+ev expect chr 6270 active 1
+shot npc_6270
+ev chr 6270 enable 0
+wait 0.5
+ev expect chr 6270 active 0
+shot npc_6270_off
+ev summary
+end

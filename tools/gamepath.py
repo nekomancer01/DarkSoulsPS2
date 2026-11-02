@@ -5,7 +5,8 @@ libraries on Linux (native, flatpak, distrobox host home) and Windows (every Ste
 
     python3 tools/gamepath.py            # prints the folder, exit 1 + a message on stderr if none is found
     python3 tools/gamepath.py --quiet    # prints the folder or nothing (config.mk)
-    import gamepath; gamepath.game_dir() # raises SystemExit with the same message
+    import gamepath; gamepath.game_dir() # raises SystemExit with the same message; warns on stderr when the folder
+                                         # is not a supported version (verify_game.warn_unsupported, cached)
 """
 import os, re, sys
 
@@ -94,14 +95,21 @@ Point it at the game folder (the one with DarkSoulsRemastered.exe), one of:
 Then check it with: python3 tools/verify_game.py"""
 
 
-def game_dir(arg=None):
-    """The game folder: an explicit argument (exporter argv) if it holds the game, else find(); exits with HELP."""
+def game_dir(arg=None, verify=True):
+    """The game folder: an explicit argument (exporter argv) if it holds the game, else find(); exits with HELP.
+    verify: also check the version (tools/verify_game.py, cached per folder; a warning, not an exit)."""
     if arg and _is_game(os.path.expanduser(arg)):
-        return os.path.abspath(os.path.expanduser(arg))
-    d, why = find() if not arg else (None, f"{arg!r} does not contain {EXE} and chr/")
-    if d:
-        return d
-    sys.exit(f"error: {why}\n{HELP}")
+        d = os.path.abspath(os.path.expanduser(arg))
+    else:
+        d, why = find() if not arg else (None, f"{arg!r} does not contain {EXE} and chr/")
+        if not d:
+            sys.exit(f"error: {why}\n{HELP}")
+    if verify:
+        if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import verify_game  # imports this module: loaded here, not at the top
+        verify_game.warn_unsupported(d)
+    return d
 
 
 if __name__ == "__main__":

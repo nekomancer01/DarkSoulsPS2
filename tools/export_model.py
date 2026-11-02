@@ -244,8 +244,8 @@ def write_model(out, names, parents, ref, mb, anims):
     sec["ref"] = len(blob) + HDR
     blob += b"".join(qt(r[1], r[0]) for r in ref)
     sec["verts"] = len(blob) + HDR
-    for pa, pb, na, ba, bb, wa, col, ms in verts:
-        blob += struct.pack("<6f3b8B1x", *pa, *pb, *(int(round(c * 127)) for c in na), ba, bb, wa, *col, *ms)
+    for pa, pb, na, ba, bb, wa, col, ms in verts:  # normals clamped: c5350's FLVER has components just over 1
+        blob += struct.pack("<6f3b8B1x", *pa, *pb, *(max(-127, min(127, int(round(c * 127)))) for c in na), ba, bb, wa, *col, *ms)
     order = sorted(range(len(tris)), key=lambda i: tri_tex[i])
     groups = []
     for n, i in enumerate(order):

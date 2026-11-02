@@ -16,7 +16,7 @@ def skeleton(hkx):
     names = []
     for i in range(bc):
         _, so, sc = h.items[struct.unpack_from("<I", h.data, bo + i * B.size + B.field("name")[0])[0]]
-        names.append(h.data[so:so + sc].split(b"\0")[0].decode())
+        names.append(h.data[so:so + sc].split(b"\0")[0].decode("cp932", "replace"))  # c2250 (Taurus) has Japanese bone names
     _, ro, rc = h.item(o, T, "referencePose")
     ref = []
     for i in range(rc):

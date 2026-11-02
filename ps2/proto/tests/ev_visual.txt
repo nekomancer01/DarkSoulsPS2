@@ -1,0 +1,46 @@
+# Event-switched visuals (TECH_DEBT event-5) in the default world build: what an event switches off disappears on
+# screen. Chunks of switched pieces / objects are keyed by entity id (dg.bin DGM3, src/drawgrp.c), event-owned map SFX
+# by their entity (fx.bin, src/fx.c). Each pair of shots has the same camera: before / after the event.
+# 1 Firelink catacombs lid (m10_02 event 11020350): closed lid o1480 (1021480) and the lid piece m2022B2 (1023501)
+#   drawn, the open lid o1481 (1021481) hidden by the event; flags 11010700 + 11400200 swap them.
+# 2 Burg fog wall o1419 (1011700; an hkx box without a mesh, the wall you see is its SFX) at the top of the aqueduct
+#   stairs and its SFX 1011701 (effect 81019, m10_01 event 11010090 slot 0): emitting until the action button; the
+#   event then switches the object off and deletes the SFX root only (no new particles; the live ones end within
+#   their life).
+option hud
+option noenemies
+option nodemo
+wait 2
+spawn -38.5 -56.3 87.0 0
+cam 0 0.5
+wait 1.5
+ev expect drawn 1021480 1
+ev expect drawn 1021481 0
+ev expect drawn 1023501 1
+shot lid_closed
+ev flag 11010700 1
+ev flag 11400200 1
+wait 0.5
+ev expect drawn 1021480 0
+ev expect drawn 1021481 1
+ev expect drawn 1023501 0
+shot lid_open
+spawn -50.12 -21.95 -31.5 2.708
+cam 2.708 0.2
+wait 3
+ev expect obj 1011700 1
+ev expect sfx 1011701 1
+shot fog_on
+spawn -50.12 -21.95 -32.52 2.708
+wait 0.5
+ev action
+wait 0.5
+ev expect obj 1011700 0
+wait 6.5  # the longest of its systems lives 6 s
+ev expect sfx 1011701 0
+spawn -50.12 -21.95 -31.5 2.708
+cam 2.708 0.2
+wait 1
+shot fog_off
+ev summary
+end

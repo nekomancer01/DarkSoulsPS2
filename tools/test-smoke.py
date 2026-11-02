@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Autotest smoke test: FromSoft's own test points (map/autotest/<area>_pNN.pointlist) for every exported area.
 
-  test-smoke.py <outdir> [--areas m10_02_00_00,...] [--max 30] [--fps-fail 20] [--holes-fail 0.002] [--gsdump]
+  test-smoke.py <outdir> [--areas m10_02_00_00,...] [--max 30] [--fps-fail 20] [--holes-fail 0.002] [--gsdump] [--jobs 2]
 
 For each area with a build (build/data/<area>.pak + build/proto[_<area>].sym.elf, `make [MAP=..] && make sym`): the
 area's pointlist points inside its exported region (tools/area.py) are de-duplicated (< 4 m apart) and thinned to --max,
@@ -95,11 +95,15 @@ def main():
     ap.add_argument("--fps-fail", type=float, default=20)
     ap.add_argument("--holes-fail", type=float, default=0.002)
     ap.add_argument("--gsdump", action="store_true")
-    ap.add_argument("--slot", type=int, help="PINE slot (default: test-run.py picks a free one)")
+    ap.add_argument("--slot", type=int, help="PINE slot (default: test-run.py picks a free one; forces --jobs 1)")
+    ap.add_argument("--jobs", type=int, default=int(os.environ.get("SMOKE_JOBS", 2)),
+                    help="areas run at once, one headless PCSX2 each (~1.5 GB host RAM apiece; default 2)")
     a = ap.parse_args()
     game = game_dir()
     areas = a.areas.split(",") if a.areas else exported_areas()
     summary = {"areas": {}, "failures": 0, "warnings": 0}
+    # areas run side by side (--jobs): tools/test-run.py gives each its own PINE slot, X display and data dir
+    runs = []
     for area in areas:
         out = os.path.join(a.outdir, area)
         os.makedirs(out, exist_ok=True)
@@ -117,7 +121,12 @@ def main():
         if a.gsdump:
             cmd.append("--gsdump")
         print(f"[smoke] {area}: {len(pts)} points", flush=True)
-        subprocess.run(cmd)
+        runs.append((area, out, pts, cmd))
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1 if a.slot else max(1, a.jobs)) as ex:
+        list(ex.map(lambda r: subprocess.run(r[3]), runs))
+    for area, out, pts, cmd in runs:
+        ar = summary["areas"][area]
         try:
             res = json.load(open(os.path.join(out, "result.json")))
         except (OSError, ValueError):

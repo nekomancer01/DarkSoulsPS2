@@ -14,12 +14,13 @@ flag 71010000 1
 flag 16000000 1  # area code 600 is not in the layout: ignored, reads 0
 flag 50000100 1
 flag 999 1
-flags 11015000 11015999 1
-flags 11015000 11015499 0
+# bulk range in chunk 4: chunks 5 / 6 of group 1 are temporary flags, cleared at load (ev_temp_flags_reset)
+flags 11014000 11014999 1
+flags 11014000 11014499 0
 flag 19905000 1
 souls 12345
 item 0x400001F4 3
-check flags 11015000 11015999 500
+check flags 11014000 11014999 500
 check flag 19905000 0
 check flag 16000000 0
 save

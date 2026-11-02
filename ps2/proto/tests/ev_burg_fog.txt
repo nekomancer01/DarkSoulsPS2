@@ -2,7 +2,8 @@
 # o1419_0000 (entity 1011700, hkx box collider) at the top of the aqueduct stairs, m10_01 event 11010090 slot 0.
 # Spawning there loads the Burg block (warp settle, src/world.c), which starts m10_01's events. The wall blocks the
 # player until the action button is used inside its front region 1012600; the event then warps the player to that
-# region, switches the object off (collider gone) and ends (flag 11010090 on). Walking on then passes the wall.
+# region (facing the wall), plays a00 7410 (E5: the walk through the fog, root motion), switches the object off and
+# ends (flag 11010090 on): the walk carries the player past the wall.
 option hud
 option noenemies
 option nodemo
@@ -24,10 +25,9 @@ ev action
 wait 0.5
 ev expect obj 1011700 0
 ev expect flag 11010090 1
-stick 0 1
-wait 1.5
-stick 0 0
-wait 0.3
+ev expect eventanim 1
+wait 4
+ev expect eventanim 0
 ev expect z < -34.0
 shot fog_passed
 ev waits

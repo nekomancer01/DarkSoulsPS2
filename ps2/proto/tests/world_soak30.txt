@@ -1,0 +1,959 @@
+# 30-minute world streaming soak (TECH_DEBT world-5): enemies ON, 72 rounds of ~25 s over every block of the default
+# world build: Firelink bonfire -> aqueduct (Burg lite) -> Burg entry / inside (Burg full, Firelink lite) -> aqueduct
+# -> far north of Firelink (Burg block off: types unload, goal trees reset) -> bonfire. Fails on a crash / hang /
+# EE-log error. Heap drift: tools/heapdrift.py on the EE log (lua0 "gc" lines = free heap right after each Lua sweep,
+# enemy "block 1 off" lines = the same spot every round). Generated: 12 rounds between shots (about 5 minutes each).
+# Run: tools/q -m 4 tools/py tools/test-run.py build/proto.sym.elf ps2/proto/tests/world_soak30.txt <out> --timeout 2400
+option hud
+option nodemo
+wait 3
+shot soak30_boot
+stats
+log round 1
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 2
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 3
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 4
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 5
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 6
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 7
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 8
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 9
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 10
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 11
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 12
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_1
+stats
+log round 13
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 14
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 15
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 16
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 17
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 18
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 19
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 20
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 21
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 22
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 23
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 24
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_2
+stats
+log round 25
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 26
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 27
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 28
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 29
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 30
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 31
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 32
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 33
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 34
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 35
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 36
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_3
+stats
+log round 37
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 38
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 39
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 40
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 41
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 42
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 43
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 44
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 45
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 46
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 47
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 48
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_4
+stats
+log round 49
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 50
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 51
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 52
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 53
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 54
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 55
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 56
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 57
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 58
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 59
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 60
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_5
+stats
+log round 61
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 62
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 63
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 64
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 65
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 66
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 67
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 68
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 69
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 70
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 71
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+log round 72
+spawn -47.6 -59.9 53.9 1.6
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 4
+spawn -48.5 -21.8 -35.5 4.0
+wait 5
+spawn -61.5 -25.2 -18.9 1.0
+wait 4
+spawn -44.8 -34.0 -8.4 4.0
+wait 3
+spawn -22.9 -76.2 185.3 3.14
+wait 5
+shot soak30_6
+stats

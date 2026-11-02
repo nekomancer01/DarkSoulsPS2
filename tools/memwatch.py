@@ -4,30 +4,61 @@
 Why: on 2026-10-31 systemd-oomd killed the whole Claude desktop scope twice (11:27, 11:35; RAM + swap > 90 %),
 taking every session down with it. oomd picks the biggest cgroup, so one runaway job inside a session kills them
 all. This watchdog acts earlier and kills only disposable job processes:
-  - any disposable process whose RSS + swap exceeds PROC_CAP (runaway job), at once;
-  - when the system is low (MemAvailable < LOW_AVAIL and swap use > LOW_SWAP_PCT), the largest disposable process,
-    one per POLL interval, until the system recovers.
+  - any disposable process whose memory (PSS + swap: shared pages split between the processes sharing them, RSS
+    before 2026-11-01) exceeds PROC_CAP (runaway job), at once;
+  - when the system is under real memory pressure, the largest disposable process is paused (SIGSTOP), one at a
+    time, and killed if pausing doesn't relieve it; paused jobs are resumed (SIGCONT) one by one once it is calm.
+Pressure = time stalled on memory (PSI, /proc/pressure/memory) or swap-ins from the disk swap file, not free or
+unused memory: page cache and reclaimable memory count as available (MemAvailable), and zram swap (compressed RAM,
+cheap to swap in) doesn't count. Before 2026-11-01 it fired on MemAvailable < 2.5 GB with >= 16 GB swap used, which
+was met with 20 GB in zram, 0 on disk and nothing stalling.
 Disposable = command line matches DISPOSABLE and none of PROTECT. The user's apps (Claude, browser, RuneLite,
 Steam, desktop) and the user's visible PCSX2 are never touched; headless test PCSX2 instances are (their flatpak
 instance ids are marked in /tmp/pcsx2-headless by tools/pcsx2-run.sh).
 Every action is logged to LOG with the top processes at that moment, and shown as a desktop notification.
+The service reloads itself when this file changes (a pull or merge): until 2026-11-02 the service kept running the
+code it started with, and the pre-PSI rule above (killed 4 export_map jobs on 11-02 with 20 GB idle in zram) stayed
+live for 17 h after its fix was merged. Paused jobs carry over through PAUSED.
 Usage: memwatch.py [--dry-run] [--once]
 """
-import os, re, signal, subprocess, sys, time
+import json, os, re, signal, subprocess, sys, time
 
 GiB = 1 << 30
 POLL = 2.0
 PROC_CAP = 8 * GiB          # one job process above this (RSS + swap) is a runaway
 MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this (wrapper shells free nothing)
-LOW_AVAIL = 4 * GiB         # system-low trigger: MemAvailable below this ...
-LOW_SWAP_PCT = 50           # ... and swap more than this % used (oomd kills at 90 % RAM + swap)
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "notes", "memwatch.log")
+# Pressure trigger (env overrides). PSI "full" = share of time every non-idle task was stalled on memory (avg10, %);
+# systemd-oomd kills a whole scope at 60 % for 30 s, so these act well before it. Disk swap-in = pswpin minus zram's
+# reads, averaged over SWAPIN_WINDOW polls. Values ASSUMED (TECH_DEBT test-6).
+PSI_PAUSE = float(os.environ.get("MEMWATCH_PSI_PAUSE", 10))     # pause the largest job at this full avg10 ...
+SWAPIN_PAUSE = float(os.environ.get("MEMWATCH_SWAPIN_MB", 20)) * (1 << 20)  # ... or this disk swap-in rate (B/s)
+PSI_KILL = float(os.environ.get("MEMWATCH_PSI_KILL", 30))       # kill the largest job at this full avg10
+PSI_CALM = float(os.environ.get("MEMWATCH_PSI_CALM", 2))        # resume paused jobs below this (and no disk swap-in)
+# hard floors that kill whatever PSI says: MemAvailable (already counts page cache and reclaimable slab), and free
+# swap (zram + disk) below SWAP_FREE_PCT, since oomd's ManagedOOMSwap kills at 90 % of all swap used. Not "swap
+# used": pages that sit in swap untouched cost nothing, and they stay there after the pressure is gone.
+LOW_AVAIL = int(float(os.environ.get("MEMWATCH_LOW_GB", 1)) * GiB)
+SWAP_FREE_PCT = float(os.environ.get("MEMWATCH_SWAP_FREE_PCT", 20))
+SWAPIN_WINDOW = 5           # polls (10 s)
+PAUSE_EVERY = 10.0          # s between two pauses (PSI avg10 needs a few seconds to show the effect of one)
+KILL_EVERY = 10.0           # s between two pressure kills (the hard floors kill every poll)
+RESUME_EVERY = 20.0         # s between two resumes, and of calm before the first
+STATE = "/tmp/memwatch.json"  # this poll's view, for tools/qstat.py (and the dashboard)
+PAUSED = "/tmp/memwatch-paused"  # <pid> <start time> per job this watchdog paused, so a restart resumes them
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+LOG = os.path.join(ROOT, "notes", "memwatch.log")
 
+# Work trees whose processes are disposable, matched by folder name so the same name works on the host and inside
+# a distrobox (different home paths): this checkout's folder, plus DSR_MEMWATCH_TREES (colon-separated folder names,
+# e.g. an older checkout that still runs jobs while work moves over). Sibling clones / worktrees named
+# <this folder>-<suffix> (e.g. DarkSoulsPS2-s2) count as this checkout.
+TREES = [t for t in os.environ.get("DSR_MEMWATCH_TREES", "").split(":") if t] + ["dsr-ref"]
+TREE_RE = "|".join([re.escape(os.path.basename(ROOT)) + r"(?:-[\w.-]+)?"] + [re.escape(t) for t in dict.fromkeys(TREES)])
 DISPOSABLE = re.compile(
-    r"dsr-ps2/|dsr-ref/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
+    r"(?<![\w.-])(?:" + TREE_RE + r")/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
     r"mips64r5900el-ps2-elf-|cc1 |ld\b.*proto\.elf|DarkSoulsRemastered\.exe|wine(server|64|-preloader)|"
     r"gamescope --backend headless|Xvfb :99|net\.pcsx2\.PCSX2|pcsx2-qt")
-JOB_CWD = re.compile(r"/dsr-ps2(/|$)|/dsr-ref(/|$)")
+JOB_CWD = re.compile(r"/(?:" + TREE_RE + r")(/|$)")
 PROTECT = re.compile(
     r"claude-desktop|/claude-code/|/claude |memwatch\.py|firefox|RuneLite|Jagex|steamwebhelper|steamrt64/steam|"
     r"plasmashell|kwin|discord|Discord|systemd|^/usr/bin/(kate|kwrite|code|codium|nvim|vim|gedit|dolphin|konsole)\b|progress\.sh")
@@ -39,6 +70,77 @@ def meminfo():
         k, v = line.split(":")
         m[k] = int(v.split()[0]) * 1024
     return m
+
+
+def psi():
+    """(some avg10, full avg10) of /proc/pressure/memory in %, or (0, 0) without PSI"""
+    r = {}
+    try:
+        for line in open("/proc/pressure/memory"):
+            kind, *kv = line.split()
+            r[kind] = float(dict(x.split("=") for x in kv)["avg10"])
+    except (OSError, KeyError, ValueError):
+        pass
+    return r.get("some", 0.0), r.get("full", 0.0)
+
+
+def swap_split():
+    """(zram swap used, other swap used, swap-ins so far from non-zram swap in bytes), from /proc/swaps, /proc/vmstat
+    and the zram devices' read counts (every zram read is a swap-in of one page)"""
+    zram = disk = 0
+    for line in open("/proc/swaps").readlines()[1:]:
+        f = line.split()
+        if "/zram" in f[0]:
+            zram += int(f[3]) * 1024
+        else:
+            disk += int(f[3]) * 1024
+    pswpin = 0
+    for line in open("/proc/vmstat"):
+        if line.startswith("pswpin "):
+            pswpin = int(line.split()[1])
+    zreads = 0
+    for dev in os.listdir("/sys/block"):
+        if dev.startswith("zram"):
+            try:
+                zreads += int(open(f"/sys/block/{dev}/stat").read().split()[0])
+            except (OSError, ValueError, IndexError):
+                pass
+    return zram, disk, max(0, pswpin - zreads) * os.sysconf("SC_PAGE_SIZE")
+
+
+def start_time(pid):
+    try:
+        return open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def load_paused():
+    """the jobs paused by this watchdog (also by an earlier run of it) that still exist: {pid: start time}"""
+    res = {}
+    try:
+        for line in open(PAUSED):
+            pid, st = line.split()
+            if start_time(int(pid)) == st:
+                res[int(pid)] = st
+    except (OSError, ValueError):
+        pass
+    return res
+
+
+def save_paused(paused):
+    with open(PAUSED + ".tmp", "w") as f:
+        f.write("".join(f"{p} {st}\n" for p, st in paused.items()))
+    os.replace(PAUSED + ".tmp", PAUSED)
+
+
+def write_state(st):
+    try:
+        with open(STATE + ".tmp", "w") as f:
+            json.dump(st, f)
+        os.replace(STATE + ".tmp", STATE)
+    except OSError:
+        pass
 
 
 def headless_pcsx2_pids():
@@ -90,6 +192,20 @@ def descendants(ps, root):
     return seen
 
 
+def pss(pid):
+    """Proportional set size + swap of a process (/proc/<pid>/smaps_rollup), or None. Unlike RSS, pages shared between
+    processes count once in total: the forked workers of one job no longer each count the parent's memory as theirs."""
+    try:
+        t = open(f"/proc/{pid}/smaps_rollup").read()
+    except OSError:
+        return None
+    m = re.search(r"^Pss:\s+(\d+)", t, re.M)
+    if not m:
+        return None
+    sw = re.search(r"^SwapPss:\s+(\d+)", t, re.M) or re.search(r"^Swap:\s+(\d+)", t, re.M)
+    return (int(m.group(1)) + (int(sw.group(1)) if sw else 0)) * 1024
+
+
 def disposable(ps):
     """Disposable processes; a headless PCSX2 instance counts with its whole process tree."""
     hl = set()
@@ -108,6 +224,11 @@ def disposable(ps):
         # 24 GB unseen, so a job is also any process whose working directory is inside the project
         if DISPOSABLE.search(c) or JOB_CWD.search(p["cwd"]):
             res.append(p)
+    for p in res:  # RSS overcounts shared pages: measure the candidates that matter by PSS (reading smaps costs more)
+        if p["mem"] >= MIN_KILL:
+            q = pss(p["pid"])
+            if q is not None:
+                p["mem"] = q
     return res
 
 
@@ -133,6 +254,7 @@ def kill(p, why, ps, dry):
         return
     try:
         os.kill(p["pid"], signal.SIGTERM)
+        os.kill(p["pid"], signal.SIGCONT)  # a paused job handles SIGTERM only once it runs again
         time.sleep(1.5)
         if os.path.exists(f"/proc/{p['pid']}"):
             os.kill(p["pid"], signal.SIGKILL)
@@ -141,24 +263,109 @@ def kill(p, why, ps, dry):
     notify(f"Killed {p['cmd'][:80]} ({p['mem'] / GiB:.1f} GB): {why}")
 
 
+def pause(p, why, ps, dry):
+    log(f"{'WOULD PAUSE' if dry else 'PAUSE'} {p['pid']} ({p['mem'] / GiB:.1f}G): {why}: {p['cmd'][:160]}", ps)
+    if dry:
+        return False
+    try:
+        os.kill(p["pid"], signal.SIGSTOP)
+    except ProcessLookupError:
+        return False
+    notify(f"Paused {p['cmd'][:80]} ({p['mem'] / GiB:.1f} GB): {why}")
+    return True
+
+
+def resume(pid, why, dry):
+    log(f"{'WOULD RESUME' if dry else 'RESUME'} {pid}: {why}")
+    if not dry:
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+
 def main():
     dry = "--dry-run" in sys.argv
-    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process, low < {LOW_AVAIL / GiB:.0f}G avail + > {LOW_SWAP_PCT}% swap)"
-        + (" DRY RUN" if dry else ""))
+    log(f"memwatch start (cap {PROC_CAP / GiB:.0f}G/process; pause at PSI full >= {PSI_PAUSE:g} % or disk swap-in >= "
+        f"{SWAPIN_PAUSE / (1 << 20):g} MB/s, kill at PSI full >= {PSI_KILL:g} %, < {LOW_AVAIL / GiB:g}G available or "
+        f"< {SWAP_FREE_PCT:g} % swap free; resume below {PSI_CALM:g} %)" + (" DRY RUN" if dry else ""))
+    paused = {} if dry else load_paused()
+
+    def bye(*_):  # never leave a job stopped behind
+        for pid in list(paused):
+            resume(pid, "memwatch exiting", dry)
+        if not dry:
+            save_paused({})
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+    swapins = []
+    me = os.path.abspath(__file__)
+    my_mtime = os.stat(me).st_mtime_ns
+    last_pause = last_kill = 0.0
+    calm_since = last_resume = time.time()
     while True:
+        now = time.time()
         ps = procs()
         d = disposable(ps)
+        alive = {p["pid"] for p in ps}
+        paused = {pid: st for pid, st in paused.items() if pid in alive}
         for p in d:
             if p["mem"] > PROC_CAP:
                 kill(p, f"over the {PROC_CAP / GiB:.0f} GB per-job cap", ps, dry)
+                paused.pop(p["pid"], None)
         m = meminfo()
-        swap_pct = 100 * (m["SwapTotal"] - m["SwapFree"]) / max(m["SwapTotal"], 1)
-        big = max((p for p in d if p["mem"] >= MIN_KILL), key=lambda p: p["mem"], default=None)
-        if m["MemAvailable"] < LOW_AVAIL and swap_pct > LOW_SWAP_PCT and big:
-            kill(big, f"system low: {m['MemAvailable'] / GiB:.1f}G available, swap {swap_pct:.0f}% used", ps, dry)
+        some, full = psi()
+        zram, disk, sin = swap_split()
+        swapins = (swapins + [(now, sin)])[-(SWAPIN_WINDOW + 1):]
+        rate = (swapins[-1][1] - swapins[0][1]) / (swapins[-1][0] - swapins[0][0]) if len(swapins) > 1 else 0.0
+        big = [p for p in d if p["mem"] >= MIN_KILL]
+        running = max((p for p in big if p["pid"] not in paused), key=lambda p: p["mem"], default=None)
+        biggest = max(big, key=lambda p: p["mem"], default=None)
+        why = (f"PSI full {full:.0f} % (some {some:.0f} %), disk swap-in {rate / (1 << 20):.0f} MB/s, "
+               f"{m['MemAvailable'] / GiB:.1f}G available, swap {zram / GiB:.1f}G zram + {disk / GiB:.1f}G disk")
+        level = "ok"
+        floor = m["MemAvailable"] < LOW_AVAIL or m["SwapFree"] < m["SwapTotal"] * SWAP_FREE_PCT / 100
+        if biggest and (floor or (full >= PSI_KILL and now - last_kill >= KILL_EVERY)):
+            kill(biggest, ("system low: " if floor else "pausing didn't help: ") + why, ps, dry)
+            paused.pop(biggest["pid"], None)
+            last_kill = now
+            level = "act"
+        elif full >= PSI_PAUSE or rate >= SWAPIN_PAUSE:
+            level = "act"
+            if running and now - last_pause >= PAUSE_EVERY:
+                if pause(running, "memory pressure: " + why, ps, dry):
+                    paused[running["pid"]] = start_time(running["pid"])
+                last_pause = now
+        elif full >= PSI_CALM or rate >= SWAPIN_PAUSE / 4 or some >= PSI_PAUSE:
+            level = "tight"
+        if level != "ok":
+            calm_since = now
+        elif paused and now - calm_since >= RESUME_EVERY and now - last_resume >= RESUME_EVERY:
+            pid = min(paused, key=lambda q: next((p["mem"] for p in d if p["pid"] == q), 0))  # smallest first
+            resume(pid, "calm again: " + why, dry)
+            paused.pop(pid)
+            last_resume = now
+        if paused and level == "ok":
+            level = "tight"
+        if not dry:  # a dry run beside the service leaves its files alone
+            save_paused(paused)
+            write_state({"t": now, "level": level, "psi_some": some, "psi_full": full,
+                         "disk_swapin_mbs": round(rate / (1 << 20), 1), "avail_gb": round(m["MemAvailable"] / GiB, 2),
+                         "zram_gb": round(zram / GiB, 2), "disk_swap_gb": round(disk / GiB, 2),
+                         "paused": sorted(paused)})
         if "--once" in sys.argv:
             break
         time.sleep(POLL)
+        try:
+            changed = os.stat(me).st_mtime_ns != my_mtime
+            if changed:
+                compile(open(me).read(), me, "exec")  # a half-written or broken file: keep running this code
+        except (OSError, SyntaxError):
+            changed = False
+        if changed:
+            log("memwatch: code changed on disk, reloading")
+            os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])  # paused jobs: saved above, loaded at start
 
 
 if __name__ == "__main__":

@@ -11,17 +11,19 @@
 
 #include "player.h"
 
-#define EV_SETS 5       /* set 0 = common.emevd, 1.. = loaded maps (one per world block) */
+#define EV_SETS 6       /* set 0 = common.emevd, 1.. = loaded maps (one per world block) */
 #define EV_MAX_INST 768 /* event instances alive at once, all sets (common + 2 maps start ~610 at most) */
 
 /* Once at boot, before the first map: common events (evcommon.bin, kept by the caller); starts common event 0 / 50 */
 int event_init(const void *common_blob);
 /* A map's events.bin (kept by the caller until event_block_off) for world block `block` (0 = the boot area from
- * main.c, others from world.c turn_on; its collision block for "Activate Hit"). Resets the map's x5xxx flags and
- * starts its events 50 and 0. NULL (a pack without events.bin) = no events. event_block_off of a block that was never
- * turned on does nothing. */
+ * main.c, others from world.c turn_on; its collision block for "Activate Hit"). Starts its events 50 and 0 (the
+ * temporary flags are cleared at boot and on a rest, as in DSR, not here). NULL (a pack without events.bin) = no
+ * events. event_block_off of a block that was never turned on does nothing. */
 void event_block_on(int block, const void *blob);
 void event_block_off(int block);
+/* After a warp's synchronous load (world.c settle): run every instance that can run until it waits (event-14) */
+void event_flush(void);
 /* Once a frame after the player / enemies / objects moved: action-button uses (ObjAct, treasure), then every running
  * instance until it waits. */
 void event_update(Player *pl, float dt);
@@ -29,10 +31,15 @@ void event_update(Player *pl, float dt);
 void event_action(void);
 /* Push a vertical capsule (feet pos, radius r, height h) out of the enabled object colliders; 1 if it touched one */
 int event_push_player(float pos[3], float r, float h);
-/* Bonfire rest (A4): Restart-on-rest events start over, End-on-rest ones stop */
+/* Bonfire rest (src/ev_misc.c bonfires, A4 later): the temporary flags of every area are cleared, Restart-on-rest
+ * events start over, End-on-rest ones stop */
 void event_rest(void);
-/* Test scripts ("ev <cmd>", testscript.c): flag ID 0|1, expect flag|obj|hit|treasure ID V, expect x|y|z <|> V,
- * action, warp ENTITY, trace 0|1|2, summary. Prints "TEST ev ..." lines (PASS / FAIL). */
+/* Position and yaw of an MSB entity of a loaded map (part, region, spawn point); 0 if none has that id */
+int event_entity(s32 id, float pos[3], float *yaw);
+/* Test scripts ("ev <cmd>", testscript.c): flag ID 0|1, obj destroy|restore|enable|disable ID (breakables),
+ * expect flag|obj|hit|treasure|objbroken ID V, expect x|y|z <|> V,
+ * expect inv ITEM N | bonfires N | respawn SPAWNPOINT | value FIRST BITS V | region ENTITY X Y Z 0|1 (region-local point),
+ * lot ID (award an item lot), rest, action, warp ENTITY, trace 0|1|2, summary. Prints "TEST ev ..." lines. */
 void event_test_cmd(const char *cmd);
 /* HUD line: instances running / waiting, conditions fired, last fired event, stubs, action prompt, update time */
 void event_status(char *buf, int n);

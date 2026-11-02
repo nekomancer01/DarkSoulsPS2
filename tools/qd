@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Usage: tools/qd [-H HOST] [--needs CAP,...] [--fetch PATH]... [-m GB] [-r GB] <command...>
+Run a heavy job through tools/q on whichever machine has room: this one, or another machine listed in
+tools/hosts.local. Same -m / -r as tools/q; the job's output streams back here and qd exits with its exit code.
+
+Picking a machine: every listed machine that has the job's capabilities is asked for its queue state
+(tools/qstat.py, over ssh for the others). The first one that fits the job now (free budget, MemAvailable and
+memwatch, see tools/qstat.py) with the most free budget wins, this machine on a tie; when none fits, the one with the
+fewest waiting jobs (then most free budget) gets it and its tools/q queues it. A machine that doesn't answer within
+a few seconds is skipped. -H HOST forces a machine.
+
+Capabilities: a job needs `game` when it builds or exports (make, export_*, test-all.sh) and `pcsx2` when it runs
+PCSX2 (pcsx2-run.sh, test-all.sh, test-run.py, test-smoke.py, test-gsdump.py); --needs adds more, `--needs none`
+clears them.
+
+On another machine the job runs in <repo>-d/<this tree's name>: a clone of that machine's checkout, kept between
+jobs, with this tree's working files (tracked + untracked, not ignored, uncommitted edits included) copied over by
+rsync before each job. Its git-ignored helpers (ext/, .venv, config.local.mk, ...) are linked from that machine's
+checkout, and its first build is seeded from that checkout's build/ (tools/newbuild). Files deleted here are not
+deleted there. Nothing comes back but the output, unless --fetch PATH (relative to the tree, repeatable) names files
+or directories to copy back after the job, e.g. --fetch build/proto.elf.
+
+tools/hosts.local (git-ignored: it names machines) has one machine per line, `#` comments:
+    NAME  TARGET  REPO  BUDGET_GB  MAKE_GB  CAPS
+TARGET is `local` for this machine or an ssh destination (key login, no prompt); REPO is that machine's checkout;
+BUDGET_GB / MAKE_GB become its tools/q DSR_Q_BUDGET / DSR_Q_MAKE_GB for delegated jobs (`-` keeps its default);
+CAPS is a comma list (game, pcsx2, ...) or `-`. Without the file, qd just runs tools/q here.
+    pc    local             ~/DarkSoulsPS2   20  8  game,pcsx2
+    vps   user@vps-address  ~/DarkSoulsPS2   6   6  game
+Every delegation is logged to notes/qd.log here; the job itself is in the receiving machine's notes/jobq.log, with
+DSR_Q_FROM=<this host> in its environment (tools/qstat.py reports it as `from`).
+"""
+import concurrent.futures, json, os, shlex, socket, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HOSTS = os.path.join(ROOT, "tools", "hosts.local")
+# git-ignored things a build needs, linked from the receiving checkout (same list as tools/worktree.sh)
+LINKS = "ext tools/ext tools/vgmstream tools/liq tools/lz4hc/build data/ref .venv .venv-tools config.local.mk".split()
+# DSR_QD_SSH: another ssh command (extra options, or a stand-in for tests)
+SSH = shlex.split(os.environ.get("DSR_QD_SSH", "ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=30"))
+
+
+def die(msg):
+    print(f"qd: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def read_hosts():
+    hosts = []
+    if not os.path.exists(HOSTS):
+        return hosts
+    with open(HOSTS) as f:
+        for line in f:
+            w = line.split("#", 1)[0].split()
+            if not w:
+                continue
+            if len(w) != 6:
+                die(f"{HOSTS}: want NAME TARGET REPO BUDGET_GB MAKE_GB CAPS, got: {line.strip()}")
+            name, target, repo, budget, make_gb, caps = w
+            hosts.append({"name": name, "target": target, "repo": repo,
+                          "budget": None if budget == "-" else budget, "make_gb": None if make_gb == "-" else make_gb,
+                          "caps": set() if caps == "-" else set(caps.split(","))})
+    return hosts
+
+
+def remote_env(h):
+    env = {"DSR_Q_FROM": socket.gethostname()}
+    if h["budget"]:
+        env["DSR_Q_BUDGET"] = h["budget"]
+    if h["make_gb"]:
+        env["DSR_Q_MAKE_GB"] = h["make_gb"]
+    return env
+
+
+def sh_env(env):
+    return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+
+
+def repo_sh(repo):
+    """a REPO path for a remote shell: ~ stays unquoted so the remote side expands it"""
+    return "~/" + shlex.quote(repo[2:]) if repo.startswith("~/") else shlex.quote(repo)
+
+
+def ask(h):
+    """the machine's tools/qstat.py JSON, or None when it doesn't answer"""
+    env = remote_env(h)
+    if h["target"] == "local":
+        cmd = [sys.executable, os.path.join(ROOT, "tools", "qstat.py")]
+        env = {**os.environ, **env}
+    else:
+        cmd = SSH + [h["target"], f"cd {repo_sh(h['repo'])} && {sh_env(env)} python3 tools/qstat.py"]
+        env = None
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        return json.loads(out.stdout) if out.returncode == 0 else None
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return None
+
+
+def reserve_gb(argv, cap, res, make_gb):
+    """the reservation tools/q will make for this job on a machine (its rule: a build reserves at most MAKE_GB)"""
+    if res is not None:
+        return res
+    line = " ".join(argv)
+    big = "test-all.sh" in line or argv[0] == "make" or argv[0].endswith("/make")
+    return min(cap, int(make_gb or 8)) if big else cap
+
+
+def needs_of(argv):
+    line = " ".join(argv)
+    caps = set()
+    if argv[0] == "make" or argv[0].endswith("/make") or "export_" in line or "test-all.sh" in line:
+        caps.add("game")
+    if any(k in line for k in ("pcsx2", "test-all.sh", "test-run.py", "test-smoke.py", "test-gsdump.py")):
+        caps.add("pcsx2")
+    return caps
+
+
+def pick(hosts, argv, cap, res):
+    with concurrent.futures.ThreadPoolExecutor(len(hosts)) as ex:
+        states = list(ex.map(ask, hosts))
+    best = None
+    for h, s in zip(hosts, states):
+        if s is None:
+            print(f"qd: {h['name']}: no answer, skipped", file=sys.stderr)
+            continue
+        r = reserve_gb(argv, cap, res, h["make_gb"])
+        fit = (s["free_gb"] >= r and s["mem_avail_gb"] >= r and (s["memwatch"] or {}).get("level") != "act")
+        key = (fit, -len(s["waiting"]) if not fit else 0, s["free_gb"], h["target"] == "local")
+        print(f"qd: {h['name']}: free {s['free_gb']}/{s['budget_gb']} GB, {s['mem_avail_gb']} GB available, "
+              f"{len(s['running'])} running, {len(s['waiting'])} waiting{' (fits)' if fit else ''}", file=sys.stderr)
+        if best is None or key > best[0]:
+            best = (key, h)
+    return best[1] if best else None
+
+
+def run_local(qargs, argv):
+    os.execv(os.path.join(ROOT, "tools", "q"), ["q"] + qargs + argv)
+
+
+def run_remote(h, qargs, argv, fetch):
+    t, repo = h["target"], h["repo"]
+    rr = repo_sh(repo)
+    wd = f"{rr}-d/{shlex.quote(os.path.basename(ROOT))}"
+    links = " ".join(shlex.quote(l) for l in LINKS)
+    # a clone of the receiving checkout (git works there: version stamps, tools/q's log), its helpers linked, its
+    # first build seeded from the checkout's build/
+    prep = (f"set -e; R=$(cd {rr} && pwd); W={wd}; mkdir -p \"$R-d\"; "
+            f"[ -d \"$W/.git\" ] || git clone -q --shared \"$R\" \"$W\"; "
+            f"for l in {links}; do [ -e \"$R/$l\" ] && [ ! -e \"$W/$l\" ] && mkdir -p \"$W/$(dirname $l)\" && "
+            f"ln -s \"$R/$l\" \"$W/$l\"; done; "
+            f"if [ ! -d \"$W/build\" ] && [ -d \"$R/build/gen\" ]; then "
+            f"(cd \"$R\" && tools/newbuild \"$W/build\" >&2) || echo 'qd: build not seeded' >&2; fi; "
+            f"cd \"$W\" && pwd")
+    r = subprocess.run(SSH + [t, prep], stdout=subprocess.PIPE, text=True)
+    if r.returncode:
+        die(f"{h['name']}: could not prepare {wd}")
+    wabs = r.stdout.strip().splitlines()[-1]
+    files = subprocess.run(["git", "-C", ROOT, "ls-files", "-z", "-co", "--exclude-standard"],
+                           capture_output=True, check=True).stdout
+    # an untracked symlink to a git-ignored helper (tools/worktree.sh links) stays out: the remote has its own
+    files = b"\0".join(f for f in files.split(b"\0") if f and f.decode() not in LINKS)
+    dest = f"{t}:{wabs}/"
+    r = subprocess.run(["rsync", "-a", "--from0", "--files-from=-", "-e", " ".join(SSH), ROOT + "/", dest], input=files)
+    if r.returncode:
+        die(f"{h['name']}: rsync of the tree failed ({r.returncode})")
+    env = remote_env(h)
+    job = (f"cd {shlex.quote(wabs)} && export {sh_env(env)} DSR_Q_LOGDIR=\"$(cd {rr} && pwd)/notes\" && source ps2/env.sh && "
+           f"exec tools/q {' '.join(shlex.quote(a) for a in qargs + argv)}")
+    tty = ["-tt"] if sys.stdin.isatty() else []    # a tty makes Ctrl-C here stop the job there
+    rc = subprocess.run(SSH + tty + [t, f"bash -c {shlex.quote(job)}"]).returncode
+    for p in fetch:
+        src = f"{t}:{wabs}/{p.rstrip('/')}"
+        dst = os.path.join(ROOT, os.path.dirname(p.rstrip("/")))
+        os.makedirs(dst, exist_ok=True)
+        if subprocess.run(["rsync", "-a", "-e", " ".join(SSH), src, dst + "/"]).returncode:
+            print(f"qd: could not fetch {p} from {h['name']}", file=sys.stderr)
+            rc = rc or 1
+    return rc
+
+
+def main():
+    a = sys.argv[1:]
+    force, extra, fetch, qargs, cap, res = None, None, [], [], 10, None
+    while a:
+        if a[0] == "-H" and len(a) > 1:
+            force = a[1]; a = a[2:]
+        elif a[0] == "--needs" and len(a) > 1:
+            extra = set() if a[1] == "none" else set(a[1].split(",")); a = a[2:]
+        elif a[0] == "--fetch" and len(a) > 1:
+            fetch.append(a[1]); a = a[2:]
+        elif a[0] in ("-m", "-r") and len(a) > 1:
+            qargs += a[:2]
+            if a[0] == "-m":
+                cap = int(a[1])
+            else:
+                res = int(a[1])
+            a = a[2:]
+        elif a[0] in ("-h", "--help"):
+            print(__doc__); return 0
+        else:
+            break
+    if not a:
+        die("usage: tools/qd [-H HOST] [--needs CAP,...] [--fetch PATH]... [-m GB] [-r GB] <command...>")
+    hosts = read_hosts()
+    if not hosts:
+        run_local(qargs, a)
+    need = needs_of(a) if extra is None else extra
+    if force:
+        cand = [h for h in hosts if h["name"] == force]
+        if not cand:
+            die(f"no host {force} in {HOSTS}")
+        h = cand[0]
+    else:
+        cand = [h for h in hosts if need <= h["caps"]]
+        if not cand:
+            die(f"no host in {HOSTS} has {','.join(sorted(need))}")
+        h = pick(cand, a, cap, res)
+        if h is None:
+            die("no host answered")
+    with open(os.path.join(ROOT, "notes", "qd.log"), "a") as f:
+        f.write(f"{time.strftime('%F %T')} -> {h['name']} [{os.path.basename(ROOT)}]: {' '.join(qargs + a)}\n")
+    print(f"qd: running on {h['name']}", file=sys.stderr)
+    if h["target"] == "local":
+        os.environ.update({k: v for k, v in remote_env(h).items() if k != "DSR_Q_FROM"})
+        run_local(qargs, a)
+    return run_remote(h, qargs, a, fetch)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

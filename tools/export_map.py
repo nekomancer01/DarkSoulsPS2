@@ -32,7 +32,7 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
           nav_verts f32[3]  nav_tris u16[3]
   fog     u32 rows, collision tris, 0, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
-          light, specular terms; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
+          light, specular terms, far depth of field; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
           MSB collision part)
 DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell table offset (after the fog offset);
           the chunk table holds the resident chunks grouped by cell (sky chunks last); flags bit 6 = coarse level
@@ -40,24 +40,34 @@ DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell tabl
           packed raw so it can be read in place): see write_cells. Without STREAM, cells.bin is empty.
 Usage: export_map.py <game dir> <out.bin> [map id] [preview prefix]
        export_map.py --render <map.bin> <preview prefix>   (offline renders of an existing map.bin, see VIEWS)"""
-import functools, math, os, struct, sys, time
+import functools, gc, json, math, os, struct, sys, time
+
+# Python's cyclic GC: with the default thresholds the exporter's millions of long-lived tuples / lists were scanned by
+# 45 full collections, 47 s of Firelink's 259 s (profiled 2026-11-02; also most of the simplify cache's load time). The
+# exporter makes almost no reference cycles, so young collections run 100x less often and full ones only every ~500M
+# allocations; gather()'s result is frozen out of later scans (main). EXPORT_GC=default keeps Python's thresholds (A/B).
+if os.environ.get("EXPORT_GC") != "default":
+    gc.set_threshold(70000, 50, 100)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
 import texmap
 import export_normal
-import export_effects
 import dsr_light
 import area as area_mod
 import pose_obj
 import drawgroups
+import emevd
 import numpy as np
 
 TEX_MAX = 128
 # breakable types tools/export_objects.py left out for its RAM budget (its <objects.bin>.static list, Makefile passes
 # STATIC_OBJ=<file>): drawn as static map objects (intact model) instead of not at all
 STATIC_BREAKABLES = set(open(os.environ["STATIC_OBJ"]).read().split()) if os.environ.get("STATIC_OBJ") else set()
+# animated objects (doors, levers, gates, chests: export_objects.py's <objects.bin>.anim part names, Makefile passes
+# ANIM_OBJ=<file>): src/objects.c draws them with their anims, so they are not baked
+ANIM_PARTS = set(open(os.environ["ANIM_OBJ"]).read().split()) if os.environ.get("ANIM_OBJ") else set()
 # PS2 triangle budget: most Firelink pieces only have LOD0 (and the game's LOD1/2, where present, are worse than
 # QEM at the same count). Foliage is thinned by whole card / tuft (keep 1 in GRASS_KEEP, each with a rank that map.c
 # compares with a density falling off with distance, see thin_foliage); everything else goes through quadric
@@ -82,10 +92,22 @@ NEAR = float(os.environ.get("NEAR", 4.0))
 STREAM = os.environ.get("STREAM") == "1"
 EPS_FAR = float(os.environ.get("EPS_FAR", (6 / 568) ** 2))
 STREAM_D = float(os.environ.get("STREAM_D", 32.0))
+# far-only cells (STREAM_FAR, the backdrop): their own coarse error. QEM's point-to-plane error lets vertices slide
+# along a face's plane, so silhouettes move far more than EPS_FAR says: Firelink's ring wall (render-12) rose ~20 px
+# with merlons / pillar caps collapsed and crack pinholes at 8 px, and matches DSR at 3 px. ASSUMED 3 px (finer: 1 px
+# costs Firelink's whole near arena when applied to every coarse cell; backdrop-only it is a few k tris).
+BACKDROP_EPS = float(os.environ.get("BACKDROP_EPS", (3 / 568) ** 2))
 # cells whose centre is farther than this from every navmesh vertex never come within mapstream.c's 40 m load radius
 # (+ half a cell diagonal + margin): one resident level, simplified without cell cuts (only their border with streamed
 # cells stays locked), no near blob
 STREAM_FAR = float(os.environ.get("STREAM_FAR", 78.0))
+# thin faces of the coarse / backdrop levels (render-12, soften_thin): narrower than SOFT_PX pixels at their nearest
+# view distance, their colour goes toward their surroundings. ASSUMED 2 px (measured on Firelink's ring wall pillars);
+# SOFT_FOCAL = the runtime's horizontal focal length in px (render.c FOCAL_X at 512 px); SOFT_PX=0 turns it off (A/B)
+SOFT_PX = float(os.environ.get("SOFT_PX", 2.0))
+SOFT_FOCAL = 609.0 * 512 / 640
+SOFT_REACH = 40.0  # m: viewpoints for the projected width: navmesh samples within this of the nearest (ASSUMED)
+SOFT_R_PX = float(os.environ.get("SOFT_R_PX", 4.0))  # footprint radius of the colour average, px (ASSUMED)
 CHUNK_COARSE = 64
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
@@ -163,13 +185,15 @@ def near_level(t, dds, name):
 
 def split_batch(ks, cents):
     """Triangles of one (texture, flags, cell) group -> ceil(n / CHUNK_TRIS) batches of nearly equal size, by recursive
-    median cuts along the longest axis of the centroids, so every batch is full and its box compact (F2)."""
+    median cuts along the longest axis of the centroids, so every batch is full and its box compact (F2).
+    ks: triangle numbers (int array), cents: centroid per triangle number (array (n, 3))."""
     k = -(-len(ks) // CHUNK_TRIS)
     if k <= 1:
         return [ks]
-    ext = [max(cents[i][a] for i in ks) - min(cents[i][a] for i in ks) for a in range(3)]
-    ax = ext.index(max(ext))
-    ks = sorted(ks, key=lambda i: cents[i][ax])
+    c = cents[ks]
+    ext = c.max(0) - c.min(0)
+    ax = int(np.argmax(ext))  # first longest axis
+    ks = ks[np.argsort(c[:, ax], kind="stable")]
     k1 = k // 2
     cut = max(len(ks) - (k - k1) * CHUNK_TRIS, min(k1 * CHUNK_TRIS, round(len(ks) * k1 / k)))
     return split_batch(ks[:cut], cents) + split_batch(ks[cut:], cents)
@@ -186,10 +210,31 @@ def pos_scale(lo, hi, org):
 
 CHUNK_TAG = []  # build_chunks: (level, cell) per chunk (STREAM), else None
 CHUNK_DG = []  # build_chunks: draw-group set index per chunk (tools/drawgroups.py, dg.bin)
+CHUNK_ENT = []  # build_chunks: MSB entity id per chunk (0 = none): the part an event switches on / off (dg.bin DGM3)
+# TECH_DEBT event-5: pieces / objects whose entity id the map's events switch ((De)activate Object, Activate Map Part,
+# tools/emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
+EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
 
-def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tcell=None, dgk=None):
+_py_sum3 = dsr_light.sum3  # Python's sum() of three floats, per element
+
+
+def _first_ext(v, X, cs):
+    """min / max per batch from ufunc.reduceat (v) with the sign of a zero result taken from the first zero in the
+    batch, as Python's min() / max() keep the first of equal values"""
+    z = np.nonzero(v == 0)
+    if len(z[0]):
+        v = v.copy()
+        for b, a in zip(*(i.tolist() for i in z)):
+            s = cs[b]
+            e = cs[b + 1] if b + 1 < len(cs) else len(X)
+            col = X[s:e, a]
+            v[b, a] = col[np.argmax(col == 0)]
+    return v
+
+
+def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tcell=None, dgk=None, entk=None):
     """Triangles -> VU1 batches: (texture, flags, tri count, pos bytes, st bytes, colour bytes, min, max, origin, pos
     step, st scale), grouped across meshes by (texture, cull flag, CHUNK_GRID cell of the centroid) and cut into full,
     compact batches (split_batch). Foliage (fol[k] = (rank, tuft, tuft size), else None): whole tufts grouped by
@@ -201,15 +246,44 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     coordinates >= 16); colour u8 x4 (V4-8). bkey: {triangle: normal-map key} (export_normal.assign): triangles
     with different keys never share a chunk; export_normal.CHUNK_BUMP gets each chunk's key. tcell (STREAM): per
     triangle (level, cell) or None: such triangles are grouped by that CHUNK_GRID cell (no coarser far cells) and
-    level; CHUNK_TAG gets each chunk's (level, cell) or None."""
-    groups, tufts, cents = {}, {}, {}
+    level; CHUNK_TAG gets each chunk's (level, cell) or None. dgk / entk: per triangle draw-group set / switched
+    entity id (CHUNK_DG / CHUNK_ENT per chunk); triangles with different ones never share a chunk."""
+    # vectorised (was 26 s of pure Python per corner at Firelink): every value is computed with the same float
+    # operations in the same order as the per-corner code was, so map.bin is unchanged (see _py_sum3, _first_ext)
+    nt = len(tris)
+    T = np.asarray(tris, np.int64).reshape(-1, 3)
+    fvt = np.zeros(nt, np.int64)
+    for ti, fv, vc, ft, tc, fl, lo, hi in meshes:
+        fvt[ft:ft + tc] = fv
+    G = T + fvt[:, None]  # global vertex per corner
+    P = np.array([v[0] for v in verts], np.float64).reshape(-1, 3)
+    exact = all(type(x) is float for v in verts for x in v[0])
+    if exact:
+        X = P[G]
+        C = _py_sum3(X[:, 0], X[:, 1], X[:, 2]) / 3
+    else:  # positions that are not plain floats: Python's own sum (other summation rules)
+        C = np.array([[sum(verts[fvt[k] + i][0][a] for i in tris[k]) / 3 for a in range(3)] for k in range(nt)],
+                     np.float64).reshape(-1, 3)
+    cl = C.tolist()
+    # distance-scaled CHUNK_GRID cell of each centroid: floor(log2(max(1, dist / 4 grid))) from the float's exponent;
+    # values within 1e-9 of a power of two are redone with math.log2 as before (its rounding decides there)
+    D = C - np.asarray(centre, np.float64)
+    r = np.sqrt(_py_sum3(D[:, 0] ** 2, D[:, 1] ** 2, D[:, 2] ** 2)) / (4 * CHUNK_GRID)
+    mant, ex = np.frexp(r)
+    lvl = np.where(r >= 1.0, ex - 1, 0)
+    for k in np.nonzero((r >= 1.0) & ((np.abs(mant - 0.5) < 1e-9) | (np.abs(mant - 1.0) < 1e-9)))[0].tolist():
+        c = cl[k]
+        dist = math.sqrt(sum((c[a] - centre[a]) ** 2 for a in range(3)))
+        lvl[k] = max(0, int(math.log2(max(1.0, dist / (4 * CHUNK_GRID)))))
+    gq = (CHUNK_GRID * np.ldexp(1.0, lvl)).tolist()
+    fq = np.floor(C / np.asarray(gq)[:, None]).astype(np.int64).tolist()
+    groups, tufts = {}, {}
     for ti, fv, vc, ft, tc, fl, lo, hi in meshes:
         for k in range(ft, ft + tc):
-            ps = [verts[fv + i][0] for i in tris[k]]
-            c = [sum(p[a] for p in ps) / 3 for a in range(3)]
-            cents[k] = c
+            c = cl[k]
             if fol[k]:
-                t = tufts.setdefault(fol[k][1], [ti, fl, fol[k][0], fol[k][2], [0.0] * 3, [], dgk[k] if dgk else 0])
+                t = tufts.setdefault(fol[k][1], [ti, fl, fol[k][0], fol[k][2], [0.0] * 3, [], dgk[k] if dgk else 0,
+                                                 entk[k] if entk else 0])
                 t[4] = [t[4][a] + c[a] for a in range(3)]
                 t[5].append((fv, k))
                 continue
@@ -218,12 +292,10 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
                         c[1] > centre[1])
             elif tcell and tcell[k] is not None:
                 cell = ("s", tcell[k][0]) + tuple(tcell[k][1])
-            else:
-                dist = math.sqrt(sum((c[a] - centre[a]) ** 2 for a in range(3)))
-                g = CHUNK_GRID * (1 << max(0, int(math.log2(max(1.0, dist / (4 * CHUNK_GRID))))))  # coarser far away
-                cell = (g,) + tuple(int(math.floor(c[a] / g)) for a in range(3))
+            else:  # coarser far away
+                cell = (gq[k],) + tuple(fq[k])
             # dgk: pieces with different draw groups never share a chunk (src/drawgrp.c hides chunks per group)
-            cell += (dgk[k] if dgk else 0,)
+            cell += (dgk[k] if dgk else 0, entk[k] if entk else 0)
             # the coarse level (STREAM level 0) is drawn beyond the relief range: no normal-map split, fuller batches
             bk = bkey.get(k) if bkey and not (tcell and tcell[k] is not None and tcell[k][0] == 0) else None
             groups.setdefault((ti, fl, cell, bk), []).append((fv, k))
@@ -232,17 +304,19 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     export_normal.CHUNK_BUMP.clear()
     CHUNK_TAG.clear()
     CHUNK_DG.clear()
+    CHUNK_ENT.clear()
     for (ti, fl, cell, bk), ks in groups.items():
-        fvk = dict((k, fv) for fv, k in ks)
-        for part in split_batch([k for _, k in ks], cents):
-            batches.append((ti, fl, [(fvk[k], k) for k in part]))
+        for part in split_batch(np.array([k for _, k in ks], np.int64), C):
+            part = part.tolist()
+            batches.append((ti, fl, part))
             export_normal.CHUNK_BUMP.append((bk, part) if bk else None)
-            CHUNK_TAG.append((cell[1], cell[2:-1]) if cell[0] == "s" else None)
-            CHUNK_DG.append(cell[-1])
+            CHUNK_TAG.append((cell[1], cell[2:-2]) if cell[0] == "s" else None)
+            CHUNK_DG.append(cell[-2])
+            CHUNK_ENT.append(cell[-1])
     fgroups = {}
     near_r = min(1.0, (GRASS_D0 / GRASS_NEAR_D) ** 2)
-    for ti, fl, r, n, c, ks, dg in tufts.values():
-        cell = tuple(int(math.floor(c[a] / len(ks) / GRASS_GRID)) for a in range(3)) + (dg,)
+    for ti, fl, r, n, c, ks, dg, ent in tufts.values():
+        cell = tuple(int(math.floor(c[a] / len(ks) / GRASS_GRID)) for a in range(3)) + (dg, ent)
         # STREAM: (CHUNK_GRID cell of the tuft centre) for tufts only drawn nearer than GRASS_NEAR_D, else resident
         sc = tuple(int(math.floor(c[a] / len(ks) / CHUNK_GRID)) for a in range(3)) if tcell and r >= near_r else None
         fgroups.setdefault((ti, fl, n, cell, sc), []).append((r, ks))
@@ -253,58 +327,67 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
             part = ts[i:i + per]
             lo, hi = int(part[0][0] * 255), min(255, math.ceil(part[-1][0] * 255))
             batches.append((ti, fl | CHUNK_GRASS | min(n, 255) << 8 | lo << 16 | hi << 24,
-                            [k for _, ks in part for k in ks]))
+                            [k for _, ks in part for _, k in ks]))
             export_normal.CHUNK_BUMP.append(None)
             CHUNK_TAG.append((1, sc) if sc else None)
-            CHUNK_DG.append(cell[-1])
-    # chunk boxes, origins and steps; then the step of each position = the coarsest among the chunks using it
-    info = []
-    for ti, fl, part in batches:
-        mn, mx = [1e9] * 3, [-1e9] * 3
-        for fv, k in part:
-            for vi in tris[k]:
-                p = verts[fv + vi][0]
-                for a in range(3):
-                    mn[a], mx[a] = min(mn[a], p[a]), max(mx[a], p[a])
-        org = [float(round((mn[a] + mx[a]) / 2)) for a in range(3)]
-        info.append([mn, mx, org, pos_scale(mn, mx, org)])
+            CHUNK_DG.append(cell[-2])
+            CHUNK_ENT.append(cell[-1])
+    # every corner of every batch, in batch order: triangle, global vertex, position
+    nb = len(batches)
+    tb = [len(part) for _, _, part in batches]
+    K = np.fromiter((k for _, _, part in batches for k in part), np.int64, sum(tb))
+    # np.intp: repeat / reduceat take counts and indices only as the platform's index type (int32 in the in-browser
+    # converter's 32-bit numpy, which refuses int64 there; int64 natively, so the same arrays)
+    cb = np.repeat(np.arange(nb), np.asarray(tb, np.intp) * 3)  # batch of each corner
+    cs = np.concatenate([[0], np.cumsum(tb)[:-1]]).astype(np.intp) * 3  # first corner of each batch
+    CG = G[K].reshape(-1)
+    PC = P[CG]
+    # chunk boxes (the first of equal values wins, as min() / max() did: the sign of a zero), origins and steps
+    MN = _first_ext(np.minimum.reduceat(PC, cs, 0), PC, cs)
+    MX = _first_ext(np.maximum.reduceat(PC, cs, 0), PC, cs)
+    ORG = np.rint((MN + MX) / 2) + 0.0  # float(round(x)): no negative zero
+    mnl, mxl, orgl = MN.tolist(), MX.tolist(), ORG.tolist()
+    E = np.array([pos_scale(mnl[b], mxl[b], orgl[b]) for b in range(nb)], np.int64)
+    # then the step of each position = the coarsest among the chunks using it (positions keyed by value, as before)
+    pk = {}
+    pid = np.fromiter((pk.setdefault(v[0], len(pk)) for v in verts), np.int64, len(verts))
+    cp = pid[CG]
     while True:
-        step = {}
-        for (ti, fl, part), (mn, mx, org, e) in zip(batches, info):
-            for fv, k in part:
-                for vi in tris[k]:
-                    p = verts[fv + vi][0]
-                    step[p] = max(step.get(p, -99), e)
-        grown = False
-        for (ti, fl, part), inf in zip(batches, info):
-            org, e = inf[2], inf[3]
-            m = max(abs(round(verts[fv + vi][0][a] / 2.0 ** step[verts[fv + vi][0]]) * 2.0 ** step[verts[fv + vi][0]]
-                        - org[a]) for fv, k in part for vi in tris[k] for a in range(3))
-            if m / 2.0 ** e > 32767:  # snapping moved a vertex out of range: coarser step for this chunk
-                inf[3] += 1
-                grown = True
-        if not grown:
+        S = np.full(len(pk), -99, np.int64)
+        np.maximum.at(S, cp, E[cb])
+        sv = np.ldexp(1.0, S[cp])[:, None]
+        Q = np.rint(PC / sv) * sv
+        m = np.maximum.reduceat(np.abs(Q - ORG[cb]).max(1), cs) if nb else np.zeros(0)
+        grow = m / np.ldexp(1.0, E) > 32767  # snapping moved a vertex out of range: coarser step for this chunk
+        if not grow.any():
             break
-    out, err = [], 0.0
-    for (ti, fl, part), (mn, mx, org, e) in zip(batches, info):
-        tw, th = (textures[ti][0], textures[ti][1]) if ti >= 0 else (1, 1)
-        smax = max([uvs[k][c][a] / (tw, th)[a] for fv, k in part for c in range(3) for a in range(2)] + [0])
-        sts = 4096 if smax < 65535 / 4096 else 1024
-        pos, st, col = bytearray(), bytearray(), bytearray()
-        for fv, k in part:
-            for c, vi in enumerate(tris[k]):
-                p, rgb, a = verts[fv + vi]
-                sv = 2.0 ** step[p]
-                q = [round(p[j] / sv) * sv for j in range(3)]
-                n = [int(round((q[j] - org[j]) / 2.0 ** e)) for j in range(3)]
-                err = max(err, max(abs(org[j] + n[j] * 2.0 ** e - p[j]) for j in range(3)))
-                pos += struct.pack("<3h", *n)
-                u, v = uvs[k][c]
-                st += struct.pack("<2H", min(65535, round(u / tw * sts)), min(65535, round(v / th * sts)))
-                col += bytes(rgb) + bytes([a])
-        for arr in (pos, st, col):
-            arr.extend(b"\0" * (-len(arr) % 16))
-        out.append((ti, fl, len(part), bytes(pos), bytes(st), bytes(col), mn, mx, org, 2.0 ** e, sts))
+        E[grow] += 1
+    sc = np.ldexp(1.0, E)[cb][:, None]
+    NQ = np.rint((Q - ORG[cb]) / sc)
+    err = float(np.abs(ORG[cb] + NQ * sc - PC).max()) if len(PC) else 0.0
+    assert len(NQ) == 0 or (NQ.min() >= -32768 and NQ.max() <= 32767), "chunk position out of s16 range"
+    pos16 = NQ.astype("<i2")
+    # texture coordinates: 1/4096 units, or 1/1024 when a chunk has coordinates >= 65535 / 4096
+    tws = np.array([(textures[ti][0], textures[ti][1]) if ti >= 0 else (1, 1) for ti, _, _ in batches],
+                   np.float64).reshape(-1, 2)
+    UV = np.array(uvs, np.float64).reshape(-1, 3, 2)[K].reshape(-1, 2) / tws[cb]
+    smax = np.maximum.reduceat(UV.max(1), cs) if nb else np.zeros(0)
+    sts = np.where(smax < 65535 / 4096, 4096, 1024)
+    ST = np.minimum(65535, np.rint(UV * sts[cb][:, None]))
+    assert len(ST) == 0 or ST.min() >= 0, "negative texture coordinate"
+    st16 = ST.astype("<u2")
+    rgb = np.array([v[1] for v in verts], np.int64).reshape(-1, 3)
+    al = np.fromiter((v[2] for v in verts), np.int64, len(verts))
+    col = np.concatenate([rgb, al[:, None]], 1)[CG]
+    assert len(col) == 0 or (col.min() >= 0 and col.max() <= 255), "vertex colour out of byte range"
+    col8 = col.astype(np.uint8)
+    out = []
+    pad = lambda b: b + b"\0" * (-len(b) % 16)
+    ce = np.cumsum(np.asarray(tb, np.int64) * 3).tolist()
+    for b, (ti, fl, part) in enumerate(batches):
+        s, e = cs[b], ce[b]
+        out.append((ti, fl, len(part), pad(pos16[s:e].tobytes()), pad(st16[s:e].tobytes()), pad(col8[s:e].tobytes()),
+                    mnl[b], mxl[b], orgl[b], 2.0 ** int(E[b]), int(sts[b])))
     print(f"chunks: {len(out)}, {sum(o[2] for o in out) / max(1, len(out)):.1f} tris / chunk, largest position "
           f"error {err * 1000:.2f} mm")
     return out
@@ -488,7 +571,8 @@ def fog_section(game, map_id, main_fog):
     u8 ambient r, g, b, 0; u8 sun r, g, b, 0; s8 sun direction x, y, z (x 127), u8 point light begin (0.1 m);
     u8 point light r, g, b (added to the ambient at full strength), u8 point light end (0.1 m); 48 B: u8 env
     reflection up r, g, b, down r, g, b, specular light r, g, b (0x80 = 1.0); s8 specular light direction x, y, z
-    (x 127); 4 pad}; u8 row per triangle."""
+    (x 127); u8 far depth of field begin, end (m), strength (%), 0}; u8 row per triangle. The DoF bytes: DofBank
+    row of the collision part's DofID (farDofBegin / farDofEnd / farDofMul; zero: none), for main.c's far blur."""
     import export_collision
     msb = souls.read(f"{game}/map/MapStudio/{map_id}.msb")
     M = souls.msb1(msb)
@@ -498,7 +582,7 @@ def fog_section(game, map_id, main_fog):
     spec_probes = dsr_light.load_spec_probes(game, map_id)
     coll = {p["name"]: p for p in M["parts"] if p["type"] == 5}
     key_of = lambda p: (p["fog_id"] if p["fog_id"] in fog_rows else main_fog, p["light_id"], p["tone_map_id"],
-                        p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")))
+                        p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")), p["dof_id"])
     subs = export_collision.area_collision(game, map_id)[0]  # collision.bin's triangles (area region, tools/area.py)
     pts = [p for s in subs for t in s["tris"] for p in t]
     lo = [min(p[k] for p in pts) for k in range(3)]
@@ -515,14 +599,14 @@ def fog_section(game, map_id, main_fog):
                 count[k] = count.get(k, 0) + 1
     keys = [k for k in count if k is not None]
     if not keys:
-        keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1)]
+        keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1, -1)]
     main = max(keys, key=lambda k: (k[0] == main_fog, count.get(k, 0)))
     order = [main] + sorted((k for k in keys if k != main), key=lambda k: -count.get(k, 0))
     assert len(order) <= 255, "too many draw-param sets"
     tone, chars, pls, specs = {}, {}, {}, {}
     a = dsr_light.srgb_lin(CHAR_ALB)
     for k in order:
-        f, l, t, c, lant, probe = k
+        f, l, t, c, lant, probe, _ = k
         row = light_rows.get(l, light_rows[min(light_rows)])
         tone[k] = area_tone(tone_rows, banks, t, c)
         if k != main:  # areas the map bake did not adapt to (cell, elevator): their own exposure
@@ -554,10 +638,91 @@ def fog_section(game, map_id, main_fog):
         amb, sun, L = chars[k]
         pb, prgb, pe = pls[k]
         eu, ed, si, ls = specs[k]
-        out += struct.pack("<3f4B4B4B3bB4B3B3B3B3b4x", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0, *fog_rgb(v, tone[k]), 0,
+        dof = banks["Dof"].get(k[6])
+        dof = [min(255, max(0, round(x))) for x in (dof["farDofBegin"], dof["farDofEnd"], dof["farDofMul"])] if dof \
+            else [0, 0, 0]
+        out += struct.pack("<3f4B4B4B3bB4B3B3B3B3b3Bx", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0, *fog_rgb(v, tone[k]), 0,
                            *[min(255, round(0x80 * x)) for x in amb], 0, *[min(255, round(0x80 * x)) for x in sun], 0,
-                           *[max(-127, min(127, round(127 * x))) for x in L], pb, *prgb, pe, *eu, *ed, *si, *ls)
+                           *[max(-127, min(127, round(127 * x))) for x in L], pb, *prgb, pe, *eu, *ed, *si, *ls, *dof)
     return out + tri_row, [(k, fog_rows[k[0]], chars[k] + (pls[k], specs[k])) for k in order], tone
+
+
+def _qrot_np(q, V):
+    """havok_anim.qrot / souls._qrot on (n, 3) rows, the same operations in the same order"""
+    x, y, z, w = q
+    vx, vy, vz = V[:, 0], V[:, 1], V[:, 2]
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    return np.stack([vx + w * tx + y * tz - z * ty, vy + w * ty + z * tx - x * tz, vz + w * tz + x * ty - y * tx], 1)
+
+
+_VERT_NP = {}  # id(vertex attribute list) -> (the list, float64 array): FLVER meshes are placed many times
+
+
+def _vert_np(lst):
+    e = _VERT_NP.get(id(lst))
+    if e is None or e[0] is not lst:
+        e = _VERT_NP[id(lst)] = (lst, np.array(lst, np.float64))
+    return e[1]
+
+
+def _first_rows(K):
+    """rows of an int array -> (id per row numbered by first appearance, row index of each id's first appearance)"""
+    _, first, inv = np.unique(K, axis=0, return_index=True, return_inverse=True)
+    inv = inv.reshape(-1)
+    order = np.argsort(first, kind="stable")
+    rank = np.empty(len(order), np.intp)  # intp: np.bincount takes no int64 under 32-bit numpy (the browser)
+    rank[order] = np.arange(len(order))
+    return rank[inv], first[order]
+
+
+def _weld(V, vis, xf, xn):
+    """gather's weld of one mesh's used vertices vis (ascending): positions by world position (0.1 mm), wedges by
+    (position, UV, colour) with the normals of merged wedges summed. -> (pos [tuples], wpos, wuv, wcol, wn [lists],
+    fvw {vertex: wedge}), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
+    export); every value is the per-vertex code's: Python's round() and numpy's rint both round half to even, normals
+    are summed in vertex order (np.add.at), the first normal of a wedge is kept as is."""
+    idx = np.asarray(vis, np.int64)
+    n = len(idx)
+    if not n:
+        return [], [], [], [], [], {}
+    Pw = xf.many(_vert_np(V["pos"])[idx])
+    pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
+    pos = list(map(tuple, Pw[pfirst].tolist()))
+    UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
+    C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
+    wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
+    wid, wfirst = _first_rows(wk)
+    vl = idx.tolist()
+    wpos = pid[wfirst].tolist()
+    wuv = [V["uv"][vl[i]] for i in wfirst.tolist()] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
+    wcol = [V["color"][vl[i]] for i in wfirst.tolist()] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
+    if V["normal"]:
+        N = xn.many(_vert_np(V["normal"])[idx])
+        WN = N[wfirst].copy()
+        rest = np.ones(n, bool)
+        rest[wfirst] = False
+        np.add.at(WN, wid[rest], N[rest])
+        wn = WN.tolist()
+    else:  # (0, 1, 0) per vertex, summed as Python ints
+        wn = [[0, int(c), 0] for c in np.bincount(wid, minlength=len(wfirst)).tolist()]
+    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist()))
+
+
+def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights):
+    """gather's per-wedge light (dsr_light.light_fn split=True + the static point lights) for one lit mesh ->
+    dict(E (hemisphere + probe + point lights), S (directional), P (positions), N (unit normals)), (n, 3) arrays,
+    each element computed as the per-wedge code did (normal length by Python's sum(), probe lookups in wedge order:
+    ProbeIndex caches per cell)."""
+    N = np.array(wn, np.float64).reshape(-1, 3)
+    ln = np.sqrt(_py_sum3(N[:, 0] * N[:, 0], N[:, 1] * N[:, 1], N[:, 2] * N[:, 2]))
+    ln[ln == 0] = 1.0
+    N = N / ln[:, None]
+    P = np.array([pos[w] for w in wpos], np.float64).reshape(-1, 3)
+    faces = [probes.get(pr) for pr in probe_at.many(P)]
+    E, S = lit.many(N, faces)
+    for f in plights:
+        E = E + f.many(P, N)
+    return dict(E=E, S=S, P=P, N=N)
 
 
 def bind_scaled(F):
@@ -584,6 +749,13 @@ def bone_xf(pxf, pxn, bt, bq, bs):
         v = souls._qrot(bq, tuple(a / b for a, b in zip(n, bs)))
         k = sum(c * c for c in v) ** 0.5 or 1.0
         return pxn(tuple(c / k for c in v))
+
+    def xn_many(N):
+        v = _qrot_np(bq, N / np.asarray(bs, np.float64))
+        k = np.array([x ** 0.5 or 1.0 for x in _py_sum3(v[:, 0] * v[:, 0], v[:, 1] * v[:, 1], v[:, 2] * v[:, 2]).tolist()])
+        return pxn.many(v / k[:, None])
+    xf.many = lambda P: pxf.many(_qrot_np(bq, np.asarray(bs, np.float64) * P) + np.asarray(bt, np.float64))
+    xn.many = xn_many
     return xf, xn
 
 
@@ -645,7 +817,7 @@ def is_sky(mtd, pts, nav_tree):
     low = mtd.lower()
     if "sky" in low or "cloud" in low:
         return True
-    if nav_tree is None or not pts:
+    if nav_tree is None or not len(pts):
         return False
     P = np.array(pts)
     lo, hi = P.min(0), P.max(0)
@@ -687,21 +859,34 @@ def load_object(game, model, dds, static=False):
     return souls.flver(files[model + ".flver"]) if model + ".flver" in files else None
 
 
+_DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
+
+
 def dedup_tris(tl, V):
     """Drop repeated triangles inside one mesh: same positions (0.1 mm), winding and UVs as an earlier one. Some FLVER
     face sets store faces two or three times (Burg barrel o1152: 1488 tris = 496 x 3, map piece m2011B1: 4.6k of 9.5k);
     the copies draw the same pixels, and their non-manifold edges stop the QEM simplifier (both kept 97-100 %)."""
-    P, U = V["pos"], V["uv"]
-    seen, out = set(), []
-    for t in tl:
-        c = [(round(P[i][0] * 1e4), round(P[i][1] * 1e4), round(P[i][2] * 1e4),
-              (round(U[i][0] * 4096), round(U[i][1] * 4096)) if U else 0) for i in t]
-        r = c.index(min(c))
-        k = tuple(c[r:] + c[:r])  # cyclic rotation keeps the winding
-        if k not in seen:
-            seen.add(k)
-            out.append(t)
-    return out
+    if not tl:
+        return []
+    # per corner (x, y, z, u, v) rounded, rotated to start at the lexicographically smallest corner (the first of
+    # equal ones, as c.index(min(c))); the first triangle of each key is kept, in order
+    K = np.rint(_vert_np(V["pos"]) * 1e4).astype(np.int64)
+    K = np.concatenate([K, np.rint(_vert_np(V["uv"]) * 4096).astype(np.int64) if V["uv"] else
+                        np.zeros((len(K), 2), np.int64)], 1)
+    C = K[np.asarray(tl, np.int64)]  # (n, 3 corners, 5)
+
+    def less(a, b):
+        lt = np.zeros(len(a), bool)
+        for j in range(a.shape[1] - 1, -1, -1):
+            lt = (a[:, j] < b[:, j]) | ((a[:, j] == b[:, j]) & lt)
+        return lt
+    r = np.zeros(len(C), np.int64)
+    rows = np.arange(len(C))
+    for i in (1, 2):
+        r = np.where(less(C[:, i], C[rows, r]), i, r)
+    rot = C[rows[:, None], (r[:, None] + np.arange(3)) % 3].reshape(len(C), -1)  # cyclic rotation keeps the winding
+    _, first = np.unique(rot, axis=0, return_index=True)
+    return [tl[i] for i in np.sort(first).tolist()]
 
 
 def place(part):
@@ -714,6 +899,9 @@ def place(part):
 
     def xn(n):
         return ha.qrot(q, n)
+    # (n, 3) arrays at once, the same operations per element
+    xf.many = lambda P: _qrot_np(q, P * np.asarray(s, np.float64)) + np.asarray(t, np.float64)
+    xn.many = lambda N: _qrot_np(q, N)
     return xf, xn
 
 
@@ -787,8 +975,8 @@ def gather(game, map_id):
     vis = area_mod.visible_groups(msb, M, map_id, {s["part"] for s in export_collision.area_collision(game, map_id)[0]})
     reg_coll = {s["part"] for s in export_collision.area_collision(game, map_id)[0]}
     DG.collisions([p["draw_groups"] for p in M["parts"] if p["type"] == 5 and p["name"] in reg_coll])  # dg.bin
-    map_r = area_mod.config(map_id).get("map_radius")
-    in_map = lambda x, y, z: (x - sp[0]) ** 2 + (z - sp[2]) ** 2 <= map_r * map_r
+    in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
+    map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
     nav_grid = {}  # 2 m xz cells -> navmesh heights, for is_canopy
     for p in nav_pts:
@@ -841,7 +1029,15 @@ def gather(game, map_id):
     near = SCATTER[0].near_factor() if SCATTER[0] else [1.0, 1.0, 1.0]
     # static point lights (visuals-effects, TECH_DEBT map-28): bonfire effect lights + MSB Light events; the
     # PointLightBank light of the collision part follows the player (fog_section). FX_LIGHTS=0 for A/B.
-    plights = export_effects.static_lights(game, map_id) if os.environ.get("FX_LIGHTS", "1") == "1" else []
+    # static point lights (export_effects.static_lights): the Makefile passes them as a file (FX_LIGHTS_FILE, written
+    # by export_effects.py --static-lights) so map.bin depends on the lights, not on export_effects.py
+    plights = []
+    if os.environ.get("FX_LIGHTS", "1") == "1":
+        if os.environ.get("FX_LIGHTS_FILE"):
+            plights = [dsr_light.cubic_light(*a) for a in json.load(open(os.environ["FX_LIGHTS_FILE"]))]
+        else:
+            import export_effects
+            plights = [dsr_light.cubic_light(*a) for a in export_effects.static_lights(game, map_id)]
     albedo_cache, pending = {}, []
 
     def albedo(name):
@@ -866,10 +1062,13 @@ def gather(game, map_id):
     textures, tex_index, meshes = [], {}, []
     flvers, poses = {}, {}
     export_normal.SRC.update(dds=dds, probes=probes, near=near)
+    switched = emevd.switched_entities(game, map_id) if EVENT_PARTS else set()
     for pi, (part, (lid, fid)) in enumerate(zip(M["parts"], ids)):
         if part["type"] in (0, 1) and not area_mod.drawn(vis, part["draw_groups"]):
             continue  # never drawn from the area's region
         far = part["type"] == 1 and not keep(*part["pos"])
+        if part["type"] == 1 and not far and part["name"] in ANIM_PARTS:
+            continue
         # objects beyond the region but inside map_radius are scenery like the map triangles around them: drawn as
         # static objects, breakables intact (the cropped collision ends at the region, nothing can reach them)
         if far and not (FAR_OBJ and map_r and in_map(*part["pos"])):
@@ -904,8 +1103,11 @@ def gather(game, map_id):
                     continue
                 P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
-            sky = part["type"] == 0 and m["verts"]["pos"] and is_sky(m["mtd"], [xf_part(part, F, m)(p) for p in
-                                                                                 m["verts"]["pos"]], nav_tree)
+            if part["type"] == 0 and m["verts"]["pos"]:
+                xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
+                sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
+            else:
+                sky = False
             if sky and fid in fog_rows:
                 sky_fog = fog_rows[fid]
             water = "water" in m["mtd"].lower()
@@ -935,19 +1137,24 @@ def gather(game, map_id):
                 # map pieces whose LOD0 lies wholly beyond STREAM_FAR of the walkable space (whole-MSB areas) take the
                 # game's lowest LOD before QEM, as DSR draws them from there (render-distance option (a), map-36)
                 Vp = m["verts"]["pos"]
-                wp = np.array([xf(Vp[i]) for i in sorted({i for t in souls.triangles(lods[min(lods)]) for i in t})])
+                wp = xf.many(_vert_np(Vp)[sorted({i for t in souls.triangles(lods[min(lods)]) for i in t})])
                 lo, hi = wp.min(0), wp.max(0)
                 d = np.maximum(0, np.maximum(lo[None] - nav_tree, nav_tree - hi[None]))
                 low = len(wp) and np.min((d * d).sum(1)) > STREAM_FAR ** 2
                 FAR_LOD_STATS[bool(low)] += 1
             fs = lods[max(lods)] if low else lods[min(lods)]
-            tl = dedup_tris(souls.triangles(fs), m["verts"])
+            dk = (id(fs), id(m["verts"]["pos"]))  # a model placed many times: its face set is deduplicated once
+            if dk not in _DEDUP or _DEDUP[dk][0] is not fs or _DEDUP[dk][1] is not m["verts"]["pos"]:
+                _DEDUP[dk] = (fs, m["verts"]["pos"], dedup_tris(souls.triangles(fs), m["verts"]))
+            tl = list(_DEDUP[dk][2])
+            if (map_r or PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
+                ui = list({i for t in tl for i in t})
+                Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
             if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
-                Vp = m["verts"]["pos"]
-                tl = [t for t in tl if in_map(*(sum(xf(Vp[i])[k] for i in t) / 3 for k in range(3)))]
+                tl = [t for t in tl if in_map(*(sum(Wp[i][k] for i in t) / 3 for k in range(3)))]
             if PANO_R and not sky:  # far panorama (tools/pano.py): beyond PANO_R of PANO_C it replaces the map
-                Vp, pc = m["verts"]["pos"], PANO_C or sp
-                far_t = lambda t: sum((sum(xf(Vp[i])[k] for i in t) / 3 - pc[k]) ** 2 for k in range(3)) > PANO_R ** 2
+                pc = PANO_C or sp
+                far_t = lambda t: sum((sum(Wp[i][k] for i in t) / 3 - pc[k]) ** 2 for k in range(3)) > PANO_R ** 2
                 tl = [t for t in tl if far_t(t) == PANO_ONLY]
             fol, gpos = None, None
             if grass:
@@ -974,30 +1181,8 @@ def gather(game, map_id):
                             near_level(textures[-1], dds[name], name)
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
-            # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges averaged
-            pid, pos, wid, wpos, wuv, wcol, wn = {}, [], {}, [], [], [], []
-            fvw = {}
-            for vi in sorted({i for t in tl for i in t}):
-                p = xf(V["pos"][vi])
-                pk = (round(p[0] * 1e4), round(p[1] * 1e4), round(p[2] * 1e4))
-                if pk not in pid:
-                    pid[pk] = len(pos)
-                    pos.append(p)
-                uv = V["uv"][vi] if V["uv"] else (0.0, 0.0)
-                c = V["color"][vi] if V["color"] else (1, 1, 1, 1)
-                wk = (pid[pk], round(uv[0] * 4096), round(uv[1] * 4096), tuple(round(x * 255) for x in c))
-                n = xn(V["normal"][vi]) if V["normal"] else (0, 1, 0)
-                if wk not in wid:
-                    wid[wk] = len(wpos)
-                    wpos.append(pid[pk])
-                    wuv.append(uv)
-                    wcol.append(c)
-                    wn.append(list(n))
-                else:
-                    a = wn[wid[wk]]
-                    for j in range(3):
-                        a[j] += n[j]
-                fvw[vi] = wid[wk]
+            # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
+            pos, wpos, wuv, wcol, wn, fvw = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
@@ -1010,35 +1195,28 @@ def gather(game, map_id):
             wrgb, wa = [], []
             alb = albedo(name)
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
-                hdr = []  # (hemisphere + probe + point lights, directional, position, normal): shadowed below
-                for i, (n, c) in enumerate(zip(wn, wcol)):
-                    ln = math.sqrt(sum(x * x for x in n)) or 1.0
-                    n = (n[0] / ln, n[1] / ln, n[2] / ln)
-                    p = pos[wpos[i]]
-                    e, sun = lit(n, probes.get(probe_at(p)), split=True)
-                    for pl in plights:
-                        e = [x + y for x, y in zip(e, pl(p, n))]
-                    hdr.append((e, sun, p, n))
+                # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
+                hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights)
                 # [M] materials blend a second diffuse by vertex alpha; the PS2 draws the first only, so the vertex
                 # colour carries the blend: DSR's output for the blended mean colour / the first texture's mean
                 alb2 = albedo(m["diffuse2"]) if "[M]" in m["mtd"] and m.get("diffuse2") in dds else None
                 pending.append((wrgb, hdr, wcol, alb, alb2, tone_of[pi]))
-            for n, c in zip(wn, wcol):
-                if lit and not water:
-                    wa.append(0x80)
-                    continue
-                k = [x / spill for x in tint] if not lit else (1.0, 1.0, 1.0)
-                if sky:  # emissive HDR: texture x MTD colour x power, through the tone map like the lit map
-                    t = tones.get(tone_of[pi]) or tones.setdefault(tone_of[pi], dsr_light.Tone(
-                        tone_rows[tone_of[pi][0]], banks["ToneCorrect"].get(tone_of[pi][1])))
-                    g = mp.get("g_DiffuseMapColorPower", (1.0,))[0]
-                    out = t([dsr_light.srgb_lin(alb[j]) * g * x for j, x in
-                             enumerate(mp.get("g_DiffuseMapColor", (1.0, 1.0, 1.0)))])
-                    k = [out[j] / alb[j] for j in range(3)]
-                if water:  # colour and opacity are in the texture (vertex colours hold the shader's flow data)
-                    k, c = (1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 1.0)
-                wrgb.append([min(255, int(0x80 * k[j] * c[j])) for j in range(3)])
-                wa.append(min(0x80, int(0x80 * c[3] * spill + 0.5)) if blend else 0x80)
+            if lit and not water:  # tone mapped below; alpha 0x80
+                wa = [0x80] * len(wn)
+            else:
+                for n, c in zip(wn, wcol):
+                    k = [x / spill for x in tint] if not lit else (1.0, 1.0, 1.0)
+                    if sky:  # emissive HDR: texture x MTD colour x power, through the tone map like the lit map
+                        t = tones.get(tone_of[pi]) or tones.setdefault(tone_of[pi], dsr_light.Tone(
+                            tone_rows[tone_of[pi][0]], banks["ToneCorrect"].get(tone_of[pi][1])))
+                        g = mp.get("g_DiffuseMapColorPower", (1.0,))[0]
+                        out = t([dsr_light.srgb_lin(alb[j]) * g * x for j, x in
+                                 enumerate(mp.get("g_DiffuseMapColor", (1.0, 1.0, 1.0)))])
+                        k = [out[j] / alb[j] for j in range(3)]
+                    if water:  # colour and opacity are in the texture (vertex colours hold the shader's flow data)
+                        k, c = (1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 1.0)
+                    wrgb.append([min(255, int(0x80 * k[j] * c[j])) for j in range(3)])
+                    wa.append(min(0x80, int(0x80 * c[3] * spill + 0.5)) if blend else 0x80)
             # normal-map relief (tools/export_normal.py): per-wedge tangent frames of lit, opaque bumped meshes
             bump = export_normal.register(m, V, fvw, wn, xn, light_rows.get(lid, light_rows[main_light]), alb,
                                           probe_at) if lit and not water and not grass and V["uv"] else None
@@ -1046,8 +1224,11 @@ def gather(game, map_id):
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
                                keep=grass or blend or sky or part["model"] in KEEP_MODELS, name=f"{part['name']}/{name}",
-                               dg=DG.add(part["draw_groups"])))
+                               dg=DG.add(part["draw_groups"]),
+                               ent=part["entity_id"] if part["entity_id"] in switched else 0))
 
+    _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
+    _DEDUP.clear()
     rss(f"gather meshes ({len(meshes)})")
     # lit map: auto exposure per tone map row (geometric mean, see the constants), then vertex colour = tone mapped colour / texture mean, so
     # texture x vertex colour gives DSR's output for the texture's mean colour
@@ -1060,50 +1241,57 @@ def gather(game, map_id):
     # the player's reach: navmesh vertices (shadows only matter where characters and the camera go)
     nav_focus = navmesh_points(game, map_id, M, keep)
     if sh and SHADOWS:
-        occ = [[m["pos"][m["wpos"][w]] for w in t] for m in meshes
-               if not m["flags"] & (CHUNK_BLEND | CHUNK_SKY) and not m["grass"] for t in m["tris"]]
         t0 = time.time()
+        occ = [np.asarray(m["pos"], np.float64)[np.asarray(m["wpos"], np.int64)[np.asarray(m["tris"], np.int64)]]
+               for m in meshes if not m["flags"] & (CHUNK_BLEND | CHUNK_SKY) and not m["grass"] and m["tris"]]
+        occ = np.concatenate(occ) if occ else np.zeros((0, 3, 3))
         smap = dsr_light.ShadowMap(occ, dsr_light.light_dir(sh["lightDegRotX"], sh["lightDegRotY"]),
                                    focus=nav_focus or [p for m in meshes for p in m["pos"][::50]])
         export_normal.SRC["smap"] = smap
         lit_n, floor = 0, [0.0, 0]
-        for _, hdr, *_ in pending:
-            for i, (e, sun, p, n) in enumerate(hdr):
-                k = smap.lit(p, n)
-                lit_n += k
-                if n[1] > 0.7:  # floors: how much of the ground characters stand on is in sun
-                    floor[0] += k
-                    floor[1] += 1
-                hdr[i] = [x * (1 - SHADOW_AMB * (1 - k)) + y * k for x, y in zip(e, sun)]
-        nv = sum(len(h) for _, h, *_ in pending)
+        ks = smap.lit_many(np.concatenate([h["P"] for _, h, *_ in pending] or [np.zeros((0, 3))]),
+                           np.concatenate([h["N"] for _, h, *_ in pending] or [np.zeros((0, 3))]))
+        j = 0
+        for _, h, *_ in pending:
+            k = ks[j:j + len(h["E"])]
+            j += len(h["E"])
+            for x in k.tolist():  # running sums in wedge order, as before
+                lit_n += x
+            for x in k[h["N"][:, 1] > 0.7].tolist():  # floors: how much of the ground characters stand on is in sun
+                floor[0] += x
+                floor[1] += 1
+            h["H"] = h["E"] * (1 - SHADOW_AMB * (1 - k))[:, None] + h["S"] * k[:, None]
+        nv = sum(len(h["E"]) for _, h, *_ in pending)
         SUN_FLOOR[0] = floor[0] / max(1, floor[1])
         print(f"floors in sun: {100 * SUN_FLOOR[0]:.0f}%")
         print(f"sun shadow map {smap.W}x{smap.H} ({len(occ)} tris, {time.time() - t0:.1f} s): {100 * lit_n / max(1, nv):.0f}% "
               f"of {nv} vertices lit")
     else:
-        for _, hdr, *_ in pending:
-            for i, (e, sun, p, n) in enumerate(hdr):
-                hdr[i] = [x + y for x, y in zip(e, sun)]
+        for _, h, *_ in pending:
+            h["H"] = h["E"] + h["S"]
     rss("shadows")
+    # tone map, vectorised per mesh with the per-wedge operations (dsr_light.sum3 / srgb_lin_many / Tone.many)
     lum = {}
-    mix = lambda alb, alb2, c: [alb[j] + (alb2[j] - alb[j]) * c[3] for j in range(3)] if alb2 else alb
-    for _, hdr, wcol, alb, alb2, tk in pending:
+    for _, h, wcol, alb, alb2, tk in pending:
+        C = np.array(wcol, np.float64).reshape(-1, 4)
+        A = np.stack([alb[j] + (alb2[j] - alb[j]) * C[:, 3] for j in range(3)], 1) if alb2 else \
+            np.broadcast_to(np.asarray(alb, np.float64), (len(C), 3))
+        h["L"] = dsr_light.srgb_lin_many(A * C[:, :3])  # srgb_lin(a[j] * c[j])
+        H, L = h["H"], h["L"]
+        y = dsr_light.sum3(*(dsr_light.LUMA[j] * L[:, j] * H[:, j] for j in range(3)))
         s = lum.setdefault(tk, [0.0, 0])
-        for e, c in zip(hdr, wcol):
-            a = mix(alb, alb2, c)
-            s[0] += math.log(max(1e-4, sum(dsr_light.LUMA[j] * dsr_light.srgb_lin(a[j] * c[j]) * e[j] for j in range(3))))
+        for x in y.tolist():
+            s[0] += math.log(x if x > 1e-4 else 1e-4)
             s[1] += 1
     for tk, (s, n) in lum.items():
         t = tones.setdefault(tk, dsr_light.Tone(tone_rows[tk[0]], banks["ToneCorrect"].get(tk[1])))
         t.adapt(math.exp(s / max(1, n)))  # geometric mean over the bake's vertices stands in for DSR's screen average
         print(f"tone row {tk[0]} / correct {tk[1]}: scene luminance {math.exp(s / max(1, n)):.3f} -> exposure {t.exposure:.2f}")
-    for wrgb, hdr, wcol, alb, alb2, tk in pending:
-        t = tones[tk]
-        for e, c in zip(hdr, wcol):
-            a = mix(alb, alb2, c)
-            ac = [a[j] * c[j] for j in range(3)]
-            out = t([dsr_light.srgb_lin(ac[j]) * e[j] * near[j] for j in range(3)])  # + scattering at d = 0
-            wrgb.append([min(255, int(0x80 * out[j] / alb[j] + 0.5)) for j in range(3)])
+    for wrgb, h, wcol, alb, alb2, tk in pending:
+        out = tones[tk].many(h["L"] * h["H"] * np.asarray(near, np.float64))  # + scattering at d = 0
+        q = np.trunc(0x80 * out / np.asarray(alb, np.float64) + 0.5)
+        wrgb.extend(np.minimum(255, q).astype(np.int64).tolist())
+        h.clear()
     TONES.update(tones)  # fog colours and the character light use the same tone maps
     MAIN_TONE[0] = tones[main_tone]
 
@@ -1147,12 +1335,20 @@ def view_distance(points, spawn, nav_v, nav_t, raw=False, floor=None):
     S = np.unique(np.round(np.concatenate(samples) * 2) / 2, axis=0)  # 0.5 m
     allp = np.array([p for ps in points for p in ps], dtype=np.float64)
     cells, inv = np.unique(np.round(allp / 2) * 2, axis=0, return_inverse=True)  # 2 m: only needed coarsely
-    s2 = (S ** 2).sum(1)
     dn = np.empty(len(cells))
-    for i in range(0, len(cells), 4096):
-        c = cells[i:i + 4096]
-        d2 = (c ** 2).sum(1)[:, None] + s2[None, :] - 2 * c @ S.T
-        dn[i:i + 4096] = np.sqrt(np.maximum(d2.min(1), 0))
+    lib = dsr_light.geom_lib()
+    if lib is not None and len(S):  # k-d tree (tools/native/geom.c): Burg / Firelink 103 s of brute force -> < 1 s
+        # cells (2 m) and samples (0.5 m) lie on lattices, so both paths' squared distances are exact: same result
+        Sc, Qc, d2 = np.array(S, np.float64, order="C"), np.ascontiguousarray(cells, np.float64), np.empty(len(cells))
+        if lib.nearest_d2(len(Qc), Qc.ctypes.data, len(Sc), Sc.ctypes.data, d2.ctypes.data):
+            raise MemoryError("nearest_d2")
+        dn[:] = np.sqrt(np.maximum(d2, 0))
+    else:
+        s2 = (S ** 2).sum(1)
+        for i in range(0, len(cells), 4096):
+            c = cells[i:i + 4096]
+            d2 = (c ** 2).sum(1)[:, None] + s2[None, :] - 2 * c @ S.T
+            dn[i:i + 4096] = np.sqrt(np.maximum(d2.min(1), 0))
     dn = dn[inv.ravel()]
     if raw:
         return [dn[k:k + len(ps)].tolist() for k, ps in zip(np.cumsum([0] + [len(ps) for ps in points]), points)]
@@ -1210,12 +1406,116 @@ def backdrop_visible(m, tl, nav_s):
     return out
 
 
+SOFT_STATS = [0, 0]  # coarse / backdrop triangles seen, softened
+
+
+def soften_thin(entries, view_s, floor):
+    """Thin faces of the coarse / backdrop levels (render-12): a face drawn narrower than SOFT_PX pixels covers a pixel
+    centre in one frame and misses it in the next, so the narrow lit pillar fronts of Firelink's ring wall (0.3 m, ~2 px
+    from the graveyard) flicker as the camera moves (512 px frame, no anti-aliasing; DSR draws them 4-6 px wide). The
+    width is the triangle's narrowest extent projected toward the viewpoints view_s (navmesh samples), the median over
+    those within SOFT_REACH metres of the nearest one, at their distance - CAM_REACH (at least floor). Its corners'
+    colours are pulled by 1 - width / SOFT_PX toward the mean colour of every coarse / backdrop triangle within SOFT_R_PX
+    pixels of it at that distance (weighted by area seen from the viewpoints, any mesh): a pre-filter like a texture
+    mip, for geometry. entries: the level entries (dicts with tris, wrgb); each softened one gets its own wrgb copy."""
+    import numpy as np
+    if not SOFT_PX or not entries or not len(view_s):
+        return
+    S = np.asarray(view_s, dtype=np.float64)
+    rows = []  # per entry: corners P (n, 3, xyz), wedges W, colour per triangle, area seen, px, footprint (m / px)
+    for e in entries:
+        tl = e["tris"]
+        SOFT_STATS[0] += len(tl)
+        P = np.array([[c[0] for c in t] for t in tl], dtype=np.float64)
+        W = np.array([[c[1] for c in t] for t in tl], dtype=np.int64)
+        E = np.stack([P[:, 1] - P[:, 0], P[:, 2] - P[:, 1], P[:, 0] - P[:, 2]], 1)
+        N = np.cross(E[:, 0], -E[:, 2])
+        area2 = np.linalg.norm(N, axis=1)
+        N /= np.maximum(area2, 1e-12)[:, None]
+        height = area2 / np.maximum(np.linalg.norm(E, axis=2).max(1), 1e-6)  # narrowest extent
+        px, mpp, seen = np.empty(len(tl)), np.empty(len(tl)), np.empty(len(tl))
+        for i in range(0, len(tl), 2048):
+            V = S[None, :, :] - P[i:i + 2048].mean(1)[:, None, :]
+            d = np.linalg.norm(V, axis=2)
+            cos = np.abs((V * N[i:i + 2048, None, :]).sum(2)) / np.maximum(d, 1e-6)
+            dd = np.maximum(d - CAM_REACH, floor)
+            far = d > d.min(1, keepdims=True) + SOFT_REACH
+            w = height[i:i + 2048, None] * cos * SOFT_FOCAL / dd
+            w[far], dd[far], cos[far] = np.nan, np.nan, np.nan
+            px[i:i + 2048] = np.nanmedian(w, 1)
+            mpp[i:i + 2048] = np.nanmedian(dd, 1) / SOFT_FOCAL
+            seen[i:i + 2048] = np.nanmean(cos, 1)
+        C = np.array(e["wrgb"], dtype=np.float64)[W].mean(1) if len(tl) else np.zeros((0, 3))
+        rows.append((P, W, C, area2 * 0.5 * seen, px, mpp))
+    cen = np.concatenate([r[0].mean(1) for r in rows if len(r[0])])
+    col = np.concatenate([r[2] for r in rows if len(r[0])])
+    wt = np.concatenate([r[3] for r in rows if len(r[0])])
+    G = 2.0  # m: grid of triangle centroids for the footprint search
+    gk = np.floor(cen / G).astype(np.int64)
+    lib = dsr_light.geom_lib()
+    if lib is None:  # the numpy path's cell lists (a Python dict over every centroid: only built when it is used)
+        grid = {}
+        for i, k in enumerate(map(tuple, gk)):
+            grid.setdefault(k, []).append(i)
+        grid = {k: np.array(v) for k, v in grid.items()}
+    else:  # the cells sorted by key, members ascending (as the grid lists), for geom.c soft_targets
+        order = np.lexsort((gk[:, 2], gk[:, 1], gk[:, 0]))
+        sk = gk[order]
+        new = np.ones(len(sk), bool)
+        new[1:] = (sk[1:] != sk[:-1]).any(1)
+        ckey = np.ascontiguousarray(sk[new])
+        cstart = np.append(np.nonzero(new)[0], len(sk)).astype(np.int64)
+        cidx = np.ascontiguousarray(order, np.int64)
+        cen_c, col_c, wt_c = (np.ascontiguousarray(a, np.float64) for a in (cen, col, wt))
+    for e, (P, W, C, _, px, mpp) in zip(entries, rows):
+        k = np.clip(1 - px / SOFT_PX, 0, 1) if len(P) else px
+        if not len(P) or not k.any():
+            continue
+        tgt = C.copy()
+        if lib is not None:
+            q = np.nonzero(k > 0)[0]
+            Cq = np.ascontiguousarray(((P[q, 0] + P[q, 1]) + P[q, 2]) / 3)  # P[i].mean(0)
+            Rq = np.ascontiguousarray(SOFT_R_PX * mpp[q])
+            out, ok = np.empty((len(q), 3)), np.zeros(len(q), np.uint8)
+            if lib.soft_targets(len(q), Cq.ctypes.data, Rq.ctypes.data, len(cen_c), cen_c.ctypes.data,
+                                col_c.ctypes.data, wt_c.ctypes.data, len(ckey), ckey.ctypes.data, cstart.ctypes.data,
+                                cidx.ctypes.data, G, out.ctypes.data, ok.ctypes.data) < 0:
+                raise MemoryError("soft_targets")
+            tgt[q[ok == 1]] = out[ok == 1]
+        else:  # numpy path (no C helpers)
+            for i in np.nonzero(k > 0)[0]:
+                c, r = P[i].mean(0), SOFT_R_PX * mpp[i]
+                lo, hi = np.floor((c - r) / G).astype(int), np.floor((c + r) / G).astype(int)
+                idx = [grid[q] for q in ((x, y, z) for x in range(lo[0], hi[0] + 1) for y in range(lo[1], hi[1] + 1)
+                                         for z in range(lo[2], hi[2] + 1)) if q in grid]
+                if not idx:
+                    continue
+                idx = np.concatenate(idx)
+                idx = idx[((cen[idx] - c) ** 2).sum(1) <= r * r]
+                if len(idx) and wt[idx].sum() > 0:
+                    tgt[i] = (col[idx] * wt[idx, None]).sum(0) / wt[idx].sum()
+        # per wedge: the area-weighted mean of its triangles' k and targets
+        ta = np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+        nw = len(e["wrgb"])
+        kw, ww, tw = np.zeros(nw), np.zeros(nw), np.zeros((nw, 3))
+        for j in range(3):
+            np.add.at(kw, W[:, j], k * ta)
+            np.add.at(ww, W[:, j], ta)
+            np.add.at(tw, W[:, j], tgt * ta[:, None])
+        out = list(e["wrgb"])
+        for w in np.nonzero((ww > 0) & (kw > 0))[0]:
+            f, t = kw[w] / ww[w], tw[w] / ww[w]
+            out[w] = [min(255, int(out[w][j] + f * (t[j] - out[w][j]) + 0.5)) for j in range(3)]
+        e["wrgb"] = out
+        SOFT_STATS[1] += int((k > 0).sum())
+
+
 # far panorama (render-distance variant A): PANO_R metres from PANO_C ("x,y,z", default the spawn); PANO_ONLY=1 keeps
 # only the triangles beyond it at full detail (the capture export for tools/pano.py), else they are dropped
 PANO_R = float(os.environ.get("PANO_R", 0))
 PANO_C = [float(v) for v in os.environ["PANO_C"].split(",")] if os.environ.get("PANO_C") else None
 PANO_ONLY = os.environ.get("PANO_ONLY") == "1"
-BACKDROP = os.environ.get("BACKDROP") == "1"  # far-background variant A (render-distance A/B, not the default yet)
+BACKDROP = os.environ.get("BACKDROP", "1") == "1"  # far-only cells as the backdrop (render-distance pick A2); BACKDROP=0: old cut
 BACKDROP_SIDE = int(os.environ.get("BACKDROP_SIDE", 0))  # 0: no back-face pruning (A/B); 1 / -1: front = n.(s-p) > 0 / < 0
 
 
@@ -1241,7 +1541,7 @@ def far_cells(meshes, nav_v):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None):
+                    far=frozenset(), area_k=None, eps_far=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
@@ -1249,19 +1549,28 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     fit BUDGET triangles (foliage not counted: map.c thins it by distance), or EPS (eps_fixed) if set. Each mesh's
     src triangles (wedge triples) become out = corners (position, wedge). cells (STREAM): each group is cut into
     CHUNK_GRID cells by triangle centroid, positions on the cuts are locked, and out + "_cell" gets each triangle's
-    cell; floor: the view distance floor (NEAR)."""
-    import multiprocessing
+    cell; floor: the view distance floor (NEAR); eps_far: the threshold of the far cells' jobs (else the same)."""
     import numpy as np
     import simplify
+    import simplify_pool
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
+    # key() of every position, per mesh at once (numpy rint rounds half to even like round())
+    pkeys = {}
+
+    def keys_of(mi):
+        if mi not in pkeys:
+            P = np.array(meshes[mi]["pos"], np.float64).reshape(-1, 3)
+            pkeys[mi] = list(map(tuple, np.rint(P * 500).astype(np.int64).tolist()))
+        return pkeys[mi]
     # identical copies (same texture, same triangles; Firelink has some far _L walls twice) only draw once
     seen = set()
-    for m in meshes:
+    for mi, m in enumerate(meshes):
         if m["keep"]:
             continue
-        k = (m["ti"], frozenset(frozenset(key(m["pos"][m["wpos"][w]]) for w in t) for t in m[src]))
+        kp, wp = keys_of(mi), m["wpos"]
+        k = (m["ti"], frozenset(frozenset(kp[wp[w]] for w in t) for t in m[src]))
         if k in seen:
             m[src] = []
         seen.add(k)
@@ -1275,8 +1584,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         return x
     first = {}
     for mi in live:
-        for p in meshes[mi]["pos"]:
-            k = key(p)
+        for k in keys_of(mi):
             if k in first:
                 par[root(mi)] = root(first[k])
             else:
@@ -1286,30 +1594,33 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         groups.setdefault(root(mi), []).append(mi)
     groups = list(groups.values())
     # per group: welded positions, attributes = (mesh, wedge), triangles in attribute indices
-    jobs, attrs, jcell = [], [], []
+    jobs, attrs, jcell, jkeys = [], [], [], []
     for g in groups:
         percell = {}
         for mi in g:
             m = meshes[mi]
-            for t in m[src]:
+            if cells and m[src]:  # CHUNK_GRID cell of each triangle's centroid (sum() of the corners, as before)
+                Pm = np.array(m["pos"], np.float64).reshape(-1, 3)[np.array(m["wpos"], np.int64)[np.array(m[src], np.int64)]]
+                cc = np.floor(_py_sum3(Pm[:, 0], Pm[:, 1], Pm[:, 2]) / 3 / CHUNK_GRID).astype(np.int64).tolist()
+            for ti_, t in enumerate(m[src]):
                 c = None
                 if cells:
-                    ps = [m["pos"][m["wpos"][w]] for w in t]
-                    c = tuple(int(math.floor(sum(q[a] for q in ps) / 3 / CHUNK_GRID)) for a in range(3))
+                    c = tuple(cc[ti_])
                     c = "far" if c in far else c  # far cells: one uncut job per welded group
                 percell.setdefault(c, []).append((mi, t))
         for c, items in percell.items():
-            pid, aid, pos, wpos, attr, tris = {}, {}, [], [], [], []
+            pid, aid, pos, wpos, attr, tris, jk = {}, {}, [], [], [], [], []
             for mi, t in items:
                 m = meshes[mi]
+                kp = keys_of(mi)
                 tt = []
                 for w in t:
                     if (mi, w) not in aid:
-                        xyz = m["pos"][m["wpos"][w]]
-                        k = key(xyz)
+                        k = kp[m["wpos"][w]]
                         if k not in pid:
                             pid[k] = len(pos)
-                            pos.append(xyz)
+                            pos.append(m["pos"][m["wpos"][w]])
+                            jk.append(k)
                         aid[(mi, w)] = len(wpos)
                         wpos.append(pid[k])
                         attr.append((mi, w))
@@ -1318,23 +1629,20 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             jobs.append([pos, wpos, tris, None, None])
             attrs.append(attr)
             jcell.append(c)
+            jkeys.append(jk)
     njobs = {}  # positions on a cell cut (in several jobs of one welded group) never move: both levels keep the cut
-    for j in jobs:
-        for p in j[0]:
-            njobs[key(p)] = njobs.get(key(p), 0) + 1
-    for j in jobs:
-        j[3] = [njobs[key(p)] > 1 for p in j[0]]
+    for jk in jkeys:
+        for k in jk:
+            njobs[k] = njobs.get(k, 0) + 1
+    for j, jk in zip(jobs, jkeys):
+        j[3] = [njobs[k] > 1 for k in jk]
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
         j[4] = [1.0 / (x * x) for x in d]
-    order = sorted(range(len(jobs)), key=lambda j: -len(jobs[j][2]))
-    # SIMPLIFY_PROCS: fewer workers for big exports (each fork of a 4 GB process can grow; memwatch killed 16 for Burg's
-    # whole MSB)
-    with multiprocessing.Pool(min(int(os.environ.get("SIMPLIFY_PROCS", 16)), os.cpu_count() or 1)) as pool:
-        res = dict(zip(order, pool.map(functools.partial(simplify.run, area_k=area_k), [jobs[j] for j in order],
-                                       chunksize=1)))
+    # cached by job content, run on forkserver workers that are retried when one dies (tools/simplify_pool.py;
+    # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
+    logs = simplify_pool.run_jobs(jobs, area_k=area_k)
     grass = sum(len(m[src]) for m in meshes if m["keep"] and not m["grass"])
-    logs = [res[j] for j in range(len(jobs))]
     full = sum(len(t) for t, _ in logs)
     # every step of every group as (cost, triangles removed): the count at a threshold is one masked sum
     cost = np.array([s[0] for _, steps in logs for s in steps])
@@ -1362,7 +1670,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         meshes[mi][out] = []
         meshes[mi][out + "_cell"] = []
     for (pos, _, _, _, _), attr, (T0, steps), c in zip(jobs, attrs, logs, jcell):
-        for t in simplify.replay(T0, steps, eps):
+        for t in simplify.replay(T0, steps, eps_far if c == "far" and eps_far is not None else eps):
             mi = attr[t[0][1]][0]
             meshes[mi][out].append(tuple((pos[p], attr[a][1]) for p, a in t))
             meshes[mi][out + "_cell"].append(c)
@@ -1438,6 +1746,11 @@ def main():
     preview = sys.argv[4] if len(sys.argv) > 4 else None
     t_start = time.time()
     meshes_in, textures, nav_v, nav_t, spawn, (fog_id, fog), sky_fog = gather(game, map_id)
+    import havok_collision
+    havok_collision.forget()  # the whole MSB's collision (gather's probes / spawn part); area_collision keeps its own
+    if os.environ.get("EXPORT_GC") != "default":
+        gc.collect()
+        gc.freeze()  # gather's meshes stay alive to the end: no later collection rescans them
     centre = spawn["pos"]
     rss("gather")
     t0 = time.time()
@@ -1450,7 +1763,7 @@ def main():
             m["tris_in"] = m["tris"]
         far = far_cells(meshes_in, nav_v)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
-                        floor=STREAM_D, cells=True)
+                        floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS))
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0)
@@ -1483,18 +1796,23 @@ def main():
             nt = [(t, c) for t, c in zip(m["tris"], m.get("tris_cell", [])) if c != "far"]
             entries.append(dict(m, tris=[t for t, _ in nt], tcell=[(1, c) for _, c in nt]))
             ft = list(zip(m.get("tris_far", []), m.get("tris_far_cell", [])))
-            entries.append(dict(m, tris=[t for t, c in ft if c != "far"], tcell=[(0, c) for _, c in ft if c != "far"]))
+            ct = [t for t, c in ft if c != "far"]
+            entries.append(dict(m, tris=ct, tcell=[(0, c) for _, c in ft if c != "far"], soft=True))
             far_t = [t for t, c in ft if c == "far"]
             bd = backdrop_visible(m, far_t, nav_s) if BACKDROP else far_t
             if bd:  # far-only cells: one resident level; BACKDROP=1: the backdrop, drawn at any distance (map.c)
-                entries.append(dict(m, tris=bd, tcell=[None] * len(bd),
+                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True,
                                     flags=m["flags"] | (CHUNK_BACKDROP if BACKDROP else 0)))
         else:
             entries.append(dict(m, tcell=None))
+    soften_thin([e for e in entries if e.get("soft") and e["tris"]], nav_s, STREAM_D)
+    if SOFT_STATS[0]:
+        print(f"soften: {SOFT_STATS[1]} of {SOFT_STATS[0]} coarse / backdrop tris under {SOFT_PX} px (colour pulled "
+              f"toward their surroundings)")
     if BACKDROP_STATS[0]:
         print(f"backdrop: {BACKDROP_STATS[1]} of {BACKDROP_STATS[0]} far-cell tris kept (back faces from the navmesh "
               f"dropped: BACKDROP_SIDE {BACKDROP_SIDE})")
-    meshes, verts, tris, uvs, fol, tcells, dgs = [], [], [], [], [], [], []
+    meshes, verts, tris, uvs, fol, tcells, dgs, ents = [], [], [], [], [], [], [], []
     for m in entries:
         tl = m["tris"]
         if not tl:
@@ -1512,6 +1830,7 @@ def main():
         fol += m["fol"] if m["fol"] else [None] * len(tl)
         tcells += m["tcell"] if m["tcell"] else [None] * len(tl)
         dgs += [m["dg"]] * len(tl)
+        ents += [m["ent"]] * len(tl)
         for t in tl:
             tris.append(tuple(remap[c] for c in t))
             if ti >= 0:
@@ -1532,7 +1851,7 @@ def main():
                                 SHADOW_AMB, src.get("probes", {})) if export_normal.BUMP else None
     rss("bump")
     chunks = build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if STREAM else None,
-                          dgs if DRAW_GROUPS else None)
+                          dgs if DRAW_GROUPS else None, ents)
     rss("chunks")
     cells = stream_cells(chunks) if STREAM else None
     if STREAM:  # resident chunks grouped by cell, then the near chunks; bump.bin numbers them in this order
@@ -1540,6 +1859,7 @@ def main():
         order = res_order + [i for c in cells for i in c[2]]
         export_normal.CHUNK_BUMP[:] = [export_normal.CHUNK_BUMP[i] for i in order]
         CHUNK_DG[:] = [CHUNK_DG[i] for i in order]
+        CHUNK_ENT[:] = [CHUNK_ENT[i] for i in order]
         coarse = {i for i, t in enumerate(CHUNK_TAG) if t and t[0] == 0}
         all_chunks = [chunks[i] for i in order]
         chunks = [chunks[i][:1] + (chunks[i][1] | (CHUNK_COARSE if i in coarse else 0),) + chunks[i][2:]
@@ -1603,9 +1923,10 @@ def main():
     import export_collision
     dgn = drawgroups.write(os.path.join(os.path.dirname(os.path.abspath(out)), "dg.bin"), DG, CHUNK_DG,
                            souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb")),
-                           export_collision.area_collision(game, map_id)[0])
-    print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[2]} bytes")
-    export_effects.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
+                           export_collision.area_collision(game, map_id)[0], CHUNK_ENT)
+    print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[3]} switched entities in "
+          f"{sum(1 for e in CHUNK_ENT if e)} chunks, {dgn[2]} bytes")
+    dsr_light.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
     if STREAM:
         nn = sum(len(c[2]) for c in cells)
         print(f"stream: {len(cells)} cells, resident {len(chunks)} chunks / {sum(c[2] for c in chunks)} tris "
@@ -1615,7 +1936,7 @@ def main():
     print(f"{map_id}: {len(meshes)} meshes -> {len(chunks)} chunks, {len(tris)} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")
-    print("area rows (fog, light, tone, tone correct, point light, probe): " + ", ".join(
+    print("area rows (fog, light, tone, tone correct, point light, probe, dof): " + ", ".join(
         f"{k} (fog {v['fogBeginZ']}..{v['fogEndZ']} m {v['degRotW']}% rgb {fog_rgb(v, gain[k])}, char amb "
         f"{[round(128 * x) for x in ch[0]]} sun {[round(128 * x) for x in ch[1]]}, player light {ch[3][1]} "
         f"{ch[3][0] / 10}..{ch[3][2] / 10} m, env up {ch[4][0]} down {ch[4][1]} spec {ch[4][2]})" for k, v, ch in fog_info))

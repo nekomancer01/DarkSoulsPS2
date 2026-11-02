@@ -1,6 +1,8 @@
 # Everything generated from the game goes to build/ (see config.mk, notes/oss/audit.md). Nothing game-derived is tracked.
 /build/
+/wt/
 /config.local.mk
+/tools/hosts.local
 .build.lock
 .job.lock
 *.lock
@@ -31,8 +33,6 @@
 /ps2/proto/data
 /ps2/proto/src/*.bin
 /ps2/proto/src/*.bin.static
-/ps2/proto/src/player_data.h
-/ps2/proto/src/combat_data.h
 /ps2/proto/src/c[0-9]*/
 /ps2/proto/src/m[0-9]*/
 /ps2/proto/obj-gprof/
@@ -69,8 +69,18 @@ gmon.out
 /tools/liq/
 /tools/lz4hc/build/
 
+# notes/: only the public docs are tracked. Everything else there is the maintainer's local working notes
+# (HANDOFF.md, threads/, research/, milestones/, job and memwatch logs, generated sites), kept in the same checkout
+# but never committed. To publish a new note, add a ! line for it here.
+/notes/*
+!/notes/EXE_FINDINGS.md
+!/notes/PLAYTHROUGH.md
+!/notes/PORTING.md
+!/notes/ROADMAP.md
+!/notes/TECH_DEBT.md
+!/notes/TOOLS.md
+
 # Screenshots / renders of game content, milestone captures, user screenshots
-/notes/milestones/
 *.png
 *.webp
 *.jpg
@@ -78,10 +88,11 @@ gmon.out
 *.gif
 *.mp4
 *.bmp
+# The one exception: the README screenshots (AGENTS.md section 1)
+!/docs/screenshots/*.jpg
 
 # Logs, scratch, environments
 *.log
-/notes/enemy/aitest/aitest
 /tools/scratch/
 .venv/
 .venv-*/

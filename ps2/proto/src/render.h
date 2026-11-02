@@ -88,11 +88,19 @@ void r_ground(float size, float cell);
  * texture's blocks are not contiguous). Each allocation takes the blocks its real footprint covers (PSMT8 with
  * vu1.c's TBW, CT32 / CT16 16x16 CLUTs), first fit in the free blocks of pages taken earlier, else new 8 KB pages
  * at gs->CurrentPointer (which stays page aligned for gsKit's own allocations after it). Byte address or
- * GSKIT_ALLOC_ERROR (0). Boot-time only: nothing is freed. */
+ * GSKIT_ALLOC_ERROR (0). r_vram_lin: n consecutive blocks (CLUT tables). The r_vram_free_* calls give an
+ * allocation's blocks back (the same w / h / psm / n it was made with) once the GS no longer reads them (callers free
+ * between frames: the last frame's chains and gsKit queue are done before the next frame's updates run). */
 u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm);
 u32 r_vram_clut(GSGLOBAL *gs, int clut_psm);
-/* blocks taken / pages taken (stats) */
-extern int r_vram_used, r_vram_pages, r_vram_gskit;  /* + blocks gsKit_vram_alloc would have taken */
+u32 r_vram_lin(GSGLOBAL *gs, int n);
+void r_vram_free_tex(u32 vram, int w, int h, int psm);
+void r_vram_free_clut(u32 vram, int clut_psm);
+void r_vram_free_lin(u32 vram, int n);
+/* VRAM bytes free: after gs->CurrentPointer plus the free blocks of r_vram's pages */
+int r_vram_avail(const GSGLOBAL *gs);
+/* blocks taken / pages taken (stats) / free blocks inside those pages */
+extern int r_vram_used, r_vram_pages, r_vram_gskit, r_vram_holes;  /* + blocks gsKit_vram_alloc would have taken */
 /* Screen-space HUD (640x448 logical, x scaled by R_HX) */
 void r_rect(float x, float y, float w, float h, int r, int g, int b);
 void r_text(float x, float y, float scale, const char *s, int r, int g, int b);

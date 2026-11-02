@@ -1,0 +1,19 @@
+# Enemies of a streamed block (world-4): at the Burg entry with Undead Burg as world block 1, the characters run and
+# draw only while their MSB DrawGroups meet those of the collision part under the player (dg.bin per block), within the
+# ACTIVE_MAX / DRAW_MAX budget caps and the view cone. The HUD (Select) and the shots' stats give active / drawn counts
+# and the frame times while they fight.
+option hud
+option nodemo
+wait 3
+spawn -48.5 -21.8 -35.5 3.14
+cam 2.4 0.2
+wait 5
+shot e1_entry
+cam 3.14 0.25
+wait 4
+shot e2_entry_south
+cam 0.9 0.25
+wait 4
+shot e3_entry_east
+stats
+end

@@ -16,6 +16,7 @@
 #include <kernel.h>
 #include <malloc.h>
 #include "fx.h"
+#include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 
 #define FX_MAX 384        /* particle pool (all instances) */
 #define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
@@ -56,7 +57,8 @@ typedef struct {
 
 typedef struct { u16 first_ref, n_ref, first_light, n_light; } FxEff;
 typedef struct { u16 sys, pad; } FxRef;
-typedef struct { u16 eff, flags; float pos[3], frame[9], pad[2]; } FxInst;  /* frame: columns local x, y, z */
+/* frame: columns local x, y, z; entity: MSB SFX entity id (0 none): off while events deleted it (fx_entity_*) */
+typedef struct { u16 eff, flags; float pos[3], frame[9]; s32 entity; float pad; } FxInst;
 typedef struct {
     u16 flags, pad;
     float off[3], radius, begin, period;
@@ -86,6 +88,7 @@ static GSTEXTURE *gtex;
 static EmitState *emit;       /* per instance, per system ref of its effect */
 static int *emit_first;       /* instance -> first EmitState */
 static u8 *inst_on;
+static u32 *tkey;             /* per texture: content hash (pixels + CLUT), the key of the shared VRAM copy */
 /* one set per fx.bin: 0 the boot area (fx_init), k world block k (fx_block_load at boot, on while the block is) */
 typedef struct {
     const FxHeader *hdr;
@@ -99,6 +102,7 @@ typedef struct {
     EmitState *emit;
     int *emit_first;
     u8 *inst_on;
+    u32 *tkey;
     int on;
 } FxSet;
 static FxSet fset[FX_SETS];
@@ -109,10 +113,10 @@ static void bind(int k)
 {
     FxSet *c = &fset[cur_set];
     c->hdr = hdr, c->tex = tex, c->sys = sys, c->eff = eff, c->ref = ref, c->inst = inst, c->light = light;
-    c->gtex = gtex, c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on;
+    c->gtex = gtex, c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on, c->tkey = tkey;
     const FxSet *n = &fset[cur_set = k];
     hdr = n->hdr, tex = n->tex, sys = n->sys, eff = n->eff, ref = n->ref, inst = n->inst, light = n->light;
-    gtex = n->gtex, emit = n->emit, emit_first = n->emit_first, inst_on = n->inst_on;
+    gtex = n->gtex, emit = n->emit, emit_first = n->emit_first, inst_on = n->inst_on, tkey = n->tkey;
 }
 static Particle pool[FX_MAX];
 static int n_alive;
@@ -125,7 +129,65 @@ static inline float rnd(void)
     return (seed >> 8) * (1.0f / 16777216.0f);
 }
 
-static int load_set(GSGLOBAL *gs, const void *blob)
+static GSGLOBAL *fx_gs;
+/* Effect textures in VRAM, shared by content: the Burg blocks' fx.bin repeat most of each other's (and Firelink's)
+ * textures (4 sets: 471 KB of textures, 214 KB different) */
+#define FX_VTEX 64
+static struct { u32 key, vram, clut; u16 w, h; int refs; } vtex[FX_VTEX];
+
+static void free_tex(void)
+{
+    for (u32 i = 0; i < hdr->n_tex; i++) {
+        for (int k = 0; gtex[i].Vram && k < FX_VTEX; k++)
+            if (vtex[k].refs && vtex[k].vram == gtex[i].Vram && !--vtex[k].refs) {
+                r_vram_free_tex(vtex[k].vram, vtex[k].w, vtex[k].h, GS_PSM_T8);
+                r_vram_free_clut(vtex[k].clut, GS_PSM_CT32);
+            }
+        gtex[i].Vram = gtex[i].VramClut = 0;
+    }
+}
+
+/* the bound set's textures to VRAM from b (its fx.bin), or another set's copy of the same texture; 0 = VRAM full
+ * (none kept) */
+static int upload_tex(GSGLOBAL *gs, const u8 *b)
+{
+    FlushCache(0);
+    for (u32 i = 0; i < hdr->n_tex; i++) {
+        GSTEXTURE *t = &gtex[i];
+        t->Width = tex[i].w;
+        t->Height = tex[i].h;
+        t->PSM = GS_PSM_T8;
+        t->ClutPSM = GS_PSM_CT32;
+        t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
+        t->Filter = GS_FILTER_LINEAR;
+        int k = 0, free_k = -1;
+        while (k < FX_VTEX && !(vtex[k].refs && vtex[k].key == tkey[i] && vtex[k].w == t->Width && vtex[k].h == t->Height))
+            free_k = free_k < 0 && !vtex[k].refs ? k : free_k, k++;
+        if (k < FX_VTEX) {
+            vtex[k].refs++;
+            t->Vram = vtex[k].vram, t->VramClut = vtex[k].clut;
+            continue;
+        }
+        t->Vram = free_k >= 0 ? r_vram_tex(gs, t->Width, t->Height, t->PSM) : GSKIT_ALLOC_ERROR;
+        t->VramClut = t->Vram != GSKIT_ALLOC_ERROR ? r_vram_clut(gs, t->ClutPSM) : GSKIT_ALLOC_ERROR;
+        if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
+            r_vram_free_tex(t->Vram, t->Width, t->Height, t->PSM);
+            t->Vram = 0;
+            free_tex();
+            return 0;
+        }
+        t->Mem = (u32 *)(b + tex[i].pix);
+        t->Clut = (u32 *)(b + tex[i].clut);
+        gsKit_texture_upload(gs, t);
+        t->Mem = t->Clut = NULL;
+        vtex[free_k].key = tkey[i], vtex[free_k].vram = t->Vram, vtex[free_k].clut = t->VramClut;
+        vtex[free_k].w = t->Width, vtex[free_k].h = t->Height, vtex[free_k].refs = 1;
+    }
+    return 1;
+}
+
+/* upload = 0: tables only, the textures go up with fx_block_on */
+static int load_set(GSGLOBAL *gs, const void *blob, int upload)
 {
     hdr = blob;
     if (!blob || memcmp(hdr->magic, "DSFX", 4) || hdr->version != 1 || sizeof(FxSys) != 280 ||
@@ -142,6 +204,15 @@ static int load_set(GSGLOBAL *gs, const void *blob)
     inst = (const FxInst *)(b + hdr->off_inst);
     light = (const FxLight *)(b + hdr->off_light);
     gtex = calloc(hdr->n_tex, sizeof *gtex);
+    tkey = calloc(hdr->n_tex ? hdr->n_tex : 1, sizeof *tkey);
+    for (u32 i = 0; tkey && i < hdr->n_tex; i++) {  /* FNV-1a over the pixels and the CLUT */
+        u32 k = 2166136261u;
+        for (u32 j = 0; j < (u32)tex[i].w * tex[i].h; j++)
+            k = (k ^ b[tex[i].pix + j]) * 16777619u;
+        for (u32 j = 0; j < 1024; j++)
+            k = (k ^ b[tex[i].clut + j]) * 16777619u;
+        tkey[i] = k;
+    }
     emit_first = calloc(hdr->n_inst + 1, sizeof *emit_first);
     inst_on = calloc(hdr->n_inst, 1);
     int ns = 0;
@@ -149,42 +220,29 @@ static int load_set(GSGLOBAL *gs, const void *blob)
         emit_first[i] = ns, ns += eff[inst[i].eff].n_ref;
     emit_first[hdr->n_inst] = ns;
     emit = calloc(ns ? ns : 1, sizeof *emit);
-    if (!gtex || !emit_first || !inst_on || !emit) {
+    if (!gtex || !tkey || !emit_first || !inst_on || !emit) {
         printf("DSRPROTO fx: out of RAM\n");
         hdr = 0;
         return 0;
     }
-    FlushCache(0);
-    int vram = 0;
-    for (u32 i = 0; i < hdr->n_tex; i++) {
-        GSTEXTURE *t = &gtex[i];
-        t->Width = tex[i].w;
-        t->Height = tex[i].h;
-        t->PSM = GS_PSM_T8;
-        t->ClutPSM = GS_PSM_CT32;
-        t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
-        t->Mem = (u32 *)(b + tex[i].pix);
-        t->Clut = (u32 *)(b + tex[i].clut);
-        t->Filter = GS_FILTER_LINEAR;
-        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM);
-        t->VramClut = r_vram_clut(gs, t->ClutPSM);
-        if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
-            printf("DSRPROTO fx: VRAM full at texture %u, effects off\n", i);
-            hdr = 0;
-            return 0;
-        }
-        gsKit_texture_upload(gs, t);
-        vram += t->Width * t->Height + 1024;
+    if (upload && !upload_tex(gs, b)) {
+        printf("DSRPROTO fx: VRAM full, effects off\n");
+        hdr = 0;
+        return 0;
     }
-    printf("DSRPROTO fx: %u instances, %u effects, %u systems, %u lights, %u textures (%d KB VRAM)\n", hdr->n_inst,
-           hdr->n_eff, hdr->n_sys, hdr->n_light, hdr->n_tex, vram / 1024);
+    int vram = 0;
+    for (u32 i = 0; i < hdr->n_tex; i++)
+        vram += tex[i].w * tex[i].h + 1024;
+    printf("DSRPROTO fx: %u instances, %u effects, %u systems, %u lights, %u textures (%d KB VRAM%s)\n", hdr->n_inst,
+           hdr->n_eff, hdr->n_sys, hdr->n_light, hdr->n_tex, vram / 1024, upload ? "" : " while on");
     return 1;
 }
 
 int fx_init(GSGLOBAL *gs, const void *blob)
 {
+    fx_gs = gs;
     bind(0);
-    int r = load_set(gs, blob);
+    int r = load_set(gs, blob, 1);
     fset[0].on = r;
     bind(0);
     return r;
@@ -195,9 +253,10 @@ int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size)
     if (block <= 0 || block >= FX_SETS || !blob)
         return 0;
     int was = cur_set;
+    fx_gs = gs;
     bind(block);
-    int r = load_set(gs, blob);
-    if (r) {  /* textures are in VRAM: keep the tables (everything before the first pixels / CLUT) */
+    int r = load_set(gs, blob, 0);
+    if (r) {  /* keep the tables (everything before the first pixels / CLUT); the pixels come with fx_block_on */
         const u8 *b = blob;
         u32 keep = size;
         for (u32 i = 0; i < hdr->n_tex; i++)
@@ -211,8 +270,6 @@ int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size)
             tex = (const FxTex *)(t + hdr->off_tex), sys = (const FxSys *)(t + hdr->off_sys);
             eff = (const FxEff *)(t + hdr->off_eff), ref = (const FxRef *)(t + hdr->off_ref);
             inst = (const FxInst *)(t + hdr->off_inst), light = (const FxLight *)(t + hdr->off_light);
-            for (u32 i = 0; i < hdr->n_tex; i++)
-                gtex[i].Mem = gtex[i].Clut = NULL;
         }
     }
     if (!r)
@@ -222,9 +279,9 @@ int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size)
     return r;
 }
 
-void fx_block_on(int block, int on)
+void fx_block_on(int block, int on, const void *blob)
 {
-    if (block <= 0 || block >= FX_SETS || !fset[block].hdr)
+    if (block <= 0 || block >= FX_SETS || !fset[block].hdr || fset[block].on == on)
         return;
     for (int i = 0; !on && i < n_alive;) {  /* its particles go */
         if (pool[i].set == block)
@@ -236,8 +293,37 @@ void fx_block_on(int block, int on)
     bind(block);
     memset(inst_on, 0, hdr->n_inst);  /* prewarmed again when it comes back */
     memset(emit, 0, emit_first[hdr->n_inst] * sizeof *emit);
+    if (!on)
+        free_tex();  /* its particles are gone: nothing draws them after this frame */
+    else if (!blob || !upload_tex(fx_gs, blob))
+        printf("DSRPROTO fx: block %d: %s, effects off (VRAM free %d)\n", block, blob ? "VRAM full" : "no fx.bin",
+               r_vram_avail(fx_gs)), on = 0;
     fset[block].on = on;
     bind(was);
+}
+
+int fx_entity_particles(int id, int kill)
+{
+    int was = cur_set, found = 0, n = 0;
+    for (int k = 0; k < FX_SETS; k++) {
+        bind(k);
+        if (!hdr)
+            continue;
+        for (u32 ii = 0; ii < hdr->n_inst; ii++)
+            found |= inst[ii].entity == id;
+        for (int i = 0; i < n_alive;) {
+            if (pool[i].set != k || inst[pool[i].inst].entity != id) {
+                i++;
+            } else if (kill) {
+                pool[i] = pool[--n_alive];
+                n++;
+            } else {
+                i++, n++;
+            }
+        }
+    }
+    bind(was);
+    return found ? n : -1;
 }
 
 static void frame_apply(const FxInst *in, const float l[3], float out[3])
@@ -404,7 +490,8 @@ void fx_update(float dt, V3 eye)
         bind(k);
     for (u32 ii = 0; ii < hdr->n_inst; ii++) {
         float dx = inst[ii].pos[0] - eye.x, dy = inst[ii].pos[1] - eye.y, dz = inst[ii].pos[2] - eye.z;
-        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE;
+        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE &&
+                 !(inst[ii].entity && dg_entity_hidden(inst[ii].entity));  /* Delete Map SFX (event.c) */
         if (on && !inst_on[ii]) {  /* prewarm: one life of the longest system in 8 steps */
             inst_on[ii] = 1;
             const FxEff *e = &eff[inst[ii].eff];

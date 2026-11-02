@@ -4,14 +4,16 @@ encode(): RGBA from the DDS -> one texture record. Width is scaled to 128 (PSMT8
 at 128 like before. Opaque / cut-out textures: 16 colours (PSMT4) when that keeps PSNR >= T4_PSNR dB on the opaque
 texels, else 255 colours (PSMT8); the last index is transparent (alpha < 50 %). Their CLUT is CT16 (RGBA 5551; the
 GS expands the alpha bit with TEXA TA0 = 0, TA1 = 0x80). Blended effects keep 256 colours with alpha in a CT32 CLUT.
-Mip 1 is the half-size image (box filter on premultiplied colour) mapped to the same palette.
+Mip 1 is the half-size image (box filter on premultiplied colour) mapped to the same palette; mips 2, 3 (MIP_CHAIN)
+the same from mip 1's filtered image, for the GS mip chain.
 
 Section written by write() (offsets from the start of map.bin):
   entry {u16 w, h (mip 0); u8 psm (0x13 PSMT8 / 0x14 PSMT4), clut psm (0 CT32 / 2 CT16), levels, flags (bit 0: near
          level); f32 texels per metre (mip 0, area-weighted over its triangles); u32 clut, pix0, pix1 offsets;
          u16 VRAM blocks (256 B) mip 0, mip 1 (power of two covering every block the level touches, buffer width 128);
          u32 near level pixels (2w x 2h, same palette, for near chunks; texcache.c level 2) or 0}  (32 B)
-  then per texture: CLUT (PSMT8: 16x16 CSM1-ordered, PSMT4: 8x2), mip 0, mip 1 pixels, each 16-byte aligned.
+  then per texture: CLUT (PSMT8: 16x16 CSM1-ordered, PSMT4: 8x2), mip 0, mip 1 (, mip 2, mip 3) pixels, each 16-byte
+  aligned (levels > 2: mip 2 and 3 follow mip 1, texcache.c finds them by size).
 """
 import struct
 import numpy as np
@@ -37,6 +39,9 @@ PSM_OVERRIDE = {}
 QUANT = __import__("os").environ.get("TEX_QUANT", "liq")
 REPORT = []  # (name, source, 8-bit, 4-bit images, metrics, chosen) for sheet(); filled by encode
 ENTRY = 32
+# GS mip chain below mip 1 (render-12: far walls shimmer without it): mip 2, mip 3 stored after mip 1, levels = 2 + this.
+# texcache.c draws them with MXL / MIPTBP1 under a chunk's mip 0 / 1. MIP_CHAIN=0: the old two levels (A/B)
+MIP_CHAIN = int(__import__("os").environ.get("MIP_CHAIN", 2))
 
 # GS block numbers inside a page: PSMT8 page 128x64 (blocks 16x16, 8 x 4), PSMT4 page 128x128 (blocks 32x16, 4 x 8)
 _BLK8 = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23], [8, 9, 12, 13, 24, 25, 28, 29],
@@ -110,8 +115,21 @@ def _kmeans(px, pal, iters=10):
 
 
 def _nearest(rgb, pal):
-    """(N,3) colours -> index of the nearest palette entry (N)."""
-    d = ((rgb[:, None, :].astype(np.int32) - pal[None, :, :].astype(np.int32)) ** 2).sum(2)
+    """(N,C) colours -> index of the nearest palette entry (N): squared integer distance over the C channels (3 or 4),
+    first entry on ties."""
+    import geom_native
+    L = geom_native.lib()
+    if L is not None and len(pal):  # integer distances: the C loop and numpy agree exactly
+        x, p = np.asarray(rgb), np.asarray(pal)
+        ch = x.shape[-1]  # RGB, or RGBA (the soft path's mip 1 compares alpha too)
+        x = np.ascontiguousarray(x.astype(np.int32).reshape(-1, ch))
+        p = np.ascontiguousarray(p.astype(np.int32).reshape(-1, ch))
+        out = np.empty(len(x), np.int64)
+        L.nearest_rgb(len(x), x.ctypes.data, len(p), p.ctypes.data, ch, out.ctypes.data)
+        return out
+    # int64 squares: add_near marks transparent entries 1e6, whose square overflowed int32 (wrapped, so such an entry
+    # could win); same result as before for every in-range palette
+    d = ((rgb[:, None, :].astype(np.int32).astype(np.int64) - pal[None, :, :].astype(np.int32)) ** 2).sum(2)
     return d.argmin(1)
 
 
@@ -164,8 +182,68 @@ class Tex(dict):
         return dict.__getitem__(self, ("w", "h")[k] if isinstance(k, int) else k)
 
 
+_CACHE = []
+
+
+def _cache():
+    """(cache dir, key prefix hash) for encode(), or None: TEX_CACHE (default <main tree>/build/cache/tex, shared like the
+    simplify cache; 0 = off). The key covers this file, the liq binding and library, the Pillow / numpy versions, the
+    knobs encode reads and the arguments, so a hit is the record encode would return."""
+    if not _CACHE:
+        import hashlib, os
+        d = os.environ.get("TEX_CACHE")
+        if d == "0" or os.environ.get("TEX_SHEET"):  # the contact sheet needs encode's REPORT entries
+            _CACHE.append(None)
+            return None
+        if not d:
+            import simplify_pool
+            d = os.path.join(os.environ.get("DSR_CACHE") or os.path.join(simplify_pool.main_tree(), "build", "cache"),
+                             "tex")
+        import PIL
+        h = hashlib.sha256(b"texmap-cache-1")
+        here = os.path.dirname(os.path.abspath(__file__))
+        for f in (__file__, os.path.join(here, "liq", "liq.py"), os.path.join(here, "liq", "libimagequant.so")):
+            try:
+                h.update(open(f, "rb").read())
+            except OSError:
+                h.update(b"-")
+        knobs = [PIL.__version__, np.__version__, QUANT, MIP_CHAIN, sorted(PSM_OVERRIDE.items()),
+                 os.environ.get("TEX_FORCE4", ""), os.environ.get("TEX_FORCE8", "")]
+        h.update(repr(knobs).encode())
+        _CACHE.append((d, h))
+    return _CACHE[0]
+
+
 def encode(w, h, rgba, soft=False, name=""):
-    """-> dict(w, h, psm, cpsm, clut, mips=[bytes, bytes], psnr4, psnr8)."""
+    """-> dict(w, h, psm, cpsm, clut, mips=[bytes, bytes], psnr4, psnr8). Results are cached across exports (_cache):
+    Undead Burg's blocks share most textures, and a re-export after a non-texture change encodes none."""
+    import os, pickle, zlib
+    c = _cache()
+    if c is None:
+        return _encode(w, h, rgba, soft, name)
+    k = c[1].copy()
+    k.update(repr((w, h, bool(soft), name, len(rgba))).encode())
+    k.update(bytes(rgba))
+    key = k.hexdigest()
+    path = os.path.join(c[0], key[:2], key)
+    try:
+        with open(path, "rb") as f:
+            return Tex(pickle.loads(zlib.decompress(f.read())))
+    except (OSError, ValueError, EOFError, pickle.UnpicklingError, zlib.error):
+        pass
+    t = _encode(w, h, rgba, soft, name)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(zlib.compress(pickle.dumps(dict(t), protocol=pickle.HIGHEST_PROTOCOL), 1))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"texmap: cache write failed ({e})")
+    return t
+
+
+def _encode(w, h, rgba, soft=False, name=""):
     from PIL import Image
     img = Image.frombytes("RGBA", (w, h), rgba)
     if w < 128:
@@ -249,16 +327,16 @@ def encode(w, h, rgba, soft=False, name=""):
             struct.pack_into("<H", clut, 2 * j, _ct16(*full[i], i < opaque_n))
         else:
             clut[4 * j:4 * j + 4] = bytes([*full[i], 0x80 if i < opaque_n else 0])
-    # mip 1: same palette (opaque entries), transparent where the averaged alpha is below 50 %
-    m1 = None
-    if h >= 16:
-        hp = half.reshape(-1, 4)
-        m1 = _nearest(np.clip(hp[:, :3] + 0.5, 0, 255), pal[:opaque_n])
-        m1 = np.where(hp[:, 3] >= 128, m1, tr)
-    if colours == 16:
-        mips = [_pack4(idx)] + ([_pack4(m1)] if m1 is not None else [])
-    else:
-        mips = [idx.astype(np.uint8).tobytes()] + ([m1.astype(np.uint8).tobytes()] if m1 is not None else [])
+    # mip 1 (and the GS mip chain below it, MIP_CHAIN levels): same palette (opaque entries), transparent where the
+    # averaged alpha is below 50 %
+    pack = _pack4 if colours == 16 else (lambda x: x.astype(np.uint8).tobytes())
+    mips = [pack(idx)]
+    lv, lh = half, h // 2
+    while lh >= 8 and len(mips) < 2 + MIP_CHAIN:
+        hp = lv.reshape(-1, 4)
+        m = _nearest(np.clip(hp[:, :3] + 0.5, 0, 255), pal[:opaque_n])
+        mips.append(pack(np.where(hp[:, 3] >= 128, m, tr)))
+        lv, lh = _half(lv), lh // 2
     return Tex(w=w, h=h, psm=PSMT4 if colours == 16 else PSMT8, cpsm=CT16 if ct16 else CT32, clut=bytes(clut), mips=mips,
                name=name)
 

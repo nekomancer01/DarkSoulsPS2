@@ -20,7 +20,7 @@
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL };
 
 typedef struct {
     unsigned short op, line;
@@ -73,6 +73,7 @@ static int parse(Prog *p, char *text)
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0},   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
+        {"kill", C_KILL, 0},  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
         /* game state (save.c save_test_cmd): event flags, souls, items, checks, save / load */
         {"flag", C_GAME, 0}, {"flags", C_GAME, 0}, {"souls", C_GAME, 0}, {"item", C_GAME, 0}, {"check", C_GAME, 0},
         {"save", C_GAME, 0}, {"load", C_GAME, 0}, {"wipe", C_GAME, 0},
@@ -102,7 +103,7 @@ static int parse(Prog *p, char *text)
                 rest[--len] = 0;
             if (!strcmp(word, "option")) {
                 opts |= !strcmp(rest, "noenemies") ? TEST_NOENEMIES : !strcmp(rest, "hud") ? TEST_HUD
-                      : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "nodemo") ? TEST_NODEMO : 0;
+                      : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "demo") ? TEST_DEMO : 0;
                 skipmiss |= !strcmp(rest, "skipmiss");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
@@ -236,6 +237,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_LOG: printf("TEST log %s\n", c->text); break;
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
+        case C_KILL: pl->hp = -1; break;
         case C_LOOP: p->pc = -1; break;
         case C_END:
             p->pc = p->n;

@@ -23,8 +23,8 @@ void world_stream_open(void);
  * before the near-cell arena) */
 void world_systems(GSGLOBAL *gs);
 /* Once a frame with the player's feet (x, y, z) and the frame time: picks the block under the player, continues one
- * background read (the full pool's swap first, then a neighbour's lite set), turns a fully read block on, unloads
- * blocks beyond WORLD_UNLOAD_R. Never waits for the IOP, except on a warp (> WORLD_WARP m in one frame: test spawns,
+ * background read (the full pool's swap first, then a wanted block's lite set), turns a fully read block on, unloads
+ * the blocks the triangle under the player no longer keeps. Never waits for the IOP, except on a warp (> WORLD_WARP m in one frame: test spawns,
  * the first frame), which loads and swaps synchronously as DSR's loading screen does. */
 void world_update(const float *feet, float dt);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
@@ -33,6 +33,7 @@ int world_current(void);
 typedef struct {
     int blocks, loaded, reading;     /* table size, blocks on (incl. boot), block being read (-1 none) */
     int current, full;               /* block under the player, block whose streams are in the full pool (-1 none) */
+    unsigned want;                   /* blocks the collision triangle under the player loads (world.bin links) */
     unsigned pool_kb, pool_used_kb;  /* fixed pools (full + slots), slots in use */
     unsigned load_ms, read_kb;       /* last lite load: wall time from first read to on, bytes */
     unsigned full_ms;                /* last full swap: time from going lite to drawing the new streams */
