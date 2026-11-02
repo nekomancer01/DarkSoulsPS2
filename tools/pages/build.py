@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Build the project's GitHub Pages site (.github/workflows/pages.yml): the "build your own ISO" page.
 
-    python3 -I tools/pages/build.py OUT_DIR
+    python3 -I tools/pages/build.py OUT_DIR [--elf proto.elf]
 
 Writes OUT_DIR/index.html + app.js (copied from tools/pages/), OUT_DIR/build.json (the commit the site was built
 from and the supported game versions, i.e. the file hashes in tools/verify_game.py, which the page checks the
 player's copy against in the browser) and OUT_DIR/build-iso.sh (tools/build-iso.sh with its default --ref pinned to
-that commit, so the page and the script always build the same source). No game data is read or written: the site is
+that commit, so the page and the script always build the same source) and, with --elf, OUT_DIR/proto.elf: the
+game-free ELF from `make -C ps2/proto elf` (CI), which runs with the packs a player converts. No game data is read or written: the site is
 code and hashes only (AGENTS.md section 1).
 """
 import json, os, re, shutil, subprocess, sys
@@ -22,9 +23,15 @@ def git(*args):
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    elf = None
+    if "--elf" in args:
+        i = args.index("--elf")
+        elf = args[i + 1]
+        del args[i:i + 2]
+    if len(args) != 1:
         sys.exit(__doc__)
-    out = sys.argv[1]
+    out = args[0]
     os.makedirs(out, exist_ok=True)
     sha = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD")
     repo = os.environ.get("GITHUB_REPOSITORY") or "nekomancer01/DarkSoulsPS2"
@@ -48,6 +55,11 @@ def main():
     with open(os.path.join(out, "build-iso.sh"), "w") as f:
         f.write(script)
     os.chmod(os.path.join(out, "build-iso.sh"), 0o755)
+    if elf:
+        shutil.copy(elf, os.path.join(out, "proto.elf"))
+        info["elf"] = {"file": "proto.elf", "size": os.path.getsize(elf)}
+        with open(os.path.join(out, "build.json"), "w") as f:
+            json.dump(info, f, indent=1)
     open(os.path.join(out, ".nojekyll"), "w").close()
     print(f"site: {out} ({repo} @ {sha[:12]}, {len(verify_game.SUPPORTED)} supported game version(s))")
 

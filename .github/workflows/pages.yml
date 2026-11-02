@@ -14,13 +14,31 @@ concurrency:
   group: pages
   cancel-in-progress: true
 jobs:
+  # The game-free ELF (make -C ps2/proto elf): game values load from the player's own packs at boot (src/gamedata.c)
+  elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: ps2dev/ps2dev:v2.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: apk add --no-cache make python3
+      - run: make -C ps2/proto elf BUILD="$PWD/elf-build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proto-elf
+          path: elf-build/proto.elf
   build:
+    needs: elf
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
-      - run: python3 -I tools/pages/build.py _site
+      - uses: actions/download-artifact@v4
+        with:
+          name: proto-elf
+          path: elf
+      - run: python3 -I tools/pages/build.py _site --elf elf/proto.elf
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
