@@ -114,7 +114,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `progress.sh` | Status of long background jobs |
 | `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |
-| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them |
+| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them. `--lean` removes each intermediate once no later step needs it (the browser's run) |
+| `tools/pages/convert-node.mjs` | The in-browser converter's run under Node (same Pyodide, 32-bit numpy, Pillow and wasm C helpers as the page): `node tools/pages/convert-node.mjs <game> <build dir>`, then `tools/convert.py --compare <build dir> build` shows whether the browser's packs are the same bytes as a native build (TECH_DEBT build-7) |
+| `tools/octree.py` | Pillow's FASTOCTREE quantizer in numpy with a stable bucket sort: the same palettes natively and in the browser (Pillow's own depends on the platform's qsort). Used by texmap, export_map, export_effects, export_menu |
 | `tools/iso9660.py` | Bootable disc image in pure Python, same layout and pack order as `ps2-iso.sh` (no xorriso) |
 | `tools/gamedata.py` | Layout of the game values the ELF loads at boot (player.gd / combat.gd / progress.gd) and the generator of `src/*_data.h` |
 | `tools/native/build-wasm.sh` | The C helpers as WebAssembly side modules for Pyodide (clang + wasm-ld) |
