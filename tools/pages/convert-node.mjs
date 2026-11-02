@@ -70,6 +70,8 @@ import convert
 json.dumps(convert.groups("/game", "/build"))
 `)).map((g) => ({ ...g, state: "wait" }));
   const last = groups[groups.length - 1];
+  const rank = (g) => g.maps + Math.max(0, ...groups.filter((x) => x !== last && x.deps.includes(g.name)).map(rank));
+  groups.forEach((g, i) => { g.rank = rank(g); g.order = i; });  // app.js's priority
   const dirOf = (g) => (g === last ? build : path.join(build, "lanes", g.name));
   const copyIn = (from, to) => { if (fs.existsSync(from)) fs.cpSync(from, to, { recursive: true, filter: (f) => !f.startsWith(path.join(from, "lanes")) }); };
   const t0 = Date.now();
@@ -81,7 +83,7 @@ json.dumps(convert.groups("/game", "/build"))
       if (groups.some((g) => g.state === "failed")) { if (!running) resolve(); return; }
       const ready = groups.filter((g) => g.state === "wait" &&
         (g === last ? groups.every((x) => x === last || x.state === "done")
-          : g.deps.every((d) => groups.find((x) => x.name === d).state === "done"))).sort((a, b) => b.maps - a.maps);
+          : g.deps.every((d) => groups.find((x) => x.name === d).state === "done"))).sort((a, b) => b.rank - a.rank || a.order - b.order);
       for (const g of ready.slice(0, Math.max(0, lanes - running))) {
         g.state = "run";
         running++;
