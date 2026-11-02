@@ -272,9 +272,13 @@ def main():
     a = sys.argv[1:]
     if a and a[0] == "--compare":
         sys.exit(1 if compare(a[1], a[2]) else 0)
-    if len(a) < 2:
+    pos = [x for x in a[:a.index("--only")] if x != "--lean"] if "--only" in a else [x for x in a if x != "--lean"]
+    if len(pos) < 2 or any(x.startswith("--") for x in pos[:2]):
         sys.exit(__doc__)
-    game, build = a[0], os.path.abspath(a[1])
+    game, build = pos[0], os.path.abspath(pos[1])
+    if os.path.realpath(build) == os.path.realpath(game) or \
+            os.path.realpath(build).startswith(os.path.realpath(game) + os.sep):
+        sys.exit("convert.py: the build dir must be outside the game folder (the game folder is only read)")
     if "--list" in a:
         for s in plan(game, build):
             print(s if isinstance(s, Step) else f"(enemy types of {s[2] or s[1]}: export_chr.py + pack.py each)")

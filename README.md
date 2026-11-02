@@ -205,6 +205,7 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | meshoptimizer (`tools/ext/`) | Mesh experiments | MIT |
 | lz4, lz4ultra (`tools/ext/`) | Compressor experiments | BSD-2 (lib) / zlib |
 | libimagequant (`tools/ext/`) | Palette quantisation experiments | GPL-3.0-or-later or commercial |
+| Node.js 18+, clang + wasm-ld (LLVM 17+); pyodide (npm, fetched into `build/cache/pyodide-node` on first use) | `tools/pages/convert-node.mjs` (the in-browser converter run outside a browser, to compare its packs with a native build) | Node: MIT; Pyodide: MPL-2.0 |
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |

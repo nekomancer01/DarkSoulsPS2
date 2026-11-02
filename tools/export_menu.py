@@ -185,7 +185,8 @@ class Packer:
 def quantize(img):
     """RGBA image -> (CSM1 CLUT bytes with alpha 0..0x80, PSMT8 pixels)"""
     from PIL import Image
-    q = img.quantize(256, method=Image.Quantize.FASTOCTREE)
+    import octree  # Pillow's FASTOCTREE, the same on every platform (TECH_DEBT build-7)
+    q = octree.quantize(img, 256)
     pal = list(q.getpalette("RGBA") or [])[:1024]
     pal += [0] * (1024 - len(pal))
     clut = bytearray(1024)

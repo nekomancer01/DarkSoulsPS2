@@ -916,7 +916,8 @@ def quantize_rgba(w, h, rgba, soft=False):
         img = img.resize((img.size[0], 128), Image.BILINEAR)
     w, h = img.size
     if soft:
-        q = img.quantize(256, method=Image.Quantize.FASTOCTREE)
+        import octree  # Pillow's FASTOCTREE, the same on every platform (TECH_DEBT build-7)
+        q = octree.quantize(img, 256)
         pal = list(q.getpalette("RGBA") or [])[:1024]
         pal += [0] * (1024 - len(pal))
         clut = bytearray(1024)

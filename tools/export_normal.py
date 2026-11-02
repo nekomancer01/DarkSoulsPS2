@@ -136,7 +136,7 @@ def _irradiance(terms, faces, n):
     amb = down + (up - down) * h + env * e
     sun = np.zeros_like(amb)
     for d, col in dirs:
-        sun += np.maximum(0.0, n @ d)[:, None] * col
+        sun += np.maximum(0.0, dsr_light.matmul(n, d))[:, None] * col
     return amb, sun
 
 
@@ -183,7 +183,7 @@ class _Response:
             k = np.repeat(tri["k"][sel], J)[:, None]
             e = amb * (1 - self.sa * (1 - k)) + sun * k
             alb = np.repeat(tri["alb"][sel], J, axis=0)
-            Y[sel] = ((e * alb * self.near) @ np.array(dsr_light.LUMA)).reshape(len(sel), J)
+            Y[sel] = dsr_light.matmul(e * alb * self.near, np.array(dsr_light.LUMA)).reshape(len(sel), J)
         o = self.tone(Y) + EPS
         return np.clip(o[:, 1:] / o[:, :1], 0, 255 / 128)
 
@@ -281,7 +281,7 @@ def _nearest(x, c, step=65536):
     out = np.empty(len(x), int)
     cc = (c ** 2).sum(1)
     for i in range(0, len(x), step):
-        d = (2 * x[i:i + step]) @ c.T
+        d = dsr_light.matmul(2 * x[i:i + step], c.T)
         np.subtract(cc, d, out=d)  # cc - 2 x.c in place: the same values without a second (step, k) array
         out[i:i + step] = d.argmin(1)
     return out
