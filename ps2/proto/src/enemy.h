@@ -21,6 +21,8 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
                       int map_lua_size);
 void enemy_block_add(int block);
 void enemy_block_remove(int block);
+/* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */
+void enemy_respawn(void);
 /* Perception, AI, ESD, animation, movement and hits for every enemy near the player */
 void enemy_update(Player *pl, float dt);
 /* Skin + draw the visible enemies into the current VU1 chain (after vu1_begin, like player_draw) */

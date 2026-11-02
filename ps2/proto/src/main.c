@@ -33,6 +33,7 @@
 #include "world.h"
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
+#include "bonfire.h"  /* A4: rest, death, bloodstain */
 #include <unistd.h>
 
 #define PI 3.14159265f
@@ -329,6 +330,7 @@ int main(int argc, char **argv)
         pl.on_map = 1;
     }
     save_apply_player(&pl);  /* saved position (same area), HP, deaths */
+    bonfire_init(AREA);      /* bloodstain / respawn point (src/bonfire.c, A4) */
 #ifdef TEST_SPAWN
     /* test start (make DEFS='-DTEST_SPAWN=x,y,z,yaw'), e.g. in front of the graveyard skeletons */
     {
@@ -472,6 +474,7 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_OBJECTS);
             objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
             event_update(&pl, dt);    /* EMEVD instances (src/event.c), then fog walls / gates block the player */
+            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
             event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
         }
 
@@ -543,6 +546,7 @@ int main(int argc, char **argv)
 #ifndef MAP_PANO_R
         fx_draw();
 #endif
+        bonfire_draw();  /* the bloodstain marker */
         if (combat_dummy.hp_max) {  /* debug dummy: a box of its hurtbox size, red once dead; the blade capsule axis */
             float r = combat_dummy.radius, h = combat_dummy.height;
             r_box(v3(combat_dummy.pos[0], combat_dummy.pos[1], combat_dummy.pos[2]), m3_rot_y(combat_dummy.yaw),

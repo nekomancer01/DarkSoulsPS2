@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bonfire.h"
 #include "ev_misc.h"
 #include "event.h"
 #include "flags.h"
@@ -111,11 +112,9 @@ int ev_bonfire_action(const float pos[3], float yaw)
             ev_message(1, 2);      /* ASSUMED banner type 2 = "BONFIRE LIT" (TECH_DEBT event-16) */
             return 1;
         }
-        /* rest: respawn point, events restarted / ended on rest, temporary flags cleared, autosave. HP / Estus refill
-         * and respawning enemies are A4's (save-6, enemy-4). */
-        prog.bonfire = b->entity;
-        progress_touch();
-        event_rest();
+        /* rest (src/bonfire.c): respawn point, HP / Estus, enemies, events restarted / ended on rest and temporary
+         * flags cleared, autosave */
+        bonfire_rest(b->entity);
         save_request();
         printf("EVT bonfire %d rest\n", (int)b->entity);
         return 1;

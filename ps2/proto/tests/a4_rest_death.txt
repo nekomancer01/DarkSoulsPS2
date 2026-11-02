@@ -1,0 +1,84 @@
+# A4 (src/bonfire.c): bonfire rest and the death loop at the Firelink bonfire, enemies on.
+# 1 rest: a killed enemy (1020160, graveyard) is back with full HP, HP refilled, respawn point = the bonfire's spawn
+#   point (1021960 + 1000), last bonfire 1021960.
+# 2 lethal fall off the east cliff (as save_death.txt): bloodstain with the 500 souls held where the player last stood,
+#   souls 0, back at the spawn point 復活ポイント00 (-47.4 -59.8 53.3), full HP, the enemy killed again is back.
+# 3 the stain survives a save round trip; walking onto it gives the souls back.
+# 4 death on the ground (hurt) by the bonfire: the ESD death anim, then the respawn; the new stain lies there.
+#   rm -f build/save/a4test*.bin  # a save from an earlier run carries its deaths count
+#   tools/q -m 4 python3 tools/test-run.py build/proto.sym.elf ps2/proto/tests/a4_rest_death.txt build/test/a4
+option save host a4test
+option hud
+option nodemo
+wait 3
+wipe
+souls 500
+ev expect estus 5
+ev expect stain -1
+# 1 rest
+ev chr 1020160 damage 99999
+wait 0.5
+ev expect chr 1020160 dead 1
+spawn -51.8 -60.6 54.4 0
+wait 1
+ev flag 11020992 1
+ev hurt 100
+wait 0.3
+ev expect hp 494
+ev action
+wait 0.5
+ev expect hp 594
+ev expect estus 5
+ev expect respawn 1022960
+ev expect lastbonfire 1021960
+ev expect chr 1020160 dead 0
+ev expect chr 1020160 hp 100
+# 2 lethal fall
+ev chr 1020160 damage 99999
+spawn -47.4 -59.8 53.3 2.53
+wait 0.5
+cam 2.0 0.25
+stick 0 1
+wait 3
+stick 0 0
+wait 10
+check deaths 1
+ev expect hp 594
+ev expect souls 0
+ev expect stain 500
+ev expect x > -48.0
+ev expect x < -46.8
+ev expect z > 52.7
+ev expect z < 53.9
+ev expect chr 1020160 dead 0
+# 3 save round trip, marker shot, pickup
+wait 1
+load
+ev expect stain 500
+ev stain go 2.5
+wait 0.5
+shot a4_stain_cliff
+ev stain go 0
+wait 0.5
+ev expect souls 500
+ev expect stain -1
+# 4 death on the ground, by the bonfire (5 m from the spawn point)
+spawn -51.8 -60.6 54.4 0
+wait 0.5
+ev hurt 9999
+wait 0.2
+ev expect hp -1
+wait 8
+check deaths 2
+ev expect hp 594
+ev expect souls 0
+ev expect stain 500
+ev expect stainx -51
+ev expect stainz 54
+ev expect x > -48.0
+ev expect x < -46.8
+cam -1.33 0.7
+wait 0.5
+shot a4_stain_bonfire
+log a4_rest_death done
+end

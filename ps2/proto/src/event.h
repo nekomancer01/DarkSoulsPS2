@@ -32,9 +32,11 @@ int event_push_player(float pos[3], float r, float h);
 /* Bonfire rest (src/ev_misc.c bonfires, A4 later): the temporary flags of every area are cleared, Restart-on-rest
  * events start over, End-on-rest ones stop */
 void event_rest(void);
+/* Position and yaw of an MSB entity of a loaded map (part, region, spawn point); 0 if none has that id */
+int event_entity(s32 id, float pos[3], float *yaw);
 /* Test scripts ("ev <cmd>", testscript.c): flag ID 0|1, obj destroy|restore|enable|disable ID (breakables),
  * expect flag|obj|hit|treasure|objbroken ID V, expect x|y|z <|> V,
- * expect inv ITEM N | bonfires N | respawn ENTITY | value FIRST BITS V | region ENTITY X Y Z 0|1 (region-local point),
+ * expect inv ITEM N | bonfires N | respawn SPAWNPOINT | value FIRST BITS V | region ENTITY X Y Z 0|1 (region-local point),
  * lot ID (award an item lot), rest, action, warp ENTITY, trace 0|1|2, summary. Prints "TEST ev ..." lines. */
 void event_test_cmd(const char *cmd);
 /* HUD line: instances running / waiting, conditions fired, last fired event, stubs, action prompt, update time */

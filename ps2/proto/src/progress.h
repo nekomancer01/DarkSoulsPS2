@@ -35,7 +35,7 @@ typedef struct {
     u8 stats[ST_COUNT];
     s32 hp;                  /* HP at save time; <= 0 = full on load */
     s32 estus, estus_max;    /* Estus charges (A4 sets the max from the bonfire's kindle level) */
-    u32 bonfire;             /* last bonfire rested at: its MSB entity id (respawn point), 0 = the map's spawn */
+    u32 bonfire;             /* last bonfire rested at: its MSB object entity id (bonfire warp later), 0 = none */
     u32 map_id;              /* area of the saved position: 0xAABBCCDD for mAA_BB_CC_DD */
     float pos[3], yaw;
     u32 play_time;           /* seconds */
@@ -43,6 +43,12 @@ typedef struct {
     s32 equip[EQ_SLOTS];
     s32 inv_count;
     InvItem inv[INV_MAX];
+    /* A4 (src/bonfire.c); an older save leaves them at their new-game values */
+    u32 respawn;             /* where a death puts the player: MSB SpawnPoint entity (Set Player Respawn Point, the
+                              * rested bonfire's), 0 = the map's spawn */
+    u32 stain_map;           /* bloodstain: area it lies in (map_id form), 0 = none */
+    float stain_pos[3];
+    s32 stain_souls, stain_humanity;
 } Progress;
 
 extern Progress prog;

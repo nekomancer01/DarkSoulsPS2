@@ -20,6 +20,7 @@
 #include "collision.h"
 #include "combat.h"
 #include "save.h"
+#include "bonfire.h"
 
 #define PI 3.14159265f
 
@@ -259,15 +260,21 @@ static float gravity_scale(const Player *p)
 
 static void respawn(Player *p)
 {
-    if (p->hp < 0)
-        save_request();  /* DSR autosaves on death; the next save_tick writes the respawn spot, full HP, deaths + 1 */
-    p->deaths += p->hp < 0;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
-    map_spawn(&p->pos, &p->yaw);
+    int died = p->hp < 0;
+    if (died) {
+        save_request();    /* DSR autosaves on death; the next save_tick writes the respawn spot, full HP, deaths + 1 */
+        bonfire_death(p);  /* bloodstain with the souls / humanity held */
+    }
+    p->deaths += died;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
+    if (!died || !bonfire_spawn(&p->pos, &p->yaw))  /* a death: the respawn point (last bonfire) */
+        map_spawn(&p->pos, &p->yaw);
     p->hp = p->hp_max;
     p->state = ST_IDLE;
     p->airborne = 0;
     p->vel = v3(0, 0, 0);
     player_esd_reset(p);  /* both ESD groups back to their start states, no pending requests */
+    if (died)
+        bonfire_revive(p);  /* Estus, enemies, events as a rest */
 }
 
 /* For combat.c: the TAE id of the attack animation playing, or -1 */
@@ -497,8 +504,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         if (p->state == ST_DEAD) {
             /* the ESD switches the death anims; the engine side respawns once the last one has played: 6067 (state 59,
              * death in the air), 6170 (98, lethal landing), 6173 (100, died on a short landing) */
-            if ((p->anim == ANIM_FALL_DEATH_LAND || p->anim == ANIM_ESD_FALL_IMPACT_END ||
-                 p->anim == ANIM_ESD_LAND_DEATH_END) && p->t >= anims[p->anim].length) {
+            /* a death on the ground (enemy hit, hurt): the ESD's death anim, once it ends with the player on the floor
+             * (ASSUMED: DSR fades to the load after YOU DIED, TECH_DEBT a4-4) */
+            int ended = p->t >= anims[p->anim].length;
+            if (ended && (p->anim == ANIM_FALL_DEATH_LAND || p->anim == ANIM_ESD_FALL_IMPACT_END ||
+                          p->anim == ANIM_ESD_LAND_DEATH_END || (p->hp < 0 && !p->airborne && !anims[p->anim].loop))) {
                 respawn(p);
                 old = p->pos;  /* constrain() below resolves from the spawn, not the death site */
             }

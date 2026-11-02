@@ -23,7 +23,7 @@ Layout (little-endian, offsets from the start of the file, version 1):
            bytes (slot, event id, then the event-arg blob) padded to words
   substs   u16 instr index (in its event), u16 dst byte (into the words), u16 src byte (into the instance arg blob),
            u8 fmt (EDF type 0-6 of dst: read the source as that type and widen; 7 = raw copy of n bytes), u8 n  (8 B)
-  entities sorted by id: s32 id; u8 kind (ENT_*); u8 shape (region SHAPE_*); u16 index (kind-specific: enemy
+  entities sorted by id (parts, regions, map SFX and spawn points): s32 id; u8 kind (ENT_*); u8 shape (region SHAPE_*); u16 index (kind-specific: enemy
            placement / collider / first hit range); f32 pos[3]; f32 yaw (rad); f32 dim[3] (box w d h / cyl r h /
            sphere r); u32 count (hit ranges); 2 x u32 0                                                   (48 B)
   ranges   u32 first triangle, u32 count (in this block's collision.bin)
@@ -195,6 +195,13 @@ def entities(game, map_id, msb, block_tris):
         if e["type_name"] == "SFX" and e.get("entity_id", -1) >= 0:
             reg = next((r for r in msb["regions"] if r["name"] == e.get("region")), None)
             ents.append([e["entity_id"], ENT_SFX, 0, 0, reg["pos"] if reg else (0, 0, 0), 0.0, (0, 0, 0), 0, None])
+        # spawn points (復活イベント): Set Player Respawn Point (2003[23]) and a bonfire rest (src/bonfire.c: bonfire
+        # object entity + 1000) name them; a point at their region (復活ポイント), facing its yaw
+        if e["type_name"] == "SpawnPoint" and e.get("entity_id", -1) >= 0:
+            reg = next((r for r in msb["regions"] if r["name"] == e.get("spawn_point")), None)
+            if reg:
+                ents.append([e["entity_id"], ENT_REGION, SHAPES["Point"], 0, reg["pos"], _yaw(reg["rot"]), (0, 0, 0), 0,
+                             None])
     # colliders: every object's hkx bodies (export_objects.py's breakables and animated objects have their own)
     import area as area_mod
     keep = area_mod.region(msb, map_id)
