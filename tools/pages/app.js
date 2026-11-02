@@ -184,43 +184,96 @@ $("convert").addEventListener("click", () => {
     $("bar").hidden = true;
     $("convert").disabled = false;
   };
-  // one worker per stretch of steps: a worker whose memory has grown too far hands the build so far to a fresh one
-  // ({pause}, worker.js RESTART_MB), as WebAssembly memory never shrinks
-  const segment = (start, carry) => {
+  // The plan's groups (build.json converter.groups: shared steps, one per area / world block, then the world) run in
+  // up to LANES workers side by side, each group once its deps are done, the ones with map exports first. A group
+  // runs as a chain of workers: one whose memory has grown too far hands its build so far to a fresh one ({pause},
+  // worker.js), as WebAssembly memory never shrinks. Each finished group's files ({finished}) go to the groups that
+  // need them; the last group (the world) gets every file and writes the disc image.
+  const groups = (BUILD.converter.groups || [{ name: null, deps: [], maps: 0 }]).map((g) => ({ ...g, state: "wait" }));
+  const last = groups[groups.length - 1];
+  const lanes = laneCount();
+  const files = new Map();  // path -> ArrayBuffer of every finished group's build files
+  // the group that made each file: a group gets its deps' files (their packs and the intermediates later steps still
+  // name, convert.py --lean)
+  const fileGroup = new Map();
+  const depFiles = (g) => [...files.keys()].filter((p) => g.deps.includes(fileGroup.get(p)));
+  const workers = new Set();
+  let failed = false;
+  log(`${lanes} worker(s) side by side, ${groups.length} groups`);
+  const carryOf = (paths) => [...paths].map((p) => ({ path: p, data: files.get(p).slice(0) }));
+  const fail = (msg) => {
+    if (failed) return;
+    failed = true;
+    for (const w of workers) w.terminate();
+    stopped(msg);
+  };
+  const status = () => {
+    const run = groups.filter((g) => g.state === "run").map((g) => g.name).join(", ");
+    const done = groups.filter((g) => g.state === "done").length;
+    const min = Math.floor((Date.now() - t0) / 60000);
+    $("bar").max = groups.length; $("bar").value = done;
+    $("convstatus").textContent = `${done} of ${groups.length} parts done; working on ${run || "…"} (${min} min so far)`;
+  };
+  const segment = (g, start, carry) => {
     const w = new Worker("worker.js");
+    workers.add(w);
+    const end = () => { w.terminate(); workers.delete(w); };
     w.onmessage = (ev) => {
       const m = ev.data;
-      if (m.log !== undefined) log(m.log);
-      if (m.progress) {
-        const [i, n, name] = m.progress;
-        $("bar").max = n; $("bar").value = i;
-        const min = Math.floor((Date.now() - t0) / 60000);
-        $("convstatus").textContent = `Step ${i + 1} of ${n}: ${name} (${min} min so far)`;
-      }
-      if (m.pause) {
-        w.terminate();
-        segment(m.pause.next, m.pause.carry);
+      if (m.log !== undefined) log(groups.length > 1 && g.name ? `[${g.name}] ${m.log}` : m.log);
+      if (m.progress) status();
+      if (m.pause) { end(); segment(g, m.pause.next, m.pause.carry); }
+      if (m.finished) {
+        end();
+        for (const f of m.finished.carry) {
+          files.set(f.path, f.data);
+          if (!fileGroup.has(f.path)) fileGroup.set(f.path, g.name);  // a dep's file handed back again stays the dep's
+        }
+        g.state = "done";
+        status();
+        schedule();
       }
       if (m.done) {
+        end();
         const url = URL.createObjectURL(new Blob([m.done], { type: "application/octet-stream" }));
         $("save").href = url;
         $("save").hidden = false;
         $("bar").value = $("bar").max;
         $("convstatus").textContent = `Done in ${Math.round((Date.now() - t0) / 60000)} min: ${(m.done.byteLength / 1048576).toFixed(0)} MB.`;
-        w.terminate();
         $("convert").disabled = false;
       }
-      if (m.error) {
-        w.terminate();
-        stopped(m.error);
-      }
+      if (m.error) { end(); fail(`${g.name ? g.name + ": " : ""}${m.error}`); }
     };
-    w.onerror = (e) => { w.terminate(); stopped(e.message + " (the converter crashed: out of memory?)"); };
-    w.postMessage({ convert: { build: BUILD, base: location.href, files: GAME_FILES, start, carry } },
-                  carry.map((f) => f.data));
+    w.onerror = (e) => { end(); fail(e.message + " (the converter crashed: out of memory? Try fewer workers.)"); };
+    const iso = g === last;
+    w.postMessage({ convert: { build: BUILD, base: location.href, files: GAME_FILES, start, carry,
+                               select: g.name ? [g.name] : null, iso } }, carry.map((f) => f.data));
   };
-  segment(0, []);
+  const schedule = () => {
+    if (failed) return;
+    const running = groups.filter((g) => g.state === "run").length;
+    const ready = groups.filter((g) => g.state === "wait" && g.deps.every((d) => groups.find((x) => x.name === d).state === "done"))
+      .filter((g) => g !== last || groups.every((x) => x === last || x.state === "done"))  // the image needs every pack
+      .sort((a, b) => b.maps - a.maps);
+    for (const g of ready.slice(0, Math.max(0, lanes - running))) {
+      g.state = "run";
+      // its dependencies' files, or every file for the last group (the disc image packs them all)
+      segment(g, 0, carryOf(g === last ? files.keys() : depFiles(g)));
+    }
+    status();
+  };
+  schedule();
 });
+
+// workers side by side: the page's choice, or from the device's memory (navigator.deviceMemory, GB, Chrome / Edge:
+// rounded down and capped at 8; unknown elsewhere: 8 assumed) and cores. Each worker peaks around 2-2.5 GB
+// (convert-node.mjs --prof, 2026-11-02: heap 1956 MB at most, plus its share of the page's copies).
+function laneCount() {
+  const v = $("lanes").value;
+  if (v !== "auto") return Number(v);
+  const mem = navigator.deviceMemory || 8, cores = navigator.hardwareConcurrency || 4;
+  return Math.max(1, Math.min(3, Math.floor(mem / 3), Math.floor(cores / 2)));
+}
 
 // --- step 2: the command ---
 function render() {

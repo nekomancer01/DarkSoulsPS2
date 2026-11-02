@@ -2,7 +2,7 @@
 every export runs in this Python process. The project page's in-browser converter (tools/pages, Pyodide) runs this;
 natively it is the check that it still matches the Makefile.
 
-    python3 tools/convert.py <game dir> <build dir> [--lean] [--only STEP...] [--list]
+    python3 tools/convert.py <game dir> <build dir> [--lean] [--only STEP...] [--list] [--groups]
     python3 tools/convert.py --compare <build dir> <make's build dir>     (same packs, byte for byte)
 
 Writes <build dir>/gen/... and <build dir>/data/*.pak exactly as the Makefile's recipes do (same tools, arguments and
@@ -222,21 +222,61 @@ def step_name(s):
     return s.name if isinstance(s, Step) else f"{s[2] or s[1]}: enemy types"
 
 
+def group_of(s):
+    """the group a plan entry belongs to: its area / block ('<out>: ...' steps and enemy placeholders), 'world' for the
+    world steps, 'shared' for the steps every area uses (player, menu, enemy ESD)"""
+    if isinstance(s, tuple):
+        return s[2] or s[1]
+    if ": " in s.name:
+        return s.name.split(": ", 1)[0]
+    return "world" if s.name.startswith("world") else "shared"
+
+
+def groups(game, build, mv=None):
+    """The plan's groups in plan order, for running them side by side (the in-browser converter's parallel workers):
+    [{name, deps, maps}], deps = the groups whose outputs a step of this group names (so they must have finished and
+    their build files be present first), maps = how many map exports it runs (the heavy steps; scheduled first). Enemy
+    steps read only the game and their own outputs, so their placeholders need no expansion here."""
+    steps = plan(game, build, mv)
+    made, order, out = {}, [], {}
+    for s in steps:
+        g = group_of(s)
+        if g not in out:
+            order.append(g)
+            out[g] = {"name": g, "deps": [], "maps": 0}
+        if isinstance(s, tuple):
+            continue
+        for f in s.files():
+            d = made.get(f)
+            if d is not None and d != g and d not in out[g]["deps"]:
+                out[g]["deps"].append(d)
+        for o in s.outputs:
+            made[os.path.normpath(o)] = g
+        out[g]["maps"] += is_map_export(s.name)
+    return [out[g] for g in order]
+
+
 def is_map_export(name):
     """the step name of an area's / block's export_map.py run (the converter's largest by far)"""
     return name.endswith(": map")
 
 
-def run_part(game, build, only=None, log=print, progress=None, lean=False, start=0, pause=None):
+def run_part(game, build, only=None, log=print, progress=None, lean=False, start=0, pause=None, select=None):
     """run() from step index start (the plan is the same every time, so an index names a step), stopping after any
     step for which pause(name of the next step) is true -> (seconds per step, index to resume at, or None when the
     plan is done). The in-browser converter goes on in a fresh Pyodide before each map export and whenever its
-    WebAssembly memory, which never shrinks, has grown past what the next steps need (tools/pages/worker.js)."""
+    WebAssembly memory, which never shrinks, has grown past what the next steps need (tools/pages/worker.js).
+    select: run only the steps of these groups (group_of; the parallel workers run one group each, see groups());
+    the step indices then count the plan with only those groups' enemy lists expanded, the same in every run with
+    the same select."""
     mv = make_vars()
     steps = plan(game, build, mv)
     times, i = [], 0
     while i < len(steps):
         s = steps[i]
+        if select is not None and group_of(s) not in select:
+            i += 1
+            continue
         if isinstance(s, tuple):  # enemy list known now
             steps[i:i + 1] = enemy_steps(game, *s[1:], mv)
             continue
@@ -271,6 +311,8 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
             if freed:
                 log(f"  freed {freed / 1048576:.1f} MB of intermediates")
         i += 1
+        while select is not None and i < len(steps) and group_of(steps[i]) not in select:
+            i += 1
         if pause and i < len(steps) and pause(step_name(steps[i])):
             return times, i
     return times, None
@@ -308,6 +350,10 @@ def main():
     if os.path.realpath(build) == os.path.realpath(game) or \
             os.path.realpath(build).startswith(os.path.realpath(game) + os.sep):
         sys.exit("convert.py: the build dir must be outside the game folder (the game folder is only read)")
+    if "--groups" in a:
+        for g in groups(game, build):
+            print(f"{g['name']}: {g['maps']} map export(s), after {', '.join(g['deps']) or 'nothing'}")
+        return
     if "--list" in a:
         for s in plan(game, build):
             print(s if isinstance(s, Step) else f"(enemy types of {s[2] or s[1]}: export_chr.py + pack.py each)")

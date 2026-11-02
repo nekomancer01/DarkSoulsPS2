@@ -102,11 +102,16 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
     <h2><span class="n">2</span> Convert in your browser</h2>
     <p>The port's own converter runs inside this tab (Python in WebAssembly): it reads your game folder, builds the
     maps, characters, menus and scripts, and packs them with the latest build of the engine into
-    <code>DarkSoulsPS2.iso</code>. Keep the tab open while it works. It takes a while (tens of minutes; the maps are
-    the slow part) and up to about 4 GB of memory, so use a desktop browser (Chrome, Edge or Firefox) with other big
-    tabs closed.</p>
+    <code>DarkSoulsPS2.iso</code>. Keep the tab open while it works. It takes a while (about 10 to 20 minutes; the
+    maps are the slow part). Each worker uses up to about 2.5 GB of memory, and several run side by side, so use a
+    desktop browser (Chrome, Edge or Firefox) with other big tabs closed, and pick fewer workers if your PC runs short
+    of memory.</p>
     <div class="row" style="align-items:center">
       <button id="convert" disabled>Convert</button>
+      <label class="small" for="lanes" style="white-space:nowrap">Workers
+        <select id="lanes" style="width:auto;padding:4px 6px">
+          <option value="auto">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option>
+        </select></label>
       <a class="btn" id="save" hidden download="DarkSoulsPS2.iso">Save DarkSoulsPS2.iso</a>
       <span class="small" id="convstatus">Choose your game folder in step 1 first.</span>
     </div>

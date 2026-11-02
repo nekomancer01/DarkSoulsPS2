@@ -38,6 +38,13 @@ def source_zip(path, wasm):
     return os.path.getsize(path)
 
 
+def convert_groups():
+    """convert.groups() of the default build, as the worker's paths name them"""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import convert
+    return convert.groups("/game", "/build")
+
+
 def main():
     args = sys.argv[1:]
     opt = {}
@@ -79,7 +86,10 @@ def main():
         shutil.copy(elf, os.path.join(out, "proto.elf"))
         info["elf"] = {"file": "proto.elf", "size": os.path.getsize(elf)}
     if wasm:
-        info["converter"] = {"zip": "convert-src.zip", "size": source_zip(os.path.join(out, "convert-src.zip"), wasm)}
+        info["converter"] = {"zip": "convert-src.zip", "size": source_zip(os.path.join(out, "convert-src.zip"), wasm),
+                             # the plan's groups (tools/convert.py groups(): Makefile + area.py, no game data), which
+                             # app.js runs in parallel workers
+                             "groups": convert_groups()}
         shutil.copy(os.path.join(HERE, "worker.js"), os.path.join(out, "worker.js"))
     with open(os.path.join(out, "build.json"), "w") as f:
         json.dump(info, f, indent=1)
