@@ -6,6 +6,7 @@
 
 --turbo: PCSX2 without its speed limit (or at x times speed) for functional runs (world_cross, world_soak, routes):
 the ELF's own frame stats run on emulated time and stay comparable; the wall-clock column of frames.csv does not.
+(A/B 2026-11-02, world_soak.txt: 159 s -> 105 s, same frame count and shot stats.)
 
 <script> is a src/testscript.c script (copied next to the ELF as tests/gen/<name>.txt, since host: only sees the ELF's
 folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>, own data dir and Xvfb display). Without
