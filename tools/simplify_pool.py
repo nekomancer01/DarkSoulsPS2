@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import simplify
 
-CACHE_VERSION = b"simplify-cache-1"
+CACHE_VERSION = b"simplify-cache-2"  # 2: entries are compact logs (simplify.pack)
 
 
 def main_tree():
@@ -137,19 +137,20 @@ def _trim(d):
 
 
 def work(job, area_k, be):
-    """pool entry: one job through the chosen simplifier"""
+    """pool entry: one job through the chosen simplifier -> its compact log (simplify.pack)"""
     if be == "native":
         import simplify_native
         try:
-            return simplify_native.simplify(*job, area_k=area_k)
+            return simplify_native.simplify_log(*job, area_k=area_k)
         except Exception as e:  # never fail an export on the C path: simplify.py gives the same result, slower
             print(f"simplify: C simplifier failed on a {len(job[2])}-triangle job ({type(e).__name__}: {e}); "
                   "using simplify.py for it", flush=True)
-    return simplify.simplify(*job, area_k=area_k)
+    return simplify.pack(*simplify.simplify(*job, area_k=area_k))
 
 
 def run_jobs(jobs, area_k=None):
-    """[(pos, wpos, tris, locked, scale)] -> [(T0, steps)] as simplify.simplify returns them, in job order"""
+    """[(pos, wpos, tris, locked, scale)] -> [compact log] (simplify.pack of what simplify.simplify returns), in job
+    order"""
     t0 = time.time()
     be = backend()
     d = cache_dir()

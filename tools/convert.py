@@ -90,6 +90,12 @@ def run_tool(tool, args, env=None, capture=False):
         gc.unfreeze()  # export_map.py freezes its meshes out of the GC's scans; they are garbage now
         gc.set_threshold(*GC_THRESHOLD)  # and raises the thresholds for its own run
         gc.collect()
+        # simplify_pool's forkserver lives on after the tool returns, and its __main__ is this tool with this
+        # step's environment: a later step's workers would re-run export_map.py's top level with a stale STATIC_OBJ
+        # (deleted by --lean by then). Stop it so each step starts its own (Pyodide has no multiprocessing).
+        fs = sys.modules.get("multiprocessing.forkserver")
+        if fs is not None and hasattr(fs._forkserver, "_stop"):
+            fs._forkserver._stop()
     return buf.getvalue() if capture else None
 
 
@@ -211,11 +217,21 @@ def run(game, build, only=None, log=print, progress=None, lean=False):
     return run_part(game, build, only, log, progress, lean)[0]
 
 
+def step_name(s):
+    """a plan entry's name: a Step's, or for an enemy placeholder (expanded when reached) '<area>: enemy types'"""
+    return s.name if isinstance(s, Step) else f"{s[2] or s[1]}: enemy types"
+
+
+def is_map_export(name):
+    """the step name of an area's / block's export_map.py run (the converter's largest by far)"""
+    return name.endswith(": map")
+
+
 def run_part(game, build, only=None, log=print, progress=None, lean=False, start=0, pause=None):
     """run() from step index start (the plan is the same every time, so an index names a step), stopping after any
-    step for which pause() is true -> (seconds per step, index to resume at, or None when the plan is done). The
-    in-browser converter goes on in a fresh Pyodide when its WebAssembly memory, which never shrinks, has grown past
-    what the next map export needs (tools/pages/worker.js)."""
+    step for which pause(name of the next step) is true -> (seconds per step, index to resume at, or None when the
+    plan is done). The in-browser converter goes on in a fresh Pyodide before each map export and whenever its
+    WebAssembly memory, which never shrinks, has grown past what the next steps need (tools/pages/worker.js)."""
     mv = make_vars()
     steps = plan(game, build, mv)
     times, i = [], 0
@@ -255,7 +271,7 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
             if freed:
                 log(f"  freed {freed / 1048576:.1f} MB of intermediates")
         i += 1
-        if pause and i < len(steps) and pause():
+        if pause and i < len(steps) and pause(step_name(steps[i])):
             return times, i
     return times, None
 

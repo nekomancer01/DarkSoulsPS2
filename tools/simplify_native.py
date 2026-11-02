@@ -56,8 +56,8 @@ def lib():
     return _L
 
 
-def simplify(pos, wpos, tris, locked, scale, area_k=None):
-    """simplify.simplify, in C"""
+def simplify_log(pos, wpos, tris, locked, scale, area_k=None):
+    """simplify.simplify in C -> its log in simplify.pack's compact form (numpy arrays, no per-step Python objects)"""
     L = lib()
     P = np.ascontiguousarray(np.asarray(pos, dtype=np.float64).reshape(-1, 3))
     W = np.ascontiguousarray(np.asarray(wpos, dtype=np.int32))
@@ -70,27 +70,25 @@ def simplify(pos, wpos, tris, locked, scale, area_k=None):
                        K.ctypes.data_as(bp) if K is not None else None, S.ctypes.data_as(dp),
                        pysimplify.BORDER_W, pysimplify.SEAM_W, pysimplify.SEAM_K * pysimplify.SEAM_K, ak ** 2,
                        pysimplify.MIN_COS)
+    if not r:
+        raise MemoryError("simplify_run returned NULL")
     try:
         R = r.contents
-        # empty outputs may come back as NULL pointers (the C side allocates nothing for them): never wrap those
-        def arr(ptr, n):
-            return np.ctypeslib.as_array(ptr, (n,)).tolist() if n and ptr else []
-        t0 = np.asarray(arr(R.t0, R.nt * 6), dtype=np.int64).reshape(-1, 6).tolist()
-        T0 = [((t[0], t[1]), (t[2], t[3]), (t[4], t[5])) for t in t0]
+
+        # copies out of the C buffers; empty outputs may come back as NULL pointers (nothing allocated for them)
+        def arr(ptr, n, dt):
+            return np.ctypeslib.as_array(ptr, (n,)).astype(dt) if n and ptr else np.zeros(0, dt)
         n = R.nsteps
-        steps = []
-        if n:
-            cost, nrem, ncha = arr(R.cost, n), arr(R.nrem, n), arr(R.ncha, n)
-            rem, cha = arr(R.rem, R.nrem_all), arr(R.cha, R.ncha_all)
-            ri = ci = 0
-            for c, nr, nc in zip(cost, nrem, ncha):
-                ch = tuple(tuple(cha[ci + 4 * j:ci + 4 * j + 4]) for j in range(nc))
-                steps.append((c, tuple(rem[ri:ri + nr]), ch))
-                ri += nr
-                ci += 4 * nc
-        return T0, steps
+        return (arr(R.t0, R.nt * 6, np.int32).reshape(-1, 6), arr(R.cost, n, np.float64), arr(R.nrem, n, np.int32),
+                arr(R.ncha, n, np.int32), arr(R.rem, R.nrem_all, np.int32),
+                arr(R.cha, R.ncha_all, np.int32).reshape(-1, 4))
     finally:
         L.simplify_free(r)
+
+
+def simplify(pos, wpos, tris, locked, scale, area_k=None):
+    """simplify.simplify, in C: (T0, steps) exactly as it returns them"""
+    return pysimplify.unpack(simplify_log(pos, wpos, tris, locked, scale, area_k))
 
 
 def _test_mesh(rng, n):
@@ -156,6 +154,13 @@ def _test(count=40):
         t = time.time()
         b = simplify(*job, area_k=ak)
         tn += time.time() - t
+        log = simplify_log(*job, area_k=ak)
+        for eps in (0.0, 1e-6, 1e-4, 1e-2, float("inf")):
+            want = [tuple(c for pa in t for c in pa) for t in pysimplify.replay(*a, eps)]
+            if [tuple(t) for t in pysimplify.replay_log(log, eps).tolist()] != want or \
+                    pysimplify.unpack(pysimplify.pack(*a)) != a:
+                print(f"MISMATCH compact log, mesh {k}, eps {eps}")
+                return 1
         if a != b:
             na, nb = len(a[1]), len(b[1])
             first = next((i for i, (x, y) in enumerate(zip(a[1], b[1])) if x != y), min(na, nb))

@@ -1671,10 +1671,10 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
     logs = simplify_pool.run_jobs(jobs, area_k=area_k)
     grass = sum(len(m[src]) for m in meshes if m["keep"] and not m["grass"])
-    full = sum(len(t) for t, _ in logs)
+    full = sum(len(lg[0]) for lg in logs)
     # every step of every group as (cost, triangles removed): the count at a threshold is one masked sum
-    cost = np.array([s[0] for _, steps in logs for s in steps])
-    gone = np.array([len(s[1]) for _, steps in logs for s in steps])
+    cost = np.concatenate([lg[1] for lg in logs] + [np.zeros(0)])
+    gone = np.concatenate([lg[2] for lg in logs] + [np.zeros(0, np.int32)]).astype(np.int64)
 
     def count(eps):
         return grass + full - int(gone[cost <= eps].sum())
@@ -1697,10 +1697,10 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     for mi in live:
         meshes[mi][out] = []
         meshes[mi][out + "_cell"] = []
-    for (pos, _, _, _, _), attr, (T0, steps), c in zip(jobs, attrs, logs, jcell):
-        for t in simplify.replay(T0, steps, eps_far if c == "far" and eps_far is not None else eps):
-            mi = attr[t[0][1]][0]
-            meshes[mi][out].append(tuple((pos[p], attr[a][1]) for p, a in t))
+    for (pos, _, _, _, _), attr, lg, c in zip(jobs, attrs, logs, jcell):
+        for p0, a0, p1, a1, p2, a2 in simplify.replay_log(lg, eps_far if c == "far" and eps_far is not None else eps).tolist():
+            mi = attr[a0][0]
+            meshes[mi][out].append(((pos[p0], attr[a0][1]), (pos[p1], attr[a1][1]), (pos[p2], attr[a2][1])))
             meshes[mi][out + "_cell"].append(c)
     for m in meshes:
         if m["keep"]:
@@ -1792,6 +1792,7 @@ def main():
         far = far_cells(meshes_in, nav_v)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
                         floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS))
+        rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0)
@@ -1833,6 +1834,7 @@ def main():
                                     flags=m["flags"] | (CHUNK_BACKDROP if BACKDROP else 0)))
         else:
             entries.append(dict(m, tcell=None))
+    rss("entries")
     soften_thin([e for e in entries if e.get("soft") and e["tris"]], nav_s, STREAM_D)
     if SOFT_STATS[0]:
         print(f"soften: {SOFT_STATS[1]} of {SOFT_STATS[0]} coarse / backdrop tris under {SOFT_PX} px (colour pulled "

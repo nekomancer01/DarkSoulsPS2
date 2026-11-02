@@ -3,10 +3,11 @@
 // Prints and writes per step: seconds and the wasm heap (HEAP8.length, which only grows) after it, so the heap's
 // growth over a step is that step's high-water mark above everything before it in the same Pyodide.
 //
-//   node tools/pages/profile-node.mjs <game dir> <build dir> [--wasm DIR] [--restart-mb N] [--fresh-each] [--out F.tsv]
+//   node tools/pages/profile-node.mjs <game dir> <build dir> [--wasm DIR] [--restart-mb N] [--map-start-mb N] [--old-rule] [--out F.tsv]
 //        [--only STEP...]
 //
-// --fresh-each: a new Pyodide after every map export (so the next map's growth is measured near a clean start).
+// Restarts follow worker.js: before a map export unless the heap is <= --map-start-mb (400), and past --restart-mb.
+// --old-rule: only past --restart-mb (the rule before 2026-11-02).
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,11 +26,12 @@ const flag = (k) => { const i = args.indexOf(k); if (i < 0) return false; args.s
 let wasm = opt("--wasm");
 const restartMB = Number(opt("--restart-mb") || 1536);
 const outTsv = opt("--out");
-const freshEach = flag("--fresh-each");
+const oldRule = flag("--old-rule");  // restart only past RESTART_MB (worker.js before the map-export rule)
+const mapStartMB = Number(opt("--map-start-mb") || 400);
 const onlyAt = args.indexOf("--only");
 const only = onlyAt >= 0 ? args.splice(onlyAt).slice(1) : null;
 if (args.length !== 2) {
-  console.error("usage: node tools/pages/profile-node.mjs <game dir> <build dir> [--wasm DIR] [--restart-mb N] [--fresh-each] [--out F.tsv]");
+  console.error("usage: node tools/pages/profile-node.mjs <game dir> <build dir> [--wasm DIR] [--restart-mb N] [--map-start-mb N] [--old-rule] [--out F.tsv]");
   process.exit(2);
 }
 const game = path.resolve(args[0]), build = path.resolve(args[1]);
@@ -83,10 +85,11 @@ try {
       }
       last = name === null ? null : { i, name, t: now };
     };
-    globalThis.heapMB = heap;
+    globalThis.heapMB = heap;  // export_map.rss() prints it per stage
     py.globals.set("START", start);
     py.globals.set("RESTART_MB", restartMB);
-    py.globals.set("FRESH_EACH", freshEach);
+    py.globals.set("FRESH_EACH", !oldRule);
+    py.globals.set("MAP_START_MB", mapStartMB);
     py.globals.set("ONLY", only ? py.toPy(only) : null);
     const nxt = py.runPython(`
 import os, sys, time
@@ -103,9 +106,10 @@ _names = {}
 def _prog(i, n, name):
     _names["next"] = name
     profStep(i, n, name)
-def _pause():
-    nxt = _names.get("next", "")
-    return heapMB() > RESTART_MB or (FRESH_EACH and str(nxt).endswith(": map"))
+def _pause(nxt):
+    if FRESH_EACH:  # worker.js's rule
+        return heapMB() > RESTART_MB or (convert.is_map_export(nxt) and heapMB() > MAP_START_MB)
+    return heapMB() > RESTART_MB
 times, nxt = convert.run_part("/game", "/build", only=ONLY, progress=_prog, lean=True, start=START, pause=_pause)
 profStep(0, 0, None)
 nxt
