@@ -1,8 +1,11 @@
 // In-browser converter (tools/pages): Pyodide runs the port's own exporters (tools/convert.py, the Makefile's steps)
 // on the player's game folder, then tools/iso9660.py packs the game-free ELF from CI and the packs into a disc image.
 // Everything stays in this worker's memory: the game files are read in place (WORKERFS over the File objects the page
-// passes in), nothing is sent anywhere. Messages out: {log}, {progress: [i, n, name]}, {pause: {next, carry}} (go on
-// in a new worker: RESTART_MB), {done: ArrayBuffer}, {error}.
+// passes in), nothing is sent anywhere. In: {convert: {build, base, files, start, carry, select, iso}} (select: the
+// plan groups this worker runs, convert.groups(); null = all; iso: write the disc image when they are done). Out:
+// {log}, {progress: [i, n, name]}, {pause: {next, carry}} (go on in a new worker: RESTART_MB / MAP_START_MB),
+// {finished: {carry}} (the groups are done; carry = this worker's build files), {done: ArrayBuffer} (the disc image),
+// {error}.
 "use strict";
 let py = null;
 
@@ -42,10 +45,13 @@ function mountGame(files) {
   py.FS.mount(py.FS.filesystems.WORKERFS, { blobs: files.map((f) => ({ name: f.path, data: f.file })) }, "/game");
 }
 
-// WebAssembly memory only grows: once a big map export has taken it to ~3 GB, the next one would run into the 4 GB
-// ceiling (wasm32) and fail inside a C helper. So after any step that leaves more than this much, the worker hands
-// /build (~100 MB, see convert.py --lean) back to the page, which goes on in a fresh worker (convert.run_part).
+// WebAssembly memory only grows: one map export takes it up by ~2.5 GB (m10_01_00_00_w: 770 -> 3232 MB, measured
+// 2026-11-02 under Node), so a map export that starts on a heap of more than ~1 GB runs into the 4 GB ceiling (wasm32)
+// mid-step. So the worker hands /build (~100 MB, see convert.py --lean) back to the page, which goes on in a fresh
+// worker (convert.run_part), before every map export unless the heap is still near a fresh Pyodide's
+// (MAP_START_MB), and after any step that leaves more than RESTART_MB.
 const RESTART_MB = 1536;
+const MAP_START_MB = 400;
 
 function buildFiles(dir, out) {
   // every file under dir in this Pyodide's file system -> [{path, data}] (data: ArrayBuffer, transferable)
@@ -72,7 +78,9 @@ async function convert(msg) {
   self.convertProgress = (i, n, name) => post({ progress: [i, n, name] });
   self.heapMB = () => py._module.HEAP8.length / 1048576;
   py.globals.set("START", msg.start || 0);
+  py.globals.set("SELECT", msg.select ? py.toPy(msg.select) : null);
   py.globals.set("RESTART_MB", RESTART_MB);
+  py.globals.set("MAP_START_MB", MAP_START_MB);
   const next = py.runPython(`
 import os, sys, time
 sys.path.insert(0, "/src/tools")
@@ -85,7 +93,8 @@ from js import convertProgress, heapMB
 t = time.time()
 # lean: intermediates leave memory once the steps after them no longer need them
 times, nxt = convert.run_part("/game", "/build", progress=lambda i, n, name: convertProgress(i, n, name), lean=True,
-                              start=START, pause=lambda: heapMB() > RESTART_MB)
+                              start=START, select=SELECT, pause=lambda nxt: heapMB() > RESTART_MB or
+                              (convert.is_map_export(nxt) and heapMB() > MAP_START_MB))
 if nxt is not None:
     print(f"memory at {heapMB():.0f} MB after {time.time() - t:.0f} s: going on in a fresh Python")
 nxt
@@ -93,6 +102,11 @@ nxt
   if (next !== undefined && next !== null) {
     const carry = buildFiles("/build", []);
     post({ pause: { next, carry } }, carry.map((f) => f.data));
+    return;
+  }
+  if (msg.iso === false) {  // one group of a parallel run: its files go to the page, which merges them
+    const carry = buildFiles("/build", []);
+    post({ finished: { carry } }, carry.map((f) => f.data));
     return;
   }
   py.runPython(`

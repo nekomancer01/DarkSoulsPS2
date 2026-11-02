@@ -293,6 +293,56 @@ def replay(tris, steps, eps):
     return [tuple(t) for t, a in zip(T, alive) if a]
 
 
+# Compact log: simplify()'s (T0, steps) as six numpy arrays instead of Python tuples (13x smaller: a 390k-triangle
+# job's log is 305 MB of tuples and 23 MB of arrays), which is what keeps the in-browser converter's wasm heap in
+# bounds. (t0 (n, 6) int32: per triangle p, a x 3; cost float64 per step; nrem, ncha int32 per step; rem int32 all
+# removed triangles in step order; cha (m, 4) int32 all changes (t, corner, p, a) in step order.)
+def pack(T0, steps):
+    """(T0, steps) as simplify() returns them -> compact log"""
+    import numpy as np
+    t0 = np.array([[c for pa in t for c in pa] for t in T0], np.int32).reshape(-1, 6)
+    cost = np.array([s[0] for s in steps], np.float64)
+    nrem = np.array([len(s[1]) for s in steps], np.int32)
+    ncha = np.array([len(s[2]) for s in steps], np.int32)
+    rem = np.array([t for s in steps for t in s[1]], np.int32)
+    cha = np.array([c for s in steps for c in s[2]], np.int32).reshape(-1, 4)
+    return t0, cost, nrem, ncha, rem, cha
+
+
+def unpack(log):
+    """compact log -> (T0, steps) as simplify() returns them"""
+    t0, cost, nrem, ncha, rem, cha = log
+    T0 = [((t[0], t[1]), (t[2], t[3]), (t[4], t[5])) for t in t0.tolist()]
+    rem, cha = rem.tolist(), [tuple(c) for c in cha.tolist()]
+    steps, ri, ci = [], 0, 0
+    for c, nr, nc in zip(cost.tolist(), nrem.tolist(), ncha.tolist()):
+        steps.append((c, tuple(rem[ri:ri + nr]), tuple(cha[ci:ci + nc])))
+        ri += nr
+        ci += nc
+    return T0, steps
+
+
+def replay_log(log, eps):
+    """replay() on a compact log -> (k, 6) int array of the surviving triangles (p, a x 3), in triangle order: the
+    steps up to the first with cost > eps, removed triangles dropped, each corner set by its last change"""
+    import numpy as np
+    t0, cost, nrem, ncha, rem, cha = log
+    over = np.flatnonzero(cost > eps)
+    k = int(over[0]) if len(over) else len(cost)
+    nr, nc = int(nrem[:k].sum()), int(ncha[:k].sum())
+    T = t0.astype(np.int64).reshape(-1, 3, 2)
+    alive = np.ones(len(T), bool)
+    alive[rem[:nr]] = False
+    C = cha[:nc]
+    if len(C):
+        key = C[:, 0].astype(np.int64) * 3 + C[:, 1]
+        _, last = np.unique(key[::-1], return_index=True)  # first in reverse = last change of each corner
+        C = C[len(C) - 1 - last]
+        T[C[:, 0], C[:, 1], 0] = C[:, 2]
+        T[C[:, 0], C[:, 1], 1] = C[:, 3]
+    return T.reshape(-1, 6)[alive]
+
+
 def run(args, area_k=None):
     """multiprocessing entry: simplify(*args)."""
     return simplify(*args, area_k=area_k)
