@@ -58,10 +58,13 @@ os.environ["TMPDIR"] = "/tmp"
 import convert, iso9660
 from js import convertProgress
 t = time.time()
-times = convert.run("/game", "/build", progress=lambda i, n, name: convertProgress(i, n, name))
+# lean: intermediates leave memory once the steps after them no longer need them
+times = convert.run("/game", "/build", progress=lambda i, n, name: convertProgress(i, n, name), lean=True)
 print(f"converted in {time.time() - t:.0f} s; writing the disc image")
 size = iso9660.build("/proto.elf", "/build/data", "/DarkSoulsPS2.iso")
 print(f"DarkSoulsPS2.iso: {size / 1048576:.1f} MB")
+import shutil
+shutil.rmtree("/build")  # the packs are in the image now: free them before the page gets its copy of it
 `);
   const iso = py.FS.readFile("/DarkSoulsPS2.iso");
   py.FS.unlink("/DarkSoulsPS2.iso");

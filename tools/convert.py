@@ -2,7 +2,7 @@
 every export runs in this Python process. The project page's in-browser converter (tools/pages, Pyodide) runs this;
 natively it is the check that it still matches the Makefile.
 
-    python3 tools/convert.py <game dir> <build dir> [--only STEP...] [--list]
+    python3 tools/convert.py <game dir> <build dir> [--lean] [--only STEP...] [--list]
     python3 tools/convert.py --compare <build dir> <make's build dir>     (same packs, byte for byte)
 
 Writes <build dir>/gen/... and <build dir>/data/*.pak exactly as the Makefile's recipes do (same tools, arguments and
@@ -13,6 +13,10 @@ entry), change plan() here the same way. Knob variables (MAPENV, MAPENV_<map>, L
 read from the Makefile itself, so retuning an area needs no change here. Each step runs like its own process: the
 tools' modules are dropped from sys.modules first and the environment is the recipe's, so module-level knobs read
 the right values.
+
+--lean (the in-browser converter, whose files all live in memory): each intermediate under <build dir>/gen is removed
+once no later step names it (in its arguments, environment or extra inputs), so the gen tree never holds more than
+the steps still to come need. The packs come out the same; check with --compare against make's build.
 """
 import gc, os, re, runpy, shlex, sys, time
 
@@ -41,8 +45,19 @@ def make_vars(path=MAKEFILE):
 
 
 class Step:
-    def __init__(self, name, tool, args, outputs, env=None):
+    def __init__(self, name, tool, args, outputs, env=None, inputs=()):
+        """inputs: files the tool reads that no argument or environment value names (a directory argument)"""
         self.name, self.tool, self.args, self.outputs, self.env = name, tool, args, outputs, env or {}
+        self.inputs = list(inputs)
+
+    def files(self):
+        """every path the step names: arguments and environment values (pack.py's "name=raw:path" and "?" entries
+        stripped to the path) and its extra inputs"""
+        out = set()
+        for x in list(self.args) + list(self.env.values()) + self.inputs:
+            x = x.lstrip("?").split("=", 1)[-1]
+            out.add(os.path.normpath(x[4:] if x.startswith("raw:") else x))
+        return out
 
     def __repr__(self):
         env = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())
@@ -86,8 +101,8 @@ def plan(game, build, mv=None):
     default = mv.get("DEFAULT_MAP", "m10_02_00_00")
     steps = []
 
-    def S(name, tool, args, outputs, env=None):
-        steps.append(Step(name, tool, [str(a) for a in args], outputs, env))
+    def S(name, tool, args, outputs, env=None, inputs=()):
+        steps.append(Step(name, tool, [str(a) for a in args], outputs, env, inputs))
 
     def mapenv(msb):
         kv = (mv.get("MAPENV", "") + " " + mv.get(f"MAPENV_{msb}", "")).split()
@@ -153,7 +168,9 @@ def plan(game, build, mv=None):
         area(msb, block, True)
     area(default, None, bool(blocks))
     if blocks:
-        S("world", "export_world.py", [game, f"{G}/world.bin", default, G], [f"{G}/world.bin"])
+        # reads <gen dir>/collision.bin and <gen dir>/<block>/collision.bin (export_world.main)
+        cols = [f"{G}/collision.bin"] + [f"{G}/{b.split(':')[1]}/collision.bin" for b in blocks]
+        S("world", "export_world.py", [game, f"{G}/world.bin", default, G], [f"{G}/world.bin"], inputs=cols)
         S("world pack", "pack.py", [f"{D}/world.pak", f"world.bin={G}/world.bin"], [f"{D}/world.pak"])
     return steps
 
@@ -172,8 +189,25 @@ def enemy_steps(game, msb, block, A, AD, mv):
     return out
 
 
-def run(game, build, only=None, log=print, progress=None):
-    """Run the plan; progress(i, n, name) before each step. Returns the seconds each step took."""
+def free_unneeded(steps, i, build):
+    """--lean: remove the files under build/gen that no step after steps[i] names; -> bytes freed. Enemy placeholders
+    (tuples) read only the game folder, and the steps they expand to name only their own outputs."""
+    keep = set()
+    for s in steps[i + 1:]:
+        if isinstance(s, Step):
+            keep |= s.files()
+    freed = 0
+    for r, _, fs in os.walk(os.path.join(build, "gen")):
+        for f in fs:
+            p = os.path.normpath(os.path.join(r, f))
+            if p not in keep:
+                freed += os.path.getsize(p)
+                os.remove(p)
+    return freed
+
+
+def run(game, build, only=None, log=print, progress=None, lean=False):
+    """Run the plan; progress(i, n, name) before each step. Returns the seconds each step took. lean: see --lean."""
     mv = make_vars()
     steps = plan(game, build, mv)
     times, i = [], 0
@@ -205,6 +239,10 @@ def run(game, build, only=None, log=print, progress=None):
         log(f"[{i + 1}/{n}] {s.name}")
         run_tool(s.tool, args, env)
         times.append((s.name, time.time() - t))
+        if lean and not only:
+            freed = free_unneeded(steps, i, build)
+            if freed:
+                log(f"  freed {freed / 1048576:.1f} MB of intermediates")
         i += 1
     return times
 
@@ -241,9 +279,9 @@ def main():
         for s in plan(game, build):
             print(s if isinstance(s, Step) else f"(enemy types of {s[2] or s[1]}: export_chr.py + pack.py each)")
         return
-    only = a[a.index("--only") + 1:] if "--only" in a else None
+    only = [x for x in a[a.index("--only") + 1:] if x != "--lean"] if "--only" in a else None
     t = time.time()
-    times = run(game, build, only)
+    times = run(game, build, only, lean="--lean" in a)
     for name, dt in sorted(times, key=lambda x: -x[1])[:8]:
         print(f"  {dt:7.1f} s  {name}")
     print(f"convert: {len(times)} steps in {time.time() - t:.0f} s -> {build}/data")
