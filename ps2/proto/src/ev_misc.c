@@ -32,15 +32,25 @@ static float msg_t;
 void ev_message(int kind, s32 id)
 {
     msg_kind = kind, msg_id = id, msg_t = 3.0f;  /* ASSUMED on-screen time; the text itself is A11's (FMG) */
-    printf("EVT %s %d\n", kind ? "banner" : "status message", (int)id);
+    printf("EVT %s %d\n", kind == 2 ? "boss defeated" : kind ? "banner" : "status message", (int)id);
 }
+
+static int defeats;
+
+void ev_boss_defeat(s32 entity)
+{
+    defeats++;
+    ev_message(2, entity);
+}
+
+int ev_boss_defeats(void) { return defeats; }
 
 const char *ev_message_hud(void)
 {
     static char buf[24];
     if (msg_t <= 0)
         return "";
-    snprintf(buf, sizeof buf, " %s%d", msg_kind ? "BNR" : "MSG", (int)msg_id);
+    snprintf(buf, sizeof buf, " %s%d", msg_kind == 2 ? "DEF" : msg_kind ? "BNR" : "MSG", (int)msg_id);
     return buf;
 }
 

@@ -93,8 +93,9 @@ def spawn_part(M, map_id):
     if c.get("spawn_at"):  # a block with no player start of its own: a point on its navmesh, facing +z
         return dict(name="spawn_at", type=4, pos=tuple(c["spawn_at"]), rot=(0.0, 0.0, 0.0))
     starts = [p for p in M["parts"] if p["type"] == 4]
-    if c.get("spawn"):
-        return next(p for p in starts if p["name"] == c["spawn"])
+    if c.get("spawn"):  # an AREA_SPAWN experiment may centre the crop on any part (e.g. a boss for an event test)
+        return next((p for p in starts if p["name"] == c["spawn"]), None) or \
+            next(p for p in M["parts"] if p["name"] == c["spawn"])
     fires = [p["pos"] for p in M["parts"] if p["type"] == 1 and p["model"] == BONFIRE]
     if not fires:
         return starts[0]

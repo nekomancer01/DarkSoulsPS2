@@ -16,6 +16,12 @@ void ev_message(int kind, s32 id);
 const char *ev_message_hud(void);
 void ev_misc_update(float dt);
 
+/* 2003[12] Handle Boss Defeat: the exe posts game message 0x36 / 4050 for the entity (FUN_1404ab4b0: the "VICTORY
+ * ACHIEVED" text and the boss-kill bookkeeping, ASSUMED meaning); the port logs it, shows banner " DEF<entity>" and
+ * counts it (tests). Flags, fog walls and the bar are the scripts' own instructions. */
+void ev_boss_defeat(s32 entity);
+int ev_boss_defeats(void);
+
 /* 2009[03] Register Bonfire (lit flag, bonfire object entity, reaction distance m, angle deg, kindling) at the
  * object's position; set = the event set it came from (dropped with its block) */
 void ev_bonfire_register(int set, s32 flag, s32 entity, const float pos[3], float dist, float angle, int kindle);

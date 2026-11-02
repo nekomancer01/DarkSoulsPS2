@@ -29,6 +29,12 @@ int hud_init(GSGLOBAL *gs, const void *menu_bin);
 /* In-game HUD for the player; souls / Estus charges from the progression state (progress.h) */
 void hud_draw(const Player *p, float dt);
 
+/* EMEVD 2003[11] Display Boss Health Bar: slot 0 / 1 shows the HP of character `entity` (MSB entity id) under the
+ * NpcParam name id `name` (FMG text is A11's: the id is drawn for now); entity < 0 hides that slot, slot < 0 every slot
+ * (the exe's "off" takes no slot: FUN_1407d0970 case 11) */
+void hud_boss_bar(int slot, int entity, int name);
+int hud_boss_bar_entity(int slot);  /* -1 none (tests) */
+
 /* Helpers for menu.c */
 const HudRect *hud_rect(int layout);
 const char *hud_string(int s);

@@ -1,0 +1,43 @@
+# E5 boss trigger chain on the Taurus Demon (Undead Burg single-area build, MAP=m10_01_00_00; enemies on), all from
+# m10_01's own events: 11015380 (action button on the fog line 1012898 / o1405 1011890: the player turns to 1012897
+# and plays a00 7410, the walk through the fog), 11015382 (the boss wakes when the player hits it), 11015384 (boss bar
+# 1010700, name 2250, while the player is in the arena 1012890), 11010901 (HP 0 -> flag 11010901, HandleBossDefeat,
+# fog o1405 off), 11015385 (bar off once the flag is on). Part 1 of 2 (ev_boss_save.txt: next boot from this save);
+# delete <elf dir>/save/bosstest*.bin before it, or the boot loads the boss as already dead.
+# The default 70 m Burg crop stops short of the bridge: build with AREA_SPAWN=c2250_0000 (crop centred on the boss).
+option save host bosstest
+option hud
+option nodemo
+wait 1
+wipe
+ev expect flag 11010901 0
+ev expect obj 1011890 1
+spawn 52.41 16.86 -118.49 -1.5708
+cam -1.5708 0.3
+wait 2
+ev expect bossbar 0 -1
+shot taurus_fog
+ev action
+wait 0.3
+ev expect eventanim 1
+shot taurus_fog_walk
+wait 4.5
+ev expect eventanim 0
+ev expect x < 50.8
+ev chr 1010700 damage 10
+wait 1
+ev expect flag 11015382 1
+ev expect bossbar 0 1010700
+shot taurus_bar
+ev chr 1010700 damage 99999
+wait 3
+ev expect chr 1010700 dead 1
+ev expect flag 11010901 1
+ev expect defeats 1
+ev expect obj 1011890 0
+wait 1
+ev expect bossbar 0 -1
+shot taurus_defeated
+save
+ev summary
+end
