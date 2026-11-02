@@ -1452,12 +1452,13 @@ def soften_thin(entries, view_s, floor):
     wt = np.concatenate([r[3] for r in rows if len(r[0])])
     G = 2.0  # m: grid of triangle centroids for the footprint search
     gk = np.floor(cen / G).astype(np.int64)
-    grid = {}
-    for i, k in enumerate(map(tuple, gk)):
-        grid.setdefault(k, []).append(i)
-    grid = {k: np.array(v) for k, v in grid.items()}
     lib = dsr_light.geom_lib()
-    if lib is not None:  # the cells sorted by key, members ascending (as the grid lists), for geom.c soft_targets
+    if lib is None:  # the numpy path's cell lists (a Python dict over every centroid: only built when it is used)
+        grid = {}
+        for i, k in enumerate(map(tuple, gk)):
+            grid.setdefault(k, []).append(i)
+        grid = {k: np.array(v) for k, v in grid.items()}
+    else:  # the cells sorted by key, members ascending (as the grid lists), for geom.c soft_targets
         order = np.lexsort((gk[:, 2], gk[:, 1], gk[:, 0]))
         sk = gk[order]
         new = np.ones(len(sk), bool)
