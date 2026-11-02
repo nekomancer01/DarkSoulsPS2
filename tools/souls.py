@@ -1,6 +1,6 @@
 """Readers for the DSR file formats the port needs: DCX (zlib), BND3, FMG, PARAMDEF/PARAM (DS1), TAE (DS1).
 Little-endian DSR PC files only. Layouts follow SoulsFormats (github.com/JKAnderson/SoulsFormats)."""
-import math, struct, zlib
+import math, os, struct, zlib
 
 
 def undcx(b):
@@ -560,6 +560,51 @@ def _euler_xzy_to_quat(rx, ry, rz):
     return mul(axis(1, ry), mul(axis(2, rz), axis(0, rx)))
 
 
+# FLVER vertex buffers read as numpy strided views (was one struct call per attribute per vertex: ~10 s of a map
+# export); the lists hold the same tuples of Python floats / ints. SOULS_NP=0: the per-vertex loop (A/B).
+FLVER_NP = os.environ.get("SOULS_NP", "1") == "1"
+_FL_SNORM = (0x10, 0x11, 0x13, 0x2F)
+
+
+def _flver_verts_np(b, base, vsize, vcount, layout, verts):
+    """One vertex buffer's attributes -> appended to verts like flver()'s per-vertex loop (attributes of one list
+    from several layout members interleave per vertex, as appended there). False when numpy is missing."""
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    def view(off, dt, k):
+        return np.ndarray((vcount, k), dt, buffer=b, offset=base + off, strides=(vsize, np.dtype(dt).itemsize))
+    cols = {}
+    for _, so, typ, sem, si in layout:
+        if sem == 0 and typ == 0x02:
+            cols.setdefault("pos", []).append(view(so, "<f4", 3).astype(np.float64))
+        elif sem == 3 and typ in _FL_SNORM:
+            cols.setdefault("normal", []).append((view(so, np.uint8, 3).astype(np.float64) - 127) / 127.0)
+        elif sem == 2:
+            cols.setdefault("bone_idx", []).append(view(so, np.uint8, 4).astype(np.int64))
+        elif sem == 1:
+            w = view(so, "<i2", 4).astype(np.float64) / 32767.0 if typ == 0x1A else \
+                view(so, np.uint8, 4).astype(np.float64) / 255.0
+            cols.setdefault("bone_w", []).append(w)
+        elif sem in (6, 7) and si == 0 and typ in _FL_SNORM:
+            cols.setdefault("tangent" if sem == 6 else "binormal", []).append(
+                (view(so, np.uint8, 4).astype(np.float64) - 127) / 127.0)
+        elif sem == 10 and si == 0 and typ in _FL_SNORM:
+            cols.setdefault("color", []).append(view(so, np.uint8, 4).astype(np.float64) / 255.0)
+        elif sem == 5 and si == 0 and typ in (0x15, 0x16):
+            four = typ == 0x16 and so + 8 <= vsize
+            u = view(so if so + 4 <= vsize else vsize - 4, "<i2", 4 if four else 2).astype(np.float64)
+            cols.setdefault("uv", []).append(u[:, :2] / 1024.0)
+            if four:
+                cols.setdefault("uv2", []).append(u[:, 2:4] / 1024.0)
+    for name, arrs in cols.items():
+        a = arrs[0] if len(arrs) == 1 else np.stack(arrs, 1).reshape(-1, arrs[0].shape[1])
+        verts[name].extend(map(tuple, a.tolist()))
+    return True
+
+
 def flver(b):
     """DS1 FLVER2 (version 0x2000C) -> dict(bones=[(name, parent, t, q, s)], meshes=[dict(dynamic, material, mtd,
     default_bone, diffuse, diffuse2, bump,
@@ -622,6 +667,8 @@ def flver(b):
                  "tangent": [], "binormal": []}
         for vbi in vb_idx:
             _, li, vsize, vcount, _, _, _, boff = vbufs[vbi]
+            if FLVER_NP and vcount and _flver_verts_np(b, data_off + boff, vsize, vcount, layouts[li], verts):
+                continue
             for v in range(vcount):
                 base = data_off + boff + v * vsize
                 for _, so, typ, sem, si in layouts[li]:

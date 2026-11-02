@@ -63,9 +63,53 @@ class Tone:
                    + 0.5 * (1 - tc[f"contrast{c}"]) for v, c in zip(out, "RGB")]
         return [max(0.0, min(1.0, v)) for v in out]
 
+    def many(self, X):
+        """__call__ on the rows of an (n, 3) array, the same operations per element (min / max as Python's: the
+        first argument unless the second is strictly smaller / larger; ** per element in Python)"""
+        import numpy as np
+        A, B, C, D, E, F = HABLE
+        x = np.where(X > 0.0, X, 0.0) * self.exposure
+        u = ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F) / _U2W
+        u = np.where(u < 1.0, u, 1.0)
+        u = np.where(u > 0.0, u, 0.0)
+        g = 1 / 2.2
+        out = np.array([v ** g for v in u.ravel().tolist()]).reshape(u.shape)
+        tc = self.tc
+        if tc:
+            y = sum3(LUMA_TC[0] * out[:, 0], LUMA_TC[1] * out[:, 1], LUMA_TC[2] * out[:, 2])
+            sat = tc["saturation"]
+            out = np.stack([tc[f"brightness{c}"] * tc[f"contrast{c}"] * (sat * out[:, j] + (1 - sat) * y)
+                            + 0.5 * (1 - tc[f"contrast{c}"]) for j, c in enumerate("RGB")], 1)
+        out = np.where(out < 1.0, out, 1.0)
+        return np.where(out > 0.0, out, 0.0)
+
 
 def srgb_lin(v):
     return max(0.0, v) ** 2.2
+
+
+def srgb_lin_many(X):
+    """srgb_lin per element of a float array (Python's ** per element: numpy's power may round differently)"""
+    import numpy as np
+    X = np.asarray(X, np.float64)
+    return np.array([x ** 2.2 if x > 0.0 else 0.0 for x in X.ravel().tolist()]).reshape(X.shape)
+
+
+def sum3(a, b, c):
+    """Python's sum((a, b, c)) per element of float arrays, bit for bit: from Python 3.12 sum() of floats adds with
+    Neumaier compensation (start 0, compensation added at the end when non-zero and finite), before that left to
+    right. The vectorised bake / chunk code uses it wherever the per-element code summed three floats."""
+    import sys
+    import numpy as np
+    f = 0.0 + a
+    if sys.version_info < (3, 12):
+        return (f + b) + c
+    comp = np.zeros_like(f)
+    for x in (b, c):
+        t = f + x
+        comp = comp + np.where(np.abs(f) >= np.abs(x), (f - t) + x, (x - t) + f)
+        f = t
+    return np.where((comp != 0) & np.isfinite(comp), f + comp, f)
 
 
 # ---- light probes ----------------------------------------------------------------------------------------------
@@ -154,6 +198,39 @@ def probe_sample(faces, n):
     return faces[f][v][u]
 
 
+_FACES_NP = {}  # id(probe faces) -> (faces, (6, R, R, 3) array)
+
+
+def probe_sample_many(faces, N):
+    """probe_sample per row of (n, 3) normals N with per-row probe faces (list; None = no probe: zeros)"""
+    import numpy as np
+    out = np.zeros((len(N), 3))
+    if not len(N):
+        return out
+    ax = np.argmax(np.abs(N), 1)  # the first of equal magnitudes, as max(range(3), key=...)
+    rows = np.arange(len(N))
+    na = N[rows, ax]
+    m = np.abs(na)
+    m = np.where(m != 0, m, 1.0)  # abs(n[ax]) or 1.0
+    f = np.where(na > 0, 0, 1) + 2 * ax
+    u, v = np.zeros(len(N), np.int64), np.zeros(len(N), np.int64)
+    for fi, (_, _, (sa, ss), (ta, ts)) in enumerate(_FACE):
+        k = f == fi
+        u[k] = np.minimum(PROBE_RES - 1, np.trunc((ss * N[k, sa] / m[k] + 1) / 2 * PROBE_RES).astype(np.int64))
+        v[k] = np.minimum(PROBE_RES - 1, np.trunc((ts * N[k, ta] / m[k] + 1) / 2 * PROBE_RES).astype(np.int64))
+    groups = {}
+    for i, fc in enumerate(faces):
+        if fc is not None:
+            groups.setdefault(id(fc), (fc, []))[1].append(i)
+    for fc, sel in groups.values():
+        e = _FACES_NP.get(id(fc))
+        if e is None or e[0] is not fc:
+            e = _FACES_NP[id(fc)] = (fc, np.array(fc, np.float64))
+        sel = np.array(sel, np.int64)
+        out[sel] = e[1][f[sel], v[sel], u[sel]]
+    return out
+
+
 class ProbeIndex:
     """World position -> light probe: the probe of the nearest collision triangle (4 m grid of centroids) whose part
     has a GI_EnvDif cube (part_probe: collision part name -> probe number, from its MSB env_event; DSR lights a map
@@ -191,6 +268,17 @@ class ProbeIndex:
         self.cache[k] = best
         return best
 
+    def many(self, P):
+        """__call__ for the rows of an (n, 3) array, in row order (the cache keeps the first query's answer per
+        cell, so the order matters)"""
+        import numpy as np
+        P = np.asarray(P, np.float64).reshape(-1, 3)
+        cache, miss, out = self.cache, object(), []
+        for k, p in zip(np.floor(P / self.cell).astype(np.int64).tolist(), P.tolist()):
+            v = cache.get(tuple(k), miss)
+            out.append(self(tuple(p)) if v is miss else v)
+        return out
+
 
 # ---- LightBank row -> HDR irradiance -------------------------------------------------------------------------------
 def light_dir(rx, ry):
@@ -224,6 +312,22 @@ def light_fn(row, probes=None):
             for c in range(3):
                 sun[c] += col[c] * k
         return (amb, sun) if split else [a + b for a, b in zip(amb, sun)]
+
+    def many(N, faces):
+        """f(n, faces, split=True) for the rows of (n, 3) unit normals N, per-row probe faces (list, None = none) ->
+        (amb, sun) (n, 3) arrays, the same operations per element"""
+        import numpy as np
+        h = N[:, 1] * 0.5 + 0.5
+        e = probe_sample_many(faces, N)
+        amb = np.stack([down[c] + (up[c] - down[c]) * h + env[c] * e[:, c] for c in range(3)], 1)
+        sun = np.zeros((len(N), 3))
+        for d, col in dirs:
+            k = N[:, 0] * d[0] + N[:, 1] * d[1] + N[:, 2] * d[2]
+            k = np.where(k > 0.0, k, 0.0)
+            for c in range(3):
+                sun[:, c] += col[c] * k
+        return amb, sun
+    f.many = many
     return f
 
 
@@ -446,6 +550,25 @@ def cubic_light(pos, begin, end, rgb):
         att = min(1.0, (k * (end - d)) ** 3)
         nl = max(0.0, sum(n[i] * v[i] for i in range(3)) / d) if n else 1.0
         return [c * att * nl for c in rgb]
+
+    def many(P, N):
+        """f per row of (n, 3) positions and normals -> (n, 3), the same operations per element"""
+        import numpy as np
+        V = np.asarray(pos, np.float64) - P
+        d = np.sqrt(sum3(V[:, 0] * V[:, 0], V[:, 1] * V[:, 1], V[:, 2] * V[:, 2]))
+        d[d == 0] = 1e-6
+        out = np.zeros((len(P), 3))
+        sel = np.nonzero(~(d >= end))[0]
+        if len(sel):
+            ds = d[sel]
+            att = np.array([x ** 3 for x in (k * (end - ds)).tolist()])
+            att = np.where(att < 1.0, att, 1.0)
+            Ns, Vs = N[sel], V[sel]
+            nl = sum3(Ns[:, 0] * Vs[:, 0], Ns[:, 1] * Vs[:, 1], Ns[:, 2] * Vs[:, 2]) / ds
+            nl = np.where(nl > 0.0, nl, 0.0)
+            out[sel] = np.stack([c * att * nl for c in rgb], 1)
+        return out
+    f.many = many
     return f
 
 

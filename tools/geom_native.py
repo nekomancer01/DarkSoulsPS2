@@ -3,6 +3,7 @@ results, used when the library cannot be built, e.g. no compiler):
   dsr_light.ShadowMap    shadow_raster / shadow_lit: the sun shadow depth map and its 3x3 PCF lookup
   export_map.view_distance  nearest_d2: distance to the nearest navmesh sample (k-d tree)
   texmap._nearest        nearest_rgb: nearest palette entry (integer RGB)
+  export_map.soften_thin soft_targets: footprint colour averages
 In the in-browser converter the library is a Pyodide side module (tools/native/build-wasm.sh)."""
 import ctypes, os
 
@@ -39,6 +40,8 @@ def lib():
                 L.nearest_d2.restype = i
                 L.nearest_rgb.argtypes = [i, vp, i, vp, i, vp]
                 L.nearest_rgb.restype = None
+                L.soft_targets.argtypes = [i, vp, vp, i, vp, vp, vp, i, vp, vp, vp, ctypes.c_double, vp, vp]
+                L.soft_targets.restype = i
             except Exception as e:  # no compiler: numpy paths, slower
                 print(f"geom: C helpers unavailable ({str(e)[:200]}), using numpy", flush=True)
                 L = None
