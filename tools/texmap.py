@@ -115,7 +115,15 @@ def _kmeans(px, pal, iters=10):
 
 
 def _nearest(rgb, pal):
-    """(N,3) colours -> index of the nearest palette entry (N)."""
+    """(N,3) colours -> index of the nearest palette entry (N): squared integer RGB distance, first entry on ties."""
+    import geom_native
+    L = geom_native.lib()
+    if L is not None and len(pal):  # integer distances: the C loop and numpy agree exactly
+        x = np.ascontiguousarray(np.asarray(rgb).astype(np.int32).reshape(-1, 3))
+        p = np.ascontiguousarray(np.asarray(pal).astype(np.int32).reshape(-1, 3))
+        out = np.empty(len(x), np.int64)
+        L.nearest_rgb(len(x), x.ctypes.data, len(p), p.ctypes.data, out.ctypes.data)
+        return out
     d = ((rgb[:, None, :].astype(np.int32) - pal[None, :, :].astype(np.int32)) ** 2).sum(2)
     return d.argmin(1)
 

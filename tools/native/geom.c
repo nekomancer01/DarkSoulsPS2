@@ -8,6 +8,7 @@
    weights with the same -1e-4 tolerance, depth = w0 z0 + w1 z1 + w2 z2, max into D.
    shadow_lit: ShadowMap.lit for many points, given their light-space coordinates (computed in numpy).
 
+   nearest_rgb: nearest palette entry for tools/texmap.py.
    nearest_d2: squared distance from each query point to the nearest sample point (k-d tree), for
    tools/export_map.py view_distance.
 
@@ -150,4 +151,21 @@ int nearest_d2(int nq, const double *Q, int ns, double *S, double *out)
     }
     free(ax);
     return 0;
+}
+
+/* ---- nearest palette entry (tools/texmap.py _nearest): X (n x 3), P (k x 3) integer RGB; out[i] = the first entry
+   with the smallest squared distance, as numpy's argmin ---- */
+void nearest_rgb(int n, const int *X, int k, const int *P, long long *out)
+{
+    for (int i = 0; i < n; i++) {
+        int r = X[3 * i], g = X[3 * i + 1], b = X[3 * i + 2], best = 0x7fffffff;
+        long long bi = 0;
+        for (int j = 0; j < k; j++) {
+            int dr = r - P[3 * j], dg = g - P[3 * j + 1], db = b - P[3 * j + 2];
+            int d = dr * dr + dg * dg + db * db;
+            if (d < best)
+                best = d, bi = j;
+        }
+        out[i] = bi;
+    }
 }
