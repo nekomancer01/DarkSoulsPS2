@@ -217,19 +217,7 @@ EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
 
-def _py_sum3(a, b, c):
-    """Python's sum((a, b, c)) per element of float arrays, bit for bit: from Python 3.12 sum() of floats adds with
-    Neumaier compensation (start 0, compensation added at the end when non-zero and finite), before that left to
-    right."""
-    f = 0.0 + a
-    if sys.version_info < (3, 12):
-        return (f + b) + c
-    comp = np.zeros_like(f)
-    for x in (b, c):
-        t = f + x
-        comp = comp + np.where(np.abs(f) >= np.abs(x), (f - t) + x, (x - t) + f)
-        f = t
-    return np.where((comp != 0) & np.isfinite(comp), f + comp, f)
+_py_sum3 = dsr_light.sum3  # Python's sum() of three floats, per element
 
 
 def _first_ext(v, X, cs):
@@ -657,6 +645,84 @@ def fog_section(game, map_id, main_fog):
     return out + tri_row, [(k, fog_rows[k[0]], chars[k] + (pls[k], specs[k])) for k in order], tone
 
 
+def _qrot_np(q, V):
+    """havok_anim.qrot / souls._qrot on (n, 3) rows, the same operations in the same order"""
+    x, y, z, w = q
+    vx, vy, vz = V[:, 0], V[:, 1], V[:, 2]
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    return np.stack([vx + w * tx + y * tz - z * ty, vy + w * ty + z * tx - x * tz, vz + w * tz + x * ty - y * tx], 1)
+
+
+_VERT_NP = {}  # id(vertex attribute list) -> (the list, float64 array): FLVER meshes are placed many times
+
+
+def _vert_np(lst):
+    e = _VERT_NP.get(id(lst))
+    if e is None or e[0] is not lst:
+        e = _VERT_NP[id(lst)] = (lst, np.array(lst, np.float64))
+    return e[1]
+
+
+def _first_rows(K):
+    """rows of an int array -> (id per row numbered by first appearance, row index of each id's first appearance)"""
+    _, first, inv = np.unique(K, axis=0, return_index=True, return_inverse=True)
+    inv = inv.reshape(-1)
+    order = np.argsort(first, kind="stable")
+    rank = np.empty(len(order), np.int64)
+    rank[order] = np.arange(len(order))
+    return rank[inv], first[order]
+
+
+def _weld(V, vis, xf, xn):
+    """gather's weld of one mesh's used vertices vis (ascending): positions by world position (0.1 mm), wedges by
+    (position, UV, colour) with the normals of merged wedges summed. -> (pos [tuples], wpos, wuv, wcol, wn [lists],
+    fvw {vertex: wedge}), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
+    export); every value is the per-vertex code's: Python's round() and numpy's rint both round half to even, normals
+    are summed in vertex order (np.add.at), the first normal of a wedge is kept as is."""
+    idx = np.asarray(vis, np.int64)
+    n = len(idx)
+    if not n:
+        return [], [], [], [], [], {}
+    Pw = xf.many(_vert_np(V["pos"])[idx])
+    pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
+    pos = list(map(tuple, Pw[pfirst].tolist()))
+    UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
+    C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
+    wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
+    wid, wfirst = _first_rows(wk)
+    vl = idx.tolist()
+    wpos = pid[wfirst].tolist()
+    wuv = [V["uv"][vl[i]] for i in wfirst.tolist()] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
+    wcol = [V["color"][vl[i]] for i in wfirst.tolist()] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
+    if V["normal"]:
+        N = xn.many(_vert_np(V["normal"])[idx])
+        WN = N[wfirst].copy()
+        rest = np.ones(n, bool)
+        rest[wfirst] = False
+        np.add.at(WN, wid[rest], N[rest])
+        wn = WN.tolist()
+    else:  # (0, 1, 0) per vertex, summed as Python ints
+        wn = [[0, int(c), 0] for c in np.bincount(wid, minlength=len(wfirst)).tolist()]
+    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist()))
+
+
+def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights):
+    """gather's per-wedge light (dsr_light.light_fn split=True + the static point lights) for one lit mesh ->
+    dict(E (hemisphere + probe + point lights), S (directional), P (positions), N (unit normals)), (n, 3) arrays,
+    each element computed as the per-wedge code did (normal length by Python's sum(), probe lookups in wedge order:
+    ProbeIndex caches per cell)."""
+    N = np.array(wn, np.float64).reshape(-1, 3)
+    ln = np.sqrt(_py_sum3(N[:, 0] * N[:, 0], N[:, 1] * N[:, 1], N[:, 2] * N[:, 2]))
+    ln[ln == 0] = 1.0
+    N = N / ln[:, None]
+    P = np.array([pos[w] for w in wpos], np.float64).reshape(-1, 3)
+    faces = [probes.get(pr) for pr in probe_at.many(P)]
+    E, S = lit.many(N, faces)
+    for f in plights:
+        E = E + f.many(P, N)
+    return dict(E=E, S=S, P=P, N=N)
+
+
 def bind_scaled(F):
     """World (t, q, s) of every FLVER bone in bind pose, with the bones' scale (souls.flver_bind_world drops it).
     Objects carry scaled root bones: the bonfire o0200's ash / bones / sticks hang off 1.2x bones and its sword off a
@@ -681,6 +747,13 @@ def bone_xf(pxf, pxn, bt, bq, bs):
         v = souls._qrot(bq, tuple(a / b for a, b in zip(n, bs)))
         k = sum(c * c for c in v) ** 0.5 or 1.0
         return pxn(tuple(c / k for c in v))
+
+    def xn_many(N):
+        v = _qrot_np(bq, N / np.asarray(bs, np.float64))
+        k = np.array([x ** 0.5 or 1.0 for x in _py_sum3(v[:, 0] * v[:, 0], v[:, 1] * v[:, 1], v[:, 2] * v[:, 2]).tolist()])
+        return pxn.many(v / k[:, None])
+    xf.many = lambda P: pxf.many(_qrot_np(bq, np.asarray(bs, np.float64) * P) + np.asarray(bt, np.float64))
+    xn.many = xn_many
     return xf, xn
 
 
@@ -742,7 +815,7 @@ def is_sky(mtd, pts, nav_tree):
     low = mtd.lower()
     if "sky" in low or "cloud" in low:
         return True
-    if nav_tree is None or not pts:
+    if nav_tree is None or not len(pts):
         return False
     P = np.array(pts)
     lo, hi = P.min(0), P.max(0)
@@ -811,6 +884,9 @@ def place(part):
 
     def xn(n):
         return ha.qrot(q, n)
+    # (n, 3) arrays at once, the same operations per element
+    xf.many = lambda P: _qrot_np(q, P * np.asarray(s, np.float64)) + np.asarray(t, np.float64)
+    xn.many = lambda N: _qrot_np(q, N)
     return xf, xn
 
 
@@ -1014,7 +1090,7 @@ def gather(game, map_id):
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
-                sky = is_sky(m["mtd"], [xfm(p) for p in m["verts"]["pos"]], nav_tree)
+                sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
             else:
                 sky = False
             if sky and fid in fog_rows:
@@ -1046,7 +1122,7 @@ def gather(game, map_id):
                 # map pieces whose LOD0 lies wholly beyond STREAM_FAR of the walkable space (whole-MSB areas) take the
                 # game's lowest LOD before QEM, as DSR draws them from there (render-distance option (a), map-36)
                 Vp = m["verts"]["pos"]
-                wp = np.array([xf(Vp[i]) for i in sorted({i for t in souls.triangles(lods[min(lods)]) for i in t})])
+                wp = xf.many(_vert_np(Vp)[sorted({i for t in souls.triangles(lods[min(lods)]) for i in t})])
                 lo, hi = wp.min(0), wp.max(0)
                 d = np.maximum(0, np.maximum(lo[None] - nav_tree, nav_tree - hi[None]))
                 low = len(wp) and np.min((d * d).sum(1)) > STREAM_FAR ** 2
@@ -1054,8 +1130,8 @@ def gather(game, map_id):
             fs = lods[max(lods)] if low else lods[min(lods)]
             tl = dedup_tris(souls.triangles(fs), m["verts"])
             if (map_r or PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
-                Vp = m["verts"]["pos"]
-                Wp = {i: xf(Vp[i]) for i in {i for t in tl for i in t}}
+                ui = list({i for t in tl for i in t})
+                Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
             if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
                 tl = [t for t in tl if in_map(*(sum(Wp[i][k] for i in t) / 3 for k in range(3)))]
             if PANO_R and not sky:  # far panorama (tools/pano.py): beyond PANO_R of PANO_C it replaces the map
@@ -1087,30 +1163,8 @@ def gather(game, map_id):
                             near_level(textures[-1], dds[name], name)
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
-            # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges averaged
-            pid, pos, wid, wpos, wuv, wcol, wn = {}, [], {}, [], [], [], []
-            fvw = {}
-            for vi in sorted({i for t in tl for i in t}):
-                p = xf(V["pos"][vi])
-                pk = (round(p[0] * 1e4), round(p[1] * 1e4), round(p[2] * 1e4))
-                if pk not in pid:
-                    pid[pk] = len(pos)
-                    pos.append(p)
-                uv = V["uv"][vi] if V["uv"] else (0.0, 0.0)
-                c = V["color"][vi] if V["color"] else (1, 1, 1, 1)
-                wk = (pid[pk], round(uv[0] * 4096), round(uv[1] * 4096), tuple(round(x * 255) for x in c))
-                n = xn(V["normal"][vi]) if V["normal"] else (0, 1, 0)
-                if wk not in wid:
-                    wid[wk] = len(wpos)
-                    wpos.append(pid[pk])
-                    wuv.append(uv)
-                    wcol.append(c)
-                    wn.append(list(n))
-                else:
-                    a = wn[wid[wk]]
-                    for j in range(3):
-                        a[j] += n[j]
-                fvw[vi] = wid[wk]
+            # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
+            pos, wpos, wuv, wcol, wn, fvw = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
@@ -1123,15 +1177,8 @@ def gather(game, map_id):
             wrgb, wa = [], []
             alb = albedo(name)
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
-                hdr = []  # (hemisphere + probe + point lights, directional, position, normal): shadowed below
-                for i, (n, c) in enumerate(zip(wn, wcol)):
-                    ln = math.sqrt(sum(x * x for x in n)) or 1.0
-                    n = (n[0] / ln, n[1] / ln, n[2] / ln)
-                    p = pos[wpos[i]]
-                    e, sun = lit(n, probes.get(probe_at(p)), split=True)
-                    for pl in plights:
-                        e = [x + y for x, y in zip(e, pl(p, n))]
-                    hdr.append((e, sun, p, n))
+                # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
+                hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights)
                 # [M] materials blend a second diffuse by vertex alpha; the PS2 draws the first only, so the vertex
                 # colour carries the blend: DSR's output for the blended mean colour / the first texture's mean
                 alb2 = albedo(m["diffuse2"]) if "[M]" in m["mtd"] and m.get("diffuse2") in dds else None
@@ -1182,47 +1229,49 @@ def gather(game, map_id):
                                    focus=nav_focus or [p for m in meshes for p in m["pos"][::50]])
         export_normal.SRC["smap"] = smap
         lit_n, floor = 0, [0.0, 0]
-        ks = smap.lit_many([v[2] for _, hdr, *_ in pending for v in hdr],
-                           [v[3] for _, hdr, *_ in pending for v in hdr]).tolist()
+        ks = smap.lit_many(np.concatenate([h["P"] for _, h, *_ in pending] or [np.zeros((0, 3))]),
+                           np.concatenate([h["N"] for _, h, *_ in pending] or [np.zeros((0, 3))]))
         j = 0
-        for _, hdr, *_ in pending:
-            for i, (e, sun, p, n) in enumerate(hdr):
-                k = ks[j]
-                j += 1
-                lit_n += k
-                if n[1] > 0.7:  # floors: how much of the ground characters stand on is in sun
-                    floor[0] += k
-                    floor[1] += 1
-                hdr[i] = [x * (1 - SHADOW_AMB * (1 - k)) + y * k for x, y in zip(e, sun)]
-        nv = sum(len(h) for _, h, *_ in pending)
+        for _, h, *_ in pending:
+            k = ks[j:j + len(h["E"])]
+            j += len(h["E"])
+            for x in k.tolist():  # running sums in wedge order, as before
+                lit_n += x
+            for x in k[h["N"][:, 1] > 0.7].tolist():  # floors: how much of the ground characters stand on is in sun
+                floor[0] += x
+                floor[1] += 1
+            h["H"] = h["E"] * (1 - SHADOW_AMB * (1 - k))[:, None] + h["S"] * k[:, None]
+        nv = sum(len(h["E"]) for _, h, *_ in pending)
         SUN_FLOOR[0] = floor[0] / max(1, floor[1])
         print(f"floors in sun: {100 * SUN_FLOOR[0]:.0f}%")
         print(f"sun shadow map {smap.W}x{smap.H} ({len(occ)} tris, {time.time() - t0:.1f} s): {100 * lit_n / max(1, nv):.0f}% "
               f"of {nv} vertices lit")
     else:
-        for _, hdr, *_ in pending:
-            for i, (e, sun, p, n) in enumerate(hdr):
-                hdr[i] = [x + y for x, y in zip(e, sun)]
+        for _, h, *_ in pending:
+            h["H"] = h["E"] + h["S"]
     rss("shadows")
+    # tone map, vectorised per mesh with the per-wedge operations (dsr_light.sum3 / srgb_lin_many / Tone.many)
     lum = {}
-    mix = lambda alb, alb2, c: [alb[j] + (alb2[j] - alb[j]) * c[3] for j in range(3)] if alb2 else alb
-    for _, hdr, wcol, alb, alb2, tk in pending:
+    for _, h, wcol, alb, alb2, tk in pending:
+        C = np.array(wcol, np.float64).reshape(-1, 4)
+        A = np.stack([alb[j] + (alb2[j] - alb[j]) * C[:, 3] for j in range(3)], 1) if alb2 else \
+            np.broadcast_to(np.asarray(alb, np.float64), (len(C), 3))
+        h["L"] = dsr_light.srgb_lin_many(A * C[:, :3])  # srgb_lin(a[j] * c[j])
+        H, L = h["H"], h["L"]
+        y = dsr_light.sum3(*(dsr_light.LUMA[j] * L[:, j] * H[:, j] for j in range(3)))
         s = lum.setdefault(tk, [0.0, 0])
-        for e, c in zip(hdr, wcol):
-            a = mix(alb, alb2, c)
-            s[0] += math.log(max(1e-4, sum(dsr_light.LUMA[j] * dsr_light.srgb_lin(a[j] * c[j]) * e[j] for j in range(3))))
+        for x in y.tolist():
+            s[0] += math.log(x if x > 1e-4 else 1e-4)
             s[1] += 1
     for tk, (s, n) in lum.items():
         t = tones.setdefault(tk, dsr_light.Tone(tone_rows[tk[0]], banks["ToneCorrect"].get(tk[1])))
         t.adapt(math.exp(s / max(1, n)))  # geometric mean over the bake's vertices stands in for DSR's screen average
         print(f"tone row {tk[0]} / correct {tk[1]}: scene luminance {math.exp(s / max(1, n)):.3f} -> exposure {t.exposure:.2f}")
-    for wrgb, hdr, wcol, alb, alb2, tk in pending:
-        t = tones[tk]
-        for e, c in zip(hdr, wcol):
-            a = mix(alb, alb2, c)
-            ac = [a[j] * c[j] for j in range(3)]
-            out = t([dsr_light.srgb_lin(ac[j]) * e[j] * near[j] for j in range(3)])  # + scattering at d = 0
-            wrgb.append([min(255, int(0x80 * out[j] / alb[j] + 0.5)) for j in range(3)])
+    for wrgb, h, wcol, alb, alb2, tk in pending:
+        out = tones[tk].many(h["L"] * h["H"] * np.asarray(near, np.float64))  # + scattering at d = 0
+        q = np.trunc(0x80 * out / np.asarray(alb, np.float64) + 0.5)
+        wrgb.extend(np.minimum(255, q).astype(np.int64).tolist())
+        h.clear()
     TONES.update(tones)  # fog colours and the character light use the same tone maps
     MAIN_TONE[0] = tones[main_tone]
 

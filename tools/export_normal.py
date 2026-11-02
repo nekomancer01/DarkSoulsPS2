@@ -82,10 +82,17 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
         return None
     nw = len(wn)
     T, W = np.zeros((nw, 3)), np.zeros(nw)
-    for vi, w in fvw.items():
-        t = V["tangent"][vi]
-        T[w] += xn(t[:3])
-        W[w] += t[3]
+    if hasattr(xn, "many") and fvw:  # all vertices at once, summed per wedge in the same order (np.add.at)
+        vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
+        ws = np.fromiter(fvw.values(), np.int64, len(fvw))
+        Tv = np.array([V["tangent"][vi] for vi in vs.tolist()], np.float64).reshape(-1, 4)
+        np.add.at(T, ws, xn.many(np.ascontiguousarray(Tv[:, :3])))
+        np.add.at(W, ws, Tv[:, 3])
+    else:
+        for vi, w in fvw.items():
+            t = V["tangent"][vi]
+            T[w] += xn(t[:3])
+            W[w] += t[3]
     N = np.array(wn, np.float64)
     MESH.append(dict(tex=m["bump"], light=light_row, alb=alb, N=N, T=T, W=np.where(W < 0, -1.0, 1.0),
                      probe_of=probe_of))
