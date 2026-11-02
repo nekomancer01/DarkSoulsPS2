@@ -546,10 +546,30 @@ def root_motion(hkx):
     return [struct.unpack_from("<4f", data, o + 16 * i) for i in range(c)]
 
 
+def sin_cos(a):
+    """(sin a, cos a) correctly rounded, the same bits on every platform: math.sin / cos come from the C library and
+    differ by an ulp between glibc (native) and musl (Pyodide, the in-browser converter), e.g. sin(-0.8163371682167053)
+    on c1201's bones (TECH_DEBT build-7); glibc itself is off by an ulp on ~0.1% of random inputs in [-pi, pi]. Taylor
+    series in 50-digit decimal, then one rounding to double; for the few angles per bone / part, not per vertex."""
+    import decimal
+    if a == 0:
+        return a, 1.0  # keeps the sign of -0.0, as libm does
+    with decimal.localcontext() as ctx:
+        ctx.prec = 50
+        x = decimal.Decimal(a)
+        x2, eps = x * x, decimal.Decimal("1e-45")
+        s, c, ts, tc, n = x, decimal.Decimal(1), x, decimal.Decimal(1), 0
+        while abs(ts) >= eps or abs(tc) >= eps:
+            n += 2
+            ts, tc = -ts * x2 / (n * (n + 1)), -tc * x2 / ((n - 1) * n)
+            s, c = s + ts, c + tc
+        return float(s), float(c)
+
+
 def _euler_xzy_to_quat(rx, ry, rz):
     """FLVER bone rotation: Euler radians applied X, then Z, then Y (SoulsFormats FLVER.Bone.ComputeLocalTransform)."""
     def axis(ax, a):
-        s, c = math.sin(a / 2), math.cos(a / 2)
+        s, c = sin_cos(a / 2)
         return (s if ax == 0 else 0.0, s if ax == 1 else 0.0, s if ax == 2 else 0.0, c)
 
     def mul(a, b):

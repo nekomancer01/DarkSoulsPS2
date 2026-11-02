@@ -70,17 +70,26 @@ try {
   }
   fs.mkdirSync(build, { recursive: true });
 
-  const py = await loadPyodide({ packageCacheDir: path.join(cache, "packages") });
-  await py.loadPackage(["numpy", "pillow"]);
-  for (const [dir, at] of [[src, "/src"], [game, "/game"], [build, "/build"]]) {
-    py.FS.mkdirTree(at);
-    py.FS.mount(py.FS.filesystems.NODEFS, { root: dir }, at);
-  }
-  py.globals.set("ONLY", only ? py.toPy(only) : null);
-  // as worker.js: no /proc, no processes, no caches
+  // as worker.js: no /proc, no processes, no caches, and a fresh Pyodide once the last one's memory (which never
+  // shrinks) has grown past RESTART_MB, or the next map export runs into the 4 GB wasm32 ceiling inside a C helper
+  // ("Unexpected rtype undefined"). /build is on disk here, so the next Pyodide just resumes at the step index.
+  const RESTART_MB = 1536;
+  const t = Date.now();
   try {
-    py.runPython(`
-import os, sys, time
+    let start = 0, py;
+    while (start !== null) {
+      py = await loadPyodide({ packageCacheDir: path.join(cache, "packages") });
+      await py.loadPackage(["numpy", "pillow"]);
+      for (const [dir, at] of [[src, "/src"], [game, "/game"], [build, "/build"]]) {
+        py.FS.mkdirTree(at);
+        py.FS.mount(py.FS.filesystems.NODEFS, { root: dir }, at);
+      }
+      py.globals.set("ONLY", only ? py.toPy(only) : null);
+      py.globals.set("START", start);
+      py.globals.set("RESTART_MB", RESTART_MB);
+      globalThis.heapMB = () => py._module.HEAP8.length / 1048576;
+      start = py.runPython(`
+import os, sys
 os.makedirs("/proc/self", exist_ok=True)
 open("/proc/self/status", "w").write("VmRSS:\\t0 kB\\nVmHWM:\\t0 kB\\n")
 sys.path.insert(0, "/src/tools")
@@ -89,11 +98,15 @@ os.environ["SIMPLIFY_CACHE"] = "0"
 os.environ["TEX_CACHE"] = "0"
 os.environ["TMPDIR"] = "/tmp"
 import convert
-t = time.time()
-convert.run("/game", "/build", only=ONLY, lean=True)
-print(f"converted in {time.time() - t:.0f} s (Pyodide, numpy {__import__('numpy').__version__}, "
-      f"Pillow {__import__('PIL').__version__})")
-`);
+from js import heapMB
+_, nxt = convert.run_part("/game", "/build", only=ONLY, lean=True, start=START, pause=lambda: heapMB() > RESTART_MB)
+if nxt is not None:
+    print(f"memory at {heapMB():.0f} MB: going on in a fresh Pyodide at step {nxt}")
+nxt
+`) ?? null;
+    }
+    py.runPython(`print(f"converted in ${Math.round((Date.now() - t) / 1000)} s (Pyodide, numpy {__import__('numpy').__version__}, "
+      f"Pillow {__import__('PIL').__version__})")`);
   } catch (e) {  // the Python traceback only (the error object also carries Pyodide's minified source)
     console.error(String(e.message || e).slice(-4000));
     process.exitCode = 1;
