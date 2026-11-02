@@ -53,6 +53,7 @@ import os, sys, time
 sys.path.insert(0, "/src/tools")
 os.environ["SIMPLIFY_PROCS"] = "1"   # no processes in a browser: simplify in this one
 os.environ["SIMPLIFY_CACHE"] = "0"   # its cache would only fill memory
+os.environ["TEX_CACHE"] = "0"        # texmap.encode's cache too (a compressed copy of every texture)
 os.environ["TMPDIR"] = "/tmp"
 import convert, iso9660
 from js import convertProgress
