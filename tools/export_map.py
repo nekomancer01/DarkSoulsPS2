@@ -185,13 +185,15 @@ def near_level(t, dds, name):
 
 def split_batch(ks, cents):
     """Triangles of one (texture, flags, cell) group -> ceil(n / CHUNK_TRIS) batches of nearly equal size, by recursive
-    median cuts along the longest axis of the centroids, so every batch is full and its box compact (F2)."""
+    median cuts along the longest axis of the centroids, so every batch is full and its box compact (F2).
+    ks: triangle numbers (int array), cents: centroid per triangle number (array (n, 3))."""
     k = -(-len(ks) // CHUNK_TRIS)
     if k <= 1:
         return [ks]
-    ext = [max(cents[i][a] for i in ks) - min(cents[i][a] for i in ks) for a in range(3)]
-    ax = ext.index(max(ext))
-    ks = sorted(ks, key=lambda i: cents[i][ax])
+    c = cents[ks]
+    ext = c.max(0) - c.min(0)
+    ax = int(np.argmax(ext))  # first longest axis
+    ks = ks[np.argsort(c[:, ax], kind="stable")]
     k1 = k // 2
     cut = max(len(ks) - (k - k1) * CHUNK_TRIS, min(k1 * CHUNK_TRIS, round(len(ks) * k1 / k)))
     return split_batch(ks[:cut], cents) + split_batch(ks[cut:], cents)
@@ -215,6 +217,35 @@ EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
 
+def _py_sum3(a, b, c):
+    """Python's sum((a, b, c)) per element of float arrays, bit for bit: from Python 3.12 sum() of floats adds with
+    Neumaier compensation (start 0, compensation added at the end when non-zero and finite), before that left to
+    right."""
+    f = 0.0 + a
+    if sys.version_info < (3, 12):
+        return (f + b) + c
+    comp = np.zeros_like(f)
+    for x in (b, c):
+        t = f + x
+        comp = comp + np.where(np.abs(f) >= np.abs(x), (f - t) + x, (x - t) + f)
+        f = t
+    return np.where((comp != 0) & np.isfinite(comp), f + comp, f)
+
+
+def _first_ext(v, X, cs):
+    """min / max per batch from ufunc.reduceat (v) with the sign of a zero result taken from the first zero in the
+    batch, as Python's min() / max() keep the first of equal values"""
+    z = np.nonzero(v == 0)
+    if len(z[0]):
+        v = v.copy()
+        for b, a in zip(*(i.tolist() for i in z)):
+            s = cs[b]
+            e = cs[b + 1] if b + 1 < len(cs) else len(X)
+            col = X[s:e, a]
+            v[b, a] = col[np.argmax(col == 0)]
+    return v
+
+
 def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tcell=None, dgk=None, entk=None):
     """Triangles -> VU1 batches: (texture, flags, tri count, pos bytes, st bytes, colour bytes, min, max, origin, pos
     step, st scale), grouped across meshes by (texture, cull flag, CHUNK_GRID cell of the centroid) and cut into full,
@@ -229,12 +260,39 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     triangle (level, cell) or None: such triangles are grouped by that CHUNK_GRID cell (no coarser far cells) and
     level; CHUNK_TAG gets each chunk's (level, cell) or None. dgk / entk: per triangle draw-group set / switched
     entity id (CHUNK_DG / CHUNK_ENT per chunk); triangles with different ones never share a chunk."""
-    groups, tufts, cents = {}, {}, {}
+    # vectorised (was 26 s of pure Python per corner at Firelink): every value is computed with the same float
+    # operations in the same order as the per-corner code was, so map.bin is unchanged (see _py_sum3, _first_ext)
+    nt = len(tris)
+    T = np.asarray(tris, np.int64).reshape(-1, 3)
+    fvt = np.zeros(nt, np.int64)
+    for ti, fv, vc, ft, tc, fl, lo, hi in meshes:
+        fvt[ft:ft + tc] = fv
+    G = T + fvt[:, None]  # global vertex per corner
+    P = np.array([v[0] for v in verts], np.float64).reshape(-1, 3)
+    exact = all(type(x) is float for v in verts for x in v[0])
+    if exact:
+        X = P[G]
+        C = _py_sum3(X[:, 0], X[:, 1], X[:, 2]) / 3
+    else:  # positions that are not plain floats: Python's own sum (other summation rules)
+        C = np.array([[sum(verts[fvt[k] + i][0][a] for i in tris[k]) / 3 for a in range(3)] for k in range(nt)],
+                     np.float64).reshape(-1, 3)
+    cl = C.tolist()
+    # distance-scaled CHUNK_GRID cell of each centroid: floor(log2(max(1, dist / 4 grid))) from the float's exponent;
+    # values within 1e-9 of a power of two are redone with math.log2 as before (its rounding decides there)
+    D = C - np.asarray(centre, np.float64)
+    r = np.sqrt(_py_sum3(D[:, 0] ** 2, D[:, 1] ** 2, D[:, 2] ** 2)) / (4 * CHUNK_GRID)
+    mant, ex = np.frexp(r)
+    lvl = np.where(r >= 1.0, ex - 1, 0)
+    for k in np.nonzero((r >= 1.0) & ((np.abs(mant - 0.5) < 1e-9) | (np.abs(mant - 1.0) < 1e-9)))[0].tolist():
+        c = cl[k]
+        dist = math.sqrt(sum((c[a] - centre[a]) ** 2 for a in range(3)))
+        lvl[k] = max(0, int(math.log2(max(1.0, dist / (4 * CHUNK_GRID)))))
+    gq = (CHUNK_GRID * np.ldexp(1.0, lvl)).tolist()
+    fq = np.floor(C / np.asarray(gq)[:, None]).astype(np.int64).tolist()
+    groups, tufts = {}, {}
     for ti, fv, vc, ft, tc, fl, lo, hi in meshes:
         for k in range(ft, ft + tc):
-            ps = [verts[fv + i][0] for i in tris[k]]
-            c = [sum(p[a] for p in ps) / 3 for a in range(3)]
-            cents[k] = c
+            c = cl[k]
             if fol[k]:
                 t = tufts.setdefault(fol[k][1], [ti, fl, fol[k][0], fol[k][2], [0.0] * 3, [], dgk[k] if dgk else 0,
                                                  entk[k] if entk else 0])
@@ -246,10 +304,8 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
                         c[1] > centre[1])
             elif tcell and tcell[k] is not None:
                 cell = ("s", tcell[k][0]) + tuple(tcell[k][1])
-            else:
-                dist = math.sqrt(sum((c[a] - centre[a]) ** 2 for a in range(3)))
-                g = CHUNK_GRID * (1 << max(0, int(math.log2(max(1.0, dist / (4 * CHUNK_GRID))))))  # coarser far away
-                cell = (g,) + tuple(int(math.floor(c[a] / g)) for a in range(3))
+            else:  # coarser far away
+                cell = (gq[k],) + tuple(fq[k])
             # dgk: pieces with different draw groups never share a chunk (src/drawgrp.c hides chunks per group)
             cell += (dgk[k] if dgk else 0, entk[k] if entk else 0)
             # the coarse level (STREAM level 0) is drawn beyond the relief range: no normal-map split, fuller batches
@@ -262,9 +318,9 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     CHUNK_DG.clear()
     CHUNK_ENT.clear()
     for (ti, fl, cell, bk), ks in groups.items():
-        fvk = dict((k, fv) for fv, k in ks)
-        for part in split_batch([k for _, k in ks], cents):
-            batches.append((ti, fl, [(fvk[k], k) for k in part]))
+        for part in split_batch(np.array([k for _, k in ks], np.int64), C):
+            part = part.tolist()
+            batches.append((ti, fl, part))
             export_normal.CHUNK_BUMP.append((bk, part) if bk else None)
             CHUNK_TAG.append((cell[1], cell[2:-2]) if cell[0] == "s" else None)
             CHUNK_DG.append(cell[-2])
@@ -283,59 +339,65 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
             part = ts[i:i + per]
             lo, hi = int(part[0][0] * 255), min(255, math.ceil(part[-1][0] * 255))
             batches.append((ti, fl | CHUNK_GRASS | min(n, 255) << 8 | lo << 16 | hi << 24,
-                            [k for _, ks in part for k in ks]))
+                            [k for _, ks in part for _, k in ks]))
             export_normal.CHUNK_BUMP.append(None)
             CHUNK_TAG.append((1, sc) if sc else None)
             CHUNK_DG.append(cell[-2])
             CHUNK_ENT.append(cell[-1])
-    # chunk boxes, origins and steps; then the step of each position = the coarsest among the chunks using it
-    info = []
-    for ti, fl, part in batches:
-        mn, mx = [1e9] * 3, [-1e9] * 3
-        for fv, k in part:
-            for vi in tris[k]:
-                p = verts[fv + vi][0]
-                for a in range(3):
-                    mn[a], mx[a] = min(mn[a], p[a]), max(mx[a], p[a])
-        org = [float(round((mn[a] + mx[a]) / 2)) for a in range(3)]
-        info.append([mn, mx, org, pos_scale(mn, mx, org)])
+    # every corner of every batch, in batch order: triangle, global vertex, position
+    nb = len(batches)
+    tb = [len(part) for _, _, part in batches]
+    K = np.fromiter((k for _, _, part in batches for k in part), np.int64, sum(tb))
+    cb = np.repeat(np.arange(nb), np.asarray(tb, np.int64) * 3)  # batch of each corner
+    cs = np.concatenate([[0], np.cumsum(tb)[:-1]]).astype(np.int64) * 3  # first corner of each batch
+    CG = G[K].reshape(-1)
+    PC = P[CG]
+    # chunk boxes (the first of equal values wins, as min() / max() did: the sign of a zero), origins and steps
+    MN = _first_ext(np.minimum.reduceat(PC, cs, 0), PC, cs)
+    MX = _first_ext(np.maximum.reduceat(PC, cs, 0), PC, cs)
+    ORG = np.rint((MN + MX) / 2) + 0.0  # float(round(x)): no negative zero
+    mnl, mxl, orgl = MN.tolist(), MX.tolist(), ORG.tolist()
+    E = np.array([pos_scale(mnl[b], mxl[b], orgl[b]) for b in range(nb)], np.int64)
+    # then the step of each position = the coarsest among the chunks using it (positions keyed by value, as before)
+    pk = {}
+    pid = np.fromiter((pk.setdefault(v[0], len(pk)) for v in verts), np.int64, len(verts))
+    cp = pid[CG]
     while True:
-        step = {}
-        for (ti, fl, part), (mn, mx, org, e) in zip(batches, info):
-            for fv, k in part:
-                for vi in tris[k]:
-                    p = verts[fv + vi][0]
-                    step[p] = max(step.get(p, -99), e)
-        grown = False
-        for (ti, fl, part), inf in zip(batches, info):
-            org, e = inf[2], inf[3]
-            m = max(abs(round(verts[fv + vi][0][a] / 2.0 ** step[verts[fv + vi][0]]) * 2.0 ** step[verts[fv + vi][0]]
-                        - org[a]) for fv, k in part for vi in tris[k] for a in range(3))
-            if m / 2.0 ** e > 32767:  # snapping moved a vertex out of range: coarser step for this chunk
-                inf[3] += 1
-                grown = True
-        if not grown:
+        S = np.full(len(pk), -99, np.int64)
+        np.maximum.at(S, cp, E[cb])
+        sv = np.ldexp(1.0, S[cp])[:, None]
+        Q = np.rint(PC / sv) * sv
+        m = np.maximum.reduceat(np.abs(Q - ORG[cb]).max(1), cs) if nb else np.zeros(0)
+        grow = m / np.ldexp(1.0, E) > 32767  # snapping moved a vertex out of range: coarser step for this chunk
+        if not grow.any():
             break
-    out, err = [], 0.0
-    for (ti, fl, part), (mn, mx, org, e) in zip(batches, info):
-        tw, th = (textures[ti][0], textures[ti][1]) if ti >= 0 else (1, 1)
-        smax = max([uvs[k][c][a] / (tw, th)[a] for fv, k in part for c in range(3) for a in range(2)] + [0])
-        sts = 4096 if smax < 65535 / 4096 else 1024
-        pos, st, col = bytearray(), bytearray(), bytearray()
-        for fv, k in part:
-            for c, vi in enumerate(tris[k]):
-                p, rgb, a = verts[fv + vi]
-                sv = 2.0 ** step[p]
-                q = [round(p[j] / sv) * sv for j in range(3)]
-                n = [int(round((q[j] - org[j]) / 2.0 ** e)) for j in range(3)]
-                err = max(err, max(abs(org[j] + n[j] * 2.0 ** e - p[j]) for j in range(3)))
-                pos += struct.pack("<3h", *n)
-                u, v = uvs[k][c]
-                st += struct.pack("<2H", min(65535, round(u / tw * sts)), min(65535, round(v / th * sts)))
-                col += bytes(rgb) + bytes([a])
-        for arr in (pos, st, col):
-            arr.extend(b"\0" * (-len(arr) % 16))
-        out.append((ti, fl, len(part), bytes(pos), bytes(st), bytes(col), mn, mx, org, 2.0 ** e, sts))
+        E[grow] += 1
+    sc = np.ldexp(1.0, E)[cb][:, None]
+    NQ = np.rint((Q - ORG[cb]) / sc)
+    err = float(np.abs(ORG[cb] + NQ * sc - PC).max()) if len(PC) else 0.0
+    assert len(NQ) == 0 or (NQ.min() >= -32768 and NQ.max() <= 32767), "chunk position out of s16 range"
+    pos16 = NQ.astype("<i2")
+    # texture coordinates: 1/4096 units, or 1/1024 when a chunk has coordinates >= 65535 / 4096
+    tws = np.array([(textures[ti][0], textures[ti][1]) if ti >= 0 else (1, 1) for ti, _, _ in batches],
+                   np.float64).reshape(-1, 2)
+    UV = np.array(uvs, np.float64).reshape(-1, 3, 2)[K].reshape(-1, 2) / tws[cb]
+    smax = np.maximum.reduceat(UV.max(1), cs) if nb else np.zeros(0)
+    sts = np.where(smax < 65535 / 4096, 4096, 1024)
+    ST = np.minimum(65535, np.rint(UV * sts[cb][:, None]))
+    assert len(ST) == 0 or ST.min() >= 0, "negative texture coordinate"
+    st16 = ST.astype("<u2")
+    rgb = np.array([v[1] for v in verts], np.int64).reshape(-1, 3)
+    al = np.fromiter((v[2] for v in verts), np.int64, len(verts))
+    col = np.concatenate([rgb, al[:, None]], 1)[CG]
+    assert len(col) == 0 or (col.min() >= 0 and col.max() <= 255), "vertex colour out of byte range"
+    col8 = col.astype(np.uint8)
+    out = []
+    pad = lambda b: b + b"\0" * (-len(b) % 16)
+    ce = np.cumsum(np.asarray(tb, np.int64) * 3).tolist()
+    for b, (ti, fl, part) in enumerate(batches):
+        s, e = cs[b], ce[b]
+        out.append((ti, fl, len(part), pad(pos16[s:e].tobytes()), pad(st16[s:e].tobytes()), pad(col8[s:e].tobytes()),
+                    mnl[b], mxl[b], orgl[b], 2.0 ** int(E[b]), int(sts[b])))
     print(f"chunks: {len(out)}, {sum(o[2] for o in out) / max(1, len(out)):.1f} tris / chunk, largest position "
           f"error {err * 1000:.2f} mm")
     return out
