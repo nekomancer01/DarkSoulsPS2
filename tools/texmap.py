@@ -96,7 +96,8 @@ def _metrics(src, out):
     hue = float((ang(oa, ob) * w).sum() / w.sum()) if w.sum() > 0 else 0.0
     ma, mb = oa.mean(0), ob.mean(0)
     tint = float(ang(ma, mb)) if np.hypot(*ma) > 3 else 0.0
-    la, lb = a @ [0.299, 0.587, 0.114], b @ [0.299, 0.587, 0.114]
+    luma = np.array([0.299, 0.587, 0.114])  # not a @ luma: BLAS natively, not in the browser (TECH_DEBT build-7)
+    la, lb = (x[:, 0] * luma[0] + x[:, 1] * luma[1] + x[:, 2] * luma[2] for x in (a, b))
     contrast = float(lb.std() / la.std()) if la.std() > 1 else 1.0
     return dict(psnr=psnr, chroma=chroma, hue=hue, tint=tint, contrast=contrast)
 
@@ -253,7 +254,8 @@ def _encode(w, h, rgba, soft=False, name=""):
     w, h = img.size
     half = _half(img)
     if soft:  # blended effects: 256 colours with alpha, CT32 CLUT (alpha 0..0x80)
-        q = img.quantize(256, method=Image.Quantize.FASTOCTREE)
+        import octree  # Pillow's FASTOCTREE, the same on every platform (TECH_DEBT build-7)
+        q = octree.quantize(img, 256)
         pal = np.array((list(q.getpalette("RGBA") or []) + [0] * 1024)[:1024], np.uint8).reshape(256, 4)
         clut = bytearray(1024)
         for i in range(256):

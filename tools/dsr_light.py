@@ -112,6 +112,19 @@ def sum3(a, b, c):
     return np.where((comp != 0) & np.isfinite(comp), f + comp, f)
 
 
+def matmul(X, M):
+    """X @ M without BLAS: the products summed left to right over the inner axis. Native numpy's @ goes through
+    OpenBLAS and Pyodide's (the in-browser converter) does not, so their last bits differ (TECH_DEBT build-7); every
+    product the exports keep goes through here instead, the same bits on every platform. M: (k,) or (k, m)."""
+    import numpy as np
+    X, M = np.asarray(X), np.asarray(M)
+    x = (lambda k: X[..., k]) if M.ndim == 1 else (lambda k: X[..., k, None])
+    out = x(0) * M[0]
+    for k in range(1, M.shape[0]):
+        out = out + x(k) * M[k]
+    return out
+
+
 # ---- light probes ----------------------------------------------------------------------------------------------
 _FACE = [  # D3D cube faces +X -X +Y -Y +Z -Z: (major axis, sign, s axis/sign, t axis/sign)
     (0, 1, (2, -1), (1, -1)), (0, -1, (2, 1), (1, -1)), (1, 1, (0, 1), (2, 1)),
@@ -378,12 +391,13 @@ class ShadowMap:
         import numpy as np
         self.np = np
         L = np.array(to_light, np.float64)
-        L /= np.linalg.norm(L)
+        n3 = lambda v: math.sqrt((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2])  # not np.linalg.norm: a BLAS dot natively
+        L /= n3(L)
         u = np.cross(L, [0.0, 1.0, 0.0] if abs(L[1]) < 0.99 else [1.0, 0.0, 0.0])
-        u /= np.linalg.norm(u)
+        u /= n3(u)
         v = np.cross(L, u)
         self.B = np.stack([u, v, L])  # rows: u, v, depth towards the light
-        F = np.asarray(focus, np.float64) @ self.B.T
+        F = matmul(np.asarray(focus, np.float64), self.B.T)
         self.lo = F[:, :2].min(0) - 60
         hi = F[:, :2].max(0) + 60
         texel = max(texel, float((hi - self.lo).max()) / max_side)
@@ -391,7 +405,7 @@ class ShadowMap:
         W, H = (np.ceil((hi - self.lo) / texel)).astype(int) + 1
         self.W, self.H = W, H
         D = np.full(W * H, -1e9, np.float32)
-        T = (np.asarray(tris, np.float32).reshape(-1, 3) @ self.B.T.astype(np.float32)).reshape(-1, 3, 3)
+        T = matmul(np.asarray(tris, np.float32).reshape(-1, 3), self.B.T.astype(np.float32)).reshape(-1, 3, 3)
         P = (T[..., :2] - self.lo.astype(np.float32)) / np.float32(texel)  # texel coordinates
         x0 = np.clip(np.floor(P[..., 0].min(1)), 0, W - 1).astype(np.int64)
         y0 = np.clip(np.floor(P[..., 1].min(1)), 0, H - 1).astype(np.int64)
@@ -446,7 +460,7 @@ class ShadowMap:
 
     def lit(self, p, n):
         np = self.np
-        q = self.B @ (np.asarray(p, np.float64) + 0.1 * np.asarray(n, np.float64))
+        q = matmul(self.B, np.asarray(p, np.float64) + 0.1 * np.asarray(n, np.float64))
         x, y = (q[:2] - self.lo) / self.texel
         xi, yi = int(x), int(y)
         tot = 0
@@ -463,7 +477,7 @@ class ShadowMap:
         P, N = np.asarray(P, np.float64).reshape(-1, 3), np.asarray(N, np.float64).reshape(-1, 3)
         if not len(P):
             return np.zeros(0)
-        q = (P + 0.1 * N) @ self.B.T
+        q = matmul(P + 0.1 * N, self.B.T)
         Q = np.empty_like(q)
         Q[:, :2] = (q[:, :2] - self.lo) / self.texel
         Q[:, 2] = q[:, 2]
