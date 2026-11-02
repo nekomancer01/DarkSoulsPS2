@@ -857,21 +857,34 @@ def load_object(game, model, dds, static=False):
     return souls.flver(files[model + ".flver"]) if model + ".flver" in files else None
 
 
+_DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
+
+
 def dedup_tris(tl, V):
     """Drop repeated triangles inside one mesh: same positions (0.1 mm), winding and UVs as an earlier one. Some FLVER
     face sets store faces two or three times (Burg barrel o1152: 1488 tris = 496 x 3, map piece m2011B1: 4.6k of 9.5k);
     the copies draw the same pixels, and their non-manifold edges stop the QEM simplifier (both kept 97-100 %)."""
-    P, U = V["pos"], V["uv"]
-    seen, out = set(), []
-    for t in tl:
-        c = [(round(P[i][0] * 1e4), round(P[i][1] * 1e4), round(P[i][2] * 1e4),
-              (round(U[i][0] * 4096), round(U[i][1] * 4096)) if U else 0) for i in t]
-        r = c.index(min(c))
-        k = tuple(c[r:] + c[:r])  # cyclic rotation keeps the winding
-        if k not in seen:
-            seen.add(k)
-            out.append(t)
-    return out
+    if not tl:
+        return []
+    # per corner (x, y, z, u, v) rounded, rotated to start at the lexicographically smallest corner (the first of
+    # equal ones, as c.index(min(c))); the first triangle of each key is kept, in order
+    K = np.rint(_vert_np(V["pos"]) * 1e4).astype(np.int64)
+    K = np.concatenate([K, np.rint(_vert_np(V["uv"]) * 4096).astype(np.int64) if V["uv"] else
+                        np.zeros((len(K), 2), np.int64)], 1)
+    C = K[np.asarray(tl, np.int64)]  # (n, 3 corners, 5)
+
+    def less(a, b):
+        lt = np.zeros(len(a), bool)
+        for j in range(a.shape[1] - 1, -1, -1):
+            lt = (a[:, j] < b[:, j]) | ((a[:, j] == b[:, j]) & lt)
+        return lt
+    r = np.zeros(len(C), np.int64)
+    rows = np.arange(len(C))
+    for i in (1, 2):
+        r = np.where(less(C[:, i], C[rows, r]), i, r)
+    rot = C[rows[:, None], (r[:, None] + np.arange(3)) % 3].reshape(len(C), -1)  # cyclic rotation keeps the winding
+    _, first = np.unique(rot, axis=0, return_index=True)
+    return [tl[i] for i in np.sort(first).tolist()]
 
 
 def place(part):
@@ -1128,7 +1141,10 @@ def gather(game, map_id):
                 low = len(wp) and np.min((d * d).sum(1)) > STREAM_FAR ** 2
                 FAR_LOD_STATS[bool(low)] += 1
             fs = lods[max(lods)] if low else lods[min(lods)]
-            tl = dedup_tris(souls.triangles(fs), m["verts"])
+            dk = (id(fs), id(m["verts"]["pos"]))  # a model placed many times: its face set is deduplicated once
+            if dk not in _DEDUP or _DEDUP[dk][0] is not fs or _DEDUP[dk][1] is not m["verts"]["pos"]:
+                _DEDUP[dk] = (fs, m["verts"]["pos"], dedup_tris(souls.triangles(fs), m["verts"]))
+            tl = list(_DEDUP[dk][2])
             if (map_r or PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
                 ui = list({i for t in tl for i in t})
                 Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
@@ -1514,12 +1530,21 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
+    # key() of every position, per mesh at once (numpy rint rounds half to even like round())
+    pkeys = {}
+
+    def keys_of(mi):
+        if mi not in pkeys:
+            P = np.array(meshes[mi]["pos"], np.float64).reshape(-1, 3)
+            pkeys[mi] = list(map(tuple, np.rint(P * 500).astype(np.int64).tolist()))
+        return pkeys[mi]
     # identical copies (same texture, same triangles; Firelink has some far _L walls twice) only draw once
     seen = set()
-    for m in meshes:
+    for mi, m in enumerate(meshes):
         if m["keep"]:
             continue
-        k = (m["ti"], frozenset(frozenset(key(m["pos"][m["wpos"][w]]) for w in t) for t in m[src]))
+        kp, wp = keys_of(mi), m["wpos"]
+        k = (m["ti"], frozenset(frozenset(kp[wp[w]] for w in t) for t in m[src]))
         if k in seen:
             m[src] = []
         seen.add(k)
@@ -1533,8 +1558,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         return x
     first = {}
     for mi in live:
-        for p in meshes[mi]["pos"]:
-            k = key(p)
+        for k in keys_of(mi):
             if k in first:
                 par[root(mi)] = root(first[k])
             else:
@@ -1544,30 +1568,33 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         groups.setdefault(root(mi), []).append(mi)
     groups = list(groups.values())
     # per group: welded positions, attributes = (mesh, wedge), triangles in attribute indices
-    jobs, attrs, jcell = [], [], []
+    jobs, attrs, jcell, jkeys = [], [], [], []
     for g in groups:
         percell = {}
         for mi in g:
             m = meshes[mi]
-            for t in m[src]:
+            if cells and m[src]:  # CHUNK_GRID cell of each triangle's centroid (sum() of the corners, as before)
+                Pm = np.array(m["pos"], np.float64).reshape(-1, 3)[np.array(m["wpos"], np.int64)[np.array(m[src], np.int64)]]
+                cc = np.floor(_py_sum3(Pm[:, 0], Pm[:, 1], Pm[:, 2]) / 3 / CHUNK_GRID).astype(np.int64).tolist()
+            for ti_, t in enumerate(m[src]):
                 c = None
                 if cells:
-                    ps = [m["pos"][m["wpos"][w]] for w in t]
-                    c = tuple(int(math.floor(sum(q[a] for q in ps) / 3 / CHUNK_GRID)) for a in range(3))
+                    c = tuple(cc[ti_])
                     c = "far" if c in far else c  # far cells: one uncut job per welded group
                 percell.setdefault(c, []).append((mi, t))
         for c, items in percell.items():
-            pid, aid, pos, wpos, attr, tris = {}, {}, [], [], [], []
+            pid, aid, pos, wpos, attr, tris, jk = {}, {}, [], [], [], [], []
             for mi, t in items:
                 m = meshes[mi]
+                kp = keys_of(mi)
                 tt = []
                 for w in t:
                     if (mi, w) not in aid:
-                        xyz = m["pos"][m["wpos"][w]]
-                        k = key(xyz)
+                        k = kp[m["wpos"][w]]
                         if k not in pid:
                             pid[k] = len(pos)
-                            pos.append(xyz)
+                            pos.append(m["pos"][m["wpos"][w]])
+                            jk.append(k)
                         aid[(mi, w)] = len(wpos)
                         wpos.append(pid[k])
                         attr.append((mi, w))
@@ -1576,12 +1603,13 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             jobs.append([pos, wpos, tris, None, None])
             attrs.append(attr)
             jcell.append(c)
+            jkeys.append(jk)
     njobs = {}  # positions on a cell cut (in several jobs of one welded group) never move: both levels keep the cut
-    for j in jobs:
-        for p in j[0]:
-            njobs[key(p)] = njobs.get(key(p), 0) + 1
-    for j in jobs:
-        j[3] = [njobs[key(p)] > 1 for p in j[0]]
+    for jk in jkeys:
+        for k in jk:
+            njobs[k] = njobs.get(k, 0) + 1
+    for j, jk in zip(jobs, jkeys):
+        j[3] = [njobs[k] > 1 for k in jk]
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
         j[4] = [1.0 / (x * x) for x in d]
