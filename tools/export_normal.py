@@ -169,9 +169,15 @@ class _Response:
     def tone(self, Y):
         return np.interp(np.log(np.maximum(Y, 1e-6)), self.ly, self.out)
 
-    def __call__(self, tri, xy):
-        """tri: dict of arrays (N, T, B, k, alb (rgb linear), light id, probe id, rows / probes lookups) -> (n, J)"""
+    def __call__(self, tri, xy, rows=32768):
+        """tri: dict of arrays (N, T, B, k, alb (rgb linear), light id, probe id, rows / probes lookups) -> (n, J).
+        In blocks of rows triangles: every value is per triangle, so the blocks give the same bits as one pass, and
+        the (triangles, J, 3) normals and their temporaries stay small (one pass over Undead Burg's triangles took
+        the in-browser converter's heap from 1.2 to 2 GB)"""
         nt = len(tri["N"])
+        if nt > rows:
+            return np.concatenate([self({k: v[i:i + rows] if isinstance(v, np.ndarray) else v for k, v in tri.items()},
+                                        xy, rows) for i in range(0, nt, rows)])
         n = _perturb(tri["N"], tri["T"], tri["B"], np.vstack([[0.0, 0.0], xy]))  # column 0: flat
         J = n.shape[1]
         Y = np.zeros((nt, J))
@@ -215,21 +221,34 @@ def _bc4(blk):
     return np.take_along_axis(pal, idx.astype(np.intp), 1) / 255.0
 
 
-def decode_xy(d, max_dim):
-    """normal-map DDS (BC5, or DXT1 / BC7 via souls) -> (h, w, 2) tangent x, y in -1..1, largest mip <= max_dim"""
+def _bc5_level(d, max_dim):
+    """BC5 normal-map DDS -> (data offset, w, h) of its largest mip <= max_dim, or None for other formats"""
     h, w, mips = struct.unpack_from("<iii", d, 12)
     mips = max(1, mips)
-    four = d[84:88]
-    if four == b"DX10" and struct.unpack_from("<I", d, 128)[0] in (83, 84):  # BC5_UNORM / SNORM (DSR: 83)
-        off = 148
-        while mips > 1 and max(w, h) > max_dim:
-            off += max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 16
-            w, h, mips = max(1, w // 2), max(1, h // 2), mips - 1
-        bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
-        blk = np.frombuffer(d, np.uint8, bw * bh * 16, off).reshape(-1, 16)
-        ch = [_bc4(blk[:, :8]), _bc4(blk[:, 8:])]
-        img = np.stack([c.reshape(bh, bw, 4, 4).transpose(0, 2, 1, 3).reshape(bh * 4, bw * 4) for c in ch], 2)
-        img = img[:h, :w]
+    if d[84:88] != b"DX10" or struct.unpack_from("<I", d, 128)[0] not in (83, 84):  # BC5_UNORM / SNORM (DSR: 83)
+        return None
+    off = 148
+    while mips > 1 and max(w, h) > max_dim:
+        off += max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 16
+        w, h, mips = max(1, w // 2), max(1, h // 2), mips - 1
+    return off, w, h
+
+
+def _bc5_rows(d, off, w, by0, by1):
+    """block rows by0..by1 of a BC5 level -> (4 (by1 - by0), 4 bw, 2) x, y in 0..1"""
+    bw = max(1, (w + 3) // 4)
+    blk = np.frombuffer(d, np.uint8, bw * (by1 - by0) * 16, off + by0 * bw * 16).reshape(-1, 16)
+    ch = [_bc4(blk[:, :8]), _bc4(blk[:, 8:])]
+    nb = by1 - by0
+    return np.stack([c.reshape(nb, bw, 4, 4).transpose(0, 2, 1, 3).reshape(nb * 4, bw * 4) for c in ch], 2)
+
+
+def decode_xy(d, max_dim):
+    """normal-map DDS (BC5, or DXT1 / BC7 via souls) -> (h, w, 2) tangent x, y in -1..1, largest mip <= max_dim"""
+    lv = _bc5_level(d, max_dim)
+    if lv:
+        off, w, h = lv
+        img = _bc5_rows(d, off, w, 0, max(1, (h + 3) // 4))[:h, :w]
     else:
         dec = souls.dds_decode_rgba(d, max_dim)
         if not dec:
@@ -239,9 +258,8 @@ def decode_xy(d, max_dim):
     return img * 2 - 1
 
 
-def _pow2(img, cap):
-    """resample to power-of-two sides <= cap (box average down, nearest up)"""
-    h, w = img.shape[:2]
+def _pow2_index(h, w, cap):
+    """_pow2's power-of-two size and its source rows / columns per texel"""
     tw, th = 1, 1
     while tw * 2 <= min(w, cap):
         tw *= 2
@@ -249,6 +267,31 @@ def _pow2(img, cap):
         th *= 2
     ys = (np.arange(th)[:, None] * h // th + np.arange(max(1, h // th))[None, :]).clip(0, h - 1)
     xs = (np.arange(tw)[:, None] * w // tw + np.arange(max(1, w // tw))[None, :]).clip(0, w - 1)
+    return ys, xs
+
+
+def xy_pow2(d, max_dim, cap, band=8):
+    """_pow2(decode_xy(d, max_dim), cap), for BC5 band output rows at a time from just the block rows they read: the
+    same values (the decode is per block, the average per texel), without the whole level as float64 (Undead Burg's
+    4096 px m10_cliff_01_n took the in-browser converter's heap from 1.3 to 1.7 GB)"""
+    lv = _bc5_level(d, max_dim)
+    if not lv:
+        xy = decode_xy(d, max_dim)
+        return None if xy is None else _pow2(xy, cap)
+    off, w, h = lv
+    ys, xs = _pow2_index(h, w, cap)
+    out = []
+    for i in range(0, len(ys), band):
+        y = ys[i:i + band]
+        by0, by1 = int(y.min()) // 4, int(y.max()) // 4 + 1
+        img = _bc5_rows(d, off, w, by0, by1)[:, :w] * 2 - 1
+        out.append(img[y - 4 * by0][:, :, xs].mean(axis=(1, 3)))
+    return np.concatenate(out)
+
+
+def _pow2(img, cap):
+    """resample to power-of-two sides <= cap (box average down, nearest up)"""
+    ys, xs = _pow2_index(*img.shape[:2], cap)
     return img[ys][:, :, xs].mean(axis=(1, 3))
 
 
@@ -277,7 +320,9 @@ def _kmeans(x, k, wts=None, iters=20, seed=1):
     return c, _nearest(x, c)
 
 
-def _nearest(x, c, step=65536):
+def _nearest(x, c, step=4096):
+    """index of the nearest centre per row of x, step rows at a time (each row on its own: any step gives the same
+    labels; 65536 rows x 255 palette entries made dsr_light.matmul's temporaries 0.5 GB of the browser's heap)"""
     out = np.empty(len(x), int)
     cc = (c ** 2).sum(1)
     for i in range(0, len(x), step):
@@ -376,9 +421,9 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     names = sorted({e["tex"] for _, e, _ in tris})
     imgs = {}
     for nme in names:
-        xy = decode_xy(dds[nme], max(BUMP_MAX, 4))
+        xy = xy_pow2(dds[nme], max(BUMP_MAX, 4), BUMP_MAX)
         if xy is not None:
-            imgs[nme] = _pow2(xy, BUMP_MAX)
+            imgs[nme] = xy
     allxy = np.concatenate([v.reshape(-1, 2) for v in imgs.values()])
     sub = allxy[np.random.default_rng(2).choice(len(allxy), min(len(allxy), 150000), replace=False)]
     pal, _ = _kmeans(sub, 255, iters=15)

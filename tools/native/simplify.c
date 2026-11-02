@@ -11,6 +11,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+/* out of memory (the in-browser converter's WebAssembly heap has a cap): trap ("RuntimeError: unreachable" in
+ * Pyodide, SIGILL natively) instead of writing through NULL, which in WebAssembly is address 0 and corrupts the
+ * interpreter's memory (Pyodide then fails later with "Unexpected rtype undefined") */
+static void *alloc_ok(void *p, size_t n) {
+    if (!p && n)
+        __builtin_trap();
+    return p;
+}
+#define malloc(n) alloc_ok(malloc(n), (n))
+#define calloc(a, b) alloc_ok(calloc(a, b), (a) * (b))
+#define realloc(p, n) alloc_ok(realloc(p, n), (n))
 
 typedef struct { int *a; int n, cap; } ivec;
 
