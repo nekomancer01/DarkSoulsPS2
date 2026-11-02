@@ -1,6 +1,6 @@
 /* EMEVD odds and ends for src/event.c: the temporary event flags DSR clears on a load / rest, save requests, status
  * messages and banners (EE log + the EVT HUD line until A11 has the FMG text), bonfire registration (2009[03]) with
- * the light / rest use of the action button, ready for A4's rest (HP, Estus, respawning enemies). */
+ * the light / rest use of the action button (the rest itself: src/bonfire.c). */
 #ifndef EV_MISC_H
 #define EV_MISC_H
 

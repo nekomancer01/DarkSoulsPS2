@@ -137,6 +137,8 @@ typedef struct {
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
     int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
+    unsigned char rec[36];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
+    int seed_i;
 } Enemy;
 
 static ChrType types[MAX_TYPES];
@@ -471,6 +473,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     ev_off[i] = 0;  /* a reused slot inherits no event state */
     e->ct = t;
     e->block = block;
+    memcpy(e->rec, r, sizeof e->rec), e->seed_i = seed_i;
     memcpy(&e->npc, r + 8, 4), memcpy(&e->thinkid, r + 12, 4), memcpy(&e->entity, r + 16, 4);
     e->var = &t->vars[0];
     for (unsigned v = 0; v < t->h->variants; v++)
@@ -620,6 +623,28 @@ void enemy_block_add(int block)
     }
     npc_block(block, 1);
     printf("enemy: block %d on: %d characters (%d slots), %d goals in use\n", block, n, nenemies, ai_goals_in_use());
+}
+
+/* Bonfire rest / death (src/bonfire.c): every placed character (all blocks that are on) back to its MSB placement with
+ * full HP, its AI and ESD from the start, as when its block was placed. Event state stays (ev_bind: disabled ones stay
+ * off, ones killed by an event stay dead); the restarted events set the rest again. c0000 NPCs (npc.c) are not
+ * revived: DSR keeps a killed NPC dead through its event flags. */
+void enemy_respawn(void)
+{
+    int n = 0;
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (ev_off[i] & EV_FREE)
+            continue;
+        if (e->registered)
+            combat_unregister(&e->cc);
+        ai_reset(&e->ai);  /* the goal tree back to the pool (place() memsets the slot) */
+        unsigned char r[36];
+        memcpy(r, e->rec, sizeof r);
+        n += e->cc.dead;
+        place(e->ct, r, i, e->block, e->seed_i);
+    }
+    printf("enemy: respawn: %d characters, %d were dead, %d goals in use\n", nenemies, n, ai_goals_in_use());
 }
 
 void enemy_block_remove(int block)

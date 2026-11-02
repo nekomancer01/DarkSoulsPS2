@@ -6,6 +6,7 @@
 #include <string.h>
 #include <tamtypes.h>
 
+#include "bonfire.h"
 #include "collision.h"
 #include "drawgrp.h"
 #include "enemy.h"
@@ -207,6 +208,16 @@ static int ent_pos(int own, s32 id, float out[3])
     if (!e)
         return 0;
     memcpy(out, e->pos, 12);
+    return 1;
+}
+
+int event_entity(s32 id, float pos[3], float *yaw)
+{
+    const EvEnt *e = ent_any(0, id, NULL);
+    if (!e)
+        return 0;
+    memcpy(pos, e->pos, 12);
+    *yaw = e->yaw;
     return 1;
 }
 
@@ -943,8 +954,8 @@ static void run(Inst *in)
         case OP_EV_CLEAR: flag_value_set(iw[0], iw[1], 0); break;
         case OP_AWARD_LOT: award_lot(iw[0]); break;
         case OP_SAVE_REQ: save_request(); break;
-        case OP_RESPAWN:  /* 2003[23] Set Player Respawn Point (a region): where A4's death respawn puts the player */
-            prog.bonfire = iw[0];
+        case OP_RESPAWN:  /* 2003[23] Set Player Respawn Point (an MSB SpawnPoint): where a death puts the player */
+            prog.respawn = iw[0];
             progress_touch();
             break;
         case OP_STATUS_MSG: ev_message(0, iw[0]); break;
@@ -1403,9 +1414,9 @@ void event_test_cmd(const char *cmd)
     } else if (!strcmp(cmd, "rest")) {  /* what a bonfire rest does to the events and the temporary flags */
         event_rest();
     } else if (sscanf(cmd, "expect respawn %d", &val) == 1) {
-        int ok = (s32)prog.bonfire == val;
+        int ok = (s32)prog.respawn == val;
         test_pass += ok, test_fail += !ok;
-        printf("TEST ev expect respawn %d: %d %s\n", val, (int)prog.bonfire, ok ? "PASS" : "FAIL");
+        printf("TEST ev expect respawn %d: %d %s\n", val, (int)prog.respawn, ok ? "PASS" : "FAIL");
     } else if (sscanf(cmd, "expect value %d %d %d", &id, &val, &want) == 3) {  /* EventValue first, bits */
         int got = (int)flag_value_get(id, val), ok = got == want;
         test_pass += ok, test_fail += !ok;
@@ -1429,6 +1440,7 @@ void event_test_cmd(const char *cmd)
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect region %d %.2f %.2f %.2f %d: %d %s\n", id, fx, v, fz, val, got, ok ? "PASS" : "FAIL");
     } else if (ev_chr_test(cmd, &test_pass, &test_fail)) {  /* chr ... / expect chr ... (ev_chr.c) */
+    } else if (bonfire_test_cmd(cmd, &test_pass, &test_fail)) {  /* hurt / expect estus, stain ... (bonfire.c) */
     } else if (ev_obj_test(cmd, &test_pass, &test_fail)) {  /* obj ... / expect objanim / objbroken (ev_obj.c) */
     } else if (sscanf(cmd, "expect %15s %d %d", a, &id, &val) == 3) {
         int found = 1, got;

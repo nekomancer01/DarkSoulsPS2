@@ -50,6 +50,7 @@ wait 0.3
 ev expect flag 11020992 1
 ev action
 wait 0.3
-ev expect respawn 1021960
+ev expect respawn 1022960
+ev expect lastbonfire 1021960
 ev summary
 end
