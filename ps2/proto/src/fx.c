@@ -628,7 +628,7 @@ void fx_draw(void)
         float bias = hx > hy ? hx : hy, kz = c.z - bias > R_NEAR + 0.05f ? (c.z - bias) / c.z : 1;
         c = v3scale(c, kz), hx *= kz, hy *= kz;
         /* the corners share the centre's view depth: screen = centre + offset x pixels per metre */
-        V3 ext = v3(fabsf(c.x) + hx + hy, fabsf(c.y) + hx + hy, c.z);
+        V3 ext = v3(fabsf(c.x) + 1.42f * hx, fabsf(c.y) + 1.42f * hy, c.z);  /* rolled unit corner <= sqrt 2 */
         int inside = r_point_inside(&ext);
         if (inside) {
             V3 c1 = v3(c.x + 1, c.y + 1, c.z);
@@ -637,7 +637,11 @@ void fx_draw(void)
             s1[0] -= s0[0], s1[1] -= s0[1];
         }
         for (int j = 0; j < 4; j++) {
-            float x = qx[j] * hx, y = qy[j] * hy, ox = x * cr - y * sr, oy = x * sr + y * cr;
+            /* roll first, then the size: corner = diag(hx, hy) x Rot(roll) x unit corner, as DSR's
+             * FRPG_Sfx_SimpleSprite*_Particle.vpo with cb0 c38.x = 0 (every captured fire draw, Firelink + Burg
+             * RenderDoc): a rolled tall flame stays tall (a sheared quad). Size-then-roll laid rolled flames on
+             * their side (the "horizontal fires") */
+            float ox = (qx[j] * cr - qy[j] * sr) * hx, oy = (qx[j] * sr + qy[j] * cr) * hy;
             q[j] = (ClipVert){c.x + ox, c.y + oy, c.z, u0 + (qx[j] > 0 ? cw - 0.5f : 0.5f),
                               v0 + (qy[j] > 0 ? 0.5f : ch - 0.5f), col[0], col[1], col[2], col[3]};
             if (inside)

@@ -83,6 +83,15 @@ CHAR_ALB = 0.35            # = export_map.CHAR_ALB: albedo the character light i
 # the texture's mean coverage gives (220, 118, 22) with exposure 1.0 through the area's tone map + ToneCorrect, two
 # overlapping layers (255, 167, 45). The map's adapted exposure (4.5 at Firelink) turns every layer white.
 FX_EXPOSURE = float(os.environ.get("FX_EXPOSURE", 1.0))
+# Additive layers: DSR sums them in linear HDR and tone maps the sum; the PS2 adds already tone-mapped (sRGB) colours
+# and clips each channel at 255, so stacked layers clip red first and drift to yellow-white. Each layer gets
+# tone(N x share) / N: N stacked layers then add up to the tone-mapped total. N = FX_OVERLAP, MEASURED fit (TECH_DEBT
+# fx-2): Firelink bonfire flame G/R and near-yellow share against the DSR capture (fl/shot.png)
+FX_OVERLAP = float(os.environ.get("FX_OVERLAP", 1.0))
+# Largest additive vertex colour channel (0x80 = 1.0). GS modulate = texel x vertex colour, clamped per channel: above
+# 1.0 the bright texels clip red while green keeps rising, so the hue turns yellow where DSR's per-pixel tone map keeps
+# it orange. MEASURED (TECH_DEBT fx-2): see FX_OVERLAP
+FX_ADD_CAP = float(os.environ.get("FX_ADD_CAP", 1.0))
 
 SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x"  # = fx.h FxSys
 LIGHT_FMT = "<H2x3ffff8f24Bf"
@@ -284,9 +293,9 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
             out = tone(hdr)
         else:  # additive: tone map a typical texel's share (colour x mean texel coverage m), then back to colour
             m = coverage(tex)
-            out = [o / m for o in tone([h * m for h in hdr])]
-            if max(out) > 255 / 128:  # GS vertex colour <= 2x: scale the channels together to keep the hue (fx-2)
-                out = [o * (255 / 128) / max(out) for o in out]
+            out = [o / (m * FX_OVERLAP) for o in tone([h * m * FX_OVERLAP for h in hdr])]
+            if max(out) > FX_ADD_CAP:  # scale the channels together to keep the hue (fx-2)
+                out = [o * FX_ADD_CAP / max(out) for o in out]
         a = max(0.0, min(1.0, c1[3][i] * c2[3][i] * mod[3][i]))
         rgba += [min(255, round(0x80 * o)) for o in out] + [min(0x80, round(0x80 * a))]
     r0 = _rand(_f(ap, "RotZ"), 0.0)
