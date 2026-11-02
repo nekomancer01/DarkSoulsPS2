@@ -249,9 +249,13 @@ def _kmeans(x, k, wts=None, iters=20, seed=1):
     c = np.array(c)
     for _ in range(iters):
         lab = _nearest(x, c)
+        # members of each cluster in index order (a stable sort by label: the same rows as the mask lab == j, without
+        # k passes over x)
+        order = np.argsort(lab, kind="stable")
+        bounds = np.searchsorted(lab[order], np.arange(k + 1)).tolist()
         for j in range(k):
-            s = lab == j
-            if s.any():
+            if bounds[j] < bounds[j + 1]:
+                s = order[bounds[j]:bounds[j + 1]]
                 c[j] = (x[s] * wts[s, None]).sum(0) / wts[s].sum()
     return c, _nearest(x, c)
 
@@ -260,7 +264,9 @@ def _nearest(x, c, step=65536):
     out = np.empty(len(x), int)
     cc = (c ** 2).sum(1)
     for i in range(0, len(x), step):
-        out[i:i + step] = np.argmin(cc[None, :] - 2 * x[i:i + step] @ c.T, 1)
+        d = (2 * x[i:i + step]) @ c.T
+        np.subtract(cc, d, out=d)  # cc - 2 x.c in place: the same values without a second (step, k) array
+        out[i:i + step] = d.argmin(1)
     return out
 
 
