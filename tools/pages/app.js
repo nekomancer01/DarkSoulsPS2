@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 let BUILD = null;
 let OS = /Win/.test(navigator.platform) ? "windows" : /Mac/.test(navigator.platform) ? "mac" : "linux";
 let checkedName = "";
+let GAME_FILES = null;  // [{path, file}] of the chosen game folder, for the converter (read in place, never sent)
 
 const REQ = {
   linux: `<ul><li><a href="https://docs.docker.com/engine/install/">Docker</a> or Podman (most distros: <code>podman</code> from the package manager).
@@ -102,6 +103,7 @@ async function check(getFile, name) {
   BUILD.key_files.forEach((f, i) => {
     if (have[f]) rows.rows[i].cells[0].innerHTML = best.files[f] === have[f] ? `<span class="ok">match</span>` : `<span class="warn">differs</span>`;
   });
+  VERIFIED = bestBad === 0;
   if (bestBad === 0) {
     $("verdict").innerHTML = `<span class="ok">Supported: ${esc(best.name)}.</span> Go on to step 2.`;
   } else if (missing) {
@@ -109,8 +111,7 @@ async function check(getFile, name) {
       <i>Properties → Installed Files → Verify integrity of game files</i>.`;
   } else {
     $("verdict").innerHTML = `<span class="warn">Unknown version: ${bestBad} file(s) differ from ${esc(best.id)}.</span>
-      The build stops on an unknown version. Updating or verifying the game in Steam usually fixes this; to try it anyway,
-      start the second line with <code>DSR_ALLOW_UNSUPPORTED=1 bash build-iso.sh</code>.`;
+      The converter is tested on the supported version only. Updating or verifying the game in Steam usually fixes this.`;
   }
 }
 
@@ -122,7 +123,11 @@ $("pick").addEventListener("click", async () => {
     if (!(await fileFromHandle(dir, "DarkSoulsRemastered.exe"))) {
       try { dir = await dir.getDirectoryHandle("DARK SOULS REMASTERED"); } catch { /* keep: reported as missing */ }
     }
-    check((rel) => fileFromHandle(dir, rel), dir.name);
+    await check((rel) => fileFromHandle(dir, rel), dir.name);
+    $("convstatus").textContent = "Listing the game folder…";
+    GAME_FILES = [];
+    await walk(dir, "", GAME_FILES);
+    gameReady();
   } else {
     $("pickfallback").click();  // Firefox / Safari: a folder input; the browser only lists files until one is read
   }
@@ -134,7 +139,74 @@ $("pickfallback").addEventListener("change", (ev) => {
   for (const f of files) byRel.set(f.webkitRelativePath.split("/").slice(1).join("/"), f);
   let prefix = "";
   if (!byRel.has("DarkSoulsRemastered.exe") && byRel.has("DARK SOULS REMASTERED/DarkSoulsRemastered.exe")) prefix = "DARK SOULS REMASTERED/";
-  check(async (rel) => byRel.get(prefix + rel) || null, files[0].webkitRelativePath.split("/")[0]);
+  check(async (rel) => byRel.get(prefix + rel) || null, files[0].webkitRelativePath.split("/")[0]).then(() => {
+    GAME_FILES = [];
+    for (const [rel, f] of byRel) if (rel.startsWith(prefix)) GAME_FILES.push({ path: rel.slice(prefix.length), file: f });
+    gameReady();
+  });
+});
+
+async function walk(dir, prefix, out) {
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === "directory") await walk(h, prefix + name + "/", out);
+    else out.push({ path: prefix + name, file: await h.getFile() });
+  }
+}
+
+// --- step 2: convert in a worker (worker.js) ---
+let VERIFIED = false;
+function gameReady() {
+  const ok = GAME_FILES && GAME_FILES.some((f) => f.path === "DarkSoulsRemastered.exe");
+  $("convert").disabled = !ok || !BUILD || !BUILD.converter;
+  $("convstatus").textContent = !BUILD || !BUILD.converter ? "This copy of the page has no converter (build.json)."
+    : !ok ? "Pick the folder that holds DarkSoulsRemastered.exe."
+    : VERIFIED ? `${GAME_FILES.length} files. Ready.` : `${GAME_FILES.length} files. Unknown game version: the conversion may fail.`;
+}
+
+$("convert").addEventListener("click", () => {
+  $("convert").disabled = true;
+  $("save").hidden = true;
+  $("bar").hidden = false;
+  $("bar").removeAttribute("value");  // indeterminate until the first step
+  $("logbox").hidden = false;
+  $("log").textContent = "";
+  const t0 = Date.now();
+  const w = new Worker("worker.js");
+  const log = (s) => {
+    const el = $("log");
+    const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+    el.textContent += s + "\n";
+    if (stick) el.scrollTop = el.scrollHeight;
+  };
+  w.onmessage = (ev) => {
+    const m = ev.data;
+    if (m.log !== undefined) log(m.log);
+    if (m.progress) {
+      const [i, n, name] = m.progress;
+      $("bar").max = n; $("bar").value = i;
+      const min = Math.floor((Date.now() - t0) / 60000);
+      $("convstatus").textContent = `Step ${i + 1} of ${n}: ${name} (${min} min so far)`;
+    }
+    if (m.done) {
+      const url = URL.createObjectURL(new Blob([m.done], { type: "application/octet-stream" }));
+      $("save").href = url;
+      $("save").hidden = false;
+      $("bar").value = $("bar").max;
+      $("convstatus").textContent = `Done in ${Math.round((Date.now() - t0) / 60000)} min: ${(m.done.byteLength / 1048576).toFixed(0)} MB.`;
+      w.terminate();
+      $("convert").disabled = false;
+    }
+    if (m.error) {
+      log("ERROR: " + m.error);
+      $("convstatus").innerHTML = `<span class="bad">The conversion stopped.</span> The log above says where. The script
+        below does the same build on your PC.`;
+      $("bar").hidden = true;
+      w.terminate();
+      $("convert").disabled = false;
+    }
+  };
+  w.onerror = (e) => { log("ERROR: " + e.message); $("convstatus").textContent = "The converter crashed (out of memory?)."; };
+  w.postMessage({ convert: { build: BUILD, base: location.href, files: GAME_FILES } });
 });
 
 // --- step 2: the command ---

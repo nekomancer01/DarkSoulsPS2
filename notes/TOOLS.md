@@ -114,4 +114,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `progress.sh` | Status of long background jobs |
 | `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |
+| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them |
+| `tools/iso9660.py` | Bootable disc image in pure Python, same layout and pack order as `ps2-iso.sh` (no xorriso) |
+| `tools/gamedata.py` | Layout of the game values the ELF loads at boot (player.gd / combat.gd / progress.gd) and the generator of `src/*_data.h` |
+| `tools/native/build-wasm.sh` | The C helpers as WebAssembly side modules for Pyodide (clang + wasm-ld) |
 | `tools/pages/build.py` | Builds the GitHub Pages site (`.github/workflows/pages.yml`): checks the player's game copy in the browser, hands out `build-iso.sh` pinned to the deployed main commit |

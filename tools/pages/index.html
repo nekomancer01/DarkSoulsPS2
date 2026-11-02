@@ -74,9 +74,9 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
   <section class="panel privacy">
     <h2>Nothing is uploaded</h2>
     <p>The check in step 1 reads a few game files inside your browser and compares their SHA-256 hashes with the versions the
-    port is tested on. Step 2 runs a script on your PC that reads the game folder read-only and writes the ISO next to you.
-    This site hosts code only: no game data, and nothing made from it. The ISO you build is made from your copy of the game,
-    so keep it to yourself.</p>
+    port is tested on.
+    The conversion in step 2 also runs inside this tab and writes the ISO to your disk. This site hosts code only: no game
+    data, and nothing made from it. The ISO you build is made from your copy of the game, so keep it to yourself.</p>
   </section>
 
   <section class="panel">
@@ -98,7 +98,22 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
   </section>
 
   <section class="panel">
-    <h2><span class="n">2</span> Build the ISO</h2>
+    <h2><span class="n">2</span> Convert in your browser</h2>
+    <p>The port's own converter runs inside this tab (Python in WebAssembly): it reads your game folder, builds the
+    maps, characters, menus and scripts, and packs them with the latest build of the engine into
+    <code>DarkSoulsPS2.iso</code>. Keep the tab open while it works. It takes a while (tens of minutes; the maps are
+    the slow part) and up to about 4 GB of memory, so use a desktop browser (Chrome, Edge or Firefox) with other big
+    tabs closed.</p>
+    <div class="row" style="align-items:center">
+      <button id="convert" disabled>Convert</button>
+      <a class="btn" id="save" hidden download="DarkSoulsPS2.iso">Save DarkSoulsPS2.iso</a>
+      <span class="small" id="convstatus">Choose your game folder in step 1 first.</span>
+    </div>
+    <progress id="bar" max="1" value="0" hidden style="width:100%;margin-top:12px"></progress>
+    <details id="logbox" hidden><summary>Converter log</summary><pre id="log" style="max-height:320px;overflow:auto"></pre></details>
+    <details style="margin-top:12px"><summary>Or build it with a script instead</summary>
+    <p style="margin-top:8px">The same build as a local command (Docker or Podman, or your own ps2dev toolchain): faster on
+    a big machine, and the way to go if the browser runs out of memory.</p>
     <div class="tabs" role="tablist" id="ostabs">
       <button role="tab" data-os="linux" aria-selected="true">Linux</button>
       <button role="tab" data-os="windows" aria-selected="false">Windows (WSL)</button>
@@ -122,11 +137,10 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
     </div>
     <p class="small" style="margin-top:12px">Paste this into a terminal<span id="termhint"></span>:</p>
     <div class="cmd"><pre><code id="cmd"></code></pre><button class="secondary" id="copy">Copy</button></div>
-    <p class="small">It downloads <a href="build-iso.sh" download>build-iso.sh</a> (read it first if you like: it is short), which
-    fetches the port's source at the commit above, builds a container with the PS2 toolchain the first time, converts your
-    game data and writes <code>DarkSoulsPS2.iso</code> in the current folder. The first run takes several minutes and needs
-    about 6 GB of free RAM. Later runs reuse the conversion cache in <code>~/.cache/darksoulsps2</code> and only redo what
-    the new build changes.</p>
+    <p class="small">It downloads <a href="build-iso.sh" download>build-iso.sh</a>, which fetches the port's source at the
+    commit above, builds a container with the PS2 toolchain the first time, converts your game data and writes
+    <code>DarkSoulsPS2.iso</code> in the current folder.</p>
+    </details>
   </section>
 
   <section class="panel">
@@ -142,15 +156,12 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
   </section>
 
   <section class="panel">
-    <h2>Why a script and not just this page?</h2>
-    <p>Converting runs the port's Python exporters, compiles small native helpers, compiles the PS2 engine (part of it is
-    generated from your game data, so a ready-made ELF can't be shared) and packs a disc image. In a browser that would mean
-    running GCC for the PS2 and a 6 GB Python job inside WebAssembly, which is limited to 4 GB of memory and has no PS2
-    cross-compiler. The page does what a browser can do safely (checking your copy) and hands the rest to one local
-    command that runs the same build the developers use.</p>
+    <h2>How it works</h2>
+    <p>The PS2 engine holds no game data: every game value it needs is in the packs, so one engine build from the
+    project's CI serves everyone. This page runs the same Python converter the developers use (in Pyodide, with its C
+    helpers compiled to WebAssembly) on your files, in your browser, and writes the disc image locally.</p>
     <details><summary>Prefer to do it by hand?</summary>
-      <p style="margin-top:8px">Clone the repository and follow the README's quick start, then <code>make -C ps2/proto iso</code>.
-      Or run <code>tools/build-iso.sh</code> from the checkout: it builds that checkout instead of downloading one.</p>
+      <p style="margin-top:8px">Clone the repository and follow the README's quick start, then <code>make -C ps2/proto iso</code>.</p>
     </details>
   </section>
 
