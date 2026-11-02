@@ -30,6 +30,7 @@ import math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
 SX, SY = 640 / 1280, 448 / 720
 FONT_H = 17  # pixels per line on the PS2 (DSFont24 glyph cells are 58 px tall for the game's 720p UI)
@@ -222,7 +223,7 @@ def font(game, atlas, packer):
             page_img[page] = Image.frombytes("RGBA", (w, h), px)
         src = page_img[page].crop((round(u0 * tw), round(v0 * th), round(u1 * tw), round(v1 * th)))
         gw = max(1, round(src.size[0] * k))
-        g = src.resize((gw, FONT_H), Image.LANCZOS)
+        g = resample.resize(src, (gw, FONT_H), Image.LANCZOS)
         out.append([0, 0, gw, FONT_H, round(pre * k), max(1, round(adv * k))])
         packer.defer(g, lambda x, y, e=out[-1]: e.__setitem__(slice(0, 2), [x, y]))
     return out
@@ -238,7 +239,7 @@ def icon_image(game, sheets, cells, icon_id):
     cell = sheets[name].crop((l, t, r, b))
     sq = Image.new("RGBA", (b - t, b - t), (0, 0, 0, 0))
     sq.alpha_composite(cell, ((b - t - (r - l)) // 2, 0))
-    return sq.resize((ICON, ICON), Image.LANCZOS)
+    return resample.resize(sq, (ICON, ICON), Image.LANCZOS)
 
 
 def main():
@@ -264,7 +265,7 @@ def main():
     def add_sprite(img_name, src, dw, dh):
         key = (img_name, src, dw, dh)
         if key not in sprite_of:
-            img = texs[img_name].crop(src).resize((dw, dh), Image.LANCZOS)
+            img = resample.resize(texs[img_name].crop(src), (dw, dh), Image.LANCZOS)
             sprite_of[key] = len(sprites)
             sprites.append([0, 0, 0, dw, dh])
             pk.defer(img, lambda x, y, e=sprites[-1]: e.__setitem__(slice(1, 3), [x, y]))
@@ -367,7 +368,7 @@ def main():
         for spr, x, y, w, h, r, g, b, a in layout:
             if spr >= 0:
                 at, u, v, sw, sh = sprites[spr]
-                piece = (atlas if at == 0 else icons).crop((u, v, u + sw, v + sh)).resize((w, h), Image.BILINEAR)
+                piece = resample.resize((atlas if at == 0 else icons).crop((u, v, u + sw, v + sh)), (w, h), Image.BILINEAR)
                 prev_img.alpha_composite(piece, (x, y))
         prev_img.save(preview)
         atlas.save(preview.replace(".png", "_atlas.png"))

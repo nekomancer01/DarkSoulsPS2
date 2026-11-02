@@ -59,6 +59,7 @@ import json, math, os, random, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import area, dsr_light, ffx, souls, srcsum
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_map.py uses them without this file
 
 FX_VERSION = 1
@@ -520,7 +521,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
         s = min(1.0, TEX_MAX / max(w, h))
         # PSMT8 needs a buffer width of 128 (TBW 2): every effect texture is 128 wide, height by aspect
         tw, th = 128, max(8, min(256, 1 << round(math.log2(max(1, 128 * h / w)))))
-        img = img.resize((tw, th), Image.LANCZOS)
+        img = resample.resize(img, (tw, th), Image.LANCZOS)
         clut, pix = quantize(img)
         tex_index[key] = len(texs)
         texs.append((tw, th, fpr, nfr, pix, clut, tid))

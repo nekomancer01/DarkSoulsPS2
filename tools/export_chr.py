@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
 import lua50
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 import export_model
 from export_model import MeshBuilder, bake, bind_world, to_local, write_model
 from area import enemy_parts
@@ -83,8 +84,8 @@ class ChrMeshBuilder(MeshBuilder):
             if dec and (max(dec[0], dec[1]) > self.tex_max or dec[0] < 128):
                 from PIL import Image
                 w, h = dec[0], dec[1]
-                im = Image.frombytes("RGB", (w, h), dec[2]).resize((max(128, min(w, self.tex_max)),
-                                                                    max(8, min(h, self.tex_max))), Image.LANCZOS)
+                im = resample.resize(Image.frombytes("RGB", (w, h), dec[2]),
+                                     (max(128, min(w, self.tex_max)), max(8, min(h, self.tex_max))), Image.LANCZOS)
                 dec = (im.width, im.height, im.tobytes())
             if dec:
                 self.tex_index[name] = len(self.textures)

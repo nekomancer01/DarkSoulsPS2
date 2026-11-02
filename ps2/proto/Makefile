@@ -187,7 +187,7 @@ $(A)/area.sig: FORCE
 	@python3 -I ../../tools/area.py --sig $(MAP) $@
 # + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
 # map leaves out of its static bake and the events out of their static colliders
-$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
+$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
 		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
@@ -210,7 +210,7 @@ $(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 
 # Enemy / NPC character: FLVER, skeleton, anims, TAE windows, one variant per placed NpcParam / ThinkParam pair
 # (enemy_parts lives in area.py: an export_enemies.py edit re-exports enemies.bin only)
-CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum \
+CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum \
 	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 $(A)/c%/chr.bin: $(CHR_DEPS)
 	@mkdir -p $(@D)
@@ -262,13 +262,13 @@ $(O)/lua0.o: src/lua0.h
 $(O)/main.o $(O)/player.o: src/model.h
 
 # Real mesh, textures and Havok animations
-$(G)/model.bin: $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
+$(G)/model.bin: $(TS)/export_model.py.sum $(TS)/resample.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_model.py "$(GAME)" $@
 
 
 # HUD and menus: DSR's menu sprites (menu.drb layout), DSFont24, item icons, English FMG text (tools/export_menu.py)
-$(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+$(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" $@
 
@@ -294,7 +294,7 @@ MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
-$(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
+$(A)/map.bin: $(TS)/export_map.py.sum $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
@@ -316,7 +316,7 @@ $(A)/dg.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
-$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin
+$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" $@ $(MAP) --tone $(A)/fx_tone.json
 

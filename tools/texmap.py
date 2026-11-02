@@ -18,6 +18,8 @@ Section written by write() (offsets from the start of map.bin):
 import struct
 import numpy as np
 
+import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
+
 PSMT8, PSMT4, CT32, CT16 = 0x13, 0x14, 0x00, 0x02
 # Colour fidelity first (map-20: the port already looks duller than DSR). Metrics against the source, opaque texels,
 # no fog / light (_metrics). PSMT4 only when the 16-colour version keeps the colour about as well as the 8-bit one:
@@ -248,9 +250,9 @@ def _encode(w, h, rgba, soft=False, name=""):
     from PIL import Image
     img = Image.frombytes("RGBA", (w, h), rgba)
     if w < 128:
-        img = img.resize((128, h * 128 // w), Image.BILINEAR)
+        img = resample.resize(img, (128, h * 128 // w), Image.BILINEAR)
     if img.size[1] > 128:  # VRAM budget: 128x128 at most
-        img = img.resize((img.size[0], 128), Image.BILINEAR)
+        img = resample.resize(img, (img.size[0], 128), Image.BILINEAR)
     w, h = img.size
     half = _half(img)
     if soft:  # blended effects: 256 colours with alpha, CT32 CLUT (alpha 0..0x80)
@@ -347,7 +349,7 @@ def add_near(t, w2, h2, rgba2):
     """Near level for texture record t (opaque / cut-out, from encode): the source at twice mip 0's size, mapped to t's
     palette (texels below 50 % alpha -> the transparent index), packed like mip 0. TECH_DEBT map-2 / texstream-5."""
     from PIL import Image
-    img = Image.frombytes("RGBA", (w2, h2), rgba2).resize((2 * t["w"], 2 * t["h"]), Image.BILINEAR)
+    img = resample.resize(Image.frombytes("RGBA", (w2, h2), rgba2), (2 * t["w"], 2 * t["h"]), Image.BILINEAR)
     n = 16 if t["psm"] == PSMT4 else 256
     pal = np.zeros((n, 3), np.float32)
     for i in range(n):  # palette back from the CLUT (CT16: 5-bit channels as the GS expands them)
