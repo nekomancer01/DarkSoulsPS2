@@ -16,9 +16,7 @@ run again with half the workers, down to one.
   SIMPLIFY_PROCS    workers (default 16, at most the CPU count)
   SIMPLIFY_NATIVE   1: the C simplifier (tools/native/simplify.c via simplify_native.py), 0: simplify.py; default:
                     C when its library builds (same collapses, see simplify_native.py)"""
-import hashlib, multiprocessing, os, pickle, sys, time, zlib
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from concurrent.futures.process import BrokenProcessPool
+import hashlib, os, pickle, sys, time, zlib
 
 import numpy as np
 
@@ -165,16 +163,19 @@ def run_jobs(jobs, area_k=None):
     hits = sum(r is not None for r in res)
     todo = sorted((i for i in range(len(jobs)) if res[i] is None), key=lambda i: -len(jobs[i][2]))
     procs = max(1, min(int(os.environ.get("SIMPLIFY_PROCS", 16)), os.cpu_count() or 1, len(todo) or 1))
+    if procs == 1:  # one worker: in process (no pool to kill, nothing to pickle; the browser converter has no processes)
+        for i in list(todo):
+            res[i] = work(jobs[i], area_k, be)
+            _store(d, keys[i], res[i])
+        todo = []
+    else:  # imported only here: Pyodide has no _multiprocessing
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from concurrent.futures.process import BrokenProcessPool
     tries = 0
     while todo:
         ctx = multiprocessing.get_context("forkserver")
         try:
-            if procs == 1 and tries == 0:  # one worker: in process (no pool to kill, nothing to pickle)
-                for i in list(todo):
-                    res[i] = work(jobs[i], area_k, be)
-                    _store(d, keys[i], res[i])
-                    todo.remove(i)
-                break
             with ProcessPoolExecutor(max_workers=procs, mp_context=ctx) as ex:
                 futs = {ex.submit(work, jobs[i], area_k, be): i for i in todo}
                 for f in as_completed(futs):
