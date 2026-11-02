@@ -124,9 +124,25 @@ def _place(part, v):
     return r[0] + p[0], r[1] + p[1], r[2] + p[2]
 
 
+_MEMO = {}  # the last map_collision result: export_map asks for it several times per export (13.6 s of Burg's)
+
+
 def map_collision(game, area="m10_02_00_00", detail="h"):
     """All MSB-placed collision of a map -> list of dict(part, model, hit_filter, material, tris=[(p0, p1, p2)])
-    with world-space points. Models without a file in the binder are reported in 'missing'."""
+    with world-space points. Models without a file in the binder are reported in 'missing'. The last result is kept
+    (callers must not modify it; forget() drops it)."""
+    key = (game, area, detail)
+    if key not in _MEMO:
+        _MEMO.clear()
+        _MEMO[key] = _map_collision(game, area, detail)
+    return _MEMO[key]
+
+
+def forget():
+    _MEMO.clear()
+
+
+def _map_collision(game, area, detail):
     mdir = f"{game}/map/{area}/{detail}{area[1:]}"
     files = {souls.basename(n).split(".")[0][:7]: b for _, n, b in souls.bxf3(mdir + ".hkxbhd", mdir + ".hkxbdt")}
     parts = msb_collisions(souls.read(f"{game}/map/MapStudio/{area}.msb"))

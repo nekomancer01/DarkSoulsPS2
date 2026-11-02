@@ -19,6 +19,7 @@ import gc, os, re, runpy, shlex, sys, time
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
 MAKEFILE = os.path.join(ROOT, "ps2", "proto", "Makefile")
+GC_THRESHOLD = gc.get_threshold()
 
 
 def make_vars(path=MAKEFILE):
@@ -71,6 +72,8 @@ def run_tool(tool, args, env=None, capture=False):
         sys.argv, sys.path[:] = saved_argv, saved_path
         os.environ.clear()
         os.environ.update(saved_env)
+        gc.unfreeze()  # export_map.py freezes its meshes out of the GC's scans; they are garbage now
+        gc.set_threshold(*GC_THRESHOLD)  # and raises the thresholds for its own run
         gc.collect()
     return buf.getvalue() if capture else None
 

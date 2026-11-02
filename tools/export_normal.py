@@ -302,21 +302,36 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     N, T, W = np.zeros((nt, 3)), np.zeros((nt, 3)), np.zeros(nt)
     ks, area, lid, pid, alb = np.ones(nt), np.zeros(nt), np.zeros(nt, int), np.zeros(nt, int), np.zeros((nt, 3))
     rows, rid, faces = {}, {}, {}
-    for i, (_, e, t) in enumerate(tris):
-        ws = [c[1] for c in t]
-        ps = np.array([c[0] for c in t])
-        N[i], T[i], W[i] = e["N"][ws].sum(0), e["T"][ws].sum(0), e["W"][ws].sum()
-        area[i] = 0.5 * np.linalg.norm(np.cross(ps[1] - ps[0], ps[2] - ps[0]))
-        n = N[i] / (np.linalg.norm(N[i]) + 1e-12)
-        if smap is not None:
-            ks[i] = np.mean([smap.lit(p, n) for p in ps])
-        lid[i] = rid.setdefault(id(e["light"]), len(rid))
-        rows[lid[i]] = e["light"]
-        p = e["probe_of"](tuple(ps.mean(0)))
+    # vectorised per mesh entry (was one numpy call chain per triangle: 68 s of Firelink's export); every element is
+    # computed with the same operations in the same order as before (row sums ((a + b) + c), np.cross, the vector norm
+    # per row), so the clusters and textures are unchanged
+    WS = np.array([[c[1] for c in t] for _, _, t in tris], np.int64).reshape(-1, 3)
+    PS = np.array([[c[0] for c in t] for _, _, t in tris], np.float64).reshape(-1, 3, 3)
+    ent, eix = {}, np.empty(nt, np.int64)
+    for i, (_, e, _) in enumerate(tris):
+        eix[i] = ent.setdefault(id(e), (len(ent), e))[0]
+    for k, e in ent.values():
+        sel = np.nonzero(eix == k)[0]
+        w = WS[sel]
+        N[sel] = e["N"][w[:, 0]] + e["N"][w[:, 1]] + e["N"][w[:, 2]]
+        T[sel] = e["T"][w[:, 0]] + e["T"][w[:, 1]] + e["T"][w[:, 2]]
+        W[sel] = e["W"][w[:, 0]] + e["W"][w[:, 1]] + e["W"][w[:, 2]]
+        lid[sel] = rid.setdefault(id(e["light"]), len(rid))
+        rows[lid[sel[0]]] = e["light"]
+        alb[sel] = [dsr_light.srgb_lin(a) for a in e["alb"]]
+    C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
+    norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
+    area[:] = [0.5 * norm(c) for c in C]
+    Nn = N / (np.array([norm(v) for v in N]).reshape(-1, 1) + 1e-12)
+    if smap is not None:
+        k3 = smap.lit_many(PS.reshape(-1, 3), np.repeat(Nn, 3, axis=0)).reshape(-1, 3)
+        ks[:] = (k3[:, 0] + k3[:, 1] + k3[:, 2]) / 3
+    cen = ((PS[:, 0] + PS[:, 1] + PS[:, 2]) / 3).tolist()
+    for i, (_, e, _) in enumerate(tris):
+        p = e["probe_of"](tuple(cen[i]))
         pid[i] = p if p is not None else -1
         if pid[i] not in faces and pid[i] in probes:
             faces[pid[i]] = np.array(probes[pid[i]], np.float64)
-        alb[i] = [dsr_light.srgb_lin(a) for a in e["alb"]]
     N, T, B = _frames(N, T, np.where(W < 0, -1.0, 1.0))
     tri = dict(N=N, T=T, B=B, k=ks, alb=alb, lid=lid, pid=pid, rows=rows, probes=faces)
     # check the vectorised light against dsr_light (same row / probe, random normals)

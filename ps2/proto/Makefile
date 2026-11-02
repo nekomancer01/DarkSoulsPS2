@@ -297,7 +297,7 @@ MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 $(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
-		$(TS)/native/simplify.c.sum $(TS)/emevd.py.sum \
+		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(AREA_SIG) $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json
 	@mkdir -p $(@D)
 	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \

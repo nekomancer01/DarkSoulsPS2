@@ -260,15 +260,55 @@ def draw_banks(game, area):
     return out
 
 
+_GEOM = []
+
+
+def geom_lib():
+    """tools/native/libgeom.so (geom.c: ShadowMap's rasteriser and PCF lookup, export_map's nearest-navmesh search;
+    same results as their numpy paths to the bit),
+    built on first use like libsimplify.so; None when it cannot be built (numpy path). GEOM_NATIVE=0: numpy."""
+    if not _GEOM:
+        L = None
+        if os.environ.get("GEOM_NATIVE", "1") != "0":
+            native = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
+            src, so = os.path.join(native, "geom.c"), os.path.join(native, "libgeom.so")
+            try:
+                if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
+                    import subprocess, tempfile
+                    fd, tmp = tempfile.mkstemp(suffix=".so", dir=native)
+                    os.close(fd)
+                    try:
+                        subprocess.run([os.environ.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fno-fast-math",
+                                        "-shared", "-fPIC", "-o", tmp, src], check=True, capture_output=True)
+                        os.replace(tmp, so)  # atomic: parallel exporters may build at once
+                    finally:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                L = ctypes.CDLL(so)
+                vp, i = ctypes.c_void_p, ctypes.c_int
+                L.shadow_raster.argtypes = [i, vp, vp, vp, vp, vp, vp, i, i, vp]
+                L.shadow_raster.restype = None
+                L.shadow_lit.argtypes = [i, vp, vp, i, i, ctypes.c_double, vp]
+                L.shadow_lit.restype = None
+                L.nearest_d2.argtypes = [i, vp, i, vp, vp]
+                L.nearest_d2.restype = i
+            except Exception as e:  # no compiler: the numpy path gives the same depth map, slower
+                print(f"geom: C helpers unavailable ({str(e)[:200]}), using numpy", flush=True)
+                L = None
+        _GEOM.append(L)
+    return _GEOM[0]
+
+
 class ShadowMap:
     """Static sun shadow: an orthographic depth map of the opaque map along the ShadowBank light direction (DSR draws
-    a shadow map along gFC_ShadowLightDir), rasterised with numpy; lit(p, n) = 0 (shadowed) .. 1 (lit), 3x3 PCF."""
+    a shadow map along gFC_ShadowLightDir), rasterised in C (tools/native/geom.c) or numpy (same depth map);
+    lit(p, n) = 0 (shadowed) .. 1 (lit), 3x3 PCF; lit_many for arrays of points."""
 
     def __init__(self, tris, to_light, focus, texel=0.25, bias=0.25, max_side=4096, batch=2_000_000):
-        """focus: world points the shadows matter around (navmesh vertices); the map covers their light-space box +
-        60 m and grows its texel to stay <= max_side; triangles are clipped to it and rasterised in batches of at
-        most `batch` samples, so memory stays ~0.5 GB whatever the area's size (a km-wide background triangle once
-        took an unclipped export to 24 GB)."""
+        """tris: (n, 3, 3) array-like of world corners. focus: world points the shadows matter around (navmesh
+        vertices); the map covers their light-space box + 60 m and grows its texel to stay <= max_side; triangles are
+        clipped to it and (numpy path) rasterised in batches of at most `batch` samples, so memory stays ~0.5 GB
+        whatever the area's size (a km-wide background triangle once took an unclipped export to 24 GB)."""
         import numpy as np
         self.np = np
         L = np.array(to_light, np.float64)
@@ -297,6 +337,20 @@ class ShadowMap:
         den = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
         ok = inside & (np.abs(den) > 1e-9)
         size = np.maximum(sw, sh)
+        lib = geom_lib()
+        if lib is not None:
+            # box side: the power of two the numpy batches below give each triangle (size in (s / 2, s])
+            side = np.ones_like(size)
+            while (side < size).any():
+                side = np.where(side < size, side * 2, side)
+            side = np.where(ok, side, 0)
+            cp = lambda x, t: np.ascontiguousarray(x, t)
+            Pc, Zc, dc = cp(P, np.float32), cp(T[..., 2], np.float32), cp(den, np.float32)
+            xc, yc, sc = cp(x0, np.int32), cp(y0, np.int32), cp(side, np.int32)
+            lib.shadow_raster(len(Pc), Pc.ctypes.data, Zc.ctypes.data, dc.ctypes.data, xc.ctypes.data, yc.ctypes.data,
+                              sc.ctypes.data, int(W), int(H), D.ctypes.data)
+            self.D = D.reshape(H, W)
+            return
         s = 1
         smax = int(size[ok].max(initial=1))
         while True:
@@ -335,6 +389,36 @@ class ShadowMap:
                 X, Y = xi + dx, yi + dy
                 if 0 <= X < self.W and 0 <= Y < self.H and self.D[Y, X] > q[2] + self.bias:
                     tot += 1
+        return 1 - tot / 9
+
+    def lit_many(self, P, N):
+        """lit() for (n, 3) points and normals at once -> (n,) float64"""
+        np = self.np
+        P, N = np.asarray(P, np.float64).reshape(-1, 3), np.asarray(N, np.float64).reshape(-1, 3)
+        if not len(P):
+            return np.zeros(0)
+        q = (P + 0.1 * N) @ self.B.T
+        Q = np.empty_like(q)
+        Q[:, :2] = (q[:, :2] - self.lo) / self.texel
+        Q[:, 2] = q[:, 2]
+        lib = geom_lib()
+        if lib is not None:
+            Q = np.ascontiguousarray(Q)
+            out = np.empty(len(Q))
+            D = np.ascontiguousarray(self.D, np.float32)
+            lib.shadow_lit(len(Q), Q.ctypes.data, D.ctypes.data, int(self.W), int(self.H), float(self.bias),
+                           out.ctypes.data)
+            return out
+        xi, yi = Q[:, 0].astype(np.int64), Q[:, 1].astype(np.int64)  # int(): towards zero, as lit()
+        d = Q[:, 2] + self.bias
+        tot = np.zeros(len(Q), np.int64)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                X, Y = xi + dx, yi + dy
+                ok = (X >= 0) & (X < self.W) & (Y >= 0) & (Y < self.H)
+                v = np.full(len(Q), -np.inf)
+                v[ok] = self.D[Y[ok], X[ok]]
+                tot += v > d
         return 1 - tot / 9
 
 
