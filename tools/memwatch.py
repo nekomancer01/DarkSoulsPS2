@@ -16,6 +16,9 @@ Disposable = command line matches DISPOSABLE and none of PROTECT. The user's app
 Steam, desktop) and the user's visible PCSX2 are never touched; headless test PCSX2 instances are (their flatpak
 instance ids are marked in /tmp/pcsx2-headless by tools/pcsx2-run.sh).
 Every action is logged to LOG with the top processes at that moment, and shown as a desktop notification.
+The service reloads itself when this file changes (a pull or merge): until 2026-11-02 the service kept running the
+code it started with, and the pre-PSI rule above (killed 4 export_map jobs on 11-02 with 20 GB idle in zram) stayed
+live for 17 h after its fix was merged. Paused jobs carry over through PAUSED.
 Usage: memwatch.py [--dry-run] [--once]
 """
 import json, os, re, signal, subprocess, sys, time
@@ -297,6 +300,8 @@ def main():
     signal.signal(signal.SIGTERM, bye)
     signal.signal(signal.SIGINT, bye)
     swapins = []
+    me = os.path.abspath(__file__)
+    my_mtime = os.stat(me).st_mtime_ns
     last_pause = last_kill = 0.0
     calm_since = last_resume = time.time()
     while True:
@@ -352,6 +357,15 @@ def main():
         if "--once" in sys.argv:
             break
         time.sleep(POLL)
+        try:
+            changed = os.stat(me).st_mtime_ns != my_mtime
+            if changed:
+                compile(open(me).read(), me, "exec")  # a half-written or broken file: keep running this code
+        except (OSError, SyntaxError):
+            changed = False
+        if changed:
+            log("memwatch: code changed on disk, reloading")
+            os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])  # paused jobs: saved above, loaded at start
 
 
 if __name__ == "__main__":
