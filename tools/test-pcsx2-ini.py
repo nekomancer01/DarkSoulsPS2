@@ -7,10 +7,15 @@ import os, sys
 SET = {
     "EmuCore": {"EnablePINE": "true", "PINESlot": None, "HostFs": "true", "EnableFastBoot": "true"},
     "UI": {"ConfirmShutdown": "false", "SetupWizardIncomplete": "false", "PauseOnFocusLoss": "false"},
-    # tools/test-run.py presses these on the Xvfb display (xdotool): single-frame GS dump into <data>/PCSX2/snaps
-    "Hotkeys": {"GSDumpSingleFrame": "Keyboard/F8"},
+    # tools/test-run.py presses these on the Xvfb display (xdotool): single-frame GS dump / screenshot into <data>/PCSX2/snaps
+    "Hotkeys": {"GSDumpSingleFrame": "Keyboard/F8", "Screenshot": "Keyboard/F9"},
     "Folders": {"Bios": None},
 }
+
+# PCSX2_GS="key=value,..." (A/B runs of display / upscaling settings): extra [EmuCore/GS] keys for this instance only,
+# e.g. PCSX2_GS="upscale_multiplier=3,deinterlace_mode=0,ScreenshotSize=1" (2.x ini names; deinterlace_mode 0 =
+# Automatic, ScreenshotSize 1 = F9 screenshots at internal resolution)
+GS = os.environ.get("PCSX2_GS", "")
 
 
 # TURBO=1 (tools/test-run.py --turbo): no speed limit, for functional tests (crossings, soaks) that need no real-time
@@ -28,6 +33,9 @@ def main():
         SET["Framerate"] = {"NominalScalar": "0" if TURBO == "1" else TURBO}
         SET["EmuCore/GS"] = {"VsyncEnable": "false"}
     SET["Folders"]["Bios"] = os.path.join(user, "bios")
+    for kv in filter(None, GS.split(",")):
+        k, v = kv.split("=", 1)
+        SET.setdefault("EmuCore/GS", {})[k.strip()] = v.strip()
     secs, order, cur = {}, [], None
     for line in open(os.path.join(user, "inis", "PCSX2.ini"), encoding="utf-8"):
         line = line.rstrip("\n")
