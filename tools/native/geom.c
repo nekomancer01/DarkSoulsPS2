@@ -15,6 +15,17 @@
 
    Only malloc / free / qsort from libc: builds unchanged as a Pyodide side module (tools/native/build-wasm.sh). */
 #include <stdlib.h>
+/* out of memory (the in-browser converter's WebAssembly heap has a cap): trap ("RuntimeError: unreachable" in
+ * Pyodide, SIGILL natively) instead of writing through NULL, which in WebAssembly is address 0 and corrupts the
+ * interpreter's memory (Pyodide then fails later with "Unexpected rtype undefined") */
+static void *alloc_ok(void *p, size_t n) {
+    if (!p && n)
+        __builtin_trap();
+    return p;
+}
+#define malloc(n) alloc_ok(malloc(n), (n))
+#define calloc(a, b) alloc_ok(calloc(a, b), (a) * (b))
+#define realloc(p, n) alloc_ok(realloc(p, n), (n))
 /* P: n x 3 x 2 texel coordinates, Z: n x 3 depths, den: n, x0 / y0: box corner, s: box side (power of two, 0 = skip).
    D: H x W, filled with -1e9 by the caller. */
 void shadow_raster(int n, const float *P, const float *Z, const float *den, const int *x0, const int *y0,

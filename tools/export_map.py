@@ -166,6 +166,11 @@ CHUNK_GRASS = 16  # foliage chunk: flags bits 8-15 triangles per tuft, 16-23 / 2
 
 def rss(stage):
     """Peak / current RSS at an export stage (the 24 GB Undead Burg run, 2026-10-31: find what grows)"""
+    if sys.platform == "emscripten":  # in-browser converter: the wasm heap (it never shrinks, 4 GB at most)
+        import js
+        if hasattr(js, "heapMB"):
+            print(f"mem {stage}: wasm heap {js.heapMB():.0f} MB", flush=True)
+            return
     st = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "VmHWM")))
     print(f"mem {stage}: rss {int(st['VmRSS'].split()[0]) >> 10} MB, peak {int(st['VmHWM'].split()[0]) >> 10} MB",
           flush=True)
@@ -1063,9 +1068,30 @@ def gather(game, map_id):
 
     textures, tex_index, meshes = [], {}, []
     flvers, poses = {}, {}
+    # each FLVER is dropped after the last part that places it (with its gather caches): parsed FLVERs held to the
+    # end of the loop were 1.6 GB of Burg's 2.3 GB, past what a browser tab's converter can grow to (tools/pages)
+    last_use = {}
+    for pi, part in enumerate(M["parts"]):
+        if part["type"] in (0, 1):
+            last_use[part["model"] if part["type"] == 0 else (part["model"], not keep(*part["pos"]))] = pi
+    expire = {}
+    for k, pi in last_use.items():
+        expire.setdefault(pi, []).append(k)
+
+    def evict(k):
+        F = flvers.pop(k, None)
+        if not F:
+            return
+        lists = {id(m["verts"]["pos"]) for m in F["meshes"]}
+        for dk in [dk for dk, e in _DEDUP.items() if id(e[1]) in lists]:
+            del _DEDUP[dk]
+        for i in lists:
+            _VERT_NP.pop(i, None)
     export_normal.SRC.update(dds=dds, probes=probes, near=near)
     switched = emevd.switched_entities(game, map_id) if EVENT_PARTS else set()
     for pi, (part, (lid, fid)) in enumerate(zip(M["parts"], ids)):
+        for k in expire.get(pi - 1, ()):
+            evict(k)
         if part["type"] in (0, 1) and not area_mod.drawn(vis, part["draw_groups"]):
             continue  # never drawn from the area's region
         far = part["type"] == 1 and not keep(*part["pos"])
