@@ -14,6 +14,8 @@ These rules have no exceptions. A change that breaks one is rejected however goo
 - **No game files, and nothing derived from them.** That covers textures, models, maps, collision, animations,
   sounds, fonts, params, scripts (ESD, EMEVD, Lua bytecode), the exe and dumps of it, and exported `.bin`/`.pak`
   files. It also covers C headers or tables generated from game data, and screenshots or videos of the game.
+  The one exception is the README screenshots in `docs/screenshots/`: a few JPEGs of the port running in PCSX2,
+  each under 256 KB, added only when the maintainer asks (`tools/ci/hygiene.py` allows exactly these).
   Everything game-derived is generated at build time from the user's copy into the build/asset directory, which is
   git-ignored.
 - **No copied decompiled code.** Describe the behaviour in your own words and implement it yourself. You may cite

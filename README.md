@@ -19,15 +19,24 @@ This is an early prototype, not a playable game yet.
 | Saving and loading on the memory card | Sound and music, cutscenes |
 | HUD (health, stamina, Estus, souls), 30 fps in PCSX2 | Full menus |
 
+### Screenshots
+
+The port running in PCSX2:
+
+| Firelink Shrine bonfire | Firelink Shrine graveyard |
+|---|---|
+| ![The Warrior standing by the Firelink Shrine bonfire, with the HUD showing health, stamina and Estus Flasks](docs/screenshots/firelink-bonfire.jpg) | ![The Warrior in the Firelink Shrine graveyard among the gravestones](docs/screenshots/firelink-graveyard.jpg) |
+
 `notes/PLAYTHROUGH.md` lists every system still needed for a full playthrough, with its status.
 `notes/TECH_DEBT.md` lists every known way the port differs from the original game.
 
 ## Legal note
 
 This repository contains **no game data**: no textures, models, maps, sounds, text, scripts, params or executable
-code from Dark Souls Remastered, and nothing derived from them. It contains no decompiled code either. You need your
-own legally bought copy of Dark Souls Remastered for PC (Steam). The build reads that copy and writes every
-game-derived file into `build/`, which is git-ignored. **Never share or commit anything in `build/`.**
+code from Dark Souls Remastered, and nothing derived from them, apart from the two screenshots above. It contains no
+decompiled code either. You need your own legally bought copy of Dark Souls Remastered for PC (Steam). The build
+reads that copy and writes every game-derived file into `build/`, which is git-ignored. **Never share or commit
+anything in `build/`.**
 
 Dark Souls is a trademark of FromSoftware / Bandai Namco. This project isn't affiliated with or endorsed by them.
 `notes/EXE_FINDINGS.md` records only facts about the game's executable (addresses, offsets, field names, constants,

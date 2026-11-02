@@ -90,6 +90,8 @@ gmon.out
 *.gif
 *.mp4
 *.bmp
+# The one exception: the README screenshots (AGENTS.md section 1)
+!/docs/screenshots/*.jpg
 
 # Logs, scratch, environments
 *.log
