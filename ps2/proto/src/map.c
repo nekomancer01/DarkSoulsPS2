@@ -37,7 +37,7 @@ typedef struct {
     unsigned char pl_begin, pl_rgb[3], pl_end;
     unsigned char env_up[3], env_down[3], spec_i[3];  /* specular (vu1skin): env reflection, specular light, 0x80 = 1.0 */
     signed char spec_dir[3];                          /* specular light direction x 127 (world) */
-    unsigned pad;
+    unsigned char dof_begin, dof_end, dof_mul, pad;   /* far depth of field: DofBank row, metres / % (0: none) */
 } FogRow;
 _Static_assert(sizeof(FogRow) == 48, "FogRow");
 /* VU1 batch: unindexed quantised streams pos s16x3 (world = org + n x step), st u16x2 (normalized x 4096, or x 1024
@@ -318,6 +318,15 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
         env_up[c] = fog_now[15 + c], env_down[c] = fog_now[18 + c], spec_i[c] = fog_now[21 + c];
         spec_dir[c] = l > 0 ? fog_now[24 + c] / l : c == 1;
     }
+}
+
+int map_far_dof(float *begin, float *end, float *mul)
+{
+    if (!pfog_rows)
+        return 0;
+    const FogRow *r = &pfog_row[fog_area];
+    *begin = r->dof_begin, *end = r->dof_end, *mul = r->dof_mul * 0.01f;
+    return r->dof_mul > 0 && r->dof_end > r->dof_begin;
 }
 
 /* DSR's fog (FRPG shaders, CalcGetFogCoef / CalcGetFogCol): density = saturate(max * saturate((z - begin) /

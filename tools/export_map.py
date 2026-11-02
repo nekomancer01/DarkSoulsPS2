@@ -32,7 +32,7 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
           nav_verts f32[3]  nav_tris u16[3]
   fog     u32 rows, collision tris, 0, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
-          light, specular terms; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
+          light, specular terms, far depth of field; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
           MSB collision part)
 DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell table offset (after the fog offset);
           the chunk table holds the resident chunks grouped by cell (sky chunks last); flags bit 6 = coarse level
@@ -505,7 +505,8 @@ def fog_section(game, map_id, main_fog):
     u8 ambient r, g, b, 0; u8 sun r, g, b, 0; s8 sun direction x, y, z (x 127), u8 point light begin (0.1 m);
     u8 point light r, g, b (added to the ambient at full strength), u8 point light end (0.1 m); 48 B: u8 env
     reflection up r, g, b, down r, g, b, specular light r, g, b (0x80 = 1.0); s8 specular light direction x, y, z
-    (x 127); 4 pad}; u8 row per triangle."""
+    (x 127); u8 far depth of field begin, end (m), strength (%), 0}; u8 row per triangle. The DoF bytes: DofBank
+    row of the collision part's DofID (farDofBegin / farDofEnd / farDofMul; zero: none), for main.c's far blur."""
     import export_collision
     msb = souls.read(f"{game}/map/MapStudio/{map_id}.msb")
     M = souls.msb1(msb)
@@ -515,7 +516,7 @@ def fog_section(game, map_id, main_fog):
     spec_probes = dsr_light.load_spec_probes(game, map_id)
     coll = {p["name"]: p for p in M["parts"] if p["type"] == 5}
     key_of = lambda p: (p["fog_id"] if p["fog_id"] in fog_rows else main_fog, p["light_id"], p["tone_map_id"],
-                        p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")))
+                        p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")), p["dof_id"])
     subs = export_collision.area_collision(game, map_id)[0]  # collision.bin's triangles (area region, tools/area.py)
     pts = [p for s in subs for t in s["tris"] for p in t]
     lo = [min(p[k] for p in pts) for k in range(3)]
@@ -532,14 +533,14 @@ def fog_section(game, map_id, main_fog):
                 count[k] = count.get(k, 0) + 1
     keys = [k for k in count if k is not None]
     if not keys:
-        keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1)]
+        keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1, -1)]
     main = max(keys, key=lambda k: (k[0] == main_fog, count.get(k, 0)))
     order = [main] + sorted((k for k in keys if k != main), key=lambda k: -count.get(k, 0))
     assert len(order) <= 255, "too many draw-param sets"
     tone, chars, pls, specs = {}, {}, {}, {}
     a = dsr_light.srgb_lin(CHAR_ALB)
     for k in order:
-        f, l, t, c, lant, probe = k
+        f, l, t, c, lant, probe, _ = k
         row = light_rows.get(l, light_rows[min(light_rows)])
         tone[k] = area_tone(tone_rows, banks, t, c)
         if k != main:  # areas the map bake did not adapt to (cell, elevator): their own exposure
@@ -571,9 +572,12 @@ def fog_section(game, map_id, main_fog):
         amb, sun, L = chars[k]
         pb, prgb, pe = pls[k]
         eu, ed, si, ls = specs[k]
-        out += struct.pack("<3f4B4B4B3bB4B3B3B3B3b4x", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0, *fog_rgb(v, tone[k]), 0,
+        dof = banks["Dof"].get(k[6])
+        dof = [min(255, max(0, round(x))) for x in (dof["farDofBegin"], dof["farDofEnd"], dof["farDofMul"])] if dof \
+            else [0, 0, 0]
+        out += struct.pack("<3f4B4B4B3bB4B3B3B3B3b3Bx", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0, *fog_rgb(v, tone[k]), 0,
                            *[min(255, round(0x80 * x)) for x in amb], 0, *[min(255, round(0x80 * x)) for x in sun], 0,
-                           *[max(-127, min(127, round(127 * x))) for x in L], pb, *prgb, pe, *eu, *ed, *si, *ls)
+                           *[max(-127, min(127, round(127 * x))) for x in L], pb, *prgb, pe, *eu, *ed, *si, *ls, *dof)
     return out + tri_row, [(k, fog_rows[k[0]], chars[k] + (pls[k], specs[k])) for k in order], tone
 
 
@@ -1643,7 +1647,7 @@ def main():
     print(f"{map_id}: {len(meshes)} meshes -> {len(chunks)} chunks, {len(tris)} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")
-    print("area rows (fog, light, tone, tone correct, point light, probe): " + ", ".join(
+    print("area rows (fog, light, tone, tone correct, point light, probe, dof): " + ", ".join(
         f"{k} (fog {v['fogBeginZ']}..{v['fogEndZ']} m {v['degRotW']}% rgb {fog_rgb(v, gain[k])}, char amb "
         f"{[round(128 * x) for x in ch[0]]} sun {[round(128 * x) for x in ch[1]]}, player light {ch[3][1]} "
         f"{ch[3][0] / 10}..{ch[3][2] / 10} m, env up {ch[4][0]} down {ch[4][1]} spec {ch[4][2]})" for k, v, ch in fog_info))

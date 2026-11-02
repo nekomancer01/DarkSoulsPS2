@@ -167,9 +167,100 @@ static void display_init(GSGLOBAL *gs)
 #endif
 #define FIELD_TICKS (294912000u / 60)  /* EE ticks per NTSC field (59.94 Hz, rounded) */
 
+/* Far depth of field (DSR DofBank, map_far_dof: blur = mul x saturate((z - begin) / (end - begin)) of view depth z;
+ * the linear ramp is ASSUMED, TECH_DEBT render-13). DSR blurs the distance (Firelink row 20: 10 -> 100 m, 60 %), which
+ * is what keeps its far walls steady; drawn sharp at 512 px, 2-3 px wide pillar faces step and crawl as the camera
+ * moves (render-12). Done in flip() after the sharp copy, as DOF_BANDS depth bands, farthest first: the draw
+ * buffer's alpha bit marks pixels beyond the band's depth (a Z-tested sprite writing alpha only: GEQUAL, larger Z is
+ * nearer, so a sprite at the band's Z passes where the scene is farther), the mark is point-copied into the
+ * display buffer's alpha, and two samples of the draw buffer, offset +-DOF_DX px / +-1 display line, are
+ * blended over the marked pixels (DATE). The marks only grow from band to band, so a pixel beyond band i gets bands
+ * N..i: per-band strengths are set so the product reaches the ramp's value. The HUD writes the nearest Z (hud.c),
+ * so it is never marked. */
+#ifndef DOF_BANDS
+#define DOF_BANDS 3
+#endif
+#define DOF_DX 1  /* px: horizontal offset of the blur taps, whole texels (half-texel offsets band in PCSX2; ASSUMED, judged
+                   * against the DSR frame at the render-12 spot) */
+#define DOF_TEXA 0x3B
+
+static int dof_regs(GSGLOBAL *gs, u64 *p)
+{
+    float b0, b1, mul;
+    if (!map_far_dof(&b0, &b1, &mul))
+        return 0;
+    int n = 0;
+#define REG(v, a) (*p++ = (v), *p++ = (a), n++)
+#define FULL(z)                                                                    \
+    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), 0x05),                         \
+     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), 0x05))
+    const u64 draw_a = GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    const u64 disp_a = GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    const u64 tex = GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 1, 1, 0, 0, 0, 0, 0);
+    /* clear the draw buffer's alpha bits (Z always, not written) */
+    REG(draw_a, 0x4C);
+    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
+    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), 0x01);
+    FULL(0);
+    REG(GS_SETREG_TEXA(0, 0, 0x80), DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
+    REG(0, 0x45);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
+    for (int i = DOF_BANDS; i >= 1; i--) {
+        /* a pixel between bands i and i + 1 gets bands 1..i: 1 - prod (1 - a_j) = mul x i / N */
+        float z = b0 + (b1 - b0) * (i - 0.5f) / DOF_BANDS, s = mul * i / DOF_BANDS, s0 = mul * (i - 1) / DOF_BANDS;
+        float a = 1 - (1 - s) / (1 - s0);
+        float x = 1 - sqrtf(1 - a);  /* two taps blended in turn: 1 - (1 - x)^2 = a */
+        int fix = (int)(x * 128 + 0.5f);
+        /* mark: alpha 1 where the scene lies beyond z */
+        REG(draw_a, 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), 0x01);
+        FULL((u32)(65535.0f * R_NEAR / z));
+        REG(0, 0x3F);  /* TEXFLUSH: the marks are read back as texture */
+        /* marks into the display buffer's alpha (point sampled, line 2y) */
+        REG(disp_a, 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
+        REG(tex, 0x06);
+        REG(GS_SETREG_TEX1(0, 0, 0, 0, 0, 0, 0), 0x14);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+        for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
+            REG(GS_SETREG_UV((x0 << 4) + 8, 8), 0x03);
+            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
+            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), 0x03);
+            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+        }
+        /* two offset bilinear taps over the marked pixels: Cd + (Cs - Cd) x fix / 128 */
+        REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
+        REG(GS_SETREG_TEST(0, 0, 0, 0, 1, 1, 1, 1), 0x47);
+        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
+        REG(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
+        REG(GS_SETREG_ALPHA(0, 1, 2, 1, fix), 0x42);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0), 0x00);
+        for (int t = 0; t < 2; t++) {
+            /* the sprite moves, not its UV (UV is unsigned: a negative start wraps): tap 0 shows texel x - DOF_DX,
+             * lines 2y - 2 / 2y - 1 at (x, y), tap 1 texel x + DOF_DX, lines 2y + 2 / 2y + 3; the sharp copy has
+             * x, lines 2y / 2y + 1. The uncovered edge column / line keeps the sharp copy. */
+            int dx = (t ? -DOF_DX : DOF_DX) << 4, dy = t ? -16 : 16;
+            for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
+                REG(GS_SETREG_UV(x0 << 4, 16), 0x03);
+                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), 0x05);
+                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), 0x03);
+                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), 0x05);
+            }
+        }
+    }
+    REG(GS_SETREG_TEXA(0x80, 0, 0x80), DOF_TEXA);  /* gsKit's */
+    REG(1, 0x45);  /* DTHE back on (main: gs->Dithering) */
+    REG(gs->PrimAlpha, 0x42);
+#undef FULL
+#undef REG
+    return n;
+}
+
 static void flip(GSGLOBAL *gs)
 {
-    static u64 pk[2 * 64] __attribute__((aligned(64)));
+    static u64 pk[2 * 64 + 2 * 128 * DOF_BANDS] __attribute__((aligned(64)));
     static unsigned last_flip;
     gsKit_vsync_wait();
     for (int f = 1; f < FPS_CAP_FIELDS && cpu_ticks() - last_flip < (unsigned)(f * FIELD_TICKS + FIELD_TICKS / 2); f++)
@@ -196,6 +287,10 @@ static void flip(GSGLOBAL *gs)
         REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
         REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), 0x03);
         REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+    }
+    {
+        int k = dof_regs(gs, p);
+        p += 2 * k, n += k;
     }
     /* back to the draw buffer and the state the frame expects (main's TEST, repeat wrapping) */
     REG(GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
