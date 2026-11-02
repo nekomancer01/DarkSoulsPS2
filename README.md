@@ -44,6 +44,11 @@ formulas), each with its source.
 
 ## Quick start
 
+**Just want to play?** The project page (https://nekomancer01.github.io/DarkSoulsPS2/) checks your game copy in the
+browser and gives you one command, `tools/build-iso.sh`, that builds a playable ISO of the latest `main` on your PC
+in a Docker or Podman container (the ps2dev toolchain image, `tools/iso-builder/Dockerfile`). Nothing is uploaded.
+The steps below are the full developer setup.
+
 Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or a Linux VM.
 
 ### 1. What you need

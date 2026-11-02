@@ -1,0 +1,54 @@
+# GitHub Pages: the "build your own ISO" page (tools/pages/). Every push to main redeploys it, so the page and the
+# build-iso.sh it hands out always point at the newest main commit. The site is code and file hashes only: no game data
+# exists in this repository or this job (AGENTS.md section 1). Needs Settings > Pages > Source: GitHub Actions.
+name: Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  # The game-free ELF (make -C ps2/proto elf): game values load from the player's own packs at boot (src/gamedata.c)
+  elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: ps2dev/ps2dev:v2.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: apk add --no-cache make python3
+      - run: make -C ps2/proto elf BUILD="$PWD/elf-build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proto-elf
+          path: elf-build/proto.elf
+  build:
+    needs: elf
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: proto-elf
+          path: elf
+      - run: python3 -I tools/pages/build.py _site --elf elf/proto.elf
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

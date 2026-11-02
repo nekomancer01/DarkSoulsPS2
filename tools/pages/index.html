@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dark Souls PS2 ISO builder</title>
+<meta name="description" content="Build a playable PS2 disc image of the Dark Souls PS2 port from your own copy of Dark Souls Remastered, on your own PC.">
+<!-- tools/pages/build.py copies this page and app.js into the GitHub Pages site, next to build.json and build-iso.sh -->
+<style>
+:root {
+  --bg: #f6f4ef; --panel: #fffdf8; --ink: #23201b; --muted: #6b645a; --line: #ddd6c9;
+  --accent: #9a5b13; --accent-ink: #fff; --ok: #2f7a3a; --bad: #b3261e; --warn: #8a6100; --code: #efeae0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15130f; --panel: #1e1b16; --ink: #ece6da; --muted: #a39a8b; --line: #3a342b;
+    --accent: #e0a458; --accent-ink: #1a1408; --ok: #7cc787; --bad: #f08a80; --warn: #e6c062; --code: #2a261f;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15130f; --panel: #1e1b16; --ink: #ece6da; --muted: #a39a8b; --line: #3a342b;
+  --accent: #e0a458; --accent-ink: #1a1408; --ok: #7cc787; --bad: #f08a80; --warn: #e6c062; --code: #2a261f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 820px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font: 600 2rem/1.2 Georgia, "Times New Roman", serif; margin: 0 0 8px; letter-spacing: .01em; }
+h2 { font: 600 1.25rem/1.3 Georgia, "Times New Roman", serif; margin: 0 0 12px; display: flex; gap: 10px; align-items: baseline; }
+h2 .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+p { margin: 0 0 12px; }
+a { color: var(--accent); }
+.lead { color: var(--muted); font-size: 1.05rem; margin-bottom: 24px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin: 0 0 20px; }
+.privacy { border-left: 4px solid var(--ok); }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: .95rem; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; overflow-wrap: anywhere; }
+button, .btn { font: inherit; background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 9px 16px;
+  cursor: pointer; text-decoration: none; display: inline-block; }
+button.secondary, .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+label { display: block; font-size: .9rem; color: var(--muted); margin: 12px 0 4px; }
+input[type=text], select { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.row > div { flex: 1 1 200px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.tabs button { background: transparent; color: var(--ink); border: 1px solid var(--line); padding: 6px 14px; }
+.tabs button[aria-selected=true] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+pre { background: var(--code); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 8px 0; font-size: .88rem; white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .9em; }
+.cmd { position: relative; }
+.cmd button { position: absolute; top: 6px; right: 6px; padding: 4px 10px; font-size: .85rem; }
+.cmd pre { padding-right: 76px; }
+ul, ol { margin: 0 0 12px; padding-left: 22px; }
+table { width: 100%; border-collapse: collapse; font-size: .88rem; margin-top: 12px; }
+td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+td.s { white-space: nowrap; width: 1%; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+.verdict { margin-top: 12px; font-weight: 600; }
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--accent); }
+.small { font-size: .88rem; color: var(--muted); }
+footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top: 32px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Build Dark Souls PS2 from your own game</h1>
+  <p class="lead">This page turns your copy of <b>Dark Souls Remastered</b> (Steam, PC) into a disc image of the PS2 port
+  that plays in PCSX2. The conversion runs on your computer. Your game files never leave it.</p>
+
+  <section class="panel privacy">
+    <h2>Nothing is uploaded</h2>
+    <p>The check in step 1 reads a few game files inside your browser and compares their SHA-256 hashes with the versions the
+    port is tested on. Step 2 runs a script on your PC that reads the game folder read-only and writes the ISO next to you.
+    This site hosts code only: no game data, and nothing made from it. The ISO you build is made from your copy of the game,
+    so keep it to yourself.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Latest build</h2>
+    <dl class="meta" id="build"><dt>Loading</dt><dd>…</dd></dl>
+  </section>
+
+  <section class="panel">
+    <h2><span class="n">1</span> Check your game copy</h2>
+    <p>Pick the folder that holds <code>DarkSoulsRemastered.exe</code>. In Steam: right-click the game, then
+    <i>Manage → Browse local files</i>. Only the 15 files the converter depends on are read, and only to hash them.</p>
+    <div class="row" style="align-items:center">
+      <button id="pick">Choose game folder</button>
+      <input id="pickfallback" type="file" webkitdirectory directory hidden>
+      <span class="small" id="pickstatus"></span>
+    </div>
+    <div id="verdict" class="verdict" aria-live="polite"></div>
+    <table id="hashes" hidden><tbody></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2><span class="n">2</span> Build the ISO</h2>
+    <div class="tabs" role="tablist" id="ostabs">
+      <button role="tab" data-os="linux" aria-selected="true">Linux</button>
+      <button role="tab" data-os="windows" aria-selected="false">Windows (WSL)</button>
+      <button role="tab" data-os="mac" aria-selected="false">macOS</button>
+    </div>
+    <div id="req"></div>
+    <div class="row">
+      <div>
+        <label for="game">Game folder <span id="gamehint"></span></label>
+        <input id="game" type="text" spellcheck="false" autocomplete="off">
+      </div>
+      <div>
+        <label for="engine">Build with</label>
+        <select id="engine">
+          <option value="auto">Docker or Podman (whichever is installed)</option>
+          <option value="docker">Docker</option>
+          <option value="podman">Podman</option>
+          <option value="native">My own ps2dev toolchain (README setup)</option>
+        </select>
+      </div>
+    </div>
+    <p class="small" style="margin-top:12px">Paste this into a terminal<span id="termhint"></span>:</p>
+    <div class="cmd"><pre><code id="cmd"></code></pre><button class="secondary" id="copy">Copy</button></div>
+    <p class="small">It downloads <a href="build-iso.sh" download>build-iso.sh</a> (read it first if you like: it is short), which
+    fetches the port's source at the commit above, builds a container with the PS2 toolchain the first time, converts your
+    game data and writes <code>DarkSoulsPS2.iso</code> in the current folder. The first run takes several minutes and needs
+    about 6 GB of free RAM. Later runs reuse the conversion cache in <code>~/.cache/darksoulsps2</code> and only redo what
+    the new build changes.</p>
+  </section>
+
+  <section class="panel">
+    <h2><span class="n">3</span> Play</h2>
+    <ol>
+      <li>Install <a href="https://pcsx2.net/">PCSX2</a> 2.x and set it up with a BIOS dumped from your own PS2.</li>
+      <li>Open <code>DarkSoulsPS2.iso</code> (<i>System → Start File</i>, or drag it onto the window). HostFs is not needed for the ISO.</li>
+      <li>Controls: left stick moves, right stick turns the camera, Circle rolls (hold to dash), R1 attacks, Cross acts,
+      Start opens the menu.</li>
+    </ol>
+    <p class="small">This is an early prototype: Firelink Shrine, Undead Burg and the Undead Asylum block, the Warrior, enemies
+    and event scripts. See <a id="readme" href="#">README</a> for what works and what doesn't yet.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Why a script and not just this page?</h2>
+    <p>Converting runs the port's Python exporters, compiles small native helpers, compiles the PS2 engine (part of it is
+    generated from your game data, so a ready-made ELF can't be shared) and packs a disc image. In a browser that would mean
+    running GCC for the PS2 and a 6 GB Python job inside WebAssembly, which is limited to 4 GB of memory and has no PS2
+    cross-compiler. The page does what a browser can do safely (checking your copy) and hands the rest to one local
+    command that runs the same build the developers use.</p>
+    <details><summary>Prefer to do it by hand?</summary>
+      <p style="margin-top:8px">Clone the repository and follow the README's quick start, then <code>make -C ps2/proto iso</code>.
+      Or run <code>tools/build-iso.sh</code> from the checkout: it builds that checkout instead of downloading one.</p>
+    </details>
+  </section>
+
+  <footer>Dark Souls is a trademark of FromSoftware / Bandai Namco. This fan project is not affiliated with or endorsed by them.
+  You need your own legally bought copy of Dark Souls Remastered for PC.</footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

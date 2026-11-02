@@ -34,6 +34,7 @@
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
 #include "bonfire.h"  /* A4: rest, death, bloodstain */
+#include "gamedata.h"  /* player / combat / progress values from c0000.pak (the ELF holds no game data) */
 #include <unistd.h>
 
 #define PI 3.14159265f
@@ -337,6 +338,11 @@ int main(int argc, char **argv)
 #ifdef IDLE_DEMO
     test_opts |= TEST_DEMO;  /* demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO): the idle demo without a script */
 #endif
+    if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
+        printf("DSRPROTO gamedata: missing or from another build; stopping\n");
+        for (;;)
+            SleepThread();
+    }
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
     unsigned t_load = cpu_ticks();

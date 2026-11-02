@@ -319,7 +319,7 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
         /* the pose at t (no crossfade: attack windows start long after the 0.15 s blend), R_Weapon to world as
          * model_draw places the model: rotate by yaw + pi (model faces -Z), translate to the feet */
         static BoneLocal pose[MAX_BONES];
-        static M34 world[SK_BONES];
+        static M34 world[SK_BONES_MAX];  /* gamedata_init refuses more bones */
         model_sample(model_anim(anim_id), t, 0, pose);
         float c = cosf(p->yaw + 3.14159265f), s = sinf(p->yaw + 3.14159265f);
         M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, p->pos.x, p->pos.y, p->pos.z}};

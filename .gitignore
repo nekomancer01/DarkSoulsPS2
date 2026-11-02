@@ -33,8 +33,6 @@
 /ps2/proto/data
 /ps2/proto/src/*.bin
 /ps2/proto/src/*.bin.static
-/ps2/proto/src/player_data.h
-/ps2/proto/src/combat_data.h
 /ps2/proto/src/c[0-9]*/
 /ps2/proto/src/m[0-9]*/
 /ps2/proto/obj-gprof/
