@@ -115,16 +115,21 @@ def _kmeans(px, pal, iters=10):
 
 
 def _nearest(rgb, pal):
-    """(N,3) colours -> index of the nearest palette entry (N): squared integer RGB distance, first entry on ties."""
+    """(N,C) colours -> index of the nearest palette entry (N): squared integer distance over the C channels (3 or 4),
+    first entry on ties."""
     import geom_native
     L = geom_native.lib()
     if L is not None and len(pal):  # integer distances: the C loop and numpy agree exactly
-        x = np.ascontiguousarray(np.asarray(rgb).astype(np.int32).reshape(-1, 3))
-        p = np.ascontiguousarray(np.asarray(pal).astype(np.int32).reshape(-1, 3))
+        x, p = np.asarray(rgb), np.asarray(pal)
+        ch = x.shape[-1]  # RGB, or RGBA (the soft path's mip 1 compares alpha too)
+        x = np.ascontiguousarray(x.astype(np.int32).reshape(-1, ch))
+        p = np.ascontiguousarray(p.astype(np.int32).reshape(-1, ch))
         out = np.empty(len(x), np.int64)
-        L.nearest_rgb(len(x), x.ctypes.data, len(p), p.ctypes.data, out.ctypes.data)
+        L.nearest_rgb(len(x), x.ctypes.data, len(p), p.ctypes.data, ch, out.ctypes.data)
         return out
-    d = ((rgb[:, None, :].astype(np.int32) - pal[None, :, :].astype(np.int32)) ** 2).sum(2)
+    # int64 squares: add_near marks transparent entries 1e6, whose square overflowed int32 (wrapped, so such an entry
+    # could win); same result as before for every in-range palette
+    d = ((rgb[:, None, :].astype(np.int32).astype(np.int64) - pal[None, :, :].astype(np.int32)) ** 2).sum(2)
     return d.argmin(1)
 
 

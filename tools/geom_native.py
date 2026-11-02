@@ -37,7 +37,7 @@ def lib():
                 L.shadow_lit.restype = None
                 L.nearest_d2.argtypes = [i, vp, i, vp, vp]
                 L.nearest_d2.restype = i
-                L.nearest_rgb.argtypes = [i, vp, i, vp, vp]
+                L.nearest_rgb.argtypes = [i, vp, i, vp, i, vp]
                 L.nearest_rgb.restype = None
             except Exception as e:  # no compiler: numpy paths, slower
                 print(f"geom: C helpers unavailable ({str(e)[:200]}), using numpy", flush=True)

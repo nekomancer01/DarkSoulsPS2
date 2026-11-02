@@ -153,17 +153,19 @@ int nearest_d2(int nq, const double *Q, int ns, double *S, double *out)
     return 0;
 }
 
-/* ---- nearest palette entry (tools/texmap.py _nearest): X (n x 3), P (k x 3) integer RGB; out[i] = the first entry
-   with the smallest squared distance, as numpy's argmin ---- */
-void nearest_rgb(int n, const int *X, int k, const int *P, long long *out)
+/* ---- nearest palette entry (tools/texmap.py _nearest): X (n x c), P (k x c) integer colours, c channels (3 or 4);
+   out[i] = the first entry with the smallest squared distance, as numpy's argmin ---- */
+void nearest_rgb(int n, const int *X, int k, const int *P, int c, long long *out)
 {
     for (int i = 0; i < n; i++) {
-        int r = X[3 * i], g = X[3 * i + 1], b = X[3 * i + 2], best = 0x7fffffff;
-        long long bi = 0;
+        const int *x = X + (long long)c * i;
+        long long bi = 0, best = -1;
         for (int j = 0; j < k; j++) {
-            int dr = r - P[3 * j], dg = g - P[3 * j + 1], db = b - P[3 * j + 2];
-            int d = dr * dr + dg * dg + db * db;
-            if (d < best)
+            const int *p = P + (long long)c * j;
+            long long d = 0;
+            for (int q = 0; q < c; q++)
+                d += (long long)(x[q] - p[q]) * (x[q] - p[q]);
+            if (best < 0 || d < best)
                 best = d, bi = j;
         }
         out[i] = bi;
