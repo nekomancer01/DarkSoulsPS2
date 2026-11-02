@@ -15,7 +15,8 @@ was met with 20 GB in zram, 0 on disk and nothing stalling.
 Disposable = command line matches DISPOSABLE and none of PROTECT. The user's apps (Claude, browser, RuneLite,
 Steam, desktop) and the user's visible PCSX2 are never touched; headless test PCSX2 instances are (their flatpak
 instance ids are marked in /tmp/pcsx2-headless by tools/pcsx2-run.sh).
-Every action is logged to LOG with the top processes at that moment, and shown as a desktop notification.
+Every action is logged to LOG with the top processes at that moment, and shown as a desktop notification (env
+MEMWATCH_NOTIFY=0: none).
 The service reloads itself when this file changes (a pull or merge): until 2026-11-02 the service kept running the
 code it started with, and the pre-PSI rule above (killed 4 export_map jobs on 11-02 with 20 GB idle in zram) stayed
 live for 17 h after its fix was merged. Paused jobs carry over through PAUSED.
@@ -244,6 +245,8 @@ def log(msg, ps=None):
 
 
 def notify(msg):
+    if os.environ.get("MEMWATCH_NOTIFY", "1") == "0":  # desktop notifications off (log and journal only)
+        return
     subprocess.run(["notify-send", "-a", "memwatch", "-u", "critical", "Memory watchdog", msg],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
