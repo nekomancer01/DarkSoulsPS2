@@ -33,12 +33,14 @@ T4_CONTRAST = 0.95  # luma standard deviation kept
 CT16_HUE, CT16_TINT, CT16_CHROMA = 1.5, 1.0, 0.02
 # Per-texture override (DDS name -> 4 or 8), applied after the rule; also env TEX_FORCE4 / TEX_FORCE8 (comma lists).
 PSM_OVERRIDE = {}
-# Palette builder for opaque / cut-out textures (env TEX_QUANT): "liq" = libimagequant (tools/liq, speed 1) on the
-# opaque texels, texels mapped to the nearest entry (no dithering); "kmeans" = Pillow median cut, + Lloyd refinement for
-# 16 colours (the quantiser before 2026-10-31). Measured on Firelink's 80 textures with _metrics (tools/liq/bench_quant.py,
-# notes/threads/tools-assets.md): liq 8-bit 54.9 dB / hue 1.44 deg vs 52.4 / 1.92, 4-bit +0.66 dB median; the rule
-# below then picks PSMT4 for 23 instead of 30 textures (+5 % VRAM). Falls back to kmeans if the library is missing.
-QUANT = __import__("os").environ.get("TEX_QUANT", "liq")
+# Palette builder for opaque / cut-out textures (env TEX_QUANT): "kmeans" = Pillow median cut, + Lloyd refinement for
+# 16 colours; "liq" = libimagequant (tools/liq, speed 1) on the opaque texels, texels mapped to the nearest entry (no
+# dithering), falling back to kmeans if the library is missing. Measured on Firelink's 80 textures with _metrics
+# (tools/liq/bench_quant.py, notes/threads/tools-assets.md): liq 8-bit 54.9 dB / hue 1.44 deg vs 52.4 / 1.92, 4-bit
+# +0.66 dB median; the rule below then picks PSMT4 for 23 instead of 30 textures (+5 % VRAM). liq was the default from
+# 2026-10-31; kmeans again since 2026-11-02 so native and in-browser exports give the same packs (the browser converter
+# has no libimagequant, TECH_DEBT build-7).
+QUANT = __import__("os").environ.get("TEX_QUANT", "kmeans")
 REPORT = []  # (name, source, 8-bit, 4-bit images, metrics, chosen) for sheet(); filled by encode
 ENTRY = 32
 # GS mip chain below mip 1 (render-12: far walls shimmer without it): mip 2, mip 3 stored after mip 1, levels = 2 + this.
