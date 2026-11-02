@@ -62,13 +62,32 @@ ANIMS = [
     # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
     # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
     ("EVENT_FOG_WALK", "a00", 7410, False),
+    # Bonfire (src/bonfire.c), played by eventCommon global_event.lua: Lua_BonfireFirstInjectAnim 7698 (light; TAE 231
+    # EzState message 30 at 1.4 s -> OnEvent_BonfireFirstLvUp), Lua_BonfireInjectAnim 7699 (kindle; message 10 at
+    # 3.667 s -> OnEvent_BonfireLvUp), Lua_BonfireLoopAnimBegin 7700 + 10 x GetRandom(0, 2) (sit; message 20 at
+    # 0.667 s -> OnEvent_BonfireRespawn), then its loop (+1) and on leaving its stand-up (+2)
+    ("BONFIRE_LIGHT", "a00", 7698, False),
+    ("BONFIRE_KINDLE", "a00", 7699, False),
+    ("BONFIRE_SIT_0", "a00", 7700, False),
+    ("BONFIRE_LOOP_0", "a00", 7701, True),
+    ("BONFIRE_STAND_0", "a00", 7702, False),
+    ("BONFIRE_SIT_1", "a00", 7710, False),
+    ("BONFIRE_LOOP_1", "a00", 7711, True),
+    ("BONFIRE_STAND_1", "a00", 7712, False),
+    ("BONFIRE_SIT_2", "a00", 7720, False),
+    ("BONFIRE_LOOP_2", "a00", 7721, True),
+    ("BONFIRE_STAND_2", "a00", 7722, False),
 ]
+# Played by the event Lua, which goes on at OnChrAnimEnd: the Havok clip's end, not the TAE's last event (their sound
+# events run past it, e.g. 7700: clip 66 frames = 2.17 s, TAE to 5.2 s)
+CLIP_LENGTH = {7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722}
 # ChrActionFlag (TAE event 0) values the controller reads; names from DSAnimStudio's TAE.Template.DS1.xml
 FLAGS = {4: "RH_ATTACK_CANCEL", 7: "DISABLE_TURNING", 8: "INVINCIBLE", 11: "MOVE_CANCEL", 26: "STEP_CANCEL",
          27: "IGNORE_GRAVITY", 32: "GENERIC_CANCEL", 51: "DISABLE_FALL_MOTION"}
 # Value ramps over an event window (Grad): TAE 300 ChrActionGradient with output 27 = gravity multiplier
 # (FUN_1403410f0 -> ctx+0x448 -> proxy+0x1E4), TAE 236 RootMotionReduction (FUN_140343660 -> ctx+0x198)
 GRAD_GRAVITY, GRAD_ROOT_REDUCTION = 27, 236
+EZ_MESSAGE = -300  # Window type of a TAE 231 EzState message n: EZ_MESSAGE - n (SP regen windows use -2 .. -257)
 WARRIOR, LONGSWORD = 3000, 201000
 
 
@@ -91,6 +110,7 @@ RECORD = Struct("PlayerData", [
 
 def HEADER():
     consts = (["/* ChrActionFlag ids (TAE event 0) */"] + [f"#define FLAG_{name} {fid}" for fid, name in FLAGS.items()] +
+              [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */"] +
               ["", "enum { " + ", ".join(f"ANIM_{c}" for c, *_ in ANIMS) + ", ANIM_COUNT };"])
     names = [("START_END", "start_end", "Warrior END"), ("WEAPON_ID", "weapon_id", "EquipParamWeapon: Longsword"),
              ("WEAPON_WEIGHT", "weapon_weight", None), ("WEAPON_ATK_PHYS", "weapon_atk_phys", None),
@@ -101,6 +121,14 @@ def HEADER():
     macros = [f"#define {m} (player_data->{f}){f'  /* {c} */' if c else ''}" for m, f, c in names]
     macros.append("/* player.c reads player_data->anims[] (a bare `anims` macro would clash with model.h's field) */")
     return gamedata.header("player", [WINDOW, ROOT, GRAD, ANIM, RECORD], RECORD, (consts, macros))
+
+
+def clip_length(hkx):
+    """Duration of a Havok clip (hkaSplineCompressedAnimation numFrames - 1 frames of frameDuration), s"""
+    h = souls.HkTag(hkx)
+    A = h.type("hkaSplineCompressedAnimation")
+    o = h.objects("hkaSplineCompressedAnimation")[0]
+    return (h.get(o, A, "numFrames", "i") - 1) * h.get(o, A, "frameDuration", "f")
 
 
 def main():
@@ -124,6 +152,8 @@ def main():
         events = taes[tfile][aid]["events"]
         root = souls.root_motion(hkx[f"{tfile}_{aid:04d}"])
         length = max([e[2] for e in events] + [(len(root) - 1) / 30])
+        if aid in CLIP_LENGTH:
+            length = clip_length(hkx[f"{tfile}_{aid:04d}"])
         wins, stamina, grads = [], 0, []
         for etype, s, e, p in sorted(events, key=lambda e: e[1]):
             if etype == 0 and 0 < p[0] < 128:  # every ChrActionFlag window (the ESD request model reads ~40 ids)
@@ -134,6 +164,8 @@ def main():
                 stamina = max(stamina, row[1]["stamina"] if row else 0)
             elif etype == 225:  # SetSPRegenRatePercent
                 wins.append((-2 - (p[0] & 0xFF), s, e))
+            elif etype == 231:  # EzState message to the event Lua (OnCheckEzStateMessage: bonfire 10 / 20 / 30)
+                wins.append((EZ_MESSAGE - (p[0] & 0xFF), s, e))
             elif etype == 300 and p[0] & 0xFFFF == GRAD_GRAVITY:  # s16 output, s16 input (0), f32 from, f32 to
                 grads.append((GRAD_GRAVITY, s, e, f32(p[1]), f32(p[2])))
             elif etype == 236 and p[2] & 0xFF == 0:  # f32 at start, f32 at end, u8 type 0 (scaled by mobility)

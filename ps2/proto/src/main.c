@@ -505,7 +505,7 @@ int main(int argc, char **argv)
             static int helm_off;
             model_helmet(!(helm_off = !helm_off));
         }
-        if (menu_update(pressed)) {  /* Start menu open: no movement or attacks, no demo */
+        if (bonfire_input(pressed) || menu_update(pressed)) {  /* bonfire / Start menu: no movement or attacks */
             in = (Input){0};
             idle = 0;
         }

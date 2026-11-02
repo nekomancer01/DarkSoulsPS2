@@ -18,6 +18,7 @@ void progress_new_game(void)
     prog.level = START_LEVEL;
     memcpy(prog.stats, start_stats, sizeof prog.stats);
     prog.estus = prog.estus_max = START_ESTUS;
+    prog.chr_type = CHR_HOLLOW;  /* ASSUMED (TECH_DEBT a4-6): a new DS1 character is Hollow until it reverses it */
     for (int i = 0; i < EQ_SLOTS; i++)
         prog.equip[i] = -1;
     for (int i = 0; i < (int)(sizeof start_equip / sizeof start_equip[0]) && i < EQ_SLOTS; i++)

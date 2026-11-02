@@ -80,5 +80,8 @@ const char *player_state_name(const Player *p);
  * motion, outside the ESD; its length in s, 0 if this build does not carry it */
 float player_event_anim(Player *p, int id);
 int player_event_anim_playing(const Player *p);
+int player_event_anim_id(const Player *p);  /* the event anim playing (its a00 id), -1 none */
+/* Time of TAE 231 EzState message `msg` (the event Lua's OnCheckEzStateMessage) in anim `id`, -1 if it has none */
+float player_anim_message(int id, int msg);
 
 #endif

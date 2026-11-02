@@ -27,6 +27,9 @@ void fx_block_on(int block, int on, const void *blob);
  * fx_entity_particles: alive particles of entity id's instances (-1: no loaded instance has it); kill = 1 removes
  * them (Delete Map SFX with "root only" 0). */
 int fx_entity_particles(int id, int kill);
+/* Bonfire instances (export_effects.py BF_*) follow ev_bonfire_level(entity): the fire of its kindle index, the light
+ * while lit. fx_bonfire_burst(entity, n): one-shot n of that bonfire (0 ignite 90007, 1 rest 90010) at dummy 100 */
+void fx_bonfire_burst(int entity, int n);
 
 typedef struct {
     int particles;   /* alive */

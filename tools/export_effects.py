@@ -7,12 +7,16 @@
 What is placed (all DATA unless marked):
 - MSB parts of the bonfire model (area.BONFIRE, o0200): BONFIRE_FX at the FLVER's dummy poly 100. The fire's frame is
   local Y = the dummy's upward vector, Z = its forward vector (MEASURED, capture particle buffers); the light's is
-  local Z = upward, Y = forward (MEASURED light position); KINDLED lists reference-save kindling overrides. Effects 90000-90016 are the bonfire family
-  in FRPG_SfxBnd_CommonEffects; 90001-90004 grow with kindling (ASSUMED: level 10 / 20 / 30 / 40), 90006 is the
+  local Z = upward, Y = forward (MEASURED light position). Effects 90000-90016 are the bonfire family in
+  FRPG_SfxBnd_CommonEffects. The fire is 90000 + the bonfire's kindle index (exe FUN_1404ccf20: index 0 unlit
+  smoulder .. 4; index = CalcCorrectGraph 150 stage of its kindle points, FUN_1407a40b0); a change into 1..4 plays
+  90007 (ignite), a rest 90010 (+ 90011, empty) at dummy 100. Each o0200 gets every fire level, its light and those
+  bursts as instances with the part's entity id and a BF_* flag; src/fx.c shows the ones that match the bonfire's
+  runtime state (src/ev_misc.c), none while it is not registered. 90006 is the
   bonfire's light (colour (1, .686, .369) x flicker, radius 5 m). MEASURED (RenderDoc light buffer, Burg bonfire
   1012962): one light at the bonfire +0.42 m (= dummy 0.164 + the effect's offset 0.25 along local Z), end 5 m,
   begin 0, linear colour (10.55, 4.61, 1.17) = 30 x (A x c)^2.2 at A 0.62, inside the curve's 0.565..0.753.
-  Every o0200 counts as lit (TECH_DEBT fx-3).
+  The light shows while the bonfire is lit (index >= 1; ASSUMED, the exe call that spawns 90006 is not found).
 - MSB SFX events (effect_id at the region; frame = region rotation, local Y up). Ones with an entity id (fog walls
   etc.) keep it in their instance: event scripts delete / spawn them by it (src/fx.c fx_entity; FX_EVENT_SFX=0 leaves
   them out as before, TECH_DEBT fx-4 / event-5).
@@ -63,10 +67,10 @@ from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_
 
 FX_VERSION = 1
 EVENT_SFX = os.environ.get("FX_EVENT_SFX", "1") == "1"  # MSB SFX with an entity id (event-owned) included
-BONFIRE_FX = (90001, 90006)   # burning bonfire at kindling level 10 + its light (see the docstring)
-# Bonfires whose fire in the reference save is a higher kindling effect (MEASURED: particle counts in the Firelink
-# capture, 15 glow / 77 embers / 12 flames = 90004's maxima 16 / 80 / 12). The save state proper is TECH_DEBT fx-3.
-KINDLED = {("m10_02_00_00", "o0200_0000"): 90004}
+BONFIRE_FIRE, BONFIRE_LIGHT = 90000, 90006   # fire = 90000 + kindle index 0..4, light (see the docstring)
+BONFIRE_BURSTS = (90007, 90010)              # one-shots: ignite (index change into 1..4), rest
+# FxInst.flags (= fx.c FXI_*): which runtime bonfire state shows an instance; 0 = always (MSB SFX)
+BF_FIRE, BF_LIGHT, BF_BURST = 0x100, 0x200, 0x400  # | kindle index / | burst number (BONFIRE_BURSTS order)
 CLASS_IDS = range(2000, 2200)  # EffectCall ids that are engine node classes, not effect files
 PS_CLASS, XFORM_CLASS = 2023, 2101
 APPEAR = {71, 70, 59, 27}
@@ -360,7 +364,8 @@ class Area:
         self.M = souls.msb1(souls.read(os.path.join(game, "map", "MapStudio", map_id + ".msb")))
         keep = area.region(self.M, map_id)
         regs = {r["name"]: r for r in self.M["regions"]}
-        self.inst, self.msb_lights, self.inst_ent = [], [], {}  # inst_ent: MSB SFX name -> entity id (event-owned)
+        # inst: (effect id, pos, frame, name, BF_* flags, entity id); entity: event-owned MSB SFX, bonfire parts
+        self.inst, self.msb_lights = [], []
         up_fwd = bonfire_frame(game)
         for p in self.M["parts"]:
             if p["model"] == area.BONFIRE and keep(*p["pos"]):
@@ -373,9 +378,12 @@ class Area:
                 frame = [_apply(R, c) for c in cols]
                 _, ny_fwd, nz_up = cols  # dummy frame columns: x, forward, up (model space)
                 fire_frame = [_apply(R, c) for c in (_cross(nz_up, ny_fwd), nz_up, ny_fwd)]
-                fire = KINDLED.get((map_id, p["name"]), BONFIRE_FX[0])
-                self.inst.append((fire, pos, fire_frame, p["name"]))
-                self.inst.append((BONFIRE_FX[1], pos, frame, p["name"]))
+                ent = max(0, p.get("entity_id", -1))
+                for lv in range(5):
+                    self.inst.append((BONFIRE_FIRE + lv, pos, fire_frame, p["name"], BF_FIRE | lv, ent))
+                self.inst.append((BONFIRE_LIGHT, pos, frame, p["name"], BF_LIGHT, ent))
+                for k, fid in enumerate(BONFIRE_BURSTS):
+                    self.inst.append((fid, pos, fire_frame, p["name"], BF_BURST | k, ent))
         for ev in self.M["events"]:
             r = regs.get(ev.get("region"))
             if r is None or not keep(*r["pos"]):
@@ -384,9 +392,7 @@ class Area:
             if ev["type_name"] == "SFX" and (not owned or EVENT_SFX) and ev.get("effect_id", -1) > 0:
                 R = _rot_part(r.get("rot", (0, 0, 0)))
                 self.inst.append((ev["effect_id"], list(r["pos"]), [[R[i][j] for i in range(3)] for j in range(3)],
-                                  ev["name"]))
-                if owned:
-                    self.inst_ent[ev["name"]] = ev["entity_id"]
+                                  ev["name"], 0, ev["entity_id"] if owned else 0))
             elif ev["type_name"] == "Light" and ev.get("point_light_id", -1) >= 0:
                 self.msb_lights.append((ev["point_light_id"], list(r["pos"]), ev["name"]))
 
@@ -471,7 +477,9 @@ def static_lights(game, map_id):
             rgb = [POINT_LIGHT_GAIN * dsr_light.lin(pl[f"col{c}"], pl["colA"]) for c in "RGB"]
             out.append((list(pos), pl["dwindleBegin"], pl["dwindleEnd"], rgb))
     lib = Library(game, map_id)
-    for fid, pos, frame, _ in A.inst:
+    for fid, pos, frame, _, flags, _ in A.inst:
+        if flags & ~BF_LIGHT:  # the map bake keeps the light of every bonfire, lit or not (TECH_DEBT fx-3)
+            continue
         e = lib.effect(fid)
         if e is None:
             continue
@@ -538,7 +546,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
         return tex_index[key]
 
     effects, sys_recs, refs, lights, eff_of = [], [], [], [], {}
-    for fid, pos, frame, name in A.inst:
+    for fid, pos, frame, name, *_ in A.inst:
         if fid in eff_of:
             continue
         e = lib.effect(fid)
@@ -561,7 +569,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
                     lights.append(L)
         eff_of[fid] = len(effects)
         effects.append((first, len(refs) - first, first_l, len(lights) - first_l, fid))
-    insts = [(eff_of[f], p, fr, n) for f, p, fr, n in A.inst if eff_of.get(f) is not None]
+    insts = [(eff_of[f], p, fr, n, fl, ent) for f, p, fr, n, fl, ent in A.inst if eff_of.get(f) is not None]
     if describe:
         for i, (f, n, fl, nl, fid) in enumerate(effects):
             print(f"effect {fid}: {n} systems, {nl} lights")
@@ -576,7 +584,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
             for L in lights[fl:fl + nl]:
                 print(f"   light off {[round(x, 3) for x in L['off']]} r {L['radius']} begin {L['begin']} "
                       f"hdr {[round(x, 2) for x in L['hdr'][0]]}..{[round(x, 2) for x in L['hdr'][N_CURVE // 2]]}")
-        for f, p, fr, n in insts:
+        for f, p, fr, n, fl, ent in insts:
             print(f"inst {effects[f][4]} at {[round(x, 2) for x in p]} ({n})")
         return
     # character light units per effect light: the tone-mapped share for albedo CHAR_ALB on top of the scene level
@@ -599,8 +607,8 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
     body_sys = b"".join(pack_sys(s, texs[s["tex"]][2:4]) for s in sys_recs)
     body_eff = b"".join(struct.pack("<4H", f, n, fl, nl) for f, n, fl, nl, _ in effects)
     body_ref = b"".join(struct.pack("<HH", r, 0) for r in refs)
-    body_inst = b"".join(struct.pack("<HH3f9fif", e, 0, *p, *[x for c in fr for x in c], A.inst_ent.get(n, 0), 0.0)
-                         for e, p, fr, n in insts)
+    body_inst = b"".join(struct.pack("<HH3f9fif", e, fl, *p, *[x for c in fr for x in c], ent, 0.0)
+                         for e, p, fr, n, fl, ent in insts)
     body_light = b"".join(light_recs)
     off_tex = HDR
     off_sys = off_tex + 16 * len(texs)

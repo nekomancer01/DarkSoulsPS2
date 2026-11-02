@@ -81,7 +81,12 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a00", 6070, "c0000_a00_md"),
          ("a00", 6170, "c0000_a00_md"), ("a00", 6073, "c0000_a00_md"), ("a00", 6173, "c0000_a00_md"), ("a23", 3500, "c0000_a2x"), ("a23", 3900, "c0000_a2x"), ("a23", 3800, "c0000_a2x"), ("a23", 3801, "c0000_a2x"), ("a00", 2000, "c0000_a00_lo"), ("a00", 2001, "c0000_a00_lo"), ("a00", 2002, "c0000_a00_lo"), ("a00", 2003, "c0000_a00_lo"), ("a00", 2004, "c0000_a00_lo"), ("a00", 2005, "c0000_a00_lo"), ("a00", 2006, "c0000_a00_lo"), ("a00", 2007, "c0000_a00_lo"),
          ("a00", 100, "c0000_a00_lo"), ("a00", 101, "c0000_a00_lo"), ("a00", 106, "c0000_a00_lo"),
-         ("a00", 116, "c0000_a00_lo")]
+         ("a00", 116, "c0000_a00_lo")] + [
+         # bonfire (export_player.py): stored compact (COMPACT) - 11 anims, 37 s; full 30 fps poses would be ~1.1 MB
+         ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)]
+# Anims written in the compact layout (export_chr.append_compact_anims: 15 fps, only the bones that move; model.c reads
+# both kinds): long, slow anims whose poses interpolate well
+COMPACT = {7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722}
 # Turn-lean pairs: DSR has no straight dash; a00_0535 leans into a left turn (head 0.20 m left of the feet, shoulders
 # rolled -21 deg on average) and a00_0536 into a right turn, and the engine blends the two by turn rate
 # (WalkAnim_Twist). Played alone, 0535 made the dash lean left. Baked here as the 50/50 blend = running straight.
@@ -229,6 +234,32 @@ class MeshBuilder:
                 self.tri_uv.append([(0, 0)] * 3)
 
 
+def compact_anim(aid, baked, nbones, fps=15):
+    """One anim in the compact layout (same as export_chr.append_compact_anims): u32 id, u32 frames | 1 << 31, u8 fps,
+    rotated bones, translated bones, pad, their bone ids (padded to 4), base pose PackedBone[bones], then per frame
+    q s16x4 of the rotated bones and t s16x3 of the translated ones (padded to 4). Bones that never leave the first
+    frame's quantized value use the base pose."""
+    q16 = lambda c: int(round(max(-1, min(1, c)) * 32767))
+    t16 = lambda c: int(round(max(-7.99, min(7.99, c)) * 4096))
+    step = 30 // fps
+    frames = baked[::step]
+    if (len(baked) - 1) % step:
+        frames.append(baked[-1])
+    q = [[tuple(q16(c) for c in pose[b][0]) for pose in frames] for b in range(nbones)]
+    t = [[tuple(t16(c) for c in pose[b][1]) for pose in frames] for b in range(nbones)]
+    rot = [b for b in range(nbones) if any(abs(x - y) > 2 for f in q[b] for x, y in zip(f, q[b][0]))]
+    tra = [b for b in range(nbones) if any(abs(x - y) > 2 for f in t[b] for x, y in zip(f, t[b][0]))]
+    head = struct.pack("<II4B", aid, len(frames) | 1 << 31, fps, len(rot), len(tra), 0) + bytes(rot) + bytes(tra)
+    head += b"\0" * (-len(head) % 4)
+    base = b"".join(struct.pack("<4h3hh", *q[b][0], *t[b][0], 0) for b in range(nbones))
+    body = bytearray()
+    for i in range(len(frames)):
+        body += b"".join(struct.pack("<4h", *q[b][i]) for b in rot)
+        body += b"".join(struct.pack("<3h", *t[b][i]) for b in tra)
+        body += b"\0" * (-len(body) % 4)
+    return head + base + bytes(body)
+
+
 def write_model(out, names, parents, ref, mb, anims):
     """model.bin (layout in the module docstring); anims = [(id, [pose per frame: [(q, t) per bone]])]"""
     verts, tris, tri_tex, tri_uv, textures = mb.verts, mb.tris, mb.tri_tex, mb.tri_uv, mb.textures
@@ -256,6 +287,9 @@ def write_model(out, names, parents, ref, mb, anims):
     blob += b"".join(struct.pack("<3H", *tris[i]) for i in order) + b"\0" * (2 * (len(tris) * 3 % 2))
     sec["anims"] = len(blob) + HDR
     for aid, baked in anims:
+        if aid in COMPACT:
+            blob += compact_anim(aid, baked, len(parents))
+            continue
         blob += struct.pack("<II", aid, len(baked)) + b"".join(qt(q, t) for pose in baked for q, t in pose)
     def align(n):
         blob.extend(b"\0" * ((-(len(blob) + HDR)) % n))

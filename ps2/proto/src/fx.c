@@ -17,6 +17,7 @@
 #include <malloc.h>
 #include "fx.h"
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
+#include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 
 #define FX_MAX 384        /* particle pool (all instances) */
 #define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
@@ -57,8 +58,17 @@ typedef struct {
 
 typedef struct { u16 first_ref, n_ref, first_light, n_light; } FxEff;
 typedef struct { u16 sys, pad; } FxRef;
-/* frame: columns local x, y, z; entity: MSB SFX entity id (0 none): off while events deleted it (fx_entity_*) */
+/* frame: columns local x, y, z; entity: MSB SFX entity id (0 none): off while events deleted it (fx_entity_*), or
+ * the bonfire object of a bonfire instance. flags (= export_effects.BF_*): 0 always; FXI_FIRE | kindle index: the fire
+ * while the bonfire is at that index; FXI_LIGHT: its light while lit; FXI_BURST | n: one-shot (fx_bonfire_burst) */
 typedef struct { u16 eff, flags; float pos[3], frame[9]; s32 entity; float pad; } FxInst;
+#define FXI_FIRE 0x100
+#define FXI_LIGHT 0x200
+#define FXI_BURST 0x400
+/* Emission time of a bonfire burst: 90007 (ignite) emits for ever in its data; its end comes from the FFX state
+ * machine, which fx.c does not run. ASSUMED 0.5 s (TECH_DEBT fx-3) */
+#define FX_BURST_T 0.5f
+#define FX_BURSTS 8
 typedef struct {
     u16 flags, pad;
     float off[3], radius, begin, period;
@@ -107,6 +117,7 @@ typedef struct {
 } FxSet;
 static FxSet fset[FX_SETS];
 static int cur_set;
+static struct { int set, inst; float t; } bursts[FX_BURSTS];  /* bursts emitting (t > 0) */
 
 /* the globals above describe set k */
 static void bind(int k)
@@ -471,6 +482,49 @@ static void step(float dt, int emit_on)
     bind(was);
 }
 
+static int burst_left(int ii)
+{
+    for (int b = 0; b < FX_BURSTS; b++)
+        if (bursts[b].t > 0 && bursts[b].set == cur_set && bursts[b].inst == ii)
+            return 1;
+    return 0;
+}
+
+/* instance ii of the bound set shown by its event / bonfire state */
+static int inst_state(int ii)
+{
+    const FxInst *in = &inst[ii];
+    if (!in->flags)
+        return !(in->entity && dg_entity_hidden(in->entity));  /* Delete Map SFX (event.c) */
+    int lv = ev_bonfire_level(in->entity);  /* -1: not registered (2009[03] creates the fire) */
+    if (in->flags & FXI_FIRE)
+        return lv == (in->flags & 0xFF);
+    if (in->flags & FXI_LIGHT)
+        return lv >= 1;
+    return burst_left(ii);
+}
+
+void fx_bonfire_burst(int entity, int n)
+{
+    int was = cur_set;
+    for (int k = 0; k < FX_SETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+        for (u32 ii = 0; ii < hdr->n_inst; ii++) {
+            if (inst[ii].entity != entity || inst[ii].flags != (FXI_BURST | n))
+                continue;
+            int b = 0;
+            while (b < FX_BURSTS - 1 && bursts[b].t > 0 && !(bursts[b].set == k && bursts[b].inst == (int)ii))
+                b++;
+            bursts[b].set = k, bursts[b].inst = ii, bursts[b].t = FX_BURST_T;
+            memset(&emit[emit_first[ii]], 0, (emit_first[ii + 1] - emit_first[ii]) * sizeof *emit);
+            inst_on[ii] = 2;  /* on without the prewarm (fx_update) */
+        }
+    }
+    bind(was);
+}
+
 void fx_update(float dt, V3 eye)
 {
     int any = 0;
@@ -490,9 +544,8 @@ void fx_update(float dt, V3 eye)
         bind(k);
     for (u32 ii = 0; ii < hdr->n_inst; ii++) {
         float dx = inst[ii].pos[0] - eye.x, dy = inst[ii].pos[1] - eye.y, dz = inst[ii].pos[2] - eye.z;
-        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE &&
-                 !(inst[ii].entity && dg_entity_hidden(inst[ii].entity));  /* Delete Map SFX (event.c) */
-        if (on && !inst_on[ii]) {  /* prewarm: one life of the longest system in 8 steps */
+        int on = dx * dx + dy * dy + dz * dz < FX_RANGE * FX_RANGE && inst_state(ii);
+        if (on && !inst_on[ii] && !(inst[ii].flags & FXI_BURST)) {  /* prewarm: one life of the longest system in 8 steps */
             inst_on[ii] = 1;
             const FxEff *e = &eff[inst[ii].eff];
             float warm = 0;
@@ -508,6 +561,8 @@ void fx_update(float dt, V3 eye)
     }
     }
     bind(0);
+    for (int b = 0; b < FX_BURSTS; b++)
+        bursts[b].t -= dt;
     step(dt, 1);
     fx_stats.active = active;
     fx_stats.particles = n_alive;
@@ -677,6 +732,8 @@ void fx_char_light(V3 pos, float amb[3])
         bind(k);
     for (u32 ii = 0; ii < hdr->n_inst; ii++) {
         const FxEff *e = &eff[inst[ii].eff];
+        if (e->n_light && !inst_state(ii))  /* an unlit bonfire's light, a burst that is over */
+            continue;
         for (int l = 0; l < e->n_light; l++) {
             const FxLight *L = &light[e->first_light + l];
             float w[3];

@@ -1,0 +1,136 @@
+# A4 bonfire use (src/bonfire.c, ev_misc.c, fx.c): Firelink (lit, kindled to 20 points by 2009[03]) and the Burg
+# bonfire 1011961 (unlit). Light (7698, BONFIRE LIT), sit (7700/10/20, rest at 0.667 s, respawn 1.333 s later), the
+# rest menu (Reverse Hollowing, Kindle, Leave), kindle points saved.
+#   rm -f build/save/a4bf*.bin
+#   tools/q -m 4 python3 tools/test-run.py build/proto.sym.elf ps2/proto/tests/a4_bonfire.txt build/test/a4bf
+option save host a4bf
+option hud
+wait 3
+wipe
+ev expect level 1021960 2
+ev expect points 1021960 20
+ev expect hollow 1
+# 1 rest at Firelink: sit, HP / Estus (10 at stage 2), respawn point, menu
+ev chr 1020160 damage 99999
+wait 0.5
+spawn -51.8 -60.6 54.2 0
+wait 1
+shot a4bf_firelink_prompt
+ev hurt 100
+wait 0.3
+ev action
+wait 0.4
+ev expect bfstate 2
+ev expect hp 494
+wait 0.5
+ev expect hp 594
+ev expect estus 10
+ev expect estusmax 10
+wait 1.5
+ev expect respawn 1022960
+ev expect lastbonfire 1021960
+ev expect chr 1020160 dead 0
+wait 2
+ev expect bfstate 3
+ev expect menu 4
+shot a4bf_firelink_menu
+# 2 Kindle while Hollow: refused; Reverse Hollowing with 2 humanity
+ev bf pick 8
+wait 0.1
+ev bf pad cross
+wait 0.1
+wait 0.2
+shot a4bf_kindle_hollow
+ev bf pad cross
+wait 0.1
+ev humanity 2
+ev bf pick 11
+wait 0.1
+ev bf pad cross
+wait 0.1
+wait 0.2
+ev bf pad cross
+wait 0.1
+wait 0.2
+ev expect hollow 0
+ev expect humanity 1
+# 3 Kindle: past stage 2 needs the Rite of Kindling (flag 257): refused; with it 20 -> 30 points, stage 3, Estus 15
+ev bf pick 8
+wait 0.1
+ev bf pad cross
+wait 0.2
+shot a4bf_kindle_rite
+ev bf pad circle
+wait 0.1
+ev expect points 1021960 20
+flag 257 1
+ev bf pick 8
+wait 0.1
+ev bf pad cross
+wait 0.2
+ev bf pad cross
+wait 1
+ev expect bfstate 4
+wait 3.5
+ev expect points 1021960 30
+ev expect level 1021960 3
+ev expect estus 15
+ev expect humanity 0
+wait 3.5
+ev expect bfstate 3
+# no humanity left: refused
+ev bf pick 8
+wait 0.1
+ev bf pad cross
+wait 0.2
+ev bf pad circle
+wait 0.1
+ev expect points 1021960 30
+# 4 Leave: stand up
+ev bf pad circle
+wait 0.1
+wait 0.5
+ev expect bfstate 5
+wait 3
+ev expect bfstate 0
+ev expect menu 0
+# 5 the kindle points survive a save round trip
+save
+wait 1
+load
+wait 1
+ev expect points 1021960 30
+# 6 Burg bonfire 1011961: unlit, light it, then rest (Estus 5)
+spawn 24.35 9.5 -25.7 0
+wait 4
+ev expect level 1011961 0
+spawn 24.35 9.5 -23.9 0
+wait 1
+cam 0.6 0.15
+wait 0.5
+shot a4bf_burg_unlit
+ev action
+wait 0.5
+ev expect bfstate 1
+wait 1.2
+ev expect level 1011961 1
+ev expect points 1011961 10
+wait 1.0
+ev expect banner 1
+shot a4bf_burg_banner
+wait 3
+ev expect bfstate 0
+cam 0.6 0.15
+wait 0.5
+shot a4bf_burg_lit
+ev action
+wait 1.2
+ev expect bfstate 2
+ev expect estus 5
+wait 3
+ev bf pad circle
+wait 0.1
+wait 3.5
+ev expect bfstate 0
+log a4_bonfire done
+end

@@ -1,6 +1,7 @@
 # A4 (src/bonfire.c): bonfire rest and the death loop at the Firelink bonfire, enemies on.
-# 1 rest: a killed enemy (1020160, graveyard) is back with full HP, HP refilled, respawn point = the bonfire's spawn
-#   point (1021960 + 1000), last bonfire 1021960.
+# 1 rest (sit down, src/bonfire.c): a killed enemy (1020160, graveyard) is back with full HP, HP and Estus refilled
+#   (10: Firelink is kindled to 20 points by 2009[03]), respawn point = the bonfire's spawn point (1021960 + 1000), last
+#   bonfire 1021960; then leave the menu (stand up).
 # 2 lethal fall off the east cliff (as save_death.txt): bloodstain with the 500 souls held where the player last stood,
 #   souls 0, back at the spawn point 復活ポイント00 (-47.4 -59.8 53.3), full HP, the enemy killed again is back.
 # 3 the stain survives a save round trip; walking onto it gives the souls back.
@@ -26,13 +27,17 @@ ev hurt 100
 wait 0.3
 ev expect hp 494
 ev action
-wait 0.5
+wait 1
 ev expect hp 594
-ev expect estus 5
+ev expect estus 10
+wait 2
 ev expect respawn 1022960
 ev expect lastbonfire 1021960
 ev expect chr 1020160 dead 0
 ev expect chr 1020160 hp 100
+wait 1
+ev bf pad circle
+wait 3
 # 2 lethal fall
 ev chr 1020160 damage 99999
 spawn -47.4 -59.8 53.3 2.53
