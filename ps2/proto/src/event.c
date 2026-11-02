@@ -128,6 +128,7 @@ typedef struct {
     u32 cond_f;
     u16 cvalid, cval;   /* compiled group results (bit g + 7) from the last MAIN */
     u8 argn, flag_only;  /* MAIN waits only on flags / inventory / constants: re-evaluated when one of those changed */
+    u8 warped;           /* warped the player to another map: finishes even if its block unloads (event_block_off) */
     u32 seen;            /* state_key() at the last evaluation */
     Reg *reg;
     u8 *args;
@@ -1059,7 +1060,7 @@ static void run(Inst *in)
                 printf("EVT area transition to m%02d_%02d: not in this world build (A1)\n", (int)(u8)iw[3],
                        (int)(u8)iw[4]);
             else
-                warp_to(in->set, iw[2]);
+                warp_to(in->set, iw[2]), in->warped = 1;
             break;
         default:
             if (!op_noop(op))
@@ -1181,6 +1182,16 @@ void event_block_off(int block)
         int moved = 0;
         for (int i = 0; i < ninst; i++) {
             if (inst[i].state == I_FREE || inst[i].set != k)
+                continue;
+            /* an event that warped the player out of this map still runs its lines after the warp (Asylum
+             * 11810000: flag 11810000, respawn point, save request) before its map goes: waits pass at once */
+            for (int n = 0; inst[i].warped && heir < 0 && n < 16 && inst[i].state != I_FREE && inst[i].state != I_DONE &&
+                            inst[i].state != I_STOPPED && inst[i].state != I_MAIN; n++) {
+                if (inst[i].state == I_WAIT_T || inst[i].state == I_WAIT_F)
+                    inst[i].state = I_RUN;
+                run(&inst[i]);
+            }
+            if (inst[i].state == I_FREE)
                 continue;
             if (heir >= 0)
                 inst[i].set = heir, moved++;
