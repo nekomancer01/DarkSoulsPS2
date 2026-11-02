@@ -128,6 +128,7 @@ typedef struct {
     u32 cond_f;
     u16 cvalid, cval;   /* compiled group results (bit g + 7) from the last MAIN */
     u8 argn, flag_only;  /* MAIN waits only on flags / inventory / constants: re-evaluated when one of those changed */
+    u8 warped;           /* warped the player to another map: finishes even if its block unloads (event_block_off) */
     u32 seen;            /* state_key() at the last evaluation */
     Reg *reg;
     u8 *args;
@@ -1050,11 +1051,16 @@ static void run(Inst *in)
         case OP_SFX_SPAWN: set_entity(in->set, iw[0], 1, 0); dg_entity(iw[0], 1); break;
         case OP_MAP_PART: set_entity(in->set, iw[0], iw[1] != 0, 1); dg_entity(iw[0], iw[1] != 0); break;
         case OP_CUTSCENE_WARP:
-            /* A13 later: the cutscene is skipped; the warp to another map is an area transition (A1) */
+            /* 2002[04] (cutscene, flags, region, AA, BB): the remo is A13's, so it is skipped and only its warp runs. A
+             * region of another map of this world comes with the map's events.bin (export_emevd.foreign_warp_targets);
+             * setting the player there makes world.c settle the destination block like DSR's loading screen (E7) */
             printf("EVT %u/%d cutscene %d skipped, warp to m%02d_%02d point %d\n", (unsigned)ev->id, (int)in->slot,
                    (int)iw[0], (int)(u8)iw[3], (int)(u8)iw[4], (int)iw[2]);
-            warp_to(in->set, iw[2]);
-            stub(in, op);
+            if (!ent_any(in->set, iw[2], NULL))
+                printf("EVT area transition to m%02d_%02d: not in this world build (A1)\n", (int)(u8)iw[3],
+                       (int)(u8)iw[4]);
+            else
+                warp_to(in->set, iw[2]), in->warped = 1;
             break;
         default:
             if (!op_noop(op))
@@ -1147,19 +1153,84 @@ void event_block_on(int block, const void *blob)
            NSEC(s, S_OBJACTS), s->live ? "" : " (entities only)", act);
 }
 
+static inline unsigned ticks(void);
+
+/* Same events in both sets (blocks of one map: export_emevd.py writes the map's events, instrs and substs alike) */
+static int same_events(const Set *a, const Set *b)
+{
+    for (int k = S_EVENTS; k <= S_SUBSTS; k++) {
+        unsigned n = k == S_EVENTS ? NSEC(a, k) * sizeof(EvEvent) : k == S_INSTRS ? (unsigned)NSEC(a, k)
+                     : NSEC(a, k) * sizeof(EvSubst);
+        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->blob + a->h->sec[k][0], b->blob + b->h->sec[k][0], n))
+            return 0;
+    }
+    return 1;
+}
+
 void event_block_off(int block)
 {
     for (int k = 1; k < EV_SETS; k++) {
         Set *s = &sets[k];
         if (!s->blob || s->block != block)
             continue;
-        for (int i = 0; i < ninst; i++)
-            if (inst[i].state != I_FREE && inst[i].set == k)
+        /* event-10: the map's live set goes, another loaded block of the same map takes its running events over (DSR
+         * runs one event manager per map, whichever part of it is loaded), else they end with the block */
+        int heir = -1;
+        for (int j = 1; j < EV_SETS && s->live && heir < 0; j++)
+            if (j != k && sets[j].blob && !sets[j].live && !memcmp(sets[j].h->map, s->h->map, 4) && same_events(s, &sets[j]))
+                heir = j;
+        int moved = 0;
+        for (int i = 0; i < ninst; i++) {
+            if (inst[i].state == I_FREE || inst[i].set != k)
+                continue;
+            /* an event that warped the player out of this map still runs its lines after the warp (Asylum
+             * 11810000: flag 11810000, respawn point, save request) before its map goes: waits pass at once */
+            for (int n = 0; inst[i].warped && heir < 0 && n < 16 && inst[i].state != I_FREE && inst[i].state != I_DONE &&
+                            inst[i].state != I_STOPPED && inst[i].state != I_MAIN; n++) {
+                if (inst[i].state == I_WAIT_T || inst[i].state == I_WAIT_F)
+                    inst[i].state = I_RUN;
+                run(&inst[i]);
+            }
+            if (inst[i].state == I_FREE)
+                continue;
+            if (heir >= 0)
+                inst[i].set = heir, moved++;
+            else
                 free_inst(&inst[i]);
+        }
+        if (heir >= 0) {
+            memcpy(sets[heir].ev_live, s->ev_live, (s->nev + 1) * sizeof *s->ev_live);
+            sets[heir].live = 1;
+            ev_bonfire_move(k, heir);
+            printf("EVT block %d off: m%02d_%02d events (%d instances) go on in block %d\n", block, s->h->map[0],
+                   s->h->map[1], moved, sets[heir].block);
+        }
         free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
         memset(s, 0, sizeof *s);
         ev_bonfire_drop(k);
     }
+}
+
+/* event-14: a warp's load (world.c settle) is DSR's loading screen: the constructors of the blocks it turned on and
+ * whatever they start run to their first wait now, not over the next frames' EV_BUDGET_US */
+void event_flush(void)
+{
+    if (!inst || !pl)
+        return;
+    unsigned t0 = ticks();
+    int runs = 0;
+    for (int pass = 0; pass < 16; pass++) {
+        int any = 0;
+        for (int i = 0; i < ninst; i++)
+            if (inst[i].state == I_RUN) {
+                run(&inst[i]);
+                any = 1, runs++;
+            }
+        if (!any)
+            break;
+    }
+    if (runs)
+        printf("EVT flush: %d instance runs in %u us\n", runs, (ticks() - t0) / 295);
 }
 
 void event_action(void) { act_press = 1; }
@@ -1462,6 +1533,27 @@ void event_test_cmd(const char *cmd)
         int got = pl && player_event_anim_playing(pl), ok = got == val;
         test_pass += ok, test_fail += !ok;
         printf("TEST ev expect eventanim %d: %d %s\n", val, got, ok ? "PASS" : "FAIL");
+    } else if (sscanf(cmd, "expect mapevents %d %d %d", &id, &val, &want) == 3) {
+        /* map mAA_BB: its events run (instances in a live set) in world block `want` (-1: none run) */
+        int got = -1, n = 0;
+        for (int k = 1; k < EV_SETS; k++)
+            if (sets[k].blob && sets[k].live && sets[k].h->map[0] == id && sets[k].h->map[1] == val) {
+                got = sets[k].block;
+                for (int i = 0; i < ninst; i++)
+                    n += inst[i].state != I_FREE && inst[i].set == k;
+            }
+        if (!n)
+            got = -1;
+        int ok = want == -2 ? got >= 0 : got == want;  /* -2: in any block */
+        test_pass += ok, test_fail += !ok;
+        printf("TEST ev expect mapevents m%02d_%02d in block %d: block %d, %d instances %s\n", id, val, want, got, n,
+               ok ? "PASS" : "FAIL");
+    } else if (!strcmp(cmd, "expect settled")) {  /* nothing left to run behind the last warp's load (event-14) */
+        int n = 0;
+        for (int i = 0; i < ninst; i++)
+            n += inst[i].state == I_RUN;
+        test_pass += !n, test_fail += !!n;
+        printf("TEST ev expect settled: %d instances still to run %s\n", n, n ? "FAIL" : "PASS");
     } else if (sscanf(cmd, "expect bonfires %d", &val) == 1) {
         int got = ev_bonfire_count(), ok = got == val;
         test_pass += ok, test_fail += !ok;

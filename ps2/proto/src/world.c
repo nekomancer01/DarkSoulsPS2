@@ -626,6 +626,7 @@ static void settle(const float *feet)
     }
     warping = 0;
     in_cur_s = WORLD_SWAP_S;
+    event_flush();  /* the new blocks' constructors finish behind the "loading screen" (A2 event-14) */
     printf("world: warp to %.1f %.1f %.1f settled in %u ms (%d steps): block %d, full %d, %d loaded\n", feet[0], feet[1],
            feet[2], (ticks() - t0) / 294912, n, cur, full_blk, world_stats.loaded);
 }
