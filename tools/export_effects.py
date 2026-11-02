@@ -2,6 +2,7 @@
 
     export_effects.py <game> <out fx.bin> <map_id> [--tone fx_tone.json]   (Makefile; tone = export_map's sidecar)
     export_effects.py <game> --describe <map_id>                           (instances / systems, no output)
+    export_effects.py <game> --static-lights <out lights.json> <map_id>     (Makefile: export_map.py's point lights)
 
 What is placed (all DATA unless marked):
 - MSB parts of the bonfire model (area.BONFIRE, o0200): BONFIRE_FX at the FLVER's dummy poly 100. The fire's frame is
@@ -57,7 +58,8 @@ fx.bin (version FX_VERSION, little endian):
 import json, math, os, random, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import area, dsr_light, ffx, souls
+import area, dsr_light, ffx, souls, srcsum
+from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_map.py uses them without this file
 
 FX_VERSION = 1
 EVENT_SFX = os.environ.get("FX_EVENT_SFX", "1") == "1"  # MSB SFX with an entity id (event-owned) included
@@ -340,21 +342,6 @@ def ffx_light(cc, xf):
     return dict(off=xf[1], radius=rad, begin=max(0.0, begin), period=period, hdr=samples)
 
 
-def cubic_light(pos, begin, end, rgb):
-    """DSR point light (FRPG_Phn_* loop): rgb x saturate(((end - d) / (end - begin))^3) x N.L -> f(p, n)."""
-    k = 1.0 / max(1e-6, end - begin)
-
-    def f(p, n):
-        v = [pos[i] - p[i] for i in range(3)]
-        d = math.sqrt(sum(x * x for x in v)) or 1e-6
-        if d >= end:
-            return (0.0, 0.0, 0.0)
-        att = min(1.0, (k * (end - d)) ** 3)
-        nl = max(0.0, sum(n[i] * v[i] for i in range(3)) / d) if n else 1.0
-        return [c * att * nl for c in rgb]
-    return f
-
-
 # ---- placement ----
 class Area:
     """Everything placed in one area: [(effect id, pos, frame 3x3 columns)], static MSB lights."""
@@ -461,28 +448,11 @@ class Library:
         return souls.dds_decode_rgba(dds, 1 << 12)
 
 
-# ---- tone (the map bake's adapted tone map, written by export_map.py next to map.bin) ----
-def write_tone(path, tone):
-    """export_map.py hook: the lit map's adapted tone map for the effect colours."""
-    if tone is None:
-        return
-    json.dump({"key": tone.key, "lo": tone.lo, "hi": tone.hi, "exposure": tone.exposure, "tc": tone.tc},
-              open(path, "w"))
-
-
-def load_tone(path):
-    if path and os.path.exists(path):
-        j = json.load(open(path))
-        t = dsr_light.Tone({"grayKeyValue": j["key"], "minAdaptedLum": j["lo"], "maxAdapredLum": j["hi"]}, j["tc"],
-                           j["exposure"])
-        return t
-    print("export_effects: no fx_tone.json, effect colours use the bright-scene exposure (re-export map.bin)")
-    return None
-
-
+# ---- static lights for the map bake (the tone map it writes back: dsr_light.write_tone) ----
 def static_lights(game, map_id):
-    """export_map.py hook: [f(position, normal) -> HDR irradiance] of the area's static point lights: MSB Light
-    events (PointLightBank x POINT_LIGHT_GAIN) and the effect lights of placed effects (mean over their flicker)."""
+    """export_map.py's static point lights as [(position, begin, end, HDR rgb)] (dsr_light.cubic_light's arguments):
+    MSB Light events (PointLightBank x POINT_LIGHT_GAIN) and the effect lights of placed effects (mean over their
+    flicker). Written to <map dir>/lights.json (--static-lights), so map.bin depends on these values, not this file."""
     A = Area(game, map_id)
     banks = dsr_light.draw_banks(game, map_id[:3])["PointLight"]
     out = []
@@ -490,7 +460,7 @@ def static_lights(game, map_id):
         pl = banks.get(row)
         if pl and pl["colA"] > 0:
             rgb = [POINT_LIGHT_GAIN * dsr_light.lin(pl[f"col{c}"], pl["colA"]) for c in "RGB"]
-            out.append(cubic_light(pos, pl["dwindleBegin"], pl["dwindleEnd"], rgb))
+            out.append((list(pos), pl["dwindleBegin"], pl["dwindleEnd"], rgb))
     lib = Library(game, map_id)
     for fid, pos, frame, _ in A.inst:
         e = lib.effect(fid)
@@ -505,7 +475,7 @@ def static_lights(game, map_id):
             if L:
                 p = [pos[i] + sum(frame[k][i] * L["off"][k] for k in range(3)) for i in range(3)]
                 mean = [sum(s[c] for s in L["hdr"]) / len(L["hdr"]) for c in range(3)]
-                out.append(cubic_light(p, L["begin"], L["radius"], mean))
+                out.append((p, L["begin"], L["radius"], mean))
     print(f"export_effects: {len(out)} static point lights ({len(A.msb_lights)} MSB Light events)")
     return out
 
@@ -651,6 +621,9 @@ def main():
     game = sys.argv[1]
     if sys.argv[2] == "--describe":
         export(game, sys.argv[3], None, None, describe=True)
+        return
+    if sys.argv[2] == "--static-lights":  # rewritten only when the lights change (srcsum.write_if_changed)
+        srcsum.write_if_changed(sys.argv[3], json.dumps(static_lights(game, sys.argv[4])) + "\n")
         return
     out, map_id = sys.argv[2], sys.argv[3]
     tone = sys.argv[sys.argv.index("--tone") + 1] if "--tone" in sys.argv else None

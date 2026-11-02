@@ -10,7 +10,8 @@ fewest waiting jobs (then most free budget) gets it and its tools/q queues it. A
 a few seconds is skipped. -H HOST forces a machine.
 
 Capabilities: a job needs `game` when it builds or exports (make, export_*, test-all.sh) and `pcsx2` when it runs
-PCSX2 (pcsx2-run.sh, test-all.sh); --needs adds more, `--needs none` clears them.
+PCSX2 (pcsx2-run.sh, test-all.sh, test-run.py, test-smoke.py, test-gsdump.py); --needs adds more, `--needs none`
+clears them.
 
 On another machine the job runs in <repo>-d/<this tree's name>: a clone of that machine's checkout, kept between
 jobs, with this tree's working files (tracked + untracked, not ignored, uncommitted edits included) copied over by
@@ -110,7 +111,7 @@ def needs_of(argv):
     caps = set()
     if argv[0] == "make" or argv[0].endswith("/make") or "export_" in line or "test-all.sh" in line:
         caps.add("game")
-    if "pcsx2" in line or "test-all.sh" in line:
+    if any(k in line for k in ("pcsx2", "test-all.sh", "test-run.py", "test-smoke.py", "test-gsdump.py")):
         caps.add("pcsx2")
     return caps
 

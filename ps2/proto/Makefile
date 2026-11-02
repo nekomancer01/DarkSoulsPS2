@@ -25,15 +25,20 @@ OUT = $(or $(BLOCK),$(MAP))
 ifneq ($(BLOCK),)
 export AREA_BLOCK := $(BLOCK)
 endif
-# Tool dependencies by content (TS = $(BUILD)/stamp): exports depend on $(TS)/<tool>.sum, a stamp holding the tool's
-# hash. It is rewritten only when the content changes, so a touch, a checkout or a save without changes no longer
-# re-exports every map (a new stamp takes the tool's own mtime, so adding the stamps rebuilds nothing). Every make
-# re-hashes the tools (FORCE), like $(O)/.cflags; stamps are replaced by rename, so parallel sub-makes never read half a one.
+# Tool dependencies by meaning (TS = $(BUILD)/stamp): exports depend on $(TS)/<tool>.sum, a stamp holding the hash of
+# the tool's syntax tree without comments and docstrings (tools/srcsum.py; C sources: their bytes). It is rewritten only
+# when that changes, so a touch, a checkout, a save without changes or a comment-only edit re-exports nothing (a new
+# stamp takes the tool's own mtime, so adding the stamps rebuilds nothing). Every make re-checks the tools (FORCE), like
+# $(O)/.cflags (an unchanged file is not parsed again); stamps are replaced by rename, so parallel sub-makes never read
+# half a one.
+# Narrow dependencies (2026-11-02, a map.bin re-export is ~4 min): an export depends on what it takes from another
+# exporter, not on that exporter's file: map.bin on objects.bin.static / .anim (rewritten only when they change),
+# lights.json (export_effects.py --static-lights) and emevd.py's switched_entities; every per-area export on
+# $(A)/area.sig (tools/area.py --sig: that area's config + area.py's code), so a new block re-exports only that block.
 TS = $(BUILD)/stamp
 $(TS)/%.sum: FORCE
 	@mkdir -p $(@D)
-	@sha1sum < ../../tools/$* > $@.$$$$ && if [ ! -e $@ ]; then touch -r ../../tools/$* $@.$$$$ && mv -f $@.$$$$ $@; \
-	elif cmp -s $@.$$$$ $@; then rm -f $@.$$$$; else mv -f $@.$$$$ $@; fi
+	@python3 -I ../../tools/srcsum.py ../../tools/$* $@
 .PRECIOUS: $(TS)/%.sum
 # G = generated files shared by every area (player model / ESD / data headers, menu), O = objects, D = packs
 G = $(BUILD)/gen
@@ -164,30 +169,39 @@ endif
 
 # Breakable objects (pots) of the area: intact + pre-fractured models, piece bodies, placements
 # (types over the RAM budget are listed in objects.bin.static and drawn by the map as static objects)
+# AREA_PY: the whole of area.py (world.pak reads every block); per-area exports depend on $(A)/area.sig instead
 AREA_PY = $(TS)/area.py.sum
+AREA_SIG = $(A)/area.sig
+$(A)/area.sig: FORCE
+	@mkdir -p $(@D)
+	@python3 -I ../../tools/area.py --sig $(MAP) $@
 # + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
 # map leaves out of its static bake and the events out of their static colliders
 $(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
-		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_PY)
+		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
+# written by the objects.bin export, only when their content changes (map.bin depends on these, not objects.bin)
+$(A)/objects.bin.static $(A)/objects.bin.anim: $(A)/objects.bin
+	@test -f $@ || { echo "$@ missing: re-export objects.bin"; rm -f $<; exit 1; }
 
 # MSB enemy parts of the area (model, NpcParam / ThinkParam ids, position, yaw)
 # EMEVD bytecode (src/event.c): the map's events + entity table (hit ranges of this area / block's collision.bin),
 # common.emevd as evcommon.bin; coverage per map in events.txt
 $(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum \
-		$(TS)/souls.py.sum $(AREA_PY) $(A)/objects.bin
+		$(TS)/souls.py.sum $(AREA_SIG) $(A)/objects.bin
 	@mkdir -p $(@D)
 	ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
 $(A)/evcommon.bin: $(A)/events.bin
 
-$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_PY)
+$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $@ $(MAP)
 
 # Enemy / NPC character: FLVER, skeleton, anims, TAE windows, one variant per placed NpcParam / ThinkParam pair
-CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/export_model.py.sum $(TS)/export_enemies.py.sum $(TS)/havok_anim.py.sum \
-	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_PY)
+# (enemy_parts lives in area.py: an export_enemies.py edit re-exports enemies.bin only)
+CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum \
+	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 $(A)/c%/chr.bin: $(CHR_DEPS)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_chr.py "$(GAME)" c$* $(MAP) $(A)/c$* $(or $(LOD_c$*),1) $(or $(TEX_c$*),64)
@@ -199,10 +213,10 @@ $(AREA_DATA)/c%.pak: $(A)/c%/chr.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.su
 .PRECIOUS: $(A)/c%/chr.bin
 
 # DSR's AI scripts (Lua 5.0 bytecode) re-packed for the lua0 VM
-$(A)/ai_common.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(TS)/export_enemies.py.sum $(AREA_PY)
+$(A)/ai_common.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/lua50.py --pack --msb "$(GAME)" $(MAP) $@ "$(GAME)/script/aiCommon.luabnd.dcx"
-$(A)/ai_map.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(TS)/export_enemies.py.sum $(AREA_PY)
+$(A)/ai_map.lua0: $(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/lua50.py --pack --msb "$(GAME)" $(MAP) $@ "$(GAME)/script/$(MAP).luabnd.dcx"
 
@@ -271,12 +285,19 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
 MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 $(A)/map.bin: $(TS)/export_map.py.sum $(TS)/texmap.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
-		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum $(TS)/export_effects.py.sum $(TS)/ffx.py.sum \
+		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
-		$(TS)/native/simplify.c.sum $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum \
-		$(TS)/havok_collision.py.sum $(AREA_PY) $(A)/objects.bin
+		$(TS)/native/simplify.c.sum $(TS)/emevd.py.sum \
+		$(TS)/havok_collision.py.sum $(AREA_SIG) $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json
 	@mkdir -p $(@D)
-	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
+	env $(MAPENV) $(MAPENV_$(MAP)) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
+		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
+# the map bake's static point lights (export_effects.static_lights), rewritten only when they change
+$(A)/lights.json: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG)
+	@mkdir -p $(@D)
+	@# a first lights.json takes the export_effects.py stamp's mtime: adding it to a build re-exports no map
+	@test -e $@ || new=1; $(PY) -I ../../tools/export_effects.py "$(GAME)" --static-lights $@ $(MAP) && \
+		if [ -n "$$new" ]; then touch -r $(TS)/export_effects.py.sum $@; fi
 # normal-map relief (tools/export_normal.py, src/bump.c): written by the map.bin export, same chunk order
 $(A)/bump.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
@@ -285,13 +306,13 @@ $(A)/dg.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
-$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/souls.py.sum $(AREA_PY) $(A)/map.bin
+$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" $@ $(MAP) --tone $(A)/fx_tone.json
 
 
 # Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller): tools/export_collision.py
-$(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_PY)
+$(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
 

@@ -40,19 +40,18 @@ DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell tabl
           packed raw so it can be read in place): see write_cells. Without STREAM, cells.bin is empty.
 Usage: export_map.py <game dir> <out.bin> [map id] [preview prefix]
        export_map.py --render <map.bin> <preview prefix>   (offline renders of an existing map.bin, see VIEWS)"""
-import functools, math, os, struct, sys, time
+import functools, json, math, os, struct, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
 import texmap
 import export_normal
-import export_effects
 import dsr_light
 import area as area_mod
 import pose_obj
 import drawgroups
-import export_emevd
+import emevd
 import numpy as np
 
 TEX_MAX = 128
@@ -197,7 +196,7 @@ CHUNK_TAG = []  # build_chunks: (level, cell) per chunk (STREAM), else None
 CHUNK_DG = []  # build_chunks: draw-group set index per chunk (tools/drawgroups.py, dg.bin)
 CHUNK_ENT = []  # build_chunks: MSB entity id per chunk (0 = none): the part an event switches on / off (dg.bin DGM3)
 # TECH_DEBT event-5: pieces / objects whose entity id the map's events switch ((De)activate Object, Activate Map Part,
-# tools/export_emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
+# tools/emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
 EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
@@ -859,7 +858,15 @@ def gather(game, map_id):
     near = SCATTER[0].near_factor() if SCATTER[0] else [1.0, 1.0, 1.0]
     # static point lights (visuals-effects, TECH_DEBT map-28): bonfire effect lights + MSB Light events; the
     # PointLightBank light of the collision part follows the player (fog_section). FX_LIGHTS=0 for A/B.
-    plights = export_effects.static_lights(game, map_id) if os.environ.get("FX_LIGHTS", "1") == "1" else []
+    # static point lights (export_effects.static_lights): the Makefile passes them as a file (FX_LIGHTS_FILE, written
+    # by export_effects.py --static-lights) so map.bin depends on the lights, not on export_effects.py
+    plights = []
+    if os.environ.get("FX_LIGHTS", "1") == "1":
+        if os.environ.get("FX_LIGHTS_FILE"):
+            plights = [dsr_light.cubic_light(*a) for a in json.load(open(os.environ["FX_LIGHTS_FILE"]))]
+        else:
+            import export_effects
+            plights = [dsr_light.cubic_light(*a) for a in export_effects.static_lights(game, map_id)]
     albedo_cache, pending = {}, []
 
     def albedo(name):
@@ -884,7 +891,7 @@ def gather(game, map_id):
     textures, tex_index, meshes = [], {}, []
     flvers, poses = {}, {}
     export_normal.SRC.update(dds=dds, probes=probes, near=near)
-    switched = export_emevd.switched_entities(game, map_id) if EVENT_PARTS else set()
+    switched = emevd.switched_entities(game, map_id) if EVENT_PARTS else set()
     for pi, (part, (lid, fid)) in enumerate(zip(M["parts"], ids)):
         if part["type"] in (0, 1) and not area_mod.drawn(vis, part["draw_groups"]):
             continue  # never drawn from the area's region
@@ -1626,7 +1633,7 @@ def main():
                            export_collision.area_collision(game, map_id)[0], CHUNK_ENT)
     print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[3]} switched entities in "
           f"{sum(1 for e in CHUNK_ENT if e)} chunks, {dgn[2]} bytes")
-    export_effects.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
+    dsr_light.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
     if STREAM:
         nn = sum(len(c[2]) for c in cells)
         print(f"stream: {len(cells)} cells, resident {len(chunks)} chunks / {sum(c[2] for c in chunks)} tris "

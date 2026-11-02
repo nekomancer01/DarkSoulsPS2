@@ -18,8 +18,14 @@
 #           host PCSX2 instances its test drivers run) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
 #           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, Xvfb), so a test
 #           reserves 2 GB instead of 4.
+#           A make reserves only DSR_Q_MAKE_BASE_GB (default 3: compilers, pack.py, the exporters it runs without q):
+#           the exporters it runs through q (the Makefile's PY) each reserve their own measured peak (kind
+#           export_map.py, export_chr.py, ...; DSR_Q_NESTED_GB, default 6, before there is one) while the make runs, so
+#           a no-op or C-only build no longer waits for a world build's 12 GB (2026-11-02: a no-op make waited 38 min
+#           behind tests), and the -j exports of one build queue against the budget instead of all starting at once.
+#           Their lines in jobq.log say "in make".
 # Env: DSR_Q_BUDGET (default 20 GB of the 31 GB host: leaves room for the desktop, browser, RuneLite and Claude),
-#      DSR_Q_MAKE_GB (default 8). memwatch stays the backstop.
+#      DSR_Q_MAKE_GB (default 8), DSR_Q_MAKE_BASE_GB (3), DSR_Q_NESTED_GB (6). memwatch stays the backstop.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 GB=10
 R=
@@ -42,6 +48,13 @@ if [ -n "$IS_MAKE" ]; then
 else
     KIND=$(printf '%s\n' "$*" | grep -o '[^ /]*\.\(py\|sh\)\b' | head -1); KIND=${KIND:-${1##*/}}
 fi
+# an exporter run through q by a make that holds a reservation: reserves its own peak below (DSR_Q_IN_MAKE, set by
+# the outer q of a make); anything else nested runs inside the outer job's reservation
+NESTED=
+[ -n "$DSR_Q_IN_MAKE" ] && [ -z "$IS_MAKE" ] && NESTED=1
+if [ -z "$R" ] && [ -n "$IS_MAKE" ] && [ -z "$DSR_Q_HELD" ]; then
+    R=${DSR_Q_MAKE_BASE_GB:-3}
+fi
 if [ -z "$R" ]; then
     # largest of the last 20 runs of this kind that weren't killed (rc < 128)
     HIST=$(awk -F'\t' -v k="$KIND" '$2 == k && $4 < 128 {m[++n] = $3}
@@ -50,6 +63,7 @@ if [ -z "$R" ]; then
         R=$(( (HIST * 11 / 10 + 1023) / 1024 )); [ "$R" -lt 1 ] && R=1
     else  # no history: a build, or test-all.sh (its builds and tests run one after another inside it)
         R=$GB
+        [ -n "$NESTED" ] && [ "$R" -gt "${DSR_Q_NESTED_GB:-6}" ] && R=${DSR_Q_NESTED_GB:-6}
         case " $* " in *test-all.sh*) BIG=1 ;; *) BIG=$IS_MAKE ;; esac
         [ -n "$BIG" ] && [ "$R" -gt "${DSR_Q_MAKE_GB:-8}" ] && R=${DSR_Q_MAKE_GB:-8}
     fi
@@ -74,12 +88,14 @@ flock_parent() {  # a `flock ... .build.lock` ancestor
 held() {  # an ancestor already holds the queue: DSR_Q_HELD, or a `flock ... .build.lock` parent
     [ -n "$DSR_Q_HELD" ] || flock_parent
 }
-if held; then
+# a nested cap can't exceed the outer one (prlimit fails raising it): clamp to the current limit
+if [ -n "$DSR_Q_HELD" ]; then
+    CUR=$(ulimit -v); [ "$CUR" != unlimited ] && [ $((GB << 20)) -gt "$CUR" ] && GB=$((CUR >> 20))
+fi
+if held && [ -z "$NESTED" ]; then
     # a make inside a q job that holds no lock for its build dir (test-all.sh: the outer q runs a script, the builds
     # are nested) takes that lock, so it never overlaps a build of the same dir queued on its own; one inside a
     # `flock .build.lock` parent or a q holding this lock already has it (taking it again would deadlock)
-    # a nested cap can't exceed the outer one (prlimit fails raising it): clamp to the current limit
-    CUR=$(ulimit -v); [ "$CUR" != unlimited ] && [ $((GB << 20)) -gt "$CUR" ] && GB=$((CUR >> 20))
     if [ -n "$IS_MAKE" ] && [ "$LOCK" != "$DSR_Q_LOCK" ] && ! { [ "$LOCK" = "$ROOT/.build.lock" ] && flock_parent; }; then
         exec 8>"$LOCK"; flock 8
         DSR_Q_LOCK=$LOCK prlimit --as=$((GB << 30)) -- "$@" 8>&-  # the job gets no copy of the lock fd (see below)
@@ -120,7 +136,7 @@ fi
 rm -f "$WAITF"
 T1=$(date +%s)
 echo "[q] start after $(( T1 - T0 )) s (${AV} GB free, ${USED} GB reserved, cap ${GB} GB, reserve ${R} GB): $*" >&2
-WHERE=${ROOT##*/}${B:+ ${B/$ROOT\//}}
+WHERE=${ROOT##*/}${B:+ ${B/$ROOT\//}}${NESTED:+ in make}
 echo "$(date '+%F %T') start pid $$ cap ${GB}G res ${R}G (reserved ${USED}G) wait $(( T1 - T0 )) s [$WHERE]: $*" >> "$LOGDIR/jobq.log"
 # the job gets no copy of the lock fds: a daemon it starts (e.g. Xvfb :99 from pcsx2-run.sh) would otherwise hold
 # them after the job ends (deadlock 2026-10-31 11:47)
@@ -128,7 +144,8 @@ echo "$(date '+%F %T') start pid $$ cap ${GB}G res ${R}G (reserved ${USED}G) wai
 mkdir -p /tmp/dsr-q-peak
 python3 -I "$ROOT/tools/qpeak.py" $$ > /tmp/dsr-q-peak/$$ 2>/dev/null < /dev/null 8>&- 9>&- &
 QP=$!
-DSR_Q_HELD=1 prlimit --as=$((GB << 30)) -- "$@" 8>&- 9>&-
+IN_MAKE=; [ -n "$IS_MAKE" ] && IN_MAKE=1  # only a make's own exporters reserve on their own
+DSR_Q_HELD=1 DSR_Q_IN_MAKE=$IN_MAKE prlimit --as=$((GB << 30)) -- "$@" 8>&- 9>&-
 RC=$?
 rm -f "$RES/$$.$R"
 kill $QP 2>/dev/null; wait $QP 2>/dev/null

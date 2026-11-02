@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Usage: tools/later add [--fetch PATH]... [-m GB] <command...>   queue a long job for the idle hours
+       tools/later list                                         queued jobs
+       tools/later run [--until HH:MM] [--jobs N]               start the queued jobs (tools/qd), oldest first
+       tools/later drop ID                                      remove a queued job
+       tools/later timer                                        print a systemd user timer for a nightly run
+
+The PC runs nothing from about 02:00 to 10:00 (notes/jobq.log, 2026-10-31 .. 11-02) while soaks, routes and parameter
+sweeps take daytime queue slots. `later add` keeps such a job (with the tree it was queued from) in
+notes/later.queue; `later run` starts them through tools/qd, which sends what needs only the game (exports, builds,
+sweeps) to whichever machine in tools/hosts.local has room (the VPS) and keeps PCSX2 runs on this PC. Up to --jobs
+(default 3) run at once; tools/q's RAM budget still decides what actually starts. No job starts after --until (default
+09:00). Output per job: notes/later/<id>.log; one line per job in notes/later.log (start, end, rc, run time).
+Nothing runs by itself: `later run` from a shell, or the timer that `later timer` prints, installed by hand."""
+import datetime, json, os, shlex, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+QUEUE = os.path.join(ROOT, "notes", "later.queue")
+LOG = os.path.join(ROOT, "notes", "later.log")
+OUT = os.path.join(ROOT, "notes", "later")
+
+
+def load():
+    try:
+        return [json.loads(l) for l in open(QUEUE) if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def save(jobs):
+    os.makedirs(os.path.dirname(QUEUE), exist_ok=True)
+    tmp = f"{QUEUE}.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write("".join(json.dumps(j) + "\n" for j in jobs))
+    os.replace(tmp, QUEUE)
+
+
+def log(line):
+    with open(LOG, "a") as f:
+        f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {line}\n")
+
+
+def add(argv):
+    qd = []
+    while argv and argv[0] in ("--fetch", "-m", "-r", "-H", "--needs"):
+        qd += argv[:2]
+        argv = argv[2:]
+    if not argv:
+        sys.exit(__doc__)
+    jobs = load()
+    done = [int(f[:-4]) for f in os.listdir(OUT) if f[:-4].isdigit()] if os.path.isdir(OUT) else []
+    jid = max([j["id"] for j in jobs] + done + [0]) + 1  # never an id whose log exists
+    tree = os.getcwd()
+    jobs.append({"id": jid, "tree": tree, "qd": qd, "cmd": argv, "added": f"{datetime.datetime.now():%Y-%m-%d %H:%M}"})
+    save(jobs)
+    print(f"later: #{jid} queued in {tree}: {shlex.join(argv)}")
+
+
+def run(until, njobs):
+    os.makedirs(OUT, exist_ok=True)
+    stop = datetime.datetime.combine(datetime.date.today(), datetime.time.fromisoformat(until))
+    if stop < datetime.datetime.now():
+        stop += datetime.timedelta(days=1)
+    running = {}
+    while True:
+        for jid, (p, j, t0) in list(running.items()):
+            if p.poll() is not None:
+                log(f"end   #{jid} rc {p.returncode} run {time.time() - t0:.0f} s")
+                del running[jid]
+        jobs = load()
+        if jobs and len(running) < njobs and datetime.datetime.now() < stop:
+            j = jobs.pop(0)
+            save(jobs)  # taken off the queue when it starts: a crash of this runner never runs a job twice
+            out = open(os.path.join(OUT, f"{j['id']}.log"), "w")
+            cmd = [os.path.join(ROOT, "tools", "qd")] + j["qd"] + j["cmd"]
+            p = subprocess.Popen(cmd, cwd=j["tree"], stdout=out, stderr=subprocess.STDOUT)
+            running[j["id"]] = (p, j, time.time())
+            log(f"start #{j['id']} [{j['tree']}]: {shlex.join(j['cmd'])}")
+            continue
+        if not running and (not jobs or datetime.datetime.now() >= stop):
+            return
+        time.sleep(5)
+
+
+TIMER = """# ~/.config/systemd/user/dsr-later.service
+[Unit]
+Description=DarkSoulsPS2: queued long jobs (tools/later run)
+[Service]
+Type=simple
+ExecStart={exe} run --until 09:00
+
+# ~/.config/systemd/user/dsr-later.timer
+[Unit]
+Description=DarkSoulsPS2: run tools/later's queue at night
+[Timer]
+OnCalendar=*-*-* 02:00
+Persistent=false
+[Install]
+WantedBy=timers.target
+
+# then: systemctl --user daemon-reload && systemctl --user enable --now dsr-later.timer
+# (from a distrobox, ExecStart needs: /usr/bin/distrobox-enter -n <box> -- {exe} run --until 09:00)"""
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or a[0] in ("-h", "--help"):
+        print(__doc__)
+    elif a[0] == "add":
+        add(a[1:])
+    elif a[0] == "list":
+        for j in load():
+            print(f"#{j['id']}  {j['added']}  [{j['tree']}]  {shlex.join(j['qd'] + j['cmd'])}")
+    elif a[0] == "drop":
+        save([j for j in load() if str(j["id"]) not in a[1:]])
+    elif a[0] == "run":
+        opts = dict(zip(a[1::2], a[2::2]))
+        run(opts.get("--until", "09:00"), int(opts.get("--jobs", 3)))
+    elif a[0] == "timer":
+        print(TIMER.format(exe=os.path.abspath(__file__)))
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

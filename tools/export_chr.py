@@ -2,7 +2,7 @@
 + chr.bin (one variant per NpcParam / NpcThinkParam pair placed in the map, anims with root motion and TAE windows,
 attack hit capsules). Packed by tools/pack.py into data/c####.pak.
 
-Variants: every MSB enemy part of this model in the map (tools/export_enemies.py) gives an (NpcParam, ThinkParam)
+Variants: every MSB enemy part of this model in the map (tools/area.py enemy_parts) gives an (NpcParam, ThinkParam)
 pair; each keeps its own HP, defence, turn rate, capsule, model masks and think values (perception, distances, the
 GetExcelParam table the AI scripts read).
 Model: the chrbnd FLVER at one LOD. Textures from the chrbnd tpf, the external chr/c####.chrtpfbdt (chrtpfbhd in the
@@ -40,7 +40,7 @@ import havok_anim as ha
 import lua50
 import export_model
 from export_model import MeshBuilder, bake, bind_world, to_local, write_model
-from export_enemies import enemy_parts
+from area import enemy_parts
 
 # Anims every enemy needs (enemyCommon.esd): idle, walk F/B/L/R, run, steps, turns, damage (2000-2014 by level /
 # direction, f222), deaths 2200 / 2205, guard 9910 (DoEzAction while approaching)

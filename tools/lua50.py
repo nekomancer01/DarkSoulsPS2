@@ -191,11 +191,11 @@ def pack(out_path, sources):
 
 def msb_goals(game, map_id):
     """Battle / logic goal ids of the map's MSB enemy parts (their NpcThinkParam rows)"""
-    import export_enemies
+    import area
     P = souls.game_params(game)
     T, N = P["NpcThinkParam"], P["NpcParam"]
     ids = set()
-    for model, npc, think, *_ in export_enemies.enemy_parts(souls.read(f"{game}/map/MapStudio/{map_id}.msb"), map_id):
+    for model, npc, think, *_ in area.enemy_parts(souls.read(f"{game}/map/MapStudio/{map_id}.msb"), map_id):
         t = T.get(think) or T.get(N[npc][1]["aiThinkId"]) if npc in N else T.get(think)
         if t:
             ids |= {t[1]["battleGoalID"], t[1]["logicId"]}

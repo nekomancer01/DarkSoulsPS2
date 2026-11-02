@@ -15,8 +15,9 @@ SET = {
 
 # TURBO=1 (tools/test-run.py --turbo): no speed limit, for functional tests (crossings, soaks) that need no real-time
 # pacing. The ELF's frame times / fps come from the emulated clock, so they keep their meaning; the wall clock gets
-# shorter. TURBO=<x>: speed limit x (2 = 200 %). ASSUMED keys of PCSX2 2.x's ini: [Framerate] NominalScalar (0 =
-# unlimited, the speed menu's "Unlimited") and [EmuCore/GS] VsyncEnable; check with an A/B run after a PCSX2 update.
+# shorter. TURBO=<x>: speed limit x (2 = 200 %). Keys of PCSX2 2.x's ini: [Framerate] NominalScalar (0 = unlimited,
+# the speed menu's "Unlimited") and [EmuCore/GS] VsyncEnable. A/B 2026-11-02 (world_soak.txt, same ELF): 159.3 s ->
+# 104.9 s, 4338 / 4343 frames, the 7 shots' TEST stats equal within noise; check again after a PCSX2 update.
 TURBO = os.environ.get("TURBO", "")
 
 

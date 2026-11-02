@@ -65,6 +65,13 @@ Several agents often work in the same tree at once.
 - **Job queue:** every heavy job (make, exporters, PCSX2 tests, Ghidra, whole-game scans) runs as `tools/q [-m GB] <cmd>`.
   It runs jobs one at a time, waits for free RAM and caps each job's memory. Exporters must stream per part or area
   instead of loading everything at once.
+- **Fast iteration:** a map re-export takes ~4 min, so most of a build-test loop is waiting on exports. A new clone
+  or build dir starts from an existing build: `tools/newbuild "$PWD/build" --from <other tree>/build` (copies the tool
+  stamps too, so only what your tree changes re-exports). Builds depend on what an export takes from another tool, not
+  on its whole file (ps2/proto/Makefile, "Narrow dependencies"): when a new export reads another exporter's code or
+  data, add that to its prerequisites the same way rather than the other tool's whole stamp. Long functional runs
+  (soaks, routes) stop at the first error in the EE log (`tools/test-run.py --keep-going` to run on) and can use
+  `--turbo`; queue the ones that need no answer today with `tools/later add <cmd>` for the night queue.
 - **Ownership:** when several agents work at once, the maintainer's working notes (`notes/HANDOFF.md`, kept locally
   and not in the public repo) say who owns which files. Outside your own files,
   make small, local edits only. Re-read the file right before each edit, and never rewrite or reformat a whole

@@ -58,7 +58,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `pcsx2-run.sh` | Boot an ELF in PCSX2: headless + screenshot, or a visible window |
 | `test-all.sh` | Build + smoke test + render diff + perf check in one run |
-| `test-run.py` | Run one test script headless (`--turbo`: no speed limit, for functional runs) |
+| `test-run.py` | Run one test script headless; stops 5 s after the first EE log error (`--keep-going` runs on), progress line every minute (`--turbo`: no speed limit, for functional runs) |
 | `test-smoke.py` | Autotest smoke test |
 | `test-gsdump.py` | Graphics regression diff |
 | `test-perf.py` | Perf history |
@@ -103,7 +103,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/q` | Job queue: `-m` address-space cap, `-r` RAM reservation against a 20 GB budget (default: the measured peak of earlier runs of the same kind of job + 10 %, from notes/jobq-peaks.tsv, which `tools/qpeak.py` fills; without history builds and test-all reserve 8 GB); builds lock their own build dir, so builds of different `BUILD=` dirs run side by side; notes/jobq.log has wait and run time per job |
 | `tools/qd` | Delegator: same arguments as `tools/q`, runs the job on whichever machine in `tools/hosts.local` (git-ignored) has room, copying the tree there over rsync for another machine; `--fetch PATH` copies results back, `-H NAME` forces a machine |
 | `tools/qstat.py` | This machine's queue state as JSON (budget, reserved, free, MemAvailable, swap, memwatch level, running and waiting jobs); `--fits GB` exits 0 when a job fits now. Used by `tools/qd` |
-| `tools/newbuild` | Seed a new build dir (`make BUILD=...`) from an existing build, so only what changed re-exports |
+| `tools/newbuild` | Seed a new build dir (`make BUILD=...`) or a new clone's `build/` (`--from` another tree's build) from an existing build, stamps included, so only what changed re-exports |
+| `tools/srcsum.py` | The Makefile's tool stamps: hash of a Python tool's syntax tree without comments / docstrings, so comment edits re-export nothing |
+| `tools/later` | Night queue: `later add <cmd>` keeps long jobs (soaks, routes, sweeps) for the idle hours, `later run` starts them through `tools/qd` (exports to the VPS, PCSX2 runs here); `later timer` prints a systemd timer |
 | `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |
