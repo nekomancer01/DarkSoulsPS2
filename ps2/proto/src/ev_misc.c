@@ -92,6 +92,13 @@ void ev_bonfire_drop(int set)
             bonfires[i].used = 0;
 }
 
+void ev_bonfire_move(int from, int to)
+{
+    for (int i = 0; i < BONFIRE_MAX; i++)
+        if (bonfires[i].used && bonfires[i].set == from)
+            bonfires[i].set = to;
+}
+
 int ev_bonfire_count(void)
 {
     int n = 0;

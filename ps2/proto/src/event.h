@@ -22,6 +22,8 @@ int event_init(const void *common_blob);
  * events. event_block_off of a block that was never turned on does nothing. */
 void event_block_on(int block, const void *blob);
 void event_block_off(int block);
+/* After a warp's synchronous load (world.c settle): run every instance that can run until it waits (event-14) */
+void event_flush(void);
 /* Once a frame after the player / enemies / objects moved: action-button uses (ObjAct, treasure), then every running
  * instance until it waits. */
 void event_update(Player *pl, float dt);

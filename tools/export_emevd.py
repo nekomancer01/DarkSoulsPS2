@@ -78,7 +78,7 @@ OPS = [
     ("SKIP_MP", (1003, 5), "real"), ("END_MP", (1003, 6), "real"), ("SKIP_IN_MAP", (1003, 7), "real"),
     # actions
     ("INIT", (2000, 0), "real"), ("NET_SYNC", (2000, 2), "noop"), ("PREFETCH", (2000, 4), "noop"),
-    ("SAVE_REQ", (2000, 5), "real"), ("CUTSCENE", (2002, 3), "stub"), ("CUTSCENE_WARP", (2002, 4), "stub"),
+    ("SAVE_REQ", (2000, 5), "real"), ("CUTSCENE", (2002, 3), "stub"), ("CUTSCENE_WARP", (2002, 4), "real"),
     ("SET_FLAG", (2003, 2), "real"), ("EVENT_STATE", (2003, 8), "real"), ("BOSS_BAR", (2003, 11), "real"),
     ("BOSS_DEFEAT", (2003, 12), "real"), ("NAVMESH", (2003, 13), "stub"), ("MP_TRIGGER", (2003, 16), "noop"),
     ("RAND_FLAG", (2003, 17), "real"), ("ANIM", (2003, 18), "stub"), ("BATCH_FLAGS", (2003, 22), "real"),
@@ -355,6 +355,39 @@ def build(sections, map_id):
     return hdr + b"\0" * (hsize - len(hdr)) + bytes(body)
 
 
+def world_maps(map_id):
+    """MSBs of the world builds this map is part of (area.WORLDS: boot area + blocks), they share one frame"""
+    import area as area_mod
+    out = set()
+    for blocks in area_mod.WORLDS.values():
+        maps = {area_mod.BLOCKS[b]["map"] if b in area_mod.BLOCKS else b for b in blocks}
+        if map_id in maps:
+            out |= maps
+    return out
+
+
+def foreign_warp_targets(game, map_id, E):
+    """Entity records of the regions this map's Play Cutscene and Warp Player (2002[04]: cutscene, flags, region, AA, BB)
+    sends the player to in another map of the same world (Firelink <-> Asylum crow carry): the runtime finds them
+    while only this map is loaded, and world.c's warp settle loads the destination block (E7)"""
+    wm = world_maps(map_id)
+    out, msbs = [], {}
+    for ev in E.events:
+        for ins in ev.instrs:
+            if (ins.bank, ins.id) != (2002, 4) or len(ins.args) < 5 or not isinstance(ins.args[2], int):
+                continue
+            dest = f"m{ins.args[3]:02d}_{ins.args[4]:02d}_00_00"
+            if dest == map_id or dest not in wm:
+                continue
+            if dest not in msbs:
+                msbs[dest] = souls.msb1(souls.read(f"{game}/map/MapStudio/{dest}.msb"))
+            r = next((r for r in msbs[dest]["regions"] if r.get("entity_id") == ins.args[2]), None)
+            if r:
+                out.append(struct.pack("<iBBH3ff3fI8x", r["entity_id"], ENT_REGION, SHAPES.get(r["shape"], 0), 0,
+                                       *r["pos"], _yaw(r["rot"]), 0, 0, 0, 0))
+    return out
+
+
 def export(game, map_id, with_entities=True):
     E = emevd.load(map_id, game)
     evs, ins_b, sub_b, counts, missing = encode_events(E)
@@ -362,6 +395,7 @@ def export(game, map_id, with_entities=True):
     if with_entities:
         msb = souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb"))
         ents, ranges, cols = entities(game, map_id, msb, hit_ranges(game, map_id))
+        ents = sorted(ents + foreign_warp_targets(game, map_id, E), key=lambda b: struct.unpack_from("<i", b)[0])
         tr, oa, lots = treasures_objacts_lots(game, msb, E, emevd.load("common", game))
     data = build([(evs, len(evs)), (ins_b, len(ins_b)), (sub_b, len(sub_b) // 8), (ents, len(ents)),
                   (ranges, len(ranges)), (cols, len(cols)), (tr, len(tr)), (oa, len(oa)), lots], map_id)

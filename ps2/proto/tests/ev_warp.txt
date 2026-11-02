@@ -1,0 +1,28 @@
+# E7 event warps and map events across world blocks (default world build: Firelink + Burg west / bonfire / Parish).
+# 1 a spawn is a warp: world.c settles the load and event_flush runs the new block's constructors to their first wait
+#   behind it (event-14): nothing is left to run one frame later.
+# 2 an event warp (ev warp = warp_to, as 2004[41] / 2002[04] use it) to a region of a block that is not loaded (Parish
+#   courtyard 1012107) loads it the same way.
+# 3 when the block running m10_01's events unloads and another m10_01 block stays, the events go on there (event-10);
+#   back at Firelink every m10_01 block unloads and its events end.
+option hud
+option noenemies
+option nodemo
+wait 2
+spawn -47.8 -21.8 -35.6 4.0
+frames 2
+ev expect settled
+ev expect mapevents 10 1 1
+ev warp 1012107
+frames 2
+ev expect settled
+ev expect y > 25
+ev expect mapevents 10 1 -2
+wait 8
+ev expect mapevents 10 1 -2
+shot warp_parish
+spawn -47.6 -59.9 53.9 1.6
+wait 8
+ev expect mapevents 10 1 -1
+ev summary
+end

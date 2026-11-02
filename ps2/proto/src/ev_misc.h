@@ -26,6 +26,7 @@ int ev_boss_defeats(void);
  * object's position; set = the event set it came from (dropped with its block) */
 void ev_bonfire_register(int set, s32 flag, s32 entity, const float pos[3], float dist, float angle, int kindle);
 void ev_bonfire_drop(int set);
+void ev_bonfire_move(int from, int to);  /* the events of a map moved to another block's set */
 /* Action button at pos / yaw: a registered bonfire in reach is lit (its flag off) or rested at. 1 if one was used. */
 int ev_bonfire_action(const float pos[3], float yaw);
 int ev_bonfire_count(void);
