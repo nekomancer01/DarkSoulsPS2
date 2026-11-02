@@ -32,6 +32,9 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3]);
  * down (GI_EnvSpc probe x LightBank envSpc), the LightBank specular light and its world direction; all 0 without a
  * map (no specular). */
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3]);
+/* Far depth of field of the player's area (DofBank row of its collision part: farDofBegin / farDofEnd in metres,
+ * farDofMul as 0..1); 0 if the area has none. main.c's flip blurs by it. */
+int map_far_dof(float *begin, float *end, float *mul);
 extern int map_vu1_batches, map_ee_tris;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
  * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams) or NULL

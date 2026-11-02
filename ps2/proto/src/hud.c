@@ -20,6 +20,9 @@ typedef struct { short sprite, x, y, w, h; unsigned char r, g, b, a; } LayoutEnt
 /* Bar length grows with the maximum like DSR's; the DRB frame is the length at these caps (DS1 limits) */
 #define HP_CAP 1900.0f
 #define SP_CAP 160.0f
+/* HUD sprites write the nearest Z (Z test off): main.c's far depth of field blurs pixels by their Z and must leave
+ * the HUD sharp wherever it lies over the distance */
+#define HUD_Z 0xFFFF
 
 static GSGLOBAL *gs;
 static const unsigned char *mb;
@@ -94,12 +97,12 @@ void hud_sprite(int s, float x, float y, float w, float h, int r, int g, int b, 
     const Sprite *p = &spr[s];
     /* half-texel inset: bilinear filtering must not pull in the 1-texel gap around each atlas piece */
     gsKit_prim_sprite_texture(gs, &atlas[p->atlas], R_HX(x), y, p->u + 0.5f, p->v + 0.5f, R_HX(x + w), y + h,
-                              p->u + p->w - 0.5f, p->v + p->h - 0.5f, 0, rgba(r, g, b, a));
+                              p->u + p->w - 0.5f, p->v + p->h - 0.5f, HUD_Z, rgba(r, g, b, a));
 }
 
 void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a)
 {
-    gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, 0, rgba(r, g, b, a));
+    gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, HUD_Z, rgba(r, g, b, a));
 }
 
 static void draw_layout(int i, int a)
@@ -134,7 +137,7 @@ float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
         if (*s != ' ')
             gsKit_prim_sprite_texture(gs, &atlas[0], R_HX(x + gl->pre), y, gl->u, gl->v, R_HX(x + gl->pre + gl->w),
                                       y + gl->h,
-                                      gl->u + gl->w, gl->v + gl->h, 0, rgba(r, g, b, 0x80));
+                                      gl->u + gl->w, gl->v + gl->h, HUD_Z, rgba(r, g, b, 0x80));
         x += gl->adv;
     }
     return w;
