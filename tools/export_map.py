@@ -1199,22 +1199,22 @@ def gather(game, map_id):
                 # colour carries the blend: DSR's output for the blended mean colour / the first texture's mean
                 alb2 = albedo(m["diffuse2"]) if "[M]" in m["mtd"] and m.get("diffuse2") in dds else None
                 pending.append((wrgb, hdr, wcol, alb, alb2, tone_of[pi]))
-            for n, c in zip(wn, wcol):
-                if lit and not water:
-                    wa.append(0x80)
-                    continue
-                k = [x / spill for x in tint] if not lit else (1.0, 1.0, 1.0)
-                if sky:  # emissive HDR: texture x MTD colour x power, through the tone map like the lit map
-                    t = tones.get(tone_of[pi]) or tones.setdefault(tone_of[pi], dsr_light.Tone(
-                        tone_rows[tone_of[pi][0]], banks["ToneCorrect"].get(tone_of[pi][1])))
-                    g = mp.get("g_DiffuseMapColorPower", (1.0,))[0]
-                    out = t([dsr_light.srgb_lin(alb[j]) * g * x for j, x in
-                             enumerate(mp.get("g_DiffuseMapColor", (1.0, 1.0, 1.0)))])
-                    k = [out[j] / alb[j] for j in range(3)]
-                if water:  # colour and opacity are in the texture (vertex colours hold the shader's flow data)
-                    k, c = (1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 1.0)
-                wrgb.append([min(255, int(0x80 * k[j] * c[j])) for j in range(3)])
-                wa.append(min(0x80, int(0x80 * c[3] * spill + 0.5)) if blend else 0x80)
+            if lit and not water:  # tone mapped below; alpha 0x80
+                wa = [0x80] * len(wn)
+            else:
+                for n, c in zip(wn, wcol):
+                    k = [x / spill for x in tint] if not lit else (1.0, 1.0, 1.0)
+                    if sky:  # emissive HDR: texture x MTD colour x power, through the tone map like the lit map
+                        t = tones.get(tone_of[pi]) or tones.setdefault(tone_of[pi], dsr_light.Tone(
+                            tone_rows[tone_of[pi][0]], banks["ToneCorrect"].get(tone_of[pi][1])))
+                        g = mp.get("g_DiffuseMapColorPower", (1.0,))[0]
+                        out = t([dsr_light.srgb_lin(alb[j]) * g * x for j, x in
+                                 enumerate(mp.get("g_DiffuseMapColor", (1.0, 1.0, 1.0)))])
+                        k = [out[j] / alb[j] for j in range(3)]
+                    if water:  # colour and opacity are in the texture (vertex colours hold the shader's flow data)
+                        k, c = (1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 1.0)
+                    wrgb.append([min(255, int(0x80 * k[j] * c[j])) for j in range(3)])
+                    wa.append(min(0x80, int(0x80 * c[3] * spill + 0.5)) if blend else 0x80)
             # normal-map relief (tools/export_normal.py): per-wedge tangent frames of lit, opaque bumped meshes
             bump = export_normal.register(m, V, fvw, wn, xn, light_rows.get(lid, light_rows[main_light]), alb,
                                           probe_at) if lit and not water and not grass and V["uv"] else None
@@ -1225,6 +1225,8 @@ def gather(game, map_id):
                                dg=DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0))
 
+    _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
+    _DEDUP.clear()
     rss(f"gather meshes ({len(meshes)})")
     # lit map: auto exposure per tone map row (geometric mean, see the constants), then vertex colour = tone mapped colour / texture mean, so
     # texture x vertex colour gives DSR's output for the texture's mean colour
