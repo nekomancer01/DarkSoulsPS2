@@ -239,6 +239,7 @@ void save_tick(const Player *pl, float dt)
     int dirty = flags_changes() != seen_flags || progress_changes() != seen_prog;
     if (request || (dirty && since >= SAVE_INTERVAL)) {
         request = 0;
+        since = 0;  /* also after a failed write (card full or pulled): retry in SAVE_INTERVAL, not every frame */
         save_write(pl);
     }
 }
