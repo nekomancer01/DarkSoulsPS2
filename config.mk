@@ -20,9 +20,9 @@ PY ?= $(if $(wildcard $(DSR_ROOT)/.venv/bin/python),$(DSR_ROOT)/.venv/bin/python
 # the source tree. host: under PCSX2 = the ELF's folder, so packs sit in $(BUILD)/data next to the ELF.
 BUILD ?= $(DSR_ROOT)/build
 
-# Every goal except clean / distclean / help needs the game: stop with a clear message when it is missing or an
+# Every goal except clean / distclean / help / elf (ps2/proto: the game-free ELF) needs the game: stop with a clear message when it is missing or an
 # unsupported version (tools/verify_game.py; DSR_ALLOW_UNSUPPORTED=1 builds anyway).
-ifneq ($(filter-out clean distclean help,$(or $(MAKECMDGOALS),all)),)
+ifneq ($(filter-out clean distclean help elf,$(or $(MAKECMDGOALS),all)),)
 ifeq ($(strip $(DSR_GAME)),)
 $(shell python3 -I $(DSR_ROOT)/tools/gamepath.py >&2)
 $(error Dark Souls Remastered not found; set DSR_GAME (see above and README.md))

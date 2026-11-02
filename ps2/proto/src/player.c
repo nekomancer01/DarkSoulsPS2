@@ -22,6 +22,8 @@
 #include "save.h"
 #include "bonfire.h"
 
+/* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
+#define anims (player_data->anims)
 #define PI 3.14159265f
 
 /* Stamina is an int (chr+0x3F8); the setter FUN_140322cf0 clamps it to [-50, max] */

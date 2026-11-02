@@ -61,7 +61,8 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o)
+	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	gamedata.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -91,7 +92,9 @@ endif
 # area; enemyCommon.esd + aiCommon's Lua (tools/lua50.py --pack) in common.pak, the area's Lua in the area pack.
 # The area's enemy types come from its MSB (inside the area's region, tools/area.py); Firelink: c1000 c1201 c2510 c2540
 # c2550 c2750 c2900 c2910 c3510 c5330
-ENEMIES ?= $(shell AREA_BLOCK=$(BLOCK) python3 -I ../../tools/export_enemies.py --models "$(GAME)" $(MAP))
+# (make elf needs neither the game nor the packs: no enemy list, no world blocks)
+GAMEFREE := $(filter elf,$(MAKECMDGOALS))
+ENEMIES ?= $(if $(GAMEFREE),,$(shell AREA_BLOCK=$(BLOCK) python3 -I ../../tools/export_enemies.py --models "$(GAME)" $(MAP)))
 # FLVER LOD per character: LOD1 for the two most common melee types, LOD2 for the rest (EE RAM: skin streams)
 LOD_c1201 = 2
 LOD_c2510 = 2
@@ -106,16 +109,21 @@ TEX_c2900 = 128
 PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.pak) $(AREA_DATA)/common.pak
 # World streaming (src/world.c): the other blocks of this boot area's world (tools/area.py WORLDS, "<msb>:<block>"),
 # each built by a sub-make, and data/world.pak with their table (tools/export_world.py). Only for the default map.
-WORLD_BLOCKS := $(if $(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
+WORLD_BLOCKS := $(if $(GAMEFREE)$(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
 ifneq ($(WORLD_BLOCKS),)
 PACKS += worldpacks $(D)/world.pak
 endif
 WORLD_SPLIT = $(or $(BLOCK),$(WORLD_BLOCKS))
 
-all: $(G)/player_data.h $(G)/combat_data.h $(G)/progress_data.h $(PACKS) $(EE_BIN)
+all: $(PACKS) $(EE_BIN)
 	$(EE_STRIP) --strip-all $(EE_BIN)
 	@# the links (the user's launch path) follow the default build only: scratch / variant BUILD= dirs leave them alone
 	@$(if $(filter $(abspath $(DSR_ROOT)/build),$(abspath $(BUILD))),ln -sfn $(EE_BIN) $(notdir $(EE_BIN)); [ -e data ] && [ ! -L data ] || ln -sfn $(D) data,true)
+# make elf: only the ELF, without the game (CI release, tools/pages): it holds no game data, the values it needs come
+# from the packs at boot (src/gamedata.c), so one build runs with every player's own packs of the same layout
+elf: $(EE_BIN)
+	$(EE_STRIP) --strip-all $(EE_BIN)
+.PHONY: elf
 # The ELF's old in-tree name (make proto.elf, make proto_<MAP>.elf) = all; ./proto.elf is the link `all` refreshes
 $(notdir $(EE_BIN)): all
 # one world block's packs (no ELF): make MAP=<msb> BLOCK=<block> blockpacks
@@ -136,9 +144,11 @@ $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.b
 	python3 -I ../../tools/pack.py $@ world.bin=$(G)/world.bin
 .PHONY: $(notdir $(EE_BIN))
 
-$(D)/c0000.pak: $(G)/model.bin $(G)/esd.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
+# player.gd / combat.gd / progress.gd: the game values the engine loads at boot (src/gamedata.c, tools/gamedata.py)
+GAMEDATA = $(G)/player.gd $(G)/combat.gd $(G)/progress.gd
+$(D)/c0000.pak: $(G)/model.bin $(G)/esd.bin $(GAMEDATA) $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
-	python3 -I ../../tools/pack.py $@ model.bin=$(G)/model.bin esd.bin=$(G)/esd.bin
+	python3 -I ../../tools/pack.py $@ model.bin=$(G)/model.bin esd.bin=$(G)/esd.bin $(foreach f,$(GAMEDATA),$(notdir $(f))=$(f))
 
 # The player's action logic: c0000.esd (state groups, conditions, bytecode) packed for src/esd.c
 $(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
@@ -229,25 +239,22 @@ $(AREA_DATA)/common.pak: $(G)/enemyCommon.esd.bin $(A)/ai_common.lua0 $(TS)/pack
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ esd.bin=$(G)/enemyCommon.esd.bin ai.lua0=$(A)/ai_common.lua0
 
-$(G)/player_data.h: $(TS)/export_player.py.sum $(TS)/souls.py.sum
+# The layouts of these records are the committed src/*_data.h (tools/gamedata.py header <name>); the ELF needs no game
+$(G)/player.gd: $(TS)/export_player.py.sum $(TS)/gamedata.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_player.py "$(GAME)" $@
 
-$(O)/player.o: $(G)/player_data.h
-
 # New-game progression (src/progress.c): CharaInitParam of the starting class
-$(G)/progress_data.h: $(TS)/export_progress.py.sum $(TS)/params.py.sum $(TS)/souls.py.sum
+$(G)/progress.gd: $(TS)/export_progress.py.sum $(TS)/gamedata.py.sum $(TS)/params.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_progress.py "$(GAME)" $@
 
-$(O)/progress.o: $(G)/progress_data.h
-
 # HP / damage core: stats, CalcCorrectGraph rows, weapon dummy polys, AtkParam windows, the debug dummy's NpcParam
-$(G)/combat_data.h: $(TS)/export_combat.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
+$(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/gamedata.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_combat.py "$(GAME)" $@
 
-$(O)/combat.o: $(G)/combat_data.h src/combat.h
+$(O)/combat.o: src/combat.h
 $(O)/player.o $(O)/main.o $(O)/enemy.o: src/combat.h
 $(O)/enemy.o: src/enemy.h src/ai.h src/model.h src/esd.h
 $(O)/ai.o: src/ai.h src/lua0.h

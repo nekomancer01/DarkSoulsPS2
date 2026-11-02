@@ -28,7 +28,7 @@ void progress_new_game(void)
     inv_add(ITEM_GOODS | ESTUS_ID, 1);
     prog.equip[EQ_QUICK1] = ESTUS_ID;
     for (int i = 0; i < START_ITEMS; i++)
-        inv_add(ITEM_GOODS | start_items[i][0], start_items[i][1]);
+        inv_add(ITEM_GOODS | start_items[i].id, start_items[i].count);
     changes++;
 }
 
