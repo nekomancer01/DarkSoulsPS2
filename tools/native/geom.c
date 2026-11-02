@@ -11,6 +11,7 @@
    nearest_rgb: nearest palette entry for tools/texmap.py.
    nearest_d2: squared distance from each query point to the nearest sample point (k-d tree), for
    tools/export_map.py view_distance.
+   soft_targets: tools/export_map.py soften_thin's footprint colours (numpy's summation order kept).
 
    Only malloc / free / qsort from libc: builds unchanged as a Pyodide side module (tools/native/build-wasm.sh). */
 #include <stdlib.h>
@@ -170,4 +171,113 @@ void nearest_rgb(int n, const int *X, int k, const int *P, int c, long long *out
         }
         out[i] = bi;
     }
+}
+
+/* ---- soften_thin's footprint colours (tools/export_map.py): for each query q (centre Cq[q], radius Rq[q]) the
+   wt-weighted mean of col over the triangles whose centroid cen lies within the radius, searched in the 2 m grid
+   cells (side G) the radius touches, x-major as the Python loops; cells given sorted (ckey, ncell x 3) with their
+   members (cidx[cstart[k] .. cstart[k + 1]], ascending). The sums repeat numpy's: the squared distance
+   (dx^2 + dy^2) + dz^2, wt[idx].sum() as numpy's pairwise sum, (col[idx] * wt[idx]).sum(0) as a running sum per
+   channel. out[q] = the mean and ok[q] = 1 when there are members with a positive weight sum, else ok[q] = 0. Returns
+   -1 when out of memory. ---- */
+static double fl(double x)  /* floor() without libm (|x| < 2^62) */
+{
+    double f = (double)(long long)x;
+    return f > x ? f - 1.0 : f;
+}
+
+static double np_pairwise(const double *a, long long n)  /* numpy's pairwise_sum (umath loops) */
+{
+    if (n < 8) {
+        double res = -0.0;
+        for (long long i = 0; i < n; i++)
+            res += a[i];
+        return res;
+    }
+    if (n <= 128) {
+        double r[8], res;
+        long long i;
+        for (int j = 0; j < 8; j++)
+            r[j] = a[j];
+        for (i = 8; i < n - (n % 8); i += 8)
+            for (int j = 0; j < 8; j++)
+                r[j] += a[i + j];
+        res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        for (; i < n; i++)
+            res += a[i];
+        return res;
+    }
+    long long n2 = n / 2;
+    n2 -= n2 % 8;
+    return np_pairwise(a, n2) + np_pairwise(a + n2, n - n2);
+}
+
+static long long cell_find(const long long *ckey, int ncell, long long x, long long y, long long z)
+{
+    int lo = 0, hi = ncell;
+    while (lo < hi) {
+        int m = (lo + hi) / 2;
+        const long long *k = ckey + 3 * (long long)m;
+        int lt = k[0] != x ? k[0] < x : k[1] != y ? k[1] < y : k[2] < z;
+        if (lt)
+            lo = m + 1;
+        else
+            hi = m;
+    }
+    if (lo < ncell && ckey[3 * (long long)lo] == x && ckey[3 * (long long)lo + 1] == y && ckey[3 * (long long)lo + 2] == z)
+        return lo;
+    return -1;
+}
+
+int soft_targets(int nq, const double *Cq, const double *Rq, int n, const double *cen, const double *col,
+                 const double *wt, int ncell, const long long *ckey, const long long *cstart, const long long *cidx,
+                 double G, double *out, unsigned char *ok)
+{
+    long long *idx = malloc(sizeof(long long) * (n > 0 ? n : 1));
+    double *w = malloc(sizeof(double) * (n > 0 ? n : 1));
+    if (!idx || !w) {
+        free(idx);
+        free(w);
+        return -1;
+    }
+    for (int q = 0; q < nq; q++) {
+        const double *c = Cq + 3 * (long long)q;
+        double r = Rq[q], rr = r * r;
+        long long lo[3], hi[3], m = 0;
+        for (int a = 0; a < 3; a++) {
+            lo[a] = (long long)fl((c[a] - r) / G);
+            hi[a] = (long long)fl((c[a] + r) / G);
+        }
+        for (long long x = lo[0]; x <= hi[0]; x++)
+            for (long long y = lo[1]; y <= hi[1]; y++)
+                for (long long z = lo[2]; z <= hi[2]; z++) {
+                    long long k = cell_find(ckey, ncell, x, y, z);
+                    if (k < 0)
+                        continue;
+                    for (long long s = cstart[k]; s < cstart[k + 1]; s++) {
+                        long long i = cidx[s];
+                        double dx = cen[3 * i] - c[0], dy = cen[3 * i + 1] - c[1], dz = cen[3 * i + 2] - c[2];
+                        if ((dx * dx + dy * dy) + dz * dz <= rr)
+                            idx[m++] = i;
+                    }
+                }
+        ok[q] = 0;
+        if (!m)
+            continue;
+        for (long long s = 0; s < m; s++)
+            w[s] = wt[idx[s]];
+        double ws = np_pairwise(w, m);
+        if (!(ws > 0))
+            continue;
+        for (int j = 0; j < 3; j++) {
+            double acc = col[3 * idx[0] + j] * w[0];
+            for (long long s = 1; s < m; s++)
+                acc += col[3 * idx[s] + j] * w[s];
+            out[3 * (long long)q + j] = acc / ws;
+        }
+        ok[q] = 1;
+    }
+    free(idx);
+    free(w);
+    return 0;
 }

@@ -1454,22 +1454,43 @@ def soften_thin(entries, view_s, floor):
     for i, k in enumerate(map(tuple, gk)):
         grid.setdefault(k, []).append(i)
     grid = {k: np.array(v) for k, v in grid.items()}
+    lib = dsr_light.geom_lib()
+    if lib is not None:  # the cells sorted by key, members ascending (as the grid lists), for geom.c soft_targets
+        order = np.lexsort((gk[:, 2], gk[:, 1], gk[:, 0]))
+        sk = gk[order]
+        new = np.ones(len(sk), bool)
+        new[1:] = (sk[1:] != sk[:-1]).any(1)
+        ckey = np.ascontiguousarray(sk[new])
+        cstart = np.append(np.nonzero(new)[0], len(sk)).astype(np.int64)
+        cidx = np.ascontiguousarray(order, np.int64)
+        cen_c, col_c, wt_c = (np.ascontiguousarray(a, np.float64) for a in (cen, col, wt))
     for e, (P, W, C, _, px, mpp) in zip(entries, rows):
         k = np.clip(1 - px / SOFT_PX, 0, 1) if len(P) else px
         if not len(P) or not k.any():
             continue
         tgt = C.copy()
-        for i in np.nonzero(k > 0)[0]:
-            c, r = P[i].mean(0), SOFT_R_PX * mpp[i]
-            lo, hi = np.floor((c - r) / G).astype(int), np.floor((c + r) / G).astype(int)
-            idx = [grid[q] for q in ((x, y, z) for x in range(lo[0], hi[0] + 1) for y in range(lo[1], hi[1] + 1)
-                                     for z in range(lo[2], hi[2] + 1)) if q in grid]
-            if not idx:
-                continue
-            idx = np.concatenate(idx)
-            idx = idx[((cen[idx] - c) ** 2).sum(1) <= r * r]
-            if len(idx) and wt[idx].sum() > 0:
-                tgt[i] = (col[idx] * wt[idx, None]).sum(0) / wt[idx].sum()
+        if lib is not None:
+            q = np.nonzero(k > 0)[0]
+            Cq = np.ascontiguousarray(((P[q, 0] + P[q, 1]) + P[q, 2]) / 3)  # P[i].mean(0)
+            Rq = np.ascontiguousarray(SOFT_R_PX * mpp[q])
+            out, ok = np.empty((len(q), 3)), np.zeros(len(q), np.uint8)
+            if lib.soft_targets(len(q), Cq.ctypes.data, Rq.ctypes.data, len(cen_c), cen_c.ctypes.data,
+                                col_c.ctypes.data, wt_c.ctypes.data, len(ckey), ckey.ctypes.data, cstart.ctypes.data,
+                                cidx.ctypes.data, G, out.ctypes.data, ok.ctypes.data) < 0:
+                raise MemoryError("soft_targets")
+            tgt[q[ok == 1]] = out[ok == 1]
+        else:  # numpy path (no C helpers)
+            for i in np.nonzero(k > 0)[0]:
+                c, r = P[i].mean(0), SOFT_R_PX * mpp[i]
+                lo, hi = np.floor((c - r) / G).astype(int), np.floor((c + r) / G).astype(int)
+                idx = [grid[q] for q in ((x, y, z) for x in range(lo[0], hi[0] + 1) for y in range(lo[1], hi[1] + 1)
+                                         for z in range(lo[2], hi[2] + 1)) if q in grid]
+                if not idx:
+                    continue
+                idx = np.concatenate(idx)
+                idx = idx[((cen[idx] - c) ** 2).sum(1) <= r * r]
+                if len(idx) and wt[idx].sum() > 0:
+                    tgt[i] = (col[idx] * wt[idx, None]).sum(0) / wt[idx].sum()
         # per wedge: the area-weighted mean of its triangles' k and targets
         ta = np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
         nw = len(e["wrgb"])
