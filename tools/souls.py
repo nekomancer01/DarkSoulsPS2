@@ -907,6 +907,7 @@ def bcdecode_lib():
 def dds_decode_rgba(d, max_dim=256):
     """DDS (BC1/2/3, or DX10 BC7) -> (w, h, RGBA bytes) of the largest mip with sides <= max_dim, via
     tools/native/libbcdecode.so (bcdec). None if the format is unsupported."""
+    import ctypes
     bcdecode_lib()
     h, w = struct.unpack_from("<ii", d, 12)
     mips = struct.unpack_from("<i", d, 28)[0]
