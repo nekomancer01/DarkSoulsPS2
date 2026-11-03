@@ -238,6 +238,28 @@ def _mx():
 
 
 _MX = {}
+_CHECK = os.environ.get("MAPX_CHECK") == "1"  # debugging: every C stage of the relief also run in numpy, compared
+
+
+def _chk(what, a, b):
+    """MAPX_CHECK: print whether the C result a equals the numpy result b (bit for bit), and where it first differs"""
+    if isinstance(a, tuple):
+        for i, (x, y) in enumerate(zip(a, b)):
+            _chk(f"{what}[{i}]", x, y)
+        return
+    a, b = np.asarray(a), np.asarray(b)
+    if a.shape != b.shape:
+        print(f"mapx check: {what} DIFF shape {a.shape} vs {b.shape}", flush=True)
+        return
+    ne = (a != b) & ~((a != a) & (b != b))
+    if not ne.any():
+        print(f"mapx check: {what} same {a.shape} {a.dtype}/{b.dtype}", flush=True)
+        return
+    ix = np.argwhere(ne)
+    i0 = tuple(ix[0].tolist())
+    ad = np.abs(a.astype(np.float64) - b.astype(np.float64))[ne]
+    print(f"mapx check: {what} DIFF {len(ix)} of {a.size} {a.dtype}/{b.dtype}, max |d| {ad.max():.3g}, first at {i0}: "
+          f"{a[i0]!r} vs {b[i0]!r}", flush=True)
 
 
 def _mx_rng(L, seed):
@@ -517,6 +539,11 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         Nn, Bc = np.empty((nt, 3)), np.empty((nt, 3))
         MX.mx_bump_frames(nt, PSc.ctypes.data, Nc.ctypes.data, Tc.ctypes.data, Wc.ctypes.data, _MX["fma"],
                           area.ctypes.data, Nn.ctypes.data, Bc.ctypes.data)
+        if _CHECK:
+            C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
+            _chk("area", area, np.array([0.5 * np.linalg.norm(c) for c in C]))
+            _chk("Nn", Nn, N / (np.array([np.linalg.norm(v) for v in N]).reshape(-1, 1) + 1e-12))
+            _chk("frames", (Nc, Tc, Bc), _frames(N, T, np.where(W < 0, -1.0, 1.0)))
     else:
         C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
         norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
@@ -548,11 +575,16 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     resp = _Response(tone, near, shadow_amb)
     R = resp(tri, np.array(RING[1:])) if MX is None else _mx_response(MX, resp, tri, np.array(RING[1:]))
     _, lab = (_kmeans if MX is None else lambda *a: _mx_kmeans(MX, *a))(R, BUMP_SPLIT, np.sqrt(area + 1e-6))
+    if _CHECK and MX is not None:
+        _chk("response", R, resp(tri, np.array(RING[1:])))
+        _chk("split kmeans", _mx_kmeans(MX, R, BUMP_SPLIT, np.sqrt(area + 1e-6)), _kmeans(R, BUMP_SPLIT, np.sqrt(area + 1e-6)))
     # textures in use, the palette, index maps
     names = sorted({e["tex"] for _, e, _ in tris})
     imgs = {}
     for nme in names:
         xy = _mx_xy_pow2(MX, dds[nme], max(BUMP_MAX, 4), BUMP_MAX) if MX is not None else None
+        if _CHECK and xy is not None:
+            _chk(f"xy_pow2 {nme}", xy, xy_pow2(dds[nme], max(BUMP_MAX, 4), BUMP_MAX))
         if xy is None:
             xy = xy_pow2(dds[nme], max(BUMP_MAX, 4), BUMP_MAX)
         if xy is not None:
@@ -560,6 +592,10 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     allxy = np.concatenate([v.reshape(-1, 2) for v in imgs.values()])
     sub = allxy[np.random.default_rng(2).choice(len(allxy), min(len(allxy), 150000), replace=False)]
     pal, _ = _kmeans(sub, 255, iters=15) if MX is None else _mx_kmeans(MX, sub, 255, iters=15)
+    if _CHECK and MX is not None:
+        print(f"mapx check: palette input {sub.shape} {sub.dtype}, {len(imgs)} of {len(names)} textures decoded in C "
+              f"where BC5", flush=True)
+        _chk("palette kmeans", pal, _kmeans(sub, 255, iters=15)[0])
     pal = np.vstack([[0.0, 0.0], pal])
     texs, err_px = [], []
     for nme in names:
@@ -570,6 +606,8 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         x1 = x0.reshape(h // 2, 2, w // 2, 2, 2).mean(axis=(1, 3)) if h > 1 and w > 1 else x0
         mips = [(_nearest(x.reshape(-1, 2), pal) if MX is None else _mx_nearest(MX, x.reshape(-1, 2), pal)).astype(np.uint8)
                 for x in (x0, x1)]
+        if _CHECK and MX is not None:
+            _chk(f"mips {nme}", tuple(mips), tuple(_nearest(x.reshape(-1, 2), pal).astype(np.uint8) for x in (x0, x1)))
         err_px.append(np.linalg.norm(pal[mips[0]] - x0.reshape(-1, 2), axis=1).mean())
         texs.append(dict(name=nme, w=w, h=h, mips=[mm.tobytes() for mm in mips]))
     tex_of = {t["name"]: i for i, t in enumerate(texs)}
@@ -609,6 +647,8 @@ def _finish():
     F = np.array([(R[m] * area[m, None]).sum(0) / max(1e-9, area[m].sum()) for m in mem])
     MX = _mx()
     cen, lab = (_kmeans if MX is None else lambda *a: _mx_kmeans(MX, *a))(F, BUMP_K, np.array([area[m].sum() for m in mem]) + 1e-6)
+    if _CHECK and MX is not None:
+        _chk("finish kmeans", (cen, lab), _kmeans(F, BUMP_K, np.array([area[m].sum() for m in mem]) + 1e-6))
     rng = np.random.default_rng(3)
     cluts, cerr, terr = [], [], []
     for c in range(len(cen)):
@@ -619,6 +659,8 @@ def _finish():
         smp = tm if len(tm) <= CLUT_SAMPLE else rng.choice(tm, CLUT_SAMPLE, replace=False)
         r = resp({key: (v[smp] if isinstance(v, np.ndarray) else v) for key, v in tri.items()}, _STATE["pal"]) \
             if MX is None else _mx_response(MX, resp, tri, _STATE["pal"], rows=smp)
+        if _CHECK and MX is not None and c < 4:
+            _chk(f"clut response {c}", r, resp({key: (v[smp] if isinstance(v, np.ndarray) else v) for key, v in tri.items()}, _STATE["pal"]))
         cluts.append(r.mean(0))
         cerr.append(np.abs(r - r.mean(0)).mean() * 128)
         terr.append(np.abs(R[tm] - cen[c]).mean() * 128)
