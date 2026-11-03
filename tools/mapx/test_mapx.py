@@ -12,8 +12,20 @@ L = mapx_native.lib()
 assert L is not None, "libmapx did not build"
 
 
+def _canon(x):
+    if isinstance(x, (list, tuple)):
+        return type(x)(_canon(v) for v in x)
+    if isinstance(x, dict):
+        return {k: _canon(v) for k, v in x.items()}
+    if isinstance(x, np.generic):
+        return x.item()
+    if isinstance(x, np.ndarray):
+        return _canon(x.tolist())
+    return x
+
+
 def same(a, b, what):
-    if a != b:
+    if a != b or repr(_canon(a)) != repr(_canon(b)):  # repr: the sign of zeros too (0.0 == -0.0)
         raise SystemExit(f"FAIL {what}: C and Python differ")
 
 
@@ -383,3 +395,84 @@ if __name__ == "__main__":
     for k in range(seed, seed + count):
         tot += check_simplify(np.random.default_rng(k))
     print(f"mapx: simplify_meshes identical to the Python code on {count} random scenes ({tot} output triangles)")
+
+
+# ---- stage 3b: flatten + build_chunks ----
+def chunk_scene(rng):
+    textures = [(int(rng.choice([32, 64, 128, 256])), int(rng.choice([32, 64, 128]))) for _ in range(4)]
+    entries = []
+    shared = [tuple(float(x) for x in p) for p in rng.integers(-40, 40, (60, 3)) * 0.5]
+    shared += [(0.0, -0.0, 1.0), (-0.0, 0.0, 1.0), (0.0, 0.0, -0.0)]
+    for _ in range(int(rng.integers(1, 12))):
+        far, zeros = rng.random() < 0.3, rng.random() < 0.15
+        nw = int(rng.integers(3, 60))
+        wrgb = [tuple(int(v) for v in rng.integers(0, 256, 3)) for _ in range(nw)]
+        wa = [int(v) for v in rng.integers(0, 256, nw)]
+        wuv = [tuple(float(v) for v in rng.uniform(-3, 3, 2)) for _ in range(nw)]
+        n = int(rng.integers(1, 300))
+        ctr = rng.uniform(-1, 1, 3) * (rng.choice([10, 200, 1500]) if far else 30)
+        tris = []
+        for _ in range(n):
+            t = []
+            for _ in range(3):
+                if zeros:  # signed zeros: which equal corner a Python set keeps shows in the boxes
+                    p = tuple(float(rng.choice([0.0, -0.0, 0.5, -0.5])) for _ in range(3))
+                elif rng.random() < 0.3:
+                    p = shared[int(rng.integers(len(shared)))]
+                else:
+                    p = tuple(float(x) for x in ctr + np.round(rng.normal(0, 3, 3), 2))
+                t.append((p, int(rng.integers(nw))))
+            tris.append(tuple(t))
+        grass = rng.random() < 0.2
+        fol = None
+        if grass:
+            nt_ = int(rng.integers(1, 4))
+            fol = [(float(rng.random()), (len(entries), i // nt_), nt_) for i in range(n)]
+            if rng.random() < 0.5:  # tuft centres on GRASS_GRID lines
+                tris = [tuple(((float(round(p[0] / 2) * 2), p[1], float(round(p[2] / 2) * 2)), w) for p, w in t) for t in tris]
+        tc = None
+        if rng.random() < 0.5:
+            tc = [None if rng.random() < 0.2 else (int(rng.integers(0, 2)), tuple(int(v) for v in rng.integers(-2, 2, 3)))
+                  for _ in range(n)]
+        flags = int(rng.choice([0, 1])) | (em.CHUNK_SKY if rng.random() < 0.1 else 0)
+        entries.append(dict(tris=tris if rng.random() < 0.95 else [], wrgb=wrgb, wa=wa, wuv=wuv,
+                            ti=int(rng.integers(-1, len(textures))), flags=flags, fol=fol, tcell=tc,
+                            dg=int(rng.integers(0, 3)), ent=int(rng.choice([0, 0, 7]))))
+        if rng.random() < 0.2:  # a second entry of the same mesh (same wedge tables)
+            entries.append(dict(entries[-1], tris=tris[: n // 2], fol=fol[: n // 2] if fol else None,
+                                tcell=tc[: n // 2] if tc else None))
+    ntot = sum(len(m["tris"]) for m in entries)
+    bkey = {k: (int(rng.integers(0, 3)), int(rng.integers(0, 4))) for k in range(ntot) if rng.random() < 0.4} \
+        if rng.random() < 0.7 else None
+    return entries, textures, tuple(float(x) for x in rng.uniform(-20, 20, 3)), bkey
+
+
+def check_chunks(rng):
+    entries, textures, centre, bkey = chunk_scene(rng)
+    stream, dgon = bool(rng.random() < 0.6), bool(rng.random() < 0.5)
+    import export_normal
+
+    def lists():
+        return [list(export_normal.CHUNK_BUMP), list(em.CHUNK_TAG), list(em.CHUNK_DG), list(em.CHUNK_ENT)]
+    with contextlib.redirect_stdout(io.StringIO()) as f1:
+        meshes, verts, tris, uvs, fol, tcells, dgs, ents = em.flatten(entries, textures)
+        ref = em.build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if stream else None,
+                              dgs if dgon else None, ents)
+    ref_l = lists()
+    assert em.chunks_c_ok(entries)
+    with contextlib.redirect_stdout(io.StringIO()) as f2:
+        got, nm, nt = em.build_chunks_c(L, entries, textures, centre, bkey, stream, dgon)
+    same(f1.getvalue(), f2.getvalue(), "chunks log")
+    same((len(meshes), len(tris)), (nm, nt), "chunks counts")
+    for a, b in zip(ref, got):
+        same(a, b, "chunk")
+    same(len(ref), len(got), "chunk count")
+    same(ref_l, lists(), "CHUNK_BUMP / TAG / DG / ENT")
+    return len(ref)
+
+
+if __name__ == "__main__":
+    tot = 0
+    for k in range(seed, seed + count):
+        tot += check_chunks(np.random.default_rng(k))
+    print(f"mapx: flatten + build_chunks identical to the Python code on {count} random scenes ({tot} chunks)")

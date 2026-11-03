@@ -58,7 +58,10 @@ def lib():
                 for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
                                 ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
                                 ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
-                                ("mx_simp_free", [vp], None)):
+                                ("mx_simp_free", [vp], None),
+                                ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),
+                                ("mx_chunks_count", [vp, vp], i), ("mx_chunks_fetch", [vp] + [vp] * 10, None),
+                                ("mx_chunks_free", [vp], None)):
                     getattr(L, f).argtypes, getattr(L, f).restype = a, r
             except Exception as e:
                 print(f"mapx: C library unavailable ({str(e)[:300]}), using the Python export", flush=True)

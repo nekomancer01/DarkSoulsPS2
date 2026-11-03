@@ -400,6 +400,143 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
     return out
 
 
+def flatten(entries, textures):
+    """the drawn entries -> build_chunks' inputs: per entry (texture, first vertex, vertices, first triangle, triangles,
+    flags, box), vertices (position, rgb, alpha) of its distinct corners (position, wedge) in sorted order, triangles
+    in those, texture coordinates per corner (in texels, from the integer below the triangle's smallest), and per
+    triangle foliage, stream cell, draw group, entity"""
+    meshes, verts, tris, uvs, fol, tcells, dgs, ents = [], [], [], [], [], [], [], []
+    for m in entries:
+        tl = m["tris"]
+        if not tl:
+            continue
+        ti = m["ti"]
+        used = sorted({c for t in tl for c in t})  # corners (position, wedge)
+        remap = {c: k for k, c in enumerate(used)}
+        base = len(verts)
+        lo, hi = [1e9] * 3, [-1e9] * 3
+        for p, a in used:
+            verts.append((p, m["wrgb"][a], m["wa"][a]))
+            for j in range(3):
+                lo[j], hi[j] = min(lo[j], p[j]), max(hi[j], p[j])
+        first_tri = len(tris)
+        fol += m["fol"] if m["fol"] else [None] * len(tl)
+        tcells += m["tcell"] if m["tcell"] else [None] * len(tl)
+        dgs += [m["dg"]] * len(tl)
+        ents += [m["ent"]] * len(tl)
+        for t in tl:
+            tris.append(tuple(remap[c] for c in t))
+            if ti >= 0:
+                tw, th = textures[ti][0], textures[ti][1]
+                uv = [m["wuv"][a] for _, a in t]
+                du, dv = math.floor(min(u for u, _ in uv)), math.floor(min(v for _, v in uv))
+                uvs.append([((u - du) * tw, (v - dv) * th) for u, v in uv])
+            else:
+                uvs.append([(0, 0)] * 3)
+        meshes.append((ti, base, len(used), first_tri, len(tl), m["flags"], lo, hi))
+    return meshes, verts, tris, uvs, fol, tcells, dgs, ents
+
+
+def chunks_c_ok(entries):
+    """build_chunks_c applies: every corner position a plain float (else build_chunks sums them with Python's rules)"""
+    return all(type(x) is float for m in entries for t in m["tris"] for c in t for x in c[0])
+
+
+def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
+    """flatten + build_chunks in C (tools/mapx/chunks.c): the same chunks, CHUNK_BUMP / TAG / DG / ENT; also returns
+    the number of drawn entries and triangles"""
+    import ctypes
+    es = [m for m in entries if m["tris"]]
+    i32, i64, f64 = np.int32, np.int64, np.float64
+    ne = len(es)
+    nts = [len(m["tris"]) for m in es]
+    toff = np.concatenate([[0], np.cumsum(nts)]).astype(i64) if ne else np.zeros(1, i64)
+    nt = int(toff[-1])
+    cpos = np.array([x for m in es for t in m["tris"] for c in t for x in c[0]], f64)
+    cw = np.array([c[1] for m in es for t in m["tris"] for c in t], i32)
+    wt, woff, wrgb, wa, wuv, w0 = {}, [], [], [], [], 0
+    for m in es:  # wedge tables, once per mesh (its entries share them)
+        k = (id(m["wrgb"]), id(m["wa"]), id(m["wuv"]))
+        if k not in wt:
+            wt[k] = w0
+            wrgb.append(np.array(m["wrgb"], i64).reshape(-1, 3))
+            wa.append(np.array(m["wa"], i64).reshape(-1))
+            wuv.append(np.array(m["wuv"], f64).reshape(-1, 2))
+            w0 += len(m["wa"])
+        woff.append(wt[k])
+    woff = np.array(woff + [w0], i64)
+    cat = lambda xs, dt, w: np.ascontiguousarray(np.concatenate(xs).astype(dt)) if xs else np.zeros((0, w), dt)
+    wrgb, wa, wuv = cat(wrgb, i32, 3), cat(wa, i32, 1), cat(wuv, f64, 2)
+    if (wrgb.size and (wrgb.min() < 0 or wrgb.max() > 255)) or (wa.size and (wa.min() < 0 or wa.max() > 255)):
+        raise AssertionError("vertex colour out of byte range")
+    tex = np.array([(t[0], t[1]) for t in textures] or [(1, 1)], i32)
+    tuft, frank, fsize = np.full(nt, -1, i64), np.zeros(nt), np.zeros(nt, i32)
+    tlev, tkey = np.full(nt, -1, i32), np.zeros((nt, 3), i64)
+    dgv, entv, bkv = np.zeros(nt, i32), np.zeros(nt, i32), np.full(nt, -1, i32)
+    tids, dids, eids, bids = {}, {}, {}, {}
+    for e, m in enumerate(es):
+        a, b = int(toff[e]), int(toff[e + 1])
+        if m["fol"]:
+            for k, f in zip(range(a, b), m["fol"]):
+                if f:
+                    tuft[k], frank[k], fsize[k] = tids.setdefault(f[1], len(tids)), f[0], f[2]
+        if stream and m["tcell"]:
+            for k, c in zip(range(a, b), m["tcell"]):
+                if c is not None:
+                    tlev[k] = c[0]
+                    tkey[k] = c[1]
+        dgv[a:b] = dids.setdefault(m["dg"] if draw_groups else 0, len(dids))
+        entv[a:b] = eids.setdefault(m["ent"], len(eids))
+    if bkey:
+        for k, v in bkey.items():
+            if k < nt:
+                bkv[k] = bids.setdefault(v, len(bids))
+    ti = np.array([m["ti"] for m in es] or [0], i32)
+    fl = np.array([m["flags"] for m in es] or [0], i64)
+    ce = np.ascontiguousarray(np.array(centre, f64).reshape(3))
+    arrs = [ti, fl, toff, woff, cpos, cw, wrgb, wa, wuv, tex, tuft, frank, fsize, tlev, tkey, dgv, entv, bkv, ce]
+    arrs = [np.ascontiguousarray(x) for x in arrs]
+    h = MX.mx_chunks_new(ne, *[x.ctypes.data for x in arrs[:15]], arrs[15].ctypes.data, arrs[16].ctypes.data,
+                         arrs[17].ctypes.data, 1 if stream else 0, CHUNK_GRID, arrs[18].ctypes.data, GRASS_GRID,
+                         min(1.0, (GRASS_D0 / GRASS_NEAR_D) ** 2), CHUNK_TRIS, export_normal.BUMP_MIN_GROUP, POS_MAX,
+                         CHUNK_SKY, CHUNK_GRASS)
+    if not h:
+        raise MemoryError("mx_chunks_new")
+    try:
+        cnt = np.zeros(4, i64)
+        nb = MX.mx_chunks_count(h, cnt.ctypes.data)
+        if nb < 0:
+            return None  # a value out of range: the Python code asserts
+        iv, flv, tag = np.zeros((max(nb, 1), 9), i32), np.zeros(max(nb, 1), i64), np.zeros((max(nb, 1), 4), i64)
+        box, offs, bt = np.zeros((max(nb, 1), 9)), np.zeros((nb + 1, 3), i64), np.zeros(max(nt, 1), i64)
+        pos, st, col = (np.zeros(max(int(n), 1), np.uint8) for n in cnt[1:])
+        err = ctypes.c_double()
+        MX.mx_chunks_fetch(h, iv.ctypes.data, flv.ctypes.data, tag.ctypes.data, box.ctypes.data, offs.ctypes.data,
+                           bt.ctypes.data, pos.ctypes.data, st.ctypes.data, col.ctypes.data, ctypes.byref(err))
+    finally:
+        MX.mx_chunks_free(h)
+    dgl, entl, bkl = list(dids), list(eids), list(bids)
+    pos, st, col = pos.tobytes(), st.tobytes(), col.tobytes()
+    out = []
+    export_normal.CHUNK_BUMP.clear()
+    CHUNK_TAG.clear()
+    CHUNK_DG.clear()
+    CHUNK_ENT.clear()
+    btl = bt.tolist()
+    for b, (v, f, tg, bx, o0, o1) in enumerate(zip(iv.tolist(), flv.tolist(), tag.tolist(), box.tolist(),
+                                                    offs[:-1].tolist(), offs[1:].tolist())):
+        t_i, ntri, kind, dg, ent, bk, e, sts, t0 = v
+        out.append((t_i, f, ntri, pos[o0[0]:o1[0]], st[o0[1]:o1[1]], col[o0[2]:o1[2]], bx[0:3], bx[3:6], bx[6:9],
+                    2.0 ** e, sts))
+        export_normal.CHUNK_BUMP.append((bkl[bk], btl[t0:t0 + ntri]) if bk >= 0 else None)
+        CHUNK_TAG.append((tg[0], tuple(tg[1:])) if kind in (1, 2) else None)
+        CHUNK_DG.append(dgl[dg])
+        CHUNK_ENT.append(entl[ent])
+    print(f"chunks: {len(out)}, {sum(o[2] for o in out) / max(1, len(out)):.1f} tris / chunk, largest position "
+          f"error {err.value * 1000:.2f} mm")
+    return out, ne, nt
+
+
 def name_is_grass(name):
     # m10_01_grass_ground_* is solid ground (Burg floors, ~1k tris): thinned as tufts it left holes under the player
     # once the draw-group filter hid the stand-in floor beneath (m2250B1 over m2420B1, autotest point 25)
@@ -2027,35 +2164,8 @@ def main():
     if BACKDROP_STATS[0]:
         print(f"backdrop: {BACKDROP_STATS[1]} of {BACKDROP_STATS[0]} far-cell tris kept (back faces from the navmesh "
               f"dropped: BACKDROP_SIDE {BACKDROP_SIDE})")
-    meshes, verts, tris, uvs, fol, tcells, dgs, ents = [], [], [], [], [], [], [], []
-    for m in entries:
-        tl = m["tris"]
-        if not tl:
-            continue
-        ti = m["ti"]
-        used = sorted({c for t in tl for c in t})  # corners (position, wedge)
-        remap = {c: k for k, c in enumerate(used)}
-        base = len(verts)
-        lo, hi = [1e9] * 3, [-1e9] * 3
-        for p, a in used:
-            verts.append((p, m["wrgb"][a], m["wa"][a]))
-            for j in range(3):
-                lo[j], hi[j] = min(lo[j], p[j]), max(hi[j], p[j])
-        first_tri = len(tris)
-        fol += m["fol"] if m["fol"] else [None] * len(tl)
-        tcells += m["tcell"] if m["tcell"] else [None] * len(tl)
-        dgs += [m["dg"]] * len(tl)
-        ents += [m["ent"]] * len(tl)
-        for t in tl:
-            tris.append(tuple(remap[c] for c in t))
-            if ti >= 0:
-                tw, th = textures[ti][0], textures[ti][1]
-                uv = [m["wuv"][a] for _, a in t]
-                du, dv = math.floor(min(u for u, _ in uv)), math.floor(min(v for _, v in uv))
-                uvs.append([((u - du) * tw, (v - dv) * th) for u, v in uv])
-            else:
-                uvs.append([(0, 0)] * 3)
-        meshes.append((ti, base, len(used), first_tri, len(tl), m["flags"], lo, hi))
+    MXL = mapx_native.lib()
+    flat = None if MXL is not None and chunks_c_ok(entries) else flatten(entries, textures)
 
     # MSB yaw (degrees about +Y, model forward -Z) -> game yaw (forward (sin, cos) on x/z): rotated by 180 degrees
     yaw = math.radians(spawn["rot"][1]) + math.pi
@@ -2065,8 +2175,13 @@ def main():
     bkey = export_normal.assign(entries, src.get("dds", {}), src.get("smap"), MAIN_TONE[0], src.get("near", [1] * 3),
                                 SHADOW_AMB, src.get("probes", {})) if export_normal.BUMP else None
     rss("bump")
-    chunks = build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if STREAM else None,
-                          dgs if DRAW_GROUPS else None, ents)
+    res = build_chunks_c(MXL, entries, textures, centre, bkey, STREAM, DRAW_GROUPS) if flat is None else None
+    if res is None:
+        meshes, verts, tris, uvs, fol, tcells, dgs, ents = flat or flatten(entries, textures)
+        chunks = build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if STREAM else None,
+                              dgs if DRAW_GROUPS else None, ents)
+        res = chunks, len(meshes), len(tris)
+    chunks, n_meshes, n_tris = res
     rss("chunks")
     cells = stream_cells(chunks) if STREAM else None
     if STREAM:  # resident chunks grouped by cell, then the near chunks; bump.bin numbers them in this order
@@ -2148,7 +2263,7 @@ def main():
               f"({sum(c[2] for c in chunks if c[1] & CHUNK_COARSE)} coarse), near {nn} chunks / "
               f"{sum(all_chunks[i][2] for i in range(len(chunks), len(all_chunks)))} tris, cells.bin {len(cell_bin)} "
               f"bytes, largest cell {max(c[3] for c in CELL_SIZES) if CELL_SIZES else 0} bytes")
-    print(f"{map_id}: {len(meshes)} meshes -> {len(chunks)} chunks, {len(tris)} tris, {texmap.stats(textures)}, "
+    print(f"{map_id}: {n_meshes} meshes -> {len(chunks)} chunks, {n_tris} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")
     print("area rows (fog, light, tone, tone correct, point light, probe, dof): " + ", ".join(
