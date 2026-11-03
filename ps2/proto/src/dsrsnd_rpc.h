@@ -12,7 +12,8 @@
 #ifndef DSRSND_RPC_H
 #define DSRSND_RPC_H
 
-#define DSRSND_RPC_ID 0x0D5A5D01
+#define DSRSND_RPC_ID 0x0D5A5D01      /* frames (SNDF_INIT, SNDF_FRAME) */
+#define DSRSND_RPC_OPS_ID 0x0D5A5D02  /* ops (SNDF_LOAD, SNDF_STREAM): may wait on the disc */
 #define SNDF_INIT 1
 #define SNDF_LOAD 2
 #define SNDF_FRAME 3

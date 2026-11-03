@@ -190,7 +190,7 @@ static int range_used(unsigned a, unsigned size)
     for (int i = 0; i < MAX_BANKS; i++) {
         const Bank *b = &banks[i];
         int live = b->used || (b->vag_size && frame_no <= b->dead_frame + 2);
-        if (live && b->vag_size && a < b->spu + b->vag_size && b->spu < a + size)
+        if (live && b->vag_size && b->spu && a < b->spu + b->vag_size && b->spu < a + size)  /* spu 0: being placed */
             return (int)(b->spu + b->vag_size - a);  /* skip past it */
     }
     return 0;
@@ -879,6 +879,8 @@ void snd_anim(unsigned owner, int model, int anim, float t1, const float pos[3])
 
 /* ---- areas, enemy banks ---- */
 
+static struct { Bank *b; const SEvent *e; int si; } amb;  /* area ambience waiting for the ops client */
+
 void snd_map(const char *map_id)
 {
     if (!on || !map_id || map_id[0] != 'm')
@@ -902,10 +904,14 @@ void snd_map(const char *map_id)
     const SEvent *e = event_find('y', (unsigned)(aa * 10000000 + bb * 100000), &b);
     int si;
     const SSample *sm = e ? pick_wave(b, e, &si) : NULL;
+    amb.e = NULL;
     if (sm && (sm->flags & SF_STREAM)) {
-        if (ops_busy)
-            ops_wait();
-        slot_start(1, b, e, si, e->vol, !first, 0);
+        if (first)
+            ops_wait();  /* boot: nothing else waits on the ops client yet */
+        if (ops_busy)    /* later: started by snd_update once the ops client is free (never wait in a frame) */
+            amb.b = b, amb.e = e, amb.si = si;
+        else
+            slot_start(1, b, e, si, e->vol, !first, 0);
     } else
         slot_stop(1);
     printf("snd: map %s, area bank %s, ambience %s\n", map_id, area_bank ? area_bank->name : "-", sm ? "on" : "none");
@@ -938,6 +944,10 @@ void snd_update(float dt)
         frame_wait();
     if (ops_busy && !SifCheckStatRpc(&cl_ops))
         ops_busy = 0;
+    if (amb.e && !ops_busy && amb.b->used) {
+        slot_start(1, amb.b, amb.e, amb.si, amb.e->vol, 1, 0);
+        amb.e = NULL;
+    }
     loads_pump();
     /* voices that ended: ENDX from the last finished frame RPC, or past their length */
     int n = 0;
@@ -994,7 +1004,7 @@ int snd_init(void)
     for (int k = 0; k < 2; k++) {
         SifRpcClientData_t *c = k ? &cl_ops : &cl_frame;
         for (int tries = 0; tries < 1000; tries++) {
-            if (SifBindRpc(c, DSRSND_RPC_ID, 0) < 0)
+            if (SifBindRpc(c, k ? DSRSND_RPC_OPS_ID : DSRSND_RPC_ID, 0) < 0)
                 return 0;
             if (c->server)
                 break;

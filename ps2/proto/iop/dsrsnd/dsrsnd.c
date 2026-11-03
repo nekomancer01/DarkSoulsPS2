@@ -16,10 +16,12 @@ IRX_ID("dsrsnd", 1, 0);
 #define ADSR1_FLAT SD_SET_ADSR1(SD_ADSR_AR_LINEARi, 0, 0xf, 0xf)  /* instant attack, no decay, sustain level max */
 #define ADSR2_FLAT(rr) SD_SET_ADSR2(SD_ADSR_SR_LINEARi, 0x7f, SD_ADSR_RR_LINEARd, (rr))  /* sustain held */
 
-static SifRpcDataQueue_t queue;
-static SifRpcServerData_t server;
-/* receive buffer: the largest call is a frame */
-static unsigned int rpc_buf[(sizeof(SndFrame) + 63) / 4] __attribute__((aligned(64)));
+/* Two servers, one per EE client (frames / ops), each with its own thread and receive buffer: a client DMAs its
+ * arguments straight into the server's buffer, so two calls in flight on one server overwrote each other (the ops
+ * call never got served: a hang walking into the Burg, 2026-11-03) */
+static SifRpcDataQueue_t queue[2];
+static SifRpcServerData_t server[2];
+static unsigned int rpc_buf[2][(sizeof(SndFrame) + 63) / 4] __attribute__((aligned(64)));
 static SndStatus status __attribute__((aligned(64)));
 static int sd_sema = -1;
 
@@ -372,11 +374,11 @@ static void *rpc_server(int fno, void *data, int size)
 
 static void rpc_thread(void *arg)
 {
-    (void)arg;
+    int k = (int)arg;
     sceSifInitRpc(0);
-    sceSifSetRpcQueue(&queue, GetThreadId());
-    sceSifRegisterRpc(&server, DSRSND_RPC_ID, rpc_server, rpc_buf, NULL, NULL, &queue);
-    sceSifRpcLoop(&queue);
+    sceSifSetRpcQueue(&queue[k], GetThreadId());
+    sceSifRegisterRpc(&server[k], k ? DSRSND_RPC_OPS_ID : DSRSND_RPC_ID, rpc_server, rpc_buf[k], NULL, NULL, &queue[k]);
+    sceSifRpcLoop(&queue[k]);
 }
 
 int _start(int argc, char *argv[])
@@ -390,11 +392,13 @@ int _start(int argc, char *argv[])
         return MODULE_NO_RESIDENT_END;
     for (int i = 0; i < SND_STREAMS; i++)
         streams[i].fd = -1;
-    iop_thread_t t = {.attr = TH_C, .thread = rpc_thread, .priority = 40, .stacksize = 0x800, .option = 0};
-    int id = CreateThread(&t);
-    if (id < 0)
-        return MODULE_NO_RESIDENT_END;
-    StartThread(id, NULL);
+    int id;
+    for (int k = 0; k < 2; k++) {  /* frame server, ops server (stream opens read the disc: a little lower) */
+        iop_thread_t t = {.attr = TH_C, .thread = rpc_thread, .priority = 40 + k, .stacksize = 0x800, .option = 0};
+        if ((id = CreateThread(&t)) < 0)
+            return MODULE_NO_RESIDENT_END;
+        StartThread(id, (void *)k);
+    }
     /* the stream thread runs above the RPC thread (and below the CD driver) so a refill is not held up by uploads */
     iop_thread_t st = {.attr = TH_C, .thread = stream_thread, .priority = 30, .stacksize = 0x800, .option = 0};
     id = CreateThread(&st);
