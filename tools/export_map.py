@@ -410,13 +410,15 @@ def flatten(entries, textures):
         tl = m["tris"]
         if not tl:
             continue
+        tl = list(tl)  # a mapx_native.Tris: its corner triples
         ti = m["ti"]
         used = sorted({c for t in tl for c in t})  # corners (position, wedge)
         remap = {c: k for k, c in enumerate(used)}
         base = len(verts)
         lo, hi = [1e9] * 3, [-1e9] * 3
+        wrgb = m["wrgb"].tolist() if isinstance(m["wrgb"], np.ndarray) else m["wrgb"]  # soften_thin_c's array
         for p, a in used:
-            verts.append((p, m["wrgb"][a], m["wa"][a]))
+            verts.append((p, wrgb[a], m["wa"][a]))
             for j in range(3):
                 lo[j], hi[j] = min(lo[j], p[j]), max(hi[j], p[j])
         first_tri = len(tris)
@@ -448,11 +450,19 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     nts = [len(m["tris"]) for m in es]
     toff = np.concatenate([[0], np.cumsum(nts)]).astype(i64) if ne else np.zeros(1, i64)
     nt = int(toff[-1])
-    cpos = [x for m in es for t in m["tris"] for c in t for x in c[0]]
-    if any(t is not float for t in set(map(type, cpos))):
-        return None
-    cpos = np.array(cpos, f64)
-    cw = np.array([c[1] for m in es for t in m["tris"] for c in t], i32)
+    cps, cws = [np.zeros(0)], [np.zeros(0, i32)]
+    for m in es:
+        tl = m["tris"]
+        if isinstance(tl, mapx_native.Tris):  # float64 from simplify_meshes_c
+            cps.append(tl.P.reshape(-1))
+            cws.append(tl.W.reshape(-1))
+            continue
+        cp = [x for t in tl for c in t for x in c[0]]
+        if any(t is not float for t in set(map(type, cp))):
+            return None
+        cps.append(np.array(cp, f64))
+        cws.append(np.array([c[1] for t in tl for c in t], i32))
+    cpos, cw = np.concatenate(cps), np.concatenate(cws).astype(i32)
     wt, woff, wrgb, wa, wuv, w0 = {}, [], [], [], [], 0
     for m in es:  # wedge tables, once per mesh (its entries share them)
         k = (id(m["wrgb"]), id(m["wa"]), id(m["wuv"]))
@@ -473,23 +483,28 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     tlev, tkey = np.full(nt, -1, i32), np.zeros((nt, 3), i64)
     dgv, entv, bkv = np.zeros(nt, i32), np.zeros(nt, i32), np.full(nt, -1, i32)
     tids, dids, eids, bids = {}, {}, {}, {}
-    for e, m in enumerate(es):
-        a, b = int(toff[e]), int(toff[e + 1])
+    tl_ = toff.tolist()
+    for e, m in enumerate(es):  # per triangle values set a mesh entry at a time
+        a, b = tl_[e], tl_[e + 1]
         if m["fol"]:
-            for k, f in zip(range(a, b), m["fol"]):
-                if f:
-                    tuft[k], frank[k], fsize[k] = tids.setdefault(f[1], len(tids)), f[0], f[2]
+            fs = [(k, f) for k, f in zip(range(a, b), m["fol"]) if f]
+            if fs:
+                sel = np.array([k for k, _ in fs], np.intp)
+                tuft[sel] = [tids.setdefault(f[1], len(tids)) for _, f in fs]
+                frank[sel] = [f[0] for _, f in fs]
+                fsize[sel] = [f[2] for _, f in fs]
         if stream and m["tcell"]:
-            for k, c in zip(range(a, b), m["tcell"]):
-                if c is not None:
-                    tlev[k] = c[0]
-                    tkey[k] = c[1]
+            cs = [(k, c) for k, c in zip(range(a, b), m["tcell"]) if c is not None]
+            if cs:
+                sel = np.array([k for k, _ in cs], np.intp)
+                tlev[sel] = [c[0] for _, c in cs]
+                tkey[sel] = [c[1] for _, c in cs]
         dgv[a:b] = dids.setdefault(m["dg"] if draw_groups else 0, len(dids))
         entv[a:b] = eids.setdefault(m["ent"], len(eids))
     if bkey:
-        for k, v in bkey.items():
-            if k < nt:
-                bkv[k] = bids.setdefault(v, len(bids))
+        bs = [(k, bids.setdefault(v, len(bids))) for k, v in bkey.items() if k < nt]
+        if bs:
+            bkv[np.array([k for k, _ in bs], np.intp)] = [i for _, i in bs]
     ti = np.array([m["ti"] for m in es] or [0], i32)
     fl = np.array([m["flags"] for m in es] or [0], i64)
     ce = np.ascontiguousarray(np.array(centre, f64).reshape(3))
@@ -855,22 +870,24 @@ def _first_rows(K):
 def _weld(V, vis, xf, xn):
     """gather's weld of one mesh's used vertices vis (ascending): positions by world position (0.1 mm), wedges by
     (position, UV, colour) with the normals of merged wedges summed. -> (pos [tuples], wpos, wuv, wcol, wn [lists],
-    fvw {vertex: wedge}), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
+    fvw {vertex: wedge}, (pos, wpos) as arrays: _mesh_np), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
     export); every value is the per-vertex code's: Python's round() and numpy's rint both round half to even, normals
     are summed in vertex order (np.add.at), the first normal of a wedge is kept as is."""
     idx = np.asarray(vis, np.int64)
     n = len(idx)
     if not n:
-        return [], [], [], [], [], {}
+        return [], [], [], [], [], {}, (np.zeros((0, 3)), np.zeros(0, np.int32))
     Pw = xf.many(_vert_np(V["pos"])[idx])
     pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
-    pos = list(map(tuple, Pw[pfirst].tolist()))
+    Pp = np.ascontiguousarray(Pw[pfirst], np.float64)
+    pos = list(map(tuple, Pp.tolist()))
     UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
     C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
     wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
     wid, wfirst = _first_rows(wk)
     vl = idx.tolist()
-    wpos = pid[wfirst].tolist()
+    Wp = pid[wfirst]
+    wpos = Wp.tolist()
     wuv = [V["uv"][vl[i]] for i in wfirst.tolist()] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
     wcol = [V["color"][vl[i]] for i in wfirst.tolist()] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
     if V["normal"]:
@@ -882,7 +899,17 @@ def _weld(V, vis, xf, xn):
         wn = WN.tolist()
     else:  # (0, 1, 0) per vertex, summed as Python ints
         wn = [[0, int(c), 0] for c in np.bincount(wid, minlength=len(wfirst)).tolist()]
-    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist()))
+    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist())), (Pp, Wp.astype(np.int32))
+
+
+def _mesh_np(m):
+    """mesh m's positions (n, 3) float64 and wedge -> position (int32) as arrays: the values np.array gives from its
+    pos / wpos lists (kept by gather's _weld; made here for a mesh from elsewhere or whose lists were replaced)"""
+    a = m.get("_np")
+    if a is None or a[0] is not m["pos"] or a[1] is not m["wpos"]:
+        P = np.array(m["pos"], np.float64).reshape(-1, 3) if m["pos"] else np.zeros((0, 3))
+        a = m["_np"] = (m["pos"], m["wpos"], np.ascontiguousarray(P), np.asarray(m["wpos"], np.int32).reshape(-1))
+    return a[2], a[3]
 
 
 def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights):
@@ -1393,7 +1420,7 @@ def gather(game, map_id):
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
-            pos, wpos, wuv, wcol, wn, fvw = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
+            pos, wpos, wuv, wcol, wn, fvw, pw_np = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
@@ -1431,7 +1458,8 @@ def gather(game, map_id):
             # normal-map relief (tools/export_normal.py): per-wedge tangent frames of lit, opaque bumped meshes
             bump = export_normal.register(m, V, fvw, wn, xn, light_rows.get(lid, light_rows[main_light]), alb,
                                           probe_at) if lit and not water and not grass and V["uv"] else None
-            meshes.append(dict(pos=pos, wpos=wpos, wuv=wuv, wrgb=wrgb, wa=wa, tris=[tuple(fvw[i] for i in t) for t in tl],
+            meshes.append(dict(pos=pos, wpos=wpos, _np=(pos, wpos) + pw_np, wuv=wuv, wrgb=wrgb, wa=wa,
+                               tris=[tuple(fvw[i] for i in t) for t in tl],
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
                                keep=grass or blend or sky or part["model"] in KEEP_MODELS, name=f"{part['name']}/{name}",
@@ -1599,6 +1627,13 @@ def prune_foliage(meshes, nav_v, nav_t):
 BACKDROP_STATS = [0, 0]
 
 
+def _take(tl, idx):
+    """the triangles idx (ascending) of tl (a list or mapx_native.Tris)"""
+    if isinstance(tl, mapx_native.Tris):
+        return tl[np.asarray(idx, np.intp)] if idx else []
+    return [tl[i] for i in idx]
+
+
 def backdrop_visible(m, tl, nav_s):
     """Backdrop triangles of mesh m minus the one-sided ones (CHUNK_CULL) that face away from every navmesh sample point:
     never seen from anywhere the player can stand."""
@@ -1609,13 +1644,13 @@ def backdrop_visible(m, tl, nav_s):
     import numpy as np
     if not tl:
         return tl
-    P = np.array([[c[0] for c in t] for t in tl], dtype=np.float64)  # (n, 3 corners, xyz)
+    P = mapx_native.tri_arrays(tl)[0]  # (n, 3 corners, xyz)
     n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
     S = np.array(nav_s, dtype=np.float64)
     # facing some sample point: n . (s - p0) > 0 (the winding / cull sense as map.c draws it is checked by the A/B)
     vis = ((S[None, :, :] - P[:, None, 0, :]) * n[:, None, :]).sum(2)
     keep = (vis * BACKDROP_SIDE > 0).any(1)
-    out = [t for t, k in zip(tl, keep) if k]
+    out = _take(tl, np.flatnonzero(keep).tolist())
     BACKDROP_STATS[1] += len(out)
     return out
 
@@ -1735,9 +1770,10 @@ def soften_thin_c(L, entries, view_s, floor):
     for e in entries:
         tl = e["tris"]
         SOFT_STATS[0] += len(tl)
-        Ps.append(np.array([[c[0] for c in t] for t in tl], dtype=np.float64).reshape(-1, 9))
-        Ws.append(np.array([[c[1] for c in t] for t in tl], dtype=np.int32).reshape(-1, 3))
-        Cs.append(np.array(e["wrgb"], dtype=np.int32).reshape(-1, 3))
+        P, W = mapx_native.tri_arrays(tl)
+        Ps.append(P.reshape(-1, 9))
+        Ws.append(W)
+        Cs.append(np.asarray(e["wrgb"], dtype=np.int32).reshape(-1, 3))
         toff.append(toff[-1] + len(tl))
         woff.append(woff[-1] + len(Cs[-1]))
     P, W, C = (np.ascontiguousarray(np.concatenate(x)) for x in (Ps, Ws, Cs))
@@ -1747,7 +1783,7 @@ def soften_thin_c(L, entries, view_s, floor):
                                       C.ctypes.data, len(S), S.ctypes.data, floor, SOFT_PX, SOFT_FOCAL, SOFT_REACH,
                                       SOFT_R_PX, CAM_REACH, out.ctypes.data, changed.ctypes.data)
     for i in np.nonzero(changed)[0].tolist():
-        entries[i]["wrgb"] = out[woff[i]:woff[i + 1]].tolist()
+        entries[i]["wrgb"] = out[woff[i]:woff[i + 1]]  # (n, 3) int32: build_chunks_c takes it as is
 
 
 # far panorama (render-distance variant A): PANO_R metres from PANO_C ("x,y,z", default the spawn); PANO_ONLY=1 keeps
@@ -1964,8 +2000,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     def flat(rows, dt, w):
         return np.ascontiguousarray(np.array(rows, dt).reshape(-1, w)) if rows else np.zeros((0, w), dt)
     nm = len(meshes)
-    Ps = [flat(m["pos"], f64, 3) for m in meshes]
-    Ws = [np.asarray(m["wpos"], i32).reshape(-1) for m in meshes]
+    PW = [_mesh_np(m) for m in meshes]
+    Ps, Ws = [p for p, _ in PW], [w for _, w in PW]
     Ts = [flat(m[src], i32, 3) for m in meshes]
     off = lambda xs: np.concatenate([[0], np.cumsum([len(x) for x in xs])]).astype(i64)
     cat = lambda xs, dt, w: np.ascontiguousarray(np.concatenate(xs).astype(dt)) if xs else np.zeros((0, w), dt)
@@ -2024,24 +2060,26 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         final = count(eps)
     finally:
         MX.mx_simp_free(h)
-    live = [mi for mi, m in enumerate(meshes) if not m["keep"] and m[src]]
-    for mi in live:
-        meshes[mi][out] = []
-        meshes[mi][out + "_cell"] = []
-    pos = [m["pos"] for m in meshes]
-    outs = [m.get(out) for m in meshes]
-    cellsl = [m.get(out + "_cell") for m in meshes]
-    cm, cp, cw = cm[:3 * n].tolist(), cp[:3 * n].tolist(), cw[:3 * n].tolist()
-    for t, (j, mi) in enumerate(zip(tj[:n].tolist(), tm[:n].tolist())):
-        k = 3 * t
-        outs[mi].append(((pos[cm[k]][cp[k]], cw[k]), (pos[cm[k + 1]][cp[k + 1]], cw[k + 1]),
-                         (pos[cm[k + 2]][cp[k + 2]], cw[k + 2])))
-        cellsl[mi].append(jc[j])
-    for m in meshes:
+    # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
+    CP = P[poff[cm[:3 * n]] + cp[:3 * n]].reshape(-1, 3, 3)
+    CW = cw[:3 * n].reshape(-1, 3)
+    tm, tj = tm[:n], tj[:n]
+    order = np.argsort(tm, kind="stable")
+    ends = np.cumsum(np.bincount(tm, minlength=nm)).tolist() if n else [0] * nm
+    tjl = tj[order].tolist()
+    for mi, m in enumerate(meshes):
         if m["keep"]:
-            m[out] = [tuple((m["pos"][m["wpos"][w]], w) for w in t) for t in m[src]]
+            if m[src]:
+                m[out] = mapx_native.Tris(np.ascontiguousarray(Ps[mi][Ws[mi][Ts[mi]]]), np.ascontiguousarray(Ts[mi]))
+            else:
+                m[out] = []
         elif not m[src]:
             m[out] = []
+        else:
+            a, b = ends[mi - 1] if mi else 0, ends[mi]
+            sel = order[a:b]
+            m[out] = mapx_native.Tris(np.ascontiguousarray(CP[sel]), np.ascontiguousarray(CW[sel])) if b > a else []
+            m[out + "_cell"] = [jc[j] for j in tjl[a:b]]
     print(f"simplify: {full} -> {final} tris ({grass} kept: effects, sky; foliage extra) in {ngroups} welded "
           f"groups / {njobs} jobs, eps {eps:.3g} "
           f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
@@ -2157,12 +2195,13 @@ def main():
     for m in meshes_in:
         if STREAM and not m["keep"] and not GAME_LOD:
             # far cells: the near run's triangles are dropped, the coarse ones are always drawn (tcell None)
-            nt = [(t, c) for t, c in zip(m["tris"], m.get("tris_cell", [])) if c != "far"]
-            entries.append(dict(m, tris=[t for t, _ in nt], tcell=[(1, c) for _, c in nt]))
-            ft = list(zip(m.get("tris_far", []), m.get("tris_far_cell", [])))
-            ct = [t for t, c in ft if c != "far"]
-            entries.append(dict(m, tris=ct, tcell=[(0, c) for _, c in ft if c != "far"], soft=True))
-            far_t = [t for t, c in ft if c == "far"]
+            tl, cl = m["tris"], m.get("tris_cell", [])
+            nt = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
+            entries.append(dict(m, tris=_take(tl, nt), tcell=[(1, cl[i]) for i in nt]))
+            tl, cl = m.get("tris_far", []), m.get("tris_far_cell", [])
+            ct = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
+            entries.append(dict(m, tris=_take(tl, ct), tcell=[(0, cl[i]) for i in ct], soft=True))
+            far_t = _take(tl, [i for i, c in zip(range(len(tl)), cl) if c == "far"])
             bd = backdrop_visible(m, far_t, nav_s) if BACKDROP else far_t
             if bd:  # far-only cells: one resident level; BACKDROP=1: the backdrop, drawn at any distance (map.c)
                 entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True,

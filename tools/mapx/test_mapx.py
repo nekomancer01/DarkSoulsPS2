@@ -13,6 +13,8 @@ assert L is not None, "libmapx did not build"
 
 
 def _canon(x):
+    if isinstance(x, mapx_native.Tris):  # the corner triples it stands for
+        return [_canon(t) for t in x]
     if isinstance(x, (list, tuple)):
         return type(x)(_canon(v) for v in x)
     if isinstance(x, dict):
@@ -24,8 +26,14 @@ def _canon(x):
     return x
 
 
+def as_tris(tl):
+    """a list of corner triples as the mapx_native.Tris simplify_meshes_c hands on"""
+    return mapx_native.Tris(*mapx_native.tri_arrays(tl)) if tl else tl
+
+
 def same(a, b, what):
-    if a != b or repr(_canon(a)) != repr(_canon(b)):  # repr: the sign of zeros too (0.0 == -0.0)
+    a, b = _canon(a), _canon(b)
+    if a != b or repr(a) != repr(b):  # repr: the sign of zeros too (0.0 == -0.0)
         raise SystemExit(f"FAIL {what}: C and Python differ")
 
 
@@ -278,15 +286,16 @@ def check_assign(rng):
         tris = [tuple((tuple(P[w].tolist()), int(w)) for w in rng.integers(0, nw, 3)) for _ in range(int(rng.integers(1, 400)))]
         meshes.append(dict(tris=tris, bump=len(MESH) - 1 if rng.random() < 0.8 else None,
                            wuv=rng.uniform(-2, 3, (nw, 2)).tolist()))
-    def run(use_c):
+    def run(use_c, tris_np=False):
         en.MESH[:] = MESH
+        ms = [dict(m, tris=as_tris(m["tris"])) for m in meshes] if tris_np else meshes
         en._MX.clear()
         L_ = mapx_native._L[0]
         if not use_c:
             mapx_native._L[0] = None
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                out = en.assign(meshes, dds, _Shadow() if rng.random() < 2 else None, tone, [0.9, 1.0, 1.1], 0.6, probes)
+                out = en.assign(ms, dds, _Shadow() if rng.random() < 2 else None, tone, [0.9, 1.0, 1.1], 0.6, probes)
                 ids = sorted(out)
                 r = np.random.default_rng(11)
                 en.CHUNK_BUMP[:] = [((out[ids[0]][0],), sorted(r.choice(ids, min(len(ids), int(r.integers(1, 60))), replace=False).tolist()))
@@ -299,9 +308,10 @@ def check_assign(rng):
         return out, st.get("density"), [(t["name"], t["w"], t["h"], t["mips"]) for t in st.get("texs", [])], \
             st["pal"].tolist() if "pal" in st else None, st["R"].tolist() if "R" in st else None, \
             None if fin is None else (fin[0], fin[1].tolist())
-    a, b = run(False), run(True)
-    for x, y, what in zip(a, b, ("assign map", "density", "textures", "palette", "response", "_finish")):
+    a, b, c = run(False), run(True), run(True, True)
+    for x, y, z, what in zip(a, b, c, ("assign map", "density", "textures", "palette", "response", "_finish")):
         same(x, y, what)
+        same(x, z, what + " (Tris)")
 
 
 if __name__ == "__main__":
@@ -467,6 +477,12 @@ def check_chunks(rng):
         same(a, b, "chunk")
     same(len(ref), len(got), "chunk count")
     same(ref_l, lists(), "CHUNK_BUMP / TAG / DG / ENT")
+    ents_np = [dict(m, tris=as_tris(m["tris"])) for m in entries]  # simplify_meshes_c's corner arrays
+    with contextlib.redirect_stdout(io.StringIO()) as f3:
+        got, nm, nt = em.build_chunks_c(L, ents_np, textures, centre, bkey, stream, dgon)
+    same(f1.getvalue(), f3.getvalue(), "chunks log (Tris)")
+    same((list(ref), len(meshes), len(tris), ref_l), (list(got), nm, nt, lists()), "chunks (Tris)")
+    same(em.flatten(entries, textures), em.flatten(ents_np, textures), "flatten (Tris)")
     return len(ref)
 
 

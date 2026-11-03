@@ -71,3 +71,37 @@ def lib():
                 L = None
         _L.append(L)
     return _L[0]
+
+
+class Tris:
+    """Triangles as corner arrays, the form the C stages pass along (simplify -> soften / bump / chunks): P (n, 3, 3)
+    float64 positions, W (n, 3) int32 wedges. len / iteration / indexing give the list it stands for, triangles
+    ((x, y, z), w) * 3 of Python floats and ints (the values np.array took from that list); an index array or mask
+    gives a Tris."""
+    __slots__ = ("P", "W")
+
+    def __init__(self, P, W):
+        self.P, self.W = P, W
+
+    def __len__(self):
+        return len(self.W)
+
+    def __iter__(self):
+        for p, w in zip(self.P.tolist(), self.W.tolist()):
+            yield (tuple(p[0]), w[0]), (tuple(p[1]), w[1]), (tuple(p[2]), w[2])
+
+    def __getitem__(self, k):
+        import numpy as np
+        if isinstance(k, (int, np.integer)):
+            p, w = self.P[k].tolist(), self.W[k].tolist()
+            return (tuple(p[0]), w[0]), (tuple(p[1]), w[1]), (tuple(p[2]), w[2])
+        return Tris(np.ascontiguousarray(self.P[k]), np.ascontiguousarray(self.W[k]))
+
+
+def tri_arrays(tl):
+    """(P (n, 3, 3) float64, W (n, 3) int32) of a Tris or of a list of corner triples ((x, y, z), w)"""
+    if isinstance(tl, Tris):
+        return tl.P, tl.W
+    import numpy as np
+    return (np.array([[c[0] for c in t] for t in tl], np.float64).reshape(-1, 3, 3),
+            np.array([[c[1] for c in t] for t in tl], np.int32).reshape(-1, 3))
