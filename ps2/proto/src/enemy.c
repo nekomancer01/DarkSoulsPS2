@@ -292,24 +292,7 @@ static void model_path(char *path, unsigned cap, const ChrType *t)
     snprintf(path, cap, PACK_ROOT "%s%.8s.pak", t->dir, t->name);
 }
 
-/* Load a type's model.bin now (boot: the loading screen) */
-static int load_model(ChrType *t, GSGLOBAL *gs)
-{
-    char path[64];
-    model_path(path, sizeof path, t);
-    Pack pk;
-    if (!pack_open(&pk, path)) {
-        printf("enemy: %s: no pack\n", path);
-        return 0;
-    }
-    unsigned size = 0;
-    int in_arena = mapstream_ready();
-    void *mb = in_arena ? pack_load_with(&pk, "model.bin", &size, arena_get, arena_put) : pack_load(&pk, "model.bin", &size);
-    pack_close(&pk);
-    return model_from(t, gs, mb, size, (size + 127) & ~127u, in_arena);
-}
-
-/* After boot a model.bin loads in the background (pack_job_*), one type at a time: from cdrom0: the synchronous
+/* A model.bin loads in the background (pack_job_*), one type at a time: from cdrom0: the synchronous
  * open + load took 0.2-1.3 s per type, each a frame stall (33 loads, 10.5 s of stalls in one tests/world_cross.txt
  * run from the ISO, 2026-11-03) */
 static GSGLOBAL *gsg;  /* enemy_init's GS context (tentative definition: set below) */
@@ -792,11 +775,12 @@ void enemy_block_remove(int block)
            enemy_ram_free() >> 10);
 }
 
-/* Load the types whose placements came within LOAD_DIST (all at once on the first frame, then one at a time in the
- * background), free the ones beyond UNLOAD_DIST */
+/* Load the types whose placements came within LOAD_DIST, one at a time in the background, the nearest first (also
+ * on the first frame: loaded there at once, the 8 Firelink types kept the ISO's boot loading screen up 10.5 s longer);
+ * free the ones beyond UNLOAD_DIST. A placement whose type is not in yet is not active: no AI, no combat body, not
+ * drawn (enemy_update `on`), so the types near the spawn appear over the first seconds (TECH_DEBT load-6) */
 static void stream_types(const Player *pl)
 {
-    static int first = 1;
     for (int i = 0; i < ntypes; i++)
         types[i].near_d = 1e9f;
     for (int i = 0; i < nenemies; i++) {
@@ -809,23 +793,20 @@ static void stream_types(const Player *pl)
             e->ct->near_d = d;
     }
     job_poll();
+    ChrType *next = NULL;
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
         if (t->loaded && t->near_d > UNLOAD_DIST) {
             unload_model(t);
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
-        } else if (!t->loaded && t->near_d < LOAD_DIST && !first && !job_t && frame >= t->retry) {
-            job_begin(t);
-        } else if (!t->loaded && t->near_d < LOAD_DIST && first && frame >= t->retry) {
-            if (load_model(t, gsg))
-                printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
-                       r_vram_avail(gsg));
-            else
-                t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
+        } else if (!t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
+                   (!next || t->near_d < next->near_d)) {
+            next = t;
         }
     }
-    first = 0;
+    if (next && !job_t)
+        job_begin(next);
 }
 
 /* ---- update ---- */

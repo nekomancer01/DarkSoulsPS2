@@ -935,9 +935,9 @@ and the bonfire + "DARK SOULS" animation in the bottom-left corner.
   size, the 32 cells with their own CLUT, DSFont24 glyphs) from inside the blocking loads: pack.c calls
   pack_wait_hook while pack_load waits for the IOP, world.c settle ticks it each step, main.c between boot steps; at
   most 30 fps, presented through main.c flip. It opens at boot (after items_init, closed after the first frame's world
-  update), for every warp (world.c settle) and for a death respawn (player.c respawn; held until that frame's settle
+  update; the enemy types near the spawn stream in after it, 2026-11-04, load-6), for every warp (world.c settle) and for a death respawn (player.c respawn; held until that frame's settle
   is done). The screen stays up at least 0.5 s (DSR's fade-to-black before its load; ASSUMED overlap: the port loads
   during it), fades out 0.25 s, then the game fades in (0.1 s black + 0.5 s). The last game frame (the display
   buffer) fades to black under it over the first 0.5 s. Data: menu.pak loading.bin (349 KB raw), read at each open,
   uploaded and freed (tables + strings kept while open); VRAM: tc_pin of the map pool, at boot the unallocated top of
-  VRAM until the pool exists (main.c ticks it there to move).
+  VRAM until the pool exists (main.c ticks it there to move: a GS local copy of the pages, no second read).
