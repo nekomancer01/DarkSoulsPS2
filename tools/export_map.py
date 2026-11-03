@@ -566,7 +566,7 @@ def thin_foliage_c(L, tl, pos, seed, ivy, world, grid):
     the navmesh grid (mx_navgrid; None when the area has no navmesh points: always canopy)."""
     import ctypes
     T = np.ascontiguousarray(np.asarray(tl, np.int32).reshape(-1, 3))
-    P = np.array(pos, np.float64).reshape(-1, 3)
+    P = np.array(_vert_np(pos), np.float64).reshape(-1, 3)  # a copy: moved positions are written into it
     Wc = np.ascontiguousarray(world, np.float64)
     nt, nv = len(T), len(P)
     moved = np.zeros(nv, np.uint8)
@@ -845,6 +845,8 @@ _VERT_NP = {}  # id(vertex attribute list) -> (the list, float64 array): FLVER m
 
 
 def _vert_np(lst):
+    if isinstance(lst, souls.Rows):  # gather's FLVER attributes: the array itself
+        return lst.a if lst.a.dtype == np.float64 else lst.a.astype(np.float64)
     e = _VERT_NP.get(id(lst))
     if e is None or e[0] is not lst or len(e[1]) != len(lst):  # (souls.flver fills it; the lists only grow)
         e = _VERT_NP[id(lst)] = (lst, np.array(lst, np.float64))
@@ -890,8 +892,14 @@ def _weld(V, vis, xf, xn):
     Wp = pid[wfirst]
     wpos = Wp.tolist()
     wfl = wfirst.tolist()
-    wuv = [V["uv"][vl[i]] for i in wfl] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
-    wcol = [V["color"][vl[i]] for i in wfl] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
+    if isinstance(V["uv"], souls.Rows):  # the same tuples, from the array
+        wuv = list(map(tuple, V["uv"].a[idx[wfirst]].tolist()))
+    else:
+        wuv = [V["uv"][vl[i]] for i in wfl] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
+    if isinstance(V["color"], souls.Rows):
+        wcol = list(map(tuple, V["color"].a[idx[wfirst]].tolist()))
+    else:
+        wcol = [V["color"][vl[i]] for i in wfl] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
     npd = dict(pos=(pos, Pp), wpos=(wpos, Wp.astype(np.int32)), wuv=(wuv, np.ascontiguousarray(UV[wfirst])),
                wcol=(wcol, np.ascontiguousarray(C[wfirst])))
     if V["normal"]:
@@ -1197,6 +1205,7 @@ def gather(game, map_id):
     map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
     souls.VERT_NP = _VERT_NP  # filled as souls.flver parses (the values np.array gives from the lists), until the end
+    souls.VERT_ROWS = souls.FLVER_NP and os.environ.get("VERT_ROWS", "1") == "1"  # FLVER attributes as souls.Rows
     MX = mapx_native.lib()  # tools/mapx (C): thin_foliage + is_canopy; MAPX=0 runs the Python code below
     mx_grid = None
     if MX is not None and nav_pts:
@@ -1489,6 +1498,7 @@ def gather(game, map_id):
     if mx_grid is not None:
         MX.mx_navgrid_free(mx_grid)
     souls.VERT_NP = None
+    souls.VERT_ROWS = False
     _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
     _DEDUP.clear()
     rss(f"gather meshes ({len(meshes)})")
