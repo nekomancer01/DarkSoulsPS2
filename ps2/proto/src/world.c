@@ -42,6 +42,11 @@
 /* metres above / below a block's collision that still count as inside it when there is no floor under the feet
  * (ASSUMED: a fall or a jump out of its range; the blocks of one world are far apart in height or not at all) */
 #define WORLD_Y_MARGIN 10.0f
+/* seconds before a block whose lite set found no room tries again (ASSUMED: the near cells change over ~1 s of
+ * walking; every try may drop drawn cells, which then stream back) */
+#define WORLD_RETRY_S 1.0f
+/* heap a lite set's texture entries leave free when they fall back to it (AGENTS.md: 1.5 MB in the heaviest spot) */
+#define WORLD_HEAP_FLOOR (1536u << 10)
 /* heap kept out of the near-cell arena beyond MS_RESERVE, for enemy models: world builds allocate the arena at boot
  * (world_systems) while no enemy model is loaded, so this holds every model streamed in later. Single-area builds
  * allocate it on the first frame after the bonfire's types loaded (3.6 MB in Firelink) and keep 3 MB more. Measured
@@ -82,7 +87,8 @@ enum { W_OFF, W_READING, W_ON, W_DRAIN };
 typedef struct {
     Pack pk;
     int open, state, slot, drain;
-    void *mem, *tex_mem;  /* arena blocks (mapstream_alloc): the lite set, its texture entries (until on) */
+    int tex_held;  /* the texture entries' blobs are still allocated (until on) */
+    float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
@@ -311,11 +317,24 @@ static void step_time(unsigned t0)
         world_stats.on_us_max = us;
 }
 
+/* a started block's entry blobs [e0, e1): arena blocks, or heap for texture entries the arena had no room for */
+static void free_ents(BlockRt *r, unsigned e0, unsigned e1)
+{
+    for (unsigned e = e0; e < e1; e++)
+        if (r->blob[e]) {
+            if (mapstream_owns(r->blob[e]))
+                mapstream_free(r->blob[e], (r->size[e] + 127) & ~127u);
+            else
+                free(r->blob[e]);
+            r->blob[e] = NULL;
+        }
+}
+
 static void free_tex(BlockRt *r)
 {
-    if (r->tex_mem) {
-        mapstream_free(r->tex_mem, r->tex_total);
-        r->tex_mem = NULL;
+    if (r->tex_held) {
+        free_ents(r, E_TEX, NENT);
+        r->tex_held = 0;
         world_stats.pool_used_kb -= r->tex_total >> 10;
     }
 }
@@ -374,8 +393,7 @@ static void free_slot(int i)
     if (r->slot >= 0)
         slot_of[r->slot] = -1;
     r->slot = -1;
-    mapstream_free(r->mem, r->total);
-    r->mem = NULL;
+    free_ents(r, 0, E_TEX);
     world_stats.pool_used_kb -= r->total >> 10;
     free_tex(r);
     r->state = W_OFF;
@@ -418,21 +436,35 @@ static int start(int i)
     int s = 0;
     while (s < WORLD_SLOTS && slot_of[s] >= 0)
         s++;
-    if (s == WORLD_SLOTS)
+    if (s == WORLD_SLOTS || (r->retry_s > 0 && !warping))
         return 0;
-    unsigned char *p = mapstream_alloc(r->total, feet_now), *q = NULL;
-    if (p && r->tex_total && !(q = mapstream_alloc(r->tex_total, feet_now)))
-        mapstream_free(p, r->total), p = NULL;
-    if (!p)
-        return 0;  /* near cells still being read or drawn: next frame */
-    r->mem = p, r->tex_mem = q;
+    /* One arena block per entry, largest first: the near cells being drawn split the arena, and the Burg block's
+     * 1508 KB in one piece found no hole with 2.1 MB free in it (largest 1068 KB; 2026-11-03, 2.8 MB arena of
+     * 9e6dd67). Texture entries live only until on: without room in the arena they take the heap while it keeps
+     * WORLD_HEAP_FLOOR. All or nothing; a failed start waits WORLD_RETRY_S, since each try may drop drawn cells. */
+    unsigned order[NENT], n = 0;
+    for (unsigned e = 0; e < NENT; e++)
+        if (r->size[e]) {
+            unsigned k = n++;
+            while (k && r->size[order[k - 1]] < r->size[e])
+                order[k] = order[k - 1], k--;
+            order[k] = e;
+        }
+    memset(r->blob, 0, sizeof r->blob);
+    for (unsigned k = 0; k < n; k++) {
+        unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
+        r->blob[e] = mapstream_alloc(sz, feet_now);
+        if (!r->blob[e] && e >= E_TEX && enemy_ram_free() >= WORLD_HEAP_FLOOR + sz)
+            r->blob[e] = memalign(128, sz);
+        if (!r->blob[e]) {
+            free_ents(r, 0, NENT);
+            r->retry_s = WORLD_RETRY_S;
+            return 0;  /* near cells still being read or drawn: try again */
+        }
+    }
+    r->tex_held = 1;
     slot_of[s] = i;
     r->slot = s;
-    for (unsigned e = 0; e < NENT; e++) {
-        unsigned char **at = e < E_TEX ? &p : &q;
-        r->blob[e] = *at;
-        *at += (r->size[e] + 127) & ~127u;
-    }
     r->ent = r->done = 0;
     while (r->ent < NENT && !r->size[r->ent])
         r->ent++;
@@ -572,6 +604,8 @@ static void step(const float *feet, float dt)
     world_stats.want = want_m;
     for (int i = 0; i < nblk; i++)
         unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
+    for (int i = 0; i < nblk; i++)
+        rt[i].retry_s = rt[i].retry_s > dt ? rt[i].retry_s - dt : 0;
     in_cur_s = cur == was ? in_cur_s + dt : 0;
     world_stats.current = cur;
     for (int i = 0; i < nblk; i++)  /* slots of unloaded blocks come free once the chains are done */
