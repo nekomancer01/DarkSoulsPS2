@@ -535,6 +535,7 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         alb[sel] = [dsr_light.srgb_lin(a) for a in e["alb"]]
     MX = _mx()
     if MX is not None:  # area, Nn and (below) _frames in C (tools/mapx/bump.c)
+        N0, T0 = (N.copy(), T.copy()) if _CHECK else (N, T)  # mx_bump_frames overwrites N and T
         PSc, Nc, Tc, Wc = (np.ascontiguousarray(a, np.float64) for a in (PS, N, T, W))
         Nn, Bc = np.empty((nt, 3)), np.empty((nt, 3))
         MX.mx_bump_frames(nt, PSc.ctypes.data, Nc.ctypes.data, Tc.ctypes.data, Wc.ctypes.data, _MX["fma"],
@@ -542,8 +543,8 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         if _CHECK:
             C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
             _chk("area", area, np.array([0.5 * np.linalg.norm(c) for c in C]))
-            _chk("Nn", Nn, N / (np.array([np.linalg.norm(v) for v in N]).reshape(-1, 1) + 1e-12))
-            _chk("frames", (Nc, Tc, Bc), _frames(N, T, np.where(W < 0, -1.0, 1.0)))
+            _chk("Nn", Nn, N0 / (np.array([np.linalg.norm(v) for v in N0]).reshape(-1, 1) + 1e-12))
+            _chk("frames", (Nc, Tc, Bc), _frames(N0, T0, np.where(W < 0, -1.0, 1.0)))
     else:
         C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
         norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
