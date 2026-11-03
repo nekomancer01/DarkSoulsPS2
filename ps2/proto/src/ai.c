@@ -369,6 +369,7 @@ static int native_update(Ai *a, Goal *g)
         if (life_over(g))
             return R_SUCCESS;
         move_dir(a, yaw_to(f->pos, p), PB_(4), np > 3 ? PI_(3) : T_SELF);
+        a->out.dest = 1, a->out.dest_pos = p;
         return R_CONTINUE;
     }
     case N_GUARD:  /* Guard(life, guard anim, target, ...) */
@@ -395,6 +396,8 @@ static int native_update(Ai *a, Goal *g)
         if ((d >= PF_(1) && d <= PF_(2)) || life_over(g))
             return R_SUCCESS;
         move_dir(a, d < PF_(1) ? wrap(to + PI) : to, PB_(4), np > 3 ? PI_(3) : PI_(0));
+        if (d > PF_(2))  /* closing in: routed like an approach */
+            a->out.dest = 1, a->out.dest_pos = p;
         return R_CONTINUE;
     }
     case N_BACKHOME: { /* BackToHome(life, ...): walk to the MSB position, then face its direction */
@@ -403,6 +406,7 @@ static int native_update(Ai *a, Goal *g)
             return R_SUCCESS;
         if (d > 0.5f) {
             move_dir(a, yaw_to(f->pos, f->home), 1, T_SELF);
+            a->out.dest = 1, a->out.dest_pos = f->home;
             return R_CONTINUE;
         }
         a->out.face = 1, a->out.face_yaw = f->home_yaw;
@@ -689,7 +693,7 @@ int ai_goals_in_use(void)
 void ai_update(Ai *a, const AiFrame *f)
 {
     a->f = f;
-    a->out.req = -1, a->out.move = a->out.run = a->out.face = 0;
+    a->out.req = -1, a->out.move = a->out.run = a->out.face = a->out.dest = 0;
     a->out.guard = -1;
     if (!scripts_ok)
         return;

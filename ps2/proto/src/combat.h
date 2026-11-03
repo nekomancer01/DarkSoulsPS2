@@ -14,6 +14,11 @@ typedef struct CombatChr {
     float pos[3];          /* feet, map space */
     float yaw;             /* facing; forward = (sin yaw, 0, cos yaw) */
     float radius, height;  /* hurtbox: vertical capsule (NpcParam hitRadius / hitHeight) */
+    /* optional finer hurtbox (enemies: the hkx ragdoll capsules, src/ragdoll.c): an attack capsule hits only when it
+     * touches the vertical capsule widened to `reach` / raised to `top` AND hit_test says so */
+    int (*hit_test)(struct CombatChr *c, const float a[3], const float b[3], float r);
+    void *owner;
+    float reach, top;      /* bounds of the finer hurtbox around pos (0: the vertical capsule's) */
     int team;              /* attacks never hit their own team */
     int hp, hp_max;
     float def_phys;        /* physical defence (flat, the character's total) */

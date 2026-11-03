@@ -77,6 +77,7 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     return 0;
 }
 
+GSGLOBAL *hud_gs(void) { return gs; }
 const HudRect *hud_rect(int i) { return &lay[i]; }
 
 const char *hud_string(int s)
@@ -126,11 +127,11 @@ float hud_text_width(const char *s)
     return w;
 }
 
-float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
+float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, int align, float sx, float sy)
 {
     if (!ok)
         return 0;
-    float w = hud_text_width(s);
+    float w = hud_text_width(s) * sx;
     if (align)
         x -= w;
     for (; *s; s++) {
@@ -138,12 +139,17 @@ float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
             continue;
         const Glyph *gl = &gly[*s - 32];
         if (*s != ' ')
-            gsKit_prim_sprite_texture(gs, &atlas[0], R_HX(x + gl->pre), y, gl->u, gl->v, R_HX(x + gl->pre + gl->w),
-                                      y + gl->h,
-                                      gl->u + gl->w, gl->v + gl->h, HUD_Z, rgba(r, g, b, 0x80));
-        x += gl->adv;
+            gsKit_prim_sprite_texture(gs, &atlas[0], R_HX(x + gl->pre * sx), y, gl->u, gl->v,
+                                      R_HX(x + (gl->pre + gl->w) * sx), y + gl->h * sy, gl->u + gl->w, gl->v + gl->h, HUD_Z,
+                                      rgba(r, g, b, a));
+        x += gl->adv * sx;
     }
     return w;
+}
+
+float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
+{
+    return hud_text_ex(x, y, s, r, g, b, 0x80, align, 1, 1);
 }
 
 void hud_begin(void)

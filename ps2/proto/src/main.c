@@ -28,6 +28,7 @@
 #include "fx.h"
 #include "hud.h"
 #include "menu.h"
+#include "items.h"
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
 #include "testscript.h"
 #include "world.h"
@@ -360,6 +361,7 @@ int main(int argc, char **argv)
         for (;;)
             SleepThread();
     }
+    items_init();  /* menu.pak items.bin: stack sizes for the inventory rules (src/items.c), before the save loads */
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
     /* sound: IOP modules, the player's bank and the boot area's into SPU2 RAM (the IOP reads them: no EE RAM) */
     if (snd_init())
@@ -503,6 +505,7 @@ int main(int argc, char **argv)
         else
             idle += dt;
         unsigned short pressed = prev & ~held;
+        pressed |= test_pad();  /* test script "pad" presses */
         if (pressed & PAD_SELECT)
             hud_debug = !hud_debug;
         if (pressed & PAD_L3) {  /* debug: helm off / on, to see the face (DSR's hide rule, model_helmet) */

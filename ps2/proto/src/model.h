@@ -16,6 +16,8 @@ Model *mdl_load(const void *blob);
 /* Upload the textures; returns free VRAM bytes afterwards, or -1 if they did not fit */
 int mdl_upload(Model *m, GSGLOBAL *gs);
 int mdl_bones(const Model *m);
+/* Parent bone of each bone (-1 = a root), in skeleton order: parents come first */
+const short *mdl_parents(const Model *m);
 /* After mdl_load + mdl_upload: keep only header / parents / ref / groups / anims in an own block so the blob (of
  * blob_size bytes, anims last as export_chr.py writes them) can be freed; 0 if out of memory */
 int mdl_compact(Model *m, unsigned blob_size);
