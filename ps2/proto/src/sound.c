@@ -909,9 +909,9 @@ void snd_map(const char *map_id)
     const SSample *sm = e ? pick_wave(b, e, &si) : NULL;
     amb.e = NULL;
     if (sm && (sm->flags & SF_STREAM)) {
-        if (first)
-            ops_wait();  /* boot: nothing else waits on the ops client yet */
-        if (ops_busy)    /* later: started by snd_update once the ops client is free (never wait in a frame) */
+        /* boot: started by the first snd_update, after the load (a stream reading the disc during it made every
+         * cdrom0: pack read seek away and back); later: once the ops client is free (never wait in a frame) */
+        if (first || ops_busy)
             amb.b = b, amb.e = e, amb.si = si;
         else
             slot_start(1, b, e, si, e->vol, !first, 0);
