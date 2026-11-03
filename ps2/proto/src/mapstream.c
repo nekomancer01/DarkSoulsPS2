@@ -251,6 +251,21 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     int was = sel, forced = 0;
     unsigned forced_kb = 0;
     void *p;
+    /* no room even with every cell not drawn this frame gone: keep them all (a block lite set retried each frame
+     * dropped 1.4 MB of drawn cells per try and never fit; 2026-11-03, ISO of 9e6dd67) */
+    unsigned room = 0;
+    for (unsigned i = 0; i < nholes; i++)
+        if (hole_off[i] < arena_size)
+            room += hole_off[i] + hole_len[i] > arena_size ? arena_size - hole_off[i] : hole_len[i];
+    for (int k = 0; k < MS_INST && room < n; k++) {
+        bind(k);
+        for (unsigned i = 0; i < ncell; i++)
+            if (state[i] == MS_READY && used[i] != frame)
+                room += (tab[i].bytes + 63) & ~63u;
+    }
+    bind(was);
+    if (room < n)
+        return NULL;
     /* drop the farthest cell no chain reads (any distance) until n bytes fit. When every cell left was drawn in the
      * last frames (the player stands among them), drop drawn ones too: callers run in the update phase (enemy.c
      * stream_types, world.c), after main.c's end-of-frame vu1_wait and before this frame's map_draw, so once VIF1 is
