@@ -3,7 +3,7 @@
  *
  * Screens (menu.drb dialog names): R00 the icon bar Start opens (Inventory, Equipment, Status, System), I02
  * Equipment (slot grid I02-00, item pick list + detail I02-02, character columns R02-0x), I01 Inventory (eight tabs,
- * four-row list, detail, use / drop popup I01-01, yes / no F05), C01 Status, F04 System list. The game keeps
+ * four-row list, detail, use / drop popup I01-01, yes / no F05), R02 Status, I06 System. The game keeps
  * running behind them, as in DSR. Text fills three ways: <?tags?> inside FMG strings (tag_text), text elements with
  * no string by their element name (text_param_vitality ...), and anonymous values (text_param3) by the label text on
  * their row (label_value: "HP", "Equip Load", "Poise" ...). */
@@ -19,10 +19,11 @@
 #include "save.h"
 
 enum { M_CLOSED, M_BAR, M_EQUIP, M_PICK, M_INV, M_POPUP, M_CONFIRM, M_STATUS, M_SYSTEM, M_SYS_CONFIRM };
-/* R00 icon order (icon_inventory, icon_equip, icon_status, icon_qwc) and their Ingame_menu FMG names */
+/* R00 icon order (icon_inventory, icon_equip, icon_status, icon_qwc) */
 enum { BAR_INV, BAR_EQUIP, BAR_STATUS, BAR_SYSTEM, BAR_N };
-static const char *const bar_label[BAR_N] = {"Inventory", "Equipment", "Status", "System"};  /* Ingame_menu 110000 /
-                                                                                              * 110001 / 110003 / 110006 */
+/* the bar's help line (R04-02 text_help0) and lineHelp on the bar: Single_line_help_ 10001 .. 10004 */
+static const char *const bar_help[BAR_N] = {"Browse and use items", "Change equipment", "View status",
+                                            "Configure options or quit the game"};
 #define LIST_MAX INV_MAX
 #define TEXT_BYTES 2048
 
@@ -41,6 +42,11 @@ static u32 text_want, text_have;
 static int text_desc = -1, text_pending;
 static char msg[96];               /* one-line status after an action */
 static float msg_t;
+/* open fade: menu.drb scene R00_open_menutab runs ANIM FadeIn60 (alpha 0 -> 255) over a 10-frame scene key; DSR's bar
+ * is fully open <= 0.67 s after the key press (reference capture 2026-11-03), so the anim is fitted to the key
+ * (1/6 s), not played at its own 59 frames. The other screens' open scenes (I01, I02, R02, I06) have no keys: drawn
+ * at once. ASSUMED linear, TECH_DEBT menu-6 */
+static int open_frames, fade_a = 0x80;
 
 /* I02 slot grid: DRB cursor element -> progress.h slot (cursor0_*: right hand, quick items; cursor1_*: left hand,
  * arrows, bolts; cursor2_*: armour, rings) */
@@ -84,8 +90,8 @@ static const char *screen_of(int m, int *icons)
     case M_BAR: return "R00";
     case M_EQUIP: case M_PICK: *icons = 30; return "I02";
     case M_INV: case M_POPUP: case M_CONFIRM: *icons = 16; return "I01";
-    case M_STATUS: return "C01";
-    case M_SYSTEM: case M_SYS_CONFIRM: return "F04";
+    case M_STATUS: return "R02";
+    case M_SYSTEM: case M_SYS_CONFIRM: return "I06";
     default: return "";
     }
 }
@@ -98,8 +104,10 @@ static void set_mode(int m)
         drb_close();
         items_detail_free();
         detail_ok = 0;
-    } else if (strcmp(drb_screen(), want))
+    } else if (strcmp(drb_screen(), want)) {
         drb_open(want, icons);
+        open_frames = 0;
+    }
     mode = m;
     text_want = text_have = 0;
 }
@@ -378,15 +386,17 @@ static const char *tag_text(int node, const char *tag, void *ctx)
             return label_value(drb_string(drb_node(label_of[node])->spr));
         return NULL;
     }
-    if (!strcmp(tag, "lineHelp")) {
-        u32 id = cursor_item();
-        if (mode == M_BAR)
-            return bar_label[bar_sel];
+    if (!strcmp(tag, "lineHelp")) {  /* DSR's Single_line_help_ FMG lines (reference capture 2026-11-03) */
         if (msg_t > 0)
             return msg;
-        if (id && text_have == id && text_desc >= 0)
-            return text_buf;
-        return mode == M_EQUIP ? slot_name(EQ_CELLS[eq_sel].slot) : "";
+        switch (mode) {
+        case M_BAR: return bar_help[bar_sel];
+        case M_INV: return "Select an item to examine";                                     /* 11001 */
+        case M_POPUP: case M_CONFIRM: return popup_sel ? "Drop selected item" : "Use selected item"; /* 11004 / 11007 */
+        case M_EQUIP: case M_PICK: return "Select item to equip";                           /* 12000 */
+        case M_STATUS: return "Check status";                                               /* 14000 */
+        default: return "Change options";                                                   /* 16500 */
+        }
     }
     if (!strcmp(tag, "keyGuide")) {
         switch (mode) {
@@ -632,6 +642,25 @@ static void show(int root, const char *path, int on)
     drb_show(root >= 0 ? drb_find(root, path) : node_of(path), on);
 }
 
+/* a list's DRB "scrollbar" sprite is the whole track; DSR draws it as a thumb sized and placed by the rows shown, and
+ * not at all when every row fits (reference capture 2026-11-03: I01 a short thumb at the top, F04 none). Call
+ * scroll_hide before the list's drb_draw, scroll_draw after. Thumb at least 4 px (ASSUMED) */
+static int scroll_hide(int parent)
+{
+    int sb = drb_child(parent, "scrollbar");
+    drb_show(sb, 0);
+    return sb;
+}
+
+static void scroll_draw(int sb, int top, int shown, int n, int alpha)
+{
+    const DrbNode *t = drb_node(sb);
+    if (!t || n <= shown)
+        return;
+    float h = t->y1 - t->y0, th = h * shown / n < 4 ? 4 : h * shown / n;
+    drb_draw_at(sb, t->x0, t->y0 + (h - th) * top / (n - shown), t->x1 - t->x0, th, alpha);
+}
+
 /* F05 yes / no: only the question box; F05-00's name plate (portrait, name, multiplayer record) is the talk variant */
 static void draw_yes_no(const char *question)
 {
@@ -661,16 +690,18 @@ static void draw_bar(void)
     for (int k = 0; k < BAR_N; k++)
         show(r00, ch[k], k == bar_sel);
     show(r00, "plate_black", 0);
-    drb_draw(root, 0, 0, 0x80, tag_text, 0);
+    drb_draw(root, 0, 0, fade_a, tag_text, 0);
     int help = drb_child(drb_find(root, "R04-02"), "text_help0");
     if (help >= 0)
-        drb_text(help, 0, 0, bar_label[bar_sel], 0x80);
+        drb_text(help, 0, 0, bar_help[bar_sel], fade_a);
 }
 
-/* the R02 character columns: one page at a time (L1 / R1) */
+/* the R02 character columns: one page at a time (L1 / R1), in the order of DSR's status screen columns: R02-03
+ * (level, souls, attributes: the page DSR's inventory and equipment open on, reference capture 2026-11-03), R02-04
+ * (HP, stamina, attack, defence), R02-00 (poise, resists) */
 static void status_pages(int root)
 {
-    static const char *const pg[3] = {"R02-00", "R02-04", "R02-03"};
+    static const char *const pg[3] = {"R02-03", "R02-04", "R02-00"};
     for (int k = 0; k < 3; k++)
         show(root, pg[k], k == status_page);
 }
@@ -747,7 +778,9 @@ static void draw_equip(void)
             show(pick, nm, 0);
         }
         detail_id = 0;
+        int sb = scroll_hide(pick);
         drb_draw(pick, 0, 0, 0x80, tag_text, 0);
+        scroll_draw(sb, pick_top, 5, pick_n, 0x80);
         for (int r = 0; r < 5; r++) {
             char nm[12];
             snprintf(nm, sizeof nm, "list%d", r);
@@ -805,7 +838,9 @@ static void draw_inventory(void)
     snprintf(tc, sizeof tc, "list_cursor%d_0", inv_sel - inv_top);
     drb_place(drb_child(lst, "list_cursor"), inv_n ? drb_child(lst, tc) : -1);
     detail_id = 0;  /* item texts only in the rows drawn below, not in stray template elements */
+    int sb = scroll_hide(lst);
     drb_draw(root, 0, 0, 0x80, tag_text, 0);
+    scroll_draw(sb, inv_top, 4, inv_n, 0x80);
     for (int r = 0; r < 4; r++) {
         int k = inv_top + r;
         if (k >= inv_n)
@@ -843,51 +878,35 @@ static void draw_inventory(void)
     }
 }
 
+/* Status: DSR's R02 screen (reference capture 2026-11-03: title "Status", the three R02 columns side by side in
+ * R02_frame_three), not C01, which is the bonfire's Level Up / Restore Humanity screen. The columns fill through
+ * tag_text and their labels as in the inventory's side column. */
 static void draw_status(void)
 {
-    int root = node_of("C01");
-    for (int k = 5; k <= 12; k++) {
-        char nm[8];
-        snprintf(nm, sizeof nm, "C01-%02d", k);
-        show(root, nm, 0);
-    }
-    int c4 = drb_find(root, "C01-04");
-    show(c4, "data_simple_arms", 0), show(c4, "data_simple_catalyst", 0), show(c4, "data_simple_bow", 0);
-    int c3 = drb_find(root, "C01-03");
-    show(c3, "cursor0", 0), show(c3, "cursor1", 0);
-    drb_show(drb_child(c3, "text_param-name5"), 0);  /* "ReqSouls" and its cost: the Level Up screen's */
-    drb_show(drb_child(c3, "text_param_cost"), 0);
-    for (int k = 0; k < 10; k++) {
-        char nm[12];
-        snprintf(nm, sizeof nm, "arrow%d_0", k);
-        show(c3, nm, 0);  /* level-up arrows: the bonfire's Level Up screen */
-    }
+    int root = node_of("R02");
+    show(root, "T02-00", 0), show(root, "T02-03", 0);  /* character creation pieces */
     drb_draw(root, 0, 0, 0x80, tag_text, 0);
-    static const struct { const char *name; int st; } vals[] = {
-        {"text_param_vitality", ST_VIT}, {"text_param_will", ST_ATT}, {"text_param_endure", ST_END},
-        {"text_param_strength", ST_STR}, {"text_param_dexter", ST_DEX}, {"text_param_durability", ST_RES},
-        {"text_param_intellect", ST_INT}, {"text_param_force", ST_FAI}};
-    for (unsigned i = 0; i < sizeof vals / sizeof vals[0]; i++)
-        drb_text(drb_child(c3, vals[i].name), 0, 0, num(prog.stats[vals[i].st]), 0x80);
-    drb_text(drb_child(c3, "text_param_level"), 0, 0, num(prog.level), 0x80);
-    drb_text(drb_child(c3, "text_param_soul"), 0, 0, num(prog.souls), 0x80);
-    drb_text(drb_child(c3, "text_param_heroic"), 0, 0, num(prog.humanity), 0x80);
 }
 
+/* System: DSR's I06 screen (reference capture 2026-11-03: the wide parchment titled "System" over the top of the
+ * view, the list centred in it, the world not dimmed: BG_dim off). I06 has three parchments, 6r (PC: 6 rows), 5r and
+ * 4r (console); two rows here take the shortest, 4r, with its key guide line _3 (ASSUMED) */
 static void draw_system(void)
 {
-    int root = node_of("F04");
-    int lst = drb_find(root, "F04-01");
-    show(root, "F04-00", 0);
-    for (int k = 2; k <= 10; k++) {
+    int root = node_of("I06");
+    int lst = drb_find(root, "I06-00");
+    show(root, "BG_dim", 0), show(root, "BG", 0), show(root, "BG_2", 0);
+    for (int k = 2; k <= 5; k++) {
         char nm[12];
         snprintf(nm, sizeof nm, "button%d_0", k);
         show(lst, nm, 0);
     }
+    show(lst, "grayout_loadgame2", 0), show(lst, "grayout_loadgame3", 0);
+    show(lst, "text_key-guide", 0), show(lst, "text_key-guide_2", 0);
     char nm[12];
-    snprintf(nm, sizeof nm, "cursor%d_0", sys_sel);
+    snprintf(nm, sizeof nm, "button%d_0", sys_sel);
     drb_place(drb_child(lst, "cursor"), drb_child(lst, nm));
-    drb_draw(lst, 0, 0, 0x80, tag_text, 0);
+    drb_draw(root, 0, 0, 0x80, tag_text, 0);
     drb_text(drb_child(lst, "button0_0"), 0, 0, "Options", 0x80);   /* Ingame_menu 115000 */
     drb_text(drb_child(lst, "button1_0"), 0, 0, "Quit Game", 0x80); /* Ingame_menu 115002 */
     if (mode == M_SYS_CONFIRM)
@@ -901,6 +920,8 @@ void menu_draw(const Player *p)
         pos_keep[0] = p->pos.x, pos_keep[1] = p->pos.y, pos_keep[2] = p->pos.z;
     if (mode == M_CLOSED || !drb_ready())
         return;
+    open_frames += 2;  /* 2 DRB frames (1/60 s) per 30 fps frame */
+    fade_a = mode != M_BAR || open_frames >= 10 ? 0x80 : 0x80 * open_frames / 10;
     hud_begin();
     switch (mode) {
     case M_BAR: draw_bar(); break;
