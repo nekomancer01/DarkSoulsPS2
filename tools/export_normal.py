@@ -75,9 +75,10 @@ def bumped(mtd):
                                                                                     "foliage", "ivy", "tree"))
 
 
-def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
+def register(m, V, fvw, wn, xn, light_row, alb, probe_of, wn_np=None):
     """gather() hook for one lit map mesh: keeps what the relief needs per wedge (normal, tangent, handedness) and
-    returns an index for the mesh dict's "bump" key, or None when the mesh has no relief."""
+    returns an index for the mesh dict's "bump" key, or None when the mesh has no relief. wn_np: (wn, np.array(wn))
+    when gather has that array."""
     if not BUMP or not m.get("bump") or not bumped(m["mtd"]) or len(V.get("tangent") or ()) != len(V["pos"]):
         return None
     nw = len(wn)
@@ -93,7 +94,7 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
             t = V["tangent"][vi]
             T[w] += xn(t[:3])
             W[w] += t[3]
-    N = np.array(wn, np.float64)
+    N = wn_np[1] if wn_np is not None and wn_np[0] is wn else np.array(wn, np.float64)
     MESH.append(dict(tex=m["bump"], light=light_row, alb=alb, N=N, T=T, W=np.where(W < 0, -1.0, 1.0),
                      probe_of=probe_of))
     return len(MESH) - 1
@@ -497,8 +498,9 @@ def merge_small(groups):
 def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     """After simplification (mesh "tris" = corners (position, wedge)): cluster the bumped triangles and build the
     textures and CLUTs. Returns {triangle number in main()'s order: (texture name, cluster)} for build_chunks."""
+    import mapx_native
     _STATE.clear()
-    tris = []  # (global triangle number, mesh entry, corners)
+    segs = []  # (global number of the first triangle, mesh entry, triangles (corners)), per bumped mesh in order
     k = 0
     for m in meshes:
         tl = m["tris"]
@@ -506,24 +508,26 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
             continue
         e = MESH[m["bump"]] if m.get("bump") is not None else None
         if e is not None and e["tex"] in dds:
-            tris += [(k + i, e, t) for i, t in enumerate(tl)]
+            segs.append((k, e, tl))
         k += len(tl)
-    if not tris:
+    if not segs:
         print("bump: no bumped triangles")
         return {}
+    sl = [len(tl) for _, _, tl in segs]
     # per triangle: DSR frame (mean of its corners), sun visibility (baked shadow at the corners), light row, probe
-    nt = len(tris)
+    nt = sum(sl)
     N, T, W = np.zeros((nt, 3)), np.zeros((nt, 3)), np.zeros(nt)
     ks, area, lid, pid, alb = np.ones(nt), np.zeros(nt), np.zeros(nt, int), np.zeros(nt, int), np.zeros((nt, 3))
     rows, rid, faces = {}, {}, {}
     # vectorised per mesh entry (was one numpy call chain per triangle: 68 s of Firelink's export); every element is
     # computed with the same operations in the same order as before (row sums ((a + b) + c), np.cross, the vector norm
     # per row), so the clusters and textures are unchanged
-    WS = np.array([[c[1] for c in t] for _, _, t in tris], np.int64).reshape(-1, 3)
-    PS = np.array([[c[0] for c in t] for _, _, t in tris], np.float64).reshape(-1, 3, 3)
-    ent, eix = {}, np.empty(nt, np.int64)
-    for i, (_, e, _) in enumerate(tris):
-        eix[i] = ent.setdefault(id(e), (len(ent), e))[0]
+    arr = [mapx_native.tri_arrays(tl) for _, _, tl in segs]
+    WS = np.concatenate([w for _, w in arr]).astype(np.int64)
+    PS = np.concatenate([p for p, _ in arr])
+    del arr
+    ent = {}
+    eix = np.repeat(np.array([ent.setdefault(id(e), (len(ent), e))[0] for _, e, _ in segs], np.int64), sl)
     for k, e in ent.values():
         sel = np.nonzero(eix == k)[0]
         w = WS[sel]
@@ -555,9 +559,9 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         ks[:] = (k3[:, 0] + k3[:, 1] + k3[:, 2]) / 3
     cen = (PS[:, 0] + PS[:, 1] + PS[:, 2]) / 3
     if all(hasattr(e["probe_of"], "many") for _, e in ent.values()) and len({id(e["probe_of"]) for _, e in ent.values()}) == 1:
-        pof = tris[0][1]["probe_of"].many(cen)  # one ProbeIndex, queried in the same order
+        pof = segs[0][1]["probe_of"].many(cen)  # one ProbeIndex, queried in the same order
     else:
-        pof = [e["probe_of"](tuple(c)) for (_, e, _), c in zip(tris, cen.tolist())]
+        pof = [e["probe_of"](tuple(c)) for e, c in zip((e for _, e, tl in segs for _ in range(len(tl))), cen.tolist())]
     for i, p in enumerate(pof):
         pid[i] = p if p is not None else -1
         if pid[i] not in faces and pid[i] in probes:
@@ -580,7 +584,7 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         _chk("response", R, resp(tri, np.array(RING[1:])))
         _chk("split kmeans", _mx_kmeans(MX, R, BUMP_SPLIT, np.sqrt(area + 1e-6)), _kmeans(R, BUMP_SPLIT, np.sqrt(area + 1e-6)))
     # textures in use, the palette, index maps
-    names = sorted({e["tex"] for _, e, _ in tris})
+    names = sorted({e["tex"] for _, e, _ in segs})
     imgs = {}
     for nme in names:
         xy = _mx_xy_pow2(MX, dds[nme], max(BUMP_MAX, 4), BUMP_MAX) if MX is not None else None
@@ -615,21 +619,27 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     # density (texels per metre, area-weighted) per texture for texcache's mip choice
     uva, wa = np.zeros(len(texs)), np.zeros(len(texs))
     out, local = {}, {}
-    for i, (g, e, t) in enumerate(tris):
-        if e["tex"] not in tex_of:
-            continue
-        ti = tex_of[e["tex"]]
-        out[g] = (ti, int(lab[i]))
-        local[g] = i
-        wa[ti] += area[i]
+    labl, areal, i = lab.tolist(), area.tolist(), 0
+    for g, e, tl in segs:
+        n = len(tl)
+        if e["tex"] in tex_of:
+            ti = tex_of[e["tex"]]
+            out.update(zip(range(g, g + n), ((ti, x) for x in labl[i:i + n])))
+            local.update(zip(range(g, g + n), range(i, i + n)))
+            s = float(wa[ti])
+            for x in areal[i:i + n]:  # summed in triangle order, as before
+                s += x
+            wa[ti] = s
+        i += n
     for m in meshes:
         e = MESH[m["bump"]] if m.get("bump") is not None and m["tris"] else None
         if e is None or e["tex"] not in tex_of:
             continue
         ti = tex_of[e["tex"]]
         # all triangles at once, added to uva in triangle order (np.add.at) as the per-triangle loop did
-        uv = np.array([[m["wuv"][c[1]] for c in t] for t in m["tris"]], np.float64).reshape(-1, 3, 2) * \
-            np.array([texs[ti]["w"], texs[ti]["h"]])
+        c = m.get("_np", {}).get("wuv")  # gather's array of this list (export_map._weld)
+        wuv = c[1] if c is not None and c[0] is m["wuv"] else np.array(m["wuv"], np.float64).reshape(-1, 2)
+        uv = wuv[mapx_native.tri_arrays(m["tris"])[1]] * np.array([texs[ti]["w"], texs[ti]["h"]])
         d1, d2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]
         np.add.at(uva, np.full(len(uv), ti), 0.5 * np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]))
     _STATE["density"] = [float(math.sqrt(u / a)) if a > 0 else 0.0 for u, a in zip(uva, wa)]
