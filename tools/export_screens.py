@@ -189,18 +189,6 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
             strings.append(s)
         return string_of[s]
 
-    # A label's box often runs under the value printed at its right (DSR's narrower font fits; the port's HUD font
-    # does not): a left-aligned text ends where a right-aligned text on the same line begins, and drb.c squeezes it
-    texts = [n for n in nodes if n[1] in ("Text", "ScrollText") and not n[7]]
-    for lab in texts:
-        if lab[2][30] & 3:
-            continue
-        for val in texts:
-            if val is lab or not val[2][30] & 1:
-                continue
-            ov = min(lab[6], val[6]) - max(lab[4], val[4])
-            if ov > 0.5 * (lab[6] - lab[4]) and lab[3] < val[3] < lab[5]:
-                lab[5] = val[3] - 4
     body = bytearray()
     for k, (el, t, raw, x0, y0, x1, y1, h, end) in enumerate(nodes):
         typ = {"Dialog": T_DIALOG, "Sprite": T_SPRITE, "MonoRect": T_RECT, "GouraudRect": T_RECT,

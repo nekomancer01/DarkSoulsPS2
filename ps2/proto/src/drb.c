@@ -38,7 +38,8 @@ static const ScrHeader *hdr;
 static const DrbNode *nodes;
 static const u32 *roots;
 static const ScrSprite *sprites;
-static s8 *vis;              /* per node: 1 shown, 0 hidden, -1 default */
+static s8 *vis;
+static s16 *pair, *vleft;  /* per text node: the value printed right of a label, its last drawn left edge */              /* per node: 1 shown, 0 hidden, -1 default */
 /* cursors moved onto their targets: drawn in the DRB's own order (under the texts after them) */
 #define MAX_PLACE 8
 static struct { int node; float tx, ty, ax, ay, kx, ky; } place[MAX_PLACE];  /* template origin -> target box */
@@ -198,6 +199,31 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
 }
 
 /* screen file loaded: borrow VRAM, upload the atlas, keep the tree, set up the icon cache */
+/* A label's box often runs under the value printed at its right (DSR's narrower font fits, the port's HUD font does
+ * not): each left-aligned text gets the narrow right-aligned text on its line, and is squeezed only as far as needed
+ * to end before that value's drawn left edge (text_box) */
+static void pair_labels(void)
+{
+    int n = hdr->nodes;
+    for (int i = 0; i < n; i++)
+        pair[i] = -1, vleft[i] = nodes[i].x1;
+    for (int i = 0; i < n; i++) {
+        const DrbNode *l = &nodes[i];
+        if (l->type != DRB_TEXT || (l->align & (DRB_RIGHT | DRB_CENTER)) || (l->flags & 1))
+            continue;
+        int best = -1;
+        for (int j = 0; j < n; j++) {
+            const DrbNode *v = &nodes[j];
+            if (v->type != DRB_TEXT || !(v->align & DRB_RIGHT) || (v->flags & 1) || v->x1 - v->x0 > 80)
+                continue;
+            int ov = (l->y1 < v->y1 ? l->y1 : v->y1) - (l->y0 > v->y0 ? l->y0 : v->y0);
+            if (2 * ov > l->y1 - l->y0 && l->x0 < v->x0 && v->x0 < l->x1 && (best < 0 || v->x0 < nodes[best].x0))
+                best = j;
+        }
+        pair[i] = best;
+    }
+}
+
 static int screen_setup(void)
 {
     const ScrHeader *h = (const ScrHeader *)file;
@@ -225,7 +251,7 @@ static int screen_setup(void)
     tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
     tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
     /* keep header .. sprites (+ per-node visibility) */
-    tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127);
+    tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 4;
     tree = ui_alloc(tree_bytes);
     if (!tree)
         return fail("no RAM for the tree");
@@ -237,6 +263,8 @@ static int screen_setup(void)
     sprites = (const ScrSprite *)(tree + hdr->sprite_off);
     vis = (s8 *)(tree + ((hdr->clut_off + 127) & ~127));
     memset(vis, -1, hdr->nodes);
+    pair = (s16 *)(vis + ((hdr->nodes + 127) & ~127)), vleft = pair + hdr->nodes;
+    pair_labels();
     if (ncells) {
         unsigned n = sheet_bytes + ncells * 1024 + ncells * sizeof(IconCell) + icon_cell_bytes;
         sheet = ui_alloc(n);
@@ -466,7 +494,7 @@ static const char *expand(const char *s, char *out, int n, int node, DrbTextFn f
     return out;
 }
 
-static void text_box(const DrbNode *t, float dx, float dy, const char *s, int alpha)
+static void text_box(int k, const DrbNode *t, float dx, float dy, const char *s, int alpha)
 {
     if (!*s)
         return;
@@ -480,6 +508,7 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
     /* one line per \n, the box's width wraps nothing (the FMG text has its own line breaks); a line wider than its box
      * is squeezed to fit, down to half width (TECH_DEBT menu-3) */
     char line[160];
+    const char *first = s;
     while (*s) {
         const char *e = strchr(s, '\n');
         int n = e ? e - s : (int)strlen(s);
@@ -488,13 +517,17 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
         memcpy(line, s, n);
         line[n] = 0;
         float w = hud_text_width(line) * fs, bw = x1 - x0, sx = fs;
+        if (k >= 0 && pair[k] >= 0)  /* a label: room up to its value */
+            bw = vleft[pair[k]] + dx - 4 - x0;
         if (w > bw && bw > 8) {
-            float k = bw / w < 0.5f ? 0.5f : bw / w;
-            sx *= k, w *= k;
+            float q = bw / w < 0.5f ? 0.5f : bw / w;
+            sx *= q, w *= q;
         }
-        if (t->align & DRB_RIGHT)
+        if (t->align & DRB_RIGHT) {
             hud_text_ex(x1, y, line, r, g, b, a, 1, sx, fs);
-        else if (t->align & DRB_CENTER)
+            if (k >= 0 && s == first)  /* for the label on its left (next frame) */
+                vleft[k] = x1 - w - dx;
+        } else if (t->align & DRB_CENTER)
             hud_text_ex((x0 + x1 - w) / 2, y, line, r, g, b, a, 0, sx, fs);
         else
             hud_text_ex(x0, y, line, r, g, b, a, 0, sx, fs);
@@ -509,7 +542,7 @@ void drb_text(int node, float dx, float dy, const char *s, int alpha)
 {
     const DrbNode *t = drb_node(node);
     if (t && s)
-        text_box(t, dx, dy, s, alpha);
+        text_box(node, t, dx, dy, s, alpha);
 }
 
 void drb_place(int node, int at)
@@ -573,11 +606,11 @@ void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
             break;
         case DRB_TEXT:
             if (m.spr >= 0)
-                text_box(&m, dx, dy, expand(drb_string(m.spr), buf, sizeof buf, k, fn, ctx), alpha);
+                text_box(cur >= 0 ? -1 : k, &m, dx, dy, expand(drb_string(m.spr), buf, sizeof buf, k, fn, ctx), alpha);
             else if (fn) {  /* no string of its own: filled by the caller (by node hash) */
                 const char *s = fn(k, NULL, ctx);
                 if (s)
-                    text_box(&m, dx, dy, s, alpha);
+                    text_box(cur >= 0 ? -1 : k, &m, dx, dy, s, alpha);
             }
             break;
         }
