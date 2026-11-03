@@ -535,6 +535,12 @@ area.
   Equipment, 110003 Status; Menu_general_text_ 101013 Level, 101030 HP, 101032 Stamina, 101041 Souls).
 - Warrior kit: CharaInitParam 3000 (Longsword 201000, Heater Shield 1450000, Standard Helm / Hard Leather set
   210000-213000, goods 117 Darksign, 103 Black Separation Crystal, soul level 4, souls 0); Estus Flask added.
+- Start menu (2026-11-03): tools/export_screens.py flattens DSR's menu.drb.dcx dialog trees per screen (R00, I02,
+  I01, C01, F04) at their own layout into scr_<name>.bin with a 512-wide PSMT8 sprite atlas; src/drb.c loads one
+  screen at a time into VRAM lent from the top of the map texture pool (texcache.c tc_pin) and RAM from the near-cell
+  arena, draws it, places cursors on their targets, and fills text from FMG tags / element names. DRB colours are
+  a, r, g, b (Text +24, Sprite tint +32, MonoRect +24). tools/export_items.py: items.bin (resident, ~3 KB) for stack
+  sizes, itemx.bin / desc.bin / icons.bin read while a menu is open (src/items.c).
 - tools/export_menu.py -> src/menu.bin (packed as data/menu.pak): sprites resampled to their exact 640x448 size
   (x 0.5, y 0.622), packed tallest-first with the 95 ASCII glyphs (17 px lines) into one 512x256 PSMT8 atlas
   (256-colour CLUT with alpha), long bars and YOU DIED stored at half size and stretched; 9 icons (64 px) in a

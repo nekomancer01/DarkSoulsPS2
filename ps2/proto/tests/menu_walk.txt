@@ -4,6 +4,8 @@
 option save host menutest
 option nodemo
 wait 3
+item 0x40000124 -99  # the save from a previous run (Quit Game saves) keeps its counts: start from none
+item 0x000186A0 -9
 item 0x40000124 5  # Firebomb x5 (consumables tab, droppable)
 item 0x000186A0 1  # Dagger (right-hand pick list)
 stats
@@ -56,7 +58,7 @@ shot equip
 pad cross
 wait 0.8
 shot equip_pick
-pad down
+pad up  # the list opens on the equipped Longsword: (Remove), Dagger, Longsword
 wait 0.3
 pad cross
 wait 0.8
