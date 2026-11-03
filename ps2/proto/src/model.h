@@ -31,6 +31,8 @@ void mdl_strip(Model *m);
 void mdl_share_textures(Model *dst, const Model *src);
 /* Index of the baked animation with this Havok/TAE id, or -1 */
 int mdl_anim(const Model *m, int id);
+/* The Havok/TAE id of baked animation `anim` (sound cues, src/sound.c) */
+int mdl_anim_id(const Model *m, int anim);
 float mdl_anim_length(const Model *m, int anim);
 /* Local pose of an animation at time t (seconds, 30 fps samples, nlerp between frames); anim -1 = reference pose */
 void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out);

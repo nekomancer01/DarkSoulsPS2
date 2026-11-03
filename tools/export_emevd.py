@@ -108,7 +108,7 @@ OPS = [
     ("DIALOG", (2007, 1), "stub"), ("STATUS_MSG", (2007, 3), "real"),
     ("LADDER", (2009, 0), "stub"), ("BONFIRE", (2009, 3), "real"), ("MP_BUFF", (2009, 4), "noop"),
     ("BOSS_ENTRY", (2009, 6), "noop"),
-    ("SE", (2010, 2), "stub"), ("SOUND_STATE", (2010, 3), "stub"),
+    ("SE", (2010, 2), "real"), ("SOUND_STATE", (2010, 3), "real"),
     ("HIT", (2011, 1), "real"), ("MAP_PART", (2012, 1), "real"),
     ("BANNER", (2007, 2), "real"),
 ]

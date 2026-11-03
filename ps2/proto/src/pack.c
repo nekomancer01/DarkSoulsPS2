@@ -76,6 +76,8 @@ static const char *pack_path(const char *path, char *out, unsigned cap)
     return out;
 }
 
+const char *pack_resolve(const char *path, char *out, unsigned cap) { return pack_path(path, out, cap); }
+
 int pack_open(Pack *p, const char *path)
 {
     async_finish();

@@ -29,5 +29,14 @@ for f in src/*.vsm; do
     N=$((N + 1))
     dvp-as "$f" -o "$OUT/$(basename "$f" .vsm).vo" || { echo "FAIL $f"; FAIL=$((FAIL + 1)); }
 done
+# the IOP sound module (iop/dsrsnd, src/sound.c's driver): compiled and linked as ps2sdk's Makefile.iopglobal does
+IOPCC="mipsel-none-elf-gcc -D_IOP -fno-builtin -G0 -O2 -Wall -Werror -msoft-float -mno-explicit-relocs \
+-I$PS2SDK/iop/include -I$PS2SDK/common/include -Isrc -Iiop/dsrsnd"
+N=$((N + 1))
+{ printf '#include "irx_imports.h"\n'; cat iop/dsrsnd/imports.lst; } > "$OUT/dsrsnd_imports.c"
+# shellcheck disable=SC2086  # $IOPCC is a word list
+{ $IOPCC -c iop/dsrsnd/dsrsnd.c -o "$OUT/dsrsnd.o" && $IOPCC -fno-toplevel-reorder -c "$OUT/dsrsnd_imports.c" -o \
+  "$OUT/dsrsnd_imports.o" && $IOPCC -T"$PS2SDK/iop/startup/linkfile" -nostdlib -dc -r -o "$OUT/dsrsnd.elf" \
+  "$OUT/dsrsnd.o" "$OUT/dsrsnd_imports.o"; } || { echo "FAIL iop/dsrsnd"; FAIL=$((FAIL + 1)); }
 echo "compiled $N files, $FAIL failed"
 [ "$FAIL" = 0 ]

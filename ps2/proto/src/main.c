@@ -34,6 +34,7 @@
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
 #include "bonfire.h"  /* A4: rest, death, bloodstain */
+#include "sound.h"  /* A12: SPU2 sound (src/sound.c, iop/dsrsnd) */
 #include "gamedata.h"  /* player / combat / progress values from c0000.pak (the ELF holds no game data) */
 #include <unistd.h>
 
@@ -360,6 +361,9 @@ int main(int argc, char **argv)
             SleepThread();
     }
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
+    /* sound: IOP modules, the player's bank and the boot area's into SPU2 RAM (the IOP reads them: no EE RAM) */
+    if (snd_init())
+        snd_map(AREA);
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
     unsigned t_load = cpu_ticks();
     Pack pk;
@@ -634,6 +638,8 @@ int main(int argc, char **argv)
         r_camera(eye, target);
 
         world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
+        snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
+        snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
         PROF_MARK(PROF_MAP);
         if (map_ok) {
             /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */

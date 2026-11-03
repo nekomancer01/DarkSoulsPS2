@@ -29,6 +29,8 @@ void world_systems(GSGLOBAL *gs);
 void world_update(const float *feet, float dt);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
 int world_current(void);
+/* MSB map id (mAA_BB_CC_DD) of a block, NULL if none (sound.c: area banks and ambience per map) */
+const char *world_map(int block);
 
 typedef struct {
     int blocks, loaded, reading;     /* table size, blocks on (incl. boot), block being read (-1 none) */
