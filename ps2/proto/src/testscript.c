@@ -1,6 +1,7 @@
 /* In-ELF test runner: script parser + interpreter, per-frame stats mailbox (testscript.h has the script syntax). */
 #define NEWLIB_PORT_AWARE  /* fio calls, as pack.c (same host: device) */
 #include <kernel.h>
+#include <libpad.h>
 #include <fileio.h>
 #include <malloc.h>
 #include <math.h>
@@ -20,7 +21,7 @@
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD };
 
 typedef struct {
     unsigned short op, line;
@@ -65,6 +66,31 @@ static char *dupstr(const char *s, int n)
     return d;
 }
 
+static unsigned short pad_pending;  /* "pad" presses for main.c's next frame */
+
+/* "pad" button names -> libpad bits */
+static int pad_mask(const char *s, int line)
+{
+    static const struct { const char *name; int bit; } names[] = {
+        {"start", PAD_START}, {"select", PAD_SELECT}, {"cross", PAD_CROSS}, {"circle", PAD_CIRCLE},
+        {"square", PAD_SQUARE}, {"triangle", PAD_TRIANGLE}, {"up", PAD_UP}, {"down", PAD_DOWN}, {"left", PAD_LEFT},
+        {"right", PAD_RIGHT}, {"l1", PAD_L1}, {"r1", PAD_R1}, {"l2", PAD_L2}, {"r2", PAD_R2},
+    };
+    int mask = 0, n;
+    char w[16];
+    while (sscanf(s, " %15s%n", w, &n) == 1) {
+        unsigned k;
+        for (k = 0; k < sizeof names / sizeof names[0] && strcmp(w, names[k].name); k++)
+            ;
+        if (k == sizeof names / sizeof names[0])
+            printf("TEST error line %d: unknown pad button '%s'\n", line, w);
+        else
+            mask |= names[k].bit;
+        s += n;
+    }
+    return mask;
+}
+
 /* Parses text (modified in place) into p; returns option bits */
 static int parse(Prog *p, char *text)
 {
@@ -73,7 +99,8 @@ static int parse(Prog *p, char *text)
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0},   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
-        {"kill", C_KILL, 0},  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
+        {"kill", C_KILL, 0},
+        {"pad", C_PAD, 0},  /* one press of the named buttons (menus, bonfire): test_pad() */  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
         /* game state (save.c save_test_cmd): event flags, souls, items, checks, save / load */
         {"flag", C_GAME, 0}, {"flags", C_GAME, 0}, {"souls", C_GAME, 0}, {"item", C_GAME, 0}, {"check", C_GAME, 0},
         {"save", C_GAME, 0}, {"load", C_GAME, 0}, {"wipe", C_GAME, 0},
@@ -129,6 +156,8 @@ static int parse(Prog *p, char *text)
                         c->text = dupstr(rest, len);
                     else if (c->op == C_GAME)  /* the whole line: 8-digit flag ids do not fit a float */
                         c->text = dupstr(s + used - strlen(word), rest + len - (s + used - strlen(word)));
+                    else if (c->op == C_PAD)
+                        c->a[0] = pad_mask(rest, line);
                     else if (c->op == C_APPROACH && !strncmp(rest, "obj", 3)) {
                         c->text = "obj";
                         sscanf(rest + 3, "%f %f", &c->a[2], &c->a[3]);
@@ -238,6 +267,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
         case C_KILL: pl->hp = -1; break;
+        case C_PAD: pad_pending |= (unsigned short)c->a[0]; break;
         case C_LOOP: p->pc = -1; break;
         case C_END:
             p->pc = p->n;
@@ -294,6 +324,13 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         p->pc++;
     }
     return p->pc < p->n;
+}
+
+unsigned short test_pad(void)
+{
+    unsigned short m = pad_pending;
+    pad_pending = 0;
+    return m;
 }
 
 int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo_on)

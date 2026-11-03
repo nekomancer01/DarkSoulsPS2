@@ -14,6 +14,8 @@
  *   pitch p                 camera pitch only (yaw as the last cam / approach set it)
  *   stick mx my             left stick held (-1..1, my > 0 forward); rstick cx cy: right stick
  *   circle 0|1              Circle held / released; r1: one R1 press
+ *   pad b [b ...]           one press of pad buttons (start select cross circle square triangle up down left right
+ *                           l1 r1 l2 r2) on the next frame, as main.c's pressed mask: Start menu, bonfire menu
  *   wait s                  wait s game seconds (frames n: wait n frames)
  *   approach obj|x,z d speed  turn the camera at the nearest breakable (obj) or point and walk at `speed` until
  *                           within d m (gives up after 10 s)
@@ -71,6 +73,8 @@ int test_frozen(void);  /* world updates paused (shot marker / freeze 1) */
 /* Fills *in for this frame from the script (or the built-in demo when demo != 0 and no script); may set the camera
  * and teleport the player. Returns 1 if it produced the input. */
 int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo);
+/* Buttons the script pressed ("pad") since the last call, as libpad PAD_* bits (main.c ORs them into its pressed mask) */
+unsigned short test_pad(void);
 /* Per-frame numbers for the mailbox / segment stats (call once per frame after the frame is drawn) */
 void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms, float chr_ms, float vuw_ms, int tris,
                     int vram_free);

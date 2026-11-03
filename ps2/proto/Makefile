@@ -62,7 +62,7 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o ragdoll.o nav.o)
+	gamedata.o ragdoll.o nav.o items.o drb.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -275,9 +275,29 @@ $(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.su
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" $@
 
-$(D)/menu.pak: $(G)/menu.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
+# Item database (src/items.c): stack sizes / kinds (resident), names, stats, descriptions and icons (read while a menu
+# is open; desc.bin and icons.bin stored raw for reads in place) (tools/export_items.py)
+ITEM_FILES = $(addprefix $(G)/items/,items.bin itemx.bin desc.bin icons.bin)
+$(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
-	python3 -I ../../tools/pack.py $@ menu.bin=$(G)/menu.bin
+	$(PY) -I ../../tools/export_items.py "$(GAME)" $(@D)
+	@touch $@
+$(ITEM_FILES): $(G)/items/.stamp ;
+# Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
+# (tools/export_screens.py SCREENS)
+SCREEN_NAMES = R00 I02 I01 C01 F04
+SCREEN_FILES = $(SCREEN_NAMES:%=$(G)/screens/scr_%.bin)
+$(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
+		$(TS)/octree.py.sum $(TS)/souls.py.sum
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/export_screens.py "$(GAME)" $(@D)
+	@touch $@
+$(SCREEN_FILES): $(G)/screens/.stamp ;
+
+$(D)/menu.pak: $(G)/menu.bin $(ITEM_FILES) $(SCREEN_FILES) $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
+	@mkdir -p $(@D)
+	python3 -I ../../tools/pack.py $@ menu.bin=$(G)/menu.bin items.bin=$(G)/items/items.bin itemx.bin=$(G)/items/itemx.bin \
+		desc.bin=raw:$(G)/items/desc.bin icons.bin=raw:$(G)/items/icons.bin $(foreach n,$(SCREEN_NAMES),scr_$(n).bin=$(G)/screens/scr_$(n).bin)
 
 # Firelink Shrine: map pieces, textures, navmesh, area fog. Tuning: BUDGET (triangles after quadric simplification,
 # foliage not counted), SPAWN_K (detail falloff with distance from the spawn), GRASS_KEEP (1 foliage tuft in N kept,
