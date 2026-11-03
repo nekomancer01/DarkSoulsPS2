@@ -39,6 +39,10 @@ static const DrbNode *nodes;
 static const u32 *roots;
 static const ScrSprite *sprites;
 static s8 *vis;              /* per node: 1 shown, 0 hidden, -1 default */
+/* cursors moved onto their targets: drawn in the DRB's own order (under the texts after them) */
+#define MAX_PLACE 8
+static struct { int node; float dx, dy; } place[MAX_PLACE];
+static int nplace;
 static GSTEXTURE atlas;
 static int want_icons;
 
@@ -131,6 +135,7 @@ void drb_open(const char *name, int icons)
 
 void drb_close(void)
 {
+    nplace = 0;
     release_all();
     state = 0;
     name_open[0] = 0;
@@ -465,12 +470,15 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
 {
     if (!*s)
         return;
-    int lh = hud_line_height();
+    /* DRB Text +28 font size class: 9 item names / titles, 7 descriptions, 6 most labels and values. Scales of the HUD
+     * font (DSFont24) ASSUMED from the box heights (TECH_DEBT menu-3) */
+    float fs = t->font <= 6 ? 0.78f : t->font == 7 ? 0.86f : 1.0f;
+    float lh = hud_line_height() * fs;
     float x0 = t->x0 + dx, x1 = t->x1 + dx, y0 = t->y0 + dy, y1 = t->y1 + dy;
     float y = t->align & DRB_MIDDLE ? (y0 + y1 - lh) / 2 : t->align & DRB_BOTTOM ? y1 - lh : y0;
     int r = t->r >> 1, g = t->g >> 1, b = t->b >> 1, a = t->a * alpha >> 7;
     /* one line per \n, the box's width wraps nothing (the FMG text has its own line breaks); a line wider than its box
-     * is squeezed to fit (the HUD font runs wider than DSR's menu font: TECH_DEBT menu-3) */
+     * is squeezed to fit (TECH_DEBT menu-3) */
     char line[160];
     while (*s) {
         const char *e = strchr(s, '\n');
@@ -479,15 +487,17 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
             n = sizeof line - 1;
         memcpy(line, s, n);
         line[n] = 0;
-        float w = hud_text_width(line), bw = x1 - x0, sx = 1;
-        if (w > bw && bw > 8)
-            sx = bw / w < 0.6f ? 0.6f : bw / w;
+        float w = hud_text_width(line) * fs, bw = x1 - x0, sx = fs;
+        if (w > bw && bw > 8) {
+            float k = bw / w < 0.6f ? 0.6f : bw / w;
+            sx *= k, w *= k;
+        }
         if (t->align & DRB_RIGHT)
-            hud_text_ex(x1, y, line, r, g, b, a, 1, sx);
+            hud_text_ex(x1, y, line, r, g, b, a, 1, sx, fs);
         else if (t->align & DRB_CENTER)
-            hud_text_ex((x0 + x1 - w * sx) / 2, y, line, r, g, b, a, 0, sx);
+            hud_text_ex((x0 + x1 - w) / 2, y, line, r, g, b, a, 0, sx, fs);
         else
-            hud_text_ex(x0, y, line, r, g, b, a, 0, sx);
+            hud_text_ex(x0, y, line, r, g, b, a, 0, sx, fs);
         y += lh;
         if (!e)
             break;
@@ -502,14 +512,48 @@ void drb_text(int node, float dx, float dy, const char *s, int alpha)
         text_box(t, dx, dy, s, alpha);
 }
 
+void drb_place(int node, int at)
+{
+    const DrbNode *t = drb_node(node), *a = drb_node(at);
+    int i;
+    for (i = 0; i < nplace && place[i].node != node; i++)
+        ;
+    if (!t || !a) {  /* no target: hide it */
+        if (t)
+            vis[node] = 0;
+        if (i < nplace)
+            place[i] = place[--nplace];
+        return;
+    }
+    if (i == nplace) {
+        if (nplace == MAX_PLACE)
+            return;
+        nplace++;
+    }
+    place[i].node = node;
+    place[i].dx = (a->x0 + a->x1 - t->x0 - t->x1) / 2.0f;
+    place[i].dy = (a->y0 + a->y1 - t->y0 - t->y1) / 2.0f;
+    vis[node] = 1;
+}
+
 void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
 {
     if (state != 3 || node < 0 || node >= (int)hdr->nodes)
         return;
     char buf[256];
     int end = nodes[node].end;
+    int sp = 0, st_end[MAX_PLACE];
+    float st_dx[MAX_PLACE], st_dy[MAX_PLACE];
     for (int k = node; k < end;) {
+        while (sp && k >= st_end[sp - 1])
+            sp--, dx -= st_dx[sp], dy -= st_dy[sp];
         const DrbNode *n = &nodes[k];
+        for (int i = 0; i < nplace && sp < MAX_PLACE; i++)
+            if (place[i].node == k) {
+                st_end[sp] = n->end, st_dx[sp] = place[i].dx, st_dy[sp] = place[i].dy;
+                dx += place[i].dx, dy += place[i].dy, sp++;
+                break;
+            }
         int shown = k == node || (vis[k] < 0 ? !(n->flags & 1) : vis[k] > 0);
         if (!shown) {
             k = n->end;

@@ -409,8 +409,9 @@ static const char *tag_text(int node, const char *tag, void *ctx)
     if (!strcmp(tag, "pcIntellect")) return num(prog.stats[ST_INT]);
     if (!strcmp(tag, "pcForce")) return num(prog.stats[ST_FAI]);
     if (!strcmp(tag, "pcHeroic")) return num(prog.humanity);
-    if (!strcmp(tag, "pcHP") || !strcmp(tag, "pcMaxHp")) return label_value("HP");
-    if (!strcmp(tag, "pcMaxStamina")) return label_value("Stamina");
+    if (!strcmp(tag, "pcHP")) return label_value("HP");
+    if (!strcmp(tag, "pcMaxHp")) return player ? num(player->hp_max) : "";
+    if (!strcmp(tag, "pcMaxStamina")) return player ? num(player->stamina_max) : "";
     if (!strcmp(tag, "equipWeight")) return weight_text(equip_weight_x100());
     if (!strcmp(tag, "maxEquipWeight")) return num(40 + prog.stats[ST_END]);
     if (!strcmp(tag, "magicSlotNum")) return num(attune_slots(prog.stats[ST_ATT]));
@@ -626,17 +627,22 @@ int menu_update(unsigned short pressed)
 /* ---- drawing ---- */
 
 /* template dialog `tpl` (e.g. a cursor) centred on node `at` */
-static void draw_centered(int tpl, int at)
-{
-    const DrbNode *t = drb_node(tpl), *a = drb_node(at);
-    if (!t || !a)
-        return;
-    drb_draw(tpl, (a->x0 + a->x1 - t->x0 - t->x1) / 2.0f, (a->y0 + a->y1 - t->y0 - t->y1) / 2.0f, 0x80, tag_text, 0);
-}
-
 static void show(int root, const char *path, int on)
 {
     drb_show(root >= 0 ? drb_find(root, path) : node_of(path), on);
+}
+
+/* F05 yes / no: only the question box; F05-00's name plate (portrait, name, multiplayer record) is the talk variant */
+static void draw_yes_no(const char *question)
+{
+    int f = drb_find(node_of("F05"), "F05-00");
+    static const char *const plate[] = {"F22_BG", "Equip_frame_1", "Equip_frame_3", "object1", "text_name",
+                                        "text_param_name"};
+    for (unsigned k = 0; k < sizeof plate / sizeof plate[0]; k++)
+        show(f, plate[k], 0);
+    drb_place(drb_child(f, "cursor"), drb_child(f, confirm_sel ? "cursor_button0_1" : "cursor_button0_0"));
+    drb_draw(f, 0, 0, 0x80, tag_text, 0);
+    drb_text(drb_child(f, "text_question"), 0, 0, question, 0x80);
 }
 
 static void icon_at(u32 id, int node)
@@ -685,27 +691,6 @@ static void list_row(int list, u32 id)
     drb_draw(list, 0, 0, 0x80, tag_text, 0);
 }
 
-/* detail panel (data_simple_*) of the item under the cursor */
-static void detail_panel(int panel_parent, u32 id)
-{
-    static const char *const kinds[] = {"data_simple_item", "data_simple_arms", "data_simple_armor",
-                                        "data_simple_arrow", "data_simple_magic"};
-    int want = -1;
-    if (id) {
-        int tab = item_tab(id);
-        want = tab == TAB_WEAPON ? 1 : tab == TAB_ARMOR ? 2 : tab == TAB_AMMO ? 3 : tab == TAB_SPELL ? 4 : 0;
-    }
-    for (int k = 0; k < 5; k++) {
-        int n = drb_child(panel_parent, kinds[k]);
-        drb_show(n, 0);
-        if (k == want && n >= 0) {
-            detail_id = id;
-            drb_draw(n, 0, 0, 0x80, tag_text, 0);
-        }
-    }
-    show(panel_parent, "data_add_effect", 0);
-}
-
 static void draw_equip(void)
 {
     int root = node_of("I02");
@@ -718,7 +703,7 @@ static void draw_equip(void)
     }
     drb_show(grid, mode == M_EQUIP);
     drb_show(pick, 0);
-    show(grid, "cursor", 0);
+    drb_place(drb_child(grid, "cursor"), drb_child(grid, EQ_CELLS[eq_sel].cell));
     detail_id = 0;
     drb_draw(root, 0, 0, 0x80, tag_text, 0);
     if (mode == M_EQUIP) {
@@ -733,16 +718,24 @@ static void draw_equip(void)
             if (c)
                 drb_text(tn, 0, 0, c, 0x80);
         }
-        int cur = drb_child(grid, EQ_CELLS[eq_sel].cell);
-        draw_centered(drb_child(grid, "cursor"), cur);
         char nb[64];
         u32 id = equip_item(EQ_CELLS[eq_sel].slot);
         drb_text(drb_child(grid, "text_category"), 0, 0, slot_name(EQ_CELLS[eq_sel].slot), 0x80);
         drb_text(drb_child(grid, "text_item-name"), 0, 0, id ? item_name(row_of(id) != item_row(id) ? id + 1 : id, nb, sizeof nb) : "", 0x80);
-    } else {  /* M_PICK: the pick list in I02-02's rows, detail beside it */
+    } else {  /* M_PICK: the pick list in I02-02's rows */
         drb_show(pick, 1);
         int dl = drb_child(pick, "data_list");
-        show(pick, "cursor", 0), show(pick, "list_cursor", 0), show(pick, "sort_cursor", 0), show(pick, "sort_list_cursor", 0);
+        show(pick, "sort_cursor", 0), show(pick, "sort_list_cursor", 0);
+        char cn[16];
+        snprintf(cn, sizeof cn, "cursor%d_0", pick_sel - pick_top);
+        drb_place(drb_child(pick, "cursor"), drb_child(pick, cn));
+        snprintf(cn, sizeof cn, "list_cursor%d_0", pick_sel - pick_top);
+        drb_place(drb_child(pick, "list_cursor"), drb_child(pick, cn));
+        for (int k = 0; k < 6; k++) {  /* the item detail panels share the list's place: DSR shows one or the other */
+            static const char *const dp[6] = {"data_simple_item", "data_simple_arms", "data_simple_armor",
+                                              "data_simple_arrow", "data_simple_magic", "data_add_effect"};
+            show(pick, dp[k], 0);
+        }
         for (int t = 0; t < 5; t++) {
             char nm[12];
             snprintf(nm, sizeof nm, "data_tab_%d", t);
@@ -765,10 +758,7 @@ static void draw_equip(void)
                 icon_at(id, drb_child(bn, "icon"));
             } else
                 drb_text(drb_child(ln, "text_param_name"), 0, 0, "(Remove)", 0x80);
-            if (k == pick_sel)
-                draw_centered(drb_find(-1, "cursor01"), ln);
         }
-        detail_panel(pick, pick_ids[pick_sel]);
     }
 }
 
@@ -802,11 +792,15 @@ static void draw_inventory(void)
     }
     show(lst, "data_simple_arms", 0), show(lst, "data_simple_armor", 0), show(lst, "data_simple_item", 0);
     show(lst, "data_simple_arrow", 0), show(lst, "data_simple_magic", 0), show(lst, "data_add_effect", 0);
-    detail_id = 0;  /* item texts only in the rows and the detail panel drawn below, not in stray template elements */
-    drb_draw(root, 0, 0, 0x80, tag_text, 0);
     char tc[20];
     snprintf(tc, sizeof tc, "tab_cursor0_%d", inv_tab);
-    draw_centered(drb_child(tabs, "tab_cursor"), drb_child(tabs, tc));
+    drb_place(drb_child(tabs, "tab_cursor"), drb_child(tabs, tc));
+    snprintf(tc, sizeof tc, "cursor%d_0", inv_sel - inv_top);
+    drb_place(drb_child(lst, "cursor"), inv_n ? drb_child(lst, tc) : -1);
+    snprintf(tc, sizeof tc, "list_cursor%d_0", inv_sel - inv_top);
+    drb_place(drb_child(lst, "list_cursor"), inv_n ? drb_child(lst, tc) : -1);
+    detail_id = 0;  /* item texts only in the rows drawn below, not in stray template elements */
+    drb_draw(root, 0, 0, 0x80, tag_text, 0);
     for (int r = 0; r < 4; r++) {
         int k = inv_top + r;
         if (k >= inv_n)
@@ -823,31 +817,24 @@ static void draw_inventory(void)
         drb_draw(bn, 0, 0, 0x80, tag_text, 0);
         icon_at(id, drb_child(bn, "icon"));
         list_row(ln, id);
-        if (k == inv_sel) {
-            snprintf(nm, sizeof nm, "cursor%d_0", r);
-            draw_centered(drb_child(lst, "cursor"), drb_child(lst, nm));
-        }
     }
-    detail_panel(lst, cursor_item());
+    /* the data_simple_* detail panels take the list's place in DSR (one or the other), so they stay hidden here */
     if (mode == M_POPUP) {
         int pop = drb_find(root, "I01-01");
         if (pop < 0)
             pop = node_of("I01-01");
         show(pop, "grayout_drop00", 0), show(pop, "grayout_drop01", 0);
         show(pop, "button2_0", 0), show(pop, "button3_0", 0);  /* Change Order / Reset Order: not yet (menu-2) */
-        drb_draw(pop, 0, 0, 0x80, tag_text, 0);
         char nm[12];
         snprintf(nm, sizeof nm, "cursor%d_0", popup_sel);
-        draw_centered(drb_child(pop, "cursor"), drb_child(pop, nm));
+        drb_place(drb_child(pop, "cursor"), drb_child(pop, nm));
+        drb_draw(pop, 0, 0, 0x80, tag_text, 0);
     }
     if (mode == M_CONFIRM) {
-        int f = drb_find(node_of("F05"), "F05-00");
-        drb_draw(f, 0, 0, 0x80, tag_text, 0);
         char nb[64];
         char q[96];
         snprintf(q, sizeof q, "Discard %s?", item_name(cursor_item(), nb, sizeof nb));
-        drb_text(drb_child(f, "text_question"), 0, 0, q, 0x80);
-        draw_centered(drb_child(f, "cursor"), drb_child(f, confirm_sel ? "cursor_button0_1" : "cursor_button0_0"));
+        draw_yes_no(q);
     }
 }
 
@@ -890,19 +877,14 @@ static void draw_system(void)
         snprintf(nm, sizeof nm, "button%d_0", k);
         show(lst, nm, 0);
     }
-    show(lst, "cursor", 0);
+    char nm[12];
+    snprintf(nm, sizeof nm, "cursor%d_0", sys_sel);
+    drb_place(drb_child(lst, "cursor"), drb_child(lst, nm));
     drb_draw(lst, 0, 0, 0x80, tag_text, 0);
     drb_text(drb_child(lst, "button0_0"), 0, 0, "Options", 0x80);   /* Ingame_menu 115000 */
     drb_text(drb_child(lst, "button1_0"), 0, 0, "Quit Game", 0x80); /* Ingame_menu 115002 */
-    char nm[12];
-    snprintf(nm, sizeof nm, "cursor%d_0", sys_sel);
-    draw_centered(drb_child(lst, "cursor"), drb_child(lst, nm));
-    if (mode == M_SYS_CONFIRM) {
-        int f = drb_find(node_of("F05"), "F05-00");
-        drb_draw(f, 0, 0, 0x80, tag_text, 0);
-        drb_text(drb_child(f, "text_question"), 0, 0, "Quit game?", 0x80);
-        draw_centered(drb_child(f, "cursor"), drb_child(f, confirm_sel ? "cursor_button0_1" : "cursor_button0_0"));
-    }
+    if (mode == M_SYS_CONFIRM)
+        draw_yes_no("Quit game?");
 }
 
 void menu_draw(const Player *p)
