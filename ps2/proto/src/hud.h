@@ -48,6 +48,8 @@ const char *hud_string(int s);
 /* sprite (from a layout entry or hud_icon) at x, y, w x h; colour 0x80 = 1.0, a 0x80 = opaque */
 void hud_sprite(int sprite, float x, float y, float w, float h, int r, int g, int b, int a);
 void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a);
+/* DRB GouraudRect: c = r, g, b, a (a 0..0x80) of the top left, top right, bottom right, bottom left corners; a scales */
+void hud_gradient(float x, float y, float w, float h, const unsigned char c[16], int a);
 int hud_icon(int kit);
 void hud_layout(int layout, int a);  /* a layout entry (HUD_*) at its place, alpha a (0x80 = as exported) */
 /* DSFont24 text; returns the width. align: 0 left, 1 right of x */

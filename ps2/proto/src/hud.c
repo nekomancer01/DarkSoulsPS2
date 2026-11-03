@@ -12,6 +12,7 @@ typedef struct {
     unsigned version, atlases, sprites, glyphs, layout, strings;
     unsigned atlas_off, sprite_off, glyph_off, layout_off, string_off;
     unsigned short font_h, icon0;
+    unsigned grads, grad_off;  /* version 2: GouraudRect corners (layout sprite -2 - k) */
 } MenuHeader;
 typedef struct { unsigned w, h, clut, pix; } AtlasEntry;
 typedef struct { unsigned short atlas, u, v, w, h, pad; } Sprite;
@@ -30,6 +31,7 @@ static const unsigned char *mb;
 static const MenuHeader *hdr;
 static const Sprite *spr;
 static const Glyph *gly;
+static const unsigned char *grad;  /* 16 B per gradient: r, g, b, a of the top left, top right, bottom right, bottom left */
 static HudRect lay[HUD_LAYOUT_COUNT];
 static GSTEXTURE atlas[2];
 static int ok;
@@ -44,12 +46,13 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     mb = menu_bin;
     hdr = menu_bin;
     fail = "MENU.BIN BAD";
-    if (memcmp(hdr->magic, "DSMN", 4) || hdr->atlases != 2 || hdr->layout != HUD_LAYOUT_COUNT ||
+    if (memcmp(hdr->magic, "DSMN", 4) || hdr->version != 2 || hdr->atlases != 2 || hdr->layout != HUD_LAYOUT_COUNT ||
         hdr->strings != STR_COUNT)
         return -1;
     fail = "HUD VRAM FULL";
     spr = (const Sprite *)(mb + hdr->sprite_off);
     gly = (const Glyph *)(mb + hdr->glyph_off);
+    grad = mb + hdr->grad_off;
     const LayoutEntry *le = (const LayoutEntry *)(mb + hdr->layout_off);
     for (int i = 0; i < HUD_LAYOUT_COUNT; i++)
         lay[i] = (HudRect){le[i].sprite, le[i].x, le[i].y, le[i].w, le[i].h, le[i].r, le[i].g, le[i].b, le[i].a};
@@ -107,11 +110,23 @@ void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a)
     gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, HUD_Z, rgba(r, g, b, a));
 }
 
+void hud_gradient(float x, float y, float w, float h, const unsigned char c[16], int a)
+{
+    /* DRB GouraudRect: corners TL, TR, BR, BL; the strip runs TL, TR, BL, BR */
+    u64 k[4];
+    for (int i = 0; i < 4; i++)
+        k[i] = rgba(c[4 * i], c[4 * i + 1], c[4 * i + 2], c[4 * i + 3] * a >> 7);
+    gsKit_prim_quad_gouraud(gs, R_HX(x), y, R_HX(x + w), y, R_HX(x), y + h, R_HX(x + w), y + h, HUD_Z,
+                            k[0], k[1], k[3], k[2]);
+}
+
 static void draw_layout(int i, int a)
 {
     const HudRect *e = &lay[i];
     if (e->sprite >= 0)
         hud_sprite(e->sprite, e->x, e->y, e->w, e->h, 0x80, 0x80, 0x80, a);
+    else if (e->sprite <= -2 && (unsigned)(-2 - e->sprite) < hdr->grads)
+        hud_gradient(e->x, e->y, e->w, e->h, grad + 16 * (-2 - e->sprite), a);
     else
         hud_fill(e->x, e->y, e->w, e->h, e->r, e->g, e->b, e->a * a / 0x80);
 }

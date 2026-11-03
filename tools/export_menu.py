@@ -15,15 +15,17 @@ parameters), SHAP {u32 type name, u32 SHPR offset}, DLGO {u32 name, u32 SHAP off
 DLG {u32 name, u32 shape, u32 ctrl, ..., u32 element count at +32, u32 DLGO offset at +36} 64 B. Shape parameters
 start with s16 left, top, right, bottom (relative to the parent dialog's left/top); Sprite: +16 s16 texel left, top,
 right, bottom, +24 s16 texture index; Dialog: +16 u8 child DLG index; MonoRect: +24 colour a, r, g, b; GouraudRect:
-+20 four such corner colours (averaged here).
++20 four such corner colours, top left, top right, bottom right, bottom left (SoulsFormats DRB.GouraudRect order).
 
 Output menu.bin (little-endian):
-  header  'DSMN', u32 version 1, atlases, sprites, glyphs, layout entries, strings; u32 offsets of each table;
-          u16 font line height, first icon sprite; pad to 64
+  header  'DSMN', u32 version 2, atlases, sprites, glyphs, layout entries, strings; u32 offsets of each table;
+          u16 font line height, first icon sprite; u32 gradients, gradient offset; pad to 64
   atlas   {u32 w, h, clut offset, pixel offset}  (PSMT8 pixels, CSM1 CLUT of RGBA, alpha 0..0x80)
   sprite  {u16 atlas, u, v, w, h, pad}           (texels)
   glyph   {u16 u, v, w, h; s16 pre-space, advance} for ASCII 32..126 (atlas 0)
-  layout  {s16 sprite (-1: solid rect), x, y, w, h (640x448 pixels); u8 r, g, b, a}  in the order of LAYOUT
+  layout  {s16 sprite (-1: solid rect, -2 - k: gradient rect k), x, y, w, h (640x448 pixels); u8 r, g, b, a}  in the
+          order of LAYOUT (a gradient's r, g, b, a are its corners' average)
+  gradient {u8 r, g, b, a} x 4 corners: top left, top right, bottom right, bottom left (a 0..0x80)
   strings u32 offsets, then NUL-terminated ASCII, in the order of STRINGS
 Usage: export_menu.py <game dir> <out.bin> [preview.png]"""
 import math, os, struct, sys
@@ -279,7 +281,7 @@ def main():
             pk.defer(img, lambda x, y, e=sprites[-1]: e.__setitem__(slice(1, 3), [x, y]))
         return sprite_of[key]
 
-    layout = []
+    layout, grads = [], []
     for name, t, raw, x0, y0, x1, y1 in want:
         x, y = round(x0 * SX), round(y0 * SY)
         w, h = max(1, round(x1 * SX) - x), max(1, round(y1 * SY) - y)
@@ -295,6 +297,9 @@ def main():
             cs = [raw[at + 4 * k:at + 4 + 4 * k] for k in range(4 if t == "GouraudRect" else 1)]
             a, r, g, b = (sum(c[j] for c in cs) // len(cs) for j in range(4))
             col = (r, g, b, (a * 0x80 + 127) // 255)
+            if len({bytes(c) for c in cs}) > 1:  # a real gradient (YOU DIED / BONFIRE LIT BG_grad00 / 01)
+                spr = -2 - len(grads)
+                grads.append(b"".join(bytes((c[1], c[2], c[3], (c[0] * 0x80 + 127) // 255)) for c in cs))
         layout.append((spr, x, y, w, h) + col)
     menu_layout = []
     for name, img_name, src, dst, keep in MENU_SPRITES:
@@ -352,6 +357,9 @@ def main():
     offs["layout"] = len(blob) + HDR
     for e in layout + menu_layout:
         blob += struct.pack("<5h4B", *e)
+    offs["grads"] = len(blob) + HDR
+    for g in grads:
+        blob += g
     offs["strings"] = len(blob) + HDR
     st = bytearray()
     so = []
@@ -360,16 +368,17 @@ def main():
         st += t.encode("ascii", "replace") + b"\0"
     base = offs["strings"] + 4 * len(strings)
     blob += struct.pack(f"<{len(so)}I", *[base + o for o in so]) + st
-    header = struct.pack("<4s6I5I2H", b"DSMN", 1, len(atlases), len(sprites), len(glyphs),
+    header = struct.pack("<4s6I5I2H2I", b"DSMN", 2, len(atlases), len(sprites), len(glyphs),
                          len(layout) + len(menu_layout), len(strings), offs["atlas"], offs["sprites"],
-                         offs["glyphs"], offs["layout"], offs["strings"], FONT_H, icon_sprite0)
+                         offs["glyphs"], offs["layout"], offs["strings"], FONT_H, icon_sprite0, len(grads),
+                         offs["grads"])
     assert len(header) <= HDR
     header += b"\0" * (HDR - len(header))
     with open(out, "wb") as f:
         f.write(header + blob)
     vram = sum(len(c) + len(p) for c, p in atlases)
     print(f"menu.bin: {len(sprites)} sprites ({pk.y + pk.row} of {ATLAS_H} atlas rows used), {len(glyphs)} glyphs, "
-          f"{len(layout) + len(menu_layout)} layout entries, {len(strings)} strings, VRAM {vram // 1024} KB, "
+          f"{len(layout) + len(menu_layout)} layout entries, {len(grads)} gradients, {len(strings)} strings, VRAM {vram // 1024} KB, "
           f"{len(header) + len(blob)} bytes")
     if preview:
         prev_img = Image.new("RGBA", (640, 448), (60, 70, 80, 255))

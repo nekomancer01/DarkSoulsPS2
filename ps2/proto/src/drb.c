@@ -21,6 +21,7 @@ typedef struct {
     u32 version, nodes, node_off, roots, root_off, strings, string_off;
     u16 aw, ah;
     u32 clut_off, pix_off, sprites, sprite_off;
+    u32 grads, grad_off;  /* version 2: GouraudRect corners, 16 B each (hud_gradient order); a rect's spr indexes them */
 } ScrHeader;
 typedef struct { u16 u, v, w, h; } ScrSprite;
 
@@ -237,7 +238,7 @@ static float label_room(int k)
 static int screen_setup(void)
 {
     const ScrHeader *h = (const ScrHeader *)file;
-    if (memcmp(h->magic, "DSCR", 4) || h->version != 1 || h->pix_off + h->aw * h->ah > job.raw ||
+    if (memcmp(h->magic, "DSCR", 4) || h->version != 2 || h->pix_off + h->aw * h->ah > job.raw ||
         h->node_off + h->nodes * sizeof(DrbNode) > h->clut_off)
         return fail("bad screen file");
     icon_px = item_icon_size();
@@ -450,6 +451,15 @@ static void sprite(const DrbNode *n, float x0, float y0, float x1, float y1, int
                               rgba((n->r + 1) >> 1, (n->g + 1) >> 1, (n->b + 1) >> 1, n->a * a >> 7));  /* DRB tint */
 }
 
+/* MonoRect / GouraudRect: untextured, so r, g, b are the colour itself (0..255), not a 0x80 = 1.0 modulation */
+static void rect(const DrbNode *n, float x0, float y0, float x1, float y1, int a)
+{
+    if (n->spr >= 0 && (u32)n->spr < hdr->grads)
+        hud_gradient(x0, y0, x1 - x0, y1 - y0, tree + hdr->grad_off + 16 * n->spr, a);
+    else
+        gsKit_prim_sprite(hud_gs(), R_HX(x0), y0, R_HX(x1), y1, DRB_Z, rgba(n->r, n->g, n->b, n->a * a >> 7));
+}
+
 void drb_draw_at(int node, float x, float y, float w, float h, int alpha)
 {
     const DrbNode *n = drb_node(node);
@@ -458,8 +468,7 @@ void drb_draw_at(int node, float x, float y, float w, float h, int alpha)
     if (n->type == DRB_SPRITE)
         sprite(n, x, y, x + w, y + h, alpha);
     else if (n->type == DRB_RECT)
-        gsKit_prim_sprite(hud_gs(), R_HX(x), y, R_HX(x + w), y + h, DRB_Z,
-                          rgba(n->r >> 1, n->g >> 1, n->b >> 1, n->a * alpha >> 7));
+        rect(n, x, y, x + w, y + h, alpha);
 }
 
 const char *drb_button_tag(const char *tag)
@@ -615,8 +624,7 @@ void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
             sprite(&m, m.x0 + dx, m.y0 + dy, m.x1 + dx, m.y1 + dy, alpha);
             break;
         case DRB_RECT:
-            gsKit_prim_sprite(hud_gs(), R_HX(m.x0 + dx), m.y0 + dy, R_HX(m.x1 + dx), m.y1 + dy, DRB_Z,
-                              rgba(m.r >> 1, m.g >> 1, m.b >> 1, m.a * alpha >> 7));
+            rect(&m, m.x0 + dx, m.y0 + dy, m.x1 + dx, m.y1 + dy, alpha);
             break;
         case DRB_TEXT:
             if (m.spr >= 0)
