@@ -77,11 +77,12 @@ def flatten(dlgs, names, roots):
             if t == "Dialog":
                 ci = struct.unpack_from("<H", raw, 16)[0]
                 if ci < len(names):
-                    # a cursor template (cursor00..) fills the dialog that places it: its ink sprite is drawn at
-                    # the template's own size (e.g. 36 x 36) and stretched to the placing dialog's box, as DSR's
-                    # cursors cover their slot / row (ASSUMED from the layouts, TECH_DEBT menu-3)
+                    # a cursor template (cursor00..) or a panel background (R03_bg_*) fills the dialog that places
+                    # it: drawn at the template's own size (cursor00's ink 36 x 36, R03_bg_normal's parchment taller
+                    # than any popup) and stretched to the placing dialog's box, as DSR's cursors cover their slot /
+                    # row and its popups end at their box (ASSUMED from the layouts, TECH_DEBT menu-3)
                     cx = cy = 1.0
-                    if names[ci].startswith("cursor"):
+                    if names[ci].startswith(("cursor", "R03_bg")):
                         ext = [struct.unpack_from("<4h", v[1]) for v in dlgs[names[ci]].values()]
                         ew = max((e[2] for e in ext), default=0)
                         eh = max((e[3] for e in ext), default=0)

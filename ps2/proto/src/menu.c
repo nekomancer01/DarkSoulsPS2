@@ -335,7 +335,7 @@ static const char *detail_text(unsigned h)
     if (h == hash("text_param_name")) return item_name(id == (ITEM_GOODS | ESTUS_ID) && prog.estus > 0 ? id + 1 : id, nb, sizeof nb);
     if (h == hash("text_param_weight")) return weight_text(r->weight);
     if (h == hash("text_param_durable") || h == hash("text_param_durable_1"))
-        return r->dur ? (snprintf(vbuf, sizeof vbuf, "%d/%d", r->dur, r->dur), vbuf) : NULL;
+        return r->dur ? num(r->dur) : NULL;  /* current and maximum are separate elements (not tracked: both max) */
     if (ITEM_CAT(id) == ITEM_WEAPON) {
         static const char *const atk[4] = {"text_param_attack_p", "text_param_attack_m", "text_param_attack_f",
                                            "text_param_attack_t"};
@@ -855,6 +855,8 @@ static void draw_status(void)
     show(c4, "data_simple_arms", 0), show(c4, "data_simple_catalyst", 0), show(c4, "data_simple_bow", 0);
     int c3 = drb_find(root, "C01-03");
     show(c3, "cursor0", 0), show(c3, "cursor1", 0);
+    drb_show(drb_child(c3, "text_param-name5"), 0);  /* "ReqSouls" and its cost: the Level Up screen's */
+    drb_show(drb_child(c3, "text_param_cost"), 0);
     for (int k = 0; k < 10; k++) {
         char nm[12];
         snprintf(nm, sizeof nm, "arrow%d_0", k);
