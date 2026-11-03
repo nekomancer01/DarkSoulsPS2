@@ -612,6 +612,28 @@ FLVER_NP = os.environ.get("SOULS_NP", "1") == "1"
 # VERT_NP_ATTRS (tools/export_map.py's _vert_np cache: it then skips np.array over the lists)
 VERT_NP = None
 VERT_NP_ATTRS = ("pos", "uv", "color", "normal")
+# VERT_ROWS=True (tools/export_map.py's gather): the attributes are Rows over the arrays instead of lists of tuples
+VERT_ROWS = False
+
+
+class Rows:
+    """A vertex attribute as an array a (n, k) that reads as the list of tuples flver() builds otherwise: len,
+    indexing (a tuple of Python floats / ints), slices (a list) and iteration give the same values. Read only."""
+    __slots__ = ("a",)
+
+    def __init__(self, a):
+        self.a = a
+
+    def __len__(self):
+        return len(self.a)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return list(map(tuple, self.a[i].tolist()))
+        return tuple(self.a[i].tolist())
+
+    def __iter__(self):
+        return iter(list(map(tuple, self.a.tolist())))
 _FL_SNORM = (0x10, 0x11, 0x13, 0x2F)
 
 
@@ -651,6 +673,12 @@ def _flver_verts_np(b, base, vsize, vcount, layout, verts):
     for name, arrs in cols.items():
         a = arrs[0] if len(arrs) == 1 else np.stack(arrs, 1).reshape(-1, arrs[0].shape[1])
         lst = verts[name]
+        if VERT_ROWS and isinstance(lst, Rows):  # a further vertex buffer of the mesh
+            verts[name] = Rows(np.ascontiguousarray(np.concatenate([lst.a, a])))
+            continue
+        if VERT_ROWS and not lst:
+            verts[name] = Rows(np.ascontiguousarray(a))
+            continue
         if VERT_NP is not None and name in VERT_NP_ATTRS and not lst:  # the float64 array of exactly this list
             VERT_NP[id(lst)] = (lst, np.ascontiguousarray(a, np.float64))
         lst.extend(map(tuple, a.tolist()))

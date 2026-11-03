@@ -62,7 +62,7 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o ragdoll.o nav.o items.o drb.o sound.o)
+	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -315,7 +315,7 @@ $(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.p
 $(ITEM_FILES): $(G)/items/.stamp ;
 # Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
 # (tools/export_screens.py SCREENS)
-SCREEN_NAMES = R00 I02 I01 C01 F04
+SCREEN_NAMES = R00 I02 I01 R02 I06
 SCREEN_FILES = $(SCREEN_NAMES:%=$(G)/screens/scr_%.bin)
 $(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
 		$(TS)/octree.py.sum $(TS)/souls.py.sum
@@ -324,10 +324,18 @@ $(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/
 	@touch $@
 $(SCREEN_FILES): $(G)/screens/.stamp ;
 
-$(D)/menu.pak: $(G)/menu.bin $(ITEM_FILES) $(SCREEN_FILES) $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
+# Loading screen (src/loading.c): menu.drb E00_00, the nowloading.tpf bonfire cells, DSFont24, the exe's hint table with
+# the items' names and long descriptions (tools/export_loading.py; the icons are icons.bin's)
+$(G)/loading.bin: $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum \
+		$(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/export_loading.py "$(GAME)" $@
+
+$(D)/menu.pak: $(G)/menu.bin $(ITEM_FILES) $(SCREEN_FILES) $(G)/loading.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ menu.bin=$(G)/menu.bin items.bin=$(G)/items/items.bin itemx.bin=$(G)/items/itemx.bin \
-		desc.bin=raw:$(G)/items/desc.bin icons.bin=raw:$(G)/items/icons.bin $(foreach n,$(SCREEN_NAMES),scr_$(n).bin=$(G)/screens/scr_$(n).bin)
+		desc.bin=raw:$(G)/items/desc.bin icons.bin=raw:$(G)/items/icons.bin $(foreach n,$(SCREEN_NAMES),scr_$(n).bin=$(G)/screens/scr_$(n).bin) \
+		loading.bin=$(G)/loading.bin
 
 # Firelink Shrine: map pieces, textures, navmesh, area fog. Tuning: BUDGET (triangles after quadric simplification,
 # foliage not counted), SPAWN_K (detail falloff with distance from the spawn), GRASS_KEEP (1 foliage tuft in N kept,
@@ -377,9 +385,10 @@ $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.s
 
 
 # Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller): tools/export_collision.py
+# (PY: havok_collision.py gathers the vertices with numpy)
 $(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
-	python3 -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
+	$(PY) -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
 
 
 # VU1 microprograms (hand-scheduled VU assembly)

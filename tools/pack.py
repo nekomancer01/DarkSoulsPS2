@@ -51,8 +51,10 @@ def pack_entry(L, data, store=False):
     return struct.pack(f"<{len(sizes)}I", *sizes) + b"".join(blobs), len(sizes)
 
 
-def main():
-    out, items = sys.argv[1], [a.split("=", 1) for a in sys.argv[2:]]
+def main(argv=None, log=print):
+    """argv: [out, name=path, ...] as on the command line (default sys.argv[1:]); log: per-entry and total lines"""
+    argv = sys.argv[1:] if argv is None else argv
+    out, items = argv[0], [a.split("=", 1) for a in argv[1:]]
     L = lib()
     t0 = time.time()
     hdr_bytes = (16 + 64 * len(items) + SECTOR - 1) // SECTOR * SECTOR
@@ -65,11 +67,12 @@ def main():
         entries.append(struct.pack("<32s8I", name.encode(), off, len(data), len(packed), nb, BLOCK, 0, 0, 0))
         body += packed
         body += b"\0" * (-len(body) % SECTOR)
-        print(f"  {name}: {len(data)} -> {len(packed)} bytes ({100 * len(packed) / max(1, len(data)):.0f}%)")
+        log(f"  {name}: {len(data)} -> {len(packed)} bytes ({100 * len(packed) / max(1, len(data)):.0f}%)")
     head = struct.pack("<4s3I", b"DSRP", 1, len(items), hdr_bytes) + b"".join(entries)
     with open(out, "wb") as f:
         f.write(head + b"\0" * (hdr_bytes - len(head)) + body)
-    print(f"{out}: {len(items)} entries, {hdr_bytes + len(body)} bytes, {time.time() - t0:.1f} s")
+    log(f"{out}: {len(items)} entries, {hdr_bytes + len(body)} bytes, {time.time() - t0:.1f} s")
 
 
-main()
+if __name__ == "__main__":
+    main()

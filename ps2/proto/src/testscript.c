@@ -17,11 +17,12 @@
 #include "enemy.h"
 #include "save.h"
 #include "event.h"
+#include "loading.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR };
 
 typedef struct {
     unsigned short op, line;
@@ -100,6 +101,7 @@ static int parse(Prog *p, char *text)
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
         {"kill", C_KILL, 0},
+        {"loadscreen", C_LOADSCR, 1},  /* the loading screen held open for n s (src/loading.c), for screenshots */
         {"pad", C_PAD, 0},  /* one press of the named buttons (menus, bonfire): test_pad() */  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
         /* game state (save.c save_test_cmd): event flags, souls, items, checks, save / load */
         {"flag", C_GAME, 0}, {"flags", C_GAME, 0}, {"souls", C_GAME, 0}, {"item", C_GAME, 0}, {"check", C_GAME, 0},
@@ -267,6 +269,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
         case C_KILL: pl->hp = -1; break;
+        case C_LOADSCR: loading_show(c->a[0]); break;
         case C_PAD: pad_pending |= (unsigned short)c->a[0]; break;
         case C_LOOP: p->pc = -1; break;
         case C_END:

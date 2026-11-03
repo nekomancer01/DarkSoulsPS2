@@ -24,6 +24,7 @@
  *   shot name               marker: world frozen, mailbox shot_seq++ with the name; waits for the host's shot_ack
  *                           (PINE) or 3 s; prints "TEST shot <name> ..." with the segment's stats
  *   log text                print "TEST log text"
+ *   loadscreen s            DSR's loading screen held open for s seconds (src/loading.c), for timed screenshots
  *   flag id 0|1 / flags first last 0|1   set event flags (flags.h; ids as integers, e.g. 11010000)
  *   souls n / item id n     set souls / add n of an item (id with category bits, progress.h ITEM_*, e.g. 0x400000C8)
  *   check flag id v | flags first last count | souls n | item id n | loaded 0|1

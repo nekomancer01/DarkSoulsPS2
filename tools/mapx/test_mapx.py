@@ -560,14 +560,74 @@ def check_weld_arrays(rng):
              if rng.random() < 0.8 else [], color=rows(4, lambda s: rng.integers(0, 2, s).astype(float))
              if rng.random() < 0.8 else [], normal=rows(3, lambda s: rng.normal(size=s)) if rng.random() < 0.8 else [])
     xf, xn = em.place(dict(rot=tuple(rng.uniform(-90, 90, 3).tolist()), scale=(1.1, 0.9, 1.0), pos=(3.0, -2.5, 7.25)))
-    out = em._weld(V, sorted(set(rng.integers(0, n, int(rng.integers(1, 2 * n))).tolist())), xf, xn)
+    vis = sorted(set(rng.integers(0, n, int(rng.integers(1, 2 * n))).tolist()))
+    out = em._weld(V, vis, xf, xn)
+    import souls  # the same from souls.Rows attributes (gather's FLVERs)
+    rw = em._weld({k: souls.Rows(np.array(v, np.float64)) if v else v for k, v in V.items()}, vis, xf, xn)
+    same(out[:6], rw[:6], "_weld of souls.Rows")
+    same({k: a.tobytes() for k, (_, a) in out[6].items()}, {k: a.tobytes() for k, (_, a) in rw[6].items()},
+         "_weld arrays of souls.Rows")
     for k, (lst, arr) in out[6].items():
         same(lst is out[("pos", "wpos", "wuv", "wcol", "wn").index(k)], True, f"_weld {k} list")
         same(np.array(lst, arr.dtype).reshape(arr.shape).tobytes(), arr.tobytes(), f"_weld {k} array")
 
 
+
+def check_vert_rows(rng):
+    """souls.Rows (gather's FLVER vertex attributes) read as the lists of tuples souls.flver builds otherwise"""
+    import souls
+    layout = [(0, 0, 0x02, 0, 0), (0, 12, 0x10, 3, 0), (0, 16, 0x11, 2, 0), (0, 20, 0x1A, 1, 0), (0, 28, 0x13, 6, 0),
+              (0, 32, 0x10, 10, 0), (0, 36, 0x16, 5, 0)]
+    vsize = 44
+    bufs = []
+    for _ in range(int(rng.integers(1, 3))):
+        n = int(rng.integers(1, 300))
+        b = bytearray(rng.integers(0, 256, n * vsize, dtype=np.uint8).tobytes())
+        P = rng.uniform(-100, 100, (n, 3)).astype("<f4")
+        for v in range(n):
+            b[v * vsize:v * vsize + 12] = P[v].tobytes()
+        bufs.append((bytes(b), n))
+    out = []
+    for rows in (False, True):
+        souls.VERT_ROWS = rows
+        verts = {k: [] for k in ("pos", "normal", "bone_idx", "bone_w", "uv", "uv2", "color", "tangent", "binormal")}
+        try:
+            for b, n in bufs:
+                souls._flver_verts_np(b, 0, vsize, n, layout, verts)
+        finally:
+            souls.VERT_ROWS = False
+        out.append(verts)
+    for k, lst in out[0].items():
+        r = out[1][k]
+        same(type(r).__name__, "Rows" if lst else "list", f"Rows {k} type")
+        same([len(r), bool(r)], [len(lst), bool(lst)], f"Rows {k} len")
+        same(list(r), lst, f"Rows {k} iteration")
+        if lst:
+            i = int(rng.integers(len(lst)))
+            same([r[i], r[i:i + 5], r[-1]], [lst[i], lst[i:i + 5], lst[-1]], f"Rows {k} indexing")
+            if k in souls.VERT_NP_ATTRS:
+                same(em._vert_np(r).tobytes(), np.array(lst, np.float64).tobytes(), f"_vert_np of Rows {k}")
+
+
+
+def check_densities(r):
+    """texmap.densities (all chunks at once) against densities_ref (a chunk at a time)"""
+    import texmap
+    tex = [dict(w=int(r.choice([16, 64, 256])), h=int(r.choice([16, 128]))) for _ in range(5)]
+    ch = []
+    for _ in range(int(r.integers(0, 300))):
+        n = int(r.integers(0, 120))
+        pos = r.integers(-32768, 32767, n * 9).astype("<i2").tobytes() + b"\0" * int(r.integers(0, 16))
+        st = r.integers(0, 65535, n * 6).astype("<u2").tobytes() + b"\0" * int(r.integers(0, 16))
+        ch.append((int(r.integers(-1, 5)), 0, n, pos, st, b"", [0.0] * 3, [0.0] * 3,
+                   [float(x) for x in r.uniform(-500, 500, 3)], 2.0 ** int(r.integers(-12, 2)), int(r.choice([1, 16, 4096]))))
+    same(texmap.densities(tex, ch), texmap.densities_ref(tex, ch), "texmap.densities")
+
+
 if __name__ == "__main__":
     for k in range(seed, seed + count):
+        check_densities(np.random.default_rng(k))
         check_gather_helpers(np.random.default_rng(k))
         check_weld_arrays(np.random.default_rng(k))
-    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays identical to the Python code on {count} random cases")
+        check_vert_rows(np.random.default_rng(k))
+    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays, souls.Rows, texmap.densities identical to the Python code on {count} random cases")

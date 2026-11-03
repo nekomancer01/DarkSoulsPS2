@@ -1,4 +1,5 @@
 #include <kernel.h>
+#include <math.h>
 #include <string.h>
 #include <stdio.h>
 #include "enemy.h"
@@ -12,6 +13,7 @@ typedef struct {
     unsigned version, atlases, sprites, glyphs, layout, strings;
     unsigned atlas_off, sprite_off, glyph_off, layout_off, string_off;
     unsigned short font_h, icon0;
+    unsigned grads, grad_off;  /* version 2: GouraudRect corners (layout sprite -2 - k) */
 } MenuHeader;
 typedef struct { unsigned w, h, clut, pix; } AtlasEntry;
 typedef struct { unsigned short atlas, u, v, w, h, pad; } Sprite;
@@ -30,6 +32,7 @@ static const unsigned char *mb;
 static const MenuHeader *hdr;
 static const Sprite *spr;
 static const Glyph *gly;
+static const unsigned char *grad;  /* 16 B per gradient: r, g, b, a of the top left, top right, bottom right, bottom left */
 static HudRect lay[HUD_LAYOUT_COUNT];
 static GSTEXTURE atlas[2];
 static int ok;
@@ -44,12 +47,13 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     mb = menu_bin;
     hdr = menu_bin;
     fail = "MENU.BIN BAD";
-    if (memcmp(hdr->magic, "DSMN", 4) || hdr->atlases != 2 || hdr->layout != HUD_LAYOUT_COUNT ||
+    if (memcmp(hdr->magic, "DSMN", 4) || hdr->version != 2 || hdr->atlases != 2 || hdr->layout != HUD_LAYOUT_COUNT ||
         hdr->strings != STR_COUNT)
         return -1;
     fail = "HUD VRAM FULL";
     spr = (const Sprite *)(mb + hdr->sprite_off);
     gly = (const Glyph *)(mb + hdr->glyph_off);
+    grad = mb + hdr->grad_off;
     const LayoutEntry *le = (const LayoutEntry *)(mb + hdr->layout_off);
     for (int i = 0; i < HUD_LAYOUT_COUNT; i++)
         lay[i] = (HudRect){le[i].sprite, le[i].x, le[i].y, le[i].w, le[i].h, le[i].r, le[i].g, le[i].b, le[i].a};
@@ -107,11 +111,23 @@ void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a)
     gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, HUD_Z, rgba(r, g, b, a));
 }
 
+void hud_gradient(float x, float y, float w, float h, const unsigned char c[16], int a)
+{
+    /* DRB GouraudRect: corners TL, TR, BR, BL; the strip runs TL, TR, BL, BR */
+    u64 k[4];
+    for (int i = 0; i < 4; i++)
+        k[i] = rgba(c[4 * i], c[4 * i + 1], c[4 * i + 2], c[4 * i + 3] * a >> 7);
+    gsKit_prim_quad_gouraud(gs, R_HX(x), y, R_HX(x + w), y, R_HX(x), y + h, R_HX(x + w), y + h, HUD_Z,
+                            k[0], k[1], k[3], k[2]);
+}
+
 static void draw_layout(int i, int a)
 {
     const HudRect *e = &lay[i];
     if (e->sprite >= 0)
         hud_sprite(e->sprite, e->x, e->y, e->w, e->h, 0x80, 0x80, 0x80, a);
+    else if (e->sprite <= -2 && (unsigned)(-2 - e->sprite) < hdr->grads)
+        hud_gradient(e->x, e->y, e->w, e->h, grad + 16 * (-2 - e->sprite), a);
     else
         hud_fill(e->x, e->y, e->w, e->h, e->r, e->g, e->b, e->a * a / 0x80);
 }
@@ -282,7 +298,13 @@ void hud_draw(const Player *p, float dt)
     snprintf(buf, sizeof buf, "%d", (int)prog.souls);
     hud_text(st->x + st->w, st->y, buf, 0x80, 0x80, 0x80, 1);
     boss_bars();
-    /* YOU DIED: fades in over 1.5 s while the player is dead (DSR F23_YouDied), gone after the respawn */
+    /* YOU DIED while the player is dead, gone after the respawn. menu.drb scene F23_open_YouDied (90 frames): BG, the
+     * gradients and the band run ANIM F23_fead (alpha key 0 -> 255 at frame 30), main_text_youdied runs
+     * F23_Died_main_text (alpha keys 0, 20 at frame 30, 255 at 90; scale 85 % -> 100 % over 90 frames about its SHPR
+     * scaling origin 640, 360). DRB frames are 1/60 s: DSR's text grows 0.10 / s (reference capture, 2026-11-03).
+     * DSR blends the UI in linear light: its text read 0.32 / 0.59 / 0.72 of full at frames 34 / 42 / 47, which the
+     * keys match as key^(1/2.2) (0.41 / 0.54 / 0.61), not as they are (0.14 / 0.26 / 0.34); the PS2 blends the
+     * framebuffer values, so the keys are converted (TECH_DEBT hud-7). */
 #ifdef DIED_TEST  /* screenshot build (make EE_DBGINFOFLAGS=-DDIED_TEST): banner after 3 s */
     static float tt;
     died_t = (tt += dt) > 3 ? died_t + dt : 0;
@@ -290,9 +312,15 @@ void hud_draw(const Player *p, float dt)
     died_t = p->hp < 0 ? died_t + dt : 0;  /* the ESD's death test; hp is back at hp_max after the respawn */
 #endif
     if (died_t > 0) {
-        int a = died_t > 1.5f ? 0x80 : (int)(0x80 * died_t / 1.5f);
-        for (int i = HUD_DIED_BG; i <= HUD_DIED_TEXT; i++)
-            draw_layout(i, a);
+        float f = died_t * 60;
+        int ba = f >= 30 ? 0x80 : (int)(0x80 * powf(f / 30, 1 / 2.2f));
+        for (int i = HUD_DIED_BG; i < HUD_DIED_TEXT; i++)
+            draw_layout(i, ba);
+        float ta = f >= 90 ? 1 : f < 30 ? 20 / 255.0f * f / 30 : (20 + 235 * (f - 30) / 60) / 255;
+        float s = f >= 90 ? 1 : 0.85f + 0.15f * f / 90, cx = 640 * 640 / 1280.0f, cy = 360 * 448 / 720.0f;
+        const HudRect *e = &lay[HUD_DIED_TEXT];
+        hud_sprite(e->sprite, cx + (e->x - cx) * s, cy + (e->y - cy) * s, e->w * s, e->h * s, 0x80, 0x80, 0x80,
+                   (int)(0x80 * powf(ta, 1 / 2.2f)));
     }
     bonfire_hud(dt);  /* bonfire prompt, rest menu, dialogs, BONFIRE LIT (src/bonfire.c) */
     hud_end();

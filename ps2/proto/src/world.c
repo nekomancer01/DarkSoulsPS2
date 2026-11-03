@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "world.h"
+#include "loading.h"
 #include "pack.h"
 #include "collision.h"
 #include "map.h"
@@ -660,17 +661,20 @@ static void settle(const float *feet)
 {
     unsigned t0 = ticks();
     vu1_wait();  /* the last frame's VIF chain no longer reads the pools */
+    loading_begin();  /* DSR's loading screen while the frame waits (src/loading.c) */
     warping = 1;
     int n = 0;
     while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
         pack_async_free();  /* a background enemy model load (enemy.c) holds the slot no longer */
         mapstream_update(feet);  /* collects a cell read in flight so the async slot comes free */
         step(feet, 0);
+        loading_tick(1);
         n++;
     }
     warping = 0;
     in_cur_s = WORLD_SWAP_S;
-    event_flush();  /* the new blocks' constructors finish behind the "loading screen" (A2 event-14) */
+    event_flush();  /* the new blocks' constructors finish behind the loading screen (A2 event-14) */
+    loading_end();
     printf("world: warp to %.1f %.1f %.1f settled in %u ms (%d steps): block %d, full %d, %d loaded\n", feet[0], feet[1],
            feet[2], (ticks() - t0) / 294912, n, cur, full_blk, world_stats.loaded);
 }
