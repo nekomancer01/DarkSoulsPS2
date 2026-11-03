@@ -26,6 +26,28 @@ struct PackEntry {
 PackStats pack_stats;
 static void async_finish(void);
 
+/* Disc lock (A12 sound, iop/dsrsnd): from a disc the IOP's sound module reads cdrom0: itself (streams, bank loads), and
+ * two IOP threads in the BIOS CD file system at once hung the game (a bank load next to an EE pack open, 2026-11-03) or
+ * thrashed the drive (boot load 4.2 -> 40 s). Every cdrom0: fio request takes the lock first and keeps it until its
+ * result is collected; a background read only tries (busy: the caller's next frame). No hooks: host: or no sound. */
+int (*pack_disc_lock)(int wait);
+void (*pack_disc_unlock)(void);
+static int disc_depth;
+
+static int disc_get(int wait)
+{
+    if (!disc_depth && pack_cdrom > 0 && pack_disc_lock && !pack_disc_lock(wait))
+        return 0;
+    disc_depth++;
+    return 1;
+}
+
+static void disc_put(void)
+{
+    if (disc_depth && !--disc_depth && pack_cdrom > 0 && pack_disc_unlock)
+        pack_disc_unlock();
+}
+
 static inline unsigned ticks(void)
 {
     unsigned c;
@@ -86,27 +108,29 @@ int pack_open(Pack *p, const char *path)
     memset(p, 0, sizeof *p);
     fioInit();
     path = pack_path(path, cd_path, sizeof cd_path);
+    disc_get(1);
     p->fd = fioOpen(path, O_RDONLY);
-    if (p->fd < 0)
-        return 0;
-    if (fioRead(p->fd, head, 16) != 16 || memcmp(head, "DSRP", 4) || head[1] != 1) {
-        pack_close(p);
-        return 0;
+    int ok = p->fd >= 0 && fioRead(p->fd, head, 16) == 16 && !memcmp(head, "DSRP", 4) && head[1] == 1;
+    if (ok) {
+        p->count = head[2];
+        p->entries = malloc(p->count * sizeof *p->entries);
+        ok = p->entries &&
+             fioRead(p->fd, p->entries, p->count * sizeof *p->entries) == (int)(p->count * sizeof *p->entries);
     }
-    p->count = head[2];
-    p->entries = malloc(p->count * sizeof *p->entries);
-    if (!p->entries || fioRead(p->fd, p->entries, p->count * sizeof *p->entries) != (int)(p->count * sizeof *p->entries)) {
+    disc_put();
+    if (!ok && p->fd >= 0)
         pack_close(p);
-        return 0;
-    }
-    return 1;
+    return ok;
 }
 
 void pack_close(Pack *p)
 {
     async_finish();
-    if (p->fd >= 0)
+    if (p->fd >= 0) {
+        disc_get(1);
         fioClose(p->fd);
+        disc_put();
+    }
     free(p->entries);
     p->fd = -1;
     p->entries = NULL;
@@ -165,6 +189,7 @@ static unsigned batch_end(const unsigned *cs, unsigned b, unsigned nb, unsigned 
 }
 
 char pack_error[96];
+void (*pack_wait_hook)(void);
 
 /* One background read at a time (pack_read_async); fio has a single async slot, so every other fio call here waits
  * for it first and keeps its result for pack_async_done */
@@ -177,6 +202,7 @@ static void async_finish(void)
         fioSync(FIO_WAIT, &async_result);
         fioSetBlockMode(FIO_WAIT);
         async_busy = 2;  /* done, result not collected yet */
+        disc_put();
     }
     log_flush();
 }
@@ -228,7 +254,7 @@ int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size)
 
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes)
 {
-    if (async_busy)
+    if (async_busy || !disc_get(0))
         return 0;
     SyncDCache(dst, (char *)dst + bytes - 1);  /* no dirty lines written back over the DMA'd data later */
     fioLseek(p->fd, offset, SEEK_SET);
@@ -244,6 +270,7 @@ int pack_async_done(int *result)
         if (fioSync(FIO_NOWAIT, &async_result) != FIO_COMPLETE)
             return 0;
         fioSetBlockMode(FIO_WAIT);
+        disc_put();
     }
     if (!async_busy)
         return 0;
@@ -270,13 +297,20 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
     j->state = J_OPEN;
 }
 
+static void job_close(PackJob *j)
+{
+    disc_get(1);
+    fioClose(j->fd), j->fd = -1;
+    disc_put();
+}
+
 static int job_fail(PackJob *j, const char *why)
 {
     printf("pack: %s %s: %s\n", j->path, j->name, why);
     if (j->out)
         j->put(j->out, j->alloc), j->out = NULL;
     if (j->fd >= 0 && !async_busy)
-        fioClose(j->fd), j->fd = -1;
+        job_close(j);
     j->state = j->fd >= 0 ? J_CLOSE : -1;  /* a pending read keeps the fd: closed on a later step */
     return j->fd >= 0 ? 0 : -1;
 }
@@ -292,6 +326,8 @@ static int job_done(PackJob *j, int *res)
     if (async_busy == 1 && fioSync(FIO_NOWAIT, &async_result) != FIO_COMPLETE)
         return 0;
     fioSetBlockMode(FIO_WAIT);
+    if (async_busy == 1)
+        disc_put();
     async_busy = 0, slot_job = NULL;
     *res = async_result;
     log_flush();
@@ -313,7 +349,7 @@ int pack_job_step(PackJob *j)
     int res;
     switch (j->state) {
     case J_OPEN:
-        if (async_busy)
+        if (async_busy || !disc_get(0))
             return 0;  /* another read is in flight: next frame */
         fioInit();
         fioSetBlockMode(FIO_NOWAIT);
@@ -328,7 +364,7 @@ int pack_job_step(PackJob *j)
         j->state = J_HEAD;
         /* fall through */
     case J_HEAD:
-        if (async_busy)
+        if (async_busy || !disc_get(0))
             return 0;
         SyncDCache(head, (char *)head + sizeof head - 1);
         fioLseek(j->fd, 0, SEEK_SET);
@@ -360,6 +396,8 @@ int pack_job_step(PackJob *j)
             if (j->packed > j->raw + j->blocks * 4 || !(j->out = j->get(j->alloc)))
                 return job_fail(j, j->out ? "entry grows on decode" : "OUT OF RAM");
         }
+        if (!disc_get(0))
+            return 0;
         j->in = j->out + ((j->alloc - j->packed) & ~63u);
         SyncDCache(j->in, j->in + j->packed - 1);
         fioLseek(j->fd, j->off, SEEK_SET);
@@ -370,7 +408,7 @@ int pack_job_step(PackJob *j)
     case J_READING: {
         if (!job_done(j, &res))
             return 0;
-        fioClose(j->fd), j->fd = -1;
+        job_close(j);
         if (res != (int)j->packed)
             return job_fail(j, "read error");
         InvalidDCache(j->in, j->in + j->packed - 1);
@@ -399,7 +437,7 @@ int pack_job_step(PackJob *j)
         if (async_busy)
             return 0;
         if (j->fd >= 0)
-            fioClose(j->fd), j->fd = -1;
+            job_close(j);
         j->state = -1;
         return -1;
     }
@@ -418,7 +456,7 @@ void pack_job_cancel(PackJob *j)
             j->fd = res;
     }
     if (j->fd >= 0)
-        fioClose(j->fd), j->fd = -1;
+        job_close(j);
     if (j->out && j->state != -2)
         j->put(j->out, j->alloc);
     j->out = NULL;
@@ -457,6 +495,7 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
                  (unsigned)(32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks) >> 10);
         printf("pack: %s\n", pack_error);
     }
+    disc_get(1);
     if (ok) {
         fioLseek(p->fd, e->offset, SEEK_SET);
         ok = fioRead(p->fd, cs, nb * 4) == (int)(nb * 4);
@@ -491,7 +530,11 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
         }
         if (nend > end) {
             unsigned w = ticks();
-            fioSync(FIO_WAIT, &got);
+            if (pack_wait_hook)
+                while (fioSync(FIO_NOWAIT, &got) != FIO_COMPLETE)
+                    pack_wait_hook();
+            else
+                fioSync(FIO_WAIT, &got);
             fioSetBlockMode(FIO_WAIT);
             wait += ticks() - w;
         }
@@ -499,6 +542,7 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
         end = nend;
         bytes = nbytes;
     }
+    disc_put();
     if (stage[0])
         put(stage[0], st);
     if (stage[1])

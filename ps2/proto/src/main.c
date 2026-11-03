@@ -35,6 +35,7 @@
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
 #include "bonfire.h"  /* A4: rest, death, bloodstain */
+#include "loading.h"  /* DSR's loading screen over blocking loads */
 #include "sound.h"  /* A12: SPU2 sound (src/sound.c, iop/dsrsnd) */
 #include "gamedata.h"  /* player / combat / progress values from c0000.pak (the ELF holds no game data) */
 #include <unistd.h>
@@ -362,10 +363,15 @@ int main(int argc, char **argv)
             SleepThread();
     }
     items_init();  /* menu.pak items.bin: stack sizes for the inventory rules (src/items.c), before the save loads */
+    /* DSR's loading screen over the boot load (src/loading.c): drawn from inside the loads below, closed after the first
+     * frame's world update (the boot position's blocks settle under it) */
+    loading_init(gs, flip, disp_buf);
+    loading_hold();
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
     /* sound: IOP modules, the player's bank and the boot area's into SPU2 RAM (the IOP reads them: no EE RAM) */
     if (snd_init())
         snd_map(AREA);
+    loading_tick(1);
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
     unsigned t_load = cpu_ticks();
     Pack pk;
@@ -415,6 +421,7 @@ int main(int argc, char **argv)
         world_stream_open();
     else
         map_stream_open(PACK_ROOT AREA ".pak");  /* DSM5: near cells stream from the area pack (src/mapstream.c) */
+    loading_tick(1);  /* the loading screen moves into the map pool now, before the uploads below reach the top of VRAM */
     if (map_ok && !bump_init(gs, bump_blob, map_chunk_count()))
         printf("DSRPROTO bump: relief off\n");
     int col_ok = map_ok && col_init(col_blob);  /* collision.bin: without it the player walks on the navmesh */
@@ -424,6 +431,7 @@ int main(int argc, char **argv)
     /* enemies: character packs data/c####.pak + enemyCommon.esd (data/common.pak), placed from enemies.bin */
     /* "option noenemies" (breakables tests): no enemy roster, RAM / VRAM for the pots, no AI in the shots */
     int enemies = map_ok && !(test_opts & TEST_NOENEMIES) ? enemy_init(gs, enemy_blob, lua_blob, (int)lua_size) : 0;
+    loading_tick(1);
     int breakables = map_ok ? objects_init(gs, obj_blob) : 0;  /* pots: intact + pre-fractured models */
     if (map_ok && col_ok && ev_blob && event_init(evc_blob))  /* after enemies + collision */
         event_block_on(0, ev_blob);
@@ -432,6 +440,7 @@ int main(int argc, char **argv)
     if (!(map_ok && fx_init(gs, fx_blob)))  /* effect textures to VRAM; the blob stays (particle systems, lights) */
         free(fx_blob);
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
+    loading_tick(1);
     combat_sweep_hook = objects_sweep_hook;  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
@@ -641,6 +650,7 @@ int main(int argc, char **argv)
         r_camera(eye, target);
 
         world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
+        loading_frame();  /* the boot's / a death's loading screen closes once this frame's loads settled */
         snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
         snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
         PROF_MARK(PROF_MAP);
@@ -783,6 +793,7 @@ int main(int argc, char **argv)
             r_text_outlined(30, 230, 2, buf);
         }
         menu_draw(&pl);
+        loading_overlay(dt);  /* the fade-in from black after a loading screen */
         PROF_DRAW();
 
         PROF_MARK(PROF_VU1WAIT);

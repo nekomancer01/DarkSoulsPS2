@@ -21,6 +21,7 @@
 #include "combat.h"
 #include "save.h"
 #include "bonfire.h"
+#include "loading.h"
 #include "sound.h"
 
 /* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
@@ -265,6 +266,8 @@ static void respawn(Player *p)
 {
     int died = p->hp < 0;
     if (died) {
+        loading_hold();    /* DSR reloads the map behind its loading screen (src/loading.c); a far respawn point's
+                            * blocks load under it this frame (world.c settle) */
         save_request();    /* DSR autosaves on death; the next save_tick writes the respawn spot, full HP, deaths + 1 */
         bonfire_death(p);  /* bloodstain with the souls / humanity held */
     }

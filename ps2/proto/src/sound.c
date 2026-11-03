@@ -114,6 +114,8 @@ static SifRpcClientData_t cl_frame __attribute__((aligned(64))), cl_ops __attrib
 static SndFrame fbuf __attribute__((aligned(64)));      /* frame RPC send buffer (in flight) */
 static SndStatus fstat __attribute__((aligned(64)));    /* its result */
 static SndStatus ostat __attribute__((aligned(64)));    /* ops client result (unused) */
+static SifRpcClientData_t cl_disc __attribute__((aligned(64)));  /* disc lock (pack.c pack_disc_lock) */
+static SndDisc dstat __attribute__((aligned(64)));
 static union { SndLoad ld; SndStreamOpen so; } obuf __attribute__((aligned(64)));
 static SndCmd cmds[SND_CMD_MAX];
 static int ncmds, frame_busy, ops_busy;
@@ -182,6 +184,18 @@ static int ops_call(int fn, unsigned size)
     SifCallRpc(&cl_ops, fn, SIF_RPC_M_NOWAIT, &obuf, (size + 15) & ~15u, &ostat, sizeof ostat, NULL, NULL);
     ops_busy = 1;
     return 1;
+}
+
+/* the disc lock for pack.c: blocking calls, the EE's next fio request waits for the answer anyway */
+static int disc_lock(int wait)
+{
+    SifCallRpc(&cl_disc, wait ? SNDF_DISC_LOCK : SNDF_DISC_TRY, 0, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
+    return ((volatile SndDisc *)((unsigned)&dstat | 0x20000000))->got;  /* uncached: the IOP wrote it */
+}
+
+static void disc_unlock(void)
+{
+    SifCallRpc(&cl_disc, SNDF_DISC_UNLOCK, 0, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
 }
 
 /* ---- SPU2 heap ---- */
@@ -372,6 +386,7 @@ static void loads_pump(void)
 /* Block until every queued bank is in SPU2 RAM (boot) */
 static void loads_wait(void)
 {
+    pack_async_wait();  /* a background read holds the disc lock (pack.c) the IOP's load needs */
     for (int k = 0; k < 20000; k++) {
         ops_wait();
         flush(1);
@@ -909,9 +924,9 @@ void snd_map(const char *map_id)
     const SSample *sm = e ? pick_wave(b, e, &si) : NULL;
     amb.e = NULL;
     if (sm && (sm->flags & SF_STREAM)) {
-        if (first)
-            ops_wait();  /* boot: nothing else waits on the ops client yet */
-        if (ops_busy)    /* later: started by snd_update once the ops client is free (never wait in a frame) */
+        /* boot: started by the first snd_update, after the load (a stream reading the disc during it made every
+         * cdrom0: pack read seek away and back); later: once the ops client is free (never wait in a frame) */
+        if (first || ops_busy)
             amb.b = b, amb.e = e, amb.si = si;
         else
             slot_start(1, b, e, si, e->vol, !first, 0);
@@ -1004,10 +1019,11 @@ int snd_init(void)
         printf("snd: dsrsnd.irx failed (%d, %d)\n", id, ret);
         return 0;
     }
-    for (int k = 0; k < 2; k++) {
-        SifRpcClientData_t *c = k ? &cl_ops : &cl_frame;
+    static const unsigned ids[3] = {DSRSND_RPC_ID, DSRSND_RPC_OPS_ID, DSRSND_RPC_DISC_ID};
+    for (int k = 0; k < 3; k++) {
+        SifRpcClientData_t *c = k == 2 ? &cl_disc : k ? &cl_ops : &cl_frame;
         for (int tries = 0; tries < 1000; tries++) {
-            if (SifBindRpc(c, k ? DSRSND_RPC_OPS_ID : DSRSND_RPC_ID, 0) < 0)
+            if (SifBindRpc(c, ids[k], 0) < 0)
                 return 0;
             if (c->server)
                 break;
@@ -1023,6 +1039,7 @@ int snd_init(void)
     if (!st.ok)
         return 0;
     on = 1;
+    pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
     /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */
