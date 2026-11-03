@@ -74,8 +74,9 @@ def _indices(h, ms, M, so_k, sub_t, ntri, stride):
     return struct.unpack_from(f"<{need}{code}", h.data, io), per
 
 
-def hkx_meshes(hkx_bytes):
-    """Collision hkx -> [(vertices [(x, y, z)], triangles [(a, b, c)], material id)] one per subpart."""
+def hkx_meshes(hkx_bytes, arrays=False):
+    """Collision hkx -> [(vertices [(x, y, z)], triangles [(a, b, c)], material id)] one per subpart. arrays: the
+    vertices as an (n, 3) float64 array (numpy), the same values."""
     h = souls.HkTag(hkx_bytes)
     d = h.data
     out = []
@@ -103,9 +104,12 @@ def hkx_meshes(hkx_bytes):
             qs = struct.unpack_from("<12f", d, so_k + toff)
             ms = h.items[struct.unpack_from("<I", d, ms_o + 8 * k)[0]][1]
             _, vo, nv = h.item(ms, M, "vertices")
-            verts = [struct.unpack_from("<3f", d, vo + 16 * i) for i in range(nv)]
-            if qs[:3] != (0, 0, 0) or qs[4:8] != (0, 0, 0, 1) or qs[8:11] != (1, 1, 1):
-                verts = [_qs_apply(qs, v) for v in verts]
+            if arrays:
+                verts = _verts_np(d, vo, nv, qs)
+            else:
+                verts = [struct.unpack_from("<3f", d, vo + 16 * i) for i in range(nv)]
+                if qs[:3] != (0, 0, 0) or qs[4:8] != (0, 0, 0, 1) or qs[8:11] != (1, 1, 1):
+                    verts = [_qs_apply(qs, v) for v in verts]
             idx, per = _indices(h, ms, M, so_k, sub_t, ntri, stride)
             tris = [idx[per * i:per * i + 3] for i in range(ntri)]
             mat = -1
@@ -116,6 +120,36 @@ def hkx_meshes(hkx_bytes):
     return out
 
 
+def _qrot_np(q, V):
+    """souls._qrot on the rows of an (n, 3) float64 array: the same operations per element, in the same order"""
+    x, y, z, w = q
+    vx, vy, vz = V[:, 0], V[:, 1], V[:, 2]
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    import numpy as np
+    return np.stack([vx + w * tx + y * tz - z * ty, vy + w * ty + z * tx - x * tz, vz + w * tz + x * ty - y * tx], 1)
+
+
+def _verts_np(d, vo, nv, qs):
+    """a subpart's hkVector4 vertices (xyz of 16 bytes) as float64, the subpart transform applied as _qs_apply"""
+    import numpy as np
+    V = np.frombuffer(d, "<f4", 4 * nv, vo).reshape(nv, 4)[:, :3].astype(np.float64)
+    if qs[:3] != (0, 0, 0) or qs[4:8] != (0, 0, 0, 1) or qs[8:11] != (1, 1, 1):
+        t, s = qs[0:3], qs[8:11]
+        V = _qrot_np(qs[4:8], np.stack([V[:, 0] * s[0], V[:, 1] * s[1], V[:, 2] * s[2]], 1))
+        V = np.stack([V[:, 0] + t[0], V[:, 1] + t[1], V[:, 2] + t[2]], 1)
+    return V
+
+
+def _place_np(part, V):
+    """_place on the rows of an (n, 3) array"""
+    import numpy as np
+    sx, sy, sz = part["scale"]
+    q = souls._euler_deg_xzy(*part["rot"])
+    R = _qrot_np(q, np.stack([V[:, 0] * sx, V[:, 1] * sy, V[:, 2] * sz], 1))
+    p = part["pos"]
+    return np.stack([R[:, 0] + p[0], R[:, 1] + p[1], R[:, 2] + p[2]], 1)
+
+
 def _place(part, v):
     sx, sy, sz = part["scale"]
     q = souls._euler_deg_xzy(*part["rot"])
@@ -124,6 +158,7 @@ def _place(part, v):
     return r[0] + p[0], r[1] + p[1], r[2] + p[2]
 
 
+NP = os.environ.get("HAVOK_NP", "1") == "1"  # numpy for the vertices (the same values); 0: the per-vertex code
 _MEMO = {}  # the last map_collision result: export_map asks for it several times per export (13.6 s of Burg's)
 
 
@@ -153,9 +188,9 @@ def _map_collision(game, area, detail):
             missing.append(p["name"])
             continue
         if model not in meshes:
-            meshes[model] = hkx_meshes(files[model])
+            meshes[model] = hkx_meshes(files[model], arrays=NP)
         for verts, tris, mat in meshes[model]:
-            wv = [_place(p, v) for v in verts]
+            wv = list(map(tuple, _place_np(p, verts).tolist())) if NP else [_place(p, v) for v in verts]
             out.append({"part": p["name"], "model": model, "hit_filter": p["hit_filter"], "material": mat,
                         "msb": p, "tris": [(wv[a], wv[b], wv[c]) for a, b, c in tris]})
     unused = sorted(set(files) - {detail + p["model"][1:] for p in parts})

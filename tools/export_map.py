@@ -437,14 +437,10 @@ def flatten(entries, textures):
     return meshes, verts, tris, uvs, fol, tcells, dgs, ents
 
 
-def chunks_c_ok(entries):
-    """build_chunks_c applies: every corner position a plain float (else build_chunks sums them with Python's rules)"""
-    return all(type(x) is float for m in entries for t in m["tris"] for c in t for x in c[0])
-
-
 def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     """flatten + build_chunks in C (tools/mapx/chunks.c): the same chunks, CHUNK_BUMP / TAG / DG / ENT; also returns
-    the number of drawn entries and triangles"""
+    the number of drawn entries and triangles; None when a corner position is not a plain float (build_chunks then
+    sums them with Python's rules)"""
     import ctypes
     es = [m for m in entries if m["tris"]]
     i32, i64, f64 = np.int32, np.int64, np.float64
@@ -452,7 +448,10 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     nts = [len(m["tris"]) for m in es]
     toff = np.concatenate([[0], np.cumsum(nts)]).astype(i64) if ne else np.zeros(1, i64)
     nt = int(toff[-1])
-    cpos = np.array([x for m in es for t in m["tris"] for c in t for x in c[0]], f64)
+    cpos = [x for m in es for t in m["tris"] for c in t for x in c[0]]
+    if any(t is not float for t in set(map(type, cpos))):
+        return None
+    cpos = np.array(cpos, f64)
     cw = np.array([c[1] for m in es for t in m["tris"] for c in t], i32)
     wt, woff, wrgb, wa, wuv, w0 = {}, [], [], [], [], 0
     for m in es:  # wedge tables, once per mesh (its entries share them)
@@ -753,19 +752,22 @@ def fog_section(game, map_id, main_fog):
     key_of = lambda p: (p["fog_id"] if p["fog_id"] in fog_rows else main_fog, p["light_id"], p["tone_map_id"],
                         p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")), p["dof_id"])
     subs = export_collision.area_collision(game, map_id)[0]  # collision.bin's triangles (area region, tools/area.py)
-    pts = [p for s in subs for t in s["tris"] for p in t]
-    lo = [min(p[k] for p in pts) for k in range(3)]
-    hi = [max(p[k] for p in pts) for k in range(3)]
+    # every corner quantised as collision.bin does (round((p - origin) / SCALE); numpy's rint rounds half to even
+    # like round()), the triangles that collapse there skipped
+    P = np.array([p for s in subs for t in s["tris"] for p in t], np.float64).reshape(-1, 3, 3)
+    lo, hi = P.reshape(-1, 3).min(0).tolist(), P.reshape(-1, 3).max(0).tolist()
     origin = [round((lo[k] + hi[k]) / 2) for k in range(3)]
-    q = lambda p: tuple(round((p[k] - origin[k]) / export_collision.SCALE) for k in range(3))
-    tri_key, count = [], {}
+    Q = np.rint((P - np.array(origin, np.float64)) / export_collision.SCALE)
+    ok = (Q[:, 0] != Q[:, 1]).any(1) & (Q[:, 1] != Q[:, 2]).any(1) & (Q[:, 0] != Q[:, 2]).any(1)
+    nok = np.concatenate([[0], np.cumsum(ok)]).tolist()
+    tri_key, count, i = [], {}, 0
     for s in subs:
         k = key_of(coll[s["part"]]) if s["part"] in coll else None
-        for t in s["tris"]:
-            a, b, c = (q(p) for p in t)
-            if a != b and b != c and a != c:
-                tri_key.append(k)
-                count[k] = count.get(k, 0) + 1
+        n = nok[i + len(s["tris"])] - nok[i]
+        i += len(s["tris"])
+        if n:
+            tri_key += [k] * n
+            count[k] = count.get(k, 0) + n
     keys = [k for k in count if k is not None]
     if not keys:
         keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1, -1)]
@@ -829,13 +831,19 @@ _VERT_NP = {}  # id(vertex attribute list) -> (the list, float64 array): FLVER m
 
 def _vert_np(lst):
     e = _VERT_NP.get(id(lst))
-    if e is None or e[0] is not lst:
+    if e is None or e[0] is not lst or len(e[1]) != len(lst):  # (souls.flver fills it; the lists only grow)
         e = _VERT_NP[id(lst)] = (lst, np.array(lst, np.float64))
     return e[1]
 
 
 def _first_rows(K):
     """rows of an int array -> (id per row numbered by first appearance, row index of each id's first appearance)"""
+    MX = mapx_native.lib()
+    if MX is not None and K.ndim == 2:  # a hash instead of np.unique's sort (tools/mapx/rows.c)
+        Kc = np.ascontiguousarray(K, np.int64)
+        ids, first = np.empty(len(Kc), np.int64), np.empty(len(Kc), np.int64)
+        u = MX.mx_first_rows(len(Kc), Kc.shape[1], Kc.ctypes.data, ids.ctypes.data, first.ctypes.data)
+        return ids.astype(np.intp), first[:u].astype(np.intp)
     _, first, inv = np.unique(K, axis=0, return_index=True, return_inverse=True)
     inv = inv.reshape(-1)
     order = np.argsort(first, kind="stable")
@@ -993,6 +1001,10 @@ def is_sky(mtd, pts, nav_tree):
     gap = np.maximum(0, np.maximum(lo - nav_tree, nav_tree - hi))  # mesh box to each walkable point
     if np.sqrt((gap ** 2).sum(1)).min() > SKY_DIST:
         return True
+    MX = mapx_native.lib()
+    if MX is not None:  # the same squared distances, stopping at the first one in range (tools/mapx/rows.c)
+        Pc, Sc = np.ascontiguousarray(P, np.float64), np.ascontiguousarray(nav_tree, np.float64)
+        return not MX.mx_any_within(len(Pc), Pc.ctypes.data, len(Sc), Sc.ctypes.data, SKY_DIST ** 2)
     for i in range(0, len(P), 2048):
         d = ((P[i:i + 2048, None, :] - nav_tree[None]) ** 2).sum(2).min()
         if d <= SKY_DIST ** 2:
@@ -1054,8 +1066,7 @@ def dedup_tris(tl, V):
     for i in (1, 2):
         r = np.where(less(C[:, i], C[rows, r]), i, r)
     rot = C[rows[:, None], (r[:, None] + np.arange(3)) % 3].reshape(len(C), -1)  # cyclic rotation keeps the winding
-    _, first = np.unique(rot, axis=0, return_index=True)
-    return [tl[i] for i in np.sort(first).tolist()]
+    return [tl[i] for i in _first_rows(rot)[1].tolist()]
 
 
 def place(part):
@@ -1148,6 +1159,7 @@ def gather(game, map_id):
     in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
     map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
+    souls.VERT_NP = _VERT_NP  # filled as souls.flver parses (the values np.array gives from the lists), until the end
     MX = mapx_native.lib()  # tools/mapx (C): thin_foliage + is_canopy; MAPX=0 runs the Python code below
     mx_grid = None
     if MX is not None and nav_pts:
@@ -1250,7 +1262,7 @@ def gather(game, map_id):
         F = flvers.pop(k, None)
         if not F:
             return
-        lists = {id(m["verts"]["pos"]) for m in F["meshes"]}
+        lists = {id(m["verts"][a]) for m in F["meshes"] for a in souls.VERT_NP_ATTRS}
         for dk in [dk for dk, e in _DEDUP.items() if id(e[1]) in lists]:
             del _DEDUP[dk]
         for i in lists:
@@ -1428,6 +1440,7 @@ def gather(game, map_id):
 
     if mx_grid is not None:
         MX.mx_navgrid_free(mx_grid)
+    souls.VERT_NP = None
     _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
     _DEDUP.clear()
     rss(f"gather meshes ({len(meshes)})")
@@ -2165,7 +2178,7 @@ def main():
         print(f"backdrop: {BACKDROP_STATS[1]} of {BACKDROP_STATS[0]} far-cell tris kept (back faces from the navmesh "
               f"dropped: BACKDROP_SIDE {BACKDROP_SIDE})")
     MXL = mapx_native.lib()
-    flat = None if MXL is not None and chunks_c_ok(entries) else flatten(entries, textures)
+    flat = None if MXL is not None else flatten(entries, textures)
 
     # MSB yaw (degrees about +Y, model forward -Z) -> game yaw (forward (sin, cos) on x/z): rotated by 180 degrees
     yaw = math.radians(spawn["rot"][1]) + math.pi

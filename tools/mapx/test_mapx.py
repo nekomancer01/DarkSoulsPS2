@@ -459,7 +459,6 @@ def check_chunks(rng):
         ref = em.build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if stream else None,
                               dgs if dgon else None, ents)
     ref_l = lists()
-    assert em.chunks_c_ok(entries)
     with contextlib.redirect_stdout(io.StringIO()) as f2:
         got, nm, nt = em.build_chunks_c(L, entries, textures, centre, bkey, stream, dgon)
     same(f1.getvalue(), f2.getvalue(), "chunks log")
@@ -476,3 +475,66 @@ if __name__ == "__main__":
     for k in range(seed, seed + count):
         tot += check_chunks(np.random.default_rng(k))
     print(f"mapx: flatten + build_chunks identical to the Python code on {count} random scenes ({tot} chunks)")
+
+
+# ---- stage 4: gather helpers ----
+def check_gather_helpers(rng):
+    def both(f):
+        L_ = mapx_native._L[0]
+        mapx_native._L[0] = None
+        try:
+            a = f()
+        finally:
+            mapx_native._L[0] = L_
+        return a, f()
+    K = rng.integers(0, int(rng.integers(1, 6)), (int(rng.integers(1, 3000)), int(rng.integers(1, 16))))
+    a, b = both(lambda: em._first_rows(K))
+    same([x.tolist() for x in a], [x.tolist() for x in b], "_first_rows")
+    nav = np.unique(np.round(rng.uniform(-900, 900, (int(rng.integers(1, 400)), 3)) / 10), axis=0) * 10
+    for _ in range(5):
+        P = rng.uniform(-1, 1, (int(rng.integers(1, 5000)), 3)) * rng.choice([100, 600, 1500]) + rng.uniform(-900, 900, 3)
+        a, b = both(lambda: em.is_sky("m_wall", P, nav))
+        same(a, b, "is_sky")
+    V = dict(pos=[tuple(p) for p in (rng.integers(0, 4, (60, 3)) * 0.25).tolist()],
+             uv=[tuple(p) for p in (rng.integers(0, 3, (60, 2)) / 4).tolist()] if rng.random() < 0.7 else [])
+    tl = [tuple(int(v) for v in rng.integers(0, 60, 3)) for _ in range(int(rng.integers(1, 800)))]
+    tl += [t[1:] + t[:1] for t in tl[:50]]
+    em._VERT_NP.clear()
+    a, b = both(lambda: em.dedup_tris(tl, V))
+    same(a, b, "dedup_tris")
+    import dsr_light
+    subs = [dict(part=f"h{i}", tris=[tuple(tuple(c) for c in t) for t in
+                                     (rng.uniform(-30, 30, (int(rng.integers(0, 200)), 3, 3)) +
+                                      rng.uniform(-20, 20, 3)).round(int(rng.integers(1, 4))).tolist()])
+            for i in range(int(rng.integers(1, 8)))]
+    probes = {p: [] for p in rng.choice(10, 5, replace=False).tolist()}
+    part_probe = {s["part"]: int(rng.integers(0, 12)) for s in subs}
+    Q = (rng.uniform(-60, 60, (int(rng.integers(1, 3000)), 3))).round(int(rng.integers(0, 3)))
+
+    def run():
+        ix = dsr_light.ProbeIndex(subs, probes, part_probe)
+        return ix.default, ix.many(Q[: len(Q) // 2]), [ix(tuple(q)) for q in Q[len(Q) // 2:].tolist()], ix.many(Q)
+    a, b = both(run)
+    same(a, b, "ProbeIndex")
+    X = np.concatenate([rng.uniform(-1, 3, 3000), [0.0, -0.0, 1.0, np.inf, 1e-300]]).reshape(-1, 1)
+    a, b = both(lambda: (dsr_light.srgb_lin_many(X).tolist(), dsr_light._pow_many(np.abs(X), 1 / 2.2, False).tolist()))
+    same(a, b, "srgb_lin_many / pow")
+    import havok_collision as hc, struct
+    nv = int(rng.integers(0, 300))
+    raw = rng.uniform(-50, 50, (nv, 4)).astype("<f4").tobytes()
+    qs = tuple(struct.unpack("<12f", rng.uniform(-2, 2, 12).astype("<f4").tobytes()))
+    for q in (qs, (0, 0, 0) + qs[3:4] + (0, 0, 0, 1) + (1, 1, 1) + qs[11:]):
+        ref = [struct.unpack_from("<3f", raw, 16 * i) for i in range(nv)]
+        if q[:3] != (0, 0, 0) or q[4:8] != (0, 0, 0, 1) or q[8:11] != (1, 1, 1):
+            ref = [hc._qs_apply(q, v) for v in ref]
+        same(ref, list(map(tuple, hc._verts_np(raw, 0, nv, q).tolist())), "hkx vertices")
+        part = dict(scale=tuple(rng.uniform(0.5, 2, 3).tolist()), rot=tuple(rng.uniform(-180, 180, 3).tolist()),
+                    pos=tuple(rng.uniform(-100, 100, 3).tolist()))
+        same([hc._place(part, v) for v in ref], list(map(tuple, hc._place_np(part, np.array(ref).reshape(-1, 3)).tolist())),
+             "collision placement")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_gather_helpers(np.random.default_rng(k))
+    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex identical to the Python code on {count} random cases")
