@@ -1,5 +1,5 @@
 """Character ragdoll from chr/c####.chrbnd c####.hkx (Havok 2015 tagfile): hkaRagdollInstance -> hkpRigidBody list
-(one hkpCapsuleShape each, in the body frame) + hkpRagdollConstraintData joints, and the hkaSkeletonMapper that ties
+(one hkpCapsuleShape each, in the body frame) + hkpRagdollConstraintData (or hinge) joints, and the hkaSkeletonMapper that ties
 each ragdoll bone to a bone of the animation skeleton. DSR uses these bodies twice: as the character's hit capsules
 (damage is taken where a weapon meets a body) and as the death ragdoll.
 
@@ -110,31 +110,50 @@ def ragdoll(hkx):
     CI = h.type("hkpConstraintInstance")
     _, co, cc = h.item(ri, RT, "constraints")
     ent, dat = CI.field("entities")[0], CI.field("data")[0]
-    AT = h.type("hkpRagdollConstraintData::Atoms")
-    atoms = h.type("hkpRagdollConstraintData").field("atoms")[0]
-    tf = AT.field("transforms")[0]
     ta, tb = (h.type("hkpSetLocalTransformsConstraintAtom").field(n)[0] for n in ("transformA", "transformB"))
-    cone, twist, planes = (AT.field(n)[0] for n in ("coneLimit", "twistLimit", "planesLimit"))
+    types = {t.name for t in h.types}
+    if "hkpRagdollConstraintData" in types:
+        AT = h.type("hkpRagdollConstraintData::Atoms")
+        rag_atoms = h.type("hkpRagdollConstraintData").field("atoms")[0]
+        rag_cone, rag_twist, rag_planes = (AT.field(n)[0] for n in ("coneLimit", "twistLimit", "planesLimit"))
+    # hinge joints (c2230, c2793, c5330, c5350: hkpHingeConstraintData only; c3460: also hkpLimitedHingeConstraintData):
+    # the hinge axis is column 0 of each constraint frame; free (hinge) or angLimit min..max about it
+    hinge = {n: (h.type(n).field("atoms")[0], h.type(n + "::Atoms"))
+             for n in ("hkpHingeConstraintData", "hkpLimitedHingeConstraintData") if n in types}
+    if "hkpAngLimitConstraintAtom" in types:
+        LT = h.type("hkpAngLimitConstraintAtom")
+        lim_min, lim_max = LT.field("minAngle")[0], LT.field("maxAngle")[0]
     joints = []
     for k in range(cc):
         o = h.items[ptr(co + 8 * k)][1]
         dt, do, _ = h.items[ptr(o + dat)]
-        if dt.name != "hkpRagdollConstraintData":
+        if dt.name != "hkpRagdollConstraintData" and dt.name not in hinge:
             continue
         ea, eb = ptr(o + ent), ptr(o + ent + 8)
         if ea not in body_items or eb not in body_items:
             continue
-        at = do + atoms
-        ax = D[at + cone + 3]  # twistAxisInA: column of each constraint frame that is the twist axis
-        axis_c = struct.unpack_from("<3f", D, at + tf + ta + 16 * ax)
-        axis_p = struct.unpack_from("<3f", D, at + tf + tb + 16 * ax)
+        if dt.name == "hkpRagdollConstraintData":
+            at = do + rag_atoms
+            tf = AT.field("transforms")[0]
+            ax = D[at + rag_cone + 3]  # twistAxisInA: column of each constraint frame that is the twist axis
+            cone = struct.unpack_from("<f", D, at + rag_cone + 12)[0]
+            tw = struct.unpack_from("<2f", D, at + rag_twist + 8)
+            planes = struct.unpack_from("<2f", D, at + rag_planes + 8)
+        else:
+            ho, HT = hinge[dt.name]
+            at, tf, ax = do + ho, HT.field("transforms")[0], 0
+            # ASSUMED: a hinge allows no swing; the runtime has cone limits only (0 = none), so 0.01 rad stands in
+            # for 0 (TECH_DEBT enemy-17)
+            cone, planes = 0.01, (0.0, 0.0)
+            if dt.name == "hkpLimitedHingeConstraintData":
+                lo = at + HT.field("angLimit")[0]
+                tw = struct.unpack_from("<f", D, lo + lim_min)[0], struct.unpack_from("<f", D, lo + lim_max)[0]
+            else:
+                tw = (-math.pi, math.pi)
         joints.append(dict(child=body_items.index(ea), parent=body_items.index(eb),
-                           axis_child=axis_c, axis_parent=axis_p,
+                           axis_child=struct.unpack_from("<3f", D, at + tf + ta + 16 * ax),
+                           axis_parent=struct.unpack_from("<3f", D, at + tf + tb + 16 * ax),
                            pivot_child=struct.unpack_from("<3f", D, at + tf + ta + 48),
                            pivot_parent=struct.unpack_from("<3f", D, at + tf + tb + 48),
-                           cone=struct.unpack_from("<f", D, at + cone + 12)[0],
-                           twist_min=struct.unpack_from("<f", D, at + twist + 8)[0],
-                           twist_max=struct.unpack_from("<f", D, at + twist + 12)[0],
-                           plane_min=struct.unpack_from("<f", D, at + planes + 8)[0],
-                           plane_max=struct.unpack_from("<f", D, at + planes + 12)[0]))
+                           cone=cone, twist_min=tw[0], twist_max=tw[1], plane_min=planes[0], plane_max=planes[1]))
     return dict(bodies=bodies, joints=joints)
