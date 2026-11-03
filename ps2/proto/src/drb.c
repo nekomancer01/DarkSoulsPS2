@@ -147,6 +147,51 @@ static int fail(const char *why)
     return -1;
 }
 
+/* Atlas / icon sheet / CLUT upload on PATH3 from a fixed 11-qword chain: header (BITBLTBUF .. TRXDIR), IMAGE by REF
+ * straight from mem, TEXFLUSH; waits on D2_CHCR STR before and after. Not gsKit_texture_send: it builds its chain in a
+ * memalign block sized like the image (257 KB for a 512x512 T8 atlas) and frees it. With it the first icon sheet send
+ * of I01 left PATH3 inside a packet (GIF_STAT APATH 3, OPH 1; D2 stopped on its END tag with MADR = TADR + 16, QWC 0)
+ * and the map's next PATH2 DIRECT waited forever in vu1.c room(), every run at the same frame; waiting for the GIF
+ * before the send, a page-aligned sheet or other sheet contents did not change it (PCSX2, 2026-11-03).
+ * Bytes: T8 w * h, CT32 w * h * 4 (the only formats drb sends), at most 32767 qw. */
+static u64 up_chain[22] __attribute__((aligned(64)));
+static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
+{
+    int qw = (psm == GS_PSM_T8 ? w * h : w * h * 4) / 16;
+    u64 *p = up_chain;
+    while (*(volatile u32 *)0x1000A000 & 0x100)  /* D2_CHCR STR: the GIF channel is still sending */
+        ;
+    p[0] = DMA_TAG(6, 0, DMA_CNT, 0, 0, 0);
+    p[1] = 0;
+    p[2] = GIF_TAG(4, 0, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
+    p[3] = GIF_AD;
+    p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, vram / 256, tbw, psm);
+    p[5] = GS_BITBLTBUF;
+    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
+    p[7] = GS_TRXPOS;
+    p[8] = GS_SETREG_TRXREG(w, h);
+    p[9] = GS_TRXREG;
+    p[10] = GS_SETREG_TRXDIR(0);
+    p[11] = GS_TRXDIR;
+    p[12] = GIF_TAG(qw, 0, 0, 0, GSKIT_GIF_FLG_IMAGE, 0);
+    p[13] = 0;
+    p[14] = DMA_TAG(qw, 0, DMA_REF, 0, (u32)mem, 0);
+    p[15] = 0;
+    p[16] = DMA_TAG(2, 0, DMA_END, 0, 0, 0);
+    p[17] = 0;
+    p[18] = GIF_TAG(1, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
+    p[19] = GIF_AD;
+    p[20] = 0;
+    p[21] = GS_TEXFLUSH;
+    SyncDCache((void *)mem, (char *)mem + qw * 16 - 1);
+    SyncDCache(up_chain, (char *)up_chain + sizeof up_chain - 1);
+    *(volatile u32 *)0x1000A020 = 0;                         /* D2_QWC */
+    *(volatile u32 *)0x1000A030 = (u32)up_chain & 0x0FFFFFFF;  /* D2_TADR */
+    *(volatile u32 *)0x1000A000 = 0x105;                     /* D2_CHCR: from memory, chain mode, STR */
+    while (*(volatile u32 *)0x1000A000 & 0x100)
+        ;
+}
+
 /* screen file loaded: borrow VRAM, upload the atlas, keep the tree, set up the icon cache */
 static int screen_setup(void)
 {
@@ -172,9 +217,8 @@ static int screen_setup(void)
     atlas.TBW = h->aw / 64;
     atlas.Vram = base, atlas.VramClut = base + atlas_bytes;
     FlushCache(0);
-    gsKit_texture_send((u32 *)(file + h->pix_off), h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW, GS_CLUT_TEXTURE);
-    gsKit_texture_send((u32 *)(file + h->clut_off), 16, 16, atlas.VramClut, GS_PSM_CT32, 1, GS_CLUT_PALLETE);
-    dmaKit_wait_fast();
+    tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
+    tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
     /* keep header .. sprites (+ per-node visibility) */
     tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127);
     tree = ui_alloc(tree_bytes);
@@ -266,12 +310,10 @@ static void icons_step(void)
     if (sheet_dirty || clut_dirty_lo || clut_dirty_hi) {
         FlushCache(0);
         if (sheet_dirty)
-            gsKit_texture_send((u32 *)sheet, 512, sheet_t.Height, sheet_t.Vram, GS_PSM_T8, 8, GS_CLUT_TEXTURE);
+            tex_send(sheet, 512, sheet_t.Height, sheet_t.Vram, GS_PSM_T8, 8);
         for (int i = 0; i < ncells; i++)
             if (i < 32 ? clut_dirty_lo >> i & 1 : clut_dirty_hi >> (i - 32) & 1)
-                gsKit_texture_send((u32 *)(cluts + i * 1024), 16, 16, clut_vram + i * 1024, GS_PSM_CT32, 1,
-                                   GS_CLUT_PALLETE);
-        dmaKit_wait_fast();
+                tex_send(cluts + i * 1024, 16, 16, clut_vram + i * 1024, GS_PSM_CT32, 1);
         sheet_dirty = 0, clut_dirty_lo = clut_dirty_hi = 0;
     }
 }
