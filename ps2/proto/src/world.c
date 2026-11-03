@@ -127,6 +127,7 @@ static float box_d(const WorldBlock *b, const float *p)
 static int read_sync(Pack *pk, unsigned off, void *dst, unsigned n)
 {
     int r = 0;
+    pack_async_free();
     if (!pack_read_async(pk, off, dst, n))
         return 0;
     while (!pack_async_done(&r))
@@ -626,6 +627,7 @@ static void settle(const float *feet)
     warping = 1;
     int n = 0;
     while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
+        pack_async_free();  /* a background enemy model load (enemy.c) holds the slot no longer */
         mapstream_update(feet);  /* collects a cell read in flight so the async slot comes free */
         step(feet, 0);
         n++;

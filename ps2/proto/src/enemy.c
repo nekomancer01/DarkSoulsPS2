@@ -245,21 +245,11 @@ static void unload_model(ChrType *t)
     t->model = NULL;
 }
 
-/* Load a type's model.bin: VU1 streams + compact anims, textures uploaded (or a loaded twin's) */
-static int load_model(ChrType *t, GSGLOBAL *gs)
+/* A type's model from its loaded model.bin (mb: size bytes in a buffer of alloc from the arena or the heap, freed
+ * here): VU1 streams + compact anims, textures uploaded (or a loaded twin's) */
+static int model_from(ChrType *t, GSGLOBAL *gs, void *mb, unsigned size, unsigned alloc, int in_arena)
 {
-    char path[64];
-    snprintf(path, sizeof path, PACK_ROOT "%s%.8s.pak", t->dir, t->name);
-    Pack pk;
-    if (!pack_open(&pk, path)) {
-        printf("enemy: %s: no pack\n", path);
-        return 0;
-    }
-    unsigned size = 0;
-    int in_arena = mapstream_ready();
-    void *mb = in_arena ? pack_load_with(&pk, "model.bin", &size, arena_get, arena_put) : pack_load(&pk, "model.bin", &size);
-    pack_close(&pk);
-#define FREE_MB() (in_arena ? arena_put(mb, (size + 127) & ~127u) : free(mb))
+#define FREE_MB() (in_arena ? arena_put(mb, alloc) : free(mb))
     Model *m = mb ? mdl_load(mb) : NULL;
     if (!m) {
         FREE_MB();
@@ -287,6 +277,69 @@ static int load_model(ChrType *t, GSGLOBAL *gs)
     t->loaded = 1;
     return 1;
 #undef FREE_MB
+}
+
+static void model_path(char *path, unsigned cap, const ChrType *t)
+{
+    snprintf(path, cap, PACK_ROOT "%s%.8s.pak", t->dir, t->name);
+}
+
+/* Load a type's model.bin now (boot: the loading screen) */
+static int load_model(ChrType *t, GSGLOBAL *gs)
+{
+    char path[64];
+    model_path(path, sizeof path, t);
+    Pack pk;
+    if (!pack_open(&pk, path)) {
+        printf("enemy: %s: no pack\n", path);
+        return 0;
+    }
+    unsigned size = 0;
+    int in_arena = mapstream_ready();
+    void *mb = in_arena ? pack_load_with(&pk, "model.bin", &size, arena_get, arena_put) : pack_load(&pk, "model.bin", &size);
+    pack_close(&pk);
+    return model_from(t, gs, mb, size, (size + 127) & ~127u, in_arena);
+}
+
+/* After boot a model.bin loads in the background (pack_job_*), one type at a time: from cdrom0: the synchronous
+ * open + load took 0.2-1.3 s per type, each a frame stall (33 loads, 10.5 s of stalls in one tests/world_cross.txt
+ * run from the ISO, 2026-11-03) */
+static GSGLOBAL *gsg;  /* enemy_init's GS context (tentative definition: set below) */
+static PackJob job;
+static ChrType *job_t;  /* the type job loads, NULL when idle */
+static int job_arena;
+static void *heap_get(unsigned n) { return memalign(128, n); }
+static void heap_put(void *p, unsigned n) { (void)n; free(p); }
+
+static void job_begin(ChrType *t)
+{
+    char path[64];
+    model_path(path, sizeof path, t);
+    job_arena = mapstream_ready();
+    pack_job_start(&job, path, "model.bin", job_arena ? arena_get : heap_get, job_arena ? arena_put : heap_put);
+    job_t = t;
+}
+
+/* 1 when the job finished this frame with t's model loaded, -1 failed, 0 otherwise */
+static int job_poll(void)
+{
+    if (!job_t)
+        return 0;
+    int r = pack_job_step(&job);
+    if (!r)
+        return 0;
+    ChrType *t = job_t;
+    job_t = NULL;
+    if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
+        job.put(job.out, job.alloc);
+        return 0;
+    }
+    if (r > 0 && model_from(t, gsg, job.out, job.raw, job.alloc, job_arena)) {
+        printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10, r_vram_avail(gsg));
+        return 1;
+    }
+    t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
+    return -1;
 }
 
 static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
@@ -731,8 +784,8 @@ void enemy_block_remove(int block)
            enemy_ram_free() >> 10);
 }
 
-/* Load the types whose placements came within LOAD_DIST (all at once on the first frame, then one per frame), free
- * the ones beyond UNLOAD_DIST */
+/* Load the types whose placements came within LOAD_DIST (all at once on the first frame, then one at a time in the
+ * background), free the ones beyond UNLOAD_DIST */
 static void stream_types(const Player *pl)
 {
     static int first = 1;
@@ -747,15 +800,16 @@ static void stream_types(const Player *pl)
         if (e->dead_t <= CORPSE_TIME && d < e->ct->near_d)
             e->ct->near_d = d;
     }
-    int loads = 0;
+    job_poll();
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
         if (t->loaded && t->near_d > UNLOAD_DIST) {
             unload_model(t);
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
-        } else if (!t->loaded && t->near_d < LOAD_DIST && (first || !loads) && frame >= t->retry) {
-            loads++;
+        } else if (!t->loaded && t->near_d < LOAD_DIST && !first && !job_t && frame >= t->retry) {
+            job_begin(t);
+        } else if (!t->loaded && t->near_d < LOAD_DIST && first && frame >= t->retry) {
             if (load_model(t, gsg))
                 printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                        r_vram_avail(gsg));

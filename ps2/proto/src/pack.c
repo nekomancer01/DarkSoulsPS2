@@ -125,7 +125,7 @@ static int lz4_decode(const unsigned char *s, unsigned n, unsigned char *dst, un
         }
         if (o + l > oe || s + l > se)
             return -1;
-        memcpy(o, s, l);
+        memmove(o, s, l);  /* in-place decode (pack_job_step): the input sits ahead of the output in one buffer */
         o += l, s += l;
         if (s >= se)
             break;
@@ -167,24 +167,44 @@ char pack_error[96];
 /* One background read at a time (pack_read_async); fio has a single async slot, so every other fio call here waits
  * for it first and keeps its result for pack_async_done */
 static int async_busy, async_result;
+static void log_flush(void);
 
 static void async_finish(void)
 {
-    if (async_busy) {
+    if (async_busy == 1) {
         fioSync(FIO_WAIT, &async_result);
         fioSetBlockMode(FIO_WAIT);
         async_busy = 2;  /* done, result not collected yet */
     }
+    log_flush();
 }
 
 void pack_async_wait(void) { async_finish(); }  /* save.c: own fio calls need FIO_WAIT mode */
 
 /* stdout / stderr also go through fio (libcglue _write -> fioWrite): a printf while a read is pending would take
  * the async slot's result (a 57-byte log line once came back as a cell read). The link wraps _write (Makefile
- * --wrap=_write) so every write waits for the pending read first. */
+ * --wrap=_write): while a read is pending, log text is queued here and written once the read is over. Waiting for
+ * the read instead stalled the frame for the rest of it: from cdrom0: a 128 KB world read takes 0.2-1 s in PCSX2, and
+ * the logging during block loads cost 10.5 s of stalls in one tests/world_cross.txt run (2026-11-03). A line that
+ * does not fit the queue waits for the read as before. */
+static char log_q[8192];
+static unsigned log_n;
 int __real__write(int fd, const void *buf, size_t n);
+static void log_flush(void)
+{
+    if (log_n && async_busy != 1) {
+        unsigned n = log_n;
+        log_n = 0;
+        __real__write(1, log_q, n);
+    }
+}
 int __wrap__write(int fd, const void *buf, size_t n)
 {
+    if (async_busy == 1 && (fd == 1 || fd == 2) && log_n + n <= sizeof log_q) {
+        memcpy(log_q + log_n, buf, n);
+        log_n += n;
+        return n;
+    }
     async_finish();
     return __real__write(fd, buf, n);
 }
@@ -227,7 +247,180 @@ int pack_async_done(int *result)
         return 0;
     async_busy = 0;
     *result = async_result;
+    log_flush();
     return 1;
+}
+
+/* Background load of one entry (pack_job_*): open, table of contents and data each go through the async slot, the
+ * data is read into the tail of the output buffer and decoded in place (an LZ4 block never grows on decode, and a
+ * stored block keeps its size, so the write position stays JOB_MARGIN bytes behind the unread input) */
+#define JOB_MARGIN 1024
+enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_CLOSE };
+static PackJob *slot_job;  /* the job whose request holds the async slot */
+
+void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
+{
+    memset(j, 0, sizeof *j);
+    const char *q = pack_path(path, j->path, sizeof j->path);  /* cdrom0: name, or path itself for host: */
+    if (q != j->path)
+        snprintf(j->path, sizeof j->path, "%s", q);
+    j->name = name, j->get = get, j->put = put, j->fd = -1;
+    j->state = J_OPEN;
+}
+
+static int job_fail(PackJob *j, const char *why)
+{
+    printf("pack: %s %s: %s\n", j->path, j->name, why);
+    if (j->out)
+        j->put(j->out, j->alloc), j->out = NULL;
+    if (j->fd >= 0 && !async_busy)
+        fioClose(j->fd), j->fd = -1;
+    j->state = j->fd >= 0 ? J_CLOSE : -1;  /* a pending read keeps the fd: closed on a later step */
+    return j->fd >= 0 ? 0 : -1;
+}
+
+/* the result of j's request once it finished (or was parked by pack_async_free), else 0 */
+static int job_done(PackJob *j, int *res)
+{
+    if (j->parked) {
+        j->parked = 0;
+        *res = j->res;
+        return 1;
+    }
+    if (async_busy == 1 && fioSync(FIO_NOWAIT, &async_result) != FIO_COMPLETE)
+        return 0;
+    fioSetBlockMode(FIO_WAIT);
+    async_busy = 0, slot_job = NULL;
+    *res = async_result;
+    log_flush();
+    return 1;
+}
+
+void pack_async_free(void)
+{
+    if (!slot_job)
+        return;
+    async_finish();
+    slot_job->res = async_result, slot_job->parked = 1;
+    async_busy = 0, slot_job = NULL;
+}
+
+int pack_job_step(PackJob *j)
+{
+    static unsigned head[512] __attribute__((aligned(64)));  /* the first sector: header + up to 31 entries */
+    int res;
+    switch (j->state) {
+    case J_OPEN:
+        if (async_busy)
+            return 0;  /* another read is in flight: next frame */
+        fioInit();
+        fioSetBlockMode(FIO_NOWAIT);
+        fioOpen(j->path, O_RDONLY);
+        async_busy = 1, slot_job = j, j->state = J_OPENING;
+        return 0;
+    case J_OPENING:
+        if (!job_done(j, &res))
+            return 0;
+        if ((j->fd = res) < 0)
+            return job_fail(j, "no pack");
+        j->state = J_HEAD;
+        /* fall through */
+    case J_HEAD:
+        if (async_busy)
+            return 0;
+        SyncDCache(head, (char *)head + sizeof head - 1);
+        fioLseek(j->fd, 0, SEEK_SET);
+        fioSetBlockMode(FIO_NOWAIT);
+        fioRead(j->fd, head, sizeof head);
+        async_busy = 1, slot_job = j, j->state = J_HEADING;
+        return 0;
+    case J_HEADING: {
+        if (!job_done(j, &res))
+            return 0;
+        InvalidDCache(head, (char *)head + sizeof head - 1);
+        if (res < 16 || memcmp(head, "DSRP", 4) || head[1] != 1 || 16 + head[2] * 64 > (unsigned)res)
+            return job_fail(j, "bad pack header");
+        const struct PackEntry *e = (const struct PackEntry *)(head + 4);
+        unsigned i = 0;
+        while (i < head[2] && strncmp(e[i].name, j->name, sizeof e->name))
+            i++;
+        if (i == head[2])
+            return job_fail(j, "no such entry");
+        e += i;
+        j->off = e->offset, j->packed = e->packed, j->raw = e->raw, j->blocks = e->blocks, j->bsize = e->block_size;
+        j->state = J_DATA;
+    }   /* fall through */
+    case J_DATA:
+        if (async_busy)
+            return 0;
+        if (!j->out) {
+            j->alloc = (j->raw + JOB_MARGIN + 64 + 127) & ~127u;
+            if (j->packed > j->raw + j->blocks * 4 || !(j->out = j->get(j->alloc)))
+                return job_fail(j, j->out ? "entry grows on decode" : "OUT OF RAM");
+        }
+        j->in = j->out + ((j->alloc - j->packed) & ~63u);
+        SyncDCache(j->in, j->in + j->packed - 1);
+        fioLseek(j->fd, j->off, SEEK_SET);
+        fioSetBlockMode(FIO_NOWAIT);
+        fioRead(j->fd, j->in, j->packed);
+        async_busy = 1, slot_job = j, j->state = J_READING;
+        return 0;
+    case J_READING: {
+        if (!job_done(j, &res))
+            return 0;
+        fioClose(j->fd), j->fd = -1;
+        if (res != (int)j->packed)
+            return job_fail(j, "read error");
+        InvalidDCache(j->in, j->in + j->packed - 1);
+        unsigned nb = j->blocks, cs[nb ? nb : 1], pos = 0;
+        memcpy(cs, j->in, nb * 4);  /* the decoded output overwrites the block size table */
+        const unsigned char *src = j->in + nb * 4;
+        for (unsigned b = 0; b < nb; b++) {
+            unsigned c = cs[b] & ~RAW_FLAG, want = j->raw - pos < j->bsize ? j->raw - pos : j->bsize;
+            if (cs[b] & RAW_FLAG ? (memmove(j->out + pos, src, c), c != want)
+                                 : lz4_decode(src, c, j->out + pos, want) != (int)want)
+                return job_fail(j, "corrupt entry");
+            src += c, pos += want;
+        }
+        if (pos != j->raw)
+            return job_fail(j, "corrupt entry");
+        SyncDCache(j->out, j->out + j->raw - 1);
+        pack_stats.read += j->packed, pack_stats.raw += j->raw;
+        j->state = -2;
+        return 1;
+    }
+    case J_CLOSE:  /* failed with its read still pending: drop the result, close */
+        if (slot_job == j || j->parked) {
+            if (!job_done(j, &res))
+                return 0;
+        }
+        if (async_busy)
+            return 0;
+        if (j->fd >= 0)
+            fioClose(j->fd), j->fd = -1;
+        j->state = -1;
+        return -1;
+    }
+    return j->state == -2 ? 1 : -1;
+}
+
+/* Drop a job before it is done (its pending request finishes first) */
+void pack_job_cancel(PackJob *j)
+{
+    if (j->state == J_OPENING || j->state == J_HEADING || j->state == J_READING) {
+        int res;
+        if (slot_job == j)
+            pack_async_free();
+        job_done(j, &res);
+        if (j->state == J_OPENING && res >= 0)
+            j->fd = res;
+    }
+    if (j->fd >= 0)
+        fioClose(j->fd), j->fd = -1;
+    if (j->out && j->state != -2)
+        j->put(j->out, j->alloc);
+    j->out = NULL;
+    j->state = -1;
 }
 
 static void *heap_get(unsigned n) { return memalign(128, n); }

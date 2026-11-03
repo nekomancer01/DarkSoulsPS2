@@ -35,6 +35,27 @@ int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size);
  * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_async_done(int *result);
+/* Background load of one entry, open to decode, without a blocking fio call (from cdrom0: an open is a directory search
+ * of ~0.1-0.3 s and a 300 KB read up to ~1 s in PCSX2: synchronous, each was a frame stall). Start it, then call
+ * pack_job_step once a frame: 0 pending, 1 done (out = the raw entry, size raw, from get(alloc): put it back with
+ * alloc), -1 failed (logged). Shares the one async slot with pack_read_async (a step waits while another read is in
+ * flight). Cancel drops a job that is no longer wanted. */
+typedef struct {
+    int state, fd;
+    unsigned off, packed, raw, blocks, bsize, alloc;
+    int res, parked;  /* result of its request kept by pack_async_free */
+    unsigned char *out, *in;
+    const char *name;
+    void *(*get)(unsigned);
+    void (*put)(void *, unsigned);
+    char path[96];
+} PackJob;
+void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned));
+int pack_job_step(PackJob *j);
+void pack_job_cancel(PackJob *j);
+/* Free the async slot now: a job's pending request is waited for and its result kept for the job's next step.
+ * Loops that wait for their own reads without running the frame (world.c settle) call it first. */
+void pack_async_free(void);
 /* Wait for a pending background read (fio back in WAIT mode; its result stays for pack_async_done). Other fio users
  * (save.c) call it first. */
 void pack_async_wait(void);
