@@ -1,5 +1,5 @@
 # Start menu walk (pad command): bar R00, Inventory I01 (tabs, Use / Discard popup, discard one Firebomb), Equipment
-# I02 (pick list, equip a Dagger, side column pages), Status C01, System F04 (Quit Game saves). One shot per state.
+# I02 (pick list, equip a Dagger, side column pages), Status R02, System F04 (Quit Game saves). One shot per state.
 # Card run: change the save line to "option save mc" (a formatted card in slot 1, see save_roundtrip.sh).
 option save host menutest
 option nodemo

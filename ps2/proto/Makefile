@@ -313,7 +313,7 @@ $(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.p
 $(ITEM_FILES): $(G)/items/.stamp ;
 # Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
 # (tools/export_screens.py SCREENS)
-SCREEN_NAMES = R00 I02 I01 C01 F04
+SCREEN_NAMES = R00 I02 I01 R02 I06
 SCREEN_FILES = $(SCREEN_NAMES:%=$(G)/screens/scr_%.bin)
 $(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
 		$(TS)/octree.py.sum $(TS)/souls.py.sum
