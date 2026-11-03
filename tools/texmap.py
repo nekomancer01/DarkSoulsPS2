@@ -380,7 +380,7 @@ def densities(textures, chunks):
     uv_a, w_a = np.zeros(len(textures)), np.zeros(len(textures))
     if not cs:
         return [0.0] * len(textures)
-    nt = np.array([c[2] for c in cs], np.int64)
+    nt = np.array([c[2] for c in cs], np.intp)
     rep = lambda v: np.repeat(np.asarray(v), nt, axis=0)
     p = np.frombuffer(b"".join(bytes(c[3])[:18 * c[2]] for c in cs), np.int16).reshape(-1, 3, 3) * \
         rep([c[9] for c in cs])[:, None, None] + rep([c[8] for c in cs])[:, None, :]
