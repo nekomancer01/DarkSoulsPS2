@@ -170,10 +170,12 @@ def plan(game, build, mv=None):
     S("items", "export_items.py", [game, f"{G}/items"], items)
     screens = mv.get("SCREEN_NAMES", "").split()
     S("menu screens", "export_screens.py", [game, f"{G}/screens"], [f"{G}/screens/scr_{n}.bin" for n in screens])
+    S("loading screen", "export_loading.py", [game, f"{G}/loading.bin"], [f"{G}/loading.bin"])
     S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin", f"items.bin={G}/items/items.bin",
                                f"itemx.bin={G}/items/itemx.bin", f"desc.bin=raw:{G}/items/desc.bin",
                                f"icons.bin=raw:{G}/items/icons.bin"] +
-      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens], [f"{D}/menu.pak"])
+      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens] + [f"loading.bin={G}/loading.bin"],
+      [f"{D}/menu.pak"])
     S("enemy ESD", "export_esd.py", [game, f"{G}/enemyCommon.esd.bin", "enemyCommon"], [f"{G}/enemyCommon.esd.bin"])
     blocks = run_tool("area.py", ["--world", default], capture=True).split()  # Makefile WORLD_BLOCKS
     # $(A)/snd.stamp: every sound pack of the boot map and its world blocks' maps (SND_MAPS) in one export, which

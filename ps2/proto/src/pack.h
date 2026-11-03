@@ -64,6 +64,9 @@ void pack_async_wait(void);
 const char *pack_resolve(const char *path, char *out, unsigned cap);
 /* Last load failure ("OUT OF RAM: <entry> needs ..K, free ..K" / "READ ERROR: <entry>"), empty if none; also printed */
 extern char pack_error[96];
+/* Called over and over while pack_load waits for the IOP's next batch (src/loading.c draws the loading screen
+ * there); it must not start fio requests. NULL: the wait blocks in fioSync. */
+extern void (*pack_wait_hook)(void);
 /* 1 when packs come from cdrom0: (boot device, set on the first pack_open), 0 for host:, -1 before */
 extern int pack_cdrom;
 /* Disc lock around every cdrom0: fio request (src/sound.c sets them once its IOP module runs, which reads the disc too):

@@ -1,0 +1,18 @@
+# DSR's loading screen (src/loading.c, notes/PORTING.md "Loading screen"). The EE log has one "loading: open" /
+# "loading: closed after N ms" pair per screen: the boot load, the held screen, the warp, the death respawn.
+#   tools/q -m 4 python3 tools/test-run.py build/proto.sym.elf ps2/proto/tests/loading_screen.txt build/test/loading
+# Screenshots: the "loadscreen" hold (12 s) starts ~2 s into the run (pcsx2-run.sh <elf> 9 shot.png with
+# ARGS=test=tests/loading_screen.txt lands inside it).
+option noenemies
+wait 2
+log hold
+loadscreen 12
+wait 2
+log warp
+spawn -47.8 -21.8 -35.6 4.0
+wait 3
+log death
+kill
+wait 12
+log done
+end

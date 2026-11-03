@@ -895,3 +895,49 @@ area.
   and hairline cracks), the 90 m cull, EE/VU1 guard and cull signs, `_Alp` stone textures (opaque). Now
   export_map.water_rgba: one RGBA from g_WaterColor / g_FresnelColor at 60 degrees, blended chunk with a solid
   128x16 texture (TECH_DEBT water row). Image notes/milestones/foliage-fog-20261031-0234-water-gap.png.
+
+## Loading screen (2026-11-03; src/loading.c, tools/export_loading.py; TECH_DEBT load-1..5)
+What DSR shows while a load blocks the game (exe DarkSoulsRemastered.exe, Ghidra; checked against the offline reference
+copy, boot load and death respawn): black, an item hint (icon, name, long description on the I02 ruled-paper panel)
+and the bonfire + "DARK SOULS" animation in the bottom-left corner.
+- **Dialog.** The common menu ESD `e00-00` (menu/common.menuesdbnd) loads `E00_00` from menu.drb and opens it as
+  `FrpgMenuDlgNowLoading` (plus an "Icon" dialog) while ESD f1007 (the menu manager's loading state, +0x800) is 1, and
+  closes it at 4. States: FUN_14071b6a0 sets 1 (and picks one of 17 background images 00..16.tpf, all identical
+  "DARK SOULS" logos in DSR, whose sprites NowLoading_00_01/02 sit off screen in E00_00: not drawn),
+  FUN_14071b790 sets 3 (end request) and reports done at 0. The dialog's update FUN_1406fec50 (vtable 0x1413ca258,
+  constructor FUN_1406fe8c0): state 1 alpha +0x210 += dt (only while its image is loaded) until > 0.5 (DAT_141615c68)
+  -> state 2, alpha 0.25; state 3 alpha -= dt until < 0 -> state 4. The dialog alpha is +0x210 x 2 x 255
+  (FUN_140ed7780); DSR draws the hint at full brightness in state 2 (0.25), so that value is read on an opaque-at-0x80
+  scale here (ASSUMED, load-2).
+- **Animation.** Two step counters +0x208 / +0x20c count 0..99 (start 0 and 50) once per update; FUN_1406fef40 copies
+  soul_<step>'s sprite into icon_soul1 / icon_soul2. In DSR the 100 soul_N of E00_00 hold the 32 cells of
+  nowloading.tpf "soul_sequence" (8 x 4 cells of 256 px: bonfire + "DARK SOULS"), cells 0..27 three steps each and
+  28..31 four; icon_soul1 sits at (96, 484)-(222, 666) of 1280x720, icon_soul2 off screen. The port steps at 60 Hz
+  (one DSR frame per step, ASSUMED: load-3). A second copy of the same animation is NS_FRPG::BootDrawStep
+  (FUN_14025dd30, update FUN_14025e020 / FUN_14025e0e0): frame = (counter % 96) / 3, alpha += / -= 0.05 per frame,
+  drawn at alpha^2, same place (x = 96 + 64 of 1280, y = 484 + 91 of 720: DAT_1412e9ab0 / 1412ddcd4, 1412f6380 /
+  1412f637c); it shows during boot and in game when the screen has been black for 15 s (fade layer 3 >= 1,
+  DAT_1412c80b0) or a 5 s wait flag is held (DAT_1412ddccc). Not ported (load-4).
+- **Hint.** FUN_1406ff1c0 puts the hint item's name (FUN_14053b200) and long description (FUN_14053b500) into tags
+  0x1c3 / 0x1c4, which E00_00's texts show as <?loadHintName?> / <?loadHintCaption?> (Menu_general_text 251000 /
+  251001), and its icon into element "icon" (EquipParamWeapon +0xba iconId, Protector +0xa2 iconIdM, Accessory +0x22,
+  Goods +0x2c). The item is DAT_141a327d0[+0x224]: a 62-entry u32 table in .data (category bits + row: 10 rings, 37
+  goods, 10 weapons, 5 armour pieces). The index starts at (last index + rand) % 62 when the dialog opens
+  (FUN_1406fea10; MT19937 tempering), saved back at the close (FUN_1406fe950), and moves on by one every +0x22c = 10 s
+  (FUN_1406fe8c0). Nothing depends on the area or progression: FUN_14071b680 / FUN_14071b690, which the load start
+  calls with a value from DAT_141c74e08 + 0x1c (title -> game: +0x40 << 24), are empty functions in DSR. tools/export_loading.py reads the table from the user's exe.
+- **When.** FUN_1402518d0 (in-game step, on a map change: warp, death, bonfire warp, cutscene map) fades layer 2 to
+  black over 0.5 s, mutes over 0.5 s (FUN_14044b0c0) and starts the loading state; the load itself waits for the fade.
+  FUN_14027aa60 does the same for title -> game. FUN_14024f1b0 ends it after the load, then +0x130 = 0.1 s later
+  FUN_14024f6b0 fades layer 2 back to clear over 0.5 s. Reference timings (2026-11-03, 1 shot / 0.7 s): boot load
+  ~3 s of hint screen, death respawn ~2.5 s.
+- **Port.** loading.c draws E00_00 (export_loading.py: flattened as tools/export_screens.py, sprites at frame-buffer
+  size, the 32 cells with their own CLUT, DSFont24 glyphs) from inside the blocking loads: pack.c calls
+  pack_wait_hook while pack_load waits for the IOP, world.c settle ticks it each step, main.c between boot steps; at
+  most 30 fps, presented through main.c flip. It opens at boot (after items_init, closed after the first frame's world
+  update), for every warp (world.c settle) and for a death respawn (player.c respawn; held until that frame's settle
+  is done). The screen stays up at least 0.5 s (DSR's fade-to-black before its load; ASSUMED overlap: the port loads
+  during it), fades out 0.25 s, then the game fades in (0.1 s black + 0.5 s). The last game frame (the display
+  buffer) fades to black under it over the first 0.5 s. Data: menu.pak loading.bin (349 KB raw), read at each open,
+  uploaded and freed (tables + strings kept while open); VRAM: tc_pin of the map pool, at boot the unallocated top of
+  VRAM until the pool exists (main.c ticks it there to move).

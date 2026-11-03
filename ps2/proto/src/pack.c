@@ -189,6 +189,7 @@ static unsigned batch_end(const unsigned *cs, unsigned b, unsigned nb, unsigned 
 }
 
 char pack_error[96];
+void (*pack_wait_hook)(void);
 
 /* One background read at a time (pack_read_async); fio has a single async slot, so every other fio call here waits
  * for it first and keeps its result for pack_async_done */
@@ -529,7 +530,11 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
         }
         if (nend > end) {
             unsigned w = ticks();
-            fioSync(FIO_WAIT, &got);
+            if (pack_wait_hook)
+                while (fioSync(FIO_NOWAIT, &got) != FIO_COMPLETE)
+                    pack_wait_hook();
+            else
+                fioSync(FIO_WAIT, &got);
             fioSetBlockMode(FIO_WAIT);
             wait += ticks() - w;
         }
