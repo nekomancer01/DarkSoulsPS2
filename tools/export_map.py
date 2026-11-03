@@ -1561,7 +1561,8 @@ def gather(game, map_id):
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
             Tl = np.array(tl, np.int64).reshape(-1, 3)
-            pos, wpos, wuv, wcol, wn, fvw, npd = _weld(V, np.flatnonzero(np.bincount(Tl.reshape(-1))), xf, xn)
+            used = np.flatnonzero(np.bincount(Tl.reshape(-1).astype(np.intp)))  # sorted, as np.unique
+            pos, wpos, wuv, wcol, wn, fvw, npd = _weld(V, used, xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
