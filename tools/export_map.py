@@ -881,13 +881,32 @@ def _weld(V, vis, xf, xn):
     if not n:
         return [], [], [], [], [], {}, {}
     Pw = xf.many(_vert_np(V["pos"])[idx])
-    pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
+    MX = mapx_native.lib()
+    WN = None
+    if MX is not None:  # both first-appearance numberings and the normal sums in C (tools/mapx/dedup.c)
+        Pw = np.ascontiguousarray(Pw, np.float64)
+        UV = np.ascontiguousarray(_vert_np(V["uv"])[idx]) if V["uv"] else None
+        C = np.ascontiguousarray(_vert_np(V["color"])[idx]) if V["color"] else None
+        N = np.ascontiguousarray(xn.many(_vert_np(V["normal"])[idx]), np.float64) if V["normal"] else None
+        pid, pfirst, wid, wfirst = (np.empty(n, np.int64) for _ in range(4))
+        WN, cnt = np.empty((n, 3)) if N is not None else None, np.zeros(2, np.int64)
+        p_ = lambda a: None if a is None else a.ctypes.data
+        MX.mx_weld(n, Pw.ctypes.data, p_(UV), p_(C), p_(N), pid.ctypes.data, pfirst.ctypes.data, wid.ctypes.data,
+                   wfirst.ctypes.data, p_(WN), cnt.ctypes.data)
+        pid, wid = pid.astype(np.intp), wid.astype(np.intp)
+        pfirst, wfirst = pfirst[:cnt[0]].astype(np.intp), wfirst[:cnt[1]].astype(np.intp)
+        if WN is not None:
+            WN = WN[:cnt[1]]
+        UV = UV if UV is not None else np.zeros((n, 2))
+        C = C if C is not None else np.ones((n, 4))
+    else:
+        pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
+        UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
+        C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
+        wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
+        wid, wfirst = _first_rows(wk)
     Pp = np.ascontiguousarray(Pw[pfirst], np.float64)
     pos = souls.Rows(Pp)  # reads as the list of position tuples
-    UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
-    C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
-    wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
-    wid, wfirst = _first_rows(wk)
     vl = idx.tolist()
     Wp = pid[wfirst]
     wpos = Wp.tolist()
@@ -902,7 +921,10 @@ def _weld(V, vis, xf, xn):
         wcol = [V["color"][vl[i]] for i in wfl] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
     npd = dict(pos=(pos, Pp), wpos=(wpos, Wp.astype(np.int32)), wuv=(wuv, np.ascontiguousarray(UV[wfirst])),
                wcol=(wcol, np.ascontiguousarray(C[wfirst])))
-    if V["normal"]:
+    if V["normal"] and WN is not None:
+        wn = WN.tolist()
+        npd["wn"] = (wn, WN)
+    elif V["normal"]:
         N = xn.many(_vert_np(V["normal"])[idx])
         WN = N[wfirst].copy()
         rest = np.ones(n, bool)
@@ -1106,6 +1128,18 @@ def dedup_tris(tl, V):
     tl: index triples (a list, or faceset_tris' array: the kept ones come back as tuples of ints either way)."""
     if not len(tl):
         return []
+    MX = mapx_native.lib()
+    if MX is not None:  # the same keys, rotation and first-appearance test in C (tools/mapx/dedup.c)
+        T = np.ascontiguousarray(np.asarray(tl, np.int64).reshape(-1, 3))
+        P = np.ascontiguousarray(_vert_np(V["pos"]), np.float64)
+        U = np.ascontiguousarray(_vert_np(V["uv"]), np.float64) if V["uv"] else None
+        keep = np.empty(len(T), np.int64)
+        nk = MX.mx_dedup_tris(len(P), P.ctypes.data, None if U is None else U.ctypes.data, len(T), T.ctypes.data,
+                              keep.ctypes.data)
+        keep = keep[:nk]
+        if isinstance(tl, np.ndarray):
+            return list(map(tuple, tl[keep].tolist()))
+        return [tl[i] for i in keep.tolist()]
     # per corner (x, y, z, u, v) rounded, rotated to start at the lexicographically smallest corner (the first of
     # equal ones, as c.index(min(c))); the first triangle of each key is kept, in order
     K = np.rint(_vert_np(V["pos"]) * 1e4).astype(np.int64)

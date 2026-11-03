@@ -663,3 +663,82 @@ if __name__ == "__main__":
         check_weld_arrays(np.random.default_rng(k))
         check_vert_rows(np.random.default_rng(k))
     print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays, souls.Rows, texmap.densities, faceset_tris, skin_mesh identical to the Python code on {count} random cases")
+
+
+# ---- stage 6c: shadow map, dedup, weld, probes ----
+def check_shadow(rng):
+    """dsr_light.ShadowMap (depth map, lit_many) in C against the numpy path and geom.c's raster"""
+    import dsr_light
+    n = int(rng.integers(0, 3000))
+    c = rng.uniform(-80, 80, (n, 1, 3))
+    tris = c + rng.normal(0, rng.choice([0.5, 3, 20]), (n, 3, 3))
+    if n:
+        tris[: max(1, n // 50)] *= 30  # a few huge triangles, clipped to the map
+    focus = rng.uniform(-50, 50, (int(rng.integers(1, 200)), 3))
+    to_light = dsr_light.light_dir(float(rng.uniform(10, 89)), float(rng.uniform(-180, 180)))
+    texel = float(rng.choice([0.25, 0.5, 1.7]))
+    P = rng.uniform(-90, 90, (int(rng.integers(0, 4000)), 3))
+    N = rng.normal(size=P.shape)
+    outs = []
+    for mode in ("c", "geom", "numpy"):
+        L_, G_ = mapx_native._L[0], dsr_light.geom_lib
+        if mode != "c":
+            mapx_native._L[0] = None
+        if mode == "numpy":
+            dsr_light.geom_lib = lambda: None
+        try:
+            sm = dsr_light.ShadowMap(tris, to_light, focus, texel=texel)
+            outs.append((sm.D.tobytes(), sm.W, sm.H, sm.lit_many(P, N).tobytes()))
+        finally:
+            mapx_native._L[0], dsr_light.geom_lib = L_, G_
+    same(outs[0], outs[2], "ShadowMap C vs numpy")
+    same(outs[1], outs[2], "ShadowMap geom vs numpy")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_shadow(np.random.default_rng(k))
+    print(f"mapx: ShadowMap identical to the numpy code on {count} random cases")
+
+
+def check_probe_cube(rng):
+    """dsr_light.probe_cube (GI_EnvDif BC6H cube -> cells) in C against the per-texel Python loop"""
+    import dsr_light, struct
+    w = int(rng.choice([8, 16, 32]))
+    hdr = bytearray(148)
+    struct.pack_into("<2I", hdr, 12, w, w)
+    struct.pack_into("<I", hdr, 128, 95)
+    blocks = rng.integers(0, 256, 16 * 6 * (w // 4) ** 2, dtype=np.uint8)
+    blocks[::16] &= int(rng.choice([0x03, 0x1F, 0xFF]))  # common modes as well as random ones
+    dds = bytes(hdr) + blocks.tobytes()
+    same(dsr_light.probe_cube(dds), dsr_light.probe_cube(dds, use_c=False), "probe_cube")
+
+
+def check_weld_c(rng):
+    """export_map._weld with libmapx (ids and normal sums in C) against the numpy code"""
+    n = int(rng.integers(1, 600))
+    rows = lambda k, f: [tuple(x) for x in f((n, k)).tolist()]
+    V = dict(pos=rows(3, lambda s: rng.integers(-6, 6, s) * 0.5), uv=rows(2, lambda s: rng.integers(0, 3, s) / 4)
+             if rng.random() < 0.8 else [], color=rows(4, lambda s: rng.integers(0, 2, s).astype(float))
+             if rng.random() < 0.8 else [], normal=rows(3, lambda s: rng.normal(size=s)) if rng.random() < 0.8 else [])
+    xf, xn = em.place(dict(rot=tuple(rng.uniform(-90, 90, 3).tolist()), scale=(1.1, 0.9, 1.0), pos=(3.0, -2.5, 7.25)))
+    vis = sorted(set(rng.integers(0, n, int(rng.integers(1, 2 * n))).tolist()))
+    L_ = mapx_native._L[0]
+    em._VERT_NP.clear()
+    a = em._weld(V, vis, xf, xn)
+    mapx_native._L[0] = None
+    try:
+        em._VERT_NP.clear()
+        b = em._weld(V, vis, xf, xn)
+    finally:
+        mapx_native._L[0] = L_
+    same(a[:6], b[:6], "_weld C")
+    same({k: (x.dtype.str, x.shape, x.tobytes()) for k, (_, x) in a[6].items()},
+         {k: (x.dtype.str, x.shape, x.tobytes()) for k, (_, x) in b[6].items()}, "_weld C arrays")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_probe_cube(np.random.default_rng(k))
+        check_weld_c(np.random.default_rng(k))
+    print(f"mapx: probe_cube, _weld (C ids) identical to the Python code on {count} random cases")
