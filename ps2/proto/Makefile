@@ -375,9 +375,10 @@ $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.s
 
 
 # Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller): tools/export_collision.py
+# (PY: havok_collision.py gathers the vertices with numpy)
 $(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
-	python3 -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
+	$(PY) -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
 
 
 # VU1 microprograms (hand-scheduled VU assembly)
