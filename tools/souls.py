@@ -890,18 +890,24 @@ def dds_decode(d, max_dim=256):
 _bc = None
 
 
-def dds_decode_rgba(d, max_dim=256):
-    """DDS (BC1/2/3, or DX10 BC7) -> (w, h, RGBA bytes) of the largest mip with sides <= max_dim, via
-    tools/native/libbcdecode.so (bcdec). None if the format is unsupported."""
+def bcdecode_lib():
+    """tools/native/libbcdecode.so (bcdec), built on first use like pack.py's liblz4pack.so (not tracked in git)"""
     import ctypes, os
     global _bc
     if _bc is None:
         native = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
         so = os.path.join(native, "libbcdecode.so")
-        if not os.path.exists(so):  # built on first use, like pack.py's liblz4pack.so (not tracked in git)
+        if not os.path.exists(so):
             if os.system(f"gcc -O2 -shared -fPIC -o '{so}' '{os.path.join(native, 'bcdecode.c')}'"):
                 raise RuntimeError("building tools/native/libbcdecode.so failed")
         _bc = ctypes.CDLL(so)
+    return _bc
+
+
+def dds_decode_rgba(d, max_dim=256):
+    """DDS (BC1/2/3, or DX10 BC7) -> (w, h, RGBA bytes) of the largest mip with sides <= max_dim, via
+    tools/native/libbcdecode.so (bcdec). None if the format is unsupported."""
+    bcdecode_lib()
     h, w = struct.unpack_from("<ii", d, 12)
     mips = struct.unpack_from("<i", d, 28)[0]
     four = d[84:88]

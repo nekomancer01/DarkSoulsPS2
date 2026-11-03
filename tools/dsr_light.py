@@ -189,7 +189,7 @@ def probe_cube(dds, use_c=True):
         F = np.empty((6, PROBE_RES, PROBE_RES, 3))
         mx.mx_probe_faces(np.frombuffer(dds, np.uint8, offset=off).ctypes.data, w, h, PROBE_RES, F.ctypes.data)
         return F.tolist()
-    lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "libbcdecode.so"))
+    lib = souls.bcdecode_lib()
     buf = (ctypes.c_float * 48)()
     for _f in range(6):
         acc = [[[0.0, 0.0, 0.0] for _ in range(PROBE_RES)] for _ in range(PROBE_RES)]
@@ -210,7 +210,7 @@ def probe_cube(dds, use_c=True):
 def load_spec_probes(game, map_id, mip=5):
     """{probe number: [6 face means of linear rgb]} of the GI_EnvSpc cubes (BC6H, 256 px, 8 mips, face-major) at a
     blurred mip: the rough (r 0.7-0.85) DSR materials reflect about this much of the sky / ground per direction."""
-    lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "libbcdecode.so"))
+    lib = souls.bcdecode_lib()
     area = map_id[:3]
     d = f"{game}/map/{area}/GI_EnvM_{area}"
     pre = f"GI_EnvSpc_{map_id[:6]}_"
