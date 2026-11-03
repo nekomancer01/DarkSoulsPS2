@@ -501,6 +501,7 @@ int main(int argc, char **argv)
         else
             idle += dt;
         unsigned short pressed = prev & ~held;
+        pressed |= test_pad();  /* test script "pad" presses */
         if (pressed & PAD_SELECT)
             hud_debug = !hud_debug;
         if (pressed & PAD_L3) {  /* debug: helm off / on, to see the face (DSR's hide rule, model_helmet) */

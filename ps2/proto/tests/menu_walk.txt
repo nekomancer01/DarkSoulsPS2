@@ -1,0 +1,100 @@
+# Start menu walk (pad command): bar R00, Inventory I01 (tabs, Use / Discard popup, discard one Firebomb), Equipment
+# I02 (pick list, equip a Dagger, side column pages), Status C01, System F04 (Quit Game saves). One shot per state.
+# Card run: change the save line to "option save mc" (a formatted card in slot 1, see save_roundtrip.sh).
+option save host menutest
+option nodemo
+wait 3
+item 0x40000124 5  # Firebomb x5 (consumables tab, droppable)
+item 0x000186A0 1  # Dagger (right-hand pick list)
+stats
+wait 4
+shot fl_idle
+pad start
+wait 1.5
+shot bar
+pad cross
+wait 1.5
+shot inv_tab0
+pad r1
+wait 1
+shot inv_tab1
+pad r1
+wait 1
+shot inv_tab2
+pad l1
+wait 0.3
+pad l1
+wait 1
+shot inv_tab0b
+pad down
+wait 0.3
+pad down
+wait 0.5
+shot inv_sel_firebomb
+pad cross
+wait 0.7
+shot inv_popup
+pad down
+wait 0.3
+pad cross
+wait 0.7
+shot inv_confirm
+pad left
+wait 0.3
+shot inv_confirm_yes
+pad cross
+wait 0.7
+shot inv_after_discard
+pad circle
+wait 1.5
+shot bar_back
+pad right
+wait 0.5
+pad cross
+wait 1.5
+shot equip
+pad cross
+wait 0.8
+shot equip_pick
+pad down
+wait 0.3
+pad cross
+wait 0.8
+shot equip_picked
+pad r1
+wait 0.5
+shot equip_page1
+pad circle
+wait 1.5
+pad right
+wait 0.5
+pad cross
+wait 1.5
+shot status0
+pad r1
+wait 0.7
+shot status1
+pad r1
+wait 0.7
+shot status2
+pad circle
+wait 1.5
+pad right
+wait 0.5
+pad cross
+wait 1.5
+shot system
+pad down
+wait 0.3
+pad cross
+wait 0.7
+shot sys_confirm
+pad left
+wait 0.3
+pad cross
+wait 2
+shot after_quit
+stats
+wait 5
+shot closed_after
+end
