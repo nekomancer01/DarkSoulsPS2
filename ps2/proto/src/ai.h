@@ -21,6 +21,9 @@ typedef struct {
     int face;          /* turn towards face_yaw */
     float face_yaw;
     int guard;         /* guard pose anim to hold while moving (DoEzAction / Guard goal: 9910), -1 none */
+    int dest;          /* the move heads for dest_pos (MoveToSomewhere / approach / BackToHome): enemy.c routes it
+                        * over the navmesh (src/nav.c) and replaces move_yaw by the way there */
+    V3 dest_pos;
 } AiOut;
 
 /* NpcThinkParam / NpcParam values for one placement (chr.bin variant, tools/export_chr.py) */

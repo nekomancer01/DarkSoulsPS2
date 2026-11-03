@@ -6,6 +6,11 @@
  * anim time, root motion of the action anim or locomotion (walk / run anims at their own root-motion speed) over
  * col_walk -> turning (NpcParam turnVellocity, not during TAE flag 7) -> pose -> attack sweeps (TAE AttackBehavior
  * windows, AtkParam_Npc dummy-poly capsule).
+ * Physics from the chr hkx ragdoll (chr.bin v6, src/ragdoll.c): weapons hit the ragdoll's capsules (pelvis, spine,
+ * head, limbs) instead of one cylinder, and a dead character falls into a simulated ragdoll at the death anim's TAE
+ * flag 12 (or its end). Movement: towards a destination the AI names (MoveToSomewhere, approaches, BackToHome) the
+ * route follows the navmesh (src/nav.c); walking stops at ledges, root motion and pushes can carry a character off
+ * one, and it falls under gravity.
  * Each placement uses its own chr.bin variant (NpcParam + ThinkParam row): HP, defence, capsule, model masks
  * (#NN# meshes), animIdOffset (a01_ / a02_ anims tried first), think values. teamType 2 characters (bonfire dummy,
  * NPCs, Frampt) ignore the player until hit. */
@@ -28,6 +33,8 @@
 #include "render.h"
 #include "ev_chr.h"
 #include "npc.h"
+#include "ragdoll.h"
+#include "nav.h"
 
 #define PI 3.14159265f
 #define MAX_TYPES 20  /* the boot area's + every world block's (enemy_block_types, at boot) */
@@ -47,7 +54,7 @@
 #endif
 #define DRAW_DIST 40.0f
 #define DRAW_FADE 8.0f      /* m before DRAW_DIST over which a character fades into the fog colour (vu1_skin_fade) */
-#define CORPSE_TIME 6.0f    /* seconds a dead enemy stays visible (DSR dissolves the corpse) */
+#define CORPSE_TIME 12.0f   /* seconds a dead enemy stays (ragdoll); ASSUMED, DSR keeps it until the map reloads */
 #define BLEND_DEFAULT 0.15f
 /* Character types stream by distance: model data in RAM and its textures in VRAM while a placement is within
  * LOAD_DIST of the player, both freed beyond UNLOAD_DIST (chr.bin stays resident: ~40 KB per type). Only the types
@@ -57,12 +64,15 @@
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
-/* chr.bin v4 (tools/export_chr.py) */
+/* chr.bin v6 (tools/export_chr.py) */
 typedef struct {
     char magic[4];
     unsigned version, anims, windows, variants, anim_off, win_off, root_off, var_off, hide_bits;
     unsigned upper[2];  /* bones of the guard pose layer: the first Spine bone and its descendants */
+    unsigned rag_off, rag_n;     /* ragdoll bodies (RagBody, src/ragdoll.h) */
+    float rag_reach, rag_top;    /* their bind-pose bounds around the root */
 } ChrHdr;
+_Static_assert(sizeof(ChrHdr) == 64, "export_chr.py chr.bin header");
 typedef struct {
     int npc, think, hp, logic, battle, anim_offset;
     unsigned show_bits;
@@ -84,6 +94,7 @@ typedef struct {
 #define F_NO_TURN 7
 #define F_INVINCIBLE 8
 #define F_STEP_A 11      /* 11 / 79 -> ctx+0x19C bit1: f118 (steps) answers inside them */
+#define F_RAGDOLL 12     /* the ragdoll takes over (ASSUMED, export_chr.py FLAGS) */
 #define F_AI_COMBO 23    /* the AI may cancel / chain from here (IsEnableCancelMove) */
 #define F_SUPER_ARMOR 24
 #define F_STEP_B 79
@@ -104,6 +115,8 @@ typedef struct {
     int drawable;   /* the model has triangles (c1000, the bonfire dummy, has none) */
     unsigned retry; /* enemy_update frame before which a failed load is not tried again (each try waits on the IOP) */
     float walk_speed, run_speed;
+    const RagBody *rag;  /* hkx ragdoll bodies (hit capsules, death ragdoll); NULL none (c1000) */
+    int nrag;
 } ChrType;
 
 typedef struct {
@@ -139,6 +152,14 @@ typedef struct {
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
     unsigned char rec[36];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
     int seed_i;
+    /* physics */
+    float vy, fall_y0;  /* airborne: vertical speed, height it left the ground at */
+    int air;
+    Ragdoll *rag;       /* from rag_pool while its ragdoll is simulated, NULL otherwise */
+    int rag_done;       /* the ragdoll ran (the pose is its last, kept) */
+    /* navmesh route (src/nav.c): next corner towards the AI's destination, replanned every NAV_REPLAN s */
+    float nav_wp[3], nav_dest[3], nav_t;
+    int nav_ok;
 } Enemy;
 
 static ChrType types[MAX_TYPES];
@@ -157,6 +178,14 @@ static int esd_ok;
 int enemy_active, enemy_drawn;
 static int hits_on_player;
 static unsigned frame;  /* enemy_update calls (anim LOD parity) */
+/* Ragdolls simulated at once (~3 KB each; ~0.3 ms of EE each while moving, ASSUMED budget): a death beyond this takes
+ * the slot of the oldest one, which keeps its last pose */
+#define RAG_POOL 4
+static Ragdoll rag_pool[RAG_POOL];
+static Enemy *rag_owner[RAG_POOL];
+#define NAV_REPLAN 0.4f      /* s between route searches of one character (1.5 s after one that found no way) */
+#define NAV_SEARCH_MAX 1     /* route searches per frame, all characters (<= ~1.5 ms of EE each, host x 30 ASSUMED) */
+#define FALL_KILL_Y (-250.0f)  /* as the player (collision-4) */
 
 /* ---- data ---- */
 
@@ -281,7 +310,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || memcmp(h->magic, "DSRC", 4) || h->version != 5 || !h->variants) {
+    if (!h || memcmp(h->magic, "DSRC", 4) || h->version != 6 || !h->variants) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
         return NULL;
@@ -297,6 +326,8 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     t->anims = (const ChrAnim *)((const char *)cb + h->anim_off);
     t->wins = (const ChrWin *)((const char *)cb + h->win_off);
     t->root = (const float (*)[3])((const char *)cb + h->root_off);
+    t->rag = h->rag_n ? (const RagBody *)((const char *)cb + h->rag_off) : NULL;
+    t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
     t->walk_speed = loop_speed(t, 200);
     t->run_speed = loop_speed(t, 500);
     t->near_d = 1e9f;
@@ -466,9 +497,30 @@ static void ev_bind(Enemy *e, EvChr *c, int placing)
 }
 
 /* enemies.bin record r (type t) into slot i of world block `block`; seed_i: its index in the file (AI seed) */
+static void rag_release(Enemy *e)
+{
+    for (int k = 0; k < RAG_POOL; k++)
+        if (rag_owner[k] == e)
+            rag_owner[k] = NULL, rag_pool[k].on = 0;
+    e->rag = NULL;
+}
+
+/* combat.c hurtbox test (CombatChr.hit_test): the attack capsule against the ragdoll capsules in the current pose */
+static int hit_test(CombatChr *c, const float a[3], const float b[3], float r)
+{
+    Enemy *e = c->owner;
+    const ChrType *t = e->ct;
+    if (!t->rag || !t->model)
+        return 1;
+    static float world[MAX_BONES][12];
+    mdl_world(t->model, e->pose, e->pos, e->yaw, world);
+    return rag_hit(t->rag, t->nrag, (const float (*)[12])world, a, b, r) >= 0;
+}
+
 static void place(ChrType *t, const unsigned char *r, int i, int block, int seed_i)
 {
     Enemy *e = &enemies[i];
+    rag_release(e);
     memset(e, 0, sizeof *e);
     ev_off[i] = 0;  /* a reused slot inherits no event state */
     e->ct = t;
@@ -499,6 +551,10 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     cc->yaw = e->yaw, cc->radius = e->var->radius, cc->height = e->var->height, cc->team = TEAM_ENEMY;
     cc->hp = cc->hp_max = e->var->hp, cc->def_phys = e->var->def_phys;
     cc->poise_max = e->var->poise;
+    if (t->rag) {  /* + margin for poses reaching past the bind pose (ASSUMED 0.5 m / 0.3 m) */
+        cc->hit_test = hit_test, cc->owner = e;
+        cc->reach = t->h->rag_reach + 0.5f, cc->top = t->h->rag_top + 0.3f;
+    }
     if (esd_ok) {
         esd_ctx_init(&e->esd, &esd_prog, ESD_ENEMY, e, enemy_env, enemy_cmd);
         esd_start(&e->esd);
@@ -548,9 +604,10 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
             continue;
         place(t, r, nenemies++, 0, i);
     }
+    int ntri = nav_load(0, b, 0);
     /* every type starts unloaded; enemy_update loads the ones near the player */
-    printf("enemy: %d characters of %d types, RAM free %uK after unloading\n", nenemies, ntypes,
-           enemy_ram_free() >> 10);
+    printf("enemy: %d characters of %d types, navmesh %d tris (%u B), RAM free %uK after unloading\n", nenemies,
+           ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
     return nenemies;
 }
 
@@ -596,8 +653,9 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     if (map_lua)
         ai_scripts_add(map_lua, map_lua_size);  /* the block's map logic functions join the one VM */
 #endif
-    printf("enemy: block %d: %d placements, %d types, RAM free %uK\n", block, blk_n[block], ntypes,
-           enemy_ram_free() >> 10);
+    int ntri = nav_load(block, b, 0);  /* kept for the session, as the placements */
+    printf("enemy: block %d: %d placements, %d types, navmesh %d tris (%u B all blocks), RAM free %uK\n", block,
+           blk_n[block], ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
     return blk_n[block];
 }
 
@@ -661,6 +719,7 @@ void enemy_block_remove(int block)
          * tree was lost there. tests/world_blockoff.txt, 2026-11-01: ~100 of the 768 pool slots lost per Burg block
          * off (623 in use after 6 rounds), 49 steady with this */
         ai_reset(&e->ai);
+        rag_release(e);
         e->ev = NULL;
         ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
         e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
@@ -737,15 +796,82 @@ static void root_at(const Enemy *e, float t, float *o)
         o[c] = e->ct->root[a->first_root + i][c] * (1 - k) + e->ct->root[a->first_root + j][c] * k;
 }
 
-static void move_by(Enemy *e, float dx, float dz)
+/* A horizontal move over the map collision. walking: the AI's own locomotion, which stops at a ledge (DSR's AI keeps
+ * to the navmesh); otherwise (root motion, push-outs) a move off a ledge leaves the character airborne and it falls
+ * (fall_step). Returns 1 if it moved. */
+static int move_by(Enemy *e, float dx, float dz, int walking)
 {
     if (e->ev && e->ev->no_maphit) {  /* 2004[31]: through the map */
         e->pos.x += dx, e->pos.z += dz;
-        return;
+        return 1;
     }
     float p[3] = {e->pos.x, e->pos.y, e->pos.z};
-    col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0);
-    e->pos = v3(p[0], p[1], p[2]);  /* no floor: stays at its height (no falling for enemies yet) */
+    if (e->air) {  /* in the air: walls only, gravity sets y */
+        col_move(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_SOLID);
+        e->pos.x = p[0], e->pos.z = p[2];
+        return 1;
+    }
+    if (col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0)) {
+        e->pos = v3(p[0], p[1], p[2]);
+        return 1;
+    }
+    if (walking)
+        return 0;  /* no floor within a step: stay on this side of the ledge */
+    e->pos.x = p[0], e->pos.z = p[2];
+    e->air = 1, e->vy = 0, e->fall_y0 = e->pos.y;
+    return 1;
+}
+
+/* Gravity for an airborne character (as the player: 9.8 m/s^2, at most 50 m/s down, collision-2): lands on the
+ * collision floor; a kill plane / lethal fall triangle or y below FALL_KILL_Y kills it; a landing takes the player's
+ * fall damage as a share of its HP (ASSUMED for enemies: combat_fall_rate, 5 m .. 20 m) */
+static void fall_step(Enemy *e, float dt)
+{
+    if (!e->air || (e->ev && e->ev->no_maphit))
+        return;
+    e->vy -= 9.8f * dt;
+    if (e->vy < -50)
+        e->vy = -50;
+    float y = e->pos.y + e->vy * dt;
+    ColHit hit;
+    if (col_floor(e->pos.x, e->pos.z, e->pos.y + 0.05f, y, COL_SOLID | COL_DEATH, &hit)) {
+        e->pos.y = hit.y, e->air = 0, e->vy = 0;
+        float rate = (1u << hit.hit_filter) & COL_DEATH ? 1 : combat_fall_rate(e->fall_y0 - hit.y);
+        if (rate > 0 && !e->cc.dead) {
+            e->cc.hp -= (int)ceilf(rate * e->cc.hp_max);
+            if (e->cc.hp <= 0)
+                e->cc.hp = -1, e->cc.dead = 1;
+        }
+        return;
+    }
+    e->pos.y = y;
+    if (y < FALL_KILL_Y && !e->cc.dead)
+        e->cc.hp = -1, e->cc.dead = 1;
+}
+
+/* The way to dest over the navmesh: the next corner, searched again every NAV_REPLAN s or when dest moved > 1 m;
+ * at most NAV_SEARCH_MAX searches a frame (the others keep their corner). 0 = no navmesh here (walk straight). */
+static int nav_route(Enemy *e, V3 dest, V3 *wp)
+{
+    static unsigned searched_frame;
+    static int searches;
+    if (searched_frame != frame)
+        searched_frame = frame, searches = 0;
+    float from[3] = {e->pos.x, e->pos.y, e->pos.z}, to[3] = {dest.x, dest.y, dest.z};
+    float mx = to[0] - e->nav_dest[0], mz = to[2] - e->nav_dest[2], moved = mx * mx + mz * mz;
+    float dx = e->nav_wp[0] - from[0], dz = e->nav_wp[2] - from[2];
+    int reached = dx * dx + dz * dz < 0.25f * 0.25f;
+    if ((e->nav_t <= 0 || moved > 1 || reached || !e->nav_ok) && searches < NAV_SEARCH_MAX) {
+        searches++;
+        int r = nav_next(e->block, from, to, e->nav_wp);
+        e->nav_ok = r > 0;
+        memcpy(e->nav_dest, to, 12);
+        e->nav_t = r == 1 ? 1.5f : NAV_REPLAN;
+    }
+    if (!e->nav_ok)
+        return 0;
+    *wp = v3(e->nav_wp[0], e->nav_wp[1], e->nav_wp[2]);
+    return 1;
 }
 
 static void attack_sweeps(Enemy *e)
@@ -822,6 +948,69 @@ static void ev_apply(Enemy *e, int new_hit)
     }
 }
 
+static int is_death_anim(int id) { return (id % 10000) >= 2200 && (id % 10000) < 2300; }
+
+/* A ragdoll slot: a free one, else one at rest, else the oldest; its last owner keeps the pose it has */
+static Ragdoll *rag_take(Enemy *e)
+{
+    int k = -1;
+    for (int i = 0; i < RAG_POOL && k < 0; i++)
+        if (!rag_owner[i])
+            k = i;
+    for (int i = 0; i < RAG_POOL && k < 0; i++)
+        if (rag_pool[i].asleep)
+            k = i;
+    for (int i = 0; i < RAG_POOL; i++)
+        if (k < 0 || (!rag_pool[k].asleep && rag_pool[i].age > rag_pool[k].age))
+            k = i;
+    if (rag_owner[k])
+        rag_owner[k]->rag = NULL;
+    rag_owner[k] = e;
+    return &rag_pool[k];
+}
+
+/* The death ragdoll. Starts at the death anim's TAE flag 12 window (or the anim's end), at once when the character
+ * dies in the air, or 2.5 s after death when no death anim plays (killed mid-action); from then on the bodies drive
+ * the pose. Returns 1 once started. */
+static int dead_ragdoll(Enemy *e, float dt)
+{
+    ChrType *t = e->ct;
+    if (!t->rag || !t->model || !e->cc.dead)
+        return 0;
+    if (!e->rag_done) {
+        int death = e->act >= 0 && is_death_anim(e->act);
+        if (!(e->air || (death && (in_window(e, F_RAGDOLL) || act_ended(e))) || (!death && e->dead_t > 2.5f)))
+            return 0;
+        static float world[MAX_BONES][12], prev[MAX_BONES][12], bind[MAX_BONES][12];
+        static BoneLocal tmp[MAX_BONES];
+        mdl_world(t->model, e->pose, e->pos, e->yaw, world);
+        if (e->act >= 0 && e->act_slot >= 0 && e->act_t > dt) {
+            mdl_sample(t->model, e->act_slot, e->act_t - dt, e->act_loop, tmp);
+            mdl_world(t->model, tmp, e->pos, e->yaw, prev);
+        } else
+            memcpy(prev, world, sizeof world);
+        mdl_sample(t->model, -1, 0, 0, tmp);
+        mdl_world(t->model, tmp, e->pos, e->yaw, bind);
+        e->rag = rag_take(e);
+        rag_start(e->rag, t->rag, t->nrag, (const float (*)[12])bind, (const float (*)[12])world,
+                  (const float (*)[12])prev, dt);
+        if (e->air)  /* falling: keep the fall speed */
+            for (int k = 0; k < e->rag->n; k++)
+                e->rag->v[k][1] += e->vy;
+        printf("enemy: %.5s %d ragdoll (%s, anim %d at %.2f s), %d bodies\n", t->name, e->entity,
+               e->air ? "in the air" : !death ? "no death anim" : in_window(e, F_RAGDOLL) ? "flag 12" : "anim end",
+               e->act, e->act_t, e->rag->n);
+        e->rag_done = 1, e->air = 0;
+    }
+    if (e->rag && !e->rag->asleep) {
+        rag_step(e->rag, dt);
+        rag_pose(e->rag, t->model, e->pose, e->pos, e->yaw, e->pose);
+        if (e->rag->asleep)
+            printf("enemy: %.5s %d ragdoll at rest after %.1f s\n", t->name, e->entity, e->rag->age);
+    }
+    return 1;
+}
+
 static void update_one(Enemy *e, Player *pl, float dt)
 {
     ChrType *t = e->ct;
@@ -870,9 +1059,26 @@ static void update_one(Enemy *e, Player *pl, float dt)
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
     e->req = e->cc.dead ? -1 : o->req;
+    /* a destination: the way there over the navmesh replaces the straight line */
+    if (e->nav_t > 0)
+        e->nav_t -= dt;
+    if (o->move && o->dest && !e->cc.dead) {
+        V3 wp;
+        if (nav_route(e, o->dest_pos, &wp) && fabsf(wp.x - e->pos.x) + fabsf(wp.z - e->pos.z) > 0.05f) {
+            float yaw = atan2f(wp.x - e->pos.x, wp.z - e->pos.z);
+            if (o->face && fabsf(wrap(o->face_yaw - o->move_yaw)) < 1e-3f)
+                e->ai.out.face_yaw = yaw;  /* it was facing along its move */
+            e->ai.out.move_yaw = yaw;
+        }
+    }
     if (esd_ok) {
         e->esd.dt = dt;
         esd_update(&e->esd);
+    }
+    if (e->cc.dead && dead_ragdoll(e, dt)) {  /* the ragdoll owns the pose now */
+        memcpy(e->cc.pos, &e->pos, 12);
+        e->blend = 1;
+        return;
     }
 
     /* animation time and movement */
@@ -889,16 +1095,17 @@ static void update_one(Enemy *e, Player *pl, float dt)
             float dx = r1[0] - r0[0], dz = r1[1] - r0[1];
             /* model space -> world: the model faces -Z; place rotation is yaw + pi */
             float c = cosf(e->yaw + PI), s = sinf(e->yaw + PI);
-            move_by(e, c * dx + s * dz, -s * dx + c * dz);
+            move_by(e, c * dx + s * dz, -s * dx + c * dz, 0);
             e->yaw = wrap(e->yaw - (r1[2] - r0[2]));
         }
     }
-    int moving = !e->cc.dead && (e->act < 0 || act_ended(e)) && e->loco_enabled && o->move;
+    int moving = !e->cc.dead && !e->air && (e->act < 0 || act_ended(e)) && e->loco_enabled && o->move;
     int loco = 0;
     if (moving) {
         float rel = wrap(o->move_yaw - e->yaw), speed = o->run ? t->run_speed : t->walk_speed;
         loco = o->run ? 500 : fabsf(rel) < PI / 4 ? 200 : fabsf(rel) > 3 * PI / 4 ? 201 : rel > 0 ? 202 : 203;
-        move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt);
+        if (!move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt, 1))
+            moving = 0, loco = 0, e->nav_t = 0;  /* at a ledge: stands (and searches the route again) */
     } else if (o->guard > 0 && !e->cc.dead)
         loco = o->guard;  /* guard pose while standing (DoEzAction 9910 / Guard goal) */
     int full, la = anim_slot(e, loco, &full);
@@ -910,6 +1117,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->loco_anim = la;
     }
     e->loco_t += dt;
+    fall_step(e, dt);
     /* turning: NpcParam turnVellocity, not inside TAE "disable turning" windows */
     if (o->face && !e->cc.dead && !in_window(e, F_NO_TURN)) {
         float d = wrap(o->face_yaw - e->yaw), step = e->var->turn * (PI / 180) * dt;
@@ -972,7 +1180,7 @@ static void separate(Enemy *e, V3 other, float other_r, float share)
     if (d < 1e-3f)
         dx = sinf(e->yaw + PI), dz = cosf(e->yaw + PI), d = 1;  /* exactly on top: back off along its facing */
     float k = (min - d) * share / d;
-    move_by(e, dx * k, dz * k);
+    move_by(e, dx * k, dz * k, 1);
 }
 
 /* The player's noise for the AI's hearing (DSR: sound events from TAE / footsteps; radii here are guesses) */
@@ -1043,11 +1251,24 @@ void enemy_update(Player *pl, float dt)
                 }
         lim = c[ACTIVE_MAX - 1];
     }
+    /* the player walking into ragdolls kicks them (its speed from the last frame) */
+    static V3 last_pos;
+    float pvel[3] = {0, 0, 0}, feet[3] = {pl->pos.x, pl->pos.y, pl->pos.z};
+    if (dt > 0)
+        pvel[0] = (pl->pos.x - last_pos.x) / dt, pvel[2] = (pl->pos.z - last_pos.z) / dt;
+    if (pvel[0] * pvel[0] + pvel[2] * pvel[2] > 100)
+        pvel[0] = pvel[2] = 0;  /* a warp, not a walk */
+    last_pos = pl->pos;
+    for (int k = 0; k < RAG_POOL; k++)
+        if (rag_owner[k])
+            rag_push(&rag_pool[k], feet, COL_PLAYER_R, COL_PLAYER_H, pvel);
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, pl->pos);
         int on = e->ct->loaded && near(e, d) && e->dead_t <= CORPSE_TIME &&
                  !ev_off[i] && dg_mask_shown(e->block, e->dg) && d3[i] <= lim;
+        if (!on && e->rag)
+            rag_release(e);  /* gone or frozen: the slot goes back */
         /* combat slots only for characters near the player (COMBAT_MAX_CHRS is smaller than the roster) */
         int want = on && !e->cc.dead && e->ct->drawable;
         if (want && !e->registered)

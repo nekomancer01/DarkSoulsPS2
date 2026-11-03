@@ -258,6 +258,7 @@ void mdl_free_textures(Model *m)
 }
 
 int mdl_bones(const Model *m) { return m->hdr->bones; }
+const short *mdl_parents(const Model *m) { return m->parents; }
 
 /* Keep only what drawing / sampling needs after mdl_load + mdl_upload (header, parents, reference pose, groups,
  * anims) in one new block, so the caller can free the blob: vertices, triangles, UVs and texture pixels live on in
