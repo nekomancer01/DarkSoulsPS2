@@ -37,7 +37,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `export_objects.py` | Breakable objects (pots) |
 | `export_esd.py` | ESD runtime data |
 | `export_menu.py` | HUD / menu assets |
-| `export_audio.py` | Per-area sound banks (prototype) |
+| `export_audio.py` | Sound packs data/snd/{main,mAA,cXXXX}.pak: FMOD banks as SPU2 ADPCM (resident / streamed), TAE sound cues, MSB sound emitters (src/sound.c) |
 | `export_effects.py` | fx.bin: bonfire / MSB SFX particle systems, effect lights, textures; static lights for the map bake |
 | `pack.py` | LZ4 area packs (.pak) |
 | `area.py`, `gamepath.py`, `verify_game.py` | Per-area selection, game folder, game version check |

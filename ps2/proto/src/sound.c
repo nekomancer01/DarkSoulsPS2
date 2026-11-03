@@ -33,6 +33,7 @@ extern unsigned int size_dsrsnd_irx, size_libsd_irx;
 #define MAX_BANKS 16
 #define MAX_LOADS 16
 #define VOL_MAX 0x3fff
+#define MASTER_VOL 0x2400
 #define BODY_Y 1.0f        /* ASSUMED: character sounds play 1 m above the feet (dummy polys not used) */
 #define EMIT_ONESHOT_MIN 4.0f  /* ASSUMED: a non-looping MSB emitter replays every 4-12 s while in range */
 #define EMIT_ONESHOT_VAR 8.0f
@@ -1024,7 +1025,8 @@ int snd_init(void)
     on = 1;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
-    cmd(SNDC_MASTER, 0, 0, 0, VOL_MAX, VOL_MAX, 0);
+    /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */
+    cmd(SNDC_MASTER, 0, 0, 0, MASTER_VOL, MASTER_VOL, 0);
     main_bank = bank_load("main", 1);
     loads_wait();
     snd_stats.on = 1;
