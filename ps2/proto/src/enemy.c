@@ -251,12 +251,18 @@ static void unload_model(ChrType *t)
     t->model = NULL;
 }
 
-/* A type's model from its loaded model.bin (mb: size bytes in a buffer of alloc from the arena or the heap, freed
- * here): VU1 streams + compact anims, textures uploaded (or a loaded twin's) */
-static int model_from(ChrType *t, GSGLOBAL *gs, void *mb, unsigned size, unsigned alloc, int in_arena)
+static inline unsigned cpu_now(void)
+{
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
+
+/* A type's model from its built model (mdl_load_begin + mdl_load_step on mb: size bytes in a buffer of alloc from
+ * the arena or the heap, freed here): textures uploaded (or a loaded twin's), compact copy, sound bank */
+static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned size, unsigned alloc, int in_arena)
 {
 #define FREE_MB() (in_arena ? arena_put(mb, alloc) : free(mb))
-    Model *m = mb ? mdl_load(mb) : NULL;
     if (!m) {
         FREE_MB();
         printf("enemy: %s: model.bin did not load\n", t->name);
@@ -298,6 +304,10 @@ static void model_path(char *path, unsigned cap, const ChrType *t)
 static GSGLOBAL *gsg;  /* enemy_init's GS context (tentative definition: set below) */
 static PackJob job;
 static ChrType *job_t;  /* the type job loads, NULL when idle */
+static Model *job_m;    /* its model while mdl_load_step builds the skin batches */
+/* EE ticks per frame for building a streamed type's VU1 skin batches: in one frame mdl_load took up to 28 ms
+ * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
+#define SETUP_TICKS (4 * 294912u)
 static int job_arena;
 static void *heap_get(unsigned n) { return memalign(128, n); }
 static void heap_put(void *p, unsigned n) { (void)n; free(p); }
@@ -311,25 +321,44 @@ static void job_begin(ChrType *t)
     job_t = t;
 }
 
-/* 1 when the job finished this frame with t's model loaded, -1 failed, 0 otherwise */
+/* 1 when the job finished this frame with t's model loaded, -1 failed, 0 otherwise. A frame does one part: a read /
+ * decode step (pack.c, PACK_JOB_DECODE_MS), SETUP_TICKS of skin batches, or the rest of the set-up (textures, compact
+ * copy, sound bank: ~2-5 ms) */
 static int job_poll(void)
 {
     if (!job_t)
         return 0;
-    int r = pack_job_step(&job);
-    if (!r)
-        return 0;
     ChrType *t = job_t;
-    job_t = NULL;
-    if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
-        job.put(job.out, job.alloc);
-        return 0;
+    if (!job_m) {
+        int r = pack_job_step(&job);
+        if (!r)
+            return 0;
+        if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
+            job.put(job.out, job.alloc);
+            job_t = NULL;
+            return 0;
+        }
+        if (r > 0 && (job_m = mdl_load_begin(job.out)))
+            return 0;
+        if (r > 0) {
+            job.put(job.out, job.alloc);
+            printf("enemy: %s: model.bin did not load\n", t->name);
+        }
+        job_t = NULL;
+        t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
+        return -1;
     }
-    if (r > 0 && model_from(t, gsg, job.out, job.raw, job.alloc, job_arena)) {
-        printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10, r_vram_avail(gsg));
+    if (!mdl_load_step(job_m, SETUP_TICKS))
+        return 0;
+    unsigned c0 = cpu_now();
+    Model *m = job_m;
+    job_t = NULL, job_m = NULL;
+    if (model_from(t, gsg, m, job.out, job.raw, job.alloc, job_arena)) {
+        printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d, set-up %u ms\n", t->name, enemy_ram_free() >> 10,
+               r_vram_avail(gsg), (cpu_now() - c0) / 294912);
         return 1;
     }
-    t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
+    t->near_d = 1e9f, t->retry = frame + 60;
     return -1;
 }
 

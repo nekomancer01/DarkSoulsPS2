@@ -284,7 +284,10 @@ int pack_async_done(int *result)
  * data is read into the tail of the output buffer and decoded in place (an LZ4 block never grows on decode, and a
  * stored block keeps its size, so the write position stays JOB_MARGIN bytes behind the unread input) */
 #define JOB_MARGIN 1024
-enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_CLOSE };
+enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOSE };
+/* EE ms of LZ4 decode per pack_job_step: a model.bin took 10-20 ms in one frame (enemy types streaming in, smoke
+ * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
+#define PACK_JOB_DECODE_MS 3
 static PackJob *slot_job;  /* the job whose request holds the async slot */
 
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
@@ -412,17 +415,24 @@ int pack_job_step(PackJob *j)
         if (res != (int)j->packed)
             return job_fail(j, "read error");
         InvalidDCache(j->in, j->in + j->packed - 1);
-        unsigned nb = j->blocks, cs[nb ? nb : 1], pos = 0;
-        memcpy(cs, j->in, nb * 4);  /* the decoded output overwrites the block size table */
-        const unsigned char *src = j->in + nb * 4;
-        for (unsigned b = 0; b < nb; b++) {
-            unsigned c = cs[b] & ~RAW_FLAG, want = j->raw - pos < j->bsize ? j->raw - pos : j->bsize;
-            if (cs[b] & RAW_FLAG ? (memmove(j->out + pos, src, c), c != want)
-                                 : lz4_decode(src, c, j->out + pos, want) != (int)want)
+        if (j->blocks > sizeof j->cs / sizeof j->cs[0])
+            return job_fail(j, "too many blocks");
+        memcpy(j->cs, j->in, j->blocks * 4);  /* the decoded output overwrites the block size table */
+        j->src = j->in + j->blocks * 4, j->b = 0, j->pos = 0;
+        j->state = J_DECODE;
+    }   /* fall through */
+    case J_DECODE: {
+        unsigned t0 = ticks();
+        while (j->b < j->blocks && (ticks() - t0) < PACK_JOB_DECODE_MS * 294912u) {
+            unsigned c = j->cs[j->b] & ~RAW_FLAG, want = j->raw - j->pos < j->bsize ? j->raw - j->pos : j->bsize;
+            if (j->cs[j->b] & RAW_FLAG ? (memmove(j->out + j->pos, j->src, c), c != want)
+                                       : lz4_decode(j->src, c, j->out + j->pos, want) != (int)want)
                 return job_fail(j, "corrupt entry");
-            src += c, pos += want;
+            j->src += c, j->pos += want, j->b++;
         }
-        if (pos != j->raw)
+        if (j->b < j->blocks)
+            return 0;
+        if (j->pos != j->raw)
             return job_fail(j, "corrupt entry");
         SyncDCache(j->out, j->out + j->raw - 1);
         pack_stats.read += j->packed, pack_stats.raw += j->raw;
