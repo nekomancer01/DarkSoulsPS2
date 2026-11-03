@@ -34,3 +34,12 @@ MX_API int mx_any_within(long long n, const double *P, long long m, const double
     }
     return 0;
 }
+
+double pow(double, double);
+
+/* Python's x ** e per element (float.__pow__ calls libm pow); pos: x ** e if x > 0.0 else 0.0 (srgb_lin) */
+MX_API void mx_pow_many(long long n, const double *X, double e, int pos, double *out)
+{
+    for (long long i = 0; i < n; i++)
+        out[i] = pos && !(X[i] > 0.0) ? 0.0 : pow(X[i], e);
+}

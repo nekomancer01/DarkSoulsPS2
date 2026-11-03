@@ -73,7 +73,7 @@ class Tone:
         u = np.where(u < 1.0, u, 1.0)
         u = np.where(u > 0.0, u, 0.0)
         g = 1 / 2.2
-        out = np.array([v ** g for v in u.ravel().tolist()]).reshape(u.shape)
+        out = _pow_many(u, g, False)
         tc = self.tc
         if tc:
             y = sum3(LUMA_TC[0] * out[:, 0], LUMA_TC[1] * out[:, 1], LUMA_TC[2] * out[:, 2])
@@ -91,8 +91,26 @@ def srgb_lin(v):
 def srgb_lin_many(X):
     """srgb_lin per element of a float array (Python's ** per element: numpy's power may round differently)"""
     import numpy as np
-    X = np.asarray(X, np.float64)
-    return np.array([x ** 2.2 if x > 0.0 else 0.0 for x in X.ravel().tolist()]).reshape(X.shape)
+    return _pow_many(np.asarray(X, np.float64), 2.2, True)
+
+
+def _pow_many(X, e, pos):
+    """Python's x ** e per element of a float64 array (pos: 0.0 where x <= 0), in C when libmapx is there (libm pow,
+    what float.__pow__ calls)"""
+    import numpy as np
+    try:
+        import mapx_native
+        L = mapx_native.lib()
+    except ImportError:
+        L = None
+    if L is not None:
+        Xc = np.ascontiguousarray(X, np.float64)
+        out = np.empty(Xc.shape)
+        L.mx_pow_many(Xc.size, Xc.ctypes.data, e, 1 if pos else 0, out.ctypes.data)
+        return out
+    if pos:
+        return np.array([x ** e if x > 0.0 else 0.0 for x in X.ravel().tolist()]).reshape(X.shape)
+    return np.array([v ** e for v in X.ravel().tolist()]).reshape(X.shape)
 
 
 def sum3(a, b, c):
@@ -251,6 +269,15 @@ class ProbeIndex:
 
     def __init__(self, subs, probes, part_probe, cell=4.0):
         self.cell, self.grid, self.probes = cell, {}, probes
+        self.mx = None
+        try:
+            import mapx_native
+            L = mapx_native.lib()
+        except ImportError:
+            L = None
+        if L is not None:  # tools/mapx/probe.c: the same centroids, search, cache
+            self._init_c(L, subs, probes, part_probe)
+            return
         use = {}
         for s in subs:
             p = part_probe.get(s["part"], -1)
@@ -263,10 +290,36 @@ class ProbeIndex:
         self.default = max(use, key=use.get) if use else None
         self.cache = {}
 
+    def _init_c(self, L, subs, probes, part_probe):
+        import numpy as np
+        use, T, pr, ids = {}, [], [], {}
+        for s in subs:
+            p = part_probe.get(s["part"], -1)
+            if p not in probes or not s["tris"]:
+                continue
+            T.append(np.array(s["tris"], np.float64).reshape(-1, 9))
+            pr.append(np.full(len(s["tris"]), ids.setdefault(p, len(ids)), np.int64))
+            use[p] = use.get(p, 0) + len(s["tris"])
+        self.default = max(use, key=use.get) if use else None
+        self.cache = {}
+        self.vals = list(ids)
+        T = np.ascontiguousarray(np.concatenate(T) if T else np.zeros((0, 9)))
+        pr = np.ascontiguousarray(np.concatenate(pr) if pr else np.zeros(0, np.int64))
+        self.L = L
+        self.mx = L.mx_probe_new(len(T), T.ctypes.data, pr.ctypes.data, self.cell,
+                                 ids[self.default] if self.default is not None else -1)
+
+    def __del__(self):
+        if getattr(self, "mx", None):
+            self.L.mx_probe_free(self.mx)
+            self.mx = None
+
     def _key(self, p):
         return tuple(int(math.floor(x / self.cell)) for x in p)
 
     def __call__(self, p):
+        if self.mx:
+            return self.many([p])[0]
         k = self._key(p)
         if k in self.cache:
             return self.cache[k]
@@ -286,6 +339,12 @@ class ProbeIndex:
         cell, so the order matters)"""
         import numpy as np
         P = np.asarray(P, np.float64).reshape(-1, 3)
+        if self.mx:
+            P = np.ascontiguousarray(P)
+            r = np.empty(len(P), np.int64)
+            self.L.mx_probe_query(self.mx, len(P), P.ctypes.data, r.ctypes.data)
+            vals = self.vals
+            return [vals[i] if i >= 0 else None for i in r.tolist()]
         cache, miss, out = self.cache, object(), []
         for k, p in zip(np.floor(P / self.cell).astype(np.int64).tolist(), P.tolist()):
             v = cache.get(tuple(k), miss)

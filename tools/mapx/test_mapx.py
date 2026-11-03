@@ -502,9 +502,26 @@ def check_gather_helpers(rng):
     em._VERT_NP.clear()
     a, b = both(lambda: em.dedup_tris(tl, V))
     same(a, b, "dedup_tris")
+    import dsr_light
+    subs = [dict(part=f"h{i}", tris=[tuple(tuple(c) for c in t) for t in
+                                     (rng.uniform(-30, 30, (int(rng.integers(0, 200)), 3, 3)) +
+                                      rng.uniform(-20, 20, 3)).round(int(rng.integers(1, 4))).tolist()])
+            for i in range(int(rng.integers(1, 8)))]
+    probes = {p: [] for p in rng.choice(10, 5, replace=False).tolist()}
+    part_probe = {s["part"]: int(rng.integers(0, 12)) for s in subs}
+    Q = (rng.uniform(-60, 60, (int(rng.integers(1, 3000)), 3))).round(int(rng.integers(0, 3)))
+
+    def run():
+        ix = dsr_light.ProbeIndex(subs, probes, part_probe)
+        return ix.default, ix.many(Q[: len(Q) // 2]), [ix(tuple(q)) for q in Q[len(Q) // 2:].tolist()], ix.many(Q)
+    a, b = both(run)
+    same(a, b, "ProbeIndex")
+    X = np.concatenate([rng.uniform(-1, 3, 3000), [0.0, -0.0, 1.0, np.inf, 1e-300]]).reshape(-1, 1)
+    a, b = both(lambda: (dsr_light.srgb_lin_many(X).tolist(), dsr_light._pow_many(np.abs(X), 1 / 2.2, False).tolist()))
+    same(a, b, "srgb_lin_many / pow")
 
 
 if __name__ == "__main__":
     for k in range(seed, seed + count):
         check_gather_helpers(np.random.default_rng(k))
-    print(f"mapx: _first_rows, is_sky, dedup_tris identical to the Python code on {count} random cases")
+    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex identical to the Python code on {count} random cases")

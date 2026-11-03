@@ -62,7 +62,9 @@ def lib():
                                 ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),
                                 ("mx_chunks_count", [vp, vp], i), ("mx_chunks_fetch", [vp] + [vp] * 10, None),
                                 ("mx_chunks_free", [vp], None),
-                                ("mx_first_rows", [ll, i, vp, vp, vp], ll), ("mx_any_within", [ll, vp, ll, vp, d], i)):
+                                ("mx_first_rows", [ll, i, vp, vp, vp], ll), ("mx_any_within", [ll, vp, ll, vp, d], i),
+                                ("mx_probe_new", [ll, vp, vp, d, ll], vp), ("mx_probe_query", [vp, ll, vp, vp], None),
+                                ("mx_probe_free", [vp], None), ("mx_pow_many", [ll, vp, d, i, vp], None)):
                     getattr(L, f).argtypes, getattr(L, f).restype = a, r
             except Exception as e:
                 print(f"mapx: C library unavailable ({str(e)[:300]}), using the Python export", flush=True)
