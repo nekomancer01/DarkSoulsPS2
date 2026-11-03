@@ -102,7 +102,8 @@ footer { color: var(--muted); font-size: .85rem; text-align: center; margin-top:
     <h2><span class="n">2</span> Convert in your browser</h2>
     <p>The port's own converter runs inside this tab (Python in WebAssembly): it reads your game folder, builds the
     maps, characters, menus and scripts, and packs them with the latest build of the engine into
-    <code>DarkSoulsPS2.iso</code>. Keep the tab open while it works. It takes a while (about 10 to 20 minutes; the
+    <code>DarkSoulsPS2.iso</code>. The browser build has no sound yet (the game's MP3 sound banks need a decoder the
+    converter cannot run here); the script below builds the same disc with sound. Keep the tab open while it works. It takes a while (about 10 to 20 minutes; the
     maps are the slow part). Each worker uses up to about 2.5 GB of memory, and several run side by side, so use a
     desktop browser (Chrome, Edge or Firefox) with other big tabs closed, and pick fewer workers if your PC runs short
     of memory.</p>

@@ -166,9 +166,20 @@ def plan(game, build, mv=None):
     S("player pack", "pack.py", [f"{D}/c0000.pak", f"model.bin={G}/model.bin", f"esd.bin={G}/esd.bin"] +
       [f"{k}.gd={G}/{k}.gd" for k in ("player", "combat", "progress")], [f"{D}/c0000.pak"])
     S("menu", "export_menu.py", [game, f"{G}/menu.bin"], [f"{G}/menu.bin"])
-    S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin"], [f"{D}/menu.pak"])
+    items = [f"{G}/items/{f}" for f in ("items.bin", "itemx.bin", "desc.bin", "icons.bin")]
+    S("items", "export_items.py", [game, f"{G}/items"], items)
+    screens = mv.get("SCREEN_NAMES", "").split()
+    S("menu screens", "export_screens.py", [game, f"{G}/screens"], [f"{G}/screens/scr_{n}.bin" for n in screens])
+    S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin", f"items.bin={G}/items/items.bin",
+                               f"itemx.bin={G}/items/itemx.bin", f"desc.bin=raw:{G}/items/desc.bin",
+                               f"icons.bin=raw:{G}/items/icons.bin"] +
+      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens], [f"{D}/menu.pak"])
     S("enemy ESD", "export_esd.py", [game, f"{G}/enemyCommon.esd.bin", "enemyCommon"], [f"{G}/enemyCommon.esd.bin"])
     blocks = run_tool("area.py", ["--world", default], capture=True).split()  # Makefile WORLD_BLOCKS
+    # $(A)/snd.stamp: every sound pack of the boot map and its world blocks' maps (SND_MAPS) in one export, which
+    # chooses the SPU2 sample rate over the whole set; it reads only the game folder (DSR_GAME)
+    snd_maps = sorted({default} | {b.split(":")[0] for b in blocks})
+    S("sound", "export_audio.py", [f"{D}/snd", f"{G}/snd"] + snd_maps, [f"{D}/snd/main.pak"])
     for b in blocks:  # worldpacks: one sub-make per block (MAP=<msb> BLOCK=<block> blockpacks)
         msb, block = b.split(":")
         area(msb, block, True)
@@ -224,12 +235,12 @@ def step_name(s):
 
 def group_of(s):
     """the group a plan entry belongs to: its area / block ('<out>: ...' steps and enemy placeholders), 'world' for the
-    world steps, 'shared' for the steps every area uses (player, menu, enemy ESD)"""
+    world steps, 'sound' for the sound packs, 'shared' for the steps every area uses (player, menu, enemy ESD)"""
     if isinstance(s, tuple):
         return s[2] or s[1]
     if ": " in s.name:
         return s.name.split(": ", 1)[0]
-    return "world" if s.name.startswith("world") else "shared"
+    return "world" if s.name.startswith("world") else "sound" if s.name == "sound" else "shared"
 
 
 def groups(game, build, mv=None):
@@ -287,6 +298,12 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
         if progress:
             progress(i, n, s.name)
         if only and not any(o in s.name for o in only):
+            i += 1
+            continue
+        if s.name == "sound" and sys.platform == "emscripten":
+            # fsb4.py decodes DSR's MP3 banks with libmpg123, which has no WebAssembly build here yet: the disc boots
+            # without data/snd (sound.c stays silent) rather than the whole conversion failing
+            log(f"[{i + 1}/{n}] sound: skipped in the browser (no MP3 decoder); build-iso.sh makes the sound packs")
             i += 1
             continue
         for o in s.outputs:

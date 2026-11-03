@@ -46,14 +46,14 @@ emit.bin
 Usage: export_audio.py <pak dir> <work dir> <map id> [map id ...]  (the packs those maps need; work dir: the files
                                                                    packed, one directory per pack)
        export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)"""
-import glob, os, re, struct, subprocess, sys, time
+import glob, os, re, struct, sys, time
 
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "adpcm"))
-import adpcm, fev, fsb4, gamepath, souls
+import adpcm, fev, fsb4, gamepath, pack, souls
 
 SPU_RAM = 2 * 1024 * 1024
 SPU_SYSTEM = 0x5040    # bottom of SPU2 RAM: core input / output areas (libsd); sound.c starts its heap here
@@ -335,8 +335,7 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
             fh.write(d)
         args.append(f"{f}={'raw:' if f in ('str.bin', 'vag.bin') else ''}{p}")
     os.makedirs(out, exist_ok=True)
-    subprocess.run([sys.executable, "-I", os.path.join(HERE, "pack.py"), os.path.join(out, name + ".pak")] + args,
-                   check=True, stdout=subprocess.DEVNULL)
+    pack.main([os.path.join(out, name + ".pak")] + args, log=lambda *a: None)  # in process: Pyodide has no subprocess
     print(f"  {name:8} {len(samples):5} samples ({sum(1 for v in g.tier.values() if v == 'res')} resident, "
           f"{sum(1 for v in g.tier.values() if v == 'stream')} streamed, {sum(1 for v in g.tier.values() if v == 'drop')}"
           f" dropped), {len(evb):5} events, vag {len(vag) / 1024:7.0f} K, str {len(strm) / 1048576:6.1f} M,"

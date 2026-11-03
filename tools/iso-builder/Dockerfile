@@ -3,10 +3,11 @@
 # player's game folder is mounted read-only at /game when the build runs.
 #   python3 + numpy + Pillow   exporters (tools/requirements.txt)
 #   gcc + musl-dev             native helpers the exporters compile on first use (tools/native/*.c)
+#   mpg123-libs                MP3 decoding of DSR's FMOD sound banks (tools/fsb4.py, libmpg123 through ctypes)
 #   xorriso                    disc image (tools/ps2-iso.sh)
 #   bash make coreutils util-linux findutils gawk   tools/q (flock), tools/ps2-iso.sh (stat -c, realpath)
 FROM ps2dev/ps2dev:v2.0.0
-RUN apk add --no-cache bash make coreutils util-linux findutils gawk python3 py3-numpy py3-pillow gcc musl-dev xorriso
+RUN apk add --no-cache bash make coreutils util-linux findutils gawk python3 py3-numpy py3-pillow gcc musl-dev mpg123-libs xorriso
 ENV PATH=/usr/local/ps2dev/bin:/usr/local/ps2dev/ee/bin:/usr/local/ps2dev/iop/bin:/usr/local/ps2dev/dvp/bin:/usr/local/ps2dev/ps2sdk/bin:$PATH \
     XORRISO=xorriso
 WORKDIR /src
