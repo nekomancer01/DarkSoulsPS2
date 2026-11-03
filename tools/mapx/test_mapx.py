@@ -15,6 +15,9 @@ assert L is not None, "libmapx did not build"
 def _canon(x):
     if isinstance(x, mapx_native.Tris):  # the corner triples it stands for
         return [_canon(t) for t in x]
+    import souls
+    if isinstance(x, souls.Rows):  # the list of tuples it reads as
+        return [_canon(t) for t in x]
     if isinstance(x, (list, tuple)):
         return type(x)(_canon(v) for v in x)
     if isinstance(x, dict):
@@ -624,10 +627,39 @@ def check_densities(r):
     same(texmap.densities(tex, ch), texmap.densities_ref(tex, ch), "texmap.densities")
 
 
+def check_faceset_skin(rng):
+    """export_map.faceset_tris against souls.triangles; pose_obj.skin_mesh_np against skin_mesh"""
+    import souls, pose_obj
+    n = int(rng.integers(0, 400))
+    idx = rng.integers(0, int(rng.choice([4, 30, 70000])), n)
+    idx[rng.random(n) < 0.05] = 0xFFFF
+    for strip in (0, 1):
+        for ix in (idx.tolist(), idx.astype(np.int64)):
+            fs = (0, strip, ix, 0)
+            same(em.faceset_tris(fs).tolist(), [list(t) for t in souls.triangles(fs)], f"faceset_tris strip {strip}")
+    nv, nb = int(rng.integers(1, 300)), int(rng.integers(1, 6))
+    names = [f"b{i}" for i in range(nb + 2)]
+    F = dict(bones=[(nm, -1, None, None, None) for nm in names])
+    unit = lambda: tuple((lambda q: (q / np.linalg.norm(q)).tolist())(rng.normal(size=4)))
+    bones = {nm: ((tuple(rng.normal(size=3).tolist()), unit()), (tuple(rng.normal(size=3).tolist()), unit()))
+             for nm in names if rng.random() < 0.7}
+    rows = lambda a: [tuple(x) for x in a.tolist()]
+    w = rng.random((nv, 4)) * (rng.random((nv, 4)) < 0.7)
+    V = dict(pos=rows(rng.normal(size=(nv, 3)) * 3), normal=rows(rng.normal(size=(nv, 3))) if rng.random() < 0.8 else [],
+             bone_idx=rows(rng.integers(0, nb + 1, (nv, 4))) if rng.random() < 0.9 else [],
+             bone_w=rows(w) if rng.random() < 0.8 else [])
+    m = dict(verts=V, bones=list(rng.permutation(len(names))[:nb].tolist()))
+    for VV in (V, {k: souls.Rows(np.array(v)) if v else v for k, v in V.items()}):
+        got = pose_obj.skin_mesh_np(F, dict(m, verts=VV), bones)
+        P, N = pose_obj.skin_mesh(F, m, bones)
+        same([list(map(tuple, got[0].tolist())), list(map(tuple, got[1].tolist()))], [P, N], "skin_mesh_np")
+
+
 if __name__ == "__main__":
     for k in range(seed, seed + count):
+        check_faceset_skin(np.random.default_rng(k))
         check_densities(np.random.default_rng(k))
         check_gather_helpers(np.random.default_rng(k))
         check_weld_arrays(np.random.default_rng(k))
         check_vert_rows(np.random.default_rng(k))
-    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays, souls.Rows, texmap.densities identical to the Python code on {count} random cases")
+    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays, souls.Rows, texmap.densities, faceset_tris, skin_mesh identical to the Python code on {count} random cases")

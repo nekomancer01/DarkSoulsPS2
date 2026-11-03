@@ -33,6 +33,37 @@ def anim_bones(game, model, init_anim):
     return {n: (bind[i], pose[i]) for i, n in enumerate(names)}
 
 
+def skin_mesh_np(F, m, bones):
+    """skin_mesh in C (tools/mapx/skin.c): the same values as (n, 3) float64 arrays (P, N), or None (no libmapx, or
+    lists skin_mesh would read differently: then it runs)"""
+    import mapx_native
+    L = mapx_native.lib()
+    if L is None:
+        return None
+    import numpy as np
+    V = m["verts"]
+    n = len(V["pos"])
+    arr = lambda l, dt, k: np.ascontiguousarray(l.a if isinstance(l, souls.Rows) else np.array(l), dt).reshape(-1, k)
+    try:
+        P = arr(V["pos"], np.float64, 3)
+        N = arr(V["normal"], np.float64, 3) if V["normal"] else None
+        BI = arr(V["bone_idx"], np.int64, 4) if V["bone_idx"] else None
+        BW = arr(V["bone_w"], np.float64, 4) if V["bone_idx"] and V["bone_w"] else None
+        fb = F["bones"]
+        tab = np.zeros((max(len(m["bones"]), 1), 15))
+        for b, fi in enumerate(m["bones"]):
+            (bt, bq), (t, q) = bones.get(fb[fi][0], (((0,) * 3, (0,) * 4), ((0,) * 3, (0,) * 4)))
+            tab[b] = [1.0 if fb[fi][0] in bones else 0.0, *bt, *bq, *t, *q]
+    except (IndexError, ValueError, TypeError):
+        return None
+    if any(x is not None and len(x) != n for x in (N, BI, BW)):
+        return None
+    OP, ON = np.empty((n, 3)), np.empty((n, 3))
+    a = lambda x: None if x is None else x.ctypes.data
+    L.mx_skin(n, a(P), a(N), a(BI), a(BW), len(m["bones"]), a(tab), a(OP), a(ON))
+    return OP, ON
+
+
 def skin_mesh(F, m, bones):
     """Posed (positions, normals) of a dynamic mesh's vertices, model space; vertices of bones the skeleton lacks
     keep their bind position."""
