@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 #include "nav.h"
+#include "enemy.h"  /* ENEMY_REC */
 
 typedef struct {
     char magic[4];
@@ -34,7 +35,7 @@ int nav_load(int block, const void *blob, unsigned size)
         return 0;
     nav_free(block);
     const unsigned char *b = blob;
-    unsigned count = *(const unsigned *)(b + 4), at = 8 + 36 * count;
+    unsigned count = *(const unsigned *)(b + 4), at = 8 + ENEMY_REC * count;
     if (at + sizeof(NavHdr) > size || memcmp(b + at, "NAV1", 4))
         return 0;
     NavHdr h;

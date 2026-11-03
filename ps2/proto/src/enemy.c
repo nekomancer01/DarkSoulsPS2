@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "progress.h"
 #include "model.h"
 #include "vu1.h"
 #include "ai.h"
@@ -151,7 +152,8 @@ typedef struct {
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
     int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
-    unsigned char rec[36];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
+    int no_award;  /* killed by an event that gives no souls (2004[04] arg 2 = 0) */
+    unsigned char rec[ENEMY_REC];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
     int seed_i;
     /* physics */
     float vy, fall_y0;  /* airborne: vertical speed, height it left the ground at */
@@ -167,7 +169,7 @@ static ChrType types[MAX_TYPES];
 static int ntypes;
 static Enemy enemies[MAX_ENEMIES];
 static int nenemies;
-/* world blocks' placements (enemies.bin records, 36 B), kept from boot; placed while the block is on */
+/* world blocks' placements (enemies.bin records, ENEMY_REC B), kept from boot; placed while the block is on */
 static unsigned char *blk_rec[ENEMY_BLOCKS];
 static int blk_n[ENEMY_BLOCKS];
 #define EV_FREE 0x80      /* ev_off: a slot of a block that turned off (reused by the next enemy_block_add) */
@@ -645,7 +647,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     free(lb);  /* the VM keeps its own copy of the code */
     unsigned count = *(const unsigned *)(b + 4);
     for (unsigned i = 0; i < count && nenemies < MAX_ENEMIES; i++) {
-        const unsigned char *r = b + 8 + 36 * i;
+        const unsigned char *r = b + 8 + ENEMY_REC * i;
         char name[9] = {0};
         memcpy(name, r, 8);
 #ifdef ENEMY_ONLY
@@ -682,10 +684,10 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     unsigned count = *(const unsigned *)(b + 4);
     snprintf(blk_dir[block], sizeof blk_dir[block], "%s/", dir);
     free(blk_rec[block]);
-    blk_rec[block] = malloc(count * 36 + 1);
+    blk_rec[block] = malloc(count * ENEMY_REC + 1);
     blk_n[block] = 0;
     for (unsigned i = 0; blk_rec[block] && i < count && i < MAX_ENEMIES; i++) {
-        const unsigned char *r = b + 8 + 36 * i;
+        const unsigned char *r = b + 8 + ENEMY_REC * i;
         char name[9] = {0};
         memcpy(name, r, 8);
         int npc, think;
@@ -706,7 +708,7 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
         if (!t)
             continue;
         blk_type[block][blk_n[block]] = t;
-        memcpy(blk_rec[block] + 36 * blk_n[block]++, r, 36);
+        memcpy(blk_rec[block] + ENEMY_REC * blk_n[block]++, r, ENEMY_REC);
     }
 #ifndef NO_AI_SCRIPTS
     if (map_lua)
@@ -724,7 +726,7 @@ void enemy_block_add(int block)
         return;
     int i = 0, n = 0;
     for (int k = 0; k < blk_n[block]; k++) {
-        const unsigned char *r = blk_rec[block] + 36 * k;
+        const unsigned char *r = blk_rec[block] + ENEMY_REC * k;
         ChrType *t = NULL;
         t = blk_type[block][k];
         if (!t)
@@ -756,7 +758,7 @@ void enemy_respawn(void)
         if (e->registered)
             combat_unregister(&e->cc);
         ai_reset(&e->ai);  /* the goal tree back to the pool (place() memsets the slot) */
-        unsigned char r[36];
+        unsigned char r[ENEMY_REC];
         memcpy(r, e->rec, sizeof r);
         n += e->cc.dead;
         place(e->ct, r, i, e->block, e->seed_i);
@@ -1091,8 +1093,12 @@ static void update_one(Enemy *e, Player *pl, float dt)
     if (e->cc.dead) {
         if (e->registered)
             combat_unregister(&e->cc), e->registered = 0;
-        if (e->dead_t == 0)
+        if (e->dead_t == 0) {
             ai_reset(&e->ai);
+            /* FUN_14032f900, once per death: souls (NpcParam getSoul) and humanity points (FUN_14032fb30) */
+            if (!e->no_award)
+                progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
+        }
         e->dead_t += dt;
     }
 
@@ -1508,11 +1514,12 @@ int enemy_entity_enable(int entity, int on, int bit)
     return n + npc_entity_enable(entity, on, bit);
 }
 
-int enemy_entity_kill(int entity)
+int enemy_entity_kill(int entity, int award)
 {
     for (int i = 0; i < nenemies; i++)
         if (enemies[i].entity == entity && !enemies[i].cc.dead) {
             enemies[i].cc.hp = -1, enemies[i].cc.dead = 1;  /* below 0: the ESD death test f1000() < 0 */
+            enemies[i].no_award = !award;
             return 1;
         }
     return npc_entity_kill(entity);

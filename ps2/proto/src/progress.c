@@ -4,6 +4,7 @@
 #include "progress.h"
 #include "progress_data.h"
 #include "items.h"
+#include "flags.h"
 
 #define START_ESTUS 5  /* ASSUMED (TECH_DEBT save-5): Estus charges before kindling; DSR hands the flask out in the Asylum */
 
@@ -38,6 +39,44 @@ void progress_add_souls(int n)
     long long s = (long long)prog.souls + n;
     prog.souls = s < 0 ? 0 : s > 999999999 ? 999999999 : (int)s;
     changes++;
+}
+
+void progress_add_humanity(int n)
+{
+    int h = prog.humanity + n;
+    prog.humanity = h < 0 ? 0 : h > 99 ? 99 : h;  /* 99: the HUD's cap (FUN_140675760), EquipParamGoods maxNum */
+    changes++;
+}
+
+/* FUN_14032fb30 with the zone (progress.gd): no counting once either end flag is set (the zone's boss is dead,
+ * FUN_14048e3a0); points add to the 16-bit counter at flag_top (capped at 65000, FUN_14052b9e0); when drop[n] (n = the
+ * 4-bit drop count at flag_top + 16, < 10) is set and reached, the counter restarts at 0, the count goes up (cap 10,
+ * FUN_14052bb20) and the player gets 1 humanity. ASSUMED (TECH_DEBT hum-1): the award (an Arxan-obfuscated call,
+ * thunk 0x1428c7f67 -> 0x140359210, passed 1) adds 1 humanity directly; flag_value bit order as flags.h. */
+int progress_enemy_killed(int souls, int points, int zone)
+{
+    if (souls > 0)
+        progress_add_souls(souls);  /* soul rate multipliers (rings, FUN_140359300) not applied: TECH_DEBT hum-2 */
+    if (points <= 0 || zone <= 0 || !progress_data)
+        return 0;
+    const HumanityZone *z = NULL;
+    for (int i = 0; i < HUM_ZONES && !z; i++)
+        if (hum_zones[i].key == zone - 1)
+            z = &hum_zones[i];
+    if (!z)
+        return 0;
+    for (int k = 0; k < 2; k++)
+        if (z->end_flag[k] > 0 && flag_get(z->end_flag[k]))
+            return 0;
+    u32 pts = flag_value_get(z->flag_top, 16) + points, n = flag_value_get(z->flag_top + 16, 4);
+    flag_value_set(z->flag_top, 16, pts < 65000 ? pts : 65000);
+    unsigned short need = n < 10 ? (unsigned short)z->drop[n] : 0xFFFF;
+    if (need == 0xFFFF || need > pts)
+        return 0;
+    flag_value_set(z->flag_top, 16, 0);
+    flag_value_set(z->flag_top + 16, 4, n + 1 < 10 ? n + 1 : 10);
+    progress_add_humanity(1);
+    return 1;
 }
 
 int inv_count(u32 id)
@@ -169,8 +208,9 @@ int inv_use(u32 id)
     if (ITEM_CAT(id) != ITEM_GOODS || inv_count(id) <= 0)
         return 0;
     int done = 0;
-    if (item_goods_type(id) == GOODS_HUMANITY) {  /* Humanity: +1 (EquipParamGoods goodsType 4, behaviour by ESD) */
-        prog.humanity = prog.humanity < 99 ? prog.humanity + 1 : 99;
+    if (r && r->st[11] < 0) {  /* humanity items: the refId SpEffect's heroPointDamage (FUN_140403550 sums it over the
+                                * active effects, the player loses that much); Darksign's loss (99) waits for its warp */
+        progress_add_humanity(-r->st[11]);
         done = 1;
     } else if (r && (r->st[9] || r->st[10])) {  /* soul items: SpEffectParam.soul of refId */
         progress_add_souls((u16)r->st[9] | (int)(u16)r->st[10] << 16);

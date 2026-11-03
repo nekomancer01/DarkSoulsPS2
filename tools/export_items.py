@@ -30,7 +30,9 @@ Output (little-endian), four files that tools/pack.py puts into menu.pak:
         accessory:  st[0] refId (SpEffect)
         goods:      sub goodsType, x1 flags as items.bin, st: consumeHeroPoint, goodsUseAnim, refId, opmeMenuType,
                     maxNum, [5..8] spells only: Magic slotLength, requirementIntellect, requirementFaith,
-                    maxQuantity, [9, 10] souls given on use (SpEffectParam.soul of refId, low / high 16 bits)
+                    maxQuantity, [9, 10] souls given on use (SpEffectParam.soul of refId, low / high 16 bits),
+                    [11] SpEffectParam.heroPointDamage of refId (humanity lost on use: -1 Humanity, -2 Twin
+                    Humanities, -5 Fire Keeper Soul, 99 Darksign)
       reinforce {u32 row; u16 physicsAtkRate, magicAtkRate, fireAtkRate, thunderAtkRate, correctStrengthRate,
               correctAgilityRate, correctMagicRate, correctFaithRate (all x1000)} sorted by row
       names   NUL-terminated ASCII
@@ -133,6 +135,10 @@ def build(game):
         if sp and sp[1]["soul"] > 0:  # soul items: SpEffectParam.soul souls on use
             st = (st + [0] * 16)[:16]
             st[9], st[10] = s16(sp[1]["soul"] & 0xFFFF), s16(sp[1]["soul"] >> 16)
+        sp = P["SpEffectParam"].get(f["refId"]) if f["refCategory"] == 2 else None
+        if sp and sp[1]["heroPointDamage"]:  # humanity items: SpEffectParam.heroPointDamage (-1 Humanity, -2 Twin)
+            st = (st + [0] * 16)[:16]
+            st[11] = sp[1]["heroPointDamage"]
         name, hlp, desc = text("Item", i)
         rows.append((CAT_GOODS | i, f["sortId"], name, hlp, desc, f["iconId"], goods_tab(f), f["goodsType"],
                      f["weight"], 0, 0, goods_flags(f), st, 0))

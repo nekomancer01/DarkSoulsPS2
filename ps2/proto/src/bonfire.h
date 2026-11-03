@@ -33,9 +33,9 @@ void bonfire_update(Player *p, float dt);
 /* The bloodstain marker (r_box; DSR draws an SFX) */
 void bonfire_draw(void);
 /* Test scripts ("ev <cmd>"): hurt N (player damage), stain go OFFSET (teleport onto / OFFSET m east of the
- * bloodstain), humanity N, hollow 0|1, bf pad up|down|left|right|cross|circle (a rest-menu button), bf pick INDEX
+ * bloodstain), humanity N, hollow 0|1, killed SOULS POINTS ZONE (progress_enemy_killed), bf pad up|down|left|right|cross|circle (a rest-menu button), bf pick INDEX
  * (menu cursor onto the talk ESD's menu index: 8 Kindle, 11 Reverse Hollowing, 9 Leave), expect estus|estusmax|hp|stain|stainx|stainz|souls|humanity|lastbonfire|
- * hollow|bfstate|menu V, expect points|level ENTITY V.
+ * hollow|bfstate|menu|banner V, expect points|level ENTITY V.
  * 1 if the command was one of these. */
 int bonfire_test_cmd(const char *cmd, int *pass, int *fail);
 

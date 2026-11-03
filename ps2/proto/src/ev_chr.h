@@ -38,7 +38,7 @@ typedef struct EvChr {
 EvChr *ev_chr_get(int entity, int create);
 /* Event ops: 1 = handled, 0 = not for a character the port has (event.c logs it as a stub) */
 int ev_chr_enable(int entity, int on, int bit);
-int ev_chr_kill(int entity);
+int ev_chr_kill(int entity, int award);  /* award: the kill gives souls / humanity points */
 int ev_chr_ai(int entity, int on);
 int ev_chr_team(int entity, int team, int end_wait);
 int ev_chr_flag(int op, int entity, int on);  /* EVC_IMMORTAL .. EVC_ALWAYS_ON */

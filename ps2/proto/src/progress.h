@@ -62,6 +62,11 @@ extern Progress prog;
 
 void progress_new_game(void);           /* CharaInitParam start values, empty flags are flags.c's */
 void progress_add_souls(int n);         /* clamps at 0 and 999999999 */
+void progress_add_humanity(int n);      /* clamps at 0 and 99 */
+/* An enemy died (enemy.c, FUN_14032f900): its placement's souls (NpcParam getSoul), humanity points and zone
+ * (enemies.bin; zone = progress.gd zone key + 1, 0 none). Points go into the zone's counter; at a drop threshold the
+ * player gains 1 humanity (FUN_14032fb30). Returns the humanity gained. */
+int progress_enemy_killed(int souls, int points, int zone);
 int inv_count(u32 id);                  /* how many of an item are held (all its entries) */
 int inv_add(u32 id, int n);             /* n < 0 removes; returns the new count, -1 if the inventory is full */
 /* Equipment (prog.equip[EQ_*] holds param rows): the item in a slot (0 empty), whether id fits it (slot type,

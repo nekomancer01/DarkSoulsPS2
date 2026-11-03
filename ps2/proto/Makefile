@@ -232,7 +232,9 @@ $(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_colli
 	ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
 $(A)/evcommon.bin: $(A)/events.bin
 
-$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
+# (export_progress.py: the humanity zone keys; params.py: NpcParam getSoul / humanityLotId, ItemLotParam)
+$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(TS)/export_progress.py.sum \
+		$(TS)/gamedata.py.sum $(TS)/params.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $@ $(MAP)
 

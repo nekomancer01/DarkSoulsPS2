@@ -8,6 +8,7 @@
 #include "player.h"
 
 #define MAX_ENEMIES 64
+#define ENEMY_REC 40  /* enemies.bin placement record (tools/export_enemies.py) */
 
 /* Spawn every placement whose character pack exists (enemies.bin from the area pack, kept by the caller); loads the
  * character packs, enemyCommon's ESD and the AI scripts (aiCommon from common.pak + the area's map_lua, both lua0
@@ -39,7 +40,7 @@ unsigned enemy_ram_free(void);
  * state, 2 backread removed: off while either is set), kill (HP 0, death anim) */
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active);  /* c0000 stand-ins (npc.c) too */
 int enemy_entity_enable(int entity, int on, int bit);
-int enemy_entity_kill(int entity);
+int enemy_entity_kill(int entity, int award);
 /* A hit of hp from the player (test scripts: "ev chr ID damage HP"); 1 if it has such a character */
 int enemy_entity_damage(int entity, int hp);
 /* ev_chr.c: its record for that entity was created (placed characters read it from then on) */

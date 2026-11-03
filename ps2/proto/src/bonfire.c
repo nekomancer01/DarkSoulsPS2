@@ -67,6 +67,7 @@ static int bf_msg_done;     /* this anim's message handled */
 static float respawn_t;     /* > 0: world respawn pending */
 static float lit_t;         /* BONFIRE LIT banner clock (starts at -LIT_TEXT_DELAY) */
 static int lit_on;
+static int lit_text = HUD_LIT_TEXT;  /* the banner's text: BONFIRE LIT, or HUMANITY RESTORED (HUD_REV_TEXT) */
 static int last_level = -2; /* bf_entity's kindle stage last frame (an increase into 1..4 plays the ignite SFX) */
 static unsigned short test_pressed;  /* "ev bf pad ..." */
 
@@ -276,6 +277,9 @@ static void dialog_done(int yes)
         prog.humanity--;
         prog.chr_type = CHR_HUMAN;
         progress_touch();
+        /* DisplayBanner(3) = F23_YouRevived (FUN_140709d40's table 0x141a32a60); shown at once with BONFIRE LIT's
+         * fades (ASSUMED, TECH_DEBT a4-6: the exe's banner time 0x141c88d98 + 0xf6c is a runtime value) */
+        lit_t = 0, lit_on = 1, lit_text = HUD_REV_TEXT;
         printf("bonfire: hollowing reversed, humanity %d\n", (int)prog.humanity);
     }
 }
@@ -333,7 +337,7 @@ static void use_update(float dt)
         if (!bf_msg_done && bf_t >= m) {
             bf_msg_done = 1;
             ev_bonfire_light(bf_entity);
-            lit_t = -LIT_TEXT_DELAY, lit_on = 1;
+            lit_t = -LIT_TEXT_DELAY, lit_on = 1, lit_text = HUD_LIT_TEXT;
         }
         if (id != ANIM_LIGHT)
             bf_state = BF_IDLE;
@@ -394,13 +398,15 @@ void bonfire_hud(float dt)
 {
     (void)dt;
     int lh = hud_line_height();
-    if (lit_on && lit_t > 0) {  /* BONFIRE LIT: F23_Bonfire */
+    if (lit_on && lit_t > 0) {  /* BONFIRE LIT: F23_Bonfire; HUMANITY RESTORED: F23_YouRevived (same backdrop) */
         float a = lit_t < LIT_IN ? lit_t / LIT_IN : lit_t < LIT_HOLD ? 1 : 1 - (lit_t - LIT_HOLD) / LIT_OUT;
         if (a <= 0)
             lit_on = 0;
-        else
-            for (int i = HUD_LIT_BG; i <= HUD_LIT_TEXT; i++)
+        else {
+            for (int i = HUD_LIT_BG; i < HUD_LIT_TEXT; i++)
                 hud_layout(i, (int)(0x80 * a));
+            hud_layout(lit_text, (int)(0x80 * a));
+        }
     }
     if (bf_state == BF_IDLE && pl && pl->hp > 0) {  /* DisplayOneLineHelp 10010182 / 10010183 */
         s32 e = ev_bonfire_near((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw);
@@ -504,6 +510,11 @@ int bonfire_test_cmd(const char *cmd, int *pass, int *fail)
         progress_touch();
         return 1;
     }
+    int k3;
+    if (sscanf(cmd, "killed %d %d %d", &v, &e, &k3) == 3) {  /* an enemy death's award: souls, humanity points, zone */
+        printf("TEST ev killed %d %d %d: +%d humanity\n", v, e, k3, progress_enemy_killed(v, e, k3));
+        return 1;
+    }
     if (sscanf(cmd, "hollow %d", &v) == 1) {
         prog.chr_type = v ? CHR_HOLLOW : CHR_HUMAN;
         progress_touch();
@@ -548,8 +559,8 @@ int bonfire_test_cmd(const char *cmd, int *pass, int *fail)
         got = bf_state;
     else if (!strcmp(what, "menu"))  /* rest menu rows shown, 0 closed */
         got = menu_open ? menu_n : 0;
-    else if (!strcmp(what, "banner"))  /* BONFIRE LIT on screen */
-        got = lit_on && lit_t > 0;
+    else if (!strcmp(what, "banner"))  /* on screen: 0 none, 1 BONFIRE LIT, 2 HUMANITY RESTORED */
+        got = lit_on && lit_t > 0 ? 1 + (lit_text == HUD_REV_TEXT) : 0;
     else
         return 0;
     int ok = got == v;

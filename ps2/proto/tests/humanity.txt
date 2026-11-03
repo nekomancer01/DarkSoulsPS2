@@ -1,0 +1,68 @@
+# Humanity (src/progress.c, hud.c, bonfire.c, enemy.c): HUD counter, humanity from kills, souls from kills,
+# HUMANITY RESTORED. Zone 5 = key 4 = m10_01 block 1 index 0 (GameAreaParam 1010700, Taurus Demon): counter flags
+# 8520 (16 bits) + 8536 (4 bits), first drop at 100 points, then 105; the count stops once flag 11010901 is on.
+#   rm -f build/save/humtest*.bin
+#   tools/q -m 4 python3 tools/test-run.py build/proto.sym.elf ps2/proto/tests/humanity.txt build/test/hum
+option save host humtest
+option hud
+option nodemo
+wait 3
+wipe
+ev humanity 0
+ev hollow 1
+wait 0.5
+shot hum_hud_hollow0
+ev humanity 7
+ev hollow 0
+wait 0.5
+shot hum_hud_human7
+ev humanity 123
+wait 0.3
+shot hum_hud_99
+# 1 kill awards: points below the first threshold, then over it
+ev humanity 7
+ev killed 50 60 5
+ev expect humanity 7
+ev expect value 8520 16 60
+ev killed 100 50 5
+ev expect humanity 8
+ev expect value 8520 16 0
+ev expect value 8536 4 1
+ev killed 0 104 5
+ev expect humanity 8
+ev expect value 8520 16 104
+ev killed 0 1 5
+ev expect humanity 9
+ev expect value 8536 4 2
+# no zone / no points: souls only
+ev killed 25 10 0
+ev expect humanity 9
+ev killed 30 0 5
+ev expect souls 205
+ev expect value 8520 16 0
+# the zone's boss dead: no more counting
+ev flag 11010901 1
+ev killed 0 200 5
+ev expect humanity 9
+ev expect value 8520 16 0
+ev flag 11010901 0
+# 2 Reverse Hollowing banner: Hollow with humanity at the Firelink bonfire
+ev hollow 1
+ev chr 1020160 damage 99999
+spawn -51.8 -60.6 54.2 0
+wait 1
+ev action
+wait 3.5
+ev expect bfstate 3
+ev bf pick 11
+wait 0.1
+ev bf pad cross
+wait 0.3
+ev bf pad cross
+wait 0.5
+ev expect hollow 0
+ev expect humanity 8
+ev expect banner 2
+shot hum_restored
+ev summary
+end
