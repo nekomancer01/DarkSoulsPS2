@@ -65,19 +65,29 @@ def flatten(dlgs, names, roots):
     """-> nodes [(name, type, raw, x0, y0, x1, y1, hidden)], root indices; DFS, end filled in"""
     nodes, root_idx = [], []
 
-    def walk(dname, ox, oy, hidden, depth):
+    def walk(dname, ox, oy, hidden, depth, kx=1.0, ky=1.0):
         if depth > 12:
             return
         for el, (t, raw) in dlgs[dname].items():
             l, tp, r, bt = struct.unpack_from("<4h", raw)
-            x0, y0, x1, y1 = ox + l, oy + tp, ox + r, oy + bt
+            x0, y0, x1, y1 = ox + l * kx, oy + tp * ky, ox + r * kx, oy + bt * ky
             h = hidden or el.startswith(("bk_", "mg_")) or x1 <= 0 or y1 <= 0 or x0 >= 1280 or y0 >= 720
             k = len(nodes)
             nodes.append([el, t, raw, x0, y0, x1, y1, h, k + 1])
             if t == "Dialog":
                 ci = struct.unpack_from("<H", raw, 16)[0]
                 if ci < len(names):
-                    walk(names[ci], x0, y0, h, depth + 1)
+                    # a cursor template (cursor00..) fills the dialog that places it: its ink sprite is drawn at
+                    # the template's own size (e.g. 36 x 36) and stretched to the placing dialog's box, as DSR's
+                    # cursors cover their slot / row (ASSUMED from the layouts, TECH_DEBT menu-3)
+                    cx = cy = 1.0
+                    if names[ci].startswith("cursor"):
+                        ext = [struct.unpack_from("<4h", v[1]) for v in dlgs[names[ci]].values()]
+                        ew = max((e[2] for e in ext), default=0)
+                        eh = max((e[3] for e in ext), default=0)
+                        if ew > 0 and eh > 0:
+                            cx, cy = (x1 - x0) / ew, (y1 - y0) / eh
+                    walk(names[ci], x0, y0, h, depth + 1, cx, cy)
             nodes[k][8] = len(nodes)
 
     for r in roots:
@@ -179,6 +189,18 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
             strings.append(s)
         return string_of[s]
 
+    # A label's box often runs under the value printed at its right (DSR's narrower font fits; the port's HUD font
+    # does not): a left-aligned text ends where a right-aligned text on the same line begins, and drb.c squeezes it
+    texts = [n for n in nodes if n[1] in ("Text", "ScrollText") and not n[7]]
+    for lab in texts:
+        if lab[2][30] & 3:
+            continue
+        for val in texts:
+            if val is lab or not val[2][30] & 1:
+                continue
+            ov = min(lab[6], val[6]) - max(lab[4], val[4])
+            if ov > 0.5 * (lab[6] - lab[4]) and lab[3] < val[3] < lab[5]:
+                lab[5] = val[3] - 4
     body = bytearray()
     for k, (el, t, raw, x0, y0, x1, y1, h, end) in enumerate(nodes):
         typ = {"Dialog": T_DIALOG, "Sprite": T_SPRITE, "MonoRect": T_RECT, "GouraudRect": T_RECT,

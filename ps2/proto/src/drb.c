@@ -41,7 +41,7 @@ static const ScrSprite *sprites;
 static s8 *vis;              /* per node: 1 shown, 0 hidden, -1 default */
 /* cursors moved onto their targets: drawn in the DRB's own order (under the texts after them) */
 #define MAX_PLACE 8
-static struct { int node; float dx, dy; } place[MAX_PLACE];
+static struct { int node; float tx, ty, ax, ay, kx, ky; } place[MAX_PLACE];  /* template origin -> target box */
 static int nplace;
 static GSTEXTURE atlas;
 static int want_icons;
@@ -478,7 +478,7 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
     float y = t->align & DRB_MIDDLE ? (y0 + y1 - lh) / 2 : t->align & DRB_BOTTOM ? y1 - lh : y0;
     int r = t->r >> 1, g = t->g >> 1, b = t->b >> 1, a = t->a * alpha >> 7;
     /* one line per \n, the box's width wraps nothing (the FMG text has its own line breaks); a line wider than its box
-     * is squeezed to fit (TECH_DEBT menu-3) */
+     * is squeezed to fit, down to half width (TECH_DEBT menu-3) */
     char line[160];
     while (*s) {
         const char *e = strchr(s, '\n');
@@ -489,7 +489,7 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
         line[n] = 0;
         float w = hud_text_width(line) * fs, bw = x1 - x0, sx = fs;
         if (w > bw && bw > 8) {
-            float k = bw / w < 0.6f ? 0.6f : bw / w;
+            float k = bw / w < 0.5f ? 0.5f : bw / w;
             sx *= k, w *= k;
         }
         if (t->align & DRB_RIGHT)
@@ -531,8 +531,9 @@ void drb_place(int node, int at)
         nplace++;
     }
     place[i].node = node;
-    place[i].dx = (a->x0 + a->x1 - t->x0 - t->x1) / 2.0f;
-    place[i].dy = (a->y0 + a->y1 - t->y0 - t->y1) / 2.0f;
+    place[i].tx = t->x0, place[i].ty = t->y0, place[i].ax = a->x0, place[i].ay = a->y0;
+    place[i].kx = t->x1 > t->x0 ? (float)(a->x1 - a->x0) / (t->x1 - t->x0) : 1;
+    place[i].ky = t->y1 > t->y0 ? (float)(a->y1 - a->y0) / (t->y1 - t->y0) : 1;
     vis[node] = 1;
 }
 
@@ -542,39 +543,41 @@ void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
         return;
     char buf[256];
     int end = nodes[node].end;
-    int sp = 0, st_end[MAX_PLACE];
-    float st_dx[MAX_PLACE], st_dy[MAX_PLACE];
+    int cur = -1, cur_end = 0;  /* the placed cursor being drawn (not nested) */
     for (int k = node; k < end;) {
-        while (sp && k >= st_end[sp - 1])
-            sp--, dx -= st_dx[sp], dy -= st_dy[sp];
+        if (cur >= 0 && k >= cur_end)
+            cur = -1;
         const DrbNode *n = &nodes[k];
-        for (int i = 0; i < nplace && sp < MAX_PLACE; i++)
-            if (place[i].node == k) {
-                st_end[sp] = n->end, st_dx[sp] = place[i].dx, st_dy[sp] = place[i].dy;
-                dx += place[i].dx, dy += place[i].dy, sp++;
-                break;
-            }
+        for (int i = 0; cur < 0 && i < nplace; i++)
+            if (place[i].node == k)
+                cur = i, cur_end = n->end;
         /* inside a placed cursor the template's off-screen default hiding no longer applies */
-        int shown = k == node || (vis[k] < 0 ? !(n->flags & 1) || sp : vis[k] > 0);
+        int shown = k == node || (vis[k] < 0 ? !(n->flags & 1) || cur >= 0 : vis[k] > 0);
         if (!shown) {
             k = n->end;
             continue;
         }
-        switch (n->type) {
+        DrbNode m = *n;  /* its box: stretched from the template onto the target inside a placed cursor */
+        if (cur >= 0) {
+            float kx = place[cur].kx, ky = place[cur].ky, ax = place[cur].ax - place[cur].tx * kx,
+                  ay = place[cur].ay - place[cur].ty * ky;
+            m.x0 = ax + n->x0 * kx, m.x1 = ax + n->x1 * kx, m.y0 = ay + n->y0 * ky, m.y1 = ay + n->y1 * ky;
+        }
+        switch (m.type) {
         case DRB_SPRITE:
-            sprite(n, n->x0 + dx, n->y0 + dy, n->x1 + dx, n->y1 + dy, alpha);
+            sprite(&m, m.x0 + dx, m.y0 + dy, m.x1 + dx, m.y1 + dy, alpha);
             break;
         case DRB_RECT:
-            gsKit_prim_sprite(hud_gs(), R_HX(n->x0 + dx), n->y0 + dy, R_HX(n->x1 + dx), n->y1 + dy, DRB_Z,
-                              rgba(n->r >> 1, n->g >> 1, n->b >> 1, n->a * alpha >> 7));
+            gsKit_prim_sprite(hud_gs(), R_HX(m.x0 + dx), m.y0 + dy, R_HX(m.x1 + dx), m.y1 + dy, DRB_Z,
+                              rgba(m.r >> 1, m.g >> 1, m.b >> 1, m.a * alpha >> 7));
             break;
         case DRB_TEXT:
-            if (n->spr >= 0)
-                text_box(n, dx, dy, expand(drb_string(n->spr), buf, sizeof buf, k, fn, ctx), alpha);
+            if (m.spr >= 0)
+                text_box(&m, dx, dy, expand(drb_string(m.spr), buf, sizeof buf, k, fn, ctx), alpha);
             else if (fn) {  /* no string of its own: filled by the caller (by node hash) */
                 const char *s = fn(k, NULL, ctx);
                 if (s)
-                    text_box(n, dx, dy, s, alpha);
+                    text_box(&m, dx, dy, s, alpha);
             }
             break;
         }

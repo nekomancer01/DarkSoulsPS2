@@ -52,7 +52,7 @@ typedef const char *(*DrbTextFn)(int node, const char *tag, void *ctx);
 /* Draw node's subtree moved by dx, dy (alpha 0x80 = as exported). Default-hidden nodes are skipped unless shown, the
  * node itself is drawn even when hidden (draw a template at a place: dx, dy = place - template origin). */
 void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx);
-/* Move node (a cursor template) so its centre sits on node at's, and show it; it is then drawn in place by drb_draw in
+/* Stretch node (a cursor template) onto node at's box, and show it; it is then drawn in place by drb_draw in
  * the DRB's order (under the texts that follow it). at < 0 hides it. Kept until changed or the screen closes. */
 void drb_place(int node, int at);
 /* One node's sprite / rect stretched over x, y, w, h */

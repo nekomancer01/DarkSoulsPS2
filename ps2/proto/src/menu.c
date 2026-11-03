@@ -736,7 +736,7 @@ static void draw_equip(void)
                                               "data_simple_arrow", "data_simple_magic", "data_add_effect"};
             show(pick, dp[k], 0);
         }
-        for (int r = 0; r < 4; r++) {  /* rows drawn one by one below (list_row), empty ones not at all */
+        for (int r = 0; r < 5; r++) {  /* rows drawn one by one below (list_row), empty ones not at all */
             char nm[12];
             snprintf(nm, sizeof nm, "list%d", r);
             drb_show(drb_child(dl, nm), 0);
