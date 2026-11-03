@@ -608,6 +608,8 @@ static void slot_start(int s, Bank *b, const SEvent *e, int smp, float vol, int 
                               .pitch = pitch_of(sm->rate), .voll = v0, .volr = v0};
     snprintf(obuf.so.path, sizeof obuf.so.path, "%s", b->path);
     ops_call(SNDF_STREAM, sizeof obuf.so);
+    printf("snd: stream %d: %c%09u (%u K, %u ch, %s)\n", s, e->type, e->id, sm->bytes >> 10, sm->ch,
+           (e->flags & EF_LOOP) ? "loop" : "once");
 }
 
 static void slot_stop(int s)
