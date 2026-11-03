@@ -127,6 +127,36 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
         ;
 }
 
+/* GS local -> local copy of whole 8 KB pages (both page aligned: the bytes land in the same layout whatever their
+ * PSM), as CT32 64 x 32-pixel pages stacked at TBW 1 */
+static void vram_copy(u32 src, u32 dst, u32 bytes)
+{
+    static u64 chain[14] __attribute__((aligned(64)));
+    u64 *p = chain;
+    while (*(volatile u32 *)0x1000A000 & 0x100)  /* D2_CHCR STR */
+        ;
+    p[0] = DMA_TAG(6, 0, DMA_END, 0, 0, 0);
+    p[1] = 0;
+    p[2] = GIF_TAG(5, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
+    p[3] = GIF_AD;
+    p[4] = GS_SETREG_BITBLTBUF(src / 256, 1, GS_PSM_CT32, dst / 256, 1, GS_PSM_CT32);
+    p[5] = GS_BITBLTBUF;
+    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
+    p[7] = GS_TRXPOS;
+    p[8] = GS_SETREG_TRXREG(64, bytes / 256);
+    p[9] = GS_TRXREG;
+    p[10] = GS_SETREG_TRXDIR(2);
+    p[11] = GS_TRXDIR;
+    p[12] = 0;
+    p[13] = GS_TEXFLUSH;
+    SyncDCache(chain, (char *)chain + sizeof chain - 1);
+    *(volatile u32 *)0x1000A020 = 0;
+    *(volatile u32 *)0x1000A030 = (u32)chain & 0x0FFFFFFF;
+    *(volatile u32 *)0x1000A000 = 0x105;
+    while (*(volatile u32 *)0x1000A000 & 0x100)
+        ;
+}
+
 /* VRAM: atlas (TBW 8), the icon (one PSMT8 page, TBW 2), three CLUTs (atlas 0 / 1, icon) */
 static u32 icon_vram(void) { return base + ((H->aw * H->ah + 8191) & ~8191u); }
 static u32 clut_vram(int i) { return icon_vram() + 8192 + i * 1024; }
@@ -401,16 +431,25 @@ void loading_tick(int can_read)
     else if (st == 3)
         a -= dt;
     if (can_read && H) {
-        if (top && tc_pin(need)) {  /* boot: the map pool exists now: move there, before the boot's last uploads */
-            tc_unpin();
-            top = 0;
-            unsigned char *k = keep;
-            keep = 0;
-            int ok = read_file();
-            if (k)
-                ui_free(k, keep_bytes);
-            if (ok && icon_request(hint, 1) > 0)
-                icon_collect();
+        u32 pool;
+        if (top && (pool = tc_pin(need))) {  /* boot: the map pool exists now: move there, before the boot's last uploads */
+            if ((u32)gs->CurrentPointer <= base) {  /* still intact at the top: one GS copy, no second read */
+                vram_copy(base, pool, need);
+                base = pool, top = 0;
+                for (int i = 0; i < 2; i++)
+                    tex[i].Vram = base, tex[i].VramClut = clut_vram(i);
+                icon_t.Vram = icon_vram(), icon_t.VramClut = clut_vram(2);
+            } else {  /* the boot's allocations reached it: read loading.bin again */
+                tc_unpin();
+                top = 0;
+                unsigned char *k = keep;
+                keep = 0;
+                int ok = read_file();
+                if (k)
+                    ui_free(k, keep_bytes);
+                if (ok && icon_request(hint, 1) > 0)
+                    icon_collect();
+            }
             printf("loading: moved to the map pool at %u KB\n", base >> 10);
         }
         icon_collect();
