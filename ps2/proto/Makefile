@@ -62,7 +62,7 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o)
+	gamedata.o ragdoll.o nav.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -204,13 +204,14 @@ $(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_colli
 	ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
 $(A)/evcommon.bin: $(A)/events.bin
 
-$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(AREA_SIG)
+$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $@ $(MAP)
 
 # Enemy / NPC character: FLVER, skeleton, anims, TAE windows, one variant per placed NpcParam / ThinkParam pair
 # (enemy_parts lives in area.py: an export_enemies.py edit re-exports enemies.bin only)
 CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum \
+	$(TS)/havok_ragdoll.py.sum \
 	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 $(A)/c%/chr.bin: $(CHR_DEPS)
 	@mkdir -p $(@D)
@@ -256,7 +257,9 @@ $(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/gamedata.py.sum $(TS)/havok_ani
 
 $(O)/combat.o: src/combat.h
 $(O)/player.o $(O)/main.o $(O)/enemy.o: src/combat.h
-$(O)/enemy.o: src/enemy.h src/ai.h src/model.h src/esd.h
+$(O)/enemy.o: src/enemy.h src/ai.h src/model.h src/esd.h src/ragdoll.h src/nav.h
+$(O)/ragdoll.o: src/ragdoll.h src/model.h src/collision.h
+$(O)/nav.o: src/nav.h
 $(O)/ai.o: src/ai.h src/lua0.h
 $(O)/lua0.o: src/lua0.h
 $(O)/main.o $(O)/player.o: src/model.h

@@ -15,6 +15,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `souls.py` | DCX, BND3, FMG, PARAMDEF/PARAM, TAE |
 | `params.py` | Every param table, with Paramdex row names and field descriptions |
 | `havok_anim.py` | Havok skeletons + spline-compressed animations |
+| `havok_ragdoll.py` | A character's Havok ragdoll (chrbnd hkx): capsule bodies, joints, the bone each follows |
 | `havok_collision.py` | Map collision (hkx) -> world-space triangles |
 | `esd.py` | EzState (.esd) reader + expression decompiler |
 | `lua50.py`, `lua50_pseudo.py` | Lua 5.0 bytecode disassembler, pseudo-code |

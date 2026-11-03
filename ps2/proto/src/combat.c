@@ -211,12 +211,15 @@ int combat_sweep(const float a[3], const float b[3], float r, const CombatAttack
         CombatChr *c = chrs[i];
         if (!c || c->team == atk->team || c->dead || hit_window[i] == atk->window)
             continue;
-        float rr = c->radius, lo = c->pos[1] + rr, hi = c->pos[1] + c->height - rr;
+        float rr = c->radius, h = c->height;
+        if (c->hit_test)  /* broad phase: the bounds of its own capsules */
+            rr = c->reach > rr ? c->reach : rr, h = c->top > h ? c->top : h;
+        float lo = c->pos[1] + rr, hi = c->pos[1] + h - rr;
         if (hi < lo)
-            lo = hi = c->pos[1] + c->height * 0.5f;
+            lo = hi = c->pos[1] + h * 0.5f;
         float p[3] = {c->pos[0], lo, c->pos[2]}, q[3] = {c->pos[0], hi, c->pos[2]};
         float reach = r + rr;
-        if (seg_seg_d2(a, b, p, q) > reach * reach)
+        if (seg_seg_d2(a, b, p, q) > reach * reach || (c->hit_test && !c->hit_test(c, a, b, r)))
             continue;
         hit_window[i] = atk->window;
         combat_apply(c, atk);

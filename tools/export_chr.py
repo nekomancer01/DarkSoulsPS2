@@ -17,9 +17,10 @@ Animations: the ESD essentials (ANIMS) + every anim id the variants' battle / lo
 for variants that use them.
 
 chr.bin (little-endian):
-  header  "DSRC", u32 version 5, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
+  header  "DSRC", u32 version 6, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
           u32 hide_bits (every variant mesh bit used), u32 upper[2] (bit per bone: the first "Spine" bone and its
-          descendants, the guard pose layer)                                                              (48 B)
+          descendants, the guard pose layer), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
+          the bodies: horizontal distance from the root axis and height, radius included)                    (64 B)
   variant i32 npc, think, hp, logic, battle, anim_offset; u32 show_bits;
           f32 radius, height, turn deg/s, def_phys, poise (superArmorDurability),
           f32 eye_dist, eye_ang_x, eye_ang_y, ear_dist, ear_cut, near, mid, far, out, sight_forget, sound_forget (s),
@@ -31,12 +32,19 @@ chr.bin (little-endian):
           f32 a[3], b[3] (capsule ends, bone-local: AtkParam hit0_DmyPoly1 / 2),
           f32 atkPhysCorrection / 100 (0 on the NPC rows read as 1)                                        (60 B)
   root    f32 x, z, yaw at 30 fps from the anim start (forward = -z), as souls.root_motion
+  ragdoll (havok_ragdoll.py: the chrbnd hkx's hkaRagdollInstance) per body: i16 bone (skeleton bone it follows),
+          i16 parent body (its joint's other body, -1 the root), f32 a[3], b[3] (capsule ends in the bone's space),
+          f32 ba[3], bb[3] (the same in the body frame), f32 radius, mass, f32 q[4], t[3] (body frame in the bone's
+          space), f32 pivot_child[3] (joint in this body's frame), pivot_parent[3] (in the parent body's frame),
+          f32 axis_child[3], axis_parent[3] (the joint's twist axis in each body's frame),
+          f32 cone (max angle between the two twist axes, rad), twist_min, twist_max (rad)                 (148 B)
 Usage: export_chr.py <game dir> <chr id e.g. c2900> <map id> <out dir> [lod 0/1/2] [tex max px]"""
 import math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import havok_anim as ha
+import havok_ragdoll
 import lua50
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 import export_model
@@ -50,8 +58,10 @@ ANIMS = [0, 200, 201, 202, 203, 500, 700, 701, 702, 703, 2000, 2001, 2002, 2004,
 # Script constants in these ranges name anims: attacks / special actions, steps, guard poses
 SCRIPT_ANIM = [(3000, 3999), (700, 799), (6000, 6999), (9900, 9999)]
 # ChrActionFlag: 5 parry window, 7 disable turning, 8 invincible, 24 super armour, and the enemy ESD gates (exe
-# FUN_140340580 -> ctx+0x19C): 23 bit0 (f107), 11 / 79 bit1 (f118 steps), 86 bit4 (f120 combo continuation)
-FLAGS = (5, 7, 8, 11, 23, 24, 79, 86)
+# FUN_140340580 -> ctx+0x19C): 23 bit0 (f107), 11 / 79 bit1 (f118 steps), 86 bit4 (f120 combo continuation);
+# 12: the ragdoll takes over (ASSUMED from where it sits: only in the deaths 22xx, ladder falls 16xx and thrown deaths
+# 25xx, near the moment the body reaches the ground; TECH_DEBT enemy-17)
+FLAGS = (5, 7, 8, 11, 12, 23, 24, 79, 86)
 LODS = {0: 0x0, 1: 0x1000000, 2: 0x2000000}
 PALETTE = 61
 MAX_ANIMS = 64  # model.c table
@@ -150,6 +160,40 @@ def qt_mul(a, b):
     qb, tb = b
     r = ha.qrot(qa, tb)
     return ha.qmul(qa, qb), (ta[0] + r[0], ta[1] + r[1], ta[2] + r[2])
+
+
+RAG_BODY = 148
+
+
+def ragdoll_blob(rag, names, full_names, full_parents, full_world):
+    """chr.bin ragdoll section (format above) + (reach, top). Each body follows the exported bone it maps to (or its
+    nearest kept ancestor); bind frames from the anibnd skeleton, which the hkx bodies match (checked on c2510)."""
+    if not rag:
+        return b"", 0.0, 0.0
+    parent_of = {j["child"]: j for j in rag["joints"]}
+    out, reach, top = b"", 0.0, 0.0
+    for k, b in enumerate(rag["bodies"]):
+        name = b["bone"]
+        fi = full_names.index(name) if name in full_names else 0
+        while full_names[fi] not in names and full_parents[fi] >= 0:
+            fi = full_parents[fi]
+        bone = names.index(full_names[fi]) if full_names[fi] in names else 0
+        bw = full_world[fi]
+        bt, bq = b["world"]
+        wa = [bt[i] + v for i, v in enumerate(ha.qrot(bq, b["a"]))]
+        wb = [bt[i] + v for i, v in enumerate(ha.qrot(bq, b["b"]))]
+        for p in (wa, wb):
+            reach = max(reach, math.hypot(p[0], p[2]) + b["radius"])
+            top = max(top, p[1] + b["radius"])
+        q = ha.qmul(export_model.qconj(bw[1]), bq)
+        j = parent_of.get(k)
+        out += struct.pack("<2h6f6f2f4f3f3f3f3f3f3f", bone, j["parent"] if j else -1,
+                           *to_local(bw, wa), *to_local(bw, wb), *b["a"], *b["b"], b["radius"], b["mass"], *q, *to_local(bw, bt),
+                           *(j["pivot_child"] if j else (0, 0, 0)), *(j["pivot_parent"] if j else (0, 0, 0)),
+                           *(j["axis_child"] if j else (1, 0, 0)), *(j["axis_parent"] if j else (1, 0, 0)),
+                           j["cone"] if j else 0, j["twist_min"] if j else 0, j["twist_max"] if j else 0)
+    assert len(out) == RAG_BODY * len(rag["bodies"]), len(out)
+    return out, reach, top
 
 
 def reduce_skeleton(names, parents, ref, keep):
@@ -342,6 +386,12 @@ def main():
                     capsule_bones.add(dmy_local(a[1]["hit0_DmyPoly1"])[0])
                     capsule_bones.add(dmy_local(a[1]["hit0_DmyPoly2"] if a[1]["hit0_DmyPoly2"] > 0
                                                 else a[1]["hit0_DmyPoly1"])[0])
+    # ragdoll (c####.hkx in the chrbnd): its bodies are the hit capsules and the death ragdoll; their bones stay
+    rag = havok_ragdoll.ragdoll(chrbnd[f"{cid}.hkx"]) if f"{cid}.hkx" in chrbnd else None
+    full_names, full_parents, full_world = list(names), list(parents), ha.world(parents, ref)
+    for b in (rag["bodies"] if rag else []):
+        if b["bone"] in sk_index:
+            capsule_bones.add(sk_index[b["bone"]])
     remap, fold = None, None
     full_bones = len(names)
     if len(names) > PALETTE:
@@ -392,11 +442,13 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     write_model(os.path.join(out_dir, "model.bin"), names, parents, ref, mb, [])
     append_compact_anims(os.path.join(out_dir, "model.bin"), len(names), anims)
-    HDR, VAR = 48, 216
+    HDR, VAR = 64, 216
     var_off = HDR
     anim_off = var_off + VAR * len(variants)
     win_off = anim_off + 24 * len(info)
     root_off = win_off + 60 * len(windows)
+    rag_off = root_off + 12 * len(roots)
+    rag_blob, reach, top = ragdoll_blob(rag, names, full_names, full_parents, full_world)
     hide_bits = 0
     var_blob = b""
     for npc_id, tid, npc, t in variants:
@@ -420,17 +472,20 @@ def main():
             j = parents[j]
         if spine >= 0 and j == spine:
             upper |= 1 << i
-    hdr = struct.pack("<4s11I", b"DSRC", 5, len(info), len(windows), len(variants), anim_off, win_off, root_off,
-                      var_off, hide_bits, upper & 0xFFFFFFFF, upper >> 32)
+    hdr = struct.pack("<4s13I2f", b"DSRC", 6, len(info), len(windows), len(variants), anim_off, win_off, root_off,
+                      var_off, hide_bits, upper & 0xFFFFFFFF, upper >> 32, rag_off, len(rag_blob) // RAG_BODY, reach,
+                      top)
     assert len(hdr) == HDR
     body = var_blob + b"".join(struct.pack("<if4I", *i) for i in info)
     body += b"".join(struct.pack("<4hi5f6ff", t, ba, bb, lvl, arow, s, e, dmg, rad, poise, *pa, *pb, rate)
                      for t, ba, bb, lvl, arow, s, e, dmg, rad, poise, pa, pb, rate in windows)
     body += b"".join(struct.pack("<3f", *r) for r in roots)
+    body += rag_blob
     with open(os.path.join(out_dir, "chr.bin"), "wb") as f:
         f.write(hdr + body)
     print(f"{cid}: {len(variants)} variants {[(n, t) for n, t, _, _ in variants]}, {shown} meshes, {len(mb.tris)} tris, "
-          f"{len(names)} bones, {len(anims)} anims {[i[2] for i in ids]}, {len(windows)} windows")
+          f"{len(names)} bones, {len(anims)} anims {[i[2] for i in ids]}, {len(windows)} windows, "
+          f"{len(rag_blob) // RAG_BODY} ragdoll bodies")
 
 
 if __name__ == "__main__":
