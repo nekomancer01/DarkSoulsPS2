@@ -61,6 +61,7 @@ Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or
 | ps2dev toolchain with gsKit | Get a ps2dev release from https://github.com/ps2dev/ps2dev. `ps2/env.sh` looks for it in `~/tools/ps2dev-2.0.0/ps2dev`; set `PS2DEV=/your/path` if it's elsewhere. |
 | Python 3.10 or newer | The tools need Pillow and numpy (step 3). |
 | gcc | Compiles a few small native helpers on first use. |
+| libmpg123 | Decodes the game's MP3 sound banks for the sound packs (Debian/Ubuntu `libmpg123-0`, Fedora/Arch `mpg123`). |
 | PCSX2 2.x | The Flatpak `net.pcsx2.PCSX2` is what the run scripts use. |
 | RAM | The first full export needs several GB. |
 

@@ -6,6 +6,9 @@
  *                stream refills, SND_LOAD_STEP bytes at a time); status.load_done = its id once it is in
  *   SNDF_FRAME   SndFrame -> SndStatus: this frame's voice commands, key offs before key ons
  *   SNDF_STREAM  SndStreamOpen -> SndStatus: (re)start a disc stream in a slot
+ *   SNDF_DISC_LOCK / _TRY / _UNLOCK (disc server, no args) -> SndDisc: the disc lock (src/pack.c pack_disc_lock). The
+ *                BIOS CD file system takes one reader at a time: the EE holds the lock over each cdrom0: fio request,
+ *                the IOP's own disc reads (stream refills and opens, bank loads) run only while they can take it
  * Voices: 0-23 core 0, 24-47 core 1. Stream slot s plays on core 1 voices SND_STREAM_VOICE(s) (left) and + 1 (right).
  * Streamed data (tools/export_audio.py str.bin): SPU2 ADPCM in chunks of `chunk` bytes per channel, channels
  * interleaved by chunk ([L chunk][R chunk][L chunk]...); the IOP rewrites the block flags for its ring buffer. */
@@ -13,11 +16,15 @@
 #define DSRSND_RPC_H
 
 #define DSRSND_RPC_ID 0x0D5A5D01      /* frames (SNDF_INIT, SNDF_FRAME) */
-#define DSRSND_RPC_OPS_ID 0x0D5A5D02  /* ops (SNDF_LOAD, SNDF_STREAM): may wait on the disc */
+#define DSRSND_RPC_OPS_ID 0x0D5A5D02  /* ops (SNDF_LOAD, SNDF_STREAM) */
+#define DSRSND_RPC_DISC_ID 0x0D5A5D03 /* disc lock (SNDF_DISC_*) */
 #define SNDF_INIT 1
 #define SNDF_LOAD 2
 #define SNDF_FRAME 3
 #define SNDF_STREAM 4
+#define SNDF_DISC_LOCK 5    /* wait for the lock */
+#define SNDF_DISC_TRY 6     /* take it if free */
+#define SNDF_DISC_UNLOCK 7
 
 #define SND_LOAD_STEP 16384
 #define SND_CMD_MAX 96
@@ -52,6 +59,7 @@ typedef struct {
 #define SNDS_PLAYING 1
 #define SNDS_ENDING 2  /* non-looping stream past its data: silence until the voices are keyed off */
 #define SNDS_ERROR 3
+#define SNDS_OPENING 4  /* opened by the EE, waiting for the disc */
 
 typedef struct {
     unsigned int endx[2];        /* ENDX switch of core 0 / core 1: voices that reached an end block */
@@ -61,6 +69,10 @@ typedef struct {
     unsigned int load_done, load_failed;  /* id of the last finished / failed SNDF_LOAD */
     unsigned int pad[2];
 } SndStatus;  /* 64 bytes */
+
+typedef struct {
+    unsigned int got, pad[15];  /* SNDF_DISC_*: 1 = the EE holds the lock */
+} SndDisc;  /* 64 bytes */
 
 typedef struct {
     unsigned int id, offset, size, spu_addr;  /* size: multiple of 64 */
