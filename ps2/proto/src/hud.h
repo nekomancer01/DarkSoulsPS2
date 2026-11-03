@@ -1,5 +1,5 @@
-/* DS1 HUD from DSR's own assets (menu.bin, tools/export_menu.py): HP / stamina bars, quick slots, soul counter,
- * YOU DIED banner (while hp < 0); text in DSFont24. Drawn through gsKit after the 3D scene. */
+/* DS1 HUD from DSR's own assets (menu.bin, tools/export_menu.py): HP / stamina bars, humanity counter, quick slots,
+ * soul counter, YOU DIED banner (while hp < 0); text in DSFont24. Drawn through gsKit after the 3D scene. */
 #ifndef HUD_H
 #define HUD_H
 
@@ -12,7 +12,10 @@ enum {
     HUD_END_HP, HUD_END_SP, HUD_BAR_START, HUD_BAR_START1, HUD_SLOT_L_PLATE, HUD_SLOT_L_ICON, HUD_SLOT_R_PLATE,
     HUD_SLOT_R_ICON, HUD_SLOT_I_FRAME, HUD_SLOT_I_PLATE, HUD_SLOT_I_ICON, HUD_SLOT_I_COUNT, HUD_ITEM_NAME,
     HUD_SOUL_PLATE, HUD_SOUL_LINE, HUD_SOUL_TEXT, HUD_DIED_BG, HUD_DIED_GRAD0, HUD_DIED_GRAD1, HUD_DIED_BAR,
-    HUD_DIED_TEXT, HUD_LIT_BG, HUD_LIT_GRAD0, HUD_LIT_GRAD1, HUD_LIT_BAR, HUD_LIT_TEXT, HUD_MENU_PANEL, HUD_MENU_RULE,
+    HUD_DIED_TEXT, HUD_LIT_BG, HUD_LIT_GRAD0, HUD_LIT_GRAD1, HUD_LIT_BAR, HUD_LIT_TEXT, HUD_REV_TEXT,
+    HUD_HUM_BG, HUD_HUM_RING1, HUD_HUM_RING0,
+    HUD_HUM_NUM,                   /* + d: units digit d (humanNum_0d); + 10 + d: tens digit d (humanNum_1d) */
+    HUD_HUM_STONE = HUD_HUM_NUM + 20, HUD_MENU_PANEL, HUD_MENU_RULE,
     HUD_LAYOUT_COUNT
 };
 /* menu.bin strings: the Warrior's kit (CharaInitParam 3000 + Estus), then menu words from the FMGs */

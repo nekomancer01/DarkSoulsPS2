@@ -23,7 +23,8 @@ Output menu.bin (little-endian):
   atlas   {u32 w, h, clut offset, pixel offset}  (PSMT8 pixels, CSM1 CLUT of RGBA, alpha 0..0x80)
   sprite  {u16 atlas, u, v, w, h, pad}           (texels)
   glyph   {u16 u, v, w, h; s16 pre-space, advance} for ASCII 32..126 (atlas 0)
-  layout  {s16 sprite (-1: solid rect), x, y, w, h (640x448 pixels); u8 r, g, b, a}  in the order of LAYOUT
+  layout  {s16 sprite (-1: solid rect), x, y, w, h (640x448 pixels); u8 r, g, b, a (solid rects: their colour;
+          sprites: 255, 255, 255, 0x80 or a TINT colour)}  in the order of LAYOUT
   strings u32 offsets, then NUL-terminated ASCII, in the order of STRINGS
 Usage: export_menu.py <game dir> <out.bin> [preview.png]"""
 import math, os, struct, sys
@@ -59,9 +60,22 @@ LAYOUT = [
     ("lit_bg", "F23_Bonfire", "BG"), ("lit_grad0", "F23_Bonfire", "BG_grad00"),
     ("lit_grad1", "F23_Bonfire", "BG_grad01"), ("lit_bar", "F23_Bonfire", "BG_bar"),
     ("lit_text", "F23_Bonfire", "main_text_revive"),
+    # HUMANITY RESTORED (Reverse Hollowing: DisplayBanner(3) -> FUN_140709d40's F23 table entry 3, F23_YouRevived): the
+    # BONFIRE LIT backdrop pieces with this text
+    ("rev_text", "F23_YouRevived", "main_text_revive"),
+    # humanity counter (F20-02, FUN_1406751d0 / FUN_140675760): disc, black and white rings, the units digits
+    # humanNum_00..09 and the tens digits humanNum_10..19 (one sprite per digit at each place), the curse skull
+] + [("hum_bg", "F20-00/F20-02", "ring_BG"), ("hum_ring1", "F20-00/F20-02", "icon_ring_1"),
+     ("hum_ring0", "F20-00/F20-02", "icon_ring_0")] + [
+    (f"hum_num{k:02d}", "F20-00/F20-02", f"humanNum_{k:02d}") for k in range(20)] + [
+    ("hum_stone", "F20-00/F20-02", "icon_stone"),
 ]
+# MenuColorTableParam rows put into a sprite entry's r, g, b, a (a tint the runtime may apply; sprites are otherwise
+# drawn untinted): the humanity digits' FrpgMenuDlgObjFeColorPlate colour while Hollow (row 60 "FE人間性数値 亡者時グレーアウト用")
+TINT = {f"hum_num{k:02d}": 60 for k in range(20)}
 # stored size factors (x, y) for long / large sprites that are drawn stretched (fits the atlas in 512x256)
-STORE = {"frame_hp": (0.5, 1), "frame_sp": (0.5, 1), "fill_hp": (0.5, 1), "fill_sp": (0.5, 1), "died_text": (0.5, 0.5), "lit_text": (0.5, 0.5)}
+STORE = {"frame_hp": (0.5, 1), "frame_sp": (0.5, 1), "fill_hp": (0.5, 1), "fill_sp": (0.5, 1), "died_text": (0.5, 0.5),
+         "lit_text": (0.5, 0.5), "rev_text": (0.5, 0.5)}
 # menu panel pieces (not from a DRB dialog: a plain read-only screen built from Menu01's parts): texture, texel rect,
 # 1280x720 screen rect, stored scale (the leather panel is stored small and stretched, it has no fine detail)
 MENU_SPRITES = [
@@ -279,10 +293,13 @@ def main():
             pk.defer(img, lambda x, y, e=sprites[-1]: e.__setitem__(slice(1, 3), [x, y]))
         return sprite_of[key]
 
+    P = souls.game_params(game)
     layout = []
     for name, t, raw, x0, y0, x1, y1 in want:
         x, y = round(x0 * SX), round(y0 * SY)
         w, h = max(1, round(x1 * SX) - x), max(1, round(y1 * SY) - y)
+        if name in TINT:  # the two digit places share their ten sprites: one size for both
+            w, h = max(1, round((x1 - x0) * SX)), max(1, round((y1 - y0) * SY))
         spr, col = -1, (255, 255, 255, 0x80)
         if t == "Sprite":
             tl, tt, tr, tb, ti = struct.unpack_from("<5h", raw, 16)
@@ -290,6 +307,9 @@ def main():
                 kx, ky = STORE.get(name, (1, 1))
                 spr = add_sprite(tex_names[ti], (max(0, tl), max(0, tt), tr, tb), max(1, round(w * kx)),
                                  max(1, round(h * ky)))
+            if name in TINT:
+                c = P["MenuColorTableParam"][TINT[name]][1]
+                col = (c["r"], c["g"], c["b"], (c["a"] * 0x80 + 127) // 255)
         elif t in ("MonoRect", "GouraudRect"):
             at = 20 if t == "GouraudRect" else 24
             cs = [raw[at + 4 * k:at + 4 + 4 * k] for k in range(4 if t == "GouraudRect" else 1)]
@@ -305,7 +325,6 @@ def main():
     pk.place_all(atlas)
 
     # icons
-    P = souls.game_params(game)
     msg = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(os.path.join(game, "msg", "ENGLISH", "item.msgbnd.dcx")))}
     menu_msg = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(os.path.join(game, "msg", "ENGLISH", "menu.msgbnd.dcx")))}
     icons = Image.new("RGBA", (ATLAS_W, 128), (0, 0, 0, 0))

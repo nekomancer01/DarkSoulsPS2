@@ -193,6 +193,27 @@ static void slot_icon(int layout, int kit)
     hud_sprite(hud_icon(kit), e->x + (e->w - s) / 2, e->y + (e->h - s) / 2, s, s, 0x80, 0x80, 0x80, 0x80);
 }
 
+/* Humanity counter (F20-02): FUN_1406753f0 updates it every frame. The number is min(humanity, 99) as two digits, the
+ * tens always shown ("07"; FUN_140675760 shows humanNum_1<n / 10> and humanNum_0<n % 10>); while Hollow (chrType 8:
+ * the exe's table 0x141a2b1e0 is 1 only there) the digits take MenuColorTableParam 60's grey (the TINT export_menu.py
+ * stored in the digit entries). Not drawn (TECH_DEBT hud-3): the flame (Null elements icon_fire_0..9 swapped by the
+ * F20_icon_fire_<min(humanity, 9)> animation, FUN_140675530) and the curse skull (icon_stone, shown while PlayerIns
+ * +0x117 is set: the port has no curse). */
+#define HUM_RING_FADE 70  /* FUN_1406753f0: icon_ring_0's FrpgMenuDlgObjFadePlate value 0x1bee = 70 by default, taken as
+                           * alpha percent (ASSUMED, TECH_DEBT hud-3) */
+static void humanity_counter(void)
+{
+    int n = prog.humanity < 0 ? 0 : prog.humanity > 99 ? 99 : prog.humanity;
+    draw_layout(HUD_HUM_BG, 0x80);
+    draw_layout(HUD_HUM_RING1, 0x80);
+    draw_layout(HUD_HUM_RING0, 0x80 * HUM_RING_FADE / 100);
+    for (int k = 0; k < 2; k++) {
+        const HudRect *e = &lay[HUD_HUM_NUM + (k ? 10 + n / 10 : n % 10)];
+        int c = prog.chr_type == CHR_HOLLOW ? 0x80 * e->r / 255 : 0x80;  /* r = g = b in row 60 */
+        hud_sprite(e->sprite, e->x, e->y, e->w, e->h, c, c, c, 0x80);
+    }
+}
+
 /* ---- boss bars (EMEVD 2003[11]) ---- */
 static int boss_ent[2] = {-1, -1}, boss_name[2];
 
@@ -239,6 +260,7 @@ void hud_draw(const Player *p, float dt)
         0x48, 0xA8, 0x40);
     draw_layout(HUD_BAR_START1, 0x80);
     draw_layout(HUD_BAR_START, 0x80);
+    humanity_counter();
     /* quick slots: left hand (shield), right hand (sword), item (Estus Flask) */
     draw_layout(HUD_SLOT_L_PLATE, 0x80);
     slot_icon(HUD_SLOT_L_ICON, STR_WEP_L - STR_WEP_R);
