@@ -519,6 +519,19 @@ def check_gather_helpers(rng):
     X = np.concatenate([rng.uniform(-1, 3, 3000), [0.0, -0.0, 1.0, np.inf, 1e-300]]).reshape(-1, 1)
     a, b = both(lambda: (dsr_light.srgb_lin_many(X).tolist(), dsr_light._pow_many(np.abs(X), 1 / 2.2, False).tolist()))
     same(a, b, "srgb_lin_many / pow")
+    import havok_collision as hc, struct
+    nv = int(rng.integers(0, 300))
+    raw = rng.uniform(-50, 50, (nv, 4)).astype("<f4").tobytes()
+    qs = tuple(struct.unpack("<12f", rng.uniform(-2, 2, 12).astype("<f4").tobytes()))
+    for q in (qs, (0, 0, 0) + qs[3:4] + (0, 0, 0, 1) + (1, 1, 1) + qs[11:]):
+        ref = [struct.unpack_from("<3f", raw, 16 * i) for i in range(nv)]
+        if q[:3] != (0, 0, 0) or q[4:8] != (0, 0, 0, 1) or q[8:11] != (1, 1, 1):
+            ref = [hc._qs_apply(q, v) for v in ref]
+        same(ref, list(map(tuple, hc._verts_np(raw, 0, nv, q).tolist())), "hkx vertices")
+        part = dict(scale=tuple(rng.uniform(0.5, 2, 3).tolist()), rot=tuple(rng.uniform(-180, 180, 3).tolist()),
+                    pos=tuple(rng.uniform(-100, 100, 3).tolist()))
+        same([hc._place(part, v) for v in ref], list(map(tuple, hc._place_np(part, np.array(ref).reshape(-1, 3)).tolist())),
+             "collision placement")
 
 
 if __name__ == "__main__":

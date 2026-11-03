@@ -150,7 +150,20 @@ _FACE = [  # D3D cube faces +X -X +Y -Y +Z -Z: (major axis, sign, s axis/sign, t
 PROBE_RES = 8
 
 
+_PROBES = {}
+
+
 def load_probes(game, map_id):
+    """load_probes_uncached, kept for the last (game, map): gather and fog_section both ask (callers must not change
+    it)"""
+    k = (game, map_id)
+    if k not in _PROBES:
+        _PROBES.clear()
+        _PROBES[k] = load_probes_uncached(game, map_id)
+    return _PROBES[k]
+
+
+def load_probes_uncached(game, map_id):
     """{probe number: [6 faces][PROBE_RES][PROBE_RES] linear rgb} for the map's GI_EnvDif cubes."""
     lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "libbcdecode.so"))
     area = map_id[:3]

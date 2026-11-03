@@ -752,19 +752,22 @@ def fog_section(game, map_id, main_fog):
     key_of = lambda p: (p["fog_id"] if p["fog_id"] in fog_rows else main_fog, p["light_id"], p["tone_map_id"],
                         p["tone_correct_id"], p["lantern_id"], probe_id(p.get("env_event")), p["dof_id"])
     subs = export_collision.area_collision(game, map_id)[0]  # collision.bin's triangles (area region, tools/area.py)
-    pts = [p for s in subs for t in s["tris"] for p in t]
-    lo = [min(p[k] for p in pts) for k in range(3)]
-    hi = [max(p[k] for p in pts) for k in range(3)]
+    # every corner quantised as collision.bin does (round((p - origin) / SCALE); numpy's rint rounds half to even
+    # like round()), the triangles that collapse there skipped
+    P = np.array([p for s in subs for t in s["tris"] for p in t], np.float64).reshape(-1, 3, 3)
+    lo, hi = P.reshape(-1, 3).min(0).tolist(), P.reshape(-1, 3).max(0).tolist()
     origin = [round((lo[k] + hi[k]) / 2) for k in range(3)]
-    q = lambda p: tuple(round((p[k] - origin[k]) / export_collision.SCALE) for k in range(3))
-    tri_key, count = [], {}
+    Q = np.rint((P - np.array(origin, np.float64)) / export_collision.SCALE)
+    ok = (Q[:, 0] != Q[:, 1]).any(1) & (Q[:, 1] != Q[:, 2]).any(1) & (Q[:, 0] != Q[:, 2]).any(1)
+    nok = np.concatenate([[0], np.cumsum(ok)]).tolist()
+    tri_key, count, i = [], {}, 0
     for s in subs:
         k = key_of(coll[s["part"]]) if s["part"] in coll else None
-        for t in s["tris"]:
-            a, b, c = (q(p) for p in t)
-            if a != b and b != c and a != c:
-                tri_key.append(k)
-                count[k] = count.get(k, 0) + 1
+        n = nok[i + len(s["tris"])] - nok[i]
+        i += len(s["tris"])
+        if n:
+            tri_key += [k] * n
+            count[k] = count.get(k, 0) + n
     keys = [k for k in count if k is not None]
     if not keys:
         keys = [(main_fog, min(light_rows), min(tone_rows), min(tone_rows), -1, -1, -1)]
