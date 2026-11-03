@@ -77,6 +77,7 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     return 0;
 }
 
+GSGLOBAL *hud_gs(void) { return gs; }
 const HudRect *hud_rect(int i) { return &lay[i]; }
 
 const char *hud_string(int s)

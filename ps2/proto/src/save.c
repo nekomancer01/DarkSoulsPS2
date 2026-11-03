@@ -14,7 +14,7 @@
 #define SAVE_MAGIC 0x53525344u  /* 'DSRS' */
 #define HDR 32
 #define SAVE_BUF (HDR + sizeof(Progress) + 4 + FLAG_PAGES * (4 + 128))
-#define MC_DIR "mc0:/DSRPS2"  /* ASSUMED (TECH_DEBT save-7): no icon.sys / icon yet, the BIOS browser shows it as corrupt */
+#define MC_DIR "mc0:/DSRPS2"  /* ASSUMED (TECH_DEBT save-7): not a product-code folder name */
 
 static u8 buf[SAVE_BUF] __attribute__((aligned(64)));
 static int device = -1, mc_loaded, loaded, request;
@@ -48,6 +48,109 @@ static void slot_path(char *out, int n, int slot)
         snprintf(out, n, MC_DIR "/SAVE%d.BIN", slot);
     else
         snprintf(out, n, "host:save/%s%d.bin", host_name, slot);  /* build/save/: writable (pcsx2-run.sh) */
+}
+
+/* The card browser's view of the save folder: icon.sys (title, background, lights) and a 3D icon (one textured quad).
+ * Both made here, nothing from the game: a dark square with an ember-coloured flame. Layouts are the BIOS browser's
+ * documented ones; the icon's model scale and its one-frame animation block are ASSUMED (TECH_DEBT save-7). */
+#define ICON_TEX 128
+_Static_assert(SAVE_BUF >= 20 + 6 * 24 + 44 + ICON_TEX * ICON_TEX * 2, "icon.ico is built in buf");
+static int open_write(const char *path);
+static int sjis_put(u8 *d, const char *s)  /* ASCII -> full-width Shift-JIS (the browser shows titles in SJIS) */
+{
+    int n = 0;
+    for (; *s; s++) {
+        unsigned c = (u8)*s, w;
+        if (c >= 'A' && c <= 'Z') w = 0x8260 + c - 'A';
+        else if (c >= 'a' && c <= 'z') w = 0x8281 + c - 'a';
+        else if (c >= '0' && c <= '9') w = 0x824F + c - '0';
+        else if (c == ':') w = 0x8146;
+        else if (c == '-') w = 0x817C;
+        else w = 0x8140;  /* space and the rest */
+        d[n++] = w >> 8, d[n++] = w & 0xFF;
+    }
+    return n;
+}
+
+static int write_file(const char *path, const void *p, int n)
+{
+    int fd = open_write(path);
+    int w = fd >= 0 ? fioWrite(fd, p, n) : -1;
+    if (fd >= 0)
+        fioClose(fd);
+    return w == n;
+}
+
+static void mc_icon(void)
+{
+    static int done;
+    if (done)
+        return;
+    int fd = fioOpen(MC_DIR "/icon.sys", FIO_O_RDONLY);
+    if (fd >= 0) {
+        fioClose(fd);
+        done = 1;
+        return;
+    }
+    /* icon.sys, 964 bytes */
+    u8 *d = buf;
+    memset(d, 0, 964);
+    memcpy(d, "PS2D", 4);
+    u32 u;
+    float f;
+    int l1 = sjis_put(d + 192, "DARK SOULS");
+    sjis_put(d + 192 + l1, "PS2 prototype");
+    d[6] = l1;  /* second title line: byte offset in the title */
+    u = 0x80, memcpy(d + 12, &u, 4);  /* background opacity */
+    static const u32 bg[4][4] = {{8, 6, 6, 0}, {8, 6, 6, 0}, {40, 18, 6, 0}, {40, 18, 6, 0}};
+    memcpy(d + 16, bg, sizeof bg);    /* corner colours: top left, top right, bottom left, bottom right */
+    static const float light[3][4] = {{0, 0, 1, 0}, {0.5f, -0.5f, 0.5f, 0}, {-0.5f, -0.5f, 0.5f, 0}};
+    static const float lcol[3][4] = {{0.5f, 0.5f, 0.5f, 0}, {0.2f, 0.2f, 0.2f, 0}, {0.2f, 0.2f, 0.2f, 0}};
+    memcpy(d + 80, light, sizeof light), memcpy(d + 128, lcol, sizeof lcol);
+    f = 0.7f;
+    for (int k = 0; k < 3; k++)
+        memcpy(d + 176 + k * 4, &f, 4);  /* ambient */
+    for (int k = 0; k < 3; k++)
+        strcpy((char *)d + 260 + k * 64, "icon.ico");  /* list / copy / delete icons */
+    pack_async_wait();
+    int ok = write_file(MC_DIR "/icon.sys", d, 964);
+    /* icon.ico: header, 6 vertices (one shape), animation, 128x128 RGB5A1 texture */
+    int nv = 6, off = 0;
+    u32 hdr[5] = {0x00010000, 1, 0x07, 0x3F800000, nv};  /* version, shapes, texture uncompressed, ?, vertices */
+    memcpy(d, hdr, 20), off = 20;
+    static const s16 xy[6][2] = {{-1, -2}, {1, -2}, {-1, 0}, {1, -2}, {1, 0}, {-1, 0}};  /* quad, y up is negative */
+    for (int v = 0; v < nv; v++) {
+        s16 vert[12] = {xy[v][0] * 4096, (s16)(xy[v][1] * 4096), 0, 0,  /* position, 4.12 fixed */
+                        0, 0, -4096, 0,                                 /* normal, towards the viewer */
+                        (xy[v][0] + 1) * 2048, (s16)((xy[v][1] + 2) * 2048), 0x8080, 0x8080};  /* uv 4.12, rgba */
+        memcpy(d + off, vert, 24), off += 24;
+    }
+    u32 anim[5] = {0x01, 1, 0x3F800000, 0, 1};  /* id, frame length, speed 1.0, offset, frames */
+    memcpy(d + off, anim, 20), off += 20;
+    u32 frame[4] = {0, 1, 1, 0};                /* shape 0, one key */
+    memcpy(d + off, frame, 16), off += 16;
+    float key[2] = {1, 1};
+    memcpy(d + off, key, 8), off += 8;
+    u16 *t = (u16 *)(d + off);
+    for (int y = 0; y < ICON_TEX; y++)
+        for (int x = 0; x < ICON_TEX; x++) {
+            /* flame: a teardrop over a glowing base; distance field in texels */
+            float fx = (x - 64) / 64.0f, fy = (y - 64) / 64.0f;
+            float w = 0.55f * (fy + 1) * (fy < 0.4f ? 1 : (1 - fy) / 0.6f);  /* half width at this height */
+            float in = w > 0 ? 1 - (fx < 0 ? -fx : fx) / w : -1;
+            int r = 10, g = 8, b = 8;
+            if (in > 0) {
+                float h = in * (0.6f + 0.4f * fy);
+                r = 120 + (int)(135 * h), g = 40 + (int)(170 * h * h), b = (int)(60 * h * h * h);
+            }
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            t[y * ICON_TEX + x] = r >> 3 | (g >> 3) << 5 | (b >> 3) << 10 | 0x8000;
+        }
+    off += ICON_TEX * ICON_TEX * 2;
+    ok &= write_file(MC_DIR "/icon.ico", d, off);
+    printf("save: wrote icon.sys + icon.ico (%d B)%s\n", off, ok ? "" : " FAILED");
+    done = ok;
 }
 
 void save_select(const char *dev)
@@ -193,6 +296,11 @@ int save_write(const Player *pl)
     if (device <= SAVE_OFF)
         return -1;
     unsigned t0 = ticks();
+    if (device == SAVE_MC) {  /* the folder and its browser icon first: mc_icon uses buf as scratch */
+        pack_async_wait();
+        fioMkdir(MC_DIR);  /* fails harmlessly when it exists */
+        mc_icon();
+    }
     if (pl) {
         prog.map_id = progress_map_id(area);
         prog.pos[0] = pl->pos.x, prog.pos[1] = pl->pos.y, prog.pos[2] = pl->pos.z, prog.yaw = pl->yaw;
@@ -209,8 +317,6 @@ int save_write(const Player *pl)
     char path[64];
     slot_path(path, sizeof path, seq & 1);
     pack_async_wait();
-    if (device == SAVE_MC)
-        fioMkdir(MC_DIR);  /* fails harmlessly when it exists */
     int fd = open_write(path);
     int w = fd >= 0 ? fioWrite(fd, buf, n) : -1;
     if (fd >= 0)

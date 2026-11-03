@@ -54,6 +54,7 @@ static u32 pool2_vram;
 static int pool3_blk, near_up, near_get, near_want;  /* near levels' pool; near bytes uploaded / drawn / asked this frame */
 static u32 pool3_vram;
 static GSGLOBAL *gsg;
+static int pin_off, pin_blk;  /* tc_pin: the top of the map pool lent to a menu screen, none while pin_blk is 0 */
 #define NLV 5
 static Level lv[MAX_TEX][NLV];  /* mip 0, mip 1, near, mip 2, mip 3 (the GS mip chain under mip 0 / 1, tc_mip) */
 static unsigned frame = 1;
@@ -407,6 +408,9 @@ static int alloc(int s, int p)
             for (int r = v->off / s; r < nrun && r * s < v->off + v->size; r++)
                 score[r] = sc > score[r] ? sc : score[r];
         }
+    if (p == 0 && pin_blk)  /* runs in the lent top of the pool are taken */
+        for (int r = pin_off / s; r < nrun; r++)
+            score[r] = ~0u;
     int best = -1;
     unsigned long long bk = ~0ull;
     for (int r = 0; r < nrun; r++) {
@@ -573,6 +577,27 @@ int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k)
     tc_stats.mip_batches++;
     return mo->n;
 }
+
+u32 tc_pin(int bytes)
+{
+    int n = ((bytes + 255) / 256 + 31) & ~31;  /* whole 8 KB pages */
+    if (!pool_blk || n <= 0 || n > pool_blk / 2 || in_frame)
+        return 0;
+    if (pin_blk)
+        return n <= pin_blk ? pool_vram + (pool_blk - pin_blk) * 256 : 0;
+    int off = (pool_blk - n) & ~31;
+    int nall = tex_end();
+    /* update phase: the last frame's chain finished (main.c vu1_wait), so its textures there can go; they upload
+     * again below the lent range when next drawn */
+    for (int i = 0; i < nall; i++)
+        for (int l = 0; l < NLV; l++)
+            if (lv[i][l].off >= 0 && pool_of(i, l) == 0 && lv[i][l].off + lv[i][l].size > off)
+                lv[i][l].off = -1;
+    pin_off = off, pin_blk = pool_blk - off;
+    return pool_vram + off * 256;
+}
+
+void tc_unpin(void) { pin_blk = 0; }
 
 void tc_end(void)
 {

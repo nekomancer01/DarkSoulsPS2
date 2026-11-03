@@ -62,8 +62,17 @@ extern Progress prog;
 
 void progress_new_game(void);           /* CharaInitParam start values, empty flags are flags.c's */
 void progress_add_souls(int n);         /* clamps at 0 and 999999999 */
-int inv_count(u32 id);                  /* how many of an item are held */
+int inv_count(u32 id);                  /* how many of an item are held (all its entries) */
 int inv_add(u32 id, int n);             /* n < 0 removes; returns the new count, -1 if the inventory is full */
+/* Equipment (prog.equip[EQ_*] holds param rows): the item in a slot (0 empty), whether id fits it (slot type,
+ * EquipParamWeapon hand / ammo flags, protector part, quick items isEquip, a piece per slot), set (0 = remove) */
+u32 equip_item(int slot);
+int equip_fits(int slot, u32 id);
+int equip_set(int slot, u32 id);
+void equip_check(void);                 /* empty the slots whose item is no longer held */
+int inv_use(u32 id);                    /* Use Item from the inventory: 1 if it did something */
+int inv_discard(u32 id, int n);         /* 0 if the item cannot be discarded (EquipParamGoods isDrop) */
+#define ESTUS_ID 200                    /* EquipParamGoods 200 Estus Flask (empty; 201 filled) */
 u32 progress_map_id(const char *area);  /* "m10_02_00_00" -> 0x0A020000 */
 unsigned progress_changes(void);        /* bumped by every change above (autosave dirty check) */
 void progress_touch(void);              /* direct writes to prog: mark changed */

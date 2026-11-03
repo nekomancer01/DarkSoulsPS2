@@ -43,6 +43,13 @@ GSTEXTURE *tc_get(int tex, int level);
 /* GS mip chain under t (what tc_get returned for tex: mip 0 or 1; mips 2 and 3 from texmap.py's MIP_CHAIN), resident
  * for the frame; returns MXL (0: none) and fills MIPTBP1 and TEX1.K for a batch with st scale st_k (see texcache.c) */
 int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k);
+/* Menus (src/drb.c): lend the top `bytes` of the map pool (whole 8 KB pages) to a screen's atlas and icons until
+ * tc_unpin; the map's textures stream through the rest meanwhile (mip fallback when it runs short). Returns the VRAM
+ * byte address, or 0 when the pool is too small or it is called between tc_begin and tc_end. Call in the update
+ * phase (after the last frame's vu1_wait, before map_draw): nothing in flight then reads the lent range. Asking again
+ * while lent returns the same range if it is big enough, else 0 (tc_unpin first). */
+u32 tc_pin(int bytes);
+void tc_unpin(void);
 /* End of the map's batches (stats) */
 void tc_end(void);
 
