@@ -246,13 +246,15 @@ MX_API int mx_bc5_pow2(const uint8_t *d, long long off, int w, int h, int cap, f
     for (int ty = 0; ty < th; ty++)
         for (int tx = 0; tx < tw; tx++)
             for (int ch = 0; ch < 2; ch++) {
+                /* numpy's mean(axis=(1, 3)) of img[ys][:, :, xs] follows that array's memory order (the fancy index
+                   puts the column offsets j outside the row offsets i), so j outer, i inner */
                 float s = 0;
-                for (int i = 0; i < ny; i++) {
-                    long long y = (long long)ty * h / th + i;
-                    y = y < h - 1 ? y : h - 1;
-                    for (int j = 0; j < nx; j++) {
-                        long long x = (long long)tx * w / tw + j;
-                        x = x < w - 1 ? x : w - 1;
+                for (int j = 0; j < nx; j++) {
+                    long long x = (long long)tx * w / tw + j;
+                    x = x < w - 1 ? x : w - 1;
+                    for (int i = 0; i < ny; i++) {
+                        long long y = (long long)ty * h / th + i;
+                        y = y < h - 1 ? y : h - 1;
                         float v = img[(y * W4 + x) * 2 + ch];
                         s = (i || j) ? s + v : v;
                     }

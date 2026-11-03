@@ -154,7 +154,9 @@ def bc5_dds(rng, w, h, mips=1):
 def check_bump(rng):
     Lx = en._mx()
     assert Lx is not None
-    for w, h, mips in ((16, 16, 1), (256, 128, 2), (64, 512, 3), (8, 4, 1), (12, 20, 1)):
+    # (512, 256, 1) and (1024, 1024, 1) average 4 x 2 and 8 x 8 texels: the summation order of both offsets matters
+    for w, h, mips in ((16, 16, 1), (256, 128, 2), (64, 512, 3), (8, 4, 1), (12, 20, 1), (512, 256, 1), (1024, 1024, 1),
+                       (300, 1000, 2)):
         d = bc5_dds(rng, w, h, mips)
         same(en.xy_pow2(d, max(en.BUMP_MAX, 4), en.BUMP_MAX).tolist(), en._mx_xy_pow2(Lx, d, max(en.BUMP_MAX, 4), en.BUMP_MAX).tolist(),
              f"xy_pow2 {w}x{h}")
