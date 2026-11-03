@@ -99,3 +99,4 @@ uint64_t mx_rng_bounded(mx_rng *r, uint64_t max);
 long long mx_rng_integers(mx_rng *r, long long n);
 long long mx_rng_choice_p(mx_rng *r, long long n, const double *p);
 void mx_rng_choice_noreplace(mx_rng *r, long long pop, long long size, long long *out);
+void mx_nearest_d2(long long nq, const double *Q, long long ns, double *S, double *out);

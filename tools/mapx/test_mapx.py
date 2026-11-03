@@ -132,7 +132,8 @@ if __name__ == "__main__":
 import math
 import export_normal as en
 
-en._log = lambda a: np.array([math.log(v) for v in np.asarray(a, np.float64).ravel().tolist()]).reshape(np.shape(a))
+if os.environ.get("MAPX_TEST_LIBM_LOG", "1") == "1":  # numpy AVX-512 log differs from libm by an ulp
+    en._log = lambda a: np.array([math.log(v) for v in np.asarray(a, np.float64).ravel().tolist()]).reshape(np.shape(a))
 
 
 def bc5_dds(rng, w, h, mips=1):
@@ -294,3 +295,89 @@ if __name__ == "__main__":
         check_assign(np.random.default_rng(k))
         check_bump(np.random.default_rng(k))
     print(f"mapx: relief (BC5 decode, frames, response, k-means) identical to export_normal's numpy code")
+
+
+# ---- stage 3: simplify_meshes ----
+import contextlib, io
+def simp_scene(rng):
+    """bumpy lattice patches (neighbours share their edge positions, so they weld), UV seams, exact copies, kept and
+    foliage meshes, a navmesh"""
+    ms, step = [], float(rng.choice([1.0, 1.5, 2.5]))
+    for _ in range(int(rng.integers(1, 9))):
+        g = int(rng.integers(2, 24))
+        ox, oz = (rng.integers(-3, 3, 2) * (g - 1)).tolist()
+        y0 = float(rng.integers(-2, 3)) * 8
+        pos, idx = [], {}
+        for i in range(g):
+            for k in range(g):
+                x, z = (ox + i) * step, (oz + k) * step
+                y = y0 + round(float(np.sin(x * 0.3) + np.cos(z * 0.2)) * (rng.random() < 0.7), 3)
+                idx[i, k] = len(pos)
+                pos.append((x, y, z))
+        wpos = list(range(len(pos))) + [int(p) for p in rng.integers(0, len(pos), len(pos) // 4)]
+        seam = {p: len(pos) + n for n, p in enumerate(wpos[len(pos):])}
+        tris = []
+        for i in range(g - 1):
+            for k in range(g - 1):
+                a, b, c, d = idx[i, k], idx[i + 1, k], idx[i + 1, k + 1], idx[i, k + 1]
+                if rng.random() < 0.05:
+                    continue
+                w = lambda p: seam.get(p, p) if (i + k) % 3 == 0 else p
+                tris.append((w(a), w(b), w(c)))
+                tris.append((w(a), w(c), w(d)))
+        m = dict(pos=pos, wpos=wpos, tris=tris, keep=bool(rng.random() < 0.12), grass=bool(rng.random() < 0.1),
+                 ti=int(rng.integers(0, 3)))
+        ms.append(m)
+        if rng.random() < 0.25:
+            ms.append(dict(m, tris=list(reversed(m["tris"])), keep=False))
+    nav_v = [(float(x), float(y), float(z)) for x, y, z in rng.uniform(-30, 30, (int(rng.integers(3, 40)), 3))]
+    nav_t = [tuple(int(v) for v in rng.integers(0, len(nav_v), 3)) for _ in range(int(rng.integers(1, 30)))]
+    return ms, nav_v, nav_t
+
+
+def check_simplify(rng):
+    import copy
+    ms, nav_v, nav_t = simp_scene(rng)
+    ms[0]["keep"] = False  # the Python code needs one live mesh (view_distance of no points fails)
+    spawn = tuple(rng.uniform(-20, 20, 3).tolist())
+    cells = bool(rng.random() < 0.6)
+    keys = sorted({(int(np.floor(p[0] / em.CHUNK_GRID)), int(np.floor(p[1] / em.CHUNK_GRID)), int(np.floor(p[2] / em.CHUNK_GRID)))
+                   for m in ms for p in m["pos"]})
+    far = frozenset(k for k in keys if rng.random() < 0.3)
+    kw = dict(src="tris_in", out="tris_far", cells=cells, far=far if cells else frozenset(),
+              eps_fixed=None if rng.random() < 0.5 else float(rng.choice([1e-6, 1e-4, 1e-3])),
+              floor=None if rng.random() < 0.5 else 2.0, area_k=None if rng.random() < 0.5 else 0.0,
+              eps_far=None if rng.random() < 0.5 else 3e-4)
+    em.KEEP_POS[:] = [tuple(rng.uniform(-20, 20, 3).tolist())] if rng.random() < 0.5 else []
+    em.BUDGET = int(rng.integers(10, 3000))
+    for m in ms:
+        m["tris_in"] = m["tris"]
+
+    def run(use_c):
+        M = copy.deepcopy(ms)
+        L_ = mapx_native._L[0]
+        if not use_c:
+            mapx_native._L[0] = None
+        f = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(f):
+                eps = em.simplify_meshes(M, spawn, nav_v, nav_t, **kw)
+        finally:
+            mapx_native._L[0] = L_
+        log = [ln for ln in f.getvalue().splitlines() if not ln.startswith("simplify: ") or " jobs, " not in ln]
+        return eps, log, [(m.get("tris_in"), m.get("tris_far"), m.get("tris_far_cell")) for m in M]
+    a, b = run(False), run(True)
+    same(a[0], b[0], "simplify eps")
+    if a[1] != b[1]:
+        print("\n".join(a[1]), "\n----\n" + "\n".join(b[1]), file=sys.stderr)
+    same(a[1], b[1], "simplify log")
+    same(a[2], b[2], "simplify output")
+    return sum(len(x[1] or []) for x in a[2])
+
+
+if __name__ == "__main__":
+    os.environ["SIMPLIFY_PROCS"], os.environ["SIMPLIFY_CACHE"] = "1", "0"
+    tot = 0
+    for k in range(seed, seed + count):
+        tot += check_simplify(np.random.default_rng(k))
+    print(f"mapx: simplify_meshes identical to the Python code on {count} random scenes ({tot} output triangles)")

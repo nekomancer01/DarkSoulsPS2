@@ -1668,6 +1668,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     import numpy as np
     import simplify
     import simplify_pool
+    MX = mapx_native.lib()
+    if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
+        return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far)
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
@@ -1796,6 +1799,101 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             m[out] = []
     print(f"simplify: {full} -> {count(eps)} tris ({grass} kept: effects, sky; foliage extra) in {len(groups)} welded "
           f"groups / {len(jobs)} jobs, eps {eps:.3g} "
+          f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
+    return eps
+
+
+def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far):
+    """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
+    jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
+    import ctypes
+    import numpy as np
+    import simplify
+    i32, i64, f64 = np.int32, np.int64, np.float64
+
+    def flat(rows, dt, w):
+        return np.ascontiguousarray(np.array(rows, dt).reshape(-1, w)) if rows else np.zeros((0, w), dt)
+    nm = len(meshes)
+    Ps = [flat(m["pos"], f64, 3) for m in meshes]
+    Ws = [np.asarray(m["wpos"], i32).reshape(-1) for m in meshes]
+    Ts = [flat(m[src], i32, 3) for m in meshes]
+    off = lambda xs: np.concatenate([[0], np.cumsum([len(x) for x in xs])]).astype(i64)
+    cat = lambda xs, dt, w: np.ascontiguousarray(np.concatenate(xs).astype(dt)) if xs else np.zeros((0, w), dt)
+    P, poff, W, woff, T, toff = cat(Ps, f64, 3), off(Ps), cat(Ws, i32, 1), off(Ws), cat(Ts, i32, 3), off(Ts)
+    tids = {}
+    ti = np.array([tids.setdefault(m["ti"], len(tids)) for m in meshes] or [0], i32)
+    keep = np.array([1 if m["keep"] else 0 for m in meshes] or [0], np.uint8)
+    F = flat(sorted(far), i64, 3)
+    nv, nt = flat(nav_v, f64, 3), flat(nav_t, i32, 3)
+    sp = np.ascontiguousarray(np.array(spawn, f64).reshape(3))
+    kp = flat([tuple(k[:3]) for k in KEEP_POS], f64, 3)
+    ak = simplify.AREA_K if area_k is None else area_k
+    a = lambda x: x.ctypes.data
+    t0 = time.time()
+    h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
+                       len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
+                       KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
+                       ak ** 2, simplify.MIN_COS)
+    if not h:
+        raise MemoryError("mx_simp_new")
+    try:
+        st = np.zeros(3, i64)
+        MX.mx_simp_stats(h, a(st))
+        full, ngroups, njobs = (int(x) for x in st)
+        print(f"simplify: {njobs} jobs, run in C in {time.time() - t0:.1f} s", flush=True)
+        dup = np.zeros(max(nm, 1), np.uint8)
+        MX.mx_simp_dup(h, a(dup))
+        for mi in np.flatnonzero(dup[:nm]).tolist():
+            meshes[mi][src] = []
+        grass = sum(len(m[src]) for m in meshes if m["keep"] and not m["grass"])
+
+        def count(eps):
+            return grass + int(MX.mx_simp_count(h, eps))
+        print("simplify: tris at an error of " + ", ".join(f"{px} px {count((px / 568) ** 2)}" for px in (1, 2, 3, 4, 6, 8, 12, 24)))
+        if eps_fixed is not None or EPS is not None:
+            eps = eps_fixed if eps_fixed is not None else EPS
+        else:
+            lo, hi = 1e-16, 1.0
+            while count(hi) > BUDGET and hi < 1e6:
+                hi *= 100
+            for _ in range(40):
+                mid = math.sqrt(lo * hi)
+                lo, hi = (lo, mid) if count(mid) <= BUDGET else (mid, hi)
+            eps = hi
+            if eps > EPS_MAX:  # see simplify_meshes
+                print(f"simplify: BUDGET {BUDGET} not reachable ({count(eps)} tris at any error); error capped at "
+                      f"{math.sqrt(EPS_MAX) * 568:.0f} px -> {count(EPS_MAX)} tris")
+                eps = EPS_MAX
+        kind, ck = np.zeros(max(njobs, 1), i32), np.zeros((max(njobs, 1), 3), i64)
+        MX.mx_simp_jobs(h, a(kind), a(ck))
+        jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
+        n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
+        tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
+        cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
+        MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
+        final = count(eps)
+    finally:
+        MX.mx_simp_free(h)
+    live = [mi for mi, m in enumerate(meshes) if not m["keep"] and m[src]]
+    for mi in live:
+        meshes[mi][out] = []
+        meshes[mi][out + "_cell"] = []
+    pos = [m["pos"] for m in meshes]
+    outs = [m.get(out) for m in meshes]
+    cellsl = [m.get(out + "_cell") for m in meshes]
+    cm, cp, cw = cm[:3 * n].tolist(), cp[:3 * n].tolist(), cw[:3 * n].tolist()
+    for t, (j, mi) in enumerate(zip(tj[:n].tolist(), tm[:n].tolist())):
+        k = 3 * t
+        outs[mi].append(((pos[cm[k]][cp[k]], cw[k]), (pos[cm[k + 1]][cp[k + 1]], cw[k + 1]),
+                         (pos[cm[k + 2]][cp[k + 2]], cw[k + 2])))
+        cellsl[mi].append(jc[j])
+    for m in meshes:
+        if m["keep"]:
+            m[out] = [tuple((m["pos"][m["wpos"][w]], w) for w in t) for t in m[src]]
+        elif not m[src]:
+            m[out] = []
+    print(f"simplify: {full} -> {final} tris ({grass} kept: effects, sky; foliage extra) in {ngroups} welded "
+          f"groups / {njobs} jobs, eps {eps:.3g} "
           f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
     return eps
 

@@ -12,7 +12,9 @@ _L = []
 
 
 def sources():
-    return sorted(glob.glob(os.path.join(HERE, "*.c")) + glob.glob(os.path.join(HERE, "*.h")))
+    """the files the library is built from (tools/mapx/simp.c includes tools/native/simplify.c)"""
+    return sorted(glob.glob(os.path.join(HERE, "*.c")) + glob.glob(os.path.join(HERE, "*.h"))) + [
+        os.path.join(os.path.dirname(HERE), "native", "simplify.c")]
 
 
 def _build(so):
@@ -21,7 +23,7 @@ def _build(so):
     os.close(fd)
     try:
         subprocess.run([os.environ.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fno-fast-math", "-fvisibility=hidden",
-                        "-shared", "-fPIC", "-pthread", "-o", tmp] + [s for s in sources() if s.endswith(".c")] + ["-lm"],
+                        "-shared", "-fPIC", "-pthread", "-o", tmp] + sorted(glob.glob(os.path.join(HERE, "*.c"))) + ["-lm"],
                        check=True, capture_output=True)
         os.replace(tmp, so)
     finally:
@@ -50,6 +52,14 @@ def lib():
                 L.mx_soften_thin.restype = ll
                 L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
                 L.mx_far_cells.restype = ll
+                L.mx_simp_new.argtypes = [i, vp, vp, vp, vp, vp, vp, vp, vp, i, d, ll, vp, ll, vp, ll, vp, vp, d, d, i, vp,
+                                          d, d, d, d, d, d, d]
+                L.mx_simp_new.restype = vp
+                for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
+                                ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
+                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
+                                ("mx_simp_free", [vp], None)):
+                    getattr(L, f).argtypes, getattr(L, f).restype = a, r
             except Exception as e:
                 print(f"mapx: C library unavailable ({str(e)[:300]}), using the Python export", flush=True)
                 L = None
