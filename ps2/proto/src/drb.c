@@ -470,9 +470,9 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
 {
     if (!*s)
         return;
-    /* DRB Text +28 font size class: 9 item names / titles, 7 descriptions, 6 most labels and values. Scales of the HUD
-     * font (DSFont24) ASSUMED from the box heights (TECH_DEBT menu-3) */
-    float fs = t->font <= 6 ? 0.78f : t->font == 7 ? 0.86f : 1.0f;
+    /* DRB Text +28 font size class (9 item names / titles, 7 descriptions, 6 most labels and values): the HUD font at
+     * its own size for all (scaled by class it read too small at 640x448: TECH_DEBT menu-3) */
+    float fs = 1.0f;
     float lh = hud_line_height() * fs;
     float x0 = t->x0 + dx, x1 = t->x1 + dx, y0 = t->y0 + dy, y1 = t->y1 + dy;
     float y = t->align & DRB_MIDDLE ? (y0 + y1 - lh) / 2 : t->align & DRB_BOTTOM ? y1 - lh : y0;
@@ -554,7 +554,8 @@ void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
                 dx += place[i].dx, dy += place[i].dy, sp++;
                 break;
             }
-        int shown = k == node || (vis[k] < 0 ? !(n->flags & 1) : vis[k] > 0);
+        /* inside a placed cursor the template's off-screen default hiding no longer applies */
+        int shown = k == node || (vis[k] < 0 ? !(n->flags & 1) || sp : vis[k] > 0);
         if (!shown) {
             k = n->end;
             continue;

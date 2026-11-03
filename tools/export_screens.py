@@ -19,7 +19,8 @@ Output scr_<name>.bin (little-endian):
           u16 atlas w, h, u32 clut offset, u32 pixel offset, u32 sprites, u32 sprite offset; padded to 64
   node    {s16 x0, y0, x1, y1 (640x448, absolute); u8 type; u8 align; u16 end (index after its subtree);
            s16 sprite (atlas sprite; Text: string index, -1 none); u8 font; u8 flags (1: hidden by default: a "bk_"
-           backup element, or wholly off screen = a template the code moves); u32 colour (r, g, b, a with a 0..0x80);
+           backup or "mg_" (the cut MP stat) element, or wholly off screen = a template the code moves);
+           u32 colour (r, g, b, a with a 0..0x80);
            u32 name hash (FNV-1a 32 of the element name)}  24 B
           types: 0 Null, 1 Dialog, 2 Sprite, 3 Rect (MonoRect / GouraudRect), 4 Text (also ScrollText)
   root    u32 node index (the root's node is a Dialog named after the DRB dialog)
@@ -70,7 +71,7 @@ def flatten(dlgs, names, roots):
         for el, (t, raw) in dlgs[dname].items():
             l, tp, r, bt = struct.unpack_from("<4h", raw)
             x0, y0, x1, y1 = ox + l, oy + tp, ox + r, oy + bt
-            h = hidden or el.startswith("bk_") or x1 <= 0 or y1 <= 0 or x0 >= 1280 or y0 >= 720
+            h = hidden or el.startswith(("bk_", "mg_")) or x1 <= 0 or y1 <= 0 or x0 >= 1280 or y0 >= 720
             k = len(nodes)
             nodes.append([el, t, raw, x0, y0, x1, y1, h, k + 1])
             if t == "Dialog":
