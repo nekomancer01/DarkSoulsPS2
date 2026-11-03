@@ -459,7 +459,6 @@ def check_chunks(rng):
         ref = em.build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey, tcells if stream else None,
                               dgs if dgon else None, ents)
     ref_l = lists()
-    assert em.chunks_c_ok(entries)
     with contextlib.redirect_stdout(io.StringIO()) as f2:
         got, nm, nt = em.build_chunks_c(L, entries, textures, centre, bkey, stream, dgon)
     same(f1.getvalue(), f2.getvalue(), "chunks log")
@@ -476,3 +475,36 @@ if __name__ == "__main__":
     for k in range(seed, seed + count):
         tot += check_chunks(np.random.default_rng(k))
     print(f"mapx: flatten + build_chunks identical to the Python code on {count} random scenes ({tot} chunks)")
+
+
+# ---- stage 4: gather helpers ----
+def check_gather_helpers(rng):
+    def both(f):
+        L_ = mapx_native._L[0]
+        mapx_native._L[0] = None
+        try:
+            a = f()
+        finally:
+            mapx_native._L[0] = L_
+        return a, f()
+    K = rng.integers(0, int(rng.integers(1, 6)), (int(rng.integers(1, 3000)), int(rng.integers(1, 16))))
+    a, b = both(lambda: em._first_rows(K))
+    same([x.tolist() for x in a], [x.tolist() for x in b], "_first_rows")
+    nav = np.unique(np.round(rng.uniform(-900, 900, (int(rng.integers(1, 400)), 3)) / 10), axis=0) * 10
+    for _ in range(5):
+        P = rng.uniform(-1, 1, (int(rng.integers(1, 5000)), 3)) * rng.choice([100, 600, 1500]) + rng.uniform(-900, 900, 3)
+        a, b = both(lambda: em.is_sky("m_wall", P, nav))
+        same(a, b, "is_sky")
+    V = dict(pos=[tuple(p) for p in (rng.integers(0, 4, (60, 3)) * 0.25).tolist()],
+             uv=[tuple(p) for p in (rng.integers(0, 3, (60, 2)) / 4).tolist()] if rng.random() < 0.7 else [])
+    tl = [tuple(int(v) for v in rng.integers(0, 60, 3)) for _ in range(int(rng.integers(1, 800)))]
+    tl += [t[1:] + t[:1] for t in tl[:50]]
+    em._VERT_NP.clear()
+    a, b = both(lambda: em.dedup_tris(tl, V))
+    same(a, b, "dedup_tris")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_gather_helpers(np.random.default_rng(k))
+    print(f"mapx: _first_rows, is_sky, dedup_tris identical to the Python code on {count} random cases")

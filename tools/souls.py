@@ -50,8 +50,33 @@ def bnd3(b, data=None):
             pos += 4
         if comp:
             pos += 4
-        out.append((fid, name, undcx(src[off:off + size])))
-    return out
+        out.append((fid, name, src[off:off + size]))
+    data = _map_undcx([d for _, _, d in out])
+    return [(fid, name, d) for (fid, name, _), d in zip(out, data)]
+
+
+_POOL = []
+
+
+def _map_undcx(blobs):
+    """undcx of every blob, in order; on threads when there are several DCX blobs (zlib.decompress releases the
+    GIL: a 4-file TPF binder took 2.5 s of a Firelink export on one core). SOULS_THREADS=1, or no threads (the
+    browser), decompresses them one by one."""
+    if sum(b[:4] == b"DCX\0" for b in blobs) < 4 or os.environ.get("SOULS_THREADS") == "1":
+        return [undcx(b) for b in blobs]
+    if not _POOL:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            n = int(os.environ.get("SOULS_THREADS") or min(8, os.cpu_count() or 1))
+            _POOL.append(ThreadPoolExecutor(n) if n > 1 else None)
+        except Exception:
+            _POOL.append(None)
+    if _POOL[0] is not None:
+        try:
+            return list(_POOL[0].map(undcx, blobs, chunksize=16))
+        except RuntimeError:  # can't start threads here
+            _POOL[0] = None
+    return [undcx(b) for b in blobs]
 
 
 def bxf3(bhd_path, bdt_path):
@@ -583,6 +608,10 @@ def _euler_xzy_to_quat(rx, ry, rz):
 # FLVER vertex buffers read as numpy strided views (was one struct call per attribute per vertex: ~10 s of a map
 # export); the lists hold the same tuples of Python floats / ints. SOULS_NP=0: the per-vertex loop (A/B).
 FLVER_NP = os.environ.get("SOULS_NP", "1") == "1"
+# a dict to fill with id(attribute list) -> (the list, float64 array) for the FLVER vertex attributes named in
+# VERT_NP_ATTRS (tools/export_map.py's _vert_np cache: it then skips np.array over the lists)
+VERT_NP = None
+VERT_NP_ATTRS = ("pos", "uv", "color", "normal")
 _FL_SNORM = (0x10, 0x11, 0x13, 0x2F)
 
 
@@ -621,7 +650,10 @@ def _flver_verts_np(b, base, vsize, vcount, layout, verts):
                 cols.setdefault("uv2", []).append(u[:, 2:4] / 1024.0)
     for name, arrs in cols.items():
         a = arrs[0] if len(arrs) == 1 else np.stack(arrs, 1).reshape(-1, arrs[0].shape[1])
-        verts[name].extend(map(tuple, a.tolist()))
+        lst = verts[name]
+        if VERT_NP is not None and name in VERT_NP_ATTRS and not lst:  # the float64 array of exactly this list
+            VERT_NP[id(lst)] = (lst, np.ascontiguousarray(a, np.float64))
+        lst.extend(map(tuple, a.tolist()))
     return True
 
 
