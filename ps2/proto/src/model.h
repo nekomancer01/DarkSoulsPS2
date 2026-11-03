@@ -13,6 +13,10 @@ typedef struct Model Model;
 /* blob: model.bin (128-byte aligned, kept while the model is used: textures and anims are read in place).
  * Builds the VU1 skin streams (heap). NULL on a bad blob or more than 61 bones (VU1 palette room). */
 Model *mdl_load(const void *blob);
+/* The same in steps (enemy.c streams types in during play): begin parses and allocates, step builds the VU1 skin
+ * batches until `budget` EE ticks have passed and returns 1 once all are built (only then use the model) */
+Model *mdl_load_begin(const void *blob);
+int mdl_load_step(Model *m, unsigned budget);
 /* Upload the textures; returns free VRAM bytes afterwards, or -1 if they did not fit */
 int mdl_upload(Model *m, GSGLOBAL *gs);
 int mdl_bones(const Model *m);

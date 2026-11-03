@@ -58,6 +58,7 @@ struct Model {
     unsigned char (*sk_ms)[SK_V][4];  /* (0, 0, m, f) x 255 for vu1skin2's specular; NULL when the model has none */
     struct { short group, tris, spec; } *sk_batch;  /* spec: the batch has metal / specular (vu1skin2 TexSpec) */
     int nsk;
+    unsigned build_g, build_t0;  /* mdl_load_step: the next group / first triangle to build a batch of */
     unsigned hide;  /* group flag bits not drawn (model.h MDL_HIDE_*) */
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
 };
@@ -68,10 +69,9 @@ static short fx12(float v)
     return v > 32767 ? 32767 : v < -32768 ? -32768 : (short)(v < 0 ? v - 0.5f : v + 0.5f);
 }
 
-static int build_skin_streams(Model *m)
+static int skin_alloc(Model *m)
 {
     const Header *hdr = m->hdr;
-    const TexEntry *te = (const TexEntry *)(m->bin + hdr->tex_off);
     int n = 0;
     for (unsigned g = 0; g < hdr->groups; g++)
         n += (m->groups[g].count + VU1_SKIN_TRIS - 1) / VU1_SKIN_TRIS;
@@ -97,11 +97,29 @@ static int build_skin_streams(Model *m)
     m->sk_ms = ms ? (void *)q : NULL;
 #undef SK_SZ
     m->nsk = 0;
-    for (unsigned g = 0; g < hdr->groups; g++) {
+    m->build_g = 0, m->build_t0 = hdr->groups ? m->groups[0].first : 0;
+    return 1;
+}
+
+/* The skin batches from build_g / build_t0 on, until `budget` EE ticks have passed: 1 when every batch is built */
+static int skin_step(Model *m, unsigned budget)
+{
+    const Header *hdr = m->hdr;
+    const TexEntry *te = (const TexEntry *)(m->bin + hdr->tex_off);
+    unsigned c0;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c0));
+    while (m->build_g < hdr->groups) {
+        unsigned g = m->build_g;
         const Group *gr = &m->groups[g];
+        unsigned t0 = m->build_t0;
+        if (t0 >= gr->first + gr->count) {
+            if (++m->build_g < hdr->groups)
+                m->build_t0 = m->groups[m->build_g].first;
+            continue;
+        }
         int textured = gr->tex >= 0 && gr->tex < (int)hdr->textures;
         float iw = textured ? 1.0f / te[gr->tex].w : 0, ih = textured ? 1.0f / te[gr->tex].h : 0;
-        for (unsigned t0 = gr->first; t0 < gr->first + gr->count; t0 += VU1_SKIN_TRIS, m->nsk++) {
+        {
             int b = m->nsk;
             unsigned nt = gr->first + gr->count - t0;
             if (nt > VU1_SKIN_TRIS)
@@ -143,12 +161,17 @@ static int build_skin_streams(Model *m)
             for (unsigned k = nt * 3; k < SK_V; k++)  /* zero padding up to the slot end */
                 memset(m->sk_pa[b][k], 0, 8), memset(m->sk_pb[b][k], 0, 8), memset(m->sk_n[b][k], 0, 8);
         }
+        m->build_t0 += VU1_SKIN_TRIS, m->nsk++;
+        unsigned c;
+        __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+        if (c - c0 >= budget && m->build_g < hdr->groups)
+            return 0;
     }
     FlushCache(0);  /* the streams go to VIF1 by DMA straight from memory */
     return 1;
 }
 
-Model *mdl_load(const void *blob)
+Model *mdl_load_begin(const void *blob)
 {
     const Header *hdr = blob;
     if (!blob || memcmp(hdr->magic, "DSRM", 4) || hdr->bones > 61 || hdr->verts > 65535)  /* 61: VU1 palette room */
@@ -186,8 +209,18 @@ Model *mdl_load(const void *blob)
         a->stride = (a->nrot * 8 + a->ntra * 6 + 3) & ~3;
         p += a->frames * a->stride;
     }
-    if (!build_skin_streams(m))
+    if (!skin_alloc(m))
         return free(m), NULL;
+    return m;
+}
+
+int mdl_load_step(Model *m, unsigned budget) { return skin_step(m, budget); }
+
+Model *mdl_load(const void *blob)
+{
+    Model *m = mdl_load_begin(blob);
+    if (m)
+        skin_step(m, ~0u);
     return m;
 }
 

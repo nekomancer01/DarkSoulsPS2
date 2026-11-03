@@ -35,7 +35,7 @@ int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size);
  * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_async_done(int *result);
-/* Background load of one entry, open to decode, without a blocking fio call (from cdrom0: an open is a directory search
+/* Background load of one entry, open to decode (the decode a few blocks per step, PACK_JOB_DECODE_MS), without a blocking fio call (from cdrom0: an open is a directory search
  * of ~0.1-0.3 s and a 300 KB read up to ~1 s in PCSX2: synchronous, each was a frame stall). Start it, then call
  * pack_job_step once a frame: 0 pending, 1 done (out = the raw entry, size raw, from get(alloc): put it back with
  * alloc), -1 failed (logged). Shares the one async slot with pack_read_async (a step waits while another read is in
@@ -44,6 +44,8 @@ typedef struct {
     int state, fd;
     unsigned off, packed, raw, blocks, bsize, alloc;
     int res, parked;  /* result of its request kept by pack_async_free */
+    unsigned cs[64], b, pos;  /* decode: block sizes (the output overwrites the table in the buffer), next block */
+    const unsigned char *src;
     unsigned char *out, *in;
     const char *name;
     void *(*get)(unsigned);
