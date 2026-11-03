@@ -395,13 +395,15 @@ void drb_show(int node, int on)
 
 static u64 rgba(int r, int g, int b, int a) { return GS_SETREG_RGBAQ(r, g, b, a, 0); }
 
-static void sprite(int s, float x0, float y0, float x1, float y1, int a)
+static void sprite(const DrbNode *n, float x0, float y0, float x1, float y1, int a)
 {
+    int s = n->spr;
     if (s < 0 || s >= (int)hdr->sprites)
         return;
     const ScrSprite *p = &sprites[s];
     gsKit_prim_sprite_texture(hud_gs(), &atlas, R_HX(x0), y0, p->u + 0.5f, p->v + 0.5f, R_HX(x1), y1,
-                              p->u + p->w - 0.5f, p->v + p->h - 0.5f, DRB_Z, rgba(0x80, 0x80, 0x80, a));
+                              p->u + p->w - 0.5f, p->v + p->h - 0.5f, DRB_Z,
+                              rgba((n->r + 1) >> 1, (n->g + 1) >> 1, (n->b + 1) >> 1, n->a * a >> 7));  /* DRB tint */
 }
 
 void drb_draw_at(int node, float x, float y, float w, float h, int alpha)
@@ -410,7 +412,7 @@ void drb_draw_at(int node, float x, float y, float w, float h, int alpha)
     if (!n)
         return;
     if (n->type == DRB_SPRITE)
-        sprite(n->spr, x, y, x + w, y + h, alpha);
+        sprite(n, x, y, x + w, y + h, alpha);
     else if (n->type == DRB_RECT)
         gsKit_prim_sprite(hud_gs(), R_HX(x), y, R_HX(x + w), y + h, DRB_Z,
                           rgba(n->r >> 1, n->g >> 1, n->b >> 1, n->a * alpha >> 7));
@@ -466,9 +468,9 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
     int lh = hud_line_height();
     float x0 = t->x0 + dx, x1 = t->x1 + dx, y0 = t->y0 + dy, y1 = t->y1 + dy;
     float y = t->align & DRB_MIDDLE ? (y0 + y1 - lh) / 2 : t->align & DRB_BOTTOM ? y1 - lh : y0;
-    int r = t->r >> 1, g = t->g >> 1, b = t->b >> 1;
-    (void)alpha;  /* ASSUMED (TECH_DEBT menu-3): HUD text draws opaque */
-    /* one line per \n, the box's width wraps nothing (the FMG text has its own line breaks) */
+    int r = t->r >> 1, g = t->g >> 1, b = t->b >> 1, a = t->a * alpha >> 7;
+    /* one line per \n, the box's width wraps nothing (the FMG text has its own line breaks); a line wider than its box
+     * is squeezed to fit (the HUD font runs wider than DSR's menu font: TECH_DEBT menu-3) */
     char line[160];
     while (*s) {
         const char *e = strchr(s, '\n');
@@ -477,12 +479,15 @@ static void text_box(const DrbNode *t, float dx, float dy, const char *s, int al
             n = sizeof line - 1;
         memcpy(line, s, n);
         line[n] = 0;
+        float w = hud_text_width(line), bw = x1 - x0, sx = 1;
+        if (w > bw && bw > 8)
+            sx = bw / w < 0.6f ? 0.6f : bw / w;
         if (t->align & DRB_RIGHT)
-            hud_text(x1, y, line, r, g, b, 1);
+            hud_text_ex(x1, y, line, r, g, b, a, 1, sx);
         else if (t->align & DRB_CENTER)
-            hud_text((x0 + x1 - hud_text_width(line)) / 2, y, line, r, g, b, 0);
+            hud_text_ex((x0 + x1 - w * sx) / 2, y, line, r, g, b, a, 0, sx);
         else
-            hud_text(x0, y, line, r, g, b, 0);
+            hud_text_ex(x0, y, line, r, g, b, a, 0, sx);
         y += lh;
         if (!e)
             break;
@@ -512,7 +517,7 @@ void drb_draw(int node, float dx, float dy, int alpha, DrbTextFn fn, void *ctx)
         }
         switch (n->type) {
         case DRB_SPRITE:
-            sprite(n->spr, n->x0 + dx, n->y0 + dy, n->x1 + dx, n->y1 + dy, alpha);
+            sprite(n, n->x0 + dx, n->y0 + dy, n->x1 + dx, n->y1 + dy, alpha);
             break;
         case DRB_RECT:
             gsKit_prim_sprite(hud_gs(), R_HX(n->x0 + dx), n->y0 + dy, R_HX(n->x1 + dx), n->y1 + dy, DRB_Z,

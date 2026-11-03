@@ -719,6 +719,7 @@ static void draw_equip(void)
     drb_show(grid, mode == M_EQUIP);
     drb_show(pick, 0);
     show(grid, "cursor", 0);
+    detail_id = 0;
     drb_draw(root, 0, 0, 0x80, tag_text, 0);
     if (mode == M_EQUIP) {
         for (int i = 0; i < EQ_N; i++) {
@@ -747,6 +748,7 @@ static void draw_equip(void)
             snprintf(nm, sizeof nm, "data_tab_%d", t);
             show(pick, nm, 0);
         }
+        detail_id = 0;
         drb_draw(pick, 0, 0, 0x80, tag_text, 0);
         for (int r = 0; r < 5; r++) {
             char nm[12];
@@ -800,6 +802,7 @@ static void draw_inventory(void)
     }
     show(lst, "data_simple_arms", 0), show(lst, "data_simple_armor", 0), show(lst, "data_simple_item", 0);
     show(lst, "data_simple_arrow", 0), show(lst, "data_simple_magic", 0), show(lst, "data_add_effect", 0);
+    detail_id = 0;  /* item texts only in the rows and the detail panel drawn below, not in stray template elements */
     drb_draw(root, 0, 0, 0x80, tag_text, 0);
     char tc[20];
     snprintf(tc, sizeof tc, "tab_cursor0_%d", inv_tab);

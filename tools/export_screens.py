@@ -9,8 +9,8 @@ Item icons are not in it (tools/export_items.py icons.bin) and neither is the fo
 
 DRB element types used (shape parameters after the s16 left, top, right, bottom rectangle relative to the parent
 dialog, see tools/export_menu.py): Dialog +16 u16 child DLG index; Sprite +16 s16 texel left, top, right, bottom,
-+24 s16 texture index; MonoRect +24 colour a, r, g, b; GouraudRect +20 four corner colours (averaged); Text and
-ScrollText +24 u32 colour (bytes r, g, b, a), +28 u8 font size class, +30 u8 alignment (1 right, 2 centre, 8 middle,
++24 s16 texture index, +32 tint a, r, g, b; MonoRect +24 colour a, r, g, b; GouraudRect +20 four corner colours (averaged); Text and
+ScrollText +24 colour a, r, g, b, +28 u8 font size class, +30 u8 alignment (1 right, 2 centre, 8 middle,
 4 bottom: inferred from where labels and values sit), +36 u32 msgbnd file id, +40 u32 FMG text id (the text, which
 for most elements is a <?tag?> the game fills in).
 
@@ -186,6 +186,10 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
         if typ == T_SPRITE:
             if k in spr_key:
                 spr = sprite_of[spr_key[k]]
+                # Sprite +32: tint a, r, g, b as MonoRect's (ffffffff on most sprites; c8ffffff translucent rules,
+                # dc282828 the tab blackouts, ff000000 black panels, 96062a76 the list cursors' blue ink)
+                a, r, g, b = raw[32:36]
+                col = (r, g, b, (a * 0x80 + 127) // 255)
             else:
                 typ = T_NULL  # an icon placeholder (texture -1 or an IconNN sheet): filled in by the code
         elif typ == T_RECT:
@@ -194,7 +198,7 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
             a, r, g, b = (sum(c[j] for c in cs) // len(cs) for j in range(4))
             col = (r, g, b, (a * 0x80 + 127) // 255)
         elif typ == T_TEXT:
-            r, g, b, a = raw[24:28]
+            a, r, g, b = raw[24:28]  # a, r, g, b as the shapes' (ff9cb9ca: the menus' pale blue-grey text)
             col = (r, g, b, (a * 0x80 + 127) // 255)
             font, align = raw[28], raw[30]
             fid, tid = struct.unpack_from("<2I", raw, 36)

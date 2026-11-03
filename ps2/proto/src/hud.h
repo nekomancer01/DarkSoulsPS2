@@ -53,6 +53,8 @@ void hud_layout(int layout, int a);  /* a layout entry (HUD_*) at its place, alp
 /* DSFont24 text; returns the width. align: 0 left, 1 right of x */
 float hud_text(float x, float y, const char *s, int r, int g, int b, int align);
 float hud_text_width(const char *s);
+/* hud_text with alpha (0..0x80) and a horizontal squeeze sx (1 = as drawn) */
+float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, int align, float sx);
 int hud_line_height(void);
 /* Begin / end a batch of HUD draws: alpha blending on, alpha and depth tests off (and back) */
 void hud_begin(void);
