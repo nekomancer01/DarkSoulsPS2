@@ -373,7 +373,32 @@ def add_near(t, w2, h2, rgba2):
 
 def densities(textures, chunks):
     """Texels per metre at mip 0 for each texture, area-weighted over the triangles of the chunks using it. Chunks as
-    build_chunks returns them: (ti, flags, tris, pos s16x3, st u16x2, colour, min, max, origin, step, st scale)."""
+    build_chunks returns them: (ti, flags, tris, pos s16x3, st u16x2, colour, min, max, origin, step, st scale).
+    Every chunk's triangles at once (was ~15 numpy calls per chunk): each element is computed as densities_ref does,
+    and each chunk's areas are still summed on their own (numpy's pairwise sum) and added up in chunk order."""
+    cs = [c for c in chunks if c[0] >= 0 and c[2]]
+    uv_a, w_a = np.zeros(len(textures)), np.zeros(len(textures))
+    if not cs:
+        return [0.0] * len(textures)
+    nt = np.array([c[2] for c in cs], np.int64)
+    rep = lambda v: np.repeat(np.asarray(v), nt, axis=0)
+    p = np.frombuffer(b"".join(bytes(c[3])[:18 * c[2]] for c in cs), np.int16).reshape(-1, 3, 3) * \
+        rep([c[9] for c in cs])[:, None, None] + rep([c[8] for c in cs])[:, None, :]
+    s = np.frombuffer(b"".join(bytes(c[4])[:12 * c[2]] for c in cs), np.uint16).reshape(-1, 3, 2) / \
+        rep([c[10] for c in cs])[:, None, None]
+    s = s * rep([[textures[c[0]]["w"], textures[c[0]]["h"]] for c in cs])[:, None, :]
+    wa = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    d1, d2 = s[:, 1] - s[:, 0], s[:, 2] - s[:, 0]
+    ua = np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0])
+    off = np.concatenate([[0], np.cumsum(nt)]).tolist()
+    for c, a, b in zip(cs, off[:-1], off[1:]):
+        w_a[c[0]] += 0.5 * wa[a:b].sum()
+        uv_a[c[0]] += 0.5 * ua[a:b].sum()
+    return [float(np.sqrt(u / a)) if a > 0 else 0.0 for u, a in zip(uv_a, w_a)]
+
+
+def densities_ref(textures, chunks):
+    """densities, a chunk at a time (the reference test_mapx checks it against)"""
     uv_a, w_a = np.zeros(len(textures)), np.zeros(len(textures))
     for c in chunks:
         ti, ntri, pos, st, org, step, sts = c[0], c[2], c[3], c[4], c[8], c[9], c[10]
