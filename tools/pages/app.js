@@ -185,12 +185,16 @@ $("convert").addEventListener("click", () => {
     $("convert").disabled = false;
   };
   // The plan's groups (build.json converter.groups: shared steps, one per area / world block, then the world) run in
-  // up to LANES workers side by side, each group once its deps are done, the ones with map exports first. A group
+  // up to LANES workers side by side, each group once its deps are done, those on the longest chain first. A group
   // runs as a chain of workers: one whose memory has grown too far hands its build so far to a fresh one ({pause},
   // worker.js), as WebAssembly memory never shrinks. Each finished group's files ({finished}) go to the groups that
   // need them; the last group (the world) gets every file and writes the disc image.
   const groups = (BUILD.converter.groups || [{ name: null, deps: [], maps: 0 }]).map((g) => ({ ...g, state: "wait" }));
   const last = groups[groups.length - 1];
+  // priority: the map exports on the longest chain from a group to the end (a group's own plus the most of any group
+  // waiting on it), so the shared steps that Firelink's group waits on start with the first maps; ties in plan order
+  const rank = (g) => g.maps + Math.max(0, ...groups.filter((x) => x !== last && x.deps.includes(g.name)).map(rank));
+  groups.forEach((g, i) => { g.rank = rank(g); g.order = i; });
   const lanes = laneCount();
   const files = new Map();  // path -> ArrayBuffer of every finished group's build files
   // the group that made each file: a group gets its deps' files (their packs and the intermediates later steps still
@@ -254,7 +258,7 @@ $("convert").addEventListener("click", () => {
     const running = groups.filter((g) => g.state === "run").length;
     const ready = groups.filter((g) => g.state === "wait" && g.deps.every((d) => groups.find((x) => x.name === d).state === "done"))
       .filter((g) => g !== last || groups.every((x) => x === last || x.state === "done"))  // the image needs every pack
-      .sort((a, b) => b.maps - a.maps);
+      .sort((a, b) => b.rank - a.rank || a.order - b.order);
     for (const g of ready.slice(0, Math.max(0, lanes - running))) {
       g.state = "run";
       // its dependencies' files, or every file for the last group (the disc image packs them all)
