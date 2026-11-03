@@ -227,7 +227,7 @@ def check_bump(rng):
     sub = {k: (v[rows] if isinstance(v, np.ndarray) else v) for k, v in tri.items()}
     same(resp(sub, pal).tolist(), en._mx_response(Lx, resp, dict(tri), pal, rows=rows).tolist(), "bump response rows")
     # k-means: float32 palette, float64 weighted clusters, nearest with float64 centres
-    for dt, d, k, n, w in ((np.float32, 2, 255, int(rng.integers(300, 4000)), False), (np.float64, 2, 9, 500, False),
+    for dt, d, k, n, w in ((np.float32, 2, 255, int(rng.integers(300, 10000)), False), (np.float64, 2, 9, 500, False),
                            (np.float64, 16, 48, int(rng.integers(10, 900)), True), (np.float64, 16, 1, 300, True)):
         x = (rng.normal(size=(n, d)) * 0.4).astype(dt)
         wts = rng.random(n) + 1e-6 if w else None
@@ -486,6 +486,13 @@ def check_chunks(rng):
     same(f1.getvalue(), f3.getvalue(), "chunks log (Tris)")
     same((list(ref), len(meshes), len(tris), ref_l), (list(got), nm, nt, lists()), "chunks (Tris)")
     same(em.flatten(entries, textures), em.flatten(ents_np, textures), "flatten (Tris)")
+    if bkey:  # export_normal.assign's arrays (BumpKeys) give the same chunks as its dict
+        it = list(bkey.items())
+        bk = export_normal.BumpKeys(*(np.array(c, np.int64) for c in
+                                      ([k for k, _ in it], [v[0] for _, v in it], [v[1] for _, v in it])))
+        with contextlib.redirect_stdout(io.StringIO()):
+            got, nm, nt = em.build_chunks_c(L, ents_np, textures, centre, bk, stream, dgon)
+        same((list(ref), ref_l), (list(got), lists()), "chunks (BumpKeys)")
     return len(ref)
 
 

@@ -18,6 +18,37 @@ static double pw_d(const double *a, int n)
     return r;
 }
 /* x float32 against float64 centres: 2 x (float32, exact) promoted, products and sums in float64 */
+typedef struct {
+    const float *x;
+    const double *c, *cc;
+    long long n;
+    int d, k;
+    long long *out;
+} fdctx;
+
+#define FD_BLOCK 4096
+static void fd_block(void *vc, long long b)
+{
+    fdctx *t = vc;
+    const double *c = t->c, *cc = t->cc;
+    int d = t->d, k = t->k;
+    long long e = (b + 1) * FD_BLOCK < t->n ? (b + 1) * FD_BLOCK : t->n;
+    for (long long i = b * FD_BLOCK; i < e; i++) {
+        const float *x = t->x + i * d;
+        long long best = 0;
+        double bv = 0;
+        for (int j = 0; j < k; j++) {
+            double dot = (double)(2 * x[0]) * c[(long long)j * d];
+            for (int a = 1; a < d; a++)
+                dot = dot + (double)(2 * x[a]) * c[(long long)j * d + a];
+            double v = cc[j] - dot;
+            if (!j || v < bv)
+                bv = v, best = j;
+        }
+        t->out[i] = best;
+    }
+}
+
 static void nearest_fd(const float *x, long long n, int d, const double *c, int k, long long *out)
 {
     double *cc = MX_NEW(double, k), *t = MX_NEW(double, d);
@@ -26,19 +57,8 @@ static void nearest_fd(const float *x, long long n, int d, const double *c, int 
             t[a] = c[(long long)j * d + a] * c[(long long)j * d + a];
         cc[j] = pw_d(t, d);
     }
-    for (long long i = 0; i < n; i++) {
-        long long best = 0;
-        double bv = 0;
-        for (int j = 0; j < k; j++) {
-            double dot = (double)(2 * x[i * d]) * c[(long long)j * d];
-            for (int a = 1; a < d; a++)
-                dot = dot + (double)(2 * x[i * d + a]) * c[(long long)j * d + a];
-            double v = cc[j] - dot;
-            if (!j || v < bv)
-                bv = v, best = j;
-        }
-        out[i] = best;
-    }
+    fdctx ctx = {x, c, cc, n, d, k, out};
+    mx_parallel_for((n + FD_BLOCK - 1) / FD_BLOCK, fd_block, &ctx);
     free(cc), free(t);
 }
 #endif
@@ -120,24 +140,41 @@ static int CAT(kmeans, S)(const T *x, long long n, int d, const double *wts, int
     memcpy(c, x + first * d, sizeof(T) * (size_t)d);
     for (long long i = 0; i < n; i++)
         d2[i] = CAT(d2row, S)(x + i * d, c, d, tmp);
+    double *cdf = MX_NEW(double, n);
     for (int j = 1; j < k; j++) {
-        for (long long i = 0; i < n; i++)
-            p[i] = (double)d2[i] * w[i];
+        /* p = d2 * w (d2: the previous centres' minimum, updated in the same pass for the next round below) */
+        if (j > 1) {
+            const T *cj = c + (long long)(j - 1) * d;
+            for (long long i = 0; i < n; i++) {
+                T v = CAT(d2row, S)(x + i * d, cj, d, tmp);
+                if (v < d2[i] || v != v)  /* np.minimum: nan wins */
+                    d2[i] = v;
+                p[i] = (double)d2[i] * w[i];
+            }
+        } else
+            for (long long i = 0; i < n; i++)
+                p[i] = (double)d2[i] * w[i];
         double ps = mx_np_pairwise(p, n, 1);
         long long pick;
-        if (ps > 0) {
+        if (ps > 0) {  /* rng.choice(n, p=p / ps): cdf = cumsum, searchsorted(cdf / cdf[-1], u, "right") */
+            double s = 0;
             for (long long i = 0; i < n; i++)
-                p[i] = p[i] / ps;
-            pick = mx_rng_choice_p(r, n, p);
+                cdf[i] = s = (i ? s + p[i] / ps : p[i] / ps);
+            double last = cdf[n - 1], u = mx_rng_random(r);
+            long long lo = 0, hi = n;  /* cdf / last is monotone: divided only where the search looks */
+            while (lo < hi) {
+                long long m = (lo + hi) / 2;
+                if (cdf[m] / last <= u)
+                    lo = m + 1;
+                else
+                    hi = m;
+            }
+            pick = lo;
         } else
             pick = mx_rng_integers(r, n);
         memcpy(c + (long long)j * d, x + pick * d, sizeof(T) * (size_t)d);
-        for (long long i = 0; i < n; i++) {
-            T v = CAT(d2row, S)(x + i * d, c + (long long)j * d, d, tmp);
-            if (v < d2[i] || v != v)  /* np.minimum: nan wins */
-                d2[i] = v;
-        }
     }
+    free(cdf);
     double *acc = MX_NEW(double, d), *wj = MX_NEW(double, n);
     long long *cnt = MX_NEW(long long, k + 1), *start = MX_NEW(long long, k + 1), *order = MX_NEW(long long, n);
     for (int it = 0; it < iters; it++) {

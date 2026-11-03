@@ -501,7 +501,13 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
                 tkey[sel] = [c[1] for _, c in cs]
         dgv[a:b] = dids.setdefault(m["dg"] if draw_groups else 0, len(dids))
         entv[a:b] = eids.setdefault(m["ent"], len(eids))
-    if bkey:
+    if isinstance(bkey, export_normal.BumpKeys) and bkey.unique():  # the same numbering from the arrays
+        sel = bkey.G < nt
+        if sel.any():
+            ids, first = _first_rows(np.stack([bkey.TI[sel], bkey.LAB[sel]], 1))
+            bkv[bkey.G[sel]] = ids
+            bids = dict.fromkeys(zip(bkey.TI[sel][first].tolist(), bkey.LAB[sel][first].tolist()))
+    elif bkey:
         bs = [(k, bids.setdefault(v, len(bids))) for k, v in bkey.items() if k < nt]
         if bs:
             bkv[np.array([k for k, _ in bs], np.intp)] = [i for _, i in bs]

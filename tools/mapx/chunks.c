@@ -120,6 +120,237 @@ static void split_batch(long long *ks, long long *tmp, long long n, long long ba
     split_batch(ks + cut, tmp, n - cut, base + cut, C, ct, p);
 }
 
+typedef struct {
+    long long *bt, *tmp;
+    const long long *ocnt;
+    const double *C;
+    int ct;
+    parts *gp;
+} spctx;
+
+static void sp_group(void *vc, long long o)
+{
+    spctx *c = vc;
+    long long s = c->ocnt[o], n = c->ocnt[o + 1] - s;
+    split_batch(c->bt + s, c->tmp + s, n, s, c->C, c->ct, c->gp + o);
+}
+
+/* ---- flatten, an entry at a time (threads): sort its corners, number the unique ones, then (fl_fill, after the
+   entries' vertex counts are summed into offsets) write the vertices and corner -> vertex ---- */
+typedef struct {
+    const int *e_ti;
+    const long long *e_toff, *e_woff;
+    const double *cpos;
+    const int *cw, *wrgb, *wa;
+    const double *wuv;
+    const int *texwh;
+    long long *ord, *loc, *ecnt;  /* ord: per corner its order, then the run's first corner per local vertex */
+    int *ebad;
+    long long *G;
+    double *P, *UV;
+    unsigned char *VC;
+} flctx;
+
+static void fl_sort(void *vc, long long e)
+{
+    flctx *f = vc;
+    long long t0 = f->e_toff[e], n = f->e_toff[e + 1] - t0, nc = 3 * n;
+    const double *cp = f->cpos + 9 * t0;
+    const int *cwe = f->cw + 3 * t0;
+    long long *ord = f->ord + 3 * t0, *loc = f->loc + 3 * t0;
+    for (long long i = 0; i < nc; i++)
+        ord[i] = i;
+    /* sort corners by (x, y, z, wedge), ties (equal values, -0 == 0) by corner order: the run's first corner is
+       the one a Python set keeps */
+    long long *tmp = MX_NEW(long long, nc ? nc : 1);
+    for (long long w = 1; w < nc; w *= 2) {  /* bottom-up merge sort */
+        for (long long s = 0; s < nc; s += 2 * w) {
+            long long m = s + w < nc ? s + w : nc, en = s + 2 * w < nc ? s + 2 * w : nc, i = s, j = m, o = s;
+            while (i < m && j < en) {
+                long long x = ord[i], y = ord[j];
+                int lt = 0;  /* corner y before corner x */
+                for (int a = 0; a < 3; a++)
+                    if (cp[3 * y + a] != cp[3 * x + a]) {
+                        lt = cp[3 * y + a] < cp[3 * x + a] ? 1 : -1;
+                        break;
+                    }
+                if (!lt && cwe[y] != cwe[x])
+                    lt = cwe[y] < cwe[x] ? 1 : -1;
+                tmp[o++] = lt > 0 ? ord[j++] : ord[i++];
+            }
+            while (i < m)
+                tmp[o++] = ord[i++];
+            while (j < en)
+                tmp[o++] = ord[j++];
+        }
+        memcpy(ord, tmp, sizeof(long long) * (size_t)nc);
+    }
+    long long prev = -1, nv = 0;
+    for (long long r = 0; r < nc; r++) {
+        long long c = ord[r];
+        int same = prev >= 0 && cwe[c] == cwe[prev];
+        for (int a = 0; same && a < 3; a++)
+            same = cp[3 * c + a] == cp[3 * prev + a];
+        if (!same) {
+            tmp[nv++] = c;
+            prev = c;
+        }
+        loc[c] = nv - 1;
+    }
+    memcpy(ord, tmp, sizeof(long long) * (size_t)nv);
+    free(tmp);
+    f->ecnt[e] = nv;
+    /* texture coordinates: ((u - floor(min u)) * w, (v - floor(min v)) * h), then / (w, h) in build_chunks */
+    int ti = f->e_ti[e];
+    for (long long t = 0; t < n; t++) {
+        double *o = f->UV + 6 * (t0 + t);
+        if (ti < 0) {
+            memset(o, 0, 6 * sizeof(double));  /* (0, 0) / (1, 1) */
+            continue;
+        }
+        double tw = f->texwh[2 * ti], th = f->texwh[2 * ti + 1];
+        const double *uv[3];
+        for (int q = 0; q < 3; q++)
+            uv[q] = f->wuv + 2 * (f->e_woff[e] + cwe[3 * t + q]);
+        double mu = uv[0][0], mv = uv[0][1];
+        for (int q = 1; q < 3; q++) {
+            mu = uv[q][0] < mu ? uv[q][0] : mu;
+            mv = uv[q][1] < mv ? uv[q][1] : mv;
+        }
+        double du = mx_floor(mu) + 0.0, dv = mx_floor(mv) + 0.0;  /* math.floor: an int */
+        for (int q = 0; q < 3; q++)
+            o[2 * q] = (uv[q][0] - du) * tw / tw, o[2 * q + 1] = (uv[q][1] - dv) * th / th;
+    }
+}
+
+static void fl_fill(void *vc, long long e)
+{
+    flctx *f = vc;
+    long long t0 = f->e_toff[e], nc = 3 * (f->e_toff[e + 1] - t0), v0 = f->ecnt[e], nv = f->ecnt[e + 1] - v0;
+    const double *cp = f->cpos + 9 * t0;
+    const int *cwe = f->cw + 3 * t0;
+    const long long *rep = f->ord + 3 * t0, *loc = f->loc + 3 * t0;
+    int bad = 0;
+    for (long long u = 0; u < nv; u++) {
+        long long c = rep[u], v = v0 + u;
+        memcpy(f->P + 3 * v, cp + 3 * c, 3 * sizeof(double));
+        long long wi = f->e_woff[e] + cwe[c];
+        for (int a = 0; a < 4; a++) {
+            int x = a < 3 ? f->wrgb[3 * wi + a] : f->wa[wi];
+            bad |= x < 0 || x > 255;
+            f->VC[4 * v + a] = (unsigned char)x;
+        }
+    }
+    for (long long c = 0; c < nc; c++)
+        f->G[3 * t0 + c] = v0 + loc[c];
+    f->ebad[e] = bad;
+}
+
+typedef struct {
+    mx_chunks *h;
+    const long long *G;
+    const double *P;
+    double *PC;
+    long long *CG;
+    int *cb;
+    double pos_max;
+} bxctx;
+
+static void bx_batch(void *vc, long long bi)  /* a batch's corners, box, origin and position exponent */
+{
+    bxctx *k = vc;
+    mx_chunks *h = k->h;
+    const long long *G = k->G;
+    const double *P = k->P;
+    double *PC = k->PC, pos_max = k->pos_max;
+    long long *CG = k->CG;
+    int *cb = k->cb;
+    batch *b = h->b + bi;
+    for (long long t = b->t0; t < b->t0 + b->ntri; t++)
+        for (int q = 0; q < 3; q++) {
+            long long c = 3 * t + q, v = G[3 * h->bt[t] + q];
+            CG[c] = v, cb[c] = (int)bi;
+            memcpy(PC + 3 * c, P + 3 * v, 3 * sizeof(double));
+        }
+    long long c0 = 3 * b->t0, c1 = 3 * (b->t0 + b->ntri);
+    for (int a = 0; a < 3; a++) {
+        double lo = PC[3 * c0 + a], hi = lo;
+        for (long long c = c0 + 1; c < c1; c++) {
+            double v = PC[3 * c + a];
+            lo = v < lo ? v : lo;
+            hi = v > hi ? v : hi;
+        }
+        b->mn[a] = lo, b->mx[a] = hi;
+        b->org[a] = mx_rint((lo + hi) / 2) + 0.0;
+    }
+    double m = 0;
+    for (int a = 0; a < 3; a++) {
+        double x = mx_fabs(b->mx[a] - b->org[a]), y = mx_fabs(b->mn[a] - b->org[a]), v = y > x ? y : x;
+        if (!a || v > m)
+            m = v;
+    }
+    int e = -16;
+    while (m / ldexp1(e) > pos_max && e < 0)
+        e++;
+    b->e = e;
+}
+
+typedef struct {
+    mx_chunks *h;
+    const double *Q, *PC, *UV;
+    const unsigned char *VC;
+    const long long *CG;
+    double *berr;
+    int *bbad;
+} stctx;
+
+static void st_batch(void *vc, long long bi)  /* a batch's position, texture coordinate and colour streams */
+{
+    stctx *k = vc;
+    mx_chunks *h = k->h;
+    const double *Q = k->Q, *PC = k->PC, *UV = k->UV;
+    const unsigned char *VC = k->VC;
+    const long long *CG = k->CG;
+    double err = 0;
+    int bad = 0;
+    batch *b = h->b + bi;
+    double scl = ldexp1(b->e);
+    long long c0 = 3 * b->t0, c1 = 3 * (b->t0 + b->ntri);
+    unsigned char *po = h->pos + h->pos_off[bi], *so = h->st + h->st_off[bi], *co = h->col + h->col_off[bi];
+    double smax = 0;
+    for (long long c = c0; c < c1; c++) {
+        for (int a = 0; a < 3; a++) {
+            double nq = mx_rint((Q[3 * c + a] - b->org[a]) / scl);
+            double d = mx_fabs(b->org[a] + nq * scl - PC[3 * c + a]);
+            err = np_maximum(err, d);
+            if (!(nq >= -32768 && nq <= 32767))
+                bad = 1;
+            int16_t v = (int16_t)nq;
+            memcpy(po + 6 * (c - c0) + 2 * a, &v, 2);
+        }
+        long long t = c / 3;
+        const double *uv = UV + 6 * h->bt[t] + 2 * (c % 3);
+        double m = np_maximum(uv[0], uv[1]);
+        smax = c == c0 ? m : np_maximum(smax, m);
+        memcpy(co + 4 * (c - c0), VC + 4 * CG[c], 4);
+    }
+    b->sts = smax < 65535.0 / 4096 ? 4096 : 1024;
+    for (long long c = c0; c < c1; c++) {
+        long long t = c / 3;
+        const double *uv = UV + 6 * h->bt[t] + 2 * (c % 3);
+        for (int a = 0; a < 2; a++) {
+            double x = mx_rint(uv[a] * b->sts);
+            x = 65535 <= x ? 65535 : x;
+            if (!(x >= 0))
+                bad = 1;
+            uint16_t v = (uint16_t)x;
+            memcpy(so + 4 * (c - c0) + 2 * a, &v, 2);
+        }
+    }
+    k->berr[bi] = err;
+    k->bbad[bi] = bad;
+}
+
 /* ---- the whole stage ----
    ne entries (the drawn ones, in order), entry e's triangles at e_toff[e]..e_toff[e + 1] (global numbers) with
    corners cpos (3 doubles) and cw (entry-local wedge), its wedges at e_woff[e].. (wrgb 3 ints, wa, wuv 2 doubles).
@@ -144,81 +375,21 @@ MX_API mx_chunks *mx_chunks_new(int ne, const int *e_ti, const long long *e_fl, 
     unsigned char *VC = MX_NEW(unsigned char, 12 * (nt ? nt : 1));
     long long nv = 0;
     int bad = 0;
-    long long *ord = MX_NEW(long long, 3 * (nt ? nt : 1));
+    long long *ord = MX_NEW(long long, 3 * (nt ? nt : 1)), *loc = MX_NEW(long long, 3 * (nt ? nt : 1));
+    long long *ecnt = MX_NEW(long long, ne + 1);
+    int *ebad = MX_ZNEW(int, ne ? ne : 1);
+    flctx fc = {e_ti, e_toff, e_woff, cpos, cw, wrgb, wa, wuv, texwh, ord, loc, ecnt, ebad, G, P, UV, VC};
+    mx_parallel_for(ne, fl_sort, &fc);  /* entries are independent: their corners, then their vertex numbers */
     for (int e = 0; e < ne; e++) {
-        long long t0 = e_toff[e], n = e_toff[e + 1] - t0, nc = 3 * n;
-        const double *cp = cpos + 9 * t0;
-        const int *cwe = cw + 3 * t0;
-        for (long long i = 0; i < nc; i++)
-            ord[i] = i;
-        /* sort corners by (x, y, z, wedge), ties (equal values, -0 == 0) by corner order: the run's first corner is
-           the one a Python set keeps */
-        long long *tmp = MX_NEW(long long, nc ? nc : 1);
-        for (long long w = 1; w < nc; w *= 2) {  /* bottom-up merge sort */
-            for (long long s = 0; s < nc; s += 2 * w) {
-                long long m = s + w < nc ? s + w : nc, en = s + 2 * w < nc ? s + 2 * w : nc, i = s, j = m, o = s;
-                while (i < m && j < en) {
-                    long long x = ord[i], y = ord[j];
-                    int lt = 0;  /* corner y before corner x */
-                    for (int a = 0; a < 3; a++)
-                        if (cp[3 * y + a] != cp[3 * x + a]) {
-                            lt = cp[3 * y + a] < cp[3 * x + a] ? 1 : -1;
-                            break;
-                        }
-                    if (!lt && cwe[y] != cwe[x])
-                        lt = cwe[y] < cwe[x] ? 1 : -1;
-                    tmp[o++] = lt > 0 ? ord[j++] : ord[i++];
-                }
-                while (i < m)
-                    tmp[o++] = ord[i++];
-                while (j < en)
-                    tmp[o++] = ord[j++];
-            }
-            memcpy(ord, tmp, sizeof(long long) * (size_t)nc);
-        }
-        free(tmp);
-        long long prev = -1;
-        for (long long r = 0; r < nc; r++) {
-            long long c = ord[r];
-            int same = prev >= 0 && cwe[c] == cwe[prev];
-            for (int a = 0; same && a < 3; a++)
-                same = cp[3 * c + a] == cp[3 * prev + a];
-            if (!same) {
-                memcpy(P + 3 * nv, cp + 3 * c, 3 * sizeof(double));
-                long long wi = e_woff[e] + cwe[c];
-                for (int a = 0; a < 4; a++) {
-                    int x = a < 3 ? wrgb[3 * wi + a] : wa[wi];
-                    bad |= x < 0 || x > 255;
-                    VC[4 * nv + a] = (unsigned char)x;
-                }
-                nv++;
-                prev = c;
-            }
-            G[3 * t0 + c] = nv - 1;
-        }
-        /* texture coordinates: ((u - floor(min u)) * w, (v - floor(min v)) * h), then / (w, h) in build_chunks */
-        int ti = e_ti[e];
-        for (long long t = 0; t < n; t++) {
-            double *o = UV + 6 * (t0 + t);
-            if (ti < 0) {
-                memset(o, 0, 6 * sizeof(double));  /* (0, 0) / (1, 1) */
-                continue;
-            }
-            double tw = texwh[2 * ti], th = texwh[2 * ti + 1];
-            const double *uv[3];
-            for (int q = 0; q < 3; q++)
-                uv[q] = wuv + 2 * (e_woff[e] + cwe[3 * t + q]);
-            double mu = uv[0][0], mv = uv[0][1];
-            for (int q = 1; q < 3; q++) {
-                mu = uv[q][0] < mu ? uv[q][0] : mu;
-                mv = uv[q][1] < mv ? uv[q][1] : mv;
-            }
-            double du = mx_floor(mu) + 0.0, dv = mx_floor(mv) + 0.0;  /* math.floor: an int */
-            for (int q = 0; q < 3; q++)
-                o[2 * q] = (uv[q][0] - du) * tw / tw, o[2 * q + 1] = (uv[q][1] - dv) * th / th;
-        }
+        long long c = ecnt[e];
+        ecnt[e] = nv;
+        nv += c;
     }
-    free(ord);
+    ecnt[ne] = nv;
+    mx_parallel_for(ne, fl_fill, &fc);
+    for (int e = 0; e < ne; e++)
+        bad |= ebad[e];
+    free(ord), free(loc), free(ecnt), free(ebad);
     h->nvert = nv;
     /* centroids, the distance-scaled cell */
     double *C = MX_NEW(double, 3 * (nt ? nt : 1));
@@ -371,10 +542,12 @@ MX_API mx_chunks *mx_chunks_new(int ne, const int *e_ti, const long long *e_fl, 
     int capb = 64;
     h->b = MX_NEW(batch, capb);
     long long *tmp = MX_NEW(long long, nt ? nt : 1);
+    parts *gp = MX_ZNEW(parts, no ? no : 1);
+    spctx spc = {h->bt, tmp, ocnt, C, chunk_tris, gp};
+    mx_parallel_for(no, sp_group, &spc);  /* groups split apart (their triangles, scratch and parts are their own) */
     for (long long o = 0; o < no; o++) {
-        parts p = {0};
+        parts p = gp[o];
         long long s = ocnt[o], n = ocnt[o + 1] - s;
-        split_batch(h->bt + s, tmp, n, s, C, chunk_tris, &p);
         const long long *K = gm.keys + 10 * oorder[o];
         for (long long i = 0; i < p.n; i++) {
             if (h->nb == capb)
@@ -391,7 +564,7 @@ MX_API mx_chunks *mx_chunks_new(int ne, const int *e_ti, const long long *e_fl, 
         }
         free(p.ofs);
     }
-    free(ocnt), free(oorder), free(dst);
+    free(gp), free(ocnt), free(oorder), free(dst);
     mx_map_free(&gm);
     /* foliage: tufts by (ti, fl, size, GRASS_GRID cell, dg, ent, stream cell), sorted by rank, CHUNK_TRIS / size
        tufts per batch */
@@ -493,36 +666,8 @@ MX_API mx_chunks *mx_chunks_new(int ne, const int *e_ti, const long long *e_fl, 
     double *PC = MX_NEW(double, 3 * (ncorner ? ncorner : 1));
     long long *CG = MX_NEW(long long, ncorner ? ncorner : 1);
     int *cb = MX_NEW(int, ncorner ? ncorner : 1);
-    for (int bi = 0; bi < nb; bi++) {
-        batch *b = h->b + bi;
-        for (long long t = b->t0; t < b->t0 + b->ntri; t++)
-            for (int q = 0; q < 3; q++) {
-                long long c = 3 * t + q, v = G[3 * h->bt[t] + q];
-                CG[c] = v, cb[c] = bi;
-                memcpy(PC + 3 * c, P + 3 * v, 3 * sizeof(double));
-            }
-        long long c0 = 3 * b->t0, c1 = 3 * (b->t0 + b->ntri);
-        for (int a = 0; a < 3; a++) {
-            double lo = PC[3 * c0 + a], hi = lo;
-            for (long long c = c0 + 1; c < c1; c++) {
-                double v = PC[3 * c + a];
-                lo = v < lo ? v : lo;
-                hi = v > hi ? v : hi;
-            }
-            b->mn[a] = lo, b->mx[a] = hi;
-            b->org[a] = mx_rint((lo + hi) / 2) + 0.0;
-        }
-        double m = 0;
-        for (int a = 0; a < 3; a++) {
-            double x = mx_fabs(b->mx[a] - b->org[a]), y = mx_fabs(b->mn[a] - b->org[a]), v = y > x ? y : x;
-            if (!a || v > m)
-                m = v;
-        }
-        int e = -16;
-        while (m / ldexp1(e) > pos_max && e < 0)
-            e++;
-        b->e = e;
-    }
+    bxctx bx = {h, G, P, PC, CG, cb, pos_max};
+    mx_parallel_for(nb, bx_batch, &bx);  /* batches own their corners */
     /* the step of each position (by value): the coarsest among the batches using it */
     long long *cp = MX_NEW(long long, ncorner ? ncorner : 1), npk;
     {
@@ -581,43 +726,15 @@ MX_API mx_chunks *mx_chunks_new(int ne, const int *e_ti, const long long *e_fl, 
     }
     h->pos_off[nb] = sp, h->st_off[nb] = ss, h->col_off[nb] = sc_;
     h->pos = MX_ZNEW(unsigned char, sp), h->st = MX_ZNEW(unsigned char, ss), h->col = MX_ZNEW(unsigned char, sc_);
-    double err = 0;
-    for (int bi = 0; bi < nb; bi++) {
-        batch *b = h->b + bi;
-        double scl = ldexp1(b->e);
-        long long c0 = 3 * b->t0, c1 = 3 * (b->t0 + b->ntri);
-        unsigned char *po = h->pos + h->pos_off[bi], *so = h->st + h->st_off[bi], *co = h->col + h->col_off[bi];
-        double smax = 0;
-        for (long long c = c0; c < c1; c++) {
-            for (int a = 0; a < 3; a++) {
-                double nq = mx_rint((Q[3 * c + a] - b->org[a]) / scl);
-                double d = mx_fabs(b->org[a] + nq * scl - PC[3 * c + a]);
-                err = np_maximum(err, d);
-                if (!(nq >= -32768 && nq <= 32767))
-                    bad = 1;
-                int16_t v = (int16_t)nq;
-                memcpy(po + 6 * (c - c0) + 2 * a, &v, 2);
-            }
-            long long t = c / 3;
-            const double *uv = UV + 6 * h->bt[t] + 2 * (c % 3);
-            double m = np_maximum(uv[0], uv[1]);
-            smax = c == c0 ? m : np_maximum(smax, m);
-            memcpy(co + 4 * (c - c0), VC + 4 * CG[c], 4);
-        }
-        b->sts = smax < 65535.0 / 4096 ? 4096 : 1024;
-        for (long long c = c0; c < c1; c++) {
-            long long t = c / 3;
-            const double *uv = UV + 6 * h->bt[t] + 2 * (c % 3);
-            for (int a = 0; a < 2; a++) {
-                double x = mx_rint(uv[a] * b->sts);
-                x = 65535 <= x ? 65535 : x;
-                if (!(x >= 0))
-                    bad = 1;
-                uint16_t v = (uint16_t)x;
-                memcpy(so + 4 * (c - c0) + 2 * a, &v, 2);
-            }
-        }
+    double *berr = MX_NEW(double, nb ? nb : 1), err = 0;
+    int *bbad = MX_ZNEW(int, nb ? nb : 1);
+    stctx sx = {h, Q, PC, UV, VC, CG, berr, bbad};
+    mx_parallel_for(nb, st_batch, &sx);
+    for (int bi = 0; bi < nb; bi++) {  /* np.maximum over the batches in order (the same max either way) */
+        err = np_maximum(err, berr[bi]);
+        bad |= bbad[bi];
     }
+    free(berr), free(bbad);
     h->err = err;
     free(PC), free(CG), free(cb), free(Q), free(G), free(P), free(UV), free(VC), free(C);
     if (bad) {  /* out of range: the Python code's asserts say which */
