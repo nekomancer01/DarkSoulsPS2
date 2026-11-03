@@ -39,7 +39,8 @@ static const DrbNode *nodes;
 static const u32 *roots;
 static const ScrSprite *sprites;
 static s8 *vis;
-static s16 *pair, *vleft;  /* per text node: the value printed right of a label, its last drawn left edge */              /* per node: 1 shown, 0 hidden, -1 default */
+static s16 *pair, *vleft;  /* per text node: the value printed right of a label, its last drawn left edge */
+static u8 *vstamp;         /* frame (low byte) that value was last drawn */              /* per node: 1 shown, 0 hidden, -1 default */
 /* cursors moved onto their targets: drawn in the DRB's own order (under the texts after them) */
 #define MAX_PLACE 8
 static struct { int node; float tx, ty, ax, ay, kx, ky; } place[MAX_PLACE];  /* template origin -> target box */
@@ -204,24 +205,29 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
  * to end before that value's drawn left edge (text_box) */
 static void pair_labels(void)
 {
-    int n = hdr->nodes;
-    for (int i = 0; i < n; i++)
-        pair[i] = -1, vleft[i] = nodes[i].x1;
+    int n = hdr->nodes, nv = 0;
+    s16 *val = vleft;  /* scratch: the candidate values (vleft is set below) */
+    for (int j = 0; j < n; j++) {
+        const DrbNode *v = &nodes[j];
+        pair[j] = -1;
+        if (v->type == DRB_TEXT && (v->align & DRB_RIGHT) && !(v->flags & 1) && v->x1 - v->x0 <= 80)
+            val[nv++] = j;
+    }
     for (int i = 0; i < n; i++) {
         const DrbNode *l = &nodes[i];
         if (l->type != DRB_TEXT || (l->align & (DRB_RIGHT | DRB_CENTER)) || (l->flags & 1))
             continue;
         int best = -1;
-        for (int j = 0; j < n; j++) {
-            const DrbNode *v = &nodes[j];
-            if (v->type != DRB_TEXT || !(v->align & DRB_RIGHT) || (v->flags & 1) || v->x1 - v->x0 > 80)
-                continue;
+        for (int c = 0; c < nv; c++) {
+            const DrbNode *v = &nodes[val[c]];
             int ov = (l->y1 < v->y1 ? l->y1 : v->y1) - (l->y0 > v->y0 ? l->y0 : v->y0);
             if (2 * ov > l->y1 - l->y0 && l->x0 < v->x0 && v->x0 < l->x1 && (best < 0 || v->x0 < nodes[best].x0))
-                best = j;
+                best = val[c];
         }
         pair[i] = best;
     }
+    for (int j = 0; j < n; j++)
+        vleft[j] = nodes[j].x1, vstamp[j] = frame - 9;
 }
 
 static int screen_setup(void)
@@ -251,7 +257,7 @@ static int screen_setup(void)
     tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
     tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
     /* keep header .. sprites (+ per-node visibility) */
-    tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 4;
+    tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 5;
     tree = ui_alloc(tree_bytes);
     if (!tree)
         return fail("no RAM for the tree");
@@ -264,6 +270,7 @@ static int screen_setup(void)
     vis = (s8 *)(tree + ((hdr->clut_off + 127) & ~127));
     memset(vis, -1, hdr->nodes);
     pair = (s16 *)(vis + ((hdr->nodes + 127) & ~127)), vleft = pair + hdr->nodes;
+    vstamp = (u8 *)(vleft + hdr->nodes);
     pair_labels();
     if (ncells) {
         unsigned n = sheet_bytes + ncells * 1024 + ncells * sizeof(IconCell) + icon_cell_bytes;
@@ -517,7 +524,7 @@ static void text_box(int k, const DrbNode *t, float dx, float dy, const char *s,
         memcpy(line, s, n);
         line[n] = 0;
         float w = hud_text_width(line) * fs, bw = x1 - x0, sx = fs;
-        if (k >= 0 && pair[k] >= 0)  /* a label: room up to its value */
+        if (k >= 0 && pair[k] >= 0 && (u8)(frame - vstamp[pair[k]]) <= 1)  /* a label: room up to its value, if drawn */
             bw = vleft[pair[k]] + dx - 4 - x0;
         if (w > bw && bw > 8) {
             float q = bw / w < 0.5f ? 0.5f : bw / w;
@@ -526,7 +533,7 @@ static void text_box(int k, const DrbNode *t, float dx, float dy, const char *s,
         if (t->align & DRB_RIGHT) {
             hud_text_ex(x1, y, line, r, g, b, a, 1, sx, fs);
             if (k >= 0 && s == first)  /* for the label on its left (next frame) */
-                vleft[k] = x1 - w - dx;
+                vleft[k] = x1 - w - dx, vstamp[k] = frame;
         } else if (t->align & DRB_CENTER)
             hud_text_ex((x0 + x1 - w) / 2, y, line, r, g, b, a, 0, sx, fs);
         else
