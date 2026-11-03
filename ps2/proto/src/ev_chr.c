@@ -57,12 +57,12 @@ int ev_chr_enable(int entity, int on, int bit)
     return enemy_entity_enable(entity, on, bit) > 0 || c;
 }
 
-int ev_chr_kill(int entity)
+int ev_chr_kill(int entity, int award)
 {
     EvChr *c = rec(entity);
     if (c)
         c->dead = 1;
-    return enemy_entity_kill(entity) || c;
+    return enemy_entity_kill(entity, award) || c;
 }
 
 int ev_chr_ai(int entity, int on)

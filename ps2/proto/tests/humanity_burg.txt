@@ -1,0 +1,20 @@
+# Humanity and souls from a real kill (Undead Burg single-area build, MAP=m10_01_00_00; enemies on): the hollow
+# 1010907 (c2540, NpcParam 254013: getSoul 60, humanityLotId 5220 = 6 points) stands on a PlayRegionID 1010xx floor:
+# zone 5 (GameAreaParam 1010700, counter flags 8520 + 8536).
+#   rm -f build/save/humburg*.bin
+#   tools/q -m 4 python3 tools/test-run.py build/proto_m10_01_00_00.sym.elf ps2/proto/tests/humanity_burg.txt build/test/humburg
+option save host humburg
+option hud
+option nodemo
+wait 2
+wipe
+ev expect souls 0
+ev expect value 8520 16 0
+ev chr 1010907 damage 99999
+wait 1
+ev expect chr 1010907 dead 1
+ev expect souls 60
+ev expect value 8520 16 6
+ev expect humanity 0
+ev summary
+end

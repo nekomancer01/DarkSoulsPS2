@@ -16,6 +16,8 @@
 #include "hud.h"
 #include "items.h"
 #include "progress.h"
+#include "combat.h"
+#include "combat_data.h"
 #include "save.h"
 
 enum { M_CLOSED, M_BAR, M_EQUIP, M_PICK, M_INV, M_POPUP, M_CONFIRM, M_STATUS, M_SYSTEM, M_SYS_CONFIRM };
@@ -249,12 +251,14 @@ static const char *label_value(const char *label)
         return vbuf;
     }
     if (!strcmp(label, "Poise")) return num(armor_sum(11));
-    if (!strcmp(label, "Item Discovery")) return num(100);  /* ASSUMED (TECH_DEBT menu-4): no humanity / ring bonus */
+    if (!strcmp(label, "Item Discovery"))  /* ASSUMED (TECH_DEBT menu-4): 100 + 1 per humanity up to 10, no rings */
+        return num(100 + (prog.humanity < 10 ? prog.humanity : 10));
     if (!strcmp(label, "Attunement Slots")) return num(attune_slots(prog.stats[ST_ATT]));
     if (!strcmp(label, "Bleed Resist")) return num(armor_sum(9));
     if (!strcmp(label, "Poison Resist")) return num(armor_sum(7));
     if (!strcmp(label, "Venom Resist") || !strcmp(label, "Toxic Resist")) return num(armor_sum(8));
-    if (!strcmp(label, "Curse Resist")) return num(armor_sum(10));
+    if (!strcmp(label, "Curse Resist"))  /* FUN_1402dddd0 type 3: CalcCorrectGraph 113 at min(humanity, 99) + armour */
+        return num((int)combat_graph(graph_113, prog.humanity < 99 ? prog.humanity : 99) + armor_sum(10));
     if (!strcmp(label, "Physical Def.") || !strcmp(label, "PhysDef") || !strcmp(label, "Physical")) return num(armor_sum(0));
     if (!strcmp(label, "VS strike") || !strcmp(label, "Strike")) return num(armor_sum(1));
     if (!strcmp(label, "VS slash") || !strcmp(label, "Slash")) return num(armor_sum(2));

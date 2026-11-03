@@ -2,7 +2,10 @@
 
 Layout (little-endian):
   header  "DSRN", u32 count
-  entry   char model[8] ("c2900"), i32 npc param, i32 think param, i32 entity id, f32 x, y, z, yaw     (36 B)
+  entry   char model[8] ("c2900"), i32 npc param, i32 think param, i32 entity id, f32 x, y, z, yaw,
+          u16 souls (NpcParam.getSoul), u8 humanity points (NpcParam.humanityLotId -> ItemLotParam: lotItemId01 x
+          lotItemNum01; every humanity lot is one 100 % slot), u8 humanity zone (export_progress.zone_key of the
+          PlayRegionID of the part's MSB collision, + 1; 0 none)                                             (40 B)
   navmesh (after the entries; older runtimes stop at count): the map's MSB navmesh parts (type 8) placing the
           map/<map>/<map>.nvmbnd NVM models, triangles within NAV_REACH of a non-c0000 placement and inside the area's
           region, vertices welded (NAV_WELD) so the parts connect, for enemy pathfinding (ps2/proto/src/nav.c)
@@ -25,6 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import area
 import havok_anim as ha
+import params
+from export_progress import zone_key  # zones: export_progress.py's docstring
 
 # enemy_parts / npc_parts / MAX_ENEMIES live in area.py (per-area selection), so export_chr.py and lua50.py do not
 # depend on this file
@@ -124,15 +129,30 @@ def main():
     M = souls.msb1(b)
     verts, tris = navmesh(game, map_id, M, area.region(M, map_id), [r[4] for r in rows if r[0] != "c0000"])
     nav = nav_blob(verts, tris)
+    NP, LOT = params.params("NpcParam", game), params.params("ItemLotParam", game)
+    # the placement's collision (the floor it starts on: ChrIns +0x354 follows the floor it walks on, ASSUMED to stay
+    # in the same zone, TECH_DEBT enemy-18) by its MSB part
+    region = {p["name"]: p["play_region_id"] for p in M["parts"] if p["type"] == 5}
+    coll = {(p["model"], p["npc_id"], p["think_id"], p["entity_id"], tuple(p["pos"])): p["collision"]
+            for p in M["parts"] if p["type"] == 2}
+    kills = []
     with open(out, "wb") as f:
         f.write(struct.pack("<4sI", b"DSRN", len(rows)))
         for model, npc, think, ent, pos, rot in rows:
-            f.write(struct.pack("<8s3i4f", model.encode(), npc, think, ent, *pos, math.radians(rot[1]) + math.pi))
+            n = NP[npc] if npc in NP else None
+            lot = LOT[n["humanityLotId"]] if n and n["humanityLotId"] in LOT else None
+            hum = min(255, max(0, lot["lotItemId01"] * lot["lotItemNum01"])) if lot else 0
+            zone = zone_key(region.get(coll.get((model, npc, think, ent, tuple(pos))), -1)) + 1
+            souls_ = min(0xFFFF, max(0, n["getSoul"])) if n else 0
+            kills.append((souls_, hum, zone))
+            f.write(struct.pack("<8s3i4fHBB", model.encode(), npc, think, ent, *pos, math.radians(rot[1]) + math.pi,
+                                souls_, hum, zone))
         f.write(nav)
     models = sorted({r[0] for r in rows if r[0] != "c0000"})
     nnpc = sum(r[0] == "c0000" for r in rows)
     print(f"{map_id}: {len(rows) - nnpc} enemies + {nnpc} c0000 NPCs, models {models}; navmesh {len(verts)} verts "
-          f"{len(tris)} tris, {len(nav)} B")
+          f"{len(tris)} tris, {len(nav)} B; humanity zones {sorted({k[2] - 1 for k in kills if k[2]})}, "
+          f"{sum(k[1] > 0 for k in kills)} placements with humanity points")
 
 
 if __name__ == "__main__":

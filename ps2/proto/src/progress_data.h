@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef PROGRESS_DATA_H
 #define PROGRESS_DATA_H
-#define PROGRESS_LAYOUT 0x80721b37u
+#define PROGRESS_LAYOUT 0x550aa376u
 
 #include <stddef.h>
 
@@ -13,7 +13,16 @@ typedef struct {
 } StartItem;
 _Static_assert(sizeof(StartItem) == 8 && offsetof(StartItem, id) == 0 && offsetof(StartItem, count) == 4, "StartItem layout differs from tools/gamedata.py");
 
-/* CharaInitParam row of the starting class */
+/* GameAreaParam humanity row of a zone: humanityPointCountFlagIdTop, the two end flags, humanityDropPoint1..10 (u16 stored as s16: 65535 = -1 none) */
+typedef struct {
+    int key;
+    int flag_top;
+    int end_flag[2];
+    short drop[10];
+} HumanityZone;
+_Static_assert(sizeof(HumanityZone) == 36 && offsetof(HumanityZone, key) == 0 && offsetof(HumanityZone, flag_top) == 4 && offsetof(HumanityZone, end_flag) == 8 && offsetof(HumanityZone, drop) == 16, "HumanityZone layout differs from tools/gamedata.py");
+
+/* CharaInitParam row of the starting class; humanity-from-kills zones */
 typedef struct {
     int start_class;
     int start_souls;
@@ -23,8 +32,10 @@ typedef struct {
     int start_equip[14];
     const StartItem *start_items;
     int nitems;
+    const HumanityZone *zones;
+    int nzones;
 } ProgressData;
-_Static_assert(sizeof(ProgressData) == 88 && offsetof(ProgressData, start_class) == 0 && offsetof(ProgressData, start_souls) == 4 && offsetof(ProgressData, start_level) == 8 && offsetof(ProgressData, start_humanity) == 12 && offsetof(ProgressData, start_stats) == 16 && offsetof(ProgressData, start_equip) == 24 && offsetof(ProgressData, start_items) == 80 && offsetof(ProgressData, nitems) == 84, "ProgressData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(ProgressData) == 96 && offsetof(ProgressData, start_class) == 0 && offsetof(ProgressData, start_souls) == 4 && offsetof(ProgressData, start_level) == 8 && offsetof(ProgressData, start_humanity) == 12 && offsetof(ProgressData, start_stats) == 16 && offsetof(ProgressData, start_equip) == 24 && offsetof(ProgressData, start_items) == 80 && offsetof(ProgressData, nitems) == 84 && offsetof(ProgressData, zones) == 88 && offsetof(ProgressData, nzones) == 92, "ProgressData layout differs from tools/gamedata.py");
 
 extern const ProgressData *progress_data;  /* NULL until gamedata_init() */
 #define START_CLASS (progress_data->start_class)
@@ -35,5 +46,7 @@ extern const ProgressData *progress_data;  /* NULL until gamedata_init() */
 #define start_equip (progress_data->start_equip)  /* progress.h EQ_* slot order */
 #define START_ITEMS (progress_data->nitems)
 #define start_items (progress_data->start_items)
+#define HUM_ZONES (progress_data->nzones)
+#define hum_zones (progress_data->zones)
 
 #endif

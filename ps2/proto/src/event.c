@@ -982,7 +982,7 @@ static void run(Inst *in)
                 pl->hp = -1;  /* death camera / respawn as a lethal fall (player.c) */
                 printf("EVT %u/%d kills the player\n", (unsigned)ev->id, (int)in->slot);
             } else
-                ev_chr_kill(iw[0]);
+                ev_chr_kill(iw[0], (u8)iw[1]);  /* 2004[04] arg 2: souls awarded */
             break;
         case OP_CHR_ENABLE: ev_chr_enable(iw[0], iw[1] != 0, 1); break;
         case OP_BACKREAD: ev_chr_enable(iw[0], iw[1] == 0, 2); break;  /* own bit: not an enable */

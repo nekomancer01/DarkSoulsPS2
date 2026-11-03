@@ -14,8 +14,9 @@ WARRIOR = 3000
 ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002)]  # R1 chain (export_player.py ANIMS)
 WEAPON_PART, WEAPON_BONE = "WP_A_0201", "R_Weapon"
 DUMMY_NPC = 206000  # NpcParam: Depths ghoul (sword) - HP 203, def_phys 71, no poise: the debug dummy target
-GRAPH_ROWS = (100, 150)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP (FUN_1402df9a0),
-# 150 = bonfire Estus refill by kindle points (回復スポットの最大補充数; FUN_1407a41b0, step lookup, src/bonfire.c)
+GRAPH_ROWS = (100, 150, 113)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
+# (FUN_1402df9a0), 150 = bonfire Estus refill by kindle points (回復スポットの最大補充数; FUN_1407a41b0, step lookup,
+# src/bonfire.c), 113 = curse resist base at min(humanity, 99) (FUN_1402dddd0 resist type 3, src/menu.c)
 
 
 SK_BONES_MAX = 256  # world[] in combat.c is sized by this; the loader refuses a skeleton with more bones
