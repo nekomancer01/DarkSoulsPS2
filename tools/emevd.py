@@ -33,6 +33,16 @@ import gamepath, souls
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 ARG_FMT = {0: "B", 1: "H", 2: "I", 3: "b", 4: "h", 5: "i", 6: "f"}
 REST = {0: "Default", 1: "Restart", 2: "End"}
+# The arg type codes (ARG_FMT keys) of instructions DSR's scripts use that the shipped common.emedf (a PTDE-era table)
+# lacks, so exports read them the same way with or without ext/DarkScript3 (TECH_DEBT build-7); only the binary
+# layout, no names.
+DSR_ONLY_ARGS = {
+    (3, 23): (3, 0, 0), (3, 24): (3, 0, 0), (4, 15): (3, 2), (4, 16): (3, 0, 0, 0), (4, 17): (3,), (2000, 6): (5,),
+    (2002, 6): (5, 2, 5, 5, 0, 0), (2002, 7): (5, 2, 5, 5, 0, 0), (2003, 42): (5, 5, 0), (2003, 43): (5, 5, 0, 0),
+    (2003, 44): (5, 5, 0, 0, 0, 0), (2003, 46): (5, 5, 0, 0, 0, 6), (2003, 47): (), (2003, 48): (5, 5, 5, 5, 5, 5, 5),
+    (2003, 49): (5,), (2004, 48): (5, 6), (2004, 49): (5, 6), (2004, 50): (), (2004, 51): (5,), (2004, 52): (),
+    (2007, 10): (5,), (2007, 11): (5,), (2007, 12): (5, 0, 5, 0), (2007, 13): (5,), (2008, 4): (),
+}
 
 
 def _wstr(b, o):
@@ -102,10 +112,17 @@ def darkscript_dir():
 
 @functools.lru_cache(maxsize=None)
 def definitions(game=None):
-    """The game's instruction definitions, with English names from DarkScript3's ds1-common.emedf.json (no licence
-    file: read from the user's checkout at ext/DarkScript3 or $DARKSCRIPT3) where available."""
+    """The game's instruction definitions plus DSR_ONLY_ARGS, with English names from DarkScript3's
+    ds1-common.emedf.json (no licence file: read from the user's checkout at ext/DarkScript3 or $DARKSCRIPT3) where
+    available."""
     game = game or gamepath.game_dir()
     defs, enums, classes = edf(souls.read(f"{game}/event/common.emedf.dcx"))
+    for (bank, iid), types in DSR_ONLY_ARGS.items():
+        if (bank, iid) not in defs:
+            d = defs[bank, iid] = InstrDef(bank, iid, f"DSR{bank}_{iid:02d}", [
+                {"name": f"arg{k}", "type": t, "enum": None, "default": 0, "min": 0, "max": 0}
+                for k, t in enumerate(types)])
+            d.source = "DSR_ONLY_ARGS"
     path = os.path.join(darkscript_dir(), "DarkScript3", "Resources", "ds1-common.emedf.json")
     if os.path.exists(path):
         for c in _json_lenient(path)["main_classes"]:
@@ -284,7 +301,7 @@ def check(game=None):
     """Every emevd in event/: parse + decode every instruction. -> (counts, problems)."""
     game = game or gamepath.game_dir()
     defs, _, _ = definitions(game)
-    counts, problems = {"files": 0, "events": 0, "instrs": 0, "named_en": 0, "defs_from_darkscript3": 0}, []
+    counts, problems = {"files": 0, "events": 0, "instrs": 0, "named_en": 0, "defs_not_in_emedf": 0}, []
     unknown = {}
     for path in sorted(glob.glob(f"{game}/event/*.emevd.dcx")):
         mid = os.path.basename(path).split(".")[0]
@@ -302,7 +319,7 @@ def check(game=None):
                     unknown[(ins.bank, ins.id)] = unknown.get((ins.bank, ins.id), 0) + 1
                 else:
                     counts["named_en"] += bool(ins.defn.name_en)
-                    counts["defs_from_darkscript3"] += ins.defn.source != "common.emedf"
+                    counts["defs_not_in_emedf"] += ins.defn.source != "common.emedf"
     for (bk, i), c in sorted(unknown.items()):
         problems.append(f"instruction {bk}[{i:02d}] not in common.emedf ({c} uses)")
     return counts, problems
