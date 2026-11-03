@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef COMBAT_DATA_H
 #define COMBAT_DATA_H
-#define COMBAT_LAYOUT 0x7c9a4cc0u
+#define COMBAT_LAYOUT 0x2e6a54e1u
 
 #include <stddef.h>
 
@@ -53,6 +53,7 @@ typedef struct {
     float graph_weapon[15];
     float graph_100[15];
     float graph_150[15];
+    float graph_113[15];
     int sk_bones;
     int sk_r_weapon;
     const signed char *sk_parent;
@@ -66,7 +67,7 @@ typedef struct {
     float dummy_height;
     int dummy_poise;
 } CombatData;
-_Static_assert(sizeof(CombatData) == 272 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, sk_bones) == 224 && offsetof(CombatData, sk_r_weapon) == 228 && offsetof(CombatData, sk_parent) == 232 && offsetof(CombatData, wep_dummy) == 236 && offsetof(CombatData, wep_dummies) == 240 && offsetof(CombatData, atk_windows) == 244 && offsetof(CombatData, natk_windows) == 248 && offsetof(CombatData, dummy_hp) == 252 && offsetof(CombatData, dummy_def_phys) == 256 && offsetof(CombatData, dummy_radius) == 260 && offsetof(CombatData, dummy_height) == 264 && offsetof(CombatData, dummy_poise) == 268, "CombatData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(CombatData) == 332 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, sk_bones) == 284 && offsetof(CombatData, sk_r_weapon) == 288 && offsetof(CombatData, sk_parent) == 292 && offsetof(CombatData, wep_dummy) == 296 && offsetof(CombatData, wep_dummies) == 300 && offsetof(CombatData, atk_windows) == 304 && offsetof(CombatData, natk_windows) == 308 && offsetof(CombatData, dummy_hp) == 312 && offsetof(CombatData, dummy_def_phys) == 316 && offsetof(CombatData, dummy_radius) == 320 && offsetof(CombatData, dummy_height) == 324 && offsetof(CombatData, dummy_poise) == 328, "CombatData layout differs from tools/gamedata.py");
 
 extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define PL_VIT (combat_data->pl_vit)
@@ -92,6 +93,7 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define graph_weapon (combat_data->graph_weapon)
 #define graph_100 (combat_data->graph_100)
 #define graph_150 (combat_data->graph_150)
+#define graph_113 (combat_data->graph_113)
 #define sk_parent (combat_data->sk_parent)
 #define wep_dummy (combat_data->wep_dummy)
 #define atk_windows (combat_data->atk_windows)
