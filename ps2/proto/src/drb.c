@@ -39,7 +39,8 @@ static const DrbNode *nodes;
 static const u32 *roots;
 static const ScrSprite *sprites;
 static s8 *vis;
-static s16 *pair, *vleft;  /* per text node: the value printed right of a label, its last drawn left edge */
+static s16 *pair, *vleft;  /* value candidates (npair: narrow right-aligned texts); per node: last drawn left edge */
+static int npair;
 static u8 *vstamp;         /* frame (low byte) that value was last drawn */              /* per node: 1 shown, 0 hidden, -1 default */
 /* cursors moved onto their targets: drawn in the DRB's own order (under the texts after them) */
 #define MAX_PLACE 8
@@ -201,33 +202,36 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
 
 /* screen file loaded: borrow VRAM, upload the atlas, keep the tree, set up the icon cache */
 /* A label's box often runs under the value printed at its right (DSR's narrower font fits, the port's HUD font does
- * not): each left-aligned text gets the narrow right-aligned text on its line, and is squeezed only as far as needed
- * to end before that value's drawn left edge (text_box) */
+ * not): a left-aligned text is squeezed only as far as needed to end before any narrow right-aligned text drawn on its
+ * line this frame or the last (text_box). Here: the list of those candidates. */
 static void pair_labels(void)
 {
-    int n = hdr->nodes, nv = 0;
-    s16 *val = vleft;  /* scratch: the candidate values (vleft is set below) */
+    int n = hdr->nodes;
+    npair = 0;
     for (int j = 0; j < n; j++) {
         const DrbNode *v = &nodes[j];
-        pair[j] = -1;
         if (v->type == DRB_TEXT && (v->align & DRB_RIGHT) && !(v->flags & 1) && v->x1 - v->x0 <= 80)
-            val[nv++] = j;
+            pair[npair++] = j;
+        vleft[j] = v->x1, vstamp[j] = frame - 9;
     }
-    for (int i = 0; i < n; i++) {
-        const DrbNode *l = &nodes[i];
-        if (l->type != DRB_TEXT || (l->align & (DRB_RIGHT | DRB_CENTER)) || (l->flags & 1))
+}
+
+/* room for left-aligned text node k: up to the nearest value drawn on its line, else its own box (-1) */
+static float label_room(int k)
+{
+    const DrbNode *l = &nodes[k];
+    float best = -1;
+    for (int c = 0; c < npair; c++) {
+        int j = pair[c];
+        const DrbNode *v = &nodes[j];
+        if ((u8)(frame - vstamp[j]) > 1 || v->x0 <= l->x0 || v->x0 >= l->x1)
             continue;
-        int best = -1;
-        for (int c = 0; c < nv; c++) {
-            const DrbNode *v = &nodes[val[c]];
-            int ov = (l->y1 < v->y1 ? l->y1 : v->y1) - (l->y0 > v->y0 ? l->y0 : v->y0);
-            if (2 * ov > l->y1 - l->y0 && l->x0 < v->x0 && v->x0 < l->x1 && (best < 0 || v->x0 < nodes[best].x0))
-                best = val[c];
-        }
-        pair[i] = best;
+        int ov = (l->y1 < v->y1 ? l->y1 : v->y1) - (l->y0 > v->y0 ? l->y0 : v->y0);
+        float room = vleft[j] - 4 - l->x0;
+        if (2 * ov > l->y1 - l->y0 && (best < 0 || room < best))
+            best = room;
     }
-    for (int j = 0; j < n; j++)
-        vleft[j] = nodes[j].x1, vstamp[j] = frame - 9;
+    return best;
 }
 
 static int screen_setup(void)
@@ -524,8 +528,11 @@ static void text_box(int k, const DrbNode *t, float dx, float dy, const char *s,
         memcpy(line, s, n);
         line[n] = 0;
         float w = hud_text_width(line) * fs, bw = x1 - x0, sx = fs;
-        if (k >= 0 && pair[k] >= 0 && (u8)(frame - vstamp[pair[k]]) <= 1)  /* a label: room up to its value, if drawn */
-            bw = vleft[pair[k]] + dx - 4 - x0;
+        if (k >= 0 && !(t->align & (DRB_RIGHT | DRB_CENTER))) {  /* a label: room up to its value, if one is drawn */
+            float room = label_room(k);
+            if (room > 0)
+                bw = room;
+        }
         if (w > bw && bw > 8) {
             float q = bw / w < 0.5f ? 0.5f : bw / w;
             sx *= q, w *= q;
