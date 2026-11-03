@@ -3,7 +3,8 @@
 # tools/pages): the same sources and flags as the gcc builds in pack.py / souls.py / simplify_native.py, linked with
 # wasm-ld's dynamic-linking (dylink.0) format, so Pyodide's ctypes.CDLL loads them like the native .so files and
 # resolves memcpy / malloc / qsort from its own libc. Needs clang and wasm-ld (LLVM 17 or newer; Ubuntu: clang lld).
-# Usage: tools/native/build-wasm.sh <out dir>     -> <out dir>/lib{lz4pack,bcdecode,simplify,geom}.so
+# Usage: tools/native/build-wasm.sh <out dir>     -> <out dir>/lib{lz4pack,bcdecode,simplify,geom,mapx}.so
+# libmapx (tools/mapx, the map exporter's C rewrite) is one module from all of tools/mapx/*.c, single-threaded.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:?usage: build-wasm.sh <out dir>}
@@ -24,3 +25,14 @@ for m in lz4pack bcdecode simplify geom; do
     "$WASMLD" --experimental-pic -shared --export-dynamic --allow-undefined -o "$OUT/lib$m.so" "$TMP/$m.o"
     echo "$OUT/lib$m.so: $(wc -c < "$OUT/lib$m.so") B"
 done
+MAPX=$HERE/../mapx
+objs=
+for f in "$MAPX"/*.c; do
+    o="$TMP/mapx_$(basename "$f" .c).o"
+    "$CLANG" --target=wasm32-unknown-emscripten -fPIC -O2 -fvisibility=default -ffp-contract=off -fno-fast-math \
+        -DMX_THREADS=0 -nostdinc -isystem "$RES" -isystem "$HERE/wasm" -c "$f" -o "$o"
+    objs="$objs $o"
+done
+# shellcheck disable=SC2086
+"$WASMLD" --experimental-pic -shared --export-dynamic --allow-undefined -o "$OUT/libmapx.so" $objs
+echo "$OUT/libmapx.so: $(wc -c < "$OUT/libmapx.so") B"

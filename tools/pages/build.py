@@ -29,12 +29,13 @@ def source_zip(path, wasm):
     """the converter's source tree: tracked tools/*.py and tools/native C files, ps2/proto/Makefile, the wasm .so"""
     files = [f for f in git("ls-files", "tools", "ps2/proto/Makefile").split("\n")
              if f == "ps2/proto/Makefile" or (f.count("/") == 1 and f.endswith(".py")) or
-             (f.startswith("tools/native/") and f.endswith((".c", ".h")))]
+             (f.startswith(("tools/native/", "tools/mapx/")) and f.endswith((".c", ".h")))]
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for f in files:
             z.write(os.path.join(ROOT, f), f)
         for m in ("lz4pack", "bcdecode", "simplify", "geom"):
             z.write(os.path.join(wasm, f"lib{m}.so"), f"tools/native/lib{m}.so")
+        z.write(os.path.join(wasm, "libmapx.so"), "tools/mapx/libmapx.so")
     return os.path.getsize(path)
 
 

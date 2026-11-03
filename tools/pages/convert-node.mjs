@@ -125,7 +125,7 @@ try {
   const src = path.join(tmp, "src");
   const files = execFileSync("git", ["ls-files", "tools", "ps2/proto/Makefile"], { cwd: ROOT, encoding: "utf8" })
     .split("\n").filter((f) => f === "ps2/proto/Makefile" || (f.split("/").length === 2 && f.endsWith(".py")) ||
-      (f.startsWith("tools/native/") && /\.(c|h)$/.test(f)));
+      ((f.startsWith("tools/native/") || f.startsWith("tools/mapx/")) && /\.(c|h)$/.test(f)));
   for (const f of files) {
     fs.mkdirSync(path.dirname(path.join(src, f)), { recursive: true });
     fs.copyFileSync(path.join(ROOT, f), path.join(src, f));
@@ -136,6 +136,9 @@ try {
     fs.copyFileSync(path.join(wasm, `lib${m}.so`), so);
     fs.utimesSync(so, later, later);
   }
+  const mapx = path.join(src, "tools/mapx/libmapx.so");
+  fs.copyFileSync(path.join(wasm, "libmapx.so"), mapx);
+  fs.utimesSync(mapx, later, later);
   fs.mkdirSync(build, { recursive: true });
   if (lanes) {
     await runLanes();

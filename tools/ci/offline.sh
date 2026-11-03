@@ -40,5 +40,7 @@ for k in player combat progress; do
     else diff -u "$h" "$TMP/$k.h" | head -20; fail "$h differs (regenerate: python3 tools/gamedata.py header $k > $h)"; fi
 done
 "$PY" -I tools/gamedata_test.py || fail "tools/gamedata_test.py"
+echo "== libmapx (the map exporter's C stages) against the Python code"
+"$PY" -I tools/mapx/test_mapx.py 0 40 || fail "tools/mapx/test_mapx.py"
 echo "offline: $FAILED failed"
 exit $FAILED
