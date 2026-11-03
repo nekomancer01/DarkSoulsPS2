@@ -20,6 +20,7 @@
 #include "objects.h"
 #include "progress.h"
 #include "save.h"
+#include "sound.h"
 #include "world.h"
 
 /* Same order as OPS in tools/export_emevd.py (the op byte of each instruction) */
@@ -1042,6 +1043,15 @@ static void run(Inst *in)
         case OP_OBJACT_STATE: objact_state(iw[0], iw[2] != 0); break;
         case OP_OBJACT_IDX: objact_state(iw[0], iw[3] != 0); break;
         case OP_HIT: set_entity(in->set, iw[0], iw[1] != 0, ENT_COLLISION); break;
+        /* sound (src/sound.c): 2010[02] Play SE (entity, sound type, id) at the entity; 2010[03] Set Map Sound State
+         * (MSB sound event entity, on): boss music regions, wind */
+        case OP_SE: {
+            float p[3];
+            if (!ent_pos(in->set, iw[0], p) || !snd_play((int)iw[1], (int)iw[2], p, 0))
+                stub(in, op);
+            break;
+        }
+        case OP_SOUND_STATE: if (!snd_entity((int)iw[0], (u8)iw[1] != 0)) stub(in, op); break;
         /* map SFX (fx.c) and map pieces (map chunks keyed by entity, drawgrp.c) by entity id: event-5 */
         case OP_SFX_DEL:  /* 2006[01] (entity, root only): root only = the emitter stops, its particles live on */
             set_entity(in->set, iw[0], 0, 0);

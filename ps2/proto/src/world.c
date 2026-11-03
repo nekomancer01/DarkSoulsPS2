@@ -256,6 +256,8 @@ void world_stream_open(void)
 
 int world_current(void) { return cur; }
 
+const char *world_map(int block) { return tab && block >= 0 && block < nblk ? tab[block].map : NULL; }
+
 /* every block's enemy / breakable / effect types, once, at boot before the near-cell arena exists (DSR keeps a whole
  * area's resources loaded; the PS2 keeps the types and places the instances per block): each raw entry read into a
  * temporary buffer, handed over, freed. What the types keep (chr.bin, compacted models, fx tables, Lua) lies below

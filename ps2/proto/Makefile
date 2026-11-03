@@ -62,11 +62,11 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o ragdoll.o nav.o items.o drb.o)
+	gamedata.o ragdoll.o nav.o items.o drb.o sound.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
-EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lm
+EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lpatches -lm
 EE_DVP = dvp-as
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(DEFS)
 
@@ -85,6 +85,22 @@ VSM_OBJS = $(patsubst src/%.vsm,$(O)/%.o,$(wildcard src/*.vsm))
 EE_OBJS := $(patsubst $(O)/%,$(O)/gprof/%,$(filter-out $(VSM_OBJS),$(EE_OBJS)) $(O)/prof.o) $(filter $(VSM_OBJS),$(EE_OBJS))
 EE_LIBS += -lprofglue
 endif
+# (the rules below come before `all:`; keep it the default goal)
+.DEFAULT_GOAL := all
+# Sound (src/sound.c): the IOP module iop/dsrsnd (dsrsnd.irx) and ps2sdk's libsd.irx, linked in as C arrays (bin2c).
+# After the PROFILE / GPROF lists: these objects have no source in src/.
+IRX_OBJS = $(O)/irx/dsrsnd_irx.o $(O)/irx/libsd_irx.o
+EE_OBJS += $(IRX_OBJS)
+$(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
+	@mkdir -p $(@D)
+	$(MAKE) --no-print-directory -C iop/dsrsnd IOP_OBJS_DIR=$(abspath $(@D))/ IOP_BIN=$(abspath $@)
+$(O)/irx/libsd.irx: $(PS2SDK)/iop/irx/libsd.irx
+	@mkdir -p $(@D)
+	cp $< $@
+$(O)/irx/%_irx.c: $(O)/irx/%.irx
+	bin2c $< $@ $*_irx
+$(O)/irx/%_irx.o: $(O)/irx/%_irx.c
+	$(EE_CC) -c $< -o $@
 
 # Assets are not linked in: they load at runtime from LZ4 packs in $(BUILD)/data/ (host: = the ELF's folder under PCSX2 with
 # HostFs on; cdrom0: on a disc later). One pack per area (map + collision) and per character (model).
@@ -106,7 +122,8 @@ LOD_c5330 = 2
 # Texture height cap (px; width stays >= 128 for PSMT8): every type's textures stay in VRAM next to the map's
 TEX_c2540 = 128
 TEX_c2900 = 128
-PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.pak) $(AREA_DATA)/common.pak
+PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.pak) $(AREA_DATA)/common.pak \
+	$(if $(BLOCK),,$(A)/snd.stamp)
 # World streaming (src/world.c): the other blocks of this boot area's world (tools/area.py WORLDS, "<msb>:<block>"),
 # each built by a sub-make, and data/world.pak with their table (tools/export_world.py). Only for the default map.
 WORLD_BLOCKS := $(if $(GAMEFREE)$(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
@@ -143,6 +160,17 @@ $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.b
 	$(PY) -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
 	python3 -I ../../tools/pack.py $@ world.bin=$(G)/world.bin
 .PHONY: $(notdir $(EE_BIN))
+
+# Sound packs (tools/export_audio.py, src/sound.c): data/snd/main.pak (player + global sounds), mAA.pak per area
+# (music, ambience, MSB emitters), cXXXX.pak per enemy type, for the boot map and every map of its world blocks. One
+# export writes them all (the SPU2 sample rate is chosen over the whole set); $(A)/snd.stamp records it.
+SND_MAPS = $(sort $(MAP) $(foreach b,$(WORLD_BLOCKS),$(firstword $(subst :, ,$(b)))))
+$(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum \
+		$(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
+	@mkdir -p $(@D) $(D)/snd
+	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) > $(A)/snd.log
+	@tail -6 $(A)/snd.log
+	touch $@
 
 # player.gd / combat.gd / progress.gd: the game values the engine loads at boot (src/gamedata.c, tools/gamedata.py)
 GAMEDATA = $(G)/player.gd $(G)/combat.gd $(G)/progress.gd

@@ -16,7 +16,8 @@ This is an early prototype, not a playable game yet.
 | The Warrior: walking, running, rolling, dashing, R1 attacks, falling | Lock-on, blocking, parries, magic, items, levelling |
 | Enemies with their own AI scripts, taking and dealing damage | Bosses |
 | Event scripts: chests, fog walls, doors, item pickups | NPC dialogue, shops |
-| Saving and loading on the memory card | Sound and music, cutscenes |
+| Saving and loading on the memory card | Cutscenes |
+| Sound effects, footsteps, music and ambience (effects at a low sample rate) | Reverb, NPC voices |
 | HUD (health, stamina, Estus, souls), 30 fps in PCSX2 | Full menus |
 
 ### Screenshots

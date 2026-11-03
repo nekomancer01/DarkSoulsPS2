@@ -33,6 +33,7 @@
 #include "render.h"
 #include "ev_chr.h"
 #include "npc.h"
+#include "sound.h"
 #include "ragdoll.h"
 #include "nav.h"
 
@@ -239,8 +240,11 @@ static void unload_model(ChrType *t)
     if (!t->model)
         return;
     t->loaded = 0;
-    if (!tex_holder(t))
+    if (!tex_holder(t)) {
         mdl_free_textures(t->model);
+        char m[6] = {0};
+        snd_chr_unload(memcpy(m, t->name, 5));  /* its sound bank (src/sound.c) */
+    }
     mdl_free(t->model);
     t->model = NULL;
 }
@@ -275,6 +279,8 @@ static int model_from(ChrType *t, GSGLOBAL *gs, void *mb, unsigned size, unsigne
     FREE_MB();
     t->model = m;
     t->loaded = 1;
+    char sm[6] = {0};
+    snd_chr_load(memcpy(sm, t->name, 5));  /* its sound bank into SPU2 RAM (src/sound.c) */
     return 1;
 #undef FREE_MB
 }
@@ -1171,6 +1177,12 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->loco_anim = la;
     }
     e->loco_t += dt;
+    {  /* TAE sound events of the action anim, else the locomotion loop (src/sound.c) */
+        int acting = e->act >= 0 && !act_ended(e), la_ok = e->loco_anim >= 0 && t->model;
+        float len = la_ok ? mdl_anim_length(t->model, e->loco_anim) : 0;
+        snd_anim(SND_OWNER_ENEMY(e->index), atoi(e->ct->name + 1), acting ? e->act : la_ok ? mdl_anim_id(t->model, e->loco_anim) : -1,
+                 acting ? e->act_t : len > 0 ? fmodf(e->loco_t, len) : e->loco_t, (const float *)&e->pos);
+    }
     fall_step(e, dt);
     /* turning: NpcParam turnVellocity, not inside TAE "disable turning" windows */
     if (o->face && !e->cc.dead && !in_window(e, F_NO_TURN)) {

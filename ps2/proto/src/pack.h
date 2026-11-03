@@ -59,6 +59,9 @@ void pack_async_free(void);
 /* Wait for a pending background read (fio back in WAIT mode; its result stays for pack_async_done). Other fio users
  * (save.c) call it first. */
 void pack_async_wait(void);
+/* The device path pack_open reads for `path` (cdrom0:\\DATA\\... when booted from a disc): what an IOP module opens to
+ * read a raw entry itself (src/sound.c). Returns path or out. */
+const char *pack_resolve(const char *path, char *out, unsigned cap);
 /* Last load failure ("OUT OF RAM: <entry> needs ..K, free ..K" / "READ ERROR: <entry>"), empty if none; also printed */
 extern char pack_error[96];
 /* 1 when packs come from cdrom0: (boot device, set on the first pack_open), 0 for host:, -1 before */

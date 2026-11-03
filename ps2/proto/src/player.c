@@ -21,6 +21,7 @@
 #include "combat.h"
 #include "save.h"
 #include "bonfire.h"
+#include "sound.h"
 
 /* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
 #define anims (player_data->anims)
@@ -860,6 +861,11 @@ void player_draw(const Player *p)
     case ST_FALL:
     case ST_DEAD: anim = model_anim(anims[p->anim].id), t = p->t, loop = anims[p->anim].loop; break;
     default: anim = model_anim(0), t = p->idle_t, loop = 1;
+    }
+    {  /* the playing anim's TAE sound events (footsteps, swings, armor, voice: src/sound.c) */
+        int key = p->state == ST_MOVE ? anims[p->loco].key : p->state == ST_IDLE ? 0 : anims[p->anim].key;
+        float len = anim >= 0 ? model_anim_length(anim) : 0, st = loop && len > 0 ? fmodf(t, len) : t;
+        snd_anim(SND_OWNER_PLAYER, 0, key, st, (const float *)&p->pos);  /* V3 as float[3] */
     }
     if (anim != last_anim) {
         if (last_anim != -2)

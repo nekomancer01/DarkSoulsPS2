@@ -328,6 +328,8 @@ int mdl_anim(const Model *m, int id)
     return -1;
 }
 
+int mdl_anim_id(const Model *m, int anim) { return m->anims[anim].id; }
+
 float mdl_anim_length(const Model *m, int anim) { return (m->anims[anim].frames - 1) / (float)m->anims[anim].fps; }
 
 static void unpack(const PackedBone *b, BoneLocal *o)
