@@ -29,6 +29,7 @@ bump.bin (little-endian, 16-byte aligned sections, pixels 128-byte aligned):
   CLUTs        [cluster][level] 16x16 CT32, CSM1-ordered (1 KB each)
   pixels       per texture mip 0, mip 1 (8-bit, linear rows)
 """
+import collections.abc
 import math, os, re, struct
 
 import numpy as np
@@ -84,8 +85,11 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of, wn_np=None):
     nw = len(wn)
     T, W = np.zeros((nw, 3)), np.zeros(nw)
     if hasattr(xn, "many") and fvw:  # all vertices at once, summed per wedge in the same order (np.add.at)
-        vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
-        ws = np.fromiter(fvw.values(), np.int64, len(fvw))
+        if hasattr(fvw, "vs"):  # export_map.VertWedge: the arrays themselves
+            vs, ws = np.asarray(fvw.vs, np.int64), np.asarray(fvw.ws, np.int64)
+        else:
+            vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
+            ws = np.fromiter(fvw.values(), np.int64, len(fvw))
         Tv = V["tangent"].a[vs].astype(np.float64) if hasattr(V["tangent"], "a") else \
             np.array([V["tangent"][vi] for vi in vs.tolist()], np.float64).reshape(-1, 4)  # souls.Rows: its array
         np.add.at(T, ws, xn.many(np.ascontiguousarray(Tv[:, :3])))
@@ -619,13 +623,16 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     tex_of = {t["name"]: i for i, t in enumerate(texs)}
     # density (texels per metre, area-weighted) per texture for texcache's mip choice
     uva, wa = np.zeros(len(texs)), np.zeros(len(texs))
-    out, local = {}, {}
+    local = {}
     labl, areal, i = lab.tolist(), area.tolist(), 0
+    og, oti, olab = [], [], []
     for g, e, tl in segs:
         n = len(tl)
         if e["tex"] in tex_of:
             ti = tex_of[e["tex"]]
-            out.update(zip(range(g, g + n), ((ti, x) for x in labl[i:i + n])))
+            og.append(np.arange(g, g + n, dtype=np.int64))
+            oti.append(np.full(n, ti, np.int64))
+            olab.append(np.asarray(lab[i:i + n], np.int64))
             local.update(zip(range(g, g + n), range(i, i + n)))
             s = float(wa[ti])
             for x in areal[i:i + n]:  # summed in triangle order, as before
@@ -643,11 +650,42 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         uv = wuv[mapx_native.tri_arrays(m["tris"])[1]] * np.array([texs[ti]["w"], texs[ti]["h"]])
         d1, d2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]
         np.add.at(uva, np.full(len(uv), ti), 0.5 * np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]))
+    cat = lambda xs: np.concatenate(xs) if xs else np.zeros(0, np.int64)
+    out = BumpKeys(cat(og), cat(oti), cat(olab))
     _STATE["density"] = [float(math.sqrt(u / a)) if a > 0 else 0.0 for u, a in zip(uva, wa)]
     _STATE.update(texs=texs, tri=tri, R=R, area=area, local=local, resp=resp, pal=pal)
     print(f"bump: {nt} triangles ({100 * nt / max(1, k):.0f}%), {len(texs)} textures (<= {BUMP_MAX} px), "
           f"palette error {np.mean(err_px):.3f} (xy)")
     return out
+
+
+class BumpKeys(collections.abc.Mapping):
+    """assign's {triangle: (texture, cluster)} as arrays in insertion order (G triangles, TI, LAB): reads as the dict
+    the per-segment dict.update calls built"""
+
+    def __init__(self, G, TI, LAB):
+        self.G, self.TI, self.LAB, self._d = G, TI, LAB, None
+
+    def _dict(self):
+        if self._d is None:
+            self._d = dict(zip(self.G.tolist(), zip(self.TI.tolist(), self.LAB.tolist())))
+        return self._d
+
+    def unique(self):
+        """True when no triangle repeats (then the arrays are the dict's items in order)"""
+        return len(np.unique(self.G)) == len(self.G)
+
+    def __getitem__(self, k):
+        return self._dict()[k]
+
+    def __iter__(self):
+        return iter(self._dict())
+
+    def __len__(self):
+        return len(self._dict())
+
+    def __repr__(self):
+        return repr(self._dict())
 
 
 def _finish():

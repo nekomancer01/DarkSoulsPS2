@@ -165,41 +165,52 @@ def load_probes(game, map_id):
 
 def load_probes_uncached(game, map_id):
     """{probe number: [6 faces][PROBE_RES][PROBE_RES] linear rgb} for the map's GI_EnvDif cubes."""
-    lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "libbcdecode.so"))
     area = map_id[:3]
     d = f"{game}/map/{area}/GI_EnvM_{area}"
     pre = f"GI_EnvDif_{map_id[:6]}_"
-    buf = (ctypes.c_float * 48)()
     out = {}
     for _, _, tb in souls.bxf3(d + ".tpfbhd", d + ".tpfbdt"):
         for name, dds in souls.tpf(tb).items():
             if not name.startswith(pre):
                 continue
-            h, w = struct.unpack_from("<2I", dds, 12)
             if struct.unpack_from("<I", dds, 128)[0] != 95:  # BC6H_UF16 only
                 continue
-            off, faces, step = 148, [], w // PROBE_RES
-            for _f in range(6):
-                acc = [[[0.0, 0.0, 0.0] for _ in range(PROBE_RES)] for _ in range(PROBE_RES)]
-                for by in range(h // 4):
-                    for bx in range(w // 4):
-                        lib.bcdec_bc6h_float(ctypes.c_char_p(dds[off:off + 16]), buf, 12, 0)
-                        off += 16
-                        for i in range(16):
-                            y, x = by * 4 + i // 4, bx * 4 + i % 4
-                            cell = acc[y // step][x // step]
-                            for c in range(3):
-                                cell[c] += buf[i * 3 + c]
-                n = step * step
-                faces.append([[[v / n for v in cell] for cell in row] for row in acc])
-            out[int(name[len(pre):])] = faces
+            out[int(name[len(pre):])] = probe_cube(dds)
     return out
+
+
+def probe_cube(dds, use_c=True):
+    """a GI_EnvDif DDS (BC6H, 6 faces) -> [6 faces][PROBE_RES][PROBE_RES] mean linear rgb per cell"""
+    h, w = struct.unpack_from("<2I", dds, 12)
+    off, faces, step = 148, [], w // PROBE_RES
+    mx = _mapx() if use_c else None
+    if mx is not None and w == h and w % PROBE_RES == 0 and len(dds) >= off + 16 * 6 * (w // 4) * (h // 4):
+        import numpy as np  # the same sums in C (tools/mapx/envprobe.c)
+        F = np.empty((6, PROBE_RES, PROBE_RES, 3))
+        mx.mx_probe_faces(np.frombuffer(dds, np.uint8, offset=off).ctypes.data, w, h, PROBE_RES, F.ctypes.data)
+        return F.tolist()
+    lib = souls.bcdecode_lib()
+    buf = (ctypes.c_float * 48)()
+    for _f in range(6):
+        acc = [[[0.0, 0.0, 0.0] for _ in range(PROBE_RES)] for _ in range(PROBE_RES)]
+        for by in range(h // 4):
+            for bx in range(w // 4):
+                lib.bcdec_bc6h_float(ctypes.c_char_p(dds[off:off + 16]), buf, 12, 0)
+                off += 16
+                for i in range(16):
+                    y, x = by * 4 + i // 4, bx * 4 + i % 4
+                    cell = acc[y // step][x // step]
+                    for c in range(3):
+                        cell[c] += buf[i * 3 + c]
+        n = step * step
+        faces.append([[[v / n for v in cell] for cell in row] for row in acc])
+    return faces
 
 
 def load_spec_probes(game, map_id, mip=5):
     """{probe number: [6 face means of linear rgb]} of the GI_EnvSpc cubes (BC6H, 256 px, 8 mips, face-major) at a
     blurred mip: the rough (r 0.7-0.85) DSR materials reflect about this much of the sky / ground per direction."""
-    lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "libbcdecode.so"))
+    lib = souls.bcdecode_lib()
     area = map_id[:3]
     d = f"{game}/map/{area}/GI_EnvM_{area}"
     pre = f"GI_EnvSpc_{map_id[:6]}_"
@@ -349,6 +360,16 @@ class ProbeIndex:
         self.cache[k] = best
         return best
 
+    def slots(self, P):
+        """many(P) as indices into self.vals (-1 = None), libmapx only (None without it)"""
+        if not self.mx:
+            return None
+        import numpy as np
+        P = np.ascontiguousarray(np.asarray(P, np.float64).reshape(-1, 3))
+        r = np.empty(len(P), np.int64)
+        self.L.mx_probe_query(self.mx, len(P), P.ctypes.data, r.ctypes.data)
+        return r
+
     def many(self, P):
         """__call__ for the rows of an (n, 3) array, in row order (the cache keeps the first query's answer per
         cell, so the order matters)"""
@@ -399,6 +420,7 @@ def light_fn(row, probes=None):
             for c in range(3):
                 sun[c] += col[c] * k
         return (amb, sun) if split else [a + b for a, b in zip(amb, sun)]
+    f.params = (dirs, up, down, env)  # for libmapx's mx_wedge_light
 
     def many(N, faces):
         """f(n, faces, split=True) for the rows of (n, 3) unit normals N, per-row probe faces (list, None = none) ->
@@ -452,6 +474,15 @@ def draw_banks(game, area):
     return out
 
 
+def _mapx():
+    """libmapx (tools/mapx_native.py), None without it or with MAPX=0"""
+    try:
+        import mapx_native
+    except ImportError:
+        return None
+    return mapx_native.lib()
+
+
 class ShadowMap:
     """Static sun shadow: an orthographic depth map of the opaque map along the ShadowBank light direction (DSR draws
     a shadow map along gFC_ShadowLightDir), rasterised in C (tools/native/geom.c) or numpy (same depth map);
@@ -478,6 +509,15 @@ class ShadowMap:
         self.texel, self.bias = texel, bias
         W, H = (np.ceil((hi - self.lo) / texel)).astype(int) + 1
         self.W, self.H = W, H
+        self.mx = _mapx()
+        if self.mx is not None:  # tools/mapx/shadow.c: the numpy path below in one call, the raster on threads
+            Tc, Bc = np.ascontiguousarray(tris, np.float64).reshape(-1, 3, 3), np.ascontiguousarray(self.B, np.float64)
+            loc = np.ascontiguousarray(self.lo, np.float64)
+            D = np.empty(int(W) * int(H), np.float32)
+            self.mx.mx_shadow_map(len(Tc), Tc.ctypes.data, Bc.ctypes.data, loc.ctypes.data, float(texel), int(W), int(H),
+                                  D.ctypes.data)
+            self.D = D.reshape(H, W)
+            return
         D = np.full(W * H, -1e9, np.float32)
         T = matmul(np.asarray(tris, np.float32).reshape(-1, 3), self.B.T.astype(np.float32)).reshape(-1, 3, 3)
         P = (T[..., :2] - self.lo.astype(np.float32)) / np.float32(texel)  # texel coordinates
@@ -551,6 +591,14 @@ class ShadowMap:
         P, N = np.asarray(P, np.float64).reshape(-1, 3), np.asarray(N, np.float64).reshape(-1, 3)
         if not len(P):
             return np.zeros(0)
+        if self.mx is not None:  # the same transform and PCF in C (tools/mapx/shadow.c)
+            P, N = np.ascontiguousarray(P), np.ascontiguousarray(N)
+            Bc, loc = np.ascontiguousarray(self.B, np.float64), np.ascontiguousarray(self.lo, np.float64)
+            D = np.ascontiguousarray(self.D, np.float32)
+            out = np.empty(len(P))
+            self.mx.mx_shadow_lit(len(P), P.ctypes.data, N.ctypes.data, Bc.ctypes.data, loc.ctypes.data, float(self.texel),
+                                  D.ctypes.data, int(self.W), int(self.H), float(self.bias), out.ctypes.data)
+            return out
         q = matmul(P + 0.1 * N, self.B.T)
         Q = np.empty_like(q)
         Q[:, :2] = (q[:, :2] - self.lo) / self.texel
@@ -638,6 +686,7 @@ def cubic_light(pos, begin, end, rgb):
         att = min(1.0, (k * (end - d)) ** 3)
         nl = max(0.0, sum(n[i] * v[i] for i in range(3)) / d) if n else 1.0
         return [c * att * nl for c in rgb]
+    f.params = (pos, k, end, rgb)  # for libmapx's mx_wedge_light
 
     def many(P, N):
         """f per row of (n, 3) positions and normals -> (n, 3), the same operations per element"""

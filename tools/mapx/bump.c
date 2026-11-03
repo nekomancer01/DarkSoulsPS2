@@ -222,6 +222,50 @@ static void bc4_block(const uint8_t *b, float *out16)
 
 /* xy_pow2 for a BC5 level (data at off, w x h texels) -> out (th x tw x 2 float32, th / tw the powers of two <= cap
    that _pow2_index picks; out sized by the caller for cap x cap x 2) */
+typedef struct {
+    const uint8_t *d;
+    long long off, W4;
+    int w, h, bw, tw, th, ny, nx;
+    float *img, *out, cnt;
+} p2ctx;
+
+static void p2_decode(void *vc, long long by)  /* one block row */
+{
+    p2ctx *c = vc;
+    float blk[16];
+    for (int bx = 0; bx < c->bw; bx++) {
+        const uint8_t *b = c->d + c->off + (by * c->bw + bx) * 16;
+        for (int ch = 0; ch < 2; ch++) {
+            bc4_block(b + 8 * ch, blk);
+            for (int t = 0; t < 16; t++)
+                c->img[((by * 4 + t / 4) * c->W4 + bx * 4 + t % 4) * 2 + ch] = blk[t] * 2 - 1;
+        }
+    }
+}
+
+static void p2_mean(void *vc, long long ty)  /* one output row */
+{
+    p2ctx *c = vc;
+    int w = c->w, h = c->h, tw = c->tw, th = c->th;
+    for (int tx = 0; tx < tw; tx++)
+        for (int ch = 0; ch < 2; ch++) {
+            /* numpy's mean(axis=(1, 3)) of img[ys][:, :, xs] follows that array's memory order (the fancy index
+               puts the column offsets j outside the row offsets i), so j outer, i inner */
+            float s = 0;
+            for (int j = 0; j < c->nx; j++) {
+                long long x = (long long)tx * w / tw + j;
+                x = x < w - 1 ? x : w - 1;
+                for (int i = 0; i < c->ny; i++) {
+                    long long y = ty * h / th + i;
+                    y = y < h - 1 ? y : h - 1;
+                    float v = c->img[(y * c->W4 + x) * 2 + ch];
+                    s = (i || j) ? s + v : v;
+                }
+            }
+            c->out[(ty * tw + tx) * 2 + ch] = s / c->cnt;
+        }
+}
+
 MX_API int mx_bc5_pow2(const uint8_t *d, long long off, int w, int h, int cap, float *out, int *th_out, int *tw_out)
 {
     int tw = 1, th = 1;
@@ -230,37 +274,11 @@ MX_API int mx_bc5_pow2(const uint8_t *d, long long off, int w, int h, int cap, f
     while (th * 2 <= (h < cap ? h : cap))
         th *= 2;
     int bw = (w + 3) / 4 > 1 ? (w + 3) / 4 : 1, bh = (h + 3) / 4 > 1 ? (h + 3) / 4 : 1;
-    float *img = MX_NEW(float, (size_t)bh * 4 * bw * 4 * 2), blk[16];
-    long long W4 = (long long)bw * 4;
-    for (int by = 0; by < bh; by++)
-        for (int bx = 0; bx < bw; bx++) {
-            const uint8_t *b = d + off + ((long long)by * bw + bx) * 16;
-            for (int ch = 0; ch < 2; ch++) {
-                bc4_block(b + 8 * ch, blk);
-                for (int t = 0; t < 16; t++)
-                    img[((by * 4 + t / 4) * W4 + bx * 4 + t % 4) * 2 + ch] = blk[t] * 2 - 1;
-            }
-        }
+    float *img = MX_NEW(float, (size_t)bh * 4 * bw * 4 * 2);
     int ny = h / th > 1 ? h / th : 1, nx = w / tw > 1 ? w / tw : 1;
-    float cnt = (float)(ny * nx);
-    for (int ty = 0; ty < th; ty++)
-        for (int tx = 0; tx < tw; tx++)
-            for (int ch = 0; ch < 2; ch++) {
-                /* numpy's mean(axis=(1, 3)) of img[ys][:, :, xs] follows that array's memory order (the fancy index
-                   puts the column offsets j outside the row offsets i), so j outer, i inner */
-                float s = 0;
-                for (int j = 0; j < nx; j++) {
-                    long long x = (long long)tx * w / tw + j;
-                    x = x < w - 1 ? x : w - 1;
-                    for (int i = 0; i < ny; i++) {
-                        long long y = (long long)ty * h / th + i;
-                        y = y < h - 1 ? y : h - 1;
-                        float v = img[(y * W4 + x) * 2 + ch];
-                        s = (i || j) ? s + v : v;
-                    }
-                }
-                out[((long long)ty * tw + tx) * 2 + ch] = s / cnt;
-            }
+    p2ctx c = {d, off, (long long)bw * 4, w, h, bw, tw, th, ny, nx, img, out, (float)(ny * nx)};
+    mx_parallel_for(bh, p2_decode, &c);  /* blocks and output texels are independent: any thread count */
+    mx_parallel_for(th, p2_mean, &c);
     free(img);
     *th_out = th, *tw_out = tw;
     return 0;

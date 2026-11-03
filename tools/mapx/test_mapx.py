@@ -227,7 +227,7 @@ def check_bump(rng):
     sub = {k: (v[rows] if isinstance(v, np.ndarray) else v) for k, v in tri.items()}
     same(resp(sub, pal).tolist(), en._mx_response(Lx, resp, dict(tri), pal, rows=rows).tolist(), "bump response rows")
     # k-means: float32 palette, float64 weighted clusters, nearest with float64 centres
-    for dt, d, k, n, w in ((np.float32, 2, 255, int(rng.integers(300, 4000)), False), (np.float64, 2, 9, 500, False),
+    for dt, d, k, n, w in ((np.float32, 2, 255, int(rng.integers(300, 10000)), False), (np.float64, 2, 9, 500, False),
                            (np.float64, 16, 48, int(rng.integers(10, 900)), True), (np.float64, 16, 1, 300, True)):
         x = (rng.normal(size=(n, d)) * 0.4).astype(dt)
         wts = rng.random(n) + 1e-6 if w else None
@@ -486,6 +486,13 @@ def check_chunks(rng):
     same(f1.getvalue(), f3.getvalue(), "chunks log (Tris)")
     same((list(ref), len(meshes), len(tris), ref_l), (list(got), nm, nt, lists()), "chunks (Tris)")
     same(em.flatten(entries, textures), em.flatten(ents_np, textures), "flatten (Tris)")
+    if bkey:  # export_normal.assign's arrays (BumpKeys) give the same chunks as its dict
+        it = list(bkey.items())
+        bk = export_normal.BumpKeys(*(np.array(c, np.int64) for c in
+                                      ([k for k, _ in it], [v[0] for _, v in it], [v[1] for _, v in it])))
+        with contextlib.redirect_stdout(io.StringIO()):
+            got, nm, nt = em.build_chunks_c(L, ents_np, textures, centre, bk, stream, dgon)
+        same((list(ref), ref_l), (list(got), lists()), "chunks (BumpKeys)")
     return len(ref)
 
 
@@ -663,3 +670,135 @@ if __name__ == "__main__":
         check_weld_arrays(np.random.default_rng(k))
         check_vert_rows(np.random.default_rng(k))
     print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays, souls.Rows, texmap.densities, faceset_tris, skin_mesh identical to the Python code on {count} random cases")
+
+
+# ---- stage 6c: shadow map, dedup, weld, probes ----
+def check_shadow(rng):
+    """dsr_light.ShadowMap (depth map, lit_many) in C against the numpy path and geom.c's raster"""
+    import dsr_light
+    n = int(rng.integers(0, 3000))
+    c = rng.uniform(-80, 80, (n, 1, 3))
+    tris = c + rng.normal(0, rng.choice([0.5, 3, 20]), (n, 3, 3))
+    if n:
+        tris[: max(1, n // 50)] *= 30  # a few huge triangles, clipped to the map
+    focus = rng.uniform(-50, 50, (int(rng.integers(1, 200)), 3))
+    to_light = dsr_light.light_dir(float(rng.uniform(10, 89)), float(rng.uniform(-180, 180)))
+    texel = float(rng.choice([0.25, 0.5, 1.7]))
+    P = rng.uniform(-90, 90, (int(rng.integers(0, 4000)), 3))
+    N = rng.normal(size=P.shape)
+    outs = []
+    for mode in ("c", "geom", "numpy"):
+        L_, G_ = mapx_native._L[0], dsr_light.geom_lib
+        if mode != "c":
+            mapx_native._L[0] = None
+        if mode == "numpy":
+            dsr_light.geom_lib = lambda: None
+        try:
+            sm = dsr_light.ShadowMap(tris, to_light, focus, texel=texel)
+            outs.append((sm.D.tobytes(), sm.W, sm.H, sm.lit_many(P, N).tobytes()))
+        finally:
+            mapx_native._L[0], dsr_light.geom_lib = L_, G_
+    same(outs[0], outs[2], "ShadowMap C vs numpy")
+    same(outs[1], outs[2], "ShadowMap geom vs numpy")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_shadow(np.random.default_rng(k))
+    print(f"mapx: ShadowMap identical to the numpy code on {count} random cases")
+
+
+def check_probe_cube(rng):
+    """dsr_light.probe_cube (GI_EnvDif BC6H cube -> cells) in C against the per-texel Python loop"""
+    import dsr_light, struct
+    w = int(rng.choice([8, 16, 32]))
+    hdr = bytearray(148)
+    struct.pack_into("<2I", hdr, 12, w, w)
+    struct.pack_into("<I", hdr, 128, 95)
+    blocks = rng.integers(0, 256, 16 * 6 * (w // 4) ** 2, dtype=np.uint8)
+    blocks[::16] &= int(rng.choice([0x03, 0x1F, 0xFF]))  # common modes as well as random ones
+    dds = bytes(hdr) + blocks.tobytes()
+    same(dsr_light.probe_cube(dds), dsr_light.probe_cube(dds, use_c=False), "probe_cube")
+
+
+def check_weld_c(rng):
+    """export_map._weld with libmapx (ids and normal sums in C) against the numpy code"""
+    n = int(rng.integers(1, 600))
+    rows = lambda k, f: [tuple(x) for x in f((n, k)).tolist()]
+    V = dict(pos=rows(3, lambda s: rng.integers(-6, 6, s) * 0.5), uv=rows(2, lambda s: rng.integers(0, 3, s) / 4)
+             if rng.random() < 0.8 else [], color=rows(4, lambda s: rng.integers(0, 2, s).astype(float))
+             if rng.random() < 0.8 else [], normal=rows(3, lambda s: rng.normal(size=s)) if rng.random() < 0.8 else [])
+    xf, xn = em.place(dict(rot=tuple(rng.uniform(-90, 90, 3).tolist()), scale=(1.1, 0.9, 1.0), pos=(3.0, -2.5, 7.25)))
+    vis = sorted(set(rng.integers(0, n, int(rng.integers(1, 2 * n))).tolist()))
+    L_ = mapx_native._L[0]
+    em._VERT_NP.clear()
+    a = em._weld(V, vis, xf, xn)
+    mapx_native._L[0] = None
+    try:
+        em._VERT_NP.clear()
+        b = em._weld(V, vis, xf, xn)
+    finally:
+        mapx_native._L[0] = L_
+    same(a[:6], b[:6], "_weld C")
+    same({k: (x.dtype.str, x.shape, x.tobytes()) for k, (_, x) in a[6].items()},
+         {k: (x.dtype.str, x.shape, x.tobytes()) for k, (_, x) in b[6].items()}, "_weld C arrays")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_probe_cube(np.random.default_rng(k))
+        check_weld_c(np.random.default_rng(k))
+    print(f"mapx: probe_cube, _weld (C ids) identical to the Python code on {count} random cases")
+
+
+def check_wedge_light(rng):
+    """export_map._wedge_light (light_fn + probes + point lights per wedge) in C against the numpy code"""
+    import dsr_light
+    row = {}
+    for i in "012":
+        row[f"colA_{i}"] = float(rng.choice([0, 50, 120]))
+        row[f"degRotX_{i}"], row[f"degRotY_{i}"] = float(rng.uniform(-90, 90)), float(rng.uniform(-180, 180))
+        for c in "RGB":
+            row[f"col{c}_{i}"] = float(rng.integers(0, 256))
+    for s in "ud":
+        row[f"colA_{s}"] = float(rng.uniform(0, 150))
+        for c in "RGB":
+            row[f"col{c}_{s}"] = float(rng.integers(0, 256))
+    row["envDif_colA"] = float(rng.uniform(0, 150))
+    for c in "RGB":
+        row[f"envDif_col{c}"] = float(rng.integers(0, 256))
+    R = dsr_light.PROBE_RES
+    probes = {int(p): rng.uniform(0, 2, (6, R, R, 3)).tolist() for p in rng.choice(20, int(rng.integers(1, 6)), replace=False)}
+    subs = [dict(part=f"h{i}", tris=[tuple(tuple(c) for c in t) for t in
+                                     (rng.uniform(-30, 30, (int(rng.integers(1, 100)), 3, 3)) + rng.uniform(-20, 20, 3)).tolist()])
+            for i in range(int(rng.integers(1, 6)))]
+    part_probe = {s["part"]: int(rng.choice(list(probes) + [99])) for s in subs}
+    plights = [dsr_light.cubic_light(tuple(rng.uniform(-30, 30, 3).tolist()), float(rng.uniform(0, 3)),
+                                     float(rng.uniform(3, 40)), [float(x) for x in rng.uniform(0, 3, 3)])
+               for _ in range(int(rng.integers(0, 4)))]
+    nw, npos = int(rng.integers(1, 2000)), int(rng.integers(1, 800))
+    wn = rng.normal(size=(nw, 3))
+    wn[rng.random(nw) < 0.05] = 0.0
+    wn[rng.random(nw) < 0.05] = [1.0, -1.0, 0.0]  # equal magnitudes: the first axis
+    pos = [tuple(p) for p in rng.uniform(-40, 40, (npos, 3)).tolist()]
+    wpos = rng.integers(0, npos, nw).tolist()
+    pls = [] if not plights else [plights[0]] * int(rng.integers(1, 3)) + plights
+    outs = []
+    for use_c in (True, False):
+        L_ = mapx_native._L[0]
+        ix = dsr_light.ProbeIndex(subs, probes, part_probe)  # the C index both times, a fresh cache each
+        if not use_c:
+            mapx_native._L[0] = None
+        try:
+            h = em._wedge_light(dsr_light.light_fn(row), wn.tolist(), pos, wpos, probes, ix, pls,
+                                dict(wn=(None, None)))
+            outs.append({k: (v.dtype.str, v.shape, v.tobytes()) for k, v in h.items()})
+        finally:
+            mapx_native._L[0] = L_
+    same(outs[0], outs[1], "_wedge_light")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_wedge_light(np.random.default_rng(k))
+    print(f"mapx: _wedge_light identical to the numpy code on {count} random cases")
