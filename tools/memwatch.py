@@ -33,7 +33,10 @@ MIN_KILL = 512 << 20        # system-low kills skip processes smaller than this 
 PSI_PAUSE = float(os.environ.get("MEMWATCH_PSI_PAUSE", 10))     # pause the largest job at this full avg10 ...
 SWAPIN_PAUSE = float(os.environ.get("MEMWATCH_SWAPIN_MB", 20)) * (1 << 20)  # ... or this disk swap-in rate (B/s)
 PSI_KILL = float(os.environ.get("MEMWATCH_PSI_KILL", 30))       # kill the largest job at this full avg10
-PSI_CALM = float(os.environ.get("MEMWATCH_PSI_CALM", 2))        # resume paused jobs below this (and no disk swap-in)
+# Resume threshold: at 2 % a desktop session with zram (browser, Steam, launchers) can sit at 2-5 % full avg10 for
+# hours with no job running, so paused jobs stayed frozen 20-30+ min holding their queue reservations. 5 % is still
+# half of PSI_PAUSE, and a job that pushes pressure back up is simply paused again.
+PSI_CALM = float(os.environ.get("MEMWATCH_PSI_CALM", 5))        # resume paused jobs below this (and no disk swap-in)
 # hard floors that kill whatever PSI says: MemAvailable (already counts page cache and reclaimable slab), and free
 # swap (zram + disk) below SWAP_FREE_PCT, since oomd's ManagedOOMSwap kills at 90 % of all swap used. Not "swap
 # used": pages that sit in swap untouched cost nothing, and they stay there after the pressure is gone.
