@@ -40,7 +40,7 @@ DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell tabl
           packed raw so it can be read in place): see write_cells. Without STREAM, cells.bin is empty.
 Usage: export_map.py <game dir> <out.bin> [map id] [preview prefix]
        export_map.py --render <map.bin> <preview prefix>   (offline renders of an existing map.bin, see VIEWS)"""
-import functools, gc, json, math, os, struct, sys, time
+import collections.abc, functools, gc, json, math, os, struct, sys, time
 
 # Python's cyclic GC: with the default thresholds the exporter's millions of long-lived tuples / lists were scanned by
 # 45 full collections, 47 s of Firelink's 259 s (profiled 2026-11-02; also most of the simplify cache's load time). The
@@ -934,7 +934,32 @@ def _weld(V, vis, xf, xn):
         npd["wn"] = (wn, WN)
     else:  # (0, 1, 0) per vertex, summed as Python ints
         wn = [[0, int(c), 0] for c in np.bincount(wid, minlength=len(wfirst)).tolist()]
-    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist())), npd
+    return pos, wpos, wuv, wcol, wn, VertWedge(idx, wid), npd
+
+
+class VertWedge(collections.abc.Mapping):
+    """_weld's {vertex: wedge} as two arrays (vs ascending, ws): reads as that dict"""
+    __slots__ = ("vs", "ws", "_d")
+
+    def __init__(self, vs, ws):
+        self.vs, self.ws, self._d = vs, ws, None
+
+    def _dict(self):
+        if self._d is None:
+            self._d = dict(zip(self.vs.tolist(), self.ws.tolist()))
+        return self._d
+
+    def __getitem__(self, k):
+        return self._dict()[k]
+
+    def __iter__(self):
+        return iter(self.vs.tolist())
+
+    def __len__(self):
+        return len(self.vs)
+
+    def __repr__(self):
+        return repr(self._dict())
 
 
 def _np_list(m, key, lst, dt, w):
@@ -957,6 +982,11 @@ def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd={}):
     each element computed as the per-wedge code did (normal length by Python's sum(), probe lookups in wedge order:
     ProbeIndex caches per cell)."""
     md = {"_np": npd}
+    MX = mapx_native.lib()
+    if MX is not None and hasattr(lit, "params") and all(hasattr(f, "params") for f in plights) and len(wpos):
+        R = _wedge_light_c(MX, lit, md, wn, pos, wpos, probes, probe_at, plights)
+        if R is not None:
+            return R
     N = _np_list(md, "wn", wn, np.float64, 3)
     ln = np.sqrt(_py_sum3(N[:, 0] * N[:, 0], N[:, 1] * N[:, 1], N[:, 2] * N[:, 2]))
     ln[ln == 0] = 1.0
@@ -966,6 +996,38 @@ def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd={}):
     E, S = lit.many(N, faces)
     for f in plights:
         E = E + f.many(P, N)
+    return dict(E=E, S=S, P=P, N=N)
+
+
+def _wedge_light_c(MX, lit, md, wn, pos, wpos, probes, probe_at, plights):
+    """_wedge_light in C (tools/mapx/wlight.c); None when the probe index has no C handle or a probe cube is not
+    (6, R, R, 3)"""
+    Wn = _np_list(md, "wn", wn, np.float64, 3)
+    Pa, Wa = _np_list(md, "pos", pos, np.float64, 3), _np_list(md, "wpos", wpos, np.int64, 1)
+    slot = probe_at.slots(Pa[Wa])  # the probe queries in wedge order, as many() (its cache keeps the first answer)
+    if slot is None:
+        return None
+    tab = getattr(probe_at, "_mx_faces", None)
+    if tab is None:
+        R = dsr_light.PROBE_RES
+        F = [np.asarray(probes[v], np.float64) for v in probe_at.vals]
+        if any(f.shape != (6, R, R, 3) for f in F):
+            return None
+        tab = probe_at._mx_faces = np.ascontiguousarray(np.stack(F) if F else np.zeros((1, 6, R, R, 3)))
+    dirs, up, down, env = lit.params
+    lp = np.zeros(28)
+    lp[0] = len(dirs)
+    for j, (d, col) in enumerate(dirs):
+        lp[1 + 3 * j:4 + 3 * j], lp[10 + 3 * j:13 + 3 * j] = d, col
+    lp[19:22], lp[22:25], lp[25:28] = up, down, env
+    pl = np.ascontiguousarray([[*f.params[0], f.params[1], f.params[2], *f.params[3]] for f in plights] or
+                              np.zeros((0, 8)), np.float64)
+    n = len(Wa)
+    E, S, P, N = (np.empty((n, 3)) for _ in range(4))
+    sl = np.ascontiguousarray(slot, np.int32)
+    MX.mx_wedge_light(n, Wn.ctypes.data, Pa.ctypes.data, Wa.ctypes.data, sl.ctypes.data, lp.ctypes.data,
+                      tab.ctypes.data, dsr_light.PROBE_RES, len(pl), pl.ctypes.data, E.ctypes.data, S.ctypes.data,
+                      P.ctypes.data, N.ctypes.data)
     return dict(E=E, S=S, P=P, N=N)
 
 
@@ -1492,7 +1554,8 @@ def gather(game, map_id):
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
-            pos, wpos, wuv, wcol, wn, fvw, npd = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
+            Tl = np.array(tl, np.int64).reshape(-1, 3)
+            pos, wpos, wuv, wcol, wn, fvw, npd = _weld(V, np.unique(Tl), xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
@@ -1532,10 +1595,9 @@ def gather(game, map_id):
             bump = export_normal.register(m, V, fvw, wn, xn, light_rows.get(lid, light_rows[main_light]), alb,
                                           probe_at, npd.get("wn")) if lit and not water and not grass and V["uv"] else None
             # triangles in wedges (fvw[vertex]), as an array too (simplify_meshes_c, far_cells_c, the shadow map)
-            vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
-            lut = np.zeros(int(vs.max()) + 1, np.int32)
-            lut[vs] = np.fromiter(fvw.values(), np.int64, len(fvw))
-            Tw = np.ascontiguousarray(lut[np.array(tl, np.int64).reshape(-1, 3)])
+            lut = np.zeros(int(fvw.vs.max()) + 1, np.int32)
+            lut[fvw.vs] = fvw.ws
+            Tw = np.ascontiguousarray(lut[Tl])
             mtris = souls.Rows(Tw)  # reads as the list of wedge triples
             npd["tris"] = (mtris, Tw)
             npd.pop("wn", None)  # used up (light, relief)

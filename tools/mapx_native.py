@@ -71,6 +71,7 @@ def lib():
                                 ("mx_dedup_tris", [ll, vp, vp, ll, vp, vp], ll),
                                 ("mx_weld", [ll, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp], None),
                                 ("mx_probe_faces", [vp, i, i, i, vp], None),
+                                ("mx_wedge_light", [ll, vp, vp, vp, vp, vp, vp, i, i, vp, vp, vp, vp, vp], None),
                                 ("mx_shadow_lit", [ll, vp, vp, vp, vp, d, vp, i, i, d, vp], None)):
                     getattr(L, f).argtypes, getattr(L, f).restype = a, r
             except Exception as e:

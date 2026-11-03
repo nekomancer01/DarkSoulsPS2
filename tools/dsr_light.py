@@ -360,6 +360,16 @@ class ProbeIndex:
         self.cache[k] = best
         return best
 
+    def slots(self, P):
+        """many(P) as indices into self.vals (-1 = None), libmapx only (None without it)"""
+        if not self.mx:
+            return None
+        import numpy as np
+        P = np.ascontiguousarray(np.asarray(P, np.float64).reshape(-1, 3))
+        r = np.empty(len(P), np.int64)
+        self.L.mx_probe_query(self.mx, len(P), P.ctypes.data, r.ctypes.data)
+        return r
+
     def many(self, P):
         """__call__ for the rows of an (n, 3) array, in row order (the cache keeps the first query's answer per
         cell, so the order matters)"""
@@ -410,6 +420,7 @@ def light_fn(row, probes=None):
             for c in range(3):
                 sun[c] += col[c] * k
         return (amb, sun) if split else [a + b for a, b in zip(amb, sun)]
+    f.params = (dirs, up, down, env)  # for libmapx's mx_wedge_light
 
     def many(N, faces):
         """f(n, faces, split=True) for the rows of (n, 3) unit normals N, per-row probe faces (list, None = none) ->
@@ -675,6 +686,7 @@ def cubic_light(pos, begin, end, rgb):
         att = min(1.0, (k * (end - d)) ** 3)
         nl = max(0.0, sum(n[i] * v[i] for i in range(3)) / d) if n else 1.0
         return [c * att * nl for c in rgb]
+    f.params = (pos, k, end, rgb)  # for libmapx's mx_wedge_light
 
     def many(P, N):
         """f per row of (n, 3) positions and normals -> (n, 3), the same operations per element"""

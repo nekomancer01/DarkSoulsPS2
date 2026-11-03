@@ -84,8 +84,11 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of, wn_np=None):
     nw = len(wn)
     T, W = np.zeros((nw, 3)), np.zeros(nw)
     if hasattr(xn, "many") and fvw:  # all vertices at once, summed per wedge in the same order (np.add.at)
-        vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
-        ws = np.fromiter(fvw.values(), np.int64, len(fvw))
+        if hasattr(fvw, "vs"):  # export_map.VertWedge: the arrays themselves
+            vs, ws = np.asarray(fvw.vs, np.int64), np.asarray(fvw.ws, np.int64)
+        else:
+            vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
+            ws = np.fromiter(fvw.values(), np.int64, len(fvw))
         Tv = V["tangent"].a[vs].astype(np.float64) if hasattr(V["tangent"], "a") else \
             np.array([V["tangent"][vi] for vi in vs.tolist()], np.float64).reshape(-1, 4)  # souls.Rows: its array
         np.add.at(T, ws, xn.many(np.ascontiguousarray(Tv[:, :3])))

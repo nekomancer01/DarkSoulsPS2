@@ -742,3 +742,56 @@ if __name__ == "__main__":
         check_probe_cube(np.random.default_rng(k))
         check_weld_c(np.random.default_rng(k))
     print(f"mapx: probe_cube, _weld (C ids) identical to the Python code on {count} random cases")
+
+
+def check_wedge_light(rng):
+    """export_map._wedge_light (light_fn + probes + point lights per wedge) in C against the numpy code"""
+    import dsr_light
+    row = {}
+    for i in "012":
+        row[f"colA_{i}"] = float(rng.choice([0, 50, 120]))
+        row[f"degRotX_{i}"], row[f"degRotY_{i}"] = float(rng.uniform(-90, 90)), float(rng.uniform(-180, 180))
+        for c in "RGB":
+            row[f"col{c}_{i}"] = float(rng.integers(0, 256))
+    for s in "ud":
+        row[f"colA_{s}"] = float(rng.uniform(0, 150))
+        for c in "RGB":
+            row[f"col{c}_{s}"] = float(rng.integers(0, 256))
+    row["envDif_colA"] = float(rng.uniform(0, 150))
+    for c in "RGB":
+        row[f"envDif_col{c}"] = float(rng.integers(0, 256))
+    R = dsr_light.PROBE_RES
+    probes = {int(p): rng.uniform(0, 2, (6, R, R, 3)).tolist() for p in rng.choice(20, int(rng.integers(1, 6)), replace=False)}
+    subs = [dict(part=f"h{i}", tris=[tuple(tuple(c) for c in t) for t in
+                                     (rng.uniform(-30, 30, (int(rng.integers(1, 100)), 3, 3)) + rng.uniform(-20, 20, 3)).tolist()])
+            for i in range(int(rng.integers(1, 6)))]
+    part_probe = {s["part"]: int(rng.choice(list(probes) + [99])) for s in subs}
+    plights = [dsr_light.cubic_light(tuple(rng.uniform(-30, 30, 3).tolist()), float(rng.uniform(0, 3)),
+                                     float(rng.uniform(3, 40)), [float(x) for x in rng.uniform(0, 3, 3)])
+               for _ in range(int(rng.integers(0, 4)))]
+    nw, npos = int(rng.integers(1, 2000)), int(rng.integers(1, 800))
+    wn = rng.normal(size=(nw, 3))
+    wn[rng.random(nw) < 0.05] = 0.0
+    wn[rng.random(nw) < 0.05] = [1.0, -1.0, 0.0]  # equal magnitudes: the first axis
+    pos = [tuple(p) for p in rng.uniform(-40, 40, (npos, 3)).tolist()]
+    wpos = rng.integers(0, npos, nw).tolist()
+    pls = [] if not plights else [plights[0]] * int(rng.integers(1, 3)) + plights
+    outs = []
+    for use_c in (True, False):
+        L_ = mapx_native._L[0]
+        ix = dsr_light.ProbeIndex(subs, probes, part_probe)  # the C index both times, a fresh cache each
+        if not use_c:
+            mapx_native._L[0] = None
+        try:
+            h = em._wedge_light(dsr_light.light_fn(row), wn.tolist(), pos, wpos, probes, ix, pls,
+                                dict(wn=(None, None)))
+            outs.append({k: (v.dtype.str, v.shape, v.tobytes()) for k, v in h.items()})
+        finally:
+            mapx_native._L[0] = L_
+    same(outs[0], outs[1], "_wedge_light")
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + count):
+        check_wedge_light(np.random.default_rng(k))
+    print(f"mapx: _wedge_light identical to the numpy code on {count} random cases")
