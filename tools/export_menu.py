@@ -14,7 +14,7 @@ DRB (DS1 PC, little-endian): "DRB\\0", then chunks {char[4] name, u32 size, u32 
 parameters), SHAP {u32 type name, u32 SHPR offset}, DLGO {u32 name, u32 SHAP offset, u32 CTRL offset, ...} 32 B,
 DLG {u32 name, u32 shape, u32 ctrl, ..., u32 element count at +32, u32 DLGO offset at +36} 64 B. Shape parameters
 start with s16 left, top, right, bottom (relative to the parent dialog's left/top); Sprite: +16 s16 texel left, top,
-right, bottom, +24 s16 texture index; Dialog: +16 u8 child DLG index; MonoRect: +24 colour a, r, g, b; GouraudRect:
+right, bottom, +24 s16 texture index; Dialog: +16 u8 child DLG index; MonoRect: +24 colour a, b, g, r; GouraudRect:
 +20 four such corner colours, top left, top right, bottom right, bottom left (SoulsFormats DRB.GouraudRect order).
 
 Output menu.bin (little-endian):
@@ -38,6 +38,18 @@ SX, SY = 640 / 1280, 448 / 720
 FONT_H = 17  # pixels per line on the PS2 (DSFont24 glyph cells are 58 px tall for the game's 720p UI)
 ICON = 64
 ATLAS_W, ATLAS_H = 512, 256
+# DSR shows every UI colour (menu textures, sprite tints, rects, the HUD) as 255 * (v / 255) ** 0.75 of its stored
+# value: reference capture 2026-11-03 (tools/dsr-ref.sh, 1920x1080), opaque texels against the screen: I01 parchment
+# 1.7 / 11.7 / 32 / 52 -> 9 / 26 / 51 / 73 (curve 4 / 25 / 54 / 77), R00 bag icon red 29 / 84 / 143 / 197 / 238 ->
+# 59 / 114 / 165 / 209 / 241 (50 / 111 / 165 / 210 / 241), HUD soul plate 49 / 75 / 114 -> 83 / 100 / 137
+# (74 / 102 / 139). A power law is multiplicative, so texture and tint convert separately. Alpha is not converted.
+UI_GAMMA = 0.75
+UI_LUT = [round(255 * (v / 255) ** UI_GAMMA) for v in range(256)]
+
+
+def ui_rgb(r, g, b):
+    """a stored UI colour as DSR shows it (UI_GAMMA)"""
+    return UI_LUT[r], UI_LUT[g], UI_LUT[b]
 
 # (layout name, dialog, element, offset dialogs to add): HUD elements in draw order. hud.h's HUD_* enum follows it.
 LAYOUT = [
@@ -160,7 +172,8 @@ def load_textures(game, names):
         for n, d in souls.tpf(souls.read(os.path.join(game, "menu", f))).items():
             if n in names and n not in out:
                 w, h, px = souls.dds_decode_rgba(d, 4096)
-                out[n] = Image.frombytes("RGBA", (w, h), px)
+                r, g, b, a = Image.frombytes("RGBA", (w, h), px).split()
+                out[n] = Image.merge("RGBA", (r.point(UI_LUT), g.point(UI_LUT), b.point(UI_LUT), a))
     return out
 
 
@@ -295,11 +308,11 @@ def main():
         elif t in ("MonoRect", "GouraudRect"):
             at = 20 if t == "GouraudRect" else 24
             cs = [raw[at + 4 * k:at + 4 + 4 * k] for k in range(4 if t == "GouraudRect" else 1)]
-            a, r, g, b = (sum(c[j] for c in cs) // len(cs) for j in range(4))
-            col = (r, g, b, (a * 0x80 + 127) // 255)
+            a, b, g, r = (sum(c[j] for c in cs) // len(cs) for j in range(4))
+            col = ui_rgb(r, g, b) + ((a * 0x80 + 127) // 255,)
             if len({bytes(c) for c in cs}) > 1:  # a real gradient (YOU DIED / BONFIRE LIT BG_grad00 / 01)
                 spr = -2 - len(grads)
-                grads.append(b"".join(bytes((c[1], c[2], c[3], (c[0] * 0x80 + 127) // 255)) for c in cs))
+                grads.append(b"".join(bytes(ui_rgb(c[3], c[2], c[1]) + ((c[0] * 0x80 + 127) // 255,)) for c in cs))
         layout.append((spr, x, y, w, h) + col)
     menu_layout = []
     for name, img_name, src, dst, keep in MENU_SPRITES:

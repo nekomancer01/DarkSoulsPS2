@@ -9,8 +9,8 @@ Item icons are not in it (tools/export_items.py icons.bin) and neither is the fo
 
 DRB element types used (shape parameters after the s16 left, top, right, bottom rectangle relative to the parent
 dialog, see tools/export_menu.py): Dialog +16 u16 child DLG index; Sprite +16 s16 texel left, top, right, bottom,
-+24 s16 texture index, +32 tint a, r, g, b; MonoRect +24 colour a, r, g, b; GouraudRect +20 four corner colours (TL, TR, BR, BL); Text and
-ScrollText +24 colour a, r, g, b, +28 u8 font size class, +30 u8 alignment (1 right, 2 centre, 8 middle,
++24 s16 texture index, +32 tint a, b, g, r; MonoRect +24 colour a, b, g, r; GouraudRect +20 four corner colours (TL, TR, BR, BL); Text and
+ScrollText +24 colour a, b, g, r, +28 u8 font size class, +30 u8 alignment (1 right, 2 centre, 8 middle,
 4 bottom: inferred from where labels and values sit), +36 u32 msgbnd file id, +40 u32 FMG text id (the text, which
 for most elements is a <?tag?> the game fills in).
 
@@ -42,6 +42,13 @@ import resample
 VERSION = 2
 SX, SY = 640 / 1280, 448 / 720
 T_NULL, T_DIALOG, T_SPRITE, T_RECT, T_TEXT = range(5)
+MENU_COLORS = {}  # MenuColorTableParam row -> (r, g, b, a), set in main
+# DRB text colours are not what DSR shows: its menus draw their text neutral white (reference capture 2026-11-03,
+# 1920x1080: brightest glyph pixels 254-255 on the I01 title, key guide and covenant, 202-213 only where thin small
+# glyphs are antialiased), also where the DRB says ff9cb9ca / ff8cb4d2 (965 + 467 of menu.drb's 1894 text elements,
+# beige / tan read as a, b, g, r) or ff000016 (the "Inventory" title, near black). MenuColorTableParam 1 / 3 / 7
+# "normal text" is 240, 240, 240; the code picks the colour, so every menu text is white here, its DRB alpha kept
+# (ASSUMED for texts not seen in the capture, TECH_DEBT menu-3)
 
 # screen -> roots. The screen's own dialog first; templates after it (src/menu.c places them).
 SCREENS = {
@@ -140,6 +147,22 @@ def fit_sizes(want, budget):
     return size
 
 
+def orient_sprite(img, o):
+    """Sprite +26 flags >> 4: bits 0-1 quarter turns clockwise, 2 (0x40) mirror left-right, 3 (0x80) mirror top-bottom,
+    after the turn. The I01 / I02 status frame (R02_status_frame_r) draws its top and bottom edges from upright strips
+    with flags 0x1b0, its sides from flat ones with 0x110: three turns and a top-bottom mirror put the corner curls
+    inward as DSR shows them (reference capture 2026-11-03); clockwise and the mirror axes are ASSUMED (a
+    counter-clockwise turn with a left-right mirror looks the same on those strips), TECH_DEBT menu-7"""
+    from PIL import Image
+    for _ in range(o & 3):
+        img = img.transpose(Image.ROTATE_270)  # PIL: 270 degrees counter-clockwise = a quarter turn clockwise
+    if o & 4:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    if o & 8:
+        img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    return img
+
+
 def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_dir=None):
     from PIL import Image
     names = list(dlgs)
@@ -152,10 +175,12 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
         tl, tt, tr, tb, ti = struct.unpack_from("<5h", raw, 16)
         if not (0 <= ti < len(tex_names)) or tr <= tl or tb <= tt or tex_names[ti].startswith(("Icon", "SYSTEX")):
             continue
-        key = (tex_names[ti], max(0, tl), max(0, tt), tr, tb)
+        orient = struct.unpack_from("<H", raw, 26)[0] >> 4 & 15  # Sprite +26 flags 0x10-0x80 (orient_sprite)
+        key = (tex_names[ti], max(0, tl), max(0, tt), tr, tb, orient)
         w = max(1, round((x1 - x0) * SX))
         hh = max(1, round((y1 - y0) * SY))
-        w, hh = min(w, tr - max(0, tl)), min(hh, tb - max(0, tt))
+        tw, th = (tb - max(0, tt), tr - max(0, tl)) if orient & 1 else (tr - max(0, tl), tb - max(0, tt))
+        w, hh = min(w, tw), min(hh, th)
         ow, oh = want.get(key, (0, 0))
         want[key] = (max(ow, w), max(oh, hh))
         spr_key[k] = key
@@ -178,8 +203,9 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
         except ValueError:
             budget = int(budget * 0.95)
     for key, (x, y, w, h) in zip(sorted(size), sprites):
-        tn, l, t, r, b = key
-        atlas.alpha_composite(resample.resize(texs[tn].crop((l, t, r, b)), (w, h), Image.LANCZOS), (x, y))
+        tn, l, t, r, b, orient = key
+        img = orient_sprite(texs[tn].crop((l, t, r, b)), orient)
+        atlas.alpha_composite(resample.resize(img, (w, h), Image.LANCZOS), (x, y))
     used_h = min(ah, pk.used())
     used_h = (used_h + 31) & ~31  # GS page-friendly height
     atlas = atlas.crop((0, 0, aw, used_h))
@@ -201,23 +227,32 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
         if typ == T_SPRITE:
             if k in spr_key:
                 spr = sprite_of[spr_key[k]]
-                # Sprite +32: tint a, r, g, b as MonoRect's (ffffffff on most sprites; c8ffffff translucent rules,
-                # dc282828 the tab blackouts, ff000000 black panels, 96062a76 the list cursors' blue ink)
-                a, r, g, b = raw[32:36]
-                col = (r, g, b, (a * 0x80 + 127) // 255)
+                # Sprite +32: tint a, b, g, r as MonoRect's (ffffffff on most sprites; c8ffffff translucent rules,
+                # dc282828 the tab blackouts, ff000000 black panels, 96062a76 the list cursors' ink: r 0x76, g 0x2a,
+                # b 0x06, the orange-brown DSR shows under the selected row (reference capture 2026-11-03; read as
+                # a, r, g, b it was blue). ff0000ff F20 text_intrusion is red that way, as DSR's invasion text)
+                a, b, g, r = raw[32:36]
+                # Sprite +28: u32 MenuColorTableParam row that replaces the tint (0: none): 2 "inventory selected
+                # icon colour" on the I01 tab highlights, 16 "scroll bar" on the list thumbs (DSR's are orange-brown,
+                # the tint ff0000a4 is red), 20 "blackout", 1 "normal text" on I02's count rules (ASSUMED meaning,
+                # from those names and the capture)
+                row = MENU_COLORS.get(struct.unpack_from("<I", raw, 28)[0])
+                if row:
+                    r, g, b, a = row
+                col = em.ui_rgb(r, g, b) + ((a * 0x80 + 127) // 255,)
             else:
                 typ = T_NULL  # an icon placeholder (texture -1 or an IconNN sheet): filled in by the code
         elif typ == T_RECT:
             at = 20 if t == "GouraudRect" else 24
             cs = [raw[at + 4 * j:at + 4 + 4 * j] for j in range(4 if t == "GouraudRect" else 1)]
-            a, r, g, b = (sum(c[j] for c in cs) // len(cs) for j in range(4))
-            col = (r, g, b, (a * 0x80 + 127) // 255)
+            a, b, g, r = (sum(c[j] for c in cs) // len(cs) for j in range(4))
+            col = em.ui_rgb(r, g, b) + ((a * 0x80 + 127) // 255,)
             if len({bytes(c) for c in cs}) > 1:
                 spr = len(grads)
-                grads.append(b"".join(bytes((c[1], c[2], c[3], (c[0] * 0x80 + 127) // 255)) for c in cs))
+                grads.append(b"".join(bytes(em.ui_rgb(c[3], c[2], c[1]) + ((c[0] * 0x80 + 127) // 255,)) for c in cs))
         elif typ == T_TEXT:
-            a, r, g, b = raw[24:28]  # a, r, g, b as the shapes' (ff9cb9ca: the menus' pale blue-grey text)
-            col = (r, g, b, (a * 0x80 + 127) // 255)
+            a = raw[24]  # a, b, g, r as the shapes'; r, g, b: white (above)
+            col = (255, 255, 255, (a * 0x80 + 127) // 255)
             font, align = raw[28], raw[30]
             fid, tid = struct.unpack_from("<2I", raw, 36)
             s = fmgs.get(fid, {}).get(tid)
@@ -285,6 +320,8 @@ def main():
                 if 0 <= ti < len(tex_names):
                     needed.add(tex_names[ti])
     texs = em.load_textures(game, {n for n in needed if not n.startswith(("Icon", "SYSTEX"))})
+    MENU_COLORS.update({k: (v["r"], v["g"], v["b"], v["a"]) for k, (_, v) in
+                        souls.game_params(game)["MenuColorTableParam"].items() if k})
     fmgs = {}
     for i, n, d in souls.bnd3(souls.read(os.path.join(game, "msg", "ENGLISH", "menu.msgbnd.dcx"))):
         fmgs[i] = souls.fmg(d)
