@@ -64,7 +64,9 @@ def lib():
                                 ("mx_chunks_free", [vp], None),
                                 ("mx_first_rows", [ll, i, vp, vp, vp], ll), ("mx_any_within", [ll, vp, ll, vp, d], i),
                                 ("mx_probe_new", [ll, vp, vp, d, ll], vp), ("mx_probe_query", [vp, ll, vp, vp], None),
-                                ("mx_probe_free", [vp], None), ("mx_pow_many", [ll, vp, d, i, vp], None)):
+                                ("mx_probe_free", [vp], None), ("mx_pow_many", [ll, vp, d, i, vp], None),
+                                ("mx_faceset_tris", [ll, vp, i, vp], ll),
+                                ("mx_skin", [ll, vp, vp, vp, vp, ll, vp, vp, vp], None)):
                     getattr(L, f).argtypes, getattr(L, f).restype = a, r
             except Exception as e:
                 print(f"mapx: C library unavailable ({str(e)[:300]}), using the Python export", flush=True)

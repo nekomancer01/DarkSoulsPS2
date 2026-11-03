@@ -883,7 +883,7 @@ def _weld(V, vis, xf, xn):
     Pw = xf.many(_vert_np(V["pos"])[idx])
     pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
     Pp = np.ascontiguousarray(Pw[pfirst], np.float64)
-    pos = list(map(tuple, Pp.tolist()))
+    pos = souls.Rows(Pp)  # reads as the list of position tuples
     UV = _vert_np(V["uv"])[idx] if V["uv"] else np.zeros((n, 2))
     C = _vert_np(V["color"])[idx] if V["color"] else np.ones((n, 4))
     wk = np.concatenate([pid[:, None], np.rint(UV * 4096).astype(np.int64), np.rint(C * 255).astype(np.int64)], 1)
@@ -892,12 +892,12 @@ def _weld(V, vis, xf, xn):
     Wp = pid[wfirst]
     wpos = Wp.tolist()
     wfl = wfirst.tolist()
-    if isinstance(V["uv"], souls.Rows):  # the same tuples, from the array
-        wuv = list(map(tuple, V["uv"].a[idx[wfirst]].tolist()))
+    if isinstance(V["uv"], souls.Rows):  # the same tuples, read from the array
+        wuv = souls.Rows(np.ascontiguousarray(V["uv"].a[idx[wfirst]], np.float64))
     else:
         wuv = [V["uv"][vl[i]] for i in wfl] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
     if isinstance(V["color"], souls.Rows):
-        wcol = list(map(tuple, V["color"].a[idx[wfirst]].tolist()))
+        wcol = souls.Rows(np.ascontiguousarray(V["color"].a[idx[wfirst]], np.float64))
     else:
         wcol = [V["color"][vl[i]] for i in wfl] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
     npd = dict(pos=(pos, Pp), wpos=(wpos, Wp.astype(np.int32)), wuv=(wuv, np.ascontiguousarray(UV[wfirst])),
@@ -1088,11 +1088,23 @@ def load_object(game, model, dds, static=False):
 _DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
 
 
+def faceset_tris(fs):
+    """souls.triangles(fs) as an (n, 3) int64 array (libmapx mx_faceset_tris; without it from souls.triangles)"""
+    MX = mapx_native.lib()
+    if MX is None:
+        return np.array(souls.triangles(fs), np.int64).reshape(-1, 3)
+    idx = np.ascontiguousarray(fs[2], np.int64)
+    out = np.empty((max(len(idx) - 2, 1), 3), np.int64)
+    n = MX.mx_faceset_tris(len(idx), idx.ctypes.data, 1 if fs[1] else 0, out.ctypes.data)
+    return out[:n]
+
+
 def dedup_tris(tl, V):
     """Drop repeated triangles inside one mesh: same positions (0.1 mm), winding and UVs as an earlier one. Some FLVER
     face sets store faces two or three times (Burg barrel o1152: 1488 tris = 496 x 3, map piece m2011B1: 4.6k of 9.5k);
-    the copies draw the same pixels, and their non-manifold edges stop the QEM simplifier (both kept 97-100 %)."""
-    if not tl:
+    the copies draw the same pixels, and their non-manifold edges stop the QEM simplifier (both kept 97-100 %).
+    tl: index triples (a list, or faceset_tris' array: the kept ones come back as tuples of ints either way)."""
+    if not len(tl):
         return []
     # per corner (x, y, z, u, v) rounded, rotated to start at the lexicographically smallest corner (the first of
     # equal ones, as c.index(min(c))); the first triangle of each key is kept, in order
@@ -1111,7 +1123,10 @@ def dedup_tris(tl, V):
     for i in (1, 2):
         r = np.where(less(C[:, i], C[rows, r]), i, r)
     rot = C[rows[:, None], (r[:, None] + np.arange(3)) % 3].reshape(len(C), -1)  # cyclic rotation keeps the winding
-    return [tl[i] for i in _first_rows(rot)[1].tolist()]
+    keep = _first_rows(rot)[1]
+    if isinstance(tl, np.ndarray):
+        return list(map(tuple, tl[keep].tolist()))
+    return [tl[i] for i in keep.tolist()]
 
 
 def place(part):
@@ -1355,7 +1370,11 @@ def gather(game, map_id):
                     poses[pk] = pose_obj.anim_bones(game, *pk) if POSE_OBJ else None
                 if poses[pk] is None:
                     continue
-                P, N = pose_obj.skin_mesh(F, m, poses[pk])
+                sk = pose_obj.skin_mesh_np(F, m, poses[pk])  # in C; the lists from Python without it
+                if sk is not None:
+                    P, N = souls.Rows(sk[0]), souls.Rows(sk[1])
+                else:
+                    P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
@@ -1391,7 +1410,7 @@ def gather(game, map_id):
                 # map pieces whose LOD0 lies wholly beyond STREAM_FAR of the walkable space (whole-MSB areas) take the
                 # game's lowest LOD before QEM, as DSR draws them from there (render-distance option (a), map-36)
                 Vp = m["verts"]["pos"]
-                wp = xf.many(_vert_np(Vp)[sorted({i for t in souls.triangles(lods[min(lods)]) for i in t})])
+                wp = xf.many(_vert_np(Vp)[np.unique(faceset_tris(lods[min(lods)]))])
                 lo, hi = wp.min(0), wp.max(0)
                 d = np.maximum(0, np.maximum(lo[None] - nav_tree, nav_tree - hi[None]))
                 low = len(wp) and np.min((d * d).sum(1)) > STREAM_FAR ** 2
@@ -1399,7 +1418,7 @@ def gather(game, map_id):
             fs = lods[max(lods)] if low else lods[min(lods)]
             dk = (id(fs), id(m["verts"]["pos"]))  # a model placed many times: its face set is deduplicated once
             if dk not in _DEDUP or _DEDUP[dk][0] is not fs or _DEDUP[dk][1] is not m["verts"]["pos"]:
-                _DEDUP[dk] = (fs, m["verts"]["pos"], dedup_tris(souls.triangles(fs), m["verts"]))
+                _DEDUP[dk] = (fs, m["verts"]["pos"], dedup_tris(faceset_tris(fs), m["verts"]))
             tl = list(_DEDUP[dk][2])
             if (map_r or PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
                 ui = list({i for t in tl for i in t})
@@ -1483,7 +1502,7 @@ def gather(game, map_id):
             lut = np.zeros(int(vs.max()) + 1, np.int32)
             lut[vs] = np.fromiter(fvw.values(), np.int64, len(fvw))
             Tw = np.ascontiguousarray(lut[np.array(tl, np.int64).reshape(-1, 3)])
-            mtris = list(map(tuple, Tw.tolist()))
+            mtris = souls.Rows(Tw)  # reads as the list of wedge triples
             npd["tris"] = (mtris, Tw)
             npd.pop("wn", None)  # used up (light, relief)
             if not (lit and not water):

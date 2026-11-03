@@ -43,3 +43,32 @@ MX_API void mx_pow_many(long long n, const double *X, double e, int pos, double 
     for (long long i = 0; i < n; i++)
         out[i] = pos && !(X[i] > 0.0) ? 0.0 : pow(X[i], e);
 }
+
+/* a FLVER face set's triangles as souls.triangles gives them: a list (strip 0) in consecutive triples; a strip
+   unrolled, every other triangle flipped (a, c, b), 0xFFFF restarting the strip (the flip too), triangles with a
+   repeated index dropped (they still flip the next). out: room for n - 2 triples. Returns the triangle count. */
+MX_API long long mx_faceset_tris(long long n, const long long *idx, int strip, long long *out)
+{
+    long long k = 0;
+    if (!strip) {
+        for (long long i = 0; i + 2 < n; i += 3, k++)
+            out[3 * k] = idx[i], out[3 * k + 1] = idx[i + 1], out[3 * k + 2] = idx[i + 2];
+        return k;
+    }
+    int flip = 0;
+    for (long long i = 0; i + 2 < n; i++) {
+        long long a = idx[i], b = idx[i + 1], c = idx[i + 2];
+        if (a == 0xFFFF || b == 0xFFFF || c == 0xFFFF) {
+            flip = 0;
+            continue;
+        }
+        if (a != b && b != c && a != c) {
+            out[3 * k] = a;
+            out[3 * k + 1] = flip ? c : b;
+            out[3 * k + 2] = flip ? b : c;
+            k++;
+        }
+        flip = !flip;
+    }
+    return k;
+}

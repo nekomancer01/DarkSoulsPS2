@@ -262,15 +262,17 @@ def probe_sample_many(faces, N):
         k = f == fi
         u[k] = np.minimum(PROBE_RES - 1, np.trunc((ss * N[k, sa] / m[k] + 1) / 2 * PROBE_RES).astype(np.int64))
         v[k] = np.minimum(PROBE_RES - 1, np.trunc((ts * N[k, ta] / m[k] + 1) / 2 * PROBE_RES).astype(np.int64))
-    groups = {}
-    for i, fc in enumerate(faces):
-        if fc is not None:
-            groups.setdefault(id(fc), (fc, []))[1].append(i)
-    for fc, sel in groups.values():
+    # rows grouped by probe (the face lists themselves; every row is written once, so the order of groups is free)
+    ids = np.fromiter((0 if fc is None else id(fc) for fc in faces), np.int64, len(faces))
+    uid, first = np.unique(ids, return_index=True)
+    for k, i in zip(uid.tolist(), first.tolist()):
+        fc = faces[i]
+        if fc is None:
+            continue
         e = _FACES_NP.get(id(fc))
         if e is None or e[0] is not fc:
             e = _FACES_NP[id(fc)] = (fc, np.array(fc, np.float64))
-        sel = np.array(sel, np.int64)
+        sel = np.flatnonzero(ids == k)
         out[sel] = e[1][f[sel], v[sel], u[sel]]
     return out
 

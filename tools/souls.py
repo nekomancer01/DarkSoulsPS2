@@ -727,7 +727,12 @@ def flver(b):
         flags, strip, cull, _, count, ioff = struct.unpack_from("<IBBhii", b, o)
         isz = struct.unpack_from("<i", b, o + 0x18)[0] or idx_size
         fmt = "H" if isz == 16 else "I"
-        fsets.append((flags, strip, list(struct.unpack_from(f"<{count}{fmt}", b, data_off + ioff)), cull))
+        if VERT_ROWS:  # gather: the indices as an int64 array (export_map.faceset_tris; triangles() takes it too)
+            import numpy as np
+            ix = np.frombuffer(b, "<u2" if isz == 16 else "<u4", count, data_off + ioff).astype(np.int64)
+        else:
+            ix = list(struct.unpack_from(f"<{count}{fmt}", b, data_off + ioff))
+        fsets.append((flags, strip, ix, cull))
     p += 0x20 * n_fs
     vbufs = [struct.unpack_from("<8i", b, p + 0x20 * i) for i in range(n_vb)]
     p += 0x20 * n_vb
@@ -793,6 +798,8 @@ def triangles(faceset):
     """Face set -> triangle index triples (strips are unrolled; 0xFFFF restarts; degenerate triangles dropped).
     Winding is kept as stored: DS front faces are clockwise on screen (Direct3D)."""
     flags, strip, idx = faceset[:3]
+    if not isinstance(idx, list):  # an array (VERT_ROWS): the same Python ints
+        idx = idx.tolist()
     tris = []
     if not strip:
         return [tuple(idx[i:i + 3]) for i in range(0, len(idx) - 2, 3)]
