@@ -550,7 +550,24 @@ def check_gather_helpers(rng):
              "collision placement")
 
 
+
+def check_weld_arrays(rng):
+    """_weld's arrays (gather hands them on for simplify, light, relief, chunks) hold what np.array gives from its
+    lists, bit for bit"""
+    n = int(rng.integers(1, 800))
+    rows = lambda k, f: [tuple(x) for x in f((n, k)).tolist()]
+    V = dict(pos=rows(3, lambda s: rng.integers(-20, 20, s) * 0.5), uv=rows(2, lambda s: rng.integers(0, 4, s) / 4)
+             if rng.random() < 0.8 else [], color=rows(4, lambda s: rng.integers(0, 2, s).astype(float))
+             if rng.random() < 0.8 else [], normal=rows(3, lambda s: rng.normal(size=s)) if rng.random() < 0.8 else [])
+    xf, xn = em.place(dict(rot=tuple(rng.uniform(-90, 90, 3).tolist()), scale=(1.1, 0.9, 1.0), pos=(3.0, -2.5, 7.25)))
+    out = em._weld(V, sorted(set(rng.integers(0, n, int(rng.integers(1, 2 * n))).tolist())), xf, xn)
+    for k, (lst, arr) in out[6].items():
+        same(lst is out[("pos", "wpos", "wuv", "wcol", "wn").index(k)], True, f"_weld {k} list")
+        same(np.array(lst, arr.dtype).reshape(arr.shape).tobytes(), arr.tobytes(), f"_weld {k} array")
+
+
 if __name__ == "__main__":
     for k in range(seed, seed + count):
         check_gather_helpers(np.random.default_rng(k))
-    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex identical to the Python code on {count} random cases")
+        check_weld_arrays(np.random.default_rng(k))
+    print(f"mapx: _first_rows, is_sky, dedup_tris, ProbeIndex, _weld's arrays identical to the Python code on {count} random cases")

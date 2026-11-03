@@ -468,9 +468,9 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
         k = (id(m["wrgb"]), id(m["wa"]), id(m["wuv"]))
         if k not in wt:
             wt[k] = w0
-            wrgb.append(np.array(m["wrgb"], i64).reshape(-1, 3))
-            wa.append(np.array(m["wa"], i64).reshape(-1))
-            wuv.append(np.array(m["wuv"], f64).reshape(-1, 2))
+            wrgb.append(_np_list(m, "wrgb", m["wrgb"], i64, 3))
+            wa.append(_np_list(m, "wa", m["wa"], i64, 1))
+            wuv.append(_np_list(m, "wuv", m["wuv"], f64, 2))
             w0 += len(m["wa"])
         woff.append(wt[k])
     woff = np.array(woff + [w0], i64)
@@ -870,13 +870,14 @@ def _first_rows(K):
 def _weld(V, vis, xf, xn):
     """gather's weld of one mesh's used vertices vis (ascending): positions by world position (0.1 mm), wedges by
     (position, UV, colour) with the normals of merged wedges summed. -> (pos [tuples], wpos, wuv, wcol, wn [lists],
-    fvw {vertex: wedge}, (pos, wpos) as arrays: _mesh_np), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
+    fvw {vertex: wedge}, npd {name: (list, its array)} for pos, wpos, wuv, wcol (wn when normals are summed): what
+    np.array gives from those lists, for _np_list), each in order of first appearance. Vectorised (was ~1 M Python iterations per Firelink
     export); every value is the per-vertex code's: Python's round() and numpy's rint both round half to even, normals
     are summed in vertex order (np.add.at), the first normal of a wedge is kept as is."""
     idx = np.asarray(vis, np.int64)
     n = len(idx)
     if not n:
-        return [], [], [], [], [], {}, (np.zeros((0, 3)), np.zeros(0, np.int32))
+        return [], [], [], [], [], {}, {}
     Pw = xf.many(_vert_np(V["pos"])[idx])
     pid, pfirst = _first_rows(np.rint(Pw * 1e4).astype(np.int64))
     Pp = np.ascontiguousarray(Pw[pfirst], np.float64)
@@ -888,8 +889,11 @@ def _weld(V, vis, xf, xn):
     vl = idx.tolist()
     Wp = pid[wfirst]
     wpos = Wp.tolist()
-    wuv = [V["uv"][vl[i]] for i in wfirst.tolist()] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
-    wcol = [V["color"][vl[i]] for i in wfirst.tolist()] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
+    wfl = wfirst.tolist()
+    wuv = [V["uv"][vl[i]] for i in wfl] if V["uv"] else [(0.0, 0.0)] * len(wfirst)
+    wcol = [V["color"][vl[i]] for i in wfl] if V["color"] else [(1, 1, 1, 1)] * len(wfirst)
+    npd = dict(pos=(pos, Pp), wpos=(wpos, Wp.astype(np.int32)), wuv=(wuv, np.ascontiguousarray(UV[wfirst])),
+               wcol=(wcol, np.ascontiguousarray(C[wfirst])))
     if V["normal"]:
         N = xn.many(_vert_np(V["normal"])[idx])
         WN = N[wfirst].copy()
@@ -897,31 +901,37 @@ def _weld(V, vis, xf, xn):
         rest[wfirst] = False
         np.add.at(WN, wid[rest], N[rest])
         wn = WN.tolist()
+        npd["wn"] = (wn, WN)
     else:  # (0, 1, 0) per vertex, summed as Python ints
         wn = [[0, int(c), 0] for c in np.bincount(wid, minlength=len(wfirst)).tolist()]
-    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist())), (Pp, Wp.astype(np.int32))
+    return pos, wpos, wuv, wcol, wn, dict(zip(vl, wid.tolist())), npd
+
+
+def _np_list(m, key, lst, dt, w):
+    """lst (a list of mesh m, or an array) as a C-contiguous (n, w) array of dtype dt (w 1: (n,)): the array gather
+    kept for that very list in m["_np"][key] (see _weld), else np.array of it"""
+    c = m.get("_np", {}).get(key)
+    a = c[1] if c is not None and c[0] is lst else lst if len(lst) else np.zeros((0, w), dt)
+    a = np.asarray(a, dt)
+    return np.ascontiguousarray(a.reshape(-1) if w == 1 else a.reshape(-1, w))
 
 
 def _mesh_np(m):
-    """mesh m's positions (n, 3) float64 and wedge -> position (int32) as arrays: the values np.array gives from its
-    pos / wpos lists (kept by gather's _weld; made here for a mesh from elsewhere or whose lists were replaced)"""
-    a = m.get("_np")
-    if a is None or a[0] is not m["pos"] or a[1] is not m["wpos"]:
-        P = np.array(m["pos"], np.float64).reshape(-1, 3) if m["pos"] else np.zeros((0, 3))
-        a = m["_np"] = (m["pos"], m["wpos"], np.ascontiguousarray(P), np.asarray(m["wpos"], np.int32).reshape(-1))
-    return a[2], a[3]
+    """mesh m's positions (n, 3) float64 and wedge -> position (int32) as arrays (np.array of its pos / wpos lists)"""
+    return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
-def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights):
+def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd={}):
     """gather's per-wedge light (dsr_light.light_fn split=True + the static point lights) for one lit mesh ->
     dict(E (hemisphere + probe + point lights), S (directional), P (positions), N (unit normals)), (n, 3) arrays,
     each element computed as the per-wedge code did (normal length by Python's sum(), probe lookups in wedge order:
     ProbeIndex caches per cell)."""
-    N = np.array(wn, np.float64).reshape(-1, 3)
+    md = {"_np": npd}
+    N = _np_list(md, "wn", wn, np.float64, 3)
     ln = np.sqrt(_py_sum3(N[:, 0] * N[:, 0], N[:, 1] * N[:, 1], N[:, 2] * N[:, 2]))
     ln[ln == 0] = 1.0
     N = N / ln[:, None]
-    P = np.array([pos[w] for w in wpos], np.float64).reshape(-1, 3)
+    P = _np_list(md, "pos", pos, np.float64, 3)[_np_list(md, "wpos", wpos, np.intp, 1)] if len(wpos) else np.zeros((0, 3))
     faces = [probes.get(pr) for pr in probe_at.many(P)]
     E, S = lit.many(N, faces)
     for f in plights:
@@ -1420,7 +1430,7 @@ def gather(game, map_id):
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
-            pos, wpos, wuv, wcol, wn, fvw, pw_np = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
+            pos, wpos, wuv, wcol, wn, fvw, npd = _weld(V, sorted({i for t in tl for i in t}), xf, xn)
             # effects and sky: unlit, material colour x g_DiffuseMapColorPower x the same exposure as the lit map;
             # additive light beyond the 2x vertex colour range moves into alpha. Everything else gets its part's
             # LightBank row.
@@ -1434,13 +1444,14 @@ def gather(game, map_id):
             alb = albedo(name)
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
                 # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
-                hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights)
+                hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd)
                 # [M] materials blend a second diffuse by vertex alpha; the PS2 draws the first only, so the vertex
                 # colour carries the blend: DSR's output for the blended mean colour / the first texture's mean
                 alb2 = albedo(m["diffuse2"]) if "[M]" in m["mtd"] and m.get("diffuse2") in dds else None
-                pending.append((wrgb, hdr, wcol, alb, alb2, tone_of[pi]))
+                pending.append((wrgb, hdr, wcol, alb, alb2, tone_of[pi], npd))
             if lit and not water:  # tone mapped below; alpha 0x80
                 wa = [0x80] * len(wn)
+                npd["wa"] = (wa, np.full(len(wa), 0x80, np.int64))
             else:
                 for n, c in zip(wn, wcol):
                     k = [x / spill for x in tint] if not lit else (1.0, 1.0, 1.0)
@@ -1457,9 +1468,18 @@ def gather(game, map_id):
                     wa.append(min(0x80, int(0x80 * c[3] * spill + 0.5)) if blend else 0x80)
             # normal-map relief (tools/export_normal.py): per-wedge tangent frames of lit, opaque bumped meshes
             bump = export_normal.register(m, V, fvw, wn, xn, light_rows.get(lid, light_rows[main_light]), alb,
-                                          probe_at) if lit and not water and not grass and V["uv"] else None
-            meshes.append(dict(pos=pos, wpos=wpos, _np=(pos, wpos) + pw_np, wuv=wuv, wrgb=wrgb, wa=wa,
-                               tris=[tuple(fvw[i] for i in t) for t in tl],
+                                          probe_at, npd.get("wn")) if lit and not water and not grass and V["uv"] else None
+            # triangles in wedges (fvw[vertex]), as an array too (simplify_meshes_c, far_cells_c, the shadow map)
+            vs = np.fromiter(fvw.keys(), np.int64, len(fvw))
+            lut = np.zeros(int(vs.max()) + 1, np.int32)
+            lut[vs] = np.fromiter(fvw.values(), np.int64, len(fvw))
+            Tw = np.ascontiguousarray(lut[np.array(tl, np.int64).reshape(-1, 3)])
+            mtris = list(map(tuple, Tw.tolist()))
+            npd["tris"] = (mtris, Tw)
+            npd.pop("wn", None)  # used up (light, relief)
+            if not (lit and not water):
+                npd.pop("wcol", None)  # the tone map below takes the lit meshes' wedge colours
+            meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
                                keep=grass or blend or sky or part["model"] in KEEP_MODELS, name=f"{part['name']}/{name}",
@@ -1484,7 +1504,7 @@ def gather(game, map_id):
     nav_focus = navmesh_points(game, map_id, M, keep)
     if sh and SHADOWS:
         t0 = time.time()
-        occ = [np.asarray(m["pos"], np.float64)[np.asarray(m["wpos"], np.int64)[np.asarray(m["tris"], np.int64)]]
+        occ = [_mesh_np(m)[0][_mesh_np(m)[1][_np_list(m, "tris", m["tris"], np.intp, 3)]]
                for m in meshes if not m["flags"] & (CHUNK_BLEND | CHUNK_SKY) and not m["grass"] and m["tris"]]
         occ = np.concatenate(occ) if occ else np.zeros((0, 3, 3))
         smap = dsr_light.ShadowMap(occ, dsr_light.light_dir(sh["lightDegRotX"], sh["lightDegRotY"]),
@@ -1514,8 +1534,8 @@ def gather(game, map_id):
     rss("shadows")
     # tone map, vectorised per mesh with the per-wedge operations (dsr_light.sum3 / srgb_lin_many / Tone.many)
     lum = {}
-    for _, h, wcol, alb, alb2, tk in pending:
-        C = np.array(wcol, np.float64).reshape(-1, 4)
+    for _, h, wcol, alb, alb2, tk, npd in pending:
+        C = _np_list({"_np": npd}, "wcol", wcol, np.float64, 4)
         A = np.stack([alb[j] + (alb2[j] - alb[j]) * C[:, 3] for j in range(3)], 1) if alb2 else \
             np.broadcast_to(np.asarray(alb, np.float64), (len(C), 3))
         h["L"] = dsr_light.srgb_lin_many(A * C[:, :3])  # srgb_lin(a[j] * c[j])
@@ -1529,10 +1549,13 @@ def gather(game, map_id):
         t = tones.setdefault(tk, dsr_light.Tone(tone_rows[tk[0]], banks["ToneCorrect"].get(tk[1])))
         t.adapt(math.exp(s / max(1, n)))  # geometric mean over the bake's vertices stands in for DSR's screen average
         print(f"tone row {tk[0]} / correct {tk[1]}: scene luminance {math.exp(s / max(1, n)):.3f} -> exposure {t.exposure:.2f}")
-    for wrgb, h, wcol, alb, alb2, tk in pending:
+    for wrgb, h, wcol, alb, alb2, tk, npd in pending:
         out = tones[tk].many(h["L"] * h["H"] * np.asarray(near, np.float64))  # + scattering at d = 0
         q = np.trunc(0x80 * out / np.asarray(alb, np.float64) + 0.5)
-        wrgb.extend(np.minimum(255, q).astype(np.int64).tolist())
+        q = np.ascontiguousarray(np.minimum(255, q).astype(np.int64))
+        wrgb.extend(q.tolist())
+        npd["wrgb"] = (wrgb, q)
+        npd.pop("wcol", None)
         h.clear()
     TONES.update(tones)  # fog colours and the character light use the same tone maps
     MAIN_TONE[0] = tones[main_tone]
@@ -1827,8 +1850,8 @@ def far_cells_c(L, meshes, nav_v):
         tl = m.get("tris_in", m["tris"])
         if m["keep"] or not tl:
             continue
-        P = np.asarray(m["pos"], np.float64).reshape(-1, 3)
-        Ts.append(P[np.asarray(m["wpos"], np.int64)[np.asarray(tl, np.int64).reshape(-1, 3)]].reshape(-1, 9))
+        P, Wp = _mesh_np(m)
+        Ts.append(P[Wp[_np_list(m, "tris", tl, np.intp, 3)]].reshape(-1, 9))
     T = np.ascontiguousarray(np.concatenate(Ts))
     if not len(T) or not nav_v:
         return set()
@@ -2002,7 +2025,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     nm = len(meshes)
     PW = [_mesh_np(m) for m in meshes]
     Ps, Ws = [p for p, _ in PW], [w for _, w in PW]
-    Ts = [flat(m[src], i32, 3) for m in meshes]
+    Ts = [_np_list(m, "tris", m[src], i32, 3) for m in meshes]
     off = lambda xs: np.concatenate([[0], np.cumsum([len(x) for x in xs])]).astype(i64)
     cat = lambda xs, dt, w: np.ascontiguousarray(np.concatenate(xs).astype(dt)) if xs else np.zeros((0, w), dt)
     P, poff, W, woff, T, toff = cat(Ps, f64, 3), off(Ps), cat(Ws, i32, 1), off(Ws), cat(Ts, i32, 3), off(Ts)

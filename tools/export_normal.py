@@ -75,9 +75,10 @@ def bumped(mtd):
                                                                                     "foliage", "ivy", "tree"))
 
 
-def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
+def register(m, V, fvw, wn, xn, light_row, alb, probe_of, wn_np=None):
     """gather() hook for one lit map mesh: keeps what the relief needs per wedge (normal, tangent, handedness) and
-    returns an index for the mesh dict's "bump" key, or None when the mesh has no relief."""
+    returns an index for the mesh dict's "bump" key, or None when the mesh has no relief. wn_np: (wn, np.array(wn))
+    when gather has that array."""
     if not BUMP or not m.get("bump") or not bumped(m["mtd"]) or len(V.get("tangent") or ()) != len(V["pos"]):
         return None
     nw = len(wn)
@@ -93,7 +94,7 @@ def register(m, V, fvw, wn, xn, light_row, alb, probe_of):
             t = V["tangent"][vi]
             T[w] += xn(t[:3])
             W[w] += t[3]
-    N = np.array(wn, np.float64)
+    N = wn_np[1] if wn_np is not None and wn_np[0] is wn else np.array(wn, np.float64)
     MESH.append(dict(tex=m["bump"], light=light_row, alb=alb, N=N, T=T, W=np.where(W < 0, -1.0, 1.0),
                      probe_of=probe_of))
     return len(MESH) - 1
@@ -636,7 +637,8 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
             continue
         ti = tex_of[e["tex"]]
         # all triangles at once, added to uva in triangle order (np.add.at) as the per-triangle loop did
-        wuv = np.array(m["wuv"], np.float64).reshape(-1, 2)
+        c = m.get("_np", {}).get("wuv")  # gather's array of this list (export_map._weld)
+        wuv = c[1] if c is not None and c[0] is m["wuv"] else np.array(m["wuv"], np.float64).reshape(-1, 2)
         uv = wuv[mapx_native.tri_arrays(m["tris"])[1]] * np.array([texs[ti]["w"], texs[ti]["h"]])
         d1, d2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]
         np.add.at(uva, np.full(len(uv), ti), 0.5 * np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]))
