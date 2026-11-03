@@ -1,0 +1,57 @@
+"""ctypes binding for tools/mapx (libmapx), the map exporter's C rewrite (see tools/mapx/mapx.h).
+
+  lib()   tools/mapx/libmapx.so, built on first use from tools/mapx/*.c and rebuilt when any source or header is newer
+          ($CC, temp file + os.replace: parallel exporters may build at once). None when MAPX=0 or when it cannot be
+          built: export_map.py then runs its Python code, which writes the same bytes (the reference).
+In the in-browser converter the library is a Pyodide side module (tools/native/build-wasm.sh, single-threaded).
+MAPX_THREADS=n caps the threads (default: every CPU); the output never depends on it."""
+import ctypes, glob, os
+
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mapx")
+_L = []
+
+
+def sources():
+    return sorted(glob.glob(os.path.join(HERE, "*.c")) + glob.glob(os.path.join(HERE, "*.h")))
+
+
+def _build(so):
+    import subprocess, tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".so", dir=HERE)
+    os.close(fd)
+    try:
+        subprocess.run([os.environ.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fno-fast-math", "-fvisibility=hidden",
+                        "-shared", "-fPIC", "-pthread", "-o", tmp] + [s for s in sources() if s.endswith(".c")] + ["-lm"],
+                       check=True, capture_output=True)
+        os.replace(tmp, so)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def lib():
+    if not _L:
+        L = None
+        if os.environ.get("MAPX", "1") != "0":
+            so = os.path.join(HERE, "libmapx.so")
+            try:
+                if not os.path.exists(so) or any(os.path.getmtime(so) < os.path.getmtime(s) for s in sources()):
+                    _build(so)
+                L = ctypes.CDLL(so)
+                vp, i, ll, d = ctypes.c_void_p, ctypes.c_int, ctypes.c_longlong, ctypes.c_double
+                L.mx_navgrid_new.argtypes = [ll, vp]
+                L.mx_navgrid_new.restype = vp
+                L.mx_navgrid_free.argtypes = [vp]
+                L.mx_navgrid_free.restype = None
+                L.mx_thin_foliage.argtypes = [i, vp, i, vp, vp, vp, vp, i, d, ctypes.c_char_p, i, i, d, d, d, vp, vp, vp,
+                                              vp, vp]
+                L.mx_thin_foliage.restype = i
+                L.mx_soften_thin.argtypes = [i, vp, vp, vp, vp, vp, i, vp, d, d, d, d, d, d, vp, vp]
+                L.mx_soften_thin.restype = ll
+                L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
+                L.mx_far_cells.restype = ll
+            except Exception as e:
+                print(f"mapx: C library unavailable ({str(e)[:300]}), using the Python export", flush=True)
+                L = None
+        _L.append(L)
+    return _L[0]

@@ -60,6 +60,7 @@ import area as area_mod
 import pose_obj
 import drawgroups
 import emevd
+import mapx_native
 import numpy as np
 
 TEX_MAX = 128
@@ -406,6 +407,31 @@ def name_is_grass(name):
 
 
 CANOPY_H = float(os.environ.get("CANOPY_H", 2.5))  # metres above the walkable ground: foliage up there is canopy / ivy
+
+
+def thin_foliage_c(L, tl, pos, seed, ivy, world, grid):
+    """thin_foliage in C (tools/mapx/foliage.c, libmapx): the same triangles, ranks, tuft names and positions. The
+    canopy test is gather's is_canopy on world (the mesh's vertices placed with xf.many, the same values as xf) against
+    the navmesh grid (mx_navgrid; None when the area has no navmesh points: always canopy)."""
+    import ctypes
+    T = np.ascontiguousarray(np.asarray(tl, np.int32).reshape(-1, 3))
+    P = np.array(pos, np.float64).reshape(-1, 3)
+    Wc = np.ascontiguousarray(world, np.float64)
+    nt, nv = len(T), len(P)
+    moved = np.zeros(nv, np.uint8)
+    out_t, root, size = (np.empty(max(1, nt), np.int32) for _ in range(3))
+    rank = np.empty(max(1, nt))
+    cn = ctypes.c_int()
+    n = L.mx_thin_foliage(nt, T.ctypes.data, nv, P.ctypes.data, moved.ctypes.data, Wc.ctypes.data, grid, 1, CANOPY_H,
+                          seed.encode(), int(bool(ivy)), GRASS_KEEP, FOL_XZ, FOL_Y, FOL_IVY, out_t.ctypes.data,
+                          rank.ctypes.data, root.ctypes.data, size.ctypes.data, ctypes.byref(cn))
+    CANOPY_STATS[0] += cn.value
+    out = [tl[k] for k in out_t[:n].tolist()]
+    fol = [(r, f"{seed}/{c}", z) for r, c, z in zip(rank[:n].tolist(), root[:n].tolist(), size[:n].tolist())]
+    pos = list(pos)
+    for i in np.nonzero(moved)[0].tolist():
+        pos[i] = tuple(P[i].tolist())
+    return out, fol, pos
 
 
 def thin_foliage(tl, pos, seed, ivy, canopy=None):
@@ -985,6 +1011,11 @@ def gather(game, map_id):
     in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
     map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
+    MX = mapx_native.lib()  # tools/mapx (C): thin_foliage + is_canopy; MAPX=0 runs the Python code below
+    mx_grid = None
+    if MX is not None and nav_pts:
+        _np_pts = np.ascontiguousarray(nav_pts, np.float64)
+        mx_grid = MX.mx_navgrid_new(len(_np_pts), _np_pts.ctypes.data)
     nav_grid = {}  # 2 m xz cells -> navmesh heights, for is_canopy
     for p in nav_pts:
         nav_grid.setdefault((int(p[0] // 2), int(p[2] // 2)), []).append(p[1])
@@ -1185,7 +1216,10 @@ def gather(game, map_id):
                 far_t = lambda t: sum((sum(Wp[i][k] for i in t) / 3 - pc[k]) ** 2 for k in range(3)) > PANO_R ** 2
                 tl = [t for t in tl if far_t(t) == PANO_ONLY]
             fol, gpos = None, None
-            if grass:
+            if grass and MX is not None and m["verts"]["pos"] and type(m["verts"]["pos"][0][0]) is float:
+                tl, fol, gpos = thin_foliage_c(MX, tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
+                                               "ivy" in m["mtd"].lower(), xf.many(_vert_np(m["verts"]["pos"])), mx_grid)
+            elif grass:
                 tl, fol, gpos = thin_foliage(tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
                                              "ivy" in m["mtd"].lower(),
                                              canopy=lambda vs, Vp=m["verts"]["pos"], xf=xf: is_canopy([xf(Vp[i]) for i in vs]))
@@ -1255,6 +1289,8 @@ def gather(game, map_id):
                                dg=DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0))
 
+    if mx_grid is not None:
+        MX.mx_navgrid_free(mx_grid)
     _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
     _DEDUP.clear()
     rss(f"gather meshes ({len(meshes)})")
@@ -1449,6 +1485,9 @@ def soften_thin(entries, view_s, floor):
     import numpy as np
     if not SOFT_PX or not entries or not len(view_s):
         return
+    L = mapx_native.lib()
+    if L is not None and dsr_light.geom_lib() is not None:
+        return soften_thin_c(L, entries, view_s, floor)
     S = np.asarray(view_s, dtype=np.float64)
     rows = []  # per entry: corners P (n, 3, xyz), wedges W, colour per triangle, area seen, px, footprint (m / px)
     for e in entries:
@@ -1538,6 +1577,29 @@ def soften_thin(entries, view_s, floor):
         SOFT_STATS[1] += int((k > 0).sum())
 
 
+def soften_thin_c(L, entries, view_s, floor):
+    """soften_thin in C (tools/mapx/soften.c, libmapx): the same widths, footprint colours and wedge colours as the
+    numpy code with geom.c's soft_targets."""
+    S = np.ascontiguousarray(view_s, dtype=np.float64)
+    toff, woff, Ps, Ws, Cs = [0], [0], [], [], []
+    for e in entries:
+        tl = e["tris"]
+        SOFT_STATS[0] += len(tl)
+        Ps.append(np.array([[c[0] for c in t] for t in tl], dtype=np.float64).reshape(-1, 9))
+        Ws.append(np.array([[c[1] for c in t] for t in tl], dtype=np.int32).reshape(-1, 3))
+        Cs.append(np.array(e["wrgb"], dtype=np.int32).reshape(-1, 3))
+        toff.append(toff[-1] + len(tl))
+        woff.append(woff[-1] + len(Cs[-1]))
+    P, W, C = (np.ascontiguousarray(np.concatenate(x)) for x in (Ps, Ws, Cs))
+    toff, woff = np.array(toff, np.int64), np.array(woff, np.int64)
+    out, changed = np.empty_like(C), np.zeros(len(entries), np.uint8)
+    SOFT_STATS[1] += L.mx_soften_thin(len(entries), toff.ctypes.data, P.ctypes.data, W.ctypes.data, woff.ctypes.data,
+                                      C.ctypes.data, len(S), S.ctypes.data, floor, SOFT_PX, SOFT_FOCAL, SOFT_REACH,
+                                      SOFT_R_PX, CAM_REACH, out.ctypes.data, changed.ctypes.data)
+    for i in np.nonzero(changed)[0].tolist():
+        entries[i]["wrgb"] = out[woff[i]:woff[i + 1]].tolist()
+
+
 # far panorama (render-distance variant A): PANO_R metres from PANO_C ("x,y,z", default the spawn); PANO_ONLY=1 keeps
 # only the triangles beyond it at full detail (the capture export for tools/pano.py), else they are dropped
 PANO_R = float(os.environ.get("PANO_R", 0))
@@ -1550,6 +1612,9 @@ BACKDROP_SIDE = int(os.environ.get("BACKDROP_SIDE", 0))  # 0: no back-face pruni
 def far_cells(meshes, nav_v):
     """STREAM: the set of CHUNK_GRID cells (of triangle centroids) whose centre lies beyond STREAM_FAR of the navmesh."""
     import numpy as np
+    L = mapx_native.lib()
+    if L is not None:
+        return far_cells_c(L, meshes, nav_v)
     keys = set()
     for m in meshes:
         if m["keep"]:
@@ -1565,6 +1630,28 @@ def far_cells(meshes, nav_v):
     d2 = np.concatenate([((c[i:i + 256, None, :] - nv[None, :, :]) ** 2).sum(2).min(1) for i in range(0, len(c), 256)])
     far = {k for k, d in zip(keys, d2) if d > STREAM_FAR * STREAM_FAR}
     print(f"stream: {len(far)} of {len(keys)} cells beyond {STREAM_FAR:.0f} m of the navmesh (one resident level)")
+    return far
+
+
+def far_cells_c(L, meshes, nav_v):
+    """far_cells in C (tools/mapx/cells.c, libmapx)"""
+    import ctypes
+    Ts = [np.zeros((0, 9))]
+    for m in meshes:
+        tl = m.get("tris_in", m["tris"])
+        if m["keep"] or not tl:
+            continue
+        P = np.asarray(m["pos"], np.float64).reshape(-1, 3)
+        Ts.append(P[np.asarray(m["wpos"], np.int64)[np.asarray(tl, np.int64).reshape(-1, 3)]].reshape(-1, 9))
+    T = np.ascontiguousarray(np.concatenate(Ts))
+    if not len(T) or not nav_v:
+        return set()
+    nv = np.ascontiguousarray(nav_v, np.float64)
+    out, nc = np.empty((len(T), 3), np.int64), ctypes.c_longlong()
+    nf = L.mx_far_cells(len(T), T.ctypes.data, len(nv), nv.ctypes.data, CHUNK_GRID, STREAM_FAR, out.ctypes.data,
+                        ctypes.byref(nc))
+    far = set(map(tuple, out[:nf].tolist()))
+    print(f"stream: {len(far)} of {nc.value} cells beyond {STREAM_FAR:.0f} m of the navmesh (one resident level)")
     return far
 
 

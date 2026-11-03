@@ -33,9 +33,10 @@ open("/proc/self/status", "w").write("VmRSS:\\t0 kB\\nVmHWM:\\t0 kB\\n")
   py.runPython(`
 import os, time
 now = time.time() + 60
-for f in os.listdir("/src/tools/native"):
-    if f.endswith(".so"):
-        os.utime(os.path.join("/src/tools/native", f), (now, now))
+for d in ("/src/tools/native", "/src/tools/mapx"):
+    for f in os.listdir(d):
+        if f.endswith(".so"):
+            os.utime(os.path.join(d, f), (now, now))
 `);
 }
 
