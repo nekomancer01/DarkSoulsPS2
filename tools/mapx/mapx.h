@@ -90,3 +90,12 @@ void mx_map_init(mx_map *m, int k, long long hint);
 void mx_map_free(mx_map *m);
 long long mx_map_get(const mx_map *m, const long long *key);  /* id or -1 */
 long long mx_map_put(mx_map *m, const long long *key, int *added);  /* id (new ids count up from 0) */
+
+/* numpy default_rng (rng.c) */
+typedef struct mx_rng mx_rng;
+uint64_t mx_rng_next64(mx_rng *r);
+double mx_rng_random(mx_rng *r);
+uint64_t mx_rng_bounded(mx_rng *r, uint64_t max);
+long long mx_rng_integers(mx_rng *r, long long n);
+long long mx_rng_choice_p(mx_rng *r, long long n, const double *p);
+void mx_rng_choice_noreplace(mx_rng *r, long long pop, long long size, long long *out);

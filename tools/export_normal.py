@@ -167,7 +167,7 @@ class _Response:
         self.terms, self.faces = {}, {}
 
     def tone(self, Y):
-        return np.interp(np.log(np.maximum(Y, 1e-6)), self.ly, self.out)
+        return np.interp(_log(np.maximum(Y, 1e-6)), self.ly, self.out)
 
     def __call__(self, tri, xy, rows=32768):
         """tri: dict of arrays (N, T, B, k, alb (rgb linear), light id, probe id, rows / probes lookups) -> (n, J).
@@ -192,6 +192,130 @@ class _Response:
             Y[sel] = dsr_light.matmul(e * alb * self.near, np.array(dsr_light.LUMA)).reshape(len(sel), J)
         o = self.tone(Y) + EPS
         return np.clip(o[:, 1:] / o[:, :1], 0, 255 / 128)
+
+
+_log = np.log  # tools/mapx/test_mapx.py swaps in libm's log (numpy's AVX-512 log differs by an ulp; libmapx calls libm)
+
+
+# ---- libmapx (tools/mapx/bump.c, kmeans.c, rng.c): the same values as the numpy code below ----
+def _mx():
+    """libmapx with its export_normal entry points, or None (MAPX=0, no compiler, or a numpy whose x.dot(x) is
+    neither a fused BLAS ddot nor a plain loop: then the numpy code runs)"""
+    if "mx" not in _MX:
+        import ctypes
+        import mapx_native
+        L = mapx_native.lib()
+        if L is not None:
+            vp, i, ll, d = ctypes.c_void_p, ctypes.c_int, ctypes.c_longlong, ctypes.c_double
+            L.mx_dot3.argtypes = [vp, i]
+            L.mx_dot3.restype = d
+            L.mx_bump_frames.argtypes = [ll, vp, vp, vp, vp, i, vp, vp, vp]
+            L.mx_bump_frames.restype = None
+            L.mx_bump_response.argtypes = [ll, vp, vp, vp, vp, vp, vp, vp, vp, i, vp, vp, i, vp, vp, d, i, vp, vp, d, vp]
+            L.mx_bump_response.restype = None
+            L.mx_bc5_pow2.argtypes = [vp, ll, i, i, i, vp, vp, vp]
+            L.mx_bc5_pow2.restype = i
+            L.mx_kmeans.argtypes = [i, vp, ll, i, vp, i, i, vp, vp, vp]
+            L.mx_kmeans.restype = i
+            L.mx_nearest.argtypes = [i, vp, ll, i, i, vp, i, vp]
+            L.mx_nearest.restype = None
+            u64 = ctypes.c_uint64
+            L.mx_rng_new.argtypes = [u64, u64, u64, u64, i, ctypes.c_uint32]
+            L.mx_rng_new.restype = vp
+            L.mx_rng_free.argtypes = [vp]
+            L.mx_rng_free.restype = None
+            V = np.random.default_rng(5).normal(size=(64, 3)) * 10
+            ref = [float(v.dot(v)) for v in V]
+            for f in (1, 0):
+                if ref == [L.mx_dot3(np.ascontiguousarray(v).ctypes.data, f) for v in V]:
+                    _MX["fma"] = f
+                    break
+            else:
+                print("export_normal: numpy's dot is neither fused nor plain, relief in numpy", flush=True)
+                L = None
+        _MX["mx"] = L
+    return _MX["mx"]
+
+
+_MX = {}
+
+
+def _mx_rng(L, seed):
+    st = np.random.default_rng(seed).bit_generator.state
+    s, i, M = st["state"]["state"], st["state"]["inc"], (1 << 64) - 1
+    return L.mx_rng_new(s >> 64, s & M, i >> 64, i & M, st["has_uint32"], st["uinteger"])
+
+
+def _mx_kmeans(L, x, k, wts=None, iters=20, seed=1):
+    """_kmeans in C (the same centres and labels)"""
+    x = np.ascontiguousarray(x)
+    assert x.dtype in (np.float32, np.float64) and x.ndim == 2
+    w = None if wts is None else np.ascontiguousarray(wts, np.float64)
+    c = np.empty((min(k, len(x)), x.shape[1]), x.dtype)
+    lab = np.empty(len(x), np.int64)
+    r = _mx_rng(L, seed)
+    L.mx_kmeans(x.dtype.itemsize, x.ctypes.data, len(x), x.shape[1], None if w is None else w.ctypes.data, k, iters, r,
+                c.ctypes.data, lab.ctypes.data)
+    L.mx_rng_free(r)
+    return c, lab
+
+
+def _mx_nearest(L, x, c):
+    x, c = np.ascontiguousarray(x), np.ascontiguousarray(c)
+    out = np.empty(len(x), np.int64)
+    L.mx_nearest(x.dtype.itemsize, x.ctypes.data, len(x), x.shape[1], c.dtype.itemsize, c.ctypes.data, len(c),
+                 out.ctypes.data)
+    return out
+
+
+def _mx_response(L, resp, tri, xy, rows=None):
+    """_Response.__call__(tri, xy) in C; rows: the triangles to evaluate (default all)"""
+    if "mx" not in tri:  # light rows and probe cubes as flat tables, once per tri dict
+        nl = max(tri["lid"].max(initial=0) + 1, 1)
+        tab = np.zeros((nl, 31))
+        for l in range(nl):
+            if l not in tri["rows"]:
+                continue
+            dirs, up, down, env = resp.terms.setdefault(l, _light_terms(tri["rows"][l]))
+            tab[l, 0] = len(dirs)
+            for j, (d, col) in enumerate(dirs):
+                tab[l, 1 + 3 * j:4 + 3 * j] = d
+                tab[l, 10 + 3 * j:13 + 3 * j] = col
+            tab[l, 19:22], tab[l, 22:25], tab[l, 25:28] = up, down, env
+        slots = sorted(tri["probes"])
+        faces = np.ascontiguousarray(np.array([tri["probes"][p] for p in slots], np.float64).reshape(-1)
+                                     if slots else np.zeros(1))
+        sl = {p: i for i, p in enumerate(slots)}
+        pslot = np.array([sl.get(p, -1) for p in tri["pid"].tolist()], np.int32)
+        cp = lambda a, t=np.float64: np.ascontiguousarray(a, t)
+        tri["mx"] = dict(tab=cp(tab), faces=faces, pslot=pslot, N=cp(tri["N"]), T=cp(tri["T"]), B=cp(tri["B"]),
+                         k=cp(tri["k"]), alb=cp(tri["alb"]), lid=cp(tri["lid"], np.int32), nl=nl,
+                         ly=cp(resp.ly), out=cp(resp.out), near=cp(resp.near))
+    m = tri["mx"]
+    xy = np.ascontiguousarray(xy, np.float64)
+    n = len(m["N"]) if rows is None else len(rows)
+    rw = None if rows is None else np.ascontiguousarray(rows, np.int64)
+    R = np.empty((n, len(xy)))
+    L.mx_bump_response(n, None if rw is None else rw.ctypes.data, m["N"].ctypes.data, m["T"].ctypes.data,
+                       m["B"].ctypes.data, m["k"].ctypes.data, m["alb"].ctypes.data, m["lid"].ctypes.data,
+                       m["pslot"].ctypes.data, m["nl"], m["tab"].ctypes.data, m["faces"].ctypes.data, len(xy),
+                       xy.ctypes.data, m["near"].ctypes.data, float(resp.sa), len(m["ly"]), m["ly"].ctypes.data,
+                       m["out"].ctypes.data, EPS, R.ctypes.data)
+    return R
+
+
+def _mx_xy_pow2(L, d, max_dim, cap):
+    """xy_pow2 in C for BC5 maps (float32, as numpy's BC5 path); other formats: None (numpy decodes them)"""
+    import ctypes
+    lv = _bc5_level(d, max_dim)
+    if not lv:
+        return None
+    off, w, h = lv
+    out = np.empty(cap * cap * 2, np.float32)
+    th, tw = ctypes.c_int(), ctypes.c_int()
+    buf = np.frombuffer(d, np.uint8)
+    L.mx_bc5_pow2(buf.ctypes.data, off, w, h, cap, out.ctypes.data, ctypes.byref(th), ctypes.byref(tw))
+    return out[:th.value * tw.value * 2].reshape(th.value, tw.value, 2).copy()
 
 
 # ---- normal maps ----
@@ -387,10 +511,17 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         lid[sel] = rid.setdefault(id(e["light"]), len(rid))
         rows[lid[sel[0]]] = e["light"]
         alb[sel] = [dsr_light.srgb_lin(a) for a in e["alb"]]
-    C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
-    norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
-    area[:] = [0.5 * norm(c) for c in C]
-    Nn = N / (np.array([norm(v) for v in N]).reshape(-1, 1) + 1e-12)
+    MX = _mx()
+    if MX is not None:  # area, Nn and (below) _frames in C (tools/mapx/bump.c)
+        PSc, Nc, Tc, Wc = (np.ascontiguousarray(a, np.float64) for a in (PS, N, T, W))
+        Nn, Bc = np.empty((nt, 3)), np.empty((nt, 3))
+        MX.mx_bump_frames(nt, PSc.ctypes.data, Nc.ctypes.data, Tc.ctypes.data, Wc.ctypes.data, _MX["fma"],
+                          area.ctypes.data, Nn.ctypes.data, Bc.ctypes.data)
+    else:
+        C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
+        norm = np.linalg.norm  # per row: np.linalg.norm(x, axis=1) sums differently (BLAS dot vs reduce)
+        area[:] = [0.5 * norm(c) for c in C]
+        Nn = N / (np.array([norm(v) for v in N]).reshape(-1, 1) + 1e-12)
     if smap is not None:
         k3 = smap.lit_many(PS.reshape(-1, 3), np.repeat(Nn, 3, axis=0)).reshape(-1, 3)
         ks[:] = (k3[:, 0] + k3[:, 1] + k3[:, 2]) / 3
@@ -403,7 +534,7 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         pid[i] = p if p is not None else -1
         if pid[i] not in faces and pid[i] in probes:
             faces[pid[i]] = np.array(probes[pid[i]], np.float64)
-    N, T, B = _frames(N, T, np.where(W < 0, -1.0, 1.0))
+    N, T, B = (Nc, Tc, Bc) if MX is not None else _frames(N, T, np.where(W < 0, -1.0, 1.0))
     tri = dict(N=N, T=T, B=B, k=ks, alb=alb, lid=lid, pid=pid, rows=rows, probes=faces)
     # check the vectorised light against dsr_light (same row / probe, random normals)
     rn = np.random.default_rng(0).normal(size=(16, 3))
@@ -415,18 +546,20 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
     err = max(np.abs(a - np.array([r[0] for r in ref])).max(), np.abs(s - np.array([r[1] for r in ref])).max())
     assert err < 1e-6, f"vectorised light differs from dsr_light by {err}"
     resp = _Response(tone, near, shadow_amb)
-    R = resp(tri, np.array(RING[1:]))
-    _, lab = _kmeans(R, BUMP_SPLIT, np.sqrt(area + 1e-6))
+    R = resp(tri, np.array(RING[1:])) if MX is None else _mx_response(MX, resp, tri, np.array(RING[1:]))
+    _, lab = (_kmeans if MX is None else lambda *a: _mx_kmeans(MX, *a))(R, BUMP_SPLIT, np.sqrt(area + 1e-6))
     # textures in use, the palette, index maps
     names = sorted({e["tex"] for _, e, _ in tris})
     imgs = {}
     for nme in names:
-        xy = xy_pow2(dds[nme], max(BUMP_MAX, 4), BUMP_MAX)
+        xy = _mx_xy_pow2(MX, dds[nme], max(BUMP_MAX, 4), BUMP_MAX) if MX is not None else None
+        if xy is None:
+            xy = xy_pow2(dds[nme], max(BUMP_MAX, 4), BUMP_MAX)
         if xy is not None:
             imgs[nme] = xy
     allxy = np.concatenate([v.reshape(-1, 2) for v in imgs.values()])
     sub = allxy[np.random.default_rng(2).choice(len(allxy), min(len(allxy), 150000), replace=False)]
-    pal, _ = _kmeans(sub, 255, iters=15)
+    pal, _ = _kmeans(sub, 255, iters=15) if MX is None else _mx_kmeans(MX, sub, 255, iters=15)
     pal = np.vstack([[0.0, 0.0], pal])
     texs, err_px = [], []
     for nme in names:
@@ -435,7 +568,8 @@ def assign(meshes, dds, smap, tone, near, shadow_amb, probes):
         x0 = imgs[nme]
         h, w = x0.shape[:2]
         x1 = x0.reshape(h // 2, 2, w // 2, 2, 2).mean(axis=(1, 3)) if h > 1 and w > 1 else x0
-        mips = [_nearest(x.reshape(-1, 2), pal).astype(np.uint8) for x in (x0, x1)]
+        mips = [(_nearest(x.reshape(-1, 2), pal) if MX is None else _mx_nearest(MX, x.reshape(-1, 2), pal)).astype(np.uint8)
+                for x in (x0, x1)]
         err_px.append(np.linalg.norm(pal[mips[0]] - x0.reshape(-1, 2), axis=1).mean())
         texs.append(dict(name=nme, w=w, h=h, mips=[mm.tobytes() for mm in mips]))
     tex_of = {t["name"]: i for i, t in enumerate(texs)}
@@ -473,7 +607,8 @@ def _finish():
     ids = [i for i, b in enumerate(CHUNK_BUMP) if b]
     mem = [np.array([local[g] for g in CHUNK_BUMP[i][1] if g in local]) for i in ids]
     F = np.array([(R[m] * area[m, None]).sum(0) / max(1e-9, area[m].sum()) for m in mem])
-    cen, lab = _kmeans(F, BUMP_K, np.array([area[m].sum() for m in mem]) + 1e-6)
+    MX = _mx()
+    cen, lab = (_kmeans if MX is None else lambda *a: _mx_kmeans(MX, *a))(F, BUMP_K, np.array([area[m].sum() for m in mem]) + 1e-6)
     rng = np.random.default_rng(3)
     cluts, cerr, terr = [], [], []
     for c in range(len(cen)):
@@ -482,7 +617,8 @@ def _finish():
             cluts.append(np.ones(256))
             continue
         smp = tm if len(tm) <= CLUT_SAMPLE else rng.choice(tm, CLUT_SAMPLE, replace=False)
-        r = resp({key: (v[smp] if isinstance(v, np.ndarray) else v) for key, v in tri.items()}, _STATE["pal"])
+        r = resp({key: (v[smp] if isinstance(v, np.ndarray) else v) for key, v in tri.items()}, _STATE["pal"]) \
+            if MX is None else _mx_response(MX, resp, tri, _STATE["pal"], rows=smp)
         cluts.append(r.mean(0))
         cerr.append(np.abs(r - r.mean(0)).mean() * 128)
         terr.append(np.abs(R[tm] - cen[c]).mean() * 128)

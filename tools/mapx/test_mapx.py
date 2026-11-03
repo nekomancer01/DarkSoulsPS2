@@ -126,3 +126,171 @@ if __name__ == "__main__":
             check_soften(rng)
             check_far(rng)
     print(f"mapx: thin_foliage, soften_thin, far_cells identical to the Python code on {count} random cases")
+
+
+# ---- stage 2: export_normal (relief) ----
+import math
+import export_normal as en
+
+en._log = lambda a: np.array([math.log(v) for v in np.asarray(a, np.float64).ravel().tolist()]).reshape(np.shape(a))
+
+
+def bc5_dds(rng, w, h, mips=1):
+    import struct
+    hdr = bytearray(148)
+    hdr[0:4] = b"DDS "
+    struct.pack_into("<iii", hdr, 12, h, w, mips)
+    hdr[84:88] = b"DX10"
+    struct.pack_into("<I", hdr, 128, 83)
+    n = 0
+    ww, hh = w, h
+    for _ in range(mips):
+        n += max(1, (ww + 3) // 4) * max(1, (hh + 3) // 4) * 16
+        ww, hh = max(1, ww // 2), max(1, hh // 2)
+    return bytes(hdr) + rng.integers(0, 256, n, dtype=np.uint8).tobytes()
+
+
+def check_bump(rng):
+    Lx = en._mx()
+    assert Lx is not None
+    for w, h, mips in ((16, 16, 1), (256, 128, 2), (64, 512, 3), (8, 4, 1), (12, 20, 1)):
+        d = bc5_dds(rng, w, h, mips)
+        same(en.xy_pow2(d, max(en.BUMP_MAX, 4), en.BUMP_MAX).tolist(), en._mx_xy_pow2(Lx, d, max(en.BUMP_MAX, 4), en.BUMP_MAX).tolist(),
+             f"xy_pow2 {w}x{h}")
+    nt = int(rng.integers(1, 3000))
+    PS = rng.normal(size=(nt, 3, 3)) * 3
+    N, T = rng.normal(size=(nt, 3)), rng.normal(size=(nt, 3))
+    W = rng.normal(size=nt)
+    area = np.zeros(nt)
+    Nn, B = np.empty((nt, 3)), np.empty((nt, 3))
+    Nc, Tc = N.copy(), T.copy()
+    Lx.mx_bump_frames(nt, np.ascontiguousarray(PS).ctypes.data, Nc.ctypes.data, Tc.ctypes.data, W.ctypes.data, en._MX["fma"],
+                      area.ctypes.data, Nn.ctypes.data, B.ctypes.data)
+    C = np.cross(PS[:, 1] - PS[:, 0], PS[:, 2] - PS[:, 0])
+    same([0.5 * np.linalg.norm(c) for c in C], area.tolist(), "bump area")
+    same((N / (np.array([np.linalg.norm(v) for v in N]).reshape(-1, 1) + 1e-12)).tolist(), Nn.tolist(), "bump Nn")
+    fN, fT, fB = en._frames(N, T, np.where(W < 0, -1.0, 1.0))
+    same([fN.tolist(), fT.tolist(), fB.tolist()], [Nc.tolist(), Tc.tolist(), B.tolist()], "bump frames")
+    # response: two light rows, a probe and no probe
+    def row(seed):
+        r = np.random.default_rng(seed)
+        out = {}
+        for i in "012":
+            out[f"colA_{i}"] = float(r.choice([0, 80, 150]))
+            out[f"degRotX_{i}"], out[f"degRotY_{i}"] = float(r.uniform(-90, 90)), float(r.uniform(0, 360))
+            for c in "RGB":
+                out[f"col{c}_{i}"] = float(r.integers(0, 256))
+        for s in "ud":
+            out[f"colA_{s}"] = float(r.uniform(20, 200))
+            for c in "RGB":
+                out[f"col{c}_{s}"] = float(r.integers(0, 256))
+        out["envDif_colA"] = float(r.uniform(20, 200))
+        for c in "RGB":
+            out[f"envDif_col{c}"] = float(r.integers(0, 256))
+        return out
+    probes = {3: np.abs(rng.normal(size=(6, 8, 8, 3)))}
+    tri = dict(N=fN, T=fT, B=fB, k=rng.random(nt), alb=rng.random((nt, 3)), lid=rng.integers(0, 2, nt),
+               pid=rng.choice([3, -1, 7], nt), rows={0: row(1), 1: row(2)}, probes=probes)
+    tone = lambda rgb: [min(1.0, max(0.0, x / (1 + x))) ** (1 / 2.2) for x in rgb]
+    resp = en._Response(tone, [0.9, 1.0, 1.1], 0.6)
+    xy = np.array(en.RING[1:])
+    same(resp(tri, xy).tolist(), en._mx_response(Lx, en._Response(tone, [0.9, 1.0, 1.1], 0.6), dict(tri), xy).tolist(),
+         "bump response")
+    rows = rng.choice(nt, min(nt, 64), replace=False)
+    pal = np.vstack([[0.0, 0.0], rng.uniform(-1, 1, (255, 2))])
+    sub = {k: (v[rows] if isinstance(v, np.ndarray) else v) for k, v in tri.items()}
+    same(resp(sub, pal).tolist(), en._mx_response(Lx, resp, dict(tri), pal, rows=rows).tolist(), "bump response rows")
+    # k-means: float32 palette, float64 weighted clusters, nearest with float64 centres
+    for dt, d, k, n, w in ((np.float32, 2, 255, int(rng.integers(300, 4000)), False), (np.float64, 2, 9, 500, False),
+                           (np.float64, 16, 48, int(rng.integers(10, 900)), True), (np.float64, 16, 1, 300, True)):
+        x = (rng.normal(size=(n, d)) * 0.4).astype(dt)
+        wts = rng.random(n) + 1e-6 if w else None
+        ref, got = en._kmeans(x, k, wts, iters=7), en._mx_kmeans(Lx, x, k, wts, iters=7)
+        same([ref[0].tolist(), ref[1].tolist()], [got[0].tolist(), got[1].tolist()], f"kmeans {dt.__name__} {k}")
+        if d == 2:
+            p = np.vstack([[0.0, 0.0], ref[0].astype(np.float64)])
+            same(en._nearest(x, p).tolist(), en._mx_nearest(Lx, x, p).tolist(), "nearest")
+
+
+class _Probes:
+    def __init__(self, ids):
+        self.ids = ids
+
+    def __call__(self, p):
+        return self.ids[int(abs(p[0]) * 7) % len(self.ids)]
+
+    def many(self, P):
+        return [self(tuple(p)) for p in np.asarray(P).tolist()]
+
+
+class _Shadow:
+    def lit_many(self, P, N):
+        return (np.floor(np.abs(np.asarray(P)[:, 0] * 3 + np.asarray(N)[:, 1])) % 3) / 2
+
+
+def check_assign(rng):
+    """export_normal.assign + _finish end to end, numpy vs libmapx"""
+    import contextlib, io
+    names = [f"n{i}" for i in range(int(rng.integers(1, 5)))]
+    dds = {n: bc5_dds(rng, int(rng.choice([32, 64, 256])), int(rng.choice([32, 128, 256])), 2) for n in names}
+    probes = {3: np.abs(rng.normal(size=(6, 8, 8, 3))).tolist(), 5: np.abs(rng.normal(size=(6, 8, 8, 3))).tolist()}
+    tone = lambda rgb: [min(1.0, max(0.0, x / (1 + x))) ** (1 / 2.2) for x in rgb]
+    def row(seed):
+        r = np.random.default_rng(seed)
+        out = {}
+        for i in "012":
+            out[f"colA_{i}"] = float(r.choice([0, 80, 150]))
+            out[f"degRotX_{i}"], out[f"degRotY_{i}"] = float(r.uniform(-90, 90)), float(r.uniform(0, 360))
+            for c in "RGB":
+                out[f"col{c}_{i}"] = float(r.integers(0, 256))
+        for s_ in "ud":
+            out[f"colA_{s_}"] = float(r.uniform(20, 200))
+            for c in "RGB":
+                out[f"col{c}_{s_}"] = float(r.integers(0, 256))
+        out["envDif_colA"] = float(r.uniform(20, 200))
+        for c in "RGB":
+            out[f"envDif_col{c}"] = float(r.integers(0, 256))
+        return out
+    rows = [row(1), row(2)]
+    pof = _Probes([3, 5, None, 9])
+    MESH, meshes = [], []
+    for mi in range(int(rng.integers(1, 8))):
+        nw = int(rng.integers(3, 200))
+        MESH.append(dict(tex=names[mi % len(names)] if rng.random() < 0.9 else "missing", light=rows[mi % 2],
+                         alb=tuple(rng.uniform(0.05, 0.9, 3).tolist()), N=rng.normal(size=(nw, 3)),
+                         T=rng.normal(size=(nw, 3)), W=np.where(rng.random(nw) < 0.5, -1.0, 1.0), probe_of=pof))
+        P = rng.normal(size=(nw, 3)) * 5
+        tris = [tuple((tuple(P[w].tolist()), int(w)) for w in rng.integers(0, nw, 3)) for _ in range(int(rng.integers(1, 400)))]
+        meshes.append(dict(tris=tris, bump=len(MESH) - 1 if rng.random() < 0.8 else None,
+                           wuv=rng.uniform(-2, 3, (nw, 2)).tolist()))
+    def run(use_c):
+        en.MESH[:] = MESH
+        en._MX.clear()
+        L_ = mapx_native._L[0]
+        if not use_c:
+            mapx_native._L[0] = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                out = en.assign(meshes, dds, _Shadow() if rng.random() < 2 else None, tone, [0.9, 1.0, 1.1], 0.6, probes)
+                ids = sorted(out)
+                r = np.random.default_rng(11)
+                en.CHUNK_BUMP[:] = [((out[ids[0]][0],), sorted(r.choice(ids, min(len(ids), int(r.integers(1, 60))), replace=False).tolist()))
+                                    for _ in range(int(r.integers(1, 80)))] if ids else []
+                fin = en._finish() if ids else None
+        finally:
+            mapx_native._L[0] = L_
+            en._MX.clear()
+        st = en._STATE
+        return out, st.get("density"), [(t["name"], t["w"], t["h"], t["mips"]) for t in st.get("texs", [])], \
+            st["pal"].tolist() if "pal" in st else None, st["R"].tolist() if "R" in st else None, \
+            None if fin is None else (fin[0], fin[1].tolist())
+    a, b = run(False), run(True)
+    for x, y, what in zip(a, b, ("assign map", "density", "textures", "palette", "response", "_finish")):
+        same(x, y, what)
+
+
+if __name__ == "__main__":
+    for k in range(seed, seed + max(1, count // 4)):
+        check_assign(np.random.default_rng(k))
+        check_bump(np.random.default_rng(k))
+    print(f"mapx: relief (BC5 decode, frames, response, k-means) identical to export_normal's numpy code")
