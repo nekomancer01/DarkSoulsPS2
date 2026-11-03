@@ -152,7 +152,7 @@ typedef struct {
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
     int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
-    int no_award;  /* killed by an event that gives no souls (2004[04] arg 2 = 0) */
+    int awarded;  /* this death's souls / humanity points given (or none due: killed before, 2004[04] arg 2 = 0) */
     unsigned char rec[ENEMY_REC];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
     int seed_i;
     /* physics */
@@ -554,7 +554,7 @@ static void ev_bind(Enemy *e, EvChr *c, int placing)
         return;
     ev_off[e->index] = c->off;
     if (c->dead)
-        e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1;  /* killed before: not shown again */
+        e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;  /* killed before: not shown again */
 }
 
 /* enemies.bin record r (type t) into slot i of world block `block`; seed_i: its index in the file (AI seed) */
@@ -1093,12 +1093,8 @@ static void update_one(Enemy *e, Player *pl, float dt)
     if (e->cc.dead) {
         if (e->registered)
             combat_unregister(&e->cc), e->registered = 0;
-        if (e->dead_t == 0) {
+        if (e->dead_t == 0)
             ai_reset(&e->ai);
-            /* FUN_14032f900, once per death: souls (NpcParam getSoul) and humanity points (FUN_14032fb30) */
-            if (!e->no_award)
-                progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
-        }
         e->dead_t += dt;
     }
 
@@ -1289,6 +1285,12 @@ void enemy_update(Player *pl, float dt)
         Enemy *e = &enemies[i];
         if (e->ev && e->ev->immortal && !e->ev->dead && e->cc.hp < 1 && e->dead_t == 0)
             e->cc.hp = 1, e->cc.dead = 0;
+        /* FUN_14032f900, once per death wherever it happened (an inactive one included): souls (NpcParam getSoul)
+         * and humanity points (FUN_14032fb30) */
+        if (e->cc.dead && !e->awarded && !(ev_off[i] & EV_FREE)) {
+            e->awarded = 1;
+            progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
+        }
     }
     npc_update(pl, dt);
     static Ai *team[MAX_ENEMIES];
@@ -1519,7 +1521,7 @@ int enemy_entity_kill(int entity, int award)
     for (int i = 0; i < nenemies; i++)
         if (enemies[i].entity == entity && !enemies[i].cc.dead) {
             enemies[i].cc.hp = -1, enemies[i].cc.dead = 1;  /* below 0: the ESD death test f1000() < 0 */
-            enemies[i].no_award = !award;
+            enemies[i].awarded = !award;
             return 1;
         }
     return npc_entity_kill(entity);
