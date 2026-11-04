@@ -55,6 +55,16 @@
  * types then ran out of RAM (world_cross.txt); 3.8 MB here gives the 5.5 MB of a bonfire boot wherever the player
  * starts: near cells >= 4.2 MB at the Firelink junction, heap outside the arena >= ~1.6 MB */
 #define WORLD_ENEMY_RESERVE (3800u << 10)
+/* The player is held at the edge of a block whose collision has not loaded yet (world_hold) instead of walking or
+ * falling into it: from cdrom0: the player walked off the Burg bonfire block's floor before the next block's lite set
+ * was read, fell to the map's floor far below or out of the map and respawned elsewhere (user report 2026-11-04,
+ * TECH_DEBT world-8). DSR has the whole map resident and never needs this. A loaded floor up to WORLD_HOLD_DROP below
+ * the feet is the floor of a jump or a short drop, not of another place: no hold (ASSUMED: higher than a running
+ * jump, lower than the drops between the Burg's levels). */
+#define WORLD_HOLD_DROP 8.0f
+/* seconds of holding before the frame waits for the blocks as on a warp (loading screen; ASSUMED: a Burg lite set
+ * alone reads in ~1.5 s from cdrom0:) */
+#define WORLD_HOLD_S 3.0f
 
 /* The lite set of a block, read raw from its pack (tools/pack.py raw: entries, read in place) into its slot.
  * events.bin (A2's tools/export_emevd.py) is optional: a pack without it loads with no events. objects.bin and fx.bin
@@ -115,6 +125,11 @@ static unsigned res_done, res_t0;
 static float in_cur_s;  /* seconds the player has stood in cur */
 static float last_feet[3];
 static int warping;  /* inside settle(): drains and the swap delay are skipped */
+static int lite_first;  /* a wanted block's lite set waits: the full swap issues no new read (step) */
+/* blocks the player is held for: found by world_hold this frame, latched for step(); blocks a settle could not load
+ * (no more holding for them until they turn on); seconds held */
+static unsigned hold_m, hold_want, hold_gone;
+static float hold_s;
 
 static inline unsigned ticks(void)
 {
@@ -360,6 +375,7 @@ static void turn_on(int i)
         event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
     free_tex(r);  /* uploaded: back to the near cells */
     r->state = W_ON;
+    hold_gone &= ~(1u << i);
     world_stats.loaded++;
     world_stats.loads++;
     world_stats.load_ms = (ticks() - r->t0) / 294912;
@@ -556,9 +572,24 @@ static void full_step(void)
             return;
         }
     }
+    if (lite_first)
+        return;  /* the slot goes to a wanted block's lite set first (step) */
     unsigned n = res_n(r, res_done, &src);
     if (pack_read_async(&r->pk, src, full_pool + res_done, n))
         res_reading = 1, world_stats.reading = res_blk;
+}
+
+/* a wanted block's lite set is being read or could start now (start()'s conditions, room aside) */
+static int lite_pending(void)
+{
+    int free_s = 0;
+    for (int s = 0; s < WORLD_SLOTS; s++)
+        free_s |= slot_of[s] < 0;
+    for (int i = 1; i < nblk; i++)
+        if (rt[i].state == W_READING ||
+            (free_s && rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1) && (rt[i].retry_s <= 0 || warping)))
+            return 1;
+    return 0;
 }
 
 /* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
@@ -599,6 +630,7 @@ static void step(const float *feet, float dt)
                 feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
                 wm |= 1u << i, km |= 1u << i;
     }
+    wm |= hold_want, km |= hold_want;  /* the blocks the player is held for (world_hold) */
     if (wm != want_m || km != keep_m)
         printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km);
     want_m = wm, keep_m = km | wm;
@@ -612,16 +644,23 @@ static void step(const float *feet, float dt)
     for (int i = 0; i < nblk; i++)  /* slots of unloaded blocks come free once the chains are done */
         if (rt[i].state == W_DRAIN && (--rt[i].drain <= 0 || warping))
             free_slot(i);
-    /* one background read at a time: the full pool first (the player's own block), then neighbours' lite sets */
-    if (res_blk >= 0 || (cur != full_blk && (in_cur_s >= WORLD_SWAP_S || warping) && world_stats.reading < 0)) {
+    /* one background read at a time. Wanted blocks' lite sets go first: they hold the collision the player walks onto
+     * next, while the full pool only adds drawing detail to the block underfoot. With the full swap first, from cdrom0:
+     * a Burg swap (4.9 MB, ~5 s at ~1 MB/s) kept the next block's collision from loading and the player walked off
+     * the loaded floor (2026-11-04, TECH_DEBT world-8). A swap chunk in flight is collected first; the swap then
+     * issues no new chunk while a lite set waits. */
+    lite_first = lite_pending();
+    if (res_reading || (!lite_first && (res_blk >= 0 || (cur != full_blk && (in_cur_s >= WORLD_SWAP_S || warping) &&
+                                                          world_stats.reading < 0)))) {
         if (res_reading || world_stats.reading < 0)
             full_step();
-        if (res_blk >= 0)
+        if (res_reading || !lite_first)
             goto unload;
     }
     for (int i = 0; i < nblk; i++)
         if (rt[i].state == W_READING) {
-            read_step(i);
+            if (world_stats.reading < 0 || world_stats.reading == i)
+                read_step(i);
             goto unload;
         }
     {   /* start the nearest wanted block */
@@ -679,6 +718,22 @@ static void settle(const float *feet)
            feet[2], (ticks() - t0) / 294912, n, cur, full_blk, world_stats.loaded);
 }
 
+int world_hold(const float *feet)
+{
+    if (cur < 0)
+        return 0;
+    ColHit h;
+    if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - WORLD_HOLD_DROP, COL_SOLID, &h))
+        return 0;
+    unsigned m = 0;
+    for (int i = 1; i < nblk; i++)
+        if (rt[i].open && rt[i].state != W_ON && !(hold_gone >> i & 1) && box_d(&tab[i], feet) <= 0.0f &&
+            feet[1] >= tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
+            m |= 1u << i;
+    hold_m |= m;
+    return m != 0;
+}
+
 void world_update(const float *feet, float dt)
 {
     if (cur < 0)
@@ -686,9 +741,24 @@ void world_update(const float *feet, float dt)
     float dx = feet[0] - last_feet[0], dy = feet[1] - last_feet[1], dz = feet[2] - last_feet[2];
     int warp = dx * dx + dy * dy + dz * dz > WORLD_WARP * WORLD_WARP;  /* also the first frame: boot settles */
     memcpy(last_feet, feet, sizeof last_feet);
-    if (warp) {
+    if (hold_m && !hold_want)
+        printf("world: player held at %.1f %.1f %.1f for blocks %x\n", feet[0], feet[1], feet[2], hold_m);
+    hold_want = hold_m, hold_m = 0;
+    hold_s = hold_want && !warp ? hold_s + dt : 0;
+    world_stats.hold_ms += hold_s > 0 ? (unsigned)(dt * 1000) : 0;
+    if (warp || hold_s >= WORLD_HOLD_S) {
+        /* a warp, or held too long: the frame waits for the blocks (loading screen) */
         step(feet, 0);  /* the block under the new position (its collision may need loading first: settle loops) */
         settle(feet);
+        if (hold_s > 0) {
+            world_stats.hold_settles++;
+            for (int i = 1; i < nblk; i++)
+                if ((hold_want >> i & 1) && rt[i].state != W_ON) {
+                    hold_gone |= 1u << i;  /* could not load: the player walks / falls on as before */
+                    printf("world: block %d did not load under the player: no more holding for it\n", i);
+                }
+            hold_want = 0, hold_s = 0;
+        }
         return;
     }
     step(feet, dt);
