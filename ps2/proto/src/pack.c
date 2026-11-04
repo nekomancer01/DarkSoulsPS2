@@ -42,6 +42,20 @@ static int disc_get(int wait)
     return 1;
 }
 
+int (*pack_disc_try_async)(void);
+
+/* disc_get(0) for the background jobs: retried next frame anyway, so the try need not wait for the IOP's answer */
+static int disc_get_bg(void)
+{
+    if (!disc_depth && pack_cdrom > 0 && pack_disc_try_async) {
+        if (!pack_disc_try_async())
+            return 0;
+        disc_depth++;
+        return 1;
+    }
+    return disc_get(0);
+}
+
 static void disc_put(void)
 {
     if (disc_depth && !--disc_depth && pack_cdrom > 0 && pack_disc_unlock)
@@ -352,7 +366,7 @@ int pack_job_step(PackJob *j)
     int res;
     switch (j->state) {
     case J_OPEN:
-        if (async_busy || !disc_get(0))
+        if (async_busy || !disc_get_bg())
             return 0;  /* another read is in flight: next frame */
         fioInit();
         fioSetBlockMode(FIO_NOWAIT);
@@ -367,7 +381,7 @@ int pack_job_step(PackJob *j)
         j->state = J_HEAD;
         /* fall through */
     case J_HEAD:
-        if (async_busy || !disc_get(0))
+        if (async_busy || !disc_get_bg())
             return 0;
         SyncDCache(head, (char *)head + sizeof head - 1);
         fioLseek(j->fd, 0, SEEK_SET);
@@ -387,6 +401,10 @@ int pack_job_step(PackJob *j)
             i++;
         if (i == head[2])
             return job_fail(j, "no such entry");
+        for (int x = 0; x < 2; x++)
+            for (unsigned k = 0; j->xname[x] && k < head[2]; k++)
+                if (!strncmp(e[k].name, j->xname[x], sizeof e->name) && e[k].packed == e[k].blocks * 4 + e[k].raw)
+                    j->xoff[x] = e[k].offset + e[k].blocks * 4, j->xsize[x] = e[k].raw;
         e += i;
         j->off = e->offset, j->packed = e->packed, j->raw = e->raw, j->blocks = e->blocks, j->bsize = e->block_size;
         j->state = J_DATA;
@@ -399,7 +417,7 @@ int pack_job_step(PackJob *j)
             if (j->packed > j->raw + j->blocks * 4 || !(j->out = j->get(j->alloc)))
                 return job_fail(j, j->out ? "entry grows on decode" : "OUT OF RAM");
         }
-        if (!disc_get(0))
+        if (!disc_get_bg())
             return 0;
         j->in = j->out + ((j->alloc - j->packed) & ~63u);
         SyncDCache(j->in, j->in + j->packed - 1);

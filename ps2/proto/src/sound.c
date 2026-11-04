@@ -14,6 +14,7 @@
 #include <loadfile.h>
 #include <iopheap.h>
 #include <sbv_patches.h>
+#include <malloc.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,16 +187,61 @@ static int ops_call(int fn, unsigned size)
     return 1;
 }
 
-/* the disc lock for pack.c: blocking calls, the EE's next fio request waits for the answer anyway */
+/* The disc lock for pack.c. lock(1) is a blocking call (the EE's next fio request waits for the answer anyway);
+ * pack_job_step's try (disc_try_async) and unlock go out without waiting: a blocking try waited 180-550 ms for the IOP
+ * whenever dsrsnd was reading the disc (a stream refill or bank load step), each a frame stall while enemy types and
+ * their banks streamed in (ISO 2026-11-04). A try's answer is collected by the next lock call (one frame later); one
+ * that got the lock but was never asked again is given back by snd_update. */
+static int disc_req;              /* 0 none, 1 a try in flight, 2 a try that got the lock (not claimed), 3 unlock */
+static unsigned disc_req_frame;
+
+static int disc_reply_got(void) { return ((volatile SndDisc *)((unsigned)&dstat | 0x20000000))->got; }  /* uncached */
+
+static int disc_collect(int wait)
+{
+    if (disc_req == 1 || disc_req == 3) {
+        if (SifCheckStatRpc(&cl_disc)) {
+            if (!wait)
+                return 0;
+            while (SifCheckStatRpc(&cl_disc))
+                ;
+        }
+        disc_req = disc_req == 1 && disc_reply_got() ? 2 : 0;
+        disc_req_frame = frame_no;
+    }
+    return 1;
+}
+
 static int disc_lock(int wait)
 {
+    disc_collect(1);  /* a background try in flight: its answer first */
+    if (disc_req == 2) {
+        disc_req = 0;
+        return 1;
+    }
     SifCallRpc(&cl_disc, wait ? SNDF_DISC_LOCK : SNDF_DISC_TRY, 0, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
-    return ((volatile SndDisc *)((unsigned)&dstat | 0x20000000))->got;  /* uncached: the IOP wrote it */
+    return disc_reply_got();
+}
+
+/* pack.c's background jobs (pack_job_step): 1 when the lock is held, else 0 and a try is on its way (or still) */
+static int disc_try_async(void)
+{
+    if (!disc_collect(0))
+        return 0;
+    if (disc_req == 2) {
+        disc_req = 0;
+        return 1;
+    }
+    SifCallRpc(&cl_disc, SNDF_DISC_TRY, SIF_RPC_M_NOWAIT, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
+    disc_req = 1, disc_req_frame = frame_no;
+    return 0;
 }
 
 static void disc_unlock(void)
 {
-    SifCallRpc(&cl_disc, SNDF_DISC_UNLOCK, 0, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
+    disc_collect(1);
+    SifCallRpc(&cl_disc, SNDF_DISC_UNLOCK, SIF_RPC_M_NOWAIT, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
+    disc_req = 3;
 }
 
 /* ---- SPU2 heap ---- */
@@ -284,6 +330,16 @@ static Bank *bank_find(const char *name)
     return NULL;
 }
 
+static Bank *bank_setup(Bank *b, const char *name, int keep, const char *path, int raw);
+
+static Bank *bank_free_slot(void)
+{
+    for (int i = 0; i < MAX_BANKS; i++)
+        if (!banks[i].used && (!banks[i].vag_size || frame_no > banks[i].dead_frame + 2))
+            return &banks[i];
+    return NULL;
+}
+
 static Bank *bank_load(const char *name, int keep)
 {
     Bank *b = bank_find(name);
@@ -291,10 +347,7 @@ static Bank *bank_load(const char *name, int keep)
         b->keep |= keep;
         return b;
     }
-    for (int i = 0; i < MAX_BANKS && !b; i++)
-        if (!banks[i].used && (!banks[i].vag_size || frame_no > banks[i].dead_frame + 2))
-            b = &banks[i];
-    if (!b)
+    if (!(b = bank_free_slot()))
         return NULL;
     char path[64];
     snprintf(path, sizeof path, PACK_ROOT "snd/%s.pak", name);
@@ -304,14 +357,21 @@ static Bank *bank_load(const char *name, int keep)
         return NULL;
     }
     memset(b, 0, sizeof *b);
-    snprintf(b->name, sizeof b->name, "%s", name);
-    b->keep = keep;
     b->blob = pack_load(&pk, "bank.bin", NULL);
     b->cue_blob = pack_load(&pk, "cue.bin", NULL);
     b->emit_blob = pack_load(&pk, "emit.bin", NULL);
     int raw = pack_entry_raw(&pk, "vag.bin", &b->vag_off, &b->vag_size) &&
               pack_entry_raw(&pk, "str.bin", &b->str_off, &b->str_size);
     pack_close(&pk);
+    return bank_setup(b, name, keep, path, raw);
+}
+
+/* A bank's tables (blob, cue_blob, emit_blob, vag / str offsets read into b) made usable; its VAG queued for the IOP.
+ * NULL (all freed) on a bad pack. */
+static Bank *bank_setup(Bank *b, const char *name, int keep, const char *path, int raw)
+{
+    snprintf(b->name, sizeof b->name, "%s", name);
+    b->keep = keep;
     const unsigned *h = b->blob;
     if (!raw || !h || memcmp(h, "DSRB", 4) || h[1] != 2) {
         printf("snd: %s: bad pack\n", path);
@@ -935,15 +995,106 @@ void snd_map(const char *map_id)
     printf("snd: map %s, area bank %s, ambience %s\n", map_id, area_bank ? area_bank->name : "-", sm ? "on" : "none");
 }
 
+/* Enemy types' banks load in the background, one at a time through pack.c's job slot (and its disc lock), the tables
+ * in three jobs (bank.bin, then cue.bin, emit.bin; the first also finds vag.bin / str.bin); then the VAG goes to the
+ * IOP as every bank's does. Loaded synchronously a type's bank took 0.4-0.6 s of one frame from cdrom0: (a pack open
+ * and three loads, ISO 2026-11-04, TECH_DEBT load-6). Until it is in, the type's sounds do not play. */
+#define CHR_QUEUE 16
+static char chr_queue[CHR_QUEUE][8];
+static int chr_nq;
+static struct { char name[8]; int stage; PackJob job; void *part[3]; unsigned xoff[2], xsize[2]; } chr_ld;
+static const char *const chr_part[3] = {"bank.bin", "cue.bin", "emit.bin"};
+static void *job_heap_get(unsigned n) { return memalign(128, n); }
+static void job_heap_put(void *p, unsigned n) { (void)n; free(p); }
+
+static void chr_path(char *path, unsigned cap, const char *name) { snprintf(path, cap, PACK_ROOT "snd/%s.pak", name); }
+
+static void chr_part_start(void)
+{
+    char path[64];
+    chr_path(path, sizeof path, chr_ld.name);
+    pack_job_start(&chr_ld.job, path, chr_part[chr_ld.stage], job_heap_get, job_heap_put);
+    if (chr_ld.stage == 0)
+        chr_ld.job.xname[0] = "vag.bin", chr_ld.job.xname[1] = "str.bin";
+}
+
+static void chr_drop(void)
+{
+    if (chr_ld.name[0])
+        pack_job_cancel(&chr_ld.job);
+    for (int k = 0; k < 3; k++)
+        free(chr_ld.part[k]);
+    memset(chr_ld.part, 0, sizeof chr_ld.part);
+    chr_ld.name[0] = 0;
+}
+
+static void chr_pump(void)
+{
+    if (!chr_ld.name[0]) {
+        if (!chr_nq)
+            return;
+        memset(&chr_ld, 0, sizeof chr_ld);
+        snprintf(chr_ld.name, sizeof chr_ld.name, "%s", chr_queue[0]);
+        memmove(chr_queue[0], chr_queue[1], --chr_nq * sizeof chr_queue[0]);
+        chr_part_start();
+    }
+    int r = pack_job_step(&chr_ld.job);
+    if (!r)
+        return;
+    if (r < 0 && chr_ld.stage == 0) {  /* no bank.bin: no pack for this model */
+        chr_ld.name[0] = 0;
+        return;
+    }
+    if (r > 0)
+        chr_ld.part[chr_ld.stage] = chr_ld.job.out;
+    if (chr_ld.stage == 0)
+        memcpy(chr_ld.xoff, chr_ld.job.xoff, sizeof chr_ld.xoff), memcpy(chr_ld.xsize, chr_ld.job.xsize, sizeof chr_ld.xsize);
+    if (++chr_ld.stage < 3) {
+        chr_part_start();
+        return;
+    }
+    Bank *b = bank_find(chr_ld.name) ? NULL : bank_free_slot();
+    if (!b) {
+        for (int k = 0; k < 3; k++)
+            free(chr_ld.part[k]);
+    } else {
+        memset(b, 0, sizeof *b);
+        b->blob = chr_ld.part[0], b->cue_blob = chr_ld.part[1], b->emit_blob = chr_ld.part[2];
+        b->vag_off = chr_ld.xoff[0], b->vag_size = chr_ld.xsize[0], b->str_off = chr_ld.xoff[1], b->str_size = chr_ld.xsize[1];
+        char path[64];
+        chr_path(path, sizeof path, chr_ld.name);
+        bank_setup(b, chr_ld.name, 0, path, chr_ld.xoff[0] && chr_ld.xoff[1]);  /* both raw, as pack_entry_raw */
+    }
+    memset(chr_ld.part, 0, sizeof chr_ld.part);
+    chr_ld.name[0] = 0;
+}
+
 void snd_chr_load(const char *model)
 {
-    if (on && model && model[0] == 'c')
-        bank_load(model, 0);
+    if (!on || !model || model[0] != 'c' || bank_find(model) || !strcmp(chr_ld.name, model))
+        return;
+    for (int i = 0; i < chr_nq; i++)
+        if (!strcmp(chr_queue[i], model))
+            return;
+    if (chr_nq < CHR_QUEUE)
+        snprintf(chr_queue[chr_nq++], sizeof chr_queue[0], "%s", model);
 }
 
 void snd_chr_unload(const char *model)
 {
-    Bank *b = on ? bank_find(model) : NULL;
+    if (!on)
+        return;
+    for (int i = 0; i < chr_nq; i++)
+        if (!strcmp(chr_queue[i], model)) {
+            memmove(chr_queue[i], chr_queue[i + 1], (chr_nq - i - 1) * sizeof chr_queue[0]);
+            chr_nq--;
+            return;
+        }
+    if (!strcmp(chr_ld.name, model)) {
+        chr_drop();
+        return;
+    }
+    Bank *b = bank_find(model);
     if (b && !b->keep)
         bank_free(b);
 }
@@ -967,6 +1118,11 @@ void snd_update(float dt)
         amb.e = NULL;
     }
     loads_pump();
+    disc_collect(0);
+    if (disc_req == 2 && frame_no > disc_req_frame + 2)  /* a try's lock nobody claimed: back to dsrsnd */
+        disc_unlock();
+    chr_pump();
+
     /* voices that ended: ENDX from the last finished frame RPC, or past their length */
     int n = 0;
     for (int v = 0; v < SND_VOICES; v++) {
@@ -1039,7 +1195,7 @@ int snd_init(void)
     if (!st.ok)
         return 0;
     on = 1;
-    pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock;
+    pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock, pack_disc_try_async = disc_try_async;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
     /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */
