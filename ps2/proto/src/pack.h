@@ -45,6 +45,8 @@ typedef struct {
     unsigned off, packed, raw, blocks, bsize, alloc;
     int res, parked;  /* result of its request kept by pack_async_free */
     unsigned cs[64], b, pos;  /* decode: block sizes (the output overwrites the table in the buffer), next block */
+    const char *xname[2];     /* set after pack_job_start: other entries to look up in the pack's table, found ... */
+    unsigned xoff[2], xsize[2];  /* ... as pack_entry_raw would (offset / size of a raw entry; size 0 missing / packed) */
     const unsigned char *src;
     unsigned char *out, *in;
     const char *name;
@@ -75,6 +77,8 @@ extern int pack_cdrom;
  * lock(1) waits, lock(0) only tries; returns 1 when held */
 extern int (*pack_disc_lock)(int wait);
 extern void (*pack_disc_unlock)(void);
+/* the same lock for the background jobs (pack_job_step): never waits for the IOP, 0 until a try sent earlier got it */
+extern int (*pack_disc_try_async)(void);
 
 /* Totals since boot: compressed bytes read, raw bytes produced, EE ticks (294.912 MHz) spent in pack_load and the
  * part of those spent waiting for the IOP, heap bytes handed out by pack_load */

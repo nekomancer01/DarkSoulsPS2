@@ -501,6 +501,10 @@ int main(int argc, char **argv)
         unsigned now = cpu_ticks();
         float dt = (now - last) / 294912000.0f;
         float dt_real = dt;  /* test stats: the frame time before the clamps */
+#ifdef SLOW_FRAME_LOG  /* make EE_DBGINFOFLAGS=-DSLOW_FRAME_LOG: frames over 100 ms in the EE log (ISO stalls) */
+        if (dt_real > 0.1f)
+            printf("DSRPROTO slow frame %d ms\n", (int)(dt_real * 1000));
+#endif
         last = now;
         avg_dt += (dt - avg_dt) * 0.1f;  /* real frame time, before the clamps below */
         if (dt > 1.0f / 15)
