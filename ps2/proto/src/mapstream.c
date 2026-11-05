@@ -28,6 +28,10 @@
  * ranks the Burg's cells kept Firelink's own out after the player came back (holes in its tree line and the aqueduct
  * wall, ISO world_route 2026-11-05) */
 #define MS_RES_OTHER 4.0f
+/* ... except within MS_OTHER_D: the cells across a block border the player may turn back to (the aqueduct wall's kept
+ * meshes 34-70 m off were dropped in the Burg and not read again 1 s after walking back into Firelink, ISO and host:
+ * round 10, 2026-11-05); ASSUMED */
+#define MS_OTHER_D 100.0f
 /* The full want / drop scan over every item runs when a read can start and the player moved MS_SCAN_D m or
  * MS_SCAN_FRAMES passed since the last one, else only every MS_SCAN_FRAMES (frees far items); after an item found no
  * room it waits MS_SCAN_FRAMES (~5000 items over 5 blocks: a scan every frame cost the Burg bonfire 30 -> 22 fps) */
@@ -427,7 +431,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
         float d2 = box_d2(&tab[tag & ~MS_RES_FAR], pos);
         if ((tag & MS_RES_FAR) && d2 > MS_FAR_D * MS_FAR_D)
             d2 = MS_FAR_D * MS_FAR_D;
-        *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
+        *key = d2 * (focus < 0 || k == focus || d2 < MS_OTHER_D * MS_OTHER_D ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
                (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (settling && settle_r > 0 && settle_item(k, id - ncell, pos, settle_r, settle_rf))
             *key *= MS_SETTLE_K;  /* what the settle waits for before anything else in view or the backdrop */
