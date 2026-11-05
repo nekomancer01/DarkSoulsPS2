@@ -121,6 +121,13 @@ static union { SndLoad ld; SndStreamOpen so; } obuf __attribute__((aligned(64)))
 static SndCmd cmds[SND_CMD_MAX];
 static int ncmds, frame_busy, ops_busy;
 static SndStatus st;  /* last status read back */
+static unsigned st_ticks;  /* EE count register when st was read */
+static inline unsigned ee_ticks(void)
+{
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
 static int load_sent;  /* id of the load the IOP is working on, 0 none */
 static int next_load_id = 1;
 static struct { int entity, on; } ents[MAX_ENTS];
@@ -152,7 +159,7 @@ static void frame_wait(void)
             ;
         frame_busy = 0;
         memcpy(&st, (void *)((unsigned)&fstat | 0x20000000), sizeof st);  /* uncached: the IOP wrote it */
-        st_seq = inflight_seq;
+        st_seq = inflight_seq, st_ticks = ee_ticks();
     }
 }
 
@@ -238,8 +245,10 @@ static int disc_try_async(void)
 }
 
 /* a disc stream runs short (status of the last finished frame RPC, a frame or two old): the EE's background reads
- * wait so the IOP's read-ahead top-up gets the drive */
-static int disc_yield(void) { return st.starving != 0; }
+ * wait so the IOP's read-ahead top-up gets the drive. Only a fresh status counts: a warp settle or a loading screen
+ * spins without snd_update, and a stale starving bit there held the block reads back for good (hang, world_cross) */
+#define DISC_YIELD_TICKS (294912u * 100)  /* 100 ms of EE ticks: a few frames */
+static int disc_yield(void) { return st.starving && ee_ticks() - st_ticks < DISC_YIELD_TICKS; }
 
 static void disc_unlock(void)
 {
