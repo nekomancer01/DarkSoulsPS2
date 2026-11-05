@@ -44,6 +44,7 @@ typedef struct {
     int state, fd;
     unsigned off, packed, raw, blocks, bsize, alloc;
     int res, parked;  /* result of its request kept by pack_async_free */
+    int fdc, reopen;  /* its fd's slot in pack.c's handle cache (-1 none); an open retried after closing cached ones */
     unsigned cs[64], b, pos;  /* decode: block sizes (the output overwrites the table in the buffer), next block */
     const char *xname[2];     /* set after pack_job_start: other entries to look up in the pack's table, found ... */
     unsigned xoff[2], xsize[2];  /* ... as pack_entry_raw would (offset / size of a raw entry; size 0 missing / packed) */
