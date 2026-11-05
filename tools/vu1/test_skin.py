@@ -1,8 +1,10 @@
-"""Compare vu1skin.vsm (old, in place) with vu1skin2.vsm (pipelined) on random batches in the emulator."""
+"""Compare ref/vu1skin.vsm (the old in-place skin program, kept only as this test's reference) with vu1skin2.vsm
+(pipelined) on random batches in the emulator."""
 import math, os, random, struct, sys
 from vuemu import VU1, U, vertices
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ps2/proto/src/')
+REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ref/')
 FOC, FOCY, ZS, NEAR, G = 554.0, 500.0, 65535 * 0.25 * 16, 0.25, 1700.0
 FOG = (-30.0, 300.0, 40.0, 255.0)  # a, b, fmin, fmax
 CX, CY = 2048.0, 2048.0
@@ -91,7 +93,7 @@ def compare(seeds=20, tris=24):
     for seed in range(seeds):
         flat, cull = seed % 2, (seed // 2) % 2
         zr = (0.1, 12) if seed % 3 else (2, 30)
-        vo, co, _ = run(SRC + 'vu1skin.vsm', 'VU1Skin_Flat' if flat else 'VU1Skin_Tex', 0, tris, seed, flat, cull, zr)
+        vo, co, _ = run(REF + 'vu1skin.vsm', 'VU1Skin_Flat' if flat else 'VU1Skin_Tex', 0, tris, seed, flat, cull, zr)
         vn, cn, _ = run(SRC + 'vu1skin2.vsm', 'VU1Skin2_Flat' if flat else 'VU1Skin2_Tex', 1, tris, seed, flat, cull, zr)
         cyc_o += co; cyc_n += cn
         assert len(vo) == len(vn) == tris * 3, (len(vo), len(vn))

@@ -25,7 +25,7 @@ typedef struct {
     unsigned char metal, spec;  /* _s map metalness / specular intensity x 255 (exporter; 0 in older blobs) */
 } Vertex;
 
-/* VU1 skinning streams (vu1skin.vsm), built once per model: unindexed batches of <= VU1_SKIN_TRIS triangles per
+/* VU1 skinning streams (vu1skin2.vsm), built once per model: unindexed batches of <= VU1_SKIN_TRIS triangles per
  * group, one 16-byte aligned slot of SK_V vertices per batch and stream */
 #define SK_V ((VU1_SKIN_TRIS * 3 + 1) & ~1)  /* even: 16-byte slots */
 #define MAX_TEX 12  /* the Warrior: 7 armour / weapon / skin + back of head, face, eyes, hair */
