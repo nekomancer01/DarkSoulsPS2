@@ -45,7 +45,6 @@
 gmon.out
 /ps2/proto_k14/
 /ps2/proto_mc/
-/ps2/vu1test/zbyszek.raw
 
 # Exe research data (decompiled code, dumps, databases): facts go into notes, never the dumps themselves
 /fndb/work/

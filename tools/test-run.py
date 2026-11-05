@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pine, runstamp
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
+HOSTEXEC = os.path.join(TOOLS, "hostexec")  # runs on the host (distrobox-host-exec inside a distrobox)
 DISPLAY = ":99"  # set per run from the PINE slot (tools/pcsx2-run.sh: 100 + slot % 100)
 
 
@@ -73,7 +74,7 @@ LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|excep
 
 
 def host_home():
-    return subprocess.run(["distrobox-host-exec", "printenv", "HOME"], capture_output=True, text=True,
+    return subprocess.run([HOSTEXEC, "printenv", "HOME"], capture_output=True, text=True,
                           timeout=60).stdout.strip()
 
 
@@ -286,7 +287,7 @@ def run(a):
         res["errors"].append(f"{type(e).__name__}: {e}")
     finally:
         time.sleep(0.5)
-        subprocess.run(["distrobox-host-exec", "flatpak", "kill", inst], capture_output=True, timeout=60)
+        subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
         try:
             os.remove(f"/tmp/pcsx2-headless/{inst}")
         except OSError:

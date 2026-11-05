@@ -15,6 +15,7 @@
 set -e
 H=${DSR_REF:-${DISTROBOX_HOST_HOME:-$HOME}/dsr-ref}
 T=$(cd "$(dirname "$0")" && pwd)
+HX=$T/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
 RD=$H/tools/dl/renderdoc/renderdoc_1.46
 PY=${PY:-$T/../.venv-tools/bin/python}
 OUT=$(realpath -m "${1:?usage: $0 OUTDIR [cam args]}"); shift
@@ -24,14 +25,14 @@ if [ "$1" = --replay-only ]; then
 else
     "$T/dsr-ref.sh" stop
     "$T/dsr-ref.sh" restore "${SAVE:-firelink}"
-    distrobox-host-exec bash -c "rm -f $H/rdc/dsr_*.rdc $H/rdc/shaders/*"
+    "$HX" bash -c "rm -f $H/rdc/dsr_*.rdc $H/rdc/shaders/*"
     RDC=1 "$T/dsr-ref.sh" start
     "$T/dsr-ref.sh" load
     [ $# -gt 0 ] && "$T/dsr-ref.sh" cam "$@" > "$OUT/camera.json" || "$T/dsr-ref.sh" cam > "$OUT/camera.json"
     "$T/dsr-ref.sh" shot "$OUT/shot.png" >/dev/null
     "$T/dsr-ref.sh" in key f12
     # the capture is written asynchronously (~1 GB): wait until a file exists and its size stops changing
-    CAP=$(distrobox-host-exec bash -c "for i in \$(seq 120); do f=\$(ls -t $H/rdc/dsr_*.rdc 2>/dev/null | head -1)
+    CAP=$("$HX" bash -c "for i in \$(seq 120); do f=\$(ls -t $H/rdc/dsr_*.rdc 2>/dev/null | head -1)
         if [ -n \"\$f\" ]; then s1=\$(stat -c %s \"\$f\"); sleep 2; [ \"\$s1\" = \"\$(stat -c %s \"\$f\")\" ] && { echo \$f; exit; }
         else sleep 1; fi; done")
     [ -n "$CAP" ] || { echo "dsr-rdc: no capture written" >&2; exit 1; }
@@ -43,7 +44,7 @@ echo "dsr-rdc: capture $CAP"
 C=$H/tools/rdconf
 mkdir -p "$C/qrenderdoc"
 [ -f "$C/qrenderdoc/UI.config" ] || printf '{\n "rdocConfigData": 1,\n "Analytics_TotalOptOut": true,\n "Analytics_ManualCheck": false,\n "CheckUpdate_AllowChecks": false,\n "Tips_HasSeenFirst": true\n}\n' > "$C/qrenderdoc/UI.config"
-"$T/q" -m 8 distrobox-host-exec bash -c "cd '$OUT' && rm -f frame.json frame.json.err && RDC_IN='$CAP' RDC_OUT='$OUT/frame.json' \
+"$T/q" -m 8 "$HX" bash -c "cd '$OUT' && rm -f frame.json frame.json.err && RDC_IN='$CAP' RDC_OUT='$OUT/frame.json' \
     XDG_DATA_HOME='$C' XDG_CONFIG_HOME='$C' \
     timeout 1200 gamescope --backend headless -W 640 -H 480 -- '$RD/bin/qrenderdoc' --python '$T/dsr_rdc_replay.py' \
     > replay.log 2>&1; true"

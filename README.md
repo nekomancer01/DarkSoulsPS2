@@ -60,7 +60,7 @@ the ISO they make is yours only: never share it.
 
 | Way | What it takes | Notes |
 |---|---|---|
-| `./build-iso.sh` in the repository root | A Linux shell; the steps below, or Docker / Podman | The recommended way. One command exports the game data, builds the ELF and writes `build/proto.iso`. Without a ps2dev toolchain it uses a distrobox that has one, or the Docker / Podman container (`tools/build-iso.sh`). `./build-iso.sh --help` lists the options |
+| `./build-iso.sh` in the repository root | A Linux shell; the steps below, or Docker / Podman | The recommended way. One command exports the game data, builds the ELF and writes `build/proto.iso`. Without a ps2dev toolchain it uses the Docker / Podman container (`tools/build-iso.sh`). `./build-iso.sh --help` lists the options |
 | The project page, https://nekomancer01.github.io/DarkSoulsPS2/ | A desktop browser (Chrome, Edge or Firefox) and plenty of memory | Converts your game folder into an ISO inside the browser tab; nothing is uploaded. **Very much a work in progress**, see below |
 | The full developer setup (steps 1 to 6 below) | Linux, ps2dev, Python, PCSX2 | For changing the code and running the tests |
 
@@ -152,8 +152,8 @@ make -C ps2/proto iso      # writes build/proto.iso
 
 `./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
 and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also copies the ISO elsewhere, `-c N` sets
-how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it builds in a
-distrobox that has one, or in the Docker / Podman container (`tools/build-iso.sh`).
+how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it builds in the
+Docker / Podman container (`tools/build-iso.sh`).
 
 ### Controls (DualShock 2)
 

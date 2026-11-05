@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: [NOSTRIP=1] ps2-iso.sh <proto.elf> <data dir> <out.iso> [boot id=DSRP_000.01]   (NOSTRIP keeps .symtab)
-# Bootable PS2 disc image (tools-hwperf): SYSTEM.CNF + the ELF under its boot id + every pack under DATA\, ISO9660
+# Bootable PS2 disc image: SYSTEM.CNF + the ELF under its boot id + every pack under DATA\, ISO9660
 # level 1 (upper case 8.3 names with ;1, what the BIOS CDVD driver reads). Pack names follow pack.c pack_path():
 # '_' dropped, upper case, names cut to their last 8 chars ("data/m10_01_00_00/c1000.pak" -> DATA/10010000/C1000.PAK).
 # Sector order (xorriso sort_weight, TECH_DEBT world-6): SYSTEM.CNF + ELF first, then the boot packs (menu, world,
@@ -8,10 +8,10 @@
 # its neighbour masks), each block's pack followed by its character packs (top-level c*.pak for the boot block,
 # data/<block>/ for the others), then every other area pack with its directory. Without world.pak: the boot packs,
 # then each area pack with its directory, by name. Boots in PCSX2 (tools/ps2-pcsx2.sh iso) and in OPL / on a burnt disc with a modchip (untested).
-# xorriso: user-local in ~/tools/xorriso (Ubuntu xorriso 1.5.6 debs, see notes/threads/tools-hwperf.md).
+# xorriso: XORRISO, else the one on PATH, else a user-local install in ~/tools/xorriso.
 set -e
 ELF=$(realpath "$1"); DATA=$(realpath "$2"); OUT=$(realpath -m "$3"); ID=${4:-DSRP_000.01}
-XORRISO=${XORRISO:-$HOME/tools/xorriso/bin/xorriso}
+XORRISO=${XORRISO:-$(command -v xorriso || echo "$HOME/tools/xorriso/bin/xorriso")}
 STRIP=${STRIP:-mips64r5900el-ps2-elf-strip}
 [ -f "$ELF" ] && [ -d "$DATA" ] || { echo "usage: $0 <elf> <data dir> <out.iso> [boot id]" >&2; exit 1; }
 [[ $ID =~ ^[A-Z]{4}_[0-9]{3}\.[0-9]{2}$ ]] || { echo "boot id must look like ABCD_123.45" >&2; exit 1; }

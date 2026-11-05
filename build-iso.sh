@@ -18,15 +18,13 @@
 #   --container      build in the Docker / Podman container (tools/build-iso.sh) even when the host has the toolchain
 # Example: ./build-iso.sh -c 6 -i "/path/to/DARK SOULS REMASTERED" -o ~/Downloads/DarkSoulsPS2.iso
 #
-# Toolchain: the host's ps2dev (ps2/env.sh) with Python (Pillow + numpy), gcc and xorriso, as in README.md. When the
-# host has no ps2dev but has a distrobox that does (DSR_DISTROBOX, default "Ubuntu"), the script re-runs itself inside
-# it. With neither, it falls back to the container build of this checkout (tools/build-iso.sh, needs Docker or Podman).
+# Toolchain: the host's ps2dev (ps2/env.sh) with Python (Pillow + numpy), gcc and xorriso, as in README.md. Without
+# it, the script falls back to the container build of this checkout (tools/build-iso.sh, needs Docker or Podman).
 # The ISO is made from your copy of the game: never share it.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 GAME=; OUT=; BUILD=$ROOT/build; JOBS=; SYMS=; QUEUE=1; CONTAINER=
-ARGS=("$@")
 
 die() { echo "build-iso: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
@@ -67,16 +65,9 @@ container_build() {
 }
 [ -n "$CONTAINER" ] && container_build
 
-# --- toolchain: this host, else a distrobox that has it, else the container build ---
-# (checked in a subshell: env.sh exports PS2DEV under this host's home, which a distrobox would inherit as a wrong path)
+# --- toolchain: this host, else the container build ---
 # shellcheck disable=SC1091
 if ! ( . "$ROOT/ps2/env.sh"; command -v mips64r5900el-ps2-elf-gcc && [ -d "$GSKIT/lib" ] ) >/dev/null 2>&1; then
-    BOX=${DSR_DISTROBOX:-Ubuntu}
-    if [ ! -e /run/.containerenv ] && [ ! -e /.dockerenv ] && command -v distrobox >/dev/null &&
-        distrobox list 2>/dev/null | awk -F'|' 'NR > 1 {gsub(/ /, "", $2); print $2}' | grep -qxF "$BOX"; then
-        say "no ps2dev on this host: running inside distrobox $BOX"
-        exec distrobox enter "$BOX" -- "$ROOT/build-iso.sh" "${ARGS[@]}"
-    fi
     echo "build-iso: no ps2dev toolchain (looked in ${PS2DEV:-~/tools/ps2dev-2.0.0/ps2dev}; set PS2DEV, see README.md):" \
         "building in the Docker / Podman container instead" >&2
     container_build
@@ -96,10 +87,9 @@ if ! $PY -c 'import PIL, numpy' 2>/dev/null; then
     python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt ||
         { rm -rf .venv; die "could not set up .venv (python3-venv missing?); or set PY in config.local.mk to a Python with Pillow + numpy"; }
 fi
-# xorriso: tools/ps2-iso.sh's default (~/tools/xorriso), else the one on PATH
-if [ -z "${XORRISO:-}" ] && [ ! -x "$HOME/tools/xorriso/bin/xorriso" ]; then
-    command -v xorriso >/dev/null || die "xorriso not found: install it (apt/dnf install xorriso) or set XORRISO"
-    export XORRISO=xorriso
+# xorriso: XORRISO, else the one on PATH, else ~/tools/xorriso (tools/ps2-iso.sh looks in the same order)
+if [ -z "${XORRISO:-}" ] && ! command -v xorriso >/dev/null && [ ! -x "$HOME/tools/xorriso/bin/xorriso" ]; then
+    die "xorriso not found: install it (apt/dnf install xorriso) or set XORRISO"
 fi
 
 MAKE=(make -C ps2/proto "BUILD=$BUILD")

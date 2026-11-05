@@ -1,0 +1,10 @@
+#!/bin/sh
+# Usage: tools/hostexec <command> [args...]
+# Runs a command on the host desktop session. The PCSX2 and reference-game scripts start their programs through this,
+# so they work both when the repo is used straight on the host and from inside a distrobox (where PCSX2, PulseAudio and
+# gamescope live on the host side): inside a distrobox it goes through distrobox-host-exec, anywhere else it runs the
+# command as it is.
+if { [ -n "${CONTAINER_ID:-}" ] || [ -e /run/.containerenv ]; } && command -v distrobox-host-exec >/dev/null 2>&1; then
+    exec distrobox-host-exec "$@"
+fi
+exec "$@"

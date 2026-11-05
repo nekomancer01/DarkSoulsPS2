@@ -32,7 +32,7 @@ user) S=1; [ $# -ge 2 ] && { S=$1; shift; }
       if [ "$(head -c 27 "$1")" != "Sony PS2 Memory Card Format" ]; then
           echo "not formatted yet (PCSX2 creates blank cards; the BIOS browser or a game's first save formats them)"
       else "$MYMC" "$1" dir || true; "$MYMC" "$1" df; fi;;
-pcsx2) CFG=$HOME/tools/pcsx2-cfg/${2:-hostfs}/PCSX2/memcards
+pcsx2) CFG=${DSR_PCSX2_CFG:-$HOME/tools/pcsx2-cfg}/${2:-hostfs}/PCSX2/memcards
       mkdir -p "$CFG"; cp "$1" "$CFG/Mcd001.ps2"; echo "slot 1 of the ${2:-hostfs} test config: $CFG/Mcd001.ps2";;
 *)    sed -n 2,13p "$0"; exit 1;;
 esac

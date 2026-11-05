@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Place / read the reference DSR camera (duplicate install, tools/dsr-ref.sh). Runs on the host:
-    distrobox-host-exec python3 -I tools/dsr-ref-cam.py [--pos X Y Z] [--yaw DEG] [--pitch DEG] [--hide] [--shot out.png]
+    tools/hostexec python3 -I tools/dsr-ref-cam.py [--pos X Y Z] [--yaw DEG] [--pitch DEG] [--hide] [--shot out.png]
     ... --point MAP N [--yaw DEG] [--pitch DEG] [--shot out.png]   stand on autotest point N of MAP (tools/dsr_points.py)
 (tools/dsr-ref.sh cam ... runs it on the host.) The map must be the one loaded: warps stay inside the current map.
 

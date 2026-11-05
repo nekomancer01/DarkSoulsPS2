@@ -17,6 +17,7 @@ A shot over --fail changed pixels is a regression. The report shows new / old / 
 import argparse, glob, html, json, os, shutil, subprocess, sys, time
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
+HOSTEXEC = os.path.join(TOOLS, "hostexec")  # runs on the host (distrobox-host-exec inside a distrobox)
 
 
 _tr = _slot = None
@@ -57,7 +58,7 @@ def replay(dump, out, secs=6.0, slot=None):
           f"--env=PULSE_SINK=dsr_mute --socket=x11 --nosocket=wayland --env=QT_QPA_PLATFORM=xcb "
           f"'--filesystem={os.path.dirname(dump)}:ro' net.pcsx2.PCSX2 -datapath '{data}' -batch -- '{dump}' "
           f"> /dev/null 2>&1 < /dev/null 3> '{idf}' & for _ in $(seq 50); do [ -s '{idf}' ] && break; sleep 0.1; done")
-    subprocess.run(["distrobox-host-exec", "bash", "-c", sh])
+    subprocess.run([HOSTEXEC, "bash", "-c", sh])
     inst = open(idf).read().strip()
     os.remove(idf)
     open(f"/tmp/pcsx2-headless/{inst}", "w").close()
@@ -66,7 +67,7 @@ def replay(dump, out, secs=6.0, slot=None):
         if not tr.capture(out):
             raise RuntimeError(f"replay screenshot failed: {dump}")
     finally:
-        subprocess.run(["distrobox-host-exec", "flatpak", "kill", inst], capture_output=True)
+        subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True)
         os.remove(f"/tmp/pcsx2-headless/{inst}")
     return out
 
