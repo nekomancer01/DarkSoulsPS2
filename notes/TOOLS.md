@@ -78,7 +78,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | What it does |
 |---|---|
 | `ps2-iso.sh` | Bootable ISO |
-| `build-iso.sh` | One command from the game folder to a playable ISO: downloads the source (or builds this checkout), builds in the ps2dev container (`iso-builder/Dockerfile`, Docker or Podman) or with `--engine native`, writes `DarkSoulsPS2.iso` |
+| `build-iso.sh` | One command from the game folder to a playable ISO: downloads the source (or builds this checkout), pulls the ps2dev image and builds in a container on it (`iso-builder/Dockerfile`, Docker or Podman) or with `--engine native`, writes `DarkSoulsPS2.iso` |
 | `ps2-pcsx2.sh` | Debugger / savestate runs |
 | `ps2-run.sh` | Real PS2 over ps2link (untested on hardware) |
 | `ps2-mc.sh` | Memory card images |
