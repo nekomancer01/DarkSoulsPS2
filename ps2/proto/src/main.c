@@ -31,6 +31,7 @@
 #include "items.h"
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
 #include "testscript.h"
+#include "debug_hud.h"  /* Select overlay, debug world drawing */
 #include "world.h"
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
 #include "event.h"  /* A2: EMEVD runtime */
@@ -463,38 +464,13 @@ int main(int argc, char **argv)
     }
     save_apply_player(&pl);  /* saved position (same area), HP, deaths */
     bonfire_init(AREA);      /* bloodstain / respawn point (src/bonfire.c, A4) */
-#ifdef TEST_SPAWN
-    /* test start (make DEFS='-DTEST_SPAWN=x,y,z,yaw'), e.g. in front of the graveyard skeletons */
-    {
-        const float ts[4] = {TEST_SPAWN};
-        ColHit th;
-        pl.pos = v3(ts[0], ts[1], ts[2]), pl.yaw = ts[3];
-        if (col_ok && col_floor(ts[0], ts[2], ts[1] + 3, ts[1] - 10, COL_SOLID, &th))
-            pl.pos.y = th.y;  /* onto the collision floor under the point */
-    }
-#endif
-#ifdef COMBAT_DUMMY
-    /* debug target (make EE_DBGINFOFLAGS=-DCOMBAT_DUMMY): NpcParam 206000's hurtbox 2.5 m in front of the spawn */
-    {
-        float d[3] = {pl.pos.x + sinf(pl.yaw) * 2.5f, pl.pos.y, pl.pos.z + cosf(pl.yaw) * 2.5f};
-        ColHit fh;
-        if (col_ok && col_floor(d[0], d[2], d[1] + 1, d[1] - 2, COL_SOLID, &fh))
-            d[1] = fh.y;
-        combat_dummy_place(d, pl.yaw + 3.14159265f);
-    }
-#endif
+    test_build_spawn(&pl, col_ok);  /* TEST_SPAWN / COMBAT_DUMMY check builds */
     float cam_yaw = pl.yaw, cam_pitch = 0.25f, cam_dist = 4.0f, idle = 99, avg_dt = 1.0f / 60;
     unsigned last = cpu_ticks();
     int tris_drawn = 0;
     float t_cull = 0, t_char = 0, t_wait = 0;  /* ms, smoothed */
     unsigned short prev = 0;
-    int hud_debug = 0;  /* Select: fps / VU1 / collision / load overlay */
-#if defined(COL_TEST) || defined(HUD_DEBUG)
-    hud_debug = 1;  /* the scripted check builds read their numbers off the overlay */
-#endif
-    if (test_opts & TEST_HUD)
-        hud_debug = 1;
-    char buf[64];
+    int hud_debug = debug_hud_default(test_opts);  /* Select: fps / VU1 / collision / load overlay (debug_hud.c) */
 
     for (;;) {
         PROF_FRAME();
@@ -532,71 +508,7 @@ int main(int argc, char **argv)
         int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
         if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
             test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
-#ifdef COL_TEST
-        /* collision / movement check builds (make EE_DBGINFOFLAGS=-DCOL_TEST=n), from the spawn after 0.5 s:
-         * 1 run at 0.6 rad into the wall north of the bonfire and slide along it; 2 run at 4.8 rad off the west ledge
-         * (5 m drop, landing); 3 run + dash at 5.1 rad, release Circle and press it again (running jump), then off the
-         * ledge; 4 walk up the stairs at 0.61 rad; 5 run off the east cliff at 2.0 rad (lethal fall, ESD fall death, respawn) */
-        {
-            static float tt;
-            tt += dt;
-            in = (Input){0};
-            in.my = tt > 0.5f ? (COL_TEST == 4 ? 0.5f : 1) : 0;
-            in.circle = COL_TEST == 3 && ((tt > 1.0f && tt < 2.3f) || (tt > 2.4f && tt < 2.6f));
-            if (COL_TEST == 7) {  /* 7: run off the west ledge (as 2) and press R1 in the air: plunging attack. R1 on
-                                   * the first airborne frames is dropped as in DSR (14 -> 19 needs ChrActionFlag 84,
-                                   * from 0.133 s into a00_1550; the 5 m drop is over before the fall loop 15), so
-                                   * press once 0.3 s into the fall */
-                static int pressed;
-                static float air_t;
-                cam_yaw = 4.8f;
-                air_t = pl.airborne ? air_t + dt : 0;
-                in.r1 = air_t > 0.3f && !pressed;
-                pressed |= in.r1;
-            } else if (COL_TEST == 6) {  /* 6: stand at the spawn (dummy in front) and press R1 at 1.0 s and 4.0 s */
-                static int pressed;
-                in.my = 0;
-                in.r1 = (tt > 1.0f && !(pressed & 1)) || (tt > 4.0f && !(pressed & 2));
-                pressed |= (tt > 1.0f) | (tt > 4.0f) << 1;
-            } else {
-                cam_yaw = COL_TEST == 1 ? 0.6f : COL_TEST == 2 ? 4.8f : COL_TEST == 3 ? 5.1f : COL_TEST == 5 ? 2.0f : 0.61f;
-            }
-            cam_pitch = 0.25f;
-        }
-#endif
-#ifdef CHAR_CLOSEUP
-        /* character close-up build (make EE_DBGINFOFLAGS='-DCHAR_CLOSEUP=yaw,dist,pitch'): no demo, the camera at
-         * dist m and yaw rad from the player's facing (0 = in front), e.g. 0.6,1.6,0.1 for the arms and neck */
-        {
-            const float cc[3] = {CHAR_CLOSEUP};
-            in = (Input){0};
-            cam_yaw = pl.yaw + 3.14159265f + cc[0];
-            cam_pitch = cc[2];
-        }
-#endif
-
-#ifdef ENEMY_VIEW
-        in = (Input){0};  /* enemy check build: no demo input (camera below) */
-#endif
-
-#ifdef ESD_TEST
-        /* ESD action check build (make EE_DBGINFOFLAGS=-DESD_TEST): from the spawn, 0.5 s idle; backstep (Circle tap,
-         * stick centred) at 1.0 s and R1 at 1.4 s (backstep attack, state 59); 3.0-5.4 s run + dash at 5.1 rad with
-         * R1 at 5.2 s while dashing (dash attack, 59); 7.0-9.4 s run back; 10.0 s run + dash, release, press again (running jump, 36) */
-        {
-            static float tt;
-            tt += dt;
-            in = (Input){0};
-            in.circle = (tt > 1.0f && tt < 1.1f) || (tt > 3.4f && tt < 5.3f) || (tt > 10.4f && tt < 11.7f) ||
-                        (tt > 11.8f && tt < 12.0f);
-            in.my = (tt > 3.0f && tt < 5.4f) || (tt > 7.0f && tt < 9.4f) || (tt > 10.0f && tt < 13.0f);
-            static int fired;
-            in.r1 = (tt > 1.4f && !(fired & 1)) || (tt > 5.2f && !(fired & 2));
-            fired |= (tt > 1.4f) | (tt > 5.2f) << 1;
-            cam_yaw = tt > 7.0f && tt < 9.4f ? 5.1f + 3.14159f : 5.1f;
-            cam_pitch = 0.25f;
-        }
-#endif
+        test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 
         cam_yaw += in.cx * 2.5f * dt;
         cam_pitch += in.cy * 1.5f * dt;
@@ -624,10 +536,7 @@ int main(int argc, char **argv)
         float ky = 1 - expf(-dt / 0.15f);
         cam_y = fabsf(pl.pos.y - cam_y) > 3 ? pl.pos.y : cam_y + (pl.pos.y - cam_y) * ky;
         V3 target = v3(pl.pos.x, cam_y + 1.42f, pl.pos.z);
-        float d = 4.0f;
-#ifdef CHAR_CLOSEUP
-        d = ((const float[3]){CHAR_CLOSEUP})[1];
-#endif
+        float d = test_build_cam_dist(4.0f);
         V3 eye = v3add(target, v3(-sinf(cam_yaw) * cosf(cam_pitch) * d, sinf(cam_pitch) * d,
                                   -cosf(cam_yaw) * cosf(cam_pitch) * d));
         /* camera collision: pull in at once in front of the first wall hit (0.3 m margin, near plane 0.25 m), ease
@@ -639,19 +548,7 @@ int main(int argc, char **argv)
             want = ch.t * d - 0.3f > 0.2f ? ch.t * d - 0.3f : 0.2f;
         cam_dist = want < cam_dist ? want : cam_dist + 4.0f * dt > want ? want : cam_dist + 4.0f * dt;
         eye = v3add(target, v3scale(v3sub(eye, target), cam_dist / d));
-#ifdef ENEMY_VIEW
-        /* enemy check build (make DEFS='-DTEST_SPAWN=... -DENEMY_VIEW=index,yaw,dist', notes/enemy/test.sh): the
-         * camera orbits MSB placement `index` at yaw (rad, 0 = in front of it) and dist m, ignoring walls */
-        {
-            const float ev[3] = {ENEMY_VIEW};
-            V3 ep;
-            float eh, eyaw;
-            if (enemy_view((int)ev[0], &ep, &eh, &eyaw)) {
-                target = v3(ep.x, ep.y + eh * 0.55f, ep.z);
-                eye = v3add(target, v3(sinf(eyaw + ev[1]) * ev[2], eh * 0.25f + 0.3f, cosf(eyaw + ev[1]) * ev[2]));
-            }
-        }
-#endif
+        test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
         r_camera(eye, target);
 
         world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
@@ -696,14 +593,7 @@ int main(int argc, char **argv)
         fx_draw();
 #endif
         bonfire_draw();  /* the bloodstain marker */
-        if (combat_dummy.hp_max) {  /* debug dummy: a box of its hurtbox size, red once dead; the blade capsule axis */
-            float r = combat_dummy.radius, h = combat_dummy.height;
-            r_box(v3(combat_dummy.pos[0], combat_dummy.pos[1], combat_dummy.pos[2]), m3_rot_y(combat_dummy.yaw),
-                  v3(0, h / 2, 0), v3(r, h / 2, r), combat_dummy.dead ? 0xC0 : 0x90, 0x60, combat_dummy.dead ? 0x40 : 0x90);
-            if (combat_hit_active)
-                r_line(v3(combat_hit_a[0], combat_hit_a[1], combat_hit_a[2]),
-                       v3(combat_hit_b[0], combat_hit_b[1], combat_hit_b[2]), 0xFF, 0xFF, 0x40);
-        }
+        debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
         t_char += ((cpu_ticks() - t1) / 294912.0f - t_char) * 0.1f;
 
         /* HUD: DSR's bars, quick slots, souls, YOU DIED (hud.c); Start menu (menu.c); Select: debug overlay */
@@ -714,96 +604,9 @@ int main(int argc, char **argv)
         if (demo)
             r_text_outlined(30, 410, 2, "DEMO - PRESS ANY BUTTON");
         if (hud_debug) {
-            r_text_outlined(30, 46, 2, player_state_name(&pl));
-            snprintf(buf, sizeof buf, "SP %d/%d", (int)pl.stamina, (int)pl.stamina_max);
-            r_text_outlined(240, 28, 2, buf);
-            if (pl.state == ST_ATTACK || pl.state == ST_ROLL) {
-                snprintf(buf, sizeof buf, "T %d.%02d%s%s", (int)pl.t, (int)(pl.t * 100) % 100, pl.hitting ? " HIT" : "",
-                         pl.invincible ? " IFRAME" : "");
-                r_text_outlined(30, 62, 2, buf);
-            }
-            r_text_outlined(470, 410, 2, model_ok ? "DSR PS2 PROTO" : "MODEL.BIN BAD");
-#if defined(COL_TEST) && COL_TEST == 7
-            {   /* plunge check: every ESD state change since the start, "group0/group1" */
-                static char path[96];
-                static int last0 = -2, last1 = -2;
-                int s0 = player_esd_state(0), s1 = player_esd_state(1), n = strlen(path);
-                if ((s0 != last0 || s1 != last1) && n < (int)sizeof path - 12)
-                    snprintf(path + n, sizeof path - n, "%s%d/%d", n ? ">" : "", s0, s1);
-                last0 = s0, last1 = s1;
-                r_text_outlined(30, 78, 2, path);
-            }
-#endif
-            if (col_ok) {  /* collision debug: feet position, wall pushes this frame, camera pulled in */
-                static int last_contacts;
-                snprintf(buf, sizeof buf, "COL %d %d %d W%d C%d", (int)floorf(pl.pos.x), (int)floorf(pl.pos.y),
-                         (int)floorf(pl.pos.z), col_contacts - last_contacts, (int)(cam_dist * 10 + 0.5f));
-                last_contacts = col_contacts;
-                r_text_outlined(30, 390, 2, buf);
-                /* step smoothness: largest per-frame height change of the feet / camera target over the last second (cm),
-                 * height in cm, HP */
-                static float last_y, last_cy, jf, jc, jt;
-                float df = fabsf(pl.pos.y - last_y) * 100, dc = fabsf(cam_y - last_cy) * 100;
-                if (df < 300) jf = df > jf ? df : jf;
-                if (dc < 300) jc = dc > jc ? dc : jc;
-                last_y = pl.pos.y, last_cy = cam_y;
-                static unsigned frames;
-                snprintf(buf, sizeof buf, "Y %d J%d/%d HP %d F%u", (int)(pl.pos.y * 100), (int)(jf + 0.5f),
-                         (int)(jc + 0.5f), pl.hp, ++frames);
-                r_text_outlined(30, 374, 2, buf);
-                /* damage debug: last hit (damage, attack rating x motion value vs defence, reaction level), dummy HP,
-                 * the latest fall's damage */
-                snprintf(buf, sizeof buf, "HIT %d AR%d/DEF%d LV%d DUMMY %d FALL %d D%d", combat_last.damage,
-                         (int)(combat_last.atk + 0.5f), (int)combat_last.def, combat_last.level, combat_dummy.hp,
-                         pl.last_fall_damage, pl.deaths);
-                r_text_outlined(30, 358, 2, buf);
-                if ((jt += dt) > 1)
-                    jt = jf = jc = 0;
-            }
-            /* where the player stands and looks (testscript `spawn x y z yaw` / `cam yaw pitch`), for spot reports */
-            snprintf(buf, sizeof buf, "POS %.1f %.1f %.1f CAM %.2f %.2f", pl.pos.x, pl.pos.y, pl.pos.z, cam_yaw, cam_pitch);
-            r_text_outlined(470, 410, 2, buf);
-            snprintf(buf, sizeof buf, vram_free < 0 ? "VRAM FULL" : "VRAM FREE %dK", vram_free / 1024);
-            r_text_outlined(470, 390, 2, buf);
-            snprintf(buf, sizeof buf, "%d FPS %dK TRIS%s", (int)(1 / avg_dt + 0.5f), tris_drawn / 1000, map_ok ? "" : " NO MAP");
-            r_text_outlined(470, 370, 2, buf);
-            snprintf(buf, sizeof buf, "VU1 %d  EE %d", map_vu1_batches, map_ee_tris);
-            r_text_outlined(470, 350, 2, buf);
-            /* VU1 chain qwords (R1): map / characters, this frame and peak, early segment kicks */
-            snprintf(buf, sizeof buf, "CHN %d/%d %d/%d S%d CLUT %d+%d", vu1_stats.last[0], vu1_stats.peak[0],
-                     vu1_stats.last[1], vu1_stats.peak[1], vu1_stats.segments, vu1_stats.clut_loads[0],
-                     vu1_stats.clut_loads[1]);
-            r_text_outlined(30, 246, 2, buf);
-            snprintf(buf, sizeof buf, "MAP %d CHR %d VUW %d MS", (int)t_cull, (int)t_char, (int)t_wait);
-            r_text_outlined(400, 330, 2, buf);
-            /* load: wall time, compressed MB read, EE RAM left between heap and stack */
-            snprintf(buf, sizeof buf, "LOAD %d.%02dS IO %d.%02dS %d.%dM RAM %d.%dM", (int)(t_load / 294912000),
-                     (int)(t_load / 2949120 % 100), (int)(pack_stats.wait_ticks / 294912000),
-                     (int)(pack_stats.wait_ticks / 2949120 % 100), (int)(pack_stats.read >> 20),
-                     (int)((pack_stats.read & 0xFFFFF) * 10 >> 20), (int)(ram_free() >> 20),
-                     (int)((ram_free() & 0xFFFFF) * 10 >> 20));
-            r_text_outlined(238, 310, 2, buf);
-            if (world_stats.blocks) {  /* world blocks (src/world.c): under the player / full / loaded, reading, pools */
-                snprintf(buf, sizeof buf, "WLD B%d F%d W%X L%d/%d R%d %d/%dK %dMS", world_stats.current,
-                         world_stats.full, world_stats.want, world_stats.loaded, world_stats.blocks, world_stats.reading,
-                         world_stats.pool_used_kb, world_stats.pool_kb, world_stats.full_ms);
-                r_text_outlined(238, 294, 2, buf);
-            }
-            /* nearest enemy: AI goal, distance, HP, action anim, ESD states; enemies updated / drawn / spawned */
-            enemy_status(buf, sizeof buf);
-            r_text_outlined(30, 294, 2, buf);
-            snprintf(buf, sizeof buf, "EN %d/%d/%d", enemy_active, enemy_drawn, enemies);
-            r_text_outlined(30, 278, 2, buf);
-            /* breakables: instances / broken, live pieces / awake, map queries this frame */
-            snprintf(buf, sizeof buf, "OBJ %d/%d PC %d/%d Q%d %dUS", breakables, objects_stats.broken,
-                     objects_stats.pieces, objects_stats.awake, objects_stats.queries, objects_stats.us);
-            r_text_outlined(30, 262, 2, buf);
-            event_status(buf, sizeof buf);  /* EMEVD: instances / waiting, fired, last fired id, stubs */
-            r_text_outlined(238, 278, 2, buf);
-            /* effects: particles alive / drawn, instances in range, GS packets, EE ms (update + draw) */
-            snprintf(buf, sizeof buf, "FX %d/%d I%d B%d %d.%dMS", fx_stats.particles, fx_stats.drawn, fx_stats.active,
-                     fx_stats.batches, (int)fx_stats.ms, (int)(fx_stats.ms * 10) % 10);
-            r_text_outlined(30, 230, 2, buf);
+            const DebugHud dh = {cam_yaw, cam_pitch, cam_dist, cam_y, avg_dt, t_cull, t_char, t_wait, t_load, ram_free(),
+                                 tris_drawn, vram_free, model_ok, map_ok, col_ok, enemies, breakables};
+            debug_hud_draw(&dh, &pl, dt);
         }
         menu_draw(&pl);
         loading_overlay(dt);  /* the fade-in from black after a loading screen */

@@ -448,7 +448,7 @@ area.
   (0.04 s, lag <= 0.12 m) and eased camera follow height (main.c, 0.15 s); src/esd_env_move.c answers f201 / f283.
   tools/export_player.py exports Grad (TAE 300/236 ramps) and flags 27/51; export_model.py bakes 900, 760, 761,
   610, 6065-6067.
-- Check builds: `make EE_DBGINFOFLAGS=-DCOL_TEST=n` (touch main.c player.c): 1 wall slide, 2 ledge drop, 3 running
+- Check builds: `make EE_DBGINFOFLAGS=-DCOL_TEST=n` (hooks in src/testscript.c; the .cflags stamp rebuilds on a flag change): 1 wall slide, 2 ledge drop, 3 running
   jump, 4 stairs. PCSX2 results: notes/firelink-ledge-drop.png, firelink-running-jump.png, firelink-stairs-smooth.png
   (HUD `Y <cm> J<feet>/<camera>` = largest per-frame height change in the last second, cm).
 - Fall death via ESD (2026-10-31): constrain()/land() only set HP = -1 (past 16 m in the air, or damage on landing);
@@ -545,7 +545,7 @@ area.
 - src/hud.c: bars (frame length = max / cap, fill = current / max, tinted), quick slots, item name + count, souls,
   YOU DIED fade while pl.hp < 0; gsKit sprites with alpha blending, alpha / depth test off around the HUD. src/menu.c:
   Start opens a read-only Equipment / Inventory / Status screen (icons, names, live HP / stamina), d-pad cursor,
-  Start or Circle closes; movement and the demo are blocked while it is open. Select toggles the old debug overlay
+  Start or Circle closes; movement and the demo are blocked while it is open. Select toggles the old debug overlay (src/debug_hud.c)
   (fps, VU1, collision, load), off by default. Screenshot switches: -DMENU_TEST, -DDIED_TEST, -DHUD_DEBUG, -DNO_HUD.
 - PCSX2 (same tree, same frame): HUD drawn vs compiled out (-DNO_HUD) both 30 fps, map pass 14 ms, 682 VU1
   batches: no measurable cost. (The spawn view was 60 fps earlier on 2026-10-31; the drop came with other changes in
@@ -691,7 +691,7 @@ area.
   an untextured group; VU1Skin_Flat / SKIN stay for meshes whose diffuse is found nowhere.
 - Cost: +1 texture (7 of model.c MAX_TEX 8; CLUTs are preallocated, so only the 64 KB pixel page), VRAM free 370 K ->
   306 K, model.bin 2.09 -> 2.16 MB, EE RAM free 11.6 -> 11.5 MB, 60 fps unchanged.
-- Close-up test build: `make EE_DBGINFOFLAGS='-DCHAR_CLOSEUP=yaw,dist,pitch'` (main.c: no demo input, camera dist m in
+- Close-up test build: `make EE_DBGINFOFLAGS='-DCHAR_CLOSEUP=yaw,dist,pitch'` (src/testscript.c: no demo input, camera dist m in
   front of the player rotated by yaw rad), e.g. 0.35,0.9,0.0 for the neck. Before/after:
   notes/milestones/char-skin-20261031-0115-{close,neck,before,after}.png.
 
