@@ -97,7 +97,8 @@ MAKE=(make -C ps2/proto "BUILD=$BUILD")
 [ -n "$QUEUE" ] && MAKE=("$ROOT/tools/q" "${MAKE[@]}")
 
 T0=$(date +%s)
-say "building game data and ELF into $BUILD (first run: long, several GB of RAM)"
+FIRST=; [ -d "$BUILD/gen" ] || FIRST=" (first build: exports everything, long and several GB of RAM)"
+say "building game data and ELF into $BUILD$FIRST"
 "${MAKE[@]}"
 say "assembling the ISO"
 # the ISO needs the packs and the ELF from the step above: a separate make, so -j never starts it early
