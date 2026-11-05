@@ -575,6 +575,15 @@ static void full_step(void)
             return;
         }
     }
+    if (warping && res_blk != cur) {
+        /* a warp or a death left the block being swapped in: the chunk in flight is collected, the rest is dropped
+         * and the pool goes to the block under the new position. Finishing a Burg swap first kept a death's loading
+         * screen up ~16-20 s from cdrom0: (2026-11-05, TECH_DEBT world-8) */
+        printf("world: block %d full swap dropped at %u of %u KB (warp to block %d)\n", res_blk, res_done >> 10,
+               res_total(r) >> 10, cur);
+        res_blk = -1;
+        return;
+    }
     if (lite_first)
         return;  /* the slot goes to a wanted block's lite set first (step) */
     unsigned n = res_n(r, res_done, &src);
