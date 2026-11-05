@@ -98,7 +98,7 @@ static unsigned nres;
 static unsigned short *rgrp;
 /* Reads in flight, oldest first (pack_req_read: the disc server serves them back to back, so a small item no longer
  * costs a frame or two of its own; ISO 2026-11-05: 51-99 ms median for items under 64 KB, one at a time) */
-#define MS_INFLIGHT 3
+#define MS_INFLIGHT 8  /* a run of MS_RUN bytes is up to four page reads */
 typedef struct { int id, inst, tk; unsigned n, bytes, t; } MsRead;  /* items id .. id + n of instance inst, one block */
 static MsRead rd[MS_INFLIGHT];
 static int nrd;
@@ -106,6 +106,9 @@ static unsigned land_t;  /* when the last read landed (or the first of a busy sp
 static float settle_r, settle_rf;  /* the radii of the last mapstream_busy */
 static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus);
 static int sel, hold, room_fail, focus = -1, settling;
+/* eviction passes left this frame: with the arena full (pages, plan step 6) every read made room by ranking every
+ * loaded item, up to MS_INFLIGHT times a frame (mapstream_update frames of 144-323 ms, ISO 2026-11-06) */
+static int evict_left;
 static unsigned scan_frame;  /* frame of the last full scan */
 static float scan_pos[3];
 /* A short ranked list of items: the next reads (lowest key first) or eviction candidates (desc: highest first) */
@@ -178,20 +181,62 @@ static unsigned char *pend_p;  /* mapstream_lend before the arena was allocated 
 static unsigned pend_n;
 static unsigned arena_size, nholes, hole_off[MS_HOLES], hole_len[MS_HOLES];  /* free list, sorted by offset */
 
-/* main: only the arena's own bytes (not memory lent by mapstream_lend, which its owner takes back) */
+/* Items live in MS_PAGE pages of the arena (plan step 6, the page pool of Jak 2's loader): an item of up to a page
+ * never crosses a page boundary, a larger one (a single chunk over a page, a big mip 0) starts on one. The exporter
+ * cuts near cells into parts of at most a page (export_map.NEAR_PART) and map.c cuts the resident level into items of
+ * at most a page (RES_ITEM), so every free page fits any item: with the first-fit arena and items of up to 256 KB
+ * the route still refused items of ~125 KB with ~450 KB free in holes of 64 KB or less (ISO 2026-11-06), and with
+ * whole near cells of up to 2.2 MB, 1.2-1.6 MB free in holes under 400 KB (TECH_DEBT world-9). A run of items read
+ * together (MS_RUN) is one read per page, back to back on the disc. */
+#define MS_PAGE (64u << 10)
+
+/* take [o, o + n) out of hole i (it lies inside it) */
+static int hole_take(unsigned i, unsigned o, unsigned n)
+{
+    unsigned hs = hole_off[i], he = hs + hole_len[i];
+    if (o > hs && o + n < he) {  /* splits it */
+        if (nholes == MS_HOLES)
+            return 0;
+        memmove(hole_off + i + 1, hole_off + i, (nholes - i) * sizeof *hole_off);
+        memmove(hole_len + i + 1, hole_len + i, (nholes - i) * sizeof *hole_len);
+        nholes++;
+        hole_len[i] = o - hs;
+        hole_off[i + 1] = o + n, hole_len[i + 1] = he - o - n;
+    } else if (o > hs) {
+        hole_len[i] = o - hs;
+    } else if (o + n < he) {
+        hole_off[i] = o + n, hole_len[i] = he - o - n;
+    } else {
+        memmove(hole_off + i, hole_off + i + 1, (nholes - i - 1) * sizeof *hole_off);
+        memmove(hole_len + i, hole_len + i + 1, (nholes - i - 1) * sizeof *hole_len);
+        nholes--;
+    }
+    return 1;
+}
+
+/* An item's blob (64-byte aligned) by the page rule above, first fit, and first into a page some item already uses,
+ * so free pages stay whole. main: only the arena's own bytes (not memory lent by mapstream_lend, which its owner
+ * takes back). Lent memory follows the same page grid (offsets from arena). */
 static void *arena_alloc(unsigned n, int main)
 {
     n = (n + 63) & ~63u;
-    for (unsigned i = 0; i < nholes; i++)
-        if (hole_len[i] >= n && (!main || hole_off[i] + n <= arena_size)) {
-            void *p = arena + hole_off[i];
-            hole_off[i] += n, hole_len[i] -= n;
-            if (!hole_len[i]) {
-                memmove(hole_off + i, hole_off + i + 1, (nholes - i - 1) * sizeof *hole_off);
-                memmove(hole_len + i, hole_len + i + 1, (nholes - i - 1) * sizeof *hole_len);
-                nholes--;
-            }
-            return p;
+    for (int pass = 0; pass < 2; pass++)
+        for (unsigned i = 0; i < nholes; i++) {
+            unsigned hs = hole_off[i], he = hs + hole_len[i], o = hs;
+            if (hole_len[i] < n)
+                continue;
+            if (n > MS_PAGE)
+                o = (o + MS_PAGE - 1) & ~(MS_PAGE - 1);
+            else if (o / MS_PAGE != (o + n - 1) / MS_PAGE)
+                o = (o / MS_PAGE + 1) * MS_PAGE;  /* would cross: the next page */
+            if (o + n > he || (main && o + n > arena_size))
+                continue;
+            unsigned pg = o & ~(MS_PAGE - 1);
+            if (!pass && n <= MS_PAGE && hs <= pg && he >= pg + MS_PAGE)
+                continue;  /* a whole free page: only when no used page has room */
+            if (!hole_take(i, o, n))
+                return NULL;
+            return arena + o;
         }
     return NULL;
 }
@@ -563,12 +608,86 @@ static int ensure_arena(void)
     return 1;
 }
 
+/* The window of whole pages of the arena's own bytes, n bytes or more, that costs the fewest item bytes to clear (the
+ * highest of equal ones): every byte in it free or held by an item that may go (loaded, not handed out within keep
+ * frames, any with keep ~0u); its items are dropped. Items scattered over the arena in pages (plan step 6) meant that dropping the
+ * farthest item first freed bytes everywhere but no window for a lite set or a model. maxkey > 0: only items ranked
+ * above it may go (a read making room, MS_EVICT_M). 1 when one was cleared; *kb += the KB dropped. */
+#define MS_WIN_PAGES 1024  /* 64 MB of arena */
+static int make_window(unsigned n, unsigned keep, unsigned *kb, float maxkey, const float *pos)
+{
+    static unsigned cov[MS_WIN_PAGES], cost[MS_WIN_PAGES];  /* per page: bytes free or clearable; item bytes in it */
+    unsigned np = arena_size / MS_PAGE, need = (n + MS_PAGE - 1) / MS_PAGE;
+    np = np < MS_WIN_PAGES ? np : MS_WIN_PAGES;
+    if (!need || need > np)
+        return 0;
+    memset(cov, 0, np * sizeof *cov), memset(cost, 0, np * sizeof *cost);
+    unsigned lim = np * MS_PAGE;
+    #define ADD(o, len, c)                                                                                      \
+        for (unsigned s_ = (o), e_ = (o) + (len) < lim ? (o) + (len) : lim; s_ < e_;) {                      \
+            unsigned pg_ = s_ / MS_PAGE, t_ = (pg_ + 1) * MS_PAGE < e_ ? (pg_ + 1) * MS_PAGE : e_;          \
+            cov[pg_] += t_ - s_;                                                                             \
+            if (c)                                                                                           \
+                cost[pg_] += t_ - s_;                                                                        \
+            s_ = t_;                                                                                         \
+        }
+    for (unsigned i = 0; i < nholes; i++)
+        if (hole_off[i] < lim)
+            ADD(hole_off[i], hole_len[i], 0)
+    int was = sel;
+    for (int k = 0; k < MS_INST; k++) {
+        bind(k);
+        for (unsigned id = 0; id < it_n(); id++) {
+            unsigned a;
+            if (state[id] != MS_READY || (run_of(id, &a), a != id) || (keep != ~0u && run_used(id, keep)) ||
+                (maxkey > 0 && run_key(k, id, pos) <= maxkey))
+                continue;
+            unsigned e = run_of(id, &a), o = (unsigned)((unsigned char *)buf[a] - arena);
+            unsigned len = it_res(a) ? rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - rit[a - ncell].rel : it_bytes(a);
+            if (o < lim)
+                ADD(o, (len + 63) & ~63u, 1)
+        }
+    }
+    #undef ADD
+    int best = -1;
+    unsigned best_cost = ~0u, c = 0, ok = 0;  /* sliding over pages [i, i + need) from the top */
+    for (int i = (int)np - 1; i >= 0; i--) {
+        ok = cov[i] >= MS_PAGE ? ok + 1 : 0;
+        c += cost[i];
+        if ((unsigned)i + need < np)
+            c -= cost[i + need];
+        if (ok >= need && c < best_cost)
+            best = i, best_cost = c;
+    }
+    if (best < 0) {
+        bind(was);
+        return 0;
+    }
+    unsigned w0 = best * MS_PAGE, w1 = w0 + need * MS_PAGE;
+    for (int k = 0; k < MS_INST; k++) {
+        bind(k);
+        for (unsigned id = 0; id < it_n(); id++) {
+            if (state[id] != MS_READY)
+                continue;
+            unsigned o = (unsigned)((unsigned char *)buf[id] - arena);
+            if (o < w1 && o + it_bytes(id) > w0) {
+                if (kb)
+                    *kb += it_bytes(id) >> 10;
+                drop(id);
+            }
+        }
+    }
+    bind(was);
+    return 1;
+}
+
 void *mapstream_alloc(unsigned n, const float pos[3])
 {
     if (!ensure_arena())
         return NULL;
     int was = sel, forced = 0;
     unsigned forced_kb = 0;
+    (void)forced;
     void *p;
     /* no room even with every item not drawn this frame gone: keep them all (a block lite set retried each frame
      * dropped 1.4 MB of drawn cells per try and never fit; 2026-11-03, ISO of 9e6dd67) */
@@ -585,37 +704,46 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     bind(was);
     if (room < n)
         return NULL;
-    /* drop the farthest item no chain reads (any distance; resident cells ranked as mapstream_update ranks them)
-     * until n bytes fit. When every item left was drawn in the last frames (the player stands among them), drop
-     * drawn ones too: callers run in the update phase (enemy.c stream_types, world.c), after main.c's end-of-frame
-     * vu1_wait and before this frame's map_draw, so once VIF1 is idle no chain reads an item not handed out this
+    /* make a window for it: the pages whose items may go (not handed out in the last 2 frames), else, once VIF1 is
+     * idle, any item not handed out this frame. Callers run in the update phase (enemy.c stream_types, world.c), after
+     * main.c's end-of-frame vu1_wait and before this frame's map_draw, so no chain reads an item not handed out this
      * frame. Without it a 579 KB c2540 model.bin found no room in the Burg and the heap fallback failed on
      * fragmentation (40-209 OUT OF RAM per 30-minute soak, 2026-11-01). Dropped items stream back. */
-    while (!(p = arena_alloc_top(n))) {
+    p = arena_alloc_top(n);
+    if (!p && make_window(n, 2, NULL, 0, pos))
+        p = arena_alloc_top(n);
+    if (!p) {
+        vu1_wait();
+        forced = 1;
+        /* after vu1_wait no chain reads any item, last frame's included (mapstream_update, and with it this frame's
+         * map_draw, runs after the callers): every loaded item may go */
+        if (make_window(n, ~0u, &forced_kb, 0, pos))
+            p = arena_alloc_top(n);
+    }
+    /* no window of whole pages (items drawn this frame in every stretch of the arena): the farthest items one by one,
+     * which can still open a hole that spans part pages (a pass that stopped here sent lite sets and enemy models to
+     * the heap: 2.5 MB less heap on the ISO route, a c2540 model.bin OUT OF RAM in world_soak, 2026-11-06) */
+    while (!p) {
         int far = -1, far_k = 0;
         float fd = -1, key;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++)
-                if (state[id] == MS_READY && !run_used(id, forced ? 0 : 2)) {
+                if (state[id] == MS_READY && !run_used(id, 0)) {
                     it_want(k, id, pos, &key);
                     if (key > fd)
                         far = id, far_k = k, fd = key;
                 }
         }
-        if (far < 0 && !forced) {
-            vu1_wait();
-            forced = 1;
-            continue;
-        }
         if (far < 0)
             break;
         bind(far_k);
-        forced_kb += forced ? it_bytes(far) >> 10 : 0;
+        forced_kb += it_bytes(far) >> 10;
         drop(far);
+        p = arena_alloc_top(n);
     }
     bind(was);
-    if (forced_kb)  /* the caller falls back to the heap on NULL */
+    if (forced_kb || !p)  /* the caller falls back to the heap on NULL */
         printf("mapstream: alloc %u KB %s, %u KB of drawn cells dropped\n", n >> 10, p ? "ok" : "FAILED", forced_kb);
     if (p)
         mapstream_stats.other_kb += (n + 63) >> 10;
@@ -729,17 +857,17 @@ int mapstream_reclaim(void *p, unsigned n)
     return 1;
 }
 
-/* An item's blob: large ones (near cells up to 2.2 MB in the Burg) from the top with mapstream_alloc's lite sets, small
- * ones (resident items, mip 0) from the bottom, so a big near cell does not wait for one hole among small items (ISO
- * round 5, 2026-11-05: 158 of 181 refusals had the room but no hole) */
-#define MS_BIG (256u << 10)
-#define MS_RUN (128u << 10)
+/* An item's blob: from the bottom in pages (arena_alloc), mapstream_alloc's lite sets and temporaries from the top */
+/* runs of neighbouring resident items read in one request: 256 KB since reads are paged by the disc server (a long
+ * read no longer holds the drive from the sound streams) and cells are in Z order (export_map.cell_zorder), so a run
+ * covers neighbours (plan step 5, 2026-11-06; 128 KB before) */
+#define MS_RUN (256u << 10)
 /* a loaded item gives way only to one ranked MS_EVICT_M x nearer (squared: ~1.4x the distance; ASSUMED hysteresis
  * against read / evict loops between items of about the same rank) */
 #define MS_EVICT_M 2.0f  /* ASSUMED: RES_ITEM (map.c), ~0.2 s from the disc */
 static void *item_alloc(unsigned n)
 {
-    return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
+    return arena_alloc(n, 0);
 }
 
 /* read i landed (r bytes) */
@@ -830,6 +958,7 @@ void mapstream_update(const float pos[3])
             }
         }
     }
+    evict_left = 1;
     while (can && nq && nrd < MS_INFLIGHT && issue(pos))
         ;
     bind(was);
@@ -847,10 +976,10 @@ static int issue(const float *pos)
         bind(was);
         return 1;  /* loaded or reading since: the next one */
     }
-    /* a small resident item takes the missing wanted ones after it in mapres.bin along, up to MS_RUN bytes in one
-     * read (one block, freed together): Firelink's 815 items took ~30 s at one a read when each read cost a frame or
-     * two of its own (ISO round 8, 2026-11-05); fewer, larger reads still save seeks */
-    unsigned wn = 1, wbytes = it_bytes(w.id);
+    /* a small resident item takes the missing wanted ones after it in mapres.bin along, up to MS_RUN bytes (fewer,
+     * larger reads save seeks: Firelink's 815 items took ~30 s at one a read, ISO round 8, 2026-11-05). The run goes
+     * out in groups of at most a page each, one read and one blob per group (freed together), back to back */
+    unsigned wn = 1;
     if (it_res(w.id)) {
         unsigned j = w.id - ncell, end = rit[j].rel + rit[j].bytes, tex = !!(rit[j].tag & MS_RES_TEX);
         float key;
@@ -862,36 +991,44 @@ static int issue(const float *pos)
                 break;
             end = c->rel + c->bytes, wn++;
         }
-        wbytes = end - rit[j].rel;
-        if (wn > 1 && wbytes >= MS_BIG)
-            wn = 1, wbytes = it_bytes(w.id);
     }
-    void *p = item_alloc(wbytes);
-    if (!p && wn > 1)  /* no room for the run as it is: the item alone, making room for it below */
-        wn = 1, wbytes = it_bytes(w.id);
-    /* make room in the arena: drop the least wanted loaded items ranked below the one wanted until its blob fits
-     * (one pass ranks up to MS_QUEUE of them, least wanted first) */
-    while (!p && !(p = item_alloc(wbytes))) {
-        MsQ d[MS_QUEUE];
-        int nd = 0;
-        float key;
-        for (int k = 0; k < MS_INST; k++) {
-            bind(k);
-            for (unsigned id = 0; id < it_n(); id++)
-                if (state[id] == MS_READY && !run_used(id, 0)) {  /* drawn last frame is fine: mapstream_update
-                                                                      * runs after main.c's end-of-frame vu1_wait */
-                    key = run_key(k, id, pos);
-                    if (key > w.key * MS_EVICT_M)
-                        q_add(d, &nd, MS_QUEUE, k, id, key, 1);
-                }
+    int sent = 0;
+    for (unsigned g = w.id; g < w.id + wn && nrd < MS_INFLIGHT;) {
+        unsigned e = g + 1, gbytes = it_bytes(g);  /* the group [g, e) */
+        if (it_res(g)) {
+            unsigned r0 = rit[g - ncell].rel;
+            while (e < w.id + wn && rit[e - ncell].rel + rit[e - ncell].bytes - r0 <= MS_PAGE)
+                e++;
+            gbytes = rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - r0;
         }
-        if (!nd) {
+        void *p = item_alloc(gbytes);
+        if (!p && sent)
+            break;  /* the rest of the run waits for its turn in the queue */
+        /* make room in the arena for the first group: drop the least wanted loaded items ranked below the one wanted
+         * until its blob fits (one pass ranks up to MS_QUEUE of them, least wanted first) */
+        if (!p && evict_left <= 0) {  /* no more ranking passes this frame: it goes back to the queue's head */
+            if (!sent && nq < MS_QUEUE) {
+                memmove(q + 1, q, nq++ * sizeof *q);
+                q[0] = w;
+            }
+            bind(was);
+            return 0;
+        }
+        evict_left -= !p;
+        /* make room: the cheapest window of whole pages holding only items ranked MS_EVICT_M x further than this one
+         * (and not drawn this frame: mapstream_update runs after main.c's end-of-frame vu1_wait) */
+        if (!p && make_window(gbytes, 0, NULL, w.key * MS_EVICT_M > 0 ? w.key * MS_EVICT_M : 1e-30f, pos)) {
+            bind(w.k);
+            p = item_alloc(gbytes);
+        }
+        bind(w.k);
+        if (!p) {
             if (!room_fail++) {
                 unsigned fr = 0, big = 0;
                 for (unsigned i = 0; i < nholes; i++)
                     fr += hole_len[i], big = hole_len[i] > big ? hole_len[i] : big;
                 printf("mapstream: no room for item %d.%u (%u KB, rank %.0f m): arena full of nearer items; %u KB free, "
-                       "largest hole %u KB, items %u KB (resident %u, mip 0 %u), other %u KB\n", w.k, w.id, wbytes >> 10,
+                       "largest hole %u KB, items %u KB (resident %u, mip 0 %u), other %u KB\n", w.k, w.id, gbytes >> 10,
                        sqrtf(w.key), fr >> 10, big >> 10, mapstream_stats.bytes >> 10, mapstream_stats.res_kb,
                        mapstream_stats.tex_kb, mapstream_stats.other_kb);
             }
@@ -902,40 +1039,34 @@ static int issue(const float *pos)
             bind(was);
             return 0;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
-        for (int j = 0; j < nd && !p; j++) {
-            bind(d[j].k);
-            if (state[d[j].id] == MS_READY)  /* not gone with an earlier one's run */
-                drop(d[j].id);
-            bind(w.k);
-            p = item_alloc(wbytes);
+        room_fail = 0;
+        bind(w.k);
+        int tk = pack_req_read(&pk, it_off(g), p, gbytes);
+        if (!tk) {
+            arena_free(p, gbytes);
+            if (!sent)
+                q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* every request slot is taken: again next frame */
+            bind(was);
+            return 0;
         }
-        if (p)
-            break;
-    }
-    room_fail = 0;
-    bind(w.k);
-    int tk = pack_req_read(&pk, it_off(w.id), p, wbytes);
-    if (!tk) {
-        arena_free(p, wbytes);
-        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* every request slot is taken: again next frame */
-        bind(was);
-        return 0;
-    }
-    for (unsigned m = w.id; m < w.id + wn; m++) {
-        unsigned b = it_bytes(m);
-        buf[m] = (unsigned char *)p + (it_res(m) ? rit[m - ncell].rel - rit[w.id - ncell].rel : 0);
-        state[m] = MS_READING;
-        if (it_res(m)) {
-            rgrp[m - ncell] = (unsigned short)(w.id - ncell);
-            *(it_tex(m) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (b + 1023) >> 10;
+        for (unsigned m = g; m < e; m++) {
+            unsigned b = it_bytes(m);
+            buf[m] = (unsigned char *)p + (it_res(m) ? rit[m - ncell].rel - rit[g - ncell].rel : 0);
+            state[m] = MS_READING;
+            if (it_res(m)) {
+                rgrp[m - ncell] = (unsigned short)(g - ncell);
+                *(it_tex(m) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (b + 1023) >> 10;
+            }
+            mapstream_stats.cells++;
+            mapstream_stats.bytes += b;
         }
-        mapstream_stats.cells++;
-        mapstream_stats.bytes += b;
+        if (!nrd)
+            land_t = ticks();
+        rd[nrd++] = (MsRead){.id = g, .inst = w.k, .tk = tk, .n = e - g, .bytes = gbytes, .t = ticks()};
+        mapstream_stats.pending = nrd;
+        sent++;
+        g = e;
     }
-    if (!nrd)
-        land_t = ticks();
-    rd[nrd++] = (MsRead){.id = w.id, .inst = w.k, .tk = tk, .n = wn, .bytes = wbytes, .t = ticks()};
-    mapstream_stats.pending = nrd;
     bind(was);
     return 1;
 }

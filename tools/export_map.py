@@ -2243,7 +2243,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
 
 def stream_cells(chunks):
     """STREAM: [(cell key, resident chunk indices (coarse level + kept meshes whose centre lies in the cell, by
-    texture), near chunk indices (by texture))] sorted by key; sky chunks belong to no cell."""
+    texture), near chunk indices (by texture))] in Z order of the key (cell_zorder); sky chunks belong to no cell."""
     cells = {}
     for i, ch in enumerate(chunks):
         if ch[1] & CHUNK_SKY:
@@ -2252,10 +2252,32 @@ def stream_cells(chunks):
         key = tuple(t[1]) if t else tuple(int(math.floor((ch[6][a] + ch[7][a]) / 2 / CHUNK_GRID)) for a in range(3))
         cells.setdefault(key, ([], []))[1 if t and t[0] == 1 else 0].append(i)
     return [(k, sorted(r, key=lambda i: chunks[i][0]), sorted(n, key=lambda i: chunks[i][0]))
-            for k, (r, n) in sorted(cells.items())]
+            for k, (r, n) in sorted(cells.items(), key=lambda kv: cell_zorder(kv[0]))]
+
+
+def cell_zorder(key):
+    """Z order (Morton) of a cell key: the bits of x, z and y interleaved, so cells next to each other on the ground
+    sit next to each other in the cell table, mapres.bin and cells.bin (the order of the disc). mapstream reads
+    neighbouring resident items in one request (MS_RUN) and a walk reads nearby sectors; sorted by (x, y, z) as before,
+    the cells of one x column came first and a neighbour in x was a whole column away (plan step 5, 2026-11-06)."""
+    k = 0
+    for b in range(10):
+        for a in (0, 2, 1):
+            k |= ((key[a] + 512) >> b & 1) << (3 * b + (0, 2, 1).index(a))
+    return k
 
 
 CELL_SIZES = []
+# Near cell blobs over NEAR_PART bytes are written as several parts (consecutive cell table entries, the later ones
+# marked CELL_PART in their near count): each part is a mapstream item of its own, so no near cell needs one big hole
+# in the arena (Burg near cells of 0.6-2.2 MB found none with 1.2-1.6 MB free: 115 refusals on the ISO route,
+# TECH_DEBT world-9). map.c draws a cell's near level once every part is in. Plan step 5, 2026-11-06.
+# One part is at most one page of mapstream's arena (MS_PAGE, plan step 6): 256 KB parts (step 5) still found no hole
+# of their size with ~450 KB free in the arena; a part of a page fits any free page. A single chunk over a page makes
+# a part of its own (it starts on a page).
+NEAR_PART = 64 * 1024
+NEAR_PARTS_MAX = 64  # map.c NEAR_PARTS
+CELL_PART = 0x80000000
 
 
 def write_cells(cells, res, all_chunks, nres):
@@ -2264,7 +2286,10 @@ def write_cells(cells, res, all_chunks, nres):
     bump.bin of the cell's first near chunk.
     cells.bin: per cell one blob (64-byte aligned): near chunk records (as map.bin's, stream offsets relative to the
     blob, flags bits 8-31 = the chunk's number in bump.bin; foliage (CHUNK_GRASS) keeps its tuft bits there, its
-    number is the table's first near number + its index in the blob), then the streams (16-byte aligned)."""
+    number is the table's first near number + its index in the blob), then the streams (16-byte aligned).
+    A cell whose blob would pass NEAR_PART bytes is split into parts of whole chunks (in their order): the first part
+    in the cell's own entry, the others in the entries after it with near | CELL_PART, 0 resident chunks and the same
+    box; each part is a blob of its own."""
     tab, cbin = bytearray(struct.pack("<4I", len(cells), 0, 0, 0)), bytearray()
     CELL_SIZES.clear()
     first, gid = 0, nres
@@ -2273,26 +2298,40 @@ def write_cells(cells, res, all_chunks, nres):
                 [all_chunks[gid + j] for j in range(len(n))]
         mn = [min(b[6][a] for b in boxes) for a in range(3)]
         mx = [max(b[7][a] for b in boxes) for a in range(3)]
-        b = bytearray(b"\0" * (64 * len(n)))
+        def size(j):  # bytes chunk gid + j adds to a blob: its record + its streams, 16-byte aligned
+            return 64 + sum((len(a) + 15) & ~15 for a in all_chunks[gid + j][3:6])
+        parts, cur, cb = [], [], 0
         for j in range(len(n)):
-            ti, fl, ntri, pos, st, col, lo, hi, org, step, sts = all_chunks[gid + j]
-            offs = []
-            for arr in (pos, st, col):
+            if cur and cb + size(j) + 63 > NEAR_PART:
+                parts.append(cur)
+                cur, cb = [], 0
+            cur.append(j)
+            cb += size(j)
+        parts.append(cur)
+        assert len(parts) <= NEAR_PARTS_MAX, f"cell {key}: {len(parts)} near parts"
+        for p, part in enumerate(parts):
+            b = bytearray(b"\0" * (64 * len(part)))
+            for i, j in enumerate(part):
+                ti, fl, ntri, pos, st, col, lo, hi, org, step, sts = all_chunks[gid + j]
+                offs = []
+                for arr in (pos, st, col):
+                    b.extend(b"\0" * (-len(b) % 16))
+                    offs.append(len(b))
+                    b += arr
                 b.extend(b"\0" * (-len(b) % 16))
-                offs.append(len(b))
-                b += arr
-            b.extend(b"\0" * (-len(b) % 16))
-            assert gid + j < 1 << 24
-            b[64 * j:64 * j + 64] = struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0) |
-                                                (0 if fl & CHUNK_GRASS else (gid + j) << 8), ntri, *offs, *lo, *hi,
-                                                *org, step)
-        b.extend(b"\0" * (-len(b) % 64))
-        off = len(cbin) if n else 0
-        cbin += b if n else b""
-        CELL_SIZES.append((key, len(r), len(n), len(b) if n else 0))
-        tab += struct.pack("<6f6I", *mn, *mx, off, len(b) if n else 0, len(n), first, len(r), gid)
+                assert gid + j < 1 << 24
+                b[64 * i:64 * i + 64] = struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0) |
+                                                    (0 if fl & CHUNK_GRASS else (gid + j) << 8), ntri, *offs, *lo, *hi,
+                                                    *org, step)
+            b.extend(b"\0" * (-len(b) % 64))
+            off = len(cbin) if part else 0
+            cbin += b if part else b""
+            CELL_SIZES.append((key, len(r) if not p else 0, len(part), len(b) if part else 0))
+            tab += struct.pack("<6f6I", *mn, *mx, off, len(b) if part else 0, len(part) | (CELL_PART if p else 0),
+                               first if not p else first + len(r), len(r) if not p else 0, gid + (part[0] if part else 0))
         first += len(r)
         gid += len(n)
+    tab[0:4] = struct.pack("<I", len(CELL_SIZES))
     return bytes(tab), bytes(cbin)
 
 
