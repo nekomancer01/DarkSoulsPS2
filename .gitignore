@@ -79,6 +79,10 @@ gmon.out
 !/notes/TECH_DEBT.md
 !/notes/TOOLS.md
 
+# The maintainer's local job dashboard (status.sh, progress.sh in the repo root): kept on that PC only
+/status.sh
+/progress.sh
+
 # Screenshots / renders of game content, milestone captures, user screenshots
 *.png
 *.webp
