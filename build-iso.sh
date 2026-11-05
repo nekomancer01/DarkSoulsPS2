@@ -51,7 +51,8 @@ done
 [ -z "$OUT" ] || OUT=$(realpath -m -- "$OUT")
 BUILD=$(realpath -m -- "$BUILD")
 if [ -n "$GAME" ]; then
-    GAME=$(realpath -e -- "$GAME") || die "no such folder: $GAME"
+    G=$(realpath -e -- "$GAME" 2>/dev/null) || die "no such folder: $GAME"
+    GAME=$G
     [ -f "$GAME/DarkSoulsRemastered.exe" ] || die "$GAME has no DarkSoulsRemastered.exe (-i takes the game's install folder)"
 fi
 
