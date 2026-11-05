@@ -602,17 +602,18 @@ int main(int argc, char **argv)
         cam_pitch += in.cy * 1.5f * dt;
         /* LockCamParam row 0: rotRangeMinX -40 degrees (camera below the target, looking up) */
         cam_pitch = cam_pitch < -0.698f ? -0.698f : cam_pitch > 1.2f ? 1.2f : cam_pitch;
-        if (!test_frozen()) {  /* test scripts freeze the world while a shot is taken (and for render-only runs) */
+        /* Frame order: the player, camera and world first, then the map chain is kicked and VU1 / the GS draw it while
+         * the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera, draw
+         * groups, streamed cells) is settled before the kick; what those updates change shows from the next frame */
+        int frozen = test_frozen();  /* test scripts freeze the world while a shot is taken (and for render-only runs) */
+        if (!frozen) {
             PROF_MARK(PROF_PLAYER);
             player_update(&pl, &in, cam_yaw, dt);
             combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
-            PROF_MARK(PROF_ENEMY);
-            enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
-            PROF_MARK(PROF_OBJECTS);
-            objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
-            event_update(&pl, dt);    /* EMEVD instances (src/event.c), then fog walls / gates block the player */
-            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
+            /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
             event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
+            PROF_MARK(PROF_ENEMY);
+            enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
         }
 
         PROF_MARK(PROF_CAMERA);
@@ -665,13 +666,21 @@ int main(int argc, char **argv)
             z_clear(gs);
             map_set_player(pl.pos);
             tris_drawn = map_draw(eye);
-            vu1_kick();  /* VU1 draws the map while the EE poses the character below */
+            vu1_kick();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
             t_cull += ((cpu_ticks() - t0) / 294912.0f - t_cull) * 0.1f;
         } else {
             gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
             r_ground(40, 2);
             gsKit_queue_exec(gs);  /* before the character's VU1 chain draws on top */
             dmaKit_wait_fast();
+        }
+        if (!frozen) {  /* nothing here may touch what the map chain reads (mapstream cells, PATH2/3 GS registers) */
+            PROF_MARK(PROF_ENEMY);
+            enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
+            PROF_MARK(PROF_OBJECTS);
+            objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
+            event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
+            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
         }
         PROF_MARK(PROF_CHARS);
         unsigned t1 = cpu_ticks();

@@ -24,7 +24,11 @@ void enemy_block_add(int block);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */
 void enemy_respawn(void);
-/* Perception, AI, ESD, animation, movement and hits for every enemy near the player */
+/* Type streaming: model.bin reads, VRAM texture uploads (PATH3) and near-cell arena allocations. main.c calls it
+ * before the map chain is kicked: mapstream_alloc may drop cells, and a PATH3 upload must not interleave with the
+ * map chain's PATH2 CLUT loads (shared BITBLTBUF / TRXDIR) */
+void enemy_stream(const Player *pl);
+/* Perception, AI, ESD, animation, movement and hits for every enemy near the player (runs while VU1 draws the map) */
 void enemy_update(Player *pl, float dt);
 /* Skin + draw the visible enemies into the current VU1 chain (after vu1_begin, like player_draw) */
 void enemy_draw(void);

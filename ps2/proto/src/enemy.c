@@ -1288,6 +1288,12 @@ static int near(const Enemy *e, V3 d)
     return d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST || (e->ev && e->ev->always_on);
 }
 
+void enemy_stream(const Player *pl)
+{
+    last_player = pl;
+    stream_types(pl);
+}
+
 void enemy_update(Player *pl, float dt)
 {
     last_player = pl;
@@ -1296,7 +1302,6 @@ void enemy_update(Player *pl, float dt)
         printf("enemy: frame %u, Lua heap %u, %d characters, RAM free %uK\n", frame, ai_lua_heap, nenemies,
                enemy_ram_free() >> 10);
     player_sounds(pl);
-    stream_types(pl);
     for (int i = 0; i < nenemies; i++) {  /* 2004[12] immortal: HP stays >= 1 (an event's kill still kills) */
         Enemy *e = &enemies[i];
         if (e->ev && e->ev->immortal && !e->ev->dead && e->cc.hp < 1 && e->dead_t == 0)
