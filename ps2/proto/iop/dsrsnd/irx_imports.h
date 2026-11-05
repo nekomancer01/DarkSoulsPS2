@@ -2,6 +2,7 @@
 #ifndef IOP_IRX_IMPORTS_H
 #define IOP_IRX_IMPORTS_H
 #include <irx.h>
+#include <cdvdman.h>
 #include <intrman.h>
 #include <ioman.h>
 #include <libsd.h>
