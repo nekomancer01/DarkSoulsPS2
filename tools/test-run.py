@@ -271,6 +271,13 @@ def run(a):
                 pine.ack_shot(p, addr, acked)
                 last_change = time.time()
             if mb["state"] == 2:
+                # the ELF queues log text while a disc read is in flight (pack.c, cdrom0:), so "TEST DONE" can reach
+                # the EE log after the mailbox says done: wait for it before PCSX2 is killed (world_death_swap.txt
+                # from the ISO lost it, 2026-11-05)
+                for _ in range(50):
+                    if os.path.exists(log) and b"TEST DONE" in open(log, "rb").read():
+                        break
+                    time.sleep(0.1)
                 break
             time.sleep(0.1)
         f.close()
