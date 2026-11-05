@@ -168,6 +168,7 @@ SND_MAPS = $(sort $(MAP) $(foreach b,$(WORLD_BLOCKS),$(firstword $(subst :, ,$(b
 $(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum \
 		$(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
 	@mkdir -p $(@D) $(D)/snd
+	@echo "sound: exporting every bank of $(SND_MAPS) (~10 min, prints nothing until done; progress in $(A)/snd.log)"
 	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) > $(A)/snd.log
 	@tail -6 $(A)/snd.log
 	touch $@
