@@ -761,8 +761,9 @@ static void collect(int r)
     }
 }
 
-/* No hole fits n bytes and nothing ranked below the item is left to drop by rank: free one window of the arena n
- * long made of holes and loaded runs ranked MS_EVICT_M x below it (rank key), the one with the fewest bytes to drop.
+/* No hole fits n bytes and nothing ranked MS_EVICT_M x below the item is left to drop: free one window of the arena n
+ * long made of holes and loaded runs not in view and ranked below it (rank key), the one with the fewest bytes to
+ * drop, at most n (half of it holes at least; dropped items stream back, ASSUMED bound against loops).
  * The free list keeps big near cells out (Burg 1.25: 865 KB refused with 4 MB free, largest hole 255-636 KB, ISO
  * rounds 12-13, 2026-11-05). 1 when a window was freed. */
 typedef struct { unsigned off, len; int k; unsigned id; } MsSpan;
@@ -789,7 +790,7 @@ static int window_evict(int wk, unsigned wid, float key, unsigned n, const float
         bind(k);
         for (unsigned id = 0; id < it_n() && ns < cap; id++) {
             unsigned a, e = run_of(id, &a);
-            if (a != id || state[id] != MS_READY || run_used(id, 0) || run_key(k, id, pos) <= key * MS_EVICT_M)
+            if (a != id || state[id] != MS_READY || run_used(id, MS_VIEW_FRAMES) || run_key(k, id, pos) <= key)
                 continue;
             unsigned b = it_res(a) ? rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - rit[a - ncell].rel : it_bytes(a);
             unsigned o = (unsigned)((unsigned char *)buf[a] - arena);
@@ -809,7 +810,7 @@ static int window_evict(int wk, unsigned wid, float key, unsigned n, const float
         if (len >= n && drop_b < best)
             best = drop_b, bi = i, bj = j + 1;
     }
-    if (best == ~0u || !best) {
+    if (best == ~0u || !best || best > n) {
         free(sp);
         return 0;
     }
