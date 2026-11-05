@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
         --syms) SYMS=1; shift ;;
         --no-queue) QUEUE=; shift ;;
         --container) CONTAINER=1; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
 done
@@ -50,23 +50,28 @@ container_build() {
     [ -n "$GAME" ] && a+=(--game "$GAME")
     [ -n "$JOBS" ] && a+=(--jobs "$JOBS")
     [ "$BUILD" = "$ROOT/build" ] || die "--build only works with the host toolchain (the container uses build/)"
+    { command -v docker >/dev/null && docker info >/dev/null 2>&1; } || command -v podman >/dev/null ||
+        die "neither a ps2dev toolchain nor Docker / Podman found: install one of them (README.md)"
     exec "$ROOT/tools/build-iso.sh" "${a[@]}"
 }
 [ -n "$CONTAINER" ] && container_build
 
 # --- toolchain: this host, else a distrobox that has it, else the container build ---
+# (checked in a subshell: env.sh exports PS2DEV under this host's home, which a distrobox would inherit as a wrong path)
 # shellcheck disable=SC1091
-. "$ROOT/ps2/env.sh"
-if ! command -v mips64r5900el-ps2-elf-gcc >/dev/null || [ ! -d "$GSKIT/lib" ]; then
+if ! ( . "$ROOT/ps2/env.sh"; command -v mips64r5900el-ps2-elf-gcc && [ -d "$GSKIT/lib" ] ) >/dev/null 2>&1; then
     BOX=${DSR_DISTROBOX:-Ubuntu}
     if [ ! -e /run/.containerenv ] && [ ! -e /.dockerenv ] && command -v distrobox >/dev/null &&
         distrobox list 2>/dev/null | awk -F'|' 'NR > 1 {gsub(/ /, "", $2); print $2}' | grep -qxF "$BOX"; then
         say "no ps2dev on this host: running inside distrobox $BOX"
         exec distrobox enter "$BOX" -- "$ROOT/build-iso.sh" "${ARGS[@]}"
     fi
-    echo "build-iso: no ps2dev toolchain at $PS2DEV (set PS2DEV, see README.md): using the container build" >&2
+    echo "build-iso: no ps2dev toolchain (looked in ${PS2DEV:-~/tools/ps2dev-2.0.0/ps2dev}; set PS2DEV, see README.md):" \
+        "building in the Docker / Podman container instead" >&2
     container_build
 fi
+# shellcheck disable=SC1091
+. "$ROOT/ps2/env.sh"
 
 cd "$ROOT"
 # Python with Pillow + numpy: the one the Makefile will use (PY from the environment / config.local.mk, else the repo's
@@ -76,7 +81,9 @@ PY=$(printf 'include %s/config.mk\nhelp:\n\t@echo $(PY)\n' "$ROOT" | make -s --n
 if ! $PY -c 'import PIL, numpy' 2>/dev/null; then
     [ "$PY" = python3 ] || die "$PY (PY in config.local.mk or the environment) lacks Pillow / numpy: pip install -r tools/requirements.txt"
     say "setting up .venv (tools/requirements.txt)"
-    python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt || die "could not set up .venv"
+    # a half-made .venv would be picked up by config.mk next time: remove it on failure
+    python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt ||
+        { rm -rf .venv; die "could not set up .venv (python3-venv missing?); or set PY in config.local.mk to a Python with Pillow + numpy"; }
 fi
 # xorriso: tools/ps2-iso.sh's default (~/tools/xorriso), else the one on PATH
 if [ -z "${XORRISO:-}" ] && [ ! -x "$HOME/tools/xorriso/bin/xorriso" ]; then
