@@ -4,21 +4,30 @@ A homebrew port of **Dark Souls Remastered** to the PlayStation 2. It's a C engi
 with ps2dev and gsKit, with hand-written VU1 microprograms), plus Python tools (`tools/`) that read **your own copy**
 of the PC game and convert its maps, characters, animations, collision, AI scripts and menus into PS2-sized files.
 
-You build it yourself, and it runs in the PCSX2 emulator. Running it on a real PS2 is set up but hasn't been tested.
+You build it yourself from your own copy of the game, and it runs in the PCSX2 emulator. Running it on a real PS2 is
+set up but hasn't been tested.
+
+> [!WARNING]
+> **This is a heavy work in progress.** It is an early prototype, not a playable game: only the first few areas load,
+> most of the game's systems are missing or partly done, and things change (and break) from one day to the next.
+> Expect bugs, crashes, missing sounds and visuals that don't match DSR yet. The in-browser converter on the project
+> page is especially experimental (see [Quick start](#quick-start)).
 
 ## What works today
 
-This is an early prototype, not a playable game yet.
-
-| Works | Not yet |
+| Works (partly, see `notes/PLAYTHROUGH.md`) | Not yet |
 |---|---|
-| Firelink Shrine and Undead Burg, with seamless walking between them (no loading screen) | Any other area |
-| The Warrior: walking, running, rolling, dashing, R1 attacks, falling | Lock-on, blocking, parries, magic, items, levelling |
-| Enemies with their own AI scripts, taking and dealing damage | Bosses |
-| Event scripts: chests, fog walls, doors, item pickups | NPC dialogue, shops |
-| Saving and loading on the memory card | Cutscenes |
-| Sound effects, footsteps, music and ambience (effects at a low sample rate) | Reverb, NPC voices |
-| HUD (health, stamina, Estus, souls), 30 fps in PCSX2 | Full menus |
+| Firelink Shrine, Undead Burg and the Undead Asylum as one world, with seamless walking between them (no loading screen). Each area's scenery streams from the disc cell by cell, nearest first | Every other area; some scenery still pops in late when read from the disc |
+| The Warrior: walking, running, rolling, dashing, R1 attacks, falling | Lock-on, blocking, parries, magic, two-handing, levelling |
+| Enemies with their own AI scripts and navmesh routes, taking and dealing damage, ragdoll deaths | Line of sight, guarding, item drops, most enemy types |
+| Event scripts: chests, item pickups, fog walls, doors, levers and gates, event warps (the crow from the Asylum to Firelink), boss fog walls and health bar (tested on the Taurus Demon) | Boss fights as in DSR, NPC dialogue, shops, cutscenes |
+| Bonfires: lighting, resting (HP, Estus and enemies reset), kindling and Reverse Hollowing from the rest menu | Level up, attune and warp at bonfires |
+| Death: YOU DIED, the player turns Hollow and returns to the last bonfire, a bloodstain holds the lost souls and humanity | The Hollow look, a full area reload on death |
+| Souls and humanity from kills, humanity items, the HUD humanity counter (grey while Hollow) | Stats used by combat, rings and other SpEffects |
+| DSR's own Start menu screens: Equipment, Inventory (Use / Discard), Status and System, with the game's item names, help text and icons. DSR's loading screen | Title screen, item pickup prompts, the other menus |
+| Saving and loading on the memory card | Saving in the background |
+| Sound effects, footsteps by floor, music, boss music and area ambience | Effects at a higher sample rate (8 kHz now), reverb, voices |
+| HUD (health, stamina, Estus, souls, humanity), 30 fps in PCSX2 | Testing on a real PS2 |
 
 ### Screenshots
 
@@ -45,11 +54,22 @@ formulas), each with its source.
 
 ## Quick start
 
-**Just want to play?** The project page (https://nekomancer01.github.io/DarkSoulsPS2/) converts your game copy into a
-playable ISO of the latest `main` inside your browser: the same Python converter (`tools/convert.py`, run in Pyodide;
-its C helpers built as WebAssembly by `tools/native/build-wasm.sh`) plus the game-free ELF from CI, packed by
-`tools/iso9660.py`. Nothing is uploaded. It also offers `tools/build-iso.sh`, the same build as one local command in a
-Docker or Podman container. The steps below are the full developer setup.
+There are three ways to get a disc image (ISO) of the latest `main`. All of them read your own copy of the game, and
+the ISO they make is yours only: never share it.
+
+| Way | What it takes | Notes |
+|---|---|---|
+| `./build-iso.sh` in the repository root | A Linux shell; the steps below, or Docker / Podman | The recommended way. One command exports the game data, builds the ELF and writes `build/proto.iso`. Without a ps2dev toolchain it uses a distrobox that has one, or the Docker / Podman container (`tools/build-iso.sh`). `./build-iso.sh --help` lists the options |
+| The project page, https://nekomancer01.github.io/DarkSoulsPS2/ | A desktop browser (Chrome, Edge or Firefox) and plenty of memory | Converts your game folder into an ISO inside the browser tab; nothing is uploaded. **Very much a work in progress**, see below |
+| The full developer setup (steps 1 to 6 below) | Linux, ps2dev, Python, PCSX2 | For changing the code and running the tests |
+
+> [!CAUTION]
+> **The in-browser converter is a heavy work in progress.** It runs the port's own Python converter
+> (`tools/convert.py`) in WebAssembly (Pyodide, with its C helpers built by `tools/native/build-wasm.sh`) and packs the
+> game-free ELF from CI with `tools/iso9660.py`. It is slow (about 10 to 20 minutes), each worker needs up to about
+> 2.5 GB of memory and can fail on PCs with less, the ISO it makes has **no sound yet** (the game's MP3 sound banks
+> can't be decoded in the browser), and it may lag behind or break when the native build changes. If it fails or
+> the result misbehaves, use `./build-iso.sh` instead and please report what happened.
 
 Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or a Linux VM.
 
