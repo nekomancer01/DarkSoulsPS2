@@ -293,6 +293,7 @@ POOL = None  # main(): worker pool, None = encode in this process (Pyodide has n
 def start_pool():
     global POOL
     n = int(os.environ.get("DSR_AUDIO_JOBS") or min(os.cpu_count() or 1, 8))
+    adpcm.lib()  # build libvagenc.so here, once, before the workers would each try
     if n > 1:
         try:
             POOL = multiprocessing.get_context("fork").Pool(n)
