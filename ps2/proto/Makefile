@@ -66,7 +66,7 @@ EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstre
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
-EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lpatches -lm
+EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lmc -lpatches -lm
 EE_DVP = dvp-as
 # Float math (refactor target 3, 2026-11-05): the game code does no double arithmetic (tools/ci/compile.sh fails on
 # any), and sqrtf is already an inline sqrt.s. -fno-math-errno lets gcc treat sinf/cosf/... as pure (merged repeat

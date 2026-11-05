@@ -1,6 +1,7 @@
 /* Save / load (save.h) */
 #define NEWLIB_PORT_AWARE  /* fio calls, as pack.c */
 #include <fileio.h>
+#include <libmc.h>
 #include <loadfile.h>
 #include <sifrpc.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@
 #define MC_DIR "mc0:/DSRPS2"  /* ASSUMED (TECH_DEBT save-7): not a product-code folder name */
 
 static u8 buf[SAVE_BUF] __attribute__((aligned(64)));
-static int device = -1, mc_loaded, loaded, request;
+static int device = -1, mc_loaded, mc_lib, loaded, request;
 static char host_name[32] = "dsrsave";
 static u32 seq;
 static const char *area;
@@ -56,6 +57,7 @@ static void slot_path(char *out, int n, int slot)
 #define ICON_TEX 128
 _Static_assert(SAVE_BUF >= 20 + 6 * 24 + 44 + ICON_TEX * ICON_TEX * 2, "icon.ico is built in buf");
 static int open_write(const char *path);
+static void mc_flush(void);
 static int sjis_put(u8 *d, const char *s)  /* ASCII -> full-width Shift-JIS (the browser shows titles in SJIS) */
 {
     int n = 0;
@@ -81,18 +83,9 @@ static int write_file(const char *path, const void *p, int n)
     return w == n;
 }
 
-static void mc_icon(void)
+/* icon.sys (964 bytes) into buf */
+static int icon_sys(void)
 {
-    static int done;
-    if (done)
-        return;
-    int fd = fioOpen(MC_DIR "/icon.sys", FIO_O_RDONLY);
-    if (fd >= 0) {
-        fioClose(fd);
-        done = 1;
-        return;
-    }
-    /* icon.sys, 964 bytes */
     u8 *d = buf;
     memset(d, 0, 964);
     memcpy(d, "PS2D", 4);
@@ -112,9 +105,14 @@ static void mc_icon(void)
         memcpy(d + 176 + k * 4, &f, 4);  /* ambient */
     for (int k = 0; k < 3; k++)
         strcpy((char *)d + 260 + k * 64, "icon.ico");  /* list / copy / delete icons */
-    pack_async_wait();
-    int ok = write_file(MC_DIR "/icon.sys", d, 964);
+    return 964;
+}
+
+/* icon.ico into buf; returns its size */
+static int icon_ico(void)
+{
     /* icon.ico: header, 6 vertices (one shape), animation, 128x128 RGB5A1 texture */
+    u8 *d = buf;
     int nv = 6, off = 0;
     u32 hdr[5] = {0x00010000, 1, 0x07, 0x3F800000, nv};  /* version, shapes, texture uncompressed, ?, vertices */
     memcpy(d, hdr, 20), off = 20;
@@ -147,9 +145,26 @@ static void mc_icon(void)
             if (g > 255) g = 255;
             t[y * ICON_TEX + x] = r >> 3 | (g >> 3) << 5 | (b >> 3) << 10 | 0x8000;
         }
-    off += ICON_TEX * ICON_TEX * 2;
-    ok &= write_file(MC_DIR "/icon.ico", d, off);
-    printf("save: wrote icon.sys + icon.ico (%d B)%s\n", off, ok ? "" : " FAILED");
+    return off + ICON_TEX * ICON_TEX * 2;
+}
+
+/* fio fallback (no libmc): both files now, once per boot */
+static void mc_icon(void)
+{
+    static int done;
+    if (done)
+        return;
+    int fd = fioOpen(MC_DIR "/icon.sys", FIO_O_RDONLY);
+    if (fd >= 0) {
+        fioClose(fd);
+        done = 1;
+        return;
+    }
+    pack_async_wait();
+    int ok = write_file(MC_DIR "/icon.sys", buf, icon_sys());
+    int n = icon_ico();
+    ok &= write_file(MC_DIR "/icon.ico", buf, n);
+    printf("save: wrote icon.sys + icon.ico (%d B)%s\n", n, ok ? "" : " FAILED");
     done = ok;
 }
 
@@ -172,6 +187,8 @@ static int mc_ready(void)
         mc_loaded = SifLoadModule("rom0:MCMAN", 0, NULL) >= 0 && SifLoadModule("rom0:MCSERV", 0, NULL) >= 0 ? 1 : -1;
         if (mc_loaded < 0)
             printf("save: rom0:MCMAN / MCSERV failed to load\n");
+        else if (!(mc_lib = mcInit(MC_TYPE_MC) >= 0))
+            printf("save: mcInit failed, card writes stay synchronous (fio)\n");
     }
     if (mc_loaded < 0)
         return 0;
@@ -197,6 +214,7 @@ static int read_slot(int slot)
 {
     char path[64];
     slot_path(path, sizeof path, slot);
+    mc_flush();
     pack_async_wait();
     int fd = fioOpen(path, FIO_O_RDONLY);
     if (fd < 0)
@@ -291,16 +309,9 @@ void save_apply_player(Player *pl)
     pl->deaths = prog.deaths;
 }
 
-int save_write(const Player *pl)
+/* The save file into buf (seq + 1): returns its size, or -1 */
+static int snapshot(const Player *pl)
 {
-    if (device <= SAVE_OFF)
-        return -1;
-    unsigned t0 = ticks();
-    if (device == SAVE_MC) {  /* the folder and its browser icon first: mc_icon uses buf as scratch */
-        pack_async_wait();
-        fioMkdir(MC_DIR);  /* fails harmlessly when it exists */
-        mc_icon();
-    }
     if (pl) {
         prog.map_id = progress_map_id(area);
         prog.pos[0] = pl->pos.x, prog.pos[1] = pl->pos.y, prog.pos[2] = pl->pos.z, prog.yaw = pl->yaw;
@@ -314,6 +325,154 @@ int save_write(const Player *pl)
     u32 h[8] = {SAVE_MAGIC, SAVE_VERSION | HDR << 16, n, 0, ++seq, sizeof prog, nf, 0};
     h[3] = crc32(buf + HDR, n - HDR);
     memcpy(buf, h, HDR);
+    return n;
+}
+
+/* Background card write (TECH_DEBT save-3): each step is one libmc call sent without waiting (MCSERV runs it on the
+ * IOP) and polled once a frame by save_tick: folder, then the slot file (open, write, close), then on the first save
+ * of a boot icon.sys / icon.ico unless the folder has them. buf holds the file being written until the write ends, so
+ * everything else that uses buf waits for it (mc_flush). */
+enum { W_IDLE, W_MKDIR, W_OPEN, W_WRITE, W_CLOSE, W_PROBE, W_PROBE_CLOSE };
+enum { F_SAVE, F_ICON_SYS, F_ICON_ICO };
+static int w_state, w_file, w_fd, w_n, w_wrote, w_result, mc_dir_ok, mc_icon_ok;
+static unsigned w_t0, w_frames, w_flags, w_prog;
+static char w_path[64];
+
+static void w_open(int file, int n)
+{
+    static const char *const icon[2] = {"/DSRPS2/icon.sys", "/DSRPS2/icon.ico"};
+    w_file = file, w_n = n;
+    if (file == F_SAVE)
+        snprintf(w_path, sizeof w_path, "/DSRPS2/SAVE%u.BIN", (unsigned)(seq & 1));
+    else
+        snprintf(w_path, sizeof w_path, "%s", icon[file - F_ICON_SYS]);
+    mcOpen(0, 0, w_path, FIO_O_WRONLY | FIO_O_CREAT);  /* no O_TRUNC: a longer old file keeps its tail (open_write) */
+    w_state = W_OPEN;
+}
+
+/* A step ended with result r: start the next one */
+static void w_step(int r)
+{
+    unsigned ms;
+    switch (w_state) {
+    case W_MKDIR:  /* 0, or -4 when it exists */
+        mc_dir_ok = 1;
+        w_open(F_SAVE, w_n);
+        return;
+    case W_OPEN:
+        if (r < 0) {
+            w_wrote = -1;
+            break;
+        }
+        w_fd = r;
+        mcWrite(w_fd, buf, w_n);
+        w_state = W_WRITE;
+        return;
+    case W_WRITE:
+        w_wrote = r;
+        mcClose(w_fd);
+        w_state = W_CLOSE;
+        return;
+    case W_CLOSE:
+        break;
+    case W_PROBE:
+        if (r >= 0) {
+            mcClose(r);
+            w_state = W_PROBE_CLOSE;
+        } else {
+            w_open(F_ICON_SYS, icon_sys());
+        }
+        return;
+    case W_PROBE_CLOSE:
+        mc_icon_ok = 1;
+        w_state = W_IDLE;
+        return;
+    }
+    /* a file ended (written, or its open failed) */
+    ms = (ticks() - w_t0) / 294912;
+    if (w_file == F_SAVE) {
+        if (w_wrote != w_n) {
+            printf("save: WRITE ERROR mc0:%s (%d of %d B)\n", w_path, w_wrote, w_n);
+            seq--, w_result = -1;
+            w_state = W_IDLE;
+            return;
+        }
+        seen_flags = w_flags, seen_prog = w_prog, w_result = 0;
+        printf("save: wrote mc0:%s %d B (seq %u, %d flag pages) in %u ms over %u frames\n", w_path, w_n,
+               (unsigned)seq, flags_pages_used(), ms, w_frames);
+        if (mc_icon_ok) {
+            w_state = W_IDLE;
+        } else {
+            mcOpen(0, 0, "/DSRPS2/icon.sys", FIO_O_RDONLY);
+            w_state = W_PROBE;
+        }
+        return;
+    }
+    if (w_wrote != w_n) {
+        printf("save: icon write FAILED mc0:%s (%d of %d B)\n", w_path, w_wrote, w_n);  /* tried again next save */
+        w_state = W_IDLE;
+    } else if (w_file == F_ICON_SYS) {
+        w_open(F_ICON_ICO, icon_ico());
+    } else {
+        mc_icon_ok = 1;
+        printf("save: wrote icon.sys + icon.ico (%d B) in %u ms\n", w_n, ms);
+        w_state = W_IDLE;
+    }
+}
+
+/* Advance the background write: every step that has ended, without waiting (wait = 0) or until it is done */
+static void mc_pump(int wait)
+{
+    while (w_state != W_IDLE) {
+        int cmd, r;
+        int st = mcSync(wait ? MC_WAIT : MC_NOWAIT, &cmd, &r);
+        if (st == 0)
+            return;
+        if (st < 0)  /* nothing in flight: the call before was refused */
+            r = -1;
+        w_step(r);
+    }
+}
+
+static void mc_flush(void) { mc_pump(1); }
+
+/* Start writing the save in the background (card with libmc); -1 if the snapshot failed */
+static int mc_start(const Player *pl)
+{
+    int n = snapshot(pl);
+    if (n < 0)
+        return -1;
+    w_flags = flags_changes(), w_prog = progress_changes();  /* what this save holds, marked seen once it is written */
+    w_t0 = ticks(), w_frames = 0, w_n = n, w_result = 1;
+    if (mc_dir_ok) {
+        w_open(F_SAVE, n);
+    } else {
+        mcMkDir(0, 0, "/DSRPS2");
+        w_state = W_MKDIR;
+    }
+    return 0;
+}
+
+int save_write(const Player *pl)
+{
+    if (device <= SAVE_OFF)
+        return -1;
+    if (device == SAVE_MC && mc_lib) {  /* now: start the background write and wait for it */
+        mc_flush();
+        if (mc_start(pl) < 0)
+            return -1;
+        mc_flush();
+        return w_result;
+    }
+    unsigned t0 = ticks();
+    if (device == SAVE_MC) {  /* the folder and its browser icon first: mc_icon uses buf as scratch */
+        pack_async_wait();
+        fioMkdir(MC_DIR);  /* fails harmlessly when it exists */
+        mc_icon();
+    }
+    int n = snapshot(pl);
+    if (n < 0)
+        return -1;
     char path[64];
     slot_path(path, sizeof path, seq & 1);
     pack_async_wait();
@@ -335,18 +494,29 @@ int save_write(const Player *pl)
 
 void save_request(void) { request = 1; }
 
+int save_busy(void) { return w_state != W_IDLE; }
+
 void save_tick(const Player *pl, float dt)
 {
     if ((play_acc += dt) >= 1)
         play_acc -= 1, prog.play_time++;
     if (device <= SAVE_OFF)
         return;
+    if (w_state != W_IDLE) {
+        w_frames++;
+        mc_pump(0);
+        if (w_state != W_IDLE)
+            return;  /* a request made meanwhile starts once this write is over */
+    }
     since += dt;
     int dirty = flags_changes() != seen_flags || progress_changes() != seen_prog;
     if (request || (dirty && since >= SAVE_INTERVAL)) {
         request = 0;
         since = 0;  /* also after a failed write (card full or pulled): retry in SAVE_INTERVAL, not every frame */
-        save_write(pl);
+        if (device == SAVE_MC && mc_lib)
+            mc_start(pl);
+        else
+            save_write(pl);
     }
 }
 
@@ -384,6 +554,7 @@ int save_test_cmd(const char *line, const Player *pl)
     else if (!strcmp(w, "load"))
         return save_load() ? 0 : (printf("TEST error load: no valid save\n"), -1);
     else if (!strcmp(w, "wipe")) {
+        mc_flush();
         for (int s = 0; s < 2 && device > SAVE_OFF; s++) {
             char path[64];
             slot_path(path, sizeof path, s);

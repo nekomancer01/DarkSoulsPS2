@@ -8,8 +8,9 @@
  * short (power off, card pulled) leaves the previous save.
  *
  * When: boot loads; save_request() (rest at a bonfire, EMEVD Save Request, death; area change not yet: save-6) writes
- * on the next save_tick; save_tick also writes every SAVE_INTERVAL s when flags or progression changed. Writes are
- * synchronous (TECH_DEBT save-3).
+ * on the next save_tick; save_tick also writes every SAVE_INTERVAL s when flags or progression changed. Card writes
+ * from save_tick run in the background (libmc, polled once a frame; TECH_DEBT save-3); save_write and host: writes are
+ * synchronous.
  * Device: argv save=mc|host|off (default: the card if one is formatted in slot 1, else host:); a test script runs with
  * saves off (new game every boot) unless it says "option save mc|host [name]". */
 #ifndef SAVE_H
@@ -30,6 +31,7 @@ int save_boot(int argc, char **argv, const char *area);
 void save_apply_player(Player *pl);
 void save_request(void);
 void save_tick(const Player *pl, float dt);  /* once per frame */
+int save_busy(void);  /* a background card write is in progress (for a saving indicator) */
 int save_write(const Player *pl);  /* now; 0 ok */
 int save_load(void);  /* reload prog + flags from the device; 1 ok */
 int save_device(void);
