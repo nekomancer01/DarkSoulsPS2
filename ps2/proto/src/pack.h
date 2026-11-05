@@ -30,6 +30,8 @@ void pack_close(Pack *p);
 /* Entries stored raw (tools/pack.py name=raw:file) can be read in place: file offset and size of the data; 0 if the
  * entry is missing or compressed */
 int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size);
+/* Raw (decoded) size of an entry, 0 if the pack has none */
+unsigned pack_entry_size(const Pack *p, const char *name);
 /* Background read of bytes at a file offset into dst (64-byte aligned; written back from the D-cache first). One at a
  * time: returns 0 while another is pending. pack_async_done: 1 once it finished (*result = bytes read or < 0), then
  * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */
@@ -44,6 +46,7 @@ typedef struct {
     int state, fd;
     unsigned off, packed, raw, blocks, bsize, alloc;
     int res, parked;  /* result of its request kept by pack_async_free */
+    int fdc, reopen;  /* its fd's slot in pack.c's handle cache (-1 none); an open retried after closing cached ones */
     unsigned cs[64], b, pos;  /* decode: block sizes (the output overwrites the table in the buffer), next block */
     const char *xname[2];     /* set after pack_job_start: other entries to look up in the pack's table, found ... */
     unsigned xoff[2], xsize[2];  /* ... as pack_entry_raw would (offset / size of a raw entry; size 0 missing / packed) */

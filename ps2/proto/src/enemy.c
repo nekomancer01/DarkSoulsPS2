@@ -63,6 +63,10 @@
  * near the player hold VRAM, so every world block's roster fits (TECH_DEBT world-4) */
 #define LOAD_DIST 60.0f
 #define UNLOAD_DIST 75.0f
+/* RAM a type's model load leaves free (AGENTS.md: 1.5 MB in the heaviest spot): a type that would go below waits,
+ * without a try, until RAM frees (a block or type unloading). At the Burg seam with two blocks' lite sets the loads
+ * ran RAM down to 0.5 MB and failed every 2 s (model.bin OUT OF RAM, route_enemies.txt from the ISO, 2026-11-05) */
+#define STREAM_RAM_FLOOR (1536u << 10)
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
@@ -106,6 +110,7 @@ typedef struct {
     char name[8];
     const char *dir;  /* pack directory under PACK_ROOT: CHR_DIR, or a world block's "<block>/" (its own variants) */
     unsigned chr_size;
+    unsigned model_raw;  /* model.bin's decoded size (stream_types: room for it before its load starts) */
     const ChrHdr *h;
     const ChrVar *vars;
     const ChrAnim *anims;
@@ -374,7 +379,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     Pack pk;
     if (!pack_open(&pk, path))
         return NULL;
-    unsigned csize = 0;
+    unsigned csize = 0, model_raw = pack_entry_size(&pk, "model.bin");
     void *cb = pack_load(&pk, "chr.bin", &csize);
     pack_close(&pk);
     for (int i = 0; cb && i < ntypes; i++)  /* the same character with the same variants in another block: one type */
@@ -393,6 +398,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     memcpy(t->name, name, 8);
     t->dir = dir;
     t->chr_size = csize;
+    t->model_raw = model_raw;
     ntypes++;  /* its model.bin and textures load once a placement comes near (stream_types) */
     t->h = h;
     t->vars = (const ChrVar *)((const char *)cb + h->var_off);
@@ -830,7 +836,7 @@ static void stream_types(const Player *pl)
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
         } else if (!t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
-                   (!next || t->near_d < next->near_d)) {
+                   enemy_ram_free() >= STREAM_RAM_FLOOR + t->model_raw && (!next || t->near_d < next->near_d)) {
             next = t;
         }
     }

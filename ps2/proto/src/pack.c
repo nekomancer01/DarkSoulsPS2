@@ -251,6 +251,14 @@ int __wrap__write(int fd, const void *buf, size_t n)
     return __real__write(fd, buf, n);
 }
 
+unsigned pack_entry_size(const Pack *p, const char *name)
+{
+    for (unsigned i = 0; i < p->count; i++)
+        if (!strncmp(p->entries[i].name, name, sizeof p->entries[i].name))
+            return p->entries[i].raw;
+    return 0;
+}
+
 int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size)
 {
     for (unsigned i = 0; i < p->count; i++) {
@@ -310,20 +318,57 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
     const char *q = pack_path(path, j->path, sizeof j->path);  /* cdrom0: name, or path itself for host: */
     if (q != j->path)
         snprintf(j->path, sizeof j->path, "%s", q);
-    j->name = name, j->get = get, j->put = put, j->fd = -1;
+    j->name = name, j->get = get, j->put = put, j->fd = -1, j->fdc = -1;
     j->state = J_OPEN;
+}
+
+/* Handles of packs jobs read, with the pack's first sector (header + entry table): the next job on the same pack skips
+ * the open and the header read. From cdrom0: an open is an ISO directory search and the header a seek + read, ~0.1-0.3
+ * s each on the async slot: a type's sound bank (bank, cue, emit: three jobs) opened its pack three times, and a type
+ * that streamed back in opened both of its packs again (134 opens in one route_enemies.txt run, 2026-11-05, TECH_DEBT
+ * world-8). JOB_FDS is ASSUMED: the IOP's cdrom0: driver serves a fixed number of open files, shared with the world
+ * block packs, mapstream and dsrsnd's streams; an open that fails while handles are cached closes them and tries again. */
+#define JOB_FDS 4
+static struct {
+    char path[96];
+    int fd, busy;  /* busy: a job reads it now */
+    unsigned use;
+    unsigned head[512] __attribute__((aligned(64)));
+} jfd[JOB_FDS] = {[0 ... JOB_FDS - 1] = {.fd = -1}};
+static unsigned jfd_clock;
+
+static void fd_close(int fd)
+{
+    disc_get(1);
+    fioClose(fd);
+    disc_put();
+}
+
+/* close the cached handles no job reads (an open failed: maybe the driver's limit) ; 1 if any */
+static int jfd_flush(void)
+{
+    int n = 0;
+    for (int k = 0; k < JOB_FDS; k++)
+        if (jfd[k].fd >= 0 && !jfd[k].busy)
+            fd_close(jfd[k].fd), jfd[k].fd = -1, n++;
+    return n;
 }
 
 static void job_close(PackJob *j)
 {
-    disc_get(1);
-    fioClose(j->fd), j->fd = -1;
-    disc_put();
+    if (j->fdc >= 0) {  /* back to the cache, still open */
+        jfd[j->fdc].busy = 0, jfd[j->fdc].use = ++jfd_clock;
+        j->fdc = -1, j->fd = -1;
+        return;
+    }
+    fd_close(j->fd), j->fd = -1;
 }
 
 static int job_fail(PackJob *j, const char *why)
 {
     printf("pack: %s %s: %s\n", j->path, j->name, why);
+    if (j->fdc >= 0 && (!strcmp(why, "read error") || !strcmp(why, "corrupt entry")))  /* a bad handle: closed with j */
+        jfd[j->fdc].fd = -1, jfd[j->fdc].busy = 0, j->fdc = -1;
     if (j->out)
         j->put(j->out, j->alloc), j->out = NULL;
     if (j->fd >= 0 && !async_busy)
@@ -366,6 +411,15 @@ int pack_job_step(PackJob *j)
     int res;
     switch (j->state) {
     case J_OPEN:
+        for (int k = 0; k < JOB_FDS; k++)
+            if (jfd[k].fd >= 0 && !jfd[k].busy && !strcmp(jfd[k].path, j->path)) {
+                /* cached: its first sector as the header read would have returned it */
+                jfd[k].busy = 1, j->fdc = k, j->fd = jfd[k].fd;
+                memcpy(head, jfd[k].head, sizeof head);
+                SyncDCache(head, (char *)head + sizeof head - 1);  /* J_HEADING invalidates the cache lines */
+                j->res = sizeof head, j->parked = 1, j->state = J_HEADING;
+                return pack_job_step(j);
+            }
         if (async_busy || !disc_get_bg())
             return 0;  /* another read is in flight: next frame */
         fioInit();
@@ -376,8 +430,13 @@ int pack_job_step(PackJob *j)
     case J_OPENING:
         if (!job_done(j, &res))
             return 0;
-        if ((j->fd = res) < 0)
+        if ((j->fd = res) < 0) {
+            if (!j->reopen++ && jfd_flush()) {  /* the driver's open file limit: the cached handles go first */
+                j->state = J_OPEN;
+                return 0;
+            }
             return job_fail(j, "no pack");
+        }
         j->state = J_HEAD;
         /* fall through */
     case J_HEAD:
@@ -395,6 +454,19 @@ int pack_job_step(PackJob *j)
         InvalidDCache(head, (char *)head + sizeof head - 1);
         if (res < 16 || memcmp(head, "DSRP", 4) || head[1] != 1 || 16 + head[2] * 64 > (unsigned)res)
             return job_fail(j, "bad pack header");
+        if (j->fdc < 0 && res == (int)sizeof head) {  /* into the cache: a free slot, else the least recently used */
+            int k = -1;
+            for (int c = 0; c < JOB_FDS; c++)
+                if (!jfd[c].busy && (k < 0 || jfd[c].fd < 0 || (jfd[k].fd >= 0 && jfd[c].use < jfd[k].use)))
+                    k = c;
+            if (k >= 0) {
+                if (jfd[k].fd >= 0)
+                    fd_close(jfd[k].fd);
+                snprintf(jfd[k].path, sizeof jfd[k].path, "%s", j->path);
+                memcpy(jfd[k].head, head, sizeof head);
+                jfd[k].fd = j->fd, jfd[k].busy = 1, j->fdc = k;
+            }
+        }
         const struct PackEntry *e = (const struct PackEntry *)(head + 4);
         unsigned i = 0;
         while (i < head[2] && strncmp(e[i].name, j->name, sizeof e->name))
