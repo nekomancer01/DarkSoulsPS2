@@ -814,9 +814,10 @@ static void res_open(int k, const void *pack)
             unsigned lo, hi = chunk_range(j, j + 1, &lo), g = j + 1, l2, h2;
             while (g < e && (h2 = chunk_range(g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
                 hi = h2 > hi ? h2 : hi, g++;
+            unsigned far = 0;
             for (unsigned c = j; c < g; c++)
-                citem[c] = (unsigned short)m;
-            it[m++] = (MapResItem){roff + lo, lo, hi - lo, i < nctab ? i : MS_RES_SKY};
+                citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
+            it[m++] = (MapResItem){roff + lo, lo, hi - lo, i < nctab ? i | (far ? MS_RES_FAR : 0) : MS_RES_SKY};
             bad |= hi > rsize;
             j = g;
         }
