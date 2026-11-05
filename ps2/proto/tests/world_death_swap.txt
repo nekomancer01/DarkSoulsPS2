@@ -1,6 +1,6 @@
-# World streaming: death during a full swap (TECH_DEBT world-8): settle into Burg west, step up the ladders into the bonfire block,
-# die 2 s later (its full swap from cdrom0: takes ~5 s) and respawn at Firelink; three rounds. EE log: the respawn's
-# 'world: warp to ... settled in N ms'.
+# World streaming: death while a block loads (TECH_DEBT world-8): settle into Burg west, step up the ladders into the bonfire
+# block, die 2 s later (its resident cells still stream in from cdrom0:) and respawn at Firelink; three rounds. EE log: the
+# respawn's 'world: warp to ... settled in N ms'.
 option hud
 option noenemies
 option nodemo
@@ -60,3 +60,4 @@ kill
 wait 6
 shot respawn
 stats
+end
