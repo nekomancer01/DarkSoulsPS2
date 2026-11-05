@@ -1,14 +1,17 @@
-/* Asset pack loader (format: tools/pack.py). fio is used directly (not newlib's read) for its NOWAIT mode: the IOP
- * fills one staging buffer while the EE decompresses the other. */
+/* Asset pack loader (format: tools/pack.py). Every open / read / close is a request (io_*, below) served by dsrsnd's
+ * disc server from cdrom0:, or by fio (its NOWAIT mode) from host:; the IOP fills one staging buffer while the EE
+ * decompresses the other. */
 #define NEWLIB_PORT_AWARE
 #include <kernel.h>
 #include <fileio.h>
+#include <sifrpc.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
+#include "dsrsnd_rpc.h"
 
 struct PackEntry {
     char name[32];
@@ -24,54 +27,9 @@ struct PackEntry {
 #define RAW_FLAG 0x80000000u
 
 PackStats pack_stats;
-static void async_finish(void);
+static void log_flush(void);
 
-/* Disc lock (A12 sound, iop/dsrsnd): from a disc the IOP's sound module reads cdrom0: itself (streams, bank loads), and
- * two IOP threads in the BIOS CD file system at once hung the game (a bank load next to an EE pack open, 2026-11-03) or
- * thrashed the drive (boot load 4.2 -> 40 s). Every cdrom0: fio request takes the lock first and keeps it until its
- * result is collected; a background read only tries (busy: the caller's next frame). No hooks: host: or no sound. */
-int (*pack_disc_lock)(int wait);
-void (*pack_disc_unlock)(void);
-static int disc_depth;
-
-static int disc_get(int wait)
-{
-    if (!disc_depth && pack_cdrom > 0 && pack_disc_lock && !pack_disc_lock(wait))
-        return 0;
-    disc_depth++;
-    return 1;
-}
-
-int (*pack_disc_try_async)(void);
-int (*pack_disc_yield)(void);
-
-/* a background read would starve a sound stream now: leave the drive to dsrsnd (from cdrom0: only) */
-static int disc_yield(void)
-{
-    return !disc_depth && pack_cdrom > 0 && pack_disc_yield && pack_disc_yield();
-}
-
-/* disc_get(0) for the background jobs: retried next frame anyway, so the try need not wait for the IOP's answer */
-static int disc_get_bg(void)
-{
-    if (disc_yield())
-        return 0;
-    if (!disc_depth && pack_cdrom > 0 && pack_disc_try_async) {
-        if (!pack_disc_try_async())
-            return 0;
-        disc_depth++;
-        return 1;
-    }
-    return disc_get(0);
-}
-
-static void disc_put(void)
-{
-    if (disc_depth && !--disc_depth && pack_cdrom > 0 && pack_disc_unlock)
-        pack_disc_unlock();
-}
-
-static inline unsigned ticks(void)
+static unsigned ticks(void)
 {
     unsigned c;
     __asm__ volatile("mfc0 %0, $9" : "=r"(c));
@@ -94,6 +52,9 @@ static const char *pack_path(const char *path, char *out, unsigned cap)
         pack_cdrom = getcwd(cwd, sizeof cwd) && !strncmp(cwd, "cdrom", 5);
 #endif
         printf("pack: packs from %s\n", pack_cdrom ? "cdrom0:\\DATA\\" : PACK_ROOT);
+        fioInit();
+        if (pack_cdrom && !pack_disc_boot())
+            printf("pack: no disc server (dsrsnd), cdrom0: through fio\n");
     }
     if (!pack_cdrom || strncmp(path, "host:data/", 10))
         return path;
@@ -123,24 +84,328 @@ static const char *pack_path(const char *path, char *out, unsigned cap)
 
 const char *pack_resolve(const char *path, char *out, unsigned cap) { return pack_path(path, out, cap); }
 
+void (*pack_wait_hook)(void);
+
+/* ---- requests ----
+ * Every open / read / close of a pack is a request in one of IO_SLOTS slots; its ticket is the slot + 1. From cdrom0:
+ * the requests go to dsrsnd's disc server (dsrsnd_rpc.h SNDF_DISC_*), the only reader of the drive: the EE queues
+ * them without waiting (one non-blocking RPC carries up to SND_DISC_BATCH), the IOP serves sync ones first, then the
+ * background ones in order, 64 KB at a time between its sound stream refills, and DMAs each slot's SndDiscDone into
+ * io_done once the data is in; the EE polls it uncached. Before (until 2026-11-05) the EE and dsrsnd took turns at the
+ * drive through a lock that the EE held from a read's issue until a later frame collected it: on the ISO, sound
+ * streams were locked out for 298 of 358 s of a Firelink-Burg-Parish route (137 underruns), every blocking try that
+ * lost to a refill stalled a frame (median 185 ms), and each small read cost at least two frames (51-99 ms).
+ * host: (PCSX2 HostFs, ps2link), or a disc without dsrsnd, keeps plain fio: one NOWAIT request at a time, taken from
+ * the slots in the same order. */
+#define IO_SLOTS SND_DISC_SLOTS
+enum { IO_FREE, IO_QUEUED, IO_SENT, IO_DONE };
+typedef struct {
+    unsigned seq, order, off, size;
+    int state, op, prio, fd, result, drop;  /* drop: nobody collects it (a close), freed when it lands */
+    unsigned char *dst;
+    const char *path;  /* SNDD_OPEN: the caller's, kept until it lands */
+} IoReq;
+static IoReq io[IO_SLOTS];
+static unsigned io_seq, io_order;
+static int io_srv;       /* 1: requests go to dsrsnd's disc server */
+static int io_run = -1;  /* fio: the slot whose NOWAIT request is in flight */
+static int io_fio_disc;  /* fio served a cdrom0: request: the disc server must not start next to it */
+static struct { unsigned slot, seq; } io_cxl[IO_SLOTS];  /* cancels not sent yet */
+static int io_ncxl;
+static SifRpcClientData_t io_cl __attribute__((aligned(64)));
+static int io_cl_busy;
+static SndDiscReq io_tx[SND_DISC_BATCH] __attribute__((aligned(64)));
+static SndDiscStat io_rx __attribute__((aligned(64)));
+static SndDiscDone io_done[IO_SLOTS] __attribute__((aligned(64)));
+
+static inline volatile SndDiscDone *done_rec(int k) { return (volatile SndDiscDone *)((unsigned)&io_done[k] | 0x20000000); }
+
+int __attribute__((weak)) pack_disc_boot(void) { return 0; }
+
+int pack_disc_attach(void)
+{
+    static SndDiscInit init __attribute__((aligned(64)));
+    if (io_srv)
+        return 1;
+    if (io_fio_disc) {
+        printf("pack: disc server too late, cdrom0: stays on fio\n");
+        return 0;
+    }
+    for (int tries = 0; !io_cl.server; tries++) {
+        if (SifBindRpc(&io_cl, DSRSND_RPC_DISC_ID, 0) < 0 || tries > 1000)
+            return 0;
+        if (!io_cl.server)
+            nopdelay();
+    }
+    SyncDCache(io_done, (char *)io_done + sizeof io_done - 1);  /* no cached line over what the IOP DMAs */
+    for (int k = 0; k < IO_SLOTS; k++)
+        done_rec(k)->seq = 0;
+    init.done = (unsigned)io_done;
+    SifCallRpc(&io_cl, SNDF_DISC_INIT, 0, &init, sizeof init, &io_rx, sizeof io_rx, NULL, NULL);
+    const volatile SndDiscStat *st = (const volatile SndDiscStat *)((unsigned)&io_rx | 0x20000000);
+    printf("pack: cdrom0: through dsrsnd's disc server; IOP RAM free %u KB (%u KB before dsrsnd's buffers)\n",
+           st->iop_free >> 10, st->iop_free_boot >> 10);
+    io_srv = 1;
+    return 1;
+}
+
+void pack_disc_stat(unsigned out[4])
+{
+    const volatile SndDiscStat *st = (const volatile SndDiscStat *)((unsigned)&io_rx | 0x20000000);
+    out[0] = io_srv ? st->iop_free : 0, out[1] = io_srv ? st->wait_max_ms : 0;
+    out[2] = io_srv ? st->waits_100 : 0, out[3] = io_srv ? st->kb : 0;
+}
+
+static void io_land(int k, int res)
+{
+    IoReq *q = &io[k];
+    q->result = res;
+    q->state = q->drop ? IO_FREE : IO_DONE;
+}
+
+/* disc server: the requests that landed, then the next batch out if the last RPC is back */
+static void srv_pump(void)
+{
+    for (int k = 0; k < IO_SLOTS; k++) {
+        IoReq *q = &io[k];
+        volatile SndDiscDone *d = done_rec(k);
+        if (q->state != IO_SENT || d->seq != q->seq)
+            continue;
+        int res = d->result;
+        unsigned nh = d->nhead, nt = d->ntail;
+        if (q->op == SNDD_READ && res > 0 && (nh || nt)) {  /* the bytes outside whole qwords, written uncached */
+            unsigned char *a = q->dst, *b = q->dst + res - nt;
+            if (nh)
+                SyncDCache(a, a + nh - 1);
+            if (nt)
+                SyncDCache(b, b + nt - 1);
+            for (unsigned i = 0; i < nh; i++)
+                ((volatile unsigned char *)((unsigned)a | 0x20000000))[i] = d->edge[i];
+            for (unsigned i = 0; i < nt; i++)
+                ((volatile unsigned char *)((unsigned)b | 0x20000000))[i] = d->edge[nh + i];
+        }
+        io_land(k, res);
+    }
+    if (io_cl_busy && SifCheckStatRpc(&io_cl))
+        return;
+    io_cl_busy = 0;
+    int n = 0;
+    while (io_ncxl && n < SND_DISC_BATCH) {
+        io_ncxl--;
+        io_tx[n++] = (SndDiscReq){.op = SNDD_CANCEL, .slot = io_cxl[io_ncxl].slot, .seq = io_cxl[io_ncxl].seq};
+    }
+    while (n < SND_DISC_BATCH) {
+        int k = -1;
+        for (int i = 0; i < IO_SLOTS; i++)
+            if (io[i].state == IO_QUEUED && (k < 0 || (int)(io[i].order - io[k].order) < 0))
+                k = i;
+        if (k < 0)
+            break;
+        IoReq *q = &io[k];
+        SndDiscReq *r = &io_tx[n++];
+        memset(r, 0, sizeof *r);
+        r->seq = q->seq, r->slot = k, r->op = q->op, r->prio = q->prio, r->fd = q->fd;
+        r->offset = q->off, r->size = q->size, r->dst = (unsigned)q->dst;
+        if (q->path)
+            snprintf(r->path, sizeof r->path, "%s", q->path);
+        q->state = IO_SENT;
+    }
+    if (!n)
+        return;
+    SifCallRpc(&io_cl, SNDF_DISC_SUBMIT, SIF_RPC_M_NOWAIT, io_tx, n * sizeof *io_tx, &io_rx, sizeof io_rx, NULL, NULL);
+    io_cl_busy = 1;
+}
+
+/* fio: the request in flight if it ended, then the next one (sync first, then in order) */
+static void fio_pump(void)
+{
+    for (;;) {
+        if (io_run >= 0) {
+            int r;
+            if (fioSync(FIO_NOWAIT, &r) != FIO_COMPLETE)
+                return;
+            fioSetBlockMode(FIO_WAIT);
+            io_land(io_run, r);
+            io_run = -1;
+            log_flush();
+        }
+        int k = -1;
+        for (int i = 0; i < IO_SLOTS; i++)
+            if (io[i].state == IO_QUEUED &&
+                (k < 0 || io[i].prio < io[k].prio || (io[i].prio == io[k].prio && (int)(io[i].order - io[k].order) < 0)))
+                k = i;
+        if (k < 0)
+            return;
+        IoReq *q = &io[k];
+        io_fio_disc |= pack_cdrom > 0;
+        if (q->op == SNDD_CLOSE) {
+            io_land(k, fioClose(q->fd));
+            continue;
+        }
+        if (q->op == SNDD_READ)
+            fioLseek(q->fd, q->off, SEEK_SET);
+        fioSetBlockMode(FIO_NOWAIT);
+        if (q->op == SNDD_OPEN)
+            fioOpen(q->path, O_RDONLY);
+        else
+            fioRead(q->fd, q->dst, q->size);
+        q->state = IO_SENT;
+        io_run = k;
+    }
+}
+
+/* fio: wait for the request in flight (fio back in WAIT mode) */
+static void fio_finish(void)
+{
+    if (io_run >= 0) {
+        int r;
+        fioSync(FIO_WAIT, &r);
+        fioSetBlockMode(FIO_WAIT);
+        io_land(io_run, r);
+        io_run = -1;
+    }
+    log_flush();
+}
+
+static void io_pump(void)
+{
+    if (io_srv)
+        srv_pump();
+    else
+        fio_pump();
+}
+
+/* a new request; its ticket, 0 when every slot is taken */
+static int io_submit(int op, int prio, int fd, const char *path, unsigned off, void *dst, unsigned size)
+{
+    int k = -1;
+    for (int pass = 0; pass < 2 && k < 0; pass++) {
+        for (int i = 0; i < IO_SLOTS && k < 0; i++)
+            if (io[i].state == IO_FREE)
+                k = i;
+        if (k < 0)
+            io_pump();  /* a dropped close may land now */
+    }
+    if (k < 0)
+        return 0;
+    if (!++io_seq)
+        io_seq = 1;  /* 0: a SndDiscDone never written */
+    io[k] = (IoReq){.seq = io_seq, .order = io_order++, .off = off, .size = size, .state = IO_QUEUED, .op = op,
+                    .prio = prio, .fd = fd, .dst = dst, .path = path};
+    if (op == SNDD_READ && size)
+        SyncDCache(dst, (char *)dst + size - 1);  /* no dirty line written back over the DMA'd data later */
+    io_pump();
+    return k + 1;
+}
+
+/* 1 once ticket t landed (*res its result; the ticket is free again) */
+static int io_poll(int t, int *res)
+{
+    if (!t)
+        return 0;
+    io_pump();
+    IoReq *q = &io[t - 1];
+    if (q->state != IO_DONE)
+        return 0;
+    *res = q->result;
+    q->state = IO_FREE;
+    return 1;
+}
+
+static unsigned ticks(void);
+static int io_wait(int t, int hook)
+{
+    int r = -1;
+#ifdef SLOW_FRAME_LOG
+    unsigned t0 = ticks();
+    int op = t ? io[t - 1].op : 0, prio = t ? io[t - 1].prio : 0;
+#endif
+    while (t && !io_poll(t, &r)) {
+        if (hook && pack_wait_hook)
+            pack_wait_hook();
+        else if (!io_srv)
+            fio_finish();
+        else
+            for (volatile int i = 0; i < 2000; i++)  /* not every cycle on the bus */
+                ;
+    }
+#ifdef SLOW_FRAME_LOG
+    unsigned ms = (ticks() - t0) / 294912;
+    if (t && ms >= 150)
+        printf("pack: waited %u ms for a%s %s\n", ms, prio == SNDD_PRIO_SYNC ? " sync" : " background",
+               op == SNDD_OPEN ? "open" : op == SNDD_READ ? "read" : "close");
+#endif
+    return r;
+}
+
+/* a request that must go out: waits for a free slot */
+static int io_submit_wait(int op, int prio, int fd, const char *path, unsigned off, void *dst, unsigned size)
+{
+    int t;
+    while (!(t = io_submit(op, prio, fd, path, off, dst, size)))
+        io_wait(0, 0), io_srv ? (void)0 : fio_finish();
+    return t;
+}
+
+static int io_sync(int op, int fd, const char *path, unsigned off, void *dst, unsigned size)
+{
+    return io_wait(io_submit_wait(op, SNDD_PRIO_SYNC, fd, path, off, dst, size), 1);
+}
+
+/* drop ticket t: a request not sent yet is gone, a read in flight stops after its current page (disc server); waits
+ * until nothing more lands in its buffer. Returns its result (-1 when it never ran) */
+static int io_cancel(int t)
+{
+    if (!t)
+        return -1;
+    IoReq *q = &io[t - 1];
+    if (q->state == IO_QUEUED) {
+        q->state = IO_FREE;
+        return -1;
+    }
+    if (io_srv && q->state == IO_SENT && q->op == SNDD_READ && io_ncxl < IO_SLOTS)
+        io_cxl[io_ncxl].slot = t - 1, io_cxl[io_ncxl++].seq = q->seq;
+    return io_wait(t, 0);
+}
+
+static void io_close(int fd)
+{
+    int t = io_submit_wait(SNDD_CLOSE, SNDD_PRIO_BG, fd, NULL, 0, NULL, 0);
+    if (io[t - 1].state == IO_DONE)
+        io[t - 1].state = IO_FREE;
+    else
+        io[t - 1].drop = 1;
+}
+
+int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes)
+{
+    return io_submit(SNDD_READ, SNDD_PRIO_BG, p->fd, NULL, offset, dst, bytes);
+}
+
+int pack_req_done(int t, int *result) { return io_poll(t, result); }
+
+void pack_req_cancel(int t) { io_cancel(t); }
+
+void pack_pump(void) { io_pump(); }
+
 int pack_open(Pack *p, const char *path)
 {
-    async_finish();
-    unsigned head[4];
+    static unsigned head[16] __attribute__((aligned(64)));
     char cd_path[96];
     memset(p, 0, sizeof *p);
-    fioInit();
     path = pack_path(path, cd_path, sizeof cd_path);
-    disc_get(1);
-    p->fd = fioOpen(path, O_RDONLY);
-    int ok = p->fd >= 0 && fioRead(p->fd, head, 16) == 16 && !memcmp(head, "DSRP", 4) && head[1] == 1;
+    p->fd = io_sync(SNDD_OPEN, -1, path, 0, NULL, 0);
+    int ok = p->fd >= 0 && io_sync(SNDD_READ, p->fd, NULL, 0, head, 16) == 16;
+    InvalidDCache(head, (char *)head + sizeof head - 1);
+    ok = ok && !memcmp(head, "DSRP", 4) && head[1] == 1;
     if (ok) {
+        unsigned n = head[2] * sizeof *p->entries;
         p->count = head[2];
-        p->entries = malloc(p->count * sizeof *p->entries);
-        ok = p->entries &&
-             fioRead(p->fd, p->entries, p->count * sizeof *p->entries) == (int)(p->count * sizeof *p->entries);
+        p->entries = memalign(64, (n + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
+        ok = p->entries && io_sync(SNDD_READ, p->fd, NULL, 16, p->entries, n) == (int)n;
+        if (ok)
+            InvalidDCache(p->entries, (char *)p->entries + n - 1);
     }
-    disc_put();
     if (!ok && p->fd >= 0)
         pack_close(p);
     return ok;
@@ -148,12 +413,8 @@ int pack_open(Pack *p, const char *path)
 
 void pack_close(Pack *p)
 {
-    async_finish();
-    if (p->fd >= 0) {
-        disc_get(1);
-        fioClose(p->fd);
-        disc_put();
-    }
+    if (p->fd >= 0)
+        io_close(p->fd);  /* in order behind the pack's reads */
     free(p->entries);
     p->fd = -1;
     p->entries = NULL;
@@ -212,38 +473,19 @@ static unsigned batch_end(const unsigned *cs, unsigned b, unsigned nb, unsigned 
 }
 
 char pack_error[96];
-void (*pack_wait_hook)(void);
 
-/* One background read at a time (pack_read_async); fio has a single async slot, so every other fio call here waits
- * for it first and keeps its result for pack_async_done */
-static int async_busy, async_result;
-static void log_flush(void);
-
-static void async_finish(void)
-{
-    if (async_busy == 1) {
-        fioSync(FIO_WAIT, &async_result);
-        fioSetBlockMode(FIO_WAIT);
-        async_busy = 2;  /* done, result not collected yet */
-        disc_put();
-    }
-    log_flush();
-}
-
-void pack_async_wait(void) { async_finish(); }  /* save.c: own fio calls need FIO_WAIT mode */
-
-/* stdout / stderr also go through fio (libcglue _write -> fioWrite): a printf while a read is pending would take
- * the async slot's result (a 57-byte log line once came back as a cell read). The link wraps _write (Makefile
- * --wrap=_write): while a read is pending, log text is queued here and written once the read is over. Waiting for
- * the read instead stalled the frame for the rest of it: from cdrom0: a 128 KB world read takes 0.2-1 s in PCSX2, and
- * the logging during block loads cost 10.5 s of stalls in one tests/world_cross.txt run (2026-11-03). A line that
- * does not fit the queue waits for the read as before. */
+/* stdout / stderr also go through fio (libcglue _write -> fioWrite): a printf while a fio NOWAIT request is in flight
+ * would take its result (a 57-byte log line once came back as a cell read). The link wraps _write (Makefile
+ * --wrap=_write): meanwhile log text is queued here and written once the request is over. Waiting for the request
+ * instead stalled the frame for the rest of it: from cdrom0: a 128 KB world read took 0.2-1 s in PCSX2, and the logging
+ * during block loads cost 10.5 s of stalls in one tests/world_cross.txt run (2026-11-03). A line that does not fit the
+ * queue waits for the request as before. The disc server sends no fio requests, so this only matters for fio. */
 static char log_q[8192];
 static unsigned log_n;
 int __real__write(int fd, const void *buf, size_t n);
 static void log_flush(void)
 {
-    if (log_n && async_busy != 1) {
+    if (log_n && io_run < 0) {
         unsigned n = log_n;
         log_n = 0;
         __real__write(1, log_q, n);
@@ -251,12 +493,12 @@ static void log_flush(void)
 }
 int __wrap__write(int fd, const void *buf, size_t n)
 {
-    if (async_busy == 1 && (fd == 1 || fd == 2) && log_n + n <= sizeof log_q) {
+    if (io_run >= 0 && (fd == 1 || fd == 2) && log_n + n <= sizeof log_q) {
         memcpy(log_q + log_n, buf, n);
         log_n += n;
         return n;
     }
-    async_finish();
+    fio_finish();
     return __real__write(fd, buf, n);
 }
 
@@ -283,40 +525,36 @@ int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size)
     return 0;
 }
 
+/* the one-at-a-time background read of pack_read_async (items.c's icons and descriptions) */
+static int legacy_t;
+
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes)
 {
-    if (async_busy || !disc_get(0))
+    if (legacy_t)
         return 0;
-    SyncDCache(dst, (char *)dst + bytes - 1);  /* no dirty lines written back over the DMA'd data later */
-    fioLseek(p->fd, offset, SEEK_SET);
-    fioSetBlockMode(FIO_NOWAIT);
-    fioRead(p->fd, dst, bytes);
-    async_busy = 1;
-    return 1;
-}
-
-int pack_read_bg(Pack *p, unsigned offset, void *dst, unsigned bytes)
-{
-    return !async_busy && !disc_yield() && pack_read_async(p, offset, dst, bytes);
+    legacy_t = pack_req_read(p, offset, dst, bytes);
+    return legacy_t != 0;
 }
 
 int pack_async_done(int *result)
 {
-    if (async_busy == 1) {
-        if (fioSync(FIO_NOWAIT, &async_result) != FIO_COMPLETE)
-            return 0;
-        fioSetBlockMode(FIO_WAIT);
-        disc_put();
-    }
-    if (!async_busy)
+    if (!io_poll(legacy_t, result))
         return 0;
-    async_busy = 0;
-    *result = async_result;
-    log_flush();
+    legacy_t = 0;
     return 1;
 }
 
-/* Background load of one entry (pack_job_*): open, table of contents and data each go through the async slot, the
+void pack_async_wait(void)
+{
+    while (legacy_t && io[legacy_t - 1].state != IO_DONE)
+        io_srv ? io_pump() : fio_finish();
+    if (!io_srv)
+        fio_finish();  /* save.c: its own fio calls need FIO_WAIT mode */
+}
+
+void pack_async_free(void) {}  /* every read has a slot of its own now: nothing to free */
+
+/* Background load of one entry (pack_job_*): open, table of contents and data are each a background request, the
  * data is read into the tail of the output buffer and decoded in place (an LZ4 block never grows on decode, and a
  * stored block keeps its size, so the write position stays JOB_MARGIN bytes behind the unread input) */
 #define JOB_MARGIN 1024
@@ -324,7 +562,6 @@ enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOS
 /* EE ms of LZ4 decode per pack_job_step: a model.bin took 10-20 ms in one frame (enemy types streaming in, smoke
  * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
 #define PACK_JOB_DECODE_MS 3
-static PackJob *slot_job;  /* the job whose request holds the async slot */
 
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
 {
@@ -340,9 +577,13 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
  * the open and the header read. From cdrom0: an open is an ISO directory search and the header a seek + read, ~0.1-0.3
  * s each on the async slot: a type's sound bank (bank, cue, emit: three jobs) opened its pack three times, and a type
  * that streamed back in opened both of its packs again (134 opens in one route_enemies.txt run, 2026-11-05, TECH_DEBT
- * world-8). JOB_FDS is ASSUMED: the IOP's cdrom0: driver serves a fixed number of open files, shared with the world
- * block packs, mapstream and dsrsnd's streams; an open that fails while handles are cached closes them and tries again. */
-#define JOB_FDS 4
+ * world-8). ioman's file table holds 16 handles, shared with the world block packs, menu.pak, mapstream and dsrsnd's
+ * streams and bank load: with 4 cached it ran full once enemy types streamed in (ISO 2026-11-05, smoke: 11 EE handles
+ * + 3 streams, -24 for dsrsnd's bank opens). An open that finds it full closes the idle cached handles and is tried
+ * again on later steps for up to JOB_OPEN_TRIES frames. */
+#define JOB_FDS 2
+#define JOB_OPEN_TRIES 300
+#define EMFILE_ 24
 static struct {
     char path[96];
     int fd, busy;  /* busy: a job reads it now */
@@ -351,12 +592,7 @@ static struct {
 } jfd[JOB_FDS] = {[0 ... JOB_FDS - 1] = {.fd = -1}};
 static unsigned jfd_clock;
 
-static void fd_close(int fd)
-{
-    disc_get(1);
-    fioClose(fd);
-    disc_put();
-}
+static void fd_close(int fd) { io_close(fd); }
 
 /* close the cached handles no job reads (an open failed: maybe the driver's limit) ; 1 if any */
 static int jfd_flush(void)
@@ -385,43 +621,28 @@ static int job_fail(PackJob *j, const char *why)
         jfd[j->fdc].fd = -1, jfd[j->fdc].busy = 0, j->fdc = -1;
     if (j->out)
         j->put(j->out, j->alloc), j->out = NULL;
-    if (j->fd >= 0 && !async_busy)
+    if (j->fd >= 0 && !j->tk)
         job_close(j);
-    j->state = j->fd >= 0 ? J_CLOSE : -1;  /* a pending read keeps the fd: closed on a later step */
-    return j->fd >= 0 ? 0 : -1;
+    j->state = j->tk ? J_CLOSE : -1;  /* a pending request keeps the fd: closed on a later step */
+    return j->tk ? 0 : -1;
 }
 
-/* the result of j's request once it finished (or was parked by pack_async_free), else 0 */
+/* the result of j's request once it landed (or the cached header, tk 0), else 0 */
 static int job_done(PackJob *j, int *res)
 {
-    if (j->parked) {
-        j->parked = 0;
+    if (!j->tk) {
         *res = j->res;
         return 1;
     }
-    if (async_busy == 1 && fioSync(FIO_NOWAIT, &async_result) != FIO_COMPLETE)
+    if (!io_poll(j->tk, res))
         return 0;
-    fioSetBlockMode(FIO_WAIT);
-    if (async_busy == 1)
-        disc_put();
-    async_busy = 0, slot_job = NULL;
-    *res = async_result;
-    log_flush();
+    j->tk = 0;
     return 1;
-}
-
-void pack_async_free(void)
-{
-    if (!slot_job)
-        return;
-    async_finish();
-    slot_job->res = async_result, slot_job->parked = 1;
-    async_busy = 0, slot_job = NULL;
 }
 
 int pack_job_step(PackJob *j)
 {
-    static unsigned head[512] __attribute__((aligned(64)));  /* the first sector: header + up to 31 entries */
+    unsigned *head = j->head;  /* the first sector: header + up to 31 entries */
     int res;
     switch (j->state) {
     case J_OPEN:
@@ -429,24 +650,22 @@ int pack_job_step(PackJob *j)
             if (jfd[k].fd >= 0 && !jfd[k].busy && !strcmp(jfd[k].path, j->path)) {
                 /* cached: its first sector as the header read would have returned it */
                 jfd[k].busy = 1, j->fdc = k, j->fd = jfd[k].fd;
-                memcpy(head, jfd[k].head, sizeof head);
-                SyncDCache(head, (char *)head + sizeof head - 1);  /* J_HEADING invalidates the cache lines */
-                j->res = sizeof head, j->parked = 1, j->state = J_HEADING;
+                memcpy(head, jfd[k].head, sizeof j->head);
+                SyncDCache(head, (char *)head + sizeof j->head - 1);  /* J_HEADING invalidates the cache lines */
+                j->res = sizeof j->head, j->tk = 0, j->state = J_HEADING;
                 return pack_job_step(j);
             }
-        if (async_busy || !disc_get_bg())
-            return 0;  /* another read is in flight: next frame */
-        fioInit();
-        fioSetBlockMode(FIO_NOWAIT);
-        fioOpen(j->path, O_RDONLY);
-        async_busy = 1, slot_job = j, j->state = J_OPENING;
+        if (!(j->tk = io_submit(SNDD_OPEN, SNDD_PRIO_BG, -1, j->path, 0, NULL, 0)))
+            return 0;  /* every request slot taken: next frame */
+        j->state = J_OPENING;
         return 0;
     case J_OPENING:
         if (!job_done(j, &res))
             return 0;
         if ((j->fd = res) < 0) {
-            if (!j->reopen++ && jfd_flush()) {  /* the driver's open file limit: the cached handles go first */
-                j->state = J_OPEN;
+            if (res == -EMFILE_ && j->reopen++ < JOB_OPEN_TRIES) {  /* the file table: the idle cached handles go first */
+                jfd_flush();
+                j->fd = -1, j->state = J_OPEN;
                 return 0;
             }
             return job_fail(j, "no pack");
@@ -454,21 +673,17 @@ int pack_job_step(PackJob *j)
         j->state = J_HEAD;
         /* fall through */
     case J_HEAD:
-        if (async_busy || !disc_get_bg())
+        if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, 0, head, sizeof j->head)))
             return 0;
-        SyncDCache(head, (char *)head + sizeof head - 1);
-        fioLseek(j->fd, 0, SEEK_SET);
-        fioSetBlockMode(FIO_NOWAIT);
-        fioRead(j->fd, head, sizeof head);
-        async_busy = 1, slot_job = j, j->state = J_HEADING;
+        j->state = J_HEADING;
         return 0;
     case J_HEADING: {
         if (!job_done(j, &res))
             return 0;
-        InvalidDCache(head, (char *)head + sizeof head - 1);
+        InvalidDCache(head, (char *)head + sizeof j->head - 1);
         if (res < 16 || memcmp(head, "DSRP", 4) || head[1] != 1 || 16 + head[2] * 64 > (unsigned)res)
             return job_fail(j, "bad pack header");
-        if (j->fdc < 0 && res == (int)sizeof head) {  /* into the cache: a free slot, else the least recently used */
+        if (j->fdc < 0 && res == (int)sizeof j->head) {  /* into the cache: a free slot, else the least recently used */
             int k = -1;
             for (int c = 0; c < JOB_FDS; c++)
                 if (!jfd[c].busy && (k < 0 || jfd[c].fd < 0 || (jfd[k].fd >= 0 && jfd[c].use < jfd[k].use)))
@@ -477,7 +692,7 @@ int pack_job_step(PackJob *j)
                 if (jfd[k].fd >= 0)
                     fd_close(jfd[k].fd);
                 snprintf(jfd[k].path, sizeof jfd[k].path, "%s", j->path);
-                memcpy(jfd[k].head, head, sizeof head);
+                memcpy(jfd[k].head, head, sizeof j->head);
                 jfd[k].fd = j->fd, jfd[k].busy = 1, j->fdc = k;
             }
         }
@@ -496,21 +711,15 @@ int pack_job_step(PackJob *j)
         j->state = J_DATA;
     }   /* fall through */
     case J_DATA:
-        if (async_busy)
-            return 0;
         if (!j->out) {
             j->alloc = (j->raw + JOB_MARGIN + 64 + 127) & ~127u;
             if (j->packed > j->raw + j->blocks * 4 || !(j->out = j->get(j->alloc)))
                 return job_fail(j, j->out ? "entry grows on decode" : "OUT OF RAM");
         }
-        if (!disc_get_bg())
-            return 0;
         j->in = j->out + ((j->alloc - j->packed) & ~63u);
-        SyncDCache(j->in, j->in + j->packed - 1);
-        fioLseek(j->fd, j->off, SEEK_SET);
-        fioSetBlockMode(FIO_NOWAIT);
-        fioRead(j->fd, j->in, j->packed);
-        async_busy = 1, slot_job = j, j->state = J_READING;
+        if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, j->off, j->in, j->packed)))
+            return 0;
+        j->state = J_READING;
         return 0;
     case J_READING: {
         if (!job_done(j, &res))
@@ -543,12 +752,8 @@ int pack_job_step(PackJob *j)
         j->state = -2;
         return 1;
     }
-    case J_CLOSE:  /* failed with its read still pending: drop the result, close */
-        if (slot_job == j || j->parked) {
-            if (!job_done(j, &res))
-                return 0;
-        }
-        if (async_busy)
+    case J_CLOSE:  /* failed with its request still pending: drop the result, close */
+        if (!job_done(j, &res))
             return 0;
         if (j->fd >= 0)
             job_close(j);
@@ -561,11 +766,9 @@ int pack_job_step(PackJob *j)
 /* Drop a job before it is done (its pending request finishes first) */
 void pack_job_cancel(PackJob *j)
 {
-    if (j->state == J_OPENING || j->state == J_HEADING || j->state == J_READING) {
-        int res;
-        if (slot_job == j)
-            pack_async_free();
-        job_done(j, &res);
+    if (j->tk) {  /* a read stops after the page in flight; an open is let finish and closed */
+        int res = io_cancel(j->tk);
+        j->tk = 0;
         if (j->state == J_OPENING && res >= 0)
             j->fd = res;
     }
@@ -587,7 +790,6 @@ void *pack_load(Pack *p, const char *name, unsigned *size)
 
 void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(unsigned), void (*put)(void *, unsigned))
 {
-    async_finish();
     struct PackEntry *e = NULL;
     for (unsigned i = 0; i < p->count; i++)
         if (!strncmp(p->entries[i].name, name, sizeof e->name))
@@ -596,7 +798,7 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
         return NULL;
     unsigned t0 = ticks(), wait = 0, nb = e->blocks;
     unsigned char *out = get((e->raw + 127) & ~127u);
-    unsigned *cs = memalign(64, (nb * 4 + 63) & ~63u);  /* fioRead DMAs into it: no cache line shared with the heap's */
+    unsigned *cs = memalign(64, (nb * 4 + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
     unsigned st = e->packed < STAGE ? (e->packed + 63) & ~63u : STAGE;
     st = st < STAGE_MIN ? STAGE_MIN : st;
     int one = e->packed <= st;  /* one batch: the second buffer is never read into */
@@ -609,26 +811,31 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
                  (unsigned)(32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks) >> 10);
         printf("pack: %s\n", pack_error);
     }
-    disc_get(1);
     if (ok) {
-        fioLseek(p->fd, e->offset, SEEK_SET);
-        ok = fioRead(p->fd, cs, nb * 4) == (int)(nb * 4);
+        unsigned w = ticks();
+        ok = io_sync(SNDD_READ, p->fd, NULL, e->offset, cs, nb * 4) == (int)(nb * 4);
+        wait += ticks() - w;
         InvalidDCache(cs, (char *)cs + nb * 4 - 1);
     }
-    unsigned b = 0, bytes, end = ok ? batch_end(cs, 0, nb, &bytes, st) : 0, pos = 0;
-    int cur = 0, got = ok ? fioRead(p->fd, stage[0], bytes) : -1;
+    unsigned b = 0, bytes, end = ok ? batch_end(cs, 0, nb, &bytes, st) : 0, pos = 0, foff = e->offset + nb * 4;
+    int cur = 0, tk = ok ? io_submit_wait(SNDD_READ, SNDD_PRIO_SYNC, p->fd, NULL, foff, stage[0], bytes) : 0;
+    foff += bytes;
     while (ok && b < nb) {
+        unsigned w = ticks();
+        int got = io_wait(tk, 1);
+        tk = 0;
+        wait += ticks() - w;
         if (got != (int)bytes) {
             ok = 0;
             break;
         }
         InvalidDCache(stage[cur], stage[cur] + st - 1);  /* drop stale lines over the DMA'd data */
-        /* next batch: queue the read on the IOP, decompress this one meanwhile */
+        /* next batch: queue its read, decompress this one meanwhile (the disc server keeps serving the sound streams:
+         * nothing holds the drive while the EE decodes) */
         unsigned nbytes = 0, nend = end < nb ? batch_end(cs, end, nb, &nbytes, st) : end;
         if (nend > end) {
-            SyncDCache(stage[cur ^ 1], stage[cur ^ 1] + nbytes - 1);  /* no dirty line written back over the DMA */
-            fioSetBlockMode(FIO_NOWAIT);
-            fioRead(p->fd, stage[cur ^ 1], nbytes);
+            tk = io_submit_wait(SNDD_READ, SNDD_PRIO_SYNC, p->fd, NULL, foff, stage[cur ^ 1], nbytes);
+            foff += nbytes;
         }
         const unsigned char *src = stage[cur];
         for (; b < end && ok; b++) {
@@ -642,21 +849,12 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
             src += c;
             pos += want;
         }
-        if (nend > end) {
-            unsigned w = ticks();
-            if (pack_wait_hook)
-                while (fioSync(FIO_NOWAIT, &got) != FIO_COMPLETE)
-                    pack_wait_hook();
-            else
-                fioSync(FIO_WAIT, &got);
-            fioSetBlockMode(FIO_WAIT);
-            wait += ticks() - w;
-        }
         cur ^= 1;
         end = nend;
         bytes = nbytes;
     }
-    disc_put();
+    if (tk)
+        io_wait(tk, 0);  /* a read still on its way into a staging buffer that goes back now */
     if (stage[0])
         put(stage[0], st);
     if (stage[1])

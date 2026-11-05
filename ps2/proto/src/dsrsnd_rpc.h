@@ -6,9 +6,13 @@
  *                stream refills, SND_LOAD_STEP bytes at a time); status.load_done = its id once it is in
  *   SNDF_FRAME   SndFrame -> SndStatus: this frame's voice commands, key offs before key ons
  *   SNDF_STREAM  SndStreamOpen -> SndStatus: (re)start a disc stream in a slot
- *   SNDF_DISC_LOCK / _TRY / _UNLOCK (disc server, no args) -> SndDisc: the disc lock (src/pack.c pack_disc_lock). The
- *                BIOS CD file system takes one reader at a time: the EE holds the lock over each cdrom0: fio request,
- *                the IOP's own disc reads (stream refills and opens, bank loads) run only while they can take it
+ *   SNDF_DISC_INIT   SndDiscInit -> SndDiscStat: where the EE wants the completion records (once, at boot)
+ *   SNDF_DISC_SUBMIT SndDiscReq[n] -> SndDiscStat: queue opens / reads / closes / cancels for the disc server
+ * Disc server (src/pack.c's cdrom0: backend): the stream thread is the only reader of the drive. The BIOS CD file system
+ * takes one reader at a time, so every cdrom0: open / read / close of the EE goes through here too: the EE queues
+ * requests (up to SND_DISC_SLOTS at once, without waiting), the thread serves the most urgent one SND_DISC_PAGE bytes
+ * at a time between stream refills and bank load steps, sends each page to the EE by SIF DMA and then the request's
+ * SndDiscDone record into the EE's ring (done[slot]); the EE polls that record uncached.
  * Voices: 0-23 core 0, 24-47 core 1. Stream slot s plays on core 1 voices SND_STREAM_VOICE(s) (left) and + 1 (right).
  * Streamed data (tools/export_audio.py str.bin): SPU2 ADPCM in chunks of `chunk` bytes per channel, channels
  * interleaved by chunk ([L chunk][R chunk][L chunk]...); the IOP rewrites the block flags for its ring buffer. */
@@ -17,14 +21,13 @@
 
 #define DSRSND_RPC_ID 0x0D5A5D01      /* frames (SNDF_INIT, SNDF_FRAME) */
 #define DSRSND_RPC_OPS_ID 0x0D5A5D02  /* ops (SNDF_LOAD, SNDF_STREAM) */
-#define DSRSND_RPC_DISC_ID 0x0D5A5D03 /* disc lock (SNDF_DISC_*) */
+#define DSRSND_RPC_DISC_ID 0x0D5A5D03 /* disc server (SNDF_DISC_*) */
 #define SNDF_INIT 1
 #define SNDF_LOAD 2
 #define SNDF_FRAME 3
 #define SNDF_STREAM 4
-#define SNDF_DISC_LOCK 5    /* wait for the lock */
-#define SNDF_DISC_TRY 6     /* take it if free */
-#define SNDF_DISC_UNLOCK 7
+#define SNDF_DISC_INIT 5
+#define SNDF_DISC_SUBMIT 6
 
 #define SND_LOAD_STEP 16384
 #define SND_CMD_MAX 96
@@ -70,14 +73,53 @@ typedef struct {
     unsigned int late;           /* stream refills since boot that came over 1.5 ring halves after the last one */
     unsigned int underruns;      /* streams muted since boot: the voice reached a half not refilled yet (it would have
                                     replayed stale audio); keyed on again from the same file position once data is in */
-    unsigned int starving;       /* bit per stream slot: its read-ahead is low or a refill waits for the disc. The EE
-                                    holds its background disc reads back meanwhile (src/pack.c pack_disc_yield) */
+    unsigned int starving;       /* bit per stream slot: its read-ahead is low or a refill waits for the drive (the
+                                    disc thread leaves the drive to the stream thread after its current page) */
     unsigned int pad;
 } SndStatus;  /* 64 bytes */
 
+/* ---- disc server ---- */
+#define SND_DISC_SLOTS 32          /* requests in flight; the EE's slot index is also its SndDiscDone's */
+#define SND_DISC_BATCH 8           /* requests per SNDF_DISC_SUBMIT */
+/* bytes per disc read of an EE request: the stream thread waits at most one for the drive. 64 KB pages made waits of
+ * up to 164 ms on the ISO (the drive gave 430-770 KB/s with the seeks between map and audio reads, 2026-11-05) */
+#define SND_DISC_PAGE (32 * 1024)
+#define SNDD_OPEN 1    /* path -> result fd (< 0 error) */
+#define SNDD_READ 2    /* fd, offset, size bytes to EE dst -> result bytes read */
+#define SNDD_CLOSE 3   /* fd -> result */
+#define SNDD_CANCEL 4  /* stop the read in slot / seq after its current page (result -1); takes no slot itself */
+#define SNDD_PRIO_SYNC 0  /* the EE waits for it (pack_open, pack_load): before every background request */
+#define SNDD_PRIO_BG 1    /* map streaming, background jobs; in order of submission */
+
 typedef struct {
-    unsigned int got, pad[15];  /* SNDF_DISC_*: 1 = the EE holds the lock */
-} SndDisc;  /* 64 bytes */
+    unsigned int seq;        /* the EE's request number, echoed in its SndDiscDone */
+    unsigned short slot;     /* 0 .. SND_DISC_SLOTS - 1, free on the EE until its SndDiscDone arrives */
+    unsigned char op, prio;
+    int fd;
+    unsigned int offset, size, dst;  /* dst: EE address, any alignment (the edges come in the SndDiscDone) */
+    unsigned int pad;
+    char path[96];           /* SNDD_OPEN: cdrom0:\... */
+} SndDiscReq;  /* 128 bytes */
+
+typedef struct {
+    unsigned char edge[32];  /* bytes of dst the DMA cannot write (not within 16-byte aligned qwords): head, then tail */
+    int result;
+    unsigned short nhead, ntail;
+    unsigned int pad[5];
+    unsigned int seq;        /* last: written by the DMA after the rest; == the request's seq once it is done */
+} SndDiscDone;  /* 64 bytes */
+
+typedef struct {
+    unsigned int done;  /* EE address of SndDiscDone[SND_DISC_SLOTS] (64-byte aligned) */
+    unsigned int pad[3];
+} SndDiscInit;
+
+typedef struct {
+    unsigned int iop_free_boot, iop_free;  /* free IOP RAM before dsrsnd's buffers, and now (bytes) */
+    unsigned int reqs, pages, kb;          /* served since boot */
+    unsigned int wait_max_ms, waits_100;   /* longest gap between stream service passes while a stream played, > 100 ms */
+    unsigned int pad[9];
+} SndDiscStat;  /* 64 bytes */
 
 typedef struct {
     unsigned int id, offset, size, spu_addr;  /* size: multiple of 64 */
