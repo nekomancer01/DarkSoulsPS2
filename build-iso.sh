@@ -1,19 +1,22 @@
 #!/bin/bash
-# Usage: ./build-iso.sh [--game DIR] [--out FILE] [--build DIR] [--jobs N] [--syms] [--no-queue] [--container]
+# Usage: ./build-iso.sh [-i GAME_DIR] [-o FILE] [-c N] [--build DIR] [--syms] [--no-queue] [--container]
 #
 # Builds the whole disc image from this checkout in one command: exports and packs the game data from your own copy
 # of Dark Souls Remastered, compiles the ELF and assembles build/proto.iso (README.md steps 5 and 6 in one go). Later
 # runs redo only what changed. Run it from anywhere; it always builds the checkout it lives in.
 #
-#   --game DIR   the folder that holds DarkSoulsRemastered.exe. Default: DSR_GAME / config.local.mk, else the Steam
-#                auto-detect (tools/gamepath.py).
-#   --out FILE   also copy the ISO here (e.g. ~/Downloads/DarkSoulsPS2.iso). It is always left at <build>/proto.iso.
-#   --build DIR  build directory (default build/). A new one starts from scratch unless seeded first with
-#                tools/newbuild DIR --from build.
-#   --jobs N     parallel jobs (default: every core)
-#   --syms       keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
-#   --no-queue   run make directly instead of through the job queue (tools/q)
-#   --container  build in the Docker / Podman container (tools/build-iso.sh) even when the host has the toolchain
+#   -i, --game DIR   input: the folder that holds DarkSoulsRemastered.exe. Default: DSR_GAME / config.local.mk,
+#                    else the Steam auto-detect (tools/gamepath.py).
+#   -o, --out FILE   output: also copy the ISO here (e.g. ~/Downloads/DarkSoulsPS2.iso). It is always left at
+#                    <build>/proto.iso.
+#   -c, --jobs N     CPU threads to use: parallel make jobs and sound-export workers (default: every core; the sound
+#                    export at most 8)
+#   --build DIR      build directory (default build/). A new one starts from scratch unless seeded first with
+#                    tools/newbuild DIR --from build.
+#   --syms           keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
+#   --no-queue       run make directly instead of through the job queue (tools/q)
+#   --container      build in the Docker / Podman container (tools/build-iso.sh) even when the host has the toolchain
+# Example: ./build-iso.sh -c 6 -i "/path/to/DARK SOULS REMASTERED" -o ~/Downloads/DarkSoulsPS2.iso
 #
 # Toolchain: the host's ps2dev (ps2/env.sh) with Python (Pillow + numpy), gcc and xorriso, as in README.md. When the
 # host has no ps2dev but has a distrobox that does (DSR_DISTROBOX, default "Ubuntu"), the script re-runs itself inside
@@ -29,21 +32,28 @@ die() { echo "build-iso: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
 while [ $# -gt 0 ]; do
     case "$1" in
-        --game) [ $# -ge 2 ] || die "--game needs a folder"; GAME=$2; shift 2 ;;
-        --out) [ $# -ge 2 ] || die "--out needs a file"; OUT=$2; shift 2 ;;
+        -i|--game) [ $# -ge 2 ] || die "$1 needs the game folder"; GAME=$2; shift 2 ;;
+        -o|--out) [ $# -ge 2 ] || die "$1 needs a file"; OUT=$2; shift 2 ;;
+        -c|--jobs) [ $# -ge 2 ] || die "$1 needs a number"; JOBS=$2; shift 2 ;;
+        -i?*) GAME=${1#-i}; shift ;;
+        -o?*) OUT=${1#-o}; shift ;;
+        -c?*) JOBS=${1#-c}; shift ;;
         --build) [ $# -ge 2 ] || die "--build needs a folder"; BUILD=$2; shift 2 ;;
-        --jobs) [ $# -ge 2 ] || die "--jobs needs a number"; JOBS=$2; shift 2 ;;
         --syms) SYMS=1; shift ;;
         --no-queue) QUEUE=; shift ;;
         --container) CONTAINER=1; shift ;;
-        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
 done
-[ -z "$JOBS" ] || [[ $JOBS =~ ^[1-9][0-9]*$ ]] || die "--jobs takes a whole number, not $JOBS"
+[ -z "$JOBS" ] || [[ $JOBS =~ ^[1-9][0-9]*$ ]] || die "-c takes a whole number of threads, not $JOBS"
+[ -z "$JOBS" ] || export DSR_AUDIO_JOBS=$JOBS  # tools/export_audio.py workers (inherited through make and tools/q)
 [ -z "$OUT" ] || OUT=$(realpath -m -- "$OUT")
 BUILD=$(realpath -m -- "$BUILD")
-[ -z "$GAME" ] || GAME=$(realpath -- "$GAME") || die "no such folder: $GAME"
+if [ -n "$GAME" ]; then
+    GAME=$(realpath -e -- "$GAME") || die "no such folder: $GAME"
+    [ -f "$GAME/DarkSoulsRemastered.exe" ] || die "$GAME has no DarkSoulsRemastered.exe (-i takes the game's install folder)"
+fi
 
 container_build() {
     local a=(--out "${OUT:-$BUILD/proto.iso}")

@@ -114,6 +114,7 @@ else
     fi
     say "building the port (first run: several minutes and several GB of RAM)"
     RUN=(run --rm --init --security-opt label=disable -e HOME=/tmp -e "DSR_ALLOW_UNSUPPORTED=${DSR_ALLOW_UNSUPPORTED:-}"
+         -e "DSR_AUDIO_JOBS=${DSR_AUDIO_JOBS:-$JOBS}"
          -v "$SRC:/src" -v "$BUILD:/build" -v "$GAME:/game:ro" -w /src)
     # rootful Docker would leave root-owned files in WORK; rootless Podman already maps root to this user
     [ "$ENGINE" = docker ] && RUN+=(--user "$(id -u):$(id -g)")

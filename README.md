@@ -130,8 +130,9 @@ make -C ps2/proto iso      # writes build/proto.iso
 ```
 
 `./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
-and writes `build/proto.iso` (`--out FILE` also copies it elsewhere, `--help` lists the options). Without a ps2dev
-toolchain on the host it builds in a distrobox that has one, or in the Docker / Podman container (`tools/build-iso.sh`).
+and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also copies the ISO elsewhere, `-c N` sets
+how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it builds in a
+distrobox that has one, or in the Docker / Podman container (`tools/build-iso.sh`).
 
 ### Controls (DualShock 2)
 
