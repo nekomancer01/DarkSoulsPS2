@@ -45,9 +45,10 @@
 /* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
  * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
  * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
- * (ISO world_route, 2026-11-05). The rest streams in nearest first. ASSUMED radii. */
+ * (ISO world_route, 2026-11-05); 160 m made the far-north and Burg warps 11-14 s from cdrom0:. The rest streams in
+ * nearest first. ASSUMED radii. */
 #define WORLD_SETTLE_R 40.0f
-#define WORLD_SETTLE_FOCUS_R 160.0f
+#define WORLD_SETTLE_FOCUS_R 96.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a

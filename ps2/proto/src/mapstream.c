@@ -617,6 +617,15 @@ int mapstream_reclaim(void *p, unsigned n)
     return 1;
 }
 
+/* An item's blob: large ones (near cells up to 2.2 MB in the Burg) from the top with mapstream_alloc's lite sets, small
+ * ones (resident items, mip 0) from the bottom, so a big near cell does not wait for one hole among small items (ISO
+ * round 5, 2026-11-05: 158 of 181 refusals had the room but no hole) */
+#define MS_BIG (256u << 10)
+static void *item_alloc(unsigned n)
+{
+    return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
+}
+
 /* the read in flight landed (r bytes) */
 static void collect(int r)
 {
@@ -707,7 +716,7 @@ void mapstream_update(const float pos[3])
     void *p;
     /* make room in the arena: drop the least wanted loaded items ranked below the one wanted until its blob fits
      * (one pass ranks up to MS_QUEUE of them, least wanted first) */
-    while (!(p = arena_alloc(wbytes, 0))) {
+    while (!(p = item_alloc(wbytes))) {
         MsQ d[MS_QUEUE];
         int nd = 0;
         float key;
@@ -740,7 +749,7 @@ void mapstream_update(const float pos[3])
             bind(d[j].k);
             drop(d[j].id);
             bind(w.k);
-            p = arena_alloc(wbytes, 0);
+            p = item_alloc(wbytes);
         }
         if (p)
             break;
