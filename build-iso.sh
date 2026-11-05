@@ -69,9 +69,12 @@ if ! command -v mips64r5900el-ps2-elf-gcc >/dev/null || [ ! -d "$GSKIT/lib" ]; t
 fi
 
 cd "$ROOT"
-# Python with Pillow + numpy: the repo's .venv (config.mk uses it when present), made here if python3 lacks them
-if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
-if ! "$PY" -c 'import PIL, numpy' 2>/dev/null; then
+# Python with Pillow + numpy: the one the Makefile will use (PY from the environment / config.local.mk, else the repo's
+# .venv, else python3; asked from config.mk itself, goal "help" skips its game check). A plain python3 without them
+# gets a .venv; a configured PY without them is an error.
+PY=$(printf 'include %s/config.mk\nhelp:\n\t@echo $(PY)\n' "$ROOT" | make -s --no-print-directory -f - help)
+if ! $PY -c 'import PIL, numpy' 2>/dev/null; then
+    [ "$PY" = python3 ] || die "$PY (PY in config.local.mk or the environment) lacks Pillow / numpy: pip install -r tools/requirements.txt"
     say "setting up .venv (tools/requirements.txt)"
     python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt || die "could not set up .venv"
 fi
