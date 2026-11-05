@@ -373,24 +373,38 @@ static void unpack(const PackedBone *b, BoneLocal *o)
         o->t[k] = b->t[k] / 4096.0f;
 }
 
+/* One bone of the nlerp; k 0 or 1 copies the end (keyframes are unit quaternions to int16 precision) */
+static void blend1(const BoneLocal *a, const BoneLocal *b, float k, BoneLocal *o)
+{
+    if (k <= 0 || k >= 1) {
+        *o = k <= 0 ? *a : *b;
+        return;
+    }
+    float d = 0, s = 1, l = 0;
+    for (int c = 0; c < 4; c++)
+        d += a->q[c] * b->q[c];
+    if (d < 0)
+        s = -1;  /* shortest path */
+    for (int c = 0; c < 4; c++) {
+        o->q[c] = a->q[c] * (1 - k) + s * b->q[c] * k;
+        l += o->q[c] * o->q[c];
+    }
+    l = 1.0f / sqrtf(l);
+    for (int c = 0; c < 4; c++)
+        o->q[c] *= l;
+    for (int c = 0; c < 3; c++)
+        o->t[c] = a->t[c] * (1 - k) + b->t[c] * k;
+}
+
 void mdl_blend(const Model *m, const BoneLocal *a, const BoneLocal *b, float k, BoneLocal *out)
 {
-    for (unsigned i = 0; i < m->hdr->bones; i++) {
-        float d = 0, s = 1, l = 0;
-        for (int c = 0; c < 4; c++)
-            d += a[i].q[c] * b[i].q[c];
-        if (d < 0)
-            s = -1;  /* shortest path */
-        for (int c = 0; c < 4; c++) {
-            out[i].q[c] = a[i].q[c] * (1 - k) + s * b[i].q[c] * k;
-            l += out[i].q[c] * out[i].q[c];
-        }
-        l = 1.0f / sqrtf(l);
-        for (int c = 0; c < 4; c++)
-            out[i].q[c] *= l;
-        for (int c = 0; c < 3; c++)
-            out[i].t[c] = a[i].t[c] * (1 - k) + b[i].t[c] * k;
+    if (k <= 0 || k >= 1) {
+        if (out != (k <= 0 ? a : b))
+            memmove(out, k <= 0 ? a : b, m->hdr->bones * sizeof *out);
+        return;
     }
+    for (unsigned i = 0; i < m->hdr->bones; i++)
+        blend1(&a[i], &b[i], k, &out[i]);
 }
 
 void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
@@ -410,14 +424,26 @@ void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
     if (f > n - 1)
         f = n - 1;
     int i0 = (int)f, i1 = i0 + 1 < n ? i0 + 1 : i0;
+    float k = f - i0;
     if (m->anims[anim].rot) {  /* compact: base pose, then the moving bones of both frames */
         const typeof(m->anims[0]) *c = &m->anims[anim];
-        for (unsigned i = 0; i < m->hdr->bones; i++)
-            unpack(&c->data[i], &fa[i]);
-        memcpy(fb, fa, m->hdr->bones * sizeof *fa);
-        for (int k = 0; k < 2; k++) {
-            const short *d = (const short *)(c->fdata + (k ? i1 : i0) * c->stride);
-            BoneLocal *o = k ? fb : fa;
+        unsigned nb = m->hdr->bones;
+        unsigned char mv[MAX_BONES];  /* 1: the bone has keyed rotation or translation */
+        memset(mv, 0, nb);
+        for (int r = 0; r < c->nrot; r++)
+            mv[c->rot[r]] = 1;
+        for (int r = 0; r < c->ntra; r++)
+            mv[c->tra[r]] = 1;
+        /* bones without keys hold the base pose in both frames: the blend leaves them as they are */
+        for (unsigned i = 0; i < nb; i++)
+            if (!mv[i])
+                unpack(&c->data[i], &out[i]);
+            else
+                unpack(&c->data[i], &fa[i]), fb[i] = fa[i];
+        int k0 = k >= 1 ? 1 : 0, k1 = k <= 0 ? 1 : 2;  /* at k 0 only frame i0 counts, at k 1 only i1 */
+        for (int kk = k0; kk < k1; kk++) {
+            const short *d = (const short *)(c->fdata + (kk ? i1 : i0) * c->stride);
+            BoneLocal *o = kk ? fb : fa;
             for (int r = 0; r < c->nrot; r++, d += 4)
                 for (int q = 0; q < 4; q++)
                     o[c->rot[r]].q[q] = d[q] / 32767.0f;
@@ -425,15 +451,22 @@ void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
                 for (int q = 0; q < 3; q++)
                     o[c->tra[r]].t[q] = d[q] / 4096.0f;
         }
-        mdl_blend(m, fa, fb, f - i0, out);
+        for (unsigned i = 0; i < nb; i++)
+            if (mv[i])
+                blend1(&fa[i], &fb[i], k, &out[i]);
         return;
     }
     const PackedBone *a = m->anims[anim].data + i0 * m->hdr->bones, *b = m->anims[anim].data + i1 * m->hdr->bones;
+    if (k <= 0 || i1 == i0) {  /* on a keyframe: no blend */
+        for (unsigned i = 0; i < m->hdr->bones; i++)
+            unpack(&a[i], &out[i]);
+        return;
+    }
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         unpack(&a[i], &fa[i]);
         unpack(&b[i], &fb[i]);
+        blend1(&fa[i], &fb[i], k, &out[i]);
     }
-    mdl_blend(m, fa, fb, f - i0, out);
 }
 
 /* 3x4 matrix: rotation rows m[0..8] + translation m[9..11] */
@@ -459,16 +492,27 @@ static M34 mul34(const M34 *a, const M34 *b)
     return r;
 }
 
-void mdl_world(const Model *m, const BoneLocal *pose, V3 pos, float yaw, float (*world)[12])
+/* model -> world: rotate by yaw + pi (model faces -Z), then translate */
+static M34 placement(V3 pos, float yaw)
 {
-    M34 *w = (M34 *)world;
-    /* model -> world: rotate by yaw + pi (model faces -Z), then translate */
     float c = cosf(yaw + 3.14159265f), s = sinf(yaw + 3.14159265f);
     M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, pos.x, pos.y, pos.z}};
+    return place;
+}
+
+/* The bone chain under root transform `root`: one 3x4 multiply per bone */
+static void chain(const Model *m, const BoneLocal *pose, const M34 *root, M34 *w)
+{
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         M34 local = from_qt(pose[i].q, pose[i].t);
-        w[i] = m->parents[i] < 0 ? mul34(&place, &local) : mul34(&w[m->parents[i]], &local);
+        w[i] = m->parents[i] < 0 ? mul34(root, &local) : mul34(&w[m->parents[i]], &local);
     }
+}
+
+void mdl_world(const Model *m, const BoneLocal *pose, V3 pos, float yaw, float (*world)[12])
+{
+    M34 place = placement(pos, yaw);
+    chain(m, pose, &place, (M34 *)world);
 }
 
 V3 mdl_point(const float *w, const float *l)
@@ -477,13 +521,9 @@ V3 mdl_point(const float *w, const float *l)
               w[6] * l[0] + w[7] * l[1] + w[8] * l[2] + w[11]);
 }
 
-void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
+/* World -> view of the current camera */
+static M34 view_matrix(void)
 {
-    static M34 world[MAX_BONES];
-    static float palette[MAX_BONES][16] __attribute__((aligned(16)));
-    const Header *hdr = m->hdr;
-    mdl_world(m, pose, pos, yaw, (float (*)[12])world);
-    /* VU1 palette: columns of view * world, and the light direction in bone space in col0-2 .w */
     V3 eye, right, up, fwd;
     float focal, focal_y, zscale;
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
@@ -491,8 +531,18 @@ void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint
                  -(right.x * eye.x + right.y * eye.y + right.z * eye.z),
                  -(up.x * eye.x + up.y * eye.y + up.z * eye.z),
                  -(fwd.x * eye.x + fwd.y * eye.y + fwd.z * eye.z)}};
+    return view;
+}
+
+static M34 vbones[MAX_BONES];  /* view * world of each bone, for draw_view */
+
+/* Palette and skin chains from vbones (view-space bone matrices); pos picks the area light */
+static void draw_view(const Model *m, const M34 *view, V3 pos, int tint)
+{
+    static float palette[MAX_BONES][16] __attribute__((aligned(16)));
+    const Header *hdr = m->hdr;
     /* DSR-fitted light of the area (map.c map_char_light: area LightBank row, tone map, bonfire) */
-    float amb[3], sun[3], L[3];
+    float amb[3], sun[3], L[3], Lv[3];
     map_char_light(pos, amb, sun, L);
     vu1_skin_light(amb, sun);
     {   /* specular terms of the area (map.c map_char_spec: GI_EnvSpc probe x envSpc, LightBank specular light) */
@@ -500,15 +550,19 @@ void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint
         map_char_spec(env_up, env_down, spec_i, spec_dir);
         vu1_skin_spec(env_up, env_down, spec_i, spec_dir);
     }
+    /* the light direction in bone space is R^T L for world rotation R; with V R in vbones (V orthonormal, the camera
+     * basis) that is (V R)^T (V L) */
+    for (int j = 0; j < 3; j++)
+        Lv[j] = view->m[j * 3] * L[0] + view->m[j * 3 + 1] * L[1] + view->m[j * 3 + 2] * L[2];
+    /* VU1 palette: columns of view * world, and the light direction in bone space in col0-2 .w */
     for (unsigned i = 0; i < hdr->bones; i++) {
-        M34 m = mul34(&view, &world[i]);
-        const float *R = world[i].m;
+        const float *R = vbones[i].m;
         float *o = palette[i];
         for (int j = 0; j < 3; j++) {
-            o[j * 4] = m.m[j], o[j * 4 + 1] = m.m[3 + j], o[j * 4 + 2] = m.m[6 + j];
-            o[j * 4 + 3] = R[j] * L[0] + R[3 + j] * L[1] + R[6 + j] * L[2];
+            o[j * 4] = R[j], o[j * 4 + 1] = R[3 + j], o[j * 4 + 2] = R[6 + j];
+            o[j * 4 + 3] = R[j] * Lv[0] + R[3 + j] * Lv[1] + R[6 + j] * Lv[2];
         }
-        o[12] = m.m[9], o[13] = m.m[10], o[14] = m.m[11], o[15] = 0;
+        o[12] = R[9], o[13] = R[10], o[14] = R[11], o[15] = 0;
     }
     /* light: amb + sun max(n . L, 0) for texture modulation, vertex colour * 0x80 (0.5 + 0.75 max(n . L, 0)) when
      * untextured; i-frames add a warm gold */
@@ -524,6 +578,23 @@ void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint
                      g->flags >> 28 ? g->flags >> 28 : 1 /* Blinn 2^k from the _s roughness (export_model) */,
                      m->sk_ms && m->sk_batch[b].spec ? m->sk_ms[b] : NULL);
     }
+}
+
+void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
+{
+    /* the chain is built in view space (view folded into the root placement): one multiply per bone */
+    M34 view = view_matrix(), place = placement(pos, yaw), root = mul34(&view, &place);
+    chain(m, pose, &root, vbones);
+    draw_view(m, &view, pos, tint);
+}
+
+void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint)
+{
+    M34 view = view_matrix();
+    const M34 *w = (const M34 *)world;
+    for (unsigned i = 0; i < m->hdr->bones; i++)
+        vbones[i] = mul34(&view, &w[i]);
+    draw_view(m, &view, pos, tint);
 }
 
 /* ---- the player's model (player.c keeps the single-model calls) ---- */

@@ -134,6 +134,7 @@ typedef struct {
     V3 pos, home;
     float yaw, home_yaw;
     BoneLocal pose[MAX_BONES], from[MAX_BONES];
+    unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
     float blend, blend_time;
     /* action anim (attacks, steps, damage, death) started by the ESD; -1 = none (locomotion / idle) */
     int act, act_slot, act_layer, act_info;
@@ -173,6 +174,45 @@ typedef struct {
 static ChrType types[MAX_TYPES];
 static int ntypes;
 static Enemy enemies[MAX_ENEMIES];
+
+/* World bone matrices of posed enemies (mdl_world), kept while pose, pos and yaw stay the same, so the hurtbox tests,
+ * the attack sweeps, the ragdoll start and the draw chain each pose once. A few enemies fight at once: WCACHE slots,
+ * least recently used replaced (a miss only builds the matrices again). 3 KB a slot. */
+#define WCACHE 8
+static struct {
+    const Enemy *e;
+    const Model *model;
+    unsigned serial, used;
+    V3 pos;
+    float yaw;
+    float m[MAX_BONES][12];
+} wcache[WCACHE];
+static unsigned pose_gen, wcache_clock;
+
+static void pose_changed(Enemy *e) { e->pose_serial = ++pose_gen; }
+
+/* e's world matrices for its current pose: from wcache, else built there when `build` (NULL when not) */
+static const float (*enemy_world(const Enemy *e, int build))[12]
+{
+    const Model *m = e->ct->model;
+    int lru = 0;
+    for (int k = 0; k < WCACHE; k++) {
+        if (wcache[k].e == e && wcache[k].model == m && wcache[k].serial == e->pose_serial &&
+            wcache[k].pos.x == e->pos.x && wcache[k].pos.y == e->pos.y && wcache[k].pos.z == e->pos.z &&
+            wcache[k].yaw == e->yaw) {
+            wcache[k].used = ++wcache_clock;
+            return (const float (*)[12])wcache[k].m;
+        }
+        if (wcache[k].used < wcache[lru].used)
+            lru = k;
+    }
+    if (!build)
+        return NULL;
+    wcache[lru].e = e, wcache[lru].model = m, wcache[lru].serial = e->pose_serial;
+    wcache[lru].pos = e->pos, wcache[lru].yaw = e->yaw, wcache[lru].used = ++wcache_clock;
+    mdl_world(m, e->pose, e->pos, e->yaw, wcache[lru].m);
+    return (const float (*)[12])wcache[lru].m;
+}
 static int nenemies;
 /* world blocks' placements (enemies.bin records, ENEMY_REC B), kept from boot; placed while the block is on */
 static unsigned char *blk_rec[ENEMY_BLOCKS];
@@ -591,9 +631,7 @@ static int hit_test(CombatChr *c, const float a[3], const float b[3], float r)
     const ChrType *t = e->ct;
     if (!t->rag || !t->model)
         return 1;
-    static float world[MAX_BONES][12];
-    mdl_world(t->model, e->pose, e->pos, e->yaw, world);
-    return rag_hit(t->rag, t->nrag, (const float (*)[12])world, a, b, r) >= 0;
+    return rag_hit(t->rag, t->nrag, enemy_world(e, 1), a, b, r) >= 0;
 }
 
 static void place(ChrType *t, const unsigned char *r, int i, int block, int seed_i)
@@ -602,6 +640,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     rag_release(e);
     memset(e, 0, sizeof *e);
     ev_off[i] = 0;  /* a reused slot inherits no event state */
+    pose_changed(e);  /* the slot's old matrices in wcache are not this placement's */
     e->ct = t;
     e->block = block;
     memcpy(e->rec, r, sizeof e->rec), e->seed_i = seed_i;
@@ -957,14 +996,13 @@ static void attack_sweeps(Enemy *e)
     if (e->act < 0 || !e->act_info || e->cc.dead)
         return;
     const ChrAnim *a = &e->ct->anims[e->act_info - 1];
-    static float world[MAX_BONES][12];
-    int have_world = 0;
+    const float (*world)[12] = NULL;
     for (unsigned i = 0; i < a->nwin; i++) {
         const ChrWin *w = &e->ct->wins[a->first_win + i];
         if (w->type != W_ATTACK || e->act_t < w->start || e->act_t >= w->end)
             continue;
-        if (!have_world)
-            mdl_world(e->ct->model, e->pose, e->pos, e->yaw, world), have_world = 1;
+        if (!world)
+            world = enemy_world(e, 1);
         V3 pa = mdl_point(world[w->bone_a], w->a), pb = mdl_point(world[w->bone_b], w->b);
         float fa[3] = {pa.x, pa.y, pa.z}, fb[3] = {pb.x, pb.y, pb.z};
         CombatAttack atk = {.team = TEAM_ENEMY, .atk_param = w->atk_param, .phys = w->phys, .atk_phys_rate = w->phys_rate,
@@ -1059,18 +1097,18 @@ static int dead_ragdoll(Enemy *e, float dt)
         int death = e->act >= 0 && is_death_anim(e->act);
         if (!(e->air || (death && (in_window(e, F_RAGDOLL) || act_ended(e))) || (!death && e->dead_t > 2.5f)))
             return 0;
-        static float world[MAX_BONES][12], prev[MAX_BONES][12], bind[MAX_BONES][12];
+        static float prev[MAX_BONES][12], bind[MAX_BONES][12];
         static BoneLocal tmp[MAX_BONES];
-        mdl_world(t->model, e->pose, e->pos, e->yaw, world);
+        const float (*world)[12] = enemy_world(e, 1);
         if (e->act >= 0 && e->act_slot >= 0 && e->act_t > dt) {
             mdl_sample(t->model, e->act_slot, e->act_t - dt, e->act_loop, tmp);
             mdl_world(t->model, tmp, e->pos, e->yaw, prev);
         } else
-            memcpy(prev, world, sizeof world);
+            memcpy(prev, world, sizeof prev);
         mdl_sample(t->model, -1, 0, 0, tmp);
         mdl_world(t->model, tmp, e->pos, e->yaw, bind);
         e->rag = rag_take(e);
-        rag_start(e->rag, t->rag, t->nrag, (const float (*)[12])bind, (const float (*)[12])world,
+        rag_start(e->rag, t->rag, t->nrag, (const float (*)[12])bind, world,
                   (const float (*)[12])prev, dt);
         if (e->air)  /* falling: keep the fall speed */
             for (int k = 0; k < e->rag->n; k++)
@@ -1083,6 +1121,7 @@ static int dead_ragdoll(Enemy *e, float dt)
     if (e->rag && !e->rag->asleep) {
         rag_step(e->rag, dt);
         rag_pose(e->rag, t->model, e->pose, e->pos, e->yaw, e->pose);
+        pose_changed(e);
         if (e->rag->asleep)
             printf("enemy: %.5s %d ragdoll at rest after %.1f s\n", t->name, e->entity, e->rag->age);
     }
@@ -1244,6 +1283,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         mdl_blend(t->model, e->from, target, e->blend, e->pose);
     else
         memcpy(e->pose, target, sizeof target);
+    pose_changed(e);
 
     memcpy(e->cc.pos, &e->pos, 12);
     e->cc.yaw = e->yaw;
@@ -1458,7 +1498,11 @@ void enemy_draw(void)
         /* fade into the fog over the last DRAW_FADE m instead of popping at DRAW_DIST (render-distance; ASSUMED) */
         float fd = (DRAW_DIST - sqrtf(d.x * d.x + d.z * d.z)) / DRAW_FADE;
         vu1_skin_fade(fd < 1 ? 255 * fd : 255);
-        mdl_draw(e->ct->model, e->pose, e->pos, e->yaw, 0);
+        const float (*w)[12] = enemy_world(e, 0);  /* built this frame by a sweep or hurtbox test */
+        if (w)
+            mdl_draw_world(e->ct->model, w, e->pos, 0);
+        else
+            mdl_draw(e->ct->model, e->pose, e->pos, e->yaw, 0);
         enemy_drawn++;
     }
     npc_draw();
