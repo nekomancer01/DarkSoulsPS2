@@ -38,7 +38,6 @@
 #include "ragdoll.h"
 #include "nav.h"
 
-#define PI 3.14159265f
 #define MAX_TYPES 20  /* the boot area's + every world block's (enemy_block_types, at boot) */
 #define ACTIVE_DIST 45.0f   /* characters farther from the player than this are frozen (DSR: by draw group / distance) */
 /* DSR runs and draws a character only while its MSB DrawGroups meet those of the collision part under the player
@@ -884,15 +883,6 @@ static void stream_types(const Player *pl)
 }
 
 /* ---- update ---- */
-
-static float wrap(float a)
-{
-    while (a > PI)
-        a -= 2 * PI;
-    while (a < -PI)
-        a += 2 * PI;
-    return a;
-}
 
 /* Root-motion sample of the action anim at time t (x, z, yaw in model space, linear between 30 fps samples) */
 static void root_at(const Enemy *e, float t, float *o)

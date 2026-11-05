@@ -9,6 +9,7 @@
 #include "combat_data.h"
 #include "player.h"
 #include "model.h"
+#include "vmath.h"
 
 CombatChr combat_dummy;
 CombatLast combat_last;
@@ -126,44 +127,6 @@ void combat_unregister(CombatChr *c)
             chrs[i] = 0;
 }
 
-static float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-
-/* squared distance between segments p1-q1 and p2-q2 (Ericson 5.1.9) */
-static float seg_seg_d2(const float *p1, const float *q1, const float *p2, const float *q2)
-{
-    float d1[3], d2[3], r[3], s, t;
-    for (int i = 0; i < 3; i++)
-        d1[i] = q1[i] - p1[i], d2[i] = q2[i] - p2[i], r[i] = p1[i] - p2[i];
-    float a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, r);
-    if (a <= 1e-9f && e <= 1e-9f) {
-        s = t = 0;
-    } else if (a <= 1e-9f) {
-        s = 0, t = f / e;
-    } else {
-        float c = dot3(d1, r);
-        if (e <= 1e-9f) {
-            t = 0, s = -c / a;
-        } else {
-            float b = dot3(d1, d2), den = a * e - b * b;
-            s = den != 0 ? (b * f - c * e) / den : 0;
-            s = s < 0 ? 0 : s > 1 ? 1 : s;
-            t = (b * s + f) / e;
-            if (t < 0)
-                t = 0, s = -c / a;
-            else if (t > 1)
-                t = 1, s = (b - c) / a;
-        }
-        s = s < 0 ? 0 : s > 1 ? 1 : s;
-    }
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    float d = 0;
-    for (int i = 0; i < 3; i++) {
-        float k = (p1[i] + d1[i] * s) - (p2[i] + d2[i] * t);
-        d += k * k;
-    }
-    return d;
-}
-
 int combat_apply(CombatChr *t, const CombatAttack *atk)
 {
     if (t->invincible)
@@ -241,34 +204,6 @@ void combat_update(float dt)
 
 /* ---- the player: hurtbox + Longsword hit capsules from the current pose ---- */
 
-typedef struct { float m[12]; } M34;  /* rotation rows m[0..8], translation m[9..11] (as model.c) */
-
-static M34 from_qt(const float *q, const float *t)
-{
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    M34 r = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
-              2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-              2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), t[0], t[1], t[2]}};
-    return r;
-}
-
-static M34 mul34(const M34 *a, const M34 *b)
-{
-    M34 r;
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            r.m[i * 3 + j] = a->m[i * 3] * b->m[j] + a->m[i * 3 + 1] * b->m[3 + j] + a->m[i * 3 + 2] * b->m[6 + j];
-        r.m[9 + i] = a->m[i * 3] * b->m[9] + a->m[i * 3 + 1] * b->m[10] + a->m[i * 3 + 2] * b->m[11] + a->m[9 + i];
-    }
-    return r;
-}
-
-static void apply34(const M34 *m, const float *p, float *o)
-{
-    for (int i = 0; i < 3; i++)
-        o[i] = m->m[i * 3] * p[0] + m->m[i * 3 + 1] * p[1] + m->m[i * 3 + 2] * p[2] + m->m[9 + i];
-}
-
 static const float *dummy_pos(int id)
 {
     for (int i = 0; i < WEP_DUMMIES; i++)
@@ -327,8 +262,8 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
         float c = cosf(p->yaw + 3.14159265f), s = sinf(p->yaw + 3.14159265f);
         M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, p->pos.x, p->pos.y, p->pos.z}};
         for (int i = 0; i <= SK_R_WEAPON; i++) {
-            M34 local = from_qt(pose[i].q, pose[i].t);
-            world[i] = sk_parent[i] < 0 ? mul34(&place, &local) : mul34(&world[(int)sk_parent[i]], &local);
+            M34 local = m34_from_qt(pose[i].q, pose[i].t);
+            world[i] = sk_parent[i] < 0 ? m34_mul(&place, &local) : m34_mul(&world[(int)sk_parent[i]], &local);
         }
         CombatAttack atk = {TEAM_PLAYER, aw->atk_param, combat_player_ar(), aw->phys_corr / 100.0f,
                             WEP_POISE_DMG * aw->sa_corr / 100.0f, aw->dmg_level,
@@ -338,8 +273,8 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             if (!d1 || !d2)
                 continue;
             float a[3], b[3];
-            apply34(&world[SK_R_WEAPON], d1, a);
-            apply34(&world[SK_R_WEAPON], d2, b);
+            m34_apply(&world[SK_R_WEAPON], d1, a);
+            m34_apply(&world[SK_R_WEAPON], d2, b);
             if (h == 0)
                 memcpy(combat_hit_a, a, 12), memcpy(combat_hit_b, b, 12), combat_hit_active = 1;
             hits += combat_sweep(a, b, aw->hit[h].r, &atk);

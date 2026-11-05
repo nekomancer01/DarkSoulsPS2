@@ -45,10 +45,6 @@ V3 m3_apply(M3 m, V3 v)
               m.m[6] * v.x + m.m[7] * v.y + m.m[8] * v.z);
 }
 
-static float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-static V3 cross(V3 a, V3 b) { return v3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
-static V3 norm(V3 a) { float l = sqrtf(dot(a, a)); return l > 0 ? v3scale(a, 1.0f / l) : a; }
-
 void r_init(GSGLOBAL *g) { gs = g; }
 
 /* --- V6 VRAM allocator: one bit per 256-byte block that this allocator owns and has not handed out --- */
@@ -203,9 +199,9 @@ int r_vram_avail(const GSGLOBAL *g) { return 4 * 1024 * 1024 - (int)g->CurrentPo
 void r_camera(V3 eye, V3 target)
 {
     cam_eye = eye;
-    cam_fwd = norm(v3sub(target, eye));
-    cam_right = norm(cross(v3(0, 1, 0), cam_fwd));
-    cam_up = cross(cam_fwd, cam_right);
+    cam_fwd = v3norm(v3sub(target, eye));
+    cam_right = v3norm(v3cross(v3(0, 1, 0), cam_fwd));
+    cam_up = v3cross(cam_fwd, cam_right);
 }
 
 void r_begin(void) {}
@@ -221,7 +217,7 @@ void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *fo
 static V3 to_view(V3 p)
 {
     V3 d = v3sub(p, cam_eye);
-    return v3(dot(d, cam_right), dot(d, cam_up), dot(d, cam_fwd));
+    return v3(v3dot(d, cam_right), v3dot(d, cam_up), v3dot(d, cam_fwd));
 }
 
 static void project(V3 v, float *sx, float *sy, int *sz)
@@ -263,7 +259,7 @@ static void tri_view(V3 a, V3 b, V3 c, u64 col)
 
 static u64 shade(V3 n, int r, int g, int b)
 {
-    float l = dot(n, norm(LIGHT));
+    float l = v3dot(n, v3norm(LIGHT));
     float k = 0.45f + 0.55f * (l > 0 ? l : 0);
     return GS_SETREG_RGBAQ((int)(r * k), (int)(g * k), (int)(b * k), 0x80, 0);
 }
@@ -283,7 +279,7 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
     }
     for (int f = 0; f < 6; f++) {
         V3 n = m3_apply(rot, v3(fn[f][0], fn[f][1], fn[f][2]));
-        if (dot(n, v3sub(w[face[f][0]], cam_eye)) >= 0)
+        if (v3dot(n, v3sub(w[face[f][0]], cam_eye)) >= 0)
             continue;  /* back face */
         u64 col = shade(n, r, g, b);
         tri_view(v[face[f][0]], v[face[f][1]], v[face[f][2]], col);

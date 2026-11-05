@@ -3,8 +3,7 @@
 #define RENDER_H
 
 #include <gsKit.h>
-
-typedef struct { float x, y, z; } V3;
+#include "vmath.h"
 
 #ifndef R_NEAR
 #define R_NEAR 0.25f    /* near plane, metres (16-bit depth: Z = 65535 * near / z) */
@@ -15,11 +14,6 @@ typedef struct { float x, y, z; } V3;
 #define R_SCREEN_W 512
 #define R_SCREEN_H 448
 #define R_HX(x) ((x) * (R_SCREEN_W / 640.0f))
-
-static inline V3 v3(float x, float y, float z) { V3 r = {x, y, z}; return r; }
-static inline V3 v3add(V3 a, V3 b) { return v3(a.x + b.x, a.y + b.y, a.z + b.z); }
-static inline V3 v3sub(V3 a, V3 b) { return v3(a.x - b.x, a.y - b.y, a.z - b.z); }
-static inline V3 v3scale(V3 a, float s) { return v3(a.x * s, a.y * s, a.z * s); }
 
 /* 3x3 rotation, row-major; a local frame for boxes and bones */
 typedef struct { float m[9]; } M3;

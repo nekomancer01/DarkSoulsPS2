@@ -18,6 +18,7 @@
 #include "player.h"
 #include "combat.h"
 #include "collision.h"
+#include "vmath.h"
 
 #define MAX_TYPES 16           /* the boot area's + every world block's (objects_block_types) */
 #define MAX_INST 128
@@ -101,9 +102,6 @@ static AInst ainst[MAX_AINST];
 static int natypes, nainst;
 static APart *ablk_part[OBJ_BLOCKS];
 static int ablk_nparts[OBJ_BLOCKS];
-
-static void q_mul(const float *a, const float *b, float *o);
-static void q_rot(const float *q, const float *v, float *o);
 
 /* objects.bin v3 animated types of a pack (block 0: the boot area, blob kept; compact: a block's, blob freed after) and
  * its placements; returns the placements */
@@ -386,23 +384,6 @@ int objects_anim_state(int entity, int *anim, float *t, int *playing)
     if (playing)
         *playing = in->playing;
     return 1;
-}
-
-static void q_mul(const float *a, const float *b, float *o)
-{
-    float x = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
-    float y = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
-    float z = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
-    float w = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
-    o[0] = x, o[1] = y, o[2] = z, o[3] = w;
-}
-
-static void q_rot(const float *q, const float *v, float *o)
-{
-    float t[3] = {2 * (q[1] * v[2] - q[2] * v[1]), 2 * (q[2] * v[0] - q[0] * v[2]), 2 * (q[0] * v[1] - q[1] * v[0])};
-    o[0] = v[0] + q[3] * t[0] + q[1] * t[2] - q[2] * t[1];
-    o[1] = v[1] + q[3] * t[1] + q[2] * t[0] - q[0] * t[2];
-    o[2] = v[2] + q[3] * t[2] + q[0] * t[1] - q[1] * t[0];
 }
 
 int objects_init(GSGLOBAL *gs, const void *blob)

@@ -10,6 +10,7 @@
 #include <string.h>
 #include "ragdoll.h"
 #include "collision.h"
+#include "vmath.h"
 
 #define SUBSTEPS 4
 #define GRAVITY 9.8f
@@ -24,46 +25,6 @@
                             * rotational jitter in this solver) */
 #define SLEEP_TIME 0.7f
 #define MAX_AGE 10.0f      /* s: simulated at most this long after the last wake (EE budget) */
-
-typedef struct { float m[12]; } M34;  /* rotation rows m[0..8], translation m[9..11] (as model.c) */
-
-static M34 from_qt(const float *q, const float *t)
-{
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    M34 r = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
-              2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-              2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), t[0], t[1], t[2]}};
-    return r;
-}
-
-static M34 mul34(const M34 *a, const M34 *b)
-{
-    M34 r;
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            r.m[i * 3 + j] = a->m[i * 3] * b->m[j] + a->m[i * 3 + 1] * b->m[3 + j] + a->m[i * 3 + 2] * b->m[6 + j];
-        r.m[9 + i] = a->m[i * 3] * b->m[9] + a->m[i * 3 + 1] * b->m[10] + a->m[i * 3 + 2] * b->m[11] + a->m[9 + i];
-    }
-    return r;
-}
-
-/* inverse of a rigid transform */
-static M34 inv34(const M34 *a)
-{
-    M34 r;
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            r.m[i * 3 + j] = a->m[j * 3 + i];
-    for (int i = 0; i < 3; i++)
-        r.m[9 + i] = -(r.m[i * 3] * a->m[9] + r.m[i * 3 + 1] * a->m[10] + r.m[i * 3 + 2] * a->m[11]);
-    return r;
-}
-
-static void apply34(const M34 *m, const float *p, float *o)
-{
-    for (int i = 0; i < 3; i++)
-        o[i] = m->m[i * 3] * p[0] + m->m[i * 3 + 1] * p[1] + m->m[i * 3 + 2] * p[2] + m->m[9 + i];
-}
 
 static void quat_of(const M34 *a, float *q)
 {
@@ -87,45 +48,10 @@ static void quat_of(const M34 *a, float *q)
         q[i] /= n;
 }
 
-static float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-
-static void cross3(const float *a, const float *b, float *o)
-{
-    float x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2], z = a[0] * b[1] - a[1] * b[0];
-    o[0] = x, o[1] = y, o[2] = z;
-}
-
-static float norm3(float *a)
-{
-    float l = sqrtf(dot3(a, a));
-    if (l > 1e-9f)
-        a[0] /= l, a[1] /= l, a[2] /= l;
-    return l;
-}
-
-static void qrot(const float *q, const float *v, float *o)
-{
-    float t[3], u[3];
-    cross3(q, v, t);
-    t[0] *= 2, t[1] *= 2, t[2] *= 2;
-    cross3(q, t, u);
-    for (int i = 0; i < 3; i++)
-        o[i] = v[i] + q[3] * t[i] + u[i];
-}
-
 static void qrot_inv(const float *q, const float *v, float *o)
 {
     float c[4] = {-q[0], -q[1], -q[2], q[3]};
-    qrot(c, v, o);
-}
-
-static void qmul(const float *a, const float *b, float *o)
-{
-    float r[4] = {a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-                  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-                  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-                  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
-    memcpy(o, r, 16);
+    q_rot(c, v, o);
 }
 
 /* q turned by the rotation vector w (world axis * angle). Exact: the linearised XPBD update (q += 0.5 [w, 0] q)
@@ -136,48 +62,13 @@ static void qturn(float *q, const float *w)
     if (ang < 1e-7f)
         return;
     float s = sinf(ang * 0.5f), d[4] = {a[0] * s, a[1] * s, a[2] * s, cosf(ang * 0.5f)};
-    qmul(d, q, q);
+    q_mul(d, q, q);
     float n = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
     for (int i = 0; i < 4; i++)
         q[i] /= n;
 }
 
 /* ---- hit capsules ---- */
-
-static float seg_seg_d2(const float *p1, const float *q1, const float *p2, const float *q2)
-{
-    float d1[3], d2[3], r[3], s, t;
-    for (int i = 0; i < 3; i++)
-        d1[i] = q1[i] - p1[i], d2[i] = q2[i] - p2[i], r[i] = p1[i] - p2[i];
-    float a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, r);
-    if (a <= 1e-9f && e <= 1e-9f)
-        s = t = 0;
-    else if (a <= 1e-9f)
-        s = 0, t = f / e;
-    else {
-        float c = dot3(d1, r);
-        if (e <= 1e-9f)
-            t = 0, s = -c / a;
-        else {
-            float b = dot3(d1, d2), den = a * e - b * b;
-            s = den != 0 ? (b * f - c * e) / den : 0;
-            s = s < 0 ? 0 : s > 1 ? 1 : s;
-            t = (b * s + f) / e;
-            if (t < 0)
-                t = 0, s = -c / a;
-            else if (t > 1)
-                t = 1, s = (b - c) / a;
-        }
-    }
-    s = s < 0 ? 0 : s > 1 ? 1 : s;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    float d = 0;
-    for (int i = 0; i < 3; i++) {
-        float x = p1[i] + d1[i] * s - p2[i] - d2[i] * t;
-        d += x * x;
-    }
-    return d;
-}
 
 int rag_hit(const RagBody *body, int n, const float (*world)[12], const float a[3], const float b[3], float r)
 {
@@ -186,7 +77,7 @@ int rag_hit(const RagBody *body, int n, const float (*world)[12], const float a[
     for (int k = 0; k < n; k++) {
         const M34 *w = (const M34 *)world[body[k].bone];
         float pa[3], pb[3];
-        apply34(w, body[k].a, pa), apply34(w, body[k].b, pb);
+        m34_apply(w, body[k].a, pa), m34_apply(w, body[k].b, pb);
         float reach = r + body[k].radius, d = seg_seg_d2(a, b, pa, pb);
         if (d <= reach * reach && d < bd)
             bd = d, best = k;
@@ -196,13 +87,13 @@ int rag_hit(const RagBody *body, int n, const float (*world)[12], const float a[
 
 /* ---- simulation ---- */
 
-static M34 body_frame(const RagBody *b) { return from_qt(b->q, b->t); }
+static M34 body_frame(const RagBody *b) { return m34_from_qt(b->q, b->t); }
 
 /* world frame of body k from bone world matrices */
 static M34 body_world(const RagBody *b, const float (*world)[12])
 {
     M34 B = body_frame(b);
-    return mul34((const M34 *)world[b->bone], &B);
+    return m34_mul((const M34 *)world[b->bone], &B);
 }
 
 void rag_start(Ragdoll *r, const RagBody *body, int n, const float (*bind)[12], const float (*world)[12],
@@ -217,14 +108,14 @@ void rag_start(Ragdoll *r, const RagBody *body, int n, const float (*bind)[12], 
             r->com[k][i] = (b->ba[i] + b->bb[i]) * 0.5f;
         M34 w = body_world(b, world), p = body_world(b, prev), bw = body_world(b, bind);
         float xp[3], qp[4], dq[4], c[4];
-        apply34(&w, r->com[k], r->x[k]), quat_of(&w, r->q[k]);
-        apply34(&p, r->com[k], xp), quat_of(&p, qp);
+        m34_apply(&w, r->com[k], r->x[k]), quat_of(&w, r->q[k]);
+        m34_apply(&p, r->com[k], xp), quat_of(&p, qp);
         quat_of(&bw, bq[k]);
         float inv = dt > 1e-4f ? 1 / dt : 0;
         for (int i = 0; i < 3; i++)
             r->v[k][i] = (r->x[k][i] - xp[i]) * inv;
         c[0] = -qp[0], c[1] = -qp[1], c[2] = -qp[2], c[3] = qp[3];
-        qmul(r->q[k], c, dq);
+        q_mul(r->q[k], c, dq);
         float sg = dq[3] < 0 ? -2 : 2;
         for (int i = 0; i < 3; i++)
             r->w[k][i] = dq[i] * sg * inv;
@@ -244,7 +135,7 @@ void rag_start(Ragdoll *r, const RagBody *body, int n, const float (*bind)[12], 
             float z[3] = {0, 0, 1};
             cross3(b->axis_c, z, pc), norm3(pc);
         }
-        qrot(bq[k], pc, w);
+        q_rot(bq[k], pc, w);
         qrot_inv(bq[b->parent], w, r->perp_p[k]);
     }
 }
@@ -275,7 +166,7 @@ static void solve_joint(Ragdoll *r, int c)
     float lc[3], lp[3], rc[3], rp[3], d[3];
     for (int i = 0; i < 3; i++)
         lc[i] = b->piv_c[i] - r->com[c][i], lp[i] = b->piv_p[i] - r->com[p][i];
-    qrot(r->q[c], lc, rc), qrot(r->q[p], lp, rp);
+    q_rot(r->q[c], lc, rc), q_rot(r->q[p], lp, rp);
     for (int i = 0; i < 3; i++)
         d[i] = r->x[p][i] + rp[i] - r->x[c][i] - rc[i];
     float len = norm3(d);
@@ -303,7 +194,7 @@ static void solve_limits(Ragdoll *r, int c)
     const RagBody *b = &r->def[c];
     int p = b->parent;
     float ac[3], ap[3], u[3];
-    qrot(r->q[c], b->axis_c, ac), qrot(r->q[p], b->axis_p, ap);
+    q_rot(r->q[c], b->axis_c, ac), q_rot(r->q[p], b->axis_p, ap);
     float cs = dot3(ac, ap);
     cs = cs > 1 ? 1 : cs < -1 ? -1 : cs;
     float ang = acosf(cs);
@@ -311,11 +202,11 @@ static void solve_limits(Ragdoll *r, int c)
         cross3(ac, ap, u);
         if (norm3(u) > 1e-6f)
             turn_pair(r, c, p, u, ang - b->cone);
-        qrot(r->q[c], b->axis_c, ac);
+        q_rot(r->q[c], b->axis_c, ac);
     }
     /* twist about the child's axis, from the parent's bind reference to the child's */
     float pc[3], pp[3], x[3];
-    qrot(r->q[c], r->perp_c[c], pc), qrot(r->q[p], r->perp_p[c], pp);
+    q_rot(r->q[c], r->perp_c[c], pc), q_rot(r->q[p], r->perp_p[c], pp);
     float k = dot3(pp, ac);
     for (int i = 0; i < 3; i++)
         pp[i] -= ac[i] * k;
@@ -343,7 +234,7 @@ static int solve_floor(Ragdoll *r, int k, const float *xp, const float *qp)
         float l[3], rel[3], p[3];
         for (int i = 0; i < 3; i++)
             l[i] = ends[e][i] - r->com[k][i];
-        qrot(r->q[k], l, rel);
+        q_rot(r->q[k], l, rel);
         for (int i = 0; i < 3; i++)
             p[i] = r->x[k][i] + rel[i];
         float o[3] = {p[0] - r->x[k][0], p[1] - r->fy[k], p[2] - r->x[k][2]};
@@ -360,7 +251,7 @@ static int solve_floor(Ragdoll *r, int k, const float *xp, const float *qp)
         /* friction: undo the contact point's sliding this substep, up to FRICTION x the push out */
         float lp[3], was[3], now[3], slide[3];
         qrot_inv(r->q[k], rel, lp);
-        qrot(qp, lp, was), qrot(r->q[k], lp, now);
+        q_rot(qp, lp, was), q_rot(r->q[k], lp, now);
         for (int i = 0; i < 3; i++)
             slide[i] = (r->x[k][i] + now[i]) - (xp[i] + was[i]);
         float sn = dot3(slide, n);
@@ -414,7 +305,7 @@ void rag_step(Ragdoll *r, float dt)
         for (int k = 0; k < r->n; k++) {
             float ang = 1 - (touch[k] ? ROLL_DAMP : ANG_DAMP) * h;
             float c[4] = {-qp[k][0], -qp[k][1], -qp[k][2], qp[k][3]}, dq[4];
-            qmul(r->q[k], c, dq);
+            q_mul(r->q[k], c, dq);
             float sg = dq[3] < 0 ? -2 / h : 2 / h, sp = 0;
             for (int i = 0; i < 3; i++) {
                 r->v[k][i] = (r->x[k][i] - xp[k][i]) / h * lin;
@@ -462,22 +353,22 @@ void rag_pose(const Ragdoll *r, const Model *m, const BoneLocal *base, V3 pos, f
         if (r->def[k].bone >= 0 && r->def[k].bone < nb)
             of[r->def[k].bone] = k;
     float c = cosf(yaw + 3.14159265f), s = sinf(yaw + 3.14159265f);
-    M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, pos.x, pos.y, pos.z}}, iplace = inv34(&place);
+    M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, pos.x, pos.y, pos.z}}, iplace = m34_inv(&place);
     for (int i = 0; i < nb; i++) {
         int k = of[i];
         const M34 *P = par[i] < 0 ? &place : &W[par[i]];
         if (k >= 0) {
             float o[3], rc[3];
-            qrot(r->q[k], r->com[k], rc);
+            q_rot(r->q[k], r->com[k], rc);
             for (int j = 0; j < 3; j++)
                 o[j] = r->x[k][j] - rc[j];
-            M34 body = from_qt(r->q[k], o), B = body_frame(&r->def[k]), iB = inv34(&B);
-            W[i] = mul34(&body, &iB);
+            M34 body = m34_from_qt(r->q[k], o), B = body_frame(&r->def[k]), iB = m34_inv(&B);
+            W[i] = m34_mul(&body, &iB);
         } else {
-            M34 L = from_qt(base[i].q, base[i].t);
-            W[i] = mul34(P, &L);
+            M34 L = m34_from_qt(base[i].q, base[i].t);
+            W[i] = m34_mul(P, &L);
         }
-        M34 iP = par[i] < 0 ? iplace : inv34(P), L = mul34(&iP, &W[i]);
+        M34 iP = par[i] < 0 ? iplace : m34_inv(P), L = m34_mul(&iP, &W[i]);
         quat_of(&L, out[i].q);
         memcpy(out[i].t, &L.m[9], 12);
     }

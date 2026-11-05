@@ -225,12 +225,6 @@ static int heap_pop(void)
     return top;
 }
 
-static float dist3(const float *a, const float *b)
-{
-    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
-    return sqrtf(x * x + y * y + z * z);
-}
-
 /* Node slot of the goal (or of the closest node to it when the search ran out / the goal is not connected) */
 static int astar(const Nav *nv, int s, int g, const float to[3])
 {

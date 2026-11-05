@@ -7,6 +7,7 @@
 #include "model.h"
 #include "vu1.h"
 #include "map.h"
+#include "vmath.h"
 
 typedef struct {
     char magic[4];
@@ -469,29 +470,6 @@ void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
     }
 }
 
-/* 3x4 matrix: rotation rows m[0..8] + translation m[9..11] */
-typedef struct { float m[12]; } M34;
-
-static M34 from_qt(const float *q, const float *t)
-{
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    M34 r = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
-              2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-              2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), t[0], t[1], t[2]}};
-    return r;
-}
-
-static M34 mul34(const M34 *a, const M34 *b)
-{
-    M34 r;
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            r.m[i * 3 + j] = a->m[i * 3] * b->m[j] + a->m[i * 3 + 1] * b->m[3 + j] + a->m[i * 3 + 2] * b->m[6 + j];
-        r.m[9 + i] = a->m[i * 3] * b->m[9] + a->m[i * 3 + 1] * b->m[10] + a->m[i * 3 + 2] * b->m[11] + a->m[9 + i];
-    }
-    return r;
-}
-
 /* model -> world: rotate by yaw + pi (model faces -Z), then translate */
 static M34 placement(V3 pos, float yaw)
 {
@@ -504,8 +482,8 @@ static M34 placement(V3 pos, float yaw)
 static void chain(const Model *m, const BoneLocal *pose, const M34 *root, M34 *w)
 {
     for (unsigned i = 0; i < m->hdr->bones; i++) {
-        M34 local = from_qt(pose[i].q, pose[i].t);
-        w[i] = m->parents[i] < 0 ? mul34(root, &local) : mul34(&w[m->parents[i]], &local);
+        M34 local = m34_from_qt(pose[i].q, pose[i].t);
+        w[i] = m->parents[i] < 0 ? m34_mul(root, &local) : m34_mul(&w[m->parents[i]], &local);
     }
 }
 
@@ -583,7 +561,7 @@ static void draw_view(const Model *m, const M34 *view, V3 pos, int tint)
 void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
 {
     /* the chain is built in view space (view folded into the root placement): one multiply per bone */
-    M34 view = view_matrix(), place = placement(pos, yaw), root = mul34(&view, &place);
+    M34 view = view_matrix(), place = placement(pos, yaw), root = m34_mul(&view, &place);
     chain(m, pose, &root, vbones);
     draw_view(m, &view, pos, tint);
 }
@@ -593,7 +571,7 @@ void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint)
     M34 view = view_matrix();
     const M34 *w = (const M34 *)world;
     for (unsigned i = 0; i < m->hdr->bones; i++)
-        vbones[i] = mul34(&view, &w[i]);
+        vbones[i] = m34_mul(&view, &w[i]);
     draw_view(m, &view, pos, tint);
 }
 
