@@ -20,8 +20,10 @@ def lib():
         return _L
     so, src = os.path.join(HERE, "libvagenc.so"), os.path.join(HERE, "vagenc.c")
     if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
-        if os.system(f"gcc -O2 -shared -fPIC -o '{so}' '{src}'"):
+        tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel process never loads half a library
+        if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{src}'"):
             sys.exit("adpcm.py: building libvagenc.so failed")
+        os.replace(tmp, so)
     L = ctypes.CDLL(so)
     L.vag_encode.restype = ctypes.c_size_t
     L.vag_encode.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_long]

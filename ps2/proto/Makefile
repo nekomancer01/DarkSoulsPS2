@@ -165,11 +165,14 @@ $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.b
 # (music, ambience, MSB emitters), cXXXX.pak per enemy type, for the boot map and every map of its world blocks. One
 # export writes them all (the SPU2 sample rate is chosen over the whole set); $(A)/snd.stamp records it.
 SND_MAPS = $(sort $(MAP) $(foreach b,$(WORLD_BLOCKS),$(firstword $(subst :, ,$(b)))))
+# progress goes to the terminal and the log (tee); pipefail keeps the exporter's exit status
+$(A)/snd.stamp: SHELL := /bin/bash
+$(A)/snd.stamp: .SHELLFLAGS := -o pipefail -c
 $(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum \
 		$(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
 	@mkdir -p $(@D) $(D)/snd
-	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) > $(A)/snd.log
-	@tail -6 $(A)/snd.log
+	@echo "sound: exporting every bank of $(SND_MAPS) (a few minutes; log in $(A)/snd.log)"
+	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) | tee $(A)/snd.log
 	touch $@
 
 # player.gd / combat.gd / progress.gd: the game values the engine loads at boot (src/gamedata.c, tools/gamedata.py)
