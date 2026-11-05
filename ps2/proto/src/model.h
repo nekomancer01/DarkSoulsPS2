@@ -51,6 +51,8 @@ V3 mdl_point(const float *world, const float *local);
 /* Skin and draw (into the current VU1 chain) at pos with facing yaw (model forward is -Z, game forward at yaw 0
  * is +Z); tint: i-frame gold */
 void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint);
+/* The same from world matrices already built by mdl_world for this pose (pos: where the area light is taken) */
+void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint);
 /* Groups whose model.bin flags share a bit with `bits` are not drawn (default 0: all). Player bits from
  * export_model.py's DSR hide rule (EquipParamProtector invisibleFlag vs #NN# materials): */
 #define MDL_HIDE_HELMET 2      /* the helmet's own meshes */
