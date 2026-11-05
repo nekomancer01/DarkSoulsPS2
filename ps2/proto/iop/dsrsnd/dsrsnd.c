@@ -18,7 +18,11 @@ IRX_ID("dsrsnd", 1, 0);
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
 #define POLL_US 4000  /* stream thread period */
 #define STREAM_PRIO 30       /* the stream thread: above the RPC threads (40-42), below the CD driver */
-#define STREAM_PRIO_DISC 45  /* the same while it holds the drive: below the RPC threads (the disc thread is 120) */
+/* the same while it holds the drive: below every thread but the disc thread (120). A CD read keeps its thread busy
+ * until the data is in, so at 45 a read-ahead top-up (up to 128 KB, ~150 ms) held up fileio for its whole length:
+ * every EE printf in that time waited (frames of 100-480 ms; 57-59 frames over 100 ms on the ISO route, 2026-11-06).
+ * Above the disc thread, so the EE's page reads never hold a top-up back. */
+#define STREAM_PRIO_DISC 119
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
  * pulls the drive away from the game's own pack reads and back (two seeks); with 16 KB refills the looping area
  * ambience alone cut a cdrom0: boot load from 7 s to 37 s in PCSX2 (2026-11-03). */
@@ -865,8 +869,8 @@ static void stream_thread(void *arg)
         if ((load_new || load_fd >= 0) && disc_take(&disc))
             load_step();  /* after the refills: a stream never waits for a bank */
         if (disc > 0) {
+            ChangeThreadPriority(TH_SELF, STREAM_PRIO);  /* back up before the drive goes to the disc thread */
             SignalSema(cd_sema);
-            ChangeThreadPriority(TH_SELF, STREAM_PRIO);
         }
         SignalSema(stream_sema);
     }
