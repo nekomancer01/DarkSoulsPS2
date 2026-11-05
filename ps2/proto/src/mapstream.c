@@ -107,6 +107,13 @@ static float scan_pos[3];
 typedef struct { int k; unsigned id; float key; } MsQ;
 static MsQ q[MS_QUEUE];
 static int nq;
+/* Items that found no room (key = the frame): passed over for MS_BLOCK_FRAMES while the next ones read, so one big
+ * near cell with no hole for it does not stop the reader (22.6 s without a read behind Burg near cell 1.25, 865 KB,
+ * largest hole 255 KB; the aqueduct wall waited behind it: ISO round 12, 2026-11-05). ASSUMED: 3 s at 30 fps. */
+#define MS_BLOCKED 8
+#define MS_BLOCK_FRAMES 90u
+static MsQ blk[MS_BLOCKED];
+static int nblk;
 
 static void q_add(MsQ *l, int *n, int cap, int k, unsigned id, float key, int desc)
 {
@@ -143,6 +150,15 @@ static inline unsigned it_bytes(unsigned id) { return id < ncell ? tab[id].bytes
 static inline unsigned it_off(unsigned id) { return id < ncell ? base + tab[id].off : rit[id - ncell].off; }
 static inline int it_tex(unsigned id) { return id >= ncell && (rit[id - ncell].tag & MS_RES_TEX); }  /* a mip 0 */
 static inline int it_res(unsigned id) { return id >= ncell; }
+
+/* item id of instance k found no room lately (blk): passed over */
+static int blocked(int k, unsigned id)
+{
+    for (int i = 0; i < nblk; i++)
+        if (blk[i].k == k && blk[i].id == id)
+            return 1;
+    return 0;
+}
 
 static unsigned char *arena;
 static unsigned char *pend_p;  /* mapstream_lend before the arena was allocated */
@@ -397,6 +413,9 @@ void mapstream_close(int k)
     free(state), free(buf), free(used), free(rit), free(rgrp);
     state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL, rit = NULL, nres = 0, rgrp = NULL;
     nq = 0, scan_frame = 0;  /* queued ids may name this instance's items */
+    for (int i = 0; i < nblk; i++)
+        if (blk[i].k == k)
+            blk[i--] = blk[--nblk];
     bind(was == k ? 0 : was);
 }
 
@@ -768,6 +787,9 @@ void mapstream_update(const float pos[3])
         memcpy(scan_pos, pos, sizeof scan_pos);
         nq = 0;
         float key;
+        for (int i = 0; i < nblk; i++)
+            if (frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
+                blk[i--] = blk[--nblk];
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++) {
@@ -776,12 +798,12 @@ void mapstream_update(const float pos[3])
                 int w = it_want(k, id, pos, &key);
                 if (state[id] == MS_READY && !w && !run_used(id, 2))
                     drop(id);
-                else if (state[id] == MS_NONE && w == 2)
+                else if (state[id] == MS_NONE && w == 2 && !blocked(k, id))
                     q_add(q, &nq, MS_QUEUE, k, id, key, 0);
             }
         }
     }
-    if (!can || !nq || (room_fail && !due)) {
+    if (!can || !nq) {
         bind(was);
         return;
     }
@@ -842,7 +864,9 @@ void mapstream_update(const float pos[3])
                        mapstream_stats.tex_kb, mapstream_stats.other_kb);
             }
             mapstream_stats.room_fails++;
-            nq = 0;
+            if (nblk == MS_BLOCKED)
+                blk[0] = blk[--nblk];
+            blk[nblk++] = (MsQ){w.k, w.id, (float)frame};  /* the next queued one reads next frame */
             bind(was);
             return;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
@@ -916,7 +940,8 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
     for (int k = 0; k < MS_INST && !busy; k++) {
         bind(k);
         for (unsigned j = 0; j < nres && !busy; j++)
-            busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus);
+            busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus) &&
+                   !blocked(k, ncell + j);
     }
     bind(was);
     return busy;
