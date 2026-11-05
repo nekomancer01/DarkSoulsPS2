@@ -55,8 +55,13 @@ void lua0_methods(int tag, LVal table, LVal (*fallback)(int tag, LVal key));
 int lua0_call(LVal f, const LVal *args, int nargs, LVal *ret, int nret);
 extern char lua0_errmsg[160];
 void lua0_error(const char *fmt, ...);
-/* Mark-and-sweep. Roots: globals, method tables, and whatever extra_roots marks via lua0_mark. Only between calls. */
+/* Mark-and-sweep. Roots: globals, method tables, and whatever extra_roots marks via lua0_mark. Only between calls.
+ * lua0_gc: a whole collection now (finishing any sweep in progress first). lua0_gc_step: once more than threshold bytes
+ * were allocated since the last mark, mark (all at once) and then sweep at most budget_us per call, one call per frame,
+ * until the cycle ends; returns 1 when it did GC work. lua0_gc_busy: a sweep is in progress. */
 void lua0_gc(void (*extra_roots)(void));
+int lua0_gc_step(void (*extra_roots)(void), unsigned threshold, unsigned budget_us);
+int lua0_gc_busy(void);
 void lua0_mark(LVal v);
 /* Heap bytes in use, and allocated since the last collection */
 extern unsigned lua0_heap, lua0_since_gc;

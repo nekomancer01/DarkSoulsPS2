@@ -92,6 +92,12 @@ static CallInfo cis[MAX_CI];
 static int nci;
 static UpVal *open_up;
 static GCH *allgc;
+/* GC (lua0_gc_step): marks alternate between cycles. An object is live in this cycle when mark == gc_cur; new objects
+ * are born with it, so the sweep that follows a mark (spread over frames) keeps them; a string interned again while
+ * dead but not yet swept is revived (new_str). sweep_pp: the sweep's place in allgc, NULL between cycles. */
+static unsigned char gc_cur;
+static GCH **sweep_pp;
+static unsigned gc_before, gc_since, gc_mark_us, gc_sweep_us, gc_step_max_us, gc_steps;
 static LStr **strt;
 static unsigned strt_size, strt_count;
 static LVal globals;
@@ -161,6 +167,7 @@ static void *gc_alloc(unsigned size, int type)
         lua0_error("out of memory (%u bytes)", size);
     memset(o, 0, size);
     o->type = (unsigned char)type;
+    o->mark = gc_cur;
     o->next = allgc;
     allgc = o;
     lua0_heap += size, lua0_since_gc += size;
@@ -224,8 +231,10 @@ static LStr *new_str(const char *s, unsigned len)
 {
     unsigned h = str_hash(s, len);
     for (LStr *e = strt[h & (strt_size - 1)]; e; e = e->hnext)
-        if (e->hash == h && e->len == len && !memcmp(e->s, s, len))
+        if (e->hash == h && e->len == len && !memcmp(e->s, s, len)) {
+            e->h.mark = gc_cur;  /* dead and not yet swept: reachable again */
             return e;
+        }
     LStr *e = gc_alloc(sizeof(LStr) + len, GC_STR);
     memcpy(e->s, s, len);
     e->s[len] = 0;
@@ -854,9 +863,9 @@ void lua0_mark(LVal v)
 
 static void mark_obj(GCH *o)
 {
-    if (!o || o->mark)
+    if (!o || o->mark == gc_cur)
         return;
-    o->mark = 1;
+    o->mark = gc_cur;
     switch (o->type) {
     case GC_TABLE: {
         LTable *t = (LTable *)o;
@@ -878,64 +887,115 @@ static void mark_obj(GCH *o)
     }
 }
 
-void lua0_gc(void (*extra_roots)(void))
+static unsigned now_ticks(void)
 {
-    if (nci)
-        return;
-    unsigned before = lua0_heap, since = lua0_since_gc, t0;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
+    unsigned t;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(t));
+    return t;
+}
+
+/* Mark (atomic, between script calls): roots are the globals, the method tables and extra_roots. Fixed objects (the
+ * globals table, registered C functions, strings in loaded code) are never freed, so they need no walk of allgc:
+ * the sweep keeps them, and the only one with children (globals) is a root. */
+static void gc_mark(void (*extra_roots)(void))
+{
+    unsigned t0 = now_ticks();
+    gc_before = lua0_heap, gc_since = lua0_since_gc;
+    gc_cur ^= 1;
     lua0_mark(globals);
     for (int i = 0; i < 8; i++)
         lua0_mark(methods[i]);
     if (extra_roots)
         extra_roots();
-    for (GCH *o = allgc; o; o = o->next)
-        if (o->fixed)
-            mark_obj(o);
-    GCH **pp = &allgc;
+    lua0_since_gc = 0;
+    sweep_pp = &allgc;
+    gc_mark_us = (now_ticks() - t0) / 295, gc_sweep_us = gc_step_max_us = gc_steps = 0;
+}
+
+/* Free unmarked objects from sweep_pp on until the list ends (returns 1) or `budget` ticks have passed (0 = no
+ * limit). Objects allocated since the mark go in at the head of allgc, behind the sweep, and are live. */
+static int gc_sweep(unsigned budget)
+{
+    unsigned t0 = now_ticks(), n = 0;
+    GCH **pp = sweep_pp;
     while (*pp) {
         GCH *o = *pp;
-        if (o->mark) {
-            o->mark = 0;
+        if (o->mark == gc_cur || o->fixed) {
             pp = &o->next;
-            continue;
+        } else {
+            *pp = o->next;
+            unsigned size = 0;
+            switch (o->type) {
+            case GC_STR: {
+                LStr *s = (LStr *)o;
+                LStr **b = &strt[s->hash & (strt_size - 1)];
+                while (*b != s)
+                    b = &(*b)->hnext;
+                *b = s->hnext;
+                strt_count--;
+                size = sizeof(LStr) + s->len;
+                break;
+            }
+            case GC_TABLE: {
+                LTable *t = (LTable *)o;
+                size = sizeof(LTable) + t->asize * sizeof(LVal) + t->hsize * sizeof(Node);
+                lrel(t->arr), lrel(t->node);
+                break;
+            }
+            case GC_LCL: size = sizeof(LClosure) + sizeof(UpVal *) * ((LClosure *)o)->nups; break;
+            case GC_CCL: size = sizeof(CClosure); break;
+            case GC_UPVAL: size = sizeof(UpVal); break;
+            }
+            lua0_heap -= size < lua0_heap ? size : lua0_heap;
+            lrel(o);
         }
-        *pp = o->next;
-        unsigned size = 0;
-        switch (o->type) {
-        case GC_STR: {
-            LStr *s = (LStr *)o;
-            LStr **b = &strt[s->hash & (strt_size - 1)];
-            while (*b != s)
-                b = &(*b)->hnext;
-            *b = s->hnext;
-            strt_count--;
-            size = sizeof(LStr) + s->len;
+        if (budget && !(++n & 63) && now_ticks() - t0 > budget)
             break;
-        }
-        case GC_TABLE: {
-            LTable *t = (LTable *)o;
-            size = sizeof(LTable) + t->asize * sizeof(LVal) + t->hsize * sizeof(Node);
-            lrel(t->arr), lrel(t->node);
-            break;
-        }
-        case GC_LCL: size = sizeof(LClosure) + sizeof(UpVal *) * ((LClosure *)o)->nups; break;
-        case GC_CCL: size = sizeof(CClosure); break;
-        case GC_UPVAL: size = sizeof(UpVal); break;
-        }
-        lua0_heap -= size < lua0_heap ? size : lua0_heap;
-        lrel(o);
     }
-    lua0_since_gc = 0;
+    sweep_pp = pp;
+    unsigned us = (now_ticks() - t0) / 295;
+    gc_sweep_us += us, gc_steps++;
+    if (us > gc_step_max_us)
+        gc_step_max_us = us;
+    if (*pp)
+        return 0;
+    sweep_pp = NULL;
     /* one line per collection: the heap-drift check (TECH_DEBT world-5) reads free heap right after a sweep, where
-     * the VM holds only live objects; between sweeps up to 192 KB of garbage (ai.c ai_end_frame) is still held */
-    unsigned t1;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+     * the VM holds only live objects and what was allocated during the sweep; between sweeps up to LUA_GC_KB of
+     * garbage (ai.c ai_end_frame) is still held. "in" = the mark (one frame) + the sweep (spread over frames) */
     struct mallinfo mi = mallinfo();
-    printf("lua0: gc %uK -> %uK (+%uK since) in %u us, pool %uK used %uK free, malloc %uK, heap free %uK in-use %uK\n",
-           before >> 10, lua0_heap >> 10, since >> 10, (t1 - t0) / 295, lua0_pool_used >> 10,
-           lua0_pool_free >> 10, lua0_malloc_live >> 10, (unsigned)mi.fordblks >> 10, (unsigned)mi.uordblks >> 10);
+    printf("lua0: gc %uK -> %uK (+%uK since) in %u us, pool %uK used %uK free, malloc %uK, heap free %uK in-use %uK"
+           " (mark %u us, sweep %u us in %u steps, longest %u us)\n",
+           gc_before >> 10, lua0_heap >> 10, gc_since >> 10, gc_mark_us + gc_sweep_us, lua0_pool_used >> 10,
+           lua0_pool_free >> 10, lua0_malloc_live >> 10, (unsigned)mi.fordblks >> 10, (unsigned)mi.uordblks >> 10,
+           gc_mark_us, gc_sweep_us, gc_steps, gc_step_max_us);
+    return 1;
 }
+
+void lua0_gc(void (*extra_roots)(void))
+{
+    if (nci)
+        return;
+    if (sweep_pp)
+        gc_sweep(0);  /* finish the cycle in progress: its mark is stale for the full one below */
+    gc_mark(extra_roots);
+    gc_sweep(0);
+}
+
+int lua0_gc_step(void (*extra_roots)(void), unsigned threshold, unsigned budget_us)
+{
+    if (nci)
+        return 0;
+    if (!sweep_pp) {
+        if (lua0_since_gc <= threshold)
+            return 0;
+        gc_mark(extra_roots);
+    }
+    gc_sweep(budget_us * 295u);
+    return 1;
+}
+
+int lua0_gc_busy(void) { return sweep_pp != NULL; }
 
 /* ---- base library (what DSR's scripts use: math.abs, table.getn; loadstring is installed by the AI) ---- */
 
