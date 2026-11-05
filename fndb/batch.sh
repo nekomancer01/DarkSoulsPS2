@@ -10,10 +10,15 @@ FNDB_PY=${FNDB_PY:-$([ -x "$HERE/../.venv-fndb/bin/python" ] && echo "$HERE/../.
 G=$HERE/../ghidra
 WORK=$HERE/work
 mkdir -p "$WORK"
-export JAVA_HOME=$HOME/tools/jdk-21.0.13+9 GHIDRA_HEADLESS_MAXMEM=8G
+# Ghidra install and the JDK it runs on: GHIDRA_INSTALL_DIR / DSR_JAVA_HOME, else the user-local defaults below when
+# they exist, else the JAVA_HOME already set
+GHIDRA_INSTALL_DIR=${GHIDRA_INSTALL_DIR:-$HOME/tools/ghidra_12.1.4_PUBLIC}
+DSR_JAVA_HOME=${DSR_JAVA_HOME:-$HOME/tools/jdk-21.0.13+9}
+if [ -d "$DSR_JAVA_HOME" ]; then export JAVA_HOME=$DSR_JAVA_HOME; fi
+export GHIDRA_HEADLESS_MAXMEM=8G
 export JAVA_TOOL_OPTIONS="-XX:-UseContainerSupport -Xlog:os+container=off"
 headless() {
-	"$HOME/tools/ghidra_12.1.4_PUBLIC/support/analyzeHeadless" "${DSR_GHIDRA_PROJECT:-${DISTROBOX_HOST_HOME:-$HOME}/Projects/dsr-ghidra}" dsr \
+	"$GHIDRA_INSTALL_DIR/support/analyzeHeadless" "${DSR_GHIDRA_PROJECT:-${DISTROBOX_HOST_HOME:-$HOME}/Projects/dsr-ghidra}" dsr \
 		-process DarkSoulsRemastered.exe -noanalysis -readOnly -scriptPath "$G/scripts" "$@" \
 		-log "$G/logs/batch.log" -scriptlog "$G/logs/batch-script.log"
 }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Real-PS2 loop over ps2link (tools-hwperf; notes/threads/tools-hwperf.md "Real PS2"). UNTESTED ON HARDWARE: no PS2 was
+# Real-PS2 loop over ps2link. UNTESTED ON HARDWARE: no PS2 was
 # available when this was written; the commands are the documented ps2link / ps2client ones and DRY=1 prints them.
 #
 #   ps2-run.sh <ps2 ip> [elf=build/proto.elf] [args...]

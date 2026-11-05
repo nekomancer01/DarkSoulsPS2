@@ -1,7 +1,7 @@
 #!/bin/bash
-# PCSX2 runs for the real-hardware / debugger flow (tools-hwperf; notes/threads/tools-hwperf.md). Uses its own PCSX2
-# config (~/tools/pcsx2-cfg/<hostfs|nohostfs>/PCSX2: copy of the user's ini + BIOS) via -datapath, so HostFs can be
-# off, logs / savestates stay apart from the user's, and the user's PCSX2 settings are never changed.
+# PCSX2 runs for the real-hardware / debugger flow. Uses its own PCSX2 config ($DSR_PCSX2_CFG/<hostfs|nohostfs>/PCSX2,
+# default ~/tools/pcsx2-cfg: copy of the user's ini + BIOS) via -datapath, so HostFs can be off, logs / savestates
+# stay apart from the user's, and the user's PCSX2 settings are never changed.
 #
 #   ps2-pcsx2.sh run   <elf|iso> [secs=10] [shot.png]  headless on Xvfb :99 (-batch -nogui -earlyconsolelog), EE/IOP
 #                                                       console in tools/ps2-pcsx2.log; prints the DSRPROTO / pack lines
@@ -18,6 +18,7 @@
 # flatpak command instead of running it).
 set -e
 H=$(cd "$(dirname "$0")/.." && pwd)
+HX=$H/tools/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
 USERCFG=${PCSX2_USERCFG:-${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2}
 NM=${NM:-mips64r5900el-ps2-elf-nm}
 MODE=$1; shift || true
@@ -36,10 +37,10 @@ STATE=; [ "$MODE" = state ] && { STATE=$(realpath "$1"); shift; }
 T=${1:-10}; SHOT=$2
 
 # Config: the user's ini with HostFs set, console logging on, no confirmation dialogs; BIOS copied once.
-CFGROOT=$HOME/tools/pcsx2-cfg/$([ "$HOSTFS" = 1 ] && echo hostfs || echo nohostfs)
+CFGROOT=${DSR_PCSX2_CFG:-$HOME/tools/pcsx2-cfg}/$([ "$HOSTFS" = 1 ] && echo hostfs || echo nohostfs)
 C=$CFGROOT/PCSX2
 mkdir -p "$C/inis" "$C/bios" "$C/logs" "$C/sstates" "$C/memcards"
-[ -e "$C/bios/scph77001-us.bin" ] || cp "$USERCFG"/bios/* "$C/bios/"
+[ -n "$(ls -A "$C/bios")" ] || cp "$USERCFG"/bios/* "$C/bios/"
 PINESLOT=$((28190 + 1 - HOSTFS))  # own PINE slots (28190 hostfs / 28191 nohostfs), apart from the test scripts'
 python3 -I - "$USERCFG/inis/PCSX2.ini" "$C/inis/PCSX2.ini" "$HOSTFS" "$PINESLOT" <<'EOF'
 import sys, re
@@ -76,7 +77,7 @@ ARGS=(-datapath "$CFGROOT" -fastboot -earlyconsolelog -logfile "$C/logs/run.log"
 if [ "$MODE" = debug ] && [ -z "$SHOT" ]; then
     CMD="setsid flatpak run $(printf "%q " "${FS[@]}" "${ENV[@]}") net.pcsx2.PCSX2 $(printf "%q " "${ARGS[@]}") -debugger $(printf "%q " "${BOOT[@]}")"
     [ -n "$DRY" ] && { echo "$CMD"; exit 0; }
-    distrobox-host-exec bash -c "$CMD > '$LOG' 2>&1 < /dev/null &"
+    "$HX" bash -c "$CMD > '$LOG' 2>&1 < /dev/null &"
     echo "PCSX2 debugger window started (config $C, HostFs $HOSTFS); console log $LOG"; exit 0
 fi
 
@@ -94,7 +95,7 @@ fi
 mkdir -p /tmp/pcsx2-headless
 ID=/tmp/pcsx2-headless/id.$$
 : > "$C/logs/run.log"
-distrobox-host-exec bash -c "$CMD > '$LOG' 2>&1 < /dev/null 3> '$ID' &
+"$HX" bash -c "$CMD > '$LOG' 2>&1 < /dev/null 3> '$ID' &
     for _ in \$(seq 50); do [ -s '$ID' ] && break; sleep 0.1; done"
 INST=$(cat "$ID"); rm -f "$ID"; touch "/tmp/pcsx2-headless/$INST"   # pcsx2-run.sh's user launch leaves it alone
 if [ -n "$STATESAVE" ]; then
@@ -110,6 +111,6 @@ if [ -n "$SHOT" ]; then
     [ "$MODE" = debug ] && WIN=root
     DISPLAY=$D import -window "${WIN:-root}" "$(realpath -m "$SHOT")"
 fi
-[ -n "$KEEP" ] || { distrobox-host-exec flatpak kill "$INST" 2>/dev/null || true; rm -f "/tmp/pcsx2-headless/$INST"; }
+[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST" 2>/dev/null || true; rm -f "/tmp/pcsx2-headless/$INST"; }
 echo "config $C (HostFs $HOSTFS), boot ${BOOT[*]}"
 grep -a -E "DSRPROTO|pack:|PROF|gprof|OUT OF RAM|ERROR|Detected PS2 Disc|ELF Loading" "$C/logs/run.log" 2>/dev/null | head -80

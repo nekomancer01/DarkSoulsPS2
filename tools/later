@@ -5,10 +5,10 @@
        tools/later drop ID                                      remove a queued job
        tools/later timer                                        print a systemd user timer for a nightly run
 
-The PC runs nothing from about 02:00 to 10:00 (notes/jobq.log, 2026-10-31 .. 11-02) while soaks, routes and parameter
-sweeps take daytime queue slots. `later add` keeps such a job (with the tree it was queued from) in
-notes/later.queue; `later run` starts them through tools/qd, which sends what needs only the game (exports, builds,
-sweeps) to whichever machine in tools/hosts.local has room (the VPS) and keeps PCSX2 runs on this PC. Up to --jobs
+Long jobs (soaks, routes, parameter sweeps) take daytime queue slots while the PC is idle at night. `later add` keeps
+such a job (with the tree it was queued from) in notes/later.queue; `later run` starts them through tools/qd, which
+sends what needs only the game (exports, builds, sweeps) to whichever machine in tools/hosts.local has room and keeps
+PCSX2 runs on this PC. Up to --jobs
 (default 3) run at once; tools/q's RAM budget still decides what actually starts. No job starts after --until (default
 09:00). Output per job: notes/later/<id>.log; one line per job in notes/later.log (start, end, rc, run time).
 Nothing runs by itself: `later run` from a shell, or the timer that `later timer` prints, installed by hand."""

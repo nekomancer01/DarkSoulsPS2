@@ -30,7 +30,6 @@ SCREENSHOT_EXT = {'.jpg'}
 README_IMAGES = {'docs/logo.png'}
 # Path -> why it may exceed MAX_KB (third-party, not game data)
 ALLOW_LARGE = {
-    'ps2/vu1test/zbyszek.c': 'ps2sdk / gsKit sample texture',
 }
 HOME_RE = re.compile(r'(?<![\w$])(/home/(?!runner/|user/|you/|<)[A-Za-z0-9_.-]+/|/Users/(?!<)[A-Za-z0-9_.-]+/'
                      r'|[A-Za-z]:\\\\?Users\\\\?(?!<)[A-Za-z0-9_.-]+)')

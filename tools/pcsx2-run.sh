@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: pcsx2-run.sh <file.elf> [seconds=8] [shot.png]  — boot an ELF in the PCSX2 flatpak (host).
-# With a shot path (tests): runs headless on the virtual X display :99 (Xvfb in this distrobox), screenshots it after
+# With a shot path (tests): runs headless on the virtual X display :99 (Xvfb), screenshots it after
 #   N seconds and kills only that instance. Works with the monitor off and never touches a PCSX2 the user has open.
 #   KEEP=1 leaves the headless instance running (prints INST=<flatpak instance id>; stop: flatpak kill <id>).
 #   Test options (env, headless only; tools/test-*.sh, tools/pine.py):
@@ -15,11 +15,12 @@
 # Without a shot path (user launch): replaces any visible PCSX2 and opens the ELF on the desktop.
 ELF=$(realpath "$1"); T=${2:-8}; SHOT=$3
 H=$(cd "$(dirname "$0")/.." && pwd)
+HX=$H/tools/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
 FS="--filesystem=$(dirname "$ELF"):ro"
 # The ELF's saves (src/save.c, host:save/): the one writable folder under the ro host: root
 mkdir -p "$(dirname "$ELF")/save"; FSW="--filesystem=$(dirname "$ELF")/save"
 if [ -z "$SHOT" ]; then
-    distrobox-host-exec bash -c "for i in \$(flatpak ps --columns=instance,application | awk '\$2==\"net.pcsx2.PCSX2\"{print \$1}'); do
+    "$HX" bash -c "for i in \$(flatpak ps --columns=instance,application | awk '\$2==\"net.pcsx2.PCSX2\"{print \$1}'); do
         [ -e /tmp/pcsx2-headless/\$i ] || flatpak kill \$i; done; sleep 1
         setsid flatpak run '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot -elf '$ELF' > '$H/tools/pcsx2.log' 2>&1 < /dev/null &"
     exit 0
@@ -39,7 +40,7 @@ EXTRA=; ENVS=; DISCARG=
 [ -n "$ARGS" ] && EXTRA="-gameargs '$ARGS'"
 if [ -n "$PINE" ]; then
     # Own data dir per PINE slot: the shared ini stays untouched and parallel slots never share logs / states
-    HH=$(distrobox-host-exec printenv HOME)
+    HH=$("$HX" printenv HOME)
     DP="$HH/.var/app/net.pcsx2.PCSX2/test/$PINE"
     python3 -I "$H/tools/test-pcsx2-ini.py" "$HH/.var/app/net.pcsx2.PCSX2/config/PCSX2" "$DP" "$PINE"
     EXTRA="$EXTRA -datapath '$DP'"
@@ -47,7 +48,7 @@ if [ -n "$PINE" ]; then
     rm -f "/run/user/$(id -u)/app/net.pcsx2.PCSX2/pcsx2.sock.$PINE"
 fi
 # Headless tests are muted (user request 2026-10-31): sound goes to the null sink dsr_mute, created on demand.
-distrobox-host-exec bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
+"$HX" bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
     sink_name=dsr_mute sink_properties=device.description=DSR-test-mute >/dev/null
     DISPLAY=$D XAUTHORITY= WAYLAND_DISPLAY= setsid flatpak run --instance-id-fd=3 --env=PULSE_SINK=dsr_mute --socket=x11 \
     --nosocket=wayland --env=QT_QPA_PLATFORM=xcb $ENVS '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot $EXTRA -elf '$ELF' $DISCARG \
@@ -61,4 +62,4 @@ sleep "$T"
 WIN=$(DISPLAY=$D xwininfo -root -children 2>/dev/null | awk '/^ +0x/{split($0,a,"  ");print $1}' | while read w; do
     DISPLAY=$D xwininfo -id "$w" 2>/dev/null | awk -v w="$w" '/Width:/{x=$2}/Height:/{y=$2}END{print x*y, w}'; done | sort -n | tail -1 | cut -d' ' -f2)
 DISPLAY=$D import -window "${WIN:-root}" "$(realpath -m "$SHOT")"
-[ -n "$KEEP" ] || { distrobox-host-exec flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; }
+[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; }

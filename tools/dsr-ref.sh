@@ -11,6 +11,8 @@
 # (~/dsr-ref/compat, a reflink copy), run inside a headless gamescope on the host. The user's Steam install,
 # prefix and save files are never touched; Steam is not used to launch it, so no Steam Cloud sync runs.
 HOST_HOME=${DISTROBOX_HOST_HOME:-$HOME}  # the host user's home (distrobox) or this one
+T=$(cd "$(dirname "$0")" && pwd)
+HX=$T/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
 H=${DSR_REF:-$HOST_HOME/dsr-ref}
 PROTON="$H/tools/proton-11.0/proton"
 W=${W:-1920}; HT=${HT:-1080}
@@ -24,12 +26,12 @@ GAME_ENV="WINEDLLOVERRIDES=d3d11,d3d10core,d3d9,dxgi=n $DBG_ENV"
     ENABLE_VULKAN_RENDERDOC_CAPTURE=1 DXVK_CONFIG='dxvk.enableDescriptorBuffer=False;dxvk.enableDescriptorHeap=False;dxvk.enableGraphicsPipelineLibrary=False' RENDERDOC_CAPFILE=$H/rdc/dsr DXVK_SHADER_DUMP_PATH=$H/rdc/shaders"
 case "$1" in
 start)
-    distrobox-host-exec pgrep -f "^bwrap .*$H/" >/dev/null && { echo "dsr-ref: already running (dsr-ref.sh stop first)" >&2; exit 1; }
+    "$HX" pgrep -f "^bwrap .*$H/" >/dev/null && { echo "dsr-ref: already running (dsr-ref.sh stop first)" >&2; exit 1; }
     # Offline by construction: bwrap gives the whole gamescope + game tree an empty network namespace (loopback only)
     # and hides the real Steam dirs behind tmpfs, so steam_api finds no Steam client and nothing can reach the net
     # or the user's install/saves. Proton runs from a reflink copy in ~/dsr-ref/tools.
     # Muted for the user (2026-10-31): audio goes to the null sink dsr_mute (created on demand), never the speakers.
-    distrobox-host-exec bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
+    "$HX" bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
         sink_name=dsr_mute sink_properties=device.description=DSR-test-mute >/dev/null
         cd '$H/game' && PULSE_SINK=dsr_mute STEAM_COMPAT_DATA_PATH='$H/compat' \
         STEAM_COMPAT_CLIENT_INSTALL_PATH='$H/nosteam' SteamAppId=570940 SteamGameId=570940 $EXTRA_ENV \
@@ -40,9 +42,9 @@ start)
 shot)
     OUT=$(realpath -m "$2")
     # the headless instance's control socket (Connector Name: Headless); full-res PNG, gamescope writes it async
-    SOCK=$(distrobox-host-exec bash -c "for s in \$(ls \$XDG_RUNTIME_DIR | grep -E '^gamescope-[0-9]+$'); do
+    SOCK=$("$HX" bash -c "for s in \$(ls \$XDG_RUNTIME_DIR | grep -E '^gamescope-[0-9]+$'); do
         GAMESCOPE_WAYLAND_DISPLAY=\$s gamescopectl 2>&1 | grep -q 'Connector Name: Headless' && echo \$s; done | tail -1")
-    distrobox-host-exec bash -c "rm -f '$H/shot.png'; GAMESCOPE_WAYLAND_DISPLAY=$SOCK gamescopectl screenshot '$H/shot.png'
+    "$HX" bash -c "rm -f '$H/shot.png'; GAMESCOPE_WAYLAND_DISPLAY=$SOCK gamescopectl screenshot '$H/shot.png'
         for _ in \$(seq 50); do [ -s '$H/shot.png' ] && break; sleep 0.1; done; sleep 0.3; cat '$H/shot.png'" > "$OUT"
     ls -la "$OUT"
     ;;
@@ -52,29 +54,28 @@ load)
     # so it stops as soon as the player exists, then waits for the fade-in.
     MEM="python3 -I $(cd "$(dirname "$0")" && pwd)/dsr_mem.py"
     for i in $(seq 60); do
-        distrobox-host-exec $MEM ready 2>/dev/null && { sleep 6; distrobox-host-exec $MEM pos; exit 0; }
+        "$HX" $MEM ready 2>/dev/null && { sleep 6; "$HX" $MEM pos; exit 0; }
         "$0" in key enter wait 300 key e 2>/dev/null; sleep 2.5
     done
     echo "dsr-ref: no player after 180 s" >&2; exit 1
     ;;
 save|restore)
     SAV="$H/compat/pfx/drive_c/users/steamuser/Documents/NBGI/DARK SOULS REMASTERED/70049876/DRAKS0005.sl2"
-    if [ "$1" = save ]; then distrobox-host-exec cp "$SAV" "$H/saves/$2.sl2"
+    if [ "$1" = save ]; then "$HX" cp "$SAV" "$H/saves/$2.sl2"
     else
-        distrobox-host-exec pgrep -f 'Z:.*[D]arkSoulsRemastered' >/dev/null && { echo "dsr-ref: stop the game first" >&2; exit 1; }
-        distrobox-host-exec cp "$H/saves/$2.sl2" "$SAV"
+        "$HX" pgrep -f 'Z:.*[D]arkSoulsRemastered' >/dev/null && { echo "dsr-ref: stop the game first" >&2; exit 1; }
+        "$HX" cp "$H/saves/$2.sl2" "$SAV"
     fi
     ;;
 cam)
     shift
-    T=$(cd "$(dirname "$0")" && pwd)
     # the shot path must be visible on the host: make it absolute
     A=(); while [ $# -gt 0 ]; do A+=("$1"); [ "$1" = --shot ] && { A+=("$(realpath -m "$2")"); shift; }; shift; done
-    distrobox-host-exec python3 -I "$T/dsr-ref-cam.py" "${A[@]}"
+    "$HX" python3 -I "$T/dsr-ref-cam.py" "${A[@]}"
     ;;
 in)
     shift
-    distrobox-host-exec bash -c "for s in \$(ls \$XDG_RUNTIME_DIR | grep -E '^gamescope-[0-9]+$'); do
+    "$HX" bash -c "for s in \$(ls \$XDG_RUNTIME_DIR | grep -E '^gamescope-[0-9]+$'); do
         GAMESCOPE_WAYLAND_DISPLAY=\$s gamescopectl 2>&1 | grep -q 'Connector Name: Headless' && S=\$s; done
         '$H/tools/dsr-ei' \$XDG_RUNTIME_DIR/\$S-ei $*"
     ;;
@@ -82,7 +83,7 @@ stop)
     # wineserver -k ends every wine process of this prefix; then every sandboxed instance by process group (an
     # anchored ^bwrap pattern, so this shell's own command line never matches; the pid file alone missed a restarted
     # instance once, 2026-10-31)
-    distrobox-host-exec bash -c "WINEPREFIX='$H/compat/pfx' '$H/tools/proton-11.0/files/bin/wineserver' -k 2>/dev/null; sleep 2
+    "$HX" bash -c "WINEPREFIX='$H/compat/pfx' '$H/tools/proton-11.0/files/bin/wineserver' -k 2>/dev/null; sleep 2
         for p in \$(pgrep -f '^(bwrap|gamescope|gamescopereaper) .*$H/'); do kill -- -\$(ps -o pgid= -p \$p | tr -d ' ') 2>/dev/null; kill \$p 2>/dev/null; done
         sleep 2; pkill -9 -f '^(bwrap|gamescope|gamescopereaper) .*$H/'; true"   # a stuck headless gamescope ignored SIGTERM once
     ;;

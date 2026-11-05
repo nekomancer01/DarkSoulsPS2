@@ -60,6 +60,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | What it does |
 |---|---|
 | `pcsx2-run.sh` | Boot an ELF in PCSX2: headless + screenshot, or a visible window |
+| `hostexec` | Runs a command on the host: through `distrobox-host-exec` inside a distrobox, directly otherwise (the PCSX2 and reference-game scripts use it) |
 | `test-all.sh` | Build + smoke test + render diff + perf check in one run |
 | `test-run.py` | Run one test script headless; stops 5 s after the first EE log error (`--keep-going` runs on), progress line every minute (`--turbo`: no speed limit, for functional runs) |
 | `test-smoke.py` | Autotest smoke test |
@@ -69,7 +70,6 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `test-pcsx2-ini.py` | PCSX2 config for one headless test instance |
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
-| `winshot.py` | Window screenshot |
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
@@ -114,8 +114,6 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
-| `progress.sh` | Status of long background jobs |
-| `tools/adopt_tree.py` | Moves work from an older local tree into this checkout: copies its git-ignored local state, lists source differences (dry run by default) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |
 | `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them. `--lean` removes each intermediate once no later step needs it (the browser's run) |
 | `tools/pages/convert-node.mjs` | The in-browser converter's run under Node (same Pyodide, 32-bit numpy, Pillow and wasm C helpers as the page): `node tools/pages/convert-node.mjs <game> <build dir>`, then `tools/convert.py --compare <build dir> build` shows whether the browser's packs are the same bytes as a native build (TECH_DEBT build-7). `--prof F.tsv`: seconds and wasm heap per step (export_map prints the heap per stage); it restarts Pyodide as worker.js does (`--old-rule` for the previous rule) |

@@ -2,7 +2,7 @@
 """Read / write the running reference DSR (duplicate install, tools/dsr-ref.sh) through /proc/<pid>/mem on the host.
 
 Pointers: AOB patterns + offset chains from DSR-Gadget (DSROffsets.cs, DSR 1.03; GPL-3.0, facts only). The exe's
-image sits at 0x140000000 under wine. Run on the host (distrobox-host-exec python3 ...); the game runs as our uid
+image sits at 0x140000000 under wine. Run on the host (tools/hostexec python3 ...); the game runs as our uid
 and wine allows ptrace by any process (PR_SET_PTRACER_ANY), so no root is needed.
 
     dsr_mem.py pos                    player x y z angle

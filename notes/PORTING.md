@@ -50,7 +50,7 @@ reading the decompiled DSR code as the specification, with game data converted o
 
 ## Resume after restart (2026-10-30)
 - Toolchain: ps2dev v2.0.0 in `~/tools/ps2dev-2.0.0/ps2dev` (tarball sha256 c8e5dedc…c028). `. ps2/env.sh` (from the repo root)
-- Built: `ps2/vu1test/vu1.elf` (ps2sdk VU1 cube sample). `ps2/hello` is an ERL sample, does not link as ELF; ignore.
+- Built: a ps2sdk VU1 cube sample as a toolchain check (no longer in the repo).
 - PCSX2: flatpak `net.pcsx2.PCSX2` (--user) installed.
   BIOS on host: `~/Downloads/scph77001-us.bin`.
 - Ghidra: persistent project `$DSR_GHIDRA_PROJECT` (host, default ~/Projects/dsr-ghidra; symlink ghidra/project; Ghidra forbids dot-dirs like .local in project paths).
@@ -123,12 +123,9 @@ reading the decompiled DSR code as the specification, with game data converted o
 - Many exe debug strings already carry FromSoftware English glosses: "(Run)走り".
 
 ## Resume after reboot (2026-10-30 evening)
-Translation and the code-index rebuild are both resumable; inside the distrobox, from the repo root:
-1. `fndb/ollama-up.sh 2`
-2. `(cd jp && setsid nohup python3 -I translate.py > translate.out 2>&1 < /dev/null &)`
-3. `(cd fndb && setsid nohup ./rebuild-code.sh > work/embed-code.log 2>&1 < /dev/null &)`
-   (waits for translation, unloads Ollama, rebuilds dsr-functions-code.sqlite)
-4. Watch: `./progress.sh`
+Translation and the code-index rebuild are both resumable: start Ollama (`fndb/ollama-up.sh 2`), rerun
+`jp/translate.py` from `jp/`, then, once it has finished, delete `fndb/dsr-functions-code.sqlite` and rerun
+`fndb.py embed-code` (unload the Ollama model first to free the GPU).
 
 ## Japanese strings → functions (done 2026-10-30)
 - ExportFunctions only sees strings Ghidra typed as string data; it left the Japanese UTF-16/Shift-JIS strings
@@ -148,8 +145,8 @@ Translation and the code-index rebuild are both resumable; inside the distrobox,
 
 ## PS2 character prototype (ps2/proto, 2026-10-30)
 - `make` in ps2/proto regenerates src/player_data.h (tools/export_player.py) and builds proto.elf (gsKit, CPU transform).
-  Run: `tools/pcsx2-run.sh ps2/proto/proto.elf [secs shot.png]` (PCSX2 flatpak, BIOS in its config dir; capture via
-  tools/winshot.py). Demo script plays when there is no pad input for 5 s.
+  Run: `tools/pcsx2-run.sh ps2/proto/proto.elf [secs shot.png]` (PCSX2 flatpak, BIOS in its config dir).
+  Demo script plays when there is no pad input for 5 s.
 - From game data: anim lengths, TAE ChrActionFlag windows (cancel/turn/i-frames), AttackBehavior hit windows, SP-regen
   windows, Havok root motion (walk 1.50, run 3.67, dash 6.33 m/s; roll/attack lunges), R1 stamina 20 (BehaviorParam_PC
   1023000xx), Warrior start (CharaInitParam 3000, Longsword 201000), R1 chain 3000->3001->3002->3001 (ESD states 46/48/49).
