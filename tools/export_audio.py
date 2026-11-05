@@ -45,8 +45,11 @@ emit.bin
            height)}                                                                                          40 B
 Usage: export_audio.py <pak dir> <work dir> <map id> [map id ...]  (the packs those maps need; work dir: the files
                                                                    packed, one directory per pack)
+       Decoding and encoding run in DSR_AUDIO_JOBS worker processes (default: every core, at most 8); the packs are
+       the same bytes whatever the count (each sample is encoded alone, results are written in order).
        export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)"""
 import glob, os, re, struct, sys, time
+import multiprocessing
 
 import numpy as np
 
@@ -267,10 +270,46 @@ def downmix(pcm):
     return np.clip(np.round(x), -32768, 32767).astype(np.int16)
 
 
+_FSB = {}  # worker: open banks by path
+
+
+def encode_sample(job):
+    """one sample -> (ADPCM blobs per channel, SNR of channel 0 or None); runs in a worker process"""
+    path, index, tier, loop, rate = job
+    b = _FSB.get(path) or _FSB.setdefault(path, fsb4.FSB4(path))
+    s = b.samples[index]
+    pcm = b.decode(s)
+    if tier == "res":
+        pcm = adpcm.resample(pcm, s.freq, min(rate, s.freq))
+        chans = [adpcm.encode(pcm[:, c], 0 if loop else None) for c in range(s.channels)]
+        return chans, adpcm.snr(pcm[:, 0], adpcm.decode(chans[0]))
+    pcm = adpcm.resample(downmix(pcm) if s.channels > 2 else pcm, s.freq, min(STREAM_RATE, s.freq))
+    return [adpcm.encode(pcm[:, c], None) for c in range(pcm.shape[1])], None
+
+
+POOL = None  # main(): worker pool, None = encode in this process (Pyodide has no processes)
+
+
+def start_pool():
+    global POOL
+    n = int(os.environ.get("DSR_AUDIO_JOBS") or min(os.cpu_count() or 1, 8))
+    if n > 1:
+        try:
+            POOL = multiprocessing.get_context("fork").Pool(n)
+        except Exception:  # no processes here (Pyodide): encode in this one
+            POOL = None
+    print(f"encoding in {n if POOL else 1} process(es) (DSR_AUDIO_JOBS)", flush=True)
+
+
 def write_pack(out, work, name, g, rate, cue=None, emit=None):
     t0 = time.time()
     samples, vag, strm, sidx = [], bytearray(), bytearray(), {}
     snr = []
+    jobs = [(b.path, s.index, g.tier[(b.name, s.index)], (b.name, s.index) in g.loops, rate)
+            for b, _ in g.banks for s in b.samples if g.tier[(b.name, s.index)] != "drop"]
+    print(f"  {name:8} encoding {len(jobs)} samples ...", flush=True)
+    results = POOL.imap(encode_sample, jobs) if POOL else map(encode_sample, jobs)
+    done, step = 0, max(1, len(jobs) // 4)
     for b, _ in g.banks:
         for s in b.samples:
             k = (b.name, s.index)
@@ -280,21 +319,19 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
             if t == "drop":
                 samples.append(struct.pack("<IIHBBI", 0, 0, min(rate, s.freq), s.channels, 4 | int(loop), 0))
                 continue
-            pcm = b.decode(s)
+            chans, q = next(results)
+            done += 1
+            if done % step == 0 and done < len(jobs) and time.time() - t0 > 5:
+                print(f"  {name:8} {done}/{len(jobs)} samples, {time.time() - t0:.0f} s", flush=True)
             if t == "res":
-                r = min(rate, s.freq)
-                pcm = adpcm.resample(pcm, s.freq, r)
                 off = len(vag)
-                for c in range(s.channels):
-                    a = adpcm.encode(pcm[:, c], 0 if loop else None)
-                    if c == 0 and len(snr) < 200:
-                        snr.append(adpcm.snr(pcm[:, 0], adpcm.decode(a)))
+                if len(snr) < 200:
+                    snr.append(q)
+                for a in chans:
                     vag += a + b"\0" * (-len(a) % ALIGN)
-                samples.append(struct.pack("<IIHBBI", off, len(vag) - off, r, s.channels, int(loop), 0))
+                samples.append(struct.pack("<IIHBBI", off, len(vag) - off, min(rate, s.freq), s.channels,
+                                           int(loop), 0))
             else:
-                r = min(STREAM_RATE, s.freq)
-                pcm = adpcm.resample(downmix(pcm) if s.channels > 2 else pcm, s.freq, r)
-                chans = [adpcm.encode(pcm[:, c], None) for c in range(pcm.shape[1])]
                 n = max(len(a) for a in chans)
                 n += -n % STREAM_CHUNK
                 chans = [a + b"\0" * (n - len(a)) for a in chans]
@@ -302,8 +339,8 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
                 for o in range(0, n, STREAM_CHUNK):
                     for a in chans:
                         strm += a[o:o + STREAM_CHUNK]
-                samples.append(struct.pack("<IIHBBI", off, len(strm) - off, r, len(chans), 2 | int(loop),
-                                           STREAM_CHUNK))
+                samples.append(struct.pack("<IIHBBI", off, len(strm) - off, min(STREAM_RATE, s.freq), len(chans),
+                                           2 | int(loop), STREAM_CHUNK))
     cat = {"music": 1, "ambience": 2, "voice": 3}
     evs = []
     for (typ, num), e, loop, refs in g.events:
@@ -387,6 +424,8 @@ def main():
     print(f"rate {rate} Hz; streamed: " + ", ".join(f"{n} {g.stream_bytes() / 1048576:.1f} MB" for n, g in groups.items()))
     if size_only:
         return
+    t0 = time.time()
+    start_pool()
     write_pack(out, work, "main", groups["main"], rate, cue=cue_blob(cues["c0000"], material))
     for aa in areas:
         blob, n = emitters(game, aa)
@@ -396,6 +435,10 @@ def main():
     for c in models:  # characters with TAE cues but no bank of their own (their cues name main-bank events)
         if c not in chr_groups and cues.get(c):
             write_pack(out, work, c, Group(c, [], wanted), rate, cue=cue_blob(cues[c], -1))
+    if POOL:
+        POOL.close()
+        POOL.join()
+    print(f"sound: {len(groups) + len(chr_groups)} packs in {time.time() - t0:.0f} s", flush=True)
 
 
 if __name__ == "__main__":
