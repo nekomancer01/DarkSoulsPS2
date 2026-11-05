@@ -39,6 +39,9 @@
 /* The backdrop's cells (MS_RES_FAR: far-only silhouettes) rank as if no further than MS_FAR_D: nearest first left the
  * far north's backdrop for last, bare for 30 s after a warp (ISO round 8, 2026-11-05); ASSUMED */
 #define MS_FAR_D 64.0f
+/* While a settle runs (mapstream_settle) the items it waits for (mapstream_busy's radii) rank x MS_SETTLE_K: with cells
+ * in view and the backdrop ranked early the far-north warp settle went from 0.9 to 6.7 s (ISO rounds 8-9, 2026-11-05) */
+#define MS_SETTLE_K 1e-4f
 #define MS_VIEW_FRAMES 8u
 #define MS_SCAN_FRAMES 16u
 /* A texture's mip 0 (asked for at mip 0 in the last frame) ranks like a cell MS_TEX_D m away: the texture is in view
@@ -89,6 +92,8 @@ static MapResItem *rit;
 static unsigned nres;
 static unsigned short *rgrp;
 static unsigned reading_n = 1, reading_bytes;  /* the read in flight: items reading .. + reading_n, one block */
+static float settle_r, settle_rf;  /* the radii of the last mapstream_busy */
+static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus);
 static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1, settling;
 static unsigned scan_frame;  /* frame of the last full scan */
 static float scan_pos[3];
@@ -424,6 +429,8 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
             d2 = MS_FAR_D * MS_FAR_D;
         *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
                (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
+        if (settling && settle_r > 0 && settle_item(k, id - ncell, pos, settle_r, settle_rf))
+            *key *= MS_SETTLE_K;  /* what the settle waits for before anything else in view or the backdrop */
         if (k == focus)  /* the player's block: its whole resident level, as the old full pool held it, but nearest
                           * first and with no swap (beyond MS_RES_R: Firelink's horizon tree line and the far north
                           * went missing behind the Burg's cells, ISO rounds 3-6, 2026-11-05) */
@@ -873,6 +880,9 @@ static int settle_item(int k, unsigned j, const float *pos, float r, float r_foc
 int mapstream_busy(const float pos[3], float r, float r_focus)
 {
     int was = sel, busy = 0;
+    if (r != settle_r || r_focus != settle_rf)
+        scan_frame = 0;  /* requeue: the settle's items first */
+    settle_r = r, settle_rf = r_focus;
     if (reading >= 0) {  /* only a read the settle waits for: further ones stream on behind the game (a settle that
                           * waited for every read in flight went on over the whole 260 m queue: 10-14 s, ISO) */
         bind(reading_inst);
