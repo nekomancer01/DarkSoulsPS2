@@ -5,7 +5,11 @@
 #     PY = /path/to/venv/bin/python
 # or come from the environment / the make command line (make DSR_GAME=...). GAME=... is accepted as an alias.
 DSR_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+# DSR_LOCAL_CONFIG=0 skips it: tools/build-iso.sh's container mounts this checkout, and the host paths in it (PY, a venv
+# under the host's home) don't exist in there
+ifneq ($(DSR_LOCAL_CONFIG),0)
 -include $(DSR_ROOT)/config.local.mk
+endif
 ifdef GAME
 DSR_GAME := $(GAME)
 endif

@@ -130,7 +130,9 @@ else
         "$ENGINE" build -t "$IMG" -f "$DF" "$SRC/tools/iso-builder"
     fi
     say "building the port (first run: several minutes and several GB of RAM)"
+    # the image's own python3, not the host's: config.local.mk and a repo .venv point at host paths (config.mk)
     RUN=(run --rm --init --security-opt label=disable -e HOME=/tmp -e "DSR_ALLOW_UNSUPPORTED=${DSR_ALLOW_UNSUPPORTED:-}"
+         -e DSR_LOCAL_CONFIG=0 -e PY=python3
          -e "DSR_AUDIO_JOBS=${DSR_AUDIO_JOBS:-$JOBS}"
          -v "$SRC:/src" -v "$BUILD:/build" -v "$GAME:/game:ro" -w /src)
     # rootful Docker would leave root-owned files in WORK; rootless Podman already maps root to this user
