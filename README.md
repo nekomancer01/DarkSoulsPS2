@@ -129,6 +129,10 @@ Or build a disc image and open it in PCSX2 like any game (HostFs isn't needed fo
 make -C ps2/proto iso      # writes build/proto.iso
 ```
 
+`./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
+and writes `build/proto.iso` (`--out FILE` also copies it elsewhere, `--help` lists the options). Without a ps2dev
+toolchain on the host it builds in a distrobox that has one, or in the Docker / Podman container (`tools/build-iso.sh`).
+
 ### Controls (DualShock 2)
 
 | Button | Action |
