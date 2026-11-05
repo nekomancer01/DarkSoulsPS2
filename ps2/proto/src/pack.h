@@ -36,6 +36,8 @@ unsigned pack_entry_size(const Pack *p, const char *name);
  * time: returns 0 while another is pending. pack_async_done: 1 once it finished (*result = bytes read or < 0), then
  * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes);
+/* pack_read_async for reads that can wait a frame (mapstream, world blocks): also 0 while a sound stream starves */
+int pack_read_bg(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_async_done(int *result);
 /* Background load of one entry, open to decode (the decode a few blocks per step, PACK_JOB_DECODE_MS), without a blocking fio call (from cdrom0: an open is a directory search
  * of ~0.1-0.3 s and a 300 KB read up to ~1 s in PCSX2: synchronous, each was a frame stall). Start it, then call
@@ -82,6 +84,9 @@ extern int (*pack_disc_lock)(int wait);
 extern void (*pack_disc_unlock)(void);
 /* the same lock for the background jobs (pack_job_step): never waits for the IOP, 0 until a try sent earlier got it */
 extern int (*pack_disc_try_async)(void);
+/* 1 while a disc sound stream runs short of data (dsrsnd status.starving): background reads (pack_read_bg, the jobs)
+ * are held back so the IOP's read-ahead top-up gets the drive between them */
+extern int (*pack_disc_yield)(void);
 
 /* Totals since boot: compressed bytes read, raw bytes produced, EE ticks (294.912 MHz) spent in pack_load and the
  * part of those spent waiting for the IOP, heap bytes handed out by pack_load */

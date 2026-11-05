@@ -41,6 +41,7 @@ typedef struct {
     unsigned spu_used, spu_free;        /* SPU2 sample heap bytes */
     unsigned played, missing, dropped;  /* events started; not found; found but without a sample (dropped tier) */
     unsigned errors;                    /* IOP read / open errors */
+    unsigned late, underruns;           /* disc stream refills late / streams muted for want of data (dsrsnd) */
     int music, ambience;                /* event id on the music / ambience slot, 0 none */
 } SndStats;
 extern SndStats snd_stats;

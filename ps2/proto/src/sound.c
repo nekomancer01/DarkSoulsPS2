@@ -121,6 +121,13 @@ static union { SndLoad ld; SndStreamOpen so; } obuf __attribute__((aligned(64)))
 static SndCmd cmds[SND_CMD_MAX];
 static int ncmds, frame_busy, ops_busy;
 static SndStatus st;  /* last status read back */
+static unsigned st_ticks;  /* EE count register when st was read */
+static inline unsigned ee_ticks(void)
+{
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
 static int load_sent;  /* id of the load the IOP is working on, 0 none */
 static int next_load_id = 1;
 static struct { int entity, on; } ents[MAX_ENTS];
@@ -152,7 +159,7 @@ static void frame_wait(void)
             ;
         frame_busy = 0;
         memcpy(&st, (void *)((unsigned)&fstat | 0x20000000), sizeof st);  /* uncached: the IOP wrote it */
-        st_seq = inflight_seq;
+        st_seq = inflight_seq, st_ticks = ee_ticks();
     }
 }
 
@@ -236,6 +243,12 @@ static int disc_try_async(void)
     disc_req = 1, disc_req_frame = frame_no;
     return 0;
 }
+
+/* a disc stream runs short (status of the last finished frame RPC, a frame or two old): the EE's background reads
+ * wait so the IOP's read-ahead top-up gets the drive. Only a fresh status counts: a warp settle or a loading screen
+ * spins without snd_update, and a stale starving bit there held the block reads back for good (hang, world_cross) */
+#define DISC_YIELD_TICKS (294912u * 100)  /* 100 ms of EE ticks: a few frames */
+static int disc_yield(void) { return st.starving && ee_ticks() - st_ticks < DISC_YIELD_TICKS; }
 
 static void disc_unlock(void)
 {
@@ -1119,8 +1132,14 @@ void snd_update(float dt)
     }
     loads_pump();
     disc_collect(0);
-    if (disc_req == 2 && frame_no > disc_req_frame + 2)  /* a try's lock nobody claimed: back to dsrsnd */
+    /* a try's lock nobody claimed: back to dsrsnd. Its job asks again before snd_update (world_update, enemy_update
+     * run first), so a lock collected in an earlier frame and still here was not wanted this frame */
+    if (disc_req == 2 && frame_no > disc_req_frame)
         disc_unlock();
+    if (st.late != snd_stats.late || st.underruns != snd_stats.underruns) {
+        printf("snd: stream refills late %u, underruns %u\n", st.late, st.underruns);
+        snd_stats.late = st.late, snd_stats.underruns = st.underruns;
+    }
     chr_pump();
 
     /* voices that ended: ENDX from the last finished frame RPC, or past their length */
@@ -1196,6 +1215,7 @@ int snd_init(void)
         return 0;
     on = 1;
     pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock, pack_disc_try_async = disc_try_async;
+    pack_disc_yield = disc_yield;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
     /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */

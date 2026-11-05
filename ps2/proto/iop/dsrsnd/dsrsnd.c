@@ -13,10 +13,20 @@ IRX_ID("dsrsnd", 1, 0);
 
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
 #define POLL_US 4000  /* stream thread period */
+#define STREAM_PRIO 30       /* the stream thread: above the RPC threads (40-42), below the CD driver */
+#define STREAM_PRIO_DISC 45  /* the same while it holds the disc lock: below the RPC threads */
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
  * pulls the drive away from the game's own pack reads and back (two seeks); with 16 KB refills the looping area
  * ambience alone cut a cdrom0: boot load from 7 s to 37 s in PCSX2 (2026-11-03). */
 #define STREAM_RA (128 * 1024)
+/* Refills come from the read-ahead without the disc lock; the lock is only taken to top the read-ahead up, from the
+ * moment it is down to half (~2.6 s of 22 kHz stereo left). Before (2026-11-05, ISO world_route) every refill waited
+ * for the lock while the EE streamed the map: 298 of 358 s locked out, 137 underruns. */
+#define STREAM_RA_TOP (STREAM_RA / 2)
+#define STREAM_RA_ALSO (STREAM_RA * 3 / 4)  /* the others top up with it from here */
+/* below this the stream is starving (~1.3 s left, or a half it cannot fill): status.starving tells the EE to hold
+ * its next background read back so the top-up gets the drive (src/pack.c pack_disc_yield) */
+#define STREAM_RA_LOW (STREAM_RA / 4)
 #define ADSR1_FLAT SD_SET_ADSR1(SD_ADSR_AR_LINEARi, 0, 0xf, 0xf)  /* instant attack, no decay, sustain level max */
 #define ADSR2_FLAT(rr) SD_SET_ADSR2(SD_ADSR_SR_LINEARi, 0x7f, SD_ADSR_RR_LINEARd, (rr))  /* sustain held */
 
@@ -41,7 +51,10 @@ typedef struct {
     unsigned int offset, size, pos, spu_buf;
     unsigned char *buf;  /* chunk * channels */
     unsigned char *ra;   /* STREAM_RA bytes read ahead (NULL: no IOP RAM for it, read per refill) */
-    unsigned int ra_pos, ra_len;
+    unsigned int ra_pos, ra_len;  /* ring: next byte to play from it, bytes held (in play order, loops unrolled) */
+    unsigned int rd_pos;          /* file position (0..size) of the next byte read into the read-ahead */
+    unsigned int half_ms, last_fill;  /* one ring half's play time; when the last half was filled (ms) */
+    int due, starved;    /* due: the voice left a half that is not refilled yet; starved: keyed off by an underrun */
     SndStreamOpen req;   /* SNDS_OPENING: the open the stream thread does once it has the disc */
 } Stream;
 static Stream streams[SND_STREAMS];
@@ -96,37 +109,82 @@ static void stream_close(Stream *s, int slot)
     s->state = SNDS_IDLE;
 }
 
-/* n bytes of the stream file at the current position, through the read-ahead buffer (n <= what is left of the
- * file: the caller wraps loops) */
+/* ms since boot (bus clock 36.864 MHz; no 64-bit divide in an IRX) */
+static unsigned int now_ms(void)
+{
+    iop_sys_clock_t c;
+    GetSystemTime(&c);
+    return c.hi * 116508u + c.lo / 36864u;
+}
+
+/* bytes the read-ahead still has to read from the file (0: all of a non-looping stream is in) */
+static inline int stream_ra_more(const Stream *s) { return s->loop || s->rd_pos < s->size; }
+/* a playing stream whose read-ahead could take more of the file */
+static inline int stream_ra_want(const Stream *s)
+{
+    return s->ra && !s->silent && (s->state == SNDS_PLAYING || s->state == SNDS_ENDING) && stream_ra_more(s);
+}
+
+/* Top the read-ahead up to full from the file (the caller holds the disc lock). Loops are unrolled into it: at the end
+ * of a looping stream the read goes on from its start. Reads end on a sector boundary where they can. */
+static int stream_ra_fill(Stream *s)
+{
+    while (s->ra_len < STREAM_RA && stream_ra_more(s)) {
+        if (s->rd_pos >= s->size) {
+            s->rd_pos = 0;
+            lseek(s->fd, s->offset, SEEK_SET);
+        }
+        unsigned int w = (s->ra_pos + s->ra_len) % STREAM_RA, n = STREAM_RA - s->ra_len;
+        if (n > STREAM_RA - w)
+            n = STREAM_RA - w;
+        if (n > s->size - s->rd_pos)
+            n = s->size - s->rd_pos;
+        else if (n > 2048)
+            n -= (s->offset + s->rd_pos + n) & 2047;
+        int r = read(s->fd, s->ra + w, n);
+        if (r <= 0)
+            return -1;
+        s->ra_len += r, s->rd_pos += r;
+    }
+    return 0;
+}
+
+/* n bytes of the stream at the current position: from the read-ahead (the caller checked it holds them; no disc), or
+ * without one from the file (the caller holds the disc lock, n <= what is left of the file: it wraps loops) */
 static int stream_read(Stream *s, unsigned char *dst, unsigned int n)
 {
     if (!s->ra)
         return read(s->fd, dst, n);
-    if (s->ra_pos >= s->ra_len) {
-        unsigned int left = s->size - s->pos, want = left < STREAM_RA ? left : STREAM_RA;
-        int r = read(s->fd, s->ra, want);
-        if (r <= 0)
-            return r;
-        s->ra_pos = 0, s->ra_len = r;
-    }
-    if (n > s->ra_len - s->ra_pos)
-        n = s->ra_len - s->ra_pos;
-    memcpy(dst, s->ra + s->ra_pos, n);
-    s->ra_pos += n;
+    if (n > s->ra_len)
+        n = s->ra_len;
+    unsigned int a = STREAM_RA - s->ra_pos < n ? STREAM_RA - s->ra_pos : n;
+    memcpy(dst, s->ra + s->ra_pos, a);
+    if (n > a)
+        memcpy(dst + a, s->ra, n - a);
+    s->ra_pos = (s->ra_pos + n) % STREAM_RA, s->ra_len -= n;
     return n;
 }
 
-/* Read the next chunk of every channel (looping or padding with silence at the end) and send it to ring half h */
+/* Read the next chunk of every channel (looping or padding with silence at the end) and send it to ring half h.
+ * 1 (nothing sent): the read-ahead does not hold the chunk yet, it waits for a top-up. */
 static int stream_fill(Stream *s, int slot, int h)
 {
     int want = s->chunk * s->channels, got = 0;
+    if (!s->silent && s->ra) {
+        unsigned int need = want;
+        if (!s->loop && need > s->size - s->pos)
+            need = s->size - s->pos;
+        if (s->ra_len < need)
+            return 1;
+    }
     if (!s->silent) {
         while (got < want) {
             if (s->pos >= s->size) {
                 if (!s->loop)
                     break;
-                s->pos = 0, s->ra_pos = s->ra_len = 0;
-                lseek(s->fd, s->offset, SEEK_SET);
+                s->pos = 0;
+                if (!s->ra)
+                    lseek(s->fd, s->offset, SEEK_SET);
             }
             unsigned int n = want - got;
             if (n > s->size - s->pos)
@@ -202,49 +260,153 @@ static void load_step(void)
 
 static void stream_start(Stream *s);
 
+/* the disc lock for this pass of the stream thread, taken on first use: 1 held, -1 the EE has it, 0 not asked yet */
+static int disc_take(int *d)
+{
+    if (!*d) {
+        *d = PollSema(disc_sema) < 0 ? -1 : 1;
+        /* below the RPC threads while this thread reads: a cdrom0: read keeps its thread busy until the data is in,
+         * and at priority 30 that held the EE's frame and disc-lock RPCs back for the whole read (frames of 200-650 ms
+         * whenever a top-up ran, ISO world_route 2026-11-05) */
+        if (*d > 0)
+            ChangeThreadPriority(TH_SELF, STREAM_PRIO_DISC);
+    }
+    return *d > 0;
+}
+
+/* Key a starved stream's voices on again: both ring halves from where its data stopped (nothing skipped, nothing
+ * replayed). 1 once it plays, 0 while the read-ahead is still short. */
+static int stream_resume(Stream *s, int slot, unsigned int now)
+{
+    if (s->ra && !s->silent) {  /* both halves in the read-ahead, or the first would be taken and the second wait */
+        unsigned int need = 2 * s->chunk * s->channels;
+        if (!s->loop && need > s->size - s->pos)
+            need = s->size - s->pos;
+        if (s->ra_len < need)
+            return 0;
+    }
+    int r = stream_fill(s, slot, 0);
+    if (r == 0)
+        r = stream_fill(s, slot, 1);
+    if (r)
+        return r < 0 ? r : 0;
+    int v = SND_STREAM_VOICE(slot);
+    sd_lock();
+    for (int c = 0; c < 2; c++)
+        sceSdSetAddr(vreg(v + c) | SD_VADDR_SSA, s->spu_buf + (c < s->channels ? c : 0) * 2 * s->chunk);
+    sceSdSetSwitch(1 | SD_SWITCH_KON, (s->channels == 2 ? 3 : 1) << (v % 24));
+    sd_unlock();
+    printf("dsrsnd: stream %d resumed after %u ms\n", slot, now - s->last_fill);
+    s->starved = s->due = 0, s->next_fill = 0, s->last_fill = now;
+    if (s->silent)
+        s->state = SNDS_ENDING;
+    return 1;
+}
+
 static void stream_thread(void *arg)
 {
     (void)arg;
     for (;;) {
         DelayThread(POLL_US);
         WaitSema(stream_sema);
-        if (PollSema(disc_sema) < 0) {  /* the EE is reading the disc: refills wait (the ring plays on) */
-            SignalSema(stream_sema);
-            continue;
-        }
+        unsigned int now = now_ms(), starving = 0;
+        int disc = 0;
         for (int i = 0; i < SND_STREAMS; i++) {
             Stream *s = &streams[i];
-            if (s->close_fd >= 0)
+            if (s->close_fd >= 0 && disc_take(&disc))
                 close(s->close_fd), s->close_fd = -1;
-            if (s->state == SNDS_OPENING)
+            if (s->state == SNDS_OPENING && disc_take(&disc))
                 stream_start(s);
             if (s->state != SNDS_PLAYING && s->state != SNDS_ENDING)
                 continue;
-            sd_lock();
-            unsigned int nax = sceSdGetAddr(vreg(SND_STREAM_VOICE(i)) | SD_VADDR_NAX);
-            sd_unlock();
-            int cur = nax >= s->spu_buf + s->chunk;  /* half the left voice is playing */
-            if (cur == s->next_fill)
-                continue;
-            if (s->silent >= 2) {  /* the voice has reached the silence after the data */
-                stream_close(s, i);
-                close(s->close_fd), s->close_fd = -1;
-                continue;
+            int r = 0;
+            if (s->starved) {
+                if (!s->ra && !disc_take(&disc))
+                    r = 0;
+                else
+                    r = stream_resume(s, i, now);
+            } else {
+                sd_lock();
+                unsigned int nax = sceSdGetAddr(vreg(SND_STREAM_VOICE(i)) | SD_VADDR_NAX);
+                sd_unlock();
+                int cur = nax >= s->spu_buf + s->chunk;  /* half the left voice is playing */
+                /* last_fill may be later than this pass's start (a stream started in it): no gap then */
+                unsigned int gap = (int)(now - s->last_fill) > 0 ? now - s->last_fill : 0;
+                /* Underrun: the voice went back into a half still waiting for its refill (it would replay stale audio),
+                 * or more than two halves passed since the last refill (a wrap this thread did not see). Mute it and
+                 * key it on again once the read-ahead holds two halves. */
+                if (!s->silent && ((s->due && cur == s->next_fill) || gap > 2 * s->half_ms)) {
+                    int v = SND_STREAM_VOICE(i);
+                    sd_lock();
+                    sceSdSetSwitch(1 | SD_SWITCH_KOFF, 3 << (v % 24));
+                    sd_unlock();
+                    s->starved = 1, s->due = 0;
+                    status.underruns++;
+                    printf("dsrsnd: stream %d refill gap %u ms (half %u ms) UNDERRUN, muted\n", i, gap, s->half_ms);
+                    starving |= 1u << i;
+                    continue;
+                }
+                if (cur == s->next_fill)
+                    r = 0;
+                else if (s->silent >= 2) {  /* the voice has reached the silence after the data */
+                    stream_close(s, i);
+                    if (disc_take(&disc))
+                        close(s->close_fd), s->close_fd = -1;
+                    continue;
+                } else if (!s->ra && !disc_take(&disc))
+                    s->due = 1;
+                else if ((r = stream_fill(s, i, s->next_fill)) == 1)
+                    s->due = 1, r = 0;  /* the read-ahead runs short: the top-up below, then the next pass */
+                else if (r == 0) {
+                    if (gap > s->half_ms * 3 / 2) {
+                        status.late++;
+                        printf("dsrsnd: stream %d refill gap %u ms (half %u ms)\n", i, gap, s->half_ms);
+                    }
+                    s->due = 0, s->last_fill = now;
+                    if (s->silent)
+                        s->state = SNDS_ENDING;
+                    s->next_fill ^= 1;
+                }
             }
-            if (stream_fill(s, i, s->next_fill) < 0) {
+            if (r < 0) {
                 stream_close(s, i);
-                close(s->close_fd), s->close_fd = -1;
+                if (disc_take(&disc))
+                    close(s->close_fd), s->close_fd = -1;
                 s->state = SNDS_ERROR;
                 continue;
             }
-            if (s->silent)
-                s->state = SNDS_ENDING;
-            s->next_fill ^= 1;
+        }
+        /* top the read-ahead up once one is down to half: the lock only now, and only if the EE is not reading. With
+         * the lock, every stream below STREAM_RA_ALSO tops up too: one trip of the drive for all of them, each one a
+         * seek away from the EE's reads and back */
+        int top = 0;
+        for (int i = 0; i < SND_STREAMS; i++) {
+            Stream *s = &streams[i];
+            top |= stream_ra_want(s) && s->ra_len <= STREAM_RA_TOP;
+        }
+        for (int i = 0; i < SND_STREAMS && top && disc_take(&disc); i++) {
+            Stream *s = &streams[i];
+            if (stream_ra_want(s) && s->ra_len <= STREAM_RA_ALSO && stream_ra_fill(s) < 0) {
+                status.errors++;
+                stream_close(s, i);
+                close(s->close_fd), s->close_fd = -1;
+                s->state = SNDS_ERROR;
+            }
+        }
+        for (int i = 0; i < SND_STREAMS; i++) {
+            Stream *s = &streams[i];
+            if (s->state == SNDS_PLAYING && (s->starved || s->due || (stream_ra_want(s) && s->ra_len < STREAM_RA_LOW)))
+                starving |= 1u << i;
         }
         for (int i = 0; i < SND_STREAMS; i++)
             status.stream_state[i] = streams[i].state;
-        load_step();  /* after the refills: a stream never waits for a bank */
-        SignalSema(disc_sema);
+        status.starving = starving;
+        if ((load_new || load_fd >= 0) && disc_take(&disc))
+            load_step();  /* after the refills: a stream never waits for a bank */
+        if (disc > 0) {
+            SignalSema(disc_sema);
+            ChangeThreadPriority(TH_SELF, STREAM_PRIO);
+        }
         SignalSema(stream_sema);
     }
 }
@@ -280,11 +442,17 @@ static void stream_start(Stream *s)
         return;
     }
     s->offset = o->offset, s->size = o->size, s->loop = o->loop, s->chunk = o->chunk, s->channels = o->channels;
-    s->spu_buf = o->spu_buf, s->pos = 0, s->silent = 0, s->next_fill = 0, s->ra_pos = s->ra_len = 0;
+    s->spu_buf = o->spu_buf, s->pos = 0, s->silent = 0, s->next_fill = 0, s->ra_pos = s->ra_len = s->rd_pos = 0;
+    s->loop = s->loop && s->size;  /* an empty loop would never end a read */
+    s->due = s->starved = 0;
+    s->half_ms = (unsigned int)s->chunk / 16 * 28 * 4096 / (48u * (o->pitch ? o->pitch : 4096));
     s->buf = stream_mem + o->slot * 2 * SND_STREAM_CHUNK_MAX;
     status.stream_bytes[o->slot] = 0;
     lseek(s->fd, s->offset, SEEK_SET);
-    if (stream_fill(s, o->slot, 0) < 0 || stream_fill(s, o->slot, 1) < 0) {
+    int bad = s->ra && stream_ra_fill(s) < 0;
+    if (bad)
+        status.errors++;
+    if (bad || stream_fill(s, o->slot, 0) || stream_fill(s, o->slot, 1)) {  /* the read-ahead holds both halves */
         stream_close(s, o->slot);
         s->state = SNDS_ERROR;
         return;
@@ -306,6 +474,7 @@ static void stream_start(Stream *s)
     sceSdSetSwitch(1 | SD_SWITCH_KON, (o->channels == 2 ? 3 : 1) << (v % 24));
     sd_unlock();
     s->state = s->silent ? SNDS_ENDING : SNDS_PLAYING;
+    s->last_fill = now_ms();
     status.stream_state[o->slot] = s->state;
 }
 
@@ -469,7 +638,7 @@ int _start(int argc, char *argv[])
         StartThread(id, (void *)k);
     }
     /* the stream thread runs above the RPC thread (and below the CD driver) so a refill is not held up by uploads */
-    iop_thread_t st = {.attr = TH_C, .thread = stream_thread, .priority = 30, .stacksize = 0x800, .option = 0};
+    iop_thread_t st = {.attr = TH_C, .thread = stream_thread, .priority = STREAM_PRIO, .stacksize = 0x800, .option = 0};
     id = CreateThread(&st);
     if (id < 0)
         return MODULE_NO_RESIDENT_END;

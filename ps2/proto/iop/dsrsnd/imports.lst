@@ -32,6 +32,8 @@ I_CreateThread
 I_StartThread
 I_GetThreadId
 I_DelayThread
+I_GetSystemTime
+I_ChangeThreadPriority
 thbase_IMPORTS_end
 
 thsemap_IMPORTS_start

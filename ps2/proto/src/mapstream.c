@@ -114,6 +114,13 @@ static int nq;
 #define MS_BLOCK_FRAMES 90u
 static MsQ blk[MS_BLOCKED];
 static int nblk;
+/* Items whose read came back short (MS_FAILED) are queued again once fail_wait frames passed since the last failure,
+ * the wait doubling while reads keep failing (3 s up to ~48 s, ASSUMED: a disc read error is rare and may not repeat)
+ * and reset by a good read; before, one bad read left a hole in the cell until its block closed */
+#define MS_FAIL_FRAMES 90u
+#define MS_FAIL_FRAMES_MAX (16 * MS_FAIL_FRAMES)
+static unsigned fail_frame, fail_wait;
+static int failed;
 
 static void q_add(MsQ *l, int *n, int cap, int k, unsigned id, float key, int desc)
 {
@@ -739,6 +746,7 @@ static void collect(int r)
     mapstream_stats.pending = 0;
     if (r == (int)n) {
         InvalidDCache(buf[id], (char *)buf[id] + n - 1);  /* drop stale lines over the DMA'd data */
+        fail_wait = 0;
         mapstream_stats.ms_last = (ticks() - t_read) / 294912;
         for (unsigned m = id; m < e; m++) {
             state[m] = MS_READY;
@@ -758,6 +766,8 @@ static void collect(int r)
         for (unsigned m = id; m < e; m++)
             state[m] = MS_FAILED;
         mapstream_stats.fails++;
+        failed = 1, fail_frame = frame;
+        fail_wait = !fail_wait ? MS_FAIL_FRAMES : fail_wait < MS_FAIL_FRAMES_MAX ? 2 * fail_wait : fail_wait;
     }
 }
 
@@ -790,9 +800,13 @@ void mapstream_update(const float pos[3])
         for (int i = 0; i < nblk; i++)
             if (frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
                 blk[i--] = blk[--nblk];
+        int retry = failed && frame - fail_frame >= fail_wait;
+        failed &= !retry;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++) {
+                if (state[id] == MS_FAILED && retry)
+                    state[id] = MS_NONE;
                 if (!it_bytes(id) || state[id] == MS_READING || state[id] == MS_FAILED)
                     continue;
                 int w = it_want(k, id, pos, &key);
@@ -882,9 +896,9 @@ void mapstream_update(const float pos[3])
     }
     room_fail = 0;
     bind(w.k);
-    if (!pack_read_async(&pk, it_off(w.id), p, wbytes)) {
+    if (!pack_read_bg(&pk, it_off(w.id), p, wbytes)) {
         arena_free(p, wbytes);
-        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* the slot is busy (world.c, enemy.c): again next frame */
+        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* the slot is busy (world.c, enemy.c) or a sound stream starves: again next frame */
         bind(was);
         return;
     }

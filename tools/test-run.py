@@ -247,8 +247,8 @@ def run(a):
             if mb["frame"] != last_frame:
                 w.writerow([f"{now - t0:.2f}"] + [mb[k] for k in pine.MAILBOX_FIELDS])
                 last_frame, last_change = mb["frame"], now
-            elif now - last_change > 15:
-                res["errors"].append(f"hang: frame {last_frame} for 15 s (script line {mb['line']}, PCSX2 {p.status()})")
+            elif now - last_change > (90 if last_frame < 300 else 30):
+                res["errors"].append(f"hang: frame {last_frame} for {now - last_change:.0f} s (script line {mb['line']}, PCSX2 {p.status()})")
                 break
             if mb["shot_seq"] != acked and mb["state"] == 3:
                 pine.ack_shot(p, addr, mb["shot_seq"] | pine.SHOT_BUSY)  # ELF keeps waiting (60 s) while we capture

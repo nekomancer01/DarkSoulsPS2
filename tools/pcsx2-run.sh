@@ -10,6 +10,8 @@
 #                   ~/.var/app/net.pcsx2.PCSX2/test/<slot>/PCSX2 (host home): the user's
 #                   PCSX2.ini + PINE + a GS-dump hotkey (F8), its own logs/emulog.txt, snaps/ and sstates/
 #     shot path '-' no screenshot (with KEEP=1 the caller drives the instance, e.g. tools/test-run.py)
+#     DISC=<image.iso>  put a disc image in the drive (-elf <elf> -- <iso>): the ELF still boots from host:, so a
+#                   test script loads, and a -DPACK_CDROM=1 build reads its packs from cdrom0:
 # Without a shot path (user launch): replaces any visible PCSX2 and opens the ELF on the desktop.
 ELF=$(realpath "$1"); T=${2:-8}; SHOT=$3
 H=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,7 +34,8 @@ if ! DISPLAY=$D xdpyinfo >/dev/null 2>&1; then
 fi
 mkdir -p /tmp/pcsx2-headless
 ID=/tmp/pcsx2-headless/id.$$
-EXTRA=; ENVS=
+EXTRA=; ENVS=; DISCARG=
+[ -n "$DISC" ] && DISCARG="-- '$(realpath "$DISC")'"
 [ -n "$ARGS" ] && EXTRA="-gameargs '$ARGS'"
 if [ -n "$PINE" ]; then
     # Own data dir per PINE slot: the shared ini stays untouched and parallel slots never share logs / states
@@ -47,7 +50,7 @@ fi
 distrobox-host-exec bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
     sink_name=dsr_mute sink_properties=device.description=DSR-test-mute >/dev/null
     DISPLAY=$D XAUTHORITY= WAYLAND_DISPLAY= setsid flatpak run --instance-id-fd=3 --env=PULSE_SINK=dsr_mute --socket=x11 \
-    --nosocket=wayland --env=QT_QPA_PLATFORM=xcb $ENVS '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot $EXTRA -elf '$ELF' \
+    --nosocket=wayland --env=QT_QPA_PLATFORM=xcb $ENVS '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot $EXTRA -elf '$ELF' $DISCARG \
     > '$H/tools/pcsx2-headless.log' 2>&1 < /dev/null 3> '$ID' &
     for _ in \$(seq 50); do [ -s '$ID' ] && break; sleep 0.1; done"
 INST=$(cat "$ID"); rm -f "$ID"; touch "/tmp/pcsx2-headless/$INST"

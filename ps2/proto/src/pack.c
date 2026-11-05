@@ -43,10 +43,19 @@ static int disc_get(int wait)
 }
 
 int (*pack_disc_try_async)(void);
+int (*pack_disc_yield)(void);
+
+/* a background read would starve a sound stream now: leave the drive to dsrsnd (from cdrom0: only) */
+static int disc_yield(void)
+{
+    return !disc_depth && pack_cdrom > 0 && pack_disc_yield && pack_disc_yield();
+}
 
 /* disc_get(0) for the background jobs: retried next frame anyway, so the try need not wait for the IOP's answer */
 static int disc_get_bg(void)
 {
+    if (disc_yield())
+        return 0;
     if (!disc_depth && pack_cdrom > 0 && pack_disc_try_async) {
         if (!pack_disc_try_async())
             return 0;
@@ -284,6 +293,11 @@ int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes)
     fioRead(p->fd, dst, bytes);
     async_busy = 1;
     return 1;
+}
+
+int pack_read_bg(Pack *p, unsigned offset, void *dst, unsigned bytes)
+{
+    return !async_busy && !disc_yield() && pack_read_async(p, offset, dst, bytes);
 }
 
 int pack_async_done(int *result)
