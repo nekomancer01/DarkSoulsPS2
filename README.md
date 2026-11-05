@@ -1,7 +1,5 @@
 <p align="center"><img src="docs/logo.png" alt="Dark Souls PS2" width="600"></p>
 
-# DarkSoulsPS2
-
 A homebrew port of **Dark Souls Remastered** to the PlayStation 2. It's a C engine for the PS2 (`ps2/proto`, built
 with ps2dev and gsKit, with hand-written VU1 microprograms), plus Python tools (`tools/`) that read **your own copy**
 of the PC game and convert its maps, characters, animations, collision, AI scripts and menus into PS2-sized files.
