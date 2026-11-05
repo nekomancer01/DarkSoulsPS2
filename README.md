@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" alt="Dark Souls PS2" width="600"></p>
+
 # DarkSoulsPS2
 
 A homebrew port of **Dark Souls Remastered** to the PlayStation 2. It's a C engine for the PS2 (`ps2/proto`, built
@@ -43,7 +45,8 @@ The port running in PCSX2:
 ## Legal note
 
 This repository contains **no game data**: no textures, models, maps, sounds, text, scripts, params or executable
-code from Dark Souls Remastered, and nothing derived from them, apart from the two screenshots above. It contains no
+code from Dark Souls Remastered, and nothing derived from them, apart from the two screenshots above and the logo
+at the top (the Dark Souls logo recoloured, with "PS2" added). It contains no
 decompiled code either. You need your own legally bought copy of Dark Souls Remastered for PC (Steam). The build
 reads that copy and writes every game-derived file into `build/`, which is git-ignored. **Never share or commit
 anything in `build/`.**
