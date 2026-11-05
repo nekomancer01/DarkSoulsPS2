@@ -237,6 +237,10 @@ static int disc_try_async(void)
     return 0;
 }
 
+/* a disc stream runs short (status of the last finished frame RPC, a frame or two old): the EE's background reads
+ * wait so the IOP's read-ahead top-up gets the drive */
+static int disc_yield(void) { return st.starving != 0; }
+
 static void disc_unlock(void)
 {
     disc_collect(1);
@@ -1119,8 +1123,14 @@ void snd_update(float dt)
     }
     loads_pump();
     disc_collect(0);
-    if (disc_req == 2 && frame_no > disc_req_frame + 2)  /* a try's lock nobody claimed: back to dsrsnd */
+    /* a try's lock nobody claimed: back to dsrsnd. Its job asks again before snd_update (world_update, enemy_update
+     * run first), so a lock collected in an earlier frame and still here was not wanted this frame */
+    if (disc_req == 2 && frame_no > disc_req_frame)
         disc_unlock();
+    if (st.late != snd_stats.late || st.underruns != snd_stats.underruns) {
+        printf("snd: stream refills late %u, underruns %u\n", st.late, st.underruns);
+        snd_stats.late = st.late, snd_stats.underruns = st.underruns;
+    }
     chr_pump();
 
     /* voices that ended: ENDX from the last finished frame RPC, or past their length */
@@ -1196,6 +1206,7 @@ int snd_init(void)
         return 0;
     on = 1;
     pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock, pack_disc_try_async = disc_try_async;
+    pack_disc_yield = disc_yield;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
     /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */

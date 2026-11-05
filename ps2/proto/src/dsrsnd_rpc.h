@@ -67,7 +67,12 @@ typedef struct {
     unsigned int stream_bytes[SND_STREAMS];  /* bytes of the stream read so far (all channels) */
     unsigned int errors, ok;     /* failed reads / opens since boot; 1 once SNDF_INIT ran */
     unsigned int load_done, load_failed;  /* id of the last finished / failed SNDF_LOAD */
-    unsigned int pad[2];
+    unsigned int late;           /* stream refills since boot that came over 1.5 ring halves after the last one */
+    unsigned int underruns;      /* streams muted since boot: the voice reached a half not refilled yet (it would have
+                                    replayed stale audio); keyed on again from the same file position once data is in */
+    unsigned int starving;       /* bit per stream slot: its read-ahead is low or a refill waits for the disc. The EE
+                                    holds its background disc reads back meanwhile (src/pack.c pack_disc_yield) */
+    unsigned int pad;
 } SndStatus;  /* 64 bytes */
 
 typedef struct {
