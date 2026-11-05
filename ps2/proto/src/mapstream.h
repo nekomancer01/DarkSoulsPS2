@@ -57,6 +57,9 @@ void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_se
 void mapstream_hold(int on);
 /* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */
 void mapstream_focus(int k);
+/* world.c settle: while on, near cells are not read (the settle waits for the resident level; ISO boot 2026-11-05:
+ * 5.5 MB of near cells read inside a 14 s boot settle) */
+void mapstream_settle(int on);
 /* settle (world.c, a warp): 1 while the sky or a resident cell within r m of pos of any instance (r_focus for the
  * mapstream_focus instance) is still to load or being read (0 once the arena had no room for the next one: nothing
  * more can come) */

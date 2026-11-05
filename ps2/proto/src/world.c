@@ -741,6 +741,7 @@ static void settle(const float *feet)
     vu1_wait();  /* the last frame's VIF chain no longer reads the pools */
     loading_begin();  /* DSR's loading screen while the frame waits (src/loading.c) */
     warping = 1;
+    mapstream_settle(1);
     int n = 0;
     unsigned stuck_t = 0;
     while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
@@ -761,6 +762,7 @@ static void settle(const float *feet)
         n++;
     }
     warping = 0;
+    mapstream_settle(0);
     in_cur_s = WORLD_SWAP_S;
     event_flush();  /* the new blocks' constructors finish behind the loading screen (A2 event-14) */
     loading_end();

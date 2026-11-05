@@ -78,7 +78,7 @@ static void **buf;
 static unsigned *used;
 static MapResItem *rit;
 static unsigned nres;
-static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1;
+static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1, settling;
 static unsigned scan_frame;  /* frame of the last full scan */
 static float scan_pos[3];
 /* A short ranked list of items: the next reads (lowest key first) or eviction candidates (desc: highest first) */
@@ -327,6 +327,13 @@ void mapstream_hold(int on)
     hold = on;
 }
 
+void mapstream_settle(int on)
+{
+    if (on != settling)
+        scan_frame = 0;  /* requeue */
+    settling = on;
+}
+
 void mapstream_focus(int k)
 {
     if (k != focus)
@@ -388,6 +395,8 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
     if (id < ncell) {
         float d2 = box_d2(&tab[id], pos);
         *key = d2;
+        if (settling)  /* a settle waits for the resident level only: near cells stream in behind the game */
+            return d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
     }
     unsigned j = id - ncell;
