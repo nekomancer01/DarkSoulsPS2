@@ -7,6 +7,7 @@
 #include <string.h>
 #include "physics.h"
 #include "collision.h"
+#include "vmath.h"
 
 int phys_queries, phys_contacts;
 
@@ -27,34 +28,6 @@ int phys_queries, phys_contacts;
 #define WALL_MOVE 0.015f       /* no ray under 0.3 m/s sideways (over WALL_EVERY frames at 60 fps) */
 #define ROLL_DAMP 4.0f         /* ASSUMED: per second while touching the floor */
 
-/* sqrt.s on the EE (libm's sqrtf goes through errno handling) */
-static inline float psqrt(float x)
-{
-#ifdef _EE
-    float r;
-    __asm__("sqrt.s %0, %1" : "=f"(r) : "f"(x));
-    return r;
-#else
-    return sqrtf(x);
-#endif
-}
-
-static float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-static void cross3(const float *a, const float *b, float *o)
-{
-    float x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2], z = a[0] * b[1] - a[1] * b[0];
-    o[0] = x, o[1] = y, o[2] = z;
-}
-
-/* Rotation rows from a unit quaternion (x y z w) */
-static void q_mat(const float *q, float m[9])
-{
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    m[0] = 1 - 2 * (y * y + z * z), m[1] = 2 * (x * y - z * w), m[2] = 2 * (x * z + y * w);
-    m[3] = 2 * (x * y + z * w), m[4] = 1 - 2 * (x * x + z * z), m[5] = 2 * (y * z - x * w);
-    m[6] = 2 * (x * z - y * w), m[7] = 2 * (y * z + x * w), m[8] = 1 - 2 * (x * x + y * y);
-}
-
 static void m_mul(const float m[9], const float *v, float *o)
 {
     float x = m[0] * v[0] + m[1] * v[1] + m[2] * v[2], y = m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
@@ -72,7 +45,7 @@ static void m_tmul(const float m[9], const float *v, float *o)  /* transpose(m) 
 void phys_point(const Body *b, const float l[3], float out[3])
 {
     float m[9];
-    q_mat(b->q, m);
+    m3_from_q(b->q, m);
     m_mul(m, l, out);
     out[0] += b->p[0], out[1] += b->p[1], out[2] += b->p[2];
 }
@@ -118,7 +91,7 @@ static int plane_contacts(Body *b, const float o[3], const float n[3], float dt)
 {
     float m[9], cw[3], t1[3], t2[3];
     struct { float r[3], target, jn, j1, j2, kn, k1, k2; } ct[8];
-    q_mat(b->q, m);
+    m3_from_q(b->q, m);
     m_mul(m, b->c, cw);
     /* tangents: any unit vector perpendicular to n, and n x t1 */
     if (n[1] > 0.9f || n[1] < -0.9f)
@@ -128,7 +101,7 @@ static int plane_contacts(Body *b, const float o[3], const float n[3], float dt)
     float k = dot3(t1, n);
     for (int c = 0; c < 3; c++)
         t1[c] -= n[c] * k;
-    k = 1 / psqrt(dot3(t1, t1));
+    k = 1 / sqrtf(dot3(t1, t1));
     t1[0] *= k, t1[1] *= k, t1[2] *= k;
     cross3(n, t1, t2);
     int nc = 0;
@@ -197,7 +170,7 @@ static void integrate(Body *b, float dt)
     float y = q[1] + h * (w1 * q[3] + w2 * q[0] - w0 * q[2]);
     float z = q[2] + h * (w2 * q[3] + w0 * q[1] - w1 * q[0]);
     float w = q[3] - h * (w0 * q[0] + w1 * q[1] + w2 * q[2]);
-    float l = 1 / psqrt(x * x + y * y + z * z + w * w);
+    float l = 1 / sqrtf(x * x + y * y + z * z + w * w);
     q[0] = x * l, q[1] = y * l, q[2] = z * l, q[3] = w * l;
 }
 
@@ -210,7 +183,7 @@ static void pair(Body *a, Body *b)
     float d[3] = {cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]}, rr = a->rs + b->rs, d2 = dot3(d, d);
     if (d2 >= rr * rr || d2 < 1e-8f)
         return;
-    float l = psqrt(d2), n[3] = {d[0] / l, d[1] / l, d[2] / l}, pen = rr - l;
+    float l = sqrtf(d2), n[3] = {d[0] / l, d[1] / l, d[2] / l}, pen = rr - l;
     float wa = a->asleep ? 0 : a->inv_mass, wb = b->asleep ? 0 : b->inv_mass, ws = wa + wb;
     if (ws <= 0)
         return;
@@ -294,7 +267,7 @@ int phys_step(Body *bodies, int n, float dt)
         float d[3] = {c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]}, l2 = dot3(d, d);
         ColHit h;
         if (d[0] * d[0] + d[2] * d[2] > WALL_MOVE * WALL_MOVE && phys_queries < QUERY_BUDGET) {
-            float l = psqrt(l2), e = b->rs / l, to[3] = {c1[0] + d[0] * e, c1[1] + d[1] * e, c1[2] + d[2] * e};
+            float l = sqrtf(l2), e = b->rs / l, to[3] = {c1[0] + d[0] * e, c1[1] + d[1] * e, c1[2] + d[2] * e};
             phys_queries++;
             /* floors are the plane contacts' (a ray hit on one would park the piece rs above it) */
             if (col_ray(c0, to, COL_SOLID, &h) && dot3(d, h.n) < 0 && h.n[1] < COL_WALKABLE_NY) {

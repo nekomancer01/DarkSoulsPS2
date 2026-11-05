@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "collision.h"
+#include "vmath.h"
 
 
 typedef struct {
@@ -140,26 +141,13 @@ static inline void tri_verts(const Tri *t, float *a, float *b, float *c)
     vert(t->v[2], c);
 }
 
-static inline float dot(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-static inline void sub(const float *a, const float *b, float *o) { o[0] = a[0] - b[0], o[1] = a[1] - b[1], o[2] = a[2] - b[2]; }
-static inline void cross(const float *a, const float *b, float *o)
-{
-    o[0] = a[1] * b[2] - a[2] * b[1];
-    o[1] = a[2] * b[0] - a[0] * b[2];
-    o[2] = a[0] * b[1] - a[1] * b[0];
-}
-static inline void lerp(const float *a, const float *b, float t, float *o)
-{
-    o[0] = a[0] + (b[0] - a[0]) * t, o[1] = a[1] + (b[1] - a[1]) * t, o[2] = a[2] + (b[2] - a[2]) * t;
-}
-
 static void tri_normal(const float *a, const float *b, const float *c, float *n)
 {
     float e1[3], e2[3];
-    sub(b, a, e1);
-    sub(c, a, e2);
-    cross(e1, e2, n);
-    float l = sqrtf(dot(n, n));
+    sub3(b, a, e1);
+    sub3(c, a, e2);
+    cross3(e1, e2, n);
+    float l = sqrtf(dot3(n, n));
     if (l > 0)
         n[0] /= l, n[1] /= l, n[2] /= l;
 }
@@ -219,39 +207,39 @@ static int floor1(float x, float z, float y_top, float y_bottom, unsigned mask, 
 static void closest_pt_tri(const float *p, const float *a, const float *b, const float *c, float *o)
 {
     float ab[3], ac[3], ap[3], bp[3], cp[3];
-    sub(b, a, ab);
-    sub(c, a, ac);
-    sub(p, a, ap);
-    float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    sub3(b, a, ab);
+    sub3(c, a, ac);
+    sub3(p, a, ap);
+    float d1 = dot3(ab, ap), d2 = dot3(ac, ap);
     if (d1 <= 0 && d2 <= 0) {
         memcpy(o, a, 12);
         return;
     }
-    sub(p, b, bp);
-    float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    sub3(p, b, bp);
+    float d3 = dot3(ab, bp), d4 = dot3(ac, bp);
     if (d3 >= 0 && d4 <= d3) {
         memcpy(o, b, 12);
         return;
     }
     float vc = d1 * d4 - d3 * d2;
     if (vc <= 0 && d1 >= 0 && d3 <= 0) {
-        lerp(a, b, d1 / (d1 - d3), o);
+        lerp3(a, b, d1 / (d1 - d3), o);
         return;
     }
-    sub(p, c, cp);
-    float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    sub3(p, c, cp);
+    float d5 = dot3(ab, cp), d6 = dot3(ac, cp);
     if (d6 >= 0 && d5 <= d6) {
         memcpy(o, c, 12);
         return;
     }
     float vb = d5 * d2 - d1 * d6;
     if (vb <= 0 && d2 >= 0 && d6 <= 0) {
-        lerp(a, c, d2 / (d2 - d6), o);
+        lerp3(a, c, d2 / (d2 - d6), o);
         return;
     }
     float va = d3 * d6 - d5 * d4;
     if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
-        lerp(b, c, (d4 - d3) / ((d4 - d3) + (d5 - d6)), o);
+        lerp3(b, c, (d4 - d3) / ((d4 - d3) + (d5 - d6)), o);
         return;
     }
     float den = 1 / (va + vb + vc), v = vb * den, w = vc * den;
@@ -259,26 +247,24 @@ static void closest_pt_tri(const float *p, const float *a, const float *b, const
         o[i] = a[i] + ab[i] * v + ac[i] * w;
 }
 
-static float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
-
 /* Closest points between segments p1-q1 and p2-q2 -> c1, c2; returns squared distance */
 static float closest_seg_seg(const float *p1, const float *q1, const float *p2, const float *q2, float *c1, float *c2)
 {
     float d1[3], d2[3], r[3], s, t;
-    sub(q1, p1, d1);
-    sub(q2, p2, d2);
-    sub(p1, p2, r);
-    float a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
+    sub3(q1, p1, d1);
+    sub3(q2, p2, d2);
+    sub3(p1, p2, r);
+    float a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, r);
     if (a <= 1e-9f && e <= 1e-9f) {
         s = t = 0;
     } else if (a <= 1e-9f) {
         s = 0, t = clamp01(f / e);
     } else {
-        float c = dot(d1, r);
+        float c = dot3(d1, r);
         if (e <= 1e-9f) {
             t = 0, s = clamp01(-c / a);
         } else {
-            float b = dot(d1, d2), den = a * e - b * b;
+            float b = dot3(d1, d2), den = a * e - b * b;
             s = den != 0 ? clamp01((b * f - c * e) / den) : 0;
             t = (b * s + f) / e;
             if (t < 0)
@@ -287,34 +273,34 @@ static float closest_seg_seg(const float *p1, const float *q1, const float *p2, 
                 t = 1, s = clamp01((b - c) / a);
         }
     }
-    lerp(p1, q1, s, c1);
-    lerp(p2, q2, t, c2);
+    lerp3(p1, q1, s, c1);
+    lerp3(p2, q2, t, c2);
     float d[3];
-    sub(c1, c2, d);
-    return dot(d, d);
+    sub3(c1, c2, d);
+    return dot3(d, d);
 }
 
 /* Segment p-q against triangle: 1 if they intersect (Moller-Trumbore, two-sided), *t = fraction along p-q */
 static int seg_tri(const float *p, const float *q, const float *a, const float *b, const float *c, float *t)
 {
     float e1[3], e2[3], d[3], h[3], s[3], qv[3];
-    sub(b, a, e1);
-    sub(c, a, e2);
-    sub(q, p, d);
-    cross(d, e2, h);
-    float det = dot(e1, h);
+    sub3(b, a, e1);
+    sub3(c, a, e2);
+    sub3(q, p, d);
+    cross3(d, e2, h);
+    float det = dot3(e1, h);
     if (det > -1e-9f && det < 1e-9f)
         return 0;
     float inv = 1 / det;
-    sub(p, a, s);
-    float u = dot(s, h) * inv;
+    sub3(p, a, s);
+    float u = dot3(s, h) * inv;
     if (u < 0 || u > 1)
         return 0;
-    cross(s, e1, qv);
-    float v = dot(d, qv) * inv;
+    cross3(s, e1, qv);
+    float v = dot3(d, qv) * inv;
     if (v < 0 || u + v > 1)
         return 0;
-    float tt = dot(e2, qv) * inv;
+    float tt = dot3(e2, qv) * inv;
     if (tt < 0 || tt > 1)
         return 0;
     *t = tt;
@@ -327,18 +313,18 @@ static float closest_seg_tri(const float *p, const float *q, const float *a, con
 {
     float t, best, tmp_s[3], tmp_t[3], d[3];
     if (seg_tri(p, q, a, b, c, &t)) {
-        lerp(p, q, t, cs);
+        lerp3(p, q, t, cs);
         memcpy(ct, cs, 12);
         return 0;
     }
     closest_pt_tri(p, a, b, c, ct);
     memcpy(cs, p, 12);
-    sub(cs, ct, d);
-    best = dot(d, d);
+    sub3(cs, ct, d);
+    best = dot3(d, d);
     closest_pt_tri(q, a, b, c, tmp_t);
-    sub(q, tmp_t, d);
-    if (dot(d, d) < best) {
-        best = dot(d, d);
+    sub3(q, tmp_t, d);
+    if (dot3(d, d) < best) {
+        best = dot3(d, d);
         memcpy(cs, q, 12);
         memcpy(ct, tmp_t, 12);
     }
@@ -405,8 +391,8 @@ static int push1(float pos[3], float r, float height, float step, unsigned mask)
                         /* segment touches/crosses the triangle: push along the horizontal normal, towards the side
                          * the capsule axis is on */
                         float side[3];
-                        sub(p0, a, side);
-                        float sgn = dot(side, n) >= 0 ? 1 : -1;
+                        sub3(p0, a, side);
+                        float sgn = dot3(side, n) >= 0 ? 1 : -1;
                         dx = n[0] * sgn, dz = n[2] * sgn;
                         hl = sqrtf(dx * dx + dz * dz);
                         if (hl < 1e-4f)
@@ -508,7 +494,7 @@ static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *h
     if (!hdr)
         return 0;
     float d[3];
-    sub(to, from, d);
+    sub3(to, from, d);
     /* 2D DDA over the x/z grid (Amanatides-Woo), clipped to the grid */
     float gx = (from[0] - hdr->x0) * inv_cell, gz = (from[2] - hdr->z0) * inv_cell;
     float ddx = d[0] * inv_cell, ddz = d[2] * inv_cell;
@@ -578,7 +564,7 @@ static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *h
         float a[3], b[3], c[3];
         tri_verts(t, a, b, c);
         tri_normal(a, b, c, hit->n);
-        if (dot(hit->n, d) > 0)
+        if (dot3(hit->n, d) > 0)
             hit->n[0] = -hit->n[0], hit->n[1] = -hit->n[1], hit->n[2] = -hit->n[2];
         hit->t = best, hit->y = from[1] + d[1] * best, hit->tri = best_tri, hit->block = bound;
         hit->hit_filter = t->hit_filter, hit->material = t->material;

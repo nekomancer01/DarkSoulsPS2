@@ -26,7 +26,6 @@
 #include "ai.h"
 #include "lua0.h"
 
-#define PI 3.14159265f
 #define TAG_AI 1
 #define TAG_GOAL 2
 #define MAX_PARAMS 14
@@ -100,15 +99,6 @@ char ai_last_error[224];
 
 /* ---- helpers ---- */
 
-static float wrap(float a)
-{
-    while (a > PI)
-        a -= 2 * PI;
-    while (a < -PI)
-        a += 2 * PI;
-    return a;
-}
-
 static unsigned rnd_u(Ai *a)
 {
     a->rng = a->rng * 1103515245u + 12345u;
@@ -121,12 +111,6 @@ static float dist_xz(V3 a, V3 b)
 {
     float dx = a.x - b.x, dz = a.z - b.z;
     return sqrtf(dx * dx + dz * dz);
-}
-
-static float dist3(V3 a, V3 b)
-{
-    float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-    return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
 static Ai *friend_of(Ai *a)
@@ -589,13 +573,13 @@ static void perceive(Ai *a)
     const AiThink *th = a->th;
     float dt = f->dt;
     a->seen_t += dt, a->heard_t += dt;
-    float d = dist3(f->pos, f->target);
+    float d = v3dist(f->pos, f->target);
     int seen = 0, heard = 0;
     if (f->target_alive) {
         float rel = fabsf(rel_angle(a, f->target));
         seen = d <= th->eye_dist && rel <= th->eye_ang_x * (PI / 360);
         for (int i = 0; i < nsounds; i++) {
-            float sd = dist3(f->pos, sounds[i].pos);
+            float sd = v3dist(f->pos, sounds[i].pos);
             if (sd <= sounds[i].r && sd <= th->ear_dist)
                 heard = 1, a->sound_pos = sounds[i].pos;
         }
@@ -915,7 +899,7 @@ static int m_GetDist(LVal *a, int n, LVal *o, const LVal *up)
 {
     (void)up;
     Ai *ai = SELF_AI;
-    RET_NUM(dist3(ai->f->pos, target_pos(ai, ARGI(1), NULL)));
+    RET_NUM(v3dist(ai->f->pos, target_pos(ai, ARGI(1), NULL)));
 }
 
 static int m_GetDistXZ(LVal *a, int n, LVal *o, const LVal *up)

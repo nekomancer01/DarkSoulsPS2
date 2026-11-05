@@ -27,7 +27,6 @@
 
 /* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
 #define anims (player_data->anims)
-#define PI 3.14159265f
 
 /* Stamina is an int (chr+0x3F8); the setter FUN_140322cf0 clamps it to [-50, max] */
 #define STAMINA_FLOOR (-50)
@@ -94,13 +93,6 @@ static void root_at(int anim, float t, float *fwd, float *side)
 
 /* Duration of a looping animation (its 30 fps root-motion samples; the TAE length is not the loop length) */
 static float loop_len(int anim) { return (anims[anim].nroot - 1) / 30.0f; }
-
-static float wrap(float a)
-{
-    while (a > PI) a -= 2 * PI;
-    while (a < -PI) a += 2 * PI;
-    return a;
-}
 
 static void turn_toward(Player *p, float target, float dt)
 {
@@ -234,7 +226,6 @@ static void constrain_navmesh(Player *p, V3 old)
 #define STEP_EASE 0.04f
 #define STEP_LAG 0.12f
 
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 /* Value of a TAE ramp (Grad) of this type at t, or `none` outside every window */
 static float grad_at(int anim, int type, float t, float none)
