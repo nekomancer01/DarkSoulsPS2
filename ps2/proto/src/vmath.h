@@ -111,4 +111,31 @@ static inline void m34_apply(const M34 *m, const float *p, float *o)
     o[0] = x, o[1] = y, o[2] = z;
 }
 
+/* ---- C44: column-major affine 4x4, the VU1 skin palette layout ----
+ * c[0..2] = rotation columns, c[3] = translation (w 1). Arrays of them are 16-byte aligned (VU0 quad loads). */
+
+/* M34 -> C44 */
+static inline void c44_from_m34(const M34 *a, float (*c)[4])
+{
+    for (int j = 0; j < 3; j++)
+        c[j][0] = a->m[j], c[j][1] = a->m[3 + j], c[j][2] = a->m[6 + j], c[j][3] = 0;
+    c[3][0] = a->m[9], c[3][1] = a->m[10], c[3][2] = a->m[11], c[3][3] = 1;
+}
+
+/* rotation q, then translation t, as a C44 */
+static inline void c44_from_qt(const float *q, const float *t, float (*c)[4])
+{
+    float m[9];
+    m3_from_q(q, m);
+    for (int j = 0; j < 3; j++)
+        c[j][0] = m[j], c[j][1] = m[3 + j], c[j][2] = m[6 + j], c[j][3] = 0;
+    c[3][0] = t[0], c[3][1] = t[1], c[3][2] = t[2], c[3][3] = 1;
+}
+
+/* o = a b for affine a, b (only a's and b's xyz are read; b's w row is taken as 0 0 0 1), as one skin palette
+ * entry: o's rotation columns get .w = column . l (l: the light direction in o's output space, xyz, 16-byte aligned)
+ * and the translation .w = 0. o may be a or b. A parent palette entry works as a (its .w are ignored). VU0 macro
+ * mode on the EE (vmath.c); -DNO_VU0 builds the C version. */
+void c44_mul_skin(float (*o)[4], const float (*a)[4], const float (*b)[4], const float *l);
+
 #endif

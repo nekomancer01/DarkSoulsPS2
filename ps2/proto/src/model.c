@@ -512,15 +512,16 @@ static M34 view_matrix(void)
     return view;
 }
 
-static M34 vbones[MAX_BONES];  /* view * world of each bone, for draw_view */
+/* VU1 skin palette (C44, vmath.h): per bone the columns of view * world, and the light direction in bone space in
+ * the rotation columns' .w (the light direction in bone space is R^T L for world rotation R; with V R in the palette,
+ * V orthonormal, the camera basis, that is (V R)^T (V L)). Built on VU0 by c44_mul_skin (refactor target 5). */
+static float palette[MAX_BONES][4][4] __attribute__((aligned(16)));
 
-/* Palette and skin chains from vbones (view-space bone matrices); pos picks the area light */
-static void draw_view(const Model *m, const M34 *view, V3 pos, int tint)
+/* The area light for a character at pos (sent to the skin program) and its direction in view space -> Lv */
+static void skin_light(const M34 *view, V3 pos, float *Lv)
 {
-    static float palette[MAX_BONES][16] __attribute__((aligned(16)));
-    const Header *hdr = m->hdr;
     /* DSR-fitted light of the area (map.c map_char_light: area LightBank row, tone map, bonfire) */
-    float amb[3], sun[3], L[3], Lv[3];
+    float amb[3], sun[3], L[3];
     map_char_light(pos, amb, sun, L);
     vu1_skin_light(amb, sun);
     {   /* specular terms of the area (map.c map_char_spec: GI_EnvSpc probe x envSpc, LightBank specular light) */
@@ -528,24 +529,18 @@ static void draw_view(const Model *m, const M34 *view, V3 pos, int tint)
         map_char_spec(env_up, env_down, spec_i, spec_dir);
         vu1_skin_spec(env_up, env_down, spec_i, spec_dir);
     }
-    /* the light direction in bone space is R^T L for world rotation R; with V R in vbones (V orthonormal, the camera
-     * basis) that is (V R)^T (V L) */
     for (int j = 0; j < 3; j++)
         Lv[j] = view->m[j * 3] * L[0] + view->m[j * 3 + 1] * L[1] + view->m[j * 3 + 2] * L[2];
-    /* VU1 palette: columns of view * world, and the light direction in bone space in col0-2 .w */
-    for (unsigned i = 0; i < hdr->bones; i++) {
-        const float *R = vbones[i].m;
-        float *o = palette[i];
-        for (int j = 0; j < 3; j++) {
-            o[j * 4] = R[j], o[j * 4 + 1] = R[3 + j], o[j * 4 + 2] = R[6 + j];
-            o[j * 4 + 3] = R[j] * Lv[0] + R[3 + j] * Lv[1] + R[6 + j] * Lv[2];
-        }
-        o[12] = R[9], o[13] = R[10], o[14] = R[11], o[15] = 0;
-    }
+    Lv[3] = 0;
+}
+
+/* Skin chains of the palette's pose */
+static void skin_draw(const Model *m, int tint)
+{
     /* light: amb + sun max(n . L, 0) for texture modulation, vertex colour * 0x80 (0.5 + 0.75 max(n . L, 0)) when
      * untextured; i-frames add a warm gold */
     static const float tint_tex[3] = {70, 45, 0}, tint_flat[3] = {90, 60, 0}, none[3] = {0, 0, 0};
-    vu1_skin_begin(palette, hdr->bones);
+    vu1_skin_begin(palette, m->hdr->bones);
     for (int b = 0; b < m->nsk; b++) {
         const Group *g = &m->groups[m->sk_batch[b].group];
         if (g->flags & m->hide)
@@ -560,19 +555,33 @@ static void draw_view(const Model *m, const M34 *view, V3 pos, int tint)
 
 void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
 {
-    /* the chain is built in view space (view folded into the root placement): one multiply per bone */
-    M34 view = view_matrix(), place = placement(pos, yaw), root = m34_mul(&view, &place);
-    chain(m, pose, &root, vbones);
-    draw_view(m, &view, pos, tint);
+    /* the chain is built in view space (view folded into the root placement), straight into the palette: one VU0
+     * multiply per bone, a parent's palette entry is its child's left factor */
+    static float root[4][4] __attribute__((aligned(16))), local[4][4] __attribute__((aligned(16)));
+    static float Lv[4] __attribute__((aligned(16)));
+    M34 view = view_matrix(), place = placement(pos, yaw), vp = m34_mul(&view, &place);
+    skin_light(&view, pos, Lv);
+    c44_from_m34(&vp, root);
+    for (unsigned i = 0; i < m->hdr->bones; i++) {
+        const float (*parent)[4] = m->parents[i] < 0 ? root : palette[m->parents[i]];
+        c44_from_qt(pose[i].q, pose[i].t, local);
+        c44_mul_skin(palette[i], parent, (const float (*)[4])local, Lv);
+    }
+    skin_draw(m, tint);
 }
 
 void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint)
 {
+    static float vc[4][4] __attribute__((aligned(16))), wc[4][4] __attribute__((aligned(16)));
+    static float Lv[4] __attribute__((aligned(16)));
     M34 view = view_matrix();
-    const M34 *w = (const M34 *)world;
-    for (unsigned i = 0; i < m->hdr->bones; i++)
-        vbones[i] = m34_mul(&view, &w[i]);
-    draw_view(m, &view, pos, tint);
+    skin_light(&view, pos, Lv);
+    c44_from_m34(&view, vc);
+    for (unsigned i = 0; i < m->hdr->bones; i++) {
+        c44_from_m34((const M34 *)world[i], wc);
+        c44_mul_skin(palette[i], (const float (*)[4])vc, (const float (*)[4])wc, Lv);
+    }
+    skin_draw(m, tint);
 }
 
 /* ---- the player's model (player.c keeps the single-model calls) ---- */
