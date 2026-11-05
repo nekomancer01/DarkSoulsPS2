@@ -15,11 +15,12 @@
 #                    tools/newbuild DIR --from build.
 #   --syms           keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
 #   --no-queue       run make directly instead of through the job queue (tools/q)
-#   --container      build in the Docker / Podman container (tools/build-iso.sh) even when the host has the toolchain
+#   --container      build in the ps2dev container (tools/build-iso.sh) even when the host has the toolchain
 # Example: ./build-iso.sh -c 6 -i "/path/to/DARK SOULS REMASTERED" -o ~/Downloads/DarkSoulsPS2.iso
 #
 # Toolchain: the host's ps2dev (ps2/env.sh) with Python (Pillow + numpy), gcc and xorriso, as in README.md. Without
-# it, the script falls back to the container build of this checkout (tools/build-iso.sh, needs Docker or Podman).
+# it, the script pulls the official ps2dev image (docker.io/ps2dev/ps2dev, the release README.md and CI use) and builds
+# this checkout in it (tools/build-iso.sh, needs Docker or Podman; -i, -o, -c, --build and --syms work there too).
 # The ISO is made from your copy of the game: never share it.
 set -euo pipefail
 
@@ -58,7 +59,8 @@ container_build() {
     local a=(--out "${OUT:-$BUILD/proto.iso}")
     [ -n "$GAME" ] && a+=(--game "$GAME")
     [ -n "$JOBS" ] && a+=(--jobs "$JOBS")
-    [ "$BUILD" = "$ROOT/build" ] || die "--build only works with the host toolchain (the container uses build/)"
+    [ "$BUILD" = "$ROOT/build" ] || a+=(--build "$BUILD")
+    [ -n "$SYMS" ] && a+=(--syms)
     { command -v docker >/dev/null && docker info >/dev/null 2>&1; } || command -v podman >/dev/null ||
         die "neither a ps2dev toolchain nor Docker / Podman found: install one of them (README.md)"
     exec "$ROOT/tools/build-iso.sh" "${a[@]}"
@@ -69,7 +71,7 @@ container_build() {
 # shellcheck disable=SC1091
 if ! ( . "$ROOT/ps2/env.sh"; command -v mips64r5900el-ps2-elf-gcc && [ -d "$GSKIT/lib" ] ) >/dev/null 2>&1; then
     echo "build-iso: no ps2dev toolchain (looked in ${PS2DEV:-~/tools/ps2dev-2.0.0/ps2dev}; set PS2DEV, see README.md):" \
-        "building in the Docker / Podman container instead" >&2
+        "building in the ps2dev container instead (Docker / Podman)" >&2
     container_build
 fi
 # shellcheck disable=SC1091

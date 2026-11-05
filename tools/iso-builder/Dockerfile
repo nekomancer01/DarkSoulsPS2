@@ -6,7 +6,9 @@
 #   mpg123-libs                MP3 decoding of DSR's FMOD sound banks (tools/fsb4.py, libmpg123 through ctypes)
 #   xorriso                    disc image (tools/ps2-iso.sh)
 #   bash make coreutils util-linux findutils gawk   tools/q (flock), tools/ps2-iso.sh (stat -c, realpath)
-FROM ps2dev/ps2dev:v2.0.0
+# Fully qualified so Podman never has to resolve a short name (Fedora's enforcing short-name mode errors without a TTY).
+# tools/build-iso.sh pulls this base image itself before building on top of it.
+FROM docker.io/ps2dev/ps2dev:v2.0.0
 RUN apk add --no-cache bash make coreutils util-linux findutils gawk python3 py3-numpy py3-pillow gcc musl-dev mpg123-libs xorriso
 ENV PATH=/usr/local/ps2dev/bin:/usr/local/ps2dev/ee/bin:/usr/local/ps2dev/iop/bin:/usr/local/ps2dev/dvp/bin:/usr/local/ps2dev/ps2sdk/bin:$PATH \
     XORRISO=xorriso

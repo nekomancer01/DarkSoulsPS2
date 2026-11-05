@@ -1,5 +1,6 @@
 #!/bin/bash
 # Usage: build-iso.sh [--game DIR] [--out FILE] [--ref REF] [--work DIR] [--engine auto|docker|podman|native] [--jobs N]
+#                     [--build DIR] [--syms]
 #
 # One-step build of a playable disc image of the port from the player's own Dark Souls Remastered: what the project's
 # web page (tools/pages/) hands out. Everything runs on this machine. The game folder is mounted read-only and never
@@ -16,9 +17,11 @@
 #   --engine     container engine (default: docker if it answers, else podman). native = no container: the host
 #                toolchain from README.md (PS2DEV, Python with Pillow + numpy, gcc, xorriso).
 #   --jobs N     parallel jobs (default: every core). The first export peaks at ~6 GB RAM.
+#   --build DIR  build directory (default: build/ of the checkout, else WORK/build)
+#   --syms       keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
 #
-# Steps: fetch the source (unless run from a checkout) -> build the builder image once -> make -C ps2/proto (exports the
-# game data into the build dir, builds the ELF) -> make iso (tools/ps2-iso.sh) -> copy build/proto.iso to --out.
+# Steps: fetch the source (unless run from a checkout) -> pull ps2dev/ps2dev and build the builder image on it once ->
+# make -C ps2/proto (exports the game data into the build dir, builds the ELF) -> make iso (tools/ps2-iso.sh) -> copy build/proto.iso to --out.
 set -euo pipefail
 
 REPO=${DSR_REPO:-nekomancer01/DarkSoulsPS2}
@@ -29,6 +32,8 @@ WORK=${XDG_CACHE_HOME:-$HOME/.cache}/darksoulsps2
 ENGINE=auto
 JOBS=
 REF_SET=
+BUILD_SET=
+SYMS=
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
@@ -40,7 +45,9 @@ while [ $# -gt 0 ]; do
         --work) WORK=$2; shift 2 ;;
         --engine) ENGINE=$2; shift 2 ;;
         --jobs) JOBS=$2; shift 2 ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --build) BUILD_SET=$2; shift 2 ;;
+        --syms) SYMS=1; shift ;;
+        -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
 done
@@ -70,7 +77,9 @@ else
     echo "$REF" > "$SRC/.source-ref"
 fi
 [ -f "$SRC/ps2/proto/Makefile" ] || die "no ps2/proto/Makefile in $SRC"
+[ -z "$BUILD_SET" ] || BUILD=$BUILD_SET
 mkdir -p "$BUILD"
+BUILD=$(realpath -- "$BUILD")
 
 # --- game folder ---
 if [ -z "$GAME" ] && command -v python3 >/dev/null; then
@@ -86,6 +95,8 @@ say "game: $GAME (read only)"
 
 MAKE_ARGS=(-C ps2/proto)
 [ -n "$JOBS" ] && MAKE_ARGS+=("JOBS=$JOBS")
+ISO_ARGS=()
+[ -n "$SYMS" ] && ISO_ARGS+=(ISO_SYMS=1)
 
 # --- engine ---
 if [ "$ENGINE" = auto ]; then
@@ -102,14 +113,20 @@ if [ "$ENGINE" = native ]; then
     if [ -z "${XORRISO:-}" ] && command -v xorriso >/dev/null; then export XORRISO=xorriso; fi
     [ -x "$SRC/.venv/bin/python" ] || { python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt; }
     make "${MAKE_ARGS[@]}" "DSR_GAME=$GAME" "BUILD=$BUILD"
-    make "${MAKE_ARGS[@]}" "DSR_GAME=$GAME" "BUILD=$BUILD" iso
+    rm -f "$BUILD/proto.iso"
+    make "${MAKE_ARGS[@]}" "DSR_GAME=$GAME" "BUILD=$BUILD" ${ISO_ARGS[@]+"${ISO_ARGS[@]}"} iso
 else
     command -v "$ENGINE" >/dev/null || die "$ENGINE not found"
     # the image is named after its Dockerfile's hash: a changed Dockerfile builds a new one, an unchanged one is reused
     DF=$SRC/tools/iso-builder/Dockerfile
     IMG=darksoulsps2-builder:$(sha256sum "$DF" | cut -c1-12)
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
-        say "building the build container (first run only, ~1 GB download)"
+        # the ps2dev toolchain image the Dockerfile builds on (pinned tag, so later runs reuse it), pulled as its own step
+        # so a registry or network failure says which image it was
+        BASE=$(awk 'toupper($1) == "FROM" {print $2; exit}' "$DF")
+        say "pulling the ps2dev toolchain ($BASE, first run only, ~1 GB download)"
+        "$ENGINE" pull "$BASE" || die "could not pull $BASE (network, or $ENGINE not allowed to reach docker.io?)"
+        say "building the build container on it (first run only)"
         "$ENGINE" build -t "$IMG" -f "$DF" "$SRC/tools/iso-builder"
     fi
     say "building the port (first run: several minutes and several GB of RAM)"
@@ -119,13 +136,18 @@ else
     # rootful Docker would leave root-owned files in WORK; rootless Podman already maps root to this user
     [ "$ENGINE" = docker ] && RUN+=(--user "$(id -u):$(id -g)")
     [ -t 0 ] && [ -t 1 ] && RUN+=(-it)
-    "$ENGINE" "${RUN[@]}" "$IMG" bash -c 'make "$@" DSR_GAME=/game BUILD=/build && make "$@" DSR_GAME=/game BUILD=/build iso' \
+    rm -f "$BUILD/proto.iso"
+    [ -n "$SYMS" ] && RUN+=(-e ISO_SYMS=1)
+    "$ENGINE" "${RUN[@]}" "$IMG" \
+        bash -c 'make "$@" DSR_GAME=/game BUILD=/build && make "$@" DSR_GAME=/game BUILD=/build ${ISO_SYMS:+ISO_SYMS=1} iso' \
         make "${MAKE_ARGS[@]}"
 fi
 
 [ -f "$BUILD/proto.iso" ] || die "the build finished without $BUILD/proto.iso"
-mkdir -p "$(dirname "$OUT")"
-cp -f "$BUILD/proto.iso" "$OUT"
+if [ "$OUT" != "$BUILD/proto.iso" ]; then  # the repo-root build-iso.sh may ask for the ISO right where it is built
+    mkdir -p "$(dirname "$OUT")"
+    cp -f "$BUILD/proto.iso" "$OUT"
+fi
 say "done: $OUT ($(du -h "$OUT" | cut -f1))"
 echo "Open it in PCSX2 (System > Start File, or drag it onto the window). No BIOS settings or HostFs needed."
 echo "Never share the ISO or $BUILD: they are made from your copy of the game."
