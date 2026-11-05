@@ -791,7 +791,7 @@ static unsigned chunk_range(unsigned a, unsigned b, unsigned *lo)
  * tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
  * 2.2 MB as one item found no hole with 4 MB of the arena free (largest hole 0.9-1 MB; ISO runs 2026-11-05); ASSUMED
  * size, small enough to fit the holes near cells leave. */
-#define RES_ITEM (128u << 10)
+#define RES_ITEM (64u << 10)  /* one page of the arena (mapstream.c MS_PAGE, plan step 6; 128 KB before) */
 static void res_open(int k, const void *pack)
 {
     unsigned roff, rsize;
