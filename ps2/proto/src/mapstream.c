@@ -733,13 +733,19 @@ int mapstream_reclaim(void *p, unsigned n)
  * ones (resident items, mip 0) from the bottom, so a big near cell does not wait for one hole among small items (ISO
  * round 5, 2026-11-05: 158 of 181 refusals had the room but no hole) */
 #define MS_BIG (256u << 10)
-#define MS_RUN (128u << 10)
+/* runs of neighbouring resident items read in one request: 256 KB since reads are paged by the disc server (a long
+ * read no longer holds the drive from the sound streams) and cells are in Z order (export_map.cell_zorder), so a run
+ * covers neighbours (plan step 5, 2026-11-06; 128 KB before) */
+#define MS_RUN (256u << 10)
 /* a loaded item gives way only to one ranked MS_EVICT_M x nearer (squared: ~1.4x the distance; ASSUMED hysteresis
  * against read / evict loops between items of about the same rank) */
 #define MS_EVICT_M 2.0f  /* ASSUMED: RES_ITEM (map.c), ~0.2 s from the disc */
-static void *item_alloc(unsigned n)
+static void *item_alloc(unsigned id, unsigned n)
 {
-    return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
+    /* near cell parts from the top as whole near cells were: with them among the small items at the bottom, drawn
+     * parts spread over the arena and mapstream_alloc found no window for a lite set or an enemy model (6 heap
+     * fallbacks and an OUT OF RAM on the heap in one ISO world_cross, 2026-11-06) */
+    return !it_res(id) || n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
 }
 
 /* read i landed (r bytes) */
@@ -863,15 +869,14 @@ static int issue(const float *pos)
             end = c->rel + c->bytes, wn++;
         }
         wbytes = end - rit[j].rel;
-        if (wn > 1 && wbytes >= MS_BIG)
-            wn = 1, wbytes = it_bytes(w.id);
     }
-    void *p = item_alloc(wbytes);
+    /* a run of small items fills from the bottom with them, whatever its size */
+    void *p = wn > 1 ? arena_alloc(wbytes, 0) : item_alloc(w.id, wbytes);
     if (!p && wn > 1)  /* no room for the run as it is: the item alone, making room for it below */
         wn = 1, wbytes = it_bytes(w.id);
     /* make room in the arena: drop the least wanted loaded items ranked below the one wanted until its blob fits
      * (one pass ranks up to MS_QUEUE of them, least wanted first) */
-    while (!p && !(p = item_alloc(wbytes))) {
+    while (!p && !(p = item_alloc(w.id, wbytes))) {
         MsQ d[MS_QUEUE];
         int nd = 0;
         float key;
@@ -907,7 +912,7 @@ static int issue(const float *pos)
             if (state[d[j].id] == MS_READY)  /* not gone with an earlier one's run */
                 drop(d[j].id);
             bind(w.k);
-            p = item_alloc(wbytes);
+            p = item_alloc(w.id, wbytes);
         }
         if (p)
             break;
