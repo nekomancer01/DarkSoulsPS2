@@ -986,8 +986,9 @@ int map_draw(V3 eye)
              * a world block's resident chunks once their item's streams are in (mapstream_res) */
             const unsigned char *nb = NULL;
             int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
-            for (unsigned j = ce->first; res_cells && j < (unsigned)ce->first + ce->count && !miss; j++)
-                miss = !res_base(order[j]);
+            for (unsigned j = ce->first; res_cells && j < (unsigned)ce->first + ce->count; j++)
+                if (!res_base(order[j]))  /* (mapstream_res also ranks it up: the cell is in view) */
+                    miss = 1;
             if (ctab) {
                 float d2 = 0;
                 for (int k = 0; k < 3; k++) {

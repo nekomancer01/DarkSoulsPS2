@@ -32,6 +32,11 @@
  * MS_SCAN_FRAMES passed since the last one, else only every MS_SCAN_FRAMES (frees far items); after an item found no
  * room it waits MS_SCAN_FRAMES (~5000 items over 5 blocks: a scan every frame cost the Burg bonfire 30 -> 22 fps) */
 #define MS_SCAN_D 4.0f
+/* An item map.c asked for in the last MS_VIEW_FRAMES frames while it was missing (a cell in view: mapstream_get /
+ * mapstream_res) ranks as if MS_VIEW_K x as far (squared: 1/4 = half the distance): the aqueduct rock wall and the
+ * far north were read after cells behind the camera (ISO rounds 1-7, 2026-11-05). ASSUMED values. */
+#define MS_VIEW_K 0.25f
+#define MS_VIEW_FRAMES 8u
 #define MS_SCAN_FRAMES 16u
 /* A texture's mip 0 (asked for at mip 0 in the last frame) ranks like a cell MS_TEX_D m away: the texture is in view
  * close up and draws mip 1 until it is in. Kept while asked for within MS_TEX_KEEP frames (ASSUMED: 4 s at 30 fps;
@@ -394,7 +399,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
 {
     if (id < ncell) {
         float d2 = box_d2(&tab[id], pos);
-        *key = d2;
+        *key = d2 * (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (settling)  /* a settle waits for the resident level only: near cells stream in behind the game */
             return d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
@@ -402,7 +407,8 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
     unsigned tag = rit[id - ncell].tag;
     if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && tag < ncell) {  /* a cell's resident chunks (or a part of them) */
         float d2 = box_d2(&tab[tag], pos);
-        *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER);
+        *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
+               (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (k == focus)  /* the player's block: its whole resident level, as the old full pool held it, but nearest
                           * first and with no swap (beyond MS_RES_R: Firelink's horizon tree line and the far north
                           * went missing behind the Burg's cells, ISO rounds 3-6, 2026-11-05) */
@@ -428,6 +434,7 @@ static void drop(unsigned id)
     arena_free(buf[id], n);
     buf[id] = NULL;
     state[id] = MS_NONE;
+    used[id] = 0;  /* not "asked for" (MS_VIEW_K) by its last hand-out */
     mapstream_stats.cells--;
     mapstream_stats.bytes -= n;
     if (it_res(id))
@@ -817,6 +824,8 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
 
 const void *mapstream_get(unsigned i)
 {
+    if (i < ncell && state[i] == MS_NONE)
+        used[i] = frame;  /* asked for while missing: in view (MS_VIEW_K) */
     if (i >= ncell || state[i] != MS_READY)
         return NULL;
     used[i] = frame;
@@ -825,6 +834,8 @@ const void *mapstream_get(unsigned i)
 
 const unsigned char *mapstream_res(unsigned i)
 {
+    if (i < nres && state[ncell + i] == MS_NONE)
+        used[ncell + i] = frame;  /* asked for while missing: in view (MS_VIEW_K) */
     if (i >= nres || state[ncell + i] != MS_READY)
         return NULL;
     used[ncell + i] = frame;
