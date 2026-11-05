@@ -76,6 +76,20 @@ int test_frozen(void);  /* world updates paused (shot marker / freeze 1) */
 int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo);
 /* Buttons the script pressed ("pad") since the last call, as libpad PAD_* bits (main.c ORs them into its pressed mask) */
 unsigned short test_pad(void);
+/* Compile-time check builds (make EE_DBGINFOFLAGS=-D..., notes/PORTING.md): fixed input and camera that replace the
+ * script / pad. All are no-ops in a plain build.
+ *   COL_TEST=n          collision / movement runs from the spawn (wall slide, ledge drops, stairs, plunge, R1 on the dummy)
+ *   ESD_TEST            backstep, backstep / dash attacks, running jump
+ *   CHAR_CLOSEUP=y,d,p  no input, camera at yaw y (rad from the player's facing), d m and pitch p
+ *   ENEMY_VIEW=i,y,d    no input, camera orbiting MSB placement i (test_build_camera)
+ *   TEST_SPAWN=x,y,z,a  start position (test_build_spawn); COMBAT_DUMMY: the dummy 2.5 m in front of the spawn */
+void test_build_spawn(Player *pl, int col_ok);
+/* This frame's input / camera angles (after test_input) */
+void test_build_input(Input *in, const Player *pl, float *cam_yaw, float *cam_pitch, float dt);
+/* Orbit distance (CHAR_CLOSEUP), else d */
+float test_build_cam_dist(float d);
+/* Replaces the camera eye and target (ENEMY_VIEW) */
+void test_build_camera(V3 *eye, V3 *target);
 /* Per-frame numbers for the mailbox / segment stats (call once per frame after the frame is drawn) */
 void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms, float chr_ms, float vuw_ms, int tris,
                     int vram_free);

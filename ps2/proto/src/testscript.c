@@ -18,6 +18,7 @@
 #include "save.h"
 #include "event.h"
 #include "loading.h"
+#include "combat.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 
@@ -396,4 +397,125 @@ void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms,
         m->seg_chain_map_max = vu1_stats.last[0];
     if (vu1_stats.last[1] > m->seg_chain_chr_max)
         m->seg_chain_chr_max = vu1_stats.last[1];
+}
+
+/* ---- compile-time check builds (testscript.h), moved out of main.c's frame loop as they were */
+
+void test_build_spawn(Player *pl, int col_ok)
+{
+    (void)pl, (void)col_ok;
+#ifdef TEST_SPAWN
+    /* test start (make DEFS='-DTEST_SPAWN=x,y,z,yaw'), e.g. in front of the graveyard skeletons */
+    {
+        const float ts[4] = {TEST_SPAWN};
+        ColHit th;
+        pl->pos = v3(ts[0], ts[1], ts[2]), pl->yaw = ts[3];
+        if (col_ok && col_floor(ts[0], ts[2], ts[1] + 3, ts[1] - 10, COL_SOLID, &th))
+            pl->pos.y = th.y;  /* onto the collision floor under the point */
+    }
+#endif
+#ifdef COMBAT_DUMMY
+    /* debug target (make EE_DBGINFOFLAGS=-DCOMBAT_DUMMY): NpcParam 206000's hurtbox 2.5 m in front of the spawn */
+    {
+        float d[3] = {pl->pos.x + sinf(pl->yaw) * 2.5f, pl->pos.y, pl->pos.z + cosf(pl->yaw) * 2.5f};
+        ColHit fh;
+        if (col_ok && col_floor(d[0], d[2], d[1] + 1, d[1] - 2, COL_SOLID, &fh))
+            d[1] = fh.y;
+        combat_dummy_place(d, pl->yaw + 3.14159265f);
+    }
+#endif
+}
+
+void test_build_input(Input *in, const Player *pl, float *cam_yaw, float *cam_pitch, float dt)
+{
+    (void)in, (void)pl, (void)cam_yaw, (void)cam_pitch, (void)dt;
+#ifdef COL_TEST
+    /* collision / movement check builds (make EE_DBGINFOFLAGS=-DCOL_TEST=n), from the spawn after 0.5 s:
+     * 1 run at 0.6 rad into the wall north of the bonfire and slide along it; 2 run at 4.8 rad off the west ledge
+     * (5 m drop, landing); 3 run + dash at 5.1 rad, release Circle and press it again (running jump), then off the
+     * ledge; 4 walk up the stairs at 0.61 rad; 5 run off the east cliff at 2.0 rad (lethal fall, ESD fall death, respawn) */
+    {
+        static float tt;
+        tt += dt;
+        *in = (Input){0};
+        in->my = tt > 0.5f ? (COL_TEST == 4 ? 0.5f : 1) : 0;
+        in->circle = COL_TEST == 3 && ((tt > 1.0f && tt < 2.3f) || (tt > 2.4f && tt < 2.6f));
+        if (COL_TEST == 7) {  /* 7: run off the west ledge (as 2) and press R1 in the air: plunging attack. R1 on
+                               * the first airborne frames is dropped as in DSR (14 -> 19 needs ChrActionFlag 84,
+                               * from 0.133 s into a00_1550; the 5 m drop is over before the fall loop 15), so
+                               * press once 0.3 s into the fall */
+            static int pressed;
+            static float air_t;
+            *cam_yaw = 4.8f;
+            air_t = pl->airborne ? air_t + dt : 0;
+            in->r1 = air_t > 0.3f && !pressed;
+            pressed |= in->r1;
+        } else if (COL_TEST == 6) {  /* 6: stand at the spawn (dummy in front) and press R1 at 1.0 s and 4.0 s */
+            static int pressed;
+            in->my = 0;
+            in->r1 = (tt > 1.0f && !(pressed & 1)) || (tt > 4.0f && !(pressed & 2));
+            pressed |= (tt > 1.0f) | (tt > 4.0f) << 1;
+        } else {
+            *cam_yaw = COL_TEST == 1 ? 0.6f : COL_TEST == 2 ? 4.8f : COL_TEST == 3 ? 5.1f : COL_TEST == 5 ? 2.0f : 0.61f;
+        }
+        *cam_pitch = 0.25f;
+    }
+#endif
+#ifdef CHAR_CLOSEUP
+    /* character close-up build (make EE_DBGINFOFLAGS='-DCHAR_CLOSEUP=yaw,dist,pitch'): no demo, the camera at
+     * dist m and yaw rad from the player's facing (0 = in front), e.g. 0.6,1.6,0.1 for the arms and neck */
+    {
+        const float cc[3] = {CHAR_CLOSEUP};
+        *in = (Input){0};
+        *cam_yaw = pl->yaw + 3.14159265f + cc[0];
+        *cam_pitch = cc[2];
+    }
+#endif
+#ifdef ENEMY_VIEW
+    *in = (Input){0};  /* enemy check build: no demo input (camera: test_build_camera) */
+#endif
+#ifdef ESD_TEST
+    /* ESD action check build (make EE_DBGINFOFLAGS=-DESD_TEST): from the spawn, 0.5 s idle; backstep (Circle tap,
+     * stick centred) at 1.0 s and R1 at 1.4 s (backstep attack, state 59); 3.0-5.4 s run + dash at 5.1 rad with
+     * R1 at 5.2 s while dashing (dash attack, 59); 7.0-9.4 s run back; 10.0 s run + dash, release, press again (running jump, 36) */
+    {
+        static float tt;
+        tt += dt;
+        *in = (Input){0};
+        in->circle = (tt > 1.0f && tt < 1.1f) || (tt > 3.4f && tt < 5.3f) || (tt > 10.4f && tt < 11.7f) ||
+                     (tt > 11.8f && tt < 12.0f);
+        in->my = (tt > 3.0f && tt < 5.4f) || (tt > 7.0f && tt < 9.4f) || (tt > 10.0f && tt < 13.0f);
+        static int fired;
+        in->r1 = (tt > 1.4f && !(fired & 1)) || (tt > 5.2f && !(fired & 2));
+        fired |= (tt > 1.4f) | (tt > 5.2f) << 1;
+        *cam_yaw = tt > 7.0f && tt < 9.4f ? 5.1f + 3.14159f : 5.1f;
+        *cam_pitch = 0.25f;
+    }
+#endif
+}
+
+float test_build_cam_dist(float d)
+{
+#ifdef CHAR_CLOSEUP
+    d = ((const float[3]){CHAR_CLOSEUP})[1];
+#endif
+    return d;
+}
+
+void test_build_camera(V3 *eye, V3 *target)
+{
+    (void)eye, (void)target;
+#ifdef ENEMY_VIEW
+    /* enemy check build (make DEFS='-DTEST_SPAWN=... -DENEMY_VIEW=index,yaw,dist', notes/enemy/test.sh): the
+     * camera orbits MSB placement `index` at yaw (rad, 0 = in front of it) and dist m, ignoring walls */
+    {
+        const float ev[3] = {ENEMY_VIEW};
+        V3 ep;
+        float eh, eyaw;
+        if (enemy_view((int)ev[0], &ep, &eh, &eyaw)) {
+            *target = v3(ep.x, ep.y + eh * 0.55f, ep.z);
+            *eye = v3add(*target, v3(sinf(eyaw + ev[1]) * ev[2], eh * 0.25f + 0.3f, cosf(eyaw + ev[1]) * ev[2]));
+        }
+    }
+#endif
 }
