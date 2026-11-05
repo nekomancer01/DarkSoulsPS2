@@ -750,17 +750,33 @@ void mapstream_update(const float pos[3])
     bind(was);
 }
 
-int mapstream_busy(const float pos[3], float r)
+/* resident item j (cell or sky) of the bound instance k counts for a settle: the sky, a cell within r, or within
+ * r_focus for the block the player is in */
+static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus)
 {
-    if (reading >= 0)
+    if (j == ncell)
         return 1;
+    float rr = k == focus && r_focus > r ? r_focus : r;
+    return j < ncell && box_d2(&tab[j], pos) < rr * rr;
+}
+
+int mapstream_busy(const float pos[3], float r, float r_focus)
+{
+    int was = sel, busy = 0;
+    if (reading >= 0) {  /* only a read the settle waits for: further ones stream on behind the game (a settle that
+                          * waited for every read in flight went on over the whole 260 m queue: 10-14 s, ISO) */
+        bind(reading_inst);
+        busy = it_res(reading) && !it_tex(reading) && settle_item(reading_inst, reading - ncell, pos, r, r_focus);
+        bind(was);
+        if (busy)
+            return 1;
+    }
     if (room_fail)
         return 0;
-    int was = sel, busy = 0;
     for (int k = 0; k < MS_INST && !busy; k++) {
         bind(k);
         for (unsigned j = 0; j <= ncell && j < nres && !busy; j++)
-            busy = state[ncell + j] == MS_NONE && rit[j].bytes && (j == ncell || box_d2(&tab[j], pos) < r * r);
+            busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus);
     }
     bind(was);
     return busy;

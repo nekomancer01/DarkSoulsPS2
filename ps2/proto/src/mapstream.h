@@ -57,9 +57,10 @@ void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_se
 void mapstream_hold(int on);
 /* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */
 void mapstream_focus(int k);
-/* settle (world.c, a warp): 1 while the sky or a resident cell within r m of pos of any instance is still to load
- * (0 once the arena had no room for the next one: nothing more can come) */
-int mapstream_busy(const float pos[3], float r);
+/* settle (world.c, a warp): 1 while the sky or a resident cell within r m of pos of any instance (r_focus for the
+ * mapstream_focus instance) is still to load or being read (0 once the arena had no room for the next one: nothing
+ * more can come) */
+int mapstream_busy(const float pos[3], float r, float r_focus);
 /* largest arena (default MS_POOL; world builds: the full pool's RAM went to it), before it is allocated */
 void mapstream_pool(unsigned max);
 /* Once per frame: finish / start reads, free far cells (blobs drawn in the last two frames are kept: the VIF chains

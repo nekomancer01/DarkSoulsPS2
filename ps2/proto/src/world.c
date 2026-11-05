@@ -42,10 +42,12 @@
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
 #define WORLD_ARENA_LESS (1024u << 10)
 #define WORLD_POOL (24u << 20)
-/* A warp settles once the resident cells within WORLD_SETTLE_R of the feet (and the sky) are in: the loading screen
- * covers what the player sees first; the rest streams in nearest first (ASSUMED radius; 64 m took 6.4 s at the
- * Firelink boot from cdrom0:, 2026-11-05) */
+/* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
+ * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
+ * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
+ * (ISO world_route, 2026-11-05). The rest streams in nearest first. ASSUMED radii. */
 #define WORLD_SETTLE_R 40.0f
+#define WORLD_SETTLE_FOCUS_R 160.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
@@ -724,7 +726,7 @@ unload:
 /* settled: nothing reading, every wanted neighbour on, the resident cells around the feet in (mapstream_busy) */
 static int settled(const float *feet)
 {
-    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R))
+    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R))
         return 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)))
