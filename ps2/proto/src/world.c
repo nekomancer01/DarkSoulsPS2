@@ -145,6 +145,9 @@ static float feet_now[3];  /* for start(): mapstream_alloc evicts the cells fart
 /* relief (bump.bin): block it is for (-1 none; its buffer may be NULL: none, or no room), block being read, the read in
  * flight, progress; a dropped buffer waits WORLD_DRAIN frames before it is freed */
 static int bump_blk = -1, bump_rd = -1, bump_reading;
+/* the ticket of this file's read in flight (pack_req_read): a lite set chunk or a relief chunk, never both
+ * (world_stats.reading names its block) */
+static int w_tk;
 static unsigned char *bump_buf, *bump_old;
 static unsigned bump_done, bump_t0, bump_old_n;
 static int bump_old_drain;
@@ -175,11 +178,10 @@ static float box_d(const WorldBlock *b, const float *p)
 /* boot-time read of a raw entry range into dst (waits) */
 static int read_sync(Pack *pk, unsigned off, void *dst, unsigned n)
 {
-    int r = 0;
-    pack_async_free();
-    if (!pack_read_async(pk, off, dst, n))
-        return 0;
-    while (!pack_async_done(&r))
+    int r = 0, t;
+    while (!(t = pack_req_read(pk, off, dst, n)))
+        pack_pump();
+    while (!pack_req_done(t, &r))
         ;
     InvalidDCache(dst, (char *)dst + n - 1);
     return r == (int)n;
@@ -510,8 +512,9 @@ static void read_step(int i, int issue)
     BlockRt *r = &rt[i];
     int res;
     if (world_stats.reading == i) {
-        if (!pack_async_done(&res))
+        if (!pack_req_done(w_tk, &res))
             return;  /* still in flight */
+        w_tk = 0;
         unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
         world_stats.reading = -1;
         if (res != (int)n) {
@@ -553,8 +556,8 @@ static void read_step(int i, int issue)
         return;  /* stage 1: the next texture entry once a read is free and the buffer has room */
     char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
-    if (pack_read_bg(&r->pk, r->off[r->ent] + r->done, dst + r->done, n))
-        world_stats.reading = i;  /* else mapstream's read is in flight or a sound stream starves: try next frame */
+    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
+        world_stats.reading = i;  /* else every request slot is taken: try next frame */
 }
 
 static int start(int i)
@@ -618,8 +621,9 @@ static void bump_step(void)
     if (bump_rd >= 0) {
         BlockRt *r = &rt[bump_rd];
         if (bump_reading) {
-            if (!pack_async_done(&res))
+            if (!pack_req_done(w_tk, &res))
                 return;
+            w_tk = 0;
             unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
             bump_reading = 0;
             world_stats.reading = -1;
@@ -647,7 +651,7 @@ static void bump_step(void)
         if (lite_first || warping)
             return;  /* a settle waits for no relief */
         unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
-        if (pack_read_bg(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n))
+        if (!w_tk && (w_tk = pack_req_read(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n)))
             bump_reading = 1, world_stats.reading = bump_rd;
         return;
     }
@@ -861,8 +865,7 @@ static void settle(const float *feet)
             printf("world: settle stopped: no room for the wanted blocks %x\n", want_m);
             break;
         }
-        pack_async_free();  /* a background enemy model load (enemy.c) holds the slot no longer */
-        mapstream_update(feet);  /* collects a cell read in flight so the async slot comes free */
+        mapstream_update(feet);  /* collects the cell reads that landed, queues the next ones */
         step(feet, 0);
         loading_tick(1);
         n++;
