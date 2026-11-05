@@ -66,7 +66,7 @@ EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstre
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
-EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lpatches -lm
+EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lmc -lpatches -lm
 EE_DVP = dvp-as
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(DEFS)
 
