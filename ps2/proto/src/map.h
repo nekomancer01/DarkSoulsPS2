@@ -37,20 +37,19 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
 int map_far_dof(float *begin, float *end, float *mul);
 extern int map_vu1_batches, map_ee_tris;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
- * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams) or NULL
- * for a "lite" block that draws only its streamed near cells. col_block: its collision block (ColHit.block), for the
- * fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture slot.
- * Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
+ * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams), or
+ * NULL: map_block_stream_open then streams them per cell from the block's mapres.bin, with each texture's mip 0
+ * (mapstream_res_open; no full swap, TECH_DEBT world-2 / world-5). col_block: its collision block (ColHit.block), for
+ * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
+ * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
 #define MAP_INST 5
 int map_block_init(int k, const void *tab, const void *res, int col_block);
 int map_tex_slot(int k);  /* texcache slot of instance k > 0 while it is on (texcache.h TC_BLOCKS), else -1 */
-void map_block_streams(int k, const void *res);  /* lite <-> full */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */
 void map_block_drop(int k);
 /* world.c world_systems, at boot: block k's dg.bin from its open Pack (per-block draw groups, src/drawgrp.c) */
 void map_block_dg(int k, void *pack);
-/* world.c, a full swap: block k's bump.bin read behind its mapres.bin in the full pool (normal-map relief, src/bump.c);
- * map_block_streams(k, NULL) drops it with the streams */
+/* world.c: block k's bump.bin while the player stands in it (normal-map relief, src/bump.c); NULL drops it */
 void map_block_bump(int k, const void *blob);
 /* Height of the navmesh floor under (x, z) closest to y (within the step limits), or 0 if there is none */
 int map_floor(float x, float z, float y, float *out_y);

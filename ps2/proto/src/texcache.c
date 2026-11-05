@@ -378,6 +378,29 @@ void tc_res(int slot, const unsigned char *res)
             lv[i][0].t.Mem = res ? (u32 *)(res + (te[i]->pix[0] & ~TC_RES)) : NULL;
 }
 
+static unsigned res_asked[MAX_TEX];  /* frame + 1 of the last tc_get asking for a TC_RES mip 0 (tc_res_age) */
+
+static int res_index(int slot, int i)
+{
+    int a = slot < 0 ? 0 : TC_BASE + slot * TC_BLOCK_TEX, n = slot < 0 ? nmap : slot < TC_BLOCKS ? blk_n[slot] : 0;
+    return i >= 0 && i < n && te[a + i] && (te[a + i]->pix[0] & TC_RES) ? a + i : -1;
+}
+
+void tc_res_one(int slot, int i, const void *pix)
+{
+    int t = res_index(slot, i);
+    if (t >= 0)
+        lv[t][0].t.Mem = (u32 *)pix;
+    if (t >= 0 && !pix)
+        res_asked[t] = 0;
+}
+
+unsigned tc_res_age(int slot, int i)
+{
+    int t = res_index(slot, i);
+    return t < 0 || !res_asked[t] ? ~0u : frame - (res_asked[t] - 1);
+}
+
 /* textures to walk: the boot map's and tc_add's, then the world block ranges in use */
 static int tex_end(void)
 {
@@ -510,6 +533,8 @@ GSTEXTURE *tc_get(int tex, int level)
     if (level == 2 ? !lv[tex][2].size : level >= te[tex]->levels)
         level = 0;
     near_want += level == 2;
+    if (!level && (te[tex]->pix[0] & TC_RES))
+        res_asked[tex] = frame + 1;  /* a streamed mip 0 (tc_res_one) is wanted */
     Level *v = &lv[tex][level];
     if (v->off < 0 && !load(tex, level)) {
         int o = level == 2 ? 0 : level ^ 1;

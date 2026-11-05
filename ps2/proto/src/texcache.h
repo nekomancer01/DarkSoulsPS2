@@ -31,6 +31,11 @@ int tc_block_bump(int slot, const unsigned char *base, const void *table, int n)
  * buffer until the chains that uploaded from it are done. */
 #define TC_RES 0x80000000u
 void tc_res(int slot, const unsigned char *res);
+/* World blocks stream mip 0 per texture instead (mapstream.c via map.c): texture i of slot (-1: the boot map's) gets
+ * its mip 0 pixels at pix, or none (NULL). tc_res_age: frames since tc_get last asked for its mip 0 (~0u never, or
+ * no TC_RES mip 0). Same buffer lifetime as tc_res. */
+void tc_res_one(int slot, int i, const void *pix);
+unsigned tc_res_age(int slot, int i);
 /* Once per map chain, after vu1_begin, before any map batch (sets TEXA for the CT16 CLUTs; the first call also uploads
  * the CLUTs). focal: screen focal length in pixels (mip choice). */
 void tc_begin(float focal);

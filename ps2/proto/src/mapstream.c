@@ -15,6 +15,18 @@
  * no contiguous block with 3.7 MB free). ASSUMED radii (render-distance; DSR keeps whole blocks resident). */
 #define MS_LOAD_R 40.0f
 #define MS_UNLOAD_R 52.0f
+/* World blocks' resident level per cell (mapstream_res_open): loaded out to MS_RES_R, the depth map.c draws opaque
+ * boxes to (map.c CULL_FAR = FAR 250 m; a box distance, so a little further), freed beyond MS_RES_UNLOAD_R. Ranked
+ * against near cells by distance x MS_RES_K: the resident cell holds the kept meshes the near level does not replace
+ * and the coarse level drawn until the near blob is in, so it goes first up to ~1.4x the distance (ASSUMED). */
+#define MS_RES_R 260.0f
+#define MS_RES_UNLOAD_R 280.0f
+#define MS_RES_K 0.5f
+/* A texture's mip 0 (asked for at mip 0 in the last frame) ranks like a cell MS_TEX_D m away: the texture is in view
+ * close up and draws mip 1 until it is in. Kept while asked for within MS_TEX_KEEP frames (ASSUMED: 4 s at 30 fps;
+ * texcache keeps a resident mip 0 in VRAM without asking again, so a short keep reads it again off the disc). */
+#define MS_TEX_D 16.0f
+#define MS_TEX_KEEP 120u
 #ifndef MS_POOL
 #define MS_POOL (8u << 20)
 #endif
@@ -22,12 +34,17 @@
  * by enemy.c and objects / effects after enemy_init (smoke 21:15: 0.2 MB used); arena = min(MS_POOL, free - MS_RESERVE) */
 #define MS_RESERVE (3u << 20)
 static unsigned reserve_extra;  /* mapstream_reserve (world builds) */
-#define MS_HOLES 256  /* free-list entries of the arena */
+static unsigned pool_max = MS_POOL;  /* mapstream_pool */
+/* free-list entries of the arena: the resident cells and mip 0 textures are many small blobs (256 was enough for
+ * whole near cells alone) */
+#define MS_HOLES 1024
 
 enum { MS_NONE, MS_READING, MS_READY, MS_FAILED };
 
 MapStreamStats mapstream_stats;
-/* one instance per map block (src/world.c; instance 0 = the boot area), all sharing the arena below */
+/* one instance per map block (src/world.c; instance 0 = the boot area), all sharing the arena below. Items of an
+ * instance: ids [0, ncell) its near cells (cells.bin), [ncell, ncell + nres) its resident items (mapstream_res_open:
+ * cells, the sky, textures) */
 typedef struct {
     Pack pk;
     unsigned base, total;
@@ -37,6 +54,8 @@ typedef struct {
     void **buf;
     unsigned *used;  /* frame the blob was last handed out */
     int borrowed;    /* pk belongs to the caller (mapstream_open_pack): not closed here */
+    MapResItem *rit;
+    unsigned nres;
 } MsInst;
 static MsInst ms[MS_INST];
 static Pack pk;
@@ -46,19 +65,31 @@ static unsigned ncell, frame;
 static unsigned char *state;
 static void **buf;
 static unsigned *used;
-static int sel, reading = -1, reading_inst;
+static MapResItem *rit;
+static unsigned nres;
+static int sel, reading = -1, reading_inst, hold, room_fail;
+static unsigned (*tex_age)(int k, unsigned tag);
+static void (*tex_set)(int k, unsigned tag, const void *p);
 
 /* the instance the globals above describe */
 static void bind(int k)
 {
     ms[sel].pk = pk;
     ms[sel].base = base, ms[sel].total = total, ms[sel].tab = tab, ms[sel].ncell = ncell;
-    ms[sel].state = state, ms[sel].buf = buf, ms[sel].used = used;
+    ms[sel].state = state, ms[sel].buf = buf, ms[sel].used = used, ms[sel].rit = rit, ms[sel].nres = nres;
     const MsInst *m = &ms[sel = k];
     pk = m->pk;
     base = m->base, total = m->total, tab = m->tab, ncell = m->ncell;
-    state = m->state, buf = m->buf, used = m->used;
+    state = m->state, buf = m->buf, used = m->used, rit = m->rit, nres = m->nres;
 }
+
+/* item id of the bound instance: bytes, offset in the pack, kind */
+static inline unsigned it_n(void) { return ncell + nres; }
+static inline unsigned it_bytes(unsigned id) { return id < ncell ? tab[id].bytes : rit[id - ncell].bytes; }
+static inline unsigned it_off(unsigned id) { return id < ncell ? base + tab[id].off : rit[id - ncell].off; }
+static inline int it_tex(unsigned id) { return id > 2 * ncell; }  /* a mip 0 texture (ncell + ncell is the sky) */
+static inline int it_res(unsigned id) { return id >= ncell; }
+
 static unsigned char *arena;
 static unsigned char *pend_p;  /* mapstream_lend before the arena was allocated */
 static unsigned pend_n;
@@ -102,7 +133,9 @@ static void arena_free(void *p, unsigned n)
         memmove(hole_off + i + 1, hole_off + i, (nholes - i) * sizeof *hole_off);
         memmove(hole_len + i + 1, hole_len + i, (nholes - i) * sizeof *hole_len);
         hole_off[i] = o, hole_len[i] = n, nholes++;
-    }  /* else: the bytes are lost until the next area load (256 holes: not reached with whole-cell blobs) */
+    } else {
+        printf("mapstream: free list full, %u bytes lost\n", n);  /* until the next area load */
+    }
 }
 static unsigned t_read;
 static int ensure_arena(void);
@@ -163,9 +196,12 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     state = calloc(n, 1);
     buf = calloc(n, sizeof *buf);
     used = calloc(n, sizeof *used);
+    rit = NULL, nres = 0;
     if (!state || !buf || !used) {
         if (!ms[k].borrowed)
             pack_close(&pk);
+        free(state), free(buf), free(used);
+        state = NULL, buf = NULL, used = NULL;
         ncell = 0;
         return 0;
     }
@@ -173,7 +209,61 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     return 1;
 }
 
-static void drop(unsigned i);
+int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems)
+{
+    if (k < 0 || k >= MS_INST || nitems < n + 1)
+        return 0;
+    int was = sel;
+    bind(k);
+    if (!ncell || n != ncell || rit) {
+        bind(was);
+        return 0;
+    }
+    /* the item arrays grow to ncell + nitems: state / buf / used are indexed by item id */
+    unsigned char *s2 = realloc(state, ncell + nitems);
+    if (s2)
+        state = s2;
+    void **b2 = s2 ? realloc(buf, (ncell + nitems) * sizeof *buf) : NULL;
+    if (b2)
+        buf = b2;
+    unsigned *u2 = b2 ? realloc(used, (ncell + nitems) * sizeof *used) : NULL;
+    if (u2)
+        used = u2;
+    rit = u2 ? malloc(nitems * sizeof *rit) : NULL;
+    if (!rit) {
+        bind(was);
+        return 0;
+    }
+    memcpy(rit, items, nitems * sizeof *rit);
+    memset(state + ncell, MS_NONE, nitems);
+    memset(buf + ncell, 0, nitems * sizeof *buf);
+    memset(used + ncell, 0, nitems * sizeof *used);
+    nres = nitems;
+    unsigned cb = 0, tb = 0;
+    for (unsigned j = 0; j < nitems; j++)
+        *(j > n ? &tb : &cb) += items[j].bytes;
+    printf("mapstream: instance %d resident level per cell: %u cells + sky %u KB, %u mip 0 textures %u KB\n", k, n,
+           cb >> 10, nitems - n - 1, tb >> 10);
+    bind(was);
+    return 1;
+}
+
+void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k, unsigned tag, const void *p))
+{
+    tex_age = age, tex_set = set;
+}
+
+void mapstream_hold(int on)
+{
+    hold = on;
+}
+
+void mapstream_pool(unsigned max)
+{
+    pool_max = max;
+}
+
+static void drop(unsigned id);
 
 void mapstream_close(int k)
 {
@@ -188,13 +278,13 @@ void mapstream_close(int k)
         reading = -1;
         mapstream_stats.pending = 0;
     }
-    for (unsigned i = 0; i < ncell; i++)
-        if (state[i] == MS_READY || state[i] == MS_READING)
-            drop(i);
+    for (unsigned id = 0; id < it_n(); id++)
+        if (state[id] == MS_READY || state[id] == MS_READING)
+            drop(id);
     if (!ms[k].borrowed)
         pack_close(&pk);
-    free(state), free(buf), free(used);
-    state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL;
+    free(state), free(buf), free(used), free(rit);
+    state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL, rit = NULL, nres = 0;
     bind(was == k ? 0 : was);
 }
 
@@ -214,13 +304,44 @@ static float box_d2(const MapCell *c, const float *p)
     return d2;
 }
 
-static void drop(unsigned i)
+/* What the bound instance k wants of item id with the player at pos: 2 load, 1 keep, 0 free; *key ranks it (lower
+ * first: squared metres) */
+static int it_want(int k, unsigned id, const float *pos, float *key)
 {
-    arena_free(buf[i], tab[i].bytes);
-    buf[i] = NULL;
-    state[i] = MS_NONE;
+    if (id < ncell) {
+        float d2 = box_d2(&tab[id], pos);
+        *key = d2;
+        return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
+    }
+    unsigned j = id - ncell;
+    if (j < ncell) {
+        float d2 = box_d2(&tab[j], pos);
+        *key = d2 * MS_RES_K;
+        return d2 < MS_RES_R * MS_RES_R ? 2 : d2 <= MS_RES_UNLOAD_R * MS_RES_UNLOAD_R;
+    }
+    if (j == ncell) {  /* the sky */
+        *key = 0;
+        return 2;
+    }
+    unsigned age = tex_age ? tex_age(k, rit[j].tag) : ~0u;
+    if (age <= 1)
+        used[id] = frame;  /* asked for: no eviction under it */
+    *key = age <= MS_TEX_KEEP ? MS_TEX_D * MS_TEX_D : 1e30f;
+    return age <= 1 ? 2 : age <= MS_TEX_KEEP;
+}
+
+static void drop(unsigned id)
+{
+    if (it_tex(id) && tex_set)
+        tex_set(sel, rit[id - ncell].tag, NULL);
+    unsigned n = it_bytes(id);
+    arena_free(buf[id], n);
+    buf[id] = NULL;
+    state[id] = MS_NONE;
     mapstream_stats.cells--;
-    mapstream_stats.bytes -= tab[i].bytes;
+    mapstream_stats.bytes -= n;
+    if (it_res(id))
+        *(it_tex(id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (n + 1023) >> 10;
 }
 
 static int ensure_arena(void)
@@ -229,7 +350,7 @@ static int ensure_arena(void)
         unsigned hf = heap_free();
         unsigned rs = MS_RESERVE + reserve_extra;
         arena_size = hf > rs + (1u << 20) ? hf - rs : 0;
-        arena_size = (arena_size < MS_POOL ? arena_size : MS_POOL) & ~63u;
+        arena_size = (arena_size < pool_max ? arena_size : pool_max) & ~63u;
         arena = arena_size ? memalign(64, arena_size) : NULL;
         printf("mapstream: arena %u KB (heap free %u KB)\n", arena ? arena_size >> 10 : 0, hf >> 10);
         if (!arena)
@@ -251,7 +372,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     int was = sel, forced = 0;
     unsigned forced_kb = 0;
     void *p;
-    /* no room even with every cell not drawn this frame gone: keep them all (a block lite set retried each frame
+    /* no room even with every item not drawn this frame gone: keep them all (a block lite set retried each frame
      * dropped 1.4 MB of drawn cells per try and never fit; 2026-11-03, ISO of 9e6dd67) */
     unsigned room = 0;
     for (unsigned i = 0; i < nholes; i++)
@@ -259,29 +380,29 @@ void *mapstream_alloc(unsigned n, const float pos[3])
             room += hole_off[i] + hole_len[i] > arena_size ? arena_size - hole_off[i] : hole_len[i];
     for (int k = 0; k < MS_INST && room < n; k++) {
         bind(k);
-        for (unsigned i = 0; i < ncell; i++)
-            if (state[i] == MS_READY && used[i] != frame)
-                room += (tab[i].bytes + 63) & ~63u;
+        for (unsigned id = 0; id < it_n(); id++)
+            if (state[id] == MS_READY && used[id] != frame)
+                room += (it_bytes(id) + 63) & ~63u;
     }
     bind(was);
     if (room < n)
         return NULL;
-    /* drop the farthest cell no chain reads (any distance) until n bytes fit. When every cell left was drawn in the
-     * last frames (the player stands among them), drop drawn ones too: callers run in the update phase (enemy.c
-     * stream_types, world.c), after main.c's end-of-frame vu1_wait and before this frame's map_draw, so once VIF1 is
-     * idle no chain reads a cell not handed out this frame. Without it a 579 KB c2540 model.bin found no room in the
-     * Burg and the heap fallback failed on fragmentation (40-209 OUT OF RAM per 30-minute soak, 2026-11-01). The
-     * dropped cells draw their coarse level until they stream back. */
+    /* drop the farthest item no chain reads (any distance; resident cells ranked as mapstream_update ranks them)
+     * until n bytes fit. When every item left was drawn in the last frames (the player stands among them), drop
+     * drawn ones too: callers run in the update phase (enemy.c stream_types, world.c), after main.c's end-of-frame
+     * vu1_wait and before this frame's map_draw, so once VIF1 is idle no chain reads an item not handed out this
+     * frame. Without it a 579 KB c2540 model.bin found no room in the Burg and the heap fallback failed on
+     * fragmentation (40-209 OUT OF RAM per 30-minute soak, 2026-11-01). Dropped items stream back. */
     while (!(p = arena_alloc(n, 1))) {
         int far = -1, far_k = 0;
-        float fd = -1;
+        float fd = -1, key;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
-            for (unsigned i = 0; i < ncell; i++)
-                if (state[i] == MS_READY && (forced ? used[i] != frame : frame - used[i] > 2)) {
-                    float d2 = box_d2(&tab[i], pos);
-                    if (d2 > fd)
-                        far = i, far_k = k, fd = d2;
+            for (unsigned id = 0; id < it_n(); id++)
+                if (state[id] == MS_READY && (forced ? used[id] != frame : frame - used[id] > 2)) {
+                    it_want(k, id, pos, &key);
+                    if (key > fd)
+                        far = id, far_k = k, fd = key;
                 }
         }
         if (far < 0 && !forced) {
@@ -292,7 +413,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         if (far < 0)
             break;
         bind(far_k);
-        forced_kb += forced ? tab[far].bytes >> 10 : 0;
+        forced_kb += forced ? it_bytes(far) >> 10 : 0;
         drop(far);
     }
     bind(was);
@@ -360,16 +481,16 @@ int mapstream_reclaim(void *p, unsigned n)
         return 1;
     unsigned long long o = (unsigned)(a - arena), e = o + n;
     int was = sel;
-    for (int k = 0; k < MS_INST; k++) {  /* the cells in it go (the caller drains the chains before reusing it) */
+    for (int k = 0; k < MS_INST; k++) {  /* the items in it go (the caller drains the chains before reusing it) */
         bind(k);
-        for (unsigned i = 0; i < ncell; i++) {
-            unsigned long long b = (unsigned)((unsigned char *)buf[i] - arena);
-            if (buf[i] && b < e && b + tab[i].bytes > o) {
-                if (state[i] == MS_READING) {  /* mapstream_update collects it first */
+        for (unsigned id = 0; id < it_n(); id++) {
+            unsigned long long b = (unsigned)((unsigned char *)buf[id] - arena);
+            if (buf[id] && b < e && b + it_bytes(id) > o) {
+                if (state[id] == MS_READING) {  /* mapstream_update collects it first */
                     bind(was);
                     return 0;
                 }
-                drop(i);
+                drop(id);
             }
         }
     }
@@ -410,6 +531,41 @@ int mapstream_reclaim(void *p, unsigned n)
     return 1;
 }
 
+/* the read in flight landed (r bytes) */
+static void collect(int r)
+{
+    bind(reading_inst);
+    unsigned id = reading, n = it_bytes(id);
+    reading = -1;
+    mapstream_stats.pending = 0;
+    if (r == (int)n) {
+        InvalidDCache(buf[id], (char *)buf[id] + n - 1);  /* drop stale lines over the DMA'd data */
+        state[id] = MS_READY;
+        used[id] = 0;
+        mapstream_stats.loads++;
+        mapstream_stats.ms_last = (ticks() - t_read) / 294912;
+        if (it_tex(id)) {
+            if (tex_set)
+                tex_set(reading_inst, rit[id - ncell].tag, buf[id]);
+        } else {
+            printf("mapstream: %s %d.%u %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
+                   it_res(id) ? "resident cell" : "cell", reading_inst, it_res(id) ? id - ncell : id, n >> 10,
+                   mapstream_stats.ms_last, mapstream_stats.cells, mapstream_stats.bytes >> 10, mapstream_stats.res_kb,
+                   mapstream_stats.tex_kb);
+        }
+    } else {
+        printf("mapstream: item %d.%u read %d of %u bytes\n", reading_inst, id, r, n);
+        arena_free(buf[id], n);
+        buf[id] = NULL;
+        state[id] = MS_FAILED;
+        mapstream_stats.fails++;
+        mapstream_stats.cells--;
+        mapstream_stats.bytes -= n;
+        if (it_res(id))
+            *(it_tex(id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (n + 1023) >> 10;
+    }
+}
+
 void mapstream_update(const float pos[3])
 {
     int any = 0, was = sel;
@@ -424,75 +580,59 @@ void mapstream_update(const float pos[3])
     }
     frame++;
     int r;
-    if (reading >= 0 && pack_async_done(&r)) {
-        bind(reading_inst);
-        unsigned i = reading;
-        reading = -1;
-        mapstream_stats.pending = 0;
-        if (r == (int)tab[i].bytes) {
-            InvalidDCache(buf[i], (char *)buf[i] + tab[i].bytes - 1);  /* drop stale lines over the DMA'd data */
-            state[i] = MS_READY;
-            used[i] = 0;
-            mapstream_stats.loads++;
-            mapstream_stats.ms_last = (ticks() - t_read) / 294912;
-            printf("mapstream: cell %d.%u %u KB in %u ms, %u cells %u KB loaded\n", reading_inst, i, tab[i].bytes >> 10,
-                   mapstream_stats.ms_last, mapstream_stats.cells, mapstream_stats.bytes >> 10);
-        } else {
-            printf("mapstream: cell %d.%u read %d of %u bytes\n", reading_inst, i, r, tab[i].bytes);
-            arena_free(buf[i], tab[i].bytes);
-            buf[i] = NULL;
-            state[i] = MS_FAILED;
-            mapstream_stats.fails++;
-            mapstream_stats.cells--;
-            mapstream_stats.bytes -= tab[i].bytes;
-        }
-    }
-    /* free far cells no chain still reads; pick the nearest missing cell in range over every instance */
+    if (reading >= 0 && pack_async_done(&r))
+        collect(r);
+    /* free far items no chain still reads; pick the most wanted missing item over every instance */
     int want = -1, want_k = 0;
-    float wd = MS_LOAD_R * MS_LOAD_R;
+    float wd = 1e30f, key;
     for (int k = 0; k < MS_INST; k++) {
         bind(k);
-        for (unsigned i = 0; i < ncell; i++) {
-            if (!tab[i].bytes)
+        for (unsigned id = 0; id < it_n(); id++) {
+            if (!it_bytes(id) || state[id] == MS_READING || state[id] == MS_FAILED)
                 continue;
-            float d2 = box_d2(&tab[i], pos);
-            if (state[i] == MS_READY && d2 > MS_UNLOAD_R * MS_UNLOAD_R && frame - used[i] > 2)
-                drop(i);
-            else if (state[i] == MS_NONE && d2 < wd)
-                want = i, want_k = k, wd = d2;
+            int w = it_want(k, id, pos, &key);
+            if (state[id] == MS_READY && !w && frame - used[id] > 2)
+                drop(id);
+            else if (state[id] == MS_NONE && w == 2 && key < wd)
+                want = id, want_k = k, wd = key;
         }
     }
-    if (want < 0 || reading >= 0) {
+    if (want < 0 || reading >= 0 || hold) {
         bind(was);
         return;
     }
-    /* make room in the arena: drop the farthest loaded cell outside the load range until the blob fits */
+    /* make room in the arena: drop the least wanted loaded item ranked below the one wanted until its blob fits */
     bind(want_k);
-    unsigned wbytes = tab[want].bytes;
+    unsigned wbytes = it_bytes(want);
     void *p;
     while (!(p = arena_alloc(wbytes, 0))) {
         int far = -1, far_k = 0;
-        float fd = MS_LOAD_R * MS_LOAD_R;
+        float fd = wd;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
-            for (unsigned i = 0; i < ncell; i++)
-                if (state[i] == MS_READY && frame - used[i] > 2) {
-                    float d2 = box_d2(&tab[i], pos);
-                    if (d2 > fd)
-                        far = i, far_k = k, fd = d2;
+            for (unsigned id = 0; id < it_n(); id++)
+                if (state[id] == MS_READY && frame - used[id] > 2) {
+                    it_want(k, id, pos, &key);
+                    if (key > fd)
+                        far = id, far_k = k, fd = key;
                 }
         }
         if (far < 0) {
+            if (!room_fail++)
+                printf("mapstream: no room for item %d.%u (%u KB): arena full of nearer items\n", want_k, want,
+                       wbytes >> 10);
+            mapstream_stats.room_fails++;
             bind(was);
-            return;  /* arena full of cells in range: the coarse level stays for this one */
+            return;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
         bind(far_k);
         drop(far);
     }
+    room_fail = 0;
     bind(want_k);
     buf[want] = p;
-    if (!pack_read_async(&pk, base + tab[want].off, buf[want], tab[want].bytes)) {
-        arena_free(buf[want], tab[want].bytes);
+    if (!pack_read_async(&pk, it_off(want), buf[want], wbytes)) {
+        arena_free(buf[want], wbytes);
         buf[want] = NULL;
         bind(was);
         return;
@@ -502,9 +642,27 @@ void mapstream_update(const float pos[3])
     reading_inst = want_k;
     t_read = ticks();
     mapstream_stats.cells++;
-    mapstream_stats.bytes += tab[want].bytes;
+    mapstream_stats.bytes += wbytes;
+    if (it_res(want))
+        *(it_tex(want) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (wbytes + 1023) >> 10;
     mapstream_stats.pending = 1;
     bind(was);
+}
+
+int mapstream_busy(const float pos[3], float r)
+{
+    if (reading >= 0)
+        return 1;
+    if (room_fail)
+        return 0;
+    int was = sel, busy = 0;
+    for (int k = 0; k < MS_INST && !busy; k++) {
+        bind(k);
+        for (unsigned j = 0; j <= ncell && j < nres && !busy; j++)
+            busy = state[ncell + j] == MS_NONE && rit[j].bytes && (j == ncell || box_d2(&tab[j], pos) < r * r);
+    }
+    bind(was);
+    return busy;
 }
 
 const void *mapstream_get(unsigned i)
@@ -513,4 +671,12 @@ const void *mapstream_get(unsigned i)
         return NULL;
     used[i] = frame;
     return buf[i];
+}
+
+const unsigned char *mapstream_res(unsigned i)
+{
+    if (i > ncell || i >= nres || state[ncell + i] != MS_READY)
+        return NULL;
+    used[ncell + i] = frame;
+    return (const unsigned char *)buf[ncell + i] - rit[i].rel;
 }
