@@ -124,6 +124,7 @@ int map_vu1_batches, map_ee_tris;
  * follow the instance the player stands in (pfog_*). */
 static const unsigned char *streams;
 static int res_cells;
+static unsigned short *citem;  /* res_cells: per resident chunk its mapstream item (res_open) */
 static int tex_base, cur_inst;
 static const FogRow *pfog_row;
 static unsigned pfog_rows;
@@ -132,11 +133,12 @@ static int map_inst_of(int col_block);
 static int inst_col_block(int k);
 static int pinst;  /* the instance the player stands in (sky, fog rows) */
 
-/* the selected instance's streams for the resident chunks of cell ci (ci = nctab: the sky), or NULL */
-static const unsigned char *res_base(unsigned ci)
+/* the selected instance's streams for resident chunk j, or NULL while its item is not in */
+static const unsigned char *res_base(unsigned j)
 {
-    return res_cells ? mapstream_res(ci) : streams;
+    return res_cells ? mapstream_res(citem[j]) : streams;
 }
+
 
 static void fog_ease(float rate)
 {
@@ -611,6 +613,7 @@ typedef struct {
     Cell *cells;
     int ncells, nsky;
     int res_cells;
+    unsigned short *citem;
     int on, col_block;
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
@@ -632,7 +635,7 @@ static void save_inst(MapInst *m)
     m->fog_row = fog_row, m->fog_tri = fog_tri, m->fog_rows = fog_rows, m->fog_ntris = fog_ntris;
     m->navv = navv, m->navt = navt, m->ntex = ntex, m->tex_base = tex_base;
     m->indexed = indexed, m->order = order, m->sky = sky, m->cells = cells, m->ncells = ncells, m->nsky = nsky;
-    m->res_cells = res_cells;
+    m->res_cells = res_cells, m->citem = citem;
 }
 
 static void load_inst(const MapInst *m)
@@ -641,7 +644,7 @@ static void load_inst(const MapInst *m)
     fog_row = m->fog_row, fog_tri = m->fog_tri, fog_rows = m->fog_rows, fog_ntris = m->fog_ntris;
     navv = m->navv, navt = m->navt, ntex = m->ntex, tex_base = m->tex_base;
     indexed = m->indexed, order = m->order, sky = m->sky, cells = m->cells, ncells = m->ncells, nsky = m->nsky;
-    res_cells = m->res_cells;
+    res_cells = m->res_cells, citem = m->citem;
 }
 
 static void map_select(int k)
@@ -694,7 +697,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     fog_tri = (const unsigned char *)(fog_row + fog_rows);
     navv = (const float *)(map_bin + hdr->navv_off);
     navt = (const unsigned short *)(map_bin + hdr->navt_off);
-    streams = res, res_cells = 0;
+    streams = res, res_cells = 0, citem = NULL;
     ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
     inst[k].on = 1, inst[k].col_block = col_block;
     if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
@@ -755,7 +758,8 @@ void map_block_drop(int k)
     if (pfog_row == fog_row)  /* the player's rows were this block's: back to the boot block's */
         pfog_row = inst[0].fog_row ? inst[0].fog_row : NULL, pfog_rows = inst[0].fog_row ? inst[0].fog_rows : 0,
         fog_area = 0;
-    hdr = NULL, ctab = NULL, nctab = 0, streams = NULL, ntex = 0, res_cells = 0;
+    free(citem);
+    hdr = NULL, ctab = NULL, nctab = 0, streams = NULL, ntex = 0, res_cells = 0, citem = NULL;
     inst[k].on = 0;
     map_select(was == k ? 0 : was);
 }
@@ -782,31 +786,40 @@ static unsigned chunk_range(unsigned a, unsigned b, unsigned *lo)
 }
 
 /* World blocks: the selected instance k's resident level as mapstream items (mapstream_res_open) instead of one
- * mapres.bin in a full pool: per cell the streams of its resident chunks (grouped by cell in the chunk table), the
- * sky chunks' streams, and each texture's mip 0 that tools/mapsplit.py moved into mapres.bin. A block without it
- * draws its near cells only. */
+ * mapres.bin in a full pool: per cell the streams of its resident chunks (grouped by cell in the chunk table) in
+ * items of whole chunks up to RES_ITEM bytes, the sky chunks' the same way, and each texture's mip 0 that
+ * tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
+ * 2.2 MB as one item found no hole with 4 MB of the arena free (largest hole 0.9-1 MB; ISO runs 2026-11-05); ASSUMED
+ * size, small enough to fit the holes near cells leave. */
+#define RES_ITEM (128u << 10)
 static void res_open(int k, const void *pack)
 {
     unsigned roff, rsize;
     if (!pack_entry_raw((Pack *)pack, "mapres.bin", &roff, &rsize) || !rsize)
         return;
-    unsigned n = nctab + 1 + (unsigned)ntex;
+    unsigned n = hdr->chunks + 1 + (unsigned)ntex;
     MapResItem *it = malloc(n * sizeof *it);
-    if (!it)
+    citem = malloc((hdr->chunks + 1) * sizeof *citem);
+    if (!it || !citem || n > 65535) {
+        free(it), free(citem);
+        citem = NULL;
         return;
-    unsigned m = 0, bad = 0;
-    for (unsigned i = 0; i < nctab; i++) {
-        unsigned lo, hi = chunk_range(ctab[i].first, ctab[i].first + ctab[i].count, &lo);
-        it[m++] = (MapResItem){roff + lo, lo, hi - lo, i};
-        bad |= hi > rsize;
     }
-    {  /* the sky chunks follow the cells' (export_map.py res_order) */
-        unsigned last = 0;
-        for (unsigned i = 0; i < nctab; i++)
-            last = ctab[i].first + ctab[i].count > last ? ctab[i].first + ctab[i].count : last;
-        unsigned lo, hi = chunk_range(last, hdr->chunks, &lo);
-        it[m++] = (MapResItem){roff + lo, lo, hi - lo, nctab};
-        bad |= hi > rsize;
+    unsigned m = 0, bad = 0, last = 0;
+    for (unsigned i = 0; i <= nctab; i++) {  /* cells, then (i = nctab) the sky chunks after them (res_order) */
+        unsigned a = i < nctab ? ctab[i].first : last, e = i < nctab ? a + ctab[i].count : hdr->chunks;
+        if (i < nctab)
+            last = e > last ? e : last;
+        for (unsigned j = a; j < e;) {  /* whole chunks [j, g) up to RES_ITEM bytes (at least one) */
+            unsigned lo, hi = chunk_range(j, j + 1, &lo), g = j + 1, l2, h2;
+            while (g < e && (h2 = chunk_range(g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
+                hi = h2 > hi ? h2 : hi, g++;
+            for (unsigned c = j; c < g; c++)
+                citem[c] = (unsigned short)m;
+            it[m++] = (MapResItem){roff + lo, lo, hi - lo, i < nctab ? i : MS_RES_SKY};
+            bad |= hi > rsize;
+            j = g;
+        }
     }
     const unsigned char *te = map_bin + hdr->tex_off;
     for (int t = 0; t < ntex; t++) {  /* texmap.py entry: u16 w, h; u8 psm; ...; u32 pix[0] at +16 */
@@ -815,7 +828,7 @@ static void res_open(int k, const void *pack)
         if (!(p0 & TC_RES))
             continue;
         unsigned b = e[4] == GS_PSM_T4 ? w * h / 2 : w * h;
-        it[m++] = (MapResItem){roff + (p0 & ~TC_RES), p0 & ~TC_RES, b, (unsigned)t};
+        it[m++] = (MapResItem){roff + (p0 & ~TC_RES), p0 & ~TC_RES, b, MS_RES_TEX | (unsigned)t};
         bad |= (p0 & ~TC_RES) + b > rsize;
     }
     if (bad)
@@ -824,6 +837,8 @@ static void res_open(int k, const void *pack)
         res_cells = 1;
         mapstream_tex_hooks(tex_hook_age, tex_hook_set);
     }
+    if (!res_cells)
+        free(citem), citem = NULL;
     free(it);
 }
 
@@ -840,6 +855,15 @@ int map_block_stream_open(int k, const void *pack)
     return r;
 }
 
+/* the selected instance has a map and its sky's streams are in (the first sky chunk's item) */
+static int sky_in(void)
+{
+    if (!hdr)
+        return 0;
+    build_index();
+    return nsky && res_base(sky[0]);
+}
+
 int map_draw(V3 eye)
 {
     GSGLOBAL *gs = gsg;
@@ -849,17 +873,16 @@ int map_draw(V3 eye)
     /* sky and fog colours from the player's block; while its sky streams are not in yet the sky of one that has them */
     int sk = pinst;
     map_select(pinst);
-    if (!res_base(nctab))
+    if (!sky_in())
         for (int k = 0; k < MAP_INST; k++)
             if (k == 0 || inst[k].on) {
                 map_select(k);
-                if (hdr && res_base(nctab)) {
+                if (sky_in()) {
                     sk = k;
                     break;
                 }
             }
     map_select(sk);
-    const unsigned char *sky_streams = hdr ? res_base(nctab) : NULL;
     build_index();
     bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
     map_vu1_batches = map_ee_tris = 0;
@@ -891,7 +914,7 @@ int map_draw(V3 eye)
     vu1_gs_regs(1, r);
     r_set_fog(0, sky_f, sky_f, sky_f, sky_col, col);
     r_set_fog_edge(0);
-    for (int pass = 0; pass < 2 && sky_streams; pass++) {  /* the player's block's sky */
+    for (int pass = 0; pass < 2; pass++) {  /* the player's block's sky (its streams once they are in) */
         if (pass)
             blend_regs(gs, CHUNK_BLEND);
         for (int i = 0; i < nsky; i++) {
@@ -902,9 +925,10 @@ int map_draw(V3 eye)
 #ifdef MAP_PANO_R
             continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
 #endif
-            int cls = visible(c, e, 1);
+            const unsigned char *sb = res_base(sky[i]);
+            int cls = sb ? visible(c, e, 1) : 0;
             if (cls)
-                drawn += draw_chunk(sky_streams, c, c->tris, cls, R_FOG | (pass ? R_BLEND : 0), sky[i]);
+                drawn += draw_chunk(sb, c, c->tris, cls, R_FOG | (pass ? R_BLEND : 0), sky[i]);
         }
     }
     blend_regs(gs, 0);
@@ -959,8 +983,11 @@ int map_draw(V3 eye)
                 continue;
             }
             /* DSM5: the near level when its blob is loaded (then the coarse chunks are skipped), else the coarse one;
-             * a world block's resident chunks only once their cell's streams are in (mapstream_res) */
-            const unsigned char *nb = NULL, *rb = res_base(ci);
+             * a world block's resident chunks once their item's streams are in (mapstream_res) */
+            const unsigned char *nb = NULL;
+            int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
+            for (unsigned j = ce->first; res_cells && j < (unsigned)ce->first + ce->count && !miss; j++)
+                miss = !res_base(order[j]);
             if (ctab) {
                 float d2 = 0;
                 for (int k = 0; k < 3; k++) {
@@ -970,12 +997,16 @@ int map_draw(V3 eye)
                 /* without the cell's resident streams its near cells draw as far as they are loaded */
                 float r = ce->near_on ? NEAR_DRAW_R + NEAR_HYST : NEAR_DRAW_R - NEAR_HYST;
                 ce->near_on = r > 0 && d2 < r * r;
-                nb = ce->near_on || !rb ? mapstream_get(ci) : NULL;
+                nb = ce->near_on || miss ? mapstream_get(ci) : NULL;
             }
             unsigned nnear = nb ? ctab[ci].near : 0;
             near_gid = nb ? ctab[ci].pad : 0;
-            for (unsigned j = rb ? ce->first : ce->first + ce->count; j < ce->first + ce->count + nnear; j++) {
+            for (unsigned j = streams || res_cells ? ce->first : ce->first + ce->count; j < ce->first + ce->count + nnear;
+                 j++) {
                 int is_near = j >= (unsigned)ce->first + ce->count;
+                const unsigned char *rb = is_near ? NULL : res_base(order[j]);
+                if (!is_near && !rb)
+                    continue;  /* its streams are not in */
                 const Chunk *c = is_near ? (const Chunk *)nb + (j - ce->first - ce->count) : &chunks[order[j]];
                 if (nb && !is_near && (c->flags & CHUNK_COARSE)) {
                     DBGW(D_SWAP, 0, order[j]);

@@ -118,7 +118,7 @@ static void bind(int k)
 static inline unsigned it_n(void) { return ncell + nres; }
 static inline unsigned it_bytes(unsigned id) { return id < ncell ? tab[id].bytes : rit[id - ncell].bytes; }
 static inline unsigned it_off(unsigned id) { return id < ncell ? base + tab[id].off : rit[id - ncell].off; }
-static inline int it_tex(unsigned id) { return id > 2 * ncell; }  /* a mip 0 texture (ncell + ncell is the sky) */
+static inline int it_tex(unsigned id) { return id >= ncell && (rit[id - ncell].tag & MS_RES_TEX); }  /* a mip 0 */
 static inline int it_res(unsigned id) { return id >= ncell; }
 
 static unsigned char *arena;
@@ -279,7 +279,7 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
 
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems)
 {
-    if (k < 0 || k >= MS_INST || nitems < n + 1)
+    if (k < 0 || k >= MS_INST || !nitems)
         return 0;
     int was = sel;
     bind(k);
@@ -308,11 +308,11 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     memset(used + ncell, 0, nitems * sizeof *used);
     nres = nitems;
     scan_frame = 0;
-    unsigned cb = 0, tb = 0;
+    unsigned cb = 0, tb = 0, nt = 0;
     for (unsigned j = 0; j < nitems; j++)
-        *(j > n ? &tb : &cb) += items[j].bytes;
-    printf("mapstream: instance %d resident level per cell: %u cells + sky %u KB, %u mip 0 textures %u KB\n", k, n,
-           cb >> 10, nitems - n - 1, tb >> 10);
+        *(items[j].tag & MS_RES_TEX ? &tb : &cb) += items[j].bytes, nt += !!(items[j].tag & MS_RES_TEX);
+    printf("mapstream: instance %d resident level per cell: %u cells + sky in %u items %u KB, %u mip 0 textures %u KB\n",
+           k, n, nitems - nt, cb >> 10, nt, tb >> 10);
     bind(was);
     return 1;
 }
@@ -399,17 +399,17 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
             return d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
     }
-    unsigned j = id - ncell;
-    if (j < ncell) {
-        float d2 = box_d2(&tab[j], pos);
+    unsigned tag = rit[id - ncell].tag;
+    if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && tag < ncell) {  /* a cell's resident chunks (or a part of them) */
+        float d2 = box_d2(&tab[tag], pos);
         *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER);
         return d2 < MS_RES_R * MS_RES_R ? 2 : d2 <= MS_RES_UNLOAD_R * MS_RES_UNLOAD_R;
     }
-    if (j == ncell) {  /* the sky */
+    if (!(tag & MS_RES_TEX)) {  /* the sky */
         *key = 0;
         return 2;
     }
-    unsigned age = tex_age ? tex_age(k, rit[j].tag) : ~0u;
+    unsigned age = tex_age ? tex_age(k, tag & ~MS_RES_TEX) : ~0u;
     if (age <= 1)
         used[id] = frame;  /* asked for: no eviction under it */
     *key = age <= MS_TEX_KEEP ? MS_TEX_D * MS_TEX_D : 1e30f;
@@ -419,7 +419,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
 static void drop(unsigned id)
 {
     if (it_tex(id) && tex_set)
-        tex_set(sel, rit[id - ncell].tag, NULL);
+        tex_set(sel, rit[id - ncell].tag & ~MS_RES_TEX, NULL);
     unsigned n = it_bytes(id);
     arena_free(buf[id], n);
     buf[id] = NULL;
@@ -632,7 +632,7 @@ static void collect(int r)
         mapstream_stats.ms_last = (ticks() - t_read) / 294912;
         if (it_tex(id)) {
             if (tex_set)
-                tex_set(reading_inst, rit[id - ncell].tag, buf[id]);
+                tex_set(reading_inst, rit[id - ncell].tag & ~MS_RES_TEX, buf[id]);
         } else {
             printf("mapstream: %s %d.%u %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
                    it_res(id) ? "resident cell" : "cell", reading_inst, it_res(id) ? id - ncell : id, n >> 10,
@@ -767,14 +767,17 @@ void mapstream_update(const float pos[3])
     bind(was);
 }
 
-/* resident item j (cell or sky) of the bound instance k counts for a settle: the sky, a cell within r, or within
- * r_focus for the block the player is in */
+/* resident item j of the bound instance k counts for a settle: the sky, a cell's within r, or within r_focus for the
+ * block the player is in (no mip 0 texture) */
 static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus)
 {
-    if (j == ncell)
+    unsigned tag = rit[j].tag;
+    if (tag & MS_RES_TEX)
+        return 0;
+    if (tag & MS_RES_SKY)
         return 1;
     float rr = k == focus && r_focus > r ? r_focus : r;
-    return j < ncell && box_d2(&tab[j], pos) < rr * rr;
+    return tag < ncell && box_d2(&tab[tag], pos) < rr * rr;
 }
 
 int mapstream_busy(const float pos[3], float r, float r_focus)
@@ -792,7 +795,7 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
         return 0;
     for (int k = 0; k < MS_INST && !busy; k++) {
         bind(k);
-        for (unsigned j = 0; j <= ncell && j < nres && !busy; j++)
+        for (unsigned j = 0; j < nres && !busy; j++)
             busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus);
     }
     bind(was);
@@ -809,7 +812,7 @@ const void *mapstream_get(unsigned i)
 
 const unsigned char *mapstream_res(unsigned i)
 {
-    if (i > ncell || i >= nres || state[ncell + i] != MS_READY)
+    if (i >= nres || state[ncell + i] != MS_READY)
         return NULL;
     used[ncell + i] = frame;
     return (const unsigned char *)buf[ncell + i] - rit[i].rel;

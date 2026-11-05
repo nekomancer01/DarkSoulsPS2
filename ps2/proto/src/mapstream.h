@@ -39,16 +39,19 @@ int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent t
 void mapstream_lend(void *p, unsigned n);
 int mapstream_reclaim(void *p, unsigned n);
 /* World blocks: the map's resident level per cell instead of one piece (TECH_DEBT world-2 / world-5). Items of
- * instance k, each a byte range of the block's raw mapres.bin (tools/mapsplit.py): [0, n) the resident chunks' streams
- * of cell i (export_map.py writes them grouped by cell), [n] the sky chunks' streams, then mip 0 pixels of single
- * textures (tag = the texture's index). off = offset in the pack, rel = offset in mapres.bin (chunk records address
- * the streams from there). Cells load within MS_RES_R of the player, nearest first; the sky always; a texture while
- * the tex_age hook says it was asked for at mip 0 lately (map.c / texcache.c tc_res_age), handed over with tex_set.
- * Call after mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
+ * instance k, each a byte range of the block's raw mapres.bin (tools/mapsplit.py): the resident chunks' streams of
+ * cell `tag` (export_map.py writes them grouped by cell; a large cell comes as several items of whole chunks, so no
+ * item needs one big arena hole), the sky chunks' (tag MS_RES_SKY), and mip 0 pixels of single textures (MS_RES_TEX |
+ * the texture's index). off = offset in the pack, rel = offset in mapres.bin (chunk records address the streams from
+ * there). Cells load within MS_RES_R of the player, nearest first; the sky always; a texture while the tex_age hook
+ * says it was asked for at mip 0 lately (map.c / texcache.c tc_res_age), handed over with tex_set. Call after
+ * mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
+#define MS_RES_SKY 0x40000000u
+#define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
-/* the selected instance's cell i (i = n: the sky) as a base to add the chunk records' stream offsets to, or NULL
- * while it is not loaded; marks it used this frame */
+/* the selected instance's item i as a base to add its chunk records' stream offsets to, or NULL while it is not
+ * loaded; marks it used this frame */
 const unsigned char *mapstream_res(unsigned i);
 /* frames since texture tag of instance k was last asked for at mip 0 (~0u never); its mip 0 pixels, or NULL when
  * they go */
