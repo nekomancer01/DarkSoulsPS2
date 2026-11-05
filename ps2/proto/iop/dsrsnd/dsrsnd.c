@@ -5,7 +5,11 @@
  * the file (ioman: host: under PCSX2, cdrom0: from a disc) and DMAs it over the half just played (channel 1). Block
  * flags are rewritten for the ring: the first block of half 0 sets the loop start, the last block of half 1 jumps back
  * to it. The same thread loads sample banks (SNDF_LOAD): SND_LOAD_STEP bytes from the file into SPU2 RAM per pass, so
- * the EE spends neither RAM nor time on them. libsd calls of both threads go through one semaphore. */
+ * the EE spends neither RAM nor time on them. libsd calls of both threads go through one semaphore.
+ * It is also the EE's disc server (dsrsnd_rpc.h SNDF_DISC_*): a third thread, below every other one, reads the EE's
+ * requests one SND_DISC_PAGE at a time. The two disc threads take turns at the drive through cd_sema (the BIOS CD file
+ * system takes one reader at a time); the stream thread never waits for it: when the drive is busy it asks for it
+ * (cd_want) and the disc thread leaves it after its current page. */
 #include "irx_imports.h"
 #include "dsrsnd_rpc.h"
 
@@ -14,19 +18,24 @@ IRX_ID("dsrsnd", 1, 0);
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
 #define POLL_US 4000  /* stream thread period */
 #define STREAM_PRIO 30       /* the stream thread: above the RPC threads (40-42), below the CD driver */
-#define STREAM_PRIO_DISC 45  /* the same while it holds the disc lock: below the RPC threads */
+#define STREAM_PRIO_DISC 45  /* the same while it holds the drive: below the RPC threads (the disc thread is 120) */
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
  * pulls the drive away from the game's own pack reads and back (two seeks); with 16 KB refills the looping area
  * ambience alone cut a cdrom0: boot load from 7 s to 37 s in PCSX2 (2026-11-03). */
 #define STREAM_RA (128 * 1024)
-/* Refills come from the read-ahead without the disc lock; the lock is only taken to top the read-ahead up, from the
+/* Refills come from the read-ahead without the drive; the drive is only taken to top the read-ahead up, from the
  * moment it is down to half (~2.6 s of 22 kHz stereo left). Before (2026-11-05, ISO world_route) every refill waited
- * for the lock while the EE streamed the map: 298 of 358 s locked out, 137 underruns. */
+ * for the EE's disc lock while the EE streamed the map: 298 of 358 s locked out, 137 underruns. */
 #define STREAM_RA_TOP (STREAM_RA / 2)
 #define STREAM_RA_ALSO (STREAM_RA * 3 / 4)  /* the others top up with it from here */
-/* below this the stream is starving (~1.3 s left, or a half it cannot fill): status.starving tells the EE to hold
- * its next background read back so the top-up gets the drive (src/pack.c pack_disc_yield) */
+/* below this the stream is starving (~1.3 s left, or a half it cannot fill): reported in status.starving */
 #define STREAM_RA_LOW (STREAM_RA / 4)
+/* ioman's file table holds 16 handles (2 taken before the game), shared by the EE's packs (world blocks, menu.pak,
+ * pack.c's job cache) and this module's streams and bank load: in a world build with enemies streaming in it ran full
+ * (ISO 2026-11-05, smoke: 11 EE handles + 3 streams). An open of this module's own that finds it full is retried on
+ * later passes for up to OPEN_RETRY_MS instead of failing the stream or bank. */
+#define EMFILE_ 24
+#define OPEN_RETRY_MS 10000
 #define ADSR1_FLAT SD_SET_ADSR1(SD_ADSR_AR_LINEARi, 0, 0xf, 0xf)  /* instant attack, no decay, sustain level max */
 #define ADSR2_FLAT(rr) SD_SET_ADSR2(SD_ADSR_SR_LINEARi, 0x7f, SD_ADSR_RR_LINEARd, (rr))  /* sustain held */
 
@@ -37,17 +46,16 @@ static SifRpcDataQueue_t queue[3];
 static SifRpcServerData_t server[3];
 static unsigned int rpc_buf[3][(sizeof(SndFrame) + 63) / 4] __attribute__((aligned(64)));
 static SndStatus status __attribute__((aligned(64)));
-static SndDisc disc_reply __attribute__((aligned(64)));
 static int sd_sema = -1;
-/* the disc lock (dsrsnd_rpc.h SNDF_DISC_*): this module's open / read / lseek / close of the disc happen only in the
- * stream thread while it holds it, taken with PollSema so that thread never waits on the EE (which may itself wait
- * on the RPC threads) */
-static int disc_sema = -1;
+/* the drive (ioman: cdrom0:, or host:): the stream thread and the disc thread take turns, one call at a time */
+static int cd_sema = -1;
+static volatile int cd_want;     /* the stream thread found the drive busy: the disc thread leaves it after its page */
+static unsigned int cd_want_ms;  /* when it first did */
 
 typedef struct {
     volatile int state;
     int fd, loop, channels, chunk, next_fill, silent;
-    int close_fd;  /* stopped by an RPC: closed by the stream thread once it has the disc */
+    int close_fd;  /* stopped by an RPC: closed by the stream thread once it has the drive */
     unsigned int offset, size, pos, spu_buf;
     unsigned char *buf;  /* chunk * channels */
     unsigned char *ra;   /* STREAM_RA bytes read ahead (NULL: no IOP RAM for it, read per refill) */
@@ -55,7 +63,8 @@ typedef struct {
     unsigned int rd_pos;          /* file position (0..size) of the next byte read into the read-ahead */
     unsigned int half_ms, last_fill;  /* one ring half's play time; when the last half was filled (ms) */
     int due, starved;    /* due: the voice left a half that is not refilled yet; starved: keyed off by an underrun */
-    SndStreamOpen req;   /* SNDS_OPENING: the open the stream thread does once it has the disc */
+    SndStreamOpen req;   /* SNDS_OPENING: the open the stream thread does once it has the drive */
+    unsigned int open_t0;  /* when its open first found ioman's file table full (0: it did not) */
 } Stream;
 static Stream streams[SND_STREAMS];
 static unsigned char *stream_mem;  /* SND_STREAMS x 2 x SND_STREAM_CHUNK_MAX, then SND_LOAD_STEP for loads */
@@ -63,6 +72,14 @@ static SndLoad load;               /* the bank load in progress (load_fd >= 0) o
 static int load_fd = -1, load_new;
 static unsigned int load_pos;
 static int stream_sema = -1;       /* guards streams[] between the two threads */
+/* The RPC threads only post stream opens / stops and bank loads here (req_sema, held for a copy); the stream thread
+ * takes them at the start of its next pass. Before, they waited for stream_sema, which the stream thread holds over
+ * its drive calls: a music change or bank load during a read-ahead top-up kept the EE's frame or ops RPC waiting for
+ * the whole read (frames of 200-480 ms after "snd: stream" / "snd: map", ISO world_cross 2026-11-05). */
+static int req_sema = -1;
+static SndStreamOpen open_req[SND_STREAMS];
+static int open_pend[SND_STREAMS], stop_pend[SND_STREAMS], load_pend;
+static SndLoad load_req;
 
 static inline void sd_lock(void) { WaitSema(sd_sema); }
 static inline void sd_unlock(void) { SignalSema(sd_sema); }
@@ -125,7 +142,7 @@ static inline int stream_ra_want(const Stream *s)
     return s->ra && !s->silent && (s->state == SNDS_PLAYING || s->state == SNDS_ENDING) && stream_ra_more(s);
 }
 
-/* Top the read-ahead up to full from the file (the caller holds the disc lock). Loops are unrolled into it: at the end
+/* Top the read-ahead up to full from the file (the caller holds the drive, cd_sema). Loops are unrolled into it: at the end
  * of a looping stream the read goes on from its start. Reads end on a sector boundary where they can. */
 static int stream_ra_fill(Stream *s)
 {
@@ -150,7 +167,7 @@ static int stream_ra_fill(Stream *s)
 }
 
 /* n bytes of the stream at the current position: from the read-ahead (the caller checked it holds them; no disc), or
- * without one from the file (the caller holds the disc lock, n <= what is left of the file: it wraps loops) */
+ * without one from the file (the caller holds the drive, n <= what is left of the file: it wraps loops) */
 static int stream_read(Stream *s, unsigned char *dst, unsigned int n)
 {
     if (!s->ra)
@@ -216,14 +233,20 @@ static int stream_fill(Stream *s, int slot, int h)
 }
 
 /* One step of the bank load: open it when new, then SND_LOAD_STEP bytes into SPU2 RAM */
+static unsigned int load_t0;  /* when the queued load first found the file table full (0: it did not) */
 static void load_step(void)
 {
     if (load_new) {
-        load_new = 0;
         if (load_fd >= 0)
             close(load_fd);
         load_fd = open(load.path, O_RDONLY);
         load_pos = 0;
+        if (load_fd == -EMFILE_ && (!load_t0 || now_ms() - load_t0 < OPEN_RETRY_MS)) {
+            load_t0 = load_t0 ? load_t0 : now_ms() | 1;
+            load_fd = -1;
+            return;  /* no handle free: again next pass */
+        }
+        load_new = 0, load_t0 = 0;
         if (load_fd < 0 || lseek(load_fd, load.offset, SEEK_SET) < 0) {
             printf("dsrsnd: load %s failed (%d)\n", load.path, load_fd);
             if (load_fd >= 0)
@@ -258,18 +281,237 @@ static void load_step(void)
     }
 }
 
+/* ---- disc server (dsrsnd_rpc.h SNDF_DISC_*) ----
+ * The pattern of the PS2 games that stream audio from the disc while they load (Jak & Daxter's OVERLORD, the 989snd
+ * "stream-safe" reads of Ratchet & Clank and Sly Cooper): one IOP thread owns the drive, the EE only queues requests
+ * and polls for their end, audio is served before any game read, and a long read is cut into pages so a refill never
+ * waits for more than one. Here the EE's requests sit in slots (the slot the EE chose), the most urgent and then the
+ * oldest is served one page per pass of the stream thread, read into one of DISC_BUFS IOP buffers and sent to the EE
+ * by SIF DMA while the next page is read. SIF DMA moves whole 16-byte qwords: the bytes of dst outside them travel in
+ * the request's SndDiscDone (edge), which goes last, on the same DMA channel, after the data it reports. */
+#define DISC_BUFS 3
+#define DISC_WAIT_LOG_MS 100  /* a gap between stream passes longer than this is logged (the plan's one-page bound) */
+typedef struct {
+    SndDiscReq r;
+    unsigned int done, order;  /* bytes sent; submission order (oldest first within a priority) */
+    volatile int live, cancel;
+} DiscJob;
+static DiscJob dq[SND_DISC_SLOTS];
+static unsigned int dq_order;
+static int dq_sema = -1;  /* dq[].live and .order between the RPC thread and the stream thread */
+static unsigned int ee_done;  /* EE physical address of its SndDiscDone ring, 0 before SNDF_DISC_INIT */
+static SndDiscDone done_rec[SND_DISC_SLOTS] __attribute__((aligned(64)));
+static unsigned char *dbuf[DISC_BUFS];  /* SND_DISC_PAGE + 16 bytes each */
+static int dbuf_dma[DISC_BUFS], dbuf_n, dbuf_next;
+static SndDiscStat dstat __attribute__((aligned(64)));
+
+static int dma_send(void *src, unsigned int ee, unsigned int size)
+{
+    SifDmaTransfer_t t = {.src = src, .dest = (void *)(ee & 0x1fffffff), .size = size, .attr = 0};
+    int st, id;
+    for (;;) {
+        CpuSuspendIntr(&st);
+        id = sceSifSetDma(&t, 1);
+        CpuResumeIntr(st);
+        if (id)
+            return id;
+        DelayThread(100);  /* the SIF DMA queue is full */
+    }
+}
+
+/* the disc thread takes the drive: after the stream thread, if it asked */
+static void cd_take(void)
+{
+    while (cd_want)
+        DelayThread(1000);
+    WaitSema(cd_sema);
+}
+
+static int disc_work(void)
+{
+    for (int i = 0; i < SND_DISC_SLOTS; i++)
+        if (dq[i].live)
+            return 1;
+    return 0;
+}
+
+/* the request in j ends with result res: its SndDiscDone goes to the EE behind its data */
+static void disc_finish(DiscJob *j, int res)
+{
+    int k = j->r.slot;
+    done_rec[k].result = res;
+    done_rec[k].seq = j->r.seq;
+    /* the slot is free before its record goes: the RPC thread runs above this one, and the EE reuses the slot as soon
+     * as it sees the record (a request into a slot still live here was dropped, a hang at boot) */
+    WaitSema(dq_sema);
+    j->live = 0;
+    SignalSema(dq_sema);
+    dstat.reqs++;
+    if (ee_done)
+        dma_send(&done_rec[k], ee_done + k * sizeof(SndDiscDone), sizeof(SndDiscDone));
+}
+
+/* One page of the read in j. Page ends are 16-byte aligned on the EE (the first page is shorter when dst is not), so
+ * only the first page has head bytes and only the last a tail. The page lands at the same address mod 16 in the IOP
+ * buffer as on the EE, so the qwords it DMAs are aligned on both sides. */
+static void disc_page(DiscJob *j)
+{
+    SndDiscReq *r = &j->r;
+    SndDiscDone *d = &done_rec[r->slot];
+    if (j->cancel || j->done >= r->size) {
+        disc_finish(j, j->cancel ? -1 : (int)j->done);
+        return;
+    }
+    unsigned int ee = r->dst + j->done, n = r->size - j->done;
+    if (n > SND_DISC_PAGE - (ee & 15))
+        n = SND_DISC_PAGE - (ee & 15);
+    int b = dbuf_next;
+    dbuf_next = (b + 1) % dbuf_n;
+    while (dbuf_dma[b] && sceSifDmaStat(dbuf_dma[b]) >= 0)  /* its last page still on its way */
+        DelayThread(100);
+    dbuf_dma[b] = 0;
+    unsigned char *p = dbuf[b] + (ee & 15);
+    cd_take();
+    int got = lseek(r->fd, r->offset + j->done, SEEK_SET) < 0 ? -1 : read(r->fd, p, n);
+    SignalSema(cd_sema);
+    if (got <= 0) {
+        disc_finish(j, j->done ? (int)j->done : got < 0 ? got : 0);
+        return;
+    }
+    unsigned int a = (ee + 15) & ~15u, e = (ee + got) & ~15u;
+    if (!j->done) {
+        unsigned int h = (a < ee + got ? a : ee + got) - ee;
+        memcpy(d->edge, p, h);
+        d->nhead = h, d->ntail = 0;
+    }
+    if (a < e)
+        dbuf_dma[b] = dma_send(p + (a - ee), a, e - a);
+    if (a <= e && ee + got > e) {  /* the tail: the last page (or a short read) */
+        d->ntail = ee + got - e;
+        memcpy(d->edge + d->nhead, p + (e - ee), d->ntail);
+    }
+    j->done += got;
+    dstat.pages++, dstat.kb += got >> 10;
+    if (got < (int)n || j->done >= r->size)
+        disc_finish(j, j->done);
+}
+
+/* the most urgent, then oldest queued request: open / close at once, a read one page further */
+static void disc_step(void)
+{
+    DiscJob *j = NULL;
+    WaitSema(dq_sema);
+    for (int i = 0; i < SND_DISC_SLOTS; i++) {
+        DiscJob *c = &dq[i];
+        if (c->live && (!j || c->r.prio < j->r.prio || (c->r.prio == j->r.prio && (int)(c->order - j->order) < 0)))
+            j = c;
+    }
+    SignalSema(dq_sema);
+    if (!j)
+        return;
+    switch (j->r.op) {
+    case SNDD_OPEN: {
+        char path[sizeof j->r.path];
+        strncpy(path, j->r.path, sizeof path - 1);
+        path[sizeof path - 1] = 0;
+        cd_take();
+        int fd = open(path, O_RDONLY);
+        SignalSema(cd_sema);
+        if (fd < 0)
+            printf("dsrsnd: disc open %s failed (%d)\n", path, fd);
+        disc_finish(j, fd);
+        break;
+    }
+    case SNDD_CLOSE: {
+        cd_take();
+        int r = close(j->r.fd);
+        SignalSema(cd_sema);
+        disc_finish(j, r);
+        break;
+    }
+    case SNDD_READ:
+        disc_page(j);
+        break;
+    default:
+        disc_finish(j, -1);
+        break;
+    }
+}
+
+/* SNDF_DISC_SUBMIT (RPC thread): into their slots; a cancel only marks its target */
+static void disc_submit(const SndDiscReq *q, int n)
+{
+    WaitSema(dq_sema);
+    for (int i = 0; i < n; i++) {
+        const SndDiscReq *r = &q[i];
+        if (r->slot >= SND_DISC_SLOTS)
+            continue;
+        DiscJob *j = &dq[r->slot];
+        if (r->op == SNDD_CANCEL) {
+            if (j->live && j->r.seq == r->seq)
+                j->cancel = 1;
+            continue;
+        }
+        if (j->live) {
+            printf("dsrsnd: disc slot %u busy (seq %u, new %u)\n", r->slot, j->r.seq, r->seq);
+            continue;
+        }
+        memcpy(&j->r, r, sizeof *r);
+        j->done = 0, j->cancel = 0, j->order = dq_order++;
+        j->live = 1;
+    }
+    SignalSema(dq_sema);
+    dstat.iop_free = QueryTotalFreeMemSize();
+}
+
+/* how long the stream thread waited for the drive (the disc thread's page in progress), while a stream played */
+static void cd_wait_note(unsigned int w)
+{
+    int play = 0;
+    for (int i = 0; i < SND_STREAMS; i++)
+        play |= streams[i].state == SNDS_PLAYING || streams[i].state == SNDS_ENDING;
+    if (!play)
+        return;
+    if (w > dstat.wait_max_ms)
+        dstat.wait_max_ms = w;
+    if (w > DISC_WAIT_LOG_MS) {
+        dstat.waits_100++;
+        printf("dsrsnd: streams waited %u ms for the drive\n", w);
+    }
+}
+
+/* the disc thread: below every other thread, so its waits in the CD driver never hold up an RPC (fileio's printf
+ * included: a busy stream thread delayed each EE printf by up to a page, ISO 2026-11-05) */
+static void disc_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (!disc_work())
+            DelayThread(POLL_US);
+        disc_step();
+    }
+}
+
 static void stream_start(Stream *s);
 
-/* the disc lock for this pass of the stream thread, taken on first use: 1 held, -1 the EE has it, 0 not asked yet */
+/* the drive for this pass of the stream thread, taken on first use: 1 held, -1 the disc thread reads a page (it
+ * leaves the drive after it: cd_want), 0 not asked yet */
 static int disc_take(int *d)
 {
     if (!*d) {
-        *d = PollSema(disc_sema) < 0 ? -1 : 1;
-        /* below the RPC threads while this thread reads: a cdrom0: read keeps its thread busy until the data is in,
-         * and at priority 30 that held the EE's frame and disc-lock RPCs back for the whole read (frames of 200-650 ms
-         * whenever a top-up ran, ISO world_route 2026-11-05) */
-        if (*d > 0)
+        if (PollSema(cd_sema) < 0) {
+            if (!cd_want)
+                cd_want_ms = now_ms();
+            cd_want = 1, *d = -1;
+        } else {
+            if (cd_want)
+                cd_wait_note(now_ms() - cd_want_ms);
+            cd_want = 0, *d = 1;
+            /* below the RPC threads while this thread reads: a cdrom0: read keeps its thread busy until the data is
+             * in, and at priority 30 that held the EE's frame RPCs back for the whole read (frames of 200-650 ms
+             * whenever a top-up ran, ISO world_route 2026-11-05) */
             ChangeThreadPriority(TH_SELF, STREAM_PRIO_DISC);
+        }
     }
     return *d > 0;
 }
@@ -303,12 +545,15 @@ static int stream_resume(Stream *s, int slot, unsigned int now)
     return 1;
 }
 
+static void take_requests(void);
+
 static void stream_thread(void *arg)
 {
     (void)arg;
     for (;;) {
         DelayThread(POLL_US);
         WaitSema(stream_sema);
+        take_requests();
         unsigned int now = now_ms(), starving = 0;
         int disc = 0;
         for (int i = 0; i < SND_STREAMS; i++) {
@@ -376,8 +621,8 @@ static void stream_thread(void *arg)
                 continue;
             }
         }
-        /* top the read-ahead up once one is down to half: the lock only now, and only if the EE is not reading. With
-         * the lock, every stream below STREAM_RA_ALSO tops up too: one trip of the drive for all of them, each one a
+        /* top the read-ahead up once one is down to half: the drive only now (after the disc thread's page in progress).
+         * With the drive, every stream below STREAM_RA_ALSO tops up too: one trip of the drive for all of them, each one a
          * seek away from the EE's reads and back */
         int top = 0;
         for (int i = 0; i < SND_STREAMS; i++) {
@@ -404,30 +649,47 @@ static void stream_thread(void *arg)
         if ((load_new || load_fd >= 0) && disc_take(&disc))
             load_step();  /* after the refills: a stream never waits for a bank */
         if (disc > 0) {
-            SignalSema(disc_sema);
+            SignalSema(cd_sema);
             ChangeThreadPriority(TH_SELF, STREAM_PRIO);
         }
         SignalSema(stream_sema);
     }
 }
 
-/* SNDF_STREAM: queue the open for the stream thread (it needs the disc) */
+/* SNDF_STREAM: queue the open for the stream thread (it needs the drive) */
 static void stream_open(const SndStreamOpen *o)
 {
     if (o->slot >= SND_STREAMS || o->channels < 1 || o->channels > 2 || o->chunk > SND_STREAM_CHUNK_MAX ||
         (o->chunk & 63) || !o->chunk)
         return;
-    WaitSema(stream_sema);
-    Stream *s = &streams[o->slot];
-    if (s->state != SNDS_IDLE && s->state != SNDS_ERROR && s->state != SNDS_OPENING)
-        stream_close(s, o->slot);
-    memcpy(&s->req, o, sizeof *o);
-    s->state = SNDS_OPENING;
-    status.stream_state[o->slot] = s->state;
-    SignalSema(stream_sema);
+    WaitSema(req_sema);
+    memcpy(&open_req[o->slot], o, sizeof *o);
+    open_pend[o->slot] = 1, stop_pend[o->slot] = 0;
+    SignalSema(req_sema);
 }
 
-/* the stream thread, holding stream_sema and the disc: open and fill a queued stream, key its voices on */
+/* the stream thread, holding stream_sema, at the start of a pass: the opens, stops and loads the RPC threads posted */
+static void take_requests(void)
+{
+    WaitSema(req_sema);
+    for (int i = 0; i < SND_STREAMS; i++) {
+        Stream *s = &streams[i];
+        if ((stop_pend[i] || open_pend[i]) && s->state != SNDS_IDLE && s->state != SNDS_ERROR &&
+            s->state != SNDS_OPENING)
+            stream_close(s, i);
+        if (stop_pend[i])
+            s->state = SNDS_IDLE, stop_pend[i] = 0;
+        if (open_pend[i]) {
+            memcpy(&s->req, &open_req[i], sizeof s->req);
+            s->state = SNDS_OPENING, s->open_t0 = 0, open_pend[i] = 0;
+        }
+    }
+    if (load_pend)
+        memcpy(&load, &load_req, sizeof load), load_new = 1, load_t0 = 0, load_pend = 0;
+    SignalSema(req_sema);
+}
+
+/* the stream thread, holding stream_sema and the drive: open and fill a queued stream, key its voices on */
 static void stream_start(Stream *s)
 {
     const SndStreamOpen *o = &s->req;
@@ -435,6 +697,12 @@ static void stream_start(Stream *s)
     strncpy(path, o->path, sizeof path - 1);
     path[sizeof path - 1] = 0;
     s->fd = open(path, O_RDONLY);
+    if (s->fd == -EMFILE_ && (!s->open_t0 || now_ms() - s->open_t0 < OPEN_RETRY_MS)) {
+        s->open_t0 = s->open_t0 ? s->open_t0 : now_ms() | 1;
+        s->fd = -1;
+        return;  /* no handle free: stays SNDS_OPENING, again next pass */
+    }
+    s->open_t0 = 0;
     if (s->fd < 0) {
         printf("dsrsnd: open %s failed (%d)\n", path, s->fd);
         status.errors++;
@@ -558,18 +826,20 @@ static void frame(const SndFrame *f)
         if (c->op == SNDC_STREAM_VOL)
             stream_volume(c->voice, c->voll, c->volr);
         else if (c->op == SNDC_STREAM_STOP && c->voice < SND_STREAMS) {
-            WaitSema(stream_sema);
-            if (streams[c->voice].state != SNDS_IDLE)
-                stream_close(&streams[c->voice], c->voice);
+            int v = SND_STREAM_VOICE(c->voice);  /* silent at once; the stream thread closes it on its next pass */
+            sd_lock();
+            sceSdSetSwitch(1 | SD_SWITCH_KOFF, 3 << (v % 24));
+            sd_unlock();
+            WaitSema(req_sema);
+            stop_pend[c->voice] = 1, open_pend[c->voice] = 0;
+            SignalSema(req_sema);
             status.stream_state[c->voice] = SNDS_IDLE;
-            SignalSema(stream_sema);
         }
     }
 }
 
 static void *rpc_server(int fno, void *data, int size)
 {
-    (void)size;
     switch (fno) {
     case SNDF_INIT:
         sd_lock();
@@ -577,11 +847,11 @@ static void *rpc_server(int fno, void *data, int size)
         sd_unlock();
         break;
     case SNDF_LOAD:
-        WaitSema(stream_sema);
-        memcpy(&load, data, sizeof load);
-        load.path[sizeof load.path - 1] = 0;
-        load_new = 1;
-        SignalSema(stream_sema);
+        WaitSema(req_sema);
+        memcpy(&load_req, data, sizeof load_req);
+        load_req.path[sizeof load_req.path - 1] = 0;
+        load_pend = 1;
+        SignalSema(req_sema);
         break;
     case SNDF_FRAME:
         frame(data);
@@ -589,16 +859,12 @@ static void *rpc_server(int fno, void *data, int size)
     case SNDF_STREAM:
         stream_open(data);
         break;
-    case SNDF_DISC_LOCK:
-        disc_reply.got = WaitSema(disc_sema) == 0;
-        return &disc_reply;
-    case SNDF_DISC_TRY:
-        disc_reply.got = PollSema(disc_sema) == 0;
-        return &disc_reply;
-    case SNDF_DISC_UNLOCK:
-        SignalSema(disc_sema);
-        disc_reply.got = 0;
-        return &disc_reply;
+    case SNDF_DISC_INIT:
+        ee_done = ((const SndDiscInit *)data)->done & 0x1fffffff;
+        return &dstat;
+    case SNDF_DISC_SUBMIT:
+        disc_submit(data, size / (int)sizeof(SndDiscReq));
+        return &dstat;
     default:
         break;
     }
@@ -621,9 +887,17 @@ int _start(int argc, char *argv[])
     iop_sema_t sm = {.attr = 0, .option = 0, .initial = 1, .max = 1};
     sd_sema = CreateSema(&sm);
     stream_sema = CreateSema(&sm);
-    disc_sema = CreateSema(&sm);
+    req_sema = CreateSema(&sm);
+    dq_sema = CreateSema(&sm);
+    cd_sema = CreateSema(&sm);
+    dstat.iop_free_boot = QueryTotalFreeMemSize();
     stream_mem = AllocSysMemory(ALLOC_FIRST, SND_STREAMS * 2 * SND_STREAM_CHUNK_MAX + SND_LOAD_STEP, NULL);
-    if (sd_sema < 0 || stream_sema < 0 || disc_sema < 0 || !stream_mem)
+    if (sd_sema < 0 || stream_sema < 0 || req_sema < 0 || dq_sema < 0 || cd_sema < 0 || !stream_mem)
+        return MODULE_NO_RESIDENT_END;
+    /* the disc pages before the read-ahead: the EE's reads need at least one, the read-ahead can do without */
+    while (dbuf_n < DISC_BUFS && (dbuf[dbuf_n] = AllocSysMemory(ALLOC_FIRST, SND_DISC_PAGE + 16, NULL)))
+        dbuf_n++;
+    if (!dbuf_n)
         return MODULE_NO_RESIDENT_END;
     unsigned char *ra = AllocSysMemory(ALLOC_FIRST, SND_STREAMS * STREAM_RA, NULL);
     if (!ra)
@@ -631,7 +905,7 @@ int _start(int argc, char *argv[])
     for (int i = 0; i < SND_STREAMS; i++)
         streams[i].fd = streams[i].close_fd = -1, streams[i].ra = ra ? ra + i * STREAM_RA : NULL;
     int id;
-    for (int k = 0; k < 3; k++) {  /* frame server, ops server, disc lock server (waits in WaitSema for the EE) */
+    for (int k = 0; k < 3; k++) {  /* frame server, ops server, disc server (queues only: never waits for the drive) */
         iop_thread_t t = {.attr = TH_C, .thread = rpc_thread, .priority = 40 + k, .stacksize = 0x800, .option = 0};
         if ((id = CreateThread(&t)) < 0)
             return MODULE_NO_RESIDENT_END;
@@ -643,6 +917,13 @@ int _start(int argc, char *argv[])
     if (id < 0)
         return MODULE_NO_RESIDENT_END;
     StartThread(id, NULL);
-    printf("dsrsnd: ready (%d streams)\n", SND_STREAMS);
+    /* the disc thread below everything (IOP priorities run 1-127, lower is more urgent) */
+    iop_thread_t dt = {.attr = TH_C, .thread = disc_thread, .priority = 120, .stacksize = 0x800, .option = 0};
+    if ((id = CreateThread(&dt)) < 0)
+        return MODULE_NO_RESIDENT_END;
+    StartThread(id, NULL);
+    dstat.iop_free = QueryTotalFreeMemSize();
+    printf("dsrsnd: ready (%d streams, %d disc pages of %u KB); IOP RAM free %u KB before dsrsnd's buffers, %u KB after\n",
+           SND_STREAMS, dbuf_n, SND_DISC_PAGE >> 10, dstat.iop_free_boot >> 10, dstat.iop_free >> 10);
     return MODULE_RESIDENT_END;
 }

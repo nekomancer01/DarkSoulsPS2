@@ -96,10 +96,16 @@ static unsigned *used;
 static MapResItem *rit;
 static unsigned nres;
 static unsigned short *rgrp;
-static unsigned reading_n = 1, reading_bytes;  /* the read in flight: items reading .. + reading_n, one block */
+/* Reads in flight, oldest first (pack_req_read: the disc server serves them back to back, so a small item no longer
+ * costs a frame or two of its own; ISO 2026-11-05: 51-99 ms median for items under 64 KB, one at a time) */
+#define MS_INFLIGHT 3
+typedef struct { int id, inst, tk; unsigned n, bytes, t; } MsRead;  /* items id .. id + n of instance inst, one block */
+static MsRead rd[MS_INFLIGHT];
+static int nrd;
+static unsigned land_t;  /* when the last read landed (or the first of a busy spell was issued) */
 static float settle_r, settle_rf;  /* the radii of the last mapstream_busy */
 static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus);
-static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1, settling;
+static int sel, hold, room_fail, focus = -1, settling;
 static unsigned scan_frame;  /* frame of the last full scan */
 static float scan_pos[3];
 /* A short ranked list of items: the next reads (lowest key first) or eviction candidates (desc: highest first) */
@@ -251,7 +257,6 @@ static void arena_free(void *p, unsigned n)
         printf("mapstream: free list full, %u bytes lost\n", n);  /* until the next area load */
     }
 }
-static unsigned t_read;
 static int ensure_arena(void);
 static float box_d2(const MapCell *c, const float *p);
 
@@ -405,13 +410,13 @@ void mapstream_close(int k)
         return;
     int was = sel;
     bind(k);
-    if (reading >= 0 && reading_inst == k) {  /* let the read land before its buffer goes back to the arena */
-        int r;
-        while (!pack_async_done(&r))
-            ;
-        reading = -1;
-        mapstream_stats.pending = 0;
-    }
+    for (int i = 0; i < nrd; i++)  /* stop its reads (after their current page) before the buffers go back */
+        if (rd[i].inst == k) {
+            pack_req_cancel(rd[i].tk);
+            memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
+            i--;
+        }
+    mapstream_stats.pending = nrd;
     for (unsigned id = 0; id < it_n(); id++)
         if (state[id] == MS_READY || state[id] == MS_READING)
             drop(id);
@@ -737,17 +742,22 @@ static void *item_alloc(unsigned n)
     return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
 }
 
-/* the read in flight landed (r bytes) */
-static void collect(int r)
+/* read i landed (r bytes) */
+static void collect(int i, int r)
 {
+    MsRead w = rd[i];
+    memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
+    mapstream_stats.pending = nrd;
+    int reading_inst = w.inst;
     bind(reading_inst);
-    unsigned id = reading, e = reading + reading_n, n = reading_bytes;
-    reading = -1;
-    mapstream_stats.pending = 0;
+    unsigned id = w.id, e = w.id + w.n, n = w.bytes, now = ticks();
+    /* its own time: from when the read before it landed if it waited behind it */
+    unsigned t0 = (int)(w.t - land_t) > 0 ? w.t : land_t;
+    land_t = now;
     if (r == (int)n) {
         InvalidDCache(buf[id], (char *)buf[id] + n - 1);  /* drop stale lines over the DMA'd data */
         fail_wait = 0;
-        mapstream_stats.ms_last = (ticks() - t_read) / 294912;
+        mapstream_stats.ms_last = (now - t0) / 294912;
         for (unsigned m = id; m < e; m++) {
             state[m] = MS_READY;
             used[m] = frame;  /* ranks as in view (MS_VIEW_K) until map.c draws it or not */
@@ -771,6 +781,8 @@ static void collect(int r)
     }
 }
 
+static int issue(const float *pos);
+
 void mapstream_update(const float pos[3])
 {
     int any = 0, was = sel;
@@ -785,13 +797,14 @@ void mapstream_update(const float pos[3])
     }
     frame++;
     int r;
-    if (reading >= 0 && pack_async_done(&r))
-        collect(r);
+    for (int i = 0; i < nrd; i++)
+        if (pack_req_done(rd[i].tk, &r))
+            collect(i--, r);
     /* free far items no chain still reads; queue the most wanted missing items over every instance (MS_SCAN_*) */
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
     int moved = dx * dx + dy * dy + dz * dz > MS_SCAN_D * MS_SCAN_D;
     int due = frame - scan_frame >= MS_SCAN_FRAMES || !scan_frame || (moved && !room_fail);
-    int can = reading < 0 && !hold;
+    int can = nrd < MS_INFLIGHT && !hold;
     if (due) {
         scan_frame = frame;
         memcpy(scan_pos, pos, sizeof scan_pos);
@@ -817,21 +830,26 @@ void mapstream_update(const float pos[3])
             }
         }
     }
-    if (!can || !nq) {
-        bind(was);
-        return;
-    }
-    /* the next queued item still missing (reads between scans take the queue in rank order) */
+    while (can && nq && nrd < MS_INFLIGHT && issue(pos))
+        ;
+    bind(was);
+}
+
+/* the next queued item still missing (reads between scans take the queue in rank order) into the arena and read;
+ * 0 when nothing more goes out this frame */
+static int issue(const float *pos)
+{
+    int was = sel;
     MsQ w = q[0];
     memmove(q, q + 1, --nq * sizeof *q);
     bind(w.k);
     if (state[w.id] != MS_NONE) {
         bind(was);
-        return;  /* loaded since: the next one next frame */
+        return 1;  /* loaded or reading since: the next one */
     }
     /* a small resident item takes the missing wanted ones after it in mapres.bin along, up to MS_RUN bytes in one
-     * read (one block, freed together): a read costs ~33 ms besides its bytes, host: or disc, and Firelink's 815 items
-     * took ~30 s at one a read (ISO round 8, 2026-11-05) */
+     * read (one block, freed together): Firelink's 815 items took ~30 s at one a read when each read cost a frame or
+     * two of its own (ISO round 8, 2026-11-05); fewer, larger reads still save seeks */
     unsigned wn = 1, wbytes = it_bytes(w.id);
     if (it_res(w.id)) {
         unsigned j = w.id - ncell, end = rit[j].rel + rit[j].bytes, tex = !!(rit[j].tag & MS_RES_TEX);
@@ -882,7 +900,7 @@ void mapstream_update(const float pos[3])
                 blk[0] = blk[--nblk];
             blk[nblk++] = (MsQ){w.k, w.id, (float)frame};  /* the next queued one reads next frame */
             bind(was);
-            return;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
+            return 0;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
         for (int j = 0; j < nd && !p; j++) {
             bind(d[j].k);
@@ -896,11 +914,12 @@ void mapstream_update(const float pos[3])
     }
     room_fail = 0;
     bind(w.k);
-    if (!pack_read_bg(&pk, it_off(w.id), p, wbytes)) {
+    int tk = pack_req_read(&pk, it_off(w.id), p, wbytes);
+    if (!tk) {
         arena_free(p, wbytes);
-        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* the slot is busy (world.c, enemy.c) or a sound stream starves: again next frame */
+        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* every request slot is taken: again next frame */
         bind(was);
-        return;
+        return 0;
     }
     for (unsigned m = w.id; m < w.id + wn; m++) {
         unsigned b = it_bytes(m);
@@ -913,13 +932,12 @@ void mapstream_update(const float pos[3])
         mapstream_stats.cells++;
         mapstream_stats.bytes += b;
     }
-    reading = w.id;
-    reading_n = wn;
-    reading_bytes = wbytes;
-    reading_inst = w.k;
-    t_read = ticks();
-    mapstream_stats.pending = 1;
+    if (!nrd)
+        land_t = ticks();
+    rd[nrd++] = (MsRead){.id = w.id, .inst = w.k, .tk = tk, .n = wn, .bytes = wbytes, .t = ticks()};
+    mapstream_stats.pending = nrd;
     bind(was);
+    return 1;
 }
 
 /* resident item j of the bound instance k counts for a settle: the sky, a cell's within r, or within r_focus for the
@@ -941,14 +959,15 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
     if (r != settle_r || r_focus != settle_rf)
         scan_frame = 0;  /* requeue: the settle's items first */
     settle_r = r, settle_rf = r_focus;
-    if (reading >= 0) {  /* only a read the settle waits for: further ones stream on behind the game (a settle that
-                          * waited for every read in flight went on over the whole 260 m queue: 10-14 s, ISO) */
-        bind(reading_inst);
-        busy = it_res(reading) && !it_tex(reading) && settle_item(reading_inst, reading - ncell, pos, r, r_focus);
+    for (int i = 0; i < nrd && !busy; i++) {  /* only reads the settle waits for: further ones stream on behind the
+                                               * game (a settle that waited for every read in flight went on over the
+                                               * whole 260 m queue: 10-14 s, ISO) */
+        bind(rd[i].inst);
+        busy = it_res(rd[i].id) && !it_tex(rd[i].id) && settle_item(rd[i].inst, rd[i].id - ncell, pos, r, r_focus);
         bind(was);
-        if (busy)
-            return 1;
     }
+    if (busy)
+        return 1;
     if (room_fail)
         return 0;
     for (int k = 0; k < MS_INST && !busy; k++) {

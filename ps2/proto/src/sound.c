@@ -115,19 +115,10 @@ static SifRpcClientData_t cl_frame __attribute__((aligned(64))), cl_ops __attrib
 static SndFrame fbuf __attribute__((aligned(64)));      /* frame RPC send buffer (in flight) */
 static SndStatus fstat __attribute__((aligned(64)));    /* its result */
 static SndStatus ostat __attribute__((aligned(64)));    /* ops client result (unused) */
-static SifRpcClientData_t cl_disc __attribute__((aligned(64)));  /* disc lock (pack.c pack_disc_lock) */
-static SndDisc dstat __attribute__((aligned(64)));
 static union { SndLoad ld; SndStreamOpen so; } obuf __attribute__((aligned(64)));
 static SndCmd cmds[SND_CMD_MAX];
 static int ncmds, frame_busy, ops_busy;
 static SndStatus st;  /* last status read back */
-static unsigned st_ticks;  /* EE count register when st was read */
-static inline unsigned ee_ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 static int load_sent;  /* id of the load the IOP is working on, 0 none */
 static int next_load_id = 1;
 static struct { int entity, on; } ents[MAX_ENTS];
@@ -159,7 +150,7 @@ static void frame_wait(void)
             ;
         frame_busy = 0;
         memcpy(&st, (void *)((unsigned)&fstat | 0x20000000), sizeof st);  /* uncached: the IOP wrote it */
-        st_seq = inflight_seq, st_ticks = ee_ticks();
+        st_seq = inflight_seq;
     }
 }
 
@@ -192,69 +183,6 @@ static int ops_call(int fn, unsigned size)
     SifCallRpc(&cl_ops, fn, SIF_RPC_M_NOWAIT, &obuf, (size + 15) & ~15u, &ostat, sizeof ostat, NULL, NULL);
     ops_busy = 1;
     return 1;
-}
-
-/* The disc lock for pack.c. lock(1) is a blocking call (the EE's next fio request waits for the answer anyway);
- * pack_job_step's try (disc_try_async) and unlock go out without waiting: a blocking try waited 180-550 ms for the IOP
- * whenever dsrsnd was reading the disc (a stream refill or bank load step), each a frame stall while enemy types and
- * their banks streamed in (ISO 2026-11-04). A try's answer is collected by the next lock call (one frame later); one
- * that got the lock but was never asked again is given back by snd_update. */
-static int disc_req;              /* 0 none, 1 a try in flight, 2 a try that got the lock (not claimed), 3 unlock */
-static unsigned disc_req_frame;
-
-static int disc_reply_got(void) { return ((volatile SndDisc *)((unsigned)&dstat | 0x20000000))->got; }  /* uncached */
-
-static int disc_collect(int wait)
-{
-    if (disc_req == 1 || disc_req == 3) {
-        if (SifCheckStatRpc(&cl_disc)) {
-            if (!wait)
-                return 0;
-            while (SifCheckStatRpc(&cl_disc))
-                ;
-        }
-        disc_req = disc_req == 1 && disc_reply_got() ? 2 : 0;
-        disc_req_frame = frame_no;
-    }
-    return 1;
-}
-
-static int disc_lock(int wait)
-{
-    disc_collect(1);  /* a background try in flight: its answer first */
-    if (disc_req == 2) {
-        disc_req = 0;
-        return 1;
-    }
-    SifCallRpc(&cl_disc, wait ? SNDF_DISC_LOCK : SNDF_DISC_TRY, 0, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
-    return disc_reply_got();
-}
-
-/* pack.c's background jobs (pack_job_step): 1 when the lock is held, else 0 and a try is on its way (or still) */
-static int disc_try_async(void)
-{
-    if (!disc_collect(0))
-        return 0;
-    if (disc_req == 2) {
-        disc_req = 0;
-        return 1;
-    }
-    SifCallRpc(&cl_disc, SNDF_DISC_TRY, SIF_RPC_M_NOWAIT, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
-    disc_req = 1, disc_req_frame = frame_no;
-    return 0;
-}
-
-/* a disc stream runs short (status of the last finished frame RPC, a frame or two old): the EE's background reads
- * wait so the IOP's read-ahead top-up gets the drive. Only a fresh status counts: a warp settle or a loading screen
- * spins without snd_update, and a stale starving bit there held the block reads back for good (hang, world_cross) */
-#define DISC_YIELD_TICKS (294912u * 100)  /* 100 ms of EE ticks: a few frames */
-static int disc_yield(void) { return st.starving && ee_ticks() - st_ticks < DISC_YIELD_TICKS; }
-
-static void disc_unlock(void)
-{
-    disc_collect(1);
-    SifCallRpc(&cl_disc, SNDF_DISC_UNLOCK, SIF_RPC_M_NOWAIT, NULL, 0, &dstat, sizeof dstat, NULL, NULL);
-    disc_req = 3;
 }
 
 /* ---- SPU2 heap ---- */
@@ -459,7 +387,6 @@ static void loads_pump(void)
 /* Block until every queued bank is in SPU2 RAM (boot) */
 static void loads_wait(void)
 {
-    pack_async_wait();  /* a background read holds the disc lock (pack.c) the IOP's load needs */
     for (int k = 0; k < 20000; k++) {
         ops_wait();
         flush(1);
@@ -1008,8 +935,8 @@ void snd_map(const char *map_id)
     printf("snd: map %s, area bank %s, ambience %s\n", map_id, area_bank ? area_bank->name : "-", sm ? "on" : "none");
 }
 
-/* Enemy types' banks load in the background, one at a time through pack.c's job slot (and its disc lock), the tables
- * in three jobs (bank.bin, then cue.bin, emit.bin; the first also finds vag.bin / str.bin); then the VAG goes to the
+/* Enemy types' banks load in the background, one at a time as pack.c jobs (from cdrom0: requests to dsrsnd's disc
+ * server), the tables in three jobs (bank.bin, then cue.bin, emit.bin; the first also finds vag.bin / str.bin); then the VAG goes to the
  * IOP as every bank's does. Loaded synchronously a type's bank took 0.4-0.6 s of one frame from cdrom0: (a pack open
  * and three loads, ISO 2026-11-04, TECH_DEBT load-6). Until it is in, the type's sounds do not play. */
 #define CHR_QUEUE 16
@@ -1131,11 +1058,6 @@ void snd_update(float dt)
         amb.e = NULL;
     }
     loads_pump();
-    disc_collect(0);
-    /* a try's lock nobody claimed: back to dsrsnd. Its job asks again before snd_update (world_update, enemy_update
-     * run first), so a lock collected in an earlier frame and still here was not wanted this frame */
-    if (disc_req == 2 && frame_no > disc_req_frame)
-        disc_unlock();
     if (st.late != snd_stats.late || st.underruns != snd_stats.underruns) {
         printf("snd: stream refills late %u, underruns %u\n", st.late, st.underruns);
         snd_stats.late = st.late, snd_stats.underruns = st.underruns;
@@ -1178,9 +1100,14 @@ void snd_update(float dt)
 
 /* ---- boot ---- */
 
-int snd_init(void)
+/* libsd.irx and dsrsnd.irx onto the IOP, once: 1 when both run */
+static int iop_load(void)
 {
+    static int done;
+    if (done)
+        return done > 0;
     int ret = 0;
+    done = -1;
     SifInitIopHeap();
     SifLoadFileInit();
     sbv_patch_enable_lmb();  /* LoadModuleBuffer on older BIOSes */
@@ -1194,9 +1121,20 @@ int snd_init(void)
         printf("snd: dsrsnd.irx failed (%d, %d)\n", id, ret);
         return 0;
     }
-    static const unsigned ids[3] = {DSRSND_RPC_ID, DSRSND_RPC_OPS_ID, DSRSND_RPC_DISC_ID};
-    for (int k = 0; k < 3; k++) {
-        SifRpcClientData_t *c = k == 2 ? &cl_disc : k ? &cl_ops : &cl_frame;
+    done = 1;
+    return 1;
+}
+
+/* pack.c, on its first cdrom0: path (before any pack is open, ahead of snd_init): dsrsnd is the disc server */
+int pack_disc_boot(void) { return iop_load() && pack_disc_attach(); }
+
+int snd_init(void)
+{
+    if (!iop_load())
+        return 0;
+    static const unsigned ids[2] = {DSRSND_RPC_ID, DSRSND_RPC_OPS_ID};
+    for (int k = 0; k < 2; k++) {
+        SifRpcClientData_t *c = k ? &cl_ops : &cl_frame;
         for (int tries = 0; tries < 1000; tries++) {
             if (SifBindRpc(c, ids[k], 0) < 0)
                 return 0;
@@ -1214,8 +1152,6 @@ int snd_init(void)
     if (!st.ok)
         return 0;
     on = 1;
-    pack_disc_lock = disc_lock, pack_disc_unlock = disc_unlock, pack_disc_try_async = disc_try_async;
-    pack_disc_yield = disc_yield;
     for (int v = 0; v < SND_VOICES; v++)
         voices[v].pair = -1, voices[v].emitter = -1, voices[v].slot = -1;
     /* master -5 dB (ASSUMED headroom): music + combat at full master clipped 751 samples in a 58 s Burg run */
