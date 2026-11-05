@@ -30,6 +30,8 @@ void pack_close(Pack *p);
 /* Entries stored raw (tools/pack.py name=raw:file) can be read in place: file offset and size of the data; 0 if the
  * entry is missing or compressed */
 int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size);
+/* Raw (decoded) size of an entry, 0 if the pack has none */
+unsigned pack_entry_size(const Pack *p, const char *name);
 /* Background read of bytes at a file offset into dst (64-byte aligned; written back from the D-cache first). One at a
  * time: returns 0 while another is pending. pack_async_done: 1 once it finished (*result = bytes read or < 0), then
  * invalidate dst's cache lines before reading it on the EE. pack_load / pack_open wait for a pending read first. */

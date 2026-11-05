@@ -49,6 +49,10 @@
 /* heap a lite set's entries and texture buffer leave free when they fall back to it (AGENTS.md: 1.5 MB in the
  * heaviest spot) */
 #define WORLD_HEAP_FLOOR (1536u << 10)
+/* heap a waited-for block's lite entries leave above WORLD_HEAP_FLOOR for the enemy models that stream in once it is
+ * on (ASSUMED: two of the Burg's larger model.bin, 578 + 590 KB; tools/export_chr.py outputs, 2026-11-05). Without
+ * it the lite sets took the heap the models needed: 10-21 model.bin OUT OF RAM retries in route_enemies.txt */
+#define WORLD_HEAP_MODELS (1200u << 10)
 /* heap kept out of the near-cell arena beyond MS_RESERVE, for enemy models: world builds allocate the arena at boot
  * (world_systems) while no enemy model is loaded, so this holds every model streamed in later. Single-area builds
  * allocate it on the first frame after the bonfire's types loaded (3.6 MB in Firelink) and keep 3 MB more. Measured
@@ -555,12 +559,14 @@ static int start(int i)
         unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
         r->blob[e] = mapstream_alloc(sz, feet_now);
         /* no hole in the near arena, and the player waits for this block (a warp, or held at its edge): the heap,
-         * while it keeps WORLD_HEAP_FLOOR for the enemy types. At the top of the Burg ladders with enemies the bonfire
+         * while it keeps WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS for the enemy types. At the top of the Burg ladders with enemies the bonfire
          * block's maptab.bin (592 KB) found none even after 886 KB of drawn cells went, with 3.5 MB of heap free
          * (route_enemies.txt, 2026-11-05). Not for every block: lite sets in the heap while walking left the enemy
          * types without room (70 model.bin OUT OF RAM in one run, RAM min 639 KB) */
-        if (!r->blob[e] && (warping || (hold_want >> i & 1)) && enemy_ram_free() >= WORLD_HEAP_FLOOR + sz)
-            r->blob[e] = memalign(128, sz);
+        if (!r->blob[e] && (warping || (hold_want >> i & 1)) &&
+            enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz && (r->blob[e] = memalign(128, sz)))
+            printf("world: block %d %s %u KB in the heap (RAM free %u KB)\n", i, ENTRIES[e], sz >> 10,
+                   enemy_ram_free() >> 10);
         if (!r->blob[e]) {
             free_ents(r, 0, NENT);
             r->retry_s = WORLD_RETRY_S;

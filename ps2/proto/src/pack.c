@@ -251,6 +251,14 @@ int __wrap__write(int fd, const void *buf, size_t n)
     return __real__write(fd, buf, n);
 }
 
+unsigned pack_entry_size(const Pack *p, const char *name)
+{
+    for (unsigned i = 0; i < p->count; i++)
+        if (!strncmp(p->entries[i].name, name, sizeof p->entries[i].name))
+            return p->entries[i].raw;
+    return 0;
+}
+
 int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size)
 {
     for (unsigned i = 0; i < p->count; i++) {
