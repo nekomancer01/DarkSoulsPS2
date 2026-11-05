@@ -1,5 +1,6 @@
 #include <kernel.h>
 #include <malloc.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -704,16 +705,23 @@ void mapstream_update(const float pos[3])
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++)
-                if (state[id] == MS_READY && frame - used[id] > 2) {
+                if (state[id] == MS_READY && used[id] != frame) {  /* drawn last frame is fine: mapstream_update
+                                                                       * runs after main.c's end-of-frame vu1_wait */
                     it_want(k, id, pos, &key);
                     if (key > w.key)
                         q_add(d, &nd, MS_QUEUE, k, id, key, 1);
                 }
         }
         if (!nd) {
-            if (!room_fail++)
-                printf("mapstream: no room for item %d.%u (%u KB): arena full of nearer items\n", w.k, w.id,
-                       wbytes >> 10);
+            if (!room_fail++) {
+                unsigned fr = 0, big = 0;
+                for (unsigned i = 0; i < nholes; i++)
+                    fr += hole_len[i], big = hole_len[i] > big ? hole_len[i] : big;
+                printf("mapstream: no room for item %d.%u (%u KB, rank %.0f m): arena full of nearer items; %u KB free, "
+                       "largest hole %u KB, items %u KB (resident %u, mip 0 %u), other %u KB\n", w.k, w.id, wbytes >> 10,
+                       sqrtf(w.key), fr >> 10, big >> 10, mapstream_stats.bytes >> 10, mapstream_stats.res_kb,
+                       mapstream_stats.tex_kb, mapstream_stats.other_kb);
+            }
             mapstream_stats.room_fails++;
             nq = 0;
             bind(was);
