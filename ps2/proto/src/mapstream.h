@@ -14,7 +14,7 @@ typedef struct {
 int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n);
 /* World blocks (src/world.c): instance k (0 = the boot area, which mapstream_init opens) of another map block's cell
  * table, all instances sharing the arena; mapstream_get answers for the selected instance */
-#define MS_INST 4
+#define MS_INST 5  /* = MAP_INST (map.h): the Asylum is the fifth block */
 int mapstream_open(int k, const char *pak_path, const MapCell *cells, unsigned n);
 /* the same with a Pack the caller opened and keeps open (pack.h; no pack_open / close here: no IOP wait) */
 int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned n);
@@ -38,13 +38,46 @@ int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent t
  * into it is in flight, call again after mapstream_update); the caller still waits for the chains that drew them. */
 void mapstream_lend(void *p, unsigned n);
 int mapstream_reclaim(void *p, unsigned n);
+/* World blocks: the map's resident level per cell instead of one piece (TECH_DEBT world-2 / world-5). Items of
+ * instance k, each a byte range of the block's raw mapres.bin (tools/mapsplit.py): the resident chunks' streams of
+ * cell `tag` (export_map.py writes them grouped by cell; a large cell comes as several items of whole chunks, so no
+ * item needs one big arena hole), the sky chunks' (tag MS_RES_SKY), and mip 0 pixels of single textures (MS_RES_TEX |
+ * the texture's index). off = offset in the pack, rel = offset in mapres.bin (chunk records address the streams from
+ * there). Cells load within MS_RES_R of the player, nearest first; the sky always; a texture while the tex_age hook
+ * says it was asked for at mip 0 lately (map.c / texcache.c tc_res_age), handed over with tex_set. Call after
+ * mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
+#define MS_RES_SKY 0x40000000u
+#define MS_RES_TEX 0x80000000u
+typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
+int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
+/* the selected instance's item i as a base to add its chunk records' stream offsets to, or NULL while it is not
+ * loaded; marks it used this frame */
+const unsigned char *mapstream_res(unsigned i);
+/* frames since texture tag of instance k was last asked for at mip 0 (~0u never); its mip 0 pixels, or NULL when
+ * they go */
+void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_set)(int k, unsigned tag, const void *p));
+/* world.c: while on, no new reads start (a block's lite set holds the async slot back to back) */
+void mapstream_hold(int on);
+/* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */
+void mapstream_focus(int k);
+/* world.c settle: while on, near cells are not read (the settle waits for the resident level; ISO boot 2026-11-05:
+ * 5.5 MB of near cells read inside a 14 s boot settle) */
+void mapstream_settle(int on);
+/* settle (world.c, a warp): 1 while the sky or a resident cell within r m of pos of any instance (r_focus for the
+ * mapstream_focus instance) is still to load or being read (0 once the arena had no room for the next one: nothing
+ * more can come) */
+int mapstream_busy(const float pos[3], float r, float r_focus);
+/* largest arena (default MS_POOL; world builds: the full pool's RAM went to it), before it is allocated */
+void mapstream_pool(unsigned max);
 /* Once per frame: finish / start reads, free far cells (blobs drawn in the last two frames are kept: the VIF chains
  * still read them) */
 void mapstream_update(const float pos[3]);
 /* Cell i's near blob (chunk records + streams) if loaded, else NULL; marks it used this frame */
 const void *mapstream_get(unsigned i);
 
-typedef struct { unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb; } MapStreamStats;  /* other_kb: mapstream_alloc, lent_kb: mapstream_lend */
+/* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
+ * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: mapstream_lend; room_fails: a wanted item found no room */
+typedef struct { unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails; } MapStreamStats;
 extern MapStreamStats mapstream_stats;
 
 #endif

@@ -29,12 +29,26 @@
 /* Blocks resident besides the boot block. Their lite sets live in mapstream.c's near-cell arena (mapstream_alloc drops
  * the farthest near cells to make room), so a world build costs no RAM while no neighbour is loaded (TECH_DEBT world-5).
  * 3: the block under the player plus both neighbours at a seam inside the Burg (the bonfire / bridge block keeps Burg
- * west and the Parish block); the Burg blocks' streams are smaller than Firelink's, so the full pool lends the rest */
+ * west and the Parish block) */
 #define WORLD_SLOTS 3
-/* The block the player stands in is "full" (its map's resident streams in the one full pool, sized for the largest
- * block's mapres.bin); every other loaded block is "lite" (near cells only). A new block becomes full after the player
- * stood in it for WORLD_SWAP_S (no swapping back and forth on a boundary); ASSUMED value. */
+/* Every loaded block draws the same way: its map's resident level streams per cell from its mapres.bin and its
+ * textures' mip 0 per texture (mapstream.c mapstream_res_open via map.c), in the near arena with the near cells, so
+ * there is no full pool and no full swap (Burg 4.9 MB / Firelink 8.5 MB, 5-14 s from cdrom0:, TECH_DEBT world-2 /
+ * world-5). Only the normal-map relief (bump.bin) is per block: read for the block the player stood in for
+ * WORLD_SWAP_S (no reading back and forth on a boundary; ASSUMED value). */
 #define WORLD_SWAP_S 1.0f
+/* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
+ * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
+ * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
+#define WORLD_ARENA_LESS (1024u << 10)
+#define WORLD_POOL (24u << 20)
+/* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
+ * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
+ * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
+ * (ISO world_route, 2026-11-05); 160 m made the far-north and Burg warps 11-14 s from cdrom0:. The rest streams in
+ * nearest first. ASSUMED radii. */
+#define WORLD_SETTLE_R 40.0f
+#define WORLD_SETTLE_FOCUS_R 96.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
@@ -126,18 +140,18 @@ static unsigned want_m, keep_m;  /* blocks the triangle under the player loads /
 static float unkept_s[WORLD_MAX];  /* seconds a loaded block has not been in keep_m */
 static BlockRt rt[WORLD_MAX];
 static int nblk, cur = -1, slot_of[WORLD_SLOTS];
-static unsigned char *full_pool;
-static unsigned slot_size, full_size;
+static unsigned slot_size;
 static float feet_now[3];  /* for start(): mapstream_alloc evicts the cells farthest from here */
-/* full pool state: block whose streams it holds (-1 none), block being read into it, drain frames, read progress */
-static int full_blk = -1, res_blk = -1, res_drain, res_reading;
-static unsigned lent;
-static int res_reclaim;  /* bytes of the full pool behind the full block's streams lent to mapstream.c for near cells */
-static unsigned res_done, res_t0;
+/* relief (bump.bin): block it is for (-1 none; its buffer may be NULL: none, or no room), block being read, the read in
+ * flight, progress; a dropped buffer waits WORLD_DRAIN frames before it is freed */
+static int bump_blk = -1, bump_rd = -1, bump_reading;
+static unsigned char *bump_buf, *bump_old;
+static unsigned bump_done, bump_t0, bump_old_n;
+static int bump_old_drain;
 static float in_cur_s;  /* seconds the player has stood in cur */
 static float last_feet[3];
 static int warping;  /* inside settle(): drains and the swap delay are skipped */
-static int lite_first;  /* a wanted block's lite set waits: the full swap issues no new read (step) */
+static int lite_first;  /* a wanted block's lite set waits: the relief read and mapstream.c issue no new read (step) */
 static int room_stuck;  /* this step a wanted block found no room and no kept block could make it some (room_for) */
 /* blocks the player is held for: found by world_hold this frame, latched for step(); blocks a settle could not load
  * (no more holding for them until they turn on); seconds held */
@@ -228,23 +242,15 @@ int world_init(const char *boot_area)
         }
         if (i && r->total > slot_size)
             slot_size = r->total;
-        if (r->res_size > full_size)
-            full_size = r->res_size;
     }
     for (int s = 0; s < WORLD_SLOTS; s++)
         slot_of[s] = -1;
-    full_size = (full_size + 127) & ~127u;
-    full_pool = memalign(128, full_size);
-    if (!full_pool) {
-        printf("world: OUT OF RAM for the full pool (%u KB)\n", full_size >> 10);
-        return 0;
-    }
     world_stats.blocks = nblk;
-    world_stats.pool_kb = full_size >> 10;
     if (nblk > 1)
-        mapstream_reserve(WORLD_ENEMY_RESERVE);
-    printf("world: %d blocks, full pool %u KB, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
-           full_size >> 10, slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
+        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
+    mapstream_pool(WORLD_POOL);
+    printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
+           slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
     for (int i = 0; i < nblk; i++)
         printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %x links %u lite %u KB res %u KB%s\n", i,
                tab[i].pack, tab[i].map, tab[i].mn[0], tab[i].mx[0], tab[i].mn[1], tab[i].mx[1], tab[i].nbr, lrange[2 * i + 1],
@@ -253,35 +259,23 @@ int world_init(const char *boot_area)
     return 1;
 }
 
-/* the full pool's bytes behind a smaller block's streams hold near cells until the next swap */
-static void lend_tail(unsigned used)
-{
-    used = (used + 127) & ~127u;
-    lent = full_size - used >= (256u << 10) ? full_size - used : 0;
-    if (lent) {
-        mapstream_lend(full_pool + used, lent);
-        printf("world: %u KB of the full pool lent to the near cells\n", lent >> 10);
-    }
-}
-
 int world_boot_map(void)
 {
     BlockRt *r = &rt[0];
     if (cur < 0)
         return 0;
-    /* the boot block: lite set (map tables) in a heap buffer of its own, streams into the full pool; collision is
-     * main.c's (collision block 0) */
+    /* the boot block: lite set (map tables) in a heap buffer of its own; its resident level streams per cell like every
+     * block's (world_stream_open; the first frame's settle waits for the cells around the spawn). Collision and relief
+     * are main.c's (collision block 0, bump_init) */
     r->blob[E_TAB] = memalign(128, (r->size[E_TAB] + 127) & ~127u);
     if (!r->blob[E_TAB] || !read_sync(&r->pk, r->off[E_TAB], r->blob[E_TAB], r->size[E_TAB]) ||
-        !read_sync(&r->pk, r->res_off, full_pool, r->res_size) || !map_block_init(0, r->blob[E_TAB], full_pool, 0)) {
+        !map_block_init(0, r->blob[E_TAB], NULL, 0)) {
         printf("world: boot block map did not load\n");
         return 0;
     }
     r->state = W_ON;
-    full_blk = world_stats.full = 0;
-    lend_tail(r->res_size);
+    bump_blk = world_stats.full = 0;
     world_stats.loaded = 1;
-    world_stats.pool_used_kb = r->res_size >> 10;
     return 1;
 }
 
@@ -374,6 +368,33 @@ static void free_tex(BlockRt *r)
     }
 }
 
+/* the relief buffer (arena block, or heap when the arena had no room) */
+static void bump_free(void *p, unsigned n)
+{
+    if (!p)
+        return;
+    n = (n + 127) & ~127u;
+    if (mapstream_owns(p))
+        mapstream_free(p, n);
+    else
+        free(p);
+    world_stats.pool_used_kb -= n >> 10;
+}
+
+/* the relief of bump_blk goes (bump.c lets go of it now); its buffer is freed WORLD_DRAIN frames later (VIF chains) */
+static void bump_drop(void)
+{
+    if (bump_blk > 0)
+        map_block_bump(bump_blk, NULL);
+    if (bump_buf) {
+        if (bump_old)  /* the one before is still draining: the chains of two swaps ago are long done */
+            bump_free(bump_old, bump_old_n);
+        bump_old = bump_buf, bump_old_n = rt[bump_blk].bump_size, bump_old_drain = WORLD_DRAIN;
+    }
+    bump_buf = NULL;
+    bump_blk = world_stats.full = -1;
+}
+
 /* A block's lite set is read: hand its blobs to the systems (no copies, no IOP waits) */
 /* first step: collision and map (the rest follows in turn_on_rest once the textures are read) */
 static void turn_on_col(int i)
@@ -395,9 +416,9 @@ static void turn_on_col(int i)
     world_stats.load_ms = (ticks() - r->t0) / 294912;
     world_stats.read_kb = r->total >> 10;
     step_time(t0);
-    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB, lent %u KB\n", i,
+    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB\n", i,
            tab[i].pack, ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295,
-           world_stats.pool_used_kb, lent >> 10);
+           world_stats.pool_used_kb);
 }
 
 /* objects.bin (e = E_OBJ) or fx.bin (E_FX) is in texbuf, or the pack has none: its textures go up */
@@ -460,7 +481,9 @@ static void turn_off(int i)
         fx_block_on(i, 0, NULL);
     r->stage = 0;
     col_unload(i);
-    map_block_drop(i);
+    map_block_drop(i);  /* its relief too (bump.c) */
+    if (bump_blk == i)
+        bump_drop();
     r->state = W_DRAIN;  /* the slot's memory is reused only after the chains that drew from it are done */
     r->drain = WORLD_DRAIN;
     world_stats.loaded--;
@@ -559,10 +582,10 @@ static int start(int i)
         unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
         r->blob[e] = mapstream_alloc(sz, feet_now);
         /* no hole in the near arena, and the player waits for this block (a warp, or held at its edge): the heap,
-         * while it keeps WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS for the enemy types. At the top of the Burg ladders with enemies the bonfire
-         * block's maptab.bin (592 KB) found none even after 886 KB of drawn cells went, with 3.5 MB of heap free
-         * (route_enemies.txt, 2026-11-05). Not for every block: lite sets in the heap while walking left the enemy
-         * types without room (70 model.bin OUT OF RAM in one run, RAM min 639 KB) */
+         * while it keeps WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS for the enemy types. At the top of the Burg ladders
+         * with enemies the bonfire block's maptab.bin (592 KB) found none even after 886 KB of drawn cells went,
+         * with 3.5 MB of heap free (route_enemies.txt, 2026-11-05). Not for every block: lite sets in the heap while
+         * walking left the enemy types without room (70 model.bin OUT OF RAM in one run, RAM min 639 KB) */
         if (!r->blob[e] && (warping || (hold_want >> i & 1)) &&
             enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz && (r->blob[e] = memalign(128, sz)))
             printf("world: block %d %s %u KB in the heap (RAM free %u KB)\n", i, ENTRIES[e], sz >> 10,
@@ -586,100 +609,66 @@ static int start(int i)
     return 1;
 }
 
-/* A full swap reads mapres.bin into the pool, then the block's raw bump.bin behind it when both fit (normal-map relief
- * while the block is full: map_block_bump); the lent tail starts after them. Read offsets are pool offsets. */
-static unsigned bump_at(const BlockRt *r)
+/* The relief of the block the player stands in: its raw bump.bin read in the background (WORLD_READ at a time, after
+ * every waiting lite set) into an arena block of its own, then handed to bump.c (map_block_bump). Relief is drawing
+ * detail only (DSR's normal maps): no settle waits for it, and without room it stays off for that block. */
+static void bump_step(void)
 {
-    return (r->res_size + 127) & ~127u;
-}
-
-static unsigned res_total(const BlockRt *r)
-{
-    return r->bump_size && bump_at(r) + r->bump_size <= full_size ? bump_at(r) + r->bump_size : r->res_size;
-}
-
-/* the next read at pool offset done: bytes, and its offset in the pack */
-static unsigned res_n(const BlockRt *r, unsigned done, unsigned *src)
-{
-    unsigned end = done < r->res_size ? r->res_size : res_total(r);
-    *src = done < r->res_size ? r->res_off + done : r->bump_off + done - bump_at(r);
-    return end - done < WORLD_READ ? end - done : WORLD_READ;
-}
-
-/* The full pool follows the player: the old full block goes lite, WORLD_DRAIN frames later the new one's streams are
- * read into the pool (background, WORLD_READ at a time), then it draws them */
-static void full_step(void)
-{
-    if (res_blk < 0) {
-        if (cur == full_blk || (in_cur_s < WORLD_SWAP_S && !warping) || rt[cur].state != W_ON)
-            return;
-        if (full_blk >= 0) {
-            map_block_streams(full_blk, NULL);
-            printf("world: block %d lite\n", full_blk);
-        }
-        full_blk = world_stats.full = -1;
-        res_blk = cur, res_reclaim = 1, res_drain = warping ? 0 : WORLD_DRAIN, res_done = 0, res_reading = 0, res_t0 = ticks();
-        return;
-    }
-    if (res_reclaim) {  /* the near cells in the lent tail go first, then the chains drain */
-        if (lent && !mapstream_reclaim(full_pool + full_size - lent, lent))
-            return;
-        lent = 0, res_reclaim = 0;
-    }
-    if (res_drain > 0) {
-        res_drain--;
-        return;
-    }
-    BlockRt *r = &rt[res_blk];
     int res;
-    unsigned src;
-    if (res_reading) {
-        if (!pack_async_done(&res))
-            return;
-        unsigned n = res_n(r, res_done, &src);
-        res_reading = 0;
-        world_stats.reading = -1;
-        if (res != (int)n) {
-            printf("world: block %d streams read %d of %u bytes at %u + %u (fd %d)\n", res_blk, res, n, r->res_off, res_done,
-                   r->pk.fd);
-            world_stats.fails++;
-            res_blk = -1;
-            return;
-        }
-        InvalidDCache(full_pool + res_done, full_pool + res_done + n - 1);
-        if ((res_done += n) == r->res_size && res_total(r) > r->res_size)
-            res_done = bump_at(r);
-        if (res_done == res_total(r)) {
-            unsigned t0 = ticks();
-            if (rt[res_blk].state == W_ON) {
-                map_block_streams(res_blk, full_pool);
-                if (res_total(r) > r->res_size)
-                    map_block_bump(res_blk, full_pool + bump_at(r));
-                full_blk = world_stats.full = res_blk;
-                lend_tail(res_total(r));
-                world_stats.full_ms = (ticks() - res_t0) / 294912;
-                printf("world: block %d full: %u KB streams in %u ms; lite sets %u KB, lent %u KB\n", res_blk,
-                       r->res_size >> 10, world_stats.full_ms, world_stats.pool_used_kb, lent >> 10);
+    if (bump_rd >= 0) {
+        BlockRt *r = &rt[bump_rd];
+        if (bump_reading) {
+            if (!pack_async_done(&res))
+                return;
+            unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
+            bump_reading = 0;
+            world_stats.reading = -1;
+            if (res != (int)n) {
+                printf("world: block %d relief read %d of %u bytes\n", bump_rd, res, n);
+                world_stats.fails++;
+                bump_free(bump_buf, r->bump_size);
+                bump_buf = NULL, bump_rd = -1;
+                return;
             }
-            step_time(t0);
-            res_blk = -1;
-            return;
+            InvalidDCache(bump_buf + bump_done, bump_buf + bump_done + n - 1);
+            if ((bump_done += n) == r->bump_size) {
+                if (r->state == W_ON && bump_rd == cur) {
+                    map_block_bump(bump_rd, bump_buf);
+                    bump_blk = world_stats.full = bump_rd;
+                    world_stats.full_ms = (ticks() - bump_t0) / 294912;
+                } else {  /* turned off or left while reading */
+                    bump_free(bump_buf, r->bump_size);
+                    bump_buf = NULL;
+                }
+                bump_rd = -1;
+                return;
+            }
         }
-    }
-    if (warping && res_blk != cur) {
-        /* a warp or a death left the block being swapped in: the chunk in flight is collected, the rest is dropped
-         * and the pool goes to the block under the new position. Finishing a Burg swap first kept a death's loading
-         * screen up ~16-20 s from cdrom0: (2026-11-05, TECH_DEBT world-8) */
-        printf("world: block %d full swap dropped at %u of %u KB (warp to block %d)\n", res_blk, res_done >> 10,
-               res_total(r) >> 10, cur);
-        res_blk = -1;
+        if (lite_first || warping)
+            return;  /* a settle waits for no relief */
+        unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
+        if (pack_read_async(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n))
+            bump_reading = 1, world_stats.reading = bump_rd;
         return;
     }
-    if (lite_first)
-        return;  /* the slot goes to a wanted block's lite set first (step) */
-    unsigned n = res_n(r, res_done, &src);
-    if (pack_read_async(&r->pk, src, full_pool + res_done, n))
-        res_reading = 1, world_stats.reading = res_blk;
+    if (cur == bump_blk || in_cur_s < WORLD_SWAP_S || warping || rt[cur].state != W_ON || lite_first)
+        return;
+    if (bump_blk >= 0)
+        bump_drop();
+    bump_blk = cur;  /* also for a block without relief or room: no retry until the player changes block */
+    BlockRt *r = &rt[cur];
+    unsigned sz = (r->bump_size + 127) & ~127u;
+    if (!r->bump_size)
+        return;
+    bump_buf = mapstream_alloc(sz, feet_now);
+    if (!bump_buf && enemy_ram_free() >= WORLD_HEAP_FLOOR + sz)
+        bump_buf = memalign(128, sz);
+    if (!bump_buf) {
+        printf("world: block %d relief: no room for %u KB\n", cur, sz >> 10);
+        return;
+    }
+    bump_blk = -1, bump_rd = cur, bump_done = 0, bump_t0 = ticks();
+    world_stats.pool_used_kb += sz >> 10;
 }
 
 /* a wanted block's lite set is being read or could start now (start()'s conditions, room aside) */
@@ -696,7 +685,7 @@ static int lite_pending(void)
 }
 
 /* A wanted block's lite set found no room in the near arena (or no free slot): turns off the farthest block that
- * is on only because the triangle under the player keeps it (not wanted, not underfoot, not full). From cdrom0: the
+ * is on only because the triangle under the player keeps it (not wanted, not underfoot). From cdrom0: the
  * Parish block (1072 KB) found no room at the courtyard steps while the Burg west block stayed kept from the bonfire
  * block with the bonfire block full, never loaded, and the player walked off the loaded floor (2026-11-05, TECH_DEBT
  * world-8). 0 if no block could go. */
@@ -713,8 +702,7 @@ static int room_for(int want, const float *feet)
     int b = -1;
     float bd = -1;
     for (int i = 1; i < nblk; i++)
-        if (i != want && i != cur && i != full_blk && i != res_blk && rt[i].state == W_ON && !(want_m >> i & 1) &&
-            world_stats.reading != i) {
+        if (i != want && i != cur && rt[i].state == W_ON && !(want_m >> i & 1) && world_stats.reading != i) {
             float d = box_d(&tab[i], feet);
             if (d > bd)
                 b = i, bd = d;
@@ -779,20 +767,24 @@ static void step(const float *feet, float dt)
     for (int i = 0; i < nblk; i++)  /* slots of unloaded blocks come free once the chains are done */
         if (rt[i].state == W_DRAIN && (--rt[i].drain <= 0 || warping))
             free_slot(i);
+    if (bump_old && (--bump_old_drain <= 0 || warping)) {
+        bump_free(bump_old, bump_old_n);
+        bump_old = NULL;
+    }
     /* one background read at a time. Wanted blocks' lite sets go first: they hold the collision the player walks onto
-     * next, while the full pool only adds drawing detail to the block underfoot. With the full swap first, from cdrom0:
-     * a Burg swap (4.9 MB, ~5 s at ~1 MB/s) kept the next block's collision from loading and the player walked off
-     * the loaded floor (2026-11-04, TECH_DEBT world-8). A swap chunk in flight is collected first; the swap then
-     * issues no new chunk while a lite set waits. */
+     * next, while the resident cells (mapstream.c) and the relief only add drawing detail. With a full swap first, from
+     * cdrom0: a Burg swap (4.9 MB, ~5 s at ~1 MB/s) kept the next block's collision from loading and the player walked
+     * off the loaded floor (2026-11-04, TECH_DEBT world-8). A relief chunk in flight is collected first; while a lite
+     * set waits neither the relief nor mapstream.c issue a new read. */
     lite_first = lite_pending();
-    if (res_reading || (!lite_first && (res_blk >= 0 || (cur != full_blk && (in_cur_s >= WORLD_SWAP_S || warping) &&
-                                                          world_stats.reading < 0)))) {
-        if (res_reading || world_stats.reading < 0)
-            full_step();
-        if (res_reading || !lite_first)
+    mapstream_hold(lite_first);
+    mapstream_focus(cur);
+    if (bump_reading) {
+        bump_step();
+        if (bump_reading)
             goto unload;
     }
-    if (world_stats.reading > 0 && !res_reading && rt[world_stats.reading].state == W_ON) {
+    if (world_stats.reading > 0 && !bump_reading && rt[world_stats.reading].state == W_ON) {
         read_step(world_stats.reading, 0);  /* a texture chunk in flight is collected; the next one waits its turn */
         goto unload;
     }
@@ -817,6 +809,8 @@ static void step(const float *feet, float dt)
         }
         if (want >= 0 && (rt[want].retry_s >= WORLD_RETRY_S || warping || slots_full()))
             room_stuck = !room_for(want, feet);  /* a fresh failure for room, or no slot */
+        else if (world_stats.reading < 0)
+            bump_step();  /* nothing for the lite sets: the relief of the block underfoot */
     }
     for (int i = 1; i < nblk; i++)  /* then the textures, enemies and events of blocks whose collision is on */
         if (rt[i].state == W_ON && rt[i].stage == 1 && world_stats.reading < 0) {
@@ -826,18 +820,18 @@ static void step(const float *feet, float dt)
             room_stuck |= !rt[i].tex_held;  /* no room for its texture buffer (settle stops on it) */
         }
 unload:
-    /* unload blocks the triangle under the player has not kept for WORLD_KEEP_S (never the boot block or the one under the player,
-     * nor the full one) */
+    /* unload blocks the triangle under the player has not kept for WORLD_KEEP_S (never the boot block or the one under
+     * the player) */
     for (int i = 1; i < nblk; i++)
-        if (i != cur && i != full_blk && i != res_blk && rt[i].state == W_ON && !(keep_m >> i & 1) &&
-            world_stats.reading != i && (unkept_s[i] >= WORLD_KEEP_S || warping))
+        if (i != cur && rt[i].state == W_ON && !(keep_m >> i & 1) && world_stats.reading != i &&
+            (unkept_s[i] >= WORLD_KEEP_S || warping))
             turn_off(i);
 }
 
-/* settled: nothing reading, no swap pending, the block under the player full, every wanted neighbour on */
+/* settled: nothing reading, every wanted neighbour on, the resident cells around the feet in (mapstream_busy) */
 static int settled(const float *feet)
 {
-    if (world_stats.reading >= 0 || res_blk >= 0 || (rt[cur].state == W_ON && cur != full_blk))
+    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R))
         return 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
@@ -853,6 +847,7 @@ static void settle(const float *feet)
     vu1_wait();  /* the last frame's VIF chain no longer reads the pools */
     loading_begin();  /* DSR's loading screen while the frame waits (src/loading.c) */
     warping = 1;
+    mapstream_settle(1);
     int n = 0;
     unsigned stuck_t = 0;
     while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
@@ -873,11 +868,13 @@ static void settle(const float *feet)
         n++;
     }
     warping = 0;
+    mapstream_settle(0);
     in_cur_s = WORLD_SWAP_S;
     event_flush();  /* the new blocks' constructors finish behind the loading screen (A2 event-14) */
     loading_end();
-    printf("world: warp to %.1f %.1f %.1f settled in %u ms (%d steps): block %d, full %d, %d loaded\n", feet[0], feet[1],
-           feet[2], (ticks() - t0) / 294912, n, cur, full_blk, world_stats.loaded);
+    printf("world: warp to %.1f %.1f %.1f settled in %u ms (%d steps): block %d, %d loaded; resident %u KB, mip 0 %u KB\n",
+           feet[0], feet[1], feet[2], (ticks() - t0) / 294912, n, cur, world_stats.loaded, mapstream_stats.res_kb,
+           mapstream_stats.tex_kb);
 }
 
 int world_hold(const float *feet)
