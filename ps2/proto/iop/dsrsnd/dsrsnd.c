@@ -18,7 +18,11 @@ IRX_ID("dsrsnd", 1, 0);
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
 #define POLL_US 4000  /* stream thread period */
 #define STREAM_PRIO 30       /* the stream thread: above the RPC threads (40-42), below the CD driver */
-#define STREAM_PRIO_DISC 45  /* the same while it holds the drive: below the RPC threads (the disc thread is 120) */
+/* the same while it holds the drive: below every thread but the disc thread (120). A CD read keeps its thread busy
+ * until the data is in, so at 45 a read-ahead top-up (up to 128 KB, ~150 ms) held up fileio for its whole length:
+ * every EE printf in that time waited (frames of 100-480 ms; 57-59 frames over 100 ms on the ISO route, 2026-11-06).
+ * Above the disc thread, so the EE's page reads never hold a top-up back. */
+#define STREAM_PRIO_DISC 119
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
  * pulls the drive away from the game's own pack reads and back (two seeks); with 16 KB refills the looping area
  * ambience alone cut a cdrom0: boot load from 7 s to 37 s in PCSX2 (2026-11-03). */
@@ -134,6 +138,218 @@ static unsigned int now_ms(void)
     return c.hi * 116508u + c.lo / 36864u;
 }
 
+/* ---- files on the disc, read by sector ----
+ * Every disc file this module reads (the EE's packs, streams, banks) is found once in a table of start sectors and
+ * sizes, built from the ISO9660 directory at the first cdrom0: open, and then read with sceCdRead: no BIOS CD file
+ * system open (a directory search of ~0.1-0.3 s per pack in PCSX2), no ioman file handle (16 in all, which ran full
+ * once enemy types streamed in), the same reads for every file. The Ratchet & Clank / Sly Cooper pattern (a sector
+ * table, read by sector), with the table made from the disc itself so tools/ps2-iso.sh and the web converter need no
+ * change. Other paths (host:), or a disc whose directory cannot be read, go through ioman as before. The df_* calls
+ * mirror open / lseek / read / close; the caller holds the drive (cd_sema) for all of them. */
+#define DF_FILES 512    /* files on the disc (92 on the 2026-11-06 ISO) */
+#define DF_DIRS 64      /* directories (6) */
+#define DF_NAME 44      /* "DATA\10010000\C1000.PAK" without ";1" (longest 26) */
+#define DF_HANDLES 64   /* opens at once: the EE's packs, streams, bank load */
+#define DF_FD 0x1000    /* handle h is fd DF_FD + h, above any ioman fd */
+#define DF_TRIES 4      /* reads of a sector run before an error */
+typedef struct {
+    unsigned int lsn, size;
+    char name[DF_NAME];
+} DfFile;
+static DfFile *df_tab;  /* DF_FILES, from _start */
+static int df_n, df_state;  /* files in df_tab; 0 not scanned yet, 1 ready, -1 no table (ioman for everything) */
+static struct {
+    int file;  /* index in df_tab, -1 free */
+    unsigned int pos;
+} df_h[DF_HANDLES];
+static unsigned char df_sec[2048] __attribute__((aligned(64)));  /* partial sectors, directory sectors */
+static sceCdRMode df_mode = {.trycount = 0, .spindlctrl = SCECdSpinNom, .datapattern = SCECdSecS2048};
+static unsigned int df_reads, df_errors;
+
+/* n sectors from lsn into buf (4-byte aligned): 0, or -1 after DF_TRIES failed reads */
+static int cd_sectors(unsigned int lsn, unsigned int n, void *buf)
+{
+    for (int t = 0; t < DF_TRIES; t++) {
+        if (sceCdRead(lsn, n, buf, &df_mode)) {
+            sceCdSync(0);
+            if (!sceCdGetError()) {
+                df_reads++;
+                return 0;
+            }
+        }
+        df_errors++;
+        DelayThread(10000);
+    }
+    printf("dsrsnd: sector read %u x %u failed (error %d)\n", lsn, n, sceCdGetError());
+    return -1;
+}
+
+static int df_upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+
+/* the ISO9660 directory tree (primary volume descriptor at sector 16) into df_tab, breadth first */
+static void df_scan(void)
+{
+    static struct {
+        unsigned int lsn, size;
+        char path[DF_NAME];
+    } dirs[DF_DIRS];
+    unsigned int t0 = now_ms();
+    int nd = 0;
+    df_state = -1, df_n = 0;
+    if (!df_tab)
+        return;
+    sceCdDiskReady(0);
+    if (cd_sectors(16, 1, df_sec) < 0 || memcmp(df_sec, "\1CD001", 6)) {
+        printf("dsrsnd: no ISO9660 volume on the disc, cdrom0: through ioman\n");
+        return;
+    }
+    const unsigned char *root = df_sec + 156;
+    memcpy(&dirs[0].lsn, root + 2, 4);
+    memcpy(&dirs[0].size, root + 10, 4);
+    dirs[0].path[0] = 0;
+    nd = 1;
+    for (int d = 0; d < nd; d++) {
+        unsigned int secs = (dirs[d].size + 2047) / 2048;
+        for (unsigned int s = 0; s < secs; s++) {
+            if (cd_sectors(dirs[d].lsn + s, 1, df_sec) < 0)
+                return;
+            for (unsigned int i = 0; i < 2048 && df_sec[i];) {  /* records never cross a sector; 0 pads the rest */
+                const unsigned char *r = df_sec + i;
+                unsigned int len = r[0], nl = r[32];
+                i += len;
+                if (len < 34 || nl > len - 33 || (nl == 1 && r[33] <= 1))  /* "." and ".." */
+                    continue;
+                char name[DF_NAME];
+                unsigned int k = 0, pl = strlen(dirs[d].path);
+                if (pl + nl + 2 > sizeof name)
+                    continue;
+                memcpy(name, dirs[d].path, pl);
+                k = pl;
+                if (pl)
+                    name[k++] = '\\';
+                for (unsigned int c = 0; c < nl && r[33 + c] != ';'; c++)
+                    name[k++] = df_upper(r[33 + c]);
+                name[k] = 0;
+                if (r[25] & 2) {
+                    if (nd < DF_DIRS) {
+                        memcpy(&dirs[nd].lsn, r + 2, 4);
+                        memcpy(&dirs[nd].size, r + 10, 4);
+                        memcpy(dirs[nd].path, name, k + 1);
+                        nd++;
+                    }
+                } else if (df_n < DF_FILES) {
+                    DfFile *f = &df_tab[df_n++];
+                    memcpy(&f->lsn, r + 2, 4);
+                    memcpy(&f->size, r + 10, 4);
+                    memcpy(f->name, name, k + 1);
+                }
+            }
+        }
+    }
+    df_state = 1;
+    printf("dsrsnd: disc table: %d files in %d directories, read by sector (%u ms)\n", df_n, nd, now_ms() - t0);
+}
+
+static int df_open(const char *path)
+{
+    const char *p = path;
+    static const char dev[] = "cdrom0:";
+    for (int i = 0; dev[i]; i++, p++)
+        if (df_upper(*p) != df_upper(dev[i]))
+            return open(path, O_RDONLY);
+    if (!df_state)
+        df_scan();
+    while (*p == '\\' || *p == '/')
+        p++;
+    char name[DF_NAME];
+    unsigned int k = 0;
+    for (; *p && *p != ';' && k < sizeof name - 1; p++)
+        name[k++] = *p == '/' ? '\\' : df_upper(*p);
+    name[k] = 0;
+    int f = -1;
+    for (int i = 0; df_state > 0 && i < df_n && f < 0; i++)
+        if (!strcmp(df_tab[i].name, name))
+            f = i;
+    if (f < 0)  /* not in the table (or no table): what the BIOS file system makes of it */
+        return open(path, O_RDONLY);
+    for (int h = 0; h < DF_HANDLES; h++)
+        if (df_h[h].file < 0) {
+            df_h[h].file = f, df_h[h].pos = 0;
+            return DF_FD + h;
+        }
+    return -EMFILE_;
+}
+
+static inline int df_is(int fd) { return fd >= DF_FD && fd < DF_FD + DF_HANDLES && df_h[fd - DF_FD].file >= 0; }
+
+static int df_close(int fd)
+{
+    if (!df_is(fd))
+        return close(fd);
+    df_h[fd - DF_FD].file = -1;
+    return 0;
+}
+
+static int df_lseek(int fd, unsigned int off)
+{
+    if (!df_is(fd))
+        return lseek(fd, off, SEEK_SET);
+    df_h[fd - DF_FD].pos = off;
+    return off;
+}
+
+/* n bytes at the handle's position: whole sectors straight into dst (4-byte aligned there), the partial ones through
+ * df_sec. Bytes read, or -1 (a read error before any byte) */
+static int df_read(int fd, void *dst, unsigned int n)
+{
+    if (!df_is(fd))
+        return read(fd, dst, n);
+    unsigned int *pos = &df_h[fd - DF_FD].pos;
+    const DfFile *f = &df_tab[df_h[fd - DF_FD].file];
+    if (*pos >= f->size)
+        return 0;
+    if (n > f->size - *pos)
+        n = f->size - *pos;
+    unsigned char *d = dst;
+    unsigned int left = n;
+    while (left) {
+        unsigned int lsn = f->lsn + *pos / 2048, skip = *pos & 2047, c;
+        if (!skip && left >= 2048 && !((unsigned int)d & 3)) {
+            c = left / 2048;
+            if (cd_sectors(lsn, c, d) < 0)
+                break;
+            c *= 2048;
+        } else {
+            if (cd_sectors(lsn, 1, df_sec) < 0)
+                break;
+            c = 2048 - skip < left ? 2048 - skip : left;
+            memcpy(d, df_sec + skip, c);
+        }
+        d += c, left -= c, *pos += c;
+    }
+    return left == n && n ? -1 : (int)(n - left);
+}
+
+/* df_read of n bytes at off into p, for a buffer buf that has 2048 bytes before p and 2048 after p + n: the sectors go
+ * in one read, straight to their place when that is 4-byte aligned, else to buf and moved down */
+static int df_pread_page(int fd, unsigned int off, unsigned char *p, unsigned int n, unsigned char *buf)
+{
+    if (!df_is(fd))
+        return lseek(fd, off, SEEK_SET) < 0 ? -1 : read(fd, p, n);
+    const DfFile *f = &df_tab[df_h[fd - DF_FD].file];
+    if (off >= f->size)
+        return 0;
+    if (n > f->size - off)
+        n = f->size - off;
+    unsigned int skip = off & 2047, secs = (skip + n + 2047) / 2048;
+    unsigned char *s = p - skip, *t = (unsigned int)s & 3 ? buf : s;
+    if (cd_sectors(f->lsn + off / 2048, secs, t) < 0)
+        return -1;
+    if (t != s)
+        memmove(p, t + skip, n);
+    return n;
+}
+
 /* bytes the read-ahead still has to read from the file (0: all of a non-looping stream is in) */
 static inline int stream_ra_more(const Stream *s) { return s->loop || s->rd_pos < s->size; }
 /* a playing stream whose read-ahead could take more of the file */
@@ -149,7 +365,7 @@ static int stream_ra_fill(Stream *s)
     while (s->ra_len < STREAM_RA && stream_ra_more(s)) {
         if (s->rd_pos >= s->size) {
             s->rd_pos = 0;
-            lseek(s->fd, s->offset, SEEK_SET);
+            df_lseek(s->fd, s->offset);
         }
         unsigned int w = (s->ra_pos + s->ra_len) % STREAM_RA, n = STREAM_RA - s->ra_len;
         if (n > STREAM_RA - w)
@@ -158,7 +374,7 @@ static int stream_ra_fill(Stream *s)
             n = s->size - s->rd_pos;
         else if (n > 2048)
             n -= (s->offset + s->rd_pos + n) & 2047;
-        int r = read(s->fd, s->ra + w, n);
+        int r = df_read(s->fd, s->ra + w, n);
         if (r <= 0)
             return -1;
         s->ra_len += r, s->rd_pos += r;
@@ -171,7 +387,7 @@ static int stream_ra_fill(Stream *s)
 static int stream_read(Stream *s, unsigned char *dst, unsigned int n)
 {
     if (!s->ra)
-        return read(s->fd, dst, n);
+        return df_read(s->fd, dst, n);
     if (n > s->ra_len)
         n = s->ra_len;
     unsigned int a = STREAM_RA - s->ra_pos < n ? STREAM_RA - s->ra_pos : n;
@@ -201,7 +417,7 @@ static int stream_fill(Stream *s, int slot, int h)
                     break;
                 s->pos = 0;
                 if (!s->ra)
-                    lseek(s->fd, s->offset, SEEK_SET);
+                    df_lseek(s->fd, s->offset);
             }
             unsigned int n = want - got;
             if (n > s->size - s->pos)
@@ -238,8 +454,8 @@ static void load_step(void)
 {
     if (load_new) {
         if (load_fd >= 0)
-            close(load_fd);
-        load_fd = open(load.path, O_RDONLY);
+            df_close(load_fd);
+        load_fd = df_open(load.path);
         load_pos = 0;
         if (load_fd == -EMFILE_ && (!load_t0 || now_ms() - load_t0 < OPEN_RETRY_MS)) {
             load_t0 = load_t0 ? load_t0 : now_ms() | 1;
@@ -247,10 +463,10 @@ static void load_step(void)
             return;  /* no handle free: again next pass */
         }
         load_new = 0, load_t0 = 0;
-        if (load_fd < 0 || lseek(load_fd, load.offset, SEEK_SET) < 0) {
+        if (load_fd < 0 || df_lseek(load_fd, load.offset) < 0) {
             printf("dsrsnd: load %s failed (%d)\n", load.path, load_fd);
             if (load_fd >= 0)
-                close(load_fd);
+                df_close(load_fd);
             load_fd = -1;
             status.errors++;
             status.load_failed = load.id;
@@ -261,9 +477,9 @@ static void load_step(void)
         return;
     unsigned char *b = stream_mem + SND_STREAMS * 2 * SND_STREAM_CHUNK_MAX;
     unsigned int n = load.size - load_pos > SND_LOAD_STEP ? SND_LOAD_STEP : load.size - load_pos;
-    int r = read(load_fd, b, n);
+    int r = df_read(load_fd, b, n);
     if (r != (int)n) {
-        close(load_fd);
+        df_close(load_fd);
         load_fd = -1;
         status.errors++;
         status.load_failed = load.id;
@@ -275,7 +491,7 @@ static void load_step(void)
     sd_unlock();
     load_pos += n;
     if (load_pos >= load.size) {
-        close(load_fd);
+        df_close(load_fd);
         load_fd = -1;
         status.load_done = load.id;
     }
@@ -301,7 +517,11 @@ static unsigned int dq_order;
 static int dq_sema = -1;  /* dq[].live and .order between the RPC thread and the stream thread */
 static unsigned int ee_done;  /* EE physical address of its SndDiscDone ring, 0 before SNDF_DISC_INIT */
 static SndDiscDone done_rec[SND_DISC_SLOTS] __attribute__((aligned(64)));
-static unsigned char *dbuf[DISC_BUFS];  /* SND_DISC_PAGE + 16 bytes each */
+/* DISC_BUF bytes each: a page lands DISC_SLACK bytes in (at the EE address mod 16), so the sector read around it
+ * (df_pread_page) has a sector of room on both sides */
+#define DISC_SLACK 2048
+#define DISC_BUF (DISC_SLACK + SND_DISC_PAGE + 2048 + 32)
+static unsigned char *dbuf[DISC_BUFS];
 static int dbuf_dma[DISC_BUFS], dbuf_n, dbuf_next;
 static SndDiscStat dstat __attribute__((aligned(64)));
 
@@ -370,9 +590,9 @@ static void disc_page(DiscJob *j)
     while (dbuf_dma[b] && sceSifDmaStat(dbuf_dma[b]) >= 0)  /* its last page still on its way */
         DelayThread(100);
     dbuf_dma[b] = 0;
-    unsigned char *p = dbuf[b] + (ee & 15);
+    unsigned char *p = dbuf[b] + DISC_SLACK + (ee & 15);
     cd_take();
-    int got = lseek(r->fd, r->offset + j->done, SEEK_SET) < 0 ? -1 : read(r->fd, p, n);
+    int got = df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
     SignalSema(cd_sema);
     if (got <= 0) {
         disc_finish(j, j->done ? (int)j->done : got < 0 ? got : 0);
@@ -415,7 +635,7 @@ static void disc_step(void)
         strncpy(path, j->r.path, sizeof path - 1);
         path[sizeof path - 1] = 0;
         cd_take();
-        int fd = open(path, O_RDONLY);
+        int fd = df_open(path);
         SignalSema(cd_sema);
         if (fd < 0)
             printf("dsrsnd: disc open %s failed (%d)\n", path, fd);
@@ -424,7 +644,7 @@ static void disc_step(void)
     }
     case SNDD_CLOSE: {
         cd_take();
-        int r = close(j->r.fd);
+        int r = df_close(j->r.fd);
         SignalSema(cd_sema);
         disc_finish(j, r);
         break;
@@ -559,7 +779,7 @@ static void stream_thread(void *arg)
         for (int i = 0; i < SND_STREAMS; i++) {
             Stream *s = &streams[i];
             if (s->close_fd >= 0 && disc_take(&disc))
-                close(s->close_fd), s->close_fd = -1;
+                df_close(s->close_fd), s->close_fd = -1;
             if (s->state == SNDS_OPENING && disc_take(&disc))
                 stream_start(s);
             if (s->state != SNDS_PLAYING && s->state != SNDS_ENDING)
@@ -596,7 +816,7 @@ static void stream_thread(void *arg)
                 else if (s->silent >= 2) {  /* the voice has reached the silence after the data */
                     stream_close(s, i);
                     if (disc_take(&disc))
-                        close(s->close_fd), s->close_fd = -1;
+                        df_close(s->close_fd), s->close_fd = -1;
                     continue;
                 } else if (!s->ra && !disc_take(&disc))
                     s->due = 1;
@@ -616,7 +836,7 @@ static void stream_thread(void *arg)
             if (r < 0) {
                 stream_close(s, i);
                 if (disc_take(&disc))
-                    close(s->close_fd), s->close_fd = -1;
+                    df_close(s->close_fd), s->close_fd = -1;
                 s->state = SNDS_ERROR;
                 continue;
             }
@@ -634,7 +854,7 @@ static void stream_thread(void *arg)
             if (stream_ra_want(s) && s->ra_len <= STREAM_RA_ALSO && stream_ra_fill(s) < 0) {
                 status.errors++;
                 stream_close(s, i);
-                close(s->close_fd), s->close_fd = -1;
+                df_close(s->close_fd), s->close_fd = -1;
                 s->state = SNDS_ERROR;
             }
         }
@@ -649,8 +869,8 @@ static void stream_thread(void *arg)
         if ((load_new || load_fd >= 0) && disc_take(&disc))
             load_step();  /* after the refills: a stream never waits for a bank */
         if (disc > 0) {
+            ChangeThreadPriority(TH_SELF, STREAM_PRIO);  /* back up before the drive goes to the disc thread */
             SignalSema(cd_sema);
-            ChangeThreadPriority(TH_SELF, STREAM_PRIO);
         }
         SignalSema(stream_sema);
     }
@@ -696,7 +916,7 @@ static void stream_start(Stream *s)
     char path[sizeof o->path];
     strncpy(path, o->path, sizeof path - 1);
     path[sizeof path - 1] = 0;
-    s->fd = open(path, O_RDONLY);
+    s->fd = df_open(path);
     if (s->fd == -EMFILE_ && (!s->open_t0 || now_ms() - s->open_t0 < OPEN_RETRY_MS)) {
         s->open_t0 = s->open_t0 ? s->open_t0 : now_ms() | 1;
         s->fd = -1;
@@ -716,7 +936,7 @@ static void stream_start(Stream *s)
     s->half_ms = (unsigned int)s->chunk / 16 * 28 * 4096 / (48u * (o->pitch ? o->pitch : 4096));
     s->buf = stream_mem + o->slot * 2 * SND_STREAM_CHUNK_MAX;
     status.stream_bytes[o->slot] = 0;
-    lseek(s->fd, s->offset, SEEK_SET);
+    df_lseek(s->fd, s->offset);
     int bad = s->ra && stream_ra_fill(s) < 0;
     if (bad)
         status.errors++;
@@ -895,10 +1115,13 @@ int _start(int argc, char *argv[])
     if (sd_sema < 0 || stream_sema < 0 || req_sema < 0 || dq_sema < 0 || cd_sema < 0 || !stream_mem)
         return MODULE_NO_RESIDENT_END;
     /* the disc pages before the read-ahead: the EE's reads need at least one, the read-ahead can do without */
-    while (dbuf_n < DISC_BUFS && (dbuf[dbuf_n] = AllocSysMemory(ALLOC_FIRST, SND_DISC_PAGE + 16, NULL)))
+    while (dbuf_n < DISC_BUFS && (dbuf[dbuf_n] = AllocSysMemory(ALLOC_FIRST, DISC_BUF, NULL)))
         dbuf_n++;
     if (!dbuf_n)
         return MODULE_NO_RESIDENT_END;
+    df_tab = AllocSysMemory(ALLOC_FIRST, DF_FILES * sizeof(DfFile), NULL);  /* none: cdrom0: through ioman */
+    for (int h = 0; h < DF_HANDLES; h++)
+        df_h[h].file = -1;
     unsigned char *ra = AllocSysMemory(ALLOC_FIRST, SND_STREAMS * STREAM_RA, NULL);
     if (!ra)
         printf("dsrsnd: no IOP RAM for stream read-ahead, reading per refill\n");
