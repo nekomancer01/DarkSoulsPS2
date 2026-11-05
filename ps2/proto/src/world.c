@@ -65,6 +65,8 @@
 /* seconds of holding before the frame waits for the blocks as on a warp (loading screen; ASSUMED: a Burg lite set
  * alone reads in ~1.5 s from cdrom0:) */
 #define WORLD_HOLD_S 3.0f
+/* ms a settle goes on while a wanted block finds no room and nothing can be turned off for it (room_stuck) */
+#define WORLD_STUCK_MS 2000
 
 /* The lite set of a block, read raw from its pack (tools/pack.py raw: entries, read in place) into its slot.
  * events.bin (A2's tools/export_emevd.py) is optional: a pack without it loads with no events. objects.bin and fx.bin
@@ -126,6 +128,7 @@ static float in_cur_s;  /* seconds the player has stood in cur */
 static float last_feet[3];
 static int warping;  /* inside settle(): drains and the swap delay are skipped */
 static int lite_first;  /* a wanted block's lite set waits: the full swap issues no new read (step) */
+static int room_stuck;  /* this step a wanted block found no room and no kept block could make it some (room_for) */
 /* blocks the player is held for: found by world_hold this frame, latched for step(); blocks a settle could not load
  * (no more holding for them until they turn on); seconds held */
 static unsigned hold_m, hold_want, hold_gone;
@@ -592,6 +595,36 @@ static int lite_pending(void)
     return 0;
 }
 
+/* A wanted block's lite set found no room in the near arena (or no free slot): turns off the farthest block that
+ * is on only because the triangle under the player keeps it (not wanted, not underfoot, not full). From cdrom0: the
+ * Parish block (1072 KB) found no room at the courtyard steps while the Burg west block stayed kept from the bonfire
+ * block with the bonfire block full, never loaded, and the player walked off the loaded floor (2026-11-05, TECH_DEBT
+ * world-8). 0 if no block could go. */
+static int slots_full(void)
+{
+    for (int s = 0; s < WORLD_SLOTS; s++)
+        if (slot_of[s] < 0)
+            return 0;
+    return 1;
+}
+
+static int room_for(int want, const float *feet)
+{
+    int b = -1;
+    float bd = -1;
+    for (int i = 1; i < nblk; i++)
+        if (i != want && i != cur && i != full_blk && i != res_blk && rt[i].state == W_ON && !(want_m >> i & 1)) {
+            float d = box_d(&tab[i], feet);
+            if (d > bd)
+                b = i, bd = d;
+        }
+    if (b < 0)
+        return 0;
+    printf("world: block %d off to make room for block %d\n", b, want);
+    turn_off(b);
+    return 1;
+}
+
 /* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
 static const WorldLink *link_at(int b, unsigned tri)
 {
@@ -617,6 +650,7 @@ static void step(const float *feet, float dt)
     int was = cur;
     unsigned wm = want_m, km = keep_m;
     memcpy(feet_now, feet, sizeof feet_now);
+    room_stuck = 0;
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - 3.0f, COL_SOLID, &h) && h.block < nblk &&
         rt[h.block].state == W_ON) {
         cur = h.block;
@@ -674,6 +708,8 @@ static void step(const float *feet, float dt)
             }
         if (want >= 0 && start(want))
             read_step(want);
+        else if (want >= 0 && (rt[want].retry_s >= WORLD_RETRY_S || warping || slots_full()))
+            room_stuck = !room_for(want, feet);  /* a fresh failure for room, or no slot */
     }
 unload:
     /* unload blocks the triangle under the player has not kept for WORLD_KEEP_S (never the boot block or the one under the player,
@@ -703,7 +739,18 @@ static void settle(const float *feet)
     loading_begin();  /* DSR's loading screen while the frame waits (src/loading.c) */
     warping = 1;
     int n = 0;
+    unsigned stuck_t = 0;
     while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
+        if (!room_stuck)
+            stuck_t = 0;
+        else if (!stuck_t)
+            stuck_t = ticks();
+        else if ((ticks() - stuck_t) / 294912 >= WORLD_STUCK_MS) {
+            /* no room for a wanted block and nothing to turn off: mapstream would read and drop the same cells
+             * until the 30 s cap (the frame never advances) */
+            printf("world: settle stopped: no room for the wanted blocks %x\n", want_m);
+            break;
+        }
         pack_async_free();  /* a background enemy model load (enemy.c) holds the slot no longer */
         mapstream_update(feet);  /* collects a cell read in flight so the async slot comes free */
         step(feet, 0);
