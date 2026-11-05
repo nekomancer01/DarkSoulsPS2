@@ -761,69 +761,6 @@ static void collect(int r)
     }
 }
 
-/* No hole fits n bytes and nothing ranked below the item is left to drop by rank: free one window of the arena n
- * long made of holes and loaded runs ranked MS_EVICT_M x below it (rank key), the one with the fewest bytes to drop.
- * The free list keeps big near cells out (Burg 1.25: 865 KB refused with 4 MB free, largest hole 255-636 KB, ISO
- * rounds 12-13, 2026-11-05). 1 when a window was freed. */
-typedef struct { unsigned off, len; int k; unsigned id; } MsSpan;
-static int span_cmp(const void *a, const void *b)
-{
-    unsigned x = ((const MsSpan *)a)->off, y = ((const MsSpan *)b)->off;
-    return x < y ? -1 : x > y;
-}
-static int window_evict(int wk, unsigned wid, float key, unsigned n, const float *pos)
-{
-    n = (n + 63) & ~63u;
-    unsigned cap = nholes;
-    for (int k = 0; k < MS_INST; k++)
-        cap += k == sel ? it_n() : ms[k].ncell + ms[k].nres;
-    MsSpan *sp = malloc(cap * sizeof *sp);
-    if (!sp)
-        return 0;
-    unsigned ns = 0;
-    for (unsigned i = 0; i < nholes; i++)
-        if (hole_off[i] < arena_size)
-            sp[ns++] = (MsSpan){hole_off[i], (hole_off[i] + hole_len[i] > arena_size ? arena_size : hole_off[i] + hole_len[i]) -
-                                                 hole_off[i], -1, 0};
-    for (int k = 0; k < MS_INST; k++) {
-        bind(k);
-        for (unsigned id = 0; id < it_n() && ns < cap; id++) {
-            unsigned a, e = run_of(id, &a);
-            if (a != id || state[id] != MS_READY || run_used(id, 0) || run_key(k, id, pos) <= key * MS_EVICT_M)
-                continue;
-            unsigned b = it_res(a) ? rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - rit[a - ncell].rel : it_bytes(a);
-            unsigned o = (unsigned)((unsigned char *)buf[a] - arena);
-            if (o < arena_size)
-                sp[ns++] = (MsSpan){o, (b + 63) & ~63u, k, id};
-        }
-    }
-    qsort(sp, ns, sizeof *sp, span_cmp);
-    /* slide over runs of adjacent spans: [i, j) covers >= n bytes; keep the one dropping the fewest item bytes */
-    unsigned bi = 0, bj = 0, best = ~0u, i = 0, len = 0, drop_b = 0;
-    for (unsigned j = 0; j < ns; j++) {
-        if (j > i && sp[j].off != sp[j - 1].off + sp[j - 1].len)
-            i = j, len = 0, drop_b = 0;  /* a gap: something else lives there */
-        len += sp[j].len, drop_b += sp[j].k >= 0 ? sp[j].len : 0;
-        while (i < j && len - sp[i].len >= n)
-            len -= sp[i].len, drop_b -= sp[i].k >= 0 ? sp[i].len : 0, i++;
-        if (len >= n && drop_b < best)
-            best = drop_b, bi = i, bj = j + 1;
-    }
-    if (best == ~0u || !best) {
-        free(sp);
-        return 0;
-    }
-    for (unsigned m = bi; m < bj; m++)
-        if (sp[m].k >= 0) {
-            bind(sp[m].k);
-            if (state[sp[m].id] == MS_READY)
-                drop(sp[m].id);
-        }
-    printf("mapstream: item %d.%u (%u KB): freed a window, %u KB of farther items dropped\n", wk, wid, n >> 10, best >> 10);
-    free(sp);
-    return 1;
-}
-
 void mapstream_update(const float pos[3])
 {
     int any = 0, was = sel;
@@ -915,11 +852,6 @@ void mapstream_update(const float pos[3])
                     if (key > w.key * MS_EVICT_M)
                         q_add(d, &nd, MS_QUEUE, k, id, key, 1);
                 }
-        }
-        if (!nd && window_evict(w.k, w.id, w.key, wbytes, pos)) {
-            bind(w.k);
-            if ((p = item_alloc(wbytes)))
-                break;
         }
         if (!nd) {
             if (!room_fail++) {
