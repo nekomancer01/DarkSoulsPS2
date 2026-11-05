@@ -68,7 +68,12 @@ EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
 EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lpatches -lm
 EE_DVP = dvp-as
-EE_CFLAGS += -O2 -std=gnu99 -Wall $(DEFS)
+# Float math (refactor target 3, 2026-11-05): the game code does no double arithmetic (tools/ci/compile.sh fails on
+# any), and sqrtf is already an inline sqrt.s. -fno-math-errno lets gcc treat sinf/cosf/... as pure (merged repeat
+# calls); nothing reads errno. -ffinite-math-only and -ffast-math stay off: collision and the ragdoll rely on exact
+# compares. MATHFLAGS= builds without, for A/B profiling.
+MATHFLAGS ?= -fno-math-errno
+EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
 # they are. make PROFILE=1 -> proto_prof.elf: main.c with -DPROFILE (per-pass EE cycles + I$ / D$ misses from the COP0
