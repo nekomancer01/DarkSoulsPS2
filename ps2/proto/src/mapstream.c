@@ -28,10 +28,26 @@
  * ranks the Burg's cells kept Firelink's own out after the player came back (holes in its tree line and the aqueduct
  * wall, ISO world_route 2026-11-05) */
 #define MS_RES_OTHER 4.0f
+/* ... except within MS_OTHER_D: the cells across a block border the player may turn back to (the aqueduct wall's kept
+ * meshes 34-70 m off were dropped in the Burg and not read again 1 s after walking back into Firelink, ISO and host:
+ * round 10, 2026-11-05); ASSUMED */
+#define MS_OTHER_D 100.0f
 /* The full want / drop scan over every item runs when a read can start and the player moved MS_SCAN_D m or
  * MS_SCAN_FRAMES passed since the last one, else only every MS_SCAN_FRAMES (frees far items); after an item found no
  * room it waits MS_SCAN_FRAMES (~5000 items over 5 blocks: a scan every frame cost the Burg bonfire 30 -> 22 fps) */
 #define MS_SCAN_D 4.0f
+/* An item map.c asked for in the last MS_VIEW_FRAMES frames while it was missing (a cell in view: mapstream_get /
+ * mapstream_res) ranks as if MS_VIEW_K x as far (squared: 1/4 = half the distance): the aqueduct rock wall and the
+ * far north were read after cells behind the camera (ISO rounds 1-7, 2026-11-05). ASSUMED values. */
+#define MS_VIEW_K 0.25f  /* loaded items drawn as lately too: else each read in view was evicted for the next one
+                          * (0.414 read 18 times in 25 s, the wall never read again: ISO round 11, 2026-11-05) */
+/* The backdrop's cells (MS_RES_FAR: far-only silhouettes) rank as if no further than MS_FAR_D: nearest first left the
+ * far north's backdrop for last, bare for 30 s after a warp (ISO round 8, 2026-11-05); ASSUMED */
+#define MS_FAR_D 64.0f
+/* While a settle runs (mapstream_settle) the items it waits for (mapstream_busy's radii) rank x MS_SETTLE_K: with cells
+ * in view and the backdrop ranked early the far-north warp settle went from 0.9 to 6.7 s (ISO rounds 8-9, 2026-11-05) */
+#define MS_SETTLE_K 1e-4f
+#define MS_VIEW_FRAMES 8u
 #define MS_SCAN_FRAMES 16u
 /* A texture's mip 0 (asked for at mip 0 in the last frame) ranks like a cell MS_TEX_D m away: the texture is in view
  * close up and draws mip 1 until it is in. Kept while asked for within MS_TEX_KEEP frames (ASSUMED: 4 s at 30 fps;
@@ -67,6 +83,7 @@ typedef struct {
     int borrowed;    /* pk belongs to the caller (mapstream_open_pack): not closed here */
     MapResItem *rit;
     unsigned nres;
+    unsigned short *rgrp;  /* per resident item: the first item of the read it came in with (MS_RUN; itself alone) */
 } MsInst;
 static MsInst ms[MS_INST];
 static Pack pk;
@@ -78,6 +95,10 @@ static void **buf;
 static unsigned *used;
 static MapResItem *rit;
 static unsigned nres;
+static unsigned short *rgrp;
+static unsigned reading_n = 1, reading_bytes;  /* the read in flight: items reading .. + reading_n, one block */
+static float settle_r, settle_rf;  /* the radii of the last mapstream_busy */
+static int settle_item(int k, unsigned j, const float *pos, float r, float r_focus);
 static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1, settling;
 static unsigned scan_frame;  /* frame of the last full scan */
 static float scan_pos[3];
@@ -86,6 +107,13 @@ static float scan_pos[3];
 typedef struct { int k; unsigned id; float key; } MsQ;
 static MsQ q[MS_QUEUE];
 static int nq;
+/* Items that found no room (key = the frame): passed over for MS_BLOCK_FRAMES while the next ones read, so one big
+ * near cell with no hole for it does not stop the reader (22.6 s without a read behind Burg near cell 1.25, 865 KB,
+ * largest hole 255 KB; the aqueduct wall waited behind it: ISO round 12, 2026-11-05). ASSUMED: 3 s at 30 fps. */
+#define MS_BLOCKED 8
+#define MS_BLOCK_FRAMES 90u
+static MsQ blk[MS_BLOCKED];
+static int nblk;
 
 static void q_add(MsQ *l, int *n, int cap, int k, unsigned id, float key, int desc)
 {
@@ -108,10 +136,12 @@ static void bind(int k)
     ms[sel].pk = pk;
     ms[sel].base = base, ms[sel].total = total, ms[sel].tab = tab, ms[sel].ncell = ncell;
     ms[sel].state = state, ms[sel].buf = buf, ms[sel].used = used, ms[sel].rit = rit, ms[sel].nres = nres;
+    ms[sel].rgrp = rgrp;
     const MsInst *m = &ms[sel = k];
     pk = m->pk;
     base = m->base, total = m->total, tab = m->tab, ncell = m->ncell;
     state = m->state, buf = m->buf, used = m->used, rit = m->rit, nres = m->nres;
+    rgrp = m->rgrp;
 }
 
 /* item id of the bound instance: bytes, offset in the pack, kind */
@@ -120,6 +150,15 @@ static inline unsigned it_bytes(unsigned id) { return id < ncell ? tab[id].bytes
 static inline unsigned it_off(unsigned id) { return id < ncell ? base + tab[id].off : rit[id - ncell].off; }
 static inline int it_tex(unsigned id) { return id >= ncell && (rit[id - ncell].tag & MS_RES_TEX); }  /* a mip 0 */
 static inline int it_res(unsigned id) { return id >= ncell; }
+
+/* item id of instance k found no room lately (blk): passed over */
+static int blocked(int k, unsigned id)
+{
+    for (int i = 0; i < nblk; i++)
+        if (blk[i].k == k && blk[i].id == id)
+            return 1;
+    return 0;
+}
 
 static unsigned char *arena;
 static unsigned char *pend_p;  /* mapstream_lend before the arena was allocated */
@@ -264,7 +303,7 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     state = calloc(n, 1);
     buf = calloc(n, sizeof *buf);
     used = calloc(n, sizeof *used);
-    rit = NULL, nres = 0;
+    rit = NULL, nres = 0, rgrp = NULL;
     if (!state || !buf || !used) {
         if (!ms[k].borrowed)
             pack_close(&pk);
@@ -298,10 +337,15 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     if (u2)
         used = u2;
     rit = u2 ? malloc(nitems * sizeof *rit) : NULL;
-    if (!rit) {
+    rgrp = rit && nitems <= 65536 ? malloc(nitems * sizeof *rgrp) : NULL;
+    if (!rgrp) {
+        free(rit);
+        rit = NULL;
         bind(was);
         return 0;
     }
+    for (unsigned j = 0; j < nitems; j++)
+        rgrp[j] = (unsigned short)j;
     memcpy(rit, items, nitems * sizeof *rit);
     memset(state + ncell, MS_NONE, nitems);
     memset(buf + ncell, 0, nitems * sizeof *buf);
@@ -366,9 +410,12 @@ void mapstream_close(int k)
             drop(id);
     if (!ms[k].borrowed)
         pack_close(&pk);
-    free(state), free(buf), free(used), free(rit);
-    state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL, rit = NULL, nres = 0;
+    free(state), free(buf), free(used), free(rit), free(rgrp);
+    state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL, rit = NULL, nres = 0, rgrp = NULL;
     nq = 0, scan_frame = 0;  /* queued ids may name this instance's items */
+    for (int i = 0; i < nblk; i++)
+        if (blk[i].k == k)
+            blk[i--] = blk[--nblk];
     bind(was == k ? 0 : was);
 }
 
@@ -394,15 +441,20 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
 {
     if (id < ncell) {
         float d2 = box_d2(&tab[id], pos);
-        *key = d2;
+        *key = d2 * (frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (settling)  /* a settle waits for the resident level only: near cells stream in behind the game */
             return d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
     }
     unsigned tag = rit[id - ncell].tag;
-    if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && tag < ncell) {  /* a cell's resident chunks (or a part of them) */
-        float d2 = box_d2(&tab[tag], pos);
-        *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER);
+    if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && (tag & ~MS_RES_FAR) < ncell) {  /* a cell's resident chunks (or a part) */
+        float d2 = box_d2(&tab[tag & ~MS_RES_FAR], pos);
+        if ((tag & MS_RES_FAR) && d2 > MS_FAR_D * MS_FAR_D)
+            d2 = MS_FAR_D * MS_FAR_D;
+        *key = d2 * (focus < 0 || k == focus || d2 < MS_OTHER_D * MS_OTHER_D ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
+               (frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
+        if (settling && settle_r > 0 && settle_item(k, id - ncell, pos, settle_r, settle_rf))
+            *key *= MS_SETTLE_K;  /* what the settle waits for before anything else in view or the backdrop */
         if (k == focus)  /* the player's block: its whole resident level, as the old full pool held it, but nearest
                           * first and with no swap (beyond MS_RES_R: Firelink's horizon tree line and the far north
                           * went missing behind the Burg's cells, ISO rounds 3-6, 2026-11-05) */
@@ -420,18 +472,62 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
     return age <= 1 ? 2 : age <= MS_TEX_KEEP;
 }
 
+/* the items [*first, return) of the bound instance that came in one read with item id (MS_RUN) */
+static unsigned run_of(unsigned id, unsigned *first)
+{
+    if (!it_res(id) || !rgrp) {
+        *first = id;
+        return id + 1;
+    }
+    unsigned j0 = rgrp[id - ncell], e = j0 + 1;
+    while (e < nres && rgrp[e] == j0)
+        e++;
+    *first = ncell + j0;
+    return ncell + e;
+}
+
+/* some item of id's run was handed out within the last f frames */
+static int run_used(unsigned id, unsigned f)
+{
+    unsigned a, e = run_of(id, &a);
+    for (unsigned m = a; m < e; m++)
+        if (frame - used[m] <= f)
+            return 1;
+    return 0;
+}
+
+/* the lowest rank over id's run (dropping it drops them all) */
+static float run_key(int k, unsigned id, const float *pos)
+{
+    unsigned a, e = run_of(id, &a);
+    float best = 1e30f, key;
+    for (unsigned m = a; m < e; m++) {
+        it_want(k, m, pos, &key);
+        best = key < best ? key : best;
+    }
+    return best;
+}
+
+/* free item id, and with it the items read in the same block (they share its memory) */
 static void drop(unsigned id)
 {
-    if (it_tex(id) && tex_set)
-        tex_set(sel, rit[id - ncell].tag & ~MS_RES_TEX, NULL);
-    unsigned n = it_bytes(id);
-    arena_free(buf[id], n);
-    buf[id] = NULL;
-    state[id] = MS_NONE;
-    mapstream_stats.cells--;
-    mapstream_stats.bytes -= n;
-    if (it_res(id))
-        *(it_tex(id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (n + 1023) >> 10;
+    unsigned a, e = run_of(id, &a), n = it_res(a) ? rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - rit[a - ncell].rel
+                                                 : it_bytes(a);
+    arena_free(buf[a], n);
+    for (unsigned m = a; m < e; m++) {
+        if (it_tex(m) && tex_set)
+            tex_set(sel, rit[m - ncell].tag & ~MS_RES_TEX, NULL);
+        unsigned b = it_bytes(m);
+        buf[m] = NULL;
+        state[m] = MS_NONE;
+        used[m] = 0;  /* not "asked for" (MS_VIEW_K) by its last hand-out */
+        mapstream_stats.cells--;
+        mapstream_stats.bytes -= b;
+        if (it_res(m)) {
+            *(it_tex(m) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (b + 1023) >> 10;
+            rgrp[m - ncell] = (unsigned short)(m - ncell);
+        }
+    }
 }
 
 static int ensure_arena(void)
@@ -471,7 +567,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     for (int k = 0; k < MS_INST && room < n; k++) {
         bind(k);
         for (unsigned id = 0; id < it_n(); id++)
-            if (state[id] == MS_READY && used[id] != frame)
+            if (state[id] == MS_READY && !run_used(id, 0))
                 room += (it_bytes(id) + 63) & ~63u;
     }
     bind(was);
@@ -489,7 +585,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++)
-                if (state[id] == MS_READY && (forced ? used[id] != frame : frame - used[id] > 2)) {
+                if (state[id] == MS_READY && !run_used(id, forced ? 0 : 2)) {
                     it_want(k, id, pos, &key);
                     if (key > fd)
                         far = id, far_k = k, fd = key;
@@ -625,6 +721,10 @@ int mapstream_reclaim(void *p, unsigned n)
  * ones (resident items, mip 0) from the bottom, so a big near cell does not wait for one hole among small items (ISO
  * round 5, 2026-11-05: 158 of 181 refusals had the room but no hole) */
 #define MS_BIG (256u << 10)
+#define MS_RUN (128u << 10)
+/* a loaded item gives way only to one ranked MS_EVICT_M x nearer (squared: ~1.4x the distance; ASSUMED hysteresis
+ * against read / evict loops between items of about the same rank) */
+#define MS_EVICT_M 2.0f  /* ASSUMED: RES_ITEM (map.c), ~0.2 s from the disc */
 static void *item_alloc(unsigned n)
 {
     return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
@@ -634,34 +734,30 @@ static void *item_alloc(unsigned n)
 static void collect(int r)
 {
     bind(reading_inst);
-    unsigned id = reading, n = it_bytes(id);
+    unsigned id = reading, e = reading + reading_n, n = reading_bytes;
     reading = -1;
     mapstream_stats.pending = 0;
     if (r == (int)n) {
         InvalidDCache(buf[id], (char *)buf[id] + n - 1);  /* drop stale lines over the DMA'd data */
-        state[id] = MS_READY;
-        used[id] = 0;
-        mapstream_stats.loads++;
         mapstream_stats.ms_last = (ticks() - t_read) / 294912;
-        if (it_tex(id)) {
-            if (tex_set)
-                tex_set(reading_inst, rit[id - ncell].tag & ~MS_RES_TEX, buf[id]);
-        } else {
-            printf("mapstream: %s %d.%u %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
-                   it_res(id) ? "resident cell" : "cell", reading_inst, it_res(id) ? id - ncell : id, n >> 10,
+        for (unsigned m = id; m < e; m++) {
+            state[m] = MS_READY;
+            used[m] = frame;  /* ranks as in view (MS_VIEW_K) until map.c draws it or not */
+            mapstream_stats.loads++;
+            if (it_tex(m) && tex_set)
+                tex_set(reading_inst, rit[m - ncell].tag & ~MS_RES_TEX, buf[m]);
+        }
+        if (!it_tex(id))
+            printf("mapstream: %s %d.%u (%u items) %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
+                   it_res(id) ? "resident cell" : "cell", reading_inst, it_res(id) ? id - ncell : id, e - id, n >> 10,
                    mapstream_stats.ms_last, mapstream_stats.cells, mapstream_stats.bytes >> 10, mapstream_stats.res_kb,
                    mapstream_stats.tex_kb);
-        }
     } else {
-        printf("mapstream: item %d.%u read %d of %u bytes\n", reading_inst, id, r, n);
-        arena_free(buf[id], n);
-        buf[id] = NULL;
-        state[id] = MS_FAILED;
+        printf("mapstream: item %d.%u (%u items) read %d of %u bytes\n", reading_inst, id, e - id, r, n);
+        drop(id);
+        for (unsigned m = id; m < e; m++)
+            state[m] = MS_FAILED;
         mapstream_stats.fails++;
-        mapstream_stats.cells--;
-        mapstream_stats.bytes -= n;
-        if (it_res(id))
-            *(it_tex(id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (n + 1023) >> 10;
     }
 }
 
@@ -691,20 +787,23 @@ void mapstream_update(const float pos[3])
         memcpy(scan_pos, pos, sizeof scan_pos);
         nq = 0;
         float key;
+        for (int i = 0; i < nblk; i++)
+            if (frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
+                blk[i--] = blk[--nblk];
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++) {
                 if (!it_bytes(id) || state[id] == MS_READING || state[id] == MS_FAILED)
                     continue;
                 int w = it_want(k, id, pos, &key);
-                if (state[id] == MS_READY && !w && frame - used[id] > 2)
+                if (state[id] == MS_READY && !w && !run_used(id, 2))
                     drop(id);
-                else if (state[id] == MS_NONE && w == 2)
+                else if (state[id] == MS_NONE && w == 2 && !blocked(k, id))
                     q_add(q, &nq, MS_QUEUE, k, id, key, 0);
             }
         }
     }
-    if (!can || !nq || (room_fail && !due)) {
+    if (!can || !nq) {
         bind(was);
         return;
     }
@@ -716,21 +815,41 @@ void mapstream_update(const float pos[3])
         bind(was);
         return;  /* loaded since: the next one next frame */
     }
-    unsigned wbytes = it_bytes(w.id);
-    void *p;
+    /* a small resident item takes the missing wanted ones after it in mapres.bin along, up to MS_RUN bytes in one
+     * read (one block, freed together): a read costs ~33 ms besides its bytes, host: or disc, and Firelink's 815 items
+     * took ~30 s at one a read (ISO round 8, 2026-11-05) */
+    unsigned wn = 1, wbytes = it_bytes(w.id);
+    if (it_res(w.id)) {
+        unsigned j = w.id - ncell, end = rit[j].rel + rit[j].bytes, tex = !!(rit[j].tag & MS_RES_TEX);
+        float key;
+        while (j + wn < nres) {
+            const MapResItem *c = &rit[j + wn];
+            if (state[ncell + j + wn] != MS_NONE || !c->bytes || c->rel < end || c->rel - end > 64 ||
+                c->off - c->rel != rit[j].off - rit[j].rel || c->rel + c->bytes - rit[j].rel > MS_RUN ||
+                !!(c->tag & MS_RES_TEX) != tex || it_want(w.k, ncell + j + wn, pos, &key) != 2)
+                break;
+            end = c->rel + c->bytes, wn++;
+        }
+        wbytes = end - rit[j].rel;
+        if (wn > 1 && wbytes >= MS_BIG)
+            wn = 1, wbytes = it_bytes(w.id);
+    }
+    void *p = item_alloc(wbytes);
+    if (!p && wn > 1)  /* no room for the run as it is: the item alone, making room for it below */
+        wn = 1, wbytes = it_bytes(w.id);
     /* make room in the arena: drop the least wanted loaded items ranked below the one wanted until its blob fits
      * (one pass ranks up to MS_QUEUE of them, least wanted first) */
-    while (!(p = item_alloc(wbytes))) {
+    while (!p && !(p = item_alloc(wbytes))) {
         MsQ d[MS_QUEUE];
         int nd = 0;
         float key;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++)
-                if (state[id] == MS_READY && used[id] != frame) {  /* drawn last frame is fine: mapstream_update
-                                                                       * runs after main.c's end-of-frame vu1_wait */
-                    it_want(k, id, pos, &key);
-                    if (key > w.key)
+                if (state[id] == MS_READY && !run_used(id, 0)) {  /* drawn last frame is fine: mapstream_update
+                                                                      * runs after main.c's end-of-frame vu1_wait */
+                    key = run_key(k, id, pos);
+                    if (key > w.key * MS_EVICT_M)
                         q_add(d, &nd, MS_QUEUE, k, id, key, 1);
                 }
         }
@@ -745,13 +864,16 @@ void mapstream_update(const float pos[3])
                        mapstream_stats.tex_kb, mapstream_stats.other_kb);
             }
             mapstream_stats.room_fails++;
-            nq = 0;
+            if (nblk == MS_BLOCKED)
+                blk[0] = blk[--nblk];
+            blk[nblk++] = (MsQ){w.k, w.id, (float)frame};  /* the next queued one reads next frame */
             bind(was);
             return;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
         for (int j = 0; j < nd && !p; j++) {
             bind(d[j].k);
-            drop(d[j].id);
+            if (state[d[j].id] == MS_READY)  /* not gone with an earlier one's run */
+                drop(d[j].id);
             bind(w.k);
             p = item_alloc(wbytes);
         }
@@ -760,22 +882,28 @@ void mapstream_update(const float pos[3])
     }
     room_fail = 0;
     bind(w.k);
-    buf[w.id] = p;
-    if (!pack_read_async(&pk, it_off(w.id), buf[w.id], wbytes)) {
-        arena_free(buf[w.id], wbytes);
-        buf[w.id] = NULL;
+    if (!pack_read_async(&pk, it_off(w.id), p, wbytes)) {
+        arena_free(p, wbytes);
         q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* the slot is busy (world.c, enemy.c): again next frame */
         bind(was);
         return;
     }
-    state[w.id] = MS_READING;
+    for (unsigned m = w.id; m < w.id + wn; m++) {
+        unsigned b = it_bytes(m);
+        buf[m] = (unsigned char *)p + (it_res(m) ? rit[m - ncell].rel - rit[w.id - ncell].rel : 0);
+        state[m] = MS_READING;
+        if (it_res(m)) {
+            rgrp[m - ncell] = (unsigned short)(w.id - ncell);
+            *(it_tex(m) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (b + 1023) >> 10;
+        }
+        mapstream_stats.cells++;
+        mapstream_stats.bytes += b;
+    }
     reading = w.id;
+    reading_n = wn;
+    reading_bytes = wbytes;
     reading_inst = w.k;
     t_read = ticks();
-    mapstream_stats.cells++;
-    mapstream_stats.bytes += wbytes;
-    if (it_res(w.id))
-        *(it_tex(w.id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (wbytes + 1023) >> 10;
     mapstream_stats.pending = 1;
     bind(was);
 }
@@ -790,12 +918,15 @@ static int settle_item(int k, unsigned j, const float *pos, float r, float r_foc
     if (tag & MS_RES_SKY)
         return 1;
     float rr = k == focus && r_focus > r ? r_focus : r;
-    return tag < ncell && box_d2(&tab[tag], pos) < rr * rr;
+    return (tag & ~MS_RES_FAR) < ncell && box_d2(&tab[tag & ~MS_RES_FAR], pos) < rr * rr;
 }
 
 int mapstream_busy(const float pos[3], float r, float r_focus)
 {
     int was = sel, busy = 0;
+    if (r != settle_r || r_focus != settle_rf)
+        scan_frame = 0;  /* requeue: the settle's items first */
+    settle_r = r, settle_rf = r_focus;
     if (reading >= 0) {  /* only a read the settle waits for: further ones stream on behind the game (a settle that
                           * waited for every read in flight went on over the whole 260 m queue: 10-14 s, ISO) */
         bind(reading_inst);
@@ -809,7 +940,8 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
     for (int k = 0; k < MS_INST && !busy; k++) {
         bind(k);
         for (unsigned j = 0; j < nres && !busy; j++)
-            busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus);
+            busy = state[ncell + j] == MS_NONE && rit[j].bytes && settle_item(k, j, pos, r, r_focus) &&
+                   !blocked(k, ncell + j);
     }
     bind(was);
     return busy;
@@ -817,6 +949,8 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
 
 const void *mapstream_get(unsigned i)
 {
+    if (i < ncell && state[i] == MS_NONE)
+        used[i] = frame;  /* asked for while missing: in view (MS_VIEW_K) */
     if (i >= ncell || state[i] != MS_READY)
         return NULL;
     used[i] = frame;
@@ -825,6 +959,8 @@ const void *mapstream_get(unsigned i)
 
 const unsigned char *mapstream_res(unsigned i)
 {
+    if (i < nres && state[ncell + i] == MS_NONE)
+        used[ncell + i] = frame;  /* asked for while missing: in view (MS_VIEW_K) */
     if (i >= nres || state[ncell + i] != MS_READY)
         return NULL;
     used[ncell + i] = frame;
