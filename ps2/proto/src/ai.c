@@ -781,11 +781,20 @@ static void mark_goals(void)
         lua0_mark(logics[i].f), lua0_mark(logics[i].i);
 }
 
+/* Lua GC: a collection starts once LUA_GC_KB were allocated since the last one (a sweep every ~33 s in the 30-minute
+ * soak, TECH_DEBT world-5); its mark runs in one frame, its sweep LUA_GC_STEP_US per frame after that (ASSUMED: 1 ms
+ * of the 33.3 ms frame, as event_update's EV_BUDGET_US share; 0 = the whole sweep in the mark's frame, the old
+ * stop-the-world collection, for A/B builds) */
+#define LUA_GC_KB 192
+#ifndef LUA_GC_STEP_US
+#define LUA_GC_STEP_US 1000
+#endif
+
 void ai_end_frame(void)
 {
     nsounds = 0;
-    if (scripts_ok && lua0_since_gc > 192 * 1024)
-        lua0_gc(mark_goals);
+    if (scripts_ok)
+        lua0_gc_step(mark_goals, LUA_GC_KB * 1024, LUA_GC_STEP_US);
     ai_lua_heap = lua0_heap, ai_lua_instr = lua0_instructions;
 }
 

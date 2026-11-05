@@ -1,5 +1,5 @@
 /* Skinned characters from model.bin (tools/export_model.py: the Warrior; tools/export_chr.py: enemies), any number of
- * models, each drawn any number of times per frame with its own pose (VU1 skinning, vu1skin.vsm). */
+ * models, each drawn any number of times per frame with its own pose (VU1 skinning, vu1skin2.vsm). */
 #ifndef MODEL_H
 #define MODEL_H
 

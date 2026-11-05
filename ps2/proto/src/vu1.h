@@ -40,7 +40,7 @@ void vu1_gs_regs(int n, const u64 *regs);
  * tbp in draw order (FLUSH + DIRECT image transfer + TEXFLUSH; buffer width = w rounded up to 64, at least 128 for
  * PSMT8 / PSMT4). Returns 0 if the chain had no room. */
 int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes);
-/* Skinned character (vu1skin.vsm), after vu1_begin in a chain of its own (call once per character, any number per
+/* Skinned character (vu1skin2.vsm, or vu1skinclip.vsm near the camera), after vu1_begin in a chain of its own (call once per character, any number per
  * chain): switch to the skin memory layout and upload
  * the bone palette (bones <= 61, 4 qwords each: columns of view * world, col0-2 .w = bone-space light vector) */
 void vu1_skin_begin(const void *palette, int bones);
@@ -49,11 +49,7 @@ void vu1_skin_begin(const void *palette, int bones);
 void vu1_skin_fade(float fmax);
 /* Light for the following textured skin batches: colour = amb + sun x max(n . L, 0) per channel, 0x80 = 1.0 */
 void vu1_skin_light(const float amb[3], const float sun[3]);
-#ifdef VU1_SKIN_OLD  /* A/B build: the in-place skin program (vu1skin.vsm) */
-#define VU1_SKIN_TRIS 31
-#else  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
-#define VU1_SKIN_TRIS 24
-#endif
+#define VU1_SKIN_TRIS 24  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
 /* One skinned batch (<= VU1_SKIN_TRIS triangles, unindexed): 16-byte aligned streams per vertex: pa/pb s16x4
  * (bone-local position * 4096, palette offset 4 * bone), nrm s16x4 (normal in bone A space * 4096, weight of A * 4096),
  * st f32x2 normalized (textured) or colour u8x4 (t == NULL). tint: added to the light (0x80 = 1.0 when textured). */
