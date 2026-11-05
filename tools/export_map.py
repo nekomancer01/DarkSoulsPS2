@@ -2295,8 +2295,11 @@ CELLS_VIFPKT = 1  # cell table word 1, format flags: bit 0 = chunk streams are V
 # marked CELL_PART in their near count): each part is a mapstream item of its own, so no near cell needs one big hole
 # in the arena (Burg near cells of 0.6-2.2 MB found none with 1.2-1.6 MB free: 115 refusals on the ISO route,
 # TECH_DEBT world-9). map.c draws a cell's near level once every part is in. Plan step 5, 2026-11-06.
-NEAR_PART = 256 * 1024
-NEAR_PARTS_MAX = 16  # map.c NEAR_PARTS
+# One part is at most one page of mapstream's arena (MS_PAGE, plan step 6): 256 KB parts (step 5) still found no hole
+# of their size with ~450 KB free in the arena; a part of a page fits any free page. A single chunk over a page makes
+# a part of its own (it starts on a page).
+NEAR_PART = 64 * 1024
+NEAR_PARTS_MAX = 64  # map.c NEAR_PARTS
 CELL_PART = 0x80000000
 
 
