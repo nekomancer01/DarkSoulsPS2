@@ -55,6 +55,8 @@ const unsigned char *mapstream_res(unsigned i);
 void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_set)(int k, unsigned tag, const void *p));
 /* world.c: while on, no new reads start (a block's lite set holds the async slot back to back) */
 void mapstream_hold(int on);
+/* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */
+void mapstream_focus(int k);
 /* settle (world.c, a warp): 1 while the sky or a resident cell within r m of pos of any instance is still to load
  * (0 once the arena had no room for the next one: nothing more can come) */
 int mapstream_busy(const float pos[3], float r);

@@ -22,6 +22,16 @@
 #define MS_RES_R 260.0f
 #define MS_RES_UNLOAD_R 280.0f
 #define MS_RES_K 0.5f
+/* Resident cells of a block the player is not in (mapstream_focus) rank as if twice as far (x4 on the squared
+ * distance, ASSUMED): Firelink + the Burg blocks' resident levels within MS_RES_R exceed the arena, and with equal
+ * ranks the Burg's cells kept Firelink's own out after the player came back (holes in its tree line and the aqueduct
+ * wall, ISO world_route 2026-11-05) */
+#define MS_RES_OTHER 4.0f
+/* The full want / drop scan over every item runs when a read can start and the player moved MS_SCAN_D m or
+ * MS_SCAN_FRAMES passed since the last one, else only every MS_SCAN_FRAMES (frees far items); after an item found no
+ * room it waits MS_SCAN_FRAMES (~5000 items over 5 blocks: a scan every frame cost the Burg bonfire 30 -> 22 fps) */
+#define MS_SCAN_D 4.0f
+#define MS_SCAN_FRAMES 16u
 /* A texture's mip 0 (asked for at mip 0 in the last frame) ranks like a cell MS_TEX_D m away: the texture is in view
  * close up and draws mip 1 until it is in. Kept while asked for within MS_TEX_KEEP frames (ASSUMED: 4 s at 30 fps;
  * texcache keeps a resident mip 0 in VRAM without asking again, so a short keep reads it again off the disc). */
@@ -67,7 +77,27 @@ static void **buf;
 static unsigned *used;
 static MapResItem *rit;
 static unsigned nres;
-static int sel, reading = -1, reading_inst, hold, room_fail;
+static int sel, reading = -1, reading_inst, hold, room_fail, focus = -1;
+static unsigned scan_frame;  /* frame of the last full scan */
+static float scan_pos[3];
+/* A short ranked list of items: the next reads (lowest key first) or eviction candidates (desc: highest first) */
+#define MS_QUEUE 32
+typedef struct { int k; unsigned id; float key; } MsQ;
+static MsQ q[MS_QUEUE];
+static int nq;
+
+static void q_add(MsQ *l, int *n, int cap, int k, unsigned id, float key, int desc)
+{
+    int i = *n < cap ? (*n)++ : cap;
+    if (i == cap && (desc ? key <= l[cap - 1].key : key >= l[cap - 1].key))
+        return;  /* full and ranked past the last */
+    if (i == cap)
+        i = cap - 1;
+    while (i > 0 && (desc ? l[i - 1].key < key : l[i - 1].key > key))
+        l[i] = l[i - 1], i--;
+    l[i] = (MsQ){k, id, key};
+}
+
 static unsigned (*tex_age)(int k, unsigned tag);
 static void (*tex_set)(int k, unsigned tag, const void *p);
 
@@ -110,6 +140,43 @@ static void *arena_alloc(unsigned n, int main)
             }
             return p;
         }
+    return NULL;
+}
+
+/* the same from the top of the highest hole that fits (mapstream_alloc: lite sets, relief, enemy model temporaries
+ * stay apart from the items, which fill from the bottom, so a freed group of small items leaves one hole) */
+static void *arena_alloc_top(unsigned n)
+{
+    n = (n + 63) & ~63u;
+    for (unsigned i = nholes; i-- > 0;) {
+        unsigned top = hole_off[i] + hole_len[i] > arena_size ? arena_size : hole_off[i] + hole_len[i];
+        if (hole_off[i] >= arena_size || top - hole_off[i] < n)
+            continue;
+        unsigned o = top - n;
+        if (top == hole_off[i] + hole_len[i]) {
+            hole_len[i] -= n;
+            if (!hole_len[i]) {
+                memmove(hole_off + i, hole_off + i + 1, (nholes - i - 1) * sizeof *hole_off);
+                memmove(hole_len + i, hole_len + i + 1, (nholes - i - 1) * sizeof *hole_len);
+                nholes--;
+            }
+        } else {  /* the hole runs on into lent memory beyond the arena: take from the arena's end, split */
+            if (nholes == MS_HOLES)
+                return NULL;
+            memmove(hole_off + i + 2, hole_off + i + 1, (nholes - i - 1) * sizeof *hole_off);
+            memmove(hole_len + i + 2, hole_len + i + 1, (nholes - i - 1) * sizeof *hole_len);
+            nholes++;
+            unsigned end = hole_off[i] + hole_len[i];
+            hole_len[i] = o - hole_off[i];
+            hole_off[i + 1] = top, hole_len[i + 1] = end - top;
+            if (!hole_len[i]) {
+                memmove(hole_off + i, hole_off + i + 1, (nholes - i - 1) * sizeof *hole_off);
+                memmove(hole_len + i, hole_len + i + 1, (nholes - i - 1) * sizeof *hole_len);
+                nholes--;
+            }
+        }
+        return arena + o;
+    }
     return NULL;
 }
 
@@ -239,6 +306,7 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     memset(buf + ncell, 0, nitems * sizeof *buf);
     memset(used + ncell, 0, nitems * sizeof *used);
     nres = nitems;
+    scan_frame = 0;
     unsigned cb = 0, tb = 0;
     for (unsigned j = 0; j < nitems; j++)
         *(j > n ? &tb : &cb) += items[j].bytes;
@@ -256,6 +324,13 @@ void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k
 void mapstream_hold(int on)
 {
     hold = on;
+}
+
+void mapstream_focus(int k)
+{
+    if (k != focus)
+        scan_frame = 0;  /* ranks changed */
+    focus = k;
 }
 
 void mapstream_pool(unsigned max)
@@ -285,6 +360,7 @@ void mapstream_close(int k)
         pack_close(&pk);
     free(state), free(buf), free(used), free(rit);
     state = NULL, buf = NULL, used = NULL, ncell = 0, tab = NULL, rit = NULL, nres = 0;
+    nq = 0, scan_frame = 0;  /* queued ids may name this instance's items */
     bind(was == k ? 0 : was);
 }
 
@@ -316,7 +392,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
     unsigned j = id - ncell;
     if (j < ncell) {
         float d2 = box_d2(&tab[j], pos);
-        *key = d2 * MS_RES_K;
+        *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER);
         return d2 < MS_RES_R * MS_RES_R ? 2 : d2 <= MS_RES_UNLOAD_R * MS_RES_UNLOAD_R;
     }
     if (j == ncell) {  /* the sky */
@@ -393,7 +469,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
      * vu1_wait and before this frame's map_draw, so once VIF1 is idle no chain reads an item not handed out this
      * frame. Without it a 579 KB c2540 model.bin found no room in the Burg and the heap fallback failed on
      * fragmentation (40-209 OUT OF RAM per 30-minute soak, 2026-11-01). Dropped items stream back. */
-    while (!(p = arena_alloc(n, 1))) {
+    while (!(p = arena_alloc_top(n))) {
         int far = -1, far_k = 0;
         float fd = -1, key;
         for (int k = 0; k < MS_INST; k++) {
@@ -582,69 +658,94 @@ void mapstream_update(const float pos[3])
     int r;
     if (reading >= 0 && pack_async_done(&r))
         collect(r);
-    /* free far items no chain still reads; pick the most wanted missing item over every instance */
-    int want = -1, want_k = 0;
-    float wd = 1e30f, key;
-    for (int k = 0; k < MS_INST; k++) {
-        bind(k);
-        for (unsigned id = 0; id < it_n(); id++) {
-            if (!it_bytes(id) || state[id] == MS_READING || state[id] == MS_FAILED)
-                continue;
-            int w = it_want(k, id, pos, &key);
-            if (state[id] == MS_READY && !w && frame - used[id] > 2)
-                drop(id);
-            else if (state[id] == MS_NONE && w == 2 && key < wd)
-                want = id, want_k = k, wd = key;
+    /* free far items no chain still reads; queue the most wanted missing items over every instance (MS_SCAN_*) */
+    float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
+    int moved = dx * dx + dy * dy + dz * dz > MS_SCAN_D * MS_SCAN_D;
+    int due = frame - scan_frame >= MS_SCAN_FRAMES || !scan_frame || (moved && !room_fail);
+    int can = reading < 0 && !hold;
+    if (due) {
+        scan_frame = frame;
+        memcpy(scan_pos, pos, sizeof scan_pos);
+        nq = 0;
+        float key;
+        for (int k = 0; k < MS_INST; k++) {
+            bind(k);
+            for (unsigned id = 0; id < it_n(); id++) {
+                if (!it_bytes(id) || state[id] == MS_READING || state[id] == MS_FAILED)
+                    continue;
+                int w = it_want(k, id, pos, &key);
+                if (state[id] == MS_READY && !w && frame - used[id] > 2)
+                    drop(id);
+                else if (state[id] == MS_NONE && w == 2)
+                    q_add(q, &nq, MS_QUEUE, k, id, key, 0);
+            }
         }
     }
-    if (want < 0 || reading >= 0 || hold) {
+    if (!can || !nq || (room_fail && !due)) {
         bind(was);
         return;
     }
-    /* make room in the arena: drop the least wanted loaded item ranked below the one wanted until its blob fits */
-    bind(want_k);
-    unsigned wbytes = it_bytes(want);
+    /* the next queued item still missing (reads between scans take the queue in rank order) */
+    MsQ w = q[0];
+    memmove(q, q + 1, --nq * sizeof *q);
+    bind(w.k);
+    if (state[w.id] != MS_NONE) {
+        bind(was);
+        return;  /* loaded since: the next one next frame */
+    }
+    unsigned wbytes = it_bytes(w.id);
     void *p;
+    /* make room in the arena: drop the least wanted loaded items ranked below the one wanted until its blob fits
+     * (one pass ranks up to MS_QUEUE of them, least wanted first) */
     while (!(p = arena_alloc(wbytes, 0))) {
-        int far = -1, far_k = 0;
-        float fd = wd;
+        MsQ d[MS_QUEUE];
+        int nd = 0;
+        float key;
         for (int k = 0; k < MS_INST; k++) {
             bind(k);
             for (unsigned id = 0; id < it_n(); id++)
                 if (state[id] == MS_READY && frame - used[id] > 2) {
                     it_want(k, id, pos, &key);
-                    if (key > fd)
-                        far = id, far_k = k, fd = key;
+                    if (key > w.key)
+                        q_add(d, &nd, MS_QUEUE, k, id, key, 1);
                 }
         }
-        if (far < 0) {
+        if (!nd) {
             if (!room_fail++)
-                printf("mapstream: no room for item %d.%u (%u KB): arena full of nearer items\n", want_k, want,
+                printf("mapstream: no room for item %d.%u (%u KB): arena full of nearer items\n", w.k, w.id,
                        wbytes >> 10);
             mapstream_stats.room_fails++;
+            nq = 0;
             bind(was);
             return;  /* arena full of items ranked above it: the coarse level (or nothing) stays for this one */
         }
-        bind(far_k);
-        drop(far);
+        for (int j = 0; j < nd && !p; j++) {
+            bind(d[j].k);
+            drop(d[j].id);
+            bind(w.k);
+            p = arena_alloc(wbytes, 0);
+        }
+        if (p)
+            break;
     }
     room_fail = 0;
-    bind(want_k);
-    buf[want] = p;
-    if (!pack_read_async(&pk, it_off(want), buf[want], wbytes)) {
-        arena_free(buf[want], wbytes);
-        buf[want] = NULL;
+    bind(w.k);
+    buf[w.id] = p;
+    if (!pack_read_async(&pk, it_off(w.id), buf[w.id], wbytes)) {
+        arena_free(buf[w.id], wbytes);
+        buf[w.id] = NULL;
+        q_add(q, &nq, MS_QUEUE, w.k, w.id, w.key, 0);  /* the slot is busy (world.c, enemy.c): again next frame */
         bind(was);
         return;
     }
-    state[want] = MS_READING;
-    reading = want;
-    reading_inst = want_k;
+    state[w.id] = MS_READING;
+    reading = w.id;
+    reading_inst = w.k;
     t_read = ticks();
     mapstream_stats.cells++;
     mapstream_stats.bytes += wbytes;
-    if (it_res(want))
-        *(it_tex(want) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (wbytes + 1023) >> 10;
+    if (it_res(w.id))
+        *(it_tex(w.id) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (wbytes + 1023) >> 10;
     mapstream_stats.pending = 1;
     bind(was);
 }

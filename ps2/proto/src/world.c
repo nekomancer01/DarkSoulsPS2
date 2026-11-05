@@ -37,11 +37,15 @@
  * world-5). Only the normal-map relief (bump.bin) is per block: read for the block the player stood in for
  * WORLD_SWAP_S (no reading back and forth on a boundary; ASSUMED value). */
 #define WORLD_SWAP_S 1.0f
-/* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it) */
+/* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
+ * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
+ * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
+#define WORLD_ARENA_LESS (1024u << 10)
 #define WORLD_POOL (24u << 20)
 /* A warp settles once the resident cells within WORLD_SETTLE_R of the feet (and the sky) are in: the loading screen
- * covers what the player sees first; the rest streams in nearest first (ASSUMED radius) */
-#define WORLD_SETTLE_R 64.0f
+ * covers what the player sees first; the rest streams in nearest first (ASSUMED radius; 64 m took 6.4 s at the
+ * Firelink boot from cdrom0:, 2026-11-05) */
+#define WORLD_SETTLE_R 40.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
@@ -228,7 +232,7 @@ int world_init(const char *boot_area)
         slot_of[s] = -1;
     world_stats.blocks = nblk;
     if (nblk > 1)
-        mapstream_reserve(WORLD_ENEMY_RESERVE);
+        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
     mapstream_pool(WORLD_POOL);
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
@@ -680,6 +684,7 @@ static void step(const float *feet, float dt)
      * set waits neither the relief nor mapstream.c issue a new read. */
     lite_first = lite_pending();
     mapstream_hold(lite_first);
+    mapstream_focus(cur);
     if (bump_reading) {
         bump_step();
         if (bump_reading)
