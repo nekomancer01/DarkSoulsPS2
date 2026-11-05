@@ -403,6 +403,10 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
     if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && tag < ncell) {  /* a cell's resident chunks (or a part of them) */
         float d2 = box_d2(&tab[tag], pos);
         *key = d2 * (focus < 0 || k == focus ? MS_RES_K : MS_RES_K * MS_RES_OTHER);
+        if (k == focus)  /* the player's block: its whole resident level, as the old full pool held it, but nearest
+                          * first and with no swap (beyond MS_RES_R: Firelink's horizon tree line and the far north
+                          * went missing behind the Burg's cells, ISO rounds 3-6, 2026-11-05) */
+            return 2;
         return d2 < MS_RES_R * MS_RES_R ? 2 : d2 <= MS_RES_UNLOAD_R * MS_RES_UNLOAD_R;
     }
     if (!(tag & MS_RES_TEX)) {  /* the sky */
