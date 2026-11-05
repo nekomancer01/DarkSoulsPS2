@@ -39,7 +39,8 @@
 /* An item map.c asked for in the last MS_VIEW_FRAMES frames while it was missing (a cell in view: mapstream_get /
  * mapstream_res) ranks as if MS_VIEW_K x as far (squared: 1/4 = half the distance): the aqueduct rock wall and the
  * far north were read after cells behind the camera (ISO rounds 1-7, 2026-11-05). ASSUMED values. */
-#define MS_VIEW_K 0.25f
+#define MS_VIEW_K 0.25f  /* loaded items drawn as lately too: else each read in view was evicted for the next one
+                          * (0.414 read 18 times in 25 s, the wall never read again: ISO round 11, 2026-11-05) */
 /* The backdrop's cells (MS_RES_FAR: far-only silhouettes) rank as if no further than MS_FAR_D: nearest first left the
  * far north's backdrop for last, bare for 30 s after a warp (ISO round 8, 2026-11-05); ASSUMED */
 #define MS_FAR_D 64.0f
@@ -421,7 +422,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
 {
     if (id < ncell) {
         float d2 = box_d2(&tab[id], pos);
-        *key = d2 * (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
+        *key = d2 * (frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (settling)  /* a settle waits for the resident level only: near cells stream in behind the game */
             return d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
@@ -432,7 +433,7 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
         if ((tag & MS_RES_FAR) && d2 > MS_FAR_D * MS_FAR_D)
             d2 = MS_FAR_D * MS_FAR_D;
         *key = d2 * (focus < 0 || k == focus || d2 < MS_OTHER_D * MS_OTHER_D ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
-               (state[id] == MS_NONE && frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
+               (frame - used[id] <= MS_VIEW_FRAMES ? MS_VIEW_K : 1.0f);
         if (settling && settle_r > 0 && settle_item(k, id - ncell, pos, settle_r, settle_rf))
             *key *= MS_SETTLE_K;  /* what the settle waits for before anything else in view or the backdrop */
         if (k == focus)  /* the player's block: its whole resident level, as the old full pool held it, but nearest
@@ -474,6 +475,18 @@ static int run_used(unsigned id, unsigned f)
         if (frame - used[m] <= f)
             return 1;
     return 0;
+}
+
+/* the lowest rank over id's run (dropping it drops them all) */
+static float run_key(int k, unsigned id, const float *pos)
+{
+    unsigned a, e = run_of(id, &a);
+    float best = 1e30f, key;
+    for (unsigned m = a; m < e; m++) {
+        it_want(k, m, pos, &key);
+        best = key < best ? key : best;
+    }
+    return best;
 }
 
 /* free item id, and with it the items read in the same block (they share its memory) */
@@ -689,7 +702,10 @@ int mapstream_reclaim(void *p, unsigned n)
  * ones (resident items, mip 0) from the bottom, so a big near cell does not wait for one hole among small items (ISO
  * round 5, 2026-11-05: 158 of 181 refusals had the room but no hole) */
 #define MS_BIG (256u << 10)
-#define MS_RUN (128u << 10)  /* ASSUMED: RES_ITEM (map.c), ~0.2 s from the disc */
+#define MS_RUN (128u << 10)
+/* a loaded item gives way only to one ranked MS_EVICT_M x nearer (squared: ~1.4x the distance; ASSUMED hysteresis
+ * against read / evict loops between items of about the same rank) */
+#define MS_EVICT_M 2.0f  /* ASSUMED: RES_ITEM (map.c), ~0.2 s from the disc */
 static void *item_alloc(unsigned n)
 {
     return n >= MS_BIG ? arena_alloc_top(n) : arena_alloc(n, 0);
@@ -707,7 +723,7 @@ static void collect(int r)
         mapstream_stats.ms_last = (ticks() - t_read) / 294912;
         for (unsigned m = id; m < e; m++) {
             state[m] = MS_READY;
-            used[m] = 0;
+            used[m] = frame;  /* ranks as in view (MS_VIEW_K) until map.c draws it or not */
             mapstream_stats.loads++;
             if (it_tex(m) && tex_set)
                 tex_set(reading_inst, rit[m - ncell].tag & ~MS_RES_TEX, buf[m]);
@@ -810,8 +826,8 @@ void mapstream_update(const float pos[3])
             for (unsigned id = 0; id < it_n(); id++)
                 if (state[id] == MS_READY && !run_used(id, 0)) {  /* drawn last frame is fine: mapstream_update
                                                                       * runs after main.c's end-of-frame vu1_wait */
-                    it_want(k, id, pos, &key);
-                    if (key > w.key)
+                    key = run_key(k, id, pos);
+                    if (key > w.key * MS_EVICT_M)
                         q_add(d, &nd, MS_QUEUE, k, id, key, 1);
                 }
         }
