@@ -23,6 +23,7 @@
 #include "bonfire.h"
 #include "loading.h"
 #include "sound.h"
+#include "world.h"
 
 /* the player anims (src/player_data.h, loaded from c0000.pak); after the includes: model.h has an `anims` field */
 #define anims (player_data->anims)
@@ -337,6 +338,10 @@ static void constrain(Player *p, V3 old)
             p->pos = v3(pos[0], clampf(y, hit.y - STEP_LAG, hit.y + STEP_LAG), pos[2]);
             return;
         }
+        if (world_hold(pos)) {  /* the floor ahead is a world block still loading (src/world.c): wait at its edge */
+            p->pos = old;
+            return;
+        }
         p->airborne = 1;
         p->fall_y0 = old.y;
         p->vel = v3(clampf(dx / dt, -AIR_XZ_MAX, AIR_XZ_MAX), 0, clampf(dz / dt, -AIR_XZ_MAX, AIR_XZ_MAX));
@@ -344,6 +349,7 @@ static void constrain(Player *p, V3 old)
         p->vel.x = clampf(dx / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
         p->vel.z = clampf(dz / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
     }
+    float vy0 = p->vel.y;
     p->vel.y = clampf(p->vel.y - GRAVITY * gravity_scale(p) * dt, -AIR_DOWN_MAX, AIR_UP_MAX);
     float y = pos[1] + p->vel.y * dt;
     if (col_floor(pos[0], pos[2], pos[1], y, COL_LETHAL, 0) || y < FALL_OUT_Y) {
@@ -356,6 +362,13 @@ static void constrain(Player *p, V3 old)
     if (col_floor(pos[0], pos[2], pos[1] + COL_STEP_UP, y, COL_SOLID, &hit)) {
         y = hit.y;
         land(p, y);
+    } else {
+        float feet[3] = {pos[0], y, pos[2]};
+        if (world_hold(feet)) {  /* falling into a world block still loading: hang until its collision is on */
+            p->pos = old;
+            p->vel.y = vy0;
+            return;
+        }
     }
     p->pos = v3(pos[0], y, pos[2]);
 }
