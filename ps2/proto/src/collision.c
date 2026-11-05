@@ -19,8 +19,8 @@ typedef struct { unsigned short v[3]; unsigned char hit_filter, material; } Tri;
 #define MAX_PUSH_ITERS 4
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
 
-/* One collision.bin per world block (src/world.c): the queries below run on the bound block's arrays; the public
- * functions loop over the loaded blocks (all in one world frame) */
+/* One collision.bin per world block (src/world.c), all in one world frame. The queries below take the block they run
+ * on; the public functions loop over the loaded blocks and skip those whose bounds the query cannot touch. */
 typedef struct {
     const Header *hdr;
     const short *verts;
@@ -30,29 +30,19 @@ typedef struct {
     unsigned short *stamp, cur_stamp;
     float inv_cell;
     unsigned char *off;  /* EMEVD "Activate Hit" (src/event.c): bit per triangle, 1 = switched off; NULL = all on */
+    float lo[3], hi[3];  /* bounds of the block's vertices (map space), for the per-block early-out */
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
-static int bound;
-static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *hit);
+static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
 
-static const Header *hdr;
-static const short *verts;
-static const Tri *tris;
-static const unsigned *cells;
-static const unsigned short *list;
-static unsigned short *stamp, cur_stamp;
-static float inv_cell;
-static const unsigned char *off;
-#define TRI_OFF(ti) (off && off[(ti) >> 3] >> ((ti) & 7) & 1)
+#define TRI_OFF(c, ti) ((c)->off && (c)->off[(ti) >> 3] >> ((ti) & 7) & 1)
 int col_contacts;
 
-static int bind(int b)
+/* 1 if the box [lo, hi] overlaps block c's bounds */
+static inline int box_hits(const ColBlock *c, const float lo[3], const float hi[3])
 {
-    blk[bound].cur_stamp = cur_stamp;
-    const ColBlock *c = &blk[bound = b];
-    hdr = c->hdr, verts = c->verts, tris = c->tris, cells = c->cells, list = c->list;
-    stamp = c->stamp, cur_stamp = c->cur_stamp, inv_cell = c->inv_cell, off = c->off;
-    return hdr != 0;
+    return c->hdr && lo[0] <= c->hi[0] && hi[0] >= c->lo[0] && lo[1] <= c->hi[1] && hi[1] >= c->lo[1] &&
+           lo[2] <= c->hi[2] && hi[2] >= c->lo[2];
 }
 
 int col_load(int b, const void *blob)
@@ -74,8 +64,18 @@ int col_load(int b, const void *blob)
     c->list = (const unsigned short *)(p + h->list_off);
     c->inv_cell = 1.0f / h->cell;
     c->cur_stamp = 0;
+    /* vertex bounds: every triangle lies inside them, so a query box outside them cannot hit the block. An empty block
+     * (no vertices) gets an inverted box that nothing overlaps */
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    for (unsigned i = 0; i < h->nverts; i++)
+        for (int k = 0; k < 3; k++) {
+            float v = h->origin[k] + c->verts[i * 3 + k] * h->scale;
+            lo[k] = v < lo[k] ? v : lo[k];
+            hi[k] = v > hi[k] ? v : hi[k];
+        }
+    for (int k = 0; k < 3; k++)  /* 1 cm margin: covers float rounding in the hit tests */
+        c->lo[k] = lo[k] - 0.01f, c->hi[k] = hi[k] + 0.01f;
     c->hdr = h;
-    bind(b);
     return 1;
 }
 
@@ -86,8 +86,6 @@ void col_unload(int b)
     free(blk[b].stamp);
     free(blk[b].off);
     memset(&blk[b], 0, sizeof blk[b]);
-    if (bound == b)
-        bind(b);
 }
 
 int col_init(const void *blob)
@@ -104,8 +102,6 @@ int col_tris_enable(int b, unsigned first, unsigned count, int on)
         c->off = calloc((c->hdr->ntris + 7) >> 3, 1);
         if (!c->off)
             return 0;
-        if (bound == b)
-            off = c->off;
     }
     if (c->off)
         for (unsigned t = first; t < first + count; t++)
@@ -117,27 +113,28 @@ int col_tris(void) { return blk[0].hdr ? (int)blk[0].hdr->ntris : 0; }
 int col_block_tris(int b) { return b >= 0 && b < COL_BLOCKS && blk[b].hdr ? (int)blk[b].hdr->ntris : 0; }
 
 /* New query id for the per-triangle "already tested" stamps (triangles span several cells) */
-static void next_stamp(void)
+static void next_stamp(ColBlock *c)
 {
-    if (++cur_stamp == 0) {
-        memset(stamp, 0, hdr->ntris * sizeof *stamp);
-        cur_stamp = 1;
+    if (++c->cur_stamp == 0) {
+        memset(c->stamp, 0, c->hdr->ntris * sizeof *c->stamp);
+        c->cur_stamp = 1;
     }
 }
 
-static inline void vert(unsigned i, float *o)
+static inline void vert(const ColBlock *c, unsigned i, float *o)
 {
-    const short *v = &verts[i * 3];
-    o[0] = hdr->origin[0] + v[0] * hdr->scale;
-    o[1] = hdr->origin[1] + v[1] * hdr->scale;
-    o[2] = hdr->origin[2] + v[2] * hdr->scale;
+    const Header *h = c->hdr;
+    const short *v = &c->verts[i * 3];
+    o[0] = h->origin[0] + v[0] * h->scale;
+    o[1] = h->origin[1] + v[1] * h->scale;
+    o[2] = h->origin[2] + v[2] * h->scale;
 }
 
-static inline void tri_verts(const Tri *t, float *a, float *b, float *c)
+static inline void tri_verts(const ColBlock *cb, const Tri *t, float *a, float *b, float *c)
 {
-    vert(t->v[0], a);
-    vert(t->v[1], b);
-    vert(t->v[2], c);
+    vert(cb, t->v[0], a);
+    vert(cb, t->v[1], b);
+    vert(cb, t->v[2], c);
 }
 
 static inline float dot(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -164,27 +161,31 @@ static void tri_normal(const float *a, const float *b, const float *c, float *n)
         n[0] /= l, n[1] /= l, n[2] /= l;
 }
 
-static inline int cell_index(float x, float z, int *ix, int *iz)
+static inline int cell_index(const ColBlock *c, float x, float z, int *ix, int *iz)
 {
-    *ix = (int)floorf((x - hdr->x0) * inv_cell);
-    *iz = (int)floorf((z - hdr->z0) * inv_cell);
-    return *ix >= 0 && *iz >= 0 && *ix < (int)hdr->gw && *iz < (int)hdr->gd;
+    const Header *h = c->hdr;
+    *ix = (int)floorf((x - h->x0) * c->inv_cell);
+    *iz = (int)floorf((z - h->z0) * c->inv_cell);
+    return *ix >= 0 && *iz >= 0 && *ix < (int)h->gw && *iz < (int)h->gd;
 }
 
-static int floor1(float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
+static int floor1(const ColBlock *cb, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
 {
     int ix, iz;
-    if (!hdr || !cell_index(x, z, &ix, &iz))
+    if (!cb->hdr || !cell_index(cb, x, z, &ix, &iz))
         return 0;
-    unsigned k = iz * hdr->gw + ix;
+    const unsigned *cells = cb->cells;
+    const unsigned short *list = cb->list;
+    const Tri *tris = cb->tris;
+    unsigned k = iz * cb->hdr->gw + ix;
     int found = -1;
     float best = 0;
     for (unsigned j = cells[k]; j < cells[k + 1]; j++) {
         const Tri *t = &tris[list[j]];
-        if (!(mask >> t->hit_filter & 1) || TRI_OFF(list[j]))
+        if (!(mask >> t->hit_filter & 1) || TRI_OFF(cb, list[j]))
             continue;
         float a[3], b[3], c[3];
-        tri_verts(t, a, b, c);
+        tri_verts(cb, t, a, b, c);
         /* barycentric test in the x/z plane */
         float d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
         if (d > -1e-6f && d < 1e-6f)
@@ -204,11 +205,11 @@ static int floor1(float x, float z, float y_top, float y_bottom, unsigned mask, 
     if (hit) {
         const Tri *t = &tris[found];
         float a[3], b[3], c[3];
-        tri_verts(t, a, b, c);
+        tri_verts(cb, t, a, b, c);
         tri_normal(a, b, c, hit->n);
         if (hit->n[1] < 0)
             hit->n[0] = -hit->n[0], hit->n[1] = -hit->n[1], hit->n[2] = -hit->n[2];
-        hit->y = best, hit->t = 0, hit->tri = found, hit->block = bound;
+        hit->y = best, hit->t = 0, hit->tri = found, hit->block = (int)(cb - blk);
         hit->hit_filter = t->hit_filter, hit->material = t->material;
     }
     return 1;
@@ -354,25 +355,38 @@ static float closest_seg_tri(const float *p, const float *q, const float *a, con
     return best;
 }
 
-static int push1(float pos[3], float r, float height, float step, unsigned mask)
+/* Capsule axis heights (push1): p0y .. p1y, radius r around it */
+static inline void capsule_axis(const float pos[3], float r, float height, float step, float *p0y, float *p1y)
 {
+    *p0y = pos[1] + step + r, *p1y = pos[1] + height - r;
+    if (*p1y < *p0y)
+        *p0y = *p1y = (*p0y + *p1y) * 0.5f;
+}
+
+static int push1(ColBlock *cb, float pos[3], float r, float height, float step, unsigned mask)
+{
+    const Header *hdr = cb->hdr;
     if (!hdr)
         return 0;
+    const unsigned *cells = cb->cells;
+    const unsigned short *list = cb->list;
+    const Tri *tris = cb->tris;
+    unsigned short *stamp = cb->stamp;
     int contacts = 0;
     for (int iter = 0; iter < MAX_PUSH_ITERS; iter++) {
-        float p0[3] = {pos[0], pos[1] + step + r, pos[2]}, p1[3] = {pos[0], pos[1] + height - r, pos[2]};
-        if (p1[1] < p0[1])
-            p0[1] = p1[1] = (p0[1] + p1[1]) * 0.5f;
+        float p0[3] = {pos[0], 0, pos[2]}, p1[3] = {pos[0], 0, pos[2]};
+        capsule_axis(pos, r, height, step, &p0[1], &p1[1]);
         int ix0, iz0, ix1, iz1;
-        cell_index(pos[0] - r, pos[2] - r, &ix0, &iz0);
-        cell_index(pos[0] + r, pos[2] + r, &ix1, &iz1);
+        cell_index(cb, pos[0] - r, pos[2] - r, &ix0, &iz0);
+        cell_index(cb, pos[0] + r, pos[2] + r, &ix1, &iz1);
         if (ix0 < 0) ix0 = 0;
         if (iz0 < 0) iz0 = 0;
         if (ix1 >= (int)hdr->gw) ix1 = hdr->gw - 1;
         if (iz1 >= (int)hdr->gd) iz1 = hdr->gd - 1;
         float lo[3] = {pos[0] - r, p0[1] - r, pos[2] - r}, hi[3] = {pos[0] + r, p1[1] + r, pos[2] + r};
         int moved = 0;
-        next_stamp();
+        next_stamp(cb);
+        unsigned short cur_stamp = cb->cur_stamp;
         for (int iz = iz0; iz <= iz1; iz++)
             for (int ix = ix0; ix <= ix1; ix++) {
                 unsigned k = iz * hdr->gw + ix;
@@ -382,10 +396,10 @@ static int push1(float pos[3], float r, float height, float step, unsigned mask)
                         continue;
                     stamp[ti] = cur_stamp;
                     const Tri *t = &tris[ti];
-                    if (!(mask >> t->hit_filter & 1) || TRI_OFF(ti))
+                    if (!(mask >> t->hit_filter & 1) || TRI_OFF(cb, ti))
                         continue;
                     float a[3], b[3], c[3];
-                    tri_verts(t, a, b, c);
+                    tri_verts(cb, t, a, b, c);
                     int out = 0;
                     for (int i = 0; i < 3 && !out; i++)
                         out = (a[i] < lo[i] && b[i] < lo[i] && c[i] < lo[i]) ||
@@ -437,8 +451,9 @@ int col_floor(float x, float z, float y_top, float y_bottom, unsigned mask, ColH
 {
     ColHit h, best;
     int found = 0;
+    const float lo[3] = {x, y_bottom, z}, hi[3] = {x, y_top, z};
     for (int b = 0; b < COL_BLOCKS; b++)
-        if (blk[b].hdr && bind(b) && floor1(x, z, y_top, y_bottom, mask, &h) && (!found || h.y > best.y))
+        if (box_hits(&blk[b], lo, hi) && floor1(&blk[b], x, z, y_top, y_bottom, mask, &h) && (!found || h.y > best.y))
             best = h, found = 1;
     if (found && hit)
         *hit = best;
@@ -448,7 +463,7 @@ int col_floor(float x, float z, float y_top, float y_bottom, unsigned mask, ColH
 int col_floor_block(int b, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
 {
     ColHit h;
-    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || !bind(b) || !floor1(x, z, y_top, y_bottom, mask, &h))
+    if (b < 0 || b >= COL_BLOCKS || !floor1(&blk[b], x, z, y_top, y_bottom, mask, &h))
         return 0;
     if (hit)
         *hit = h;
@@ -458,9 +473,14 @@ int col_floor_block(int b, float x, float z, float y_top, float y_bottom, unsign
 int col_push_capsule(float pos[3], float r, float height, float step, unsigned mask)
 {
     int contacts = 0;
-    for (int b = 0; b < COL_BLOCKS; b++)
-        if (blk[b].hdr && bind(b))
-            contacts += push1(pos, r, height, step, mask);
+    for (int b = 0; b < COL_BLOCKS; b++) {
+        /* the capsule's box as push1 tests it (its axis only moves in x / z, and only while it touches this block) */
+        float lo[3] = {pos[0] - r, 0, pos[2] - r}, hi[3] = {pos[0] + r, 0, pos[2] + r};
+        capsule_axis(pos, r, height, step, &lo[1], &hi[1]);
+        lo[1] -= r, hi[1] += r;
+        if (box_hits(&blk[b], lo, hi))
+            contacts += push1(&blk[b], pos, r, height, step, mask);
+    }
     return contacts;
 }
 
@@ -468,8 +488,11 @@ int col_ray(const float from[3], const float to[3], unsigned mask, ColHit *hit)
 {
     ColHit h, best;
     int found = 0;
+    float lo[3], hi[3];  /* the segment's box */
+    for (int k = 0; k < 3; k++)
+        lo[k] = from[k] < to[k] ? from[k] : to[k], hi[k] = from[k] < to[k] ? to[k] : from[k];
     for (int b = 0; b < COL_BLOCKS; b++)
-        if (blk[b].hdr && bind(b) && ray1(from, to, mask, &h) && (!found || h.t < best.t))
+        if (box_hits(&blk[b], lo, hi) && ray1(&blk[b], from, to, mask, &h) && (!found || h.t < best.t))
             best = h, found = 1;
     if (found && hit)
         *hit = best;
@@ -503,10 +526,16 @@ int col_walk(float pos[3], float dx, float dz, float r, float height, float step
     return 1;
 }
 
-static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *hit)
+static int ray1(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit)
 {
+    const Header *hdr = cb->hdr;
     if (!hdr)
         return 0;
+    const unsigned *cells = cb->cells;
+    const unsigned short *list = cb->list;
+    const Tri *tris = cb->tris;
+    unsigned short *stamp = cb->stamp;
+    const float inv_cell = cb->inv_cell;
     float d[3];
     sub(to, from, d);
     /* 2D DDA over the x/z grid (Amanatides-Woo), clipped to the grid */
@@ -540,7 +569,8 @@ static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *h
     float tmz = ddz != 0 ? t0 + ((ddz > 0 ? iz + 1 - sz : sz - iz) * tdz) : 1e30f;
     float best = 2;
     int best_tri = -1;
-    next_stamp();
+    next_stamp(cb);
+    const unsigned short cur_stamp = cb->cur_stamp;
     for (;;) {
         unsigned k = iz * hdr->gw + ix;
         for (unsigned j = cells[k]; j < cells[k + 1]; j++) {
@@ -549,10 +579,10 @@ static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *h
                 continue;
             stamp[ti] = cur_stamp;
             const Tri *t = &tris[ti];
-            if (!(mask >> t->hit_filter & 1) || TRI_OFF(ti))
+            if (!(mask >> t->hit_filter & 1) || TRI_OFF(cb, ti))
                 continue;
             float a[3], b[3], c[3], tt;
-            tri_verts(t, a, b, c);
+            tri_verts(cb, t, a, b, c);
             if (seg_tri(from, to, a, b, c, &tt) && tt < best)
                 best = tt, best_tri = ti;
         }
@@ -576,11 +606,11 @@ static int ray1(const float from[3], const float to[3], unsigned mask, ColHit *h
     if (hit) {
         const Tri *t = &tris[best_tri];
         float a[3], b[3], c[3];
-        tri_verts(t, a, b, c);
+        tri_verts(cb, t, a, b, c);
         tri_normal(a, b, c, hit->n);
         if (dot(hit->n, d) > 0)
             hit->n[0] = -hit->n[0], hit->n[1] = -hit->n[1], hit->n[2] = -hit->n[2];
-        hit->t = best, hit->y = from[1] + d[1] * best, hit->tri = best_tri, hit->block = bound;
+        hit->t = best, hit->y = from[1] + d[1] * best, hit->tri = best_tri, hit->block = (int)(cb - blk);
         hit->hit_filter = t->hit_filter, hit->material = t->material;
     }
     return 1;
