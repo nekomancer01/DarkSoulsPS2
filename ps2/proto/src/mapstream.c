@@ -634,10 +634,10 @@ static int issue(void)
 }
 
 /* ---- plan ---- */
-/* the plan's wanted items, sorted by rank; MS_FILL: the share of the item pages the plan may fill (granule rounding,
+/* the plan's wanted items, sorted by rank; MS_FILL_PCT: the share (%) of the item pages the plan may fill (granule rounding,
  * read groups not filling their page, ASSUMED) */
 #define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
-#define MS_FILL 0.92
+#define MS_FILL_PCT 92u
 typedef struct { unsigned char k, cls; unsigned short id; float key; } MsW;
 static MsW want[MS_WANTED];
 static int w_cmp(const void *a, const void *b)
@@ -672,7 +672,7 @@ static void plan(const float *pos)
         }
     }
     qsort(want, nw, sizeof *want, w_cmp);
-    unsigned cap = (unsigned)((ipages * (unsigned long long)MS_PAGE) * MS_FILL), sum = 0;
+    unsigned cap = ipages * (MS_PAGE / 100) * MS_FILL_PCT, sum = 0;
     for (unsigned i = 0; i < nw; i++) {
         MsInst *m = &ms[want[i].k];
         sum += (it_bytes(m, want[i].id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
