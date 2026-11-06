@@ -632,10 +632,15 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     memcpy(cp, org, 16);  /* origin xyz, position step: the program folds them into its view matrix */
     cp += 2;
     q64(GIF_SET_TAG(3, clip, 0, 0, 0, 1), 0xE);  /* A+D: TEX0, TEX1, TEST (the clip program kicks it alone) */
-    u32 tbw = (t->Width + 127) / 128 * 2;     /* PSMT8 buffer width: even multiple of 64 texels */
-    q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
-                       t->ClutPSM, 0, 0, cld(t->VramClut)),
-        0x06);
+    if (!t || (mode & VU1_FLAT)) {  /* untextured: TEX0 unused (no CLUT load: CLD 0) */
+        mode |= VU1_FLAT;
+        q64(0, 0x06);
+    } else {
+        u32 tbw = (t->Width + 127) / 128 * 2;  /* PSMT8 buffer width: even multiple of 64 texels */
+        q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
+                           t->ClutPSM, 0, 0, cld(t->VramClut)),
+            0x06);
+    }
     if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
         q64(GS_SETREG_TEX1(0, mxl, 1, 4, 0, 0, mip_k), 0x14);
         q64(mip_tbp, 0x34);  /* MIPTBP1_1 */
@@ -649,7 +654,7 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     }
     /* PRIM: triangle, gouraud, textured, STQ (perspective-correct), context 1; FGE / ABE per mode. Registers ST,
      * RGBAQ, XYZF2: the program writes the fog factor even when FGE is off */
-    q64(GIF_SET_TAG(clip ? 3 : n, 1, 1, 0x1B | (mode & VU1_FOG ? 0x20 : 0) | (mode & VU1_BLEND ? 0x40 : 0), 0, 3),
+    q64(GIF_SET_TAG(clip ? 3 : n, 1, 1, (mode & VU1_FLAT ? 0x0B : 0x1B) | (mode & VU1_FOG ? 0x20 : 0) | (mode & VU1_BLEND ? 0x40 : 0), 0, 3),
         0x412);  /* clip program: one triangle per packet */
     /* quantised streams (R3): pos s16x3, st u16x2, colour u8x4; the program converts with ITOF */
     if (mode & VU1_PKT) {  /* code qword, pos, code qword, st, code qword, colour: one REF from pos's code qword */
