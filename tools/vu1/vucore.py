@@ -692,16 +692,17 @@ class Block:
             assert s[k] in ('NOP',), 'slot clash'
             s[k] = x.text
         if branch:
-            # place in the last free lower slot b with b >= L - 2 (delay slot = b + 1)
-            b = L - 2 if L >= 2 and slots[L - 2][1] == 'NOP' else None
-            if b is None:
-                if slots[L - 1][1] == 'NOP':
-                    b = L - 1
-                    slots.append(['NOP', 'NOP'])
-                else:
-                    slots.append(['NOP', 'NOP'])
-                    slots.append(['NOP', 'NOP'])
-                    b = L
+            # place in the last free lower slot b with b >= L - 2 (delay slot = b + 1), at least 2 cycles after the
+            # last write of a VI the branch reads (hardware: a VI written by the pair right before a branch is read
+            # old, e.g. a loop counter decremented there runs the loop once more)
+            br_vi = {r for r, _ in Ins('L', branch).reads if r.startswith('VI')}
+            last_w = max([self.issue[i] for i, x in enumerate(self.ins)
+                          if any(r in br_vi for r, _ in x.writes)], default=-9)
+            b = max(L - 2, last_w + 2, 0)
+            while b < len(slots) and slots[b][1] != 'NOP':
+                b += 1
+            while len(slots) < b + 2:
+                slots.append(['NOP', 'NOP'])
             slots[b][1] = branch
         return slots
 

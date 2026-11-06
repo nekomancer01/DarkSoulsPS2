@@ -263,10 +263,10 @@ mapiTri:
 	NOP                            	sq VF23,7(VI08)
 	NOP                            	sq VF24,8(VI08)
 	NOP                            	isw.w VI07,9(VI08)
-	NOP                            	iaddiu VI03,VI03,1
+	NOP                            	isubiu VI04,VI04,1
 	NOP                            	xgkick VI08
 	NOP                            	isub VI08,VI06,VI08
-	NOP                            	isubiu VI04,VI04,1
+	NOP                            	iaddiu VI03,VI03,1
 	NOP                            	ibne VI04,VI00,mapiTri
 	NOP                            	NOP
 	NOP[E]                         	NOP

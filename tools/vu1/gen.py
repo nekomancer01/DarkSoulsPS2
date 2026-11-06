@@ -1057,7 +1057,8 @@ def mapi_vertex_body(edge=False):
 
 def mapi_tri_body():
     H = MAPI_HDR
-    code = ['L ilw.x &i0, 0(VI03)', 'L ilw.y &i1, 0(VI03)', 'L ilw.z &i2, 0(VI03)']
+    code = ['L isubiu VI04, VI04, 1',  # early: the loop branch reads VI04 at least 2 cycles after this
+            'L ilw.x &i0, 0(VI03)', 'L ilw.y &i1, 0(VI03)', 'L ilw.z &i2, 0(VI03)']
     for v in range(3):  # vertex address = batch start + 3 x vertex number + H (in the offsets below)
         code += ['L iadd &e%d, &i%d, &i%d' % (v, v, v), 'L iadd &f%d, &e%d, &i%d' % (v, v, v),
                  'L iadd &a%d, &f%d, VI02' % (v, v)]
@@ -1074,7 +1075,7 @@ def mapi_tri_body():
         code += ['L sq %%s%d, %d(VI08)' % (v, 1 + 3 * v), 'L sq %%c%d, %d(VI08)' % (v, 2 + 3 * v),
                  'L sq %%x%d, %d(VI08)' % (v, 3 + 3 * v)]
     code += ['L isw.w &t, 9(VI08)', 'L sq VF10, 0(VI08)', 'L xgkick VI08', 'L isub VI08, VI06, VI08',
-             'L iaddiu VI03, VI03, 1', 'L isubiu VI04, VI04, 1']
+             'L iaddiu VI03, VI03, 1']
     return code
 
 

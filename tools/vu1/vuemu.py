@@ -1,6 +1,7 @@
 """Functional VU1 emulator for the ops ps2/proto's programs use, with the timing effects that matter for scheduled
 code: Q lands 7 cycles after DIV (reads before that see the old Q unless WAITQ), MAC / CLIP flag reads see the
-writers issued >= 4 cycles earlier. VF / VI / ACC behave in program order (hardware interlocks). XGKICK packets are
+writers issued >= 4 cycles earlier, a conditional branch reads a VI written by the pair right before it as it was
+before that write. VF / VI / ACC behave in program order otherwise (hardware interlocks). XGKICK packets are
 decoded into vertex lists so two programs can be compared on the same input (tools/vu1/test_*.py)."""
 import struct
 from vucore import parse_program, Timer, Ins
@@ -65,7 +66,17 @@ class VU1:
     def seti(self, reg, v):
         n = int(reg[2:])
         if n:
+            self.vi_wrote = getattr(self, 'vi_wrote', []) + [(n, self.vi[n])]
             self.vi[n] = v & 0xFFFF
+
+    def geti_branch(self, reg):
+        """a conditional branch reads a VI written by the pair right before it as it was before that write (VU1
+        hardware / PCSX2 microVU: the branch's VI read is a cycle ahead)"""
+        n = int(reg[2:])
+        for k, old in getattr(self, 'vi_last', []):
+            if k == n:
+                return old & 0xFFFF
+        return self.geti(reg)
 
     # ---------------- run
     def run(self, entry, max_pairs=200000):
@@ -91,8 +102,10 @@ class VU1:
             # upper reads happen before lower writes of the same pair: evaluate upper, then lower, then commit
             uw = self.exec_upper(u, c)
             lw, br = self.exec_lower(l, c)
+            self.vi_wrote = []
             for fn in uw + lw:
                 fn()
+            self.vi_last = self.vi_wrote
             nxt = pc + 1
             if pending_branch is not None:
                 nxt, pending_branch = pending_branch, None
@@ -342,11 +355,11 @@ class VU1:
             self.kick(self.geti(ops[0]))
             return [], None
         if base in ('ibne', 'ibeq'):
-            a, b = self.geti(ops[0]), self.geti(ops[1])
+            a, b = self.geti_branch(ops[0]), self.geti_branch(ops[1])
             take = (a != b) if base == 'ibne' else (a == b)
             return [], (ins.target if take else None)
         if base in ('ibltz', 'ibgez', 'ibgtz', 'iblez'):
-            a = self.geti(ops[0])
+            a = self.geti_branch(ops[0])
             a = a - 0x10000 if a & 0x8000 else a
             take = {'ibltz': a < 0, 'ibgez': a >= 0, 'ibgtz': a > 0, 'iblez': a <= 0}[base]
             return [], (ins.target if take else None)
