@@ -68,6 +68,10 @@ const unsigned char *mapstream_res(unsigned i);
 /* frames since texture tag of instance k was last asked for at mip 0 (~0u never); its mip 0 pixels, or NULL when
  * they go */
 void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_set)(int k, unsigned tag, const void *p));
+/* Visibility (mapstream.c, src/pvs.c): vis(k, id) = 1 while any chunk of instance k's item id (ids: cells [0, n), then
+ * the mapstream_res_open items) is seen from a camera cell near the camera, gen() changes whenever an answer may change
+ * (map.c ms_pvs_vis / pvs_gen). Items unseen a while are neither read nor pinned. */
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void));
 /* world.c: while on, no new reads start (a block's lite set holds the async slot back to back) */
 void mapstream_hold(int on);
 /* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */
@@ -88,8 +92,11 @@ void mapstream_update(const float pos[3]);
 const void *mapstream_get(unsigned i);
 
 /* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
- * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: mapstream_lend; room_fails: a wanted item found no room */
-typedef struct { unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails; } MapStreamStats;
+ * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: mapstream_lend; room_fails: a wanted item found no room;
+ * vis_items / vis_kb: items (loaded or not) the visibility leaves out now (pvs.c) */
+typedef struct {
+    unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails, vis_items, vis_kb;
+} MapStreamStats;
 extern MapStreamStats mapstream_stats;
 
 #endif

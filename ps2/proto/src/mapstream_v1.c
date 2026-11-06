@@ -418,6 +418,8 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     return 1;
 }
 
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void)) { (void)vis, (void)gen; }
+
 void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k, unsigned tag, const void *p))
 {
     tex_age = age, tex_set = set;

@@ -11,6 +11,7 @@
 #include "fx.h"
 #include "mapstream.h"
 #include "drawgrp.h"
+#include "pvs.h"
 #include "pack.h"
 
 typedef struct {
@@ -130,6 +131,8 @@ typedef struct {
     int ncells, nsky;
     int res_cells;
     unsigned short *citem;  /* res_cells: per resident chunk its mapstream item (res_open) */
+    unsigned (*rrange)[3];  /* res_cells: per mapstream item its chunks [first, first + n) and cell (n 0: texture / sky) */
+    unsigned nritem;
     int on, col_block;
     int pkt;  /* VU1_PKT: the chunk streams are VIF packets (DSM5 cell table flags bit 0, export_map.py CELLS_VIFPKT) */
 } MapInst;
@@ -300,9 +303,27 @@ static void pano_open(const char *pak_path)
     printf("map: panorama %d chunks, %u textures, %u KB\n", pano_n, h[3], size >> 10);
 }
 
+/* mapstream.c's item visibility (pvs.c): item id of instance k (a near cell part, then a resident item) has a chunk
+ * some camera cell within PVS_STREAM_R sees; textures, the sky and maps without pvs.bin count as seen */
+static int ms_pvs_vis(int k, unsigned id)
+{
+    if (k < 0 || k >= MAP_INST || !inst[k].ctab)
+        return 1;
+    const MapInst *m = &inst[k];
+    if (id < m->nctab) {
+        unsigned n = m->ctab[id].near & ~CELL_PART;
+        return !n || pvs_range(k, id, m->ctab[id].pad, n, 0);
+    }
+    id -= m->nctab;
+    if (!m->rrange || id >= m->nritem || !m->rrange[id][1])
+        return 1;
+    return pvs_range(k, m->rrange[id][2], m->rrange[id][0], m->rrange[id][1], 0);
+}
+
 int map_stream_open(const char *pak_path)
 {
     pano_open(pak_path);
+    mapstream_vis_hooks(ms_pvs_vis, pvs_gen);
     return inst[0].ctab ? mapstream_init(pak_path, inst[0].ctab, inst[0].nctab) : 0;
 }
 
@@ -422,8 +443,8 @@ static unsigned grass_tris(const Chunk *c, const float *e)
 static int visible_(const Chunk *c, const float *e, int sky);
 #ifdef MAP_DBG  /* debug builds: chunks / tris dropped per step, printed every MAP_DBG frames (MAP_DBG_ALL: no
                  * draw-group, distance, subpixel or foliage culling, the reference render to compare with) */
-enum { D_DRAWN, D_DG, D_CELL_FAR, D_CELL_SMALL, D_CELL_VIEW, D_FAR, D_SMALL, D_VIEW, D_GRASS, D_TEX, D_SWAP, D_NR };
-static const char *const dbg_name[D_NR] = {"drawn", "dg", "cfar", "csmall", "cview", "far", "small", "view", "grass",
+enum { D_DRAWN, D_DG, D_PVS, D_CELL_FAR, D_CELL_SMALL, D_CELL_VIEW, D_FAR, D_SMALL, D_VIEW, D_GRASS, D_TEX, D_SWAP, D_NR };
+static const char *const dbg_name[D_NR] = {"drawn", "dg", "pvs", "cfar", "csmall", "cview", "far", "small", "view", "grass",
                                            "tex", "lod"};
 static unsigned dbg_c[D_NR], dbg_t[D_NR];
 static int vis_why;  /* visible_'s reason for a 0: D_FAR / D_SMALL / D_VIEW */
@@ -610,7 +631,7 @@ static void build_index(MapInst *mi)
 /* ---- world blocks (src/world.c): one MapInst per loaded map block ---- */
 /* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
  * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
-static void *blk_dg[MAP_INST];
+static void *blk_dg[MAP_INST], *blk_pvs[MAP_INST];
 /* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
  * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
 static signed char tslot[MAP_INST];
@@ -689,6 +710,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         }
         tex_res(k);
         dg_block_init(k, blk_dg[k], hdr->chunks, (unsigned)col_block_tris(col_block));  /* per-block draw groups */
+        pvs_block_init(k, blk_pvs[k], hdr->chunks, m->nctab);  /* and visibility (src/pvs.c) */
     }
     return 1;
 }
@@ -711,21 +733,33 @@ void map_block_drop(int k)
     mapstream_close(k);  /* before the slot's textures go: it hands their mip 0 back (tex_hook_set) */
     tc_block_drop(tslot[k]);
     dg_block_drop(k);
+    pvs_block_drop(k);
     free(m->order), free(m->sky), free(m->cells);
     m->indexed = NULL, m->order = m->sky = NULL, m->cells = NULL, m->ncells = m->nsky = 0;
     if (pfog_row == m->fog_row)  /* the player's rows were this block's: back to the boot block's */
         pfog_row = inst[0].fog_row ? inst[0].fog_row : NULL, pfog_rows = inst[0].fog_row ? inst[0].fog_rows : 0,
         fog_area = 0;
-    free(m->citem);
+    free(m->citem), free(m->rrange);
+    m->rrange = NULL, m->nritem = 0;
     m->hdr = NULL, m->ctab = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
     m->on = 0;
     mapstream_select(0);
+}
+
+void map_pvs_init(const void *blob)
+{
+    if (inst[0].hdr)
+        pvs_block_init(0, blob, inst[0].hdr->chunks, inst[0].nctab);
 }
 
 void map_block_dg(int k, void *pack)
 {
     if (k > 0 && k < MAP_INST && pack && !blk_dg[k])
         blk_dg[k] = pack_load(pack, "dg.bin", NULL);
+#ifndef NO_PVS
+    if (k > 0 && k < MAP_INST && pack && !blk_pvs[k])
+        blk_pvs[k] = pack_load(pack, "pvs.bin", NULL);
+#endif
 }
 
 /* bytes of the streams of resident chunks [a, b) (export_map.py writes pos, st, colour per chunk, each 16-byte
@@ -763,9 +797,10 @@ static void res_open(int k, const void *pack)
     unsigned n = hdr->chunks + 1 + (unsigned)mi->ntex;
     MapResItem *it = malloc(n * sizeof *it);
     unsigned short *citem = mi->citem = malloc((hdr->chunks + 1) * sizeof *citem);
-    if (!it || !citem || n > 65535) {
-        free(it), free(citem);
-        mi->citem = NULL;
+    unsigned (*rr)[3] = mi->rrange = malloc(n * sizeof *rr);
+    if (!it || !citem || !rr || n > 65535) {
+        free(it), free(citem), free(rr);
+        mi->citem = NULL, mi->rrange = NULL;
         return;
     }
     unsigned m = 0, bad = 0, last = 0;
@@ -784,6 +819,7 @@ static void res_open(int k, const void *pack)
             unsigned far = 0;
             for (unsigned c = j; c < g; c++)
                 citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
+            rr[m][0] = j, rr[m][1] = i < nctab ? g - j : 0, rr[m][2] = i;
             it[m++] = (MapResItem){roff + lo, lo, hi - lo,
                                    i < nctab ? i | (far ? MS_RES_FAR : 0) |
                                                    ((coarse & CHUNK_COARSE) && ctab[i].near ? MS_RES_COARSE : 0) |
@@ -800,17 +836,18 @@ static void res_open(int k, const void *pack)
         if (!(p0 & TC_RES))
             continue;
         unsigned b = e[4] == GS_PSM_T4 ? w * h / 2 : w * h;
+        rr[m][0] = rr[m][1] = rr[m][2] = 0;
         it[m++] = (MapResItem){roff + (p0 & ~TC_RES), p0 & ~TC_RES, b, MS_RES_TEX | (unsigned)t};
         bad |= (p0 & ~TC_RES) + b > rsize;
     }
     if (bad)
         printf("map: block %d: mapres.bin (%u KB) shorter than its chunk / texture records\n", k, rsize >> 10);
-    else if (mapstream_res_open(k, it, nctab, m)) {
+    else if (mi->nritem = m, mapstream_res_open(k, it, nctab, m)) {
         mi->res_cells = 1;
         mapstream_tex_hooks(tex_hook_age, tex_hook_set);
     }
     if (!mi->res_cells)
-        free(citem), mi->citem = NULL;
+        free(citem), free(rr), mi->citem = NULL, mi->rrange = NULL, mi->nritem = 0;
     free(it);
 }
 
@@ -821,6 +858,7 @@ int map_block_stream_open(int k, const void *pack)
     const MapInst *m = &inst[k];
     mapstream_select(k);
     int r = m->ctab ? mapstream_open_pack(k, pack, m->ctab, m->nctab) : 0;
+    mapstream_vis_hooks(ms_pvs_vis, pvs_gen);
     if (r && !m->streams)
         res_open(k, pack);
     mapstream_select(0);  /* mapstream_open_pack leaves instance k selected */
@@ -863,6 +901,7 @@ int map_draw(V3 eye)
         memset(dbg_why, 255, sizeof dbg_why);
 #endif
     const float e[3] = {eye.x, eye.y, eye.z};
+    pvs_eye(e);  /* every instance's visibility row for this camera cell (src/pvs.c) */
     {
         V3 ey, rt, up, fw;
         float fx, fy, zs;
@@ -933,6 +972,8 @@ int map_draw(V3 eye)
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
+    unsigned pvs_cut = 0;  /* triangles the visibility rows left out (src/pvs.c) */
+    unsigned k_drawn[MAP_INST] = {0}, k_cut[MAP_INST] = {0};  /* the same and the drawn ones per instance (A/B log) */
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
         if (k && !inst[k].on)
             continue;
@@ -965,10 +1006,12 @@ int map_draw(V3 eye)
             const unsigned char *nb = NULL, *nbp[NEAR_PARTS] = {0};
             unsigned np = 1, nnear = 0;  /* the cell's near parts (export_map.py NEAR_PART), their chunks */
             int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
+            int nd = 0;    /* the near level is drawn (every part in, or unseen: pvs.c) */
             for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++)
                 /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
                  * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
-                if (!res_base(m, order[j]) && !(chunks[order[j]].flags & CHUNK_GRASS))
+                if (!res_base(m, order[j]) && !(chunks[order[j]].flags & CHUNK_GRASS) &&
+                    pvs_chunk(k, (unsigned)ci, order[j]))  /* a chunk the camera cannot see is not read (pvs.c) */
                     miss = 1;
             if (ctab) {
                 float d2 = 0;
@@ -985,14 +1028,17 @@ int map_draw(V3 eye)
                  * for the whole cell until then */
                 int all = ce->near_on || miss;
                 for (unsigned p = 0; p < np; p++)
-                    all &= (nbp[p] = ce->near_on || miss ? mapstream_get(ci + p) : NULL) != NULL;
-                nb = all ? nbp[0] : NULL;
-                for (unsigned p = 0; nb && p < np; p++)
+                    all &= (nbp[p] = ce->near_on || miss ? mapstream_get(ci + p) : NULL) != NULL ||
+                           (all && !pvs_range(k, (unsigned)ci, ctab[ci + p].pad, ctab[ci + p].near & ~CELL_PART, 1));
+                /* (a part no chunk of which the camera sees is not read: the near level draws without it) */
+                nd = all;
+                nb = nd ? nbp[0] : NULL;
+                for (unsigned p = 0; nd && p < np; p++)
                     nnear += ctab[ci + p].near & ~CELL_PART;
             }
-            holes += miss && !nb;
-            unsigned near_gid = nb ? ctab[ci].pad : 0;
-            unsigned part = 0, part_end = nb ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
+            holes += miss && !nd;
+            unsigned near_gid = nd ? ctab[ci].pad : 0;
+            unsigned part = 0, part_end = nd ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
             for (unsigned j = m->streams || m->res_cells ? ce->first : ce->first + ce->count;
                  j < ce->first + ce->count + nnear; j++) {
                 int is_near = j >= (unsigned)ce->first + ce->count;
@@ -1005,15 +1051,22 @@ int map_draw(V3 eye)
                     nb = nbp[part], near_gid = ctab[ci + part].pad;
                     part_end += ctab[ci + part].near & ~CELL_PART;
                 }
+                if (is_near && !nb)
+                    continue;  /* an unseen part that is not in (pvs.c) */
                 const Chunk *c = is_near ? (const Chunk *)nb + (nj - (part_end - (ctab[ci + part].near & ~CELL_PART)))
                                          : &chunks[order[j]];
-                if (nb && !is_near && (c->flags & CHUNK_COARSE)) {
+                if (nd && !is_near && (c->flags & CHUNK_COARSE)) {
                     DBGW(D_SWAP, 0, order[j]);
                     continue;
                 }
 #ifndef MAP_DBG_ALL
                 if (!dg_shown(k, is_near ? NEAR_NO(c, nb) : order[j])) {  /* MSB draw groups (drawgrp.c) */
                     DBGW(D_DG, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
+                    continue;
+                }
+                if (!pvs_chunk(k, (unsigned)ci, is_near ? NEAR_NO(c, nb) : order[j])) {  /* behind something (pvs.c) */
+                    DBGW(D_PVS, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
+                    pvs_cut += c->tris, k_cut[k] += c->tris;
                     continue;
                 }
                 unsigned n = c->flags & CHUNK_GRASS ? grass_tris(c, e) : c->tris;
@@ -1055,7 +1108,10 @@ int map_draw(V3 eye)
                     }
                     continue;
                 }
-                drawn += draw_chunk(m, is_near ? nb : rb, c, n, cls, fog, is_near ? NEAR_NO(c, nb) : order[j]);
+                {
+                    unsigned dn = draw_chunk(m, is_near ? nb : rb, c, n, cls, fog, is_near ? NEAR_NO(c, nb) : order[j]);
+                    drawn += dn, k_drawn[k] += dn;
+                }
             }
         }
     }
@@ -1133,12 +1189,18 @@ int map_draw(V3 eye)
     }
 #endif
     {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
-        static unsigned fr, worst;
+        static unsigned fr, worst, cut_max;
         worst = holes > worst ? holes : worst;
+        cut_max = pvs_cut > cut_max ? pvs_cut : cut_max;
         if (!(++fr % 30)) {
             if (worst)
                 printf("map: cells missing %u (most in a frame over 1 s)\n", worst);
-            worst = 0;
+            if (cut_max)  /* occlusion A/B (src/pvs.c): this frame's per-instance drawn / culled counts */
+                printf("map: pvs culled %u tris (most in a frame over 1 s), eye %.1f %.1f %.1f; now drawn / culled %u/%u "
+                       "%u/%u %u/%u\n", cut_max, (double)e[0], (double)e[1], (double)e[2], k_drawn[0], k_cut[0],
+                       MAP_INST > 1 ? k_drawn[1] : 0, MAP_INST > 1 ? k_cut[1] : 0, MAP_INST > 2 ? k_drawn[2] : 0,
+                       MAP_INST > 2 ? k_cut[2] : 0);
+            worst = cut_max = 0;
         }
     }
 #ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
