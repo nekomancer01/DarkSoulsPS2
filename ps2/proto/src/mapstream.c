@@ -494,6 +494,22 @@ static float box_d2(const MapCell *c, const float *p)
 
 /* What the bound instance k wants of item id with the player at pos: 2 load, 1 keep, 0 free; *key ranks it (lower
  * first: squared metres) */
+/* Resident items of coarse chunks give way to their cell's near level (the SDK / re3 rule of one level of detail in
+ * memory per place: Burg blocks hold 1.7-3.4 MB of coarse chunks, 70-90 % of their resident level, kept beside the near
+ * cells that replace them; ISO 2026-11-06). Within MS_COARSE_R of a cell whose near level is in, they are neither kept
+ * nor read; beyond it they are read again before the near level goes (MS_UNLOAD_R). */
+#define MS_COARSE_R (MS_UNLOAD_R - 8.0f)
+/* every near part of cell c of the bound instance is loaded */
+static int near_in(unsigned c)
+{
+    if (!(tab[c].near & ~CELL_PART) || (tab[c].near & CELL_PART))
+        return 0;
+    for (unsigned p = c; p < ncell && (p == c || (tab[p].near & CELL_PART)); p++)
+        if (state[p] != MS_READY)
+            return 0;
+    return 1;
+}
+
 static int it_want(int k, unsigned id, const float *pos, float *key)
 {
     if (id < ncell) {
@@ -504,8 +520,12 @@ static int it_want(int k, unsigned id, const float *pos, float *key)
         return d2 < MS_LOAD_R * MS_LOAD_R ? 2 : d2 <= MS_UNLOAD_R * MS_UNLOAD_R;
     }
     unsigned tag = rit[id - ncell].tag;
-    if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && (tag & ~MS_RES_FAR) < ncell) {  /* a cell's resident chunks (or a part) */
-        float d2 = box_d2(&tab[tag & ~MS_RES_FAR], pos);
+    if (!(tag & (MS_RES_SKY | MS_RES_TEX)) && MS_RES_CELL(tag) < ncell) {  /* a cell's resident chunks (or a part) */
+        float d2 = box_d2(&tab[MS_RES_CELL(tag)], pos);
+        if ((tag & MS_RES_COARSE) && !settling && d2 < MS_COARSE_R * MS_COARSE_R && near_in(MS_RES_CELL(tag))) {
+            *key = 1e30f;
+            return 0;  /* the near level stands for these: they go, and are read again from MS_COARSE_R out */
+        }
         if ((tag & MS_RES_FAR) && d2 > MS_FAR_D * MS_FAR_D)
             d2 = MS_FAR_D * MS_FAR_D;
         *key = d2 * (focus < 0 || k == focus || d2 < MS_OTHER_D * MS_OTHER_D ? MS_RES_K : MS_RES_K * MS_RES_OTHER) *
@@ -997,7 +1017,11 @@ static int issue(const float *pos)
         unsigned e = g + 1, gbytes = it_bytes(g);  /* the group [g, e) */
         if (it_res(g)) {
             unsigned r0 = rit[g - ncell].rel;
-            while (e < w.id + wn && rit[e - ncell].rel + rit[e - ncell].bytes - r0 <= MS_PAGE)
+            /* coarse items in groups of their own: a group is freed as one (they go before the rest, near_in). Not
+             * in a settle: split groups took 2.5x the reads, the ISO boot settle 6.0 -> 7.8 s (2026-11-06); the
+             * coarse items of a mixed group stay until the group goes */
+            while (e < w.id + wn && rit[e - ncell].rel + rit[e - ncell].bytes - r0 <= MS_PAGE &&
+                   (settling || !(rit[e - ncell].tag & MS_RES_COARSE) == !(rit[g - ncell].tag & MS_RES_COARSE)))
                 e++;
             gbytes = rit[e - 1 - ncell].rel + rit[e - 1 - ncell].bytes - r0;
         }
@@ -1081,7 +1105,10 @@ static int settle_item(int k, unsigned j, const float *pos, float r, float r_foc
     if (tag & MS_RES_SKY)
         return 1;
     float rr = k == focus && r_focus > r ? r_focus : r;
-    return (tag & ~MS_RES_FAR) < ncell && box_d2(&tab[tag & ~MS_RES_FAR], pos) < rr * rr;
+    unsigned c = MS_RES_CELL(tag);
+    if (c >= ncell || ((tag & MS_RES_COARSE) && near_in(c)))
+        return 0;  /* coarse chunks the cell's loaded near level stands for */
+    return box_d2(&tab[c], pos) < rr * rr;
 }
 
 int mapstream_busy(const float pos[3], float r, float r_focus)

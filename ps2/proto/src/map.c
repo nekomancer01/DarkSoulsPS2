@@ -775,12 +775,17 @@ static void res_open(int k, const void *pack)
             last = e > last ? e : last;
         for (unsigned j = a; j < e;) {  /* whole chunks [j, g) up to RES_ITEM bytes (at least one) */
             unsigned lo, hi = chunk_range(chunks, j, j + 1, &lo), g = j + 1, l2, h2;
-            while (g < e && (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
+            /* coarse chunks in items of their own (MS_RES_COARSE: they go while the cell's near level is in) */
+            unsigned coarse = chunks[j].flags & CHUNK_COARSE;
+            while (g < e && (chunks[g].flags & CHUNK_COARSE) == coarse &&
+                   (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
                 hi = h2 > hi ? h2 : hi, g++;
             unsigned far = 0;
             for (unsigned c = j; c < g; c++)
                 citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
-            it[m++] = (MapResItem){roff + lo, lo, hi - lo, i < nctab ? i | (far ? MS_RES_FAR : 0) : MS_RES_SKY};
+            it[m++] = (MapResItem){roff + lo, lo, hi - lo,
+                                   i < nctab ? i | (far ? MS_RES_FAR : 0) | (coarse && ctab[i].near ? MS_RES_COARSE : 0)
+                                             : MS_RES_SKY};
             bad |= hi > rsize;
             j = g;
         }

@@ -52,6 +52,10 @@ int mapstream_reclaim(void *p, unsigned n);
  * mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
 #define MS_RES_SKY 0x40000000u
 #define MS_RES_FAR 0x20000000u  /* | cell: chunks of the far backdrop (map.c CHUNK_BACKDROP), read early */
+/* | cell: only coarse chunks (map.c CHUNK_COARSE), which map.c skips while the cell's near level is drawn: not kept
+ * or read while the near level is in and the cell within MS_COARSE_R (mapstream.c) */
+#define MS_RES_COARSE 0x10000000u
+#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
