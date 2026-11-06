@@ -138,7 +138,8 @@ def plan(game, build, mv=None):
         S(f"{out}: map AI", "lua50.py", ["--pack", "--msb", game, msb, f"{A}/ai_map.lua0",
                                         f"{game}/script/{msb}.luabnd.dcx"], [f"{A}/ai_map.lua0"], benv)
         if world_split:
-            S(f"{out}: map split", "mapsplit.py", [f"{A}/map.bin", f"{A}/maptab.bin", f"{A}/mapres.bin"],
+            S(f"{out}: horizon", "horizon.py", [f"{A}/map.bin", f"{A}/hzn.bin"], [f"{A}/hzn.bin"])
+            S(f"{out}: map split", "mapsplit.py", [f"{A}/map.bin", f"{A}/maptab.bin", f"{A}/mapres.bin", f"{A}/hzn.bin"],
               [f"{A}/maptab.bin", f"{A}/mapres.bin"])
         raw = "raw:" if block else ""
         entries = [f"map.bin={A}/map.bin", f"collision.bin={raw}{A}/collision.bin", f"enemies.bin={raw}{A}/enemies.bin",

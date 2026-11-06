@@ -58,7 +58,10 @@ int mapstream_reclaim(void *p, unsigned n);
 /* | cell: only foliage chunks (map.c CHUNK_GRASS), which map.c thins to nothing with distance: resident only near the
  * player (world streaming v2) */
 #define MS_RES_GRASS 0x08000000u
-#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS))  /* the cell of a cell item's tag */
+/* | cell: only chunks the cell's horizon stands for (map.c hz_covers, tools/horizon.py): map.c draws them only within
+ * HZN_R of the camera, so they are read and kept only within MS_R_HZN of the player (the horizon covers the rest) */
+#define MS_RES_LOD 0x04000000u
+#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS | MS_RES_LOD))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);

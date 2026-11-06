@@ -92,6 +92,12 @@
 #define MS_SETTLE_NEAR 1
 #endif
 #define MS_SETTLE_NEAR_MS 10000u  /* ASSUMED cap: past it the settle ends with what is in, the rest streams in */
+/* Horizon (map.c HZN_R, tools/horizon.py): items tagged MS_RES_LOD (a cell's coarse level and kept opaque meshes, the
+ * cell has a horizon) are wanted only within MS_R_HZN and kept to MS_R_HZN_KEEP; beyond, the resident horizon is
+ * drawn. That leaves the reader the near detail: ~1000 small coarse items in view out to 260 m, a seek each, were the
+ * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
+#define MS_R_HZN 64.0f
+#define MS_R_HZN_KEEP 72.0f
 #define MS_R1_VIEW 128.0f /* coarse cells in view this close: C_VIEW, beyond: C_VIEW2 */
 #define MS_R1_WANT 260.0f
 #define MS_R1_KEEP 280.0f
@@ -470,6 +476,12 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     if (c >= m->ncell)
         return C_FREE;
     float d2 = box_d2(&m->tab[c], pos);
+    /* a cell the horizon stands for beyond MS_R_HZN (map.c HZN_R): never read there, kept a little while (its
+     * backdrop too: the horizon has it) */
+    if ((tag & MS_RES_LOD) && d2 >= sq(MS_R_HZN)) {
+        *key = d2 * vk;
+        return d2 < sq(MS_R_HZN_KEEP) ? C_KEEP : C_FREE;
+    }
     if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
         return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view ? C_VIEW2 : C_FARC;

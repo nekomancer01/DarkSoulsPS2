@@ -27,6 +27,9 @@ void vu1_begin(int buffer);
  * in front of each stream) holding exactly tris triangles: one DMA REF sends all three (render rebuild PR 1). Ignored
  * when the batch is split (VU1_CLIP over VU1_CLIP_TRIS) and in VU1_NO_PKT builds. */
 #define VU1_PKT 16
+/* VU1_FLAT: untextured (tex may be NULL): PRIM with TME off, the vertex colour is the final colour (0x80 = half, not
+ * 1.0); the st values VU1 writes are ignored (map.c's horizon level, tools/horizon.py: its packets have no st stream) */
+#define VU1_FLAT 32
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
 /* GS mip chain for the next vu1_add_ex only (opaque batches; texcache.c tc_mip): TEX1 MXL mxl, LINEAR_MIPMAP_NEAREST,

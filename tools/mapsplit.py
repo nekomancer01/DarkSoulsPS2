@@ -1,6 +1,6 @@
 """Split a DSM5 map.bin (tools/export_map.py) for world streaming (src/world.c, map.c map_block_init):
 
-  mapsplit.py <map.bin> <maptab.bin> <mapres.bin>
+  mapsplit.py <map.bin> <maptab.bin> <mapres.bin> [hzn.bin]
 
 maptab.bin = the 80-byte header + map.bin from the chunk table offset on (chunk table, textures, navmesh, fog section,
 cell table: what a "lite" block needs to draw its streamed near cells). mapres.bin = map.bin up to the chunk table
@@ -12,7 +12,10 @@ maptab.bin leaves out (TECH_DEBT world-5: lite sets count against the near-cell 
 - mip 0 pixels of textures that have a mip 1: they move to the end of mapres.bin and the entry's pix[0] becomes
   RES_FLAG | offset in mapres.bin (texcache.c tc_res resolves it while the block is full; a lite block draws mip 1).
 Every other offset into maptab (header sections, texture CLUT / mip 1 / near pixels) moves down by the bytes cut
-before it."""
+before it.
+hzn.bin (tools/horizon.py, the resident far backdrop; empty: none) is appended to maptab.bin, 64-byte aligned, and the
+cell table header's words 2 and 3 get its offset (from map.bin's start, as the runtime resolves maptab offsets) and
+size; map.c finds it there (0: no horizon, the old drawing)."""
 import struct, sys
 
 HDR = 80
@@ -78,13 +81,20 @@ def main():
         struct.pack_into("<3I", tab, e + 12, moved(clut), RES_FLAG | at[l0[i][0]] if i in l0 else moved(p0), moved(p1))
         if near:
             struct.pack_into("<I", tab, e + 28, moved(near))
+    hzn = open(sys.argv[4], "rb").read() if len(sys.argv) > 4 else b""
+    if hzn:
+        assert hzn[:4] == b"HZN1" and struct.unpack_from("<I", hzn, 8)[0] == struct.unpack_from("<I", b, cell_off)[0], \
+            "hzn.bin: not this map's horizon"
+        tab.extend(b"\0" * (-len(tab) % 64))
+        struct.pack_into("<2I", tab, HDR + moved(cell_off) - chunk_off + 8, len(tab) - HDR + chunk_off, len(hzn))
+        tab += hzn
     with open(tab_path, "wb") as f:
         f.write(tab)
     with open(res_path, "wb") as f:
         f.write(res)
     cut_l0 = sum(n0 for a0, n0 in ranges if a0 != navv_off or not cut)
     print(f"{src}: maptab {len(tab)} bytes (navmesh {cut}, mip 0 of {len(l0)} textures {cut_l0} moved out), "
-          f"mapres {len(res)} bytes")
+          f"mapres {len(res)} bytes, horizon {len(hzn)} bytes")
 
 
 if __name__ == "__main__":
