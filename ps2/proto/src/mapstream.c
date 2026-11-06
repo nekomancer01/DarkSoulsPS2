@@ -1185,6 +1185,9 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
     if (r != settle_r || r_focus != settle_rf)
         replan = 1;
     settle_r = r, settle_rf = r_focus;
+    if (arena && (replan || !scan_frame))
+        return 1;  /* classes not planned yet (all C_FREE): the check below would find nothing to wait for (the boot
+                    * settle ended after 0 ms with 51 cells missing, ISO 2026-11-06) */
     for (int i = 0; i < nrd; i++) {  /* only the reads the settle waits for: the rest streams on behind the game */
         const MsInst *m = &ms[rd[i].k];
         if (it_res(m, rd[i].id) && settle_item(rd[i].k, m, rd[i].id - m->ncell, pos, r, r_focus))
