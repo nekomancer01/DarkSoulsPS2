@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import havok_collision
 import area as area_mod
 import gamepath
+import navwalls
 
 SCALE = 1 / 128  # 7.8 mm steps, +-256 m around the origin
 
@@ -108,9 +109,14 @@ def _area_collision(game, area, detail):
     # event can switch such a part, so the second copy is dropped (Asylum 65572 -> 65404 tris, fits the u16 indices)
     water, seen = (9, 16), set()
     dup = lambda s, t: s["hit_filter"] in water and s["msb"]["entity"] < 0 and frozenset(map(q, t)) in seen
+    # walls of one part that seal a doorway another part leaves open (tools/navwalls.py: the Taurus tower's ground
+    # floor doorway in Undead Burg). NAVWALLS=0: keep them (old collision)
+    sealed = set() if os.environ.get("NAVWALLS") == "0" else \
+        navwalls.sealed(game, area, subs, log=lambda m: print(m, file=sys.stderr))
     out = []
-    for s in subs:
-        tris = [t for t in s["tris"] if any(keep(*p) for p in t) and len({q(p) for p in t}) == 3 and not dup(s, t)]
+    for si, s in enumerate(subs):
+        tris = [t for ti, t in enumerate(s["tris"]) if (si, ti) not in sealed and any(keep(*p) for p in t)
+                and len({q(p) for p in t}) == 3 and not dup(s, t)]
         if s["hit_filter"] in water and s["msb"]["entity"] < 0:
             seen.update(frozenset(map(q, t)) for t in tris)
         if tris:

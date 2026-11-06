@@ -28,8 +28,9 @@
  *   loadscreen s            DSR's loading screen held open for s seconds (src/loading.c), for timed screenshots
  *   flag id 0|1 / flags first last 0|1   set event flags (flags.h; ids as integers, e.g. 11010000)
  *   souls n / item id n     set souls / add n of an item (id with category bits, progress.h ITEM_*, e.g. 0x400000C8)
- *   check flag id v | flags first last count | souls n | item id n | loaded 0|1
- *                           "TEST check ... ok", or "TEST error check ..." (fails the run)
+ *   check flag id v | flags first last count | souls n | item id n | loaded 0|1 | near x y z r
+ *                           "TEST check ... ok", or "TEST error check ..." (fails the run); near: the player within
+ *                           r m of (x, y, z), so a walked route (approach gives up silently) really got there
  *   save / load / wipe      write the save now / reload it / delete both slots (save.h); saves are off in a test
  *                           run unless "option save mc" or "option save host [name]" (host:<name>0.bin / 1.bin)
  *   loop / end              restart the script / stop (prints "TEST DONE", input idle afterwards)

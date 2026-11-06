@@ -1,6 +1,7 @@
 /* Save / load (save.h) */
 #define NEWLIB_PORT_AWARE  /* fio calls, as pack.c */
 #include <fileio.h>
+#include <math.h>
 #include <libmc.h>
 #include <loadfile.h>
 #include <sifrpc.h>
@@ -589,6 +590,13 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("deaths", pl->deaths, a);
         if (!strcmp(what, "seq") && sscanf(r, "%lu", &a) == 1)  /* sequence of the last save written or loaded, 0 after wipe */
             return check("seq", seq, a);
+        float px, py, pz, pr;  /* the player within r m of (x, y, z): a walked route really got there */
+        if (!strcmp(what, "near") && pl && sscanf(r, "%f %f %f %f", &px, &py, &pz, &pr) == 4) {
+            float dx = pl->pos.x - px, dy = pl->pos.y - py, dz = pl->pos.z - pz, d = sqrtf(dx * dx + dy * dy + dz * dz);
+            printf("TEST %scheck near %.2f %.2f %.2f %.1f: at %.2f %.2f %.2f (%.2f m)%s\n", d <= pr ? "" : "error ",
+                   px, py, pz, pr, pl->pos.x, pl->pos.y, pl->pos.z, d, d <= pr ? " ok" : "");
+            return d <= pr ? 0 : -1;
+        }
         printf("TEST error check: bad '%s'\n", line);
         return -1;
     } else {
