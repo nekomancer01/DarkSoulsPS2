@@ -184,6 +184,150 @@ static inline void q64(u64 lo, u64 hi)
     cp += 2;
 }
 
+#ifdef VU1_CHECK
+/* debug (make DEFS='... -DVU1_CHECK'): decode every chain segment the way VIF1 will (tag transfer on: each tag's upper
+ * two words are VIF codes, then its CNT / REF data) right before it is kicked, and again once its DMA is done. Reports
+ * the first word that would run as something this renderer never sends (an i-bit code, MARK, an unknown command), a
+ * tag reached while a command still owes data, and an UNPACK past VU1 memory. The second pass catches REF'd memory
+ * that changed while (or after) the DMA read it. */
+#include <stdio.h>
+typedef struct { int cl, wl, base, offset; } ChkVif;  /* VIF1 state that carries over from segment to segment */
+static struct { const u128 *start, *end; int cur, n; ChkVif v; } chk_seg;  /* the segment last kicked */
+static ChkVif chk_v = {1, 1, 0, 0};
+static int chk_errors, chk_frames;
+static const char *const chk_chain_name[3] = {"map", "chr", "fx"};
+
+static void chk_dump(const u32 *w, const u32 *lo, const u32 *hi)
+{
+    const u32 *a = w - 8 < lo ? lo : w - 8, *b = w + 8 > hi ? hi : w + 8;
+    for (; a < b; a++)
+        printf("  %c %08x: %08x\n", a == w ? '>' : ' ', (u32)a, *a);
+}
+
+/* checks one segment; 0 = fine */
+static int chk_run(const u128 *start, const u128 *end, int ch, ChkVif *v, const char *pass)
+{
+    int cl = v->cl, wl = v->wl, base = v->base, offset = v->offset, ntag = 0;
+    u32 need = 0, code = 0;  /* data words the current command still takes */
+    const u64 *t = (const u64 *)start, *hist[8];
+    const char *err = NULL;
+    const u32 *bad = NULL, *blo = NULL, *bhi = NULL;
+    for (;;) {
+        if ((const u128 *)t >= end) {
+            err = "chain runs past its END";
+            break;
+        }
+        hist[ntag++ & 7] = t;
+        u64 tg = t[0];
+        u32 qwc = tg & 0xFFFF, id = (tg >> 28) & 7, addr = (u32)(tg >> 32);
+        if (need) {
+            err = "tag reached while a command still takes data", bad = (const u32 *)t, blo = bad - 8, bhi = bad + 4;
+            break;
+        }
+        const u32 *data = id == T_REF || id == T_REFE ? (const u32 *)addr : (const u32 *)(t + 2);
+        if (id != T_CNT && id != T_REF && id != T_END && id != T_REFE) {
+            err = "unknown DMA tag id", bad = (const u32 *)t, blo = bad, bhi = bad + 4;
+            break;
+        }
+        if ((id == T_REF || id == T_REFE) && ((addr & 15) || (addr & 0x0FFFFFFF) + qwc * 16 > 32u << 20)) {
+            err = "REF outside main RAM / not qword aligned", bad = (const u32 *)t, blo = bad, bhi = bad + 4;
+            break;
+        }
+        /* the words VIF1 sees for this tag: its two code words, then qwc qwords of data */
+        for (u32 i = 0; i < 2 + 4 * qwc && !err; i++) {
+            const u32 *wp = i < 2 ? (const u32 *)t + 2 + i : data + (i - 2);
+            if (need) {
+                u32 k = 2 + 4 * qwc - i < need ? 2 + 4 * qwc - i : need;
+                need -= k;
+                i += k - 1;
+                continue;
+            }
+            code = *wp;
+            u32 cmd = code >> 24, num = (code >> 16) & 255, imm = code & 0xFFFF;
+            if (cmd & 0x80) {
+                err = "VIF code with the interrupt bit";
+            } else if (cmd >= 0x60) {  /* UNPACK */
+                u32 vn = (cmd >> 2) & 3, vl = cmd & 3, nv = num ? num : 256;
+                if (vl == 3)
+                    err = "UNPACK V?-5 (never sent)";
+                u32 vb = (vn + 1) * (32 >> vl) / 8;  /* bytes per vector */
+                u32 dv = wl <= cl ? nv : cl * (nv / wl) + (nv % wl < (u32)cl ? nv % wl : (u32)cl);
+                need = (dv * vb + 3) / 4;
+                u32 last = wl <= cl ? (nv - 1) / wl * cl + (nv - 1) % wl : nv - 1;
+                u32 top = (imm & 0x3FF) + last + (imm & 0x8000 ? base + offset : 0);
+                if (top >= 1024)
+                    err = "UNPACK past the end of VU1 data memory";
+            } else
+                switch (cmd) {
+                case V_NOP: case V_FLUSHE: case V_FLUSH: case V_FLUSHA: case V_MSCAL:
+                    break;
+                case V_STCYCL:
+                    cl = imm & 255, wl = imm >> 8;
+                    if (!cl || !wl)
+                        err = "STCYCL with a 0 length";
+                    break;
+                case V_BASE: base = imm & 0x3FF; break;
+                case V_OFFSET: offset = imm & 0x3FF; break;
+                case V_STMASK: need = 1; break;
+                case V_MPG: need = 2 * (num ? num : 256); break;
+                case V_DIRECT: need = 4 * (imm ? imm : 65536); break;
+                case 0x07: err = "MARK (never sent)"; break;
+                default: err = "VIF command this renderer never sends"; break;
+                }
+            if (err)
+                bad = wp, blo = i < 2 ? (const u32 *)t : data, bhi = blo + (i < 2 ? 4 : 4 * qwc);
+        }
+        if (err)
+            break;
+        if (id == T_END || id == T_REFE) {
+            if (need)
+                err = "chain ends while a command still takes data";
+            break;
+        }
+        t = id == T_CNT ? t + 2 + 2 * qwc : t + 2;
+    }
+    v->cl = cl, v->wl = wl, v->base = base, v->offset = offset;
+    if (!err)
+        return 0;
+    if (chk_errors++ < 6) {
+        printf("DSRPROTO VU1_CHECK %s: %s chain, frame %d, tag %d at +%d qw: %s (code %08x)\n", pass, chk_chain_name[ch],
+               chk_frames, ntag - 1, (int)((const u128 *)t - start), err, bad ? *bad : 0);
+        for (int k = ntag - 8 < 0 ? 0 : ntag - 8; k < ntag; k++) {
+            const u64 *h = hist[k & 7];
+            printf("  tag +%d: %016llx %08x %08x\n", (int)((const u128 *)h - start), (unsigned long long)h[0],
+                   (u32)h[1], (u32)(h[1] >> 32));
+        }
+        if (bad && blo)
+            chk_dump(bad, blo, bhi);
+    }
+    return 1;
+}
+
+/* before the kick: the segment as built (cl / wl carry over from the chain's earlier segments) */
+static void chk_kick(void)
+{
+    if (cur == 0 && !seg_qw)
+        chk_frames++;
+    chk_seg.start = chain, chk_seg.end = (const u128 *)cp, chk_seg.cur = cur, chk_seg.v = chk_v, chk_seg.n = 1;
+    chk_run(chain, (const u128 *)cp, cur, &chk_v, "kick");
+}
+
+/* after its DMA ended: the same words again (only REF'd memory can differ) */
+static void chk_after(void)
+{
+    if (!chk_seg.n)
+        return;
+    chk_seg.n = 0;
+    ChkVif v = chk_seg.v;
+    chk_run(chk_seg.start, chk_seg.end, chk_seg.cur, &v, "after DMA");
+}
+#define CHK_KICK() chk_kick()
+#define CHK_AFTER() chk_after()
+#else
+#define CHK_KICK() ((void)0)
+#define CHK_AFTER() ((void)0)
+#endif
+
 /* room for qw more qwords (plus the END tag): otherwise send the chain built so far and start over in the same
  * buffer. 0 = cannot fit at all (the caller drops the batch) */
 static int room(int qw)
@@ -195,6 +339,7 @@ static int room(int qw)
     vu1_kick();
     seg_qw += (u128 *)cp - chain;
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+    CHK_AFTER();
     cp = (u64 *)chain;
     vu1_stats.segments++;
     return 1;
@@ -839,6 +984,8 @@ void vu1_kick(void)
         vu1_stats.peak[cur] = qw;
     SyncDCache(chain, cp);  /* write back only the chain, not the whole data cache */
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+    CHK_AFTER();
+    CHK_KICK();
 #ifdef VU1_TEX_PATH3
     if (tq_n) {  /* the segment's uploads first: PATH3 runs from here, the chain's gate waits for it */
         tq[0] = TAG(2, T_END, 0), tq[1] = 0;
@@ -859,4 +1006,5 @@ void vu1_kick(void)
 void vu1_wait(void)
 {
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+    CHK_AFTER();
 }
