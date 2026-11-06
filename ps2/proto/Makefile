@@ -275,7 +275,7 @@ $(A)/objects.bin.static $(A)/objects.bin.anim: $(A)/objects.bin
 # MSB enemy parts of the area (model, NpcParam / ThinkParam ids, position, yaw)
 # EMEVD bytecode (src/event.c): the map's events + entity table (hit ranges of this area / block's collision.bin),
 # common.emevd as evcommon.bin; coverage per map in events.txt
-$(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum \
+$(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum $(TS)/havok_collision.py.sum \
 		$(TS)/souls.py.sum $(AREA_SIG) $(A)/objects.bin
 	@mkdir -p $(@D)
 	ANIM_OBJ=$(A)/objects.bin.anim $(PY) -I ../../tools/export_emevd.py "$(GAME)" $@ $(MAP) --common $(A)/evcommon.bin --report $(A)/events.txt
@@ -420,7 +420,7 @@ $(A)/mapenv: FORCE | $(TS)/export_map.py.sum
 	else echo '$(MAPENV_LINE)' | cmp -s - $@ || echo '$(MAPENV_LINE)' > $@; fi
 # libmapx (tools/mapx: the map exporter's C rewrite, tools/mapx_native.py): every C source and header
 MAPX_SUMS = $(TS)/mapx_native.py.sum $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/mapx/*.c ../../tools/mapx/*.h))
-$(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum \
+$(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
@@ -471,7 +471,7 @@ $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.s
 
 # Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller): tools/export_collision.py
 # (PY: havok_collision.py gathers the vertices with numpy)
-$(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_SIG)
+$(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_collision.py "$(GAME)" $@ $(MAP) h
 

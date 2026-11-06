@@ -70,7 +70,7 @@ def x(cmd, timeout=20, **kw):
 FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
 PROGRESS = 60.0  # s between progress lines
 LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error"
-                        r"|mapstream: alloc .* FAILED", re.I)
+                        r"|mapstream: alloc .* FAILED|TEST ev expect .*: \S+ FAIL", re.I)
 # map.c prints the most cells missing in one frame over each second; more than this is a hole in the world, not a cell
 # arriving a frame late (--cells-missing N, 0 = off)
 CELLS_MISSING = re.compile(r"map: cells missing (\d+)")
