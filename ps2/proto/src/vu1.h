@@ -131,7 +131,9 @@ typedef struct {
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
     int idx_batches, idx_clip, idx_vuclip;  /* indexed map batches so far / triangles split on the EE for vu1clip /
                                              * VU1_CLIP batches clipped by vu1clip's indexed entry */
-    unsigned long long idx_clip_ticks, wait_ticks;  /* EE ticks so far: vu1_add_idx's near-plane split, room()'s mid-chain waits */
+    unsigned long long idx_clip_ticks, wait_ticks;
+    unsigned long long add_idx_ticks, add_ex_ticks;  /* EE ticks so far in vu1_add_idx / vu1_add_ex (map + relief) */
+    int add_idx_n, add_ex_n;                         /* their calls so far */  /* EE ticks so far: vu1_add_idx's near-plane split, room()'s mid-chain waits */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 

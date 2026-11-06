@@ -639,6 +639,10 @@ int main(int argc, char **argv)
                    "chain waits %u\n", vu1_stats.idx_batches, vu1_stats.idx_clip, vu1_stats.idx_vuclip,
                    (unsigned)(vu1_stats.idx_clip_ticks / 294912),
                    (unsigned)(vu1_stats.wait_ticks / 294912));
+        if (log_frames % 300 == 0)  /* EE time in the batch builders so far (map and relief passes) */
+            printf("DSRPROTO add ms so far: idx %u (%d calls), ex %u (%d calls)\n",
+                   (unsigned)(vu1_stats.add_idx_ticks / 294912), vu1_stats.add_idx_n,
+                   (unsigned)(vu1_stats.add_ex_ticks / 294912), vu1_stats.add_ex_n);
 #ifdef VU1_TEX_PATH3
         if (log_frames % 300 == 0)
             printf("DSRPROTO tex path3 %d, path2 %d, gates %d\n", vu1_stats.tex_path3, vu1_stats.tex_path2,

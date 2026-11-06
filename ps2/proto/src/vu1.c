@@ -659,8 +659,8 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
         q64(idx_hdr[0] | (u64)idx_hdr[1] << 32, 0);
 }
 
-void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
-                const float *org, float st_k)
+static void add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
+                   const float *org, float st_k)
 {
 #ifdef VU1_NO_CLIP  /* debug: near / guard-band batches through the plain program (flagged triangles dropped) */
     mode &= ~VU1_CLIP;
@@ -673,9 +673,9 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     if ((mode & VU1_CLIP) && tris > VU1_CLIP_TRIS) {  /* the clip program keeps scratch after its batch */
         mode &= ~VU1_PKT;  /* the packet's UNPACK counts are the whole chunk's */
         mip_mxl = mxl;
-        vu1_add_ex(t, cull, mode, VU1_CLIP_TRIS, pos, st, col, org, st_k);
+        add_ex(t, cull, mode, VU1_CLIP_TRIS, pos, st, col, org, st_k);
         mip_mxl = mxl;
-        vu1_add_ex(t, cull, mode, tris - VU1_CLIP_TRIS, (const char *)pos + VU1_CLIP_TRIS * 18,
+        add_ex(t, cull, mode, tris - VU1_CLIP_TRIS, (const char *)pos + VU1_CLIP_TRIS * 18,
                    (const char *)st + VU1_CLIP_TRIS * 12, (const char *)col + VU1_CLIP_TRIS * 12, org, st_k);
         return;
     }
@@ -740,8 +740,17 @@ static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const 
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, clip ? CLIP_CODE : MAP2_CODE));
 }
 
-void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
-                 const void *idx, const float *org, float st_k)
+void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
+                const float *org, float st_k)
+{
+    unsigned t0 = ticks();
+    add_ex(t, cull, mode, tris, pos, st, col, org, st_k);
+    vu1_stats.add_ex_ticks += ticks() - t0;
+    vu1_stats.add_ex_n++;
+}
+
+static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
+                    const void *idx, const float *org, float st_k)
 {
 #ifdef VU1_NO_CLIP
     mode &= ~VU1_CLIP;
@@ -840,6 +849,15 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
     }
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, entry));
     vu1_stats.idx_batches++;
+}
+
+void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
+                 const void *idx, const float *org, float st_k)
+{
+    unsigned t0 = ticks();
+    add_idx(t, cull, mode, tris, nv, pos, st, col, idx, org, st_k);
+    vu1_stats.add_idx_ticks += ticks() - t0;
+    vu1_stats.add_idx_n++;
 }
 
 /* textured skin light (vu1_skin_light): colour = amb + sun x max(n . L, 0), 0x80 = 1.0 */
