@@ -444,7 +444,12 @@ $(PVS_BAKE): ../../tools/pvs_bake.c
 $(A)/pvsin.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))
-$(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(foreach d,$(PVS_WITH),$(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) | $(if $(WORLD_BLOCKS),worldexports)
+# the other blocks' exports have no rule in this make: worldexports (the top make) or the parent make's worldexports
+# (a block's sub-make) writes them; order-only, so an existing file is judged by its time alone
+PVS_WITH_FILES = $(foreach d,$(PVS_WITH),$(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin)
+$(PVS_WITH_FILES): | $(if $(WORLD_BLOCKS),worldexports)
+	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
+$(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES)
 	$(abspath ../../tools/q) -m 2 $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
 		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
