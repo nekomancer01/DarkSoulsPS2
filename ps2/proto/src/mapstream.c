@@ -7,16 +7,21 @@
  * recently used unreferenced model removed to make room, never one in use), with the data sized at export
  * (tools/export_map.py solve_budget) so that what a spot needs fits:
  *
- * Every item gets a class from its distance to the player (box distance) every MS_SCAN_FRAMES or MS_SCAN_D metres:
- *   MS_PIN   the coarse level and kept meshes of cells within MS_R1_PIN, the backdrop, the sky of the player's block
- *   MS_VIEW  the same for cells within MS_R1_WANT that map.c drew or asked for lately (in view)
- *   MS_NEAR  near parts of cells within MS_R0_DRAW (map.c draws them there)
- *   MS_FARC  coarse / kept items within MS_R1_WANT not in view (behind the camera)
- *   MS_PREF  near parts within MS_R0_WANT (read ahead of walking in), mip 0 textures asked for
- *   MS_KEEP  loaded and within its keep radius, or a coarse item whose cell's near level is in and closer than
- *            MS_R0_IN (one level of detail per place): kept while there is room, never read
- *   MS_FREE  dropped once no VIF chain reads it
- * Missing items of class MS_PREF and up are read, highest class first, nearest first (in view counts as half the
+ * Every item gets a class from its distance to the player (box distance) every MS_SCAN_FRAMES or MS_SCAN_D metres,
+ * highest first:
+ *   C_PIN    the coarse level and kept meshes of cells within MS_R1_PIN, the backdrop and sky of the player's block
+ *   C_VIEW   coarse cells within MS_R1_VIEW that map.c drew or asked for lately (in view)
+ *   C_NEAR   near parts of cells within MS_R0_FIRST
+ *   C_NEAR2  near parts within MS_R0_DRAW (map.c draws them there), foliage within MS_GRASS_WANT
+ *   C_VIEW2  coarse cells in view out to MS_R1_WANT, another block's backdrop in view
+ *   C_FARC   coarse cells and backdrop not in view (behind the camera)
+ *   C_PREF   near parts within MS_R0_WANT (read ahead of walking in), mip 0 textures asked for
+ *   C_KEEP   loaded and within its keep radius, or anything ranked past what the arena holds: kept while there is
+ *            room, never read
+ *   C_FREE   dropped once no VIF chain reads it
+ * The plan is cut to fit: wanted items in rank order (class, then distance) until their bytes fill the item pages; the
+ * rest become C_KEEP. So the plan always fits and the reader never stalls on items it cannot place.
+ * Missing items of class C_PREF and up are read, highest class first, nearest first (in view counts as half the
  * distance), neighbouring resident items together in one request of up to MS_RUN bytes. A read that finds no room may
  * clear one 64 KB page whose items are all of a lower class than its own (lowest class, least recently drawn first),
  * so a coarse cell in view is never dropped for a near cell, and a pinned one only for a block's lite set.
@@ -46,8 +51,9 @@
 #define MS_R0_DRAW 26.0f
 #define MS_R0_WANT 30.0f  /* = export_map.WS_R0 */
 #define MS_R0_KEEP 36.0f
-#define MS_R0_IN 20.0f    /* a cell this close with its near level in draws only that: its coarse items may go */
-#define MS_R1_PIN 96.0f   /* = export_map.WS_R1 */
+#define MS_R1_PIN 64.0f   /* pinned coarse; export_map.WS_R1 (96 m) budgets a little beyond it */
+#define MS_R0_FIRST 16.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 26 m below (C_NEAR2) */
+#define MS_R1_VIEW 128.0f /* coarse cells in view this close: C_VIEW, beyond: C_VIEW2 */
 #define MS_R1_WANT 260.0f
 #define MS_R1_KEEP 280.0f
 /* foliage items (MS_RES_GRASS): map.c draws tufts at (GRASS_D0 10 m / d)^2 of their density, ~6 % at 40 m (ASSUMED
@@ -74,6 +80,13 @@
 /* EE heap left outside the arena when it is allocated (as v1): the 1.5 MB reserve + 1.5 MB for what loads later */
 #define MS_RESERVE (3u << 20)
 #define MS_PAGE (64u << 10)
+/* The top of the arena is kept for mapstream_alloc (block lite sets up to 1.7 MB, relief ~0.9 MB, enemy model.bin
+ * buffers up to 0.6 MB): map items never go there. Without it the pinned and drawn items filled every page, model
+ * buffers fell back to the heap and fragmented it (c2540 model.bin OUT OF RAM in world_cross, host ELF, 2026-11-06);
+ * v1 dropped drawn cells for them instead, which hung PCSX2 when a queued chain still read them. Sized for one enemy
+ * model.bin (lite sets and relief clear windows below it): 2 MB cost the route's map items 2 MB and its worst frame
+ * went from 42 to 219 cells missing (ISO, 2026-11-06). ASSUMED size. */
+#define MS_OTHER (768u << 10)
 #define MS_GRAN 256u
 #define MS_GPP (MS_PAGE / MS_GRAN)  /* granules per page */
 #define MS_RUN (256u << 10)          /* bytes of neighbouring resident items per request (v1 step 5) */
@@ -86,7 +99,10 @@
 #define MS_FAIL_FRAMES_MAX (16 * MS_FAIL_FRAMES)
 
 enum { MS_NONE, MS_READING, MS_READY, MS_FAILED };
-enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_NEAR, C_VIEW, C_PIN };
+/* classes, lowest first (the header comment lists them). Coarse cells in view within MS_R1_VIEW rank above near
+ * parts: a missing near part draws its cell's coarse level, a missing coarse cell is a hole (with near parts first, the
+ * route's worst frame had 211 cells missing instead of 42, ISO 2026-11-06) */
+enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_NEAR, C_VIEW, C_PIN };
 
 MapStreamStats mapstream_stats;
 
@@ -153,7 +169,7 @@ static unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
 
 /* ---- arena: granule bitmap on a page grid ---- */
 static unsigned char *arena;
-static unsigned arena_size, npages, *gmap;  /* bit per granule, 1 = used */
+static unsigned arena_size, npages, ipages, *gmap;  /* ipages: pages map items may use (below MS_OTHER) */  /* bit per granule, 1 = used */
 static unsigned short *pfree;               /* free granules per page */
 static unsigned reserve_extra, pool_max = MS_POOL;
 /* make_window's scores per page: bits 0-7 highest class + 1 of its clearable groups, 0x200 not clearable; cost;
@@ -180,7 +196,7 @@ static void *g_alloc(unsigned n)
     if (!ng || ng > MS_GPP)
         return NULL;
     for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = 0; p < npages; p++) {
+        for (unsigned p = 0; p < ipages; p++) {
             if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
                 continue;
             unsigned run = 0, g0 = p * MS_GPP;
@@ -194,11 +210,11 @@ static void *g_alloc(unsigned n)
         }
     return NULL;
 }
-/* n bytes in a run of whole free pages, the highest such run, placed at its top */
-static void *g_alloc_top(unsigned n)
+/* n bytes in a run of whole free pages below page `top`, the highest such run, placed at its top */
+static void *g_alloc_top(unsigned n, unsigned top)
 {
     unsigned np = (n + MS_PAGE - 1) / MS_PAGE, ng = (n + MS_GRAN - 1) / MS_GRAN, run = 0;
-    for (unsigned p = npages; p-- > 0;) {
+    for (unsigned p = top; p-- > 0;) {
         run = pfree[p] == MS_GPP ? run + 1 : 0;
         if (run == np) {
             unsigned end = (p + np) * MS_GPP;
@@ -249,6 +265,7 @@ static int ensure_arena(void)
             for (unsigned p = 0; p < npages; p++)
                 pfree[p] = MS_GPP;
             arena_size = sz;
+            ipages = npages > 2 * (MS_OTHER / MS_PAGE) ? npages - MS_OTHER / MS_PAGE : npages / 2;
         }
     }
     printf("mapstream: v2 arena %u KB in %u pages (heap free %u KB)\n", arena ? arena_size >> 10 : 0, npages, hf >> 10);
@@ -296,7 +313,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = d2 * vk;
         if (settling)  /* a settle waits for the resident level: near cells stream in behind the game */
             return d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
-        return d2 < sq(MS_R0_DRAW) ? C_NEAR : d2 < sq(MS_R0_WANT) ? C_PREF : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
+        return d2 < sq(MS_R0_FIRST) ? C_NEAR : d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_WANT) ? C_PREF : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
     }
     unsigned tag = m->rit[id - m->ncell].tag;
     if (tag & MS_RES_TEX) {
@@ -312,16 +329,19 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     if (c >= m->ncell)
         return C_FREE;
     float d2 = box_d2(&m->tab[c], pos);
-    if (tag & MS_RES_FAR) {  /* the backdrop: the horizon from anywhere */
+    if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
-        return C_PIN;
+        return k == (focus < 0 ? 0 : focus) ? C_PIN : view ? C_VIEW2 : C_FARC;
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
-        return settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
-    if ((tag & MS_RES_COARSE) && !settling && d2 < sq(MS_R0_IN) && near_in(m, c))
-        return C_KEEP;  /* the near level stands for these */
-    return d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (view ? C_VIEW : C_FARC) : d2 < sq(MS_R1_KEEP) ? C_KEEP : C_FREE;
+        return settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
+    /* no "one level of detail per place" here: a cell's coarse items stay while its near level is drawn. Dropping them
+     * once the near parts were in made a hole whenever a near part went next (the near level draws only with every
+     * part in): the route's worst frame had ~200 cells missing in the Burg (ISO, 2026-11-06). The coarse level within
+     * MS_R1_PIN is in the export budget anyway. */
+    return d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? C_FARC : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
+                                                           : d2 < sq(MS_R1_KEEP) ? C_KEEP : C_FREE;
 }
 
 /* free the group of item id */
@@ -369,6 +389,7 @@ static unsigned grp_used(const MsInst *m, unsigned id)
 static int nowin = C_PIN + 2;  /* a window of 1 page was not found for this class or above since the last change */
 static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
 {
+    unsigned lim = ng_need ? ipages : npages;  /* a read's window lies where items may go */
     if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
         return 0;
     memset(pcls, 0, npages * sizeof *pcls);
@@ -409,7 +430,7 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
     }
     int best = -1;
     unsigned long long bestc = ~0ull;
-    for (unsigned p = npages - need + 1; p-- > 0;) {
+    for (unsigned p = lim >= need ? lim - need + 1 : 0; p-- > 0;) {
         unsigned hi = 0;
         unsigned long long c = 0;
         unsigned q;
@@ -552,7 +573,7 @@ static int issue(void)
                 e++;
             gb = grp_bytes(m, g, e);
         }
-        void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb);
+        void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ipages);
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -560,7 +581,7 @@ static int issue(void)
             /* one page (or the pages of a group over a page) of items below this one's class, not drawn this frame
              * or the last */
             if (make_window((gb + MS_PAGE - 1) / MS_PAGE, (gb + MS_GRAN - 1) / MS_GRAN, w.cls, NULL))
-                p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb);
+                p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ipages);
         }
         if (!p) {
             if (evict_left <= 0 && !sent && nq < MS_QUEUE) {  /* no clearing left this frame: first again next frame */
@@ -613,6 +634,17 @@ static int issue(void)
 }
 
 /* ---- plan ---- */
+/* the plan's wanted items, sorted by rank; MS_FILL_PCT: the share (%) of the item pages the plan may fill (granule rounding,
+ * read groups not filling their page, ASSUMED) */
+#define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
+#define MS_FILL_PCT 92u
+typedef struct { unsigned char k, cls; unsigned short id; float key; } MsW;
+static MsW want[MS_WANTED];
+static int w_cmp(const void *a, const void *b)
+{
+    const MsW *x = a, *y = b;
+    return x->cls != y->cls ? y->cls - x->cls : x->key < y->key ? -1 : x->key > y->key;
+}
 static void plan(const float *pos)
 {
     nq = 0;
@@ -622,6 +654,11 @@ static void plan(const float *pos)
             blk[i--] = blk[--nblk];
     int retry = failed && frame - fail_frame >= fail_wait;
     failed &= !retry;
+    /* classes, then the cut: wanted items in rank order (class, then key) until their bytes fill the item pages; the
+     * rest are only kept (never read, first to go). Without the cut the pinned coarse cells of Firelink + three Burg
+     * blocks (7 MB within 96 m, 1.9 MB of backdrop) outgrew the arena: no near cell could find room and the Burg
+     * stayed at its coarse level, with cells going missing (user report, 2026-11-06) */
+    unsigned nw = 0;
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
         for (unsigned id = 0; id < it_n(m); id++) {
@@ -630,8 +667,30 @@ static void plan(const float *pos)
             m->cls[id] = (unsigned char)c;
             if (m->state[id] == MS_FAILED && retry)
                 m->state[id] = MS_NONE;
-            if (m->state[id] == MS_NONE && c >= C_PREF && it_bytes(m, id) && !blocked(k, id))
-                q_add(k, id, c, key);
+            if (c >= C_PREF && nw < MS_WANTED)
+                want[nw++] = (MsW){(unsigned char)k, (unsigned char)c, (unsigned short)id, key};
+        }
+    }
+    qsort(want, nw, sizeof *want, w_cmp);
+    unsigned cap = ipages * (MS_PAGE / 100) * MS_FILL_PCT, sum = 0;
+    for (unsigned i = 0; i < nw; i++) {
+        MsInst *m = &ms[want[i].k];
+        sum += (it_bytes(m, want[i].id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
+        if (sum > cap) {
+            m->cls[want[i].id] = C_KEEP;
+            continue;
+        }
+        if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
+            q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
+    }
+    {  /* what the plan wants per class (KB) against the room, every ~10 s of plans (tuning the classes) */
+        static unsigned np;
+        if (!(np++ % 40)) {
+            unsigned kb[C_PIN + 1] = {0};
+            for (unsigned i = 0; i < nw; i++)
+                kb[want[i].cls] += it_bytes(&ms[want[i].k], want[i].id) >> 10;
+            printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB\n", cap >> 10,
+                   kb[C_PIN], kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF]);
         }
     }
     /* free what no class wants and no VIF chain reads (not asked for this frame or the last) */
@@ -731,10 +790,10 @@ int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned 
 
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems)
 {
-    if (k < 0 || k >= MS_INST || !nitems || nitems > 65536)
+    if (k < 0 || k >= MS_INST || !nitems)
         return 0;
     MsInst *m = &ms[k];
-    if (!m->ncell || n != m->ncell || m->rit)
+    if (!m->ncell || n != m->ncell || m->rit || m->ncell + nitems > 65535)  /* ids are u16 in the plan */
         return 0;
     unsigned t = m->ncell + nitems;
     unsigned char *s = realloc(m->state, t), *c = s ? (m->state = s, realloc(m->cls, t)) : NULL;
@@ -837,12 +896,12 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     (void)pos;  /* ranks come from the last plan */
     if (!mapstream_arena())
         return NULL;
-    void *p = g_alloc_top(n);
+    void *p = g_alloc_top(n, npages);
     unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
     /* clear a window: of items below the near class first, then of anything but the pinned level, last of anything
      * (a lite set holds the collision the player walks onto next); never of items a VIF chain may read (in_chain) */
-    if (!p && (make_window(need, 0, C_NEAR, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_PIN + 1, &kb)))
-        p = g_alloc_top(n);
+    if (!p && (make_window(need, 0, C_NEAR2, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_PIN + 1, &kb)))
+        p = g_alloc_top(n, npages);
     if (kb || !p)  /* the caller falls back to the heap on NULL */
         printf("mapstream: alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
     if (p)
