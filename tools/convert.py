@@ -201,7 +201,7 @@ def enemy_steps(game, msb, block, A, AD, mv):
     out = []
     for c in chrs:
         lod, tex = mv.get(f"LOD_{c}", "1"), mv.get(f"TEX_{c}", "64")
-        out.append(Step(f"{block or msb}: {c}", "export_chr.py", [game, c, msb, f"{A}/{c}", lod, tex],
+        out.append(Step(f"{block or msb}: {c}", "export_chr.py", [game, c, msb, f"{A}/{c}", lod, tex, mv["CHR_BONES"]],
                         [f"{A}/{c}/chr.bin"], env))
         out.append(Step(f"{block or msb}: {c} pack", "pack.py", [f"{AD}/{c}.pak", f"model.bin={A}/{c}/model.bin",
                                                                   f"chr.bin={A}/{c}/chr.bin"], [f"{AD}/{c}.pak"]))

@@ -27,8 +27,7 @@ typedef struct {
 } Vertex;
 
 /* VU1 skinning streams (vu1skin2.vsm), built once per model: unindexed batches of <= VU1_SKIN_TRIS triangles per
- * group, one 16-byte aligned slot of SK_V vertices per batch and stream */
-#define SK_V ((VU1_SKIN_TRIS * 3 + 1) & ~1)  /* even: 16-byte slots */
+ * group, each batch one prebuilt VIF packet (vu1_skin_packet, renderer plan PR 8) holding its streams */
 #define MAX_TEX 12  /* the Warrior: 7 armour / weapon / skin + back of head, face, eyes, hair */
 #define MAX_ANIMS 64
 
@@ -51,14 +50,19 @@ struct Model {
     int nanims;
     GSTEXTURE tex[MAX_TEX];
     int ntex;
-    short (*sk_pa)[SK_V][4];  /* bone A position * 4096, 4 * bone A */
-    short (*sk_pb)[SK_V][4];  /* bone B position * 4096, 4 * bone B */
-    short (*sk_n)[SK_V][4];   /* normal (bone A space) * 4096, weight A * 4096 */
-    float (*sk_st)[SK_V][2];  /* st normalized, or colour u8x4 if untextured */
-    void *sk_block;  /* the one allocation the sk_ arrays live in */
-    unsigned char (*sk_ms)[SK_V][4];  /* (0, 0, m, f) x 255 for vu1skin2's specular; NULL when the model has none */
-    /* spec: the batch has metal / specular (vu1skin2 TexSpec); t0: its first triangle; win: its bone window */
-    struct { short group, tris, spec, win; unsigned t0; } *sk_batch;
+    void *sk_block;  /* the one allocation the batch table, the packets and the windows live in */
+    unsigned char *sk_next;  /* skin_step: where the next batch's packet goes */
+    int sk_has_ms;   /* the model has metal / specular streams */
+    /* spec: the batch has metal / specular (vu1skin2 TexSpec); t0: its first triangle; win: its bone window; pkt /
+     * bytes: its VIF packet, streams in it: pa / pb = bone A / B position * 4096, 4 * palette slot (s16x4); n = normal
+     * (bone A space) * 4096, weight A * 4096; ms = (0, 0, m, f) x 255 for vu1skin2's specular (NULL when the model
+     * has none); st = st normalized (f32x2), or colour u8x4 if untextured */
+    struct SkBatch {
+        short group, tris, spec, win;
+        unsigned t0;
+        int bytes;
+        void *pkt, *pa, *pb, *n, *ms, *st;
+    } *sk_batch;
     int nsk, nplan;
     /* bone windows (models with more than MDL_WIN_BONES bones, else nwin = 0 and the palette is uploaded whole):
      * window w uploads win_n[w] (slot, skeleton bone) pairs from win_ids + 2 win_first[w] before its first batch;
@@ -85,8 +89,10 @@ static short fx12(float v)
  * would not fit, and the next batch starts a new window. A new window keeps what the slots hold: a bone already in a
  * slot costs no upload, new bones go to slots the window does not need (empty ones first). DSR's own meshes use <= 38
  * bones each (FLVER mesh bone tables, all 171 chr/ FLVERs), so a window usually spans whole meshes and consecutive
- * windows share the spine / root bones. fill = 0: count batches, windows and uploads only. */
-static void skin_plan(Model *m, int fill, int *nb, int *nw, int *nid)
+ * windows share the spine / root bones. fill = 0: count batches, windows and uploads only, and add up the batches'
+ * packet bytes (vu1_skin_packet, ms = the model has metal / specular) in plan_bytes. */
+static unsigned plan_bytes;
+static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
 {
     const Header *hdr = m->hdr;
     int windowed = hdr->bones > MDL_WIN_BONES, b = 0, w = 0, id = 0, nneed = 0;
@@ -149,6 +155,8 @@ static void skin_plan(Model *m, int fill, int *nb, int *nw, int *nid)
                 }
                 nt++, t++;
             }
+            if (!fill)
+                plan_bytes += vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < (int)hdr->textures, ms, NULL);
             if (fill) {
                 m->sk_batch[b].group = g, m->sk_batch[b].tris = nt, m->sk_batch[b].t0 = t0;
                 m->sk_batch[b].win = windowed ? w : -1, m->sk_batch[b].spec = 0;
@@ -168,37 +176,34 @@ static int skin_alloc(Model *m)
 {
     const Header *hdr = m->hdr;
     int n, nw, nid;
-    skin_plan(m, 0, &n, &nw, &nid);
-    /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
-     * heap until a model no longer fit with 2 MB free, 2026-11-01) */
     int ms = 0;
     for (unsigned i = 0; i < hdr->verts && !ms; i++)
         ms = m->verts[i].metal | m->verts[i].spec;
 #ifdef SPEC_TEST  /* debug (make EE_DBGINFOFLAGS='-DSPEC_TEST=0.85,0.8'): metal m, specular s on every vertex */
     ms = 1;
 #endif
-#define SK_SZ(f) ((n * sizeof *m->f + 63) & ~63u)
+    plan_bytes = 0;
+    skin_plan(m, 0, ms, &n, &nw, &nid);
+    /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
+     * heap until a model no longer fit with 2 MB free, 2026-11-01) */
+    /* the packets, each the size of its batch (plan_bytes), packed in build order by skin_step */
+    unsigned tab = (n * sizeof *m->sk_batch + 15) & ~15u, pkts = plan_bytes;
     unsigned wsz = nw ? (nw * 4 + 2 * nid + 15) & ~15u : 0;
-    unsigned total = SK_SZ(sk_pa) + SK_SZ(sk_pb) + SK_SZ(sk_n) + SK_SZ(sk_st) + SK_SZ(sk_batch) + (ms ? SK_SZ(sk_ms) : 0) +
-                     wsz;
+    unsigned total = tab + pkts + wsz;
     unsigned char *q = memalign(64, total ? total : 64);
     m->sk_block = q;
     if (!q)
         return 0;
-    m->sk_pa = (void *)q, q += SK_SZ(sk_pa);
-    m->sk_pb = (void *)q, q += SK_SZ(sk_pb);
-    m->sk_n = (void *)q, q += SK_SZ(sk_n);
-    m->sk_st = (void *)q, q += SK_SZ(sk_st);
-    m->sk_batch = (void *)q, q += SK_SZ(sk_batch);
-    m->sk_ms = ms ? (void *)q : NULL;
-    q += ms ? SK_SZ(sk_ms) : 0;
-#undef SK_SZ
+    memset(q, 0, total);  /* stream padding is read by VIF as NOPs */
+    m->sk_batch = (void *)q, q += tab;
+    m->sk_next = q, q += pkts;
+    m->sk_has_ms = ms;
     m->nwin = nw;
     if (nw) {
         m->win_first = (void *)q, m->win_n = m->win_first + nw, m->win_ids = (unsigned char *)(m->win_n + nw);
     }
     m->win_built = -1;
-    skin_plan(m, 1, &n, &nw, &nid);
+    skin_plan(m, 1, ms, &n, &nw, &nid);
     m->nplan = n;
     m->nsk = 0;
     return 1;
@@ -231,39 +236,43 @@ static int skin_step(Model *m, unsigned budget)
                     slot[u[2 * i + 1]] = u[2 * i];
             }
         {
-            memset(m->sk_st[b], 0, sizeof *m->sk_st);  /* stream padding is read by VIF as NOPs */
-            if (m->sk_ms)
-                memset(m->sk_ms[b], 0, sizeof *m->sk_ms);
+            struct SkBatch *sb = &m->sk_batch[b];
+            void *s[5];
+            sb->pkt = m->sk_next;
+            sb->bytes = vu1_skin_packet(sb->pkt, nt, textured, m->sk_has_ms, s);
+            m->sk_next += sb->bytes;
+            sb->pa = s[0], sb->pb = s[1], sb->n = s[2], sb->ms = s[3], sb->st = s[4];
+            short (*pa)[4] = sb->pa, (*pb)[4] = sb->pb, (*nr)[4] = sb->n;
+            unsigned char (*msq)[4] = sb->ms;
+            float (*st)[2] = sb->st;
             for (unsigned k = 0; k < nt * 3; k++) {
                 const Vertex *v = &m->verts[m->tris[t0 * 3 + k]];
                 for (int c = 0; c < 3; c++) {
-                    m->sk_pa[b][k][c] = fx12(v->pa[c]);
-                    m->sk_pb[b][k][c] = fx12(v->pb[c]);
-                    m->sk_n[b][k][c] = fx12(v->na[c] / 127.0f);
+                    pa[k][c] = fx12(v->pa[c]);
+                    pb[k][c] = fx12(v->pb[c]);
+                    nr[k][c] = fx12(v->na[c] / 127.0f);
                 }
-                m->sk_pa[b][k][3] = 4 * slot[v->ba];
-                m->sk_pb[b][k][3] = 4 * slot[v->bb];
-                m->sk_n[b][k][3] = fx12(v->wa / 255.0f);
+                pa[k][3] = 4 * slot[v->ba];
+                pb[k][3] = 4 * slot[v->bb];
+                nr[k][3] = fx12(v->wa / 255.0f);
                 if (textured) {
-                    if (m->sk_ms) {  /* f = s m + 0.04 s^2 (1 - m): the specular weight of vu1skin2's colour */
+                    if (msq) {  /* f = s m + 0.04 s^2 (1 - m): the specular weight of vu1skin2's colour */
                         float mm = v->metal / 255.0f, ss = v->spec / 255.0f;
 #ifdef SPEC_TEST
                         mm = ((const float[2]){SPEC_TEST})[0], ss = ((const float[2]){SPEC_TEST})[1];
 #endif
                         float f = ss * mm + 0.04f * ss * ss * (1 - mm);
-                        unsigned char *q = m->sk_ms[b][k];
+                        unsigned char *q = msq[k];
                         q[0] = q[1] = 0, q[2] = (unsigned char)(mm * 255 + 0.5f), q[3] = (unsigned char)(f * 255 + 0.5f);
-                        m->sk_batch[b].spec |= q[2] | q[3];
+                        sb->spec |= q[2] | q[3];
                     }
-                    m->sk_st[b][k][0] = m->uvs[t0 * 6 + k * 2] * iw;
-                    m->sk_st[b][k][1] = m->uvs[t0 * 6 + k * 2 + 1] * ih;
+                    st[k][0] = m->uvs[t0 * 6 + k * 2] * iw;
+                    st[k][1] = m->uvs[t0 * 6 + k * 2 + 1] * ih;
                 } else {
-                    unsigned char *col = (unsigned char *)m->sk_st[b] + k * 4;
+                    unsigned char *col = (unsigned char *)st + k * 4;
                     col[0] = v->r, col[1] = v->g, col[2] = v->b, col[3] = 0x80;
                 }
             }
-            for (unsigned k = nt * 3; k < SK_V; k++)  /* zero padding up to the slot end */
-                memset(m->sk_pa[b][k], 0, 8), memset(m->sk_pb[b][k], 0, 8), memset(m->sk_n[b][k], 0, 8);
         }
         m->nsk++;
         unsigned c;
@@ -438,7 +447,7 @@ void mdl_strip(Model *m)
 {
     free(m->sk_block), free(m->own);
     m->sk_block = NULL;
-    m->sk_pa = m->sk_pb = m->sk_n = NULL, m->sk_st = NULL, m->sk_ms = NULL, m->sk_batch = NULL, m->own = NULL;
+    m->sk_batch = NULL, m->sk_next = NULL, m->own = NULL;
     m->nsk = 0, m->nanims = 0;
 }
 
@@ -646,7 +655,8 @@ static void skin_draw(const Model *m, int tint)
     int win = m->nwin ? 0 : -1;
     vu1_skin_begin(palette, m->hdr->bones, m->nwin ? m->win_ids : NULL, m->nwin ? m->win_n[0] : 0);
     for (int b = 0; b < m->nsk; b++) {
-        const Group *g = &m->groups[m->sk_batch[b].group];
+        const struct SkBatch *sb = &m->sk_batch[b];
+        const Group *g = &m->groups[sb->group];
         /* the next bone windows (char-7), in order even past hidden batches: each builds on the slots before it */
         while (win >= 0 && win < m->sk_batch[b].win) {
             win++;
@@ -655,10 +665,10 @@ static void skin_draw(const Model *m, int tint)
         if (g->flags & m->hide)
             continue;
         GSTEXTURE *gt = g->tex >= 0 && g->tex < m->ntex ? (GSTEXTURE *)&m->tex[g->tex] : NULL;
-        vu1_skin_add(gt, g->flags & 1, m->sk_batch[b].tris, !tint ? none : gt ? tint_tex : tint_flat, m->sk_pa[b],
-                     m->sk_pb[b], m->sk_n[b], m->sk_st[b],
-                     g->flags >> 28 ? g->flags >> 28 : 1 /* Blinn 2^k from the _s roughness (export_model) */,
-                     m->sk_ms && m->sk_batch[b].spec ? m->sk_ms[b] : NULL);
+        int textured = g->tex >= 0 && g->tex < (int)m->hdr->textures;  /* the packet's st kind (skin_step) */
+        vu1_skin_add_pkt(gt, g->flags & 1, sb->tris, !tint ? none : gt ? tint_tex : tint_flat, sb->pa, sb->pb, sb->n,
+                         sb->st, g->flags >> 28 ? g->flags >> 28 : 1 /* Blinn 2^k from the _s roughness (export_model) */,
+                         sb->ms && sb->spec ? sb->ms : NULL, !gt == !textured ? sb->pkt : NULL, sb->bytes);
     }
 }
 

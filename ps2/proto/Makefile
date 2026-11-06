@@ -74,11 +74,10 @@ EE_DVP = dvp-as
 # compares. MATHFLAGS= builds without, for A/B profiling.
 MATHFLAGS ?= -fno-math-errno
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
-# CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 61 = one VU1 palette window, the skeleton folded as
-# before; up to 255 draws through per-batch bone windows (model.c) and costs RAM: Undead Burg smoke at 255, lowest free
-# 1482 KB vs 1544 KB at 61 (2026-11-06), so off by default until the RAM floor has room. model.h MDL_MAX_BONES sizes the
-# pose / palette arrays for it (64 at the default)
-CHR_BONES ?= 61
+# CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through
+# per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette window, bigger skeletons folded).
+# model.h MDL_MAX_BONES sizes the pose / palette arrays for it
+CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
 # World streaming v2 (src/mapstream.c, 2026-11-06) is the default; MAPSTREAM_V1=1 builds the first streamer
 # (src/mapstream_v1.c) for A/B runs
