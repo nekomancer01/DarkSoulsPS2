@@ -26,6 +26,7 @@ enum {
     HS_MSPLAN, /* inside HS_WORLD: mapstream plan() */
     HS_MSWIN,  /* inside: make_window (eviction scans) */
     HS_MSIO,   /* inside: issue / collect */
+    HS_MSVIS,  /* inside: the visibility job (vis_step) */
     HS_LOG,    /* printf (pack.c __wrap__write), anywhere */
     HS_N
 };

@@ -378,15 +378,21 @@ static void (*tex_set)(int k, unsigned tag, const void *p);
  * another area are neither requested nor kept). `make PVS=0` (-DNO_PVS): every item is planned by distance only. */
 #define MS_VIS_HOLD 15u  /* ticks of 4 frames: 2 s, ASSUMED (a look through a doorway and back) */
 static int (*vis_hook)(int k, unsigned id);
-static unsigned (*vis_gen)(void);
-static unsigned vis_last;
+static unsigned (*vis_gen)(int k);
+/* The answers change whenever the camera crosses into another camera cell of a block's grid (every few seconds of
+ * walking). Asking every item of all five blocks at once (~45k pvs ranges) cost 0.2-1.1 s in one frame: the walking
+ * hitches of the 40 min Burg soak (ISO, 2026-11-07; tools/hitchsum.py). The refresh runs as a job instead, one block
+ * at a time (only the block whose grid was crossed), MS_VIS_SLICE_US of EE time per frame (MS_VIS_SETTLE_US in a
+ * settle); answers update in place as it goes and the plan is redone once a block is through. An item keeps its old
+ * answer until the job reaches it: a few frames late, never wrong for longer. */
+#define MS_VIS_SLICE_US 1500u
+#define MS_VIS_SETTLE_US 20000u
+static struct { int k, fresh; unsigned id, g, nh, kb; } vjob = {-1};
 
-static void vis_refresh(int k)
+static void vis_begin(int k)
 {
     MsInst *m = &ms[k];
-    unsigned n = it_n(m), g = vis_gen ? vis_gen() : 0;
-    if (!vis_hook || !n)
-        return;
+    unsigned n = it_n(m);
     int fresh = m->visn != n;  /* an item unseen at its first look was never seen: no hold */
     if (fresh) {
         unsigned char *v = realloc(m->visv, n);
@@ -398,24 +404,56 @@ static void vis_refresh(int k)
         m->vist = t;
         memset(m->visv, 1, n);
         memset(m->vist, 0, n * sizeof *t);
-        m->visn = n, m->visg = g - 1;
+        m->visn = n;
     }
-    if (m->visg == g)
+    vjob.k = k, vjob.fresh = fresh, vjob.id = 0, vjob.g = vis_gen(k), vjob.nh = vjob.kb = 0;
+}
+
+static int replan;
+/* one slice of the visibility job (us of EE time); starts the next block's job when none runs */
+static void vis_step(unsigned us)
+{
+    if (!vis_hook || !vis_gen)
         return;
-    m->visg = g;
-    unsigned short tick = (unsigned short)(frame >> 2);
-    unsigned nh = 0, kb = 0;
-    for (unsigned id = 0; id < n; id++) {
-        int v = it_bytes(m, id) ? vis_hook(k, id) : 1;
-        if (!v && m->visv[id])
-            m->vist[id] = fresh ? (unsigned short)(tick - MS_VIS_HOLD - 1) : tick;  /* seen until now */
-        m->visv[id] = (unsigned char)!!v;
-        if (!v)
-            nh++, kb += it_bytes(m, id);
+    HITCH_BEGIN(v);
+    unsigned t0 = ticks(), lim = us * 295;
+    for (int pass = 0; pass < MS_INST; pass++) {
+        if (vjob.k < 0) {
+            for (int k = 0; k < MS_INST && vjob.k < 0; k++)
+                if (it_n(&ms[k]) && (ms[k].visn != it_n(&ms[k]) || ms[k].visg != vis_gen(k)))
+                    vis_begin(k);
+            if (vjob.k < 0)
+                break;
+        }
+        MsInst *m = &ms[vjob.k];
+        unsigned n = it_n(m), id = vjob.id;
+        if (!m->visv || m->visn != n) {  /* the block closed or grew meanwhile: start it again */
+            vjob.k = -1;
+            continue;
+        }
+        unsigned short tick = (unsigned short)(frame >> 2);
+        for (; id < n; id++) {
+            if (!(id & 63) && ticks() - t0 > lim)
+                break;
+            int v = it_bytes(m, id) ? vis_hook(vjob.k, id) : 1;
+            if (!v && m->visv[id])
+                m->vist[id] = vjob.fresh ? (unsigned short)(tick - MS_VIS_HOLD - 1) : tick;  /* seen until now */
+            m->visv[id] = (unsigned char)!!v;
+            if (!v)
+                vjob.nh++, vjob.kb += it_bytes(m, id);
+        }
+        vjob.id = id;
+        if (id < n)
+            break;  /* out of time: on from here next frame */
+        mapstream_stats.vis_items += vjob.nh - m->vish, mapstream_stats.vis_kb += (vjob.kb >> 10) - m->viskb;
+        m->vish = vjob.nh, m->viskb = vjob.kb >> 10;
+        m->visg = vjob.g;  /* (a crossing meanwhile: its gen moved on, the next job takes it) */
+        vjob.k = -1;
+        replan = 1;
+        if (ticks() - t0 > lim)
+            break;
     }
-    mapstream_stats.vis_items += nh - m->vish, mapstream_stats.vis_kb += (kb >> 10) - m->viskb;
-    m->vish = nh, m->viskb = kb >> 10;
-    printf("mapstream: %d: pvs leaves out %u of %u items, %u KB\n", k, nh, n, kb >> 10);  /* A/B logs */
+    HITCH_END(v, HS_MSVIS);
 }
 /* outside the visibility now */
 static inline int vis_off(const MsInst *m, unsigned id) { return m->visv && id < m->visn && !m->visv[id]; }
@@ -425,13 +463,12 @@ static inline int vis_cut(const MsInst *m, unsigned id)
     return vis_off(m, id) && (unsigned short)((unsigned short)(frame >> 2) - m->vist[id]) > MS_VIS_HOLD;
 }
 
-void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void))
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(int k))
 {
 #ifdef NO_PVS
     (void)vis, (void)gen;
 #else
     vis_hook = vis, vis_gen = gen;
-    vis_last = gen ? gen() - 1 : 0;
 #endif
 }
 
@@ -681,7 +718,7 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
 }
 
 /* ---- reads ---- */
-typedef struct { int k; unsigned id, n, bytes, t; int tk; } MsRead;
+typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl; } MsRead;  /* cxl: cancelled, still landing */
 static MsRead rd[MS_INFLIGHT];
 static int nrd;
 static unsigned land_t;
@@ -725,6 +762,10 @@ static void collect(int i, int r)
     memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
     mapstream_stats.pending = nrd;
     MsInst *m = &ms[w.k];
+    if (w.cxl) {  /* cancelled (MS_CANCEL): the buffer is free once the read stopped */
+        drop(w.k, w.id);
+        return;
+    }
     unsigned now = ticks(), t0 = (int)(w.t - land_t) > 0 ? w.t : land_t;
     land_t = now;
     if (r == (int)w.bytes) {
@@ -853,7 +894,7 @@ static int issue(void)
         }
         if (!nrd)
             land_t = ticks();
-        rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk};
+        rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0};
         mapstream_stats.pending = nrd;
         sent++;
         g = e;
@@ -882,6 +923,8 @@ static void plan(const float *pos)
 }
 static void plan_(const float *pos)
 {
+    unsigned pt[8], np_ = 0;  /* section times (PLAN_PROF) */
+    pt[np_++] = ticks();
     nq = 0;
     nowin = C_TOP + 2;
     for (int i = 0; i < nblk; i++)
@@ -896,7 +939,6 @@ static void plan_(const float *pos)
     unsigned nw = 0;
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
-        vis_refresh(k);
         for (unsigned id = 0; id < it_n(m); id++) {
             float key = 0;
             int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
@@ -911,10 +953,12 @@ static void plan_(const float *pos)
                 want[nw++] = (MsW){(unsigned char)k, (unsigned char)c, (unsigned short)id, key};
         }
     }
+    pt[np_++] = ticks();
     qsort(want, nw, sizeof *want, w_cmp);
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
     unsigned other = mapstream_stats.other_kb << 10, over = other > MS_OTHER ? other - MS_OTHER : 0;
     unsigned cap = ipages * MS_PAGE > over ? (ipages * MS_PAGE - over) / 100 * MS_FILL_PCT : 0, sum = 0;
+    pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
         if (ms[k].cmark)
             memset(ms[k].cmark, 0, ms[k].ncell);
@@ -950,16 +994,22 @@ static void plan_(const float *pos)
         if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
             q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
     }
+    pt[np_++] = ticks();
 #if MS_CANCEL
     for (int i = 0; i < nrd; i++) {  /* reads in flight that nothing wants any more */
         MsInst *m = &ms[rd[i].k];
+        if (rd[i].cxl)
+            continue;
         int want = 0;
         for (unsigned j = rd[i].id; j < rd[i].id + rd[i].n; j++)
             want |= m->cls[j] >= C_PREF;
         if (want)
             continue;
-        pack_req_cancel(rd[i].tk);  /* returns once nothing more lands in the buffer */
         cancel_kb += rd[i].bytes >> 10;
+        if (!pack_req_cancel_async(rd[i].tk)) {  /* in flight: it stops after its page; collect() frees it then */
+            rd[i].cxl = 1;
+            continue;
+        }
         drop(rd[i].k, rd[i].id);
         memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
         i--;
@@ -977,6 +1027,7 @@ static void plan_(const float *pos)
                    kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb);
         }
     }
+    pt[np_++] = ticks();
     if (st_wait) {  /* after a settle: is the near level within MS_R0_FIRST of the feet in? */
         unsigned left = 0;
         for (int k = 0; k < MS_INST; k++) {
@@ -994,6 +1045,7 @@ static void plan_(const float *pos)
             st_wait = 0;
         }
     }
+    pt[np_++] = ticks();
     /* free what no class wants and no VIF chain reads (not asked for this frame or the last) */
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
@@ -1004,7 +1056,13 @@ static void plan_(const float *pos)
                 hitch_drop(0, 0), drop(k, id);
         }
     }
+    pt[np_++] = ticks();
+    if ((pt[np_ - 1] - pt[0]) / 294912 >= 40)  /* a slow plan: where it went (classify, sort, cut, cancel+log, settle check, free) */
+        printf("mapstream: slow plan %u ms: %u %u %u %u %u %u ms, %u wanted\n", (pt[np_ - 1] - pt[0]) / 294912,
+               (pt[1] - pt[0]) / 294912, (pt[2] - pt[1]) / 294912, (pt[3] - pt[2]) / 294912, (pt[4] - pt[3]) / 294912,
+               (pt[5] - pt[4]) / 294912, (pt[6] - pt[5]) / 294912, nw);
 }
+
 
 void mapstream_update(const float pos[3])
 {
@@ -1041,8 +1099,7 @@ void mapstream_update(const float pos[3])
         }
         ahead_on = !jump && vel[0] * vel[0] + vel[2] * vel[2] > sq(0.02f);  /* moving faster than 0.6 m/s */
     }
-    if (vis_gen && vis_gen() != vis_last)  /* a row changed: what is read changes too (pvs.c) */
-        vis_last = vis_gen(), replan = 1;
+    vis_step(settling ? MS_VIS_SETTLE_US : MS_VIS_SLICE_US);  /* a row changed: the job re-plans once through (pvs.c) */
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
     if (replan || !scan_frame || frame - scan_frame >= MS_SCAN_FRAMES || dx * dx + dy * dy + dz * dz > sq(MS_SCAN_D)) {
         replan = 0;
@@ -1191,6 +1248,8 @@ void mapstream_close(int k)
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);
+    if (vjob.k == k)
+        vjob.k = -1;
     nq = 0, replan = 1;
     for (int i = 0; i < nblk; i++)
         if (blk[i].k == k)

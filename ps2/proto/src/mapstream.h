@@ -75,9 +75,10 @@ const unsigned char *mapstream_res(unsigned i);
  * they go */
 void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_set)(int k, unsigned tag, const void *p));
 /* Visibility (mapstream.c, src/pvs.c): vis(k, id) = 1 while any chunk of instance k's item id (ids: cells [0, n), then
- * the mapstream_res_open items) is seen from a camera cell near the camera, gen() changes whenever an answer may change
- * (map.c ms_pvs_vis / pvs_gen). Items unseen a while are neither read nor pinned. */
-void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void));
+ * the mapstream_res_open items) is seen from a camera cell near the camera, gen(k) changes whenever an answer for
+ * instance k may change (map.c ms_pvs_vis / pvs_gen). Items unseen a while are neither read nor pinned. The answers
+ * are refreshed a slice per frame (mapstream.c MS_VIS_SLICE_US). */
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(int k));
 /* world.c: while on, no new reads start (a block's lite set holds the async slot back to back) */
 void mapstream_hold(int on);
 /* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */

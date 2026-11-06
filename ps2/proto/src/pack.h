@@ -41,6 +41,10 @@ unsigned pack_entry_size(const Pack *p, const char *name);
 int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_req_done(int t, int *result);
 void pack_req_cancel(int t);
+/* pack_req_cancel without the wait: 1 when the ticket is gone, 0 when the read stops after its current page and still
+ * lands through pack_req_done (dst stays written until then). mapstream.c: the blocking cancel held the frame for that
+ * page and its seek, 0.2-1 s on the disc (Burg soak, 2026-11-07). */
+int pack_req_cancel_async(int t);
 /* the same with one implicit ticket: returns 0 while the last one is not collected by pack_async_done */
 int pack_read_async(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_async_done(int *result);

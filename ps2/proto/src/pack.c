@@ -387,6 +387,20 @@ int pack_req_done(int t, int *result) { return io_poll(t, result); }
 
 void pack_req_cancel(int t) { io_cancel(t); }
 
+int pack_req_cancel_async(int t)
+{
+    if (!t)
+        return 1;
+    IoReq *q = &io[t - 1];
+    if (q->state == IO_QUEUED) {  /* never sent: gone now */
+        q->state = IO_FREE;
+        return 1;
+    }
+    if (io_srv && q->state == IO_SENT && q->op == SNDD_READ && io_ncxl < IO_SLOTS)
+        io_cxl[io_ncxl].slot = t - 1, io_cxl[io_ncxl++].seq = q->seq;
+    return 0;  /* lands (short) later: pack_req_done as usual */
+}
+
 void pack_pump(void) { io_pump(); }
 
 int pack_open(Pack *p, const char *path)
