@@ -105,7 +105,14 @@ typedef struct {
     float mn[3], mx[3];
     unsigned short first, count, flags;  /* flags: CHUNK_BLEND / CHUNK_BACKDROP if any */
     unsigned char near_on;               /* DSM5: drawing the near level (NEAR_DRAW_R with NEAR_HYST hysteresis) */
+    unsigned char waiting;               /* pop-in metric: in view inside the near radius, drawn coarse (not in yet) */
+    unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
 } Cell;
+/* Pop-in (streaming A/B, 2026-11-06): a cell in view whose near level is due (near_on) but not in draws its coarse
+ * level; once the near level arrives while the cell is still in view, the swap is seen: a pop. map_draw counts them
+ * (waits of 2 draws or more) and prints "map: near pop-in" lines (tools/test-run.py --popin-max fails a run on them). */
+static unsigned short pop_fr;
+static unsigned pop_total;
 
 /* One map instance: instance 0 is the single-area map (map_init) or the boot world block, 1.. the other loaded world
  * blocks (src/world.c, map_block_init). Every function that works on one takes it explicitly. streams = the base of
@@ -972,6 +979,9 @@ int map_draw(V3 eye)
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
+    unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
+    float pop_d = 1e9f;
+    pop_fr++;
     unsigned pvs_cut = 0;  /* triangles the visibility rows left out (src/pvs.c) */
     unsigned k_drawn[MAP_INST] = {0}, k_cut[MAP_INST] = {0};  /* the same and the drawn ones per instance (A/B log) */
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
@@ -1033,6 +1043,25 @@ int map_draw(V3 eye)
                 /* (a part no chunk of which the camera sees is not read: the near level draws without it) */
                 nd = all;
                 nb = nd ? nbp[0] : NULL;
+                if (ce->near_on && (ctab[ci].near & ~CELL_PART)) {
+                    int was = (unsigned short)(pop_fr - ce->seen) == 1;
+                    if (!nd) {
+                        pend++;
+                        if (!ce->waiting)
+                            ce->wait0 = pop_fr, ce->waiting = 1;
+                    } else if (ce->waiting) {
+                        unsigned w = (unsigned short)(pop_fr - ce->wait0);
+                        if (was && w >= 2) {
+                            pops++;
+                            pop_wait = w > pop_wait ? w : pop_wait;
+                            pop_d = d2 < pop_d * pop_d ? sqrtf(d2) : pop_d;
+                        }
+                        ce->waiting = 0;
+                    }
+                } else {
+                    ce->waiting = 0;
+                }
+                ce->seen = pop_fr;
                 for (unsigned p = 0; nd && p < np; p++)
                     nnear += ctab[ci + p].near & ~CELL_PART;
             }
@@ -1189,12 +1218,21 @@ int map_draw(V3 eye)
     }
 #endif
     {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
-        static unsigned fr, worst, cut_max;
+        static unsigned fr, worst, cut_max, pend_max, pops_s, wait_max;
+        static float near_min = 1e9f;
         worst = holes > worst ? holes : worst;
+        pend_max = pend > pend_max ? pend : pend_max;
+        pops_s += pops, pop_total += pops;
+        wait_max = pop_wait > wait_max ? pop_wait : wait_max;
+        near_min = pop_d < near_min ? pop_d : near_min;
         cut_max = pvs_cut > cut_max ? pvs_cut : cut_max;
         if (!(++fr % 30)) {
             if (worst)
                 printf("map: cells missing %u (most in a frame over 1 s)\n", worst);
+            if (pops_s)
+                printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "
+                       "near drawn coarse (most in a frame)\n", pops_s, wait_max, (double)near_min, pop_total, pend_max);
+            pend_max = pops_s = wait_max = 0, near_min = 1e9f;
             if (cut_max)  /* occlusion A/B (src/pvs.c): this frame's per-instance drawn / culled counts */
                 printf("map: pvs culled %u tris (most in a frame over 1 s), eye %.1f %.1f %.1f; now drawn / culled %u/%u "
                        "%u/%u %u/%u\n", cut_max, (double)e[0], (double)e[1], (double)e[2], k_drawn[0], k_cut[0],

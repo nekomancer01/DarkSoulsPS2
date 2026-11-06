@@ -22,6 +22,7 @@
 #include "combat.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
+int test_god;
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
        C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR };
@@ -136,6 +137,7 @@ static int parse(Prog *p, char *text)
                 opts |= !strcmp(rest, "noenemies") ? TEST_NOENEMIES : !strcmp(rest, "hud") ? TEST_HUD
                       : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "demo") ? TEST_DEMO : 0;
                 skipmiss |= !strcmp(rest, "skipmiss");
+                test_god |= !strcmp(rest, "god");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
             } else {
@@ -233,8 +235,29 @@ static int teleport(Player *pl, float x, float y, float z, float yaw)
     return ok;
 }
 
+/* frame times (dt_real) in 2 ms bins, the last bin = 126 ms and over: this segment and the whole run, for the
+ * "TEST frames" lines (median, p90, share over 34 ms = below 30 fps) */
+#define FT_BINS 64
+static unsigned ft_seg[FT_BINS], ft_all[FT_BINS];
+static void ft_print(const char *name, const unsigned *h)
+{
+    unsigned n = 0, over = 0, acc = 0;
+    int p50 = -1, p90 = -1;
+    for (int i = 0; i < FT_BINS; i++)
+        n += h[i], over += i >= 17 ? h[i] : 0;  /* bin 17 = 34..36 ms */
+    for (int i = 0; i < FT_BINS && n; i++) {
+        acc += h[i];
+        if (p50 < 0 && 2 * acc >= n)
+            p50 = 2 * i + 1;
+        if (p90 < 0 && 10 * acc >= 9 * n)
+            p90 = 2 * i + 1;
+    }
+    printf("TEST frames %s n %u p50 %d p90 %d over34 %u pct %u\n", name, n, p50, p90, over, n ? over * 100 / n : 0);
+}
+
 static void seg_reset(void)
 {
+    memset(ft_seg, 0, sizeof ft_seg);
     test_mb.seg_frames = 0;
     test_mb.seg_ms_avg = test_mb.seg_ms_max = test_mb.seg_map_max = 0;
     test_mb.seg_ram_min = 0x7FFFFFFF;
@@ -312,6 +335,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                        test_mb.seg_ms_avg, test_mb.seg_ms_max, test_mb.seg_map_max, test_mb.seg_ram_min,
                        test_mb.vram_free, test_mb.seg_chain_map_max, test_mb.seg_chain_chr_max, test_mb.tris,
                        test_mb.vu1_batches, test_mb.ee_tris, pl->pos.x, pl->pos.y, pl->pos.z);
+                ft_print(c->text, ft_seg);
                 printf("TEST fx %s particles %d drawn %d vu1 %d batches %d ms %.3f draw %.3f breaks %d %d %d\n",
                        c->text, fx_stats.particles, fx_stats.drawn, fx_stats.vu1, fx_stats.batches, fx_stats.ms,
                        fx_stats.ms_draw, fx_stats.vu1_breaks[0], fx_stats.vu1_breaks[1], fx_stats.vu1_breaks[2]);
@@ -351,6 +375,7 @@ int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt
         p->done = 1;
         frozen = 0;
         test_mb.state = 2;
+        ft_print("all", ft_all);
         printf("TEST DONE frames %u\n", test_mb.frame);
     }
     *in = p->held;
@@ -391,6 +416,8 @@ void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms,
     if (++m->seg_frames <= 2)  /* the first frames after a teleport / unfreeze carry its hitch */
         return;
     m->seg_ms_avg += (ms - m->seg_ms_avg) / (float)(m->seg_frames - 2);
+    int bin = ms < 0 ? 0 : ms >= 2 * (FT_BINS - 1) ? FT_BINS - 1 : (int)(ms * 0.5f);
+    ft_seg[bin]++, ft_all[bin]++;
     if (ms > m->seg_ms_max)
         m->seg_ms_max = ms;
     if (map_ms > m->seg_map_max)

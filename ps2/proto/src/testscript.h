@@ -5,10 +5,11 @@
  * only when a script asks for it ("option demo") or in a demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO).
  *
  * Script: one command per line, '#' comments, times in game seconds (the frame dt main.c uses):
- *   option noenemies|hud|holes|demo|skipmiss   boot options (top of the file): no enemy roster / debug HUD /
+ *   option noenemies|hud|holes|demo|skipmiss|god   boot options (top of the file): no enemy roster / debug HUD /
  *                           magenta colour clear so uncovered pixels show / the idle demo walk once the script has
  *                           ended or has no commands (off otherwise; "nodemo" is still accepted, a no-op) / a spawn
- *                           without collision floor skips to the next spawn
+ *                           without collision floor skips to the next spawn / the player's HP stays full (enemies
+ *                           on, for routes the walker cannot fight; combat.c)
  *   spawn x y z [yaw]       teleport the player onto the collision floor under (x, y, z) (y + 3 .. y - 10 m)
  *   cam yaw pitch           camera yaw / pitch in rad (absolute), held until "cam off"; "cam off" = pad/script stick
  *   pitch p                 camera pitch only (yaw as the last cam / approach set it)
@@ -66,6 +67,7 @@ typedef struct {
     int seg_ram_min, seg_chain_map_max, seg_chain_chr_max;
 } TestMailbox;
 extern volatile TestMailbox test_mb;
+extern int test_god;  /* "option god" */
 
 /* Loads the script named by argv ("test=<path>"); returns TEST_* option bits */
 int test_init(int argc, char **argv);

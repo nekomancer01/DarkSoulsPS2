@@ -1,0 +1,182 @@
+# Undead Burg on the real disc, enemies on (TECH_DEBT world-1): from the Burg start (aqueduct arrival c0000_0000)
+# past the Burg bonfire o0200_0002 and the second bonfire o0200_0001, back down the ladders to the street below the
+# wall, up the Taurus Demon tower to its fog on the bridge (row z -4 of the 32 m cell grid, in no world block before
+# 2026-11-06), then through the fog to the fight. Boot the ISO itself, as a player does:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_taurus.txt <out> --iso build/proto.iso --timeout 1500
+#   --popin-max 10
+# Fails on a hang, an error line, "mapstream: alloc ... FAILED", more than 16 cells missing in a frame (test-run.py
+# LOG_ERRORS / --cells-missing) or more than 10 near-level swaps seen on screen (--popin-max). Waypoints: the Burg
+# stretch of world_route.txt (checked by hand), then tools/navroute.py m10_01_00_00 over the game's navmesh from the
+# bonfire to (-0.5, -16.2, -95.1) and from (21.3, -14.2, -105.9) to the fog (spawns over ladders and drops the walker
+# cannot take). Between those two points the navmesh runs over a wooden walkway at y -15.7 that is object collision:
+# the port gives no floor from objects (TECH_DEBT collision-1), so the route warps across it. "option god": the
+# walker cannot fight.
+option hud
+option god
+option nodemo
+wait 3
+shot boot
+stats
+spawn -48.5 -21.8 -35.5 0
+wait 3
+shot burg_start
+stats
+# step 2.3 m
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+shot bonfire_o0002
+stats
+# no walkable floor on the straight line (ladder)
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+# step 0.8 m
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+# step 1.5 m
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+wait 2
+shot bonfire_o0001
+stats
+approach 24.1,-27.6 0.8 1
+approach 19.6,-28.1 0.8 1
+spawn 20.4 9.6 -30.0 2.74
+wait 0.5
+approach 17.3,-33.3 0.8 1
+approach 15.3,-37.5 0.8 1
+approach 12.4,-42.8 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 6.2,-55.3 0.8 1
+wait 1
+shot street_1
+stats
+approach 2.6,-58.4 0.8 1
+approach 3.7,-62.8 0.8 1
+approach 1.3,-67.0 0.8 1
+approach 4.7,-64.3 0.8 1
+approach 6.8,-60.8 0.8 1
+approach 3.2,-58.8 0.8 1
+approach -0.5,-56.4 0.8 1
+approach -4.3,-60.8 0.8 1
+wait 1
+shot street_2
+stats
+spawn -3.3 -1.6 -63.1 2.74
+wait 0.5
+spawn -3.1 -2.9 -63.2 2.10
+wait 0.5
+spawn -3.1 -4.8 -63.2 2.39
+wait 0.5
+spawn -3.1 -6.8 -63.2 1.57
+wait 0.5
+spawn -3.1 -8.7 -63.2 2.90
+wait 0.5
+spawn -3.0 -10.0 -63.0 0.56
+wait 0.5
+approach -3.6,-67.1 0.8 1
+approach -6.2,-70.3 0.8 1
+approach -7.2,-75.4 0.8 1
+approach -7.4,-82.1 0.8 1
+approach -7.2,-86.4 0.8 1
+approach -4.1,-90.0 0.8 1
+spawn -4.6 -14.3 -90.6 -2.43
+wait 0.5
+spawn -5.0 -16.4 -91.6 -2.77
+wait 0.5
+approach -1.9,-94.2 0.8 1
+approach -0.5,-95.1 0.8 1
+wait 1
+shot street_3
+stats
+wait 1
+shot street_end
+stats
+# the walkway (object collision, TECH_DEBT collision-1): warp across
+spawn 21.3 -14.2 -105.9 0
+wait 0.5
+wait 3
+shot tower_base
+stats
+approach 26.5,-107.7 0.8 1
+approach 31.5,-108.6 0.8 1
+approach 35.7,-107.2 0.8 1
+approach 36.7,-112.0 0.8 1
+approach 40.5,-114.2 0.8 1
+approach 47.1,-112.9 0.8 1
+approach 51.4,-113.3 0.8 1
+approach 55.5,-112.8 0.8 1
+wait 1
+shot tower_1
+stats
+approach 59.9,-111.6 0.8 1
+approach 63.3,-113.9 0.8 1
+approach 64.5,-117.8 0.8 1
+approach 62.2,-122.2 0.8 1
+approach 57.7,-123.6 0.8 1
+approach 54.0,-121.9 0.8 1
+approach 53.0,-118.0 0.8 1
+approach 54.3,-118.9 0.8 1
+wait 1
+shot tower_2
+stats
+wait 2
+shot taurus_fog_near
+stats
+# the fog gate (ev_boss_taurus.txt): action button on the fog line, the walk-through anim, then the boss drops
+spawn 52.41 16.86 -118.49 -1.5708
+cam -1.5708 0.3
+wait 2
+shot taurus_fog
+ev action
+wait 5
+cam off
+shot taurus_bridge
+stats
+approach 40.0,-118.5 0.8 1
+wait 4
+shot taurus_arrives
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 2
+cam 1.5708 0.3
+wait 2
+shot taurus_fight
+stats
+ev summary
+end

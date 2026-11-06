@@ -69,8 +69,26 @@ def x(cmd, timeout=20, **kw):
 
 FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
 PROGRESS = 60.0  # s between progress lines
-LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error",
-                        re.I)
+LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error"
+                        r"|mapstream: alloc .* FAILED", re.I)
+# map.c prints the most cells missing in one frame over each second; more than this is a hole in the world, not a cell
+# arriving a frame late (--cells-missing N, 0 = off)
+CELLS_MISSING = re.compile(r"map: cells missing (\d+)")
+CELLS_MISSING_MAX = 16
+# map.c counts near-level swaps seen on screen (pop-in: a cell drawn at its coarse level inside the near radius until
+# its near level streamed in); more in the run than --popin-max fails it (-1 = off, the default)
+POPIN = re.compile(r"map: near pop-in \d+ cells .*?; (\d+) in the run")
+POPIN_MAX = -1
+
+
+def log_error(line):
+    if LOG_ERRORS.search(line):
+        return True
+    m = CELLS_MISSING_MAX and CELLS_MISSING.search(line)
+    if m and int(m[1]) > CELLS_MISSING_MAX:
+        return True
+    m = POPIN_MAX >= 0 and POPIN.search(line)
+    return bool(m) and int(m[1]) > POPIN_MAX
 
 
 def host_home():
@@ -175,6 +193,8 @@ def run(a):
     if os.path.exists(log):
         os.remove(log)
     env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}")
+    if a.iso:  # boot the disc itself (tools/pcsx2-run.sh BOOTISO): the ISO must sit in the ELF's folder (host: root)
+        env["BOOTISO"] = os.path.realpath(a.iso)
     if a.turbo:  # no speed limit (tools/test-pcsx2-ini.py TURBO)
         env["TURBO"] = a.turbo
     out = subprocess.run([os.path.join(TOOLS, "pcsx2-run.sh"), elf, "0", "-"], env=env, capture_output=True, text=True,
@@ -220,7 +240,7 @@ def run(a):
                         chunk = lf.read()
                     chunk = chunk[:chunk.rfind(b"\n") + 1]  # whole lines only
                     log_pos += len(chunk)
-                    err = next((l for l in chunk.decode(errors="replace").splitlines() if LOG_ERRORS.search(l)), None)
+                    err = next((l for l in chunk.decode(errors="replace").splitlines() if log_error(l)), None)
                     if err:
                         first_err = (now, err.strip())
                         print(f"[test-run] {name}: error at {now - t0:.0f} s, stopping in {FAIL_GRACE:.0f} s "
@@ -302,7 +322,7 @@ def run(a):
                 d = parse_shot_line(line)
                 if d:
                     stats[d["name"]] = d
-            if LOG_ERRORS.search(line):
+            if log_error(line):
                 res["errors"].append("log: " + line.strip())
         for s in res["shots"]:
             s["stats"] = stats.get(s["name"], {})
@@ -322,6 +342,12 @@ def main():
     ap.add_argument("outdir")
     ap.add_argument("--slot", type=int, help="PINE slot (default: first free in 28110-28199)")
     ap.add_argument("--timeout", type=float, default=300)
+    ap.add_argument("--iso", help="boot this disc image as a player does (the ELF only gives symbols and the host: "
+                    "folder; build both with the same make, the ISO in the ELF's folder)")
+    ap.add_argument("--popin-max", type=int, default=POPIN_MAX,
+                    help="fail when more near-level swaps were seen on screen in the run (map.c pop-in; -1 = off)")
+    ap.add_argument("--cells-missing", type=int, default=CELLS_MISSING_MAX,
+                    help=f"fail when map.c reports more cells missing in a frame (default {CELLS_MISSING_MAX}, 0 = off)")
     ap.add_argument("--gsdump", action="store_true")
     ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
     ap.add_argument("--name")
@@ -330,6 +356,8 @@ def main():
     ap.add_argument("--turbo", nargs="?", const="1", default=os.environ.get("TURBO", ""),
                     help="run unthrottled (or at speed x: --turbo 3) for functional tests; not for perf numbers")
     a = ap.parse_args()
+    globals()["CELLS_MISSING_MAX"] = a.cells_missing
+    globals()["POPIN_MAX"] = a.popin_max
     res = run(a)
     print(f"{res['name']}: {len(res['shots'])} shots, {res.get('frames', 0)} frames, {res['seconds']} s, "
           f"{len(res['errors'])} errors")
