@@ -407,7 +407,24 @@ skcPow2:
 	NOP                            	ibeq VI10,VI00,skcProj
 	NOP                            	iaddiu VI13,VI02,181
 	NOP                            	iaddiu VI15,VI00,1014
+	NOP                            	fcand VI01,133152
+	NOP                            	isw.x VI01,240(VI02)
+	NOP                            	fcand VI01,137313
+	NOP                            	isw.x VI01,241(VI02)
+	NOP                            	fcand VI01,141474
+	NOP                            	isw.x VI01,242(VI02)
+	NOP                            	fcand VI01,149796
+	NOP                            	isw.x VI01,243(VI02)
+	NOP                            	fcand VI01,166440
+	NOP                            	isw.x VI01,244(VI02)
 skcPlane:
+	NOP                            	iadd VI01,VI15,VI02
+	NOP                            	ilw.x VI01,-774(VI01)
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	ibeq VI01,VI00,skcNext
+	NOP                            	NOP
 	NOP                            	lq VF30,0(VI15)
 	NOP                            	iadd VI01,VI11,VI11
 	NOP                            	iadd VI01,VI01,VI11
@@ -486,7 +503,48 @@ skcCurOut:
 	NOP                            	isubiu VI01,VI11,3
 	NOP                            	NOP
 	NOP                            	ibltz VI01,skcSkip
+	NOP                            	NOP
+skcNext:
 	NOP                            	iaddiu VI15,VI15,1
+	NOP                            	iaddiu VI01,VI00,1015
+	NOP                            	NOP
+	NOP                            	ibne VI15,VI01,skcNext2
+	NOP                            	ilw.x VI01,240(VI02)
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	ibeq VI01,VI00,skcNext2
+	NOP                            	iadd VI06,VI12,VI00
+	NOP                            	iadd VI10,VI11,VI00
+skcRe:
+	NOP                            	lq VF10,0(VI06)
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	mul.xy VF16,VF10,VF07          	NOP
+	mulz.w VF17,VF00,VF10z         	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	sub.z VF16,VF10,VF07           	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	clipw.xyz VF16xyz,VF17w        	isubiu VI10,VI10,1
+	NOP                            	iaddiu VI06,VI06,3
+	NOP                            	NOP
+	NOP                            	ibne VI10,VI00,skcRe
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	NOP                            	fcand VI01,266305
+	NOP                            	isw.x VI01,241(VI02)
+	NOP                            	fcand VI01,532610
+	NOP                            	isw.x VI01,242(VI02)
+	NOP                            	fcand VI01,1065220
+	NOP                            	isw.x VI01,243(VI02)
+	NOP                            	fcand VI01,2130440
+	NOP                            	isw.x VI01,244(VI02)
+skcNext2:
 	NOP                            	iaddiu VI01,VI00,1019
 	NOP                            	NOP
 	NOP                            	ibne VI15,VI01,skcPlane
