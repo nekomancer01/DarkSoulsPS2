@@ -46,7 +46,8 @@ emit.bin
 Usage: export_audio.py <pak dir> <work dir> <map id> [map id ...]  (the packs those maps need; work dir: the files
                                                                    packed, one directory per pack)
        Decoding and encoding run in DSR_AUDIO_JOBS worker processes (default: every core, at most 8); the packs are
-       the same bytes whatever the count (each sample is encoded alone, results are written in order).
+       the same bytes whatever the count (each sample is encoded alone, results are written in order). Encoded
+       samples are cached across exports and trees (cache(), SND_CACHE=0 = off): the packs are the same bytes either way.
        export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)"""
 import glob, os, re, struct, sys, time
 import multiprocessing
@@ -273,18 +274,73 @@ def downmix(pcm):
 _FSB = {}  # worker: open banks by path
 
 
-def encode_sample(job):
-    """one sample -> (ADPCM blobs per channel, SNR of channel 0 or None); runs in a worker process"""
-    path, index, tier, loop, rate = job
-    b = _FSB.get(path) or _FSB.setdefault(path, fsb4.FSB4(path))
-    s = b.samples[index]
-    pcm = b.decode(s)
+def _encode(pcm, s, tier, loop, rate):
+    """decoded sample -> (ADPCM blobs per channel, SNR of channel 0 or None)"""
     if tier == "res":
         pcm = adpcm.resample(pcm, s.freq, min(rate, s.freq))
         chans = [adpcm.encode(pcm[:, c], 0 if loop else None) for c in range(s.channels)]
         return chans, adpcm.snr(pcm[:, 0], adpcm.decode(chans[0]))
     pcm = adpcm.resample(downmix(pcm) if s.channels > 2 else pcm, s.freq, min(STREAM_RATE, s.freq))
     return [adpcm.encode(pcm[:, c], None) for c in range(pcm.shape[1])], None
+
+
+_CACHE = []
+
+
+def cache():
+    """(dir, key hash) of the encoded-sample cache, or None: SND_CACHE (default <main tree>/build/cache/snd, shared by
+    every tree and build dir like the texture cache; 0 = off). The key covers the encoder (adpcm.py, vagenc.c, _encode,
+    downmix, STREAM_RATE, numpy) and, per sample, its decoded PCM and the arguments, so a hit is what _encode returns:
+    an export after a change elsewhere (souls.py, area.py, a new map) encodes only samples it has not seen."""
+    if not _CACHE:
+        import hashlib, inspect
+        d = os.environ.get("SND_CACHE")
+        if d == "0":
+            _CACHE.append(None)
+            return None
+        if not d:
+            import simplify_pool
+            d = os.path.join(os.environ.get("DSR_CACHE") or os.path.join(simplify_pool.main_tree(), "build", "cache"),
+                             "snd")
+        h = hashlib.sha256(b"snd-cache-1")
+        for f in ("adpcm.py", "vagenc.c"):
+            h.update(open(os.path.join(HERE, "adpcm", f), "rb").read())
+        h.update(repr((inspect.getsource(_encode), inspect.getsource(downmix), STREAM_RATE, np.__version__)).encode())
+        _CACHE.append((d, h))
+    return _CACHE[0]
+
+
+def encode_sample(job):
+    """one sample -> (ADPCM blobs per channel, SNR of channel 0 or None), from the cache when it has it; runs in a
+    worker process"""
+    import pickle
+    path, index, tier, loop, rate = job
+    b = _FSB.get(path) or _FSB.setdefault(path, fsb4.FSB4(path))
+    s = b.samples[index]
+    pcm = b.decode(s)  # ~1 % of the encode time: keying on the PCM keeps the cache right across decoder changes
+    c = cache()
+    if c is None:
+        return _encode(pcm, s, tier, loop, rate)
+    k = c[1].copy()
+    k.update(repr((pcm.shape, s.freq, s.channels, tier, bool(loop), rate)).encode())
+    k.update(np.ascontiguousarray(pcm).tobytes())
+    key = k.hexdigest()
+    p = os.path.join(c[0], key[:2], key)
+    try:
+        with open(p, "rb") as f:
+            return pickle.load(f)
+    except (OSError, ValueError, EOFError, pickle.UnpicklingError):
+        pass
+    r = _encode(pcm, s, tier, loop, rate)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = f"{p}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(r, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, p)
+    except OSError as e:
+        print(f"export_audio: cache write failed ({e})", flush=True)
+    return r
 
 
 POOL = None  # main(): worker pool, None = encode in this process (Pyodide has no processes)
@@ -294,12 +350,14 @@ def start_pool():
     global POOL
     n = int(os.environ.get("DSR_AUDIO_JOBS") or min(os.cpu_count() or 1, 8))
     adpcm.lib()  # build libvagenc.so here, once, before the workers would each try
+    c = cache()  # key prefix once, inherited by the workers
     if n > 1:
         try:
             POOL = multiprocessing.get_context("fork").Pool(n)
         except Exception:  # no processes here (Pyodide): encode in this one
             POOL = None
-    print(f"encoding in {n if POOL else 1} process(es) (DSR_AUDIO_JOBS)", flush=True)
+    print(f"encoding in {n if POOL else 1} process(es) (DSR_AUDIO_JOBS); sample cache {c[0] if c else 'off'}"
+          " (SND_CACHE)", flush=True)
 
 
 def write_pack(out, work, name, g, rate, cue=None, emit=None):

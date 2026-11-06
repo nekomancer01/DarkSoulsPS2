@@ -203,7 +203,9 @@ $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.b
 
 # Sound packs (tools/export_audio.py, src/sound.c): data/snd/main.pak (player + global sounds), mAA.pak per area
 # (music, ambience, MSB emitters), cXXXX.pak per enemy type, for the boot map and every map of its world blocks. One
-# export writes them all (the SPU2 sample rate is chosen over the whole set); $(A)/snd.stamp records it.
+# export writes them all (the SPU2 sample rate is chosen over the whole set); $(A)/snd.stamp records it. Encoded samples
+# come from the shared sample cache (export_audio.py cache(), <main tree>/build/cache/snd) when an earlier export of any
+# tree made them, so a re-export after a change to souls.py / area.py or a new build dir takes seconds.
 SND_MAPS = $(sort $(MAP) $(foreach b,$(WORLD_BLOCKS),$(firstword $(subst :, ,$(b)))))
 # progress goes to the terminal and the log (tee); pipefail keeps the exporter's exit status
 $(A)/snd.stamp: SHELL := /bin/bash
@@ -211,7 +213,7 @@ $(A)/snd.stamp: .SHELLFLAGS := -o pipefail -c
 $(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum \
 		$(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
 	@mkdir -p $(@D) $(D)/snd
-	@echo "sound: exporting every bank of $(SND_MAPS) (a few minutes; log in $(A)/snd.log)"
+	@echo "sound: exporting every bank of $(SND_MAPS) (log in $(A)/snd.log)"
 	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) | tee $(A)/snd.log
 	touch $@
 
