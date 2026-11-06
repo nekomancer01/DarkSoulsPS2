@@ -2817,6 +2817,7 @@ def load_map_bin(path):
     P, ST, C, TI, FL, R, BX = [], [], [], [], [], [], []
     for i in range(nch):
         ti, fl, n, po, so, co = struct.unpack_from("<iII3I", b, och + 64 * i)
+        n, nv = n & 0xFFFF, n >> 16
         BX.append(np.tile(np.array(struct.unpack_from("<6f", b, och + 64 * i + 24)), (n, 1)))
         org, step = np.array(struct.unpack_from("<3f", b, och + 64 * i + 48)), struct.unpack_from("<f", b, och + 64 * i + 60)[0]
         if fl & CHUNK_GRASS:
@@ -2825,9 +2826,18 @@ def load_map_bin(path):
             R.append(lo + (hi - lo) * (np.arange(n) // per + 0.5) / max(1, n // per))
         else:
             R.append(np.zeros(n))
-        P.append(org + step * np.frombuffer(b, np.int16, n * 9, po).reshape(n, 3, 3).astype(np.float32))
-        ST.append(np.frombuffer(b, np.uint16, n * 6, so).reshape(n, 3, 2) / (1024.0 if fl & CHUNK_ST1K else 4096.0))
-        C.append(np.frombuffer(b, np.uint8, n * 12, co).reshape(n, 3, 4))
+        if nv:  # indexed chunk: shared vertices, then the triangle stream (u8 x4) after the colours' code qword
+            ix = np.frombuffer(b, np.uint8, n * 4, co + -(-4 * nv // 16) * 16 + 16).reshape(n, 4)[:, :3]
+            pv = np.frombuffer(b, np.int16, nv * 3, po).reshape(nv, 3)[ix]
+            sv = np.frombuffer(b, np.uint16, nv * 2, so).reshape(nv, 2)[ix]
+            cv = np.frombuffer(b, np.uint8, nv * 4, co).reshape(nv, 4)[ix]
+        else:
+            pv = np.frombuffer(b, np.int16, n * 9, po).reshape(n, 3, 3)
+            sv = np.frombuffer(b, np.uint16, n * 6, so).reshape(n, 3, 2)
+            cv = np.frombuffer(b, np.uint8, n * 12, co).reshape(n, 3, 4)
+        P.append(org + step * pv.astype(np.float32))
+        ST.append(sv / (1024.0 if fl & CHUNK_ST1K else 4096.0))
+        C.append(cv)
         TI.append(np.full(n, ti))
         FL.append(np.full(n, fl))
     tex = texmap.load(b, ntex, otex)
