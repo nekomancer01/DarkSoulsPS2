@@ -42,8 +42,14 @@ void vu1_gs_regs(int n, const u64 *regs);
 int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes);
 /* Skinned character (vu1skin2.vsm, or vu1skinclip.vsm near the camera), after vu1_begin in a chain of its own (call once per character, any number per
  * chain): switch to the skin memory layout and upload
- * the bone palette (bones <= 61, 4 qwords each: columns of view * world, col0-2 .w = bone-space light vector) */
-void vu1_skin_begin(const void *palette, int bones);
+ * the bone palette (4 qwords per bone: columns of view * world, col0-2 .w = bone-space light vector). win = NULL:
+ * all bones (<= 61) go to palette slots 0..bones-1; else nwin (slot, bone) byte pairs say which bone goes to which slot
+ * (the first bone window of a model over 61 bones, char-7). The near-plane test and the specular view direction use
+ * every bone either way. */
+void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, int nwin);
+/* The next bone window of the same character: waits for the batches before it (they read the slots it replaces), then
+ * uploads its n (slot, bone) pairs; the other slots keep their bones */
+void vu1_skin_window(const void *palette, const unsigned char *win, int n);
 /* Fog cap (255 = none, 0 = all fog colour) for the next vu1_skin_begin only: a character fading out at its draw
  * distance (enemy.c); the map's edge fog at the character's depth is applied on top */
 void vu1_skin_fade(float fmax);
@@ -73,6 +79,7 @@ void vu1_clut_reload(void);
 typedef struct {
     int last[2], peak[2], segments;
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
+    int skin_windows;  /* char-7: bone windows uploaded after a character's first (models over 61 bones), so far */
     int clut_loads[2];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;

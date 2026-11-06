@@ -10,16 +10,19 @@ chrbnd) and NpcParam.normalChangeTexChrId's chrbnd; at most TEX_MAX px (VRAM: ev
 Meshes named "#NN#..." are equipment variants shown only when a variant's NpcParam modelDispMaskNN is set: such a
 mesh's triangle group gets flag bit 8 + NN, and enemy.c hides the bits its variant does not show (mdl_hide). Meshes
 no variant shows are dropped.
-Skeleton: anibnd skeleton.hkx. If it has more bones than the VU1 palette holds (61), bones no vertex / hit capsule
-uses are folded into their children (their local transforms multiplied in per frame), keeping the hierarchy.
+Skeleton: anibnd skeleton.hkx. Above PALETTE (61, what one VU1 bone window holds) bones are folded into their
+children (their local transforms multiplied in per frame), keeping the hierarchy: first those no vertex / hit capsule /
+ragdoll body uses, then, above [max bones] (default 61 = one window; up to 255: u8 bone ids in model.bin vertices and
+compact anims), the ones carrying the least vertex weight. A model over 61 bones draws through per-batch bone windows
+(model.c, TECH_DEBT char-7); ps2/proto/Makefile CHR_BONES sets [max bones]: more bones cost RAM (anims, poses).
 Animations: the ESD essentials (ANIMS) + every anim id the variants' battle / logic scripts name as a constant
 (Lua chunks of script/<map>.luabnd), plus the NpcParam.animIdOffset versions (a01_ = 10000 + id, a02_ = 20000 + id)
 for variants that use them.
 
 chr.bin (little-endian):
-  header  "DSRC", u32 version 6, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
-          u32 hide_bits (every variant mesh bit used), u32 upper[2] (bit per bone: the first "Spine" bone and its
-          descendants, the guard pose layer), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
+  header  "DSRC", u32 version 7, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
+          u32 hide_bits (every variant mesh bit used), i32 spine (the first "Spine" bone: it and its descendants
+          are the guard pose layer; -1 none; parents come before their children), u32 bones (skeleton bones), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
           the bodies: horizontal distance from the root axis and height, radius included)                    (64 B)
   variant i32 npc, think, hp, logic, battle, anim_offset; u32 show_bits;
           f32 radius, height, turn deg/s, def_phys, poise (superArmorDurability),
@@ -38,7 +41,7 @@ chr.bin (little-endian):
           space), f32 pivot_child[3] (joint in this body's frame), pivot_parent[3] (in the parent body's frame),
           f32 axis_child[3], axis_parent[3] (the joint's twist axis in each body's frame),
           f32 cone (max angle between the two twist axes, rad), twist_min, twist_max (rad)                 (148 B)
-Usage: export_chr.py <game dir> <chr id e.g. c2900> <map id> <out dir> [lod 0/1/2] [tex max px]"""
+Usage: export_chr.py <game dir> <chr id e.g. c2900> <map id> <out dir> [lod 0/1/2] [tex max px] [max bones]"""
 import math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -63,7 +66,8 @@ SCRIPT_ANIM = [(3000, 3999), (700, 799), (6000, 6999), (9900, 9999)]
 # 25xx, near the moment the body reaches the ground; TECH_DEBT enemy-17)
 FLAGS = (5, 7, 8, 11, 12, 23, 24, 79, 86)
 LODS = {0: 0x0, 1: 0x1000000, 2: 0x2000000}
-PALETTE = 61
+PALETTE = 61  # bones one VU1 window holds (vu1.c palette room); above it the unused bones are folded
+MAX_SKELETON = 255  # u8 bone ids (model.bin vertices, compact anims): the highest [max bones]
 MAX_ANIMS = 64  # model.c table
 # GetExcelParam index -> NpcThinkParam field (ai_define.lua AI_EXCEL_THINK_PARAM_TYPE__*); None = derived below
 EXCEL = [None, "maxBackhomeDist", "backhomeDist", "backhomeBattleDist", "nonBattleActLife", "BattleStartDist", None,
@@ -284,6 +288,7 @@ def main():
     game, cid, map_id, out_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
     lod = LODS[int(sys.argv[5]) if len(sys.argv) > 5 else 1]
     tex_max = int(sys.argv[6]) if len(sys.argv) > 6 else 128
+    max_bones = max(PALETTE, min(MAX_SKELETON, int(sys.argv[7]) if len(sys.argv) > 7 else PALETTE))
     chr_dir = os.path.join(game, "chr")
     P = souls.game_params(game)
     msb = souls.read(f"{game}/map/MapStudio/{map_id}.msb")
@@ -401,7 +406,7 @@ def main():
             weight[v[4]] = weight.get(v[4], 0) + 1 - v[5] / 255
         keep = set(capsule_bones) | {i for i, p in enumerate(parents) if p < 0}
         for b in sorted(weight, key=lambda b: -weight[b]):
-            if len(keep) >= PALETTE:
+            if len(keep) >= max_bones:
                 break
             keep.add(b)
         names, parents, ref, remap, fold = reduce_skeleton(names, parents, ref, keep)
@@ -464,17 +469,10 @@ def main():
         v += struct.pack("<24f", *think_values(t, npc))
         assert len(v) == VAR, len(v)
         var_blob += v
-    upper = 0
     spine = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
-    for i in range(len(names)):
-        j = i
-        while j >= 0 and j != spine:
-            j = parents[j]
-        if spine >= 0 and j == spine:
-            upper |= 1 << i
-    hdr = struct.pack("<4s13I2f", b"DSRC", 6, len(info), len(windows), len(variants), anim_off, win_off, root_off,
-                      var_off, hide_bits, upper & 0xFFFFFFFF, upper >> 32, rag_off, len(rag_blob) // RAG_BODY, reach,
-                      top)
+    assert all(p < i for i, p in enumerate(parents)), f"{cid}: a parent after its child (enemy.c guard layer)"
+    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 7, len(info), len(windows), len(variants), anim_off, win_off, root_off,
+                      var_off, hide_bits, spine, len(names), rag_off, len(rag_blob) // RAG_BODY, reach, top)
     assert len(hdr) == HDR
     body = var_blob + b"".join(struct.pack("<if4I", *i) for i in info)
     body += b"".join(struct.pack("<4hi5f6ff", t, ba, bb, lvl, arow, s, e, dmg, rad, poise, *pa, *pb, rate)

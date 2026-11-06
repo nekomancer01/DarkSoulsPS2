@@ -344,9 +344,9 @@ void rag_push(Ragdoll *r, const float feet[3], float radius, float height, const
 
 void rag_pose(const Ragdoll *r, const Model *m, const BoneLocal *base, V3 pos, float yaw, BoneLocal *out)
 {
-    static M34 W[MAX_BONES];
-    signed char of[MAX_BONES];
     int nb = mdl_bones(m);
+    M34 W[nb];  /* VLA: <= 12 KB of stack at MDL_MAX_BONES */
+    signed char of[nb];
     const short *par = mdl_parents(m);
     memset(of, -1, sizeof of);
     for (int k = r->n - 1; k >= 0; k--)  /* the first body of a bone wins */

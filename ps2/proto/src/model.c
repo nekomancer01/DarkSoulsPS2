@@ -57,9 +57,18 @@ struct Model {
     float (*sk_st)[SK_V][2];  /* st normalized, or colour u8x4 if untextured */
     void *sk_block;  /* the one allocation the sk_ arrays live in */
     unsigned char (*sk_ms)[SK_V][4];  /* (0, 0, m, f) x 255 for vu1skin2's specular; NULL when the model has none */
-    struct { short group, tris, spec; } *sk_batch;  /* spec: the batch has metal / specular (vu1skin2 TexSpec) */
-    int nsk;
-    unsigned build_g, build_t0;  /* mdl_load_step: the next group / first triangle to build a batch of */
+    /* spec: the batch has metal / specular (vu1skin2 TexSpec); t0: its first triangle; win: its bone window */
+    struct { short group, tris, spec, win; unsigned t0; } *sk_batch;
+    int nsk, nplan;
+    /* bone windows (models with more than MDL_WIN_BONES bones, else nwin = 0 and the palette is uploaded whole):
+     * window w uploads win_n[w] (slot, skeleton bone) pairs from win_ids + 2 win_first[w] before its first batch;
+     * the palette slots it does not name keep what earlier windows put there (vu1_skin_window). Batch vertex bone
+     * offsets are palette slots. */
+    unsigned char *win_ids;
+    unsigned short *win_first, *win_n;
+    int nwin;
+    int win_built;              /* skin_step: the last window applied to build_slot */
+    unsigned char build_slot[256];  /* skin_step: skeleton bone -> palette slot after window win_built */
     unsigned hide;  /* group flag bits not drawn (model.h MDL_HIDE_*) */
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
 };
@@ -70,12 +79,96 @@ static short fx12(float v)
     return v > 32767 ? 32767 : v < -32768 ? -32768 : (short)(v < 0 ? v - 0.5f : v + 0.5f);
 }
 
+/* Batch plan: batches of <= VU1_SKIN_TRIS triangles per group in draw order; with more than MDL_WIN_BONES bones each
+ * batch also gets a bone window, greedily: a batch joins the current window while the bones it needs fit in the
+ * MDL_WIN_BONES palette slots together with the window's others; a batch is cut short where the next triangle's bones
+ * would not fit, and the next batch starts a new window. A new window keeps what the slots hold: a bone already in a
+ * slot costs no upload, new bones go to slots the window does not need (empty ones first). DSR's own meshes use <= 38
+ * bones each (FLVER mesh bone tables, all 171 chr/ FLVERs), so a window usually spans whole meshes and consecutive
+ * windows share the spine / root bones. fill = 0: count batches, windows and uploads only. */
+static void skin_plan(Model *m, int fill, int *nb, int *nw, int *nid)
+{
+    const Header *hdr = m->hdr;
+    int windowed = hdr->bones > MDL_WIN_BONES, b = 0, w = 0, id = 0, nneed = 0;
+    short occ[MDL_WIN_BONES], where[256];  /* slot -> bone / bone -> slot, -1 none */
+    unsigned char need[MDL_WIN_BONES];     /* the current window's batches use the slot */
+    memset(occ, -1, sizeof occ), memset(where, -1, sizeof where), memset(need, 0, sizeof need);
+    if (fill && windowed)
+        m->win_first[0] = 0, m->win_n[0] = 0;
+    for (unsigned g = 0; g < hdr->groups; g++) {
+        const Group *gr = &m->groups[g];
+        unsigned t = gr->first, end = gr->first + gr->count;
+        while (t < end) {
+            unsigned t0 = t, nt = 0;
+            int cut = 0;
+            while (nt < VU1_SKIN_TRIS && t < end) {
+                if (windowed) {
+                    unsigned char tb[6];
+                    int n = 0, extra = 0;
+                    for (int k = 0; k < 3; k++) {
+                        const Vertex *v = &m->verts[m->tris[t * 3 + k]];
+                        unsigned char c[2] = {v->ba, v->bb};
+                        for (int j = 0; j < 2; j++) {
+                            int dup = 0;
+                            for (int i = 0; i < n && !dup; i++)
+                                dup = tb[i] == c[j];
+                            if (!dup)
+                                tb[n++] = c[j], extra += where[c[j]] < 0 || !need[where[c[j]]];
+                        }
+                    }
+                    if (nneed + extra > MDL_WIN_BONES) {
+                        if (nt) {  /* the batch ends here; the next one starts a new window */
+                            cut = 1;
+                            break;
+                        }
+                        /* the batch's first triangle: the window starts here (a fresh one holds any 6 bones) */
+                        memset(need, 0, sizeof need), nneed = 0, w++;
+                        if (fill)
+                            m->win_first[w] = id, m->win_n[w] = 0;
+                        continue;
+                    }
+                    for (int i = 0; i < n; i++) {
+                        int s = where[tb[i]];
+                        if (s >= 0 && need[s])
+                            continue;
+                        if (s < 0) {  /* upload: an empty slot, else the first one this window does not need */
+                            for (s = 0; s < MDL_WIN_BONES && occ[s] >= 0; s++)
+                                ;
+                            if (s == MDL_WIN_BONES)
+                                for (s = 0; need[s]; s++)
+                                    ;
+                            if (occ[s] >= 0)
+                                where[occ[s]] = -1;
+                            occ[s] = tb[i], where[tb[i]] = s;
+                            if (fill)
+                                m->win_ids[2 * id] = s, m->win_ids[2 * id + 1] = tb[i], m->win_n[w]++;
+                            id++;
+                        }
+                        need[s] = 1, nneed++;
+                    }
+                }
+                nt++, t++;
+            }
+            if (fill) {
+                m->sk_batch[b].group = g, m->sk_batch[b].tris = nt, m->sk_batch[b].t0 = t0;
+                m->sk_batch[b].win = windowed ? w : -1, m->sk_batch[b].spec = 0;
+            }
+            b++;
+            if (cut) {  /* the next batch starts a new window */
+                memset(need, 0, sizeof need), nneed = 0, w++;
+                if (fill)
+                    m->win_first[w] = id, m->win_n[w] = 0;
+            }
+        }
+    }
+    *nb = b, *nw = windowed ? w + 1 : 0, *nid = id;
+}
+
 static int skin_alloc(Model *m)
 {
     const Header *hdr = m->hdr;
-    int n = 0;
-    for (unsigned g = 0; g < hdr->groups; g++)
-        n += (m->groups[g].count + VU1_SKIN_TRIS - 1) / VU1_SKIN_TRIS;
+    int n, nw, nid;
+    skin_plan(m, 0, &n, &nw, &nid);
     /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
      * heap until a model no longer fit with 2 MB free, 2026-11-01) */
     int ms = 0;
@@ -85,7 +178,9 @@ static int skin_alloc(Model *m)
     ms = 1;
 #endif
 #define SK_SZ(f) ((n * sizeof *m->f + 63) & ~63u)
-    unsigned total = SK_SZ(sk_pa) + SK_SZ(sk_pb) + SK_SZ(sk_n) + SK_SZ(sk_st) + SK_SZ(sk_batch) + (ms ? SK_SZ(sk_ms) : 0);
+    unsigned wsz = nw ? (nw * 4 + 2 * nid + 15) & ~15u : 0;
+    unsigned total = SK_SZ(sk_pa) + SK_SZ(sk_pb) + SK_SZ(sk_n) + SK_SZ(sk_st) + SK_SZ(sk_batch) + (ms ? SK_SZ(sk_ms) : 0) +
+                     wsz;
     unsigned char *q = memalign(64, total ? total : 64);
     m->sk_block = q;
     if (!q)
@@ -96,38 +191,46 @@ static int skin_alloc(Model *m)
     m->sk_st = (void *)q, q += SK_SZ(sk_st);
     m->sk_batch = (void *)q, q += SK_SZ(sk_batch);
     m->sk_ms = ms ? (void *)q : NULL;
+    q += ms ? SK_SZ(sk_ms) : 0;
 #undef SK_SZ
+    m->nwin = nw;
+    if (nw) {
+        m->win_first = (void *)q, m->win_n = m->win_first + nw, m->win_ids = (unsigned char *)(m->win_n + nw);
+    }
+    m->win_built = -1;
+    skin_plan(m, 1, &n, &nw, &nid);
+    m->nplan = n;
     m->nsk = 0;
-    m->build_g = 0, m->build_t0 = hdr->groups ? m->groups[0].first : 0;
     return 1;
 }
 
-/* The skin batches from build_g / build_t0 on, until `budget` EE ticks have passed: 1 when every batch is built */
+/* The planned skin batches from nsk on, until `budget` EE ticks have passed: 1 when every batch is built */
 static int skin_step(Model *m, unsigned budget)
 {
     const Header *hdr = m->hdr;
     const TexEntry *te = (const TexEntry *)(m->bin + hdr->tex_off);
     unsigned c0;
     __asm__ volatile("mfc0 %0, $9" : "=r"(c0));
-    while (m->build_g < hdr->groups) {
-        unsigned g = m->build_g;
+    while (m->nsk < m->nplan) {
+        int b = m->nsk;
+        unsigned g = m->sk_batch[b].group, t0 = m->sk_batch[b].t0, nt = m->sk_batch[b].tris;
         const Group *gr = &m->groups[g];
-        unsigned t0 = m->build_t0;
-        if (t0 >= gr->first + gr->count) {
-            if (++m->build_g < hdr->groups)
-                m->build_t0 = m->groups[m->build_g].first;
-            continue;
-        }
         int textured = gr->tex >= 0 && gr->tex < (int)hdr->textures;
         float iw = textured ? 1.0f / te[gr->tex].w : 0, ih = textured ? 1.0f / te[gr->tex].h : 0;
+        unsigned char *slot = m->build_slot;  /* skeleton bone -> palette slot (identity without windows) */
+        if (m->sk_batch[b].win < 0) {
+            if (m->win_built != -2)
+                for (int i = 0; i < 256; i++)
+                    slot[i] = i;
+            m->win_built = -2;
+        } else
+            while (m->win_built < m->sk_batch[b].win) {  /* the windows up to this batch's, in order */
+                int w = ++m->win_built;
+                const unsigned char *u = m->win_ids + 2 * m->win_first[w];
+                for (int i = 0; i < m->win_n[w]; i++)
+                    slot[u[2 * i + 1]] = u[2 * i];
+            }
         {
-            int b = m->nsk;
-            unsigned nt = gr->first + gr->count - t0;
-            if (nt > VU1_SKIN_TRIS)
-                nt = VU1_SKIN_TRIS;
-            m->sk_batch[b].group = g;
-            m->sk_batch[b].tris = nt;
-            m->sk_batch[b].spec = 0;
             memset(m->sk_st[b], 0, sizeof *m->sk_st);  /* stream padding is read by VIF as NOPs */
             if (m->sk_ms)
                 memset(m->sk_ms[b], 0, sizeof *m->sk_ms);
@@ -138,8 +241,8 @@ static int skin_step(Model *m, unsigned budget)
                     m->sk_pb[b][k][c] = fx12(v->pb[c]);
                     m->sk_n[b][k][c] = fx12(v->na[c] / 127.0f);
                 }
-                m->sk_pa[b][k][3] = 4 * v->ba;
-                m->sk_pb[b][k][3] = 4 * v->bb;
+                m->sk_pa[b][k][3] = 4 * slot[v->ba];
+                m->sk_pb[b][k][3] = 4 * slot[v->bb];
                 m->sk_n[b][k][3] = fx12(v->wa / 255.0f);
                 if (textured) {
                     if (m->sk_ms) {  /* f = s m + 0.04 s^2 (1 - m): the specular weight of vu1skin2's colour */
@@ -162,10 +265,10 @@ static int skin_step(Model *m, unsigned budget)
             for (unsigned k = nt * 3; k < SK_V; k++)  /* zero padding up to the slot end */
                 memset(m->sk_pa[b][k], 0, 8), memset(m->sk_pb[b][k], 0, 8), memset(m->sk_n[b][k], 0, 8);
         }
-        m->build_t0 += VU1_SKIN_TRIS, m->nsk++;
+        m->nsk++;
         unsigned c;
         __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-        if (c - c0 >= budget && m->build_g < hdr->groups)
+        if (c - c0 >= budget && m->nsk < m->nplan)
             return 0;
     }
     FlushCache(0);  /* the streams go to VIF1 by DMA straight from memory */
@@ -175,7 +278,7 @@ static int skin_step(Model *m, unsigned budget)
 Model *mdl_load_begin(const void *blob)
 {
     const Header *hdr = blob;
-    if (!blob || memcmp(hdr->magic, "DSRM", 4) || hdr->bones > 61 || hdr->verts > 65535)  /* 61: VU1 palette room */
+    if (!blob || memcmp(hdr->magic, "DSRM", 4) || hdr->bones > MDL_MAX_BONES || hdr->verts > 65535)
         return NULL;
     Model *m = calloc(1, sizeof *m);
     if (!m)
@@ -410,7 +513,7 @@ void mdl_blend(const Model *m, const BoneLocal *a, const BoneLocal *b, float k, 
 
 void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
 {
-    static BoneLocal fa[MAX_BONES], fb[MAX_BONES];
+    BoneLocal fa[m->hdr->bones], fb[m->hdr->bones];  /* VLA: <= 14 KB of stack at MDL_MAX_BONES */
     if (anim < 0 || anim >= m->nanims) {
         for (unsigned i = 0; i < m->hdr->bones; i++)
             unpack(&m->ref[i], &out[i]);
@@ -429,7 +532,7 @@ void mdl_sample(const Model *m, int anim, float t, int loop, BoneLocal *out)
     if (m->anims[anim].rot) {  /* compact: base pose, then the moving bones of both frames */
         const typeof(m->anims[0]) *c = &m->anims[anim];
         unsigned nb = m->hdr->bones;
-        unsigned char mv[MAX_BONES];  /* 1: the bone has keyed rotation or translation */
+        unsigned char mv[MDL_MAX_BONES];  /* 1: the bone has keyed rotation or translation */
         memset(mv, 0, nb);
         for (int r = 0; r < c->nrot; r++)
             mv[c->rot[r]] = 1;
@@ -515,7 +618,7 @@ static M34 view_matrix(void)
 /* VU1 skin palette (C44, vmath.h): per bone the columns of view * world, and the light direction in bone space in
  * the rotation columns' .w (the light direction in bone space is R^T L for world rotation R; with V R in the palette,
  * V orthonormal, the camera basis, that is (V R)^T (V L)). Built on VU0 by c44_mul_skin (refactor target 5). */
-static float palette[MAX_BONES][4][4] __attribute__((aligned(16)));
+static float palette[MDL_MAX_BONES][4][4] __attribute__((aligned(16)));
 
 /* The area light for a character at pos (sent to the skin program) and its direction in view space -> Lv */
 static void skin_light(const M34 *view, V3 pos, float *Lv)
@@ -540,9 +643,15 @@ static void skin_draw(const Model *m, int tint)
     /* light: amb + sun max(n . L, 0) for texture modulation, vertex colour * 0x80 (0.5 + 0.75 max(n . L, 0)) when
      * untextured; i-frames add a warm gold */
     static const float tint_tex[3] = {70, 45, 0}, tint_flat[3] = {90, 60, 0}, none[3] = {0, 0, 0};
-    vu1_skin_begin(palette, m->hdr->bones);
+    int win = m->nwin ? 0 : -1;
+    vu1_skin_begin(palette, m->hdr->bones, m->nwin ? m->win_ids : NULL, m->nwin ? m->win_n[0] : 0);
     for (int b = 0; b < m->nsk; b++) {
         const Group *g = &m->groups[m->sk_batch[b].group];
+        /* the next bone windows (char-7), in order even past hidden batches: each builds on the slots before it */
+        while (win >= 0 && win < m->sk_batch[b].win) {
+            win++;
+            vu1_skin_window(palette, m->win_ids + 2 * m->win_first[win], m->win_n[win]);
+        }
         if (g->flags & m->hide)
             continue;
         GSTEXTURE *gt = g->tex >= 0 && g->tex < m->ntex ? (GSTEXTURE *)&m->tex[g->tex] : NULL;

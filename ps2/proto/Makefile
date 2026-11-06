@@ -74,6 +74,12 @@ EE_DVP = dvp-as
 # compares. MATHFLAGS= builds without, for A/B profiling.
 MATHFLAGS ?= -fno-math-errno
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
+# CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 61 = one VU1 palette window, the skeleton folded as
+# before; up to 255 draws through per-batch bone windows (model.c) and costs RAM: Undead Burg smoke at 255, lowest free
+# 1482 KB vs 1544 KB at 61 (2026-11-06), so off by default until the RAM floor has room. model.h MDL_MAX_BONES sizes the
+# pose / palette arrays for it (64 at the default)
+CHR_BONES ?= 61
+EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
 # they are. make PROFILE=1 -> proto_prof.elf: main.c with -DPROFILE (per-pass EE cycles + I$ / D$ misses from the COP0
@@ -251,9 +257,11 @@ $(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_ani
 CHR_DEPS = $(TS)/export_chr.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/havok_anim.py.sum \
 	$(TS)/havok_ragdoll.py.sum \
 	$(TS)/lua50.py.sum $(TS)/souls.py.sum $(AREA_SIG)
-$(A)/c%/chr.bin: $(CHR_DEPS)
+$(A)/.chr_bones: FORCE
+	@mkdir -p $(@D); echo $(CHR_BONES) | cmp -s - $@ || echo $(CHR_BONES) > $@
+$(A)/c%/chr.bin: $(CHR_DEPS) $(A)/.chr_bones
 	@mkdir -p $(@D)
-	$(PY) -I ../../tools/export_chr.py "$(GAME)" c$* $(MAP) $(A)/c$* $(or $(LOD_c$*),1) $(or $(TEX_c$*),64)
+	$(PY) -I ../../tools/export_chr.py "$(GAME)" c$* $(MAP) $(A)/c$* $(or $(LOD_c$*),1) $(or $(TEX_c$*),64) $(CHR_BONES)
 
 $(AREA_DATA)/c%.pak: $(A)/c%/chr.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
