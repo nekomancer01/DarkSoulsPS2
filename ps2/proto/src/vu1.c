@@ -112,6 +112,8 @@ static u32 clut_last, clut_loads;
 #define VIF(cmd, num, imm) ((u64)(imm) | ((u64)(num) << 16) | ((u64)(cmd) << 24))
 #define V_NOP 0x00
 #define V_STCYCL 0x01
+#define V_STMASK 0x20
+#define V_MPG 0x4A
 #define V_OFFSET 0x02
 #define V_BASE 0x03
 #define V_FLUSHE 0x10
@@ -349,7 +351,6 @@ static int room(int qw)
  * that is not resident puts an MPG (REF straight from the ELF's .vutext copy) into the chain, and programs whose
  * ranges it overlaps are marked gone. Residency is tracked in chain order, which is execution order. Variants that
  * would not all fit (old A/B programs, future strip / skin-clip versions) just share addresses. */
-#define V_MPG 0x4A
 enum { P_MAP, P_MAP2, P_CLIP, P_SKIN2, P_SKINCLIP, P_FX, P_COUNT };
 static struct { const u32 *start, *end; u32 addr; } progs[P_COUNT];
 static u8 resident[P_COUNT];
@@ -667,7 +668,6 @@ static float skin_amb[3] = {64, 64, 64}, skin_sun[3] = {96, 96, 96};
 /* textured skin specular (vu1skin2 spec_stages, tools/vu1/gen.py): per-draw constants in the skin pass at SPEC_ADDR */
 #define SPEC_ADDR 992
 #define SPEC_QW 10
-#define V_STMASK 0x20
 static float spec_up[3] = {64, 64, 64}, spec_down[3] = {32, 32, 32}, spec_i[3] = {96, 96, 96},
              spec_ls[3] = {0.40f, 0.80f, -0.45f};
 
@@ -831,20 +831,33 @@ int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
 void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
                   const void *nrm, const void *st_or_col, int spec_k, const void *ms)
 {
-    vu1_skin_add_pkt(t, cull, tris, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
+    vu1_skin_add_pkt(t, t != NULL, cull, tris, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
 }
 
-void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
+/* unlit colour of a batch whose texture is missing (not a DSR value: makes the gap visible instead of hiding it) */
+#define SKIN_NOTEX_GREY 96.0f
+
+void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tint, const void *pa, const void *pb,
                       const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes)
 {
     if (tris <= 0)  /* an UNPACK of 0 vectors would take 256 */
         return;
+    /* The unpacks must match the data. A V4_8 colour unpack of an st stream (texture missing) took n of its 2n words,
+     * a V2_32 st unpack of a colour stream 2n words of n: the DMA still sends whole qwords, so the words left over in
+     * the last qword (st floats, or the s16 positions of whatever lies after the stream) ran as VIF codes: i-bit /
+     * MARK codes, VIF1 stalled, vu1_kick waited forever (frame-0 hang, 2026-11-06). */
+    if (!st)
+        t = NULL;  /* colour data: the flat program, whatever texture the group names */
+    int grey = st && !t;  /* st data, no texture: flat program, constant colour (K2 = 0 ignores qword 3) */
+    if (grey)
+        ms = NULL;
     if (skin_clip && tris > SKIN_CLIP_TRIS) {  /* the clip program keeps its scratch after the batch */
         int k = SKIN_CLIP_TRIS * 3;
-        vu1_skin_add(t, cull, SKIN_CLIP_TRIS, tint, pa, pb, nrm, st_or_col, spec_k, ms);  /* streams: no packet */
-        vu1_skin_add(t, cull, tris - SKIN_CLIP_TRIS, tint, (const char *)pa + k * 8, (const char *)pb + k * 8,
-                     (const char *)nrm + k * 8, (const char *)st_or_col + k * (t ? 8 : 4), spec_k,
-                     ms ? (const char *)ms + k * 4 : NULL);
+        /* streams: no packet */
+        vu1_skin_add_pkt(t, st, cull, SKIN_CLIP_TRIS, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
+        vu1_skin_add_pkt(t, st, cull, tris - SKIN_CLIP_TRIS, tint, (const char *)pa + k * 8, (const char *)pb + k * 8,
+                         (const char *)nrm + k * 8, (const char *)st_or_col + k * (st ? 8 : 4), spec_k,
+                         ms ? (const char *)ms + k * 4 : NULL, NULL, 0);
         return;
     }
     use_prog(skin_clip ? P_SKINCLIP : P_SKIN2);
@@ -868,6 +881,9 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const
             f[4 + c] = t ? 0 : 0.5f, f[8 + c] = t ? skin_sun[c] : 0.75f;
         }
         f[7] = t && ms ? 1 : 0, f[11] = kk;
+        if (grey)
+            for (int c = 0; c < 3; c++)
+                f[c] += SKIN_NOTEX_GREY, f[4 + c] = f[8 + c] = 0;
     } else if (t) {
         if (ms) {  /* header 0.zw = (a, b): max(0, a x + b)^2 fits x^(2^k) on 0..1 (least squares, a + b = 1) */
             static const float pw[5][2] = {{1, 0}, {1.695f, -0.695f}, {3.125f, -2.125f}, {5.99f, -4.99f},
@@ -877,8 +893,9 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const
         f[0] = tint[0] + skin_amb[0], f[1] = tint[1] + skin_amb[1], f[2] = tint[2] + skin_amb[2], f[3] = 128;
         f[4] = skin_sun[0], f[5] = skin_sun[1], f[6] = skin_sun[2], f[7] = 0;
     } else {
-        f[0] = tint[0], f[1] = tint[1], f[2] = tint[2], f[3] = 128;
-        f[4] = 0.5f, f[5] = 0.75f, f[6] = 0, f[7] = 0;
+        float g = grey ? SKIN_NOTEX_GREY : 0;
+        f[0] = tint[0] + g, f[1] = tint[1] + g, f[2] = tint[2] + g, f[3] = 128;
+        f[4] = grey ? 0 : 0.5f, f[5] = grey ? 0 : 0.75f, f[6] = 0, f[7] = 0;
     }
     if (!skin_clip)
         f[8] = f[9] = f[10] = 255, f[11] = 128;
@@ -908,7 +925,7 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const
     tag((n * 8 + 15) / 16, T_REF, pa, VIF(V_STCYCL, 0, 0x0104), VIF(UNPACK_V4_16, n, U_FLG | 9));
     tag((n * 8 + 15) / 16, T_REF, pb, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 10));
     tag((n * 8 + 15) / 16, T_REF, nrm, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 11));
-    if (t) {
+    if (st) {
         /* qword 3 = st (f32, .xy) + metal m / spec factor f (u8, .zw: unpacked first, then protected by the mask;
          * without an m / f stream the mask fills .zw from ROW = 0) */
         if (ms) {
