@@ -131,6 +131,7 @@ typedef struct {
     int res_cells;
     unsigned short *citem;  /* res_cells: per resident chunk its mapstream item (res_open) */
     int on, col_block;
+    int pkt;  /* VU1_PKT: the chunk streams are VIF packets (DSM5 cell table flags bit 0, export_map.py CELLS_VIFPKT) */
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
 
@@ -180,6 +181,7 @@ int map_init(const void *blob)
         return 0;
     m->ctab = hdr->magic[3] == '5' && hdr->cell_off ? (const MapCell *)(map_bin + hdr->cell_off + 16) : NULL;
     m->nctab = m->ctab ? *(const unsigned *)(map_bin + hdr->cell_off) : 0;
+    m->pkt = m->ctab && ((const unsigned *)(map_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(map_bin + hdr->fog_off);
     m->fog_ntris = ((const unsigned *)(map_bin + hdr->fog_off))[1];
@@ -521,8 +523,9 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
             if (mxl)
                 vu1_mip(mxl, k, mt);
         }
+        int pkt = n == c->tris ? m->pkt : 0;  /* a foliage prefix sends its streams one by one */
         vu1_add_ex(t, c->flags & CHUNK_CULL,
-                   (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge, n,
+                   (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge | pkt, n,
                    base + c->pos, base + c->st, base + c->col, c->org,
                    c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
         map_vu1_batches++;
@@ -530,7 +533,7 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - inst), no, sqrtf(d2),
-                     c->flags & CHUNK_CULL, vclip, n, base + c->pos, base + c->st, base + c->col, c->org,
+                     c->flags & CHUNK_CULL, vclip | pkt, n, base + c->pos, base + c->st, base + c->col, c->org,
                      c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
     }
     return n;
@@ -650,6 +653,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     const Header *hdr = m->hdr = h;
     m->ctab = (const MapCell *)(map_bin + hdr->cell_off + 16);
     m->nctab = *(const unsigned *)(map_bin + hdr->cell_off);
+    m->pkt = ((const unsigned *)(map_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(map_bin + hdr->fog_off);
     m->fog_ntris = ((const unsigned *)(map_bin + hdr->fog_off))[1];
@@ -725,14 +729,14 @@ void map_block_dg(int k, void *pack)
 }
 
 /* bytes of the streams of resident chunks [a, b) (export_map.py writes pos, st, colour per chunk, each 16-byte
- * aligned, chunk after chunk in table order): [*lo, return) in mapres.bin */
+ * aligned, chunk after chunk in table order, each after a VIF code qword: VU1_PKT): [*lo, return) in mapres.bin */
 static unsigned chunk_range(const Chunk *chunks, unsigned a, unsigned b, unsigned *lo)
 {
     unsigned l = ~0u, h = 0;
     for (unsigned j = a; j < b; j++) {
         const Chunk *c = &chunks[j];
         unsigned e = (c->col + c->tris * 12 + 15) & ~15u;  /* colour u8x4 per corner, the last stream */
-        l = c->pos < l ? c->pos : l;
+        l = c->pos - 16 < l ? c->pos - 16 : l;  /* from pos's code qword (VU1_PKT sends from there) */
         h = e > h ? e : h;
     }
     *lo = l == ~0u ? 0 : l;

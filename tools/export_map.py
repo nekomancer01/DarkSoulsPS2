@@ -28,7 +28,8 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
           bit 5: texture coordinates in 1/1024 units, else 1/4096
   streams pos s16[3] (world = origin + n x step; step a power of two, origin whole metres), st u16[2] normalized x
           4096 or 1024 (per-triangle shifted >= 0), colour u8[4] light (0x80 = 1.0) and alpha (vertex alpha for
-          blended chunks, else 0x80); each stream zero-padded to 16 bytes (build_chunks)
+          blended chunks, else 0x80); each stream zero-padded to 16 bytes (build_chunks), with a VIF code qword in
+          front (chunk_streams: the three streams form one VIF packet; DSM5 cell table flag CELLS_VIFPKT)
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
           nav_verts f32[3]  nav_tris u16[3]
   fog     u32 rows, collision tris, 0, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
@@ -155,6 +156,27 @@ SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh
 CHUNK_TRIS = 54  # per VU1 batch: 7 header qwords + 3 qwords per vertex = 493 qw, the VU buffer (OFFSET 493): the limit
 CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are grouped by the grid cell of their centroid
 # (map.c culls by 32 m cells too), then cut into full, compact batches (split_batch)
+
+
+def chunk_streams(ntri, pos, st, col):
+    """A chunk's three vertex streams as one VIF packet (render rebuild PR 1): a code qword in front of each stream
+    {NOP, NOP, STCYCL 3,1, UNPACK V3-16 n -> TOPS+7} / {NOP x 3, UNPACK V2-16 unsigned n -> TOPS+8} / {NOP x 3,
+    UNPACK V4-8 unsigned n -> TOPS+9}, then the stream zero-padded to 16 bytes (zeros = VIF NOPs). vu1.c sends the whole
+    packet with one DMA REF (VU1_PKT); the stream offsets point past each code qword, so batches that send part of a
+    chunk (foliage prefixes, clip splits) still REF the streams one by one. +48 bytes per chunk.
+    Returns (bytes, [pos, st, col offsets in it])."""
+    n = 3 * ntri
+    assert 0 < n < 256, n
+    codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6500C008 | n << 16), (0, 0, 0, 0x6E00C009 | n << 16))
+    b, offs = bytearray(), []
+    for arr, cw in zip((pos, st, col), codes):
+        b += struct.pack("<4I", *cw)
+        offs.append(len(b))
+        b += arr
+        b.extend(b"\0" * (-len(b) % 16))
+    return b, offs
+
+
 POS_MAX = 32000  # s16 position range used before snapping (leaves room for split_batch / snapping)
 GRASS_D0 = float(os.environ.get("GRASS_D0", 10.0))
 # STREAM: ground foliage tufts ranked above the density map.c draws at GRASS_NEAR_D (map.c NEAR_DRAW_R - NEAR_HYST, where
@@ -2256,16 +2278,17 @@ def stream_cells(chunks):
 
 
 CELL_SIZES = []
+CELLS_VIFPKT = 1  # cell table word 1, format flags: bit 0 = chunk streams are VIF packets (chunk_streams)
 
 
 def write_cells(cells, res, all_chunks, nres):
-    """DSM5 cell table + cells.bin. Table: u32 cells, 0, 0, 0; per cell (48 B) f32 min[3], max[3] (resident + near
+    """DSM5 cell table + cells.bin. Table: u32 cells, flags (CELLS_VIFPKT), 0, 0; per cell (48 B) f32 min[3], max[3] (resident + near
     chunks), u32 blob offset, blob bytes (in cells.bin), near chunks, first resident chunk, resident chunks, number in
     bump.bin of the cell's first near chunk.
     cells.bin: per cell one blob (64-byte aligned): near chunk records (as map.bin's, stream offsets relative to the
     blob, flags bits 8-31 = the chunk's number in bump.bin; foliage (CHUNK_GRASS) keeps its tuft bits there, its
     number is the table's first near number + its index in the blob), then the streams (16-byte aligned)."""
-    tab, cbin = bytearray(struct.pack("<4I", len(cells), 0, 0, 0)), bytearray()
+    tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT, 0, 0)), bytearray()
     CELL_SIZES.clear()
     first, gid = 0, nres
     for key, r, n in cells:
@@ -2276,12 +2299,9 @@ def write_cells(cells, res, all_chunks, nres):
         b = bytearray(b"\0" * (64 * len(n)))
         for j in range(len(n)):
             ti, fl, ntri, pos, st, col, lo, hi, org, step, sts = all_chunks[gid + j]
-            offs = []
-            for arr in (pos, st, col):
-                b.extend(b"\0" * (-len(b) % 16))
-                offs.append(len(b))
-                b += arr
-            b.extend(b"\0" * (-len(b) % 16))
+            pk, offs = chunk_streams(ntri, pos, st, col)
+            offs = [len(b) + o for o in offs]
+            b += pk
             assert gid + j < 1 << 24
             b[64 * j:64 * j + 64] = struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0) |
                                                 (0 if fl & CHUNK_GRASS else (gid + j) << 8), ntri, *offs, *lo, *hi,
@@ -2411,12 +2431,10 @@ def main():
     # chunk vertex streams first (16-byte aligned for VIF UNPACK via DMA REF), then the chunk table
     recs = []
     for ti, fl, ntri, pos, st, col, lo, hi, org, step, sts in chunks:
-        offs = []
-        for arr in (pos, st, col):
-            align(16)
-            offs.append(len(blob) + HDR)
-            blob += arr
         align(16)
+        pk, offs = chunk_streams(ntri, pos, st, col)
+        offs = [len(blob) + HDR + o for o in offs]
+        blob += pk
         recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), ntri, *offs, *lo, *hi,
                                 *org, step))
     sec["chunks"] = len(blob) + HDR

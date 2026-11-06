@@ -224,7 +224,7 @@ void bump_draw(void)
         GSTEXTURE tt = *it->t;
         tt.VramClut = clut_vram + (it->key >> 12 & 0xFFF) * 1024;
         tt.ClutPSM = GS_PSM_CT32;
-        vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip ? VU1_CLIP : 0), it->tris, it->pos, it->st, it->col, it->org,
+        vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip & (VU1_CLIP | VU1_PKT)), it->tris, it->pos, it->st, it->col, it->org,
                    it->st_k);
         bump_batches++;
     }

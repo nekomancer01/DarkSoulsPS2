@@ -23,6 +23,10 @@ void vu1_begin(int buffer);
  * batches fade into the fog colour by map.c's cull distance (vu1map2 edge loop, 91 instead of 79 VU1 cycles per
  * triangle; ignored with VU1_CLIP) */
 #define VU1_EDGE 8
+/* VU1_PKT: pos / st / col are the streams of one prebuilt VIF packet (tools/export_map.py chunk_streams: a code qword
+ * in front of each stream) holding exactly tris triangles: one DMA REF sends all three (render rebuild PR 1). Ignored
+ * when the batch is split (VU1_CLIP over VU1_CLIP_TRIS) and in VU1_NO_PKT builds. */
+#define VU1_PKT 16
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
 /* GS mip chain for the next vu1_add_ex only (opaque batches; texcache.c tc_mip): TEX1 MXL mxl, LINEAR_MIPMAP_NEAREST,
