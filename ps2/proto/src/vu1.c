@@ -740,6 +740,73 @@ static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const 
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, clip ? CLIP_CODE : MAP2_CODE));
 }
 
+#ifndef VU1_IDX_EE_CLIP
+/* VU1_CLIP indexed batch too big for vu1clip's indexed entry (header + vertices + triangle stream > CLIPI_MAX): pieces
+ * of whole triangles in stream order, each with only the vertices it uses (renumbered, written into the chain) and
+ * clipped on VU1 like any other indexed VU1_CLIP batch. No EE clip test: the EE only copies. */
+static void add_idx_vuclip_pieces(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st,
+                                  const void *col, const void *idx, const float *org, float st_k, int mxl)
+{
+    const u8 *ib = (const u8 *)idx;
+    const u16 *p16 = (const u16 *)pos;
+    const u32 *s32 = (const u32 *)st, *c32 = (const u32 *)col;
+    u8 map[256], vs[CLIPI_MAX / 3], ix2[VU1_IDX_TRIS * 4];
+    for (int t0 = 0; t0 < tris;) {
+        memset(map, 0xFF, sizeof map);
+        int nv = 0, k = 0;
+        for (; t0 + k < tris; k++) {
+            const u8 *ix = ib + 4 * (t0 + k);
+            int add = 0;
+            for (int j = 0; j < 3; j++)
+                add += map[ix[j]] == 0xFF && (j < 1 || ix[j] != ix[0]) && (j < 2 || ix[j] != ix[1]);
+            if (MAPI_HDR + 3 * (nv + add) + k + 1 > CLIPI_MAX)
+                break;
+            for (int j = 0; j < 3; j++) {
+                if (map[ix[j]] == 0xFF)
+                    map[ix[j]] = nv, vs[nv++] = ix[j];
+                ix2[4 * k + j] = map[ix[j]];
+            }
+            ix2[4 * k + 3] = 0;
+        }
+        if (!k)
+            return;  /* cannot happen: one triangle always fits */
+        int qp = (nv * 6 + 15) / 16, qs = (nv * 4 + 15) / 16, qi = (k * 4 + 15) / 16;
+        use_prog(P_CLIP);
+        if (!room(16 + qp + 2 * qs + qi))
+            return;
+        u32 hdr[2] = {(u32)nv / 3, MAPI_HDR + 3 * (u32)nv};  /* .x unused by vu1clip */
+        batch_head(t, cull, mode, k, org, st_k, mxl, 1, hdr);
+        tag(qp, T_CNT, 0, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, nv, U_FLG | MAPI_HDR));
+        u16 *dp = (u16 *)cp;
+        for (int i = 0; i < nv; i++, dp += 3) {
+            const u16 *s = p16 + 3 * vs[i];
+            dp[0] = s[0], dp[1] = s[1], dp[2] = s[2];
+        }
+        for (u8 *z = (u8 *)dp; z < (u8 *)(cp + 2 * qp); z++)
+            *z = 0;
+        cp += 2 * qp;
+        const u32 *srcs[2] = {s32, c32};
+        for (int a = 0; a < 2; a++) {  /* st (V2-16) and colour (V4-8): 4 bytes per vertex each */
+            tag(qs, T_CNT, 0, VIF(V_NOP, 0, 0), a ? VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2))
+                                                  : VIF(UNPACK_V2_16, nv, U_FLG | U_USN | (MAPI_HDR + 1)));
+            u32 *w = (u32 *)cp;
+            for (int i = 0; i < nv; i++)
+                *w++ = srcs[a][vs[i]];
+            for (; w < (u32 *)(cp + 2 * qs); w++)
+                *w = 0;
+            cp += 2 * qs;
+        }
+        tag(qi, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_8, k, U_FLG | U_USN | (MAPI_HDR + 3 * nv)));
+        memset(cp, 0, qi * 16);
+        memcpy(cp, ix2, k * 4);
+        cp += 2 * qi;
+        tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, CLIPI_CODE));
+        vu1_stats.idx_vuclip++, vu1_stats.idx_pieces++;
+        t0 += k;
+    }
+}
+#endif
+
 void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
                  const void *idx, const float *org, float st_k)
 {
@@ -768,7 +835,12 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
     int nk = tris, entry = MAPI_CODE;
     unsigned t_in = ticks();
 #ifndef VU1_IDX_EE_CLIP  /* fallback switch: the EE split below for every VU1_CLIP batch */
-    if ((mode & VU1_CLIP) && MAPI_HDR + 3 * nv + tris <= CLIPI_MAX) {
+    if ((mode & VU1_CLIP) && MAPI_HDR + 3 * nv + tris > CLIPI_MAX) {  /* too big for vu1clip's scratch: pieces */
+        add_idx_vuclip_pieces(t, cull, mode, tris, pos, st, col, idx, org, st_k, mxl);
+        vu1_stats.idx_clip_ticks += ticks() - t_in;
+        return;
+    }
+    if (mode & VU1_CLIP) {
         /* vu1clip.vsm's indexed entry reads the batch as vu1mapi does and clips the flagged triangles on VU1 */
         use_prog(P_CLIP);
         entry = CLIPI_CODE;
