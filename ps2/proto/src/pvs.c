@@ -24,7 +24,7 @@ typedef struct {
     int uni_all;                /* the union is "everything" */
 } Pvs;
 static Pvs pv[PVS_INST];
-static unsigned gen = 1;
+static unsigned gen[PVS_INST];  /* per instance: a crossing in one block's camera grid re-checks only its items */
 
 int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries)
 {
@@ -34,7 +34,7 @@ int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries)
     free(p->uni), free(p->tmp);
     memset(p, 0, sizeof *p);
     p->key = ~0u;
-    gen++;
+    gen[k]++;
 #ifdef NO_PVS
     (void)blob, (void)chunks, (void)entries;
     return 0;
@@ -74,11 +74,11 @@ void pvs_block_drop(int k)
     if (k >= 0 && k < PVS_INST) {
         free(pv[k].uni), free(pv[k].tmp);
         memset(&pv[k], 0, sizeof pv[k]);
-        gen++;
+        gen[k]++;
     }
 }
 
-unsigned pvs_gen(void) { return gen; }
+unsigned pvs_gen(int k) { return k >= 0 && k < PVS_INST ? gen[k] : 0; }
 
 static unsigned key_of(int x, int y, int z)
 {
@@ -155,7 +155,7 @@ void pvs_eye(const float e[3])
                                 p->uni[i] |= rw[i];
                     }
         }
-        gen++;
+        gen[k]++;
     }
 }
 

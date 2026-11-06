@@ -20,8 +20,8 @@ void pvs_eye(const float e[3]);
 int pvs_chunk(int k, unsigned entry, unsigned chunk);
 /* any of chunks [first, first + n) of entry is in the row now (now = 1) or in the streaming union (now = 0) */
 int pvs_range(int k, unsigned entry, unsigned first, unsigned n, int now);
-/* changes whenever a row or the union may answer differently */
-unsigned pvs_gen(void);
+/* changes whenever instance k's row or union may answer differently */
+unsigned pvs_gen(int k);
 /* stats: units of instance k in the current row / all (0 / 0: off or no row) */
 void pvs_stats(int k, unsigned *in_row, unsigned *units);
 
