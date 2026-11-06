@@ -55,7 +55,10 @@ int mapstream_reclaim(void *p, unsigned n);
 /* | cell: only coarse chunks (map.c CHUNK_COARSE), which map.c skips while the cell's near level is drawn: not kept
  * or read while the near level is in and the cell within MS_COARSE_R (mapstream.c) */
 #define MS_RES_COARSE 0x10000000u
-#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE))  /* the cell of a cell item's tag */
+/* | cell: only foliage chunks (map.c CHUNK_GRASS), which map.c thins to nothing with distance: resident only near the
+ * player (world streaming v2) */
+#define MS_RES_GRASS 0x08000000u
+#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);

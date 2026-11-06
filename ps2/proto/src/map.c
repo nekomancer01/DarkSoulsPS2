@@ -775,16 +775,19 @@ static void res_open(int k, const void *pack)
             last = e > last ? e : last;
         for (unsigned j = a; j < e;) {  /* whole chunks [j, g) up to RES_ITEM bytes (at least one) */
             unsigned lo, hi = chunk_range(chunks, j, j + 1, &lo), g = j + 1, l2, h2;
-            /* coarse chunks in items of their own (MS_RES_COARSE: they go while the cell's near level is in) */
-            unsigned coarse = chunks[j].flags & CHUNK_COARSE;
-            while (g < e && (chunks[g].flags & CHUNK_COARSE) == coarse &&
+            /* coarse chunks in items of their own (MS_RES_COARSE: they go while the cell's near level is in), and
+             * foliage too (MS_RES_GRASS: only near the player) */
+            unsigned coarse = chunks[j].flags & (CHUNK_COARSE | CHUNK_GRASS);
+            while (g < e && (chunks[g].flags & (CHUNK_COARSE | CHUNK_GRASS)) == coarse &&
                    (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
                 hi = h2 > hi ? h2 : hi, g++;
             unsigned far = 0;
             for (unsigned c = j; c < g; c++)
                 citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
             it[m++] = (MapResItem){roff + lo, lo, hi - lo,
-                                   i < nctab ? i | (far ? MS_RES_FAR : 0) | (coarse && ctab[i].near ? MS_RES_COARSE : 0)
+                                   i < nctab ? i | (far ? MS_RES_FAR : 0) |
+                                                   ((coarse & CHUNK_COARSE) && ctab[i].near ? MS_RES_COARSE : 0) |
+                                                   (coarse & CHUNK_GRASS ? MS_RES_GRASS : 0)
                                              : MS_RES_SKY};
             bad |= hi > rsize;
             j = g;
@@ -929,6 +932,7 @@ int map_draw(V3 eye)
     r_set_fog_edge(edge_a2);
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
+    unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
         if (k && !inst[k].on)
             continue;
@@ -962,7 +966,9 @@ int map_draw(V3 eye)
             unsigned np = 1, nnear = 0;  /* the cell's near parts (export_map.py NEAR_PART), their chunks */
             int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
             for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++)
-                if (!res_base(m, order[j]))  /* (mapstream_res also ranks it up: the cell is in view) */
+                /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
+                 * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
+                if (!res_base(m, order[j]) && !(chunks[order[j]].flags & CHUNK_GRASS))
                     miss = 1;
             if (ctab) {
                 float d2 = 0;
@@ -984,6 +990,7 @@ int map_draw(V3 eye)
                 for (unsigned p = 0; nb && p < np; p++)
                     nnear += ctab[ci + p].near & ~CELL_PART;
             }
+            holes += miss && !nb;
             unsigned near_gid = nb ? ctab[ci].pad : 0;
             unsigned part = 0, part_end = nb ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
             for (unsigned j = m->streams || m->res_cells ? ce->first : ce->first + ce->count;
@@ -1125,6 +1132,15 @@ int map_draw(V3 eye)
         memset(dbg_why[dbg_cur], 255, DBG_IDS);
     }
 #endif
+    {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
+        static unsigned fr, worst;
+        worst = holes > worst ? holes : worst;
+        if (!(++fr % 30)) {
+            if (worst)
+                printf("map: cells missing %u (most in a frame over 1 s)\n", worst);
+            worst = 0;
+        }
+    }
 #ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
     {
         static unsigned fr;

@@ -112,6 +112,22 @@ SOFT_FOCAL = 609.0 * 512 / 640
 SOFT_REACH = 40.0  # m: viewpoints for the projected width: navmesh samples within this of the nearest (ASSUMED)
 SOFT_R_PX = float(os.environ.get("SOFT_R_PX", 4.0))  # footprint radius of the colour average, px (ASSUMED)
 CHUNK_COARSE = 64
+# Spot budgets (world streaming v2, src/mapstream.c): the bytes of a level's streamed cells around any navmesh point.
+# Measured 2026-11-06: near cells within 40 m of the Burg entry were 10.2 MB and coarse within 260 m 13.4 MB against a
+# 10.8 MB arena, so the streamer could never hold what it wanted and dropped coarse cells for near ones (holes).
+# solve_budget raises the thresholds of the least simplified cells around a spot that is over budget until every
+# spot fits: detail drops only where the data would not fit, evenly over the spot. Near: cells within WS_R0 (mapstream
+# MS_R0_WANT). Coarse: cells within WS_R1_IN..WS_R1 (mapstream pins the coarse level within MS_R1_PIN; inside WS_R1_IN
+# a cell draws its near level). ASSUMED sizes (KB): arena ~10.8 MB less ~3.5 MB of neighbour lite sets + relief at a
+# seam, shared by up to three blocks; per area through MAPENV_<area>. WS_BUDGET=0: no solve (A/B).
+WS_BUDGET = os.environ.get("WS_BUDGET", "1") == "1"
+WS_B0 = float(os.environ.get("WS_B0", 1536)) * 1024
+WS_B1 = float(os.environ.get("WS_B1", 2048)) * 1024
+WS_R0, WS_R1, WS_R1_IN = 30.0, 96.0, 16.0
+# error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
+WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
+WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
+WS_BPT = 45  # bytes per triangle of a streamed chunk (positions, st, colours, padding: 44-45 measured over 4 blocks)
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
 GAME_LOD = os.environ.get("GAME_LOD") == "1"
@@ -326,7 +342,7 @@ def build_chunks(meshes, verts, tris, uvs, textures, centre, fol, bkey=None, tce
             # dgk: pieces with different draw groups never share a chunk (src/drawgrp.c hides chunks per group)
             cell += (dgk[k] if dgk else 0, entk[k] if entk else 0)
             # the coarse level (STREAM level 0) is drawn beyond the relief range: no normal-map split, fuller batches
-            bk = bkey.get(k) if bkey and not (tcell and tcell[k] is not None and tcell[k][0] == 0) else None
+            bk = bkey.get(k) if bkey and not (tcell and tcell[k] is not None and tcell[k][0] != 1) else None
             groups.setdefault((ti, fl, cell, bk), []).append((fv, k))
     groups = export_normal.merge_small(groups)
     batches = []
@@ -2019,7 +2035,7 @@ def far_cells_c(L, meshes, nav_v):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None, eps_far=None):
+                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
@@ -2033,7 +2049,10 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     import simplify_pool
     MX = mapx_native.lib()
     if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
-        return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far)
+        return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
+                                 budget, nav_s)
+    if budget:
+        print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
@@ -2166,7 +2185,74 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     return eps
 
 
-def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far):
+def solve_budget(MX, h, jc, eps, eps_far, budget, samples):
+    """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
+    within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
+    the heaviest cell around it that can still be raised goes one step up. Jobs outside cells (no cell cut, far-only
+    cells) keep eps / eps_far. budget = (r_in, r, nbytes, name). Returns the per-job thresholds (float64) or None."""
+    import numpy as np
+    r_in, r, nbytes, name, px_cap = budget
+    njobs = len(jc)
+    cells = sorted({c for c in jc if isinstance(c, tuple)})
+    if not cells or not len(samples):
+        return None
+    cid = {c: i for i, c in enumerate(cells)}
+    jcell = np.array([cid[c] if isinstance(c, tuple) else -1 for c in jc], np.int64)
+    # at most px_cap px of error: past it the spot stays over budget (mapstream drops its farthest near cells first).
+    # Without a cap the near level of dense Burg spots went to 130x the threshold (68 px) and still did not fit: the
+    # simplifier keeps open borders, UV seams and small parts, so a spot's bytes stop falling (first export 2026-11-06)
+    K = 0
+    while K < 12 and math.sqrt(eps * 1.5 ** (K + 1)) * 568 <= px_cap + 1e-6:
+        K += 1
+    steps = [eps * 1.5 ** k for k in range(K + 1)]
+    cnt = np.zeros(max(njobs, 1), np.int64)
+    by = np.zeros((len(cells), K + 1))  # bytes of cell c at step k
+    sel = jcell >= 0
+    for k, e in enumerate(steps):
+        MX.mx_simp_job_counts(h, e, cnt.ctypes.data)
+        by[:, k] = np.bincount(jcell[sel], weights=cnt[:njobs][sel], minlength=len(cells)) * WS_BPT
+    lo = np.array(cells, np.float64) * CHUNK_GRID
+    hi = lo + CHUNK_GRID
+    P = np.asarray(samples, np.float64).reshape(-1, 3)
+    d = np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
+    M = (d >= r_in) & (d < r) if r else np.ones(d.shape, bool)
+    Mf = M.astype(np.float64)
+    step = np.zeros(len(cells), np.int64)
+    cur = by[np.arange(len(cells)), step]
+    W = Mf @ cur
+    w0, raised, stuck = W.max(), 0, False
+    while W.max() > nbytes and raised < 100000:
+        p = int(W.argmax())
+        cand = np.flatnonzero(M[p] & (step < K) & (cur > 0))
+        if not len(cand):
+            stuck = True
+            break
+        # the least simplified cells of the spot go up together: the spot's error evens out (one cell taken to 130x
+        # the threshold while its neighbours kept theirs looked broken next to them; first export 2026-11-06)
+        cand = cand[step[cand] == step[cand].min()]
+        for c in cand.tolist():
+            step[c] += 1
+            new = by[c, step[c]]
+            W -= Mf[:, c] * (cur[c] - new)
+            cur[c] = new
+        raised += 1
+    job_eps = np.array([steps[step[jcell[i]]] if jcell[i] >= 0 else (eps_far if jc[i] == "far" and eps_far is not None
+                                                                       else eps) for i in range(njobs)], np.float64)
+    nr = int((step > 0).sum())
+    print(f"budget {name}: worst spot {w0 / 1024:.0f} -> {W.max() / 1024:.0f} KB (budget {nbytes / 1024:.0f} KB, "
+          f"{len(P)} navmesh points); {nr} of {len(cells)} cells coarser (up to {1.5 ** step.max():.1f}x the threshold, "
+          f"{math.sqrt(steps[step.max()]) * 568:.1f} px)" + (f"; over budget at the {px_cap:.0f} px cap" if stuck else ""))
+    BUDGET_REPORT.append(dict(level=name, worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
+                              budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
+                              met=not stuck))
+    return job_eps
+
+
+BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.budget.json)
+
+
+def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
+                      budget=None, nav_s=None):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -2230,11 +2316,15 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         kind, ck = np.zeros(max(njobs, 1), i32), np.zeros((max(njobs, 1), 3), i64)
         MX.mx_simp_jobs(h, a(kind), a(ck))
         jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
-        n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
+        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s) if budget and cells else None
+        if job_eps is not None:
+            n = int(MX.mx_simp_replay_jobs(h, job_eps.ctypes.data))
+        else:
+            n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
-        final = count(eps)
+        final = grass + n if job_eps is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
     # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
@@ -2273,7 +2363,10 @@ def stream_cells(chunks):
         t = CHUNK_TAG[i]
         key = tuple(t[1]) if t else tuple(int(math.floor((ch[6][a] + ch[7][a]) / 2 / CHUNK_GRID)) for a in range(3))
         cells.setdefault(key, ([], []))[1 if t and t[0] == 1 else 0].append(i)
-    return [(k, sorted(r, key=lambda i: chunks[i][0]), sorted(n, key=lambda i: chunks[i][0]))
+    def lev(i):  # kept chunks, then the coarse ones, each by texture: map.c cuts a cell's items by level (streaming v2)
+        t = CHUNK_TAG[i]
+        return (1 if t and t[0] == 0 else 0, chunks[i][0])
+    return [(k, sorted(r, key=lev), sorted(n, key=lambda i: chunks[i][0]))
             for k, (r, n) in sorted(cells.items(), key=lambda kv: cell_zorder(kv[0]))]
 
 
@@ -2377,12 +2470,16 @@ def main():
         for m in meshes_in:
             m["tris_in"] = m["tris"]
         far = far_cells(meshes_in, nav_v)
+        # player positions for the spot budgets (world streaming v2): navmesh vertices, at most 4000
+        ws_s = nav_v[::max(1, len(nav_v) // 4000)] if WS_BUDGET else None
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
-                        floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS))
+                        floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS),
+                        budget=(WS_R1_IN, WS_R1, WS_B1, "coarse level", WS_PX1) if ws_s else None, nav_s=ws_s)
         rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
-        simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0)
+        simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0,
+                        budget=(0.0, WS_R0, WS_B0, "near level", WS_PX0) if ws_s else None, nav_s=ws_s)
     else:
         prune_foliage(meshes_in, nav_v, nav_t)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t)
@@ -2527,6 +2624,8 @@ def main():
               f"({sum(c[2] for c in chunks if c[1] & CHUNK_COARSE)} coarse), near {nn} chunks / "
               f"{sum(all_chunks[i][2] for i in range(len(chunks), len(all_chunks)))} tris, cells.bin {len(cell_bin)} "
               f"bytes, largest cell {max(c[3] for c in CELL_SIZES) if CELL_SIZES else 0} bytes")
+        with open(out + ".budget.json", "w") as f:  # tools/stream_budget.py, the PR's numbers
+            json.dump(BUDGET_REPORT, f, indent=1)
     print(f"{map_id}: {n_meshes} meshes -> {len(chunks)} chunks, {n_tris} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")

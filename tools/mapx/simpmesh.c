@@ -146,6 +146,7 @@ typedef struct mx_simp {
     double border_w, seam_w, seam_k2, ak2, min_cos;
     double eps, eps_far;
     int use_far;
+    const double *job_eps;  /* mx_simp_replay_jobs: per job threshold, else NULL */
     long long nout;
 } mx_simp;
 
@@ -526,12 +527,26 @@ MX_API long long mx_simp_count(const mx_simp *h, double eps)
     return n;
 }
 
+/* per job: triangles left at threshold eps (the budget solve, export_map.py solve_budget: one job is one welded group's
+   part of one cell, so a cell's count at a threshold is the sum over its jobs) */
+MX_API void mx_simp_job_counts(const mx_simp *h, double eps, long long *out)
+{
+    for (int i = 0; i < h->njobs; i++) {
+        const sresult *R = h->jobs[i].log;
+        long long n = R->nt;
+        for (int s = 0; s < R->nsteps; s++)
+            if (R->cost[s] <= eps)
+                n -= R->nrem[s];
+        out[i] = n;
+    }
+}
+
 static void replay_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
     const sresult *R = j->log;
-    double eps = h->use_far && j->kind == 1 ? h->eps_far : h->eps;
+    double eps = h->job_eps ? h->job_eps[i] : h->use_far && j->kind == 1 ? h->eps_far : h->eps;
     int k = 0;
     while (k < R->nsteps && !(R->cost[k] > eps))
         k++;
@@ -561,8 +576,20 @@ static void replay_job(void *vc, long long i)
 /* replay every job's log at eps (far jobs at eps_far when use_far) -> surviving triangle count */
 MX_API long long mx_simp_replay(mx_simp *h, double eps, double eps_far, int use_far)
 {
-    h->eps = eps, h->eps_far = eps_far, h->use_far = use_far;
+    h->eps = eps, h->eps_far = eps_far, h->use_far = use_far, h->job_eps = NULL;
     mx_parallel_for(h->njobs, replay_job, h);
+    h->nout = 0;
+    for (int i = 0; i < h->njobs; i++)
+        h->nout += h->jobs[i].nout;
+    return h->nout;
+}
+
+/* replay with one threshold per job (job_eps[njobs]: the budget solve's per-cell thresholds) -> surviving triangles */
+MX_API long long mx_simp_replay_jobs(mx_simp *h, const double *job_eps)
+{
+    h->job_eps = job_eps;
+    mx_parallel_for(h->njobs, replay_job, h);
+    h->job_eps = NULL;
     h->nout = 0;
     for (int i = 0; i < h->njobs; i++)
         h->nout += h->jobs[i].nout;
