@@ -498,7 +498,7 @@ static float box_d2(const MapCell *c, const float *p)
  * memory per place: Burg blocks hold 1.7-3.4 MB of coarse chunks, 70-90 % of their resident level, kept beside the near
  * cells that replace them; ISO 2026-11-06). Within MS_COARSE_R of a cell whose near level is in, they are neither kept
  * nor read; beyond it they are read again before the near level goes (MS_UNLOAD_R). */
-#define MS_COARSE_R (MS_UNLOAD_R - 8.0f)
+#define MS_COARSE_R (MS_UNLOAD_R - 8.0f)  /* ASSUMED: 8 m to read them back before the near level goes */
 /* every near part of cell c of the bound instance is loaded */
 static int near_in(unsigned c)
 {
