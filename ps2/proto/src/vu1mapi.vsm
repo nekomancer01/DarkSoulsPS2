@@ -3,8 +3,8 @@
 ; pipelined. Input: header 0-6 as vu1map2.vsm (0 {tris, cull mask, st scale K, edge fog slope a2}, 1 {origin xyz,
 ; step}, 2 A+D GIF tag, 3-5 TEX0 / TEX1 / TEST, 6 PRIM tag with NLOOP 3 + EOP), 7 {vertex passes = vertices / 3,
 ; offset of the triangle stream from the batch start, 0, 0}; vertices at 8, 3 qw each (s16 pos, u16 st, u8 colour;
-; the exporter pads the count to a multiple of 3); then one qword per triangle: u8 x4 {3 v0, 3 v1, 3 v2, 0} (vertex
-; number x 3). Constants as vu1map2.vsm.
+; the exporter pads the count to a multiple of 3); then one qword per triangle: u8 x4 {v0, v1, v2, 0} (vertex
+; numbers). Constants as vu1map2.vsm.
 ; Pass 1, three vertices per loop pass, in place: vu1map2's vertex math (view, fog, the edge fog in a second loop taken
 ; as in vu1map2, CLIP, q, STQ, screen); qword 0 <- XYZF2 (ftoi4 screen, fog), 1 <- STQ with .w = 1 when the vertex is
 ; outside a clip plane, 2 (colour) kept.
@@ -12,7 +12,7 @@
 ; alternating, shared with vu1map2 / vu1clip) as one GIF packet; ADC on the third vertex when a vertex is flagged or
 ; the cull mask catches the screen cross product, as in vu1map2.
 
-; pass 1: 72 cycles per 3 vertices (edge fog loop 84), pass 2: 43 cycles per triangle in the tools/vu1 timing model
+; pass 1: 72 cycles per 3 vertices (edge fog loop 84), pass 2: 49 cycles per triangle in the tools/vu1 timing model
 
 		.vu
 		.align 4
@@ -224,39 +224,45 @@ mapiTri:
 	NOP                            	ilw.y VI10,0(VI03)
 	NOP                            	ilw.z VI11,0(VI03)
 	NOP                            	sq VF10,0(VI08)
-	NOP                            	iadd VI12,VI07,VI02
-	NOP                            	iadd VI13,VI10,VI02
-	NOP                            	iadd VI14,VI11,VI02
-	NOP                            	lq VF11,8(VI12)
+	NOP                            	iadd VI12,VI07,VI07
+	NOP                            	iadd VI13,VI10,VI10
+	NOP                            	iadd VI14,VI11,VI11
+	NOP                            	iadd VI15,VI12,VI07
+	NOP                            	iadd VI07,VI13,VI10
+	NOP                            	iadd VI12,VI14,VI11
+	NOP                            	iadd VI10,VI15,VI02
+	NOP                            	iadd VI13,VI07,VI02
+	NOP                            	iadd VI11,VI12,VI02
+	NOP                            	lq VF11,8(VI10)
 	NOP                            	lq VF12,8(VI13)
-	NOP                            	lq VF13,8(VI14)
-	NOP                            	ilw.w VI15,9(VI12)
-	itof4.xyz VF14,VF11            	ilw.w VI07,9(VI13)
-	itof4.xyz VF15,VF12            	ilw.w VI10,9(VI14)
-	itof4.xyz VF16,VF13            	ilw.w VI11,8(VI14)
-	NOP                            	lq VF17,9(VI12)
-	NOP                            	ior VI15,VI15,VI07
-	sub.xyz VF18,VF15,VF14         	ior VI15,VI15,VI10
-	sub.xyz VF19,VF16,VF14         	lq VF20,10(VI12)
+	NOP                            	lq VF13,8(VI11)
+	NOP                            	ilw.w VI14,9(VI10)
+	itof4.xyz VF14,VF11            	ilw.w VI15,9(VI13)
+	itof4.xyz VF15,VF12            	ilw.w VI07,9(VI11)
+	itof4.xyz VF16,VF13            	ilw.w VI12,8(VI11)
+	NOP                            	lq VF17,9(VI10)
+	NOP                            	ior VI14,VI14,VI15
+	sub.xyz VF18,VF15,VF14         	ior VI14,VI14,VI07
+	sub.xyz VF19,VF16,VF14         	lq VF20,10(VI10)
 	NOP                            	lq VF21,9(VI13)
 	NOP                            	lq VF22,10(VI13)
-	NOP                            	lq VF23,9(VI14)
-	opmula.xyz ACC,VF19,VF18       	lq VF24,10(VI14)
+	NOP                            	lq VF23,9(VI11)
+	opmula.xyz ACC,VF19,VF18       	lq VF24,10(VI11)
 	opmsub.xyz VF25,VF18,VF19      	sq VF13,9(VI08)
 	NOP                            	sq VF17,1(VI08)
 	NOP                            	sq VF20,2(VI08)
 	NOP                            	sq VF11,3(VI08)
-	NOP                            	fmand VI07,VI05
-	NOP                            	ior VI10,VI15,VI07
-	NOP                            	iaddiu VI10,VI10,0x7fff
-	NOP                            	iand VI10,VI10,VI09
-	NOP                            	ior VI10,VI10,VI11
+	NOP                            	fmand VI15,VI05
+	NOP                            	ior VI07,VI14,VI15
+	NOP                            	iaddiu VI07,VI07,0x7fff
+	NOP                            	iand VI07,VI07,VI09
+	NOP                            	ior VI07,VI07,VI12
 	NOP                            	sq VF21,4(VI08)
 	NOP                            	sq VF22,5(VI08)
 	NOP                            	sq VF12,6(VI08)
 	NOP                            	sq VF23,7(VI08)
 	NOP                            	sq VF24,8(VI08)
-	NOP                            	isw.w VI10,9(VI08)
+	NOP                            	isw.w VI07,9(VI08)
 	NOP                            	iaddiu VI03,VI03,1
 	NOP                            	xgkick VI08
 	NOP                            	isub VI08,VI06,VI08

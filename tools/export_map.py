@@ -209,7 +209,7 @@ def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
 
 
 # Indexed chunks (vu1mapi.vsm, vu1.c vu1_add_idx): every chunk but foliage stores each distinct corner (position, st,
-# colour) once plus a triangle stream of u8 x4 {3 v0, 3 v1, 3 v2, 0}, like the shared vertices of Sony's HiG and
+# colour) once plus a triangle stream of u8 x4 {v0, v1, v2, 0} (vertex numbers), like the shared vertices of Sony's HiG and
 # other indexed PS2 renderers. Undead Burg west: 1.61 distinct corners per triangle, 45 -> ~28 bytes per triangle.
 # INDEXED=0: lists as before (A/B)
 INDEXED = os.environ.get("INDEXED", "1") == "1"
@@ -234,7 +234,7 @@ def index_chunk(ntri, pos, st, col):
     if nv > 255 or MAPI_HDR + 3 * nv + ntri > MAPI_IN_QW:
         return None
     src = np.concatenate([src, np.repeat(src[-1:], nv - len(src))])
-    tri = rank[inv.ravel()].reshape(ntri, 3) * 3
+    tri = rank[inv.ravel()].reshape(ntri, 3)
     idx = np.zeros((ntri, 4), np.uint8)
     idx[:, :3] = tri
     pad = lambda k: -(-k // 16) * 16

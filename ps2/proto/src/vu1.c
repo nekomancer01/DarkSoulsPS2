@@ -683,7 +683,7 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
 }
 
 /* VU1_CLIP part of an indexed batch: triangles [t0, t0 + k) as list streams written into the chain (vu1clip.vsm reads
- * lists only; such batches are the few near the camera) */
+ * lists only; such batches are the few near the camera). Streams are 2-byte (pos) / 4-byte aligned. */
 static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const u8 *pos, const u8 *st, const u8 *col,
                          const u8 *idx, const float *org, float st_k, int mxl)
 {
@@ -693,27 +693,29 @@ static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const 
         return;
     batch_head(t, cull, mode, k, org, st_k, mxl, 1, NULL);
     tag(qp, T_CNT, 0, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, n, U_FLG | 7));
-    u8 *d = (u8 *)cp;
-    for (int i = 0; i < n; i++)  /* each corner's vertex: idx holds 3 x its number per corner, 4 bytes a triangle */
-        memcpy(d + 6 * i, pos + 2 * idx[4 * (t0 + i / 3) + i % 3], 6);
-    memset(d + 6 * n, 0, qp * 16 - 6 * n);
+    const u8 *ix = idx + 4 * t0;  /* u8 x4 per triangle: its three vertex numbers, 0 */
+    const u16 *p16 = (const u16 *)pos;
+    u16 *dp = (u16 *)cp;
+    for (int i = 0; i < k; i++, ix += 4)
+        for (int j = 0; j < 3; j++, dp += 3) {
+            const u16 *s = p16 + 3 * ix[j];
+            dp[0] = s[0], dp[1] = s[1], dp[2] = s[2];
+        }
+    for (u8 *z = (u8 *)dp; z < (u8 *)(cp + 2 * qp); z++)
+        *z = 0;
     cp += 2 * qp;
-    tag(qs, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, n, U_FLG | U_USN | 8));
-    u32 *w = (u32 *)cp;
-    for (int i = 0; i < n; i++) {
-        unsigned v = idx[4 * (t0 + i / 3) + i % 3] / 3;
-        memcpy(w + i, st + 4 * v, 4);
+    const u32 *srcs[2] = {(const u32 *)st, (const u32 *)col};
+    for (int a = 0; a < 2; a++) {  /* st (V2-16) and colour (V4-8): 4 bytes per vertex each */
+        tag(qs, T_CNT, 0, VIF(V_NOP, 0, 0), a ? VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9)
+                                              : VIF(UNPACK_V2_16, n, U_FLG | U_USN | 8));
+        u32 *w = (u32 *)cp;
+        ix = idx + 4 * t0;
+        for (int i = 0; i < k; i++, ix += 4, w += 3)
+            w[0] = srcs[a][ix[0]], w[1] = srcs[a][ix[1]], w[2] = srcs[a][ix[2]];
+        for (; w < (u32 *)(cp + 2 * qs); w++)
+            *w = 0;
+        cp += 2 * qs;
     }
-    memset(w + n, 0, qs * 16 - 4 * n);
-    cp += 2 * qs;
-    tag(qs, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9));
-    w = (u32 *)cp;
-    for (int i = 0; i < n; i++) {
-        unsigned v = idx[4 * (t0 + i / 3) + i % 3] / 3;
-        memcpy(w + i, col + 4 * v, 4);
-    }
-    memset(w + n, 0, qs * 16 - 4 * n);
-    cp += 2 * qs;
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, CLIP_CODE));
 }
 

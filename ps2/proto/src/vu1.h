@@ -30,8 +30,8 @@ void vu1_begin(int buffer);
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
 /* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col
- * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: 3 x the vertex number of each
- * corner, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a
+ * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: the vertex numbers of its
+ * corners, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a
  * code qword before each, idx last). VU1_CLIP batches go to vu1clip.vsm as lists the EE writes into the chain. */
 void vu1_add_idx(GSTEXTURE *tex, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
                  const void *idx, const float *org, float st_k);
