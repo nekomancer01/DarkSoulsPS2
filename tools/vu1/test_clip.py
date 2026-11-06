@@ -34,8 +34,9 @@ def make(rng, tris, near_frac):
 
 
 def view_mat():
-    # camera basis = identity (right x, up y, forward z), eye at 0: columns 0-3
-    return [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 0]]
+    # camera basis = identity (right x, up y, forward z), eye at 0: columns 0-3; .w repeats the z row as vu1_begin
+    # writes it (view .w = view z)
+    return [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1], [0, 0, 0, 0]]
 
 
 def setup(vu, prog, rng_args, cull):
@@ -123,7 +124,8 @@ def main(seeds=10, tris=32):
         setup(vu, 'clip', args, cull)
         snap = [list(q) for q in vu.mem]
         vu.run('VU1Clip_CodeStart')
-        got = vertices(vu.kicks)
+        got = vertices(vu.kicks)  # triangles kicked with ADC (pass 1 of the two-pass program) are not drawn
+        got = [v for t in range(len(got) // 3) if not got[3 * t + 2].get('adc') for v in got[3 * t:3 * t + 3]]
         stray = [a for a in vu.kick_addrs if a not in (gen.MAP_IN + 2, gen.MAP_OUT0, gen.MAP_OUT1)]
         clob = [a for a in list(range(0, 8)) + list(range(gen.MAP_PLANES, 1024)) if vu.mem[a] != snap[a]]
         if stray or clob:
@@ -134,6 +136,15 @@ def main(seeds=10, tris=32):
             print('seed %d: %d vertices, reference %d' % (seed, len(got), len(ref)))
             bad += 1
             continue
+        # the two-pass program draws the unclipped triangles first: compare triangles in a fixed order
+        # (each output triangle against the closest reference triangle still unmatched)
+        left, order = list(range(len(ref) // 3)), []
+        for t in range(len(got) // 3):
+            dist = lambda r: max(abs(got[3 * t + k][c] - ref[3 * r + k][c]) for k in range(3) for c in ('x', 'y'))
+            r = min(left, key=dist)
+            left.remove(r)
+            order.append(r)
+        ref = [v for r in order for v in ref[3 * r:3 * r + 3]]
         for a, b in zip(got, ref):
             tot += 1
             d = max(abs(a['x'] - b['x']), abs(a['y'] - b['y']), abs(a['z'] - b['z']) >> 4, abs(a['f'] - b['f']),
@@ -142,7 +153,7 @@ def main(seeds=10, tris=32):
             if d > 3:
                 bad += 1
                 if bad < 6:
-                    print('seed %d diff %.1f\n got %s\n ref %s' % (seed, d, a, {k: b[k] for k in a}))
+                    print('seed %d diff %.1f\n got %s\n ref %s' % (seed, d, a, {k: b.get(k) for k in a}))
         print('seed %d: %d triangles out, %d kicks' % (seed, len(got) // 3, len(vu.kicks)))
     print('vertices %d, bad %d' % (tot, bad))
     return bad
