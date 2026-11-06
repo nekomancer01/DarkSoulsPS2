@@ -18,7 +18,10 @@ def index_export(vs):
     pos = b''.join(struct.pack('<3h', *q) for q, st, c in vs)
     st = b''.join(struct.pack('<2H', *s) for q, s, c in vs)
     col = bytes(x for q, s, c in vs for x in c)
-    nv, p2, s2, c2, idx = export_map.index_chunk(n // 3, pos, st, col)
+    ix = export_map.index_chunk(n // 3, pos, st, col)
+    if ix is None:  # over CLIPI_MAX (or no smaller): the exporter keeps it unindexed
+        return None
+    nv, p2, s2, c2, idx = ix
     verts = [(list(struct.unpack_from('<3h', p2, 6 * i)), list(struct.unpack_from('<2H', s2, 4 * i)),
               list(c2[4 * i:4 * i + 4])) for i in range(nv)]
     tris = [list(idx[4 * t:4 * t + 3]) for t in range(n // 3)]
@@ -66,18 +69,20 @@ def main(seeds=12, tris=54):
     # sharing is set per seed: some batches reach 3 vertices per triangle (vertex numbers past 85, i.e. 3 v > 255)
     bad = 0
     cl = ci = 0
-    nv = nt = 0
+    nv = nt = exported = 0
     for seed in range(seeds):
         rng = random.Random(300 + seed)
         args = tc.make(rng, tris, 0.3)
         org, step, K, vs = args
         # share corners: each triangle reuses up to two corners of earlier ones (a mesh-like batch)
         vs = list(vs)
-        for t in range(1, tris):
-            for k in range(rng.randrange(3)):
+        for t in range(1, tris):  # odd seeds share more: the exporter indexes only batches within CLIPI_MAX
+            for k in range(rng.randrange(1, 3) if seed % 2 else rng.randrange(3)):
                 vs[3 * t + k] = vs[rng.randrange(3 * t)]
         args = (org, step, K, vs)
-        idx = index_export(vs) if seed % 2 else index(vs, rng)  # odd seeds: the exporter's own bytes
+        ie = seed % 2 and index_export(vs)
+        exported += bool(ie)
+        idx = ie or index(vs, rng)  # odd seeds: the exporter's own bytes (when it indexes)
         nv += len(idx[0]); nt += tris
         cull, edge = seed % 2, seed % 3 == 0
         kl, c1 = run('vu1map2.vsm', 'VU1Map2_CodeStart', args, cull, edge)
@@ -93,8 +98,8 @@ def main(seeds=12, tris=54):
                 if a != b:
                     print('  vertex', i, a, b)
                     break
-    print('%d batches, %.2f vertices / triangle, bad %d; cycles list %d indexed %d (%.2fx)' %
-          (seeds, nv / nt, bad, cl, ci, cl / ci))
+    print('%d batches (%d through the exporter), %.2f vertices / triangle, bad %d; cycles list %d indexed %d (%.2fx)' %
+          (seeds, exported, nv / nt, bad, cl, ci, cl / ci))
     return bad
 
 
@@ -111,7 +116,7 @@ def main_clip(seeds=12, tris=32):
             for k in range(rng.randrange(3)):
                 vs[3 * t + k] = vs[rng.randrange(3 * t)]
         args = (org, step, K, vs)
-        idx = index_export(vs) if seed % 2 else index(vs, rng)
+        idx = (seed % 2 and index_export(vs)) or index(vs, rng)
         assert gen.MAPI_HDR + 3 * len(idx[0]) + tris <= gen.CLIPI_MAX
         cull = seed % 2
         kl, _ = run('vu1clip.vsm', 'VU1Clip_CodeStart', args, cull, False)

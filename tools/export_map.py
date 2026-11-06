@@ -214,12 +214,15 @@ def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
 # INDEXED=0: lists as before (A/B)
 INDEXED = os.environ.get("INDEXED", "1") == "1"
 MAPI_HDR, MAPI_IN_QW = 8, 493  # tools/vu1/gen.py MAPI_HDR, MAP_IN_QW
+CLIPI_MAX = 336  # tools/vu1/gen.py CLIPI_MAX: the most an indexed batch may take to be clipped on VU1 (vu1clip's indexed
+                 # entry); bigger ones would be split on the EE near the camera (~1 ms a frame at the crossing), so they
+                 # stay unindexed (little sharing anyway: about 2 vertices per triangle)
 
 
 def index_chunk(ntri, pos, st, col):
     """Unindexed corner streams -> (nv, pos, st, col, idx) with the distinct corners in first-use order (the count padded
     to a multiple of 3 with copies of the last one: vu1mapi transforms three per loop pass), or None when the chunk
-    does not fit the VU1 buffer that way or is no smaller."""
+    does not fit vu1clip's indexed entry (CLIPI_MAX) or is no smaller."""
     n = 3 * ntri
     P = np.frombuffer(bytes(pos[:6 * n]), np.uint8).reshape(n, 6)
     S = np.frombuffer(bytes(st[:4 * n]), np.uint8).reshape(n, 4)
@@ -231,7 +234,7 @@ def index_chunk(ntri, pos, st, col):
     rank[order] = np.arange(len(order))
     src = first[order]
     nv = -(-len(src) // 3) * 3
-    if nv > 255 or MAPI_HDR + 3 * nv + ntri > MAPI_IN_QW:
+    if nv > 255 or MAPI_HDR + 3 * nv + ntri > CLIPI_MAX:
         return None
     src = np.concatenate([src, np.repeat(src[-1:], nv - len(src))])
     tri = rank[inv.ravel()].reshape(ntri, 3)
