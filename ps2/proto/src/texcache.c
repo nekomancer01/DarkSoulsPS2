@@ -4,8 +4,8 @@
  * frame are never evicted, because the EE-clipped triangles (gsKit, end of the frame) still use them.
  *
  * Uploads (R&C 1 / Jak pattern): a texture that is not resident is uploaded in the map's VIF1 chain right before the
- * first batch that draws with it (vu1_upload_tex: PATH2 image transfer straight from map.bin, then TEXFLUSH); resident
- * ones cost nothing (Jak II). The chain may be sent in several segments (vu1.c room()); order is kept either way.
+ * first batch that draws with it (vu1_upload_tex: PATH2 image transfer straight from map.bin, then TEXFLUSH; with
+ * VU1_TEX_PATH3 queued on PATH3 behind one FLUSHA gate per segment, see vu1.c); resident ones cost nothing (Jak II). The chain may be sent in several segments (vu1.c room()); order is kept either way.
  *
  * Near level (TECH_DEBT map-2 / texstream-5): textures with a 2x level (texmap.add_near: twice mip 0's size, same
  * palette) draw it on chunks close enough for its texels to stay >= 1 / MIP_K px. Near levels live in a pool of their

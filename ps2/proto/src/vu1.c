@@ -96,6 +96,7 @@ static u32 clut_last, clut_loads;
 #define V_BASE 0x03
 #define V_FLUSHE 0x10
 #define V_FLUSH 0x11
+#define V_FLUSHA 0x13
 #define V_MSCAL 0x14
 #define V_DIRECT 0x50
 #define UNPACK_V4_32 0x6C
@@ -112,6 +113,41 @@ static u32 clut_last, clut_loads;
 #define T_CNT 1
 #define T_REF 3
 #define T_END 7
+
+#ifdef VU1_TEX_PATH3
+/* texstream-4 (renderer plan PR 4): texture uploads on PATH3 instead of FLUSH + PATH2 in the chain. vu1_upload_tex
+ * queues the transfer in a GIF DMA chain of the chain buffer (texq); vu1_kick starts it on the GIF channel right
+ * before the VIF1 chain, so the GS takes the images while VU1 draws the batches in front of the gate. The gate is one
+ * FLUSHA per segment, put in the VIF1 chain where the segment's first upload was asked for (right before the first
+ * batch drawing with a queued texture): it waits until PATH3 has nothing left, so every texture queued in the
+ * segment is in VRAM (and the closing TEXFLUSH done) before any batch after it draws. Before the gate the GS
+ * interleaves the IMAGE packets (TEXQ_SLICE qwords each, EOP) with VU1's PATH1 kicks and the chain's PATH2 packets.
+ * No MSKPATH3: nothing an upload overwrites is still drawn when the queue starts. texcache never evicts a level
+ * drawn this frame, and the last frame's chains and gsKit's queue (same GIF channel, d2_wait) are done by the kick.
+ * Double-buffered chains (render-14 step B) would break that and need the uploads masked until the old frame's
+ * draws are out. A queue that fills up sends the rest on PATH2 as before (after the gate, so in order). */
+#ifndef TEXQ_MAP_QW
+#define TEXQ_MAP_QW 4096  /* ~8 qw per texture (11 at 128x128 T8): the first Firelink frame queues ~350 */
+#endif
+#ifndef TEXQ_CHR_QW
+#define TEXQ_CHR_QW 256
+#endif
+#ifndef TEXQ_SLICE
+#define TEXQ_SLICE 512  /* IMAGE qwords per GIF packet: PATH1 / PATH2 get the GIF between packets */
+#endif
+static u128 texq_map[TEXQ_MAP_QW] __attribute__((aligned(64)));
+static u128 texq_chr[TEXQ_CHR_QW] __attribute__((aligned(64)));
+static u64 *tq0, *tq, *tq_end;  /* this chain's queue, write pointer, end (3 qw kept for the closing TEXFLUSH) */
+static int tq_n;                /* uploads queued in this segment */
+#define D2_CHCR (*(volatile u32 *)0x1000A000)
+#define D2_QWC (*(volatile u32 *)0x1000A020)
+#define D2_TADR (*(volatile u32 *)0x1000A030)
+static void d2_wait(void)
+{
+    while (D2_CHCR & 0x100)  /* STR: the GIF channel is still sending (gsKit's queue, drb, an earlier queue) */
+        ;
+}
+#endif
 
 static inline void tag(u32 qwc, int id, const void *addr, u64 vif0, u64 vif1)
 {
@@ -207,6 +243,11 @@ void vu1_begin(int buffer)
     chain = cur ? chain_chr : chain_map;
     chain_end = cur ? chain_chr + CHAIN_CHR_QW - 4 : chain_map + CHAIN_MAP_QW - 4;
     seg_qw = 0;
+#ifdef VU1_TEX_PATH3
+    tq0 = tq = (u64 *)(cur ? texq_chr : texq_map);
+    tq_end = tq0 + 2 * ((cur ? TEXQ_CHR_QW : TEXQ_MAP_QW) - 3);
+    tq_n = 0;
+#endif
     clut_sync = 0;
     clut_loads = 0;
     V3 eye, right, up, fwd;
@@ -323,6 +364,41 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
     u32 dbw = (w + 63) / 64;
     if (psm == GS_PSM_T8 || psm == GS_PSM_T4)
         dbw = (dbw + 1) & ~1u;  /* even, like TEX0's TBW for these textures */
+#ifdef VU1_TEX_PATH3
+    int slices = (qw + TEXQ_SLICE - 1) / TEXQ_SLICE;
+    if (tq + 2 * (8 + 3 * (slices - 1)) <= tq_end) {
+        if (!tq_n) {  /* the segment's gate, in front of the batch that asked for this texture */
+            if (!room(1))
+                return 0;
+            tag(0, T_CNT, 0, VIF(V_FLUSHA, 0, 0), VIF(V_NOP, 0, 0));
+            vu1_stats.tex_gates++;
+            d2_wait();  /* the queue buffer is not still being read by its last transfer */
+        }
+        u64 *p = tq;
+        p[0] = TAG(6, T_CNT, 0), p[1] = 0;
+        p[2] = GIF_SET_TAG(4, 0, 0, 0, 0, 1), p[3] = 0xE;
+        p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, tbp, dbw, psm), p[5] = 0x50;
+        p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0), p[7] = 0x51;
+        p[8] = GS_SETREG_TRXREG(w, h), p[9] = 0x52;
+        p[10] = GS_SETREG_TRXDIR(0), p[11] = 0x53;
+        p += 12;
+        for (int s = 0, off = 0; s < slices; s++, off += TEXQ_SLICE) {
+            int n = qw - off < TEXQ_SLICE ? qw - off : TEXQ_SLICE;
+            if (s) {
+                p[0] = TAG(1, T_CNT, 0), p[1] = 0;
+                p += 2;
+            }
+            p[0] = GIF_SET_TAG(n, 1, 0, 0, 2, 0), p[1] = 0;  /* IMAGE, EOP: the GIF may switch paths after it */
+            p[2] = TAG(n, T_REF, (const char *)pix + off * 16), p[3] = 0;
+            p += 4;
+        }
+        tq = p;
+        tq_n++;
+        vu1_stats.tex_path3++;
+        return 1;
+    }
+    vu1_stats.tex_path2++;  /* queue full: in the chain on PATH2, behind this segment's gate */
+#endif
     if (!room(11))
         return 0;
     tag(6, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_DIRECT, 0, 6));
@@ -596,6 +672,20 @@ void vu1_kick(void)
         vu1_stats.peak[cur] = qw;
     SyncDCache(chain, cp);  /* write back only the chain, not the whole data cache */
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+#ifdef VU1_TEX_PATH3
+    if (tq_n) {  /* the segment's uploads first: PATH3 runs from here, the chain's gate waits for it */
+        tq[0] = TAG(2, T_END, 0), tq[1] = 0;
+        tq[2] = GIF_SET_TAG(1, 1, 0, 0, 0, 1), tq[3] = 0xE;
+        tq[4] = 0, tq[5] = 0x3F;  /* TEXFLUSH */
+        tq += 6;
+        SyncDCache(tq0, tq);
+        d2_wait();
+        D2_QWC = 0;
+        D2_TADR = (u32)tq0 & 0x0FFFFFFF;
+        D2_CHCR = 0x105;  /* from memory, chain mode, STR (no tag transfer) */
+        tq = tq0, tq_n = 0;  /* refilled only after the gate passed (room() waits for VIF1, the next frame later) */
+    }
+#endif
     dma_channel_send_chain(DMA_CHANNEL_VIF1, chain, 0, DMA_FLAG_TRANSFERTAG, 0);
 }
 

@@ -74,6 +74,8 @@ typedef struct {
     int last[2], peak[2], segments;
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
     int clut_loads[2];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
+    int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
+                                           * the queue was full, FLUSHA gates (one per segment with uploads) */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 
