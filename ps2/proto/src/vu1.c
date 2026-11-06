@@ -766,14 +766,21 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
            rz = {s * idx_fwd.x, s * idx_fwd.y, s * idx_fwd.z};
         for (int i = 0; i < nv; i++, p += 3) {
             float x = ox + rx.x * p[0] + rx.y * p[1] + rx.z * p[2], y = oy + ry.x * p[0] + ry.y * p[1] + ry.z * p[2],
-                  z = oz + rz.x * p[0] + rz.y * p[1] + rz.z * p[2], zm = z * 0.999f - 0.01f;  /* margin */
-            flag[i] = z < R_NEAR * 1.01f + 0.01f || fabsf(x) * idx_kx > zm || fabsf(y) * idx_ky > zm;
+                  z = oz + rz.x * p[0] + rz.y * p[1] + rz.z * p[2];
+            float zm = z * 0.999f - 0.01f, zp = z * 1.001f + 0.01f, ax = fabsf(x) * idx_kx, ay = fabsf(y) * idx_ky;
+            /* bit 0: VU1 may flag it (conservative); bits 1-5: surely past the near plane / that guard band side */
+            flag[i] = (z < R_NEAR * 1.01f + 0.01f || ax > zm || ay > zm) | (z < R_NEAR * 0.99f - 0.01f) << 1 |
+                      (ax > zp) << (x > 0 ? 2 : 3) | (ay > zp) << (y > 0 ? 4 : 5);
         }
         const u8 *ix = idx;
         int nc = 0;
         nk = 0;
-        for (int i = 0; i < tris; i++, ix += 4)
-            memcpy(flag[ix[0]] | flag[ix[1]] | flag[ix[2]] ? clipt + 4 * nc++ : keep + 4 * nk++, ix, 4);
+        for (int i = 0; i < tris; i++, ix += 4) {
+            u8 a = flag[ix[0]], b = flag[ix[1]], c = flag[ix[2]];
+            if (a & b & c & 0x3E)  /* all three corners past the same plane: nothing of it on screen */
+                continue;
+            memcpy((a | b | c) & 1 ? clipt + 4 * nc++ : keep + 4 * nk++, ix, 4);
+        }
         for (int t0 = 0; t0 < nc; t0 += VU1_CLIP_TRIS)
             add_idx_clip(t, cull, mode, 0, nc - t0 < VU1_CLIP_TRIS ? nc - t0 : VU1_CLIP_TRIS, pos, st, col,
                          clipt + 4 * t0, org, st_k, mxl);
