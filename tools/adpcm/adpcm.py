@@ -21,7 +21,7 @@ def lib():
     so, src = os.path.join(HERE, "libvagenc.so"), os.path.join(HERE, "vagenc.c")
     if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
         tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel process never loads half a library
-        if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{src}'"):
+        if os.system(f"gcc -O2 -ffp-contract=off -shared -fPIC -o '{tmp}' '{src}'"):
             sys.exit("adpcm.py: building libvagenc.so failed")
         os.replace(tmp, so)
     L = ctypes.CDLL(so)
@@ -29,6 +29,9 @@ def lib():
     L.vag_encode.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_long]
     L.vag_decode.restype = ctypes.c_size_t
     L.vag_decode.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    L.rs_accum.restype = None
+    L.rs_accum.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                           ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
     _L = L
     return L
 
@@ -54,8 +57,12 @@ def snr(ref, test):
     return 99.0 if noise == 0 else 10 * np.log10(max((ref ** 2).sum(), 1e-9) / noise)
 
 
-def resample(pcm, src, dst, taps=32):
-    """Band-limited resampling (Kaiser-windowed sinc, cutoff 0.95 x the lower Nyquist); int16 (frames, ch) in/out"""
+def resample(pcm, src, dst, taps=32, native=True):
+    """Band-limited resampling (Kaiser-windowed sinc, cutoff 0.95 x the lower Nyquist); int16 (frames, ch) in/out.
+    The window weights depend only on an output frame's fractional position, which takes few distinct values (a
+    fixed rate ratio repeats them), so they are computed once per distinct value and the multiply-add runs in C
+    (vagenc.c rs_accum, same order and rounding: the output is bit for bit the all-numpy form, native=False, which
+    took ~50 s for a 5-minute stereo track)."""
     if src == dst:
         return pcm
     x = pcm.astype(np.float32).reshape(len(pcm), -1)
@@ -65,12 +72,27 @@ def resample(pcm, src, dst, taps=32):
     frac = (t - i0).astype(np.float32)
     cut = 0.95 * min(1.0, dst / src)
     k = np.arange(-taps + 1, taps + 1)
-    out = np.zeros((n_out, x.shape[1]), np.float32)
     xp = np.vstack([np.zeros((taps, x.shape[1]), np.float32), x, np.zeros((taps + 1, x.shape[1]), np.float32)])
+
+    def weights(j, f):
+        d = j - f
+        return cut * np.sinc(cut * d) * np.i0(8.0 * np.sqrt(np.clip(1 - (d / taps) ** 2, 0, 1))) / np.i0(8.0)
+
+    if native:
+        uf, ph = np.unique(frac, return_inverse=True)
+        w = np.stack([weights(j, uf) for j in k], 1)
+        if w.dtype == np.float64:  # rs_accum's precision (numpy's promotion of int64 tap - float32 position)
+            w = np.ascontiguousarray(w)
+            xp = np.ascontiguousarray(xp)
+            ph = np.ascontiguousarray(ph.reshape(-1), np.int64)
+            i0c = np.ascontiguousarray(i0 + k[0] + taps, np.int64)  # first tap's row in xp
+            out = np.empty((n_out, x.shape[1]), np.float32)
+            lib().rs_accum(xp.ctypes.data, x.shape[1], i0c.ctypes.data, ph.ctypes.data, n_out, w.ctypes.data,
+                           len(k), out.ctypes.data)
+            return np.clip(np.round(out), -32768, 32767).astype(np.int16)
+    out = np.zeros((n_out, x.shape[1]), np.float32)
     for j in k:  # 2 * taps passes over the output, O(n * taps) memory-light
-        d = j - frac
-        w = cut * np.sinc(cut * d) * np.i0(8.0 * np.sqrt(np.clip(1 - (d / taps) ** 2, 0, 1))) / np.i0(8.0)
-        out += xp[i0 + j + taps] * w[:, None]
+        out += xp[i0 + j + taps] * weights(j, frac)[:, None]
     return np.clip(np.round(out), -32768, 32767).astype(np.int16)
 
 
