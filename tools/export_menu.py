@@ -389,9 +389,13 @@ def main():
     offs["layout"] = len(blob) + HDR
     for e in layout + menu_layout:
         blob += struct.pack("<5h4B", *e)
+    # the layout entries are 14 B each: realign, since the PS2 reads the gradient and string tables as words (a lw at a
+    # misaligned address is an address error on the EE; PCSX2 does it anyway)
+    align(4)
     offs["grads"] = len(blob) + HDR
     for g in grads:
         blob += g
+    align(4)
     offs["strings"] = len(blob) + HDR
     st = bytearray()
     so = []
