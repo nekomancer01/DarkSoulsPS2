@@ -653,14 +653,50 @@ void vu1_skin_light(const float amb[3], const float sun[3])
         skin_amb[c] = amb[c], skin_sun[c] = sun[c];
 }
 
+int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
+{
+    /* the stream unpacks of vu1_skin_add below, each behind a code qword (VIF codes, NOP-padded in front) and each
+     * stream padded to a qword with zeros (= VIF NOPs) */
+    int n = tris * 3, q16 = (n * 8 + 15) / 16, q8 = (n * 4 + 15) / 16, at = 0;
+    u32 *w = buf;
+    const u32 code[5][2] = {
+        {VIF(V_STCYCL, 0, 0x0104), VIF(UNPACK_V4_16, n, U_FLG | 9)},
+        {VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 10)},
+        {VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 11)},
+        {0, VIF(UNPACK_V4_8, n, U_FLG | U_USN | 12)},  /* after STMASK 0xF0: .zw of qword 3 kept for st */
+        {VIF(V_NOP, 0, 0), textured ? VIF(ms ? UNPACK_V2_32 | 0x10 : UNPACK_V2_32, n, U_FLG | 12)
+                                    : VIF(UNPACK_V4_8, n, U_FLG | U_USN | 12)}};
+    for (int s = 0; s < 5; s++) {
+        if (s == 3 && !ms) {
+            if (streams)
+                streams[3] = NULL;
+            continue;
+        }
+        if (w) {
+            u32 *c = w + at * 4;
+            c[0] = s == 3 ? VIF(V_STMASK, 0, 0) : 0, c[1] = s == 3 ? 0xF0 : 0, c[2] = code[s][0], c[3] = code[s][1];
+            if (streams)
+                streams[s] = c + 4;
+        }
+        at += 1 + (s == 3 || (s == 4 && !textured) ? q8 : q16);
+    }
+    return at * 16;
+}
+
 void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
                   const void *nrm, const void *st_or_col, int spec_k, const void *ms)
+{
+    vu1_skin_add_pkt(t, cull, tris, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
+}
+
+void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
+                      const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes)
 {
     if (tris <= 0)  /* an UNPACK of 0 vectors would take 256 */
         return;
     if (skin_clip && tris > SKIN_CLIP_TRIS) {  /* the clip program keeps its scratch after the batch */
         int k = SKIN_CLIP_TRIS * 3;
-        vu1_skin_add(t, cull, SKIN_CLIP_TRIS, tint, pa, pb, nrm, st_or_col, spec_k, ms);
+        vu1_skin_add(t, cull, SKIN_CLIP_TRIS, tint, pa, pb, nrm, st_or_col, spec_k, ms);  /* streams: no packet */
         vu1_skin_add(t, cull, tris - SKIN_CLIP_TRIS, tint, (const char *)pa + k * 8, (const char *)pb + k * 8,
                      (const char *)nrm + k * 8, (const char *)st_or_col + k * (t ? 8 : 4), spec_k,
                      ms ? (const char *)ms + k * 4 : NULL);
@@ -716,6 +752,14 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
     /* PRIM tag template (triangle, gouraud, (textured, STQ), fog, context 1; STQ, RGBAQ, XYZF2): the program copies
      * it in front of each kick of output with NLOOP and EOP set */
     q64(GIF_SET_TAG(skin_clip ? 3 : 0, skin_clip, 1, (t ? 0x1B : 0x0B) | fge, 0, 3), 0x412);
+#ifndef VU1_NO_SKINPKT  /* fallback switch: the stream-by-stream path below for every batch */
+    if (pkt) {  /* PR 8: the batch's prebuilt packet (vu1_skin_packet) in one REF */
+        tag(pkt_bytes / 16, T_REF, pkt, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
+        u32 entry = skin_clip ? SKINCLIP_CODE : !t ? SKIN2_FLAT : ms ? SKIN2_TEXSPEC : SKIN2_TEX;
+        tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, entry));
+        return;
+    }
+#endif
     tag((n * 8 + 15) / 16, T_REF, pa, VIF(V_STCYCL, 0, 0x0104), VIF(UNPACK_V4_16, n, U_FLG | 9));
     tag((n * 8 + 15) / 16, T_REF, pb, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 10));
     tag((n * 8 + 15) / 16, T_REF, nrm, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 11));

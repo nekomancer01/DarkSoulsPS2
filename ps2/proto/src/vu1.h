@@ -65,6 +65,14 @@ void vu1_skin_light(const float amb[3], const float sun[3]);
  * st f32x2 normalized (textured) or colour u8x4 (t == NULL). tint: added to the light (0x80 = 1.0 when textured). */
 void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
                   const void *nrm, const void *st_or_col, int spec_k, const void *ms);
+/* Prebuilt skin batches (renderer plan PR 8): vu1_skin_packet writes the VIF packet of one batch into buf (16-byte
+ * aligned, zeroed, NULL = size only): the stream unpacks of vu1_skin_add, each stream behind its own code qword. It
+ * returns the size in bytes and the streams' places (pa, pb, nrm, ms or NULL, st_or_col) for the caller to fill.
+ * vu1_skin_add_pkt then sends the per-frame header and the packet as one DMA reference instead of 4-6; batches the
+ * clip program splits (> 12 triangles near the camera) still go stream by stream. */
+int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5]);
+void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
+                      const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes);
 /* Specular (textured batches; visuals-fog-light's spec, TECH_DEBT vu1-6): spec_k = Blinn exponent 2^k (1..5), ms =
  * u8x4 per vertex (0, 0, metal m, f = s m + 0.04 s^2 (1 - m)) x 255, or NULL for a batch without metal / specular
  * (it then runs the plain textured program, which costs 131 instead of ~200 VU1 cycles per triangle). Per draw, before
