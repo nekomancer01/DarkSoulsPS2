@@ -54,6 +54,7 @@ static int want_icons;
 typedef struct { int icon, state; unsigned last; } IconCell;  /* state 0 empty, 1 reading, 2 ready */
 static IconCell *cells;
 static int ncells, icon_px, icon_cell_bytes;
+static unsigned sheet_alloc;  /* bytes ui_alloc'd for sheet (+ CLUTs, cells, stage) */
 static unsigned char *sheet, *cluts, *stage;  /* EE copies: the sheet (512 x rows), the CLUTs, one read's cell */
 static unsigned sheet_bytes;
 static GSTEXTURE sheet_t;
@@ -118,7 +119,7 @@ static void release_all(void)
         reading_cell = -1;
     }
     if (sheet)
-        ui_free(sheet, sheet_bytes + ncells * 1024 + ncells * sizeof(IconCell) + icon_cell_bytes), sheet = 0;
+        ui_free(sheet, sheet_alloc), sheet = 0;
     cells = 0, ncells = 0, nodes = 0, hdr = 0, vis = 0;
     tc_unpin();
     drb_stats.vram_kb = 0;
@@ -278,7 +279,11 @@ static int screen_setup(void)
     vstamp = (u8 *)(vleft + hdr->nodes);
     pair_labels();
     if (ncells) {
-        unsigned n = sheet_bytes + ncells * 1024 + ncells * sizeof(IconCell) + icon_cell_bytes;
+        /* + 63: stage is rounded up to 64 B below; without the slack an icon read ran up to 60 B past the block and
+         * overwrote the next heap chunk's header (free() then stored through a null link: PCSX2 "TLB Miss addr=0x8",
+         * on a PS2 kernel memory) */
+        unsigned n = sheet_bytes + ncells * 1024 + ncells * sizeof(IconCell) + 63 + icon_cell_bytes;
+        sheet_alloc = n;
         sheet = ui_alloc(n);
         if (!sheet)
             ncells = 0;
