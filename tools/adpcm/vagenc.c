@@ -4,7 +4,8 @@
  * Decode: s = (r << 12 >> shift) + (s1 * f0 + s2 * f1 + 32) / 64, clamped to 16 bit, with the SPU's filter table.
  * The encoder tries every filter and shift per block against the real decoder state and keeps the one with the
  * least squared error, so encoder and decoder never drift.
- * Build: gcc -O2 -shared -fPIC -o libvagenc.so vagenc.c */
+ * rs_accum: the multiply-add of adpcm.resample (weights from Python).
+ * Build: gcc -O2 -ffp-contract=off -shared -fPIC -o libvagenc.so vagenc.c (no FMA: rs_accum rounds like numpy) */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -98,4 +99,24 @@ size_t vag_decode(const uint8_t *in, size_t nblocks, int16_t *out)
         }
     }
     return nblocks * 28;
+}
+
+/* adpcm.resample's sum, in the same order and precision as its numpy form (out += xp[i0 + j + taps] * w per tap j):
+ * out[i][c] = (float)((double)out[i][c] + (double)xp[i0[i] + j][c] * w[ph[i]][j]) for j = 0 .. ntaps - 1, so the
+ * result is bit for bit the numpy one. xp: padded input (frames, ch) float32; w: (phases, ntaps) double. */
+void rs_accum(const float *xp, size_t ch, const int64_t *i0, const int64_t *ph, size_t n, const double *w,
+              size_t ntaps, float *out)
+{
+    for (size_t i = 0; i < n; i++) {
+        const float *x = xp + (size_t)i0[i] * ch;
+        const double *wi = w + (size_t)ph[i] * ntaps;
+        for (size_t c = 0; c < ch; c++) {
+            float o = 0.0f;
+            for (size_t j = 0; j < ntaps; j++) {
+                double p = (double)x[j * ch + c] * wi[j];
+                o = (float)((double)o + p);
+            }
+            out[i * ch + c] = o;
+        }
+    }
 }
