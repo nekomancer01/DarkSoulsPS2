@@ -80,11 +80,18 @@ void vu1_wait(void);
 void vu1_clut_reload(void);
 /* Chain sizes in qwords (R1): last / peak per buffer (0 map, 1 characters) incl. segments; segments = times a full
  * buffer was sent early (each costs an EE wait) */
+/* texstream-4: map texture uploads on PATH3 behind one FLUSHA gate per segment (vu1.c); -DVU1_TEX_PATH2 builds keep
+ * the old FLUSH + PATH2 uploads in the chain */
+#ifndef VU1_TEX_PATH2
+#define VU1_TEX_PATH3
+#endif
 typedef struct {
     int last[2], peak[2], segments;
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
     int skin_windows;  /* char-7: bone windows uploaded after a character's first (models over 61 bones), so far */
     int clut_loads[2];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
+    int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
+                                           * the queue was full, FLUSHA gates (one per segment with uploads) */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 

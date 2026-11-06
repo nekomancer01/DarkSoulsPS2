@@ -628,6 +628,11 @@ int main(int argc, char **argv)
             printf("DSRPROTO chain qw: map %d peak %d, chr %d peak %d, segments %d; CLUT loads %d + %d, batches %d\n",
                    vu1_stats.last[0], vu1_stats.peak[0], vu1_stats.last[1], vu1_stats.peak[1], vu1_stats.segments,
                    vu1_stats.clut_loads[0], vu1_stats.clut_loads[1], map_vu1_batches);
+#ifdef VU1_TEX_PATH3
+        if (log_frames % 300 == 0)
+            printf("DSRPROTO tex path3 %d, path2 %d, gates %d\n", vu1_stats.tex_path3, vu1_stats.tex_path2,
+                   vu1_stats.tex_gates);
+#endif
     }
     return 0;
 }
