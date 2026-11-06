@@ -71,7 +71,10 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
  * vu1_skin_add_pkt then sends the per-frame header and the packet as one DMA reference instead of 4-6; batches the
  * clip program splits (> 12 triangles near the camera) still go stream by stream. */
 int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5]);
-void vu1_skin_add_pkt(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
+/* st: what the packet's / streams' last stream holds (1 st, 0 colour; vu1_skin_packet's `textured`), apart from t: the
+ * VIF unpacks follow the data, never the texture. A texture without st draws flat (t ignored); st without a texture
+ * (texture missing: VRAM full / not uploaded) draws unlit grey from the st packet. */
+void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tint, const void *pa, const void *pb,
                       const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes);
 /* Specular (textured batches; visuals-fog-light's spec, TECH_DEBT vu1-6): spec_k = Blinn exponent 2^k (1..5), ms =
  * u8x4 per vertex (0, 0, metal m, f = s m + 0.04 s^2 (1 - m)) x 255, or NULL for a batch without metal / specular
