@@ -38,6 +38,11 @@
  * world-5). Only the normal-map relief (bump.bin) is per block: read for the block the player stood in for
  * WORLD_SWAP_S (no reading back and forth on a boundary; ASSUMED value). */
 #define WORLD_SWAP_S 1.0f
+#define WORLD_RELIEF_RETRY_S 5.0f  /* a relief that found no room tries again after (ASSUMED) */
+static float relief_at;  /* in_cur_s from which the relief of the block underfoot may be tried */
+#ifndef WORLD_RELIEF_SOFT
+#define WORLD_RELIEF_SOFT 1  /* 0: the relief may drop wanted / drawn cells (the old way) */
+#endif
 /* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
  * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
@@ -235,7 +240,7 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
         }
-        if (!i || !pack_entry_raw(&r->pk, "bump.bin", &r->bump_off, &r->bump_size))  /* the boot area's: main.c */
+        if ((!i && !WORLD_BOOT_RELIEF) || !pack_entry_raw(&r->pk, "bump.bin", &r->bump_off, &r->bump_size))
             r->bump_off = r->bump_size = 0;
         if (!r->open) {
             pack_close(&r->pk);
@@ -277,7 +282,7 @@ int world_boot_map(void)
         return 0;
     }
     r->state = W_ON;
-    bump_blk = world_stats.full = 0;
+    bump_blk = world_stats.full = WORLD_BOOT_RELIEF ? -1 : 0;  /* (streamed: read once the player stood in it) */
     world_stats.loaded = 1;
     return 1;
 }
@@ -387,7 +392,7 @@ static void bump_free(void *p, unsigned n)
 /* the relief of bump_blk goes (bump.c lets go of it now); its buffer is freed WORLD_DRAIN frames later (VIF chains) */
 static void bump_drop(void)
 {
-    if (bump_blk > 0)
+    if (bump_blk > 0 || (bump_blk == 0 && WORLD_BOOT_RELIEF))
         map_block_bump(bump_blk, NULL);
     if (bump_buf) {
         if (bump_old)  /* the one before is still draining: the chains of two swaps ago are long done */
@@ -656,7 +661,8 @@ static void bump_step(void)
             bump_reading = 1, world_stats.reading = bump_rd, hitch_block_read(n);
         return;
     }
-    if (cur == bump_blk || in_cur_s < WORLD_SWAP_S || warping || rt[cur].state != W_ON || lite_first)
+    if (cur == bump_blk || in_cur_s < (relief_at > WORLD_SWAP_S ? relief_at : WORLD_SWAP_S) || warping ||
+        rt[cur].state != W_ON || lite_first)
         return;
     if (bump_blk >= 0)
         bump_drop();
@@ -665,11 +671,15 @@ static void bump_step(void)
     unsigned sz = (r->bump_size + 127) & ~127u;
     if (!r->bump_size)
         return;
-    bump_buf = mapstream_alloc(sz, feet_now);
-    if (!bump_buf && enemy_ram_free() >= WORLD_HEAP_FLOOR + sz)
+    /* the relief is detail on top of the map: it takes room no wanted cell needs (WORLD_RELIEF_SOFT). Taking it like a
+     * lite set dropped ~700 KB of drawn cells at every block change after 1 s in the Burg, which then read back
+     * (soak on the ISO, 2026-11-07); the heap is the enemies' (WORLD_HEAP_MODELS) */
+    bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
+    if (!bump_buf && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)
         bump_buf = memalign(128, sz);
     if (!bump_buf) {
         printf("world: block %d relief: no room for %u KB\n", cur, sz >> 10);
+        bump_blk = -1, relief_at = in_cur_s + WORLD_RELIEF_RETRY_S;  /* try again while the player stays */
         return;
     }
     bump_blk = -1, bump_rd = cur, bump_done = 0, bump_t0 = ticks();
@@ -768,6 +778,8 @@ static void step(const float *feet, float dt)
     for (int i = 0; i < nblk; i++)
         rt[i].retry_s = rt[i].retry_s > dt ? rt[i].retry_s - dt : 0;
     in_cur_s = cur == was ? in_cur_s + dt : 0;
+    if (cur != was)
+        relief_at = 0;
     world_stats.current = cur;
     for (int i = 0; i < nblk; i++)  /* slots of unloaded blocks come free once the chains are done */
         if (rt[i].state == W_DRAIN && (--rt[i].drain <= 0 || warping))

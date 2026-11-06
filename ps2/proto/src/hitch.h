@@ -40,10 +40,13 @@ static inline unsigned hitch_now(void)
 #define HITCH_BEGIN(s) unsigned hitch_t0_##s = hitch_now()
 #define HITCH_END(s, sec) (hitch_acc[sec] += hitch_now() - hitch_t0_##s)
 
+/* loading.c: a loading screen opened in this frame (DSR's own loads: warps, deaths). Such a frame counts apart ("loads
+ * N longest ms"), not as a hitch */
+void hitch_loadscreen(void);
 /* end of a frame: dt_real = the whole frame (s) */
 void hitch_frame(float dt_real);
 /* mapstream.c: an item read (again: it was loaded before in this run) */
-void hitch_load(int again, unsigned bytes);
+void hitch_load(int again, int thrash, unsigned bytes);
 /* mapstream.c: an item dropped; wanted = it still had a class that wanted it (evicted for something else) */
 void hitch_drop(int wanted, unsigned bytes);
 /* map.c: cell (instance k, index ci) changed its drawn level while in view; flop = back to the level it had before */
@@ -55,7 +58,7 @@ void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb
 
 /* totals over the run (test gates) */
 typedef struct {
-    unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, evicts;
+    unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms;
 } HitchTotals;
 extern HitchTotals hitch_total;
 

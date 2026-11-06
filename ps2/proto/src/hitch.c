@@ -40,11 +40,14 @@ static unsigned largest_block(unsigned hi)
     return lo;
 }
 
-void hitch_load(int a, unsigned bytes)
+static unsigned thr, thr_kb;
+void hitch_load(int a, int t, unsigned bytes)
 {
     loads++, read_kb += bytes >> 10;
     if (a)
         again++, again_kb += bytes >> 10, hitch_total.rereads++;
+    if (t)
+        thr++, thr_kb += bytes >> 10, hitch_total.thrash++;
 }
 void hitch_drop(int wanted, unsigned bytes)
 {
@@ -71,9 +74,22 @@ void hitch_flip(int k, unsigned ci, int flop)
 }
 void hitch_block_read(unsigned bytes) { blk_reads++, blk_kb += bytes >> 10; }
 
+static int load_fr;
+static unsigned n_load, load_max;
+void hitch_loadscreen(void) { load_fr = 1; }
+
 void hitch_frame(float dt_real)
 {
     unsigned ms = (unsigned)(dt_real * 1000.0f + 0.5f);
+    if (load_fr) {  /* behind a loading screen: its own count */
+        load_fr = 0;
+        n_load++, hitch_total.loads++;
+        load_max = ms > load_max ? ms : load_max;
+        hitch_total.load_max_ms = ms > hitch_total.load_max_ms ? ms : hitch_total.load_max_ms;
+        memset(hitch_acc, 0, sizeof hitch_acc);
+        per_s += 0.25f, run_s += 0.25f;
+        return;
+    }
     n_fr++, sum_ms += ms;
     hitch_total.frames++;
     o50 += ms > 50, o100 += ms > 100, o200 += ms > 200;
@@ -95,19 +111,19 @@ void hitch_frame(float dt_real)
     mapstream_free_info(&fkb, &rkb, &okb);
     printf("hitch: t %u s frames %u avg %u max %u ms over50 %u over100 %u over200 %u | worst pre %u world %u (plan %u win "
            "%u io %u) snd %u map %u logic %u chr %u wait %u flip %u save %u log %u | heap free %u KB largest %u KB | arena "
-           "free %u KB run %u KB other %u KB | reads %u (%u KB) again %u (%u KB) drops %u evicted %u (%u KB) | blocks %u "
-           "(%u KB) | lod flips %u flops %u top",
+           "free %u KB run %u KB other %u KB | reads %u (%u KB) again %u (%u KB) thrash %u (%u KB) drops %u evicted %u (%u KB) | blocks %u "
+           "(%u KB) | lod flips %u flops %u | loads %u longest %u ms | top",
            (unsigned)run_s, n_fr, n_fr ? sum_ms / n_fr : 0, worst_ms, o50, o100, o200, worst_sec[HS_PRE],
            worst_sec[HS_WORLD], worst_sec[HS_MSPLAN], worst_sec[HS_MSWIN], worst_sec[HS_MSIO], worst_sec[HS_SND],
            worst_sec[HS_MAP], worst_sec[HS_LOGIC], worst_sec[HS_CHR], worst_sec[HS_WAIT], worst_sec[HS_FLIP],
-           worst_sec[HS_SAVE], worst_sec[HS_LOG], hf >> 10, lb, fkb, rkb, okb, loads, read_kb, again, again_kb, drops,
-           evicts, evict_kb, blk_reads, blk_kb, flips, flops);
+           worst_sec[HS_SAVE], worst_sec[HS_LOG], hf >> 10, lb, fkb, rkb, okb, loads, read_kb, again, again_kb, thr, thr_kb, drops,
+           evicts, evict_kb, blk_reads, blk_kb, flips, flops, n_load, load_max);
     for (int i = 0; i < TOPN; i++)
         if (top[i].n > 1)
             printf(" %d.%u x%u", top[i].k, top[i].ci, top[i].n);
     printf("\n");
     per_s = 0;
-    n_fr = o50 = o100 = o200 = worst_ms = sum_ms = 0;
-    loads = again = again_kb = drops = evicts = evict_kb = flips = flops = blk_reads = blk_kb = read_kb = 0;
+    n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;
+    loads = again = again_kb = thr = thr_kb = drops = evicts = evict_kb = flips = flops = blk_reads = blk_kb = read_kb = 0;
     memset(top, 0, sizeof top);
 }

@@ -99,6 +99,16 @@
  * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
 #define MS_R_HZN 64.0f
 #define MS_R_HZN_KEEP 72.0f
+/* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
+ * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
+#ifndef MS_STABLE
+#define MS_STABLE 1
+#endif
+#define MS_HOLD_K 0.7f
+#define MS_THRASH_TICKS 28u  /* hitch.c: a read again within ~30 s of its drop counts as thrash (ticks of 32 frames) */
+#ifndef MS_WHOLE_CELLS
+#define MS_WHOLE_CELLS 1  /* the near parts of a cell are planned together (0: one by one, the old cut) */
+#endif
 #define MS_R1_VIEW 128.0f /* coarse cells in view this close: C_VIEW, beyond: C_VIEW2 */
 #define MS_R1_WANT 260.0f
 #define MS_R1_KEEP 280.0f
@@ -170,7 +180,8 @@ typedef struct {
     void **buf;
     unsigned *used;        /* frame map.c last asked for it */
     unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
-    unsigned char *ld;     /* per item: read before in this run (hitch.c churn: a read again after a drop) */
+    unsigned short *ld;    /* per item (hitch.c churn): 0 never read, 1 in, else the tick (frame / 32) + 2 it was dropped */
+    unsigned char *cmark;  /* per cell, during the plan's cut: 1 its near parts are in the plan, 2 they are not */
     /* visibility (pvs.c): per item 1 while any of its chunks is seen, the tick (frame / 4) it was last seen; the
      * vis_gen value they follow, items they cover */
     unsigned char *visv;
@@ -446,6 +457,9 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         if (!m->tab[id].bytes)
             return C_FREE;
         float d2 = box_d2(&m->tab[id], pos);
+        /* near parts rank by distance alone (MS_STABLE): with the view factor a look around reordered them against
+         * the plan's cut every turn and the arena read the same parts again and again (soak, 2026-11-07) */
+        vk = MS_STABLE ? 1.0f : vk;
         *key = d2 * vk;
         /* a settle reads the near level within the draw radius (MS_SETTLE_NEAR) after the coarse level it waits for (as
          * C_NEAR it took the plan from coarse cells inside the settle radius, which the settle then waited for until its
@@ -495,6 +509,21 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * once the near parts were in made a hole whenever a near part went next (the near level draws only with every
      * part in): the route's worst frame had ~200 cells missing in the Burg (ISO, 2026-11-06). The coarse level within
      * MS_R1_PIN is in the export budget anyway. */
+#if MS_STABLE
+    /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
+     * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
+     * two classes on every look around; with the arena holding ~half of what the Burg pins (two blocks' lite sets
+     * beside it) each turn evicted what the last one read: 80 % of all map reads were re-reads, ~1750 swaps between
+     * near / coarse / horizon on screen in 40 min (Burg soak on the ISO, 2026-11-07). All of it ranks above the near
+     * parts: with near parts first (MS_NEAR_FIRST) the arena never held the Burg's near level anyway (7-37 cells within
+     * 24 m waited for it up to 90 s) and 5-17 cells inside the horizon radius drew their untextured horizon instead of
+     * their coarse level, the "malformed parts" of the user report. Coarse first, the horizon is a ring at the far
+     * edge and the near level fills in nearest cell first with what is left. */
+    if (d2 < sq(MS_R1_PIN)) {  /* and all of it above the near parts: the near level gets what is left */
+        *key = d2;
+        return C_PIN0;
+    }
+#endif
 #if MS_NEAR_FIRST
     /* in view out to MS_R1_VIEW: C_VIEW above the near parts (a missing coarse cell in view is a hole; with C_VIEW
      * below C_NEAR the route had 227 s with over 16 cells missing instead of 144, ISO 2026-11-06); pinned but out of
@@ -516,6 +545,8 @@ static void drop(int k, unsigned id)
         if (it_tex(m, j) && tex_set)
             tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, NULL);
         unsigned b = it_bytes(m, j);
+        if (m->ld && m->ld[j])
+            m->ld[j] = (unsigned short)((frame >> 5) + 2);
         m->buf[j] = NULL;
         m->state[j] = MS_NONE;
         mapstream_stats.cells--;
@@ -707,7 +738,10 @@ static void collect(int i, int r)
             st_first = clk_ms - st_t1 + 1;
         fail_wait = 0;
         mapstream_stats.ms_last = (now - t0) / 294912;
-        hitch_load(m->ld && m->ld[w.id], w.bytes);
+        {
+            unsigned l = m->ld ? m->ld[w.id] : 0;  /* read again within MS_THRASH_TICKS of its drop: thrash */
+            hitch_load(l != 0, l >= 2 && (unsigned short)((frame >> 5) + 2 - l) <= MS_THRASH_TICKS, w.bytes);
+        }
         for (unsigned j = w.id; j < w.id + w.n; j++) {
             if (m->ld)
                 m->ld[j] = 1;
@@ -868,6 +902,8 @@ static void plan_(const float *pos)
             int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
             if (c > C_KEEP && vis_cut(m, id))
                 c = C_KEEP;  /* no camera cell near the camera sees it (pvs.c) */
+            if (MS_STABLE && m->state[id] != MS_NONE && m->state[id] != MS_FAILED)
+                key *= MS_HOLD_K;  /* in (or on its way): ranks as if nearer, so the cut does not flip at its edge */
             m->cls[id] = (unsigned char)c;
             if (m->state[id] == MS_FAILED && retry)
                 m->state[id] = MS_NONE;
@@ -879,12 +915,37 @@ static void plan_(const float *pos)
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
     unsigned other = mapstream_stats.other_kb << 10, over = other > MS_OTHER ? other - MS_OTHER : 0;
     unsigned cap = ipages * MS_PAGE > over ? (ipages * MS_PAGE - over) / 100 * MS_FILL_PCT : 0, sum = 0;
+    for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
+        if (ms[k].cmark)
+            memset(ms[k].cmark, 0, ms[k].ncell);
     for (unsigned i = 0; i < nw; i++) {
         MsInst *m = &ms[want[i].k];
-        sum += (it_bytes(m, want[i].id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
-        if (sum > cap) {
-            m->cls[want[i].id] = C_KEEP;
-            continue;
+        unsigned id = want[i].id;
+        if (MS_WHOLE_CELLS && id < m->ncell && m->cmark) {
+            /* a cell's near level draws only with all its (seen) parts in: the parts go in together or not at all,
+             * so the room is not spent on parts of cells that cannot be drawn (MS_WHOLE_CELLS) */
+            unsigned h = id;
+            while (h > 0 && (m->tab[h].near & CELL_PART))
+                h--;
+            if (!m->cmark[h]) {
+                unsigned need = 0;
+                for (unsigned p = h; p < m->ncell && (p == h || (m->tab[p].near & CELL_PART)); p++)
+                    if (m->cls[p] >= C_PREF)
+                        need += (it_bytes(m, p) + MS_GRAN - 1) & ~(MS_GRAN - 1);
+                m->cmark[h] = sum + need > cap ? 2 : 1;
+                if (m->cmark[h] == 1)
+                    sum += need;
+            }
+            if (m->cmark[h] == 2) {
+                m->cls[id] = C_KEEP;
+                continue;
+            }
+        } else {
+            sum += (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
+            if (sum > cap) {
+                m->cls[id] = C_KEEP;
+                continue;
+            }
         }
         if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
             q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
@@ -1025,12 +1086,13 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     m->tab = cells, m->ncell = n;
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
-    m->ld = calloc(n, 1);  /* (NULL: no churn count) */
+    m->ld = calloc(n, sizeof *m->ld);  /* (NULL: no churn count) */
+    m->cmark = calloc(n, 1);  /* (NULL: parts planned one by one) */
     m->rit = NULL, m->nres = 0, m->rgrp = NULL;
     if (!m->state || !m->cls || !m->buf || !m->used) {
         if (!m->borrowed)
             pack_close(&m->pk);
-        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld);
+        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->cmark);
         memset(m, 0, sizeof *m);
         return 0;
     }
@@ -1075,9 +1137,9 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     unsigned *u = b ? (m->buf = b, realloc(m->used, t * sizeof *m->used)) : NULL;
     if (u) {
         m->used = u;
-        unsigned char *l = realloc(m->ld, t);
+        unsigned short *l = realloc(m->ld, t * sizeof *l);
         if (l)
-            memset(l + m->ncell, 0, nitems);
+            memset(l + m->ncell, 0, nitems * sizeof *l);
         else
             free(m->ld);
         m->ld = l;
@@ -1125,7 +1187,7 @@ void mapstream_close(int k)
     }
     if (!m->borrowed)
         pack_close(&m->pk);
-    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld);
+    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->cmark);
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);
@@ -1205,6 +1267,21 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         printf("mapstream: alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;
+    return p;
+}
+
+void *mapstream_alloc_soft(unsigned n)
+{
+    if (!mapstream_arena())
+        return NULL;
+    void *p = g_alloc_top(n, npages);
+    unsigned kb = 0;
+    if (!p && make_window((n + MS_PAGE - 1) / MS_PAGE, 0, C_PREF, &kb))  /* only what no class wants */
+        p = g_alloc_top(n, npages);
+    if (p)
+        mapstream_stats.other_kb += (n + 1023) >> 10;
+    else
+        printf("mapstream: soft alloc %u KB: no room beside the wanted cells\n", n >> 10);
     return p;
 }
 

@@ -794,7 +794,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
 
 void map_block_bump(int k, const void *blob)
 {
-    if (k <= 0 || k >= MAP_INST || !inst[k].on)
+    if (k < 0 || k >= MAP_INST || (k && !inst[k].on) || !inst[k].hdr)  /* (0: the boot block, world.c) */
         return;
     int on = bump_block(k, blob, inst[k].hdr->chunks);
     if (blob)

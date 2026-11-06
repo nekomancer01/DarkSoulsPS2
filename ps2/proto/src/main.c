@@ -387,7 +387,10 @@ int main(int argc, char **argv)
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
         map_blob = world ? NULL : pack_load(&pk, "map.bin", 0);  /* world: split map, world_boot_map */
 #ifndef MAP_PANO_R  /* panorama capture builds (tools/pano.py): no relief or effects, their RAM goes to the far map */
-        bump_blob = pack_load(&pk, "bump.bin", 0);  /* normal-map relief (tools/export_normal.py, src/bump.c) */
+        /* normal-map relief (tools/export_normal.py, src/bump.c). A world build streams the boot block's like every
+         * block's (world.c bump_step, WORLD_BOOT_RELIEF): resident it kept 0.9 MB of the heap from the near arena
+         * wherever the player went */
+        bump_blob = world && WORLD_BOOT_RELIEF ? NULL : pack_load(&pk, "bump.bin", 0);
         fx_blob = pack_load(&pk, "fx.bin", 0);      /* effects: bonfire fire, MSB SFX (tools/export_effects.py, src/fx.c) */
 #endif
         dg_blob = pack_load(&pk, "dg.bin", 0);      /* MSB draw groups per chunk (tools/drawgroups.py, src/drawgrp.c) */
