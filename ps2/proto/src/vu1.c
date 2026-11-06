@@ -413,6 +413,10 @@ void vu1_init(GSGLOBAL *gs)
     packet2_free(p);
 }
 
+/* the map chain's camera (vu1_begin), for vu1_add_idx's per-vertex clip test: view x / y scales of the guard band */
+static V3 idx_eye, idx_right, idx_up, idx_fwd;
+static float idx_kx, idx_ky;
+
 void vu1_begin(int buffer)
 {
     cur = buffer == 2 ? 2 : buffer & 1;
@@ -431,6 +435,9 @@ void vu1_begin(int buffer)
     V3 eye, right, up, fwd;
     float focal, focal_y, zscale;
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
+    if (cur == 0)  /* the map chain: vu1_add_idx's near-plane / guard-band test */
+        idx_eye = eye, idx_right = right, idx_up = up, idx_fwd = fwd, idx_kx = focal / R_GUARD,
+        idx_ky = focal_y / R_GUARD;
     cp = (u64 *)chain;
     /* wait for last frame's programs before overwriting the constants; map buffer layout (the skin chain changes it) */
     tag(0, T_CNT, 0, VIF(V_FLUSHE, 0, 0), VIF(V_STCYCL, 0, 0x0101));
@@ -685,7 +692,7 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
 /* VU1_CLIP part of an indexed batch: triangles [t0, t0 + k) as list streams written into the chain (vu1clip.vsm reads
  * lists only; such batches are the few near the camera). Streams are 2-byte (pos) / 4-byte aligned. */
 static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const u8 *pos, const u8 *st, const u8 *col,
-                         const u8 *idx, const float *org, float st_k, int mxl)
+                         const u8 *idx, const float *org, float st_k, int mxl)  /* idx: u8 x4 per triangle */
 {
     int n = 3 * k, qp = (n * 6 + 15) / 16, qs = (n * 4 + 15) / 16, clip = mode & VU1_CLIP;
     use_prog(clip ? P_CLIP : P_MAP2);
@@ -730,7 +737,7 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
 #endif
     int mxl = mip_mxl;
     mip_mxl = 0;
-    if (tris <= 0 || nv <= 0)
+    if (tris <= 0 || nv <= 0 || tris > VU1_IDX_TRIS)
         return;
 #ifdef VU1_IDX_NO_CLIP  /* debug: indexed batches at the near plane / guard band are not drawn */
     if (mode & VU1_CLIP)
@@ -743,19 +750,53 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
         return;
     }
 #endif
+    u8 keep[VU1_IDX_TRIS * 4];  /* VU1_CLIP: the triangles vu1mapi draws (no corner near the near plane / guard band) */
+    int nk = tris;
     if (mode & VU1_CLIP) {
-        for (int t0 = 0; t0 < tris; t0 += VU1_CLIP_TRIS)
-            add_idx_clip(t, cull, mode, t0, tris - t0 < VU1_CLIP_TRIS ? tris - t0 : VU1_CLIP_TRIS, pos, st, col, idx,
-                         org, st_k, mxl);
-        vu1_stats.idx_clip++;
-        return;
+        /* the EE's conservative version of the programs' CLIP test (view z < near, |view x| > z x guard band...):
+         * flagged triangles go to vu1clip.vsm as lists written into the chain, the others to vu1mapi with a triangle
+         * stream of their own (inline). vu1mapi still drops (ADC) any triangle with a flagged corner. */
+        u8 flag[256], clipt[VU1_IDX_TRIS * 4];
+        const short *p = (const short *)pos;
+        float s = org[3];
+        V3 o = {org[0] - idx_eye.x, org[1] - idx_eye.y, org[2] - idx_eye.z};
+        float ox = o.x * idx_right.x + o.y * idx_right.y + o.z * idx_right.z,
+              oy = o.x * idx_up.x + o.y * idx_up.y + o.z * idx_up.z, oz = o.x * idx_fwd.x + o.y * idx_fwd.y + o.z * idx_fwd.z;
+        V3 rx = {s * idx_right.x, s * idx_right.y, s * idx_right.z}, ry = {s * idx_up.x, s * idx_up.y, s * idx_up.z},
+           rz = {s * idx_fwd.x, s * idx_fwd.y, s * idx_fwd.z};
+        for (int i = 0; i < nv; i++, p += 3) {
+            float x = ox + rx.x * p[0] + rx.y * p[1] + rx.z * p[2], y = oy + ry.x * p[0] + ry.y * p[1] + ry.z * p[2],
+                  z = oz + rz.x * p[0] + rz.y * p[1] + rz.z * p[2], zm = z * 0.999f - 0.01f;  /* margin */
+            flag[i] = z < R_NEAR * 1.01f + 0.01f || fabsf(x) * idx_kx > zm || fabsf(y) * idx_ky > zm;
+        }
+        const u8 *ix = idx;
+        int nc = 0;
+        nk = 0;
+        for (int i = 0; i < tris; i++, ix += 4)
+            memcpy(flag[ix[0]] | flag[ix[1]] | flag[ix[2]] ? clipt + 4 * nc++ : keep + 4 * nk++, ix, 4);
+        for (int t0 = 0; t0 < nc; t0 += VU1_CLIP_TRIS)
+            add_idx_clip(t, cull, mode, 0, nc - t0 < VU1_CLIP_TRIS ? nc - t0 : VU1_CLIP_TRIS, pos, st, col,
+                         clipt + 4 * t0, org, st_k, mxl);
+        vu1_stats.idx_clip += nc;
+        if (!nk)
+            return;
+        mode &= ~VU1_PKT;  /* the packet's triangle stream is the whole chunk's */
     }
     use_prog(P_MAPI);
-    if (!room(14))
+    if (!room(14 + (nk * 4 + 15) / 16))
         return;
     u32 hdr[2] = {(u32)nv / 3, MAPI_HDR + 3 * (u32)nv};
-    batch_head(t, cull, mode, tris, org, st_k, mxl, 1, hdr);
-    if (mode & VU1_PKT) {  /* code qword, pos, st, colour, triangle streams (each after its code qword): one REF */
+    batch_head(t, cull, mode, nk, org, st_k, mxl, 1, hdr);
+    if (nk < tris || (mode & VU1_CLIP)) {  /* the kept triangles' stream inline */
+        tag((nv * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, nv, U_FLG | MAPI_HDR));
+        tag((nv * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, nv, U_FLG | U_USN | (MAPI_HDR + 1)));
+        tag((nv * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2)));
+        int q = (nk * 4 + 15) / 16;
+        tag(q, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_8, nk, U_FLG | U_USN | (MAPI_HDR + 3 * nv)));
+        memset(cp, 0, q * 16);
+        memcpy(cp, keep, nk * 4);
+        cp += 2 * q;
+    } else if (mode & VU1_PKT) {  /* code qword, pos, st, colour, triangle streams (each after its code qword): one REF */
         const char *p0 = (const char *)pos - 16;
         tag(((const char *)idx + tris * 4 + 15 - p0) / 16, T_REF, p0, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
     } else {

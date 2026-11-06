@@ -19,6 +19,7 @@ void vu1_begin(int buffer);
  * which clips against both on VU1 (batches over VU1_CLIP_TRIS are split) */
 #define VU1_CLIP 4
 #define VU1_CLIP_TRIS 32
+#define VU1_IDX_TRIS 64  /* most triangles in one vu1_add_idx batch (map chunks: <= 54) */
 /* VU1_EDGE: fog = max(min(fog, b + a2 z), 0) on top of the map fog (b = vu1_map_fog's b, a2 = vu1_map_edge): far
  * batches fade into the fog colour by map.c's cull distance (vu1map2 edge loop, 91 instead of 79 VU1 cycles per
  * triangle; ignored with VU1_CLIP) */
@@ -128,7 +129,7 @@ typedef struct {
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
-    int idx_batches, idx_clip;  /* indexed map batches drawn by vu1mapi / expanded to lists for vu1clip, so far */
+    int idx_batches, idx_clip;  /* indexed map batches drawn by vu1mapi / their triangles sent to vu1clip, so far */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 
