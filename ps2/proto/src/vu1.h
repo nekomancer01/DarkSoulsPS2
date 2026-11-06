@@ -70,6 +70,11 @@ void vu1_wait(void);
 void vu1_clut_reload(void);
 /* Chain sizes in qwords (R1): last / peak per buffer (0 map, 1 characters) incl. segments; segments = times a full
  * buffer was sent early (each costs an EE wait) */
+/* texstream-4: map texture uploads on PATH3 behind one FLUSHA gate per segment (vu1.c); -DVU1_TEX_PATH2 builds keep
+ * the old FLUSH + PATH2 uploads in the chain */
+#ifndef VU1_TEX_PATH2
+#define VU1_TEX_PATH3
+#endif
 typedef struct {
     int last[2], peak[2], segments;
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */

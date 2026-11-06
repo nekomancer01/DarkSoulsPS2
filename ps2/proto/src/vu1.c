@@ -115,7 +115,8 @@ static u32 clut_last, clut_loads;
 #define T_END 7
 
 #ifdef VU1_TEX_PATH3
-/* texstream-4 (renderer plan PR 4): texture uploads on PATH3 instead of FLUSH + PATH2 in the chain. vu1_upload_tex
+/* texstream-4 (renderer plan PR 4): texture uploads on PATH3 instead of FLUSH + PATH2 in the chain (the default; vu1.h,
+ * -DVU1_TEX_PATH2 = the old path). vu1_upload_tex
  * queues the transfer in a GIF DMA chain of the chain buffer (texq); vu1_kick starts it on the GIF channel right
  * before the VIF1 chain, so the GS takes the images while VU1 draws the batches in front of the gate. The gate is one
  * FLUSHA per segment, put in the VIF1 chain where the segment's first upload was asked for (right before the first
