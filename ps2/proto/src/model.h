@@ -5,13 +5,18 @@
 
 #include "render.h"
 
-#define MAX_BONES 64
+#define MAX_BONES 64       /* pose arrays of the single-model users (player, NPC stand-ins, objects: <= 61 bones) */
+#ifndef MDL_MAX_BONES     /* the largest model (Makefile: from CHR_BONES; <= 255, u8 vertex bone ids) */
+#define MDL_MAX_BONES 255
+#endif
+#define MDL_WIN_BONES 61   /* bones one VU1 palette window holds (vu1.c skin layout) */
 
 typedef struct { float q[4], t[3]; } BoneLocal;
 typedef struct Model Model;
 
 /* blob: model.bin (128-byte aligned, kept while the model is used: textures and anims are read in place).
- * Builds the VU1 skin streams (heap). NULL on a bad blob or more than 61 bones (VU1 palette room). */
+ * Builds the VU1 skin streams (heap). NULL on a bad blob or more than MDL_MAX_BONES bones. A model with more than
+ * MDL_WIN_BONES bones is drawn through per-batch bone windows (TECH_DEBT char-7). */
 Model *mdl_load(const void *blob);
 /* The same in steps (enemy.c streams types in during play): begin parses and allocates, step builds the VU1 skin
  * batches until `budget` EE ticks have passed and returns 1 once all are built (only then use the model) */

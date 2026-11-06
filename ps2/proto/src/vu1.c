@@ -423,15 +423,56 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
         spec_up[c] = env_up[c], spec_down[c] = env_down[c], spec_i[c] = si[c], spec_ls[c] = ls[c];
 }
 
-void vu1_skin_begin(const void *palette, int bones)
+/* palette entries into the chain: win = NULL: bones 0..n-1 to slots 0..n-1; else n (slot, bone) pairs, one UNPACK per
+ * run of consecutive slots */
+static void palette_put(const void *palette, const unsigned char *win, int n)
+{
+    if (!win) {
+        tag(n * 4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, n * 4, 8));
+        memcpy(cp, palette, n * 64);
+        cp += n * 8;
+        return;
+    }
+    for (int i = 0; i < n;) {
+        int k = 1;
+        while (i + k < n && win[2 * (i + k)] == win[2 * i] + k)
+            k++;
+        tag(k * 4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, k * 4, 8 + 4 * win[2 * i]));
+        for (int j = 0; j < k; j++)
+            memcpy(cp + 8 * j, (const char *)palette + 64 * win[2 * (i + j) + 1], 64);
+        cp += k * 8;
+        i += k;
+    }
+}
+
+/* chain qwords palette_put writes */
+static int palette_qw(const unsigned char *win, int n)
+{
+    int qw = win ? 0 : 1 + 4 * n;
+    for (int i = 0; win && i < n; i++)
+        qw += 4 + (i == 0 || win[2 * i] != win[2 * i - 2] + 1);
+    return qw;
+}
+
+void vu1_skin_window(const void *palette, const unsigned char *win, int n)
+{
+    /* FLUSHE: the batches queued before read the slots about to be overwritten. STCYCL: batches leave it at 1,4 */
+    if (!n || !room(palette_qw(win, n) + 1))
+        return;
+    tag(0, T_CNT, 0, VIF(V_FLUSHE, 0, 0), VIF(V_STCYCL, 0, 0x0101));
+    palette_put(palette, win, n);
+    vu1_stats.skin_windows++;
+}
+
+void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, int nwin)
 {
     /* one call per skinned character in the chain: FLUSHE waits for the previous character's last batch (it reads
      * the palette about to be overwritten); OFFSET also resets the double buffer to BASE */
-    room(bones * 4 + 9 + 2 + SPEC_QW);
+    int nup = win ? nwin : bones;
+    room(palette_qw(win, nup) + 8 + 2 + SPEC_QW);
     tag(0, T_CNT, 0, VIF(V_FLUSHE, 0, 0), VIF(V_STCYCL, 0, 0x0101));
     tag(0, T_CNT, 0, VIF(V_BASE, 0, SKIN2_IN), VIF(V_OFFSET, 0, SKIN2_IN_QW));
-    tag(bones * 4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, bones * 4, 8));
-    memcpy(cp, palette, bones * 64);
+    palette_put(palette, win, nup);
     {   /* char-6: a bone origin (view space, palette col3) within SKIN_CLIP_MARGIN of the near plane or the guard
          * band -> this character's batches use the clipping program */
         V3 e, r, u, f;
@@ -445,7 +486,6 @@ void vu1_skin_begin(const void *palette, int bones)
                         fabsf(pb[13]) + SKIN_CLIP_MARGIN > z * R_GUARD / fy;
         }
     }
-    cp += bones * 8;
     /* constants 4-7 as vu1_map_fog writes them (XYZF2 Z scale, the map's fog terms in .w): characters fog like the
      * map around them (DSR fogs every model with the same row) */
     V3 eye, right, up, fwd;
@@ -507,6 +547,8 @@ void vu1_skin_light(const float amb[3], const float sun[3])
 void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
                   const void *nrm, const void *st_or_col, int spec_k, const void *ms)
 {
+    if (tris <= 0)  /* an UNPACK of 0 vectors would take 256 */
+        return;
     if (skin_clip && tris > SKIN_CLIP_TRIS) {  /* the clip program keeps its scratch after the batch */
         int k = SKIN_CLIP_TRIS * 3;
         vu1_skin_add(t, cull, SKIN_CLIP_TRIS, tint, pa, pb, nrm, st_or_col, spec_k, ms);

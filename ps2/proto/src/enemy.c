@@ -69,11 +69,12 @@
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
-/* chr.bin v6 (tools/export_chr.py) */
+/* chr.bin v7 (tools/export_chr.py) */
 typedef struct {
     char magic[4];
     unsigned version, anims, windows, variants, anim_off, win_off, root_off, var_off, hide_bits;
-    unsigned upper[2];  /* bones of the guard pose layer: the first Spine bone and its descendants */
+    int spine;          /* guard pose layer: this bone (the first Spine one) and its descendants; -1 none */
+    unsigned bones;     /* skeleton bones (model.bin's count; parents come before their children) */
     unsigned rag_off, rag_n;     /* ragdoll bodies (RagBody, src/ragdoll.h) */
     float rag_reach, rag_top;    /* their bind-pose bounds around the root */
 } ChrHdr;
@@ -132,7 +133,9 @@ typedef struct {
     int npc, thinkid, entity, index;
     V3 pos, home;
     float yaw, home_yaw;
-    BoneLocal pose[MAX_BONES], from[MAX_BONES];
+    /* pose / from: pose_s for types of <= MAX_BONES bones, else the slot's big_pose block (place()) */
+    BoneLocal *pose, *from;
+    BoneLocal pose_s[2][MAX_BONES];
     unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
     float blend, blend_time;
     /* action anim (attacks, steps, damage, death) started by the ESD; -1 = none (locomotion / idle) */
@@ -178,35 +181,41 @@ static Enemy enemies[MAX_ENEMIES];
  * the attack sweeps, the ragdoll start and the draw chain each pose once. A few enemies fight at once: WCACHE slots,
  * least recently used replaced (a miss only builds the matrices again). 3 KB a slot. */
 #define WCACHE 8
+#define WCACHE_BIG 1  /* slots for models of more than MAX_BONES bones (char-7 bone windows), 12 KB each */
 static struct {
     const Enemy *e;
     const Model *model;
     unsigned serial, used;
     V3 pos;
     float yaw;
-    float m[MAX_BONES][12];
-} wcache[WCACHE];
+    float (*m)[12];  /* wc_small (models of <= MAX_BONES bones) or, for the WCACHE_BIG last slots, wc_big */
+} wcache[WCACHE + WCACHE_BIG];
+static float wc_small[WCACHE][MAX_BONES][12], wc_big[WCACHE_BIG][MDL_MAX_BONES][12];
 static unsigned pose_gen, wcache_clock;
 
 static void pose_changed(Enemy *e) { e->pose_serial = ++pose_gen; }
+static unsigned pose_bytes(const Enemy *e) { return e->ct->h->bones * sizeof(BoneLocal); }
+static BoneLocal *big_pose[MAX_ENEMIES];  /* poses of slots placed with a type of more than MAX_BONES bones */
+static unsigned big_cap[MAX_ENEMIES];
 
 /* e's world matrices for its current pose: from wcache, else built there when `build` (NULL when not) */
 static const float (*enemy_world(const Enemy *e, int build))[12]
 {
     const Model *m = e->ct->model;
-    int lru = 0;
-    for (int k = 0; k < WCACHE; k++) {
+    int big = m && mdl_bones(m) > MAX_BONES, lru = big ? WCACHE : 0;
+    for (int k = 0; k < WCACHE + WCACHE_BIG; k++) {
         if (wcache[k].e == e && wcache[k].model == m && wcache[k].serial == e->pose_serial &&
             wcache[k].pos.x == e->pos.x && wcache[k].pos.y == e->pos.y && wcache[k].pos.z == e->pos.z &&
             wcache[k].yaw == e->yaw) {
             wcache[k].used = ++wcache_clock;
             return (const float (*)[12])wcache[k].m;
         }
-        if (wcache[k].used < wcache[lru].used)
+        if ((k >= WCACHE) == big && wcache[k].used < wcache[lru].used)
             lru = k;
     }
     if (!build)
         return NULL;
+    wcache[lru].m = big ? wc_big[lru - WCACHE] : wc_small[lru];
     wcache[lru].e = e, wcache[lru].model = m, wcache[lru].serial = e->pose_serial;
     wcache[lru].pos = e->pos, wcache[lru].yaw = e->yaw, wcache[lru].used = ++wcache_clock;
     mdl_world(m, e->pose, e->pos, e->yaw, wcache[lru].m);
@@ -427,7 +436,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || memcmp(h->magic, "DSRC", 4) || h->version != 6 || !h->variants) {
+    if (!h || memcmp(h->magic, "DSRC", 4) || h->version != 7 || h->bones > MDL_MAX_BONES || !h->variants) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
         return NULL;
@@ -535,7 +544,7 @@ static int anim_slot(const Enemy *e, int anim, int *full)
 
 static void start_action(Enemy *e, int anim, int layer, float blend, int loop)
 {
-    memcpy(e->from, e->pose, sizeof e->pose);
+    memcpy(e->from, e->pose, pose_bytes(e));
     e->blend = 0, e->blend_time = blend > 0 ? blend : 0.05f;
     e->act = anim, e->act_layer = layer, e->act_loop = loop;
     int full;
@@ -563,7 +572,7 @@ static int enemy_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             start_action(e, anim, layer, n > k + 2 ? a[k + 2] : 0.1f, n > k + 3 ? a[k + 3] != 0 : 0);
         else if (e->act >= 0 && e->act_layer == layer)
             e->act = -1, e->act_info = 0, e->blend = 0, e->blend_time = BLEND_DEFAULT,
-            memcpy(e->from, e->pose, sizeof e->pose);
+            memcpy(e->from, e->pose, pose_bytes(e));
         return 1;
     }
     case 101:  /* SetLocomotionEnabled */
@@ -639,6 +648,21 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     rag_release(e);
     memset(e, 0, sizeof *e);
     ev_off[i] = 0;  /* a reused slot inherits no event state */
+    if (t->h->bones > MAX_BONES) {  /* char-7: a big skeleton's poses in a block of the slot's own, kept for reuse */
+        if (big_cap[i] < t->h->bones) {
+            free(big_pose[i]);
+            big_cap[i] = (big_pose[i] = malloc(2 * t->h->bones * sizeof(BoneLocal))) ? t->h->bones : 0;
+        }
+        if (!big_cap[i]) {  /* left as a free slot (as enemy_block_remove leaves one) */
+            printf("enemy: %.5s: no RAM for a %u-bone pose, placement %d dropped\n", t->name, t->h->bones, i);
+            ev_off[i] = EV_FREE;
+            e->ct = t, e->pose = e->pose_s[0], e->from = e->pose_s[1];
+            e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
+            return;
+        }
+        e->pose = big_pose[i], e->from = big_pose[i] + t->h->bones;
+    } else
+        e->pose = e->pose_s[0], e->from = e->pose_s[1];
     pose_changed(e);  /* the slot's old matrices in wcache are not this placement's */
     e->ct = t;
     e->block = block;
@@ -1087,8 +1111,9 @@ static int dead_ragdoll(Enemy *e, float dt)
         int death = e->act >= 0 && is_death_anim(e->act);
         if (!(e->air || (death && (in_window(e, F_RAGDOLL) || act_ended(e))) || (!death && e->dead_t > 2.5f)))
             return 0;
-        static float prev[MAX_BONES][12], bind[MAX_BONES][12];
-        static BoneLocal tmp[MAX_BONES];
+        int nb = mdl_bones(t->model);  /* on the stack (VLA): <= 21 KB at MDL_MAX_BONES, once per death */
+        float prev[nb][12], bind[nb][12];
+        BoneLocal tmp[nb];
         const float (*world)[12] = enemy_world(e, 1);
         if (e->act >= 0 && e->act_slot >= 0 && e->act_t > dt) {
             mdl_sample(t->model, e->act_slot, e->act_t - dt, e->act_loop, tmp);
@@ -1220,7 +1245,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         la = anim_slot(e, 0, &full);
     if (la != e->loco_anim) {
         if (e->act < 0)
-            memcpy(e->from, e->pose, sizeof e->pose), e->blend = 0, e->blend_time = BLEND_DEFAULT;
+            memcpy(e->from, e->pose, pose_bytes(e)), e->blend = 0, e->blend_time = BLEND_DEFAULT;
         e->loco_anim = la;
     }
     e->loco_t += dt;
@@ -1254,25 +1279,29 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->blend += e->blend_time > 0 ? dt / e->blend_time : 1;
         return;
     }
-    BoneLocal target[MAX_BONES];
+    BoneLocal target[mdl_bones(t->model)];  /* VLA: the type's bones (<= 7 KB at MDL_MAX_BONES) */
     if (e->act >= 0 && e->act_slot >= 0)
         mdl_sample(t->model, e->act_slot, e->act_t, e->act_loop, target);
     else {
         mdl_sample(t->model, e->loco_anim, e->loco_t, 1, target);
         int gs = moving && o->guard > 0 ? anim_slot(e, o->guard, &full) : -1;
         if (gs >= 0) {  /* guard while walking: the guard pose on the spine and everything above it */
-            BoneLocal g[MAX_BONES];
+            BoneLocal g[mdl_bones(t->model)];
+            unsigned char up[mdl_bones(t->model)];
+            const short *par = mdl_parents(t->model);
             mdl_sample(t->model, gs, e->loco_t, 1, g);
-            for (int b = 0; b < mdl_bones(t->model) && b < 64; b++)
-                if (t->h->upper[b >> 5] >> (b & 31) & 1)
+            for (int b = 0; b < mdl_bones(t->model); b++) {  /* the spine bone and its descendants (parents first) */
+                up[b] = b == t->h->spine || (par[b] >= 0 && up[par[b]]);
+                if (up[b])
                     target[b] = g[b];
+            }
         }
     }
     e->blend += e->blend_time > 0 ? dt / e->blend_time : 1;
     if (e->blend < 1)
         mdl_blend(t->model, e->from, target, e->blend, e->pose);
     else
-        memcpy(e->pose, target, sizeof target);
+        memcpy(e->pose, target, pose_bytes(e));
     pose_changed(e);
 
     memcpy(e->cc.pos, &e->pos, 12);

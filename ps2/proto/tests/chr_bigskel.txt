@@ -1,0 +1,175 @@
+# char-7 bone windows (make CHR_BONES=255): characters with more than 61 bones (Firelink c2550 / c3510, Burg block p
+# c2560), spawned 2.5 m
+# beside each (four sides, the first on collision is used) and shot in four camera directions
+option nodemo
+option hud
+option skipmiss
+spawn -20.90 -49.67 16.15 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2550_+2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c2550_+2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c2550_+2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c2550_+2_+0_y3
+spawn -25.90 -49.67 16.15 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2550_-2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c2550_-2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c2550_-2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c2550_-2_+0_y3
+spawn -23.40 -49.67 18.65 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2550_+0_+2_y0
+cam 1.571 0.25
+wait 0.4
+shot c2550_+0_+2_y1
+cam 3.142 0.25
+wait 0.4
+shot c2550_+0_+2_y2
+cam 4.712 0.25
+wait 0.4
+shot c2550_+0_+2_y3
+spawn -23.40 -49.67 13.65 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2550_+0_-2_y0
+cam 1.571 0.25
+wait 0.4
+shot c2550_+0_-2_y1
+cam 3.142 0.25
+wait 0.4
+shot c2550_+0_-2_y2
+cam 4.712 0.25
+wait 0.4
+shot c2550_+0_-2_y3
+spawn -43.50 -46.47 89.26 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c3510_+2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c3510_+2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c3510_+2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c3510_+2_+0_y3
+spawn -48.50 -46.47 89.26 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c3510_-2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c3510_-2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c3510_-2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c3510_-2_+0_y3
+spawn -46.00 -46.47 91.76 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c3510_+0_+2_y0
+cam 1.571 0.25
+wait 0.4
+shot c3510_+0_+2_y1
+cam 3.142 0.25
+wait 0.4
+shot c3510_+0_+2_y2
+cam 4.712 0.25
+wait 0.4
+shot c3510_+0_+2_y3
+spawn -46.00 -46.47 86.76 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c3510_+0_-2_y0
+cam 1.571 0.25
+wait 0.4
+shot c3510_+0_-2_y1
+cam 3.142 0.25
+wait 0.4
+shot c3510_+0_-2_y2
+cam 4.712 0.25
+wait 0.4
+shot c3510_+0_-2_y3
+spawn 14.66 27.97 88.25 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2560_+2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c2560_+2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c2560_+2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c2560_+2_+0_y3
+spawn 9.66 27.97 88.25 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2560_-2_+0_y0
+cam 1.571 0.25
+wait 0.4
+shot c2560_-2_+0_y1
+cam 3.142 0.25
+wait 0.4
+shot c2560_-2_+0_y2
+cam 4.712 0.25
+wait 0.4
+shot c2560_-2_+0_y3
+spawn 12.16 27.97 90.75 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2560_+0_+2_y0
+cam 1.571 0.25
+wait 0.4
+shot c2560_+0_+2_y1
+cam 3.142 0.25
+wait 0.4
+shot c2560_+0_+2_y2
+cam 4.712 0.25
+wait 0.4
+shot c2560_+0_+2_y3
+spawn 12.16 27.97 85.75 0
+wait 4
+cam 0 0.25
+wait 0.4
+shot c2560_+0_-2_y0
+cam 1.571 0.25
+wait 0.4
+shot c2560_+0_-2_y1
+cam 3.142 0.25
+wait 0.4
+shot c2560_+0_-2_y2
+cam 4.712 0.25
+wait 0.4
+shot c2560_+0_-2_y3
+end
