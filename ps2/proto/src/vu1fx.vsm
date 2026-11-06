@@ -6,7 +6,7 @@
 ; 0 {particles (even), -, -, -}, 1 (cw, ch, 0.5, 1 / fpr), 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr), 3 (du, dv, 0, edge
 ; fog a2), 4 (du, 0, 0, 0), 5 (0, dv, 0, 0), 6 (fog min, fog max, 0, 2048), 7 A+D GIF tag (6 regs: TEX0 TEX1 TEST ALPHA
 ; ZBUF FOGCOL, EOP) + 8-13, 14 PRIM tag template (EOP, triangle strip, STQ RGBAQ XYZF2), 15.. 8 curve
-; tables of 8 keys x {size (kx, ky), colour (r, g, b, a)}, 143.. particles: {world xyz, 8 table + 7 age / life},
+; tables of 8 keys x {size (kx, ky), colour (r, g, b, a) as integers}, 143.. particles: {world xyz, 8 table + 7 age / life},
 ; {half size x, y, roll (-pi..pi), frame + 0.5}. cw / ch: flipbook cell, du / dv = cell - 1 texel (normalized).
 ; Per particle: view v = M p; key k, f from .w: size = mix(K_k, K_k+1, f) x half size, colour likewise; corner =
 ; centre + qx A + qy B with A = (hx cos, hy sin), B = (-hx sin, hy cos) (roll, then size, as fx.c's EE path);
@@ -77,7 +77,7 @@ fxPart:
 	maddz.xy VF29,VF16,VF23z       	lq VF30,18(VI10)
 	mulaw.xy ACC,VF18,VF00w        	div Q,VF00w,VF25z
 	sub.xy VF31,VF26,VF24          	NOP
-	NOP                            	NOP
+	itof0 VF28,VF28                	NOP
 	maddz.xy VF17,VF29,VF23z       	NOP
 	mulaw.xy ACC,VF24,VF00w        	NOP
 	maddw.xy VF13,VF31,VF27w       	NOP
@@ -87,151 +87,152 @@ fxPart:
 	mul.xy VF16,VF14,VF13          	NOP
 	mulaw.xy ACC,VF21,VF00w        	NOP
 	maddz.xy VF18,VF22,VF23z       	NOP
-	mulaw.xy ACC,VF06,VF00w        	NOP
+	itof0 VF30,VF30                	NOP
 	maxy.x VF29,VF16,VF16y         	NOP
-	madd.xy VF24,VF25,VF15         	NOP
-	mulz.x VF31,VF18,VF20z         	NOP
-	addaw.x ACC,VF00,VF00w         	NOP
-	subx.z VF19,VF25,VF29x         	NOP
-	sub VF17,VF30,VF28             	NOP
-	muly.x VF13,VF31,VF18y         	NOP
-	msubx.x VF21,VF31,VF31x        	NOP
-	mulaw.w ACC,VF06,VF00w         	div Q,VF00w,VF19z
-	maddz.w VF22,VF05,VF19z        	NOP
-	mulaw.w ACC,VF06,VF00w         	NOP
-	add.x VF23,VF21,VF13           	NOP
-	sub.x VF20,VF21,VF13           	NOP
-	maddz.w VF25,VF09,VF19z        	NOP
-	mulax.y ACC,VF00,VF00x         	NOP
-	mulq.z VF29,VF05,Q             	waitq
-	mulx.x VF26,VF16,VF20x         	NOP
-	mulx.y VF26,VF16,VF23x         	NOP
-	mulx.x VF30,VF16,VF23x         	NOP
-	msubx.y VF30,VF16,VF20x        	NOP
-	mulaw ACC,VF28,VF00w           	NOP
-	mul.xy VF18,VF26,VF15          	NOP
-	maddw VF31,VF17,VF27w          	NOP
-	mul.xy VF13,VF30,VF15          	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	ftoi0 VF21,VF31                	NOP
-	mulw.w VF19,VF14,VF07w         	NOP
-	maxx.w VF23,VF22,VF12x         	NOP
-	maxx.w VF16,VF25,VF00x         	NOP
-	sub.xy VF20,VF24,VF13          	sq VF21,1(VI06)
-	ftoi0.w VF19,VF19              	sq VF21,4(VI06)
-	miniy.w VF28,VF23,VF12y        	sq VF21,7(VI06)
-	add.xy VF26,VF24,VF18          	sq VF21,10(VI06)
-	sub.xy VF17,VF24,VF18          	NOP
-	itof0.w VF27,VF19              	NOP
-	mulaw.w ACC,VF14,VF00w         	NOP
-	mini.w VF29,VF28,VF16          	NOP
-	add.xy VF15,VF24,VF13          	NOP
-	msubw.w VF30,VF27,VF08w        	NOP
-	mulaw.x ACC,VF08,VF00w         	NOP
-	add.zw VF31,VF29,VF12          	NOP
-	addw.z VF22,VF00,VF00w         	NOP
-	maddw.x VF22,VF07,VF30w        	NOP
-	mulaw.y ACC,VF08,VF00w         	NOP
-	maddw.y VF22,VF07,VF27w        	NOP
-	ftoi4.xy VF20,VF20             	NOP
-	ftoi4.xy VF26,VF26             	NOP
-	ftoi4.xy VF17,VF17             	NOP
-	ftoi4.xy VF15,VF15             	sq.xyz VF22,0(VI06)
-	ftoi4.zw VF29,VF29             	lq VF25,2(VI03)
-	ftoi4.zw VF31,VF31             	lq VF23,3(VI03)
-	add.xyz VF21,VF22,VF10         	sq.xy VF20,2(VI06)
-	add.xyz VF18,VF22,VF11         	sq.xy VF26,5(VI06)
-	ftoi0.w VF19,VF25              	sq.xy VF17,8(VI06)
-	mulax ACC,VF01,VF25x           	sq.xy VF15,11(VI06)
-	madday ACC,VF02,VF25y          	sq.zw VF31,2(VI06)
-	maddaz ACC,VF03,VF25z          	sq.xyz VF21,3(VI06)
-	itof0.w VF14,VF19              	mtir VI11,VF19w
-	maddw VF16,VF04,VF00w          	iadd VI12,VI11,VI11
-	add.xyz VF28,VF22,VF09         	iadd VI12,VI12,VI02
-	mulz.z VF24,VF23,VF07z         	lq.xy VF13,11(VI00)
-	sub.w VF27,VF25,VF14           	lq.xy VF30,12(VI00)
-	NOP                            	lq.xy VF20,15(VI12)
-	NOP                            	lq.xy VF26,17(VI12)
-	mulz.z VF15,VF24,VF24z         	lq.xy VF17,10(VI00)
-	mulaw.xy ACC,VF13,VF00w        	lq.xy VF21,9(VI00)
-	NOP                            	lq.xy VF19,8(VI00)
-	sub.xy VF22,VF26,VF20          	div Q,VF00w,VF16z
-	maddz.xy VF14,VF30,VF15z       	lq VF25,16(VI12)
-	mulaw.xy ACC,VF17,VF00w        	lq VF13,18(VI12)
-	NOP                            	sq.zw VF31,5(VI06)
-	NOP                            	sq.xyz VF18,6(VI06)
-	maddz.xy VF30,VF14,VF15z       	sq.zw VF29,8(VI06)
-	mulaw.xy ACC,VF20,VF00w        	sq.xyz VF28,9(VI06)
-	maddw.xy VF17,VF22,VF27w       	waitq
-	mulaw.xy ACC,VF21,VF00w        	sq.zw VF29,11(VI06)
-	maddz.xy VF31,VF30,VF15z       	iaddiu VI03,VI03,4
-	mulaw.xy ACC,VF19,VF00w        	NOP
-	mul.xy VF18,VF23,VF17          	NOP
-	mulq.xy VF14,VF05,Q            	NOP
-	maddz.xy VF20,VF31,VF15z       	NOP
 	mulaw.xy ACC,VF06,VF00w        	NOP
-	maxy.x VF28,VF18,VF18y         	NOP
-	madd.xy VF22,VF16,VF14         	NOP
-	mulz.x VF21,VF20,VF24z         	NOP
+	mulz.x VF24,VF18,VF20z         	NOP
+	madd.xy VF31,VF25,VF15         	NOP
+	subx.z VF19,VF25,VF29x         	NOP
 	addaw.x ACC,VF00,VF00w         	NOP
-	subx.z VF29,VF16,VF28x         	NOP
-	sub VF30,VF13,VF25             	NOP
-	muly.x VF19,VF21,VF20y         	NOP
-	msubx.x VF17,VF21,VF21x        	NOP
-	mulaw.w ACC,VF06,VF00w         	div Q,VF00w,VF29z
-	maddz.w VF15,VF05,VF29z        	NOP
+	muly.x VF17,VF24,VF18y         	NOP
+	msubx.x VF13,VF24,VF24x        	NOP
+	mulaw.w ACC,VF06,VF00w         	div Q,VF00w,VF19z
+	maddz.w VF21,VF05,VF19z        	NOP
 	mulaw.w ACC,VF06,VF00w         	NOP
-	add.x VF31,VF17,VF19           	NOP
-	sub.x VF24,VF17,VF19           	NOP
-	maddz.w VF16,VF09,VF29z        	NOP
+	add.x VF22,VF13,VF17           	NOP
+	sub.x VF23,VF13,VF17           	NOP
+	maddz.w VF20,VF09,VF19z        	NOP
 	mulax.y ACC,VF00,VF00x         	NOP
-	mulx.y VF26,VF18,VF31x         	waitq
-	mulx.x VF26,VF18,VF24x         	NOP
-	mulx.x VF28,VF18,VF31x         	NOP
-	msubx.y VF28,VF18,VF24x        	NOP
-	mulq.z VF13,VF05,Q             	NOP
-	mul.xy VF20,VF26,VF14          	NOP
-	mulaw ACC,VF25,VF00w           	NOP
-	mul.xy VF21,VF28,VF14          	NOP
-	maddw VF17,VF30,VF27w          	NOP
+	mulq.z VF25,VF05,Q             	waitq
+	mulx.x VF26,VF16,VF23x         	NOP
+	mulx.y VF26,VF16,VF22x         	NOP
+	mulx.x VF29,VF16,VF22x         	NOP
+	msubx.y VF29,VF16,VF23x        	NOP
+	sub VF18,VF30,VF28             	NOP
+	mul.xy VF24,VF26,VF15          	NOP
+	mulaw ACC,VF28,VF00w           	NOP
+	mul.xy VF13,VF29,VF15          	NOP
+	maddw VF17,VF18,VF27w          	NOP
 	NOP                            	NOP
 	NOP                            	NOP
-	sub.xy VF19,VF22,VF21          	NOP
-	ftoi0 VF29,VF17                	NOP
-	mulw.w VF31,VF23,VF07w         	NOP
-	maxx.w VF18,VF15,VF12x         	NOP
-	maxx.w VF24,VF16,VF00x         	NOP
-	add.xy VF26,VF22,VF20          	sq VF29,13(VI06)
-	ftoi0.w VF31,VF31              	sq VF29,16(VI06)
-	miniy.w VF25,VF18,VF12y        	sq VF29,19(VI06)
-	sub.xy VF14,VF22,VF20          	sq VF29,22(VI06)
-	add.xy VF28,VF22,VF21          	NOP
-	itof0.w VF27,VF31              	NOP
-	mulaw.w ACC,VF23,VF00w         	NOP
-	mini.w VF13,VF25,VF24          	NOP
-	addw.z VF30,VF00,VF00w         	NOP
-	msubw.w VF17,VF27,VF08w        	NOP
+	sub.xy VF19,VF31,VF13          	NOP
+	ftoi0 VF22,VF17                	NOP
+	mulw.w VF16,VF14,VF07w         	NOP
+	maxx.w VF23,VF21,VF12x         	NOP
+	maxx.w VF30,VF20,VF00x         	NOP
+	add.xy VF26,VF31,VF24          	sq VF22,1(VI06)
+	ftoi0.w VF16,VF16              	sq VF22,4(VI06)
+	miniy.w VF28,VF23,VF12y        	sq VF22,7(VI06)
+	sub.xy VF15,VF31,VF24          	sq VF22,10(VI06)
+	add.xy VF29,VF31,VF13          	NOP
+	itof0.w VF18,VF16              	NOP
+	mulaw.w ACC,VF14,VF00w         	NOP
+	mini.w VF25,VF28,VF30          	NOP
+	addw.z VF27,VF00,VF00w         	NOP
+	msubw.w VF17,VF18,VF08w        	NOP
 	mulaw.x ACC,VF08,VF00w         	NOP
-	add.zw VF15,VF13,VF12          	NOP
+	add.zw VF21,VF25,VF12          	NOP
 	ftoi4.xy VF19,VF19             	NOP
-	maddw.x VF30,VF07,VF17w        	NOP
+	maddw.x VF27,VF07,VF17w        	NOP
 	mulaw.y ACC,VF08,VF00w         	NOP
-	maddw.y VF30,VF07,VF27w        	NOP
-	ftoi4.xy VF26,VF26             	sq.xy VF19,14(VI06)
-	ftoi4.xy VF14,VF14             	NOP
+	maddw.y VF27,VF07,VF18w        	NOP
+	ftoi4.xy VF26,VF26             	sq.xy VF19,2(VI06)
+	ftoi4.xy VF15,VF15             	NOP
+	ftoi4.xy VF29,VF29             	NOP
+	ftoi4.zw VF25,VF25             	lq VF20,2(VI03)
+	ftoi4.zw VF21,VF21             	lq VF23,3(VI03)
+	add.xyz VF22,VF27,VF10         	sq.xy VF26,5(VI06)
+	add.xyz VF24,VF27,VF11         	sq.xy VF15,8(VI06)
+	ftoi0.w VF13,VF20              	sq.xy VF29,11(VI06)
+	mulax ACC,VF01,VF20x           	sq.xyz VF27,0(VI06)
+	madday ACC,VF02,VF20y          	sq.zw VF21,2(VI06)
+	maddaz ACC,VF03,VF20z          	sq.xyz VF22,3(VI06)
+	itof0.w VF31,VF13              	mtir VI11,VF13w
+	maddw VF16,VF04,VF00w          	iadd VI12,VI11,VI11
+	add.xyz VF14,VF27,VF09         	iadd VI12,VI12,VI02
+	mulz.z VF30,VF23,VF07z         	lq.xy VF28,11(VI00)
+	sub.w VF18,VF20,VF31           	lq.xy VF17,12(VI00)
+	NOP                            	lq.xy VF19,15(VI12)
+	NOP                            	lq.xy VF26,17(VI12)
+	mulz.z VF29,VF30,VF30z         	lq.xy VF15,10(VI00)
+	mulaw.xy ACC,VF28,VF00w        	div Q,VF00w,VF16z
+	NOP                            	lq VF22,16(VI12)
+	sub.xy VF13,VF26,VF19          	lq VF27,18(VI12)
+	maddz.xy VF20,VF17,VF29z       	sq.zw VF21,5(VI06)
+	mulaw.xy ACC,VF15,VF00w        	lq.xy VF31,9(VI00)
+	itof0 VF22,VF22                	sq.xyz VF24,6(VI06)
+	itof0 VF27,VF27                	lq.xy VF28,8(VI00)
+	maddz.xy VF17,VF20,VF29z       	waitq
+	mulaw.xy ACC,VF19,VF00w        	sq.zw VF25,8(VI06)
+	maddw.xy VF21,VF13,VF18w       	sq.xyz VF14,9(VI06)
+	mulaw.xy ACC,VF31,VF00w        	sq.zw VF25,11(VI06)
+	maddz.xy VF15,VF17,VF29z       	iaddiu VI03,VI03,4
+	mulaw.xy ACC,VF28,VF00w        	NOP
+	mul.xy VF24,VF23,VF21          	NOP
+	mulq.xy VF20,VF05,Q            	NOP
+	maddz.xy VF19,VF15,VF29z       	NOP
+	mulaw.xy ACC,VF06,VF00w        	NOP
+	maxy.x VF13,VF24,VF24y         	NOP
+	madd.xy VF14,VF16,VF20         	NOP
+	mulz.x VF25,VF19,VF30z         	NOP
+	addaw.x ACC,VF00,VF00w         	NOP
+	subx.z VF31,VF16,VF13x         	NOP
+	sub VF17,VF27,VF22             	NOP
+	muly.x VF28,VF25,VF19y         	NOP
+	msubx.x VF21,VF25,VF25x        	NOP
+	mulaw.w ACC,VF06,VF00w         	div Q,VF00w,VF31z
+	maddz.w VF15,VF05,VF31z        	NOP
+	mulaw.w ACC,VF06,VF00w         	NOP
+	add.x VF29,VF21,VF28           	NOP
+	sub.x VF30,VF21,VF28           	NOP
+	maddz.w VF13,VF09,VF31z        	NOP
+	mulax.y ACC,VF00,VF00x         	NOP
+	mulx.y VF26,VF24,VF29x         	waitq
+	mulx.x VF26,VF24,VF30x         	NOP
+	mulx.x VF16,VF24,VF29x         	NOP
+	msubx.y VF16,VF24,VF30x        	NOP
+	mulq.z VF27,VF05,Q             	NOP
+	mul.xy VF19,VF26,VF20          	NOP
+	mulaw ACC,VF22,VF00w           	NOP
+	mul.xy VF25,VF16,VF20          	NOP
+	maddw VF21,VF17,VF18w          	NOP
+	NOP                            	NOP
+	NOP                            	NOP
+	sub.xy VF28,VF14,VF25          	NOP
+	ftoi0 VF31,VF21                	NOP
+	mulw.w VF29,VF23,VF07w         	NOP
+	maxx.w VF24,VF15,VF12x         	NOP
+	maxx.w VF30,VF13,VF00x         	NOP
+	add.xy VF26,VF14,VF19          	sq VF31,13(VI06)
+	ftoi0.w VF29,VF29              	sq VF31,16(VI06)
+	miniy.w VF22,VF24,VF12y        	sq VF31,19(VI06)
+	sub.xy VF16,VF14,VF19          	sq VF31,22(VI06)
+	add.xy VF20,VF14,VF25          	NOP
+	itof0.w VF17,VF29              	NOP
+	mulaw.w ACC,VF23,VF00w         	NOP
+	mini.w VF27,VF22,VF30          	NOP
+	addw.z VF18,VF00,VF00w         	NOP
+	msubw.w VF21,VF17,VF08w        	NOP
+	mulaw.x ACC,VF08,VF00w         	NOP
+	add.zw VF15,VF27,VF12          	NOP
 	ftoi4.xy VF28,VF28             	NOP
-	ftoi4.zw VF13,VF13             	sq.xyz VF30,12(VI06)
+	maddw.x VF18,VF07,VF21w        	NOP
+	mulaw.y ACC,VF08,VF00w         	NOP
+	maddw.y VF18,VF07,VF17w        	NOP
+	ftoi4.xy VF26,VF26             	sq.xy VF28,14(VI06)
+	ftoi4.xy VF16,VF16             	NOP
+	ftoi4.xy VF20,VF20             	NOP
+	ftoi4.zw VF27,VF27             	sq.xyz VF18,12(VI06)
 	ftoi4.zw VF15,VF15             	sq.xy VF26,17(VI06)
-	add.xyz VF16,VF30,VF10         	sq.xy VF14,20(VI06)
-	add.xyz VF18,VF30,VF11         	sq.xy VF28,23(VI06)
-	add.xyz VF20,VF30,VF09         	sq.zw VF13,20(VI06)
+	add.xyz VF13,VF18,VF10         	sq.xy VF16,20(VI06)
+	add.xyz VF24,VF18,VF11         	sq.xy VF20,23(VI06)
+	add.xyz VF19,VF18,VF09         	sq.zw VF27,20(VI06)
 	NOP                            	sq.zw VF15,14(VI06)
-	NOP                            	sq.xyz VF16,15(VI06)
+	NOP                            	sq.xyz VF13,15(VI06)
 	NOP                            	sq.zw VF15,17(VI06)
-	NOP                            	sq.xyz VF18,18(VI06)
-	NOP                            	sq.xyz VF20,21(VI06)
-	NOP                            	sq.zw VF13,23(VI06)
+	NOP                            	sq.xyz VF24,18(VI06)
+	NOP                            	sq.xyz VF19,21(VI06)
+	NOP                            	sq.zw VF27,23(VI06)
 	NOP                            	iaddiu VI06,VI06,24
 	NOP                            	ibne VI04,VI00,fxPart
 	NOP                            	NOP

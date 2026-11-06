@@ -60,7 +60,7 @@ def setup(vu, b):
         for k in range(8):
             a = top + gen.FX_TAB + 16 * s + 2 * k
             vu.wq(a, [kx[k], ky[k], 0, 0], True)
-            vu.wq(a + 1, [float(c) for c in rgba[k]], True)
+            vu.wq(a + 1, [int(c) for c in rgba[k]])  # V4_8 USN unpack: integers
     for i, p in enumerate(b['parts']):
         a = top + gen.FX_PART + 2 * i
         vu.wq(a, p['p'] + [8 * p['sys'] + min(p['t'] * 7, 6.9999)], True)
