@@ -89,8 +89,10 @@ static short fx12(float v)
  * would not fit, and the next batch starts a new window. A new window keeps what the slots hold: a bone already in a
  * slot costs no upload, new bones go to slots the window does not need (empty ones first). DSR's own meshes use <= 38
  * bones each (FLVER mesh bone tables, all 171 chr/ FLVERs), so a window usually spans whole meshes and consecutive
- * windows share the spine / root bones. fill = 0: count batches, windows and uploads only. */
-static void skin_plan(Model *m, int fill, int *nb, int *nw, int *nid)
+ * windows share the spine / root bones. fill = 0: count batches, windows and uploads only, and add up the batches'
+ * packet bytes (vu1_skin_packet, ms = the model has metal / specular) in plan_bytes. */
+static unsigned plan_bytes;
+static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
 {
     const Header *hdr = m->hdr;
     int windowed = hdr->bones > MDL_WIN_BONES, b = 0, w = 0, id = 0, nneed = 0;
@@ -153,6 +155,8 @@ static void skin_plan(Model *m, int fill, int *nb, int *nw, int *nid)
                 }
                 nt++, t++;
             }
+            if (!fill)
+                plan_bytes += vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < (int)hdr->textures, ms, NULL);
             if (fill) {
                 m->sk_batch[b].group = g, m->sk_batch[b].tris = nt, m->sk_batch[b].t0 = t0;
                 m->sk_batch[b].win = windowed ? w : -1, m->sk_batch[b].spec = 0;
@@ -172,17 +176,18 @@ static int skin_alloc(Model *m)
 {
     const Header *hdr = m->hdr;
     int n, nw, nid;
-    skin_plan(m, 0, &n, &nw, &nid);
-    /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
-     * heap until a model no longer fit with 2 MB free, 2026-11-01) */
     int ms = 0;
     for (unsigned i = 0; i < hdr->verts && !ms; i++)
         ms = m->verts[i].metal | m->verts[i].spec;
 #ifdef SPEC_TEST  /* debug (make EE_DBGINFOFLAGS='-DSPEC_TEST=0.85,0.8'): metal m, specular s on every vertex */
     ms = 1;
 #endif
-    /* the packets: at most a full batch each (textured: the larger st stream); skin_step packs them as built */
-    unsigned tab = (n * sizeof *m->sk_batch + 15) & ~15u, pkts = n * vu1_skin_packet(NULL, VU1_SKIN_TRIS, 1, ms, NULL);
+    plan_bytes = 0;
+    skin_plan(m, 0, ms, &n, &nw, &nid);
+    /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
+     * heap until a model no longer fit with 2 MB free, 2026-11-01) */
+    /* the packets, each the size of its batch (plan_bytes), packed in build order by skin_step */
+    unsigned tab = (n * sizeof *m->sk_batch + 15) & ~15u, pkts = plan_bytes;
     unsigned wsz = nw ? (nw * 4 + 2 * nid + 15) & ~15u : 0;
     unsigned total = tab + pkts + wsz;
     unsigned char *q = memalign(64, total ? total : 64);
@@ -198,7 +203,7 @@ static int skin_alloc(Model *m)
         m->win_first = (void *)q, m->win_n = m->win_first + nw, m->win_ids = (unsigned char *)(m->win_n + nw);
     }
     m->win_built = -1;
-    skin_plan(m, 1, &n, &nw, &nid);
+    skin_plan(m, 1, ms, &n, &nw, &nid);
     m->nplan = n;
     m->nsk = 0;
     return 1;
