@@ -79,6 +79,12 @@ EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 # model.h MDL_MAX_BONES sizes the pose / palette arrays for it
 CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
+# World streaming v2 (src/mapstream.c, 2026-11-06) is the default; MAPSTREAM_V1=1 builds the first streamer
+# (src/mapstream_v1.c) for A/B runs
+MAPSTREAM_V1 ?= 0
+ifeq ($(MAPSTREAM_V1),1)
+EE_CFLAGS += -DMAPSTREAM_V1
+endif
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
 # they are. make PROFILE=1 -> proto_prof.elf: main.c with -DPROFILE (per-pass EE cycles + I$ / D$ misses from the COP0
