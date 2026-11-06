@@ -898,8 +898,10 @@ def bcdecode_lib():
         native = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
         so = os.path.join(native, "libbcdecode.so")
         if not os.path.exists(so):
-            if os.system(f"gcc -O2 -shared -fPIC -o '{so}' '{os.path.join(native, 'bcdecode.c')}'"):
+            tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel exporter never loads half a library
+            if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{os.path.join(native, 'bcdecode.c')}'"):
                 raise RuntimeError("building tools/native/libbcdecode.so failed")
+            os.replace(tmp, so)
         _bc = ctypes.CDLL(so)
     return _bc
 

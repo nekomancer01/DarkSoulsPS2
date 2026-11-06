@@ -22,8 +22,10 @@ def lib():
     so = os.path.join(NATIVE, "liblz4pack.so")
     src = os.path.join(NATIVE, "lz4pack.c")
     if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
-        if os.system(f"gcc -O2 -shared -fPIC -o '{so}' '{src}'"):
+        tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel pack job never loads half a library
+        if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{src}'"):
             sys.exit("pack.py: building liblz4pack.so failed")
+        os.replace(tmp, so)
     L = ctypes.CDLL(so)
     L.lz4_compress.restype = ctypes.c_size_t
     L.lz4_compress.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]

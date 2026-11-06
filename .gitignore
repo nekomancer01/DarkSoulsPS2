@@ -42,6 +42,7 @@
 .cflags
 *.elf
 *.so
+*.so.[0-9]*
 gmon.out
 /ps2/proto_k14/
 /ps2/proto_mc/
