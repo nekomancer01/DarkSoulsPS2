@@ -129,9 +129,8 @@ typedef struct {
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
-    int idx_batches, idx_clip, idx_vuclip, idx_pieces;  /* indexed map batches so far / triangles split on the EE for vu1clip /
-                                             * VU1_CLIP batches clipped by vu1clip's indexed entry / of them, pieces of
-                                             * batches over CLIPI_MAX (vertices copied on the EE) */
+    int idx_batches, idx_clip, idx_vuclip;  /* indexed map batches so far / triangles split on the EE for vu1clip /
+                                             * VU1_CLIP batches clipped by vu1clip's indexed entry */
     unsigned long long idx_clip_ticks, wait_ticks;  /* EE ticks so far: vu1_add_idx's near-plane split, room()'s mid-chain waits */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;

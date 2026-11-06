@@ -635,9 +635,8 @@ int main(int argc, char **argv)
                    vu1_stats.last[0], vu1_stats.peak[0], vu1_stats.last[1], vu1_stats.peak[1], vu1_stats.segments,
                    vu1_stats.clut_loads[0], vu1_stats.clut_loads[1], map_vu1_batches);
         if (log_frames % 300 == 0)  /* indexed map batches so far / EE-split clip triangles / batches clipped on VU1 */
-            printf("DSRPROTO idx batches %d, clip tris %d, vu clip batches %d (pieces %d); EE ms so far: idx clip split "
-                   "%u, chain waits %u\n", vu1_stats.idx_batches, vu1_stats.idx_clip, vu1_stats.idx_vuclip,
-                   vu1_stats.idx_pieces,
+            printf("DSRPROTO idx batches %d, clip tris %d, vu clip batches %d; EE ms so far: idx clip split %u, "
+                   "chain waits %u\n", vu1_stats.idx_batches, vu1_stats.idx_clip, vu1_stats.idx_vuclip,
                    (unsigned)(vu1_stats.idx_clip_ticks / 294912),
                    (unsigned)(vu1_stats.wait_ticks / 294912));
 #ifdef VU1_TEX_PATH3
