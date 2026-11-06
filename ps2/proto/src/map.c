@@ -1006,8 +1006,8 @@ int map_draw(V3 eye)
             /* the cell's box, tested as opaque (out to CULL_FAR); its blended chunks end at FAR on their own test. A
              * cell holding backdrop chunks is only frustum tested, its other chunks get their own distance test (the
              * cell cut dropped whole far-only cells beyond 250 m: the sky holes and floating wall tops of map-39) */
-            Chunk cb = {0, ce->flags & CHUNK_BACKDROP, 0, 0, 0, 0, {ce->mn[0], ce->mn[1], ce->mn[2]},
-                        {ce->mx[0], ce->mx[1], ce->mx[2]}};
+            Chunk cb = {.flags = ce->flags & CHUNK_BACKDROP, .mn = {ce->mn[0], ce->mn[1], ce->mn[2]},
+                        .mx = {ce->mx[0], ce->mx[1], ce->mx[2]}};  /* designated: Chunk's scalar fields change */
             if (!visible(&cb, e, 0)) {
 #ifdef MAP_DBG
                 for (unsigned j = ce->first; j < ce->first + ce->count; j++)
