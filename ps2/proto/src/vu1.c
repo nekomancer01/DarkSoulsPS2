@@ -687,8 +687,8 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
 static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const u8 *pos, const u8 *st, const u8 *col,
                          const u8 *idx, const float *org, float st_k, int mxl)
 {
-    int n = 3 * k, qp = (n * 6 + 15) / 16, qs = (n * 4 + 15) / 16;
-    use_prog(P_CLIP);
+    int n = 3 * k, qp = (n * 6 + 15) / 16, qs = (n * 4 + 15) / 16, clip = mode & VU1_CLIP;
+    use_prog(clip ? P_CLIP : P_MAP2);
     if (!room(14 + qp + 2 * qs))
         return;
     batch_head(t, cull, mode, k, org, st_k, mxl, 1, NULL);
@@ -716,7 +716,7 @@ static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const 
             *w = 0;
         cp += 2 * qs;
     }
-    tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, CLIP_CODE));
+    tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, clip ? CLIP_CODE : MAP2_CODE));
 }
 
 void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
@@ -732,6 +732,17 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
     mip_mxl = 0;
     if (tris <= 0 || nv <= 0)
         return;
+#ifdef VU1_IDX_NO_CLIP  /* debug: indexed batches at the near plane / guard band are not drawn */
+    if (mode & VU1_CLIP)
+        return;
+#endif
+#ifdef VU1_IDX_LISTS  /* debug: every indexed batch expanded on the EE into lists (vu1map2 / vu1clip), no vu1mapi */
+    if (!(mode & VU1_CLIP)) {
+        for (int t0 = 0; t0 < tris; t0 += 48)
+            add_idx_clip(t, cull, mode, t0, tris - t0 < 48 ? tris - t0 : 48, pos, st, col, idx, org, st_k, mxl);
+        return;
+    }
+#endif
     if (mode & VU1_CLIP) {
         for (int t0 = 0; t0 < tris; t0 += VU1_CLIP_TRIS)
             add_idx_clip(t, cull, mode, t0, tris - t0 < VU1_CLIP_TRIS ? tris - t0 : VU1_CLIP_TRIS, pos, st, col, idx,
