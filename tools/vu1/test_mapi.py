@@ -98,5 +98,33 @@ def main(seeds=12, tris=54):
     return bad
 
 
+def main_clip(seeds=12, tris=32):
+    """vu1clip.vsm's indexed entry (VU1Clip_Idx) vs its list entry on the same near-plane / guard-band batches"""
+    bad = 0
+    out = 0
+    for seed in range(seeds):
+        rng = random.Random(500 + seed)
+        args = tc.make(rng, tris, 0.5)
+        org, step, K, vs = args
+        vs = list(vs)
+        for t in range(1, tris):
+            for k in range(rng.randrange(3)):
+                vs[3 * t + k] = vs[rng.randrange(3 * t)]
+        args = (org, step, K, vs)
+        idx = index_export(vs) if seed % 2 else index(vs, rng)
+        assert gen.MAPI_HDR + 3 * len(idx[0]) + tris <= gen.CLIPI_MAX
+        cull = seed % 2
+        kl, _ = run('vu1clip.vsm', 'VU1Clip_CodeStart', args, cull, False)
+        ki, _ = run('vu1clip.vsm', 'VU1Clip_Idx', args, cull, False, idx)
+        out += len(kl)
+        if kl != ki:
+            bad += 1
+            print('clip seed %d: %d / %d kicks differ (%d / %d)' % (seed, sum(a != b for a, b in zip(kl, ki)),
+                                                                   len(kl), len(kl), len(ki)))
+    print('clip: %d batches, %d kicks, bad %d' % (seeds, out, bad))
+    return bad
+
+
 if __name__ == '__main__':
-    sys.exit(1 if main(int(sys.argv[1]) if len(sys.argv) > 1 else 12) else 0)
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 12
+    sys.exit(1 if main(n) + main_clip(n) else 0)

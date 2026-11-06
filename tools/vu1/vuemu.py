@@ -306,6 +306,11 @@ class VU1:
             reg, f = Ins.reg(ops[1])
             v = self.vf[int(reg[2:])][IDX[f]] & 0xFFFF
             return [lambda: self.seti(ops[0], v)], None
+        if base == 'mfir':  # VI (16 bits, sign extended) -> the dest fields
+            v = self.geti(ops[1])
+            v = (v - 0x10000 if v & 0x8000 else v) & 0xFFFFFFFF
+            d = Ins.reg(ops[0])[0]
+            return [lambda: self.setf(d, [v] * 4, dest)], None
         if base == 'div':
             s, sf = Ins.reg(ops[1])
             t, tf = Ins.reg(ops[2])
