@@ -107,7 +107,7 @@ static EmitState *emit;       /* per instance, per system ref of its effect */
 static int *emit_first;       /* instance -> first EmitState */
 static u8 *inst_on;
 static u32 *tkey;             /* per texture: content hash (pixels + CLUT), the key of the shared VRAM copy */
-static float *vtab;           /* FX_VU1: per system 8 curve keys x {(kx, ky, 0, 0), (r, g, b, a)} (vu1_fx_add) */
+static float *vtab;           /* FX_VU1: per system VU1_FX_TABF floats: 8 x (kx, ky), then 8 x u8 (r, g, b, a) */
 static float *kmax;           /* per system: largest size multiplier of its curves */
 /* one set per fx.bin: 0 the boot area (fx_init), k world block k (fx_block_load at boot, on while the block is) */
 typedef struct {
@@ -245,7 +245,7 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
     emit_first[hdr->n_inst] = ns;
     emit = calloc(ns ? ns : 1, sizeof *emit);
     kmax = calloc(hdr->n_sys ? hdr->n_sys : 1, sizeof *kmax);
-    vtab = FX_VU1 ? memalign(16, (hdr->n_sys ? hdr->n_sys : 1) * 64 * sizeof *vtab) : NULL;
+    vtab = FX_VU1 ? memalign(16, (hdr->n_sys ? hdr->n_sys : 1) * VU1_FX_TABF * sizeof *vtab) : NULL;
     for (u32 i = 0; kmax && i < hdr->n_sys; i++)
         for (int k = 0; k < FX_CURVE; k++) {
             const FxSys *y = &sys[i];
@@ -253,13 +253,12 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
             kmax[i] = m > kmax[i] ? m : kmax[i];
             if (!vtab)
                 continue;
-            float *t = &vtab[64 * i + 8 * k];
-            t[0] = y->kx[k], t[1] = y->ky[k], t[2] = t[3] = 0;
-            for (int c = 0; c < 4; c++)
-                t[4 + c] = y->rgba[k][c];
+            float *t = &vtab[VU1_FX_TABF * i];
+            t[2 * k] = y->kx[k], t[2 * k + 1] = y->ky[k];
+            memcpy(&t[16 + k], y->rgba[k], 4);
         }
     if (vtab)
-        SyncDCache(vtab, vtab + 64 * hdr->n_sys);  /* vu1_fx_add sends the tables by DMA reference */
+        SyncDCache(vtab, vtab + VU1_FX_TABF * hdr->n_sys);  /* vu1_fx_add sends the tables by DMA reference */
     if (!gtex || !tkey || !emit_first || !inst_on || !emit || !kmax || (FX_VU1 && !vtab)) {
         printf("DSRPROTO fx: out of RAM\n");
         hdr = 0;
@@ -680,7 +679,7 @@ static int vu_add(const Particle *p, const FxSys *s, V3 c, int mode)
     if (s->rgba[k0][3] + (s->rgba[k0 + 1][3] - s->rgba[k0][3]) * (t - k0) < 1)
         return 1;  /* invisible at this age (as the EE path) */
     GSTEXTURE *gt = &gtex[s->tex];
-    const float *tab = &vtab[64 * p->sys];
+    const float *tab = &vtab[VU1_FX_TABF * p->sys];
     int k = 0;
     while (k < vb.nsys && vb.tab[k] != tab)
         k++;

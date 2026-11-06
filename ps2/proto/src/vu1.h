@@ -83,12 +83,14 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
  * header (7 qwords) and *parts (2 n qwords) for the caller to fill: header 0 {n, 0, 0, 0}; 1 (cw, ch, 0.5, 1 / fpr);
  * 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0); 6 (fog min,
  * fog max, 0, 2048); particle i {world x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi), frame + 0.5}.
- * tabs[s] (s < nsys <= VU1_FX_SYS): curve tables, 16 qwords each (8 keys x {(kx, ky, 0, 0), (r, g, b, a)}), sent by
- * reference: 16-byte aligned, written back from the data cache, unchanged until the chain is done. Flipbook: cw / ch =
+ * tabs[s] (s < nsys <= VU1_FX_SYS): curve tables of VU1_FX_TABF floats (96 bytes): 8 keys (kx, ky) f32, then 8 keys
+ * (r, g, b, a) u8, sent by reference: 16-byte aligned, written back from the data cache, unchanged until the chain is
+ * done. Flipbook: cw / ch =
  * cell size, du / dv = cell - 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore
  * ALPHA / ZBUF / FOGCOL with vu1_gs_regs before gsKit draws again. */
 #define VU1_FX_N 64
 #define VU1_FX_SYS 8
+#define VU1_FX_TABF 24
 #define VU1_FX_TAB 15
 #define VU1_FX_PART (VU1_FX_TAB + 16 * VU1_FX_SYS)
 #define VU1_FX_ADD 1  /* additive (else alpha blended) */

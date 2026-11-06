@@ -798,7 +798,7 @@ void vu1_fx_begin(void)
 float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts)
 {
     use_prog(P_FX);
-    if (n <= 0 || n > VU1_FX_N || (n & 1) || nsys > VU1_FX_SYS || !room(VU1_FX_TAB + nsys + 2 * n + 4))
+    if (n <= 0 || n > VU1_FX_N || (n & 1) || nsys > VU1_FX_SYS || !room(VU1_FX_TAB + 2 * nsys + 2 * n + 4))
         return NULL;
     tag(VU1_FX_TAB, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, VU1_FX_TAB, U_FLG));
     float *h = (float *)cp;
@@ -817,9 +817,11 @@ float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const flo
     q64(fogcol, 0x3D);
     /* PRIM: triangle strip, gouraud, textured, STQ, blended; FGE for the fogged (alpha) ones */
     q64(GIF_SET_TAG(0, 1, 1, 0x5C | (mode & VU1_FX_FOG ? 0x20 : 0), 0, 3), 0x412);
-    for (int s = 0; s < nsys; s++)
-        tag(16, T_REF, tabs[s], VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 16, U_FLG | (VU1_FX_TAB + 16 * s)));
-    tag(2 * n, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 2 * n, U_FLG | VU1_FX_PART));
+    for (int s = 0; s < nsys; s++) {  /* keys interleaved {size, colour} by STCYCL 2,1 */
+        tag(4, T_REF, tabs[s], VIF(V_STCYCL, 0, 0x0102), VIF(UNPACK_V2_32, 8, U_FLG | (VU1_FX_TAB + 16 * s)));
+        tag(2, T_REF, tabs[s] + 16, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, 8, U_FLG | U_USN | (VU1_FX_TAB + 16 * s + 1)));
+    }
+    tag(2 * n, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, 2 * n, U_FLG | VU1_FX_PART));
     *parts = (float *)cp;
     cp += 4 * n;
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, FX_CODE));
