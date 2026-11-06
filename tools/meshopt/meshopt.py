@@ -36,8 +36,10 @@ def lib():
         return _L
     so = os.path.join(HERE, "libmeshopt.so")
     if not os.path.exists(so):
-        if os.system(f"g++ -O2 -shared -fPIC -o '{so}' '{SRC}'/*.cpp"):
+        tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel exporter never loads half a library
+        if os.system(f"g++ -O2 -shared -fPIC -o '{tmp}' '{SRC}'/*.cpp"):
             sys.exit("meshopt.py: building libmeshopt.so failed (needs tools/ext/meshoptimizer)")
+        os.replace(tmp, so)
     L = ctypes.CDLL(so)
     L.meshopt_simplifyWithAttributes.restype = sz
     L.meshopt_simplifyWithAttributes.argtypes = [u32p, u32p, sz, f32p, sz, sz, ctypes.c_void_p, sz, ctypes.c_void_p,
@@ -109,8 +111,10 @@ def point_mesh_distance(points, pos, idx):
     if not _D:
         so, src = os.path.join(HERE, "libmeshdist.so"), os.path.join(HERE, "meshdist.c")
         if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
-            if os.system(f"gcc -O2 -shared -fPIC -o '{so}' '{src}' -lm"):
+            tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel exporter never loads half a library
+            if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{src}' -lm"):
                 sys.exit("meshopt.py: building libmeshdist.so failed")
+            os.replace(tmp, so)
         _D = ctypes.CDLL(so)
         _D.point_mesh_distance.argtypes = [f32p, sz, f32p, sz, u32p, sz, f32p]
     points = np.ascontiguousarray(points, np.float32)
