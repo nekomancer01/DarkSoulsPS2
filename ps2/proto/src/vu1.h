@@ -130,6 +130,7 @@ typedef struct {
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
     int idx_batches, idx_clip;  /* indexed map batches drawn by vu1mapi / their triangles sent to vu1clip, so far */
+    unsigned long long idx_clip_ticks, wait_ticks;  /* EE ticks so far: vu1_add_idx's near-plane split, room()'s mid-chain waits */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 

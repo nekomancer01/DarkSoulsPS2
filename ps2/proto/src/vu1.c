@@ -337,6 +337,13 @@ static void chk_after(void)
 #define CHK_AFTER() ((void)0)
 #endif
 
+static inline unsigned ticks(void)  /* EE COP0 Count, 294.912 MHz */
+{
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
+
 /* room for qw more qwords (plus the END tag): otherwise send the chain built so far and start over in the same
  * buffer. 0 = cannot fit at all (the caller drops the batch) */
 static int room(int qw)
@@ -345,9 +352,11 @@ static int room(int qw)
         return 1;
     if (chain + qw + 64 > chain_end)
         return 0;
+    unsigned w0 = ticks();
     vu1_kick();
     seg_qw += (u128 *)cp - chain;
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+    vu1_stats.wait_ticks += ticks() - w0;
     CHK_AFTER();
     cp = (u64 *)chain;
     vu1_stats.segments++;
@@ -752,6 +761,7 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
 #endif
     u8 keep[VU1_IDX_TRIS * 4];  /* VU1_CLIP: the triangles vu1mapi draws (no corner near the near plane / guard band) */
     int nk = tris;
+    unsigned t_in = ticks();
     if (mode & VU1_CLIP) {
         /* the EE's conservative version of the programs' CLIP test (view z < near, |view x| > z x guard band...):
          * flagged triangles go to vu1clip.vsm as lists written into the chain, the others to vu1mapi with a triangle
@@ -785,6 +795,7 @@ void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void 
             add_idx_clip(t, cull, mode, 0, nc - t0 < VU1_CLIP_TRIS ? nc - t0 : VU1_CLIP_TRIS, pos, st, col,
                          clipt + 4 * t0, org, st_k, mxl);
         vu1_stats.idx_clip += nc;
+        vu1_stats.idx_clip_ticks += ticks() - t_in;
         if (!nk)
             return;
         mode &= ~VU1_PKT;  /* the packet's triangle stream is the whole chunk's */
