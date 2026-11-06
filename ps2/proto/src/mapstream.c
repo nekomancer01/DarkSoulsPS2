@@ -49,10 +49,49 @@
  * MS_R1_PIN (export_map.WS_R1: the spot budget covers it), wanted out to MS_R1_WANT (map.c CULL_FAR 250 m + a box
  * margin), kept to MS_R1_KEEP. */
 #define MS_R0_DRAW 26.0f
-#define MS_R0_WANT 30.0f  /* = export_map.WS_R0 */
+/* read ahead out to MS_R0_WANT (export_map.WS_R0 budgets 30 m; the plan cut keeps the extra within the arena, C_PREF
+ * is the lowest wanted class): at 30 m, 4 m past the draw radius, cells inside it were still coarse when the player
+ * walked in (pop-in, ISO 2026-11-06) */
+#ifndef MS_NEAR_FIRST
+#define MS_NEAR_FIRST 1
+#endif
+#if MS_NEAR_FIRST
+#define MS_R0_WANT 40.0f
+#define MS_R0_KEEP 46.0f
+#else
+#define MS_R0_WANT 30.0f
 #define MS_R0_KEEP 36.0f
+#endif
+/* near parts rank by the nearer of the feet and a point MS_AHEAD_FRAMES ahead along the walking direction (velocity
+ * smoothed over ~10 frames; ASSUMED 1.5 s: about the read time of a near cell group from cdrom0: plus a margin), so
+ * the cells the player walks into come before those behind (MS_NEAR_FIRST) */
+#define MS_AHEAD_FRAMES 45.0f
 #define MS_R1_PIN 64.0f   /* pinned coarse; export_map.WS_R1 (96 m) budgets a little beyond it */
 #define MS_R0_FIRST 16.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 26 m below (C_NEAR2) */
+/* MS_NEAR_FIRST (default on; make DEFS=-DMS_NEAR_FIRST=0 = the old order): the near parts within MS_R0_FIRST rank
+ * above the pinned coarse level out of view (C_PIN0 within MS_R1_FIRST and the sky / backdrop of the player's block >
+ * C_VIEW coarse in view > C_NEAR > C_PIN coarse out of view). With every pinned coarse cell of all blocks within 64 m and every one in view within 128 m ahead of
+ * them, the near level around the player waited behind megabytes of far coarse cells after each spawn (user report,
+ * 2026-11-06). The coarse cells close by still go first: a missing one is a hole at the player's feet. */
+#ifndef MS_NEAR_FIRST
+#define MS_NEAR_FIRST 1
+#endif
+#define MS_R1_FIRST 32.0f
+/* MS_CANCEL (default on; 0 = off): a read in flight whose items all fell below C_PREF on a re-plan (the player moved
+ * on or warped, a settle began) is cancelled and its pages freed (pack_req_cancel stops it after its current 64 KB
+ * page). Without it up to MS_INFLIGHT x MS_RUN = 2 MB of stale reads went on landing ahead of what the new spot
+ * needs. */
+#ifndef MS_CANCEL
+#define MS_CANCEL 1
+#endif
+/* MS_SETTLE_NEAR (default on; 0 = the old settle, coarse level only): a settle (DSR's loading screen after a warp or
+ * spawn) also reads the near parts within MS_R0_DRAW of the feet and waits for them (mapstream_busy), so the player
+ * starts with the near level drawn instead of watching it stream in over the coarse one (Ame, 2026-11-06). world.c
+ * still ends a settle after its time limit. */
+#ifndef MS_SETTLE_NEAR
+#define MS_SETTLE_NEAR 1
+#endif
+#define MS_SETTLE_NEAR_MS 10000u  /* ASSUMED cap: past it the settle ends with what is in, the rest streams in */
 #define MS_R1_VIEW 128.0f /* coarse cells in view this close: C_VIEW, beyond: C_VIEW2 */
 #define MS_R1_WANT 260.0f
 #define MS_R1_KEEP 280.0f
@@ -102,7 +141,12 @@ enum { MS_NONE, MS_READING, MS_READY, MS_FAILED };
 /* classes, lowest first (the header comment lists them). Coarse cells in view within MS_R1_VIEW rank above near
  * parts: a missing near part draws its cell's coarse level, a missing coarse cell is a hole (with near parts first, the
  * route's worst frame had 211 cells missing instead of 42, ISO 2026-11-06) */
-enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_NEAR, C_VIEW, C_PIN };
+#if MS_NEAR_FIRST
+enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_PIN, C_NEAR, C_VIEW, C_PIN0 };
+#else
+enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_NEAR, C_VIEW, C_PIN, C_PIN0 = C_PIN };
+#endif
+#define C_TOP C_PIN0
 
 MapStreamStats mapstream_stats;
 
@@ -132,7 +176,18 @@ static unsigned frame;
  * by a VIF chain that is built or still running: it is never freed (a warp settle advances `frame` many times without
  * a draw, and #110 freed cells of the last drawn frame's chain there: hang after a spawn, 2026-11-06) */
 static unsigned dcur, dprev;
-static inline int in_chain(unsigned used) { return dprev && (int)(used - dprev) >= 0; }
+/* (an item that landed after the last draw has used > dcur: no chain has it. Counting those made every item read in
+ * a settle undroppable: the near level filled the arena and the next block's lite set found no window, settle at its
+ * 30 s cap, ISO 2026-11-06) */
+/* mapstream_alloc after vu1_wait: no chain reads the arena (map.c builds the map chain in map_draw and main.c kicks it
+ * right after; no allocation runs in between) */
+static int chains_done;
+static inline int in_chain(unsigned used)
+{
+    if (chains_done)
+        return 0;
+    return dprev && (int)(used - dprev) >= 0 && (int)(used - dcur) <= 0;
+}
 static inline void drawn(void)
 {
     if (frame != dcur)
@@ -289,6 +344,8 @@ static float box_d2(const MapCell *c, const float *p)
 }
 
 static int focus = -1, settling, hold;
+static float ahead[3], vel[3], last_pos[3];  /* the walking look-ahead point (MS_AHEAD_FRAMES) */
+static int ahead_on;
 static float settle_r, settle_rf;
 static unsigned (*tex_age)(int k, unsigned tag);
 static void (*tex_set)(int k, unsigned tag, const void *p);
@@ -382,8 +439,21 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
             return C_FREE;
         float d2 = box_d2(&m->tab[id], pos);
         *key = d2 * vk;
-        if (settling)  /* a settle waits for the resident level: near cells stream in behind the game */
-            return d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
+        /* a settle reads the near level within the draw radius (MS_SETTLE_NEAR) after the coarse level it waits for (as
+         * C_NEAR it took the plan from coarse cells inside the settle radius, which the settle then waited for until its
+         * 30 s cap: Firelink's near level within 26 m is 4.1 MB, ISO 2026-11-06); the rest streams in */
+        if (settling)
+            return MS_SETTLE_NEAR && d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
+#if MS_NEAR_FIRST
+        if (ahead_on) {
+            float da = box_d2(&m->tab[id], ahead);
+            if (da < d2)
+                *key = da * vk;
+            if (d2 >= sq(MS_R0_KEEP))
+                return da < sq(MS_R0_WANT) ? C_PREF : C_FREE;
+            d2 = da < d2 ? da : d2;
+        }
+#endif
         return d2 < sq(MS_R0_FIRST) ? C_NEAR : d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_WANT) ? C_PREF : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
     }
     unsigned tag = m->rit[id - m->ncell].tag;
@@ -394,7 +464,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     if (tag & MS_RES_SKY) {
         *key = 0;
-        return k == (focus < 0 ? 0 : focus) ? C_PIN : C_KEEP;
+        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : C_KEEP;
     }
     unsigned c = MS_RES_CELL(tag);
     if (c >= m->ncell)
@@ -402,7 +472,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     float d2 = box_d2(&m->tab[c], pos);
     if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
-        return k == (focus < 0 ? 0 : focus) ? C_PIN : view ? C_VIEW2 : C_FARC;
+        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view ? C_VIEW2 : C_FARC;
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
@@ -411,7 +481,14 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * once the near parts were in made a hole whenever a near part went next (the near level draws only with every
      * part in): the route's worst frame had ~200 cells missing in the Burg (ISO, 2026-11-06). The coarse level within
      * MS_R1_PIN is in the export budget anyway. */
-    return d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? C_FARC : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
+#if MS_NEAR_FIRST
+    /* in view out to MS_R1_VIEW: C_VIEW above the near parts (a missing coarse cell in view is a hole; with C_VIEW
+     * below C_NEAR the route had 227 s with over 16 cells missing instead of 144, ISO 2026-11-06); pinned but out of
+     * view: C_PIN below them */
+    if (d2 >= sq(MS_R1_FIRST) && d2 < sq(MS_R1_VIEW) && view)
+        return C_VIEW;
+#endif
+    return d2 < sq(MS_R1_FIRST) ? C_PIN0 : d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? C_FARC : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
                                                            : d2 < sq(MS_R1_KEEP) ? C_KEEP : C_FREE;
 }
 
@@ -445,6 +522,15 @@ static int grp_cls(const MsInst *m, unsigned id)
         c = m->cls[j] > c ? m->cls[j] : c;
     return c;
 }
+/* any item of id's group handed out in the last two map draws */
+static int grp_chain(const MsInst *m, unsigned id)
+{
+    unsigned a, e = grp_of(m, id, &a);
+    for (unsigned j = a; j < e; j++)
+        if (in_chain(m->used[j]))
+            return 1;
+    return 0;
+}
 static unsigned grp_used(const MsInst *m, unsigned id)
 {
     unsigned a, e = grp_of(m, id, &a), u = 0;
@@ -457,7 +543,7 @@ static unsigned grp_used(const MsInst *m, unsigned id)
  * Clear `need` whole pages (a window; need = 1 for a read group): every group in the window must be loaded, of a class
  * below `below`, and not handed out in the last two map draws (in_chain). Cost per page: (highest class in it, then
  * the bytes and recency of its groups); the cheapest window from the top goes. 1 when cleared. */
-static int nowin = C_PIN + 2;  /* a window of 1 page was not found for this class or above since the last change */
+static int nowin = C_TOP + 2;  /* a window of 1 page was not found for this class or above since the last change */
 static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
 {
     unsigned lim = ng_need ? ipages : npages;  /* a read's window lies where items may go */
@@ -475,7 +561,7 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
             int c = grp_cls(m, id);
             unsigned u = grp_used(m, id), n = grp_bytes(m, a, e);
             unsigned g0 = (unsigned)((unsigned char *)m->buf[a] - arena) / MS_GRAN, ng = (n + MS_GRAN - 1) / MS_GRAN;
-            int ok = c < below && !in_chain(u);
+            int ok = c < below && !grp_chain(m, id);
             unsigned age = frame - u > 1000 ? 1000 : frame - u;  /* cost: bytes, older groups cheaper */
             for (unsigned p = g0 / MS_GPP; p <= (g0 + ng - 1) / MS_GPP; p++) {
                 unsigned lo = p * MS_GPP > g0 ? p * MS_GPP : g0, hi = (p + 1) * MS_GPP < g0 + ng ? (p + 1) * MS_GPP : g0 + ng;
@@ -530,7 +616,7 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
             if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
                 continue;
             unsigned o = (unsigned)((unsigned char *)m->buf[a] - arena);
-            if (o < w1 && o + grp_bytes(m, a, e) > w0 && grp_cls(m, id) < below && !in_chain(grp_used(m, id))) {
+            if (o < w1 && o + grp_bytes(m, a, e) > w0 && grp_cls(m, id) < below && !grp_chain(m, id)) {
                 if (kb)
                     *kb += grp_bytes(m, a, e) >> 10;
                 drop(k, id);
@@ -553,6 +639,10 @@ static int nblk;
 static unsigned scan_frame, fail_frame, fail_wait;
 static float scan_pos[3];
 static int room_fail, failed, evict_left, replan;
+/* load-time A/B (2026-11-06): a clock in ms over mapstream_update calls (COP0 Count wraps every 14.6 s), the settle
+ * that ended last (its start / end on that clock), the first near cell and the full near level within MS_R0_FIRST of
+ * the feet after it; KB of reads that landed with no class wanting them, KB of reads cancelled (MS_CANCEL) */
+static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb, cancel_kb;
 
 static int q_before(const MsQ *a, int cls, float key) { return a->cls > cls || (a->cls == cls && a->key <= key); }
 static void q_add(int k, unsigned id, int cls, float key)
@@ -585,6 +675,13 @@ static void collect(int i, int r)
     land_t = now;
     if (r == (int)w.bytes) {
         InvalidDCache(m->buf[w.id], (char *)m->buf[w.id] + w.bytes - 1);
+        int want = 0;
+        for (unsigned j = w.id; j < w.id + w.n; j++)
+            want |= m->cls[j] >= C_PREF;
+        if (!want)
+            stale_kb += w.bytes >> 10;
+        if (st_wait && !st_first && !it_res(m, w.id))
+            st_first = clk_ms - st_t1 + 1;
         fail_wait = 0;
         mapstream_stats.ms_last = (now - t0) / 294912;
         for (unsigned j = w.id; j < w.id + w.n; j++) {
@@ -719,7 +816,7 @@ static int w_cmp(const void *a, const void *b)
 static void plan(const float *pos)
 {
     nq = 0;
-    nowin = C_PIN + 2;
+    nowin = C_TOP + 2;
     for (int i = 0; i < nblk; i++)
         if (frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
             blk[i--] = blk[--nblk];
@@ -746,7 +843,9 @@ static void plan(const float *pos)
         }
     }
     qsort(want, nw, sizeof *want, w_cmp);
-    unsigned cap = ipages * (MS_PAGE / 100) * MS_FILL_PCT, sum = 0;
+    /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
+    unsigned other = mapstream_stats.other_kb << 10, over = other > MS_OTHER ? other - MS_OTHER : 0;
+    unsigned cap = ipages * MS_PAGE > over ? (ipages * MS_PAGE - over) / 100 * MS_FILL_PCT : 0, sum = 0;
     for (unsigned i = 0; i < nw; i++) {
         MsInst *m = &ms[want[i].k];
         sum += (it_bytes(m, want[i].id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
@@ -757,14 +856,48 @@ static void plan(const float *pos)
         if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
             q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
     }
+#if MS_CANCEL
+    for (int i = 0; i < nrd; i++) {  /* reads in flight that nothing wants any more */
+        MsInst *m = &ms[rd[i].k];
+        int want = 0;
+        for (unsigned j = rd[i].id; j < rd[i].id + rd[i].n; j++)
+            want |= m->cls[j] >= C_PREF;
+        if (want)
+            continue;
+        pack_req_cancel(rd[i].tk);  /* returns once nothing more lands in the buffer */
+        cancel_kb += rd[i].bytes >> 10;
+        drop(rd[i].k, rd[i].id);
+        memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
+        i--;
+    }
+    mapstream_stats.pending = nrd;
+#endif
     {  /* what the plan wants per class (KB) against the room, every ~10 s of plans (tuning the classes) */
         static unsigned np;
         if (!(np++ % 40)) {
-            unsigned kb[C_PIN + 1] = {0};
+            unsigned kb[C_TOP + 1] = {0};
             for (unsigned i = 0; i < nw; i++)
                 kb[want[i].cls] += it_bytes(&ms[want[i].k], want[i].id) >> 10;
-            printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB\n", cap >> 10,
-                   kb[C_PIN], kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF]);
+            printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB; stale reads "
+                   "landed %u KB, cancelled %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
+                   kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb);
+        }
+    }
+    if (st_wait) {  /* after a settle: is the near level within MS_R0_FIRST of the feet in? */
+        unsigned left = 0;
+        for (int k = 0; k < MS_INST; k++) {
+            const MsInst *m = &ms[k];
+            for (unsigned c = 0; c < m->ncell; c++)
+                if ((m->tab[c].near & ~CELL_PART) && !(m->tab[c].near & CELL_PART) && m->tab[c].bytes &&
+                    box_d2(&m->tab[c], pos) < sq(MS_R0_FIRST) && !vis_cut(m, c) && !near_in(m, c))
+                    left++;
+        }
+        unsigned t = clk_ms - st_t1;
+        if (!left || t > 60000) {
+            printf("mapstream: after the settle (%u ms): first near cell %d ms, near level within %.0f m %s %u ms "
+                   "(%u cells left)\n", st_t1 - st_t0, st_first ? (int)st_first - 1 : -1, (double)MS_R0_FIRST,
+                   left ? "still missing after" : "in at", t, left);
+            st_wait = 0;
         }
     }
     /* free what no class wants and no VIF chain reads (not asked for this frame or the last) */
@@ -773,7 +906,7 @@ static void plan(const float *pos)
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a;
             if (m->state[id] == MS_READY && (grp_of(m, id, &a), a == id) && grp_cls(m, id) == C_FREE &&
-                !in_chain(grp_used(m, id)))
+                !grp_chain(m, id))
                 drop(k, id);
         }
     }
@@ -792,10 +925,26 @@ void mapstream_update(const float pos[3])
         return;
     }
     frame++;
+    {
+        unsigned now = ticks(), dt = now - clk_last + clk_frac;  /* 294912 Count ticks per ms */
+        clk_last = now;
+        if (frame > 1)
+            clk_ms += dt / 294912, clk_frac = dt % 294912;
+    }
     int r;
     for (int i = 0; i < nrd; i++)
         if (pack_req_done(rd[i].tk, &r))
             collect(i--, r);
+    {  /* walking velocity per frame (smoothed); a warp / teleport starts it again */
+        float d[3] = {pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]};
+        int jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4.0f || settling;
+        for (int i = 0; i < 3; i++) {
+            vel[i] = jump ? 0 : vel[i] + (d[i] - vel[i]) * 0.1f;
+            ahead[i] = pos[i] + vel[i] * MS_AHEAD_FRAMES;
+            last_pos[i] = pos[i];
+        }
+        ahead_on = !jump && vel[0] * vel[0] + vel[2] * vel[2] > sq(0.02f);  /* moving faster than 0.6 m/s */
+    }
     if (vis_gen && vis_gen() != vis_last)  /* a row changed: what is read changes too (pvs.c) */
         vis_last = vis_gen(), replan = 1;
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
@@ -946,6 +1095,10 @@ void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k
 void mapstream_hold(int on) { hold = on; }
 void mapstream_settle(int on)
 {
+    if (on && !settling)
+        st_t0 = clk_ms, st_wait = 0;
+    if (!on && settling)
+        st_t1 = clk_ms, st_first = 0, st_wait = 1;
     replan |= on != settling;
     settling = on;
 }
@@ -978,8 +1131,20 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
     /* clear a window: of items below the near class first, then of anything but the pinned level, last of anything
      * (a lite set holds the collision the player walks onto next); never of items a VIF chain may read (in_chain) */
-    if (!p && (make_window(need, 0, C_NEAR2, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_PIN + 1, &kb)))
+    if (!p && (make_window(need, 0, C_NEAR2, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_TOP + 1, &kb)))
         p = g_alloc_top(n, npages);
+    if (!p) {
+        /* every window holds a drawn item: the lite set of the block the player walks onto next (983 KB of the
+         * bonfire block's collision) found none for minutes and the player walked off the loaded floor (ISO
+         * 2026-11-06). Once VU1 is idle no chain of an earlier frame reads the arena: clear the cheapest window, drawn
+         * items too (they read back; a frame or two of coarse level or hole beats no floor) */
+        vu1_wait();
+        chains_done = 1;
+        nowin = C_TOP + 2;
+        if (make_window(need, 0, C_TOP + 1, &kb))
+            p = g_alloc_top(n, npages);
+        chains_done = 0;
+    }
     if (kb || !p)  /* the caller falls back to the heap on NULL */
         printf("mapstream: alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
     if (p)
@@ -994,7 +1159,7 @@ void mapstream_free(void *p, unsigned n)
     g_free(p, n);
     mapstream_stats.other_kb -= (n + 1023) >> 10;
     replan = 1;  /* room for what was refused */
-    nblk = 0, nowin = C_PIN + 2;
+    nblk = 0, nowin = C_TOP + 2;
 }
 
 /* resident item j of instance k counts for a settle: the sky of the player's block, or a cell's coarse / kept items
@@ -1027,11 +1192,24 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
     }
     if (room_fail)
         return 0;  /* nothing more fits: go on with what is in */
+#if MS_SETTLE_NEAR
+    /* the near level within the draw radius (the plan made it C_NEAR2 in the settle; one the cut left out is C_KEEP),
+     * for at most MS_SETTLE_NEAR_MS of the settle */
+    if (clk_ms - st_t0 < MS_SETTLE_NEAR_MS)
+        for (int k = 0; k < MS_INST; k++) {
+            const MsInst *m = &ms[k];
+            for (unsigned c = 0; c < m->ncell; c++)
+                if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING ||
+                    (m->state[c] == MS_NONE && !blocked(k, c))) && !vis_off(m, c) &&
+                    box_d2(&m->tab[c], pos) < sq(MS_R0_DRAW))
+                    return 1;
+        }
+#endif
     for (int k = 0; k < MS_INST; k++) {
         const MsInst *m = &ms[k];
         for (unsigned j = 0; j < m->nres; j++)
-            if (m->state[m->ncell + j] == MS_NONE && m->rit[j].bytes && settle_item(k, m, j, pos, r, r_focus) &&
-                !blocked(k, m->ncell + j))
+            if (m->state[m->ncell + j] == MS_NONE && m->rit[j].bytes && m->cls[m->ncell + j] >= C_PREF &&
+                settle_item(k, m, j, pos, r, r_focus) && !blocked(k, m->ncell + j))  /* (not what the cut left out) */
                 return 1;
     }
     return 0;

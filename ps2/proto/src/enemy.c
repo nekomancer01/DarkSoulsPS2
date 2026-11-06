@@ -64,7 +64,9 @@
 #define UNLOAD_DIST 75.0f
 /* RAM a type's model load leaves free (AGENTS.md: 1.5 MB in the heaviest spot): a type that would go below waits,
  * without a try, until RAM frees (a block or type unloading). At the Burg seam with two blocks' lite sets the loads
- * ran RAM down to 0.5 MB and failed every 2 s (model.bin OUT OF RAM, route_enemies.txt from the ISO, 2026-11-05) */
+ * ran RAM down to 0.5 MB and failed every 2 s (model.bin OUT OF RAM, route_enemies.txt from the ISO, 2026-11-05).
+ * A load counts twice the model: its model.bin buffer takes the heap when the arena has no room, beside the compact
+ * copy (the Taurus Demon's load took RAM to 278 KB under the bridge, ISO 2026-11-06) */
 #define STREAM_RAM_FLOOR (1536u << 10)
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
@@ -898,7 +900,7 @@ static void stream_types(const Player *pl)
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
         } else if (!t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
-                   enemy_ram_free() >= STREAM_RAM_FLOOR + t->model_raw && (!next || t->near_d < next->near_d)) {
+                   enemy_ram_free() >= STREAM_RAM_FLOOR + 2 * t->model_raw && (!next || t->near_d < next->near_d)) {
             next = t;
         }
     }

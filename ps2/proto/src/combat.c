@@ -10,6 +10,7 @@
 #include "player.h"
 #include "model.h"
 #include "vmath.h"
+#include "testscript.h"
 
 CombatChr combat_dummy;
 CombatLast combat_last;
@@ -232,6 +233,8 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
     if (first)
         synced = player_chr.hp = p->hp, first = 0;
     int hp = p->hp + (player_chr.hp - synced);
+    if (test_god && hp < p->hp_max)
+        hp = p->hp_max;  /* test script "option god": routes with enemies on that the walker cannot fight */
     if (hp <= 0 && (p->hp > 0 || player_chr.hp != synced))
         hp = -1;  /* dead: the ESD death branches test f1000() < 0 */
     p->hp = player_chr.hp = synced = hp;

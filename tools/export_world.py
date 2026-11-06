@@ -83,11 +83,14 @@ def crop(game, block, m):
     return [(s["part"], s["tris"]) for s in subs]
 
 
-def rect_d(r, x, z):
-    """xz distance from (x, z) to rectangle (x0, z0, x1, z1)"""
-    dx = max(r[0] - x, 0.0, x - r[2])
-    dz = max(r[1] - z, 0.0, z - r[3])
-    return (dx * dx + dz * dz) ** 0.5
+def rect_d(rs, x, z):
+    """xz distance from (x, z) to the nearest of rectangles [(x0, z0, x1, z1)]"""
+    d = 1e30
+    for r in rs:
+        dx = max(r[0] - x, 0.0, x - r[2])
+        dz = max(r[1] - z, 0.0, z - r[3])
+        d = min(d, (dx * dx + dz * dz) ** 0.5)
+    return d
 
 
 def main():
@@ -99,7 +102,7 @@ def main():
         col = os.path.join(gen, "collision.bin") if i == 0 else os.path.join(gen, b, "collision.bin")
         cells = area.BLOCKS.get(b, {}).get("cells")
         c = area.CELL
-        rect = (cells[0] * c, cells[1] * c, (cells[2] + 1) * c, (cells[3] + 1) * c) if cells else None
+        rect = [(r[0] * c, r[1] * c, (r[2] + 1) * c, (r[3] + 1) * c) for r in area.cell_rects(cells)] if cells else None
         blocks.append((b, m, col_bounds(col), rect))
         heights.append(col_height(col))
     n = len(blocks)
@@ -132,7 +135,7 @@ def main():
                 # block (no cells) is DSR's own unit and takes the part wherever it lies: the Asylum's crow ledge
                 # (h0054B1, z -95..-82) is outside Firelink's collision bounds (z >= -51)
                 ts = by_part[part]
-                inside = lambda r: sum(r[0] <= cen[t][0] < r[2] and r[1] <= cen[t][1] < r[3] for t in ts)
+                inside = lambda rs: sum(any(r[0] <= cen[t][0] < r[2] and r[1] <= cen[t][1] < r[3] for r in rs) for t in ts)
                 cnt = {j: inside(blocks[j][3]) if blocks[j][3] else len(ts)
                        for j in range(n) if nbr[i] >> j & 1 and blocks[j][1] == mj}
                 j = max(cnt, key=cnt.get, default=None)
