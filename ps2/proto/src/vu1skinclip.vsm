@@ -458,6 +458,7 @@ skcEdge:
 	NOP                            	NOP
 	sub.x VF18,VF13,VF17           	ibeq VI01,VI14,skcNoCross
 	NOP                            	NOP
+	sub.x VF19,VF17,VF13           	ibne VI14,VI00,skcFromCur
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	NOP
@@ -471,6 +472,21 @@ skcEdge:
 	sub VF19,VF16,VF12             	NOP
 	mulaw ACC,VF12,VF00w           	NOP
 	maddq VF22,VF19,Q              	sq VF21,1(VI07)
+	NOP                            	b skcStored
+	NOP                            	NOP
+skcFromCur:
+	NOP                            	NOP
+	NOP                            	div Q,VF17x,VF19x
+	sub VF19,VF10,VF14             	waitq
+	mulaw ACC,VF14,VF00w           	NOP
+	maddq VF20,VF19,Q              	NOP
+	sub VF19,VF11,VF15             	NOP
+	mulaw ACC,VF15,VF00w           	NOP
+	maddq VF21,VF19,Q              	sq VF20,0(VI07)
+	sub VF19,VF12,VF16             	NOP
+	mulaw ACC,VF16,VF00w           	NOP
+	maddq VF22,VF19,Q              	sq VF21,1(VI07)
+skcStored:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	NOP

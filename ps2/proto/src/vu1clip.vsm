@@ -6,7 +6,8 @@
 ; Pass 2, per listed triangle: the three corners again (view space, st K, colour) into polygon buffer A at
 ; TOPS+296, CLIPs, then the clip core: trivial reject, Sutherland-Hodgman against the planes at 1014 that some
 ; corner is outside of (after the near plane the corners are CLIPped again: CLIP compares with |z|), projection,
-; fan, back faces dropped, one GIF packet per triangle (B at TOPS+323, projected at TOPS+350).
+; fan, back faces dropped, one GIF packet per triangle (B at TOPS+323, projected at TOPS+350). A cut edge's
+; new corner is interpolated from its inside end, so two triangles sharing the edge get the same point.
 
 ; pass 1 loop: 79 cycles per triangle in the tools/vu1 timing model
 
@@ -256,6 +257,7 @@ c2Edge:
 	NOP                            	NOP
 	sub.x VF18,VF13,VF17           	ibeq VI01,VI14,c2NoCross
 	NOP                            	NOP
+	sub.x VF19,VF17,VF13           	ibne VI14,VI00,c2FromCur
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	NOP
@@ -269,6 +271,21 @@ c2Edge:
 	sub VF19,VF16,VF12             	NOP
 	mulaw ACC,VF12,VF00w           	NOP
 	maddq VF22,VF19,Q              	sq VF21,1(VI07)
+	NOP                            	b c2Stored
+	NOP                            	NOP
+c2FromCur:
+	NOP                            	NOP
+	NOP                            	div Q,VF17x,VF19x
+	sub VF19,VF10,VF14             	waitq
+	mulaw ACC,VF14,VF00w           	NOP
+	maddq VF20,VF19,Q              	NOP
+	sub VF19,VF11,VF15             	NOP
+	mulaw ACC,VF15,VF00w           	NOP
+	maddq VF21,VF19,Q              	sq VF20,0(VI07)
+	sub VF19,VF12,VF16             	NOP
+	mulaw ACC,VF16,VF00w           	NOP
+	maddq VF22,VF19,Q              	sq VF21,1(VI07)
+c2Stored:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	NOP
