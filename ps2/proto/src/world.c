@@ -853,8 +853,11 @@ static void settle(const float *feet)
     warping = 1;
     mapstream_settle(1);
     int n = 0;
-    unsigned stuck_t = 0;
-    while (!settled(feet) && (ticks() - t0) / 294912 < 30000) {
+    unsigned stuck_t = 0, el_ms = 0, last = t0, frac = 0;
+    /* elapsed ms summed per step: COP0 Count wraps every 14.6 s, so (ticks() - t0) never reached the 30 s cap */
+    while (!settled(feet) && el_ms < 30000) {
+        unsigned now = ticks(), d = now - last + frac;
+        last = now, el_ms += d / 294912, frac = d % 294912;
         if (!room_stuck)
             stuck_t = 0;
         else if (!stuck_t)
@@ -875,8 +878,12 @@ static void settle(const float *feet)
     in_cur_s = WORLD_SWAP_S;
     event_flush();  /* the new blocks' constructors finish behind the loading screen (A2 event-14) */
     loading_end();
+    {
+        unsigned d = ticks() - last + frac;
+        el_ms += d / 294912;
+    }
     printf("world: warp to %.1f %.1f %.1f settled in %u ms (%d steps): block %d, %d loaded; resident %u KB, mip 0 %u KB\n",
-           feet[0], feet[1], feet[2], (ticks() - t0) / 294912, n, cur, world_stats.loaded, mapstream_stats.res_kb,
+           feet[0], feet[1], feet[2], el_ms, n, cur, world_stats.loaded, mapstream_stats.res_kb,
            mapstream_stats.tex_kb);
 }
 
