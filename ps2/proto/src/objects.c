@@ -142,7 +142,7 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
         memset(ty, 0, sizeof *ty);
         ty->id = (int)t[0], ty->nbodies = (int)t[3], ty->roots = t[6];
         ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
-        ty->model = mdl_load(b + t[1]);
+        ty->model = mdl_load_tex(b + t[1], tex);
         if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || mdl_upload(ty->model, gs) < 0 ||
             (compact && !mdl_compact(ty->model, t[2]))) {
             printf("objects: block %d: animated o%04d did not load\n", block, ty->id);

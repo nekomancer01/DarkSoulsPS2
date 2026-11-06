@@ -18,6 +18,10 @@ typedef struct Model Model;
  * Builds the VU1 skin streams (heap). NULL on a bad blob or more than MDL_MAX_BONES bones. A model with more than
  * MDL_WIN_BONES bones is drawn through per-batch bone windows (TECH_DEBT char-7). */
 Model *mdl_load(const void *blob);
+/* mdl_load for a model without textures of its own whose groups index tex's (animated objects: the pack's shared
+ * texture model, export_objects.py): its skin batches get st for tex's texture sizes, so mdl_share_textures(m, tex)
+ * draws them textured. tex is read during the call only. */
+Model *mdl_load_tex(const void *blob, const Model *tex);
 /* The same in steps (enemy.c streams types in during play): begin parses and allocates, step builds the VU1 skin
  * batches until `budget` EE ticks have passed and returns 1 once all are built (only then use the model) */
 Model *mdl_load_begin(const void *blob);

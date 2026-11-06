@@ -8,6 +8,9 @@
 #include "vu1.h"
 #include "map.h"
 #include "vmath.h"
+#ifdef VU1_CHECK
+#include <stdio.h>
+#endif
 
 typedef struct {
     char magic[4];
@@ -50,6 +53,11 @@ struct Model {
     int nanims;
     GSTEXTURE tex[MAX_TEX];
     int ntex;
+    /* the textures the skin batches' st are built for (skin_plan / skin_step, load time only): the model's own, or for
+     * animated objects the pack's shared texture model's (mdl_load_tex). nte also decides at draw time which packets
+     * hold st (textured) and which colours */
+    const TexEntry *te;
+    int nte;
     void *sk_block;  /* the one allocation the batch table, the packets and the windows live in */
     unsigned char *sk_next;  /* skin_step: where the next batch's packet goes */
     int sk_has_ms;   /* the model has metal / specular streams */
@@ -156,7 +164,7 @@ static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
                 nt++, t++;
             }
             if (!fill)
-                plan_bytes += vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < (int)hdr->textures, ms, NULL);
+                plan_bytes += vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < m->nte, ms, NULL);
             if (fill) {
                 m->sk_batch[b].group = g, m->sk_batch[b].tris = nt, m->sk_batch[b].t0 = t0;
                 m->sk_batch[b].win = windowed ? w : -1, m->sk_batch[b].spec = 0;
@@ -212,15 +220,14 @@ static int skin_alloc(Model *m)
 /* The planned skin batches from nsk on, until `budget` EE ticks have passed: 1 when every batch is built */
 static int skin_step(Model *m, unsigned budget)
 {
-    const Header *hdr = m->hdr;
-    const TexEntry *te = (const TexEntry *)(m->bin + hdr->tex_off);
+    const TexEntry *te = m->te;
     unsigned c0;
     __asm__ volatile("mfc0 %0, $9" : "=r"(c0));
     while (m->nsk < m->nplan) {
         int b = m->nsk;
         unsigned g = m->sk_batch[b].group, t0 = m->sk_batch[b].t0, nt = m->sk_batch[b].tris;
         const Group *gr = &m->groups[g];
-        int textured = gr->tex >= 0 && gr->tex < (int)hdr->textures;
+        int textured = gr->tex >= 0 && gr->tex < m->nte;
         float iw = textured ? 1.0f / te[gr->tex].w : 0, ih = textured ? 1.0f / te[gr->tex].h : 0;
         unsigned char *slot = m->build_slot;  /* skeleton bone -> palette slot (identity without windows) */
         if (m->sk_batch[b].win < 0) {
@@ -284,7 +291,14 @@ static int skin_step(Model *m, unsigned budget)
     return 1;
 }
 
+static Model *load_begin(const void *blob, const Model *tex);
+
 Model *mdl_load_begin(const void *blob)
+{
+    return load_begin(blob, NULL);
+}
+
+static Model *load_begin(const void *blob, const Model *tex)
 {
     const Header *hdr = blob;
     if (!blob || memcmp(hdr->magic, "DSRM", 4) || hdr->bones > MDL_MAX_BONES || hdr->verts > 65535)
@@ -300,6 +314,9 @@ Model *mdl_load_begin(const void *blob)
     m->tris = (const unsigned short *)(m->bin + hdr->tri_off);
     m->groups = (const Group *)(m->bin + hdr->group_off);
     m->uvs = (const float *)(m->bin + hdr->uv_off);
+    m->te = (const TexEntry *)(m->bin + hdr->tex_off), m->nte = hdr->textures;
+    if (tex && tex->te && !hdr->textures)  /* groups index the shared texture model's textures */
+        m->te = tex->te, m->nte = tex->nte;
     const unsigned char *p = m->bin + hdr->anim_off;
     for (m->nanims = 0; m->nanims < (int)hdr->anims && m->nanims < MAX_ANIMS; m->nanims++) {
         const unsigned *h = (const unsigned *)p;
@@ -331,7 +348,12 @@ int mdl_load_step(Model *m, unsigned budget) { return skin_step(m, budget); }
 
 Model *mdl_load(const void *blob)
 {
-    Model *m = mdl_load_begin(blob);
+    return mdl_load_tex(blob, NULL);
+}
+
+Model *mdl_load_tex(const void *blob, const Model *tex)
+{
+    Model *m = load_begin(blob, tex);
     if (m)
         skin_step(m, ~0u);
     return m;
@@ -436,7 +458,7 @@ int mdl_compact(Model *m, unsigned blob_size)
             m->anims[i].rot += d, m->anims[i].tra += d, m->anims[i].fdata += d;
     }
     m->hdr = (const Header *)b;
-    m->bin = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL;
+    m->bin = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL, m->te = NULL;
     for (int i = 0; i < m->ntex; i++)
         m->tex[i].Mem = m->tex[i].Clut = NULL;
     m->own = b;
@@ -665,10 +687,19 @@ static void skin_draw(const Model *m, int tint)
         if (g->flags & m->hide)
             continue;
         GSTEXTURE *gt = g->tex >= 0 && g->tex < m->ntex ? (GSTEXTURE *)&m->tex[g->tex] : NULL;
-        int textured = g->tex >= 0 && g->tex < (int)m->hdr->textures;  /* the packet's st kind (skin_step) */
-        vu1_skin_add_pkt(gt, g->flags & 1, sb->tris, !tint ? none : gt ? tint_tex : tint_flat, sb->pa, sb->pb, sb->n,
-                         sb->st, g->flags >> 28 ? g->flags >> 28 : 1 /* Blinn 2^k from the _s roughness (export_model) */,
-                         sb->ms && sb->spec ? sb->ms : NULL, !gt == !textured ? sb->pkt : NULL, sb->bytes);
+        int textured = g->tex >= 0 && g->tex < m->nte;  /* the packet's st kind (skin_step) */
+#ifdef VU1_CHECK
+        if (!gt != !textured) {
+            static int nrep;
+            if (nrep++ < 20)
+                printf("DSRPROTO VU1_CHECK model %p batch %d: group %d tex %d, ntex %d, hdr textures %d, tris %d: %s\n",
+                       (void *)m, b, sb->group, g->tex, m->ntex, m->nte, sb->tris,
+                       gt ? "texture without st: drawn flat" : "st without texture: drawn grey");
+        }
+#endif
+        vu1_skin_add_pkt(gt, textured, g->flags & 1, sb->tris, !tint ? none : gt && textured ? tint_tex : tint_flat,
+                         sb->pa, sb->pb, sb->n, sb->st, g->flags >> 28 ? g->flags >> 28 : 1 /* Blinn 2^k from the _s roughness (export_model) */,
+                         sb->ms && sb->spec ? sb->ms : NULL, sb->pkt, sb->bytes);
     }
 }
 
