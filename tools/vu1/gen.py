@@ -1110,60 +1110,42 @@ def mapi_vertex_body(edge=False):
     return code
 
 
-MAPI_VFC, MAPI_VFB, MAPI_VFK = 'VF29', 'VF30', 'VF31'  # pass 2 constants: {3, 3, 3, -32768}, batch start, cull
-
-
-def mapi_tri_ops(t):
-    """triangle t of a loop pass (index qword t(VI03)); the index and ADC math run on the upper pipe (floats), so the
-    lower pipe only moves data. Ends with the kick of output slot VI08 and the slot swap."""
-    H, C3, B, K = MAPI_HDR, MAPI_VFC, MAPI_VFB, MAPI_VFK
-    n = lambda r: r.replace('#', str(t))
-    code = ['L lq.xyz %ix#, ' + '%d(VI03)' % t, 'U itof0.xyz %ix#, %ix#',
-            'U mul.xyz %ix#, %ix#, ' + C3, 'U add.xyz %ix#, %ix#, ' + B,  # vertex address = batch start + 3 x number
-            'U ftoi0.xyz %ix#, %ix#']
-    code += ['L mtir &a#%d, %%ix#:%s' % (v, 'xyz'[v]) for v in range(3)]
+def mapi_tri_body():
+    H = MAPI_HDR
+    code = ['L isubiu VI04, VI04, 1',  # early: the loop branch reads VI04 at least 2 cycles after this
+            'L ilw.x &i0, 0(VI03)', 'L ilw.y &i1, 0(VI03)', 'L ilw.z &i2, 0(VI03)']
+    for v in range(3):  # vertex address = batch start + 3 x vertex number + H (in the offsets below)
+        code += ['L iadd &e%d, &i%d, &i%d' % (v, v, v), 'L iadd &f%d, &e%d, &i%d' % (v, v, v),
+                 'L iadd &a%d, &f%d, VI02' % (v, v)]
     for v in range(3):
-        code += ['L lq %%s#%d, %d(&a#%d)' % (v, H + 1, v), 'L lq %%c#%d, %d(&a#%d)' % (v, H + 2, v),
-                 'L lq %%x#%d, %d(&a#%d)' % (v, H, v),
-                 'U itof4.xyz %%y#%d, %%x#%d' % (v, v), 'U itof0.w %%s#%d, %%s#%d' % (v, v)]  # STQ .w: clip flag 0 / 1
-    code += ['U add.w %fl#, %s#0, %s#1', 'U add.w %fl#, %fl#, %s#2',
-             'U sub.xyz %e#1, %y#1, %y#0', 'U sub.xyz %e#2, %y#2, %y#0',
-             'U opmula.xyz ACC, %e#2, %e#1', 'U opmsub.xyz %cr#, %e#1, %e#2',
-             # back face (cull mask 0x22: z <= 0): K {.., .., m / 16, 32 m} for mask m, so 2.125 - 1088 z, which is
-             # >= 2 when z <= 0 and <= -2 otherwise (z is a multiple of 1 / 256: screen coordinates are 1 / 16 pixel)
-             'U mulaz.w ACC, VF00, %sz' % K, 'U msubz.w %%cu#, %s, %%cr#:z' % K,
-             'U max.w %fl#, %fl#, %cu#', 'U miniw.w %fl#, %fl#, VF00w',  # ADC: a flagged corner or culled
-             'U itof0.w %fg#, %x#2', 'U mulaw.w ACC, %fg#, VF00w', 'U msub.w %fg#, %fl#, ' + C3,  # fog + 32768 ADC
-             'U ftoi0.w %x#2, %fg#']
+        code += ['L lq %%s%d, %d(&a%d)' % (v, H + 1, v), 'L lq %%c%d, %d(&a%d)' % (v, H + 2, v),
+                 'L lq %%x%d, %d(&a%d)' % (v, H, v), 'L ilw.w &k%d, %d(&a%d)' % (v, H + 1, v),
+                 'U itof4.xyz %%y%d, %%x%d' % (v, v)]
+    code += ['U sub.xyz %e1, %y1, %y0', 'U sub.xyz %e2, %y2, %y0',
+             'U opmula.xyz ACC, %e2, %e1', 'U opmsub.xyz %cr, %e1, %e2',
+             'L ior &k0, &k0, &k1', 'L ior &k0, &k0, &k2',
+             'L fmand &fm, VI05', 'L ior &t, &k0, &fm', 'L iaddiu &t, &t, 0x7fff',
+             'L iand &t, &t, VI09', 'L ilw.w &w, %d(&a2)' % H, 'L ior &t, &t, &w']
     for v in range(3):
-        code += ['L sq %%s#%d, %d(VI08)' % (v, 1 + 3 * v), 'L sq %%c#%d, %d(VI08)' % (v, 2 + 3 * v),
-                 'L sq %%x#%d, %d(VI08)' % (v, 3 + 3 * v)]
-    code += ['L sq VF10, 0(VI08)', 'L xgkick VI08', 'L isub VI08, VI06, VI08']
-    return [n(x) for x in code]
-
-
-def mapi_tri_body(pair=True):
-    """two triangles per loop pass (one for an odd count's last)"""
-    code = ['L isubiu VI04, VI04, 2'] if pair else []  # early: the loop branch reads VI04 at least 2 cycles after
-    for t in range(2 if pair else 1):
-        code += mapi_tri_ops(t)
-    return code + ['L iaddiu VI03, VI03, %d' % (2 if pair else 1)]
+        code += ['L sq %%s%d, %d(VI08)' % (v, 1 + 3 * v), 'L sq %%c%d, %d(VI08)' % (v, 2 + 3 * v),
+                 'L sq %%x%d, %d(VI08)' % (v, 3 + 3 * v)]
+    code += ['L isw.w &t, 9(VI08)', 'L sq VF10, 0(VI08)', 'L xgkick VI08', 'L isub VI08, VI06, VI08',
+             'L iaddiu VI03, VI03, 1']
+    return code
 
 
 def gen_mapi():
-    vf_pool = ['VF%02d' % i for i in range(11, 29)]  # VF29-31: pass 2 constants
+    vf_pool = ['VF%02d' % i for i in range(11, 32)]
     vi_pool = ['VI07', 'VI10', 'VI11', 'VI12', 'VI13', 'VI14', 'VI15']
-    C3, B, K = MAPI_VFC, MAPI_VFB, MAPI_VFK
     loops = []
-    for body, label, name, br in ((mapi_vertex_body(False), 'mapiVtx', 'vertex', 'ibne VI04, VI00, mapiVtx'),
-                                  (mapi_vertex_body(True), 'mapiVtxE', 'vertex edge', 'ibne VI04, VI00, mapiVtxE'),
-                                  (mapi_tri_body(True), 'mapiTri', 'triangle pair', 'ibgtz VI04, mapiTri'),
-                                  (mapi_tri_body(False), 'mapiTri1', 'last triangle', None)):
-        pairs, per, stalls, _ = schedule_body(body, vi_pool, label, br, vf_pool)
+    for body, label, name in ((mapi_vertex_body(False), 'mapiVtx', 'vertex'),
+                              (mapi_vertex_body(True), 'mapiVtxE', 'vertex edge'),
+                              (mapi_tri_body(), 'mapiTri', 'triangle')):
+        pairs, per, stalls, _ = schedule_body(body, vi_pool, label, 'ibne VI04, VI00, %s' % label, vf_pool)
         print('mapi %s: body %d pairs, %.1f cycles / pass, stalls %d' % (name, len(pairs), per, stalls), file=sys.stderr)
         loops.append((label, pairs, per))
-    out = [MAPI_DOC, '; pass 1: %.0f cycles per 3 vertices (edge fog loop %.0f), pass 2: %.0f cycles per 2 triangles (an odd '
-           'count\'s last: %.0f) in the tools/vu1 timing model' % (loops[0][2], loops[1][2], loops[2][2], loops[3][2]),
+    out = [MAPI_DOC, '; pass 1: %.0f cycles per 3 vertices (edge fog loop %.0f), pass 2: %.0f cycles per triangle in the '
+           'tools/vu1 timing model' % (loops[0][2], loops[1][2], loops[2][2]),
            '', '\t\t.vu', '\t\t.align 4', '\t\t.global VU1MapI_CodeStart', '\t\t.global VU1MapI_CodeEnd',
            'VU1MapI_CodeStart:']
     P = lambda u, l='NOP': out.append('\t%-31s\t%s' % (u.replace(', ', ','), l.replace(', ', ',')))
@@ -1181,23 +1163,12 @@ def gen_mapi():
     P('madday ACC, VF02, VF19y', 'iaddiu VI03, VI02, %d' % MAPI_HDR)
     P('maddaz ACC, VF03, VF19z', 'iaddiu VI09, VI00, 0x7fff')
     P('maddw VF04, VF04, VF00w', 'iaddiu VI09, VI09, 1')
-    # pass 2 constants: C3 {3, 3, 3, -32768}, B {batch start}, K.zw {m / 16, 32 m} for the cull mask m (0x22 or 0)
-    P('NOP', 'iaddiu VI07, VI00, 3')
-    P('NOP', 'mfir.w %s, VI09' % C3)
-    P('NOP', 'mfir.xyz %s, VI07' % C3)
-    P('NOP', 'mfir.xyz %s, VI02' % B)
-    P('NOP', 'mfir.z %s, VI05' % K)
-    P('NOP', 'iadd VI07, VI05, VI05')
-    for _ in range(4):
-        P('NOP', 'iadd VI07, VI07, VI07')
-    P('itof0 %s, %s' % (C3, C3), 'mfir.w %s, VI07' % K)
-    P('itof0.xyz %s, %s' % (B, B))
-    P('itof4.z %s, %s' % (K, K), 'iaddiu VI06, VI00, %d' % (MAP_OUT0 + MAP_OUT1))
-    P('mulw VF01, VF01, VF19w', 'ibeq VI08, VI01, mapiGo')
-    P('mulw VF02, VF02, VF19w')
-    P('mulw VF03, VF03, VF19w', 'iaddiu VI08, VI00, %d' % MAP_OUT0)
+    P('mulw VF01, VF01, VF19w', 'iaddiu VI06, VI00, %d' % (MAP_OUT0 + MAP_OUT1))
+    P('mulw VF02, VF02, VF19w', 'ibeq VI08, VI01, mapiGo')
+    P('mulw VF03, VF03, VF19w')
+    P('NOP', 'iaddiu VI08, VI00, %d' % MAP_OUT0)
     out.append('mapiGo:')                                 # header 0.w != 0 (low 16 bits): the edge fog vertex loop
-    P('itof0.w %s, %s' % (K, K), 'ilw.w VI01, 0(VI02)')
+    P('NOP', 'ilw.w VI01, 0(VI02)')
     P('NOP')
     P('NOP')
     P('NOP')
@@ -1212,20 +1183,12 @@ def gen_mapi():
             P('NOP')
             P('NOP')
             P('NOP', 'iadd VI03, VI03, VI02')
-            P('NOP', 'isubiu VI04, VI04, 1')              # pairs while VI04 > 0 (-2 a pass); 0 left: one more
-            P('NOP')
-            P('NOP', 'ibeq VI04, VI00, mapiTri1')
-            P('NOP')
-        if label == 'mapiTri1':
-            P('NOP', 'ibne VI04, VI00, mapiEnd')
-            P('NOP')
         out.append('%s:' % label)
         emit_pairs(pairs, out)
-        if label == 'mapiTri1':
-            out.append('mapiEnd:')
+        if label == 'mapiTri':
             P('NOP[E]')
             P('NOP')
-        elif label != 'mapiTri':
+        else:
             P('NOP', 'b mapiTris')
             P('NOP')
     out += ['\t\t.align 4', 'VU1MapI_CodeEnd:', '']

@@ -12,7 +12,7 @@
 ; alternating, shared with vu1map2 / vu1clip) as one GIF packet; ADC on the third vertex when a vertex is flagged or
 ; the cull mask catches the screen cross product, as in vu1map2.
 
-; pass 1: 72 cycles per 3 vertices (edge fog loop 84), pass 2: 93 cycles per 2 triangles (an odd count's last: 66) in the tools/vu1 timing model
+; pass 1: 72 cycles per 3 vertices (edge fog loop 84), pass 2: 49 cycles per triangle in the tools/vu1 timing model
 
 		.vu
 		.align 4
@@ -39,24 +39,12 @@ VU1MapI_CodeStart:
 	madday ACC,VF02,VF19y          	iaddiu VI03,VI02,8
 	maddaz ACC,VF03,VF19z          	iaddiu VI09,VI00,0x7fff
 	maddw VF04,VF04,VF00w          	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI07,VI00,3
-	NOP                            	mfir.w VF29,VI09
-	NOP                            	mfir.xyz VF29,VI07
-	NOP                            	mfir.xyz VF30,VI02
-	NOP                            	mfir.z VF31,VI05
-	NOP                            	iadd VI07,VI05,VI05
-	NOP                            	iadd VI07,VI07,VI07
-	NOP                            	iadd VI07,VI07,VI07
-	NOP                            	iadd VI07,VI07,VI07
-	NOP                            	iadd VI07,VI07,VI07
-	itof0 VF29,VF29                	mfir.w VF31,VI07
-	itof0.xyz VF30,VF30            	NOP
-	itof4.z VF31,VF31              	iaddiu VI06,VI00,1998
-	mulw VF01,VF01,VF19w           	ibeq VI08,VI01,mapiGo
-	mulw VF02,VF02,VF19w           	NOP
-	mulw VF03,VF03,VF19w           	iaddiu VI08,VI00,994
+	mulw VF01,VF01,VF19w           	iaddiu VI06,VI00,1998
+	mulw VF02,VF02,VF19w           	ibeq VI08,VI01,mapiGo
+	mulw VF03,VF03,VF19w           	NOP
+	NOP                            	iaddiu VI08,VI00,994
 mapiGo:
-	itof0.w VF31,VF31              	ilw.w VI01,0(VI02)
+	NOP                            	ilw.w VI01,0(VI02)
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	NOP
@@ -124,13 +112,13 @@ mapiVtx:
 	madd.xyz VF23,VF28,VF05        	NOP
 	mulq.xy VF16,VF16,Q            	NOP
 	mulq.z VF16,VF09,Q             	NOP
-	ftoi4 VF11,VF21                	NOP
-	ftoi4 VF12,VF22                	NOP
-	ftoi4 VF14,VF23                	NOP
+	ftoi4 VF29,VF21                	NOP
+	ftoi4 VF30,VF22                	NOP
+	ftoi4 VF31,VF23                	NOP
 	NOP                            	sq VF16,7(VI03)
-	NOP                            	sq VF11,0(VI03)
-	NOP                            	sq VF12,3(VI03)
-	NOP                            	sq VF14,6(VI03)
+	NOP                            	sq VF29,0(VI03)
+	NOP                            	sq VF30,3(VI03)
+	NOP                            	sq VF31,6(VI03)
 	NOP                            	isw.w VI01,7(VI03)
 	NOP                            	iaddiu VI03,VI03,9
 	NOP                            	ibne VI04,VI00,mapiVtx
@@ -188,18 +176,18 @@ mapiVtxE:
 	mula.xyz ACC,VF17,VF07         	NOP
 	maddw.xyz VF28,VF08,VF00w      	NOP
 	mula.xyz ACC,VF18,VF07         	NOP
-	maddw.xyz VF11,VF08,VF00w      	NOP
+	maddw.xyz VF29,VF08,VF00w      	NOP
 	mula.xyz ACC,VF19,VF07         	NOP
-	maddw.xyz VF12,VF08,VF00w      	NOP
+	maddw.xyz VF30,VF08,VF00w      	NOP
 	mini.w VF21,VF21,VF25          	NOP
 	mini.w VF22,VF22,VF26          	NOP
 	mini.w VF23,VF23,VF27          	NOP
-	mulq.xy VF13,VF19,Q            	NOP
-	addq.z VF13,VF00,Q             	NOP
+	mulq.xy VF31,VF19,Q            	NOP
+	addq.z VF31,VF00,Q             	NOP
 	clipw.xyz VF28xyz,VF17w        	NOP
-	clipw.xyz VF11xyz,VF18w        	NOP
+	clipw.xyz VF29xyz,VF18w        	NOP
 	itof0.xy VF16,VF16             	NOP
-	clipw.xyz VF12xyz,VF19w        	NOP
+	clipw.xyz VF30xyz,VF19w        	NOP
 	mulaw.xyz ACC,VF06,VF00w       	NOP
 	maxx.w VF21,VF21,VF00x         	NOP
 	maxx.w VF22,VF22,VF00x         	NOP
@@ -208,16 +196,16 @@ mapiVtxE:
 	mulaw.xyz ACC,VF06,VF00w       	fcand VI01,4032
 	madd.xyz VF22,VF24,VF05        	isw.w VI01,4(VI03)
 	mulaw.xyz ACC,VF06,VF00w       	fcand VI01,63
-	madd.xyz VF23,VF13,VF05        	NOP
+	madd.xyz VF23,VF31,VF05        	NOP
 	mulq.xy VF16,VF16,Q            	NOP
 	mulq.z VF16,VF09,Q             	NOP
-	ftoi4 VF14,VF21                	NOP
-	ftoi4 VF15,VF22                	NOP
-	ftoi4 VF25,VF23                	NOP
+	ftoi4 VF11,VF21                	NOP
+	ftoi4 VF12,VF22                	NOP
+	ftoi4 VF13,VF23                	NOP
 	NOP                            	sq VF16,7(VI03)
-	NOP                            	sq VF14,0(VI03)
-	NOP                            	sq VF15,3(VI03)
-	NOP                            	sq VF25,6(VI03)
+	NOP                            	sq VF11,0(VI03)
+	NOP                            	sq VF12,3(VI03)
+	NOP                            	sq VF13,6(VI03)
 	NOP                            	isw.w VI01,7(VI03)
 	NOP                            	iaddiu VI03,VI03,9
 	NOP                            	ibne VI04,VI00,mapiVtxE
@@ -231,174 +219,56 @@ mapiTris:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	iadd VI03,VI03,VI02
-	NOP                            	isubiu VI04,VI04,1
-	NOP                            	NOP
-	NOP                            	ibeq VI04,VI00,mapiTri1
-	NOP                            	NOP
 mapiTri:
-	NOP                            	lq.xyz VF11,0(VI03)
-	NOP                            	lq.xyz VF12,1(VI03)
+	NOP                            	ilw.x VI07,0(VI03)
+	NOP                            	ilw.y VI10,0(VI03)
+	NOP                            	ilw.z VI11,0(VI03)
 	NOP                            	sq VF10,0(VI08)
-	NOP                            	isubiu VI04,VI04,2
-	itof0.xyz VF11,VF11            	iaddiu VI03,VI03,2
-	itof0.xyz VF12,VF12            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	mul.xyz VF11,VF11,VF29         	NOP
-	mul.xyz VF12,VF12,VF29         	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	add.xyz VF11,VF11,VF30         	NOP
-	add.xyz VF12,VF12,VF30         	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	ftoi0.xyz VF11,VF11            	NOP
-	ftoi0.xyz VF12,VF12            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	mtir VI07,VF11x
-	NOP                            	mtir VI10,VF11y
-	NOP                            	mtir VI11,VF11z
-	NOP                            	lq VF13,8(VI07)
-	NOP                            	lq VF14,8(VI10)
-	NOP                            	lq VF15,8(VI11)
-	NOP                            	mtir VI12,VF12x
-	itof4.xyz VF16,VF13            	mtir VI13,VF12y
-	itof4.xyz VF17,VF14            	mtir VI14,VF12z
-	itof4.xyz VF18,VF15            	lq VF19,8(VI12)
-	itof0.w VF20,VF15              	lq VF21,8(VI13)
-	NOP                            	lq VF22,8(VI14)
-	sub.xyz VF24,VF17,VF16         	lq VF23,9(VI07)
-	sub.xyz VF26,VF18,VF16         	lq VF25,9(VI10)
-	itof4.xyz VF27,VF19            	lq VF28,9(VI11)
-	itof4.xyz VF11,VF21            	lq VF12,9(VI12)
-	itof4.xyz VF17,VF22            	lq VF16,9(VI13)
-	itof0.w VF23,VF23              	lq VF18,9(VI14)
-	itof0.w VF25,VF25              	sq VF13,3(VI08)
-	opmula.xyz ACC,VF26,VF24       	lq VF13,10(VI07)
-	itof0.w VF28,VF28              	sq VF14,6(VI08)
-	itof0.w VF12,VF12              	lq VF14,10(VI10)
-	itof0.w VF16,VF16              	sq VF23,1(VI08)
-	itof0.w VF18,VF18              	sq VF13,2(VI08)
-	NOP                            	lq VF13,10(VI11)
-	NOP                            	sq VF25,4(VI08)
-	NOP                            	sq VF14,5(VI08)
-	sub.xyz VF14,VF11,VF27         	sq VF28,7(VI08)
-	sub.xyz VF11,VF17,VF27         	sq VF13,8(VI08)
-	add.w VF13,VF23,VF25           	lq VF17,10(VI12)
-	opmsub.xyz VF27,VF24,VF26      	lq VF23,10(VI13)
-	mulaz.w ACC,VF00,VF31z         	lq VF25,10(VI14)
-	add.w VF24,VF12,VF16           	NOP
-	add.w VF13,VF13,VF28           	NOP
-	msubz.w VF26,VF31,VF27z        	NOP
-	opmula.xyz ACC,VF11,VF14       	NOP
-	opmsub.xyz VF28,VF14,VF11      	NOP
-	mulaz.w ACC,VF00,VF31z         	NOP
-	max.w VF13,VF13,VF26           	NOP
-	add.w VF24,VF24,VF18           	NOP
-	msubz.w VF27,VF31,VF28z        	NOP
-	itof0.w VF11,VF22              	NOP
-	miniw.w VF13,VF13,VF00w        	NOP
-	mulaw.w ACC,VF20,VF00w         	NOP
-	max.w VF24,VF24,VF27           	NOP
-	NOP                            	NOP
-	msub.w VF20,VF13,VF29          	NOP
-	NOP                            	NOP
-	miniw.w VF24,VF24,VF00w        	NOP
-	mulaw.w ACC,VF11,VF00w         	NOP
-	ftoi0.w VF15,VF20              	NOP
-	NOP                            	NOP
-	msub.w VF11,VF24,VF29          	NOP
-	NOP                            	NOP
-	NOP                            	sq VF15,9(VI08)
-	NOP                            	NOP
-	ftoi0.w VF22,VF11              	xgkick VI08
-	NOP                            	isub VI08,VI06,VI08
-	NOP                            	sq VF12,1(VI08)
-	NOP                            	sq VF17,2(VI08)
-	NOP                            	sq VF19,3(VI08)
-	NOP                            	sq VF16,4(VI08)
-	NOP                            	sq VF23,5(VI08)
-	NOP                            	sq VF21,6(VI08)
-	NOP                            	sq VF18,7(VI08)
-	NOP                            	sq VF25,8(VI08)
-	NOP                            	sq VF22,9(VI08)
-	NOP                            	sq VF10,0(VI08)
-	NOP                            	NOP
+	NOP                            	iadd VI12,VI07,VI07
+	NOP                            	iadd VI13,VI10,VI10
+	NOP                            	iadd VI14,VI11,VI11
+	NOP                            	iadd VI15,VI12,VI07
+	NOP                            	iadd VI07,VI13,VI10
+	NOP                            	iadd VI12,VI14,VI11
+	NOP                            	iadd VI10,VI15,VI02
+	NOP                            	iadd VI13,VI07,VI02
+	NOP                            	iadd VI11,VI12,VI02
+	NOP                            	lq VF11,8(VI10)
+	NOP                            	lq VF12,8(VI13)
+	NOP                            	lq VF13,8(VI11)
+	NOP                            	ilw.w VI14,9(VI10)
+	itof4.xyz VF14,VF11            	ilw.w VI15,9(VI13)
+	itof4.xyz VF15,VF12            	ilw.w VI07,9(VI11)
+	itof4.xyz VF16,VF13            	ilw.w VI12,8(VI11)
+	NOP                            	lq VF17,9(VI10)
+	NOP                            	ior VI14,VI14,VI15
+	sub.xyz VF18,VF15,VF14         	ior VI14,VI14,VI07
+	sub.xyz VF19,VF16,VF14         	lq VF20,10(VI10)
+	NOP                            	lq VF21,9(VI13)
+	NOP                            	lq VF22,10(VI13)
+	NOP                            	lq VF23,9(VI11)
+	opmula.xyz ACC,VF19,VF18       	lq VF24,10(VI11)
+	opmsub.xyz VF25,VF18,VF19      	sq VF13,9(VI08)
+	NOP                            	sq VF17,1(VI08)
+	NOP                            	sq VF20,2(VI08)
+	NOP                            	sq VF11,3(VI08)
+	NOP                            	fmand VI15,VI05
+	NOP                            	ior VI07,VI14,VI15
+	NOP                            	iaddiu VI07,VI07,0x7fff
+	NOP                            	iand VI07,VI07,VI09
+	NOP                            	ior VI07,VI07,VI12
+	NOP                            	sq VF21,4(VI08)
+	NOP                            	sq VF22,5(VI08)
+	NOP                            	sq VF12,6(VI08)
+	NOP                            	sq VF23,7(VI08)
+	NOP                            	sq VF24,8(VI08)
+	NOP                            	isw.w VI07,9(VI08)
+	NOP                            	isubiu VI04,VI04,1
 	NOP                            	xgkick VI08
 	NOP                            	isub VI08,VI06,VI08
-	NOP                            	ibgtz VI04,mapiTri
-	NOP                            	NOP
-	NOP                            	ibne VI04,VI00,mapiEnd
-	NOP                            	NOP
-mapiTri1:
-	NOP                            	lq.xyz VF11,0(VI03)
-	NOP                            	sq VF10,0(VI08)
 	NOP                            	iaddiu VI03,VI03,1
+	NOP                            	ibne VI04,VI00,mapiTri
 	NOP                            	NOP
-	itof0.xyz VF11,VF11            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	mul.xyz VF11,VF11,VF29         	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	add.xyz VF11,VF11,VF30         	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	ftoi0.xyz VF11,VF11            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	mtir VI07,VF11x
-	NOP                            	mtir VI10,VF11y
-	NOP                            	mtir VI11,VF11z
-	NOP                            	lq VF12,8(VI07)
-	NOP                            	lq VF13,8(VI10)
-	NOP                            	lq VF14,8(VI11)
-	NOP                            	lq VF15,9(VI07)
-	itof4.xyz VF16,VF12            	lq VF17,9(VI10)
-	itof4.xyz VF18,VF13            	lq VF19,9(VI11)
-	itof4.xyz VF21,VF14            	lq VF20,10(VI07)
-	itof0.w VF15,VF15              	lq VF22,10(VI10)
-	itof0.w VF17,VF17              	lq VF23,10(VI11)
-	sub.xyz VF24,VF18,VF16         	sq VF12,3(VI08)
-	sub.xyz VF25,VF21,VF16         	sq VF20,2(VI08)
-	itof0.w VF19,VF19              	sq VF15,1(VI08)
-	add.w VF26,VF15,VF17           	sq VF17,4(VI08)
-	itof0.w VF27,VF14              	sq VF22,5(VI08)
-	opmula.xyz ACC,VF25,VF24       	sq VF13,6(VI08)
-	opmsub.xyz VF28,VF24,VF25      	sq VF19,7(VI08)
-	mulaz.w ACC,VF00,VF31z         	sq VF23,8(VI08)
-	add.w VF26,VF26,VF19           	NOP
-	NOP                            	NOP
-	msubz.w VF11,VF31,VF28z        	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	max.w VF26,VF26,VF11           	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	miniw.w VF26,VF26,VF00w        	NOP
-	mulaw.w ACC,VF27,VF00w         	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	msub.w VF27,VF26,VF29          	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	ftoi0.w VF14,VF27              	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	NOP
-	NOP                            	sq VF14,9(VI08)
-	NOP                            	NOP
-	NOP                            	xgkick VI08
-	NOP                            	isub VI08,VI06,VI08
-mapiEnd:
 	NOP[E]                         	NOP
 	NOP                            	NOP
 		.align 4
