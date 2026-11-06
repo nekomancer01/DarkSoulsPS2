@@ -9,6 +9,7 @@
 #include "drb.h"
 #include "items.h"
 #include "loading.h"
+#include "hitch.h"
 #include "pack.h"
 #include "render.h"
 #include "texcache.h"
@@ -469,6 +470,7 @@ static void pack_hook(void) { loading_tick(0); }
 
 void loading_begin(void)
 {
+    hitch_loadscreen();  /* this frame waits behind a loading screen: not a hitch (src/hitch.c) */
     if (depth++ || !gs)
         return;
     open_screen();

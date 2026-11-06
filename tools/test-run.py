@@ -328,11 +328,56 @@ def run(a):
             s["stats"] = stats.get(s["name"], {})
         if not any("TEST DONE" in l for l in res["log"]):
             res["errors"].append("script did not reach its end (no TEST DONE)")
+        if a.hitch:
+            hitch_gates(log, res)
     else:
         res["errors"].append(f"no EE log at {log}")
     res["seconds"] = round(time.time() - res.pop("started"), 1)
     json.dump(res, open(os.path.join(a.outdir, "result.json"), "w"), indent=1)
     return res
+
+
+# --hitch: gates on the hitch monitor's lines (src/hitch.c, tools/hitchsum.py). Loading screens (warps, deaths) count
+# apart. A hitch is a frame over HITCH_MAX_MS while playing; churn is the share of map KB read that had been dropped
+# less than ~30 s before (walking back to a place reads it again legitimately); flops are cells in view swapping their level of detail and back within 2 s; drift compares the
+# first and the last HITCH_WINDOW s of the run (worse late than early = degradation over time).
+HITCH_MAX_MS = 150      # worst frame outside loading screens (after the first 30 s)
+HITCH_OVER100 = 3       # frames over 100 ms per 10 min of play
+HITCH_THRASH_PCT = 15   # KB read again within ~30 s of being dropped / KB read (src/mapstream.c MS_THRASH_TICKS)
+HITCH_FLOPS_MIN = 3.0   # flip-flops per minute
+HITCH_WINDOW = 300
+HITCH_DRIFT_KB = 512    # lowest free heap / largest arena run may fall at most this much first -> last window
+
+
+def hitch_gates(log, res):
+    import hitchsum
+    rows = [r for r in hitchsum.parse(log) if r["t"] > 30]
+    if not rows:
+        res["errors"].append("hitch: no hitch monitor lines (src/hitch.c)")
+        return
+    s = hitchsum.summarize(rows, HITCH_WINDOW)
+    al, mins = s["all"], max(1.0, sum(r["frames"] for r in rows) / 30 / 60)
+    res["hitch"] = s
+    if al["max"] > HITCH_MAX_MS:
+        w = s["worst"][0]
+        res["errors"].append(f"hitch: worst frame {al['max']} ms > {HITCH_MAX_MS} at t {w['t']} s ({w['split']})")
+    if al["o100"] > HITCH_OVER100 * mins / 10:
+        res["errors"].append(f"hitch: {al['o100']} frames over 100 ms in {mins:.0f} min (gate {HITCH_OVER100} / 10 min)")
+    if al["read_kb"] and 100 * al["thrash_kb"] > HITCH_THRASH_PCT * al["read_kb"]:
+        res["errors"].append(f"hitch: churn, {al['thrash_kb']} of {al['read_kb']} KB read had been dropped under 30 s "
+                             f"before (gate {HITCH_THRASH_PCT} %)")
+    if al["flops"] > HITCH_FLOPS_MIN * mins:
+        res["errors"].append(f"hitch: {al['flops']} level-of-detail flip-flops in {mins:.0f} min (gate {HITCH_FLOPS_MIN}"
+                             " / min)")
+    w = s["windows"]
+    if len(w) >= 3:
+        a, b = w[0], w[-1]
+        if b["heap_min"] + HITCH_DRIFT_KB < a["heap_min"] or b["largest_min"] + HITCH_DRIFT_KB < a["largest_min"]:
+            res["errors"].append(f"hitch: free heap drifts down over the run ({a['heap_min']} -> {b['heap_min']} KB, "
+                                 f"largest block {a['largest_min']} -> {b['largest_min']} KB)")
+        if b["max"] > max(2 * a["max"], HITCH_MAX_MS // 2) or b["o50"] > 2 * a["o50"] + 5:
+            res["errors"].append(f"hitch: frames get worse over the run (worst {a['max']} -> {b['max']} ms, over 50 ms "
+                                 f"{a['o50']} -> {b['o50']} per {HITCH_WINDOW} s)")
 
 
 def main():
@@ -348,6 +393,8 @@ def main():
                     help="fail when more near-level swaps were seen on screen in the run (map.c pop-in; -1 = off)")
     ap.add_argument("--cells-missing", type=int, default=CELLS_MISSING_MAX,
                     help=f"fail when map.c reports more cells missing in a frame (default {CELLS_MISSING_MAX}, 0 = off)")
+    ap.add_argument("--hitch", action="store_true", help="gate on the hitch monitor (worst frame, hitches, churn, "
+                    "flip-flops, drift over the run; hitch_gates)")
     ap.add_argument("--gsdump", action="store_true")
     ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
     ap.add_argument("--name")

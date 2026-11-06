@@ -30,6 +30,7 @@
 #include "menu.h"
 #include "items.h"
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
+#include "hitch.h"  /* per-frame worst case, hitches, churn, RAM over time ("hitch:" EE log lines) */
 #include "testscript.h"
 #include "debug_hud.h"  /* Select overlay, debug world drawing */
 #include "world.h"
@@ -386,7 +387,10 @@ int main(int argc, char **argv)
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
         map_blob = world ? NULL : pack_load(&pk, "map.bin", 0);  /* world: split map, world_boot_map */
 #ifndef MAP_PANO_R  /* panorama capture builds (tools/pano.py): no relief or effects, their RAM goes to the far map */
-        bump_blob = pack_load(&pk, "bump.bin", 0);  /* normal-map relief (tools/export_normal.py, src/bump.c) */
+        /* normal-map relief (tools/export_normal.py, src/bump.c). A world build streams the boot block's like every
+         * block's (world.c bump_step, WORLD_BOOT_RELIEF): resident it kept 0.9 MB of the heap from the near arena
+         * wherever the player went */
+        bump_blob = world && WORLD_BOOT_RELIEF ? NULL : pack_load(&pk, "bump.bin", 0);
         fx_blob = pack_load(&pk, "fx.bin", 0);      /* effects: bonfire fire, MSB SFX (tools/export_effects.py, src/fx.c) */
 #endif
         dg_blob = pack_load(&pk, "dg.bin", 0);      /* MSB draw groups per chunk (tools/drawgroups.py, src/drawgrp.c) */
@@ -482,6 +486,7 @@ int main(int argc, char **argv)
         unsigned now = cpu_ticks();
         float dt = (now - last) / 294912000.0f;
         float dt_real = dt;  /* test stats: the frame time before the clamps */
+        hitch_frame(dt_real);  /* the last pass of this loop, its sections (src/hitch.c) */
 #ifdef SLOW_FRAME_LOG  /* make EE_DBGINFOFLAGS=-DSLOW_FRAME_LOG: frames over 100 ms in the EE log (ISO stalls) */
         if (dt_real > 0.1f)
             printf("DSRPROTO slow frame %d ms\n", (int)(dt_real * 1000));
@@ -523,6 +528,7 @@ int main(int argc, char **argv)
          * the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera, draw
          * groups, streamed cells) is settled before the kick; what those updates change shows from the next frame */
         int frozen = test_frozen();  /* test scripts freeze the world while a shot is taken (and for render-only runs) */
+        HITCH_BEGIN(pre);
         if (!frozen) {
             PROF_MARK(PROF_PLAYER);
             player_update(&pl, &in, cam_yaw, dt);
@@ -532,6 +538,7 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_ENEMY);
             enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
         }
+        HITCH_END(pre, HS_PRE);
 
         PROF_MARK(PROF_CAMERA);
         /* third-person orbit camera behind the player */
@@ -556,11 +563,16 @@ int main(int argc, char **argv)
         test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
         r_camera(eye, target);
 
+        HITCH_BEGIN(world);
         world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
         loading_frame();  /* the boot's / a death's loading screen closes once this frame's loads settled */
+        HITCH_END(world, HS_WORLD);
+        HITCH_BEGIN(snd);
         snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
         snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
+        HITCH_END(snd, HS_SND);
         PROF_MARK(PROF_MAP);
+        HITCH_BEGIN(map);
         if (map_ok) {
             /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
             unsigned t0 = cpu_ticks();
@@ -576,6 +588,8 @@ int main(int argc, char **argv)
             gsKit_queue_exec(gs);  /* before the character's VU1 chain draws on top */
             dmaKit_wait_fast();
         }
+        HITCH_END(map, HS_MAP);
+        HITCH_BEGIN(logic);
         if (!frozen) {  /* nothing here may touch what the map chain reads (mapstream cells, PATH2/3 GS registers) */
             PROF_MARK(PROF_ENEMY);
             enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
@@ -584,6 +598,7 @@ int main(int argc, char **argv)
             event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
             bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
         }
+        HITCH_END(logic, HS_LOGIC);
         PROF_MARK(PROF_CHARS);
         unsigned t1 = cpu_ticks();
         vu1_begin(1);
@@ -618,15 +633,20 @@ int main(int argc, char **argv)
         PROF_DRAW();
 
         PROF_MARK(PROF_VU1WAIT);
+        hitch_acc[HS_CHR] += cpu_ticks() - t1;
         unsigned t2 = cpu_ticks();
         fx_kick();   /* FX_VU1: the particle chain, after the characters' */
         vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
         t_wait += ((cpu_ticks() - t2) / 294912.0f - t_wait) * 0.1f;
+        hitch_acc[HS_WAIT] += cpu_ticks() - t2;
         PROF_MARK(PROF_FLIP);
+        HITCH_BEGIN(flip);
         gsKit_queue_exec(gs);
         flip(gs);
         if (vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
             vram_free = r_vram_avail(gs);
+        HITCH_END(flip, HS_FLIP);
+        HITCH_BEGIN(save);
         test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
         save_tick(&pl, dt);  /* requested saves + autosave */
         static unsigned log_frames;
@@ -639,6 +659,7 @@ int main(int argc, char **argv)
             printf("DSRPROTO tex path3 %d, path2 %d, gates %d\n", vu1_stats.tex_path3, vu1_stats.tex_path2,
                    vu1_stats.tex_gates);
 #endif
+        HITCH_END(save, HS_SAVE);
     }
     return 0;
 }

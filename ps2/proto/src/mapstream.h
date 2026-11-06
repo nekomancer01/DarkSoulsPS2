@@ -28,6 +28,9 @@ void mapstream_select(int k);
  * chain reads (not used in the last two frames) until they fit; NULL if they cannot. The arena is allocated on the
  * first call if mapstream_update has not done it yet. */
 void *mapstream_alloc(unsigned n, const float pos[3]);
+/* as mapstream_alloc, but clears only items no class wants (kept / cut): never a cell the plan wants or one drawn.
+ * For optional data (world.c relief). NULL when there is no such room. */
+void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
 /* Heap left outside the arena beyond MS_RESERVE (call before the arena exists: world.c, for the enemy models of a
  * second block near a junction) */

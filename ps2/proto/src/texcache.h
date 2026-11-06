@@ -25,6 +25,12 @@ void tc_block_drop(int slot);
  * map textures, pixels in tc_add's relief pool. n = 0 / table NULL forgets the slot's set. Returns the first index or
  * -1 (block off, no room, no relief pool). tc_block_drop forgets them too. */
 int tc_block_bump(int slot, const unsigned char *base, const void *table, int n);
+/* The boot block's normal maps when they stream (world.c WORLD_BOOT_RELIEF): the first set takes indices after the
+ * base textures (tc_add, which makes the relief pool of pool_kb), later calls with the same n bind the same indices to
+ * a new buffer; table NULL forgets them. Returns the first index or -1. */
+int tc_base_bump(const unsigned char *base, const void *table, int n, int pool_kb);
+/* the relief pool (tc_add's pool_kb) without textures: a world build whose boot relief streams in later */
+int tc_relief_pool(int pool_kb);
 /* Split maps (tools/mapsplit.py): an entry whose pix[0] has TC_RES set keeps its mip 0 in the block's mapres.bin at
  * that offset, present only while the block is full. tc_res gives the textures of slot (-1: the boot map's, else a
  * block slot) that buffer, or NULL: mip 0 is then drawn only while still in VRAM, else mip 1. The caller keeps the old

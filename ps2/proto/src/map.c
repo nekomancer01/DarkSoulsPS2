@@ -10,6 +10,7 @@
 #include "bump.h"
 #include "fx.h"
 #include "mapstream.h"
+#include "hitch.h"
 #include "drawgrp.h"
 #include "pvs.h"
 #include "pack.h"
@@ -124,6 +125,8 @@ typedef struct {
     unsigned char waiting;               /* pop-in metric: in view inside the near radius, drawn coarse (not in yet) */
     unsigned char hz_on;                 /* beyond HZN_R (with HZN_HYST hysteresis): its horizon stands for it */
     unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
+    unsigned char lv, lv_prev;           /* hitch.c: level drawn (1 hole, 2 horizon, 3 coarse, 4 near), the one before */
+    unsigned short lv_seen, lv_fr;       /* the draw it was last in view, the draw its level last changed */
 } Cell;
 /* Pop-in (streaming A/B, 2026-11-06): a cell in view whose near level is due (near_on) but not in draws its coarse
  * level; once the near level arrives while the cell is still in view, the swap is seen: a pop. map_draw counts them
@@ -791,7 +794,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
 
 void map_block_bump(int k, const void *blob)
 {
-    if (k <= 0 || k >= MAP_INST || !inst[k].on)
+    if (k < 0 || k >= MAP_INST || (k && !inst[k].on) || !inst[k].hdr)  /* (0: the boot block, world.c) */
         return;
     int on = bump_block(k, blob, inst[k].hdr->chunks);
     if (blob)
@@ -1174,6 +1177,14 @@ int map_draw(V3 eye)
                     hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
             }
             hz_fill += use_hz && !hzf;
+            {  /* level-of-detail flips of a cell in view (hitch.c): near / coarse / horizon / hole */
+                unsigned char lv = nd ? 4 : use_hz ? 2 : miss && (!hc || mcov) ? 1 : 3;
+                if (ce->lv && lv != ce->lv && (unsigned short)(pop_fr - ce->lv_seen) == 1) {
+                    hitch_flip(k, (unsigned)ci, lv == ce->lv_prev && (unsigned short)(pop_fr - ce->lv_fr) <= HITCH_FLOP_FRAMES);
+                    ce->lv_prev = ce->lv, ce->lv_fr = pop_fr;
+                }
+                ce->lv = lv, ce->lv_seen = pop_fr;
+            }
             unsigned near_gid = nd ? ctab[ci].pad : 0;
             unsigned part = 0, part_end = nd ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
             for (unsigned j = m->streams || m->res_cells ? ce->first : ce->first + ce->count;
