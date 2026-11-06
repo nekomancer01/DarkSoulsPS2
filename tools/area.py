@@ -38,15 +38,18 @@ BONFIRE = "o0200"
 # knobs) with the block's entries overriding AREAS: env AREA_BLOCK=<block name> (Makefile BLOCK=).
 # Block name = output directory / pack name. The boot area's block is the plain area export (no entry needed).
 # Keys: map (MSB); cells (x0, z0, x1, z1): the block is the xz rectangle of CELL m grid cells x0..x1, z0..z1 (inclusive,
-# cell = floor(coordinate / CELL)), the cells export_map.py groups chunks by (CHUNK_GRID), so the blocks of one MSB
-# tile it with no gap or overlap: placed things and map triangles (by centroid) go to exactly one block, collision
+# cell = floor(coordinate / CELL)), or a tuple of such rectangles (their union), the cells export_map.py groups chunks
+# by (CHUNK_GRID), so the blocks of one MSB tile it with no gap or overlap: placed things and map triangles (by centroid) go to exactly one block, collision
 # triangles to every block one of their corners lies in (they meet at the seam). spawn: the player start the exporters
 # bake lighting / LOD around (a part name, or spawn_at (x, y, z) for a block without one).
 # Undead Burg cells (m10_01_00_00; navmesh A* from the aqueduct arrival c0000_0000 to the Burg bonfire o0200_0001 and
 # the Parish bonfire o0200_0005): x -4..-1 the west streets from the aqueduct stairs (h1070B1 / h1095B1 / h1127B1 ->
-# m10_02); x 0..1, z -3..0 the Burg bonfire, the Taurus Demon tower and the bridge's south end; x 0..1, z 1..3 the
-# bridge north to the Parish courtyard (route y 16 -> 28). Row z -4 (Lower Burg, under the street) and the Parish
-# church (z 4, x 2..3) are not blocks yet: map instance / collision block / enemy block index = world block index caps
+# m10_02); x 0..1, z -3..0 the Burg bonfire and the street south of it, plus x -1..2, z -5..-4 the street's south
+# end, the Taurus Demon tower and its bridge (fog 52, 17, -118; the boss at -7, 27, -110): before 2026-11-06 that row
+# was in no block, so past the second bonfire the world ended (no map, no collision; user report); x 0..1, z 1..3 the
+# bridge north to the Parish courtyard (route y 16 -> 28). The Lower Burg corner under the street (x -4..-2, z -5..-4)
+# goes with Burg west. keep: parts the block's enemy roster holds whatever their distance from the spawn (the boss of
+# the bridge; enemy_parts keeps the MAX_ENEMIES nearest otherwise). The Parish church (z 4, x 2..3) is not a block yet: map instance / collision block / enemy block index = world block index caps
 # a world build at 5 blocks (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS; TECH_DEBT world-1).
 # obj_budget (MB, export_objects.py): every block's breakable types load at boot with their VRAM (world.c
 # world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
@@ -55,8 +58,10 @@ BONFIRE = "o0200"
 CELL = 32.0
 BLOCK_OBJ_MB = 0.12
 BLOCKS = {
-    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=(-4, -3, -1, -1), obj_budget=BLOCK_OBJ_MB),
-    "m10_01_00_00_b": dict(map="m10_01_00_00", spawn="c0000_0009", cells=(0, -3, 1, 0), obj_budget=BLOCK_OBJ_MB),
+    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=((-4, -3, -1, -1), (-4, -5, -2, -4)),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m10_01_00_00_b": dict(map="m10_01_00_00", spawn="c0000_0009", cells=((0, -3, 1, 0), (-1, -5, 2, -4)),
+                           obj_budget=BLOCK_OBJ_MB, keep=("c2250_0000",)),
     "m10_01_00_00_p": dict(map="m10_01_00_00", spawn_at=(14.5, 28.5, 102.2), cells=(0, 1, 1, 3), obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
@@ -110,10 +115,16 @@ def spawn_part(M, map_id):
     return min(starts, key=lambda p: min(math.dist(p["pos"], f) for f in fires))  # min keeps the first on ties
 
 
+def cell_rects(cells):
+    """block cells (one (x0, z0, x1, z1) rectangle or a tuple of them) -> [rectangles]"""
+    return [tuple(cells)] if isinstance(cells[0], (int, float)) else [tuple(r) for r in cells]
+
+
 def in_cells(cells):
-    """(x0, z0, x1, z1) block cells -> keep(x, y, z)"""
-    x0, z0, x1, z1 = cells
-    return lambda x, y, z: x0 <= math.floor(x / CELL) <= x1 and z0 <= math.floor(z / CELL) <= z1
+    """block cells -> keep(x, y, z)"""
+    rs = cell_rects(cells)
+    return lambda x, y, z: any(r[0] <= math.floor(x / CELL) <= r[2] and r[1] <= math.floor(z / CELL) <= r[3]
+                               for r in rs)
 
 
 def region(M, map_id):
@@ -177,17 +188,20 @@ def enemy_parts(b, map_id=None):
     inside the area's region (tools/area.py: the part of the MSB the PS2 build holds)"""
     import souls
     M = souls.msb1(b)
-    out = []
+    out, names = [], []
     keep = region(M, map_id) if map_id else (lambda x, y, z: True)
     for p in M["parts"]:
         if p["type"] != 2 or not p["model"] or not keep(*p["pos"]):
             continue
         out.append((p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]))
+        names.append(p["name"])
     if map_id and not is_whole(map_id):
         # cropped area: the runtime roster holds MAX_ENEMIES (enemy.h, 32) parts incl. c0000 (skipped later), so
         # keep the non-c0000 parts nearest to the spawn (TECH_DEBT build-6)
         sp = spawn_part(M, map_id)["pos"]
-        rest = sorted((r for r in out if r[0] != "c0000"), key=lambda r: math.dist(r[4], sp))
+        always = set(config(map_id).get("keep", ()))  # BLOCKS keep: first, whatever their distance
+        name = {id(r): n for r, n in zip(out, names)}
+        rest = sorted((r for r in out if r[0] != "c0000"), key=lambda r: (name[id(r)] not in always, math.dist(r[4], sp)))
         out = rest[:config(map_id).get("max_enemies", MAX_ENEMIES)]
     return out
 
