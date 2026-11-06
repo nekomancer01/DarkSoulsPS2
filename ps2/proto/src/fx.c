@@ -20,11 +20,11 @@
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
 
-/* FX_VU1 1: particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan PR 7): the EE
- * sends one 2-qword vertex per particle, VU1 does the curves, roll, flipbook, projection and the sprite; the rest
- * keep the EE billboards below. Off until VU1 and GS fill are timed on hardware (TECH_DEBT fx-14) */
+/* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
+ * PR 7): the EE sends one 2-qword vertex per particle, VU1 does the curves, roll, flipbook, projection and the sprite;
+ * the rest keep the EE billboards below. FX_VU1=0 builds draw them all on the EE (A/B; TECH_DEBT fx-14) */
 #ifndef FX_VU1
-#define FX_VU1 0
+#define FX_VU1 1
 #endif
 
 #define FX_MAX 384        /* particle pool (all instances) */
