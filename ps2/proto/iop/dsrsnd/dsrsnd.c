@@ -165,6 +165,7 @@ static struct {
 static unsigned char df_sec[2048] __attribute__((aligned(64)));  /* partial sectors, directory sectors */
 static sceCdRMode df_mode = {.trycount = 0, .spindlctrl = SCECdSpinNom, .datapattern = SCECdSecS2048};
 static unsigned int df_reads, df_errors;
+static unsigned int cd_head;  /* the sector after the last one read: where the drive's head is (disc_step's sweep) */
 
 /* n sectors from lsn into buf (4-byte aligned): 0, or -1 after DF_TRIES failed reads */
 static int cd_sectors(unsigned int lsn, unsigned int n, void *buf)
@@ -174,6 +175,7 @@ static int cd_sectors(unsigned int lsn, unsigned int n, void *buf)
             sceCdSync(0);
             if (!sceCdGetError()) {
                 df_reads++;
+                cd_head = lsn + n;
                 return 0;
             }
         }
@@ -616,15 +618,34 @@ static void disc_page(DiscJob *j)
         disc_finish(j, j->done);
 }
 
-/* the most urgent, then oldest queued request: open / close at once, a read one page further */
+/* the disc sector job j reads next (an open, a close or a host: read: where the head is, so it goes now) */
+static unsigned int job_lsn(const DiscJob *j)
+{
+    if (j->r.op != SNDD_READ || !df_is(j->r.fd))
+        return cd_head;
+    return df_tab[df_h[j->r.fd - DF_FD].file].lsn + (j->r.offset + j->done) / 2048;
+}
+
+/* The next request: the most urgent priority first; within it the one whose next sector is the first at or after the
+ * head, else the lowest (one sweep across the disc, then back: the request queue "sorted by LSN" of Sony's streaming
+ * talks and the next-file-on-CD rule of console streamers, so queued map reads cost one pass over the disc instead
+ * of a seek back and forth per read in submission order). A read in progress stays first: its next page is at the
+ * head. Ties go to the oldest. */
 static void disc_step(void)
 {
     DiscJob *j = NULL;
+    unsigned int jd = 0;
     WaitSema(dq_sema);
     for (int i = 0; i < SND_DISC_SLOTS; i++) {
         DiscJob *c = &dq[i];
-        if (c->live && (!j || c->r.prio < j->r.prio || (c->r.prio == j->r.prio && (int)(c->order - j->order) < 0)))
-            j = c;
+        if (!c->live)
+            continue;
+        /* sectors ahead of the head, wrapping for those behind it; from the last sector read, which a read in
+         * progress continues in when its page ended inside a sector */
+        unsigned int d = job_lsn(c) - (cd_head - 1);
+        if (!j || c->r.prio < j->r.prio ||
+            (c->r.prio == j->r.prio && (d < jd || (d == jd && (int)(c->order - j->order) < 0))))
+            j = c, jd = d;
     }
     SignalSema(dq_sema);
     if (!j)
