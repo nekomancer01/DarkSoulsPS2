@@ -75,6 +75,8 @@ void r_tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const float (
 void r_set_fog(float a, float b, float fmin, float fmax, u32 rgb, u32 base_rgb);
 /* edge fog slope for the EE path (map.c fog_terms): F = max(min(F, b + a2 z), 0); 0 = none */
 void r_set_fog_edge(float a2);
+/* the EE path's fog terms as set above (fx.c hands them to its VU1 particle chain): a, b, fmin, fmax, edge a2 */
+void r_get_fog(float f[5], u64 *rgb, u64 *base_rgb);
 /* View-space axis-aligned box test against the frustum: 0 if certainly outside */
 int r_box_visible(const float *mn, const float *mx);
 void r_ground(float size, float cell);

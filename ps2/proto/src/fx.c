@@ -18,6 +18,14 @@
 #include "fx.h"
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
+#include "vu1.h"
+
+/* FX_VU1 1: particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan PR 7): the EE
+ * sends one 2-qword vertex per particle, VU1 does the curves, roll, flipbook, projection and the sprite; the rest
+ * keep the EE billboards below. Off until VU1 and GS fill are timed on hardware (TECH_DEBT fx-14) */
+#ifndef FX_VU1
+#define FX_VU1 0
+#endif
 
 #define FX_MAX 384        /* particle pool (all instances) */
 #define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
@@ -99,6 +107,8 @@ static EmitState *emit;       /* per instance, per system ref of its effect */
 static int *emit_first;       /* instance -> first EmitState */
 static u8 *inst_on;
 static u32 *tkey;             /* per texture: content hash (pixels + CLUT), the key of the shared VRAM copy */
+static float *vtab;           /* FX_VU1: per system 8 curve keys x {(kx, ky, 0, 0), (r, g, b, a)} (vu1_fx_add) */
+static float *kmax;           /* per system: largest size multiplier of its curves */
 /* one set per fx.bin: 0 the boot area (fx_init), k world block k (fx_block_load at boot, on while the block is) */
 typedef struct {
     const FxHeader *hdr;
@@ -113,6 +123,7 @@ typedef struct {
     int *emit_first;
     u8 *inst_on;
     u32 *tkey;
+    float *vtab, *kmax;
     int on;
 } FxSet;
 static FxSet fset[FX_SETS];
@@ -125,9 +136,11 @@ static void bind(int k)
     FxSet *c = &fset[cur_set];
     c->hdr = hdr, c->tex = tex, c->sys = sys, c->eff = eff, c->ref = ref, c->inst = inst, c->light = light;
     c->gtex = gtex, c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on, c->tkey = tkey;
+    c->vtab = vtab, c->kmax = kmax;
     const FxSet *n = &fset[cur_set = k];
     hdr = n->hdr, tex = n->tex, sys = n->sys, eff = n->eff, ref = n->ref, inst = n->inst, light = n->light;
     gtex = n->gtex, emit = n->emit, emit_first = n->emit_first, inst_on = n->inst_on, tkey = n->tkey;
+    vtab = n->vtab, kmax = n->kmax;
 }
 static Particle pool[FX_MAX];
 static int n_alive;
@@ -231,7 +244,23 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
         emit_first[i] = ns, ns += eff[inst[i].eff].n_ref;
     emit_first[hdr->n_inst] = ns;
     emit = calloc(ns ? ns : 1, sizeof *emit);
-    if (!gtex || !tkey || !emit_first || !inst_on || !emit) {
+    kmax = calloc(hdr->n_sys ? hdr->n_sys : 1, sizeof *kmax);
+    vtab = FX_VU1 ? memalign(16, (hdr->n_sys ? hdr->n_sys : 1) * 64 * sizeof *vtab) : NULL;
+    for (u32 i = 0; kmax && i < hdr->n_sys; i++)
+        for (int k = 0; k < FX_CURVE; k++) {
+            const FxSys *y = &sys[i];
+            float m = y->kx[k] > y->ky[k] ? y->kx[k] : y->ky[k];
+            kmax[i] = m > kmax[i] ? m : kmax[i];
+            if (!vtab)
+                continue;
+            float *t = &vtab[64 * i + 8 * k];
+            t[0] = y->kx[k], t[1] = y->ky[k], t[2] = t[3] = 0;
+            for (int c = 0; c < 4; c++)
+                t[4 + c] = y->rgba[k][c];
+        }
+    if (vtab)
+        SyncDCache(vtab, vtab + 64 * hdr->n_sys);  /* vu1_fx_add sends the tables by DMA reference */
+    if (!gtex || !tkey || !emit_first || !inst_on || !emit || !kmax || (FX_VU1 && !vtab)) {
         printf("DSRPROTO fx: out of RAM\n");
         hdr = 0;
         return 0;
@@ -594,6 +623,99 @@ static int by_depth(const void *a, const void *b)
     return d > 0 ? 1 : d < 0 ? -1 : 0;
 }
 
+/* FX_VU1: the VU1 batch being collected (one texture and mode, <= VU1_FX_SYS curve tables) and the fog terms */
+static struct {
+    GSTEXTURE *gt;
+    const FxTex *tx;
+    int mode, n, nsys, chain;
+    const float *tab[VU1_FX_SYS];
+    float fog[5];
+    u64 fogcol, fogbase;
+    float part[VU1_FX_N][8] __attribute__((aligned(16)));
+} vb;
+static int vu_drawn, vu_batches, vu_breaks[3];  /* breaks: texture / mode, full, tables */
+
+static void vu_flush(void)
+{
+    if (!vb.n)
+        return;
+    if (vb.n & 1) {  /* the program takes particles in pairs: a zero-size copy of the last one draws nothing */
+        memcpy(vb.part[vb.n], vb.part[vb.n - 1], sizeof vb.part[0]);
+        vb.part[vb.n][4] = vb.part[vb.n][5] = 0;
+        vb.n++;
+    }
+    if (!vb.chain) {  /* the particle chain: camera constants, the main fog row, the program's layout */
+        vu1_begin(2);
+        vu1_map_fog(vb.fog[0], vb.fog[1], vb.fog[2], vb.fog[3]);
+        vu1_fx_begin();
+        vb.chain = 1;
+    }
+    float *pt, *b = vu1_fx_add(vb.gt, vb.mode, vb.fogcol, vb.n, vb.nsys, vb.tab, &pt);
+    if (b) {
+        const FxTex *tx = vb.tx;
+        int nf = tx->nframes ? tx->nframes : 1, fpr = tx->fpr ? tx->fpr : 1, rows = (nf + fpr - 1) / fpr;
+        float cw = 1.0f / fpr, ch = 1.0f / rows, mu = 0.5f / vb.gt->Width, mv = 0.5f / vb.gt->Height;
+        float du = cw - 2 * mu, dv = ch - 2 * mv;
+        const float h[28] = {0, 0, 0, 0, cw, ch, 0.5f, 1.0f / fpr, mu - cw * 0.5f, mv, 0, (float)fpr,
+                             du, dv, 0, vb.fog[4], du, 0, 0, 0, 0, dv, 0, 0, vb.fog[2], vb.fog[3], 0, 2048};
+        memcpy(b, h, sizeof h);
+        ((u32 *)b)[0] = vb.n;
+        memcpy(pt, vb.part, vb.n * 8 * sizeof(float));
+        vu_batches++;
+    }
+    vb.n = vb.nsys = 0;
+}
+
+/* p (system s of the bound set, view centre c) to the VU1 batch; 0 = not VU1-safe (near plane / guard band), drawn
+ * by the EE path */
+static int vu_add(const Particle *p, const FxSys *s, V3 c, int mode)
+{
+    float rad = (p->sx > p->sy ? p->sx : p->sy) * kmax[p->sys];  /* the largest half size its curves reach */
+    V3 ext = v3(fabsf(c.x) + 1.42f * rad, fabsf(c.y) + 1.42f * rad, c.z - rad);  /* rolled corner <= sqrt 2 */
+    if (ext.z <= R_NEAR + 0.05f || !r_point_inside(&ext))
+        return 0;
+    float t = p->age / p->life * (FX_CURVE - 1), rot = p->rot;
+    t = t < FX_CURVE - 1.0001f ? t : FX_CURVE - 1.0001f;
+    int k0 = (int)t;
+    if (s->rgba[k0][3] + (s->rgba[k0 + 1][3] - s->rgba[k0][3]) * (t - k0) < 1)
+        return 1;  /* invisible at this age (as the EE path) */
+    GSTEXTURE *gt = &gtex[s->tex];
+    const float *tab = &vtab[64 * p->sys];
+    int k = 0;
+    while (k < vb.nsys && vb.tab[k] != tab)
+        k++;
+    if (vb.n && (gt != vb.gt || mode != vb.mode || vb.n >= VU1_FX_N || k == VU1_FX_SYS)) {
+        vu_breaks[gt != vb.gt || mode != vb.mode ? 0 : vb.n >= VU1_FX_N ? 1 : 2]++;
+        vu_flush(), k = 0;
+    }
+    if (k == vb.nsys)
+        vb.tab[vb.nsys++] = tab;
+    vb.gt = gt, vb.tx = &tex[s->tex], vb.mode = mode;
+    const FxTex *tx = vb.tx;
+    int nf = tx->nframes ? tx->nframes : 1;
+    int fr = (int)(p->f0 + s->rate * p->age) % nf;
+    fr = fr < 0 ? fr + nf : fr;
+    rot -= 6.2831853f * (int)(rot * 0.15915494f);  /* the program's sin / cos take -pi..pi */
+    rot = rot > 3.1415927f ? rot - 6.2831853f : rot < -3.1415927f ? rot + 6.2831853f : rot;
+    float *q = vb.part[vb.n++];
+    q[0] = p->p[0], q[1] = p->p[1], q[2] = p->p[2], q[3] = 8 * k + t;
+    q[4] = p->sx, q[5] = p->sy, q[6] = rot, q[7] = fr + 0.5f;
+    vu_drawn++;
+    return 1;
+}
+
+void fx_kick(void)
+{
+    if (!vb.chain)
+        return;
+    /* gsKit draws after this chain with its own ALPHA / ZBUF / FOGCOL (as tri_list leaves them) */
+    u64 zbuf = GS_SETREG_ZBUF(fx_gs->ZBuffer / 8192, fx_gs->PSMZ, 0);
+    const u64 r[6] = {fx_gs->PrimAlpha, 0x42, zbuf, 0x4E, vb.fogbase, 0x3D};
+    vu1_gs_regs(3, r);
+    vu1_kick();
+    vb.chain = 0;
+}
+
 void fx_draw(void)
 {
     bind(0);
@@ -636,6 +758,10 @@ void fx_draw(void)
         float fy, zs;
         r_camera_basis(&e, &rt, &up, &fw, &focal_px, &fy, &zs);
     }
+    vu_drawn = vu_batches = 0;
+    memset(vu_breaks, 0, sizeof vu_breaks);
+    if (FX_VU1)
+        r_get_fog(vb.fog, &vb.fogcol, &vb.fogbase);
     static ClipVert cv[FX_BATCH * 6];
     static float sc[FX_BATCH * 6][3];
     int nv = 0, cur_tex = -1, cur_mode = 0, drawn = 0, batches = 0;
@@ -652,6 +778,8 @@ void fx_draw(void)
         }
         if (!p)
             break;
+        if (FX_VU1 && vu_add(p, s, cen[ord[o].i], s->blend ? VU1_FX_FOG : VU1_FX_ADD))
+            continue;
         cur_tex = s->tex, cur_mode = mode, cur_gt = &gtex[s->tex];
         /* curves at the particle's age */
         float t = p->age / p->life * (FX_CURVE - 1);
@@ -716,12 +844,17 @@ void fx_draw(void)
         }
     }
     bind(0);
+    vu_flush();
     (void)cur_tex;
-    fx_stats.drawn = drawn;
-    fx_stats.batches = batches;
+    fx_stats.drawn = drawn + vu_drawn;
+    fx_stats.batches = batches + vu_batches;
+    fx_stats.vu1 = vu_drawn;
+    for (int k = 0; k < 3; k++)
+        fx_stats.vu1_breaks[k] = vu_breaks[k];
     unsigned t1;
     __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
-    fx_stats.ms += (t1 - t0) / 294912.0f;
+    fx_stats.ms_draw = (t1 - t0) / 294912.0f;
+    fx_stats.ms += fx_stats.ms_draw;
 }
 
 void fx_char_light(V3 pos, float amb[3])

@@ -14,6 +14,8 @@ int fx_init(GSGLOBAL *gs, const void *blob);
 void fx_update(float dt, V3 eye);
 /* queue this frame's particles as gsKit packets (call after the map / character VU1 chains are kicked) */
 void fx_draw(void);
+/* FX_VU1 builds: send fx_draw's VU1 particle chain (after the character chain; main.c, right before vu1_wait) */
+void fx_kick(void);
 /* add the effect lights near pos (bonfire flicker) to a character's ambient light (0x80 = 1.0 units) */
 void fx_char_light(V3 pos, float amb[3]);
 /* World blocks (src/world.c): at boot, block b's fx.bin tables (kept: the blob can be freed); fx_block_on(b, 1, blob)
@@ -36,7 +38,10 @@ typedef struct {
     int active;      /* instances within range */
     int drawn;       /* particles drawn this frame */
     int batches;     /* GS packets */
+    int vu1;         /* of drawn: on VU1 (FX_VU1) */
+    int vu1_breaks[3];  /* VU1 batch ends: texture / mode change, full, out of curve tables */
     float ms;        /* EE time of update + draw (smoothed) */
+    float ms_draw;   /* of which fx_draw */
 } FxStats;
 extern FxStats fx_stats;
 

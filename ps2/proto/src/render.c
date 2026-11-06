@@ -397,6 +397,12 @@ void r_set_fog_edge(float a2)
     fog_edge = a2;
 }
 
+void r_get_fog(float f[5], u64 *rgb, u64 *base_rgb)
+{
+    f[0] = fog_a, f[1] = fog_b, f[2] = fog_min, f[3] = fog_max, f[4] = fog_edge;
+    *rgb = fog_col, *base_rgb = fog_base;
+}
+
 void r_set_fog(float a, float b, float fmin, float fmax, u32 rgb, u32 base_rgb)
 {
     fog_a = a, fog_b = b, fog_min = fmin, fog_max = fmax;
