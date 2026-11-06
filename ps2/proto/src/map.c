@@ -749,7 +749,7 @@ static unsigned chunk_range(const Chunk *chunks, unsigned a, unsigned b, unsigne
  * tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
  * 2.2 MB as one item found no hole with 4 MB of the arena free (largest hole 0.9-1 MB; ISO runs 2026-11-05); ASSUMED
  * size, small enough to fit the holes near cells leave. */
-#define RES_ITEM (128u << 10)
+#define RES_ITEM (64u << 10)  /* one page of the arena (mapstream.c MS_PAGE, plan step 6; 128 KB before) */
 static void res_open(int k, const void *pack)
 {
     MapInst *mi = &inst[k];
@@ -775,12 +775,17 @@ static void res_open(int k, const void *pack)
             last = e > last ? e : last;
         for (unsigned j = a; j < e;) {  /* whole chunks [j, g) up to RES_ITEM bytes (at least one) */
             unsigned lo, hi = chunk_range(chunks, j, j + 1, &lo), g = j + 1, l2, h2;
-            while (g < e && (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
+            /* coarse chunks in items of their own (MS_RES_COARSE: they go while the cell's near level is in) */
+            unsigned coarse = chunks[j].flags & CHUNK_COARSE;
+            while (g < e && (chunks[g].flags & CHUNK_COARSE) == coarse &&
+                   (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
                 hi = h2 > hi ? h2 : hi, g++;
             unsigned far = 0;
             for (unsigned c = j; c < g; c++)
                 citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
-            it[m++] = (MapResItem){roff + lo, lo, hi - lo, i < nctab ? i | (far ? MS_RES_FAR : 0) : MS_RES_SKY};
+            it[m++] = (MapResItem){roff + lo, lo, hi - lo,
+                                   i < nctab ? i | (far ? MS_RES_FAR : 0) | (coarse && ctab[i].near ? MS_RES_COARSE : 0)
+                                             : MS_RES_SKY};
             bad |= hi > rsize;
             j = g;
         }
@@ -951,7 +956,10 @@ int map_draw(V3 eye)
             }
             /* DSM5: the near level when its blob is loaded (then the coarse chunks are skipped), else the coarse one;
              * a world block's resident chunks once their item's streams are in (mapstream_res) */
-            const unsigned char *nb = NULL;
+            if (ctab && (ctab[ci].near & CELL_PART))
+                continue;  /* a later part of the cell before it: drawn with it */
+            const unsigned char *nb = NULL, *nbp[NEAR_PARTS] = {0};
+            unsigned np = 1, nnear = 0;  /* the cell's near parts (export_map.py NEAR_PART), their chunks */
             int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
             for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++)
                 if (!res_base(m, order[j]))  /* (mapstream_res also ranks it up: the cell is in view) */
@@ -965,17 +973,33 @@ int map_draw(V3 eye)
                 /* without the cell's resident streams its near cells draw as far as they are loaded */
                 float r = ce->near_on ? NEAR_DRAW_R + NEAR_HYST : NEAR_DRAW_R - NEAR_HYST;
                 ce->near_on = r > 0 && d2 < r * r;
-                nb = ce->near_on || miss ? mapstream_get(ci) : NULL;
+                while (np < NEAR_PARTS && ci + np < (unsigned)m->ncells && (ctab[ci + np].near & CELL_PART))
+                    np++;
+                /* every part asked for (mapstream ranks them up), drawn once all are in: the coarse chunks stand
+                 * for the whole cell until then */
+                int all = ce->near_on || miss;
+                for (unsigned p = 0; p < np; p++)
+                    all &= (nbp[p] = ce->near_on || miss ? mapstream_get(ci + p) : NULL) != NULL;
+                nb = all ? nbp[0] : NULL;
+                for (unsigned p = 0; nb && p < np; p++)
+                    nnear += ctab[ci + p].near & ~CELL_PART;
             }
-            unsigned nnear = nb ? ctab[ci].near : 0;
-            const unsigned near_gid = nb ? ctab[ci].pad : 0;
+            unsigned near_gid = nb ? ctab[ci].pad : 0;
+            unsigned part = 0, part_end = nb ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
             for (unsigned j = m->streams || m->res_cells ? ce->first : ce->first + ce->count;
                  j < ce->first + ce->count + nnear; j++) {
                 int is_near = j >= (unsigned)ce->first + ce->count;
                 const unsigned char *rb = is_near ? NULL : res_base(m, order[j]);
                 if (!is_near && !rb)
                     continue;  /* its streams are not in */
-                const Chunk *c = is_near ? (const Chunk *)nb + (j - ce->first - ce->count) : &chunks[order[j]];
+                unsigned nj = j - ce->first - ce->count;
+                while (is_near && nj >= part_end && part + 1 < np) {  /* into the next part's blob */
+                    part++;
+                    nb = nbp[part], near_gid = ctab[ci + part].pad;
+                    part_end += ctab[ci + part].near & ~CELL_PART;
+                }
+                const Chunk *c = is_near ? (const Chunk *)nb + (nj - (part_end - (ctab[ci + part].near & ~CELL_PART)))
+                                         : &chunks[order[j]];
                 if (nb && !is_near && (c->flags & CHUNK_COARSE)) {
                     DBGW(D_SWAP, 0, order[j]);
                     continue;

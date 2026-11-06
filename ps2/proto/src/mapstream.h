@@ -4,11 +4,15 @@
 #ifndef MAPSTREAM_H
 #define MAPSTREAM_H
 
-/* DSM5 cell table entry (export_map.write_cells) */
+/* DSM5 cell table entry (export_map.write_cells). A near blob over export_map.NEAR_PART (64 KB, one arena page) comes in parts: the
+ * cell's entry holds the first, the entries right after it the others (near | CELL_PART, no resident chunks, the same
+ * box). Each part is an item of its own here; map.c draws the cell's near level once every part is in. */
 typedef struct {
     float mn[3], mx[3];
     unsigned off, bytes, near, first, count, pad;
 } MapCell;
+#define CELL_PART 0x80000000u
+#define NEAR_PARTS 64  /* parts per cell at most (export_map.NEAR_PARTS_MAX) */
 
 /* Open the area pack's cells.bin for the n cells of the table; 0 if the pack has no readable (raw, non-empty) entry */
 int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n);
@@ -48,6 +52,10 @@ int mapstream_reclaim(void *p, unsigned n);
  * mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
 #define MS_RES_SKY 0x40000000u
 #define MS_RES_FAR 0x20000000u  /* | cell: chunks of the far backdrop (map.c CHUNK_BACKDROP), read early */
+/* | cell: only coarse chunks (map.c CHUNK_COARSE), which map.c skips while the cell's near level is drawn: not kept
+ * or read while the near level is in and the cell within MS_COARSE_R (mapstream.c) */
+#define MS_RES_COARSE 0x10000000u
+#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
