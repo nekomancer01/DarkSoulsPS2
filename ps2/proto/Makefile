@@ -96,6 +96,16 @@ VSM_OBJS = $(patsubst src/%.vsm,$(O)/%.o,$(wildcard src/*.vsm))
 EE_OBJS := $(patsubst $(O)/%,$(O)/gprof/%,$(filter-out $(VSM_OBJS),$(EE_OBJS)) $(O)/prof.o) $(filter $(VSM_OBJS),$(EE_OBJS))
 EE_LIBS += -lprofglue
 endif
+# Alignment check build (hw-6): make ALIGNCHECK=1 -> proto_align.elf, every C file with -fsanitize=alignment in
+# $(O)/align/. The EE raises an address error on a lh / lw / ld / sw ... at a misaligned address (the game freezes on a
+# PS2); PCSX2 does the access anyway. src/aligncheck.c logs each misaligned site once ("ALIGN file:line type ptr") and
+# lets the access go on, so a PCSX2 run of this ELF lists every access that would crash a console.
+ifeq ($(ALIGNCHECK),1)
+EE_BIN := $(EE_BIN:.elf=_align.elf)
+VSM_OBJS = $(patsubst src/%.vsm,$(O)/%.o,$(wildcard src/*.vsm))
+EE_OBJS := $(patsubst $(O)/%,$(O)/align/%,$(filter-out $(VSM_OBJS),$(EE_OBJS))) $(filter $(VSM_OBJS),$(EE_OBJS)) \
+	$(O)/aligncheck.o
+endif
 # (the rules below come before `all:`; keep it the default goal)
 .DEFAULT_GOAL := all
 # Sound (src/sound.c): the IOP module iop/dsrsnd (dsrsnd.irx) and ps2sdk's libsd.irx, linked in as C arrays (bin2c).
@@ -440,6 +450,14 @@ ifneq ($(MAP),$(DEFAULT_MAP))
 $(O)/gprof/$(MAP)/%.o: src/%.c $(O)/.cflags
 	@mkdir -p $(@D)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -pg -DPROFILE -DGPROF $(AREA_DEFS) -c $< -o $@
+endif
+$(O)/align/%.o: src/%.c $(O)/.cflags
+	@mkdir -p $(@D)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -fsanitize=alignment $(AREA_DEFS) -c $< -o $@
+ifneq ($(MAP),$(DEFAULT_MAP))
+$(O)/align/$(MAP)/%.o: src/%.c $(O)/.cflags
+	@mkdir -p $(@D)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -fsanitize=alignment $(AREA_DEFS) -c $< -o $@
 endif
 # <elf>.sym.elf: the same link unstripped (.symtab for the PCSX2 debugger, addr2line, gprof; tools/ps2-pcsx2.sh)
 SYM_ELF = $(EE_BIN:.elf=.sym.elf)
