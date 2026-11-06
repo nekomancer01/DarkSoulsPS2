@@ -38,6 +38,8 @@ extern u32 VU1SkinClip_CodeStart __attribute__((section(".vudata")));
 extern u32 VU1SkinClip_CodeEnd __attribute__((section(".vudata")));
 extern u32 VU1Clip_CodeStart __attribute__((section(".vudata")));
 extern u32 VU1Clip_CodeEnd __attribute__((section(".vudata")));
+extern u32 VU1Fx_CodeStart __attribute__((section(".vudata")));
+extern u32 VU1Fx_CodeEnd __attribute__((section(".vudata")));
 
 /* micro memory (instruction units, 2048; loaded on demand, R8): vu1clip 112..394, vu1skinclip 400..968, vu1skin2
  * 1024..1602 (Tex, TexSpec, Flat entries), vu1map2 1608..1811 (plain + edge fog loop); free 0..111, 969..1023 and
@@ -67,6 +69,13 @@ extern u32 VU1Clip_CodeEnd __attribute__((section(".vudata")));
 #define MAP_IN 8
 #define MAP_IN_QW 493
 #define MAP_PLANES 1014
+/* vu1fx.vsm (PR 7, generated): particles (fx.c FX_VU1). Shares 1812.. with the planned map specular variants (loaded
+ * on demand, R8). Fx pass layout (must match gen.py FX_*): sin / cos coefficients FX_SC, input double buffer FX_IN
+ * (FX_IN_QW each), output slots after it */
+#define FX_CODE 1812
+#define FX_SC 8
+#define FX_IN 16
+#define FX_IN_QW (VU1_FX_PART + 2 * VU1_FX_N)
 
 /* chain buffers sized from the measured peak (R1: vu1_stats, HUD "CHN"); a chain that fills up is sent in segments
  * (room): kick what is built, wait for it, refill the same buffer. VU1 state (constants, palette, TOPS) carries
@@ -78,6 +87,10 @@ extern u32 VU1Clip_CodeEnd __attribute__((section(".vudata")));
 #ifndef CHAIN_CHR_QW
 #define CHAIN_CHR_QW 19100  /* peak 15240 qw (graveyard skeletons + player, after opt-vu1 skin2), x 1.25 */
 #endif
+#ifndef CHAIN_FX_QW
+#define CHAIN_FX_QW 4096  /* particles (vu1_fx_add): ~212 qw per full batch of 64, FX_MAX 384 = 6+ batches */
+#endif
+static u128 chain_fx[CHAIN_FX_QW] __attribute__((aligned(64)));
 static u128 chain_map[CHAIN_MAP_QW] __attribute__((aligned(64)));
 static u128 chain_chr[CHAIN_CHR_QW] __attribute__((aligned(64)));
 static u128 *chain, *chain_end;  /* chain_end: 4 qwords before the buffer end, room for the END tag */
@@ -186,7 +199,7 @@ static int room(int qw)
  * ranges it overlaps are marked gone. Residency is tracked in chain order, which is execution order. Variants that
  * would not all fit (old A/B programs, future strip / skin-clip versions) just share addresses. */
 #define V_MPG 0x4A
-enum { P_MAP, P_MAP2, P_CLIP, P_SKIN2, P_SKINCLIP, P_COUNT };
+enum { P_MAP, P_MAP2, P_CLIP, P_SKIN2, P_SKINCLIP, P_FX, P_COUNT };
 static struct { const u32 *start, *end; u32 addr; } progs[P_COUNT];
 static u8 resident[P_COUNT];
 
@@ -199,6 +212,7 @@ static void vu1_progs_init(void)
     progs[P_SKIN2].addr = SKIN2_CODE;
     progs[P_SKINCLIP].start = &VU1SkinClip_CodeStart, progs[P_SKINCLIP].end = &VU1SkinClip_CodeEnd,
     progs[P_SKINCLIP].addr = SKINCLIP_CODE;
+    progs[P_FX].start = &VU1Fx_CodeStart, progs[P_FX].end = &VU1Fx_CodeEnd, progs[P_FX].addr = FX_CODE;
     memset(resident, 0, sizeof resident);
     FlushCache(0);  /* the code goes to VIF1 by DMA from memory */
 }
@@ -241,13 +255,15 @@ void vu1_init(GSGLOBAL *gs)
 
 void vu1_begin(int buffer)
 {
-    cur = buffer & 1;
-    chain = cur ? chain_chr : chain_map;
-    chain_end = cur ? chain_chr + CHAIN_CHR_QW - 4 : chain_map + CHAIN_MAP_QW - 4;
+    cur = buffer == 2 ? 2 : buffer & 1;
+    chain = cur == 2 ? chain_fx : cur ? chain_chr : chain_map;
+    chain_end = cur == 2 ? chain_fx + CHAIN_FX_QW - 4 : cur ? chain_chr + CHAIN_CHR_QW - 4 : chain_map + CHAIN_MAP_QW - 4;
     seg_qw = 0;
 #ifdef VU1_TEX_PATH3
     tq0 = tq = (u64 *)(cur ? texq_chr : texq_map);
     tq_end = tq0 + 2 * ((cur ? TEXQ_CHR_QW : TEXQ_MAP_QW) - 3);
+    if (cur == 2)  /* the particle chain uploads nothing; the character chain's queue may still be in flight */
+        tq_end = tq0;
     tq_n = 0;
 #endif
     clut_sync = 0;
@@ -712,6 +728,52 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
     }
     u32 entry = skin_clip ? SKINCLIP_CODE : !t ? SKIN2_FLAT : ms ? SKIN2_TEXSPEC : SKIN2_TEX;
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, entry));
+}
+
+/* sin(x) / x and cos(x) in x^2 for the half roll angle, times sqrt 2 (gen.py fx_coefs) */
+static const float fx_sc[20] __attribute__((aligned(16))) = {
+    1.41421356f, 1.41421356f, 0, 0, -0.23570226f, -0.70710678f, 0, 0, 0.01178511f, 0.05892557f, 0, 0,
+    -2.8059793e-4f, -1.9641855e-3f, 0, 0, 3.8971935e-6f, 3.5074741e-5f, 0, 0};
+
+void vu1_fx_begin(void)
+{
+    if (!room(8))
+        return;
+    tag(0, T_CNT, 0, VIF(V_BASE, 0, FX_IN), VIF(V_OFFSET, 0, FX_IN_QW));
+    tag(5, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, 5, FX_SC));
+    memcpy(cp, fx_sc, sizeof fx_sc);
+    cp += 10;
+}
+
+float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts)
+{
+    use_prog(P_FX);
+    if (n <= 0 || n > VU1_FX_N || (n & 1) || nsys > VU1_FX_SYS || !room(VU1_FX_TAB + nsys + 2 * n + 4))
+        return NULL;
+    tag(VU1_FX_TAB, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, VU1_FX_TAB, U_FLG));
+    float *h = (float *)cp;
+    cp += 14;  /* header 0-6: the caller's */
+    /* A+D as fx.c's EE path (render.c tri_list): alpha test off, depth test GEQUAL without Z write, additive or alpha
+     * blending, FOGCOL */
+    u64 zbuf = GS_SETREG_ZBUF(gsg->ZBuffer / 8192, gsg->PSMZ, 0);
+    q64(GIF_SET_TAG(6, 1, 0, 0, 0, 1), 0xE);
+    q64(GS_SETREG_TEX0(t->Vram / 256, (t->Width + 127) / 128 * 2, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0,
+                       t->VramClut / 256, t->ClutPSM, 0, 0, cld(t->VramClut)),
+        0x06);
+    q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
+    q64(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
+    q64(mode & VU1_FX_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42);
+    q64(zbuf | (1ull << 32), 0x4E);
+    q64(fogcol, 0x3D);
+    /* PRIM: triangle strip, gouraud, textured, STQ, blended; FGE for the fogged (alpha) ones */
+    q64(GIF_SET_TAG(0, 1, 1, 0x5C | (mode & VU1_FX_FOG ? 0x20 : 0), 0, 3), 0x412);
+    for (int s = 0; s < nsys; s++)
+        tag(16, T_REF, tabs[s], VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 16, U_FLG | (VU1_FX_TAB + 16 * s)));
+    tag(2 * n, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 2 * n, U_FLG | VU1_FX_PART));
+    *parts = (float *)cp;
+    cp += 4 * n;
+    tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, FX_CODE));
+    return h;
 }
 
 void vu1_kick(void)

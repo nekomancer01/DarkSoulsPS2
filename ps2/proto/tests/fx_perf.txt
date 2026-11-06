@@ -1,0 +1,16 @@
+# effects perf (renderer plan PR 7, FX_VU1 A/B): Firelink bonfire 5 m ahead, HUD FX line, five shots 0.5 s apart
+option nodemo
+option hud
+spawn -47.41 -59.82 53.30 5.2185
+cam 5.2185 0.25
+wait 4
+shot fx_perf1
+wait 0.5
+shot fx_perf2
+wait 0.5
+shot fx_perf3
+wait 0.5
+shot fx_perf4
+wait 0.5
+shot fx_perf5
+end

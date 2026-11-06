@@ -70,6 +70,23 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
  * (it then runs the plain textured program, which costs 131 instead of ~200 VU1 cycles per triangle). Per draw, before
  * vu1_skin_begin: hemisphere env colours (EnvUp / EnvDown) and specular light colour / direction (world), 0x80 = 1.0 */
 void vu1_skin_spec(const float env_up[3], const float env_down[3], const float spec_i[3], const float ls[3]);
+/* Particles (vu1fx.vsm, fx.c FX_VU1 builds): a third chain, vu1_begin(2) + vu1_map_fog + vu1_fx_begin, then batches of
+ * n (even, <= VU1_FX_N) particles of one texture and mode. vu1_fx_add puts the batch in the chain and returns its
+ * header (7 qwords) and *parts (2 n qwords) for the caller to fill: header 0 {n, 0, 0, 0}; 1 (cw, ch, 0.5, 1 / fpr);
+ * 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0); 6 (fog min,
+ * fog max, 0, 2048); particle i {world x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi), frame + 0.5}.
+ * tabs[s] (s < nsys <= VU1_FX_SYS): curve tables, 16 qwords each (8 keys x {(kx, ky, 0, 0), (r, g, b, a)}), sent by
+ * reference: 16-byte aligned, written back from the data cache, unchanged until the chain is done. Flipbook: cw / ch =
+ * cell size, du / dv = cell - 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore
+ * ALPHA / ZBUF / FOGCOL with vu1_gs_regs before gsKit draws again. */
+#define VU1_FX_N 64
+#define VU1_FX_SYS 8
+#define VU1_FX_TAB 15
+#define VU1_FX_PART (VU1_FX_TAB + 16 * VU1_FX_SYS)
+#define VU1_FX_ADD 1  /* additive (else alpha blended) */
+#define VU1_FX_FOG 2
+void vu1_fx_begin(void);
+float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts);
 /* Send the current chain to VIF1 (returns at once; the EE can keep working). Waits for the previous chain first.
  * Streams written by the EE this frame must be written back with SyncDCache before this. */
 void vu1_kick(void);
@@ -86,10 +103,10 @@ void vu1_clut_reload(void);
 #define VU1_TEX_PATH3
 #endif
 typedef struct {
-    int last[2], peak[2], segments;
+    int last[3], peak[3], segments;  /* [2]: the particle chain */
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
     int skin_windows;  /* char-7: bone windows uploaded after a character's first (models over 61 bones), so far */
-    int clut_loads[2];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
+    int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
 } Vu1Stats;

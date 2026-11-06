@@ -614,6 +614,7 @@ int main(int argc, char **argv)
 
         PROF_MARK(PROF_VU1WAIT);
         unsigned t2 = cpu_ticks();
+        fx_kick();   /* FX_VU1: the particle chain, after the characters' */
         vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
         t_wait += ((cpu_ticks() - t2) / 294912.0f - t_wait) * 0.1f;
         PROF_MARK(PROF_FLIP);
