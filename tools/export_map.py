@@ -2298,6 +2298,13 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     kp = flat([tuple(k[:3]) for k in KEEP_POS], f64, 3)
     ak = simplify.AREA_K if area_k is None else area_k
     a = lambda x: x.ctypes.data
+    if os.environ.get("SIMP_DUMP"):  # debugging: the simplifier's whole input, to rerun / analyse it without the game
+        np.savez_compressed(f"{os.environ['SIMP_DUMP']}.{out}.npz", P=P, poff=poff, W=W, woff=woff, T=T, toff=toff,
+                            keep=keep, ti=ti, F=F, nv=nv, nt=nt, sp=sp, kp=kp, cells=int(bool(cells)),
+                            floor=floor or NEAR, ak=ak, eps=-1.0 if eps_fixed is None else eps_fixed,
+                            eps_far=-1.0 if eps_far is None else eps_far, names=np.array([m["name"] for m in meshes]),
+                            budget=np.array(budget[:3] if budget else (), f64),
+                            nav_s=np.array(nav_s if nav_s is not None else np.zeros((0, 3)), f64))
     t0 = time.time()
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
                        len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
