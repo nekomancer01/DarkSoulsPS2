@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
+#include "hitch.h"
 #include "dsrsnd_rpc.h"
 
 struct PackEntry {
@@ -498,8 +499,11 @@ int __wrap__write(int fd, const void *buf, size_t n)
         log_n += n;
         return n;
     }
+    HITCH_BEGIN(w);
     fio_finish();
-    return __real__write(fd, buf, n);
+    int r = __real__write(fd, buf, n);
+    HITCH_END(w, HS_LOG);
+    return r;
 }
 
 unsigned pack_entry_size(const Pack *p, const char *name)

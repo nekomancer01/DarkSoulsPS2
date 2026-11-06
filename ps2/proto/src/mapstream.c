@@ -43,6 +43,7 @@
 #include "mapstream.h"
 #include "pack.h"
 #include "vu1.h"
+#include "hitch.h"
 
 /* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
@@ -169,6 +170,7 @@ typedef struct {
     void **buf;
     unsigned *used;        /* frame map.c last asked for it */
     unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
+    unsigned char *ld;     /* per item: read before in this run (hitch.c churn: a read again after a drop) */
     /* visibility (pvs.c): per item 1 while any of its chunks is seen, the tick (frame / 4) it was last seen; the
      * vis_gen value they follow, items they cover */
     unsigned char *visv;
@@ -556,7 +558,15 @@ static unsigned grp_used(const MsInst *m, unsigned id)
  * below `below`, and not handed out in the last two map draws (in_chain). Cost per page: (highest class in it, then
  * the bytes and recency of its groups); the cheapest window from the top goes. 1 when cleared. */
 static int nowin = C_TOP + 2;  /* a window of 1 page was not found for this class or above since the last change */
+static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb);
 static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
+{
+    HITCH_BEGIN(w);
+    int r = make_window_(need, ng_need, below, kb);
+    HITCH_END(w, HS_MSWIN);
+    return r;
+}
+static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb)
 {
     unsigned lim = ng_need ? ipages : npages;  /* a read's window lies where items may go */
     if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
@@ -631,6 +641,7 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
             if (o < w1 && o + grp_bytes(m, a, e) > w0 && grp_cls(m, id) < below && !grp_chain(m, id)) {
                 if (kb)
                     *kb += grp_bytes(m, a, e) >> 10;
+                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
                 drop(k, id);
             }
         }
@@ -696,7 +707,10 @@ static void collect(int i, int r)
             st_first = clk_ms - st_t1 + 1;
         fail_wait = 0;
         mapstream_stats.ms_last = (now - t0) / 294912;
+        hitch_load(m->ld && m->ld[w.id], w.bytes);
         for (unsigned j = w.id; j < w.id + w.n; j++) {
+            if (m->ld)
+                m->ld[j] = 1;
             m->state[j] = MS_READY;
             m->used[j] = frame;
             mapstream_stats.loads++;
@@ -825,7 +839,14 @@ static int w_cmp(const void *a, const void *b)
     const MsW *x = a, *y = b;
     return x->cls != y->cls ? y->cls - x->cls : x->key < y->key ? -1 : x->key > y->key;
 }
+static void plan_(const float *pos);
 static void plan(const float *pos)
+{
+    HITCH_BEGIN(p);
+    plan_(pos);
+    HITCH_END(p, HS_MSPLAN);
+}
+static void plan_(const float *pos)
 {
     nq = 0;
     nowin = C_TOP + 2;
@@ -919,7 +940,7 @@ static void plan(const float *pos)
             unsigned a;
             if (m->state[id] == MS_READY && (grp_of(m, id, &a), a == id) && grp_cls(m, id) == C_FREE &&
                 !grp_chain(m, id))
-                drop(k, id);
+                hitch_drop(0, 0), drop(k, id);
         }
     }
 }
@@ -944,9 +965,11 @@ void mapstream_update(const float pos[3])
             clk_ms += dt / 294912, clk_frac = dt % 294912;
     }
     int r;
+    HITCH_BEGIN(io);
     for (int i = 0; i < nrd; i++)
         if (pack_req_done(rd[i].tk, &r))
             collect(i--, r);
+    HITCH_END(io, HS_MSIO);
     {  /* walking velocity per frame (smoothed); a warp / teleport starts it again */
         float d[3] = {pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]};
         int jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4.0f || settling;
@@ -967,8 +990,21 @@ void mapstream_update(const float pos[3])
         plan(pos);
     }
     evict_left = MS_EVICT_PASSES;
+    HITCH_BEGIN(is);
     while (!hold && nq && nrd < MS_INFLIGHT && issue())
         ;
+    HITCH_END(is, HS_MSIO);
+}
+
+void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb)
+{
+    unsigned fr = 0, run = 0, best = 0;
+    for (unsigned p = 0; pfree && p < npages; p++) {
+        fr += pfree[p];
+        run = pfree[p] == MS_GPP ? run + 1 : 0;
+        best = run > best ? run : best;
+    }
+    *free_kb = fr * MS_GRAN >> 10, *run_kb = best * (MS_PAGE >> 10), *other_kb = mapstream_stats.other_kb;
 }
 
 /* ---- opening and closing ---- */
@@ -989,11 +1025,12 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     m->tab = cells, m->ncell = n;
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
+    m->ld = calloc(n, 1);  /* (NULL: no churn count) */
     m->rit = NULL, m->nres = 0, m->rgrp = NULL;
     if (!m->state || !m->cls || !m->buf || !m->used) {
         if (!m->borrowed)
             pack_close(&m->pk);
-        free(m->state), free(m->cls), free(m->buf), free(m->used);
+        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld);
         memset(m, 0, sizeof *m);
         return 0;
     }
@@ -1036,8 +1073,15 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     unsigned char *s = realloc(m->state, t), *c = s ? (m->state = s, realloc(m->cls, t)) : NULL;
     void **b = c ? (m->cls = c, realloc(m->buf, t * sizeof *m->buf)) : NULL;
     unsigned *u = b ? (m->buf = b, realloc(m->used, t * sizeof *m->used)) : NULL;
-    if (u)
+    if (u) {
         m->used = u;
+        unsigned char *l = realloc(m->ld, t);
+        if (l)
+            memset(l + m->ncell, 0, nitems);
+        else
+            free(m->ld);
+        m->ld = l;
+    }
     m->rit = u ? malloc(nitems * sizeof *m->rit) : NULL;
     m->rgrp = m->rit ? malloc(nitems * sizeof *m->rgrp) : NULL;
     if (!m->rgrp) {
@@ -1081,7 +1125,7 @@ void mapstream_close(int k)
     }
     if (!m->borrowed)
         pack_close(&m->pk);
-    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp);
+    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld);
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);

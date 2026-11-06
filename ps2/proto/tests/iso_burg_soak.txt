@@ -1,0 +1,721 @@
+# Undead Burg soak on the real disc (hitch monitor, src/hitch.c): 8 laps of Burg start -> Burg bonfire -> the
+# second bonfire and back on foot, camera spins and idles at both ends, a death every other lap, enemies on.
+# Generated; run:  tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_soak.txt <out> --iso build/proto.iso
+#   --timeout 5400 --hitch   (gates on the hitch: lines: worst frame, hitches, flip-flops, re-reads, heap over time)
+option hud
+option god
+option nodemo
+wait 3
+shot boot
+log soak lap 0 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+stats
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 0 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 0 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 1 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 1 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 1 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 1 death
+kill
+wait 15
+log soak lap 2 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 2 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 2 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 3 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 3 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 3 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 3 death
+kill
+wait 15
+log soak lap 4 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 4 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 4 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 5 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 5 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 5 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 5 death
+kill
+wait 15
+log soak lap 6 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 6 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 6 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 7 start
+spawn -48.5 -21.8 -35.5 0
+wait 3
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+log soak lap 7 far end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+approach 21.8,-27.8 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 3.3,-66.8 0.8 1
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+spawn -7.2 -6.0 -69.6 4.2
+wait 0.5
+approach -13.1,-68.1 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -37.0,-42.6 0.8 1
+approach -37.0,-42.6 0.8 1
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+log soak lap 7 near end
+rstick 1 0
+wait 4
+rstick -1 0
+wait 4
+rstick 0 0
+wait 20
+log soak lap 7 death
+kill
+wait 15
+log soak done
+shot end
+end

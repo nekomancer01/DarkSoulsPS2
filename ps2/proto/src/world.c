@@ -13,6 +13,7 @@
 #include "objects.h"
 #include "fx.h"
 #include "enemy.h"
+#include "hitch.h"
 
 /* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
  * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
@@ -557,7 +558,7 @@ static void read_step(int i, int issue)
     char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
     if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
-        world_stats.reading = i;  /* else every request slot is taken: try next frame */
+        world_stats.reading = i, hitch_block_read(n);  /* else every request slot is taken: try next frame */
 }
 
 static int start(int i)
@@ -652,7 +653,7 @@ static void bump_step(void)
             return;  /* a settle waits for no relief */
         unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
         if (!w_tk && (w_tk = pack_req_read(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n)))
-            bump_reading = 1, world_stats.reading = bump_rd;
+            bump_reading = 1, world_stats.reading = bump_rd, hitch_block_read(n);
         return;
     }
     if (cur == bump_blk || in_cur_s < WORLD_SWAP_S || warping || rt[cur].state != W_ON || lite_first)
