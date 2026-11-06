@@ -61,7 +61,7 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1skinclip.o vu1fx.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
@@ -84,6 +84,12 @@ EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES
 MAPSTREAM_V1 ?= 0
 ifeq ($(MAPSTREAM_V1),1)
 EE_CFLAGS += -DMAPSTREAM_V1
+endif
+# Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
+# sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
+PVS ?= 1
+ifeq ($(PVS),0)
+EE_CFLAGS += -DNO_PVS
 endif
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
@@ -176,11 +182,19 @@ blockpacks: $(D)/$(OUT).pak $(ENEMIES:%=$(AREA_DATA)/%.pak)  # chr packs with th
 # job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB). WORLD_J=1: one block recipe at a
 # time, as before.
 WORLD_J ?=
-worldpacks:
-	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
+# Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so
+# every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexports, then the packs.
+PVS_PEERS ?= $(if $(WORLD_BLOCKS),$(G) $(foreach b,$(WORLD_BLOCKS),$(G)/$(lastword $(subst :, ,$(b)))))
+worldexports:
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldexport@,$(subst :,@,$(WORLD_BLOCKS)))
+worldexport@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockexport
+worldpacks: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
-	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockpacks
-.PHONY: worldpacks
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks
+blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
+.PHONY: worldpacks worldexports blockexport
 $(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
@@ -212,11 +226,11 @@ $(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@
 
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin $(A)/dg.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
+$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
 		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
-		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin \
+		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin pvs.bin=$(A)/pvs.bin \
 		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
 		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin) \
 		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
@@ -416,6 +430,23 @@ $(A)/bump.bin: $(A)/map.bin
 # MSB draw groups per chunk + collision triangle (tools/drawgroups.py, src/drawgrp.c): written by the map.bin export
 $(A)/dg.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
+# Occlusion (tools/pvs_bake.c, src/pvs.c): the map export writes pvsin.bin (chunks by MSB part and cell, their
+# triangles, the navmesh); the bake renders ID cube maps from camera samples over the walkable collision and writes the
+# visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out. In world
+# builds every other block takes part (PVS_PEERS): cameras on its floors, its walls as occluders. Host C (OpenMP),
+# about 1-2 min per block.
+PVS_BAKE = $(BUILD)/host/pvs_bake
+PVS_VALIDATE ?= 300
+PVS_ARGS ?=
+$(PVS_BAKE): ../../tools/pvs_bake.c
+	@mkdir -p $(@D)
+	gcc -O2 -fopenmp -o $@ $< -lm
+$(A)/pvsin.bin: $(A)/map.bin
+	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
+PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))
+$(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(foreach d,$(PVS_WITH),$(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) | $(if $(WORLD_BLOCKS),worldexports)
+	$(abspath ../../tools/q) -m 2 $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
+		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
 $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin

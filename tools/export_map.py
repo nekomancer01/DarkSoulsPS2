@@ -147,7 +147,11 @@ POSE_OBJ = os.environ.get("POSE_OBJ", "1") == "1"
 FAR_OBJ = os.environ.get("FAR_OBJ", "1") == "1"
 FAR_LOD = os.environ.get("FAR_LOD", "1") == "1"  # map pieces beyond STREAM_FAR of the navmesh: lowest game LOD (A/B: 0)
 FAR_LOD_STATS = [0, 0]  # pieces with several LODs: [kept LOD0, took the lowest]
-DRAW_GROUPS = os.environ.get("DRAW_GROUPS", "1") == "1"  # 0: chunks ignore draw groups, dg.bin shows everything (A/B)
+DRAW_GROUPS = os.environ.get("DRAW_GROUPS", "1") == "1"
+# Occlusion (tools/pvs_bake.c, src/pvs.c, 2026-11-06): every chunk holds triangles of one MSB part only (the PVS unit
+# is a part within one CHUNK_GRID cell) and of one occluder class; pvsin.bin hands the chunks' triangles to the bake.
+# PVS=0: chunks mix parts as before and no pvsin.bin is written (pvs.bin then shows everything)
+PVS = os.environ.get("PVS", "1") == "1"  # 0: chunks ignore draw groups, dg.bin shows everything (A/B)
 PARK_DIST = 150.0  # metres: objects farther than this from every walkable navmesh vertex are parked, not drawn
 HDR = 80
 CHUNK_CULL, CHUNK_BLEND, CHUNK_ADD, CHUNK_SKY = 1, 2, 4, 8
@@ -255,6 +259,10 @@ def pos_scale(lo, hi, org):
 
 CHUNK_TAG = []  # build_chunks: (level, cell) per chunk (STREAM), else None
 CHUNK_DG = []  # build_chunks: draw-group set index per chunk (tools/drawgroups.py, dg.bin)
+CHUNK_PART = []  # build_chunks_c (PVS): (MSB part name, occluder) per chunk
+CHUNK_SRC = []  # build_chunks_c (PVS): per chunk the indices of its triangles in PVS_TRIS
+PVS_TRIS = [None]  # build_chunks_c (PVS): float32 (triangles, 3, 3) world positions of every input triangle
+PVS_ORDER = []  # STREAM + PVS: per chunk in map.bin / dg.bin order (index in build order, (cell key, 0 resident / 1 near) or None)
 CHUNK_ENT = []  # build_chunks: MSB entity id per chunk (0 = none): the part an event switches on / off (dg.bin DGM3)
 # TECH_DEBT event-5: pieces / objects whose entity id the map's events switch ((De)activate Object, Activate Map Part,
 # tools/emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
@@ -537,7 +545,8 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
                 sel = np.array([k for k, _ in cs], np.intp)
                 tlev[sel] = [c[0] for _, c in cs]
                 tkey[sel] = [c[1] for _, c in cs]
-        dgv[a:b] = dids.setdefault(m["dg"] if draw_groups else 0, len(dids))
+        dgv[a:b] = dids.setdefault((m["dg"] if draw_groups else 0, m.get("piece", "") if PVS else "",
+                                    m.get("occ", 0) if PVS else 0), len(dids))
         entv[a:b] = eids.setdefault(m["ent"], len(eids))
     if isinstance(bkey, export_normal.BumpKeys) and bkey.unique():  # the same numbering from the arrays
         sel = bkey.G < nt
@@ -580,6 +589,9 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     CHUNK_TAG.clear()
     CHUNK_DG.clear()
     CHUNK_ENT.clear()
+    CHUNK_PART.clear()
+    CHUNK_SRC.clear()
+    PVS_TRIS[0] = cpos.astype(np.float32).reshape(-1, 3, 3) if PVS and len(cpos) == 9 * nt else None
     btl = bt.tolist()
     for b, (v, f, tg, bx, o0, o1) in enumerate(zip(iv.tolist(), flv.tolist(), tag.tolist(), box.tolist(),
                                                     offs[:-1].tolist(), offs[1:].tolist())):
@@ -588,8 +600,10 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
                     2.0 ** e, sts))
         export_normal.CHUNK_BUMP.append((bkl[bk], btl[t0:t0 + ntri]) if bk >= 0 else None)
         CHUNK_TAG.append((tg[0], tuple(tg[1:])) if kind in (1, 2) else None)
-        CHUNK_DG.append(dgl[dg])
+        CHUNK_DG.append(dgl[dg][0])
         CHUNK_ENT.append(entl[ent])
+        CHUNK_PART.append(dgl[dg][1:])
+        CHUNK_SRC.append(bt[t0:t0 + ntri])
     print(f"chunks: {len(out)}, {sum(o[2] for o in out) / max(1, len(out)):.1f} tris / chunk, largest position "
           f"error {err.value * 1000:.2f} mm")
     return out, ne, nt
@@ -1653,7 +1667,13 @@ def gather(game, map_id):
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
                                keep=grass or blend or sky or part["model"] in KEEP_MODELS, name=f"{part['name']}/{name}",
                                dg=DG.add(part["draw_groups"]),
-                               ent=part["entity_id"] if part["entity_id"] in switched else 0))
+                               ent=part["entity_id"] if part["entity_id"] in switched else 0,
+                               # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
+                               # (objects move or break, cut-outs and blends let light through)
+                               piece=part["name"],
+                               occ=int(part["type"] == 0 and not blend and not grass and not sky and not water and
+                                       "_alp" not in m["mtd"].lower() and "_edge" not in m["mtd"].lower() and
+                                       part["entity_id"] not in switched)))
 
     if mx_grid is not None:
         MX.mx_navgrid_free(mx_grid)
@@ -2353,6 +2373,70 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     return eps
 
 
+PVSIN_MAGIC = b"PVI1"
+
+
+def write_pvsin(path, all_chunks, nav_v, nav_t):
+    """Input of the occlusion bake (tools/pvs_bake.c): per chunk in map.bin / dg.bin order its unit, flags and box,
+    the units' cell boxes, the navmesh, then the chunks' triangles (world positions, float32). A unit is one MSB part
+    within one CHUNK_GRID cell (huge terrain pieces so come in cell-sized clusters); sky chunks are unit 0xFFFFFFFF
+    (always drawn). An empty file (header only, 0 chunks) when there is no PVS input: the bake then writes a pvs.bin
+    that shows everything.
+      header (32 B): magic, chunks, units, tris, nav verts, nav tris, cell table entries, f32 cell size
+      per chunk (44 B): u32 unit, flags (bit 0 occluder, bit 1 near level, bit 2 coarse level, neither: kept /
+                        always drawn; bits 8-15 map.c chunk flags), first triangle, triangles, cell table entry
+                        (0xFFFFFFFF none: sky); f32 box min[3], max[3]
+      per unit (40 B): i32 cell key[3], u32 part; f32 box of its cell's chunks min[3], max[3]
+      parts: u32 count, NUL-terminated names, padded to 4 bytes
+      nav: f32 x3 per vertex, u32 x3 per triangle
+      tris: f32 x9 per triangle, in chunk order"""
+    T = PVS_TRIS[0]
+    if not PVS or T is None or len(PVS_ORDER) != len(all_chunks):
+        if PVS:
+            print("pvsin.bin: no PVS input (Python chunk path or no streaming): pvs.bin will show everything")
+        with open(path, "wb") as f:
+            f.write(struct.pack("<4s7I", PVSIN_MAGIC, 0, 0, 0, 0, 0, 0, 0))
+        return
+    units, parts, crec, cbox = {}, {}, [], {}
+    tri_chunks, first = [], 0
+    for j, (i, ck) in enumerate(PVS_ORDER):
+        ch = all_chunks[j]
+        part, occ = CHUNK_PART[i]
+        sky = ch[1] & CHUNK_SKY
+        if sky or ck is None:
+            u = 0xFFFFFFFF
+        else:
+            key = tuple(ck[0])
+            u = units.setdefault((parts.setdefault(part, len(parts)), key), len(units))
+            lo, hi = cbox.get(key, ((1e9,) * 3, (-1e9,) * 3))
+            cbox[key] = (tuple(min(a, b) for a, b in zip(lo, ch[6])), tuple(max(a, b) for a, b in zip(hi, ch[7])))
+        src = np.asarray(CHUNK_SRC[i], np.int64)
+        near = ck is not None and ck[1] == 1
+        coarse = not near and CHUNK_TAG[i] is not None and CHUNK_TAG[i][0] == 0
+        fl = (1 if occ and not ch[1] & (CHUNK_BLEND | CHUNK_GRASS | CHUNK_SKY) else 0) | (2 if near else 0) | \
+             (4 if coarse else 0) | (ch[1] & 0xFF) << 8
+        ent = CHUNK_ENTRY[j] if j < len(CHUNK_ENTRY) and CHUNK_ENTRY[j] is not None else 0xFFFFFFFF
+        crec.append(struct.pack("<5I6f", u, fl, first, len(src), ent, *ch[6], *ch[7]))
+        tri_chunks.append(src)
+        first += len(src)
+    urec = []
+    for (pi, key), u in sorted(units.items(), key=lambda kv: kv[1]):
+        lo, hi = cbox[key]
+        urec.append(struct.pack("<3iI6f", *key, pi, *lo, *hi))
+    pn = b"".join(n.encode() + b"\0" for n in parts)
+    idx = np.concatenate(tri_chunks) if tri_chunks else np.zeros(0, np.int64)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<4s6If", PVSIN_MAGIC, len(crec), len(urec), len(idx), len(nav_v), len(nav_t),
+                            len(CELL_SIZES), CHUNK_GRID))
+        f.write(b"".join(crec))
+        f.write(b"".join(urec))
+        f.write(struct.pack("<I", len(parts)) + pn + b"\0" * (-(len(pn) + 4) % 4))
+        f.write(np.asarray(nav_v, np.float32).reshape(-1, 3).tobytes())
+        f.write(np.asarray(nav_t, np.uint32).reshape(-1, 3).tobytes())
+        f.write(np.ascontiguousarray(T[idx]).tobytes())
+    print(f"pvsin.bin: {len(crec)} chunks, {len(urec)} units of {len(parts)} parts, {len(idx)} tris")
+
+
 def stream_cells(chunks):
     """STREAM: [(cell key, resident chunk indices (coarse level + kept meshes whose centre lies in the cell, by
     texture), near chunk indices (by texture))] in Z order of the key (cell_zorder); sky chunks belong to no cell."""
@@ -2383,6 +2467,7 @@ def cell_zorder(key):
 
 
 CELL_SIZES = []
+CHUNK_ENTRY = []  # write_cells: per chunk (map.bin / dg.bin order) its cell's first cell table entry, else None
 CELLS_VIFPKT = 1  # cell table word 1, format flags: bit 0 = chunk streams are VIF packets (chunk_streams)
 # Near cell blobs over NEAR_PART bytes are written as several parts (consecutive cell table entries, the later ones
 # marked CELL_PART in their near count): each part is a mapstream item of its own, so no near cell needs one big hole
@@ -2408,6 +2493,7 @@ def write_cells(cells, res, all_chunks, nres):
     box; each part is a blob of its own."""
     tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT, 0, 0)), bytearray()
     CELL_SIZES.clear()
+    CHUNK_ENTRY[:] = [None] * len(all_chunks)
     first, gid = 0, nres
     for key, r, n in cells:
         boxes = [all_chunks[i] for i in range(first, first + len(r))] + \
@@ -2425,6 +2511,8 @@ def write_cells(cells, res, all_chunks, nres):
             cb += size(j)
         parts.append(cur)
         assert len(parts) <= NEAR_PARTS_MAX, f"cell {key}: {len(parts)} near parts"
+        for i in list(range(first, first + len(r))) + [gid + j for j in range(len(n))]:
+            CHUNK_ENTRY[i] = len(CELL_SIZES)  # the cell's own (first) entry, also for its later near parts
         for p, part in enumerate(parts):
             b = bytearray(b"\0" * (64 * len(part)))
             for i, j in enumerate(part):
@@ -2553,6 +2641,9 @@ def main():
         export_normal.CHUNK_BUMP[:] = [export_normal.CHUNK_BUMP[i] for i in order]
         CHUNK_DG[:] = [CHUNK_DG[i] for i in order]
         CHUNK_ENT[:] = [CHUNK_ENT[i] for i in order]
+        if PVS and PVS_TRIS[0] is not None and len(CHUNK_PART) == len(order):
+            pvs_cell = {i: (k, lv) for k, r, n in cells for lv, ids in ((0, r), (1, n)) for i in ids}
+            PVS_ORDER[:] = [(i, pvs_cell.get(i)) for i in order]
         coarse = {i for i, t in enumerate(CHUNK_TAG) if t and t[0] == 0}
         all_chunks = [chunks[i] for i in order]
         chunks = [chunks[i][:1] + (chunks[i][1] | (CHUNK_COARSE if i in coarse else 0),) + chunks[i][2:]
@@ -2618,6 +2709,7 @@ def main():
     print(f"dg.bin: {dgn[0]} piece / {dgn[1]} collision draw-group sets, {dgn[3]} switched entities in "
           f"{sum(1 for e in CHUNK_ENT if e)} chunks, {dgn[2]} bytes")
     dsr_light.write_tone(os.path.join(os.path.dirname(os.path.abspath(out)), "fx_tone.json"), MAIN_TONE[0])
+    write_pvsin(os.path.join(os.path.dirname(os.path.abspath(out)), "pvsin.bin"), all_chunks, nav_v, nav_t)
     if STREAM:
         nn = sum(len(c[2]) for c in cells)
         print(f"stream: {len(cells)} cells, resident {len(chunks)} chunks / {sum(c[2] for c in chunks)} tris "

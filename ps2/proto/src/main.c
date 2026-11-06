@@ -380,7 +380,7 @@ int main(int argc, char **argv)
     void *model_blob = pack_open(&pk, PACK_ROOT "c0000.pak") ? pack_load(&pk, "model.bin", &model_size) : 0;
     pack_close(&pk);
     void *map_blob = 0, *col_blob = 0, *enemy_blob = 0, *lua_blob = 0, *obj_blob = 0, *bump_blob = 0, *fx_blob = 0,
-         *dg_blob = 0, *ev_blob = 0, *evc_blob = 0;
+         *dg_blob = 0, *ev_blob = 0, *evc_blob = 0, *pvs_blob = 0;
     unsigned lua_size = 0;
     int world = world_init(AREA);  /* world build: blocks stream in by position (src/world.c, data/world.pak) */
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
@@ -390,6 +390,9 @@ int main(int argc, char **argv)
         fx_blob = pack_load(&pk, "fx.bin", 0);      /* effects: bonfire fire, MSB SFX (tools/export_effects.py, src/fx.c) */
 #endif
         dg_blob = pack_load(&pk, "dg.bin", 0);      /* MSB draw groups per chunk (tools/drawgroups.py, src/drawgrp.c) */
+#ifndef NO_PVS
+        pvs_blob = pack_load(&pk, "pvs.bin", 0);    /* visibility per camera cell (tools/pvs_bake.c, src/pvs.c) */
+#endif
         col_blob = pack_load(&pk, "collision.bin", 0);
         enemy_blob = pack_load(&pk, "enemies.bin", 0);  /* MSB enemy parts (tools/export_enemies.py) */
         obj_blob = pack_load(&pk, "objects.bin", 0);    /* breakable objects (tools/export_objects.py) */
@@ -428,6 +431,8 @@ int main(int argc, char **argv)
     int col_ok = map_ok && col_init(col_blob);  /* collision.bin: without it the player walks on the navmesh */
     if (col_ok)
         dg_init(dg_blob, map_chunk_count(), (unsigned)col_tris());
+    if (map_ok)
+        map_pvs_init(pvs_blob);
     hud_init(gs, menu_blob);  /* 194 KB VRAM for its two atlases */
     /* enemies: character packs data/c####.pak + enemyCommon.esd (data/common.pak), placed from enemies.bin */
     /* "option noenemies" (breakables tests): no enemy roster, RAM / VRAM for the pots, no AI in the shots */

@@ -119,6 +119,11 @@ typedef struct {
     void **buf;
     unsigned *used;        /* frame map.c last asked for it */
     unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
+    /* visibility (pvs.c): per item 1 while any of its chunks is seen, the tick (frame / 4) it was last seen; the
+     * vis_gen value they follow, items they cover */
+    unsigned char *visv;
+    unsigned short *vist;
+    unsigned visg, visn, vish, viskb;  /* + items outside it now, their KB */
 } MsInst;
 static MsInst ms[MS_INST];
 static int sel;  /* the instance mapstream_get / mapstream_res answer for */
@@ -288,13 +293,79 @@ static float settle_r, settle_rf;
 static unsigned (*tex_age)(int k, unsigned tag);
 static void (*tex_set)(int k, unsigned tag, const void *p);
 
-/* every near part of cell c is loaded */
+/* ---- visibility (src/pvs.c via map.c, 2026-11-06) ----
+ * Cells are a spatial index: a cell 20 m away behind a wall still holds parts no camera nearby can see. The vis hook
+ * says whether any chunk of an item is in the precomputed visibility of a camera cell within PVS_STREAM_R; an item
+ * outside it for MS_VIS_HOLD ticks is planned no higher than C_KEEP: not read, not pinned, kept while there is room
+ * (a turn back finds it in). The camera cell changes smoothly; the draw-group cut tried first (floor part, which
+ * flips every 1-7 s at the Burg) churned. The design follows Vice City's streamer (re3 CStreaming: entities of
+ * another area are neither requested nor kept). `make PVS=0` (-DNO_PVS): every item is planned by distance only. */
+#define MS_VIS_HOLD 15u  /* ticks of 4 frames: 2 s, ASSUMED (a look through a doorway and back) */
+static int (*vis_hook)(int k, unsigned id);
+static unsigned (*vis_gen)(void);
+static unsigned vis_last;
+
+static void vis_refresh(int k)
+{
+    MsInst *m = &ms[k];
+    unsigned n = it_n(m), g = vis_gen ? vis_gen() : 0;
+    if (!vis_hook || !n)
+        return;
+    int fresh = m->visn != n;  /* an item unseen at its first look was never seen: no hold */
+    if (fresh) {
+        unsigned char *v = realloc(m->visv, n);
+        unsigned short *t = v ? (m->visv = v, realloc(m->vist, n * sizeof *t)) : NULL;
+        if (!t) {
+            free(m->visv), m->visv = NULL, m->visn = 0;
+            return;
+        }
+        m->vist = t;
+        memset(m->visv, 1, n);
+        memset(m->vist, 0, n * sizeof *t);
+        m->visn = n, m->visg = g - 1;
+    }
+    if (m->visg == g)
+        return;
+    m->visg = g;
+    unsigned short tick = (unsigned short)(frame >> 2);
+    unsigned nh = 0, kb = 0;
+    for (unsigned id = 0; id < n; id++) {
+        int v = it_bytes(m, id) ? vis_hook(k, id) : 1;
+        if (!v && m->visv[id])
+            m->vist[id] = fresh ? (unsigned short)(tick - MS_VIS_HOLD - 1) : tick;  /* seen until now */
+        m->visv[id] = (unsigned char)!!v;
+        if (!v)
+            nh++, kb += it_bytes(m, id);
+    }
+    mapstream_stats.vis_items += nh - m->vish, mapstream_stats.vis_kb += (kb >> 10) - m->viskb;
+    m->vish = nh, m->viskb = kb >> 10;
+    printf("mapstream: %d: pvs leaves out %u of %u items, %u KB\n", k, nh, n, kb >> 10);  /* A/B logs */
+}
+/* outside the visibility now */
+static inline int vis_off(const MsInst *m, unsigned id) { return m->visv && id < m->visn && !m->visv[id]; }
+/* out of the plan: outside the visibility now and for MS_VIS_HOLD ticks */
+static inline int vis_cut(const MsInst *m, unsigned id)
+{
+    return vis_off(m, id) && (unsigned short)((unsigned short)(frame >> 2) - m->vist[id]) > MS_VIS_HOLD;
+}
+
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void))
+{
+#ifdef NO_PVS
+    (void)vis, (void)gen;
+#else
+    vis_hook = vis, vis_gen = gen;
+    vis_last = gen ? gen() - 1 : 0;
+#endif
+}
+
+/* every near part of cell c is loaded (or outside the visibility: not read) */
 static int near_in(const MsInst *m, unsigned c)
 {
     if (!(m->tab[c].near & ~CELL_PART) || (m->tab[c].near & CELL_PART))
         return 0;
     for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++)
-        if (m->state[p] != MS_READY)
+        if (m->state[p] != MS_READY && !vis_off(m, p))  /* such a part is not read (pvs.c) */
             return 0;
     return 1;
 }
@@ -661,9 +732,12 @@ static void plan(const float *pos)
     unsigned nw = 0;
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
+        vis_refresh(k);
         for (unsigned id = 0; id < it_n(m); id++) {
             float key = 0;
             int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
+            if (c > C_KEEP && vis_cut(m, id))
+                c = C_KEEP;  /* no camera cell near the camera sees it (pvs.c) */
             m->cls[id] = (unsigned char)c;
             if (m->state[id] == MS_FAILED && retry)
                 m->state[id] = MS_NONE;
@@ -722,6 +796,8 @@ void mapstream_update(const float pos[3])
     for (int i = 0; i < nrd; i++)
         if (pack_req_done(rd[i].tk, &r))
             collect(i--, r);
+    if (vis_gen && vis_gen() != vis_last)  /* a row changed: what is read changes too (pvs.c) */
+        vis_last = vis_gen(), replan = 1;
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
     if (replan || !scan_frame || frame - scan_frame >= MS_SCAN_FRAMES || dx * dx + dy * dy + dz * dz > sq(MS_SCAN_D)) {
         replan = 0;
@@ -845,6 +921,8 @@ void mapstream_close(int k)
     if (!m->borrowed)
         pack_close(&m->pk);
     free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp);
+    free(m->visv), free(m->vist);
+    mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);
     nq = 0, replan = 1;
     for (int i = 0; i < nblk; i++)
@@ -930,6 +1008,8 @@ static int settle_item(int k, const MsInst *m, unsigned j, const float *pos, flo
         return k == (focus < 0 ? 0 : focus);
     unsigned c = MS_RES_CELL(tag);
     float rr = k == focus && r_focus > r ? r_focus : r;
+    if (vis_off(m, m->ncell + j))  /* no camera cell near the camera sees it (pvs.c) */
+        return 0;
     if (c >= m->ncell || ((tag & MS_RES_COARSE) && near_in(m, c)))
         return 0;
     return box_d2(&m->tab[c], pos) < rr * rr;
