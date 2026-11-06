@@ -3,7 +3,8 @@
  *
  * Per batch: CNT {STCYCL 1,1; UNPACK V4-32 x7 -> TOPS+0} + header qwords,
  *            REF pos {STCYCL 3,1; UNPACK V3-16 -> TOPS+7}, REF st {UNPACK V2-16 unsigned -> TOPS+8},
- *            REF colour {UNPACK V4-8 unsigned -> TOPS+9}, CNT {MSCAL 0}.
+ *            REF colour {UNPACK V4-8 unsigned -> TOPS+9}, CNT {MSCAL 0}. VU1_PKT batches (map.bin chunks with their VIF
+ *            codes in front of the streams) send the three streams with one REF: 10 instead of 12 qwords.
  * MSCAL waits for the previous batch's program and swaps the double buffer.
  *
  * VU1 data memory: 0-7 camera constants. Map chains: double buffers at 8 and 504 (BASE 8, OFFSET 496).
@@ -353,9 +354,13 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
 #ifdef VU1_NO_CLIP  /* debug: near / guard-band batches through the plain program (flagged triangles dropped) */
     mode &= ~VU1_CLIP;
 #endif
+#ifdef VU1_NO_PKT  /* A/B: the stream-by-stream REFs of the old path */
+    mode &= ~VU1_PKT;
+#endif
     int mxl = mip_mxl;  /* vu1_mip's chain applies to this call only (both halves of a split) */
     mip_mxl = 0;
     if ((mode & VU1_CLIP) && tris > VU1_CLIP_TRIS) {  /* the clip program keeps scratch after its batch */
+        mode &= ~VU1_PKT;  /* the packet's UNPACK counts are the whole chunk's */
         mip_mxl = mxl;
         vu1_add_ex(t, cull, mode, VU1_CLIP_TRIS, pos, st, col, org, st_k);
         mip_mxl = mxl;
@@ -402,9 +407,14 @@ void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, con
     q64(GIF_SET_TAG(clip ? 3 : n, 1, 1, 0x1B | (mode & VU1_FOG ? 0x20 : 0) | (mode & VU1_BLEND ? 0x40 : 0), 0, 3),
         0x412);  /* clip program: one triangle per packet */
     /* quantised streams (R3): pos s16x3, st u16x2, colour u8x4; the program converts with ITOF */
-    tag((n * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, n, U_FLG | 7));
-    tag((n * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, n, U_FLG | U_USN | 8));
-    tag((n * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9));
+    if (mode & VU1_PKT) {  /* code qword, pos, code qword, st, code qword, colour: one REF from pos's code qword */
+        const char *p0 = (const char *)pos - 16;
+        tag(((const char *)col + (n * 4 + 15) / 16 * 16 - p0) / 16, T_REF, p0, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
+    } else {
+        tag((n * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, n, U_FLG | 7));
+        tag((n * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, n, U_FLG | U_USN | 8));
+        tag((n * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9));
+    }
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, mode & VU1_CLIP ? CLIP_CODE : clip ? MAP2_CODE : 0));
 }
 
