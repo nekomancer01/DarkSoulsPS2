@@ -127,7 +127,9 @@ WS_R0, WS_R1, WS_R1_IN = 30.0, 96.0, 16.0
 # error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
 WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
 WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
-WS_BPT = 45  # bytes per triangle of a streamed chunk (positions, st, colours, padding: 44-45 measured over 4 blocks)
+# bytes per triangle of a streamed chunk (positions, st, colours, padding, record: 44-45 measured over 4 blocks as lists;
+# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level)
+WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
 GAME_LOD = os.environ.get("GAME_LOD") == "1"
@@ -178,23 +180,79 @@ CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are 
 # (map.c culls by 32 m cells too), then cut into full, compact batches (split_batch)
 
 
-def chunk_streams(ntri, pos, st, col):
-    """A chunk's three vertex streams as one VIF packet (render rebuild PR 1): a code qword in front of each stream
+def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
+    """A chunk's vertex streams as one VIF packet (render rebuild PR 1): a code qword in front of each stream
     {NOP, NOP, STCYCL 3,1, UNPACK V3-16 n -> TOPS+7} / {NOP x 3, UNPACK V2-16 unsigned n -> TOPS+8} / {NOP x 3,
     UNPACK V4-8 unsigned n -> TOPS+9}, then the stream zero-padded to 16 bytes (zeros = VIF NOPs). vu1.c sends the whole
     packet with one DMA REF (VU1_PKT); the stream offsets point past each code qword, so batches that send part of a
     chunk (foliage prefixes, clip splits) still REF the streams one by one. +48 bytes per chunk.
+    Indexed chunks (nv vertices, idx: index_chunk): n = nv, the streams go to TOPS+8 / 9 / 10 (vu1mapi.vsm's header is
+    8 qwords), then a fourth code qword {NOP x 2, STCYCL 1,1, UNPACK V4-8 unsigned ntri -> TOPS+8+3 nv} and the
+    triangle stream (u8 x4 per triangle). +64 bytes per chunk.
     Returns (bytes, [pos, st, col offsets in it])."""
-    n = 3 * ntri
+    n, a = (nv, MAPI_HDR) if nv else (3 * ntri, 7)
     assert 0 < n < 256, n
-    codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6500C008 | n << 16), (0, 0, 0, 0x6E00C009 | n << 16))
+    codes = ((0, 0, 0x01000103, 0x69008000 | a | n << 16), (0, 0, 0, 0x6500C000 | (a + 1) | n << 16),
+             (0, 0, 0, 0x6E00C000 | (a + 2) | n << 16))
     b, offs = bytearray(), []
     for arr, cw in zip((pos, st, col), codes):
         b += struct.pack("<4I", *cw)
         offs.append(len(b))
         b += arr
         b.extend(b"\0" * (-len(b) % 16))
+    if nv:
+        assert MAPI_HDR + 3 * nv + ntri <= MAPI_IN_QW
+        b += struct.pack("<4I", 0, 0, 0x01000101, 0x6E00C000 | (MAPI_HDR + 3 * nv) | ntri << 16)
+        b += idx
+        b.extend(b"\0" * (-len(b) % 16))
     return b, offs
+
+
+# Indexed chunks (vu1mapi.vsm, vu1.c vu1_add_idx): every chunk but foliage stores each distinct corner (position, st,
+# colour) once plus a triangle stream of u8 x4 {3 v0, 3 v1, 3 v2, 0}, like the shared vertices of Sony's HiG and
+# other indexed PS2 renderers. Undead Burg west: 1.61 distinct corners per triangle, 45 -> ~28 bytes per triangle.
+# INDEXED=0: lists as before (A/B)
+INDEXED = os.environ.get("INDEXED", "1") == "1"
+MAPI_HDR, MAPI_IN_QW = 8, 493  # tools/vu1/gen.py MAPI_HDR, MAP_IN_QW
+
+
+def index_chunk(ntri, pos, st, col):
+    """Unindexed corner streams -> (nv, pos, st, col, idx) with the distinct corners in first-use order (the count padded
+    to a multiple of 3 with copies of the last one: vu1mapi transforms three per loop pass), or None when the chunk
+    does not fit the VU1 buffer that way or is no smaller."""
+    n = 3 * ntri
+    P = np.frombuffer(bytes(pos[:6 * n]), np.uint8).reshape(n, 6)
+    S = np.frombuffer(bytes(st[:4 * n]), np.uint8).reshape(n, 4)
+    C = np.frombuffer(bytes(col[:4 * n]), np.uint8).reshape(n, 4)
+    K = np.ascontiguousarray(np.concatenate([P, S, C], 1)).view("V14").ravel()
+    _, first, inv = np.unique(K, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")  # distinct corners in first-use order
+    rank = np.empty(len(order), np.int64)
+    rank[order] = np.arange(len(order))
+    src = first[order]
+    nv = -(-len(src) // 3) * 3
+    if nv > 255 or MAPI_HDR + 3 * nv + ntri > MAPI_IN_QW:
+        return None
+    src = np.concatenate([src, np.repeat(src[-1:], nv - len(src))])
+    tri = rank[inv.ravel()].reshape(ntri, 3) * 3
+    idx = np.zeros((ntri, 4), np.uint8)
+    idx[:, :3] = tri
+    pad = lambda k: -(-k // 16) * 16
+    if pad(6 * nv) + 2 * pad(4 * nv) + pad(4 * ntri) + 16 >= pad(6 * n) + 2 * pad(4 * n):
+        return None
+    return nv, P[src].tobytes(), S[src].tobytes(), C[src].tobytes(), idx.tobytes()
+
+
+def chunk_packet(ti, fl, ntri, pos, st, col):
+    """chunk_streams of one chunk tuple, indexed when it pays (index_chunk; never foliage) ->
+    (bytes, offsets, ntri word for the chunk record: ntri | nv << 16)"""
+    ix = index_chunk(ntri, pos, st, col) if INDEXED and not fl & CHUNK_GRASS else None
+    if ix is None:
+        pk, offs = chunk_streams(ntri, pos, st, col)
+        return pk, offs, ntri
+    nv, p2, s2, c2, idx = ix
+    pk, offs = chunk_streams(ntri, p2, s2, c2, nv, idx)
+    return pk, offs, ntri | nv << 16
 
 
 POS_MAX = 32000  # s16 position range used before snapping (leaves room for split_batch / snapping)
@@ -2507,8 +2565,10 @@ def write_cells(cells, res, all_chunks, nres):
                 [all_chunks[gid + j] for j in range(len(n))]
         mn = [min(b[6][a] for b in boxes) for a in range(3)]
         mx = [max(b[7][a] for b in boxes) for a in range(3)]
-        def size(j):  # bytes chunk gid + j adds to a blob: its record + its streams, 16-byte aligned
-            return 64 + sum(16 + ((len(a) + 15) & ~15) for a in all_chunks[gid + j][3:6])  # + VIF code qwords
+        pkts = [chunk_packet(*all_chunks[gid + j][:6]) for j in range(len(n))]
+
+        def size(j):  # bytes chunk gid + j adds to a blob: its record + its packet (VIF code qwords, streams)
+            return 64 + len(pkts[j][0])
         parts, cur, cb = [], [], 0
         for j in range(len(n)):
             if cur and cb + size(j) + 63 > NEAR_PART:
@@ -2524,12 +2584,12 @@ def write_cells(cells, res, all_chunks, nres):
             b = bytearray(b"\0" * (64 * len(part)))
             for i, j in enumerate(part):
                 ti, fl, ntri, pos, st, col, lo, hi, org, step, sts = all_chunks[gid + j]
-                pk, offs = chunk_streams(ntri, pos, st, col)
+                pk, offs, nw = pkts[j]
                 offs = [len(b) + o for o in offs]
                 b += pk
                 assert gid + j < 1 << 24
                 b[64 * i:64 * i + 64] = struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0) |
-                                                    (0 if fl & CHUNK_GRASS else (gid + j) << 8), ntri, *offs, *lo, *hi,
+                                                    (0 if fl & CHUNK_GRASS else (gid + j) << 8), nw, *offs, *lo, *hi,
                                                     *org, step)
             b.extend(b"\0" * (-len(b) % 64))
             off = len(cbin) if part else 0
@@ -2666,10 +2726,10 @@ def main():
     recs = []
     for ti, fl, ntri, pos, st, col, lo, hi, org, step, sts in chunks:
         align(16)
-        pk, offs = chunk_streams(ntri, pos, st, col)
+        pk, offs, nw = chunk_packet(ti, fl, ntri, pos, st, col)
         offs = [len(blob) + HDR + o for o in offs]
         blob += pk
-        recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), ntri, *offs, *lo, *hi,
+        recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), nw, *offs, *lo, *hi,
                                 *org, step))
     sec["chunks"] = len(blob) + HDR
     blob += b"".join(recs)

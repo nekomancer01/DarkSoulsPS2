@@ -29,6 +29,12 @@ void vu1_begin(int buffer);
 #define VU1_PKT 16
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
+/* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col
+ * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: 3 x the vertex number of each
+ * corner, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a
+ * code qword before each, idx last). VU1_CLIP batches go to vu1clip.vsm as lists the EE writes into the chain. */
+void vu1_add_idx(GSTEXTURE *tex, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
+                 const void *idx, const float *org, float st_k);
 /* GS mip chain for the next vu1_add_ex only (opaque batches; texcache.c tc_mip): TEX1 MXL mxl, LINEAR_MIPMAP_NEAREST,
  * K k (7.4 fixed), MIPTBP1 miptbp1. The batch then sends MIPTBP1 in TEST's A+D slot: the opaque TEST must be set
  * already (vu1_gs_regs; map.c sets it at the start of its opaque pass) */
@@ -122,6 +128,7 @@ typedef struct {
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
+    int idx_batches, idx_clip;  /* indexed map batches drawn by vu1mapi / expanded to lists for vu1clip, so far */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 

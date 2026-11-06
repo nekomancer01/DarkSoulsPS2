@@ -40,7 +40,11 @@ typedef struct {
 _Static_assert(sizeof(FogRow) == 48, "FogRow");
 /* VU1 batch: unindexed quantised streams pos s16x3 (world = org + n x step), st u16x2 (normalized x 4096, or x 1024
  * with CHUNK_ST1K), colour u8x4 (light, 0x80 = 1.0) */
-typedef struct { int tex; unsigned flags, tris, pos, st, col; float mn[3], mx[3], org[3], step; } Chunk;
+/* tris | nv << 16 on disc: nv = 0: unindexed lists (pos / st / col: one entry per corner); nv > 0: an indexed chunk
+ * (tools/export_map.py index_chunk): nv shared vertices, then a triangle stream after the colours (chunk_idx) */
+typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos, st, col; float mn[3], mx[3], org[3], step; } Chunk;
+/* offset of an indexed chunk's triangle stream (u8 x4 per triangle, after its own VIF code qword) */
+#define CHUNK_IDX(c) ((c)->col + (((c)->nv * 4u + 15) & ~15u) + 16)
 
 #define MAX_TEX 128
 #ifndef TEX_POOL_KB
@@ -552,17 +556,18 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
                 vu1_mip(mxl, k, mt);
         }
         int pkt = n == c->tris ? m->pkt : 0;  /* a foliage prefix sends its streams one by one */
-        vu1_add_ex(t, c->flags & CHUNK_CULL,
-                   (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge | pkt, n,
-                   base + c->pos, base + c->st, base + c->col, c->org,
-                   c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
+        int vm = (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge | pkt;
+        if (c->nv)  /* indexed (whole chunks only: foliage, the only prefix drawer, stays in lists) */
+            vu1_add_idx(t, c->flags & CHUNK_CULL, vm, n, c->nv, base + c->pos, base + c->st, base + c->col,
+                        base + CHUNK_IDX(c), c->org, st_k);
+        else
+            vu1_add_ex(t, c->flags & CHUNK_CULL, vm, n, base + c->pos, base + c->st, base + c->col, c->org, st_k);
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
-            bump_add((int)(m - inst), no, sqrtf(d2),
-                     c->flags & CHUNK_CULL, vclip | pkt, n, base + c->pos, base + c->st, base + c->col, c->org,
-                     c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
+            bump_add((int)(m - inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
+                     base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
     }
     return n;
 }
@@ -776,7 +781,8 @@ static unsigned chunk_range(const Chunk *chunks, unsigned a, unsigned b, unsigne
     unsigned l = ~0u, h = 0;
     for (unsigned j = a; j < b; j++) {
         const Chunk *c = &chunks[j];
-        unsigned e = (c->col + c->tris * 12 + 15) & ~15u;  /* colour u8x4 per corner, the last stream */
+        unsigned e = c->nv ? (CHUNK_IDX(c) + c->tris * 4u + 15) & ~15u  /* the triangle stream is the last */
+                           : (c->col + c->tris * 12 + 15) & ~15u;  /* colour u8x4 per corner, the last stream */
         l = c->pos - 16 < l ? c->pos - 16 : l;  /* from pos's code qword (VU1_PKT sends from there) */
         h = e > h ? e : h;
     }

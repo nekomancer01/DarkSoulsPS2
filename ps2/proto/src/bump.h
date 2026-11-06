@@ -18,9 +18,9 @@ int bump_block(int k, const void *blob, unsigned chunks);
 void bump_owner(int k);
 /* One opaque map chunk of instance k that was just queued (draw_chunk): kept for the relief pass when bump.bin marks it and it lies
  * within BUMP_FAR. d: distance from the eye to the chunk's box. Same streams / origin / st scale as the opaque batch,
- * so VU1 writes the same depth. clip: vu1_add_ex mode bits VU1_CLIP / VU1_PKT of the opaque batch. */
-void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, const void *pos, const void *st,
-              const void *col, const float *org, float st_k);
+ * so VU1 writes the same depth (nv / idx: an indexed chunk, vu1_add_idx; nv 0: lists). clip: vu1_add_ex mode bits VU1_CLIP / VU1_PKT of the opaque batch. */
+void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, int nv, const void *pos, const void *st,
+              const void *col, const void *idx, const float *org, float st_k);
 /* Draw the kept chunks (after the opaque map, before the blended effects; between tc_begin and tc_end): ALPHA
  * Cd x As, Z tested GEQUAL, not written, no fog; restores ALPHA / ZBUF. */
 void bump_draw(void);

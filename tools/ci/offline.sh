@@ -25,7 +25,7 @@ done
 
 echo "== generated VU1 programs up to date"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for pair in clip:vu1clip map:vu1map2 skin:vu1skin2 skinclip:vu1skinclip fx:vu1fx; do
+for pair in clip:vu1clip map:vu1map2 mapi:vu1mapi skin:vu1skin2 skinclip:vu1skinclip fx:vu1fx; do
     kind=${pair%%:*}; vsm=$ROOT/ps2/proto/src/${pair#*:}.vsm
     "$PY" gen.py "$kind" > "$TMP/$kind.vsm" 2> "$TMP/$kind.err" || { tail -5 "$TMP/$kind.err"; fail "gen.py $kind"; continue; }
     if cmp -s "$TMP/$kind.vsm" "$vsm"; then echo "${vsm#$ROOT/}: up to date"
