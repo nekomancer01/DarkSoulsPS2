@@ -232,12 +232,54 @@ static int col_floor(float x, float y, float z)
 }
 
 /* ---- rendering ---- */
+/* Occlusion pre-tests (2026-11-07, build speed): the depth buffer holds 1 / depth and only grows, so the smallest value
+ * of each TILE x TILE pixel tile (tmin, refreshed now and then: a stale one is never above the true one) bounds every
+ * pixel under it. A triangle or a chunk whose nearest point lies clearly behind that bound over its whole screen
+ * rectangle can neither write depth (mode 0) nor pass the biased test (mode 1), so it is skipped without changing any
+ * result: only work that cannot change a pixel or a unit's mark is left out (margins PT_MARGIN cover the rounding of
+ * the interpolated depth and of the projection). PVS_PRETEST=0 turns them off (A/B: pvs.bin must stay identical). */
+#define TILE 8
+#define PT_MARGIN 1e-3f
+static int pretest = 1;
+static int TW;  /* tiles per side */
 typedef struct {
     float *zb;
     unsigned *seen;  /* per unit: stamp of the sample that saw it */
     unsigned *ib;    /* validate: unit per pixel */
     unsigned stamp;
+    float *tmin;     /* per tile: lower bound of zb over it (valid when tvalid) */
+    int tvalid;
 } Ctx;
+
+static void tiles_refresh(Ctx *c)
+{
+    for (int ty = 0; ty < TW; ty++)
+        for (int tx = 0; tx < TW; tx++) {
+            float m = 1e30f;
+            int y1 = (ty + 1) * TILE < R ? (ty + 1) * TILE : R, x1 = (tx + 1) * TILE < R ? (tx + 1) * TILE : R;
+            for (int y = ty * TILE; y < y1; y++)
+                for (int x = tx * TILE; x < x1; x++)
+                    m = c->zb[y * R + x] < m ? c->zb[y * R + x] : m;
+            c->tmin[ty * TW + tx] = m;
+        }
+    c->tvalid = 1;
+}
+
+/* whether nothing with 1 / depth at most iz over pixels [x0, x1] x [y0, y1] can change the buffer (mode 0) or pass the
+ * biased test (mode 1); needs valid tiles */
+static int hidden_rect(const Ctx *c, int x0, int y0, int x1, int y1, float iz, int mode)
+{
+    iz *= 1 + PT_MARGIN;
+    for (int ty = y0 / TILE; ty <= y1 / TILE; ty++)
+        for (int tx = x0 / TILE; tx <= x1 / TILE; tx++) {
+            float z = c->tmin[ty * TW + tx];
+            if (z <= 0)
+                return 0;
+            if (mode == 0 ? !(iz < z * (1 - PT_MARGIN)) : !(iz < z / (1.01f + 0.02f * z) * (1 - PT_MARGIN)))
+                return 0;
+        }
+    return 1;
+}
 
 static const float FB[6][9] = {{1, 0, 0, 0, 0, -1, 0, 1, 0}, {-1, 0, 0, 0, 0, 1, 0, 1, 0}, {0, 0, 1, 1, 0, 0, 0, 1, 0},
                                {0, 0, -1, -1, 0, 0, 0, 1, 0}, {0, 1, 0, 1, 0, 0, 0, 0, -1}, {0, -1, 0, 1, 0, 0, 0, 0, 1}};
@@ -274,6 +316,17 @@ static void raster(Ctx *c, float (*p)[3], unsigned unit, int mode)
     float s[8][3];
     for (int i = 0; i < m; i++)
         s[i][0] = (q[i][0] / q[i][2] * 0.5f + 0.5f) * R, s[i][1] = (q[i][1] / q[i][2] * 0.5f + 0.5f) * R, s[i][2] = 1.0f / q[i][2];
+    if (mode != 2 && c->tvalid) {  /* the whole polygon behind the tiles' bound: no fan triangle changes anything */
+        float fx0 = s[0][0], fx1 = s[0][0], fy0 = s[0][1], fy1 = s[0][1], iz = s[0][2];
+        for (int i = 1; i < m; i++)
+            fx0 = fminf(fx0, s[i][0]), fx1 = fmaxf(fx1, s[i][0]), fy0 = fminf(fy0, s[i][1]), fy1 = fmaxf(fy1, s[i][1]),
+            iz = fmaxf(iz, s[i][2]);
+        if (fx1 < 0 || fy1 < 0 || fx0 >= R || fy0 >= R)
+            return;
+        if (hidden_rect(c, fx0 < 0 ? 0 : (int)fx0, fy0 < 0 ? 0 : (int)fy0, fx1 >= R ? R - 1 : (int)fx1,
+                        fy1 >= R ? R - 1 : (int)fy1, iz, mode))
+            return;
+    }
     for (int t = 1; t + 1 < m; t++) {
         float *a = s[0], *b = s[t], *e = s[t + 1];
         float area = (b[0] - a[0]) * (e[1] - a[1]) - (b[1] - a[1]) * (e[0] - a[0]);
@@ -287,30 +340,55 @@ static void raster(Ctx *c, float (*p)[3], unsigned unit, int mode)
         int y0 = fy0 < 0 ? 0 : (int)fy0, y1 = fy1 >= R ? R - 1 : (int)fy1;
         float ia = 1 / area;
         int hit = 0;
-        for (int y = y0; y <= y1; y++)
-            for (int x = x0; x <= x1; x++) {
-                float px = x + 0.5f, py = y + 0.5f;
-                float w0 = ((b[0] - px) * (e[1] - py) - (b[1] - py) * (e[0] - px)) * ia;
-                float w1 = ((e[0] - px) * (a[1] - py) - (e[1] - py) * (a[0] - px)) * ia;
-                float w2 = 1 - w0 - w1;
-                if (w0 < 0 || w1 < 0 || w2 < 0)
-                    continue;
-                float iz = w0 * a[2] + w1 * b[2] + w2 * e[2];
-                float *z = &c->zb[y * R + x];
-                if (mode == 0) {
-                    if (iz > *z)
-                        *z = iz;
-                } else if (mode == 1) {
-                    /* passes when no farther than 1 % + 2 cm behind the occluder depth (decals, coplanar pieces) */
-                    if (*z == 0 || iz >= *z / (1.01f + 0.02f * *z)) {
-                        c->seen[unit] = c->stamp;
-                        return;
+        if (mode != 2) {
+            /* modes 0 / 1: the same per-pixel arithmetic without branches, so the compiler vectorises the row (the
+             * depth buffer keeps the maximum, so a row's order does not matter; mode 1 only asks whether any pixel
+             * passes) */
+            const float ax = a[0], ay = a[1], az = a[2], bx = b[0], by = b[1], bz = b[2], ex = e[0], ey = e[1], ez = e[2];
+            for (int y = y0; y <= y1; y++) {
+                const float py = y + 0.5f;
+                float *zr = &c->zb[y * R];
+                int any = 0, pass = 0;
+                for (int x = x0; x <= x1; x++) {
+                    float px = x + 0.5f;
+                    float w0 = ((bx - px) * (ey - py) - (by - py) * (ex - px)) * ia;
+                    float w1 = ((ex - px) * (ay - py) - (ey - py) * (ax - px)) * ia;
+                    float w2 = 1 - w0 - w1;
+                    int cov = !(w0 < 0) & !(w1 < 0) & !(w2 < 0);
+                    float iz = w0 * az + w1 * bz + w2 * ez;
+                    float z = zr[x];
+                    if (mode == 0) {
+                        zr[x] = cov & (iz > z) ? iz : z;
+                    } else {
+                        /* passes when no farther than 1 % + 2 cm behind the occluder depth (decals, coplanar pieces) */
+                        pass |= cov & ((z == 0) | (iz >= z / (1.01f + 0.02f * z)));
                     }
-                } else if (iz > *z) {
-                    *z = iz, c->ib[y * R + x] = unit;
+                    any |= cov;
                 }
-                hit = 1;
+                if (pass) {
+                    c->seen[unit] = c->stamp;
+                    return;
+                }
+                hit |= any;
             }
+        } else {  /* mode 2 (validate): as above; within a triangle each pixel is visited once, so order is kept */
+            const float ax = a[0], ay = a[1], az = a[2], bx = b[0], by = b[1], bz = b[2], ex = e[0], ey = e[1], ez = e[2];
+            for (int y = y0; y <= y1; y++) {
+                const float py = y + 0.5f;
+                float *zr = &c->zb[y * R];
+                unsigned *ir = &c->ib[y * R];
+                for (int x = x0; x <= x1; x++) {
+                    float px = x + 0.5f;
+                    float w0 = ((bx - px) * (ey - py) - (by - py) * (ex - px)) * ia;
+                    float w1 = ((ex - px) * (ay - py) - (ey - py) * (ax - px)) * ia;
+                    float w2 = 1 - w0 - w1;
+                    int win = !(w0 < 0) & !(w1 < 0) & !(w2 < 0) & (w0 * az + w1 * bz + w2 * ez > zr[x]);
+                    float iz = w0 * az + w1 * bz + w2 * ez;
+                    zr[x] = win ? iz : zr[x];
+                    ir[x] = win ? unit : ir[x];
+                }
+            }
+        }
         /* a triangle that covers no pixel centre: its first vertex's pixel stands for it (sub-pixel slivers) */
         if (!hit && mode == 1) {
             int x = (int)a[0], y = (int)a[1];
@@ -377,36 +455,89 @@ static void draw_chunk(Ctx *c, unsigned i, const float *e, const float *fb, int 
     }
 }
 
-/* the chunks drawn from camera e (player on block pb, mask cm) into list, bit 31 = occluder; their count */
+#define NEAR_FIRST 32.0f
+/* the chunks drawn from camera e (player on block pb, mask cm) into list, bit 31 = occluder, bit 30 = within
+ * NEAR_FIRST m (drawn first); their count */
 static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
 {
     unsigned n = 0;
     for (unsigned j = 0; j < nch; j++) {
         int d = drawn(j, e, pb, cm);
         if (d)
-            list[n++] = j | (d == 2 ? 0x80000000u : 0);
+            list[n++] = j | (d == 2 ? 0x80000000u : 0) |
+                        (box_d2(ch[j].mn, ch[j].mx, e) < NEAR_FIRST * NEAR_FIRST ? 0x40000000u : 0);
     }
     return n;
 }
 
-/* every block-0 unit visible from eye e: c->seen[u] == c->stamp */
-static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist)
+/* box_in_face for all six faces at once (bit f: face f): the FB axes are signed unit axes, so each face's x / y / z of a
+ * corner is a component of d or its negation, exactly the value the dot product gives (adding zeros changes no compare) */
+static unsigned box_faces(const float *mn, const float *mx, const float *e)
 {
+    unsigned m = 0;
+    for (int f = 0; f < 6; f++)
+        m |= (unsigned)box_in_face(mn, mx, e, FB[f]) << f;
+    return m;
+}
+
+/* per chunk: the box of its own triangles (tight, from the vertices themselves), for the chunk pre-tests */
+static float (*tb)[2][3];
+
+/* whether chunk i, seen from e through face fb, lies clearly behind the tiles' bound (see hidden_rect) */
+static int chunk_hidden(const Ctx *c, unsigned i, const float *e, const float *fb, int mode)
+{
+    float zmin = 1e30f, x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+    const float *mn = tb[i][0], *mx = tb[i][1];
+    for (int k = 0; k < 8; k++) {
+        float d[3] = {(k & 1 ? mx[0] : mn[0]) - e[0], (k & 2 ? mx[1] : mn[1]) - e[1], (k & 4 ? mx[2] : mn[2]) - e[2]};
+        float x = d[0] * fb[3] + d[1] * fb[4] + d[2] * fb[5], y = d[0] * fb[6] + d[1] * fb[7] + d[2] * fb[8];
+        float z = d[0] * fb[0] + d[1] * fb[1] + d[2] * fb[2];
+        if (z < 0.2f)  /* near the camera plane (clipping): never judged */
+            return 0;
+        float sx = (x / z * 0.5f + 0.5f) * R, sy = (y / z * 0.5f + 0.5f) * R;
+        zmin = fminf(zmin, z), x0 = fminf(x0, sx), x1 = fmaxf(x1, sx), y0 = fminf(y0, sy), y1 = fmaxf(y1, sy);
+    }
+    x0 -= 1, y0 -= 1, x1 += 1, y1 += 1;  /* rounding of the projection */
+    if (x1 < 0 || y1 < 0 || x0 >= R || y0 >= R)
+        return 1;
+    return hidden_rect(c, x0 < 0 ? 0 : (int)x0, y0 < 0 ? 0 : (int)y0, x1 >= R ? R - 1 : (int)x1, y1 >= R ? R - 1 : (int)y1,
+                       1.0f / zmin * (1 + PT_MARGIN), mode);
+}
+
+/* every block-0 unit visible from eye e: c->seen[u] == c->stamp. Occluders within NEAR_FIRST m go first (bit 30 of
+ * the list), then the tiles bound the rest; the order of depth writes changes nothing (the buffer keeps the maximum). */
+static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist, unsigned char *fm)
+{
+    for (unsigned j = 0; j < nlist; j++) {
+        unsigned i = list[j] & 0x3FFFFFFFu;
+        fm[j] = (unsigned char)box_faces(ch[i].mn, ch[i].mx, e);
+    }
     for (int f = 0; f < 6; f++) {
         const float *fb = FB[f];
         memset(c->zb, 0, sizeof(float) * R * R);
+        c->tvalid = 0;
         unsigned n = 0;
-        for (unsigned j = 0; j < nlist; j++) {
-            unsigned i = list[j] & 0x7FFFFFFFu;
-            if (box_in_face(ch[i].mn, ch[i].mx, e, fb))
+        for (unsigned j = 0; j < nlist; j++)
+            if (fm[j] >> f & 1)
                 list[nlist + n++] = list[j];
+        for (int pass = 0; pass < 2; pass++) {
+            unsigned since = 0;
+            for (unsigned j = 0; j < n; j++) {
+                unsigned v = list[nlist + j], i = v & 0x3FFFFFFFu;
+                if (!(v >> 31) || (int)(v >> 30 & 1) != !pass)
+                    continue;
+                if (pretest && pass && (++since & 127) == 0)
+                    tiles_refresh(c);
+                if (c->tvalid && chunk_hidden(c, i, e, fb, 0))
+                    continue;
+                draw_chunk(c, i, e, fb, 0);
+            }
+            if (pretest)
+                tiles_refresh(c);
         }
-        for (unsigned j = 0; j < n; j++)
-            if (list[nlist + j] >> 31)
-                draw_chunk(c, list[nlist + j] & 0x7FFFFFFFu, e, fb, 0);
         for (unsigned j = 0; j < n; j++) {
-            unsigned i = list[nlist + j] & 0x7FFFFFFFu;
-            if (i < nself && c->seen[ch[i].unit] != c->stamp)
+            unsigned i = list[nlist + j] & 0x3FFFFFFFu;
+            if (i < nself && c->seen[ch[i].unit] != c->stamp && !(c->tvalid && chunk_hidden(c, i, e, fb, 1)))
                 draw_chunk(c, i, e, fb, 1);
         }
     }
@@ -703,6 +834,17 @@ int main(int argc, char **argv)
         nblk++;
     }
     build_grid();
+    TW = (R + TILE - 1) / TILE;
+    const char *pt = getenv("PVS_PRETEST");
+    pretest = !(pt && !strcmp(pt, "0"));
+    tb = malloc((nch + 1) * sizeof *tb);
+    for (unsigned i = 0; i < nch; i++) {
+        for (int k = 0; k < 3; k++)
+            tb[i][0][k] = 1e30f, tb[i][1][k] = -1e30f;
+        for (unsigned t = ch[i].first; t < ch[i].first + ch[i].ntri; t++)
+            for (int j = 0; j < 9; j++)
+                tb[i][0][j % 3] = fminf(tb[i][0][j % 3], tri[t].v[j]), tb[i][1][j % 3] = fmaxf(tb[i][1][j % 3], tri[t].v[j]);
+    }
     for (int k = 0; k < 3; k++)
         sbox[0][k] = 1e9f, sbox[1][k] = -1e9f;
     for (unsigned i = 0; i < nself; i++)
@@ -749,8 +891,9 @@ int main(int argc, char **argv)
     unsigned long long tested = 0;
 #pragma omp parallel
     {
-        Ctx c = {malloc(sizeof(float) * R * R), calloc(nun, sizeof(unsigned)), NULL, 0};
+        Ctx c = {malloc(sizeof(float) * R * R), calloc(nun, sizeof(unsigned)), NULL, 0, malloc(sizeof(float) * TW * TW), 0};
         unsigned *list = malloc(2 * nch * sizeof *list);
+        unsigned char *fm = malloc(nch + 1);
 #pragma omp for schedule(dynamic, 1) reduction(+ : tested)
         for (unsigned i = 0; i < nsampled; i++) {
             Cell *ce = &cells[i];
@@ -759,14 +902,14 @@ int main(int argc, char **argv)
                 const Cam *cm = &ce->cam[s];
                 unsigned nl = draw_list(cm->e, cm->b, cm->cm, list);
                 c.stamp++;
-                sample(&c, cm->e, list, nl);
+                sample(&c, cm->e, list, nl, fm);
                 for (unsigned u = 0; u < nun; u++)
                     if (c.seen[u] == c.stamp)
                         ce->row[u >> 3] |= 1 << (u & 7);
                 tested++;
             }
         }
-        free(c.zb), free(c.seen), free(list);
+        free(c.zb), free(c.seen), free(list), free(c.tmin), free(fm);
     }
     /* dilation: each row ORs its 6 neighbours' (missed samples). Only sampled cells are stored: the runtime takes the
      * union of a missing cell's stored neighbours (pvs.c), "everything" when it has none */
@@ -911,7 +1054,7 @@ int main(int argc, char **argv)
         float we[3] = {0};
 #pragma omp parallel
         {
-            Ctx c = {malloc(sizeof(float) * R * R), NULL, malloc(sizeof(unsigned) * R * R), 0};
+            Ctx c = {malloc(sizeof(float) * R * R), NULL, malloc(sizeof(unsigned) * R * R), 0, NULL, 0};
             unsigned *list = malloc(2 * nch * sizeof *list);
             unsigned char *tmp = malloc(rb);
 #pragma omp for schedule(dynamic, 4) reduction(+ : px, miss, norow, bad)
@@ -931,7 +1074,7 @@ int main(int argc, char **argv)
                     memset(c.zb, 0, sizeof(float) * R * R);
                     memset(c.ib, 0xFF, sizeof(unsigned) * R * R);
                     for (unsigned j = 0; j < nl; j++) {
-                        unsigned i = list[j] & 0x7FFFFFFFu;
+                        unsigned i = list[j] & 0x3FFFFFFFu;
                         if (box_in_face(ch[i].mn, ch[i].mx, cm.e, FB[f]))
                             draw_chunk(&c, i, cm.e, FB[f], 2);
                     }

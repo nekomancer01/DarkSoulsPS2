@@ -36,9 +36,12 @@ endif
 # lights.json (export_effects.py --static-lights) and emevd.py's switched_entities; every per-area export on
 # $(A)/area.sig (tools/area.py --sig: that area's config + area.py's code), so a new block re-exports only that block.
 TS = $(BUILD)/stamp
+# A tool not modified since its stamp's last check (<stamp>.key, written by srcsum.py whenever the tool's size / mtime
+# change) is not handed to Python at all: each sub-make re-checks every stamp, ~500 Python starts a world build (find
+# -newer compares to the nanosecond)
 $(TS)/%.sum: FORCE
-	@mkdir -p $(@D)
-	@python3 -I ../../tools/srcsum.py ../../tools/$* $@
+	@if [ -f $@ ] && [ -f $@.key ] && [ -z "$$(find ../../tools/$* -newer $@.key)" ]; then :; else \
+		mkdir -p $(@D) && python3 -I ../../tools/srcsum.py ../../tools/$* $@; fi
 .PRECIOUS: $(TS)/%.sum
 # G = generated files shared by every area (player model / ESD / data headers, menu), O = objects, D = packs
 G = $(BUILD)/gen
@@ -195,7 +198,11 @@ worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks
 blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
-$(D)/world.pak: worldpacks $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin
+# (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
+# from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
+$(D)/world.pak: $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
+		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
 	python3 -I ../../tools/pack.py $@ world.bin=$(G)/world.bin
@@ -241,7 +248,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 # it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet). HZN=0: none (old path)
 $(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum
 	python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
-$(A)/hzn.bin: $(A)/map.bin $(TS)/horizon.py.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum
+$(A)/hzn.bin: $(A)/map.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum
 	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
 
 # Objects: src/*.c -> $(O)/*.o; area-dependent objects of a non-default area go to $(O)/<MAP>/
@@ -428,12 +435,17 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/t
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
-# the map bake's static point lights (export_effects.static_lights), rewritten only when they change
-$(A)/lights.json: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG)
+# the map bake's static point lights (export_effects.static_lights), rewritten only when they change. The export runs
+# for lights.stamp (touched each run): a lights.json left as it was stays older than its tools' stamps, and as the target
+# it re-ran the export on every build (2026-11-07)
+$(A)/lights.json: $(A)/lights.stamp
+	@test -f $@ || { echo "$@ missing: re-export it"; rm -f $<; exit 1; }
+$(A)/lights.stamp: $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	@# a first lights.json takes the export_effects.py stamp's mtime: adding it to a build re-exports no map
-	@test -e $@ || new=1; $(PY) -I ../../tools/export_effects.py "$(GAME)" --static-lights $@ $(MAP) && \
-		if [ -n "$$new" ]; then touch -r $(TS)/export_effects.py.sum $@; fi
+	@j=$(A)/lights.json; test -e $$j || new=1; $(PY) -I ../../tools/export_effects.py "$(GAME)" --static-lights $$j $(MAP) && \
+		if [ -n "$$new" ]; then touch -r $(TS)/export_effects.py.sum $$j; fi
+	@touch $@
 # normal-map relief (tools/export_normal.py, src/bump.c): written by the map.bin export, same chunk order
 $(A)/bump.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
@@ -448,9 +460,12 @@ $(A)/dg.bin: $(A)/map.bin
 PVS_BAKE = $(BUILD)/host/pvs_bake
 PVS_VALIDATE ?= 300
 PVS_ARGS ?=
+# -march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every
+# float operation as written, so pvs.bin is the same bytes whatever the CPU (PVS_CFLAGS overrides).
+PVS_CFLAGS ?= -O3 -march=native -ffp-contract=off
 $(PVS_BAKE): ../../tools/pvs_bake.c
 	@mkdir -p $(@D)
-	gcc -O2 -fopenmp -o $@ $< -lm
+	gcc $(PVS_CFLAGS) -fopenmp -o $@ $< -lm
 $(A)/pvsin.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))
@@ -459,8 +474,9 @@ PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))
 PVS_WITH_FILES = $(foreach d,$(PVS_WITH),$(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin)
 $(PVS_WITH_FILES): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
-$(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES)
-	$(abspath ../../tools/q) -m 2 $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
+# (tools/pvs_cache.py: an earlier bake of the same inputs in any build dir or worktree is reused, PVS_CACHE=0 off)
+$(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES) $(TS)/pvs_cache.py.sum
+	$(abspath ../../tools/q) -m 2 python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
 		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)

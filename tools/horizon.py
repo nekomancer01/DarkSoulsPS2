@@ -158,12 +158,52 @@ def nav_points(b):
     return np.frombuffer(b, np.float32, 3 * nv, navv_off).reshape(-1, 3).astype(np.float64)
 
 
+_NEAREST = []
+
+
+def _nearest_lib():
+    """tools/native/libnearest.so (min_d2), built on first use like libgeom.so; None without a compiler (numpy path,
+    same results) or with HZN_NATIVE=0"""
+    if not _NEAREST:
+        L = None
+        if os.environ.get("HZN_NATIVE", "1") != "0":
+            import ctypes
+            native = os.path.join(HERE, "native")
+            src, so = os.path.join(native, "nearest.c"), os.path.join(native, "libnearest.so")
+            try:
+                if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
+                    import subprocess, tempfile
+                    fd, tmp = tempfile.mkstemp(suffix=".so", dir=native)
+                    os.close(fd)
+                    try:
+                        subprocess.run([os.environ.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fno-fast-math",
+                                        "-shared", "-fPIC", "-o", tmp, src], check=True, capture_output=True)
+                        os.replace(tmp, so)  # atomic: parallel exports may build at once
+                    finally:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                L = ctypes.CDLL(so)
+                vp, i = ctypes.c_void_p, ctypes.c_int
+                L.min_d2.argtypes = [i, vp, i, vp, ctypes.c_double, vp]
+                L.min_d2.restype = None
+            except Exception as e:
+                print(f"horizon: C nearest distance unavailable ({str(e)[:200]}), using numpy", flush=True)
+                L = None
+        _NEAREST.append(L)
+    return _NEAREST[0]
+
+
 def view_d(X, nav):
     """view distance of points X: to the nearest of at most 4000 navmesh vertices (brute force in blocks: no scipy in
     the build venv), at least HZN_D (the horizon is never drawn nearer)"""
     if not len(nav) or not len(X):
         return np.full(len(X), HZN_D)
     ns = nav[::max(1, len(nav) // 4000)]
+    L = _nearest_lib()
+    if L is not None:  # the same minimum in C (tools/native/nearest.c): 93 % of a Burg block's 150 s before
+        Q, S, d2 = np.ascontiguousarray(X, np.float64), np.ascontiguousarray(ns, np.float64), np.empty(len(X))
+        L.min_d2(len(Q), Q.ctypes.data, len(S), S.ctypes.data, HZN_D * HZN_D, d2.ctypes.data)
+        return np.maximum(np.sqrt(d2), HZN_D)
     d = np.empty(len(X))
     for s in range(0, len(X), 2048):
         v = X[s:s + 2048]
