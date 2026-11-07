@@ -19,10 +19,12 @@ stores them), so it needs no re-export:
   3. one quadric edge collapse over the whole block (tools/simplify_native.py, the exporter's simplifier) with each
      vertex weighted by its view distance (the distance to the nearest navmesh vertex, at least HZN_D): every cell's
      horizon comes from the same mesh, so neighbouring cells meet without cracks;
-  4. the collapse stops at PX pixels of screen error, or earlier if the block's horizon would pass KB kilobytes
-     (budget: lite sets share the near-cell arena);
+  4. the collapse stops at PX pixels of screen error, or at the one larger error (the same for every draw-group mesh
+     of the block) at which the block's horizon fits KB kilobytes (the backdrop BD_KB apart; budget: lite sets share
+     the near-cell arena), never past PX_MAX;
   5. triangles go to the cell whose box holds their centroid (else the nearest), are sorted along a Z curve and cut
-     into VU1 batches of CHUNK_TRIS.
+     into VU1 batches: indexed (HZN_IDX, the default: a breadth-first walk over shared vertices, at most IDX_TRIS
+     triangles / IDX_NV vertices, each vertex stored once), else lists of CHUNK_TRIS.
 Untextured: map.c draws it with TME off (vu1.c VU1_FLAT), vertex colour = final colour.
 
 hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the section start, so it can move):
@@ -32,10 +34,12 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
                    chunks
   chunk records (64 B, map.c Chunk): tex -1, flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop | draw-group set
                    << 16: dg.bin piece mask index, 0 = always drawn), tris, pos / st / col offsets, box, org, step
-  streams: per chunk one VIF packet (chunk_streams: pos s16x3, colour u8x4; no st)
+  streams: per chunk one VIF packet: indexed (tris | nv << 16, idx_streams): pos s16x3 x nv, colour u8x4 x nv, u8x4
+           triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
-Env: HZN=0 writes an empty file (the old drawing); HZN_PX, HZN_KB, HZN_D, HZN_WELD, HZN_DG."""
+Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_PX, HZN_KB, HZN_BD_KB, HZN_D,
+HZN_WELD, HZN_DG."""
 import os
 import struct
 import sys
@@ -53,20 +57,31 @@ POS_MAX = 32000
 PSMT8, PSMT4, CT16 = 0x13, 0x14, 0x02
 FOCAL = 568.0  # export_map: screen errors in pixels of a 568-pixel focal length ((px / 568)^2 = eps)
 ON = os.environ.get("HZN", "1") == "1"
-# Screen error at the nearest the horizon is drawn (map.c HZN_R 56 m - hysteresis). ASSUMED 12 px: the coarse level's
-# own cap is 24-36 px at 32 m (export_map WS_PX1), 14-20 px at 56 m; the horizon stays a little under that (8 px:
-# Burg 19.6k tris a block, 12 px 15.8k, 16 px 13.5k).
-PX = float(os.environ.get("HZN_PX", 12.0))
+# Screen error at the nearest the horizon is drawn (map.c HZN_R 56 m - hysteresis). The coarse level's own cap is
+# 24-36 px at 32 m (export_map WS_PX1), 14-20 px at 56 m. Lists at 12 px went past the KB cap in every block, so all of
+# them sat at PX_MAX (32 px: the coarse, spiky far shapes of Ame's report, 2026-11-07); indexed, 8 px fits every Burg
+# block in about the bytes 32 px took (Burg west 26.8k tris 455 KB, was 13.6k 455 KB) and Firelink reaches 12.7 px.
+PX = float(os.environ.get("HZN_PX", 8.0))
 HZN_D = float(os.environ.get("HZN_D", 54.0))  # metres: nearest view distance the error is judged from
-# cap per block (ASSUMED): lite sets share the near-cell arena with the near cells, relief and enemy models. At ~0.6 MB
+# cap per block (ASSUMED; 320 with lists, which no block met: the PX_MAX floor won): lite sets share the near-cell arena with the near cells, relief and enemy models. At ~0.6 MB
 # a block (1 MB for Firelink with its m8000 backdrop) mapstream_alloc held 4.4 MB of the 8 MB arena in the Burg and
 # the near level waited up to 28 s (ISO route, 2026-11-06)
-KB = float(os.environ.get("HZN_KB", 320))
+KB = float(os.environ.get("HZN_KB", 480))
 PX_MAX = float(os.environ.get("HZN_PX_MAX", 32.0))  # the budget never pushes the error past this (ASSUMED)
-BD_SHARE = 0.3  # of KB for the backdrop mesh at most
+# the backdrop (Firelink's m8000 view of the Burg and the valley, 8-14k triangles; a few hundred elsewhere) has its own
+# budget: as a share of KB it took the map's triangles in Firelink, the block with the most to show far off
+BD_KB = float(os.environ.get("HZN_BD_KB", 288))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
-BPT = 36  # bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36)
+# indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
+# ~18-19 bytes a triangle against ~36 (horizon meshes share fewer vertices than closed ones), about twice the triangles
+IDX = os.environ.get("HZN_IDX", "1") == "1"
+MAPI_HDR, CLIPI_MAX = 8, 336  # export_map / tools/vu1/gen.py
+IDX_TRIS = 64  # vu1.h VU1_IDX_TRIS
+IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324 <= CLIPI_MAX)
+# bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
+# ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
+BPT = 19 if IDX else 36
 
 
 def _swz(i):
@@ -265,25 +280,48 @@ def cluster(P, C, nav, px):
     return V, VC, T[np.sort(first)]
 
 
-def simplify(V, T, nav, px, kb):
-    """quadric collapse of the clustered block (flat stretches the grid cut up) -> surviving triangles (vertex
-    triples), the screen error used in pixels: px, or more where the block would pass kb"""
+def qlog(V, T, nav):
+    """quadric collapse log of a clustered mesh (flat stretches the grid cut up), each vertex weighted by its view
+    distance: costs are screen errors^2 at a 1-unit focal length; None without triangles"""
     import simplify_native
     if not len(T):
-        return T, px
+        return None
     d = view_d(V, nav)
-    log = simplify_native.simplify_log(V, np.arange(len(V), dtype=np.int32), T.astype(np.int32), None, 1.0 / (d * d))
-    t0, cost, nrem = log[0], log[1], log[2]
-    eps = (px / FOCAL) ** 2
-    alive = len(t0) - np.cumsum(nrem)
-    cap = int(kb * 1024 / BPT)
-    k = int(np.searchsorted(cost, eps, side="right"))
-    if (alive[k - 1] if k else len(t0)) > cap:
-        under = np.flatnonzero(alive <= cap)
-        eps = float(cost[under[0]]) if len(under) else float(cost[-1]) if len(cost) else eps
-        eps = min(eps, (PX_MAX / FOCAL) ** 2)  # never coarser than PX_MAX: the budget gives way
-    out = simplify_native.pysimplify.replay_log(log, eps)
-    return out[:, 0::2], float(np.sqrt(eps) * FOCAL)
+    return simplify_native.simplify_log(V, np.arange(len(V), dtype=np.int32), T.astype(np.int32), None, 1.0 / (d * d))
+
+
+def alive(log, eps):
+    """triangles a log leaves at error eps"""
+    if log is None:
+        return 0
+    k = int(np.searchsorted(log[1], eps, side="right"))
+    return len(log[0]) - (int(np.cumsum(log[2])[k - 1]) if k else 0)
+
+
+def block_eps(logs, cap):
+    """the smallest error >= PX (as eps) whose triangles over all logs fit cap, at most PX_MAX (the budget gives way)"""
+    e0, e1 = (PX / FOCAL) ** 2, (PX_MAX / FOCAL) ** 2
+    if sum(alive(L, e0) for L in logs) <= cap:
+        return e0
+    cand = np.unique(np.concatenate([L[1][(L[1] > e0) & (L[1] <= e1)] for L in logs if L is not None] + [[e1]]))
+    lo_i, hi_i = 0, len(cand) - 1
+    if sum(alive(L, cand[hi_i]) for L in logs) > cap:
+        return float(cand[hi_i])
+    while lo_i < hi_i:  # alive is non-increasing in eps
+        m = (lo_i + hi_i) // 2
+        if sum(alive(L, cand[m]) for L in logs) <= cap:
+            hi_i = m
+        else:
+            lo_i = m + 1
+    return float(cand[lo_i])
+
+
+def replay(log, eps):
+    """surviving triangles (vertex triples) of a log at error eps"""
+    import simplify_native
+    if log is None:
+        return np.zeros((0, 3), np.int64)
+    return simplify_native.pysimplify.replay_log(log, eps)[:, 0::2]
 
 
 def zkey(c, lo, step):
@@ -314,6 +352,64 @@ def chunk_streams(ntri, pos, col):
         out += arr
         out.extend(b"\0" * (-len(out) % 16))
     return out, offs if ST else [offs[0], offs[0], offs[1]]
+
+
+def idx_streams(ntri, nv, pos, col, idx):
+    """an indexed horizon batch (map.c CHUNK_IDX, vu1.c vu1_add_idx): {code} pos s16x3 x nv, {code} colour u8x4 x nv,
+    {code} triangles u8x4; no st stream (the st offset points at the colours: vu1mapi reads them, the GS ignores ST
+    with TME off). The code qwords are export_map.chunk_streams' (vu1.c REFs the streams one by one, never VU1_PKT)."""
+    codes = ((0, 0, 0x01000103, 0x69008000 | MAPI_HDR | nv << 16), (0, 0, 0, 0x6E00C000 | (MAPI_HDR + 2) | nv << 16),
+             (0, 0, 0x01000101, 0x6E00C000 | (MAPI_HDR + 3 * nv) | ntri << 16))
+    out, offs = bytearray(), []
+    for arr, cw in zip((pos, col, idx), codes):
+        out += struct.pack("<4I", *cw)
+        offs.append(len(out))
+        out += arr
+        out.extend(b"\0" * (-len(out) % 16))
+    return out, [offs[0], offs[1], offs[1]]
+
+
+def idx_batches(T):
+    """a cell's triangles (vertex triples) -> batches for vu1mapi that share as many vertices as they can: triangles
+    in breadth-first order over shared vertices (a surface is walked as a growing patch, not in Z-curve stripes), cut
+    where the next one would pass IDX_TRIS triangles or IDX_NV vertices (vu1clip's indexed entry: MAPI_HDR + 3 nv +
+    tris <= CLIPI_MAX, so a batch at the near plane is clipped on VU1)"""
+    n = len(T)
+    if not n:
+        return []
+    flat = T.reshape(-1)
+    order_v = np.argsort(flat, kind="stable")
+    vs, starts = np.unique(flat[order_v], return_index=True)
+    ends = np.append(starts[1:], len(flat))
+    pos_of = {int(v): (int(a), int(b)) for v, a, b in zip(vs, starts, ends)}
+    done = np.zeros(n, bool)
+    seq = []
+    for seed in range(n):  # Z-curve order (the caller's) picks the seeds
+        if done[seed]:
+            continue
+        done[seed] = True
+        q, qi = [seed], 0
+        while qi < len(q):
+            t = q[qi]
+            qi += 1
+            seq.append(t)
+            for v in T[t]:
+                a, b = pos_of[int(v)]
+                for k in order_v[a:b] // 3:
+                    if not done[k]:
+                        done[k] = True
+                        q.append(int(k))
+    out, cur, vset = [], [], set()
+    for t in seq:
+        new = vset | set(int(v) for v in T[t])
+        nv = -(-len(new) // 3) * 3
+        if cur and (len(cur) + 1 > IDX_TRIS or nv > IDX_NV or MAPI_HDR + 3 * nv + len(cur) + 1 > CLIPI_MAX):
+            out.append(T[cur])
+            cur, new = [], set(int(v) for v in T[t])
+        cur.append(t)
+        vset = new
+    out.append(T[cur])
+    return out
 
 
 def _place(V, VC, T, lo, hi, cfl):
@@ -349,23 +445,25 @@ def build(b):
     # merged into one surface, a cell's stand-ins and the detail they stand in for, Firelink's views of the Burg and the
     # Burg itself, drew all at once, spiky and purple, wherever the horizon was used (Ame's ISO report, 2026-11-07)
     groups, stats = [], dict(opaque=0, clustered=0, px=PX)
-    left = KB
-    for g in (1, 0):  # the backdrop first, at most BD_SHARE of the budget; the map gets the rest
+    # one screen error for the whole block (every set at once): the smallest at or above PX whose triangles fit the
+    # budget. Shared by triangle count, each set hit its own cap apart: small sets stayed at PX while the big ones went
+    # to PX_MAX (Firelink: every block at 32 px, 2026-11-07)
+    for g in (1, 0):  # the backdrop (BD_KB), then the map (KB)
         selg = keep & (bd == bool(g))
-        budget = left * BD_SHARE if g else left
-        tot = max(1, int(selg.sum()))
-        pxs = []
+        budget = BD_KB if g else KB
+        sets = []
         for dset in np.unique(dg[selg]):
             sel = selg & (dg == dset)
             V, VC, T = cluster(P[sel], C[sel], nav, PX)
             stats["opaque"] += int(sel.sum())
             stats["clustered"] += len(T)
-            T, px = simplify(V, T, nav, PX, budget * sel.sum() / tot)  # the budget shared by triangle count
-            left -= len(T) * BPT / 1024.0
-            pxs.append(px)
+            sets.append((dset, V, VC, qlog(V, T, nav)))
+        eps = block_eps([x[3] for x in sets], int(budget * 1024 / BPT))
+        for dset, V, VC, log in sets:
+            T = replay(log, eps)
             groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
-        if not g and pxs:
-            stats["px"] = max(pxs)
+        if not g:
+            stats["px"] = float(np.sqrt(eps) * FOCAL)
     recs, streams, ctab = [], bytearray(), []
     first = 0
     for ci in range(ncell):
@@ -373,9 +471,19 @@ def build(b):
         cmn, cmx = np.full(3, 1e9), np.full(3, -1e9)
         for V, col, T, tc, cfl in groups:
             sel = np.flatnonzero(tc == ci)
-            for s in range(0, len(sel), CHUNK_TRIS):
-                t = T[sel[s:s + CHUNK_TRIS]]
-                p = V[t].reshape(-1, 3)
+            for t in (idx_batches(T[sel]) if IDX else [T[sel[s:s + CHUNK_TRIS]] for s in range(0, len(sel), CHUNK_TRIS)]):
+                if IDX:  # the batch's distinct vertices in first-use order, padded to a multiple of 3 (vu1mapi)
+                    u, first_use, inv = np.unique(t.reshape(-1), return_index=True, return_inverse=True)
+                    order = np.argsort(first_use, kind="stable")
+                    rank = np.empty(len(u), np.int64)
+                    rank[order] = np.arange(len(u))
+                    vs = u[order]
+                    nv = -(-len(vs) // 3) * 3
+                    vs = np.concatenate([vs, np.repeat(vs[-1:], nv - len(vs))])
+                    tri = rank[inv.reshape(-1)].reshape(-1, 3)
+                else:
+                    vs = t.reshape(-1)
+                p = V[vs]
                 mn, mx = p.min(0), p.max(0)
                 org = (mn + mx) / 2
                 ext = np.abs(p - org).max()
@@ -385,9 +493,16 @@ def build(b):
                 pq = qp.astype(np.float64) * step + org  # the box of what is drawn
                 mn, mx = pq.min(0), pq.max(0)
                 cmn, cmx = np.minimum(cmn, mn), np.maximum(cmx, mx)
-                c4 = np.concatenate([col[t.reshape(-1)], np.full((len(p), 1), 0x80, np.uint8)], 1)
-                pk, offs = chunk_streams(len(t), qp.tobytes(), c4.tobytes())
-                recs.append((cfl, len(t), len(streams), offs, mn, mx, org, step))
+                c4 = np.concatenate([col[vs], np.full((len(p), 1), 0x80, np.uint8)], 1)
+                if IDX:
+                    ix = np.zeros((len(t), 4), np.uint8)
+                    ix[:, :3] = tri
+                    pk, offs = idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
+                    ntw = len(t) | nv << 16
+                else:
+                    pk, offs = chunk_streams(len(t), qp.tobytes(), c4.tobytes())
+                    ntw = len(t)
+                recs.append((cfl, ntw, len(streams), offs, mn, mx, org, step))
                 streams += pk
                 nchk += 1
                 flags |= 2 if cfl & CHUNK_BACKDROP else 0
