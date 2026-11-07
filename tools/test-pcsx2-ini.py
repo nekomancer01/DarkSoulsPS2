@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Data dir for one headless test PCSX2 (tools/pcsx2-run.sh PINE=<slot>): <data>/PCSX2/inis/PCSX2.ini = the user's PCSX2.ini
-with PINE on <slot>, the BIOS folder pointing at the user's, a GS-dump hotkey and no confirmation dialogs.
+with PINE on <slot>, the BIOS folder pointing at the user's, a GS-dump hotkey, no confirmation dialogs and the sound muted.
   test-pcsx2-ini.py <user PCSX2 config dir> <data dir> <slot>"""
 import os, sys
 
@@ -10,6 +10,10 @@ SET = {
     # tools/test-run.py presses these on the Xvfb display (xdotool): single-frame GS dump / screenshot into <data>/PCSX2/snaps
     "Hotkeys": {"GSDumpSingleFrame": "Keyboard/F8", "Screenshot": "Keyboard/F9"},
     "Folders": {"Bios": None},
+    # Test runs are silent (user request 2026-10-31, again 2026-11-07): the launchers send the sound to the null sink
+    # dsr_mute, and PCSX2's own mute is on too, so a stream that falls back to the speakers (the null sink unloaded
+    # or missing, a PipeWire restart) stays silent. Same backend and sync mode as the user's, so timing is unchanged.
+    "SPU2/Output": {"OutputMuted": "true"},
 }
 
 # PCSX2_GS="key=value,..." (A/B runs of display / upscaling settings): extra [EmuCore/GS] keys for this instance only,
