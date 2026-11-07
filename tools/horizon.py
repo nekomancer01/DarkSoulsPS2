@@ -30,9 +30,12 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
   per cell (32 B): f32 box min[3], max[3] (its horizon chunks); u16 first chunk, chunk count; u32 flags: bit 0 the
                    cell has chunks the horizon stands for (even if they simplified to nothing), bit 1 it has backdrop
                    chunks
-  chunk records (64 B, map.c Chunk): tex -1, flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop), tris, pos / st / col offsets, box, org, step
+  chunk records (64 B, map.c Chunk): tex -1, flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop | draw-group set
+                   << 16: dg.bin piece mask index, 0 = always drawn), tris, pos / st / col offsets, box, org, step
   streams: per chunk one VIF packet (chunk_streams: pos s16x3, colour u8x4; no st)
-Env: HZN=0 writes an empty file (the old drawing); HZN_PX, HZN_KB, HZN_D, HZN_WELD."""
+Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
+map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
+Env: HZN=0 writes an empty file (the old drawing); HZN_PX, HZN_KB, HZN_D, HZN_WELD, HZN_DG."""
 import os
 import struct
 import sys
@@ -104,7 +107,8 @@ def coarse_tris(b):
     ncell = struct.unpack_from("<I", b, cell_off)[0]
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
-    Ps, Cs, Ks, Bs, cov = [], [], [], [], set()
+    Ps, Cs, Ks, Bs, Ds, cov = [], [], [], [], [], set()
+    cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
         if ce[8] & 0x80000000:  # a later near part (no resident chunks)
             continue
@@ -153,9 +157,25 @@ def coarse_tris(b):
             Cs.append(np.minimum(255.0, rgb * col / 128.0).reshape(-1, 3, 3))
             Ks.append(opaque)
             Bs.append(np.full(ntri, bool(fl & CHUNK_BACKDROP)))
+            Ds.append(np.full(ntri, cdg[j] if j < len(cdg) else 0, np.int64))
     if not Ps:
-        return np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), np.zeros(0, bool), np.zeros(0, bool), cells, cov
-    return np.concatenate(Ps), np.concatenate(Cs), np.concatenate(Ks), np.concatenate(Bs), cells, cov
+        z = np.zeros(0, bool)
+        return np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), z, z, np.zeros(0, np.int64), cells, cov
+    return (np.concatenate(Ps), np.concatenate(Cs), np.concatenate(Ks), np.concatenate(Bs), np.concatenate(Ds), cells,
+            cov)
+
+
+def chunk_dg(b, nch):
+    """draw-group set per resident chunk (dg.bin next to map.bin, written by the same export: piece mask index per
+    chunk in bump.bin's order, resident chunks first); all 0 (always shown) without one or with HZN_DG=0"""
+    path = os.path.join(os.path.dirname(os.path.abspath(SRC[0])), "dg.bin") if SRC else ""
+    if os.environ.get("HZN_DG", "1") != "1" or not path or not os.path.exists(path):
+        return np.zeros(nch, np.int64)
+    d = open(path, "rb").read()
+    _mg, P, C, N = struct.unpack_from("<4I", d, 0)
+    if N < nch:
+        return np.zeros(nch, np.int64)
+    return np.frombuffer(d, np.uint8, nch, 32 + 16 * (P + C)).astype(np.int64)
 
 
 def nav_points(b):
@@ -296,10 +316,26 @@ def chunk_streams(ntri, pos, col):
     return out, offs if ST else [offs[0], offs[0], offs[1]]
 
 
+def _place(V, VC, T, lo, hi, cfl):
+    """triangles to cells (the box holding the centroid, else the nearest box), Z-curve order inside a cell"""
+    cen = V[T].mean(1) if len(T) else np.zeros((0, 3))
+    tc = np.zeros(len(T), np.int64)
+    for s in range(0, len(T), 4096):
+        c = cen[s:s + 4096, None, :]
+        dd = np.maximum(0, np.maximum(lo[None] - c, c - hi[None]))
+        tc[s:s + 4096] = (dd * dd).sum(2).argmin(1)
+    glo = cen.min(0) if len(cen) else np.zeros(3)
+    order = np.lexsort((zkey(cen, glo, 4.0), tc)) if len(T) else np.zeros(0, np.int64)
+    return V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T[order], tc[order], cfl
+
+
+SRC = []
+
+
 def build(b):
     """-> (hzn.bin bytes, stats dict)"""
     assert b[:4] == b"DSM5", "horizon: not a DSM5 map.bin"
-    P, C, keep, bd, cells, cov = coarse_tris(b)
+    P, C, keep, bd, dg, cells, cov = coarse_tris(b)
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)
@@ -309,27 +345,27 @@ def build(b):
     lo[part], hi[part] = 1e9, 1e9 + 1  # later near parts hold no resident chunks
     # two meshes: the map, and the far backdrop (export_map BACKDROP: map.c never distance culls it, so its horizon
     # chunks keep CHUNK_BACKDROP); the backdrop is small and already coarse, so only the map counts against KB
-    groups, stats = [None, None], dict(opaque=0, clustered=0, px=PX)
+    # one mesh per draw-group set (dg.bin: map.c draws a horizon chunk only while the floor's groups show its set):
+    # merged into one surface, a cell's stand-ins and the detail they stand in for, Firelink's views of the Burg and the
+    # Burg itself, drew all at once, spiky and purple, wherever the horizon was used (Ame's ISO report, 2026-11-07)
+    groups, stats = [], dict(opaque=0, clustered=0, px=PX)
     left = KB
     for g in (1, 0):  # the backdrop first, at most BD_SHARE of the budget; the map gets the rest
-        sel = keep & (bd == bool(g))
-        V, VC, T = cluster(P[sel], C[sel], nav, PX)
-        stats["opaque"] += int(sel.sum())
-        stats["clustered"] += len(T)
-        T, px = simplify(V, T, nav, PX, left * BD_SHARE if g else left)
-        left -= len(T) * BPT / 1024.0
-        if not g:
-            stats["px"] = px
-        cen = V[T].mean(1) if len(T) else np.zeros((0, 3))
-        tc = np.zeros(len(T), np.int64)  # cell: the box holding the centroid, else the nearest box
-        for s in range(0, len(T), 4096):
-            c = cen[s:s + 4096, None, :]
-            dd = np.maximum(0, np.maximum(lo[None] - c, c - hi[None]))
-            tc[s:s + 4096] = (dd * dd).sum(2).argmin(1)
-        glo = cen.min(0) if len(cen) else np.zeros(3)
-        order = np.lexsort((zkey(cen, glo, 4.0), tc)) if len(T) else np.zeros(0, np.int64)
-        groups[g] = (V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T[order], tc[order],
-                     CHUNK_HZN | (CHUNK_BACKDROP if g else 0))
+        selg = keep & (bd == bool(g))
+        budget = left * BD_SHARE if g else left
+        tot = max(1, int(selg.sum()))
+        pxs = []
+        for dset in np.unique(dg[selg]):
+            sel = selg & (dg == dset)
+            V, VC, T = cluster(P[sel], C[sel], nav, PX)
+            stats["opaque"] += int(sel.sum())
+            stats["clustered"] += len(T)
+            T, px = simplify(V, T, nav, PX, budget * sel.sum() / tot)  # the budget shared by triangle count
+            left -= len(T) * BPT / 1024.0
+            pxs.append(px)
+            groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
+        if not g and pxs:
+            stats["px"] = max(pxs)
     recs, streams, ctab = [], bytearray(), []
     first = 0
     for ci in range(ncell):
@@ -370,7 +406,8 @@ def build(b):
     out.extend(b"\0" * (-len(out) % 16))
     struct.pack_into("<I", out, 12, len(out))
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
-              tris=sum(len(g[2]) for g in groups), bd_tris=len(groups[1][2]), chunks=nchunks, bytes=len(out),
+              tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
+              sets=len(groups), chunks=nchunks, bytes=len(out),
               px=stats["px"], covered=len(cov))
     return bytes(out), st
 
@@ -382,12 +419,13 @@ def main():
         open(dst, "wb").close()
         print(f"horizon: {src}: none ({'HZN=0' if not ON else 'not DSM5'})")
         return
+    SRC.append(src)
     out, st = build(b)
     with open(dst, "wb") as f:
         f.write(out)
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
           f"({st['tris_opaque']} opaque, {st['tris_welded']} clustered) -> {st['tris']} tris in {st['chunks']} chunks over "
-          f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
+          f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
 
 
 if __name__ == "__main__":
