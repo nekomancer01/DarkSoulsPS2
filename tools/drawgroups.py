@@ -14,7 +14,9 @@ files need no common order and a cropped area / block keeps working.
 
 dg.bin (little endian):
   u32 magic 'DGM3', piece masks P, collision masks C, chunks N, collision triangles T, placements E, switched
-      entities S, 0
+      entities S, area group A (the AA of mAA when the map is in an area load list: its maps share one draw-group
+      bit space and the runtime applies the mask of the part under the player to every block of the group; 0 = the
+      block's own sets only, the old files)
   P x u32[4]  distinct draw-group sets of the exported pieces / objects (index 0 = all-ones: shown always)
   C x u32[4]  distinct DrawGroups of the area's collision parts
   N x u8      piece mask per chunk, in bump.bin's global chunk order (resident chunks, then near chunks)
@@ -24,7 +26,7 @@ dg.bin (little endian):
   S x s32     entity ids of the pieces / objects events switch on / off (export_map.py EVENT_PARTS, TECH_DEBT event-5),
               ascending; DGM2 and older: none
   N x u8      per chunk: 1 + index into those ids, 0 = no switched part (padded to 4 bytes)"""
-import struct
+import glob, os, struct
 
 ALL = (0xFFFFFFFF,) * 4
 
@@ -35,7 +37,7 @@ class Table:
     split only where the runtime filter can tell them apart (Burg: 194 sets -> fewer chunk splits)."""
 
     def __init__(self):
-        self.masks, self.index, self.coll = [ALL], {}, None
+        self.masks, self.index, self.coll, self.area = [ALL], {}, None, 0
 
     def collisions(self, cmasks):
         self.coll = sorted({tuple(c) for c in cmasks})
@@ -49,6 +51,38 @@ class Table:
             self.index[key] = len(self.masks)
             self.masks.append(g)  # any member decides the same for every collision of the area
         return self.index[key]
+
+
+def _arealoadlists(game):
+    import worldgraph
+    return [[m for _, m, _ in worldgraph.loadlist(p) if m] for p in sorted(glob.glob(f"{game}/map/*/*.arealoadlist"))]
+
+
+def area_group(game, map_id):
+    """AA of map_id when an area load list keeps it resident with other maps (m10_01_00_00 -> 10), else 0 (DG_GROUPS=0:
+    always 0)"""
+    if os.environ.get("DG_GROUPS", "1") != "1":
+        return 0
+    return int(map_id[1:3]) if any(map_id in a and len(a) > 1 for a in _arealoadlists(game)) else 0
+
+
+def group_collisions(game, map_id, M, reg_coll):
+    """DrawGroups of the collision parts a piece of map_id can be seen from: the region's own (reg_coll: names in M),
+    and with an area group every collision of every map of its area load list (another block of the same MSB, Firelink
+    from the Burg)"""
+    out = [p["draw_groups"] for p in M["parts"] if p["type"] == 5 and p["name"] in reg_coll]
+    if not area_group(game, map_id):
+        return out
+    import souls
+    for a in _arealoadlists(game):
+        if map_id not in a:
+            continue
+        for m in a:
+            path = f"{game}/map/MapStudio/{m}.msb"
+            if os.path.exists(path):
+                Mm = M if m == map_id else souls.msb1(souls.read(path))
+                out += [p["draw_groups"] for p in Mm["parts"] if p["type"] == 5]
+    return out
 
 
 def write(path, table, chunk_dg, M, coll_subs, chunk_ent=None):
@@ -66,7 +100,8 @@ def write(path, table, chunk_dg, M, coll_subs, chunk_ent=None):
     chars = [(p["pos"], table.add(p["draw_groups"])) for p in M["parts"] if p["type"] == 2]
     ents = sorted({e for e in chunk_ent or () if e})
     assert len(table.masks) < 256 and len(cmasks) < 256 and len(ents) < 256, "dg.bin indices are u8"
-    b = struct.pack("<8I", 0x334D4744, len(table.masks), len(cmasks), len(chunk_dg), len(tri), len(chars), len(ents), 0)
+    b = struct.pack("<8I", 0x334D4744, len(table.masks), len(cmasks), len(chunk_dg), len(tri), len(chars), len(ents),
+                    table.area)
     b += b"".join(struct.pack("<4I", *g) for g in table.masks)
     b += b"".join(struct.pack("<4I", *g) for g in cmasks)
     b += bytes(chunk_dg) + bytes(tri)

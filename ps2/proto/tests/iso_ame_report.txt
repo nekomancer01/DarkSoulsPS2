@@ -1,0 +1,56 @@
+# Ame's play report 2026-11-07 (ISO, main 35f2b0e) as a script: a save loaded at the Burg bonfire, a walk in the Burg,
+# Firelink, back up the aqueduct through the doorway into the Burg start and down to the first stairs. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_ame_report.txt <out> --iso build/proto.iso --timeout 900
+# Shots: load_* (a spawn in the Burg with Firelink never stood on), doorway_* (the Firelink -> Burg seam), lod_* (the
+# Burg start, near level wanted), burg_* (the stairs where block m10_01_00_00_b turns on).
+option hud
+option god
+option nodemo
+spawn -16.0 -13.4 -68.1 1.6
+wait 4
+shot load_bonfire
+stats
+cam 2.4 0.1
+wait 1
+shot load_turn
+approach -22.1,-62.2 1.0 1
+approach -26.2,-58.0 1.0 1
+wait 1
+shot load_walk
+stats
+spawn -47.4 -59.8 53.3 0
+wait 6
+shot firelink
+stats
+spawn -18.0 -39.0 16.0 3.6
+wait 4
+# the walker falls off the aqueduct between Firelink and here: the rest of the way up is a spawn (blocks stay on)
+spawn -31.2 -31.0 3.0 3.9
+wait 3
+approach -36.1,-0.9 1.0 1
+shot doorway_a
+approach -43.1,-4.0 1.0 1
+shot doorway_b
+# the walker does not get through the doorway (TECH_DEBT: the Burg start doorway blocks it): into the Burg by a spawn
+spawn -51.0 -31.0 -13.0 4.1
+wait 3
+approach -54.8,-15.1 1.0 1
+approach -60.2,-16.8 1.0 1
+approach -66.2,-20.5 1.0 1
+shot lod_a
+approach -63.1,-25.4 1.0 1
+approach -57.6,-27.1 1.0 1
+shot lod_b
+approach -51.8,-27.0 1.0 1
+approach -49.4,-37.7 1.0 1
+shot lod_c
+stats
+approach -45.4,-35.3 1.0 1
+approach -40.3,-39.2 1.0 1
+approach -37.2,-43.4 1.0 1
+shot burg_a
+wait 3
+shot burg_b
+wait 3
+shot burg_c
+stats

@@ -1430,7 +1430,13 @@ def gather(game, map_id):
     keep = area_mod.region(M, map_id)
     vis = area_mod.visible_groups(msb, M, map_id, {s["part"] for s in export_collision.area_collision(game, map_id)[0]})
     reg_coll = {s["part"] for s in export_collision.area_collision(game, map_id)[0]}
-    DG.collisions([p["draw_groups"] for p in M["parts"] if p["type"] == 5 and p["name"] in reg_coll])  # dg.bin
+    # dg.bin: DSR compares a piece's draw groups with those of the collision part under the player in whichever map
+    # that part belongs to (one bit space for the maps an area load list keeps resident together: m10_00 / _01 / _02;
+    # Burg collisions show 41-63 of Firelink's 67 pieces near the aqueduct, none deep inside). Pieces are merged into
+    # sets over every collision of those maps, so a set decides alike from another block's floor too (DG_GROUPS=0: the
+    # region's own collisions only, the old per-block sets)
+    DG.collisions(drawgroups.group_collisions(game, map_id, M, reg_coll))
+    DG.area = drawgroups.area_group(game, map_id)
     in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
     map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
