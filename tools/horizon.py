@@ -89,11 +89,12 @@ IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324
 # bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
 # ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
 BPT = 19 if IDX else 36
-# simplifier (HZN_SIMP): "meshopt", the default: a light weld (WELD_FR of the error's grid), then meshoptimizer's
+# simplifier (HZN_SIMP): "auto", the default: meshopt, or qem where meshopt only fits the budget at a coarser error
+# (build: per block, backdrop and map apart); "meshopt": a light weld (WELD_FR of the error's grid), then meshoptimizer's
 # attribute-aware edge collapse (tools/native/meshopt, MIT) in distance bands (mo_simplify); "qem": the old path, the
 # weld at the full error then tools/native/simplify.c. Grid clustering at the full error welded unrelated surfaces into
 # slivers and the collapse kept long thin fans: the spiky far shapes of Ame's report (2026-11-07)
-SIMP = os.environ.get("HZN_SIMP", "meshopt")
+SIMP = os.environ.get("HZN_SIMP", "auto")
 WELD_FR = float(os.environ.get("HZN_WELD_FR", 0.25))  # weld grid / error grid (ASSUMED: closes cracks under 1/4 the error)
 # colour weight: a baked colour step of 1/CW of full range counts as much as the band's allowed position error (ASSUMED)
 CW = float(os.environ.get("HZN_CW", 4.0))
@@ -633,25 +634,27 @@ def build(b):
         stats["hidden"] = int((~vis).sum())
         keep = keep.copy()
         keep[np.flatnonzero(keep)[~vis]] = False
-    mo = SIMP == "meshopt" and _meshopt() is not None
+    mo = SIMP in ("auto", "meshopt") and _meshopt() is not None
     tex_on = TEX and _native_ok("libhzbake")
+    used = []
     for g in (1, 0):  # the backdrop (BD_KB), then the map (KB; the texture pages come out of it)
         selg = keep & (bd == bool(g))
         budget = BD_KB if g else KB - (TEX_PAGES * TEX_PAGE_KB if tex_on else 0)
-        bpt = TEX_BPT if tex_on else BPT
+        cap = int(budget * 1024 / (TEX_BPT if tex_on else BPT))
+        flags = CHUNK_HZN | (CHUNK_BACKDROP if g else 0)
+        cand = []  # (px, method, [(set, V, VC, T, welded triangles)])
         if mo:
             raw = [(dset, selg & (dg == dset)) for dset in np.unique(dg[selg])]
-            cap = int(budget * 1024 / bpt)
 
             def run(px):
                 out = []
                 for dset, sel in raw:
                     V, VC, T = cluster(P[sel], C[sel], nav, px * WELD_FR)
-                    out.append((dset, V, VC, len(T), mo_simplify(V, VC, T, view_d(V, nav), px)))
+                    out.append((dset, V, VC, mo_simplify(V, VC, T, view_d(V, nav), px), len(T)))
                 return out
 
             def total(r):
-                return sum(len(x[4]) for x in r)
+                return sum(len(x[3]) for x in r)
             px, res = PX, run(PX)
             if total(res) > cap:  # the smallest error that fits (geometric search, ~2 % apart at the end)
                 plo, phi, res = PX, PX_MAX, run(PX_MAX)
@@ -664,26 +667,27 @@ def build(b):
                         else:
                             plo = mid
                 px = phi
-            for dset, V, VC, ncl, T in res:
-                stats["opaque"] += int((selg & (dg == dset)).sum())
-                stats["clustered"] += ncl
-                groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
-            if not g:
-                stats["px"] = float(px)
-            continue
-        sets = []
-        for dset in np.unique(dg[selg]):
-            sel = selg & (dg == dset)
-            V, VC, T = cluster(P[sel], C[sel], nav, PX)
-            stats["opaque"] += int(sel.sum())
-            stats["clustered"] += len(T)
-            sets.append((dset, V, VC, qlog(V, T, nav)))
-        eps = block_eps([x[3] for x in sets], int(budget * 1024 / bpt))
-        for dset, V, VC, log in sets:
-            T = replay(log, eps)
-            groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
+            cand.append((float(px), "meshopt", res))
+        if not mo or cand[0][0] > PX * 1.01:
+            # meshoptimizer keeps the soup's borders and non-manifold vertices (it only collapses along a border), so a
+            # block of open pieces can stop far above the budget (Firelink: 32 px against the old path's 12.7, ISO A/B
+            # 2026-11-07); the old path welds them at the full error. HZN_SIMP=auto takes whichever fits finer
+            sets = []
+            for dset in np.unique(dg[selg]):
+                sel = selg & (dg == dset)
+                V, VC, T = cluster(P[sel], C[sel], nav, PX)
+                sets.append((dset, V, VC, qlog(V, T, nav), len(T)))
+            eps = block_eps([x[3] for x in sets], cap)
+            cand.append((float(np.sqrt(eps) * FOCAL), "qem", [(d, V, VC, replay(L, eps), n) for d, V, VC, L, n in sets]))
+        px, method, res = min(cand, key=lambda c: (round(c[0], 3), c[1] != "meshopt"))
+        used.append(("bd " if g else "") + method)
+        for dset, V, VC, T, ncl in res:
+            stats["opaque"] += int((selg & (dg == dset)).sum())
+            stats["clustered"] += ncl
+            groups.append(_place(V, VC, T, lo, hi, flags | int(dset) << 16))
         if not g:
-            stats["px"] = float(np.sqrt(eps) * FOCAL)
+            stats["px"] = px
+            stats["px_alt"] = ", ".join(f"{m} {p:.1f}" for p, m, _ in cand)
     pages, tst = [], dict(pages=0, rho=0.0, texels=0, found=0.0, charts=0, flat=0)
     if tex_on and groups:
         r = __import__("hzntex").texture(groups, TEX_PAGES, bake_fn(P, keep))
@@ -764,7 +768,8 @@ def build(b):
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
               tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
               sets=len(groups), chunks=nchunks, bytes=len(out),
-              px=stats["px"], covered=len(cov), hidden=stats["hidden"], simp="meshopt" if mo else "qem", tex=tst)
+              px=stats["px"], covered=len(cov), hidden=stats["hidden"], tex=tst,
+              simp="/".join(used) + (f" [{stats['px_alt']}]" if stats.get("px_alt") else ""))
     return bytes(out), st
 
 
@@ -781,7 +786,8 @@ def main():
         f.write(out)
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
           f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
-          f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
+          f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m" + (f", {st['tex']['pages']} pages at {st['tex']['rho']:.2f} texels/m ({st['tex']['charts']} charts, "
+             f"{st['tex']['flat']} flat, {100 * st['tex']['found']:.0f} % found)" if st['tex']['pages'] else ", untextured"))
 
 
 if __name__ == "__main__":
