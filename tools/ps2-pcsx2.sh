@@ -36,7 +36,7 @@ HOSTFS=${HOSTFS:-$((1 - ISO))}
 STATE=; [ "$MODE" = state ] && { STATE=$(realpath "$1"); shift; }
 T=${1:-10}; SHOT=$2
 
-# Config: the user's ini with HostFs set, console logging on, no confirmation dialogs; BIOS copied once.
+# Config: the user's ini with HostFs set, console logging on, no confirmation dialogs, sound muted; BIOS copied once.
 CFGROOT=${DSR_PCSX2_CFG:-$HOME/tools/pcsx2-cfg}/$([ "$HOSTFS" = 1 ] && echo hostfs || echo nohostfs)
 C=$CFGROOT/PCSX2
 mkdir -p "$C/inis" "$C/bios" "$C/logs" "$C/sstates" "$C/memcards"
@@ -49,7 +49,8 @@ want = {'EmuCore': {'HostFs': 'true' if hostfs == '1' else 'false', 'EnableFastB
                      'PINESlot': sys.argv[4]},
         'Logging': {'EnableFileLogging': 'true', 'EnableEEConsole': 'true', 'EnableIOPConsole': 'true'},
         'UI': {'ConfirmShutdown': 'false', 'SetupWizardIncomplete': 'false', 'StartFullscreen': 'false'},
-        'MemoryCards': {'Slot1_Filename': 'Mcd001.ps2', 'Slot2_Enable': 'false'}}
+        'MemoryCards': {'Slot1_Filename': 'Mcd001.ps2', 'Slot2_Enable': 'false'},
+        'SPU2/Output': {'OutputMuted': 'true'}}  # silent even if the stream misses the null sink dsr_mute
 out, sec, seen = [], None, set()
 def flush(sec):
     for k, v in want.get(sec, {}).items():
