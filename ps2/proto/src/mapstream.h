@@ -28,6 +28,9 @@ void mapstream_select(int k);
  * chain reads (not used in the last two frames) until they fit; NULL if they cannot. The arena is allocated on the
  * first call if mapstream_update has not done it yet. */
 void *mapstream_alloc(unsigned n, const float pos[3]);
+/* as mapstream_alloc, but clears only items no class wants (kept / cut): never a cell the plan wants or one drawn.
+ * For optional data (world.c relief). NULL when there is no such room. */
+void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
 /* Heap left outside the arena beyond MS_RESERVE (call before the arena exists: world.c, for the enemy models of a
  * second block near a junction) */
@@ -58,7 +61,10 @@ int mapstream_reclaim(void *p, unsigned n);
 /* | cell: only foliage chunks (map.c CHUNK_GRASS), which map.c thins to nothing with distance: resident only near the
  * player (world streaming v2) */
 #define MS_RES_GRASS 0x08000000u
-#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS))  /* the cell of a cell item's tag */
+/* | cell: only chunks the cell's horizon stands for (map.c hz_covers, tools/horizon.py): map.c draws them only within
+ * HZN_R of the camera, so they are read and kept only within MS_R_HZN of the player (the horizon covers the rest) */
+#define MS_RES_LOD 0x04000000u
+#define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS | MS_RES_LOD))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
@@ -69,9 +75,10 @@ const unsigned char *mapstream_res(unsigned i);
  * they go */
 void mapstream_tex_hooks(unsigned (*tex_age)(int k, unsigned tag), void (*tex_set)(int k, unsigned tag, const void *p));
 /* Visibility (mapstream.c, src/pvs.c): vis(k, id) = 1 while any chunk of instance k's item id (ids: cells [0, n), then
- * the mapstream_res_open items) is seen from a camera cell near the camera, gen() changes whenever an answer may change
- * (map.c ms_pvs_vis / pvs_gen). Items unseen a while are neither read nor pinned. */
-void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void));
+ * the mapstream_res_open items) is seen from a camera cell near the camera, gen(k) changes whenever an answer for
+ * instance k may change (map.c ms_pvs_vis / pvs_gen). Items unseen a while are neither read nor pinned. The answers
+ * are refreshed a slice per frame (mapstream.c MS_VIS_SLICE_US). */
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(int k));
 /* world.c: while on, no new reads start (a block's lite set holds the async slot back to back) */
 void mapstream_hold(int on);
 /* world.c: the instance the player stands in; other instances' resident cells rank lower (mapstream.c MS_RES_OTHER) */

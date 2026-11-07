@@ -33,6 +33,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
 | `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
 | `export_collision.py` | collision.bin |
+| `navwalls.py` | Walls of one collision part that seal a doorway another part leaves open (navmesh crosses them onto another part's floor); export_collision.py drops them (NAVWALLS=0 keeps them). `navwalls.py <map>` lists them |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
 | `export_chr.py`, `export_enemies.py` | Enemy / NPC models, placements |
 | `export_objects.py` | Breakable objects (pots) |

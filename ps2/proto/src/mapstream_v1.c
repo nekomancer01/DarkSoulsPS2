@@ -418,7 +418,7 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     return 1;
 }
 
-void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(void)) { (void)vis, (void)gen; }
+void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(int k)) { (void)vis, (void)gen; }
 
 void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k, unsigned tag, const void *p))
 {
@@ -771,6 +771,16 @@ void mapstream_reserve(unsigned extra)
 {
     reserve_extra = extra;
 }
+
+/* v1 has no plan classes to spare: optional data takes room as mapstream_alloc does (v2: only unwanted items) */
+void *mapstream_alloc_soft(unsigned n)
+{
+    static const float none[3];
+    return mapstream_alloc(n, none);
+}
+
+/* hitch.c's arena line (v1: not counted) */
+void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb) { *free_kb = *run_kb = *other_kb = 0; }
 
 void mapstream_free(void *p, unsigned n)
 {

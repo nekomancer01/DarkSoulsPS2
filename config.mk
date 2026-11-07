@@ -31,7 +31,13 @@ ifeq ($(strip $(DSR_GAME)),)
 $(shell python3 -I $(DSR_ROOT)/tools/gamepath.py >&2)
 $(error Dark Souls Remastered not found; set DSR_GAME (see above and README.md))
 endif
+# (sub-makes of a make that already checked this copy skip the check: DSR_GAME_OK is exported to them)
+ifneq ($(DSR_GAME_OK),$(DSR_GAME))
 ifneq ($(shell python3 -I $(DSR_ROOT)/tools/verify_game.py "$(DSR_GAME)" >&2; echo $$?),0)
 $(error the game copy at "$(DSR_GAME)" failed tools/verify_game.py (see above))
 endif
+export DSR_GAME_OK := $(DSR_GAME)
 endif
+endif
+# found once: sub-makes take the same game folder instead of searching again
+export DSR_GAME

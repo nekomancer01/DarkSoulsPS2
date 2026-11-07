@@ -335,6 +335,53 @@ void tc_block_drop(int b)
     blk_n[b] = blk_clut_due[b] = blk_bump[b] = 0;
 }
 
+int tc_relief_pool(int pool_kb)
+{
+    if (!pool2_blk && pool_kb > 0) {
+        pool2_blk = pool_kb * 4 < POOL_MAX ? pool_kb * 4 : POOL_MAX;
+        pool2_vram = gsKit_vram_alloc(gsg, pool2_blk * 256, GSKIT_ALLOC_USERBUFFER);
+        if (pool2_vram == GSKIT_ALLOC_ERROR)
+            pool2_blk = 0;
+    }
+    return pool2_blk != 0;
+}
+
+int tc_base_bump(const unsigned char *base, const void *table, int n, int pool_kb)
+{
+    static int first = -1, nb;
+    if (first >= 0)
+        for (int i = first; i < first + nb; i++)  /* the old buffer's: forgotten, their pool blocks free */
+            te[i] = NULL, lv_reset(i);
+    if (!table || n <= 0)
+        return -1;
+    if (first < 0) {
+        first = tc_add(base, table, n, pool_kb);
+        nb = first >= 0 ? n : 0;
+        return first;
+    }
+    if (n != nb)
+        return -1;
+    for (int i = 0; i < n; i++) {  /* as tc_add's entries (normal maps have no CLUT of their own) */
+        const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
+        for (int l = 0; l < 2; l++) {
+            GSTEXTURE *t = &lv[first + i][l].t;
+            memset(t, 0, sizeof *t);
+            t->Width = e->w >> l;
+            t->Height = e->h >> l;
+            t->PSM = e->psm;
+            t->ClutPSM = e->cpsm;
+            t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
+            t->Filter = GS_FILTER_LINEAR;
+            t->Mem = (u32 *)(base + e->pix[l]);
+            lv[first + i][l].off = -1;
+            lv[first + i][l].last = 0;
+            lv[first + i][l].size = e->blocks[l];
+        }
+        lv_reset(first + i);
+    }
+    return first;
+}
+
 int tc_block_bump(int b, const unsigned char *base, const void *table, int n)
 {
     if (b < 0 || b >= TC_BLOCKS)

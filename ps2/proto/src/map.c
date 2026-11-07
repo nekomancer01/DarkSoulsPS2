@@ -10,6 +10,7 @@
 #include "bump.h"
 #include "fx.h"
 #include "mapstream.h"
+#include "hitch.h"
 #include "drawgrp.h"
 #include "pvs.h"
 #include "pack.h"
@@ -62,6 +63,22 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #define CHUNK_COARSE 64
 #define CHUNK_BACKDROP 128  /* far background (exporter: far-only cells beyond STREAM_FAR of the navmesh): one resident
                              * level, never distance / subpixel culled, so its silhouette has no holes and never pops */
+/* Horizon (resident far backdrop, tools/horizon.py appended to a world block's maptab.bin): per cell a very coarse
+ * untextured level, loaded with the block. A cell beyond HZN_R (+- HZN_HYST) of the camera draws it in place of its
+ * coarse level and kept opaque meshes (hz_covers), and so does a nearer cell whose coarse level is not in yet: a late
+ * read shows a blurrier cell, not a hole. mapstream.c reads those chunks only within MS_R_HZN (64 m) of the player's
+ * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 56 m (horizon.py judges its error from 54 m).
+ * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
+#ifndef HZN_R
+#define HZN_R 56.0f
+#endif
+#define HZN_HYST 2.0f
+#define CHUNK_HZN 256
+#define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
+#define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
+/* horizon.py, 32 B; flags bit 0: the cell has chunks it stands for (its horizon may have simplified to nothing),
+ * bit 1: some of its chunks come from the backdrop (CHUNK_BACKDROP: never distance culled) */
+typedef struct { float mn[3], mx[3]; unsigned short first, count; unsigned flags; } HzCell;
 #define NEAR_HYST 2.0f  /* m: a cell switches to its near level inside NEAR_DRAW_R - NEAR_HYST, back beyond + NEAR_HYST
                          * (no flipping near <-> coarse while the camera hovers at the radius) */
 #ifndef NEAR_DRAW_R
@@ -110,7 +127,10 @@ typedef struct {
     unsigned short first, count, flags;  /* flags: CHUNK_BLEND / CHUNK_BACKDROP if any */
     unsigned char near_on;               /* DSM5: drawing the near level (NEAR_DRAW_R with NEAR_HYST hysteresis) */
     unsigned char waiting;               /* pop-in metric: in view inside the near radius, drawn coarse (not in yet) */
+    unsigned char hz_on;                 /* beyond HZN_R (with HZN_HYST hysteresis): its horizon stands for it */
     unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
+    unsigned char lv, lv_prev;           /* hitch.c: level drawn (1 hole, 2 horizon, 3 coarse, 4 near), the one before */
+    unsigned short lv_seen, lv_fr;       /* the draw it was last in view, the draw its level last changed */
 } Cell;
 /* Pop-in (streaming A/B, 2026-11-06): a cell in view whose near level is due (near_on) but not in draws its coarse
  * level; once the near level arrives while the cell is still in view, the swap is seen: a pop. map_draw counts them
@@ -146,6 +166,10 @@ typedef struct {
     unsigned nritem;
     int on, col_block;
     int pkt;  /* VU1_PKT: the chunk streams are VIF packets (DSM5 cell table flags bit 0, export_map.py CELLS_VIFPKT) */
+    /* horizon (HZN_R): per cell table entry its box and chunks, the chunk records, the base their offsets add to */
+    const HzCell *hz_cell;
+    const Chunk *hz_chunk;
+    const unsigned char *hz_base;
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
 
@@ -184,6 +208,29 @@ static void fog_ease(float rate)
         fog_now[i] += (t[i] - fog_now[i]) * rate;
 }
 
+/* the horizon section the DSM5 cell table header points at (words 2 / 3: offset, bytes; tools/mapsplit.py), if any */
+static void hz_parse(MapInst *m)
+{
+    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
+#ifndef HZN_OFF
+    if (!m->ctab)
+        return;
+    const unsigned *ch = (const unsigned *)(m->map_bin + m->hdr->cell_off);
+    if (!ch[2] || ch[3] < 16)
+        return;
+    const unsigned char *b = m->map_bin + ch[2];
+    const unsigned *h = (const unsigned *)b;
+    if (memcmp(b, "HZN1", 4) || h[2] != m->nctab || h[3] != ch[3] || ((unsigned)b & 15)) {
+        printf("map: horizon section does not match the cell table (ignored)\n");
+        return;
+    }
+    m->hz_cell = (const HzCell *)(b + 16);
+    m->hz_chunk = (const Chunk *)(b + 16 + 32 * m->nctab);
+    m->hz_base = b;
+    printf("map: horizon %u chunks, %u KB\n", h[1], ch[3] >> 10);
+#endif
+}
+
 int map_init(const void *blob)
 {
     if (!blob)
@@ -212,6 +259,7 @@ int map_init(const void *blob)
     m->navv = (const float *)(map_bin + hdr->navv_off);
     m->navt = (const unsigned short *)(map_bin + hdr->navt_off);
     m->streams = map_bin, m->tex_base = 0;
+    hz_parse(m);
     return 1;
 }
 
@@ -572,6 +620,27 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
     return n;
 }
 
+/* a horizon chunk (untextured, double-sided, its packet without st: vu1.c VU1_FLAT). The clipping program (VU1_CLIP)
+ * gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2 2 s into the Burg on the
+ * first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
+static int draw_hz(const MapInst *m, const Chunk *c, int cls)
+{
+    static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
+    float zmax;
+    box_depth(c, cam, &zmax, NULL);
+    if (c->tris > CHUNK_HZN_TRIS)
+        return 0;
+    int edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;
+    if (cls == 2)
+        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | VU1_CLIP, c->tris, m->hz_base + c->pos, zero_st, m->hz_base + c->col,
+                   c->org, 4096.0f);
+    else
+        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | edge | VU1_PKT, c->tris, m->hz_base + c->pos, m->hz_base + c->st,
+                   m->hz_base + c->col, c->org, 4096.0f);
+    map_vu1_batches++;
+    return c->tris;
+}
+
 /* index sort key: cell, then texture inside a cell (so neighbours share TEX0 / CLUT), then chunk number */
 static int cell_key_cmp(const void *a, const void *b)
 {
@@ -612,7 +681,7 @@ static void build_index(MapInst *mi)
         for (unsigned i = 0; i < mi->nctab; i++) {
             Cell *ce = &cells[ncells++];
             memcpy(ce->mn, ctab[i].mn, sizeof ce->mn), memcpy(ce->mx, ctab[i].mx, sizeof ce->mx);
-            ce->first = ctab[i].first, ce->count = ctab[i].count, ce->flags = 0, ce->near_on = 0;
+            ce->first = ctab[i].first, ce->count = ctab[i].count, ce->flags = 0, ce->near_on = 0, ce->hz_on = 0;
             for (unsigned j = ce->first; j < ce->first + ce->count; j++)
                 order[j] = j, ce->flags |= chunks[j].flags & (CHUNK_BLEND | CHUNK_BACKDROP);
         }
@@ -695,6 +764,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->navv = (const float *)(map_bin + hdr->navv_off);
     m->navt = (const unsigned short *)(map_bin + hdr->navt_off);
     m->streams = res, m->res_cells = 0, m->citem = NULL;
+    hz_parse(m);
     m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
     m->on = 1, m->col_block = col_block;
     if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
@@ -729,7 +799,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
 
 void map_block_bump(int k, const void *blob)
 {
-    if (k <= 0 || k >= MAP_INST || !inst[k].on)
+    if (k < 0 || k >= MAP_INST || (k && !inst[k].on) || !inst[k].hdr)  /* (0: the boot block, world.c) */
         return;
     int on = bump_block(k, blob, inst[k].hdr->chunks);
     if (blob)
@@ -754,6 +824,7 @@ void map_block_drop(int k)
     free(m->citem), free(m->rrange);
     m->rrange = NULL, m->nritem = 0;
     m->hdr = NULL, m->ctab = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
+    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
     m->on = 0;
     mapstream_select(0);
 }
@@ -829,14 +900,14 @@ static void res_open(int k, const void *pack)
             while (g < e && (chunks[g].flags & (CHUNK_COARSE | CHUNK_GRASS)) == coarse &&
                    (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
                 hi = h2 > hi ? h2 : hi, g++;
-            unsigned far = 0;
+            unsigned far = 0, cov = i < nctab && mi->hz_cell && (mi->hz_cell[i].flags & 1);
             for (unsigned c = j; c < g; c++)
-                citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP;
+                citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP, cov &= hz_covers(chunks[c].flags);
             rr[m][0] = j, rr[m][1] = i < nctab ? g - j : 0, rr[m][2] = i;
             it[m++] = (MapResItem){roff + lo, lo, hi - lo,
                                    i < nctab ? i | (far ? MS_RES_FAR : 0) |
                                                    ((coarse & CHUNK_COARSE) && ctab[i].near ? MS_RES_COARSE : 0) |
-                                                   (coarse & CHUNK_GRASS ? MS_RES_GRASS : 0)
+                                                   (coarse & CHUNK_GRASS ? MS_RES_GRASS : 0) | (cov ? MS_RES_LOD : 0)
                                              : MS_RES_SKY};
             bad |= hi > rsize;
             j = g;
@@ -985,6 +1056,7 @@ int map_draw(V3 eye)
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
+    unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
     unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
     float pop_d = 1e9f;
     pop_fr++;
@@ -1008,6 +1080,15 @@ int map_draw(V3 eye)
              * cell cut dropped whole far-only cells beyond 250 m: the sky holes and floating wall tops of map-39) */
             Chunk cb = {.flags = ce->flags & CHUNK_BACKDROP, .mn = {ce->mn[0], ce->mn[1], ce->mn[2]},
                         .mx = {ce->mx[0], ce->mx[1], ce->mx[2]}};  /* designated: Chunk's scalar fields change */
+            /* the cell's horizon (HZN_R): its triangles went to the cell by centroid and may reach past its box */
+            const HzCell *hc = m->hz_cell && ctab && !(ctab[ci].near & CELL_PART) && (m->hz_cell[ci].flags & 1)
+                                   ? &m->hz_cell[ci] : NULL;
+            if (hc && hc->count) {
+                cb.flags |= hc->flags & 2 ? CHUNK_BACKDROP : 0;
+                for (int a = 0; a < 3; a++)
+                    cb.mn[a] = hc->mn[a] < cb.mn[a] ? hc->mn[a] : cb.mn[a],
+                    cb.mx[a] = hc->mx[a] > cb.mx[a] ? hc->mx[a] : cb.mx[a];
+            }
             if (!visible(&cb, e, 0)) {
 #ifdef MAP_DBG
                 for (unsigned j = ce->first; j < ce->first + ce->count; j++)
@@ -1022,13 +1103,33 @@ int map_draw(V3 eye)
             const unsigned char *nb = NULL, *nbp[NEAR_PARTS] = {0};
             unsigned np = 1, nnear = 0;  /* the cell's near parts (export_map.py NEAR_PART), their chunks */
             int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
+            int mcov = 0;  /* ... of those the horizon stands for (hz_covers) */
             int nd = 0;    /* the near level is drawn (every part in, or unseen: pvs.c) */
-            for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++)
+            int hzf = 0;   /* beyond HZN_R: the horizon is drawn, the covered chunks are not even asked for */
+            if (hc) {
+                float d2 = 0;
+                for (int a = 0; a < 3; a++) {
+                    float o = e[a] < ce->mn[a] ? ce->mn[a] - e[a] : e[a] > ce->mx[a] ? e[a] - ce->mx[a] : 0;
+                    d2 += o * o;
+                }
+                float r = ce->hz_on ? HZN_R - HZN_HYST : HZN_R + HZN_HYST;
+                hzf = ce->hz_on = d2 > r * r;
+            }
+            for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++) {
+                unsigned fl = chunks[order[j]].flags;
+                if (hzf && hz_covers(fl))
+                    continue;
                 /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
                  * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
-                if (!res_base(m, order[j]) && !(chunks[order[j]].flags & CHUNK_GRASS) &&
-                    pvs_chunk(k, (unsigned)ci, order[j]))  /* a chunk the camera cannot see is not read (pvs.c) */
+                if (!res_base(m, order[j]) && !(fl & CHUNK_GRASS) &&
+                    pvs_chunk(k, (unsigned)ci, order[j])) {  /* a chunk the camera cannot see is not read (pvs.c) */
                     miss = 1;
+                    if (hz_covers(fl))
+                        mcov = 1;
+                    else if (hc)
+                        miss = 2;  /* not covered (with a horizon only blended effects are not): drawn late */
+                }
+            }
             if (ctab) {
                 float d2 = 0;
                 for (int k = 0; k < 3; k++) {
@@ -1071,12 +1172,32 @@ int map_draw(V3 eye)
                 for (unsigned p = 0; nd && p < np; p++)
                     nnear += ctab[ci + p].near & ~CELL_PART;
             }
-            holes += miss && !nd;
+            /* the horizon in place of the coarse level: far, or the coarse level not complete (never mixed) */
+            int use_hz = hc && !nd && (hzf || mcov);
+            {
+                /* with the horizon only blended effects (mist, light shafts) can be missing: late, but no hole */
+                unsigned h = use_hz ? 0 : miss && !nd && (!hc || mcov);
+                holes += h;
+                hole_nohz += h && !hc, hole_unc += hc && miss == 2 && !nd;  /* no horizon for the cell; effects late */
+                if (h && hole_ex[0] == ~0u)
+                    hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
+            }
+            hz_fill += use_hz && !hzf;
+            {  /* level-of-detail flips of a cell in view (hitch.c): near / coarse / horizon / hole */
+                unsigned char lv = nd ? 4 : use_hz ? 2 : miss && (!hc || mcov) ? 1 : 3;
+                if (ce->lv && lv != ce->lv && (unsigned short)(pop_fr - ce->lv_seen) == 1) {
+                    hitch_flip(k, (unsigned)ci, lv == ce->lv_prev && (unsigned short)(pop_fr - ce->lv_fr) <= HITCH_FLOP_FRAMES);
+                    ce->lv_prev = ce->lv, ce->lv_fr = pop_fr;
+                }
+                ce->lv = lv, ce->lv_seen = pop_fr;
+            }
             unsigned near_gid = nd ? ctab[ci].pad : 0;
             unsigned part = 0, part_end = nd ? ctab[ci].near : 0;  /* the near part of chunk j, its last index + 1 */
             for (unsigned j = m->streams || m->res_cells ? ce->first : ce->first + ce->count;
                  j < ce->first + ce->count + nnear; j++) {
                 int is_near = j >= (unsigned)ce->first + ce->count;
+                if (use_hz && !is_near && hz_covers(chunks[order[j]].flags))
+                    continue;  /* the horizon stands for it */
                 const unsigned char *rb = is_near ? NULL : res_base(m, order[j]);
                 if (!is_near && !rb)
                     continue;  /* its streams are not in */
@@ -1146,6 +1267,14 @@ int map_draw(V3 eye)
                 {
                     unsigned dn = draw_chunk(m, is_near ? nb : rb, c, n, cls, fog, is_near ? NEAR_NO(c, nb) : order[j]);
                     drawn += dn, k_drawn[k] += dn;
+                }
+            }
+            for (unsigned j = 0; use_hz && j < hc->count; j++) {  /* the horizon (no draw groups / pvs rows: merged) */
+                const Chunk *c = &m->hz_chunk[hc->first + j];
+                int cls = visible(c, e, 0);
+                if (cls) {
+                    unsigned dn = draw_hz(m, c, cls);
+                    drawn += dn, k_drawn[k] += dn, hz_tris += dn;
                 }
             }
         }
@@ -1224,9 +1353,13 @@ int map_draw(V3 eye)
     }
 #endif
     {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
-        static unsigned fr, worst, cut_max, pend_max, pops_s, wait_max;
+        static unsigned fr, worst, cut_max, pend_max, pops_s, wait_max, hzf_max, hzt_max, w_nohz, unc_max, w_k, w_ci;
         static float near_min = 1e9f;
-        worst = holes > worst ? holes : worst;
+        if (holes > worst)
+            worst = holes, w_nohz = hole_nohz, w_k = hole_ex[0], w_ci = hole_ex[1];
+        unc_max = hole_unc > unc_max ? hole_unc : unc_max;
+        hzf_max = hz_fill > hzf_max ? hz_fill : hzf_max;
+        hzt_max = hz_tris > hzt_max ? hz_tris : hzt_max;
         pend_max = pend > pend_max ? pend : pend_max;
         pops_s += pops, pop_total += pops;
         wait_max = pop_wait > wait_max ? pop_wait : wait_max;
@@ -1234,7 +1367,14 @@ int map_draw(V3 eye)
         cut_max = pvs_cut > cut_max ? pvs_cut : cut_max;
         if (!(++fr % 30)) {
             if (worst)
-                printf("map: cells missing %u (most in a frame over 1 s)\n", worst);
+                printf("map: cells missing %u (most in a frame over 1 s; %u without a horizon; e.g. cell %u.%u)\n", worst,
+                       w_nohz, w_k, w_ci);
+            if (unc_max)
+                printf("map: effects not in yet in %u cells (most in a frame over 1 s)\n", unc_max);
+            unc_max = 0;
+            if (hzf_max)  /* not holes: the horizon stood in for a coarse level not in yet, inside HZN_R */
+                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris\n", hzf_max, hzt_max);
+            hzf_max = hzt_max = 0;
             if (pops_s)
                 printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "
                        "near drawn coarse (most in a frame)\n", pops_s, wait_max, (double)near_min, pop_total, pend_max);

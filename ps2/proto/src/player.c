@@ -264,8 +264,13 @@ static void respawn(Player *p)
         bonfire_death(p);  /* bloodstain with the souls / humanity held */
     }
     p->deaths += died;  /* HUD: deaths so far (kill-plane respawns keep HP and do not count) */
+    V3 at = p->pos;
     if (!died || !bonfire_spawn(&p->pos, &p->yaw))  /* a death: the respawn point (last bonfire) */
         map_spawn(&p->pos, &p->yaw);
+    /* EE log (play-test reports): deaths and falls out of the world, where, and where the player comes back */
+    printf("player: %s at %.1f %.1f %.1f block %d, back at %.1f %.1f %.1f; deaths %d\n",
+           died ? "died" : "fell out of the world (kill plane)", at.x, at.y, at.z, world_current(), p->pos.x, p->pos.y,
+           p->pos.z, (int)p->deaths);
     p->hp = p->hp_max;
     p->state = ST_IDLE;
     p->airborne = 0;

@@ -47,6 +47,7 @@ typedef struct { unsigned short tex; unsigned char cluster, spread; } BumpChunk;
 #endif
 
 static GSGLOBAL *gsg;
+#define BUMP_CLUT_KB 96  /* the CLUT area when no set sizes it at boot (48 clusters x 2 levels, export_normal.py) */
 /* one relief set per map instance (map.c / src/world.c: 0 the boot area, k a world block while it is full) */
 typedef struct {
     const unsigned char *bin;
@@ -84,6 +85,8 @@ static int set_init(int k, const void *blob, unsigned chunks)
     b->on = 0;
     if (k)
         tc_block_bump(map_tex_slot(k), NULL, NULL, 0);  /* the old set's normal maps (blob gone with the block's streams) */
+    else
+        tc_base_bump(NULL, NULL, 0, 0);  /* the boot block's (streamed, world.c WORLD_BOOT_RELIEF) */
     b->bin = blob;
     b->bh = blob;
     const BumpHeader *bh = blob;
@@ -91,7 +94,7 @@ static int set_init(int k, const void *blob, unsigned chunks)
         return 0;
     b->bc = (const BumpChunk *)(b->bin + bh->chunk_off);
     b->tex0 = k ? tc_block_bump(map_tex_slot(k), b->bin, b->bin + bh->tex_off, bh->textures)
-                : tc_add(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
+                : tc_base_bump(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
     unsigned kb = bh->clusters * bh->levels;
     if (b->tex0 >= 0 && !clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= kb * 1024) {  /* the first set sizes it */
         clut_vram = gsKit_vram_alloc(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER);
@@ -116,12 +119,19 @@ static int set_init(int k, const void *blob, unsigned chunks)
 int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
 {
     gsg = gs;
+    if (!blob) {  /* streamed later (world.c): the relief pool and CLUT area now, where the resident set put them */
+        tc_relief_pool(BUMP_POOL_KB);
+        if (!clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= BUMP_CLUT_KB * 1024) {
+            clut_vram = gsKit_vram_alloc(gsg, BUMP_CLUT_KB * 1024, GSKIT_ALLOC_USERBUFFER);
+            clut_kb = clut_vram == GSKIT_ALLOC_ERROR ? 0 : BUMP_CLUT_KB;
+        }
+    }
     return set_init(0, blob, chunks);
 }
 
 int bump_block(int k, const void *blob, unsigned chunks)
 {
-    if (k <= 0 || k >= BUMP_INST || !gsg)
+    if (k < 0 || k >= BUMP_INST || !gsg)
         return 0;
     nitems = 0;  /* items of this frame may point into the old set (bump_draw runs after the map's batches) */
     return set_init(k, blob, chunks);

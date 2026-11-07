@@ -8,6 +8,11 @@
 #ifndef WORLD_H
 #define WORLD_H
 
+/* 1 (default): the boot block's relief streams like every block's (world.c), 0: resident from boot (main.c) */
+#ifndef WORLD_BOOT_RELIEF
+#define WORLD_BOOT_RELIEF 1
+#endif
+
 #include <gsKit.h>
 
 #define WORLD_MAX 8  /* blocks in world.bin */
