@@ -6,7 +6,11 @@
  * and map.c's level-of-detail flips (a cell in view changing between near / coarse / horizon / hole, and flip-flops:
  * back to the level it left within HITCH_FLOP_FRAMES). tools/hitchsum.py summarises the lines over a run (degradation
  * over time: the first against the last 10 minutes); tools/test-run.py gates on them (--hitch-max ...).
- * The line costs one printf per period; nothing else here prints. */
+ * The line costs one printf per period. Also on by default, for play-test reports (play-report.sh at the repo root):
+ * a "spike:" line for a single frame over HITCH_SPIKE_MS outside a loading screen (its section split and where the
+ * player stood; at most HITCH_SPIKES_MAX a period, the rest counted in the hitch line), and an "alloc:" line for a
+ * malloc / calloc / realloc / memalign that returned NULL (the linker wraps them: the first failure from each caller
+ * with its return address for addr2line on proto.sym.elf, then only counted). */
 #ifndef HITCH_H
 #define HITCH_H
 
@@ -54,12 +58,15 @@ void hitch_drop(int wanted, unsigned bytes);
 void hitch_flip(int k, unsigned ci, int flop);
 /* world.c: a block's lite set / relief read started (bytes) */
 void hitch_block_read(unsigned bytes);
+/* main.c, every frame: the player's position and world block (world_current) for the hitch / spike lines */
+void hitch_where(const float *pos, int block);
+
 /* the arena's free granules (256 B) and its largest run of free 64 KB pages (mapstream.c) */
 void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb);
 
 /* totals over the run (test gates) */
 typedef struct {
-    unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms;
+    unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms, allocfail;
 } HitchTotals;
 extern HitchTotals hitch_total;
 

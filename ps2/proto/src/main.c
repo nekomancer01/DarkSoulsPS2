@@ -486,6 +486,7 @@ int main(int argc, char **argv)
         unsigned now = cpu_ticks();
         float dt = (now - last) / 294912000.0f;
         float dt_real = dt;  /* test stats: the frame time before the clamps */
+        hitch_where(&pl.pos.x, world_current());  /* hitch / spike lines say where (src/hitch.c) */
         hitch_frame(dt_real);  /* the last pass of this loop, its sections (src/hitch.c) */
 #ifdef SLOW_FRAME_LOG  /* make EE_DBGINFOFLAGS=-DSLOW_FRAME_LOG: frames over 100 ms in the EE log (ISO stalls) */
         if (dt_real > 0.1f)

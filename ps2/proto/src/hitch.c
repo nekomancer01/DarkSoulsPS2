@@ -8,6 +8,14 @@
 
 #define HITCH_PERIOD_S 10.0f
 #define TPMS 294912u  /* EE ticks per ms */
+#define HITCH_SPIKE_MS 150   /* a single frame this long (outside a loading screen) gets its own "spike:" line */
+#define HITCH_SPIKES_MAX 6   /* "spike:" lines a period at most (the rest only counted) */
+
+/* the real allocators (-Wl,--wrap=malloc,...: the wrappers below count the failures) */
+void *__real_malloc(size_t n);
+void *__real_calloc(size_t n, size_t s);
+void *__real_realloc(void *p, size_t n);
+void *__real_memalign(size_t a, size_t n);
 
 unsigned hitch_acc[HS_N];
 HitchTotals hitch_total;
@@ -31,7 +39,7 @@ static unsigned largest_block(unsigned hi)
     hi >>= 10;
     while (lo < hi) {
         unsigned mid = (lo + hi + 1) / 2;
-        void *p = malloc((size_t)mid << 10);
+        void *p = __real_malloc((size_t)mid << 10);  /* probes: not counted as failures */
         if (p)
             free(p), lo = mid;
         else
@@ -74,6 +82,79 @@ void hitch_flip(int k, unsigned ci, int flop)
 }
 void hitch_block_read(unsigned bytes) { blk_reads++, blk_kb += bytes >> 10; }
 
+static float where[3];
+static int where_blk = -1;
+void hitch_where(const float *pos, int block) { where[0] = pos[0], where[1] = pos[1], where[2] = pos[2], where_blk = block; }
+
+/* allocation failures: count, the largest request, the first one from each caller logged */
+#define AF_CALLERS 32
+static unsigned af_n, af_kb, af_caller[AF_CALLERS], af_ncaller;
+static int af_busy;
+static void alloc_failed(const char *fn, unsigned n, void *caller)
+{
+    af_n++, hitch_total.allocfail++;
+    af_kb = (n >> 10) > af_kb ? n >> 10 : af_kb;
+    if (af_busy)  /* (a failure inside the printf below) */
+        return;
+    unsigned c = (unsigned)caller, i;
+    for (i = 0; i < af_ncaller && af_caller[i] != c; i++)
+        ;
+    if (i < af_ncaller || af_ncaller == AF_CALLERS)  /* seen (or the table is full): counted only */
+        return;
+    af_caller[af_ncaller++] = c;
+    af_busy = 1;
+    unsigned hf = heap_free();
+    printf("alloc: %s %u B FAILED, caller 0x%08x, heap free %u KB, at %.1f %.1f %.1f block %d, t %u s (first from this "
+           "caller; later ones counted in hitch lines)\n", fn, n, c, hf >> 10, where[0], where[1], where[2], where_blk,
+           (unsigned)run_s);
+    af_busy = 0;
+}
+void *__wrap_malloc(size_t n)
+{
+    void *p = __real_malloc(n);
+    if (!p && n)
+        alloc_failed("malloc", n, __builtin_return_address(0));
+    return p;
+}
+void *__wrap_calloc(size_t n, size_t s)
+{
+    void *p = __real_calloc(n, s);
+    if (!p && n && s)
+        alloc_failed("calloc", n * s, __builtin_return_address(0));
+    return p;
+}
+void *__wrap_realloc(void *q, size_t n)
+{
+    void *p = __real_realloc(q, n);
+    if (!p && n)
+        alloc_failed("realloc", n, __builtin_return_address(0));
+    return p;
+}
+void *__wrap_memalign(size_t a, size_t n)
+{
+    void *p = __real_memalign(a, n);
+    if (!p && n)
+        alloc_failed("memalign", n, __builtin_return_address(0));
+    return p;
+}
+
+static unsigned spikes, spikes_cut;
+static void spike(unsigned ms)
+{
+    if (spikes >= HITCH_SPIKES_MAX) {
+        spikes_cut++;
+        return;
+    }
+    spikes++;
+    printf("spike: t %u s %u ms | pre %u world %u (plan %u win %u io %u vis %u) snd %u map %u logic %u chr %u wait %u "
+           "flip %u save %u log %u | at %.1f %.1f %.1f block %d\n",
+           (unsigned)run_s, ms, hitch_acc[HS_PRE] / TPMS, hitch_acc[HS_WORLD] / TPMS, hitch_acc[HS_MSPLAN] / TPMS,
+           hitch_acc[HS_MSWIN] / TPMS, hitch_acc[HS_MSIO] / TPMS, hitch_acc[HS_MSVIS] / TPMS, hitch_acc[HS_SND] / TPMS,
+           hitch_acc[HS_MAP] / TPMS, hitch_acc[HS_LOGIC] / TPMS, hitch_acc[HS_CHR] / TPMS, hitch_acc[HS_WAIT] / TPMS,
+           hitch_acc[HS_FLIP] / TPMS, hitch_acc[HS_SAVE] / TPMS, hitch_acc[HS_LOG] / TPMS, where[0], where[1], where[2],
+           where_blk);
+}
+
 static int load_fr;
 static unsigned n_load, load_max;
 void hitch_loadscreen(void) { load_fr = 1; }
@@ -96,6 +177,8 @@ void hitch_frame(float dt_real)
     hitch_total.over50 += ms > 50, hitch_total.over100 += ms > 100, hitch_total.over200 += ms > 200;
     if (ms > hitch_total.max_ms && run_s > 20.0f)  /* (not the boot) */
         hitch_total.max_ms = ms;
+    if (ms >= HITCH_SPIKE_MS && run_s > 20.0f)  /* (not the boot) */
+        spike(ms);
     if (ms > worst_ms) {
         worst_ms = ms;
         for (int i = 0; i < HS_N; i++)
@@ -112,17 +195,20 @@ void hitch_frame(float dt_real)
     printf("hitch: t %u s frames %u avg %u max %u ms over50 %u over100 %u over200 %u | worst pre %u world %u (plan %u win "
            "%u io %u vis %u) snd %u map %u logic %u chr %u wait %u flip %u save %u log %u | heap free %u KB largest %u KB | arena "
            "free %u KB run %u KB other %u KB | reads %u (%u KB) again %u (%u KB) thrash %u (%u KB) drops %u evicted %u (%u KB) | blocks %u "
-           "(%u KB) | lod flips %u flops %u | loads %u longest %u ms | top",
+           "(%u KB) | lod flips %u flops %u | loads %u longest %u ms | spikes %u (+%u) | allocfail %u (max %u KB) | at %.0f %.0f "
+           "%.0f block %d | top",
            (unsigned)run_s, n_fr, n_fr ? sum_ms / n_fr : 0, worst_ms, o50, o100, o200, worst_sec[HS_PRE],
            worst_sec[HS_WORLD], worst_sec[HS_MSPLAN], worst_sec[HS_MSWIN], worst_sec[HS_MSIO], worst_sec[HS_MSVIS], worst_sec[HS_SND],
            worst_sec[HS_MAP], worst_sec[HS_LOGIC], worst_sec[HS_CHR], worst_sec[HS_WAIT], worst_sec[HS_FLIP],
            worst_sec[HS_SAVE], worst_sec[HS_LOG], hf >> 10, lb, fkb, rkb, okb, loads, read_kb, again, again_kb, thr, thr_kb, drops,
-           evicts, evict_kb, blk_reads, blk_kb, flips, flops, n_load, load_max);
+           evicts, evict_kb, blk_reads, blk_kb, flips, flops, n_load, load_max, spikes, spikes_cut, af_n, af_kb, where[0], where[1], where[2],
+           where_blk);
     for (int i = 0; i < TOPN; i++)
         if (top[i].n > 1)
             printf(" %d.%u x%u", top[i].k, top[i].ci, top[i].n);
     printf("\n");
     per_s = 0;
+    spikes = spikes_cut = af_n = af_kb = 0;
     n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;
     loads = again = again_kb = thr = thr_kb = drops = evicts = evict_kb = flips = flops = blk_reads = blk_kb = read_kb = 0;
     memset(top, 0, sizeof top);
