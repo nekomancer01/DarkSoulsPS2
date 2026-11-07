@@ -672,9 +672,18 @@ static int draw_hz(const MapInst *m, const Chunk *c, int cls)
     static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
     float zmax;
     box_depth(c, cam, &zmax, NULL);
+    int edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;
+    if (c->nv) {  /* indexed (horizon.py HZN_IDX, the default): vu1mapi, or vu1clip's indexed entry at the near plane;
+                   * the st stream is the colours (read, unused with TME off) */
+        if (c->tris > VU1_IDX_TRIS)
+            return 0;
+        vu1_add_idx(NULL, 0, VU1_FOG | VU1_FLAT | (cls == 2 ? VU1_CLIP : edge), c->tris, c->nv, m->hz_base + c->pos,
+                    m->hz_base + c->st, m->hz_base + c->col, m->hz_base + CHUNK_IDX(c), c->org, 4096.0f);
+        map_vu1_batches++;
+        return c->tris;
+    }
     if (c->tris > CHUNK_HZN_TRIS)
         return 0;
-    int edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;
     if (cls == 2)
         vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | VU1_CLIP, c->tris, m->hz_base + c->pos, zero_st, m->hz_base + c->col,
                    c->org, 4096.0f);

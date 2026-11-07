@@ -1,6 +1,6 @@
 # Ame's second play report 2026-11-07 15:27 (ISO, main 4e914ed) as a script: Firelink looking out to the Burg (far
 # horizon), the aqueduct wall, the Burg from its start to the bonfire (horizon standing in near the player) and on
-# toward the Taurus tower. Boot the ISO:
+# toward the Taurus tower. rep49: the report's 49 s spot (the aqueduct and the Burg past it, all horizon). Boot the ISO:
 #   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_ame_report2.txt <out> --iso build/proto.iso --timeout 900
 option hud
 option god
@@ -11,6 +11,9 @@ shot far_a
 cam 2.6 0.05
 wait 1
 shot far_b
+spawn -29.6 -48.8 23.5 3.14
+wait 4
+shot rep49
 spawn -25.0 -34.0 10.0 3.6
 wait 4
 shot wall_a

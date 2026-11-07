@@ -1,0 +1,84 @@
+# Horizon LOD A/B (far geometry beyond 56 m): eight camera yaws at three spots, no HUD. Firelink at the 49 s spot of
+# Ame's report 2026-11-07 15:27 (looking out to the aqueduct and the Burg), Firelink's cliff top, the Burg start.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_hzn_lod.txt <out> --iso build/proto.iso --timeout 600
+option god
+option nodemo
+spawn -29.6 -48.8 23.5 3.14
+wait 5
+cam 0.0 0.05
+wait 1
+shot r49_0
+cam 0.785 0.05
+wait 1
+shot r49_1
+cam 1.57 0.05
+wait 1
+shot r49_2
+cam 2.355 0.05
+wait 1
+shot r49_3
+cam 3.14 0.05
+wait 1
+shot r49_4
+cam 3.925 0.05
+wait 1
+shot r49_5
+cam 4.71 0.05
+wait 1
+shot r49_6
+cam 5.495 0.05
+wait 1
+shot r49_7
+spawn -32.0 -54.0 38.0 3.3
+wait 5
+cam 0.0 0.05
+wait 1
+shot fl_0
+cam 0.785 0.05
+wait 1
+shot fl_1
+cam 1.57 0.05
+wait 1
+shot fl_2
+cam 2.355 0.05
+wait 1
+shot fl_3
+cam 3.14 0.05
+wait 1
+shot fl_4
+cam 3.925 0.05
+wait 1
+shot fl_5
+cam 4.71 0.05
+wait 1
+shot fl_6
+cam 5.495 0.05
+wait 1
+shot fl_7
+spawn -41.0 -19.0 -35.0 2.4
+wait 5
+cam 0.0 0.05
+wait 1
+shot bu_0
+cam 0.785 0.05
+wait 1
+shot bu_1
+cam 1.57 0.05
+wait 1
+shot bu_2
+cam 2.355 0.05
+wait 1
+shot bu_3
+cam 3.14 0.05
+wait 1
+shot bu_4
+cam 3.925 0.05
+wait 1
+shot bu_5
+cam 4.71 0.05
+wait 1
+shot bu_6
+cam 5.495 0.05
+wait 1
+shot bu_7
+stats
