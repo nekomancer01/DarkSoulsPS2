@@ -66,14 +66,17 @@ ON = os.environ.get("HZN", "1") == "1"
 # block in about the bytes 32 px took (Burg west 26.8k tris 455 KB, was 13.6k 455 KB) and Firelink reaches 12.7 px.
 PX = float(os.environ.get("HZN_PX", 8.0))
 HZN_D = float(os.environ.get("HZN_D", 54.0))  # metres: nearest view distance the error is judged from
-# cap per block (ASSUMED; 320 with lists, which no block met: the PX_MAX floor won): lite sets share the near-cell arena with the near cells, relief and enemy models. At ~0.6 MB
-# a block (1 MB for Firelink with its m8000 backdrop) mapstream_alloc held 4.4 MB of the 8 MB arena in the Burg and
-# the near level waited up to 28 s (ISO route, 2026-11-06)
-KB = float(os.environ.get("HZN_KB", 480))
+# Every block is cut to the same screen error (PX), so the far view has one quality across the game: the triangle count
+# follows how much each block shows, not a share of bytes. KB is only a safety ceiling (ASSUMED) for a block that would
+# overflow the mapstream arena (9984 KB; lite sets share it with the near cells, relief and enemy models, up to 3 slots,
+# peak w+b 4206 KB; at ~0.6 MB a block in lists the near level waited up to 28 s, ISO route 2026-11-06). Measured at 8 px
+# with no ceiling (2026-11-07): Firelink 1050 KB meshopt, Burg p 337, Asylum 411, Burg b 486, Burg w 491; only a block
+# past the ceiling gets a coarser error (the export line prints it)
+KB = float(os.environ.get("HZN_KB", 960))
 PX_MAX = float(os.environ.get("HZN_PX_MAX", 32.0))  # the budget never pushes the error past this (ASSUMED)
 # the backdrop (Firelink's m8000 view of the Burg and the valley, 8-14k triangles; a few hundred elsewhere) has its own
-# budget: as a share of KB it took the map's triangles in Firelink, the block with the most to show far off
-BD_KB = float(os.environ.get("HZN_BD_KB", 288))
+# ceiling, so it can't take the map's share in Firelink (ASSUMED)
+BD_KB = float(os.environ.get("HZN_BD_KB", 480))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
 # indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
@@ -85,8 +88,8 @@ IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324
 # bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
 # ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
 BPT = 19 if IDX else 36
-# simplifier (HZN_SIMP): "auto", the default: meshopt, or qem where meshopt only fits the budget at a coarser error
-# (build: per block, backdrop and map apart); "meshopt": a light weld (WELD_FR of the error's grid), then meshoptimizer's
+# simplifier (HZN_SIMP): "auto", the default: both run at PX and the block takes the one with fewer triangles (the finer
+# error first if the ceiling pushed one coarser; build: per block, backdrop and map apart); "meshopt": a light weld (WELD_FR of the error's grid), then meshoptimizer's
 # attribute-aware edge collapse (tools/native/meshopt, MIT) in distance bands (mo_simplify); "qem": the old path, the
 # weld at the full error then tools/native/simplify.c. Grid clustering at the full error welded unrelated surfaces into
 # slivers and the collapse kept long thin fans: the spiky far shapes of Ame's report (2026-11-07)
@@ -589,10 +592,10 @@ def build(b):
                             plo = mid
                 px = phi
             cand.append((float(px), "meshopt", res))
-        if not mo or cand[0][0] > PX * 1.01:
-            # meshoptimizer keeps the soup's borders and non-manifold vertices (it only collapses along a border), so a
-            # block of open pieces can stop far above the budget (Firelink: 32 px against the old path's 12.7, ISO A/B
-            # 2026-11-07); the old path welds them at the full error. HZN_SIMP=auto takes whichever fits finer
+        if SIMP in ("auto", "qem") or not mo:
+            # meshoptimizer keeps the soup's borders and non-manifold vertices (it only collapses along a border), so on
+            # a block of open pieces the old path, which welds them at the full error, can be smaller at the same error
+            # (and fit the ceiling finer: Firelink 12.7 px against 32 at a 480 KB cap, ISO A/B 2026-11-07). auto runs both
             sets = []
             for dset in np.unique(dg[selg]):
                 sel = selg & (dg == dset)
@@ -600,7 +603,8 @@ def build(b):
                 sets.append((dset, V, VC, qlog(V, T, nav), len(T)))
             eps = block_eps([x[3] for x in sets], cap)
             cand.append((float(np.sqrt(eps) * FOCAL), "qem", [(d, V, VC, replay(L, eps), n) for d, V, VC, L, n in sets]))
-        px, method, res = min(cand, key=lambda c: (round(c[0], 3), c[1] != "meshopt"))
+        # the finer error wins (only differs past the ceiling); at the same error, the fewer triangles
+        px, method, res = min(cand, key=lambda c: (round(c[0], 1), sum(len(x[3]) for x in c[2]), c[1] != "meshopt"))
         used.append(("bd " if g else "") + method)
         for dset, V, VC, T, ncl in res:
             stats["opaque"] += int((selg & (dg == dset)).sum())
@@ -608,7 +612,7 @@ def build(b):
             groups.append(_place(V, VC, T, lo, hi, flags | int(dset) << 16))
         if not g:
             stats["px"] = px
-            stats["px_alt"] = ", ".join(f"{m} {p:.1f}" for p, m, _ in cand)
+            stats["px_alt"] = ", ".join(f"{m} {p:.1f}/{sum(len(x[3]) for x in r)}" for p, m, r in cand)
     recs, streams, ctab = [], bytearray(), []
     first = 0
     for ci in range(ncell):
