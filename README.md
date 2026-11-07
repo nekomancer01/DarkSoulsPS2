@@ -81,7 +81,7 @@ Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or
 | Dark Souls Remastered, Steam PC version | Build 10943698 with English data is the one that's checked. `python3 tools/verify_game.py` lists supported versions. |
 | ps2dev toolchain with gsKit | Get a ps2dev release from https://github.com/ps2dev/ps2dev. `ps2/env.sh` looks for it in `~/tools/ps2dev-2.0.0/ps2dev`; set `PS2DEV=/your/path` if it's elsewhere. |
 | Python 3.10 or newer | The tools need Pillow and numpy (step 3). |
-| gcc | Compiles a few small native helpers on first use. |
+| gcc, g++ | Compile a few small native helpers on first use (g++: meshoptimizer's simplifier for the far horizon level). |
 | libmpg123 | Decodes the game's MP3 sound banks for the sound packs (Debian/Ubuntu `libmpg123-0`, Fedora/Arch `mpg123`). |
 | PCSX2 2.x | The Flatpak `net.pcsx2.PCSX2` is what the run scripts use. |
 | RAM | The first full export needs several GB. |
@@ -260,6 +260,8 @@ git clone --depth 1 https://github.com/Meowmaritus/DSAnimStudio ext/DSAnimStudio
 `ext/soulstruct`). Checked 2026-11-01 against Paramdex ff7245e, DarkScript3 733f024, DSAnimStudio f1bff06.
 
 `tools/native/bcdec.h` (BC texture decoder, MIT / Unlicense) is included with its licence header.
+`tools/native/meshopt/` holds meshoptimizer 1.3's simplifier (https://github.com/zeux/meshoptimizer, MIT, `LICENSE.md`
+beside it), used by `tools/horizon.py`; built into `tools/native/libmeshopt.so` on first use.
 
 ## Licence
 

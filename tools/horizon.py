@@ -14,11 +14,14 @@ Built from the map's own resident level (the CHUNK_COARSE chunks, the opaque kep
 stores them), so it needs no re-export:
   1. every triangle gets its colour baked: texel of the texture's mip 1 at the corner's UV x the corner's light (the
      GS's modulate, 0x80 = 1.0); cut-out triangles mostly transparent are dropped (a fence is no wall at 60 m);
-  2. the whole block is clustered on a grid of PX pixels at each vertex's view distance (meshes, UV seams and
-     materials stop mattering: one surface);
-  3. one quadric edge collapse over the whole block (tools/simplify_native.py, the exporter's simplifier) with each
-     vertex weighted by its view distance (the distance to the nearest navmesh vertex, at least HZN_D): every cell's
-     horizon comes from the same mesh, so neighbouring cells meet without cracks;
+  1b. triangles no view can see are dropped (HZN_VIS, tools/native/hzvis.c: cube maps at navmesh points and
+     orthographic views from all round, conservative);
+  2. the whole block is welded on a grid of WELD_FR x the error's pixels at each vertex's view distance (meshes, UV
+     seams and materials stop mattering: one surface; HZN_SIMP=qem: the full error, the old path);
+  3. one edge collapse over the whole block with each vertex judged at its view distance (the distance to the nearest
+     navmesh vertex, at least HZN_D): meshoptimizer's attribute-aware collapse in distance bands (mo_simplify; qem:
+     tools/simplify_native.py, the exporter's simplifier): every cell's horizon comes from the same mesh, so
+     neighbouring cells meet without cracks;
   4. the collapse stops at PX pixels of screen error, or at the one larger error (the same for every draw-group mesh
      of the block) at which the block's horizon fits KB kilobytes (the backdrop BD_KB apart; budget: lite sets share
      the near-cell arena), never past PX_MAX;
@@ -38,8 +41,8 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
            triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
-Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_PX, HZN_KB, HZN_BD_KB, HZN_D,
-HZN_WELD, HZN_DG."""
+Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
+HZN_VIS=0 no visibility cut; HZN_PX, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
 import struct
 import sys
@@ -82,6 +85,22 @@ IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324
 # bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
 # ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
 BPT = 19 if IDX else 36
+# simplifier (HZN_SIMP): "meshopt", the default: a light weld (WELD_FR of the error's grid), then meshoptimizer's
+# attribute-aware edge collapse (tools/native/meshopt, MIT) in distance bands (mo_simplify); "qem": the old path, the
+# weld at the full error then tools/native/simplify.c. Grid clustering at the full error welded unrelated surfaces into
+# slivers and the collapse kept long thin fans: the spiky far shapes of Ame's report (2026-11-07)
+SIMP = os.environ.get("HZN_SIMP", "meshopt")
+WELD_FR = float(os.environ.get("HZN_WELD_FR", 0.25))  # weld grid / error grid (ASSUMED: closes cracks under 1/4 the error)
+# colour weight: a baked colour step of 1/CW of full range counts as much as the band's allowed position error (ASSUMED)
+CW = float(os.environ.get("HZN_CW", 4.0))
+# visibility (HZN_VIS, tools/native/hzvis.c): triangles no view can see are dropped before simplifying (interiors,
+# undersides, faces pressed against other faces); views = cube maps at navmesh points EYE metres up (Y up) and
+# orthographic views from VIS_DIRS directions (cameras outside the block). Conservative: a doubtful triangle stays
+VIS = os.environ.get("HZN_VIS", "1") == "1"
+VIS_DIRS = int(os.environ.get("HZN_VIS_DIRS", 64))
+VIS_N = int(os.environ.get("HZN_VIS_N", 96))  # navmesh eye points at most
+VIS_RES_O, VIS_RES_P = 512, 256  # pixels: orthographic view, cube face
+EYE = 1.6  # metres above the navmesh (ASSUMED: DSR's camera sits ~1.5-2 m up)
 
 
 def _swz(i):
@@ -160,6 +179,17 @@ def coarse_tris(b):
                     return img[y, x]
                 s = sample(st)
                 rgb, a = s[:, :3].astype(np.float64), s[:, 3] > 0
+                # each corner's colour: the mean of the opaque texels from the corner a third and two thirds of the way
+                # to the centroid (the coarse level is seen through mips 2-3 at this distance: an average, not the
+                # texel under the corner; one texel made the horizon blotchy against the level it stands for)
+                cst = np.repeat(st.reshape(-1, 3, 2).mean(1), 3, 0)
+                acc, cnt3 = np.where(a[:, None], rgb, 0.0), a.astype(np.float64)
+                for u in (1.0 / 3.0, 2.0 / 3.0):
+                    sm = sample(st + (cst - st) * u)
+                    ok = sm[:, 3] > 0
+                    acc += np.where(ok[:, None], sm[:, :3], 0.0)
+                    cnt3 += ok
+                rgb = np.where(cnt3[:, None] > 0, acc / np.maximum(cnt3, 1)[:, None], rgb)
                 cen = sample(st.reshape(-1, 3, 2).mean(1))
                 cen_a = cen[:, 3] > 0
                 # transparent corners take the triangle's mean opaque texel (cut-out edges keep the leaf colour)
@@ -199,39 +229,50 @@ def nav_points(b):
     return np.frombuffer(b, np.float32, 3 * nv, navv_off).reshape(-1, 3).astype(np.float64)
 
 
-_NEAREST = []
+_SO = {}
 
 
-def _nearest_lib():
-    """tools/native/libnearest.so (min_d2), built on first use like libgeom.so; None without a compiler (numpy path,
-    same results) or with HZN_NATIVE=0"""
-    if not _NEAREST:
+def _native(name, srcs, setup, cxx=False):
+    """tools/native/<name>.so from srcs (paths under tools/native), built on first use or when a source is newer (an
+    atomic replace: parallel exports may build at once); setup(lib) sets the argtypes. None without a compiler, with
+    HZN_NATIVE=0, or on a failed build (the caller falls back)."""
+    if name not in _SO:
         L = None
         if os.environ.get("HZN_NATIVE", "1") != "0":
             import ctypes
             native = os.path.join(HERE, "native")
-            src, so = os.path.join(native, "nearest.c"), os.path.join(native, "libnearest.so")
+            src = [os.path.join(native, s) for s in srcs]
+            so = os.path.join(native, name + ".so")
             try:
-                if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
+                if not os.path.exists(so) or os.path.getmtime(so) < max(os.path.getmtime(s) for s in src):
                     import subprocess, tempfile
                     fd, tmp = tempfile.mkstemp(suffix=".so", dir=native)
                     os.close(fd)
                     try:
-                        subprocess.run([os.environ.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fno-fast-math",
-                                        "-shared", "-fPIC", "-o", tmp, src], check=True, capture_output=True)
-                        os.replace(tmp, so)  # atomic: parallel exports may build at once
+                        cc = os.environ.get("CXX", "c++") if cxx else os.environ.get("CC", "cc")
+                        subprocess.run([cc, "-O2", "-ffp-contract=off", "-fno-fast-math", "-shared", "-fPIC", "-o", tmp]
+                                       + src, check=True, capture_output=True)
+                        os.replace(tmp, so)
                     finally:
                         if os.path.exists(tmp):
                             os.remove(tmp)
                 L = ctypes.CDLL(so)
-                vp, i = ctypes.c_void_p, ctypes.c_int
-                L.min_d2.argtypes = [i, vp, i, vp, ctypes.c_double, vp]
-                L.min_d2.restype = None
+                setup(L)
             except Exception as e:
-                print(f"horizon: C nearest distance unavailable ({str(e)[:200]}), using numpy", flush=True)
+                print(f"horizon: {name} unavailable ({str(e)[:200]})", flush=True)
                 L = None
-        _NEAREST.append(L)
-    return _NEAREST[0]
+        _SO[name] = L
+    return _SO[name]
+
+
+def _nearest_lib():
+    """tools/native/libnearest.so (min_d2); None without a compiler (numpy path, same results) or with HZN_NATIVE=0"""
+    def setup(L):
+        import ctypes
+        vp, i = ctypes.c_void_p, ctypes.c_int
+        L.min_d2.argtypes = [i, vp, i, vp, ctypes.c_double, vp]
+        L.min_d2.restype = None
+    return _native("libnearest", ["nearest.c"], setup)
 
 
 def view_d(X, nav):
@@ -278,6 +319,68 @@ def cluster(P, C, nav, px):
     T = T[ok]
     _, first = np.unique(np.sort(T, 1), axis=0, return_index=True)
     return V, VC, T[np.sort(first)]
+
+
+def _meshopt():
+    def setup(L):
+        import ctypes
+        vp, sz = ctypes.c_void_p, ctypes.c_size_t
+        L.meshopt_simplifyWithAttributes.argtypes = [vp, vp, sz, vp, sz, sz, vp, sz, vp, sz, vp, sz, ctypes.c_float,
+                                                     ctypes.c_uint, vp]
+        L.meshopt_simplifyWithAttributes.restype = sz
+    return _native("libmeshopt", ["meshopt/simplifier.cpp", "meshopt/allocator.cpp"], setup, cxx=True)
+
+
+MO_ABS, MO_PRUNE, MO_LOCK = 1 << 2, 1 << 3, 1  # meshoptimizer.h: SimplifyErrorAbsolute, SimplifyPrune, Vertex_Lock
+
+
+def mo_simplify(V, VC, T, d, px):
+    """meshoptimizer's collapse with the error judged at each vertex's view distance d: passes over distance bands
+    (octaves from HZN_D), pass k at the error px pixels make at the band's near edge, the vertices nearer than the band
+    locked (they keep the finer error of the passes before). Colour is an attribute (CW), so collapses keep colour
+    edges too. Prune drops pieces smaller than the error. -> surviving triangles (vertex triples into V)"""
+    import ctypes
+    L = _meshopt()
+    if not len(T):
+        return np.zeros((0, 3), np.int64)
+    idx = np.ascontiguousarray(T.reshape(-1), np.uint32)
+    pos = np.ascontiguousarray(V, np.float32)
+    att = np.ascontiguousarray(VC / 255.0, np.float32)
+    dst = np.empty_like(idx)
+    k = 0
+    while True:
+        r0 = HZN_D * 2.0 ** k
+        if k and not (d >= r0).any():
+            break
+        e = px / FOCAL * r0
+        lock = np.ascontiguousarray(np.where(d < r0, MO_LOCK, 0), np.uint8)
+        w = np.full(3, e * CW, np.float32)
+        n = L.meshopt_simplifyWithAttributes(dst.ctypes.data, idx.ctypes.data, len(idx), pos.ctypes.data, len(pos), 12,
+                                             att.ctypes.data, 12, w.ctypes.data, 3, lock.ctypes.data, 0,
+                                             ctypes.c_float(e), MO_ABS | MO_PRUNE, None)
+        idx = dst[:n].copy()
+        k += 1
+    return idx.reshape(-1, 3).astype(np.int64)
+
+
+def visible_tris(P, key, nav):
+    """(n,) bool: triangles some view may see (tools/native/hzvis.c); all True without the library"""
+    def setup(L):
+        import ctypes
+        vp, i = ctypes.c_void_p, ctypes.c_int
+        L.hz_vis.argtypes = [i, vp, vp, i, vp, i, i, i, vp]
+        L.hz_vis.restype = None
+    L = _native("libhzvis", ["hzvis.c"], setup)
+    if L is None or not len(P):
+        return np.ones(len(P), bool)
+    eyes = nav[np.linspace(0, len(nav) - 1, min(VIS_N, len(nav))).astype(np.int64)] if len(nav) else np.zeros((0, 3))
+    eyes = np.ascontiguousarray(eyes + np.array([0.0, EYE, 0.0]), np.float32)
+    tri = np.ascontiguousarray(P.reshape(-1, 9), np.float32)
+    ks = np.ascontiguousarray(key, np.int32)
+    out = np.zeros(len(P), np.uint8)
+    L.hz_vis(len(P), tri.ctypes.data, ks.ctypes.data, len(eyes), eyes.ctypes.data, VIS_DIRS, VIS_RES_O, VIS_RES_P,
+             out.ctypes.data)
+    return out.astype(bool)
 
 
 def qlog(V, T, nav):
@@ -444,13 +547,51 @@ def build(b):
     # one mesh per draw-group set (dg.bin: map.c draws a horizon chunk only while the floor's groups show its set):
     # merged into one surface, a cell's stand-ins and the detail they stand in for, Firelink's views of the Burg and the
     # Burg itself, drew all at once, spiky and purple, wherever the horizon was used (Ame's ISO report, 2026-11-07)
-    groups, stats = [], dict(opaque=0, clustered=0, px=PX)
+    groups, stats = [], dict(opaque=0, clustered=0, px=PX, hidden=0)
     # one screen error for the whole block (every set at once): the smallest at or above PX whose triangles fit the
     # budget. Shared by triangle count, each set hit its own cap apart: small sets stayed at PX while the big ones went
     # to PX_MAX (Firelink: every block at 32 px, 2026-11-07)
+    if VIS and len(P):  # visibility key: draw-group set and backdrop apart (map.c may skip either: never occluders)
+        vis = visible_tris(P[keep], dg[keep] * 2 + bd[keep], nav)
+        stats["hidden"] = int((~vis).sum())
+        keep = keep.copy()
+        keep[np.flatnonzero(keep)[~vis]] = False
+    mo = SIMP == "meshopt" and _meshopt() is not None
     for g in (1, 0):  # the backdrop (BD_KB), then the map (KB)
         selg = keep & (bd == bool(g))
         budget = BD_KB if g else KB
+        if mo:
+            raw = [(dset, selg & (dg == dset)) for dset in np.unique(dg[selg])]
+            cap = int(budget * 1024 / BPT)
+
+            def run(px):
+                out = []
+                for dset, sel in raw:
+                    V, VC, T = cluster(P[sel], C[sel], nav, px * WELD_FR)
+                    out.append((dset, V, VC, len(T), mo_simplify(V, VC, T, view_d(V, nav), px)))
+                return out
+
+            def total(r):
+                return sum(len(x[4]) for x in r)
+            px, res = PX, run(PX)
+            if total(res) > cap:  # the smallest error that fits (geometric search, ~2 % apart at the end)
+                plo, phi, res = PX, PX_MAX, run(PX_MAX)
+                if total(res) <= cap:
+                    for _ in range(7):
+                        mid = (plo * phi) ** 0.5
+                        r = run(mid)
+                        if total(r) <= cap:
+                            phi, res = mid, r
+                        else:
+                            plo = mid
+                px = phi
+            for dset, V, VC, ncl, T in res:
+                stats["opaque"] += int((selg & (dg == dset)).sum())
+                stats["clustered"] += ncl
+                groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
+            if not g:
+                stats["px"] = float(px)
+            continue
         sets = []
         for dset in np.unique(dg[selg]):
             sel = selg & (dg == dset)
@@ -523,7 +664,7 @@ def build(b):
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
               tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
               sets=len(groups), chunks=nchunks, bytes=len(out),
-              px=stats["px"], covered=len(cov))
+              px=stats["px"], covered=len(cov), hidden=stats["hidden"], simp="meshopt" if mo else "qem")
     return bytes(out), st
 
 
@@ -539,7 +680,7 @@ def main():
     with open(dst, "wb") as f:
         f.write(out)
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
-          f"({st['tris_opaque']} opaque, {st['tris_welded']} clustered) -> {st['tris']} tris in {st['chunks']} chunks over "
+          f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
           f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
 
 

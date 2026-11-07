@@ -73,6 +73,13 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #define HZN_R 56.0f
 #endif
 #define HZN_HYST 2.0f
+/* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque
+ * map), so the switch at HZN_R swaps two pictures that already look alike instead of popping (ASSUMED 8 m: about a
+ * second at walking speed). make DEFS=-DHZN_FADE=0: the hard switch */
+#ifndef HZN_FADE
+#define HZN_FADE 8.0f
+#endif
+#define MAX_HZ_FADE 64  /* cells fading in per frame */
 #define CHUNK_HZN 256
 #define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
 #define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
@@ -667,7 +674,7 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
 /* a horizon chunk (untextured, double-sided, its packet without st: vu1.c VU1_FLAT). The clipping program (VU1_CLIP)
  * gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2 2 s into the Burg on the
  * first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
-static int draw_hz(const MapInst *m, const Chunk *c, int cls)
+static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode)
 {
     static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
     float zmax;
@@ -677,7 +684,7 @@ static int draw_hz(const MapInst *m, const Chunk *c, int cls)
                    * the st stream is the colours (read, unused with TME off) */
         if (c->tris > VU1_IDX_TRIS)
             return 0;
-        vu1_add_idx(NULL, 0, VU1_FOG | VU1_FLAT | (cls == 2 ? VU1_CLIP : edge), c->tris, c->nv, m->hz_base + c->pos,
+        vu1_add_idx(NULL, 0, VU1_FOG | VU1_FLAT | mode | (cls == 2 ? VU1_CLIP : edge), c->tris, c->nv, m->hz_base + c->pos,
                     m->hz_base + c->st, m->hz_base + c->col, m->hz_base + CHUNK_IDX(c), c->org, 4096.0f);
         map_vu1_batches++;
         return c->tris;
@@ -685,10 +692,10 @@ static int draw_hz(const MapInst *m, const Chunk *c, int cls)
     if (c->tris > CHUNK_HZN_TRIS)
         return 0;
     if (cls == 2)
-        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | VU1_CLIP, c->tris, m->hz_base + c->pos, zero_st, m->hz_base + c->col,
+        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | mode | VU1_CLIP, c->tris, m->hz_base + c->pos, zero_st, m->hz_base + c->col,
                    c->org, 4096.0f);
     else
-        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | edge | VU1_PKT, c->tris, m->hz_base + c->pos, m->hz_base + c->st,
+        vu1_add_ex(NULL, 0, VU1_FOG | VU1_FLAT | mode | edge | VU1_PKT, c->tris, m->hz_base + c->pos, m->hz_base + c->st,
                    m->hz_base + c->col, c->org, 4096.0f);
     map_vu1_batches++;
     return c->tris;
@@ -1108,6 +1115,8 @@ int map_draw(V3 eye)
     r_set_fog_edge(edge_a2);
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
+    static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
+    int nhzfade = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
     unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
     unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
@@ -1159,6 +1168,7 @@ int map_draw(V3 eye)
             int mcov = 0;  /* ... of those the horizon stands for (hz_covers) */
             int nd = 0;    /* the near level is drawn (every part in, or unseen: pvs.c) */
             int hzf = 0;   /* beyond HZN_R: the horizon is drawn, the covered chunks are not even asked for */
+            float hz_d = 0;  /* the cell box's distance (with a horizon) */
             if (hc) {
                 float d2 = 0;
                 for (int a = 0; a < 3; a++) {
@@ -1167,6 +1177,7 @@ int map_draw(V3 eye)
                 }
                 float r = ce->hz_on ? HZN_R - HZN_HYST : HZN_R + HZN_HYST;
                 hzf = ce->hz_on = d2 > r * r;
+                hz_d = sqrtf(d2);
             }
             for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++) {
                 unsigned fl = chunks[order[j]].flags;
@@ -1236,6 +1247,15 @@ int map_draw(V3 eye)
                     hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
             }
             hz_fill += use_hz && !hzf;
+            if (HZN_FADE > 0 && hc && hc->count && !use_hz && !nd && hz_d > HZN_R - HZN_FADE && nhzfade < MAX_HZ_FADE) {
+                /* inside HZN_R, on the coarse level: its horizon over it at alpha (d - (HZN_R - HZN_FADE)) / HZN_FADE,
+                 * reaching 1 where the hysteresis band starts (HZN_R - HZN_HYST: the swap then shows no change) */
+                float t = (hz_d - (HZN_R - HZN_FADE)) / (HZN_FADE - HZN_HYST);
+                int al = t >= 1 ? 128 : (int)(t * 128);
+                if (al > 0)
+                    hzfade[nhzfade].k = (unsigned char)k, hzfade[nhzfade].ci = (unsigned short)ci,
+                    hzfade[nhzfade++].a = (unsigned char)al;
+            }
             {  /* level-of-detail flips of a cell in view (hitch.c): near / coarse / horizon / hole */
                 unsigned char lv = nd ? 4 : use_hz ? 2 : miss && (!hc || mcov) ? 1 : 3;
                 if (ce->lv && lv != ce->lv && (unsigned short)(pop_fr - ce->lv_seen) == 1) {
@@ -1330,13 +1350,35 @@ int map_draw(V3 eye)
                     continue;
                 int cls = visible(c, e, 0);
                 if (cls) {
-                    unsigned dn = draw_hz(m, c, cls);
+                    unsigned dn = draw_hz(m, c, cls, 0);
                     drawn += dn, k_drawn[k] += dn, hz_tris += dn;
                 }
             }
         }
     }
     mapstream_select(0);
+    if (nhzfade) {  /* horizons fading in (HZN_FADE) over their cells' coarse level: Cs a + Cd (1 - a), no Z write */
+        vu1_map_fog(a, b, fmin, 255);
+        vu1_map_edge(edge_a2);
+        u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+        for (int i = 0; i < nhzfade; i++) {
+            const MapInst *mk = &inst[hzfade[i].k];
+            const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
+            u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, hzfade[i].a), 0x42, zb, 0x4E};
+            vu1_gs_regs(2, r);
+            for (unsigned j = 0; j < hc->count; j++) {
+                const Chunk *c = &mk->hz_chunk[hc->first + j];
+                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
+                    continue;
+                int cls = visible(c, e, 0);
+                if (cls) {
+                    unsigned dn = draw_hz(mk, c, cls, VU1_BLEND);
+                    drawn += dn, hz_tris += dn;
+                }
+            }
+        }
+        blend_regs(gs, 0);
+    }
     bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
 
     /* effects after the opaque map: alpha-blended (mist) far to near, then additive (light shafts, order-free);
