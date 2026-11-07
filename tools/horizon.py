@@ -115,11 +115,17 @@ def coarse_tris(b):
             cov.add(ci)
             mn_mx_org_step = struct.unpack_from("<10f", b, chunk_off + 64 * j + 24)
             org, step = np.array(mn_mx_org_step[6:9]), mn_mx_org_step[9]
+            nv, ntri = ntri >> 16, ntri & 0xFFFF  # tris | nv << 16 (export_map.chunk_packet)
             n = 3 * ntri
-            p = np.frombuffer(b, np.int16, 3 * n, po).reshape(-1, 3).astype(np.float64) * step + org
-            st = np.frombuffer(b, np.uint16, 2 * n, so).reshape(-1, 2).astype(np.float64) / \
+            # an indexed chunk (nv > 0) stores nv distinct corners, then a u8 x4 triangle stream after its own VIF code
+            # qword (map.c CHUNK_IDX); expand it to one entry per corner like an unindexed chunk
+            corner = np.frombuffer(b, np.uint8, 4 * ntri, co + ((4 * nv + 15) & ~15) + 16).reshape(-1, 4)[:, :3] \
+                .ravel().astype(np.int64) if nv else slice(None)
+            m = nv or n
+            p = np.frombuffer(b, np.int16, 3 * m, po).reshape(-1, 3)[corner].astype(np.float64) * step + org
+            st = np.frombuffer(b, np.uint16, 2 * m, so).reshape(-1, 2)[corner].astype(np.float64) / \
                 (1024.0 if fl & CHUNK_ST1K else 4096.0)
-            col = np.frombuffer(b, np.uint8, 4 * n, co).reshape(-1, 4)[:, :3].astype(np.float64)
+            col = np.frombuffer(b, np.uint8, 4 * m, co).reshape(-1, 4)[corner][:, :3].astype(np.float64)
             if ti not in tex:
                 tex[ti] = texture_rgba(b, tex_off, ti) if ti >= 0 else None
             img = tex[ti]
