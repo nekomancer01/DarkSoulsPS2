@@ -62,7 +62,7 @@ FIRELINK = waypoints("world_route.txt", r"approach -43\.1,52\.2", r"# step 2\.3 
 # the Burg side (aqueduct -> Burg start), until that rise and the Burg ladders can be walked (playable plan step 3).
 CLIMB = next(i for i, p in enumerate(FIRELINK) if p[2])
 FIRELINK_LOW, AQUEDUCT = FIRELINK[:CLIMB], FIRELINK[CLIMB + 1:]
-BURG_START = (-48.5, -21.8, -35.5, 0)     # the Burg start (aqueduct arrival c0000_0000, iso_burg_taurus.txt)
+RISE_TOP = (-22.9, -41.8, 21.0, 4.0)      # the top of that rise, on the way to the aqueduct (world_route.txt)
 BURG = waypoints("iso_burg_taurus.txt", r"# step 2\.3 m", r"approach 52\.6,-118\.5 0\.4 1")
 
 
@@ -150,7 +150,7 @@ def death():
         out += ["wait 14", f"check deaths {n}", f"ev expect respawn {RESPAWN_ID}",
                 f"check near {RESPAWN[0]} {RESPAWN[1]} {RESPAWN[2]} 1.5", "ev expect souls 0", "ev expect stain 1000",
                 "ram check 384"]
-        out += walk(path, shots=False, check_end=False)
+        out += walk(path[:-1], shots=False, check_end=False)  # the stain lies at the last point: walk onto it
         out += ["go stain 0.4", "wait 1", "ev expect souls 1000", "ev expect stain -1"]
         if kind != "fall":
             out += walk(list(reversed(path[:-1])), shots=False, check_end=False)
@@ -160,14 +160,14 @@ def death():
 
 
 def soak(laps=30):
-    out = header("Play soak on the real disc, 60 min and more of game time, enemies on: laps from the Burg start",
-                 ["through the aqueduct (the Firelink / Burg west block seam) to the top of the rise above Firelink and",
+    out = header("Play soak on the real disc, 60 min and more of game time, enemies on: laps from the top of the rise",
+                 ["above Firelink through the aqueduct (the Firelink / Burg west block seam) to the Burg start and",
                   "back, camera spins and idles at both ends. No deaths or rests: a respawn at Firelink cannot climb",
                   "back (see CLIMB in tools/playtests.py). Gate (test-run.py --hitch --soak): the last 10 min may",
                   "not be more than 20 % worse than the first in worst frame, frames over 50 ms, re-reads per",
-                  "minute, LOD flips, pop-ins seen, or the largest free arena run / heap block."], boot=BURG_START)
-    there = list(reversed(AQUEDUCT[:-1]))  # Burg start -> aqueduct -> the top of the rise
-    back = [(x, z, n) for x, z, n in reversed(there[:-1])] + [AQUEDUCT[-1]]
+                  "minute, LOD flips, pop-ins seen, or the largest free arena run / heap block."], boot=RISE_TOP)
+    there = AQUEDUCT  # the top of the rise -> aqueduct -> Burg start
+    back = [(x, z, n) for x, z, n in reversed(there[:-1])]
     for lap in range(laps):
         out += [f"log soak lap {lap} start"]
         out += walk(there, shots=False, check_end=False)
