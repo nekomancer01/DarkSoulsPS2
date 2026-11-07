@@ -232,9 +232,9 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
     static int first = 1;
     if (first)
         synced = player_chr.hp = p->hp, first = 0;
-    int hp = p->hp + (player_chr.hp - synced);
-    if (test_god && hp < p->hp_max)
-        hp = p->hp_max;  /* test script "option god": routes with enemies on that the walker cannot fight */
+    /* test script "option god": enemy hits do nothing (routes with enemies on that the walker cannot fight); the
+     * script's own kills and lethal falls still kill (the play death run, testscript.c) */
+    int hp = p->hp + (test_god && player_chr.hp < synced ? 0 : player_chr.hp - synced);
     if (hp <= 0 && (p->hp > 0 || player_chr.hp != synced))
         hp = -1;  /* dead: the ESD death branches test f1000() < 0 */
     p->hp = player_chr.hp = synced = hp;

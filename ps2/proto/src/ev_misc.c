@@ -140,6 +140,18 @@ int ev_bonfire_estus(s32 entity)
     return (int)graph_150[5 + stage_of(ev_bonfire_points(entity))];
 }
 
+int ev_bonfire_nearest(const float pos[3], float out[3])
+{
+    float best = 1e30f;
+    for (int i = 0; i < BONFIRE_MAX; i++) {
+        Bonfire *b = &bonfires[i];
+        float dx = b->pos[0] - pos[0], dz = b->pos[2] - pos[2];
+        if (b->used && dx * dx + dz * dz < best)
+            best = dx * dx + dz * dz, memcpy(out, b->pos, 12);
+    }
+    return best < 1e30f;
+}
+
 int ev_bonfire_pos(s32 entity, float pos[3])
 {
     Bonfire *b = find(entity);

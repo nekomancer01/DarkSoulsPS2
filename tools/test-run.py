@@ -330,6 +330,8 @@ def run(a):
             res["errors"].append("script did not reach its end (no TEST DONE)")
         if a.hitch:
             hitch_gates(log, res)
+        if a.soak:
+            soak_gates(log, res)
     else:
         res["errors"].append(f"no EE log at {log}")
     res["seconds"] = round(time.time() - res.pop("started"), 1)
@@ -380,6 +382,73 @@ def hitch_gates(log, res):
                                  f"{a['o50']} -> {b['o50']} per {HITCH_WINDOW} s)")
 
 
+# --soak: the 60-minute play soak (ps2/proto/tests/iso_play_soak.txt). The run is cut into SOAK_BUCKET s of game time
+# (hitch: lines, src/hitch.c, every 10 s); the last bucket fails when it is more than SOAK_WORSE worse than the first in
+# any of: worst frame, hitches (frames over 50 ms), re-reads within ~30 s of a drop (map churn, per minute), LOD flips,
+# near-level pop-ins seen on screen (map.c), or the largest free hole (arena run, largest malloc block) shrinking.
+# Small counts get SOAK_SLACK on top so 0 -> 1 is not "infinitely worse". Loading screens (deaths) count apart.
+SOAK_BUCKET = 600
+SOAK_MIN_S = 3000       # less game time than this = the soak did not run long enough to compare
+SOAK_WORSE = 0.20
+SOAK_SLACK = {"max": 10, "o50": 3, "thrash_pm": 2, "flips": 5, "popin": 2}
+
+
+def soak_buckets(log):
+    import hitchsum
+    rows, popin, t = [], {}, 0
+    for ln in open(log, errors="replace"):
+        m = hitchsum.LINE.search(ln)
+        if m:
+            r = dict(zip(hitchsum.KEYS, m.groups()))
+            for k in hitchsum.KEYS:
+                if k not in ("worst", "top"):
+                    r[k] = int(r[k] or 0)
+            rows.append(r)
+            t = r["t"]
+            continue
+        m = re.search(r"map: near pop-in (\d+) cells", ln)
+        if m:  # attributed to the bucket of the last hitch line before it
+            popin[t // SOAK_BUCKET] = popin.get(t // SOAK_BUCKET, 0) + int(m[1])
+    out = {}
+    for r in rows:
+        b = out.setdefault(r["t"] // SOAK_BUCKET, {"t0": r["t"], "t1": r["t"], "max": 0, "o50": 0, "o100": 0,
+                                                   "thrash": 0, "thrash_kb": 0, "again": 0, "flips": 0, "flops": 0,
+                                                   "largest_min": 1 << 30, "arun_min": 1 << 30, "heap_min": 1 << 30})
+        b["t1"] = r["t"]
+        b["max"] = max(b["max"], r["max"])
+        for k in ("o50", "o100", "thrash", "thrash_kb", "again", "flips", "flops"):
+            b[k] += r[k]
+        b["largest_min"] = min(b["largest_min"], r["largest"])
+        b["arun_min"] = min(b["arun_min"], r["arun"])
+        b["heap_min"] = min(b["heap_min"], r["heap"])
+    for k, b in out.items():
+        b["popin"] = popin.get(k, 0)
+        b["thrash_pm"] = round(b["thrash"] * 60 / max(10, b["t1"] - b["t0"] + 10), 1)
+    return [out[k] for k in sorted(out)], (rows[-1]["t"] if rows else 0)
+
+
+def soak_gates(log, res):
+    buckets, t_end = soak_buckets(log)
+    res["soak"] = buckets
+    print(f"soak: {len(buckets)} buckets of {SOAK_BUCKET} s, {t_end} s of game time")
+    print("   t0   worst  over50 over100 rereads/min  flips  pop-in  arena run KB  largest block KB")
+    for b in buckets:
+        print(f"{b['t0']:6} {b['max']:6} {b['o50']:7} {b['o100']:7} {b['thrash_pm']:11} {b['flips']:6} {b['popin']:7} "
+              f"{b['arun_min']:13} {b['largest_min']:17}")
+    if t_end < SOAK_MIN_S or len(buckets) < 2:
+        res["errors"].append(f"soak: only {t_end} s of game time (needs {SOAK_MIN_S} s to compare first and last "
+                             f"{SOAK_BUCKET // 60} min)")
+        return
+    a, b = buckets[0], buckets[-1]
+    for k, name in (("max", "worst frame ms"), ("o50", "frames over 50 ms"), ("thrash_pm", "re-reads per minute"),
+                    ("flips", "LOD flips"), ("popin", "pop-ins seen")):
+        if b[k] > a[k] * (1 + SOAK_WORSE) + SOAK_SLACK[k]:
+            res["errors"].append(f"soak: {name} worse in the last {SOAK_BUCKET // 60} min than the first: {a[k]} -> {b[k]}")
+    for k, name in (("arun_min", "largest free arena run KB"), ("largest_min", "largest free heap block KB")):
+        if b[k] < a[k] * (1 - SOAK_WORSE):
+            res["errors"].append(f"soak: {name} shrank: {a[k]} -> {b[k]}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("elf")
@@ -395,6 +464,8 @@ def main():
                     help=f"fail when map.c reports more cells missing in a frame (default {CELLS_MISSING_MAX}, 0 = off)")
     ap.add_argument("--hitch", action="store_true", help="gate on the hitch monitor (worst frame, hitches, churn, "
                     "flip-flops, drift over the run; hitch_gates)")
+    ap.add_argument("--soak", action="store_true", help="gate the last 10 min of game time against the first (worst "
+                    "frame, hitches, re-reads, LOD flips, pop-in, largest free hole; soak_gates)")
     ap.add_argument("--gsdump", action="store_true")
     ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
     ap.add_argument("--name")

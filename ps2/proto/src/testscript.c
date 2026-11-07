@@ -20,12 +20,18 @@
 #include "event.h"
 #include "loading.h"
 #include "combat.h"
+#include "progress.h"  /* go stain: the bloodstain position */
+#include "ev_misc.h"   /* go bonfire */
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 int test_god;
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_GO, C_RAM };
+
+#define GO_STUCK_S 5.0f     /* go: no 0.3 m of progress towards the point for this long = stuck (TEST error) */
+#define GO_PROGRESS 0.3f
+#define SETTLE_MAX_S 12.0f  /* death -> player back in control at the respawn point; longer = TEST error */
 
 typedef struct {
     unsigned short op, line;
@@ -50,10 +56,14 @@ typedef struct {
     int cam_on;
     float cam_yaw, cam_pitch;
     int done;
+    float go_best, go_t;  /* go: closest distance so far, time of the last progress */
 } Prog;
 
 static Prog script, demo;
-static int frozen, shot_wait, skipmiss;
+static int frozen, shot_wait, skipmiss, play;
+static int drive;           /* this frame's step set the left stick (approach: 1) or both sticks (go: 2) */
+static float cur_cam_yaw;   /* the camera yaw main.c had at the start of this frame (go steers relative to it) */
+static int ram_mark;        /* "ram mark": test_mb.ram_free then */
 
 static inline unsigned ticks(void)
 {
@@ -103,9 +113,12 @@ static int parse(Prog *p, char *text)
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0},   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
-        {"kill", C_KILL, 0},
+        {"kill", C_KILL, 0},  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
         {"loadscreen", C_LOADSCR, 1},  /* the loading screen held open for n s (src/loading.c), for screenshots */
-        {"pad", C_PAD, 0},  /* one press of the named buttons (menus, bonfire): test_pad() */  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
+        {"go", C_GO, 0},    /* walk to x,z with the pad as a player does (left stick relative to the camera, right stick
+                             * turns the camera); "go stain": to the bloodstain */
+        {"ram", C_RAM, 0},  /* ram mark / ram check KB */
+        {"pad", C_PAD, 0},  /* one press of the named buttons on the next frame, through the fake pad */
         /* game state (save.c save_test_cmd): event flags, souls, items, checks, save / load */
         {"flag", C_GAME, 0}, {"flags", C_GAME, 0}, {"souls", C_GAME, 0}, {"item", C_GAME, 0}, {"check", C_GAME, 0},
         {"save", C_GAME, 0}, {"load", C_GAME, 0}, {"wipe", C_GAME, 0},
@@ -138,6 +151,7 @@ static int parse(Prog *p, char *text)
                       : !strcmp(rest, "holes") ? TEST_HOLES : !strcmp(rest, "demo") ? TEST_DEMO : 0;
                 skipmiss |= !strcmp(rest, "skipmiss");
                 test_god |= !strcmp(rest, "god");
+                play |= !strcmp(rest, "play");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
             } else {
@@ -164,7 +178,14 @@ static int parse(Prog *p, char *text)
                         c->text = dupstr(s + used - strlen(word), rest + len - (s + used - strlen(word)));
                     else if (c->op == C_PAD)
                         c->a[0] = pad_mask(rest, line);
-                    else if (c->op == C_APPROACH && !strncmp(rest, "obj", 3)) {
+                    else if (c->op == C_GO && (!strncmp(rest, "stain", 5) || !strncmp(rest, "bonfire", 7))) {
+                        c->text = rest[0] == 's' ? "stain" : "bonfire";
+                        sscanf(rest + strlen(c->text), "%f", &c->a[2]);
+                    } else if (c->op == C_RAM) {
+                        c->a[0] = !strncmp(rest, "check", 5);
+                        if (c->a[0] && sscanf(rest + 5, "%f", &c->a[1]) != 1)
+                            printf("TEST error line %d: 'ram check' needs KB\n", line);
+                    } else if (c->op == C_APPROACH && !strncmp(rest, "obj", 3)) {
                         c->text = "obj";
                         sscanf(rest + 3, "%f %f", &c->a[2], &c->a[3]);
                     } else {
@@ -176,6 +197,26 @@ static int parse(Prog *p, char *text)
             }
         }
         s = next;
+    }
+    if (play) {
+        /* "option play": the script plays as a person with a pad. One spawn at the start, then only pad input:
+         * no teleports, no camera set from the script, no walker that steers the camera, no event calls that
+         * stand in for a button */
+        int moved = 0;
+        for (int i = 0; i < p->n; i++) {
+            Cmd *c = &p->cmd[i];
+            const char *bad = 0;
+            if (c->op == C_SPAWN && moved)
+                bad = "spawn (a teleport) after the start";
+            else if (c->op == C_APPROACH || c->op == C_CAM || c->op == C_PITCH || c->op == C_FREEZE)
+                bad = "a command that sets the camera or freezes the world (use go / rstick)";
+            else if (c->op == C_EV && (!strncmp(c->text, "warp", 4) || !strncmp(c->text, "action", 6) ||
+                                       !strncmp(c->text, "stain go", 8) || !strncmp(c->text, "bf", 2)))
+                bad = "an ev command that stands in for walking or a button (use go / pad cross)";
+            if (bad)
+                printf("TEST error line %d: option play: %s\n", c->line, bad);
+            moved |= c->op == C_GO || c->op == C_STICK || c->op == C_RSTICK || c->op == C_PAD;
+        }
     }
     return opts;
 }
@@ -318,11 +359,73 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                 p->cam_on = 1;
                 p->cam_yaw = atan2f(dx, dz);
                 in->mx = 0, in->my = c->a[3];
+                drive = 1;
                 return 1;
             }
             p->t = 0;
             break;
         }
+        case C_GO: {
+            float tx = c->a[0], tz = c->a[1], r = c->a[2] > 0 ? c->a[2] : 0.8f;
+            if (c->text && c->text[0] == 'b') {  /* the nearest bonfire, stopping in reach of it (facing it) */
+                float f[3] = {pl->pos.x, pl->pos.y, pl->pos.z}, b[3];
+                if (!ev_bonfire_nearest(f, b)) {
+                    printf("TEST error line %d: go bonfire: no bonfire\n", c->line);
+                    break;
+                }
+                tx = b[0], tz = b[2];
+                if (!(c->a[2] > 0))
+                    r = 2.0f;  /* inside REACH_LIT 3.4 m (ev_misc.c), short of the bonfire's own collision */
+            } else if (c->text) {
+                if (!prog.stain_map) {
+                    printf("TEST error line %d: go stain: there is no bloodstain\n", c->line);
+                    break;
+                }
+                tx = prog.stain_pos[0], tz = prog.stain_pos[2];
+            }
+            float dx = tx - pl->pos.x, dz = tz - pl->pos.z, d = sqrtf(dx * dx + dz * dz);
+            if (d <= r) {
+                p->t = 0;
+                break;
+            }
+            if (pl->hp < 0) {  /* died on the way (a fall, a kill): the walk ends there, as a player's would */
+                if (p->t > 0)
+                    printf("TEST log go line %d: died at %.2f %.2f %.2f\n", c->line, pl->pos.x, pl->pos.y, pl->pos.z);
+                p->t = 0;
+                break;
+            }
+            if (p->t == 0)
+                p->go_best = d, p->go_t = 0;
+            p->t += dt;
+            if (loading_active())  /* behind a loading screen no one can walk */
+                p->go_t += dt;
+            if (d < p->go_best - GO_PROGRESS) {
+                p->go_best = d, p->go_t = p->t;
+            } else if (p->t - p->go_t > GO_STUCK_S) {
+                printf("TEST error stuck line %d: at %.2f %.2f %.2f, %.1f m from %.1f,%.1f, no %.1f m of progress in %.0f s\n",
+                       c->line, pl->pos.x, pl->pos.y, pl->pos.z, d, tx, tz, GO_PROGRESS, GO_STUCK_S);
+                p->t = 0;
+                break;  /* on to the next point (--keep-going shows how far the rest gets) */
+            }
+            /* as a player: the left stick towards the point relative to where the camera looks, the right stick
+             * swings the camera round behind the walk (main.c: cam_yaw += cx * 2.5 rad/s) */
+            float a = remainderf(atan2f(dx, dz) - cur_cam_yaw, 6.2831853f);
+            in->mx = sinf(a), in->my = cosf(a);
+            in->cx = a * 1.5f > 1 ? 1 : a * 1.5f < -1 ? -1 : a * 1.5f;
+            p->cam_on = 0;
+            drive = 2;
+            return 1;
+        }
+        case C_RAM:
+            if (!c->a[0]) {
+                ram_mark = test_mb.ram_free;
+                printf("TEST ram mark %d KB\n", ram_mark >> 10);
+            } else {
+                int diff = (test_mb.ram_free - ram_mark) >> 10;
+                printf("TEST %sram check %d KB, mark %d KB (%+d KB, allowed -%d)\n",
+                       diff < -(int)c->a[1] ? "error " : "", test_mb.ram_free >> 10, ram_mark >> 10, diff, (int)c->a[1]);
+            }
+            break;
         case C_SHOT:
             if (!shot_wait) {
                 strncpy((char *)test_mb.shot_name, c->text, sizeof test_mb.shot_name - 1);
@@ -358,29 +461,69 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
     return p->pc < p->n;
 }
 
-unsigned short test_pad(void)
+/* The pad as the script holds it this frame (test_script_frame), read by main.c's pad_input in place of libpad */
+static unsigned short fake_btn;
+static float fake_ax[4];  /* mx my cx cy */
+
+static unsigned char axis_byte(float f)
 {
-    unsigned short m = pad_pending;
-    pad_pending = 0;
-    return m;
+    int v = 128 + (int)lrintf(f * 127);
+    return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
-int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo_on)
+void test_pad_read(struct padButtonStatus *st)
 {
-    Prog *p = script.n && !script.done ? &script : demo_on && !script.n ? &demo : 0;
-    if (!p)
+    memset(st, 0, sizeof *st);
+    st->mode = 0x73;  /* DualShock */
+    st->btns = 0xFFFF ^ fake_btn;  /* libpad: 0 = pressed */
+    st->ljoy_h = axis_byte(fake_ax[0]), st->ljoy_v = axis_byte(-fake_ax[1]);  /* main.c: my = -ljoy_v */
+    st->rjoy_h = axis_byte(fake_ax[2]), st->rjoy_v = axis_byte(fake_ax[3]);
+}
+
+int test_script_frame(Player *pl, float *cam_yaw, float *cam_pitch, float dt)
+{
+    Prog *p = &script;
+    if (!script.n || script.done)
         return 0;
     Input mv = {0};
-    if (!step(p, &mv, pl, dt, p == &script)) {
+    drive = 0;
+    cur_cam_yaw = *cam_yaw;
+    if (!step(p, &mv, pl, dt, 1)) {
         p->done = 1;
         frozen = 0;
         test_mb.state = 2;
         ft_print("all", ft_all);
         printf("TEST DONE frames %u\n", test_mb.frame);
     }
+    Input in = p->held;
+    in.r1 = mv.r1;
+    if (drive)  /* approach / go drive the left stick themselves, go the right one too */
+        in.mx = mv.mx, in.my = mv.my;
+    if (drive == 2)
+        in.cx = mv.cx, in.cy = 0;
+    if (p->cam_on)
+        *cam_yaw = p->cam_yaw, *cam_pitch = p->cam_pitch;
+    if (test_frozen())
+        in = (Input){0};
+    /* through the pad layer (TECH_DEBT test-1): main.c reads these as a pad, with its dead zone, d-pad and edges */
+    fake_btn = (in.circle ? PAD_CIRCLE : 0) | (in.r1 ? PAD_R1 : 0) | pad_pending;
+    pad_pending = 0;
+    fake_ax[0] = in.mx, fake_ax[1] = in.my, fake_ax[2] = in.cx, fake_ax[3] = in.cy;
+    return 1;
+}
+
+int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo_on)
+{
+    Prog *p = demo_on && !script.n ? &demo : 0;  /* the idle demo; scripts go through test_script_frame */
+    if (!p)
+        return 0;
+    Input mv = {0};
+    drive = 0;
+    if (!step(p, &mv, pl, dt, 0))
+        p->done = 1;
     *in = p->held;
     in->r1 = mv.r1;
-    if (mv.my)  /* approach drives the stick itself */
+    if (drive)
         in->mx = mv.mx, in->my = mv.my;
     if (p->cam_on)
         *cam_yaw = p->cam_yaw, *cam_pitch = p->cam_pitch;
@@ -408,6 +551,23 @@ void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms,
     m->tris = tris, m->vu1_batches = map_vu1_batches, m->ee_tris = map_ee_tris;
     m->enemies_active = enemy_active, m->enemies_drawn = enemy_drawn;
     m->hp = pl->hp, m->deaths = pl->deaths;
+    {
+        /* each death: the time until the player is back in control at the respawn point (loading screen gone, HP
+         * full), the RAM free then and where (tests check the bonfire with ev expect respawn / check near) */
+        static int dying, deaths0;
+        static float settle;
+        if (pl->hp < 0 && !dying)
+            dying = 1, settle = 0, deaths0 = pl->deaths;
+        if (dying) {
+            settle += dt_real;
+            if (pl->deaths > deaths0 && pl->hp > 0 && !loading_active()) {
+                dying = 0;
+                printf("TEST %srespawn death %d settle %.2f s ram %d KB at %.2f %.2f %.2f respawn %d\n",
+                       settle > SETTLE_MAX_S ? "error " : "", pl->deaths, settle, m->ram_free >> 10, pl->pos.x,
+                       pl->pos.y, pl->pos.z, (int)prog.respawn);
+            }
+        }
+    }
     if (shot_wait)
         return;  /* the frozen frames waiting for the host are not part of any segment */
     if (!m->seg_frames)

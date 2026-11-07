@@ -1,15 +1,18 @@
 /* In-ELF test runner (tools/test-*.sh, tools/pine.py). A plain-text script loaded at boot drives the pad, camera,
- * teleports, waits and screenshot markers, so a test needs no rebuild. The script path comes from the ELF's argv
+ * teleports, waits and screenshot markers, so a test needs no rebuild. The script's sticks and buttons go through a fake pad that main.c's
+ * pad_input reads in place of libpad's (dead zone, d-pad, button edges, the action button as a player's pad). The script path comes from the ELF's argv
  * (PCSX2 -gameargs 'test=tests/x.txt', ps2client execee host:proto.elf test=...), relative to host: (the ELF's folder).
  * Without one the pad drives the player. The built-in demo walk (after 5 s without pad input) is test-only: it plays
  * only when a script asks for it ("option demo") or in a demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO).
  *
  * Script: one command per line, '#' comments, times in game seconds (the frame dt main.c uses):
+ *   option play             the script plays as a person: one spawn at the start, then pad input only (a later
+ *                           spawn, approach, cam, pitch, freeze, ev warp / action / stain go / bf are TEST errors)
  *   option noenemies|hud|holes|demo|skipmiss|god   boot options (top of the file): no enemy roster / debug HUD /
  *                           magenta colour clear so uncovered pixels show / the idle demo walk once the script has
  *                           ended or has no commands (off otherwise; "nodemo" is still accepted, a no-op) / a spawn
- *                           without collision floor skips to the next spawn / the player's HP stays full (enemies
- *                           on, for routes the walker cannot fight; combat.c)
+ *                           without collision floor skips to the next spawn / enemy hits do no damage (enemies on,
+ *                           for routes the walker cannot fight; combat.c; "kill" and lethal falls still kill)
  *   spawn x y z [yaw]       teleport the player onto the collision floor under (x, y, z) (y + 3 .. y - 10 m)
  *   cam yaw pitch           camera yaw / pitch in rad (absolute), held until "cam off"; "cam off" = pad/script stick
  *   pitch p                 camera pitch only (yaw as the last cam / approach set it)
@@ -20,6 +23,10 @@
  *   wait s                  wait s game seconds (frames n: wait n frames)
  *   approach obj|x,z d speed  turn the camera at the nearest breakable (obj) or point and walk at `speed` until
  *                           within d m (gives up after 10 s)
+ *   go x,z [r] | go stain [r] | go bonfire [r]  walk to the point (the bloodstain, the nearest bonfire: r 2) within r m (0.8) as a player: the left stick
+ *                           towards it relative to the camera, the right stick turns the camera after the walk; no
+ *                           0.3 m of progress in 5 s (alive, no loading screen) = "TEST error stuck ..." (fails the run)
+ *   ram mark / ram check kb  remember the RAM free / "TEST error ram check" when it is now more than kb KB below that
  *   freeze 0|1              1: player / enemies / objects not updated (render-only; autotest uses it)
  *   stats                   reset the per-segment stats (each shot also resets them)
  *   shot name               marker: world frozen, mailbox shot_seq++ with the name; waits for the host's shot_ack
@@ -34,11 +41,14 @@
  *   save / load / wipe      write the save now / reload it / delete both slots (save.h); saves are off in a test
  *                           run unless "option save mc" or "option save host [name]" (host:<name>0.bin / 1.bin)
  *   loop / end              restart the script / stop (prints "TEST DONE", input idle afterwards)
+ * Every death prints "TEST respawn death n settle s ram kb at x y z respawn id" once the player is back in control
+ * (over 12 s: TEST error).
  * Results: EE log lines "TEST ..." (emulog.txt) and the mailbox test_mb (pine.py reads it by symbol, or by the address
  * printed as "TEST mailbox 0x..." when the ELF is stripped). */
 #ifndef TESTSCRIPT_H
 #define TESTSCRIPT_H
 
+#include <libpad.h>
 #include "player.h"
 
 #define TEST_NOENEMIES 1
@@ -74,11 +84,13 @@ extern int test_god;  /* "option god" */
 int test_init(int argc, char **argv);
 int test_active(void);  /* a script is loaded and not finished */
 int test_frozen(void);  /* world updates paused (shot marker / freeze 1) */
-/* Fills *in for this frame from the script (or the built-in demo when demo != 0 and no script); may set the camera
- * and teleport the player. Returns 1 if it produced the input. */
+/* The built-in idle demo (demo != 0 and no script): fills *in directly. Returns 1 if it produced the input. */
 int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo);
-/* Buttons the script pressed ("pad") since the last call, as libpad PAD_* bits (main.c ORs them into its pressed mask) */
-unsigned short test_pad(void);
+/* Runs the script for this frame (before the pad is read): fills the fake pad test_pad_read returns, may set the
+ * camera and teleport the player (spawn). Returns 1 while a script runs (main.c then reads test_pad_read, not libpad). */
+int test_script_frame(Player *pl, float *cam_yaw, float *cam_pitch, float dt);
+/* The script's pad this frame as libpad's padRead gives it (sticks, held Circle, R1 / "pad" presses for one frame) */
+void test_pad_read(struct padButtonStatus *st);
 /* Compile-time check builds (make EE_DBGINFOFLAGS=-D..., notes/PORTING.md): fixed input and camera that replace the
  * script / pad. All are no-ops in a plain build.
  *   COL_TEST=n          collision / movement runs from the spawn (wall slide, ledge drops, stairs, plunge, R1 on the dummy)

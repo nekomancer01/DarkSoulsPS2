@@ -87,16 +87,20 @@ static float axis(unsigned char v)
 }
 
 /* Returns 1 if the pad produced any input this frame */
-static int pad_input(Input *in, unsigned short *prev)
+static int pad_input(Input *in, unsigned short *prev, int scripted)
 {
     struct padButtonStatus st;
-    int state = pad_ok ? padGetState(0, 0) : -1;
-    if (state != PAD_STATE_STABLE && state != PAD_STATE_FINDCTP1)
-        return 0;
-    if (!padRead(0, 0, &st))
-        return 0;
+    if (scripted) {
+        test_pad_read(&st);  /* a test script's pad (src/testscript.c): the same path as libpad's from here on */
+    } else {
+        int state = pad_ok ? padGetState(0, 0) : -1;
+        if (state != PAD_STATE_STABLE && state != PAD_STATE_FINDCTP1)
+            return 0;
+        if (!padRead(0, 0, &st))
+            return 0;
+    }
     static int dual;
-    if (!dual) {  /* analog sticks need DualShock mode */
+    if (!dual && !scripted) {  /* analog sticks need DualShock mode */
         padSetMainMode(0, 0, PAD_MMODE_DUALSHOCK, PAD_MMODE_LOCK);
         dual = 1;
     }
@@ -498,13 +502,14 @@ int main(int argc, char **argv)
         if (dt < 1.0f / 60)
             dt = 1.0f / 60;
         Input in = {0};
+        /* a test script runs first and holds a fake pad that pad_input reads instead of libpad's */
+        int scripted = test_script_frame(&pl, &cam_yaw, &cam_pitch, dt);
         unsigned short held = prev;
-        if (pad_input(&in, &prev))
+        if (pad_input(&in, &prev, scripted))
             idle = 0;
         else
             idle += dt;
         unsigned short pressed = prev & ~held;
-        pressed |= test_pad();  /* test script "pad" presses */
         if (pressed & PAD_SELECT)
             hud_debug = !hud_debug;
         if (pressed & PAD_L3) {  /* debug: helm off / on, to see the face (DSR's hide rule, model_helmet) */
@@ -516,7 +521,7 @@ int main(int argc, char **argv)
             idle = 0;
         }
         int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
-        if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
+        if (demo)  /* the idle demo when a script asked for it (a script itself drives the pad: test_script_frame) */
             test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
         test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 

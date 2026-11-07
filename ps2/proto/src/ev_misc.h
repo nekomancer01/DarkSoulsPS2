@@ -34,7 +34,8 @@ int ev_bonfire_level(s32 entity);
 int ev_bonfire_points(s32 entity);
 void ev_bonfire_add_points(s32 entity, int n);  /* capped 0..40 */
 int ev_bonfire_estus(s32 entity);                /* Estus charges a rest there gives (CalcCorrectGraph 150) */
-int ev_bonfire_pos(s32 entity, float pos[3]);    /* object position; 0 if not registered */
+int ev_bonfire_pos(s32 entity, float pos[3]);
+int ev_bonfire_nearest(const float pos[3], float out[3]);  /* the registered bonfire nearest in x / z (tests: go bonfire) */    /* object position; 0 if not registered */
 void ev_bonfire_light(s32 entity);               /* lighting: its flag on, 10 points */
 /* The registered bonfire whose prompt shows for the player at pos / yaw (talk ESD reach), 0 none */
 s32 ev_bonfire_near(const float pos[3], float yaw);
