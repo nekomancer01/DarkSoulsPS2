@@ -80,6 +80,18 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #define HZN_FADE 8.0f
 #endif
 #define MAX_HZ_FADE 64  /* cells fading in per frame */
+/* the fading horizon is depth tested as if HZN_ZBIAS of its distance nearer: it is the coarse surface simplified
+ * (horizon.py measures it within HZN_PX 8 px of 568: 1.4 % of the distance), so where it lies just behind the coarse
+ * level it still blends instead of leaving the coarse level unfaded. ASSUMED 3 % (about twice that error, deviations
+ * seen up to ~60 degrees off the view ray). 0: the plain depth test */
+#ifndef HZN_ZBIAS
+#define HZN_ZBIAS 0.03f
+#endif
+/* make DEFS=-DHZN_FADE_DEBUG=1: the fade pass draws the horizon solid magenta (full fog in that colour, alpha 1), so a
+ * shot shows which pixels of the fading cells it reaches (coarse level left showing = unfaded) */
+#ifndef HZN_FADE_DEBUG
+#define HZN_FADE_DEBUG 0
+#endif
 #define CHUNK_HZN 256
 #define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
 #define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
@@ -1357,26 +1369,43 @@ int map_draw(V3 eye)
         }
     }
     mapstream_select(0);
-    if (nhzfade) {  /* horizons fading in (HZN_FADE) over their cells' coarse level: Cs a + Cd (1 - a), no Z write */
+    if (nhzfade) {
+        /* horizons fading in (HZN_FADE) over their cells' coarse level, Cs a + Cd (1 - a), in two passes so each pixel
+         * blends once, with the nearest horizon layer: 1. depth only (alpha FIX 0: Cd kept, Z written) where the horizon
+         * is in front of the coarse level or within HZN_ZBIAS behind it; 2. colour, Z tested GEQUAL against pass 1 (its
+         * own Z passes, the layers behind it fail: the horizon is double-sided, a back face or a second wall would blend
+         * again), not written. Pass 1 leaves the horizon's depth in those pixels for the effects drawn after (at most
+         * HZN_ZBIAS nearer than the coarse level there) */
+        vu1_map_zbias(1.0f + HZN_ZBIAS);
         vu1_map_fog(a, b, fmin, 255);
         vu1_map_edge(edge_a2);
-        u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
-        for (int i = 0; i < nhzfade; i++) {
-            const MapInst *mk = &inst[hzfade[i].k];
-            const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
-            u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, hzfade[i].a), 0x42, zb, 0x4E};
-            vu1_gs_regs(2, r);
-            for (unsigned j = 0; j < hc->count; j++) {
-                const Chunk *c = &mk->hz_chunk[hc->first + j];
-                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
-                    continue;
-                int cls = visible(c, e, 0);
-                if (cls) {
-                    unsigned dn = draw_hz(mk, c, cls, VU1_BLEND);
-                    drawn += dn, hz_tris += dn;
+        u64 zw = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), zb = zw | (1ull << 32);
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < nhzfade; i++) {
+                const MapInst *mk = &inst[hzfade[i].k];
+                const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
+                if (HZN_FADE_DEBUG && pass && !i) {
+                    u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
+                    vu1_gs_regs(1, fc);
+                    vu1_map_fog(a, b, 0, 0);
+                }
+                u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, pass ? (HZN_FADE_DEBUG ? 0x80 : hzfade[i].a) : 0), 0x42,
+                            pass ? zb : zw, 0x4E};
+                vu1_gs_regs(2, r);
+                for (unsigned j = 0; j < hc->count; j++) {
+                    const Chunk *c = &mk->hz_chunk[hc->first + j];
+                    if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
+                        continue;
+                    int cls = visible(c, e, 0);
+                    if (cls) {
+                        unsigned dn = draw_hz(mk, c, cls, VU1_BLEND);
+                        if (pass)
+                            drawn += dn, hz_tris += dn;
+                    }
                 }
             }
-        }
+        vu1_map_zbias(1.0f);
+        vu1_map_fog(a, b, fmin, 255);
         blend_regs(gs, 0);
     }
     bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */

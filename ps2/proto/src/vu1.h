@@ -46,6 +46,9 @@ void vu1_mip(int mxl, int k, u64 miptbp1);
 /* Map program fog for the following batches: F = clamp(a * view z + b, fmin, fmax), 255 = no fog. Call after
  * vu1_begin before the first map batch (the map program writes XYZF2 and needs these constants). */
 void vu1_map_fog(float a, float b, float fmin, float fmax);
+/* the map programs' Z scale x k from the next vu1_map_fog on (Z = Zs / z: k > 1 draws as if nearer by z (1 - 1 / k),
+ * screen position and fog unchanged); 1 restores it */
+void vu1_map_zbias(float k);
 /* Edge fog slope a2 (fog units per metre of view z, <= 0) for the following VU1_EDGE batches */
 void vu1_map_edge(float a2);
 /* Set n GS registers (pairs {value, register address}) between batches, in draw order (FLUSH + DIRECT) */

@@ -524,6 +524,13 @@ void vu1_skin_fade(float fmax)
     skin_fade = fmax;
 }
 
+static float map_zk = 1.0f;
+
+void vu1_map_zbias(float k)
+{
+    map_zk = k;
+}
+
 void vu1_map_fog(float a, float b, float fmin, float fmax)
 {
     skin_fog[0] = a, skin_fog[1] = b, skin_fog[2] = fmin, skin_fog[3] = fmax;
@@ -536,7 +543,7 @@ void vu1_map_fog(float a, float b, float fmin, float fmax)
     room(6);
     tag(0, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_STCYCL, 0, 0x0101));  /* batches leave STCYCL at 3,1 */
     tag(4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 4, 4));
-    float m[16] = {focal, -focal_y, zscale, a,
+    float m[16] = {focal, -focal_y, zscale * map_zk, a,
                    R_SCREEN_W / 2 + gsg->OffsetX / 16.0f, 224.0f + gsg->OffsetY / 16.0f, 0, b,
                    focal / R_GUARD, focal_y / R_GUARD, 1, fmin,
                    0, 0, -2 * R_NEAR, fmax};
