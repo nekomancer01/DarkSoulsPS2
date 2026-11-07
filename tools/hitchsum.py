@@ -7,17 +7,18 @@ Prints one row per window (default 5 min of game time): worst frame, frames over
 read again after a drop), evictions of wanted items, LOD flips / flip-flops, the lowest free heap, the smallest
 "largest block" malloc found, the smallest largest free run of the streaming arena; then the ten worst periods with
 their section split and the cells that flipped most. The last row compares the first and the last window
-(degradation over time). Used by tools/test-run.py --hitch (gates) and by hand."""
+(degradation over time). Used by tools/test-run.py --hitch (gates), play-report.sh (summary.txt in a play-test report) and by hand."""
 import argparse, collections, json, re, sys
 
 NUM = r"(\d+)"
 LINE = re.compile(r"hitch: t (\d+) s frames (\d+) avg (\d+) max (\d+) ms over50 (\d+) over100 (\d+) over200 (\d+) \| worst "
                   r"(.*?) \| heap free (\d+) KB largest (\d+) KB \| arena free (\d+) KB run (\d+) KB other (\d+) KB \| reads "
                   r"(\d+) \((\d+) KB\) again (\d+) \((\d+) KB\)(?: thrash (\d+) \((\d+) KB\))? drops (\d+) evicted (\d+) \((\d+) KB\) \| blocks (\d+) "
-                  r"\((\d+) KB\) \| lod flips (\d+) flops (\d+)(?: \| loads (\d+) longest (\d+) ms \|)? top(.*)")
+                  r"\((\d+) KB\) \| lod flips (\d+) flops (\d+)(?: \| loads (\d+) longest (\d+) ms \|)?"
+                  r"(?: spikes (\d+) \(\+(\d+)\) \| allocfail (\d+) \(max (\d+) KB\) \| at (-?\d+) (-?\d+) (-?\d+) block (-?\d+) \|)? top(.*)")
 KEYS = ["t", "frames", "avg", "max", "o50", "o100", "o200", "worst", "heap", "largest", "afree", "arun", "other",
         "reads", "read_kb", "again", "again_kb", "thrash", "thrash_kb", "drops", "evicts", "evict_kb", "blocks", "block_kb", "flips", "flops",
-        "loads", "load_max", "top"]
+        "loads", "load_max", "spikes", "spikes_cut", "allocfail", "allocfail_kb", "x", "y", "z", "block", "top"]
 
 
 def parse(path):
@@ -45,6 +46,7 @@ def window_stats(rows):
             "again": s("again"), "again_kb": s("again_kb"), "thrash_kb": s("thrash_kb"), "evicts": s("evicts"), "evict_kb": s("evict_kb"),
             "read_kb": s("read_kb"), "block_kb": s("block_kb"), "flips": s("flips"), "flops": s("flops"),
             "loads": s("loads"), "load_max": max(r["load_max"] for r in rows),
+            "spikes": s("spikes") + s("spikes_cut"), "allocfail": s("allocfail"),
             "heap_min": min(r["heap"] for r in rows), "largest_min": min(r["largest"] for r in rows),
             "arun_min": min(r["arun"] for r in rows), "afree_min": min(r["afree"] for r in rows)}
 
@@ -59,7 +61,7 @@ def summarize(rows, window=300):
         for c, n in r["top"]:
             cells[c] += n
     out["top_cells"] = cells.most_common(10)
-    out["worst"] = [{"t": r["t"], "max": r["max"], "split": r["worst"]} for r in sorted(rows, key=lambda r: -r["max"])[:10]]
+    out["worst"] = [{"t": r["t"], "max": r["max"], "split": r["worst"], "at": f"{r['x']} {r['y']} {r['z']} block {r['block']}"} for r in sorted(rows, key=lambda r: -r["max"])[:10]]
     w = out["windows"]
     if len(w) >= 2:
         a, b = w[0], w[-1]
@@ -69,7 +71,7 @@ def summarize(rows, window=300):
 
 
 COLS = ["t0", "max", "avg", "o50", "o100", "o200", "loads", "load_max", "again", "thrash_kb", "evicts", "read_kb", "block_kb",
-        "flips", "flops",
+        "flips", "flops", "spikes", "allocfail",
         "heap_min", "largest_min", "arun_min"]
 
 
@@ -88,7 +90,7 @@ def main():
         print(" ".join(f"{w[c]:>9}" for c in COLS))
     print("worst periods:")
     for x in s["worst"]:
-        print(f"  t {x['t']:5} max {x['max']:4} ms: {x['split']}")
+        print(f"  t {x['t']:5} max {x['max']:4} ms: {x['split']} (at {x['at']})")
     print("cells flipping most:", ", ".join(f"{c} x{n}" for c, n in s["top_cells"]))
     if "drift" in s:
         print("first -> last window:", ", ".join(f"{k} {v[0]} -> {v[1]}" for k, v in s["drift"].items()))

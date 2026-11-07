@@ -155,6 +155,13 @@ and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also cop
 how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it pulls the official
 ps2dev image (`ps2dev/ps2dev:v2.0.0`) and builds in a container on it with Docker or Podman (`tools/build-iso.sh`).
 
+To report a problem, play with `./play-report.sh` instead of opening the ISO yourself. It starts PCSX2 with
+`build/proto.iso` and your own settings and memory cards, records PCSX2's log with the game's, and takes a screenshot of
+the window every 2 seconds. Type a note in its terminal and press Enter to mark the moment something goes wrong (it also
+saves a savestate there). When you close PCSX2 it writes one zip to `build/play-reports/` (a summary, the log, the
+screenshots, your marks): attach that file to the report. `--help` lists the options. It needs `python3`, and for the
+screenshots ImageMagick and `xprop`.
+
 ### Controls (DualShock 2)
 
 | Button | Action |
@@ -182,7 +189,7 @@ press any button to take over.
 | `OUT OF RAM: ...` in the PCSX2 log | The PS2 has 32 MB of RAM and the port runs close to it. Please report it with the spot. |
 | The build is killed or the PC slows down | The export needs a lot of RAM. Close other programs and run it again; heavy jobs go through `tools/q`, which waits for free RAM. |
 
-The PCSX2 log is `emulog.txt` in PCSX2's `logs` folder (Flatpak: `~/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/`).
+For a report, `./play-report.sh` collects all of this for you (see step 6). The PCSX2 log is `emulog.txt` in PCSX2's `logs` folder (Flatpak: `~/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/`).
 
 ## More build options
 
