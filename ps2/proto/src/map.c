@@ -1313,8 +1313,12 @@ int map_draw(V3 eye)
                     drawn += dn, k_drawn[k] += dn;
                 }
             }
-            for (unsigned j = 0; use_hz && j < hc->count; j++) {  /* the horizon (no draw groups / pvs rows: merged) */
+            for (unsigned j = 0; use_hz && j < hc->count; j++) {  /* the horizon (no pvs rows: merged) */
                 const Chunk *c = &m->hz_chunk[hc->first + j];
+                /* one mesh per draw-group set (horizon.py, flags >> 16 = dg.bin piece mask; 0 always drawn): only
+                 * the sets the floor's groups show, as the chunks it stands for */
+                if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
+                    continue;
                 int cls = visible(c, e, 0);
                 if (cls) {
                     unsigned dn = draw_hz(m, c, cls);

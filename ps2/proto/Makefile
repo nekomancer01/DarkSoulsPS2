@@ -250,7 +250,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 # it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet). HZN=0: none (old path)
 $(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum
 	python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
-$(A)/hzn.bin: $(A)/map.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum
+$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum
 	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
 
 # Objects: src/*.c -> $(O)/*.o; area-dependent objects of a non-default area go to $(O)/<MAP>/
