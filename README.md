@@ -161,6 +161,10 @@ the window every 2 seconds. Type a note in its terminal and press Enter to mark 
 saves a savestate there). When you close PCSX2 it writes one zip to `build/play-reports/` (a summary, the log, the
 screenshots, your marks): attach that file to the report. `--help` lists the options. It needs `python3`, and for the
 screenshots ImageMagick and `xprop`.
+Then it opens the report in your browser (`./annotate-report.sh`, or later `./annotate-report.sh build/play-reports/<zip>`):
+step through the screenshots with the arrow keys, click a shot to pin a numbered comment on it, and write a note for the
+shot or the whole report. The notes are saved into the same zip as you go (`annotations/`: `notes.md`, `notes.json`
+and each annotated shot with its pins drawn), so the zip you attach carries them. Ctrl+C in the terminal when done.
 
 ### Controls (DualShock 2)
 

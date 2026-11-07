@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Play report notes</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #dcdcd6;
+  --accent: #c2410c; --mark: #b45309; --pin: #e11d48; --ok: #15803d; --err: #b91c1c; --code: #f0f0ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --text: #e9e9e4; --muted: #9a9a92; --line: #34342f;
+    --accent: #fb923c; --mark: #fbbf24; --pin: #fb7185; --ok: #4ade80; --err: #f87171; --code: #262623;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; height: 100vh;
+  display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+header { display: flex; gap: 12px; align-items: baseline; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+header .path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+#status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+#status.ok { color: var(--ok); } #status.err { color: var(--err); }
+main { display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+#view { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 10px; }
+#frame { position: relative; max-width: 100%; max-height: 100%; cursor: crosshair; line-height: 0; }
+#frame img { display: block; user-select: none; -webkit-user-drag: none; }
+.pin { position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px; border-radius: 50%; background: var(--pin);
+  color: #fff; font: 600 12px/24px system-ui, sans-serif; text-align: center; border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.6); cursor: grab; }
+.pin.sel { outline: 3px solid var(--accent); outline-offset: 1px; }
+#tlabel { position: absolute; left: 14px; top: 10px; font-size: 12px; color: var(--muted); line-height: 1.4; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 10px 14px 20px; }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+aside h2:first-child { margin-top: 2px; }
+textarea { width: 100%; resize: vertical; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-height: 44px; }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pinrow { display: grid; grid-template-columns: 26px 1fr 24px; gap: 6px; align-items: start; margin-bottom: 6px; }
+.pinrow .n { width: 22px; height: 22px; border-radius: 50%; background: var(--pin); color: #fff; text-align: center;
+  font: 600 12px/22px system-ui, sans-serif; margin-top: 6px; cursor: pointer; }
+.pinrow.sel textarea { border-color: var(--accent); }
+button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.x { padding: 0; width: 24px; height: 24px; margin-top: 5px; color: var(--muted); }
+.hint { color: var(--muted); font-size: 12px; }
+ul.list { list-style: none; margin: 0; padding: 0; }
+ul.list li { padding: 3px 6px; border-radius: 4px; cursor: pointer; display: flex; gap: 8px; }
+ul.list li:hover { background: var(--bg); }
+ul.list li .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 52px; }
+pre { background: var(--code); border-radius: 6px; padding: 6px 8px; font-size: 11px; line-height: 1.35;
+  white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; margin: 0; }
+footer { border-top: 1px solid var(--line); padding: 8px 14px 10px; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+#track { position: relative; height: 28px; }
+#track input { position: absolute; inset: 8px 0 auto 0; width: 100%; margin: 0; }
+.tick { position: absolute; top: 0; width: 3px; height: 8px; margin-left: -1px; border-radius: 1px; pointer-events: none; }
+.tick.mark { background: var(--mark); } .tick.ann { background: var(--pin); top: 20px; }
+#pos { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; white-space: nowrap; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+@media (max-width: 800px) {
+  body { height: auto; overflow: auto; }
+  main { grid-template-columns: 1fr; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="name">Play report</h1><span class="path" id="path"></span><span id="status">loading</span>
+</header>
+<main>
+  <section id="view">
+    <div id="tlabel"></div>
+    <div id="frame"><img id="img" alt="screenshot"></div>
+  </section>
+  <aside>
+    <h2>This shot</h2>
+    <textarea id="note" placeholder="What is wrong here (optional)"></textarea>
+    <div id="pins"></div>
+    <p class="hint">Click the image to pin a comment, drag a pin to move it. ← → step, PgUp/PgDn 10 shots, N/P next or
+      previous annotated shot, M next mark, Delete removes the selected pin.</p>
+    <h2>Whole report</h2>
+    <textarea id="summary" placeholder="Overall note for the report (optional)"></textarea>
+    <h2>Annotated shots</h2>
+    <ul class="list" id="annlist"></ul>
+    <h2>Marks from play</h2>
+    <ul class="list" id="marklist"></ul>
+    <h2>Log before this shot</h2>
+    <pre id="log"></pre>
+    <h2>Summary</h2>
+    <details><summary>summary.txt</summary><pre id="sumtxt"></pre></details>
+  </aside>
+</main>
+<footer>
+  <button id="prev" title="Previous shot (←)">◀</button>
+  <div id="track"><input type="range" id="slider" min="0" value="0"></div>
+  <span id="pos"></span>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+let R, shots = [], idx = 0, notes = { version: 1, summary: '', shots: {} }, sel = -1;
+const dirty = new Set(); let saveTimer = null, saving = false, again = false;
+
+function fmt(t) { return t.toFixed(1) + ' s'; }
+function cur() { return shots[idx]; }
+function entry(make) {
+  const f = cur().file;
+  if (!notes.shots[f] && make) notes.shots[f] = { t: cur().t, note: '', pins: [] };
+  return notes.shots[f];
+}
+function annotated(f) { const s = notes.shots[f]; return s && (s.pins.length || s.note.trim()); }
+
+async function load() {
+  R = await (await fetch('/api/report')).json();
+  shots = R.shots;
+  if (R.notes && R.notes.shots) notes = Object.assign({ version: 1, summary: '' }, R.notes);
+  $('name').textContent = R.name; $('path').textContent = R.path; document.title = 'Notes: ' + R.name;
+  $('summary').value = notes.summary || '';
+  $('sumtxt').textContent = R.summary || '(no summary.txt)';
+  $('slider').max = shots.length - 1;
+  $('marklist').innerHTML = '';
+  for (const m of R.marks) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="t">${fmt(m.t)}</span><span></span>`;
+    li.lastChild.textContent = `${m.n}: ${m.note || '(no note)'}`;
+    li.onclick = () => go(nearest(m.t));
+    $('marklist').appendChild(li);
+  }
+  if (!R.marks.length) $('marklist').innerHTML = '<li class="hint">none</li>';
+  ticks();
+  const first = R.marks.length ? nearest(R.marks[0].t) : 0;
+  go(first);
+  status('', 'ready: changes are saved into the report');
+}
+
+function nearest(t) {
+  let b = 0;
+  shots.forEach((s, i) => { if (Math.abs(s.t - t) < Math.abs(shots[b].t - t)) b = i; });
+  return b;
+}
+
+function ticks() {
+  document.querySelectorAll('.tick').forEach(e => e.remove());
+  const n = Math.max(1, shots.length - 1), tr = $('track');
+  const put = (i, cls) => { const d = document.createElement('div'); d.className = 'tick ' + cls;
+    d.style.left = `calc(${i / n * 100}% + ${8 - 16 * i / n}px)`; tr.appendChild(d); };
+  R.marks.forEach(m => put(nearest(m.t), 'mark'));
+  shots.forEach((s, i) => { if (annotated(s.file)) put(i, 'ann'); });
+  const ul = $('annlist'); ul.innerHTML = '';
+  shots.forEach((s, i) => {
+    if (!annotated(s.file)) return;
+    const e = notes.shots[s.file], li = document.createElement('li');
+    li.innerHTML = '<span class="t"></span><span></span>';
+    li.firstChild.textContent = fmt(s.t);
+    li.lastChild.textContent = (e.note.trim() || (e.pins[0] && e.pins[0].text) || '').slice(0, 60) +
+      (e.pins.length ? `  [${e.pins.length} pin${e.pins.length > 1 ? 's' : ''}]` : '');
+    li.onclick = () => go(i);
+    ul.appendChild(li);
+  });
+  if (!ul.children.length) ul.innerHTML = '<li class="hint">none yet</li>';
+}
+
+function go(i) {
+  idx = Math.max(0, Math.min(shots.length - 1, i)); sel = -1;
+  const s = cur();
+  $('img').src = '/shots/' + encodeURIComponent(s.file);
+  $('slider').value = idx;
+  $('pos').textContent = `${idx + 1} / ${shots.length}  ·  ${fmt(s.t)}`;
+  const near = R.marks.filter(m => Math.abs(m.t - s.t) <= 3);
+  $('tlabel').textContent = `t = ${fmt(s.t)}  shots/${s.file}` + near.map(m => `   ·  mark ${m.n}: ${m.note}`).join('');
+  const e = entry(false);
+  $('note').value = e ? e.note : '';
+  render();
+  fetch('/api/log?t=' + s.t).then(r => r.json()).then(l => { if (cur() === s) {
+    $('log').textContent = l.length ? l.join('\n') : '(no game log in the 3 s before this shot)';
+    $('log').scrollTop = 1e9; } });
+}
+
+function render() {
+  const e = entry(false), pins = e ? e.pins : [];
+  document.querySelectorAll('.pin').forEach(p => p.remove());
+  pins.forEach((p, i) => {
+    const d = document.createElement('div');
+    d.className = 'pin' + (i === sel ? ' sel' : ''); d.textContent = i + 1;
+    d.style.left = p.x * 100 + '%'; d.style.top = p.y * 100 + '%';
+    d.onpointerdown = ev => drag(ev, i, d);
+    $('frame').appendChild(d);
+  });
+  const box = $('pins'); box.innerHTML = '';
+  pins.forEach((p, i) => {
+    const row = document.createElement('div'); row.className = 'pinrow' + (i === sel ? ' sel' : '');
+    row.innerHTML = `<div class="n">${i + 1}</div><textarea rows="2" placeholder="Comment for pin ${i + 1}"></textarea><button class="x" title="Remove pin">✕</button>`;
+    const ta = row.querySelector('textarea'); ta.value = p.text;
+    ta.oninput = () => { p.text = ta.value; changed(); };
+    ta.onfocus = () => { if (sel !== i) { sel = i; mark(); } };
+    row.querySelector('.n').onclick = () => { sel = i; mark(); };
+    row.querySelector('.x').onclick = () => removePin(i);
+    box.appendChild(row);
+  });
+}
+function mark() {  // selection only, keeps focus in the textareas
+  document.querySelectorAll('.pin').forEach((d, i) => d.classList.toggle('sel', i === sel));
+  document.querySelectorAll('.pinrow').forEach((d, i) => d.classList.toggle('sel', i === sel));
+}
+
+function removePin(i) {
+  const e = entry(false); if (!e) return;
+  e.pins.splice(i, 1); sel = -1; render(); changed();
+}
+
+function frac(ev) {
+  const r = $('img').getBoundingClientRect();
+  return { x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) };
+}
+$('img').onclick = ev => {
+  const e = entry(true), p = frac(ev);
+  e.pins.push({ x: +p.x.toFixed(4), y: +p.y.toFixed(4), text: '' });
+  sel = e.pins.length - 1; render(); changed();
+  const tas = $('pins').querySelectorAll('textarea'); tas[tas.length - 1].focus();
+};
+function drag(ev, i, d) {
+  ev.preventDefault(); ev.stopPropagation();
+  sel = i; mark();
+  const p = entry(false).pins[i]; let moved = false;
+  d.setPointerCapture(ev.pointerId);
+  d.onpointermove = m => { const f = frac(m); p.x = +f.x.toFixed(4); p.y = +f.y.toFixed(4);
+    d.style.left = p.x * 100 + '%'; d.style.top = p.y * 100 + '%'; moved = true; };
+  d.onpointerup = () => { d.onpointermove = d.onpointerup = null;
+    if (moved) changed(); else { const ta = $('pins').querySelectorAll('textarea')[i]; ta && ta.focus(); } };
+}
+
+$('note').oninput = () => { entry(true).note = $('note').value; changed(); };
+$('summary').oninput = () => { notes.summary = $('summary').value; changed(false); };
+function fit() {  // the shot as large as the view allows, aspect kept (pins are fractions of the image)
+  const im = $('img'), v = $('view'); if (!im.naturalWidth) return;
+  const s = Math.min((v.clientWidth - 20) / im.naturalWidth, (v.clientHeight - 44) / im.naturalHeight);
+  im.style.width = Math.max(100, im.naturalWidth * s) + 'px'; im.style.height = Math.max(75, im.naturalHeight * s) + 'px';
+}
+$('img').onload = fit; window.onresize = fit;
+$('slider').oninput = () => go(+$('slider').value);
+$('prev').onclick = () => go(idx - 1);
+
+function changed(shot = true) {
+  if (shot) dirty.add(cur().file);
+  status('', 'unsaved changes');
+  clearTimeout(saveTimer); saveTimer = setTimeout(save, 800);
+  ticks();
+}
+
+// the shot with its pins, and the numbered comments under it, as a JPEG (annotations/<shot>.jpg)
+function drawn(file) {
+  const e = notes.shots[file];
+  return new Promise((ok, bad) => {
+    const im = new Image();
+    im.onload = () => {
+      const scale = Math.max(1, Math.ceil(720 / im.naturalWidth)), W = im.naturalWidth * scale, H = im.naturalHeight * scale;
+      const fs = 15, pad = 8, c = document.createElement('canvas'), g = c.getContext('2d');
+      g.font = `${fs}px sans-serif`;
+      const lines = [];
+      const wrap = (prefix, text) => {
+        let line = prefix;
+        for (const w of text.split(/\s+/).filter(Boolean)) {
+          if (g.measureText(line + w).width > W - 2 * pad && line.trim() !== prefix.trim()) { lines.push(line); line = '    '; }
+          line += w + ' ';
+        }
+        lines.push(line);
+      };
+      wrap(`t = ${e.t.toFixed(1)} s   `, e.note.trim());
+      e.pins.forEach((p, i) => wrap(`${i + 1}. `, p.text.trim() || '(no comment)'));
+      const LH = fs + 5;
+      c.width = W; c.height = H + pad * 2 + lines.length * LH;
+      g.fillStyle = '#111'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(im, 0, 0, W, H);
+      e.pins.forEach((p, i) => {
+        const x = p.x * W, y = p.y * H, r = 12;
+        g.beginPath(); g.arc(x, y, r, 0, 7); g.fillStyle = '#e11d48'; g.fill();
+        g.lineWidth = 2; g.strokeStyle = '#fff'; g.stroke();
+        g.fillStyle = '#fff'; g.font = `bold 13px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(String(i + 1), x, y + 1);
+      });
+      g.font = `${fs}px sans-serif`; g.textAlign = 'left'; g.textBaseline = 'top'; g.fillStyle = '#eee';
+      lines.forEach((l, i) => g.fillText(l, pad, H + pad + i * LH));
+      ok(c.toDataURL('image/jpeg', 0.88));
+    };
+    im.onerror = bad;
+    im.src = '/shots/' + encodeURIComponent(file);
+  });
+}
+
+async function save() {
+  if (saving) { again = true; return; }
+  saving = true;
+  const files = [...dirty]; dirty.clear();
+  try {
+    const images = {};
+    for (const f of files) if (annotated(f)) images[f] = await drawn(f);
+    status('', 'saving');
+    const r = await (await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes, images }) })).json();
+    if (!r.ok) throw new Error(r.error);
+    status('ok', `saved into ${R.name} at ${r.saved} (${r.shots} annotated shot${r.shots === 1 ? '' : 's'})`);
+  } catch (err) {
+    files.forEach(f => dirty.add(f));
+    status('err', 'not saved: ' + err.message);
+  }
+  saving = false;
+  if (again) { again = false; save(); }
+}
+function status(cls, text) { const s = $('status'); s.className = cls; s.textContent = text; }
+window.onbeforeunload = ev => { if (dirty.size || saving) { save(); ev.preventDefault(); return ''; } };
+
+document.onkeydown = ev => {
+  if (ev.target.tagName === 'TEXTAREA') { if (ev.key === 'Escape') ev.target.blur(); return; }
+  const k = ev.key, step = d => { ev.preventDefault(); go(idx + d); };
+  const findAnn = d => { for (let i = idx + d; i >= 0 && i < shots.length; i += d) if (annotated(shots[i].file)) return go(i); };
+  if (k === 'ArrowRight') step(1); else if (k === 'ArrowLeft') step(-1);
+  else if (k === 'PageDown') step(10); else if (k === 'PageUp') step(-10);
+  else if (k === 'Home') go(0); else if (k === 'End') go(shots.length - 1);
+  else if (k === 'n') findAnn(1); else if (k === 'p') findAnn(-1);
+  else if (k === 'm') { const m = R.marks.map(m => nearest(m.t)).find(i => i > idx); if (m !== undefined) go(m); }
+  else if ((k === 'Delete' || k === 'Backspace') && sel >= 0) { ev.preventDefault(); removePin(sel); }
+};
+load().catch(err => status('err', 'could not load the report: ' + err.message));
+</script>
+</body>
+</html>

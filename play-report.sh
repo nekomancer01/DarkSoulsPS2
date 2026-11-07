@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ./play-report.sh [ISO] [-o FILE] [--every SECS] [--width PX] [--no-states] [--for SECS]
+# Usage: ./play-report.sh [ISO] [-o FILE] [--every SECS] [--width PX] [--no-states] [--for SECS] [--no-annotate]
 #
 # Play the built disc in PCSX2 and get one file to send with a bug report. Starts PCSX2 with the ISO (default
 # build/proto.iso, what ./build-iso.sh makes), records the emulator's log with the game's EE log in it, takes a
@@ -16,6 +16,8 @@
 #   --no-states      no savestates at marks
 #   --for SECS       quit PCSX2 by itself after that many seconds (scripted checks; implies --mute)
 #   --mute           no sound (a null PulseAudio sink dsr_mute, and PCSX2's output muted)
+#   --no-annotate    do not open the report in ./annotate-report.sh when done (it opens after a manual run: step
+#                    through the shots, pin comments on them; they are saved into the zip, Ctrl+C there when done)
 #
 # What the zip holds:
 #   summary.txt   the run at a glance: hitch summary (tools/hitchsum.py), spikes, failed allocations, deaths, blocks
@@ -24,6 +26,7 @@
 #   shots/        t<seconds>.jpg, the same clock as emulog.txt's prefix
 #   marks.txt     your notes, states/ the savestates at the last marks
 #   info.txt      ISO, checkout, PCSX2 version, settings (pcsx2.ini without its key bindings)
+#   annotations/  added by ./annotate-report.sh: notes.md, notes.json, the annotated shots with their pins drawn
 #
 # PCSX2 runs with your own settings, BIOS and memory cards (saves count as usual) from a separate data folder next to
 # your PCSX2 config (play-report/PCSX2), so console logging can be on without changing your PCSX2.ini; savestates made
@@ -39,7 +42,7 @@ if [ -z "${PLAY_ON_HOST:-}" ] && { [ -n "${CONTAINER_ID:-}" ] || [ -e /run/.cont
     exec distrobox-host-exec env PLAY_ON_HOST=1 bash "$ROOT/play-report.sh" "$@"
 fi
 
-ISO=; OUT=; EVERY=2; WIDTH=480; STATES=1; FOR=; MUTE=
+ISO=; OUT=; EVERY=2; WIDTH=480; STATES=1; FOR=; MUTE=; ANNOTATE=1
 die() { echo "play-report: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,6 +51,7 @@ while [ $# -gt 0 ]; do
         --width) [ $# -ge 2 ] || die "$1 needs pixels"; WIDTH=$2; shift 2 ;;
         --no-states) STATES=; shift ;;
         --mute) MUTE=1; shift ;;
+        --no-annotate) ANNOTATE=; shift ;;
         --for) [ $# -ge 2 ] || die "$1 needs seconds"; FOR=$2; shift 2 ;;
         -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) die "unknown option $1 (see --help)" ;;
@@ -286,3 +290,8 @@ with zipfile.ZipFile(out, 'w') as z:
 EOF
 rm -rf "$WORK"
 echo "play-report: $OUT ($(du -h "$OUT" | cut -f1)): send this file with the report"
+# a manual run: open the report to pin comments on its shots (saved into the same zip)
+if [ -n "$ANNOTATE" ] && [ -z "$FOR" ] && [ -n "$TTY" ] && [ -t 1 ]; then
+    echo "play-report: opening it to annotate (pin comments on the shots; Ctrl+C when done, --no-annotate to skip)"
+    python3 -I "$ROOT/tools/annotate_report.py" "$OUT" || true
+fi
