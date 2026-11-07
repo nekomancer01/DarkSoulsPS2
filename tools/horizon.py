@@ -67,8 +67,8 @@ ON = os.environ.get("HZN", "1") == "1"
 # block in about the bytes 32 px took (Burg west 26.8k tris 455 KB, was 13.6k 455 KB) and Firelink reaches 12.7 px.
 # HZN_PX bounds the final mesh's deviation from the original (the weld and all collapse passes together, measured by
 # mesh_err, not the collapse's own error bound): build() lowers the error it gives the weld and the collapse until the
-# measured ERR_Q quantile is at most PX (ASSUMED 0.99: a few samples on pruned specks and slivers may exceed it; the
-# export line prints the quantile and the maximum)
+# measured ERR_Q quantile (by surface area, both ways) is at most PX (ASSUMED 0.99: specks the prune drops and slivers
+# may exceed it; the export line prints the quantile and the maximum)
 PX = float(os.environ.get("HZN_PX", 8.0))
 ERR_Q = float(os.environ.get("HZN_ERR_Q", 0.99))
 S_MIN = 0.25  # the weld + collapse error is searched down to S_MIN x PX
@@ -403,33 +403,41 @@ def _dist(tri, pts, rmax):
 
 
 def _samples(tri):
-    """points on triangles (n, 3, 3): the distinct corners, edge midpoints and centroids"""
+    """points on triangles (n, 3, 3): corners, edge midpoints and centroid of each, weighted by a seventh of its area
+    (a quantile of the error is then a share of the surface, not of the triangles: small ones would dominate)
+    -> (points (7n, 3), weights (7n,))"""
     if not len(tri):
-        return np.zeros((0, 3))
+        return np.zeros((0, 3)), np.zeros(0)
     mids = 0.5 * (tri + tri[:, [1, 2, 0]])
-    pts = np.concatenate([tri.reshape(-1, 3), mids.reshape(-1, 3), tri.mean(1)])
-    return np.unique(np.round(pts, 3), axis=0)
+    pts = np.concatenate([tri, mids, tri.mean(1)[:, None]], 1).reshape(-1, 3)
+    area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    return pts, np.repeat(area / 7.0, 7)
 
 
 def mesh_err(pairs, nav):
     """measured screen error of simplified meshes against their originals: pairs = [(original (n, 3, 3), simplified
     (m, 3, 3))]; both ways (points of the original to the simplified mesh: lost or caved-in surface; points of the
     simplified mesh to the original: spikes, bulges, the weld's moves), each distance in pixels at the point's view
-    distance (FOCAL), capped at ERR_CAP x PX -> (ERR_Q quantile, max), or None without tools/native/hzerr.c"""
+    distance (FOCAL), capped at ERR_CAP x PX -> (ERR_Q quantile by surface area, max), or None without
+    tools/native/hzerr.c"""
     if _err_lib() is None:
         return None
-    px = []
+    px, wt = [], []
     for A, B in pairs:
         for src, dst in ((A, B), (B, A)):
-            pts = _samples(src)
+            pts, w = _samples(src)
             if not len(pts):
                 continue
             d = view_d(pts, nav)
             px.append(_dist(dst, pts, ERR_CAP * PX / FOCAL * d) / d * FOCAL)
+            wt.append(w)
     if not px:
         return 0.0, 0.0
-    px = np.concatenate(px)
-    return float(np.quantile(px, ERR_Q)), float(px.max())
+    px, wt = np.concatenate(px), np.concatenate(wt)
+    o = np.argsort(px)
+    cw = np.cumsum(wt[o])
+    k = min(int(np.searchsorted(cw, ERR_Q * cw[-1])), len(o) - 1)
+    return float(px[o[k]]), float(px.max())
 
 
 def visible_tris(P, key, nav):
