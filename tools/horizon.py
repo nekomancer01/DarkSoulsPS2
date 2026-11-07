@@ -738,8 +738,8 @@ def build(b):
     out = bytearray(struct.pack("<4s3I", b"HZN1", nchunks, ncell, 0))
     for mn, mx, f, n, fl in ctab:
         out += struct.pack("<6f2HI", *mn, *mx, f, n, fl)
-    for cfl, ntri, so, offs, mn, mx, org, step in recs:
-        out += struct.pack("<iII3I6f4f", -1, cfl, ntri, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
+    for cfl, ntw, so, offs, mn, mx, org, step in recs:
+        out += struct.pack("<iII3I6f4f", -1, cfl, ntw, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
     assert len(out) == s0
     out += streams
     out.extend(b"\0" * (-len(out) % 16))
