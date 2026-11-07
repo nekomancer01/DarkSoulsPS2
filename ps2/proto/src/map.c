@@ -81,6 +81,7 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #endif
 #define MAX_HZ_FADE 64  /* cells fading in per frame */
 #define CHUNK_HZN 256
+#define CHUNK_PANO 512  /* a horizon chunk standing for the block's panorama content: skipped while it is drawn */
 #define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
 #define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
 /* horizon.py, 32 B; flags bit 0: the cell has chunks it stands for (its horizon may have simplified to nothing),
@@ -182,6 +183,11 @@ typedef struct {
     const unsigned char *hz_ttab;
     int hz_ntex, hz_tex;
     void *hz_tab;
+    /* HZN2 panorama (tools/hznpano.py): centre x y z and the radius the camera must be inside (xz), the ring strips
+     * (tex: their tiles' index among the horizon textures); pz_on: drawn this frame */
+    const float *pz;
+    const Chunk *pz_chunk;
+    int pz_n, pz_on;
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
 
@@ -224,6 +230,7 @@ static void fog_ease(float rate)
 static void hz_parse(MapInst *m)
 {
     m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL, m->hz_ttab = NULL, m->hz_ntex = 0, m->hz_tex = -1;
+    m->pz = NULL, m->pz_chunk = NULL, m->pz_n = 0, m->pz_on = 0;
 #ifndef HZN_OFF
     if (!m->ctab)
         return;
@@ -243,7 +250,9 @@ static void hz_parse(MapInst *m)
     m->hz_base = b;
     if (v2 && h[4] && h[5])
         m->hz_ttab = b + h[5], m->hz_ntex = (int)h[4];
-    printf("map: horizon %u chunks, %u textures, %u KB\n", h[1], m->hz_ntex, ch[3] >> 10);
+    if (v2 && h[6] && h[7])
+        m->pz = (const float *)(b + h[7]), m->pz_chunk = (const Chunk *)(b + h[7] + 16), m->pz_n = (int)h[6];
+    printf("map: horizon %u chunks, %u textures, %d panorama strips, %u KB\n", h[1], m->hz_ntex, m->pz_n, ch[3] >> 10);
 #endif
 }
 
@@ -937,6 +946,7 @@ void map_block_drop(int k)
     m->rrange = NULL, m->nritem = 0;
     m->hdr = NULL, m->ctab = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
     m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL, m->hz_ttab = NULL, m->hz_ntex = 0;
+    m->pz = NULL, m->pz_n = 0, m->pz_on = 0;
     m->on = 0;
     mapstream_select(0);
 }
@@ -1165,6 +1175,32 @@ int map_draw(V3 eye)
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
+    /* the blocks' far panoramas (HZN2, tools/hznpano.py): a block's while the camera is inside its navmesh's reach,
+     * over the sky and under everything else (no Z write: nearer and farther map pieces both draw over it), with the
+     * map's fog at the ring; alpha tested (cut out where the far content leaves sky) */
+    for (int k = 0; k < MAP_INST; k++) {
+        MapInst *mk = &inst[k];
+        mk->pz_on = 0;
+        if ((k && !mk->on) || !mk->pz_n || mk->hz_tex < 0)
+            continue;
+        float dx = e[0] - mk->pz[0], dz = e[2] - mk->pz[2];
+        if (dx * dx + dz * dz > mk->pz[3] * mk->pz[3])
+            continue;
+        mk->pz_on = 1;
+        u64 zr[2] = {GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32), 0x4E};
+        vu1_gs_regs(1, zr);
+        for (int i = 0; i < mk->pz_n; i++) {
+            const Chunk *c = &mk->pz_chunk[i];
+            int cls = visible(c, e, 1);
+            GSTEXTURE *t = cls ? tc_get(mk->hz_tex + c->tex, 0) : NULL;
+            if (!t)
+                continue;  /* (pool full: the stand-in is skipped too this frame, so the far view is empty) */
+            vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, mk->hz_base + c->pos, mk->hz_base + c->st,
+                       mk->hz_base + c->col, c->org, 4096.0f);
+            drawn += c->tris;
+        }
+        blend_regs(gs, 0);
+    }
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
     static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
@@ -1398,7 +1434,7 @@ int map_draw(V3 eye)
                 const Chunk *c = &m->hz_chunk[hc->first + j];
                 /* one mesh per draw-group set (horizon.py, flags >> 16 = dg.bin piece mask; 0 always drawn): only
                  * the sets the floor's groups show, as the chunks it stands for */
-                if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
+                if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)) || ((c->flags & CHUNK_PANO) && m->pz_on))
                     continue;
                 int cls = visible(c, e, 0);
                 if (cls) {
@@ -1420,7 +1456,7 @@ int map_draw(V3 eye)
             vu1_gs_regs(2, r);
             for (unsigned j = 0; j < hc->count; j++) {
                 const Chunk *c = &mk->hz_chunk[hc->first + j];
-                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
+                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)) || ((c->flags & CHUNK_PANO) && mk->pz_on))
                     continue;
                 int cls = visible(c, e, 0);
                 if (cls) {

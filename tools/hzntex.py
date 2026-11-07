@@ -71,7 +71,7 @@ def chart_list(groups):
     out = []
     for gi, g in enumerate(groups):
         V, T = g[0], g[2]
-        if not len(T):
+        if not len(T) or g[4] & 512:  # CHUNK_PANO: the panorama's coarse stand-in stays untextured
             continue
         cid, axes = charts(V, T)
         order = np.argsort(cid, kind="stable")

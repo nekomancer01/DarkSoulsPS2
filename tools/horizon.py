@@ -29,24 +29,29 @@ stores them), so it needs no re-export:
      into VU1 batches: indexed (HZN_IDX, the default: a breadth-first walk over shared vertices, at most IDX_TRIS
      triangles / IDX_NV vertices, each vertex stored once), else lists of CHUNK_TRIS.
   6. (HZN_TEX, indexed only) a few 128 x 128 pages per block baked from the source map (tools/hzntex.py); textured
-     batches carry an st stream and their page in the chunk's tex, the rest stay untextured.
+     batches carry an st stream and their page in the chunk's tex, the rest stay untextured;
+  7. (HZN_PANO) the backdrop beyond hznpano.PANO_MIN of the navmesh becomes a panorama ring, its triangles a coarse
+     stand-in mesh (CHUNK_PANO, PANO_HZ_KB) for cameras in other blocks.
 Untextured: map.c draws it with TME off (vu1.c VU1_FLAT), vertex colour = final colour. Textured: the page modulates
 the vertex colour (texel 0x80 = 1.0), so a page the texture pool can't hold this frame falls back to the average.
 
 hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the section start, so it can move):
   header (16 B): 'HZN1', chunks, cells (= the map's cell table entries), bytes; with texture pages 'HZN2' and 16 B more:
-                 pages, texture section offset (texmap.write: entries + CLUT and mips 0-3), 0, 0
+                 textures, texture section offset (texmap.write: entries + CLUT and mips 0-3; the pages, then the
+                 panorama's tiles), panorama strips, panorama offset (0: none)
   per cell (32 B): f32 box min[3], max[3] (its horizon chunks); u16 first chunk, chunk count; u32 flags: bit 0 the
                    cell has chunks the horizon stands for (even if they simplified to nothing), bit 1 it has backdrop
                    chunks
   chunk records (64 B, map.c Chunk): tex = page (-1: untextured), flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop | draw-group set
                    << 16: dg.bin piece mask index, 0 = always drawn), tris, pos / st / col offsets, box, org, step
+  panorama (HZN_PANO, tools/hznpano.py): f32 centre x y z, radius the camera must be inside (xz); strip records (64 B,
+                 Chunk: tex = texture, flags CHUNK_HZN | CHUNK_SKY | CHUNK_BACKDROP, list streams with st)
   streams: per chunk one VIF packet: indexed (tris | nv << 16, idx_streams): pos s16x3 x nv, (textured: st u16x2 / 4096
            x nv,) colour u8x4 x nv, u8x4 triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
-HZN_VIS=0 no visibility cut; HZN_PX, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
+HZN_VIS=0 no visibility cut; HZN_TEX=0 untextured; HZN_PANO=0 no panorama; HZN_PX, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
 import struct
 import sys
@@ -59,6 +64,7 @@ sys.path.insert(0, HERE)
 HDR = 80
 CHUNK_CULL, CHUNK_BLEND, CHUNK_SKY, CHUNK_GRASS, CHUNK_ST1K, CHUNK_COARSE, CHUNK_BACKDROP = 1, 2, 8, 16, 32, 64, 128
 CHUNK_HZN = 256  # map.c: a horizon chunk (in hzn.bin only)
+CHUNK_PANO = 512  # map.c: stands for panorama content (hznpano.py), skipped while the block's panorama is drawn
 CHUNK_TRIS = 54  # export_map.CHUNK_TRIS (VU1 buffer)
 POS_MAX = 32000
 PSMT8, PSMT4, CT16 = 0x13, 0x14, 0x02
@@ -114,6 +120,11 @@ TEX_PAGES = int(os.environ.get("HZN_TEX_PAGES", 4))
 TEX_PAGE_KB = 22
 TEX_BPT = 24
 TEX_MAXD = float(os.environ.get("HZN_TEX_MAXD", 6.0))  # metres: farthest source surface a texel looks for (ASSUMED)
+# far panorama (HZN_PANO, tools/hznpano.py + tools/native/hzpano.c; with HZN_TEX): the backdrop beyond PANO_MIN of the
+# navmesh as a picture on a ring, drawn while the camera is in the block; for other blocks' cameras a coarse mesh of
+# PANO_HZ_KB (ASSUMED) at most stands in for it (CHUNK_PANO). HZN_PANO=0: all of it in the horizon mesh as before
+PANO = os.environ.get("HZN_PANO", "1") == "1" and TEX
+PANO_HZ_KB = float(os.environ.get("HZN_PANO_HZ_KB", 48))
 
 
 def _swz(i):
@@ -520,6 +531,19 @@ def chunk_streams(ntri, pos, col):
     return out, offs if ST else [offs[0], offs[0], offs[1]]
 
 
+def list_streams_st(ntri, pos, st, col):
+    """export_map.chunk_streams: a textured list batch (pos s16x3, st u16x2, colour u8x4 per corner)"""
+    n = 3 * ntri
+    codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6500C008 | n << 16), (0, 0, 0, 0x6E00C009 | n << 16))
+    out, offs = bytearray(), []
+    for arr, cw in zip((pos, st, col), codes):
+        out += struct.pack("<4I", *cw)
+        offs.append(len(out))
+        out += arr
+        out.extend(b"\0" * (-len(out) % 16))
+    return out, offs
+
+
 def idx_streams_st(ntri, nv, pos, st, col, idx):
     """a textured indexed horizon batch: export_map.chunk_packet's indexed streams (pos, st u16x2 / 4096, colour,
     triangles), map.c draws it with the block's horizon page (chunk tex)"""
@@ -637,11 +661,29 @@ def build(b):
     mo = SIMP in ("auto", "meshopt") and _meshopt() is not None
     tex_on = TEX and _native_ok("libhzbake")
     used = []
-    for g in (1, 0):  # the backdrop (BD_KB), then the map (KB; the texture pages come out of it)
-        selg = keep & (bd == bool(g))
-        budget = BD_KB if g else KB - (TEX_PAGES * TEX_PAGE_KB if tex_on else 0)
+    pano, psel = None, np.zeros(len(P), bool)
+    if PANO and tex_on and len(P):
+        import hznpano
+        far = np.flatnonzero(keep & bd)
+        if len(far):
+            dmin = view_d(P[far].reshape(-1, 3), nav).reshape(-1, 3).min(1)
+            psel[far[dmin >= hznpano.PANO_MIN]] = True
+
+        def setup(L):
+            import ctypes
+            vp, i = ctypes.c_void_p, ctypes.c_int
+            L.hz_pano.argtypes = [i, vp, vp, vp, vp, i, vp, vp, vp, vp, i, i, vp, vp]
+            L.hz_pano.restype = None
+        pano = hznpano.render(P, psel, nav, SRC_TEX, EYE, view_d, _native("libhzpano", ["hzpano.c"], setup))
+        if pano is None:
+            psel[:] = False
+    for g in (2, 1, 0):  # the panorama's stand-in (PANO_HZ_KB), the backdrop (BD_KB), the map (KB, less the pages)
+        if g == 2 and not psel.any():
+            continue
+        selg = psel if g == 2 else keep & ~psel & (bd == bool(g))
+        budget = PANO_HZ_KB if g == 2 else BD_KB if g else KB - (TEX_PAGES * TEX_PAGE_KB if tex_on else 0)
         cap = int(budget * 1024 / (TEX_BPT if tex_on else BPT))
-        flags = CHUNK_HZN | (CHUNK_BACKDROP if g else 0)
+        flags = CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | (CHUNK_PANO if g == 2 else 0)
         cand = []  # (px, method, [(set, V, VC, T, welded triangles)])
         if mo:
             raw = [(dset, selg & (dg == dset)) for dset in np.unique(dg[selg])]
@@ -680,7 +722,7 @@ def build(b):
             eps = block_eps([x[3] for x in sets], cap)
             cand.append((float(np.sqrt(eps) * FOCAL), "qem", [(d, V, VC, replay(L, eps), n) for d, V, VC, L, n in sets]))
         px, method, res = min(cand, key=lambda c: (round(c[0], 3), c[1] != "meshopt"))
-        used.append(("bd " if g else "") + method)
+        used.append(("pano " if g == 2 else "bd " if g else "") + method)
         for dset, V, VC, T, ncl in res:
             stats["opaque"] += int((selg & (dg == dset)).sum())
             stats["clustered"] += ncl
@@ -745,30 +787,44 @@ def build(b):
         first += nchk
     nchunks = first
     assert nchunks < 65536
-    hdr = 32 if pages else 16  # HZN2: the header carries the texture section
-    s0 = hdr + 32 * ncell + 64 * nchunks
-    out = bytearray(struct.pack("<4s3I", b"HZN2" if pages else b"HZN1", nchunks, ncell, 0))
-    if pages:
+    precs = []  # the panorama's ring strips: textures after the pages
+    for tile, qp, stq, org, step, mn, mx in (pano["chunks"] if pano else []):
+        col = np.full((len(qp), 4), 0x80, np.uint8)
+        pk, offs = list_streams_st(len(qp) // 3, qp.tobytes(), stq.tobytes(), col.tobytes())
+        precs.append((len(pages) + tile, CHUNK_HZN | CHUNK_SKY | CHUNK_BACKDROP, len(qp) // 3, len(streams), offs, mn,
+                      mx, org, step))
+        streams += pk
+    textures = pages + (pano["tiles"] if pano else [])
+    v2 = bool(textures)
+    hdr = 32 if v2 else 16  # HZN2: the header carries the texture section and the panorama
+    pano_off = hdr + 32 * ncell + 64 * nchunks
+    s0 = pano_off + (16 + 64 * len(precs) if precs else 0)
+    out = bytearray(struct.pack("<4s3I", b"HZN2" if v2 else b"HZN1", nchunks, ncell, 0))
+    if v2:
         out += bytes(16)
     for mn, mx, f, n, fl in ctab:
         out += struct.pack("<6f2HI", *mn, *mx, f, n, fl)
     for page, cfl, ntri, so, offs, mn, mx, org, step in recs:
         out += struct.pack("<iII3I6f4f", page, cfl, ntri, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
+    if precs:
+        out += struct.pack("<4f", *pano["centre"], pano["valid_r"])
+        for page, cfl, ntri, so, offs, mn, mx, org, step in precs:
+            out += struct.pack("<iII3I6f4f", page, cfl, ntri, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
     assert len(out) == s0
     out += streams
     out.extend(b"\0" * (-len(out) % 16))
-    if pages:  # texmap.write's section (offsets from the horizon section's start), densities in texels a metre
+    if v2:  # texmap.write's section (offsets from the horizon section's start), densities in texels a metre
         import texmap
-        tex_off = texmap.write(out, 0, pages, [])
+        tex_off = texmap.write(out, 0, textures, [])
         for k in range(len(pages)):
             struct.pack_into("<f", out, tex_off + texmap.ENTRY * k + 8, tst["rho"])
         out.extend(b"\0" * (-len(out) % 16))
-        struct.pack_into("<2I", out, 16, len(pages), tex_off)
+        struct.pack_into("<4I", out, 16, len(textures), tex_off, len(precs), pano_off if precs else 0)
     struct.pack_into("<I", out, 12, len(out))
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
               tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
               sets=len(groups), chunks=nchunks, bytes=len(out),
-              px=stats["px"], covered=len(cov), hidden=stats["hidden"], tex=tst,
+              px=stats["px"], covered=len(cov), hidden=stats["hidden"], tex=tst, pano=pano["stats"] if pano else None,
               simp="/".join(used) + (f" [{stats['px_alt']}]" if stats.get("px_alt") else ""))
     return bytes(out), st
 
@@ -787,7 +843,9 @@ def main():
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
           f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
           f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m" + (f", {st['tex']['pages']} pages at {st['tex']['rho']:.2f} texels/m ({st['tex']['charts']} charts, "
-             f"{st['tex']['flat']} flat, {100 * st['tex']['found']:.0f} % found)" if st['tex']['pages'] else ", untextured"))
+             f"{st['tex']['flat']} flat, {100 * st['tex']['found']:.0f} % found)" if st['tex']['pages'] else ", untextured")
+          + (f", panorama {st['pano']['tris']} tris -> {st['pano']['tiles']} tiles at {st['pano']['radius']:.0f} m "
+             f"({100 * st['pano']['cover']:.0f} % covered)" if st['pano'] else ""))
 
 
 if __name__ == "__main__":
