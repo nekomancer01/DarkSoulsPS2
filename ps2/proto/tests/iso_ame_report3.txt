@@ -1,0 +1,37 @@
+# Ame's play report 2026-11-08 00:31 (ISO, main b8a5a22) as a script: the path from Firelink down to the aqueduct
+# and into the Burg (coarse cells and holes, "never loads the higher LOD"), the dark hallway, the Burg bonfire area
+# (untextured stand-ins) and the bonfire. Spots from the report's hitch "at x y z" lines. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_ame_report3.txt <out> --iso build/proto.iso --timeout 900
+option hud
+option god
+option nodemo
+spawn -17.0 -39.0 15.0 3.3
+wait 4
+shot fl_path
+spawn -63.0 -23.0 -26.0 2.4
+wait 4
+shot stairs
+approach -49.0,-36.0 1.0 1
+shot cave_a
+approach -37.0,-43.0 1.0 1
+shot cave_b
+wait 3
+shot cave_c
+approach -21.0,-61.0 1.0 1
+shot hall_a
+wait 3
+shot hall_b
+spawn 2.0 -10.0 -62.0 3.0
+wait 4
+shot burg_a
+wait 4
+shot burg_b
+spawn -6.0 -10.0 -73.0 2.0
+wait 4
+shot burg_c
+wait 6
+shot burg_d
+spawn -1.0 -7.3 -64.0 0.5
+wait 6
+shot bonfire
+stats
