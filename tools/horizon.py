@@ -69,9 +69,10 @@ HZN_D = float(os.environ.get("HZN_D", 54.0))  # metres: nearest view distance th
 # Every block is cut to the same screen error (PX), so the far view has one quality across the game: the triangle count
 # follows how much each block shows, not a share of bytes. KB is only a safety ceiling (ASSUMED) for a block that would
 # overflow the mapstream arena (9984 KB; lite sets share it with the near cells, relief and enemy models, up to 3 slots,
-# peak w+b 4206 KB; at ~0.6 MB a block in lists the near level waited up to 28 s, ISO route 2026-11-06). Measured at 8 px
-# with no ceiling (2026-11-07): Firelink 1050 KB meshopt, Burg p 337, Asylum 411, Burg b 486, Burg w 491; only a block
-# past the ceiling gets a coarser error (the export line prints it)
+# peak w+b 4206 KB; at ~0.6 MB a block in lists the near level waited up to 28 s, ISO route 2026-11-06). At 8 px with
+# auto (ISO 2026-11-07, hzn.bin map + backdrop): Firelink 920 KB, Burg p 314, Asylum 411, Burg b 449, Burg w 459; the map
+# part of each stays under 600 KB, so no block meets the ceiling (HZN_KB=800 gives the same files). A block past it gets
+# a coarser error (the export line prints it)
 KB = float(os.environ.get("HZN_KB", 960))
 PX_MAX = float(os.environ.get("HZN_PX_MAX", 32.0))  # the budget never pushes the error past this (ASSUMED)
 # the backdrop (Firelink's m8000 view of the Burg and the valley, 8-14k triangles; a few hundred elsewhere) has its own
