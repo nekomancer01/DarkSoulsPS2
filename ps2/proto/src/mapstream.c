@@ -250,6 +250,18 @@ static unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
 static unsigned char *arena;
 static unsigned arena_size, npages, ipages, *gmap;  /* ipages: pages map items may use (below MS_OTHER) */  /* bit per granule, 1 = used */
 static unsigned short *pfree;               /* free granules per page */
+/* MS_ITEMS_TOP (default on; 0 = the old limit): the pages map items may use now. Once mapstream_alloc holds more than
+ * MS_OTHER (two Burg blocks' lite sets: 4.2 MB) the reserve is gone anyway, and the plan's cut already counts every
+ * page not held by them as item room (cap = npages - other); items kept out of the reserve's free pages left that room
+ * idle while 63 KB coarse cells of the pinned class found no room (384 KB of whole free pages there, ISO A/B of Ame's
+ * play report 2026-11-08). mapstream_alloc clears item pages there like any other. */
+#ifndef MS_ITEMS_TOP
+#define MS_ITEMS_TOP 1
+#endif
+static inline unsigned ilim(void)
+{
+    return MS_ITEMS_TOP && (mapstream_stats.other_kb << 10) > MS_OTHER ? npages : ipages;
+}
 static unsigned reserve_extra, pool_max = MS_POOL;
 /* make_window's scores per page: bits 0-7 highest class + 1 of its clearable groups, 0x200 not clearable; cost;
  * granules of clearable groups (a page whose used granules are not all clearable groups holds a read in flight or a
@@ -275,7 +287,7 @@ static void *g_alloc(unsigned n)
     if (!ng || ng > MS_GPP)
         return NULL;
     for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = 0; p < ipages; p++) {
+        for (unsigned p = 0; p < ilim(); p++) {
             if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
                 continue;
             unsigned run = 0, g0 = p * MS_GPP;
@@ -636,7 +648,7 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
 }
 static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb)
 {
-    unsigned lim = ng_need ? ipages : npages;  /* a read's window lies where items may go */
+    unsigned lim = ng_need ? ilim() : npages;  /* a read's window lies where items may go */
     if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
         return 0;
     memset(pcls, 0, npages * sizeof *pcls);
@@ -717,6 +729,138 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
     return 1;
 }
 
+/* ---- moving items (MS_DEFRAG) ----
+ * Ame's ISO play report (2026-11-08): 101 "no room" in 200 s with ~1 MB of the arena free. The free granules lay in
+ * holes of ~10 KB over every page, and every page held a group drawn this frame or of a higher class, so make_window
+ * found nothing to clear: near cells stayed at the coarse level or the horizon (holes, "never loads the higher LOD",
+ * untextured stand-ins) and the relief window (732 KB) never came (normal maps). A group moves instead: copied into a
+ * hole of another page, its pointers (and its texture's mip 0, tex_set) follow at once, and the old copy stays used
+ * until no VIF chain built before the move can still read it (the in_chain rule: two map draws later), then frees.
+ * Default on; make DEFS=-DMS_DEFRAG=0 = the old path (never move). */
+#ifndef MS_DEFRAG
+#define MS_DEFRAG 1
+#endif
+#define MS_DEFRAG_PEND 64            /* old copies waiting for their chains */
+#define MS_DEFRAG_KB 256u            /* most KB copied for a read (~2 ms of EE memcpy, ASSUMED); 3x for a relief window */
+#define MS_DEFRAG_WAIT 8u            /* frames a read waits at the queue head for a page being emptied */
+static struct { unsigned g0, ng, fr; } pend[MS_DEFRAG_PEND];
+static int npend;
+static unsigned pend_frame;  /* frame of the last move */
+static unsigned defrag_moves, defrag_kb;
+
+/* old copies no chain can read any more go back */
+static void pend_release(void)
+{
+    for (int i = 0; i < npend; i++)
+        if (chains_done || !dprev || (int)(dprev - pend[i].fr) > 0) {
+            g_mark(pend[i].g0, pend[i].ng, 0);
+            pend[i--] = pend[--npend];
+        }
+}
+
+/* n bytes inside one page outside pages [x0, x1) (below ilim): fullest page with a fitting hole first */
+static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
+{
+    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN, bp = ~0u, bg = 0;
+    if (!ng || ng > MS_GPP)
+        return NULL;
+    for (unsigned p = 0; p < ilim(); p++) {
+        if ((p >= x0 && p < x1) || pfree[p] < ng || (bp != ~0u && pfree[p] >= pfree[bp]))
+            continue;
+        unsigned run = 0, g0 = p * MS_GPP;
+        for (unsigned g = g0; g < g0 + MS_GPP; g++) {
+            run = g_used(g) ? 0 : run + 1;
+            if (run == ng) {
+                bp = p, bg = g + 1 - ng;
+                break;
+            }
+        }
+    }
+    if (bp == ~0u)
+        return NULL;
+    g_mark(bg, ng, 1);
+    return arena + (size_t)bg * MS_GRAN;
+}
+
+/* Empty `need` whole pages below `lim` by moving their groups elsewhere: the window whose used granules are all
+ * movable groups (loaded, inside one page) with the fewest of them. 1 when every group of the window moved (its pages
+ * free once the old copies go back, pend_release), 0 when no window qualifies or a group found no hole. */
+static int defrag(unsigned need, unsigned lim, unsigned max_kb)
+{
+    if (!MS_DEFRAG || !pitem || npend > MS_DEFRAG_PEND - 16 || need > lim)
+        return 0;
+    HITCH_BEGIN(d);
+    memset(pitem, 0, npages * sizeof *pitem);
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                continue;
+            unsigned n = grp_bytes(m, a, e), g0 = (unsigned)((unsigned char *)m->buf[a] - arena) / MS_GRAN;
+            unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
+            if (g0 / MS_GPP == (g0 + ng - 1) / MS_GPP)
+                pitem[g0 / MS_GPP] += ng;
+        }
+    }
+    unsigned fr = 0;
+    for (unsigned p = 0; p < ilim(); p++)
+        fr += pfree[p];
+    int best = -1;
+    unsigned bused = ~0u;
+    for (unsigned p = lim - need + 1; p-- > 0;) {
+        unsigned used = 0, q;
+        for (q = p; q < p + need; q++) {
+            unsigned u = MS_GPP - pfree[q];
+            if (pitem[q] != u)
+                break;  /* a read in flight, an old copy or a mapstream_alloc block */
+            used += u;
+        }
+        if (q < p + need || !used)
+            continue;
+        unsigned wfree = 0;
+        for (q = p; q < p + need; q++)
+            wfree += q < ilim() ? pfree[q] : 0;
+        if (used < bused && used <= max_kb * 1024 / MS_GRAN && fr - wfree >= used + used / 4)
+            bused = used, best = (int)p;
+    }
+    int ok = best >= 0;
+    if (ok) {
+        unsigned w0 = (unsigned)best * MS_GPP, w1 = w0 + need * MS_GPP, kb = 0;
+        for (int k = 0; k < MS_INST && ok; k++) {
+            MsInst *m = &ms[k];
+            for (unsigned id = 0; id < it_n(m) && ok; id++) {
+                unsigned a, e;
+                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                    continue;
+                unsigned char *src = m->buf[a];
+                unsigned n = grp_bytes(m, a, e), g0 = (unsigned)(src - arena) / MS_GRAN, ng = (n + MS_GRAN - 1) / MS_GRAN;
+                if (g0 < w0 || g0 >= w1)
+                    continue;
+                unsigned char *dst = npend < MS_DEFRAG_PEND ? g_alloc_ex(n, (unsigned)best, (unsigned)best + need) : NULL;
+                if (!dst) {
+                    ok = 0;
+                    break;
+                }
+                memcpy(dst, src, n);
+                SyncDCache(dst, dst + n - 1);  /* the VIF / GIF DMA reads RAM */
+                for (unsigned j = a; j < e; j++) {
+                    m->buf[j] = dst + ((unsigned char *)m->buf[j] - src);
+                    if (it_tex(m, j) && tex_set)
+                        tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
+                }
+                pend[npend++] = (typeof(pend[0])){g0, ng, frame};
+                kb += n;
+                defrag_moves++;
+            }
+        }
+        defrag_kb += kb >> 10;
+        pend_frame = frame;
+    }
+    HITCH_END(d, HS_MSWIN);
+    return ok;
+}
+
 /* ---- reads ---- */
 typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl; } MsRead;  /* cxl: cancelled, still landing */
 static MsRead rd[MS_INFLIGHT];
@@ -729,7 +873,7 @@ static MsQ blk[MS_BLOCKED];
 static int nblk;
 static unsigned scan_frame, fail_frame, fail_wait;
 static float scan_pos[3];
-static int room_fail, failed, evict_left, replan;
+static int room_fail, failed, evict_left, defrag_left, replan;
 /* load-time A/B (2026-11-06): a clock in ms over mapstream_update calls (COP0 Count wraps every 14.6 s), the settle
  * that ended last (its start / end on that clock), the first near cell and the full near level within MS_R0_FIRST of
  * the feet after it; KB of reads that landed with no class wanting them, KB of reads cancelled (MS_CANCEL) */
@@ -842,7 +986,7 @@ static int issue(void)
                 e++;
             gb = grp_bytes(m, g, e);
         }
-        void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ipages);
+        void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -850,7 +994,21 @@ static int issue(void)
             /* one page (or the pages of a group over a page) of items below this one's class, not drawn this frame
              * or the last */
             if (make_window((gb + MS_PAGE - 1) / MS_PAGE, (gb + MS_GRAN - 1) / MS_GRAN, w.cls, NULL))
-                p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ipages);
+                p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
+        }
+        if (!p && !sent && MS_DEFRAG && gb <= MS_PAGE && nq < MS_QUEUE) {
+            /* nothing to clear: empty a page by moving its groups (MS_DEFRAG); the read waits at the head of the queue
+             * for the old copies to go (two draws), a few frames at most */
+            int moving = npend && frame - pend_frame <= MS_DEFRAG_WAIT;
+            if (!moving && defrag_left > 0) {
+                defrag_left--;
+                moving = defrag(1, ilim(), MS_DEFRAG_KB);
+            }
+            if (moving) {
+                memmove(q + 1, q, nq++ * sizeof *q);
+                q[0] = w;
+                return 0;
+            }
         }
         if (!p) {
             if (evict_left <= 0 && !sent && nq < MS_QUEUE) {  /* no clearing left this frame: first again next frame */
@@ -1023,8 +1181,9 @@ static void plan_(const float *pos)
             for (unsigned i = 0; i < nw; i++)
                 kb[want[i].cls] += it_bytes(&ms[want[i].k], want[i].id) >> 10;
             printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB; stale reads "
-                   "landed %u KB, cancelled %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
-                   kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb);
+                   "landed %u KB, cancelled %u KB; moved %u groups %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
+                   kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
+                   defrag_moves, defrag_kb);
         }
     }
     pt[np_++] = ticks();
@@ -1108,6 +1267,8 @@ void mapstream_update(const float pos[3])
         plan(pos);
     }
     evict_left = MS_EVICT_PASSES;
+    defrag_left = 1;
+    pend_release();
     HITCH_BEGIN(is);
     while (!hold && nq && nrd < MS_INFLIGHT && issue())
         ;
@@ -1357,8 +1518,17 @@ void *mapstream_alloc_soft(unsigned n)
         p = g_alloc_top(n, npages);
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;
-    else
-        printf("mapstream: soft alloc %u KB: no room beside the wanted cells\n", n >> 10);
+    else {
+        /* the room is there but in holes (MS_DEFRAG): empty a window for the next call (world.c asks again) when
+         * the arena's free granules cover it with MS_DEFRAG_KB to spare */
+        unsigned fr = 0;
+        for (unsigned i = 0; i < npages; i++)
+            fr += pfree[i];
+        int mv = MS_DEFRAG && !npend && fr * MS_GRAN >= n + (MS_DEFRAG_KB << 10) &&
+                 defrag((n + MS_PAGE - 1) / MS_PAGE, npages, 3 * MS_DEFRAG_KB);
+        printf("mapstream: soft alloc %u KB: no room beside the wanted cells%s (%u KB free)\n", n >> 10,
+               mv ? ", window being emptied" : "", fr * MS_GRAN >> 10);
+    }
     return p;
 }
 

@@ -319,6 +319,21 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
                 spin=rs, frame=(fr0[0] * fr0[1], fr0[0] * fr0[2]), rate=rate, fpr=0, nframes=0, frame_t=0)
 
 
+# FX_LOD_ONE (default on; FX_LOD_ONE=0 = the old export): an effect's systems that differ only in how many particles
+# they emit (interval, count, max alive) are its quality / LOD copies; DSR plays one of them. The fog walls (81016,
+# 81018, 81019, 81021: 4 copies of base / wisp / mote systems, 60/30/20/15 motes) drew all four, the m2012 torches (530)
+# their flame twice. The first copy (the most particles) stays: 218 -> 125 particles at the Burg fog wall. (The fog
+# wall still draws as an opaque white box with one copy: its BlendMode 1 / 4 systems are exported as additive, see
+# TECH_DEBT fx-12; Ame's ISO play report 2026-11-08.)
+FX_LOD_ONE = os.environ.get("FX_LOD_ONE", "1") == "1"
+
+
+def _lod_key(s):
+    def fz(v):
+        return tuple(fz(x) for x in v) if isinstance(v, (list, tuple)) else round(v, 4) if isinstance(v, float) else v
+    return tuple((k, fz(v)) for k, v in sorted(s.items()) if k not in ("interval", "per_emit", "max_alive", "total"))
+
+
 def pack_sys(s, tex_fpr):
     fpr, nfr = tex_fpr
     return struct.pack(SYS_FMT, s["tex"], s["blend"], s["shape"], s["per_emit"], s["max_alive"], s["life"],
@@ -558,9 +573,15 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
         found = []
         walk(e, lib.effect, found)
         first, first_l = len(refs), len(lights)
+        lod_seen = set()
         for kind, cc, xf, pxf in found:
             if kind == "ps" and len(refs) - first < MAX_SYS_PER_EFFECT:
                 s = system(cc, xf, pxf, fx_tone, tex_of, lambda i: covs[i])
+                if s and FX_LOD_ONE:
+                    key = _lod_key(s)
+                    if key in lod_seen:
+                        continue
+                    lod_seen.add(key)
                 if s:
                     refs.append(len(sys_recs))
                     sys_recs.append(s)

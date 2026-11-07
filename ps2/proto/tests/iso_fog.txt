@@ -1,0 +1,15 @@
+# Ame's play report 2026-11-08: the Burg fog walls (81019 at the Taurus stairs, 81021 in the Burg) draw as an opaque
+# white box on main b8a5a22 (TECH_DEBT fx-12).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_fog.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option god
+option nodemo
+option noenemies
+spawn -50.12 -21.95 -31.5 2.708
+cam 2.708 0.2
+wait 3
+shot fog_on
+spawn -0.75 4.52 -59.5 0
+cam 0 0.1
+wait 3
+shot fog_burg
