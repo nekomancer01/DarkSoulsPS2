@@ -1320,6 +1320,24 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         nowin = C_TOP + 2;
         if (make_window(need, 0, C_TOP + 1, &kb))
             p = g_alloc_top(n, npages);
+        if (!p && nrd) {
+            /* still none: the pages reads in flight land in cannot be cleared, and up to MS_INFLIGHT small reads are
+             * spread over the arena (indexed map data: more, smaller items; a 1.3 MB enemy model temporary at the
+             * Taurus tower warp fell back to the heap, RAM free 1.66 MB, ISO 2026-11-07). Stop them all (the plan asks
+             * again) and try once more */
+            unsigned c = 0;
+            for (int i = 0; i < nrd; i++) {
+                pack_req_cancel(rd[i].tk);  /* returns once nothing more lands in the buffer */
+                c += rd[i].bytes >> 10;
+                drop(rd[i].k, rd[i].id);
+            }
+            printf("mapstream: alloc %u KB: %d reads in flight (%u KB) cancelled for a window\n", n >> 10, nrd, c);
+            cancel_kb += c;
+            nrd = 0;
+            mapstream_stats.pending = 0;
+            if (make_window(need, 0, C_TOP + 1, &kb))
+                p = g_alloc_top(n, npages);
+        }
         chains_done = 0;
     }
     if (kb || !p)  /* the caller falls back to the heap on NULL */

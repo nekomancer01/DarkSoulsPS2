@@ -66,8 +66,8 @@ int bump_batches;
 
 typedef struct {
     unsigned key;  /* set << 24 | CLUT << 12 | texture: neighbours share the CLUT (TEX0 CLD 4 reloads on a change) */
-    int cull, clip, tris, mip;
-    const void *pos, *st, *col;
+    int cull, clip, tris, nv, mip;
+    const void *pos, *st, *col, *idx;  /* idx: indexed chunks (nv vertices), else NULL */
     const float *org;
     float st_k, d;
     GSTEXTURE *t;  /* normal map level, fetched nearest first */
@@ -142,8 +142,8 @@ void bump_owner(int k)
     owner = k > 0 && k < BUMP_INST && set[k].on ? k : 0;
 }
 
-void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, const void *pos, const void *st,
-              const void *col, const float *org, float st_k)
+void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, int nv, const void *pos, const void *st,
+              const void *col, const void *idx, const float *org, float st_k)
 {
     const BumpSet *b = &set[k];
     if (k != owner || !b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
@@ -155,7 +155,7 @@ void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, cons
     int tex = b->tex0 + b->bc[chunk].tex;
     it->key = (unsigned)k << 24 | (unsigned)(b->bc[chunk].cluster * b->bh->levels + level) << 12 | tex;
     /* the half-strength band draws from mip 1 (a quarter of the pool space) */
-    it->cull = cull, it->clip = clip, it->tris = tris, it->mip = level | tc_level(tex, d);
+    it->cull = cull, it->clip = clip, it->tris = tris, it->nv = nv, it->idx = idx, it->mip = level | tc_level(tex, d);
     it->pos = pos, it->st = st, it->col = col, it->org = org, it->st_k = st_k, it->d = d;
 }
 
@@ -234,8 +234,12 @@ void bump_draw(void)
         GSTEXTURE tt = *it->t;
         tt.VramClut = clut_vram + (it->key >> 12 & 0xFFF) * 1024;
         tt.ClutPSM = GS_PSM_CT32;
-        vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip & (VU1_CLIP | VU1_PKT)), it->tris, it->pos, it->st, it->col, it->org,
-                   it->st_k);
+        if (it->nv)
+            vu1_add_idx(&tt, it->cull, VU1_BLEND | (it->clip & (VU1_CLIP | VU1_PKT)), it->tris, it->nv, it->pos, it->st,
+                        it->col, it->idx, it->org, it->st_k);
+        else
+            vu1_add_ex(&tt, it->cull, VU1_BLEND | (it->clip & (VU1_CLIP | VU1_PKT)), it->tris, it->pos, it->st, it->col,
+                       it->org, it->st_k);
         bump_batches++;
     }
     u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};

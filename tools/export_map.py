@@ -127,7 +127,9 @@ WS_R0, WS_R1, WS_R1_IN = 30.0, 96.0, 16.0
 # error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
 WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
 WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
-WS_BPT = 45  # bytes per triangle of a streamed chunk (positions, st, colours, padding: 44-45 measured over 4 blocks)
+# bytes per triangle of a streamed chunk (positions, st, colours, padding, record: 44-45 measured over 4 blocks as lists;
+# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level)
+WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
 GAME_LOD = os.environ.get("GAME_LOD") == "1"
@@ -178,23 +180,82 @@ CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are 
 # (map.c culls by 32 m cells too), then cut into full, compact batches (split_batch)
 
 
-def chunk_streams(ntri, pos, st, col):
-    """A chunk's three vertex streams as one VIF packet (render rebuild PR 1): a code qword in front of each stream
+def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
+    """A chunk's vertex streams as one VIF packet (render rebuild PR 1): a code qword in front of each stream
     {NOP, NOP, STCYCL 3,1, UNPACK V3-16 n -> TOPS+7} / {NOP x 3, UNPACK V2-16 unsigned n -> TOPS+8} / {NOP x 3,
     UNPACK V4-8 unsigned n -> TOPS+9}, then the stream zero-padded to 16 bytes (zeros = VIF NOPs). vu1.c sends the whole
     packet with one DMA REF (VU1_PKT); the stream offsets point past each code qword, so batches that send part of a
     chunk (foliage prefixes, clip splits) still REF the streams one by one. +48 bytes per chunk.
+    Indexed chunks (nv vertices, idx: index_chunk): n = nv, the streams go to TOPS+8 / 9 / 10 (vu1mapi.vsm's header is
+    8 qwords), then a fourth code qword {NOP x 2, STCYCL 1,1, UNPACK V4-8 unsigned ntri -> TOPS+8+3 nv} and the
+    triangle stream (u8 x4 per triangle). +64 bytes per chunk.
     Returns (bytes, [pos, st, col offsets in it])."""
-    n = 3 * ntri
+    n, a = (nv, MAPI_HDR) if nv else (3 * ntri, 7)
     assert 0 < n < 256, n
-    codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6500C008 | n << 16), (0, 0, 0, 0x6E00C009 | n << 16))
+    codes = ((0, 0, 0x01000103, 0x69008000 | a | n << 16), (0, 0, 0, 0x6500C000 | (a + 1) | n << 16),
+             (0, 0, 0, 0x6E00C000 | (a + 2) | n << 16))
     b, offs = bytearray(), []
     for arr, cw in zip((pos, st, col), codes):
         b += struct.pack("<4I", *cw)
         offs.append(len(b))
         b += arr
         b.extend(b"\0" * (-len(b) % 16))
+    if nv:
+        assert MAPI_HDR + 3 * nv + ntri <= MAPI_IN_QW
+        b += struct.pack("<4I", 0, 0, 0x01000101, 0x6E00C000 | (MAPI_HDR + 3 * nv) | ntri << 16)
+        b += idx
+        b.extend(b"\0" * (-len(b) % 16))
     return b, offs
+
+
+# Indexed chunks (vu1mapi.vsm, vu1.c vu1_add_idx): every chunk but foliage stores each distinct corner (position, st,
+# colour) once plus a triangle stream of u8 x4 {v0, v1, v2, 0} (vertex numbers), like the shared vertices of Sony's HiG and
+# other indexed PS2 renderers. Undead Burg west: 1.61 distinct corners per triangle, 45 -> ~28 bytes per triangle.
+# INDEXED=0: lists as before (A/B)
+INDEXED = os.environ.get("INDEXED", "1") == "1"
+MAPI_HDR, MAPI_IN_QW = 8, 493  # tools/vu1/gen.py MAPI_HDR, MAP_IN_QW
+CLIPI_MAX = 336  # tools/vu1/gen.py CLIPI_MAX: the most an indexed batch may take to be clipped on VU1 (vu1clip's indexed
+                 # entry); bigger ones would be split on the EE near the camera (~1 ms a frame at the crossing), so they
+                 # stay unindexed (little sharing anyway: about 2 vertices per triangle)
+
+
+def index_chunk(ntri, pos, st, col):
+    """Unindexed corner streams -> (nv, pos, st, col, idx) with the distinct corners in first-use order (the count padded
+    to a multiple of 3 with copies of the last one: vu1mapi transforms three per loop pass), or None when the chunk
+    does not fit vu1clip's indexed entry (CLIPI_MAX) or is no smaller."""
+    n = 3 * ntri
+    P = np.frombuffer(bytes(pos[:6 * n]), np.uint8).reshape(n, 6)
+    S = np.frombuffer(bytes(st[:4 * n]), np.uint8).reshape(n, 4)
+    C = np.frombuffer(bytes(col[:4 * n]), np.uint8).reshape(n, 4)
+    K = np.ascontiguousarray(np.concatenate([P, S, C], 1)).view("V14").ravel()
+    _, first, inv = np.unique(K, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")  # distinct corners in first-use order
+    rank = np.empty(len(order), np.int64)
+    rank[order] = np.arange(len(order))
+    src = first[order]
+    nv = -(-len(src) // 3) * 3
+    if nv > 255 or MAPI_HDR + 3 * nv + ntri > CLIPI_MAX:
+        return None
+    src = np.concatenate([src, np.repeat(src[-1:], nv - len(src))])
+    tri = rank[inv.ravel()].reshape(ntri, 3)
+    idx = np.zeros((ntri, 4), np.uint8)
+    idx[:, :3] = tri
+    pad = lambda k: -(-k // 16) * 16
+    if pad(6 * nv) + 2 * pad(4 * nv) + pad(4 * ntri) + 16 >= pad(6 * n) + 2 * pad(4 * n):
+        return None
+    return nv, P[src].tobytes(), S[src].tobytes(), C[src].tobytes(), idx.tobytes()
+
+
+def chunk_packet(ti, fl, ntri, pos, st, col):
+    """chunk_streams of one chunk tuple, indexed when it pays (index_chunk; never foliage) ->
+    (bytes, offsets, ntri word for the chunk record: ntri | nv << 16)"""
+    ix = index_chunk(ntri, pos, st, col) if INDEXED and not fl & CHUNK_GRASS else None
+    if ix is None:
+        pk, offs = chunk_streams(ntri, pos, st, col)
+        return pk, offs, ntri
+    nv, p2, s2, c2, idx = ix
+    pk, offs = chunk_streams(ntri, p2, s2, c2, nv, idx)
+    return pk, offs, ntri | nv << 16
 
 
 POS_MAX = 32000  # s16 position range used before snapping (leaves room for split_batch / snapping)
@@ -2298,6 +2359,13 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     kp = flat([tuple(k[:3]) for k in KEEP_POS], f64, 3)
     ak = simplify.AREA_K if area_k is None else area_k
     a = lambda x: x.ctypes.data
+    if os.environ.get("SIMP_DUMP"):  # debugging: the simplifier's whole input, to rerun / analyse it without the game
+        np.savez_compressed(f"{os.environ['SIMP_DUMP']}.{out}.npz", P=P, poff=poff, W=W, woff=woff, T=T, toff=toff,
+                            keep=keep, ti=ti, F=F, nv=nv, nt=nt, sp=sp, kp=kp, cells=int(bool(cells)),
+                            floor=floor or NEAR, ak=ak, eps=-1.0 if eps_fixed is None else eps_fixed,
+                            eps_far=-1.0 if eps_far is None else eps_far, names=np.array([m["name"] for m in meshes]),
+                            budget=np.array(budget[:3] if budget else (), f64),
+                            nav_s=np.array(nav_s if nav_s is not None else np.zeros((0, 3)), f64))
     t0 = time.time()
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
                        len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
@@ -2500,8 +2568,10 @@ def write_cells(cells, res, all_chunks, nres):
                 [all_chunks[gid + j] for j in range(len(n))]
         mn = [min(b[6][a] for b in boxes) for a in range(3)]
         mx = [max(b[7][a] for b in boxes) for a in range(3)]
-        def size(j):  # bytes chunk gid + j adds to a blob: its record + its streams, 16-byte aligned
-            return 64 + sum(16 + ((len(a) + 15) & ~15) for a in all_chunks[gid + j][3:6])  # + VIF code qwords
+        pkts = [chunk_packet(*all_chunks[gid + j][:6]) for j in range(len(n))]
+
+        def size(j):  # bytes chunk gid + j adds to a blob: its record + its packet (VIF code qwords, streams)
+            return 64 + len(pkts[j][0])
         parts, cur, cb = [], [], 0
         for j in range(len(n)):
             if cur and cb + size(j) + 63 > NEAR_PART:
@@ -2517,12 +2587,12 @@ def write_cells(cells, res, all_chunks, nres):
             b = bytearray(b"\0" * (64 * len(part)))
             for i, j in enumerate(part):
                 ti, fl, ntri, pos, st, col, lo, hi, org, step, sts = all_chunks[gid + j]
-                pk, offs = chunk_streams(ntri, pos, st, col)
+                pk, offs, nw = pkts[j]
                 offs = [len(b) + o for o in offs]
                 b += pk
                 assert gid + j < 1 << 24
                 b[64 * i:64 * i + 64] = struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0) |
-                                                    (0 if fl & CHUNK_GRASS else (gid + j) << 8), ntri, *offs, *lo, *hi,
+                                                    (0 if fl & CHUNK_GRASS else (gid + j) << 8), nw, *offs, *lo, *hi,
                                                     *org, step)
             b.extend(b"\0" * (-len(b) % 64))
             off = len(cbin) if part else 0
@@ -2659,10 +2729,10 @@ def main():
     recs = []
     for ti, fl, ntri, pos, st, col, lo, hi, org, step, sts in chunks:
         align(16)
-        pk, offs = chunk_streams(ntri, pos, st, col)
+        pk, offs, nw = chunk_packet(ti, fl, ntri, pos, st, col)
         offs = [len(blob) + HDR + o for o in offs]
         blob += pk
-        recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), ntri, *offs, *lo, *hi,
+        recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), nw, *offs, *lo, *hi,
                                 *org, step))
     sec["chunks"] = len(blob) + HDR
     blob += b"".join(recs)
@@ -2750,6 +2820,7 @@ def load_map_bin(path):
     P, ST, C, TI, FL, R, BX = [], [], [], [], [], [], []
     for i in range(nch):
         ti, fl, n, po, so, co = struct.unpack_from("<iII3I", b, och + 64 * i)
+        n, nv = n & 0xFFFF, n >> 16
         BX.append(np.tile(np.array(struct.unpack_from("<6f", b, och + 64 * i + 24)), (n, 1)))
         org, step = np.array(struct.unpack_from("<3f", b, och + 64 * i + 48)), struct.unpack_from("<f", b, och + 64 * i + 60)[0]
         if fl & CHUNK_GRASS:
@@ -2758,9 +2829,18 @@ def load_map_bin(path):
             R.append(lo + (hi - lo) * (np.arange(n) // per + 0.5) / max(1, n // per))
         else:
             R.append(np.zeros(n))
-        P.append(org + step * np.frombuffer(b, np.int16, n * 9, po).reshape(n, 3, 3).astype(np.float32))
-        ST.append(np.frombuffer(b, np.uint16, n * 6, so).reshape(n, 3, 2) / (1024.0 if fl & CHUNK_ST1K else 4096.0))
-        C.append(np.frombuffer(b, np.uint8, n * 12, co).reshape(n, 3, 4))
+        if nv:  # indexed chunk: shared vertices, then the triangle stream (u8 x4) after the colours' code qword
+            ix = np.frombuffer(b, np.uint8, n * 4, co + -(-4 * nv // 16) * 16 + 16).reshape(n, 4)[:, :3]
+            pv = np.frombuffer(b, np.int16, nv * 3, po).reshape(nv, 3)[ix]
+            sv = np.frombuffer(b, np.uint16, nv * 2, so).reshape(nv, 2)[ix]
+            cv = np.frombuffer(b, np.uint8, nv * 4, co).reshape(nv, 4)[ix]
+        else:
+            pv = np.frombuffer(b, np.int16, n * 9, po).reshape(n, 3, 3)
+            sv = np.frombuffer(b, np.uint16, n * 6, so).reshape(n, 3, 2)
+            cv = np.frombuffer(b, np.uint8, n * 12, co).reshape(n, 3, 4)
+        P.append(org + step * pv.astype(np.float32))
+        ST.append(sv / (1024.0 if fl & CHUNK_ST1K else 4096.0))
+        C.append(cv)
         TI.append(np.full(n, ti))
         FL.append(np.full(n, fl))
     tex = texmap.load(b, ntex, otex)

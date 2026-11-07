@@ -19,6 +19,7 @@ void vu1_begin(int buffer);
  * which clips against both on VU1 (batches over VU1_CLIP_TRIS are split) */
 #define VU1_CLIP 4
 #define VU1_CLIP_TRIS 32
+#define VU1_IDX_TRIS 64  /* most triangles in one vu1_add_idx batch (map chunks: <= 54) */
 /* VU1_EDGE: fog = max(min(fog, b + a2 z), 0) on top of the map fog (b = vu1_map_fog's b, a2 = vu1_map_edge): far
  * batches fade into the fog colour by map.c's cull distance (vu1map2 edge loop, 91 instead of 79 VU1 cycles per
  * triangle; ignored with VU1_CLIP) */
@@ -32,6 +33,12 @@ void vu1_begin(int buffer);
 #define VU1_FLAT 32
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
+/* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col
+ * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: the vertex numbers of its
+ * corners, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a
+ * code qword before each, idx last). VU1_CLIP batches go to vu1clip.vsm as lists the EE writes into the chain. */
+void vu1_add_idx(GSTEXTURE *tex, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
+                 const void *idx, const float *org, float st_k);
 /* GS mip chain for the next vu1_add_ex only (opaque batches; texcache.c tc_mip): TEX1 MXL mxl, LINEAR_MIPMAP_NEAREST,
  * K k (7.4 fixed), MIPTBP1 miptbp1. The batch then sends MIPTBP1 in TEST's A+D slot: the opaque TEST must be set
  * already (vu1_gs_regs; map.c sets it at the start of its opaque pass) */
@@ -125,6 +132,11 @@ typedef struct {
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
                                            * the queue was full, FLUSHA gates (one per segment with uploads) */
+    int idx_batches, idx_clip, idx_vuclip;  /* indexed map batches so far / triangles split on the EE for vu1clip /
+                                             * VU1_CLIP batches clipped by vu1clip's indexed entry */
+    unsigned long long idx_clip_ticks, wait_ticks;
+    unsigned long long add_idx_ticks, add_ex_ticks;  /* EE ticks so far in vu1_add_idx / vu1_add_ex (map + relief) */
+    int add_idx_n, add_ex_n;                         /* their calls so far */  /* EE ticks so far: vu1_add_idx's near-plane split, room()'s mid-chain waits */
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 
