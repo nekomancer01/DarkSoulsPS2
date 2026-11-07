@@ -379,16 +379,59 @@ static int ms_pvs_vis(int k, unsigned id)
     return pvs_range(k, m->rrange[id][2], m->rrange[id][0], m->rrange[id][1], 0);
 }
 
+/* MS_DG (default on; make DEFS=-DMS_DG=0 = pvs only): an item none of whose chunks the draw groups of the recent floors
+ * show (drawgrp.c dg_stream_shown) counts as unseen too: Firelink's cells from inside the Burg. A near part goes by
+ * its cell's coarse chunks (the same pieces; its own chunks are known only once it is in). */
+#ifndef MS_DG
+#define MS_DG 1
+#endif
+static int ms_dg_vis(int k, unsigned id)
+{
+    const MapInst *m = &inst[k];
+    if (!dg_area(k) || !m->order)
+        return 1;
+    unsigned a, n;
+    if (id < m->nctab) {
+        unsigned c = id;
+        while (c > 0 && (m->ctab[c].near & CELL_PART))  /* a later part of a cell: the cell's own entry */
+            c--;
+        a = m->ctab[c].first, n = m->ctab[c].count;
+        if (!n)
+            return 1;
+        for (unsigned j = a; j < a + n; j++)
+            if (dg_stream_shown(k, m->order[j]))
+                return 1;
+        return 0;
+    }
+    id -= m->nctab;
+    if (!m->rrange || id >= m->nritem || !(n = m->rrange[id][1]))
+        return 1;
+    a = m->rrange[id][0];
+    for (unsigned c = a; c < a + n; c++)
+        if (dg_stream_shown(k, c))
+            return 1;
+    return 0;
+}
+static int ms_vis(int k, unsigned id)
+{
+    if (!ms_pvs_vis(k, id))
+        return 0;
+    return !MS_DG || k < 0 || k >= MAP_INST || !inst[k].ctab || ms_dg_vis(k, id);
+}
+static unsigned ms_vis_gen(int k) { return pvs_gen(k) + (MS_DG ? dg_stream_gen() << 16 : 0); }
+
 int map_stream_open(const char *pak_path)
 {
     pano_open(pak_path);
-    mapstream_vis_hooks(ms_pvs_vis, pvs_gen);
+    mapstream_vis_hooks(ms_vis, ms_vis_gen);
     return inst[0].ctab ? mapstream_init(pak_path, inst[0].ctab, inst[0].nctab) : 0;
 }
 
 void map_set_player(V3 feet)
 {
     const float p[3] = {feet.x, feet.y, feet.z};
+    static unsigned dg_frames;
+    dg_tick(++dg_frames);  /* the recent floors' draw groups for streaming (drawgrp.c) */
     mapstream_update(p);  /* every instance's near cells (src/mapstream.c) */
     /* DSR's fog follows the collision part under the player (its MSB FogID); in the air the last one stays */
     ColHit h;
@@ -396,13 +439,14 @@ void map_set_player(V3 feet)
     int k = -1;
     if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0)
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
-    /* every other loaded block takes its draw groups from its own collision under the player: at a seam both blocks'
-     * collisions overlap (DSR's ConnectCollision pairs, e.g. Firelink h0029B2 / Burg h1127B1), each map shows what its
-     * own part shows. Elsewhere a block keeps the set of the last of its parts the player stood on (ASSUMED,
-     * TECH_DEBT world-4) */
+    /* a block outside the area group of the floor's block (drawgrp.c DG_SHARED; every block without one) takes its
+     * draw groups from its own collision under the player: at a seam both blocks' collisions overlap (DSR's
+     * ConnectCollision pairs, e.g. the Asylum's crow ledge h0054B1 and Firelink), each map shows what its own part
+     * shows. Elsewhere such a block keeps the set of the last of its parts the player stood on (ASSUMED, TECH_DEBT
+     * world-4). The blocks of the floor's group all follow the floor's part (one mask, as DSR) */
     for (int j = 0; j < MAP_INST; j++) {
         ColHit hj;
-        if (j != k && inst_col_block(j) >= 0 &&
+        if (j != k && inst_col_block(j) >= 0 && (k < 0 || !dg_area(k) || dg_area(j) != dg_area(k)) &&
             col_floor_block(inst_col_block(j), feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &hj))
             dg_floor(j, hj.tri);
     }
@@ -942,7 +986,7 @@ int map_block_stream_open(int k, const void *pack)
     const MapInst *m = &inst[k];
     mapstream_select(k);
     int r = m->ctab ? mapstream_open_pack(k, pack, m->ctab, m->nctab) : 0;
-    mapstream_vis_hooks(ms_pvs_vis, pvs_gen);
+    mapstream_vis_hooks(ms_vis, ms_vis_gen);
     if (r && !m->streams)
         res_open(k, pack);
     mapstream_select(0);  /* mapstream_open_pack leaves instance k selected */

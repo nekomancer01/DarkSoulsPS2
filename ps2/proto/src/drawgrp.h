@@ -14,8 +14,16 @@ int dg_init(const void *blob, unsigned chunks, unsigned col_tris);
 int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris);
 /* Block k turned off: its set is forgotten (all shown when it comes back, until the player's floor in it is known) */
 void dg_block_drop(int k);
-/* Triangle of instance k's collision under the player (col_floor hit): its part's draw groups become k's shown set */
+/* Triangle of instance k's collision under the player (col_floor hit): its part's draw groups become k's shown set,
+ * and with an area group (DG_SHARED) the shown set of every block of that group */
 void dg_floor(int k, int tri);
+/* the area group of instance k (dg.bin; 0 = none: k follows only its own floor) */
+int dg_area(int k);
+/* Streaming: dg_tick(frame) every frame; dg_stream_shown 1 when a floor of the last ~20 s (the union of their shared
+ * masks) shows instance k's chunk (always 1 outside the shared area group); dg_stream_gen changes with that union */
+void dg_tick(unsigned now);
+int dg_stream_shown(int k, unsigned chunk);
+unsigned dg_stream_gen(void);
 /* Chunk number in bump.bin's order (resident index, near chunks: flags >> 8): 1 = draw */
 int dg_shown(int k, unsigned chunk);
 /* Event-switched pieces / objects (TECH_DEBT event-5; dg.bin DGM3 keys their chunks by MSB entity id): (De)activate
