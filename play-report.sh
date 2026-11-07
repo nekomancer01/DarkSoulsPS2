@@ -14,7 +14,8 @@
 #   --every SECS     seconds between screenshots (default 2; 0 = none)
 #   --width PX       screenshot width (default 480, JPEG; the report grows ~30 MB an hour at the default)
 #   --no-states      no savestates at marks
-#   --for SECS       quit PCSX2 by itself after that many seconds (scripted checks)
+#   --for SECS       quit PCSX2 by itself after that many seconds (scripted checks; implies --mute)
+#   --mute           no sound (a null PulseAudio sink dsr_mute, and PCSX2's output muted)
 #
 # What the zip holds:
 #   summary.txt   the run at a glance: hitch summary (tools/hitchsum.py), spikes, failed allocations, deaths, blocks
@@ -38,7 +39,7 @@ if [ -z "${PLAY_ON_HOST:-}" ] && { [ -n "${CONTAINER_ID:-}" ] || [ -e /run/.cont
     exec distrobox-host-exec env PLAY_ON_HOST=1 bash "$ROOT/play-report.sh" "$@"
 fi
 
-ISO=; OUT=; EVERY=2; WIDTH=480; STATES=1; FOR=
+ISO=; OUT=; EVERY=2; WIDTH=480; STATES=1; FOR=; MUTE=
 die() { echo "play-report: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
         --every) [ $# -ge 2 ] || die "$1 needs seconds"; EVERY=$2; shift 2 ;;
         --width) [ $# -ge 2 ] || die "$1 needs pixels"; WIDTH=$2; shift 2 ;;
         --no-states) STATES=; shift ;;
+        --mute) MUTE=1; shift ;;
         --for) [ $# -ge 2 ] || die "$1 needs seconds"; FOR=$2; shift 2 ;;
         -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) die "unknown option $1 (see --help)" ;;
@@ -55,6 +57,7 @@ done
 [[ $EVERY =~ ^[0-9]+$ ]] || die "--every takes whole seconds"
 [[ $WIDTH =~ ^[1-9][0-9]*$ ]] || die "--width takes pixels"
 [ -z "$FOR" ] || [[ $FOR =~ ^[1-9][0-9]*$ ]] || die "--for takes whole seconds"
+[ -z "$FOR" ] || MUTE=1  # scripted runs are silent (manual play keeps its sound)
 ISO=$(realpath -e -- "${ISO:-$ROOT/build/proto.iso}" 2>/dev/null) || die "no ISO at ${ISO:-$ROOT/build/proto.iso} (build it with ./build-iso.sh)"
 command -v python3 >/dev/null || die "needs python3"
 STAMP=$(date +%Y%m%d-%H%M%S)
@@ -93,13 +96,15 @@ for e in "$USERCFG"/*; do
     ln -sfn "$(realpath --relative-to="$PLAYCFG" "$e")" "$PLAYCFG/$n"
 done
 cp -f "$USERCFG"/inis/*.ini "$PLAYCFG/inis/" 2>/dev/null || true
-python3 -I - "$USERCFG/inis/PCSX2.ini" "$PLAYCFG/inis/PCSX2.ini" "$PINE_SLOT" <<'EOF'
+python3 -I - "$USERCFG/inis/PCSX2.ini" "$PLAYCFG/inis/PCSX2.ini" "$PINE_SLOT" "${MUTE:-0}" <<'EOF'
 import re, sys
-src, dst, slot = sys.argv[1:4]
+src, dst, slot, mute = sys.argv[1:5]
 want = {'Logging': {'EnableFileLogging': 'true', 'EnableTimestamps': 'true', 'EnableEEConsole': 'true',
                     'EnableIOPConsole': 'true', 'EnableVerbose': 'false'},
         'EmuCore': {'EnablePINE': 'true', 'PINESlot': slot},
         'UI': {'ConfirmShutdown': 'false', 'SetupWizardIncomplete': 'false'}}
+if mute == '1':  # (else the user's own setting)
+    want['SPU2/Output'] = {'OutputMuted': 'true'}
 out, sec, seen = [], None, set()
 def flush(sec):
     out.extend(f'{k} = {v}' for k, v in want.get(sec, {}).items() if (sec, k) not in seen)
@@ -123,6 +128,11 @@ EMULOG=$PLAYCFG/logs/emulog.txt
 # --- start PCSX2 (X11 / XWayland: its window can be captured) ---
 XENV=(QT_QPA_PLATFORM=xcb)
 [ -n "${DISPLAY:-}" ] || die "no DISPLAY (start it from your desktop session)"
+if [ -n "$MUTE" ]; then  # sound to a null sink (created on demand, like the test scripts')
+    command -v pactl >/dev/null && { pactl list short sinks | grep -q dsr_mute ||
+        pactl load-module module-null-sink sink_name=dsr_mute sink_properties=device.description=DSR-test-mute >/dev/null; }
+    if [ "$BIN" = flatpak ]; then RUN+=(--env=PULSE_SINK=dsr_mute); else RUN+=(PULSE_SINK=dsr_mute); fi
+fi
 if [ "$BIN" = flatpak ]; then
     RUN+=(--socket=x11 --nosocket=wayland --env=QT_QPA_PLATFORM=xcb net.pcsx2.PCSX2)
 else
