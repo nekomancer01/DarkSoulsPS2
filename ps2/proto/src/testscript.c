@@ -377,8 +377,8 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                 if (!(c->a[2] > 0))
                     r = 2.0f;  /* inside REACH_LIT 3.4 m (ev_misc.c), short of the bonfire's own collision */
             } else if (c->text) {
-                if (!prog.stain_map) {
-                    printf("TEST error line %d: go stain: there is no bloodstain\n", c->line);
+                if (!prog.stain_map) {  /* picked up already on the way (walking over it), as a player would */
+                    printf("TEST log go stain line %d: no bloodstain (picked up on the way or none)\n", c->line);
                     break;
                 }
                 tx = prog.stain_pos[0], tz = prog.stain_pos[2];

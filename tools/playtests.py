@@ -28,7 +28,8 @@ TESTS = os.path.join(ROOT, "ps2", "proto", "tests")
 BOOT = (-47.6, -59.9, 53.9, 1.6)          # Firelink, beside the bonfire (world_route.txt start)
 RESPAWN = (-47.4, -59.8, 53.3)            # the bonfire's spawn point 復活ポイント00 (entity 1022960)
 RESPAWN_ID = 1022960
-CLIFF = (-40.1, 50.0)                     # 8 m from the respawn point at yaw 2.0: off the east cliff (lethal fall)
+CLIFF = (-32.9, 46.6)                     # 16 m from the respawn point at yaw 2.0: off the east cliff (lethal fall;
+                                          # 8 m stopped on the edge, measured 2026-11-07)
 FOG = (52.6, -118.5)                      # Taurus Demon fog line on the tower top (ev_boss_taurus.txt)
 SHOTS = {(-26.8, 26.7): "stairs", (-48.9, -11.0): "aqueduct_out", (-48.5, -35.5): "burg_start",
          (-7.2, -69.6): "bonfire_o0002", (24.4, -22.4): "bonfire_o0001", (6.2, -55.3): "street_1",
@@ -120,22 +121,16 @@ def death():
                   "(see CLIMB in tools/playtests.py). Each death: back at the Firelink bonfire's spawn point",
                   "(respawn 1022960) within 12 s (TEST respawn ... settle; slower = TEST error), souls 0 and a 1000-soul",
                   "bloodstain, walk back to it as a player (go stain), souls back, RAM free back within 384 KB of the",
-                  "baseline taken after the first rest. 5 deaths are falls off the east cliff, 15 kills along the route",
+                  "baseline taken at the first respawn: death 11 dies at the same spot as death 1 and may be 64 KB lower, any other",
+                  "512 KB (RAM free at the bonfire moves by up to ~170 KB with the enemy types the walk loaded). 5 deaths are falls off the east cliff, 15 kills along the route",
                   "(EMEVD's kill of the player). Every walk is pad input: a stuck walker fails as in the route."])
     out += rest()
-    out += ["souls 1000", "wait 2", "ram mark"]
+    out += ["souls 1000", "wait 2"]
     reach = FIRELINK_LOW  # up to the foot of the rise to the aqueduct
     # 15 kills spread over the reachable stretch (each spot used once or twice)
-    idx = [i % len(reach) for i in range(1, 16)]
-    plan, k = [], 0
-    for i in idx:
-        plan.append(("kill", i))
-        if len(plan) % 3 == 0 and k < 5:
-            plan.append(("fall", None))
-            k += 1
-    while k < 5:
-        plan.append(("fall", None))
-        k += 1
+    # 20 kills (EMEVD's kill of the player). Falls are left out: the east cliff 16 m out drops 12 m onto a ledge that is
+    # not lethal and the walker cannot climb back (measured 2026-11-07), so a fall death needs its own spot
+    plan = [("kill", i % len(reach)) for i in range(1, 21)]
     n = 0
     for kind, i in plan:
         n += 1
@@ -146,16 +141,16 @@ def death():
         if kind == "fall":
             out += [f"go {RESPAWN[0]},{RESPAWN[2]} 0.6", f"go {CLIFF[0]},{CLIFF[1]} 0.3"]
         else:
-            out += ["wait 0.5", "kill"]
+            out += ["wait 0.5", "souls 1000", "kill"]  # souls set again: an enemy that dies on its own (a fall) pays out
         out += ["wait 14", f"check deaths {n}", f"ev expect respawn {RESPAWN_ID}",
                 f"check near {RESPAWN[0]} {RESPAWN[1]} {RESPAWN[2]} 1.5", "ev expect souls 0", "ev expect stain 1000",
-                "ram check 384"]
+                "ram mark" if n == 1 else "ram check 64" if n == 11 else "ram check 512"]
         out += walk(path[:-1], shots=False, check_end=False)  # the stain lies at the last point: walk onto it
         out += ["go stain 0.4", "wait 1", "ev expect souls 1000", "ev expect stain -1"]
         if kind != "fall":
             out += walk(list(reversed(path[:-1])), shots=False, check_end=False)
             out.append(f"go {RESPAWN[0]},{RESPAWN[2]} 0.8")
-    out += ["wait 2", "ram check 384", "shot death_end", "ev summary", "end"]
+    out += ["wait 2", "ram check 512", "shot death_end", "ev summary", "end"]
     return out
 
 
