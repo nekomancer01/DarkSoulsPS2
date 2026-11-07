@@ -28,17 +28,21 @@ stores them), so it needs no re-export:
   5. triangles go to the cell whose box holds their centroid (else the nearest), are sorted along a Z curve and cut
      into VU1 batches: indexed (HZN_IDX, the default: a breadth-first walk over shared vertices, at most IDX_TRIS
      triangles / IDX_NV vertices, each vertex stored once), else lists of CHUNK_TRIS.
-Untextured: map.c draws it with TME off (vu1.c VU1_FLAT), vertex colour = final colour.
+  6. (HZN_TEX, indexed only) a few 128 x 128 pages per block baked from the source map (tools/hzntex.py); textured
+     batches carry an st stream and their page in the chunk's tex, the rest stay untextured.
+Untextured: map.c draws it with TME off (vu1.c VU1_FLAT), vertex colour = final colour. Textured: the page modulates
+the vertex colour (texel 0x80 = 1.0), so a page the texture pool can't hold this frame falls back to the average.
 
 hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the section start, so it can move):
-  header (16 B): 'HZN1', chunks, cells (= the map's cell table entries), bytes
+  header (16 B): 'HZN1', chunks, cells (= the map's cell table entries), bytes; with texture pages 'HZN2' and 16 B more:
+                 pages, texture section offset (texmap.write: entries + CLUT and mips 0-3), 0, 0
   per cell (32 B): f32 box min[3], max[3] (its horizon chunks); u16 first chunk, chunk count; u32 flags: bit 0 the
                    cell has chunks the horizon stands for (even if they simplified to nothing), bit 1 it has backdrop
                    chunks
-  chunk records (64 B, map.c Chunk): tex -1, flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop | draw-group set
+  chunk records (64 B, map.c Chunk): tex = page (-1: untextured), flags CHUNK_HZN (| CHUNK_BACKDROP: from the backdrop | draw-group set
                    << 16: dg.bin piece mask index, 0 = always drawn), tris, pos / st / col offsets, box, org, step
-  streams: per chunk one VIF packet: indexed (tris | nv << 16, idx_streams): pos s16x3 x nv, colour u8x4 x nv, u8x4
-           triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
+  streams: per chunk one VIF packet: indexed (tris | nv << 16, idx_streams): pos s16x3 x nv, (textured: st u16x2 / 4096
+           x nv,) colour u8x4 x nv, u8x4 triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
@@ -101,6 +105,14 @@ VIS_DIRS = int(os.environ.get("HZN_VIS_DIRS", 64))
 VIS_N = int(os.environ.get("HZN_VIS_N", 96))  # navmesh eye points at most
 VIS_RES_O, VIS_RES_P = 512, 256  # pixels: orthographic view, cube face
 EYE = 1.6  # metres above the navmesh (ASSUMED: DSR's camera sits ~1.5-2 m up)
+# baked texture pages (HZN_TEX, tools/hzntex.py + tools/native/hzbake.c; indexed batches only): TEX_PAGES 128 x 128
+# pages per block at most, taken out of KB (TEX_PAGE_KB each with its mips and CLUT; ASSUMED until measured), and
+# about 4 bytes a vertex of st plus the seams' extra vertices a triangle (TEX_BPT, ASSUMED). HZN_TEX=0: untextured
+TEX = os.environ.get("HZN_TEX", "1") == "1" and IDX
+TEX_PAGES = int(os.environ.get("HZN_TEX_PAGES", 4))
+TEX_PAGE_KB = 22
+TEX_BPT = 24
+TEX_MAXD = float(os.environ.get("HZN_TEX_MAXD", 6.0))  # metres: farthest source surface a texel looks for (ASSUMED)
 
 
 def _swz(i):
@@ -142,6 +154,7 @@ def coarse_tris(b):
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
     Ps, Cs, Ks, Bs, Ds, cov = [], [], [], [], [], set()
+    Us, Ts, Ls = [], [], []  # per triangle: texture coordinates, texture, corner light (the bake's source, SRC_TEX)
     cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
         if ce[8] & 0x80000000:  # a later near part (no resident chunks)
@@ -203,11 +216,19 @@ def coarse_tris(b):
             Ks.append(opaque)
             Bs.append(np.full(ntri, bool(fl & CHUNK_BACKDROP)))
             Ds.append(np.full(ntri, cdg[j] if j < len(cdg) else 0, np.int64))
+            Us.append(st.reshape(-1, 3, 2))
+            Ts.append(np.full(ntri, ti if img is not None else -1, np.int64))
+            Ls.append(col.reshape(-1, 3, 3))
     if not Ps:
         z = np.zeros(0, bool)
         return np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), z, z, np.zeros(0, np.int64), cells, cov
+    SRC_TEX.update(uv=np.concatenate(Us), tid=np.concatenate(Ts), light=np.concatenate(Ls),
+                   img={t: im for t, im in tex.items() if im is not None})
     return (np.concatenate(Ps), np.concatenate(Cs), np.concatenate(Ks), np.concatenate(Bs), np.concatenate(Ds), cells,
             cov)
+
+
+SRC_TEX = {}
 
 
 def chunk_dg(b, nch):
@@ -263,6 +284,11 @@ def _native(name, srcs, setup, cxx=False):
                 L = None
         _SO[name] = L
     return _SO[name]
+
+
+def _native_ok(name):
+    srcs = {"libhzbake": ["hzbake.c"]}[name]
+    return _native(name, srcs, lambda L: None) is not None
 
 
 def _nearest_lib():
@@ -363,6 +389,42 @@ def mo_simplify(V, VC, T, d, px):
     return idx.reshape(-1, 3).astype(np.int64)
 
 
+def bake_fn(P, sel):
+    """hz_bake over the source triangles P[sel] (SRC_TEX: their texture coordinates, textures and light) -> f(points,
+    normals) -> (rgb (m, 3), found (m,) bool); None without the library"""
+    import ctypes
+
+    def setup(L):
+        vp, i = ctypes.c_void_p, ctypes.c_int
+        L.hz_bake.argtypes = [i, vp, vp, vp, vp, i, vp, vp, vp, vp, i, vp, vp, ctypes.c_float, vp, vp]
+        L.hz_bake.restype = None
+    L = _native("libhzbake", ["hzbake.c"], setup)
+    if L is None:
+        return None
+    tri = np.ascontiguousarray(P[sel].reshape(-1, 9), np.float32)
+    uv = np.ascontiguousarray(SRC_TEX["uv"][sel].reshape(-1, 6), np.float32)
+    light = np.ascontiguousarray(SRC_TEX["light"][sel].reshape(-1, 9), np.float32)
+    ids = sorted(SRC_TEX["img"])
+    remap = {t: k for k, t in enumerate(ids)}
+    tid = np.ascontiguousarray([remap.get(int(t), -1) for t in SRC_TEX["tid"][sel]], np.int32)
+    imgs = [np.ascontiguousarray(SRC_TEX["img"][t], np.uint8) for t in ids]
+    pix = np.ascontiguousarray(np.concatenate([im.reshape(-1) for im in imgs]) if imgs else np.zeros(4, np.uint8))
+    toff = np.ascontiguousarray(np.cumsum([0] + [im.size for im in imgs])[:len(imgs)] if imgs else [0], np.int64)
+    tw = np.ascontiguousarray([im.shape[1] for im in imgs] or [1], np.int32)
+    th = np.ascontiguousarray([im.shape[0] for im in imgs] or [1], np.int32)
+
+    def f(pts, nrm):
+        q = np.ascontiguousarray(pts, np.float32)
+        nn = np.ascontiguousarray(nrm, np.float32)
+        out = np.zeros((len(q), 3), np.float32)
+        found = np.zeros(len(q), np.uint8)
+        L.hz_bake(len(tri), tri.ctypes.data, uv.ctypes.data, tid.ctypes.data, light.ctypes.data, len(imgs),
+                  pix.ctypes.data, toff.ctypes.data, tw.ctypes.data, th.ctypes.data, len(q), q.ctypes.data,
+                  nn.ctypes.data, ctypes.c_float(TEX_MAXD), out.ctypes.data, found.ctypes.data)
+        return out.astype(np.float64), found.astype(bool)
+    return f
+
+
 def visible_tris(P, key, nav):
     """(n,) bool: triangles some view may see (tools/native/hzvis.c); all True without the library"""
     def setup(L):
@@ -455,6 +517,21 @@ def chunk_streams(ntri, pos, col):
         out += arr
         out.extend(b"\0" * (-len(out) % 16))
     return out, offs if ST else [offs[0], offs[0], offs[1]]
+
+
+def idx_streams_st(ntri, nv, pos, st, col, idx):
+    """a textured indexed horizon batch: export_map.chunk_packet's indexed streams (pos, st u16x2 / 4096, colour,
+    triangles), map.c draws it with the block's horizon page (chunk tex)"""
+    codes = ((0, 0, 0x01000103, 0x69008000 | MAPI_HDR | nv << 16), (0, 0, 0, 0x6500C000 | (MAPI_HDR + 1) | nv << 16),
+             (0, 0, 0, 0x6E00C000 | (MAPI_HDR + 2) | nv << 16),
+             (0, 0, 0x01000101, 0x6E00C000 | (MAPI_HDR + 3 * nv) | ntri << 16))
+    out, offs = bytearray(), []
+    for arr, cw in zip((pos, st, col, idx), codes):
+        out += struct.pack("<4I", *cw)
+        offs.append(len(out))
+        out += arr
+        out.extend(b"\0" * (-len(out) % 16))
+    return out, offs[:3]
 
 
 def idx_streams(ntri, nv, pos, col, idx):
@@ -557,12 +634,14 @@ def build(b):
         keep = keep.copy()
         keep[np.flatnonzero(keep)[~vis]] = False
     mo = SIMP == "meshopt" and _meshopt() is not None
-    for g in (1, 0):  # the backdrop (BD_KB), then the map (KB)
+    tex_on = TEX and _native_ok("libhzbake")
+    for g in (1, 0):  # the backdrop (BD_KB), then the map (KB; the texture pages come out of it)
         selg = keep & (bd == bool(g))
-        budget = BD_KB if g else KB
+        budget = BD_KB if g else KB - (TEX_PAGES * TEX_PAGE_KB if tex_on else 0)
+        bpt = TEX_BPT if tex_on else BPT
         if mo:
             raw = [(dset, selg & (dg == dset)) for dset in np.unique(dg[selg])]
-            cap = int(budget * 1024 / BPT)
+            cap = int(budget * 1024 / bpt)
 
             def run(px):
                 out = []
@@ -599,72 +678,93 @@ def build(b):
             stats["opaque"] += int(sel.sum())
             stats["clustered"] += len(T)
             sets.append((dset, V, VC, qlog(V, T, nav)))
-        eps = block_eps([x[3] for x in sets], int(budget * 1024 / BPT))
+        eps = block_eps([x[3] for x in sets], int(budget * 1024 / bpt))
         for dset, V, VC, log in sets:
             T = replay(log, eps)
             groups.append(_place(V, VC, T, lo, hi, CHUNK_HZN | (CHUNK_BACKDROP if g else 0) | int(dset) << 16))
         if not g:
             stats["px"] = float(np.sqrt(eps) * FOCAL)
+    pages, tst = [], dict(pages=0, rho=0.0, texels=0, found=0.0, charts=0, flat=0)
+    if tex_on and groups:
+        r = __import__("hzntex").texture(groups, TEX_PAGES, bake_fn(P, keep))
+        if r is not None:
+            groups, pages, tst = r
+    groups = [g if len(g) > 5 else g + (None, np.full(len(g[2]), -1, np.int64)) for g in groups]
     recs, streams, ctab = [], bytearray(), []
     first = 0
     for ci in range(ncell):
         nchk, flags = 0, (1 if ci in cov else 0)
         cmn, cmx = np.full(3, 1e9), np.full(3, -1e9)
-        for V, col, T, tc, cfl in groups:
-            sel = np.flatnonzero(tc == ci)
-            for t in (idx_batches(T[sel]) if IDX else [T[sel[s:s + CHUNK_TRIS]] for s in range(0, len(sel), CHUNK_TRIS)]):
-                if IDX:  # the batch's distinct vertices in first-use order, padded to a multiple of 3 (vu1mapi)
-                    u, first_use, inv = np.unique(t.reshape(-1), return_index=True, return_inverse=True)
-                    order = np.argsort(first_use, kind="stable")
-                    rank = np.empty(len(u), np.int64)
-                    rank[order] = np.arange(len(u))
-                    vs = u[order]
-                    nv = -(-len(vs) // 3) * 3
-                    vs = np.concatenate([vs, np.repeat(vs[-1:], nv - len(vs))])
-                    tri = rank[inv.reshape(-1)].reshape(-1, 3)
-                else:
-                    vs = t.reshape(-1)
-                p = V[vs]
-                mn, mx = p.min(0), p.max(0)
-                org = (mn + mx) / 2
-                ext = np.abs(p - org).max()
-                e = int(np.ceil(np.log2(max(ext, 1e-3) / POS_MAX)))
-                step = 2.0 ** e
-                qp = np.clip(np.rint((p - org) / step), -32767, 32767).astype(np.int16)
-                pq = qp.astype(np.float64) * step + org  # the box of what is drawn
-                mn, mx = pq.min(0), pq.max(0)
-                cmn, cmx = np.minimum(cmn, mn), np.maximum(cmx, mx)
-                c4 = np.concatenate([col[vs], np.full((len(p), 1), 0x80, np.uint8)], 1)
-                if IDX:
-                    ix = np.zeros((len(t), 4), np.uint8)
-                    ix[:, :3] = tri
-                    pk, offs = idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
-                    ntw = len(t) | nv << 16
-                else:
-                    pk, offs = chunk_streams(len(t), qp.tobytes(), c4.tobytes())
-                    ntw = len(t)
-                recs.append((cfl, ntw, len(streams), offs, mn, mx, org, step))
-                streams += pk
-                nchk += 1
-                flags |= 2 if cfl & CHUNK_BACKDROP else 0
+        for V, col, T, tc, cfl, uv, tp in groups:
+            for page in np.unique(tp[tc == ci]):  # one page (or none: -1) per batch
+                sel = np.flatnonzero((tc == ci) & (tp == page))
+                for t in (idx_batches(T[sel]) if IDX else [T[sel[s:s + CHUNK_TRIS]] for s in range(0, len(sel), CHUNK_TRIS)]):
+                    if IDX:  # the batch's distinct vertices in first-use order, padded to a multiple of 3 (vu1mapi)
+                        u, first_use, inv = np.unique(t.reshape(-1), return_index=True, return_inverse=True)
+                        order = np.argsort(first_use, kind="stable")
+                        rank = np.empty(len(u), np.int64)
+                        rank[order] = np.arange(len(u))
+                        vs = u[order]
+                        nv = -(-len(vs) // 3) * 3
+                        vs = np.concatenate([vs, np.repeat(vs[-1:], nv - len(vs))])
+                        tri = rank[inv.reshape(-1)].reshape(-1, 3)
+                    else:
+                        vs = t.reshape(-1)
+                    p = V[vs]
+                    mn, mx = p.min(0), p.max(0)
+                    org = (mn + mx) / 2
+                    ext = np.abs(p - org).max()
+                    e = int(np.ceil(np.log2(max(ext, 1e-3) / POS_MAX)))
+                    step = 2.0 ** e
+                    qp = np.clip(np.rint((p - org) / step), -32767, 32767).astype(np.int16)
+                    pq = qp.astype(np.float64) * step + org  # the box of what is drawn
+                    mn, mx = pq.min(0), pq.max(0)
+                    cmn, cmx = np.minimum(cmn, mn), np.maximum(cmx, mx)
+                    c4 = np.concatenate([col[vs], np.full((len(p), 1), 0x80, np.uint8)], 1)
+                    if IDX:
+                        ix = np.zeros((len(t), 4), np.uint8)
+                        ix[:, :3] = tri
+                        if page >= 0:
+                            pk, offs = idx_streams_st(len(t), nv, qp.tobytes(), uv[vs].astype("<u2").tobytes(),
+                                                      c4.tobytes(), ix.tobytes())
+                        else:
+                            pk, offs = idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
+                        ntw = len(t) | nv << 16
+                    else:
+                        pk, offs = chunk_streams(len(t), qp.tobytes(), c4.tobytes())
+                        ntw = len(t)
+                    recs.append((int(page), cfl, ntw, len(streams), offs, mn, mx, org, step))
+                    streams += pk
+                    nchk += 1
+                    flags |= 2 if cfl & CHUNK_BACKDROP else 0
         ctab.append((cmn if nchk else np.zeros(3), cmx if nchk else np.zeros(3), first, nchk, flags))
         first += nchk
     nchunks = first
     assert nchunks < 65536
-    s0 = 16 + 32 * ncell + 64 * nchunks
-    out = bytearray(struct.pack("<4s3I", b"HZN1", nchunks, ncell, 0))
+    hdr = 32 if pages else 16  # HZN2: the header carries the texture section
+    s0 = hdr + 32 * ncell + 64 * nchunks
+    out = bytearray(struct.pack("<4s3I", b"HZN2" if pages else b"HZN1", nchunks, ncell, 0))
+    if pages:
+        out += bytes(16)
     for mn, mx, f, n, fl in ctab:
         out += struct.pack("<6f2HI", *mn, *mx, f, n, fl)
-    for cfl, ntri, so, offs, mn, mx, org, step in recs:
-        out += struct.pack("<iII3I6f4f", -1, cfl, ntri, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
+    for page, cfl, ntri, so, offs, mn, mx, org, step in recs:
+        out += struct.pack("<iII3I6f4f", page, cfl, ntri, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
     assert len(out) == s0
     out += streams
     out.extend(b"\0" * (-len(out) % 16))
+    if pages:  # texmap.write's section (offsets from the horizon section's start), densities in texels a metre
+        import texmap
+        tex_off = texmap.write(out, 0, pages, [])
+        for k in range(len(pages)):
+            struct.pack_into("<f", out, tex_off + texmap.ENTRY * k + 8, tst["rho"])
+        out.extend(b"\0" * (-len(out) % 16))
+        struct.pack_into("<2I", out, 16, len(pages), tex_off)
     struct.pack_into("<I", out, 12, len(out))
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
               tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
               sets=len(groups), chunks=nchunks, bytes=len(out),
-              px=stats["px"], covered=len(cov), hidden=stats["hidden"], simp="meshopt" if mo else "qem")
+              px=stats["px"], covered=len(cov), hidden=stats["hidden"], simp="meshopt" if mo else "qem", tex=tst)
     return bytes(out), st
 
 

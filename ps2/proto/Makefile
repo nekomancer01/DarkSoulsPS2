@@ -251,7 +251,8 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 $(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum
 	python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
 $(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
-		$(TS)/native/hzvis.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
+		$(TS)/native/hzvis.c.sum $(TS)/native/meshopt/simplifier.cpp.sum $(TS)/hzntex.py.sum $(TS)/native/hzbake.c.sum \
+		$(TS)/texmap.py.sum
 	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
 
 # Objects: src/*.c -> $(O)/*.o; area-dependent objects of a non-default area go to $(O)/<MAP>/
