@@ -298,9 +298,18 @@ def _native(name, srcs, setup, cxx=False):
     return _SO[name]
 
 
+def _hzbake_setup(L):
+    import ctypes
+    vp, i = ctypes.c_void_p, ctypes.c_int
+    L.hz_bake.argtypes = [i, vp, vp, vp, vp, i, vp, vp, vp, vp, i, vp, vp, ctypes.c_float, vp, vp]
+    L.hz_bake.restype = None
+
+
 def _native_ok(name):
-    srcs = {"libhzbake": ["hzbake.c"]}[name]
-    return _native(name, srcs, lambda L: None) is not None
+    # the same setup as the real caller: _native caches the first load, and without argtypes ctypes passes the 64-bit
+    # array pointers as C ints (hz_bake segfaulted on every block)
+    srcs, setup = {"libhzbake": (["hzbake.c"], _hzbake_setup)}[name]
+    return _native(name, srcs, setup) is not None
 
 
 def _nearest_lib():
@@ -405,12 +414,7 @@ def bake_fn(P, sel):
     """hz_bake over the source triangles P[sel] (SRC_TEX: their texture coordinates, textures and light) -> f(points,
     normals) -> (rgb (m, 3), found (m,) bool); None without the library"""
     import ctypes
-
-    def setup(L):
-        vp, i = ctypes.c_void_p, ctypes.c_int
-        L.hz_bake.argtypes = [i, vp, vp, vp, vp, i, vp, vp, vp, vp, i, vp, vp, ctypes.c_float, vp, vp]
-        L.hz_bake.restype = None
-    L = _native("libhzbake", ["hzbake.c"], setup)
+    L = _native("libhzbake", ["hzbake.c"], _hzbake_setup)
     if L is None:
         return None
     tri = np.ascontiguousarray(P[sel].reshape(-1, 9), np.float32)
