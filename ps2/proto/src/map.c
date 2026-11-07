@@ -81,7 +81,6 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #endif
 #define MAX_HZ_FADE 64  /* cells fading in per frame */
 #define CHUNK_HZN 256
-#define CHUNK_PANO 512  /* a horizon chunk standing for the block's panorama content: skipped while it is drawn */
 #define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
 #define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
 /* horizon.py, 32 B; flags bit 0: the cell has chunks it stands for (its horizon may have simplified to nothing),
@@ -178,16 +177,6 @@ typedef struct {
     const HzCell *hz_cell;
     const Chunk *hz_chunk;
     const unsigned char *hz_base;
-    /* HZN2: the horizon's baked texture pages (texmap entries in the section, offsets from it), their first texcache
-     * index (registered after the map's textures, hz_tex_table) or -1, and the table handed to texcache */
-    const unsigned char *hz_ttab;
-    int hz_ntex, hz_tex;
-    void *hz_tab;
-    /* HZN2 panorama (tools/hznpano.py): centre x y z and the radius the camera must be inside (xz), the ring strips
-     * (tex: their tiles' index among the horizon textures); pz_on: drawn this frame */
-    const float *pz;
-    const Chunk *pz_chunk;
-    int pz_n, pz_on;
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
 
@@ -229,8 +218,7 @@ static void fog_ease(float rate)
 /* the horizon section the DSM5 cell table header points at (words 2 / 3: offset, bytes; tools/mapsplit.py), if any */
 static void hz_parse(MapInst *m)
 {
-    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL, m->hz_ttab = NULL, m->hz_ntex = 0, m->hz_tex = -1;
-    m->pz = NULL, m->pz_chunk = NULL, m->pz_n = 0, m->pz_on = 0;
+    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
 #ifndef HZN_OFF
     if (!m->ctab)
         return;
@@ -239,20 +227,14 @@ static void hz_parse(MapInst *m)
         return;
     const unsigned char *b = m->map_bin + ch[2];
     const unsigned *h = (const unsigned *)b;
-    int v2 = !memcmp(b, "HZN2", 4);  /* tools/horizon.py HZN_TEX: a 32-byte header with the texture pages */
-    if ((!v2 && memcmp(b, "HZN1", 4)) || h[2] != m->nctab || h[3] != ch[3] || ((unsigned)b & 15)) {
+    if (memcmp(b, "HZN1", 4) || h[2] != m->nctab || h[3] != ch[3] || ((unsigned)b & 15)) {
         printf("map: horizon section does not match the cell table (ignored)\n");
         return;
     }
-    unsigned hl = v2 ? 32 : 16;
-    m->hz_cell = (const HzCell *)(b + hl);
-    m->hz_chunk = (const Chunk *)(b + hl + 32 * m->nctab);
+    m->hz_cell = (const HzCell *)(b + 16);
+    m->hz_chunk = (const Chunk *)(b + 16 + 32 * m->nctab);
     m->hz_base = b;
-    if (v2 && h[4] && h[5])
-        m->hz_ttab = b + h[5], m->hz_ntex = (int)h[4];
-    if (v2 && h[6] && h[7])
-        m->pz = (const float *)(b + h[7]), m->pz_chunk = (const Chunk *)(b + h[7] + 16), m->pz_n = (int)h[6];
-    printf("map: horizon %u chunks, %u textures, %d panorama strips, %u KB\n", h[1], m->hz_ntex, m->pz_n, ch[3] >> 10);
+    printf("map: horizon %u chunks, %u KB\n", h[1], ch[3] >> 10);
 #endif
 }
 
@@ -308,40 +290,13 @@ static void tex_hook_set(int k, unsigned tag, const void *p)
         tc_res_one(slot, (int)tag, p);
 }
 
-/* the texture table texcache gets for instance m: the map's own, or (HZN2) a copy with the horizon's pages after it,
- * their offsets moved from the horizon section to map_bin; *n = its entries */
-static const void *hz_tex_table(MapInst *m, int *n)
-{
-    const unsigned char *mt = m->map_bin + m->hdr->tex_off;
-    free(m->hz_tab), m->hz_tab = NULL;
-    *n = m->ntex;
-    if (!m->hz_ntex || !m->hz_ttab)
-        return mt;
-    unsigned char *t = malloc(32u * (unsigned)(m->ntex + m->hz_ntex));
-    if (!t)
-        return mt;
-    memcpy(t, mt, 32u * (unsigned)m->ntex);
-    memcpy(t + 32 * m->ntex, m->hz_ttab, 32u * (unsigned)m->hz_ntex);
-    unsigned d = (unsigned)(m->hz_base - m->map_bin);
-    for (int i = 0; i < m->hz_ntex; i++) {  /* texmap entry: u32 clut, pix0, pix1 at 12; near at 28 (0: none) */
-        unsigned *e = (unsigned *)(t + 32 * (m->ntex + i));
-        e[3] += d, e[4] += d, e[5] = e[5] ? e[5] + d : 0, e[7] = 0;
-    }
-    m->hz_tab = t;
-    *n = m->ntex + m->hz_ntex;
-    return t;
-}
-
 int map_upload(GSGLOBAL *gs)
 {
     gsg = gs;
     MapInst *m = &inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
-    int nt;
-    const void *tt = hz_tex_table(m, &nt);
-    int r = tc_init(gs, m->map_bin, tt, nt, TEX_POOL_KB);
-    m->hz_tex = !r && nt > m->ntex ? m->ntex : -1;
+    int r = tc_init(gs, m->map_bin, m->map_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
     if (!r)
         tex_res(0);
     return r;
@@ -716,10 +671,9 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
     return n;
 }
 
-/* a horizon chunk (double-sided; untextured, its packet without st: vu1.c VU1_FLAT, or HZN2 with tex >= 0: its baked
- * page, modulating the vertex colour, which alone is the right average when the page is not in VRAM this frame). The
- * clipping program (VU1_CLIP) gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2
- * 2 s into the Burg on the first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
+/* a horizon chunk (untextured, double-sided, its packet without st: vu1.c VU1_FLAT). The clipping program (VU1_CLIP)
+ * gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2 2 s into the Burg on the
+ * first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
 static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode)
 {
     static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
@@ -727,22 +681,11 @@ static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode)
     box_depth(c, cam, &zmax, NULL);
     int edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;
     if (c->nv) {  /* indexed (horizon.py HZN_IDX, the default): vu1mapi, or vu1clip's indexed entry at the near plane;
-                   * untextured: the st stream is the colours (read, unused with TME off) */
+                   * the st stream is the colours (read, unused with TME off) */
         if (c->tris > VU1_IDX_TRIS)
             return 0;
-        GSTEXTURE *t = NULL;
-        if (c->tex >= 0 && c->tex < m->hz_ntex && m->hz_tex >= 0) {
-            int tx = m->hz_tex + c->tex;
-            float d2 = 0;
-            for (int k = 0; k < 3; k++) {
-                float o = cam[k] < c->mn[k] ? c->mn[k] - cam[k] : cam[k] > c->mx[k] ? cam[k] - c->mx[k] : 0;
-                d2 += o * o;
-            }
-            t = tc_get(tx, tc_level(tx, sqrtf(d2)));  /* NULL (pool full): the vertex colours */
-        }
-        vu1_add_idx(t, 0, VU1_FOG | (t ? 0 : VU1_FLAT) | mode | (cls == 2 ? VU1_CLIP : edge), c->tris, c->nv,
-                    m->hz_base + c->pos, m->hz_base + c->st, m->hz_base + c->col, m->hz_base + CHUNK_IDX(c), c->org,
-                    4096.0f);
+        vu1_add_idx(NULL, 0, VU1_FOG | VU1_FLAT | mode | (cls == 2 ? VU1_CLIP : edge), c->tris, c->nv, m->hz_base + c->pos,
+                    m->hz_base + c->st, m->hz_base + c->col, m->hz_base + CHUNK_IDX(c), c->org, 4096.0f);
         map_vu1_batches++;
         return c->tris;
     }
@@ -901,10 +844,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         tslot[k] = 0;
         while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
             tslot[k]++;
-        int nt;
-        const void *tt = hz_tex_table(m, &nt);
-        m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], map_bin, tt, nt);
-        m->hz_tex = m->tex_base >= 0 && nt > m->ntex ? m->tex_base + m->ntex : -1;
+        m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], map_bin, map_bin + hdr->tex_off, m->ntex);
         if (m->tex_base < 0) {
             printf("map: block %d: no texture slot / CLUT VRAM\n", k);
             m->on = 0;
@@ -934,7 +874,6 @@ void map_block_drop(int k)
     bump_block(k, NULL, 0);
     mapstream_close(k);  /* before the slot's textures go: it hands their mip 0 back (tex_hook_set) */
     tc_block_drop(tslot[k]);
-    free(m->hz_tab), m->hz_tab = NULL, m->hz_tex = -1;  /* (texcache forgot its entries above) */
     dg_block_drop(k);
     pvs_block_drop(k);
     free(m->order), free(m->sky), free(m->cells);
@@ -945,8 +884,7 @@ void map_block_drop(int k)
     free(m->citem), free(m->rrange);
     m->rrange = NULL, m->nritem = 0;
     m->hdr = NULL, m->ctab = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
-    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL, m->hz_ttab = NULL, m->hz_ntex = 0;
-    m->pz = NULL, m->pz_n = 0, m->pz_on = 0;
+    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
     m->on = 0;
     mapstream_select(0);
 }
@@ -1175,32 +1113,6 @@ int map_draw(V3 eye)
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
-    /* the blocks' far panoramas (HZN2, tools/hznpano.py): a block's while the camera is inside its navmesh's reach,
-     * over the sky and under everything else (no Z write: nearer and farther map pieces both draw over it), with the
-     * map's fog at the ring; alpha tested (cut out where the far content leaves sky) */
-    for (int k = 0; k < MAP_INST; k++) {
-        MapInst *mk = &inst[k];
-        mk->pz_on = 0;
-        if ((k && !mk->on) || !mk->pz_n || mk->hz_tex < 0)
-            continue;
-        float dx = e[0] - mk->pz[0], dz = e[2] - mk->pz[2];
-        if (dx * dx + dz * dz > mk->pz[3] * mk->pz[3])
-            continue;
-        mk->pz_on = 1;
-        u64 zr[2] = {GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32), 0x4E};
-        vu1_gs_regs(1, zr);
-        for (int i = 0; i < mk->pz_n; i++) {
-            const Chunk *c = &mk->pz_chunk[i];
-            int cls = visible(c, e, 1);
-            GSTEXTURE *t = cls ? tc_get(mk->hz_tex + c->tex, 0) : NULL;
-            if (!t)
-                continue;  /* (pool full: the stand-in is skipped too this frame, so the far view is empty) */
-            vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, mk->hz_base + c->pos, mk->hz_base + c->st,
-                       mk->hz_base + c->col, c->org, 4096.0f);
-            drawn += c->tris;
-        }
-        blend_regs(gs, 0);
-    }
     static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
     int nfx = 0;
     static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
@@ -1434,7 +1346,7 @@ int map_draw(V3 eye)
                 const Chunk *c = &m->hz_chunk[hc->first + j];
                 /* one mesh per draw-group set (horizon.py, flags >> 16 = dg.bin piece mask; 0 always drawn): only
                  * the sets the floor's groups show, as the chunks it stands for */
-                if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)) || ((c->flags & CHUNK_PANO) && m->pz_on))
+                if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
                     continue;
                 int cls = visible(c, e, 0);
                 if (cls) {
@@ -1456,7 +1368,7 @@ int map_draw(V3 eye)
             vu1_gs_regs(2, r);
             for (unsigned j = 0; j < hc->count; j++) {
                 const Chunk *c = &mk->hz_chunk[hc->first + j];
-                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)) || ((c->flags & CHUNK_PANO) && mk->pz_on))
+                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
                     continue;
                 int cls = visible(c, e, 0);
                 if (cls) {

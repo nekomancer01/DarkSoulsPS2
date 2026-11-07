@@ -83,7 +83,7 @@ def main():
             struct.pack_into("<I", tab, e + 28, moved(near))
     hzn = open(sys.argv[4], "rb").read() if len(sys.argv) > 4 else b""
     if hzn:
-        assert hzn[:4] in (b"HZN1", b"HZN2") and struct.unpack_from("<I", hzn, 8)[0] == struct.unpack_from("<I", b, cell_off)[0], \
+        assert hzn[:4] == b"HZN1" and struct.unpack_from("<I", hzn, 8)[0] == struct.unpack_from("<I", b, cell_off)[0], \
             "hzn.bin: not this map's horizon"
         tab.extend(b"\0" * (-len(tab) % 64))
         struct.pack_into("<2I", tab, HDR + moved(cell_off) - chunk_off + 8, len(tab) - HDR + chunk_off, len(hzn))
