@@ -56,11 +56,13 @@
 #ifndef MS_NEAR_FIRST
 #define MS_NEAR_FIRST 1
 #endif
-#if MS_NEAR_FIRST
-#define MS_R0_WANT 40.0f
-#define MS_R0_KEEP 46.0f
-#else
+/* (2026-11-08) 30 / 36 m: the project's DVD-9 budget (draw radius + sprint speed x worst DVD read latency; a CD
+ * would need 35 / 41). 40 / 46 m (MS_NEAR_FIRST's read-ahead since 2026-11-06) covered ~1.8x the ground of 30 m.
+ * make DEFS=-DMS_R0_WANT=40 -DMS_R0_KEEP=46 = the old radii */
+#ifndef MS_R0_WANT
 #define MS_R0_WANT 30.0f
+#endif
+#ifndef MS_R0_KEEP
 #define MS_R0_KEEP 36.0f
 #endif
 /* near parts rank by the nearer of the feet and a point MS_AHEAD_FRAMES ahead along the walking direction (velocity
@@ -175,6 +177,7 @@ typedef struct {
     int borrowed;
     unsigned base, total;  /* cells.bin in the pack */
     const MapCell *tab;
+    const short *keys;  /* cell keys (mapstream.h cell_keys), NULL: none / MS_NEAR_CUBE=0 */
     unsigned ncell;
     MapResItem *rit;
     unsigned nres;
@@ -425,6 +428,9 @@ static float box_d2(const MapCell *c, const float *p)
     return d2;
 }
 
+/* the near level's distance (mapstream.h cell_near_d2: the box clipped to the cell's cube, MS_NEAR_CUBE) */
+#define near_d2(m, c, p) cell_near_d2(&(m)->tab[c], (m)->keys ? (m)->keys + 4 * (c) : (const short *)0, p)
+
 static int focus = -1, settling, hold;
 static float ahead[3], vel[3], last_pos[3];  /* the walking look-ahead point (MS_AHEAD_FRAMES) */
 static int ahead_on;
@@ -575,7 +581,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     if (id < m->ncell) {
         if (!m->tab[id].bytes)
             return C_FREE;
-        float d2 = box_d2(&m->tab[id], pos);
+        float d2 = near_d2(m, id, pos);
         /* near parts rank by distance alone (MS_STABLE): with the view factor a look around reordered them against
          * the plan's cut every turn and the arena read the same parts again and again (soak, 2026-11-07) */
         vk = MS_STABLE ? 1.0f : vk;
@@ -587,7 +593,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
             return MS_SETTLE_NEAR && d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
 #if MS_NEAR_FIRST
         if (ahead_on) {
-            float da = box_d2(&m->tab[id], ahead);
+            float da = near_d2(m, id, ahead);
             if (da < d2)
                 *key = da * vk;
             if (d2 >= sq(MS_R0_KEEP))
@@ -1334,6 +1340,9 @@ static void plan_(const float *pos)
             if (!(tag & MS_RES_COARSE) || (tag & (MS_RES_SKY | MS_RES_TEX)) || c >= m->ncell || !near_in(m, c))
                 continue;
             int cc = m->cls[id];
+            /* (the whole box, not near_d2's cube: map.c draws the near level wherever the coarse level misses, and
+             * by the cube ~0.4 MB more of the Burg's coarse level stayed in beside its near level at the Taurus
+             * tower, where near parts at the feet then found no room; ISO 2026-11-08) */
             if (box_d2(&m->tab[c], pos) < sq(MS_COARSE_R)) {  /* the near level stands for it */
                 if (m->cls[id] > C_KEEP)
                     m->cls[id] = C_KEEP;
@@ -1347,7 +1356,7 @@ static void plan_(const float *pos)
                     continue;
                 if (m->cls[p] < C_PREF && cc >= C_PREF && nw < MS_WANTED)
                     want[nw++] = (MsW){(unsigned char)k, (unsigned char)cc, (unsigned short)p,
-                                       box_d2(&m->tab[p], pos) * (MS_STABLE ? MS_HOLD_K : 1.0f)};
+                                       near_d2(m, p, pos) * (MS_STABLE ? MS_HOLD_K : 1.0f)};
                 m->cls[p] = (unsigned char)cc;
             }
         }
@@ -1473,7 +1482,7 @@ static void plan_(const float *pos)
             const MsInst *m = &ms[k];
             for (unsigned c = 0; c < m->ncell; c++)
                 if ((m->tab[c].near & ~CELL_PART) && !(m->tab[c].near & CELL_PART) && m->tab[c].bytes &&
-                    box_d2(&m->tab[c], pos) < sq(MS_R0_FIRST) && !vis_cut(m, c) && !near_in(m, c))
+                    near_d2(m, c, pos) < sq(MS_R0_FIRST) && !vis_cut(m, c) && !near_in(m, c))
                     left++;
         }
         unsigned t = clk_ms - st_t1;
@@ -1584,7 +1593,7 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
             pack_close(&m->pk);
         return 0;
     }
-    m->tab = cells, m->ncell = n;
+    m->tab = cells, m->ncell = n, m->keys = cell_keys(cells, n);
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
     m->ld = calloc(n, sizeof *m->ld);  /* (NULL: no churn count) */
@@ -1598,7 +1607,8 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
         return 0;
     }
     replan = 1;
-    printf("mapstream: %u cells, cells.bin %u KB at %u (instance %d)\n", n, m->total >> 10, m->base, k);
+    printf("mapstream: %u cells, cells.bin %u KB at %u (instance %d)%s\n", n, m->total >> 10, m->base, k,
+           m->keys ? ", near level by cell cube" : "");
     return 1;
 }
 
@@ -1867,7 +1877,7 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
             for (unsigned c = 0; c < m->ncell; c++)
                 if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING ||
                     (m->state[c] == MS_NONE && !blocked(k, c))) && !vis_off(m, c) &&
-                    box_d2(&m->tab[c], pos) < sq(MS_R0_DRAW))
+                    near_d2(m, c, pos) < sq(MS_R0_DRAW))
                     return 1;
         }
 #endif

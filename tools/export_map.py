@@ -118,12 +118,21 @@ CHUNK_COARSE = 64
 # solve_budget raises the thresholds of the least simplified cells around a spot that is over budget until every
 # spot fits: detail drops only where the data would not fit, evenly over the spot. Near: cells within WS_R0 (mapstream
 # MS_R0_WANT). Coarse: cells within WS_R1_IN..WS_R1 (mapstream pins the coarse level within MS_R1_PIN; inside WS_R1_IN
-# a cell draws its near level). ASSUMED sizes (KB): arena ~10.8 MB less ~3.5 MB of neighbour lite sets + relief at a
-# seam, shared by up to three blocks; per area through MAPENV_<area>. WS_BUDGET=0: no solve (A/B).
+# a cell draws its near level). Sizes (KB) below; per area through MAPENV_<area>. WS_BUDGET=0: no solve (A/B).
 WS_BUDGET = os.environ.get("WS_BUDGET", "1") == "1"
-WS_B0 = float(os.environ.get("WS_B0", 1536)) * 1024
+# Since 2026-11-08 the sizes are the project's DVD-9 budget (PS2 hardware budgets from the SDK, "Disc and read-ahead":
+# 1.5 MB/s sustained, near 600 KB/s / coarse 400 KB/s of it at a 6 m/s sprint): near 2.5 MB within 30 m, coarse 3 MB
+# within 16-96 m. The coarse level stays at 2 MB: the 10 MB arena, not the disc, limits it. At 3 MB no Burg coarse cell
+# was simplified (0 of 60) and the pinned coarse level left no room for the near cells at the Burg bonfire (its statue
+# drawn coarse) or the Taurus tower (ISO 2026-11-08, tools/world_budget.py). A CD build would take WS_B0=1536
+# (500 KB/s). What all blocks ask of the arena together is checked by tools/world_budget.py.
+WS_B0 = float(os.environ.get("WS_B0", 2560)) * 1024
 WS_B1 = float(os.environ.get("WS_B1", 2048)) * 1024
 WS_R0, WS_R1, WS_R1_IN = 30.0, 96.0, 16.0
+# WS_EXTENTS (default on; 0 = cubes as before): spot distances to a cell are measured as mapstream.c / map.c measure
+# them: the coarse level to the box of its triangles, the near level to that box clipped to its CHUNK_GRID cube
+# (NEAR_CUBE; without it the whole box as well) (solve_budget, cell_extents)
+WS_EXTENTS = os.environ.get("WS_EXTENTS", "1") == "1"
 # error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
 WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
 WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
@@ -2272,7 +2281,30 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     return eps
 
 
-def solve_budget(MX, h, jc, eps, eps_far, budget, samples):
+def cell_extents(P, poff, W, woff, T, toff):
+    """{CHUNK_GRID cell key: (min xyz, max xyz)} of the input triangles grouped by centroid (simplify_meshes_c's
+    flat arrays): the box mapstream.c and map.c measure a cell's distance by (its chunks' box) is this, not the cell's
+    cube. Triangles are grouped by centroid, not cut, so the Undead Burg's near cells reach 12 m (median, up to 74 m)
+    past their cube; a spot budget over cubes saw a near level within ~26 + 12 m as if within 26 m (2026-11-08)."""
+    import numpy as np
+    if not len(T):
+        return {}
+    wm = np.repeat(np.arange(len(woff) - 1), np.diff(woff))
+    tm = np.repeat(np.arange(len(toff) - 1), np.diff(toff))
+    wg = W.reshape(-1).astype(np.int64) + poff[wm]
+    V = P[wg[T.astype(np.int64) + woff[tm][:, None]]]  # (tris, 3 corners, xyz)
+    lo, hi = V.min(1), V.max(1)
+    key = np.floor((V[:, 0] + V[:, 1] + V[:, 2]) / 3 / CHUNK_GRID).astype(np.int64)
+    u, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    mn = np.full((len(u), 3), np.inf)
+    mx = np.full((len(u), 3), -np.inf)
+    np.minimum.at(mn, inv, lo)
+    np.maximum.at(mx, inv, hi)
+    return {tuple(k): (a, b) for k, a, b in zip(u.tolist(), mn, mx)}
+
+
+def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
     """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
     within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
     the heaviest cell around it that can still be raised goes one step up. Jobs outside cells (no cell cut, far-only
@@ -2300,6 +2332,17 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples):
         by[:, k] = np.bincount(jcell[sel], weights=cnt[:njobs][sel], minlength=len(cells)) * WS_BPT
     lo = np.array(cells, np.float64) * CHUNK_GRID
     hi = lo + CHUNK_GRID
+    if extents and WS_EXTENTS:  # the boxes the runtime measures (cell_extents): the near level's clipped to its cube
+        near = r_in == 0.0  # (NEAR_CUBE, mapstream.h cell_near_d2), the coarse level's whole
+        for i, c in enumerate(cells):
+            e = extents.get(c)
+            if e is None:
+                continue
+            if near and NEAR_CUBE:
+                lo[i], hi[i] = np.maximum(lo[i], e[0]), np.minimum(hi[i], e[1])
+                hi[i] = np.maximum(hi[i], lo[i])
+            else:
+                lo[i], hi[i] = np.minimum(lo[i], e[0]), np.maximum(hi[i], e[1])
     P = np.asarray(samples, np.float64).reshape(-1, 3)
     d = np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
     M = (d >= r_in) & (d < r) if r else np.ones(d.shape, bool)
@@ -2308,12 +2351,18 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples):
     cur = by[np.arange(len(cells)), step]
     W = Mf @ cur
     w0, raised, stuck = W.max(), 0, False
-    while W.max() > nbytes and raised < 100000:
-        p = int(W.argmax())
+    # spots whose cells are all at the cap: left over budget, and the solve goes on with the next worst spot. It used
+    # to stop at the first such spot, so every other spot over budget kept its cells at the threshold (Undead Burg
+    # 2026-11-08: 14 of 60 near cells raised in the Burg block, 25 % of its spots over budget -> 41 cells, 14 %)
+    capped = np.zeros(len(W), bool)
+    while raised < 100000:
+        p = int(np.where(capped, -1.0, W).argmax())
+        if capped[p] or W[p] <= nbytes:
+            break
         cand = np.flatnonzero(M[p] & (step < K) & (cur > 0))
         if not len(cand):
-            stuck = True
-            break
+            stuck = capped[p] = True
+            continue
         # the least simplified cells of the spot go up together: the spot's error evens out (one cell taken to 130x
         # the threshold while its neighbours kept theirs looked broken next to them; first export 2026-11-06)
         cand = cand[step[cand] == step[cand].min()]
@@ -2326,12 +2375,15 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples):
     job_eps = np.array([steps[step[jcell[i]]] if jcell[i] >= 0 else (eps_far if jc[i] == "far" and eps_far is not None
                                                                        else eps) for i in range(njobs)], np.float64)
     nr = int((step > 0).sum())
+    over = float((W > nbytes).mean() * 100)
     print(f"budget {name}: worst spot {w0 / 1024:.0f} -> {W.max() / 1024:.0f} KB (budget {nbytes / 1024:.0f} KB, "
           f"{len(P)} navmesh points); {nr} of {len(cells)} cells coarser (up to {1.5 ** step.max():.1f}x the threshold, "
-          f"{math.sqrt(steps[step.max()]) * 568:.1f} px)" + (f"; over budget at the {px_cap:.0f} px cap" if stuck else ""))
+          f"{math.sqrt(steps[step.max()]) * 568:.1f} px)" +
+          (f"; {over:.1f} % of the spots over budget at the {px_cap:.0f} px cap" if stuck else ""))
     BUDGET_REPORT.append(dict(level=name, worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
                               budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
-                              met=not stuck))
+                              met=not stuck, spots_over_pct=round(over, 1),
+                              p90_kb=round(float(np.percentile(W, 90)) / 1024)))
     return job_eps
 
 
@@ -2410,7 +2462,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         kind, ck = np.zeros(max(njobs, 1), i32), np.zeros((max(njobs, 1), 3), i64)
         MX.mx_simp_jobs(h, a(kind), a(ck))
         jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
-        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s) if budget and cells else None
+        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s,
+                               cell_extents(P, poff, W, woff, T, toff)) if budget and cells else None
         if job_eps is not None:
             n = int(MX.mx_simp_replay_jobs(h, job_eps.ctypes.data))
         else:
@@ -2541,8 +2594,17 @@ def cell_zorder(key):
 
 
 CELL_SIZES = []
+RES_SIZE = []  # bytes of each resident chunk in map.bin (its packet + record)
+CELL_BUDGET = []  # write_cells: per cell [key x, y, z, box min, max, near, coarse, kept, backdrop bytes, near box min, max] (map.bin.cells.json)
 CHUNK_ENTRY = []  # write_cells: per chunk (map.bin / dg.bin order) its cell's first cell table entry, else None
 CELLS_VIFPKT = 1  # cell table word 1, format flags: bit 0 = chunk streams are VIF packets (chunk_streams)
+# bit 1: per entry s16 x, y, z, 0 of its CHUNK_GRID cell follow the entries. NEAR_CUBE (default on; 0 = none, the
+# runtime then measures the near level to the box as before): mapstream.c / map.c measure the near level's distance to
+# the cell's box clipped to that cube (mapstream.h cell_near_d2, MS_NEAR_CUBE): triangles are grouped by centroid, not
+# cut, and the Undead Burg's near cells reach 12 m past their cube at the median (big wall and ground triangles), so a
+# near level was wanted ~12 m early (2026-11-08, TECH_DEBT world-10). The runtime's CELL_GRID is 32 m.
+CELLS_KEYS = 2
+NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1" and CHUNK_GRID == 32.0
 # Near cell blobs over NEAR_PART bytes are written as several parts (consecutive cell table entries, the later ones
 # marked CELL_PART in their near count): each part is a mapstream item of its own, so no near cell needs one big hole
 # in the arena (Burg near cells of 0.6-2.2 MB found none with 1.2-1.6 MB free: 115 refusals on the ISO route,
@@ -2567,6 +2629,7 @@ def write_cells(cells, res, all_chunks, nres):
     box; each part is a blob of its own."""
     tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT, 0, 0)), bytearray()
     CELL_SIZES.clear()
+    CELL_BUDGET.clear()
     CHUNK_ENTRY[:] = [None] * len(all_chunks)
     first, gid = 0, nres
     for key, r, n in cells:
@@ -2606,9 +2669,19 @@ def write_cells(cells, res, all_chunks, nres):
             CELL_SIZES.append((key, len(r) if not p else 0, len(part), len(b) if part else 0))
             tab += struct.pack("<6f6I", *mn, *mx, off, len(b) if part else 0, len(part) | (CELL_PART if p else 0),
                                first if not p else first + len(r), len(r) if not p else 0, gid + (part[0] if part else 0))
+        lv = [0, 0, 0]  # coarse, kept, backdrop bytes of the cell's resident items
+        for i in range(first, first + len(r)):
+            lv[0 if res[i][1] & CHUNK_COARSE else 2 if res[i][1] & CHUNK_BACKDROP else 1] += \
+                RES_SIZE[i] if i < len(RES_SIZE) else 0
+        nbx = [all_chunks[gid + j] for j in range(len(n))] or boxes
+        CELL_BUDGET.append([*key, *mn, *mx, sum(c[3] for c in CELL_SIZES[-len(parts):]), *lv,
+                            *(min(b[6][a] for b in nbx) for a in range(3)), *(max(b[7][a] for b in nbx) for a in range(3))])
         first += len(r)
         gid += len(n)
     tab[0:4] = struct.pack("<I", len(CELL_SIZES))
+    if NEAR_CUBE:  # the cell keys after the entries (mapstream.h CELLS_KEYS / cell_near_d2)
+        tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS)
+        tab += b"".join(struct.pack("<4h", *key, 0) for key, *_ in CELL_SIZES)
     return bytes(tab), bytes(cbin)
 
 
@@ -2733,9 +2806,11 @@ def main():
     sec = {}
     # chunk vertex streams first (16-byte aligned for VIF UNPACK via DMA REF), then the chunk table
     recs = []
+    RES_SIZE.clear()
     for ti, fl, ntri, pos, st, col, lo, hi, org, step, sts in chunks:
         align(16)
         pk, offs, nw = chunk_packet(ti, fl, ntri, pos, st, col)
+        RES_SIZE.append(len(pk) + 64 + (-len(pk) % 16))  # packet + its chunk record (cells sidecar, world budget)
         offs = [len(blob) + HDR + o for o in offs]
         blob += pk
         recs.append(struct.pack("<iII3I6f4f", ti, fl | (CHUNK_ST1K if sts == 1024 else 0), nw, *offs, *lo, *hi,
@@ -2792,8 +2867,15 @@ def main():
               f"({sum(c[2] for c in chunks if c[1] & CHUNK_COARSE)} coarse), near {nn} chunks / "
               f"{sum(all_chunks[i][2] for i in range(len(chunks), len(all_chunks)))} tris, cells.bin {len(cell_bin)} "
               f"bytes, largest cell {max(c[3] for c in CELL_SIZES) if CELL_SIZES else 0} bytes")
-        with open(out + ".budget.json", "w") as f:  # tools/stream_budget.py, the PR's numbers
+        with open(out + ".budget.json", "w") as f:  # the spot budget solve's results
             json.dump(BUDGET_REPORT, f, indent=1)
+        # per cell bytes by level, the resident level's other items and the navmesh spots: the world budget check
+        # across blocks (tools/world_budget.py)
+        sky = sum(RES_SIZE[i] for i in range(len(chunks)) if i < len(RES_SIZE) and chunks[i][1] & CHUNK_SKY)
+        sp = nav_v[::max(1, len(nav_v) // 4000)]
+        with open(out + ".cells.json", "w") as f:
+            json.dump(dict(cells=[[round(v, 2) if isinstance(v, float) else v for v in c] for c in CELL_BUDGET],
+                           sky=sky, spots=[[round(v, 2) for v in q] for q in sp]), f, separators=(",", ":"))
     print(f"{map_id}: {n_meshes} meshes -> {len(chunks)} chunks, {n_tris} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")

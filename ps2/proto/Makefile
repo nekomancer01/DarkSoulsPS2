@@ -165,7 +165,7 @@ PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.
 # each built by a sub-make, and data/world.pak with their table (tools/export_world.py). Only for the default map.
 WORLD_BLOCKS := $(if $(GAMEFREE)$(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
 ifneq ($(WORLD_BLOCKS),)
-PACKS += worldpacks $(D)/world.pak
+PACKS += worldpacks $(D)/world.pak $(G)/world_budget.json
 endif
 WORLD_SPLIT = $(or $(BLOCK),$(WORLD_BLOCKS))
 
@@ -481,6 +481,19 @@ $(PVS_WITH_FILES): | $(if $(WORLD_BLOCKS),worldexports)
 $(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES) $(TS)/pvs_cache.py.sum
 	$(abspath ../../tools/q) -m 2 python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
 		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
+# World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own
+# (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at each navmesh spot of each block
+# (near level within the draw radius, coarse level to the pin radius, kept meshes, the spot's backdrop and sky) from
+# their map.bin.cells.json, and prints how much of the world is over (the error caps leave dense spots over: a warning,
+# WORLD_BUDGET_ARGS=--strict fails the build on it). world_budget.json holds the numbers.
+WORLD_BUDGET_ARGS ?=
+WB_WITH = $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json)
+$(A)/map.bin.cells.json: $(A)/map.bin
+	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
+$(WB_WITH): | $(if $(WORLD_BLOCKS),worldexports)
+	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
+$(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH)
+	$(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
 $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin

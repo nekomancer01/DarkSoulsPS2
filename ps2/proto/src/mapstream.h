@@ -12,6 +12,39 @@ typedef struct {
     unsigned off, bytes, near, first, count, pad;
 } MapCell;
 #define CELL_PART 0x80000000u
+/* Cell keys (2026-11-08, TECH_DEBT world-10; export_map.py write_cells, table header flag CELLS_KEYS): after the
+ * entries, per entry s16 x, y, z, 0: the CELL_GRID m cube (export_map.CHUNK_GRID) its triangles were grouped into by
+ * centroid. Triangles are not cut at the cube, so a cell's box reaches past it (Undead Burg near cells: 12 m at the
+ * median, up to 74 m: big wall / ground triangles); measured to the box, the near level of cells up to ~26 + 12 m away
+ * was wanted and drawn, ~1.3x the near bytes the export budgets (tools/world_budget.py). MS_NEAR_CUBE (default on;
+ * make DEFS=-DMS_NEAR_CUBE=0 = the box as before): the near level's distance (map.c's switch, mapstream's near ranks)
+ * is measured to the box clipped to the cube. Both levels lock the cell's cuts, so the switch stays
+ * watertight; frustum and horizon tests keep the whole box. */
+#define CELLS_KEYS 2u
+#define CELL_GRID 32.0f
+#ifndef MS_NEAR_CUBE
+#define MS_NEAR_CUBE 1
+#endif
+static inline const short *cell_keys(const MapCell *tab, unsigned n)
+{
+    return MS_NEAR_CUBE && tab && (((const unsigned *)tab)[-3] & CELLS_KEYS) ? (const short *)(tab + n) : (const short *)0;
+}
+/* squared distance from p to entry c's near level: its box, clipped to its cube when key (4 shorts) is given */
+static inline float cell_near_d2(const MapCell *c, const short *key, const float *p)
+{
+    float d2 = 0;
+    for (int a = 0; a < 3; a++) {
+        float lo = c->mn[a], hi = c->mx[a];
+        if (key) {
+            float k0 = key[a] * CELL_GRID, k1 = k0 + CELL_GRID;
+            lo = lo > k0 ? lo : k0, hi = hi < k1 ? hi : k1;
+            hi = hi < lo ? lo : hi;
+        }
+        float o = p[a] < lo ? lo - p[a] : p[a] > hi ? p[a] - hi : 0;
+        d2 += o * o;
+    }
+    return d2;
+}
 #define NEAR_PARTS 64  /* parts per cell at most (export_map.NEAR_PARTS_MAX) */
 
 /* Open the area pack's cells.bin for the n cells of the table; 0 if the pack has no readable (raw, non-empty) entry */
