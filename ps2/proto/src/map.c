@@ -67,10 +67,10 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
  * untextured level, loaded with the block. A cell beyond HZN_R (+- HZN_HYST) of the camera draws it in place of its
  * coarse level and kept opaque meshes (hz_covers), and so does a nearer cell whose coarse level is not in yet: a late
  * read shows a blurrier cell, not a hole. mapstream.c reads those chunks only within MS_R_HZN (64 m) of the player's
- * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 56 m (horizon.py judges its error from 54 m).
+ * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 40 m (horizon.py judges its error from 38 m; 56 / 54 m before the Burg plan's B3).
  * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
 #ifndef HZN_R
-#define HZN_R 56.0f
+#define HZN_R 40.0f  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
 #endif
 #define HZN_HYST 2.0f
 /* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque
@@ -101,7 +101,7 @@ typedef struct { float mn[3], mx[3]; unsigned short first, count; unsigned flags
 #define NEAR_HYST 2.0f  /* m: a cell switches to its near level inside NEAR_DRAW_R - NEAR_HYST, back beyond + NEAR_HYST
                          * (no flipping near <-> coarse while the camera hovers at the radius) */
 #ifndef NEAR_DRAW_R
-#define NEAR_DRAW_R 24.0f  /* m: a loaded near blob is drawn only for cells whose box is this close to the camera (the
+#define NEAR_DRAW_R 18.0f  /* (Burg plan B3: + NEAR_HYST = mapstream.c MS_R0_DRAW 20 m; 24 m before) m: a loaded near blob is drawn only for cells whose box is this close to the camera (the
                             * blobs load out to 40 m ahead of time); farther cells keep the coarse level (ASSUMED, map-36:
                             * Burg p00_082: 85k tris / map 15.3 ms at 24 m, 67k / 13.8 ms at 16 m; 16 m made the near <->
                             * coarse swap visible: Firelink's coarse level is judged from STREAM_D 24 m) */

@@ -46,13 +46,13 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 /* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
  * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
-#define WORLD_ARENA_LESS (1024u << 10)
+#define WORLD_ARENA_LESS (512u << 10)  /* (Burg plan B3, 2026-11-08: half of it went to the arena's visual room) */
 #define WORLD_POOL (24u << 20)
 /* MS_POOLS: the arena's size is this build constant, not whatever heap a boot spot leaves (8640 KB booted in the Burg
  * on the ISO, 2026-11-08; booted on world_route's spawn it was ~1.5 MB larger, so the visual room changed with the boot
  * spot). tools/world_budget.py reads this line: the export is solved against the same visual room the runtime prints.
  * A boot with less heap gets a smaller arena (logged by mapstream.c). */
-#define WORLD_ARENA_KB 8640
+#define WORLD_ARENA_KB 9152  /* (8640 + the 512 KB WORLD_ARENA_LESS gave up, Burg plan B3) */
 /* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
  * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
  * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
