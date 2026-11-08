@@ -64,6 +64,9 @@ void hitch_flip(int k, unsigned ci, int flop);
 void hitch_room(int near, int k, unsigned id);
 /* mapstream.c MS_LEND: a near part lent an idle pool page was dropped for a lite set */
 void hitch_lent_near(void);
+/* mapstream.c plan cut (Burg plan B4): wanted items the plan had to leave out for room (near: near parts among them),
+ * one call per plan: a logged bug once the export fits the visual room, gated per run by tools/budget.py */
+void hitch_cut(unsigned items, unsigned near);
 /* map.c, once a draw: cells in view due their near level but drawn coarse (not in yet), cells inside HZN_R drawn by their
  * horizon (coarse not in), near swaps seen on screen (pop-ins) this draw. The period's "stream:" line gives the median
  * and largest due count over its frames, the seconds with any horizon-filled cell and the pop-ins */
@@ -82,6 +85,7 @@ typedef struct {
     unsigned layer_play;  /* disc layer changes in periods without a loading screen (the disc: lines) */
     unsigned room, room_near, popins, room_items, lent_near;  /* "no room" refusals (all, near attempts, near items),
                                                                * near pop-ins, lent near parts dropped (stream: lines) */
+    unsigned cut;  /* the most wanted items one plan cut for room (hitch_cut) */
     float hzn_s;  /* seconds with a cell inside HZN_R drawn by its horizon */
 } HitchTotals;
 extern HitchTotals hitch_total;
