@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdlib.h>
@@ -8,6 +9,7 @@
 #include "vu1.h"
 #include "map.h"
 #include "vmath.h"
+#include "mapstream.h"
 #ifdef VU1_CHECK
 #include <stdio.h>
 #endif
@@ -59,6 +61,7 @@ struct Model {
     const TexEntry *te;
     int nte;
     void *sk_block;  /* the one allocation the batch table, the packets and the windows live in */
+    unsigned sk_bytes;  /* its size (mapstream_free when it came from the near-cell arena) */
     unsigned char *sk_next;  /* skin_step: where the next batch's packet goes */
     int sk_has_ms;   /* the model has metal / specular streams */
     /* spec: the batch has metal / specular (vu1skin2 TexSpec); t0: its first triangle; win: its bone window; pkt /
@@ -199,7 +202,15 @@ static int skin_alloc(Model *m)
     unsigned wsz = nw ? (nw * 4 + 2 * nid + 15) & ~15u : 0;
     unsigned total = tab + pkts + wsz;
     unsigned char *q = memalign(64, total ? total : 64);
-    m->sk_block = q;
+    /* the heap with no run that large (the Taurus Demon's 1.65 MB block with 4.8 MB free in pieces, ISO 2026-11-08):
+     * the near-cell arena (mapstream_alloc clears cells for it; granule aligned) */
+    if (!q && total && mapstream_ready()) {
+        static const float none[3];
+        q = mapstream_alloc(total, none);
+        if (q)
+            printf("model: skin block %u KB from the near-cell arena (no heap run)\n", total >> 10);
+    }
+    m->sk_block = q, m->sk_bytes = total;
     if (!q)
         return 0;
     memset(q, 0, total);  /* stream padding is read by VIF as NOPs */
@@ -467,7 +478,11 @@ int mdl_compact(Model *m, unsigned blob_size)
 
 void mdl_strip(Model *m)
 {
-    free(m->sk_block), free(m->own);
+    if (mapstream_owns(m->sk_block))
+        mapstream_free(m->sk_block, m->sk_bytes);
+    else
+        free(m->sk_block);
+    free(m->own);
     m->sk_block = NULL;
     m->sk_batch = NULL, m->sk_next = NULL, m->own = NULL;
     m->nsk = 0, m->nanims = 0;

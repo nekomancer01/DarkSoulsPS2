@@ -97,6 +97,9 @@
  * cell has a horizon) are wanted only within MS_R_HZN and kept to MS_R_HZN_KEEP; beyond, the resident horizon is
  * drawn. That leaves the reader the near detail: ~1000 small coarse items in view out to 260 m, a seek each, were the
  * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
+/* (2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m freed ~0.55 MB of pinned coarse cells
+ * at the Burg spots of Ame's report, but the horizon grew 62 KB per block and the room went down with it: ~0.3 MB net
+ * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
 #define MS_R_HZN 64.0f
 #define MS_R_HZN_KEEP 72.0f
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
@@ -1184,6 +1187,36 @@ static void plan_(const float *pos)
                    "landed %u KB, cancelled %u KB; moved %u groups %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
                    kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
                    defrag_moves, defrag_kb);
+            /* the pinned coarse level by box distance of its cell (0-16-32-48-64 m, beyond), the backdrop and sky
+             * apart, and what of it the horizon could stand for (MS_RES_LOD): sizing the pin radius (2026-11-08) */
+            unsigned band[6] = {0}, lod[6] = {0}, far = 0, sky = 0;
+            for (unsigned i = 0; i < nw; i++) {
+                const MsInst *m = &ms[want[i].k];
+                unsigned id = want[i].id;
+                if (want[i].cls != C_PIN0 || id < m->ncell)
+                    continue;
+                unsigned tag = m->rit[id - m->ncell].tag, kb = it_bytes(m, id);
+                if (tag & MS_RES_SKY) {
+                    sky += kb;
+                    continue;
+                }
+                if (tag & MS_RES_FAR) {
+                    far += kb;
+                    continue;
+                }
+                unsigned c = MS_RES_CELL(tag);
+                if (c >= m->ncell)
+                    continue;
+                float d = sqrtf(box_d2(&m->tab[c], pos));
+                int b = d < 16 ? 0 : d < 32 ? 1 : d < 48 ? 2 : d < 64 ? 3 : d < 96 ? 4 : 5;
+                band[b] += kb;
+                if (tag & MS_RES_LOD)
+                    lod[b] += kb;
+            }
+            printf("mapstream: pin0 by distance KB (of it horizon-covered): 0-16 %u (%u) 16-32 %u (%u) 32-48 %u (%u) "
+                   "48-64 %u (%u) 64-96 %u (%u) more %u (%u); backdrop %u sky %u\n", band[0] >> 10, lod[0] >> 10,
+                   band[1] >> 10, lod[1] >> 10, band[2] >> 10, lod[2] >> 10, band[3] >> 10, lod[3] >> 10, band[4] >> 10,
+                   lod[4] >> 10, band[5] >> 10, lod[5] >> 10, far >> 10, sky >> 10);
         }
     }
     pt[np_++] = ticks();
