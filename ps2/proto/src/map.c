@@ -1692,8 +1692,8 @@ int map_draw(V3 eye)
         if (tot > wtot)
             memcpy(wst, v, sizeof wst), wtot = tot;
         if (!(++fr % MAP_PASS_LOG) && nt) {
-#define MPMS(x) ((double)(x) / 294912.0 / (double)nt)
-#define MPMS1(x) ((double)(x) / 294912.0)
+#define MPMS(x) ((double)((float)(x) / 294912.0f / (float)nt))
+#define MPMS1(x) ((double)((float)(x) / 294912.0f))
             unsigned at = acc[0] + acc[1] + acc[2] + acc[3] + acc[4];
             printf("map: pass ms cull %.2f plan %.2f chain %.2f tex %.2f bump %.2f total %.2f | worst cull %.2f plan "
                    "%.2f chain %.2f tex %.2f bump %.2f total %.2f (%u timed frames)\n", MPMS(acc[MP_CULL]),
