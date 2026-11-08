@@ -988,7 +988,9 @@ static void bump_step(void)
     bump_buf = WORLD_RELIEF_POOL ? mapstream_alloc_pool(sz, MS_POOL_MISC) : NULL;  /* (sized by the largest relief) */
     if (!bump_buf)
         bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
-    if (!bump_buf && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)
+    /* MS_POOLS: no heap fallback. The relief is optional detail, and in the heap it took RAM min on taurus to
+     * 1417-1478 KB under the 1.5 MB floor once the enemies loaded (ISO 2026-11-09) */
+    if (!bump_buf && !mapstream_pools_on() && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)
         bump_buf = memalign(128, sz);
     if (!bump_buf) {
         printf("world: block %d relief: no room for %u KB\n", cur, sz >> 10);

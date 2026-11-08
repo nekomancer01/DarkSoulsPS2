@@ -797,7 +797,10 @@ static unsigned grp_used(const MsInst *m, unsigned id)
 
 static inline int lendable(int cls)
 {
-    return MS_LEND && pools_on && (cls == C_PREF || cls == C_FARC || cls == C_VIEW2 || cls == C_PIN);
+    /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon
+     * for a moment, a near part would pop. With only the classes below C_PIN (and C_VIEW) lendable, iso_ame_report3
+     * drew the horizon inside HZN_R 99.5 % of the time (main 54 %; all classes lendable: 53 %) */
+    return MS_LEND && pools_on && cls != C_NEAR && cls != C_NEAR2 && cls > C_KEEP;
 }
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
 static unsigned lend_reclaim(unsigned p0, unsigned p1)
@@ -812,7 +815,8 @@ static unsigned lend_reclaim(unsigned p0, unsigned p1)
             unsigned g = g_of(m->buf[id]);
             if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
                 continue;
-            if (grp_chain(m, id))
+            if (!settling && grp_chain(m, id))  /* (a settle waited for VU1: no chain reads the arena; without this the
+                                                 * lite set waited out the settle: "settle stopped", taurus 2026-11-09) */
                 busy++;
             else
                 drop(k, id);
@@ -1334,9 +1338,15 @@ static int issue(void)
                 e++;
             gb = grp_bytes(m, g, e);
         }
-        void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
-        if (!p && gb <= MS_PAGE && lendable(w.cls) && (p = g_alloc_lend(gb)))
-            lent_n++;  /* MS_LEND: an idle pool page */
+        /* MS_LEND: a lendable item goes to an idle pool page first, so the item pages stay for the near parts (in
+         * the item pages first, coarse cells of classes above them took the room the near parts could not clear:
+         * taurus near refusals 165 -> 876) */
+        int lo = gb <= MS_PAGE && lendable(w.cls) && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_SKY));
+        void *p = lo ? g_alloc_lend(gb) : NULL;
+        if (p)
+            lent_n++;
+        else
+            p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
