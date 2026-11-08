@@ -1142,3 +1142,5 @@ const unsigned char *mapstream_res(unsigned i)
     used[ncell + i] = frame;
     return (const unsigned char *)buf[ncell + i] - rit[i].rel;
 }
+
+unsigned mapstream_heap_release(unsigned bytes) { (void)bytes; return 0; }  /* v1 borrows nothing */

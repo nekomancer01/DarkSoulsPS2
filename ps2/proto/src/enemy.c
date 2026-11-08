@@ -68,6 +68,16 @@
  * A load counts twice the model: its model.bin buffer takes the heap when the arena has no room, beside the compact
  * copy (the Taurus Demon's load took RAM to 278 KB under the bridge, ISO 2026-11-06) */
 #define STREAM_RAM_FLOOR (1536u << 10)
+/* A placement the player cannot meet yet holds its type only within LAZY_LOAD_DIST: one an event keeps off (the Taurus
+ * Demon before its trigger, a later-phase NPC, the Asylum's dead-or-alive pairs) or in a draw group the map does not
+ * show now (another room / level of the block: drawgrp.c). Within LOAD_DIST every such placement had its model in RAM
+ * and VRAM, and walking past them loaded / unloaded types that were never seen (Ame, 2026-11-08: "enemies are being
+ * allocated when unnecessary and might cause churn"). 20 m (ASSUMED): a load takes 0.2-1.5 s from cdrom0:, so a type
+ * is in before the player reaches it. Default on; make DEFS=-DENEMY_LAZY_LOAD=0 = every placement within LOAD_DIST. */
+#ifndef ENEMY_LAZY_LOAD
+#define ENEMY_LAZY_LOAD 1
+#endif
+#define LAZY_LOAD_DIST 20.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
@@ -273,7 +283,9 @@ static void *arena_get(unsigned n)
 {
     static const float none[3];
     void *p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
-    return p ? p : memalign(128, n);  /* the cells in it are all being drawn: the heap after all */
+    if (!p && !(p = memalign(128, n)) && mapstream_heap_release(n))  /* the cells in it are all being drawn: the heap */
+        p = memalign(128, n);  /* after the pages the streamer borrowed from it went back */
+    return p;
 }
 static void arena_put(void *p, unsigned n)
 {
@@ -332,7 +344,7 @@ static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned siz
         return 0;
     }
     t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
-    if (!mdl_compact(m, size)) {
+    if (!mdl_compact(m, size) && !(mapstream_heap_release(size / 2) && mdl_compact(m, size))) {
         printf("enemy: %.5s: no RAM to keep the model, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
         if (!twin)
             mdl_free_textures(m);
@@ -364,11 +376,20 @@ static Model *job_m;    /* its model while mdl_load_step builds the skin batches
  * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
 #define SETUP_TICKS (4 * 294912u)
 static int job_arena;
-static void *heap_get(unsigned n) { return memalign(128, n); }
+static void *heap_get(unsigned n)
+{
+    void *p = memalign(128, n);
+    return p || !mapstream_heap_release(n) ? p : memalign(128, n);
+}
 static void heap_put(void *p, unsigned n) { (void)n; free(p); }
 
 static void job_begin(ChrType *t)
 {
+    /* the load's heap room back from the streamer first (its pages went over the floor: the Taurus Demon's load took
+     * RAM to 1.32 MB with the streamer's pages out, ISO 2026-11-08) */
+    unsigned need = STREAM_RAM_FLOOR + 2 * t->model_raw, hf = enemy_ram_free();
+    if (hf < need)
+        mapstream_heap_release(need - hf);
     char path[64];
     model_path(path, sizeof path, t);
     job_arena = mapstream_ready();
@@ -888,6 +909,8 @@ static void stream_types(const Player *pl)
          * its type's model in RAM (2026-11-01: xz kept c2500 + c3491 loaded at the bonfire, 0.85 MB) */
         float d = sqrtf((e->pos.x - pl->pos.x) * (e->pos.x - pl->pos.x) + (e->pos.y - pl->pos.y) * (e->pos.y - pl->pos.y) +
                         (e->pos.z - pl->pos.z) * (e->pos.z - pl->pos.z));
+        if (ENEMY_LAZY_LOAD && d > LAZY_LOAD_DIST && (ev_off[i] || !dg_mask_shown(e->block, e->dg)))
+            continue;
         if (e->dead_t <= CORPSE_TIME && d < e->ct->near_d)
             e->ct->near_d = d;
     }
@@ -900,7 +923,9 @@ static void stream_types(const Player *pl)
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
         } else if (!t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
-                   enemy_ram_free() >= STREAM_RAM_FLOOR + 2 * t->model_raw && (!next || t->near_d < next->near_d)) {
+                   /* + pages the streamer borrowed: they go back when the load needs them (mapstream_heap_release) */
+                   enemy_ram_free() + (mapstream_stats.lent_kb << 10) >= STREAM_RAM_FLOOR + 2 * t->model_raw &&
+                   (!next || t->near_d < next->near_d)) {
             next = t;
         }
     }

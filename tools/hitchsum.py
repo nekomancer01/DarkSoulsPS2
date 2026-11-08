@@ -12,7 +12,7 @@ import argparse, collections, json, re, sys
 
 NUM = r"(\d+)"
 LINE = re.compile(r"hitch: t (\d+) s frames (\d+) avg (\d+) max (\d+) ms over50 (\d+) over100 (\d+) over200 (\d+) \| worst "
-                  r"(.*?) \| heap free (\d+) KB largest (\d+) KB \| arena free (\d+) KB run (\d+) KB other (\d+) KB \| reads "
+                  r"(.*?) \| heap free (\d+) KB largest (\d+) KB \| arena free (\d+) KB run (\d+) KB other (\d+) KB(?: lent \d+ KB)? \| reads "
                   r"(\d+) \((\d+) KB\) again (\d+) \((\d+) KB\)(?: thrash (\d+) \((\d+) KB\))? drops (\d+) evicted (\d+) \((\d+) KB\) \| blocks (\d+) "
                   r"\((\d+) KB\) \| lod flips (\d+) flops (\d+)(?: \| loads (\d+) longest (\d+) ms \|)?"
                   r"(?: spikes (\d+) \(\+(\d+)\) \| allocfail (\d+) \(max (\d+) KB\) \| at (-?\d+) (-?\d+) (-?\d+) block (-?\d+) \|)? top(.*)")
