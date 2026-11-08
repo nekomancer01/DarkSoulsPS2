@@ -295,6 +295,7 @@ static unsigned *pcls, *pcost, *pitem;
 static unsigned char *xpage[MS_XMAX];
 static unsigned char xret[MS_XMAX];  /* being given back: no new items (its drawn ones wait for their chains) */
 static unsigned nx;  /* borrowed pages now */
+static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
 static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
 static inline unsigned ntot(void) { return npages + MS_XMAX; }
 static inline unsigned char *g_ptr(unsigned g)
@@ -1014,9 +1015,11 @@ static void x_update(void)
 {
     if (!MS_BORROW || !arena)
         return;
-    unsigned hf = heap_free();
-    if (nx && hf < MS_BORROW_FLOOR) {  /* up to 4 pages a frame: back over the floor within a few frames */
-        for (int i = 0; i < 4 && hf < MS_BORROW_FLOOR && x_release(1); i++)
+    unsigned hf = heap_free(), floor = x_want > MS_BORROW_FLOOR ? x_want : MS_BORROW_FLOOR;
+    if (!nx || hf >= x_want)
+        x_want = 0;
+    if (nx && hf < floor) {  /* up to 4 pages a frame: back over the floor within a few frames */
+        for (int i = 0; i < 4 && hf < floor && x_release(1); i++)
             hf = heap_free();
         return;
     }
@@ -1046,6 +1049,11 @@ unsigned mapstream_heap_release(unsigned bytes)
     unsigned n = 0, want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;
     while (n < want && x_release(0))
         n++;
+    if (n < want && nx) {  /* the rest drains over the next frames (pages with drawn cells: x_release) */
+        unsigned t = heap_free() + (want - n) * MS_PAGE;
+        x_want = t > x_want ? t : x_want;
+        x_release(1);
+    }
     if (n)
         printf("mapstream: gave %u borrowed pages back to the heap for %u KB (%u left)\n", n, bytes >> 10, nx);
     return n;
