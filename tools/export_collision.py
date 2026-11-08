@@ -190,13 +190,169 @@ def floor(c, x, z, y_top, y_bottom=-1e9, solid=SOLID):
     return best
 
 
+# ---- DCOL v2: fragments (COL_V1=1 writes v1) ----
+# Ame asked (2026-11-08) for the Burg blocks' collision to take less of the near-cell arena (two blocks' lite sets
+# held 4.2 of 8 MB). The packing follows Naughty Dog's Jak 2 background collision (OpenGOAL collide-hash fragments:
+# u16 vertices relative to the fragment, 4-byte polygons of three u8 indices + a u8 attribute index, a small grid per
+# fragment with u8 lists): 8-byte triangles -> 4, u16 grid refs -> u8, plus a u16 per triangle back to the v1 number
+# (events, draw groups, fog rows and block links address triangles by it). Same quantized vertices, so the same answers.
+#   header  96 B: "DCOL", u32 2, u32 nverts (all fragments), u32 ntris; f32 origin[3], scale; f32 x0, z0, cell (top
+#           grid), u32 gw, gd; u32 off_frag, nfrag, off_top, off_toplist, ntoplist, off_pat, npat, off_gid;
+#           f32 ymin, ymax (vertex heights), f32 fcell (fragment grid cell)
+#   top     u32[gw * gd + 1] starts into toplist (u16 fragment indices): fragments whose box overlaps the top cell
+#   frags   32 B each: s16 lo[3], hi[3] (quantized, from origin); u16 ntri, nvert; u32 tri0 (first slot in gid);
+#           u32 data offset; u8 gw, gd; u16 pad
+#   data    per fragment, 4-aligned: u16 verts[nvert][3] (from lo); u8 tris[ntri][4] (a, b, c, pat);
+#           u16 cells[gw * gd + 1] starts into u8 list (fragment-local triangle indices); grid origin = lo - 0.02 m
+#   pat     u16 per entry: hit_filter | material << 8
+#   gid     u16 per triangle slot (fragments' triangles in order): its v1 triangle number
+FRAG_VERTS, FRAG_TRIS, TOP_CELL = 255, 255, 8.0
+
+
+def _fragments(c):
+    """v1 build() -> [triangle indices] per fragment: kd split on centroids (longest axis) until a node has at most
+    FRAG_VERTS distinct vertices and FRAG_TRIS triangles"""
+    V, T = c["verts"], c["tris"]
+    cen = [tuple(sum(V[t[i]][k] for i in range(3)) / 3 for k in range(3)) for t in T]
+    out, stack = [], [list(range(len(T)))]
+    while stack:
+        idx = stack.pop()
+        nv = len({v for i in idx for v in T[i][:3]})
+        if nv <= FRAG_VERTS and len(idx) <= FRAG_TRIS:
+            out.append(idx)
+            continue
+        # the split (axis, then a few cut points around the median) whose halves share the fewest vertices: a shared
+        # vertex is stored in both fragments
+        best = None
+        for ax in range(3):
+            srt = sorted(idx, key=lambda i: cen[i][ax])
+            for q in (0.35, 0.5, 0.65):
+                h = max(1, min(len(srt) - 1, int(len(srt) * q)))
+                a = {v for i in srt[:h] for v in T[i][:3]}
+                shared = sum(1 for i in srt[h:] for v in T[i][:3] if v in a)
+                if best is None or shared < best[0]:
+                    best = (shared, srt[:h], srt[h:])
+        stack += [best[1], best[2]]
+    out.sort(key=lambda f: (min(cen[i][2] for i in f), min(cen[i][0] for i in f)))
+    return out
+
+
+def write_v2(c, path):
+    V, T, org, cell = c["verts"], c["tris"], c["origin"], c["cell"]
+    W = lambda q: [org[k] + q[k] * SCALE for k in range(3)]
+    frags = _fragments(c)
+    pats, pat_of = [], {}
+    frec, data, gid = [], b"", []
+    eps = 0.02
+    hsize = 96
+    for f in frags:
+        vs = sorted({v for i in f for v in T[i][:3]})
+        loc = {v: j for j, v in enumerate(vs)}
+        lo = [min(V[v][k] for v in vs) for k in range(3)]
+        hi = [max(V[v][k] for v in vs) for k in range(3)]
+        vb = b"".join(struct.pack("<3H", *(V[v][k] - lo[k] for k in range(3))) for v in vs)
+        vb += b"\0" * (-len(vb) % 4)
+        tb = b""
+        for i in f:
+            a, b_, cc, hf, mat = T[i]
+            key = hf | mat << 8
+            if key not in pat_of:
+                pat_of[key] = len(pats)
+                pats.append(key)
+            assert pat_of[key] < 256, "more than 256 hit filter / material pairs"
+            tb += struct.pack("<4B", loc[a], loc[b_], loc[cc], pat_of[key])
+        lw, hw = W(lo), W(hi)
+        fx0, fz0 = lw[0] - eps, lw[2] - eps
+        gw, gd = int((hw[0] - fx0) / cell) + 1, int((hw[2] - fz0) / cell) + 1
+        assert gw < 256 and gd < 256
+        cells = [[] for _ in range(gw * gd)]
+        for j, i in enumerate(f):
+            p = [(q[0], q[2]) for q in (W(V[T[i][0]]), W(V[T[i][1]]), W(V[T[i][2]]))]
+            ix0 = max(0, int((min(q[0] for q in p) - eps - fx0) / cell))
+            ix1 = min(gw - 1, int((max(q[0] for q in p) + eps - fx0) / cell))
+            iz0 = max(0, int((min(q[1] for q in p) - eps - fz0) / cell))
+            iz1 = min(gd - 1, int((max(q[1] for q in p) + eps - fz0) / cell))
+            for iz in range(iz0, iz1 + 1):
+                for ix in range(ix0, ix1 + 1):
+                    cx, cz = fx0 + ix * cell, fz0 + iz * cell
+                    if _tri_overlaps_rect(p, cx - eps, cz - eps, cx + cell + eps, cz + cell + eps):
+                        cells[iz * gw + ix].append(j)
+        starts, lst = [], []
+        for cl in cells:
+            starts.append(len(lst))
+            lst += cl
+        starts.append(len(lst))
+        assert len(lst) < 65536
+        blob = vb + tb + struct.pack(f"<{len(starts)}H", *starts) + bytes(lst)
+        blob += b"\0" * (-len(blob) % 4)
+        frec.append((lo, hi, len(f), len(vs), len(gid), len(data), gw, gd))
+        gid += f
+        data += blob
+    # top grid over the fragments' xz boxes
+    allw = [W(v) for v in V]
+    # the origin as v1 had it (build(): the unquantized minimum - 0.01 m): export_world's block bounds stay the same
+    x0, z0 = c.get("x0", min(p[0] for p in allw) - 0.01), c.get("z0", min(p[2] for p in allw) - 0.01)
+    tgw = int((max(p[0] for p in allw) - x0) / TOP_CELL) + 1
+    tgd = int((max(p[2] for p in allw) - z0) / TOP_CELL) + 1
+    top = [[] for _ in range(tgw * tgd)]
+    for fi, (lo, hi, *_r) in enumerate(frec):
+        lw, hw = W(lo), W(hi)
+        for iz in range(max(0, int((lw[2] - eps - z0) / TOP_CELL)), min(tgd - 1, int((hw[2] + eps - z0) / TOP_CELL)) + 1):
+            for ix in range(max(0, int((lw[0] - eps - x0) / TOP_CELL)), min(tgw - 1, int((hw[0] + eps - x0) / TOP_CELL)) + 1):
+                top[iz * tgw + ix].append(fi)
+    tstarts, tlist = [], []
+    for cl in top:
+        tstarts.append(len(tlist))
+        tlist += cl
+    tstarts.append(len(tlist))
+    off_top = hsize
+    off_tl = off_top + 4 * len(tstarts)
+    off_frag = (off_tl + 2 * len(tlist) + 15) & ~15
+    off_data = off_frag + 32 * len(frec)
+    off_pat = off_data + len(data)
+    off_gid = (off_pat + 2 * len(pats) + 3) & ~3
+    fb = b"".join(struct.pack("<3h3hHHIIBBH4x", *lo, *hi, nt, nv, t0, off_data + do, gw, gd, 0)
+                  for lo, hi, nt, nv, t0, do, gw, gd in frec)
+    ys = [p[1] for p in allw]
+    hdr = struct.pack("<4sIII3ff3fII8I3f", b"DCOL", 2, sum(r[3] for r in frec), len(T), *org, SCALE, x0, z0, TOP_CELL,
+                      tgw, tgd, off_frag, len(frec), off_top, off_tl, len(tlist), off_pat, len(pats), off_gid,
+                      min(ys), max(ys), cell)
+    assert len(hdr) == hsize, len(hdr)
+    out = hdr + struct.pack(f"<{len(tstarts)}I", *tstarts) + struct.pack(f"<{len(tlist)}H", *tlist)
+    out += b"\0" * (off_frag - len(out)) + fb + data + struct.pack(f"<{len(pats)}H", *pats)
+    out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
+    with open(path, "wb") as fo:
+        fo.write(out)
+    return dict(size=len(out), frags=len(frec), data=len(data), gid=2 * len(gid), top=4 * len(tstarts) + 2 * len(tlist),
+                verts=sum(r[3] for r in frec))
+
+
+def v1_dict(path):
+    """a v1 collision.bin back to build()'s dict (quantized verts, tris, cell): repacking without the game"""
+    b = open(path, "rb").read()
+    (mg, ver, nv, nt, ox, oy, oz, sc, x0, z0, cell, gw, gd, ov, ot, oc, ol, nl) = struct.unpack_from(
+        "<4sIII3ff3fII5I", b, 0)
+    assert mg == b"DCOL" and ver == 1 and abs(sc - SCALE) < 1e-9
+    return dict(origin=[ox, oy, oz], verts=list(struct.iter_unpack("<3h", b[ov:ov + 6 * nv])),
+                tris=list(struct.iter_unpack("<3HBB", b[ot:ot + 8 * nt])), cell=cell, x0=x0, z0=z0)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--repack":  # v1 collision.bin -> v2 (tests, no game needed)
+        st = write_v2(v1_dict(sys.argv[2]), sys.argv[3])
+        print(f"{sys.argv[3]}: {st}")
+        sys.exit(0)
     game = gamepath.game_dir(sys.argv[1] if len(sys.argv) > 1 else None)
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(gamepath.ROOT, "build/gen/collision.bin")
     area = sys.argv[3] if len(sys.argv) > 3 else "m10_02_00_00"
     detail = sys.argv[4] if len(sys.argv) > 4 else "h"
     subs, missing, unused = area_collision(game, area, detail)
     c = build(subs, float(os.environ.get("CELL", 2)))
+    if os.environ.get("COL_V1") != "1":  # DCOL v2 (write_v2), the default; COL_V1=1: the old layout
+        st = write_v2(c, out)
+        print(f"{out}: v2 {st['size']} bytes ({len(c['tris'])} tris in {st['frags']} fragments, {st['verts']} verts, "
+              f"v1 numbers {st['gid']} B, top grid {st['top']} B); MSB parts without hkx: {missing}; unplaced hkx: {unused}")
+        sys.exit(0)
     st = write(c, out)
     lens = [len(x) for x in c["cells"]]
     print(f"{out}: {st['size']} bytes ({len(c['verts'])} verts {st['verts']} B, {len(c['tris'])} tris {st['tris']} B, "

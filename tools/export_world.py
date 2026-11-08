@@ -42,13 +42,29 @@ def col_bounds(path):
     assert h[:4] == b"DCOL", path
     x0, z0, cell = struct.unpack_from("<3f", h, 32)
     gw, gd = struct.unpack_from("<2I", h, 44)
+    if struct.unpack_from("<I", h, 4)[0] == 2:  # v2 (export_collision.write_v2): the 8 m top grid overshoots; v1's 2 m
+        return _col_bounds_v2(path)            # grid from the same origin, as v1 wrote it
     return x0, z0, x0 + gw * cell, z0 + gd * cell
+
+
+def _col_bounds_v2(path):
+    with open(path, "rb") as f:
+        b = f.read()
+    ox, oy, oz, sc, x0, z0 = struct.unpack_from("<6f", b, 16)
+    off, nfrag = struct.unpack_from("<2I", b, 52)
+    fcell = struct.unpack_from("<f", b, 92)[0]
+    hx = max(struct.unpack_from("<3h", b, off + 32 * i + 6)[0] for i in range(nfrag)) * sc + ox
+    hz = max(struct.unpack_from("<3h", b, off + 32 * i + 6)[2] for i in range(nfrag)) * sc + oz
+    gw, gd = int((hx - x0) / fcell) + 1, int((hz - z0) / fcell) + 1
+    return x0, z0, x0 + gw * fcell, z0 + gd * fcell
 
 
 def col_height(path):
     """(min y, max y) of a collision.bin's vertices"""
     with open(path, "rb") as f:
         b = f.read()
+    if struct.unpack_from("<I", b, 4)[0] == 2:  # v2 header: vertex height range
+        return struct.unpack_from("<2f", b, 84)
     nv = struct.unpack_from("<I", b, 8)[0]
     oy, scale = struct.unpack_from("<f", b, 20)[0], struct.unpack_from("<f", b, 28)[0]
     ov = struct.unpack_from("<I", b, 52)[0]
