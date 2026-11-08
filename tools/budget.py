@@ -30,7 +30,11 @@ OVER34_PCT = 1.0
 RAM_MIN_KB = 1536
 VRAM_MIN_KB = 128
 IOP_MIN_KB = 250
-SEEKS_PER_S = 2.0
+SEEKS_PER_S = 2.0  # logged as a note since Burg plan B8b (it assumed 128 KB runs; measured: 1.2 items of ~30 KB)
+# Burg plan B8b disc gate, as drive time per period of play: seeks inside the fast window x SEEK_MS + far seeks x
+# FAR_SEEK_MS + bytes at DRIVE_KBPS (ASSUMED: Sony's DVD short / long seek and sustained rate figures) at most
+# DISC_BUSY_PCT of the period, and no far seek in play. PCSX2 times no seek: the counts are the proxy until hardware
+SEEK_MS, FAR_SEEK_MS, DRIVE_KBPS, DISC_BUSY_PCT = 40, 150, 1536, 70
 MIN_FRAMES = 10
 # the Burg plan's streamer gates per test script (step B0): the most allowed per run, from two ISO runs of main 6bb3218
 # (2026-11-08, tools/test-all.sh --iso --burg --reps 2, the plan's baseline table; near_items re-measured 2026-11-09:
@@ -90,6 +94,11 @@ def log_summary(log):
                         pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
+    for i, d in enumerate(disc):  # estimated drive time of each period (the gate above)
+        span = d["t"] - disc[i - 1]["t"] if i else (disc[1]["t"] - d["t"] if len(disc) > 1 else 10)
+        span = span if span > 0 else 10
+        d["est_pct"] = round(100 * ((d["seeks"] - d["far"]) * SEEK_MS + d["far"] * FAR_SEEK_MS +
+                                    1000 * d["kbps"] * span / DRIVE_KBPS) / (1000 * span), 1)
     play = [d for d in disc if not d["load"]]
     out = {"underruns": under, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
                                             for k, v in mp.items()}}
@@ -99,6 +108,8 @@ def log_summary(log):
             "media": disc[-1]["media"], "periods": len(disc), "play_periods": len(play),
             "kbps": round(sum(d["kbps"] for d in play) / n), "seeks_s": round(sum(d["seeks_s"] for d in play) / n, 2),
             "far_seeks": sum(d["far"] for d in disc), "layer_play": sum(d["layer"] for d in play),
+            "far_play": sum(d["far"] for d in play), "est_max": max((d["est_pct"] for d in play), default=0),
+            "est_avg": round(sum(d["est_pct"] for d in play) / n, 1),
             "layer_load": sum(d["layer"] for d in disc if d["load"]),
             "wait_avg": round(sum(d["wait_avg"] for d in play) / n), "wait_max": max(d["wait_max"] for d in disc),
             "stream_wait_max": max(d["stream_max"] for d in disc), "stream_over100": disc[-1]["over100"],
@@ -165,8 +176,13 @@ def check_result(path, disc_gates=True):
         dd = run["disc"]
         if dd["layer_play"]:
             out["fails"].append(f"run: {dd['layer_play']} disc layer changes during play (budget: none)")
+        if dd.get("est_max", 0) > DISC_BUSY_PCT:
+            out["fails"].append(f"run: drive time {dd['est_max']} % of a period in play > {DISC_BUSY_PCT} % (seeks "
+                                f"x {SEEK_MS} ms, far x {FAR_SEEK_MS} ms, bytes at {DRIVE_KBPS} KB/s)")
+        if dd.get("far_play"):
+            out["fails"].append(f"run: {dd['far_play']} far seeks in play (budget: none)")
         if dd["seeks_s"] > SEEKS_PER_S:
-            out["fails"].append(f"run: {dd['seeks_s']} seeks/s while playing > {SEEKS_PER_S}")
+            out.setdefault("notes", []).append(f"run: {dd['seeks_s']} seeks/s while playing (was gated at {SEEKS_PER_S})")
     try:
         import hitchsum
         st = hitchsum.stream_summary(hitchsum.parse_stream(os.path.join(d, "emulog.txt")))
@@ -208,7 +224,8 @@ def table(r):
     if run.get("disc"):
         d = run["disc"]
         o.append(f"  disc ({d['media']}, {d['play_periods']} periods of play): {d['kbps']} KB/s, {d['seeks_s']} seeks/s, "
-                 f"{d['far_seeks']} far, layer changes {d['layer_play']} play / {d['layer_load']} load, EE wait avg "
+                 f"{d['far_seeks']} far ({d.get('far_play', 0)} in play), est. drive time {d.get('est_avg')} % avg / "
+                 f"{d.get('est_max')} % max, layer changes {d['layer_play']} play / {d['layer_load']} load, EE wait avg "
                  f"{d['wait_avg']} max {d['wait_max']} ms, stream wait max {d['stream_wait_max']} ms, cache "
                  f"{d['cache_kb']} KB {d['cache_hits']} hits / {d['cache_miss']} misses, busy {d['busy_pct']} %, "
                  f"IOP free min {d['iop_free_min']} KB")

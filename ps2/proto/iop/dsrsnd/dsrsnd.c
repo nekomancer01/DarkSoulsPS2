@@ -753,6 +753,40 @@ static const unsigned char *pc_block(unsigned int lsn)
     return pc_mem + v * PC_PAGE;
 }
 
+/* Burg plan B8b gap reads (default on; DSRSND_DEFS=-DGAP_KB=0 = seek as before): a background read whose first block
+ * lies a little ahead of the head (at most GAP_KB, forward, same layer) reads the blocks in between into the page
+ * cache instead of seeking over them. The map streamer asks per item and its runs average 1.2 items (B4's ISO
+ * world_route: ~8 runs a second, each a seek): the gaps between them are items not wanted yet or already in, so the
+ * cache then often serves the next item without the drive. On DVD a 96 KB gap costs ~40 ms of reading against ~40 ms
+ * for a short seek and leaves its bytes in the cache. ASSUMED threshold: tuned by the runs a second it saves */
+#ifndef GAP_KB
+#define GAP_KB 96
+#endif
+#define GAP_SECS (GAP_KB / 2)
+static unsigned int gap_reads, gap_blocks;
+static int pc_has(unsigned int lsn)
+{
+    for (int i = 0; i < pc_n; i++)
+        if (pc_use[i] && pc_lsn[i] == lsn)
+            return 1;
+    return 0;
+}
+static void gap_fill(unsigned int blk)
+{
+    if (!GAP_SECS || cd_head >= blk || blk - cd_head > GAP_SECS || (cd_head & (PC_SECS - 1u)) || pc_has(blk) ||
+        (dstat.layer1 && (cd_head < dstat.layer1) != (blk < dstat.layer1)))
+        return;
+    for (unsigned int b = cd_head; b < blk; b += PC_SECS) {
+        if (!pc_has(b) && !pc_block(b))
+            return;
+        gap_blocks++;
+        if (cd_head != b + PC_SECS)  /* a cached block between: the head stayed; stop, the seek is not saved */
+            return;
+    }
+    if (!(++gap_reads & 255))
+        printf("dsrsnd: gap reads %u (%u blocks of 32 KB read through instead of a seek)\n", gap_reads, gap_blocks);
+}
+
 /* n bytes of file fd from off into p through the cache (the caller holds the drive): -1 on a read error. When they lie
  * in one block at the same address mod 16 as p, *direct is set to them in the page and nothing is copied (the page is
  * then sent to the EE straight from the cache: pc_dma); else *direct is NULL and p has them. A 32 KB copy costs the
@@ -771,6 +805,8 @@ static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n, u
         unsigned int in = (lsn - blk) * 2048 + (off & 2047), c = PC_PAGE - in;
         if (c > left)
             c = left;
+        if (left == n)
+            gap_fill(blk);
         const unsigned char *pg = pc_block(blk);
         if (!pg)
             return left == n ? -1 : (int)(n - left);
