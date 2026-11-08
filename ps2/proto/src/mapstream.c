@@ -1390,28 +1390,60 @@ static void collect(int i, int r)
     }
 }
 
+/* Burg plan B8b: why each run of resident items stopped, and how the reads it made sit on the disc ("mapstream: runs"
+ * line every MS_RUNLOG_FRAMES frames): a read that starts where the last one ended needs no seek. B4's ISO world_route,
+ * 2026-11-09: 3089 runs of 1.2 items in 6 min, 170 contiguous; most stops are the next item not wanted (class) or
+ * already in (state). Reading the kept neighbours along (up to 64 KB) took 388 more items but no fewer runs, and more
+ * "no room" refusals (97 -> 120): dropped */
+enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, RS_N };
+static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
+static unsigned rs_stop[RS_N], rs_runs, rs_items, rs_reads, rs_contig, rs_kb, rs_frame;
+static unsigned rs_last_end, rs_last_k = ~0u;
+#define MS_RUNLOG_FRAMES 300
+static void rs_log(void)
+{
+    if (frame - rs_frame < MS_RUNLOG_FRAMES)
+        return;
+    rs_frame = frame;
+    if (!rs_runs)
+        return;
+    printf("mapstream: runs %u (%u items, %u KB), reads %u, %u start where the last ended; stops", rs_runs, rs_items,
+           rs_kb, rs_reads, rs_contig);
+    for (int i = 0; i < RS_N; i++)
+        printf(" %s %u", rs_name[i], rs_stop[i]);
+    printf("\n");
+    memset(rs_stop, 0, sizeof rs_stop);
+    rs_runs = rs_items = rs_reads = rs_contig = rs_kb = 0;
+}
+
 /* the queue's head into the arena and read (its missing wanted neighbours in mapres.bin along, up to MS_RUN bytes, as
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
+    rs_log();
     MsQ w = q[0];
     memmove(q, q + 1, --nq * sizeof *q);
     MsInst *m = &ms[w.k];
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
     unsigned wn = 1;
+    int stop = RS_END;
     if (it_res(m, w.id)) {
         unsigned j = w.id - m->ncell, end = m->rit[j].rel + m->rit[j].bytes, tex = !!(m->rit[j].tag & MS_RES_TEX);
         while (j + wn < m->nres) {
             const MapResItem *c = &m->rit[j + wn];
             unsigned id = m->ncell + j + wn;
-            if (m->state[id] != MS_NONE || !c->bytes || c->rel < end || c->rel - end > 64 ||
-                c->off - c->rel != m->rit[j].off - m->rit[j].rel || c->rel + c->bytes - m->rit[j].rel > MS_RUN ||
-                !!(c->tag & MS_RES_TEX) != tex || m->cls[id] < C_PREF || blocked(w.k, id))
+            stop = m->state[id] != MS_NONE ? RS_STATE : !c->bytes || c->rel < end || c->rel - end > 64 ? RS_GAP :
+                   c->off - c->rel != m->rit[j].off - m->rit[j].rel ? RS_BASE :
+                   c->rel + c->bytes - m->rit[j].rel > MS_RUN ? RS_CAP : !!(c->tag & MS_RES_TEX) != tex ? RS_TEX :
+                   m->cls[id] < C_PREF ? RS_CLASS : blocked(w.k, id) ? RS_BLOCKED : -1;
+            if (stop >= 0)
                 break;
+            stop = RS_END;
             end = c->rel + c->bytes, wn++;
         }
     }
+    rs_runs++, rs_items += wn, rs_stop[stop]++;
     int sent = 0;
     for (unsigned g = w.id; g < w.id + wn && nrd < MS_INFLIGHT;) {
         unsigned e = g + 1, gb = it_bytes(m, g);
@@ -1490,6 +1522,11 @@ static int issue(void)
         }
         room_fail = 0;
         int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        if (tk) {
+            unsigned o = it_off(m, g);
+            rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
+            rs_last_end = o + gb, rs_last_k = w.k;
+        }
         if (!tk) {
             g_free(p, gb);
             if (!sent)
