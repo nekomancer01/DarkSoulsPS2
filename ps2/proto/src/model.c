@@ -51,6 +51,7 @@ struct Model {
         const PackedBone *data;  /* full anims: frames * bones; compact: the base pose */
         const unsigned char *rot, *tra;
         const unsigned char *fdata;
+        unsigned a_off, a_len;  /* the anim's bytes in the model.bin (mdl_compact copies them) */
     } anims[MAX_ANIMS];
     int nanims;
     GSTEXTURE tex[MAX_TEX];
@@ -90,6 +91,8 @@ struct Model {
     unsigned char build_slot[256];  /* skin_step: skeleton bone -> palette slot after window win_built */
     unsigned hide;  /* group flag bits not drawn (model.h MDL_HIDE_*) */
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
+    void *apg[MAX_ANIMS];  /* MDL_ANIM_PAGES: the pages the anims were copied into */
+    int napg;
 };
 
 static short fx12(float v)
@@ -394,12 +397,14 @@ static Model *load_begin(const void *blob, const Model *tex)
     for (m->nanims = 0; m->nanims < (int)hdr->anims && m->nanims < MAX_ANIMS; m->nanims++) {
         const unsigned *h = (const unsigned *)p;
         typeof(m->anims[0]) *a = &m->anims[m->nanims];
+        a->a_off = (unsigned)(p - m->bin);
         a->id = h[0];
         a->frames = h[1] & 0x7FFFFFFF;
         a->fps = 30;
         if (!(h[1] & 0x80000000)) {
             a->data = (const PackedBone *)(p + 8);
             p += 8 + a->frames * hdr->bones * sizeof(PackedBone);
+            a->a_len = (unsigned)(p - m->bin) - a->a_off;
             continue;
         }
         /* u8 fps, rotated, translated, pad; u8 bone ids (padded to 4); base pose; frames */
@@ -411,6 +416,7 @@ static Model *load_begin(const void *blob, const Model *tex)
         a->fdata = p;
         a->stride = (a->nrot * 8 + a->ntra * 6 + 3) & ~3;
         p += a->frames * a->stride;
+        a->a_len = (unsigned)(p - m->bin) - a->a_off;
     }
     if (!skin_alloc(m))
         return free(m), NULL;
@@ -504,8 +510,79 @@ const short *mdl_parents(const Model *m) { return m->parents; }
 /* Keep only what drawing / sampling needs after mdl_load + mdl_upload (header, parents, reference pose, groups,
  * anims) in one new block, so the caller can free the blob: vertices, triangles, UVs and texture pixels live on in
  * the VU1 streams and VRAM. anim_end = the blob's size (enemy model.bin keeps its anims at the end). */
+/* Anims kept after load go in pages of up to MDL_ANIM_PAGE bytes (an anim larger than that gets a block of its own)
+ * instead of one copy of the whole anim section (default on; make DEFS=-DMDL_ANIM_PAGE=0 = one copy, the old way):
+ * the Taurus Demon's is 489 KB, and the compact copy was the load's second large heap block next to its model.bin
+ * buffer (enemy.c STREAM_RAM_FLOOR). Same page size as the skin packets, so a freed page fits the next type's. */
+#ifndef MDL_ANIM_PAGE
+#define MDL_ANIM_PAGE (64u << 10)
+#endif
+static void anim_free_pages(Model *m)
+{
+    for (int i = 0; i < m->napg; i++)
+        free(m->apg[i]), m->apg[i] = NULL;
+    m->napg = 0;
+}
+
+static void *page_get(unsigned n)
+{
+    void *p = memalign(16, n);
+    if (!p && mapstream_heap_release(n))
+        p = memalign(16, n);
+    return p;
+}
+
 int mdl_compact(Model *m, unsigned blob_size)
 {
+    if (MDL_ANIM_PAGE && m->nanims) {
+        const Header *h = m->hdr;
+        unsigned np = (h->bones * 2 + 3) & ~3u, nr = h->bones * sizeof(PackedBone), ng = h->groups * sizeof(Group);
+        /* page plan: anims in order, a page closes when the next one does not fit */
+        unsigned psz[MAX_ANIMS], npg = 0, cur = 0;
+        for (int i = 0; i < m->nanims; i++) {
+            unsigned n = (m->anims[i].a_len + 15) & ~15u;
+            if (!npg || cur + n > MDL_ANIM_PAGE)
+                psz[npg++] = 0, cur = 0;
+            psz[npg - 1] += n, cur += n;
+        }
+        unsigned char *b = page_get(sizeof(Header) + np + nr + ng);
+        if (!b)
+            return 0;
+        m->napg = 0;
+        for (unsigned i = 0; i < npg; i++)
+            if (!(m->apg[m->napg++] = page_get(psz[i]))) {
+                m->napg--;
+                anim_free_pages(m);
+                free(b);
+                return 0;
+            }
+        unsigned char *q = b;
+        memcpy(q, h, sizeof(Header)), q += sizeof(Header);
+        memcpy(q, m->parents, np), m->parents = (const short *)q, q += np;
+        memcpy(q, m->ref, nr), m->ref = (const PackedBone *)q, q += nr;
+        memcpy(q, m->groups, ng), m->groups = (const Group *)q;
+        int pg = -1;
+        unsigned char *dst = NULL;
+        for (int i = 0; i < m->nanims; i++) {
+            unsigned n = (m->anims[i].a_len + 15) & ~15u;
+            if (pg < 0 || cur + n > MDL_ANIM_PAGE)
+                dst = m->apg[++pg], cur = 0;
+            const unsigned char *src = m->bin + m->anims[i].a_off;
+            memcpy(dst + cur, src, m->anims[i].a_len);
+            long d = (dst + cur) - src;
+            m->anims[i].data = (const PackedBone *)((const unsigned char *)m->anims[i].data + d);
+            if (m->anims[i].rot)
+                m->anims[i].rot += d, m->anims[i].tra += d, m->anims[i].fdata += d;
+            m->anims[i].a_off = 0;
+            cur += n;
+        }
+        m->hdr = (const Header *)b;
+        m->bin = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL, m->te = NULL;
+        for (int i = 0; i < m->ntex; i++)
+            m->tex[i].Mem = m->tex[i].Clut = NULL;
+        m->own = b;
+        return 1;
+    }
     const Header *h = m->hdr;
     unsigned np = (h->bones * 2 + 3) & ~3u, nr = h->bones * sizeof(PackedBone), ng = h->groups * sizeof(Group);
     /* the anim section ends at the next section after it (the player's model.bin has textures, groups and UVs
@@ -542,6 +619,7 @@ void mdl_strip(Model *m)
 {
     if (m->sk_block)
         skin_free_pages(m);
+    anim_free_pages(m);
     free(m->sk_block), free(m->own);
     m->sk_block = NULL;
     m->sk_batch = NULL, m->sk_page = NULL, m->sk_psz = NULL, m->own = NULL;

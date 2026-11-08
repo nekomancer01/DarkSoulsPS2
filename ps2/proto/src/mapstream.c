@@ -293,7 +293,9 @@ static unsigned *pcls, *pcost, *pitem;
 #endif
 #define MS_BORROW_HYST (256u << 10)         /* borrow only above floor + this (no borrow / give back each frame) */
 static unsigned char *xpage[MS_XMAX];
+static unsigned char xret[MS_XMAX];  /* being given back: no new items (its drawn ones wait for their chains) */
 static unsigned nx;  /* borrowed pages now */
+static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
 static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
 static inline unsigned ntot(void) { return npages + MS_XMAX; }
 static inline unsigned char *g_ptr(unsigned g)
@@ -334,7 +336,7 @@ static void *g_alloc(unsigned n)
         return NULL;
     for (int pass = 0; pass < 2; pass++)
         FOR_IPAGES(p) {
-            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
+            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP) || (p >= npages && xret[p - npages]))
                 continue;
             unsigned run = 0, g0 = p * MS_GPP;
             for (unsigned g = g0; g < g0 + MS_GPP; g++) {
@@ -755,7 +757,7 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
             bestc = score, best = (int)p;
     }
     for (unsigned p = npages; need == 1 && ng_need && p < ntot(); p++) {  /* a read: borrowed pages too */
-        if (!xpage[p - npages] || (pcls[p] & 0x200))
+        if (!xpage[p - npages] || xret[p - npages] || (pcls[p] & 0x200))
             continue;
         unsigned long long score = (unsigned long long)(pcls[p] & 0x4ff) << 40 | pcost[p];
         if (score < bestc)
@@ -783,99 +785,6 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
         }
     }
     return 1;
-}
-
-/* ---- borrowed pages: give back, borrow (MS_BORROW, comment at xpage) ---- */
-/* Give back the borrowed page whose items can all go now (loaded groups no chain reads: no read in flight, no old
- * defrag copy), the emptiest first. 1 when a page went back to the heap. */
-static int x_release(void)
-{
-    unsigned ok[MS_XMAX];
-    if (!nx)
-        return 0;
-    memset(ok, 0, sizeof ok);
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned g0 = g_of(m->buf[a]);
-            if (g0 / MS_GPP < npages || g0 == ~0u || grp_chain(m, id))
-                continue;
-            ok[g0 / MS_GPP - npages] += (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN;
-        }
-    }
-    int best = -1;
-    for (unsigned i = 0; i < MS_XMAX; i++) {
-        unsigned p = npages + i;
-        if (xpage[i] && ok[i] == MS_GPP - pfree[p] && (best < 0 || pfree[p] > pfree[npages + best]))
-            best = (int)i;
-    }
-    if (best < 0)
-        return 0;
-    unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned g0 = g_of(m->buf[a]);
-            if (g0 >= w0 && g0 < w1) {
-                xstat_drop_kb += grp_bytes(m, a, e) >> 10;
-                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
-                drop(k, id);
-            }
-        }
-    }
-    if (pfree[p] != MS_GPP)  /* cannot happen (ok[] counted every used granule) */
-        return 0;
-    pfree[p] = 0;
-    memset(&gmap[w0 / 32], 0xff, MS_GPP / 8);
-    free(xpage[best]), xpage[best] = NULL, nx--, xstat_back++;
-    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
-    return 1;
-}
-
-/* Once per frame: borrow a page while the item pages are (nearly) full and the heap has room over the floor; give
- * one back while the heap is under it */
-static void x_update(void)
-{
-    if (!MS_BORROW || !arena)
-        return;
-    unsigned hf = heap_free();
-    if (nx && hf < MS_BORROW_FLOOR) {  /* up to 4 pages a frame: back over the floor within a few frames */
-        for (int i = 0; i < 4 && hf < MS_BORROW_FLOOR && x_release(); i++)
-            hf = heap_free();
-        return;
-    }
-    unsigned fr = 0;
-    FOR_IPAGES(p)
-        fr += pfree[p];
-    if (nx >= MS_XMAX || fr >= 2 * MS_GPP || hf < MS_BORROW_FLOOR + MS_BORROW_HYST + MS_PAGE)
-        return;
-    unsigned i = 0;
-    while (xpage[i])
-        i++;
-    if (!(xpage[i] = memalign(MS_GRAN, MS_PAGE)))
-        return;
-    unsigned p = npages + i;
-    memset(&gmap[p * MS_GPP / 32], 0, MS_GPP / 8);
-    pfree[p] = MS_GPP;
-    nx++, xstat_borrow++;
-    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
-    nowin = C_TOP + 2;  /* new room: windows may be found again */
-}
-
-unsigned mapstream_heap_release(unsigned bytes)
-{
-    unsigned n = 0, want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;
-    while (n < want && x_release())
-        n++;
-    if (n)
-        printf("mapstream: gave %u borrowed pages back to the heap for %u KB (%u left)\n", n, bytes >> 10, nx);
-    return n;
 }
 
 /* ---- moving items (MS_DEFRAG) ----
@@ -914,7 +823,7 @@ static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
     if (!ng || ng > MS_GPP)
         return NULL;
     FOR_IPAGES(p) {
-        if ((p >= x0 && p < x1) || pfree[p] < ng || (bp != ~0u && pfree[p] >= pfree[bp]))
+        if ((p >= x0 && p < x1) || (p >= npages && xret[p - npages]) || pfree[p] < ng || (bp != ~0u && pfree[p] >= pfree[bp]))
             continue;
         unsigned run = 0, g0 = p * MS_GPP;
         for (unsigned g = g0; g < g0 + MS_GPP; g++) {
@@ -1008,6 +917,146 @@ static int defrag(unsigned need, unsigned lim, unsigned max_kb)
     }
     HITCH_END(d, HS_MSWIN);
     return ok;
+}
+
+/* ---- borrowed pages: give back, borrow (MS_BORROW, comment at xpage) ---- */
+/* Give back the borrowed page whose items can all go now (loaded groups no chain reads: no read in flight, no old
+ * defrag copy), the emptiest first. 1 when a page went back to the heap. */
+static int x_release(int force)
+{
+    unsigned ok[MS_XMAX];
+    if (!nx)
+        return 0;
+    memset(ok, 0, sizeof ok);
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                continue;
+            unsigned g0 = g_of(m->buf[a]);
+            if (g0 / MS_GPP < npages || g0 == ~0u || grp_chain(m, id))
+                continue;
+            ok[g0 / MS_GPP - npages] += (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN;
+        }
+    }
+    int best = -1;
+    for (unsigned i = 0; i < MS_XMAX; i++) {
+        unsigned p = npages + i;
+        if (xpage[i] && ok[i] == MS_GPP - pfree[p] && (best < 0 || pfree[p] > pfree[npages + best]))
+            best = (int)i;
+    }
+    if (best < 0) {
+        /* every borrowed page holds a group a chain may still read (cells drawn each frame stay in the last two
+         * draws: the heap sat at 1.48 MB with 448 KB lent at the Firelink cave, ISO 2026-11-08). Empty the
+         * fullest-free one now: its groups go (drawn ones keep their granules until their chains are done, as
+         * defrag's old copies, pend_release) and no new item goes in; the next call gives it back. */
+        if (!force)
+            return 0;
+        for (unsigned i = 0; i < MS_XMAX; i++)
+            if (xpage[i] && xret[i])
+                return 0;  /* one at a time: that one is still draining */
+        for (unsigned i = 0; i < MS_XMAX; i++)
+            if (xpage[i] && (best < 0 || pfree[npages + i] > pfree[npages + best]))
+                best = (int)i;
+        if (best < 0 || npend > MS_DEFRAG_PEND - 16)
+            return 0;
+        unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
+        xret[best] = 1;
+        for (int k = 0; k < MS_INST; k++) {
+            MsInst *m = &ms[k];
+            for (unsigned id = 0; id < it_n(m); id++) {
+                unsigned a, e;
+                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                    continue;
+                unsigned g0 = g_of(m->buf[a]);
+                if (g0 < w0 || g0 >= w1)
+                    continue;
+                unsigned n = grp_bytes(m, a, e), ng = (n + MS_GRAN - 1) / MS_GRAN;
+                int chain = grp_chain(m, id);
+                xstat_drop_kb += n >> 10;
+                hitch_drop(grp_cls(m, id) >= C_PREF, n);
+                drop(k, id);
+                if (chain && npend < MS_DEFRAG_PEND) {  /* the granules stay used until no chain reads them */
+                    g_mark(g0, ng, 1);
+                    pend[npend++] = (typeof(pend[0])){g0, ng, frame};
+                }
+            }
+        }
+        return 0;
+    }
+    unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                continue;
+            unsigned g0 = g_of(m->buf[a]);
+            if (g0 >= w0 && g0 < w1) {
+                xstat_drop_kb += grp_bytes(m, a, e) >> 10;
+                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
+                drop(k, id);
+            }
+        }
+    }
+    if (pfree[p] != MS_GPP)  /* cannot happen (ok[] counted every used granule) */
+        return 0;
+    pfree[p] = 0;
+    memset(&gmap[w0 / 32], 0xff, MS_GPP / 8);
+    free(xpage[best]), xpage[best] = NULL, xret[best] = 0, nx--, xstat_back++;
+    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
+    return 1;
+}
+
+/* Once per frame: borrow a page while the item pages are (nearly) full and the heap has room over the floor; give
+ * one back while the heap is under it */
+static void x_update(void)
+{
+    if (!MS_BORROW || !arena)
+        return;
+    unsigned hf = heap_free(), floor = x_want > MS_BORROW_FLOOR ? x_want : MS_BORROW_FLOOR;
+    if (!nx || hf >= x_want)
+        x_want = 0;
+    if (nx && hf < floor) {  /* up to 4 pages a frame: back over the floor within a few frames */
+        for (int i = 0; i < 4 && hf < floor && x_release(1); i++)
+            hf = heap_free();
+        return;
+    }
+    unsigned fr = 0;
+    FOR_IPAGES(p)
+        fr += pfree[p];
+    if (nx >= MS_XMAX || fr >= 2 * MS_GPP || hf < MS_BORROW_FLOOR + MS_BORROW_HYST + MS_PAGE)
+        return;
+    for (unsigned j = 0; j < MS_XMAX; j++)
+        if (xret[j])
+            return;  /* one is being given back: none borrowed meanwhile */
+    unsigned i = 0;
+    while (xpage[i])
+        i++;
+    if (!(xpage[i] = memalign(MS_GRAN, MS_PAGE)))
+        return;
+    unsigned p = npages + i;
+    memset(&gmap[p * MS_GPP / 32], 0, MS_GPP / 8);
+    pfree[p] = MS_GPP;
+    nx++, xstat_borrow++;
+    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
+    nowin = C_TOP + 2;  /* new room: windows may be found again */
+}
+
+unsigned mapstream_heap_release(unsigned bytes)
+{
+    unsigned n = 0, want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;
+    while (n < want && x_release(0))
+        n++;
+    if (n < want && nx) {  /* the rest drains over the next frames (pages with drawn cells: x_release) */
+        unsigned t = heap_free() + (want - n) * MS_PAGE;
+        x_want = t > x_want ? t : x_want;
+        x_release(1);
+    }
+    if (n)
+        printf("mapstream: gave %u borrowed pages back to the heap for %u KB (%u left)\n", n, bytes >> 10, nx);
+    return n;
 }
 
 /* ---- reads ---- */

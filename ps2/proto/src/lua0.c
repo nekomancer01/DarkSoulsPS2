@@ -117,8 +117,18 @@ unsigned lua0_heap, lua0_since_gc, lua0_instructions;
  * stays full and up to ~180 KB of garbage per collection goes through malloc (30-minute soak, 2026-11-01). */
 #define LP_SIZE (384u << 10)
 #define LP_MAX 512
+/* LUA_POOL_GROW (default on; 0 = the fixed pool): a full pool takes another LP_CHUNK block instead of sending small
+ * objects to malloc. With five blocks' AI scripts 575 KB stay live (ISO Burg route, 2026-11-08: pool 384 KB full,
+ * 276 KB of small Lua objects in malloc), and those short-lived 16-512 byte blocks pinned holes between the enemy
+ * models (sdk303 _txt "No More Excuses - Use the IOP": keep long- and short-lived allocations apart). The chunks stay
+ * for the run (the free lists recycle their objects); at most LP_CHUNKS of them. */
+#ifndef LUA_POOL_GROW
+#define LUA_POOL_GROW 1
+#endif
+#define LP_CHUNK (64u << 10)
+#define LP_CHUNKS 12
 static unsigned char *lp;
-static unsigned lp_used;
+static unsigned lp_used, lp_cap = LP_SIZE, lp_chunks;
 static void *lp_free[LP_MAX / 16 + 1];
 unsigned lua0_pool_used, lua0_pool_free, lua0_malloc_live;  /* pool watermark, bytes on its free lists, fallback bytes */
 
@@ -129,8 +139,12 @@ static void *lmem(unsigned n)
     if (c <= LP_MAX / 16) {
         if (lp_free[c])
             b = lp_free[c], lp_free[c] = *(void **)(b + 8), lua0_pool_free -= c * 16;
-        else if (lp && lp_used + c * 16 <= LP_SIZE)
-            b = lp + lp_used, lp_used += c * 16, lua0_pool_used = lp_used;
+        else if (lp && lp_used + c * 16 <= lp_cap)
+            b = lp + lp_used, lp_used += c * 16, lua0_pool_used += c * 16;
+        else if (LUA_POOL_GROW && lp && lp_chunks < LP_CHUNKS && (b = memalign(16, LP_CHUNK))) {
+            lp = b, lp_cap = LP_CHUNK, lp_chunks++;  /* the rest of the old block stays unused (< 512 B) */
+            lp_used = c * 16, lua0_pool_used += c * 16;
+        }
     }
     if (!b) {
         b = malloc(n + 8);

@@ -165,6 +165,9 @@ static unsigned pop_total;
  * answers mapstream_get / mapstream_res for its selected instance, so the code that asks selects it first. */
 typedef struct {
     const unsigned char *map_bin, *streams;  /* map.bin (main.c, from the area pack: 128-byte aligned, kept loaded) */
+    /* map.bin bases for the textures / navmesh / fog rows and the cell table / horizon: map_bin, or those of the
+     * pieces a world block's maptab.bin was read in (map_block_split, world.c WORLD_TAB_SPLIT) */
+    const unsigned char *tex_bin, *cel_bin;
     const Header *hdr;
     const MapCell *ctab;  /* DSM5 cell table (resident range + streamed near blob per cell), else NULL */
     unsigned nctab;
@@ -234,10 +237,10 @@ static void hz_parse(MapInst *m)
 #ifndef HZN_OFF
     if (!m->ctab)
         return;
-    const unsigned *ch = (const unsigned *)(m->map_bin + m->hdr->cell_off);
+    const unsigned *ch = (const unsigned *)(m->cel_bin + m->hdr->cell_off);
     if (!ch[2] || ch[3] < 16)
         return;
-    const unsigned char *b = m->map_bin + ch[2];
+    const unsigned char *b = m->cel_bin + ch[2];
     const unsigned *h = (const unsigned *)b;
     if (memcmp(b, "HZN1", 4) || h[2] != m->nctab || h[3] != ch[3] || ((unsigned)b & 15)) {
         printf("map: horizon section does not match the cell table (ignored)\n");
@@ -255,7 +258,7 @@ int map_init(const void *blob)
     if (!blob)
         return 0;
     MapInst *m = &inst[0];
-    const unsigned char *map_bin = m->map_bin = blob;
+    const unsigned char *map_bin = m->map_bin = m->tex_bin = m->cel_bin = blob;
     const Header *hdr = m->hdr = (const Header *)map_bin;
     if (memcmp(hdr->magic, "DSM4", 4) && memcmp(hdr->magic, "DSM5", 4))
         return 0;
@@ -810,6 +813,14 @@ static int map_inst_of(int col_block)
     return -1;
 }
 
+static int split_k = -1;
+static const unsigned char *split_b, *split_c;
+static unsigned split_boff, split_coff;
+void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsigned c_off)
+{
+    split_k = k, split_b = b, split_boff = b_off, split_c = c, split_coff = c_off;
+}
+
 int map_block_init(int k, const void *tab, const void *res, int col_block)
 {
     if (k < 0 || k >= MAP_INST)
@@ -824,17 +835,23 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     /* tab = the 80-byte header + map.bin from the chunk table on (tools/mapsplit.py): offsets >= chunk_off resolve
      * against a base chunk_off - 80 bytes before it */
     const unsigned char *map_bin = m->map_bin = (const unsigned char *)tab + sizeof(Header) - h->chunk_off;
+    /* pieces (world.c WORLD_TAB_SPLIT): piece base - its offset in maptab.bin, in map.bin coordinates as map_bin */
+    const unsigned char *tex_bin = m->tex_bin =
+        split_k == k && split_b ? split_b - split_boff + sizeof(Header) - h->chunk_off : map_bin;
+    const unsigned char *cel_bin = m->cel_bin =
+        split_k == k && split_c ? split_c - split_coff + sizeof(Header) - h->chunk_off : map_bin;
+    split_k = -1, split_b = split_c = NULL;
     const Header *hdr = m->hdr = h;
-    m->ctab = (const MapCell *)(map_bin + hdr->cell_off + 16);
-    m->nctab = *(const unsigned *)(map_bin + hdr->cell_off);
-    m->pkt = ((const unsigned *)(map_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
+    m->ctab = (const MapCell *)(cel_bin + hdr->cell_off + 16);
+    m->nctab = *(const unsigned *)(cel_bin + hdr->cell_off);
+    m->pkt = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
-    m->fog_rows = *(const unsigned *)(map_bin + hdr->fog_off);
-    m->fog_ntris = ((const unsigned *)(map_bin + hdr->fog_off))[1];
-    m->fog_row = (const FogRow *)(map_bin + hdr->fog_off + 16);
+    m->fog_rows = *(const unsigned *)(tex_bin + hdr->fog_off);
+    m->fog_ntris = ((const unsigned *)(tex_bin + hdr->fog_off))[1];
+    m->fog_row = (const FogRow *)(tex_bin + hdr->fog_off + 16);
     m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
-    m->navv = (const float *)(map_bin + hdr->navv_off);
-    m->navt = (const unsigned short *)(map_bin + hdr->navt_off);
+    m->navv = (const float *)(tex_bin + hdr->navv_off);
+    m->navt = (const unsigned short *)(tex_bin + hdr->navt_off);
     m->streams = res, m->res_cells = 0, m->citem = NULL;
     hz_parse(m);
     m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
@@ -856,7 +873,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         tslot[k] = 0;
         while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
             tslot[k]++;
-        m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], map_bin, map_bin + hdr->tex_off, m->ntex);
+        m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], tex_bin, tex_bin + hdr->tex_off, m->ntex);
         if (m->tex_base < 0) {
             printf("map: block %d: no texture slot / CLUT VRAM\n", k);
             m->on = 0;
@@ -985,7 +1002,7 @@ static void res_open(int k, const void *pack)
             j = g;
         }
     }
-    const unsigned char *te = mi->map_bin + hdr->tex_off;
+    const unsigned char *te = mi->tex_bin + hdr->tex_off;
     for (int t = 0; t < mi->ntex; t++) {  /* texmap.py entry: u16 w, h; u8 psm; ...; u32 pix[0] at +16 */
         const unsigned char *e = te + 32 * t;
         unsigned w = *(const unsigned short *)e, h = *(const unsigned short *)(e + 2), p0 = *(const unsigned *)(e + 16);
