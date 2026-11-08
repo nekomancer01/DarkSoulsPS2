@@ -653,10 +653,18 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
         mode |= VU1_FLAT;
         q64(0, 0x06);
     } else {
-        u32 tbw = (t->Width + 127) / 128 * 2;  /* PSMT8 buffer width: even multiple of 64 texels */
-        q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
-                           t->ClutPSM, 0, 0, cld(t->VramClut)),
-            0x06);
+        /* TEX0 without CLD, kept for the next batch of the same texture (map chunks come grouped by texture) */
+        static const GSTEXTURE *lt;
+        static u32 lt_vram, lt_clut, lt_wh;
+        static u64 lt_tex0;
+        u32 wh = t->Width | t->Height << 12 | (u32)t->PSM << 24 | (u32)t->ClutPSM << 28;
+        if (t != lt || t->Vram != lt_vram || t->VramClut != lt_clut || wh != lt_wh) {
+            u32 tbw = (t->Width + 127) / 128 * 2;  /* PSMT8 buffer width: even multiple of 64 texels */
+            lt_tex0 = GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0,
+                                     t->VramClut / 256, t->ClutPSM, 0, 0, 0);
+            lt = t, lt_vram = t->Vram, lt_clut = t->VramClut, lt_wh = wh;
+        }
+        q64(lt_tex0 | (u64)cld(t->VramClut) << 61, 0x06);
     }
     if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
         q64(GS_SETREG_TEX1(0, mxl, 1, 4, 0, 0, mip_k), 0x14);
@@ -758,13 +766,22 @@ static void add_idx_clip(GSTEXTURE *t, int cull, int mode, int t0, int k, const 
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, clip ? CLIP_CODE : MAP2_CODE));
 }
 
+/* the batch builders' EE time (vu1_stats.add_*_ticks) is sampled one call in ADD_TICKS_EVERY, scaled up: two Count
+ * reads per batch cost ~0.3 us in PCSX2, ~0.6 ms of a Burg frame (Burg plan B5) */
+#define ADD_TICKS_EVERY 8
+static unsigned add_calls;
+
 void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k)
 {
+    vu1_stats.add_ex_n++;
+    if (++add_calls % ADD_TICKS_EVERY) {
+        add_ex(t, cull, mode, tris, pos, st, col, org, st_k);
+        return;
+    }
     unsigned t0 = ticks();
     add_ex(t, cull, mode, tris, pos, st, col, org, st_k);
-    vu1_stats.add_ex_ticks += ticks() - t0;
-    vu1_stats.add_ex_n++;
+    vu1_stats.add_ex_ticks += (ticks() - t0) * ADD_TICKS_EVERY;
 }
 
 static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
@@ -793,7 +810,6 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 #endif
     u8 keep[VU1_IDX_TRIS * 4];  /* VU1_CLIP: the triangles vu1mapi draws (no corner near the near plane / guard band) */
     int nk = tris, entry = MAPI_CODE;
-    unsigned t_in = ticks();
 #ifndef VU1_IDX_EE_CLIP  /* fallback switch: the EE split below for every VU1_CLIP batch */
     if ((mode & VU1_CLIP) && MAPI_HDR + 3 * nv + tris <= CLIPI_MAX) {
         /* vu1clip.vsm's indexed entry reads the batch as vu1mapi does and clips the flagged triangles on VU1 */
@@ -803,6 +819,7 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
     } else
 #endif
     if (mode & VU1_CLIP) {
+        unsigned t_in = ticks();
         /* the EE's conservative version of the programs' CLIP test (view z < near, |view x| > z x guard band...):
          * flagged triangles go to vu1clip.vsm as lists written into the chain, the others to vu1mapi with a triangle
          * stream of their own (inline). vu1mapi still drops (ADC) any triangle with a flagged corner. */
@@ -872,10 +889,14 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
                  const void *idx, const float *org, float st_k)
 {
+    vu1_stats.add_idx_n++;
+    if (++add_calls % ADD_TICKS_EVERY) {
+        add_idx(t, cull, mode, tris, nv, pos, st, col, idx, org, st_k);
+        return;
+    }
     unsigned t0 = ticks();
     add_idx(t, cull, mode, tris, nv, pos, st, col, idx, org, st_k);
-    vu1_stats.add_idx_ticks += ticks() - t0;
-    vu1_stats.add_idx_n++;
+    vu1_stats.add_idx_ticks += (ticks() - t0) * ADD_TICKS_EVERY;
 }
 
 /* textured skin light (vu1_skin_light): colour = amb + sun x max(n . L, 0), 0x80 = 1.0 */
