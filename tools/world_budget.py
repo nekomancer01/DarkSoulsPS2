@@ -39,6 +39,7 @@ ARENA_KB = 10240
 FILL_PCT = 92        # mapstream.c MS_FILL_PCT
 WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
+STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", WORLD_SLOTS))  # world.c WORLD_STRUCT_WHOLE
 RELIEF_POOL = os.environ.get("WORLD_RELIEF_POOL", "0") == "1"  # world.c WORLD_RELIEF_POOL
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -86,8 +87,11 @@ def structural(gen):
             first, cnt, load, keep = struct.unpack_from("<IHBB", b, lbase + 8 * (lr[2 * blk] + l))
             load |= (1 << blk) if blk else 0
             keep |= load
-            v = sorted(((ent[i][0] if (load >> i & 1) or not LITE_DIET else ent[i][0] - ent[i][1])
-                        for i in ent if keep >> i & 1), reverse=True)[:WORLD_SLOTS]
+            on = [i for i in ent if keep >> i & 1]
+            lean_of = {i: ent[i][0] - ent[i][1] if LITE_DIET else ent[i][0] for i in on}
+            whole = sorted((i for i in on if (load >> i & 1) or not LITE_DIET), key=lambda i: -ent[i][0])
+            v = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
+                       reverse=True)[:WORLD_SLOTS]
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     misc = (max((e[2] for e in ent.values()), default=0) if RELIEF_POOL else 0) + max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)

@@ -74,6 +74,12 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * blocks (they drain in WORLD_DRAIN frames), then turns one off (room_for); it never clears a map item. The visual
  * room left is a constant tools/world_budget.py computes the same way (gen/world_budget.json "structural_kb"). */
 #define WORLD_MISC_EXTRA (640u << 10)
+/* wanted blocks the structural pool counts whole per link (the rest lean): 3 = every link's worst case (one Burg_w
+ * triangle loads w, b and p: 4484 KB, visual 2.1-3.1 MB of the ISO's 8640 KB arena); fewer = a smaller pool, the rare
+ * link with more spills its last lite set into the item pages (logged, world_stats.pool_spills) */
+#ifndef WORLD_STRUCT_WHOLE
+#define WORLD_STRUCT_WHOLE WORLD_SLOTS
+#endif
 /* the relief in the misc pool too (sized by the largest bump.bin). Off: the relief takes item room only where no map
  * item is wanted (mapstream_alloc_soft, as before): with it in, the Burg's visual room was 2112 KB of an 8640 KB arena
  * (structural 4544 KB for the link that loads three Burg blocks at once, misc 1984 KB; ISO 2026-11-08) */
@@ -367,9 +373,22 @@ unsigned world_struct_bytes(void)
         for (unsigned l = 0; l < lrange[2 * b + 1]; l++) {
             const WorldLink *k = links + lrange[2 * b] + l;
             unsigned load = k->load | (b ? 1u << b : 0), keep = k->keep | load, v[WORLD_MAX], n = 0, sum = 0;
+            unsigned lean_v[WORLD_MAX], whole = 0;
             for (int i = 1; i < nblk; i++)
-                if (rt[i].open && (keep >> i & 1))
-                    v[n++] = (load >> i & 1) || !WORLD_LITE_DIET ? rt[i].total : rt[i].total - tab_bytes(&rt[i]);
+                if (rt[i].open && (keep >> i & 1)) {
+                    lean_v[n] = WORLD_LITE_DIET ? rt[i].total - tab_bytes(&rt[i]) : rt[i].total;
+                    v[n] = (load >> i & 1) || !WORLD_LITE_DIET ? rt[i].total : lean_v[n];
+                    n++;
+                }
+            for (unsigned a = 0; a < n; a++)  /* wanted beyond WORLD_STRUCT_WHOLE (smallest first) count lean */
+                whole += v[a] != lean_v[a];
+            while (whole > WORLD_STRUCT_WHOLE) {
+                unsigned m = ~0u;
+                for (unsigned a = 0; a < n; a++)
+                    if (v[a] != lean_v[a] && (m == ~0u || v[a] < v[m]))
+                        m = a;
+                v[m] = lean_v[m], whole--;
+            }
             for (unsigned s = 0; s < WORLD_SLOTS && s < n; s++) {  /* the WORLD_SLOTS largest */
                 unsigned m = s;
                 for (unsigned j = s + 1; j < n; j++)
