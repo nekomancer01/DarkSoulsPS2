@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdlib.h>
@@ -8,6 +9,7 @@
 #include "vu1.h"
 #include "map.h"
 #include "vmath.h"
+#include "mapstream.h"
 #ifdef VU1_CHECK
 #include <stdio.h>
 #endif
@@ -58,8 +60,13 @@ struct Model {
      * hold st (textured) and which colours */
     const TexEntry *te;
     int nte;
-    void *sk_block;  /* the one allocation the batch table, the packets and the windows live in */
-    unsigned char *sk_next;  /* skin_step: where the next batch's packet goes */
+    void *sk_block;  /* the batch table, the windows and the page table (heap) */
+    /* the packets, in pages of up to MDL_SKIN_PAGE bytes (sk_page[i], sk_psz[i] bytes; a page from the near-cell
+     * arena when the heap had no hole: mapstream_owns) */
+    unsigned char **sk_page;
+    unsigned *sk_psz;
+    int sk_npg, sk_pg;  /* pages; skin_step: the page the next batch's packet goes in */
+    unsigned sk_off;    /* skin_step: where in it */
     int sk_has_ms;   /* the model has metal / specular streams */
     /* spec: the batch has metal / specular (vu1skin2 TexSpec); t0: its first triangle; win: its bone window; pkt /
      * bytes: its VIF packet, streams in it: pa / pb = bone A / B position * 4096, 4 * palette slot (s16x4); n = normal
@@ -99,7 +106,31 @@ static short fx12(float v)
  * bones each (FLVER mesh bone tables, all 171 chr/ FLVERs), so a window usually spans whole meshes and consecutive
  * windows share the spine / root bones. fill = 0: count batches, windows and uploads only, and add up the batches'
  * packet bytes (vu1_skin_packet, ms = the model has metal / specular) in plan_bytes. */
-static unsigned plan_bytes;
+/* Skin packets go in pages, not one block (default on; make DEFS=-DMDL_SKIN_PAGE=0 = one block for all packets, the
+ * old way). The Taurus Demon's 1.65 MB block found no heap run with 4.8 MB free in pieces (largest 1.4 MB; c2250
+ * "model.bin did not load" x7 on the ISO Burg route, 2026-11-08). Fixed-size pages are the RenderWare free-list /
+ * Sony shell MemoryPool idea (sdk-ref rwplcore.h RwFreeList, sdk303 extralibs/Shell/Core/shellMemory.c): any freed
+ * page fits the next type's page, so loading and unloading types no longer leaves holes too small for the next one.
+ * 64 KB = mapstream.c's page (a page from the arena fits any free arena page); a packet is <= 24 triangles (~3.5 KB),
+ * so a page wastes at most one packet's room. */
+#ifndef MDL_SKIN_PAGE
+#define MDL_SKIN_PAGE (64u << 10)
+#endif
+#define SKIN_MAX_PG 256
+static unsigned plan_bytes, plan_pg[SKIN_MAX_PG], plan_npg, plan_over;
+static inline unsigned skin_page_cap(void) { return MDL_SKIN_PAGE ? MDL_SKIN_PAGE : ~0u; }
+/* plan_pg / plan_npg: one more packet of b bytes, in build order */
+static void plan_packet(unsigned b)
+{
+    if (!plan_npg || plan_pg[plan_npg - 1] + b > skin_page_cap()) {
+        if (plan_npg == SKIN_MAX_PG) {  /* the page table is full: skin_alloc refuses the model */
+            plan_over = 1;
+            return;
+        }
+        plan_pg[plan_npg++] = 0;
+    }
+    plan_pg[plan_npg - 1] += b;
+}
 static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
 {
     const Header *hdr = m->hdr;
@@ -163,8 +194,11 @@ static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
                 }
                 nt++, t++;
             }
-            if (!fill)
-                plan_bytes += vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < m->nte, ms, NULL);
+            if (!fill) {
+                unsigned pb = vu1_skin_packet(NULL, nt, gr->tex >= 0 && gr->tex < m->nte, ms, NULL);
+                plan_bytes += pb;
+                plan_packet(pb);
+            }
             if (fill) {
                 m->sk_batch[b].group = g, m->sk_batch[b].tris = nt, m->sk_batch[b].t0 = t0;
                 m->sk_batch[b].win = windowed ? w : -1, m->sk_batch[b].spec = 0;
@@ -180,6 +214,18 @@ static void skin_plan(Model *m, int fill, int ms, int *nb, int *nw, int *nid)
     *nb = b, *nw = windowed ? w + 1 : 0, *nid = id;
 }
 
+static void skin_free_pages(Model *m)
+{
+    for (int i = 0; i < m->sk_npg; i++) {
+        if (mapstream_owns(m->sk_page[i]))
+            mapstream_free(m->sk_page[i], m->sk_psz[i]);
+        else
+            free(m->sk_page[i]);
+        m->sk_page[i] = NULL;
+    }
+    m->sk_npg = 0;
+}
+
 static int skin_alloc(Model *m)
 {
     const Header *hdr = m->hdr;
@@ -190,21 +236,45 @@ static int skin_alloc(Model *m)
 #ifdef SPEC_TEST  /* debug (make EE_DBGINFOFLAGS='-DSPEC_TEST=0.85,0.8'): metal m, specular s on every vertex */
     ms = 1;
 #endif
-    plan_bytes = 0;
+    plan_bytes = 0, plan_npg = 0, plan_over = 0;
     skin_plan(m, 0, ms, &n, &nw, &nid);
-    /* one block for all of them (streamed enemy types load / unload all the time: six blocks per type fragmented the
-     * heap until a model no longer fit with 2 MB free, 2026-11-01) */
-    /* the packets, each the size of its batch (plan_bytes), packed in build order by skin_step */
-    unsigned tab = (n * sizeof *m->sk_batch + 15) & ~15u, pkts = plan_bytes;
+    if (plan_over)
+        return 0;  /* more than SKIN_MAX_PG pages (16 MB of packets: no model comes near) */
+    /* the batch table, windows and page table in one small block; the packets in their pages (skin_page_cap), packed
+     * in build order by skin_step */
+    unsigned tab = (n * sizeof *m->sk_batch + 15) & ~15u;
     unsigned wsz = nw ? (nw * 4 + 2 * nid + 15) & ~15u : 0;
-    unsigned total = tab + pkts + wsz;
-    unsigned char *q = memalign(64, total ? total : 64);
+    unsigned ptab = (plan_npg * (sizeof(void *) + sizeof(unsigned)) + 15) & ~15u;
+    unsigned char *q = memalign(64, tab + wsz + ptab ? tab + wsz + ptab : 64);
     m->sk_block = q;
     if (!q)
         return 0;
-    memset(q, 0, total);  /* stream padding is read by VIF as NOPs */
+    memset(q, 0, tab + wsz + ptab);
     m->sk_batch = (void *)q, q += tab;
-    m->sk_next = q, q += pkts;
+    unsigned char *wq = q;
+    q += wsz;
+    m->sk_page = (void *)q, m->sk_psz = (unsigned *)(m->sk_page + plan_npg);
+    m->sk_npg = plan_npg, m->sk_pg = 0, m->sk_off = 0;
+    for (unsigned i = 0; i < plan_npg; i++) {
+        unsigned sz = plan_pg[i];
+        void *pg = memalign(64, sz);
+        if (!pg && mapstream_heap_release(sz + 1024))  /* pages the streamer borrowed from the heap go back first */
+            pg = memalign(64, sz);
+        if (!pg && mapstream_ready()) {  /* no heap hole of a page: the near-cell arena (clears cells for it) */
+            static const float none[3];
+            if ((pg = mapstream_alloc(sz, none)))
+                printf("model: skin page %u of %u (%u KB) from the near-cell arena\n", i, plan_npg, sz >> 10);
+        }
+        if (!pg) {
+            m->sk_npg = i;
+            skin_free_pages(m);
+            free(m->sk_block), m->sk_block = NULL;
+            return 0;
+        }
+        memset(pg, 0, sz);  /* stream padding is read by VIF as NOPs */
+        m->sk_page[i] = pg, m->sk_psz[i] = sz;
+    }
+    q = wq;
     m->sk_has_ms = ms;
     m->nwin = nw;
     if (nw) {
@@ -245,9 +315,12 @@ static int skin_step(Model *m, unsigned budget)
         {
             struct SkBatch *sb = &m->sk_batch[b];
             void *s[5];
-            sb->pkt = m->sk_next;
+            unsigned need = vu1_skin_packet(NULL, nt, textured, m->sk_has_ms, NULL);
+            if (m->sk_off + need > m->sk_psz[m->sk_pg])  /* the same cut as plan_packet */
+                m->sk_pg++, m->sk_off = 0;
+            sb->pkt = m->sk_page[m->sk_pg] + m->sk_off;
             sb->bytes = vu1_skin_packet(sb->pkt, nt, textured, m->sk_has_ms, s);
-            m->sk_next += sb->bytes;
+            m->sk_off += sb->bytes;
             sb->pa = s[0], sb->pb = s[1], sb->n = s[2], sb->ms = s[3], sb->st = s[4];
             short (*pa)[4] = sb->pa, (*pb)[4] = sb->pb, (*nr)[4] = sb->n;
             unsigned char (*msq)[4] = sb->ms;
@@ -467,9 +540,11 @@ int mdl_compact(Model *m, unsigned blob_size)
 
 void mdl_strip(Model *m)
 {
+    if (m->sk_block)
+        skin_free_pages(m);
     free(m->sk_block), free(m->own);
     m->sk_block = NULL;
-    m->sk_batch = NULL, m->sk_next = NULL, m->own = NULL;
+    m->sk_batch = NULL, m->sk_page = NULL, m->sk_psz = NULL, m->own = NULL;
     m->nsk = 0, m->nanims = 0;
 }
 

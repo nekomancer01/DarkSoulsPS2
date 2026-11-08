@@ -40,6 +40,10 @@ int mapstream_ready(void);
 /* allocate the arena now (world builds, at boot: its size must not depend on which enemy types happen to be loaded) */
 int mapstream_arena(void);
 int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent to it) */
+/* Give pages the streamer borrowed from the heap (mapstream.c MS_BORROW) back, dropping their items, until about
+ * `bytes` more are free (each a 64 KB block); call when a heap allocation failed, then try it again. Returns the pages
+ * given back (0: none borrowed, or every one still read by a chain). */
+unsigned mapstream_heap_release(unsigned bytes);
 /* Memory another system leaves idle for a while (world.c: the full pool's tail behind a smaller block's streams) holds
  * near cells too. mapstream_reclaim takes it back: drops the cells in it and returns 1 once none is left (0: a read
  * into it is in flight, call again after mapstream_update); the caller still waits for the chains that drew them. */

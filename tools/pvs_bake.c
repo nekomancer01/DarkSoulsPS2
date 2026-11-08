@@ -111,6 +111,33 @@ static unsigned load_col(const char *p, int blk)
     float *hf = (float *)b;
     unsigned nv = h[2], nt = h[3], v0 = ncv, t0 = nct;
     float org[3] = {hf[4], hf[5], hf[6]}, sc = hf[7];
+    if (h[1] == 2) {  /* DCOL v2 (tools/export_collision.py write_v2): fragments; triangles back at their v1 numbers */
+        unsigned nfrag = h[14];
+        const uint16_t *pat = (const uint16_t *)(b + h[18]), *gid = (const uint16_t *)(b + h[20]);
+        cv = realloc(cv, (ncv + nv) * sizeof *cv), ct = realloc(ct, (nct + nt) * sizeof *ct);
+        unsigned vi = v0;
+        for (unsigned fi = 0; fi < nfrag; fi++) {
+            const unsigned char *fr = b + h[13] + 32 * fi;
+            const int16_t *lo = (const int16_t *)fr;
+            uint16_t ntri = *(const uint16_t *)(fr + 12), nvert = *(const uint16_t *)(fr + 14);
+            uint32_t tri0 = *(const uint32_t *)(fr + 16), data = *(const uint32_t *)(fr + 20);
+            const uint16_t *vs = (const uint16_t *)(b + data);
+            const unsigned char *ts = b + data + ((nvert * 6u + 3) & ~3u);
+            for (unsigned i = 0; i < nvert; i++)
+                for (int k = 0; k < 3; k++)
+                    cv[vi + i][k] = org[k] + (lo[k] + vs[i * 3 + k]) * sc;
+            for (unsigned i = 0; i < ntri; i++) {
+                CTri *t = &ct[t0 + gid[tri0 + i]];
+                for (int k = 0; k < 3; k++)
+                    t->v[k] = vi + ts[i * 4 + k];
+                t->hf = (uint8_t)(pat[ts[i * 4 + 3]] & 0xff), t->blk = (uint8_t)blk, t->dg = 0xFF, t->pad = 0;
+            }
+            vi += nvert;
+        }
+        ncv = vi, nct += nt;
+        free(b);
+        return t0;
+    }
     const short *vs = (const short *)(b + h[13]);
     const struct { uint16_t v[3]; uint8_t hf, mat; } *ts = (const void *)(b + h[14]);
     cv = realloc(cv, (ncv + nv) * sizeof *cv), ct = realloc(ct, (nct + nt) * sizeof *ct);

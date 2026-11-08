@@ -97,6 +97,9 @@
  * cell has a horizon) are wanted only within MS_R_HZN and kept to MS_R_HZN_KEEP; beyond, the resident horizon is
  * drawn. That leaves the reader the near detail: ~1000 small coarse items in view out to 260 m, a seek each, were the
  * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
+/* (2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m freed ~0.55 MB of pinned coarse cells
+ * at the Burg spots of Ame's report, but the horizon grew 62 KB per block and the room went down with it: ~0.3 MB net
+ * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
 #define MS_R_HZN 64.0f
 #define MS_R_HZN_KEEP 72.0f
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
@@ -268,6 +271,49 @@ static unsigned reserve_extra, pool_max = MS_POOL;
  * mapstream_alloc block) */
 static unsigned *pcls, *pcost, *pitem;
 
+/* ---- pages borrowed from the heap (MS_BORROW) ----
+ * The arena's size is fixed at boot, but the heap's free RAM is not idle: at the Taurus Demon on the ISO Burg route
+ * (2026-11-08) the heap had 5.9 MB free (largest run 1.4 MB) while near and coarse cells found no arena room (plan
+ * ~6.7 MB of items against ~3.7 MB of arena left by two lite sets and the relief). Map items are at most a page and
+ * any free page fits any read group, so the streamer borrows single 64 KB heap blocks as extra item pages while the
+ * heap keeps MS_BORROW_FLOOR free, and gives them back (dropping their items, never one a chain may still read) when
+ * it falls below that, or at once when a heap allocation needs the room (mapstream_heap_release, the way re3's
+ * CMemoryHeap::Malloc calls CStreaming::MakeSpaceFor before it fails: sdk-ref re3 src/rw/MemoryHeap.cpp). A page
+ * fits a hole of the fragmented heap, so free RAM in pieces too small for an enemy model still holds map data.
+ * Extra pages get page numbers npages.. npages + MS_XMAX - 1 in the granule map; an absent one is marked used.
+ * Default on; make DEFS=-DMS_BORROW=0 = the old fixed arena. */
+#ifndef MS_BORROW
+#define MS_BORROW 1
+#endif
+#define MS_XMAX 96                          /* pages that may be borrowed (6 MB) */
+/* heap kept free: AGENTS.md's 1.5 MB in the heaviest spot + one Burg enemy type's load (model.bin falls back to the
+ * heap, then its skin pages and compact copy; ~1.2 MB, world.c WORLD_HEAP_MODELS) */
+#ifndef MS_BORROW_FLOOR
+#define MS_BORROW_FLOOR (2816u << 10)
+#endif
+#define MS_BORROW_HYST (256u << 10)         /* borrow only above floor + this (no borrow / give back each frame) */
+static unsigned char *xpage[MS_XMAX];
+static unsigned nx;  /* borrowed pages now */
+static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
+static inline unsigned ntot(void) { return npages + MS_XMAX; }
+static inline unsigned char *g_ptr(unsigned g)
+{
+    unsigned p = g / MS_GPP;
+    return (p < npages ? arena + (size_t)p * MS_PAGE : xpage[p - npages]) + (g % MS_GPP) * MS_GRAN;
+}
+static unsigned g_of(const void *ptr)
+{
+    const unsigned char *q = ptr;
+    if (q >= arena && q < arena + arena_size)
+        return (unsigned)(q - arena) / MS_GRAN;
+    for (unsigned i = 0; i < MS_XMAX; i++)
+        if (xpage[i] && q >= xpage[i] && q < xpage[i] + MS_PAGE)
+            return (npages + i) * MS_GPP + (unsigned)(q - xpage[i]) / MS_GRAN;
+    return ~0u;  /* not ours (a caller bug) */
+}
+/* the item pages: those below ilim(), then the borrowed ones (absent ones are marked full) */
+#define FOR_IPAGES(p) for (unsigned p##_i = 0, p; p##_i < ilim() + MS_XMAX && (p = p##_i < ilim() ? p##_i : npages + p##_i - ilim(), 1); p##_i++)
+
 static inline int g_used(unsigned g) { return gmap[g >> 5] >> (g & 31) & 1; }
 static void g_mark(unsigned g0, unsigned n, int on)
 {
@@ -287,7 +333,7 @@ static void *g_alloc(unsigned n)
     if (!ng || ng > MS_GPP)
         return NULL;
     for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = 0; p < ilim(); p++) {
+        FOR_IPAGES(p) {
             if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
                 continue;
             unsigned run = 0, g0 = p * MS_GPP;
@@ -295,7 +341,7 @@ static void *g_alloc(unsigned n)
                 run = g_used(g) ? 0 : run + 1;
                 if (run == ng) {
                     g_mark(g + 1 - ng, ng, 1);
-                    return arena + (size_t)(g + 1 - ng) * MS_GRAN;
+                    return g_ptr(g + 1 - ng);
                 }
             }
         }
@@ -317,7 +363,7 @@ static void *g_alloc_top(unsigned n, unsigned top)
 }
 static void g_free(void *ptr, unsigned n)
 {
-    unsigned g0 = (unsigned)((unsigned char *)ptr - arena) / MS_GRAN;
+    unsigned g0 = g_of(ptr);
     g_mark(g0, (n + MS_GRAN - 1) / MS_GRAN, 0);
 }
 
@@ -344,10 +390,11 @@ static int ensure_arena(void)
     arena = sz ? memalign(MS_PAGE, sz) : NULL;
     if (arena) {
         npages = sz / MS_PAGE;
-        gmap = calloc((npages * MS_GPP + 31) / 32, 4);
-        pfree = malloc(npages * sizeof *pfree);
-        pcls = malloc(npages * sizeof *pcls), pcost = malloc(npages * sizeof *pcost);
-        pitem = malloc(npages * sizeof *pitem);
+        unsigned nt = ntot();  /* + the borrowed pages' slots */
+        gmap = calloc((nt * MS_GPP + 31) / 32, 4);
+        pfree = malloc(nt * sizeof *pfree);
+        pcls = malloc(nt * sizeof *pcls), pcost = malloc(nt * sizeof *pcost);
+        pitem = malloc(nt * sizeof *pitem);
         if (!gmap || !pfree || !pcls || !pcost || !pitem) {
             free(arena), free(gmap), free(pfree), free(pcls), free(pcost), free(pitem);
             pcls = pcost = pitem = NULL;
@@ -355,6 +402,8 @@ static int ensure_arena(void)
         } else {
             for (unsigned p = 0; p < npages; p++)
                 pfree[p] = MS_GPP;
+            for (unsigned p = npages; p < ntot(); p++)  /* not borrowed: full */
+                pfree[p] = 0, memset(&gmap[p * MS_GPP / 32], 0xff, MS_GPP / 8);
             arena_size = sz;
             ipages = npages > 2 * (MS_OTHER / MS_PAGE) ? npages - MS_OTHER / MS_PAGE : npages / 2;
         }
@@ -651,9 +700,9 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
     unsigned lim = ng_need ? ilim() : npages;  /* a read's window lies where items may go */
     if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
         return 0;
-    memset(pcls, 0, npages * sizeof *pcls);
-    memset(pcost, 0, npages * sizeof *pcost);
-    memset(pitem, 0, npages * sizeof *pitem);
+    memset(pcls, 0, ntot() * sizeof *pcls);
+    memset(pcost, 0, ntot() * sizeof *pcost);
+    memset(pitem, 0, ntot() * sizeof *pitem);
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
         for (unsigned id = 0; id < it_n(m); id++) {
@@ -662,7 +711,7 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
                 continue;
             int c = grp_cls(m, id);
             unsigned u = grp_used(m, id), n = grp_bytes(m, a, e);
-            unsigned g0 = (unsigned)((unsigned char *)m->buf[a] - arena) / MS_GRAN, ng = (n + MS_GRAN - 1) / MS_GRAN;
+            unsigned g0 = g_of(m->buf[a]), ng = (n + MS_GRAN - 1) / MS_GRAN;
             int ok = c < below && !grp_chain(m, id);
             unsigned age = frame - u > 1000 ? 1000 : frame - u;  /* cost: bytes, older groups cheaper */
             for (unsigned p = g0 / MS_GPP; p <= (g0 + ng - 1) / MS_GPP; p++) {
@@ -681,7 +730,7 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
     /* a page is clearable when its used granules are all clearable groups; for one group of ng_need granules, also
      * when its free granules and those of its clearable groups add up to that (the pinned and drawn groups of mixed
      * pages stay; whether the hole is contiguous shows when the group is placed) */
-    for (unsigned p = 0; p < npages; p++) {
+    for (unsigned p = 0; p < ntot(); p++) {
         if (pitem[p] != MS_GPP - pfree[p])
             pcls[p] |= 0x200;
         if (need == 1 && (pcls[p] & 0x200) && pitem[p] && pfree[p] + pitem[p] >= ng_need)
@@ -705,20 +754,27 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
         if (score < bestc)
             bestc = score, best = (int)p;
     }
+    for (unsigned p = npages; need == 1 && ng_need && p < ntot(); p++) {  /* a read: borrowed pages too */
+        if (!xpage[p - npages] || (pcls[p] & 0x200))
+            continue;
+        unsigned long long score = (unsigned long long)(pcls[p] & 0x4ff) << 40 | pcost[p];
+        if (score < bestc)
+            bestc = score, best = (int)p;
+    }
     if (best < 0) {
         if (need == 1 && below < nowin)
             nowin = below;
         return 0;
     }
-    unsigned w0 = best * MS_PAGE, w1 = (best + need) * MS_PAGE;
+    unsigned w0 = best * MS_GPP, w1 = (best + need) * MS_GPP;  /* granules */
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
             if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
                 continue;
-            unsigned o = (unsigned)((unsigned char *)m->buf[a] - arena);
-            if (o < w1 && o + grp_bytes(m, a, e) > w0 && grp_cls(m, id) < below && !grp_chain(m, id)) {
+            unsigned o = g_of(m->buf[a]);
+            if (o < w1 && o + (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN > w0 && grp_cls(m, id) < below && !grp_chain(m, id)) {
                 if (kb)
                     *kb += grp_bytes(m, a, e) >> 10;
                 hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
@@ -727,6 +783,99 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
         }
     }
     return 1;
+}
+
+/* ---- borrowed pages: give back, borrow (MS_BORROW, comment at xpage) ---- */
+/* Give back the borrowed page whose items can all go now (loaded groups no chain reads: no read in flight, no old
+ * defrag copy), the emptiest first. 1 when a page went back to the heap. */
+static int x_release(void)
+{
+    unsigned ok[MS_XMAX];
+    if (!nx)
+        return 0;
+    memset(ok, 0, sizeof ok);
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                continue;
+            unsigned g0 = g_of(m->buf[a]);
+            if (g0 / MS_GPP < npages || g0 == ~0u || grp_chain(m, id))
+                continue;
+            ok[g0 / MS_GPP - npages] += (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN;
+        }
+    }
+    int best = -1;
+    for (unsigned i = 0; i < MS_XMAX; i++) {
+        unsigned p = npages + i;
+        if (xpage[i] && ok[i] == MS_GPP - pfree[p] && (best < 0 || pfree[p] > pfree[npages + best]))
+            best = (int)i;
+    }
+    if (best < 0)
+        return 0;
+    unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                continue;
+            unsigned g0 = g_of(m->buf[a]);
+            if (g0 >= w0 && g0 < w1) {
+                xstat_drop_kb += grp_bytes(m, a, e) >> 10;
+                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
+                drop(k, id);
+            }
+        }
+    }
+    if (pfree[p] != MS_GPP)  /* cannot happen (ok[] counted every used granule) */
+        return 0;
+    pfree[p] = 0;
+    memset(&gmap[w0 / 32], 0xff, MS_GPP / 8);
+    free(xpage[best]), xpage[best] = NULL, nx--, xstat_back++;
+    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
+    return 1;
+}
+
+/* Once per frame: borrow a page while the item pages are (nearly) full and the heap has room over the floor; give
+ * one back while the heap is under it */
+static void x_update(void)
+{
+    if (!MS_BORROW || !arena)
+        return;
+    unsigned hf = heap_free();
+    if (nx && hf < MS_BORROW_FLOOR) {  /* up to 4 pages a frame: back over the floor within a few frames */
+        for (int i = 0; i < 4 && hf < MS_BORROW_FLOOR && x_release(); i++)
+            hf = heap_free();
+        return;
+    }
+    unsigned fr = 0;
+    FOR_IPAGES(p)
+        fr += pfree[p];
+    if (nx >= MS_XMAX || fr >= 2 * MS_GPP || hf < MS_BORROW_FLOOR + MS_BORROW_HYST + MS_PAGE)
+        return;
+    unsigned i = 0;
+    while (xpage[i])
+        i++;
+    if (!(xpage[i] = memalign(MS_GRAN, MS_PAGE)))
+        return;
+    unsigned p = npages + i;
+    memset(&gmap[p * MS_GPP / 32], 0, MS_GPP / 8);
+    pfree[p] = MS_GPP;
+    nx++, xstat_borrow++;
+    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
+    nowin = C_TOP + 2;  /* new room: windows may be found again */
+}
+
+unsigned mapstream_heap_release(unsigned bytes)
+{
+    unsigned n = 0, want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;
+    while (n < want && x_release())
+        n++;
+    if (n)
+        printf("mapstream: gave %u borrowed pages back to the heap for %u KB (%u left)\n", n, bytes >> 10, nx);
+    return n;
 }
 
 /* ---- moving items (MS_DEFRAG) ----
@@ -764,7 +913,7 @@ static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
     unsigned ng = (n + MS_GRAN - 1) / MS_GRAN, bp = ~0u, bg = 0;
     if (!ng || ng > MS_GPP)
         return NULL;
-    for (unsigned p = 0; p < ilim(); p++) {
+    FOR_IPAGES(p) {
         if ((p >= x0 && p < x1) || pfree[p] < ng || (bp != ~0u && pfree[p] >= pfree[bp]))
             continue;
         unsigned run = 0, g0 = p * MS_GPP;
@@ -779,7 +928,7 @@ static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
     if (bp == ~0u)
         return NULL;
     g_mark(bg, ng, 1);
-    return arena + (size_t)bg * MS_GRAN;
+    return g_ptr(bg);
 }
 
 /* Empty `need` whole pages below `lim` by moving their groups elsewhere: the window whose used granules are all
@@ -790,21 +939,21 @@ static int defrag(unsigned need, unsigned lim, unsigned max_kb)
     if (!MS_DEFRAG || !pitem || npend > MS_DEFRAG_PEND - 16 || need > lim)
         return 0;
     HITCH_BEGIN(d);
-    memset(pitem, 0, npages * sizeof *pitem);
+    memset(pitem, 0, ntot() * sizeof *pitem);
     for (int k = 0; k < MS_INST; k++) {
         MsInst *m = &ms[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
             if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
                 continue;
-            unsigned n = grp_bytes(m, a, e), g0 = (unsigned)((unsigned char *)m->buf[a] - arena) / MS_GRAN;
+            unsigned n = grp_bytes(m, a, e), g0 = g_of(m->buf[a]);
             unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
             if (g0 / MS_GPP == (g0 + ng - 1) / MS_GPP)
                 pitem[g0 / MS_GPP] += ng;
         }
     }
     unsigned fr = 0;
-    for (unsigned p = 0; p < ilim(); p++)
+    FOR_IPAGES(p)
         fr += pfree[p];
     int best = -1;
     unsigned bused = ~0u;
@@ -834,7 +983,7 @@ static int defrag(unsigned need, unsigned lim, unsigned max_kb)
                 if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
                     continue;
                 unsigned char *src = m->buf[a];
-                unsigned n = grp_bytes(m, a, e), g0 = (unsigned)(src - arena) / MS_GRAN, ng = (n + MS_GRAN - 1) / MS_GRAN;
+                unsigned n = grp_bytes(m, a, e), g0 = g_of(src), ng = (n + MS_GRAN - 1) / MS_GRAN;
                 if (g0 < w0 || g0 >= w1)
                     continue;
                 unsigned char *dst = npend < MS_DEFRAG_PEND ? g_alloc_ex(n, (unsigned)best, (unsigned)best + need) : NULL;
@@ -1018,12 +1167,12 @@ static int issue(void)
             }
             if (!room_fail++) {
                 unsigned fr = 0;
-                for (unsigned i = 0; i < npages; i++)
+                for (unsigned i = 0; i < ntot(); i++)
                     fr += pfree[i];
                 printf("mapstream: no room for item %d.%u (%u KB, class %d, %.0f m): nothing of a lower class to drop; "
-                       "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB\n", w.k, w.id, gb >> 10, w.cls,
-                       sqrtf(w.key), fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10, mapstream_stats.res_kb,
-                       mapstream_stats.tex_kb, mapstream_stats.other_kb);
+                       "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB, borrowed %u KB\n", w.k, w.id,
+                       gb >> 10, w.cls, sqrtf(w.key), fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
+                       mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
             }
             mapstream_stats.room_fails++;
             if (nblk == MS_BLOCKED)
@@ -1115,7 +1264,8 @@ static void plan_(const float *pos)
     qsort(want, nw, sizeof *want, w_cmp);
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
     unsigned other = mapstream_stats.other_kb << 10, over = other > MS_OTHER ? other - MS_OTHER : 0;
-    unsigned cap = ipages * MS_PAGE > over ? (ipages * MS_PAGE - over) / 100 * MS_FILL_PCT : 0, sum = 0;
+    unsigned room = (ipages + nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
+    unsigned cap = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, sum = 0;
     pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
         if (ms[k].cmark)
@@ -1184,6 +1334,36 @@ static void plan_(const float *pos)
                    "landed %u KB, cancelled %u KB; moved %u groups %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
                    kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
                    defrag_moves, defrag_kb);
+            /* the pinned coarse level by box distance of its cell (0-16-32-48-64 m, beyond), the backdrop and sky
+             * apart, and what of it the horizon could stand for (MS_RES_LOD): sizing the pin radius (2026-11-08) */
+            unsigned band[6] = {0}, lod[6] = {0}, far = 0, sky = 0;
+            for (unsigned i = 0; i < nw; i++) {
+                const MsInst *m = &ms[want[i].k];
+                unsigned id = want[i].id;
+                if (want[i].cls != C_PIN0 || id < m->ncell)
+                    continue;
+                unsigned tag = m->rit[id - m->ncell].tag, kb = it_bytes(m, id);
+                if (tag & MS_RES_SKY) {
+                    sky += kb;
+                    continue;
+                }
+                if (tag & MS_RES_FAR) {
+                    far += kb;
+                    continue;
+                }
+                unsigned c = MS_RES_CELL(tag);
+                if (c >= m->ncell)
+                    continue;
+                float d = sqrtf(box_d2(&m->tab[c], pos));
+                int b = d < 16 ? 0 : d < 32 ? 1 : d < 48 ? 2 : d < 64 ? 3 : d < 96 ? 4 : 5;
+                band[b] += kb;
+                if (tag & MS_RES_LOD)
+                    lod[b] += kb;
+            }
+            printf("mapstream: pin0 by distance KB (of it horizon-covered): 0-16 %u (%u) 16-32 %u (%u) 32-48 %u (%u) "
+                   "48-64 %u (%u) 64-96 %u (%u) more %u (%u); backdrop %u sky %u\n", band[0] >> 10, lod[0] >> 10,
+                   band[1] >> 10, lod[1] >> 10, band[2] >> 10, lod[2] >> 10, band[3] >> 10, lod[3] >> 10, band[4] >> 10,
+                   lod[4] >> 10, band[5] >> 10, lod[5] >> 10, far >> 10, sky >> 10);
         }
     }
     pt[np_++] = ticks();
@@ -1236,6 +1416,7 @@ void mapstream_update(const float pos[3])
         return;
     }
     frame++;
+    x_update();
     {
         unsigned now = ticks(), dt = now - clk_last + clk_frac;  /* 294912 Count ticks per ms */
         clk_last = now;
@@ -1283,6 +1464,8 @@ void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb
         run = pfree[p] == MS_GPP ? run + 1 : 0;
         best = run > best ? run : best;
     }
+    for (unsigned p = npages; pfree && p < ntot(); p++)  /* borrowed pages: free room, never part of a run */
+        fr += pfree[p];
     *free_kb = fr * MS_GRAN >> 10, *run_kb = best * (MS_PAGE >> 10), *other_kb = mapstream_stats.other_kb;
 }
 

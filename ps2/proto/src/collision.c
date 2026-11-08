@@ -16,6 +16,27 @@ typedef struct {
     unsigned verts_off, tris_off, cells_off, list_off, nlist;
 } Header;
 typedef struct { unsigned short v[3]; unsigned char hit_filter, material; } Tri;
+/* DCOL v2 (tools/export_collision.py write_v2, COL_V1=1 exports v1): fragments of at most 255 vertices / triangles
+ * with u16 vertices from the fragment's corner, 4-byte triangles (u8 a, b, c, pattern), a grid per fragment with u8
+ * lists, a top grid of fragments, and per triangle slot its v1 number (gid): what ColHit.tri, events, draw groups,
+ * fog rows and block links use. ~17 % smaller (Burg west 835 -> 693 KB), the same quantized vertices. */
+typedef struct {
+    char magic[4];
+    unsigned version, nverts, ntris;
+    float origin[3], scale;
+    float x0, z0, cell;
+    unsigned gw, gd;
+    unsigned frag_off, nfrag, top_off, toplist_off, ntoplist, pat_off, npat, gid_off;
+    float ymin, ymax, fcell;
+} Header2;
+typedef struct {
+    short lo[3], hi[3];
+    unsigned short ntri, nvert;
+    unsigned tri0, data;
+    unsigned char gw, gd;
+    unsigned short pad, pad2[2];
+} Frag;
+_Static_assert(sizeof(Header2) == 96 && sizeof(Frag) == 32, "DCOL v2");
 
 #define MAX_PUSH_ITERS 4
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
@@ -32,9 +53,19 @@ typedef struct {
     float inv_cell;
     unsigned char *off;  /* EMEVD "Activate Hit" (src/event.c): bit per triangle, 1 = switched off; NULL = all on */
     float lo[3], hi[3];  /* bounds of the block's vertices (map space), for the per-block early-out */
+    /* v2: h2 is the same blob as hdr (the fields up to gd are shared; verts .. list are v1 only) */
+    const Header2 *h2;
+    const Frag *frag;
+    const unsigned *top;
+    const unsigned short *toplist, *pat, *gid;
+    unsigned short *fstamp, fcur;
+    float inv_top, inv_fcell;
+    unsigned ntris;
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
 static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
+static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit);
+static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit);
 
 #define TRI_OFF(c, ti) ((c)->off && (c)->off[(ti) >> 3] >> ((ti) & 7) & 1)
 int col_contacts;
@@ -52,13 +83,42 @@ int col_load(int b, const void *blob)
         return 0;
     col_unload(b);
     const Header *h = blob;
-    if (!h || memcmp(h->magic, "DCOL", 4) || h->version != 1)
+    if (!h || memcmp(h->magic, "DCOL", 4) || (h->version != 1 && h->version != 2))
         return 0;
     const unsigned char *p = blob;
     ColBlock *c = &blk[b];
     c->stamp = calloc(h->ntris, sizeof *c->stamp);
     if (!c->stamp)
         return 0;
+    c->ntris = h->ntris;
+    if (h->version == 2) {
+        const Header2 *h2 = blob;
+        c->fstamp = calloc(h2->nfrag ? h2->nfrag : 1, sizeof *c->fstamp);
+        if (!c->fstamp) {
+            free(c->stamp);
+            c->stamp = NULL;
+            return 0;
+        }
+        c->h2 = h2;
+        c->frag = (const Frag *)(p + h2->frag_off);
+        c->top = (const unsigned *)(p + h2->top_off);
+        c->toplist = (const unsigned short *)(p + h2->toplist_off);
+        c->pat = (const unsigned short *)(p + h2->pat_off);
+        c->gid = (const unsigned short *)(p + h2->gid_off);
+        c->inv_top = 1.0f / h2->cell, c->inv_fcell = 1.0f / h2->fcell;
+        c->cur_stamp = c->fcur = 0;
+        float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+        for (unsigned i = 0; i < h2->nfrag; i++)
+            for (int k = 0; k < 3; k++) {
+                float a = h->origin[k] + c->frag[i].lo[k] * h->scale, z = h->origin[k] + c->frag[i].hi[k] * h->scale;
+                lo[k] = a < lo[k] ? a : lo[k];
+                hi[k] = z > hi[k] ? z : hi[k];
+            }
+        for (int k = 0; k < 3; k++)
+            c->lo[k] = lo[k] - 0.01f, c->hi[k] = hi[k] + 0.01f;
+        c->hdr = h;
+        return 1;
+    }
     c->verts = (const short *)(p + h->verts_off);
     c->tris = (const Tri *)(p + h->tris_off);
     c->cells = (const unsigned *)(p + h->cells_off);
@@ -85,6 +145,7 @@ void col_unload(int b)
     if (b < 0 || b >= COL_BLOCKS)
         return;
     free(blk[b].stamp);
+    free(blk[b].fstamp);
     free(blk[b].off);
     memset(&blk[b], 0, sizeof blk[b]);
 }
@@ -96,11 +157,11 @@ int col_init(const void *blob)
 
 int col_tris_enable(int b, unsigned first, unsigned count, int on)
 {
-    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || first + count > blk[b].hdr->ntris)
+    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || first + count > blk[b].ntris)
         return 0;
     ColBlock *c = &blk[b];
     if (!c->off && !on) {
-        c->off = calloc((c->hdr->ntris + 7) >> 3, 1);
+        c->off = calloc((c->ntris + 7) >> 3, 1);
         if (!c->off)
             return 0;
     }
@@ -117,7 +178,7 @@ int col_block_tris(int b) { return b >= 0 && b < COL_BLOCKS && blk[b].hdr ? (int
 static void next_stamp(ColBlock *c)
 {
     if (++c->cur_stamp == 0) {
-        memset(c->stamp, 0, c->hdr->ntris * sizeof *c->stamp);
+        memset(c->stamp, 0, c->ntris * sizeof *c->stamp);
         c->cur_stamp = 1;
     }
 }
@@ -159,6 +220,8 @@ static inline int cell_index(const ColBlock *c, float x, float z, int *ix, int *
 
 static int floor1(const ColBlock *cb, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
 {
+    if (cb->h2)
+        return floor2(cb, x, z, y_top, y_bottom, mask, hit);
     int ix, iz;
     if (!cb->hdr || !cell_index(cb, x, z, &ix, &iz))
         return 0;
@@ -349,88 +412,421 @@ static inline void capsule_axis(const float pos[3], float r, float height, float
         *p0y = *p1y = (*p0y + *p1y) * 0.5f;
 }
 
+/* One triangle against the capsule axis p0-p1 (radius r): walls only (floors / flat ceilings do not push sideways);
+ * moves pos (and p0, p1, the box lo / hi in x / z) out horizontally. 1 when it moved */
+static int push_tri(float pos[3], float *p0, float *p1, float *lo, float *hi, float r, const float *a, const float *b,
+                    const float *c)
+{
+    int out = 0;
+    for (int i = 0; i < 3 && !out; i++)
+        out = (a[i] < lo[i] && b[i] < lo[i] && c[i] < lo[i]) || (a[i] > hi[i] && b[i] > hi[i] && c[i] > hi[i]);
+    if (out)
+        return 0;
+    float n[3];
+    tri_normal(a, b, c, n);
+    if (n[1] >= COL_WALKABLE_NY || -n[1] >= COL_WALKABLE_NY)
+        return 0; /* floors (col_floor) and flat ceilings do not push sideways */
+    float cs[3], ct[3];
+    float d2 = closest_seg_tri(p0, p1, a, b, c, cs, ct);
+    if (d2 >= r * r)
+        return 0;
+    float dx = cs[0] - ct[0], dz = cs[2] - ct[2], dist = sqrtf(d2), hl = sqrtf(dx * dx + dz * dz);
+    if (hl < 1e-4f) {
+        /* segment touches/crosses the triangle: push along the horizontal normal, towards the side the capsule axis
+         * is on */
+        float side[3];
+        sub3(p0, a, side);
+        float sgn = dot3(side, n) >= 0 ? 1 : -1;
+        dx = n[0] * sgn, dz = n[2] * sgn;
+        hl = sqrtf(dx * dx + dz * dz);
+        if (hl < 1e-4f)
+            return 0;
+        dist = 0;
+    }
+    /* horizontal move that brings the separation back to r (the vertical part stays) */
+    float dy = dist > 0 ? (cs[1] - ct[1]) : 0, need = sqrtf(r * r - dy * dy) - hl * (dist > 0);
+    if (need <= 0)
+        return 0;
+    pos[0] += dx / hl * (need + 1e-3f);
+    pos[2] += dz / hl * (need + 1e-3f);
+    col_contacts++;
+    p0[0] = p1[0] = pos[0];
+    p0[2] = p1[2] = pos[2];
+    lo[0] = pos[0] - r, hi[0] = pos[0] + r, lo[2] = pos[2] - r, hi[2] = pos[2] + r;
+    return 1;
+}
+
+static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, float *hi, float r, unsigned mask,
+                 int *contacts);
+static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float *p1, const float *lo, const float *hi,
+                  float r, unsigned mask);
+
 static int push1(ColBlock *cb, float pos[3], float r, float height, float step, unsigned mask)
 {
     const Header *hdr = cb->hdr;
     if (!hdr)
         return 0;
-    const unsigned *cells = cb->cells;
-    const unsigned short *list = cb->list;
-    const Tri *tris = cb->tris;
-    unsigned short *stamp = cb->stamp;
     int contacts = 0;
     for (int iter = 0; iter < MAX_PUSH_ITERS; iter++) {
         float p0[3] = {pos[0], 0, pos[2]}, p1[3] = {pos[0], 0, pos[2]};
         capsule_axis(pos, r, height, step, &p0[1], &p1[1]);
-        int ix0, iz0, ix1, iz1;
-        cell_index(cb, pos[0] - r, pos[2] - r, &ix0, &iz0);
-        cell_index(cb, pos[0] + r, pos[2] + r, &ix1, &iz1);
-        if (ix0 < 0) ix0 = 0;
-        if (iz0 < 0) iz0 = 0;
-        if (ix1 >= (int)hdr->gw) ix1 = hdr->gw - 1;
-        if (iz1 >= (int)hdr->gd) iz1 = hdr->gd - 1;
         float lo[3] = {pos[0] - r, p0[1] - r, pos[2] - r}, hi[3] = {pos[0] + r, p1[1] + r, pos[2] + r};
         int moved = 0;
-        next_stamp(cb);
-        unsigned short cur_stamp = cb->cur_stamp;
-        for (int iz = iz0; iz <= iz1; iz++)
-            for (int ix = ix0; ix <= ix1; ix++) {
-                unsigned k = iz * hdr->gw + ix;
-                for (unsigned j = cells[k]; j < cells[k + 1]; j++) {
-                    unsigned ti = list[j];
-                    if (stamp[ti] == cur_stamp)
-                        continue;
-                    stamp[ti] = cur_stamp;
-                    const Tri *t = &tris[ti];
-                    if (!(mask >> t->hit_filter & 1) || TRI_OFF(cb, ti))
-                        continue;
-                    float a[3], b[3], c[3];
-                    tri_verts(cb, t, a, b, c);
-                    int out = 0;
-                    for (int i = 0; i < 3 && !out; i++)
-                        out = (a[i] < lo[i] && b[i] < lo[i] && c[i] < lo[i]) ||
-                              (a[i] > hi[i] && b[i] > hi[i] && c[i] > hi[i]);
-                    if (out)
-                        continue;
-                    float n[3];
-                    tri_normal(a, b, c, n);
-                    if (n[1] >= COL_WALKABLE_NY || -n[1] >= COL_WALKABLE_NY)
-                        continue; /* floors (col_floor) and flat ceilings do not push sideways */
-                    float cs[3], ct[3];
-                    float d2 = closest_seg_tri(p0, p1, a, b, c, cs, ct);
-                    if (d2 >= r * r)
-                        continue;
-                    float dx = cs[0] - ct[0], dz = cs[2] - ct[2], dist = sqrtf(d2), hl = sqrtf(dx * dx + dz * dz);
-                    if (hl < 1e-4f) {
-                        /* segment touches/crosses the triangle: push along the horizontal normal, towards the side
-                         * the capsule axis is on */
-                        float side[3];
-                        sub3(p0, a, side);
-                        float sgn = dot3(side, n) >= 0 ? 1 : -1;
-                        dx = n[0] * sgn, dz = n[2] * sgn;
-                        hl = sqrtf(dx * dx + dz * dz);
-                        if (hl < 1e-4f)
+        if (cb->h2) {
+            /* free standing (no triangle touches the capsule where it is: the order cannot matter) is the common
+             * case: one cheap pass in fragment order finds it; only a contact pays for v1's order (push2) */
+            if (touch2(cb, pos, p0, p1, lo, hi, r, mask))
+                moved = push2(cb, pos, p0, p1, lo, hi, r, mask, &contacts);
+        } else {
+            const unsigned *cells = cb->cells;
+            const unsigned short *list = cb->list;
+            const Tri *tris = cb->tris;
+            unsigned short *stamp = cb->stamp;
+            int ix0, iz0, ix1, iz1;
+            cell_index(cb, pos[0] - r, pos[2] - r, &ix0, &iz0);
+            cell_index(cb, pos[0] + r, pos[2] + r, &ix1, &iz1);
+            if (ix0 < 0) ix0 = 0;
+            if (iz0 < 0) iz0 = 0;
+            if (ix1 >= (int)hdr->gw) ix1 = hdr->gw - 1;
+            if (iz1 >= (int)hdr->gd) iz1 = hdr->gd - 1;
+            next_stamp(cb);
+            unsigned short cur_stamp = cb->cur_stamp;
+            for (int iz = iz0; iz <= iz1; iz++)
+                for (int ix = ix0; ix <= ix1; ix++) {
+                    unsigned k = iz * hdr->gw + ix;
+                    for (unsigned j = cells[k]; j < cells[k + 1]; j++) {
+                        unsigned ti = list[j];
+                        if (stamp[ti] == cur_stamp)
                             continue;
-                        dist = 0;
+                        stamp[ti] = cur_stamp;
+                        const Tri *t = &tris[ti];
+                        if (!(mask >> t->hit_filter & 1) || TRI_OFF(cb, ti))
+                            continue;
+                        float a[3], b[3], c[3];
+                        tri_verts(cb, t, a, b, c);
+                        if (push_tri(pos, p0, p1, lo, hi, r, a, b, c))
+                            contacts++, moved = 1;
                     }
-                    /* horizontal move that brings the separation back to r (the vertical part stays) */
-                    float dy = dist > 0 ? (cs[1] - ct[1]) : 0, need = sqrtf(r * r - dy * dy) - hl * (dist > 0);
-                    if (need <= 0)
-                        continue;
-                    pos[0] += dx / hl * (need + 1e-3f);
-                    pos[2] += dz / hl * (need + 1e-3f);
-                    contacts++;
-                    col_contacts++;
-                    moved = 1;
-                    p0[0] = p1[0] = pos[0];
-                    p0[2] = p1[2] = pos[2];
-                    lo[0] = pos[0] - r, hi[0] = pos[0] + r, lo[2] = pos[2] - r, hi[2] = pos[2] + r;
                 }
-            }
+        }
         if (!moved)
             break;
     }
     return contacts;
+}
+
+/* ---- DCOL v2 (fragments) ---- */
+static inline void vert2(const ColBlock *c, const Frag *f, unsigned i, float *o)
+{
+    const Header *h = c->hdr;
+    const unsigned short *v = (const unsigned short *)((const unsigned char *)c->hdr + f->data) + i * 3;
+    o[0] = h->origin[0] + (f->lo[0] + v[0]) * h->scale;
+    o[1] = h->origin[1] + (f->lo[1] + v[1]) * h->scale;
+    o[2] = h->origin[2] + (f->lo[2] + v[2]) * h->scale;
+}
+/* fragment f's triangles (4 bytes each, after its 4-aligned vertices), cell starts and lists */
+static inline const unsigned char *ftris(const ColBlock *c, const Frag *f)
+{
+    return (const unsigned char *)c->hdr + f->data + ((f->nvert * 6u + 3) & ~3u);
+}
+static inline const unsigned short *fcells(const ColBlock *c, const Frag *f) { return (const unsigned short *)(ftris(c, f) + f->ntri * 4u); }
+static inline const unsigned char *flist(const ColBlock *c, const Frag *f) { return (const unsigned char *)(fcells(c, f) + f->gw * f->gd + 1); }
+static inline void tri2(const ColBlock *c, const Frag *f, const unsigned char *t, float *a, float *b, float *cc)
+{
+    vert2(c, f, t[0], a);
+    vert2(c, f, t[1], b);
+    vert2(c, f, t[2], cc);
+}
+/* the fragment grid's origin (lo - 0.02 m, export_collision.write_v2) */
+static inline void forigin(const ColBlock *c, const Frag *f, float *x0, float *z0)
+{
+    const Header *h = c->hdr;
+    *x0 = h->origin[0] + f->lo[0] * h->scale - 0.02f;
+    *z0 = h->origin[2] + f->lo[2] * h->scale - 0.02f;
+}
+static inline int fbox_hits(const ColBlock *c, const Frag *f, const float lo[3], const float hi[3])
+{
+    const Header *h = c->hdr;
+    for (int k = 0; k < 3; k++)
+        if (lo[k] > h->origin[k] + f->hi[k] * h->scale + 0.02f || hi[k] < h->origin[k] + f->lo[k] * h->scale - 0.02f)
+            return 0;
+    return 1;
+}
+static void next_fstamp(ColBlock *c)
+{
+    if (++c->fcur == 0) {
+        memset(c->fstamp, 0, c->h2->nfrag * sizeof *c->fstamp);
+        c->fcur = 1;
+    }
+}
+
+/* Calls fn(c, f, triangle bytes, gid, user) for every triangle of the fragments overlapping box [lo, hi] whose cells
+ * overlap it, each triangle once per call (stamp by gid); fn returns nonzero to stop */
+typedef int (*TriFn)(ColBlock *c, const Frag *f, const unsigned char *t, unsigned gid, void *u);
+static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned mask, TriFn fn, void *u)
+{
+    const Header2 *h2 = c->h2;
+    int tx0 = (int)floorf((lo[0] - h2->x0) * c->inv_top), tz0 = (int)floorf((lo[2] - h2->z0) * c->inv_top);
+    int tx1 = (int)floorf((hi[0] - h2->x0) * c->inv_top), tz1 = (int)floorf((hi[2] - h2->z0) * c->inv_top);
+    tx0 = tx0 < 0 ? 0 : tx0, tz0 = tz0 < 0 ? 0 : tz0;
+    tx1 = tx1 >= (int)h2->gw ? (int)h2->gw - 1 : tx1, tz1 = tz1 >= (int)h2->gd ? (int)h2->gd - 1 : tz1;
+    if (tx0 > tx1 || tz0 > tz1)
+        return 0;
+    next_stamp(c);
+    next_fstamp(c);
+    const unsigned short cur = c->cur_stamp, fcur = c->fcur;
+    for (int tz = tz0; tz <= tz1; tz++)
+        for (int tx = tx0; tx <= tx1; tx++) {
+            unsigned k = tz * h2->gw + tx;
+            for (unsigned j = c->top[k]; j < c->top[k + 1]; j++) {
+                unsigned fi = c->toplist[j];
+                if (c->fstamp[fi] == fcur)
+                    continue;
+                c->fstamp[fi] = fcur;
+                const Frag *f = &c->frag[fi];
+                if (!fbox_hits(c, f, lo, hi))
+                    continue;
+                float fx0, fz0;
+                forigin(c, f, &fx0, &fz0);
+                int ix0 = (int)floorf((lo[0] - fx0) * c->inv_fcell), iz0 = (int)floorf((lo[2] - fz0) * c->inv_fcell);
+                int ix1 = (int)floorf((hi[0] - fx0) * c->inv_fcell), iz1 = (int)floorf((hi[2] - fz0) * c->inv_fcell);
+                ix0 = ix0 < 0 ? 0 : ix0, iz0 = iz0 < 0 ? 0 : iz0;
+                ix1 = ix1 >= f->gw ? f->gw - 1 : ix1, iz1 = iz1 >= f->gd ? f->gd - 1 : iz1;
+                const unsigned char *tr = ftris(c, f), *ls = flist(c, f);
+                const unsigned short *cs = fcells(c, f);
+                for (int iz = iz0; iz <= iz1; iz++)
+                    for (int ix = ix0; ix <= ix1; ix++) {
+                        unsigned ck = iz * f->gw + ix;
+                        for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
+                            unsigned lt = ls[q], g = c->gid[f->tri0 + lt];
+                            if (c->stamp[g] == cur)
+                                continue;
+                            c->stamp[g] = cur;
+                            const unsigned char *t = tr + lt * 4;
+                            if (!(mask >> (c->pat[t[3]] & 0xff) & 1) || TRI_OFF(c, g))
+                                continue;
+                            if (fn(c, f, t, g, u))
+                                return 1;
+                        }
+                    }
+            }
+        }
+    return 0;
+}
+
+/* col_floor on a v2 block: the fragments of the point's top cell, the point's cell in each */
+static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
+{
+    const Header2 *h2 = cb->h2;
+    int tx = (int)floorf((x - h2->x0) * cb->inv_top), tz = (int)floorf((z - h2->z0) * cb->inv_top);
+    if (tx < 0 || tz < 0 || tx >= (int)h2->gw || tz >= (int)h2->gd)
+        return 0;
+    unsigned k = tz * h2->gw + tx;
+    int found = -1;
+    float best = 0;
+    const Frag *bf = NULL;
+    const unsigned char *bt = NULL;
+    for (unsigned j = cb->top[k]; j < cb->top[k + 1]; j++) {
+        const Frag *f = &cb->frag[cb->toplist[j]];
+        float fx0, fz0;
+        forigin(cb, f, &fx0, &fz0);
+        int ix = (int)floorf((x - fx0) * cb->inv_fcell), iz = (int)floorf((z - fz0) * cb->inv_fcell);
+        if (ix < 0 || iz < 0 || ix >= f->gw || iz >= f->gd)
+            continue;
+        const unsigned char *tr = ftris(cb, f), *ls = flist(cb, f);
+        const unsigned short *cs = fcells(cb, f);
+        unsigned ck = iz * f->gw + ix;
+        for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
+            const unsigned char *t = tr + ls[q] * 4;
+            unsigned g = cb->gid[f->tri0 + ls[q]];
+            if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
+                continue;
+            float a[3], b[3], c[3];
+            tri2(cb, f, t, a, b, c);
+            float d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+            if (d > -1e-6f && d < 1e-6f)
+                continue;
+            float l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / d;
+            float l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
+            float l3 = 1 - l1 - l2;
+            if (l1 < 0 || l2 < 0 || l3 < 0)
+                continue;
+            float h = l1 * a[1] + l2 * b[1] + l3 * c[1];
+            /* ties: the lower v1 number wins, as v1's cell order (ascending triangle numbers) did */
+            if (h > y_top || h < y_bottom || (found >= 0 && (h < best || (h == best && (int)g > found))))
+                continue;
+            best = h, found = (int)g, bf = f, bt = t;
+        }
+    }
+    if (found < 0)
+        return 0;
+    if (hit) {
+        float a[3], b[3], c[3];
+        tri2(cb, bf, bt, a, b, c);
+        tri_normal(a, b, c, hit->n);
+        if (hit->n[1] < 0)
+            hit->n[0] = -hit->n[0], hit->n[1] = -hit->n[1], hit->n[2] = -hit->n[2];
+        hit->y = best, hit->t = 0, hit->tri = found, hit->block = (int)(cb - blk);
+        hit->hit_filter = cb->pat[bt[3]] & 0xff, hit->material = cb->pat[bt[3]] >> 8;
+    }
+    return 1;
+}
+
+/* push1 on a v2 block. The pushes move the capsule one triangle after the other, so their order decides where it ends
+ * in a corner (a v2 walker wedged in the Taurus tower's ground floor doorway that v1 slid through, ISO 2026-11-08):
+ * the triangles go in v1's order. v1 visits the 2 m cells the start box covers (rows of z, then x) and in each cell
+ * its triangles by number, each once; v2 gathers the triangles of the fragments over those cells' rectangle and sorts
+ * them by (first such cell whose rectangle they overlap, as export_collision.build tests it, then v1 number). */
+#define PUSH2_MAX 512
+#ifndef PUSH2_CELLS
+#define PUSH2_CELLS 1
+#endif
+typedef struct { unsigned key; float a[3], b[3], c[3]; } PushCand;
+typedef struct { PushCand *c; int n; int ix0, iz0, nx, nz; float x0, z0, cell, blo[3], bhi[3]; } PushGather;
+#define PUSH2_REACH 1.2f  /* m: three contacts of the player capsule (r 0.4) */
+/* export_collision._tri_overlaps_rect, in float: the EE has no double unit (doubles here took the logic of a
+ * frame to 0.8-1.4 s on the ISO); a triangle exactly on a cell edge may land one cell over, a rare order swap */
+static int tri_rect(const float p[3][2], float x0, float z0, float x1, float z1)
+{
+    float mnx = p[0][0], mxx = p[0][0], mnz = p[0][1], mxz = p[0][1];
+    for (int i = 1; i < 3; i++) {
+        mnx = p[i][0] < mnx ? p[i][0] : mnx, mxx = p[i][0] > mxx ? p[i][0] : mxx;
+        mnz = p[i][1] < mnz ? p[i][1] : mnz, mxz = p[i][1] > mxz ? p[i][1] : mxz;
+    }
+    if (mxx < x0 || mnx > x1 || mxz < z0 || mnz > z1)
+        return 0;
+    const float rc[4][2] = {{x0, z0}, {x1, z0}, {x1, z1}, {x0, z1}};
+    for (int i = 0; i < 3; i++) {
+        const float *a = p[i], *b = p[(i + 1) % 3], *o = p[(i + 2) % 3];
+        float nx = b[1] - a[1], nz = a[0] - b[0], side = nx * (o[0] - a[0]) + nz * (o[1] - a[1]);
+        if (side == 0)
+            continue;
+        int all = 1;
+        for (int k = 0; k < 4 && all; k++)
+            all = (nx * (rc[k][0] - a[0]) + nz * (rc[k][1] - a[1])) * side < 0;
+        if (all)
+            return 0;
+    }
+    return 1;
+}
+static int gather_cb(ColBlock *cb, const Frag *f, const unsigned char *t, unsigned g, void *u)
+{
+    PushGather *q = u;
+    if (q->n >= PUSH2_MAX)
+        return 1;
+    PushCand *c = &q->c[q->n];
+    tri2(cb, f, t, c->a, c->b, c->c);
+    const float *v[3] = {c->a, c->b, c->c};
+    /* a triangle PUSH2_REACH beyond the start box in x / z (or outside it in y) never pushes in this pass (push_tri
+     * tests the box the pushes moved: ~r per contact): dropped before the cell test, the rest keeps its order */
+    for (int k = 0; k < 3; k++)
+        if ((v[0][k] < q->blo[k] && v[1][k] < q->blo[k] && v[2][k] < q->blo[k]) ||
+            (v[0][k] > q->bhi[k] && v[1][k] > q->bhi[k] && v[2][k] > q->bhi[k]))
+            return 0;
+    if (!PUSH2_CELLS || (q->nx == 1 && q->nz == 1)) {  /* by number (one cell, most pushes: v1's order exactly) */
+        c->key = g, q->n++;
+        return 0;
+    }
+    const float p[3][2] = {{c->a[0], c->a[2]}, {c->b[0], c->b[2]}, {c->c[0], c->c[2]}};
+    const float eps = 0.02f;
+    for (int iz = 0; iz < q->nz; iz++)
+        for (int ix = 0; ix < q->nx; ix++) {
+            float cx = q->x0 + (q->ix0 + ix) * q->cell, cz = q->z0 + (q->iz0 + iz) * q->cell;
+            if (tri_rect(p, cx - eps, cz - eps, cx + q->cell + eps, cz + q->cell + eps)) {
+                c->key = (unsigned)(iz * q->nx + ix) << 16 | g, q->n++;
+                return 0;
+            }
+        }
+    return 0;
+}
+/* any triangle of a v2 block pushes the capsule as it stands (push_tri on a copy; stops at the first) */
+typedef struct { float pos[3], p0[3], p1[3], lo[3], hi[3], r; } TouchQ;
+static int touch_cb(ColBlock *cb, const Frag *f, const unsigned char *t, unsigned g, void *u)
+{
+    (void)g;
+    TouchQ *q = u;
+    float a[3], b[3], c[3];
+    tri2(cb, f, t, a, b, c);
+    TouchQ k = *q;  /* push_tri moves its arguments */
+    return push_tri(k.pos, k.p0, k.p1, k.lo, k.hi, k.r, a, b, c);
+}
+static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float *p1, const float *lo, const float *hi,
+                  float r, unsigned mask)
+{
+    TouchQ q;
+    memcpy(q.pos, pos, 12), memcpy(q.p0, p0, 12), memcpy(q.p1, p1, 12), memcpy(q.lo, lo, 12), memcpy(q.hi, hi, 12);
+    q.r = r;
+    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q);
+    col_contacts = c0;  /* (push_tri counts the contact it found) */
+    return hit;
+}
+
+static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, float *hi, float r, unsigned mask,
+                 int *contacts)
+{
+    static PushCand cand[PUSH2_MAX];
+    const Header2 *h2 = cb->h2;
+    PushGather q = {cand, 0, 0, 0, 0, 0, h2->x0, h2->z0, h2->fcell,
+                    {lo[0] - PUSH2_REACH, lo[1], lo[2] - PUSH2_REACH}, {hi[0] + PUSH2_REACH, hi[1], hi[2] + PUSH2_REACH}};
+    q.ix0 = (int)floorf((lo[0] - h2->x0) * cb->inv_fcell), q.iz0 = (int)floorf((lo[2] - h2->z0) * cb->inv_fcell);
+    int ix1 = (int)floorf((hi[0] - h2->x0) * cb->inv_fcell), iz1 = (int)floorf((hi[2] - h2->z0) * cb->inv_fcell);
+    q.ix0 = q.ix0 < 0 ? 0 : q.ix0, q.iz0 = q.iz0 < 0 ? 0 : q.iz0;
+    if (ix1 < q.ix0 || iz1 < q.iz0)
+        return 0;
+    q.nx = ix1 - q.ix0 + 1, q.nz = iz1 - q.iz0 + 1;
+    /* the cells' rectangle (+ the export's 0.02 m) as the gather box; y as push1's box (a triangle outside it in y
+     * never pushes) */
+    /* only triangles within PUSH2_REACH can push: the cells' rectangle cut to that box */
+    float glo[3] = {h2->x0 + q.ix0 * h2->fcell - 0.03f, lo[1], h2->z0 + q.iz0 * h2->fcell - 0.03f};
+    float ghi[3] = {h2->x0 + (ix1 + 1) * h2->fcell + 0.03f, hi[1], h2->z0 + (iz1 + 1) * h2->fcell + 0.03f};
+    for (int k = 0; k < 3; k += 2)
+        glo[k] = glo[k] > q.blo[k] ? glo[k] : q.blo[k], ghi[k] = ghi[k] < q.bhi[k] ? ghi[k] : q.bhi[k];
+    each_tri2(cb, glo, ghi, mask, gather_cb, &q);
+    for (int i = 1; i < q.n; i++) {  /* insertion sort: a few dozen, mostly in order already */
+        PushCand x = cand[i];
+        int j = i;
+        while (j > 0 && cand[j - 1].key > x.key)
+            cand[j] = cand[j - 1], j--;
+        cand[j] = x;
+    }
+    int moved = 0;
+    for (int i = 0; i < q.n; i++) {
+        if (push_tri(pos, p0, p1, lo, hi, r, cand[i].a, cand[i].b, cand[i].c))
+            moved = 1, (*contacts)++;
+    }
+    return moved;
+}
+
+typedef struct { const float *from, *to; float best; int tri; const Frag *f; const unsigned char *t; } RayQ;
+static int ray_tri_cb(ColBlock *cb, const Frag *f, const unsigned char *t, unsigned g, void *u)
+{
+    RayQ *q = u;
+    float a[3], b[3], c[3], tt;
+    tri2(cb, f, t, a, b, c);
+    if (seg_tri(q->from, q->to, a, b, c, &tt) && (tt < q->best || (tt == q->best && (int)g < q->tri)))
+        q->best = tt, q->tri = (int)g, q->f = f, q->t = t;
+    return 0;
+}
+static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit)
+{
+    float lo[3], hi[3], d[3];
+    for (int k = 0; k < 3; k++)
+        lo[k] = from[k] < to[k] ? from[k] : to[k], hi[k] = from[k] < to[k] ? to[k] : from[k];
+    RayQ q = {from, to, 2, -1, NULL, NULL};
+    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q);
+    if (q.tri < 0)
+        return 0;
+    if (hit) {
+        float a[3], b[3], c[3];
+        sub3(to, from, d);
+        tri2(cb, q.f, q.t, a, b, c);
+        tri_normal(a, b, c, hit->n);
+        if (dot3(hit->n, d) > 0)
+            hit->n[0] = -hit->n[0], hit->n[1] = -hit->n[1], hit->n[2] = -hit->n[2];
+        hit->t = q.best, hit->y = from[1] + d[1] * q.best, hit->tri = q.tri, hit->block = (int)(cb - blk);
+        hit->hit_filter = cb->pat[q.t[3]] & 0xff, hit->material = cb->pat[q.t[3]] >> 8;
+    }
+    return 1;
 }
 
 int col_floor(float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit)
@@ -517,6 +913,8 @@ static int ray1(ColBlock *cb, const float from[3], const float to[3], unsigned m
     const Header *hdr = cb->hdr;
     if (!hdr)
         return 0;
+    if (cb->h2)
+        return ray2(cb, from, to, mask, hit);
     const unsigned *cells = cb->cells;
     const unsigned short *list = cb->list;
     const Tri *tris = cb->tris;
