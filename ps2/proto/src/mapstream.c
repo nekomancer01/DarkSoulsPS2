@@ -1371,7 +1371,10 @@ static int issue(void)
         /* MS_LEND: a lendable item goes to an idle pool page first, so the item pages stay for the near parts (in
          * the item pages first, coarse cells of classes above them took the room the near parts could not clear:
          * taurus near refusals 165 -> 876) */
-        int lo = gb <= MS_PAGE && lendable(w.cls) && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_SKY));
+        /* (never the sky or the far backdrop (MS_RES_FAR): dropped for a lite set they are read again from across the
+         * disc, ~180 of 260 far seeks on world_route were Firelink's backdrop re-read while in the Burg) */
+        int lo = gb <= MS_PAGE && lendable(w.cls) &&
+                 !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR)));
         int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
         void *p = lo && !nr ? g_alloc_lend(gb) : NULL;
         if (p)
