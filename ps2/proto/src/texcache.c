@@ -647,6 +647,14 @@ void tc_begin(float focal)
         }
 }
 
+/* a streamed mip 0 is asked for from MIP0_AHEAD x its switch distance on (Burg plan B9, TECH_DEBT texstream-5): asked
+ * only where drawn, it arrived a few frames after the switch and the texture sharpened on screen (the mip 1 -> mip 0
+ * step); asked ahead it is in by the time the camera crosses mip_d. ASSUMED 1.3 (~1-2 s at walking speed for the
+ * Burg's 5-10 m switch distances). make DEFS=-DMIP0_AHEAD=0: asked where drawn */
+#ifndef MIP0_AHEAD
+#define MIP0_AHEAD 1.3f
+#endif
+
 int tc_level(int tex, float d)
 {
     if (tex < 0 || tex >= MAX_TEX || !te[tex])
@@ -655,6 +663,8 @@ int tc_level(int tex, float d)
     if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f)
         return 2;  /* near level texels (half mip 0's) still >= 1 / MIP_K px */
 #endif
+    if (MIP0_AHEAD > 0 && d > mip_d[tex] && d < mip_d[tex] * MIP0_AHEAD && (te[tex]->pix[0] & TC_RES) && in_frame)
+        res_asked[tex][0] = frame + 1;  /* mip 1 drawn, mip 0 read ahead */
     return d > mip_d[tex];
 }
 
