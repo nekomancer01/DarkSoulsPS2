@@ -609,16 +609,19 @@ int main(int argc, char **argv)
         objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
 #endif
         vu1_kick();
+        HITCH_BEGIN(fx);
         fx_update(dt, eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
 #ifndef MAP_PANO_R
         fx_draw();
 #endif
+        HITCH_END(fx, HS_FX);
         bonfire_draw();  /* the bloodstain marker */
         debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
         t_char += ((cpu_ticks() - t1) / 294912.0f - t_char) * 0.1f;
 
         /* HUD: DSR's bars, quick slots, souls, YOU DIED (hud.c); Start menu (menu.c); Select: debug overlay */
         PROF_MARK(PROF_HUD);
+        HITCH_BEGIN(hud);
 #ifndef MAP_PANO_R
         hud_draw(&pl, dt);
 #endif
@@ -627,11 +630,14 @@ int main(int argc, char **argv)
         if (hud_debug) {
             const DebugHud dh = {cam_yaw, cam_pitch, cam_dist, cam_y, avg_dt, t_cull, t_char, t_wait, t_load, ram_free(),
                                  tris_drawn, vram_free, model_ok, map_ok, col_ok, enemies, breakables};
+            HITCH_BEGIN(dbg);
             debug_hud_draw(&dh, &pl, dt);
+            HITCH_END(dbg, HS_DBG);
         }
         menu_draw(&pl);
         loading_overlay(dt);  /* the fade-in from black after a loading screen */
         PROF_DRAW();
+        HITCH_END(hud, HS_HUD);
 
         PROF_MARK(PROF_VU1WAIT);
         hitch_acc[HS_CHR] += cpu_ticks() - t1;

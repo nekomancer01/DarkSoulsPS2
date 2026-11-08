@@ -149,6 +149,17 @@ def gs_dump(win, snaps, before, out, wait=20):
     return False
 
 
+def parse_kv(text):
+    """'k v k v ...' -> {k: float or str}"""
+    toks, d = text.split(), {}
+    for k, v in zip(toks[::2], toks[1::2]):
+        try:
+            d[k] = float(v)
+        except ValueError:
+            d[k] = v
+    return d
+
+
 def parse_shot_line(line):
     """'TEST shot <name> seq N frames .. fps .. ms_avg ..' -> dict"""
     m = re.search(r"TEST shot (\S+) (.*)", line)
@@ -329,6 +340,9 @@ def run(a):
                 d = parse_shot_line(line)
                 if d:
                     stats[d["name"]] = d
+                m = re.search(r"TEST passes (\S+) (.*)", line)
+                if m:  # budget passes of the shot (testscript.c pb_print; tools/budget.py checks them)
+                    stats.setdefault(m[1], {"name": m[1]})["passes"] = parse_kv(m[2])
             if log_error(line):
                 res["errors"].append("log: " + line.strip())
         for s in res["shots"]:
