@@ -920,8 +920,11 @@ static void miss_scan(const MapInst *m, int k, int ci, int hzf, int has_hz, int 
             continue;
         /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
          * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
+        /* a chunk the camera cannot see is not read (pvs.c), nor one the draw groups hide (drawgrp.c, mapstream.c
+         * MS_DG): neither is a hole. Counted as missing, a cell whose coarse chunks are hidden stand-ins drew its
+         * horizon inside HZN_R for good (Firelink's cell 47 seen from the Burg, 2026-11-08) */
         if (!res_base(m, order[j]) && !(fl & CHUNK_GRASS) &&
-            pvs_chunk(k, (unsigned)ci, order[j])) {  /* a chunk the camera cannot see is not read (pvs.c) */
+            pvs_chunk(k, (unsigned)ci, order[j]) && dg_shown(k, order[j])) {
             *miss = 1;
             if (hz_covers(fl))
                 *mcov = 1;
@@ -968,7 +971,7 @@ static void miss_items(const MapInst *m, int k, int ci, int hzf, int has_hz, con
             unsigned fl = m->chunks[j].flags;
             if (hzf && hz_covers(fl))
                 continue;
-            if (!(fl & CHUNK_GRASS) && pvs_chunk(k, (unsigned)ci, j)) {
+            if (!(fl & CHUNK_GRASS) && pvs_chunk(k, (unsigned)ci, j) && dg_shown(k, j)) {  /* (as miss_scan) */
                 *miss = 1;
                 if (hz_covers(fl))
                     *mcov = 1;
