@@ -189,8 +189,11 @@ static unsigned int cd_window = 4371;
  * FAR_LOG far seeks of each from -> to pair printed with their count every FAR_LOG_EVERY far seeks */
 #define FAR_LOG_PAIRS 24
 #define FAR_LOG_EVERY 64
-static struct { short a, b; unsigned short n; } far_pair[FAR_LOG_PAIRS];
+static struct { short a, b; char who; unsigned short n; } far_pair[FAR_LOG_PAIRS];
 static int far_npair;
+/* who reads next (set before each read): 'S' a stream's read-ahead, 'B' a bank load, 'E' an EE request past the
+ * cache (sync loads: block lite sets, packs), 'C' an EE background read through the page cache (map items) */
+static char cd_who = '?';
 static unsigned int far_total;
 static int df_file_at(unsigned int lsn)
 {
@@ -202,17 +205,17 @@ static int df_file_at(unsigned int lsn)
 static void far_note(unsigned int from, unsigned int to)
 {
     int a = df_file_at(from ? from - 1 : 0), b = df_file_at(to), k;
-    for (k = 0; k < far_npair && !(far_pair[k].a == a && far_pair[k].b == b); k++)
+    for (k = 0; k < far_npair && !(far_pair[k].a == a && far_pair[k].b == b && far_pair[k].who == cd_who); k++)
         ;
     if (k == far_npair && far_npair < FAR_LOG_PAIRS)
-        far_pair[k].a = a, far_pair[k].b = b, far_pair[k].n = 0, far_npair++;
+        far_pair[k].a = a, far_pair[k].b = b, far_pair[k].who = cd_who, far_pair[k].n = 0, far_npair++;
     if (k < far_npair)
         far_pair[k].n++;
     if (++far_total % FAR_LOG_EVERY)
         return;
-    printf("dsrsnd: far seeks %u:", far_total);
+    printf("dsrsnd: far seeks %u (since the last line, by reader):", far_total);
     for (k = 0; k < far_npair; k++)
-        printf(" %s>%s %u", far_pair[k].a >= 0 ? df_tab[far_pair[k].a].name : "?",
+        printf(" %c:%s>%s %u", far_pair[k].who, far_pair[k].a >= 0 ? df_tab[far_pair[k].a].name : "?",
                far_pair[k].b >= 0 ? df_tab[far_pair[k].b].name : "?", far_pair[k].n);
     printf("\n");
     far_npair = 0;
@@ -540,6 +543,7 @@ static int stream_ra_fill(Stream *s)
             n = s->size - s->rd_pos;
         else if (n > 2048)
             n -= (s->offset + s->rd_pos + n) & 2047;
+        cd_who = 'S';
         int r = df_read(s->fd, s->ra + w, n);
         if (r <= 0)
             return -1;
@@ -553,7 +557,7 @@ static int stream_ra_fill(Stream *s)
 static int stream_read(Stream *s, unsigned char *dst, unsigned int n)
 {
     if (!s->ra)
-        return df_read(s->fd, dst, n);
+        return cd_who = 'S', df_read(s->fd, dst, n);
     if (n > s->ra_len)
         n = s->ra_len;
     unsigned int a = STREAM_RA - s->ra_pos < n ? STREAM_RA - s->ra_pos : n;
@@ -643,6 +647,7 @@ static void load_step(void)
         return;
     unsigned char *b = stream_mem + SND_STREAMS * 2 * SND_STREAM_CHUNK_MAX;
     unsigned int n = load.size - load_pos > SND_LOAD_STEP ? SND_LOAD_STEP : load.size - load_pos;
+    cd_who = 'B';
     int r = df_read(load_fd, b, n);
     if (r != (int)n) {
         df_close(load_fd);
@@ -890,6 +895,7 @@ static void disc_page(DiscJob *j)
     unsigned char *p = dbuf[b] + DISC_SLACK + (ee & 15);
     cd_take();
     unsigned char *direct = NULL;
+    cd_who = cached ? 'C' : 'E';
     int got = cached ? pc_read(r->fd, r->offset + j->done, p, n, &direct)
                      : df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
     int pc_slot = pc_last;
