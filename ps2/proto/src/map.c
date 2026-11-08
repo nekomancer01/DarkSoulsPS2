@@ -67,10 +67,15 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
  * untextured level, loaded with the block. A cell beyond HZN_R (+- HZN_HYST) of the camera draws it in place of its
  * coarse level and kept opaque meshes (hz_covers), and so does a nearer cell whose coarse level is not in yet: a late
  * read shows a blurrier cell, not a hole. mapstream.c reads those chunks only within MS_R_HZN (64 m) of the player's
- * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 56 m (horizon.py judges its error from 54 m).
+ * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it (MS_R_HZN 48 m with HZN_R 40 below).
  * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
+/* 40 m (2026-11-08): at 56 m the coarse level the streamer pins out to MS_R_HZN (64 m) took 3.4-4.0 MB of the Burg's
+ * ~3.9 MB room with two blocks loaded; the horizon (hzn.bin unchanged, still judged from 54 m: ~1.35x its screen
+ * error at 40 m) now stands for 40-56 m. 3 runs each of Ame's report routes on the ISO: "no room" 40 -> 23 and
+ * 58 -> 30, pop-in and near cells drawn coarse unchanged (32 m helped one route, hurt the other). make
+ * DEFS='-DHZN_R=56.0f -DMS_R_HZN=64.0f': the old radii */
 #ifndef HZN_R
-#define HZN_R 56.0f
+#define HZN_R 40.0f
 #endif
 #define HZN_HYST 2.0f
 /* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque

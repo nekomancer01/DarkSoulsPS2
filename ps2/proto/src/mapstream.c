@@ -97,11 +97,14 @@
  * cell has a horizon) are wanted only within MS_R_HZN and kept to MS_R_HZN_KEEP; beyond, the resident horizon is
  * drawn. That leaves the reader the near detail: ~1000 small coarse items in view out to 260 m, a seek each, were the
  * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
-/* (2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m freed ~0.55 MB of pinned coarse cells
- * at the Burg spots of Ame's report, but the horizon grew 62 KB per block and the room went down with it: ~0.3 MB net
- * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
-#define MS_R_HZN 64.0f
-#define MS_R_HZN_KEEP 72.0f
+/* (2026-11-08: also judging the horizon from 38 m made hzn.bin 62 KB per block bigger: ~0.3 MB net; not kept. The
+ * "pin0 by distance" log line shows the bands.) */
+#ifndef MS_R_HZN
+#define MS_R_HZN 48.0f  /* map.c HZN_R 40 + its hysteresis and the camera (was 64 with HZN_R 56) */
+#endif
+#ifndef MS_R_HZN_KEEP
+#define MS_R_HZN_KEEP (MS_R_HZN + 8.0f)
+#endif
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
 #ifndef MS_STABLE
@@ -1498,6 +1501,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     (void)pos;  /* ranks come from the last plan */
     if (!mapstream_arena())
         return NULL;
+    pend_release();
     void *p = g_alloc_top(n, npages);
     unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
     /* clear a window: of items below the near class first, then of anything but the pinned level, last of anything
@@ -1511,6 +1515,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
          * items too (they read back; a frame or two of coarse level or hole beats no floor) */
         vu1_wait();
         chains_done = 1;
+        pend_release();  /* MS_DEFRAG's old copies: no chain reads them now (else their pages block every window) */
         nowin = C_TOP + 2;
         if (make_window(need, 0, C_TOP + 1, &kb))
             p = g_alloc_top(n, npages);
@@ -1545,6 +1550,7 @@ void *mapstream_alloc_soft(unsigned n)
 {
     if (!mapstream_arena())
         return NULL;
+    pend_release();
     void *p = g_alloc_top(n, npages);
     unsigned kb = 0;
     if (!p && make_window((n + MS_PAGE - 1) / MS_PAGE, 0, C_PREF, &kb))  /* only what no class wants */

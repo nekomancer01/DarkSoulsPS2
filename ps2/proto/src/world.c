@@ -79,7 +79,10 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * 2026-11-01: an arena created when only 3 types were loaded (spawn at the aqueduct) was 7.7 MB and two blocks'
  * types then ran out of RAM (world_cross.txt); 3.8 MB here gives the 5.5 MB of a bonfire boot wherever the player
  * starts: near cells >= 4.2 MB at the Firelink junction, heap outside the arena >= ~1.6 MB */
-#define WORLD_ENEMY_RESERVE (3800u << 10)
+/* 4096 (2026-11-08, was 3800): the Taurus Demon's skin block (1.65 MB) found no heap run in half the runs of the
+ * report2 route once the arena's contents moved (streamer defrag); the collision repack freed ~0.3 MB of the arena's
+ * lite sets, spent here */
+#define WORLD_ENEMY_RESERVE (4096u << 10)
 /* The player is held at the edge of a block whose collision has not loaded yet (world_hold) instead of walking or
  * falling into it: from cdrom0: the player walked off the Burg bonfire block's floor before the next block's lite set
  * was read, fell to the map's floor far below or out of the map and respawned elsewhere (user report 2026-11-04,

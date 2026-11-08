@@ -273,7 +273,10 @@ static void *arena_get(unsigned n)
 {
     static const float none[3];
     void *p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
-    return p ? p : memalign(128, n);  /* the cells in it are all being drawn: the heap after all */
+    if (!p)  /* the cells in it are all being drawn: the heap after all (a hole there can split the run a later
+              * model's skin block needs: log it) */
+        printf("enemy: model.bin buffer %u KB from the heap\n", n >> 10);
+    return p ? p : memalign(128, n);
 }
 static void arena_put(void *p, unsigned n)
 {
