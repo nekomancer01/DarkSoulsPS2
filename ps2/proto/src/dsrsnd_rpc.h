@@ -134,7 +134,8 @@ typedef struct {
     unsigned int lat_ms, lat_n, lat_max;   /* EE reads: submit to done, summed / count / longest (ms) */
     unsigned int cache_hits, cache_miss;   /* EE pages served from the IOP page cache / read from the drive into it */
     unsigned int cache_kb;                 /* the page cache's size (0: none) */
-    unsigned int pad[3];
+    unsigned int cache_direct;             /* of the cache's pages, those sent to the EE without a copy */
+    unsigned int pad[2];
 } SndDiscStat;  /* 96 bytes */
 
 typedef struct {

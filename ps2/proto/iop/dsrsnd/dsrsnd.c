@@ -234,7 +234,9 @@ static void cd_media(void)
         dstat.media = SNDM_DVD;
         cd_window = 14764;
         sceCdMmode(SCECdMmodeDvd);
-        if (sceCdReadDvdDualInfo(&dual, &l1) && dual && l1) {
+        /* (PCSX2's BIOS cdvdman, v2.20: the call returns without an answer, ok != 1; df_scan then looks for layer 1's
+         * volume descriptor where layer 0's volume ends) */
+        if (sceCdReadDvdDualInfo(&dual, &l1) == 1 && dual && l1) {
             dstat.media = SNDM_DVD9, dstat.layer1 = l1, cd_dual = 1;
             cd_window = 13360;
         }
@@ -243,6 +245,23 @@ static void cd_media(void)
            t, cd_dual ? "" : "\n");
     if (cd_dual)
         printf(", layer 1 from LSN %u\n", dstat.layer1);
+}
+
+/* a DVD whose drive did not say it has two layers: layer 1 starts where layer 0's volume ends, with a copy of the volume
+ * descriptor there (parallel track path; tools/iso9660.py writes one, and PCSX2 finds the break the same way). One read
+ * try: past the end of a single-layer disc it fails */
+static void cd_layer1_probe(void)
+{
+    if (dstat.media != SNDM_DVD || !df_volume)
+        return;
+    if (!sceCdRead(df_volume, 1, df_sec, &df_mode))
+        return;
+    sceCdSync(0);
+    if (sceCdGetError() || memcmp(df_sec, "\1CD001", 6))
+        return;
+    dstat.media = SNDM_DVD9, dstat.layer1 = df_volume, cd_dual = 1, cd_window = 13360;
+    cd_head = df_volume + 1;
+    printf("dsrsnd: media DVD-9, layer 1 from LSN %u (its volume descriptor)\n", df_volume);
 }
 
 static int df_upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
@@ -300,7 +319,10 @@ static void df_scan(void)
         return;
     }
     memcpy(&df_volume, df_sec + 80, 4);
-    const unsigned char *root = df_sec + 156;
+    unsigned char pvd_root[34];
+    memcpy(pvd_root, df_sec + 156, sizeof pvd_root);
+    cd_layer1_probe();  /* (reads into df_sec) */
+    const unsigned char *root = pvd_root;
     memcpy(&dirs[0].lsn, root + 2, 4);
     memcpy(&dirs[0].size, root + 10, 4);
     dirs[0].path[0] = 0;
@@ -691,7 +713,8 @@ static void disc_finish(DiscJob *j, int res)
 #define PC_KEEP_FREE (256 * 1024)
 static unsigned char *pc_mem;
 static unsigned int pc_lsn[PC_PAGES], pc_use[PC_PAGES], pc_clock;
-static int pc_n;
+static int pc_dma[PC_PAGES];  /* SIF DMA in flight straight from the page (pc_read direct): not reused until done */
+static int pc_n, pc_last;     /* pages; the page pc_block returned last */
 
 /* the page holding the ECC block from lsn (16-aligned), read on a miss; NULL on a read error */
 static const unsigned char *pc_block(unsigned int lsn)
@@ -701,6 +724,7 @@ static const unsigned char *pc_block(unsigned int lsn)
         if (pc_use[i] && pc_lsn[i] == lsn) {
             pc_use[i] = ++pc_clock;
             dstat.cache_hits++;
+            pc_last = i;
             return pc_mem + i * PC_PAGE;
         }
         if (pc_use[i] < pc_use[v])
@@ -711,18 +735,26 @@ static const unsigned char *pc_block(unsigned int lsn)
     unsigned int n = PC_SECS, end = dstat.layer1 && lsn < dstat.layer1 ? dstat.layer1 : lsn < df_volume ? df_volume : 0;
     if (end && lsn + n > end)
         n = end - lsn;
+    while (pc_dma[v] && sceSifDmaStat(pc_dma[v]) >= 0)  /* the EE is still being sent bytes of it */
+        DelayThread(100);
+    pc_dma[v] = 0;
     pc_use[v] = 0;
     if (cd_sectors(lsn, n, pc_mem + v * PC_PAGE) < 0)
         return NULL;
     pc_lsn[v] = lsn, pc_use[v] = ++pc_clock;
     dstat.cache_miss++;
+    pc_last = v;
     return pc_mem + v * PC_PAGE;
 }
 
-/* n bytes of file fd from off into p through the cache (the caller holds the drive): -1 on a read error */
-static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n)
+/* n bytes of file fd from off into p through the cache (the caller holds the drive): -1 on a read error. When they lie
+ * in one block at the same address mod 16 as p, *direct is set to them in the page and nothing is copied (the page is
+ * then sent to the EE straight from the cache: pc_dma); else *direct is NULL and p has them. A 32 KB copy costs the
+ * IOP ~1 ms: with every page copied the boot settle took ~1.8 s longer (PCSX2 smoke, 2026-11-08). */
+static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n, unsigned char **direct)
 {
     const DfFile *f = &df_tab[df_h[fd - DF_FD].file];
+    *direct = NULL;
     if (off >= f->size)
         return 0;
     if (n > f->size - off)
@@ -736,6 +768,11 @@ static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n)
         const unsigned char *pg = pc_block(blk);
         if (!pg)
             return left == n ? -1 : (int)(n - left);
+        if (c == n && !(((unsigned int)(pg + in) ^ (unsigned int)p) & 15)) {
+            *direct = (unsigned char *)pg + in;
+            dstat.cache_direct++;
+            return n;
+        }
         memcpy(p, pg + in, c);
         p += c, off += c, left -= c;
     }
@@ -775,8 +812,13 @@ static void disc_page(DiscJob *j)
     dbuf_dma[b] = 0;
     unsigned char *p = dbuf[b] + DISC_SLACK + (ee & 15);
     cd_take();
-    int got = cached ? pc_read(r->fd, r->offset + j->done, p, n) : df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
+    unsigned char *direct = NULL;
+    int got = cached ? pc_read(r->fd, r->offset + j->done, p, n, &direct)
+                     : df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
+    int pc_slot = pc_last;
     SignalSema(cd_sema);
+    if (direct)
+        p = direct;
     if (got <= 0) {
         disc_finish(j, j->done ? (int)j->done : got < 0 ? got : 0);
         return;
@@ -787,8 +829,13 @@ static void disc_page(DiscJob *j)
         memcpy(d->edge, p, h);
         d->nhead = h, d->ntail = 0;
     }
-    if (a < e)
-        dbuf_dma[b] = dma_send(p + (a - ee), a, e - a);
+    if (a < e) {
+        int id = dma_send(p + (a - ee), a, e - a);
+        if (direct)
+            pc_dma[pc_slot] = id;
+        else
+            dbuf_dma[b] = id;
+    }
     if (a <= e && ee + got > e) {  /* the tail: the last page (or a short read) */
         d->ntail = ee + got - e;
         memcpy(d->edge + d->nhead, p + (e - ee), d->ntail);

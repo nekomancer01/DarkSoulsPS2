@@ -308,10 +308,11 @@ static void pb_print(const char *name)
         const SndDiscStat *a = &pb_disc0;
         unsigned rn = d.lat_n - a->lat_n;
         printf(" media %u disc_kb %u seeks %u far_seeks %u layer_changes %u ee_reads %u wait_avg %u wait_max %u "
-               "stream_wait_max %u cache_kb %u cache_hits %u cache_miss %u drive_ms %u iop_free %u",
+               "stream_wait_max %u cache_kb %u cache_hits %u cache_miss %u cache_direct %u drive_ms %u iop_free %u",
                d.media, d.drive_kb - a->drive_kb, d.seeks - a->seeks, d.far_seeks - a->far_seeks,
                d.layer_changes - a->layer_changes, rn, rn ? (d.lat_ms - a->lat_ms) / rn : 0, d.lat_max, d.wait_max_ms,
-               d.cache_kb, d.cache_hits - a->cache_hits, d.cache_miss - a->cache_miss, d.drive_ms - a->drive_ms,
+               d.cache_kb, d.cache_hits - a->cache_hits, d.cache_miss - a->cache_miss,
+               d.cache_direct - a->cache_direct, d.drive_ms - a->drive_ms,
                d.iop_free >> 10);
     }
     printf("\n");
