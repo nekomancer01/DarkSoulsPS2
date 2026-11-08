@@ -183,6 +183,12 @@ enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_PIN, C_NEAR, C_VIEW, 
 enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_NEAR, C_VIEW, C_PIN, C_PIN0 = C_PIN };
 #endif
 #define C_TOP C_PIN0
+/* the class of a streamed mip 1 asked for lately (mapsplit.py MIP1_OUT). C_VIEW2 (the coarse cells in view) took
+ * near-class "no room" refusals 12 -> 145 on iso_ame_report3 (one run, 2026-11-08): the 4 KB items spread over the
+ * pages the near parts needed. C_PREF: as mip 0, after every near part */
+#ifndef MS_MIP1_CLS
+#define MS_MIP1_CLS C_PREF
+#endif
 
 MapStreamStats mapstream_stats;
 
@@ -629,7 +635,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         unsigned age = tex_age ? tex_age(k, tag & ~MS_RES_TEX) : ~0u;
         *key = 0;
         if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
-            return age <= 1 ? C_VIEW2 : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
+            return age <= 1 ? MS_MIP1_CLS : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
     }
     if (tag & MS_RES_SKY) {

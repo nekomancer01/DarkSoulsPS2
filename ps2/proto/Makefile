@@ -260,15 +260,17 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 # it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet). HZN=0: none (old path)
 # WORLD_LITE_DIET (the Burg plan's step B1, default 1): mip 1 of textures with a mip chain streams from mapres.bin
 # (mapsplit.py MIP1_OUT) and a block that is only kept holds its collision and events, not its map tables (src/world.c).
-# WORLD_LITE_DIET=0: today's lite sets (a changed value re-splits every block: $(A)/splitenv).
+# WORLD_LITE_DIET=0: today's lite sets (a changed value re-splits every block: $(A)/splitenv). WORLD_MIP1_OUT
+# (default WORLD_LITE_DIET) is the mip 1 half alone.
 WORLD_LITE_DIET ?= 1
+WORLD_MIP1_OUT ?= $(WORLD_LITE_DIET)
 EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)
-	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_LITE_DIET)' > $@ && touch -d @0 $@; \
-	else echo 'MIP1_OUT=$(WORLD_LITE_DIET)' | cmp -s - $@ || echo 'MIP1_OUT=$(WORLD_LITE_DIET)' > $@; fi
+	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' > $@ && touch -d @0 $@; \
+	else echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' | cmp -s - $@ || echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' > $@; fi
 $(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv
-	MIP1_OUT=$(WORLD_LITE_DIET) python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
+	MIP1_OUT=$(WORLD_MIP1_OUT) python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
 $(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
 		$(TS)/native/hzvis.c.sum $(TS)/native/hzerr.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
 	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
