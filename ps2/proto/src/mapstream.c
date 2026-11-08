@@ -309,6 +309,13 @@ static unsigned lend_struct_off;  /* frame until which nothing new is lent the s
 static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_pool_prepare), for the log */
 /* near parts may take idle pool pages too, up to this much (the planning thread: a refused near part is not drawn
  * either; a lent one draws until a lite set needs its page). Their drops are logged and counted (hitch.c stream line) */
+/* MS_LEND_ALL 0 (default): only items out of view or ahead of the player are lent (C_PREF, C_FARC, C_VIEW2), so a
+ * lite set's drop never removes something drawn. 1: every class (near parts up to MS_LEND_NEAR_KB). With B3's radii
+ * all-class lending cost ~25 world_route pop-ins (36 / 34 vs 10-13 with MS_LEND=0, 2026-11-09); without B3 it brought
+ * iso_ame_report3's horizon share back to main's */
+#ifndef MS_LEND_ALL
+#define MS_LEND_ALL 0
+#endif
 #ifndef MS_LEND_NEAR_KB
 #define MS_LEND_NEAR_KB 900
 #endif
@@ -819,7 +826,7 @@ static inline int lendable(int cls)
     /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon
      * for a moment, a near part would pop. With only the classes below C_PIN (and C_VIEW) lendable, iso_ame_report3
      * drew the horizon inside HZN_R 99.5 % of the time (main 54 %; all classes lendable: 53 %) */
-    return MS_LEND && pools_on && cls > C_KEEP;
+    return MS_LEND && pools_on && cls > C_KEEP && (MS_LEND_ALL || cls <= C_VIEW2);
 }
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
 static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near);
