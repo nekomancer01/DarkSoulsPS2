@@ -33,17 +33,18 @@ IOP_MIN_KB = 250
 SEEKS_PER_S = 2.0
 MIN_FRAMES = 10
 # the Burg plan's streamer gates per test script (step B0): the most allowed per run, from two ISO runs of main 6bb3218
-# (2026-11-08, tools/test-all.sh --iso --burg --reps 2, the plan's baseline table): counts at the larger run + 30 %
+# (2026-11-08, tools/test-all.sh --iso --burg --reps 2, the plan's baseline table; near_items re-measured 2026-11-09:
+# distinct near items refused, the attempt count room_near swung 2x between identical runs): counts at the larger run + 30 %
 # (identical runs differ by that much: near refusals 12 vs 92 on iso_ame_report3), the median + 2 cells, the horizon
 # share + 3 points; None = not gated. Lower them as the plan's steps land, never raise them.
 STREAM_GATE_KEYS = {"near_items": "near items refused for room (distinct)", "room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
                     "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
 STREAM_GATES = {
-    "iso_ame_report3": {"room_near": 120, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
-    "iso_burg_soak2": {"room_near": 1013, "popins": 50, "due_med": 12, "hzn_pct": 100.0},
-    "iso_burg_taurus": {"room_near": 333, "popins": 39, "due_med": 9, "hzn_pct": 100.0},
-    "world_route": {"room_near": 528, "popins": 60, "due_med": 3, "hzn_pct": 94.0},
-    "world_sprint": {"room_near": 234, "popins": 89, "due_med": 4, "hzn_pct": 96.3},
+    "iso_ame_report3": {"near_items": 16, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
+    "iso_burg_soak2": {"near_items": 95, "popins": 50, "due_med": 12, "hzn_pct": 100.0},
+    "iso_burg_taurus": {"near_items": 99, "popins": 36, "due_med": 8, "hzn_pct": 100.0},
+    "world_route": {"near_items": 162, "popins": 60, "due_med": 3, "hzn_pct": 93.9},
+    "world_sprint": {"near_items": 151, "popins": 89, "due_med": 4, "hzn_pct": 95.9},
     "iso_burg_soak": None,  # (the 8-lap soak: not measured for the baseline)
 }
 MEDIA = {0: "-", 1: "cd", 2: "dvd", 3: "dvd9"}
