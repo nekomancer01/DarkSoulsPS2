@@ -1380,9 +1380,11 @@ static int issue(void)
          * taurus near refusals 165 -> 876) */
         /* (never the sky or the far backdrop (MS_RES_FAR): dropped for a lite set they are read again from across the
          * disc, ~180 of 260 far seeks on world_route were Firelink's backdrop re-read while in the Burg) */
-        /* (nor the boot block's items, instance 0: Firelink's coarse cells and textures were dropped and read again
-         * from 60-100 MB away while the player was in the Burg, B8b's per-read log 2026-11-09) */
-        int lo = gb <= MS_PAGE && lendable(w.cls) && w.k != 0 &&
+        /* (of the boot block, instance 0, only coarse cells out of view: its textures and in-view cells were dropped and
+         * read again from 60-100 MB away while the player was in the Burg, B8b's per-read log 2026-11-09; with none of
+         * it lent, taurus near refusals went back to the no-lending level, 376-474) */
+        int lo = gb <= MS_PAGE && lendable(w.cls) &&
+                 (w.k != 0 || (w.cls == C_FARC && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_TEX)))) &&
                  !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR)));
         int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
         void *p = lo && !nr ? g_alloc_lend(gb) : NULL;
