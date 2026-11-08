@@ -1573,6 +1573,10 @@ static void plan_(const float *pos)
         cap_hi += ln / 100 * MS_FILL_PCT;
     }
     unsigned sum = 0, sum_hi = 0;
+    /* a planned near part not in yet: no lent room for the lendable classes this plan (their reads would queue beside
+     * the near parts' and the near level wait longer: world_route pop-ins 10-13 -> 26-28 with lending under B3's
+     * radii, 2026-11-09) */
+    int near_missing = 0;
     pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
         if (ms[k].cmark)
@@ -1592,8 +1596,11 @@ static void plan_(const float *pos)
                     if (m->cls[p] >= C_PREF)
                         need += (it_bytes(m, p) + MS_GRAN - 1) & ~(MS_GRAN - 1);
                 m->cmark[h] = sum + need > cap || sum_hi + need > cap_hi ? 2 : 1;  /* (near parts: never lent) */
-                if (m->cmark[h] == 1)
+                if (m->cmark[h] == 1) {
                     sum += need, sum_hi += need;
+                    for (unsigned p = h; !near_missing && p < m->ncell && (p == h || (m->tab[p].near & CELL_PART)); p++)
+                        near_missing = m->cls[p] >= C_PREF && m->state[p] != MS_READY;
+                }
             }
             if (m->cmark[h] == 2) {
                 m->cls[id] = C_KEEP;
@@ -1603,7 +1610,7 @@ static void plan_(const float *pos)
             unsigned b = (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
             int lo = lendable(want[i].cls) && want[i].cls != C_NEAR && want[i].cls != C_NEAR2;
             sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
-            if (sum > cap || (!lo && sum_hi > cap_hi)) {
+            if (sum > cap || (!lo && sum_hi > cap_hi) || (lo && near_missing && sum > cap_hi)) {
                 m->cls[id] = C_KEEP;
                 continue;
             }
