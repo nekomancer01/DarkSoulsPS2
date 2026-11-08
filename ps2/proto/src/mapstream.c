@@ -158,6 +158,12 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 /* an item map.c asked for (drawn, or wanted while missing) within MS_VIEW_FRAMES counts as in view: its rank is
  * MS_VIEW_K x the squared distance (half the distance); ASSUMED 1 s so a look around does not flip classes */
 #define MS_VIEW_FRAMES 30u
+/* MS_STEADY: whether a coarse or backdrop item counts as in view for its class (C_VIEW / C_VIEW2 vs C_FARC) is judged
+ * over MS_VIEW_STICKY frames: with the 1 s window another block's backdrop (Firelink's, behind the Burg) dropped to
+ * C_FARC on every look away, went first when room was needed and was read again on the next look back: ~180 of 260
+ * far seeks on the ISO world_route were Firelink's pack, 60-100 MB from the Burg's on the disc (B8b, 2026-11-08).
+ * ASSUMED 10 s (a look around and back) */
+#define MS_VIEW_STICKY 300u
 #define MS_VIEW_K 0.25f
 /* re-plan when the player moved this far or this many frames passed (~5000 items over 5 blocks: a scan every frame
  * cost the Burg bonfire 30 -> 22 fps with v1) */
@@ -709,6 +715,8 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
 {
     int view = frame - m->used[id] <= MS_VIEW_FRAMES;
     float vk = view ? MS_VIEW_K : 1.0f;
+    if (MS_STEADY)  /* (the rank keeps the 1 s view, the class the sticky one) */
+        view = frame - m->used[id] <= MS_VIEW_STICKY;
     if (id < m->ncell) {
         if (!m->tab[id].bytes)
             return C_FREE;
