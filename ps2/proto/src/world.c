@@ -98,7 +98,11 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #define WORLD_KEPT_HZN 1
 #endif
 #define LEAN_E1 (WORLD_KEPT_HZN && WORLD_TAB_SPLIT ? E_TABB : E_TABC)  /* the last maptab piece a lean block lets go */
-#define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
+#define WORLD_LEAN_S 5.0f
+/* MS_LEND: a kept, still-off block within this of the feet gets its structural pool room cleared of lent items (not
+ * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
+ * time: soak2 pop-ins 25 / 37 -> 54 / 54 on the B3 + B4 stack (2026-11-09). ASSUMED: about one 32 m cell */
+#define WORLD_PREP_D 32.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
 #define WORLD_WARP 20.0f
@@ -1118,7 +1122,7 @@ static void step(const float *feet, float dt)
         prep_s -= dt;
         for (int i = 1; i < nblk && prep_s <= 0; i++)
             if (rt[i].open && rt[i].state == W_OFF && (keep_m >> i & 1) && mapstream_pools_on() &&
-                !mapstream_pool_prepare(MS_POOL_STRUCT, rt[i].total))
+                box_d(&tab[i], feet) < WORLD_PREP_D && !mapstream_pool_prepare(MS_POOL_STRUCT, rt[i].total))
                 prep_s = 0.25f;
     }
     for (int i = 1; i < nblk; i++) {  /* WORLD_LITE_DIET: kept-only blocks let go of their map tables */

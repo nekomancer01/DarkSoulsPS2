@@ -299,6 +299,12 @@ static int pools_on, pool_busy;
 #define MS_LEND 1
 #endif
 static unsigned lent_n;  /* items in pool pages now (A/B log) */
+/* frames a mapstream_pool_prepare keeps new items out of the structural pool. 0 (default): with ~2 s, under B3's
+ * radii the near parts lost the lent pages they relied on (soak2 pop-ins 25 / 37 -> 54 / 54, taurus 16 / 12 -> 35 / 35,
+ * 2026-11-09); the drop after one VU1 wait in mapstream_alloc_pool is what ended the long seam holds */
+#ifndef MS_PREP_NOLEND
+#define MS_PREP_NOLEND 0
+#endif
 static unsigned lend_struct_off;  /* frame until which nothing new is lent the structural pool (a lite set is due) */
 static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_pool_prepare), for the log */
 /* near parts may take idle pool pages too, up to this much (the planning thread: a refused near part is not drawn
@@ -816,7 +822,10 @@ static inline int lendable(int cls)
     return MS_LEND && pools_on && cls > C_KEEP;
 }
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
-static unsigned lend_reclaim(unsigned p0, unsigned p1)
+static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near);
+static unsigned lend_reclaim(unsigned p0, unsigned p1) { return lend_reclaim_(p0, p1, 0); }
+/* keep_near: near parts stay (mapstream_pool_prepare: ahead of time, they are what the player is looking at) */
+static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
 {
     unsigned busy = 0;
     for (int k = 0; k < MS_INST; k++) {
@@ -827,6 +836,8 @@ static unsigned lend_reclaim(unsigned p0, unsigned p1)
                 continue;
             unsigned g = g_of(m->buf[id]);
             if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
+                continue;
+            if (keep_near && (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2))
                 continue;
             if (!settling && grp_chain(m, id))  /* (a settle waited for VU1: no chain reads the arena; without this the
                                                  * lite set waited out the settle: "settle stopped", taurus 2026-11-09) */
@@ -1973,9 +1984,9 @@ int mapstream_pool_prepare(int pool, unsigned n)
         return 1;
     }
     unsigned before = lent_n;
-    if (pool == MS_POOL_STRUCT)
-        lend_struct_off = frame + 60;  /* nothing new lent there for ~2 s (prepare is asked again before that) */
-    lend_reclaim(p0, p1);
+    if (pool == MS_POOL_STRUCT && MS_PREP_NOLEND)
+        lend_struct_off = frame + MS_PREP_NOLEND;  /* nothing new lent there meanwhile */
+    lend_reclaim_(p0, p1, 1);
     early_n += before - lent_n;
     return 0;
 }
