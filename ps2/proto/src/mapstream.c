@@ -548,6 +548,25 @@ static int near_in(const MsInst *m, unsigned c)
 
 static inline float sq(float x) { return x * x; }
 
+/* MS_ONE_LOD (default on; make DEFS=-DMS_ONE_LOD=0 = the old plan, coarse items kept under drawn near cells): one level
+ * of detail in memory per place (the SDK / re3 rule). 70-90 % of each block's resident level is coarse chunks (Burg
+ * west 3.4 of 3.8 MB, Parish 3.1 of 3.3 MB) that map.c skips wherever the cell's near level is drawn; kept in the arena
+ * beside those near cells they ranked above them (C_PIN0 within MS_R1_PIN) and the near level found no room. A cell's
+ * coarse items are planned C_KEEP while all its near parts are in and the cell is within MS_COARSE_R: never read, the
+ * first to go when a wanted item needs room, kept while nothing does (as C_FREE they went at once and were read again
+ * on the way out: the ISO world_route read 58 -> 69 MB, 780 -> 1110 re-reads, 2026-11-08); beyond it they are wanted
+ * again at their own class. While any coarse item of the cell is not in, its loaded near parts take that
+ * class (map.c draws the near level wherever the coarse level misses, at any distance), so a near part never goes
+ * before the coarse level is back: #110's first try (c24273d, reverted) left the near parts at their own class, a near
+ * part went next and the cell was a hole (~200 cells missing in the Burg, ISO 2026-11-06). Its teleport hang was the
+ * settle freeing items of the last drawn frame's chain (fixed by the dcur / dprev in_chain rule). Not in a settle: a
+ * settle reads no coarse item whose near level is in (settle_item). */
+#ifndef MS_ONE_LOD
+#define MS_ONE_LOD 1
+#endif
+#define MS_COARSE_R (MS_R0_KEEP - 8.0f)
+static unsigned onelod_n, onelod_kb;  /* coarse items the last plan left to their near level (kept or not) */
+
 /* class of item id of instance k with the player at pos; *key ranks it within the class (lower first) */
 static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, float *key)
 {
@@ -605,10 +624,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
         return settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
-    /* no "one level of detail per place" here: a cell's coarse items stay while its near level is drawn. Dropping them
-     * once the near parts were in made a hole whenever a near part went next (the near level draws only with every
-     * part in): the route's worst frame had ~200 cells missing in the Burg (ISO, 2026-11-06). The coarse level within
-     * MS_R1_PIN is in the export budget anyway. */
+    /* (one level of detail per place: plan_ drops this item while its cell's near level stands for it, MS_ONE_LOD) */
 #if MS_STABLE
     /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
      * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
@@ -1309,6 +1325,41 @@ static void plan_(const float *pos)
                 want[nw++] = (MsW){(unsigned char)k, (unsigned char)c, (unsigned short)id, key};
         }
     }
+#if MS_ONE_LOD
+    onelod_n = onelod_kb = 0;
+    for (int k = 0; !settling && k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned j = 0; j < m->nres; j++) {
+            unsigned tag = m->rit[j].tag, id = m->ncell + j, c = MS_RES_CELL(tag);
+            if (!(tag & MS_RES_COARSE) || (tag & (MS_RES_SKY | MS_RES_TEX)) || c >= m->ncell || !near_in(m, c))
+                continue;
+            int cc = m->cls[id];
+            if (box_d2(&m->tab[c], pos) < sq(MS_COARSE_R)) {  /* the near level stands for it */
+                if (m->cls[id] > C_KEEP)
+                    m->cls[id] = C_KEEP;
+                onelod_n++, onelod_kb += it_bytes(m, id) >> 10;
+            } else if (m->state[id] == MS_READY) {
+                continue;  /* back in: the near parts go by their own class */
+            }
+            /* the near parts are the cell's only level in memory: they keep the coarse level's class */
+            for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++) {
+                if (m->state[p] != MS_READY || m->cls[p] >= cc)
+                    continue;
+                if (m->cls[p] < C_PREF && cc >= C_PREF && nw < MS_WANTED)
+                    want[nw++] = (MsW){(unsigned char)k, (unsigned char)cc, (unsigned short)p,
+                                       box_d2(&m->tab[p], pos) * (MS_STABLE ? MS_HOLD_K : 1.0f)};
+                m->cls[p] = (unsigned char)cc;
+            }
+        }
+    }
+    {  /* the classes of the wanted list after that */
+        unsigned o = 0;
+        for (unsigned i = 0; i < nw; i++)
+            if ((want[i].cls = ms[want[i].k].cls[want[i].id]) >= C_PREF)
+                want[o++] = want[i];
+        nw = o;
+    }
+#endif
     pt[np_++] = ticks();
     qsort(want, nw, sizeof *want, w_cmp);
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
@@ -1380,9 +1431,9 @@ static void plan_(const float *pos)
             for (unsigned i = 0; i < nw; i++)
                 kb[want[i].cls] += it_bytes(&ms[want[i].k], want[i].id) >> 10;
             printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB; stale reads "
-                   "landed %u KB, cancelled %u KB; moved %u groups %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
+                   "landed %u KB, cancelled %u KB; moved %u groups %u KB; one lod %u coarse items %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
                    kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
-                   defrag_moves, defrag_kb);
+                   defrag_moves, defrag_kb, onelod_n, onelod_kb);
             /* the pinned coarse level by box distance of its cell (0-16-32-48-64 m, beyond), the backdrop and sky
              * apart, and what of it the horizon could stand for (MS_RES_LOD): sizing the pin radius (2026-11-08) */
             unsigned band[6] = {0}, lod[6] = {0}, far = 0, sky = 0;

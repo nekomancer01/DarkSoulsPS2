@@ -59,8 +59,8 @@ int mapstream_reclaim(void *p, unsigned n);
  * mapstream_open_pack (cell boxes from its table); n must equal its cell count. */
 #define MS_RES_SKY 0x40000000u
 #define MS_RES_FAR 0x20000000u  /* | cell: chunks of the far backdrop (map.c CHUNK_BACKDROP), read early */
-/* | cell: only coarse chunks (map.c CHUNK_COARSE), which map.c skips while the cell's near level is drawn: not kept
- * or read while the near level is in and the cell within MS_COARSE_R (mapstream.c) */
+/* | cell: only coarse chunks (map.c CHUNK_COARSE), which map.c skips while the cell's near level is drawn: not read,
+ * and the first to go, while the near level is in and the cell within MS_COARSE_R (mapstream.c MS_ONE_LOD) */
 #define MS_RES_COARSE 0x10000000u
 /* | cell: only foliage chunks (map.c CHUNK_GRASS), which map.c thins to nothing with distance: resident only near the
  * player (world streaming v2) */
