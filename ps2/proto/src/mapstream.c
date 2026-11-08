@@ -187,6 +187,7 @@ typedef struct {
     unsigned *used;        /* frame map.c last asked for it */
     unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
     unsigned short *ld;    /* per item (hitch.c churn): 0 never read, 1 in, else the tick (frame / 32) + 2 it was dropped */
+    unsigned *wq;          /* per near part (near wait log): clk_ms + 1 of the plan that first wanted it while not in, 0 */
     unsigned char *cmark;  /* per cell, during the plan's cut: 1 its near parts are in the plan, 2 they are not */
     /* visibility (pvs.c): per item 1 while any of its chunks is seen, the tick (frame / 4) it was last seen; the
      * vis_gen value they follow, items they cover */
@@ -434,6 +435,12 @@ static float box_d2(const MapCell *c, const float *p)
 static int focus = -1, settling, hold;
 static float ahead[3], vel[3], last_pos[3];  /* the walking look-ahead point (MS_AHEAD_FRAMES) */
 static int ahead_on;
+/* how long a near part waits from the plan that first wants it to its landing (ms: running average and mean
+ * deviation; the reads queued and in flight before it count), logged with the plan's class sizes. Budget doc
+ * proposal 5 (2026-11-08) set the look-ahead from it (speed x wait, the strip ahead ranked first): on world_sprint
+ * near pop-in went 69-71 -> 78-81 against the fixed look-ahead. The pop-ins there wait 3-40 s inside the draw
+ * radius, for room in the arena, not for the disc, so the look-ahead stays as it is. */
+static float lat_avg = 800.0f, lat_dev = 200.0f;
 static float settle_r, settle_rf;
 static unsigned (*tex_age)(int k, unsigned tag);
 static void (*tex_set)(int k, unsigned tag, const void *p);
@@ -1143,6 +1150,18 @@ static void collect(int i, int r)
             st_first = clk_ms - st_t1 + 1;
         fail_wait = 0;
         mapstream_stats.ms_last = (now - t0) / 294912;
+        {  /* a near part's wait from the plan that wanted it to its landing (the reads queued and in
+            * flight before it count); others (or one wanted before a settle) from the issue */
+            float l = (float)(now - w.t) / 294912.0f;
+            if (!it_res(m, w.id) && m->wq && m->wq[w.id] && !settling) {
+                l = (float)(clk_ms + 1 - m->wq[w.id]);
+                for (unsigned j = w.id; j < w.id + w.n; j++)
+                    m->wq[j] = 0;
+            }
+            l = l > 5000.0f ? 5000.0f : l;
+            lat_avg += (l - lat_avg) * 0.125f;
+            lat_dev += (fabsf(l - lat_avg) - lat_dev) * 0.125f;
+        }
         {
             unsigned l = m->ld ? m->ld[w.id] : 0;  /* read again within MS_THRASH_TICKS of its drop: thrash */
             hitch_load(l != 0, l >= 2 && (unsigned short)((frame >> 5) + 2 - l) <= MS_THRASH_TICKS, w.bytes);
@@ -1443,6 +1462,7 @@ static void plan_(const float *pos)
                    "landed %u KB, cancelled %u KB; moved %u groups %u KB; one lod %u coarse items %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
                    kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
                    defrag_moves, defrag_kb, onelod_n, onelod_kb);
+            printf("mapstream: near wait %u ms (dev %u) from wanted to landed\n", (unsigned)lat_avg, (unsigned)lat_dev);
             /* the pinned coarse level by box distance of its cell (0-16-32-48-64 m, beyond), the backdrop and sky
              * apart, and what of it the horizon could stand for (MS_RES_LOD): sizing the pin radius (2026-11-08) */
             unsigned band[6] = {0}, lod[6] = {0}, far = 0, sky = 0;
@@ -1503,6 +1523,14 @@ static void plan_(const float *pos)
                 !grp_chain(m, id))
                 hitch_drop(0, 0), drop(k, id);
         }
+    }
+    for (int k = 0; !settling && k < MS_INST; k++) {  /* near parts the cut left wanted and not in: their wait starts */
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; m->wq && id < m->ncell; id++)
+            if (m->cls[id] < C_PREF || m->state[id] == MS_READY)
+                m->wq[id] = 0;
+            else if (!m->wq[id])
+                m->wq[id] = clk_ms + 1;
     }
     pt[np_++] = ticks();
     if ((pt[np_ - 1] - pt[0]) / 294912 >= 40)  /* a slow plan: where it went (classify, sort, cut, cancel+log, settle check, free) */
@@ -1597,12 +1625,13 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
     m->ld = calloc(n, sizeof *m->ld);  /* (NULL: no churn count) */
+    m->wq = calloc(n, sizeof *m->wq);  /* (NULL: no wait measured) */
     m->cmark = calloc(n, 1);  /* (NULL: parts planned one by one) */
     m->rit = NULL, m->nres = 0, m->rgrp = NULL;
     if (!m->state || !m->cls || !m->buf || !m->used) {
         if (!m->borrowed)
             pack_close(&m->pk);
-        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->cmark);
+        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->cmark), free(m->wq);
         memset(m, 0, sizeof *m);
         return 0;
     }
@@ -1699,6 +1728,7 @@ void mapstream_close(int k)
     if (!m->borrowed)
         pack_close(&m->pk);
     free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->cmark);
+    free(m->wq);
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);
