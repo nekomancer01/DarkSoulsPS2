@@ -82,6 +82,11 @@ int mapstream_pools_on(void);
 int mapstream_pools_on_build(void);
 /* the last mapstream_alloc_pool that failed found lent items a chain may still read (MS_LEND): ask again in a frame or two */
 int mapstream_pool_wait(void);
+/* MS_LEND: make n bytes of the pool free ahead of time (world.c: a block the player's triangle keeps while it is still
+ * off, i.e. one step from wanted), dropping the lent items no chain reads; 1 = the room is there now */
+int mapstream_pool_prepare(int pool, unsigned n);
+/* lent items mapstream_pool_prepare let go since the last call (the hold log) */
+unsigned mapstream_lend_early(void);
 /* Heap left outside the arena beyond MS_RESERVE (call before the arena exists: world.c, for the enemy models of a
  * second block near a junction) */
 void mapstream_reserve(unsigned extra);

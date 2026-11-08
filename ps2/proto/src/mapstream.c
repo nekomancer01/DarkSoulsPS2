@@ -299,6 +299,8 @@ static int pools_on, pool_busy;
 #define MS_LEND 1
 #endif
 static unsigned lent_n;  /* items in pool pages now (A/B log) */
+static unsigned lend_struct_off;  /* frame until which nothing new is lent the structural pool (a lite set is due) */
+static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_pool_prepare), for the log */
 /* near parts may take idle pool pages too, up to this much (the planning thread: a refused near part is not drawn
  * either; a lent one draws until a lite set needs its page). Their drops are logged and counted (hitch.c stream line) */
 #ifndef MS_LEND_NEAR_KB
@@ -421,7 +423,7 @@ static void *g_alloc_lend(unsigned n)
     if (!ng || ng > MS_GPP)
         return NULL;
     for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = mpage0; p < npages; p++) {
+        for (unsigned p = mpage0; p < (frame < lend_struct_off ? spage0 : npages); p++) {
             if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
                 continue;
             unsigned run = 0, g0 = p * MS_GPP;
@@ -1958,6 +1960,25 @@ unsigned mapstream_visual(void) { return arena ? ipages * MS_PAGE : 0; }
 int mapstream_pools_on(void) { return pools_on; }
 int mapstream_pools_on_build(void) { return MS_POOLS; }
 int mapstream_pool_wait(void) { return pool_busy; }
+unsigned mapstream_lend_early(void) { unsigned n = early_n; early_n = 0; return n; }
+
+int mapstream_pool_prepare(int pool, unsigned n)
+{
+    if (!pools_on || !lent_n)
+        return 1;
+    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
+    void *p = g_alloc_range(n, p0, p1);
+    if (p) {
+        g_free(p, n);
+        return 1;
+    }
+    unsigned before = lent_n;
+    if (pool == MS_POOL_STRUCT)
+        lend_struct_off = frame + 60;  /* nothing new lent there for ~2 s (prepare is asked again before that) */
+    lend_reclaim(p0, p1);
+    early_n += before - lent_n;
+    return 0;
+}
 
 void *mapstream_alloc_pool(unsigned n, int pool)
 {
@@ -1967,8 +1988,16 @@ void *mapstream_alloc_pool(unsigned n, int pool)
     void *p = g_alloc_range(n, p0, p1);
     pool_busy = 0;
     if (!p && lent_n) {  /* MS_LEND: the lent items go */
-        pool_busy = lend_reclaim(p0, p1) > 0;
-        p = g_alloc_range(n, p0, p1);
+        if (lend_reclaim(p0, p1) && !(p = g_alloc_range(n, p0, p1))) {
+            /* some are in a chain: cells drawn every frame never leave it (a lite set waited 13.8 s behind them,
+             * taurus 2026-11-09), so wait for VU1 once and drop them all */
+            vu1_wait();
+            chains_done = 1;
+            pool_busy = lend_reclaim(p0, p1) > 0;
+            chains_done = 0;
+        }
+        if (!p)
+            p = g_alloc_range(n, p0, p1);
     }
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;

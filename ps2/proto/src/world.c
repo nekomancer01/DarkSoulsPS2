@@ -192,7 +192,11 @@ typedef struct {
     int lean;          /* WORLD_LITE_DIET: 1 map tables let go (draining: lean_drain frames), 2 being read back */
     int lean_drain, tab_gone;  /* tab_gone: the tables' memory is freed (counted out of pool_used_kb) */
     float unwanted_s;  /* seconds an on block has not been wanted */
+    int why;           /* the last reason start() / relite_start() returned 0 (WHY_*, the hold log) */
+    unsigned want_t;   /* ticks when it was first wanted while off (0: not waiting) */
 } BlockRt;
+enum { WHY_NONE, WHY_SLOT, WHY_RETRY, WHY_POOLWAIT, WHY_LEANWAIT, WHY_NOROOM };
+static const char *const WHY[] = {"-", "no slot", "retry wait", "lent pages draining", "a lean draining", "no room"};
 
 WorldStats world_stats = {.reading = -1, .full = -1};
 static const WorldBlock *tab;
@@ -876,8 +880,11 @@ static int start(int i)
     int s = 0;
     while (s < WORLD_SLOTS && slot_of[s] >= 0)
         s++;
-    if (s == WORLD_SLOTS || (r->retry_s > 0 && !warping))
+    if (s == WORLD_SLOTS || (r->retry_s > 0 && !warping)) {
+        if (s == WORLD_SLOTS)
+            r->why = WHY_SLOT;
         return 0;
+    }
     /* One arena block per entry, largest first: the near cells being drawn split the arena, and the Burg block's
      * 1508 KB in one piece found no hole with 2.1 MB free in it (largest 1068 KB; 2026-11-03, 2.8 MB arena of
      * 9e6dd67). Without room in the arena an entry takes the heap while it keeps WORLD_HEAP_FLOOR. All or nothing;
@@ -898,6 +905,7 @@ static int start(int i)
         if (wait) {
             free_ents(r, 0, NENT);
             r->retry_s = 0.1f;  /* (a lean drains in WORLD_DRAIN frames) */
+            r->why = mapstream_pool_wait() ? WHY_POOLWAIT : WHY_LEANWAIT;
             return 0;
         }
         /* no hole in the near arena, and the player waits for this block (a warp, or held at its edge): the heap,
@@ -912,6 +920,7 @@ static int start(int i)
         if (!r->blob[e]) {
             free_ents(r, 0, NENT);
             r->retry_s = WORLD_RETRY_S;
+            r->why = WHY_NOROOM;
             return 0;  /* near cells still being read or drawn: try again */
         }
     }
@@ -925,7 +934,12 @@ static int start(int i)
     r->state = W_READING;
     r->t0 = ticks();
     world_stats.pool_used_kb += r->total >> 10;
-    printf("world: block %d %s loading (%u KB + %u KB textures)\n", i, tab[i].pack, r->total >> 10, r->tex_total >> 10);
+    printf("world: block %d %s loading (%u KB + %u KB textures)%s\n", i, tab[i].pack, r->total >> 10, r->tex_total >> 10,
+           hold_want >> i & 1 ? " for the held player" : "");
+    if (r->want_t && (hold_want >> i & 1))
+        printf("world: block %d started %u ms after it was wanted (last wait: %s)\n", i, (ticks() - r->want_t) / 294912,
+               WHY[r->why]);
+    r->why = WHY_NONE;
     return 1;
 }
 
@@ -1094,6 +1108,19 @@ static void step(const float *feet, float dt)
         unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
     for (int i = 0; i < nblk; i++)
         rt[i].retry_s = rt[i].retry_s > dt ? rt[i].retry_s - dt : 0;
+    for (int i = 1; i < nblk; i++) {  /* the hold log: since when a block is wanted while not on */
+        int w = (want_m >> i & 1) && (rt[i].state == W_OFF || rt[i].state == W_READING);
+        rt[i].want_t = w ? (rt[i].want_t ? rt[i].want_t : ticks() | 1) : 0;
+    }
+    {  /* MS_LEND: a block one step from wanted (kept by the triangle, still off) gets its pool room cleared of lent
+        * items now, so the lite set never waits for them to drain at the seam (the planning thread, 2026-11-09) */
+        static float prep_s;
+        prep_s -= dt;
+        for (int i = 1; i < nblk && prep_s <= 0; i++)
+            if (rt[i].open && rt[i].state == W_OFF && (keep_m >> i & 1) && mapstream_pools_on() &&
+                !mapstream_pool_prepare(MS_POOL_STRUCT, rt[i].total))
+                prep_s = 0.25f;
+    }
     for (int i = 1; i < nblk; i++) {  /* WORLD_LITE_DIET: kept-only blocks let go of their map tables */
         BlockRt *r = &rt[i];
         r->unwanted_s = r->state == W_ON && !(want_m >> i & 1) && i != cur ? r->unwanted_s + dt : 0;
@@ -1275,8 +1302,19 @@ void world_update(const float *feet, float dt)
     float dx = feet[0] - last_feet[0], dy = feet[1] - last_feet[1], dz = feet[2] - last_feet[2];
     int warp = dx * dx + dy * dy + dz * dz > WORLD_WARP * WORLD_WARP;  /* also the first frame: boot settles */
     memcpy(last_feet, feet, sizeof last_feet);
-    if (hold_m && !hold_want)
+    if (hold_m && !hold_want) {
         printf("world: player held at %.1f %.1f %.1f for blocks %x\n", feet[0], feet[1], feet[2], hold_m);
+        for (int i = 1; i < nblk; i++)  /* what each waits on (B2 hold check): slot / pool / lean / room, or the disc */
+            if (hold_m >> i & 1)
+                printf("world: hold block %d: %s, wanted %u ms ago, last wait %s, retry %.2f s, reading %d (%u of %u KB), "
+                       "near reads in flight %u, lent items let go early %u\n", i,
+                       rt[i].state == W_OFF ? "off" : rt[i].state == W_READING ? "reading its lite set" : rt[i].state == W_ON
+                       ? "on" : "draining", rt[i].want_t ? (ticks() - rt[i].want_t) / 294912 : 0, WHY[rt[i].why],
+                       (double)rt[i].retry_s, world_stats.reading, rt[i].state == W_READING ? rt[i].ent : 0,
+                       rt[i].total >> 10, mapstream_stats.pending, mapstream_lend_early());
+    }
+    if (!hold_m && hold_want)
+        printf("world: hold released after %.0f ms\n", (double)(hold_s * 1000));
     hold_want = hold_m, hold_m = 0;
     hold_s = hold_want && !warp ? hold_s + dt : 0;
     world_stats.hold_ms += hold_s > 0 ? (unsigned)(dt * 1000) : 0;
