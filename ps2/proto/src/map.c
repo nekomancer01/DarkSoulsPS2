@@ -882,8 +882,11 @@ static void miss_scan(const MapInst *m, int k, int ci, int hzf, int has_hz, int 
             continue;
         /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
          * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
+        /* a chunk the camera cannot see is not read (pvs.c), nor one the draw groups hide (drawgrp.c, mapstream.c
+         * MS_DG): neither is a hole. Counted as missing, a cell whose coarse chunks are hidden stand-ins drew its
+         * horizon inside HZN_R for good (Firelink's cell 47 seen from the Burg: report3's 99.5 %, 2026-11-08) */
         if (!res_base(m, order[j]) && !(fl & CHUNK_GRASS) &&
-            pvs_chunk(k, (unsigned)ci, order[j])) {  /* a chunk the camera cannot see is not read (pvs.c) */
+            pvs_chunk(k, (unsigned)ci, order[j]) && dg_shown(k, order[j])) {
             *miss = 1;
             if (hz_covers(fl))
                 *mcov = 1;
@@ -1377,6 +1380,7 @@ int map_draw(V3 eye)
     static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
     int nhzfade = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
+    static unsigned hzx[3][3];  /* cells the horizon stood in for inside HZN_R this frame (log) */
     unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
     unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
     float pop_d = 1e9f;
@@ -1538,6 +1542,8 @@ int map_draw(V3 eye)
                 if (h && hole_ex[0] == ~0u)
                     hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
             }
+            if (use_hz && !hzf && hz_fill < 3)  /* (the log names up to three: instance.cell at distance) */
+                hzx[hz_fill][0] = (unsigned)k, hzx[hz_fill][1] = (unsigned)ci, hzx[hz_fill][2] = (unsigned)hz_d;
             hz_fill += use_hz && !hzf;
             if (HZN_FADE > 0 && hc && hc->count && !use_hz && !nd && hz_d > HZN_R - HZN_FADE && nhzfade < MAX_HZ_FADE) {
                 /* inside HZN_R, on the coarse level: its horizon over it at alpha (d - (HZN_R - HZN_FADE)) / HZN_FADE,
@@ -1833,7 +1839,8 @@ int map_draw(V3 eye)
                 printf("map: effects not in yet in %u cells (most in a frame over 1 s)\n", unc_max);
             unc_max = 0;
             if (hzf_max)  /* not holes: the horizon stood in for a coarse level not in yet, inside HZN_R */
-                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris\n", hzf_max, hzt_max);
+                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris; e.g. %u.%u at %u m, %u.%u at %u m\n",
+                       hzf_max, hzt_max, hzx[0][0], hzx[0][1], hzx[0][2], hzx[1][0], hzx[1][1], hzx[1][2]);
             hzf_max = hzt_max = 0;
             if (pops_s)
                 printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "
