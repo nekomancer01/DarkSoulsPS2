@@ -170,7 +170,7 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #define MS_SCAN_D 4.0f
 #define MS_SCAN_FRAMES 16u
 /* a texture's mip 0 kept while texcache asked for it within this many frames (as v1) */
-#define MS_TEX_KEEP 120u
+#define MS_TEX_KEEP (MS_STEADY ? 600u : 120u)  /* (MS_STEADY: 20 s, a mip 0 asked for again after a look around) */
 /* an item that found no room is passed over this many frames (the next one reads meanwhile) */
 #define MS_BLOCK_FRAMES 30u
 #ifndef MS_POOL
@@ -766,7 +766,9 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
-        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view ? C_VIEW2 : C_FARC;
+        /* (MS_STEADY: another loaded block's backdrop, Firelink's behind the Burg, keeps C_VIEW2 whether in view or
+         * not: as C_FARC it went first whenever room was short and came back from across the disc) */
+        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view || MS_STEADY ? C_VIEW2 : C_FARC;
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
