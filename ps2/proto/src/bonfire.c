@@ -7,6 +7,7 @@
 #include <libpad.h>
 
 #include "bonfire.h"
+#include "lpass.h" /* lpass_now */
 #include "enemy.h"
 #include "ev_misc.h"
 #include "event.h"
@@ -111,11 +112,15 @@ static void rest_world(s32 entity)
         printf("bonfire %d: no spawn point %d, respawn point stays %d\n", (int)entity, (int)(entity + SPAWN_OFFSET),
                (int)prog.respawn);
     progress_touch();
+    unsigned t0 = lpass_now();
     enemy_respawn();
+    unsigned t1 = lpass_now();
     event_rest();  /* temporary flags, Restart / End on rest */
+    unsigned t2 = lpass_now();
     save_request();
-    printf("bonfire %d rest: respawn %d, HP %d, Estus %d\n", (int)entity, (int)prog.respawn, pl ? pl->hp : -1,
-           (int)prog.estus);
+    printf("bonfire %d rest: respawn %d, HP %d, Estus %d; EE ms enemies %.2f events %.2f\n", (int)entity,
+           (int)prog.respawn, pl ? pl->hp : -1, (int)prog.estus, (double)((t1 - t0) / 294912.0f),
+           (double)((t2 - t1) / 294912.0f));
 }
 
 void bonfire_rest(s32 entity)

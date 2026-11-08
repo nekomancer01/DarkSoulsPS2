@@ -29,6 +29,7 @@
 #include "hud.h"
 #include "menu.h"
 #include "items.h"
+#include "lpass.h" /* "logic: pass ms" breakdown (Burg plan B6) */
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
 #include "hitch.h"  /* per-frame worst case, hitches, churn, RAM over time ("hitch:" EE log lines) */
 #include "testscript.h"
@@ -532,12 +533,16 @@ int main(int argc, char **argv)
         HITCH_BEGIN(pre);
         if (!frozen) {
             PROF_MARK(PROF_PLAYER);
+            LG_BEGIN(player);
             player_update(&pl, &in, cam_yaw, dt);
             combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
             /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
             event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
+            LG_END(player, LG_PLAYER);
             PROF_MARK(PROF_ENEMY);
+            LG_BEGIN(stream);
             enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
+            LG_END(stream, LG_STREAM);
         }
         HITCH_END(pre, HS_PRE);
 
@@ -593,13 +598,23 @@ int main(int argc, char **argv)
         HITCH_BEGIN(logic);
         if (!frozen) {  /* nothing here may touch what the map chain reads (mapstream cells, PATH2/3 GS registers) */
             PROF_MARK(PROF_ENEMY);
+            LG_BEGIN_X(enemy);
             enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
+            LG_END_X(enemy, LG_ENEMY);
             PROF_MARK(PROF_OBJECTS);
+            LG_BEGIN(objects);
             objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
+            LG_END(objects, LG_OBJECTS);
+            LG_BEGIN(events);
             event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
+            LG_END(events, LG_EVENTS);
+            LG_BEGIN(bonfire);
             bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
+            LG_END(bonfire, LG_BONFIRE);
         }
         HITCH_END(logic, HS_LOGIC);
+        if (!frozen)  /* a frozen frame (test shots) runs no logic: not part of the averages */
+            lpass_frame(hitch_acc[HS_PRE] + hitch_acc[HS_LOGIC]);
         PROF_MARK(PROF_CHARS);
         unsigned t1 = cpu_ticks();
         vu1_begin(1);

@@ -1,5 +1,5 @@
 # The aqueduct <-> Burg doorway at (-49.8, -21.8, -33.2): the multiplayer checkpoint light wall o1419 (event 11010090)
-# drew as a white quad with a solid collider in single player until 2026-11-09 (Burg plan B9, TECH_DEBT event-19).
+# drew as a white quad with a solid collider in single player until 2026-11-09 (Burg plan B9, TECH_DEBT event-20).
 # Shots of the doorway from both sides; each side checked by position. Boot the ISO:
 #   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_door.txt <out> --iso build/proto.iso --timeout 600
 option hud
