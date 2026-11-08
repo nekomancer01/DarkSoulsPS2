@@ -10,8 +10,9 @@ Per shot (the ELF's "TEST passes" line, src/testscript.c pb_print: p50 / p90 of 
   FRAME_P99_MS (one NTSC vsync is 33.37 ms, so the doc's 33.3 ms reads as "never a second vsync": 34 ms);
   RAM >= 1.5 MB free (ram_min), VRAM >= 128 KB free; with the disc server (ISO runs) IOP RAM >= 250 KB free.
 Per run (EE log): no disc layer change during play (the "disc:" lines without "(load)"), seeks <= 2 a second on average
-  while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 30 frames: avg / max
-  of cull, plan, chain, tex, bump, fx) are summarised, not gated: the map pass as a whole is.
+  while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
+  average of the timed frames and the worst one, for cull, plan, chain, tex, bump, total) are summarised (p90 of the
+  averages, the largest worst), not gated: the map pass as a whole is.
 Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
 import argparse, glob, json, os, re, sys
 
@@ -54,16 +55,15 @@ def log_summary(log):
                          "cache_kb": int(g[13]), "hits": int(g[14]), "miss": int(g[15]), "busy": int(g[16]),
                          "iop_free": int(g[17])})
         m = MAP_PASS.search(line)
-        if m:  # "cull 1.2 plan 0.4 ..." or "cull 1.2/3.4 ..." (avg / max over 30 frames)
-            t = m[1].split()
-            for k, v in zip(t[::2], t[1::2]):
-                a = v.split("/")
-                try:
-                    mp.setdefault(k, {"avg": [], "max": []})["avg"].append(float(a[0]))
-                    if len(a) > 1:
-                        mp[k]["max"].append(float(a[1]))
-                except ValueError:
-                    pass
+        if m:  # "cull A plan B ... total F | worst cull ... total F (N timed frames)": averages, then the worst frame
+            avg, _, worst = m[1].partition("|")
+            for part, key in ((avg, "avg"), (worst.replace("worst", "", 1).split("(")[0], "max")):
+                t = part.split()
+                for k, v in zip(t[::2], t[1::2]):
+                    try:
+                        mp.setdefault(k, {"avg": [], "max": []})[key].append(float(v.split("/")[0]))
+                    except ValueError:
+                        pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
     play = [d for d in disc if not d["load"]]
