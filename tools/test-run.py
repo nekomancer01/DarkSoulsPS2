@@ -270,6 +270,13 @@ def run(a):
                 last_frame, last_change = mb["frame"], now
             elif now - last_change > (90 if last_frame < 300 else 30):
                 res["errors"].append(f"hang: frame {last_frame} for {now - last_change:.0f} s (script line {mb['line']}, PCSX2 {p.status()})")
+                if os.environ.get("DSR_HANG_STATE"):  # a savestate of the hang (slot 9) for tools/hangstate.py
+                    try:
+                        p.save_state(9)
+                        time.sleep(5)
+                        res["hang_state"] = 9
+                    except Exception as e:
+                        print(f"[test-run] hang savestate failed: {e}", flush=True)
                 break
             if mb["shot_seq"] != acked and mb["state"] == 3:
                 pine.ack_shot(p, addr, mb["shot_seq"] | pine.SHOT_BUSY)  # ELF keeps waiting (60 s) while we capture

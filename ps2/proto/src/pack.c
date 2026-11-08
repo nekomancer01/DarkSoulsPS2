@@ -564,8 +564,12 @@ int pack_async_done(int *result)
 
 void pack_async_wait(void)
 {
+    /* fio: start what is queued too (fio_pump), not only finish the request in flight. With fio_finish alone a
+     * background read queued behind another (mapstream / world reads in flight at a warp) was never sent: the host
+     * ELF hung here in the warp settle's loading-screen icon read (loading.c icon_request), legacy slot QUEUED with
+     * nothing in flight (PINE savestate, world_cross 1 of 3, 2026-11-08); the "teleport hang" of #110 */
     while (legacy_t && io[legacy_t - 1].state != IO_DONE)
-        io_srv ? io_pump() : fio_finish();
+        io_srv ? io_pump() : (fio_pump(), fio_finish());
     if (!io_srv)
         fio_finish();  /* save.c: its own fio calls need FIO_WAIT mode */
 }
