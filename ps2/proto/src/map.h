@@ -51,6 +51,9 @@ int map_block_init(int k, const void *tab, const void *res, int col_block);
 int map_tex_slot(int k);  /* texcache slot of instance k > 0 while it is on (texcache.h TC_BLOCKS), else -1 */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */
 void map_block_drop(int k);
+/* map_block_drop, but its draw groups stay (world.c WORLD_LITE_DIET: a block only kept keeps its collision, events and
+ * characters, which dg_mask_shown still answers for; map_block_init brings the drawing back) */
+void map_block_lean(int k);
 /* world.c world_systems, at boot: block k's dg.bin from its open Pack (per-block draw groups, src/drawgrp.c) */
 void map_block_dg(int k, void *pack);
 /* the boot instance's pvs.bin (main.c, from the area pack; kept loaded) */
