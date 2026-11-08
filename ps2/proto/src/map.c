@@ -1767,6 +1767,7 @@ int map_draw(V3 eye)
         if (holes > worst)
             worst = holes, w_nohz = hole_nohz, w_k = hole_ex[0], w_ci = hole_ex[1];
         unc_max = hole_unc > unc_max ? hole_unc : unc_max;
+        hitch_map(pend, hz_fill, pops);  /* the hitch monitor's "stream:" line (src/hitch.c) */
         hzf_max = hz_fill > hzf_max ? hz_fill : hzf_max;
         hzt_max = hz_tris > hzt_max ? hz_tris : hzt_max;
         pend_max = pend > pend_max ? pend : pend_max;

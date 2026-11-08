@@ -16,6 +16,9 @@ LINE = re.compile(r"hitch: t (\d+) s frames (\d+) avg (\d+) max (\d+) ms over50 
                   r"(\d+) \((\d+) KB\) again (\d+) \((\d+) KB\)(?: thrash (\d+) \((\d+) KB\))? drops (\d+) evicted (\d+) \((\d+) KB\) \| blocks (\d+) "
                   r"\((\d+) KB\) \| lod flips (\d+) flops (\d+)(?: \| loads (\d+) longest (\d+) ms \|)?"
                   r"(?: spikes (\d+) \(\+(\d+)\) \| allocfail (\d+) \(max (\d+) KB\) \| at (-?\d+) (-?\d+) (-?\d+) block (-?\d+) \|)? top(.*)")
+# the streamer's Burg gates (plan step B0), one line a period after the hitch line
+STREAM = re.compile(r"stream: t (\d+) s room (\d+) near (\d+) \| due near drawn coarse median (\d+) max (\d+) \| "
+                    r"hzn inside ([\d.]+) s \| pop-ins (\d+)")
 KEYS = ["t", "frames", "avg", "max", "o50", "o100", "o200", "worst", "heap", "largest", "afree", "arun", "other",
         "reads", "read_kb", "again", "again_kb", "thrash", "thrash_kb", "drops", "evicts", "evict_kb", "blocks", "block_kb", "flips", "flops",
         "loads", "load_max", "spikes", "spikes_cut", "allocfail", "allocfail_kb", "x", "y", "z", "block", "top"]
@@ -34,6 +37,33 @@ def parse(path):
         r["top"] = [(c, int(n)) for c, n in re.findall(r"(\d+\.\d+) x(\d+)", r["top"])]
         rows.append(r)
     return rows
+
+
+def parse_stream(path):
+    """the "stream:" lines -> [{"t", "room", "room_near", "due_med", "due_max", "hzn_s", "popins"}]"""
+    out = []
+    for ln in open(path, errors="replace"):
+        m = STREAM.search(ln)
+        if m:
+            g = m.groups()
+            out.append({"t": int(g[0]), "room": int(g[1]), "room_near": int(g[2]), "due_med": int(g[3]),
+                        "due_max": int(g[4]), "hzn_s": float(g[5]), "popins": int(g[6])})
+    return out
+
+
+def stream_summary(rows, t_min=30):
+    """run totals of the "stream:" lines after the first t_min s (the boot): refusals, near refusals, pop-ins, the
+    median of the periods' due-near-drawn-coarse medians and the largest, seconds and share of time with a horizon-filled
+    cell inside HZN_R"""
+    rows = [r for r in rows if r["t"] > t_min]
+    if not rows:
+        return {}
+    secs = max(1, rows[-1]["t"] - rows[0]["t"] + 10)
+    meds = sorted(r["due_med"] for r in rows)
+    hz = sum(r["hzn_s"] for r in rows)
+    return {"periods": len(rows), "room": sum(r["room"] for r in rows), "room_near": sum(r["room_near"] for r in rows),
+            "popins": sum(r["popins"] for r in rows), "due_med": meds[len(meds) // 2],
+            "due_max": max(r["due_max"] for r in rows), "hzn_s": round(hz, 1), "hzn_pct": round(100 * hz / secs, 1)}
 
 
 def window_stats(rows):
@@ -94,6 +124,10 @@ def main():
     print("cells flipping most:", ", ".join(f"{c} x{n}" for c, n in s["top_cells"]))
     if "drift" in s:
         print("first -> last window:", ", ".join(f"{k} {v[0]} -> {v[1]}" for k, v in s["drift"].items()))
+    st = stream_summary(parse_stream(a.log))
+    if st:
+        s["stream"] = st
+        print("stream (after 30 s): " + ", ".join(f"{k} {v}" for k, v in st.items()))
     if a.json:
         json.dump(s, open(a.json, "w"), indent=1)
 

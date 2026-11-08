@@ -1279,6 +1279,7 @@ static int issue(void)
                        mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
             }
             mapstream_stats.room_fails++;
+            hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2);
             if (nblk == MS_BLOCKED)
                 memmove(blk, blk + 1, --nblk * sizeof *blk);
             blk[nblk++] = (MsQ){w.k, w.id, 0, (float)frame};

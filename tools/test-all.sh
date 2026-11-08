@@ -1,5 +1,12 @@
 #!/bin/bash
 # Usage: tools/test-all.sh [--no-build] [--areas m10_02_00_00,...] [--max N] [--gsdump] [--accept]
+#        tools/test-all.sh --iso --burg [--no-build] [--reps N] [--jobs N]
+# --iso --burg (the Burg plan's gate run, step B0): build the world ELF + its ISO (make, make sym, make iso), then boot
+#   the ISO for each Burg route (BURG_TESTS: iso_burg_taurus, iso_ame_report3, world_route, world_sprint and a 2-lap
+#   iso_burg_soak cut by tools/soaklaps.py), --reps times each (default 1), --jobs side by side (default 2), and print
+#   one tools/budget.py table: every shot's passes, frames over 34 ms, RAM / VRAM, the disc gates, and the streamer's
+#   run gates (budget.py STREAM_GATES: near "no room" refusals, near pop-ins, cells drawn coarse while due near,
+#   horizon inside HZN_R). Results in build/test/runs/<time>/burg/<test>-<rep>/; report.html shows the same table.
 # Build, then the headless test suite, then build/test/runs/<time>/report.html:
 #   1 build    make + make sym for every exported area (build/data/<area>.pak), through the job queue (tools/q -m 12)
 #   2 smoke    tools/test-smoke.py: FromSoft's map/autotest points per area, shot + stats per point; fails on crash /
@@ -18,7 +25,7 @@ if [ -z "$PY" ]; then  # Pillow + numpy: the Makefile's PY (config.local.mk / .v
     PY=$(sed -n 's/^PY *= *//p' config.local.mk 2>/dev/null | tail -1)
     [ -n "$PY" ] || { [ -x .venv/bin/python ] && PY=.venv/bin/python || PY=python3; }
 fi
-DO_BUILD=1; AREAS=; MAX=120; GSDUMP=; ACCEPT=
+DO_BUILD=1; AREAS=; MAX=120; GSDUMP=; ACCEPT=; ISO=; BURG=; REPS=1; JOBS=2
 while [ $# -gt 0 ]; do
     case $1 in
         --no-build) DO_BUILD= ;;
@@ -26,6 +33,10 @@ while [ $# -gt 0 ]; do
         --max) MAX=$2; shift ;;
         --gsdump) GSDUMP=--gsdump ;;
         --accept) ACCEPT=1 ;;
+        --iso) ISO=1 ;;
+        --burg) BURG=1 ;;
+        --reps) REPS=$2; shift ;;
+        --jobs) JOBS=$2; shift ;;
         *) echo "unknown option $1"; exit 2 ;;
     esac
     shift
@@ -44,6 +55,42 @@ step() {  # step <name> <command...>: run, log status + time to steps.txt
     [ $rc = 0 ] || FAILED=$((FAILED + 1))
     return $rc
 }
+if [ -n "$BURG" ]; then
+    [ -n "$ISO" ] || { echo "test-all.sh: --burg needs --iso (the Burg gates are measured on the disc)"; exit 2; }
+    # test script, timeout (s); the soak's 2-lap cut is written into the run dir
+    BURG_TESTS=${BURG_TESTS:-"iso_burg_taurus:1500 iso_ame_report3:900 world_route:1800 world_sprint:1500 iso_burg_soak2:1800"}
+    if [ -n "$DO_BUILD" ]; then
+        step build tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto BUILD=$BUILD && make -C ps2/proto BUILD=$BUILD sym && make -C ps2/proto BUILD=$BUILD iso"
+    fi
+    ELF=$BUILD/proto.sym.elf; IMG=$BUILD/proto.iso
+    [ -e "$ELF" ] && [ -e "$IMG" ] || { echo "test-all.sh: no $ELF / $IMG"; exit 1; }
+    mkdir -p "$RUN/burg"
+    "$PY" tools/soaklaps.py 2 "$RUN/burg/iso_burg_soak2.txt" > /dev/null
+    burg_one() {  # <test> <timeout> <rep>
+        local sc=ps2/proto/tests/$1.txt
+        [ -e "$sc" ] || sc=$RUN/burg/$1.txt
+        tools/q -m 2 "$PY" tools/test-run.py "$ELF" "$sc" "$RUN/burg/$1-$3" --iso "$IMG" --timeout "$2" --keep-going \
+            --hitch --name "$1-$3" > "$RUN/burg/$1-$3.log" 2>&1
+        echo "$1-$3 rc $?"
+    }
+    n=0
+    for r in $(seq 1 "$REPS"); do
+        for t in $BURG_TESTS; do
+            burg_one "${t%%:*}" "${t##*:}" "$r" &
+            n=$((n + 1))
+            [ $((n % JOBS)) = 0 ] && wait
+        done
+    done
+    wait
+    step budget "$PY" tools/budget.py "$RUN/burg" --json "$RUN/budget.json"
+    "$PY" tools/runstamp.py "$ELF" > "$RUN/stamp.json" 2>/dev/null
+    "$PY" tools/test-report.py "$RUN" > /dev/null
+    echo
+    echo "== summary ($RUN)"
+    cat "$STEPS"
+    echo "report: $RUN/report.html"
+    exit $FAILED
+fi
 [ -n "$AREAS" ] || AREAS=$(ls "$BUILD"/data/m??_??_??_??.pak 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.pak$//' | paste -sd,)
 [ -n "$AREAS" ] || AREAS=m10_02_00_00
 if [ -n "$DO_BUILD" ]; then

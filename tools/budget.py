@@ -13,8 +13,15 @@ Per run (EE log): no disc layer change during play (the "disc:" lines without "(
   while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
   average of the timed frames and the worst one, for cull, plan, chain, tex, bump, total) are summarised (p90 of the
   averages, the largest worst), not gated: the map pass as a whole is.
+Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" lines, tools/hitchsum.py stream_summary,
+  after the first 30 s): near-class "no room" refusals, near pop-ins seen on screen, the median of cells drawn coarse
+  while due near, and the share of seconds with a horizon-filled cell inside HZN_R. Their thresholds are per test
+  script (STREAM_GATES), started at the measured numbers of main so nothing fails at first; a step of the plan may only
+  lower one (they ratchet one way).
 Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
 import argparse, glob, json, os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # budget doc, "EE per frame" and "VU1, GS and DMA per frame" (ms at p90 per shot)
 PASS_MS = {"map": 14.0, "chr": 5.0, "logic": 5.0, "world": 2.0, "fxhud": 1.5, "vuw": 0.5}
@@ -25,6 +32,18 @@ VRAM_MIN_KB = 128
 IOP_MIN_KB = 250
 SEEKS_PER_S = 2.0
 MIN_FRAMES = 10
+# the Burg plan's streamer gates per test script (step B0): the most allowed per run, from two ISO runs of main
+# (2026-11-08, the plan's baseline table); None = not gated. Lower them as the plan's steps land, never raise them.
+STREAM_GATE_KEYS = {"room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
+                    "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
+STREAM_GATES = {
+    "iso_burg_taurus": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+    "iso_ame_report3": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+    "world_route": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+    "world_sprint": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+    "iso_burg_soak": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+    "iso_burg_soak2": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
+}
 MEDIA = {0: "-", 1: "cd", 2: "dvd", 3: "dvd9"}
 
 MAP_PASS = re.compile(r"map: pass ms (.*)")
@@ -84,6 +103,11 @@ def log_summary(log):
     return out
 
 
+def script_key(res, d):
+    sc = res.get("script") or res.get("name") or os.path.basename(d)
+    return os.path.splitext(os.path.basename(sc))[0]
+
+
 def check_result(path, disc_gates=True):
     """one result.json -> {"name", "shots": [...], "run": {...}, "fails": [...]}"""
     res = json.load(open(path))
@@ -138,6 +162,18 @@ def check_result(path, disc_gates=True):
             out["fails"].append(f"run: {dd['layer_play']} disc layer changes during play (budget: none)")
         if dd["seeks_s"] > SEEKS_PER_S:
             out["fails"].append(f"run: {dd['seeks_s']} seeks/s while playing > {SEEKS_PER_S}")
+    try:
+        import hitchsum
+        st = hitchsum.stream_summary(hitchsum.parse_stream(os.path.join(d, "emulog.txt")))
+    except OSError:
+        st = {}
+    if st:
+        run["stream"] = st
+        key = script_key(res, d)
+        out["script"] = key
+        for k, b in (STREAM_GATES.get(key) or {}).items():
+            if b is not None and st.get(k, 0) > b:
+                out["fails"].append(f"run: {STREAM_GATE_KEYS[k]} {st[k]} > {b} ({key})")
     if run.get("underruns"):
         out["fails"].append(f"run: {run['underruns']} stream underruns")
     return out
@@ -175,6 +211,11 @@ def table(r):
         o.append("  map pass p90 (30-frame avgs): " + " ".join(
             f"{k} {v['p90_avg']:.2f}" + (f"/{v['max']:.1f}" if v["max"] is not None else "")
             for k, v in run["map_pass"].items() if v["p90_avg"] is not None))
+    if run.get("stream"):
+        st = run["stream"]
+        o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}), pop-ins "
+                 f"{st['popins']}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
+                 f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %)")
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)
 
