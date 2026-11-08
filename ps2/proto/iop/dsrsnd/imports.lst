@@ -78,4 +78,7 @@ I_sceCdRead
 I_sceCdSync
 I_sceCdGetError
 I_sceCdDiskReady
+I_sceCdGetDiskType
+I_sceCdMmode
+I_sceCdReadDvdDualInfo
 cdvdman_IMPORTS_end

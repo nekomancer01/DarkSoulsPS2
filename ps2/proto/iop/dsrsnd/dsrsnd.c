@@ -154,6 +154,7 @@ static unsigned int now_ms(void)
 #define DF_TRIES 4      /* reads of a sector run before an error */
 typedef struct {
     unsigned int lsn, size;
+    unsigned int lsn1;  /* its copy on layer 1 (DSRLAYER.BIN), 0: none */
     char name[DF_NAME];
 } DfFile;
 static DfFile *df_tab;  /* DF_FILES, from _start */
@@ -161,32 +162,124 @@ static int df_n, df_state;  /* files in df_tab; 0 not scanned yet, 1 ready, -1 n
 static struct {
     int file;  /* index in df_tab, -1 free */
     unsigned int pos;
+    unsigned int lsn;  /* the copy this handle reads: the one on the layer the drive was on at its open */
 } df_h[DF_HANDLES];
 static unsigned char df_sec[2048] __attribute__((aligned(64)));  /* partial sectors, directory sectors */
 static sceCdRMode df_mode = {.trycount = 0, .spindlctrl = SCECdSpinNom, .datapattern = SCECdSecS2048};
 static unsigned int df_reads, df_errors;
 static unsigned int cd_head;  /* the sector after the last one read: where the drive's head is (disc_step's sweep) */
+static unsigned int df_volume;  /* sectors in the volume (layer 0's PVD; the end of what a page-cache block may read) */
+static SndDiscStat dstat __attribute__((aligned(64)));
 
-/* n sectors from lsn into buf (4-byte aligned): 0, or -1 after DF_TRIES failed reads */
-static int cd_sectors(unsigned int lsn, unsigned int n, void *buf)
+/* The drive's media and layers (budget doc "Disc and read-ahead", Sony's dual-layer notes): a DVD-9 is parallel track
+ * path, LSNs carry on across the break, layer 0 reads in its own spin mode (SCECdSpinDvdDL0, constant ~2.2 MB/s) and
+ * layer 1 in the normal one. The fast seek window (seeks inside it move the lens only) is ~+/-4371 sectors on CD,
+ * +/-14764 on DVD-5 and +/-13360 on DVD-9. On a real dual-layer disc dstat.layer1 is the drive's own break, else the one
+ * the ISO builder planned (df_layout), counted but not switched. */
+static int cd_layer = -1, cd_dual;  /* layer of the last read (-1 none yet); 1: a real dual-layer disc */
+static unsigned int cd_window = 4371;
+
+static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
 {
+    int l = dstat.layer1 && lsn >= dstat.layer1, lc = cd_layer >= 0 && l != cd_layer;
+    dstat.layer_changes += lc;
+    cd_layer = l;
+    df_mode.spindlctrl = cd_dual && !l ? SCECdSpinDvdDL0 : SCECdSpinNom;
+    if (lsn != cd_head) {
+        unsigned int d = lsn > cd_head ? lsn - cd_head : cd_head - lsn;
+        dstat.seeks++;
+        dstat.far_seeks += d > cd_window || lc;
+    }
+    unsigned int t0 = now_ms();
     for (int t = 0; t < DF_TRIES; t++) {
         if (sceCdRead(lsn, n, buf, &df_mode)) {
             sceCdSync(0);
             if (!sceCdGetError()) {
                 df_reads++;
                 cd_head = lsn + n;
+                dstat.drive_ms += now_ms() - t0;
+                dstat.drive_kb += n * 2;
                 return 0;
             }
         }
         df_errors++;
         DelayThread(10000);
     }
+    dstat.drive_ms += now_ms() - t0;
     printf("dsrsnd: sector read %u x %u failed (error %d)\n", lsn, n, sceCdGetError());
     return -1;
 }
 
+/* n sectors from lsn into buf (4-byte aligned): 0, or -1 after DF_TRIES failed reads. A run across the layer break
+ * goes in two reads (one per layer and spin mode) */
+static int cd_sectors(unsigned int lsn, unsigned int n, void *buf)
+{
+    unsigned int b = dstat.layer1;
+    if (b && lsn < b && lsn + n > b) {
+        if (cd_read1(lsn, b - lsn, buf) < 0)
+            return -1;
+        return cd_read1(b, lsn + n - b, (unsigned char *)buf + (b - lsn) * 2048);
+    }
+    return cd_read1(lsn, n, buf);
+}
+
+/* the disc in the drive (at the first cdrom0: open): CD or DVD, and on a DVD whether it has two layers */
+static void cd_media(void)
+{
+    int t = sceCdGetDiskType();
+    dstat.media = SNDM_CD;
+    if (t == SCECdPS2DVD || t == SCECdDVDV) {
+        int dual = 0;
+        unsigned int l1 = 0;
+        dstat.media = SNDM_DVD;
+        cd_window = 14764;
+        sceCdMmode(SCECdMmodeDvd);
+        if (sceCdReadDvdDualInfo(&dual, &l1) && dual && l1) {
+            dstat.media = SNDM_DVD9, dstat.layer1 = l1, cd_dual = 1;
+            cd_window = 13360;
+        }
+    }
+    printf("dsrsnd: media %s (disc type 0x%02x)%s", dstat.media == SNDM_DVD9 ? "DVD-9" : dstat.media == SNDM_DVD ? "DVD" : "CD",
+           t, cd_dual ? "" : "\n");
+    if (cd_dual)
+        printf(", layer 1 from LSN %u\n", dstat.layer1);
+}
+
 static int df_upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+
+/* DSRLAYER.BIN (tools/iso9660.py): the layout the ISO builder planned, u32 magic "DSRL", version 1, layer 1's first
+ * LSN (0: no second region), the volume's sectors, n copies, then n x {layer-0 LSN, layer-1 LSN} of the packs both
+ * layers read in play (df_open picks the copy on the drive's layer). On a single-layer disc its break stands in for the drive's,
+ * for the layer change count (dsrsnd_rpc.h SNDM_*); a real dual-layer disc keeps the drive's own */
+static void df_layout(void)
+{
+    for (int i = 0; i < df_n; i++)
+        if (!strcmp(df_tab[i].name, "DSRLAYER.BIN")) {
+            unsigned int w[5];
+            if (cd_sectors(df_tab[i].lsn, 1, df_sec) < 0)
+                return;
+            memcpy(w, df_sec, sizeof w);
+            if (w[0] != 0x4C525344u || w[1] != 1)
+                return;
+            unsigned int nc = w[4] < (2048 - 20) / 8 ? w[4] : (2048 - 20) / 8, found = 0;
+            for (unsigned int c = 0; c < nc; c++) {  /* layer-1 copies: {layer-0 LSN, layer-1 LSN} */
+                unsigned int pr[2];
+                memcpy(pr, df_sec + 20 + 8 * c, 8);
+                for (int k = 0; k < df_n; k++)
+                    if (df_tab[k].lsn == pr[0])
+                        df_tab[k].lsn1 = pr[1], found++;
+            }
+            if (nc)
+                printf("dsrsnd: %u of %u packs have a layer-1 copy\n", found, nc);
+            if (cd_dual && w[2] && w[2] != dstat.layer1)
+                printf("dsrsnd: layer break at LSN %u, the ISO builder planned %u\n", dstat.layer1, w[2]);
+            if (!cd_dual && w[2]) {
+                dstat.layer1 = w[2];
+                printf("dsrsnd: planned layer break at LSN %u (one layer on this disc: counted, not switched)\n", w[2]);
+            }
+            return;
+        }
+}
 
 /* the ISO9660 directory tree (primary volume descriptor at sector 16) into df_tab, breadth first */
 static void df_scan(void)
@@ -201,10 +294,12 @@ static void df_scan(void)
     if (!df_tab)
         return;
     sceCdDiskReady(0);
+    cd_media();
     if (cd_sectors(16, 1, df_sec) < 0 || memcmp(df_sec, "\1CD001", 6)) {
         printf("dsrsnd: no ISO9660 volume on the disc, cdrom0: through ioman\n");
         return;
     }
+    memcpy(&df_volume, df_sec + 80, 4);
     const unsigned char *root = df_sec + 156;
     memcpy(&dirs[0].lsn, root + 2, 4);
     memcpy(&dirs[0].size, root + 10, 4);
@@ -215,6 +310,8 @@ static void df_scan(void)
         for (unsigned int s = 0; s < secs; s++) {
             if (cd_sectors(dirs[d].lsn + s, 1, df_sec) < 0)
                 return;
+            if (s && !df_sec[0])
+                break;  /* the empty rest of a directory (a DVD image's 64 KB root, tools/iso9660.py) */
             for (unsigned int i = 0; i < 2048 && df_sec[i];) {  /* records never cross a sector; 0 pads the rest */
                 const unsigned char *r = df_sec + i;
                 unsigned int len = r[0], nl = r[32];
@@ -242,6 +339,7 @@ static void df_scan(void)
                 } else if (df_n < DF_FILES) {
                     DfFile *f = &df_tab[df_n++];
                     memcpy(&f->lsn, r + 2, 4);
+                    f->lsn1 = 0;
                     memcpy(&f->size, r + 10, 4);
                     memcpy(f->name, name, k + 1);
                 }
@@ -249,6 +347,7 @@ static void df_scan(void)
         }
     }
     df_state = 1;
+    df_layout();
     printf("dsrsnd: disc table: %d files in %d directories, read by sector (%u ms)\n", df_n, nd, now_ms() - t0);
 }
 
@@ -277,6 +376,8 @@ static int df_open(const char *path)
     for (int h = 0; h < DF_HANDLES; h++)
         if (df_h[h].file < 0) {
             df_h[h].file = f, df_h[h].pos = 0;
+            /* a pack read in play on both layers has a copy on each (tools/iso9660.py plan): the one on this layer */
+            df_h[h].lsn = df_tab[f].lsn1 && cd_layer == 1 ? df_tab[f].lsn1 : df_tab[f].lsn;
             return DF_FD + h;
         }
     return -EMFILE_;
@@ -315,7 +416,7 @@ static int df_read(int fd, void *dst, unsigned int n)
     unsigned char *d = dst;
     unsigned int left = n;
     while (left) {
-        unsigned int lsn = f->lsn + *pos / 2048, skip = *pos & 2047, c;
+        unsigned int lsn = df_h[fd - DF_FD].lsn + *pos / 2048, skip = *pos & 2047, c;
         if (!skip && left >= 2048 && !((unsigned int)d & 3)) {
             c = left / 2048;
             if (cd_sectors(lsn, c, d) < 0)
@@ -345,7 +446,7 @@ static int df_pread_page(int fd, unsigned int off, unsigned char *p, unsigned in
         n = f->size - off;
     unsigned int skip = off & 2047, secs = (skip + n + 2047) / 2048;
     unsigned char *s = p - skip, *t = (unsigned int)s & 3 ? buf : s;
-    if (cd_sectors(f->lsn + off / 2048, secs, t) < 0)
+    if (cd_sectors(df_h[fd - DF_FD].lsn + off / 2048, secs, t) < 0)
         return -1;
     if (t != s)
         memmove(p, t + skip, n);
@@ -512,6 +613,7 @@ static void load_step(void)
 typedef struct {
     SndDiscReq r;
     unsigned int done, order;  /* bytes sent; submission order (oldest first within a priority) */
+    unsigned int t0;           /* submitted (ms), for dstat.lat_* */
     volatile int live, cancel;
 } DiscJob;
 static DiscJob dq[SND_DISC_SLOTS];
@@ -525,8 +627,6 @@ static SndDiscDone done_rec[SND_DISC_SLOTS] __attribute__((aligned(64)));
 #define DISC_BUF (DISC_SLACK + SND_DISC_PAGE + 2048 + 32)
 static unsigned char *dbuf[DISC_BUFS];
 static int dbuf_dma[DISC_BUFS], dbuf_n, dbuf_next;
-static SndDiscStat dstat __attribute__((aligned(64)));
-
 static int dma_send(void *src, unsigned int ee, unsigned int size)
 {
     SifDmaTransfer_t t = {.src = src, .dest = (void *)(ee & 0x1fffffff), .size = size, .attr = 0};
@@ -569,13 +669,84 @@ static void disc_finish(DiscJob *j, int res)
     j->live = 0;
     SignalSema(dq_sema);
     dstat.reqs++;
+    if (j->r.op == SNDD_READ) {
+        unsigned int w = now_ms() - j->t0;
+        dstat.lat_ms += w, dstat.lat_n++;
+        dstat.lat_max = w > dstat.lat_max ? w : dstat.lat_max;
+    }
     if (ee_done)
         dma_send(&done_rec[k], ee_done + k * sizeof(SndDiscDone), sizeof(SndDiscDone));
 }
 
+/* ---- the IOP page cache (budget doc proposal 4; SCEE's IOP streaming talk) ----
+ * The IOP has ~1 MB that nothing used (997 KB free after dsrsnd, 2026-11-08). PC_PAGES 32 KB pages of it hold the last
+ * ECC blocks (16 sectors, LSN % 16 == 0: the drive's smallest read) that background requests (map streaming) read, LRU.
+ * A page read again (the route walks back and forth over block seams; cancelled reads are asked for again) costs no
+ * seek and no drive time. Pages are read-only disc data, so the EE's and the cache's views never differ. Sync loads (whole
+ * packs at boot / warps) go past it: they would flush it with data nobody reads twice. At least PC_KEEP_FREE of IOP RAM
+ * stays free for MCMAN / MCSERV (~250 KB at their peak while loading). DSRSND_NO_CACHE builds go without it. */
+#define PC_SECS 16
+#define PC_PAGE (PC_SECS * 2048)
+#define PC_PAGES 16  /* 512 KB */
+#define PC_KEEP_FREE (256 * 1024)
+static unsigned char *pc_mem;
+static unsigned int pc_lsn[PC_PAGES], pc_use[PC_PAGES], pc_clock;
+static int pc_n;
+
+/* the page holding the ECC block from lsn (16-aligned), read on a miss; NULL on a read error */
+static const unsigned char *pc_block(unsigned int lsn)
+{
+    int v = 0;
+    for (int i = 0; i < pc_n; i++) {
+        if (pc_use[i] && pc_lsn[i] == lsn) {
+            pc_use[i] = ++pc_clock;
+            dstat.cache_hits++;
+            return pc_mem + i * PC_PAGE;
+        }
+        if (pc_use[i] < pc_use[v])
+            v = i;
+    }
+    /* the block ends at the layer break (layer 1 starts with the drive's reserved sectors and is a seek away) and at the
+     * end of layer 0's volume (the ISO builder pads every layer to whole blocks) */
+    unsigned int n = PC_SECS, end = dstat.layer1 && lsn < dstat.layer1 ? dstat.layer1 : lsn < df_volume ? df_volume : 0;
+    if (end && lsn + n > end)
+        n = end - lsn;
+    pc_use[v] = 0;
+    if (cd_sectors(lsn, n, pc_mem + v * PC_PAGE) < 0)
+        return NULL;
+    pc_lsn[v] = lsn, pc_use[v] = ++pc_clock;
+    dstat.cache_miss++;
+    return pc_mem + v * PC_PAGE;
+}
+
+/* n bytes of file fd from off into p through the cache (the caller holds the drive): -1 on a read error */
+static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n)
+{
+    const DfFile *f = &df_tab[df_h[fd - DF_FD].file];
+    if (off >= f->size)
+        return 0;
+    if (n > f->size - off)
+        n = f->size - off;
+    unsigned int left = n;
+    while (left) {
+        unsigned int lsn = df_h[fd - DF_FD].lsn + off / 2048, blk = lsn & ~(PC_SECS - 1u);
+        unsigned int in = (lsn - blk) * 2048 + (off & 2047), c = PC_PAGE - in;
+        if (c > left)
+            c = left;
+        const unsigned char *pg = pc_block(blk);
+        if (!pg)
+            return left == n ? -1 : (int)(n - left);
+        memcpy(p, pg + in, c);
+        p += c, off += c, left -= c;
+    }
+    return n;
+}
+
 /* One page of the read in j. Page ends are 16-byte aligned on the EE (the first page is shorter when dst is not), so
  * only the first page has head bytes and only the last a tail. The page lands at the same address mod 16 in the IOP
- * buffer as on the EE, so the qwords it DMAs are aligned on both sides. */
+ * buffer as on the EE, so the qwords it DMAs are aligned on both sides. A background read of a disc file goes through
+ * the page cache with pages that end at an ECC block (LSN % 16), less the bytes that keep the EE end aligned (they open
+ * the next page, from the cached block). */
 static void disc_page(DiscJob *j)
 {
     SndDiscReq *r = &j->r;
@@ -585,7 +756,17 @@ static void disc_page(DiscJob *j)
         return;
     }
     unsigned int ee = r->dst + j->done, n = r->size - j->done;
-    if (n > SND_DISC_PAGE - (ee & 15))
+    int cached = pc_n && r->prio == SNDD_PRIO_BG && df_is(r->fd);
+    if (cached) {
+        unsigned int pos = r->offset + j->done, lsn = df_h[r->fd - DF_FD].lsn + pos / 2048;
+        unsigned int to_blk = ((lsn | (PC_SECS - 1u)) + 1 - lsn) * 2048 - (pos & 2047);  /* bytes to the block's end */
+        if (n > to_blk) {
+            unsigned int m = to_blk - ((ee + to_blk) & 15);  /* the EE end on a qword: the rest opens the next page */
+            if (!m)
+                m = to_blk + PC_PAGE - ((ee + to_blk + PC_PAGE) & 15);
+            n = m < n ? m : n;
+        }
+    } else if (n > SND_DISC_PAGE - (ee & 15))
         n = SND_DISC_PAGE - (ee & 15);
     int b = dbuf_next;
     dbuf_next = (b + 1) % dbuf_n;
@@ -594,7 +775,7 @@ static void disc_page(DiscJob *j)
     dbuf_dma[b] = 0;
     unsigned char *p = dbuf[b] + DISC_SLACK + (ee & 15);
     cd_take();
-    int got = df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
+    int got = cached ? pc_read(r->fd, r->offset + j->done, p, n) : df_pread_page(r->fd, r->offset + j->done, p, n, dbuf[b]);
     SignalSema(cd_sema);
     if (got <= 0) {
         disc_finish(j, j->done ? (int)j->done : got < 0 ? got : 0);
@@ -623,7 +804,7 @@ static unsigned int job_lsn(const DiscJob *j)
 {
     if (j->r.op != SNDD_READ || !df_is(j->r.fd))
         return cd_head;
-    return df_tab[df_h[j->r.fd - DF_FD].file].lsn + (j->r.offset + j->done) / 2048;
+    return df_h[j->r.fd - DF_FD].lsn + (j->r.offset + j->done) / 2048;
 }
 
 /* The next request: the most urgent priority first; within it the one whose next sector is the first at or after the
@@ -698,7 +879,7 @@ static void disc_submit(const SndDiscReq *q, int n)
             continue;
         }
         memcpy(&j->r, r, sizeof *r);
-        j->done = 0, j->cancel = 0, j->order = dq_order++;
+        j->done = 0, j->cancel = 0, j->order = dq_order++, j->t0 = now_ms();
         j->live = 1;
     }
     SignalSema(dq_sema);
@@ -1166,8 +1347,17 @@ int _start(int argc, char *argv[])
     if ((id = CreateThread(&dt)) < 0)
         return MODULE_NO_RESIDENT_END;
     StartThread(id, NULL);
+#ifndef DSRSND_NO_CACHE
+    {
+        unsigned int f = QueryTotalFreeMemSize(), want = f > PC_KEEP_FREE ? (f - PC_KEEP_FREE) / PC_PAGE : 0;
+        for (pc_n = want < PC_PAGES ? want : PC_PAGES; pc_n && !(pc_mem = AllocSysMemory(ALLOC_FIRST, pc_n * PC_PAGE, NULL));)
+            pc_n--;
+        dstat.cache_kb = pc_n * (PC_PAGE >> 10);
+    }
+#endif
     dstat.iop_free = QueryTotalFreeMemSize();
-    printf("dsrsnd: ready (%d streams, %d disc pages of %u KB); IOP RAM free %u KB before dsrsnd's buffers, %u KB after\n",
-           SND_STREAMS, dbuf_n, SND_DISC_PAGE >> 10, dstat.iop_free_boot >> 10, dstat.iop_free >> 10);
+    printf("dsrsnd: ready (%d streams, %d disc pages of %u KB, page cache %u KB); IOP RAM free %u KB before dsrsnd's "
+           "buffers, %u KB after\n", SND_STREAMS, dbuf_n, SND_DISC_PAGE >> 10, dstat.cache_kb, dstat.iop_free_boot >> 10,
+           dstat.iop_free >> 10);
     return MODULE_RESIDENT_END;
 }

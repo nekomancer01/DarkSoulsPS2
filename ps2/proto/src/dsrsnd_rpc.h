@@ -114,12 +114,28 @@ typedef struct {
     unsigned int pad[3];
 } SndDiscInit;
 
+/* media (SndDiscStat.media): what the disc server found in the drive at its first cdrom0: open */
+#define SNDM_NONE 0   /* not scanned yet, or no disc (host: runs) */
+#define SNDM_CD 1
+#define SNDM_DVD 2    /* single layer */
+#define SNDM_DVD9 3   /* dual layer (parallel track path): layer1 = the first LSN of layer 1 */
+/* the drive's own layer: on a single-layer disc the ISO builder's planned break (DSRLAYER.BIN, tools/iso9660.py) stands
+ * in for layer 1, so a DVD-5 test image counts the layer changes a DVD-9 pressing of the same layout would make */
+
 typedef struct {
     unsigned int iop_free_boot, iop_free;  /* free IOP RAM before dsrsnd's buffers, and now (bytes) */
-    unsigned int reqs, pages, kb;          /* served since boot */
+    unsigned int reqs, pages, kb;          /* served since boot (EE requests; kb: bytes sent to the EE) */
     unsigned int wait_max_ms, waits_100;   /* longest gap between stream service passes while a stream played, > 100 ms */
-    unsigned int pad[9];
-} SndDiscStat;  /* 64 bytes */
+    /* drive counters since boot (every sector read: EE pages, stream read-ahead, banks, the directory scan) */
+    unsigned int media, layer1;            /* SNDM_*; layer 1's first LSN (0: one layer), planned one on a single layer */
+    unsigned int drive_kb, drive_ms;       /* KB the drive read; ms spent in sceCdRead + sceCdSync */
+    unsigned int seeks, far_seeks;         /* reads that did not start at the head; of those beyond the fast seek window */
+    unsigned int layer_changes;            /* reads on the other layer than the last one */
+    unsigned int lat_ms, lat_n, lat_max;   /* EE reads: submit to done, summed / count / longest (ms) */
+    unsigned int cache_hits, cache_miss;   /* EE pages served from the IOP page cache / read from the drive into it */
+    unsigned int cache_kb;                 /* the page cache's size (0: none) */
+    unsigned int pad[3];
+} SndDiscStat;  /* 96 bytes */
 
 typedef struct {
     unsigned int id, offset, size, spu_addr;  /* size: multiple of 64 */

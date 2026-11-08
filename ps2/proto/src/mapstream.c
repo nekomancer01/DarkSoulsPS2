@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include "mapstream.h"
 #include "pack.h"
+#include "dsrsnd_rpc.h"
 #include "vu1.h"
 #include "hitch.h"
 
@@ -59,11 +60,24 @@
 /* (2026-11-08) 30 / 36 m: the project's DVD-9 budget (draw radius + sprint speed x worst DVD read latency; a CD
  * would need 35 / 41). 40 / 46 m (MS_NEAR_FIRST's read-ahead since 2026-11-06) covered ~1.8x the ground of 30 m.
  * make DEFS=-DMS_R0_WANT=40 -DMS_R0_KEEP=46 = the old radii */
+/* Per media (budget doc proposal 2): the DVD radii on a DVD (and host: runs), 35 / 41 m on a CD (the read with a seek
+ * takes up to 1 s there); the disc server reports the media once it has looked at the disc (pack_disc_media, checked
+ * in mapstream_update). MEDIA=cd builds (MEDIA_CD) take the CD radii whatever the disc. DEFS radii stay fixed. */
+#define MS_R0_WANT_DVD 30.0f
+#define MS_R0_KEEP_DVD 36.0f
+#define MS_R0_WANT_CD 35.0f
+#define MS_R0_KEEP_CD 41.0f
 #ifndef MS_R0_WANT
-#define MS_R0_WANT 30.0f
+#ifdef MEDIA_CD
+static float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
+#else
+static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #endif
-#ifndef MS_R0_KEEP
-#define MS_R0_KEEP 36.0f
+#define MS_R0_WANT ms_r0_want
+#define MS_R0_KEEP ms_r0_keep
+#define MS_MEDIA_RADII 1
+#elif !defined MS_R0_KEEP
+#define MS_R0_KEEP (MS_R0_WANT + 6.0f)
 #endif
 /* near parts rank by the nearer of the feet and a point MS_AHEAD_FRAMES ahead along the walking direction (velocity
  * smoothed over ~10 frames; ASSUMED 1.5 s: about the read time of a near cell group from cdrom0: plus a margin), so
@@ -1514,6 +1528,15 @@ static void plan_(const float *pos)
 
 void mapstream_update(const float pos[3])
 {
+#if defined MS_MEDIA_RADII && !defined MEDIA_CD
+    static unsigned media;
+    if (pack_disc_media() != media) {  /* the disc server looked at the disc: its radii (budget doc "Disc and read-ahead") */
+        media = pack_disc_media();
+        ms_r0_want = media == SNDM_CD ? MS_R0_WANT_CD : MS_R0_WANT_DVD;
+        ms_r0_keep = media == SNDM_CD ? MS_R0_KEEP_CD : MS_R0_KEEP_DVD;
+        printf("mapstream: media %u, near parts wanted to %.0f m, kept to %.0f m\n", media, ms_r0_want, ms_r0_keep);
+    }
+#endif
     int any = 0;
     for (int k = 0; k < MS_INST; k++)
         any |= ms[k].ncell != 0;
