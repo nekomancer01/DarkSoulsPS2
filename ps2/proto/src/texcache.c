@@ -43,7 +43,14 @@ typedef struct {
 #ifndef TC_NEAR_KB
 #define TC_NEAR_KB 256  /* near-level pool (only allocated when the map has near levels) */
 #endif
+/* Upload caps per frame (budget doc proposal 7, 2026-11-08): 512 KB of near and chain levels together over PATH3
+ * (~0.5 ms of GS time as CT32 by the SDK's rates, ASSUMED; PCSX2 does not time it), mip 0 / 1 as before uncapped (a
+ * miss there is a missing batch). make DEFS=-DTC_UP_OLD = the old 96 + 16 KB. */
+#ifdef TC_UP_OLD
 #define TC_NEAR_UP (96 * 1024)  /* near-level upload bytes per frame */
+#else
+#define TC_NEAR_UP (384 * 1024)
+#endif
 
 static const TexEntry *te[MAX_TEX];  /* map.bin's table, then tc_add's */
 static const unsigned char *bin;
@@ -63,8 +70,13 @@ static float mip_d[MAX_TEX];
 static float tc_focal = 487;
 /* chain level bytes uploaded a frame, at most (no hitch when a teleport or a turn brings many textures at once: those
  * batches draw without a chain until their levels are in; ASSUMED 16 KB, a few textures' mip 1 / 2 / 3) */
+#ifdef TC_UP_OLD
 #define TC_MIP_UP (16 * 1024)
+#else
+#define TC_MIP_UP (128 * 1024)
+#endif
 static int mip_up;
+static unsigned mip_short;  /* chains cut short this frame (the "tex:" log) */
 /* tc_mip's LOD bias in levels (ASSUMED 1: the next level once a texel is under 2 pixels by view depth; the GS LOD has
  * no slope term, so walls seen at a grazing angle need it. Measured at the user's ring-wall spot, render-12: flicker
  * 17.4k -> 14.7k at 0, 12.8k at 1, 16.1k at -1; near textures as sharp (spawn view gradient 2.75 -> 2.74)) */
@@ -160,6 +172,36 @@ static void chain_levels(int i, const unsigned char *base)
         v->size = level_blocks(e->psm, v->t.Width, v->t.Height);
     }
 }
+
+/* resident levels (TC_RLIST, default on; make DEFS=-DTC_RLIST=0 = the old walk over every texture's levels): alloc and
+ * tc_end walk this list instead of all MAX_TEX x NLV levels (3840: a texture miss cost ~0.1 ms, a few hundred of
+ * them after a turn or warp up to 10 ms of map pass, rd_firelink 2026-11-08). Entries are added by load and dropped
+ * lazily once their level is no longer resident (lv_reset, eviction, tc_pin set off = -1 anywhere). */
+#ifndef TC_RLIST
+#define TC_RLIST 1
+#endif
+static unsigned short rl[MAX_TEX * NLV];
+static int rl_n;
+static unsigned char rl_in[MAX_TEX * NLV];
+static void rl_add(int i, int l)
+{
+    unsigned id = (unsigned)i * NLV + (unsigned)l;
+    if (!rl_in[id])
+        rl_in[id] = 1, rl[rl_n++] = (unsigned short)id;
+}
+#if TC_RLIST
+/* the list without entries no longer resident */
+static void rl_trim(void)
+{
+    for (int j = 0; j < rl_n;) {
+        unsigned id = rl[j];
+        if (lv[id / NLV][id % NLV].off < 0)
+            rl_in[id] = 0, rl[j] = rl[--rl_n];
+        else
+            j++;
+    }
+}
+#endif
 
 static int cluts_sent;
 static int in_frame;
@@ -460,16 +502,34 @@ static int tex_end(void)
 
 /* aligned run of s blocks in pool p (pool_of): free, else the one drawn longest ago (not this frame); evicts its
  * occupants */
+static unsigned fail_fr;
+static int fail_s[3];
 static int alloc(int s, int p)
 {
     static unsigned score[POOL_MAX];  /* per run: 0 free, else newest occupant's frame + 1, ~0 drawn this frame */
     if (s <= 0)
+        return -1;
+    /* this frame a run of fail_s[p] or fewer blocks found nothing to evict in pool p: larger ones cannot either (runs
+     * only fill up within a frame) */
+    if (fail_fr == frame && fail_s[p] && s >= fail_s[p])
         return -1;
     int nrun = (p == 2 ? pool3_blk : p ? pool2_blk : pool_blk) / s;
     if (!nrun)
         return -1;
     memset(score, 0, nrun * sizeof *score);
     int nall = tex_end();
+#if TC_RLIST
+    rl_trim();
+    for (int j = 0; j < rl_n; j++) {
+        int i = rl[j] / NLV, l = rl[j] % NLV;
+        const Level *v = &lv[i][l];
+        if (pool_of(i, l) != p)
+            continue;
+        unsigned sc = v->last == frame ? ~0u : v->last + 1;
+        for (int r = v->off / s; r < nrun && r * s < v->off + v->size; r++)
+            score[r] = sc > score[r] ? sc : score[r];
+    }
+#else
     for (int i = 0; i < nall; i++)
         for (int l = 0; l < NLV; l++) {
             const Level *v = &lv[i][l];
@@ -479,6 +539,7 @@ static int alloc(int s, int p)
             for (int r = v->off / s; r < nrun && r * s < v->off + v->size; r++)
                 score[r] = sc > score[r] ? sc : score[r];
         }
+#endif
     if (p == 0 && pin_blk)  /* runs in the lent top of the pool are taken */
         for (int r = pin_off / s; r < nrun; r++)
             score[r] = ~0u;
@@ -490,15 +551,29 @@ static int alloc(int s, int p)
         if (k < bk)
             bk = k, best = r;
     }
-    if (best < 0 || score[best] == ~0u)
+    if (best < 0 || score[best] == ~0u) {
+        if (fail_fr != frame)
+            fail_fr = frame, fail_s[0] = fail_s[1] = fail_s[2] = 0;
+        fail_s[p] = !fail_s[p] || s < fail_s[p] ? s : fail_s[p];
         return -1;
+    }
     int off = best * s;
+#if TC_RLIST
+    (void)nall;
+    for (int j = 0; j < rl_n; j++) {
+        int i = rl[j] / NLV, l = rl[j] % NLV;
+        Level *v = &lv[i][l];
+        if (v->off >= 0 && pool_of(i, l) == p && v->off < off + s && v->off + v->size > off)
+            v->off = -1;
+    }
+#else
     for (int i = 0; i < nall; i++)
         for (int l = 0; l < NLV; l++) {
             Level *v = &lv[i][l];
             if (v->off >= 0 && pool_of(i, l) == p && v->off < off + s && v->off + v->size > off)
                 v->off = -1;
         }
+#endif
     return off;
 }
 
@@ -523,6 +598,7 @@ static int load(int tex, int l)
     v->off = off;
     v->t.Vram = tbp * 256;
     v->last = frame;
+    rl_add(tex, l);
     return 1;
 }
 
@@ -630,8 +706,10 @@ int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k)
                 break;
             if (v->off < 0) {  /* not resident: uploaded unless this frame's chain uploads are spent (a shorter chain) */
                 int bytes = (v->t.Width * v->t.Height) >> (te[tex]->psm == GS_PSM_T4);
-                if (mip_up + bytes > TC_MIP_UP || !load(tex, m < 2 ? m : m + 1))
+                if (mip_up + bytes > TC_MIP_UP || !load(tex, m < 2 ? m : m + 1)) {
+                    mip_short++;  /* a shorter chain this frame (cap or no room) */
                     break;
+                }
                 mip_up += bytes;
             }
             v->last = frame;
@@ -679,15 +757,37 @@ void tc_end(void)
         tc_stats.first_bytes = tc_stats.bytes;
     else if (tc_stats.bytes > tc_stats.max_bytes)
         tc_stats.max_bytes = tc_stats.bytes;
-    int used = 0, now = 0, nall = tex_end();
+    int used = 0, now = 0;
+#if TC_RLIST
+    rl_trim();
+    for (int j = 0; j < rl_n; j++) {
+        const Level *v = &lv[rl[j] / NLV][rl[j] % NLV];
+        used += v->size;
+        now += v->last == frame ? v->size : 0;
+    }
+#else
+    int nall = tex_end();
     for (int i = 0; i < nall; i++)
         for (int l = 0; l < NLV; l++) {
             used += lv[i][l].off >= 0 ? lv[i][l].size : 0;
             now += lv[i][l].off >= 0 && lv[i][l].last == frame ? lv[i][l].size : 0;
         }
+#endif
     tc_stats.resident = used / 4;
     tc_stats.frame_kb = now / 4;
     tc_stats.max_frame_kb = tc_stats.frame_kb > tc_stats.max_frame_kb ? tc_stats.frame_kb : tc_stats.max_frame_kb;
+    {  /* budget doc proposal 7: uploads and misses every 120 frames (fails = a batch not drawn: no level resident or
+        * uploadable; short = a mip chain cut by the per-frame cap or the pool) */
+        static unsigned fr, up, kb, fails, shorts, kbmax;
+        up += tc_stats.uploads, kb += tc_stats.bytes >> 10, fails += tc_stats.fails, shorts += mip_short;
+        kbmax = (unsigned)(tc_stats.bytes >> 10) > kbmax ? (unsigned)(tc_stats.bytes >> 10) : kbmax;
+        mip_short = 0;
+        if (!(++fr % 120)) {
+            printf("tex: %u uploads %u KB (most in a frame %u KB), %u fails, %u chains cut short over 120 frames; "
+                   "resident %d KB of %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident, tc_stats.pool);
+            up = kb = fails = shorts = kbmax = 0;
+        }
+    }
 #ifdef TC_HUD  /* measurement builds: upload numbers on screen and in the EE log */
     char buf[100];
     snprintf(buf, sizeof buf, "TEX UP %dK MAX %dK 1ST %dK SET %d/%dK RES %d/%dK F%d N%d/%d M%d", tc_stats.bytes / 1024,

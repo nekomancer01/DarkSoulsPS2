@@ -425,6 +425,12 @@ void vu1_init(GSGLOBAL *gs)
     dma_channel_send_packet2(p, DMA_CHANNEL_VIF1, 1);
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
     packet2_free(p);
+#if defined(VU1_TEX_PATH3) && !defined(VU1_NO_IMT)
+    /* GIF MODE IMT (budget doc proposal 7): PATH3 IMAGE data in 8-qword slices, so PATH1 / PATH2 get the GIF between
+     * any two slices of an upload, not only between TEXQ_SLICE packets (M3R stays 0: PATH3 not masked).
+     * make DEFS=-DVU1_NO_IMT = continuous mode as before */
+    *(volatile u32 *)0x10003010 = 1u << 2;
+#endif
 }
 
 /* the map chain's camera (vu1_begin), for vu1_add_idx's per-vertex clip test: view x / y scales of the guard band */
