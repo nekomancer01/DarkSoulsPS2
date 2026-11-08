@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "flags.h"
+#include "lpass.h" /* LOGIC_SPREAD */
 
 #define PAGE_WORDS 32
 #define NO_PAGE 0xFFFF
@@ -93,9 +94,24 @@ void flag_set(u32 id, int on)
 void flag_range_set(u32 first, u32 last, int on)
 {
     for (u32 id = first; id <= last && id >= first;) {
-        if (flag_slot(id) < 0) {
+        int s = flag_slot(id);
+        if (s < 0) {
             id = (id / 10000 + 1) * 10000;  /* invalid area / group: skip the rest of this section group */
             continue;
+        }
+        /* LOGIC_SPREAD (Burg plan B6): clearing skips what is clear already, a section without a page or a word of 32
+         * clear flags at a time (a rest's temporary flag reset, ev_temp_flags_reset: 37000 flag_set calls, 56 ms of
+         * EE in one frame on the ISO, 2026-11-08) */
+        if (LOGIC_SPREAD && !on) {
+            if (page_of[s] == NO_PAGE) {
+                id = (id / 1000 + 1) * 1000;
+                continue;
+            }
+            unsigned n = id % 1000;
+            if (!(n & 31) && n + 32 <= 1000 && !pool[page_of[s]][n >> 5] && last - id >= 31) {
+                id += 32;
+                continue;
+            }
         }
         flag_set(id, on);
         id++;
