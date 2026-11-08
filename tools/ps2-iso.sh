@@ -8,6 +8,11 @@
 # its neighbour masks), each block's pack followed by its character packs (top-level c*.pak for the boot block,
 # data/<block>/ for the others), then every other area pack with its directory. Without world.pak: the boot packs,
 # then each area pack with its directory, by name. Boots in PCSX2 (tools/ps2-pcsx2.sh iso) and in OPL / on a burnt disc with a modchip (untested).
+# Writer (2026-11-08, budget doc proposal 3): tools/iso9660.py by default, which plans the layers (boot packs and the
+# boot block's walk-connected region on layer 0, other regions on layer 1, a region never across the break: the build
+# fails), starts every file on a 32 KB ECC block, writes DSRLAYER.BIN for dsrsnd and makes the image a DVD for PCSX2
+# (a 64 KB root directory). ISO_MEDIA=cd / ISO_LAYERS=2 / ISO_LAYER0_MB=N: see iso9660.py build().
+# ISO_WRITER=xorriso: the old xorriso image (one layer, CD in PCSX2, sort weights below), the fallback.
 # xorriso: XORRISO, else the one on PATH, else a user-local install in ~/tools/xorriso.
 set -e
 ELF=$(realpath "$1"); DATA=$(realpath "$2"); OUT=$(realpath -m "$3"); ID=${4:-DSRP_000.01}
@@ -24,9 +29,14 @@ iso_name() {  # one path component -> ISO9660 level 1 name (same rule as pack.c)
 }
 printf 'BOOT2 = cdrom0:\\%s;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n' "$ID" > "$STAGE/SYSTEM.CNF"
 if [ -n "$NOSTRIP" ]; then cp "$ELF" "$STAGE/$ID"; else "$STRIP" --strip-all -o "$STAGE/$ID" "$ELF"; fi
+if [ "${ISO_WRITER:-}" != xorriso ]; then
+    rm -f "$OUT"
+    python3 -I "$(dirname "$(realpath "$0")")/iso9660.py" "$STAGE/$ID" "$DATA" "$OUT" "$ID" || exit 1
+fi
 # xorriso native mode: its mkisofs emulation turns Rock Ridge on and ignores -sort weights. Rock Ridge makes every
 # directory record ~120 bytes, and the BIOS CDVD driver reads only a directory's first 2048-byte sector: with 15 packs
 # DATA\ spilled into a second sector and DATA\MENU.PAK could not be opened (seen in PCSX2, SCPH-77001 BIOS).
+if [ "${ISO_WRITER:-}" = xorriso ]; then
 WEIGHTS=(-find /SYSTEM.CNF -exec sort_weight 100000 -- -find "/$ID" -exec sort_weight 99999 --)
 mkdir -p "$STAGE/DATA"
 w=90000
@@ -101,6 +111,7 @@ rm -f "$OUT"
 "$XORRISO" -report_about WARNING -outdev "$OUT" -rockridge off -joliet off -compliance iso_9660_level=1 \
     -volid DSRPS2 -system_id PLAYSTATION -application_id "DSR PS2 PROTO" -map "$STAGE" / "${WEIGHTS[@]}" -commit \
     2>&1 | grep -v "^xorriso .* : RockRidge filesystem manipulator" | grep -v '^$' || true
+fi
 # Check what the BIOS can read: every directory in one sector, file names with ;1
 python3 -I - "$OUT" <<'PY'
 import struct, sys
@@ -108,7 +119,7 @@ f = open(sys.argv[1], 'rb')
 def sec(n, c=1):
     f.seek(n * 2048); return f.read(2048 * c)
 def walk(lba, size, path):
-    if size > 2048:
+    if size > 2048 and any(sec(lba + 1, (size - 1) // 2048)):  # (iso9660.py's DVD root: 32 sectors, the rest empty)
         sys.exit(f"ISO check: directory {path or '/'} is {size} B > one sector (the BIOS reads only the first)")
     d, i = sec(lba), 0
     while i < len(d) and d[i]:
