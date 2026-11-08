@@ -681,12 +681,27 @@ static const Chunk *vis_c;
 static float vis_zmax;
 static int emit_close;  /* MAP_TWO_PASS emit: the cell's chunks need no distance / edge fog test */
 
+/* the frustum test of render.c r_box_classify (the box's bounding sphere against the view planes with a 40 px margin,
+ * then the near plane and guard band) fused with the distance tests: one view transform of the box centre. Its plane
+ * constants for this frame's camera (map_draw: vis_frame) */
+static float vc_tx, vc_ty, vc_kx, vc_ky, vc_tg, vc_kg;
+
+static void vis_frame(float fx, float fy)
+{
+    vc_tx = (R_SCREEN_W / 2 + 40) / fx, vc_ty = (R_SCREEN_H / 2 + 40) / fy;
+    vc_kx = 1.0f / sqrtf(1 + vc_tx * vc_tx), vc_ky = 1.0f / sqrtf(1 + vc_ty * vc_ty);
+    vc_tg = R_GUARD / fx, vc_kg = 1.0f / sqrtf(1 + vc_tg * vc_tg);
+}
+
 static int visible_(const Chunk *c, const float *e, int sky)
 {
+    float h0 = (c->mx[0] - c->mn[0]) * 0.5f, h1 = (c->mx[1] - c->mn[1]) * 0.5f, h2 = (c->mx[2] - c->mn[2]) * 0.5f;
+    float d0 = c->mn[0] + h0 - e[0], d1 = c->mn[1] + h1 - e[1], d2 = c->mn[2] + h2 - e[2];
+    float vz = cam[9] * d0 + cam[10] * d1 + cam[11] * d2, r2 = h0 * h0 + h1 * h1 + h2 * h2;
     if (!sky && !(c->flags & CHUNK_BACKDROP)) {  /* beyond FAR the edge fog is complete: blended mist / shafts end there (a fog-coloured card would show
                   * on the sky), opaque pieces at CULL_FAR (a fog-coloured silhouette, like DSR's distant background) */
-        float r2, z = box_depth(c, e, &vis_zmax, &r2);
-        vis_c = c;
+        float ext = fabsf(cam[9]) * h0 + fabsf(cam[10]) * h1 + fabsf(cam[11]) * h2, z = vz - ext;
+        vis_zmax = vz + ext, vis_c = c;
 #ifndef MAP_DBG_ALL
         float zcut = c->flags & CHUNK_BLEND ? FAR : CULL_FAR;
         if (z > zcut || (z > SMALL_Z && r2 * cam_f * cam_f < SMALL_PX * SMALL_PX * z * z)) {
@@ -702,7 +717,16 @@ static int visible_(const Chunk *c, const float *e, int sky)
 #ifdef MAP_DBG
     vis_why = D_VIEW;
 #endif
-    return r_box_classify(c->mn, c->mx);
+    float r = sqrtf(r2);
+    if (vz < R_NEAR - r)
+        return 0;
+    float ax = fabsf(cam[3] * d0 + cam[4] * d1 + cam[5] * d2), ay = fabsf(cam[6] * d0 + cam[7] * d1 + cam[8] * d2);
+    if ((ax - vc_tx * vz) * vc_kx > r || (ay - vc_ty * vz) * vc_ky > r)
+        return 0;
+    /* VU1-safe: the whole sphere in front of the near plane and inside the guard band */
+    if (vz - r >= R_NEAR && (ax - vc_tg * vz) * vc_kg < -r && (ay - vc_tg * vz) * vc_kg < -r)
+        return 1;
+    return 2;
 }
 
 /* the first n triangles of chunk c (n < c->tris: foliage thinned by distance) */
@@ -1380,6 +1404,7 @@ int map_draw(V3 eye)
         const float b[12] = {ey.x, ey.y, ey.z, rt.x, rt.y, rt.z, up.x, up.y, up.z, fw.x, fw.y, fw.z};
         memcpy(cam, b, sizeof cam);
         cam_f = fx;
+        vis_frame(fx, fy);
         MP_BEGIN
         tc_begin(fx);  /* this frame's texture uploads go into the chain from here on */
         MP_END(MP_TEX)
@@ -1715,7 +1740,7 @@ int map_draw(V3 eye)
                     int cls;
                     if (emit_close) {
                         MP_BEGIN
-                        cls = r_box_classify(c->mn, c->mx);
+                        cls = visible_(c, e, 1);  /* (as sky: no distance tests) */
                         MP_END(MP_CULL)
                     } else
                         cls = visible(c, e, 0);
