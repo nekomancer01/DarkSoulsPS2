@@ -25,6 +25,8 @@ int world_init(const char *boot_area);
  * instance 0; map_upload follows as usual. Then world_stream_open instead of map_stream_open. */
 int world_boot_map(void);
 void world_stream_open(void);
+/* MS_POOLS: the structural pool's size from the world table (world_init computes it; tools/world_budget.py the same) */
+unsigned world_struct_bytes(void);
 /* main.c after enemy_init / objects_init / fx_init: other blocks' enemy, breakable and effect types (boot time,
  * before the near-cell arena) */
 void world_systems(GSGLOBAL *gs);
@@ -50,7 +52,8 @@ typedef struct {
     unsigned load_ms, read_kb;       /* last lite load: wall time from first read to on, bytes */
     unsigned full_ms;                /* last relief load: ms from its first read to drawing it */
     unsigned on_us_max;              /* longest single-frame step (turning a block on / off), microseconds */
-    unsigned leans, relites;         /* WORLD_LITE_DIET: kept-only blocks that let go of their map tables / read them back */
+    unsigned leans, relites;
+    unsigned pool_spills;            /* MS_POOLS: lite-set entries the structural pool had no room for (item pages) */         /* WORLD_LITE_DIET: kept-only blocks that let go of their map tables / read them back */
     int loads, unloads, fails;
     unsigned hold_ms;                /* time the player was held at a block still loading (world_hold) */
     int hold_settles;                /* holds that ran out (WORLD_HOLD_S) and waited behind the loading screen */

@@ -66,6 +66,20 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #ifndef WORLD_LITE_DIET
 #define WORLD_LITE_DIET 1
 #endif
+/* MS_POOLS (mapstream.h, the Burg plan's step B2): the lite sets live in a structural pool of their own at the
+ * arena's top, sized here once from the world table: the most any collision triangle's links can have on at once
+ * (world_struct_bytes: wanted blocks whole, kept-only ones lean with WORLD_LITE_DIET, at most WORLD_SLOTS of them);
+ * the relief, a block's texture buffer and enemy model temporaries in a misc pool (the largest relief + the largest
+ * texture buffer + WORLD_MISC_EXTRA). A wanted lite set that finds the structural pool full first leans the kept-only
+ * blocks (they drain in WORLD_DRAIN frames), then turns one off (room_for); it never clears a map item. The visual
+ * room left is a constant tools/world_budget.py computes the same way (gen/world_budget.json "structural_kb"). */
+#define WORLD_MISC_EXTRA (640u << 10)
+/* the relief in the misc pool too (sized by the largest bump.bin). Off: the relief takes item room only where no map
+ * item is wanted (mapstream_alloc_soft, as before): with it in, the Burg's visual room was 2112 KB of an 8640 KB arena
+ * (structural 4544 KB for the link that loads three Burg blocks at once, misc 1984 KB; ISO 2026-11-08) */
+#ifndef WORLD_RELIEF_POOL
+#define WORLD_RELIEF_POOL 0
+#endif  /* ASSUMED: one of the Burg's larger enemy model.bin temporaries (578-590 KB) */
 #define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
@@ -312,6 +326,18 @@ int world_init(const char *boot_area)
     if (nblk > 1)
         mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
     mapstream_pool(WORLD_POOL);
+    if (nblk > 1) {
+        unsigned sb = world_struct_bytes(), mb = 0, bmax = 0, tmax = 0;
+        for (int i = 0; i < nblk; i++) {
+            unsigned bs = (rt[i].bump_size + 127) & ~127u;
+            bmax = bs > bmax ? bs : bmax;
+            tmax = rt[i].tex_total > tmax ? rt[i].tex_total : tmax;
+        }
+        mb = (WORLD_RELIEF_POOL ? bmax : 0) + tmax + WORLD_MISC_EXTRA;
+        mapstream_pools(sb, mb);
+        printf("world: structural pool %u KB (the most one triangle's links keep on), misc pool %u KB (relief %u + "
+               "textures %u + %u KB)\n", sb >> 10, mb >> 10, bmax >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
+    }
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
     for (int i = 0; i < nblk; i++)
@@ -320,6 +346,41 @@ int world_init(const char *boot_area)
                rt[i].total >> 10, rt[i].res_size >> 10, rt[i].open ? "" : " (no pack)");
     cur = 0;
     return 1;
+}
+
+/* WORLD_LITE_DIET: the map tables of block i (E_TAB .. E_TABC) */
+static unsigned tab_bytes(const BlockRt *r)
+{
+    unsigned n = 0;
+    for (int e = E_TAB; e <= E_TABC; e++)
+        n += (r->size[e] + 127) & ~127u;
+    return n;
+}
+
+/* the structural pool's size: over every link record of every block (the triangle under the player), the lite sets
+ * on at once: the blocks it loads (and the block itself) whole, those it only keeps lean (WORLD_LITE_DIET) or whole,
+ * the WORLD_SLOTS largest (world.c never has more on); the boot block's tables are in the heap (world_boot_map) */
+unsigned world_struct_bytes(void)
+{
+    unsigned best = 0;
+    for (int b = 0; b < nblk; b++)
+        for (unsigned l = 0; l < lrange[2 * b + 1]; l++) {
+            const WorldLink *k = links + lrange[2 * b] + l;
+            unsigned load = k->load | (b ? 1u << b : 0), keep = k->keep | load, v[WORLD_MAX], n = 0, sum = 0;
+            for (int i = 1; i < nblk; i++)
+                if (rt[i].open && (keep >> i & 1))
+                    v[n++] = (load >> i & 1) || !WORLD_LITE_DIET ? rt[i].total : rt[i].total - tab_bytes(&rt[i]);
+            for (unsigned s = 0; s < WORLD_SLOTS && s < n; s++) {  /* the WORLD_SLOTS largest */
+                unsigned m = s;
+                for (unsigned j = s + 1; j < n; j++)
+                    m = v[j] > v[m] ? j : m;
+                unsigned t = v[s];
+                v[s] = v[m], v[m] = t;
+                sum += v[s];
+            }
+            best = sum > best ? sum : best;
+        }
+    return best;
 }
 
 int world_boot_map(void)
@@ -522,7 +583,9 @@ static int tex_alloc(int i)
         return 1;
     if (r->retry_s > 0 && !warping)
         return 0;
-    r->texbuf = mapstream_alloc(r->tex_total, feet_now);
+    r->texbuf = mapstream_alloc_pool(r->tex_total, MS_POOL_MISC);  /* (MS_POOLS) */
+    if (!r->texbuf)
+        r->texbuf = mapstream_alloc(r->tex_total, feet_now);
     if (!r->texbuf && enemy_ram_free() >= WORLD_HEAP_FLOOR + r->tex_total)
         r->texbuf = memalign(128, r->tex_total);
     if (!r->texbuf) {
@@ -560,6 +623,7 @@ static void turn_off(int i)
     printf("world: block %d %s off\n", i, tab[i].pack);
 }
 
+static void *lite_alloc(int want, unsigned sz, int *wait);
 /* WORLD_LITE_DIET: the map tables of block i (E_TAB .. E_TABC) */
 static unsigned tab_kb(const BlockRt *r)
 {
@@ -621,10 +685,11 @@ static int relite_start(int i)
         unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
         if (!r->size[e])
             continue;
-        r->blob[e] = mapstream_alloc(sz, feet_now);
+        int wait = 0;
+        r->blob[e] = lite_alloc(i, sz, &wait);
         if (!r->blob[e]) {
             free_ents(r, E_TAB, E_TABC + 1);
-            r->retry_s = WORLD_RETRY_S;
+            r->retry_s = wait ? 0.1f : WORLD_RETRY_S;
             return 0;
         }
     }
@@ -732,6 +797,44 @@ static void read_step(int i, int issue)
         world_stats.reading = i, hitch_block_read(n);  /* else every request slot is taken: try next frame */
 }
 
+/* MS_POOLS: a lite-set entry from the structural pool. Full: a kept-only block that still holds its tables lets go of
+ * them (lean, freed WORLD_DRAIN frames later: *wait = 1, try again soon); none left to lean: as before, from the item
+ * pages (mapstream_alloc clears map items), which the pool's size should make rare (logged). Without pools: as before */
+static void lean(int i);
+static void *lite_alloc(int want, unsigned sz, int *wait)
+{
+    if (!mapstream_pools_on())
+        return mapstream_alloc(sz, feet_now);
+    void *p = mapstream_alloc_pool(sz, MS_POOL_STRUCT);
+    if (p)
+        return p;
+    for (int i = 1; i < nblk; i++)
+        if (rt[i].state == W_ON && rt[i].lean == 1 && rt[i].lean_drain > 0) {
+            *wait = 1;  /* one is draining already */
+            return NULL;
+        }
+    int b = -1;
+    float bd = -1;
+    for (int i = 1; WORLD_LITE_DIET && i < nblk; i++)
+        if (i != want && i != cur && rt[i].state == W_ON && rt[i].stage == 2 && !rt[i].lean && !(want_m >> i & 1) &&
+            world_stats.reading != i) {
+            float d = box_d(&tab[i], feet_now);
+            if (d > bd)
+                b = i, bd = d;
+        }
+    if (b >= 0) {
+        lean(b);
+        *wait = 1;
+        return NULL;
+    }
+    p = mapstream_alloc(sz, feet_now);
+    if (p)
+        world_stats.pool_spills++;
+    printf("world: structural pool full for %u KB of block %d: %s the item pages\n", sz >> 10, want,
+           p ? "taken from" : "nothing in");
+    return p;
+}
+
 static int start(int i)
 {
     BlockRt *r = &rt[i];
@@ -755,7 +858,13 @@ static int start(int i)
     memset(r->blob, 0, sizeof r->blob);
     for (unsigned k = 0; k < n; k++) {
         unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
-        r->blob[e] = mapstream_alloc(sz, feet_now);
+        int wait = 0;
+        r->blob[e] = lite_alloc(i, sz, &wait);
+        if (wait) {
+            free_ents(r, 0, NENT);
+            r->retry_s = 0.1f;  /* (a lean drains in WORLD_DRAIN frames) */
+            return 0;
+        }
         /* no hole in the near arena, and the player waits for this block (a warp, or held at its edge): the heap,
          * while it keeps WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS for the enemy types. At the top of the Burg ladders
          * with enemies the bonfire block's maptab.bin (592 KB) found none even after 886 KB of drawn cells went,
@@ -841,7 +950,9 @@ static void bump_step(void)
     /* the relief is detail on top of the map: it takes room no wanted cell needs (WORLD_RELIEF_SOFT). Taking it like a
      * lite set dropped ~700 KB of drawn cells at every block change after 1 s in the Burg, which then read back
      * (soak on the ISO, 2026-11-07); the heap is the enemies' (WORLD_HEAP_MODELS) */
-    bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
+    bump_buf = WORLD_RELIEF_POOL ? mapstream_alloc_pool(sz, MS_POOL_MISC) : NULL;  /* (sized by the largest relief) */
+    if (!bump_buf)
+        bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
     if (!bump_buf && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)
         bump_buf = memalign(128, sz);
     if (!bump_buf) {

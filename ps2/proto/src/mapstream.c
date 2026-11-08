@@ -282,14 +282,25 @@ static unsigned short *pfree;               /* free granules per page */
  * page not held by them as item room (cap = npages - other); items kept out of the reserve's free pages left that room
  * idle while 63 KB coarse cells of the pinned class found no room (384 KB of whole free pages there, ISO A/B of Ame's
  * play report 2026-11-08). mapstream_alloc clears item pages there like any other. */
+#ifndef MS_POOLS
+#define MS_POOLS 1
+#endif
+/* MS_POOLS: bytes asked for the structural / misc pools (mapstream_pools), their first pages once the arena exists
+ * (struct: [spage0, npages), misc: [mpage0, spage0), items below mpage0 = ipages), bytes mapstream_alloc placed in
+ * item pages (the plan leaves them out) */
+static unsigned pool_req[2], spage0, mpage0, items_other;
+static int pools_on;
 #ifndef MS_ITEMS_TOP
 #define MS_ITEMS_TOP 1
 #endif
 static inline unsigned ilim(void)
 {
+    if (pools_on)
+        return ipages;
     return MS_ITEMS_TOP && (mapstream_stats.other_kb << 10) > MS_OTHER ? npages : ipages;
 }
 static unsigned reserve_extra, pool_max = MS_POOL;
+
 /* make_window's scores per page: bits 0-7 highest class + 1 of its clearable groups, 0x200 not clearable; cost;
  * granules of clearable groups (a page whose used granules are not all clearable groups holds a read in flight or a
  * mapstream_alloc block) */
@@ -373,11 +384,11 @@ static void *g_alloc(unsigned n)
         }
     return NULL;
 }
-/* n bytes in a run of whole free pages below page `top`, the highest such run, placed at its top */
-static void *g_alloc_top(unsigned n, unsigned top)
+/* n bytes in a run of whole free pages in [bot, top), the highest such run, placed at its top */
+static void *g_alloc_range(unsigned n, unsigned bot, unsigned top)
 {
     unsigned np = (n + MS_PAGE - 1) / MS_PAGE, ng = (n + MS_GRAN - 1) / MS_GRAN, run = 0;
-    for (unsigned p = top; p-- > 0;) {
+    for (unsigned p = top; p-- > bot;) {
         run = pfree[p] == MS_GPP ? run + 1 : 0;
         if (run == np) {
             unsigned end = (p + np) * MS_GPP;
@@ -387,6 +398,7 @@ static void *g_alloc_top(unsigned n, unsigned top)
     }
     return NULL;
 }
+static void *g_alloc_top(unsigned n, unsigned top) { return g_alloc_range(n, 0, top); }
 static void g_free(void *ptr, unsigned n)
 {
     unsigned g0 = g_of(ptr);
@@ -432,9 +444,20 @@ static int ensure_arena(void)
                 pfree[p] = 0, memset(&gmap[p * MS_GPP / 32], 0xff, MS_GPP / 8);
             arena_size = sz;
             ipages = npages > 2 * (MS_OTHER / MS_PAGE) ? npages - MS_OTHER / MS_PAGE : npages / 2;
+            unsigned sp = (pool_req[0] + MS_PAGE - 1) / MS_PAGE, mp = (pool_req[1] + MS_PAGE - 1) / MS_PAGE;
+            if (MS_POOLS && sp && sp + mp + 16 < npages) {  /* (16: at least 1 MB of items) */
+                pools_on = 1;
+                spage0 = npages - sp, mpage0 = spage0 - mp, ipages = mpage0;
+            }
         }
     }
     printf("mapstream: v2 arena %u KB in %u pages (heap free %u KB)\n", arena ? arena_size >> 10 : 0, npages, hf >> 10);
+    if (pools_on)
+        printf("mapstream: arena structural %u KB, misc %u KB, visual %u KB\n", (npages - spage0) * (MS_PAGE >> 10),
+               (spage0 - mpage0) * (MS_PAGE >> 10), ipages * (MS_PAGE >> 10));
+    else if (arena && pool_req[0])
+        printf("mapstream: arena pools off (MS_POOLS %d, structural %u KB + misc %u KB asked of %u KB)\n", MS_POOLS,
+               pool_req[0] >> 10, pool_req[1] >> 10, arena_size >> 10);
     return arena != NULL;
 }
 
@@ -750,7 +773,8 @@ static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
 }
 static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb)
 {
-    unsigned lim = ng_need ? ilim() : npages;  /* a read's window lies where items may go */
+    unsigned lim = ng_need || pools_on ? ilim() : npages;  /* a read's window lies where items may go (MS_POOLS: and
+                                                             * mapstream_alloc's beyond the pools) */
     if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
         return 0;
     memset(pcls, 0, ntot() * sizeof *pcls);
@@ -1414,7 +1438,7 @@ static void plan_(const float *pos)
     pt[np_++] = ticks();
     qsort(want, nw, sizeof *want, w_cmp);
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
-    unsigned other = mapstream_stats.other_kb << 10, over = other > MS_OTHER ? other - MS_OTHER : 0;
+    unsigned other = mapstream_stats.other_kb << 10, over = pools_on ? items_other : other > MS_OTHER ? other - MS_OTHER : 0;
     unsigned room = (ipages + nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
     unsigned cap = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, sum = 0;
     pt[np_++] = ticks();
@@ -1815,17 +1839,49 @@ int mapstream_owns(const void *p)
 void mapstream_lend(void *p, unsigned n) { (void)p, (void)n; }
 int mapstream_reclaim(void *p, unsigned n) { (void)p, (void)n; return 1; }
 
+void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
+{
+    if (!arena)
+        pool_req[0] = struct_bytes, pool_req[1] = misc_bytes;
+}
+
+unsigned mapstream_visual(void) { return arena ? ipages * MS_PAGE : 0; }
+int mapstream_pools_on(void) { return pools_on; }
+
+void *mapstream_alloc_pool(unsigned n, int pool)
+{
+    if (!mapstream_arena() || !pools_on)
+        return NULL;
+    void *p = pool == MS_POOL_STRUCT ? g_alloc_range(n, spage0, npages) : g_alloc_range(n, mpage0, spage0);
+    if (p)
+        mapstream_stats.other_kb += (n + 1023) >> 10;
+    return p;
+}
+
+/* the top of the item pages mapstream_alloc may clear (all pages without pools) */
+static inline unsigned alloc_top(void) { return pools_on ? ipages : npages; }
+static void *alloc_items(unsigned n)
+{
+    void *p = g_alloc_top(n, alloc_top());
+    if (p && pools_on)
+        items_other += (n + MS_GRAN - 1) / MS_GRAN * MS_GRAN;
+    return p;
+}
+
 void *mapstream_alloc(unsigned n, const float pos[3])
 {
     (void)pos;  /* ranks come from the last plan */
     if (!mapstream_arena())
         return NULL;
-    void *p = g_alloc_top(n, npages);
+    void *p = mapstream_alloc_pool(n, MS_POOL_MISC);  /* (MS_POOLS: enemy model temporaries and the like) */
+    if (p)
+        return p;
+    p = alloc_items(n);
     unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
     /* clear a window: of items below the near class first, then of anything but the pinned level, last of anything
      * (a lite set holds the collision the player walks onto next); never of items a VIF chain may read (in_chain) */
     if (!p && (make_window(need, 0, C_NEAR2, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_TOP + 1, &kb)))
-        p = g_alloc_top(n, npages);
+        p = alloc_items(n);
     if (!p) {
         /* every window holds a drawn item: the lite set of the block the player walks onto next (983 KB of the
          * bonfire block's collision) found none for minutes and the player walked off the loaded floor (ISO
@@ -1835,7 +1891,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
         chains_done = 1;
         nowin = C_TOP + 2;
         if (make_window(need, 0, C_TOP + 1, &kb))
-            p = g_alloc_top(n, npages);
+            p = alloc_items(n);
         if (!p && nrd) {
             /* still none: the pages reads in flight land in cannot be cleared, and up to MS_INFLIGHT small reads are
              * spread over the arena (indexed map data: more, smaller items; a 1.3 MB enemy model temporary at the
@@ -1852,7 +1908,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
             nrd = 0;
             mapstream_stats.pending = 0;
             if (make_window(need, 0, C_TOP + 1, &kb))
-                p = g_alloc_top(n, npages);
+                p = alloc_items(n);
         }
         chains_done = 0;
     }
@@ -1867,10 +1923,10 @@ void *mapstream_alloc_soft(unsigned n)
 {
     if (!mapstream_arena())
         return NULL;
-    void *p = g_alloc_top(n, npages);
+    void *p = alloc_items(n);
     unsigned kb = 0;
     if (!p && make_window((n + MS_PAGE - 1) / MS_PAGE, 0, C_PREF, &kb))  /* only what no class wants */
-        p = g_alloc_top(n, npages);
+        p = alloc_items(n);
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;
     else {
@@ -1880,7 +1936,7 @@ void *mapstream_alloc_soft(unsigned n)
         for (unsigned i = 0; i < npages; i++)
             fr += pfree[i];
         int mv = MS_DEFRAG && !npend && fr * MS_GRAN >= n + (MS_DEFRAG_KB << 10) &&
-                 defrag((n + MS_PAGE - 1) / MS_PAGE, npages, 3 * MS_DEFRAG_KB);
+                 defrag((n + MS_PAGE - 1) / MS_PAGE, alloc_top(), 3 * MS_DEFRAG_KB);
         printf("mapstream: soft alloc %u KB: no room beside the wanted cells%s (%u KB free)\n", n >> 10,
                mv ? ", window being emptied" : "", fr * MS_GRAN >> 10);
     }
@@ -1891,6 +1947,8 @@ void mapstream_free(void *p, unsigned n)
 {
     if (!p)
         return;
+    if (pools_on && g_of(p) < ipages * MS_GPP)
+        items_other -= (n + MS_GRAN - 1) / MS_GRAN * MS_GRAN;
     g_free(p, n);
     mapstream_stats.other_kb -= (n + 1023) >> 10;
     replan = 1;  /* room for what was refused */

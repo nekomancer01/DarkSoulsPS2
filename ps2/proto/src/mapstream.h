@@ -65,6 +65,19 @@ void *mapstream_alloc(unsigned n, const float pos[3]);
  * For optional data (world.c relief). NULL when there is no such room. */
 void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
+/* MS_POOLS (default 1; the Burg plan's step B2): the arena's top is split off for what is not map items, sized once
+ * before the arena exists (world.c world_init, from the world table): a structural pool for the lite sets of the
+ * WORLD_SLOTS blocks (MS_POOL_STRUCT) and a misc pool for the relief, a block's texture buffer and enemy model
+ * temporaries (MS_POOL_MISC). Map items never use either, so the visual room (the pages below) is the same at every
+ * spot; the boot log prints "mapstream: arena structural X KB, misc Y KB, visual Z KB". mapstream_alloc_pool takes
+ * from one pool only and never drops a map item (NULL: the pool is full); mapstream_alloc / _soft try the misc pool,
+ * then clear item pages as before. MS_POOLS=0: one arena (mapstream_pools does nothing). */
+enum { MS_POOL_STRUCT, MS_POOL_MISC };
+void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes);
+void *mapstream_alloc_pool(unsigned n, int pool);
+/* the visual room in bytes (the item pages; 0 before the arena exists) */
+unsigned mapstream_visual(void);
+int mapstream_pools_on(void);
 /* Heap left outside the arena beyond MS_RESERVE (call before the arena exists: world.c, for the enemy models of a
  * second block near a junction) */
 void mapstream_reserve(unsigned extra);
