@@ -1399,6 +1399,9 @@ enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, 
 static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
 static unsigned rs_stop[RS_N], rs_runs, rs_items, rs_reads, rs_contig, rs_kb, rs_frame;
 static unsigned rs_last_end, rs_last_k = ~0u;
+/* per instance (world block): reads, and of them far backdrop / coarse / sky / texture / mip 1 / other items */
+enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
+static unsigned rk[MS_INST][RK_N + 1];
 #define MS_RUNLOG_FRAMES 300
 static void rs_log(void)
 {
@@ -1411,7 +1414,13 @@ static void rs_log(void)
            rs_kb, rs_reads, rs_contig);
     for (int i = 0; i < RS_N; i++)
         printf(" %s %u", rs_name[i], rs_stop[i]);
+    printf("; by block");
+    for (int k = 0; k < MS_INST; k++)
+        if (rk[k][RK_N])
+            printf(" %d: %u (far %u coarse %u sky %u tex %u mip1 %u other %u)", k, rk[k][RK_N], rk[k][RK_FAR],
+                   rk[k][RK_COARSE], rk[k][RK_SKY], rk[k][RK_TEX], rk[k][RK_MIP1], rk[k][RK_OTHER]);
     printf("\n");
+    memset(rk, 0, sizeof rk);
     memset(rs_stop, 0, sizeof rs_stop);
     rs_runs = rs_items = rs_reads = rs_contig = rs_kb = 0;
 }
@@ -1526,6 +1535,10 @@ static int issue(void)
             unsigned o = it_off(m, g);
             rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
             rs_last_end = o + gb, rs_last_k = w.k;
+            unsigned tg = it_res(m, g) ? m->rit[g - m->ncell].tag : 0;
+            rk[w.k][RK_N]++;
+            rk[w.k][tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? RK_MIP1 : RK_TEX) : tg & MS_RES_SKY ? RK_SKY :
+                    tg & MS_RES_FAR ? RK_FAR : tg & MS_RES_COARSE ? RK_COARSE : RK_OTHER]++;
         }
         if (!tk) {
             g_free(p, gb);

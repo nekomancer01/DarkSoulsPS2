@@ -185,6 +185,39 @@ static SndDiscStat dstat __attribute__((aligned(64)));
 static int cd_layer = -1, cd_dual;  /* layer of the last read (-1 none yet); 1: a real dual-layer disc */
 static unsigned int cd_window = 4371;
 
+/* Burg plan B8b: where the far seeks go (the disc gate's hard half). The file holding an LSN (df_tab), and the first
+ * FAR_LOG far seeks of each from -> to pair printed with their count every FAR_LOG_EVERY far seeks */
+#define FAR_LOG_PAIRS 24
+#define FAR_LOG_EVERY 64
+static struct { short a, b; unsigned short n; } far_pair[FAR_LOG_PAIRS];
+static int far_npair;
+static unsigned int far_total;
+static int df_file_at(unsigned int lsn)
+{
+    for (int i = 0; i < df_n; i++)
+        if (lsn >= df_tab[i].lsn && lsn < df_tab[i].lsn + (df_tab[i].size + 2047) / 2048)
+            return i;
+    return -1;
+}
+static void far_note(unsigned int from, unsigned int to)
+{
+    int a = df_file_at(from ? from - 1 : 0), b = df_file_at(to), k;
+    for (k = 0; k < far_npair && !(far_pair[k].a == a && far_pair[k].b == b); k++)
+        ;
+    if (k == far_npair && far_npair < FAR_LOG_PAIRS)
+        far_pair[k].a = a, far_pair[k].b = b, far_pair[k].n = 0, far_npair++;
+    if (k < far_npair)
+        far_pair[k].n++;
+    if (++far_total % FAR_LOG_EVERY)
+        return;
+    printf("dsrsnd: far seeks %u:", far_total);
+    for (k = 0; k < far_npair; k++)
+        printf(" %s>%s %u", far_pair[k].a >= 0 ? df_tab[far_pair[k].a].name : "?",
+               far_pair[k].b >= 0 ? df_tab[far_pair[k].b].name : "?", far_pair[k].n);
+    printf("\n");
+    far_npair = 0;
+}
+
 static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
 {
     int l = dstat.layer1 && lsn >= dstat.layer1, lc = cd_layer >= 0 && l != cd_layer;
@@ -195,6 +228,8 @@ static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
         unsigned int d = lsn > cd_head ? lsn - cd_head : cd_head - lsn;
         dstat.seeks++;
         dstat.far_seeks += d > cd_window || lc;
+        if (d > cd_window || lc)
+            far_note(cd_head, lsn);
     }
     unsigned int t0 = now_ms();
     for (int t = 0; t < DF_TRIES; t++) {
