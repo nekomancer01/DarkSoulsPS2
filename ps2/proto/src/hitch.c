@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include "hitch.h"
 #include "mapstream.h"
+#include "pack.h"
+#include "dsrsnd_rpc.h"
 
 #define HITCH_PERIOD_S 10.0f
 #define TPMS 294912u  /* EE ticks per ms */
@@ -139,6 +141,33 @@ void *__wrap_memalign(size_t a, size_t n)
     return p;
 }
 
+/* the drive over the period (dsrsnd's counters, ISO runs only): read rate, seeks, EE read latency, layer changes, page
+ * cache. A layer change in a period with a loading screen counts for the load (budget doc: none during play) */
+static const char *media_name(unsigned m) { return m == SNDM_DVD9 ? "dvd9" : m == SNDM_DVD ? "dvd" : m == SNDM_CD ? "cd" : "-"; }
+static void disc_line(float secs, int loading)
+{
+    static SndDiscStat prev;
+    static int have;
+    SndDiscStat d;
+    int ok = pack_disc_stats(&d);
+    pack_disc_poll();  /* fresh counters for the next period */
+    if (!ok)
+        return;
+    if (have && secs > 0) {
+        unsigned lc = d.layer_changes - prev.layer_changes, n = d.lat_n - prev.lat_n;
+        if (!loading)
+            hitch_total.layer_play += lc;
+        printf("disc: t %u s media %s kbps %u seeks %u far %u (%.2f/s) layer %u%s | ee reads %u wait avg %u max %u ms | "
+               "stream wait max %u ms over100 %u | cache %u KB hits %u miss %u | busy %u %% | iop free %u KB\n",
+               (unsigned)run_s, media_name(d.media), (unsigned)((d.drive_kb - prev.drive_kb) / secs),
+               d.seeks - prev.seeks, d.far_seeks - prev.far_seeks, (d.seeks - prev.seeks) / secs, lc,
+               loading ? " (load)" : "", n, n ? (d.lat_ms - prev.lat_ms) / n : 0, d.lat_max, d.wait_max_ms, d.waits_100,
+               d.cache_kb, d.cache_hits - prev.cache_hits, d.cache_miss - prev.cache_miss,
+               (unsigned)((d.drive_ms - prev.drive_ms) / (10.0f * secs)), d.iop_free >> 10);
+    }
+    prev = d, have = 1;
+}
+
 static unsigned spikes, spikes_cut;
 static void spike(unsigned ms)
 {
@@ -208,6 +237,7 @@ void hitch_frame(float dt_real)
         if (top[i].n > 1)
             printf(" %d.%u x%u", top[i].k, top[i].ci, top[i].n);
     printf("\n");
+    disc_line(per_s, n_load > 0);
     per_s = 0;
     spikes = spikes_cut = af_n = af_kb = 0;
     n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;

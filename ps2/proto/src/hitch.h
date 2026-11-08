@@ -32,6 +32,9 @@ enum {
     HS_MSIO,   /* inside: issue / collect */
     HS_MSVIS,  /* inside: the visibility job (vis_step) */
     HS_LOG,    /* printf (pack.c __wrap__write), anywhere */
+    HS_FX,     /* inside HS_CHR: fx_update + fx_draw (the budget's effects pass) */
+    HS_HUD,    /* inside HS_CHR: HUD, menu, overlays */
+    HS_DBG,    /* inside HS_HUD: the debug overlay (option hud in the tests; not part of the budget) */
     HS_N
 };
 
@@ -67,6 +70,7 @@ void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb
 /* totals over the run (test gates) */
 typedef struct {
     unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms, allocfail;
+    unsigned layer_play;  /* disc layer changes in periods without a loading screen (the disc: lines) */
 } HitchTotals;
 extern HitchTotals hitch_total;
 

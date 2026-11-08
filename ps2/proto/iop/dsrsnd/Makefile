@@ -6,5 +6,6 @@ IOP_OBJS = dsrsnd.o imports.o
 IOP_INCS += -I../../src
 IOP_OPTFLAGS = -O2
 IOP_WARNFLAGS = -Wall -Werror
+IOP_CFLAGS += $(DSRSND_DEFS)
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.iopglobal

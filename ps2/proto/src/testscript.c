@@ -20,6 +20,9 @@
 #include "event.h"
 #include "loading.h"
 #include "combat.h"
+#include "hitch.h"
+#include "pack.h"
+#include "dsrsnd_rpc.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
 int test_god;
@@ -255,8 +258,72 @@ static void ft_print(const char *name, const unsigned *h)
     printf("TEST frames %s n %u p50 %d p90 %d over34 %u pct %u\n", name, n, p50, p90, over, n ? over * 100 / n : 0);
 }
 
+/* Budget passes per shot (budget doc "Frame time budget (final)", tools/budget.py): each frame's section times from
+ * hitch_acc in PB_BIN ms bins, p50 / p90 per pass and the frame's p99 on the "TEST passes" line, with the drive's
+ * counters over the segment (ISO runs; dsrsnd_rpc.h SndDiscStat) */
+enum { PB_MAP, PB_CHR, PB_FX, PB_LOGIC, PB_WORLD, PB_VUW, PB_FRAME, PB_N };
+static const char *const pb_name[PB_N] = {"map", "chr", "fxhud", "logic", "world", "vuw", "frame"};
+#define PB_BINS 256
+#define PB_BIN 0.25f  /* ms: up to 64 ms, the last bin above */
+static unsigned short pb_hist[PB_N][PB_BINS];
+static float pb_secs;
+static SndDiscStat pb_disc0;
+
+static float pb_pct(const unsigned short *h, unsigned n, unsigned pct)
+{
+    unsigned acc = 0;
+    for (int i = 0; i < PB_BINS; i++)
+        if (100 * (acc += h[i]) >= pct * n)
+            return (i + 1) * PB_BIN;  /* the bin's upper edge */
+    return PB_BINS * PB_BIN;
+}
+
+static void pb_frame(float frame_ms)
+{
+    const float k = 1.0f / 294912.0f;
+    unsigned chr = hitch_acc[HS_CHR] - hitch_acc[HS_FX] - hitch_acc[HS_HUD];  /* (the debug overlay counts nowhere) */
+    float v[PB_N] = {hitch_acc[HS_MAP] * k, chr * k, (hitch_acc[HS_FX] + hitch_acc[HS_HUD] - hitch_acc[HS_DBG]) * k,
+                     (hitch_acc[HS_PRE] + hitch_acc[HS_LOGIC]) * k, (hitch_acc[HS_WORLD] + hitch_acc[HS_SND]) * k,
+                     hitch_acc[HS_WAIT] * k, frame_ms};
+    for (int i = 0; i < PB_N; i++) {
+        int b = v[i] < 0 ? 0 : (int)(v[i] / PB_BIN);
+        b = b >= PB_BINS ? PB_BINS - 1 : b;
+        if (pb_hist[i][b] < 0xFFFF)
+            pb_hist[i][b]++;
+    }
+    pb_secs += frame_ms * 0.001f;
+}
+
+static void pb_print(const char *name)
+{
+    unsigned n = 0, over = 0;
+    for (int b = 0; b < PB_BINS; b++)
+        n += pb_hist[PB_FRAME][b], over += b * PB_BIN >= 34.0f ? pb_hist[PB_FRAME][b] : 0;
+    printf("TEST passes %s n %u", name, n);
+    for (int i = 0; i < PB_N && n; i++)
+        printf(" %s_p50 %.2f %s_p90 %.2f", pb_name[i], pb_pct(pb_hist[i], n, 50), pb_name[i], pb_pct(pb_hist[i], n, 90));
+    printf(" frame_p99 %.2f over34 %u secs %.2f", n ? pb_pct(pb_hist[PB_FRAME], n, 99) : 0, over, pb_secs);
+    SndDiscStat d;
+    if (pack_disc_stats(&d)) {
+        const SndDiscStat *a = &pb_disc0;
+        unsigned rn = d.lat_n - a->lat_n;
+        printf(" media %u disc_kb %u seeks %u far_seeks %u layer_changes %u ee_reads %u wait_avg %u wait_max %u "
+               "stream_wait_max %u cache_kb %u cache_hits %u cache_miss %u cache_direct %u drive_ms %u iop_free %u",
+               d.media, d.drive_kb - a->drive_kb, d.seeks - a->seeks, d.far_seeks - a->far_seeks,
+               d.layer_changes - a->layer_changes, rn, rn ? (d.lat_ms - a->lat_ms) / rn : 0, d.lat_max, d.wait_max_ms,
+               d.cache_kb, d.cache_hits - a->cache_hits, d.cache_miss - a->cache_miss,
+               d.cache_direct - a->cache_direct, d.drive_ms - a->drive_ms,
+               d.iop_free >> 10);
+    }
+    printf("\n");
+}
+
 static void seg_reset(void)
 {
+    memset(pb_hist, 0, sizeof pb_hist);
+    pb_secs = 0;
+    pack_disc_stats(&pb_disc0);
+    pack_disc_poll();
     memset(ft_seg, 0, sizeof ft_seg);
     test_mb.seg_frames = 0;
     test_mb.seg_ms_avg = test_mb.seg_ms_max = test_mb.seg_map_max = 0;
@@ -336,6 +403,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                        test_mb.vram_free, test_mb.seg_chain_map_max, test_mb.seg_chain_chr_max, test_mb.tris,
                        test_mb.vu1_batches, test_mb.ee_tris, pl->pos.x, pl->pos.y, pl->pos.z);
                 ft_print(c->text, ft_seg);
+                pb_print(c->text);
                 printf("TEST fx %s particles %d drawn %d vu1 %d batches %d ms %.3f draw %.3f breaks %d %d %d\n",
                        c->text, fx_stats.particles, fx_stats.drawn, fx_stats.vu1, fx_stats.batches, fx_stats.ms,
                        fx_stats.ms_draw, fx_stats.vu1_breaks[0], fx_stats.vu1_breaks[1], fx_stats.vu1_breaks[2]);
@@ -418,6 +486,7 @@ void test_frame_end(const Player *pl, float avg_dt, float dt_real, float map_ms,
     m->seg_ms_avg += (ms - m->seg_ms_avg) / (float)(m->seg_frames - 2);
     int bin = ms < 0 ? 0 : ms >= 2 * (FT_BINS - 1) ? FT_BINS - 1 : (int)(ms * 0.5f);
     ft_seg[bin]++, ft_all[bin]++;
+    pb_frame(ms);
     if (ms > m->seg_ms_max)
         m->seg_ms_max = ms;
     if (map_ms > m->seg_map_max)

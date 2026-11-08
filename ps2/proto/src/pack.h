@@ -96,6 +96,12 @@ extern int pack_cdrom;
 int pack_disc_boot(void);
 int pack_disc_attach(void);
 void pack_disc_stat(unsigned out[4]);
+/* the disc server's counters (dsrsnd_rpc.h SndDiscStat) as of its last reply; 0 without the server (host: runs).
+ * pack_disc_poll asks for a fresh copy (an empty submit) when no request went out since the last call */
+int pack_disc_stats(void *out /* SndDiscStat */);
+void pack_disc_poll(void);
+/* the media the disc server found (dsrsnd_rpc.h SNDM_*: 0 none yet / host:) */
+unsigned pack_disc_media(void);
 
 /* Totals since boot: compressed bytes read, raw bytes produced, EE ticks (294.912 MHz) spent in pack_load and the
  * part of those spent waiting for the IOP, heap bytes handed out by pack_load */

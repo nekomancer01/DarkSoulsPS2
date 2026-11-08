@@ -96,6 +96,16 @@ PVS ?= 1
 ifeq ($(PVS),0)
 EE_CFLAGS += -DNO_PVS
 endif
+# Disc (budget doc proposals 2 and 4, 2026-11-08): the streaming budgets follow the media in the drive (dsrsnd reads the
+# disc type at its first cdrom0: open: the DVD-9 column on a DVD, the CD column on a CD; host: runs use the DVD one).
+# MEDIA=cd forces the CD column (fallback). DISC_CACHE=0 builds dsrsnd without its 512 KB IOP page cache (in its own
+# BUILD dir: the switch does not rebuild an existing dsrsnd.irx).
+MEDIA ?= auto
+ifeq ($(MEDIA),cd)
+EE_CFLAGS += -DMEDIA_CD
+endif
+DISC_CACHE ?= 1
+DSRSND_DEFS = $(if $(filter 0,$(DISC_CACHE)),-DDSRSND_NO_CACHE)
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
 # they are. make PROFILE=1 -> proto_prof.elf: main.c with -DPROFILE (per-pass EE cycles + I$ / D$ misses from the COP0
@@ -130,7 +140,7 @@ IRX_OBJS = $(O)/irx/dsrsnd_irx.o $(O)/irx/libsd_irx.o
 EE_OBJS += $(IRX_OBJS)
 $(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
 	@mkdir -p $(@D)
-	$(MAKE) --no-print-directory -C iop/dsrsnd IOP_OBJS_DIR=$(abspath $(@D))/ IOP_BIN=$(abspath $@)
+	$(MAKE) --no-print-directory -C iop/dsrsnd IOP_OBJS_DIR=$(abspath $(@D))/ IOP_BIN=$(abspath $@) DSRSND_DEFS='$(DSRSND_DEFS)'
 $(O)/irx/libsd.irx: $(PS2SDK)/iop/irx/libsd.irx
 	@mkdir -p $(@D)
 	cp $< $@

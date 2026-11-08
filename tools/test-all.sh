@@ -7,6 +7,7 @@
 #   3 render   tools/test-gsdump.py compare: shots vs the previous run (build/test/last) and vs the accepted baseline
 #              (build/test/baseline); with --gsdump each shot also has a GS dump and the comparison uses dump replays
 #   4 perf     tools/test-perf.py: per-spot stats appended to build/test/perf-history.csv, compared with the previous build
+#   5 budget   tools/budget.py: each shot's passes at p90 against the budget doc's frame budget
 #   --accept   make this run the baseline for step 3
 # Each PCSX2 step runs through tools/q with a small memory cap (one headless PCSX2 ~1.5 GB host RAM, outside the cap:
 # the flatpak runs on the host). Exit code = number of failed steps.
@@ -68,6 +69,8 @@ if [ -f "$RUN/smoke/smoke.json" ] && [ -n "$ELFS" ]; then
     "$PY" tools/test-perf.py record "$RUN/smoke" "$BUILD/test/perf-history.csv" $ELFS
     step perf "$PY" tools/test-perf.py check "$BUILD/test/perf-history.csv" $ELFS --json "$RUN/perf.json"
 fi
+# the frame budget per shot (tools/budget.py; host ELF runs: no disc server, so no disc gates)
+[ -d "$RUN/smoke" ] && step budget "$PY" tools/budget.py "$RUN/smoke"
 # what this run tested (tools/runstamp.py): git revision + uncommitted-change hash, ELF hashes; shown in report.html
 "$PY" tools/runstamp.py $ELFS > "$RUN/stamp.json" 2>/dev/null
 ln -sfn "$RUN" "$BUILD/test/last"

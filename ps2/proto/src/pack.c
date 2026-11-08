@@ -115,6 +115,8 @@ static struct { unsigned slot, seq; } io_cxl[IO_SLOTS];  /* cancels not sent yet
 static int io_ncxl;
 static SifRpcClientData_t io_cl __attribute__((aligned(64)));
 static int io_cl_busy;
+static int io_stat_want;  /* pack_disc_poll: an empty submit for fresh counters */
+static SndDiscStat io_last;  /* io_rx as of the last reply that landed */
 static SndDiscReq io_tx[SND_DISC_BATCH] __attribute__((aligned(64)));
 static SndDiscStat io_rx __attribute__((aligned(64)));
 static SndDiscDone io_done[IO_SLOTS] __attribute__((aligned(64)));
@@ -144,6 +146,7 @@ int pack_disc_attach(void)
     init.done = (unsigned)io_done;
     SifCallRpc(&io_cl, SNDF_DISC_INIT, 0, &init, sizeof init, &io_rx, sizeof io_rx, NULL, NULL);
     const volatile SndDiscStat *st = (const volatile SndDiscStat *)((unsigned)&io_rx | 0x20000000);
+    memcpy(&io_last, (const void *)st, sizeof io_last);
     printf("pack: cdrom0: through dsrsnd's disc server; IOP RAM free %u KB (%u KB before dsrsnd's buffers)\n",
            st->iop_free >> 10, st->iop_free_boot >> 10);
     io_srv = 1;
@@ -189,6 +192,8 @@ static void srv_pump(void)
     }
     if (io_cl_busy && SifCheckStatRpc(&io_cl))
         return;
+    if (io_cl_busy || io_stat_want)  /* the reply is in: keep a copy the next RPC does not overwrite mid-read */
+        memcpy(&io_last, (const void *)((unsigned)&io_rx | 0x20000000), sizeof io_last);
     io_cl_busy = 0;
     int n = 0;
     while (io_ncxl && n < SND_DISC_BATCH) {
@@ -211,11 +216,30 @@ static void srv_pump(void)
             snprintf(r->path, sizeof r->path, "%s", q->path);
         q->state = IO_SENT;
     }
-    if (!n)
+    if (!n && !io_stat_want)
         return;
+    io_stat_want = 0;
     SifCallRpc(&io_cl, SNDF_DISC_SUBMIT, SIF_RPC_M_NOWAIT, io_tx, n * sizeof *io_tx, &io_rx, sizeof io_rx, NULL, NULL);
     io_cl_busy = 1;
 }
+
+int pack_disc_stats(void *out)
+{
+    if (!io_srv)
+        return memset(out, 0, sizeof(SndDiscStat)), 0;
+    memcpy(out, &io_last, sizeof io_last);
+    return 1;
+}
+
+void pack_disc_poll(void)
+{
+    if (!io_srv)
+        return;
+    io_stat_want = 1;
+    srv_pump();
+}
+
+unsigned pack_disc_media(void) { return io_srv ? io_last.media : 0; }
 
 /* fio: the request in flight if it ended, then the next one (sync first, then in order) */
 static void fio_pump(void)

@@ -4,8 +4,13 @@ so the PS2 can decompress one batch of blocks while the IOP reads the next (ps2/
 Layout (little-endian), one pack per area (m10_02_00_00.pak: map + collision) or character (c0000.pak):
   header   char magic[4] "DSRP", u32 version 1, u32 entry count, u32 header bytes (multiple of 2048)
   entries  {char name[32]; u32 offset; u32 raw size; u32 packed size; u32 blocks; u32 block size; u32 pad[3]} = 64 B
-  data     per entry at a 2048-byte (CD sector) aligned offset: u32 csize[blocks] (bit 31 set = block stored raw),
-           then the blocks back to back. A block decompresses to block size bytes (the last one to the remainder).
+  data     per entry: u32 csize[blocks] (bit 31 set = block stored raw), then the blocks back to back. A block
+           decompresses to block size bytes (the last one to the remainder). Placement (2026-11-08, budget doc
+           proposal 3): the drive reads 32 KB ECC blocks (16 sectors), and tools/iso9660.py starts every pack on one,
+           so an entry of 32 KB or more has its blocks (after the csize table) start on a 32 KB boundary of the pack,
+           and a smaller one starts on a sector and never crosses a 32 KB boundary (it moves to the next one). An
+           item straddling a block costs the drive a whole extra block (Sony measured 12-15 % of throughput).
+           Readers take the offset as it is (any byte). ALIGN=0 in the environment: every entry on a sector, as before.
 Usage: pack.py <out.pak> <name>=<file> [<name>=raw:<file> ...]
   raw: every block stored uncompressed, so byte k of the entry sits at offset + 4 x blocks + k and can be read in place
   (map cells streamed at runtime: src/mapstream.c reads byte ranges with pack.c pack_read_async)
@@ -15,6 +20,18 @@ import ctypes, os, struct, sys, time
 
 SECTOR = 2048
 BLOCK = 65536
+ECC = 32768  # the drive's smallest read (16 sectors)
+
+
+def place(cur, table, n):
+    """offset of an entry with a table-byte csize table and n bytes in all, at or after cur (sector aligned)"""
+    if os.environ.get("ALIGN", "1") == "0":
+        return cur
+    if n >= ECC:  # its blocks from a 32 KB boundary
+        return -(-(cur + table) // ECC) * ECC - table
+    if cur // ECC != (cur + n - 1) // ECC:  # would cross one: from the next
+        return -(-cur // ECC) * ECC
+    return cur
 NATIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
 
 
@@ -65,7 +82,9 @@ def main(argv=None, log=print):
         store = path.startswith("raw:")
         data = open(path[4:] if store else path, "rb").read()
         packed, nb = pack_entry(L, data, store)
-        off = hdr_bytes + len(body)
+        cur = hdr_bytes + len(body)
+        off = place(cur, 4 * nb, len(packed))
+        body += b"\0" * (off - cur)
         entries.append(struct.pack("<32s8I", name.encode(), off, len(data), len(packed), nb, BLOCK, 0, 0, 0))
         body += packed
         body += b"\0" * (-len(body) % SECTOR)
