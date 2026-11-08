@@ -43,6 +43,10 @@ extern int map_vu1_batches, map_ee_tris;
  * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
  * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
 #define MAP_INST 5
+/* the next map_block_init(k, ...) takes maptab.bin in three pieces: tab = bytes [0, b_off + ...), b = the piece
+ * from byte b_off (textures, navmesh, fog rows), c = the piece from byte c_off (cell table, horizon) (world.c
+ * WORLD_TAB_SPLIT) */
+void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsigned c_off);
 int map_block_init(int k, const void *tab, const void *res, int col_block);
 int map_tex_slot(int k);  /* texcache slot of instance k > 0 while it is on (texcache.h TC_BLOCKS), else -1 */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */
