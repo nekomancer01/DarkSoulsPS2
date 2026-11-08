@@ -96,6 +96,9 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #define MS_NEAR_FIRST 1
 #endif
 #define MS_R1_FIRST 32.0f
+#ifndef MS_NEAR_OVER
+#define MS_NEAR_OVER 1
+#endif
 /* MS_CANCEL (default on; 0 = off): a read in flight whose items all fell below C_PREF on a re-plan (the player moved
  * on or warped, a settle began) is cancelled and its pages freed (pack_req_cancel stops it after its current 64 KB
  * page). Without it up to MS_INFLIGHT x MS_RUN = 2 MB of stale reads went on landing ahead of what the new spot
@@ -751,6 +754,18 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * 24 m waited for it up to 90 s) and 5-17 cells inside the horizon radius drew their untextured horizon instead of
      * their coarse level, the "malformed parts" of the user report. Coarse first, the horizon is a ring at the far
      * edge and the near level fills in nearest cell first with what is left. */
+    /* MS_NEAR_OVER (Burg plan B3, default on; 0 = pinned as below): the coarse items of a cell with a near level
+     * within MS_R0_DRAW rank below the near parts (C_VIEW2). The export's hard tier budgets the coarse level from
+     * MS_R0_DRAW out and the near level inside it, never both at one cell (export_map.py WS_UNION, world_budget.py);
+     * pinned above the near parts, the coarse level of the cells around the player held ~1 MB more than the budget at
+     * the median spot until their near parts landed, and the near parts were refused ("no room", Burg soak 2026-11-08).
+     * A cell whose near part is not in and whose coarse level is out draws its horizon (map.c), not a hole. */
+#if MS_NEAR_OVER
+    if ((tag & MS_RES_COARSE) && (m->tab[c].near & ~CELL_PART) && near_d2(m, c, pos) < sq(MS_R0_DRAW)) {
+        *key = d2;
+        return C_VIEW2;
+    }
+#endif
     if (d2 < sq(MS_R1_PIN)) {  /* and all of it above the near parts: the near level gets what is left */
         *key = d2;
         return C_PIN0;
