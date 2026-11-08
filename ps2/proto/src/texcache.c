@@ -26,8 +26,12 @@ typedef struct {
     float density;        /* texels per metre at mip 0 */
     unsigned clut, pix[2];
     unsigned short blocks[2];
-    unsigned near;  /* near level pixels (flag bit 0 in pad), 0: none */
+    unsigned near;  /* near level pixels (flag bit 0 in pad), 0: none; with TE_CHAIN_AT: the mip 2 / 3 chain */
 } TexEntry;
+/* pad bit 1 (tools/mapsplit.py MIP1_OUT, the Burg plan's lite set diet): mip 1 streams from mapres.bin (pix[1] has
+ * TC_RES) and near holds the maptab offset of mip 2 (mip 3 follows it); mip 2 is then the resident level drawn until
+ * mip 1 is in */
+#define TE_CHAIN_AT 2
 
 typedef struct {
     GSTEXTURE t;
@@ -165,7 +169,10 @@ static void chain_levels(int i, const unsigned char *base)
         if (e->levels <= m)
             continue;
         int w = e->w >> (m - 1), h = e->h >> (m - 1);
-        off += ((w * h >> (e->psm == GS_PSM_T4)) + 15) & ~15;  /* past the level before */
+        if (m == 2 && (e->pad & TE_CHAIN_AT))
+            off = e->near;  /* mip 1 streams (mapsplit.py MIP1_OUT): the chain's own offset */
+        else
+            off += ((w * h >> (e->psm == GS_PSM_T4)) + 15) & ~15;  /* past the level before */
         v->t = lv[i][1].t;
         v->t.Width = e->w >> m, v->t.Height = e->h >> m;
         v->t.Mem = (u32 *)(base + off);
@@ -252,7 +259,7 @@ int tc_init(GSGLOBAL *gs, const unsigned char *base, const void *table, int n, i
             t->ClutPSM = e->cpsm;
             t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
             t->Filter = GS_FILTER_LINEAR;
-            t->Mem = l == 0 && (e->pix[0] & TC_RES) ? NULL : (u32 *)(bin + e->pix[l]);  /* tc_res */
+            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)(bin + e->pix[l]);  /* tc_res */
             t->Clut = (u32 *)(bin + e->clut);
             t->VramClut = c;
             lv[i][l].off = -1;
@@ -342,7 +349,7 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             t->ClutPSM = e->cpsm;
             t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
             t->Filter = GS_FILTER_LINEAR;
-            t->Mem = l == 0 && (e->pix[0] & TC_RES) ? NULL : (u32 *)(base + e->pix[l]);  /* tc_res */
+            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)(base + e->pix[l]);  /* tc_res */
             t->Clut = (u32 *)(base + e->clut);
             t->VramClut = c;
             lv[first + i][l].off = -1;
@@ -464,31 +471,32 @@ void tc_res(int slot, const unsigned char *res)
 {
     int a = slot < 0 ? 0 : TC_BASE + slot * TC_BLOCK_TEX, n = slot < 0 ? nmap : slot < TC_BLOCKS ? blk_n[slot] : 0;
     for (int i = a; i < a + n; i++)
-        if (te[i] && (te[i]->pix[0] & TC_RES))
-            lv[i][0].t.Mem = res ? (u32 *)(res + (te[i]->pix[0] & ~TC_RES)) : NULL;
+        for (int l = 0; l < 2; l++)
+            if (te[i] && (te[i]->pix[l] & TC_RES))
+                lv[i][l].t.Mem = res ? (u32 *)(res + (te[i]->pix[l] & ~TC_RES)) : NULL;
 }
 
-static unsigned res_asked[MAX_TEX];  /* frame + 1 of the last tc_get asking for a TC_RES mip 0 (tc_res_age) */
+static unsigned res_asked[MAX_TEX][2];  /* frame + 1 of the last tc_get asking for a TC_RES mip 0 / 1 (tc_res_age) */
 
-static int res_index(int slot, int i)
+static int res_index(int slot, int i, int l)
 {
     int a = slot < 0 ? 0 : TC_BASE + slot * TC_BLOCK_TEX, n = slot < 0 ? nmap : slot < TC_BLOCKS ? blk_n[slot] : 0;
-    return i >= 0 && i < n && te[a + i] && (te[a + i]->pix[0] & TC_RES) ? a + i : -1;
+    return l >= 0 && l < 2 && i >= 0 && i < n && te[a + i] && (te[a + i]->pix[l] & TC_RES) ? a + i : -1;
 }
 
-void tc_res_one(int slot, int i, const void *pix)
+void tc_res_one(int slot, int i, int l, const void *pix)
 {
-    int t = res_index(slot, i);
+    int t = res_index(slot, i, l);
     if (t >= 0)
-        lv[t][0].t.Mem = (u32 *)pix;
+        lv[t][l].t.Mem = (u32 *)pix;
     if (t >= 0 && !pix)
-        res_asked[t] = 0;
+        res_asked[t][l] = 0;
 }
 
-unsigned tc_res_age(int slot, int i)
+unsigned tc_res_age(int slot, int i, int l)
 {
-    int t = res_index(slot, i);
-    return t < 0 || !res_asked[t] ? ~0u : frame - (res_asked[t] - 1);
+    int t = res_index(slot, i, l);
+    return t < 0 || !res_asked[t][l] ? ~0u : frame - (res_asked[t][l] - 1);
 }
 
 /* textures to walk: the boot map's and tc_add's, then the world block ranges in use */
@@ -657,13 +665,21 @@ GSTEXTURE *tc_get(int tex, int level)
     if (level == 2 ? !lv[tex][2].size : level >= te[tex]->levels)
         level = 0;
     near_want += level == 2;
-    if (!level && (te[tex]->pix[0] & TC_RES))
-        res_asked[tex] = frame + 1;  /* a streamed mip 0 (tc_res_one) is wanted */
+    if (level < 2 && (te[tex]->pix[level] & TC_RES))
+        res_asked[tex][level] = frame + 1;  /* a streamed mip 0 / 1 (tc_res_one) is wanted */
     Level *v = &lv[tex][level];
     if (v->off < 0 && !load(tex, level)) {
         int o = level == 2 ? 0 : level ^ 1;
         v = &lv[tex][o];
+        if (o == 1 && o < te[tex]->levels && (te[tex]->pix[1] & TC_RES))
+            res_asked[tex][1] = frame + 1;  /* the fallback streams too */
         if (o >= te[tex]->levels || (v->off < 0 && !load(tex, o))) {
+            /* a streamed mip 1 not in yet (mapsplit.py MIP1_OUT): the resident chain's mip 2, then mip 3 */
+            for (o = 3; o < 5 && (te[tex]->pad & TE_CHAIN_AT); o++)
+                if (lv[tex][o].size && (lv[tex][o].off >= 0 || load(tex, o))) {
+                    lv[tex][o].last = frame;
+                    return &lv[tex][o].t;
+                }
             tc_stats.fails++;
             return NULL;
         }

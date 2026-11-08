@@ -57,6 +57,16 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #define WORLD_SETTLE_FOCUS_R 96.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
+/* WORLD_LITE_DIET (Makefile, default 1; the Burg plan's step B1): a block that is on only because the triangle under the
+ * player keeps it (not wanted, not underfoot) for WORLD_LEAN_S lets go of its map tables (maptab.bin: chunk table,
+ * textures, cell table, horizon; map.c map_block_lean), keeping its collision, events, objects and characters. Wanted
+ * again, it reads them back (relite) before anything else of the map streams. Two Burg blocks' lite sets took 4.2 of
+ * the arena's ~10 MB at the bonfire seam (TECH_DEBT world-14); a kept-only block now holds its ~0.9 MB of collision and
+ * events. The other half of the diet is in tools/mapsplit.py (MIP1_OUT: mip 1 streams). 0: today's lite sets. */
+#ifndef WORLD_LITE_DIET
+#define WORLD_LITE_DIET 1
+#endif
+#define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
 #define WORLD_WARP 20.0f
@@ -147,6 +157,9 @@ typedef struct {
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
+    int lean;          /* WORLD_LITE_DIET: 1 map tables let go (draining: lean_drain frames), 2 being read back */
+    int lean_drain, tab_gone;  /* tab_gone: the tables' memory is freed (counted out of pool_used_kb) */
+    float unwanted_s;  /* seconds an on block has not been wanted */
 } BlockRt;
 
 WorldStats world_stats = {.reading = -1, .full = -1};
@@ -468,9 +481,11 @@ static void turn_on_col(int i)
     world_stats.load_ms = (ticks() - r->t0) / 294912;
     world_stats.read_kb = r->total >> 10;
     step_time(t0);
-    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB\n", i,
+    printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB | collision %u "
+           "chunks %u textures %u cells+horizon %u events %u KB\n", i,
            tab[i].pack, ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295,
-           world_stats.pool_used_kb);
+           world_stats.pool_used_kb, r->size[E_COL] >> 10, r->size[E_TAB] >> 10, r->size[E_TABB] >> 10,
+           r->size[E_TABC] >> 10, r->size[E_EV] >> 10);
 }
 
 /* objects.bin (e = E_OBJ) or fx.bin (E_FX) is in texbuf, or the pack has none: its textures go up */
@@ -532,6 +547,7 @@ static void turn_off(int i)
     if (r->stage == 2 || r->ent > E_FX)
         fx_block_on(i, 0, NULL);
     r->stage = 0;
+    r->lean = r->lean_drain = 0;  /* (free_slot frees whatever tables are still held) */
     col_unload(i);
     map_block_drop(i);  /* its relief too (bump.c) */
     if (bump_blk == i)
@@ -544,6 +560,15 @@ static void turn_off(int i)
     printf("world: block %d %s off\n", i, tab[i].pack);
 }
 
+/* WORLD_LITE_DIET: the map tables of block i (E_TAB .. E_TABC) */
+static unsigned tab_kb(const BlockRt *r)
+{
+    unsigned n = 0;
+    for (int e = E_TAB; e <= E_TABC; e++)
+        n += (r->size[e] + 127) & ~127u;
+    return n >> 10;
+}
+
 static void free_slot(int i)
 {
     BlockRt *r = &rt[i];
@@ -551,9 +576,106 @@ static void free_slot(int i)
         slot_of[r->slot] = -1;
     r->slot = -1;
     free_ents(r, 0, E_TEX);
-    world_stats.pool_used_kb -= r->total >> 10;
+    world_stats.pool_used_kb -= (r->total >> 10) - (r->tab_gone ? tab_kb(r) : 0);
+    r->tab_gone = 0;
     free_tex(r);
     r->state = W_OFF;
+}
+
+/* an on block only kept: its drawing goes now, the tables' memory after the chains that drew from them (lean_step) */
+static void lean(int i)
+{
+    BlockRt *r = &rt[i];
+    map_block_lean(i);
+    r->lean = 1, r->lean_drain = WORLD_DRAIN;
+    world_stats.leans++;
+    printf("world: block %d %s kept only: map tables let go (%u KB), collision %u KB and events stay\n", i, tab[i].pack,
+           tab_kb(r), (r->size[E_COL] + 127) >> 10);
+}
+
+static void lean_step(int i)
+{
+    BlockRt *r = &rt[i];
+    if (r->lean == 1 && r->lean_drain > 0 && (--r->lean_drain <= 0 || warping)) {
+        r->lean_drain = 0;
+        free_ents(r, E_TAB, E_TABC + 1);
+        world_stats.pool_used_kb -= tab_kb(r);
+        r->tab_gone = 1;
+    }
+}
+
+/* a lean block is wanted again: its map tables, one arena block each (largest first, as start()); 0 = no room yet */
+static int relite_start(int i)
+{
+    BlockRt *r = &rt[i];
+    if (r->lean_drain > 0 || (r->retry_s > 0 && !warping) || world_stats.reading >= 0)
+        return 0;
+    unsigned order[3] = {E_TAB, E_TABB, E_TABC}, n = 3;
+    for (unsigned a = 0; a < n; a++)
+        for (unsigned b = a + 1; b < n; b++)
+            if (r->size[order[b]] > r->size[order[a]]) {
+                unsigned t = order[a];
+                order[a] = order[b], order[b] = t;
+            }
+    for (unsigned k = 0; k < n; k++) {
+        unsigned e = order[k], sz = (r->size[e] + 127) & ~127u;
+        if (!r->size[e])
+            continue;
+        r->blob[e] = mapstream_alloc(sz, feet_now);
+        if (!r->blob[e]) {
+            free_ents(r, E_TAB, E_TABC + 1);
+            r->retry_s = WORLD_RETRY_S;
+            return 0;
+        }
+    }
+    r->lean = 2, r->ent = E_TAB, r->done = 0, r->t0 = ticks();
+    world_stats.pool_used_kb += tab_kb(r);
+    r->tab_gone = 0;
+    return 1;
+}
+
+/* read the tables back (one WORLD_READ at a time, as read_step); all in: the drawing is on again */
+static void relite_step(int i)
+{
+    BlockRt *r = &rt[i];
+    int res;
+    if (world_stats.reading == i) {
+        if (!pack_req_done(w_tk, &res))
+            return;
+        w_tk = 0;
+        unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
+        world_stats.reading = -1;
+        if (res != (int)n) {
+            printf("world: block %d tables read %d of %u bytes\n", i, res, n);
+            world_stats.fails++;
+            free_ents(r, E_TAB, E_TABC + 1);
+            world_stats.pool_used_kb -= tab_kb(r);
+            r->lean = 1, r->tab_gone = 1, r->retry_s = WORLD_RETRY_S;
+            return;
+        }
+        InvalidDCache((char *)r->blob[r->ent] + r->done, (char *)r->blob[r->ent] + r->done + n - 1);
+        if ((r->done += n) == r->size[r->ent])
+            r->ent++, r->done = 0;
+    }
+    while (r->ent <= E_TABC && !r->size[r->ent])
+        r->ent++;
+    if (r->ent > E_TABC) {
+        unsigned t0 = ticks();
+        if (r->size[E_TABB])
+            map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+        int ok = map_block_init(i, r->blob[E_TAB], NULL, i);
+        if (ok)
+            map_block_stream_open(i, &r->pk);
+        r->lean = 0, r->ent = NENT;
+        world_stats.relites++;
+        step_time(t0);
+        printf("world: block %d %s wanted again: map tables %u KB in %u ms%s\n", i, tab[i].pack, tab_kb(r),
+               (ticks() - r->t0) / 294912, ok ? "" : " (map FAILED)");
+        return;
+    }
+    unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
+    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, (char *)r->blob[r->ent] + r->done, n)))
+        world_stats.reading = i, hitch_block_read(n);
 }
 
 /* Continue the background read of block i's lite set */
@@ -650,6 +772,7 @@ static int start(int i)
         }
     }
     r->tex_held = 0, r->stage = 0;
+    r->lean = r->lean_drain = r->tab_gone = 0, r->unwanted_s = 0;
     slot_of[s] = i;
     r->slot = s;
     r->ent = r->done = 0;
@@ -738,7 +861,9 @@ static int lite_pending(void)
         free_s |= slot_of[s] < 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
-            (free_s && rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1) && (rt[i].retry_s <= 0 || warping)))
+            (free_s && rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1) && (rt[i].retry_s <= 0 || warping)) ||
+            (rt[i].state == W_ON && rt[i].lean == 2) ||
+            (rt[i].state == W_ON && rt[i].lean == 1 && (want_m >> i & 1 || i == cur) && (rt[i].retry_s <= 0 || warping)))
             return 1;
     return 0;
 }
@@ -821,6 +946,14 @@ static void step(const float *feet, float dt)
         unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
     for (int i = 0; i < nblk; i++)
         rt[i].retry_s = rt[i].retry_s > dt ? rt[i].retry_s - dt : 0;
+    for (int i = 1; i < nblk; i++) {  /* WORLD_LITE_DIET: kept-only blocks let go of their map tables */
+        BlockRt *r = &rt[i];
+        r->unwanted_s = r->state == W_ON && !(want_m >> i & 1) && i != cur ? r->unwanted_s + dt : 0;
+        lean_step(i);
+        if (WORLD_LITE_DIET && r->state == W_ON && r->stage == 2 && !r->lean && i != cur && !(want_m >> i & 1) &&
+            world_stats.reading != i && (r->unwanted_s >= WORLD_LEAN_S || (warping && !(hold_want >> i & 1))))
+            lean(i);
+    }
     in_cur_s = cur == was ? in_cur_s + dt : 0;
     if (cur != was)
         relief_at = 0;
@@ -845,10 +978,20 @@ static void step(const float *feet, float dt)
         if (bump_reading)
             goto unload;
     }
+    if (world_stats.reading > 0 && !bump_reading && rt[world_stats.reading].state == W_ON &&
+        rt[world_stats.reading].lean == 2) {
+        relite_step(world_stats.reading);  /* a lean block's tables coming back */
+        goto unload;
+    }
     if (world_stats.reading > 0 && !bump_reading && rt[world_stats.reading].state == W_ON) {
         read_step(world_stats.reading, 0);  /* a texture chunk in flight is collected; the next one waits its turn */
         goto unload;
     }
+    for (int i = 1; i < nblk; i++)  /* a lean block's tables: one read in flight at a time */
+        if (rt[i].state == W_ON && rt[i].lean == 2 && world_stats.reading < 0) {
+            relite_step(i);
+            goto unload;
+        }
     for (int i = 0; i < nblk; i++)
         if (rt[i].state == W_READING) {
             if (world_stats.reading < 0 || world_stats.reading == i)
@@ -867,6 +1010,22 @@ static void step(const float *feet, float dt)
         if (want >= 0 && start(want)) {
             read_step(want, 1);
             goto unload;
+        }
+        if (want < 0) {  /* every wanted block is on: a lean one wanted again (or underfoot) reads its tables back */
+            int lw = -1;
+            float ld = 1e30f;
+            for (int i = 1; i < nblk; i++)
+                if (rt[i].state == W_ON && rt[i].lean == 1 && (want_m >> i & 1 || i == cur)) {
+                    float d = box_d(&tab[i], feet);
+                    if (d < ld)
+                        lw = i, ld = d;
+                }
+            if (lw >= 0 && relite_start(lw)) {
+                relite_step(lw);
+                goto unload;
+            }
+            if (lw >= 0 && rt[lw].retry_s >= WORLD_RETRY_S)
+                room_stuck = !room_for(lw, feet);
         }
         if (want >= 0 && (rt[want].retry_s >= WORLD_RETRY_S || warping || slots_full()))
             room_stuck = !room_for(want, feet);  /* a fresh failure for room, or no slot */
@@ -896,7 +1055,8 @@ static int settled(const float *feet)
         return 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
-            (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)))
+            (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)) ||
+            (rt[i].state == W_ON && rt[i].lean && (want_m >> i & 1 || i == cur)))
             return 0;
     return 1;
 }

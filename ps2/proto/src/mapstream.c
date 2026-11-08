@@ -628,6 +628,8 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     if (tag & MS_RES_TEX) {
         unsigned age = tex_age ? tex_age(k, tag & ~MS_RES_TEX) : ~0u;
         *key = 0;
+        if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
+            return age <= 1 ? C_VIEW2 : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
     }
     if (tag & MS_RES_SKY) {

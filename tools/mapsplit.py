@@ -11,16 +11,23 @@ maptab.bin leaves out (TECH_DEBT world-5: lite sets count against the near-cell 
   without collision.bin, and every world block has collision;
 - mip 0 pixels of textures that have a mip 1: they move to the end of mapres.bin and the entry's pix[0] becomes
   RES_FLAG | offset in mapres.bin (texcache.c tc_res resolves it while the block is full; a lite block draws mip 1).
+- mip 1 pixels of textures that have a mip 2 and no near level (MIP1_OUT=1, the default; the Burg plan's lite set
+  diet, step B1): they move to mapres.bin too, pix[1] becomes RES_FLAG | offset there, and the entry's near word holds
+  the maptab offset of its mip 2 / 3 chain (pad bit 1, TEX_CHAIN_AT; the chain used to be found past mip 1). The runtime
+  streams mip 1 per texture as it streams mip 0 (mapstream.c MS_RES_TEX | MS_RES_MIP1) and draws the resident mip 2
+  until it is in. MIP1_OUT=0 (make WORLD_LITE_DIET=0): mip 1 stays in maptab as before.
 Every other offset into maptab (header sections, texture CLUT / mip 1 / near pixels) moves down by the bytes cut
 before it.
 hzn.bin (tools/horizon.py, the resident far backdrop; empty: none) is appended to maptab.bin, 64-byte aligned, and the
 cell table header's words 2 and 3 get its offset (from map.bin's start, as the runtime resolves maptab offsets) and
 size; map.c finds it there (0: no horizon, the old drawing)."""
-import struct, sys
+import os, struct, sys
 
 HDR = 80
 PSM_T4 = 0x14
-RES_FLAG = 0x80000000  # texture pix[0] in mapres.bin (texcache.c TC_RES)
+RES_FLAG = 0x80000000  # texture pix[0] / pix[1] in mapres.bin (texcache.c TC_RES)
+TEX_CHAIN_AT = 2  # entry pad bit: the near word is the maptab offset of the mip 2 / 3 chain (texcache.c TE_CHAIN_AT)
+MIP1_OUT = os.environ.get("MIP1_OUT", "1") != "0"
 
 
 def main():
@@ -35,16 +42,23 @@ def main():
     cut = (fog_off - navv_off) & ~63  # keeps the later sections' alignment
     gone = {navv_off: cut} if cut else {}  # offset -> bytes left out of maptab
     l0 = {}  # texture -> (offset in map.bin, bytes)
+    l1 = {}  # texture -> (mip 1 offset in map.bin, bytes cut, mip 2 offset in map.bin)
     for i in range(ntex):
         e = tex_off + 32 * i
-        w, h, psm, cpsm, levels = struct.unpack_from("<2H3B", b, e)
+        w, h, psm, cpsm, levels, pad = struct.unpack_from("<2H4B", b, e)
         p0, p1 = struct.unpack_from("<2I", b, e + 16)
+        near = struct.unpack_from("<I", b, e + 28)[0]
         if levels < 2 or not tex_off <= p0 < navv_off:
             continue
         n0 = w * h // (2 if psm == PSM_T4 else 1)
         assert n0 % 16 == 0 and gone.get(p0, n0) == n0, f"texture {i}: mip 0 at {p0} ({n0} bytes)"
         gone[p0] = n0
         l0[i] = (p0, n0)
+        if MIP1_OUT and levels >= 3 and not ((pad & 1) and near) and tex_off <= p1 < navv_off:
+            n1 = ((w >> 1) * (h >> 1) // (2 if psm == PSM_T4 else 1) + 15) & ~15  # texmap.py: levels 16-byte aligned
+            if n1 >= 64 and gone.get(p1, n1) == n1 and p1 not in gone:
+                gone[p1] = n1
+                l1[i] = (p1, n1, p1 + n1)
     ranges = sorted(gone.items())
     for (a0, n0), (a1, _) in zip(ranges, ranges[1:]):
         assert a0 + n0 <= a1, f"overlapping cuts at {a0}"
@@ -78,8 +92,12 @@ def main():
         e = HDR + tex_off - chunk_off + 32 * i
         clut, p0, p1 = struct.unpack_from("<3I", b, tex_off + 32 * i + 12)
         near = struct.unpack_from("<I", b, tex_off + 32 * i + 28)[0]
-        struct.pack_into("<3I", tab, e + 12, moved(clut), RES_FLAG | at[l0[i][0]] if i in l0 else moved(p0), moved(p1))
-        if near:
+        q1 = RES_FLAG | at[l1[i][0]] if i in l1 else moved(p1)
+        struct.pack_into("<3I", tab, e + 12, moved(clut), RES_FLAG | at[l0[i][0]] if i in l0 else moved(p0), q1)
+        if i in l1:  # the chain's place in maptab (mip 2 follows mip 1 in map.bin)
+            struct.pack_into("<I", tab, e + 28, moved(l1[i][2]))
+            tab[e + 7] |= TEX_CHAIN_AT
+        elif near:
             struct.pack_into("<I", tab, e + 28, moved(near))
     hzn = open(sys.argv[4], "rb").read() if len(sys.argv) > 4 else b""
     if hzn:
@@ -92,8 +110,10 @@ def main():
         f.write(tab)
     with open(res_path, "wb") as f:
         f.write(res)
-    cut_l0 = sum(n0 for a0, n0 in ranges if a0 != navv_off or not cut)
-    print(f"{src}: maptab {len(tab)} bytes (navmesh {cut}, mip 0 of {len(l0)} textures {cut_l0} moved out), "
+    cut_l1 = sum(n1 for _, n1, _ in l1.values())
+    cut_l0 = sum(n0 for a0, n0 in ranges if a0 != navv_off or not cut) - cut_l1
+    print(f"{src}: maptab {len(tab)} bytes (navmesh {cut}, mip 0 of {len(l0)} textures {cut_l0} and mip 1 of {len(l1)} "
+          f"{cut_l1} moved out), "
           f"mapres {len(res)} bytes, horizon {len(hzn)} bytes")
 
 

@@ -309,18 +309,19 @@ static void tex_res(int k)
     tc_res(k ? map_tex_slot(k) : -1, inst[k].streams);
 }
 
-/* mapstream.c's mip 0 hooks (mapstream_tex_hooks): tag = the texture's index in instance k's table */
+/* mapstream.c's mip 0 / 1 hooks (mapstream_tex_hooks): tag = the texture's index in instance k's table, | MS_RES_MIP1
+ * for its mip 1 (tools/mapsplit.py MIP1_OUT) */
 static unsigned tex_hook_age(int k, unsigned tag)
 {
     int slot = k ? map_tex_slot(k) : -1;
-    return k && slot < 0 ? ~0u : tc_res_age(slot, (int)tag);
+    return k && slot < 0 ? ~0u : tc_res_age(slot, (int)(tag & ~MS_RES_MIP1), !!(tag & MS_RES_MIP1));
 }
 
 static void tex_hook_set(int k, unsigned tag, const void *p)
 {
     int slot = k ? map_tex_slot(k) : -1;
     if (!k || slot >= 0)
-        tc_res_one(slot, (int)tag, p);
+        tc_res_one(slot, (int)(tag & ~MS_RES_MIP1), !!(tag & MS_RES_MIP1), p);
 }
 
 int map_upload(GSGLOBAL *gs)
@@ -1064,7 +1065,7 @@ void map_block_bump(int k, const void *blob)
         printf("map: block %d relief %s\n", k, on ? "on" : "off");
 }
 
-void map_block_drop(int k)
+static void block_drop(int k, int keep_dg)
 {
     if (k <= 0 || k >= MAP_INST || !inst[k].on)
         return;
@@ -1072,7 +1073,8 @@ void map_block_drop(int k)
     bump_block(k, NULL, 0);
     mapstream_close(k);  /* before the slot's textures go: it hands their mip 0 back (tex_hook_set) */
     tc_block_drop(tslot[k]);
-    dg_block_drop(k);
+    if (!keep_dg)
+        dg_block_drop(k);
     pvs_block_drop(k);
     free(m->order), free(m->sky), free(m->cells), free(m->tiles), free(m->tcell);
     m->indexed = NULL, m->order = m->sky = NULL, m->cells = NULL, m->ncells = m->nsky = 0;
@@ -1087,6 +1089,9 @@ void map_block_drop(int k)
     m->on = 0;
     mapstream_select(0);
 }
+
+void map_block_drop(int k) { block_drop(k, 0); }
+void map_block_lean(int k) { block_drop(k, 1); }
 
 void map_pvs_init(const void *blob)
 {
@@ -1122,8 +1127,8 @@ static unsigned chunk_range(const Chunk *chunks, unsigned a, unsigned b, unsigne
 
 /* World blocks: the selected instance k's resident level as mapstream items (mapstream_res_open) instead of one
  * mapres.bin in a full pool: per cell the streams of its resident chunks (grouped by cell in the chunk table) in
- * items of whole chunks up to RES_ITEM bytes, the sky chunks' the same way, and each texture's mip 0 that
- * tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
+ * items of whole chunks up to RES_ITEM bytes, the sky chunks' the same way, and each texture's mip 0 (and mip 1,
+ * MIP1_OUT) that tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
  * 2.2 MB as one item found no hole with 4 MB of the arena free (largest hole 0.9-1 MB; ISO runs 2026-11-05); ASSUMED
  * size, small enough to fit the holes near cells leave. */
 #define RES_ITEM (64u << 10)  /* one page of the arena (mapstream.c MS_PAGE, plan step 6; 128 KB before) */
@@ -1137,7 +1142,7 @@ static void res_open(int k, const void *pack)
     unsigned roff, rsize;
     if (!pack_entry_raw((Pack *)pack, "mapres.bin", &roff, &rsize) || !rsize)
         return;
-    unsigned n = hdr->chunks + 1 + (unsigned)mi->ntex;
+    unsigned n = hdr->chunks + 1 + 2 * (unsigned)mi->ntex;  /* (mip 0 and 1 per texture) */
     MapResItem *it = malloc(n * sizeof *it);
     unsigned short *citem = mi->citem = malloc((hdr->chunks + 1) * sizeof *citem);
     unsigned (*rr)[3] = mi->rrange = malloc(n * sizeof *rr);
@@ -1175,13 +1180,16 @@ static void res_open(int k, const void *pack)
     const unsigned char *te = mi->tex_bin + hdr->tex_off;
     for (int t = 0; t < mi->ntex; t++) {  /* texmap.py entry: u16 w, h; u8 psm; ...; u32 pix[0] at +16 */
         const unsigned char *e = te + 32 * t;
-        unsigned w = *(const unsigned short *)e, h = *(const unsigned short *)(e + 2), p0 = *(const unsigned *)(e + 16);
-        if (!(p0 & TC_RES))
-            continue;
-        unsigned b = e[4] == GS_PSM_T4 ? w * h / 2 : w * h;
-        rr[m][0] = rr[m][1] = rr[m][2] = 0;
-        it[m++] = (MapResItem){roff + (p0 & ~TC_RES), p0 & ~TC_RES, b, MS_RES_TEX | (unsigned)t};
-        bad |= (p0 & ~TC_RES) + b > rsize;
+        unsigned w = *(const unsigned short *)e, h = *(const unsigned short *)(e + 2);
+        for (int l = 0; l < 2; l++) {  /* mip 0, and mip 1 when it streams too (mapsplit.py MIP1_OUT) */
+            unsigned p = *(const unsigned *)(e + 16 + 4 * l), wl = w >> l, hl = h >> l;
+            if (!(p & TC_RES))
+                continue;
+            unsigned b = e[4] == GS_PSM_T4 ? wl * hl / 2 : wl * hl;
+            rr[m][0] = rr[m][1] = rr[m][2] = 0;
+            it[m++] = (MapResItem){roff + (p & ~TC_RES), p & ~TC_RES, b, MS_RES_TEX | (l ? MS_RES_MIP1 : 0) | (unsigned)t};
+            bad |= (p & ~TC_RES) + b > rsize;
+        }
     }
     if (bad)
         printf("map: block %d: mapres.bin (%u KB) shorter than its chunk / texture records\n", k, rsize >> 10);
