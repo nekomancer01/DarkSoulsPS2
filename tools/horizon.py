@@ -61,7 +61,7 @@ POS_MAX = 32000
 PSMT8, PSMT4, CT16 = 0x13, 0x14, 0x02
 FOCAL = 568.0  # export_map: screen errors in pixels of a 568-pixel focal length ((px / 568)^2 = eps)
 ON = os.environ.get("HZN", "1") == "1"
-# Screen error at the nearest the horizon is drawn (map.c HZN_R 56 m - hysteresis). The coarse level's own cap is
+# Screen error at the nearest the horizon is drawn (map.c HZN_R 40 m - hysteresis; 56 m before the Burg plan's B3). The coarse level's own cap is
 # 24-36 px at 32 m (export_map WS_PX1), 14-20 px at 56 m. Lists at 12 px went past the KB cap in every block, so all of
 # them sat at PX_MAX (32 px: the coarse, spiky far shapes of Ame's report, 2026-11-07); indexed, 8 px fits every Burg
 # block in about the bytes 32 px took (Burg west 26.8k tris 455 KB, was 13.6k 455 KB) and Firelink reaches 12.7 px.
@@ -73,7 +73,7 @@ PX = float(os.environ.get("HZN_PX", 8.0))
 ERR_Q = float(os.environ.get("HZN_ERR_Q", 0.99))
 S_MIN = 0.25  # the weld + collapse error is searched down to S_MIN x PX
 ERR_CAP = 4.0  # distances are searched up to ERR_CAP x PX pixels (a larger one counts as that)
-HZN_D = float(os.environ.get("HZN_D", 54.0))  # metres: nearest view distance the error is judged from
+HZN_D = float(os.environ.get("HZN_D", 38.0))  # (54 before map.c HZN_R went 56 -> 40, Burg plan B3)  # metres: nearest view distance the error is judged from
 # Every block is cut to the same screen error (PX), so the far view has one quality across the game: the triangle count
 # follows how much each block shows, not a share of bytes. KB is only a safety ceiling (ASSUMED) for a block that would
 # overflow the mapstream arena (9984 KB; lite sets share it with the near cells, relief and enemy models, up to 3 slots,

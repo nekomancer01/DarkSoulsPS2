@@ -50,7 +50,9 @@
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
  * MS_R1_PIN (export_map.WS_R1: the spot budget covers it), wanted out to MS_R1_WANT (map.c CULL_FAR 250 m + a box
  * margin), kept to MS_R1_KEEP. */
-#define MS_R0_DRAW 26.0f
+/* (Burg plan B3, 2026-11-08: the export's hard tier holds the near level within 20 m, the coarse level within 40 m:
+ * the radii follow it; 26 / 30 / 36 / 64 m before) */
+#define MS_R0_DRAW 20.0f
 /* read ahead out to MS_R0_WANT (export_map.WS_R0 budgets 30 m; the plan cut keeps the extra within the arena, C_PREF
  * is the lowest wanted class): at 30 m, 4 m past the draw radius, cells inside it were still coarse when the player
  * walked in (pop-in, ISO 2026-11-06) */
@@ -63,10 +65,10 @@
 /* Per media (budget doc proposal 2): the DVD radii on a DVD (and host: runs), 35 / 41 m on a CD (the read with a seek
  * takes up to 1 s there); the disc server reports the media once it has looked at the disc (pack_disc_media, checked
  * in mapstream_update). MEDIA=cd builds (MEDIA_CD) take the CD radii whatever the disc. DEFS radii stay fixed. */
-#define MS_R0_WANT_DVD 30.0f
-#define MS_R0_KEEP_DVD 36.0f
-#define MS_R0_WANT_CD 35.0f
-#define MS_R0_KEEP_CD 41.0f
+#define MS_R0_WANT_DVD 24.0f
+#define MS_R0_KEEP_DVD 30.0f
+#define MS_R0_WANT_CD 29.0f
+#define MS_R0_KEEP_CD 35.0f
 #ifndef MS_R0_WANT
 #ifdef MEDIA_CD
 static float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
@@ -83,8 +85,8 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
  * smoothed over ~10 frames; ASSUMED 1.5 s: about the read time of a near cell group from cdrom0: plus a margin), so
  * the cells the player walks into come before those behind (MS_NEAR_FIRST) */
 #define MS_AHEAD_FRAMES 45.0f
-#define MS_R1_PIN 64.0f   /* pinned coarse; export_map.WS_R1 (96 m) budgets a little beyond it */
-#define MS_R0_FIRST 16.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 26 m below (C_NEAR2) */
+#define MS_R1_PIN 40.0f   /* pinned coarse: export_map.WS_PIN_R, the hard tier (the ring to MS_R_HZN ranks below the near level) */
+#define MS_R0_FIRST 12.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 20 m below (C_NEAR2) */
 /* MS_NEAR_FIRST (default on; make DEFS=-DMS_NEAR_FIRST=0 = the old order): the near parts within MS_R0_FIRST rank
  * above the pinned coarse level out of view (C_PIN0 within MS_R1_FIRST and the sky / backdrop of the player's block >
  * C_VIEW coarse in view > C_NEAR > C_PIN coarse out of view). With every pinned coarse cell of all blocks within 64 m and every one in view within 128 m ahead of
@@ -116,8 +118,10 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 /* (2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m freed ~0.55 MB of pinned coarse cells
  * at the Burg spots of Ame's report, but the horizon grew 62 KB per block and the room went down with it: ~0.3 MB net
  * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
-#define MS_R_HZN 64.0f
-#define MS_R_HZN_KEEP 72.0f
+/* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
+ * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
+#define MS_R_HZN 48.0f
+#define MS_R_HZN_KEEP 56.0f
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
 #ifndef MS_STABLE

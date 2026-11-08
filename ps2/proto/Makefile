@@ -434,11 +434,12 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # Undead Burg (render-distance): two levels (STREAM=1, map.bin DSM5 + cells.bin): coarse 12 px judged at >= 32 m
 # resident (140k tris, map.bin 10.1 MB), near 6 px (3 px was 150k tris within 24 m at the densest smoke point, 15 fps)
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
-MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446 WS_PX0=24 WS_PX1=36
+MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446 WS_PX0=36 WS_PX1=54
 # (WS_PX0 / WS_PX1: the spot budget solve's error caps, export_map.py. At 12 / 24 px no Burg block met its budgets
 # (near level 4.9-6.0 MB around the worst spots against 1.5 MB, coarse 2.6-3.0 MB against 2 MB): from the ISO up to
 # ~380 cells missing in a frame and near cells that never found room (2026-11-06). Detail drops only in the spots over
-# budget. ASSUMED caps)
+# budget. ASSUMED caps. 2026-11-08, Burg plan B3: 36 / 54 px with the spot budgets shared over the blocks loaded at a
+# spot (export_map.py WS_UNION): at 24 / 36 px 80 % of the Burg's spots were over the visual room)
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
@@ -508,7 +509,11 @@ $(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WI
 # (near level within the draw radius, coarse level to the pin radius, kept meshes, the spot's backdrop and sky) from
 # their map.bin.cells.json, and prints how much of the world is over (the error caps leave dense spots over: a warning,
 # WORLD_BUDGET_ARGS=--strict fails the build on it). world_budget.json holds the numbers.
-WORLD_BUDGET_ARGS ?=
+# Since the Burg plan's step B3 (2026-11-08) --strict is the default: the hard tier (near level within 20 m, coarse
+# level and kept meshes within 40 m, link-aware) at 0 % of the Burg's spots over the visual room fails the build, with
+# at most 1 % of the spots on the solve's seam allowance (export_map.py WS_ALLOW_PX); the soft tier (coarse 40-64 m,
+# backdrop, sky) is logged. WORLD_BUDGET_ARGS= (empty) = report only
+WORLD_BUDGET_ARGS ?= --strict
 WB_WITH = $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json)
 $(A)/map.bin.cells.json: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
