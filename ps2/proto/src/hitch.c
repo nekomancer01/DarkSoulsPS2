@@ -87,11 +87,25 @@ void hitch_flip(int k, unsigned ci, int flop)
 #define DUE_BINS 64
 static unsigned room_n, room_near, pop_n, due_hist[DUE_BINS], due_max, due_fr, map_due, map_hz;
 static float hz_s;
-void hitch_room(int near)
+/* near items refused this run, distinct (an item is refused again at each retry, 2-3 times in 50 ms: the attempt
+ * count swung 2x between identical runs; the B0 gate counts items). Open addressing, (k << 20 | id) + 1; full: counted
+ * as new */
+#define ROOM_SEEN 4096
+static unsigned room_seen[ROOM_SEEN], room_new;
+void hitch_room(int near, int k, unsigned id)
 {
     room_n++, hitch_total.room++;
-    if (near)
-        room_near++, hitch_total.room_near++;
+    if (!near)
+        return;
+    room_near++, hitch_total.room_near++;
+    unsigned key = ((unsigned)k << 20 | (id & 0xFFFFF)) + 1, h = key * 2654435761u >> 20, n;
+    for (n = 0; n < ROOM_SEEN && room_seen[h % ROOM_SEEN] && room_seen[h % ROOM_SEEN] != key; n++, h++)
+        ;
+    if (n < ROOM_SEEN && room_seen[h % ROOM_SEEN] == key)
+        return;
+    if (n < ROOM_SEEN)
+        room_seen[h % ROOM_SEEN] = key;
+    room_new++, hitch_total.room_items++;
 }
 void hitch_map(unsigned due, unsigned hz_fill, unsigned pops)
 {
@@ -111,8 +125,9 @@ static void stream_line(void)
     unsigned med = 0, acc = 0;
     while (med < DUE_BINS - 1 && (acc += due_hist[med]) * 2 < due_fr)
         med++;
-    printf("stream: t %u s room %u near %u | due near drawn coarse median %u max %u | hzn inside %.1f s | pop-ins %u\n",
-           (unsigned)run_s, room_n, room_near, due_fr ? med : 0, due_max, (double)hz_s, pop_n);
+    printf("stream: t %u s room %u near %u items %u | due near drawn coarse median %u max %u | hzn inside %.1f s | pop-ins %u\n",
+           (unsigned)run_s, room_n, room_near, room_new, due_fr ? med : 0, due_max, (double)hz_s, pop_n);
+    room_new = 0;
     room_n = room_near = pop_n = due_max = due_fr = 0, hz_s = 0;
     memset(due_hist, 0, sizeof due_hist);
 }

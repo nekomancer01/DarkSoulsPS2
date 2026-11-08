@@ -36,7 +36,7 @@ MIN_FRAMES = 10
 # (2026-11-08, tools/test-all.sh --iso --burg --reps 2, the plan's baseline table): counts at the larger run + 30 %
 # (identical runs differ by that much: near refusals 12 vs 92 on iso_ame_report3), the median + 2 cells, the horizon
 # share + 3 points; None = not gated. Lower them as the plan's steps land, never raise them.
-STREAM_GATE_KEYS = {"room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
+STREAM_GATE_KEYS = {"near_items": "near items refused for room (distinct)", "room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
                     "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
 STREAM_GATES = {
     "iso_ame_report3": {"room_near": 120, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
@@ -174,7 +174,7 @@ def check_result(path, disc_gates=True):
         key = script_key(res, d)
         out["script"] = key
         for k, b in (STREAM_GATES.get(key) or {}).items():
-            if b is not None and st.get(k, 0) > b:
+            if b is not None and (st.get(k) or 0) > b:
                 out["fails"].append(f"run: {STREAM_GATE_KEYS[k]} {st[k]} > {b} ({key})")
     if run.get("underruns"):
         out["fails"].append(f"run: {run['underruns']} stream underruns")
@@ -215,7 +215,7 @@ def table(r):
             for k, v in run["map_pass"].items() if v["p90_avg"] is not None))
     if run.get("stream"):
         st = run["stream"]
-        o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}), pop-ins "
+        o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}, {st.get('near_items')} items), pop-ins "
                  f"{st['popins']}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
                  f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %)")
     o += [f"  FAIL {x}" for x in r["fails"]]
