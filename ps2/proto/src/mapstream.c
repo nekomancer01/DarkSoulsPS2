@@ -1505,11 +1505,15 @@ static void plan_(const float *pos)
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
     unsigned other = mapstream_stats.other_kb << 10, over = pools_on ? items_other : other > MS_OTHER ? other - MS_OTHER : 0;
     unsigned room = (ipages + nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
-    if (pools_on && MS_LEND) {  /* + the pools' room their own blocks leave (lent to the lowest classes) */
+    unsigned lend = 0;
+    if (pools_on && MS_LEND) {  /* the pools' room their own blocks leave: only the lowest classes may use it (lendable) */
         unsigned own = other > items_other ? other - items_other : 0, pb = (npages - mpage0) * MS_PAGE;
-        room += pb > own ? pb - own : 0;
+        lend = pb > own ? pb - own : 0;
     }
-    unsigned cap = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, sum = 0;
+    /* cap_hi: what the item pages hold, for every class; cap: + the lent room, which only lendable classes reach (with
+     * one cap the near parts were planned into room they could never use: near refusals 165 -> 1117 on taurus) */
+    unsigned cap_hi = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, cap = cap_hi + lend / 100 * MS_FILL_PCT;
+    unsigned sum = 0, sum_hi = 0;
     pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
         if (ms[k].cmark)
@@ -1528,17 +1532,19 @@ static void plan_(const float *pos)
                 for (unsigned p = h; p < m->ncell && (p == h || (m->tab[p].near & CELL_PART)); p++)
                     if (m->cls[p] >= C_PREF)
                         need += (it_bytes(m, p) + MS_GRAN - 1) & ~(MS_GRAN - 1);
-                m->cmark[h] = sum + need > cap ? 2 : 1;
+                m->cmark[h] = sum + need > cap || sum_hi + need > cap_hi ? 2 : 1;  /* (near parts: never lent) */
                 if (m->cmark[h] == 1)
-                    sum += need;
+                    sum += need, sum_hi += need;
             }
             if (m->cmark[h] == 2) {
                 m->cls[id] = C_KEEP;
                 continue;
             }
         } else {
-            sum += (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
-            if (sum > cap) {
+            unsigned b = (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
+            int lo = lendable(want[i].cls);
+            sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
+            if (sum > cap || (!lo && sum_hi > cap_hi)) {
                 m->cls[id] = C_KEEP;
                 continue;
             }
