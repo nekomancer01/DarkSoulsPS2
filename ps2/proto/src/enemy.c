@@ -237,6 +237,14 @@ static int nenemies;
 /* world blocks' placements (enemies.bin records, ENEMY_REC B), kept from boot; placed while the block is on */
 static unsigned char *blk_rec[ENEMY_BLOCKS];
 static int blk_n[ENEMY_BLOCKS];
+/* ENEMY_KEEP_DEAD (default on; 0 = the old way): placements the player killed, per block and enemies.bin index. A
+ * block that turns off and on again placed every one of them alive (a fresh AI, its type loaded again for a body
+ * nobody had left). DSR keeps a killed enemy dead until a bonfire rest or the player's death (enemy_respawn clears
+ * this), wherever the player walked meanwhile. */
+#ifndef ENEMY_KEEP_DEAD
+#define ENEMY_KEEP_DEAD 1
+#endif
+static unsigned blk_dead[ENEMY_BLOCKS][(MAX_ENEMIES + 31) / 32];
 #define EV_FREE 0x80      /* ev_off: a slot of a block that turned off (reused by the next enemy_block_add) */
 #define ENT_FREE (-0x7fffffff)
 static unsigned char ev_off[MAX_ENEMIES];  /* EMEVD (src/event.c): bit 0 disabled (Change Character Enable State),
@@ -847,6 +855,10 @@ void enemy_block_add(int block)
         if (i == nenemies)
             nenemies++;
         place(t, r, i, block, k);
+        if (ENEMY_KEEP_DEAD && blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
+            Enemy *e = &enemies[i];
+            e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;
+        }
         n++;
     }
     npc_block(block, 1);
@@ -860,6 +872,7 @@ void enemy_block_add(int block)
 void enemy_respawn(void)
 {
     int n = 0;
+    memset(blk_dead, 0, sizeof blk_dead);
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         if (ev_off[i] & EV_FREE)
@@ -1402,6 +1415,8 @@ void enemy_update(Player *pl, float dt)
          * and humanity points (FUN_14032fb30) */
         if (e->cc.dead && !e->awarded && !(ev_off[i] & EV_FREE)) {
             e->awarded = 1;
+            if (e->block > 0 && e->block < ENEMY_BLOCKS && e->seed_i >= 0 && e->seed_i < MAX_ENEMIES)
+                blk_dead[e->block][e->seed_i >> 5] |= 1u << (e->seed_i & 31);
             progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
         }
     }

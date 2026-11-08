@@ -102,8 +102,18 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * and freed after the uploads: allocated with the lite set (one arena block per entry) the Burg west block needed
  * 1508 + 475 KB at once and found no room beside the bonfire block with enemies loaded (2026-11-05, TECH_DEBT
  * world-5). */
-enum { E_COL, E_TAB, E_EV, E_OBJ, E_FX, NENT };
-static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "events.bin", "objects.bin", "fx.bin"};
+/* WORLD_TAB_SPLIT (default on; 0 = maptab.bin in one piece): a neighbour block's maptab.bin is read as three arena
+ * blocks, cut at its section starts (map.c map_block_split): header + chunk table (E_TAB), textures + navmesh + fog
+ * rows (E_TABB), cell table + horizon (E_TABC). In one piece the Burg bonfire block's 1185 KB needed a run of 19 free
+ * arena pages, the largest the lite sets ask for; as pieces the largest is 549 KB. Most "no room" refusals had the
+ * bytes free but no hole (TECH_DEBT world-5: 53 of 58 in world_route). The pieces' offsets come from the 80-byte
+ * header, read once per block at boot. */
+#ifndef WORLD_TAB_SPLIT
+#define WORLD_TAB_SPLIT 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_EV, E_OBJ, E_FX, NENT };
+static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "events.bin",
+                                          "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_EV)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
@@ -133,6 +143,7 @@ typedef struct {
     void *texbuf;  /* objects.bin, then fx.bin (tex_total bytes) */
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
+    unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -193,6 +204,32 @@ static int read_sync(Pack *pk, unsigned off, void *dst, unsigned n)
     return r == (int)n;
 }
 
+/* WORLD_TAB_SPLIT: E_TAB / E_TABB / E_TABC from maptab.bin's header (map.c Header: chunk_off, tex_off, cell_off at
+ * bytes 36 / 40 / 76; tab offset of a map.bin offset X = X - chunk_off + 80). A piece starts on a 128-byte boundary
+ * at or before its section (the few bytes before it are read twice), so the sections keep their alignment. Leaves
+ * maptab.bin whole when the cuts do not make sense. 0 if the header could not be read. */
+static int tab_split(BlockRt *r)
+{
+    static unsigned hd[32] __attribute__((aligned(64)));
+    unsigned full = r->size[E_TAB];
+    r->total -= 2 * ((full + 127) & ~127u);  /* the loop counted E_TABB / E_TABC as the whole entry too */
+    if (full < 128 || !read_sync(&r->pk, r->off[E_TAB], hd, 128))
+        return 0;
+    if (memcmp(hd, "DSM5", 4))
+        return 1;
+    unsigned chunk_off = hd[9], tex = hd[10] - chunk_off + 80, cell = hd[19] - chunk_off + 80;
+    unsigned b0 = tex & ~127u, c0 = cell & ~127u;
+    if (!(tex > 80 && b0 >= 128 && cell > tex && c0 > b0 && cell < full))
+        return 1;
+    r->total -= (full + 127) & ~127u;
+    r->off[E_TABB] = r->off[E_TAB] + b0, r->size[E_TABB] = cell - b0;
+    r->off[E_TABC] = r->off[E_TAB] + c0, r->size[E_TABC] = full - c0;
+    r->size[E_TAB] = tex, r->cut[0] = b0, r->cut[1] = c0;
+    for (int e = E_TAB; e <= E_TABC; e++)
+        r->total += (r->size[e] + 127) & ~127u;
+    return 1;
+}
+
 int world_init(const char *boot_area)
 {
     Pack pk;
@@ -235,6 +272,11 @@ int world_init(const char *boot_area)
             }
             else if (i || e == E_TAB)
                 r->total += (r->size[e] + 127) & ~127u;
+        }
+        r->size[E_TABB] = r->size[E_TABC] = 0;  /* (the loop above gave them the whole maptab.bin) */
+        if (i && r->open && WORLD_TAB_SPLIT && !tab_split(r)) {
+            printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
+            r->open = 0;
         }
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
@@ -410,6 +452,8 @@ static void turn_on_col(int i)
     BlockRt *r = &rt[i];
     unsigned t0 = ticks();
     int ok = col_load(i, r->blob[E_COL]), cok = ok;
+    if (r->size[E_TABB])
+        map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
