@@ -260,10 +260,12 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 # it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet). HZN=0: none (old path)
 # WORLD_LITE_DIET (the Burg plan's step B1, default 1): mip 1 of textures with a mip chain streams from mapres.bin
 # (mapsplit.py MIP1_OUT) and a block that is only kept holds its collision and events, not its map tables (src/world.c).
-# WORLD_LITE_DIET=0: today's lite sets (a changed value re-splits every block: $(A)/splitenv). WORLD_MIP1_OUT
-# (default WORLD_LITE_DIET) is the mip 1 half alone.
+# WORLD_LITE_DIET=0: today's lite sets. WORLD_MIP1_OUT=1 streams mip 1 too (a changed value re-splits every block:
+# $(A)/splitenv). Off by default (Ame, 2026-11-08: "play it safe"): a walked-in block draws its textures every frame,
+# so its streamed mip 1 never frees room, and the 4 KB items competed with near parts for pages; a kept-only block
+# drops its textures anyway. On taurus it halved the cells drawn coarse while due near (7 -> 3), near refusals level.
 WORLD_LITE_DIET ?= 1
-WORLD_MIP1_OUT ?= $(WORLD_LITE_DIET)
+WORLD_MIP1_OUT ?= 0
 EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)

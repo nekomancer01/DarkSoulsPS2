@@ -15,7 +15,7 @@ spot of every block, what all blocks together ask of the arena:
   far     the backdrop and sky of the spot's own block (pinned)
 
 The sum is checked against ROOM (KB): with the arena's pools (mapstream.c MS_POOLS, the Burg plan's step B2) the visual
-room is the project budget's 10 MB map arena less the structural pool (world.c world_struct_bytes, computed here the
+room is the arena's build-constant size (world.c WORLD_ARENA_KB) less the structural pool (world.c world_struct_bytes, computed here the
 same way from world.bin's links and the blocks' lite-set entries: "structural_kb") and the misc pool (largest relief +
 largest texture buffer + WORLD_MISC_EXTRA), x MS_FILL_PCT 92 %; without world.bin, the old ROOM_KB (one neighbour's
 lite set of up to 2064 KB out). The per-block budgets the per-block budgets are summed across blocks (near within WS_R0 against WS_B0,
@@ -35,11 +35,23 @@ NEAR_R = 26.0   # mapstream.c MS_R0_DRAW
 PIN_R = 64.0    # mapstream.c MS_R1_PIN (= MS_R_HZN: the horizon stands for the coarse level beyond)
 WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
-ARENA_KB = 10240
+def _world_c(name, default):
+    """a #define of src/world.c (the build constants the runtime sizes its arena with)"""
+    import re
+    try:
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ps2", "proto", "src", "world.c")).read()
+        m = re.search(rf"^#define {name} \(?(\d+)", src, re.M)
+        return int(m[1]) if m else default
+    except OSError:
+        return default
+
+
+ARENA_KB = _world_c("WORLD_ARENA_KB", 8640)  # world.c: the arena's build-constant size
 FILL_PCT = 92        # mapstream.c MS_FILL_PCT
 WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
-STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", WORLD_SLOTS))  # world.c WORLD_STRUCT_WHOLE
+KEPT_HZN = os.environ.get("WORLD_KEPT_HZN", "1") != "0"  # world.c WORLD_KEPT_HZN
+STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 RELIEF_POOL = os.environ.get("WORLD_RELIEF_POOL", "0") == "1"  # world.c WORLD_RELIEF_POOL
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -60,6 +72,8 @@ def lite_entries(d):
     b0, c0 = tex & ~127, cell & ~127  # world.c tab_split
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
     total = r128(sz("collision.bin")) + tabs + r128(sz("events.bin"))
+    if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
+        tabs -= r128(full - c0)
     return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
 
 

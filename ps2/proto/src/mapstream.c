@@ -289,7 +289,16 @@ static unsigned short *pfree;               /* free granules per page */
  * (struct: [spage0, npages), misc: [mpage0, spage0), items below mpage0 = ipages), bytes mapstream_alloc placed in
  * item pages (the plan leaves them out) */
 static unsigned pool_req[2], spage0, mpage0, items_other;
-static int pools_on;
+static int pools_on, pool_busy;
+/* MS_LEND (default 1; the planning thread's "drop-only lending", 2026-11-08): the pools' idle pages hold map items of
+ * the lowest classes the plan wants (read-ahead, coarse out of view or beyond the view radius, the pinned coarse ring:
+ * MS_LEND_CLS), never a near part. They are never copied: a pool allocation that finds no room drops them (those a
+ * chain may still read wait two draws: mapstream_pool_wait). The visual room the export solves against stays the item
+ * pages; lent room only fills the horizon ring where fewer blocks are loaded than the pool is sized for. */
+#ifndef MS_LEND
+#define MS_LEND 1
+#endif
+static unsigned lent_n;  /* items in pool pages now (A/B log) */
 #ifndef MS_ITEMS_TOP
 #define MS_ITEMS_TOP 1
 #endif
@@ -399,6 +408,27 @@ static void *g_alloc_range(unsigned n, unsigned bot, unsigned top)
     return NULL;
 }
 static void *g_alloc_top(unsigned n, unsigned top) { return g_alloc_range(n, 0, top); }
+/* MS_LEND: n bytes (<= a page) inside one page of the pools, pages already in use first */
+static void *g_alloc_lend(unsigned n)
+{
+    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
+    if (!ng || ng > MS_GPP)
+        return NULL;
+    for (int pass = 0; pass < 2; pass++)
+        for (unsigned p = mpage0; p < npages; p++) {
+            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
+                continue;
+            unsigned run = 0, g0 = p * MS_GPP;
+            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
+                run = g_used(g) ? 0 : run + 1;
+                if (run == ng) {
+                    g_mark(g + 1 - ng, ng, 1);
+                    return g_ptr(g + 1 - ng);
+                }
+            }
+        }
+    return NULL;
+}
 static void g_free(void *ptr, unsigned n)
 {
     unsigned g0 = g_of(ptr);
@@ -452,6 +482,9 @@ static int ensure_arena(void)
         }
     }
     printf("mapstream: v2 arena %u KB in %u pages (heap free %u KB)\n", arena ? arena_size >> 10 : 0, npages, hf >> 10);
+    if (pools_on && arena_size < pool_max)
+        printf("mapstream: arena %u KB is under the build's %u KB (heap): the visual room is smaller\n",
+               arena_size >> 10, pool_max >> 10);
     if (pools_on)
         printf("mapstream: arena structural %u KB, misc %u KB, visual %u KB\n", (npages - spage0) * (MS_PAGE >> 10),
                (spage0 - mpage0) * (MS_PAGE >> 10), ipages * (MS_PAGE >> 10));
@@ -714,6 +747,10 @@ static void drop(int k, unsigned id)
 {
     MsInst *m = &ms[k];
     unsigned a, e = grp_of(m, id, &a);
+    if (pools_on && lent_n) {  /* (MS_LEND: one in the pools' pages) */
+        unsigned g = g_of(m->buf[a]);
+        lent_n -= g != ~0u && g >= mpage0 * MS_GPP && g < npages * MS_GPP;
+    }
     g_free(m->buf[a], grp_bytes(m, a, e));
     for (unsigned j = a; j < e; j++) {
         if (it_tex(m, j) && tex_set)
@@ -756,6 +793,32 @@ static unsigned grp_used(const MsInst *m, unsigned id)
     for (unsigned j = a; j < e; j++)
         u = frame - m->used[j] < frame - u ? m->used[j] : u;
     return u;
+}
+
+static inline int lendable(int cls)
+{
+    return MS_LEND && pools_on && (cls == C_PREF || cls == C_FARC || cls == C_VIEW2 || cls == C_PIN);
+}
+/* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
+static unsigned lend_reclaim(unsigned p0, unsigned p1)
+{
+    unsigned busy = 0;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a;
+            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = g_of(m->buf[id]);
+            if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
+                continue;
+            if (grp_chain(m, id))
+                busy++;
+            else
+                drop(k, id);
+        }
+    }
+    return busy;
 }
 
 /* ---- making room ----
@@ -1272,6 +1335,8 @@ static int issue(void)
             gb = grp_bytes(m, g, e);
         }
         void *p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
+        if (!p && gb <= MS_PAGE && lendable(w.cls) && (p = g_alloc_lend(gb)))
+            lent_n++;  /* MS_LEND: an idle pool page */
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -1440,6 +1505,10 @@ static void plan_(const float *pos)
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
     unsigned other = mapstream_stats.other_kb << 10, over = pools_on ? items_other : other > MS_OTHER ? other - MS_OTHER : 0;
     unsigned room = (ipages + nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
+    if (pools_on && MS_LEND) {  /* + the pools' room their own blocks leave (lent to the lowest classes) */
+        unsigned own = other > items_other ? other - items_other : 0, pb = (npages - mpage0) * MS_PAGE;
+        room += pb > own ? pb - own : 0;
+    }
     unsigned cap = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, sum = 0;
     pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
@@ -1847,12 +1916,20 @@ void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
 
 unsigned mapstream_visual(void) { return arena ? ipages * MS_PAGE : 0; }
 int mapstream_pools_on(void) { return pools_on; }
+int mapstream_pools_on_build(void) { return MS_POOLS; }
+int mapstream_pool_wait(void) { return pool_busy; }
 
 void *mapstream_alloc_pool(unsigned n, int pool)
 {
     if (!mapstream_arena() || !pools_on)
         return NULL;
-    void *p = pool == MS_POOL_STRUCT ? g_alloc_range(n, spage0, npages) : g_alloc_range(n, mpage0, spage0);
+    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
+    void *p = g_alloc_range(n, p0, p1);
+    pool_busy = 0;
+    if (!p && lent_n) {  /* MS_LEND: the lent items go */
+        pool_busy = lend_reclaim(p0, p1) > 0;
+        p = g_alloc_range(n, p0, p1);
+    }
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;
     return p;

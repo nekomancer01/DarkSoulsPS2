@@ -48,6 +48,11 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
 #define WORLD_ARENA_LESS (1024u << 10)
 #define WORLD_POOL (24u << 20)
+/* MS_POOLS: the arena's size is this build constant, not whatever heap a boot spot leaves (8640 KB booted in the Burg
+ * on the ISO, 2026-11-08; booted on world_route's spawn it was ~1.5 MB larger, so the visual room changed with the boot
+ * spot). tools/world_budget.py reads this line: the export is solved against the same visual room the runtime prints.
+ * A boot with less heap gets a smaller arena (logged by mapstream.c). */
+#define WORLD_ARENA_KB 8640
 /* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
  * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
  * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
@@ -78,7 +83,7 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * triangle loads w, b and p: 4484 KB, visual 2.1-3.1 MB of the ISO's 8640 KB arena); fewer = a smaller pool, the rare
  * link with more spills its last lite set into the item pages (logged, world_stats.pool_spills) */
 #ifndef WORLD_STRUCT_WHOLE
-#define WORLD_STRUCT_WHOLE WORLD_SLOTS
+#define WORLD_STRUCT_WHOLE 2  /* (Ame 2026-11-08: two wanted whole + one lean, visual 3.1 -> 3.8 MB) */
 #endif
 /* the relief in the misc pool too (sized by the largest bump.bin). Off: the relief takes item room only where no map
  * item is wanted (mapstream_alloc_soft, as before): with it in, the Burg's visual room was 2112 KB of an 8640 KB arena
@@ -86,6 +91,13 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #ifndef WORLD_RELIEF_POOL
 #define WORLD_RELIEF_POOL 0
 #endif  /* ASSUMED: one of the Burg's larger enemy model.bin temporaries (578-590 KB) */
+/* WORLD_KEPT_HZN (default 1): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
+ * MB in the Burg) and map.c draws its horizon (map_block_lean): its far cells are in view beyond the pinned 64 m, and
+ * without the horizon they were holes (planning thread, 2026-11-08). 0: the tables go whole. */
+#ifndef WORLD_KEPT_HZN
+#define WORLD_KEPT_HZN 1
+#endif
+#define LEAN_E1 (WORLD_KEPT_HZN && WORLD_TAB_SPLIT ? E_TABB : E_TABC)  /* the last maptab piece a lean block lets go */
 #define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
@@ -331,7 +343,7 @@ int world_init(const char *boot_area)
     world_stats.blocks = nblk;
     if (nblk > 1)
         mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
-    mapstream_pool(WORLD_POOL);
+    mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (nblk > 1) {
         unsigned sb = world_struct_bytes(), mb = 0, bmax = 0, tmax = 0;
         for (int i = 0; i < nblk; i++) {
@@ -358,7 +370,7 @@ int world_init(const char *boot_area)
 static unsigned tab_bytes(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= E_TABC; e++)
+    for (int e = E_TAB; e <= LEAN_E1; e++)
         n += (r->size[e] + 127) & ~127u;
     return n;
 }
@@ -647,7 +659,7 @@ static void *lite_alloc(int want, unsigned sz, int *wait);
 static unsigned tab_kb(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= E_TABC; e++)
+    for (int e = E_TAB; e <= LEAN_E1; e++)
         n += (r->size[e] + 127) & ~127u;
     return n >> 10;
 }
@@ -669,7 +681,7 @@ static void free_slot(int i)
 static void lean(int i)
 {
     BlockRt *r = &rt[i];
-    map_block_lean(i);
+    map_block_lean(i, LEAN_E1 != E_TABC);  /* WORLD_KEPT_HZN: its horizon stays drawn */
     r->lean = 1, r->lean_drain = WORLD_DRAIN;
     world_stats.leans++;
     printf("world: block %d %s kept only: map tables let go (%u KB), collision %u KB and events stay\n", i, tab[i].pack,
@@ -681,7 +693,7 @@ static void lean_step(int i)
     BlockRt *r = &rt[i];
     if (r->lean == 1 && r->lean_drain > 0 && (--r->lean_drain <= 0 || warping)) {
         r->lean_drain = 0;
-        free_ents(r, E_TAB, E_TABC + 1);
+        free_ents(r, E_TAB, LEAN_E1 + 1);
         world_stats.pool_used_kb -= tab_kb(r);
         r->tab_gone = 1;
     }
@@ -693,7 +705,7 @@ static int relite_start(int i)
     BlockRt *r = &rt[i];
     if (r->lean_drain > 0 || (r->retry_s > 0 && !warping) || world_stats.reading >= 0)
         return 0;
-    unsigned order[3] = {E_TAB, E_TABB, E_TABC}, n = 3;
+    unsigned order[3] = {E_TAB, E_TABB, E_TABC}, n = LEAN_E1 - E_TAB + 1;
     for (unsigned a = 0; a < n; a++)
         for (unsigned b = a + 1; b < n; b++)
             if (r->size[order[b]] > r->size[order[a]]) {
@@ -707,7 +719,7 @@ static int relite_start(int i)
         int wait = 0;
         r->blob[e] = lite_alloc(i, sz, &wait);
         if (!r->blob[e]) {
-            free_ents(r, E_TAB, E_TABC + 1);
+            free_ents(r, E_TAB, LEAN_E1 + 1);
             r->retry_s = wait ? 0.1f : WORLD_RETRY_S;
             return 0;
         }
@@ -732,7 +744,7 @@ static void relite_step(int i)
         if (res != (int)n) {
             printf("world: block %d tables read %d of %u bytes\n", i, res, n);
             world_stats.fails++;
-            free_ents(r, E_TAB, E_TABC + 1);
+            free_ents(r, E_TAB, LEAN_E1 + 1);
             world_stats.pool_used_kb -= tab_kb(r);
             r->lean = 1, r->tab_gone = 1, r->retry_s = WORLD_RETRY_S;
             return;
@@ -741,9 +753,9 @@ static void relite_step(int i)
         if ((r->done += n) == r->size[r->ent])
             r->ent++, r->done = 0;
     }
-    while (r->ent <= E_TABC && !r->size[r->ent])
+    while (r->ent <= LEAN_E1 && !r->size[r->ent])
         r->ent++;
-    if (r->ent > E_TABC) {
+    if (r->ent > LEAN_E1) {
         unsigned t0 = ticks();
         if (r->size[E_TABB])
             map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
@@ -827,6 +839,10 @@ static void *lite_alloc(int want, unsigned sz, int *wait)
     void *p = mapstream_alloc_pool(sz, MS_POOL_STRUCT);
     if (p)
         return p;
+    if (mapstream_pool_wait()) {  /* MS_LEND: map items lent the pool are in a chain for two more draws */
+        *wait = 1;
+        return NULL;
+    }
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_ON && rt[i].lean == 1 && rt[i].lean_drain > 0) {
             *wait = 1;  /* one is draining already */
