@@ -35,6 +35,7 @@ MIN_FRAMES = 10
 # the Burg plan's streamer gates per test script (step B0): the most allowed per run, from two ISO runs of main
 # (2026-11-08, the plan's baseline table); None = not gated. Lower them as the plan's steps land, never raise them.
 STREAM_GATE_KEYS = {"room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
+                    "lent_near": "near parts lent a pool page and dropped for a lite set (MS_LEND)",
                     "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
 STREAM_GATES = {
     "iso_burg_taurus": {"room_near": None, "popins": None, "due_med": None, "hzn_pct": None},
@@ -214,7 +215,7 @@ def table(r):
     if run.get("stream"):
         st = run["stream"]
         o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}), pop-ins "
-                 f"{st['popins']}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
+                 f"{st['popins']}, lent near dropped {st.get('lent_near', 0)}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
                  f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %)")
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)

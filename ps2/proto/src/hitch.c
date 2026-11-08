@@ -85,6 +85,8 @@ void hitch_flip(int k, unsigned ci, int flop)
 }
 /* the streamer's Burg gates (plan step B0): refusals, near due but coarse, horizon inside its radius, pop-ins */
 #define DUE_BINS 64
+static unsigned lent_near_n;
+void hitch_lent_near(void) { lent_near_n++, hitch_total.lent_near++; }
 static unsigned room_n, room_near, pop_n, due_hist[DUE_BINS], due_max, due_fr, map_due, map_hz;
 static float hz_s;
 void hitch_room(int near)
@@ -111,9 +113,10 @@ static void stream_line(void)
     unsigned med = 0, acc = 0;
     while (med < DUE_BINS - 1 && (acc += due_hist[med]) * 2 < due_fr)
         med++;
-    printf("stream: t %u s room %u near %u | due near drawn coarse median %u max %u | hzn inside %.1f s | pop-ins %u\n",
-           (unsigned)run_s, room_n, room_near, due_fr ? med : 0, due_max, (double)hz_s, pop_n);
-    room_n = room_near = pop_n = due_max = due_fr = 0, hz_s = 0;
+    printf("stream: t %u s room %u near %u | due near drawn coarse median %u max %u | hzn inside %.1f s | pop-ins %u | "
+           "lent near dropped %u\n", (unsigned)run_s, room_n, room_near, due_fr ? med : 0, due_max, (double)hz_s, pop_n,
+           lent_near_n);
+    room_n = room_near = pop_n = due_max = due_fr = lent_near_n = 0, hz_s = 0;
     memset(due_hist, 0, sizeof due_hist);
 }
 

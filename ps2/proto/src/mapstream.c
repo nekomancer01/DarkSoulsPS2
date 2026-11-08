@@ -299,6 +299,12 @@ static int pools_on, pool_busy;
 #define MS_LEND 1
 #endif
 static unsigned lent_n;  /* items in pool pages now (A/B log) */
+/* near parts may take idle pool pages too, up to this much (the planning thread: a refused near part is not drawn
+ * either; a lent one draws until a lite set needs its page). Their drops are logged and counted (hitch.c stream line) */
+#ifndef MS_LEND_NEAR_KB
+#define MS_LEND_NEAR_KB 900
+#endif
+static unsigned lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
 #ifndef MS_ITEMS_TOP
 #define MS_ITEMS_TOP 1
 #endif
@@ -749,7 +755,12 @@ static void drop(int k, unsigned id)
     unsigned a, e = grp_of(m, id, &a);
     if (pools_on && lent_n) {  /* (MS_LEND: one in the pools' pages) */
         unsigned g = g_of(m->buf[a]);
-        lent_n -= g != ~0u && g >= mpage0 * MS_GPP && g < npages * MS_GPP;
+        int in_pool = g != ~0u && g >= mpage0 * MS_GPP && g < npages * MS_GPP;
+        lent_n -= in_pool;
+        if (in_pool && (m->cls[a] == C_NEAR || m->cls[a] == C_NEAR2)) {
+            unsigned b = grp_bytes(m, a, e);
+            lent_near = lent_near > b ? lent_near - b : 0;
+        }
     }
     g_free(m->buf[a], grp_bytes(m, a, e));
     for (unsigned j = a; j < e; j++) {
@@ -800,7 +811,7 @@ static inline int lendable(int cls)
     /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon
      * for a moment, a near part would pop. With only the classes below C_PIN (and C_VIEW) lendable, iso_ame_report3
      * drew the horizon inside HZN_R 99.5 % of the time (main 54 %; all classes lendable: 53 %) */
-    return MS_LEND && pools_on && cls != C_NEAR && cls != C_NEAR2 && cls > C_KEEP;
+    return MS_LEND && pools_on && cls > C_KEEP;
 }
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
 static unsigned lend_reclaim(unsigned p0, unsigned p1)
@@ -818,8 +829,14 @@ static unsigned lend_reclaim(unsigned p0, unsigned p1)
             if (!settling && grp_chain(m, id))  /* (a settle waited for VU1: no chain reads the arena; without this the
                                                  * lite set waited out the settle: "settle stopped", taurus 2026-11-09) */
                 busy++;
-            else
+            else {
+                if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2) {
+                    hitch_lent_near();
+                    printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
+                           grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
+                }
                 drop(k, id);
+            }
         }
     }
     return busy;
@@ -1342,11 +1359,14 @@ static int issue(void)
          * the item pages first, coarse cells of classes above them took the room the near parts could not clear:
          * taurus near refusals 165 -> 876) */
         int lo = gb <= MS_PAGE && lendable(w.cls) && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_SKY));
-        void *p = lo ? g_alloc_lend(gb) : NULL;
+        int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
+        void *p = lo && !nr ? g_alloc_lend(gb) : NULL;
         if (p)
             lent_n++;
         else
             p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
+        if (!p && lo && nr && lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = g_alloc_lend(gb)))
+            lent_n++, lent_near += gb;
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -1523,6 +1543,10 @@ static void plan_(const float *pos)
     /* cap_hi: what the item pages hold, for every class; cap: + the lent room, which only lendable classes reach (with
      * one cap the near parts were planned into room they could never use: near refusals 165 -> 1117 on taurus) */
     unsigned cap_hi = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, cap = cap_hi + lend / 100 * MS_FILL_PCT;
+    {  /* near parts may use lent room up to MS_LEND_NEAR_KB */
+        unsigned ln = lend < (MS_LEND_NEAR_KB << 10) ? lend : MS_LEND_NEAR_KB << 10;
+        cap_hi += ln / 100 * MS_FILL_PCT;
+    }
     unsigned sum = 0, sum_hi = 0;
     pt[np_++] = ticks();
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
@@ -1552,7 +1576,7 @@ static void plan_(const float *pos)
             }
         } else {
             unsigned b = (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
-            int lo = lendable(want[i].cls);
+            int lo = lendable(want[i].cls) && want[i].cls != C_NEAR && want[i].cls != C_NEAR2;
             sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
             if (sum > cap || (!lo && sum_hi > cap_hi)) {
                 m->cls[id] = C_KEEP;
@@ -1967,6 +1991,15 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     if (!mapstream_arena())
         return NULL;
     void *p = mapstream_alloc_pool(n, MS_POOL_MISC);  /* (MS_POOLS: enemy model temporaries and the like) */
+    if (!p && pool_busy) {
+        /* MS_LEND: map items lent the misc pool are in this or the last frame's chain. Wait for VU1 rather than clear
+         * item pages: enemy model temporaries took 300-600 KB of drawn cells from the visual room at each load, so the
+         * room the export was solved to was not a constant (taurus / report3 with enemies, 2026-11-09) */
+        vu1_wait();
+        chains_done = 1;
+        p = mapstream_alloc_pool(n, MS_POOL_MISC);
+        chains_done = 0;
+    }
     if (p)
         return p;
     p = alloc_items(n);

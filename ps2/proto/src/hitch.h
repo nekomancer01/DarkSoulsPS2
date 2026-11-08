@@ -62,6 +62,8 @@ void hitch_flip(int k, unsigned ci, int flop);
 /* mapstream.c: a wanted item found no room in the arena ("mapstream: no room"); near = a near-level class (C_NEAR,
  * C_NEAR2: the Burg plan's gated refusals, B0) */
 void hitch_room(int near);
+/* mapstream.c MS_LEND: a near part lent an idle pool page was dropped for a lite set */
+void hitch_lent_near(void);
 /* map.c, once a draw: cells in view due their near level but drawn coarse (not in yet), cells inside HZN_R drawn by their
  * horizon (coarse not in), near swaps seen on screen (pop-ins) this draw. The period's "stream:" line gives the median
  * and largest due count over its frames, the seconds with any horizon-filled cell and the pop-ins */
@@ -78,7 +80,7 @@ void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb
 typedef struct {
     unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms, allocfail;
     unsigned layer_play;  /* disc layer changes in periods without a loading screen (the disc: lines) */
-    unsigned room, room_near, popins;  /* "no room" refusals (all, near classes), near pop-ins (the stream: lines) */
+    unsigned room, room_near, popins, lent_near;  /* "no room" refusals (all, near classes), near pop-ins (the stream: lines) */
     float hzn_s;  /* seconds with a cell inside HZN_R drawn by its horizon */
 } HitchTotals;
 extern HitchTotals hitch_total;
