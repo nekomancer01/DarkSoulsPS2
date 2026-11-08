@@ -170,6 +170,7 @@ typedef struct {
     const unsigned char *tex_bin, *cel_bin;
     const Header *hdr;
     const MapCell *ctab;  /* DSM5 cell table (resident range + streamed near blob per cell), else NULL */
+    const short *ckeys;   /* its cell keys (mapstream.h cell_keys: MS_NEAR_CUBE), else NULL */
     unsigned nctab;
     const Chunk *chunks;
     const FogRow *fog_row;
@@ -264,6 +265,7 @@ int map_init(const void *blob)
         return 0;
     m->ctab = hdr->magic[3] == '5' && hdr->cell_off ? (const MapCell *)(map_bin + hdr->cell_off + 16) : NULL;
     m->nctab = m->ctab ? *(const unsigned *)(map_bin + hdr->cell_off) : 0;
+    m->ckeys = cell_keys(m->ctab, m->nctab);
     m->pkt = m->ctab && ((const unsigned *)(map_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(map_bin + hdr->fog_off);
@@ -844,6 +846,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     const Header *hdr = m->hdr = h;
     m->ctab = (const MapCell *)(cel_bin + hdr->cell_off + 16);
     m->nctab = *(const unsigned *)(cel_bin + hdr->cell_off);
+    m->ckeys = cell_keys(m->ctab, m->nctab);
     m->pkt = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(tex_bin + hdr->fog_off);
@@ -912,7 +915,7 @@ void map_block_drop(int k)
         fog_area = 0;
     free(m->citem), free(m->rrange);
     m->rrange = NULL, m->nritem = 0;
-    m->hdr = NULL, m->ctab = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
+    m->hdr = NULL, m->ctab = NULL, m->ckeys = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
     m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
     m->on = 0;
     mapstream_select(0);
@@ -1231,6 +1234,8 @@ int map_draw(V3 eye)
                 }
                 /* without the cell's resident streams its near cells draw as far as they are loaded */
                 float r = ce->near_on ? NEAR_DRAW_R + NEAR_HYST : NEAR_DRAW_R - NEAR_HYST;
+                if (m->ckeys)  /* the near level's distance: the box clipped to the cell's cube (MS_NEAR_CUBE) */
+                    d2 = cell_near_d2(&ctab[ci], m->ckeys + 4 * ci, e);
                 ce->near_on = r > 0 && d2 < r * r;
                 while (np < NEAR_PARTS && ci + np < (unsigned)m->ncells && (ctab[ci + np].near & CELL_PART))
                     np++;
