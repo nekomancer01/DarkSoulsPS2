@@ -6,6 +6,8 @@ Packs (<pak dir>/<name>.pak, tools/pack.py; build/data/snd/), one per FMOD bank 
                cue.bin = c0000's TAE sound events, with the Warrior's armor defenseMaterial for b events
   mAA.pak      frpg_mAA + fdlc_mAA + frpg_smAA (music, long ambience: streamed) + frpg_xmAA (5.1 area ambience,
                downmixed, streamed); emit.bin = the Sound events of every mAA_* MSB
+  mAA_BB.pak   str.bin alone: the streamed samples only map mAA_BB's music / ambience / area events use (write_pack
+               split_aa; Burg plan B8, SND_SPLIT=0 = all in mAA.pak), beside that map's blocks on the disc
   cXXXX.pak    frpg_cXXXX + fdlc_cXXXX for an enemy model placed in one of the maps given; cue.bin = its TAE cues
 Each pack: bank.bin (tables), vag.bin (resident ADPCM) and str.bin (streamed samples), both raw entries the IOP reads
 in place (vag.bin straight into SPU2 RAM), cue.bin / emit.bin when present.
@@ -25,7 +27,7 @@ RATE: the highest of RATES at which main + the largest area + the CHR_MIN larges
 bank.bin (little-endian)
   header  "DSRB", u32 version 2, u32 nsamples, u32 nevents, u32 nwaves, u32 vag bytes, u32 str bytes, u32 rate
   sample  {u32 offset (vag.bin or str.bin), u32 bytes (all channels), u16 rate, u8 channels,
-           u8 flags (1 loops, 2 streamed, 4 dropped), u32 chunk (streamed: bytes per channel per chunk)}       16 B
+           u8 flags (1 loops, 2 streamed, 4 dropped, bits 4-7: BB + 1 when in mAA_BB.pak, 15 in every one), u32 chunk (streamed: bytes per channel per chunk)}       16 B
           resident: channel c at offset + c * bytes / channels; streamed: chunks of `chunk` bytes per channel,
           channels interleaved by chunk (src/dsrsnd_rpc.h)
   event   {u32 id, char type, u8 flags (1 loop, 2 3D), u8 nwaves, u8 category (0 SE, 1 music, 2 ambience, 3 voice),
@@ -360,9 +362,37 @@ def start_pool():
           " (SND_CACHE)", flush=True)
 
 
-def write_pack(out, work, name, g, rate, cue=None, emit=None):
+MAP_TYPES = set("may")  # events whose id is AA BB xxxxx: music, area SE, area ambience of one map (map_of)
+SPLIT = os.environ.get("SND_SPLIT", "1") != "0"  # Burg plan B8 (default on; SND_SPLIT=0: one str.bin per area)
+
+
+def map_of(typ, num, aa):
+    """map BB an area bank's event belongs to (music, ambience, area SE of mAA_BB), else None (shared)"""
+    return num // 100000 % 100 if typ in MAP_TYPES and num // 10000000 == aa else None
+
+
+def sample_maps(g, aa):
+    """(bank, sample) -> the one map BB whose events alone use it (streamed samples of an area bank), else absent"""
+    own = {}
+    for (typ, num), e, loop, refs in g.events:
+        bb = map_of(typ, num, aa)
+        for k, _ in refs:
+            own.setdefault(k, set()).add(bb)
+    return {k: next(iter(v)) for k, v in own.items() if len(v) == 1 and None not in v and next(iter(v)) < 14}
+
+
+def write_pack(out, work, name, g, rate, cue=None, emit=None, split_aa=None, split_maps=None):
+    """split_aa (an area bank, SPLIT): each streamed sample that only one map's events use goes into that map's own
+    pack mAA_BB.pak (str.bin alone), placed on the disc beside the map's blocks (tools/iso9660.py) so a walk there
+    reads its music and ambience inside the drive's fast seek window; the sample's flags carry BB + 1 in bits 4-7
+    (src/sound.c opens the stream from that pack). The rest stay in mAA.pak's str.bin."""
     t0 = time.time()
     samples, vag, strm, sidx = [], bytearray(), bytearray(), {}
+    owner = sample_maps(g, split_aa) if split_aa is not None and SPLIT else {}
+    mstrm = {}  # BB -> str.bin of mAA_BB.pak (after the shared streams, copied at its start)
+    if owner:  # every map of the area that has a block, or owns a stream, gets a pack
+        for bb in sorted(set(owner.values()) | set(split_maps or ())):
+            mstrm[bb] = None
     snr = []
     jobs = [(b.path, s.index, g.tier[(b.name, s.index)], (b.name, s.index) in g.loops, rate)
             for b, _ in g.banks for s in b.samples if g.tier[(b.name, s.index)] != "drop"]
@@ -394,12 +424,23 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
                 n = max(len(a) for a in chans)
                 n += -n % STREAM_CHUNK
                 chans = [a + b"\0" * (n - len(a)) for a in chans]
-                off = len(strm)
+                bb = owner.get(k)
+                if bb is not None and mstrm.get(bb) is None:
+                    mstrm[bb] = bytearray()
+                dst = strm if bb is None else mstrm[bb]
+                off = len(dst)
                 for o in range(0, n, STREAM_CHUNK):
                     for a in chans:
-                        strm += a[o:o + STREAM_CHUNK]
-                samples.append(struct.pack("<IIHBBI", off, len(strm) - off, min(STREAM_RATE, s.freq), len(chans),
-                                           2 | int(loop), STREAM_CHUNK))
+                        dst += a[o:o + STREAM_CHUNK]
+                # a shared one (bb None) is also at the start of every map's pack, same offset: flag 15 = the map
+                # the player is in (src/sound.c), so no stream of a walk reads mAA.pak
+                samples.append(struct.pack("<IIHBBI", off, len(dst) - off, min(STREAM_RATE, s.freq), len(chans),
+                                           2 | int(loop) | ((15 if mstrm else 0) if bb is None else (bb + 1) << 4),
+                                           STREAM_CHUNK))
+    for i, smp in enumerate(samples):  # map-own streams: after the shared ones in their map's pack
+        off, nb, r, ch, fl, ck = struct.unpack("<IIHBBI", smp)
+        if fl & 2 and 0 < fl >> 4 < 15:
+            samples[i] = struct.pack("<IIHBBI", off + len(strm), nb, r, ch, fl, ck)
     cat = {"music": 1, "ambience": 2, "voice": 3}
     evs = []
     for (typ, num), e, loop, refs in g.events:
@@ -432,6 +473,13 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
         args.append(f"{f}={'raw:' if f in ('str.bin', 'vag.bin') else ''}{p}")
     os.makedirs(out, exist_ok=True)
     pack.main([os.path.join(out, name + ".pak")] + args, log=lambda *a: None)  # in process: Pyodide has no subprocess
+    for bb, d in sorted(mstrm.items()):  # the maps' own streams (split_aa), after a copy of the shared ones
+        sub = f"{name}_{bb:02d}"
+        p = os.path.join(gen, f"str_{bb:02d}.bin")
+        with open(p, "wb") as fh:
+            fh.write(bytes(strm) + bytes(d or b""))
+        pack.main([os.path.join(out, sub + ".pak"), f"str.bin=raw:{p}"], log=lambda *a: None)
+        print(f"  {sub:8} str {len(d) / 1048576:6.1f} M (the map's own music / ambience)", flush=True)
     print(f"  {name:8} {len(samples):5} samples ({sum(1 for v in g.tier.values() if v == 'res')} resident, "
           f"{sum(1 for v in g.tier.values() if v == 'stream')} streamed, {sum(1 for v in g.tier.values() if v == 'drop')}"
           f" dropped), {len(evb):5} events, vag {len(vag) / 1024:7.0f} K, str {len(strm) / 1048576:6.1f} M,"
@@ -488,7 +536,8 @@ def main():
     write_pack(out, work, "main", groups["main"], rate, cue=cue_blob(cues["c0000"], material))
     for aa in areas:
         blob, n = emitters(game, aa)
-        write_pack(out, work, "m" + aa, groups["m" + aa], rate, emit=blob)
+        write_pack(out, work, "m" + aa, groups["m" + aa], rate, emit=blob, split_aa=int(aa),
+                   split_maps={int(m[4:6]) for m in maps if m[1:3] == aa})
     for c, g in chr_groups.items():
         write_pack(out, work, c, g, rate, cue=cue_blob(cues.get(c, {}), -1))
     for c in models:  # characters with TAE cues but no bank of their own (their cues name main-bank events)

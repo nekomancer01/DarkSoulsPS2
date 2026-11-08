@@ -41,6 +41,8 @@ int world_hold(const float *feet);
 int world_current(void);
 /* MSB map id (mAA_BB_CC_DD) of a block, NULL if none (sound.c: area banks and ambience per map) */
 const char *world_map(int block);
+/* its pack name (data/<pack>.pak: mAA_BB_CC_DD[_x]), NULL if none (sound.c: the block's copy of its map's streams) */
+const char *world_pack(int block);
 
 typedef struct {
     int blocks, loaded, reading;     /* table size, blocks on (incl. boot), block being read (-1 none) */

@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sound.h"
+#include "world.h" /* world_current, world_pack: per-block stream copies */
 #include "dsrsnd_rpc.h"
 #include "pack.h"
 #include "render.h"
@@ -83,6 +84,11 @@ typedef struct {
     unsigned nemit;
     EmitRt *ert;
     char path[96];
+    /* an area bank's maps' own streams (export_audio.py write_pack split_aa, Burg plan B8): the streamed samples with
+     * flags bits 4-7 = BB + 1 read from snd/mAA_BB.pak's str.bin, beside that map's blocks on the disc */
+    unsigned map_str[14];   /* str.bin's offset in snd/<name>_BB.pak */
+    unsigned short map_ok;  /* bit BB: map_str[BB] found */
+    unsigned blk_copy;      /* bit i: the disc holds world block i's copy of its map's pack (<block>/snd.pak) */
 } Bank;
 
 typedef struct {
@@ -304,7 +310,36 @@ static Bank *bank_load(const char *name, int keep)
     int raw = pack_entry_raw(&pk, "vag.bin", &b->vag_off, &b->vag_size) &&
               pack_entry_raw(&pk, "str.bin", &b->str_off, &b->str_size);
     pack_close(&pk);
-    return bank_setup(b, name, keep, path, raw);
+    if (!bank_setup(b, name, keep, path, raw))
+        return NULL;
+    unsigned want = 0;  /* the maps' own stream packs this bank's samples name (15: every map's, the shared ones) */
+    for (unsigned i = 0; i < b->nsmp; i++) {
+        unsigned top = b->smp[i].flags >> 4;
+        want |= top == 15 ? 0x3FFFu : top ? 1u << (top - 1) : 0;
+    }
+    for (unsigned bb = 0; bb < 14; bb++) {
+        if (!(want >> bb & 1))
+            continue;
+        char mp[64];
+        snprintf(mp, sizeof mp, PACK_ROOT "snd/%s_%02u.pak", name, bb);
+        unsigned size;
+        if (pack_open(&pk, mp) && pack_entry_raw(&pk, "str.bin", &b->map_str[bb], &size))
+            b->map_ok |= 1u << bb;
+        pack_close(&pk);
+    }
+    for (int i = 0; b->map_ok && i < 32 && world_pack(i); i++) {  /* tools/iso9660.py's per-block copies (the disc) */
+        const char *wp = world_pack(i);
+        unsigned bb = (unsigned)atoi(wp + 4);
+        if (strncmp(wp, name, 3) || bb >= 14 || !(b->map_ok >> bb & 1))
+            continue;
+        char mp[64];
+        snprintf(mp, sizeof mp, PACK_ROOT "%s/snd.pak", wp);
+        unsigned off, size;
+        if (pack_open(&pk, mp) && pack_entry_raw(&pk, "str.bin", &off, &size) && off == b->map_str[bb])
+            b->blk_copy |= 1u << i;
+        pack_close(&pk);
+    }
+    return b;
 }
 
 /* A bank's tables (blob, cue_blob, emit_blob, vag / str offsets read into b) made usable; its VAG queued for the IOP.
@@ -618,11 +653,32 @@ static void slot_start(int s, Bank *b, const SEvent *e, int smp, float vol, int 
                  .open_frame = frame_no, .emitter = emitter};
     unsigned short v0 = (unsigned short)(sl->cur * VOL_MAX);
     sl->l = sl->r = v0;
-    obuf.so = (SndStreamOpen){.slot = s, .offset = b->str_off + sm->off, .size = sm->bytes,
+    /* in its map's own pack (Burg plan B8): flags bits 4-7 = BB + 1, or 15 for a shared one, which every map's pack
+     * holds at the same offset (the one the player is in; mAA.pak's copy without one) */
+    unsigned top = sm->flags >> 4, bb = top == 15 ? (unsigned)area_bb : top - 1u;
+    if (bb >= 14 || !(b->map_ok >> bb & 1)) {
+        if (top && top != 15) {
+            printf("snd: %c%09u: no snd/%s_%02u.pak\n", e->type, e->id, b->name, top - 1);
+            sl->on = 0;
+            return;
+        }
+        bb = 99;  /* mAA.pak */
+    }
+    obuf.so = (SndStreamOpen){.slot = s, .offset = (bb < 14 ? b->map_str[bb] : b->str_off) + sm->off, .size = sm->bytes,
                               .loop = (e->flags & EF_LOOP) != 0, .chunk = sm->chunk,
                               .spu_buf = SPU_STREAMS0 + s * 2 * 2 * SND_STREAM_CHUNK_MAX, .channels = sm->ch,
                               .pitch = pitch_of(sm->rate), .voll = v0, .volr = v0};
-    snprintf(obuf.so.path, sizeof obuf.so.path, "%s", b->path);
+    if (bb < 14) {  /* what the IOP opens: the copy beside the block the player is in, else snd/<bank>_BB.pak */
+        char mp[64], cd[96];
+        int wb = world_current();
+        const char *wp = world_pack(wb);
+        if (wp && wb < 32 && (b->blk_copy >> wb & 1) && (unsigned)atoi(wp + 4) == bb)
+            snprintf(mp, sizeof mp, PACK_ROOT "%s/snd.pak", wp);
+        else
+            snprintf(mp, sizeof mp, PACK_ROOT "snd/%s_%02u.pak", b->name, bb);
+        snprintf(obuf.so.path, sizeof obuf.so.path, "%s", pack_resolve(mp, cd, sizeof cd));
+    } else
+        snprintf(obuf.so.path, sizeof obuf.so.path, "%s", b->path);
     ops_call(SNDF_STREAM, sizeof obuf.so);
     printf("snd: stream %d: %c%09u (%u K, %u ch, %s)\n", s, e->type, e->id, sm->bytes >> 10, sm->ch,
            (e->flags & EF_LOOP) ? "loop" : "once");
