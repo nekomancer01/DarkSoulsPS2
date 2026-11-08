@@ -385,11 +385,17 @@ static void heap_put(void *p, unsigned n) { (void)n; free(p); }
 
 static void job_begin(ChrType *t)
 {
-    /* the load's heap room back from the streamer first (its pages went over the floor: the Taurus Demon's load took
-     * RAM to 1.32 MB with the streamer's pages out, ISO 2026-11-08) */
+    /* the load's heap room back from the streamer first; a page holding drawn cells drains over a few frames
+     * (mapstream.c x_release), so the load waits for it: started at once the Taurus Demon's load took RAM to 1.21 MB
+     * with 0.8 MB still lent (ISO 2026-11-08) */
     unsigned need = STREAM_RAM_FLOOR + 2 * t->model_raw, hf = enemy_ram_free();
-    if (hf < need)
+    if (hf < need && mapstream_stats.lent_kb) {
         mapstream_heap_release(need - hf);
+        if ((hf = enemy_ram_free()) < need && mapstream_stats.lent_kb) {
+            t->retry = frame + 5;
+            return;
+        }
+    }
     char path[64];
     model_path(path, sizeof path, t);
     job_arena = mapstream_ready();
