@@ -38,7 +38,13 @@ import dsr_light
 import souls
 import texmap
 
-BUMP = os.environ.get("BUMP", "1") == "1"
+# BUMP_BAKE (default 1): the relief goes into the diffuse texels at export (bake_rgba) instead of the runtime CLUT pass:
+# no bump.bin set, no relief VRAM pool, no second draw, the same relief in every block at every distance. The PS2-era
+# way (lighting detail painted / baked into the diffuse): the GS has no per-pixel normal, and the CLUT pass (below)
+# needed 0.7-1 MB of arena per block that the Undead Burg never had (main b1530b6, ISO report3: "relief: no room" for
+# the whole run, so the Burg drew no relief at all) plus 480 KB of VRAM. BUMP_BAKE=0: the CLUT pass as before.
+BAKE = os.environ.get("BUMP_BAKE", "1") == "1"
+BUMP = os.environ.get("BUMP", "0" if BAKE else "1") == "1"
 BUMP_MAX = int(os.environ.get("BUMP_MAX", 128))  # px, largest normal-map side (VRAM pool / RAM)
 BUMP_K = int(os.environ.get("BUMP_K", 48))       # lighting clusters = CLUTs, one per chunk
 # coarse per-triangle response groups that build_chunks keeps apart (a wall's sunlit and shadowed sides). Measured at
@@ -61,6 +67,44 @@ EPS = 1 / 32
 # instead of becoming a partial chunk of their own
 BUMP_MIN_GROUP = int(os.environ.get("BUMP_MIN_GROUP", 18))
 CLUT_SAMPLE = 64  # triangles per cluster the CLUT is averaged over
+
+# The baked response is one light for every texture, not the triangle's own (a texture is shared by sunlit and shaded
+# walls, and by every block: tools/mapsplit.py TEX_PEERS shares textures with identical bytes between blocks, so the
+# bake must not depend on the block's triangles). Ratio(n) = (a + b x + c y + e z) / (a + e), n = (x, y, z) the
+# tangent-space normal as _perturb reads it (x along B, y along T). MEASURED (2026-11-09, Undead Burg block b, main
+# b1530b6): the area-weighted mean of the 48 CLUT responses over the 256-normal palette fits this plane with rms 0.04
+# (its std 0.145, range 0.60..1.20); a, b, c, e = 0.799, 0.071, -0.410, 0.247. On walls world up is -T (up.T -0.94):
+# light from above, as DSR's sun and sky hemisphere give. The clusters' own strength is 1.0x the mean (area-weighted).
+BAKE_COEF = (0.799, 0.071, -0.410, 0.247)
+BAKE_K = float(os.environ.get("BUMP_BAKE_K", 1.0))  # relief strength (1 = the measured mean)
+
+
+def bake_ratio(xy, k=BAKE_K):
+    """tangent-space xy image (h, w, 2) -> relief ratio image (h, w), 1 = flat"""
+    a, b, c, e = BAKE_COEF
+    x, y = xy[..., 0], xy[..., 1]
+    z = np.sqrt(np.clip(1.0 - x * x - y * y, 0.0, 1.0))
+    r = (a + b * x + c * y + e * z) / (a + e)
+    return 1.0 + k * (r - 1.0)
+
+
+def bake_rgba(w, h, rgba, ndds):
+    """diffuse (w, h, RGBA bytes) x the relief of normal map DDS ndds, resampled to (w, h) (box filter of the ratio
+    over each texel's footprint); alpha unchanged. None when the normal map can't be decoded."""
+    xy = xy_pow2(ndds, max(w, h, 4), max(w, h, 4))
+    if xy is None:
+        return None
+    r = bake_ratio(xy)
+    nh, nw = r.shape
+    if (nh, nw) != (h, w):
+        if nh % h == 0 and nw % w == 0:
+            r = r.reshape(h, nh // h, w, nw // w).mean(axis=(1, 3))
+        else:  # nearest texel centre
+            r = r[(np.arange(h) * nh // h)[:, None], (np.arange(w) * nw // w)[None, :]]
+    a = np.frombuffer(bytes(rgba), np.uint8).reshape(h, w, 4).astype(np.float64)
+    a[..., :3] = np.clip(np.round(a[..., :3] * r[..., None]), 0, 255)
+    return a.astype(np.uint8).tobytes()
+
 
 MESH = []         # per registered mesh: dict(tex, light, alb, N, T, W, probe_of)
 SRC = {}          # gather(): dds, probes, near (scattering d = 0 factor), smap (sun shadow map)
