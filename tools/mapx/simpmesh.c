@@ -125,11 +125,11 @@ static void sw_sub(const double *a, const double *b, double *r) { r[0] = a[0] - 
 static double sw_dot(const double *a, const double *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 static void struct_weight(int npos, const double *pos, const int *wpos, int ntri, const int *tris, double w,
-                          double crease_cos, double corner_cos, double *out)
+                          double flat_w, double crease_cos, double corner_cos, double *out)
 {
     for (int v = 0; v < npos; v++)
         out[v] = 1.0;
-    if (w <= 1.0 || !npos)
+    if ((w <= 1.0 && flat_w == 1.0) || !npos)
         return;
     int *ft = MX_NEW(int, 3 * (size_t)(ntri ? ntri : 1)), nf = 0;
     double *fu = MX_NEW(double, 3 * (size_t)(ntri ? ntri : 1));
@@ -188,7 +188,7 @@ static void struct_weight(int npos, const double *pos, const int *wpos, int ntri
                 }
         }
         int k = crease + corner;
-        out[v] = k == 2 ? w * w : (k == 1 ? w : 1.0);
+        out[v] = k == 2 ? w * w : (k == 1 ? w : flat_w);
     }
     free(ft), free(fu), free(acc), free(ninc), free(inc), free(fill);
 }
@@ -218,7 +218,7 @@ typedef struct mx_simp {
     unsigned char *dup;
     sjob *jobs;
     double border_w, seam_w, seam_k2, ak2, min_cos;
-    double struct_w, crease_cos, corner_cos;  /* simplify.STRUCT_W, STRUCT_CREASE_COS, STRUCT_CORNER_COS */
+    double struct_w, flat_w, crease_cos, corner_cos;  /* simplify.STRUCT_W, STRUCT_FLAT_W, STRUCT_CREASE_COS, ..._CORNER_COS */
     double eps, eps_far;
     int use_far;
     const double *job_eps;  /* mx_simp_replay_jobs: per job threshold, else NULL */
@@ -285,7 +285,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
                             double grid, long long nfar, const long long *far, long long nnv, const double *nv,
                             long long nnt, const int *nt, const double *spawn, double floor_, double spawn_k, int nkeep,
                             const double *keep_pos, double keep_r2, double keep_d, double border_w, double seam_w,
-                            double seam_k2, double ak2, double min_cos, double struct_w, double crease_cos,
+                            double seam_k2, double ak2, double min_cos, double struct_w, double flat_w, double crease_cos,
                             double corner_cos)
 {
     if (nm < 0)
@@ -293,7 +293,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
     mx_simp *h = MX_ZNEW(mx_simp, 1);
     h->nm = nm;
     h->border_w = border_w, h->seam_w = seam_w, h->seam_k2 = seam_k2, h->ak2 = ak2, h->min_cos = min_cos;
-    h->struct_w = struct_w, h->crease_cos = crease_cos, h->corner_cos = corner_cos;
+    h->struct_w = struct_w, h->flat_w = flat_w, h->crease_cos = crease_cos, h->corner_cos = corner_cos;
     h->dup = MX_ZNEW(unsigned char, nm);
     long long npt = poff[nm], nwt = woff[nm];
     /* key() of every non-kept position -> dense key id */
@@ -553,7 +553,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         j->locked = MX_NEW(unsigned char, j->npos ? j->npos : 1);
         j->scale = MX_NEW(double, j->npos ? j->npos : 1);
         double *sw = MX_NEW(double, j->npos ? j->npos : 1);
-        struct_weight(j->npos, j->pos, j->wpos, j->ntri, j->tris, h->struct_w, h->crease_cos, h->corner_cos, sw);
+        struct_weight(j->npos, j->pos, j->wpos, j->ntri, j->tris, h->struct_w, h->flat_w, h->crease_cos, h->corner_cos, sw);
         for (int p = 0; p < j->npos; p++, o++) {
             j->locked[p] = njk[j->pkid[p]] > 1;
             j->scale[p] = sw[p] / (D[o] * D[o]);

@@ -44,17 +44,21 @@ MIN_COS = 0.25  # a triangle's normal may not turn more than acos(0.25) = 75 deg
 STRUCT_W = float(__import__("os").environ.get("SIMPLIFY_STRUCT_W", 10.0))
 STRUCT_CREASE_DEG = float(__import__("os").environ.get("SIMPLIFY_CREASE_DEG", 40.0))
 STRUCT_CORNER_DEG = float(__import__("os").environ.get("SIMPLIFY_CORNER_DEG", 60.0))
+# vertices that pass neither test: cost x STRUCT_FLAT_W (< 1: they give up the triangles the structure keeps, so the
+# weight moves the budget instead of adding to it; 1: only the structure weight)
+STRUCT_FLAT_W = float(__import__("os").environ.get("SIMPLIFY_FLAT_W", 1.0))
 STRUCT_CREASE_COS = math.cos(math.radians(STRUCT_CREASE_DEG))  # passed to simpmesh.c as is (same bits)
 STRUCT_CORNER_COS = math.cos(math.radians(STRUCT_CORNER_DEG))
 
 
-def structure_weight(pos, wpos, tris, w=None):
+def structure_weight(pos, wpos, tris, w=None, flat_w=None):
     """Per position vertex cost multiplier STRUCT_W ** (crease + corner) (1.0 everywhere when STRUCT_W <= 1).
     pos: position coordinates; wpos[a]: position of attribute a; tris: attribute triples. Mirrored by
     tools/mapx/simpmesh.c struct_weight (same operations in the same order)."""
     w = STRUCT_W if w is None else w
+    flat_w = STRUCT_FLAT_W if flat_w is None else flat_w
     out = [1.0] * len(pos)
-    if w <= 1.0:
+    if w <= 1.0 and flat_w == 1.0:
         return out
     crease_cos, corner_cos = STRUCT_CREASE_COS, STRUCT_CORNER_COS
     ft, fu = [], []  # non-degenerate triangles: positions, unit normal
@@ -80,7 +84,7 @@ def structure_weight(pos, wpos, tris, w=None):
     for v in range(len(pos)):
         fs = inc[v]
         if not fs:
-            continue
+            continue  # no live triangle: never collapsed, keeps 1.0
         crease = corner = 0
         for i in range(len(fs)):
             for j in range(i):
@@ -99,7 +103,7 @@ def structure_weight(pos, wpos, tris, w=None):
                     corner = 1
                     break
         k = crease + corner
-        out[v] = w * w if k == 2 else (w if k == 1 else 1.0)
+        out[v] = w * w if k == 2 else (w if k == 1 else flat_w)
     return out
 
 

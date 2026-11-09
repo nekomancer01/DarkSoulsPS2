@@ -2710,7 +2710,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
                        len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
                        KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
-                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_CREASE_COS,
+                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, simplify.STRUCT_CREASE_COS,
                        simplify.STRUCT_CORNER_COS)
     if not h:
         raise MemoryError("mx_simp_new")
