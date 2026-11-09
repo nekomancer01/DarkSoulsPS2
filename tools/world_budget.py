@@ -52,7 +52,6 @@ WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = os.environ.get("WORLD_KEPT_HZN", "1") != "0"  # world.c WORLD_KEPT_HZN
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
-RELIEF_POOL = os.environ.get("WORLD_RELIEF_POOL", "0") == "1"  # world.c WORLD_RELIEF_POOL
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
 
@@ -108,7 +107,7 @@ def structural(gen):
                        reverse=True)[:WORLD_SLOTS]
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
-    misc = (max((e[2] for e in ent.values()), default=0) if RELIEF_POOL else 0) + max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
+    misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
     return dict(structural_kb=best >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
