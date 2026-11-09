@@ -135,6 +135,18 @@ else
          -e DSR_LOCAL_CONFIG=0 -e PY=python3
          -e "DSR_AUDIO_JOBS=${DSR_AUDIO_JOBS:-$JOBS}"
          -v "$SRC:/src" -v "$BUILD:/build" -v "$GAME:/game:ro" -w /src)
+    # The tools build their native helpers (lib*.so) next to their sources on first use. The image is musl (Alpine) and
+    # a host build is glibc, so sharing those folders left musl libraries that a later host build could not load
+    # ("libc.musl-x86_64.so.1: cannot open shared object file", 2026-11-09), and the other way round. The container
+    # gets its own copy of these folders under the build dir (sources refreshed every run, mtimes kept), mounted over
+    # the tree's, so its .so files never land in the source tree.
+    for d in tools/native tools/adpcm tools/mapx tools/meshopt; do
+        [ -d "$SRC/$d" ] || continue
+        c=$BUILD/container-tools/$d
+        mkdir -p "$c"
+        (cd "$SRC/$d" && tar cf - --exclude='*.so' --exclude=__pycache__ .) | (cd "$c" && tar xpf -)
+        RUN+=(-v "$c:/src/$d")
+    done
     # rootful Docker would leave root-owned files in WORK; rootless Podman already maps root to this user
     [ "$ENGINE" = docker ] && RUN+=(--user "$(id -u):$(id -g)")
     [ -t 0 ] && [ -t 1 ] && RUN+=(-it)
