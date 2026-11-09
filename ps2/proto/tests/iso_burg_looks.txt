@@ -7,26 +7,26 @@ option nodemo
 option noenemies
 spawn -63.0 -23.0 -26.0 2.4
 cam 2.4 0.14
-wait 8
+wait 14
 shot stairs
 spawn -49.0 -21.8 -36.0 2.6
 cam 2.6 0.1
-wait 8
+wait 14
 shot cave_a
 spawn 2.0 -10.0 -62.0 3.0
 cam 3.0 0.14
-wait 8
+wait 14
 shot burg_a
 spawn -6.0 -10.0 -73.0 2.0
 cam 2.0 0.14
-wait 8
+wait 14
 shot burg_c
 spawn -1.0 -7.3 -64.0 0.5
 cam 0.5 0.14
-wait 8
+wait 14
 shot bonfire
 spawn -56.0 -22.8 -29.5 2.0
 cam 2.0 0.1
-wait 8
+wait 14
 shot door_w
 stats

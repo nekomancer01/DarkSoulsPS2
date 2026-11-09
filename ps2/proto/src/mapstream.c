@@ -1737,6 +1737,29 @@ static void plan_(const float *pos)
                    "48-64 %u (%u) 64-96 %u (%u) more %u (%u); backdrop %u sky %u\n", band[0] >> 10, lod[0] >> 10,
                    band[1] >> 10, lod[1] >> 10, band[2] >> 10, lod[2] >> 10, band[3] >> 10, lod[3] >> 10, band[4] >> 10,
                    lod[4] >> 10, band[5] >> 10, lod[5] >> 10, far >> 10, sky >> 10);
+            /* the plan by height (Ame, 2026-11-09: "does the LOD take vertical elements into account"): KB of near
+             * parts / coarse cells whose box (the near level's clipped to its cube) lies wholly more than 8 m below
+             * the feet, within 8 m of them, or wholly more than 8 m above, of the classes at or above C_NEAR2 */
+            unsigned vk_[2][3] = {{0}};
+            for (unsigned i = 0; i < nw; i++) {
+                const MsInst *m = &ms[want[i].k];
+                unsigned id = want[i].id, c, nr = id < m->ncell;
+                if (want[i].cls < C_NEAR2)
+                    continue;
+                if (nr)
+                    c = id;
+                else if ((c = MS_RES_CELL(m->rit[id - m->ncell].tag)) >= m->ncell ||
+                         (m->rit[id - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR | MS_RES_TEX)))
+                    continue;
+                float lo = m->tab[c].mn[1], hi = m->tab[c].mx[1];
+                if (nr && m->keys) {
+                    float k0 = m->keys[4 * c + 1] * CELL_GRID, k1 = k0 + CELL_GRID;
+                    lo = lo > k0 ? lo : k0, hi = hi < k1 ? hi : k1;
+                }
+                vk_[!nr][hi < pos[1] - 8 ? 0 : lo > pos[1] + 8 ? 2 : 1] += it_bytes(m, id) >> 10;
+            }
+            printf("mapstream: plan by height KB (below 8 m / level / above 8 m): near %u / %u / %u, coarse %u / %u / %u\n",
+                   vk_[0][0], vk_[0][1], vk_[0][2], vk_[1][0], vk_[1][1], vk_[1][2]);
         }
     }
     pt[np_++] = ticks();
