@@ -74,7 +74,7 @@ def _code_hash(be):
 
 
 def job_key(code, job, area_k):
-    pos, wpos, tris, locked, scale = job
+    pos, wpos, tris, locked, scale = job[:5]
     h = code.copy()
     eff = simplify.AREA_K if area_k is None else area_k
     h.update(repr(float(eff)).encode())
@@ -83,6 +83,9 @@ def job_key(code, job, area_k):
         h.update(len(b).to_bytes(8, "little") + b)
     lk = b"" if locked is None else np.asarray(locked, dtype=np.uint8).tobytes()
     h.update(len(lk).to_bytes(8, "little") + (b"N" if locked is None else lk))
+    if len(job) > 5 and job[5] is not None:  # structure weight and its saturation (simplify.simplify weight / sat)
+        b = np.ascontiguousarray(np.asarray(job[5], dtype=np.float64)).tobytes()
+        h.update(b"W" + len(b).to_bytes(8, "little") + b + repr(float(job[6])).encode())
     return h.hexdigest()
 
 
@@ -149,7 +152,7 @@ def work(job, area_k, be):
 
 
 def run_jobs(jobs, area_k=None):
-    """[(pos, wpos, tris, locked, scale)] -> [compact log] (simplify.pack of what simplify.simplify returns), in job
+    """[(pos, wpos, tris, locked, scale[, weight, sat])] -> [compact log] (simplify.pack of what simplify.simplify returns), in job
     order"""
     t0 = time.time()
     be = backend()

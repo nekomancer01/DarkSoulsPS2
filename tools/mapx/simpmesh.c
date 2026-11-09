@@ -16,7 +16,8 @@ typedef struct {
     size_t nrem_all, ncha_all;
 } sresult;
 sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
-                      const unsigned char *locked, const double *scale, double border_w, double seam_w, double seam_k2,
+                      const unsigned char *locked, const double *scale, const double *weight, double sat,
+                      double border_w, double seam_w, double seam_k2,
                       double ak2, double min_cos);
 void simplify_free(sresult *R);
 
@@ -204,6 +205,7 @@ typedef struct {
     int *tris;            /* ntri x 3 attributes */
     unsigned char *locked;
     double *scale;
+    double *weight;       /* structure weight per position (struct_weight) or NULL */
     int kind;             /* 0 no cells, 1 "far", 2 cell key */
     long long ckey[3];
     sresult *log;
@@ -218,7 +220,7 @@ typedef struct mx_simp {
     unsigned char *dup;
     sjob *jobs;
     double border_w, seam_w, seam_k2, ak2, min_cos;
-    double struct_w, flat_w, crease_cos, corner_cos;  /* simplify.STRUCT_W, STRUCT_FLAT_W, STRUCT_CREASE_COS, ..._CORNER_COS */
+    double struct_w, flat_w, sat, crease_cos, corner_cos;  /* simplify.STRUCT_W, STRUCT_FLAT_W, STRUCT_CREASE_COS, ..._CORNER_COS */
     double eps, eps_far;
     int use_far;
     const double *job_eps;  /* mx_simp_replay_jobs: per job threshold, else NULL */
@@ -252,7 +254,7 @@ static void run_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
-    j->log = simplify_run(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, h->border_w,
+    j->log = simplify_run(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat, h->border_w,
                           h->seam_w, h->seam_k2, h->ak2, h->min_cos);
     mx_ok(j->log, 1);
 }
@@ -285,7 +287,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
                             double grid, long long nfar, const long long *far, long long nnv, const double *nv,
                             long long nnt, const int *nt, const double *spawn, double floor_, double spawn_k, int nkeep,
                             const double *keep_pos, double keep_r2, double keep_d, double border_w, double seam_w,
-                            double seam_k2, double ak2, double min_cos, double struct_w, double flat_w, double crease_cos,
+                            double seam_k2, double ak2, double min_cos, double struct_w, double flat_w, double sat, double crease_cos,
                             double corner_cos)
 {
     if (nm < 0)
@@ -293,7 +295,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
     mx_simp *h = MX_ZNEW(mx_simp, 1);
     h->nm = nm;
     h->border_w = border_w, h->seam_w = seam_w, h->seam_k2 = seam_k2, h->ak2 = ak2, h->min_cos = min_cos;
-    h->struct_w = struct_w, h->flat_w = flat_w, h->crease_cos = crease_cos, h->corner_cos = corner_cos;
+    h->struct_w = struct_w, h->flat_w = flat_w, h->sat = sat, h->crease_cos = crease_cos, h->corner_cos = corner_cos;
     h->dup = MX_ZNEW(unsigned char, nm);
     long long npt = poff[nm], nwt = woff[nm];
     /* key() of every non-kept position -> dense key id */
@@ -552,13 +554,15 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         sjob *j = h->jobs + i;
         j->locked = MX_NEW(unsigned char, j->npos ? j->npos : 1);
         j->scale = MX_NEW(double, j->npos ? j->npos : 1);
-        double *sw = MX_NEW(double, j->npos ? j->npos : 1);
-        struct_weight(j->npos, j->pos, j->wpos, j->ntri, j->tris, h->struct_w, h->flat_w, h->crease_cos, h->corner_cos, sw);
+        if (h->struct_w > 1.0 || h->flat_w != 1.0) {  /* export_map: crease / corner vertices first (struct_sat) */
+            j->weight = MX_NEW(double, j->npos ? j->npos : 1);
+            struct_weight(j->npos, j->pos, j->wpos, j->ntri, j->tris, h->struct_w, h->flat_w, h->crease_cos,
+                          h->corner_cos, j->weight);
+        }
         for (int p = 0; p < j->npos; p++, o++) {
             j->locked[p] = njk[j->pkid[p]] > 1;
-            j->scale[p] = sw[p] / (D[o] * D[o]);
+            j->scale[p] = 1.0 / (D[o] * D[o]);
         }
-        free(sw);
     }
     free(AP), free(D), free(njk);
     /* simplify every job, largest first */
@@ -702,7 +706,7 @@ MX_API void mx_simp_free(mx_simp *h)
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
         free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
-        free(j->tris), free(j->locked), free(j->scale), free(j->out);
+        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out);
         if (j->log)
             simplify_free(j->log);
     }

@@ -2154,6 +2154,24 @@ def far_cells_c(L, meshes, nav_v):
     return far
 
 
+def struct_sat(eps_fixed, budget):
+    """The structure weight's saturation (simplify.simplify sat) for a level: the largest threshold the spot budget
+    solve reaches under its px cap (solve_budget's steps eps x 1.5^k), so a cell the solve takes to its cap simplifies
+    exactly as without the weight and the weight never costs memory the budget needs; below the cap crease / corner
+    collapses wait for the plain ones. No solve (budget None): no saturation (a global threshold fits the triangle
+    count anyway). Threshold searched instead of fixed: the cap itself, rounded down to a 1.5 step (ASSUMED close)."""
+    if not budget:
+        return math.inf
+    px_cap = budget[4]
+    eps = eps_fixed if eps_fixed is not None else EPS
+    if eps is None:
+        return (px_cap / 568) ** 2 / 1.5
+    K = 0
+    while K < 12 and math.sqrt(eps * 1.5 ** (K + 1)) * 568 <= px_cap + 1e-6:  # solve_budget's K
+        K += 1
+    return eps * 1.5 ** K
+
+
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
                     far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
@@ -2168,9 +2186,10 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     import simplify
     import simplify_pool
     MX = mapx_native.lib()
+    sat = struct_sat(eps_fixed, budget)
     if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
         return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                                 budget, nav_s)
+                                 budget, nav_s, sat=sat)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
 
@@ -2258,8 +2277,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         j[3] = [njobs[k] > 1 for k in jk]
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
-        sw = simplify.structure_weight(j[0], j[1], j[2])  # crease / corner vertices cost more (simplify.STRUCT_W)
-        j[4] = [s / (x * x) for x, s in zip(d, sw)]
+        j[4] = [1.0 / (x * x) for x in d]
+        if simplify.STRUCT_W > 1.0 or simplify.STRUCT_FLAT_W != 1.0:  # crease / corner vertices first (struct_sat)
+            j += [simplify.structure_weight(j[0], j[1], j[2]), sat]
     # cached by job content, run on forkserver workers that are retried when one dies (tools/simplify_pool.py;
     # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
     logs = simplify_pool.run_jobs(jobs, area_k=area_k)
@@ -2290,7 +2310,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     for mi in live:
         meshes[mi][out] = []
         meshes[mi][out + "_cell"] = []
-    for (pos, _, _, _, _), attr, lg, c in zip(jobs, attrs, logs, jcell):
+    for (pos, *_), attr, lg, c in zip(jobs, attrs, logs, jcell):
         for p0, a0, p1, a1, p2, a2 in simplify.replay_log(lg, eps_far if c == "far" and eps_far is not None else eps).tolist():
             mi = attr[a0][0]
             meshes[mi][out].append(((pos[p0], attr[a0][1]), (pos[p1], attr[a1][1]), (pos[p2], attr[a2][1])))
@@ -2673,7 +2693,7 @@ BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.bud
 
 
 def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                      budget=None, nav_s=None):
+                      budget=None, nav_s=None, sat=math.inf):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -2710,7 +2730,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
                        len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
                        KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
-                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, simplify.STRUCT_CREASE_COS,
+                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, sat, simplify.STRUCT_CREASE_COS,
                        simplify.STRUCT_CORNER_COS)
     if not h:
         raise MemoryError("mx_simp_new")

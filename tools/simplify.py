@@ -142,10 +142,14 @@ def _area(p):
     return 0.5 * math.sqrt(_dot(n, n))
 
 
-def simplify(pos, wpos, tris, locked, scale, area_k=None):
+def simplify(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area_k=None):
     """pos: position-vertex coordinates; wpos[w]: position vertex of attribute vertex w; tris: attribute-vertex
     triples; locked[p]: never move p if it is on a border (the caller flags positions shared with other meshes:
     interior points may still move, open edges that meet another mesh stay welded); scale[p]: cost multiplier (screen weight).
+    weight[p] (None: all 1): structure weight (structure_weight); a collapse costing c (scale applied) costs
+    min(c x max(weight[u], weight[v]), sat) while c < sat and c from there on, so at any threshold >= sat (the budget
+    solve's cap) the result is the unweighted one: the weight orders collapses below the cap but never keeps triangles
+    the memory budget needs.
     Returns (tris, steps): the input triangles minus degenerate ones as ((p, a) x 3) corners, and steps
     [(cost, removed triangle ids, ((tri, corner, p, a), ...))], cost = running maximum."""
     T0 = [tuple((wpos[w], w) for w in t) for t in tris if len({wpos[w] for w in t}) == 3]
@@ -281,6 +285,8 @@ def simplify(pos, wpos, tris, locked, scale, area_k=None):
         # merged regions, which let thin things on a floor sink below it)
         b = max(errm[v], errm[u] + dloc)
         c = max(e, b * b, ak2 * (alost[u] + alost[v] + lost[0])) * max(scale[u], scale[v])
+        if weight is not None and c < sat:
+            c = min(c * max(weight[u], weight[v]), sat)
         heapq.heappush(heap, (c, u, v, ver[u], ver[v]))
 
     for (a, b) in et:
