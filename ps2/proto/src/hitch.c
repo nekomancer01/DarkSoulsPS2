@@ -30,6 +30,112 @@ static unsigned loads, again, again_kb, drops, evicts, evict_kb, flips, flops, b
 #define TOPN 4
 static struct { int k; unsigned ci, n; } top[TOPN];
 
+
+#ifdef MEMPROF
+/* Memory-handling profile (make MEMPROF=1, measurement builds only): EE ticks spent in the allocator, mallinfo, the
+ * cache maintenance calls and large memcpy / memmove / memset, per frame (loading-screen frames left out), printed
+ * as one "mem:" line per hitch period. The linker wraps the functions (Makefile); each timed call costs two mfc0
+ * reads (~0.3 us in PCSX2), listed as calls so the overhead can be subtracted. */
+enum { MP_ALLOC, MP_FREE, MP_MINFO, MP_PROBE, MP_SYNC, MP_INVAL, MP_FLUSH, MP_CPY, MP_SET, MP_N };
+static const char *const mp_name[MP_N] = {"alloc", "free", "mallinfo", "probe", "sync", "inval", "flush", "cpy", "set"};
+static unsigned mp_fr[MP_N], mp_frn[MP_N], mp_sum[MP_N], mp_n[MP_N], mp_max1[MP_N], mp_maxfr[MP_N], mp_frames, mp_skip;
+static unsigned long long mp_bytes[MP_N];
+static inline unsigned mp_t(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
+/* per-caller totals over the whole run ("memcall:" lines each period: addr2line on proto.sym.elf) */
+#define MP_CALLERS 1024
+static struct { unsigned b, ra, n; unsigned long long t, bytes; unsigned max1; } mp_c[MP_CALLERS];
+static void mp_caller(int b, unsigned ra, unsigned d, unsigned bytes)
+{
+    int i;
+    for (i = 0; i < MP_CALLERS && mp_c[i].n && !(mp_c[i].b == (unsigned)b && mp_c[i].ra == ra); i++)
+        ;
+    if (i == MP_CALLERS)
+        return;
+    mp_c[i].b = b, mp_c[i].ra = ra, mp_c[i].n++, mp_c[i].t += d, mp_c[i].bytes += bytes;
+    mp_c[i].max1 = d > mp_c[i].max1 ? d : mp_c[i].max1;
+}
+#define mp_add(b, t0, bytes) mp_add_(b, t0, bytes, (unsigned)__builtin_return_address(0))
+static inline void mp_add_(int b, unsigned t0, unsigned bytes, unsigned ra)
+{
+    if (mp_skip)
+        return;
+    unsigned d = mp_t() - t0;
+    mp_caller(b, ra, d, bytes);
+    mp_fr[b] += d, mp_frn[b]++, mp_bytes[b] += bytes;
+    mp_max1[b] = d > mp_max1[b] ? d : mp_max1[b];
+}
+void __real_free(void *p);
+void __wrap_free(void *p) { unsigned t = mp_t(); __real_free(p); mp_add(MP_FREE, t, 0); }
+struct mallinfo __real_mallinfo(void);
+struct mallinfo __wrap_mallinfo(void) { unsigned t = mp_t(); struct mallinfo m = __real_mallinfo(); mp_add(MP_MINFO, t, 0); return m; }
+void __real_SyncDCache(void *a, void *b);
+void __wrap_SyncDCache(void *a, void *b) { unsigned t = mp_t(); __real_SyncDCache(a, b); mp_add(MP_SYNC, t, (char *)b - (char *)a + 1); }
+void __real_InvalidDCache(void *a, void *b);
+void __wrap_InvalidDCache(void *a, void *b) { unsigned t = mp_t(); __real_InvalidDCache(a, b); mp_add(MP_INVAL, t, (char *)b - (char *)a + 1); }
+void __real_FlushCache(int op);
+void __wrap_FlushCache(int op) { unsigned t = mp_t(); __real_FlushCache(op); mp_add(MP_FLUSH, t, 0); }
+/* only the calls of 1 KB or more are timed (the small ones would be mostly timer overhead) */
+void *__real_memcpy(void *d, const void *s, size_t n);
+void *__wrap_memcpy(void *d, const void *s, size_t n)
+{
+    if (n < 1024)
+        return __real_memcpy(d, s, n);
+    unsigned t = mp_t(); void *r = __real_memcpy(d, s, n); mp_add(MP_CPY, t, n); return r;
+}
+void *__real_memmove(void *d, const void *s, size_t n);
+void *__wrap_memmove(void *d, const void *s, size_t n)
+{
+    if (n < 1024)
+        return __real_memmove(d, s, n);
+    unsigned t = mp_t(); void *r = __real_memmove(d, s, n); mp_add(MP_CPY, t, n); return r;
+}
+void *__real_memset(void *d, int c, size_t n);
+void *__wrap_memset(void *d, int c, size_t n)
+{
+    if (n < 1024)
+        return __real_memset(d, c, n);
+    unsigned t = mp_t(); void *r = __real_memset(d, c, n); mp_add(MP_SET, t, n); return r;
+}
+#define MP_BEGIN unsigned mp_t0 = mp_t()
+#define MP_END(b) mp_add(b, mp_t0, 0)
+static void mp_frame(int loading)
+{
+    for (int b = 0; b < MP_N; b++) {
+        if (!loading) {
+            mp_sum[b] += mp_fr[b], mp_n[b] += mp_frn[b];
+            mp_maxfr[b] = mp_fr[b] > mp_maxfr[b] ? mp_fr[b] : mp_maxfr[b];
+        }
+        mp_fr[b] = mp_frn[b] = 0;
+    }
+    mp_frames += !loading;
+}
+static void mp_line(void)
+{
+    struct mallinfo mi = __real_mallinfo();
+    unsigned tot = 0, totmax = 0;
+    printf("mem: t %u s frames %u | free chunks %u heap free %u KB |", (unsigned)run_s, mp_frames, (unsigned)mi.ordblks,
+           (unsigned)mi.fordblks >> 10);
+    for (int b = 0; b < MP_N; b++) {
+        tot += mp_sum[b], totmax += mp_maxfr[b];
+        printf(" %s %u us/fr %u calls/fr max1 %u us maxfr %u us %u KB/fr |", mp_name[b],
+               mp_frames ? (unsigned)(mp_sum[b] / 294.912f / mp_frames) : 0, mp_frames ? (mp_n[b] + mp_frames / 2) / mp_frames : 0,
+               (unsigned)(mp_max1[b] / 294.912f), (unsigned)(mp_maxfr[b] / 294.912f),
+               mp_frames ? (unsigned)(mp_bytes[b] / 1024 / mp_frames) : 0);
+    }
+    printf(" all %u us/fr\n", mp_frames ? (unsigned)(tot / 294.912f / mp_frames) : 0);
+    for (int i = 0; i < MP_CALLERS && mp_c[i].n; i++)
+        if (mp_c[i].t > 294912u / 10)  /* > 0.1 ms over the run */
+            printf("memcall: %s 0x%08x calls %u total %u us max1 %u us %u KB\n", mp_name[mp_c[i].b], mp_c[i].ra, mp_c[i].n,
+                   (unsigned)(mp_c[i].t / 295), (unsigned)(mp_c[i].max1 / 295), (unsigned)(mp_c[i].bytes >> 10));
+    memset(mp_sum, 0, sizeof mp_sum), memset(mp_n, 0, sizeof mp_n), memset(mp_max1, 0, sizeof mp_max1);
+    memset(mp_maxfr, 0, sizeof mp_maxfr), memset(mp_bytes, 0, sizeof mp_bytes);
+    mp_frames = 0;
+}
+#else
+#define MP_BEGIN
+#define MP_END(b)
+#endif
+
 static unsigned heap_free(void)
 {
     struct mallinfo mi = mallinfo();
@@ -173,28 +279,36 @@ static void alloc_failed(const char *fn, unsigned n, void *caller)
 }
 void *__wrap_malloc(size_t n)
 {
+    MP_BEGIN;
     void *p = __real_malloc(n);
+    MP_END(MP_ALLOC);
     if (!p && n)
         alloc_failed("malloc", n, __builtin_return_address(0));
     return p;
 }
 void *__wrap_calloc(size_t n, size_t s)
 {
+    MP_BEGIN;
     void *p = __real_calloc(n, s);
+    MP_END(MP_ALLOC);
     if (!p && n && s)
         alloc_failed("calloc", n * s, __builtin_return_address(0));
     return p;
 }
 void *__wrap_realloc(void *q, size_t n)
 {
+    MP_BEGIN;
     void *p = __real_realloc(q, n);
+    MP_END(MP_ALLOC);
     if (!p && n)
         alloc_failed("realloc", n, __builtin_return_address(0));
     return p;
 }
 void *__wrap_memalign(size_t a, size_t n)
 {
+    MP_BEGIN;
     void *p = __real_memalign(a, n);
+    MP_END(MP_ALLOC);
     if (!p && n)
         alloc_failed("memalign", n, __builtin_return_address(0));
     return p;
@@ -258,6 +372,9 @@ void hitch_frame(float dt_real)
         hitch_total.load_max_ms = ms > hitch_total.load_max_ms ? ms : hitch_total.load_max_ms;
         memset(hitch_acc, 0, sizeof hitch_acc);
         per_s += 0.25f, run_s += 0.25f;
+#ifdef MEMPROF
+        mp_frame(1);
+#endif
         return;
     }
     n_fr++, sum_ms += ms;
@@ -277,10 +394,24 @@ void hitch_frame(float dt_real)
     float dt = dt_real > 0.25f ? 0.25f : dt_real;  /* a loading screen's frame counts as one long frame */
     stream_frame(dt);
     per_s += dt, run_s += dt;
-    if (per_s < HITCH_PERIOD_S)
+    if (per_s < HITCH_PERIOD_S) {
+#ifdef MEMPROF
+        mp_frame(0);
+#endif
         return;
+    }
     unsigned hf = heap_free(), fkb = 0, rkb = 0, okb = 0;
+#ifdef MEMPROF
+    unsigned pt0 = mp_t();
+    mp_skip = 1;
+#endif
     unsigned lb = largest_block(hf);
+#ifdef MEMPROF
+    mp_skip = 0;
+    mp_add(MP_PROBE, pt0, 0);
+    mp_frame(0);  /* the probe counted in the period's last frame */
+    mp_line();
+#endif
     mapstream_free_info(&fkb, &rkb, &okb);
     printf("hitch: t %u s frames %u avg %u max %u ms over50 %u over100 %u over200 %u | worst pre %u world %u (plan %u win "
            "%u io %u vis %u) snd %u map %u logic %u chr %u wait %u flip %u save %u log %u | heap free %u KB largest %u KB | arena "

@@ -71,6 +71,12 @@ EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
 # src/hitch.c: allocation failures in the EE log ("alloc:" lines, counted in "hitch:" lines)
 EE_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign
+# make MEMPROF=1 (measurement only): src/hitch.c times the allocator, mallinfo, cache maintenance and large memcpy /
+# memset calls ("mem:" log lines); its own BUILD dir, as the other A/B switches
+ifeq ($(MEMPROF),1)
+EE_CFLAGS += -DMEMPROF
+EE_LDFLAGS += -Wl,--wrap=free,--wrap=mallinfo,--wrap=SyncDCache,--wrap=InvalidDCache,--wrap=FlushCache,--wrap=memcpy,--wrap=memmove,--wrap=memset
+endif
 EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lmc -lpatches -lm
 EE_DVP = dvp-as
 # Float math (refactor target 3, 2026-11-05): the game code does no double arithmetic (tools/ci/compile.sh fails on
