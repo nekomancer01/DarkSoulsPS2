@@ -42,8 +42,8 @@ MIN_COS = 0.25  # a triangle's normal may not turn more than acos(0.25) = 75 deg
 # read. The paper's eigenvalue saliency is replaced by the crease test: on authored low-poly meshes a 90 degree box edge
 # has a 45 degree normal spread, under the corner threshold. SIMPLIFY_STRUCT_W=1: off (the old cost, A/B).
 STRUCT_W = float(__import__("os").environ.get("SIMPLIFY_STRUCT_W", 10.0))
-STRUCT_CREASE_DEG = 40.0
-STRUCT_CORNER_DEG = 60.0
+STRUCT_CREASE_DEG = float(__import__("os").environ.get("SIMPLIFY_CREASE_DEG", 40.0))
+STRUCT_CORNER_DEG = float(__import__("os").environ.get("SIMPLIFY_CORNER_DEG", 60.0))
 STRUCT_CREASE_COS = math.cos(math.radians(STRUCT_CREASE_DEG))  # passed to simpmesh.c as is (same bits)
 STRUCT_CORNER_COS = math.cos(math.radians(STRUCT_CORNER_DEG))
 
