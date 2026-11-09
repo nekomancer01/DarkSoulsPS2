@@ -1081,7 +1081,7 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
         e->pos.x = p[0], e->pos.z = p[2];
         return 1;
     }
-    int on_floor = MP_SUB(0, col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0));
+    int on_floor = MP_SUB(0, col_walk_key(e, p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0));
     if (ENEMY_WALLS && (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p)))) {
         e->wc_moves |= MV_LEASH;
         return 0;
@@ -1129,6 +1129,10 @@ static int move_prof(Enemy *e, float dx, float dz, int walking)
             printf(" | ms walk %.2f leash %.2f wall %.2f ledge %.2f\n", mp_sub[0] / 120.0f / 294912.0f,
                    mp_sub[1] / 120.0f / 294912.0f, mp_sub[2] / 120.0f / 294912.0f, mp_sub[3] / 120.0f / 294912.0f);
             memset(mp_sub, 0, sizeof mp_sub);
+            extern int col_cache_stats[3];  /* collision.c COL_CACHE: hits / builds / overflows */
+            printf("enemy: wall cache per frame hits %.1f builds %.1f over %.1f\n", col_cache_stats[0] / 120.0f,
+                   col_cache_stats[1] / 120.0f, col_cache_stats[2] / 120.0f);
+            memset(col_cache_stats, 0, sizeof col_cache_stats);
             memset(mp_n, 0, sizeof mp_n), memset(mp_t, 0, sizeof mp_t), memset(mp_c, 0, sizeof mp_c);
             memset(mp_tiny, 0, sizeof mp_tiny), mp_frames = 0;
         }

@@ -71,6 +71,9 @@ int col_move(float pos[3], float dx, float dz, float r, float height, float step
 /* One walk step for a character: col_move, then the floor under the result within [y - step_down, y + step_up].
  * Returns 1 and sets pos[1] to the floor if there is one, 0 if not (x/z still moved, y unchanged: falling / ledge,
  * the caller decides). hit (may be NULL) gets the floor triangle. */
+/* col_walk for a character (key: its address): its capsule pushes test its cached wall list (collision.c COL_CACHE) */
+int col_walk_key(const void *key, float pos[3], float dx, float dz, float r, float height, float step_up,
+                 float step_down, unsigned mask, ColHit *hit);
 int col_walk(float pos[3], float dx, float dz, float r, float height, float step_up, float step_down, unsigned mask,
              ColHit *hit);
 

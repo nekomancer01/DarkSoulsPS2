@@ -332,6 +332,8 @@ void r_line(V3 a, V3 b, int r, int g, int bl)
 
 V3 r_view(V3 p) { return to_view(p); }
 
+float r_guard_k(void) { return GUARD / FOCAL; }
+
 int r_point_inside(const V3 *v)
 {
     float lim = GUARD / FOCAL * v->z;

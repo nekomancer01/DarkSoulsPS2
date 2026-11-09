@@ -59,6 +59,20 @@ _Static_assert(sizeof(ColPage) == 32, "ColPage");
 #ifndef COL_SCAN
 #define COL_SCAN 1
 #endif
+/* COL_CACHE (frame-time pass 2, 2026-11-09, default on; DEFS=-DCOL_CACHE=0 = scan every push): a character's wall
+ * triangles within a box around it are gathered once (float vertices, v1 numbers) and its capsule pushes over the next
+ * frames test that list instead of scanning the fragments' cell lists again, while the push's reach box stays inside
+ * the cached box and nothing in collision changed (col_gen: loads, unloads, pages, Activate Hit). Walls only: floors and
+ * flat ceilings never push (push_tri). The SDK's collision sample does the same split (broad phase once, narrow tests
+ * on the candidates, reuse while motion is coherent). iso_ame_report3 caves 2026-11-09: ~25 push scans a frame read
+ * ~5000 cell-list entries for ~250 triangles tested (2.2 ms of 2.7 ms in the scan). Overflow (CC_MAX) = the old path */
+#ifndef COL_CACHE
+#define COL_CACHE 1
+#endif
+#define CC_SLOTS 24    /* characters with a cache at once (LRU) */
+#define CC_MAX 80      /* wall triangles per cache */
+#define CC_MARGIN 1.0f /* m: the cached box past the push's reach box, xz (y: CC_MARGIN_Y) */
+#define CC_MARGIN_Y 0.5f
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
 
 /* One collision.bin per world block (src/world.c), all in one world frame. The queries below take the block they run
@@ -90,6 +104,7 @@ typedef struct {
     unsigned *pgid;  /* CTP2: per page its first triangle slot and its v1 numbers' offset in the page (NULL: gid) */
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
+static unsigned col_gen = 1;  /* COL_CACHE: bumped by every change to what collision holds */
 static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
 static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bottom, unsigned mask, ColHit *hit);
 static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit);
@@ -146,6 +161,7 @@ int col_load_index(int b, const void *blob) { return load_blob(b, blob, 0); }
 
 static int load_blob(int b, const void *blob, int whole)
 {
+    col_gen++;
     if (b < 0 || b >= COL_BLOCKS)
         return 0;
     col_unload(b);
@@ -256,6 +272,7 @@ void col_unload(int b)
     free(blk[b].fpg);
     free(blk[b].pgid);
     memset(&blk[b], 0, sizeof blk[b]);
+    col_gen++;
 }
 
 int col_init(const void *blob)
@@ -273,6 +290,7 @@ int col_tris_enable(int b, unsigned first, unsigned count, int on)
         if (!c->off)
             return 0;
     }
+    col_gen++;
     if (c->off)
         for (unsigned t = first; t < first + count; t++)
             c->off[t >> 3] = on ? c->off[t >> 3] & ~(1 << (t & 7)) : c->off[t >> 3] | 1 << (t & 7);
@@ -306,7 +324,7 @@ int col_page(int b, int i, float lo[3], float hi[3], unsigned *off, unsigned *by
 void col_page_set(int b, int i, const void *buf)
 {
     if (b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg)
-        blk[b].pbuf[i] = buf;
+        blk[b].pbuf[i] = buf, col_gen++;
 }
 
 int col_page_in(int b, int i)
@@ -604,6 +622,12 @@ static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, fl
 static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float *p1, const float *lo, const float *hi,
                   float r, unsigned mask);
 
+typedef struct ColCache ColCache;
+static const ColCache *cc_for(const float *lo, const float *hi, unsigned mask);
+static int cc_touch(const ColCache *cc, int bi, const float pos[3], const float *p0, const float *p1, const float *lo,
+                    const float *hi, float r);
+static int cc_push(const ColCache *cc, ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, float *hi, float r,
+                   int *contacts);
 static int push1(ColBlock *cb, float pos[3], float r, float height, float step, unsigned mask)
 {
     const Header *hdr = cb->hdr;
@@ -618,7 +642,11 @@ static int push1(ColBlock *cb, float pos[3], float r, float height, float step, 
         if (cb->h2) {
             /* free standing (no triangle touches the capsule where it is: the order cannot matter) is the common
              * case: one cheap pass in fragment order finds it; only a contact pays for v1's order (push2) */
-            if (touch2(cb, pos, p0, p1, lo, hi, r, mask))
+            const ColCache *cc = COL_CACHE ? cc_for(lo, hi, mask) : NULL;
+            if (cc) {
+                if (cc_touch(cc, (int)(cb - blk), pos, p0, p1, lo, hi, r))
+                    moved = cc_push(cc, cb, pos, p0, p1, lo, hi, r, &contacts);
+            } else if (touch2(cb, pos, p0, p1, lo, hi, r, mask))
                 moved = push2(cb, pos, p0, p1, lo, hi, r, mask, &contacts);
         } else {
             const unsigned *cells = cb->cells;
@@ -1040,6 +1068,178 @@ static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, fl
             moved = 1, (*contacts)++;
     }
     return moved;
+}
+
+/* ---- COL_CACHE ---- */
+typedef struct { float a[3], b[3], c[3], lo[3], hi[3]; unsigned short g; unsigned char blk; } CcTri;
+struct ColCache {
+    const void *key;
+    unsigned gen, mask, used;
+    float lo[3], hi[3];
+    int n, over;
+    CcTri t[CC_MAX];
+};
+#if COL_CACHE
+static ColCache ccache[CC_SLOTS];
+static unsigned cc_clock;
+#endif
+static const void *cc_key;  /* the character col_walk_key runs for (NULL: no cache) */
+int col_cache_stats[3];      /* hits, builds, overflows (tests) */
+
+#if COL_CACHE
+static int cc_add(ColBlock *cb, const Frag *f, const unsigned char *t, unsigned g, void *u)
+{
+    ColCache *cc = u;
+    float a[3], b[3], c[3], n[3];
+    tri2(cb, f, t, a, b, c);
+    tri_normal(a, b, c, n);
+    if (n[1] >= COL_WALKABLE_NY || -n[1] >= COL_WALKABLE_NY)  /* push_tri's floor / ceiling test: never pushes */
+        return 0;
+    if (cc->n == CC_MAX) {
+        cc->over = 1;
+        return 1;
+    }
+    CcTri *o = &cc->t[cc->n++];
+    memcpy(o->a, a, 12), memcpy(o->b, b, 12), memcpy(o->c, c, 12);
+    for (int k = 0; k < 3; k++) {
+        float mn = a[k] < b[k] ? a[k] : b[k], mx = a[k] < b[k] ? b[k] : a[k];
+        o->lo[k] = mn < c[k] ? mn : c[k], o->hi[k] = mx > c[k] ? mx : c[k];
+    }
+    o->g = (unsigned short)g, o->blk = (unsigned char)(cb - blk);
+    return 0;
+}
+#endif
+
+/* The cache of the current character holding the push's reach box [lo - PUSH2_REACH, hi + PUSH2_REACH] (xz), built
+ * or rebuilt when it doesn't; NULL = the old path (no character, or more walls than CC_MAX) */
+static const ColCache *cc_for(const float *lo, const float *hi, unsigned mask)
+{
+#if COL_CACHE
+    if (!cc_key)
+        return NULL;
+    float nlo[3] = {lo[0] - PUSH2_REACH, lo[1], lo[2] - PUSH2_REACH}, nhi[3] = {hi[0] + PUSH2_REACH, hi[1], hi[2] + PUSH2_REACH};
+    ColCache *cc = NULL, *old = &ccache[0];
+    for (int i = 0; i < CC_SLOTS; i++) {
+        if (ccache[i].key == cc_key) {
+            cc = &ccache[i];
+            break;
+        }
+        if (ccache[i].used < old->used)
+            old = &ccache[i];
+    }
+    if (cc && cc->gen == col_gen && cc->mask == mask && nlo[0] >= cc->lo[0] && nlo[1] >= cc->lo[1] &&
+        nlo[2] >= cc->lo[2] && nhi[0] <= cc->hi[0] && nhi[1] <= cc->hi[1] && nhi[2] <= cc->hi[2]) {
+        cc->used = ++cc_clock;
+        col_cache_stats[0]++;
+        return cc->over ? NULL : cc;
+    }
+    if (!cc)
+        cc = old;
+    cc->key = cc_key, cc->gen = col_gen, cc->mask = mask, cc->used = ++cc_clock, cc->n = 0, cc->over = 0;
+    for (int k = 0; k < 3; k++) {
+        float m = k == 1 ? CC_MARGIN_Y : CC_MARGIN;
+        cc->lo[k] = nlo[k] - m, cc->hi[k] = nhi[k] + m;
+    }
+    col_cache_stats[1]++;
+    for (int b = 0; b < COL_BLOCKS && !cc->over; b++)
+        if (blk[b].h2 && box_hits(&blk[b], cc->lo, cc->hi))
+            each_tri2(&blk[b], cc->lo, cc->hi, mask, cc_add, cc, cc->lo, cc->hi);
+        else if (blk[b].hdr && !blk[b].h2 && box_hits(&blk[b], cc->lo, cc->hi))
+            cc->over = 1;  /* a v1 block: the old path */
+    col_cache_stats[2] += cc->over;
+    return cc->over ? NULL : cc;
+#else
+    (void)lo, (void)hi, (void)mask;
+    return NULL;
+#endif
+}
+
+static inline int cc_out(const CcTri *t, const float *lo, const float *hi)
+{
+    return t->hi[0] < lo[0] || t->lo[0] > hi[0] || t->hi[1] < lo[1] || t->lo[1] > hi[1] || t->hi[2] < lo[2] ||
+           t->lo[2] > hi[2];
+}
+
+/* touch2 over the cache: any of block bi's walls pushes the capsule as it stands */
+static int cc_touch(const ColCache *cc, int bi, const float pos[3], const float *p0, const float *p1, const float *lo,
+                    const float *hi, float r)
+{
+    for (int i = 0; i < cc->n; i++) {
+        const CcTri *t = &cc->t[i];
+        if (t->blk != bi || cc_out(t, lo, hi) || TRI_OFF(&blk[bi], t->g))
+            continue;
+        float q[3], a0[3], a1[3], l[3], h[3];
+        memcpy(q, pos, 12), memcpy(a0, p0, 12), memcpy(a1, p1, 12), memcpy(l, lo, 12), memcpy(h, hi, 12);
+        int c0 = col_contacts, hit = push_tri(q, a0, a1, l, h, r, t->a, t->b, t->c);
+        col_contacts = c0;
+        if (hit)
+            return 1;
+    }
+    return 0;
+}
+
+/* push2 over the cache: the same candidates (walls in the gather box and the reach box), keys and order */
+static int cc_push(const ColCache *cc, ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, float *hi, float r,
+                   int *contacts)
+{
+    static PushCand cand[PUSH2_MAX];
+    const Header2 *h2 = cb->h2;
+    int bi = (int)(cb - blk);
+    float blo[3] = {lo[0] - PUSH2_REACH, lo[1], lo[2] - PUSH2_REACH}, bhi[3] = {hi[0] + PUSH2_REACH, hi[1], hi[2] + PUSH2_REACH};
+    int ix0 = (int)floorf((lo[0] - h2->x0) * cb->inv_fcell), iz0 = (int)floorf((lo[2] - h2->z0) * cb->inv_fcell);
+    int ix1 = (int)floorf((hi[0] - h2->x0) * cb->inv_fcell), iz1 = (int)floorf((hi[2] - h2->z0) * cb->inv_fcell);
+    ix0 = ix0 < 0 ? 0 : ix0, iz0 = iz0 < 0 ? 0 : iz0;
+    if (ix1 < ix0 || iz1 < iz0)
+        return 0;
+    int nx = ix1 - ix0 + 1, nz = iz1 - iz0 + 1, n = 0;
+    float glo[3] = {h2->x0 + ix0 * h2->fcell - 0.03f, lo[1], h2->z0 + iz0 * h2->fcell - 0.03f};
+    float ghi[3] = {h2->x0 + (ix1 + 1) * h2->fcell + 0.03f, hi[1], h2->z0 + (iz1 + 1) * h2->fcell + 0.03f};
+    for (int k = 0; k < 3; k += 2)
+        glo[k] = glo[k] > blo[k] ? glo[k] : blo[k], ghi[k] = ghi[k] < bhi[k] ? ghi[k] : bhi[k];
+    for (int i = 0; i < cc->n && n < PUSH2_MAX; i++) {
+        const CcTri *t = &cc->t[i];
+        if (t->blk != bi || cc_out(t, glo, ghi) || cc_out(t, blo, bhi) || TRI_OFF(cb, t->g))
+            continue;
+        PushCand *c = &cand[n];
+        if (!PUSH2_CELLS || (nx == 1 && nz == 1)) {
+            c->key = t->g;
+        } else {
+            const float p[3][2] = {{t->a[0], t->a[2]}, {t->b[0], t->b[2]}, {t->c[0], t->c[2]}};
+            const float eps = 0.02f;
+            int found = 0;
+            for (int iz = 0; iz < nz && !found; iz++)
+                for (int ix = 0; ix < nx && !found; ix++) {
+                    float cx = h2->x0 + (ix0 + ix) * h2->fcell, cz = h2->z0 + (iz0 + iz) * h2->fcell;
+                    if (tri_rect(p, cx - eps, cz - eps, cx + h2->fcell + eps, cz + h2->fcell + eps))
+                        c->key = (unsigned)(iz * nx + ix) << 16 | t->g, found = 1;
+                }
+            if (!found)
+                continue;
+        }
+        memcpy(c->a, t->a, 12), memcpy(c->b, t->b, 12), memcpy(c->c, t->c, 12);
+        n++;
+    }
+    for (int i = 1; i < n; i++) {
+        PushCand x = cand[i];
+        int j = i;
+        while (j > 0 && cand[j - 1].key > x.key)
+            cand[j] = cand[j - 1], j--;
+        cand[j] = x;
+    }
+    int moved = 0;
+    for (int i = 0; i < n; i++)
+        if (push_tri(pos, p0, p1, lo, hi, r, cand[i].a, cand[i].b, cand[i].c))
+            moved = 1, (*contacts)++;
+    return moved;
+}
+
+int col_walk_key(const void *key, float pos[3], float dx, float dz, float r, float height, float step_up,
+                 float step_down, unsigned mask, ColHit *hit)
+{
+    cc_key = key;
+    int on = col_walk(pos, dx, dz, r, height, step_up, step_down, mask, hit);
+    cc_key = NULL;
+    return on;
 }
 
 typedef struct { const float *from, *to; float best; int tri; const Frag *f; const unsigned char *t; } RayQ;

@@ -54,6 +54,7 @@ typedef struct { float x, y, z, u, v, r, g, b, a; } ClipVert;
 /* World point -> view space (x right, y up, z forward) */
 V3 r_view(V3 p);
 /* True if a view-space point is in front of the near plane and inside the guard band */
+float r_guard_k(void);  /* guard band half width / focal length: view-space limit per metre of depth */
 int r_point_inside(const V3 *v);
 /* Stricter variant matching VU1's skip test: a triangle with any vertex failing it is drawn by the EE */
 int r_point_vu_safe(const V3 *v);
