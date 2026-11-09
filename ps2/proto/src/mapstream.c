@@ -2113,6 +2113,32 @@ void *mapstream_alloc_pool(unsigned n, int pool)
     return p;
 }
 
+/* mapstream_alloc_pool for blocks of at most a page (collision tiles, src/coltile.c: 1-55 KB each): granules inside
+ * one page of the pool, pages already in use from the pool's bottom first, so whole pages stay free at its top for the
+ * lite sets (g_alloc_range takes whole pages: a 3 KB tile there held a 64 KB page) */
+void *mapstream_alloc_pool_small(unsigned n, int pool)
+{
+    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
+    if (!mapstream_arena() || !pools_on || !ng || ng > MS_GPP)
+        return mapstream_alloc_pool(n, pool);
+    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
+    for (int pass = 0; pass < 2; pass++)
+        for (unsigned p = p0; p < p1; p++) {
+            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
+                continue;
+            unsigned run = 0, g0 = p * MS_GPP;
+            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
+                run = g_used(g) ? 0 : run + 1;
+                if (run == ng) {
+                    g_mark(g + 1 - ng, ng, 1);
+                    mapstream_stats.other_kb += (n + 1023) >> 10;
+                    return g_ptr(g + 1 - ng);
+                }
+            }
+        }
+    return mapstream_alloc_pool(n, pool);  /* (no hole: lent items may go) */
+}
+
 /* the top of the item pages mapstream_alloc may clear (all pages without pools) */
 static inline unsigned alloc_top(void) { return pools_on ? ipages : npages; }
 static void *alloc_items(unsigned n)

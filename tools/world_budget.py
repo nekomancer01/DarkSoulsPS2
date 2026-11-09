@@ -61,6 +61,51 @@ def r128(n):
     return (n + 127) & ~127
 
 
+COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
+CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 4  # coltile.c
+
+
+def col_pages(d):
+    """a block's paged collision.bin (export_collision.py COL_TILE) -> (index bytes, [(lo, hi, bytes)]) or None"""
+    import struct
+    p = os.path.join(d, "collision.bin")
+    if not COL_TILES or not os.path.exists(p):
+        return None
+    b = open(p, "rb").read()
+    if b[:4] != b"DCOL" or struct.unpack_from("<I", b, 4)[0] != 2:
+        return None
+    ntris = struct.unpack_from("<I", b, 12)[0]
+    org, sc = struct.unpack_from("<3f", b, 16), struct.unpack_from("<f", b, 28)[0]
+    at = (struct.unpack_from("<I", b, 80)[0] + 2 * ntris + 15) & ~15
+    if b[at:at + 4] != b"CTP1":
+        return None
+    npg, lo_b = struct.unpack_from("<2I", b, at + 4)
+    pages = []
+    for i in range(npg):
+        r = struct.unpack_from("<3hHIII3h3h", b, at + 16 + 32 * i)
+        pages.append(([org[k] + r[7 + k] * sc for k in range(3)], [org[k] + r[10 + k] * sc for k in range(3)], r[6]))
+    return lo_b, pages
+
+
+def col_budget(blocks):
+    """coltile.c coltile_budget: over every page's box centre, the pages of all blocks within the want window + a
+    margin (256-byte granules)"""
+    allp = [pg for pages in blocks for pg in pages]
+    if not allp:
+        return 0
+    lo = np.array([p[0] for p in allp]); hi = np.array([p[1] for p in allp])
+    nb = (np.array([p[2] for p in allp]) + 255) // 256 * 256
+    C = (lo + hi) / 2
+    R, Y = CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M
+    best = 0
+    for c in C:
+        dx = np.maximum(0, np.maximum(lo[:, 0] - c[0], c[0] - hi[:, 0]))
+        dz = np.maximum(0, np.maximum(lo[:, 2] - c[2], c[2] - hi[:, 2]))
+        dy = np.maximum(0, np.maximum(lo[:, 1] - c[1], c[1] - hi[:, 1]))
+        best = max(best, int(nb[(dx * dx + dz * dz <= R * R) & (dy <= Y)].sum()))
+    return best + best // CT_PACK_K
+
+
 def lite_entries(d):
     """a block's gen dir -> (lite set bytes as world.c counts them, its map tables' bytes, relief, texture buffer)"""
     import struct
@@ -72,7 +117,8 @@ def lite_entries(d):
     tex, cell = tex_off - chunk_off + 80, cell_off - chunk_off + 80
     b0, c0 = tex & ~127, cell & ~127  # world.c tab_split
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
-    total = r128(sz("collision.bin")) + tabs + r128(sz("events.bin"))
+    cp = col_pages(d)
+    total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(sz("events.bin"))
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
@@ -110,7 +156,9 @@ def structural(gen):
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
-    return dict(structural_kb=best >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
+    cb = col_budget([cp[1] for cp in (col_pages(os.path.join(gen, names[i])) for i in ent) if cp])
+    best += cb
+    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of
