@@ -1288,7 +1288,7 @@ unsigned mapstream_heap_release(unsigned bytes)
 }
 
 /* ---- reads ---- */
-typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl; } MsRead;  /* cxl: cancelled, still landing */
+typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; } MsRead;  /* cxl: cancelled, still landing */
 static MsRead rd[MS_INFLIGHT];
 static int nrd;
 static unsigned land_t;
@@ -1313,6 +1313,12 @@ static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, sta
  * read log showed ~3100 reads of 1.2 items per 6-min world_route, every one a seek (~8/s, the gate is 2). */
 #ifndef MS_SCAN
 #define MS_SCAN 1
+#endif
+/* MS_RA_INFLIGHT (with MS_SCAN): reads of the read-ahead classes in flight at once. The disc server serves reads in
+ * order, so a near part wanted at the feet waited behind up to MS_INFLIGHT read-ahead reads: Ame's ISO play
+ * (2026-11-10) had cells drawn coarse while due near for up to 169 frames at 0 m with no room refusal. */
+#ifndef MS_RA_INFLIGHT
+#define MS_RA_INFLIGHT 2
 #endif
 static int scan_k = -1;
 static unsigned scan_end;
@@ -1406,6 +1412,13 @@ static void collect(int i, int r)
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
+    if (MS_SCAN && q[0].cls < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
+        int ra = 0;
+        for (int i = 0; i < nrd; i++)
+            ra += !rd[i].cxl && rd[i].cls < C_NEAR2;
+        if (ra >= MS_RA_INFLIGHT)
+            return 0;
+    }
     int qi = MS_SCAN ? q_scan_pick() : 0;
     MsQ w = q[qi];
     memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
@@ -1522,7 +1535,7 @@ static int issue(void)
         }
         if (!nrd)
             land_t = ticks();
-        rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0};
+        rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
         scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
         mapstream_stats.pending = nrd;
         sent++;
