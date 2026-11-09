@@ -212,6 +212,16 @@ static void rl_trim(void)
 
 static int cluts_sent;
 static int in_frame;
+/* TC_PRESS (default on; 0 = the old choice): frames left of pool pressure. A frame whose drawn levels fill the pool past
+ * TC_PRESS_PCT %, or that had a fail (a batch not drawn), draws mip 1 where mip 0 would do down to half the usual
+ * distance (and no near levels) for the next TC_PRESS_FRAMES frames: with more near detail kept in view (the cube-grid
+ * stack, report3 burg_c 2026-11-09) the 896 KB pool ran full for ~4 s and 510 batches went undrawn. ASSUMED values */
+#ifndef TC_PRESS
+#define TC_PRESS 1
+#endif
+#define TC_PRESS_PCT 90
+#define TC_PRESS_FRAMES 60
+static int press;
 TcStats tc_stats;
 
 /* one GS image transfer into the chain; counted in tc_stats */
@@ -660,9 +670,11 @@ int tc_level(int tex, float d)
     if (tex < 0 || tex >= MAX_TEX || !te[tex])
         return 0;
 #ifndef TC_NO_NEAR  /* A/B builds: near levels never drawn */
-    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f)
+    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f && !press)
         return 2;  /* near level texels (half mip 0's) still >= 1 / MIP_K px */
 #endif
+    if (press && te[tex]->levels > 1)
+        return d > mip_d[tex] * 0.5f;
     if (MIP0_AHEAD > 0 && d > mip_d[tex] && d < mip_d[tex] * MIP0_AHEAD && (te[tex]->pix[0] & TC_RES) && in_frame)
         res_asked[tex][0] = frame + 1;  /* mip 1 drawn, mip 0 read ahead */
     return d > mip_d[tex];
@@ -684,8 +696,9 @@ GSTEXTURE *tc_get(int tex, int level)
         if (o == 1 && o < te[tex]->levels && (te[tex]->pix[1] & TC_RES))
             res_asked[tex][1] = frame + 1;  /* the fallback streams too */
         if (o >= te[tex]->levels || (v->off < 0 && !load(tex, o))) {
-            /* a streamed mip 1 not in yet (mapsplit.py MIP1_OUT): the resident chain's mip 2, then mip 3 */
-            for (o = 3; o < 5 && (te[tex]->pad & TE_CHAIN_AT); o++)
+            /* a streamed mip 1 not in yet (mapsplit.py MIP1_OUT), or no room for mip 0 / 1: the chain's mip 2, then
+             * mip 3 (smaller: a blurrier batch, not a missing one) */
+            for (o = 3; o < 5; o++)
                 if (lv[tex][o].size && (lv[tex][o].off >= 0 || load(tex, o))) {
                     lv[tex][o].last = frame;
                     return &lv[tex][o].t;
@@ -801,6 +814,12 @@ void tc_end(void)
 #endif
     tc_stats.resident = used / 4;
     tc_stats.frame_kb = now / 4;
+    if (TC_PRESS && (tc_stats.fails || now * 100 > pool_blk * TC_PRESS_PCT)) {
+        if (!press)
+            tc_stats.press_n++;
+        press = TC_PRESS_FRAMES;
+    } else if (press)
+        press--;
     tc_stats.max_frame_kb = tc_stats.frame_kb > tc_stats.max_frame_kb ? tc_stats.frame_kb : tc_stats.max_frame_kb;
     {  /* budget doc proposal 7: uploads and misses every 120 frames (fails = a batch not drawn: no level resident or
         * uploadable; short = a mip chain cut by the per-frame cap or the pool) */
@@ -810,7 +829,8 @@ void tc_end(void)
         mip_short = 0;
         if (!(++fr % 120)) {
             printf("tex: %u uploads %u KB (most in a frame %u KB), %u fails, %u chains cut short over 120 frames; "
-                   "resident %d KB of %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident, tc_stats.pool);
+                   "resident %d KB of %d, pressure spells %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident,
+                   tc_stats.pool, tc_stats.press_n);
             up = kb = fails = shorts = kbmax = 0;
         }
     }
