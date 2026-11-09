@@ -42,6 +42,8 @@ int col_tris_enable(int block, unsigned first, unsigned count, int on);
  * tile = the tile size; col_page: its box (map space), file offset and size; col_page_set: its data in memory (NULL:
  * absent; the buffer stays the caller's). Queries skip the triangles of absent pages. */
 unsigned col_index_bytes(const void *head, unsigned n);
+/* byte offset of the page table in a v2 file (head = its first 96 bytes): v 2 = CTP2 (after the patterns), 1 = CTP1 */
+unsigned col_ptab_at(const void *head, int v);
 int col_load_index(int block, const void *blob);
 int col_pages(int block, float *tile);
 int col_page(int block, int page, float lo[3], float hi[3], unsigned *offset, unsigned *bytes);

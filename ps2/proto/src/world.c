@@ -295,11 +295,16 @@ static int col_paged(int i, BlockRt *r)
         return 0;
     if (memcmp(hd, "DCOL", 4) || hd[1] != 2)
         return 1;
-    unsigned at = (hd[20] + 2 * hd[3] + 15) & ~15u, a0 = at & ~63u;  /* the page table: after gid (DCOL header) */
-    if (at + 16 > r->size[E_COL] || !read_sync(&r->pk, r->off[E_COL] + a0, hd + 32, 64))
-        return 0;
-    const unsigned *t = (const unsigned *)((const unsigned char *)(hd + 32) + (at - a0));
-    if (memcmp(t, "CTP1", 4))
+    unsigned at = 0, a0 = 0;
+    const unsigned *t = NULL;
+    for (int v = 2; v >= 1 && !t; v--) {  /* the page table: CTP2 after the patterns, CTP1 after gid (collision.c) */
+        at = col_ptab_at(hd, v), a0 = at & ~63u;
+        if (at + 16 > r->size[E_COL] || !read_sync(&r->pk, r->off[E_COL] + a0, hd + 32, 64))
+            return 0;
+        t = (const unsigned *)((const unsigned char *)(hd + 32) + (at - a0));
+        t = !memcmp(t, v == 2 ? "CTP2" : "CTP1", 4) ? t : NULL;
+    }
+    if (!t)
         return 1;
     unsigned npg = t[1], lo = t[2], n = 16 + 32 * npg, n0 = (at - a0 + n + 63) & ~63u;
     unsigned char *pt = memalign(64, n0);

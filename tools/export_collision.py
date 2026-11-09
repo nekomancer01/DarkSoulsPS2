@@ -245,11 +245,14 @@ def _fragments(c, idx0=None):
 # their 32 m map cell (the tile key >> 1, eight tiles per cell) and lie next to each other on the disc, so the tiles of
 # one cell read in one request. No triangle is stored twice: a tile's page box is its fragments' true box (it overhangs
 # the cube by up to a triangle), and the runtime ranks pages by that box.
-#   page table (after gid, 16-aligned): u32 'CTP1', npage, data_lo (first page byte = the index's size), f32 tile;
-#           32 B per page: s16 key[3] (tile, floor(centroid / tile)), u16 nfrag; u32 frag0, offset (file), bytes;
-#           s16 lo[3], hi[3] (quantized like the fragments: the page's box)
+#   page table (after the patterns, 16-aligned): u32 'CTP2', npage, data_lo (first page byte = the index's size),
+#           f32 tile; 32 B per page: s16 key[3] (tile, floor(centroid / tile)), u16 nfrag; u32 frag0, offset (file),
+#           bytes; s16 lo[3], hi[3] (quantized like the fragments: the page's box)
 #   pages   from data_lo, each 128-aligned: its fragments' data in fragment order (fragment data offsets stay file
-#           offsets: in a page buffer at offset - page offset)
+#           offsets: in a page buffer at offset - page offset), then the v1 numbers of its triangle slots (u16 each,
+#           slots frag0.tri0 .. the last fragment's tri0 + ntri: the page's last bytes), so the index holds none
+#   gid     the whole v1 number array again after the pages (off_gid: for the tools; the runtime never reads it)
+# (CTP1, the first paged layout: the page table after gid, gid in the index, no numbers in the pages)
 COL_TILE = float(os.environ.get("COL_TILE", 16))
 PAGE_ALIGN = 128
 
@@ -348,8 +351,7 @@ def write_v2(c, path):
     off_frag = (off_tl + 2 * len(tlist) + 15) & ~15
     if pages:  # index first (fragment records, patterns, v1 numbers, page table), the pages after it
         off_pat = off_frag + 32 * len(frec)
-        off_gid = (off_pat + 2 * len(pats) + 3) & ~3
-        off_ptab = (off_gid + 2 * len(gid) + 15) & ~15
+        off_ptab = (off_pat + 2 * len(pats) + 15) & ~15
         data_lo = (off_ptab + 16 + 32 * len(pages) + PAGE_ALIGN - 1) & ~(PAGE_ALIGN - 1)
         data, prec = b"", []
         for key, f0, nf in pages:
@@ -358,11 +360,14 @@ def write_v2(c, path):
             for fi in range(f0, f0 + nf):
                 frec[fi][5] = data_lo + len(data)
                 data += blobs[fi]
+            s0, s1 = frec[f0][4], frec[f0 + nf - 1][4] + frec[f0 + nf - 1][2]
+            data += struct.pack(f"<{s1 - s0}H", *gid[s0:s1])
             lo = [min(frec[fi][0][k] for fi in range(f0, f0 + nf)) for k in range(3)]
             hi = [max(frec[fi][1][k] for fi in range(f0, f0 + nf)) for k in range(3)]
             assert all(-32768 <= v < 32768 for v in key)
             prec.append(struct.pack("<3hHIII3h3h", *key, nf, f0, p0, data_lo + len(data) - p0, *lo, *hi))
-        ptab = struct.pack("<4sIIf", b"CTP1", len(pages), data_lo, tile) + b"".join(prec)
+        ptab = struct.pack("<4sIIf", b"CTP2", len(pages), data_lo, tile) + b"".join(prec)
+        off_gid = (data_lo + len(data) + 3) & ~3
     else:  # fragment data right after the records (the old layout)
         off_data = off_frag + 32 * len(frec)
         data = b""
@@ -382,9 +387,9 @@ def write_v2(c, path):
     out += b"\0" * (off_frag - len(out)) + fb
     if pages:
         out += struct.pack(f"<{len(pats)}H", *pats)
-        out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
         out += b"\0" * (off_ptab - len(out)) + ptab
         out += b"\0" * (data_lo - len(out)) + data
+        out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
     else:
         out += data + struct.pack(f"<{len(pats)}H", *pats)
         out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)

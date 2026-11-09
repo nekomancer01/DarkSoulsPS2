@@ -81,6 +81,7 @@ typedef struct {
     float tile;
     const unsigned char **pbuf;
     unsigned short *fpg;
+    unsigned *pgid;  /* CTP2: per page its first triangle slot and its v1 numbers' offset in the page (NULL: gid) */
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
 static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
@@ -99,11 +100,22 @@ static inline int box_hits(const ColBlock *c, const float lo[3], const float hi[
            lo[2] <= c->hi[2] && hi[2] >= c->lo[2];
 }
 
-/* the page table of a v2 blob (NULL: none) */
-static const unsigned *ptab_of(const Header2 *h2)
+/* where a v2 file's page table may be: CTP2 after the patterns (v1 numbers in the pages), CTP1 after gid */
+unsigned col_ptab_at(const void *head, int v)
 {
-    const unsigned *t = (const unsigned *)((const unsigned char *)h2 + ((h2->gid_off + 2 * h2->ntris + 15) & ~15u));
-    return h2->gid_off && !memcmp(t, "CTP1", 4) ? t : NULL;
+    const Header2 *h2 = head;
+    return v == 2 ? (h2->pat_off + 2 * h2->npat + 15) & ~15u : (h2->gid_off + 2 * h2->ntris + 15) & ~15u;
+}
+
+/* the page table of a v2 blob (NULL: none); *v = its version */
+static const unsigned *ptab_of(const Header2 *h2, int *v)
+{
+    for (*v = 2; *v >= 1; --*v) {
+        const unsigned *t = (const unsigned *)((const unsigned char *)h2 + col_ptab_at(h2, *v));
+        if (!memcmp(t, *v == 2 ? "CTP2" : "CTP1", 4))
+            return t;
+    }
+    return NULL;
 }
 
 unsigned col_index_bytes(const void *head, unsigned n)
@@ -111,11 +123,15 @@ unsigned col_index_bytes(const void *head, unsigned n)
     const Header2 *h2 = head;
     if (n < sizeof *h2 || memcmp(h2->magic, "DCOL", 4) || h2->version != 2)
         return 0;
-    unsigned at = (h2->gid_off + 2 * h2->ntris + 15) & ~15u;
-    if (at + 16 > n)
-        return at + 16;  /* read this much to see */
-    const unsigned *t = (const unsigned *)((const unsigned char *)head + at);
-    return memcmp(t, "CTP1", 4) ? 0 : t[2];
+    for (int v = 2; v >= 1; v--) {
+        unsigned at = col_ptab_at(head, v);
+        if (at + 16 > n)
+            return at + 16;  /* read this much to see */
+        const unsigned *t = (const unsigned *)((const unsigned char *)head + at);
+        if (!memcmp(t, v == 2 ? "CTP2" : "CTP1", 4))
+            return t[2];
+    }
+    return 0;
 }
 
 static int load_blob(int b, const void *blob, int whole);
@@ -152,7 +168,8 @@ static int load_blob(int b, const void *blob, int whole)
         c->gid = (const unsigned short *)(p + h2->gid_off);
         c->inv_top = 1.0f / h2->cell, c->inv_fcell = 1.0f / h2->fcell;
         c->cur_stamp = c->fcur = 0;
-        const unsigned *pt = ptab_of(h2);
+        int pv;
+        const unsigned *pt = ptab_of(h2, &pv);
         if (pt) {
             c->npg = pt[1], c->data_lo = pt[2];
             memcpy(&c->tile, pt + 3, 4);
@@ -164,9 +181,23 @@ static int load_blob(int b, const void *blob, int whole)
                 memset(c, 0, sizeof *c);
                 return 0;
             }
+            if (pv == 2) {  /* the v1 numbers are at each page's end: its slots' first number, its offset in the page */
+                c->gid = NULL;
+                c->pgid = malloc(2 * (c->npg ? c->npg : 1) * sizeof *c->pgid);
+                if (!c->pgid) {
+                    free(c->pbuf), free(c->fpg), free(c->stamp), free(c->fstamp);
+                    memset(c, 0, sizeof *c);
+                    return 0;
+                }
+            }
             for (unsigned i = 0; i < c->npg; i++) {
                 for (unsigned f = c->pg[i].frag0; f < c->pg[i].frag0 + c->pg[i].nfrag && f < h2->nfrag; f++)
                     c->fpg[f] = i;
+                if (c->pgid && c->pg[i].nfrag) {
+                    const Frag *f0 = &c->frag[c->pg[i].frag0], *f1 = f0 + c->pg[i].nfrag - 1;
+                    c->pgid[2 * i] = f0->tri0;
+                    c->pgid[2 * i + 1] = c->pg[i].bytes - 2 * (f1->tri0 + f1->ntri - f0->tri0);
+                }
                 if (whole)
                     c->pbuf[i] = p + c->pg[i].off;
             }
@@ -217,6 +248,7 @@ void col_unload(int b)
     free(blk[b].off);
     free(blk[b].pbuf);
     free(blk[b].fpg);
+    free(blk[b].pgid);
     memset(&blk[b], 0, sizeof blk[b]);
 }
 
@@ -621,6 +653,14 @@ static int push1(ColBlock *cb, float pos[3], float r, float height, float step, 
 }
 
 /* ---- DCOL v2 (fragments) ---- */
+/* the v1 number of fragment f's triangle lt (FRAG_IN) */
+static inline unsigned gid_of(const ColBlock *c, const Frag *f, unsigned lt)
+{
+    if (!c->pgid)
+        return c->gid[f->tri0 + lt];
+    unsigned i = c->fpg[f - c->frag];
+    return ((const unsigned short *)(c->pbuf[i] + c->pgid[2 * i + 1]))[f->tri0 + lt - c->pgid[2 * i]];
+}
 /* fragment f's data (FRAG_IN: in memory) */
 static inline const unsigned char *fbase(const ColBlock *c, const Frag *f)
 {
@@ -742,7 +782,7 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                     for (int ix = ix0; ix <= ix1; ix++) {
                         unsigned ck = iz * f->gw + ix;
                         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
-                            unsigned lt = ls[q], g = c->gid[f->tri0 + lt];
+                            unsigned lt = ls[q], g = gid_of(c, f, lt);
                             if (c->stamp[g] == cur)
                                 continue;
                             c->stamp[g] = cur;
@@ -791,7 +831,7 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
         }
         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
             const unsigned char *t = tr + ls[q] * 4;
-            unsigned g = cb->gid[f->tri0 + ls[q]];
+            unsigned g = gid_of(cb, f, ls[q]);
             if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
                 continue;
             if (LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
