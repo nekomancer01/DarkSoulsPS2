@@ -150,7 +150,7 @@ WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
 # Other MSBs (Firelink, the Asylum) are not shared out: tools/world_budget.py checks those seams.
 WS_UNION = os.environ.get("WS_UNION", "1") == "1"
 # The hard tier (2026-11-08, the plan's review): near within 20 m, coarse and kept meshes within 40 m (map.c HZN_R 40:
-# the horizon stands in beyond), against the room world_budget.py prints for world.c's WORLD_ARENA_KB 9152 (3692 KB)
+# the horizon stands in beyond), against the room world_budget.py prints for world.c's WORLD_ARENA_KB 9152 (3618 KB with the Burg's lite sets, 2026-11-08)
 WS_ROOM = float(os.environ.get("WS_ROOM", 3618))
 WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 1792))  # (2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
 WS_FAR_KB = float(os.environ.get("WS_FAR_KB", 128))  # kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)

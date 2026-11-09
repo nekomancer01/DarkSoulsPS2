@@ -32,7 +32,9 @@ import sys
 import numpy as np
 
 NEAR_R = 20.0   # mapstream.c MS_R0_DRAW
-PIN_R = 64.0    # mapstream.c MS_R1_PIN (= MS_R_HZN: the horizon stands for the coarse level beyond)
+PIN_R = 64.0    # the soft tier's outer edge (coarse HARD_R..PIN_R); the runtime pins the coarse level to MS_R1_PIN 40 m
+                # (= HARD_R) and wants the ring beyond at a lower class out to MS_R_HZN 48 m; 64 m keeps the soft-tier log
+                # comparable with the numbers before the Burg plan's B3
 WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
 def _world_c(name, default):
