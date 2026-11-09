@@ -78,19 +78,16 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * texture buffer + WORLD_MISC_EXTRA). A wanted lite set that finds the structural pool full first leans the kept-only
  * blocks (they drain in WORLD_DRAIN frames), then turns one off (room_for); it never clears a map item. The visual
  * room left is a constant tools/world_budget.py computes the same way (gen/world_budget.json "structural_kb"). */
-#define WORLD_MISC_EXTRA (640u << 10)
+#define WORLD_MISC_EXTRA (640u << 10)  /* ASSUMED: one of the Burg's larger enemy model.bin temporaries (578-590 KB) */
 /* wanted blocks the structural pool counts whole per link (the rest lean): 3 = every link's worst case (one Burg_w
  * triangle loads w, b and p: 4484 KB, visual 2.1-3.1 MB of the ISO's 8640 KB arena); fewer = a smaller pool, the rare
  * link with more spills its last lite set into the item pages (logged, world_stats.pool_spills) */
 #ifndef WORLD_STRUCT_WHOLE
 #define WORLD_STRUCT_WHOLE 2  /* (Ame 2026-11-08: two wanted whole + one lean, visual 3.1 -> 3.8 MB) */
 #endif
-/* the relief in the misc pool too (sized by the largest bump.bin). Off: the relief takes item room only where no map
- * item is wanted (mapstream_alloc_soft, as before): with it in, the Burg's visual room was 2112 KB of an 8640 KB arena
- * (structural 4544 KB for the link that loads three Burg blocks at once, misc 1984 KB; ISO 2026-11-08) */
-#ifndef WORLD_RELIEF_POOL
-#define WORLD_RELIEF_POOL 0
-#endif  /* ASSUMED: one of the Burg's larger enemy model.bin temporaries (578-590 KB) */
+/* The relief (bump.bin) stays out of the pools: it takes item room only where no map item is wanted
+ * (mapstream_alloc_soft), never the heap. Sized into the misc pool (tried 2026-11-08, dropped) it left the Burg 2112 KB
+ * of visual room in the 8640 KB arena (structural 4544 KB for the link that loads three Burg blocks, misc 1984 KB). */
 /* WORLD_KEPT_HZN (default 1): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
  * MB in the Burg) and map.c draws its horizon (map_block_lean): its far cells are in view beyond the pinned 64 m, and
  * without the horizon they were holes (planning thread, 2026-11-08). 0: the tables go whole. */
@@ -98,11 +95,11 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #define WORLD_KEPT_HZN 1
 #endif
 #define LEAN_E1 (WORLD_KEPT_HZN && WORLD_TAB_SPLIT ? E_TABB : E_TABC)  /* the last maptab piece a lean block lets go */
-#define WORLD_LEAN_S 5.0f
+#define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* MS_LEND: a kept, still-off block within this of the feet gets its structural pool room cleared of lent items (not
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
  * time: soak2 pop-ins 25 / 37 -> 54 / 54 on the B3 + B4 stack (2026-11-09). ASSUMED: about one 32 m cell */
-#define WORLD_PREP_D 32.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
+#define WORLD_PREP_D 32.0f
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
 #define WORLD_WARP 20.0f
@@ -353,16 +350,13 @@ int world_init(const char *boot_area)
         mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (nblk > 1) {
-        unsigned sb = world_struct_bytes(), mb = 0, bmax = 0, tmax = 0;
-        for (int i = 0; i < nblk; i++) {
-            unsigned bs = (rt[i].bump_size + 127) & ~127u;
-            bmax = bs > bmax ? bs : bmax;
+        unsigned sb = world_struct_bytes(), mb, tmax = 0;
+        for (int i = 0; i < nblk; i++)
             tmax = rt[i].tex_total > tmax ? rt[i].tex_total : tmax;
-        }
-        mb = (WORLD_RELIEF_POOL ? bmax : 0) + tmax + WORLD_MISC_EXTRA;
+        mb = tmax + WORLD_MISC_EXTRA;  /* (the relief stays out of the pools) */
         mapstream_pools(sb, mb);
-        printf("world: structural pool %u KB (the most one triangle's links keep on), misc pool %u KB (relief %u + "
-               "textures %u + %u KB)\n", sb >> 10, mb >> 10, bmax >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
+        printf("world: structural pool %u KB (the most one triangle's links keep on), misc pool %u KB (textures %u + "
+               "%u KB)\n", sb >> 10, mb >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
     }
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
@@ -1003,9 +997,7 @@ static void bump_step(void)
     /* the relief is detail on top of the map: it takes room no wanted cell needs (WORLD_RELIEF_SOFT). Taking it like a
      * lite set dropped ~700 KB of drawn cells at every block change after 1 s in the Burg, which then read back
      * (soak on the ISO, 2026-11-07); the heap is the enemies' (WORLD_HEAP_MODELS) */
-    bump_buf = WORLD_RELIEF_POOL ? mapstream_alloc_pool(sz, MS_POOL_MISC) : NULL;  /* (sized by the largest relief) */
-    if (!bump_buf)
-        bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
+    bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
     /* MS_POOLS: no heap fallback. The relief is optional detail, and in the heap it took RAM min on taurus to
      * 1417-1478 KB under the 1.5 MB floor once the enemies loaded (ISO 2026-11-09) */
     if (!bump_buf && !mapstream_pools_on() && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)

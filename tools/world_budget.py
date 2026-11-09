@@ -32,7 +32,9 @@ import sys
 import numpy as np
 
 NEAR_R = 20.0   # mapstream.c MS_R0_DRAW
-PIN_R = 64.0    # mapstream.c MS_R1_PIN (= MS_R_HZN: the horizon stands for the coarse level beyond)
+PIN_R = 64.0    # the soft tier's outer edge (coarse HARD_R..PIN_R); the runtime pins the coarse level to MS_R1_PIN 40 m
+                # (= HARD_R) and wants the ring beyond at a lower class out to MS_R_HZN 48 m; 64 m keeps the soft-tier log
+                # comparable with the numbers before the Burg plan's B3
 WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
 def _world_c(name, default):
@@ -52,7 +54,6 @@ WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = os.environ.get("WORLD_KEPT_HZN", "1") != "0"  # world.c WORLD_KEPT_HZN
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
-RELIEF_POOL = os.environ.get("WORLD_RELIEF_POOL", "0") == "1"  # world.c WORLD_RELIEF_POOL
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
 
@@ -108,7 +109,7 @@ def structural(gen):
                        reverse=True)[:WORLD_SLOTS]
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
-    misc = (max((e[2] for e in ent.values()), default=0) if RELIEF_POOL else 0) + max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
+    misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
     return dict(structural_kb=best >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
