@@ -63,7 +63,7 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
@@ -266,6 +266,11 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 WORLD_LITE_DIET ?= 1
 WORLD_MIP1_OUT ?= $(WORLD_LITE_DIET)
 EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
+# COL_TILES (the cube-grid plan's step 1, default 1): world blocks read their collision.bin's index with the lite set
+# and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structural pool (src/coltile.c).
+# COL_TILES=0: collision.bin read whole with the lite set (the export stays paged; COL_TILE=0 exports unpaged files).
+COL_TILES ?= 1
+EE_CFLAGS += -DCOL_TILES=$(COL_TILES)
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)
 	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' > $@ && touch -d @0 $@; \

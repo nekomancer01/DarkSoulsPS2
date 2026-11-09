@@ -38,6 +38,19 @@ typedef struct {
     unsigned short pad, pad2[2];
 } Frag;
 _Static_assert(sizeof(Header2) == 96 && sizeof(Frag) == 32, "DCOL v2");
+/* Collision tiles (export_collision.py COL_TILE, the cube-grid plan's step 1): a v2 file whose fragments are grouped
+ * per tile has a page table after gid (16-aligned): 'CTP1', pages, data_lo (the index's size: everything before the
+ * first page), f32 tile; then ColPage records. A page is one tile's fragment data, a byte range from data_lo on; a
+ * fragment's data offset stays a file offset (in a page buffer at data - page off). col_load takes a whole file (every
+ * page in it); col_load_index the index alone, and src/coltile.c hands pages in and out with col_page_set: queries
+ * skip the fragments of absent pages, as they skip a block that is not loaded. */
+typedef struct {
+    short key[3];
+    unsigned short nfrag;
+    unsigned frag0, off, bytes;
+    short lo[3], hi[3];
+} ColPage;
+_Static_assert(sizeof(ColPage) == 32, "ColPage");
 
 #define MAX_PUSH_ITERS 4
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
@@ -62,6 +75,12 @@ typedef struct {
     unsigned short *fstamp, fcur;
     float inv_top, inv_fcell;
     unsigned ntris;
+    /* collision tiles: page table (NULL: an unpaged file), per page its data (NULL: absent), per fragment its page */
+    const ColPage *pg;
+    unsigned npg, data_lo;
+    float tile;
+    const unsigned char **pbuf;
+    unsigned short *fpg;
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
 static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
@@ -69,6 +88,8 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
 static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit);
 
 #define TRI_OFF(c, ti) ((c)->off && (c)->off[(ti) >> 3] >> ((ti) & 7) & 1)
+/* fragment fi's data is in memory (always, in an unpaged block) */
+#define FRAG_IN(c, fi) (!(c)->pbuf || (c)->pbuf[(c)->fpg[fi]])
 int col_contacts;
 
 /* 1 if the box [lo, hi] overlaps block c's bounds */
@@ -78,7 +99,30 @@ static inline int box_hits(const ColBlock *c, const float lo[3], const float hi[
            lo[2] <= c->hi[2] && hi[2] >= c->lo[2];
 }
 
-int col_load(int b, const void *blob)
+/* the page table of a v2 blob (NULL: none) */
+static const unsigned *ptab_of(const Header2 *h2)
+{
+    const unsigned *t = (const unsigned *)((const unsigned char *)h2 + ((h2->gid_off + 2 * h2->ntris + 15) & ~15u));
+    return h2->gid_off && !memcmp(t, "CTP1", 4) ? t : NULL;
+}
+
+unsigned col_index_bytes(const void *head, unsigned n)
+{
+    const Header2 *h2 = head;
+    if (n < sizeof *h2 || memcmp(h2->magic, "DCOL", 4) || h2->version != 2)
+        return 0;
+    unsigned at = (h2->gid_off + 2 * h2->ntris + 15) & ~15u;
+    if (at + 16 > n)
+        return at + 16;  /* read this much to see */
+    const unsigned *t = (const unsigned *)((const unsigned char *)head + at);
+    return memcmp(t, "CTP1", 4) ? 0 : t[2];
+}
+
+static int load_blob(int b, const void *blob, int whole);
+int col_load(int b, const void *blob) { return load_blob(b, blob, 1); }
+int col_load_index(int b, const void *blob) { return load_blob(b, blob, 0); }
+
+static int load_blob(int b, const void *blob, int whole)
 {
     if (b < 0 || b >= COL_BLOCKS)
         return 0;
@@ -108,6 +152,29 @@ int col_load(int b, const void *blob)
         c->gid = (const unsigned short *)(p + h2->gid_off);
         c->inv_top = 1.0f / h2->cell, c->inv_fcell = 1.0f / h2->fcell;
         c->cur_stamp = c->fcur = 0;
+        const unsigned *pt = ptab_of(h2);
+        if (pt) {
+            c->npg = pt[1], c->data_lo = pt[2];
+            memcpy(&c->tile, pt + 3, 4);
+            c->pg = (const ColPage *)(pt + 4);
+            c->pbuf = calloc(c->npg ? c->npg : 1, sizeof *c->pbuf);
+            c->fpg = malloc((h2->nfrag ? h2->nfrag : 1) * sizeof *c->fpg);
+            if (!c->pbuf || !c->fpg) {
+                free(c->pbuf), free(c->fpg), free(c->stamp), free(c->fstamp);
+                memset(c, 0, sizeof *c);
+                return 0;
+            }
+            for (unsigned i = 0; i < c->npg; i++) {
+                for (unsigned f = c->pg[i].frag0; f < c->pg[i].frag0 + c->pg[i].nfrag && f < h2->nfrag; f++)
+                    c->fpg[f] = i;
+                if (whole)
+                    c->pbuf[i] = p + c->pg[i].off;
+            }
+        } else if (!whole) {  /* an unpaged file has no index of its own */
+            free(c->stamp), free(c->fstamp);
+            memset(c, 0, sizeof *c);
+            return 0;
+        }
         float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
         for (unsigned i = 0; i < h2->nfrag; i++)
             for (int k = 0; k < 3; k++) {
@@ -148,6 +215,8 @@ void col_unload(int b)
     free(blk[b].stamp);
     free(blk[b].fstamp);
     free(blk[b].off);
+    free(blk[b].pbuf);
+    free(blk[b].fpg);
     memset(&blk[b], 0, sizeof blk[b]);
 }
 
@@ -170,6 +239,41 @@ int col_tris_enable(int b, unsigned first, unsigned count, int on)
         for (unsigned t = first; t < first + count; t++)
             c->off[t >> 3] = on ? c->off[t >> 3] & ~(1 << (t & 7)) : c->off[t >> 3] | 1 << (t & 7);
     return 1;
+}
+
+int col_pages(int b, float *tile)
+{
+    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || !blk[b].pg)
+        return 0;
+    if (tile)
+        *tile = blk[b].tile;
+    return (int)blk[b].npg;
+}
+
+int col_page(int b, int i, float lo[3], float hi[3], unsigned *off, unsigned *bytes)
+{
+    const ColBlock *c = &blk[b];
+    if (b < 0 || b >= COL_BLOCKS || !c->pg || i < 0 || (unsigned)i >= c->npg)
+        return 0;
+    const ColPage *g = &c->pg[i];
+    for (int k = 0; lo && k < 3; k++)
+        lo[k] = c->hdr->origin[k] + g->lo[k] * c->hdr->scale, hi[k] = c->hdr->origin[k] + g->hi[k] * c->hdr->scale;
+    if (off)
+        *off = g->off;
+    if (bytes)
+        *bytes = g->bytes;
+    return 1;
+}
+
+void col_page_set(int b, int i, const void *buf)
+{
+    if (b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg)
+        blk[b].pbuf[i] = buf;
+}
+
+int col_page_in(int b, int i)
+{
+    return b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg && blk[b].pbuf[i];
 }
 
 int col_tris(void) { return blk[0].hdr ? (int)blk[0].hdr->ntris : 0; }
@@ -517,10 +621,18 @@ static int push1(ColBlock *cb, float pos[3], float r, float height, float step, 
 }
 
 /* ---- DCOL v2 (fragments) ---- */
+/* fragment f's data (FRAG_IN: in memory) */
+static inline const unsigned char *fbase(const ColBlock *c, const Frag *f)
+{
+    if (!c->pbuf)
+        return (const unsigned char *)c->hdr + f->data;
+    const ColPage *g = &c->pg[c->fpg[f - c->frag]];
+    return c->pbuf[g - c->pg] + (f->data - g->off);
+}
 static inline void vert2(const ColBlock *c, const Frag *f, unsigned i, float *o)
 {
     const Header *h = c->hdr;
-    const unsigned short *v = (const unsigned short *)((const unsigned char *)c->hdr + f->data) + i * 3;
+    const unsigned short *v = (const unsigned short *)fbase(c, f) + i * 3;
     o[0] = h->origin[0] + (f->lo[0] + v[0]) * h->scale;
     o[1] = h->origin[1] + (f->lo[1] + v[1]) * h->scale;
     o[2] = h->origin[2] + (f->lo[2] + v[2]) * h->scale;
@@ -528,7 +640,7 @@ static inline void vert2(const ColBlock *c, const Frag *f, unsigned i, float *o)
 /* fragment f's triangles (4 bytes each, after its 4-aligned vertices), cell starts and lists */
 static inline const unsigned char *ftris(const ColBlock *c, const Frag *f)
 {
-    return (const unsigned char *)c->hdr + f->data + ((f->nvert * 6u + 3) & ~3u);
+    return fbase(c, f) + ((f->nvert * 6u + 3) & ~3u);
 }
 static inline const unsigned short *fcells(const ColBlock *c, const Frag *f) { return (const unsigned short *)(ftris(c, f) + f->ntri * 4u); }
 static inline const unsigned char *flist(const ColBlock *c, const Frag *f) { return (const unsigned char *)(fcells(c, f) + f->gw * f->gd + 1); }
@@ -613,7 +725,7 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                     continue;
                 c->fstamp[fi] = fcur;
                 const Frag *f = &c->frag[fi];
-                if (!fbox_hits(c, f, lo, hi))
+                if (!FRAG_IN(c, fi) || !fbox_hits(c, f, lo, hi))
                     continue;
                 float fx0, fz0;
                 QBox qb;
@@ -661,6 +773,8 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
     const Frag *bf = NULL;
     const unsigned char *bt = NULL;
     for (unsigned j = cb->top[k]; j < cb->top[k + 1]; j++) {
+        if (!FRAG_IN(cb, cb->toplist[j]))
+            continue;
         const Frag *f = &cb->frag[cb->toplist[j]];
         float fx0, fz0;
         forigin(cb, f, &fx0, &fz0);
