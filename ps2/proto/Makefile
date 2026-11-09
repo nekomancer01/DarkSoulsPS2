@@ -261,7 +261,8 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 # WORLD_LITE_DIET (the Burg plan's step B1, default 1): mip 1 of textures with a mip chain streams from mapres.bin
 # (mapsplit.py MIP1_OUT) and a block that is only kept holds its collision and events, not its map tables (src/world.c).
 # WORLD_LITE_DIET=0: today's lite sets (a changed value re-splits every block: $(A)/splitenv). WORLD_MIP1_OUT
-# (default WORLD_LITE_DIET) is the mip 1 half alone.
+# (default WORLD_LITE_DIET) is the mip 1 half alone: on taurus it halved the cells drawn coarse while due near
+# (7 -> 3) with near refusals level (ISO A/B 2026-11-08, two runs each).
 WORLD_LITE_DIET ?= 1
 WORLD_MIP1_OUT ?= $(WORLD_LITE_DIET)
 EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
@@ -513,7 +514,8 @@ $(A)/map.bin.cells.json: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 $(WB_WITH): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
-$(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH)
+$(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH) $(D)/world.pak \
+		$(foreach d,$(PVS_PEERS),$(d)/maptab.bin) ../../ps2/proto/src/world.c
 	$(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)

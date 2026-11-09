@@ -38,6 +38,7 @@ MIN_FRAMES = 10
 # (identical runs differ by that much: near refusals 12 vs 92 on iso_ame_report3), the median + 2 cells, the horizon
 # share + 3 points; None = not gated. Lower them as the plan's steps land, never raise them.
 STREAM_GATE_KEYS = {"near_items": "near items refused for room (distinct)", "room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
+                    "lent_near": "near parts lent a pool page and dropped for a lite set (MS_LEND)",
                     "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
 STREAM_GATES = {
     "iso_ame_report3": {"near_items": 16, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
@@ -217,7 +218,7 @@ def table(r):
     if run.get("stream"):
         st = run["stream"]
         o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}, {st.get('near_items')} items), pop-ins "
-                 f"{st['popins']}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
+                 f"{st['popins']}, lent near dropped {st.get('lent_near', 0)}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
                  f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %)")
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)

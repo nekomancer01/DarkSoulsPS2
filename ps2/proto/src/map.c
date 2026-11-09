@@ -209,6 +209,7 @@ typedef struct {
     const HzCell *hz_cell;
     const Chunk *hz_chunk;
     const unsigned char *hz_base;
+    int hz_only;  /* world.c WORLD_KEPT_HZN: a kept-only block, its horizon drawn alone (map_block_lean) */
 } MapInst;
 static MapInst inst[MAP_INST] = {{.on = 0}};
 
@@ -1025,7 +1026,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->streams = res, m->res_cells = 0, m->citem = NULL;
     hz_parse(m);
     m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
-    m->on = 1, m->col_block = col_block;
+    m->on = 1, m->col_block = col_block, m->hz_only = 0;
     if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
         float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1],
                              hdr->fog_rgb[2], 64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
@@ -1090,8 +1091,44 @@ static void block_drop(int k, int keep_dg)
     mapstream_select(0);
 }
 
-void map_block_drop(int k) { block_drop(k, 0); }
-void map_block_lean(int k) { block_drop(k, 1); }
+void map_block_drop(int k)
+{
+    block_drop(k, 0);
+    if (k > 0 && k < MAP_INST)
+        inst[k].hz_only = 0, inst[k].hz_cell = NULL, inst[k].hz_chunk = NULL, inst[k].hz_base = NULL;
+}
+void map_block_lean(int k, int keep_hz)
+{
+    if (k <= 0 || k >= MAP_INST || !inst[k].on)
+        return;
+    MapInst *m = &inst[k];
+    const HzCell *hc = m->hz_cell;
+    const Chunk *hk = m->hz_chunk;
+    const unsigned char *hb = m->hz_base;
+    unsigned n = m->nctab;
+    block_drop(k, 1);
+    if (keep_hz && hc)  /* (they lie in maptab's last piece, which world.c keeps) */
+        m->hz_cell = hc, m->hz_chunk = hk, m->hz_base = hb, m->nctab = n, m->hz_only = 1;
+}
+
+/* a kept-only block (hz_only): every horizon chunk in view, as the shown draw groups pick them */
+static unsigned draw_hz_only(int k, const float *e)
+{
+    const MapInst *m = &inst[k];
+    unsigned n = 0;
+    for (unsigned ci = 0; ci < m->nctab; ci++) {
+        const HzCell *hc = &m->hz_cell[ci];
+        for (unsigned j = 0; j < hc->count; j++) {
+            const Chunk *c = &m->hz_chunk[hc->first + j];
+            if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
+                continue;
+            int cls = visible(c, e, 0);
+            if (cls)
+                n += draw_hz(m, c, cls, 0, 0);
+        }
+    }
+    return n;
+}
 
 void map_pvs_init(const void *blob)
 {
@@ -1347,8 +1384,13 @@ int map_draw(V3 eye)
     unsigned pvs_cut = 0;  /* triangles the visibility rows left out (src/pvs.c) */
     unsigned k_drawn[MAP_INST] = {0}, k_cut[MAP_INST] = {0};  /* the same and the drawn ones per instance (A/B log) */
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
-        if (k && !inst[k].on)
+        if (k && !inst[k].on) {
+            if (inst[k].hz_only) {  /* a kept-only block: its horizon alone */
+                unsigned dn = draw_hz_only(k, e);
+                drawn += dn, k_drawn[k] += dn, hz_tris += dn;
+            }
             continue;
+        }
         m = &inst[k];
         mapstream_select(k);  /* mapstream_get / mapstream_res below answer for k */
         if (!m->hdr)
