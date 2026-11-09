@@ -33,6 +33,74 @@ SEAM_W = 4.0
 SEAM_K = 0.05  # metres: tearing a seam costs like this much (mean) geometric error
 AREA_K = float(__import__("os").environ.get("SIMPLIFY_AREA_K", 1.0))  # 0: area loss ignored (A/B)
 MIN_COS = 0.25  # a triangle's normal may not turn more than acos(0.25) = 75 degrees in one collapse
+# Structural vertices (after Chen et al. 2026, "Structure- and Semantics-Aware Mesh Simplification for Generating
+# Lightweight 3D Building Models", Remote Sens. 18(6) 914): a vertex on a crease (two of its triangles that share an
+# edge at it turn by STRUCT_CREASE_DEG or more) and / or a corner (one of its triangles turns STRUCT_CORNER_DEG or more
+# from its area-weighted normal) has its cost multiplied by STRUCT_W per test it passes. The memory budget pushes the
+# map's error 3-7x past the target (Firelink coarse cells up to 22 px), where an error-only metric drops whole
+# merlons, window frames and railings; the weight moves that budget off flat faces onto the edges that make a building
+# read. The paper's eigenvalue saliency is replaced by the crease test: on authored low-poly meshes a 90 degree box edge
+# has a 45 degree normal spread, under the corner threshold. SIMPLIFY_STRUCT_W=1: off (the old cost, A/B).
+STRUCT_W = float(__import__("os").environ.get("SIMPLIFY_STRUCT_W", 10.0))
+STRUCT_CREASE_DEG = 40.0
+STRUCT_CORNER_DEG = 60.0
+STRUCT_CREASE_COS = math.cos(math.radians(STRUCT_CREASE_DEG))  # passed to simpmesh.c as is (same bits)
+STRUCT_CORNER_COS = math.cos(math.radians(STRUCT_CORNER_DEG))
+
+
+def structure_weight(pos, wpos, tris, w=None):
+    """Per position vertex cost multiplier STRUCT_W ** (crease + corner) (1.0 everywhere when STRUCT_W <= 1).
+    pos: position coordinates; wpos[a]: position of attribute a; tris: attribute triples. Mirrored by
+    tools/mapx/simpmesh.c struct_weight (same operations in the same order)."""
+    w = STRUCT_W if w is None else w
+    out = [1.0] * len(pos)
+    if w <= 1.0:
+        return out
+    crease_cos, corner_cos = STRUCT_CREASE_COS, STRUCT_CORNER_COS
+    ft, fu = [], []  # non-degenerate triangles: positions, unit normal
+    acc = [[0.0, 0.0, 0.0] for _ in pos]
+    inc = [[] for _ in pos]
+    for t in tris:
+        p = (wpos[t[0]], wpos[t[1]], wpos[t[2]])
+        if p[0] == p[1] or p[1] == p[2] or p[0] == p[2]:
+            continue
+        n = _cross(_sub(pos[p[1]], pos[p[0]]), _sub(pos[p[2]], pos[p[0]]))
+        ln = math.sqrt(_dot(n, n))
+        if ln == 0.0:
+            continue
+        f = len(ft)
+        ft.append(p)
+        fu.append((n[0] / ln, n[1] / ln, n[2] / ln))
+        for q in p:
+            a = acc[q]
+            a[0] += n[0]
+            a[1] += n[1]
+            a[2] += n[2]
+            inc[q].append(f)
+    for v in range(len(pos)):
+        fs = inc[v]
+        if not fs:
+            continue
+        crease = corner = 0
+        for i in range(len(fs)):
+            for j in range(i):
+                a, b = ft[fs[i]], ft[fs[j]]
+                if any(q != v and q in b for q in a) and _dot(fu[fs[i]], fu[fs[j]]) <= crease_cos:
+                    crease = 1
+                    break
+            if crease:
+                break
+        a = acc[v]
+        ln = math.sqrt(_dot(a, a))
+        if ln > 0.0:
+            nv = (a[0] / ln, a[1] / ln, a[2] / ln)
+            for f in fs:
+                if _dot(nv, fu[f]) <= corner_cos:
+                    corner = 1
+                    break
+        k = crease + corner
+        out[v] = w * w if k == 2 else (w if k == 1 else 1.0)
+    return out
 
 
 def _plane(n, p, w):

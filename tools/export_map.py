@@ -2258,7 +2258,8 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         j[3] = [njobs[k] > 1 for k in jk]
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
-        j[4] = [1.0 / (x * x) for x in d]
+        sw = simplify.structure_weight(j[0], j[1], j[2])  # crease / corner vertices cost more (simplify.STRUCT_W)
+        j[4] = [s / (x * x) for x, s in zip(d, sw)]
     # cached by job content, run on forkserver workers that are retried when one dies (tools/simplify_pool.py;
     # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
     logs = simplify_pool.run_jobs(jobs, area_k=area_k)
@@ -2709,7 +2710,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
                        len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
                        KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
-                       ak ** 2, simplify.MIN_COS)
+                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_CREASE_COS,
+                       simplify.STRUCT_CORNER_COS)
     if not h:
         raise MemoryError("mx_simp_new")
     try:
