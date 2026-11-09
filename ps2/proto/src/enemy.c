@@ -188,6 +188,8 @@ typedef struct {
     /* wall check (wall_check): where it stood after the last frame it was updated, and the moves of this frame */
     V3 wc_pos, wc_mesh;  /* ... and where it last stood on its block's navmesh */
     int wc_ok, wc_mesh_ok, wc_off;
+    V3 leash;         /* ENEMY_WALLS: where it last stood on its navmesh (leash_ok) */
+    int leash_ok;
     int stuck;        /* LOGIC_SPREAD: frames in a row its walk got nowhere (a wall it cannot pass) */
     float stuck_t;    /* > 0: standing that long before it tries again */
     float sep[2];  /* LOGIC_SPREAD: this frame's capsule pushes, walked once (sep_flush) */
@@ -994,13 +996,54 @@ static void root_at(const Enemy *e, float t, float *o)
  * to the navmesh); otherwise (root motion, push-outs) a move off a ledge leaves the character airborne and it falls
  * (fall_step). Returns 1 if it moved. */
 /* wall check: which kind of move is running (the move_by callers set it; wall_check names them on a hit) */
-enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64 };
+#ifndef ENEMY_WALL_CHECK
+#define ENEMY_WALL_CHECK 1
+#endif
+#define WC_H 1.0f        /* m above the feet: above kerbs and steps (COL_STEP_UP 0.6), below every character's top */
+#define WC_FALL_M 4.0f  /* m: a landing this far below where it left the ground is logged ("enemy: fell") */
+enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
 /* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
 #ifndef ENEMY_WALLS
 #define ENEMY_WALLS 1
 #endif
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
+
+/* ENEMY_WALLS (Burg plan B7, Ame's report 2026-11-09: enemies through the walls on the stairs after the Firelink ->
+ * Burg tunnel). On the ISO the hollows there chasing the player went past the end of their navmesh by their attacks'
+ * root motion, through a stair railing the exported collision lacks, and fell 5-20 m (tests/iso_burg_walls.txt,
+ * "enemy: fell" lines). A grounded character that stands on its block's navmesh keeps to it: a move that ends more
+ * than LEASH_M from the last point it stood on the mesh, off the mesh, is refused, as a walk at a ledge is; so is any
+ * character's own move (root motion, push-apart) off a ledge. Exempt: a character in a damage reaction (the player's
+ * hits still knock it off ledges, as in DSR); from the mesh rule, one placed off the mesh or on a block without one. ASSUMED (DSR's character proxy and AI keep
+ * enemies on walkable space by rules not decoded; TECH_DEBT enemy-21) */
+#define LEASH_M 1.0f
+static int leash_ok(Enemy *e, const float p[3], int on_floor)
+{
+    float o[3] = {e->pos.x, e->pos.y, e->pos.z};
+    if (nav_tri_at(e->block, o) >= 0)
+        e->leash = e->pos, e->leash_ok = 1;
+    if (e->damaged)
+        return 1;
+    if (!on_floor)
+        return 0;  /* off a ledge by its own move (on the mesh or not: hollows placed on the Burg stairs fell 11-13 m) */
+    if (!e->leash_ok)
+        return 1;
+    if (nav_tri_at(e->block, p) >= 0)
+        return 1;
+    float x = p[0] - e->leash.x, z = p[2] - e->leash.z;
+    return x * x + z * z <= LEASH_M * LEASH_M;
+}
+
+/* ENEMY_WALLS: the move's push-out let the centre through a thin wall (the same test as wall_check, at WC_H above the
+ * feet; two characters stacked on one spot on the Burg stairs, pushed apart into a wall, 2026-11-09 ISO) */
+static int wall_between(const Enemy *e, const float p[3])
+{
+    float h = e->var->height < WC_H * 1.5f ? e->var->height * 0.66f : WC_H;
+    float a[3] = {e->pos.x, e->pos.y + h, e->pos.z}, b[3] = {p[0], p[1] + h, p[2]};
+    ColHit hit;
+    return (a[0] != b[0] || a[2] != b[2]) && col_ray(a, b, COL_SOLID, &hit) && fabsf(hit.n[1]) < COL_WALKABLE_NY;
+}
 
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
@@ -1015,7 +1058,12 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
         e->pos.x = p[0], e->pos.z = p[2];
         return 1;
     }
-    if (col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0)) {
+    int on_floor = col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0);
+    if (ENEMY_WALLS && (!leash_ok(e, p, on_floor) || wall_between(e, p))) {
+        e->wc_moves |= MV_LEASH;
+        return 0;
+    }
+    if (on_floor) {
         e->pos = v3(p[0], p[1], p[2]);
         return 1;
     }
@@ -1033,6 +1081,10 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
     e->pos.x = p[0], e->pos.z = p[2];
     e->air = 1, e->vy = 0, e->fall_y0 = e->pos.y;
     e->wc_moves |= MV_GROUND_LOST;
+    if (ENEMY_WALL_CHECK && test_active())  /* which move took it off the ground, and where */
+        printf("enemy: left the ground %d %s at %.2f %.2f %.2f by %s (%.3f %.3f)\n", e->index, e->ct->name,
+               (double)p[0], (double)e->pos.y, (double)p[2], mv_tag == MV_ROOT ? "root motion" : mv_tag == MV_SEP ?
+               "push-apart" : mv_tag == MV_WALK ? "walk" : "?", (double)dx, (double)dz);
     return 1;
 }
 
@@ -1050,6 +1102,12 @@ static void fall_step(Enemy *e, float dt)
     float y = e->pos.y + e->vy * dt;
     ColHit hit;
     if (col_floor(e->pos.x, e->pos.z, e->pos.y + 0.05f, y, COL_SOLID | COL_DEATH, &hit)) {
+        if (ENEMY_WALL_CHECK && test_active() && e->fall_y0 - hit.y > WC_FALL_M)  /* a long fall: from where, by what move */
+            printf("enemy: fell %d %s entity %d block %d %.1f m to %.2f %.2f %.2f (left the ground at y %.2f), floor tri "
+                   "%d/%d filter %u, moves%s%s%s%s r %.2f\n", e->index, e->ct->name, e->entity, e->block,
+                   (double)(e->fall_y0 - hit.y), (double)e->pos.x, (double)hit.y, (double)e->pos.z, (double)e->fall_y0,
+                   hit.block, hit.tri, hit.hit_filter, e->wc_moves & MV_ROOT ? " root" : "", e->wc_moves & MV_WALK ? " walk" : "",
+                   e->wc_moves & MV_SEP ? " sep" : "", e->wc_moves & MV_GROUND_LOST ? " ledge" : "", (double)e->var->radius);
         e->pos.y = hit.y, e->air = 0, e->vy = 0;
         float rate = (1u << hit.hit_filter) & COL_DEATH ? 1 : combat_fall_rate(e->fall_y0 - hit.y);
         if (rate > 0 && !e->cc.dead) {
@@ -1498,10 +1556,6 @@ void enemy_stream(const Player *pl)
  * a move that slid through (collision.c push-out), a gap in the exported collision (tools/navwalls.py, a part
  * switched off), or no collision under it at all. At most WC_LOG_MAX lines; every one counts in the run total,
  * which tools/test-run.py --walls-max gates. Cost: one col_ray per active character a frame. */
-#ifndef ENEMY_WALL_CHECK
-#define ENEMY_WALL_CHECK 1
-#endif
-#define WC_H 1.0f        /* m above the feet: above kerbs and steps (COL_STEP_UP 0.6), below every character's top */
 #define WC_JUMP 4.0f     /* m in one frame: a warp or respawn, not a move */
 #define WC_LOG_MAX 40
 #define WC_OFF_M 1.5f    /* m from its last navmesh spot: off the navmesh (the mesh stays a capsule radius off walls) */
