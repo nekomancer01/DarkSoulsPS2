@@ -158,9 +158,17 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #ifndef WORLD_TAB_SPLIT
 #define WORLD_TAB_SPLIT 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_EV, E_OBJ, E_FX, NENT };
+/* WORLD_EV_SHARED (the cube-grid plan's step 2, default 1; 0 = every block reads its whole events.bin): the blocks of
+ * one MSB carry the same events.bin but for their entities, hit ranges and colliders (export_emevd.py writes the map's
+ * events, instrs, substs, treasures, objacts and lots alike; 67 of each Burg block's 68 KB). A block reads its own
+ * middle part (E_EV: entities .. colliders, ~18 KB) and the whole file (E_EVM) only when no block of its map has one
+ * in yet; the first copy is the map's (evm[], freed with the map's last block). event.c's split sets point there. */
+#ifndef WORLD_EV_SHARED
+#define WORLD_EV_SHARED 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_EV, E_EVM, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "events.bin",
-                                          "objects.bin", "fx.bin"};
+                                          "events.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_EV)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
@@ -192,6 +200,11 @@ typedef struct {
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
+    /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
+     * the map has no copy in: ev_full bytes); its own header; it holds a reference on its map's copy */
+    int ev_split, ev_ref;
+    unsigned ev_mid, ev_full;
+    unsigned evhdr[24] __attribute__((aligned(64)));
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -232,6 +245,8 @@ static int room_stuck;  /* this step a wanted block found no room and no kept bl
  * (no more holding for them until they turn on); seconds held */
 static unsigned hold_m, hold_want, hold_gone;
 static float hold_s;
+/* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
+static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX];
 
 static inline unsigned ticks(void)
 {
@@ -319,6 +334,33 @@ static int col_paged(int i, BlockRt *r)
     return ok;
 }
 
+/* WORLD_EV_SHARED: split block r's events.bin at boot (its header, kept for event.c) */
+static void ev_split(BlockRt *r)
+{
+    unsigned full = r->size[E_EV], f128 = (full + 127) & ~127u;
+    r->total -= f128;  /* world_init's loop counted the second events.bin entry (E_EVM) whole */
+    if (!WORLD_EV_SHARED || full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
+        memcmp(r->evhdr, "EVB1", 4) || r->evhdr[1] != 3)
+        return;
+    unsigned m0 = r->evhdr[4 + 2 * 3], m1 = r->evhdr[4 + 2 * 6];  /* sections: entities .. colliders, then treasures */
+    if (!(96 <= m0 && m0 <= m1 && m1 <= full))
+        return;
+    r->total -= f128;
+    r->ev_split = 1, r->ev_mid = m0, r->ev_full = full;
+    r->off[E_EVM] = r->off[E_EV];
+    r->off[E_EV] += m0, r->size[E_EV] = m1 - m0;
+    r->total += (r->size[E_EV] + 127) & ~127u;
+}
+
+/* the first block of block i's map (evm[]'s index) */
+static int map_lead(int i)
+{
+    for (int j = 1; j < i; j++)
+        if (!strncmp(tab[j].map, tab[i].map, 16))
+            return j;
+    return i;
+}
+
 int world_init(const char *boot_area)
 {
     Pack pk;
@@ -369,6 +411,9 @@ int world_init(const char *boot_area)
         }
         if (i && r->open && COL_TILES && !col_paged(i, r))
             r->open = 0;
+        r->off[E_EVM] = r->size[E_EVM] = 0;  /* (the loop above read it as a second events.bin: ev_split) */
+        if (i && r->open)
+            ev_split(r);
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
@@ -444,6 +489,14 @@ unsigned world_struct_bytes(void)
                         m = a;
                 v[m] = lean_v[m], whole--;
             }
+            for (int i = 1; i < nblk; i++)  /* WORLD_EV_SHARED: one events.bin per map of the blocks on */
+                if (rt[i].open && rt[i].ev_split && (keep >> i & 1) && map_lead(i) == i) {
+                    unsigned most = 0;
+                    for (int j = i; j < nblk; j++)
+                        if (rt[j].open && rt[j].ev_split && (keep >> j & 1) && map_lead(j) == i)
+                            most = rt[j].ev_full > most ? rt[j].ev_full : most;
+                    sum += (most + 127) & ~127u;
+                }
             for (unsigned s = 0; s < WORLD_SLOTS && s < n; s++) {  /* the WORLD_SLOTS largest */
                 unsigned m = s;
                 for (unsigned j = s + 1; j < n; j++)
@@ -637,13 +690,63 @@ static void tex_on(int i, unsigned e)
 }
 
 /* second step: the block's enemies and events, after its objects and effects */
+static void ev_free(void *p, unsigned n)
+{
+    if (mapstream_owns(p))
+        mapstream_free(p, (n + 127) & ~127u);
+    else
+        free(p);
+}
+
+/* WORLD_EV_SHARED: block i's events on, from its map's copy (its own read becomes it when there is none yet; read now
+ * when the copy it counted on went before it turned on) */
+static void ev_on(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (r->blob[E_EVM]) {
+        if (!evm[L].buf)
+            evm[L].buf = r->blob[E_EVM], evm[L].n = r->ev_full;
+        else
+            ev_free(r->blob[E_EVM], r->ev_full);
+        r->blob[E_EVM] = NULL;
+    } else if (!evm[L].buf) {
+        void *b = memalign(128, (r->ev_full + 127) & ~127u);
+        if (!b || !read_sync(&r->pk, r->off[E_EVM], b, r->ev_full)) {
+            printf("world: block %d: events.bin not readable\n", i);
+            free(b);
+            return;
+        }
+        evm[L].buf = b, evm[L].n = r->ev_full;
+        printf("world: block %d: its map's events.bin went before it turned on, read again (heap)\n", i);
+    }
+    evm[L].refs++, r->ev_ref = 1;
+    event_block_on_split(i, evm[L].buf, r->evhdr, r->blob[E_EV], r->ev_mid);
+}
+
+static void ev_off(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->ev_ref)
+        return;
+    r->ev_ref = 0;
+    if (--evm[L].refs <= 0) {
+        ev_free(evm[L].buf, evm[L].n);
+        evm[L].buf = NULL, evm[L].refs = 0;
+    }
+}
+
 static void turn_on_rest(int i)
 {
     BlockRt *r = &rt[i];
     unsigned t0 = ticks();
     free_tex(r);  /* uploaded: back to the near cells */
     enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
-    event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
+    if (r->ev_split)
+        ev_on(i);
+    else
+        event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
     r->stage = 2;
     step_time(t0);
     printf("world: block %d objects, enemies, events on: %u KB textures, %u ms after the read began, step %u us\n", i,
@@ -679,6 +782,7 @@ static void turn_off(int i)
     unsigned t0 = ticks();
     if (r->stage == 2) {  /* stage 1: no enemies or events yet; the uploads done so far (r->ent) go below */
         event_block_off(i);  /* before the collision its hit parts point into goes */
+        ev_off(i);           /* (after: another block of the map may take its running events over, event.c) */
         enemy_block_remove(i);
     }
     if (r->stage == 2 || r->ent > E_OBJ)
@@ -931,6 +1035,8 @@ static int start(int i)
      * 1508 KB in one piece found no hole with 2.1 MB free in it (largest 1068 KB; 2026-11-03, 2.8 MB arena of
      * 9e6dd67). Without room in the arena an entry takes the heap while it keeps WORLD_HEAP_FLOOR. All or nothing;
      * a failed start waits WORLD_RETRY_S, since each try may drop drawn cells. */
+    if (r->ev_split)  /* the map's events.bin is in: only this block's middle part */
+        r->size[E_EVM] = evm[map_lead(i)].buf ? 0 : r->ev_full;
     unsigned order[NENT], n = 0;
     for (unsigned e = 0; e < E_TEX; e++)  /* the texture buffer comes once the collision is on (tex_alloc) */
         if (r->size[e]) {
