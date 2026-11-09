@@ -21,6 +21,10 @@ int event_init(const void *common_blob);
  * temporary flags are cleared at boot and on a rest, as in DSR, not here). NULL (a pack without events.bin) = no
  * events. event_block_off of a block that was never turned on does nothing. */
 void event_block_on(int block, const void *blob);
+/* World blocks of one map share its events (world.c): blob = the map's events.bin as one block read it (events, instrs,
+ * substs, treasures, objacts, lots come from there), hdr = this block's own 96-byte header (kept by the caller), mid =
+ * this block's entities .. colliders, read from its events.bin at file offset mid_off (its hit ranges differ) */
+void event_block_on_split(int block, const void *blob, const void *hdr, const void *mid, unsigned mid_off);
 void event_block_off(int block);
 /* After a warp's synchronous load (world.c settle): run every instance that can run until it waits (event-14) */
 void event_flush(void);

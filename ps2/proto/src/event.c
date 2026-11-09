@@ -102,6 +102,8 @@ enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
 
 typedef struct {
     const u8 *blob;
+    const u8 *secp[9];  /* each section's start: in blob, or (a world block's split events) the map's shared copy and
+                         * the block's own entities / hit ranges / colliders (event_block_on_split) */
     const EvHdr *h;
     const EvEvent *ev;
     const EvEnt *ent;
@@ -114,7 +116,7 @@ typedef struct {
 } Set;
 static Set sets[EV_SETS];
 
-#define SEC(s, k, T) ((const T *)((s)->blob + (s)->h->sec[k][0]))
+#define SEC(s, k, T) ((const T *)(s)->secp[k])
 #define NSEC(s, k) ((int)(s)->h->sec[k][1])
 
 /* ---- instances ---- */
@@ -264,7 +266,7 @@ static Set *player_set(void)
 }
 
 /* ---- instruction access ---- */
-static const EvInstr *instr_at(const Set *s, u32 off) { return (const EvInstr *)(s->blob + s->h->sec[S_INSTRS][0] + off); }
+static const EvInstr *instr_at(const Set *s, u32 off) { return (const EvInstr *)(s->secp[S_INSTRS] + off); }
 static u32 instr_next(const Set *s, u32 off) { return off + 8 + 4 * instr_at(s, off)->nw; }
 
 /* Words of instruction idx at off with the instance's substitutions applied (into w, 64 words max) */
@@ -1134,15 +1136,21 @@ static void run(Inst *in)
 }
 
 /* ---- public ---- */
-static int load_set(Set *s, const void *blob, int block)
+/* blob: the events.bin; h: its header (split: the block's own copy), mid: NULL, or the block's entities .. colliders
+ * read from file offset mid_off (the rest from blob, whose header gives its own offsets) */
+static int load_set(Set *s, const void *blob, int block, const EvHdr *h, const u8 *mid, u32 mid_off)
 {
-    const EvHdr *h = blob;
-    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 3) {  /* export_emevd.py VERSION */
+    const EvHdr *bh = blob;
+    h = h ? h : bh;
+    if (!h || !bh || memcmp(h->magic, "EVB1", 4) || h->version != 3 || memcmp(bh->magic, "EVB1", 4) ||
+        bh->version != 3 || memcmp(h->map, bh->map, 4)) {  /* export_emevd.py VERSION */
         printf("EVT bad events blob\n");
         return 0;
     }
     memset(s, 0, sizeof *s);
     s->blob = blob, s->h = h, s->block = block;
+    for (int k = 0; k < 9; k++)
+        s->secp[k] = mid && k >= S_ENTS && k <= S_COLS ? mid + (h->sec[k][0] - mid_off) : (const u8 *)blob + bh->sec[k][0];
     s->ev = SEC(s, S_EVENTS, EvEvent), s->nev = NSEC(s, S_EVENTS);
     s->ent = SEC(s, S_ENTS, EvEnt), s->nent = NSEC(s, S_ENTS);
     s->ent_off = calloc(s->nent + 1, 1);
@@ -1184,7 +1192,7 @@ int event_init(const void *common_blob)
 {
     if (!inst)
         inst = calloc(EV_MAX_INST, sizeof *inst);
-    if (!inst || !load_set(&sets[0], common_blob, -1))
+    if (!inst || !load_set(&sets[0], common_blob, -1, NULL, NULL, 0))
         return 0;
     event_stats.prompt = -1;
     ev_temp_flags_reset(1);  /* the game load (save_boot ran before): DSR's area-load reset, FUN_1404f1fb0 */
@@ -1193,12 +1201,14 @@ int event_init(const void *common_blob)
     return 1;
 }
 
-void event_block_on(int block, const void *blob)
+void event_block_on(int block, const void *blob) { event_block_on_split(block, blob, NULL, NULL, 0); }
+
+void event_block_on_split(int block, const void *blob, const void *hdr, const void *mid, unsigned mid_off)
 {
     int k;
     for (k = 1; k < EV_SETS && sets[k].blob; k++)
         ;
-    if (!blob || k == EV_SETS || !inst || !load_set(&sets[k], blob, block))
+    if (!blob || k == EV_SETS || !inst || !load_set(&sets[k], blob, block, hdr, mid, mid_off))
         return;
     Set *s = &sets[k];
     for (int j = 1; j < EV_SETS; j++)  /* another block of the same map runs its events: this one adds entities */
@@ -1224,7 +1234,7 @@ static int same_events(const Set *a, const Set *b)
     for (int k = S_EVENTS; k <= S_SUBSTS; k++) {
         unsigned n = k == S_EVENTS ? NSEC(a, k) * sizeof(EvEvent) : k == S_INSTRS ? (unsigned)NSEC(a, k)
                      : NSEC(a, k) * sizeof(EvSubst);
-        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->blob + a->h->sec[k][0], b->blob + b->h->sec[k][0], n))
+        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->secp[k], b->secp[k], n))
             return 0;
     }
     return 1;
