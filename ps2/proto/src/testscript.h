@@ -34,6 +34,8 @@
  *   save / load / wipe      write the save now / reload it / delete both slots (save.h); saves are off in a test
  *                           run unless "option save mc" or "option save host [name]" (host:<name>0.bin / 1.bin)
  *   loop / end              restart the script / stop (prints "TEST DONE", input idle afterwards)
+ *   park                    warm start (tools/warmstate.py): mailbox state 4, wait for the host to name the next
+ *                           script (mailbox next / next_seq) and run that one instead; the host saves a state here
  * Results: EE log lines "TEST ..." (emulog.txt) and the mailbox test_mb (pine.py reads it by symbol, or by the address
  * printed as "TEST mailbox 0x..." when the ELF is stripped). */
 #ifndef TESTSCRIPT_H
@@ -51,7 +53,7 @@ typedef struct {
     unsigned magic;        /* 'TSTM' */
     unsigned version;      /* 1 */
     unsigned frame;        /* frames since boot (heartbeat) */
-    unsigned state;        /* 0 no script, 1 running, 2 done, 3 waiting for a shot ack */
+    unsigned state;        /* 0 no script, 1 running, 2 done, 3 waiting for a shot ack, 4 parked (warm start) */
     unsigned shot_seq;     /* shot markers so far */
     unsigned shot_ack;     /* host: shot_seq | 0x80000000 while capturing (wait up to 60 s), shot_seq when done */
     char shot_name[32];
@@ -66,6 +68,10 @@ typedef struct {
     unsigned seg_frames;
     float seg_ms_avg, seg_ms_max, seg_map_max;
     int seg_ram_min, seg_chain_map_max, seg_chain_chr_max;
+    /* version 2: warm start ("park"; tools/warmstate.py). The host writes next (the script path, as argv's test=),
+     * then increments next_seq; a parked ELF (state 4) loads that script in place of the parked one */
+    unsigned next_seq;
+    char next[64];
 } TestMailbox;
 extern volatile TestMailbox test_mb;
 extern int test_god;  /* "option god" */

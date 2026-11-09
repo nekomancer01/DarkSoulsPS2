@@ -2,11 +2,16 @@
 """Run one test script in a headless PCSX2 and collect its results (needs Pillow + numpy: the Makefile's PY venv).
 
   test-run.py <elf> <script> <outdir> [--slot N] [--timeout 300] [--gsdump] [--holes] [--name label] [--turbo [x]]
-              [--keep-going]
+              [--realtime] [--cold] [--keep-going]
 
---turbo: PCSX2 without its speed limit (or at x times speed) for functional runs (world_cross, world_soak, routes):
-the ELF's own frame stats run on emulated time and stay comparable; the wall-clock column of frames.csv does not.
-(A/B 2026-11-02, world_soak.txt: 159 s -> 105 s, same frame count and shot stats.)
+Speed (2026-11-09): runs are unthrottled by default (--turbo; --realtime / TURBO=0: PCSX2's normal speed limit). The
+ELF's frame stats, hitch monitor and disc timing run on emulated time, so the numbers stay comparable; the wall-clock
+column of frames.csv does not. (A/B 2026-11-02, world_soak.txt: 159 s -> 105 s, same frame count and shot stats;
+2026-11-09 on the ISO, two reps each: iso_ame_report3 112-119 s -> 54-74 s, iso_burg_taurus 192 s -> 101 s, shot fps /
+tris, worst frame and re-read share within the spread of the realtime reps.)
+Warm start (tools/warmstate.py, default on; --cold / WARM_CACHE=0 boots every run): the first run of a build boots
+with a park script (the test's options and first spawn), saves a state while parked and goes on with the test; later
+runs of the same ELF / ISO / options / first spawn load that state and skip the boot (iso_ame_report3 111 -> 83 s).
 
 <script> is a src/testscript.c script (copied next to the ELF as tests/gen/<name>.txt, since host: only sees the ELF's
 folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>, own data dir and Xvfb display). Without
@@ -22,10 +27,10 @@ parallel runs from several sessions never share a socket, display or data dir. T
 Results: <outdir>/result.json (shots with the ELF's "TEST shot" stats, errors, log lines, "stamp": git revision + hash of
 uncommitted changes, ELF / script hashes and times, tools/runstamp.py) and emulog.txt.
 Exit code 0 = script ran to its end without errors."""
-import argparse, csv, fcntl, glob, json, os, re, shutil, subprocess, sys, time
+import argparse, csv, fcntl, glob, json, os, re, shutil, struct, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pine, runstamp
+import pine, runstamp, warmstate
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 HOSTEXEC = os.path.join(TOOLS, "hostexec")  # runs on the host (distrobox-host-exec inside a distrobox)
@@ -67,6 +72,7 @@ def x(cmd, timeout=20, **kw):
         return subprocess.CompletedProcess(cmd, -1, "", "timeout")
 
 
+WARM_WAIT = 60.0  # s a loaded warm state gets to show the parked ELF before the run boots cold instead
 FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
 PROGRESS = 60.0  # s between progress lines
 LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error"
@@ -204,6 +210,18 @@ def run(a):
     if os.path.exists(log):
         os.remove(log)
     env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}")
+    # warm start (tools/warmstate.py): load a cached state of this build parked at the script's start, or boot with
+    # the park script and save that state on the way (--cold / WARM_CACHE=0: boot every run)
+    warm = None if a.cold else warmstate.plan(elf, a.script, a.iso, HOSTEXEC)
+    warm_loaded = bool(warm and warm.cached)
+    if warm_loaded:
+        os.makedirs(data, exist_ok=True)  # flatpak PCSX2 sees its data dir, not the cache
+        shutil.copyfile(warm.state, os.path.join(data, "warm.p2s"))
+        env["STATEFILE"] = os.path.join(data, "warm.p2s")
+    elif warm:
+        with open(os.path.join(gen, f"{name}.park.txt"), "w") as pf:
+            pf.write(warm.park)
+        env["ARGS"] = f"test=tests/gen/{name}.park.txt"
     if a.iso:  # boot the disc itself (tools/pcsx2-run.sh BOOTISO): the ISO must sit in the ELF's folder (host: root)
         env["BOOTISO"] = os.path.realpath(a.iso)
     if a.turbo:  # no speed limit (tools/test-pcsx2-ini.py TURBO)
@@ -212,7 +230,8 @@ def run(a):
                          timeout=120)
     inst = re.search(r"INST=(\S+)", out.stdout)
     res = {"name": name, "elf": elf, "script": a.script, "shots": [], "errors": [], "log": [], "started": time.time(),
-           "stamp": runstamp.stamp([elf, a.script]), "turbo": a.turbo or None}  # which tree / ELF / script this result belongs to
+           "stamp": runstamp.stamp([elf, a.script]), "turbo": a.turbo or None,
+           "warm": warm and ("loaded" if warm_loaded else "saved")}  # which tree / ELF / script this result belongs to
     print(f"[test-run] {name}: {runstamp.line(res['stamp'])}", flush=True)
     if not inst:
         res["errors"].append("PCSX2 did not start: " + out.stdout + out.stderr)
@@ -227,6 +246,9 @@ def run(a):
             try:
                 addr = pine.resolve("test_mb", syms, log)[0]
             except KeyError:
+                if warm_loaded and warm.mailbox():  # a loaded state prints no boot line: the address it was saved with
+                    addr = warm.mailbox()
+                    break
                 time.sleep(0.5)
         if addr is None:
             raise RuntimeError("test mailbox not found (no symbol, no 'TEST mailbox' log line)")
@@ -238,6 +260,7 @@ def run(a):
         last_frame, last_change, acked = -1, time.time(), 0
         mb = None
         log_pos, log_next, first_err, next_progress = 0, t0, None, t0 + PROGRESS
+        unparked = False
         while True:
             now = time.time()
             if now - t0 > a.timeout:
@@ -266,6 +289,10 @@ def run(a):
                 next_progress = now + PROGRESS
                 print(f"[test-run] {name}: {now - t0:.0f} s, frame {mb['frame']}, script line {mb['line']}, "
                       f"{mb.get('fps', 0):.0f} fps", flush=True)
+            if warm_loaded and not unparked and now - t0 > WARM_WAIT:
+                res["errors"].append(f"warm state did not come up parked in {WARM_WAIT} s")
+                res["warm_failed"] = True
+                break
             try:
                 mb = pine.read_mailbox(p, addr)
             except (ValueError, IOError) as e:  # no VM yet (PINE IPC_FAIL) / ELF still loading (magic not set)
@@ -275,6 +302,29 @@ def run(a):
                     raise
                 last_change = now
                 time.sleep(0.2)
+                continue
+            if mb["state"] == 4 and warm and not unparked:  # parked at the start spot (warm start)
+                if not warm_loaded:
+                    t_save = time.time()
+                    p.save_state(9)
+                    st = warmstate.newest_state(os.path.join(data, "PCSX2", "sstates"), t_save)
+                    if st:
+                        warm.store(st, addr, {"elf": os.path.basename(elf), "iso": a.iso and os.path.basename(a.iso),
+                                              "script": os.path.basename(a.script)})
+                        print(f"[test-run] {name}: warm state saved ({warm.key[:12]}, "
+                              f"{os.path.getsize(warm.state) >> 20} MB, {time.time() - t_save:.1f} s)", flush=True)
+                    else:
+                        print(f"[test-run] {name}: warm state not saved (no .p2s in sstates/)", flush=True)
+                else:
+                    print(f"[test-run] {name}: warm start from {warm.key[:12]} after {now - t0:.1f} s", flush=True)
+                nb = (rel + "\0").encode()[:63] + b"\0" * 64
+                off = addr + struct.calcsize(pine.MAILBOX_FMT)  # mailbox v2: next_seq, then next[64]
+                for i in range(0, 64, 4):
+                    p.write(off + 4 + i, int.from_bytes(nb[i:i + 4], "little"))
+                p.write(off, mb.get("next_seq", 0) + 1)
+                unparked = True
+                last_change = time.time()
+                time.sleep(0.1)
                 continue
             if mb["frame"] != last_frame:
                 w.writerow([f"{now - t0:.2f}"] + [mb[k] for k in pine.MAILBOX_FIELDS])
@@ -421,12 +471,30 @@ def main():
     ap.add_argument("--name")
     ap.add_argument("--keep-going", action="store_true",
                     help="run to the end after an error line in the EE log (default: stop FAIL_GRACE s after it)")
-    ap.add_argument("--turbo", nargs="?", const="1", default=os.environ.get("TURBO", ""),
-                    help="run unthrottled (or at speed x: --turbo 3) for functional tests; not for perf numbers")
+    ap.add_argument("--turbo", nargs="?", const="1", default=os.environ.get("TURBO", "1"),
+                    help="speed limit: unthrottled (the default; the ELF's frame / hitch / stream numbers run on "
+                    "emulated time, A/B 2026-11-09 in notes/TOOLS.md) or x times speed (--turbo 3)")
+    ap.add_argument("--realtime", action="store_true",
+                    help="PCSX2 at its normal speed limit (TURBO=0 too): the wall-clock column of frames.csv, "
+                    "watching a run, sound")
+    ap.add_argument("--cold", action="store_true", default=os.environ.get("WARM_CACHE") == "0",
+                    help="boot the ELF / ISO every run (default: warm start from a cached state parked at the "
+                    "script's start, tools/warmstate.py)")
     a = ap.parse_args()
+    if a.realtime or a.turbo == "0":
+        a.turbo = ""
     globals()["CELLS_MISSING_MAX"] = a.cells_missing
     globals()["POPIN_MAX"] = a.popin_max
     res = run(a)
+    if res.get("warm_failed"):  # a state that did not load: drop it and boot (this run saves a new one)
+        warm = warmstate.plan(os.path.realpath(a.elf), a.script, a.iso, HOSTEXEC)
+        if warm:
+            warm.drop()
+        print(f"[test-run] {res['name']}: warm state failed, booting cold", flush=True)
+        for f in _slot_locks:  # the same slot again
+            f.close()
+        _slot_locks.clear()
+        res = run(a)
     print(f"{res['name']}: {len(res['shots'])} shots, {res.get('frames', 0)} frames, {res['seconds']} s, "
           f"{len(res['errors'])} errors")
     for e in res["errors"][:20]:
