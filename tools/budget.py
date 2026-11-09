@@ -12,12 +12,16 @@ Per shot (the ELF's "TEST passes" line, src/testscript.c pb_print: p50 / p90 of 
 Per run (EE log): no disc layer change during play (the "disc:" lines without "(load)"), seeks <= 2 a second on average
   while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
   average of the timed frames and the worst one, for cull, plan, chain, tex, bump, total) are summarised (p90 of the
-  averages, the largest worst), not gated: the map pass as a whole is.
+  averages, the largest worst), not gated: the map pass as a whole is. The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" lines, tools/hitchsum.py stream_summary,
   after the first 30 s): near-class "no room" refusals, near pop-ins seen on screen, the median of cells drawn coarse
   while due near, and the share of seconds with a horizon-filled cell inside HZN_R. Their thresholds are per test
   script (STREAM_GATES), started at the measured numbers of main so nothing fails at first; a step of the plan may only
-  lower one (they ratchet one way).
+  lower one (they ratchet one way). The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
 import argparse, glob, json, os, re, sys
 
@@ -52,6 +56,7 @@ STREAM_GATES = {
 MEDIA = {0: "-", 1: "cd", 2: "dvd", 3: "dvd9"}
 
 MAP_PASS = re.compile(r"map: pass ms (.*)")
+LOGIC_PASS = re.compile(r"logic: pass ms (.*)")  # lpass.c (Burg plan B6): averages | worst frame | each part's max
 DISC = re.compile(r"disc: t (\d+) s media (\S+) kbps (\d+) seeks (\d+) far (\d+) \(([\d.]+)/s\) layer (\d+)( \(load\))? \| "
                   r"ee reads (\d+) wait avg (\d+) max (\d+) ms \| stream wait max (\d+) ms over100 (\d+) \| cache (\d+) KB "
                   r"hits (\d+) miss (\d+) \| busy (\d+) % \| iop free (\d+) KB")
@@ -64,7 +69,7 @@ def pct(vals, p):
 
 def log_summary(log):
     """the run's "disc:" and "map: pass ms" lines -> dict"""
-    disc, mp, under = [], {}, 0
+    disc, mp, lp, under = [], {}, {}, 0
     try:
         lines = open(log, errors="replace").read().splitlines()
     except OSError:
@@ -88,11 +93,23 @@ def log_summary(log):
                         mp.setdefault(k, {"avg": [], "max": []})[key].append(float(v.split("/")[0]))
                     except ValueError:
                         pass
+        m = LOGIC_PASS.search(line)
+        if m:  # "player A ... total T | worst player ... total T | max player ... other O (N frames)"
+            parts = m[1].split("|")
+            for part, key in zip(parts, ("avg", "worst", "max")):
+                t = part.replace("worst", "", 1).replace("max", "", 1).split("(")[0].split()
+                for k, v in zip(t[::2], t[1::2]):
+                    try:
+                        lp.setdefault(k, {"avg": [], "worst": [], "max": []})[key].append(float(v))
+                    except ValueError:
+                        pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
     play = [d for d in disc if not d["load"]]
     out = {"underruns": under, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
-                                            for k, v in mp.items()}}
+                                            for k, v in mp.items()},
+           "logic_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
+                          for k, v in lp.items()}}
     if disc:
         n = max(1, len(play))
         out["disc"] = {
@@ -221,6 +238,10 @@ def table(r):
         o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}, {st.get('near_items')} items), pop-ins "
                  f"{st['popins']}, lent near dropped {st.get('lent_near', 0)}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
                  f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %), plan cut at most {st.get('cut', 0)} items in a plan (near {st.get('cut_near', 0)})")
+    if run.get("logic_pass"):
+        o.append("  logic pass p90 (120-frame avgs)/max frame: " + " ".join(
+            f"{k} {v['p90_avg']:.2f}" + (f"/{v['max']:.1f}" if v["max"] is not None else "")
+            for k, v in run["logic_pass"].items() if v["p90_avg"] is not None))
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)
 

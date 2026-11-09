@@ -12,6 +12,7 @@
 #     shot path '-' no screenshot (with KEEP=1 the caller drives the instance, e.g. tools/test-run.py)
 #     DISC=<image.iso>  put a disc image in the drive (-elf <elf> -- <iso>): the ELF still boots from host:, so a
 #                   test script loads, and a -DPACK_CDROM=1 build reads its packs from cdrom0:
+#     STATEFILE=<file.p2s>  load that savestate after boot (tools/warmstate.py)
 #     BOOTISO=<image.iso>  boot the disc itself the way a player does (BIOS fast boot of SYSTEM.CNF's ELF, packs
 #                   from cdrom0:); ARGS still reach that ELF (PCSX2 -gameargs) and host: (HostFs) still serves the
 #                   test script and saves from <file.elf>'s folder; <file.elf> gives that folder and nothing else
@@ -43,6 +44,9 @@ EXTRA=; ENVS=; DISCARG=
 BOOT="-elf '$ELF'"
 [ -n "$BOOTISO" ] && BOOT= DISCARG="-- '$(realpath "$BOOTISO")'"
 [ -n "$ARGS" ] && EXTRA="-gameargs '$ARGS'"
+# STATEFILE=<file.p2s>: start from that savestate (tools/warmstate.py warm starts; the file must be inside the PCSX2
+# data dir, which the flatpak sees). The disc / ELF arguments stay: the state needs the same disc in the drive
+[ -n "$STATEFILE" ] && EXTRA="$EXTRA -statefile '$STATEFILE'"
 if [ -n "$PINE" ]; then
     # Own data dir per PINE slot: the shared ini stays untouched and parallel slots never share logs / states
     HH=$("$HX" printenv HOME)

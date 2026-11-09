@@ -1,0 +1,133 @@
+# Burg plan B7 (src/enemy.c wall_check): enemies never through walls. The iso_burg_taurus route from the Burg start
+# to the Taurus tower's foot, enemies on and the player immortal ("option god"), standing 15 s at each stop so the
+# hollows, dogs and soldiers there chase, attack (root motion) and crowd the player against the walls. Every frame
+# each active character's centre is tested against the walls it crossed since the last frame ("enemy: through
+# wall" lines, test runs only); --walls-max 0 fails the run on the first one. Boot the ISO, as a player does:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_walls.txt <out> --iso build/proto.iso
+#   --timeout 1200   (gated on "enemy: through wall": test-run.py --walls-max, default 0)
+# ev_enemies / block_enemies stay the checks that enemies still reach the player.
+option hud
+option god
+option nodemo
+wait 3
+shot boot
+stats
+spawn -48.5 -21.8 -35.5 0
+wait 3
+shot burg_start
+stats
+wait 15
+# step 2.3 m
+spawn -45.1 -18.5 -38.3 2.26
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -39.9 -16.3 -39.2 1.74
+wait 0.5
+approach -37.0,-42.6 0.8 1
+approach -34.2,-45.7 0.8 1
+approach -30.6,-48.6 0.8 1
+approach -26.2,-52.5 0.8 1
+approach -23.9,-56.7 0.8 1
+approach -20.5,-62.3 0.8 1
+approach -17.0,-66.4 0.8 1
+approach -13.1,-68.1 0.8 1
+approach -7.2,-69.6 0.8 1
+wait 1
+shot bonfire_o0002
+stats
+wait 15
+# no walkable floor on the straight line (ladder)
+spawn -3.6 -9.0 -66.0 0.79
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -3.1 -5.8 -63.2 0.18
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -3.3 -0.6 -63.1 -1.11
+wait 0.5
+# no walkable floor on the straight line (ladder)
+spawn -2.8 4.1 -58.9 0.12
+wait 0.5
+# step 0.8 m
+spawn 2.3 5.6 -60.6 1.89
+wait 0.5
+# step 1.5 m
+spawn 5.7 7.0 -62.5 2.08
+wait 0.5
+approach 3.3,-66.8 0.8 1
+approach 2.8,-61.5 0.8 1
+approach 5.6,-56.4 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 15.3,-40.5 0.8 1
+approach 17.5,-35.7 0.8 1
+approach 19.3,-31.8 0.8 1
+approach 21.8,-27.8 0.8 1
+approach 24.4,-22.4 0.8 1
+wait 2
+shot bonfire_o0001
+stats
+wait 15
+approach 24.1,-27.6 0.8 1
+approach 19.6,-28.1 0.8 1
+spawn 20.4 9.6 -30.0 2.74
+wait 0.5
+approach 17.3,-33.3 0.8 1
+approach 15.3,-37.5 0.8 1
+approach 12.4,-42.8 0.8 1
+approach 11.1,-46.9 0.8 1
+approach 8.8,-51.1 0.8 1
+approach 6.2,-55.3 0.8 1
+wait 1
+shot street_1
+stats
+wait 15
+approach 2.6,-58.4 0.8 1
+approach 3.7,-62.8 0.8 1
+approach 1.3,-67.0 0.8 1
+approach 4.7,-64.3 0.8 1
+approach 6.8,-60.8 0.8 1
+approach 3.2,-58.8 0.8 1
+approach -0.5,-56.4 0.8 1
+approach -4.3,-60.8 0.8 1
+wait 1
+shot street_2
+stats
+wait 15
+spawn -3.3 -1.6 -63.1 2.74
+wait 0.5
+spawn -3.1 -2.9 -63.2 2.10
+wait 0.5
+spawn -3.1 -4.8 -63.2 2.39
+wait 0.5
+spawn -3.1 -6.8 -63.2 1.57
+wait 0.5
+spawn -3.1 -8.7 -63.2 2.90
+wait 0.5
+spawn -3.0 -10.0 -63.0 0.56
+wait 0.5
+approach -3.6,-67.1 0.8 1
+approach -6.2,-70.3 0.8 1
+approach -7.2,-75.4 0.8 1
+approach -7.4,-82.1 0.8 1
+approach -7.2,-86.4 0.8 1
+approach -4.1,-90.0 0.8 1
+spawn -4.6 -14.3 -90.6 -2.43
+wait 0.5
+spawn -5.0 -16.4 -91.6 -2.77
+wait 0.5
+approach -1.9,-94.2 0.8 1
+approach -0.5,-95.1 0.8 1
+wait 1
+shot street_3
+stats
+wait 15
+wait 1
+shot street_end
+stats
+wait 15
+# the walkway (object collision, TECH_DEBT collision-1): warp across
+spawn 21.3 -14.2 -105.9 0
+wait 0.5
+wait 3
+shot tower_base

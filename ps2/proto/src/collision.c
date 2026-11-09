@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "collision.h"
+#include "lpass.h" /* LOGIC_SPREAD (Burg plan B6) */
 #include "vmath.h"
 
 
@@ -675,7 +676,35 @@ static void next_fstamp(ColBlock *c)
 /* Calls fn(c, f, triangle bytes, gid, user) for every triangle of the fragments overlapping box [lo, hi] whose cells
  * overlap it, each triangle once per call (stamp by gid); fn returns nonzero to stop */
 typedef int (*TriFn)(ColBlock *c, const Frag *f, const unsigned char *t, unsigned gid, void *u);
-static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned mask, TriFn fn, void *u)
+/* Burg plan B6 (LOGIC_SPREAD, lpass.h): a triangle whose three vertices all lie below or all above the box the caller
+ * tests against, on one axis, can never be a hit there (push_tri, the gather's reach box, seg_tri all start with that
+ * test). On the fragment's 16-bit vertex grid that test is three integer compares instead of nine conversions to
+ * float: the box goes into grid units once per fragment, widened by a unit each side (it only rejects what the float
+ * test rejects too). 2026-11-08 ISO, Burg start with 16 characters active: ~3000 triangles visited a frame at
+ * ~1.2 us each, most outside the capsule's box. */
+typedef struct { int lo[3], hi[3]; } QBox;
+static inline void qbox(const ColBlock *c, const Frag *f, const float *flo, const float *fhi, QBox *q)
+{
+    const Header *h = c->hdr;
+    float inv = 1.0f / h->scale;
+    for (int k = 0; k < 3; k++) {
+        float a = (flo[k] - h->origin[k]) * inv - f->lo[k] - 1, b = (fhi[k] - h->origin[k]) * inv - f->lo[k] + 1;
+        a = a < -2 ? -2 : a > 70000 ? 70000 : a, b = b < -2 ? -2 : b > 70000 ? 70000 : b;
+        q->lo[k] = (int)floorf(a), q->hi[k] = (int)ceilf(b);
+    }
+}
+static inline int qbox_out(const ColBlock *c, const Frag *f, const unsigned char *t, const QBox *q)
+{
+    const unsigned short *v = (const unsigned short *)((const unsigned char *)c->hdr + f->data);
+    const unsigned short *a = v + t[0] * 3, *b = v + t[1] * 3, *d = v + t[2] * 3;
+    for (int k = 0; k < 3; k++)
+        if ((a[k] < q->lo[k] && b[k] < q->lo[k] && d[k] < q->lo[k]) ||
+            (a[k] > q->hi[k] && b[k] > q->hi[k] && d[k] > q->hi[k]))
+            return 1;
+    return 0;
+}
+static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned mask, TriFn fn, void *u,
+                     const float *flo, const float *fhi)
 {
     const Header2 *h2 = c->h2;
     int tx0 = (int)floorf((lo[0] - h2->x0) * c->inv_top), tz0 = (int)floorf((lo[2] - h2->z0) * c->inv_top);
@@ -699,6 +728,9 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                 if (!FRAG_IN(c, fi) || !fbox_hits(c, f, lo, hi))
                     continue;
                 float fx0, fz0;
+                QBox qb;
+                if (flo)
+                    qbox(c, f, flo, fhi, &qb);
                 forigin(c, f, &fx0, &fz0);
                 int ix0 = (int)floorf((lo[0] - fx0) * c->inv_fcell), iz0 = (int)floorf((lo[2] - fz0) * c->inv_fcell);
                 int ix1 = (int)floorf((hi[0] - fx0) * c->inv_fcell), iz1 = (int)floorf((hi[2] - fz0) * c->inv_fcell);
@@ -716,6 +748,8 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                             c->stamp[g] = cur;
                             const unsigned char *t = tr + lt * 4;
                             if (!(mask >> (c->pat[t[3]] & 0xff) & 1) || TRI_OFF(c, g))
+                                continue;
+                            if (flo && qbox_out(c, f, t, &qb))
                                 continue;
                             if (fn(c, f, t, g, u))
                                 return 1;
@@ -750,10 +784,17 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
         const unsigned char *tr = ftris(cb, f), *ls = flist(cb, f);
         const unsigned short *cs = fcells(cb, f);
         unsigned ck = iz * f->gw + ix;
+        QBox qb;  /* the point's column [y_bottom, y_top]: a triangle beside it or wholly above / below has no h there */
+        if (LOGIC_SPREAD) {
+            const float flo[3] = {x, y_bottom, z}, fhi[3] = {x, y_top, z};
+            qbox(cb, f, flo, fhi, &qb);
+        }
         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
             const unsigned char *t = tr + ls[q] * 4;
             unsigned g = cb->gid[f->tri0 + ls[q]];
             if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
+                continue;
+            if (LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
                 continue;
             float a[3], b[3], c[3];
             tri2(cb, f, t, a, b, c);
@@ -870,7 +911,7 @@ static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float
     TouchQ q;
     memcpy(q.pos, pos, 12), memcpy(q.p0, p0, 12), memcpy(q.p1, p1, 12), memcpy(q.lo, lo, 12), memcpy(q.hi, hi, 12);
     q.r = r;
-    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q);
+    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
     col_contacts = c0;  /* (push_tri counts the contact it found) */
     return hit;
 }
@@ -895,7 +936,7 @@ static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, fl
     float ghi[3] = {h2->x0 + (ix1 + 1) * h2->fcell + 0.03f, hi[1], h2->z0 + (iz1 + 1) * h2->fcell + 0.03f};
     for (int k = 0; k < 3; k += 2)
         glo[k] = glo[k] > q.blo[k] ? glo[k] : q.blo[k], ghi[k] = ghi[k] < q.bhi[k] ? ghi[k] : q.bhi[k];
-    each_tri2(cb, glo, ghi, mask, gather_cb, &q);
+    each_tri2(cb, glo, ghi, mask, gather_cb, &q, LOGIC_SPREAD ? q.blo : NULL, q.bhi);
     for (int i = 1; i < q.n; i++) {  /* insertion sort: a few dozen, mostly in order already */
         PushCand x = cand[i];
         int j = i;
@@ -927,7 +968,7 @@ static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned m
     for (int k = 0; k < 3; k++)
         lo[k] = from[k] < to[k] ? from[k] : to[k], hi[k] = from[k] < to[k] ? to[k] : from[k];
     RayQ q = {from, to, 2, -1, NULL, NULL};
-    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q);
+    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
     if (q.tri < 0)
         return 0;
     if (hit) {
