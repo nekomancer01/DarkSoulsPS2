@@ -1305,6 +1305,18 @@ static int room_fail, failed, evict_left, defrag_left, replan;
  * the feet after it; KB of reads that landed with no class wanting them, KB of reads cancelled (MS_CANCEL) */
 static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb, cancel_kb;
 
+/* MS_SCAN (default 1; 0 = strict class then distance order): urgent reads (classes C_NEAR2 and up: near parts within the
+ * draw radius, the coarse level in view and pinned) go nearest first; the read-ahead classes below them (C_VIEW2,
+ * C_FARC, C_PREF) go in disc order: the queued one at or after the end of the last read in the same pack first, then
+ * the lowest offset of that pack (a circular scan), then another pack. The technique of the RW-era PS2 streamers (re3
+ * CStreaming: priority requests first, the rest in image order from the head position): ordered by distance, B8b's
+ * read log showed ~3100 reads of 1.2 items per 6-min world_route, every one a seek (~8/s, the gate is 2). */
+#ifndef MS_SCAN
+#define MS_SCAN 1
+#endif
+static int scan_k = -1;
+static unsigned scan_end;
+static int q_scan_pick(void);
 static int q_before(const MsQ *a, int cls, float key) { return a->cls > cls || (a->cls == cls && a->key <= key); }
 static void q_add(int k, unsigned id, int cls, float key)
 {
@@ -1394,8 +1406,9 @@ static void collect(int i, int r)
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
-    MsQ w = q[0];
-    memmove(q, q + 1, --nq * sizeof *q);
+    int qi = MS_SCAN ? q_scan_pick() : 0;
+    MsQ w = q[qi];
+    memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
     MsInst *m = &ms[w.k];
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
@@ -1510,11 +1523,34 @@ static int issue(void)
         if (!nrd)
             land_t = ticks();
         rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0};
+        scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
         mapstream_stats.pending = nrd;
         sent++;
         g = e;
     }
     return 1;
+}
+
+/* MS_SCAN: the queue entry issue() takes. The queue is in rank order, so the urgent entries lead it; once the head is
+ * a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate. */
+static int q_scan_pick(void)
+{
+    if (q[0].cls >= C_NEAR2 || scan_k < 0)
+        return 0;
+    int best = 0, bk = 3;
+    unsigned bo = ~0u;
+    for (int i = 0; i < nq; i++) {
+        const MsInst *m = &ms[q[i].k];
+        if (q[i].id >= it_n(m))
+            continue;
+        unsigned o = it_off(m, q[i].id);
+        int rk = q[i].k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
+        if (rk == 2)
+            o = (unsigned)q[i].k << 26 | (o >> 6);  /* other packs: by block, then offset */
+        if (rk < bk || (rk == bk && o < bo))
+            best = i, bk = rk, bo = o;
+    }
+    return best;
 }
 
 /* ---- plan ---- */
