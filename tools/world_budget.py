@@ -62,7 +62,7 @@ def r128(n):
 
 
 COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
-CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 4  # coltile.c
+CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 8  # coltile.c
 
 
 def col_pages(d):
@@ -76,8 +76,11 @@ def col_pages(d):
         return None
     ntris = struct.unpack_from("<I", b, 12)[0]
     org, sc = struct.unpack_from("<3f", b, 16), struct.unpack_from("<f", b, 28)[0]
-    at = (struct.unpack_from("<I", b, 80)[0] + 2 * ntris + 15) & ~15
-    if b[at:at + 4] != b"CTP1":
+    pat_off, npat, gid_off = struct.unpack_from("<3I", b, 72)
+    for at, mg in (((pat_off + 2 * npat + 15) & ~15, b"CTP2"), ((gid_off + 2 * ntris + 15) & ~15, b"CTP1")):
+        if b[at:at + 4] == mg:
+            break
+    else:
         return None
     npg, lo_b = struct.unpack_from("<2I", b, at + 4)
     pages = []

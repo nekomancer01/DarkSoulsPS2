@@ -19,7 +19,7 @@
 #define CT_BUDGET_M 4.0f  /* coltile_budget: the feet are not only at page centres (ASSUMED margin) */
 /* coltile_budget: + 1/CT_PACK_K for the pages' packing into the pool's 64 KB pages (mapstream_alloc_pool_small: a page
  * never straddles two; ASSUMED, the log's "coltile:" line prints the pool pages the tiles touch) */
-#define CT_PACK_K 4
+#define CT_PACK_K 8
 /* One run: the wanted page nearest the feet and the absent pages after it in the same 32 m map cell, which lie next to
  * each other on the disc, as back-to-back requests (one seek; Sony DevCon 2002 "Why Do My Load Times Suck": a short DVD
  * seek ~40 ms costs about as much as reading 100 KB). Each page has its own pool block, so pages go one by one. */
@@ -72,7 +72,7 @@ static inline unsigned gran(unsigned n) { return (n + 255) & ~255u; }
 int coltile_plan(int b, const float os[4], const void *ptab)
 {
     const unsigned *t = ptab;
-    if (b < 0 || b >= COL_BLOCKS || memcmp(t, "CTP1", 4) || !t[1] || t[1] > CT_MAX_PAGES)
+    if (b < 0 || b >= COL_BLOCKS || (memcmp(t, "CTP1", 4) && memcmp(t, "CTP2", 4)) || !t[1] || t[1] > CT_MAX_PAGES)
         return 0;
     TBlock *k = &tb[b];
     free(k->pg);
