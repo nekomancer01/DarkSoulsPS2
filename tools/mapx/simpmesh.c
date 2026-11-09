@@ -3,6 +3,7 @@
    navmesh samples (k-d tree), every job through simplify.c on threads, the global error threshold (fixed or searched
    to fit BUDGET), and each job's log replayed. Python's dict orders (first appearance) are kept throughout. */
 #include "mapx.h"
+#include <math.h>
 
 typedef struct {
     int nt;
