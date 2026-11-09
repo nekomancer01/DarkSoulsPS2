@@ -244,6 +244,7 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
+| three.js 0.160 (loaded from cdn.jsdelivr.net by the page) | `tools/lodview.py` (LOD budget viewer) | MIT |
 
 The name and layout references are read from fixed paths under `ext/` (or the environment variable, if set). Without
 them the tools still run: param rows keep their Japanese names, TAE events stay raw words, and EMEVD instructions keep

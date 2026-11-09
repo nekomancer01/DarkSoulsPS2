@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOD Budget Viewer</title>
+<style>
+:root {
+  --bg: #15171a; --panel: #1d2024; --line: #30353b; --text: #e6e8eb; --muted: #9aa3ad; --accent: #6cb4ff;
+  --ok: #4fbf7a; --warn: #e0a83a; --bad: #e5604f; --bar: #2a2f35;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+#app { display: grid; grid-template-columns: 1fr 380px; height: 100vh; }
+#view { position: relative; min-width: 0; }
+#view canvas { display: block; width: 100%; height: 100%; }
+#hud { position: absolute; left: 10px; top: 10px; background: rgba(21,23,26,.88); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; max-width: 360px; pointer-events: none; }
+#hud b { font-weight: 600; }
+#busy { position: absolute; right: 10px; top: 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 10px; color: var(--muted); }
+#help { position: absolute; left: 10px; bottom: 10px; color: var(--muted); background: rgba(21,23,26,.88);
+  padding: 4px 8px; border-radius: 4px; }
+#side { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 10px 14px 40px; }
+h1 { font-size: 15px; margin: 2px 0 2px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 6px;
+  border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.sub { color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; }
+td { padding: 2px 0; vertical-align: top; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 6px; }
+.meter { margin: 6px 0 9px; }
+.meter .lbl { display: flex; justify-content: space-between; gap: 8px; }
+.meter .lbl span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.track { position: relative; height: 8px; background: var(--bar); border-radius: 4px; margin-top: 3px; overflow: hidden; }
+.fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.base { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); opacity: .55; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+.delta { color: var(--muted); font-size: 12px; }
+.row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.row label { flex: 0 0 92px; color: var(--muted); }
+.seg { display: flex; flex-wrap: wrap; gap: 3px; }
+.seg button { background: var(--bar); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  padding: 2px 6px; font: inherit; font-size: 12px; cursor: pointer; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+.seg button.ovr { outline: 1px dashed var(--warn); }
+input[type=range] { flex: 1; accent-color: var(--accent); }
+.val { width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+select, .btn { background: var(--bar); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  padding: 3px 8px; font: inherit; }
+.btn { cursor: pointer; }
+.btn:hover, .seg button:hover { border-color: var(--accent); }
+.lvl { margin: 8px 0; }
+.lvl .head { display: flex; justify-content: space-between; }
+.lvl .head span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+pre { white-space: pre-wrap; font-size: 11px; color: var(--muted); max-height: 160px; overflow: auto;
+  background: var(--bg); padding: 6px; border-radius: 4px; }
+@media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 55vh auto; } #side { border-left: 0; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="view">
+    <div id="hud">Loading…</div>
+    <div id="busy" hidden>Computing budget…</div>
+    <div id="help">Drag to orbit, right-drag to pan, wheel to zoom. Click a cell to select it, double-click to move the focus point there.</div>
+  </div>
+  <div id="side">
+    <h1>LOD budget viewer</h1>
+    <div class="sub" id="gen"></div>
+
+    <h2>Budget (computed by world_budget.py)</h2>
+    <div id="budget"></div>
+
+    <h2>At the focus point</h2>
+    <div id="spot" class="sub">No spot yet.</div>
+
+    <h2>Distance bands</h2>
+    <div class="row"><label title="mapstream.c MS_R0_DRAW: near level drawn within">Near (R0)</label>
+      <input type="range" id="r_near" min="8" max="40" step="1"><span class="val" id="v_near"></span></div>
+    <div class="row"><label title="map.c HZN_R: hard tier edge, horizon beyond">Horizon (HZN_R)</label>
+      <input type="range" id="r_hard" min="16" max="64" step="1"><span class="val" id="v_hard"></span></div>
+    <div class="row"><label title="soft tier outer edge (world_budget PIN_R)">Soft edge</label>
+      <input type="range" id="r_pin" min="32" max="96" step="1"><span class="val" id="v_pin"></span></div>
+    <div class="row"><label>Presets</label><div class="seg" id="presets"></div></div>
+
+    <h2>Level of detail, all cells</h2>
+    <div id="levels"></div>
+
+    <h2>Selected cell</h2>
+    <div id="cell" class="sub">Click a cell in the view.</div>
+
+    <h2>View</h2>
+    <div class="row"><label>Show</label><div class="seg" id="mode"></div></div>
+    <div class="row"><label>Colour</label><div class="seg" id="colour"></div></div>
+    <div class="row"><label>Layers</label><div class="seg" id="layers"></div></div>
+    <div class="row"><label>Block</label><select id="goto"></select></div>
+
+    <h2>Reference budgets (not computed here)</h2>
+    <table id="ref"></table>
+
+    <h2>Choices</h2>
+    <div class="row"><button class="btn" id="copy">Copy choices JSON</button><button class="btn" id="reset">Reset all</button></div>
+    <pre id="log"></pre>
+  </div>
+</div>
+<script type="module" src="/lodview.js"></script>
+</body>
+</html>
