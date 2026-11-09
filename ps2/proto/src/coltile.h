@@ -22,12 +22,15 @@ unsigned coltile_budget(void);
 void coltile_on(int b, Pack *pk, unsigned base);
 /* block b's collision goes: its pages are freed (a read in flight for it is cancelled first) */
 void coltile_off(int b);
-/* once a frame (and in a settle's loop): collect the read that landed, free the groups no longer kept, start the read of
- * the nearest wanted page (with the wanted pages next to it in the same 32 m cell) */
+/* once a frame (and in a settle's loop): collect the reads that landed, free the pages no longer kept, start the read of
+ * the nearest wanted page (and the pages after it on the disc in the same 32 m cell) */
 void coltile_step(const float feet[3]);
 /* wanted pages within r (xz) / r (y) of feet that are not in yet and can still come (a settle waits for them; the
  * hold: a page under the feet) */
 int coltile_missing(const float feet[3], float r);
+/* pages under the feet (xz within 1 m, from 1 m above to CT_WANT_Y below) that are not in, whatever the room: world_hold
+ * holds the player there rather than let them fall through */
+int coltile_under(const float feet[3]);
 
 typedef struct {
     unsigned reads, read_kb, failed, noroom, drops, in_kb, peak_kb, pages_in;

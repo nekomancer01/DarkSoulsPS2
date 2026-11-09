@@ -17,6 +17,9 @@
 #define CT_KEEP_R 56.0f
 #define CT_KEEP_Y 24.0f
 #define CT_BUDGET_M 4.0f  /* coltile_budget: the feet are not only at page centres (ASSUMED margin) */
+/* coltile_budget: + 1/CT_PACK_K for the pages' packing into the pool's 64 KB pages (mapstream_alloc_pool_small: a page
+ * never straddles two; ASSUMED, the log's "coltile:" line prints the pool pages the tiles touch) */
+#define CT_PACK_K 4
 /* One run: the wanted page nearest the feet and the absent pages after it in the same 32 m map cell, which lie next to
  * each other on the disc, as back-to-back requests (one seek; Sony DevCon 2002 "Why Do My Load Times Suck": a short DVD
  * seek ~40 ms costs about as much as reading 100 KB). Each page has its own pool block, so pages go one by one. */
@@ -106,7 +109,7 @@ unsigned coltile_budget(void)
                         sum += gran(tb[o].pg[j].bytes);
             best = sum > best ? sum : best;
         }
-    return best;
+    return best + best / CT_PACK_K;
 }
 
 void coltile_on(int b, Pack *pk, unsigned base)
@@ -196,10 +199,12 @@ static int start(int b, int i, const float *f, int wanted)
 {
     Page *p = &tb[b].pg[i];
     void *buf;
-    while (!(buf = mapstream_alloc_pool(gran(p->bytes), MS_POOL_STRUCT)))
+    while (!(buf = mapstream_alloc_pool_small(gran(p->bytes), MS_POOL_STRUCT)))
         if (!wanted || !evict(f)) {
             if (wanted) {
-                coltile_stats.noroom++;
+                if (!coltile_stats.noroom++ || !(coltile_stats.noroom & 63))
+                    printf("coltile: no room for block %d page %d (%u bytes), %u KB of tiles in, %d pages (%u refusals)\n",
+                           b, i, p->bytes, coltile_stats.in_kb, coltile_stats.pages_in, coltile_stats.noroom);
                 noroom_wait = CT_RETRY_FRAMES;
             }
             return 0;
@@ -247,6 +252,11 @@ static void issue(const float *f)
 
 void coltile_step(const float feet[3])
 {
+    static unsigned fr;
+    if (!(++fr % 600) && coltile_stats.reads)  /* every ~20 s of play */
+        printf("coltile: %u KB in (%d pages, peak %u KB), %u reads %u KB, %u drops, %u no room, %u failed, %d in flight\n",
+               coltile_stats.in_kb, coltile_stats.pages_in, coltile_stats.peak_kb, coltile_stats.reads,
+               coltile_stats.read_kb, coltile_stats.drops, coltile_stats.noroom, coltile_stats.failed, nfly);
     collect();
     for (int b = 0; b < COL_BLOCKS; b++)  /* pages past the keep window go (one still reading goes once it lands) */
         for (unsigned i = 0; tb[b].on && i < tb[b].npg; i++)
@@ -258,6 +268,18 @@ void coltile_step(const float feet[3])
         noroom_wait--;
     else if (!nfly)
         issue(feet);
+}
+
+int coltile_under(const float feet[3])
+{
+    int n = 0;
+    for (int b = 0; b < COL_BLOCKS; b++)
+        for (unsigned i = 0; tb[b].on && i < tb[b].npg; i++) {
+            const Page *p = &tb[b].pg[i];
+            n += p->state != P_IN && box_dxz2(p, feet) <= 1.0f && feet[1] >= p->lo[1] - 1.0f &&
+                 feet[1] <= p->hi[1] + CT_WANT_Y;
+        }
+    return n;
 }
 
 int coltile_missing(const float feet[3], float r)

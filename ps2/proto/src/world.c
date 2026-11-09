@@ -1325,7 +1325,7 @@ int world_hold(const float *feet)
         return 0;
     unsigned m = 0;
     /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
-    if (coltile_missing(feet, 4.0f))
+    if (coltile_under(feet))
         for (int i = 1; i < nblk; i++)
             if (rt[i].state == W_ON && rt[i].col_full && box_d(&tab[i], feet) <= 0.0f)
                 m |= 1u << i;

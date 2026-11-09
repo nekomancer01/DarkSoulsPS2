@@ -62,7 +62,7 @@ def r128(n):
 
 
 COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
-CT_WANT_R, CT_WANT_Y, CT_BUDGET_M = 48.0, 16.0, 4.0  # coltile.c
+CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 4  # coltile.c
 
 
 def col_pages(d):
@@ -103,7 +103,7 @@ def col_budget(blocks):
         dz = np.maximum(0, np.maximum(lo[:, 2] - c[2], c[2] - hi[:, 2]))
         dy = np.maximum(0, np.maximum(lo[:, 1] - c[1], c[1] - hi[:, 1]))
         best = max(best, int(nb[(dx * dx + dz * dz <= R * R) & (dy <= Y)].sum()))
-    return best
+    return best + best // CT_PACK_K
 
 
 def lite_entries(d):
