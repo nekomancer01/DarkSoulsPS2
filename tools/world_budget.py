@@ -109,6 +109,22 @@ def col_budget(blocks):
     return best + best // CT_PACK_K
 
 
+EV_SHARED = os.environ.get("WORLD_EV_SHARED", "1") != "0"  # world.c WORLD_EV_SHARED
+
+
+def ev_parts(d):
+    """world.c ev_split: (bytes of the block's own events part, the whole events.bin) or (whole, 0) when not split"""
+    import struct
+    p = os.path.join(d, "events.bin")
+    if not os.path.exists(p):
+        return 0, 0
+    b = open(p, "rb").read()
+    if not EV_SHARED or len(b) < 96 or b[:4] != b"EVB1" or struct.unpack_from("<I", b, 4)[0] != 3:
+        return len(b), 0
+    m0, m1 = struct.unpack_from("<I", b, 16 + 8 * 3)[0], struct.unpack_from("<I", b, 16 + 8 * 6)[0]
+    return (m1 - m0, len(b)) if 96 <= m0 <= m1 <= len(b) else (len(b), 0)
+
+
 def lite_entries(d):
     """a block's gen dir -> (lite set bytes as world.c counts them, its map tables' bytes, relief, texture buffer)"""
     import struct
@@ -121,7 +137,7 @@ def lite_entries(d):
     b0, c0 = tex & ~127, cell & ~127  # world.c tab_split
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
     cp = col_pages(d)
-    total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(sz("events.bin"))
+    total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
@@ -138,13 +154,15 @@ def structural(gen):
         return None
     n = struct.unpack_from("<I", b, 8)[0]
     names = [b[16 + 64 * i:32 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
+    maps = [b[32 + 64 * i:48 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     lr = struct.unpack_from(f"<{2 * n}I", b, 16 + 64 * n)
     lbase = 16 + 64 * n + 8 * n
-    ent = {}
+    ent, evfull = {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
         if os.path.exists(os.path.join(d, "maptab.bin")):
             ent[i] = lite_entries(d)
+            evfull[i] = ev_parts(d)[1]
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
@@ -156,6 +174,12 @@ def structural(gen):
             whole = sorted((i for i in on if (load >> i & 1) or not LITE_DIET), key=lambda i: -ent[i][0])
             v = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
                        reverse=True)[:WORLD_SLOTS]
+            evm = {}  # WORLD_EV_SHARED: one whole events.bin per map of the blocks on
+            for i in on:
+                full = evfull.get(i, 0)
+                if full:
+                    evm[maps[i]] = max(evm.get(maps[i], 0), r128(full))
+            v = v + list(evm.values())
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
