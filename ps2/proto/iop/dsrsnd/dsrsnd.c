@@ -26,11 +26,11 @@ IRX_ID("dsrsnd", 1, 0);
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
  * pulls the drive away from the game's own pack reads and back (two seeks); with 16 KB refills the looping area
  * ambience alone cut a cdrom0: boot load from 7 s to 37 s in PCSX2 (2026-11-03). */
-/* Burg plan B8b: 192 KB (DSRSND_DEFS=-DSTREAM_RA_KB=128 = before). With three streams playing their top-ups were
- * ~2 seeks a second on their own (two per top-up, one every ~2.6 s each), the disc budget's whole 2 / s; at 192 KB
- * one every ~3.9 s. IOP RAM: 3 x 64 KB more (min free on the ISO route 501 -> ~309 KB, gate 250) */
+/* Burg plan B8b: 160 KB (DSRSND_DEFS=-DSTREAM_RA_KB=128 = before). With three streams playing their top-ups were
+ * ~2 seeks a second on their own (two per top-up, one every ~2.6 s each); at 160 KB one every ~3.3 s. 192 KB measured
+ * 7.27 -> 6.95 seeks/s on world_route but left the IOP 309 KB free (gate 250); 160 KB costs 3 x 32 KB (~405 KB free) */
 #ifndef STREAM_RA_KB
-#define STREAM_RA_KB 192
+#define STREAM_RA_KB 160
 #endif
 #define STREAM_RA (STREAM_RA_KB * 1024)
 /* Refills come from the read-ahead without the drive; the drive is only taken to top the read-ahead up, from the
