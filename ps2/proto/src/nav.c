@@ -14,6 +14,11 @@ typedef struct {
 _Static_assert(sizeof(NavHdr) == 48, "export_enemies.py NAV1 header");
 typedef struct { unsigned short v[3], nbr[3]; } NavTri;
 #define NONE 0xFFFF
+/* NAV_QREJ (frame-time pass 2026-11-09, default on; DEFS=-DNAV_QREJ=0 = off): tri_at rejects a cell's triangles by
+ * their integer vertex box before the float barycentric test (the ENEMY_WALLS leash calls it twice per enemy move) */
+#ifndef NAV_QREJ
+#define NAV_QREJ 1
+#endif
 #define NAV_Q 16.0f  /* export_enemies.py NAV_Q: 1/16 m vertex grid */
 
 typedef struct {
@@ -126,9 +131,25 @@ static int tri_at(const Nav *nv, const float p[3], float below, float above)
     if (c < 0)
         return -1;
     float bd = 1e9f;
+#if NAV_QREJ
+    /* the point and its height window on the 1/16 m vertex grid, a unit wider each side (tri_height's 1e-3
+     * barycentric margin is ~1 mm on a 1 m triangle): a triangle with all three vertices to one side never holds it */
+    const float q = NAV_Q;
+    float fx = (p[0] - nv->h.org[0]) * q, fz = (p[2] - nv->h.org[2]) * q;
+    float fy0 = (p[1] - below - nv->h.org[1]) * q, fy1 = (p[1] + above - nv->h.org[1]) * q;
+    int qx0 = (int)floorf(fx) - 1, qx1 = (int)ceilf(fx) + 1, qz0 = (int)floorf(fz) - 1, qz1 = (int)ceilf(fz) + 1;
+    int qy0 = (int)floorf(fy0) - 1, qy1 = (int)ceilf(fy1) + 1;
+#endif
     for (unsigned k = nv->start[c]; k < nv->start[c + 1]; k++) {
         int t = nv->list[k];
         float y;
+#if NAV_QREJ
+        const short *a = nv->v[nv->t[t].v[0]], *b = nv->v[nv->t[t].v[1]], *e = nv->v[nv->t[t].v[2]];
+        if ((a[0] < qx0 && b[0] < qx0 && e[0] < qx0) || (a[0] > qx1 && b[0] > qx1 && e[0] > qx1) ||
+            (a[2] < qz0 && b[2] < qz0 && e[2] < qz0) || (a[2] > qz1 && b[2] > qz1 && e[2] > qz1) ||
+            (a[1] < qy0 && b[1] < qy0 && e[1] < qy0) || (a[1] > qy1 && b[1] > qy1 && e[1] > qy1))
+            continue;
+#endif
         if (!tri_height(nv, t, p[0], p[2], &y) || y < p[1] - below || y > p[1] + above)
             continue;
         float d = fabsf(y - p[1]);

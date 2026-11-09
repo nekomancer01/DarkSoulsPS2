@@ -53,6 +53,12 @@ typedef struct {
 _Static_assert(sizeof(ColPage) == 32, "ColPage");
 
 #define MAX_PUSH_ITERS 4
+/* COL_SCAN (frame-time pass 2026-11-09, default on; DEFS=-DCOL_SCAN=0 = the old loop): each_tri2's list loop tests the
+ * triangle's integer box before its v1 number / stamp lookups and takes the fragment's vertex and number tables once
+ * (iso_ame_report3 caves: ~5000 list entries a frame for ~250 triangles tested) */
+#ifndef COL_SCAN
+#define COL_SCAN 1
+#endif
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
 
 /* One collision.bin per world block (src/world.c), all in one world frame. The queries below take the block they run
@@ -778,6 +784,48 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                 ix1 = ix1 >= f->gw ? f->gw - 1 : ix1, iz1 = iz1 >= f->gd ? f->gd - 1 : iz1;
                 const unsigned char *tr = ftris(c, f), *ls = flist(c, f);
                 const unsigned short *cs = fcells(c, f);
+#if COL_SCAN
+                /* the fragment's vertices and v1 numbers once, then per list entry the integer box test first (on the
+                 * fragment's own vertex bytes), before the v1-number / stamp lookups (block-wide arrays, D-cache
+                 * misses on a PS2); a triangle the box rejects is rejected in every cell of this fragment, so its stamp is
+                 * not needed */
+                const unsigned short *fv = (const unsigned short *)fbase(c, f), *gt;
+                if (!c->pgid)
+                    gt = c->gid + f->tri0;
+                else {
+                    unsigned pi = c->fpg[fi];
+                    gt = (const unsigned short *)(c->pbuf[pi] + c->pgid[2 * pi + 1]) + (f->tri0 - c->pgid[2 * pi]);
+                }
+                for (int iz = iz0; iz <= iz1; iz++)
+                    for (int ix = ix0; ix <= ix1; ix++) {
+                        unsigned ck = iz * f->gw + ix;
+                        for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
+                            unsigned lt = ls[q];
+                            const unsigned char *t = tr + lt * 4;
+                            if (flo) {
+                                const unsigned short *a = fv + t[0] * 3, *b = fv + t[1] * 3, *d = fv + t[2] * 3;
+                                if ((a[0] < qb.lo[0] && b[0] < qb.lo[0] && d[0] < qb.lo[0]) ||
+                                    (a[0] > qb.hi[0] && b[0] > qb.hi[0] && d[0] > qb.hi[0]) ||
+                                    (a[2] < qb.lo[2] && b[2] < qb.lo[2] && d[2] < qb.lo[2]) ||
+                                    (a[2] > qb.hi[2] && b[2] > qb.hi[2] && d[2] > qb.hi[2]) ||
+                                    (a[1] < qb.lo[1] && b[1] < qb.lo[1] && d[1] < qb.lo[1]) ||
+                                    (a[1] > qb.hi[1] && b[1] > qb.hi[1] && d[1] > qb.hi[1]))
+                                    continue;
+                            }
+                            if (!(mask >> (c->pat[t[3]] & 0xff) & 1))
+                                continue;
+                            unsigned g = gt[lt];
+                            if (c->stamp[g] == cur)
+                                continue;
+                            c->stamp[g] = cur;
+                            if (TRI_OFF(c, g))
+                                continue;
+                            if (fn(c, f, t, g, u))
+                                return 1;
+                        }
+                    }
+                continue;
+#endif
                 for (int iz = iz0; iz <= iz1; iz++)
                     for (int ix = ix0; ix <= ix1; ix++) {
                         unsigned ck = iz * f->gw + ix;
@@ -831,10 +879,12 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
         }
         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
             const unsigned char *t = tr + ls[q] * 4;
+            if (COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))  /* the box first: no v1-number lookup */
+                continue;
             unsigned g = gid_of(cb, f, ls[q]);
             if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
                 continue;
-            if (LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
+            if (!COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
                 continue;
             float a[3], b[3], c[3];
             tri2(cb, f, t, a, b, c);
