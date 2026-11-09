@@ -191,6 +191,7 @@ typedef struct {
     int stuck;        /* LOGIC_SPREAD: frames in a row its walk got nowhere (a wall it cannot pass) */
     float stuck_t;    /* > 0: standing that long before it tries again */
     float sep[2];  /* LOGIC_SPREAD: this frame's capsule pushes, walked once (sep_flush) */
+    float sep_c[2];  /* SEP_CARRY: pushes waiting for the character's next root / walk move */
     unsigned wc_moves;
 } Enemy;
 
@@ -1002,8 +1003,21 @@ enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
 
+/* SEP_CARRY (Burg plan B9 polish, default on; DEFS=-DSEP_CARRY=0 = each push walked on its own): the capsule pushes
+ * between characters (sep_flush) ride along with the character's next root motion or walk, one col_walk for both, and
+ * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
+ * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
+#ifndef SEP_CARRY
+#define SEP_CARRY 1
+#endif
+#define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
+
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
+    if (SEP_CARRY && !e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
+        dx += e->sep_c[0], dz += e->sep_c[1];
+        e->sep_c[0] = e->sep_c[1] = 0;
+    }
     e->wc_moves |= mv_tag | (e->air ? MV_AIR : 0);
     if (e->ev && e->ev->no_maphit) {  /* 2004[31]: through the map */
         e->pos.x += dx, e->pos.z += dz;
@@ -1035,6 +1049,41 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
     e->wc_moves |= MV_GROUND_LOST;
     return 1;
 }
+
+/* MOVE_PROF (Burg plan B9 polish, default on; DEFS=-DMOVE_PROF=0 = off): "enemy: moves" every 120 frames, per kind of
+ * move (root motion, walk, separation push, airborne): calls, EE ms and wall contacts per frame, and how many of the
+ * calls moved under 1 mm, to see what in the logic pass's "move" part costs at the Burg bonfires */
+#ifndef MOVE_PROF
+#define MOVE_PROF 1
+#endif
+#if MOVE_PROF && LOGIC_PASS_MS
+static unsigned mp_n[5], mp_t[5], mp_c[5], mp_tiny[5], mp_frames, mp_last = ~0u;
+static int move_prof(Enemy *e, float dx, float dz, int walking)
+{
+    if (mp_last != frame) {
+        mp_last = frame;
+        if (++mp_frames == 120) {
+            static const char *nm[5] = {"root", "walk", "sep", "air", "other"};
+            printf("enemy: moves per frame (calls / ms / contacts / under 1 mm):");
+            for (int i = 0; i < 5; i++)
+                printf(" %s %.1f / %.2f / %.1f / %.1f", nm[i], mp_n[i] / 120.0f, mp_t[i] / 120.0f / 294912.0f,
+                       mp_c[i] / 120.0f, mp_tiny[i] / 120.0f);
+            printf("\n");
+            memset(mp_n, 0, sizeof mp_n), memset(mp_t, 0, sizeof mp_t), memset(mp_c, 0, sizeof mp_c);
+            memset(mp_tiny, 0, sizeof mp_tiny), mp_frames = 0;
+        }
+    }
+    int i = e->air ? 3 : mv_tag == MV_ROOT ? 0 : mv_tag == MV_WALK ? 1 : mv_tag == MV_SEP ? 2 : 4;
+    int c0 = col_contacts;
+    unsigned t0 = lpass_now();
+    int r = move_by(e, dx, dz, walking);
+    mp_t[i] += lpass_now() - t0, mp_n[i]++, mp_c[i] += (unsigned)(col_contacts - c0);
+    mp_tiny[i] += dx * dx + dz * dz < 1e-6f;
+    return r;
+}
+#define move_by move_prof
+#endif
+
 
 /* Gravity for an airborne character (as the player: 9.8 m/s^2, at most 50 m/s down, collision-2): lands on the
  * collision floor; a kill plane / lethal fall triangle or y below FALL_KILL_Y kills it; a landing takes the player's
@@ -1457,6 +1506,14 @@ static void sep_flush(Enemy *e)
 {
     float x = e->sep[0], z = e->sep[1];
     e->sep[0] = e->sep[1] = 0;
+    if (SEP_CARRY && !e->air && !e->cc.dead) {  /* with the next root / walk move, unless it grew past SEP_CARRY_M */
+        x += e->sep_c[0], z += e->sep_c[1];
+        if (x * x + z * z < SEP_CARRY_M * SEP_CARRY_M) {
+            e->sep_c[0] = x, e->sep_c[1] = z;
+            return;
+        }
+        e->sep_c[0] = e->sep_c[1] = 0;
+    }
     if (x * x + z * z < 1e-6f)
         return;
     mv_tag = MV_SEP;
