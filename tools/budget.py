@@ -32,8 +32,11 @@ VRAM_MIN_KB = 128
 IOP_MIN_KB = 250
 SEEKS_PER_S = 2.0  # logged as a note since Burg plan B8b (it assumed 128 KB runs; measured: 1.2 items of ~30 KB)
 # Burg plan B8b disc gate, as drive time per period of play: seeks inside the fast window x SEEK_MS + far seeks x
-# FAR_SEEK_MS + bytes at DRIVE_KBPS (ASSUMED: Sony's DVD short / long seek and sustained rate figures) at most
-# DISC_BUSY_PCT of the period, and no far seek in play. PCSX2 times no seek: the counts are the proxy until hardware
+# FAR_SEEK_MS + bytes at DRIVE_KBPS (ASSUMED: Sony's DVD short / long seek and sustained rate figures), the p90 over
+# the periods at most DISC_BUSY_PCT (the max is logged: a period over 100 % means the estimate is off, not the drive),
+# and no far seek in play. Each period's estimate is printed next to dsrsnd's own busy % (PCSX2's drive time); a
+# ratio drifting past ~1.5 means the seek constants need refitting. PCSX2 times no seek: counts are the proxy until
+# hardware
 SEEK_MS, FAR_SEEK_MS, DRIVE_KBPS, DISC_BUSY_PCT = 40, 150, 1536, 70
 MIN_FRAMES = 10
 # the Burg plan's streamer gates per test script (step B0): the most allowed per run, from two ISO runs of main 6bb3218
@@ -109,6 +112,8 @@ def log_summary(log):
             "kbps": round(sum(d["kbps"] for d in play) / n), "seeks_s": round(sum(d["seeks_s"] for d in play) / n, 2),
             "far_seeks": sum(d["far"] for d in disc), "layer_play": sum(d["layer"] for d in play),
             "far_play": sum(d["far"] for d in play), "est_max": max((d["est_pct"] for d in play), default=0),
+            "est_p90": pct([d["est_pct"] for d in play], 90) or 0,
+            "est_ratio": round(sum(d["est_pct"] for d in play) / max(1, sum(d["busy"] for d in play)), 2),
             "est_avg": round(sum(d["est_pct"] for d in play) / n, 1),
             "layer_load": sum(d["layer"] for d in disc if d["load"]),
             "wait_avg": round(sum(d["wait_avg"] for d in play) / n), "wait_max": max(d["wait_max"] for d in disc),
@@ -176,9 +181,9 @@ def check_result(path, disc_gates=True):
         dd = run["disc"]
         if dd["layer_play"]:
             out["fails"].append(f"run: {dd['layer_play']} disc layer changes during play (budget: none)")
-        if dd.get("est_max", 0) > DISC_BUSY_PCT:
-            out["fails"].append(f"run: drive time {dd['est_max']} % of a period in play > {DISC_BUSY_PCT} % (seeks "
-                                f"x {SEEK_MS} ms, far x {FAR_SEEK_MS} ms, bytes at {DRIVE_KBPS} KB/s)")
+        if dd.get("est_p90", 0) > DISC_BUSY_PCT:
+            out["fails"].append(f"run: drive time p90 {dd['est_p90']} % of the periods in play > {DISC_BUSY_PCT} % (seeks "
+                                f"x {SEEK_MS} ms, far x {FAR_SEEK_MS} ms, bytes at {DRIVE_KBPS} KB/s; max {dd['est_max']} %)")
         if dd.get("far_play"):
             out["fails"].append(f"run: {dd['far_play']} far seeks in play (budget: none)")
         if dd["seeks_s"] > SEEKS_PER_S:
@@ -225,7 +230,7 @@ def table(r):
         d = run["disc"]
         o.append(f"  disc ({d['media']}, {d['play_periods']} periods of play): {d['kbps']} KB/s, {d['seeks_s']} seeks/s, "
                  f"{d['far_seeks']} far ({d.get('far_play', 0)} in play), est. drive time {d.get('est_avg')} % avg / "
-                 f"{d.get('est_max')} % max, layer changes {d['layer_play']} play / {d['layer_load']} load, EE wait avg "
+                 f"{d.get('est_p90')} % p90 / {d.get('est_max')} % max (x{d.get('est_ratio')} dsrsnd busy), layer changes {d['layer_play']} play / {d['layer_load']} load, EE wait avg "
                  f"{d['wait_avg']} max {d['wait_max']} ms, stream wait max {d['stream_wait_max']} ms, cache "
                  f"{d['cache_kb']} KB {d['cache_hits']} hits / {d['cache_miss']} misses, busy {d['busy_pct']} %, "
                  f"IOP free min {d['iop_free_min']} KB")
