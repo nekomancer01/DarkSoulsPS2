@@ -275,6 +275,13 @@ COL_TILES ?= 1
 # bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: the runtime CLUT relief pass (needs a
 # re-export: make distclean of the map exports, the switch is not in the export stamps).
 BUMP_BAKE ?= 1
+# BURG_HZN_NEAR (default 1, Ame 2026-11-10): the horizon stands in for the coarse level from 32 m (map.c HZN_R 32,
+# mapstream.c MS_R_HZN 40) instead of 40 / 48 m: ~0.35-0.45 MB less coarse level per plan at the Burg spots, mid-distance
+# buildings blurrier. 0: 40 / 48 m. (The horizon is still exported judged from 38 m.)
+BURG_HZN_NEAR ?= 1
+ifeq ($(BURG_HZN_NEAR),1)
+EE_CFLAGS += -DHZN_R=32.0f -DMS_R_HZN=40.0f
+endif
 export BUMP_BAKE
 EE_CFLAGS += -DBUMP_BAKED=$(BUMP_BAKE)
 EE_CFLAGS += -DCOL_TILES=$(COL_TILES)

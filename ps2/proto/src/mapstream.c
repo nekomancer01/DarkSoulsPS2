@@ -134,8 +134,21 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
  * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
 /* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
  * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
+/* (Makefile BURG_HZN_NEAR, 2026-11-10, Ame's pick: map.c HZN_R 32 and MS_R_HZN 40: the horizon stands in from 32 m) */
+#ifndef MS_R_HZN
 #define MS_R_HZN 48.0f
-#define MS_R_HZN_KEEP (56.0f + 2 * MS_KEEP_MORE)
+#endif
+#define MS_R_HZN_KEEP (MS_R_HZN + 8.0f + 2 * MS_KEEP_MORE)
+/* MS_BEHIND_KEEP (default 1, Ame's pick 2026-11-10; 0 = read as before): a horizon-covered coarse item (MS_RES_LOD)
+ * out of view and at least MS_BEHIND_R away is kept while it is in but never read: behind the camera nothing draws it,
+ * and turning round shows the cell's horizon until it lands (map.c draws a missing coarse cell's horizon). At the Burg
+ * spots 96 % of the pinned coarse level 16-48 m was horizon-covered and 270-410 KB of a plan was coarse out of view. */
+#ifndef MS_BEHIND_KEEP
+#define MS_BEHIND_KEEP 1
+#endif
+#ifndef MS_BEHIND_R
+#define MS_BEHIND_R 32.0f
+#endif
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
 #ifndef MS_STABLE
@@ -790,6 +803,10 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * pinned above the near parts, the coarse level of the cells around the player held ~1 MB more than the budget at
      * the median spot until their near parts landed, and the near parts were refused ("no room", Burg soak 2026-11-08).
      * A cell whose near part is not in and whose coarse level is out draws its horizon (map.c), not a hole. */
+#if MS_BEHIND_KEEP
+    if ((tag & MS_RES_LOD) && !view && !settling && d2 >= sq(MS_BEHIND_R))
+        return C_KEEP;
+#endif
 #if MS_NEAR_OVER
     if ((tag & MS_RES_COARSE) && (m->tab[c].near & ~CELL_PART) && near_d2(m, c, pos) < sq(MS_R0_DRAW)) {
         *key = d2;
