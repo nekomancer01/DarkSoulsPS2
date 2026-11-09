@@ -92,6 +92,15 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #ifndef HZN_FADE_DEBUG
 #define HZN_FADE_DEBUG 0
 #endif
+/* the near / coarse swap fades (Burg plan B9, TECH_DEBT world-12): for NEAR_FADE map draws after a cell in view goes
+ * from its coarse level to its near level, its resident coarse chunks are drawn again over the near level at alpha
+ * falling from 1 to 0 (GS alpha FIX after the opaque map, Z tested HZN_ZBIAS nearer and not written, as the horizon
+ * fade), so the detail dissolves in instead of popping. ASSUMED 10 draws (~0.33 s at 30 fps). The way back (near ->
+ * coarse) is at the radius, behind the hysteresis, and stays a hard switch. make DEFS=-DNEAR_FADE=0: the hard swap */
+#ifndef NEAR_FADE
+#define NEAR_FADE 10
+#endif
+#define MAX_NEAR_FADE 32  /* cells fading per frame */
 #define CHUNK_HZN 256
 #define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
 #define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
@@ -149,6 +158,7 @@ typedef struct {
     unsigned char hz_on;                 /* beyond HZN_R (with HZN_HYST hysteresis): its horizon stands for it */
     unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
     unsigned char lv, lv_prev;           /* hitch.c: level drawn (1 hole, 2 horizon, 3 coarse, 4 near), the one before */
+    unsigned char nfade;                 /* NEAR_FADE: map draws left of its coarse level fading out over the near one */
     unsigned short lv_seen, lv_fr;       /* the draw it was last in view, the draw its level last changed */
     /* MAP_TWO_PASS: the cell's draw list (chunks that pass the level / stream / draw-group / visibility-row filters)
      * kept from the draw that built it: valid while lgen is the list pool's generation and lkey the cell's key */
@@ -1519,6 +1529,8 @@ int map_draw(V3 eye)
     int nfx = 0;
     static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
     int nhzfade = 0;
+    static struct { unsigned char k, a; unsigned short ci; } nrfade[MAX_NEAR_FADE];  /* coarse levels fading out */
+    int nnrfade = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
     static unsigned hzx[3][3];  /* cells the horizon stood in for inside HZN_R this frame (log) */
     unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
@@ -1713,6 +1725,17 @@ int map_draw(V3 eye)
             }
             {  /* level-of-detail flips of a cell in view (hitch.c): near / coarse / horizon / hole */
                 unsigned char lv = nd ? 4 : use_hz ? 2 : miss && (!hc || mcov) ? 1 : 3;
+                if (NEAR_FADE > 0) {  /* coarse -> near while in view: the coarse level fades out over it */
+                    if (lv != 4)
+                        ce->nfade = 0;
+                    else if (ce->lv == 3 && (unsigned short)(pop_fr - ce->lv_seen) == 1)
+                        ce->nfade = NEAR_FADE;
+                    if (ce->nfade && nnrfade < MAX_NEAR_FADE) {
+                        nrfade[nnrfade].k = (unsigned char)k, nrfade[nnrfade].ci = (unsigned short)ci;
+                        nrfade[nnrfade++].a = (unsigned char)(ce->nfade * 128 / (NEAR_FADE + 1));
+                    }
+                    ce->nfade -= ce->nfade != 0;
+                }
                 if (ce->lv && lv != ce->lv && (unsigned short)(pop_fr - ce->lv_seen) == 1) {
                     hitch_flip(k, (unsigned)ci, lv == ce->lv_prev && (unsigned short)(pop_fr - ce->lv_fr) <= HITCH_FLOP_FRAMES);
                     ce->lv_prev = ce->lv, ce->lv_fr = pop_fr;
@@ -1957,6 +1980,34 @@ int map_draw(V3 eye)
             r_get_fog(f, &fc[0], &fb);
             vu1_gs_regs(1, fc);
         }
+        blend_regs(gs, 0);
+    }
+    if (nnrfade) {
+        /* coarse levels fading out (NEAR_FADE) over their cells' near level, as the horizon fade above: Cs a + Cd
+         * (1 - a), Z tested HZN_ZBIAS nearer and not written (the coarse surface is the near one simplified) */
+        vu1_map_zbias(1.0f + HZN_ZBIAS);
+        u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+        for (int i = 0; i < nnrfade; i++) {
+            const MapInst *mk = &inst[nrfade[i].k];
+            const Cell *ce = &mk->cells[nrfade[i].ci];
+            u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
+            vu1_gs_regs(2, r);
+            mapstream_select(nrfade[i].k);  /* mapstream_res answers for that instance */
+            for (unsigned j = ce->first; j < (unsigned)ce->first + ce->count; j++) {
+                unsigned no = mk->order[j];
+                const Chunk *c = &mk->chunks[no];
+                if (!(c->flags & CHUNK_COARSE) || !hz_covers(c->flags) || (c->flags & CHUNK_BACKDROP))
+                    continue;
+                const unsigned char *base = res_base(mk, no);
+                if (!base || !dg_shown(nrfade[i].k, no))
+                    continue;
+                int cls = visible(c, e, 0);
+                if (cls)
+                    drawn += draw_chunk(mk, base, c, c->tris, cls, R_FOG | R_BLEND, no);
+            }
+        }
+        mapstream_select(0);
+        vu1_map_zbias(1.0f);
         blend_regs(gs, 0);
     }
     {
