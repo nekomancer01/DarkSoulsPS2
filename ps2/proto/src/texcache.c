@@ -32,6 +32,14 @@ typedef struct {
  * TC_RES) and near holds the maptab offset of mip 2 (mip 3 follows it); mip 2 is then the resident level drawn until
  * mip 1 is in */
 #define TE_CHAIN_AT 2
+/* World blocks of one map share the textures two or more of them have (tools/mapsplit.py TEX_PEERS, maptex.bin): an
+ * offset with TC_SHR set is in the map's shared buffer (tc_block_shared), not in the block's maptab */
+static const unsigned char *sh_cur;  /* the shared buffer of the slot tc_block_add is setting up */
+static const unsigned char *blk_sh[TC_BLOCKS];
+static inline const unsigned char *tpix(const unsigned char *base, unsigned off)
+{
+    return (off & TC_SHR) ? sh_cur + (off & ~TC_SHR) : base + off;
+}
 
 typedef struct {
     GSTEXTURE t;
@@ -122,7 +130,7 @@ static void near_level(int i, const unsigned char *base)
     if (!(e->pad & 1) || !e->near)
         return;
     v->t.Width = e->w * 2, v->t.Height = e->h * 2;
-    v->t.Mem = (u32 *)(base + e->near);
+    v->t.Mem = (u32 *)tpix(base, e->near);
     v->size = near_blocks(e->psm, e->w * 2, e->h * 2);
     if (!pool3_blk) {  /* first near level: allocate its pool */
         pool3_blk = TC_NEAR_KB * 4 < POOL_MAX ? TC_NEAR_KB * 4 : POOL_MAX;
@@ -175,7 +183,7 @@ static void chain_levels(int i, const unsigned char *base)
             off += ((w * h >> (e->psm == GS_PSM_T4)) + 15) & ~15;  /* past the level before */
         v->t = lv[i][1].t;
         v->t.Width = e->w >> m, v->t.Height = e->h >> m;
-        v->t.Mem = (u32 *)(base + off);
+        v->t.Mem = (u32 *)tpix(base, off);
         v->size = level_blocks(e->psm, v->t.Width, v->t.Height);
     }
 }
@@ -324,12 +332,19 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
 /* world block slot b's textures: indices TC_BASE + b x TC_BLOCK_TEX .. + n, CLUTs in VRAM of their own (reserved
  * while the block is on, one allocation each), pixels in the map's pool. base: the block's map.bin (texture offsets
  * are from it), kept until tc_block_drop. Returns the first index, or -1 (too many textures, VRAM full). */
+void tc_block_shared(int b, const void *buf)
+{
+    if (b >= 0 && b < TC_BLOCKS)
+        blk_sh[b] = buf;
+}
+
 int tc_block_add(int b, const unsigned char *base, const void *table, int n)
 {
     if (b < 0 || b >= TC_BLOCKS || n > TC_BLOCK_TEX)
         return -1;
     tc_block_drop(b);
     int first = TC_BASE + b * TC_BLOCK_TEX;
+    sh_cur = blk_sh[b];
     for (int i = 0; i < n; i++) {
         const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
         /* its CLUT's VRAM, one allocation each (fills the holes characters and blocks leave), until tc_block_drop */
@@ -349,8 +364,8 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             t->ClutPSM = e->cpsm;
             t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
             t->Filter = GS_FILTER_LINEAR;
-            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)(base + e->pix[l]);  /* tc_res */
-            t->Clut = (u32 *)(base + e->clut);
+            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)tpix(base, e->pix[l]);  /* tc_res */
+            t->Clut = (u32 *)tpix(base, e->clut);
             t->VramClut = c;
             lv[first + i][l].off = -1;
             lv[first + i][l].last = 0;

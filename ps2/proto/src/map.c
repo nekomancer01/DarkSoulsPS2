@@ -1109,6 +1109,7 @@ static void *blk_dg[MAP_INST], *blk_pvs[MAP_INST];
 /* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
  * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
 static signed char tslot[MAP_INST];
+static const void *blk_tex_sh[MAP_INST];  /* map_block_shared: the map's maptex.bin per block */
 
 int map_tex_slot(int k)
 {
@@ -1193,6 +1194,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         tslot[k] = 0;
         while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
             tslot[k]++;
+        tc_block_shared(tslot[k], blk_tex_sh[k]);  /* the map's shared textures (map_block_shared) */
         m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], tex_bin, tex_bin + hdr->tex_off, m->ntex);
         if (m->tex_base < 0) {
             printf("map: block %d: no texture slot / CLUT VRAM\n", k);
@@ -1204,6 +1206,12 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         pvs_block_init(k, blk_pvs[k], hdr->chunks, m->nctab);  /* and visibility (src/pvs.c) */
     }
     return 1;
+}
+
+void map_block_shared(int k, const void *buf)
+{
+    if (k > 0 && k < MAP_INST)
+        blk_tex_sh[k] = buf;
 }
 
 void map_block_bump(int k, const void *blob)
