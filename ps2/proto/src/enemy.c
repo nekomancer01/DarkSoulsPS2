@@ -1055,6 +1055,15 @@ static int wall_between(const Enemy *e, const float p[3])
 #endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 
+#ifndef MOVE_PROF
+#define MOVE_PROF 1
+#endif
+#if MOVE_PROF && LOGIC_PASS_MS
+static unsigned mp_sub[4];  /* MOVE_PROF: ticks in col_walk / leash (nav) / wall ray / ledge floor, all moves */
+#define MP_SUB(i, x) ({ unsigned mp_t0_ = lpass_now(); __typeof__(x) mp_r_ = (x); mp_sub[i] += lpass_now() - mp_t0_; mp_r_; })
+#else
+#define MP_SUB(i, x) (x)
+#endif
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
     if (SEP_CARRY && !e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
@@ -1072,8 +1081,8 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
         e->pos.x = p[0], e->pos.z = p[2];
         return 1;
     }
-    int on_floor = col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0);
-    if (ENEMY_WALLS && (!leash_ok(e, p, on_floor) || wall_between(e, p))) {
+    int on_floor = MP_SUB(0, col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0));
+    if (ENEMY_WALLS && (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p)))) {
         e->wc_moves |= MV_LEASH;
         return 0;
     }
@@ -1087,8 +1096,8 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
      * with none within WALL_FLOOR_DEPTH the floor there belongs to a block that is not on (a seam): it stays, as the
      * player is held at a seam (world_hold), instead of falling through the world to FALL_KILL_Y */
     ColHit below;
-    if (ENEMY_WALLS && !col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH, COL_SOLID | COL_DEATH,
-                                  &below)) {
+    if (ENEMY_WALLS && !MP_SUB(3, col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH,
+                                            COL_SOLID | COL_DEATH, &below))) {
         e->wc_moves |= MV_NO_FLOOR;
         return 0;
     }
@@ -1105,9 +1114,6 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
 /* MOVE_PROF (Burg plan B9 polish, default on; DEFS=-DMOVE_PROF=0 = off): "enemy: moves" every 120 frames, per kind of
  * move (root motion, walk, separation push, airborne): calls, EE ms and wall contacts per frame, and how many of the
  * calls moved under 1 mm, to see what in the logic pass's "move" part costs at the Burg bonfires */
-#ifndef MOVE_PROF
-#define MOVE_PROF 1
-#endif
 #if MOVE_PROF && LOGIC_PASS_MS
 static unsigned mp_n[5], mp_t[5], mp_c[5], mp_tiny[5], mp_frames, mp_last = ~0u;
 static int move_prof(Enemy *e, float dx, float dz, int walking)
@@ -1120,7 +1126,9 @@ static int move_prof(Enemy *e, float dx, float dz, int walking)
             for (int i = 0; i < 5; i++)
                 printf(" %s %.1f / %.2f / %.1f / %.1f", nm[i], mp_n[i] / 120.0f, mp_t[i] / 120.0f / 294912.0f,
                        mp_c[i] / 120.0f, mp_tiny[i] / 120.0f);
-            printf("\n");
+            printf(" | ms walk %.2f leash %.2f wall %.2f ledge %.2f\n", mp_sub[0] / 120.0f / 294912.0f,
+                   mp_sub[1] / 120.0f / 294912.0f, mp_sub[2] / 120.0f / 294912.0f, mp_sub[3] / 120.0f / 294912.0f);
+            memset(mp_sub, 0, sizeof mp_sub);
             memset(mp_n, 0, sizeof mp_n), memset(mp_t, 0, sizeof mp_t), memset(mp_c, 0, sizeof mp_c);
             memset(mp_tiny, 0, sizeof mp_tiny), mp_frames = 0;
         }
