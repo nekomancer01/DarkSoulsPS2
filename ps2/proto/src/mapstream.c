@@ -65,10 +65,21 @@
 /* Per media (budget doc proposal 2): the DVD radii on a DVD (and host: runs), 35 / 41 m on a CD (the read with a seek
  * takes up to 1 s there); the disc server reports the media once it has looked at the disc (pack_disc_media, checked
  * in mapstream_update). MEDIA=cd builds (MEDIA_CD) take the CD radii whatever the disc. DEFS radii stay fixed. */
+/* MS_STEADY (Burg plan B4, default on; make DEFS=-DMS_STEADY=0 = the radii and class edges before it): with the export
+ * sized to the visual room the plan has nothing to cut, so what is in may stay in. Keep radii rise (a kept item is the
+ * first to go when a wanted one needs room, so keeping costs nothing but saves a read when the player turns back: ~25 %
+ * of the map KB of a Burg soak was read again within 30 s, world-14); an item that is in (or being read) is measured
+ * MS_CLS_HYST m nearer for its class, so a player standing on a class edge does not flip it every plan; and a plan that
+ * has to cut a wanted item says so (hitch_cut, the "stream:" line's plan cut: a logged bug, gated by tools/budget.py). */
+#ifndef MS_STEADY
+#define MS_STEADY 1
+#endif
+#define MS_CLS_HYST 2.0f  /* m (ASSUMED: the near switch's own NEAR_HYST in map.c) */
+#define MS_KEEP_MORE (MS_STEADY ? 10.0f : 0.0f)  /* m added to the near, horizon and foliage keep radii */
 #define MS_R0_WANT_DVD 24.0f
-#define MS_R0_KEEP_DVD 30.0f
+#define MS_R0_KEEP_DVD (30.0f + MS_KEEP_MORE)
 #define MS_R0_WANT_CD 29.0f
-#define MS_R0_KEEP_CD 35.0f
+#define MS_R0_KEEP_CD (35.0f + MS_KEEP_MORE)
 #ifndef MS_R0_WANT
 #ifdef MEDIA_CD
 static float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
@@ -124,7 +135,7 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 /* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
  * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
 #define MS_R_HZN 48.0f
-#define MS_R_HZN_KEEP 56.0f
+#define MS_R_HZN_KEEP (56.0f + 2 * MS_KEEP_MORE)
 /* MS_STABLE (default on; 0 = the old order): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
 #ifndef MS_STABLE
@@ -141,19 +152,25 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 /* foliage items (MS_RES_GRASS): map.c draws tufts at (GRASS_D0 10 m / d)^2 of their density, ~6 % at 40 m (ASSUMED
  * radius); kept 8 m more */
 #define MS_GRASS_WANT 40.0f
-#define MS_GRASS_KEEP 48.0f
+#define MS_GRASS_KEEP (48.0f + MS_KEEP_MORE)
 /* backdrop chunks (MS_RES_FAR) rank as if no farther than this: they are the horizon wherever the player stands */
 #define MS_FAR_D 64.0f
 /* an item map.c asked for (drawn, or wanted while missing) within MS_VIEW_FRAMES counts as in view: its rank is
  * MS_VIEW_K x the squared distance (half the distance); ASSUMED 1 s so a look around does not flip classes */
 #define MS_VIEW_FRAMES 30u
+/* MS_STEADY: whether a coarse or backdrop item counts as in view for its class (C_VIEW / C_VIEW2 vs C_FARC) is judged
+ * over MS_VIEW_STICKY frames: with the 1 s window another block's backdrop (Firelink's, behind the Burg) dropped to
+ * C_FARC on every look away, went first when room was needed and was read again on the next look back: ~180 of 260
+ * far seeks on the ISO world_route were Firelink's pack, 60-100 MB from the Burg's on the disc (B8b, 2026-11-08).
+ * ASSUMED 10 s (a look around and back) */
+#define MS_VIEW_STICKY 300u
 #define MS_VIEW_K 0.25f
 /* re-plan when the player moved this far or this many frames passed (~5000 items over 5 blocks: a scan every frame
  * cost the Burg bonfire 30 -> 22 fps with v1) */
 #define MS_SCAN_D 4.0f
 #define MS_SCAN_FRAMES 16u
 /* a texture's mip 0 kept while texcache asked for it within this many frames (as v1) */
-#define MS_TEX_KEEP 120u
+#define MS_TEX_KEEP (MS_STEADY ? 600u : 120u)  /* (MS_STEADY: 20 s, a mip 0 asked for again after a look around) */
 /* an item that found no room is passed over this many frames (the next one reads meanwhile) */
 #define MS_BLOCK_FRAMES 30u
 #ifndef MS_POOL
@@ -681,18 +698,29 @@ static inline float sq(float x) { return x * x; }
 #ifndef MS_ONE_LOD
 #define MS_ONE_LOD 1
 #endif
-#define MS_COARSE_R (MS_R0_KEEP - 8.0f)
+#define MS_COARSE_R (MS_R0_KEEP - MS_KEEP_MORE - 8.0f)  /* (the near keep radius before MS_STEADY, less 8 m) */
 static unsigned onelod_n, onelod_kb;  /* coarse items the last plan left to their near level (kept or not) */
+
+/* MS_STEADY: an item that is in or on its way is measured MS_CLS_HYST nearer for its class */
+static inline float steady_d2(const MsInst *m, unsigned id, float d2)
+{
+    if (!MS_STEADY || m->state[id] == MS_NONE || m->state[id] == MS_FAILED || d2 <= 0)
+        return d2;
+    float d = sqrtf(d2) - MS_CLS_HYST;
+    return d > 0 ? d * d : 0;
+}
 
 /* class of item id of instance k with the player at pos; *key ranks it within the class (lower first) */
 static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, float *key)
 {
     int view = frame - m->used[id] <= MS_VIEW_FRAMES;
     float vk = view ? MS_VIEW_K : 1.0f;
+    if (MS_STEADY)  /* (the rank keeps the 1 s view, the class the sticky one) */
+        view = frame - m->used[id] <= MS_VIEW_STICKY;
     if (id < m->ncell) {
         if (!m->tab[id].bytes)
             return C_FREE;
-        float d2 = near_d2(m, id, pos);
+        float d2 = steady_d2(m, id, near_d2(m, id, pos));
         /* near parts rank by distance alone (MS_STABLE): with the view factor a look around reordered them against
          * the plan's cut every turn and the arena read the same parts again and again (soak, 2026-11-07) */
         vk = MS_STABLE ? 1.0f : vk;
@@ -729,7 +757,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     unsigned c = MS_RES_CELL(tag);
     if (c >= m->ncell)
         return C_FREE;
-    float d2 = box_d2(&m->tab[c], pos);
+    float d2 = steady_d2(m, id, box_d2(&m->tab[c], pos));
     /* a cell the horizon stands for beyond MS_R_HZN (map.c HZN_R): never read there, kept a little while (its
      * backdrop too: the horizon has it) */
     if ((tag & MS_RES_LOD) && d2 >= sq(MS_R_HZN)) {
@@ -738,7 +766,9 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
-        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view ? C_VIEW2 : C_FARC;
+        /* (MS_STEADY: another loaded block's backdrop, Firelink's behind the Burg, keeps C_VIEW2 whether in view or
+         * not: as C_FARC it went first whenever room was short and came back from across the disc) */
+        return k == (focus < 0 ? 0 : focus) ? C_PIN0 : view || MS_STEADY ? C_VIEW2 : C_FARC;
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
@@ -1602,6 +1632,7 @@ static void plan_(const float *pos)
     for (int k = 0; MS_WHOLE_CELLS && k < MS_INST; k++)
         if (ms[k].cmark)
             memset(ms[k].cmark, 0, ms[k].ncell);
+    unsigned cut = 0, cut_near = 0;  /* wanted items the cut left out (MS_STEADY: hitch_cut) */
     for (unsigned i = 0; i < nw; i++) {
         MsInst *m = &ms[want[i].k];
         unsigned id = want[i].id;
@@ -1625,6 +1656,7 @@ static void plan_(const float *pos)
             }
             if (m->cmark[h] == 2) {
                 m->cls[id] = C_KEEP;
+                cut++, cut_near += want[i].cls == C_NEAR || want[i].cls == C_NEAR2;
                 continue;
             }
         } else {
@@ -1633,12 +1665,15 @@ static void plan_(const float *pos)
             sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
             if (sum > cap || (!lo && sum_hi > cap_hi) || (lo && near_missing && sum > cap_hi)) {
                 m->cls[id] = C_KEEP;
+                cut++, cut_near += id < m->ncell && (want[i].cls == C_NEAR || want[i].cls == C_NEAR2);
                 continue;
             }
         }
         if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
             q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
     }
+    if (MS_STEADY && !settling)
+        hitch_cut(cut, cut_near);
     pt[np_++] = ticks();
 #if MS_CANCEL
     for (int i = 0; i < nrd; i++) {  /* reads in flight that nothing wants any more */

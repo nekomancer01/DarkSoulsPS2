@@ -39,7 +39,8 @@ MIN_FRAMES = 10
 # share + 3 points; None = not gated. Lower them as the plan's steps land, never raise them.
 STREAM_GATE_KEYS = {"near_items": "near items refused for room (distinct)", "room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
                     "lent_near": "near parts lent a pool page and dropped for a lite set (MS_LEND)",
-                    "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R"}
+                    "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R",
+                    "cut": "most wanted items one plan cut for room (mapstream.c, step B4)"}
 STREAM_GATES = {
     "iso_ame_report3": {"near_items": 16, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
     "iso_burg_soak2": {"near_items": 95, "popins": 50, "due_med": 12, "hzn_pct": 100.0},
@@ -219,7 +220,7 @@ def table(r):
         st = run["stream"]
         o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}, {st.get('near_items')} items), pop-ins "
                  f"{st['popins']}, lent near dropped {st.get('lent_near', 0)}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
-                 f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %)")
+                 f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %), plan cut at most {st.get('cut', 0)} items in a plan (near {st.get('cut_near', 0)})")
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)
 

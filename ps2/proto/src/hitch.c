@@ -87,7 +87,7 @@ void hitch_flip(int k, unsigned ci, int flop)
 #define DUE_BINS 64
 static unsigned lent_near_n;
 void hitch_lent_near(void) { lent_near_n++, hitch_total.lent_near++; }
-static unsigned room_n, room_near, pop_n, due_hist[DUE_BINS], due_max, due_fr, map_due, map_hz;
+static unsigned room_n, room_near, pop_n, due_hist[DUE_BINS], due_max, due_fr, map_due, map_hz, cut_n, cut_near;
 static float hz_s;
 /* near items refused this run, distinct (an item is refused again at each retry, 2-3 times in 50 ms: the attempt
  * count swung 2x between identical runs; the B0 gate counts items). Open addressing, (k << 20 | id) + 1; full: counted
@@ -109,6 +109,13 @@ void hitch_room(int near, int k, unsigned id)
         room_seen[h % ROOM_SEEN] = key;
     room_new++, hitch_total.room_items++;
 }
+void hitch_cut(unsigned items, unsigned near)
+{
+    /* the most one plan of the period cut (plans run every few frames: a sum would count one item many times) */
+    if (items > cut_n)
+        cut_n = items, cut_near = near;
+    hitch_total.cut = items > hitch_total.cut ? items : hitch_total.cut;
+}
 void hitch_map(unsigned due, unsigned hz_fill, unsigned pops)
 {
     map_due = due, map_hz = hz_fill;
@@ -128,10 +135,10 @@ static void stream_line(void)
     while (med < DUE_BINS - 1 && (acc += due_hist[med]) * 2 < due_fr)
         med++;
     printf("stream: t %u s room %u near %u items %u | due near drawn coarse median %u max %u | hzn inside %.1f s | "
-           "pop-ins %u | lent near dropped %u\n", (unsigned)run_s, room_n, room_near, room_new, due_fr ? med : 0, due_max,
-           (double)hz_s, pop_n, lent_near_n);
+           "pop-ins %u | lent near dropped %u | plan cut %u near %u\n", (unsigned)run_s, room_n, room_near, room_new,
+           due_fr ? med : 0, due_max, (double)hz_s, pop_n, lent_near_n, cut_n, cut_near);
     room_new = 0;
-    room_n = room_near = pop_n = due_max = due_fr = lent_near_n = 0, hz_s = 0;
+    room_n = room_near = pop_n = due_max = due_fr = lent_near_n = cut_n = cut_near = 0, hz_s = 0;
     memset(due_hist, 0, sizeof due_hist);
 }
 

@@ -18,7 +18,7 @@ LINE = re.compile(r"hitch: t (\d+) s frames (\d+) avg (\d+) max (\d+) ms over50 
                   r"(?: spikes (\d+) \(\+(\d+)\) \| allocfail (\d+) \(max (\d+) KB\) \| at (-?\d+) (-?\d+) (-?\d+) block (-?\d+) \|)? top(.*)")
 # the streamer's Burg gates (plan step B0), one line a period after the hitch line
 STREAM = re.compile(r"stream: t (\d+) s room (\d+) near (\d+)(?: items (\d+))? \| due near drawn coarse median (\d+) max (\d+) \| "
-                    r"hzn inside ([\d.]+) s \| pop-ins (\d+)(?: \| lent near dropped (\d+))?")
+                    r"hzn inside ([\d.]+) s \| pop-ins (\d+)(?: \| lent near dropped (\d+))?(?: \| plan cut (\d+) near (\d+))?")
 KEYS = ["t", "frames", "avg", "max", "o50", "o100", "o200", "worst", "heap", "largest", "afree", "arun", "other",
         "reads", "read_kb", "again", "again_kb", "thrash", "thrash_kb", "drops", "evicts", "evict_kb", "blocks", "block_kb", "flips", "flops",
         "loads", "load_max", "spikes", "spikes_cut", "allocfail", "allocfail_kb", "x", "y", "z", "block", "top"]
@@ -50,7 +50,7 @@ def parse_stream(path):
             g = g[:3] + g[4:]
             out.append({"t": int(g[0]), "room": int(g[1]), "room_near": int(g[2]), "near_items": items,
                         "due_med": int(g[3]), "due_max": int(g[4]), "hzn_s": float(g[5]), "popins": int(g[6]),
-                        "lent_near": int(g[7] or 0)})
+                        "lent_near": int(g[7] or 0), "cut": int(g[8] or 0), "cut_near": int(g[9] or 0)})
     return out
 
 
@@ -66,7 +66,8 @@ def stream_summary(rows, t_min=30):
     hz = sum(r["hzn_s"] for r in rows)
     return {"periods": len(rows), "room": sum(r["room"] for r in rows), "room_near": sum(r["room_near"] for r in rows),
             "near_items": sum(r["near_items"] for r in rows) if all(r["near_items"] >= 0 for r in rows) else None,
-            "popins": sum(r["popins"] for r in rows), "lent_near": sum(r["lent_near"] for r in rows), "due_med": meds[len(meds) // 2],
+            "popins": sum(r["popins"] for r in rows), "lent_near": sum(r["lent_near"] for r in rows),
+            "cut": max(r["cut"] for r in rows), "cut_near": max(r["cut_near"] for r in rows), "due_med": meds[len(meds) // 2],
             "due_max": max(r["due_max"] for r in rows), "hzn_s": round(hz, 1), "hzn_pct": round(100 * hz / secs, 1)}
 
 
