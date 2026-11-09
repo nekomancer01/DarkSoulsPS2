@@ -50,6 +50,7 @@ typedef struct {
     unsigned load_ms, read_kb;       /* last lite load: wall time from first read to on, bytes */
     unsigned full_ms;                /* last relief load: ms from its first read to drawing it */
     unsigned on_us_max;              /* longest single-frame step (turning a block on / off), microseconds */
+    unsigned leans, relites;         /* WORLD_LITE_DIET: kept-only blocks that let go of their map tables / read them back */
     int loads, unloads, fails;
     unsigned hold_ms;                /* time the player was held at a block still loading (world_hold) */
     int hold_settles;                /* holds that ran out (WORLD_HOLD_S) and waited behind the loading screen */

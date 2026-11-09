@@ -103,6 +103,9 @@ int mapstream_reclaim(void *p, unsigned n);
 #define MS_RES_LOD 0x04000000u
 #define MS_RES_CELL(tag) ((tag) & ~(MS_RES_FAR | MS_RES_COARSE | MS_RES_GRASS | MS_RES_LOD))  /* the cell of a cell item's tag */
 #define MS_RES_TEX 0x80000000u
+/* | texture index (with MS_RES_TEX): its mip 1 (tools/mapsplit.py MIP1_OUT, the lite set diet): wanted while asked for
+ * as mip 1 lately, ranked with the coarse cells in view (map.c draws the resident mip 2 until it is in) */
+#define MS_RES_MIP1 0x00800000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
 /* the selected instance's item i as a base to add its chunk records' stream offsets to, or NULL while it is not
