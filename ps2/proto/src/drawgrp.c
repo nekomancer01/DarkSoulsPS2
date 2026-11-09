@@ -40,8 +40,11 @@ static unsigned sh_mask[4];
 static unsigned sh_area;  /* 0: no shared mask yet */
 static unsigned dg_now;   /* frames (dg_tick) */
 
+static unsigned shown_gen = 1;  /* dg_gen: any instance's shown set changed */
+
 static void apply_to(const Dg *d, const unsigned *c, unsigned char *out)
 {
+    shown_gen++;
     for (unsigned i = 0; i < d->n_pieces; i++)
         out[i] = (d->piece[i][0] & c[0]) | (d->piece[i][1] & c[1]) | (d->piece[i][2] & c[2]) | (d->piece[i][3] & c[3]) ? 1 : 0;
 }
@@ -80,6 +83,7 @@ int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris)
     Dg *d = &dg[k];
     memset(d, 0, sizeof *d);
     d->cur = -1;
+    shown_gen++;
     if (!h || (h->magic != DGM1 && h->magic != DGM2 && h->magic != DGM3) || h->chunks < chunks || h->tris != col_tris ||
         h->pieces > 256) {
         if (h)
@@ -125,7 +129,10 @@ void dg_block_drop(int k)
 {
     if (k > 0 && k < DG_INST)
         dg[k].cur = -1;
+    shown_gen++;
 }
+
+unsigned dg_gen(void) { return shown_gen + hidden_gen; }
 
 void dg_floor(int k, int tri)
 {

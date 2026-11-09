@@ -26,6 +26,8 @@ int dg_stream_shown(int k, unsigned chunk);
 unsigned dg_stream_gen(void);
 /* Chunk number in bump.bin's order (resident index, near chunks: flags >> 8): 1 = draw */
 int dg_shown(int k, unsigned chunk);
+/* changes whenever a dg_shown answer of any instance may change (map.c MAP_TWO_PASS: cached per-cell chunk lists) */
+unsigned dg_gen(void);
 /* Event-switched pieces / objects (TECH_DEBT event-5; dg.bin DGM3 keys their chunks by MSB entity id): (De)activate
  * Object and Activate Map Part (src/event.c) hide / show every chunk of entity id in every instance, also in blocks
  * that load later. Returns 1 if a loaded instance has chunks of that id. dg_entity_drawn: 1 drawn, 0 hidden, -1 no
