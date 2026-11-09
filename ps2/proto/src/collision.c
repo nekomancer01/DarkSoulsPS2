@@ -735,7 +735,7 @@ static inline void qbox(const ColBlock *c, const Frag *f, const float *flo, cons
 }
 static inline int qbox_out(const ColBlock *c, const Frag *f, const unsigned char *t, const QBox *q)
 {
-    const unsigned short *v = (const unsigned short *)((const unsigned char *)c->hdr + f->data);
+    const unsigned short *v = (const unsigned short *)fbase(c, f);  /* (a paged block: in its page, collision tiles) */
     const unsigned short *a = v + t[0] * 3, *b = v + t[1] * 3, *d = v + t[2] * 3;
     for (int k = 0; k < 3; k++)
         if ((a[k] < q->lo[k] && b[k] < q->lo[k] && d[k] < q->lo[k]) ||
