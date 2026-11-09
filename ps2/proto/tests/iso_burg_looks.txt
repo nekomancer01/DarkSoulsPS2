@@ -1,0 +1,32 @@
+# Burg plan B9: matched DSR / PS2 views at the iso_ame_report3 Burg spots and the aqueduct doorway, fixed camera,
+# no enemies (DSR eye = player + 1.42 up - 4 m along the view yaw; tools/b9-dsr-shots.sh places the DSR camera there).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_looks.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option god
+option nodemo
+option noenemies
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.4 0.14
+wait 14
+shot stairs
+spawn -49.0 -21.8 -36.0 2.6
+cam 2.6 0.1
+wait 14
+shot cave_a
+spawn 2.0 -10.0 -62.0 3.0
+cam 3.0 0.14
+wait 14
+shot burg_a
+spawn -6.0 -10.0 -73.0 2.0
+cam 2.0 0.14
+wait 14
+shot burg_c
+spawn -1.0 -7.3 -64.0 0.5
+cam 0.5 0.14
+wait 14
+shot bonfire
+spawn -56.0 -22.8 -29.5 2.0
+cam 2.0 0.1
+wait 14
+shot door_w
+stats

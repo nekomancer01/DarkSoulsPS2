@@ -12,7 +12,9 @@ Per shot (the ELF's "TEST passes" line, src/testscript.c pb_print: p50 / p90 of 
 Per run (EE log): no disc layer change during play (the "disc:" lines without "(load)"), seeks <= 2 a second on average
   while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
   average of the timed frames and the worst one, for cull, plan, chain, tex, bump, total) are summarised (p90 of the
-  averages, the largest worst), not gated: the map pass as a whole is.
+  averages, the largest worst), not gated: the map pass as a whole is. The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" lines, tools/hitchsum.py stream_summary,
   after the first 30 s): near-class "no room" refusals, near pop-ins seen on screen, the median of cells drawn coarse
   while due near, and the share of seconds with a horizon-filled cell inside HZN_R. Their thresholds are per test
