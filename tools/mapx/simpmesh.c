@@ -3,6 +3,7 @@
    navmesh samples (k-d tree), every job through simplify.c on threads, the global error threshold (fixed or searched
    to fit BUDGET), and each job's log replayed. Python's dict orders (first appearance) are kept throughout. */
 #include "mapx.h"
+#include <math.h>
 
 typedef struct {
     int nt;
@@ -15,7 +16,8 @@ typedef struct {
     size_t nrem_all, ncha_all;
 } sresult;
 sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
-                      const unsigned char *locked, const double *scale, double border_w, double seam_w, double seam_k2,
+                      const unsigned char *locked, const double *scale, const double *weight, double sat,
+                      double border_w, double seam_w, double seam_k2,
                       double ak2, double min_cos);
 void simplify_free(sresult *R);
 
@@ -119,6 +121,79 @@ static void view_distance(long long n, const double *P, long long nnv, const dou
     free(S), free(cells), free(dc);
 }
 
+/* ---- struct_weight: simplify.structure_weight (same operations in the same order; the reasoning lives there) ---- */
+static void sw_sub(const double *a, const double *b, double *r) { r[0] = a[0] - b[0], r[1] = a[1] - b[1], r[2] = a[2] - b[2]; }
+static double sw_dot(const double *a, const double *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+static void struct_weight(int npos, const double *pos, const int *wpos, int ntri, const int *tris, double w,
+                          double flat_w, double crease_cos, double corner_cos, double *out)
+{
+    for (int v = 0; v < npos; v++)
+        out[v] = 1.0;
+    if ((w <= 1.0 && flat_w == 1.0) || !npos)
+        return;
+    int *ft = MX_NEW(int, 3 * (size_t)(ntri ? ntri : 1)), nf = 0;
+    double *fu = MX_NEW(double, 3 * (size_t)(ntri ? ntri : 1));
+    double *acc = MX_ZNEW(double, 3 * (size_t)npos);
+    int *ninc = MX_ZNEW(int, (size_t)npos + 1);
+    for (int t = 0; t < ntri; t++) {
+        int p0 = wpos[tris[3 * t]], p1 = wpos[tris[3 * t + 1]], p2 = wpos[tris[3 * t + 2]];
+        if (p0 == p1 || p1 == p2 || p0 == p2)
+            continue;
+        double e1[3], e2[3], n[3];
+        sw_sub(pos + 3 * p1, pos + 3 * p0, e1), sw_sub(pos + 3 * p2, pos + 3 * p0, e2);
+        n[0] = e1[1] * e2[2] - e1[2] * e2[1], n[1] = e1[2] * e2[0] - e1[0] * e2[2], n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        double ln = sqrt(sw_dot(n, n));
+        if (ln == 0.0)
+            continue;
+        ft[3 * nf] = p0, ft[3 * nf + 1] = p1, ft[3 * nf + 2] = p2;
+        fu[3 * nf] = n[0] / ln, fu[3 * nf + 1] = n[1] / ln, fu[3 * nf + 2] = n[2] / ln;
+        for (int k = 0; k < 3; k++) {
+            double *a = acc + 3 * ft[3 * nf + k];
+            a[0] += n[0], a[1] += n[1], a[2] += n[2];
+            ninc[ft[3 * nf + k] + 1]++;
+        }
+        nf++;
+    }
+    for (int v = 0; v < npos; v++)  /* incident triangles per vertex, ascending (CSR) */
+        ninc[v + 1] += ninc[v];
+    int *inc = MX_NEW(int, 3 * (size_t)(nf ? nf : 1)), *fill = MX_NEW(int, (size_t)npos);
+    memcpy(fill, ninc, sizeof(int) * (size_t)npos);
+    for (int f = 0; f < nf; f++)
+        for (int k = 0; k < 3; k++)
+            inc[fill[ft[3 * f + k]]++] = f;
+    for (int v = 0; v < npos; v++) {
+        const int *fs = inc + ninc[v];
+        int n = ninc[v + 1] - ninc[v], crease = 0, corner = 0;
+        if (!n)
+            continue;
+        for (int i = 0; i < n && !crease; i++)
+            for (int j = 0; j < i; j++) {
+                const int *a = ft + 3 * fs[i], *b = ft + 3 * fs[j];
+                int share = 0;
+                for (int x = 0; x < 3 && !share; x++)
+                    share = a[x] != v && (a[x] == b[0] || a[x] == b[1] || a[x] == b[2]);
+                if (share && sw_dot(fu + 3 * fs[i], fu + 3 * fs[j]) <= crease_cos) {
+                    crease = 1;
+                    break;
+                }
+            }
+        const double *a = acc + 3 * v;
+        double ln = sqrt(sw_dot(a, a));
+        if (ln > 0.0) {
+            double nv[3] = {a[0] / ln, a[1] / ln, a[2] / ln};
+            for (int i = 0; i < n; i++)
+                if (sw_dot(nv, fu + 3 * fs[i]) <= corner_cos) {
+                    corner = 1;
+                    break;
+                }
+        }
+        int k = crease + corner;
+        out[v] = k == 2 ? w * w : (k == 1 ? w : flat_w);
+    }
+    free(ft), free(fu), free(acc), free(ninc), free(inc), free(fill);
+}
+
 /* ---- simplify_meshes ---- */
 typedef struct {
     int npos, nattr, ntri;
@@ -130,6 +205,7 @@ typedef struct {
     int *tris;            /* ntri x 3 attributes */
     unsigned char *locked;
     double *scale;
+    double *weight;       /* structure weight per position (struct_weight) or NULL */
     int kind;             /* 0 no cells, 1 "far", 2 cell key */
     long long ckey[3];
     sresult *log;
@@ -144,6 +220,7 @@ typedef struct mx_simp {
     unsigned char *dup;
     sjob *jobs;
     double border_w, seam_w, seam_k2, ak2, min_cos;
+    double struct_w, flat_w, sat, crease_cos, corner_cos;  /* simplify.STRUCT_W, STRUCT_FLAT_W, STRUCT_CREASE_COS, ..._CORNER_COS */
     double eps, eps_far;
     int use_far;
     const double *job_eps;  /* mx_simp_replay_jobs: per job threshold, else NULL */
@@ -177,7 +254,7 @@ static void run_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
-    j->log = simplify_run(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, h->border_w,
+    j->log = simplify_run(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat, h->border_w,
                           h->seam_w, h->seam_k2, h->ak2, h->min_cos);
     mx_ok(j->log, 1);
 }
@@ -210,13 +287,15 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
                             double grid, long long nfar, const long long *far, long long nnv, const double *nv,
                             long long nnt, const int *nt, const double *spawn, double floor_, double spawn_k, int nkeep,
                             const double *keep_pos, double keep_r2, double keep_d, double border_w, double seam_w,
-                            double seam_k2, double ak2, double min_cos)
+                            double seam_k2, double ak2, double min_cos, double struct_w, double flat_w, double sat, double crease_cos,
+                            double corner_cos)
 {
     if (nm < 0)
         return NULL;
     mx_simp *h = MX_ZNEW(mx_simp, 1);
     h->nm = nm;
     h->border_w = border_w, h->seam_w = seam_w, h->seam_k2 = seam_k2, h->ak2 = ak2, h->min_cos = min_cos;
+    h->struct_w = struct_w, h->flat_w = flat_w, h->sat = sat, h->crease_cos = crease_cos, h->corner_cos = corner_cos;
     h->dup = MX_ZNEW(unsigned char, nm);
     long long npt = poff[nm], nwt = woff[nm];
     /* key() of every non-kept position -> dense key id */
@@ -475,6 +554,11 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         sjob *j = h->jobs + i;
         j->locked = MX_NEW(unsigned char, j->npos ? j->npos : 1);
         j->scale = MX_NEW(double, j->npos ? j->npos : 1);
+        if (h->struct_w > 1.0 || h->flat_w != 1.0) {  /* export_map: crease / corner vertices first (struct_sat) */
+            j->weight = MX_NEW(double, j->npos ? j->npos : 1);
+            struct_weight(j->npos, j->pos, j->wpos, j->ntri, j->tris, h->struct_w, h->flat_w, h->crease_cos,
+                          h->corner_cos, j->weight);
+        }
         for (int p = 0; p < j->npos; p++, o++) {
             j->locked[p] = njk[j->pkid[p]] > 1;
             j->scale[p] = 1.0 / (D[o] * D[o]);
@@ -622,7 +706,7 @@ MX_API void mx_simp_free(mx_simp *h)
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
         free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
-        free(j->tris), free(j->locked), free(j->scale), free(j->out);
+        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out);
         if (j->log)
             simplify_free(j->log);
     }

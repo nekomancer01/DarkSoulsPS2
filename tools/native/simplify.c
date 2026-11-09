@@ -136,6 +136,8 @@ typedef struct {
     char *lock, *border, *dead;
     double (*Q)[11];
     double *errm, *alost, *scale;
+    const double *weight;  /* NULL: all 1 */
+    double sat;
     int *ver;
     double lost, seam_k2, ak2;
     /* attr_map scratch */
@@ -223,6 +225,10 @@ static void push(S *s, heap *h, int u, int v) {
     if (bb > m) m = bb;
     if (ar > m) m = ar;
     double c = m * pmax(s->scale[u], s->scale[v]);
+    if (s->weight && c < s->sat) {  /* simplify.py: structure weight, saturating at sat */
+        double wc = c * pmax(s->weight[u], s->weight[v]);
+        c = wc < s->sat ? wc : s->sat;
+    }
     hent he = {c, u, v, s->ver[u], s->ver[v]};
     hpush(h, he);
 }
@@ -250,11 +256,12 @@ static uint64_t hmix(uint64_t x) {
 #define GROW(ptr, n, cap, type) do { if ((n) == (cap)) { (cap) = (cap) ? (cap) * 2 : 1024; \
     (ptr) = realloc((ptr), sizeof(type) * (cap)); } } while (0)
 
-/* pos: nv x 3 doubles; wpos: nw; tris: ntri x 3 attribute vertices; locked: nv bytes or NULL; scale: nv.
+/* pos: nv x 3 doubles; wpos: nw; tris: ntri x 3 attribute vertices; locked: nv bytes or NULL; scale: nv;
+ * weight: nv or NULL, sat (simplify.py's weight / sat).
  * Constants from simplify.py: border_w, seam_w, seam_k2 (SEAM_K^2), ak2 ((AREA_K or area_k)^2), min_cos. */
 result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
-                     const unsigned char *locked, const double *scale, double border_w, double seam_w,
-                     double seam_k2, double ak2, double min_cos) {
+                     const unsigned char *locked, const double *scale, const double *weight, double sat,
+                     double border_w, double seam_w, double seam_k2, double ak2, double min_cos) {
     (void)nw;
     result *R = calloc(1, sizeof(result));
     S s;
@@ -356,6 +363,7 @@ result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int nt
     s.alost = calloc(nv ? nv : 1, sizeof(double));
     s.ver = calloc(nv ? nv : 1, sizeof(int));
     s.scale = (double *)scale;
+    s.weight = weight, s.sat = sat;
     heap h = {0};
     for (int ei = 0; ei < ne; ei++) {
         push(&s, &h, E[ei].a, E[ei].b);

@@ -53,7 +53,7 @@ def lib():
                 L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
                 L.mx_far_cells.restype = ll
                 L.mx_simp_new.argtypes = [i, vp, vp, vp, vp, vp, vp, vp, vp, i, d, ll, vp, ll, vp, ll, vp, vp, d, d, i, vp,
-                                          d, d, d, d, d, d, d]
+                                          d, d, d, d, d, d, d, d, d, d, d, d]
                 L.mx_simp_new.restype = vp
                 for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
                                 ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
