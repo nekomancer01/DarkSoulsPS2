@@ -253,6 +253,9 @@ def _native(name, srcs, setup, cxx=False):
         L = None
         if os.environ.get("HZN_NATIVE", "1") != "0":
             import ctypes
+            # idle OpenMP threads sleep instead of spinning: a world build runs one horizon per block side by side
+            # (Firelink area 106 -> 76 CPU s, the same wall time)
+            os.environ.setdefault("OMP_WAIT_POLICY", "passive")
             native = os.path.join(HERE, "native")
             src = [os.path.join(native, s) for s in srcs]
             so = os.path.join(native, name + ".so")
@@ -263,8 +266,13 @@ def _native(name, srcs, setup, cxx=False):
                     os.close(fd)
                     try:
                         cc = os.environ.get("CXX", "c++") if cxx else os.environ.get("CC", "cc")
-                        subprocess.run([cc, "-O2", "-ffp-contract=off", "-fno-fast-math", "-shared", "-fPIC", "-o", tmp]
-                                       + src, check=True, capture_output=True)
+                        base = [cc, "-O2", "-ffp-contract=off", "-fno-fast-math", "-shared", "-fPIC", "-o", tmp]
+                        # -fopenmp: hzvis / hzerr / nearest split their independent loops over the cores (the same
+                        # bytes out; Burg block b 23 -> 11 s, Firelink area 60 -> 16 s); a compiler without OpenMP builds them serial
+                        try:
+                            subprocess.run(base + ["-fopenmp"] + src, check=True, capture_output=True)
+                        except subprocess.CalledProcessError:
+                            subprocess.run(base + src, check=True, capture_output=True)
                         os.replace(tmp, so)
                     finally:
                         if os.path.exists(tmp):

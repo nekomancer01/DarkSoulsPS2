@@ -4,7 +4,7 @@
 # each active character's centre is tested against the walls it crossed since the last frame ("enemy: through
 # wall" lines, test runs only); --walls-max 0 fails the run on the first one. Boot the ISO, as a player does:
 #   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_walls.txt <out> --iso build/proto.iso
-#   --timeout 1200 --walls-max 0
+#   --timeout 1200   (gated on "enemy: through wall": test-run.py --walls-max, default 0)
 # ev_enemies / block_enemies stay the checks that enemies still reach the player.
 option hud
 option god

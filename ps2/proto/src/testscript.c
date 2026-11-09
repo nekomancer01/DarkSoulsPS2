@@ -24,11 +24,11 @@
 #include "pack.h"
 #include "dsrsnd_rpc.h"
 
-volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 1};
+volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 2};
 int test_god;
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK };
 
 typedef struct {
     unsigned short op, line;
@@ -106,6 +106,7 @@ static int parse(Prog *p, char *text)
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0},   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
+        {"park", C_PARK, 0},  /* warm start (tools/warmstate.py): wait here for the next script from the host */
         {"kill", C_KILL, 0},
         {"loadscreen", C_LOADSCR, 1},  /* the loading screen held open for n s (src/loading.c), for screenshots */
         {"pad", C_PAD, 0},  /* one press of the named buttons (menus, bonfire): test_pad() */  /* player HP below 0, as EMEVD's kill of the player (event.c OP_KILL): ESD death, respawn */
@@ -183,6 +184,32 @@ static int parse(Prog *p, char *text)
     return opts;
 }
 
+/* Reads and parses a script file into `script`; returns its option bits, or -1 (error printed) */
+static int load_script(const char *full)
+{
+    int fd = fioOpen(full, O_RDONLY);
+    if (fd < 0) {
+        printf("TEST error: cannot open %s\n", full);
+        return -1;
+    }
+    int size = fioLseek(fd, 0, SEEK_END);
+    fioLseek(fd, 0, SEEK_SET);
+    char *text = malloc(size + 1);
+    int got = text ? fioRead(fd, text, size) : -1;
+    fioClose(fd);
+    if (got != size) {
+        printf("TEST error: read %s\n", full);
+        free(text);
+        return -1;
+    }
+    text[size] = 0;
+    free(script.cmd);  /* a warm start's second script (the parked one's shot / log strings stay: a few bytes) */
+    int opts = parse(&script, text);  /* shot / log strings are copies; text is only scanned */
+    free(text);
+    printf("TEST script %s: %d commands, options 0x%x\n", full, script.n, opts);
+    return opts;
+}
+
 int test_init(int argc, char **argv)
 {
     char tmp[sizeof demo_script];
@@ -197,25 +224,9 @@ int test_init(int argc, char **argv)
         return 0;
     char full[128];
     snprintf(full, sizeof full, "%s%s", strchr(path, ':') ? "" : "host:", path);
-    int fd = fioOpen(full, O_RDONLY);
-    if (fd < 0) {
-        printf("TEST error: cannot open %s\n", full);
+    int opts = load_script(full);
+    if (opts < 0)
         return 0;
-    }
-    int size = fioLseek(fd, 0, SEEK_END);
-    fioLseek(fd, 0, SEEK_SET);
-    char *text = malloc(size + 1);
-    int got = text ? fioRead(fd, text, size) : -1;
-    fioClose(fd);
-    if (got != size) {
-        printf("TEST error: read %s\n", full);
-        free(text);
-        return 0;
-    }
-    text[size] = 0;
-    int opts = parse(&script, text);  /* shot / log strings are copies; text is only scanned */
-    free(text);
-    printf("TEST script %s: %d commands, options 0x%x\n", full, script.n, opts);
     test_mb.state = script.n ? 1 : 0;
     return opts;
 }
@@ -364,6 +375,12 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_LOADSCR: loading_show(c->a[0]); break;
         case C_PAD: pad_pending |= (unsigned short)c->a[0]; break;
         case C_LOOP: p->pc = -1; break;
+        case C_PARK:  /* warm start: test_input loads the host's next script (mailbox next / next_seq) */
+            if (test_mb.state != 4) {
+                test_mb.state = 4;
+                printf("TEST parked frame %u\n", test_mb.frame);
+            }
+            return 1;
         case C_END:
             p->pc = p->n;
             continue;
@@ -433,8 +450,35 @@ unsigned short test_pad(void)
     return m;
 }
 
+/* Warm start (tools/warmstate.py): the host saved a state while this ELF was parked, loads it later and names the
+ * test's own script in the mailbox (next, relative to host: like argv's test=); it replaces the parked script. Boot
+ * options of the new script (noenemies / hud / holes) took effect at the parked boot: warmstate keys the state on them. */
+static unsigned park_seq;
+
+static void unpark(void)
+{
+    if (test_mb.state != 4 || test_mb.next_seq == park_seq)
+        return;
+    park_seq = test_mb.next_seq;
+    char name[sizeof test_mb.next + 1], full[128];
+    memcpy(name, (const char *)test_mb.next, sizeof test_mb.next);
+    name[sizeof test_mb.next] = 0;
+    snprintf(full, sizeof full, "%s%s", strchr(name, ':') ? "" : "host:", name);
+    if (load_script(full) < 0) {
+        test_mb.state = 2;
+        script.done = 1;
+        printf("TEST DONE frames %u\n", test_mb.frame);
+        return;
+    }
+    frozen = shot_wait = 0;
+    memset(ft_all, 0, sizeof ft_all);
+    seg_reset();
+    test_mb.state = script.n ? 1 : 2;
+}
+
 int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt, int demo_on)
 {
+    unpark();
     Prog *p = script.n && !script.done ? &script : demo_on && !script.n ? &demo : 0;
     if (!p)
         return 0;

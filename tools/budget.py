@@ -19,7 +19,9 @@ Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" 
   after the first 30 s): near-class "no room" refusals, near pop-ins seen on screen, the median of cells drawn coarse
   while due near, and the share of seconds with a horizon-filled cell inside HZN_R. Their thresholds are per test
   script (STREAM_GATES), started at the measured numbers of main so nothing fails at first; a step of the plan may only
-  lower one (they ratchet one way).
+  lower one (they ratchet one way). The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
 import argparse, glob, json, os, re, sys
 

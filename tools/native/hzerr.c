@@ -95,6 +95,8 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
                 }
     }
     qsort(pr, n, sizeof *pr, cmp_pair);
+    /* points are independent (each writes only out[i]): the same values with any thread count (-fopenmp, or serial) */
+#pragma omp parallel for schedule(dynamic, 512)
     for (int i = 0; i < np; i++) {
         double p[3] = {pts[3 * (size_t)i], pts[3 * (size_t)i + 1], pts[3 * (size_t)i + 2]};
         double r = rmax[i], best = r * r;

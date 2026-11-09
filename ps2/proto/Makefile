@@ -519,8 +519,13 @@ $(A)/map.bin.cells.json: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 $(WB_WITH): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
+# the other blocks' maptab.bin come from their blockpacks sub-makes (worldpacks): no rule here, as with WB_WITH, so a
+# fresh build dir (the container's /build) stopped on "No rule to make target .../maptab.bin" (2026-11-09)
+WB_TABS = $(foreach d,$(PVS_WITH),$(d)/maptab.bin)
+$(WB_TABS): | $(if $(WORLD_BLOCKS),worldpacks)
+	@test -f $@ || { echo "$@ missing: the world block packs (worldpacks) did not write it"; exit 1; }
 $(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH) $(D)/world.pak \
-		$(foreach d,$(PVS_PEERS),$(d)/maptab.bin) ../../ps2/proto/src/world.c
+		$(A)/maptab.bin $(WB_TABS) ../../ps2/proto/src/world.c
 	$(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)

@@ -4,6 +4,8 @@
  * distance up to HZN_D, so any value under stop = HZN_D^2 gives the same result. Built with -ffp-contract=off. */
 void min_d2(int nq, const double *Q, int ns, const double *S, double stop, double *out)
 {
+    /* each query writes only out[i]: the same values with any thread count (-fopenmp, or serial) */
+#pragma omp parallel for schedule(dynamic, 256)
     for (int i = 0; i < nq; i++) {
         const double qx = Q[3 * i], qy = Q[3 * i + 1], qz = Q[3 * i + 2];
         double best = 1e300;
