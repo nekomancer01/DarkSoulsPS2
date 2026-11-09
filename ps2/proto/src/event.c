@@ -14,6 +14,7 @@
 #include "ev_misc.h"
 #include "ev_obj.h"
 #include "event.h"
+#include "lpass.h" /* LOGIC_SPREAD (Burg plan B6) */
 #include "flags.h"
 #include "hud.h"
 #include "fx.h"
@@ -131,6 +132,9 @@ typedef struct {
     u8 argn, flag_only;  /* MAIN waits only on flags / inventory / constants: re-evaluated when one of those changed */
     u8 warped;           /* warped the player to another map: finishes even if its block unloads (event_block_off) */
     u32 seen;            /* state_key() at the last evaluation */
+    u8 static_and;       /* MAIN group 0 holds a flag-type condition (static_cond, not a group) and no action button */
+    u8 sfalse;           /* (LOGIC_SPREAD) one of those was false at `seen`: the group stays false until the key moves */
+    u8 edge;             /* a condition true for one frame only (button, hit, ObjAct use): tested every frame */
     Reg *reg;
     u8 *args;
 } Inst;
@@ -140,6 +144,7 @@ static int free_hint;  /* no free slot below this */
 #define EV_BUDGET_US 2000  /* event_update time per frame before the rest waits for the next (33.3 ms frames) */
 
 EventStats event_stats;
+static unsigned ev_frame;  /* event_update calls (LOGIC_SPREAD: which half of the world-reading waits runs) */
 static Player *pl;
 static float dtime;
 static int act_press, act_used, trace = 1;
@@ -532,6 +537,31 @@ static int eval_group(Inst *in, int g, int depth)
     return n && and;
 }
 
+/* LOGIC_SPREAD: AND group g (MAIN is group 0, AND_xx groups are positive) is false because of a flag-type condition
+ * alone: one of its own is false, or it asks for an AND group ON that is false that way. Depends only on state_key() */
+static int static_false(Inst *in, int g, int depth)
+{
+    if (g < 0 || depth > 8)
+        return 0;
+    const Set *s = &sets[in->set];
+    const EvEvent *ev = &s->ev[in->ev];
+    for (int i = 0; i < in->nreg; i++) {
+        if (in->reg[i].group != g)
+            continue;
+        int op = instr_at(s, ev->ioff + in->reg[i].off)->op;
+        if (op == OP_C_GROUP) {
+            u32 w[64];
+            load_instr(in, ev->ioff + in->reg[i].off, in->reg[i].idx, w);
+            int sg = (s8)w[2];
+            if (w[1] != 0 && sg > 0 && static_false(in, sg, depth + 1))
+                return 1;
+        } else if (static_cond(op) && !eval_cond(in, &in->reg[i], 0)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void clear_conds(Inst *in)
 {
     in->nreg = 0;
@@ -819,7 +849,19 @@ static void run(Inst *in)
         in->cond_t += dtime, in->cond_f++;
         if (in->flag_only && in->seen == state_key())
             return;
+        if (LOGIC_SPREAD && in->sfalse && in->seen == state_key())
+            return;
+        /* LOGIC_SPREAD: the MAIN waits that read the world (areas, distances, HP, deaths) are tested on every other
+         * frame, half of them on each (by slot): 33 ms more before such an event starts, ~0.7 ms of EE less a frame
+         * at the Burg (217 of them, 2026-11-08 ISO). A flag change tests them at once */
+        if (LOGIC_SPREAD && !in->edge && (((unsigned)(in - inst) ^ ev_frame) & 1) && in->seen == state_key())
+            return;
         in->seen = state_key();
+        in->sfalse = 0;
+        if (LOGIC_SPREAD && in->static_and && static_false(in, 0, 0)) {  /* AND group: false whatever the rest says */
+            in->sfalse = 1;
+            return;
+        }
         if (!eval_group(in, 0, 0))
             return;
         resolve(in);
@@ -863,6 +905,17 @@ static void run(Inst *in)
                     in->flag_only = 1;
                     for (int i = 0; i < in->nreg; i++)
                         in->flag_only &= static_cond(instr_at(s, ev->ioff + in->reg[i].off)->op);
+                    in->static_and = in->sfalse = in->edge = 0;
+                    for (int i = 0; i < in->nreg; i++) {
+                        int op = instr_at(s, ev->ioff + in->reg[i].off)->op;
+                        if (op == OP_C_ACTION || op == OP_C_ACTION_LINE || op == OP_C_ACTION_BOSS) {
+                            in->static_and = 0;  /* evaluating it takes the button press: keep the old order */
+                            in->edge = 1;
+                            break;
+                        }
+                        in->edge |= op == OP_C_DAMAGED || op == OP_C_ON_HIT || op == OP_C_OBJACT;
+                        in->static_and |= op != OP_C_GROUP && static_cond(op);
+                    }
                 }
             }
             continue;
@@ -1346,6 +1399,7 @@ void event_update(Player *p, float dt)
     unsigned t0 = ticks();
     pl = p, dtime = dt;
     act_used = 0;
+    ev_frame++;
     ev_chr_update(dt);
     ev_misc_update(dt);
     event_stats.prompt = -1;
