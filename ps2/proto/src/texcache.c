@@ -32,6 +32,14 @@ typedef struct {
  * TC_RES) and near holds the maptab offset of mip 2 (mip 3 follows it); mip 2 is then the resident level drawn until
  * mip 1 is in */
 #define TE_CHAIN_AT 2
+/* World blocks of one map share the textures two or more of them have (tools/mapsplit.py TEX_PEERS, maptex.bin): an
+ * offset with TC_SHR set is in the map's shared buffer (tc_block_shared), not in the block's maptab */
+static const unsigned char *sh_cur;  /* the shared buffer of the slot tc_block_add is setting up */
+static const unsigned char *blk_sh[TC_BLOCKS];
+static inline const unsigned char *tpix(const unsigned char *base, unsigned off)
+{
+    return (off & TC_SHR) ? sh_cur + (off & ~TC_SHR) : base + off;
+}
 
 typedef struct {
     GSTEXTURE t;
@@ -122,7 +130,7 @@ static void near_level(int i, const unsigned char *base)
     if (!(e->pad & 1) || !e->near)
         return;
     v->t.Width = e->w * 2, v->t.Height = e->h * 2;
-    v->t.Mem = (u32 *)(base + e->near);
+    v->t.Mem = (u32 *)tpix(base, e->near);
     v->size = near_blocks(e->psm, e->w * 2, e->h * 2);
     if (!pool3_blk) {  /* first near level: allocate its pool */
         pool3_blk = TC_NEAR_KB * 4 < POOL_MAX ? TC_NEAR_KB * 4 : POOL_MAX;
@@ -175,7 +183,7 @@ static void chain_levels(int i, const unsigned char *base)
             off += ((w * h >> (e->psm == GS_PSM_T4)) + 15) & ~15;  /* past the level before */
         v->t = lv[i][1].t;
         v->t.Width = e->w >> m, v->t.Height = e->h >> m;
-        v->t.Mem = (u32 *)(base + off);
+        v->t.Mem = (u32 *)tpix(base, off);
         v->size = level_blocks(e->psm, v->t.Width, v->t.Height);
     }
 }
@@ -212,6 +220,16 @@ static void rl_trim(void)
 
 static int cluts_sent;
 static int in_frame;
+/* TC_PRESS (default on; 0 = the old choice): frames left of pool pressure. A frame whose drawn levels fill the pool past
+ * TC_PRESS_PCT %, or that had a fail (a batch not drawn), draws mip 1 where mip 0 would do down to half the usual
+ * distance (and no near levels) for the next TC_PRESS_FRAMES frames: with more near detail kept in view (the cube-grid
+ * stack, report3 burg_c 2026-11-09) the 896 KB pool ran full for ~4 s and 510 batches went undrawn. ASSUMED values */
+#ifndef TC_PRESS
+#define TC_PRESS 1
+#endif
+#define TC_PRESS_PCT 90
+#define TC_PRESS_FRAMES 60
+static int press;
 TcStats tc_stats;
 
 /* one GS image transfer into the chain; counted in tc_stats */
@@ -324,12 +342,19 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
 /* world block slot b's textures: indices TC_BASE + b x TC_BLOCK_TEX .. + n, CLUTs in VRAM of their own (reserved
  * while the block is on, one allocation each), pixels in the map's pool. base: the block's map.bin (texture offsets
  * are from it), kept until tc_block_drop. Returns the first index, or -1 (too many textures, VRAM full). */
+void tc_block_shared(int b, const void *buf)
+{
+    if (b >= 0 && b < TC_BLOCKS)
+        blk_sh[b] = buf;
+}
+
 int tc_block_add(int b, const unsigned char *base, const void *table, int n)
 {
     if (b < 0 || b >= TC_BLOCKS || n > TC_BLOCK_TEX)
         return -1;
     tc_block_drop(b);
     int first = TC_BASE + b * TC_BLOCK_TEX;
+    sh_cur = blk_sh[b];
     for (int i = 0; i < n; i++) {
         const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
         /* its CLUT's VRAM, one allocation each (fills the holes characters and blocks leave), until tc_block_drop */
@@ -349,8 +374,8 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
             t->ClutPSM = e->cpsm;
             t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
             t->Filter = GS_FILTER_LINEAR;
-            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)(base + e->pix[l]);  /* tc_res */
-            t->Clut = (u32 *)(base + e->clut);
+            t->Mem = (e->pix[l] & TC_RES) ? NULL : (u32 *)tpix(base, e->pix[l]);  /* tc_res */
+            t->Clut = (u32 *)tpix(base, e->clut);
             t->VramClut = c;
             lv[first + i][l].off = -1;
             lv[first + i][l].last = 0;
@@ -647,14 +672,26 @@ void tc_begin(float focal)
         }
 }
 
+/* a streamed mip 0 is asked for from MIP0_AHEAD x its switch distance on (Burg plan B9, TECH_DEBT texstream-5): asked
+ * only where drawn, it arrived a few frames after the switch and the texture sharpened on screen (the mip 1 -> mip 0
+ * step); asked ahead it is in by the time the camera crosses mip_d. ASSUMED 1.3 (~1-2 s at walking speed for the
+ * Burg's 5-10 m switch distances). make DEFS=-DMIP0_AHEAD=0: asked where drawn */
+#ifndef MIP0_AHEAD
+#define MIP0_AHEAD 1.3f
+#endif
+
 int tc_level(int tex, float d)
 {
     if (tex < 0 || tex >= MAX_TEX || !te[tex])
         return 0;
 #ifndef TC_NO_NEAR  /* A/B builds: near levels never drawn */
-    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f)
+    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f && !press)
         return 2;  /* near level texels (half mip 0's) still >= 1 / MIP_K px */
 #endif
+    if (press && te[tex]->levels > 1)
+        return d > mip_d[tex] * 0.5f;
+    if (MIP0_AHEAD > 0 && d > mip_d[tex] && d < mip_d[tex] * MIP0_AHEAD && (te[tex]->pix[0] & TC_RES) && in_frame)
+        res_asked[tex][0] = frame + 1;  /* mip 1 drawn, mip 0 read ahead */
     return d > mip_d[tex];
 }
 
@@ -674,8 +711,9 @@ GSTEXTURE *tc_get(int tex, int level)
         if (o == 1 && o < te[tex]->levels && (te[tex]->pix[1] & TC_RES))
             res_asked[tex][1] = frame + 1;  /* the fallback streams too */
         if (o >= te[tex]->levels || (v->off < 0 && !load(tex, o))) {
-            /* a streamed mip 1 not in yet (mapsplit.py MIP1_OUT): the resident chain's mip 2, then mip 3 */
-            for (o = 3; o < 5 && (te[tex]->pad & TE_CHAIN_AT); o++)
+            /* a streamed mip 1 not in yet (mapsplit.py MIP1_OUT), or no room for mip 0 / 1: the chain's mip 2, then
+             * mip 3 (smaller: a blurrier batch, not a missing one) */
+            for (o = 3; o < 5; o++)
                 if (lv[tex][o].size && (lv[tex][o].off >= 0 || load(tex, o))) {
                     lv[tex][o].last = frame;
                     return &lv[tex][o].t;
@@ -791,6 +829,12 @@ void tc_end(void)
 #endif
     tc_stats.resident = used / 4;
     tc_stats.frame_kb = now / 4;
+    if (TC_PRESS && (tc_stats.fails || now * 100 > pool_blk * TC_PRESS_PCT)) {
+        if (!press)
+            tc_stats.press_n++;
+        press = TC_PRESS_FRAMES;
+    } else if (press)
+        press--;
     tc_stats.max_frame_kb = tc_stats.frame_kb > tc_stats.max_frame_kb ? tc_stats.frame_kb : tc_stats.max_frame_kb;
     {  /* budget doc proposal 7: uploads and misses every 120 frames (fails = a batch not drawn: no level resident or
         * uploadable; short = a mip chain cut by the per-frame cap or the pool) */
@@ -800,7 +844,8 @@ void tc_end(void)
         mip_short = 0;
         if (!(++fr % 120)) {
             printf("tex: %u uploads %u KB (most in a frame %u KB), %u fails, %u chains cut short over 120 frames; "
-                   "resident %d KB of %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident, tc_stats.pool);
+                   "resident %d KB of %d, pressure spells %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident,
+                   tc_stats.pool, tc_stats.press_n);
             up = kb = fails = shorts = kbmax = 0;
         }
     }

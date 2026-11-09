@@ -61,6 +61,70 @@ def r128(n):
     return (n + 127) & ~127
 
 
+COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
+CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 8  # coltile.c
+
+
+def col_pages(d):
+    """a block's paged collision.bin (export_collision.py COL_TILE) -> (index bytes, [(lo, hi, bytes)]) or None"""
+    import struct
+    p = os.path.join(d, "collision.bin")
+    if not COL_TILES or not os.path.exists(p):
+        return None
+    b = open(p, "rb").read()
+    if b[:4] != b"DCOL" or struct.unpack_from("<I", b, 4)[0] != 2:
+        return None
+    ntris = struct.unpack_from("<I", b, 12)[0]
+    org, sc = struct.unpack_from("<3f", b, 16), struct.unpack_from("<f", b, 28)[0]
+    pat_off, npat, gid_off = struct.unpack_from("<3I", b, 72)
+    for at, mg in (((pat_off + 2 * npat + 15) & ~15, b"CTP2"), ((gid_off + 2 * ntris + 15) & ~15, b"CTP1")):
+        if b[at:at + 4] == mg:
+            break
+    else:
+        return None
+    npg, lo_b = struct.unpack_from("<2I", b, at + 4)
+    pages = []
+    for i in range(npg):
+        r = struct.unpack_from("<3hHIII3h3h", b, at + 16 + 32 * i)
+        pages.append(([org[k] + r[7 + k] * sc for k in range(3)], [org[k] + r[10 + k] * sc for k in range(3)], r[6]))
+    return lo_b, pages
+
+
+def col_budget(blocks):
+    """coltile.c coltile_budget: over every page's box centre, the pages of all blocks within the want window + a
+    margin (256-byte granules)"""
+    allp = [pg for pages in blocks for pg in pages]
+    if not allp:
+        return 0
+    lo = np.array([p[0] for p in allp]); hi = np.array([p[1] for p in allp])
+    nb = (np.array([p[2] for p in allp]) + 255) // 256 * 256
+    C = (lo + hi) / 2
+    R, Y = CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M
+    best = 0
+    for c in C:
+        dx = np.maximum(0, np.maximum(lo[:, 0] - c[0], c[0] - hi[:, 0]))
+        dz = np.maximum(0, np.maximum(lo[:, 2] - c[2], c[2] - hi[:, 2]))
+        dy = np.maximum(0, np.maximum(lo[:, 1] - c[1], c[1] - hi[:, 1]))
+        best = max(best, int(nb[(dx * dx + dz * dz <= R * R) & (dy <= Y)].sum()))
+    return best + best // CT_PACK_K
+
+
+EV_SHARED = os.environ.get("WORLD_EV_SHARED", "1") != "0"  # world.c WORLD_EV_SHARED
+
+
+def ev_parts(d):
+    """world.c ev_split: (bytes of the block's own events part, the whole events.bin) or (whole, 0) when not split"""
+    import struct
+    p = os.path.join(d, "events.bin")
+    if not os.path.exists(p):
+        return 0, 0
+    b = open(p, "rb").read()
+    if not EV_SHARED or len(b) < 96 or b[:4] != b"EVB1" or struct.unpack_from("<I", b, 4)[0] != 3:
+        return len(b), 0
+    m0, m1 = struct.unpack_from("<I", b, 16 + 8 * 3)[0], struct.unpack_from("<I", b, 16 + 8 * 6)[0]
+    return (m1 - m0, len(b)) if 96 <= m0 <= m1 <= len(b) else (len(b), 0)
+
+
 def lite_entries(d):
     """a block's gen dir -> (lite set bytes as world.c counts them, its map tables' bytes, relief, texture buffer)"""
     import struct
@@ -72,7 +136,8 @@ def lite_entries(d):
     tex, cell = tex_off - chunk_off + 80, cell_off - chunk_off + 80
     b0, c0 = tex & ~127, cell & ~127  # world.c tab_split
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
-    total = r128(sz("collision.bin")) + tabs + r128(sz("events.bin"))
+    cp = col_pages(d)
+    total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
@@ -89,13 +154,17 @@ def structural(gen):
         return None
     n = struct.unpack_from("<I", b, 8)[0]
     names = [b[16 + 64 * i:32 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
+    maps = [b[32 + 64 * i:48 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     lr = struct.unpack_from(f"<{2 * n}I", b, 16 + 64 * n)
     lbase = 16 + 64 * n + 8 * n
-    ent = {}
+    ent, evfull, mtxfull = {}, {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
         if os.path.exists(os.path.join(d, "maptab.bin")):
             ent[i] = lite_entries(d)
+            evfull[i] = ev_parts(d)[1]
+            mp = os.path.join(d, "maptex.bin")
+            mtxfull[i] = os.path.getsize(mp) if os.path.exists(mp) else 0
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
@@ -107,10 +176,21 @@ def structural(gen):
             whole = sorted((i for i in on if (load >> i & 1) or not LITE_DIET), key=lambda i: -ent[i][0])
             v = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
                        reverse=True)[:WORLD_SLOTS]
+            evm = {}  # WORLD_EV_SHARED: one whole events.bin per map of the blocks on
+            mtx = {}  # one maptex.bin per map (mapsplit.py TEX_PEERS, world.c mtx[])
+            for i in on:
+                full = evfull.get(i, 0)
+                if full:
+                    evm[maps[i]] = max(evm.get(maps[i], 0), r128(full))
+                if mtxfull.get(i):
+                    mtx[maps[i]] = max(mtx.get(maps[i], 0), r128(mtxfull[i]))
+            v = v + list(evm.values()) + list(mtx.values())
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
-    return dict(structural_kb=best >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
+    cb = col_budget([cp[1] for cp in (col_pages(os.path.join(gen, names[i])) for i in ent) if cp])
+    best += cb
+    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of

@@ -47,6 +47,9 @@ extern int map_vu1_batches, map_ee_tris;
  * from byte b_off (textures, navmesh, fog rows), c = the piece from byte c_off (cell table, horizon) (world.c
  * WORLD_TAB_SPLIT) */
 void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsigned c_off);
+/* before map_block_init: the map's shared textures (maptex.bin, tools/mapsplit.py TEX_PEERS) for block k, kept until
+ * map_block_drop; NULL: none */
+void map_block_shared(int k, const void *buf);
 int map_block_init(int k, const void *tab, const void *res, int col_block);
 int map_tex_slot(int k);  /* texcache slot of instance k > 0 while it is on (texcache.h TC_BLOCKS), else -1 */
 int map_block_stream_open(int k, const void *pack);  /* an open Pack (pack.h) of the block, kept open */

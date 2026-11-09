@@ -14,6 +14,7 @@
 #include "fx.h"
 #include "enemy.h"
 #include "hitch.h"
+#include "coltile.h"
 
 /* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
  * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
@@ -60,6 +61,9 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * nearest first. ASSUMED radii. */
 #define WORLD_SETTLE_R 40.0f
 #define WORLD_SETTLE_FOCUS_R 96.0f
+/* COL_TILES: a warp also waits for the collision tiles within this of the feet (ASSUMED: the floor around the player
+ * and the walls of the next steps; the rest streams in at walking speed well before it is reached) */
+#define WORLD_SETTLE_COL_R 16.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* WORLD_LITE_DIET (Makefile, default 1; the Burg plan's step B1): a block that is on only because the triangle under the
@@ -154,10 +158,21 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #ifndef WORLD_TAB_SPLIT
 #define WORLD_TAB_SPLIT 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_EV, E_OBJ, E_FX, NENT };
-static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "events.bin",
-                                          "objects.bin", "fx.bin"};
-#define E_OPTIONAL(e) ((e) >= E_EV)
+/* WORLD_EV_SHARED (the cube-grid plan's step 2, default 1; 0 = every block reads its whole events.bin): the blocks of
+ * one MSB carry the same events.bin but for their entities, hit ranges and colliders (export_emevd.py writes the map's
+ * events, instrs, substs, treasures, objacts and lots alike; 67 of each Burg block's 68 KB). A block reads its own
+ * middle part (E_EV: entities .. colliders, ~18 KB) and the whole file (E_EVM) only when no block of its map has one
+ * in yet; the first copy is the map's (evm[], freed with the map's last block). event.c's split sets point there. */
+#ifndef WORLD_EV_SHARED
+#define WORLD_EV_SHARED 1
+#endif
+/* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
+ * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
+ * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_OBJ, E_FX, NENT };
+static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
+                                          "events.bin", "events.bin", "objects.bin", "fx.bin"};
+#define E_OPTIONAL(e) ((e) >= E_MTX)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
@@ -187,6 +202,14 @@ typedef struct {
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
+    unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
+    /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
+     * the map has no copy in: ev_full bytes); its own header; it holds a reference on its map's copy */
+    int ev_split, ev_ref;
+    unsigned mtx_full;  /* maptex.bin's size (0: none); the block holds a reference on its map's copy (mtx_ref) */
+    int mtx_ref;
+    unsigned ev_mid, ev_full;
+    unsigned evhdr[24] __attribute__((aligned(64)));
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -227,6 +250,8 @@ static int room_stuck;  /* this step a wanted block found no room and no kept bl
  * (no more holding for them until they turn on); seconds held */
 static unsigned hold_m, hold_want, hold_gone;
 static float hold_s;
+/* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
+static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
 
 static inline unsigned ticks(void)
 {
@@ -280,6 +305,67 @@ static int tab_split(BlockRt *r)
     return 1;
 }
 
+/* COL_TILES: a paged collision.bin (tools/export_collision.py COL_TILE) reads its index with the lite set and its pages
+ * through src/coltile.c; the page table goes to coltile_plan now (the pool's size). An unpaged file stays whole. 0 if
+ * the file could not be read. */
+static int col_paged(int i, BlockRt *r)
+{
+    static unsigned hd[48] __attribute__((aligned(64)));
+    if (r->size[E_COL] < 192 || !read_sync(&r->pk, r->off[E_COL], hd, 128))
+        return 0;
+    if (memcmp(hd, "DCOL", 4) || hd[1] != 2)
+        return 1;
+    unsigned at = 0, a0 = 0;
+    const unsigned *t = NULL;
+    for (int v = 2; v >= 1 && !t; v--) {  /* the page table: CTP2 after the patterns, CTP1 after gid (collision.c) */
+        at = col_ptab_at(hd, v), a0 = at & ~63u;
+        if (at + 16 > r->size[E_COL] || !read_sync(&r->pk, r->off[E_COL] + a0, hd + 32, 64))
+            return 0;
+        t = (const unsigned *)((const unsigned char *)(hd + 32) + (at - a0));
+        t = !memcmp(t, v == 2 ? "CTP2" : "CTP1", 4) ? t : NULL;
+    }
+    if (!t)
+        return 1;
+    unsigned npg = t[1], lo = t[2], n = 16 + 32 * npg, n0 = (at - a0 + n + 63) & ~63u;
+    unsigned char *pt = memalign(64, n0);
+    float os[4];
+    memcpy(os, hd + 4, 16);  /* origin[3], scale */
+    int ok = pt && lo <= r->size[E_COL] && read_sync(&r->pk, r->off[E_COL] + a0, pt, n0) && coltile_plan(i, os, pt + (at - a0));
+    free(pt);
+    if (ok) {
+        r->total -= ((r->size[E_COL] + 127) & ~127u) - ((lo + 127) & ~127u);
+        r->col_full = r->size[E_COL], r->size[E_COL] = lo;
+    }
+    return ok;
+}
+
+/* WORLD_EV_SHARED: split block r's events.bin at boot (its header, kept for event.c) */
+static void ev_split(BlockRt *r)
+{
+    unsigned full = r->size[E_EV], f128 = (full + 127) & ~127u;
+    r->total -= f128;  /* world_init's loop counted the second events.bin entry (E_EVM) whole */
+    if (!WORLD_EV_SHARED || full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
+        memcmp(r->evhdr, "EVB1", 4) || r->evhdr[1] != 3)
+        return;
+    unsigned m0 = r->evhdr[4 + 2 * 3], m1 = r->evhdr[4 + 2 * 6];  /* sections: entities .. colliders, then treasures */
+    if (!(96 <= m0 && m0 <= m1 && m1 <= full))
+        return;
+    r->total -= f128;
+    r->ev_split = 1, r->ev_mid = m0, r->ev_full = full;
+    r->off[E_EVM] = r->off[E_EV];
+    r->off[E_EV] += m0, r->size[E_EV] = m1 - m0;
+    r->total += (r->size[E_EV] + 127) & ~127u;
+}
+
+/* the first block of block i's map (evm[]'s index) */
+static int map_lead(int i)
+{
+    for (int j = 1; j < i; j++)
+        if (!strncmp(tab[j].map, tab[i].map, 16))
+            return j;
+    return i;
+}
+
 int world_init(const char *boot_area)
 {
     Pack pk;
@@ -328,6 +414,13 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
             r->open = 0;
         }
+        if (i && r->open && COL_TILES && !col_paged(i, r))
+            r->open = 0;
+        r->off[E_EVM] = r->size[E_EVM] = 0;  /* (the loop above read it as a second events.bin: ev_split) */
+        if (i && r->open && (r->mtx_full = r->size[E_MTX]))  /* counted once per map (world_struct_bytes) */
+            r->total -= (r->mtx_full + 127) & ~127u;
+        if (i && r->open)
+            ev_split(r);
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
@@ -350,13 +443,13 @@ int world_init(const char *boot_area)
         mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (nblk > 1) {
-        unsigned sb = world_struct_bytes(), mb, tmax = 0;
+        unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
         for (int i = 0; i < nblk; i++)
             tmax = rt[i].tex_total > tmax ? rt[i].tex_total : tmax;
         mb = tmax + WORLD_MISC_EXTRA;  /* (the relief stays out of the pools) */
         mapstream_pools(sb, mb);
-        printf("world: structural pool %u KB (the most one triangle's links keep on), misc pool %u KB (textures %u + "
-               "%u KB)\n", sb >> 10, mb >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
+        printf("world: structural pool %u KB (the most one triangle's links keep on, collision tiles %u KB), misc pool "
+               "%u KB (textures %u + %u KB)\n", sb >> 10, cb >> 10, mb >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
     }
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
@@ -403,6 +496,22 @@ unsigned world_struct_bytes(void)
                         m = a;
                 v[m] = lean_v[m], whole--;
             }
+            for (int i = 1; i < nblk; i++)  /* one maptex.bin per map of the blocks on */
+                if (rt[i].open && rt[i].mtx_full && (keep >> i & 1) && map_lead(i) == i) {
+                    unsigned most = 0;
+                    for (int j = i; j < nblk; j++)
+                        if (rt[j].open && (keep >> j & 1) && map_lead(j) == i)
+                            most = rt[j].mtx_full > most ? rt[j].mtx_full : most;
+                    sum += (most + 127) & ~127u;
+                }
+            for (int i = 1; i < nblk; i++)  /* WORLD_EV_SHARED: one events.bin per map of the blocks on */
+                if (rt[i].open && rt[i].ev_split && (keep >> i & 1) && map_lead(i) == i) {
+                    unsigned most = 0;
+                    for (int j = i; j < nblk; j++)
+                        if (rt[j].open && rt[j].ev_split && (keep >> j & 1) && map_lead(j) == i)
+                            most = rt[j].ev_full > most ? rt[j].ev_full : most;
+                    sum += (most + 127) & ~127u;
+                }
             for (unsigned s = 0; s < WORLD_SLOTS && s < n; s++) {  /* the WORLD_SLOTS largest */
                 unsigned m = s;
                 for (unsigned j = s + 1; j < n; j++)
@@ -554,13 +663,60 @@ static void bump_drop(void)
 
 /* A block's lite set is read: hand its blobs to the systems (no copies, no IOP waits) */
 /* first step: collision and map (the rest follows in turn_on_rest once the textures are read) */
+/* the map's shared textures for block i (its own read becomes the map's copy, or goes when there is one; read now
+ * when the copy it counted on went before it turned on) */
+static void ev_free(void *p, unsigned n);
+static void mtx_on(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->mtx_full || r->mtx_ref) {
+        map_block_shared(i, r->mtx_full ? mtx[L].buf : NULL);
+        return;
+    }
+    if (r->blob[E_MTX]) {
+        if (!mtx[L].buf)
+            mtx[L].buf = r->blob[E_MTX], mtx[L].n = r->mtx_full;
+        else
+            ev_free(r->blob[E_MTX], r->mtx_full);
+        r->blob[E_MTX] = NULL;
+    } else if (!mtx[L].buf) {
+        void *b = memalign(128, (r->mtx_full + 127) & ~127u);
+        if (b && read_sync(&r->pk, r->off[E_MTX], b, r->mtx_full)) {
+            mtx[L].buf = b, mtx[L].n = r->mtx_full;
+            printf("world: block %d: its map's maptex.bin went before it turned on, read again (heap)\n", i);
+        } else
+            free(b);
+    }
+    if (mtx[L].buf)
+        mtx[L].refs++, r->mtx_ref = 1;
+    map_block_shared(i, mtx[L].buf);
+}
+
+/* free_slot: block i's chains are done; the map's shared textures go with its last block */
+static void mtx_off(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->mtx_ref)
+        return;
+    r->mtx_ref = 0;
+    if (--mtx[L].refs <= 0) {
+        ev_free(mtx[L].buf, mtx[L].n);
+        mtx[L].buf = NULL, mtx[L].refs = 0;
+    }
+}
+
 static void turn_on_col(int i)
 {
     BlockRt *r = &rt[i];
     unsigned t0 = ticks();
-    int ok = col_load(i, r->blob[E_COL]), cok = ok;
+    int ok = r->col_full ? col_load_index(i, r->blob[E_COL]) : col_load(i, r->blob[E_COL]), cok = ok;
+    if (ok && r->col_full)
+        coltile_on(i, &r->pk, r->off[E_COL]);
     if (r->size[E_TABB])
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+    mtx_on(i);
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
@@ -594,13 +750,63 @@ static void tex_on(int i, unsigned e)
 }
 
 /* second step: the block's enemies and events, after its objects and effects */
+static void ev_free(void *p, unsigned n)
+{
+    if (mapstream_owns(p))
+        mapstream_free(p, (n + 127) & ~127u);
+    else
+        free(p);
+}
+
+/* WORLD_EV_SHARED: block i's events on, from its map's copy (its own read becomes it when there is none yet; read now
+ * when the copy it counted on went before it turned on) */
+static void ev_on(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (r->blob[E_EVM]) {
+        if (!evm[L].buf)
+            evm[L].buf = r->blob[E_EVM], evm[L].n = r->ev_full;
+        else
+            ev_free(r->blob[E_EVM], r->ev_full);
+        r->blob[E_EVM] = NULL;
+    } else if (!evm[L].buf) {
+        void *b = memalign(128, (r->ev_full + 127) & ~127u);
+        if (!b || !read_sync(&r->pk, r->off[E_EVM], b, r->ev_full)) {
+            printf("world: block %d: events.bin not readable\n", i);
+            free(b);
+            return;
+        }
+        evm[L].buf = b, evm[L].n = r->ev_full;
+        printf("world: block %d: its map's events.bin went before it turned on, read again (heap)\n", i);
+    }
+    evm[L].refs++, r->ev_ref = 1;
+    event_block_on_split(i, evm[L].buf, r->evhdr, r->blob[E_EV], r->ev_mid);
+}
+
+static void ev_off(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->ev_ref)
+        return;
+    r->ev_ref = 0;
+    if (--evm[L].refs <= 0) {
+        ev_free(evm[L].buf, evm[L].n);
+        evm[L].buf = NULL, evm[L].refs = 0;
+    }
+}
+
 static void turn_on_rest(int i)
 {
     BlockRt *r = &rt[i];
     unsigned t0 = ticks();
     free_tex(r);  /* uploaded: back to the near cells */
     enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
-    event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
+    if (r->ev_split)
+        ev_on(i);
+    else
+        event_block_on(i, r->size[E_EV] ? r->blob[E_EV] : NULL);
     r->stage = 2;
     step_time(t0);
     printf("world: block %d objects, enemies, events on: %u KB textures, %u ms after the read began, step %u us\n", i,
@@ -636,6 +842,7 @@ static void turn_off(int i)
     unsigned t0 = ticks();
     if (r->stage == 2) {  /* stage 1: no enemies or events yet; the uploads done so far (r->ent) go below */
         event_block_off(i);  /* before the collision its hit parts point into goes */
+        ev_off(i);           /* (after: another block of the map may take its running events over, event.c) */
         enemy_block_remove(i);
     }
     if (r->stage == 2 || r->ent > E_OBJ)
@@ -644,6 +851,7 @@ static void turn_off(int i)
         fx_block_on(i, 0, NULL);
     r->stage = 0;
     r->lean = r->lean_drain = 0;  /* (free_slot frees whatever tables are still held) */
+    coltile_off(i);
     col_unload(i);
     map_block_drop(i);  /* its relief too (bump.c) */
     if (bump_blk == i)
@@ -673,6 +881,7 @@ static void free_slot(int i)
         slot_of[r->slot] = -1;
     r->slot = -1;
     free_ents(r, 0, E_TEX);
+    mtx_off(i);
     world_stats.pool_used_kb -= (r->total >> 10) - (r->tab_gone ? tab_kb(r) : 0);
     r->tab_gone = 0;
     free_tex(r);
@@ -887,6 +1096,9 @@ static int start(int i)
      * 1508 KB in one piece found no hole with 2.1 MB free in it (largest 1068 KB; 2026-11-03, 2.8 MB arena of
      * 9e6dd67). Without room in the arena an entry takes the heap while it keeps WORLD_HEAP_FLOOR. All or nothing;
      * a failed start waits WORLD_RETRY_S, since each try may drop drawn cells. */
+    if (r->ev_split)  /* the map's events.bin is in: only this block's middle part */
+        r->size[E_EVM] = evm[map_lead(i)].buf ? 0 : r->ev_full;
+    r->size[E_MTX] = mtx[map_lead(i)].buf ? 0 : r->mtx_full;  /* the same for its shared textures */
     unsigned order[NENT], n = 0;
     for (unsigned e = 0; e < E_TEX; e++)  /* the texture buffer comes once the collision is on (tex_alloc) */
         if (r->size[e]) {
@@ -1075,6 +1287,7 @@ static const WorldLink *link_at(int b, unsigned tri)
 
 static void step(const float *feet, float dt)
 {
+    coltile_step(feet);  /* collision tiles around the feet (also in a settle's loop) */
     /* the block under the player: the one whose collision floor is under the feet; its triangle picks the blocks
      * wanted (world.bin links) */
     ColHit h = {.tri = -1};
@@ -1222,7 +1435,8 @@ unload:
 /* settled: nothing reading, every wanted neighbour on, the resident cells around the feet in (mapstream_busy) */
 static int settled(const float *feet)
 {
-    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R))
+    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R) ||
+        coltile_missing(feet, WORLD_SETTLE_COL_R))
         return 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
@@ -1283,6 +1497,11 @@ int world_hold(const float *feet)
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - WORLD_HOLD_DROP, COL_SOLID, &h))
         return 0;
     unsigned m = 0;
+    /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
+    if (coltile_under(feet))
+        for (int i = 1; i < nblk; i++)
+            if (rt[i].state == W_ON && rt[i].col_full && box_d(&tab[i], feet) <= 0.0f)
+                m |= 1u << i;
     for (int i = 1; i < nblk; i++)
         if (rt[i].open && rt[i].state != W_ON && !(hold_gone >> i & 1) && box_d(&tab[i], feet) <= 0.0f &&
             feet[1] >= tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
