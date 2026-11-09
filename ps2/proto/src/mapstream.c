@@ -45,6 +45,7 @@
 #include "dsrsnd_rpc.h"
 #include "vu1.h"
 #include "hitch.h"
+#include "world.h" /* world_current, world_pack: the neighbour copies (MS_COPIES) */
 
 /* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
@@ -1399,6 +1400,7 @@ enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, 
 static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
 static unsigned rs_stop[RS_N], rs_runs, rs_items, rs_reads, rs_contig, rs_kb, rs_frame;
 static unsigned rs_last_end, rs_last_k = ~0u;
+static unsigned cpy_reads;  /* reads from a neighbour copy (MS_COPIES) since the last runs line */
 /* per instance (world block): reads, and of them far backdrop / coarse / sky / texture / mip 1 / other items */
 enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
 static unsigned rk[MS_INST][RK_N + 1];
@@ -1410,8 +1412,9 @@ static void rs_log(void)
     rs_frame = frame;
     if (!rs_runs)
         return;
-    printf("mapstream: runs %u (%u items, %u KB), reads %u, %u start where the last ended; stops", rs_runs, rs_items,
-           rs_kb, rs_reads, rs_contig);
+    printf("mapstream: runs %u (%u items, %u KB), reads %u (%u from a neighbour copy), %u start where the last ended; "
+           "stops", rs_runs, rs_items, rs_kb, rs_reads, cpy_reads, rs_contig);
+    cpy_reads = 0;
     for (int i = 0; i < RS_N; i++)
         printf(" %s %u", rs_name[i], rs_stop[i]);
     printf("; by block");
@@ -1423,6 +1426,46 @@ static void rs_log(void)
     memset(rk, 0, sizeof rk);
     memset(rs_stop, 0, sizeof rs_stop);
     rs_runs = rs_items = rs_reads = rs_contig = rs_kb = 0;
+}
+
+/* Burg plan B8a (default on; DEFS=-DMS_COPIES=0 = always the block's own pack): tools/iso9660.py writes each world
+ * block's resident items (its mapres.bin entry, the bytes after the block table) once more beside every other block
+ * of its walk region, as <that block>/<this block>.pak. A read of block k's items while the player is in block j
+ * comes from j's copy, a short seek from what j itself reads, instead of from k's pack 60-100 MB away (ISO 2026-11-09:
+ * Burg <-> Firelink reads were ~half the far seeks in play). Opened on first use; host builds have no copies */
+#ifndef MS_COPIES
+#define MS_COPIES 1
+#endif
+static struct { signed char st; Pack pk; unsigned d0, len; } cpy[MS_INST][MS_INST];  /* [j][k]; st 0 ?, 1 open, -1 none */
+static Pack *copy_for(int k, unsigned *off, unsigned bytes)
+{
+    int j = world_current();
+    if (!MS_COPIES || j < 0 || j >= MS_INST || j == k)
+        return NULL;
+    if (!cpy[j][k].st) {
+        const char *pj = world_pack(j), *pk = world_pack(k);
+        unsigned d0, len;
+        char path[96];
+        cpy[j][k].st = -1;
+        if (pj && pk && pack_entry_raw(&ms[k].pk, "mapres.bin", &d0, &len)) {
+            snprintf(path, sizeof path, PACK_ROOT "%s/%s.pak", pj, pk);
+            if (pack_open_raw(&cpy[j][k].pk, path))
+                cpy[j][k].st = 1, cpy[j][k].d0 = d0, cpy[j][k].len = len;
+        }
+    }
+    if (cpy[j][k].st < 0 || *off < cpy[j][k].d0 || *off + bytes > cpy[j][k].d0 + cpy[j][k].len)
+        return NULL;
+    *off -= cpy[j][k].d0;
+    cpy_reads++;
+    return &cpy[j][k].pk;
+}
+static void copies_close(int k)  /* block k's instance closed, its reads cancelled: the copies of its items go */
+{
+    for (int i = 0; i < MS_INST; i++) {
+        if (cpy[i][k].st > 0)
+            pack_close(&cpy[i][k].pk);  /* (io_close queues behind the handle's reads) */
+        cpy[i][k].st = 0;
+    }
 }
 
 /* the queue's head into the arena and read (its missing wanted neighbours in mapres.bin along, up to MS_RUN bytes, as
@@ -1530,7 +1573,9 @@ static int issue(void)
             return 1;  /* the next queued one may still fit */
         }
         room_fail = 0;
-        int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        unsigned roff = it_off(m, g);
+        Pack *src = copy_for(w.k, &roff, gb);
+        int tk = pack_req_read(src ? src : &m->pk, roff, p, gb);
         if (tk) {
             unsigned o = it_off(m, g);
             rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
@@ -2008,6 +2053,24 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
         *(items[j].tag & MS_RES_TEX ? &tb : &cb) += items[j].bytes, nt += !!(items[j].tag & MS_RES_TEX);
     printf("mapstream: instance %d resident level per cell: %u cells + sky in %u items %u KB, %u mip 0 textures %u KB\n",
            k, n, nitems - nt, cb >> 10, nt, tb >> 10);
+    {  /* Burg plan B8a: where each kind of item lies in the pack (a neighbour's backdrop read from far away) */
+        static const char *const kn[5] = {"far", "coarse", "near", "tex", "mip1"};
+        unsigned c[5] = {0}, kb[5] = {0}, lo[5], hi[5] = {0};
+        for (int q = 0; q < 5; q++)
+            lo[q] = ~0u;
+        for (unsigned j = 0; j < nitems; j++) {
+            unsigned tg = items[j].tag;
+            int q = tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? 4 : 3) : tg & MS_RES_FAR ? 0 : tg & MS_RES_COARSE ? 1 : 2;
+            c[q]++, kb[q] += items[j].bytes;
+            lo[q] = items[j].off < lo[q] ? items[j].off : lo[q];
+            hi[q] = items[j].off + items[j].bytes > hi[q] ? items[j].off + items[j].bytes : hi[q];
+        }
+        printf("mapstream: instance %d items in the pack:", k);
+        for (int q = 0; q < 5; q++)
+            if (c[q])
+                printf(" %s %u (%u KB) at %u..%u KB", kn[q], c[q], kb[q] >> 10, lo[q] >> 10, hi[q] >> 10);
+        printf("\n");
+    }
     return 1;
 }
 
@@ -2023,6 +2086,7 @@ void mapstream_close(int k)
             i--;
         }
     mapstream_stats.pending = nrd;
+    copies_close(k);
     for (unsigned id = 0; id < it_n(m); id++) {
         unsigned a;
         if ((m->state[id] == MS_READY || m->state[id] == MS_READING) && (grp_of(m, id, &a), a == id))
