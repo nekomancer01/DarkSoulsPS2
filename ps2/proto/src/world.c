@@ -425,7 +425,9 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
         }
-        if ((!i && !WORLD_BOOT_RELIEF) || !pack_entry_raw(&r->pk, "bump.bin", &r->bump_off, &r->bump_size))
+        /* a header-only bump.bin (48 bytes: no relief, e.g. BUMP_BAKE exports) is no relief: never read */
+        if ((!i && !WORLD_BOOT_RELIEF) || !pack_entry_raw(&r->pk, "bump.bin", &r->bump_off, &r->bump_size) ||
+            r->bump_size <= 48)
             r->bump_off = r->bump_size = 0;
         if (!r->open) {
             pack_close(&r->pk);

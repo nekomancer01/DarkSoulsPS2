@@ -1704,6 +1704,9 @@ def gather(game, map_id):
             elif name and name in dds:
                 if (name, blend) not in tex_index:
                     dec = souls.dds_decode_rgba(dds[name], TEX_MAX)
+                    if dec and export_normal.BAKE and not blend and m.get("bump") in dds and export_normal.bumped(m["mtd"]):
+                        baked = export_normal.bake_rgba(*dec, dds[m["bump"]])  # the relief in the texels (BUMP_BAKE)
+                        dec = (dec[0], dec[1], baked) if baked is not None else dec
                     if dec:
                         tex_index[name, blend] = len(textures)
                         textures.append(texmap.encode(*dec, soft=blend, name=name))

@@ -271,6 +271,12 @@ EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
 # and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structural pool (src/coltile.c).
 # COL_TILES=0: collision.bin read whole with the lite set (the export stays paged; COL_TILE=0 exports unpaged files).
 COL_TILES ?= 1
+# BUMP_BAKE (default 1): normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba);
+# bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: the runtime CLUT relief pass (needs a
+# re-export: make distclean of the map exports, the switch is not in the export stamps).
+BUMP_BAKE ?= 1
+export BUMP_BAKE
+EE_CFLAGS += -DBUMP_BAKED=$(BUMP_BAKE)
 EE_CFLAGS += -DCOL_TILES=$(COL_TILES)
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)
