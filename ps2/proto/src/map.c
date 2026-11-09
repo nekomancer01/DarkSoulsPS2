@@ -67,10 +67,10 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
  * untextured level, loaded with the block. A cell beyond HZN_R (+- HZN_HYST) of the camera draws it in place of its
  * coarse level and kept opaque meshes (hz_covers), and so does a nearer cell whose coarse level is not in yet: a late
  * read shows a blurrier cell, not a hole. mapstream.c reads those chunks only within MS_R_HZN (64 m) of the player's
- * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 56 m (horizon.py judges its error from 54 m).
+ * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 40 m (horizon.py judges its error from 38 m; 56 / 54 m before the Burg plan's B3).
  * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
 #ifndef HZN_R
-#define HZN_R 56.0f
+#define HZN_R 40.0f  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
 #endif
 #define HZN_HYST 2.0f
 /* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque
@@ -101,7 +101,7 @@ typedef struct { float mn[3], mx[3]; unsigned short first, count; unsigned flags
 #define NEAR_HYST 2.0f  /* m: a cell switches to its near level inside NEAR_DRAW_R - NEAR_HYST, back beyond + NEAR_HYST
                          * (no flipping near <-> coarse while the camera hovers at the radius) */
 #ifndef NEAR_DRAW_R
-#define NEAR_DRAW_R 24.0f  /* m: a loaded near blob is drawn only for cells whose box is this close to the camera (the
+#define NEAR_DRAW_R 18.0f  /* (Burg plan B3: + NEAR_HYST = mapstream.c MS_R0_DRAW 20 m; 24 m before) m: a loaded near blob is drawn only for cells whose box is this close to the camera (the
                             * blobs load out to 40 m ahead of time); farther cells keep the coarse level (ASSUMED, map-36:
                             * Burg p00_082: 85k tris / map 15.3 ms at 24 m, 67k / 13.8 ms at 16 m; 16 m made the near <->
                             * coarse swap visible: Firelink's coarse level is judged from STREAM_D 24 m) */
@@ -924,7 +924,7 @@ static void miss_scan(const MapInst *m, int k, int ci, int hzf, int has_hz, int 
          * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
         /* a chunk the camera cannot see is not read (pvs.c), nor one the draw groups hide (drawgrp.c, mapstream.c
          * MS_DG): neither is a hole. Counted as missing, a cell whose coarse chunks are hidden stand-ins drew its
-         * horizon inside HZN_R for good (Firelink's cell 47 seen from the Burg, 2026-11-08) */
+         * horizon inside HZN_R for good (Firelink's cell 47 seen from the Burg: report3's 99.5 %, 2026-11-08) */
         if (!res_base(m, order[j]) && !(fl & CHUNK_GRASS) &&
             pvs_chunk(k, (unsigned)ci, order[j]) && dg_shown(k, order[j])) {
             *miss = 1;
@@ -1520,6 +1520,7 @@ int map_draw(V3 eye)
     static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
     int nhzfade = 0;
     unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
+    static unsigned hzx[3][3];  /* cells the horizon stood in for inside HZN_R this frame (log) */
     unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
     unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
     float pop_d = 1e9f;
@@ -1698,6 +1699,8 @@ int map_draw(V3 eye)
                 if (h && hole_ex[0] == ~0u)
                     hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
             }
+            if (use_hz && !hzf && hz_fill < 3)  /* (the log names up to three: instance.cell at distance) */
+                hzx[hz_fill][0] = (unsigned)k, hzx[hz_fill][1] = (unsigned)ci, hzx[hz_fill][2] = (unsigned)hz_d;
             hz_fill += use_hz && !hzf;
             if (HZN_FADE > 0 && hc && hc->count && !use_hz && !nd && hz_d > HZN_R - HZN_FADE && nhzfade < MAX_HZ_FADE) {
                 /* inside HZN_R, on the coarse level: its horizon over it at alpha (d - (HZN_R - HZN_FADE)) / HZN_FADE,
@@ -2103,7 +2106,8 @@ int map_draw(V3 eye)
                 printf("map: effects not in yet in %u cells (most in a frame over 1 s)\n", unc_max);
             unc_max = 0;
             if (hzf_max)  /* not holes: the horizon stood in for a coarse level not in yet, inside HZN_R */
-                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris\n", hzf_max, hzt_max);
+                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris; e.g. %u.%u at %u m, %u.%u at %u m\n",
+                       hzf_max, hzt_max, hzx[0][0], hzx[0][1], hzx[0][2], hzx[1][0], hzx[1][1], hzx[1][2]);
             hzf_max = hzt_max = 0;
             if (pops_s)
                 printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "

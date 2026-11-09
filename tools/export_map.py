@@ -139,6 +139,30 @@ WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
 # bytes per triangle of a streamed chunk (positions, st, colours, padding, record: 44-45 measured over 4 blocks as lists;
 # indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level)
 WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
+# WS_UNION (Burg plan B3, default on; WS_UNION=0 = the per-block budgets above): the spot budgets are what the arena's
+# visual room holds at a spot, shared by every block loaded there. The runtime measures a spot as tools/world_budget.py
+# does: near parts within WS_NEAR_R (mapstream.c MS_R0_DRAW) and the pinned coarse level from there to WS_PIN_R
+# (MS_R1_PIN), plus kept meshes and the backdrop. The room (WS_ROOM KB: world.c WORLD_ARENA_KB less the structural and
+# misc pools, x 92 %, as world_budget.py prints it) is split into WS_NEAR_KB for the near level and the rest for the
+# coarse level less WS_FAR_KB for kept meshes, backdrop and sky (ASSUMED: their p90 at the Burg spots); a block of a
+# world group with neighbours of its own MSB (tools/area.py BLOCKS cells) gets the share of each budget that its cells
+# cover of the spot's disc (WS_NEAR_R for the near level, WS_PIN_R for the coarse level), the neighbours the rest.
+# Other MSBs (Firelink, the Asylum) are not shared out: tools/world_budget.py checks those seams.
+WS_UNION = os.environ.get("WS_UNION", "1") == "1"
+# The hard tier (2026-11-08, the plan's review): near within 20 m, coarse and kept meshes within 40 m (map.c HZN_R 40:
+# the horizon stands in beyond), against the room world_budget.py prints for world.c's WORLD_ARENA_KB 9152 (3618 KB with the Burg's lite sets, 2026-11-08)
+WS_ROOM = float(os.environ.get("WS_ROOM", 3618))
+WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 1792))  # (2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+WS_FAR_KB = float(os.environ.get("WS_FAR_KB", 128))  # kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)
+# a spot still over at the caps may take its cells past the cap up to WS_ALLOW_PX (the seam allowance: two blocks'
+# cells at one spot); world_budget.py fails the build when more than 1 % of the spots need it
+WS_NEAR_R = float(os.environ.get("WS_NEAR_R", 20.0))
+WS_PIN_R = float(os.environ.get("WS_PIN_R", 40.0))
+WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
+# a block's share of a seam spot's room, x WS_SHARE_K (capped at the whole room): the neighbour's cells seldom fill
+# their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
+# over the union of blocks stays at 0 %)
+WS_SHARE_K = float(os.environ.get("WS_SHARE_K", 1.0))
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
 GAME_LOD = os.environ.get("GAME_LOD") == "1"
@@ -2281,6 +2305,133 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     return eps
 
 
+# CUT_CELLS (Burg plan B3, default on; CUT_CELLS=0 = triangles grouped by centroid only, as before): before the two
+# simplify passes, every simplified mesh's triangles are cut at the CHUNK_GRID planes, so each piece lies inside one
+# cell's cube and a cell's box is its cube (the Undead Burg's near cells reached 12 m past it at the median, up to 74 m:
+# big wall / ground triangles; mapstream.c / map.c then wanted and drew near levels ~1.3x farther than the export
+# budgets assumed, TECH_DEBT world-10). The cut points are new vertices on the plane (shared by both sides, so the
+# simplifier's cell cuts lock them: no cracks), with UV, colour, alpha and relief frame interpolated along the edge.
+CUT_CELLS = os.environ.get("CUT_CELLS", "1") == "1"
+CUT_EPS = 1e-4  # m: a corner this close to a plane counts as on it (not cut again)
+# only triangles reaching more than CUT_MIN m past their centroid's cube are cut: every cut locks the cut points in both
+# simplify passes, and cutting every crossing triangle of the Undead Burg's tower block made its coarse level 25 % and
+# its near level 6 % bigger (2026-11-08); a cell's box then reaches at most CUT_MIN past its cube
+CUT_MIN = float(os.environ.get("CUT_MIN", 4.0))
+CUT_STATS = [0, 0, 0]  # meshes cut, triangles cut, pieces they became
+
+
+def cut_cells(meshes):
+    """CUT_CELLS: cut the triangles of every non-kept mesh at the CHUNK_GRID planes (x, then y, then z), in place:
+    m["pos"], m["wpos"], m["tris"], m["wuv"], m["wrgb"], m["wa"] and the relief frames (export_normal.MESH) grow by the
+    cut points; a triangle's pieces take its place in the list, in its winding."""
+    import numpy as np
+    G = CHUNK_GRID
+    for m in meshes:
+        if m["keep"] or not len(m["tris"]):
+            continue
+        arr = lambda x, w, dt=np.float64: np.asarray(x.a if isinstance(x, souls.Rows) else x, dt).reshape(-1, w) \
+            if len(x) else np.zeros((0, w), dt)
+        P = arr(m["pos"], 3)
+        WP = arr(m["wpos"], 1, np.int64).reshape(-1)
+        T = arr(m["tris"], 3, np.int64)
+        X = P[WP[T]]  # (tris, corners, xyz)
+        c0 = np.floor(X.sum(1) / 3 / G) * G  # the cube of each centroid (where the simplifier groups it)
+        over = np.maximum(c0 - X.min(1), X.max(1) - (c0 + G)).max(1)
+        span = np.flatnonzero(over > CUT_MIN)
+        if not len(span):
+            continue
+        nw0 = len(WP)
+        UV = arr(m["wuv"], 2)
+        RGB = arr(m["wrgb"], 3) if len(m["wrgb"]) else np.zeros((nw0, 3))
+        A = np.asarray(m["wa"], np.float64).reshape(-1) if len(m["wa"]) else np.zeros(nw0)
+        B = export_normal.MESH[m["bump"]] if m.get("bump") is not None else None
+        P_l, WP_l, UV_l, RGB_l, A_l = list(map(tuple, P.tolist())), WP.tolist(), UV.tolist(), RGB.tolist(), A.tolist()
+        BN_l = B["N"].tolist() if B is not None else None
+        BT_l = B["T"].tolist() if B is not None else None
+        BW_l = B["W"].tolist() if B is not None else None
+        pkey, wkey = {}, {}
+
+        def point(wi, wj, a, v):
+            """the cut point of edge (wi, wj) on plane a = v: one position per position pair, one wedge per wedge pair"""
+            pi_, pj_ = WP_l[wi], WP_l[wj]
+            if pi_ > pj_ or (pi_ == pj_ and wi > wj):
+                wi, wj, pi_, pj_ = wj, wi, pj_, pi_
+            k = (pi_, pj_, a, v)
+            p = pkey.get(k)
+            qa, qb = P_l[pi_], P_l[pj_]
+            t = (v - qa[a]) / (qb[a] - qa[a])
+            if p is None:
+                q = [qa[c] + t * (qb[c] - qa[c]) for c in range(3)]
+                q[a] = v
+                p = pkey[k] = len(P_l)
+                P_l.append(tuple(q))
+            kw = (wi, wj, a, v)
+            w = wkey.get(kw)
+            if w is None:
+                w = wkey[kw] = len(WP_l)
+                WP_l.append(p)
+                lerp = lambda L: [x + t * (y - x) for x, y in zip(L[wi], L[wj])]
+                UV_l.append(lerp(UV_l))
+                RGB_l.append(lerp(RGB_l))
+                A_l.append(A_l[wi] + t * (A_l[wj] - A_l[wi]))
+                if BN_l is not None:
+                    for L in (BN_l, BT_l):
+                        n = lerp(L)
+                        ln = math.sqrt(sum(c * c for c in n)) or 1.0
+                        L.append([c / ln for c in n])
+                    BW_l.append(BW_l[wi])
+            return w
+
+        def split(tri, a, v):
+            s = [P_l[WP_l[w]][a] - v for w in tri]
+            side = [0 if abs(x) <= CUT_EPS else (1 if x > 0 else -1) for x in s]
+            if min(side) >= 0 or max(side) <= 0:
+                return [tri]
+            if 0 in side:  # one corner on the plane, the others on either side: two pieces
+                r = side.index(0)
+                A_, B_, C_ = tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]
+                p = point(B_, C_, a, v)
+                return [(A_, B_, p), (A_, p, C_)]
+            r = next(i for i in range(3) if side[i] != side[(i + 1) % 3] and side[i] != side[(i + 2) % 3])
+            A_, B_, C_ = tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]  # A alone on its side
+            pab, pac = point(A_, B_, a, v), point(A_, C_, a, v)
+            return [(A_, pab, pac), (pab, B_, C_), (pab, C_, pac)]
+
+        def cut(tri, a):
+            xs = [P_l[WP_l[w]][a] for w in tri]
+            v = (math.floor((min(xs) + CUT_EPS) / G) + 1) * G
+            if v >= max(xs) - CUT_EPS:
+                return [tri]
+            out = []
+            for piece in split(tri, a, v):
+                out += [piece] if piece == tri else cut(piece, a)
+            return out
+        Tl = T.tolist()
+        rep = {}
+        for i in span.tolist():
+            q = [tuple(Tl[i])]
+            for a in range(3):
+                q = [r for t in q for r in cut(t, a)]
+            rep[i] = q
+        pieces = sum(len(q) for q in rep.values())
+        Tn = [t for i, x in enumerate(Tl) for t in rep.get(i, (x,))]
+        CUT_STATS[0] += 1
+        CUT_STATS[1] += len(span)
+        CUT_STATS[2] += pieces
+        m["pos"] = souls.Rows(np.ascontiguousarray(np.array(P_l, np.float64)))
+        m["wpos"] = WP_l
+        m["tris"] = souls.Rows(np.ascontiguousarray(np.array(Tn, np.int32)))
+        m["wuv"] = souls.Rows(np.ascontiguousarray(np.array(UV_l, np.float64)))
+        m["wrgb"] = [[int(round(c)) for c in x] for x in RGB_l]
+        m["wa"] = [int(round(x)) for x in A_l]
+        m.pop("_np", None)  # gather's arrays of the old lists
+        if B is not None:
+            B["N"], B["T"], B["W"] = np.array(BN_l, np.float64), np.array(BT_l, np.float64), np.array(BW_l, np.float64)
+    if CUT_STATS[0]:
+        print(f"cut cells: {CUT_STATS[1]} triangles of {CUT_STATS[0]} meshes crossed a {G:.0f} m plane -> "
+              f"{CUT_STATS[2]} pieces")
+
+
 def cell_extents(P, poff, W, woff, T, toff):
     """{CHUNK_GRID cell key: (min xyz, max xyz)} of the input triangles grouped by centroid (simplify_meshes_c's
     flat arrays): the box mapstream.c and map.c measure a cell's distance by (its chunks' box) is this, not the cell's
@@ -2304,6 +2455,102 @@ def cell_extents(P, poff, W, woff, T, toff):
     return {tuple(k): (a, b) for k, a, b in zip(u.tolist(), mn, mx)}
 
 
+_NAV_VOX = {}  # map id -> set of dilated 8 m voxels of its navmesh (ws_shares)
+
+
+def _nav_voxels(game, map_id, rects=None):
+    """the 8 m voxels within one voxel of map_id's navmesh vertices (inside rects, xz metres, if given)"""
+    k = (map_id, tuple(rects or ()))
+    if k not in _NAV_VOX:
+        M = souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb"))
+        pts = np.asarray(navmesh_points(game, map_id, M, lambda *q: True) or np.zeros((0, 3)), np.float64).reshape(-1, 3)
+        if rects:
+            ok = np.zeros(len(pts), bool)
+            for x0, z0, x1, z1 in rects:
+                ok |= (pts[:, 0] >= x0) & (pts[:, 0] < x1) & (pts[:, 2] >= z0) & (pts[:, 2] < z1)
+            pts = pts[ok]
+        v = set(map(tuple, np.floor(pts / 8.0).astype(np.int64).tolist()))
+        _NAV_VOX[k] = {(x + a, y + b, z + c) for x, y, z in v for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)}
+    return _NAV_VOX[k]
+
+
+def ws_foreign_spots(game, map_id, nav_v, reach=64.0, most=2000):
+    """WS_UNION: navmesh vertices of the other MSBs of this export's world (Firelink next to the Burg) within reach
+    metres of this export's own navmesh: a seam's spots are solved from both sides"""
+    b = area_mod.block()
+    name, cfg = b if b else (map_id, {"map": map_id})
+    world = next((w for w in area_mod.WORLDS.values() if name in w), [name])
+    own = np.asarray(nav_v, np.float64).reshape(-1, 3)
+    if not len(own):
+        return []
+    vox = set(map(tuple, np.floor(own / reach).astype(np.int64).tolist()))
+    near = {(x + a, y + c, z + d) for x, y, z in vox for a in (-1, 0, 1) for c in (-1, 0, 1) for d in (-1, 0, 1)}
+    out = []
+    for omap in sorted({(area_mod.BLOCKS[o]["map"] if o in area_mod.BLOCKS else o) for o in world} - {cfg["map"]}):
+        M = souls.msb1(souls.read(f"{game}/map/MapStudio/{omap}.msb"))
+        pts = np.asarray(navmesh_points(game, omap, M, lambda *q: True) or np.zeros((0, 3)), np.float64).reshape(-1, 3)
+        pts = pts[[tuple(v) in near for v in np.floor(pts / reach).astype(np.int64).tolist()]] if len(pts) else pts
+        if len(pts):
+            d = np.full(len(pts), np.inf)
+            for a in range(0, len(own), 1024):
+                d = np.minimum(d, np.sqrt(((pts[:, None] - own[None, a:a + 1024]) ** 2).sum(2)).min(1))
+            pts = pts[d <= reach]
+        out += [tuple(p) for p in pts[::max(1, len(pts) // most)].tolist()]
+    if out:
+        print(f"budget: {len(out)} spots of other maps within {reach:.0f} m share the room (WS_UNION)")
+    return out
+
+
+def ws_shares(P, r, game=None, map_id=None, nav_v=None):
+    """WS_UNION: per spot (P: (m, 3)) the share of the disc of radius r (xz at the spot's height, sampled every 4 m)
+    that this export covers, of what it and the other blocks of its world (tools/area.py WORLDS) cover together. A
+    block of the same MSB with cells covers its cells (tools/area.py BLOCKS); another MSB (Firelink, the Asylum) or a
+    block without cells covers the 8 m voxels around its navmesh. 1 where nothing covers the disc."""
+    b = area_mod.block()
+    name, cfg = b if b else (map_id, {"map": map_id})
+    world = next((w for w in area_mod.WORLDS.values() if name in w), [name])
+    g = np.arange(-r, r + 1e-6, 4.0)
+    gx, gz = np.meshgrid(g, g)
+    m = gx * gx + gz * gz <= r * r
+    X = P[:, None, 0] + gx[m][None]
+    Y = np.broadcast_to(P[:, None, 1], X.shape)
+    Z = P[:, None, 2] + gz[m][None]
+    C = area_mod.CELL
+    rects = lambda c: [tuple(c)] if isinstance(c[0], (int, float)) else [tuple(x) for x in c]
+    to_m = lambda rs: [(x0 * C, z0 * C, (x1 + 1) * C, (z1 + 1) * C) for x0, z0, x1, z1 in rs]
+
+    def by_rects(rs):
+        out = np.zeros(X.shape, bool)
+        for x0, z0, x1, z1 in to_m(rs):
+            out |= (X >= x0) & (X < x1) & (Z >= z0) & (Z < z1)
+        return out
+
+    def by_nav(vox):
+        V = np.floor(np.stack([X, Y, Z], -1) / 8.0).astype(np.int64)
+        flat = V.reshape(-1, 3)
+        return np.fromiter(((x, y, z) in vox for x, y, z in flat.tolist()), bool, len(flat)).reshape(X.shape)
+    if cfg.get("cells"):
+        own = by_rects(rects(cfg["cells"]))
+    elif nav_v is not None and len(nav_v):
+        pts = np.asarray(nav_v, np.float64).reshape(-1, 3)
+        v = set(map(tuple, np.floor(pts / 8.0).astype(np.int64).tolist()))
+        own = by_nav({(x + a, y + c, z + d) for x, y, z in v for a in (-1, 0, 1) for c in (-1, 0, 1) for d in (-1, 0, 1)})
+    else:
+        return np.ones(len(P))
+    oth = np.zeros(X.shape, bool)
+    for o in world:
+        if o == name:
+            continue
+        ob = area_mod.BLOCKS.get(o)
+        omap = ob["map"] if ob else o
+        if ob and ob.get("cells") and omap == cfg["map"] and cfg.get("cells"):
+            oth |= by_rects(rects(ob["cells"]))
+        elif game:
+            oth |= by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
+    no, nt = own.sum(1), (own | oth).sum(1)
+    return np.minimum(1.0, np.where(nt > 0, no / np.maximum(nt, 1), 1.0) * WS_SHARE_K)
+
+
 def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
     """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
     within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
@@ -2323,9 +2570,12 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
     K = 0
     while K < 12 and math.sqrt(eps * 1.5 ** (K + 1)) * 568 <= px_cap + 1e-6:
         K += 1
-    steps = [eps * 1.5 ** k for k in range(K + 1)]
+    KA = K  # the seam allowance's cap (WS_UNION: WS_ALLOW_PX)
+    while WS_UNION and KA < 16 and math.sqrt(eps * 1.5 ** (KA + 1)) * 568 <= max(px_cap, WS_ALLOW_PX) + 1e-6:
+        KA += 1
+    steps = [eps * 1.5 ** k for k in range(KA + 1)]
     cnt = np.zeros(max(njobs, 1), np.int64)
-    by = np.zeros((len(cells), K + 1))  # bytes of cell c at step k
+    by = np.zeros((len(cells), KA + 1))  # bytes of cell c at step k
     sel = jcell >= 0
     for k, e in enumerate(steps):
         MX.mx_simp_job_counts(h, e, cnt.ctypes.data)
@@ -2344,6 +2594,7 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
             else:
                 lo[i], hi[i] = np.minimum(lo[i], e[0]), np.maximum(hi[i], e[1])
     P = np.asarray(samples, np.float64).reshape(-1, 3)
+    nb = np.broadcast_to(np.asarray(nbytes, np.float64), (len(P),))  # per spot (WS_UNION) or one for all
     d = np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
     M = (d >= r_in) & (d < r) if r else np.ones(d.shape, bool)
     Mf = M.astype(np.float64)
@@ -2356,8 +2607,8 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
     # 2026-11-08: 14 of 60 near cells raised in the Burg block, 25 % of its spots over budget -> 41 cells, 14 %)
     capped = np.zeros(len(W), bool)
     while raised < 100000:
-        p = int(np.where(capped, -1.0, W).argmax())
-        if capped[p] or W[p] <= nbytes:
+        p = int(np.where(capped, -np.inf, W - nb).argmax())  # the spot most over its budget
+        if capped[p] or W[p] <= nb[p]:
             break
         cand = np.flatnonzero(M[p] & (step < K) & (cur > 0))
         if not len(cand):
@@ -2372,15 +2623,45 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
             W -= Mf[:, c] * (cur[c] - new)
             cur[c] = new
         raised += 1
+    allow = np.zeros(len(W), bool)  # spots that took the seam allowance (past the cap)
+    while KA > K and raised < 200000:
+        p = int(np.where(allow | ~capped, -np.inf, W - nb).argmax())
+        if not capped[p] or allow[p] or W[p] <= nb[p]:
+            break
+        cand = np.flatnonzero(M[p] & (step < KA) & (cur > 0))
+        if not len(cand):
+            allow[p] = True  # (no step left: stays over)
+            continue
+        cand = cand[step[cand] == step[cand].min()]
+        for c in cand.tolist():
+            step[c] += 1
+            new = by[c, step[c]]
+            W -= Mf[:, c] * (cur[c] - new)
+            cur[c] = new
+        raised += 1
+        if W[p] <= nb[p]:
+            allow[p] = True
+    mine = nb >= nb.max() * 0.999 if len(nb) else nb > 0  # the block's own spots (its whole share of the room)
+    allow_pct = float(allow[mine].mean() * 100) if mine.any() else 0.0
+    if allow.any():
+        hot = sorted({cells[c] for c in np.flatnonzero(step > K).tolist()})
+        print(f"budget {name}: seam allowance (past {px_cap:.0f} px, up to {WS_ALLOW_PX:.0f} px) at "
+              f"{allow_pct:.1f} % of its own spots ({allow.mean() * 100:.1f} % of all), cells {hot}")
     job_eps = np.array([steps[step[jcell[i]]] if jcell[i] >= 0 else (eps_far if jc[i] == "far" and eps_far is not None
                                                                        else eps) for i in range(njobs)], np.float64)
     nr = int((step > 0).sum())
-    over = float((W > nbytes).mean() * 100)
-    print(f"budget {name}: worst spot {w0 / 1024:.0f} -> {W.max() / 1024:.0f} KB (budget {nbytes / 1024:.0f} KB, "
+    over = float((W > nb).mean() * 100)
+    nbytes = float(np.median(nb))
+    print(f"budget {name}: worst spot {w0 / 1024:.0f} -> {W.max() / 1024:.0f} KB (budget {nbytes / 1024:.0f} KB"
+          f"{' median' if nb.min() < nb.max() else ''}, "
           f"{len(P)} navmesh points); {nr} of {len(cells)} cells coarser (up to {1.5 ** step.max():.1f}x the threshold, "
           f"{math.sqrt(steps[step.max()]) * 568:.1f} px)" +
           (f"; {over:.1f} % of the spots over budget at the {px_cap:.0f} px cap" if stuck else ""))
-    BUDGET_REPORT.append(dict(level=name, worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
+    BUDGET_REPORT.append(dict(level=name, allow_pct=round(allow_pct, 2),
+                              allow_spots=[[round(float(v), 1) for v in P[i]] + [round(float(W[i]) / 1024)]
+                                           for i in np.flatnonzero(allow & mine)[:500].tolist()],
+                              allow_cells=[list(cells[c]) for c in np.flatnonzero(step > K).tolist()],
+                              worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
                               budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
                               met=not stuck, spots_over_pct=round(over, 1),
                               p90_kb=round(float(np.percentile(W, 90)) / 1024)))
@@ -2704,19 +2985,31 @@ def main():
             m["tris"] = [tuple((m["pos"][m["wpos"][w]], w) for w in t) for t in m["tris"]]
     elif STREAM:  # coarse level first (it must not see the near level's corners), both cut by cell
         prune_foliage(meshes_in, nav_v, nav_t)
+        if CUT_CELLS:
+            cut_cells(meshes_in)
+            rss("cut cells")
         for m in meshes_in:
             m["tris_in"] = m["tris"]
         far = far_cells(meshes_in, nav_v)
         # player positions for the spot budgets (world streaming v2): navmesh vertices, at most 4000
         ws_s = nav_v[::max(1, len(nav_v) // 4000)] if WS_BUDGET else None
+        if ws_s and WS_UNION:  # the shared visual room (WS_UNION): per spot, this block's share
+            ws_s = list(ws_s) + ws_foreign_spots(game, map_id, nav_v)  # and the other MSBs' spots this block reaches
+            Ps = np.asarray(ws_s, np.float64).reshape(-1, 3)
+            ws_bc = (WS_NEAR_R, WS_PIN_R, ws_shares(Ps, WS_PIN_R, game, map_id, nav_v) * (WS_ROOM - WS_NEAR_KB - WS_FAR_KB) * 1024,
+                     "coarse level", WS_PX1)
+            ws_bn = (0.0, WS_NEAR_R, ws_shares(Ps, WS_NEAR_R, game, map_id, nav_v) * WS_NEAR_KB * 1024, "near level", WS_PX0)
+        elif ws_s:
+            ws_bc = (WS_R1_IN, WS_R1, WS_B1, "coarse level", WS_PX1)
+            ws_bn = (0.0, WS_R0, WS_B0, "near level", WS_PX0)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
                         floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS),
-                        budget=(WS_R1_IN, WS_R1, WS_B1, "coarse level", WS_PX1) if ws_s else None, nav_s=ws_s)
+                        budget=ws_bc if ws_s else None, nav_s=ws_s)
         rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0,
-                        budget=(0.0, WS_R0, WS_B0, "near level", WS_PX0) if ws_s else None, nav_s=ws_s)
+                        budget=ws_bn if ws_s else None, nav_s=ws_s)
     else:
         prune_foliage(meshes_in, nav_v, nav_t)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t)
