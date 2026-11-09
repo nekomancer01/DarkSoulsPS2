@@ -157,12 +157,14 @@ def structural(gen):
     maps = [b[32 + 64 * i:48 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     lr = struct.unpack_from(f"<{2 * n}I", b, 16 + 64 * n)
     lbase = 16 + 64 * n + 8 * n
-    ent, evfull = {}, {}
+    ent, evfull, mtxfull = {}, {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
         if os.path.exists(os.path.join(d, "maptab.bin")):
             ent[i] = lite_entries(d)
             evfull[i] = ev_parts(d)[1]
+            mp = os.path.join(d, "maptex.bin")
+            mtxfull[i] = os.path.getsize(mp) if os.path.exists(mp) else 0
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
@@ -175,11 +177,14 @@ def structural(gen):
             v = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
                        reverse=True)[:WORLD_SLOTS]
             evm = {}  # WORLD_EV_SHARED: one whole events.bin per map of the blocks on
+            mtx = {}  # one maptex.bin per map (mapsplit.py TEX_PEERS, world.c mtx[])
             for i in on:
                 full = evfull.get(i, 0)
                 if full:
                     evm[maps[i]] = max(evm.get(maps[i], 0), r128(full))
-            v = v + list(evm.values())
+                if mtxfull.get(i):
+                    mtx[maps[i]] = max(mtx.get(maps[i], 0), r128(mtxfull[i]))
+            v = v + list(evm.values()) + list(mtx.values())
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)

@@ -166,10 +166,13 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #ifndef WORLD_EV_SHARED
 #define WORLD_EV_SHARED 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_EV, E_EVM, E_OBJ, E_FX, NENT };
-static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "events.bin",
-                                          "events.bin", "objects.bin", "fx.bin"};
-#define E_OPTIONAL(e) ((e) >= E_EV)
+/* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
+ * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
+ * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_OBJ, E_FX, NENT };
+static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
+                                          "events.bin", "events.bin", "objects.bin", "fx.bin"};
+#define E_OPTIONAL(e) ((e) >= E_MTX)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
@@ -203,6 +206,8 @@ typedef struct {
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
      * the map has no copy in: ev_full bytes); its own header; it holds a reference on its map's copy */
     int ev_split, ev_ref;
+    unsigned mtx_full;  /* maptex.bin's size (0: none); the block holds a reference on its map's copy (mtx_ref) */
+    int mtx_ref;
     unsigned ev_mid, ev_full;
     unsigned evhdr[24] __attribute__((aligned(64)));
     void *blob[NENT];
@@ -246,7 +251,7 @@ static int room_stuck;  /* this step a wanted block found no room and no kept bl
 static unsigned hold_m, hold_want, hold_gone;
 static float hold_s;
 /* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
-static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX];
+static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
 
 static inline unsigned ticks(void)
 {
@@ -412,6 +417,8 @@ int world_init(const char *boot_area)
         if (i && r->open && COL_TILES && !col_paged(i, r))
             r->open = 0;
         r->off[E_EVM] = r->size[E_EVM] = 0;  /* (the loop above read it as a second events.bin: ev_split) */
+        if (i && r->open && (r->mtx_full = r->size[E_MTX]))  /* counted once per map (world_struct_bytes) */
+            r->total -= (r->mtx_full + 127) & ~127u;
         if (i && r->open)
             ev_split(r);
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
@@ -489,6 +496,14 @@ unsigned world_struct_bytes(void)
                         m = a;
                 v[m] = lean_v[m], whole--;
             }
+            for (int i = 1; i < nblk; i++)  /* one maptex.bin per map of the blocks on */
+                if (rt[i].open && rt[i].mtx_full && (keep >> i & 1) && map_lead(i) == i) {
+                    unsigned most = 0;
+                    for (int j = i; j < nblk; j++)
+                        if (rt[j].open && (keep >> j & 1) && map_lead(j) == i)
+                            most = rt[j].mtx_full > most ? rt[j].mtx_full : most;
+                    sum += (most + 127) & ~127u;
+                }
             for (int i = 1; i < nblk; i++)  /* WORLD_EV_SHARED: one events.bin per map of the blocks on */
                 if (rt[i].open && rt[i].ev_split && (keep >> i & 1) && map_lead(i) == i) {
                     unsigned most = 0;
@@ -648,6 +663,50 @@ static void bump_drop(void)
 
 /* A block's lite set is read: hand its blobs to the systems (no copies, no IOP waits) */
 /* first step: collision and map (the rest follows in turn_on_rest once the textures are read) */
+/* the map's shared textures for block i (its own read becomes the map's copy, or goes when there is one; read now
+ * when the copy it counted on went before it turned on) */
+static void ev_free(void *p, unsigned n);
+static void mtx_on(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->mtx_full || r->mtx_ref) {
+        map_block_shared(i, r->mtx_full ? mtx[L].buf : NULL);
+        return;
+    }
+    if (r->blob[E_MTX]) {
+        if (!mtx[L].buf)
+            mtx[L].buf = r->blob[E_MTX], mtx[L].n = r->mtx_full;
+        else
+            ev_free(r->blob[E_MTX], r->mtx_full);
+        r->blob[E_MTX] = NULL;
+    } else if (!mtx[L].buf) {
+        void *b = memalign(128, (r->mtx_full + 127) & ~127u);
+        if (b && read_sync(&r->pk, r->off[E_MTX], b, r->mtx_full)) {
+            mtx[L].buf = b, mtx[L].n = r->mtx_full;
+            printf("world: block %d: its map's maptex.bin went before it turned on, read again (heap)\n", i);
+        } else
+            free(b);
+    }
+    if (mtx[L].buf)
+        mtx[L].refs++, r->mtx_ref = 1;
+    map_block_shared(i, mtx[L].buf);
+}
+
+/* free_slot: block i's chains are done; the map's shared textures go with its last block */
+static void mtx_off(int i)
+{
+    BlockRt *r = &rt[i];
+    int L = map_lead(i);
+    if (!r->mtx_ref)
+        return;
+    r->mtx_ref = 0;
+    if (--mtx[L].refs <= 0) {
+        ev_free(mtx[L].buf, mtx[L].n);
+        mtx[L].buf = NULL, mtx[L].refs = 0;
+    }
+}
+
 static void turn_on_col(int i)
 {
     BlockRt *r = &rt[i];
@@ -657,6 +716,7 @@ static void turn_on_col(int i)
         coltile_on(i, &r->pk, r->off[E_COL]);
     if (r->size[E_TABB])
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+    mtx_on(i);
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
@@ -821,6 +881,7 @@ static void free_slot(int i)
         slot_of[r->slot] = -1;
     r->slot = -1;
     free_ents(r, 0, E_TEX);
+    mtx_off(i);
     world_stats.pool_used_kb -= (r->total >> 10) - (r->tab_gone ? tab_kb(r) : 0);
     r->tab_gone = 0;
     free_tex(r);
@@ -1037,6 +1098,7 @@ static int start(int i)
      * a failed start waits WORLD_RETRY_S, since each try may drop drawn cells. */
     if (r->ev_split)  /* the map's events.bin is in: only this block's middle part */
         r->size[E_EVM] = evm[map_lead(i)].buf ? 0 : r->ev_full;
+    r->size[E_MTX] = mtx[map_lead(i)].buf ? 0 : r->mtx_full;  /* the same for its shared textures */
     unsigned order[NENT], n = 0;
     for (unsigned e = 0; e < E_TEX; e++)  /* the texture buffer comes once the collision is on (tex_alloc) */
         if (r->size[e]) {
