@@ -1002,17 +1002,8 @@ enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
 
-/* MOVE_SKIP (Burg plan B9 polish, default on; DEFS=-DMOVE_SKIP=0 = every move walks): a grounded move under 1 mm is no
- * move. Every character with an action ran a col_walk each frame for its root motion, also the idle and stance
- * loops whose root does not move (most of the 16 updating at a Burg bonfire), ~0.1-1 ms each with wall contacts */
-#ifndef MOVE_SKIP
-#define MOVE_SKIP 1
-#endif
-
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
-    if (MOVE_SKIP && !e->air && dx * dx + dz * dz < 1e-6f)
-        return 1;  /* (stands where it is: on its floor already) */
     e->wc_moves |= mv_tag | (e->air ? MV_AIR : 0);
     if (e->ev && e->ev->no_maphit) {  /* 2004[31]: through the map */
         e->pos.x += dx, e->pos.z += dz;
