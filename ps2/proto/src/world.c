@@ -14,6 +14,7 @@
 #include "fx.h"
 #include "enemy.h"
 #include "hitch.h"
+#include "coltile.h"
 
 /* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
  * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
@@ -60,6 +61,9 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * nearest first. ASSUMED radii. */
 #define WORLD_SETTLE_R 40.0f
 #define WORLD_SETTLE_FOCUS_R 96.0f
+/* COL_TILES: a warp also waits for the collision tiles within this of the feet (ASSUMED: the floor around the player
+ * and the walls of the next steps; the rest streams in at walking speed well before it is reached) */
+#define WORLD_SETTLE_COL_R 16.0f
 /* frames a buffer stays untouched after the map stopped drawing from it (VIF chains of the last two frames) */
 #define WORLD_DRAIN 3
 /* WORLD_LITE_DIET (Makefile, default 1; the Burg plan's step B1): a block that is on only because the triangle under the
@@ -187,6 +191,7 @@ typedef struct {
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
+    unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     void *blob[NENT];
     unsigned ent, done;  /* read progress: entry, bytes of it */
     unsigned t0;
@@ -280,6 +285,35 @@ static int tab_split(BlockRt *r)
     return 1;
 }
 
+/* COL_TILES: a paged collision.bin (tools/export_collision.py COL_TILE) reads its index with the lite set and its pages
+ * through src/coltile.c; the page table goes to coltile_plan now (the pool's size). An unpaged file stays whole. 0 if
+ * the file could not be read. */
+static int col_paged(int i, BlockRt *r)
+{
+    static unsigned hd[48] __attribute__((aligned(64)));
+    if (r->size[E_COL] < 192 || !read_sync(&r->pk, r->off[E_COL], hd, 128))
+        return 0;
+    if (memcmp(hd, "DCOL", 4) || hd[1] != 2)
+        return 1;
+    unsigned at = (hd[20] + 2 * hd[3] + 15) & ~15u, a0 = at & ~63u;  /* the page table: after gid (DCOL header) */
+    if (at + 16 > r->size[E_COL] || !read_sync(&r->pk, r->off[E_COL] + a0, hd + 32, 64))
+        return 0;
+    const unsigned *t = (const unsigned *)((const unsigned char *)(hd + 32) + (at - a0));
+    if (memcmp(t, "CTP1", 4))
+        return 1;
+    unsigned npg = t[1], lo = t[2], n = 16 + 32 * npg, n0 = (at - a0 + n + 63) & ~63u;
+    unsigned char *pt = memalign(64, n0);
+    float os[4];
+    memcpy(os, hd + 4, 16);  /* origin[3], scale */
+    int ok = pt && lo <= r->size[E_COL] && read_sync(&r->pk, r->off[E_COL] + a0, pt, n0) && coltile_plan(i, os, pt + (at - a0));
+    free(pt);
+    if (ok) {
+        r->total -= ((r->size[E_COL] + 127) & ~127u) - ((lo + 127) & ~127u);
+        r->col_full = r->size[E_COL], r->size[E_COL] = lo;
+    }
+    return ok;
+}
+
 int world_init(const char *boot_area)
 {
     Pack pk;
@@ -328,6 +362,8 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
             r->open = 0;
         }
+        if (i && r->open && COL_TILES && !col_paged(i, r))
+            r->open = 0;
         if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, tab[i].pack);
             r->open = 0;
@@ -350,13 +386,13 @@ int world_init(const char *boot_area)
         mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (nblk > 1) {
-        unsigned sb = world_struct_bytes(), mb, tmax = 0;
+        unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
         for (int i = 0; i < nblk; i++)
             tmax = rt[i].tex_total > tmax ? rt[i].tex_total : tmax;
         mb = tmax + WORLD_MISC_EXTRA;  /* (the relief stays out of the pools) */
         mapstream_pools(sb, mb);
-        printf("world: structural pool %u KB (the most one triangle's links keep on), misc pool %u KB (textures %u + "
-               "%u KB)\n", sb >> 10, mb >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
+        printf("world: structural pool %u KB (the most one triangle's links keep on, collision tiles %u KB), misc pool "
+               "%u KB (textures %u + %u KB)\n", sb >> 10, cb >> 10, mb >> 10, tmax >> 10, WORLD_MISC_EXTRA >> 10);
     }
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
@@ -558,7 +594,9 @@ static void turn_on_col(int i)
 {
     BlockRt *r = &rt[i];
     unsigned t0 = ticks();
-    int ok = col_load(i, r->blob[E_COL]), cok = ok;
+    int ok = r->col_full ? col_load_index(i, r->blob[E_COL]) : col_load(i, r->blob[E_COL]), cok = ok;
+    if (ok && r->col_full)
+        coltile_on(i, &r->pk, r->off[E_COL]);
     if (r->size[E_TABB])
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
@@ -644,6 +682,7 @@ static void turn_off(int i)
         fx_block_on(i, 0, NULL);
     r->stage = 0;
     r->lean = r->lean_drain = 0;  /* (free_slot frees whatever tables are still held) */
+    coltile_off(i);
     col_unload(i);
     map_block_drop(i);  /* its relief too (bump.c) */
     if (bump_blk == i)
@@ -1075,6 +1114,7 @@ static const WorldLink *link_at(int b, unsigned tri)
 
 static void step(const float *feet, float dt)
 {
+    coltile_step(feet);  /* collision tiles around the feet (also in a settle's loop) */
     /* the block under the player: the one whose collision floor is under the feet; its triangle picks the blocks
      * wanted (world.bin links) */
     ColHit h = {.tri = -1};
@@ -1222,7 +1262,8 @@ unload:
 /* settled: nothing reading, every wanted neighbour on, the resident cells around the feet in (mapstream_busy) */
 static int settled(const float *feet)
 {
-    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R))
+    if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R) ||
+        coltile_missing(feet, WORLD_SETTLE_COL_R))
         return 0;
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
@@ -1283,6 +1324,11 @@ int world_hold(const float *feet)
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - WORLD_HOLD_DROP, COL_SOLID, &h))
         return 0;
     unsigned m = 0;
+    /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
+    if (coltile_missing(feet, 4.0f))
+        for (int i = 1; i < nblk; i++)
+            if (rt[i].state == W_ON && rt[i].col_full && box_d(&tab[i], feet) <= 0.0f)
+                m |= 1u << i;
     for (int i = 1; i < nblk; i++)
         if (rt[i].open && rt[i].state != W_ON && !(hold_gone >> i & 1) && box_d(&tab[i], feet) <= 0.0f &&
             feet[1] >= tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
