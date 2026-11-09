@@ -75,6 +75,7 @@ typedef struct {
     int resident;        /* KB of the pool in use */
     int pool;            /* pool KB */
     int mip_batches;     /* this frame: batches drawn with a GS mip chain (tc_mip) */
+    int press_n;         /* TC_PRESS spells so far (pool full: mip 1 drawn closer) */
 } TcStats;
 extern TcStats tc_stats;
 
