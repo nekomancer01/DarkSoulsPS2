@@ -85,6 +85,10 @@ CELLS_MISSING_MAX = 16
 # its near level streamed in); more in the run than --popin-max fails it (-1 = off, the default)
 POPIN = re.compile(r"map: near pop-in \d+ cells .*?; (\d+) in the run")
 POPIN_MAX = -1
+# enemy.c wall_check (test runs): a character's centre crossed a wall; more in the run than --walls-max fails it
+# (default 0: every run is gated, Burg plan B7; -1 = off)
+WALLS = re.compile(r"enemy: through wall .*?; (\d+) in the run")
+WALLS_MAX = 0
 
 
 def log_error(line):
@@ -92,6 +96,9 @@ def log_error(line):
         return True
     m = CELLS_MISSING_MAX and CELLS_MISSING.search(line)
     if m and int(m[1]) > CELLS_MISSING_MAX:
+        return True
+    m = WALLS_MAX >= 0 and WALLS.search(line)
+    if m and int(m[1]) > WALLS_MAX:
         return True
     m = POPIN_MAX >= 0 and POPIN.search(line)
     return bool(m) and int(m[1]) > POPIN_MAX
@@ -462,6 +469,8 @@ def main():
                     "folder; build both with the same make, the ISO in the ELF's folder)")
     ap.add_argument("--popin-max", type=int, default=POPIN_MAX,
                     help="fail when more near-level swaps were seen on screen in the run (map.c pop-in; -1 = off)")
+    ap.add_argument("--walls-max", type=int, default=WALLS_MAX,
+                    help="fail when more enemies went through a wall in the run (enemy.c wall_check; default 0, -1 = off)")
     ap.add_argument("--cells-missing", type=int, default=CELLS_MISSING_MAX,
                     help=f"fail when map.c reports more cells missing in a frame (default {CELLS_MISSING_MAX}, 0 = off)")
     ap.add_argument("--hitch", action="store_true", help="gate on the hitch monitor (worst frame, hitches, churn, "
@@ -485,6 +494,7 @@ def main():
         a.turbo = ""
     globals()["CELLS_MISSING_MAX"] = a.cells_missing
     globals()["POPIN_MAX"] = a.popin_max
+    globals()["WALLS_MAX"] = a.walls_max
     res = run(a)
     if res.get("warm_failed"):  # a state that did not load: drop it and boot (this run saves a new one)
         warm = warmstate.plan(os.path.realpath(a.elf), a.script, a.iso, HOSTEXEC)
