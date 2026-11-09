@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "lpass.h" /* logic pass breakdown (Burg plan B6) */
 #include "progress.h"
 #include "model.h"
 #include "vu1.h"
@@ -183,6 +184,9 @@ typedef struct {
     /* navmesh route (src/nav.c): next corner towards the AI's destination, replanned every NAV_REPLAN s */
     float nav_wp[3], nav_dest[3], nav_t;
     int nav_ok;
+    int stuck;        /* LOGIC_SPREAD: frames in a row its walk got nowhere (a wall it cannot pass) */
+    float stuck_t;    /* > 0: standing that long before it tries again */
+    float sep[2];  /* LOGIC_SPREAD: this frame's capsule pushes, walked once (sep_flush) */
 } Enemy;
 
 static ChrType types[MAX_TYPES];
@@ -260,6 +264,8 @@ static unsigned frame;  /* enemy_update calls (anim LOD parity) */
 static Ragdoll rag_pool[RAG_POOL];
 static Enemy *rag_owner[RAG_POOL];
 #define NAV_REPLAN 0.4f      /* s between route searches of one character (1.5 s after one that found no way) */
+#define STUCK_FRAMES 10      /* LOGIC_SPREAD: walks in a row that got nowhere before it stands (update_one) */
+#define STUCK_HOLD 1.0f      /* s it stands then */
 #define NAV_SEARCH_MAX 1     /* route searches per frame, all characters (<= ~1.5 ms of EE each, host x 30 ASSUMED) */
 #define FALL_KILL_Y (-250.0f)  /* as the player (collision-4) */
 
@@ -382,7 +388,8 @@ static ChrType *job_t;  /* the type job loads, NULL when idle */
 static Model *job_m;    /* its model while mdl_load_step builds the skin batches */
 /* EE ticks per frame for building a streamed type's VU1 skin batches: in one frame mdl_load took up to 28 ms
  * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
-#define SETUP_TICKS (4 * 294912u)
+/* LOGIC_SPREAD: 1.5 ms (Burg plan B6: the 4 ms steps were the logic pass's spikes on every type load) */
+#define SETUP_TICKS ((LOGIC_SPREAD ? 3 : 8) * 294912u / 2)
 static int job_arena;
 static void *heap_get(unsigned n)
 {
@@ -679,9 +686,12 @@ static int hit_test(CombatChr *c, const float a[3], const float b[3], float r)
     return rag_hit(t->rag, t->nrag, enemy_world(e, 1), a, b, r) >= 0;
 }
 
+static unsigned ent_gen;  /* bumped when a slot's entity can change (enemy_entity's index) */
+
 static void place(ChrType *t, const unsigned char *r, int i, int block, int seed_i)
 {
     Enemy *e = &enemies[i];
+    ent_gen++;
     rag_release(e);
     memset(e, 0, sizeof *e);
     ev_off[i] = 0;  /* a reused slot inherits no event state */
@@ -907,6 +917,7 @@ void enemy_block_remove(int block)
         ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
         e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
     }
+    ent_gen++;
     while (nenemies && (ev_off[nenemies - 1] & EV_FREE))
         nenemies--;
     npc_block(block, 0);
@@ -1214,8 +1225,10 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->dead_t += dt;
     }
 
+    LG_BEGIN(esd0);
     if (e->ev)
         ev_apply(e, new_hit);
+    LG_END(esd0, LG_ESD);
 
     /* AI: what it sees this frame */
     AiFrame *f = &e->frame;
@@ -1232,14 +1245,17 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->damaged = new_hit;
     f->dt = dt;
     const AiOut *o = &e->ai.out;
+    LG_BEGIN_X(ai);
     if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off))
         ai_update(&e->ai, f);
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
+    LG_END_X(ai, LG_AI);
     e->req = e->cc.dead ? -1 : o->req;
     /* a destination: the way there over the navmesh replaces the straight line */
     if (e->nav_t > 0)
         e->nav_t -= dt;
+    LG_BEGIN(nav);
     if (o->move && o->dest && !e->cc.dead) {
         V3 wp;
         if (nav_route(e, o->dest_pos, &wp) && fabsf(wp.x - e->pos.x) + fabsf(wp.z - e->pos.z) > 0.05f) {
@@ -1249,11 +1265,17 @@ static void update_one(Enemy *e, Player *pl, float dt)
             e->ai.out.move_yaw = yaw;
         }
     }
+    LG_END(nav, LG_NAV);
+    LG_BEGIN(esd);
     if (esd_ok) {
         e->esd.dt = dt;
         esd_update(&e->esd);
     }
-    if (e->cc.dead && dead_ragdoll(e, dt)) {  /* the ragdoll owns the pose now */
+    LG_END(esd, LG_ESD);
+    LG_BEGIN(rag);
+    int ragged = e->cc.dead && dead_ragdoll(e, dt);
+    LG_END(rag, LG_RAGDOLL);
+    if (ragged) {  /* the ragdoll owns the pose now */
         memcpy(e->cc.pos, &e->pos, 12);
         e->blend = 1;
         return;
@@ -1267,6 +1289,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         if (e->act_loop && len > 0 && e->act_t >= len)
             e->act_t -= len, e->act_prev_t -= len;
         if (e->act_info && !e->cc.dead) {
+            LG_BEGIN(root);
             float r0[3], r1[3];
             root_at(e, e->act_prev_t, r0);
             root_at(e, e->act_t, r1);
@@ -1275,6 +1298,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
             float c = cosf(e->yaw + PI), s = sinf(e->yaw + PI);
             move_by(e, c * dx + s * dz, -s * dx + c * dz, 0);
             e->yaw = wrap(e->yaw - (r1[2] - r0[2]));
+            LG_END(root, LG_MOVE);
         }
     }
     int moving = !e->cc.dead && !e->air && (e->act < 0 || act_ended(e)) && e->loco_enabled && o->move;
@@ -1282,8 +1306,23 @@ static void update_one(Enemy *e, Player *pl, float dt)
     if (moving) {
         float rel = wrap(o->move_yaw - e->yaw), speed = o->run ? t->run_speed : t->walk_speed;
         loco = o->run ? 500 : fabsf(rel) < PI / 4 ? 200 : fabsf(rel) > 3 * PI / 4 ? 201 : rel > 0 ? 202 : 203;
-        if (!move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt, 1))
+        LG_BEGIN(walk);
+        V3 p0 = e->pos;
+        if (LOGIC_SPREAD && e->stuck_t > 0)
+            e->stuck_t -= dt, moving = 0, loco = 0;  /* against a wall it cannot pass: stands, as at a ledge */
+        else if (!move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt, 1))
             moving = 0, loco = 0, e->nav_t = 0;  /* at a ledge: stands (and searches the route again) */
+        else if (LOGIC_SPREAD) {
+            /* a walk that got under a tenth of its step for STUCK_FRAMES frames in a row is pinned on a wall (no route
+             * to the player, who stands above or behind it: the Burg bonfire, 2026-11-08 ISO, two hollows pushing at
+             * the same wall for 20 s, each push a col_walk with contacts, ~1 ms of EE a frame). It stands STUCK_HOLD s
+             * and searches the route again, as the ledge rule does. ASSUMED timings: DSR's own stuck rule is not decoded */
+            float gx = e->pos.x - p0.x, gz = e->pos.z - p0.z, step = speed * dt;
+            e->stuck = gx * gx + gz * gz < 0.01f * step * step ? e->stuck + 1 : 0;
+            if (e->stuck >= STUCK_FRAMES)
+                e->stuck = 0, e->stuck_t = STUCK_HOLD, e->nav_t = 0, moving = 0, loco = 0;
+        }
+        LG_END(walk, LG_MOVE);
     } else if (o->guard > 0 && !e->cc.dead)
         loco = o->guard;  /* guard pose while standing (DoEzAction 9910 / Guard goal) */
     int full, la = anim_slot(e, loco, &full);
@@ -1301,7 +1340,9 @@ static void update_one(Enemy *e, Player *pl, float dt)
         snd_anim(SND_OWNER_ENEMY(e->index), atoi(e->ct->name + 1), acting ? e->act : la_ok ? mdl_anim_id(t->model, e->loco_anim) : -1,
                  acting ? e->act_t : len > 0 ? fmodf(e->loco_t, len) : e->loco_t, (const float *)&e->pos);
     }
+    LG_BEGIN(fall);
     fall_step(e, dt);
+    LG_END(fall, LG_MOVE);
     /* turning: NpcParam turnVellocity, not inside TAE "disable turning" windows */
     if (o->face && !e->cc.dead && !in_window(e, F_NO_TURN)) {
         float d = wrap(o->face_yaw - e->yaw), step = e->var->turn * (PI / 180) * dt;
@@ -1325,6 +1366,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->blend += e->blend_time > 0 ? dt / e->blend_time : 1;
         return;
     }
+    LG_BEGIN(pose);
     BoneLocal target[mdl_bones(t->model)];  /* VLA: the type's bones (<= 7 KB at MDL_MAX_BONES) */
     if (e->act >= 0 && e->act_slot >= 0)
         mdl_sample(t->model, e->act_slot, e->act_t, e->act_loop, target);
@@ -1349,12 +1391,15 @@ static void update_one(Enemy *e, Player *pl, float dt)
     else
         memcpy(e->pose, target, pose_bytes(e));
     pose_changed(e);
+    LG_END(pose, LG_POSE);
 
     memcpy(e->cc.pos, &e->pos, 12);
     e->cc.yaw = e->yaw;
     e->cc.invincible = in_window(e, F_INVINCIBLE) || (e->ev && e->ev->invincible);
     e->cc.super_armor = in_window(e, F_SUPER_ARMOR);
+    LG_BEGIN(hits);
     attack_sweeps(e);
+    LG_END(hits, LG_HITS);
 }
 
 /* Character capsules push each other apart (DSR: Havok character proxies); only the enemy moves, through col_walk */
@@ -1369,7 +1414,22 @@ static void separate(Enemy *e, V3 other, float other_r, float share)
     if (d < 1e-3f)
         dx = sinf(e->yaw + PI), dz = cosf(e->yaw + PI), d = 1;  /* exactly on top: back off along its facing */
     float k = (min - d) * share / d;
+    if (LOGIC_SPREAD) {  /* summed over every pair, one move per character after the loop (sep_flush) */
+        e->sep[0] += dx * k, e->sep[1] += dz * k;
+        return;
+    }
     move_by(e, dx * k, dz * k, 1);
+}
+
+/* LOGIC_SPREAD: a character pushed by several others (a crowd at a bonfire) made one col_walk per pair, each ~0.1 ms
+ * of EE at the Burg (2026-11-08 ISO); the pushes are summed and walked once. Under 1 mm it stands */
+static void sep_flush(Enemy *e)
+{
+    float x = e->sep[0], z = e->sep[1];
+    e->sep[0] = e->sep[1] = 0;
+    if (x * x + z * z < 1e-6f)
+        return;
+    move_by(e, x, z, 1);
 }
 
 /* The player's noise for the AI's hearing (DSR: sound events from TAE / footsteps; radii here are guesses) */
@@ -1461,9 +1521,11 @@ void enemy_update(Player *pl, float dt)
     if (pvel[0] * pvel[0] + pvel[2] * pvel[2] > 100)
         pvel[0] = pvel[2] = 0;  /* a warp, not a walk */
     last_pos = pl->pos;
+    LG_BEGIN(ragpush);
     for (int k = 0; k < RAG_POOL; k++)
         if (rag_owner[k])
             rag_push(&rag_pool[k], feet, COL_PLAYER_R, COL_PLAYER_H, pvel);
+    LG_END(ragpush, LG_RAGDOLL);
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, pl->pos);
@@ -1483,7 +1545,9 @@ void enemy_update(Player *pl, float dt)
         act[na++] = e;
     }
     enemy_active = na;
+    LG_BEGIN(gc);
     ai_end_frame();
+    LG_END(gc, LG_GC);
 #ifdef ENEMY_HIT_TEST
     /* test build (make DEFS=-DENEMY_HIT_TEST): a Longsword-like hit on the nearest live enemy every 2 s, to see the
      * ESD's damage reactions (f206 / f236 -> 2000-series anims) and the death (HP < 0 -> 2200) without pad input */
@@ -1506,6 +1570,7 @@ void enemy_update(Player *pl, float dt)
         }
     }
 #endif
+    LG_BEGIN(sep);
     for (int i = 0; i < na; i++) {
         if (!act[i]->ct->drawable)
             continue;
@@ -1517,8 +1582,11 @@ void enemy_update(Player *pl, float dt)
             separate(act[i], act[j]->pos, act[j]->var->radius, 0.5f);
             separate(act[j], pi, act[i]->var->radius, 0.5f);
         }
+        if (LOGIC_SPREAD)
+            sep_flush(act[i]);
         memcpy(act[i]->cc.pos, &act[i]->pos, 12);
     }
+    LG_END(sep, LG_MOVE);
 }
 
 void enemy_draw(void)
@@ -1614,9 +1682,40 @@ void enemy_status(char *buf, int n)
 }
 
 /* EMEVD hooks (src/event.c): placements by MSB entity id */
+/* LOGIC_SPREAD: entity id -> the first slot holding it. Event conditions ask for a character's HP, death or
+ * activity ~200 times a frame at the Burg (2026-11-08 ISO: ~1.4 ms of event_update was these scans over ~120 slots
+ * plus npc.c's); rebuilt when a slot is placed or freed */
+#define ENT_HASH 512  /* power of two, > 2 * MAX_ENEMIES */
+static short ent_hash[ENT_HASH];
+static unsigned ent_hash_gen = ~0u;
+static int ent_slot(int entity)
+{
+    if (ent_hash_gen != ent_gen || ent_hash_gen == ~0u) {
+        for (int k = 0; k < ENT_HASH; k++)
+            ent_hash[k] = -1;
+        for (int i = 0; i < nenemies; i++) {
+            unsigned h = (unsigned)enemies[i].entity * 2654435761u >> 23 & (ENT_HASH - 1);
+            while (ent_hash[h] >= 0 && enemies[ent_hash[h]].entity != enemies[i].entity)
+                h = (h + 1) & (ENT_HASH - 1);
+            if (ent_hash[h] < 0)
+                ent_hash[h] = (short)i;  /* the lowest slot of an id, as the scan found it */
+        }
+        ent_hash_gen = ent_gen;
+    }
+    for (unsigned h = (unsigned)entity * 2654435761u >> 23 & (ENT_HASH - 1);; h = (h + 1) & (ENT_HASH - 1))
+        if (ent_hash[h] < 0 || enemies[ent_hash[h]].entity == entity)
+            return ent_hash[h];
+}
+
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
 {
-    for (int i = 0; i < nenemies; i++) {
+    int i0 = 0;
+    if (LOGIC_SPREAD) {
+        i0 = ent_slot(entity);
+        if (i0 < 0)
+            i0 = nenemies;  /* not an enemy: straight to the NPCs */
+    }
+    for (int i = i0; i < nenemies; i++) {
         const Enemy *e = &enemies[i];
         if (e->entity != entity)
             continue;

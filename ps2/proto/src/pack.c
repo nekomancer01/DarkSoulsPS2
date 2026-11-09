@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
+#include "lpass.h" /* LOGIC_SPREAD */
 #include "hitch.h"
 #include "dsrsnd_rpc.h"
 
@@ -607,7 +608,9 @@ void pack_async_free(void) {}  /* every read has a slot of its own now: nothing 
 enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOSE };
 /* EE ms of LZ4 decode per pack_job_step: a model.bin took 10-20 ms in one frame (enemy types streaming in, smoke
  * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
-#define PACK_JOB_DECODE_MS 3
+/* LOGIC_SPREAD (Burg plan B6, lpass.h): 1 ms, the logic pass's budget is 5 ms (a character type's load then takes a
+ * few more frames) */
+#define PACK_JOB_DECODE_MS (LOGIC_SPREAD ? 1 : 3)
 
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
 {
