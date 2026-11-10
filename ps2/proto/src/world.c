@@ -202,6 +202,7 @@ typedef struct {
     void *texbuf;  /* objects.bin, then fx.bin (tex_total bytes) */
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
+    unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
@@ -410,7 +411,7 @@ int world_init(const char *boot_area)
                 r->open = 0;
             }
             if (i && e == E_OBJ && r->size[e] >= 64)
-                obj_tail(r);
+                r->obj0 = r->off[e], obj_tail(r);
             if (i && e >= E_TEX) {  /* the boot block's collision, objects and effects are main.c's */
                 if (((r->size[e] + 127) & ~127u) > r->tex_total)
                     r->tex_total = (r->size[e] + 127) & ~127u;
@@ -585,6 +586,13 @@ static unsigned char *read_tmp(BlockRt *r, const char *name, unsigned *size)
         return NULL;
     }
     return p;
+}
+
+int world_obj_read(int block, unsigned rel, void *dst, unsigned bytes)
+{
+    if (block < 1 || block >= nblk || !rt[block].open || !rt[block].obj0)
+        return 0;
+    return pack_req_read(&rt[block].pk, rt[block].obj0 + rel, dst, bytes);
 }
 
 void world_systems(GSGLOBAL *gs)

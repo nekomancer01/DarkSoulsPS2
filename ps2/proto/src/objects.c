@@ -20,6 +20,9 @@
 #include "collision.h"
 #include "vmath.h"
 #include "ticks.h"
+#include "pack.h"
+#include "world.h"
+#include <kernel.h>
 
 #define MAX_TYPES 64           /* the boot area's + every world block's (objects_block_types; Undead Burg: 31) */
 #define MAX_INST 512           /* placed in the boot area and the blocks on (Burg blocks: 115 / 146 / 121) */
@@ -30,6 +33,18 @@
 #define SINK_TIME 2.0f
 #define SINK_DEPTH 0.5f
 #define DRAW_DIST 40.0f
+/* OBJ_STREAM (default 1; 0 = every world block's breakable types loaded and compacted at boot, the old path): a
+ * block's types are only listed at boot (pieces, cylinder, where the model is in its objects.bin); a type's model is
+ * read and compacted once a placement of a block that is on comes within OBJ_LOAD_DIST of the player, and freed again
+ * beyond OBJ_DROP_DIST with no pieces out. Loading all 31 Burg + 7 Asylum types at boot took 1.35 MB of the heap the
+ * near-cell arena is made from (PR #186: visual room 4160 -> 2816 KB against the export's 4317, near cells refused at
+ * the player's feet). Within 45 m of the 38 Burg report spots their types are 38 % of the Burg's bytes on average,
+ * 92 % at most (2026-11-10). DSR loads every objbnd of the map at map load (dsr-load-model memory). */
+#ifndef OBJ_STREAM
+#define OBJ_STREAM 1
+#endif
+#define OBJ_LOAD_DIST 50.0f    /* DRAW_DIST + ~1.5 s of running for the read (ASSUMED) */
+#define OBJ_DROP_DIST 64.0f
 #define PUSH_OUT 2.0f          /* ASSUMED: m/s away from the hit */
 #define PUSH_ALONG 2.5f        /* ASSUMED: m/s along the hit direction */
 #define PUSH_UP 1.5f           /* ASSUMED */
@@ -43,6 +58,8 @@ typedef struct {
     Model *model;
     int tex_refs;              /* blocks on that place it (its textures are in VRAM while > 0); the boot area's: 1 */
     int set;                   /* objects.bin v4: its map's texture set (tset), -1: textures of its own */
+    int src_blk;               /* OBJ_STREAM: block whose objects.bin holds its model (0: loaded once, never dropped) */
+    unsigned src_off, src_len; /* its model.bin there */
 } Type;
 
 /* objects.bin v4 (export_objects.py OBJ_TEX_SHARED): one texture model per map holds every breakable texture of the
@@ -504,6 +521,12 @@ static int load_block_type(int block, const unsigned char *b, const unsigned *t,
     ty->intact_bits = t[12], ty->broken_bits = t[13];
     ty->set = set;
     float *pc = malloc(ty->pieces * 20 * sizeof *pc);  /* the blob goes after objects_block_types */
+    if (OBJ_STREAM && tm && set >= 0 && pc) {  /* listed only: obj_stream reads the model when it is near */
+        ty->src_blk = block, ty->src_off = t[1], ty->src_len = t[2];
+        memcpy(pc, b + t[4], ty->pieces * 20 * sizeof *pc);
+        ty->piece = pc;
+        return ntypes++;
+    }
     ty->model = tm ? mdl_load_tex(b + t[1], tm) : mdl_load(b + t[1]);
     if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || !mdl_compact(ty->model, t[2])) {
         printf("objects: block %d: o%04d did not load\n", block, ty->id);
@@ -537,6 +560,8 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
         fresh = set < 0;
         if (fresh)
             set = tset_get((int)h[15], b + h[14]);
+        if (fresh && set >= 0 && OBJ_STREAM && !mdl_keep_te(tset[set].m))  /* streamed types are planned for it later */
+            set = -1;
         tm = set < 0 ? NULL : fresh ? tset[set].m : mdl_load(b + h[14]);
         if (!tm) {
             printf("objects: block %d: breakable texture set did not load\n", block);
@@ -833,9 +858,79 @@ int objects_push_capsule(float pos[3], float r, float h)
 }
 
 
+/* OBJ_STREAM: one model read at a time, the nearest wanted type first; types far from every placement go */
+static int st_type = -1, st_tk;
+static unsigned char *st_buf;
+static void obj_stream(const float *f)
+{
+    if (!OBJ_STREAM)
+        return;
+    static float d2[MAX_TYPES];
+    static unsigned char busy[MAX_TYPES];
+    for (int j = 0; j < ntypes; j++)
+        d2[j] = 1e30f, busy[j] = 0;
+    for (int i = 0; i < ninst; i++) {
+        const Inst *in = &inst[i];
+        if (in->block <= 0)
+            continue;
+        float dx = in->pos[0] - f[0], dy = in->pos[1] - f[1], dz = in->pos[2] - f[2], d = dx * dx + dy * dy + dz * dz;
+        if (d < d2[in->type])
+            d2[in->type] = d;
+        busy[in->type] |= in->broken == 1;
+    }
+    if (st_type >= 0) {
+        int r;
+        if (!pack_req_done(st_tk, &r))
+            return;
+        Type *ty = &types[st_type];
+        Model *m = NULL;
+        if (r == (int)ty->src_len) {
+            InvalidDCache(st_buf, st_buf + ty->src_len - 1);
+            m = mdl_load_tex(st_buf, tset[ty->set].m);
+            if (m && (mdl_bones(m) != ty->pieces + 1 || !mdl_compact(m, ty->src_len)))
+                mdl_free(m), m = NULL;
+        }
+        if (m) {
+            mdl_share_textures(m, tset[ty->set].m);
+            ty->model = m;
+            objects_stats.streamed++;
+            printf("objects: o%04d in (%u KB read, %.0f m)\n", ty->id, ty->src_len >> 10, sqrtf(d2[st_type]));
+        } else {
+            printf("objects: o%04d did not load (read %d of %u bytes)\n", ty->id, r, ty->src_len);
+            ty->src_blk = 0;  /* not again */
+        }
+        free(st_buf), st_buf = NULL, st_type = -1;
+    }
+    int best = -1;
+    for (int j = 0; j < ntypes; j++) {
+        Type *ty = &types[j];
+        if (!ty->src_blk)
+            continue;
+        if (ty->model && d2[j] > OBJ_DROP_DIST * OBJ_DROP_DIST && !busy[j]) {
+            mdl_free(ty->model), ty->model = NULL;
+            objects_stats.dropped++;
+        } else if (!ty->model && d2[j] < OBJ_LOAD_DIST * OBJ_LOAD_DIST && (best < 0 || d2[j] < d2[best]))
+            best = j;
+    }
+    if (best < 0)
+        return;
+    Type *ty = &types[best];
+    if (!(st_buf = memalign(64, (ty->src_len + 63) & ~63u)))
+        return;  /* next frame */
+    if (!(st_tk = world_obj_read(ty->src_blk, ty->src_off, st_buf, ty->src_len))) {
+        free(st_buf), st_buf = NULL;
+        return;
+    }
+    st_type = best;
+}
+
 void objects_update(Player *p, float dt)
 {
     anim_update(dt);
+    if (p) {
+        float f[3] = {p->pos.x, p->pos.y, p->pos.z};
+        obj_stream(f);
+    }
     if (!ninst && !nainst)
         return;
     unsigned t0 = ticks();
@@ -901,7 +996,7 @@ void objects_draw(void)
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         Type *ty = &types[in->type];
-        if (in->broken == 2 || in->off)
+        if (in->broken == 2 || in->off || !ty->model)
             continue;
         float dx = in->pos[0] - eye.x, dy = in->pos[1] - eye.y, dz = in->pos[2] - eye.z;
         if (dx * dx + dy * dy + dz * dz > DRAW_DIST * DRAW_DIST || dx * fwd.x + dy * fwd.y + dz * fwd.z < -3)

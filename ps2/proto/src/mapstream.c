@@ -341,6 +341,14 @@ static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_po
 #ifndef MS_LEND_NEAR_KB
 #define MS_LEND_NEAR_KB 900
 #endif
+/* MS_LEND_NEAR (default 1; 0 = the old path): near parts take idle pool pages once the item pages are full, up to
+ * MS_LEND_NEAR_KB, with MS_LEND_ALL 0 too. With MS_LEND_ALL 0 they never could (lendable() is false for them), yet
+ * the plan's cap_hi counted that room for them: near cells were planned in and then refused at the player's feet
+ * while the structural pool had Firelink's 1.7 MB lite slot idle (Ame's ISO play report 2026-11-10: 252 "no room
+ * for item", 167 of them near parts, with 1.4-4.5 MB of the arena free) */
+#ifndef MS_LEND_NEAR
+#define MS_LEND_NEAR 1
+#endif
 static unsigned lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
 #ifndef MS_ITEMS_TOP
 #define MS_ITEMS_TOP 1
@@ -1443,6 +1451,9 @@ static int issue(void)
                  (w.k != 0 || (w.cls == C_FARC && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_TEX)))) &&
                  !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR)));
         int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
+        if (MS_LEND_NEAR && nr && MS_LEND && pools_on && gb <= MS_PAGE &&
+            !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))))
+            lo = 1;
         void *p = lo && !nr ? g_alloc_lend(gb) : NULL;
         if (p)
             lent_n++;

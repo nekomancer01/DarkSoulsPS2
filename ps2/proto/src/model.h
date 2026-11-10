@@ -42,6 +42,9 @@ void mdl_free_textures(Model *m);
 void mdl_free(Model *m);
 /* Free everything but the struct (which keeps the VRAM texture handles for mdl_share_textures); not drawable after */
 void mdl_strip(Model *m);
+/* Copy the texture table (sizes the skin batches' st are planned for) out of the blob, so a stripped texture model can
+ * still be the tex of mdl_load_tex after its blob is gone (objects.c OBJ_STREAM). 0 if out of memory */
+int mdl_keep_te(Model *m);
 /* dst draws with src's VRAM textures (a reloaded copy of the same model) instead of uploading its own */
 void mdl_share_textures(Model *dst, const Model *src);
 /* Room for n textures (more than a model's own MAX_TEX: a breakable texture set, objects.c); before mdl_upload. A model
