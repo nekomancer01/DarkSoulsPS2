@@ -19,6 +19,9 @@ sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int n
                       const unsigned char *locked, const double *scale, const double *weight, double sat,
                       double border_w, double seam_w, double seam_k2,
                       double ak2, double min_cos);
+sresult *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
+                          const unsigned char *locked, const double *scale, const double *weight, double sat,
+                          double border_w, double seam_w, double seam_k2, double ak2, double min_cos, const int *agrp);
 void simplify_free(sresult *R);
 void simplify_set_envelope(double pad);
 
@@ -256,8 +259,8 @@ static void run_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
-    j->log = simplify_run(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat, h->border_w,
-                          h->seam_w, h->seam_k2, h->ak2, h->min_cos);
+    j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat,
+                              h->border_w, h->seam_w, h->seam_k2, h->ak2, h->min_cos, j->amesh);
     mx_ok(j->log, 1);
 }
 
