@@ -300,6 +300,18 @@ static int tab_split(BlockRt *r)
     return 1;
 }
 
+/* objects.bin v4 (tools/export_objects.py OBJ_TEX_SHARED): the breakable texture model is the file's last part (header
+ * word 14 = its offset), and the types were loaded at boot (world_systems), so turning a block on reads only that tail
+ * (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. Older files stay whole. */
+static void obj_tail(BlockRt *r)
+{
+    static unsigned hd[16] __attribute__((aligned(64)));
+    if (!read_sync(&r->pk, r->off[E_OBJ], hd, 64) || memcmp(hd, "DSRB", 4) || hd[1] < 4 || !hd[14] ||
+        hd[14] >= r->size[E_OBJ] || (hd[14] & 127))
+        return;
+    r->off[E_OBJ] += hd[14], r->size[E_OBJ] -= hd[14];
+}
+
 /* COL_TILES: a paged collision.bin (tools/export_collision.py COL_TILE) reads its index with the lite set and its pages
  * through src/coltile.c; the page table goes to coltile_plan now (the pool's size). An unpaged file stays whole. 0 if
  * the file could not be read. */
@@ -397,6 +409,8 @@ int world_init(const char *boot_area)
                 printf("world: block %d %s: %s missing or not raw\n", i, tab[i].pack, ENTRIES[e]);
                 r->open = 0;
             }
+            if (i && e == E_OBJ && r->size[e] >= 64)
+                obj_tail(r);
             if (i && e >= E_TEX) {  /* the boot block's collision, objects and effects are main.c's */
                 if (((r->size[e] + 127) & ~127u) > r->tex_total)
                     r->tex_total = (r->size[e] + 127) & ~127u;

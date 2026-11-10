@@ -55,8 +55,12 @@ BONFIRE = "o0200"
 # world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
 # "Not enough VRAM", block 3's o1230 not loaded). ASSUMED cut until types load per block: the types with the fewest
 # placements per byte become static map objects (drawn, not breakable).
+# 2026-11-10: VRAM is per block now (objects_block_add uploads a type's textures while a block holding it is on; ISO Burg
+# runs show 650-870 KB VRAM free) and export_objects.py counts what a block type keeps in EE RAM (VU1 skin streams of
+# OBJ_TRIS-capped meshes; a conservative 3 KB per skin batch), so every Burg breakable fits (measured figures in
+# TECH_DEBT physics-3). OBJ_BLOCK_MB=0.12 = the old cut (fallback).
 CELL = 32.0
-BLOCK_OBJ_MB = 0.12
+BLOCK_OBJ_MB = float(os.environ.get("OBJ_BLOCK_MB", 1.3))
 BLOCKS = {
     "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=((-4, -3, -1, -1), (-4, -5, -2, -4)),
                            obj_budget=BLOCK_OBJ_MB),
