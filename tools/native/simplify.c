@@ -212,6 +212,13 @@ static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
     return 1;
 }
 
+/* Shape envelope (export_map.py SIMPLIFY_ENV_*): a collapse whose bound on how far the surface around the vertex has
+ * moved from the source mesh (errm, metres) passes this padding is not taken at any threshold, so however far a memory
+ * budget pushes a cell's error, its shapes stay within the padding of the original. Set by the caller before a run
+ * (one value for all its jobs); infinity: off, the log simplify.py gives. */
+static double g_env_pad = 1e300;
+void simplify_set_envelope(double pad) { g_env_pad = pad > 0 ? pad : 1e300; }
+
 static void push(S *s, heap *h, int u, int v) {
     if (s->lock[u]) return;
     if (s->border[u] && !iv_has(&s->bnb[u], v)) return;
@@ -221,6 +228,7 @@ static void push(S *s, heap *h, int u, int v) {
     v3 pv = s->pos[v];
     double e = w > 0 ? (qeval(s->Q[u], pv) + qeval(s->Q[v], pv) + s->seam_k2 * torn) / w : 0.0;
     double b = pmax(s->errm[v], s->errm[u] + dloc);
+    if (b > g_env_pad) return;  /* the surface would leave the envelope around the source shape: never collapsed */
     double m = e, bb = b * b, ar = s->ak2 * (s->alost[u] + s->alost[v] + s->lost);
     if (bb > m) m = bb;
     if (ar > m) m = ar;

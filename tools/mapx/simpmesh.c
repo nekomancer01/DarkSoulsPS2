@@ -20,6 +20,7 @@ sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int n
                       double border_w, double seam_w, double seam_k2,
                       double ak2, double min_cos);
 void simplify_free(sresult *R);
+void simplify_set_envelope(double pad);
 
 static double np_maximum(double a, double b) { return a >= b || a != a ? a : b; }
 static double np_minimum(double a, double b) { return a <= b || a != a ? a : b; }
@@ -699,6 +700,38 @@ MX_API void mx_simp_fetch(const mx_simp *h, int *tjob, int *tmesh, int *cmesh, i
         }
     }
 }
+
+/* Jobs mask[i] of h take o's replayed result (log, triangles) and o takes h's: both handles were made from the same
+   input, so their jobs match one to one (export_map.py: the cells whose spots stay over budget with the shape envelope
+   take the run without it). Returns h's surviving triangle count. */
+MX_API long long mx_simp_swap_jobs(mx_simp *h, mx_simp *o, const unsigned char *mask)
+{
+    if (h->njobs != o->njobs)
+        return -1;
+    for (int i = 0; i < h->njobs; i++) {
+        sjob *a = h->jobs + i, *b = o->jobs + i;
+        if (!mask[i] || a->nattr != b->nattr || a->npos != b->npos)
+            continue;
+        sresult *l = a->log;
+        int *out = a->out, n = a->nout, k = a->ksteps;
+        a->log = b->log, a->out = b->out, a->nout = b->nout, a->ksteps = b->ksteps;
+        b->log = l, b->out = out, b->nout = n, b->ksteps = k;
+    }
+    h->nout = o->nout = 0;
+    for (int i = 0; i < h->njobs; i++)
+        h->nout += h->jobs[i].nout, o->nout += o->jobs[i].nout;
+    return h->nout;
+}
+
+/* per job: triangles of the last replay */
+MX_API void mx_simp_job_nout(const mx_simp *h, long long *out)
+{
+    for (int i = 0; i < h->njobs; i++)
+        out[i] = h->jobs[i].nout;
+}
+
+/* the shape envelope's padding in metres for the next mx_simp_new (tools/native/simplify.c g_env_pad); <= 0: off */
+MX_API void mx_simp_envelope(double pad) { simplify_set_envelope(pad); }
 
 /* Colour refit (export_map.py SIMPLIFY_REFIT): a half-edge collapse leaves each surviving vertex the colour it had in
    the source mesh, a point sample of the baked light, so after many collapses one vertex that sat in a dark joint or
