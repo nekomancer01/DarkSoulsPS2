@@ -342,11 +342,49 @@ static void unload_model(ChrType *t)
 }
 
 
+/* ENEMY_MODEL_STREAM (default 1): a streamed type's model.bin comes in pieces (pack_job_sink + model.c mdl_stream_*):
+ * each section in a buffer of its own, the anims straight into their kept pages, instead of one buffer of the file's
+ * raw size. The Taurus Demon's 1.3 MB buffer did not fit the arena's misc pool and cleared 1.27 MB of map cells round
+ * the player, near ones too, for the ~3.5 s of the load (play report 2026-11-10); its largest piece is now 373 KB.
+ * Pieces come from the misc pool, then the heap, and only then from map cells. 0: one buffer, the old way. */
+#ifndef ENEMY_MODEL_STREAM
+#define ENEMY_MODEL_STREAM 1
+#endif
+static MdlStream *job_st;  /* the job's model.bin pieces (mb NULL in model_from) */
+static void *piece_get(unsigned n)
+{
+    static const float none[3];
+    int ar = mapstream_ready();
+    void *p = ar ? mapstream_alloc_pool(n, MS_POOL_MISC) : NULL;
+    if (!p && !(p = memalign(128, n)) && mapstream_heap_release(n))
+        p = memalign(128, n);
+    if (!p && ar)  /* last: clear map cells for it */
+        p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
+    return p;
+}
+static void piece_put(void *p, unsigned n)
+{
+    if (mapstream_owns(p))
+        mapstream_free(p, n);
+    else
+        free(p);
+}
+
+static void mb_free(void *mb, unsigned alloc, int in_arena)
+{
+    if (!mb)  /* a stream's pieces */
+        mdl_stream_free(job_st), job_st = NULL;
+    else if (in_arena)
+        arena_put(mb, alloc);
+    else
+        free(mb);
+}
+
 /* A type's model from its built model (mdl_load_begin + mdl_load_step on mb: size bytes in a buffer of alloc from
  * the arena or the heap, freed here): textures uploaded (or a loaded twin's), compact copy, sound bank */
 static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned size, unsigned alloc, int in_arena)
 {
-#define FREE_MB() (in_arena ? arena_put(mb, alloc) : free(mb))
+#define FREE_MB() mb_free(mb, alloc, in_arena)
     if (!m) {
         FREE_MB();
         printf("enemy: %s: model.bin did not load\n", t->name);
@@ -360,7 +398,7 @@ static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned siz
         mdl_free(m), FREE_MB();
         return 0;
     }
-    t->drawable = ((const unsigned *)mb)[3] > 0;  /* model.bin header: tris */
+    t->drawable = mdl_tris(m) > 0;
     if (!mdl_compact(m, size) && !(mapstream_heap_release(size / 2) && mdl_compact(m, size))) {
         printf("enemy: %.5s: no RAM to keep the model, RAM free %uK\n", t->name, enemy_ram_free() >> 10);
         if (!twin)
@@ -417,8 +455,22 @@ static void job_begin(ChrType *t)
     char path[64];
     model_path(path, sizeof path, t);
     job_arena = mapstream_ready();
-    pack_job_start(&job, path, "model.bin", job_arena ? arena_get : heap_get, job_arena ? arena_put : heap_put);
+    if (ENEMY_MODEL_STREAM && (job_st = mdl_stream_new(t->model_raw, piece_get, piece_put))) {
+        pack_job_start(&job, path, "model.bin", piece_get, piece_put);  /* (the staging buffer) */
+        pack_job_sink(&job, mdl_stream_sink, job_st);
+    } else
+        pack_job_start(&job, path, "model.bin", job_arena ? arena_get : heap_get, job_arena ? arena_put : heap_put);
     job_t = t;
+}
+
+/* the job's model.bin: its buffer, or its pieces */
+static void job_out_free(void)
+{
+    if (job_st)
+        mdl_stream_free(job_st), job_st = NULL;
+    else if (job.out)
+        job.put(job.out, job.alloc);
+    job.out = NULL;
 }
 
 /* 1 when the job finished this frame with t's model loaded, -1 failed, 0 otherwise. A frame does one part: a read /
@@ -434,16 +486,15 @@ static int job_poll(void)
         if (!r)
             return 0;
         if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
-            job.put(job.out, job.alloc);
+            job_out_free();
             job_t = NULL;
             return 0;
         }
-        if (r > 0 && (job_m = mdl_load_begin(job.out)))
+        if (r > 0 && (job_m = job_st ? mdl_stream_begin(job_st) : mdl_load_begin(job.out)))
             return 0;
-        if (r > 0) {
-            job.put(job.out, job.alloc);
+        if (r > 0)
             printf("enemy: %s: model.bin did not load\n", t->name);
-        }
+        job_out_free();
         job_t = NULL;
         t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
         return -1;

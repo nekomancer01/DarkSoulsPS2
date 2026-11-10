@@ -69,10 +69,19 @@ typedef struct {
     void *(*get)(unsigned);
     void (*put)(void *, unsigned);
     char path[96];
+    /* sink mode (pack_job_sink, before the first step): the entry is not decoded into one buffer of its raw size. Its
+     * packed blocks are read a run at a time into a staging buffer (get(bsize + PACK_STAGE_IN)), each block decoded
+     * there and handed to sink(ctx, raw offset, bytes, n) in order; sink returns 0 to fail the job (out of RAM). On
+     * success out is NULL: the data is wherever the sink put it. */
+    int (*sink)(void *ctx, unsigned off, const unsigned char *p, unsigned n);
+    void *sink_ctx;
+    unsigned rb_end, rb_bytes;  /* sink mode: the end of the block run read now, its packed bytes */
     unsigned head[512] __attribute__((aligned(64)));  /* the pack's first sector (header + entry table) */
 } PackJob;
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned));
 int pack_job_step(PackJob *j);
+/* after pack_job_start: deliver the entry to sink in order instead of one buffer (see PackJob.sink) */
+void pack_job_sink(PackJob *j, int (*sink)(void *, unsigned, const unsigned char *, unsigned), void *ctx);
 void pack_job_cancel(PackJob *j);
 /* as pack_job_cancel without waiting for a read in flight: the job is left as cancelled at once, its buffer and file go
  * back once the read lands (PACK_JOB_ABANDON) */

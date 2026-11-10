@@ -25,10 +25,20 @@ Model *mdl_load_tex(const void *blob, const Model *tex);
 /* The same in steps (enemy.c streams types in during play): begin parses and allocates, step builds the VU1 skin
  * batches until `budget` EE ticks have passed and returns 1 once all are built (only then use the model) */
 Model *mdl_load_begin(const void *blob);
+/* A model.bin in pieces (pack_job_sink with mdl_stream_sink): every section in a buffer of its own from get (put gives it
+ * back), the anims straight into their kept pages. After the job: mdl_stream_begin (then mdl_load_step as for
+ * mdl_load_begin), mdl_upload, mdl_compact (blob_size unused); mdl_stream_free once compacted, or on failure */
+typedef struct MdlStream MdlStream;
+MdlStream *mdl_stream_new(unsigned raw, void *(*get)(unsigned), void (*put)(void *, unsigned));
+int mdl_stream_sink(void *ctx, unsigned off, const unsigned char *p, unsigned n);
+Model *mdl_stream_begin(MdlStream *s);
+void mdl_stream_free(MdlStream *s);
 int mdl_load_step(Model *m, unsigned budget);
 /* Upload the textures; returns free VRAM bytes afterwards, or -1 if they did not fit */
 int mdl_upload(Model *m, GSGLOBAL *gs);
 int mdl_bones(const Model *m);
+/* triangles in its model.bin (0: a model drawn with nothing of its own) */
+unsigned mdl_tris(const Model *m);
 /* Parent bone of each bone (-1 = a root), in skeleton order: parents come first */
 const short *mdl_parents(const Model *m);
 /* After mdl_load + mdl_upload: keep only header / parents / ref / groups / anims in an own block so the blob (of

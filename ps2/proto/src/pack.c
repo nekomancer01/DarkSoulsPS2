@@ -594,7 +594,10 @@ void pack_async_free(void) {}  /* every read has a slot of its own now: nothing 
  * data is read into the tail of the output buffer and decoded in place (an LZ4 block never grows on decode, and a
  * stored block keeps its size, so the write position stays JOB_MARGIN bytes behind the unread input) */
 #define JOB_MARGIN 1024
-enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOSE };
+enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOSE, J_STAB, J_SREAD, J_SREADING, J_SDECODE };
+/* sink mode: packed bytes read per request into the staging buffer, behind its one-block decode area (at least one
+ * block's packed size is read whatever this says) */
+#define PACK_STAGE_IN (128u << 10)
 /* EE ms of LZ4 decode per pack_job_step: a model.bin took 10-20 ms in one frame (enemy types streaming in, smoke
  * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
 /* LOGIC_SPREAD (Burg plan B6, lpass.h): 1 ms, the logic pass's budget is 5 ms (a character type's load then takes a
@@ -609,6 +612,11 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
         snprintf(j->path, sizeof j->path, "%s", q);
     j->name = name, j->get = get, j->put = put, j->fd = -1, j->fdc = -1;
     j->state = J_OPEN;
+}
+
+void pack_job_sink(PackJob *j, int (*sink)(void *, unsigned, const unsigned char *, unsigned), void *ctx)
+{
+    j->sink = sink, j->sink_ctx = ctx;
 }
 
 /* Handles of packs jobs read, with the pack's first sector (header + entry table): the next job on the same pack skips
@@ -750,6 +758,23 @@ int pack_job_step(PackJob *j)
         j->state = J_DATA;
     }   /* fall through */
     case J_DATA:
+        if (j->sink) {  /* the block size table first, into the staging buffer */
+            if (!j->out) {
+                unsigned in = j->packed - j->blocks * 4 < PACK_STAGE_IN ? j->packed - j->blocks * 4 : PACK_STAGE_IN;
+                if (in < j->bsize + j->bsize / 255 + 16)
+                    in = j->bsize + j->bsize / 255 + 16;  /* one block, stored or worst-case LZ4 */
+                j->alloc = (j->bsize + 64 + in + 127) & ~127u;
+                if (j->blocks > sizeof j->cs / sizeof j->cs[0])
+                    return job_fail(j, "too many blocks");
+                if (!(j->out = j->get(j->alloc)))
+                    return job_fail(j, "OUT OF RAM");
+            }
+            j->in = j->out + ((j->bsize + 63) & ~63u);
+            if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, j->off, j->in, (j->blocks * 4 + 63) & ~63u)))
+                return 0;
+            j->state = J_STAB;
+            return 0;
+        }
         if (!j->out) {
             j->alloc = (j->raw + JOB_MARGIN + 64 + 127) & ~127u;
             if (j->packed > j->raw + j->blocks * 4 || !(j->out = j->get(j->alloc)))
@@ -787,6 +812,65 @@ int pack_job_step(PackJob *j)
         if (j->pos != j->raw)
             return job_fail(j, "corrupt entry");
         SyncDCache(j->out, j->out + j->raw - 1);
+        pack_stats.read += j->packed, pack_stats.raw += j->raw;
+        j->state = -2;
+        return 1;
+    }
+    case J_STAB:
+        if (!job_done(j, &res))
+            return 0;
+        if (res < (int)(j->blocks * 4))
+            return job_fail(j, "read error");
+        InvalidDCache(j->in, j->in + ((j->blocks * 4 + 63) & ~63u) - 1);
+        memcpy(j->cs, j->in, j->blocks * 4);
+        j->b = 0, j->pos = 0, j->res = j->off + j->blocks * 4;  /* res: the file offset of block b's packed bytes */
+        j->state = J_SREAD;
+        /* fall through */
+    case J_SREAD: {
+        unsigned cap = j->alloc - (unsigned)(j->in - j->out), n = 0, e = j->b;
+        while (e < j->blocks && n + (j->cs[e] & ~RAW_FLAG) <= cap)
+            n += j->cs[e++] & ~RAW_FLAG;
+        if (e == j->b)
+            return job_fail(j, "block over the staging buffer");
+        if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, j->res, j->in, n)))
+            return 0;
+        j->src = j->in, j->rb_end = e, j->rb_bytes = n;
+        j->state = J_SREADING;
+        return 0;
+    }
+    case J_SREADING:
+        if (!job_done(j, &res))
+            return 0;
+        if (res != (int)j->rb_bytes)
+            return job_fail(j, "read error");
+        InvalidDCache(j->in, j->in + res - 1);
+        j->res += j->rb_bytes;
+        if (j->rb_end == j->blocks)
+            job_close(j);
+        j->state = J_SDECODE;
+        /* fall through */
+    case J_SDECODE: {
+        unsigned t0 = ticks();
+        while (j->b < j->rb_end && (ticks() - t0) < PACK_JOB_DECODE_MS * 294912u) {
+            unsigned c = j->cs[j->b] & ~RAW_FLAG, want = j->raw - j->pos < j->bsize ? j->raw - j->pos : j->bsize;
+            const unsigned char *d = j->src;
+            if (j->cs[j->b] & RAW_FLAG ? c != want : lz4_decode(j->src, c, j->out, want) != (int)want)
+                return job_fail(j, "corrupt entry");
+            if (!(j->cs[j->b] & RAW_FLAG))
+                d = j->out;
+            if (!j->sink(j->sink_ctx, j->pos, d, want))
+                return job_fail(j, "OUT OF RAM");
+            j->src += c, j->pos += want, j->b++;
+        }
+        if (j->b < j->rb_end)
+            return 0;
+        if (j->b < j->blocks) {
+            j->state = J_SREAD;
+            return 0;
+        }
+        if (j->pos != j->raw)
+            return job_fail(j, "corrupt entry");
+        j->put(j->out, j->alloc), j->out = NULL;
         pack_stats.read += j->packed, pack_stats.raw += j->raw;
         j->state = -2;
         return 1;
