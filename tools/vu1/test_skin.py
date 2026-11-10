@@ -1,6 +1,6 @@
 """Compare ref/vu1skin.vsm (the old in-place skin program, kept only as this test's reference) with vu1skin2.vsm
 (pipelined) on random batches in the emulator."""
-import math, os, random, struct, sys
+import math, os, random, sys
 from vuemu import VU1, U, vertices
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ps2/proto/src/')

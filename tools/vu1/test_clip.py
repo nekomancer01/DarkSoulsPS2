@@ -1,7 +1,7 @@
 """vu1clip.vsm vs a Python reference (near + guard-band Sutherland-Hodgman, fan, screen-space cull) on random map
 batches in the R3 format; unclipped triangles are also checked against vu1map.vsm's output."""
-import math, os, random, sys
-from vuemu import VU1, U, F, vertices
+import os, random, sys
+from vuemu import VU1, U, vertices
 import gen
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ps2/proto/src/')

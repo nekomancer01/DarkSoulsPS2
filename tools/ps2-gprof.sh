@@ -23,6 +23,6 @@ if [ "$1" != report ]; then
     RW=1 "$H/tools/ps2-pcsx2.sh" run "$ELF" "$T"
 fi
 [ -s "$B/gmon.out" ] || { echo "no gmon.out (run longer: PROF_GPROF_START + PROF_GPROF_FRAMES frames)" >&2; exit 1; }
-"$GPROF" -b "$ELF" "$B/gmon.out" > "$H/tools/ps2-gprof.txt"
-echo "gprof report: $H/tools/ps2-gprof.txt"
-sed -n '/Flat profile/,/^$/p;/cumulative/,+25p' "$H/tools/ps2-gprof.txt" | head -32
+"$GPROF" -b "$ELF" "$B/gmon.out" > "$B/gprof.txt"
+echo "gprof report: $B/gprof.txt"
+sed -n '/Flat profile/,/^$/p;/cumulative/,+25p' "$B/gprof.txt" | head -32
