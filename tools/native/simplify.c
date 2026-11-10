@@ -133,6 +133,7 @@ typedef struct {
     const v3 *pos;
     int (*TP)[3], (*TA)[3];
     ivec *vt, *bnb;
+    ivec *snb;  /* seam neighbours (attribute seams), only while the shape envelope is on; NULL: off */
     char *lock, *border, *dead;
     double (*Q)[11];
     double *errm, *alost, *scale;
@@ -206,6 +207,24 @@ static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
             }
         }
     }
+    if (s->snb && s->snb[u].n) {
+        /* the envelope along attribute seams (a texture's outline on one surface): sliding u along a flat surface
+         * moves no plane, so the plane term above reads 0 while the outline of what u's texture covers moves (a board
+         * lying on the floor stretched into a sliver across the courtyard, play report 2026-11-10); bound the move
+         * across each seam line as the border term does across the mesh's open edges */
+        ivec *b = &s->snb[u];
+        for (int i = 0; i < b->n; i++) {
+            int x = b->a[i];
+            if (x != v) {
+                v3 e = sub(s->pos[x], pv);
+                double le = dot(e, e);
+                if (le > 0) {
+                    v3 c = cross(du, e);
+                    dloc = pmax(dloc, sqrt(dot(c, c) / le));
+                }
+            }
+        }
+    }
     s->lost = fabs(da);
     *torn_out = torn;
     *dloc_out = dloc;
@@ -267,9 +286,21 @@ static uint64_t hmix(uint64_t x) {
 /* pos: nv x 3 doubles; wpos: nw; tris: ntri x 3 attribute vertices; locked: nv bytes or NULL; scale: nv;
  * weight: nv or NULL, sat (simplify.py's weight / sat).
  * Constants from simplify.py: border_w, seam_w, seam_k2 (SEAM_K^2), ak2 ((AREA_K or area_k)^2), min_cos. */
+result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
+                         const unsigned char *locked, const double *scale, const double *weight, double sat,
+                         double border_w, double seam_w, double seam_k2, double ak2, double min_cos, const int *agrp);
 result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
                      const unsigned char *locked, const double *scale, const double *weight, double sat,
                      double border_w, double seam_w, double seam_k2, double ak2, double min_cos) {
+    return simplify_run_grp(nv, posd, nw, wpos, ntri, tris, locked, scale, weight, sat, border_w, seam_w, seam_k2, ak2,
+                            min_cos, NULL);
+}
+/* agrp: per attribute vertex its source mesh (one material each), or NULL. With the shape envelope on, an edge between
+ * two triangles of different source meshes is a material outline the envelope holds (snb); UV seams inside one mesh
+ * are not (bounding those too took the Asylum's near level to 28 % of spots over the room) */
+result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
+                         const unsigned char *locked, const double *scale, const double *weight, double sat,
+                         double border_w, double seam_w, double seam_k2, double ak2, double min_cos, const int *agrp) {
     (void)nw;
     result *R = calloc(1, sizeof(result));
     S s;
@@ -296,6 +327,7 @@ result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int nt
         for (int k = 0; k < 3; k++) { s.TP[i][k] = R->t0[6 * i + 2 * k]; s.TA[i][k] = R->t0[6 * i + 2 * k + 1]; }
     s.vt = calloc(nv ? nv : 1, sizeof(ivec));
     s.bnb = calloc(nv ? nv : 1, sizeof(ivec));
+    s.snb = g_env_pad < 1e299 && agrp ? calloc(nv ? nv : 1, sizeof(ivec)) : NULL;
     for (int i = 0; i < nt; i++)
         for (int k = 0; k < 3; k++) iv_add(&s.vt[s.TP[i][k]], i);
     /* et */
@@ -345,6 +377,7 @@ result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int nt
         if (ed->n == 2) {
             int *tp0 = s.TP[ed->t0], *ta0 = s.TA[ed->t0], *tp1 = s.TP[ed->t1], *ta1 = s.TA[ed->t1];
             if (ta0[idx3(tp0, a)] == ta1[idx3(tp1, a)] && ta0[idx3(tp0, b)] == ta1[idx3(tp1, b)]) continue;
+            if (s.snb && agrp[ta0[idx3(tp0, a)]] != agrp[ta1[idx3(tp1, a)]]) { iv_add(&s.snb[a], b); iv_add(&s.snb[b], a); }
             wgt = seam_w;
         } else {
             s.border[a] = s.border[b] = 1;
@@ -453,6 +486,14 @@ result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int nt
                 if (x != v) { iv_add(&s.bnb[x], v); iv_add(&s.bnb[v], x); }
             }
         }
+        if (s.snb) {  /* u's seam lines now end at v */
+            ivec *b = &s.snb[u];
+            for (int i = 0; i < b->n; i++) {
+                int x = b->a[i];
+                iv_discard(&s.snb[x], u);
+                if (x != v) { iv_add(&s.snb[x], v); iv_add(&s.snb[v], x); }
+            }
+        }
         runmax = pmax(runmax, he.c);
         /* record the step */
         if ((size_t)ns == scap) {
@@ -482,7 +523,8 @@ result *simplify_run(int nv, const double *posd, int nw, const int *wpos, int nt
         free(nb.a);
     }
     R->nsteps = ns;
-    for (int p = 0; p < nv; p++) { free(s.vt[p].a); free(s.bnb[p].a); }
+    for (int p = 0; p < nv; p++) { free(s.vt[p].a); free(s.bnb[p].a); if (s.snb) free(s.snb[p].a); }
+    free(s.snb);
     free(s.vt); free(s.bnb); free(s.TP); free(s.TA); free(s.lock); free(s.border); free(s.dead); free(s.Q);
     free(s.errm); free(s.alost); free(s.ver); free(h.a); free(chg.a);
     free(s.removed.a); free(s.keep.a); free(s.amk.a); free(s.amv.a); free(s.nu.a); free(s.nv_.a); free(s.opp.a);
