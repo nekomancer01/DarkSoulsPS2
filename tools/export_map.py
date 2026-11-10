@@ -223,10 +223,11 @@ SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh
 # than this many metres from the source mesh, whatever error the budget solve asks of a cell, so a tower stays a tower
 # when its cell is pushed to the caps. SIMPLIFY_ENV_NEAR: the near level (and areas without levels), SIMPLIFY_ENV_FAR:
 # the coarse level and the backdrop. 0: off (the old export). ASSUMED values, see TECH_DEBT map-43
-# SIMPLIFY_ENV_STRICT=1: the envelope holds in every cell, also where the budget solve cannot pay for it (A/B: the
-# world blocks grew 5-12 % and near cells were refused on the iso_ame_report3 route, 2026-11-10); default 0: cells in
-# reach of a spot the solve leaves over budget take the run without the envelope (simplify_meshes_c)
-SIMPLIFY_ENV_STRICT = os.environ.get("SIMPLIFY_ENV_STRICT", "0") == "1"
+# SIMPLIFY_ENV_STRICT (default 1, the maintainer's choice 2026-11-10: shapes first): the envelope holds in every cell,
+# also where the budget solve cannot pay for it (the world blocks grew 5-12 %, 0.31 % of the Burg's spots are over the
+# room and near cells were refused on the iso_ame_report3 route). 0: cells in reach of a spot the solve leaves over
+# budget take the run without the envelope (simplify_meshes_c), so no spot holds more than with the envelope off
+SIMPLIFY_ENV_STRICT = os.environ.get("SIMPLIFY_ENV_STRICT", "1") == "1"
 SIMPLIFY_ENV_NEAR = float(os.environ.get("SIMPLIFY_ENV_NEAR", 0.25))
 SIMPLIFY_ENV_FAR = float(os.environ.get("SIMPLIFY_ENV_FAR", 1.0))
 # SIMPLIFY_REFIT (default on; 0 = each surviving vertex keeps its source colour, the old export): after the simplifier,
