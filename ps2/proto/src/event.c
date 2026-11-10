@@ -23,6 +23,7 @@
 #include "save.h"
 #include "sound.h"
 #include "world.h"
+#include "ticks.h"
 
 /* Same order as OPS in tools/export_emevd.py (the op byte of each instruction) */
 enum Op {
@@ -1226,7 +1227,6 @@ void event_block_on_split(int block, const void *blob, const void *hdr, const vo
            NSEC(s, S_OBJACTS), s->live ? "" : " (entities only)", act);
 }
 
-static inline unsigned ticks(void);
 
 /* Same events in both sets (blocks of one map: export_emevd.py writes the map's events, instrs and substs alike) */
 static int same_events(const Set *a, const Set *b)
@@ -1308,12 +1308,6 @@ void event_flush(void)
 
 void event_action(void) { act_press = 1; }
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* ObjActParam key (spQualifiedType 1 = a good in the inventory, either of the two; ASSUMED: other types unmet, TECH_DEBT
  * event-11); spQualifiedPassEventFlag (on once the door was opened from the other side) opens it as well */

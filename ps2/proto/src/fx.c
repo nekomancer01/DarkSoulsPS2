@@ -19,6 +19,7 @@
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
+#include "ticks.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
  * PR 7): the EE sends one 2-qword vertex per particle, VU1 does the curves, roll, flipbook, projection and the sprite;
@@ -560,8 +561,7 @@ void fx_update(float dt, V3 eye)
         any |= fset[k].on;
     if (!any)
         return;
-    unsigned t0;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
+    unsigned t0 = ticks();
     if (dt > 0.1f)
         dt = 0.1f;
     clock += dt;
@@ -594,8 +594,7 @@ void fx_update(float dt, V3 eye)
     step(dt, 1);
     fx_stats.active = active;
     fx_stats.particles = n_alive;
-    unsigned t1;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+    unsigned t1 = ticks();
     fx_stats.ms = (t1 - t0) / 294912.0f;
 }
 
@@ -722,8 +721,7 @@ void fx_draw(void)
         fx_stats.drawn = fx_stats.batches = 0;
         return;
     }
-    unsigned t0;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t0));
+    unsigned t0 = ticks();
     static Order ord[FX_MAX];
     static V3 cen[FX_MAX];
     /* alpha blended: sorted far to near; additive (order-free) after them, bucketed by texture: few GS packets */
@@ -850,8 +848,7 @@ void fx_draw(void)
     fx_stats.vu1 = vu_drawn;
     for (int k = 0; k < 3; k++)
         fx_stats.vu1_breaks[k] = vu_breaks[k];
-    unsigned t1;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t1));
+    unsigned t1 = ticks();
     fx_stats.ms_draw = (t1 - t0) / 294912.0f;
     fx_stats.ms += fx_stats.ms_draw;
 }

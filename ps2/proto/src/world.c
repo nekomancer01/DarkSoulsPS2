@@ -15,6 +15,7 @@
 #include "enemy.h"
 #include "hitch.h"
 #include "coltile.h"
+#include "ticks.h"
 
 /* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
  * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
@@ -253,12 +254,6 @@ static float hold_s;
 /* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
 static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static float box_d(const WorldBlock *b, const float *p)
 {
@@ -1044,7 +1039,6 @@ static void read_step(int i, int issue)
 /* MS_POOLS: a lite-set entry from the structural pool. Full: a kept-only block that still holds its tables lets go of
  * them (lean, freed WORLD_DRAIN frames later: *wait = 1, try again soon); none left to lean: as before, from the item
  * pages (mapstream_alloc clears map items), which the pool's size should make rare (logged). Without pools: as before */
-static void lean(int i);
 static void *lite_alloc(int want, unsigned sz, int *wait)
 {
     if (!mapstream_pools_on())

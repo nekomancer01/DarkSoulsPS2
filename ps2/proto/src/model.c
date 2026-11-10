@@ -10,6 +10,7 @@
 #include "map.h"
 #include "vmath.h"
 #include "mapstream.h"
+#include "ticks.h"
 #ifdef VU1_CHECK
 #include <stdio.h>
 #endif
@@ -294,8 +295,7 @@ static int skin_alloc(Model *m)
 static int skin_step(Model *m, unsigned budget)
 {
     const TexEntry *te = m->te;
-    unsigned c0;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c0));
+    unsigned c0 = ticks();
     while (m->nsk < m->nplan) {
         int b = m->nsk;
         unsigned g = m->sk_batch[b].group, t0 = m->sk_batch[b].t0, nt = m->sk_batch[b].tris;
@@ -358,8 +358,7 @@ static int skin_step(Model *m, unsigned budget)
             }
         }
         m->nsk++;
-        unsigned c;
-        __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+        unsigned c = ticks();
         if (c - c0 >= budget && m->nsk < m->nplan)
             return 0;
     }

@@ -124,22 +124,6 @@ static const unsigned *ptab_of(const Header2 *h2, int *v)
     return NULL;
 }
 
-unsigned col_index_bytes(const void *head, unsigned n)
-{
-    const Header2 *h2 = head;
-    if (n < sizeof *h2 || memcmp(h2->magic, "DCOL", 4) || h2->version != 2)
-        return 0;
-    for (int v = 2; v >= 1; v--) {
-        unsigned at = col_ptab_at(head, v);
-        if (at + 16 > n)
-            return at + 16;  /* read this much to see */
-        const unsigned *t = (const unsigned *)((const unsigned char *)head + at);
-        if (!memcmp(t, v == 2 ? "CTP2" : "CTP1", 4))
-            return t[2];
-    }
-    return 0;
-}
-
 static int load_blob(int b, const void *blob, int whole);
 int col_load(int b, const void *blob) { return load_blob(b, blob, 1); }
 int col_load_index(int b, const void *blob) { return load_blob(b, blob, 0); }
@@ -288,30 +272,10 @@ int col_pages(int b, float *tile)
     return (int)blk[b].npg;
 }
 
-int col_page(int b, int i, float lo[3], float hi[3], unsigned *off, unsigned *bytes)
-{
-    const ColBlock *c = &blk[b];
-    if (b < 0 || b >= COL_BLOCKS || !c->pg || i < 0 || (unsigned)i >= c->npg)
-        return 0;
-    const ColPage *g = &c->pg[i];
-    for (int k = 0; lo && k < 3; k++)
-        lo[k] = c->hdr->origin[k] + g->lo[k] * c->hdr->scale, hi[k] = c->hdr->origin[k] + g->hi[k] * c->hdr->scale;
-    if (off)
-        *off = g->off;
-    if (bytes)
-        *bytes = g->bytes;
-    return 1;
-}
-
 void col_page_set(int b, int i, const void *buf)
 {
     if (b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg)
         blk[b].pbuf[i] = buf;
-}
-
-int col_page_in(int b, int i)
-{
-    return b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg && blk[b].pbuf[i];
 }
 
 int col_tris(void) { return blk[0].hdr ? (int)blk[0].hdr->ntris : 0; }

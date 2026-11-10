@@ -14,6 +14,7 @@
 #include "drawgrp.h"
 #include "pvs.h"
 #include "pack.h"
+#include "ticks.h"
 
 typedef struct {
     char magic[4];
@@ -368,7 +369,6 @@ void map_spawn(V3 *pos, float *yaw)
  * those (and only those) are clipped on the EE and drawn through gsKit */
 #ifdef MAP_PROF  /* profiling build: map_vu1_batches / map_ee_tris show visibility / EE-clip time in 0.01 ms */
 static unsigned prof_vis, prof_clip;
-static inline unsigned ticks(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
 #define PROF_BEGIN unsigned _t0 = ticks();
 #define PROF_END(acc) acc += ticks() - _t0;
 #else
@@ -400,14 +400,13 @@ static unsigned mc_cells, mc_vis, mc_tiles, mc_tvis, mc_chunks;  /* per frame: c
 
 static unsigned mp_t[MP_N];
 static inline unsigned mp_sum(void) { return mp_t[0] + mp_t[1] + mp_t[2] + mp_t[3]; }
-static inline unsigned mp_now(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
 #if MAP_PASS_MS
-#define MP_BEGIN unsigned _mp0 = mp_on ? mp_now() : 0;
-#define MP_END(p) if (mp_on) mp_t[p] += mp_now() - _mp0;
-#define MP_SPLIT(p) do { if (mp_on) { unsigned _mp1 = mp_now(); mp_t[p] += _mp1 - _mp0; _mp0 = _mp1; } } while (0)
-#define MF_BEGIN unsigned _mf0 = mp_on ? mp_now() : 0, _mfn = mp_on ? mp_sum() : 0;
-#define MF_END(p) if (mp_on) mf_t[p] += mp_now() - _mf0 - (mp_sum() - _mfn);
-#define MF_AGAIN if (mp_on) _mf0 = mp_now(), _mfn = mp_sum();
+#define MP_BEGIN unsigned _mp0 = mp_on ? ticks() : 0;
+#define MP_END(p) if (mp_on) mp_t[p] += ticks() - _mp0;
+#define MP_SPLIT(p) do { if (mp_on) { unsigned _mp1 = ticks(); mp_t[p] += _mp1 - _mp0; _mp0 = _mp1; } } while (0)
+#define MF_BEGIN unsigned _mf0 = mp_on ? ticks() : 0, _mfn = mp_on ? mp_sum() : 0;
+#define MF_END(p) if (mp_on) mf_t[p] += ticks() - _mf0 - (mp_sum() - _mfn);
+#define MF_AGAIN if (mp_on) _mf0 = ticks(), _mfn = mp_sum();
 #else
 #define MF_BEGIN
 #define MF_END(p)
@@ -1429,7 +1428,7 @@ int map_draw(V3 eye)
     int drawn = 0;
     static unsigned mp_fr;
     mp_on = MAP_PASS_MS && !(mp_fr++ % MAP_PASS_EVERY);
-    unsigned mp_t0 = mp_on ? mp_now() : 0;
+    unsigned mp_t0 = mp_on ? ticks() : 0;
     (void)mp_t0;
     memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
     if (!inst[pinst].on && pinst)
@@ -2054,7 +2053,7 @@ int map_draw(V3 eye)
 #if MAP_PASS_MS
     {  /* "map: pass ms": the breakdown over 30 frames (average, and the frame with the largest map_draw) */
         static unsigned fr, nt, acc[MP_N + 1], wst[MP_N + 1], wtot, facc[MF_N];
-        unsigned tot = mp_on ? mp_now() - mp_t0 : 0, v[MP_N + 1], sub = 0;
+        unsigned tot = mp_on ? ticks() - mp_t0 : 0, v[MP_N + 1], sub = 0;
         for (int i = 0; i < MF_N; i++)
             facc[i] += mf_t[i];
         nt += mp_on;
