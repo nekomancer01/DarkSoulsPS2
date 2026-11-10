@@ -152,7 +152,9 @@ make -C ps2/proto iso      # writes build/proto.iso
 
 `./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
 and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also copies the ISO elsewhere, `-c N` sets
-how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it pulls the official
+how many CPU threads it uses; `--help` lists every option. In a terminal it shows a progress view (a progress bar,
+the current step and the latest output line) and writes the full log to `build/build-iso.log`; `--plain` (or
+`DSR_TUI=0`, or output to a file or pipe) prints the plain log instead. Without a ps2dev toolchain on the host it pulls the official
 ps2dev image (`ps2dev/ps2dev:v2.0.0`) and builds in a container on it with Docker or Podman (`tools/build-iso.sh`).
 
 To report a problem, play with `./play-report.sh` instead of opening the ISO yourself. It starts PCSX2 with
