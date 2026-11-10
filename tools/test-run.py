@@ -9,7 +9,7 @@ ELF's frame stats, hitch monitor and disc timing run on emulated time, so the nu
 column of frames.csv does not. (A/B 2026-11-02, world_soak.txt: 159 s -> 105 s, same frame count and shot stats;
 2026-11-09 on the ISO, two reps each: iso_ame_report3 112-119 s -> 54-74 s, iso_burg_taurus 192 s -> 101 s, shot fps /
 tris, worst frame and re-read share within the spread of the realtime reps.)
-Warm start (tools/warmstate.py, default on; --cold / WARM_CACHE=0 boots every run): the first run of a build boots
+Warm start (tools/warmstate.py, default on for --iso runs; --cold / WARM_CACHE=0 boots every run): the first run of a build boots
 with a park script (the test's options and first spawn), saves a state while parked and goes on with the test; later
 runs of the same ELF / ISO / options / first spawn load that state and skip the boot (iso_ame_report3 111 -> 83 s).
 
