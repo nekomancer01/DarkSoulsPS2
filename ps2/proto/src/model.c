@@ -37,6 +37,23 @@ typedef struct {
 #define MAX_TEX 12  /* the Warrior: 7 armour / weapon / skin + back of head, face, eyes, hair */
 #define MAX_ANIMS 64
 
+/* a model.bin delivered in pieces (mdl_stream_*): its sections, each in a buffer of its own */
+#define MDL_SECS 8
+struct MdlStream {
+    Header hdr;
+    unsigned raw, nsec;
+    struct { unsigned off, len; unsigned char *p; int anim; } sec[MDL_SECS];
+    void *(*get)(unsigned);
+    void (*put)(void *, unsigned);
+    /* the anim section, record by record straight into pages of MDL_ANIM_PAGE (an anim larger than that: its own) */
+    unsigned ai, hl, len, done, cur, pgsz;
+    unsigned char hb[12], *dst;
+    void *pg[MAX_ANIMS];
+    unsigned short apg_of[MAX_ANIMS];
+    unsigned aoff[MAX_ANIMS], alen[MAX_ANIMS];
+    int npg;
+};
+
 struct Model {
     const unsigned char *bin;
     const Header *hdr;
@@ -94,6 +111,8 @@ struct Model {
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
     void *apg[MAX_ANIMS];  /* MDL_ANIM_PAGES: the pages the anims were copied into */
     int napg;
+    const MdlStream *st;  /* loaded through a stream (mdl_stream_begin): its sections until mdl_compact; bin NULL */
+    int anim_paged;       /* the anims are in apg already (a stream put them there): mdl_compact copies none */
 };
 
 static short fx12(float v)
@@ -368,6 +387,41 @@ static int skin_step(Model *m, unsigned budget)
 
 static Model *load_begin(const void *blob, const Model *tex);
 
+/* bytes at offset off of the model.bin: in the blob, or in the stream section holding it */
+static const unsigned char *at(const Model *m, unsigned off)
+{
+    if (m->bin || !m->st)
+        return m->bin + off;
+    for (unsigned i = 0; i < m->st->nsec; i++)
+        if (off >= m->st->sec[i].off && off - m->st->sec[i].off < m->st->sec[i].len)
+            return m->st->sec[i].p + (off - m->st->sec[i].off);
+    return NULL;
+}
+
+/* one anim record at p: fills a (pointers into p), returns its length in bytes */
+static unsigned anim_fill(typeof(((Model *)0)->anims[0]) *a, const unsigned char *p, unsigned bones)
+{
+    const unsigned *h = (const unsigned *)p;
+    const unsigned char *p0 = p;
+    a->id = h[0];
+    a->frames = h[1] & 0x7FFFFFFF;
+    a->fps = 30;
+    if (!(h[1] & 0x80000000)) {
+        a->data = (const PackedBone *)(p + 8);
+        return 8 + a->frames * bones * sizeof(PackedBone);
+    }
+    /* u8 fps, rotated, translated, pad; u8 bone ids (padded to 4); base pose; frames */
+    a->fps = p[8], a->nrot = p[9], a->ntra = p[10];
+    a->rot = p + 12, a->tra = p + 12 + a->nrot;
+    p += 12 + ((a->nrot + a->ntra + 3) & ~3);
+    a->data = (const PackedBone *)p;
+    p += bones * sizeof(PackedBone);
+    a->fdata = p;
+    a->stride = (a->nrot * 8 + a->ntra * 6 + 3) & ~3;
+    p += a->frames * a->stride;
+    return (unsigned)(p - p0);
+}
+
 Model *mdl_load_begin(const void *blob)
 {
     return load_begin(blob, NULL);
@@ -394,28 +448,10 @@ static Model *load_begin(const void *blob, const Model *tex)
         m->te = tex->te, m->nte = tex->nte;
     const unsigned char *p = m->bin + hdr->anim_off;
     for (m->nanims = 0; m->nanims < (int)hdr->anims && m->nanims < MAX_ANIMS; m->nanims++) {
-        const unsigned *h = (const unsigned *)p;
         typeof(m->anims[0]) *a = &m->anims[m->nanims];
         a->a_off = (unsigned)(p - m->bin);
-        a->id = h[0];
-        a->frames = h[1] & 0x7FFFFFFF;
-        a->fps = 30;
-        if (!(h[1] & 0x80000000)) {
-            a->data = (const PackedBone *)(p + 8);
-            p += 8 + a->frames * hdr->bones * sizeof(PackedBone);
-            a->a_len = (unsigned)(p - m->bin) - a->a_off;
-            continue;
-        }
-        /* u8 fps, rotated, translated, pad; u8 bone ids (padded to 4); base pose; frames */
-        a->fps = p[8], a->nrot = p[9], a->ntra = p[10];
-        a->rot = p + 12, a->tra = p + 12 + a->nrot;
-        p += 12 + ((a->nrot + a->ntra + 3) & ~3);
-        a->data = (const PackedBone *)p;
-        p += hdr->bones * sizeof(PackedBone);
-        a->fdata = p;
-        a->stride = (a->nrot * 8 + a->ntra * 6 + 3) & ~3;
-        p += a->frames * a->stride;
-        a->a_len = (unsigned)(p - m->bin) - a->a_off;
+        a->a_len = anim_fill(a, p, hdr->bones);
+        p += a->a_len;
     }
     if (!skin_alloc(m))
         return free(m), NULL;
@@ -443,7 +479,7 @@ Model *mdl_load_tex(const void *blob, const Model *tex)
  * 0 / 0x80): 512 B instead of 1 KB per CLUT. Returns the bytes of VRAM still free, or -1 if a texture did not fit. */
 int mdl_upload(Model *m, GSGLOBAL *gs)
 {
-    const TexEntry *te = (const TexEntry *)(m->bin + m->hdr->tex_off);
+    const TexEntry *te = (const TexEntry *)at(m, m->hdr->tex_off);
     static u16 clut16[256] __attribute__((aligned(64)));
     FlushCache(0);
     for (m->ntex = 0; m->ntex < (int)m->hdr->textures && m->ntex < MAX_TEX; m->ntex++) {
@@ -458,8 +494,8 @@ int mdl_upload(Model *m, GSGLOBAL *gs)
         t->ClutPSM = GS_PSM_CT16;
 #endif
         t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
-        t->Mem = (u32 *)(m->bin + te[m->ntex].pix);
-        const u32 *c32 = (const u32 *)(m->bin + te[m->ntex].clut);
+        t->Mem = (u32 *)at(m, te[m->ntex].pix);
+        const u32 *c32 = (const u32 *)at(m, te[m->ntex].clut);
         dmaKit_wait_fast();  /* the previous texture's CLUT upload still reads clut16 */
         for (int i = 0; i < 256; i++) {
             u32 c = c32[i];
@@ -504,6 +540,7 @@ void mdl_free_textures(Model *m)
 }
 
 int mdl_bones(const Model *m) { return m->hdr->bones; }
+unsigned mdl_tris(const Model *m) { return m->hdr->tris; }
 const short *mdl_parents(const Model *m) { return m->parents; }
 
 /* Keep only what drawing / sampling needs after mdl_load + mdl_upload (header, parents, reference pose, groups,
@@ -533,6 +570,23 @@ static void *page_get(unsigned n)
 
 int mdl_compact(Model *m, unsigned blob_size)
 {
+    if (m->anim_paged) {  /* a stream's model: the anims are in their pages already */
+        const Header *h = m->hdr;
+        unsigned np = (h->bones * 2 + 3) & ~3u, nr = h->bones * sizeof(PackedBone), ng = h->groups * sizeof(Group);
+        unsigned char *b = page_get(sizeof(Header) + np + nr + ng), *q = b;
+        if (!b)
+            return 0;
+        memcpy(q, h, sizeof(Header)), q += sizeof(Header);
+        memcpy(q, m->parents, np), m->parents = (const short *)q, q += np;
+        memcpy(q, m->ref, nr), m->ref = (const PackedBone *)q, q += nr;
+        memcpy(q, m->groups, ng), m->groups = (const Group *)q;
+        m->hdr = (const Header *)b;
+        m->bin = NULL, m->st = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL, m->te = NULL;
+        for (int i = 0; i < m->ntex; i++)
+            m->tex[i].Mem = m->tex[i].Clut = NULL;
+        m->own = b;
+        return 1;
+    }
     if (MDL_ANIM_PAGE && m->nanims) {
         const Header *h = m->hdr;
         unsigned np = (h->bones * 2 + 3) & ~3u, nr = h->bones * sizeof(PackedBone), ng = h->groups * sizeof(Group);
@@ -912,3 +966,182 @@ void model_draw(const BoneLocal *pose, V3 pos, float yaw, int tint) { mdl_draw(p
 
 void mdl_hide(Model *m, unsigned bits) { m->hide = bits & ~1u & ~0xF0000000u; }  /* bit 0 cull, 28-31 spec k */
 void model_helmet(int on) { mdl_hide(pm, on ? MDL_HIDE_UNDER_HELM : MDL_HIDE_HELMET); }
+
+/* ---- model.bin in pieces (enemy.c: pack_job_sink) ----
+ * A streamed type's model.bin used to be decoded into one buffer of its raw size: the Taurus Demon's 1.3 MB did not
+ * fit the arena's misc pool (960 KB) and cleared 1.27 MB of map cells round the player, near ones included, for the
+ * ~3.5 s of the load (play report 2026-11-10). DSR has no such load at all (FUN_140573f10 loads every chrbnd of the
+ * map's MSB model list with the map). Here each section (vertices, triangles, textures, UVs, ...) gets a buffer of its
+ * own from get, and the anims go record by record straight into the pages mdl_compact would have copied them into, so
+ * the largest single piece is the largest non-anim section (Taurus: vertices, 373 KB) instead of the whole file. */
+MdlStream *mdl_stream_new(unsigned raw, void *(*get)(unsigned), void (*put)(void *, unsigned))
+{
+    MdlStream *s = calloc(1, sizeof *s);
+    if (s)
+        s->raw = raw, s->get = get, s->put = put;
+    return s;
+}
+
+static int stream_plan(MdlStream *s)
+{
+    const Header *h = &s->hdr;
+    if (memcmp(h->magic, "DSRM", 4) || h->bones > MDL_MAX_BONES || h->verts > 65535)
+        return 0;
+    unsigned o[8] = {h->parents, h->ref, h->vert_off, h->tri_off, h->anim_off, h->tex_off, h->group_off, h->uv_off};
+    for (int i = 1; i < 8; i++)  /* sort */
+        for (int k = i; k > 0 && o[k] < o[k - 1]; k--) {
+            unsigned t = o[k]; o[k] = o[k - 1], o[k - 1] = t;
+        }
+    s->nsec = 0;
+    for (int i = 0; i < 8; i++) {
+        unsigned e = s->raw;  /* the next section that starts after it (an empty section shares its start) */
+        for (int k = i + 1; k < 8 && e == s->raw; k++)
+            if (o[k] > o[i])
+                e = o[k];
+        if (o[i] < sizeof(Header) || o[i] >= s->raw || (i && o[i] == o[i - 1]))
+            continue;
+        s->sec[s->nsec].off = o[i], s->sec[s->nsec].len = e - o[i], s->sec[s->nsec].anim = o[i] == h->anim_off && (h->anims || e - o[i] == 0);
+        s->nsec++;
+    }
+    return 1;
+}
+
+static void page_close(MdlStream *s)
+{
+    if (s->npg && s->cur < s->pgsz) {  /* give the page's unused tail back (newlib shrinks in place) */
+        void *q = realloc(s->pg[s->npg - 1], s->cur);
+        if (q)
+            s->pg[s->npg - 1] = q;
+    }
+}
+
+static int anim_feed(MdlStream *s, const unsigned char *p, unsigned n)
+{
+    unsigned na = s->hdr.anims < MAX_ANIMS ? s->hdr.anims : MAX_ANIMS;
+    while (n) {
+        if (s->ai >= na)
+            return 1;  /* past the anims kept (load_begin keeps MAX_ANIMS too) */
+        if (!s->len) {  /* the record's head: 8 bytes, 12 for a compact anim */
+            unsigned need = s->hl < 8 ? 8 : 12, k = need - s->hl < n ? need - s->hl : n;
+            memcpy(s->hb + s->hl, p, k), s->hl += k, p += k, n -= k;
+            if (s->hl < 8 || (s->hl < 12 && (((const unsigned *)s->hb)[1] & 0x80000000)))
+                continue;
+            const unsigned *h = (const unsigned *)s->hb;
+            unsigned fr = h[1] & 0x7FFFFFFF, len;
+            if (!(h[1] & 0x80000000))
+                len = 8 + fr * s->hdr.bones * sizeof(PackedBone);
+            else {
+                unsigned nrot = s->hb[9], ntra = s->hb[10];
+                len = 12 + ((nrot + ntra + 3) & ~3u) + s->hdr.bones * sizeof(PackedBone) + fr * ((nrot * 8 + ntra * 6 + 3) & ~3u);
+            }
+            unsigned n16 = (len + 15) & ~15u;
+            if (!s->npg || s->cur + n16 > s->pgsz) {
+                page_close(s);
+                if (s->npg == MAX_ANIMS)
+                    return 0;
+                s->pgsz = n16 > MDL_ANIM_PAGE ? n16 : MDL_ANIM_PAGE;
+                if (!(s->pg[s->npg] = page_get(s->pgsz)))
+                    return 0;
+                s->npg++, s->cur = 0;
+            }
+            s->apg_of[s->ai] = s->npg - 1, s->aoff[s->ai] = s->cur, s->alen[s->ai] = len;
+            s->dst = (unsigned char *)s->pg[s->npg - 1] + s->cur;
+            s->cur += n16;
+            memcpy(s->dst, s->hb, s->hl);
+            s->len = len, s->done = s->hl;
+        }
+        unsigned k = s->len - s->done < n ? s->len - s->done : n;
+        memcpy(s->dst + s->done, p, k), s->done += k, p += k, n -= k;
+        if (s->done == s->len)
+            s->ai++, s->len = 0, s->hl = 0;
+    }
+    return 1;
+}
+
+int mdl_stream_sink(void *ctx, unsigned off, const unsigned char *p, unsigned n)
+{
+    MdlStream *s = ctx;
+    while (n) {
+        if (off < sizeof(Header)) {
+            unsigned k = sizeof(Header) - off < n ? sizeof(Header) - off : n;
+            memcpy((unsigned char *)&s->hdr + off, p, k), off += k, p += k, n -= k;
+            if (off == sizeof(Header) && !stream_plan(s))
+                return 0;
+            continue;
+        }
+        unsigned i = 0, next = s->raw;
+        while (i < s->nsec && !(off >= s->sec[i].off && off - s->sec[i].off < s->sec[i].len)) {
+            if (s->sec[i].off > off && s->sec[i].off < next)
+                next = s->sec[i].off;
+            i++;
+        }
+        if (i == s->nsec) {  /* padding between sections */
+            unsigned k = next - off < n ? next - off : n;
+            off += k, p += k, n -= k;
+            continue;
+        }
+        unsigned end = s->sec[i].off + s->sec[i].len, k = end - off < n ? end - off : n;
+        if (s->sec[i].anim) {
+            if (!anim_feed(s, p, k))
+                return 0;
+        } else {
+            if (!s->sec[i].p && !(s->sec[i].p = s->get((s->sec[i].len + 127) & ~127u)))
+                return 0;
+            memcpy(s->sec[i].p + (off - s->sec[i].off), p, k);
+        }
+        off += k, p += k, n -= k;
+    }
+    return 1;
+}
+
+Model *mdl_stream_begin(MdlStream *s)
+{
+    page_close(s);
+    unsigned na = s->hdr.anims < MAX_ANIMS ? s->hdr.anims : MAX_ANIMS;
+    for (unsigned i = 0; i < s->nsec; i++)
+        if (!s->sec[i].anim && !s->sec[i].p)
+            return NULL;
+    if (s->ai != na)
+        return NULL;
+    Model *m = calloc(1, sizeof *m);
+    if (!m)
+        return NULL;
+    for (unsigned i = 0; i < s->nsec; i++)  /* the CPU wrote them: the texture upload DMAs from them */
+        if (s->sec[i].p)
+            SyncDCache(s->sec[i].p, s->sec[i].p + s->sec[i].len - 1);
+    const Header *hdr = &s->hdr;
+    m->st = s, m->bin = NULL, m->hdr = hdr;
+    m->parents = (const short *)at(m, hdr->parents);
+    m->ref = (const PackedBone *)at(m, hdr->ref);
+    m->verts = (const Vertex *)at(m, hdr->vert_off);
+    m->tris = (const unsigned short *)at(m, hdr->tri_off);
+    m->groups = (const Group *)at(m, hdr->group_off);
+    m->uvs = (const float *)at(m, hdr->uv_off);
+    m->te = (const TexEntry *)at(m, hdr->tex_off), m->nte = hdr->textures;
+    for (m->nanims = 0; m->nanims < (int)na; m->nanims++) {
+        typeof(m->anims[0]) *a = &m->anims[m->nanims];
+        anim_fill(a, (const unsigned char *)s->pg[s->apg_of[m->nanims]] + s->aoff[m->nanims], hdr->bones);
+        a->a_off = 0, a->a_len = s->alen[m->nanims];
+    }
+    for (int i = 0; i < s->npg; i++)
+        m->apg[i] = s->pg[i];
+    m->napg = s->npg, m->anim_paged = 1;
+    s->npg = 0;  /* the model owns the pages now */
+    if (!skin_alloc(m)) {
+        mdl_free(m);
+        return NULL;
+    }
+    return m;
+}
+
+void mdl_stream_free(MdlStream *s)
+{
+    if (!s)
+        return;
+    for (unsigned i = 0; i < s->nsec; i++)
+        if (s->sec[i].p)
+            s->put(s->sec[i].p, (s->sec[i].len + 127) & ~127u);
+    for (int i = 0; i < s->npg; i++)
+        free(s->pg[i]);
+    free(s);
+}
