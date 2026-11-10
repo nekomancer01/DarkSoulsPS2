@@ -414,7 +414,8 @@ int pack_req_cancel_async(int t)
     return 0;  /* lands (short) later: pack_req_done as usual */
 }
 
-void pack_pump(void) { io_pump(); }
+static void zombie_pump(void);
+void pack_pump(void) { io_pump(); zombie_pump(); }
 
 int pack_open(Pack *p, const char *path)
 {
@@ -679,6 +680,7 @@ static int job_done(PackJob *j, int *res)
 
 int pack_job_step(PackJob *j)
 {
+    zombie_pump();
     unsigned *head = j->head;  /* the first sector: header + up to 31 entries */
     int res;
     switch (j->state) {
@@ -815,6 +817,52 @@ void pack_job_cancel(PackJob *j)
         j->put(j->out, j->alloc);
     j->out = NULL;
     j->state = -1;
+}
+
+/* PACK_JOB_ABANDON (default 1): pack_job_abandon hands a job with a read in flight to a slot here instead of waiting for
+ * it. pack_job_cancel waits until nothing more lands in the job's buffer (io_cancel): behind the disc server's queue that
+ * was 236 ms of one frame when a character's sound bank was dropped mid-load (an enemy type unloaded right after it
+ * loaded, Burg, play report 2026-11-10). Here the cancel is sent, and the buffer and the file go back once the read has
+ * landed (pack_job_step / pack_pump poll the slots). 0: the old wait. */
+#ifndef PACK_JOB_ABANDON
+#define PACK_JOB_ABANDON 1
+#endif
+#define PACK_ZOMBIES 4
+static PackJob zomb[PACK_ZOMBIES];
+static int nzomb;
+
+static void zombie_pump(void)
+{
+    for (int i = 0; nzomb && i < PACK_ZOMBIES; i++) {
+        PackJob *j = &zomb[i];
+        int res;
+        if (!j->tk || !io_poll(j->tk, &res))
+            continue;
+        j->tk = 0;
+        if (j->state == J_OPENING && res >= 0)
+            j->fd = res;
+        if (j->fd >= 0)
+            job_close(j);
+        if (j->out && j->state != -2)
+            j->put(j->out, j->alloc);
+        j->out = NULL;
+        nzomb--;
+    }
+}
+
+void pack_job_abandon(PackJob *j)
+{
+    int i = 0;
+    while (i < PACK_ZOMBIES && zomb[i].tk)
+        i++;
+    /* only a data read (it lands in j->out, which goes with the slot); a header read lands in j->head, inside *j */
+    if (!PACK_JOB_ABANDON || !j->tk || j->state != J_READING || i == PACK_ZOMBIES || pack_req_cancel_async(j->tk)) {
+        pack_job_cancel(j);  /* nothing in flight (or never sent): no wait anyway */
+        return;
+    }
+    zomb[i] = *j;
+    nzomb++;
+    j->tk = 0, j->fd = -1, j->fdc = -1, j->out = NULL, j->state = -1;
 }
 
 static void *heap_get(unsigned n) { return memalign(128, n); }
