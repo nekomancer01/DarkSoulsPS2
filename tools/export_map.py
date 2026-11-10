@@ -236,6 +236,22 @@ SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh
 SIMPLIFY_ENV_STRICT = os.environ.get("SIMPLIFY_ENV_STRICT", "1") == "1"
 SIMPLIFY_ENV_NEAR = float(os.environ.get("SIMPLIFY_ENV_NEAR", 0.25))
 SIMPLIFY_ENV_FAR = float(os.environ.get("SIMPLIFY_ENV_FAR", 1.0))
+# Triangle guard (the maintainer's rule 2026-11-10: no exploded, stretched or sliver polygons, whatever it costs in
+# triangles or memory; tools/native/simplify.c g_qmin / g_flip_cos / g_shape_tol). No collapse may leave a triangle
+# turned more than SIMPLIFY_FLIP_DEG from its source triangle over all steps; with (almost) no area left; thinner than
+# SIMPLIFY_QMIN (shape quality 4 sqrt(3) area / sum of squared edges: 1 equilateral, 0.1 about 1 : 17, 0.05 about
+# 1 : 35 height to length) unless it got no thinner (0 by default: at 0.1 the world budget gate failed at 9.8 % of the
+# spots, at 0.05 at 4.1 %, against 0.71 % without it, limit 1 %); or with a corner, edge middle or centre further than the level's envelope
+# (SIMPLIFY_ENV_*) from every source triangle of its own mesh (a material stretched over another one's ground, the
+# board sliver of the 2026-11-10 play report). Then SIMPLIFY_VALIDATE measures every replayed triangle against its
+# source again, independently (simpmesh.c mx_simp_check), and steps each job with a failing triangle back to before
+# the collapse that last changed it until none fails (0 steps is the source: always passes); the export stops if one
+# still fails. SIMPLIFY_GUARD=0: neither (the old export). ASSUMED thresholds, see TECH_DEBT map-44
+SIMPLIFY_GUARD = os.environ.get("SIMPLIFY_GUARD", "1") == "1"
+SIMPLIFY_QMIN = float(os.environ.get("SIMPLIFY_QMIN", 0.0))
+SIMPLIFY_FLIP_DEG = float(os.environ.get("SIMPLIFY_FLIP_DEG", 90.0))
+SIMPLIFY_VALIDATE = SIMPLIFY_GUARD and os.environ.get("SIMPLIFY_VALIDATE", "1") == "1"
+SIMPLIFY_VALIDATE_TOL = float(os.environ.get("SIMPLIFY_VALIDATE_TOL", 0))  # metres; 0: the level's envelope (else 0.25)
 # SIMPLIFY_REFIT (default on; 0 = each surviving vertex keeps its source colour, the old export): after the simplifier,
 # a level's surviving wedges take the area-weighted mean colour of the source wedges that collapsed into them
 # (tools/mapx/simpmesh.c mx_simp_refit), per level, so the near and the coarse level each get their own colours
@@ -2238,11 +2254,16 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
         env_pad = SIMPLIFY_ENV_NEAR if env_pad is None else env_pad
         MX.mx_simp_envelope(env_pad)  # for the jobs mx_simp_new runs
+        if SIMPLIFY_GUARD:
+            MX.mx_simp_guard(SIMPLIFY_QMIN, math.cos(math.radians(SIMPLIFY_FLIP_DEG)))
+            MX.mx_simp_shape(SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
                                      eps_far, budget, nav_s, sat=sat, env_pad=env_pad)
         finally:
             MX.mx_simp_envelope(0.0)
+            MX.mx_simp_guard(0.0, -2.0)
+            MX.mx_simp_shape(0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
 
@@ -2862,6 +2883,11 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             n = int(MX.mx_simp_replay_jobs(h, job_eps.ctypes.data))
         else:
             n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
+        if SIMPLIFY_VALIDATE and njobs:
+            n = validate_jobs(MX, h, njobs, n, SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+            final_n = n
+        else:
+            final_n = None
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
@@ -2878,7 +2904,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             d = np.abs(refit[hit] - RGB[hit]).max(1)
             print(f"refit: {int(hit.sum())} surviving wedge colours averaged over their collapsed regions "
                   f"({int((d > 8).sum())} moved by more than 8 / 255, {int((d > 32).sum())} by more than 32)")
-        final = grass + n if job_eps is not None else count(eps)
+        final = grass + n if job_eps is not None or final_n is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
     # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
@@ -2907,6 +2933,30 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
           f"groups / {njobs} jobs, eps {eps:.3g} "
           f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
     return eps
+
+
+def validate_jobs(MX, h, njobs, n, tol):
+    """SIMPLIFY_VALIDATE: check every replayed triangle against its source (simpmesh.c mx_simp_check) and send the
+    jobs with a failing one back to half their collapse steps until none fails -> the surviving triangle count"""
+    import numpy as np
+    t0 = time.time()
+    fcos = math.cos(math.radians(SIMPLIFY_FLIP_DEG))
+    bad, cnt = np.zeros(njobs, np.uint8), np.zeros((njobs, 5), np.int64)
+    nb = int(MX.mx_simp_check(h, tol, SIMPLIFY_QMIN, fcos, None, bad.ctypes.data, cnt.ctypes.data))
+    c0, worst, n0, rounds, jobs = cnt[:, :4].sum(0), int(cnt[:, 4].max()), n, 0, set()
+    while nb and rounds < 100000:  # each round takes at least one step off every failing job: ends at the source
+        jobs.update(np.flatnonzero(bad).tolist())
+        n = int(MX.mx_simp_back_off(h, bad.ctypes.data))
+        only = bad.copy()
+        nb = int(MX.mx_simp_check(h, tol, SIMPLIFY_QMIN, fcos, only.ctypes.data, bad.ctypes.data, cnt.ctypes.data))
+        rounds += 1
+    if nb:
+        raise RuntimeError(f"validate: {nb} jobs still fail after {rounds} rounds")
+    print(f"validate (tol {tol} m, quality {SIMPLIFY_QMIN}, flip {SIMPLIFY_FLIP_DEG:g} deg): {int(c0[0])} degenerate, "
+          f"{int(c0[1])} thin, {int(c0[2])} flipped, {int(c0[3])} off-shape triangles (worst {worst} mm) in "
+          f"{len(jobs)} of {njobs} jobs; stepped back to before their last change in {rounds} rounds: {n0} -> {n} tris "
+          f"(+{n - n0}), {time.time() - t0:.1f} s", flush=True)
+    return n
 
 
 PVSIN_MAGIC = b"PVI1"
