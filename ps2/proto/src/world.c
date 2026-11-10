@@ -6,6 +6,7 @@
 #include "world.h"
 #include "loading.h"
 #include "pack.h"
+#include "dsrsnd_rpc.h"
 #include "collision.h"
 #include "map.h"
 #include "mapstream.h"
@@ -978,7 +979,8 @@ static void relite_step(int i)
         return;
     }
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
-    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, (char *)r->blob[r->ent] + r->done, n)))
+    if (!w_tk && (w_tk = pack_req_read_q(&r->pk, r->off[r->ent] + r->done, (char *)r->blob[r->ent] + r->done, n,
+                                          SNDD_PRIO_HIT)))
         world_stats.reading = i, hitch_block_read(n);
 }
 
@@ -1032,7 +1034,9 @@ static void read_step(int i, int issue)
         return;  /* stage 1: the next texture entry once a read is free and the buffer has room */
     char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
-    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
+    /* MS_READQ: the lite set in DSR's MapHit queue (collision, events, map tables), its textures in MapTpf */
+    if (!w_tk && (w_tk = pack_req_read_q(&r->pk, r->off[r->ent] + r->done, dst + r->done, n,
+                                          r->ent >= E_TEX ? SNDD_PRIO_TPF : SNDD_PRIO_HIT)))
         world_stats.reading = i, hitch_block_read(n);  /* else every request slot is taken: try next frame */
 }
 
@@ -1188,7 +1192,7 @@ static void bump_step(void)
         if (lite_first || warping)
             return;  /* a settle waits for no relief */
         unsigned n = r->bump_size - bump_done < WORLD_READ ? r->bump_size - bump_done : WORLD_READ;
-        if (!w_tk && (w_tk = pack_req_read(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n)))
+        if (!w_tk && (w_tk = pack_req_read_q(&r->pk, r->bump_off + bump_done, bump_buf + bump_done, n, SNDD_PRIO_TPF)))
             bump_reading = 1, world_stats.reading = bump_rd, hitch_block_read(n);
         return;
     }

@@ -187,7 +187,15 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #define MS_GRAN 256u
 #define MS_GPP (MS_PAGE / MS_GRAN)  /* granules per page */
 #define MS_RUN (256u << 10)          /* bytes of neighbouring resident items per request (v1 step 5) */
-#define MS_INFLIGHT 8
+/* MS_READQ (pack.h, default on): DSR hands its reader a block's whole load list at once and the reader goes through
+ * it queue by queue; with 8 small reads in flight the disc server's disc-order sweep saw a handful of requests at a
+ * time, and the head went back and forth between mapres, collision and character packs (B8b's run log: ~3100 runs of
+ * 1.2 items on a 6-min route, a seek each). With the queues, read-ahead (Prefetch) may go out up to MS_INFLIGHT while
+ * MS_SPARE_SLOTS request slots stay free for the other readers (collision tiles, lite sets, models); the urgent
+ * classes keep the old 8. */
+#define MS_INFLIGHT (MS_READQ ? 16 : 8)
+#define MS_INFLIGHT_NOW 8
+#define MS_SPARE_SLOTS 12
 #define MS_QUEUE 64
 #define MS_BLOCKED 16
 /* pages a read may clear per frame (each clearing ranks every loaded item) */
@@ -1419,8 +1427,14 @@ static int issue(void)
             end = c->rel + c->bytes, wn++;
         }
     }
-    int sent = 0;
-    for (unsigned g = w.id; g < w.id + wn && nrd < MS_INFLIGHT;) {
+    /* past the urgent reads' share only read-ahead goes out, and only while the other readers keep their slots */
+    if (nrd >= MS_INFLIGHT_NOW && (w.cls >= C_NEAR2 || pack_req_free() < MS_SPARE_SLOTS)) {
+        memmove(q + 1, q, nq++ * sizeof *q);
+        q[0] = w;
+        return 0;
+    }
+    int sent = 0, cap = w.cls >= C_NEAR2 ? MS_INFLIGHT_NOW : MS_INFLIGHT;
+    for (unsigned g = w.id; g < w.id + wn && nrd < cap;) {
         unsigned e = g + 1, gb = it_bytes(m, g);
         if (it_res(m, g)) {
             unsigned r0 = m->rit[g - m->ncell].rel;
@@ -1496,7 +1510,11 @@ static int issue(void)
             return 1;  /* the next queued one may still fit */
         }
         room_fail = 0;
-        int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        /* MS_READQ: textures in DSR's MapTpf queue, the classes map.c draws from now in MapDefault, the rest Prefetch */
+        int rq = it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_TEX) ? SNDD_PRIO_TPF
+                 : w.cls >= C_NEAR2                                     ? SNDD_PRIO_MAP
+                                                                        : SNDD_PRIO_PREF;
+        int tk = pack_req_read_q(&m->pk, it_off(m, g), p, gb, rq);
         if (!tk) {
             g_free(p, gb);
             if (!sent)

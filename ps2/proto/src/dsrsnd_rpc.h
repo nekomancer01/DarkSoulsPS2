@@ -89,7 +89,15 @@ typedef struct {
 #define SNDD_CLOSE 3   /* fd -> result */
 #define SNDD_CANCEL 4  /* stop the read in slot / seq after its current page (result -1); takes no slot itself */
 #define SNDD_PRIO_SYNC 0  /* the EE waits for it (pack_open, pack_load): before every background request */
-#define SNDD_PRIO_BG 1    /* map streaming, background jobs; in order of submission */
+#define SNDD_PRIO_BG 1    /* background jobs (enemy models, sound banks, menus): DSR's "Default" read queue */
+/* MS_READQ (pack.h): DSR's own file reader keeps five queues and serves them strictly in this order: Default,
+ * BackRead_MapHit, BackRead_MapDefault, BackRead_MapTpf, Prefetch (the strings FUN_14059f530 names them with; the
+ * per-frame service FUN_14059e300 drains them in index order). The background reads of the world map the same way;
+ * inside one priority the server still goes in disc order. Lower is more urgent. */
+#define SNDD_PRIO_HIT 2   /* a block's collision (tiles, lite sets): BackRead_MapHit */
+#define SNDD_PRIO_MAP 3   /* map cells wanted now (near parts, coarse cells in view): BackRead_MapDefault */
+#define SNDD_PRIO_TPF 4   /* map textures (mip 0, streamed mip 1), the relief: BackRead_MapTpf */
+#define SNDD_PRIO_PREF 5  /* read-ahead and out-of-view cells: Prefetch */
 
 typedef struct {
     unsigned int seq;        /* the EE's request number, echoed in its SndDiscDone */

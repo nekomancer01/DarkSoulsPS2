@@ -39,6 +39,15 @@ unsigned pack_entry_size(const Pack *p, const char *name);
  * lines before reading it on the EE. pack_req_cancel drops one: a read already started stops after its current 64 KB
  * page; it returns once nothing more can land in dst. */
 int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes);
+/* The same in one of DSR's read queues (dsrsnd_rpc.h SNDD_PRIO_HIT / _MAP / _TPF / _PREF; pack_req_read is
+ * SNDD_PRIO_BG): the disc server serves the queues strictly in order, each in disc order. MS_READQ (default 1; make
+ * DEFS=-DMS_READQ=0 = every background read in one queue, the old way). */
+#ifndef MS_READQ
+#define MS_READQ 1
+#endif
+int pack_req_read_q(Pack *p, unsigned offset, void *dst, unsigned bytes, int q);
+/* request slots free right now (of SND_DISC_SLOTS): a reader that queues many leaves room for the others */
+int pack_req_free(void);
 int pack_req_done(int t, int *result);
 void pack_req_cancel(int t);
 /* pack_req_cancel without the wait: 1 when the ticket is gone, 0 when the read stops after its current page and still

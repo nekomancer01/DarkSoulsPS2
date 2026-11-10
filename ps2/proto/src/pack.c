@@ -396,6 +396,19 @@ int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes)
     return io_submit(SNDD_READ, SNDD_PRIO_BG, p->fd, NULL, offset, dst, bytes);
 }
 
+int pack_req_read_q(Pack *p, unsigned offset, void *dst, unsigned bytes, int q)
+{
+    return io_submit(SNDD_READ, MS_READQ && q > SNDD_PRIO_BG ? q : SNDD_PRIO_BG, p->fd, NULL, offset, dst, bytes);
+}
+
+int pack_req_free(void)
+{
+    int n = 0;
+    for (int i = 0; i < IO_SLOTS; i++)
+        n += io[i].state == IO_FREE;
+    return n;
+}
+
 int pack_req_done(int t, int *result) { return io_poll(t, result); }
 
 void pack_req_cancel(int t) { io_cancel(t); }

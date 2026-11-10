@@ -793,7 +793,7 @@ static void disc_page(DiscJob *j)
         return;
     }
     unsigned int ee = r->dst + j->done, n = r->size - j->done;
-    int cached = pc_n && r->prio == SNDD_PRIO_BG && df_is(r->fd);
+    int cached = pc_n && r->prio >= SNDD_PRIO_BG && df_is(r->fd);
     if (cached) {
         unsigned int pos = r->offset + j->done, lsn = df_h[r->fd - DF_FD].lsn + pos / 2048;
         unsigned int to_blk = ((lsn | (PC_SECS - 1u)) + 1 - lsn) * 2048 - (pos & 2047);  /* bytes to the block's end */

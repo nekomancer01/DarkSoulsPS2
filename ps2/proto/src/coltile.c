@@ -5,6 +5,8 @@
 #include "coltile.h"
 #include "collision.h"
 #include "mapstream.h"
+#include "pack.h"
+#include "dsrsnd_rpc.h"
 
 /* Which pages a block holds: those whose box lies within CT_WANT_R (xz) / CT_WANT_Y (y) of the feet are read; those past
  * CT_KEEP_R / CT_KEEP_Y go. In between they stay while there is room: a wanted page with no room in the structural pool
@@ -209,7 +211,7 @@ static int start(int b, int i, const float *f, int wanted)
             }
             return 0;
         }
-    int t = pack_req_read(tb[b].pk, tb[b].base + p->off, buf, p->bytes);
+    int t = pack_req_read_q(tb[b].pk, tb[b].base + p->off, buf, p->bytes, SNDD_PRIO_HIT);  /* DSR: BackRead_MapHit */
     if (!t) {
         mapstream_free(buf, gran(p->bytes));
         return 0;
