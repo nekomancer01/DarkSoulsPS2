@@ -392,6 +392,10 @@ def type_model(game, model, files, dds, shared=None):
         sk = {n: i for i, n in enumerate(names)}
         mb = new_mb(sk, shared)
 
+    bw_i = {}  # intact FLVER bones off the model frame: (rotation rows, translation)
+    for i, (t, q) in enumerate(bind_world(intact["bones"])):
+        if max(abs(c) for c in t) > 1e-4 or abs(abs(q[3]) - 1) > 1e-6:
+            bw_i[i] = (souls_rot(q), list(t))
     # Static object meshes are rigid and bone-local (no weights; bone_idx[0] -> mesh bone list -> FLVER bone): split
     # each mesh's chosen LOD face set by its vertices' bone, cap the state's triangles (cap_tris) and add the pieces
     # through MeshBuilder's rigid path
@@ -410,9 +414,14 @@ def type_model(game, model, files, dds, shared=None):
             ti = obj_texture(mb, tex, dds.get(tex) or dds.get(tex.lower())) if tex else -1
             skb = 0 if F is intact else sk.get(F["bones"][fb][0], 0)
             mm = m
+            R = None
             if F is broken and fb in move:
                 skb, R, off = move[fb]
-            if F is broken and fb in move and R is not None:  # a joined piece: its vertices into the body's frame
+            elif F is intact and fb in bw_i:
+                # an intact FLVER with several bones (the Burg's stacked barrels o1152 / crates o1133: one bone per
+                # barrel / crate, vertices bone-local): into model space, as the whole intact object is bone 0
+                R, off = bw_i[fb]
+            if R is not None:  # a joined piece: its vertices into the body's frame; an intact bone: into model space
                 V = m["verts"]
                 used = set(idx)
                 pos, nrm = list(V["pos"]), list(V["normal"]) if V["normal"] else None

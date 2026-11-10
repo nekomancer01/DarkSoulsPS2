@@ -1014,7 +1014,9 @@ void objects_draw(void)
         }
         mdl_hide(ty->model, in->broken ? ty->intact_bits : ty->broken_bits);
         /* yaw -pi: mdl_world's placement is the identity, so each bone's pose is its world transform */
+        mdl_light_at(in->pos);  /* the object's own light (player / bonfire point lights), not the origin's */
         mdl_draw(ty->model, pose, v3(0, 0, 0), -3.14159265f, 0);
+        mdl_light_at(NULL);
     }
 }
 

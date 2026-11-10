@@ -50,6 +50,9 @@ void mdl_share_textures(Model *dst, const Model *src);
 /* Room for n textures (more than a model's own MAX_TEX: a breakable texture set, objects.c); before mdl_upload. A model
  * sharing such a set (mdl_share_textures) draws from its array. 0 if out of memory */
 int mdl_tex_capacity(Model *m, int n);
+/* Light the next mdl_draw calls as if they stood at p (x y z) instead of their placement position; NULL: back to the
+ * placement */
+void mdl_light_at(const float *p);
 /* Index of the baked animation with this Havok/TAE id, or -1 */
 int mdl_anim(const Model *m, int id);
 /* The Havok/TAE id of baked animation `anim` (sound cues, src/sound.c) */

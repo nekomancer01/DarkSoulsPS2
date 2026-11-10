@@ -898,6 +898,18 @@ static void skin_draw(const Model *m, int tint)
     }
 }
 
+/* mdl_light_at: where the next draws take their light from instead of their placement position (breakables pass world
+ * bone poses with the identity placement at the origin, so their light came from the world origin: no player point
+ * light, no bonfire light, src/objects.c) */
+static V3 light_at;
+static int light_at_on;
+void mdl_light_at(const float *p)
+{
+    light_at_on = p != NULL;
+    if (p)
+        light_at = v3(p[0], p[1], p[2]);
+}
+
 void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
 {
     /* the chain is built in view space (view folded into the root placement), straight into the palette: one VU0
@@ -905,7 +917,7 @@ void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint
     static float root[4][4] __attribute__((aligned(16))), local[4][4] __attribute__((aligned(16)));
     static float Lv[4] __attribute__((aligned(16)));
     M34 view = view_matrix(), place = placement(pos, yaw), vp = m34_mul(&view, &place);
-    skin_light(&view, pos, Lv);
+    skin_light(&view, light_at_on ? light_at : pos, Lv);
     c44_from_m34(&vp, root);
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         const float (*parent)[4] = m->parents[i] < 0 ? root : palette[m->parents[i]];
@@ -920,7 +932,7 @@ void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint)
     static float vc[4][4] __attribute__((aligned(16))), wc[4][4] __attribute__((aligned(16)));
     static float Lv[4] __attribute__((aligned(16)));
     M34 view = view_matrix();
-    skin_light(&view, pos, Lv);
+    skin_light(&view, light_at_on ? light_at : pos, Lv);
     c44_from_m34(&view, vc);
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         c44_from_m34((const M34 *)world[i], wc);
