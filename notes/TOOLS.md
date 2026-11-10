@@ -81,6 +81,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `ps2-iso.sh` | Bootable ISO |
 | `build-iso.sh` | One command from the game folder to a playable ISO: downloads the source (or builds this checkout), pulls the ps2dev image and builds in a container on it (`iso-builder/Dockerfile`, Docker or Podman) or with `--engine native`, writes `DarkSoulsPS2.iso` |
+| `buildtui.py` | Progress view for a long build: runs a command and shows a progress bar, the current step and the latest output line, redrawn in place, with the full log in a file. `./build-iso.sh` runs under it in a terminal (`--plain` / `DSR_TUI=0` for the plain log); it plans with a `make -n --trace` dry run and follows `make --trace` |
 | `ps2-pcsx2.sh` | Debugger / savestate runs |
 | `ps2-run.sh` | Real PS2 over ps2link (untested on hardware) |
 | `ps2-mc.sh` | Memory card images |
