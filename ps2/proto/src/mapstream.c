@@ -759,6 +759,21 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = d2 * vk;
         return d2 < sq(MS_R_HZN_KEEP) ? C_KEEP : C_FREE;
     }
+    /* MS_SETTLE_HZN (Burg plan B9 polish, default on; 0 = the pinned coarse level read in the settle too): in a settle
+     * the coarse items the horizon stands for (MS_RES_LOD) beyond MS_SETTLE_HZN_D are not read (kept if in), so the
+     * near level within the draw radius gets the room; they come back at their class once the settle ends, the horizon
+     * fading over them meanwhile. report3's second warp: every settle plan had near 0, near2 1235 KB, pinned coarse
+     * items refused "no room" with 5 MB of the old spot loaded, the settle ended on that refusal with no near cell in
+     * and the near cells 0-5 m away popped in 2-7 s later; pinned coarse at 16-48 m was 96 % horizon-covered,
+     * ~1.0-1.1 MB a plan (engine-gaps thread, ISO, 2026-11-09) */
+#ifndef MS_SETTLE_HZN
+#define MS_SETTLE_HZN 1
+#endif
+#define MS_SETTLE_HZN_D 24.0f  /* m (ASSUMED: past the near level's draw radius + its hysteresis) */
+    if (MS_SETTLE_HZN && settling && (tag & MS_RES_LOD) && d2 >= sq(MS_SETTLE_HZN_D)) {
+        *key = d2 * vk;
+        return C_KEEP;
+    }
     if (tag & MS_RES_FAR) {  /* the backdrop: the horizon of the player's block; another block's while in view */
         *key = (d2 < sq(MS_FAR_D) ? d2 : sq(MS_FAR_D)) * vk;
         /* (MS_STEADY: another loaded block's backdrop, Firelink's behind the Burg, keeps C_VIEW2 whether in view or
