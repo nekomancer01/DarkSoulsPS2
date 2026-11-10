@@ -66,6 +66,7 @@ struct Model {
      * hold st (textured) and which colours */
     const TexEntry *te;
     int nte;
+    void *te_own;  /* mdl_keep_te: te copied out of the blob */
     void *sk_block;  /* the batch table, the windows and the page table (heap) */
     /* the packets, in pages of up to MDL_SKIN_PAGE bytes (sk_page[i], sk_psz[i] bytes; a page from the near-cell
      * arena when the heap had no hole: mapstream_owns) */
@@ -630,11 +631,24 @@ void mdl_strip(Model *m)
     m->nsk = 0, m->nanims = 0;
 }
 
+int mdl_keep_te(Model *m)
+{
+    if (!m->te || m->te_own || !m->nte)
+        return 1;
+    void *c = malloc(m->nte * sizeof *m->te);
+    if (!c)
+        return 0;
+    memcpy(c, m->te, m->nte * sizeof *m->te);
+    m->te = c, m->te_own = c;
+    return 1;
+}
+
 void mdl_free(Model *m)
 {
     if (!m)
         return;
     mdl_strip(m);
+    free(m->te_own);
     if (m->tex_own)
         free(m->texv);
     free(m);
