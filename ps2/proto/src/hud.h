@@ -46,7 +46,6 @@ int hud_boss_bar_entity(int slot);  /* -1 none (tests) */
 
 /* Helpers for menu.c / drb.c */
 GSGLOBAL *hud_gs(void);
-const HudRect *hud_rect(int layout);
 const char *hud_string(int s);
 /* sprite (from a layout entry or hud_icon) at x, y, w x h; colour 0x80 = 1.0, a 0x80 = opaque */
 void hud_sprite(int sprite, float x, float y, float w, float h, int r, int g, int b, int a);

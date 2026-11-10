@@ -21,6 +21,7 @@
  *   bonfire  bonfire_update (rest, respawn, bloodstain) */
 #ifndef LPASS_H
 #define LPASS_H
+#include "ticks.h"
 
 /* The logic pass fixes the breakdown pointed at (default on; make DEFS=-DLOGIC_SPREAD=0 = the old order and code):
  * collision.c skips triangles outside the tested box on the fragments' integer grid, event.c lets an instance whose
@@ -38,12 +39,7 @@ enum { LG_PLAYER, LG_STREAM, LG_ENEMY, LG_AI, LG_NAV, LG_ESD, LG_MOVE, LG_RAGDOL
        LG_EVENTS, LG_BONFIRE, LG_N };
 
 extern unsigned lpass_t[LG_N];  /* EE ticks this frame */
-static inline unsigned lpass_now(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
+static inline unsigned lpass_now(void) { return ticks(); }
 #if LOGIC_PASS_MS
 #define LG_BEGIN(s) unsigned lg_t0_##s = lpass_now()
 #define LG_END(s, part) (lpass_t[part] += lpass_now() - lg_t0_##s)

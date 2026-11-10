@@ -13,6 +13,7 @@
 #include "pack.h"
 #include "render.h"
 #include "texcache.h"
+#include "ticks.h"
 
 #define LD_Z 0xFFFF  /* nearest: the far depth of field in main.c flip leaves it sharp, as the HUD */
 /* FrpgMenuDlgNowLoading (vtable 0x1413ca258): update FUN_1406fec50, constructor FUN_1406fe8c0 */
@@ -71,12 +72,6 @@ static int hint, hint_next = -1, icon_ok, icon_reading, saved_hint = 1000;
 static unsigned char icon_buf[4096] __attribute__((aligned(64)));
 static float post_t = -1;
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 void loading_init(GSGLOBAL *g, void (*p)(GSGLOBAL *), unsigned disp)
 {
@@ -86,8 +81,6 @@ void loading_init(GSGLOBAL *g, void (*p)(GSGLOBAL *), unsigned disp)
     gs = g, present = p, disp_vram = disp;
     srand(ticks());  /* FUN_1406fea10 draws the first hint at random (MT19937 in DSR) */
 }
-
-int loading_active(void) { return shown; }
 
 /* Own GIF chain for uploads (as drb.c: gsKit_texture_send from the update phase hung PATH3) */
 static u64 up_chain[22] __attribute__((aligned(64)));

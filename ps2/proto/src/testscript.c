@@ -23,6 +23,7 @@
 #include "hitch.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
+#include "ticks.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 2};
 int test_god;
@@ -58,12 +59,6 @@ typedef struct {
 static Prog script, demo;
 static int frozen, shot_wait, skipmiss;
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static char *dupstr(const char *s, int n)
 {

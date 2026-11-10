@@ -8,6 +8,7 @@
 #include "mapstream.h"
 #include "pack.h"
 #include "vu1.h"
+#include "ticks.h"
 
 /* Cells whose box is within MS_LOAD_R m of the player are loaded, nearest first, one read at a time; beyond
  * MS_UNLOAD_R they are freed. The blobs live in one arena allocated at the first mapstream_update, i.e. after
@@ -311,12 +312,6 @@ static unsigned heap_free(void)
     return 32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks;
 }
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n)
 {

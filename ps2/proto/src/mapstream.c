@@ -32,6 +32,7 @@
  * top, clearing the cheapest run first. */
 #ifdef MAPSTREAM_V1
 #include "mapstream_v1.c"
+#include "ticks.h"
 #else
 #include <kernel.h>
 #include <malloc.h>
@@ -486,12 +487,6 @@ static unsigned heap_free(void)
     return 32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks;
 }
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static int ensure_arena(void)
 {
@@ -1299,7 +1294,7 @@ static MsQ blk[MS_BLOCKED];
 static int nblk;
 static unsigned scan_frame, fail_frame, fail_wait;
 static float scan_pos[3];
-static int room_fail, failed, evict_left, defrag_left, replan;
+static int room_fail, failed, evict_left, defrag_left;
 /* load-time A/B (2026-11-06): a clock in ms over mapstream_update calls (COP0 Count wraps every 14.6 s), the settle
  * that ended last (its start / end on that clock), the first near cell and the full near level within MS_R0_FIRST of
  * the feet after it; KB of reads that landed with no class wanting them, KB of reads cancelled (MS_CANCEL) */
@@ -2065,7 +2060,6 @@ void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
         pool_req[0] = struct_bytes, pool_req[1] = misc_bytes;
 }
 
-unsigned mapstream_visual(void) { return arena ? ipages * MS_PAGE : 0; }
 int mapstream_pools_on(void) { return pools_on; }
 int mapstream_pools_on_build(void) { return MS_POOLS; }
 int mapstream_pool_wait(void) { return pool_busy; }

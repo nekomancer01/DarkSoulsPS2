@@ -63,7 +63,6 @@ void esd_start(EsdCtx *c);
 void esd_update(EsdCtx *c);
 /* Current state id of a group (HUD / debugging), -1 if there is no such group */
 int esd_state(const EsdCtx *c, int group);
-int esd_groups(const EsdCtx *c);
 
 /* Movement / combat side (esd_env_move.c): called first for every context and id; return 1 when handled */
 int esd_env_move(struct EsdCtx *c, int id, const float *args, int nargs, float *out);

@@ -13,6 +13,7 @@
 #include "texcache.h"
 #include "map.h"
 #include "vu1.h"
+#include "ticks.h"
 #ifndef BUMP_BAKED
 #define BUMP_BAKED 0
 #endif
@@ -184,7 +185,6 @@ static int item_cmp(const void *a, const void *b)
 }
 
 #ifdef BUMP_LOG
-static inline unsigned ticks(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
 #endif
 
 void bump_draw(void)
