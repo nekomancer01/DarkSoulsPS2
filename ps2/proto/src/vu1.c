@@ -622,6 +622,14 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
     return 1;
 }
 
+/* The chain's minification filter. DSR's samplers blend between mip levels: its renderer builds them as trilinear
+ * (D3D11 MIN_MAG_MIP_LINEAR) or anisotropic x4, all with MipLODBias 0 (exe FUN_141152870, desc -> D3D11 in
+ * FUN_140ce8590). 1 (default): GS LINEAR_MIPMAP_LINEAR, the two nearest levels blended; make DEFS=-DMIP_TRILINEAR=0:
+ * LINEAR_MIPMAP_NEAREST as before (one level, a visible step where it changes). PCSX2 does not time the second
+ * texture read per pixel: the fill cost shows on real hardware only. */
+#ifndef MIP_TRILINEAR
+#define MIP_TRILINEAR 1
+#endif
 static int mip_mxl, mip_k;
 static u64 mip_tbp;
 
@@ -662,7 +670,7 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
         q64(lt_tex0 | (u64)cld(t->VramClut) << 61, 0x06);
     }
     if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
-        q64(GS_SETREG_TEX1(0, mxl, 1, 4, 0, 0, mip_k), 0x14);
+        q64(GS_SETREG_TEX1(0, mxl, 1, MIP_TRILINEAR ? 5 : 4, 0, 0, mip_k), 0x14);
         q64(mip_tbp, 0x34);  /* MIPTBP1_1 */
     } else {
         q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
