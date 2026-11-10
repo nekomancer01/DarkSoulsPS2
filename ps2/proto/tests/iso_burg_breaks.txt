@@ -1,0 +1,192 @@
+# Undead Burg breakables on the real disc (TECH_DEBT physics-3, 2026-11-10): one of each heavy / clustered type
+# in the three world blocks: spawn 1.5 m off it, walk to the nearest intact breakable, R1, a shot mid-break and one of
+# the pieces on the floor. Every type here was a static map object before (objects.bin.static). Run:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_breaks.txt <out> --iso build/proto.iso --timeout 900
+# The EE log's 'objects: block' lines give each block's placements / types; the HUD line OBJ <inst>/<broken>.
+option hud
+option god
+option noenemies
+option nodemo
+wait 3
+stats
+# o1154_01 (block w)
+spawn -49.3 -18.3 -14.7 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1154_01_intact
+stats
+r1
+wait 0.8
+shot o1154_01_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1154_01_pieces
+stats
+pitch 0.3
+# o1152_02 (block w)
+spawn -53.4 -22.3 -20.6 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1152_02_intact
+stats
+r1
+wait 0.8
+shot o1152_02_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1152_02_pieces
+stats
+pitch 0.3
+# o1133_01 (block w)
+spawn -47.7 -22.3 -17.5 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1133_01_intact
+stats
+r1
+wait 0.8
+shot o1133_01_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1133_01_pieces
+stats
+pitch 0.3
+# o1122_02 (block w)
+spawn -20.8 -31.7 -72.0 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1122_02_intact
+stats
+r1
+wait 0.8
+shot o1122_02_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1122_02_pieces
+stats
+pitch 0.3
+# o1172_05 (block w)
+spawn -27.8 -19.4 -72.9 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1172_05_intact
+stats
+r1
+wait 0.8
+shot o1172_05_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1172_05_pieces
+stats
+pitch 0.3
+# o1048_01 (block w)
+spawn -33.9 -33.5 -63.8 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1048_01_intact
+stats
+r1
+wait 0.8
+shot o1048_01_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1048_01_pieces
+stats
+pitch 0.3
+# o1163_01 (block b)
+spawn 6.9 -9.4 -98.5 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1163_01_intact
+stats
+r1
+wait 0.8
+shot o1163_01_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1163_01_pieces
+stats
+pitch 0.3
+# o1150_16 (block b)
+spawn -9.1 17.6 -113.4 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1150_16_intact
+stats
+r1
+wait 0.8
+shot o1150_16_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1150_16_pieces
+stats
+pitch 0.3
+# o1152_05 (block b)
+spawn 23.4 23.6 25.0 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1152_05_intact
+stats
+r1
+wait 0.8
+shot o1152_05_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1152_05_pieces
+stats
+pitch 0.3
+# o1240_1015 (block p)
+spawn 10.4 28.9 108.2 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1240_1015_intact
+stats
+r1
+wait 0.8
+shot o1240_1015_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1240_1015_pieces
+stats
+pitch 0.3
+# o1155_0000 (block p)
+spawn 18.3 35.7 67.7 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1155_0000_intact
+stats
+r1
+wait 0.8
+shot o1155_0000_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1155_0000_pieces
+stats
+pitch 0.3
+# o1242_1100 (block p)
+spawn 6.1 35.5 80.3 4.71
+wait 3
+approach obj 1.9 0.6
+shot o1242_1100_intact
+stats
+r1
+wait 0.8
+shot o1242_1100_hit
+wait 2.5
+pitch 0.9
+wait 0.5
+shot o1242_1100_pieces
+stats
+pitch 0.3
+end
