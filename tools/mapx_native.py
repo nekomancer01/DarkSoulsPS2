@@ -52,12 +52,14 @@ def lib():
                 L.mx_soften_thin.restype = ll
                 L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
                 L.mx_far_cells.restype = ll
+                L.mx_chunks_st_align.argtypes = [i]
+                L.mx_chunks_st_align.restype = None
                 L.mx_simp_new.argtypes = [i, vp, vp, vp, vp, vp, vp, vp, vp, i, d, ll, vp, ll, vp, ll, vp, vp, d, d, i, vp,
                                           d, d, d, d, d, d, d, d, d, d, d, d]
                 L.mx_simp_new.restype = vp
                 for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
                                 ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
-                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_job_counts", [vp, d, vp], None),
+                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_refit", [vp, vp, vp, vp], None), ("mx_simp_job_counts", [vp, d, vp], None),
                                 ("mx_simp_replay_jobs", [vp, vp], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
                                 ("mx_simp_free", [vp], None),
                                 ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),

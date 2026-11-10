@@ -212,6 +212,7 @@ typedef struct {
     /* replay */
     int nout;
     int *out;             /* nout x 6 (p, a) */
+    int ksteps;           /* log steps the last replay applied */
 } sjob;
 
 typedef struct mx_simp {
@@ -654,7 +655,7 @@ static void replay_job(void *vc, long long i)
             memmove(Tt + 6 * m++, Tt + 6 * t, 6 * sizeof(int));
     free(alive);
     free(j->out);
-    j->out = Tt, j->nout = m;
+    j->out = Tt, j->nout = m, j->ksteps = k;
 }
 
 /* replay every job's log at eps (far jobs at eps_far when use_far) -> surviving triangle count */
@@ -696,6 +697,69 @@ MX_API void mx_simp_fetch(const mx_simp *h, int *tjob, int *tmesh, int *cmesh, i
                 cmesh[3 * o + q] = j->pmesh[p], cpos[3 * o + q] = j->ppi[p], cw[3 * o + q] = j->aw[a];
             }
         }
+    }
+}
+
+/* Colour refit (export_map.py SIMPLIFY_REFIT): a half-edge collapse leaves each surviving vertex the colour it had in
+   the source mesh, a point sample of the baked light, so after many collapses one vertex that sat in a dark joint or
+   on a lit edge paints a whole large triangle with it (light and dark shards on walls and floors). Here every
+   surviving wedge gets the mean colour of the source wedges that collapsed into it (the log's attribute changes of
+   the last replay, followed to their end), weighted by a third of the area of the source triangles at each: the
+   surface it now stands for, like a texture mip. Wedges that kept their own attributes across a seam stay apart.
+   wrgb: every mesh's wedge colours (mesh mi's at woff[mi]); acc (zeroed by the caller, 4 per wedge): summed r, g, b
+   and weight over all jobs; weight 0: not a surviving wedge, or one at a locked position (cell cuts: both levels and
+   both cells must agree there), which keeps its colour. */
+MX_API void mx_simp_refit(const mx_simp *h, const long long *woff, const int *wrgb, double *acc)
+{
+    for (int i = 0; i < h->njobs; i++) {
+        const sjob *j = h->jobs + i;
+        const sresult *R = j->log;
+        int na = j->nattr > 0 ? j->nattr : 1;
+        int *par = MX_NEW(int, na), *Ta = MX_NEW(int, 3 * (size_t)(R->nt ? R->nt : 1));
+        double *sum = MX_ZNEW(double, 4 * (size_t)na);
+        unsigned char *done = MX_ZNEW(unsigned char, na);
+        for (int a = 0; a < na; a++)
+            par[a] = a;
+        for (int t = 0; t < R->nt; t++)
+            for (int q = 0; q < 3; q++)
+                Ta[3 * t + q] = R->t0[6 * t + 2 * q + 1];
+        long long nc = 0;
+        for (int s = 0; s < j->ksteps; s++)
+            nc += R->ncha[s];
+        for (long long c = 0; c < nc; c++) {
+            const int *C = R->cha + 4 * c;
+            int old = Ta[3 * C[0] + C[1]];
+            if (old != C[3]) {
+                int ra = uf_root(par, old), rb = uf_root(par, C[3]);
+                if (ra != rb)
+                    par[ra] = rb;
+                Ta[3 * C[0] + C[1]] = C[3];
+            }
+        }
+        for (int t = 0; t < R->nt; t++) {
+            const int *r = R->t0 + 6 * t;
+            const double *a = j->pos + 3 * r[0], *b = j->pos + 3 * r[2], *c = j->pos + 3 * r[4];
+            double e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+            double w = mx_sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) / 6;
+            for (int q = 0; q < 3; q++) {
+                int at = r[2 * q + 1];
+                const int *col = wrgb + 3 * (woff[j->amesh[at]] + j->aw[at]);
+                double *o = sum + 4 * (size_t)uf_root(par, at);
+                o[0] += w * col[0], o[1] += w * col[1], o[2] += w * col[2], o[3] += w;
+            }
+        }
+        for (int t = 0; t < j->nout; t++)
+            for (int q = 0; q < 3; q++) {
+                int at = j->out[6 * t + 2 * q + 1];
+                if (done[at] || j->locked[j->wpos[at]])
+                    continue;  /* locked (cell cuts): the same colour in every level, so a near cell meets a coarse one */
+                done[at] = 1;
+                const double *o = sum + 4 * (size_t)uf_root(par, at);
+                double *d = acc + 4 * (woff[j->amesh[at]] + j->aw[at]);
+                d[0] += o[0], d[1] += o[1], d[2] += o[2], d[3] += o[3];
+            }
+        free(par), free(Ta), free(sum), free(done);
     }
 }
 
