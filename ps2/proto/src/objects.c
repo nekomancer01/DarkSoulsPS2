@@ -21,8 +21,9 @@
 #include "vmath.h"
 #include "ticks.h"
 
-#define MAX_TYPES 16           /* the boot area's + every world block's (objects_block_types) */
-#define MAX_INST 128
+#define MAX_TYPES 64           /* the boot area's + every world block's (objects_block_types; Undead Burg: 31) */
+#define MAX_INST 512           /* placed in the boot area and the blocks on (Burg blocks: 115 / 146 / 121) */
+#define MAX_LIVE 16            /* broken objects with pieces out at once (their body lists: live_body) */
 #define MAX_PIECES 32          /* per type */
 #define MAX_BODIES 96          /* piece budget (3 pots); the oldest broken object's pieces go first */
 #define PIECE_LIFE 8.0f        /* ASSUMED */
@@ -41,7 +42,18 @@ typedef struct {
     const float *piece;        /* 20 floats each */
     Model *model;
     int tex_refs;              /* blocks on that place it (its textures are in VRAM while > 0); the boot area's: 1 */
+    int set;                   /* objects.bin v4: its map's texture set (tset), -1: textures of its own */
 } Type;
+
+/* objects.bin v4 (export_objects.py OBJ_TEX_SHARED): one texture model per map holds every breakable texture of the
+ * MSB, the same list in each block of that map; the types' groups index it. Up in VRAM while any block of the map is
+ * on (the boot area's: always); its types draw with its VRAM textures (mdl_share_textures after each upload). */
+#define MAX_TSETS 4
+static struct {
+    int key, refs;   /* area x 100 + map (0: free slot); blocks on that hold it */
+    Model *m;        /* texture handles only after objects_block_types (mdl_strip) */
+} tset[MAX_TSETS];
+static int blk_set[OBJ_BLOCKS];  /* a block's texture set, -1 none */
 
 typedef struct {
     int type;
@@ -51,11 +63,14 @@ typedef struct {
     int entity;                /* MSB entity id (EMEVD addresses it: objects_entity_*), -1 none */
     int off;                   /* switched off by an event: not drawn, no collision, cannot break */
     float t;                   /* seconds since the break */
-    short body[MAX_PIECES];
+    short live;                /* its row of live_body while its pieces are out, else -1 */
 } Inst;
 
 static Type types[MAX_TYPES];
 static Inst inst[MAX_INST];
+/* body slot of each piece of a broken object (-1: none), and the instance holding the row (-1: free) */
+static short live_body[MAX_LIVE][MAX_PIECES], live_of[MAX_LIVE];
+#define BODY(in, j) ((in)->live >= 0 ? live_body[(in)->live][j] : -1)
 static int ntypes, ninst;
 /* world blocks' placements (objects_block_types at boot; types already loaded): type index, pos, q */
 typedef struct {
@@ -387,15 +402,52 @@ int objects_anim_state(int entity, int *anim, float *t, int *playing)
     return 1;
 }
 
+/* the texture set of key (made from the texture model at tm when new; NULL when there is no room) */
+static int tset_get(int key, const unsigned char *tm)
+{
+    int free_slot = -1;
+    for (int k = 0; k < MAX_TSETS; k++) {
+        if (tset[k].key == key)
+            return k;
+        if (!tset[k].key && free_slot < 0)
+            free_slot = k;
+    }
+    if (free_slot < 0 || !(tset[free_slot].m = mdl_load(tm)))
+        return -1;
+    if (!mdl_tex_capacity(tset[free_slot].m, (int)((const unsigned *)tm)[5])) {  /* DSRM header: textures */
+        mdl_free(tset[free_slot].m);
+        return -1;
+    }
+    tset[free_slot].key = key, tset[free_slot].refs = 0;
+    return free_slot;
+}
+
+/* the set's textures went up (or away): every type of it draws with the new VRAM handles */
+static void tset_share(int k)
+{
+    for (int j = 0; j < ntypes; j++)
+        if (types[j].set == k && types[j].model)
+            mdl_share_textures(types[j].model, tset[k].m);
+}
+
 int objects_init(GSGLOBAL *gs, const void *blob)
 {
     const unsigned *h = blob;
     ntypes = ninst = 0;
     memset(bodies, 0, sizeof bodies);
-    if (!blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 3)
+    memset(live_of, 0xFF, sizeof live_of);
+    if (!blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 4)
         return 0;
     const unsigned char *b = blob;
     unsigned ps = h[1] >= 2 ? 48 : 32;  /* part record (export_objects.py: version 2 adds the entity id) */
+    memset(tset, 0, sizeof tset);
+    for (int k = 0; k < OBJ_BLOCKS; k++)
+        blk_set[k] = -1;
+    int set = h[1] >= 4 && h[14] ? tset_get((int)h[15], b + h[14]) : -1;  /* the boot blob stays: no strip */
+    if (set >= 0 && mdl_upload(tset[set].m, gs) < 0)
+        printf("objects: breakable textures do not fit in VRAM\n");
+    if (set >= 0)
+        tset[set].refs = 1, blk_set[0] = set;
     for (unsigned k = 0; k < h[2] && ntypes < MAX_TYPES; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
         const float *f = (const float *)t;
@@ -406,11 +458,14 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         ty->hp = (int)t[5], ty->defense = (int)t[6];
         ty->cyl_r = f[7], ty->cyl_y0 = f[8], ty->cyl_y1 = f[9], ty->fr = f[10], ty->rest = f[11];
         ty->intact_bits = t[12], ty->broken_bits = t[13];
-        ty->model = mdl_load(b + t[1]);
+        ty->set = set;
+        ty->model = set >= 0 ? mdl_load_tex(b + t[1], tset[set].m) : mdl_load(b + t[1]);
         if (!ty->model || mdl_bones(ty->model) != ty->pieces + 1)
             continue;
-        if (mdl_upload(ty->model, gs) < 0)
+        if (set < 0 && mdl_upload(ty->model, gs) < 0)
             continue;
+        if (set >= 0)
+            mdl_share_textures(ty->model, tset[set].m);
         ty->tex_refs = 1;
         ntypes++;
     }
@@ -421,7 +476,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
             continue;
         Inst *in = &inst[ninst++];
         memset(in, 0, sizeof *in);
-        memset(in->body, 0xFF, sizeof in->body);  /* -1: no body */
+        in->live = -1;
         in->type = ti;
         memcpy(in->pos, p + 4, 12);
         memcpy(in->q, p + 16, 16);
@@ -437,7 +492,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
 
 /* a breakable type of a block's objects.bin (b, type record t): model compacted (the blob is freed after
  * objects_block_types), textures not uploaded (objects_block_add does, from the objects.bin read with the block) */
-static int load_block_type(int block, const unsigned char *b, const unsigned *t)
+static int load_block_type(int block, const unsigned char *b, const unsigned *t, int set, const Model *tm)
 {
     const float *f = (const float *)t;
     Type *ty = &types[ntypes];
@@ -447,8 +502,9 @@ static int load_block_type(int block, const unsigned char *b, const unsigned *t)
     ty->hp = (int)t[5], ty->defense = (int)t[6];
     ty->cyl_r = f[7], ty->cyl_y0 = f[8], ty->cyl_y1 = f[9], ty->fr = f[10], ty->rest = f[11];
     ty->intact_bits = t[12], ty->broken_bits = t[13];
+    ty->set = set;
     float *pc = malloc(ty->pieces * 20 * sizeof *pc);  /* the blob goes after objects_block_types */
-    ty->model = mdl_load(b + t[1]);
+    ty->model = tm ? mdl_load_tex(b + t[1], tm) : mdl_load(b + t[1]);
     if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || !mdl_compact(ty->model, t[2])) {
         printf("objects: block %d: o%04d did not load\n", block, ty->id);
         if (ty->model)
@@ -464,21 +520,38 @@ static int load_block_type(int block, const unsigned char *b, const unsigned *t)
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 {
     const unsigned *h = blob;
-    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 3)
+    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 4)
         return 0;
     obj_gs = gs;
     const unsigned char *b = blob;
     unsigned ps = h[1] >= 2 ? 48 : 32;
     int map[MAX_TYPES * 2];
     blk_ntm[block] = 0;
+    /* v4: the map's texture set; this block's copy of its texture model for the type loads (st per texture size) */
+    int set = -1, fresh = 0;
+    Model *tm = NULL;
+    if (h[1] >= 4 && h[14] && h[2]) {
+        for (int k = 0; k < MAX_TSETS; k++)
+            if (tset[k].key == (int)h[15])
+                set = k;
+        fresh = set < 0;
+        if (fresh)
+            set = tset_get((int)h[15], b + h[14]);
+        tm = set < 0 ? NULL : fresh ? tset[set].m : mdl_load(b + h[14]);
+        if (!tm) {
+            printf("objects: block %d: breakable texture set did not load\n", block);
+            set = -1;
+        }
+    }
+    blk_set[block] = set;
     for (unsigned k = 0; k < h[2] && k < MAX_TYPES * 2; k++) {
         const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
         map[k] = -1;
-        for (int j = 0; j < ntypes; j++)  /* the same object model in another block: one type */
-            if (types[j].id == (int)t[0])
+        for (int j = 0; j < ntypes; j++)  /* the same object model in another block of its map: one type */
+            if (types[j].id == (int)t[0] && types[j].set == set)
                 map[k] = j;
-        if (map[k] < 0 && ntypes < MAX_TYPES)
-            map[k] = load_block_type(block, b, t);
+        if (map[k] < 0 && ntypes < MAX_TYPES && (set >= 0 || !h[14]))
+            map[k] = load_block_type(block, b, t, set, tm);
         if (map[k] >= 0 && blk_ntm[block] < MAX_TYPES)
             blk_tm[block][blk_ntm[block]].type = map[k], blk_tm[block][blk_ntm[block]++].off = t[1];
     }
@@ -496,6 +569,10 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
         memcpy(pt->q, p + 16, 16);
         pt->entity = ps == 48 ? *(const int *)(p + 32) : -1;
     }
+    if (tm && fresh)
+        mdl_strip(tm);  /* the set keeps its texture handles only (the blob goes) */
+    else if (tm)
+        mdl_free(tm);
     printf("objects: block %d: %d placements, %d types loaded\n", block, blk_nparts[block], ntypes);
     return blk_nparts[block] + anim_load(gs, block, blob, 1);
 }
@@ -506,7 +583,15 @@ void objects_block_add(int block, const void *blob)
 {
     if (block <= 0 || block >= OBJ_BLOCKS)
         return;
-    for (int k = 0; k < blk_ntm[block]; k++) {  /* textures of its types no other block on holds */
+    int set = blk_set[block];
+    /* v4: blob = the map's texture model (world.c reads only that tail); up unless another block of the map holds it */
+    if (set >= 0 && !tset[set].refs++) {
+        if (!blob || mdl_upload_from(tset[set].m, blob, obj_gs) < 0)
+            printf("objects: block %d: breakable textures %s (VRAM free %d)\n", block,
+                   blob ? "do not fit in VRAM" : "missing", r_vram_avail(obj_gs));
+        tset_share(set);
+    }
+    for (int k = 0; k < blk_ntm[block] && set < 0; k++) {  /* textures of its types no other block on holds */
         Type *ty = &types[blk_tm[block][k].type];
         if (!ty->tex_refs++ && (!blob || mdl_upload_from(ty->model, (const unsigned char *)blob + blk_tm[block][k].off,
                                                           obj_gs) < 0))
@@ -523,7 +608,7 @@ void objects_block_add(int block, const void *blob)
         if (i == ninst)
             ninst++;
         memset(in, 0, sizeof *in);
-        memset(in->body, 0xFF, sizeof in->body);
+        in->live = -1;
         in->type = blk_part[block][k].type;
         in->block = block;
         in->entity = blk_part[block][k].entity;
@@ -540,7 +625,12 @@ void objects_block_remove(int block)
 {
     if (block <= 0 || block >= OBJ_BLOCKS)
         return;
-    for (int k = 0; k < blk_ntm[block]; k++) {
+    int set = blk_set[block];
+    if (set >= 0 && tset[set].refs > 0 && !--tset[set].refs) {
+        mdl_free_textures(tset[set].m);  /* no block of the map is on: its instances are gone */
+        tset_share(set);
+    }
+    for (int k = 0; k < blk_ntm[block] && set < 0; k++) {
         Type *ty = &types[blk_tm[block][k].type];
         if (ty->tex_refs > 0 && !--ty->tex_refs)
             mdl_free_textures(ty->model);  /* its instances are gone with the block */
@@ -566,27 +656,34 @@ void objects_block_remove(int block)
 static void retire(Inst *in)
 {
     Type *ty = &types[in->type];
-    for (int j = 0; j < ty->pieces; j++)
-        if (in->body[j] >= 0)
-            bodies[in->body[j]].active = 0, in->body[j] = -1;
+    if (in->live >= 0) {
+        for (int j = 0; j < ty->pieces; j++)
+            if (live_body[in->live][j] >= 0)
+                bodies[live_body[in->live][j]].active = 0;
+        live_of[in->live] = -1, in->live = -1;
+    }
     in->broken = 2;
 }
 
-/* Free body slots, retiring the oldest broken objects until n are free; returns 1 when there is room */
+/* Free body slots and a live_body row, retiring the oldest broken objects until n slots are free; returns the row, or
+ * -1 when there is no room */
 static int make_room(int n)
 {
     for (;;) {
-        int free = 0;
+        int free = 0, row = -1;
         for (int i = 0; i < MAX_BODIES; i++)
             free += !bodies[i].active;
-        if (free >= n)
-            return 1;
+        for (int r = 0; r < MAX_LIVE && row < 0; r++)
+            if (live_of[r] < 0)
+                row = r;
+        if (free >= n && row >= 0)
+            return row;
         Inst *oldest = 0;
         for (int i = 0; i < ninst; i++)
             if (inst[i].broken == 1 && (!oldest || inst[i].t > oldest->t))
                 oldest = &inst[i];
         if (!oldest)
-            return 0;
+            return -1;
         retire(oldest);
     }
 }
@@ -599,10 +696,13 @@ void objects_break(int i, const float *dir)
     Type *ty = &types[in->type];
     in->broken = 1, in->t = 0;
     objects_stats.broken++;
-    if (!make_room(ty->pieces)) {
+    int row = make_room(ty->pieces);
+    if (row < 0) {
         in->broken = 2;
         return;
     }
+    in->live = row, live_of[row] = i;
+    memset(live_body[row], 0xFF, sizeof live_body[row]);
     float dx = dir ? dir[0] : 0, dz = dir ? dir[2] : 0, dl = sqrtf(dx * dx + dz * dz);
     if (dl > 1e-4f)
         dx /= dl, dz /= dl;
@@ -647,7 +747,7 @@ void objects_break(int i, const float *dir)
         unsigned hsh = (unsigned)(j * 2654435761u + i * 40503u);
         for (int k = 0; k < 3; k++, hsh = hsh * 1103515245u + 12345u)
             bd->w[k] = SPIN * ((int)((hsh >> 16) & 0xFF) - 128) / 128.0f;
-        in->body[j] = slot;
+        live_body[row][j] = slot;
     }
     phys_wake(bodies, MAX_BODIES, in->pos, 2.0f);
 }
@@ -670,7 +770,7 @@ int objects_sweep(const float a[3], const float b[3], float r, float damage, con
         if (in->broken || in->off)
             continue;
         Type *ty = &types[in->type];
-        if (damage - ty->defense < ty->hp)
+        if (ty->hp < 0 || damage - ty->defense < ty->hp)  /* ObjectParam hp -1: no attack breaks it */
             continue;
         /* capsule vs the vertical cylinder: sample the blade at 5 points against the axis segment */
         float lo[3] = {in->pos[0], in->pos[1] + ty->cyl_y0, in->pos[2]}, hi[3] = {in->pos[0], in->pos[1] + ty->cyl_y1, in->pos[2]};
@@ -756,7 +856,9 @@ void objects_update(Player *p, float dt)
             if (f[1] > top + 0.3f || f[1] + 1.5f < bottom)
                 continue;
             float dir[3] = {dx, 0, dz};
-            if (breaker || (landing && f[1] > top - 0.5f))
+            /* ASSUMED: only defence-0 objects (pots, crates, barrels, furniture) break from a roll or a landing; the
+             * Burg's walls o1230 / o1231 / o1233 have defense 90 (isAttackBacklash 1) and take a weapon hit */
+            if ((breaker || (landing && f[1] > top - 0.5f)) && ty->hp >= 0 && ty->defense <= 0)
                 objects_break(i, dir);
         }
         if (objects_push_capsule(f, 0.4f, 1.5f))
@@ -771,9 +873,9 @@ void objects_update(Player *p, float dt)
         Type *ty = &types[in->type];
         int sinking = in->t > PIECE_LIFE;
         for (int j = 0; j < ty->pieces; j++) {
-            if (in->body[j] < 0)
+            if (BODY(in, j) < 0)
                 continue;
-            Body *bd = &bodies[in->body[j]];
+            Body *bd = &bodies[BODY(in, j)];
             if (sinking)
                 bd->asleep = 1, bd->p[1] -= SINK_DEPTH / SINK_TIME * dt;
             pieces++;
@@ -807,8 +909,8 @@ void objects_draw(void)
         memcpy(pose[0].q, in->q, 16);
         memcpy(pose[0].t, in->pos, 12);
         for (int j = 0; j < ty->pieces; j++) {
-            if (in->broken && in->body[j] >= 0) {
-                Body *bd = &bodies[in->body[j]];
+            if (in->broken && BODY(in, j) >= 0) {
+                Body *bd = &bodies[BODY(in, j)];
                 memcpy(pose[1 + j].q, bd->q, 16);
                 memcpy(pose[1 + j].t, bd->p, 12);
             } else {

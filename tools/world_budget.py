@@ -140,7 +140,24 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
-    return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
+    return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
+
+
+def obj_tex_bytes(d):
+    """bytes of objects.bin world.c reads when the block turns on: v4 (export_objects.py OBJ_TEX_SHARED) only the
+    breakable texture tail from header word 14 (world.c obj_tail), older files whole"""
+    import struct
+    p = os.path.join(d, "objects.bin")
+    if not os.path.exists(p):
+        return 0
+    with open(p, "rb") as f:
+        h = f.read(64)
+    n = os.path.getsize(p)
+    if len(h) == 64 and h[:4] == b"DSRB" and struct.unpack_from("<I", h, 4)[0] >= 4:
+        tail = struct.unpack_from("<I", h, 56)[0]
+        if tail and tail < n and not tail & 127:
+            return n - tail
+    return n
 
 
 def structural(gen):

@@ -37,6 +37,11 @@ header to 48 B:
           u32 0 x 2 (48 B); scaled placements stay static
   sanim   i32 entity, u32 anims, 8 x (i32 anim id, f32 length s) (72 B): objects the events animate that stay static
           map objects (elevators, ...), so 2003[18] "wait for completion" waits as long as in DSR
+Version 4 (2026-11-10) uses the header's last two words: u32 breakable texture model offset (0 none: each breakable
+type's model carries its own textures, as before), u32 texture set key (area x 100 + map: 1001 for m10_01). That
+texture model (one bone, no triangles) holds every breakable texture of the whole MSB, the same list in every block of
+one map, and is the file's last part, so world.c reads only it when a block turns on; the types' models carry no
+textures and their groups index it (objects.c: one upload per map while any of its blocks is on).
 Animated = an MSB object whose objbnd has an anibnd (skeleton + a00_NNNN.hkx anims) and that the map's EMEVD animates
 (2005[07] End Of Animation / 2003[18] Force Animation on its entity id) or an ObjAct uses; not breakables, not the
 models in ANIM_SKIP (elevators: their moving floor is A9's). Their part names go to <out>.anim and export_map.py leaves
@@ -69,6 +74,23 @@ ANIM_MAX_TRIS = 600  # a type over this takes the next LOD (skin streams ~100 B 
 # Elevators (A9 moves the platform and the player on it) and objects whose bones leave model.bin's +-8 m range stay
 # static map objects; their anims stay event stubs
 ANIM_SKIP = set(os.environ.get("ANIM_SKIP", "o1460").split(","))
+# Undead Burg's breakables (2026-11-10; crates, barrels, sacks, chairs, tables, shelves, carts, walls: 31 types, ~380
+# placements in the three world blocks): triangles per state (intact / broken) after the FLVER's LOD_* face set,
+# simplified past it (cap_tris; 0 = no cap; 240 measured barely more RAM than 160: most types are under it), texture
+# height (obj_texture), and one texture list per map at the end of objects.bin (OBJ_TEX_SHARED, objects.bin v4: the
+# Burg's 31 types share 27 textures, ~230 KB of VRAM while any Burg block is on, where per-type copies at 128 x 128 were
+# ~0.7 MB per block; world.c reads only that tail when a block turns on). OBJ_TRIS=0 OBJ_TEX_H=1024 OBJ_TEX_SHARED=0
+# (with tools/area.py OBJ_BLOCK_MB=0.12) = the old path
+OBJ_TRIS = int(os.environ.get("OBJ_TRIS", 160))
+OBJ_TEX_H = int(os.environ.get("OBJ_TEX_H", 64))
+# cap_tris's error bound, relative to each group's extent (meshoptimizer): the cap is a target, never reached by
+# flattening a shape (unbounded, the Burg barrel shell o1155 went 42 -> 6 triangles with 1.4 m slivers, drawn as shards)
+OBJ_TRI_ERR = float(os.environ.get("OBJ_TRI_ERR", 0.02))
+OBJ_TEX_SHARED = int(os.environ.get("OBJ_TEX_SHARED", 1))
+# Block types are compacted at load (objects.c load_block_type: mdl_compact keeps bones, groups and the VU1 skin
+# streams; the vertices, UVs and textures go with the blob, the textures come from the block's objects.bin when it turns
+# on), so the budget counts what stays: skin streams + this per-type header estimate. The boot area keeps its whole blob.
+COMPACT_HDR = 256
 
 
 def objbnd(game, model):
@@ -150,8 +172,160 @@ def mat_to_quat(m):
     return tuple(q)
 
 
-def type_model(game, model, files, dds):
-    """-> (model.bin bytes, pieces [(pos, q, half, centre, inv_mass, inv_inertia)], cylinder (r, y0, y1), fr, rest)"""
+def new_mb(sk, shared):
+    mb = MeshBuilder(sk)
+    if shared:
+        mb.textures, mb.tex_index = shared
+    return mb
+
+
+def shared_textures(game, msb, dds, files_of):
+    """(texture list, {name: index}) of every breakable of the MSB (not just the block's: all blocks of one map then
+    carry the same list, so objects.c uploads it once while any of them is on and a type loaded with one block's list
+    draws with another's), in model and mesh order"""
+    shared = ([], {})
+    mb = new_mb({}, shared)
+    for model in sorted({p["model"] for p in msb["parts"] if p["type"] == 1}):
+        files = files_of(model)
+        if not is_breakable(files, model):
+            continue
+        d = type_dds(dds, files)
+        for name in (model + ".flver", model + "_1.flver"):
+            for m in souls.flver(files[name])["meshes"]:
+                tex = os.path.splitext(os.path.basename(m["diffuse"]))[0] if m["diffuse"] else ""
+                if tex:
+                    obj_texture(mb, tex, d.get(tex) or d.get(tex.lower()))
+    return shared
+
+
+def type_dds(dds, files):
+    """the area's textures + the objbnd's own"""
+    d = dict(dds)
+    for n, b in files.items():
+        if n.endswith(".tpf"):
+            d.update(souls.tpf(b))
+    return d
+
+
+def obj_texture(mb, name, d):
+    """Texture index of DDS d for a breakable: decoded at TEX texels at most, stretched to PSMT8's 128 texel width and
+    kept at the decoded height (OBJ_TEX_H at most): a 64 x 64 source becomes 128 x 64 (the old path doubled it to
+    128 x 128 with no more detail; the Burg barrels' rope m10_01_rope_02, 1:8, became 128 x 1024). UVs are normalised,
+    so this only resamples. -1 without one"""
+    if not d:
+        return -1
+    if name not in mb.tex_index:
+        from PIL import Image
+        from export_model import quantize
+        dec = souls.dds_decode(d, TEX)
+        if not dec:
+            return mb.texture(name, d)
+        w, h, rgb = dec
+        h2 = max(8, min(OBJ_TEX_H, h))
+        img = resample.resize(Image.frombytes("RGB", (w, h), rgb), (128, h2), Image.BILINEAR)
+        mb.tex_index[name] = len(mb.textures)
+        mb.textures.append(quantize(128, h2, img.tobytes()))
+    return mb.tex_index[name]
+
+
+def cap_tris(groups, cap):
+    """groups [(mesh, face set, FLVER bone, flat triangle indices)] of one state (intact or broken) -> the same with at
+    most ~cap triangles in all: each group keeps its share (at least one triangle), simplified by meshoptimizer's edge
+    collapse on the bone-local positions (UV seams stay). The FLVER's coarsest LOD is still 1000-2000 triangles for the
+    Burg's roped barrels o1154 / o1155 (EE RAM: ~100 B of VU1 skin stream per triangle; TECH_DEBT physics-3)"""
+    total = sum(len(g[3]) // 3 for g in groups)
+    if cap <= 0 or total <= cap:
+        return groups
+    import numpy as np
+    mo = meshopt_mod()
+    out = []
+    for m, fs, fb, idx in groups:
+        n = len(idx) // 3
+        target = max(1, int(round(n * cap / total)))
+        if target < n:
+            # positions of this group's vertices only (a mesh holds every piece: the others would be locked borders)
+            used = sorted(set(idx))
+            loc = {v: k for k, v in enumerate(used)}
+            pos = np.array([m["verts"]["pos"][v] for v in used], np.float32)
+            got, _ = mo.simplify(pos, np.array([loc[v] for v in idx], np.uint32), target, error=OBJ_TRI_ERR)
+            if len(got) >= 3:
+                idx = [used[int(v)] for v in got]
+        out.append((m, fs, fb, idx))
+    return out
+
+
+_MESHOPT = None
+
+
+def meshopt_mod():
+    global _MESHOPT
+    if _MESHOPT is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "meshopt", os.path.join(os.path.dirname(os.path.abspath(__file__)), "meshopt", "meshopt.py"))
+        _MESHOPT = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_MESHOPT)
+    return _MESHOPT
+
+
+def cluster_pieces(model, pieces, ref):
+    """More than MAX_PIECES pieces -> MAX_PIECES rigid bodies: the pieces whose model-space boxes are closest are joined
+    (smallest joint box first). A joined body has the model's axes at the members' mass centre, their joint box, the sum
+    of their masses and that box's inertia (ASSUMED: DSR simulates every piece; TECH_DEBT physics-3). Returns pieces,
+    ref, bone names (bone 0 = the intact object) and {piece index: (new bone, rotation rows or None, offset)}: a member's
+    bone-local vertex p goes to R p + offset in its body's frame (None: a piece of its own, frame unchanged)."""
+    boxes = []
+    for t, q, half, centre, inv_mass, _ in pieces:
+        R = souls_rot(q)
+        c = [t[r] + sum(R[r][k] * centre[k] for k in range(3)) for r in range(3)]
+        e = [sum(abs(R[r][k]) * half[k] for k in range(3)) for r in range(3)]
+        boxes.append(([c[r] - e[r] for r in range(3)], [c[r] + e[r] for r in range(3)], c,
+                      1.0 / inv_mass if inv_mass > 0 else 1.0))
+    cl = [([j], b[0], b[1]) for j, b in enumerate(boxes)]
+
+    def size(lo, hi):
+        return sum(hi[k] - lo[k] for k in range(3))
+
+    while len(cl) > MAX_PIECES:
+        best = None
+        for a in range(len(cl)):
+            for b in range(a + 1, len(cl)):
+                lo = [min(cl[a][1][k], cl[b][1][k]) for k in range(3)]
+                hi = [max(cl[a][2][k], cl[b][2][k]) for k in range(3)]
+                s = size(lo, hi)
+                if best is None or s < best[0]:
+                    best = (s, a, b, lo, hi)
+        _, a, b, lo, hi = best
+        cl[a] = (cl[a][0] + cl[b][0], lo, hi)
+        del cl[b]
+    out, ref2, names, move = [], [ref[0]], [model], {}
+    for k, (mem, lo, hi) in enumerate(sorted(cl, key=lambda c: min(c[0]))):
+        if len(mem) == 1:
+            j = mem[0]
+            out.append(pieces[j])
+            ref2.append(ref[1 + j])
+            names.append(f"{model}_p{j:02d}")
+            move[j] = (1 + k, None, None)
+            continue
+        mass = sum(boxes[j][3] for j in mem)
+        o = [sum(boxes[j][2][r] * boxes[j][3] for j in mem) / mass for r in range(3)]
+        half = [(hi[r] - lo[r]) / 2 for r in range(3)]
+        centre = [(hi[r] + lo[r]) / 2 - o[r] for r in range(3)]
+        inertia = [mass / 3 * (half[(r + 1) % 3] ** 2 + half[(r + 2) % 3] ** 2) for r in range(3)]
+        out.append((tuple(o), (0.0, 0.0, 0.0, 1.0), tuple(half), tuple(centre), 1.0 / mass,
+                    tuple(1.0 / max(i, 1e-6) for i in inertia)))
+        ref2.append((tuple(o), (0.0, 0.0, 0.0, 1.0)))
+        names.append(f"{model}_c{k:02d}")
+        for j in mem:
+            t, q = pieces[j][0], pieces[j][1]
+            move[j] = (1 + k, souls_rot(q), [t[r] - o[r] for r in range(3)])
+    print(f"{model}: {len(pieces)} pieces joined into {len(out)} bodies (objects.c MAX_PIECES {MAX_PIECES})")
+    return out, ref2, names, move
+
+
+def type_model(game, model, files, dds, shared=None):
+    """shared: (texture list, {name: index}) of the map's breakables (OBJ_TEX_SHARED): the model then carries no
+    textures, its groups index that list. -> (model.bin bytes, pieces [(pos, q, half, centre, inv_mass, inv_inertia)], cylinder (r, y0, y1), fr, rest)"""
     intact = souls.flver(files[model + ".flver"])
     broken = souls.flver(files[model + "_1.flver"])
     pieces_hk = {b[0]: b for b in bodies(files[model + "_1.hkx"])}
@@ -176,7 +350,7 @@ def type_model(game, model, files, dds):
     # o8403_1.hkx and so is a piece too (its name then maps to that piece; the intact mesh uses bone 0 explicitly)
     names = [model] + [b[0] for b in broken["bones"]]
     sk = {n: i for i, n in enumerate(names)}
-    mb = MeshBuilder(sk)
+    mb = new_mb(sk, shared)
     pieces = []
     bw_b = bind_world(broken["bones"])
     pb = mesh_bounds(broken)
@@ -211,24 +385,51 @@ def type_model(game, model, files, dds):
             imi = tuple(sum(M[r][c] ** 2 * imi[c] for c in range(3)) for r in range(3)) + (imi[3],)
         pieces.append((t, q, half, centre, imi[3], imi[:3]))
     ref = [((0, 0, 0), (0, 0, 0, 1))] + [(t, q) for t, q in bw_b]
+    # more pieces than objects.c holds per type (Undead Burg: o1122 94, o1152 79, o1133 66, ...): clusters
+    move = {}  # broken bone index -> (cluster bone index, rotation rows, offset): vertex p -> R p + off in its frame
+    if len(pieces) > MAX_PIECES:
+        pieces, ref, names, move = cluster_pieces(model, pieces, ref)
+        sk = {n: i for i, n in enumerate(names)}
+        mb = new_mb(sk, shared)
 
     # Static object meshes are rigid and bone-local (no weights; bone_idx[0] -> mesh bone list -> FLVER bone): split
-    # each mesh's chosen LOD face set by its vertices' bone and add the pieces through MeshBuilder's rigid path
+    # each mesh's chosen LOD face set by its vertices' bone, cap the state's triangles (cap_tris) and add the pieces
+    # through MeshBuilder's rigid path
     for F, bits in ((intact, BITS_INTACT), (broken, BITS_BROKEN)):
+        groups = []
         for m in F["meshes"]:
-            tex = os.path.splitext(os.path.basename(m["diffuse"]))[0] if m["diffuse"] else ""
-            ti = mb.texture(tex, dds.get(tex) or dds.get(tex.lower())) if tex else -1
             V = m["verts"]
             fs = m["facesets"][min(LOD_INTACT if F is intact else LOD_BROKEN, len(m["facesets"]) - 1)]
             per_bone = {}
             for tri in souls.triangles(fs):
                 fb = m["bones"][V["bone_idx"][tri[0]][0]] if V["bone_idx"] and m["bones"] else m["default_bone"]
                 per_bone.setdefault(fb, []).extend(tri)
-            for fb, idx in per_bone.items():
-                skb = 0 if F is intact else sk[F["bones"][fb][0]]
-                mb.add(F, None, m, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False), bits=bits)
+            groups += [(m, fs, fb, idx) for fb, idx in per_bone.items()]
+        for m, fs, fb, idx in cap_tris(groups, OBJ_TRIS):
+            tex = os.path.splitext(os.path.basename(m["diffuse"]))[0] if m["diffuse"] else ""
+            ti = obj_texture(mb, tex, dds.get(tex) or dds.get(tex.lower())) if tex else -1
+            skb = 0 if F is intact else sk.get(F["bones"][fb][0], 0)
+            mm = m
+            if F is broken and fb in move:
+                skb, R, off = move[fb]
+            if F is broken and fb in move and R is not None:  # a joined piece: its vertices into the body's frame
+                V = m["verts"]
+                used = set(idx)
+                pos, nrm = list(V["pos"]), list(V["normal"]) if V["normal"] else None
+                for vi in used:
+                    p = V["pos"][vi]
+                    pos[vi] = tuple(sum(R[r][c] * p[c] for c in range(3)) + off[r] for r in range(3))
+                    if nrm:
+                        n = V["normal"][vi]
+                        nrm[vi] = tuple(sum(R[r][c] * n[c] for c in range(3)) for r in range(3))
+                mm = dict(m, verts=dict(V, pos=pos, normal=nrm))
+            mb.add(F, None, mm, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False), bits=bits)
     out = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"export_objects_{os.getpid()}_{model}.bin")
+    own = mb.textures
+    if shared:
+        mb.textures = []  # the groups index the map's shared list (texture section at the end of objects.bin)
     write_model(out, names, [-1] * len(names), ref, mb, [])
+    mb.textures = own
     with open(out, "rb") as f:
         blob = f.read()
     os.unlink(out)
@@ -514,19 +715,22 @@ def main():
 
     types, parts, heaps = [], [], []
     keep = area_mod.region(msb, map_id)
+    bnds = {}
+
+    def files_of(model):
+        if model not in bnds:
+            bnds[model] = objbnd(game, model)
+        return bnds[model]
+    shared = shared_textures(game, msb, dds, files_of) if OBJ_TEX_SHARED else None
     for part in msb["parts"]:
         if part["type"] != 1 or not keep(*part["pos"]):
             continue
         model = part["model"]
         if model not in [t[0] for t in types]:
-            files = objbnd(game, model)
+            files = files_of(model)
             if not is_breakable(files, model):
                 continue
-            dds_obj = dict(dds)
-            for n, d in files.items():
-                if n.endswith(".tpf"):
-                    dds_obj.update(souls.tpf(d))
-            types.append((model, files) + type_model(game, model, files, dds_obj))
+            types.append((model, files) + type_model(game, model, files, type_dds(dds, files), shared))
             heaps.append(types[-1][-1])
         ti = [t[0] for t in types].index(model)
         assert all(abs(s - 1) < 1e-3 for s in part["scale"]), f"{part['name']}: scaled"
@@ -535,12 +739,17 @@ def main():
     # RAM budget (HANDOFF: objects runtime <= 0.4 MB): keep the types with the most placements per byte first; the
     # dropped types are listed in <out>.static and export_map.py draws them as static map objects (intact, no break)
     budget = area_mod.config(map_id).get("obj_budget", OBJ_BUDGET) * 1048576 - 24 * 1024
-    cost = [len(t[2]) + t[-1] + 128 for t in types]
+    block = area_mod.block() is not None
+    cost = [(t[-1] + COMPACT_HDR + 80 * len(t[3]) if block else len(t[2]) + t[-1]) + 128 for t in types]
     count = [sum(1 for p in parts if p[0] == k) for k in range(len(types))]
     order = sorted(range(len(types)), key=lambda k: -count[k] / cost[k])
     kept, used = set(), 0
     for k in order:
-        # objects.c holds MAX_PIECES pieces per type: a type with more (the Asylum's o8610, 51) never loads there
+        # ObjectParam hp < 0 (the Parish roof's gargoyle statues o1300: hp -1, no entity id, so no event breaks them
+        # either): no attack breaks it in DSR (objects.c: damage - defense >= hp breaks), it stays a static map object
+        if params.get(int(types[k][0][1:]), (None, {}))[1].get("hp", 1) < 0:
+            continue
+        # objects.c holds MAX_PIECES pieces per type (cluster_pieces joins the rest)
         if used + cost[k] <= budget and len(types[k][3]) <= MAX_PIECES:
             kept.add(k)
             used += cost[k]
@@ -609,8 +818,17 @@ def main():
     for ent, lens in astatic:
         lens = lens + [(-1, 0.0)] * (8 - len(lens))
         blob += struct.pack("<iI", ent, sum(1 for a, _ in lens if a >= 0)) + b"".join(struct.pack("<if", a, l) for a, l in lens)
+    # version 4: the map's shared breakable textures last (world.c reads only this tail when a block turns on)
+    brk_off, key = 0, int(map_id[1:3]) * 100 + int(map_id[4:6])
+    if shared and types:
+        blob.extend(b"\0" * (-len(blob) % 128))
+        brk_off = len(blob)
+        blob += anim_texture_model(shared)
+        print(f"breakable textures: {len(shared[0])} shared, {len(blob) - brk_off} bytes "
+              f"{sorted({(t[0], t[1]) for t in shared[0]})}")
+    struct.pack_into("<I", blob, 4, 4)
     struct.pack_into("<10I", blob, 24, len(atypes), len(aparts), atype_off, apart_off, body_off, tex_off, len(astatic),
-                     static_off, 0, 0)
+                     static_off, brk_off, key)
     anim_ram = sum(t[3] for t in atypes)
     with open(out_path, "wb") as f:
         f.write(blob)
