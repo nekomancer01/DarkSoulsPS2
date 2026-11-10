@@ -59,7 +59,7 @@ def lib():
                 L.mx_simp_new.restype = vp
                 for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
                                 ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
-                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_refit", [vp, vp, vp, vp], None), ("mx_simp_job_counts", [vp, d, vp], None),
+                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_refit", [vp, vp, vp, vp], None), ("mx_simp_envelope", [d], None), ("mx_simp_swap_jobs", [vp, vp, vp], ll), ("mx_simp_job_nout", [vp, vp], None), ("mx_simp_job_counts", [vp, d, vp], None),
                                 ("mx_simp_replay_jobs", [vp, vp], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
                                 ("mx_simp_free", [vp], None),
                                 ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),

@@ -219,6 +219,17 @@ TONES = {}  # (ToneMapID, ToneCorrectID) -> dsr_light.Tone, exposure adapted by 
 SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh vertex are sky / background
 
 
+# Shape envelope (tools/native/simplify.c g_env_pad; the C simplifier only): no collapse may move the surface further
+# than this many metres from the source mesh, whatever error the budget solve asks of a cell, so a tower stays a tower
+# when its cell is pushed to the caps. SIMPLIFY_ENV_NEAR: the near level (and areas without levels), SIMPLIFY_ENV_FAR:
+# the coarse level and the backdrop. 0: off (the old export). ASSUMED values, see TECH_DEBT map-43
+# SIMPLIFY_ENV_STRICT (default 1, the maintainer's choice 2026-11-10: shapes first): the envelope holds in every cell,
+# also where the budget solve cannot pay for it (the world blocks grew 5-12 %, 0.31 % of the Burg's spots are over the
+# room and near cells were refused on the iso_ame_report3 route). 0: cells in reach of a spot the solve leaves over
+# budget take the run without the envelope (simplify_meshes_c), so no spot holds more than with the envelope off
+SIMPLIFY_ENV_STRICT = os.environ.get("SIMPLIFY_ENV_STRICT", "1") == "1"
+SIMPLIFY_ENV_NEAR = float(os.environ.get("SIMPLIFY_ENV_NEAR", 0.25))
+SIMPLIFY_ENV_FAR = float(os.environ.get("SIMPLIFY_ENV_FAR", 1.0))
 # SIMPLIFY_REFIT (default on; 0 = each surviving vertex keeps its source colour, the old export): after the simplifier,
 # a level's surviving wedges take the area-weighted mean colour of the source wedges that collapsed into them
 # (tools/mapx/simpmesh.c mx_simp_refit), per level, so the near and the coarse level each get their own colours
@@ -2200,7 +2211,7 @@ def struct_sat(eps_fixed, budget):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None):
+                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
@@ -2215,8 +2226,13 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     MX = mapx_native.lib()
     sat = struct_sat(eps_fixed, budget)
     if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
-        return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                                 budget, nav_s, sat=sat)
+        env_pad = SIMPLIFY_ENV_NEAR if env_pad is None else env_pad
+        MX.mx_simp_envelope(env_pad)  # for the jobs mx_simp_new runs
+        try:
+            return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
+                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad)
+        finally:
+            MX.mx_simp_envelope(0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
 
@@ -2599,7 +2615,7 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
     return np.minimum(1.0, np.where(nt > 0, no / np.maximum(nt, 1), 1.0) * WS_SHARE_K)
 
 
-def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
+def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=None):
     """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
     within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
     the heaviest cell around it that can still be raised goes one step up. Jobs outside cells (no cell cut, far-only
@@ -2697,6 +2713,9 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
               f"{allow_pct:.1f} % of its own spots ({allow.mean() * 100:.1f} % of all), cells {hot}")
     job_eps = np.array([steps[step[jcell[i]]] if jcell[i] >= 0 else (eps_far if jc[i] == "far" and eps_far is not None
                                                                        else eps) for i in range(njobs)], np.float64)
+    if info is not None:  # per cell: in reach of a spot the solve left over budget; the spots' reach and budgets
+        overc = M[W > nb].any(0) if (W > nb).any() else np.zeros(len(cells), bool)
+        info.update(over=overc, M=M, nb=nb, jcell=jcell)
     nr = int((step > 0).sum())
     over = float((W > nb).mean() * 100)
     nbytes = float(np.median(nb))
@@ -2720,7 +2739,7 @@ BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.bud
 
 
 def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                      budget=None, nav_s=None, sat=math.inf):
+                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -2755,13 +2774,16 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
                             flags=np.array([m["flags"] for m in meshes] or [0], i64),
                             nav_s=np.array(nav_s if nav_s is not None else np.zeros((0, 3)), f64))
     t0 = time.time()
-    h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
-                       len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
-                       KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
-                       ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, sat, simplify.STRUCT_CREASE_COS,
-                       simplify.STRUCT_CORNER_COS)
-    if not h:
-        raise MemoryError("mx_simp_new")
+    def new_handle():
+        h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
+                           len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
+                           KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
+                           ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, sat,
+                           simplify.STRUCT_CREASE_COS, simplify.STRUCT_CORNER_COS)
+        if not h:
+            raise MemoryError("mx_simp_new")
+        return h
+    h = new_handle()
     try:
         st = np.zeros(3, i64)
         MX.mx_simp_stats(h, a(st))
@@ -2793,9 +2815,40 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         kind, ck = np.zeros(max(njobs, 1), i32), np.zeros((max(njobs, 1), 3), i64)
         MX.mx_simp_jobs(h, a(kind), a(ck))
         jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
-        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s,
-                               cell_extents(P, poff, W, woff, T, toff)) if budget and cells else None
-        if job_eps is not None:
+        info, ext = {}, cell_extents(P, poff, W, woff, T, toff) if budget and cells else None
+        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s, ext, info) if budget and cells else None
+        if job_eps is not None and env_pad and info["over"].any() and not SIMPLIFY_ENV_STRICT:
+            # The shape envelope costs triangles. Where the solve cannot pay for them (cells in reach of a spot it
+            # left over budget) the cells take the run without the envelope as its own solve leaves them, and then
+            # any cell whose spot would so hold more than its budget and more than without the envelope, until none
+            # does: no spot is worse off than with the envelope off
+            MX.mx_simp_envelope(0.0)
+            h0 = new_handle()
+            try:
+                del BUDGET_REPORT[-1]  # (the solve below reports this level)
+                eps0 = solve_budget(MX, h0, jc, eps, eps_far, budget, nav_s, ext)
+                MX.mx_simp_replay_jobs(h, job_eps.ctypes.data)
+                MX.mx_simp_replay_jobs(h0, eps0.ctypes.data)
+                jcell, Mf, nb, over = info["jcell"], info["M"].astype(np.float64), info["nb"], info["over"].copy()
+                ce, c0 = np.zeros(max(njobs, 1), i64), np.zeros(max(njobs, 1), i64)
+                MX.mx_simp_job_nout(h, a(ce))
+                MX.mx_simp_job_nout(h0, a(c0))
+                sel = jcell >= 0
+                be, b0 = (np.bincount(jcell[sel], weights=c[:njobs][sel], minlength=len(over)) * WS_BPT for c in (ce, c0))
+                lim = np.maximum(nb, Mf @ b0) + 1.0
+                while True:
+                    bad = Mf @ np.where(over, b0, be) > lim
+                    more = info["M"][bad].any(0) & ~over if bad.any() else np.zeros(len(over), bool)
+                    if not more.any():
+                        break
+                    over |= more
+                jover = np.array([jcell[i] >= 0 and bool(over[jcell[i]]) for i in range(njobs)], np.uint8)
+                n = int(MX.mx_simp_swap_jobs(h, h0, a(jover)))
+            finally:
+                MX.mx_simp_free(h0)
+            print(f"envelope ({env_pad} m): kept in {int((~over).sum())} of {len(over)} cells; {int(over.sum())} cells in "
+                  f"reach of spots over budget take the run without it")
+        elif job_eps is not None:
             n = int(MX.mx_simp_replay_jobs(h, job_eps.ctypes.data))
         else:
             n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
@@ -3069,7 +3122,7 @@ def main():
             ws_bn = (0.0, WS_R0, WS_B0, "near level", WS_PX0)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
                         floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS),
-                        budget=ws_bc if ws_s else None, nav_s=ws_s)
+                        budget=ws_bc if ws_s else None, nav_s=ws_s, env_pad=SIMPLIFY_ENV_FAR)
         rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)

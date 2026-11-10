@@ -11,6 +11,7 @@ import mapx_native
 # C-only steps after the stages compared here (no Python twin): off, so both paths print and write the same
 em.SIMPLIFY_REFIT = False
 em.ST_ALIGN = False
+em.SIMPLIFY_ENV_NEAR = em.SIMPLIFY_ENV_FAR = 0.0
 
 L = mapx_native.lib()
 assert L is not None, "libmapx did not build"

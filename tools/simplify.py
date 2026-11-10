@@ -40,8 +40,11 @@ MIN_COS = 0.25  # a triangle's normal may not turn more than acos(0.25) = 75 deg
 # map's error 3-7x past the target (Firelink coarse cells up to 22 px), where an error-only metric drops whole
 # merlons, window frames and railings; the weight moves that budget off flat faces onto the edges that make a building
 # read. The paper's eigenvalue saliency is replaced by the crease test: on authored low-poly meshes a 90 degree box edge
-# has a 45 degree normal spread, under the corner threshold. SIMPLIFY_STRUCT_W=1: off (the old cost, A/B).
-STRUCT_W = float(__import__("os").environ.get("SIMPLIFY_STRUCT_W", 10.0))
+# has a 45 degree normal spread, under the corner threshold. SIMPLIFY_STRUCT_W=1: off (the old cost).
+# Off by default since the shape envelope (export_map.py SIMPLIFY_ENV_*, 2026-11-10): the envelope keeps the outlines,
+# and with both on the weight spent triangles on edges twice (A/B: with the weight off 0.13 % of the Burg's spots over
+# the room against 0.31 %, cleaner ledges, fewer merlons on Burg C_north). SIMPLIFY_STRUCT_W=10: the weight as before
+STRUCT_W = float(__import__("os").environ.get("SIMPLIFY_STRUCT_W", 1.0))
 STRUCT_CREASE_DEG = float(__import__("os").environ.get("SIMPLIFY_CREASE_DEG", 40.0))
 STRUCT_CORNER_DEG = float(__import__("os").environ.get("SIMPLIFY_CORNER_DEG", 60.0))
 # vertices that pass neither test: cost x STRUCT_FLAT_W (< 1: they give up the triangles the structure keeps, so the
