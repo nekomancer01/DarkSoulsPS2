@@ -1,0 +1,60 @@
+# Sky / far background fog per FogBank row (map.c draw_sky, SkyRow): the horizon in eight headings from a Burg
+# rooftop, looking up from the Burg bonfire, and from Firelink, no enemies. A/B against a `make DEFS=-DSKY_ROWS=0` build (one constant
+# sky row per block, as before).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_sky_fog.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option god
+option nodemo
+option noenemies
+spawn -15.1 1.0 -19.7 0.0
+cam 0.000 -0.2
+wait 14
+shot roof_0
+cam 0.785 -0.2
+wait 3
+shot roof_1
+cam 1.570 -0.2
+wait 3
+shot roof_2
+cam 2.355 -0.2
+wait 3
+shot roof_3
+cam 3.140 -0.2
+wait 3
+shot roof_4
+cam 3.925 -0.2
+wait 3
+shot roof_5
+cam 4.710 -0.2
+wait 3
+shot roof_6
+cam 5.495 -0.2
+wait 3
+shot roof_7
+spawn -1.0 -7.3 -64.0 0.0
+cam 0.000 -0.6
+wait 14
+shot up_0
+cam 1.571 -0.6
+wait 3
+shot up_1
+cam 3.142 -0.6
+wait 3
+shot up_2
+cam 4.713 -0.6
+wait 3
+shot up_3
+spawn -63.0 -23.0 -26.0 2.4
+cam 0.000 -0.3
+wait 14
+shot fl_0
+cam 1.571 -0.3
+wait 3
+shot fl_1
+cam 3.142 -0.3
+wait 3
+shot fl_2
+cam 4.713 -0.3
+wait 3
+shot fl_3
+stats

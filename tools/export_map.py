@@ -32,7 +32,7 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
           front (chunk_streams: the three streams form one VIF packet; DSM5 cell table flag CELLS_VIFPKT)
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
           nav_verts f32[3]  nav_tris u16[3]
-  fog     u32 rows, collision tris, 0, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
+  fog     u32 rows, collision tris, sky rows, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
           light, specular terms, far depth of field; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
           MSB collision part)
 DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell table offset (after the fog offset);
@@ -202,6 +202,12 @@ PARK_DIST = 150.0  # metres: objects farther than this from every walkable navme
 HDR = 80
 CHUNK_CULL, CHUNK_BLEND, CHUNK_ADD, CHUNK_SKY = 1, 2, 4, 8
 CHUNK_ST1K = 32  # texture coordinates in 1/1024 units (some >= 16) instead of 1/4096
+# Sky chunks: flags bits 12-15 = 1 + index of the chunk's FogBank row in the fog section's sky rows (0: none). DSR fogs
+# every map piece by the row of its own MSB FogID (exe FUN_140565600 reads the row by id; a RenderDoc frame of Firelink
+# holds rows 20, 22 and 23 at once, TECH_DEBT map-15), the sky and far background included: Undead Burg's far pieces use
+# three rows (15, 16, 19) that end 1.6-2 km out, so their density still ramps where the pieces stand.
+CHUNK_SKY_ROW = 12
+SKY_FOG_ROWS = []  # gather: FogBank row ids of the sky meshes, in slot order
 # Light, fog colour and tone map follow DSR's own math (tools/dsr_light.py), from the area's own banks and MSB.
 # CHAR_ALB: sRGB albedo the character light is fitted for.
 SHADOWS = os.environ.get("SHADOWS", "1") == "1"  # bake sun shadows (dsr_light.ShadowMap)
@@ -1670,8 +1676,12 @@ def gather(game, map_id):
                 sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
             else:
                 sky = False
+            sky_slot = 0
             if sky and fid in fog_rows:
                 sky_fog = fog_rows[fid]
+                if fid not in SKY_FOG_ROWS and len(SKY_FOG_ROWS) < 15:
+                    SKY_FOG_ROWS.append(fid)
+                sky_slot = SKY_FOG_ROWS.index(fid) + 1 if fid in SKY_FOG_ROWS else 0
             water = "water" in m["mtd"].lower()
             # "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" = alpha-tested cut-outs). Floor decals / dirt /
             # ground overlays (blood, soot, stains: M[D][L]_Alp) exported as cut-outs drew every texel above 50 % alpha at
@@ -1683,7 +1693,7 @@ def gather(game, map_id):
                                                        for k in ("decal", "dirt", "ground", "stain"))
             blend = is_effect(m["mtd"]) or decal or water
             flags = (CHUNK_BLEND if blend else 0) | (CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
-                (CHUNK_SKY if sky else 0)
+                (CHUNK_SKY if sky else 0) | sky_slot << CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
                 xf, xn = bone_xf(pxf, pxn, *bind[m["default_bone"]])
             else:
@@ -3241,6 +3251,12 @@ def main():
     align(4)
     sec["fog"] = len(blob) + HDR
     fog_blob, fog_info, gain = fog_section(game, map_id, fog_id)
+    # sky rows after the per-triangle bytes: f32 begin, end, max density; u8 r, g, b, 0 (as the header's fog)
+    sky_rows = b"".join(struct.pack("<3f4B", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0,
+                                    *fog_rgb(v, MAIN_TONE[0]), 0)
+                        for v in (draw_params(game, map_id[:3])[1][r] for r in SKY_FOG_ROWS))
+    fog_blob = fog_blob[:8] + struct.pack("<I", len(SKY_FOG_ROWS)) + fog_blob[12:] + b"\0" * (-len(fog_blob) % 4) + \
+        sky_rows
     blob += fog_blob
     cell_bin = b""
     if STREAM:

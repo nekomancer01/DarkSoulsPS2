@@ -25,7 +25,8 @@ typedef struct {
     unsigned char fog_rgb[4], sky_fog[4]; /* sky_fog: r, g, b, constant density x 255 */
     unsigned fog_off, cell_off;          /* fog section: area fog rows + row per collision triangle; DSM5: cell table */
 } Header;
-/* fog section: u32 rows, collision tris, 0, 0; FogRow rows[]; u8 row per collision.bin triangle. One row per draw-param
+/* fog section: u32 rows, collision tris, sky rows, 0; FogRow rows[]; u8 row per collision.bin triangle; padding to 4;
+ * SkyRow sky rows[]. One row per draw-param
  * set of the collision parts (export_map.fog_section): FogBank row (colour = DSR's constant), the character light of
  * that area (colour = amb + sun x max(n . L, 0), 0x80 = 1.0; dir = L x 127) and the player-attached point light
  * (PointLightBank[MSB lantern_id]: rgb added to a character's ambient x saturate((end - d) / (end - begin)), d = its
@@ -40,6 +41,13 @@ typedef struct {
     unsigned char dof_begin, dof_end, dof_mul, pad;   /* far depth of field: DofBank row, metres / % (0: none) */
 } FogRow;
 _Static_assert(sizeof(FogRow) == 48, "FogRow");
+/* FogBank row of a sky / far background piece (a sky chunk's flags name it, CHUNK_SKY_ROW): DSR fogs every map piece by
+ * the row of its own MSB FogID through the one curve (exe FUN_140565600 reads the row by id, no sky case; a RenderDoc
+ * frame of Firelink holds three rows, TECH_DEBT map-15). rgb as the header's fog colour. */
+typedef struct { float begin, end, max; unsigned char rgb[4]; } SkyRow;
+#ifndef SKY_ROWS
+#define SKY_ROWS 1  /* make DEFS=-DSKY_ROWS=0: every sky chunk under the header's one sky row at full density, as before */
+#endif
 /* VU1 batch: unindexed quantised streams pos s16x3 (world = org + n x step), st u16x2 (normalized x 4096, or x 1024
  * with CHUNK_ST1K), colour u8x4 (light, 0x80 = 1.0) */
 /* tris | nv << 16 on disc: nv = 0: unindexed lists (pos / st / col: one entry per corner); nv > 0: an indexed chunk
@@ -58,6 +66,7 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
 #define CHUNK_BLEND 2  /* alpha blended, no Z write */
 #define CHUNK_ADD 4    /* with CHUNK_BLEND: additive */
 #define CHUNK_SKY 8    /* sky / background: own fog, never distance-culled, drawn first */
+#define CHUNK_SKY_ROW(f) ((f) >> 12 & 15)  /* a sky chunk's SkyRow, counted from 1; 0: the header's constant sky fog */
 #define CHUNK_ST1K 32  /* texture coordinates in 1/1024 units, else 1/4096 */
 /* DSM5 (two-level map, tools/export_map.py STREAM): CHUNK_COARSE = the coarse level, drawn only while the cell's near
  * blob (mapstream.c) is not loaded; near chunks (in the blobs) carry their bump.bin number in flags bits 8-31 */
@@ -204,6 +213,8 @@ typedef struct {
     const FogRow *fog_row;
     const unsigned char *fog_tri;
     unsigned fog_rows, fog_ntris;
+    const SkyRow *sky_row;  /* fog rows of the sky chunks (CHUNK_SKY_ROW) */
+    unsigned sky_rows;      /* 0: a map.bin from before them */
     const float *navv;
     const unsigned short *navt;
     int ntex, tex_base;
@@ -305,6 +316,8 @@ int map_init(const void *blob)
     m->fog_ntris = ((const unsigned *)(map_bin + hdr->fog_off))[1];
     m->fog_row = (const FogRow *)(map_bin + hdr->fog_off + 16);
     m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
+    m->sky_rows = SKY_ROWS ? ((const unsigned *)(map_bin + hdr->fog_off))[2] : 0;
+    m->sky_row = (const SkyRow *)(m->fog_tri + ((m->fog_ntris + 3) & ~3u));
     /* no rows: the header's fog and the old fixed character light (0.5 + 0.75 n . L) */
     float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1], hdr->fog_rgb[2],
                           64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
@@ -1170,6 +1183,8 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->fog_ntris = ((const unsigned *)(tex_bin + hdr->fog_off))[1];
     m->fog_row = (const FogRow *)(tex_bin + hdr->fog_off + 16);
     m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
+    m->sky_rows = SKY_ROWS ? ((const unsigned *)(tex_bin + hdr->fog_off))[2] : 0;
+    m->sky_row = (const SkyRow *)(m->fog_tri + ((m->fog_ntris + 3) & ~3u));
     m->navv = (const float *)(tex_bin + hdr->navv_off);
     m->navt = (const unsigned short *)(tex_bin + hdr->navt_off);
     m->streams = res, m->res_cells = 0, m->citem = NULL;
@@ -1442,6 +1457,24 @@ typedef struct {
     unsigned k_drawn[MAP_INST], k_cut[MAP_INST];  /* the same and the drawn ones per instance (A/B log) */
 } FrameLog;
 
+/* Fog of sky row `row` of m (counted from 1) as vu1_map_fog / r_set_fog terms, F = clamp(a z + b, fmin, 255), and its
+ * FOGCOL. DSR's curve as fog_terms: density = saturate(max x saturate((z - begin) / (end - begin))). Row 0 (chunks
+ * without a row, and maps exported before the rows): the header's sky fog at its maximum density at every distance. */
+static u32 sky_fog(const MapInst *m, unsigned row, float *a, float *b, float *fmin)
+{
+    if (!row) {
+        *a = 0, *b = *fmin = 255 - m->hdr->sky_fog[3];
+        return m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 | m->hdr->sky_fog[2] << 16;
+    }
+    const SkyRow *s = &m->sky_row[row - 1];
+    float span = s->end - s->begin, mx = s->max;
+    if (mx <= 0 || span <= 0)
+        *a = 0, *b = *fmin = 255;  /* a row without fog */
+    else
+        *a = -255 * mx / span, *b = 255 + 255 * mx * s->begin / span, *fmin = mx < 1 ? 255 * (1 - mx) : 0;
+    return s->rgb[0] | s->rgb[1] << 8 | s->rgb[2] << 16;
+}
+
 /* The sky of block sk and the far panorama, then the fog and test registers of the opaque map (fog terms a, b, fmin,
  * colour col). Returns the triangles drawn. */
 static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
@@ -1449,30 +1482,41 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     GSGLOBAL *gs = gsg;
     MapInst *m = &inst[sk];
     int drawn = 0;
-    u32 sky_col = m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 | m->hdr->sky_fog[2] << 16;
-    float sky_f = 255 - m->hdr->sky_fog[3];
+    u64 r[2] = {0, 0x3D};
 
-    /* sky first: the FogBank row of the sky part at its maximum density, constant over the dome */
-    vu1_map_fog(0, sky_f, sky_f, sky_f);
-    u64 r[2] = {sky_col, 0x3D};
-    vu1_gs_regs(1, r);
-    r_set_fog(0, sky_f, sky_f, sky_f, sky_col, col);
+    /* sky first, each piece under its own FogBank row as in DSR (SkyRow): opaque, then the alpha clouds. The rows in
+     * turn, so the fog constants change once per row and pass at most. The edge fog is the map's, not the sky's. */
     r_set_fog_edge(0);
     for (int pass = 0; pass < 2; pass++) {  /* the player's block's sky (its streams once they are in) */
         if (pass)
             blend_regs(gs, CHUNK_BLEND);
-        for (int i = 0; i < m->nsky; i++) {
-            const unsigned no = m->sky[i];
-            const Chunk *c = &m->chunks[no];
-            if (!(c->flags & CHUNK_BLEND) != !pass || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
-                continue;
+        for (unsigned row = 0; row <= m->sky_rows; row++) {
+            int set = 0;
+            for (int i = 0; i < m->nsky; i++) {
+                const unsigned no = m->sky[i];
+                const Chunk *c = &m->chunks[no];
+                unsigned cr = CHUNK_SKY_ROW(c->flags);
+                if ((cr <= m->sky_rows ? cr : 0) != row)
+                    continue;
+                if (!(c->flags & CHUNK_BLEND) != !pass || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
+                    continue;
 #ifdef MAP_PANO_R
-            continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
+                continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
 #endif
-            const unsigned char *sb = res_base(m, no);
-            int cls = sb ? visible(c, e, 1) : 0;
-            if (cls)
+                const unsigned char *sb = res_base(m, no);
+                int cls = sb ? visible(c, e, 1) : 0;
+                if (!cls)
+                    continue;
+                if (!set++) {
+                    float sa, sb2, smin;
+                    u32 sky_col = sky_fog(m, row, &sa, &sb2, &smin);
+                    vu1_map_fog(sa, sb2, smin, 255);
+                    r[0] = sky_col;
+                    vu1_gs_regs(1, r);
+                    r_set_fog(sa, sb2, smin, 255, sky_col, col);
+                }
                 drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (pass ? R_BLEND : 0), no);
+            }
         }
     }
     blend_regs(gs, 0);
