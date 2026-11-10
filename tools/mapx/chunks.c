@@ -304,6 +304,10 @@ typedef struct {
     int *bbad;
 } stctx;
 
+static int g_st_align;  /* mx_chunks_st_align: set by the caller before mx_chunks_new, read by its batches */
+#define ST_ALIGN_MAX 15.5
+MX_API void mx_chunks_st_align(int on) { g_st_align = on; }
+
 static void st_batch(void *vc, long long bi)  /* a batch's position, texture coordinate and colour streams */
 {
     stctx *k = vc;
@@ -334,12 +338,77 @@ static void st_batch(void *vc, long long bi)  /* a batch's position, texture coo
         smax = c == c0 ? m : np_maximum(smax, m);
         memcpy(co + 4 * (c - c0), VC + 4 * CG[c], 4);
     }
+    /* ST_ALIGN: flatten moved every triangle's coordinates by whole repeats on its own (floor of its smallest u, v),
+       so two triangles that share a corner in the source often hold it a repeat apart and an indexed chunk stores
+       it twice (Undead Burg west: 1.59 distinct corners per triangle, 1.44 once aligned). Here triangles of the batch
+       that share a corner up to whole repeats (same quantised position, colour and fraction) are walked from one
+       to the next and moved by the difference, each connected set then back to its smallest non-negative repeat;
+       a set that would pass ST_ALIGN_MAX repeats keeps its own shifts (u16 at 1 / 4096 holds 16). */
+    long long nc = c1 - c0, nt = b->ntri;
+    int *ko = NULL;  /* per triangle: whole repeats added to u, v */
+    if (g_st_align && nt > 1) {
+        long long *X = MX_NEW(long long, 2 * (size_t)nc);
+        ko = MX_ZNEW(int, 2 * (size_t)nt);
+        int *comp = MX_NEW(int, nt), *queue = MX_NEW(int, nt);
+        for (long long c = 0; c < nc; c++) {
+            const double *uv = UV + 6 * h->bt[(c0 + c) / 3] + 2 * ((c0 + c) % 3);
+            X[2 * c] = (long long)mx_rint(uv[0] * 4096), X[2 * c + 1] = (long long)mx_rint(uv[1] * 4096);
+        }
+        for (long long t = 0; t < nt; t++)
+            comp[t] = -1;
+        for (long long s = 0; s < nt; s++) {
+            if (comp[s] >= 0)
+                continue;
+            long long qh = 0, qt = 0;
+            queue[qt++] = (int)s, comp[s] = (int)s;
+            while (qh < qt) {
+                long long t = queue[qh++];
+                for (int q = 0; q < 3; q++) {
+                    long long c = 3 * t + q;
+                    for (long long d = 0; d < nc; d++) {
+                        long long t2 = d / 3;
+                        if (comp[t2] >= 0 || memcmp(po + 6 * c, po + 6 * d, 6) || memcmp(co + 4 * c, co + 4 * d, 4) ||
+                            ((X[2 * c] ^ X[2 * d]) & 4095) || ((X[2 * c + 1] ^ X[2 * d + 1]) & 4095))
+                            continue;
+                        for (int a = 0; a < 2; a++)
+                            ko[2 * t2 + a] = ko[2 * t + a] + (int)((X[2 * c + a] >> 12) - (X[2 * d + a] >> 12));
+                        comp[t2] = (int)s, queue[qt++] = (int)t2;
+                    }
+                }
+            }
+            /* the set (queue[0 .. qt)): back to its smallest repeat; too wide: its own shifts again */
+            long long mn[2] = {0, 0}, mx[2] = {0, 0};
+            for (long long i = 0; i < qt; i++)
+                for (int q = 0; q < 3; q++)
+                    for (int a = 0; a < 2; a++) {
+                        long long v = X[2 * (3 * queue[i] + q) + a] + 4096LL * ko[2 * queue[i] + a];
+                        long long f = v >> 12;  /* floor */
+                        if (!i && !q)
+                            mn[a] = f, mx[a] = v;
+                        mn[a] = f < mn[a] ? f : mn[a], mx[a] = v > mx[a] ? v : mx[a];
+                    }
+            int wide = 0;
+            for (int a = 0; a < 2; a++)
+                wide |= mx[a] - 4096 * mn[a] > (long long)(ST_ALIGN_MAX * 4096);
+            for (long long i = 0; i < qt; i++)
+                for (int a = 0; a < 2; a++)
+                    ko[2 * queue[i] + a] = wide ? 0 : ko[2 * queue[i] + a] - (int)mn[a];
+        }
+        free(X), free(comp), free(queue);
+        smax = 0;
+        for (long long c = c0; c < c1; c++) {
+            const double *uv = UV + 6 * h->bt[c / 3] + 2 * (c % 3);
+            const int *k2 = ko + 2 * (c / 3 - b->t0);
+            double m = np_maximum(uv[0] + k2[0], uv[1] + k2[1]);
+            smax = c == c0 ? m : np_maximum(smax, m);
+        }
+    }
     b->sts = smax < 65535.0 / 4096 ? 4096 : 1024;
     for (long long c = c0; c < c1; c++) {
         long long t = c / 3;
         const double *uv = UV + 6 * h->bt[t] + 2 * (c % 3);
         for (int a = 0; a < 2; a++) {
-            double x = mx_rint(uv[a] * b->sts);
+            double x = mx_rint((ko ? uv[a] + ko[2 * (t - b->t0) + a] : uv[a]) * b->sts);
             x = 65535 <= x ? 65535 : x;
             if (!(x >= 0))
                 bad = 1;
@@ -347,6 +416,7 @@ static void st_batch(void *vc, long long bi)  /* a batch's position, texture coo
             memcpy(so + 4 * (c - c0) + 2 * a, &v, 2);
         }
     }
+    free(ko);
     k->berr[bi] = err;
     k->bbad[bi] = bad;
 }

@@ -136,9 +136,14 @@ WS_EXTENTS = os.environ.get("WS_EXTENTS", "1") == "1"
 # error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
 WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
 WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
+# ST_ALIGN (default on; 0 = every triangle keeps its own whole-repeat shift, the old export): triangles of a batch that
+# share a corner up to whole texture repeats get the same shift, so the indexed chunk stores the corner once
+# (tools/mapx/chunks.c st_batch)
+ST_ALIGN = os.environ.get("ST_ALIGN", "1") == "1"
 # bytes per triangle of a streamed chunk (positions, st, colours, padding, record: 44-45 measured over 4 blocks as lists;
-# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level)
-WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
+# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level;
+# with ST_ALIGN 29.3 over both levels of that block, 31.8 without)
+WS_BPT = (29 if ST_ALIGN else 31) if os.environ.get("INDEXED", "1") == "1" else 45
 # WS_UNION (Burg plan B3, default on; WS_UNION=0 = the per-block budgets above): the spot budgets are what the arena's
 # visual room holds at a spot, shared by every block loaded there. The runtime measures a spot as tools/world_budget.py
 # does: near parts within WS_NEAR_R (mapstream.c MS_R0_DRAW) and the pinned coarse level from there to WS_PIN_R
@@ -208,6 +213,10 @@ TONES = {}  # (ToneMapID, ToneCorrectID) -> dsr_light.Tone, exposure adapted by 
 SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh vertex are sky / background
 
 
+# SIMPLIFY_REFIT (default on; 0 = each surviving vertex keeps its source colour, the old export): after the simplifier,
+# a level's surviving wedges take the area-weighted mean colour of the source wedges that collapsed into them
+# (tools/mapx/simpmesh.c mx_simp_refit), per level, so the near and the coarse level each get their own colours
+SIMPLIFY_REFIT = os.environ.get("SIMPLIFY_REFIT", "1") == "1"
 CHUNK_TRIS = 54  # per VU1 batch: 7 header qwords + 3 qwords per vertex = 493 qw, the VU buffer (OFFSET 493): the limit
 CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are grouped by the grid cell of their centroid
 # (map.c culls by 32 m cells too), then cut into full, compact batches (split_batch)
@@ -279,10 +288,18 @@ def index_chunk(ntri, pos, st, col):
     return nv, P[src].tobytes(), S[src].tobytes(), C[src].tobytes(), idx.tobytes()
 
 
+
 def chunk_packet(ti, fl, ntri, pos, st, col):
     """chunk_streams of one chunk tuple, indexed when it pays (index_chunk; never foliage) ->
     (bytes, offsets, ntri word for the chunk record: ntri | nv << 16)"""
     ix = index_chunk(ntri, pos, st, col) if INDEXED and not fl & CHUNK_GRASS else None
+    if os.environ.get("CHUNK_STATS"):  # debugging: per chunk a line "texture flags tris P PS PC PSC nv bytes" (distinct
+        n = 3 * ntri                   # corners by position, + st, + colour, + both; indexed vertices; packet bytes)
+        P, S, C = (np.frombuffer(bytes(x[:w * n]), np.uint8).reshape(n, w) for x, w in ((pos, 6), (st, 4), (col, 4)))
+        u = lambda *a: len(np.unique(np.ascontiguousarray(np.concatenate(a, 1)), axis=0))
+        nb = len(chunk_streams(ntri, pos, st, col)[0] if ix is None else chunk_streams(ntri, *ix[1:4], ix[0], ix[4])[0])
+        with open(os.environ["CHUNK_STATS"], "a") as f:
+            f.write(f"{ti} {fl} {ntri} {u(P)} {u(P, S)} {u(P, C)} {u(P, S, C)} {0 if ix is None else ix[0]} {nb}\n")
     if ix is None:
         pk, offs = chunk_streams(ntri, pos, st, col)
         return pk, offs, ntri
@@ -657,6 +674,7 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     ce = np.ascontiguousarray(np.array(centre, f64).reshape(3))
     arrs = [ti, fl, toff, woff, cpos, cw, wrgb, wa, wuv, tex, tuft, frank, fsize, tlev, tkey, dgv, entv, bkv, ce]
     arrs = [np.ascontiguousarray(x) for x in arrs]
+    MX.mx_chunks_st_align(1 if ST_ALIGN else 0)
     h = MX.mx_chunks_new(ne, *[x.ctypes.data for x in arrs[:15]], arrs[15].ctypes.data, arrs[16].ctypes.data,
                          arrs[17].ctypes.data, 1 if stream else 0, CHUNK_GRID, arrs[18].ctypes.data, GRASS_GRID,
                          min(1.0, (GRASS_D0 / GRASS_NEAR_D) ** 2), CHUNK_TRIS, export_normal.BUMP_MIN_GROUP, POS_MAX,
@@ -2727,7 +2745,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
                             keep=keep, ti=ti, F=F, nv=nv, nt=nt, sp=sp, kp=kp, cells=int(bool(cells)),
                             floor=floor or NEAR, ak=ak, eps=-1.0 if eps_fixed is None else eps_fixed,
                             eps_far=-1.0 if eps_far is None else eps_far, names=np.array([m["name"] for m in meshes]),
-                            budget=np.array(budget[:3] if budget else (), f64),
+                            budget=np.array(budget[:2] if budget else (), f64),
+                            flags=np.array([m["flags"] for m in meshes] or [0], i64),
                             nav_s=np.array(nav_s if nav_s is not None else np.zeros((0, 3)), f64))
     t0 = time.time()
     h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
@@ -2777,6 +2796,19 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
+        refit = None
+        if SIMPLIFY_REFIT and n:  # surviving wedges take the mean colour of what collapsed into them (simpmesh.c)
+            has = [len(m.get("wrgb", ())) == len(w) for m, w in zip(meshes, Ws)]  # (meshes without colours: as they are)
+            RGB = cat([_np_list(m, "wrgb", m["wrgb"], i32, 3) if k else np.zeros((len(w), 3), i32)
+                       for m, w, k in zip(meshes, Ws, has)], i32, 3)
+            acc = np.zeros((len(RGB), 4))
+            MX.mx_simp_refit(h, a(woff), a(RGB), a(acc))
+            hit = acc[:, 3] > 0
+            refit = RGB.copy()
+            refit[hit] = np.clip(np.rint(acc[hit, :3] / acc[hit, 3:4]), 0, 255).astype(i32)
+            d = np.abs(refit[hit] - RGB[hit]).max(1)
+            print(f"refit: {int(hit.sum())} surviving wedge colours averaged over their collapsed regions "
+                  f"({int((d > 8).sum())} moved by more than 8 / 255, {int((d > 32).sum())} by more than 32)")
         final = grass + n if job_eps is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
@@ -2800,6 +2832,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             sel = order[a:b]
             m[out] = mapx_native.Tris(np.ascontiguousarray(CP[sel]), np.ascontiguousarray(CW[sel])) if b > a else []
             m[out + "_cell"] = [jc[j] for j in tjl[a:b]]
+            if refit is not None and b > a and has[mi]:
+                m[out + "_wrgb"] = np.ascontiguousarray(refit[woff[mi]:woff[mi + 1]])
     print(f"simplify: {full} -> {final} tris ({grass} kept: effects, sky; foliage extra) in {ngroups} welded "
           f"groups / {njobs} jobs, eps {eps:.3g} "
           f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
@@ -3063,14 +3097,15 @@ def main():
             # far cells: the near run's triangles are dropped, the coarse ones are always drawn (tcell None)
             tl, cl = m["tris"], m.get("tris_cell", [])
             nt = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
-            entries.append(dict(m, tris=_take(tl, nt), tcell=[(1, cl[i]) for i in nt]))
+            entries.append(dict(m, tris=_take(tl, nt), tcell=[(1, cl[i]) for i in nt], wrgb=m.get("tris_wrgb", m["wrgb"])))
             tl, cl = m.get("tris_far", []), m.get("tris_far_cell", [])
             ct = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
-            entries.append(dict(m, tris=_take(tl, ct), tcell=[(0, cl[i]) for i in ct], soft=True))
+            wf = m.get("tris_far_wrgb", m["wrgb"])  # the coarse level's refit colours (SIMPLIFY_REFIT)
+            entries.append(dict(m, tris=_take(tl, ct), tcell=[(0, cl[i]) for i in ct], soft=True, wrgb=wf))
             far_t = _take(tl, [i for i, c in zip(range(len(tl)), cl) if c == "far"])
             bd = backdrop_visible(m, far_t, nav_s) if BACKDROP else far_t
             if bd:  # far-only cells: one resident level; BACKDROP=1: the backdrop, drawn at any distance (map.c)
-                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True,
+                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True, wrgb=wf,
                                     flags=m["flags"] | (CHUNK_BACKDROP if BACKDROP else 0)))
         else:
             entries.append(dict(m, tcell=None))
