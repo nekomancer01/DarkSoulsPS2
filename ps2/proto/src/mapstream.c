@@ -193,7 +193,10 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
  * 1.2 items on a 6-min route, a seek each). With the queues, read-ahead (Prefetch) may go out up to MS_INFLIGHT while
  * MS_SPARE_SLOTS request slots stay free for the other readers (collision tiles, lite sets, models); the urgent
  * classes keep the old 8. */
-#define MS_INFLIGHT (MS_READQ ? 16 : 8)
+#ifndef MS_RA_DEEP
+#define MS_RA_DEEP MS_READQ
+#endif
+#define MS_INFLIGHT (MS_RA_DEEP ? 16 : 8)
 #define MS_INFLIGHT_NOW 8
 #define MS_SPARE_SLOTS 12
 #define MS_QUEUE 64

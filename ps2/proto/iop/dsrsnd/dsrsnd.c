@@ -859,10 +859,25 @@ static unsigned int job_lsn(const DiscJob *j)
  * talks and the next-file-on-CD rule of console streamers, so queued map reads cost one pass over the disc instead
  * of a seek back and forth per read in submission order). A read in progress stays first: its next page is at the
  * head. Ties go to the oldest. */
+/* The map queues (SNDD_PRIO_HIT and below) age: a request waiting DISC_AGE_MS counts one queue more urgent, up to
+ * SNDD_PRIO_HIT. DSR serves its queues strictly in order, but its drive is fast; here the first A/B of the queue order
+ * (ISO, 2026-11-10) left reads waiting up to 14 s while the urgent queues stayed busy (ASSUMED value: about one
+ * re-plan of the map streamer). */
+#define DISC_AGE_MS 1500u
+static unsigned int job_prio(const DiscJob *c, unsigned int now)
+{
+    unsigned int p = c->r.prio;
+    if (p > SNDD_PRIO_HIT) {
+        unsigned int up = (now - c->t0) / DISC_AGE_MS;
+        p = up >= p - SNDD_PRIO_HIT ? SNDD_PRIO_HIT : p - up;
+    }
+    return p;
+}
+
 static void disc_step(void)
 {
     DiscJob *j = NULL;
-    unsigned int jd = 0;
+    unsigned int jd = 0, jp = 0, now = now_ms();
     WaitSema(dq_sema);
     for (int i = 0; i < SND_DISC_SLOTS; i++) {
         DiscJob *c = &dq[i];
@@ -870,10 +885,9 @@ static void disc_step(void)
             continue;
         /* sectors ahead of the head, wrapping for those behind it; from the last sector read, which a read in
          * progress continues in when its page ended inside a sector */
-        unsigned int d = job_lsn(c) - (cd_head - 1);
-        if (!j || c->r.prio < j->r.prio ||
-            (c->r.prio == j->r.prio && (d < jd || (d == jd && (int)(c->order - j->order) < 0))))
-            j = c, jd = d;
+        unsigned int d = job_lsn(c) - (cd_head - 1), cp = job_prio(c, now);
+        if (!j || cp < jp || (cp == jp && (d < jd || (d == jd && (int)(c->order - j->order) < 0))))
+            j = c, jd = d, jp = cp;
     }
     SignalSema(dq_sema);
     if (!j)
