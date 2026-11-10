@@ -431,6 +431,74 @@ static inline unsigned mp_sum(void) { return mp_t[0] + mp_t[1] + mp_t[2] + mp_t[
 
 /* camera (set per frame in map_draw): eye, right, up, forward; focal length in pixels */
 static float cam[12], cam_f;
+
+/* ZSPLIT (2026-11-11): two depth ranges for the 16-bit Z buffer. Z = ZMAX near / z leaves ~200 codes for everything
+ * beyond 80 m with the 0.25 m near plane (40 cm a step at 80 m, 1.4 m at 150 m: far walls and roofs z-fought). The map
+ * is drawn in two passes inside its chain: the far pass first, everything whose box reaches past ZSPLIT, with the
+ * near plane at ZSPLIT (vu1_map_near: Z = ZMAX ZSPLIT / z, ~1.5 mm a step at 80 m; vu1clip cuts at ZSPLIT); then Z
+ * is set to the near mapping's value at ZSPLIT (zs_clear) and the near pass draws everything whose box starts nearer
+ * than ZSPLIT with the normal near plane. Its pixels beyond ZSPLIT fail the GEQUAL test against that value, so a
+ * box crossing ZSPLIT draws its far part in the far pass and its near part in the near pass, each pixel once.
+ * Characters, breakables, NPCs and effects draw after the map with the normal mapping: they all end before ZSPLIT
+ * (enemies / breakables 40 m, NPCs 30 m, FX_RANGE 40 m from the eye; past ZSPLIT they would not show).
+ * The near pass is recorded while the far pass is drawn (zs_rec: the chunks, and every chain state call in order:
+ * GS registers, fog rows, Z bias, edge fog, the relief pass) and replayed after zs_clear, into the idle character
+ * chain buffer (vu1_scratch). ZSPLIT=0 builds: one range, as before. */
+#ifndef ZSPLIT
+#define ZSPLIT 50.0f
+#endif
+enum { ZS_CHUNK = 1, ZS_HZ, ZS_REGS, ZS_FOG, ZS_ZBIAS, ZS_EDGE, ZS_BUMP };
+static int zs_pass;  /* 1: the far pass (recording the near one), 2: replaying the near pass, 0: one range */
+static u32 *zs_buf;
+static unsigned zs_n, zs_cap, zs_lost;  /* words used / available; near records that did not fit (this frame) */
+static unsigned zs_st[4];  /* frames: chunks far only, near only, both; peak words */
+static int zs_nobump;  /* draw_chunk_ for the far pass: the relief pass is the near pass's (BUMP_FAR < ZSPLIT) */
+
+static int zs_room(unsigned w)
+{
+    if (zs_n + w <= zs_cap)
+        return 1;
+    zs_lost++;
+    return 0;
+}
+
+static void zs_gs_regs(int n, const u64 *regs)
+{
+    vu1_gs_regs(n, regs);
+    if (zs_pass == 1 && (n <= 8 || (zs_lost++, 0)) && zs_room(2 + 4 * (unsigned)n)) {
+        zs_buf[zs_n++] = ZS_REGS, zs_buf[zs_n++] = (u32)n;
+        memcpy(zs_buf + zs_n, regs, 16 * (unsigned)n);
+        zs_n += 4 * (unsigned)n;
+    }
+}
+
+static void zs_rec_f(int op, int nf, const float *f)
+{
+    if (zs_pass == 1 && zs_room(1 + (unsigned)nf)) {
+        zs_buf[zs_n++] = (u32)op;
+        memcpy(zs_buf + zs_n, f, 4 * (unsigned)nf);
+        zs_n += (unsigned)nf;
+    }
+}
+
+static void zs_map_fog(float a, float b, float fmin, float fmax)
+{
+    vu1_map_fog(a, b, fmin, fmax);
+    const float f[4] = {a, b, fmin, fmax};
+    zs_rec_f(ZS_FOG, 4, f);
+}
+
+static void zs_map_zbias(float k)
+{
+    vu1_map_zbias(k);
+    zs_rec_f(ZS_ZBIAS, 1, &k);
+}
+
+static void zs_map_edge(float a2)
+{
+    vu1_map_edge(a2);
+    zs_rec_f(ZS_EDGE, 1, &a2);
+}
 /* edge fog this frame (fog_terms): slope a2 of b + a2 z and the view depth beyond which it is below the DSR fog */
 static float edge_a2, edge_z;
 
@@ -442,7 +510,7 @@ static void blend_regs(GSGLOBAL *gs, int mode)
                 mode ? zbuf | (1ull << 32) : zbuf, 0x4E};
     if (!mode)
         r[0] = gs->PrimAlpha;
-    vu1_gs_regs(2, r);
+    zs_gs_regs(2, r);
 }
 
 /* Far panorama (render-distance variant A, tools/pano.py): pano.bin in the area pack = u32 'PANO', chunks, chunk
@@ -755,8 +823,8 @@ static int visible_(const Chunk *c, const float *e, int sky)
 
 /* the first n triangles of chunk c (n < c->tris: foliage thinned by distance) */
 /* no: the chunk's number in bump.bin / dg.bin (resident: its index in the chunk table; near: NEAR_NO) */
-static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
-                      unsigned no)
+static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
+                       unsigned no)
 {
     GSTEXTURE *t = NULL;
     float d2 = 0;
@@ -809,7 +877,7 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)))  /* normal-map relief pass (bump.c: the boot
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
@@ -821,7 +889,7 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
 /* a horizon chunk (untextured, double-sided, its packet without st: vu1.c VU1_FLAT). The clipping program (VU1_CLIP)
  * gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2 2 s into the Burg on the
  * first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
-static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
+static int draw_hz_(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
 {
     static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
     float zmax;
@@ -846,6 +914,151 @@ static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull
                    m->hz_base + c->col, c->org, 4096.0f);
     map_vu1_batches++;
     return c->tris;
+}
+
+/* ZSPLIT routing: the far pass draws the part of a box beyond ZSPLIT now (clipped at ZSPLIT where the box starts
+ * nearer), the part nearer than ZSPLIT is recorded for the near pass. cls is visible_'s, for the normal near plane. */
+static int zs_route(const Chunk *c, int *far_cls, int cls)
+{
+    float zmax, zmin = box_depth(c, cam, &zmax, NULL);
+    int r = (zmax > ZSPLIT) | (zmin < ZSPLIT) << 1;
+    *far_cls = cls == 1 && zmin >= ZSPLIT * 1.001f ? 1 : 2;
+    zs_st[r - 1]++;
+    return r;
+}
+
+static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
+                      unsigned no)
+{
+    if (zs_pass != 1 || (c->flags & CHUNK_SKY))  /* the sky (1-3 km): the far pass */
+        return draw_chunk_(m, base, c, n, cls, mode, no);
+    int fc, r = zs_route(c, &fc, cls), dn = 0;
+    if ((r & 2) && zs_room(8)) {
+        u32 *w = zs_buf + zs_n;
+        w[0] = ZS_CHUNK, w[1] = (u32)(m - inst), w[2] = (u32)c, w[3] = (u32)base, w[4] = n, w[5] = (u32)cls;
+        w[6] = (u32)mode, w[7] = no;
+        zs_n += 8, dn = (int)n;
+    }
+    if (r & 1) {
+        zs_nobump = 1;
+        dn = draw_chunk_(m, base, c, n, fc, mode, no);
+        zs_nobump = 0;
+    }
+    return dn;
+}
+
+static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
+{
+    if (zs_pass != 1)
+        return draw_hz_(m, c, cls, mode, cull);
+    int fc, r = zs_route(c, &fc, cls), dn = 0;
+    if ((r & 2) && zs_room(6)) {
+        u32 *w = zs_buf + zs_n;
+        w[0] = ZS_HZ, w[1] = (u32)(m - inst), w[2] = (u32)c, w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
+        zs_n += 6, dn = (int)c->tris;
+    }
+    if (r & 1)
+        dn = draw_hz_(m, c, fc, mode, cull);
+    return dn;
+}
+
+/* the near pass's Z: everything set to the near mapping's Z at ZSPLIT (colour masked), the far pass's depth is
+ * done with; the near pass's pixels beyond ZSPLIT then fail GEQUAL */
+static void zs_clear(void)
+{
+    GSGLOBAL *gs = gsg;
+    u64 r[2 * 32];
+    int n = 0;
+    u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
+    u32 z = (u32)(65535.0f * R_NEAR / ZSPLIT);
+#define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
+    REG(frame | 0xFFFFFFFFull << 32, 0x4C);
+    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
+    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
+    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+    for (int x = 0; x < gs->Width && n < 30; x += 64) {
+        int x1 = x + 64 < gs->Width ? x + 64 : gs->Width;
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, z), 0x05);
+        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, z), 0x05);
+    }
+    REG(frame, 0x4C);
+#undef REG
+    vu1_gs_regs(n, r);
+}
+
+/* map_draw: the far pass from here on (recording the near pass), when there is room to record it */
+static void zs_begin(void)
+{
+    int bytes = 0;
+    zs_pass = 0;
+    zs_n = zs_lost = 0;
+    if (ZSPLIT <= 0 || !(zs_buf = vu1_scratch(&bytes)) || bytes < 4096)
+        return;
+    zs_cap = (unsigned)bytes / 4;
+    zs_pass = 1;
+    vu1_map_near(ZSPLIT);
+}
+
+/* map_draw: Z reset, the normal near plane, the recorded near pass */
+static void zs_end(void)
+{
+    if (zs_pass != 1)
+        return;
+    zs_pass = 2;
+    zs_clear();
+    vu1_map_near(R_NEAR);
+    for (unsigned i = 0; i < zs_n;) {
+        const u32 *w = zs_buf + i;
+        float f[4];
+        switch (w[0]) {
+        case ZS_CHUNK:
+            draw_chunk_(&inst[w[1]], (const unsigned char *)w[3], (const Chunk *)w[2], w[4], (int)w[5], (int)w[6], w[7]);
+            i += 8;
+            break;
+        case ZS_HZ:
+            draw_hz_(&inst[w[1]], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
+            i += 6;
+            break;
+        case ZS_REGS: {
+            u64 r[2 * 8];
+            int n = (int)w[1];
+            if (n > 8)
+                n = 8;
+            memcpy(r, w + 2, 16 * (unsigned)n);
+            vu1_gs_regs(n, r);
+            i += 2 + 4 * w[1];
+            break;
+        }
+        case ZS_FOG:
+            memcpy(f, w + 1, 16);
+            vu1_map_fog(f[0], f[1], f[2], f[3]);
+            i += 5;
+            break;
+        case ZS_ZBIAS:
+        case ZS_EDGE:
+            memcpy(f, w + 1, 4);
+            (w[0] == ZS_ZBIAS ? vu1_map_zbias : vu1_map_edge)(f[0]);
+            i += 2;
+            break;
+        case ZS_BUMP:
+            bump_draw();
+            i += 1;
+            break;
+        default:
+            i = zs_n;
+        }
+    }
+    if (zs_n > zs_st[3])
+        zs_st[3] = zs_n;
+    if (zs_lost)
+        printf("map: zsplit: %u near records did not fit (%u words)\n", zs_lost, zs_cap);
+    static unsigned zs_fr;
+    if (!(++zs_fr % 600)) {  /* every 600 frames: boxes drawn far only / near only / in both passes, peak record */
+        printf("map: zsplit %.0f m: far %u near %u both %u, peak %u words of %u\n", (double)ZSPLIT, zs_st[0], zs_st[1],
+               zs_st[2], zs_st[3], zs_cap);
+        memset(zs_st, 0, sizeof zs_st);
+    }
+    zs_pass = 0;
 }
 
 /* index sort key: cell, then texture inside a cell (so neighbours share TEX0 / CLUT), then chunk number */
@@ -1511,9 +1724,9 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                 if (!set++) {
                     float sa, sb2, smin;
                     u32 sky_col = sky_fog(m, row, &sa, &sb2, &smin);
-                    vu1_map_fog(sa, sb2, smin, 255);
+                    zs_map_fog(sa, sb2, smin, 255);
                     r[0] = sky_col;
-                    vu1_gs_regs(1, r);
+                    zs_gs_regs(1, r);
                     r_set_fog(sa, sb2, smin, 255, sky_col, col);
                 }
                 drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (pass ? R_BLEND : 0), no);
@@ -1530,7 +1743,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
         if (!t)
             continue;
         if (!any++)
-            vu1_map_fog(0, 255, 255, 255);
+            zs_map_fog(0, 255, 255, 255);
         vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, pano + c->pos, pano + c->st, pano + c->col,
                    c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
         drawn += c->tris;
@@ -1538,13 +1751,13 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
 
     /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
      * send MIPTBP1 in its place) */
-    vu1_map_fog(a, b, fmin, 255);
-    vu1_map_edge(edge_a2);
+    zs_map_fog(a, b, fmin, 255);
+    zs_map_edge(edge_a2);
     r[0] = col;
-    vu1_gs_regs(1, r);
+    zs_gs_regs(1, r);
     {
         u64 rt[2] = {GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47};
-        vu1_gs_regs(1, rt);
+        zs_gs_regs(1, rt);
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
@@ -1561,20 +1774,20 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
      * behind the coarse surface, now inside the bias) would blend a second time. A depth-only pre-pass did the same
      * but left the horizon's biased depth for the characters and effects drawn after (feet in the ground at
      * ~50 m) */
-    vu1_map_zbias(1.0f + HZN_ZBIAS);
-    vu1_map_fog(a, b, fmin, 255);
-    vu1_map_edge(edge_a2);
+    zs_map_zbias(1.0f + HZN_ZBIAS);
+    zs_map_fog(a, b, fmin, 255);
+    zs_map_edge(edge_a2);
     u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
     for (int i = 0; i < n; i++) {
         const MapInst *mk = &inst[hzfade[i].k];
         const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
         if (HZN_FADE_DEBUG && !i) {
             u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
-            vu1_gs_regs(1, fc);
-            vu1_map_fog(a, b, 0, 0);
+            zs_gs_regs(1, fc);
+            zs_map_fog(a, b, 0, 0);
         }
         u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, HZN_FADE_DEBUG ? 0x80 : hzfade[i].a), 0x42, zb, 0x4E};
-        vu1_gs_regs(2, r);
+        zs_gs_regs(2, r);
         for (unsigned j = 0; j < hc->count; j++) {
             const Chunk *c = &mk->hz_chunk[hc->first + j];
             if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
@@ -1586,13 +1799,13 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
             }
         }
     }
-    vu1_map_zbias(1.0f);
-    vu1_map_fog(a, b, fmin, 255);
+    zs_map_zbias(1.0f);
+    zs_map_fog(a, b, fmin, 255);
     if (HZN_FADE_DEBUG) {  /* the frame's fog colour back for what is drawn after */
         float f[5];
         u64 fc[2] = {0, 0x3D}, fb;
         r_get_fog(f, &fc[0], &fb);
-        vu1_gs_regs(1, fc);
+        zs_gs_regs(1, fc);
     }
     blend_regs(gs, 0);
     return drawn;
@@ -1605,13 +1818,13 @@ static int draw_near_fades(int n, const float e[3])
     int drawn = 0;
     /* coarse levels fading out (NEAR_FADE) over their cells' near level, as the horizon fade above: Cs a + Cd
      * (1 - a), Z tested HZN_ZBIAS nearer and not written (the coarse surface is the near one simplified) */
-    vu1_map_zbias(1.0f + HZN_ZBIAS);
+    zs_map_zbias(1.0f + HZN_ZBIAS);
     u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
     for (int i = 0; i < n; i++) {
         const MapInst *mk = &inst[nrfade[i].k];
         const Cell *ce = &mk->cells[nrfade[i].ci];
         u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
-        vu1_gs_regs(2, r);
+        zs_gs_regs(2, r);
         mapstream_select(nrfade[i].k);  /* mapstream_res answers for that instance */
         for (unsigned j = ce->first; j < (unsigned)ce->first + ce->count; j++) {
             unsigned no = mk->order[j];
@@ -1627,7 +1840,7 @@ static int draw_near_fades(int n, const float e[3])
         }
     }
     mapstream_select(0);
-    vu1_map_zbias(1.0f);
+    zs_map_zbias(1.0f);
     blend_regs(gs, 0);
     return drawn;
 }
@@ -2281,6 +2494,7 @@ int map_draw(V3 eye)
         tc_begin(fx);  /* this frame's texture uploads go into the chain from here on */
         MP_END(MP_TEX)
     }
+    zs_begin();
     float a, b, fmin;
     fog_terms(&a, &b, &fmin);
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
@@ -2300,13 +2514,18 @@ int map_draw(V3 eye)
         drawn += draw_near_fades(nnrfade, e);
     {
         MP_BEGIN
-        bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
+        if (zs_pass == 1) {  /* (ZSPLIT: in the near pass) */
+            if (zs_room(1))
+                zs_buf[zs_n++] = ZS_BUMP;
+        } else
+            bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
         MP_END(MP_BUMP)
     }
 
     MF_BEGIN
     drawn += draw_effects(nfx, fog);
     MF_END(MF_FX)
+    zs_end();
     {
         MP_BEGIN
         tc_end();
