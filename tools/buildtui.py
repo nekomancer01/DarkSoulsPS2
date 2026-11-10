@@ -42,6 +42,16 @@ SECONDS = {"horizon.py": 47, "export_audio.py": 28, "export_map.py": 27, "export
            "export_emevd.py": 2, "ps2-iso.sh": 5}
 SPIN = "|/-\\"
 FPS = 10
+# xterm-256 colours, soft on dark and light themes alike: the bar teal (sage when done, rose on a failure), its empty
+# part a faint rule, the step lavender, the current line warm sand on a slightly raised background, phase headers
+# steel blue, kept errors rose
+C_BAR, C_DONE, C_FAIL, C_EMPTY = "38;5;80", "38;5;114", "38;5;174", "38;5;240"
+C_STEP, C_LINE, C_PHASE, C_ERR, C_DIM = "38;5;183", "38;5;223;48;5;236", "1;38;5;110", "38;5;174", "38;5;246"
+PARTS = " ▏▎▍▌▋▊▉"  # eighths of a cell, for a smooth bar edge
+
+
+def col(code, text):
+    return f"\x1b[{code}m{text}\x1b[0m"
 
 
 def tool_of(s):
@@ -87,7 +97,7 @@ class View:
                 item[0] = float("-inf")
             self.phase = re.sub(r" into \S.*$", "", self.short(s[3:].strip()))  # the step line names the target
             self.label = "…"
-            self.keep("\x1b[1m" + self.short(s) + "\x1b[0m")
+            self.keep(col(C_PHASE, self.short(s)))
             return
         if s.startswith("##tui "):
             cmd, _, arg = s[6:].partition(" ")
@@ -122,7 +132,7 @@ class View:
                 self.work[self.pending][1] = SECONDS.get(name, 1)
                 self.pending = None
         if KEEP.search(s):
-            self.keep("\x1b[31m" + self.short(s) + "\x1b[0m")
+            self.keep(col(C_ERR, self.short(s)))
         self.line = self.short(s)
 
     # --- output ---
@@ -174,14 +184,16 @@ class View:
             count = f"{n}/{'≥' if self.plan_min and n < total else ''}{total} steps"
             right = f" {frac * 100:3.0f}%  {count}  {clock}"
         inner = max(10, w - len(right) - 2)
-        if frac is None:  # no plan: a sweep that shows it is alive
+        colour = C_BAR if self.done is None else C_DONE if self.done == 0 else C_FAIL
+        if frac is None:  # no plan: a block that sweeps across to show it is alive
             pos = int(time.monotonic() * 8) % (inner + 6)
-            cells = "".join("█" if pos - 6 < i <= pos else "·" for i in range(inner))
+            cells = "".join(col(colour, "█") if pos - 6 < i <= pos else col(C_EMPTY, "─") for i in range(inner))
         else:
-            full = int(frac * inner)
-            cells = "█" * full + "·" * (inner - full)
-        colour = "32" if self.done in (None, 0) else "31"
-        return f"\x1b[{colour}m[{cells}]\x1b[0m{right}"
+            eighths = int(frac * inner * 8)
+            full, part = divmod(eighths, 8)
+            head = PARTS[part] if part and full < inner else ""
+            cells = col(colour, "█" * full + head) + col(C_EMPTY, "─" * (inner - full - len(head)))
+        return f"{col(C_DIM, '▕')}{cells}{col(C_DIM, '▏')}{col(C_DIM, right)}"
 
     def draw(self, force=False):
         now = time.monotonic()
@@ -190,9 +202,9 @@ class View:
         self.last = now
         self.clear()
         step = f"{self.phase}: {self.label}" if self.done is None else self.phase
-        rows = [self.bar(), self.fit("\x1b[1m" + step + "\x1b[0m")]
+        rows = [self.bar(), self.fit(col(C_STEP, step))]
         if self.done is None:
-            rows.append(self.fit("\x1b[1;33m" + (self.line or "…") + "\x1b[0m"))
+            rows.append(self.fit(col(C_LINE, " " + (self.line or "…") + " ")))
         self.out.write("\n".join(rows))
         self.out.flush()
         self.drawn = len(rows)
