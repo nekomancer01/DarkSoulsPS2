@@ -156,8 +156,14 @@ WS_BPT = (29 if ST_ALIGN else 31) if os.environ.get("INDEXED", "1") == "1" else 
 WS_UNION = os.environ.get("WS_UNION", "1") == "1"
 # The hard tier (2026-11-08, the plan's review): near within 20 m, coarse and kept meshes within 40 m (map.c HZN_R 40:
 # the horizon stands in beyond), against the room world_budget.py prints for world.c's WORLD_ARENA_KB 9152 (3618 KB with the Burg's lite sets, 2026-11-08)
-WS_ROOM = float(os.environ.get("WS_ROOM", 3618))
-WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 1792))  # (2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+# 2026-11-10 refit: collision tiles (#157), one events.bin / texture set per map (#159-#163) shrank the structural pool
+# to 3376 KB and world_budget.py prints a 4450 KB room on main 4fa8d0d; WS_ROOM is that less 3 % (ASSUMED margin: more
+# chunks grow the structural pool, +41 KB with the structure weight, TECH_DEBT map-41). The near level gets 60 % of it
+# (was ~50 %): with the Burg's caps back at 12 / 24 px the strict gate is at 0.00 % (main 0.49 %), near level tris
+# +11..+29 % per block, hard tier max 4290 KB. The standalone Burg ELF (MAP=m10_01_00_00, no world) keeps the old
+# numbers (Makefile MAPENV_m10_01_00_00): its own arena crashed at these (grass_tris, 2.15 MB free).
+WS_ROOM = float(os.environ.get("WS_ROOM", 4317))
+WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 2590))  # (3618 room: 1792; 2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
 WS_FAR_KB = float(os.environ.get("WS_FAR_KB", 128))  # kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)
 # a spot still over at the caps may take its cells past the cap up to WS_ALLOW_PX (the seam allowance: two blocks'
 # cells at one spot); world_budget.py fails the build when more than 1 % of the spots need it

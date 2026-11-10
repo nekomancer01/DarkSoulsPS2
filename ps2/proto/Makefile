@@ -451,12 +451,17 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # Undead Burg (render-distance): two levels (STREAM=1, map.bin DSM5 + cells.bin): coarse 12 px judged at >= 32 m
 # resident (140k tris, map.bin 10.1 MB), near 6 px (3 px was 150k tris within 24 m at the densest smoke point, 15 fps)
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
-MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446 WS_PX0=36 WS_PX1=54
+MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 # (WS_PX0 / WS_PX1: the spot budget solve's error caps, export_map.py. At 12 / 24 px no Burg block met its budgets
 # (near level 4.9-6.0 MB around the worst spots against 1.5 MB, coarse 2.6-3.0 MB against 2 MB): from the ISO up to
 # ~380 cells missing in a frame and near cells that never found room (2026-11-06). Detail drops only in the spots over
 # budget. ASSUMED caps. 2026-11-08, Burg plan B3: 36 / 54 px with the spot budgets shared over the blocks loaded at a
 # spot (export_map.py WS_UNION): at 24 / 36 px 80 % of the Burg's spots were over the visual room)
+# 2026-11-10 refit: the world's room grew 3618 -> 4450 KB (export_map.py WS_ROOM), and the world blocks pass the strict
+# gate at the default 12 / 24 px caps (0.00 %; at 36 / 54 px the near level of Burg west had 43 of 85 cells on the cap).
+# The standalone Burg ELF (MAP=m10_01_00_00 without BLOCK: the whole Burg as one map in its own arena) keeps the old
+# room and caps: at the new ones it grew 516k -> 582k tris and crashed in grass_tris at 2.15 MB free.
+MAPENV_m10_01_00_00 += $(if $(BLOCK),,WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_PX1=54)
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
