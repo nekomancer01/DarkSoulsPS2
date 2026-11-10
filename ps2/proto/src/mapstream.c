@@ -1,6 +1,6 @@
 /* World streaming v2 (2026-11-06): map cells by a residency plan, the API of mapstream.h.
  *
- * The first streamer (mapstream_v1.c, `make MAPSTREAM_V1=1`) ranked every item by distance times a dozen factors and
+ * The first streamer (v1, removed 2026-11-10; git history has src/mapstream_v1.c) ranked every item by distance times a dozen factors and
  * let any item evict any item ranked 1.4x farther. Around the Burg entry it wanted 20-27 MB of cells for a 10.8 MB
  * arena, so whatever ranked last was missing, coarse cells included: holes. v2 follows the design of Vice City's
  * streamer (re3 CStreaming: low-detail models always resident, high-detail ones requested around the camera, the least
@@ -30,10 +30,6 @@
  * up to a page never crosses one (export_map.NEAR_PART, map.c RES_ITEM keep items within a page), so any free page
  * fits any group; mapstream_alloc (lite sets, relief, enemy model buffers) takes runs of whole free pages from the
  * top, clearing the cheapest run first. */
-#ifdef MAPSTREAM_V1
-#include "mapstream_v1.c"
-#include "ticks.h"
-#else
 #include <kernel.h>
 #include <malloc.h>
 #include <math.h>
@@ -46,6 +42,7 @@
 #include "dsrsnd_rpc.h"
 #include "vu1.h"
 #include "hitch.h"
+#include "ticks.h"
 
 /* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
@@ -2065,9 +2062,6 @@ int mapstream_owns(const void *p)
 {
     return arena && (const unsigned char *)p >= arena && (const unsigned char *)p < arena + arena_size;
 }
-/* v1 lent idle memory of the old full pool to the arena; nothing lends it any more (world.c, 2026-11-05) */
-void mapstream_lend(void *p, unsigned n) { (void)p, (void)n; }
-int mapstream_reclaim(void *p, unsigned n) { (void)p, (void)n; return 1; }
 
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
 {
@@ -2329,4 +2323,3 @@ const unsigned char *mapstream_res(unsigned i)
     m->used[m->ncell + i] = frame;
     return m->state[m->ncell + i] == MS_READY ? (const unsigned char *)m->buf[m->ncell + i] - m->rit[i].rel : NULL;
 }
-#endif

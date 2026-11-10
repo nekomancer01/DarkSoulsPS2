@@ -84,12 +84,6 @@ EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 # model.h MDL_MAX_BONES sizes the pose / palette arrays for it
 CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
-# World streaming v2 (src/mapstream.c, 2026-11-06) is the default; MAPSTREAM_V1=1 builds the first streamer
-# (src/mapstream_v1.c) for A/B runs
-MAPSTREAM_V1 ?= 0
-ifeq ($(MAPSTREAM_V1),1)
-EE_CFLAGS += -DMAPSTREAM_V1
-endif
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
 PVS ?= 1
