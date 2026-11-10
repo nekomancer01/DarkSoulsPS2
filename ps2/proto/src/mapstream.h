@@ -99,11 +99,6 @@ int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent t
  * `bytes` more are free (each a 64 KB block); call when a heap allocation failed, then try it again. Returns the pages
  * given back (0: none borrowed, or every one still read by a chain). */
 unsigned mapstream_heap_release(unsigned bytes);
-/* Memory another system leaves idle for a while (world.c: the full pool's tail behind a smaller block's streams) holds
- * near cells too. mapstream_reclaim takes it back: drops the cells in it and returns 1 once none is left (0: a read
- * into it is in flight, call again after mapstream_update); the caller still waits for the chains that drew them. */
-void mapstream_lend(void *p, unsigned n);
-int mapstream_reclaim(void *p, unsigned n);
 /* World blocks: the map's resident level per cell instead of one piece (TECH_DEBT world-2 / world-5). Items of
  * instance k, each a byte range of the block's raw mapres.bin (tools/mapsplit.py): the resident chunks' streams of
  * cell `tag` (| MS_RES_FAR for backdrop chunks; export_map.py writes them grouped by cell; a large cell comes as several items of whole chunks, so no
@@ -161,7 +156,7 @@ void mapstream_update(const float pos[3]);
 const void *mapstream_get(unsigned i);
 
 /* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
- * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: mapstream_lend; room_fails: a wanted item found no room;
+ * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: pages borrowed from the heap (MS_BORROW); room_fails: a wanted item found no room;
  * vis_items / vis_kb: items (loaded or not) the visibility leaves out now (pvs.c) */
 typedef struct {
     unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails, vis_items, vis_kb;
