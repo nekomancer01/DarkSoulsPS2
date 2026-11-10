@@ -1422,62 +1422,33 @@ static int sky_in(int k)
     return m->nsky && res_base(m, m->sky[0]);
 }
 
-int map_draw(V3 eye)
+/* map_draw keeps what its later passes draw in these lists while it walks the cells: effect chunks (sorted far to
+ * near, drawn after the opaque map), horizons fading in over their cells' coarse level (HZN_FADE) and coarse levels
+ * fading out over their near level (NEAR_FADE) */
+typedef struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } FxItem;
+typedef struct { unsigned char k, a; unsigned short ci; } FadeItem;
+static FxItem fxl[MAX_FX];
+static FadeItem hzfade[MAX_HZ_FADE], nrfade[MAX_NEAR_FADE];
+static unsigned hzx[3][3];  /* cells the horizon stood in for inside HZN_R this frame (log) */
+
+/* One frame's counters for the log lines (log_frame) and the hitch monitor */
+typedef struct {
+    unsigned holes;  /* visible cells with resident chunks not in and no near level drawn for them */
+    unsigned hole_nohz, hole_unc, hole_ex[2];
+    unsigned hz_fill, hz_tris;  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
+    unsigned pend, pops, pop_wait;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
+    float pop_d;
+    unsigned pvs_cut;  /* triangles the visibility rows left out (src/pvs.c) */
+    unsigned k_drawn[MAP_INST], k_cut[MAP_INST];  /* the same and the drawn ones per instance (A/B log) */
+} FrameLog;
+
+/* The sky of block sk and the far panorama, then the fog and test registers of the opaque map (fog terms a, b, fmin,
+ * colour col). Returns the triangles drawn. */
+static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
 {
     GSGLOBAL *gs = gsg;
-    int drawn = 0;
-    static unsigned mp_fr;
-    mp_on = MAP_PASS_MS && !(mp_fr++ % MAP_PASS_EVERY);
-    unsigned mp_t0 = mp_on ? ticks() : 0;
-    (void)mp_t0;
-    memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
-    if (!inst[pinst].on && pinst)
-        pinst = 0;
-    vis_c = NULL;
-    /* sky and fog colours from the player's block; while its sky streams are not in yet the sky of one that has them */
-    int sk = pinst;
-    if (!sky_in(pinst))
-        for (int k = 0; k < MAP_INST; k++)
-            if ((k == 0 || inst[k].on) && sky_in(k)) {
-                sk = k;
-                break;
-            }
     MapInst *m = &inst[sk];
-    mapstream_select(sk);
-    {
-        MP_BEGIN
-        build_index(m);
-        MP_END(MP_CULL)
-    }
-    bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
-    map_vu1_batches = map_ee_tris = 0;
-#ifdef MAP_DBG
-    static int dbg_init;
-    if (!dbg_init++)
-        memset(dbg_why, 255, sizeof dbg_why);
-#endif
-    const float e[3] = {eye.x, eye.y, eye.z};
-    {
-        MP_BEGIN
-        pvs_eye(e);  /* every instance's visibility row for this camera cell (src/pvs.c) */
-        MP_END(MP_CULL)
-    }
-    {
-        V3 ey, rt, up, fw;
-        float fx, fy, zs;
-        r_camera_basis(&ey, &rt, &up, &fw, &fx, &fy, &zs);
-        const float b[12] = {ey.x, ey.y, ey.z, rt.x, rt.y, rt.z, up.x, up.y, up.z, fw.x, fw.y, fw.z};
-        memcpy(cam, b, sizeof cam);
-        cam_f = fx;
-        vis_frame(fx, fy);
-        MP_BEGIN
-        tc_begin(fx);  /* this frame's texture uploads go into the chain from here on */
-        MP_END(MP_TEX)
-    }
-    float a, b, fmin;
-    fog_terms(&a, &b, &fmin);
-    int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
-    u32 col = (u32)fog_now[3] | (u32)fog_now[4] << 8 | (u32)fog_now[5] << 16;
+    int drawn = 0;
     u32 sky_col = m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 | m->hdr->sky_fog[2] << 16;
     float sky_f = 255 - m->hdr->sky_fog[3];
 
@@ -1532,25 +1503,343 @@ int map_draw(V3 eye)
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
-    static struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } fx[MAX_FX];
-    int nfx = 0;
-    static struct { unsigned char k, a; unsigned short ci; } hzfade[MAX_HZ_FADE];  /* cells fading in (HZN_FADE) */
-    int nhzfade = 0;
-    static struct { unsigned char k, a; unsigned short ci; } nrfade[MAX_NEAR_FADE];  /* coarse levels fading out */
-    int nnrfade = 0;
-    unsigned holes = 0;  /* visible cells with resident chunks not in and no near level drawn for them */
-    static unsigned hzx[3][3];  /* cells the horizon stood in for inside HZN_R this frame (log) */
-    unsigned hz_fill = 0, hz_tris = 0, hole_nohz = 0, hole_unc = 0, hole_ex[2] = {~0u, 0};  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
-    unsigned pend = 0, pops = 0, pop_wait = 0;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
-    float pop_d = 1e9f;
+    return drawn;
+}
+
+/* The first n entries of hzfade. Returns the triangles drawn (all horizon triangles). */
+static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
+{
+    GSGLOBAL *gs = gsg;
+    int drawn = 0;
+    /* horizons fading in (HZN_FADE) over their cells' coarse level, Cs a + Cd (1 - a), Z tested HZN_ZBIAS nearer
+     * and not written, front faces only: the horizon is drawn double-sided, so a wall's back face (or a layer just
+     * behind the coarse surface, now inside the bias) would blend a second time. A depth-only pre-pass did the same
+     * but left the horizon's biased depth for the characters and effects drawn after (feet in the ground at
+     * ~50 m) */
+    vu1_map_zbias(1.0f + HZN_ZBIAS);
+    vu1_map_fog(a, b, fmin, 255);
+    vu1_map_edge(edge_a2);
+    u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+    for (int i = 0; i < n; i++) {
+        const MapInst *mk = &inst[hzfade[i].k];
+        const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
+        if (HZN_FADE_DEBUG && !i) {
+            u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
+            vu1_gs_regs(1, fc);
+            vu1_map_fog(a, b, 0, 0);
+        }
+        u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, HZN_FADE_DEBUG ? 0x80 : hzfade[i].a), 0x42, zb, 0x4E};
+        vu1_gs_regs(2, r);
+        for (unsigned j = 0; j < hc->count; j++) {
+            const Chunk *c = &mk->hz_chunk[hc->first + j];
+            if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
+                continue;
+            int cls = visible(c, e, 0);
+            if (cls) {
+                unsigned dn = draw_hz(mk, c, cls, VU1_BLEND, 1);
+                drawn += dn;
+            }
+        }
+    }
+    vu1_map_zbias(1.0f);
+    vu1_map_fog(a, b, fmin, 255);
+    if (HZN_FADE_DEBUG) {  /* the frame's fog colour back for what is drawn after */
+        float f[5];
+        u64 fc[2] = {0, 0x3D}, fb;
+        r_get_fog(f, &fc[0], &fb);
+        vu1_gs_regs(1, fc);
+    }
+    blend_regs(gs, 0);
+    return drawn;
+}
+
+/* The first n entries of nrfade. Returns the triangles drawn. */
+static int draw_near_fades(int n, const float e[3])
+{
+    GSGLOBAL *gs = gsg;
+    int drawn = 0;
+    /* coarse levels fading out (NEAR_FADE) over their cells' near level, as the horizon fade above: Cs a + Cd
+     * (1 - a), Z tested HZN_ZBIAS nearer and not written (the coarse surface is the near one simplified) */
+    vu1_map_zbias(1.0f + HZN_ZBIAS);
+    u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+    for (int i = 0; i < n; i++) {
+        const MapInst *mk = &inst[nrfade[i].k];
+        const Cell *ce = &mk->cells[nrfade[i].ci];
+        u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
+        vu1_gs_regs(2, r);
+        mapstream_select(nrfade[i].k);  /* mapstream_res answers for that instance */
+        for (unsigned j = ce->first; j < (unsigned)ce->first + ce->count; j++) {
+            unsigned no = mk->order[j];
+            const Chunk *c = &mk->chunks[no];
+            if (!(c->flags & CHUNK_COARSE) || !hz_covers(c->flags) || (c->flags & CHUNK_BACKDROP))
+                continue;
+            const unsigned char *base = res_base(mk, no);
+            if (!base || !dg_shown(nrfade[i].k, no))
+                continue;
+            int cls = visible(c, e, 0);
+            if (cls)
+                drawn += draw_chunk(mk, base, c, c->tris, cls, R_FOG | R_BLEND, no);
+        }
+    }
+    mapstream_select(0);
+    vu1_map_zbias(1.0f);
+    blend_regs(gs, 0);
+    return drawn;
+}
+
+/* The first n entries of fxl, after the opaque map: alpha-blended (mist) far to near, then additive (light shafts,
+ * order-free); Z tested, not written. Returns the triangles drawn. */
+static int draw_effects(int n, int fog)
+{
+    GSGLOBAL *gs = gsg;
+    int drawn = 0;
+    for (int i = 1; i < n; i++)  /* insertion sort by distance, far first; a few dozen per frame */
+        for (int j = i; j > 0 && fxl[j].d > fxl[j - 1].d; j--) {
+            FxItem tmp = fxl[j];
+            fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
+        }
+    for (int add = 0; add < 2; add++) {
+        int any = 0;
+        for (int i = 0; i < n; i++) {
+            const Chunk *c = fxl[i].c;
+            if (!(c->flags & CHUNK_ADD) != !add)
+                continue;
+            if (!any++)
+                blend_regs(gs, CHUNK_BLEND | (add ? CHUNK_ADD : 0));
+            drawn += draw_chunk(&inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
+                                fxl[i].no);
+        }
+    }
+    blend_regs(gs, 0);
+    return drawn;
+}
+
+#if MAP_PASS_MS
+/* "map: pass ms": the breakdown over 30 frames (average, and the frame with the largest map_draw) */
+static void log_pass_ms(unsigned mp_t0)
+{
+    static unsigned fr, nt, acc[MP_N + 1], wst[MP_N + 1], wtot, facc[MF_N];
+    unsigned tot = mp_on ? ticks() - mp_t0 : 0, v[MP_N + 1], sub = 0;
+    for (int i = 0; i < MF_N; i++)
+        facc[i] += mf_t[i];
+    nt += mp_on;
+    for (int i = 0; i < MP_N; i++)
+        v[i] = mp_t[i], sub += mp_t[i];
+    v[MP_N] = tot > sub ? tot - sub : 0;  /* plan: the rest */
+    for (int i = 0; i <= MP_N; i++)
+        acc[i] += v[i];
+    if (tot > wtot)
+        memcpy(wst, v, sizeof wst), wtot = tot;
+    if (!(++fr % MAP_PASS_LOG) && nt) {
+#define MPMS(x) ((double)((float)(x) / 294912.0f / (float)nt))
+#define MPMS1(x) ((double)((float)(x) / 294912.0f))
+        unsigned at = acc[0] + acc[1] + acc[2] + acc[3] + acc[4];
+        printf("map: pass ms cull %.2f plan %.2f chain %.2f tex %.2f bump %.2f total %.2f | worst cull %.2f plan "
+               "%.2f chain %.2f tex %.2f bump %.2f total %.2f (%u timed frames)\n", MPMS(acc[MP_CULL]),
+               MPMS(acc[MP_N]), MPMS(acc[MP_CHAIN]), MPMS(acc[MP_TEX]), MPMS(acc[MP_BUMP]), MPMS(at),
+               MPMS1(wst[MP_CULL]), MPMS1(wst[MP_N]), MPMS1(wst[MP_CHAIN]), MPMS1(wst[MP_TEX]), MPMS1(wst[MP_BUMP]),
+               MPMS1(wtot), nt);
+        printf("map: plan ms miss %.2f near %.2f chunks %.2f fx %.2f other %.2f; per frame tiles %u visible %u, cells %u "
+               "visible %u, chunks %u\n", MPMS(facc[MF_MISS]), MPMS(facc[MF_NEAR]),
+               MPMS(facc[MF_CHUNKS]), MPMS(facc[MF_FX]), MPMS(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]),
+               mc_tiles / MAP_PASS_LOG, mc_tvis / MAP_PASS_LOG, mc_cells / MAP_PASS_LOG, mc_vis / MAP_PASS_LOG,
+               mc_chunks / MAP_PASS_LOG);
+        mc_cells = mc_vis = mc_tiles = mc_tvis = mc_chunks = 0, nt = 0;
+#undef MPMS
+#undef MPMS1
+        memset(acc, 0, sizeof acc), memset(wst, 0, sizeof wst), wtot = 0, memset(facc, 0, sizeof facc);
+    }
+}
+#endif
+
+/* map_draw's log lines and debug-build reports for one frame */
+static void log_frame(const FrameLog *lg, const float e[3], int drawn)
+{
+#ifdef MAP_PANO_R  /* panorama capture: the camera basis for tools/pano.py, every 8 frames */
+    {
+        static unsigned pf;
+        if (!(++pf & 7))
+            printf("PANOCAM %.3f %.3f %.3f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.2f\n", cam[0], cam[1],
+                   cam[2], cam[3], cam[4], cam[5], cam[6], cam[7], cam[8], cam[9], cam[10], cam[11], cam_f, 0.0f, 0.0f, 0.0f);
+    }
+#endif
+#ifdef MAP_DBG
+    {
+        static unsigned fr;
+        dbg_t[D_DRAWN] = drawn;
+        if (!(++fr % MAP_DBG)) {
+            char line[320];
+            int k = snprintf(line, sizeof line, "MAPDBG %u", fr);
+            for (int r = 0; r < D_NR; r++)
+                k += snprintf(line + k, sizeof line - k, " %s %u/%u", dbg_name[r], dbg_c[r], dbg_t[r]);
+            puts(line);
+        }
+        memset(dbg_c, 0, sizeof dbg_c), memset(dbg_t, 0, sizeof dbg_t);
+#ifdef MAP_DBG_FLIP
+        {  /* chunks drawn last frame, not now: by this frame's step (view = left the frustum: expected when turning) */
+            unsigned cnt[D_NR + 1] = {0}, tris[D_NR + 1] = {0}, on = 0;
+            const unsigned char *now = dbg_why[dbg_cur], *was = dbg_why[!dbg_cur];
+            char line[400];
+            int k = snprintf(line, sizeof line, "FLIP %u", fr);
+            for (unsigned i = 0; i < DBG_IDS; i++) {
+                if (was[i] == D_DRAWN && now[i] != D_DRAWN) {
+                    int r = now[i] < D_NR ? now[i] : D_NR;
+                    cnt[r]++;
+                    if (i < inst[0].hdr->chunks)
+                        tris[r] += inst[0].chunks[i].tris;
+                    if (r != D_VIEW && r != D_CELL_VIEW && r != D_SWAP && r != D_NR && k < 300)
+                        k += snprintf(line + k, sizeof line - k, " [%u %s]", i, dbg_name[r]);
+                } else if (was[i] != D_DRAWN && now[i] == D_DRAWN)
+                    on++;
+            }
+            k += snprintf(line + k, sizeof line - k, " | on %u off", on);
+            for (int r = 1; r <= D_NR; r++)
+                if (cnt[r])
+                    k += snprintf(line + k, sizeof line - k, " %s %u/%u", r < D_NR ? dbg_name[r] : "unseen", cnt[r],
+                                  tris[r]);
+            puts(line);
+        }
+#endif
+        dbg_cur = !dbg_cur;
+        memset(dbg_why[dbg_cur], 255, DBG_IDS);
+    }
+#endif
+    {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
+        static unsigned fr, worst, cut_max, pend_max, pops_s, wait_max, hzf_max, hzt_max, w_nohz, unc_max, w_k, w_ci;
+        static float near_min = 1e9f;
+        if (lg->holes > worst)
+            worst = lg->holes, w_nohz = lg->hole_nohz, w_k = lg->hole_ex[0], w_ci = lg->hole_ex[1];
+        unc_max = lg->hole_unc > unc_max ? lg->hole_unc : unc_max;
+        hitch_map(lg->pend, lg->hz_fill, lg->pops);  /* the hitch monitor's "stream:" line (src/hitch.c) */
+        hzf_max = lg->hz_fill > hzf_max ? lg->hz_fill : hzf_max;
+        hzt_max = lg->hz_tris > hzt_max ? lg->hz_tris : hzt_max;
+        pend_max = lg->pend > pend_max ? lg->pend : pend_max;
+        pops_s += lg->pops, pop_total += lg->pops;
+        wait_max = lg->pop_wait > wait_max ? lg->pop_wait : wait_max;
+        near_min = lg->pop_d < near_min ? lg->pop_d : near_min;
+        cut_max = lg->pvs_cut > cut_max ? lg->pvs_cut : cut_max;
+        if (!(++fr % 30)) {
+#if MAP_TWO_PASS
+            if (!(fr % 300))
+                printf("map: two-pass lists built %u, pool resets %u, pool %u / %u entries\n", lpool_builds,
+                       lpool_resets, lpool_top, LPOOL_N);
+#ifdef MAP_TWO_PASS_CHECK
+            printf("map: two-pass check %u lists, %u differ\n", chk_lists, chk_bad);
+#endif
+#endif
+            if (worst)
+                printf("map: cells missing %u (most in a frame over 1 s; %u without a horizon; e.g. cell %u.%u)\n", worst,
+                       w_nohz, w_k, w_ci);
+            if (unc_max)
+                printf("map: effects not in yet in %u cells (most in a frame over 1 s)\n", unc_max);
+            unc_max = 0;
+            if (hzf_max)  /* not holes: the horizon stood in for a coarse level not in yet, inside HZN_R */
+                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris; e.g. %u.%u at %u m, %u.%u at %u m\n",
+                       hzf_max, hzt_max, hzx[0][0], hzx[0][1], hzx[0][2], hzx[1][0], hzx[1][1], hzx[1][2]);
+            hzf_max = hzt_max = 0;
+            if (pops_s)
+                printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "
+                       "near drawn coarse (most in a frame)\n", pops_s, wait_max, (double)near_min, pop_total, pend_max);
+            pend_max = pops_s = wait_max = 0, near_min = 1e9f;
+            if (cut_max)  /* occlusion A/B (src/pvs.c): this frame's per-instance drawn / culled counts */
+                printf("map: pvs culled %u tris (most in a frame over 1 s), eye %.1f %.1f %.1f; now drawn / culled %u/%u "
+                       "%u/%u %u/%u\n", cut_max, (double)e[0], (double)e[1], (double)e[2], lg->k_drawn[0], lg->k_cut[0],
+                       MAP_INST > 1 ? lg->k_drawn[1] : 0, MAP_INST > 1 ? lg->k_cut[1] : 0, MAP_INST > 2 ? lg->k_drawn[2] : 0,
+                       MAP_INST > 2 ? lg->k_cut[2] : 0);
+            worst = cut_max = 0;
+        }
+    }
+#ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
+    {
+        static unsigned fr;
+        if (!(++fr % 60))
+            printf("MAPSTATS batches %d tris %d tc uploads %d bytes %d fails %d stream cells %u KB %u\n",
+                   map_vu1_batches, drawn, tc_stats.uploads, tc_stats.bytes, tc_stats.fails, mapstream_stats.cells,
+                   mapstream_stats.bytes >> 10);
+    }
+#endif
+#ifdef MAP_PROF
+    {
+        static unsigned frames, v, c;
+        v += prof_vis, c += prof_clip;
+        prof_vis = prof_clip = 0;
+        if (++frames == 30) {  /* average over 30 frames, in 0.01 ms */
+            map_vu1_batches = v / 30 / 2949, map_ee_tris = c / 30 / 2949;
+            frames = v = c = 0;
+        }
+        static int sv, sc;
+        if (frames)
+            map_vu1_batches = sv, map_ee_tris = sc;
+        else
+            sv = map_vu1_batches, sc = map_ee_tris;
+    }
+#endif
+}
+
+int map_draw(V3 eye)
+{
+    int drawn = 0;
+    static unsigned mp_fr;
+    mp_on = MAP_PASS_MS && !(mp_fr++ % MAP_PASS_EVERY);
+    unsigned mp_t0 = mp_on ? ticks() : 0;
+    (void)mp_t0;
+    memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
+    if (!inst[pinst].on && pinst)
+        pinst = 0;
+    vis_c = NULL;
+    /* sky and fog colours from the player's block; while its sky streams are not in yet the sky of one that has them */
+    int sk = pinst;
+    if (!sky_in(pinst))
+        for (int k = 0; k < MAP_INST; k++)
+            if ((k == 0 || inst[k].on) && sky_in(k)) {
+                sk = k;
+                break;
+            }
+    MapInst *m = &inst[sk];
+    mapstream_select(sk);
+    {
+        MP_BEGIN
+        build_index(m);
+        MP_END(MP_CULL)
+    }
+    bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
+    map_vu1_batches = map_ee_tris = 0;
+#ifdef MAP_DBG
+    static int dbg_init;
+    if (!dbg_init++)
+        memset(dbg_why, 255, sizeof dbg_why);
+#endif
+    const float e[3] = {eye.x, eye.y, eye.z};
+    {
+        MP_BEGIN
+        pvs_eye(e);  /* every instance's visibility row for this camera cell (src/pvs.c) */
+        MP_END(MP_CULL)
+    }
+    {
+        V3 ey, rt, up, fw;
+        float fx, fy, zs;
+        r_camera_basis(&ey, &rt, &up, &fw, &fx, &fy, &zs);
+        const float b[12] = {ey.x, ey.y, ey.z, rt.x, rt.y, rt.z, up.x, up.y, up.z, fw.x, fw.y, fw.z};
+        memcpy(cam, b, sizeof cam);
+        cam_f = fx;
+        vis_frame(fx, fy);
+        MP_BEGIN
+        tc_begin(fx);  /* this frame's texture uploads go into the chain from here on */
+        MP_END(MP_TEX)
+    }
+    float a, b, fmin;
+    fog_terms(&a, &b, &fmin);
+    int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
+    u32 col = (u32)fog_now[3] | (u32)fog_now[4] << 8 | (u32)fog_now[5] << 16;
+    drawn += draw_sky(sk, e, col, a, b, fmin);
+    int nfx = 0, nhzfade = 0, nnrfade = 0;
+    FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
-    unsigned pvs_cut = 0;  /* triangles the visibility rows left out (src/pvs.c) */
-    unsigned k_drawn[MAP_INST] = {0}, k_cut[MAP_INST] = {0};  /* the same and the drawn ones per instance (A/B log) */
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
         if (k && !inst[k].on) {
             if (inst[k].hz_only) {  /* a kept-only block: its horizon alone */
                 unsigned dn = draw_hz_only(k, e);
-                drawn += dn, k_drawn[k] += dn, hz_tris += dn;
+                drawn += dn, lg.k_drawn[k] += dn, lg.hz_tris += dn;
             }
             continue;
         }
@@ -1688,15 +1977,15 @@ int map_draw(V3 eye)
                 if (ce->near_on && (ctab[ci].near & ~CELL_PART)) {
                     int was = (unsigned short)(pop_fr - ce->seen) == 1;
                     if (!nd) {
-                        pend++;
+                        lg.pend++;
                         if (!ce->waiting)
                             ce->wait0 = pop_fr, ce->waiting = 1;
                     } else if (ce->waiting) {
                         unsigned w = (unsigned short)(pop_fr - ce->wait0);
                         if (was && w >= 2) {
-                            pops++;
-                            pop_wait = w > pop_wait ? w : pop_wait;
-                            pop_d = d2 < pop_d * pop_d ? sqrtf(d2) : pop_d;
+                            lg.pops++;
+                            lg.pop_wait = w > lg.pop_wait ? w : lg.pop_wait;
+                            lg.pop_d = d2 < lg.pop_d * lg.pop_d ? sqrtf(d2) : lg.pop_d;
                         }
                         ce->waiting = 0;
                     }
@@ -1713,14 +2002,14 @@ int map_draw(V3 eye)
             {
                 /* with the horizon only blended effects (mist, light shafts) can be missing: late, but no hole */
                 unsigned h = use_hz ? 0 : miss && !nd && (!hc || mcov);
-                holes += h;
-                hole_nohz += h && !hc, hole_unc += hc && miss == 2 && !nd;  /* no horizon for the cell; effects late */
-                if (h && hole_ex[0] == ~0u)
-                    hole_ex[0] = (unsigned)k, hole_ex[1] = (unsigned)ci;
+                lg.holes += h;
+                lg.hole_nohz += h && !hc, lg.hole_unc += hc && miss == 2 && !nd;  /* no horizon for the cell; effects late */
+                if (h && lg.hole_ex[0] == ~0u)
+                    lg.hole_ex[0] = (unsigned)k, lg.hole_ex[1] = (unsigned)ci;
             }
-            if (use_hz && !hzf && hz_fill < 3)  /* (the log names up to three: instance.cell at distance) */
-                hzx[hz_fill][0] = (unsigned)k, hzx[hz_fill][1] = (unsigned)ci, hzx[hz_fill][2] = (unsigned)hz_d;
-            hz_fill += use_hz && !hzf;
+            if (use_hz && !hzf && lg.hz_fill < 3)  /* (the log names up to three: instance.cell at distance) */
+                hzx[lg.hz_fill][0] = (unsigned)k, hzx[lg.hz_fill][1] = (unsigned)ci, hzx[lg.hz_fill][2] = (unsigned)hz_d;
+            lg.hz_fill += use_hz && !hzf;
             if (HZN_FADE > 0 && hc && hc->count && !use_hz && !nd && hz_d > HZN_R - HZN_FADE && nhzfade < MAX_HZ_FADE) {
                 /* inside HZN_R, on the coarse level: its horizon over it at alpha (d - (HZN_R - HZN_FADE)) / HZN_FADE,
                  * reaching 1 where the hysteresis band starts (HZN_R - HZN_HYST: the swap then shows no change) */
@@ -1788,7 +2077,7 @@ int map_draw(V3 eye)
                         chk_bad++;
                 }
 #endif
-                pvs_cut += ce->lcut, k_cut[k] += ce->lcut;
+                lg.pvs_cut += ce->lcut, lg.k_cut[k] += ce->lcut;
                 MF_END(MF_NEAR)
                 MF_AGAIN
                 /* emit: the list's chunks through the frustum and texture tests into the chain. A cell whose farthest
@@ -1839,13 +2128,13 @@ int map_draw(V3 eye)
                                 float mm = (c->mn[a] + c->mx[a]) * 0.5f - e[a];
                                 d += mm * mm;
                             }
-                            fx[nfx].d = d, fx[nfx].c = c, fx[nfx].k = k, fx[nfx].cls = cls;
-                            fx[nfx].base = base, fx[nfx++].no = no;
+                            fxl[nfx].d = d, fxl[nfx].c = c, fxl[nfx].k = k, fxl[nfx].cls = cls;
+                            fxl[nfx].base = base, fxl[nfx++].no = no;
                         }
                         continue;
                     }
                     unsigned dn = draw_chunk(m, base, c, n, cls, fog, no);
-                    drawn += dn, k_drawn[k] += dn;
+                    drawn += dn, lg.k_drawn[k] += dn;
                 }
                 emit_close = 0;
             } else
@@ -1882,7 +2171,7 @@ int map_draw(V3 eye)
                     }
                     if (!pvs_chunk(k, (unsigned)ci, is_near ? NEAR_NO(c, nb) : order[j])) {  /* behind something (pvs.c) */
                         DBGW(D_PVS, c->tris, is_near ? NEAR_NO(c, nb) : order[j]);
-                        pvs_cut += c->tris, k_cut[k] += c->tris;
+                        lg.pvs_cut += c->tris, lg.k_cut[k] += c->tris;
                         continue;
                     }
                     unsigned n = c->flags & CHUNK_GRASS ? grass_tris(c, e) : c->tris;
@@ -1920,14 +2209,14 @@ int map_draw(V3 eye)
                                 float m = (c->mn[k] + c->mx[k]) * 0.5f - e[k];
                                 d += m * m;
                             }
-                            fx[nfx].d = d, fx[nfx].c = c, fx[nfx].k = k, fx[nfx].cls = cls;
-                            fx[nfx].base = is_near ? nb : rb, fx[nfx++].no = is_near ? NEAR_NO(c, nb) : order[j];
+                            fxl[nfx].d = d, fxl[nfx].c = c, fxl[nfx].k = k, fxl[nfx].cls = cls;
+                            fxl[nfx].base = is_near ? nb : rb, fxl[nfx++].no = is_near ? NEAR_NO(c, nb) : order[j];
                         }
                         continue;
                     }
                     {
                         unsigned dn = draw_chunk(m, is_near ? nb : rb, c, n, cls, fog, is_near ? NEAR_NO(c, nb) : order[j]);
-                        drawn += dn, k_drawn[k] += dn;
+                        drawn += dn, lg.k_drawn[k] += dn;
                     }
                 }
             }
@@ -1941,7 +2230,7 @@ int map_draw(V3 eye)
                 int cls = visible(c, e, 0);
                 if (cls) {
                     unsigned dn = draw_hz(m, c, cls, 0, 0);
-                    drawn += dn, k_drawn[k] += dn, hz_tris += dn;
+                    drawn += dn, lg.k_drawn[k] += dn, lg.hz_tris += dn;
                 }
             }
         }
@@ -1949,74 +2238,11 @@ int map_draw(V3 eye)
     }
     mapstream_select(0);
     if (nhzfade) {
-        /* horizons fading in (HZN_FADE) over their cells' coarse level, Cs a + Cd (1 - a), Z tested HZN_ZBIAS nearer
-         * and not written, front faces only: the horizon is drawn double-sided, so a wall's back face (or a layer just
-         * behind the coarse surface, now inside the bias) would blend a second time. A depth-only pre-pass did the same
-         * but left the horizon's biased depth for the characters and effects drawn after (feet in the ground at
-         * ~50 m) */
-        vu1_map_zbias(1.0f + HZN_ZBIAS);
-        vu1_map_fog(a, b, fmin, 255);
-        vu1_map_edge(edge_a2);
-        u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
-        for (int i = 0; i < nhzfade; i++) {
-            const MapInst *mk = &inst[hzfade[i].k];
-            const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
-            if (HZN_FADE_DEBUG && !i) {
-                u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
-                vu1_gs_regs(1, fc);
-                vu1_map_fog(a, b, 0, 0);
-            }
-            u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, HZN_FADE_DEBUG ? 0x80 : hzfade[i].a), 0x42, zb, 0x4E};
-            vu1_gs_regs(2, r);
-            for (unsigned j = 0; j < hc->count; j++) {
-                const Chunk *c = &mk->hz_chunk[hc->first + j];
-                if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
-                    continue;
-                int cls = visible(c, e, 0);
-                if (cls) {
-                    unsigned dn = draw_hz(mk, c, cls, VU1_BLEND, 1);
-                    drawn += dn, hz_tris += dn;
-                }
-            }
-        }
-        vu1_map_zbias(1.0f);
-        vu1_map_fog(a, b, fmin, 255);
-        if (HZN_FADE_DEBUG) {  /* the frame's fog colour back for what is drawn after */
-            float f[5];
-            u64 fc[2] = {0, 0x3D}, fb;
-            r_get_fog(f, &fc[0], &fb);
-            vu1_gs_regs(1, fc);
-        }
-        blend_regs(gs, 0);
+        int dn = draw_hz_fades(nhzfade, e, a, b, fmin);
+        drawn += dn, lg.hz_tris += dn;
     }
-    if (nnrfade) {
-        /* coarse levels fading out (NEAR_FADE) over their cells' near level, as the horizon fade above: Cs a + Cd
-         * (1 - a), Z tested HZN_ZBIAS nearer and not written (the coarse surface is the near one simplified) */
-        vu1_map_zbias(1.0f + HZN_ZBIAS);
-        u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
-        for (int i = 0; i < nnrfade; i++) {
-            const MapInst *mk = &inst[nrfade[i].k];
-            const Cell *ce = &mk->cells[nrfade[i].ci];
-            u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
-            vu1_gs_regs(2, r);
-            mapstream_select(nrfade[i].k);  /* mapstream_res answers for that instance */
-            for (unsigned j = ce->first; j < (unsigned)ce->first + ce->count; j++) {
-                unsigned no = mk->order[j];
-                const Chunk *c = &mk->chunks[no];
-                if (!(c->flags & CHUNK_COARSE) || !hz_covers(c->flags) || (c->flags & CHUNK_BACKDROP))
-                    continue;
-                const unsigned char *base = res_base(mk, no);
-                if (!base || !dg_shown(nrfade[i].k, no))
-                    continue;
-                int cls = visible(c, e, 0);
-                if (cls)
-                    drawn += draw_chunk(mk, base, c, c->tris, cls, R_FOG | R_BLEND, no);
-            }
-        }
-        mapstream_select(0);
-        vu1_map_zbias(1.0f);
-        blend_regs(gs, 0);
-    }
+    if (nnrfade)
+        drawn += draw_near_fades(nnrfade, e);
     {
         MP_BEGIN
         bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
@@ -2024,26 +2250,7 @@ int map_draw(V3 eye)
     }
 
     MF_BEGIN
-    /* effects after the opaque map: alpha-blended (mist) far to near, then additive (light shafts, order-free);
-     * Z tested, not written */
-    for (int i = 1; i < nfx; i++)  /* insertion sort by distance, far first; a few dozen per frame */
-        for (int j = i; j > 0 && fx[j].d > fx[j - 1].d; j--) {
-            __typeof__(fx[0]) tmp = fx[j];
-            fx[j] = fx[j - 1], fx[j - 1] = tmp;
-        }
-    for (int add = 0; add < 2; add++) {
-        int any = 0;
-        for (int i = 0; i < nfx; i++) {
-            const Chunk *c = fx[i].c;
-            if (!(c->flags & CHUNK_ADD) != !add)
-                continue;
-            if (!any++)
-                blend_regs(gs, CHUNK_BLEND | (add ? CHUNK_ADD : 0));
-            drawn += draw_chunk(&inst[fx[i].k], fx[i].base, c, c->tris, fx[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
-                                fx[i].no);
-        }
-    }
-    blend_regs(gs, 0);
+    drawn += draw_effects(nfx, fog);
     MF_END(MF_FX)
     {
         MP_BEGIN
@@ -2051,159 +2258,9 @@ int map_draw(V3 eye)
         MP_END(MP_TEX)
     }
 #if MAP_PASS_MS
-    {  /* "map: pass ms": the breakdown over 30 frames (average, and the frame with the largest map_draw) */
-        static unsigned fr, nt, acc[MP_N + 1], wst[MP_N + 1], wtot, facc[MF_N];
-        unsigned tot = mp_on ? ticks() - mp_t0 : 0, v[MP_N + 1], sub = 0;
-        for (int i = 0; i < MF_N; i++)
-            facc[i] += mf_t[i];
-        nt += mp_on;
-        for (int i = 0; i < MP_N; i++)
-            v[i] = mp_t[i], sub += mp_t[i];
-        v[MP_N] = tot > sub ? tot - sub : 0;  /* plan: the rest */
-        for (int i = 0; i <= MP_N; i++)
-            acc[i] += v[i];
-        if (tot > wtot)
-            memcpy(wst, v, sizeof wst), wtot = tot;
-        if (!(++fr % MAP_PASS_LOG) && nt) {
-#define MPMS(x) ((double)((float)(x) / 294912.0f / (float)nt))
-#define MPMS1(x) ((double)((float)(x) / 294912.0f))
-            unsigned at = acc[0] + acc[1] + acc[2] + acc[3] + acc[4];
-            printf("map: pass ms cull %.2f plan %.2f chain %.2f tex %.2f bump %.2f total %.2f | worst cull %.2f plan "
-                   "%.2f chain %.2f tex %.2f bump %.2f total %.2f (%u timed frames)\n", MPMS(acc[MP_CULL]),
-                   MPMS(acc[MP_N]), MPMS(acc[MP_CHAIN]), MPMS(acc[MP_TEX]), MPMS(acc[MP_BUMP]), MPMS(at),
-                   MPMS1(wst[MP_CULL]), MPMS1(wst[MP_N]), MPMS1(wst[MP_CHAIN]), MPMS1(wst[MP_TEX]), MPMS1(wst[MP_BUMP]),
-                   MPMS1(wtot), nt);
-            printf("map: plan ms miss %.2f near %.2f chunks %.2f fx %.2f other %.2f; per frame tiles %u visible %u, cells %u "
-                   "visible %u, chunks %u\n", MPMS(facc[MF_MISS]), MPMS(facc[MF_NEAR]),
-                   MPMS(facc[MF_CHUNKS]), MPMS(facc[MF_FX]), MPMS(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]),
-                   mc_tiles / MAP_PASS_LOG, mc_tvis / MAP_PASS_LOG, mc_cells / MAP_PASS_LOG, mc_vis / MAP_PASS_LOG,
-                   mc_chunks / MAP_PASS_LOG);
-            mc_cells = mc_vis = mc_tiles = mc_tvis = mc_chunks = 0, nt = 0;
-#undef MPMS
-#undef MPMS1
-            memset(acc, 0, sizeof acc), memset(wst, 0, sizeof wst), wtot = 0, memset(facc, 0, sizeof facc);
-        }
-    }
+    log_pass_ms(mp_t0);
 #endif
-#ifdef MAP_PANO_R  /* panorama capture: the camera basis for tools/pano.py, every 8 frames */
-    {
-        static unsigned pf;
-        if (!(++pf & 7))
-            printf("PANOCAM %.3f %.3f %.3f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.2f\n", cam[0], cam[1],
-                   cam[2], cam[3], cam[4], cam[5], cam[6], cam[7], cam[8], cam[9], cam[10], cam[11], cam_f, 0.0f, 0.0f, 0.0f);
-    }
-#endif
-#ifdef MAP_DBG
-    {
-        static unsigned fr;
-        dbg_t[D_DRAWN] = drawn;
-        if (!(++fr % MAP_DBG)) {
-            char line[320];
-            int k = snprintf(line, sizeof line, "MAPDBG %u", fr);
-            for (int r = 0; r < D_NR; r++)
-                k += snprintf(line + k, sizeof line - k, " %s %u/%u", dbg_name[r], dbg_c[r], dbg_t[r]);
-            puts(line);
-        }
-        memset(dbg_c, 0, sizeof dbg_c), memset(dbg_t, 0, sizeof dbg_t);
-#ifdef MAP_DBG_FLIP
-        {  /* chunks drawn last frame, not now: by this frame's step (view = left the frustum: expected when turning) */
-            unsigned cnt[D_NR + 1] = {0}, tris[D_NR + 1] = {0}, on = 0;
-            const unsigned char *now = dbg_why[dbg_cur], *was = dbg_why[!dbg_cur];
-            char line[400];
-            int k = snprintf(line, sizeof line, "FLIP %u", fr);
-            for (unsigned i = 0; i < DBG_IDS; i++) {
-                if (was[i] == D_DRAWN && now[i] != D_DRAWN) {
-                    int r = now[i] < D_NR ? now[i] : D_NR;
-                    cnt[r]++;
-                    if (i < inst[0].hdr->chunks)
-                        tris[r] += inst[0].chunks[i].tris;
-                    if (r != D_VIEW && r != D_CELL_VIEW && r != D_SWAP && r != D_NR && k < 300)
-                        k += snprintf(line + k, sizeof line - k, " [%u %s]", i, dbg_name[r]);
-                } else if (was[i] != D_DRAWN && now[i] == D_DRAWN)
-                    on++;
-            }
-            k += snprintf(line + k, sizeof line - k, " | on %u off", on);
-            for (int r = 1; r <= D_NR; r++)
-                if (cnt[r])
-                    k += snprintf(line + k, sizeof line - k, " %s %u/%u", r < D_NR ? dbg_name[r] : "unseen", cnt[r],
-                                  tris[r]);
-            puts(line);
-        }
-#endif
-        dbg_cur = !dbg_cur;
-        memset(dbg_why[dbg_cur], 255, DBG_IDS);
-    }
-#endif
-    {  /* streaming A/B (world streaming v2): the most cells missing in one frame over each second, when any were */
-        static unsigned fr, worst, cut_max, pend_max, pops_s, wait_max, hzf_max, hzt_max, w_nohz, unc_max, w_k, w_ci;
-        static float near_min = 1e9f;
-        if (holes > worst)
-            worst = holes, w_nohz = hole_nohz, w_k = hole_ex[0], w_ci = hole_ex[1];
-        unc_max = hole_unc > unc_max ? hole_unc : unc_max;
-        hitch_map(pend, hz_fill, pops);  /* the hitch monitor's "stream:" line (src/hitch.c) */
-        hzf_max = hz_fill > hzf_max ? hz_fill : hzf_max;
-        hzt_max = hz_tris > hzt_max ? hz_tris : hzt_max;
-        pend_max = pend > pend_max ? pend : pend_max;
-        pops_s += pops, pop_total += pops;
-        wait_max = pop_wait > wait_max ? pop_wait : wait_max;
-        near_min = pop_d < near_min ? pop_d : near_min;
-        cut_max = pvs_cut > cut_max ? pvs_cut : cut_max;
-        if (!(++fr % 30)) {
-#if MAP_TWO_PASS
-            if (!(fr % 300))
-                printf("map: two-pass lists built %u, pool resets %u, pool %u / %u entries\n", lpool_builds,
-                       lpool_resets, lpool_top, LPOOL_N);
-#ifdef MAP_TWO_PASS_CHECK
-            printf("map: two-pass check %u lists, %u differ\n", chk_lists, chk_bad);
-#endif
-#endif
-            if (worst)
-                printf("map: cells missing %u (most in a frame over 1 s; %u without a horizon; e.g. cell %u.%u)\n", worst,
-                       w_nohz, w_k, w_ci);
-            if (unc_max)
-                printf("map: effects not in yet in %u cells (most in a frame over 1 s)\n", unc_max);
-            unc_max = 0;
-            if (hzf_max)  /* not holes: the horizon stood in for a coarse level not in yet, inside HZN_R */
-                printf("map: horizon filled %u cells (most in a frame over 1 s), %u horizon tris; e.g. %u.%u at %u m, %u.%u at %u m\n",
-                       hzf_max, hzt_max, hzx[0][0], hzx[0][1], hzx[0][2], hzx[1][0], hzx[1][1], hzx[1][2]);
-            hzf_max = hzt_max = 0;
-            if (pops_s)
-                printf("map: near pop-in %u cells over 1 s (wait max %u frames, nearest %.0f m; %u in the run), %u due "
-                       "near drawn coarse (most in a frame)\n", pops_s, wait_max, (double)near_min, pop_total, pend_max);
-            pend_max = pops_s = wait_max = 0, near_min = 1e9f;
-            if (cut_max)  /* occlusion A/B (src/pvs.c): this frame's per-instance drawn / culled counts */
-                printf("map: pvs culled %u tris (most in a frame over 1 s), eye %.1f %.1f %.1f; now drawn / culled %u/%u "
-                       "%u/%u %u/%u\n", cut_max, (double)e[0], (double)e[1], (double)e[2], k_drawn[0], k_cut[0],
-                       MAP_INST > 1 ? k_drawn[1] : 0, MAP_INST > 1 ? k_cut[1] : 0, MAP_INST > 2 ? k_drawn[2] : 0,
-                       MAP_INST > 2 ? k_cut[2] : 0);
-            worst = cut_max = 0;
-        }
-    }
-#ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
-    {
-        static unsigned fr;
-        if (!(++fr % 60))
-            printf("MAPSTATS batches %d tris %d tc uploads %d bytes %d fails %d stream cells %u KB %u\n",
-                   map_vu1_batches, drawn, tc_stats.uploads, tc_stats.bytes, tc_stats.fails, mapstream_stats.cells,
-                   mapstream_stats.bytes >> 10);
-    }
-#endif
-#ifdef MAP_PROF
-    {
-        static unsigned frames, v, c;
-        v += prof_vis, c += prof_clip;
-        prof_vis = prof_clip = 0;
-        if (++frames == 30) {  /* average over 30 frames, in 0.01 ms */
-            map_vu1_batches = v / 30 / 2949, map_ee_tris = c / 30 / 2949;
-            frames = v = c = 0;
-        }
-        static int sv, sc;
-        if (frames)
-            map_vu1_batches = sv, map_ee_tris = sc;
-        else
-            sv = map_vu1_batches, sc = map_ee_tris;
-    }
-#endif
+    log_frame(&lg, e, drawn);
     return drawn;
 }
 
