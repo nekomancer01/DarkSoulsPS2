@@ -1,4 +1,4 @@
-# Tool index (2026-10-31)
+# Tool index
 
 **What this is:** a list of every tool and script in the repository, grouped by what it's for, with one line on what
 each does. Use it to find the right script; most tools print their usage with `--help` or in the comment at the top
@@ -22,6 +22,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `emevd.py` | Event scripts (EMEVD), decoded with the game's instruction definitions |
 | `worldgraph.py` | Which maps load together / connect (level streaming) |
 | `dsr_points.py` | FromSoft autotest point lists |
+| `flag_scan.py` | Checks the event flag id layout (`src/flags.h`) against every flag id the game data uses |
+| `navroute.py` | Walking route between points of one map from the game's navmesh, for a test script |
 | `dsr_light.py` | Map lighting, fog, tone map decoded for baking |
 | `fev.py`, `fsb4.py` | FMOD event projects (FEV1), sample banks (FSB4) |
 | `ffx.py` | DSR effects (FXR1 in sfx/*.ffxbnd): nodes, states, actions, particle data, curves; `--check` |
@@ -33,11 +35,21 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
 | `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
 | `export_collision.py` | collision.bin |
+| `export_normal.py` | bump.bin: normal-map relief for the map (CLUT dot3) |
+| `pose_obj.py` | Skinned MSB objects (corpses, hanging chains) posed once as static map geometry for export_map |
+| `mapsplit.py`, `horizon.py` | A map.bin split for world streaming (maptab.bin + mapres.bin), and its resident far backdrop (hzn.bin) |
+| `drawgroups.py` | dg.bin: DSR's draw groups for the runtime (`src/drawgrp.c`) |
+| `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
+| `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |
+| `pano.py` | Far panorama for capture builds (render-distance variant A) |
 | `navwalls.py` | Walls of one collision part that seal a doorway another part leaves open (navmesh crosses them onto another part's floor); export_collision.py drops them (NAVWALLS=0 keeps them). `navwalls.py <map>` lists them |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
 | `export_chr.py`, `export_enemies.py` | Enemy / NPC models, placements |
 | `export_objects.py` | Breakable objects (pots) |
 | `export_esd.py` | ESD runtime data |
+| `export_emevd.py` | Event scripts (EMEVD) as compact bytecode for `src/event.c` |
+| `export_progress.py` | New-game progression state (progress.gd) from the starting class |
+| `export_loading.py` | DSR's loading screen for `src/loading.c` |
 | `export_menu.py` | HUD / menu assets |
 | `export_items.py` | Item database for the menus: stack sizes / kinds (items.bin), names, stats, reinforcement (itemx.bin), descriptions (desc.bin), 48 px icons (icons.bin) |
 | `export_screens.py` | DSR menu screens (scr_<name>.bin): menu.drb dialog trees at their own layout + a sprite atlas each (R00 bar, I02 Equipment, I01 Inventory, C01 Status, F04 System) |
@@ -52,7 +64,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `meshopt/` | meshoptimizer bindings |
 | `liq/` | libimagequant colour quantisation |
 | `lz4hc/` | LZ4 high-compression packing |
-| `native/` | BC7 decode, LZ4 packer |
+| `native/` | BC7 decode, LZ4 packer, the map export's C helpers (`geom_native.py` binds them) |
+| `mapx/` | The map exporter's C rewrite, libmapx (`mapx_native.py` binds it) |
 | `adpcm/` | PS2 ADPCM (VAG) audio encoder |
 | `vgmstream/` | Audio decoding |
 | `vu1/` | VU1 microprogram generator (`gen.py`), VU emulator (`vuemu.py`) + unit tests, A/B and reference runs |
@@ -72,6 +85,13 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `test-pcsx2-ini.py` | PCSX2 config for one headless test instance |
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
+| `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
+| `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |
+| `heapdrift.py` | EE heap drift from an EE log: GC sawtooth or a real leak |
+| `soaklaps.py` | Cuts the Burg soak script to its first N laps |
+| `save-dump.py` | Reads a save file: header, progression, set event flags; `--expect` checks |
+| `colcheck.c` | Host harness: two collision.bin files of one block give the same answers |
+| `gamedata_test.py` | Offline test of `gamedata.py` (run by `ci/offline.sh`) |
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
@@ -92,6 +112,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `dsr-ref.sh` | Start, load, camera, savestates, screenshots |
 | `dsr-ref-cam.py` | Precise camera placement |
+| `b9-dsr-shots.sh` | Reference shots matching `tests/iso_burg_looks.txt` |
 | `dsr_mem.py` | Read / write game memory (position, warp, HP) |
 | `dsr-ei.c` | Input injection |
 | `dsr-rdc.sh` + `dsr_rdc.py`, `dsr_rdc_replay.py` | RenderDoc capture -> named shader constants |

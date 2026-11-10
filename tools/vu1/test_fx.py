@@ -1,7 +1,7 @@
 """vu1fx.vsm (VU1 particles, fx.c FX_VU1 builds) against a Python model of fx.c's EE billboard path on random batches:
 curve keys and fractions, roll, flipbook cells, the pull toward the camera, fog with edge fog, ADC strip restarts."""
 import math, os, random, sys
-from vuemu import VU1, U, vertices
+from vuemu import VU1, vertices
 import gen
 from test_clip import gif_tag, FOC, FOCY, NEAR, FOG, CX, CY
 

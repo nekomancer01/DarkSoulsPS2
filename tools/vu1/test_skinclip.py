@@ -1,5 +1,5 @@
 """vu1skinclip.vsm vs a Python reference (skinning as vu1skin2 + near / guard-band clipping + fan + cull)."""
-import math, random, struct, sys
+import math, random, sys
 from vuemu import VU1, U, F, vertices
 import test_skin as ts, gen
 

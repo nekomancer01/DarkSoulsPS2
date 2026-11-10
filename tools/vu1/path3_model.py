@@ -17,7 +17,7 @@ program kicks ~10 qw per triangle against ~40 VU1 cycles, so the GIF is idle mos
 Upload sets: the TECH_DEBT texstream-4 numbers (first Firelink frame 216-264 KB, moving 2-32 KB per frame), split
 into textures of the sizes map.bin has (128x128 T8 16 KB, 64x64 T8 4 KB, CLUTs 1 KB)."""
 import argparse, random, sys
-from vuemu import VU1, vertices
+from vuemu import VU1
 import test_clip as tc
 
 IMAGE_CYC = 4
