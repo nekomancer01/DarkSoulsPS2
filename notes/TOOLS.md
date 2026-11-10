@@ -63,7 +63,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pcsx2-run.sh` | Boot an ELF in PCSX2: headless + screenshot, or a visible window (`STATEFILE=`: start from a savestate) |
 | `hostexec` | Runs a command on the host: through `distrobox-host-exec` inside a distrobox, directly otherwise (the PCSX2 and reference-game scripts use it) |
 | `test-all.sh` | Build + smoke test + render diff + perf check in one run |
-| `test-run.py` | Run one test script headless; stops 5 s after the first EE log error (`--keep-going` runs on), progress line every minute. Unthrottled by default (`--realtime` / `TURBO=0`: normal speed; the ELF's numbers run on emulated time) and warm-started from a cached savestate (`--cold` boots) |
+| `test-run.py` | Run one test script headless; stops 5 s after the first EE log error (`--keep-going` runs on), progress line every minute. Unthrottled by default (`--realtime` / `TURBO=0`: normal speed; the ELF's numbers run on emulated time) and ISO runs warm-start from a cached savestate (`--cold` boots; host-ELF runs always boot) |
 | `warmstate.py` | test-run.py's warm starts: per ELF / ISO / boot options / first spawn, a state of the ELF parked at the script's start (testscript.c `park`), cached in build/cache/warm (`WARM_CACHE`, 0 = off); `list` / `clear` |
 | `test-smoke.py` | Autotest smoke test |
 | `test-gsdump.py` | Graphics regression diff |
