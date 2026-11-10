@@ -22,7 +22,5 @@ int pvs_chunk(int k, unsigned entry, unsigned chunk);
 int pvs_range(int k, unsigned entry, unsigned first, unsigned n, int now);
 /* changes whenever instance k's row or union may answer differently */
 unsigned pvs_gen(int k);
-/* stats: units of instance k in the current row / all (0 / 0: off or no row) */
-void pvs_stats(int k, unsigned *in_row, unsigned *units);
 
 #endif

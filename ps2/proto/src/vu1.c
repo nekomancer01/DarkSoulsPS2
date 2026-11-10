@@ -12,6 +12,7 @@
  * OFFSET 386); a skin batch is a 9-qword header + 4 qwords per vertex, <= VU1_SKIN_TRIS triangles. */
 #include <kernel.h>
 #include <dma.h>
+#include "ticks.h"
 /* gsKit's dmaInit.h (through render.h) defines these again with the same values spelled 0x0 / 0x1, a redefinition
  * warning; drop ps2sdk's spelling here, gsKit's takes over below */
 #undef DMA_CHANNEL_VIF0
@@ -342,12 +343,6 @@ static void chk_after(void)
 #define CHK_AFTER() ((void)0)
 #endif
 
-static inline unsigned ticks(void)  /* EE COP0 Count, 294.912 MHz */
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* room for qw more qwords (plus the END tag): otherwise send the chain built so far and start over in the same
  * buffer. 0 = cannot fit at all (the caller drops the batch) */

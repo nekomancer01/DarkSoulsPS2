@@ -77,8 +77,6 @@ void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes);
 void *mapstream_alloc_pool(unsigned n, int pool);
 /* the same for n <= 64 KB, packed into partly used pages of the pool (collision tiles, src/coltile.c) */
 void *mapstream_alloc_pool_small(unsigned n, int pool);
-/* the visual room in bytes (the item pages; 0 before the arena exists) */
-unsigned mapstream_visual(void);
 int mapstream_pools_on(void);
 /* MS_POOLS is built in (before the arena exists; mapstream_pools_on says whether the arena has them) */
 int mapstream_pools_on_build(void);

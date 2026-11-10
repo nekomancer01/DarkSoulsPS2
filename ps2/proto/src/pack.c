@@ -14,6 +14,7 @@
 #include "lpass.h" /* LOGIC_SPREAD */
 #include "hitch.h"
 #include "dsrsnd_rpc.h"
+#include "ticks.h"
 
 struct PackEntry {
     char name[32];
@@ -31,12 +32,6 @@ struct PackEntry {
 PackStats pack_stats;
 static void log_flush(void);
 
-static unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* Boot device (tools-hwperf): booted from a disc, libcglue's cwd (argv[0]'s device) is "cdrom0:..." and PACK_ROOT
  * paths are mapped onto the ISO layout of `make iso` (tools/ps2-iso.sh): "host:data/m10_01_00_00/c1000.pak" ->
@@ -152,13 +147,6 @@ int pack_disc_attach(void)
            st->iop_free >> 10, st->iop_free_boot >> 10);
     io_srv = 1;
     return 1;
-}
-
-void pack_disc_stat(unsigned out[4])
-{
-    const volatile SndDiscStat *st = (const volatile SndDiscStat *)((unsigned)&io_rx | 0x20000000);
-    out[0] = io_srv ? st->iop_free : 0, out[1] = io_srv ? st->wait_max_ms : 0;
-    out[2] = io_srv ? st->waits_100 : 0, out[3] = io_srv ? st->kb : 0;
 }
 
 static void io_land(int k, int res)

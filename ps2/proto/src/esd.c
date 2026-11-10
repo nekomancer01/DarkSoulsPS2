@@ -232,5 +232,3 @@ int esd_state(const EsdCtx *c, int group)
     const EsdProgram *g = c->prog;
     return g && group >= 0 && group < g->ngroups ? g->states[c->cur[group]].id : -1;
 }
-
-int esd_groups(const EsdCtx *c) { return c->prog ? c->prog->ngroups : 0; }

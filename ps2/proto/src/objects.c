@@ -19,6 +19,7 @@
 #include "combat.h"
 #include "collision.h"
 #include "vmath.h"
+#include "ticks.h"
 
 #define MAX_TYPES 16           /* the boot area's + every world block's (objects_block_types) */
 #define MAX_INST 128
@@ -731,16 +732,6 @@ int objects_push_capsule(float pos[3], float r, float h)
     return touched;
 }
 
-static unsigned ticks(void)
-{
-#ifdef _EE
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));  /* COP0 Count, 294.912 MHz */
-    return c;
-#else
-    return 0;
-#endif
-}
 
 void objects_update(Player *p, float dt)
 {
