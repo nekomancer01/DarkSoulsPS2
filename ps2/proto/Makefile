@@ -308,7 +308,7 @@ $(A)/area.sig: FORCE
 # + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
 # map leaves out of its static bake and the events out of their static colliders
 $(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
-		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
+		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(TS)/horizon.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
 # written by the objects.bin export, only when their content changes (map.bin depends on these, not objects.bin)

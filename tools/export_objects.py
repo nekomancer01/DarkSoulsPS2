@@ -237,7 +237,6 @@ def cap_tris(groups, cap):
     if cap <= 0 or total <= cap:
         return groups
     import numpy as np
-    mo = meshopt_mod()
     out = []
     for m, fs, fb, idx in groups:
         n = len(idx) // 3
@@ -247,25 +246,30 @@ def cap_tris(groups, cap):
             used = sorted(set(idx))
             loc = {v: k for k, v in enumerate(used)}
             pos = np.array([m["verts"]["pos"][v] for v in used], np.float32)
-            got, _ = mo.simplify(pos, np.array([loc[v] for v in idx], np.uint32), target, error=OBJ_TRI_ERR)
+            got = mo_simplify(pos, np.array([loc[v] for v in idx], np.uint32), target, OBJ_TRI_ERR)
             if len(got) >= 3:
                 idx = [used[int(v)] for v in got]
         out.append((m, fs, fb, idx))
     return out
 
 
-_MESHOPT = None
-
-
-def meshopt_mod():
-    global _MESHOPT
-    if _MESHOPT is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "meshopt", os.path.join(os.path.dirname(os.path.abspath(__file__)), "meshopt", "meshopt.py"))
-        _MESHOPT = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_MESHOPT)
-    return _MESHOPT
+def mo_simplify(pos, idx, target, error):
+    """meshoptimizer's edge collapse (relative error, no attributes / locks) -> simplified triangle list. The tracked
+    copy in tools/native/meshopt, built by horizon.py's _native (c++ on first use), as the far horizon uses it: the
+    tools/meshopt binding wants tools/ext/meshoptimizer, which only a local checkout has (a clean clone or the
+    container build failed the objects.bin export)."""
+    import ctypes
+    import numpy as np
+    import horizon
+    L = horizon._meshopt()
+    if L is None:
+        sys.exit("export_objects.py: meshoptimizer (tools/native/meshopt) unavailable: needs a C++ compiler (c++ / CXX)")
+    pos = np.ascontiguousarray(pos, np.float32)
+    idx = np.ascontiguousarray(idx, np.uint32)
+    out = np.empty_like(idx)
+    n = L.meshopt_simplifyWithAttributes(out.ctypes.data, idx.ctypes.data, len(idx), pos.ctypes.data, len(pos), 12,
+                                         None, 0, None, 0, None, 3 * int(target), ctypes.c_float(error), 0, None)
+    return out[:n].copy()
 
 
 def cluster_pieces(model, pieces, ref):
