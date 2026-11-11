@@ -14,6 +14,7 @@
 #include <gsKit.h>
 #include <dmaKit.h>
 #include "render.h"
+#define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #include "player.h"
 #include "model.h"
 #include "map.h"
@@ -551,13 +552,13 @@ int main(int argc, char **argv)
         float d = test_build_cam_dist(4.0f);
         V3 eye = v3add(target, v3(-sinf(cam_yaw) * cosf(cam_pitch) * d, sinf(cam_pitch) * d,
                                   -cosf(cam_yaw) * cosf(cam_pitch) * d));
-        /* camera collision: pull in at once in front of the first wall hit (0.3 m margin, near plane 0.25 m), ease
-         * back out at 4 m/s */
+        /* camera collision: pull in at once in front of the first wall hit (CAM_WALL margin: the near plane plus
+         * 0.05 m, 0.3 m with the old 0.25 m plane), ease back out at 4 m/s */
         float want = d;
         ColHit ch;
         float ray0[3] = {target.x, target.y, target.z}, ray1[3] = {eye.x, eye.y, eye.z};
         if (col_ok && col_ray(ray0, ray1, COL_CAMERA, &ch))
-            want = ch.t * d - 0.3f > 0.2f ? ch.t * d - 0.3f : 0.2f;
+            want = ch.t * d - CAM_WALL > 0.2f ? ch.t * d - CAM_WALL : 0.2f;
         cam_dist = want < cam_dist ? want : cam_dist + 4.0f * dt > want ? want : cam_dist + 4.0f * dt;
         eye = v3add(target, v3scale(v3sub(eye, target), cam_dist / d));
         test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
