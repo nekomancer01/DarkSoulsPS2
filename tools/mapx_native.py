@@ -35,7 +35,10 @@ def lib():
     if not _L:
         L = None
         if os.environ.get("MAPX", "1") != "0":
-            so = os.path.join(HERE, "libmapx.so")
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run as a script with -I: not on the path
+            import native_so
+            so = native_so.so(os.path.join(HERE, "libmapx"))
             try:
                 if not os.path.exists(so) or any(os.path.getmtime(so) < os.path.getmtime(s) for s in sources()):
                     _build(so)

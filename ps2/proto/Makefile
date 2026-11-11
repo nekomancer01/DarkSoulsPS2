@@ -499,7 +499,10 @@ $(A)/dg.bin: $(A)/map.bin
 # visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out. In world
 # builds every other block takes part (PVS_PEERS): cameras on its floors, its walls as occluders. Host C (OpenMP),
 # about 1-2 min per block.
-PVS_BAKE = $(BUILD)/host/pvs_bake
+# host executables are named per C library: the container build (tools/build-iso.sh, Alpine musl) and a host build
+# (glibc) may share one build dir, and the other one's binary does not run here but looks up to date (tools/native_so.py)
+HOST_TAG := $(shell ldd --version 2>&1 | grep -qi musl && echo -musl)
+PVS_BAKE = $(BUILD)/host/pvs_bake$(HOST_TAG)
 PVS_VALIDATE ?= 300
 PVS_ARGS ?=
 # -march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every

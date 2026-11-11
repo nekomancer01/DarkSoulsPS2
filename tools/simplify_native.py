@@ -16,7 +16,8 @@ sys.path.insert(0, HERE)
 import simplify as pysimplify
 
 SRC = os.path.join(HERE, "native", "simplify.c")
-SO = os.path.join(HERE, "native", "libsimplify.so")
+import native_so
+SO = native_so.so(os.path.join(HERE, "native", "libsimplify"))
 _L = None
 
 

@@ -17,7 +17,10 @@ def lib():
         L = None
         if os.environ.get("GEOM_NATIVE", "1") != "0":
             native = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
-            src, so = os.path.join(native, "geom.c"), os.path.join(native, "libgeom.so")
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run as a script with -I: not on the path
+            import native_so
+            src, so = os.path.join(native, "geom.c"), native_so.so(os.path.join(native, "libgeom"))
             try:
                 if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
                     import subprocess, tempfile
