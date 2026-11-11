@@ -6,7 +6,11 @@
 #include "vmath.h"
 
 #ifndef R_NEAR
-#define R_NEAR 0.25f    /* near plane, metres (16-bit depth: Z = 65535 * near / z) */
+/* near plane, metres (16-bit depth: Z = 65535 * near / z, so two surfaces z^2 / (65535 near) apart still separate).
+ * 0.5 (default, 2026-11-11; 0.25 = the old plane: make DEFS=-DR_NEAR=0.25f): distant Burg walls and roofs z-fought
+ * right of the Burg bonfire (Ame's play report), 0.25 m resolved only 40 cm at 80 m and 1.4 m at 150 m; 0.5 m halves
+ * that. The camera keeps R_NEAR + 0.05 m in front of walls (main.c) so the plane does not cut into them. */
+#define R_NEAR 0.5f
 #endif
 #define R_GUARD 1700.0f /* px from the screen centre that GS coordinates still hold safely */
 /* V1c: frame buffer width (DISPLAY MAGH stretches it to the full 4:3 picture). 2D code keeps 640-wide logical
