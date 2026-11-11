@@ -431,6 +431,11 @@ void vu1_init(GSGLOBAL *gs)
 /* the map chain's camera (vu1_begin), for vu1_add_idx's per-vertex clip test: view x / y scales of the guard band */
 static V3 idx_eye, idx_right, idx_up, idx_fwd;
 static float idx_kx, idx_ky;
+/* the map programs' near plane (vu1_map_near; R_NEAR again at every vu1_begin): Z = ZMAX near / z, the clip planes'
+ * near plane and the programs' CLIP term (2 near) follow it */
+static float map_near = R_NEAR;
+static int rows_fog;  /* constants 4-7 hold vu1_map_fog's terms (else vu1_begin's) */
+static float last_fog[4];
 
 void vu1_begin(int buffer)
 {
@@ -447,6 +452,7 @@ void vu1_begin(int buffer)
 #endif
     clut_sync = 0;
     clut_loads = 0;
+    map_near = R_NEAR, rows_fog = 0;
     V3 eye, right, up, fwd;
     float focal, focal_y, zscale;
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
@@ -532,6 +538,48 @@ void vu1_map_zbias(float k)
     map_zk = k;
 }
 
+void vu1_map_near(float n)
+{
+    map_near = n;
+    V3 eye, right, up, fwd;
+    float focal, focal_y, zscale;
+    r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
+    if (!room(10))
+        return;
+    /* after FLUSH (the running program read its constants): vu1clip's planes, then constants 4-7 */
+    tag(0, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_STCYCL, 0, 0x0101));
+    tag(5, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 5, MAP_PLANES));
+    {
+        float pl[20] = {0, 0, 1, -n, -1, 0, R_GUARD / focal, 0, 1, 0, R_GUARD / focal, 0,
+                        0, -1, R_GUARD / focal_y, 0, 0, 1, R_GUARD / focal_y, 0};
+        memcpy(cp, pl, sizeof pl);
+        cp += 10;
+    }
+    if (rows_fog) {  /* vu1_map_fog's rows with the last fog terms (it sends its own FLUSH) */
+        vu1_map_fog(last_fog[0], last_fog[1], last_fog[2], last_fog[3]);
+        return;
+    }
+    tag(4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 4, 4));
+    float m[16] = {focal, -focal_y, zscale * (n / R_NEAR) / 16.0f, 0,
+                   R_SCREEN_W / 2 + gsg->OffsetX / 16.0f, 224.0f + gsg->OffsetY / 16.0f, 0, 0,
+                   focal / R_GUARD, focal_y / R_GUARD, 1, 0,
+                   0, 0, -2 * n, 0};
+    memcpy(cp, m, sizeof m);
+    cp += 8;
+}
+
+float vu1_map_near_get(void)
+{
+    return map_near;
+}
+
+void *vu1_scratch(int *bytes)
+{
+    /* the character chain's buffer: free from the end of last frame's vu1_wait until this frame's vu1_begin(1) */
+    *bytes = cur == 0 ? (int)sizeof chain_chr : 0;
+    return cur == 0 ? (void *)chain_chr : NULL;
+}
+
 void vu1_map_fog(float a, float b, float fmin, float fmax)
 {
     skin_fog[0] = a, skin_fog[1] = b, skin_fog[2] = fmin, skin_fog[3] = fmax;
@@ -544,10 +592,11 @@ void vu1_map_fog(float a, float b, float fmin, float fmax)
     room(6);
     tag(0, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_STCYCL, 0, 0x0101));  /* batches leave STCYCL at 3,1 */
     tag(4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 4, 4));
-    float m[16] = {focal, -focal_y, zscale * map_zk, a,
+    float m[16] = {focal, -focal_y, zscale * (map_near / R_NEAR) * map_zk, a,
                    R_SCREEN_W / 2 + gsg->OffsetX / 16.0f, 224.0f + gsg->OffsetY / 16.0f, 0, b,
                    focal / R_GUARD, focal_y / R_GUARD, 1, fmin,
-                   0, 0, -2 * R_NEAR, fmax};
+                   0, 0, -2 * map_near, fmax};
+    rows_fog = 1, last_fog[0] = a, last_fog[1] = b, last_fog[2] = fmin, last_fog[3] = fmax;
     memcpy(cp, m, sizeof m);
     cp += 8;
 }
@@ -839,7 +888,7 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
                   z = oz + rz.x * p[0] + rz.y * p[1] + rz.z * p[2];
             float zm = z * 0.999f - 0.01f, zp = z * 1.001f + 0.01f, ax = fabsf(x) * idx_kx, ay = fabsf(y) * idx_ky;
             /* bit 0: VU1 may flag it (conservative); bits 1-5: surely past the near plane / that guard band side */
-            flag[i] = (z < R_NEAR * 1.01f + 0.01f || ax > zm || ay > zm) | (z < R_NEAR * 0.99f - 0.01f) << 1 |
+            flag[i] = (z < map_near * 1.01f + 0.01f || ax > zm || ay > zm) | (z < map_near * 0.99f - 0.01f) << 1 |
                       (ax > zp) << (x > 0 ? 2 : 3) | (ay > zp) << (y > 0 ? 4 : 5);
         }
         const u8 *ix = idx;
