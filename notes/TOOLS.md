@@ -95,6 +95,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
+| `ci/switches.py` | PR check: `ps2/proto/src/switches.h` lists every compile-time switch the sources test, and nothing else; `--list` prints the CI builds |
+| `ci/switches.sh` | PR check: one `-Werror` compile + link per fallback / debug build in `switches.h` (only the sources a switch reaches are rebuilt; ps2dev container, ~1.5 min) |
 
 ## Real hardware and profiling
 | Tool | What it does |

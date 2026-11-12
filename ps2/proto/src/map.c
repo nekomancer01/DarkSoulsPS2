@@ -970,7 +970,7 @@ static void zs_clear(void)
     u64 r[2 * 32];
     int n = 0;
     u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
-    u32 z = (u32)(65535.0f * R_NEAR / ZSPLIT);
+    u32 z = (u32)(65535.0f * R_NEAR / (ZSPLIT > 0 ? ZSPLIT : 1));  /* (ZSPLIT=0 builds never call it) */
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
     REG(frame | 0xFFFFFFFFull << 32, 0x4C);
     REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
@@ -2392,7 +2392,8 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             }
 #endif
 #else
-                unsigned n = c->flags & CHUNK_GRASS ? c->tris : c->tris;
+                unsigned n = c->tris;  /* MAP_DBG_ALL: every tuft */
+                (void)grass_tris;  /* (the per-chunk loop is its only user in MAP_DBG / MAP_PANO_R builds) */
 #endif
                 DBG(D_GRASS, c->tris - n);
                 if (!n) {
