@@ -1,282 +1,34 @@
-#include <kernel.h>
-#include <string.h>
-#include <stdlib.h>
-#include <math.h>
-#include <stdio.h>
-#include "map.h"
-#include "vu1.h"
-#include "collision.h"
-#include "texcache.h"
-#include "bump.h"
-#include "fx.h"
-#include "mapstream.h"
-#include "hitch.h"
-#include "drawgrp.h"
-#include "pvs.h"
-#include "pack.h"
-#include "ticks.h"
-
-typedef struct {
-    char magic[4];
-    unsigned chunks, textures, nav_verts, nav_tris;
-    float spawn[3], spawn_yaw;
-    unsigned chunk_off, tex_off, navv_off, navt_off;
-    float fog_begin, fog_end, fog_max;  /* FogBank row: view z metres, maximum density (may exceed 1) */
-    unsigned char fog_rgb[4], sky_fog[4]; /* sky_fog: r, g, b, constant density x 255 */
-    unsigned fog_off, cell_off;          /* fog section: area fog rows + row per collision triangle; DSM5: cell table */
-} Header;
-/* fog section: u32 rows, collision tris, sky rows, 0; FogRow rows[]; u8 row per collision.bin triangle; padding to 4;
- * SkyRow sky rows[]. One row per draw-param
- * set of the collision parts (export_map.fog_section): FogBank row (colour = DSR's constant), the character light of
- * that area (colour = amb + sun x max(n . L, 0), 0x80 = 1.0; dir = L x 127) and the player-attached point light
- * (PointLightBank[MSB lantern_id]: rgb added to a character's ambient x saturate((end - d) / (end - begin)), d = its
- * distance to the player; begin / end in 0.1 m) */
-typedef struct {
-    float begin, end, max;
-    unsigned char rgb[4], amb[4], sun[4];
-    signed char dir[3];
-    unsigned char pl_begin, pl_rgb[3], pl_end;
-    unsigned char env_up[3], env_down[3], spec_i[3];  /* specular (vu1skin): env reflection, specular light, 0x80 = 1.0 */
-    signed char spec_dir[3];                          /* specular light direction x 127 (world) */
-    unsigned char dof_begin, dof_end, dof_mul, pad;   /* far depth of field: DofBank row, metres / % (0: none) */
-} FogRow;
-_Static_assert(sizeof(FogRow) == 48, "FogRow");
-/* FogBank row of a sky / far background piece (a sky chunk's flags name it, CHUNK_SKY_ROW): DSR fogs every map piece by
- * the row of its own MSB FogID through the one curve (exe FUN_140565600 reads the row by id, no sky case; a RenderDoc
- * frame of Firelink holds three rows, TECH_DEBT map-15). rgb as the header's fog colour. */
-typedef struct { float begin, end, max; unsigned char rgb[4]; } SkyRow;
-#ifndef SKY_ROWS
-#define SKY_ROWS 1  /* make DEFS=-DSKY_ROWS=0: every sky chunk under the header's one sky row at full density, as before */
-#endif
-/* VU1 batch: unindexed quantised streams pos s16x3 (world = org + n x step), st u16x2 (normalized x 4096, or x 1024
- * with CHUNK_ST1K), colour u8x4 (light, 0x80 = 1.0) */
-/* tris | nv << 16 on disc: nv = 0: unindexed lists (pos / st / col: one entry per corner); nv > 0: an indexed chunk
- * (tools/export_map.py index_chunk): nv shared vertices, then a triangle stream after the colours (chunk_idx) */
-typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos, st, col; float mn[3], mx[3], org[3], step; } Chunk;
-/* offset of an indexed chunk's triangle stream (u8 x4 per triangle, after its own VIF code qword) */
-#define CHUNK_IDX(c) ((c)->col + (((c)->nv * 4u + 15) & ~15u) + 16)
-
-#define MAX_TEX 128
-#ifndef TEX_POOL_KB
-#define TEX_POOL_KB 896  /* VRAM texture pool (texcache.c); CLUTs come on top. Burg's map working set reaches ~950 KB
-                          * with relief: at 640 KB the bonfire-north spot skipped 84 chunks a frame and p00_082 165 (15 fps);
-                          * 896 KB: 0 at every burg_cov spot, p00_082 20 fps; 1024 KB adds nothing (TECH_DEBT area-9) */
-#endif
-#define CHUNK_CULL 1
-#define CHUNK_BLEND 2  /* alpha blended, no Z write */
-#define CHUNK_ADD 4    /* with CHUNK_BLEND: additive */
-#define CHUNK_SKY 8    /* sky / background: own fog, never distance-culled, drawn first */
-#define CHUNK_SKY_ROW(f) ((f) >> 12 & 15)  /* a sky chunk's SkyRow, counted from 1; 0: the header's constant sky fog */
-#define CHUNK_ST1K 32  /* texture coordinates in 1/1024 units, else 1/4096 */
-/* DSM5 (two-level map, tools/export_map.py STREAM): CHUNK_COARSE = the coarse level, drawn only while the cell's near
- * blob (mapstream.c) is not loaded; near chunks (in the blobs) carry their bump.bin number in flags bits 8-31 */
-#define CHUNK_COARSE 64
-#define CHUNK_BACKDROP 128  /* far background (exporter: far-only cells beyond STREAM_FAR of the navmesh): one resident
-                             * level, never distance / subpixel culled, so its silhouette has no holes and never pops */
-/* Horizon (resident far backdrop, tools/horizon.py appended to a world block's maptab.bin): per cell a very coarse
- * untextured level, loaded with the block. A cell beyond HZN_R (+- HZN_HYST) of the camera draws it in place of its
- * coarse level and kept opaque meshes (hz_covers), and so does a nearer cell whose coarse level is not in yet: a late
- * read shows a blurrier cell, not a hole. mapstream.c reads those chunks only within MS_R_HZN (64 m) of the player's
- * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 40 m (horizon.py judges its error from 38 m; 56 / 54 m before the Burg plan's B3).
- * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
-#ifndef HZN_R
-#define HZN_R 40.0f  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
-#endif
-#define HZN_HYST 2.0f
-/* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque
- * map), so the switch at HZN_R swaps two pictures that already look alike instead of popping (ASSUMED 8 m: about a
- * second at walking speed). make DEFS=-DHZN_FADE=0: the hard switch */
-#ifndef HZN_FADE
-#define HZN_FADE 8.0f
-#endif
-#define MAX_HZ_FADE 64  /* cells fading in per frame */
-/* the fading horizon is depth tested as if HZN_ZBIAS of its distance nearer: it is the coarse surface simplified
- * (horizon.py measures it within HZN_PX 8 px of 568: 1.4 % of the distance), so where it lies just behind the coarse
- * level it still blends instead of leaving the coarse level unfaded. ASSUMED 3 % (about twice that error, deviations
- * seen up to ~60 degrees off the view ray). 0: the plain depth test */
-#ifndef HZN_ZBIAS
-#define HZN_ZBIAS 0.03f
-#endif
-/* make DEFS=-DHZN_FADE_DEBUG=1: the fade pass draws the horizon solid magenta (full fog in that colour, alpha 1), so a
- * shot shows which pixels of the fading cells it reaches (coarse level left showing = unfaded) */
-#ifndef HZN_FADE_DEBUG
-#define HZN_FADE_DEBUG 0
-#endif
-/* the near / coarse swap fades (Burg plan B9, TECH_DEBT world-12): for NEAR_FADE map draws after a cell in view goes
- * from its coarse level to its near level, its resident coarse chunks are drawn again over the near level at alpha
- * falling from 1 to 0 (GS alpha FIX after the opaque map, Z tested HZN_ZBIAS nearer and not written, as the horizon
- * fade), so the detail dissolves in instead of popping. ASSUMED 10 draws (~0.33 s at 30 fps). The way back (near ->
- * coarse) is at the radius, behind the hysteresis, and stays a hard switch. make DEFS=-DNEAR_FADE=0: the hard swap */
-#ifndef NEAR_FADE
-#define NEAR_FADE 10
-#endif
-#define MAX_NEAR_FADE 32  /* cells fading per frame */
-#define CHUNK_HZN 256
-#define CHUNK_HZN_TRIS 54  /* triangles per horizon chunk at most (horizon.py CHUNK_TRIS) */
-#define hz_covers(fl) (!((fl) & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS)))
-/* horizon.py, 32 B; flags bit 0: the cell has chunks it stands for (its horizon may have simplified to nothing),
- * bit 1: some of its chunks come from the backdrop (CHUNK_BACKDROP: never distance culled) */
-typedef struct { float mn[3], mx[3]; unsigned short first, count; unsigned flags; } HzCell;
-#define NEAR_HYST 2.0f  /* m: a cell switches to its near level inside NEAR_DRAW_R - NEAR_HYST, back beyond + NEAR_HYST
-                         * (no flipping near <-> coarse while the camera hovers at the radius) */
-#ifndef NEAR_DRAW_R
-#define NEAR_DRAW_R 18.0f  /* (Burg plan B3: + NEAR_HYST = mapstream.c MS_R0_DRAW 20 m; 24 m before) m: a loaded near blob is drawn only for cells whose box is this close to the camera (the
-                            * blobs load out to 40 m ahead of time); farther cells keep the coarse level (ASSUMED, map-36:
-                            * Burg p00_082: 85k tris / map 15.3 ms at 24 m, 67k / 13.8 ms at 16 m; 16 m made the near <->
-                            * coarse swap visible: Firelink's coarse level is judged from STREAM_D 24 m) */
-#endif
-#define CHUNK_GRASS 16 /* foliage: bits 8-15 triangles per tuft, 16-23 / 24-31 lowest / highest tuft rank x 255 */
-#define GRASS_D0 10.0f  /* metres: foliage at its exported density up to here, then (GRASS_D0 / d)^2 (export_map.py) */
-#define FOG_RATE 0.06f  /* per frame: fog parameters move this part of the way to the area's row (~0.3 s at 60 fps) */
-#define MAX_FX 256     /* blended chunks sorted per frame */
-#define STEP_UP 0.6f    /* highest step the player walks up in one move */
-#define STEP_DOWN 1.2f  /* lowest drop that still counts as the same floor */
-/* Draw distance (render-distance): the edge fog (fog_terms) reaches the fog colour at FAR metres of view depth; opaque
- * boxes are drawn out to CULL_FAR (the far background stays a silhouette), blended ones to FAR. ASSUMED: DSR draws
- * the whole loaded map (plus neighbouring maps and far _L pieces) (TECH_DEBT map-7). Boxes beyond SMALL_Z whose radius
- * is under SMALL_PX pixels are skipped too. */
-#ifndef FAR
-#define FAR 250.0f      /* view depth where the edge fog reaches the fog colour */
-#endif
-#ifndef CULL_FAR
-#define CULL_FAR FAR  /* view depth beyond which opaque boxes are not drawn. A/B (far-background variants): 1000 m keeps
-                       * the background (Firelink's m8000 backdrop at 250-450 m) as a fog-coloured silhouette; the cut at
-                       * FAR leaves sky-coloured holes and steps in it (user report 2026-10-31) */
-#endif
-#define EDGE0 0.6f      /* rows without DSR fog: the edge fog starts at EDGE0 x FAR */
-#ifndef SMALL_Z
-#define SMALL_Z 40.0f
-#endif
-#ifndef SMALL_PX
-#define SMALL_PX 3.0f   /* box radius in px (A/B 1: 3 px drops whole far slabs, holes in the background silhouette) */
-#endif
-
-/* a near chunk's number in bump.bin / dg.bin: flags bits 8-31; foliage keeps its tuft bits there, so its number is
- * the cell's first near number (MapCell.pad, near_gid, set per cell in map_draw) + its index in the blob
- * (export_map.py) */
-#define NEAR_NO(c, blob) ((c)->flags & CHUNK_GRASS ? near_gid + (unsigned)((c) - (const Chunk *)(blob)) : (c)->flags >> 8)
-
-/* Culling index, built on the first draw of a map (build_index): non-sky chunks grouped by CELL-metre cells of their
- * centres (a cell is tested once, its chunks only if it is visible: ~5700 sphere tests a frame cost ~4 ms), the sky
- * chunks in a list of their own */
-#define CELL 32.0f
-typedef struct {
-    float mn[3], mx[3];
-    unsigned short first, count, flags;  /* flags: CHUNK_BLEND / CHUNK_BACKDROP if any */
-    unsigned char near_on;               /* DSM5: drawing the near level (NEAR_DRAW_R with NEAR_HYST hysteresis) */
-    unsigned char waiting;               /* pop-in metric: in view inside the near radius, drawn coarse (not in yet) */
-    unsigned char hz_on;                 /* beyond HZN_R (with HZN_HYST hysteresis): its horizon stands for it */
-    unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
-    unsigned char lv, lv_prev;           /* hitch.c: level drawn (1 hole, 2 horizon, 3 coarse, 4 near), the one before */
-    unsigned char nfade;                 /* NEAR_FADE: map draws left of its coarse level fading out over the near one */
-    unsigned short lv_seen, lv_fr;       /* the draw it was last in view, the draw its level last changed */
-    /* MAP_TWO_PASS: the cell's draw list (chunks that pass the level / stream / draw-group / visibility-row filters)
-     * kept from the draw that built it: valid while lgen is the list pool's generation and lkey the cell's key */
-    unsigned lkey[2], lgen, lcut;        /* key, pool generation, triangles the visibility rows left out */
-    unsigned short loff, ln;             /* its entries in the pool */
-} Cell;
-/* MAP_TILES (budget doc proposal 6, default on; make DEFS=-DMAP_TILES=0 = every cell tested): the cells grouped by
- * MAP_TILE_M x MAP_TILE_M metre squares of their box centres (x, z), each group's box (cells and horizons) tested
- * first. The Burg's 5 blocks have ~1230 cells and ~200-550 of them in view: the cells of a tile out of view are no
- * longer tested one by one (~1 us each, with the box set-up) */
-#ifndef MAP_TILES
-#define MAP_TILES 1
-#endif
-#define MAP_TILE_M 128.0f
-typedef struct {
-    float mn[3], mx[3];
-    unsigned short first, count;  /* into MapInst.tcell */
-    unsigned flags;               /* CHUNK_BACKDROP if a cell's test has it (no distance cut) */
-} MapTile;
-/* Pop-in (streaming A/B, 2026-11-06): a cell in view whose near level is due (near_on) but not in draws its coarse
- * level; once the near level arrives while the cell is still in view, the swap is seen: a pop. map_draw counts them
- * (waits of 2 draws or more) and prints "map: near pop-in" lines (tools/test-run.py --popin-max fails a run on them). */
+#include "map_i.h"
 static unsigned short pop_fr;
 static unsigned pop_total;
-
-/* One map instance: instance 0 is the single-area map (map_init) or the boot world block, 1.. the other loaded world
- * blocks (src/world.c, map_block_init). Every function that works on one takes it explicitly. streams = the base of
- * the resident chunks' vertex streams (the whole map.bin of a single-area build), NULL for a world block: res_cells,
- * its resident level streams per cell (mapstream_res: cell i's streams, the sky's at nctab) and its textures' mip 0
- * per texture (TECH_DEBT world-2 / world-5: no full swap). tex_base = its first texcache index. mapstream.c still
- * answers mapstream_get / mapstream_res for its selected instance, so the code that asks selects it first. */
-typedef struct {
-    const unsigned char *map_bin, *streams;  /* map.bin (main.c, from the area pack: 128-byte aligned, kept loaded) */
-    /* map.bin bases for the textures / navmesh / fog rows and the cell table / horizon: map_bin, or those of the
-     * pieces a world block's maptab.bin was read in (map_block_split, world.c WORLD_TAB_SPLIT) */
-    const unsigned char *tex_bin, *cel_bin;
-    const Header *hdr;
-    const MapCell *ctab;  /* DSM5 cell table (resident range + streamed near blob per cell), else NULL */
-    const short *ckeys;   /* its cell keys (mapstream.h cell_keys: MS_NEAR_CUBE), else NULL */
-    unsigned nctab;
-    const Chunk *chunks;
-    const FogRow *fog_row;
-    const unsigned char *fog_tri;
-    unsigned fog_rows, fog_ntris;
-    const SkyRow *sky_row;  /* fog rows of the sky chunks (CHUNK_SKY_ROW) */
-    unsigned sky_rows;      /* 0: a map.bin from before them */
-    const float *navv;
-    const unsigned short *navt;
-    int ntex, tex_base;
-    const unsigned char *indexed;  /* the map.bin the index below was built for */
-    unsigned short *order, *sky;
-    Cell *cells;
-    int ncells, nsky;
-    MapTile *tiles;          /* MAP_TILES: groups of cells, their cells (lead cells only: no CELL_PART) */
-    unsigned short *tcell;
-    int ntiles;
-    int res_cells;
-    unsigned short *citem;  /* res_cells: per resident chunk its mapstream item (res_open) */
-    unsigned char *rflag;   /* res_cells: per mapstream item RI_COV (every chunk hz_covers) / RI_GRASS (foliage) */
-    unsigned (*rrange)[3];  /* res_cells: per mapstream item its chunks [first, first + n) and cell (n 0: texture / sky) */
-    unsigned nritem;
-    int on, col_block;
-    int pkt;  /* VU1_PKT: the chunk streams are VIF packets (DSM5 cell table flags bit 0, export_map.py CELLS_VIFPKT) */
-    /* horizon (HZN_R): per cell table entry its box and chunks, the chunk records, the base their offsets add to */
-    const HzCell *hz_cell;
-    const Chunk *hz_chunk;
-    const unsigned char *hz_base;
-    int hz_only;  /* world.c WORLD_KEPT_HZN: a kept-only block, its horizon drawn alone (map_block_lean) */
-} MapInst;
-static MapInst inst[MAP_INST] = {{.on = 0}};
-
+MapInst mp_inst[MAP_INST] = {{.on = 0}};
 static V3 player_feet;
-/* the fog drawn now (begin, end, max, r, g, b) and the character light (ambient rgb, sun rgb, sun direction xyz),
- * moving towards fog_row[fog_area] */
-#define FOG_NOW 27
-static float fog_now[FOG_NOW] = {0, 0, 0, 0, 0, 0, 64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
-/* + specular: env up rgb [15], env down rgb [18], specular light rgb [21], its direction x 127 [24] (0: none) */
-static int fog_area;
+float mp_fog_now[FOG_NOW] = {0, 0, 0, 0, 0, 0, 64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
+int mp_fog_area;
 static GSGLOBAL *gsg;
-int map_vu1_batches, map_ee_tris;
-/* The fog / light rows follow the instance the player stands in (pfog_*) */
-static const FogRow *pfog_row;
-static unsigned pfog_rows;
-static int map_inst_of(int col_block);
-static int inst_col_block(int k);
+const FogRow *mp_pfog_row;
+unsigned mp_pfog_rows;
 static int pinst;  /* the instance the player stands in (sky, fog rows) */
-
-/* instance m's streams for resident chunk j, or NULL while its item is not in (mapstream.c: m selected) */
-static const unsigned char *res_base(const MapInst *m, unsigned j)
+const unsigned char *mp_res_base(const MapInst *m, unsigned j)
 {
     return m->res_cells ? mapstream_res(m->citem[j]) : m->streams;
 }
 
 
-static void fog_ease(float rate)
+void mp_fog_ease(float rate)
 {
-    const FogRow *r = &pfog_row[fog_area];
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
     const float t[FOG_NOW] = {r->begin, r->end, r->max, r->rgb[0], r->rgb[1], r->rgb[2], r->amb[0], r->amb[1],
                               r->amb[2], r->sun[0], r->sun[1], r->sun[2], r->dir[0], r->dir[1], r->dir[2],
                               r->env_up[0], r->env_up[1], r->env_up[2], r->env_down[0], r->env_down[1],
                               r->env_down[2], r->spec_i[0], r->spec_i[1], r->spec_i[2], r->spec_dir[0],
                               r->spec_dir[1], r->spec_dir[2]};
     for (int i = 0; i < FOG_NOW; i++)
-        fog_now[i] += (t[i] - fog_now[i]) * rate;
+        mp_fog_now[i] += (t[i] - mp_fog_now[i]) * rate;
 }
 
 /* the horizon section the DSM5 cell table header points at (words 2 / 3: offset, bytes; tools/mapsplit.py), if any */
-static void hz_parse(MapInst *m)
+void mp_hz_parse(MapInst *m)
 {
     m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
 #ifndef HZN_OFF
@@ -302,7 +54,7 @@ int map_init(const void *blob)
 {
     if (!blob)
         return 0;
-    MapInst *m = &inst[0];
+    MapInst *m = &mp_inst[0];
     const unsigned char *map_bin = m->map_bin = m->tex_bin = m->cel_bin = blob;
     const Header *hdr = m->hdr = (const Header *)map_bin;
     if (memcmp(hdr->magic, "DSM4", 4) && memcmp(hdr->magic, "DSM5", 4))
@@ -321,33 +73,33 @@ int map_init(const void *blob)
     /* no rows: the header's fog and the old fixed character light (0.5 + 0.75 n . L) */
     float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1], hdr->fog_rgb[2],
                           64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
-    memcpy(fog_now, f0, sizeof fog_now);
-    fog_area = 0;
-    pfog_row = m->fog_row, pfog_rows = m->fog_rows;
+    memcpy(mp_fog_now, f0, sizeof mp_fog_now);
+    mp_fog_area = 0;
+    mp_pfog_row = m->fog_row, mp_pfog_rows = m->fog_rows;
     if (m->fog_rows)
-        fog_ease(1);
+        mp_fog_ease(1);
     m->navv = (const float *)(map_bin + hdr->navv_off);
     m->navt = (const unsigned short *)(map_bin + hdr->navt_off);
     m->streams = map_bin, m->tex_base = 0;
-    hz_parse(m);
+    mp_hz_parse(m);
     return 1;
 }
 
 /* world blocks: the selected instance's split textures have no mip 0 until mapstream.c reads it (tex_hook_set) */
-static void tex_res(int k)
+void mp_tex_res(int k)
 {
-    tc_res(k ? map_tex_slot(k) : -1, inst[k].streams);
+    tc_res(k ? map_tex_slot(k) : -1, mp_inst[k].streams);
 }
 
 /* mapstream.c's mip 0 / 1 hooks (mapstream_tex_hooks): tag = the texture's index in instance k's table, | MS_RES_MIP1
  * for its mip 1 (tools/mapsplit.py MIP1_OUT) */
-static unsigned tex_hook_age(int k, unsigned tag)
+unsigned mp_tex_hook_age(int k, unsigned tag)
 {
     int slot = k ? map_tex_slot(k) : -1;
     return k && slot < 0 ? ~0u : tc_res_age(slot, (int)(tag & ~MS_RES_MIP1), !!(tag & MS_RES_MIP1));
 }
 
-static void tex_hook_set(int k, unsigned tag, const void *p)
+void mp_tex_hook_set(int k, unsigned tag, const void *p)
 {
     int slot = k ? map_tex_slot(k) : -1;
     if (!k || slot >= 0)
@@ -357,23 +109,23 @@ static void tex_hook_set(int k, unsigned tag, const void *p)
 int map_upload(GSGLOBAL *gs)
 {
     gsg = gs;
-    MapInst *m = &inst[0];
+    MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
     int r = tc_init(gs, m->map_bin, m->map_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
     if (!r)
-        tex_res(0);
+        mp_tex_res(0);
     return r;
 }
 
 unsigned map_chunk_count(void)
 {
-    return inst[0].hdr ? inst[0].hdr->chunks : 0;
+    return mp_inst[0].hdr ? mp_inst[0].hdr->chunks : 0;
 }
 
 void map_spawn(V3 *pos, float *yaw)
 {
-    const Header *hdr = inst[0].hdr;
+    const Header *hdr = mp_inst[0].hdr;
     *pos = v3(hdr->spawn[0], hdr->spawn[1], hdr->spawn[2]);
     *yaw = hdr->spawn_yaw;
 }
@@ -544,9 +296,9 @@ static void pano_open(const char *pak_path)
  * some camera cell within PVS_STREAM_R sees; textures, the sky and maps without pvs.bin count as seen */
 static int ms_pvs_vis(int k, unsigned id)
 {
-    if (k < 0 || k >= MAP_INST || !inst[k].ctab)
+    if (k < 0 || k >= MAP_INST || !mp_inst[k].ctab)
         return 1;
-    const MapInst *m = &inst[k];
+    const MapInst *m = &mp_inst[k];
     if (id < m->nctab) {
         unsigned n = m->ctab[id].near & ~CELL_PART;
         return !n || pvs_range(k, id, m->ctab[id].pad, n, 0);
@@ -565,7 +317,7 @@ static int ms_pvs_vis(int k, unsigned id)
 #endif
 static int ms_dg_vis(int k, unsigned id)
 {
-    const MapInst *m = &inst[k];
+    const MapInst *m = &mp_inst[k];
     if (!dg_area(k) || !m->order)
         return 1;
     unsigned a, n;
@@ -590,19 +342,19 @@ static int ms_dg_vis(int k, unsigned id)
             return 1;
     return 0;
 }
-static int ms_vis(int k, unsigned id)
+int mp_vis(int k, unsigned id)
 {
     if (!ms_pvs_vis(k, id))
         return 0;
-    return !MS_DG || k < 0 || k >= MAP_INST || !inst[k].ctab || ms_dg_vis(k, id);
+    return !MS_DG || k < 0 || k >= MAP_INST || !mp_inst[k].ctab || ms_dg_vis(k, id);
 }
-static unsigned ms_vis_gen(int k) { return pvs_gen(k) + (MS_DG ? dg_stream_gen() << 16 : 0); }
+unsigned mp_vis_gen(int k) { return pvs_gen(k) + (MS_DG ? dg_stream_gen() << 16 : 0); }
 
 int map_stream_open(const char *pak_path)
 {
     pano_open(pak_path);
-    mapstream_vis_hooks(ms_vis, ms_vis_gen);
-    return inst[0].ctab ? mapstream_init(pak_path, inst[0].ctab, inst[0].nctab) : 0;
+    mapstream_vis_hooks(mp_vis, mp_vis_gen);
+    return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
 
 void map_set_player(V3 feet)
@@ -624,29 +376,29 @@ void map_set_player(V3 feet)
      * world-4). The blocks of the floor's group all follow the floor's part (one mask, as DSR) */
     for (int j = 0; j < MAP_INST; j++) {
         ColHit hj;
-        if (j != k && inst_col_block(j) >= 0 && (k < 0 || !dg_area(k) || dg_area(j) != dg_area(k)) &&
-            col_floor_block(inst_col_block(j), feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &hj))
+        if (j != k && mp_inst_col_block(j) >= 0 && (k < 0 || !dg_area(k) || dg_area(j) != dg_area(k)) &&
+            col_floor_block(mp_inst_col_block(j), feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &hj))
             dg_floor(j, hj.tri);
     }
     if (k >= 0) {
-        const MapInst *m = &inst[k];
+        const MapInst *m = &mp_inst[k];
         pinst = k;
         if (m->fog_rows && m->fog_ntris == (unsigned)col_block_tris(h.block) && (unsigned)h.tri < m->fog_ntris &&
             m->fog_tri[h.tri] < m->fog_rows) {
-            pfog_row = m->fog_row, pfog_rows = m->fog_rows;
-            fog_area = m->fog_tri[h.tri];
+            mp_pfog_row = m->fog_row, mp_pfog_rows = m->fog_rows;
+            mp_fog_area = m->fog_tri[h.tri];
         }
     }
 }
 
 void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
 {
-    float l = sqrtf(fog_now[12] * fog_now[12] + fog_now[13] * fog_now[13] + fog_now[14] * fog_now[14]);
+    float l = sqrtf(mp_fog_now[12] * mp_fog_now[12] + mp_fog_now[13] * mp_fog_now[13] + mp_fog_now[14] * mp_fog_now[14]);
     for (int c = 0; c < 3; c++)
-        amb[c] = fog_now[6 + c], sun[c] = fog_now[9 + c], dir[c] = l > 0 ? fog_now[12 + c] / l : c == 1;
+        amb[c] = mp_fog_now[6 + c], sun[c] = mp_fog_now[9 + c], dir[c] = l > 0 ? mp_fog_now[12 + c] / l : c == 1;
     /* the player's own light (DSR attaches the area's PointLightBank row to the player) */
-    if (pfog_rows) {
-        const FogRow *r = &pfog_row[fog_area];
+    if (mp_pfog_rows) {
+        const FogRow *r = &mp_pfog_row[mp_fog_area];
         float dx = player_feet.x - pos.x, dy = player_feet.y - pos.y, dz = player_feet.z - pos.z;
         float d = sqrtf(dx * dx + dy * dy + dz * dz), b = r->pl_begin * 0.1f, e = r->pl_end * 0.1f;
         float att = e > b ? (e - d) / (e - b) : 0;
@@ -659,18 +411,18 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
 
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
 {
-    float l = sqrtf(fog_now[24] * fog_now[24] + fog_now[25] * fog_now[25] + fog_now[26] * fog_now[26]);
+    float l = sqrtf(mp_fog_now[24] * mp_fog_now[24] + mp_fog_now[25] * mp_fog_now[25] + mp_fog_now[26] * mp_fog_now[26]);
     for (int c = 0; c < 3; c++) {
-        env_up[c] = fog_now[15 + c], env_down[c] = fog_now[18 + c], spec_i[c] = fog_now[21 + c];
-        spec_dir[c] = l > 0 ? fog_now[24 + c] / l : c == 1;
+        env_up[c] = mp_fog_now[15 + c], env_down[c] = mp_fog_now[18 + c], spec_i[c] = mp_fog_now[21 + c];
+        spec_dir[c] = l > 0 ? mp_fog_now[24 + c] / l : c == 1;
     }
 }
 
 int map_far_dof(float *begin, float *end, float *mul)
 {
-    if (!pfog_rows)
+    if (!mp_pfog_rows)
         return 0;
-    const FogRow *r = &pfog_row[fog_area];
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
     *begin = r->dof_begin, *end = r->dof_end, *mul = r->dof_mul * 0.01f;
     return r->dof_mul > 0 && r->dof_end > r->dof_begin;
 }
@@ -679,14 +431,14 @@ int map_far_dof(float *begin, float *end, float *mul)
  * (end - begin))) on view z, mixed towards the fog colour; GS: F = 255 * (1 - density), clamped at 0 when max > 1 */
 static void fog_terms(float *a, float *b, float *fmin)
 {
-    if (pfog_rows)  /* ease into the area's row */
-        fog_ease(FOG_RATE);
-    float span = fog_now[1] - fog_now[0], mx = fog_now[2];
+    if (mp_pfog_rows)  /* ease into the area's row */
+        mp_fog_ease(FOG_RATE);
+    float span = mp_fog_now[1] - mp_fog_now[0], mx = mp_fog_now[2];
     if (mx <= 0 || span <= 0) {  /* no DSR fog: fmin = 255 clamps it away, b only sets the edge fog's start */
         *a = 0, *b = 255 / (1 - EDGE0), *fmin = 255;
     } else {
         *a = -255 * mx / span;
-        *b = 255 + 255 * mx * fog_now[0] / span;
+        *b = 255 + 255 * mx * mp_fog_now[0] / span;
         *fmin = mx < 1 ? 255 * (1 - mx) : 0;
     }
     /* Edge fog (vu1map2 edge loop): F = min(F, b + a2 z), 0 at FAR. It starts where it drops below the DSR curve:
@@ -741,7 +493,7 @@ static int dbg_cur;
 #define DBG(r, n) ((void)0)
 #define DBGW(r, n, id) ((void)0)
 #endif
-static int visible(const Chunk *c, const float *e, int sky)
+int mp_visible(const Chunk *c, const float *e, int sky)
 {
     PROF_BEGIN
     MP_BEGIN
@@ -879,7 +631,7 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         MP_SPLIT(MP_CHAIN);
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
-            bump_add((int)(m - inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
+            bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
         MP_END(MP_BUMP)
     }
@@ -935,7 +687,7 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
     int fc, r = zs_route(c, &fc, cls), dn = 0;
     if ((r & 2) && zs_room(8)) {
         u32 *w = zs_buf + zs_n;
-        w[0] = ZS_CHUNK, w[1] = (u32)(m - inst), w[2] = (u32)c, w[3] = (u32)base, w[4] = n, w[5] = (u32)cls;
+        w[0] = ZS_CHUNK, w[1] = (u32)(m - mp_inst), w[2] = (u32)c, w[3] = (u32)base, w[4] = n, w[5] = (u32)cls;
         w[6] = (u32)mode, w[7] = no;
         zs_n += 8, dn = (int)n;
     }
@@ -947,14 +699,14 @@ static int draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *
     return dn;
 }
 
-static int draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
+int mp_draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
 {
     if (zs_pass != 1)
         return draw_hz_(m, c, cls, mode, cull);
     int fc, r = zs_route(c, &fc, cls), dn = 0;
     if ((r & 2) && zs_room(6)) {
         u32 *w = zs_buf + zs_n;
-        w[0] = ZS_HZ, w[1] = (u32)(m - inst), w[2] = (u32)c, w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
+        w[0] = ZS_HZ, w[1] = (u32)(m - mp_inst), w[2] = (u32)c, w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
         zs_n += 6, dn = (int)c->tris;
     }
     if (r & 1)
@@ -1012,11 +764,11 @@ static void zs_end(void)
         float f[4];
         switch (w[0]) {
         case ZS_CHUNK:
-            draw_chunk_(&inst[w[1]], (const unsigned char *)w[3], (const Chunk *)w[2], w[4], (int)w[5], (int)w[6], w[7]);
+            draw_chunk_(&mp_inst[w[1]], (const unsigned char *)w[3], (const Chunk *)w[2], w[4], (int)w[5], (int)w[6], w[7]);
             i += 8;
             break;
         case ZS_HZ:
-            draw_hz_(&inst[w[1]], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
+            draw_hz_(&mp_inst[w[1]], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
             i += 6;
             break;
         case ZS_REGS: {
@@ -1061,593 +813,15 @@ static void zs_end(void)
     zs_pass = 0;
 }
 
-/* index sort key: cell, then texture inside a cell (so neighbours share TEX0 / CLUT), then chunk number */
-static int cell_key_cmp(const void *a, const void *b)
-{
-    const unsigned *x = a, *y = b;
-    if (x[0] != y[0])
-        return x[0] < y[0] ? -1 : 1;
-    int tx = (int)x[1], ty = (int)y[1];
-    return tx != ty ? (tx < ty ? -1 : 1) : (x[2] < y[2] ? -1 : x[2] > y[2]);
-}
-
-/* the box map_draw tests cell ci with: the cell's, grown by its horizon's (flags CHUNK_BACKDROP when either has it) */
-static void cell_cull_box(const MapInst *m, int ci, Chunk *cb)
-{
-    const Cell *ce = &m->cells[ci];
-    const MapCell *ctab = m->ctab;
-    memset(cb, 0, sizeof *cb);
-    cb->flags = ce->flags & CHUNK_BACKDROP;
-    memcpy(cb->mn, ce->mn, sizeof cb->mn), memcpy(cb->mx, ce->mx, sizeof cb->mx);
-    const HzCell *hc = m->hz_cell && ctab && !(ctab[ci].near & CELL_PART) && (m->hz_cell[ci].flags & 1)
-                           ? &m->hz_cell[ci] : NULL;
-    if (hc && hc->count) {
-        cb->flags |= hc->flags & 2 ? CHUNK_BACKDROP : 0;
-        for (int a = 0; a < 3; a++)
-            cb->mn[a] = hc->mn[a] < cb->mn[a] ? hc->mn[a] : cb->mn[a],
-            cb->mx[a] = hc->mx[a] > cb->mx[a] ? hc->mx[a] : cb->mx[a];
-    }
-}
-
-static int tile_key_cmp(const void *a, const void *b)
-{
-    const unsigned *x = a, *y = b;
-    return x[0] != y[0] ? (x[0] < y[0] ? -1 : 1) : (x[1] < y[1] ? -1 : x[1] > y[1]);
-}
-
-/* MAP_TILES: the lead cells grouped by tile, in cell order inside a tile */
-static void tile_index(MapInst *mi)
-{
-    free(mi->tiles), free(mi->tcell);
-    mi->tiles = NULL, mi->tcell = NULL, mi->ntiles = 0;
-    if (!MAP_TILES || mi->ncells <= 0)
-        return;
-    unsigned (*key)[2] = malloc(mi->ncells * sizeof *key);
-    mi->tcell = malloc(mi->ncells * sizeof *mi->tcell);
-    mi->tiles = malloc(mi->ncells * sizeof *mi->tiles);
-    if (!key || !mi->tcell || !mi->tiles) {
-        free(key), free(mi->tiles), free(mi->tcell);
-        mi->tiles = NULL, mi->tcell = NULL;
-        return;
-    }
-    int n = 0;
-    for (int ci = 0; ci < mi->ncells; ci++) {
-        if (mi->ctab && (mi->ctab[ci].near & CELL_PART))
-            continue;  /* drawn with the cell before it */
-        const Cell *ce = &mi->cells[ci];
-        int tx = (int)floorf((ce->mn[0] + ce->mx[0]) * 0.5f / MAP_TILE_M) + 2048;
-        int tz = (int)floorf((ce->mn[2] + ce->mx[2]) * 0.5f / MAP_TILE_M) + 2048;
-        key[n][0] = (unsigned)(tx & 4095) << 12 | (unsigned)(tz & 4095), key[n++][1] = (unsigned)ci;
-    }
-    qsort(key, n, sizeof *key, tile_key_cmp);
-    int nt = 0;
-    for (int j = 0; j < n; j++) {
-        Chunk cb;
-        cell_cull_box(mi, (int)key[j][1], &cb);
-        if (!j || key[j][0] != key[j - 1][0]) {
-            MapTile *t = &mi->tiles[nt++];
-            memcpy(t->mn, cb.mn, sizeof t->mn), memcpy(t->mx, cb.mx, sizeof t->mx);
-            t->first = (unsigned short)j, t->count = 0, t->flags = 0;
-        }
-        MapTile *t = &mi->tiles[nt - 1];
-        t->count++;
-        t->flags |= cb.flags & CHUNK_BACKDROP;
-        for (int a = 0; a < 3; a++)
-            t->mn[a] = cb.mn[a] < t->mn[a] ? cb.mn[a] : t->mn[a], t->mx[a] = cb.mx[a] > t->mx[a] ? cb.mx[a] : t->mx[a];
-        mi->tcell[j] = (unsigned short)key[j][1];
-    }
-    free(key);
-    mi->ntiles = nt;
-}
-
-/* MAP_NEAR_SKIP (budget doc proposal 6, default on; make DEFS=-DMAP_NEAR_SKIP=0 = scan every visible cell) */
-#ifndef MAP_NEAR_SKIP
-#define MAP_NEAR_SKIP 1
-#endif
-/* a visible cell's resident chunks not in yet (*miss 1; 2: one the horizon does not stand for, with a horizon; *mcov:
- * one it does), skipping those the horizon stands for beyond HZN_R (hzf) */
-static void miss_scan(const MapInst *m, int k, int ci, int hzf, int has_hz, int *miss, int *mcov)
-{
-    const Cell *ce = &m->cells[ci];
-    const Chunk *chunks = m->chunks;
-    const unsigned short *order = m->order;
-    for (unsigned j = ce->first; m->res_cells && j < (unsigned)ce->first + ce->count; j++) {
-        unsigned fl = chunks[order[j]].flags;
-        if (hzf && hz_covers(fl))
-            continue;
-        /* (mapstream_res also ranks it up: the cell is in view); foliage is resident only near the player
-         * (mapstream.c MS_GRASS_WANT) and thinned to nothing farther: its absence is no hole */
-        /* a chunk the camera cannot see is not read (pvs.c), nor one the draw groups hide (drawgrp.c, mapstream.c
-         * MS_DG): neither is a hole. Counted as missing, a cell whose coarse chunks are hidden stand-ins drew its
-         * horizon inside HZN_R for good (Firelink's cell 47 seen from the Burg: report3's 99.5 %, 2026-11-08) */
-        if (!res_base(m, order[j]) && !(fl & CHUNK_GRASS) &&
-            pvs_chunk(k, (unsigned)ci, order[j]) && dg_shown(k, order[j])) {
-            *miss = 1;
-            if (hz_covers(fl))
-                *mcov = 1;
-            else if (has_hz)
-                *miss = 2;  /* not covered (with a horizon only blended effects are not): drawn late */
-        }
-    }
-}
-
-/* MAP_TWO_PASS (Burg plan B5, default on; make DEFS=-DMAP_TWO_PASS=0 = the per-chunk loop as before): map_draw splits
- * each visible cell into a pre-pass and an emit pass. The pre-pass decides the cell's level (near / coarse / horizon),
- * asks for its resident items once each instead of once per chunk, and takes the cell's draw list (the chunks that pass
- * the level, stream, draw-group and visibility-row filters, as offsets from the cell's first chunk) from the last draw
- * that built it, while nothing it depends on changed: the level, the near parts' and items' addresses, dg_gen and
- * pvs_gen (a 2 x 32-bit key). The emit pass runs only the per-frame tests over the list: foliage thinning, frustum /
- * distance, texture, batch. Chunks keep their order, so the chain is the same as the per-chunk loop's. The lists live in
- * one pool of LPOOL_N entries (24 KB); a full pool starts over (every cell builds its list again once). */
-#ifndef MAP_TWO_PASS
-#define MAP_TWO_PASS 1
-#endif
-#if defined(MAP_DBG) || defined(MAP_PANO_R)  /* their per-chunk reasons / panorama cut need the per-chunk loop */
-#undef MAP_TWO_PASS
-#define MAP_TWO_PASS 0
-#endif
-#define RI_COV 1    /* MapInst.rflag: every chunk of the item hz_covers (its tag has MS_RES_LOD) */
-#define RI_GRASS 2  /* ... the item holds foliage (MS_RES_GRASS) */
-#define CELL_ITEMS 32  /* resident items of one cell the pre-pass holds (more: that cell takes the per-chunk loop) */
-#ifndef LPOOL_N
-#define LPOOL_N 12288
-#endif
-#if MAP_TWO_PASS
-static unsigned short lpool[LPOOL_N];
-static unsigned lpool_top, lpool_gen = 1, lpool_builds, lpool_resets;
-/* miss_scan from the cell's items (ib: their bases, NULL = not in; ib[t] of item i0 + t): only the chunks of items not
- * in are looked at, in chunk order as miss_scan does */
-static void miss_items(const MapInst *m, int k, int ci, int hzf, int has_hz, const unsigned char *const *ib, unsigned i0,
-                       unsigned ni, int *miss, int *mcov)
-{
-    for (unsigned t = 0; t < ni; t++) {
-        if (ib[t] || (m->rflag[i0 + t] & RI_GRASS))
-            continue;
-        const unsigned *rr = m->rrange[i0 + t];
-        for (unsigned j = rr[0]; j < rr[0] + rr[1]; j++) {
-            unsigned fl = m->chunks[j].flags;
-            if (hzf && hz_covers(fl))
-                continue;
-            if (!(fl & CHUNK_GRASS) && pvs_chunk(k, (unsigned)ci, j) && dg_shown(k, j)) {  /* (as miss_scan) */
-                *miss = 1;
-                if (hz_covers(fl))
-                    *mcov = 1;
-                else if (has_hz)
-                    *miss = 2;
-            }
-        }
-    }
-}
-
-/* the cell's draw list (MAP_TWO_PASS pre-pass): offsets from ce->first of the chunks [jb, je) that pass the level,
- * stream, draw-group and visibility-row filters, in chunk order, as the per-chunk loop takes them; *cut = triangles
- * the visibility rows left out */
-static unsigned list_build(const MapInst *m, int k, int ci, int nd, int use_hz, const unsigned char *const *ib,
-                           unsigned i0, const unsigned char *const *nbp, unsigned np, unsigned jb, unsigned je,
-                           unsigned short *ls, unsigned *cut)
-{
-    const Cell *ce = &m->cells[ci];
-    const MapCell *ctab = m->ctab;
-    unsigned ln = 0, ct = 0;
-    const unsigned char *nbb = nd ? nbp[0] : NULL;
-    unsigned gid = nd ? ctab[ci].pad : 0, part = 0, pe = nd ? ctab[ci].near : 0;
-    for (unsigned j = jb; j < je; j++) {
-        const Chunk *c;
-        unsigned no;
-        if (j < (unsigned)ce->first + ce->count) {
-            no = m->order[j], c = &m->chunks[no];
-            if (use_hz && hz_covers(c->flags))
-                continue;  /* the horizon stands for it */
-            if (!(m->res_cells ? ib[m->citem[no] - i0] : m->streams))
-                continue;  /* its streams are not in */
-            if (nd && (c->flags & CHUNK_COARSE))
-                continue;
-        } else {
-            unsigned nj = j - ce->first - ce->count;
-            while (nj >= pe && part + 1 < np)  /* into the next part's blob */
-                part++, nbb = nbp[part], gid = ctab[ci + part].pad, pe += ctab[ci + part].near & ~CELL_PART;
-            if (!nbb)
-                continue;  /* an unseen part that is not in (pvs.c) */
-            c = (const Chunk *)nbb + (nj - (pe - (ctab[ci + part].near & ~CELL_PART)));
-            no = c->flags & CHUNK_GRASS ? gid + (unsigned)(c - (const Chunk *)nbb) : c->flags >> 8;
-        }
-        if (!dg_shown(k, no))  /* MSB draw groups (drawgrp.c) */
-            continue;
-        if (!pvs_chunk(k, (unsigned)ci, no)) {  /* behind something (pvs.c) */
-            ct += c->tris;
-            continue;
-        }
-        ls[ln++] = (unsigned short)(j - ce->first);
-    }
-    *cut = ct;
-    return ln;
-}
-#ifdef MAP_TWO_PASS_CHECK
-static unsigned chk_lists, chk_bad;
-#endif
-#endif
-
-static void build_index(MapInst *mi)
-{
-    if (mi->indexed == mi->map_bin)
-        return;
-    const Chunk *chunks = mi->chunks;
-    free(mi->order), free(mi->sky), free(mi->cells), free(mi->tiles), free(mi->tcell);
-    mi->tiles = NULL, mi->tcell = NULL, mi->ntiles = 0;
-    unsigned n = mi->hdr->chunks;
-    unsigned (*key)[3] = malloc(n * sizeof *key);
-    unsigned short *order = mi->order = malloc(n * sizeof *order);
-    unsigned short *sky = mi->sky = malloc(n * sizeof *sky);
-    int m = 0, nsky = 0;
-    for (unsigned i = 0; i < n; i++) {
-        const Chunk *c = &chunks[i];
-        if (c->flags & CHUNK_SKY) {
-            sky[nsky++] = i;
-            continue;
-        }
-        unsigned k = 0;
-        for (int a = 0; a < 3; a++)
-            k = k << 10 | (((int)((c->mn[a] + c->mx[a]) * 0.5f / CELL + 512)) & 1023);
-        key[m][0] = k, key[m][1] = (unsigned)c->tex, key[m++][2] = i;
-    }
-    mi->nsky = nsky;
-    Cell *cells = mi->cells = calloc((mi->nctab > (unsigned)m ? mi->nctab : m) + 1, sizeof *cells);
-    int ncells = 0;
-    if (mi->ctab) {  /* DSM5: the exporter's cells, resident chunks already grouped per cell (sky chunks after them) */
-        const MapCell *ctab = mi->ctab;
-        for (unsigned i = 0; i < mi->nctab; i++) {
-            Cell *ce = &cells[ncells++];
-            memcpy(ce->mn, ctab[i].mn, sizeof ce->mn), memcpy(ce->mx, ctab[i].mx, sizeof ce->mx);
-            ce->first = ctab[i].first, ce->count = ctab[i].count, ce->flags = 0, ce->near_on = 0, ce->hz_on = 0;
-            for (unsigned j = ce->first; j < ce->first + ce->count; j++)
-                order[j] = j, ce->flags |= chunks[j].flags & (CHUNK_BLEND | CHUNK_BACKDROP);
-        }
-        m = 0;
-    }
-    qsort(key, m, sizeof *key, cell_key_cmp);
-    for (int j = 0; j < m; j++) {
-        const Chunk *c = &chunks[key[j][2]];
-        order[j] = key[j][2];
-        if (!j || key[j][0] != key[j - 1][0]) {
-            Cell *ce = &cells[ncells++];
-            memcpy(ce->mn, c->mn, sizeof ce->mn), memcpy(ce->mx, c->mx, sizeof ce->mx);
-            ce->first = j, ce->count = 0, ce->flags = 0, ce->near_on = 0;
-        }
-        Cell *ce = &cells[ncells - 1];
-        ce->count++;
-        ce->flags |= c->flags & (CHUNK_BLEND | CHUNK_BACKDROP);
-        for (int a = 0; a < 3; a++) {
-            ce->mn[a] = c->mn[a] < ce->mn[a] ? c->mn[a] : ce->mn[a];
-            ce->mx[a] = c->mx[a] > ce->mx[a] ? c->mx[a] : ce->mx[a];
-        }
-    }
-    free(key);
-    mi->ncells = ncells;
-    mi->indexed = mi->map_bin;
-    tile_index(mi);
-}
-
-/* ---- world blocks (src/world.c): one MapInst per loaded map block ---- */
-/* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
- * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
-static void *blk_dg[MAP_INST], *blk_pvs[MAP_INST];
-/* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
- * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
-static signed char tslot[MAP_INST];
-static const void *blk_tex_sh[MAP_INST];  /* map_block_shared: the map's maptex.bin per block */
-
-int map_tex_slot(int k)
-{
-    return k > 0 && k < MAP_INST && inst[k].on ? tslot[k] : -1;
-}
-
-/* the collision block of instance k (0 for the boot area), -1 while it is off */
-static int inst_col_block(int k)
-{
-    return k == 0 ? inst[0].col_block : inst[k].on ? inst[k].col_block : -1;
-}
-
-static int map_inst_of(int col_block)
-{
-    if (!inst[0].on)  /* single area: everything is instance 0 */
-        return col_block == 0 ? 0 : -1;
-    for (int k = 0; k < MAP_INST; k++)
-        if ((k == 0 || inst[k].on) && inst[k].col_block == col_block)
-            return k;
-    return -1;
-}
-
-static int split_k = -1;
-static const unsigned char *split_b, *split_c;
-static unsigned split_boff, split_coff;
-void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsigned c_off)
-{
-    split_k = k, split_b = b, split_boff = b_off, split_c = c, split_coff = c_off;
-}
-
-int map_block_init(int k, const void *tab, const void *res, int col_block)
-{
-    if (k < 0 || k >= MAP_INST)
-        return 0;
-    const Header *h = tab;
-    if (!h || memcmp(h->magic, "DSM5", 4) || !h->cell_off)
-        return 0;
-    MapInst *m = &inst[k];
-    if (k) {  /* a fresh instance: no index yet */
-        m->indexed = NULL, m->order = m->sky = NULL, m->cells = NULL, m->ncells = m->nsky = 0;
-        m->tiles = NULL, m->tcell = NULL, m->ntiles = 0;
-    }
-    /* tab = the 80-byte header + map.bin from the chunk table on (tools/mapsplit.py): offsets >= chunk_off resolve
-     * against a base chunk_off - 80 bytes before it */
-    const unsigned char *map_bin = m->map_bin = (const unsigned char *)tab + sizeof(Header) - h->chunk_off;
-    /* pieces (world.c WORLD_TAB_SPLIT): piece base - its offset in maptab.bin, in map.bin coordinates as map_bin */
-    const unsigned char *tex_bin = m->tex_bin =
-        split_k == k && split_b ? split_b - split_boff + sizeof(Header) - h->chunk_off : map_bin;
-    const unsigned char *cel_bin = m->cel_bin =
-        split_k == k && split_c ? split_c - split_coff + sizeof(Header) - h->chunk_off : map_bin;
-    split_k = -1, split_b = split_c = NULL;
-    const Header *hdr = m->hdr = h;
-    m->ctab = (const MapCell *)(cel_bin + hdr->cell_off + 16);
-    m->nctab = *(const unsigned *)(cel_bin + hdr->cell_off);
-    m->ckeys = cell_keys(m->ctab, m->nctab);
-    m->pkt = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
-    m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
-    m->fog_rows = *(const unsigned *)(tex_bin + hdr->fog_off);
-    m->fog_ntris = ((const unsigned *)(tex_bin + hdr->fog_off))[1];
-    m->fog_row = (const FogRow *)(tex_bin + hdr->fog_off + 16);
-    m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
-    m->sky_rows = SKY_ROWS ? ((const unsigned *)(tex_bin + hdr->fog_off))[2] : 0;
-    m->sky_row = (const SkyRow *)(m->fog_tri + ((m->fog_ntris + 3) & ~3u));
-    m->navv = (const float *)(tex_bin + hdr->navv_off);
-    m->navt = (const unsigned short *)(tex_bin + hdr->navt_off);
-    m->streams = res, m->res_cells = 0, m->citem = NULL;
-    hz_parse(m);
-    m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
-    m->on = 1, m->col_block = col_block, m->hz_only = 0;
-    if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
-        float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1],
-                             hdr->fog_rgb[2], 64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
-        memcpy(fog_now, f0, sizeof fog_now);
-        fog_area = 0;
-        pfog_row = m->fog_row, pfog_rows = m->fog_rows;
-        if (m->fog_rows)
-            fog_ease(1);
-        m->tex_base = 0;
-    } else {
-        int used = 0;
-        for (int j = 1; j < MAP_INST; j++)
-            if (j != k && inst[j].on)
-                used |= 1 << tslot[j];
-        tslot[k] = 0;
-        while (tslot[k] < TC_BLOCKS - 1 && used >> tslot[k] & 1)
-            tslot[k]++;
-        tc_block_shared(tslot[k], blk_tex_sh[k]);  /* the map's shared textures (map_block_shared) */
-        m->tex_base = used >> tslot[k] & 1 ? -1 : tc_block_add(tslot[k], tex_bin, tex_bin + hdr->tex_off, m->ntex);
-        if (m->tex_base < 0) {
-            printf("map: block %d: no texture slot / CLUT VRAM\n", k);
-            m->on = 0;
-            return 0;
-        }
-        tex_res(k);
-        dg_block_init(k, blk_dg[k], hdr->chunks, (unsigned)col_block_tris(col_block));  /* per-block draw groups */
-        pvs_block_init(k, blk_pvs[k], hdr->chunks, m->nctab);  /* and visibility (src/pvs.c) */
-    }
-    return 1;
-}
-
-void map_block_shared(int k, const void *buf)
-{
-    if (k > 0 && k < MAP_INST)
-        blk_tex_sh[k] = buf;
-}
-
-void map_block_bump(int k, const void *blob)
-{
-    if (k < 0 || k >= MAP_INST || (k && !inst[k].on) || !inst[k].hdr)  /* (0: the boot block, world.c) */
-        return;
-    int on = bump_block(k, blob, inst[k].hdr->chunks);
-    if (blob)
-        printf("map: block %d relief %s\n", k, on ? "on" : "off");
-}
-
-static void block_drop(int k, int keep_dg)
-{
-    if (k <= 0 || k >= MAP_INST || !inst[k].on)
-        return;
-    MapInst *m = &inst[k];
-    bump_block(k, NULL, 0);
-    mapstream_close(k);  /* before the slot's textures go: it hands their mip 0 back (tex_hook_set) */
-    tc_block_drop(tslot[k]);
-    if (!keep_dg)
-        dg_block_drop(k);
-    pvs_block_drop(k);
-    free(m->order), free(m->sky), free(m->cells), free(m->tiles), free(m->tcell);
-    m->indexed = NULL, m->order = m->sky = NULL, m->cells = NULL, m->ncells = m->nsky = 0;
-    m->tiles = NULL, m->tcell = NULL, m->ntiles = 0;
-    if (pfog_row == m->fog_row)  /* the player's rows were this block's: back to the boot block's */
-        pfog_row = inst[0].fog_row ? inst[0].fog_row : NULL, pfog_rows = inst[0].fog_row ? inst[0].fog_rows : 0,
-        fog_area = 0;
-    free(m->citem), free(m->rrange), free(m->rflag);
-    m->rrange = NULL, m->rflag = NULL, m->nritem = 0;
-    m->hdr = NULL, m->ctab = NULL, m->ckeys = NULL, m->nctab = 0, m->streams = NULL, m->ntex = 0, m->res_cells = 0, m->citem = NULL;
-    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
-    m->on = 0;
-    mapstream_select(0);
-}
-
-void map_block_drop(int k)
-{
-    block_drop(k, 0);
-    if (k > 0 && k < MAP_INST)
-        inst[k].hz_only = 0, inst[k].hz_cell = NULL, inst[k].hz_chunk = NULL, inst[k].hz_base = NULL;
-}
-void map_block_lean(int k, int keep_hz)
-{
-    if (k <= 0 || k >= MAP_INST || !inst[k].on)
-        return;
-    MapInst *m = &inst[k];
-    const HzCell *hc = m->hz_cell;
-    const Chunk *hk = m->hz_chunk;
-    const unsigned char *hb = m->hz_base;
-    unsigned n = m->nctab;
-    block_drop(k, 1);
-    if (keep_hz && hc)  /* (they lie in maptab's last piece, which world.c keeps) */
-        m->hz_cell = hc, m->hz_chunk = hk, m->hz_base = hb, m->nctab = n, m->hz_only = 1;
-}
-
-/* a kept-only block (hz_only): every horizon chunk in view, as the shown draw groups pick them */
-static unsigned draw_hz_only(int k, const float *e)
-{
-    const MapInst *m = &inst[k];
-    unsigned n = 0;
-    for (unsigned ci = 0; ci < m->nctab; ci++) {
-        const HzCell *hc = &m->hz_cell[ci];
-        for (unsigned j = 0; j < hc->count; j++) {
-            const Chunk *c = &m->hz_chunk[hc->first + j];
-            if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
-                continue;
-            int cls = visible(c, e, 0);
-            if (cls)
-                n += draw_hz(m, c, cls, 0, 0);
-        }
-    }
-    return n;
-}
-
-void map_pvs_init(const void *blob)
-{
-    if (inst[0].hdr)
-        pvs_block_init(0, blob, inst[0].hdr->chunks, inst[0].nctab);
-}
-
-void map_block_dg(int k, void *pack)
-{
-    if (k > 0 && k < MAP_INST && pack && !blk_dg[k])
-        blk_dg[k] = pack_load(pack, "dg.bin", NULL);
-#ifndef NO_PVS
-    if (k > 0 && k < MAP_INST && pack && !blk_pvs[k])
-        blk_pvs[k] = pack_load(pack, "pvs.bin", NULL);
-#endif
-}
-
-/* bytes of the streams of resident chunks [a, b) (export_map.py writes pos, st, colour per chunk, each 16-byte
- * aligned, chunk after chunk in table order, each after a VIF code qword: VU1_PKT): [*lo, return) in mapres.bin */
-static unsigned chunk_range(const Chunk *chunks, unsigned a, unsigned b, unsigned *lo)
-{
-    unsigned l = ~0u, h = 0;
-    for (unsigned j = a; j < b; j++) {
-        const Chunk *c = &chunks[j];
-        unsigned e = c->nv ? (CHUNK_IDX(c) + c->tris * 4u + 15) & ~15u  /* the triangle stream is the last */
-                           : (c->col + c->tris * 12 + 15) & ~15u;  /* colour u8x4 per corner, the last stream */
-        l = c->pos - 16 < l ? c->pos - 16 : l;  /* from pos's code qword (VU1_PKT sends from there) */
-        h = e > h ? e : h;
-    }
-    *lo = l == ~0u ? 0 : l;
-    return h;
-}
-
-/* World blocks: the selected instance k's resident level as mapstream items (mapstream_res_open) instead of one
- * mapres.bin in a full pool: per cell the streams of its resident chunks (grouped by cell in the chunk table) in
- * items of whole chunks up to RES_ITEM bytes, the sky chunks' the same way, and each texture's mip 0 (and mip 1,
- * MIP1_OUT) that tools/mapsplit.py moved into mapres.bin. A block without it draws its near cells only. RES_ITEM: one cell up to
- * 2.2 MB as one item found no hole with 4 MB of the arena free (largest hole 0.9-1 MB; ISO runs 2026-11-05); ASSUMED
- * size, small enough to fit the holes near cells leave. */
-#define RES_ITEM (64u << 10)  /* one page of the arena (mapstream.c MS_PAGE, plan step 6; 128 KB before) */
-static void res_open(int k, const void *pack)
-{
-    MapInst *mi = &inst[k];
-    const Header *hdr = mi->hdr;
-    const Chunk *chunks = mi->chunks;
-    const MapCell *ctab = mi->ctab;
-    unsigned nctab = mi->nctab;
-    unsigned roff, rsize;
-    if (!pack_entry_raw((Pack *)pack, "mapres.bin", &roff, &rsize) || !rsize)
-        return;
-    unsigned n = hdr->chunks + 1 + 2 * (unsigned)mi->ntex;  /* (mip 0 and 1 per texture) */
-    MapResItem *it = malloc(n * sizeof *it);
-    unsigned short *citem = mi->citem = malloc((hdr->chunks + 1) * sizeof *citem);
-    unsigned (*rr)[3] = mi->rrange = malloc(n * sizeof *rr);
-    unsigned char *rf = mi->rflag = calloc(n, 1);
-    if (!it || !citem || !rr || !rf || n > 65535) {
-        free(it), free(citem), free(rr), free(rf);
-        mi->citem = NULL, mi->rrange = NULL, mi->rflag = NULL;
-        return;
-    }
-    unsigned m = 0, bad = 0, last = 0;
-    for (unsigned i = 0; i <= nctab; i++) {  /* cells, then (i = nctab) the sky chunks after them (res_order) */
-        unsigned a = i < nctab ? ctab[i].first : last, e = i < nctab ? a + ctab[i].count : hdr->chunks;
-        if (i < nctab)
-            last = e > last ? e : last;
-        for (unsigned j = a; j < e;) {  /* whole chunks [j, g) up to RES_ITEM bytes (at least one) */
-            unsigned lo, hi = chunk_range(chunks, j, j + 1, &lo), g = j + 1, l2, h2;
-            /* coarse chunks in items of their own (MS_RES_COARSE: they go while the cell's near level is in), and
-             * foliage too (MS_RES_GRASS: only near the player) */
-            unsigned coarse = chunks[j].flags & (CHUNK_COARSE | CHUNK_GRASS);
-            while (g < e && (chunks[g].flags & (CHUNK_COARSE | CHUNK_GRASS)) == coarse &&
-                   (h2 = chunk_range(chunks, g, g + 1, &l2)) - lo <= RES_ITEM && l2 >= lo)
-                hi = h2 > hi ? h2 : hi, g++;
-            unsigned far = 0, cov = i < nctab && mi->hz_cell && (mi->hz_cell[i].flags & 1);
-            for (unsigned c = j; c < g; c++)
-                citem[c] = (unsigned short)m, far |= chunks[c].flags & CHUNK_BACKDROP, cov &= hz_covers(chunks[c].flags);
-            rr[m][0] = j, rr[m][1] = i < nctab ? g - j : 0, rr[m][2] = i;
-            rf[m] = (cov ? RI_COV : 0) | (coarse & CHUNK_GRASS ? RI_GRASS : 0);
-            it[m++] = (MapResItem){roff + lo, lo, hi - lo,
-                                   i < nctab ? i | (far ? MS_RES_FAR : 0) |
-                                                   ((coarse & CHUNK_COARSE) && ctab[i].near ? MS_RES_COARSE : 0) |
-                                                   (coarse & CHUNK_GRASS ? MS_RES_GRASS : 0) | (cov ? MS_RES_LOD : 0)
-                                             : MS_RES_SKY};
-            bad |= hi > rsize;
-            j = g;
-        }
-    }
-    const unsigned char *te = mi->tex_bin + hdr->tex_off;
-    for (int t = 0; t < mi->ntex; t++) {  /* texmap.py entry: u16 w, h; u8 psm; ...; u32 pix[0] at +16 */
-        const unsigned char *e = te + 32 * t;
-        unsigned w = *(const unsigned short *)e, h = *(const unsigned short *)(e + 2);
-        for (int l = 0; l < 2; l++) {  /* mip 0, and mip 1 when it streams too (mapsplit.py MIP1_OUT) */
-            unsigned p = *(const unsigned *)(e + 16 + 4 * l), wl = w >> l, hl = h >> l;
-            if (!(p & TC_RES))
-                continue;
-            unsigned b = e[4] == GS_PSM_T4 ? wl * hl / 2 : wl * hl;
-            rr[m][0] = rr[m][1] = rr[m][2] = 0;
-            it[m++] = (MapResItem){roff + (p & ~TC_RES), p & ~TC_RES, b, MS_RES_TEX | (l ? MS_RES_MIP1 : 0) | (unsigned)t};
-            bad |= (p & ~TC_RES) + b > rsize;
-        }
-    }
-    if (bad)
-        printf("map: block %d: mapres.bin (%u KB) shorter than its chunk / texture records\n", k, rsize >> 10);
-    else if (mi->nritem = m, mapstream_res_open(k, it, nctab, m)) {
-        mi->res_cells = 1;
-        mapstream_tex_hooks(tex_hook_age, tex_hook_set);
-    }
-    if (!mi->res_cells)
-        free(citem), free(rr), free(rf), mi->citem = NULL, mi->rrange = NULL, mi->rflag = NULL, mi->nritem = 0;
-    free(it);
-}
-
-int map_block_stream_open(int k, const void *pack)
-{
-    if (k < 0 || k >= MAP_INST || !inst[k].on)
-        return 0;
-    const MapInst *m = &inst[k];
-    mapstream_select(k);
-    int r = m->ctab ? mapstream_open_pack(k, pack, m->ctab, m->nctab) : 0;
-    mapstream_vis_hooks(ms_vis, ms_vis_gen);
-    if (r && !m->streams)
-        res_open(k, pack);
-    mapstream_select(0);  /* mapstream_open_pack leaves instance k selected */
-    return r;
-}
-
 /* instance k has a map and its sky's streams are in (the first sky chunk's item); selects k in mapstream.c */
 static int sky_in(int k)
 {
-    MapInst *m = &inst[k];
+    MapInst *m = &mp_inst[k];
     mapstream_select(k);
     if (!m->hdr)
         return 0;
-    build_index(m);
-    return m->nsky && res_base(m, m->sky[0]);
+    mp_build_index(m);
+    return m->nsky && mp_res_base(m, m->sky[0]);
 }
 
 /* map_draw keeps what its later passes draw in these lists while it walks the cells: effect chunks (sorted far to
@@ -1694,7 +868,7 @@ static u32 sky_fog(const MapInst *m, unsigned row, float *a, float *b, float *fm
 static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
 {
     GSGLOBAL *gs = gsg;
-    MapInst *m = &inst[sk];
+    MapInst *m = &mp_inst[sk];
     int drawn = 0;
     u64 r[2] = {0, 0x3D};
 
@@ -1717,8 +891,8 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
 #ifdef MAP_PANO_R
                 continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
 #endif
-                const unsigned char *sb = res_base(m, no);
-                int cls = sb ? visible(c, e, 1) : 0;
+                const unsigned char *sb = mp_res_base(m, no);
+                int cls = sb ? mp_visible(c, e, 1) : 0;
                 if (!cls)
                     continue;
                 if (!set++) {
@@ -1738,7 +912,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
      * rendered offline, DSR's fog baked in): over the sky, unfogged, alpha tested */
     for (int i = 0, any = 0; i < pano_n && !sk; i++) {
         const Chunk *c = &pano_chunk[i];
-        int cls = visible(c, e, 1);
+        int cls = mp_visible(c, e, 1);
         GSTEXTURE *t = cls ? tc_get(pano_tex + c->tex, 0) : NULL;
         if (!t)
             continue;
@@ -1779,7 +953,7 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
     zs_map_edge(edge_a2);
     u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
     for (int i = 0; i < n; i++) {
-        const MapInst *mk = &inst[hzfade[i].k];
+        const MapInst *mk = &mp_inst[hzfade[i].k];
         const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
         if (HZN_FADE_DEBUG && !i) {
             u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
@@ -1792,9 +966,9 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
             const Chunk *c = &mk->hz_chunk[hc->first + j];
             if (!dg_mask_shown(hzfade[i].k, (int)(c->flags >> 16 & 0xFF)))
                 continue;
-            int cls = visible(c, e, 0);
+            int cls = mp_visible(c, e, 0);
             if (cls) {
-                unsigned dn = draw_hz(mk, c, cls, VU1_BLEND, 1);
+                unsigned dn = mp_draw_hz(mk, c, cls, VU1_BLEND, 1);
                 drawn += dn;
             }
         }
@@ -1821,7 +995,7 @@ static int draw_near_fades(int n, const float e[3])
     zs_map_zbias(1.0f + HZN_ZBIAS);
     u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
     for (int i = 0; i < n; i++) {
-        const MapInst *mk = &inst[nrfade[i].k];
+        const MapInst *mk = &mp_inst[nrfade[i].k];
         const Cell *ce = &mk->cells[nrfade[i].ci];
         u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
         zs_gs_regs(2, r);
@@ -1831,10 +1005,10 @@ static int draw_near_fades(int n, const float e[3])
             const Chunk *c = &mk->chunks[no];
             if (!(c->flags & CHUNK_COARSE) || !hz_covers(c->flags) || (c->flags & CHUNK_BACKDROP))
                 continue;
-            const unsigned char *base = res_base(mk, no);
+            const unsigned char *base = mp_res_base(mk, no);
             if (!base || !dg_shown(nrfade[i].k, no))
                 continue;
-            int cls = visible(c, e, 0);
+            int cls = mp_visible(c, e, 0);
             if (cls)
                 drawn += draw_chunk(mk, base, c, c->tris, cls, R_FOG | R_BLEND, no);
         }
@@ -1864,7 +1038,7 @@ static int draw_effects(int n, int fog)
                 continue;
             if (!any++)
                 blend_regs(gs, CHUNK_BLEND | (add ? CHUNK_ADD : 0));
-            drawn += draw_chunk(&inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
+            drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
                                 fxl[i].no);
         }
     }
@@ -1943,8 +1117,8 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                 if (was[i] == D_DRAWN && now[i] != D_DRAWN) {
                     int r = now[i] < D_NR ? now[i] : D_NR;
                     cnt[r]++;
-                    if (i < inst[0].hdr->chunks)
-                        tris[r] += inst[0].chunks[i].tris;
+                    if (i < mp_inst[0].hdr->chunks)
+                        tris[r] += mp_inst[0].chunks[i].tris;
                     if (r != D_VIEW && r != D_CELL_VIEW && r != D_SWAP && r != D_NR && k < 300)
                         k += snprintf(line + k, sizeof line - k, " [%u %s]", i, dbg_name[r]);
                 } else if (was[i] != D_DRAWN && now[i] == D_DRAWN)
@@ -1979,10 +1153,10 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
         if (!(++fr % 30)) {
 #if MAP_TWO_PASS
             if (!(fr % 300))
-                printf("map: two-pass lists built %u, pool resets %u, pool %u / %u entries\n", lpool_builds,
-                       lpool_resets, lpool_top, LPOOL_N);
+                printf("map: two-pass lists built %u, pool resets %u, pool %u / %u entries\n", mp_lpool_builds,
+                       mp_lpool_resets, mp_lpool_top, LPOOL_N);
 #ifdef MAP_TWO_PASS_CHECK
-            printf("map: two-pass check %u lists, %u differ\n", chk_lists, chk_bad);
+            printf("map: two-pass check %u lists, %u differ\n", mp_chk_lists, mp_chk_bad);
 #endif
 #endif
             if (worst)
@@ -2041,20 +1215,20 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
 {
     MapInst *m;
     int drawn = 0;
-    if (k && !inst[k].on) {
-        if (inst[k].hz_only) {  /* a kept-only block: its horizon alone */
-            unsigned dn = draw_hz_only(k, e);
+    if (k && !mp_inst[k].on) {
+        if (mp_inst[k].hz_only) {  /* a kept-only block: its horizon alone */
+            unsigned dn = mp_draw_hz_only(k, e);
             drawn += dn, lg->k_drawn[k] += dn, lg->hz_tris += dn;
         }
         return drawn;
     }
-    m = &inst[k];
+    m = &mp_inst[k];
     mapstream_select(k);  /* mapstream_get / mapstream_res below answer for k */
     if (!m->hdr)
         return drawn;
     {
         MP_BEGIN
-        build_index(m);
+        mp_build_index(m);
         MP_END(MP_CULL)
     }
     const Chunk *chunks = m->chunks;
@@ -2066,7 +1240,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
     if (tl) {
         Chunk tb = {.flags = tl->flags, .mn = {tl->mn[0], tl->mn[1], tl->mn[2]}, .mx = {tl->mx[0], tl->mx[1], tl->mx[2]}};
         mc_tiles++;
-        if (!visible(&tb, e, 0))
+        if (!mp_visible(&tb, e, 0))
             continue;
         mc_tvis++;
     }
@@ -2088,7 +1262,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 cb.mx[a] = hc->mx[a] > cb.mx[a] ? hc->mx[a] : cb.mx[a];
         }
         mc_cells++;
-        if (!visible(&cb, e, 0)) {
+        if (!mp_visible(&cb, e, 0)) {
 #ifdef MAP_DBG
             for (unsigned j = ce->first; j < ce->first + ce->count; j++)
                 DBGW(vis_why - D_FAR + D_CELL_FAR, chunks[order[j]].tris, order[j]);
@@ -2130,10 +1304,10 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             for (unsigned t = 0; two && t < ni; t++)
                 ib[t] = hzf && (m->rflag[i0 + t] & RI_COV) ? NULL : mapstream_res(i0 + t);
         }
-#define MISS_SCAN() (two ? miss_items(m, k, ci, hzf, hc != NULL, ib, i0, ni, &miss, &mcov) \
-                     : miss_scan(m, k, ci, hzf, hc != NULL, &miss, &mcov))
+#define MISS_SCAN() (two ? mp_miss_items(m, k, ci, hzf, hc != NULL, ib, i0, ni, &miss, &mcov) \
+                     : mp_miss_scan(m, k, ci, hzf, hc != NULL, &miss, &mcov))
 #else
-#define MISS_SCAN() miss_scan(m, k, ci, hzf, hc != NULL, &miss, &mcov)
+#define MISS_SCAN() mp_miss_scan(m, k, ci, hzf, hc != NULL, &miss, &mcov)
 #endif
         /* the near switch first (MAP_NEAR_SKIP): a cell inside the near radius needs the resident-miss scan only
          * when its near level is not drawn after all (the scan decides holes and the horizon stand-in, nothing
@@ -2265,21 +1439,21 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             for (unsigned t = 0; t < ni; t++)
                 LMIX((unsigned)ib[t]);
 #undef LMIX
-            if (ce->lgen != lpool_gen || ce->lkey[0] != h1 || ce->lkey[1] != h2) {
-                if (lpool_top + (je - jb) > LPOOL_N)  /* full: every list goes, the cells build theirs again */
-                    lpool_gen++, lpool_top = 0, lpool_resets++;
-                unsigned cut, ln = list_build(m, k, ci, nd, use_hz, ib, i0, nbp, np, jb, je, lpool + lpool_top, &cut);
-                ce->lkey[0] = h1, ce->lkey[1] = h2, ce->lgen = lpool_gen, ce->lcut = cut;
-                ce->loff = (unsigned short)lpool_top, ce->ln = (unsigned short)ln;
-                lpool_top += ln;
-                lpool_builds++;
+            if (ce->lgen != mp_lpool_gen || ce->lkey[0] != h1 || ce->lkey[1] != h2) {
+                if (mp_lpool_top + (je - jb) > LPOOL_N)  /* full: every list goes, the cells build theirs again */
+                    mp_lpool_gen++, mp_lpool_top = 0, mp_lpool_resets++;
+                unsigned cut, ln = mp_list_build(m, k, ci, nd, use_hz, ib, i0, nbp, np, jb, je, mp_lpool + mp_lpool_top, &cut);
+                ce->lkey[0] = h1, ce->lkey[1] = h2, ce->lgen = mp_lpool_gen, ce->lcut = cut;
+                ce->loff = (unsigned short)mp_lpool_top, ce->ln = (unsigned short)ln;
+                mp_lpool_top += ln;
+                mp_lpool_builds++;
             }
 #ifdef MAP_TWO_PASS_CHECK  /* debug: every kept list against a fresh build ("map: two-pass check" line) */
-            else if (lpool_top + (je - jb) <= LPOOL_N) {
-                unsigned cut, ln = list_build(m, k, ci, nd, use_hz, ib, i0, nbp, np, jb, je, lpool + lpool_top, &cut);
-                chk_lists++;
-                if (ln != ce->ln || cut != ce->lcut || memcmp(lpool + lpool_top, lpool + ce->loff, ln * 2))
-                    chk_bad++;
+            else if (mp_lpool_top + (je - jb) <= LPOOL_N) {
+                unsigned cut, ln = mp_list_build(m, k, ci, nd, use_hz, ib, i0, nbp, np, jb, je, mp_lpool + mp_lpool_top, &cut);
+                mp_chk_lists++;
+                if (ln != ce->ln || cut != ce->lcut || memcmp(mp_lpool + mp_lpool_top, mp_lpool + ce->loff, ln * 2))
+                    mp_chk_bad++;
             }
 #endif
             lg->pvs_cut += ce->lcut, lg->k_cut[k] += ce->lcut;
@@ -2295,7 +1469,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             }
             emit_close = SMALL_Z <= FAR && SMALL_Z <= CULL_FAR && df2 < SMALL_Z * SMALL_Z && edge_z > 0 &&
                          df2 < edge_z * edge_z;
-            const unsigned short *ls = lpool + ce->loff;
+            const unsigned short *ls = mp_lpool + ce->loff;
             const unsigned char *nbb = nd ? nbp[0] : NULL;
             unsigned gid = nd ? ctab[ci].pad : 0, part = 0, pe = nd ? ctab[ci].near : 0;
             for (unsigned li = 0, ln = ce->ln; li < ln; li++) {
@@ -2323,7 +1497,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                     cls = visible_(c, e, 1);  /* (as sky: no distance tests) */
                     MP_END(MP_CULL)
                 } else
-                    cls = visible(c, e, 0);
+                    cls = mp_visible(c, e, 0);
                 if (!cls)
                     continue;
                 if (c->flags & CHUNK_BLEND) {
@@ -2352,7 +1526,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 int is_near = j >= (unsigned)ce->first + ce->count;
                 if (use_hz && !is_near && hz_covers(chunks[order[j]].flags))
                     continue;  /* the horizon stands for it */
-                const unsigned char *rb = is_near ? NULL : res_base(m, order[j]);
+                const unsigned char *rb = is_near ? NULL : mp_res_base(m, order[j]);
                 if (!is_near && !rb)
                     continue;  /* its streams are not in */
                 unsigned nj = j - ce->first - ce->count;
@@ -2401,7 +1575,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                     continue;
                 }
                 mc_chunks++;
-                int cls = visible(c, e, 0);
+                int cls = mp_visible(c, e, 0);
                 if (!cls) {
 #ifdef MAP_DBG
                     DBGW(vis_why, n, is_near ? NEAR_NO(c, nb) : order[j]);
@@ -2433,9 +1607,9 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
              * the sets the floor's groups show, as the chunks it stands for */
             if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
                 continue;
-            int cls = visible(c, e, 0);
+            int cls = mp_visible(c, e, 0);
             if (cls) {
-                unsigned dn = draw_hz(m, c, cls, 0, 0);
+                unsigned dn = mp_draw_hz(m, c, cls, 0, 0);
                 drawn += dn, lg->k_drawn[k] += dn, lg->hz_tris += dn;
             }
         }
@@ -2452,22 +1626,22 @@ int map_draw(V3 eye)
     unsigned mp_t0 = mp_on ? ticks() : 0;
     (void)mp_t0;
     memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
-    if (!inst[pinst].on && pinst)
+    if (!mp_inst[pinst].on && pinst)
         pinst = 0;
     vis_c = NULL;
     /* sky and fog colours from the player's block; while its sky streams are not in yet the sky of one that has them */
     int sk = pinst;
     if (!sky_in(pinst))
         for (int k = 0; k < MAP_INST; k++)
-            if ((k == 0 || inst[k].on) && sky_in(k)) {
+            if ((k == 0 || mp_inst[k].on) && sky_in(k)) {
                 sk = k;
                 break;
             }
-    MapInst *m = &inst[sk];
+    MapInst *m = &mp_inst[sk];
     mapstream_select(sk);
     {
         MP_BEGIN
-        build_index(m);
+        mp_build_index(m);
         MP_END(MP_CULL)
     }
     bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
@@ -2499,7 +1673,7 @@ int map_draw(V3 eye)
     float a, b, fmin;
     fog_terms(&a, &b, &fmin);
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
-    u32 col = (u32)fog_now[3] | (u32)fog_now[4] << 8 | (u32)fog_now[5] << 16;
+    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
@@ -2541,9 +1715,9 @@ int map_draw(V3 eye)
 
 int map_floor(float x, float z, float y, float *out_y)
 {
-    const Header *hdr = inst[0].hdr;
-    const float *navv = inst[0].navv;
-    const unsigned short *navt = inst[0].navt;
+    const Header *hdr = mp_inst[0].hdr;
+    const float *navv = mp_inst[0].navv;
+    const unsigned short *navt = mp_inst[0].navt;
     int found = 0;
     float best = 0;
     for (unsigned i = 0; i < hdr->nav_tris; i++) {
