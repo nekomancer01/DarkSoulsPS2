@@ -4,7 +4,7 @@ import os, struct, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gamedata
-from gamedata import Ptr, Scalar, Struct
+from gamedata import Ptr, Scalar
 
 
 def fake(t, k):

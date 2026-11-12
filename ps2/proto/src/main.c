@@ -14,6 +14,7 @@
 #include <gsKit.h>
 #include <dmaKit.h>
 #include "render.h"
+#define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #include "player.h"
 #include "model.h"
 #include "map.h"
@@ -42,6 +43,7 @@
 #include "sound.h"  /* A12: SPU2 sound (src/sound.c, iop/dsrsnd) */
 #include "gamedata.h"  /* player / combat / progress values from c0000.pak (the ELF holds no game data) */
 #include <unistd.h>
+#include "ticks.h"
 
 #define PI 3.14159265f
 #ifndef AREA
@@ -59,13 +61,6 @@ static unsigned ram_free(void)
     return 32 * 1024 * 1024 - (unsigned)_stack_size - (unsigned)sbrk(0) + mi.fordblks;
 }
 
-/* EE COP0 Count: 294.912 MHz */
-static inline unsigned cpu_ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static char pad_buf[256] __attribute__((aligned(64)));
 static int pad_ok;
@@ -131,9 +126,6 @@ static void z_clear(GSGLOBAL *gs)
     int n = 0;
     u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-#ifdef F9_HOLES
-    holes = 1;
-#endif
     REG(holes ? frame : frame | 0xFFFFFFFFull << 32, 0x4C);
     REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
     REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
@@ -286,9 +278,9 @@ static void flip(GSGLOBAL *gs)
     static u64 pk[2 * 64 + 2 * 128 * DOF_BANDS] __attribute__((aligned(64)));
     static unsigned last_flip;
     gsKit_vsync_wait();
-    for (int f = 1; f < FPS_CAP_FIELDS && cpu_ticks() - last_flip < (unsigned)(f * FIELD_TICKS + FIELD_TICKS / 2); f++)
+    for (int f = 1; f < FPS_CAP_FIELDS && ticks() - last_flip < (unsigned)(f * FIELD_TICKS + FIELD_TICKS / 2); f++)
         gsKit_vsync_wait();
-    last_flip = cpu_ticks();
+    last_flip = ticks();
 #ifdef V1B_FIELD
     int odd = (*GS_CSR >> 13) & 1, filter = 0, v0 = odd * 16 + 8;  /* texel centre of line 2y + field */
 #else
@@ -357,9 +349,6 @@ int main(int argc, char **argv)
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
-#ifdef IDLE_DEMO
-    test_opts |= TEST_DEMO;  /* demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO): the idle demo without a script */
-#endif
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
         printf("DSRPROTO gamedata: missing or from another build; stopping\n");
         for (;;)
@@ -376,7 +365,7 @@ int main(int argc, char **argv)
         snd_map(AREA);
     loading_tick(1);
     /* assets from per-area / per-character LZ4 packs (tools/pack.py, src/pack.c); kept for the program's lifetime */
-    unsigned t_load = cpu_ticks();
+    unsigned t_load = ticks();
     Pack pk;
     unsigned model_size = 0;
     void *model_blob = pack_open(&pk, PACK_ROOT "c0000.pak") ? pack_load(&pk, "model.bin", &model_size) : 0;
@@ -409,7 +398,7 @@ int main(int argc, char **argv)
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
     void *menu_blob = pack_open(&pk, PACK_ROOT "menu.pak") ? pack_load(&pk, "menu.bin", 0) : 0;
     pack_close(&pk);
-    t_load = cpu_ticks() - t_load;
+    t_load = ticks() - t_load;
     printf("DSRPROTO mem: elf %u, packs %u (read %u), heap end %u, stack %u, free %u; load %u ms, IOP wait %u ms\n",
            (unsigned)_end - 0x100000, pack_stats.heap, pack_stats.read, (unsigned)sbrk(0), (unsigned)_stack_size,
            ram_free(), t_load / 294912, pack_stats.wait_ticks / 294912);
@@ -476,7 +465,7 @@ int main(int argc, char **argv)
     bonfire_init(AREA);      /* bloodstain / respawn point (src/bonfire.c, A4) */
     test_build_spawn(&pl, col_ok);  /* TEST_SPAWN / COMBAT_DUMMY check builds */
     float cam_yaw = pl.yaw, cam_pitch = 0.25f, cam_dist = 4.0f, idle = 99, avg_dt = 1.0f / 60;
-    unsigned last = cpu_ticks();
+    unsigned last = ticks();
     int tris_drawn = 0;
     float t_cull = 0, t_char = 0, t_wait = 0;  /* ms, smoothed */
     unsigned short prev = 0;
@@ -484,7 +473,7 @@ int main(int argc, char **argv)
 
     for (;;) {
         PROF_FRAME();
-        unsigned now = cpu_ticks();
+        unsigned now = ticks();
         float dt = (now - last) / 294912000.0f;
         float dt_real = dt;  /* test stats: the frame time before the clamps */
         hitch_where(&pl.pos.x, world_current());  /* hitch / spike lines say where (src/hitch.c) */
@@ -557,13 +546,13 @@ int main(int argc, char **argv)
         float d = test_build_cam_dist(4.0f);
         V3 eye = v3add(target, v3(-sinf(cam_yaw) * cosf(cam_pitch) * d, sinf(cam_pitch) * d,
                                   -cosf(cam_yaw) * cosf(cam_pitch) * d));
-        /* camera collision: pull in at once in front of the first wall hit (0.3 m margin, near plane 0.25 m), ease
-         * back out at 4 m/s */
+        /* camera collision: pull in at once in front of the first wall hit (CAM_WALL margin: the near plane plus
+         * 0.05 m, 0.3 m with the old 0.25 m plane), ease back out at 4 m/s */
         float want = d;
         ColHit ch;
         float ray0[3] = {target.x, target.y, target.z}, ray1[3] = {eye.x, eye.y, eye.z};
         if (col_ok && col_ray(ray0, ray1, COL_CAMERA, &ch))
-            want = ch.t * d - 0.3f > 0.2f ? ch.t * d - 0.3f : 0.2f;
+            want = ch.t * d - CAM_WALL > 0.2f ? ch.t * d - CAM_WALL : 0.2f;
         cam_dist = want < cam_dist ? want : cam_dist + 4.0f * dt > want ? want : cam_dist + 4.0f * dt;
         eye = v3add(target, v3scale(v3sub(eye, target), cam_dist / d));
         test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
@@ -581,13 +570,13 @@ int main(int argc, char **argv)
         HITCH_BEGIN(map);
         if (map_ok) {
             /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
-            unsigned t0 = cpu_ticks();
+            unsigned t0 = ticks();
             vu1_begin(0);
             z_clear(gs);
             map_set_player(pl.pos);
             tris_drawn = map_draw(eye);
             vu1_kick();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
-            t_cull += ((cpu_ticks() - t0) / 294912.0f - t_cull) * 0.1f;
+            t_cull += ((ticks() - t0) / 294912.0f - t_cull) * 0.1f;
         } else {
             gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
             r_ground(40, 2);
@@ -616,7 +605,7 @@ int main(int argc, char **argv)
         if (!frozen)  /* a frozen frame (test shots) runs no logic: not part of the averages */
             lpass_frame(hitch_acc[HS_PRE] + hitch_acc[HS_LOGIC]);
         PROF_MARK(PROF_CHARS);
-        unsigned t1 = cpu_ticks();
+        unsigned t1 = ticks();
         vu1_begin(1);
 #ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
         player_draw(&pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
@@ -632,7 +621,7 @@ int main(int argc, char **argv)
         HITCH_END(fx, HS_FX);
         bonfire_draw();  /* the bloodstain marker */
         debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
-        t_char += ((cpu_ticks() - t1) / 294912.0f - t_char) * 0.1f;
+        t_char += ((ticks() - t1) / 294912.0f - t_char) * 0.1f;
 
         /* HUD: DSR's bars, quick slots, souls, YOU DIED (hud.c); Start menu (menu.c); Select: debug overlay */
         PROF_MARK(PROF_HUD);
@@ -655,12 +644,12 @@ int main(int argc, char **argv)
         HITCH_END(hud, HS_HUD);
 
         PROF_MARK(PROF_VU1WAIT);
-        hitch_acc[HS_CHR] += cpu_ticks() - t1;
-        unsigned t2 = cpu_ticks();
+        hitch_acc[HS_CHR] += ticks() - t1;
+        unsigned t2 = ticks();
         fx_kick();   /* FX_VU1: the particle chain, after the characters' */
         vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
-        t_wait += ((cpu_ticks() - t2) / 294912.0f - t_wait) * 0.1f;
-        hitch_acc[HS_WAIT] += cpu_ticks() - t2;
+        t_wait += ((ticks() - t2) / 294912.0f - t_wait) * 0.1f;
+        hitch_acc[HS_WAIT] += ticks() - t2;
         PROF_MARK(PROF_FLIP);
         HITCH_BEGIN(flip);
         gsKit_queue_exec(gs);

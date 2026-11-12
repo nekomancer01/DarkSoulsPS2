@@ -9,12 +9,14 @@
 #include "collision.h"
 #include "map.h"
 #include "mapstream.h"
+#include "residency.h"
 #include "vu1.h"
 #include "objects.h"
 #include "fx.h"
 #include "enemy.h"
 #include "hitch.h"
 #include "coltile.h"
+#include "ticks.h"
 
 /* Which blocks load: the collision triangle under the player (world.bin links, tools/export_world.py). Between two
  * maps that is DSR's own rule, the ConnectCollision part (MSB type 11) under the player; inside one MSB (DSR keeps it
@@ -41,9 +43,6 @@
 #define WORLD_SWAP_S 1.0f
 #define WORLD_RELIEF_RETRY_S 5.0f  /* a relief that found no room tries again after (ASSUMED) */
 static float relief_at;  /* in_cur_s from which the relief of the block underfoot may be tried */
-#ifndef WORLD_RELIEF_SOFT
-#define WORLD_RELIEF_SOFT 1  /* 0: the relief may drop wanted / drawn cells (the old way) */
-#endif
 /* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
  * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
@@ -51,9 +50,10 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #define WORLD_POOL (24u << 20)
 /* MS_POOLS: the arena's size is this build constant, not whatever heap a boot spot leaves (8640 KB booted in the Burg
  * on the ISO, 2026-11-08; booted on world_route's spawn it was ~1.5 MB larger, so the visual room changed with the boot
- * spot). tools/world_budget.py reads this line: the export is solved against the same visual room the runtime prints.
- * A boot with less heap gets a smaller arena (logged by mapstream.c). */
-#define WORLD_ARENA_KB 9152  /* (8640 + the 512 KB WORLD_ARENA_LESS gave up, Burg plan B3) */
+ * spot). The size is residency.h's RES_ARENA_KB, the table the export and tools/world_budget.py solve against.
+ * A boot with less heap gets a smaller arena (logged by mapstream.c; tools/budget.py fails such a run). (9152 KB =
+ * 8640 + the 512 KB WORLD_ARENA_LESS gave up in the Burg plan's B3, until 2026-11-12: the ISO's heap gave 9088.) */
+#define WORLD_ARENA_KB RES_ARENA_KB
 /* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
  * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
  * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg
@@ -92,13 +92,10 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 /* The relief (bump.bin) stays out of the pools: it takes item room only where no map item is wanted
  * (mapstream_alloc_soft), never the heap. Sized into the misc pool (tried 2026-11-08, dropped) it left the Burg 2112 KB
  * of visual room in the 8640 KB arena (structural 4544 KB for the link that loads three Burg blocks, misc 1984 KB). */
-/* WORLD_KEPT_HZN (default 1): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
+/* Kept horizon (built in: the frozen residency design, 2026-11-12): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
  * MB in the Burg) and map.c draws its horizon (map_block_lean): its far cells are in view beyond the pinned 64 m, and
  * without the horizon they were holes (planning thread, 2026-11-08). 0: the tables go whole. */
-#ifndef WORLD_KEPT_HZN
-#define WORLD_KEPT_HZN 1
-#endif
-#define LEAN_E1 (WORLD_KEPT_HZN && WORLD_TAB_SPLIT ? E_TABB : E_TABC)  /* the last maptab piece a lean block lets go */
+#define LEAN_E1 E_TABB  /* the last maptab piece a lean block lets go */
 #define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* MS_LEND: a kept, still-off block within this of the feet gets its structural pool room cleared of lent items (not
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
@@ -149,23 +146,17 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * and freed after the uploads: allocated with the lite set (one arena block per entry) the Burg west block needed
  * 1508 + 475 KB at once and found no room beside the bonfire block with enemies loaded (2026-11-05, TECH_DEBT
  * world-5). */
-/* WORLD_TAB_SPLIT (default on; 0 = maptab.bin in one piece): a neighbour block's maptab.bin is read as three arena
+/* Split map tables (built in: the frozen residency design, 2026-11-12): a neighbour block's maptab.bin is read as three arena
  * blocks, cut at its section starts (map.c map_block_split): header + chunk table (E_TAB), textures + navmesh + fog
  * rows (E_TABB), cell table + horizon (E_TABC). In one piece the Burg bonfire block's 1185 KB needed a run of 19 free
  * arena pages, the largest the lite sets ask for; as pieces the largest is 549 KB. Most "no room" refusals had the
  * bytes free but no hole (TECH_DEBT world-5: 53 of 58 in world_route). The pieces' offsets come from the 80-byte
  * header, read once per block at boot. */
-#ifndef WORLD_TAB_SPLIT
-#define WORLD_TAB_SPLIT 1
-#endif
-/* WORLD_EV_SHARED (the cube-grid plan's step 2, default 1; 0 = every block reads its whole events.bin): the blocks of
+/* Shared events (the cube-grid plan's step 2, built in: the frozen residency design, 2026-11-12): the blocks of
  * one MSB carry the same events.bin but for their entities, hit ranges and colliders (export_emevd.py writes the map's
  * events, instrs, substs, treasures, objacts and lots alike; 67 of each Burg block's 68 KB). A block reads its own
  * middle part (E_EV: entities .. colliders, ~18 KB) and the whole file (E_EVM) only when no block of its map has one
  * in yet; the first copy is the map's (evm[], freed with the map's last block). event.c's split sets point there. */
-#ifndef WORLD_EV_SHARED
-#define WORLD_EV_SHARED 1
-#endif
 /* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
  * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
  * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
@@ -201,6 +192,7 @@ typedef struct {
     void *texbuf;  /* objects.bin, then fx.bin (tex_total bytes) */
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
+    unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
@@ -253,12 +245,6 @@ static float hold_s;
 /* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
 static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static float box_d(const WorldBlock *b, const float *p)
 {
@@ -305,6 +291,18 @@ static int tab_split(BlockRt *r)
     return 1;
 }
 
+/* objects.bin v4 (tools/export_objects.py OBJ_TEX_SHARED): the breakable texture model is the file's last part (header
+ * word 14 = its offset), and the types were loaded at boot (world_systems), so turning a block on reads only that tail
+ * (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. Older files stay whole. */
+static void obj_tail(BlockRt *r)
+{
+    static unsigned hd[16] __attribute__((aligned(64)));
+    if (!read_sync(&r->pk, r->off[E_OBJ], hd, 64) || memcmp(hd, "DSRB", 4) || hd[1] < 4 || !hd[14] ||
+        hd[14] >= r->size[E_OBJ] || (hd[14] & 127))
+        return;
+    r->off[E_OBJ] += hd[14], r->size[E_OBJ] -= hd[14];
+}
+
 /* COL_TILES: a paged collision.bin (tools/export_collision.py COL_TILE) reads its index with the lite set and its pages
  * through src/coltile.c; the page table goes to coltile_plan now (the pool's size). An unpaged file stays whole. 0 if
  * the file could not be read. */
@@ -344,7 +342,7 @@ static void ev_split(BlockRt *r)
 {
     unsigned full = r->size[E_EV], f128 = (full + 127) & ~127u;
     r->total -= f128;  /* world_init's loop counted the second events.bin entry (E_EVM) whole */
-    if (!WORLD_EV_SHARED || full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
+    if (full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
         memcmp(r->evhdr, "EVB1", 4) || r->evhdr[1] != 3)
         return;
     unsigned m0 = r->evhdr[4 + 2 * 3], m1 = r->evhdr[4 + 2 * 6];  /* sections: entities .. colliders, then treasures */
@@ -402,6 +400,8 @@ int world_init(const char *boot_area)
                 printf("world: block %d %s: %s missing or not raw\n", i, tab[i].pack, ENTRIES[e]);
                 r->open = 0;
             }
+            if (i && e == E_OBJ && r->size[e] >= 64)
+                r->obj0 = r->off[e], obj_tail(r);
             if (i && e >= E_TEX) {  /* the boot block's collision, objects and effects are main.c's */
                 if (((r->size[e] + 127) & ~127u) > r->tex_total)
                     r->tex_total = (r->size[e] + 127) & ~127u;
@@ -410,7 +410,7 @@ int world_init(const char *boot_area)
                 r->total += (r->size[e] + 127) & ~127u;
         }
         r->size[E_TABB] = r->size[E_TABC] = 0;  /* (the loop above gave them the whole maptab.bin) */
-        if (i && r->open && WORLD_TAB_SPLIT && !tab_split(r)) {
+        if (i && r->open && !tab_split(r)) {
             printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
             r->open = 0;
         }
@@ -576,6 +576,13 @@ static unsigned char *read_tmp(BlockRt *r, const char *name, unsigned *size)
         return NULL;
     }
     return p;
+}
+
+int world_obj_read(int block, unsigned rel, void *dst, unsigned bytes)
+{
+    if (block < 1 || block >= nblk || !rt[block].open || !rt[block].obj0)
+        return 0;
+    return pack_req_read(&rt[block].pk, rt[block].obj0 + rel, dst, bytes);
 }
 
 void world_systems(GSGLOBAL *gs)
@@ -1044,7 +1051,6 @@ static void read_step(int i, int issue)
 /* MS_POOLS: a lite-set entry from the structural pool. Full: a kept-only block that still holds its tables lets go of
  * them (lean, freed WORLD_DRAIN frames later: *wait = 1, try again soon); none left to lean: as before, from the item
  * pages (mapstream_alloc clears map items), which the pool's size should make rare (logged). Without pools: as before */
-static void lean(int i);
 static void *lite_alloc(int want, unsigned sz, int *wait)
 {
     if (!mapstream_pools_on())
@@ -1211,7 +1217,7 @@ static void bump_step(void)
     /* the relief is detail on top of the map: it takes room no wanted cell needs (WORLD_RELIEF_SOFT). Taking it like a
      * lite set dropped ~700 KB of drawn cells at every block change after 1 s in the Burg, which then read back
      * (soak on the ISO, 2026-11-07); the heap is the enemies' (WORLD_HEAP_MODELS) */
-    bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
+    bump_buf = mapstream_alloc_soft(sz);
     /* MS_POOLS: no heap fallback. The relief is optional detail, and in the heap it took RAM min on taurus to
      * 1417-1478 KB under the 1.5 MB floor once the enemies loaded (ISO 2026-11-09) */
     if (!bump_buf && !mapstream_pools_on() && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)

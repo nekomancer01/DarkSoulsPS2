@@ -13,6 +13,7 @@
  * with its return address for addr2line on proto.sym.elf, then only counted). */
 #ifndef HITCH_H
 #define HITCH_H
+#include "ticks.h"
 
 /* a flip back to the level the cell left within this many map draws (~2 s at 30 fps) is a flip-flop */
 #define HITCH_FLOP_FRAMES 60
@@ -39,12 +40,7 @@ enum {
 };
 
 extern unsigned hitch_acc[HS_N];  /* EE ticks this frame */
-static inline unsigned hitch_now(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
+static inline unsigned hitch_now(void) { return ticks(); }
 #define HITCH_BEGIN(s) unsigned hitch_t0_##s = hitch_now()
 #define HITCH_END(s, sec) (hitch_acc[sec] += hitch_now() - hitch_t0_##s)
 

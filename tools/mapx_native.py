@@ -35,7 +35,10 @@ def lib():
     if not _L:
         L = None
         if os.environ.get("MAPX", "1") != "0":
-            so = os.path.join(HERE, "libmapx.so")
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run as a script with -I: not on the path
+            import native_so
+            so = native_so.so(os.path.join(HERE, "libmapx"))
             try:
                 if not os.path.exists(so) or any(os.path.getmtime(so) < os.path.getmtime(s) for s in sources()):
                     _build(so)
@@ -52,12 +55,14 @@ def lib():
                 L.mx_soften_thin.restype = ll
                 L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
                 L.mx_far_cells.restype = ll
+                L.mx_chunks_st_align.argtypes = [i]
+                L.mx_chunks_st_align.restype = None
                 L.mx_simp_new.argtypes = [i, vp, vp, vp, vp, vp, vp, vp, vp, i, d, ll, vp, ll, vp, ll, vp, vp, d, d, i, vp,
                                           d, d, d, d, d, d, d, d, d, d, d, d]
                 L.mx_simp_new.restype = vp
                 for f, a, r in (("mx_simp_stats", [vp, vp], None), ("mx_simp_dup", [vp, vp], None),
                                 ("mx_simp_jobs", [vp, vp, vp], None), ("mx_simp_count", [vp, d], ll),
-                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_job_counts", [vp, d, vp], None),
+                                ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_refit", [vp, vp, vp, vp], None), ("mx_simp_envelope", [d], None), ("mx_simp_guard", [d, d], None), ("mx_simp_shape", [d], None), ("mx_simp_check", [vp, d, d, d, vp, vp, vp], ll), ("mx_simp_back_off", [vp, vp], ll), ("mx_simp_swap_jobs", [vp, vp, vp], ll), ("mx_simp_job_nout", [vp, vp], None), ("mx_simp_job_counts", [vp, d, vp], None),
                                 ("mx_simp_replay_jobs", [vp, vp], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
                                 ("mx_simp_free", [vp], None),
                                 ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),

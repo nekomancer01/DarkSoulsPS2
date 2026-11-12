@@ -961,7 +961,7 @@ static void chr_part_start(void)
 static void chr_drop(void)
 {
     if (chr_ld.name[0])
-        pack_job_cancel(&chr_ld.job);
+        pack_job_abandon(&chr_ld.job);
     for (int k = 0; k < 3; k++)
         free(chr_ld.part[k]);
     memset(chr_ld.part, 0, sizeof chr_ld.part);

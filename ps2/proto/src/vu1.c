@@ -12,6 +12,7 @@
  * OFFSET 386); a skin batch is a 9-qword header + 4 qwords per vertex, <= VU1_SKIN_TRIS triangles. */
 #include <kernel.h>
 #include <dma.h>
+#include "ticks.h"
 /* gsKit's dmaInit.h (through render.h) defines these again with the same values spelled 0x0 / 0x1, a redefinition
  * warning; drop ps2sdk's spelling here, gsKit's takes over below */
 #undef DMA_CHANNEL_VIF0
@@ -342,12 +343,6 @@ static void chk_after(void)
 #define CHK_AFTER() ((void)0)
 #endif
 
-static inline unsigned ticks(void)  /* EE COP0 Count, 294.912 MHz */
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* room for qw more qwords (plus the END tag): otherwise send the chain built so far and start over in the same
  * buffer. 0 = cannot fit at all (the caller drops the batch) */
@@ -436,6 +431,11 @@ void vu1_init(GSGLOBAL *gs)
 /* the map chain's camera (vu1_begin), for vu1_add_idx's per-vertex clip test: view x / y scales of the guard band */
 static V3 idx_eye, idx_right, idx_up, idx_fwd;
 static float idx_kx, idx_ky;
+/* the map programs' near plane (vu1_map_near; R_NEAR again at every vu1_begin): Z = ZMAX near / z, the clip planes'
+ * near plane and the programs' CLIP term (2 near) follow it */
+static float map_near = R_NEAR;
+static int rows_fog;  /* constants 4-7 hold vu1_map_fog's terms (else vu1_begin's) */
+static float last_fog[4];
 
 void vu1_begin(int buffer)
 {
@@ -452,6 +452,7 @@ void vu1_begin(int buffer)
 #endif
     clut_sync = 0;
     clut_loads = 0;
+    map_near = R_NEAR, rows_fog = 0;
     V3 eye, right, up, fwd;
     float focal, focal_y, zscale;
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
@@ -537,6 +538,48 @@ void vu1_map_zbias(float k)
     map_zk = k;
 }
 
+void vu1_map_near(float n)
+{
+    map_near = n;
+    V3 eye, right, up, fwd;
+    float focal, focal_y, zscale;
+    r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
+    if (!room(10))
+        return;
+    /* after FLUSH (the running program read its constants): vu1clip's planes, then constants 4-7 */
+    tag(0, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_STCYCL, 0, 0x0101));
+    tag(5, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 5, MAP_PLANES));
+    {
+        float pl[20] = {0, 0, 1, -n, -1, 0, R_GUARD / focal, 0, 1, 0, R_GUARD / focal, 0,
+                        0, -1, R_GUARD / focal_y, 0, 0, 1, R_GUARD / focal_y, 0};
+        memcpy(cp, pl, sizeof pl);
+        cp += 10;
+    }
+    if (rows_fog) {  /* vu1_map_fog's rows with the last fog terms (it sends its own FLUSH) */
+        vu1_map_fog(last_fog[0], last_fog[1], last_fog[2], last_fog[3]);
+        return;
+    }
+    tag(4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 4, 4));
+    float m[16] = {focal, -focal_y, zscale * (n / R_NEAR) / 16.0f, 0,
+                   R_SCREEN_W / 2 + gsg->OffsetX / 16.0f, 224.0f + gsg->OffsetY / 16.0f, 0, 0,
+                   focal / R_GUARD, focal_y / R_GUARD, 1, 0,
+                   0, 0, -2 * n, 0};
+    memcpy(cp, m, sizeof m);
+    cp += 8;
+}
+
+float vu1_map_near_get(void)
+{
+    return map_near;
+}
+
+void *vu1_scratch(int *bytes)
+{
+    /* the character chain's buffer: free from the end of last frame's vu1_wait until this frame's vu1_begin(1) */
+    *bytes = cur == 0 ? (int)sizeof chain_chr : 0;
+    return cur == 0 ? (void *)chain_chr : NULL;
+}
+
 void vu1_map_fog(float a, float b, float fmin, float fmax)
 {
     skin_fog[0] = a, skin_fog[1] = b, skin_fog[2] = fmin, skin_fog[3] = fmax;
@@ -549,10 +592,11 @@ void vu1_map_fog(float a, float b, float fmin, float fmax)
     room(6);
     tag(0, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_STCYCL, 0, 0x0101));  /* batches leave STCYCL at 3,1 */
     tag(4, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, 4, 4));
-    float m[16] = {focal, -focal_y, zscale * map_zk, a,
+    float m[16] = {focal, -focal_y, zscale * (map_near / R_NEAR) * map_zk, a,
                    R_SCREEN_W / 2 + gsg->OffsetX / 16.0f, 224.0f + gsg->OffsetY / 16.0f, 0, b,
                    focal / R_GUARD, focal_y / R_GUARD, 1, fmin,
-                   0, 0, -2 * R_NEAR, fmax};
+                   0, 0, -2 * map_near, fmax};
+    rows_fog = 1, last_fog[0] = a, last_fog[1] = b, last_fog[2] = fmin, last_fog[3] = fmax;
     memcpy(cp, m, sizeof m);
     cp += 8;
 }
@@ -627,6 +671,14 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
     return 1;
 }
 
+/* The chain's minification filter. DSR's samplers blend between mip levels: its renderer builds them as trilinear
+ * (D3D11 MIN_MAG_MIP_LINEAR) or anisotropic x4, all with MipLODBias 0 (exe FUN_141152870, desc -> D3D11 in
+ * FUN_140ce8590). 1 (default): GS LINEAR_MIPMAP_LINEAR, the two nearest levels blended; make DEFS=-DMIP_TRILINEAR=0:
+ * LINEAR_MIPMAP_NEAREST as before (one level, a visible step where it changes). PCSX2 does not time the second
+ * texture read per pixel: the fill cost shows on real hardware only. */
+#ifndef MIP_TRILINEAR
+#define MIP_TRILINEAR 1
+#endif
 static int mip_mxl, mip_k;
 static u64 mip_tbp;
 
@@ -667,7 +719,7 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
         q64(lt_tex0 | (u64)cld(t->VramClut) << 61, 0x06);
     }
     if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
-        q64(GS_SETREG_TEX1(0, mxl, 1, 4, 0, 0, mip_k), 0x14);
+        q64(GS_SETREG_TEX1(0, mxl, 1, MIP_TRILINEAR ? 5 : 4, 0, 0, mip_k), 0x14);
         q64(mip_tbp, 0x34);  /* MIPTBP1_1 */
     } else {
         q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
@@ -836,7 +888,7 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
                   z = oz + rz.x * p[0] + rz.y * p[1] + rz.z * p[2];
             float zm = z * 0.999f - 0.01f, zp = z * 1.001f + 0.01f, ax = fabsf(x) * idx_kx, ay = fabsf(y) * idx_ky;
             /* bit 0: VU1 may flag it (conservative); bits 1-5: surely past the near plane / that guard band side */
-            flag[i] = (z < R_NEAR * 1.01f + 0.01f || ax > zm || ay > zm) | (z < R_NEAR * 0.99f - 0.01f) << 1 |
+            flag[i] = (z < map_near * 1.01f + 0.01f || ax > zm || ay > zm) | (z < map_near * 0.99f - 0.01f) << 1 |
                       (ax > zp) << (x > 0 ? 2 : 3) | (ay > zp) << (y > 0 ? 4 : 5);
         }
         const u8 *ix = idx;

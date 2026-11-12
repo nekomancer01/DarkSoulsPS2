@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lua0.h"
+#include "ticks.h"
 
 enum { OP_MOVE, OP_LOADK, OP_LOADBOOL, OP_LOADNIL, OP_GETUPVAL, OP_GETGLOBAL, OP_GETTABLE, OP_SETGLOBAL, OP_SETUPVAL,
        OP_SETTABLE, OP_NEWTABLE, OP_SELF, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_POW, OP_UNM, OP_NOT, OP_CONCAT, OP_JMP,
@@ -901,19 +902,13 @@ static void mark_obj(GCH *o)
     }
 }
 
-static unsigned now_ticks(void)
-{
-    unsigned t;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(t));
-    return t;
-}
 
 /* Mark (atomic, between script calls): roots are the globals, the method tables and extra_roots. Fixed objects (the
  * globals table, registered C functions, strings in loaded code) are never freed, so they need no walk of allgc:
  * the sweep keeps them, and the only one with children (globals) is a root. */
 static void gc_mark(void (*extra_roots)(void))
 {
-    unsigned t0 = now_ticks();
+    unsigned t0 = ticks();
     gc_before = lua0_heap, gc_since = lua0_since_gc;
     gc_cur ^= 1;
     lua0_mark(globals);
@@ -923,14 +918,14 @@ static void gc_mark(void (*extra_roots)(void))
         extra_roots();
     lua0_since_gc = 0;
     sweep_pp = &allgc;
-    gc_mark_us = (now_ticks() - t0) / 295, gc_sweep_us = gc_step_max_us = gc_steps = 0;
+    gc_mark_us = (ticks() - t0) / 295, gc_sweep_us = gc_step_max_us = gc_steps = 0;
 }
 
 /* Free unmarked objects from sweep_pp on until the list ends (returns 1) or `budget` ticks have passed (0 = no
  * limit). Objects allocated since the mark go in at the head of allgc, behind the sweep, and are live. */
 static int gc_sweep(unsigned budget)
 {
-    unsigned t0 = now_ticks(), n = 0;
+    unsigned t0 = ticks(), n = 0;
     GCH **pp = sweep_pp;
     while (*pp) {
         GCH *o = *pp;
@@ -963,11 +958,11 @@ static int gc_sweep(unsigned budget)
             lua0_heap -= size < lua0_heap ? size : lua0_heap;
             lrel(o);
         }
-        if (budget && !(++n & 63) && now_ticks() - t0 > budget)
+        if (budget && !(++n & 63) && ticks() - t0 > budget)
             break;
     }
     sweep_pp = pp;
-    unsigned us = (now_ticks() - t0) / 295;
+    unsigned us = (ticks() - t0) / 295;
     gc_sweep_us += us, gc_steps++;
     if (us > gc_step_max_us)
         gc_step_max_us = us;
@@ -1008,8 +1003,6 @@ int lua0_gc_step(void (*extra_roots)(void), unsigned threshold, unsigned budget_
     gc_sweep(budget_us * 295u);
     return 1;
 }
-
-int lua0_gc_busy(void) { return sweep_pp != NULL; }
 
 /* ---- base library (what DSR's scripts use: math.abs, table.getn; loadstring is installed by the AI) ---- */
 

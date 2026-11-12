@@ -8,6 +8,14 @@ import numpy as np
 import export_map as em
 import mapx_native
 
+# C-only steps after the stages compared here (no Python twin): off, so both paths print and write the same
+em.SIMPLIFY_REFIT = False
+em.ST_ALIGN = False
+em.SIMPLIFY_ENV_NEAR = em.SIMPLIFY_ENV_FAR = 0.0
+# the triangle guard and its validation pass (SIMPLIFY_GUARD, PR #187) live only in the C simplifier: the Python twin
+# gives the guard-off log, so the comparison runs with both off; check_guard runs the C path with them on
+em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = False
+
 L = mapx_native.lib()
 assert L is not None, "libmapx did not build"
 
@@ -402,12 +410,45 @@ def check_simplify(rng):
     return sum(len(x[1] or []) for x in a[2])
 
 
+def check_guard(rng):
+    """the C simplifier with the triangle guard + validation on (export_map.py's default; no Python twin): it has to
+    finish (validate_jobs raises if a job still fails after backing off) and print its validate line. The triangle count
+    is not compared with the guard-off run: a refused collapse changes the order of the later ones, so either can end
+    a triangle or two lower"""
+    import copy, io, contextlib
+    ms, nav_v, nav_t = simp_scene(rng)
+    ms[0]["keep"] = False
+    spawn = tuple(rng.uniform(-20, 20, 3).tolist())
+    em.KEEP_POS[:] = []
+    em.BUDGET = int(rng.integers(10, 3000))
+    for m in ms:
+        m["tris_in"] = m["tris"]
+
+    def run(guard):
+        M = copy.deepcopy(ms)
+        em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = guard
+        f = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(f):
+                em.simplify_meshes(M, spawn, nav_v, nav_t, src="tris_in", out="tris_far", env_pad=0.25)
+        finally:
+            em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = False
+        return sum(len(m.get("tris_far") or []) for m in M), f.getvalue()
+    n_off, _ = run(False)
+    n_on, log = run(True)
+    if n_on and "validate (" not in log:
+        raise SystemExit("FAIL guard: no validation pass ran")
+    return n_on - n_off
+
+
 if __name__ == "__main__":
     os.environ["SIMPLIFY_PROCS"], os.environ["SIMPLIFY_CACHE"] = "1", "0"
     tot = 0
     for k in range(seed, seed + count):
         tot += check_simplify(np.random.default_rng(k))
     print(f"mapx: simplify_meshes identical to the Python code on {count} random scenes ({tot} output triangles)")
+    tot = sum(check_guard(np.random.default_rng(k)) for k in range(seed, seed + count))
+    print(f"mapx: simplify_meshes with the triangle guard ran clean on {count} random scenes ({tot:+d} triangles against no guard)")
 
 
 # ---- stage 3b: flatten + build_chunks ----

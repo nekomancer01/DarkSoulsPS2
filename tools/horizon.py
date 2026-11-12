@@ -258,7 +258,8 @@ def _native(name, srcs, setup, cxx=False):
             os.environ.setdefault("OMP_WAIT_POLICY", "passive")
             native = os.path.join(HERE, "native")
             src = [os.path.join(native, s) for s in srcs]
-            so = os.path.join(native, name + ".so")
+            import native_so
+            so = native_so.so(os.path.join(native, name))
             try:
                 if not os.path.exists(so) or os.path.getmtime(so) < max(os.path.getmtime(s) for s in src):
                     import subprocess, tempfile

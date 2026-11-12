@@ -896,7 +896,10 @@ def bcdecode_lib():
     global _bc
     if _bc is None:
         native = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
-        so = os.path.join(native, "libbcdecode.so")
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run as a script with -I: not on the path
+        import native_so
+        so = native_so.so(os.path.join(native, "libbcdecode"))
         if not os.path.exists(so):
             tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel exporter never loads half a library
             if os.system(f"gcc -O2 -shared -fPIC -o '{tmp}' '{os.path.join(native, 'bcdecode.c')}'"):

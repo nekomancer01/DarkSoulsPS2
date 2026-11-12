@@ -14,12 +14,13 @@ concurrency:
   cancel-in-progress: true
 jobs:
   hygiene:
-    name: Hygiene (no game data, personal paths, duplicate TECH_DEBT IDs)
+    name: Hygiene (no game data, personal paths, duplicate TECH_DEBT IDs, switch list complete)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: python3 -I tools/ci/hygiene.py
+      - run: python3 -I tools/ci/switches.py
   offline:
     name: Offline (VU1 tests, generated .vsm up to date, Python compiles)
     runs-on: ubuntu-latest
@@ -40,3 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: tools/ci/compile.sh
+  switches:
+    name: Switches (every fallback / debug build in src/switches.h compiles and links, -Werror)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: ps2dev/ps2dev:v2.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/ci/switches.sh

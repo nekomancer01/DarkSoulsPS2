@@ -10,7 +10,10 @@ How (src/testscript.c "park", mailbox version 2):
     ELF and hands it the script the same way. A state that does not come up parked is dropped and the run boots cold.
 The key: the ELF's and the disc image's bytes, the PCSX2 build, and the park script (options + first spawn), so a
 rebuilt ELF / ISO, another start spot or other boot options never load an old state. Scripts with "option save" (a save
-file read at boot) or "option demo" always boot cold.
+file read at boot) or "option demo" always boot cold, and so does every host-ELF run (no --iso): the ELF keeps its
+host: packs open from boot, and a loaded state has none of PCSX2's HostFs file handles, so the first pack read after it
+fails ("host:data/c1201.pak model.bin: read error", smoke on 2026-11-10: 19 of 20 warm host runs failed). A host boot
+is ~7 s anyway; ISO packs are read by sector (dsrsnd's disc table) and keep no handle.
 Cache: WARM_CACHE (a directory; 0 = off: every run boots cold, as test-run.py --cold), default
 <main tree>/build/cache/warm (DSR_CACHE: the cache root); entries older than WARM_DAYS (2) days are pruned, and the
 newest WARM_KEEP (60) kept.
@@ -19,7 +22,7 @@ newest WARM_KEEP (60) kept.
 import glob, hashlib, json, os, re, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = b"warm-1"
+VERSION = b"warm-2"  # warm-2: ISO runs only (warm-1 also keyed host-ELF runs, whose states never worked)
 WAIT_PARK = 3  # game seconds at the start spot before parking: the first stream-in settles
 
 
@@ -130,7 +133,7 @@ class Plan:
 def plan(elf, script, iso, hostexec):
     """Plan for this run, or None (cache off, or a script that boots cold)"""
     d = cache_dir()
-    park = park_script(script) if d and parks(elf) else None
+    park = park_script(script) if d and iso and parks(elf) else None
     if park is None:
         return None
     h = hashlib.sha256(VERSION)

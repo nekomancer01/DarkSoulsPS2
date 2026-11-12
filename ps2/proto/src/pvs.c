@@ -193,14 +193,3 @@ int pvs_range(int k, unsigned entry, unsigned first, unsigned n, int now)
             return 1;
     return 0;
 }
-
-void pvs_stats(int k, unsigned *in_row, unsigned *units)
-{
-    *in_row = *units = 0;
-    if (k < 0 || k >= PVS_INST || !pv[k].row)
-        return;
-    const Pvs *p = &pv[k];
-    *units = p->units;  /* row bits */
-    for (unsigned u = 0; u < p->units; u++)
-        *in_row += p->row[u >> 3] >> (u & 7) & 1;
-}

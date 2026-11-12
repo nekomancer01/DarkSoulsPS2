@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "prof.h"
 #include "render.h"
+#include "ticks.h"
 #ifdef GPROF
 #include <ps2prof.h>
 #endif
@@ -35,12 +36,6 @@ static float avg_cyc[PROF_PASSES], avg_im[PROF_PASSES], avg_dm[PROF_PASSES], avg
 static unsigned over[PROF_PASSES], frames, mark_c, mark_i, mark_d, frame_c;
 static int running = -1;
 
-static inline unsigned count(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 static inline unsigned pcr0(void)
 {
     unsigned c;
@@ -64,7 +59,7 @@ static void counters_reset(void)
 
 void prof_mark(int pass)
 {
-    unsigned c = count(), i = pcr0(), d = pcr1();
+    unsigned c = ticks(), i = pcr0(), d = pcr1();
     if (running >= 0) {
         cur[running].cyc += c - mark_c;
         cur[running].im += i - mark_i;
@@ -78,7 +73,7 @@ static float ms(float cyc) { return cyc / 294912.0f; }
 void prof_frame(void)
 {
     prof_mark(-1);
-    unsigned now = count();
+    unsigned now = ticks();
     if (frames) {
         unsigned fc = now - frame_c;
         avg_frame += (fc - avg_frame) * 0.05f;
@@ -121,7 +116,7 @@ void prof_frame(void)
         cur[p] = (Sample){0, 0, 0};
     frames++;
     counters_reset();
-    frame_c = count();
+    frame_c = ticks();
     mark_c = frame_c, mark_i = 0, mark_d = 0;
     running = PROF_INPUT;
 }

@@ -12,6 +12,7 @@
 #include "flags.h"
 #include "pack.h"
 #include "progress.h"
+#include "ticks.h"
 
 #define SAVE_MAGIC 0x53525344u  /* 'DSRS' */
 #define HDR 32
@@ -26,12 +27,6 @@ static const char *area;
 static unsigned seen_flags, seen_prog;
 static float since, play_acc;
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 static u32 crc32(const u8 *p, int n)
 {
@@ -521,7 +516,6 @@ void save_tick(const Player *pl, float dt)
     }
 }
 
-int save_device(void) { return device; }
 int save_resident_bytes(void) { return (int)(sizeof buf + sizeof prog) + flags_resident_bytes(); }
 
 static int check(const char *what, long long got, long long want)
