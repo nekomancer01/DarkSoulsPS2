@@ -73,7 +73,7 @@ PX = float(os.environ.get("HZN_PX", 8.0))
 ERR_Q = float(os.environ.get("HZN_ERR_Q", 0.99))
 S_MIN = 0.25  # the weld + collapse error is searched down to S_MIN x PX
 ERR_CAP = 4.0  # distances are searched up to ERR_CAP x PX pixels (a larger one counts as that)
-HZN_D = float(os.environ.get("HZN_D", 38.0))  # (54 before map.c HZN_R went 56 -> 40, Burg plan B3)  # metres: nearest view distance the error is judged from
+HZN_D = float(os.environ.get("HZN_D", 30.0))  # (54 before map.c HZN_R went 56 -> 40, Burg plan B3)  # metres: nearest view distance the error is judged from
 # Every block is cut to the same screen error (PX), so the far view has one quality across the game: the triangle count
 # follows how much each block shows, not a share of bytes. KB is only a safety ceiling (ASSUMED) for a block that would
 # overflow the mapstream arena (9984 KB; lite sets share it with the near cells, relief and enemy models, up to 3 slots,

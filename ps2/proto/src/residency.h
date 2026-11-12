@@ -20,8 +20,8 @@
 #define RESIDENCY_H
 
 #define RES_NEAR_R 20      /* m: near level drawn and budgeted within (box clipped to the cell's cube) */
-#define RES_PIN_R 40       /* m: coarse level and kept meshes pinned within (map.c HZN_R: the horizon stands in beyond) */
-#define RES_HZN_R 48       /* m: coarse cells with a horizon wanted within (soft), the horizon drawn beyond */
+#define RES_PIN_R 32       /* m: coarse level and kept meshes pinned within (map.c HZN_R: the horizon stands in beyond) */
+#define RES_HZN_R 40       /* m: coarse cells with a horizon wanted within (soft), the horizon drawn beyond */
 #define RES_ARENA_KB 9088  /* the streamer's arena (world.c), what the heap gives at boot (9152 asked before 2026-11-12) */
 #define RES_PAGE_KB 64     /* arena page (mapstream.c MS_PAGE) */
 #define RES_FILL_PCT 92    /* share of the item pages the plan fills (granule rounding, groups not filling a page) */

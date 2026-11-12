@@ -158,7 +158,13 @@ def main():
         elif ws_s:
             ws_bc = (mapcfg.WS_R1_IN, mapcfg.WS_R1, mapcfg.WS_B1, "coarse level", mapcfg.WS_PX1)
             ws_bn = (0.0, mapcfg.WS_R0, mapcfg.WS_B0, "near level", mapcfg.WS_PX0)
-        mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=mapcfg.EPS_FAR, far=far,
+        if mapcfg.WS_FAR_SHAPE and ws_s and mapcfg.WS_DROP:  # the near level's geometry without the small clutter
+            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far",
+                                    eps_fixed=(mapcfg.WS_PX0 / 568) ** 2, far=far, cells=True, area_k=0.0,
+                                    eps_far=min(mapcfg.EPS_FAR, mapcfg.BACKDROP_EPS),
+                                    budget=ws_bc[:4] + (mapcfg.WS_FAR_PX,), nav_s=ws_s, far_shape=True)
+        else:
+            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=mapcfg.EPS_FAR, far=far,
                         floor=mapcfg.STREAM_D, cells=True, eps_far=min(mapcfg.EPS_FAR, mapcfg.BACKDROP_EPS),
                         budget=ws_bc if ws_s else None, nav_s=ws_s, env_pad=mapcfg.SIMPLIFY_ENV_FAR)
         mapchunks.rss("simplify coarse")

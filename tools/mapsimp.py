@@ -316,7 +316,7 @@ def struct_sat(eps_fixed, budget):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None):
+                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None, far_shape=False):
     """Quadric edge collapse (tools/native/simplify.c, the source of truth; tools/simplify.py is its frozen reference and
     the fallback below) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
@@ -339,7 +339,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_shape(mapcfg.SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
-                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad)
+                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad, far_shape=far_shape)
         finally:
             MX.mx_simp_envelope(0.0)
             MX.mx_simp_guard(0.0, -2.0)
@@ -970,7 +970,7 @@ BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.bud
 
 
 def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0):
+                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0, far_shape=False):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -1016,7 +1016,11 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         return h
     drop = None
     if budget and cells and nav_s is not None and len(nav_s) and mapcfg.WS_DROP and (mapcfg.SIMPLIFY_ENV_STRICT or not env_pad):
-        drop = loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spawn, floor or mapcfg.NEAR)
+        # (WS_FAR_SHAPE's coarse pass: clutter as seen from where the coarse level starts, WS_FAR_DROP_K x sooner)
+        drop = loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spawn,
+                            mapcfg.WS_NEAR_R if far_shape else floor or mapcfg.NEAR)
+        if far_shape:
+            drop["cost"] = drop["cost"] / mapcfg.WS_FAR_DROP_K ** 2
     h = new_handle()
     try:
         st = np.zeros(3, i64)

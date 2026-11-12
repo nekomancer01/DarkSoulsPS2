@@ -144,6 +144,17 @@ WS_DROP_FLUSH = float(os.environ.get("WS_DROP_FLUSH", 0.1))
 # cluster's size (the stones of an arch, the planks of a floor; each stone alone was small enough to go and the arch
 # by the Burg bonfire lost them one by one). Cut-out cards (ivy leaves) stay single.
 WS_DROP_GAP = float(os.environ.get("WS_DROP_GAP", 0.1))
+# WS_FAR_SHAPE (default on; 0 = the coarse level as before: its own collapse at EPS_FAR judged from STREAM_D): the
+# coarse level is the near level's geometry without the small clutter. The structure is low-poly already, so a second,
+# cruder collapse of it (12-24 px judged at 32 m: 0.7-1.4 m) saved little and folded recessed facades into tents (the
+# arcade south of the Burg bonfire, drawn coarse from 20 m). The coarse pass now runs like the near pass (judged at
+# the near view distance, the near envelope, no area term) at the near level's cap WS_PX0, capped at WS_FAR_PX, and
+# leaves out the loose clusters under WS_FAR_DROP_K x the cell's threshold as seen from WS_NEAR_R, where the coarse
+# level starts to be drawn. It is ~1.75x the old coarse triangles over a whole block, paid by the pin radius
+# (residency.h RES_PIN_R 40 -> 32 m: the horizon stands in from there). ASSUMED constants (TECH_DEBT map-46)
+WS_FAR_SHAPE = os.environ.get("WS_FAR_SHAPE", "1") == "1"
+WS_FAR_PX = float(os.environ.get("WS_FAR_PX", 18.0))
+WS_FAR_DROP_K = float(os.environ.get("WS_FAR_DROP_K", 4.0))
 # A block's share of a seam spot's room by the source triangles in reach (WS_SHARE_TRIS, the default): the blocks of one MSB split a seam spot's room by
 # the game's own triangle counts of their cells within the tier's radius (mapgather counts every triangle of the MSB
 # per 32 m cell before the block cut, so each block's export sees the same table and the shares add up to 1).
