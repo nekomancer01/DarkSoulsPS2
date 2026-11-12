@@ -15,6 +15,7 @@
 
 IRX_ID("dsrsnd", 1, 0);
 
+#define LOAD_TRIP 8  /* SND_LOAD_STEP reads of a bank per trip of the drive (ASSUMED: under a stream's half second) */
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
 #define POLL_US 4000  /* stream thread period */
 #define STREAM_PRIO 30       /* the stream thread: above the RPC threads (40-42), below the CD driver */
@@ -179,8 +180,64 @@ static SndDiscStat dstat __attribute__((aligned(64)));
 static int cd_layer = -1, cd_dual;  /* layer of the last read (-1 none yet); 1: a real dual-layer disc */
 static unsigned int cd_window = 4371;
 
+/* Who uses the drive (the "dsrsnd: drive" line every DRIVE_LOG_MS): reads, seeks, far seeks, KB and ms by reader (the
+ * EE's requests / stream read-ahead / bank loads), and the EE reads that had to seek back right after one of the
+ * other two (the return trip a stream top-up costs the map reader). */
+#define DRIVE_LOG_MS 10000u
+#define DISC_AGE_MS 1000u  /* ASSUMED: about the look-ahead of the map reader */
+static unsigned int dstat_aged;  /* requests served out of sweep order for their age */
+static int cd_who, cd_last_who;  /* 0 EE request, 1 stream read-ahead, 2 bank load */
+static struct { unsigned int reads, seeks, far, kb, ms; } who_st[4];  /* [3]: EE reads right after another reader */
+static unsigned int who_t0;
+/* far seeks by the files they went between (from -> to, indices into df_tab; -1: outside every file) */
+#define FAR_PAIRS 12
+static struct { short a, b; unsigned short n, who; } far_tab[FAR_PAIRS];
+static int df_file_at(unsigned int lsn)
+{
+    for (int i = 0; i < df_n; i++)
+        if (lsn >= df_tab[i].lsn && lsn < df_tab[i].lsn + (df_tab[i].size + 2047) / 2048 + 1)
+            return i;
+    return -1;
+}
+static void far_note(unsigned int from, unsigned int to)
+{
+    int a = df_file_at(from), b = df_file_at(to), free_i = -1;
+    for (int i = 0; i < FAR_PAIRS; i++) {
+        if (far_tab[i].n && far_tab[i].a == a && far_tab[i].b == b) {
+            far_tab[i].n++;
+            return;
+        }
+        if (!far_tab[i].n && free_i < 0)
+            free_i = i;
+    }
+    if (free_i >= 0)
+        far_tab[free_i].a = a, far_tab[free_i].b = b, far_tab[free_i].n = 1, far_tab[free_i].who = cd_who;
+}
+static void who_log(void)
+{
+    unsigned int now = now_ms();
+    if (now - who_t0 < DRIVE_LOG_MS)
+        return;
+    who_t0 = now;
+    if (who_st[0].reads + who_st[1].reads + who_st[2].reads)
+        printf("dsrsnd: drive 10 s: ee %u reads %u seeks %u far %u KB %u ms | streams %u reads %u seeks %u far %u KB %u ms | "
+               "banks %u reads %u seeks %u far %u KB %u ms | ee back from them %u seeks %u far %u ms | aged %u\n",
+               who_st[0].reads, who_st[0].seeks, who_st[0].far, who_st[0].kb, who_st[0].ms,
+               who_st[1].reads, who_st[1].seeks, who_st[1].far, who_st[1].kb, who_st[1].ms,
+               who_st[2].reads, who_st[2].seeks, who_st[2].far, who_st[2].kb, who_st[2].ms,
+               who_st[3].seeks, who_st[3].far, who_st[3].ms, dstat_aged);
+    dstat_aged = 0;
+    for (int i = 0; i < FAR_PAIRS; i++)
+        if (far_tab[i].n > 1)
+            printf("dsrsnd: far seeks %u x %s -> %s (%s)\n", far_tab[i].n, far_tab[i].a < 0 ? "?" : df_tab[far_tab[i].a].name,
+                   far_tab[i].b < 0 ? "?" : df_tab[far_tab[i].b].name, far_tab[i].who == 1 ? "stream" : far_tab[i].who ? "bank" : "ee");
+    memset(far_tab, 0, sizeof far_tab);
+    memset(who_st, 0, sizeof who_st);
+}
+
 static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
 {
+    int w_seek = 0, w_far = 0;
     int l = dstat.layer1 && lsn >= dstat.layer1, lc = cd_layer >= 0 && l != cd_layer;
     dstat.layer_changes += lc;
     cd_layer = l;
@@ -189,6 +246,9 @@ static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
         unsigned int d = lsn > cd_head ? lsn - cd_head : cd_head - lsn;
         dstat.seeks++;
         dstat.far_seeks += d > cd_window || lc;
+        w_seek = 1, w_far = d > cd_window || lc;
+        if (w_far && df_tab)
+            far_note(cd_head ? cd_head - 1 : 0, lsn);
     }
     unsigned int t0 = now_ms();
     for (int t = 0; t < DF_TRIES; t++) {
@@ -199,6 +259,11 @@ static int cd_read1(unsigned int lsn, unsigned int n, void *buf)
                 cd_head = lsn + n;
                 dstat.drive_ms += now_ms() - t0;
                 dstat.drive_kb += n * 2;
+                who_st[cd_who].reads++, who_st[cd_who].seeks += w_seek, who_st[cd_who].far += w_far;
+                who_st[cd_who].kb += n * 2, who_st[cd_who].ms += now_ms() - t0;
+                if (!cd_who && cd_last_who && w_seek)
+                    who_st[3].seeks++, who_st[3].far += w_far, who_st[3].ms += now_ms() - t0;
+                cd_last_who = cd_who;
                 return 0;
             }
         }
@@ -499,7 +564,9 @@ static int stream_ra_fill(Stream *s)
             n = s->size - s->rd_pos;
         else if (n > 2048)
             n -= (s->offset + s->rd_pos + n) & 2047;
+        cd_who = 1;
         int r = df_read(s->fd, s->ra + w, n);
+        cd_who = 0;
         if (r <= 0)
             return -1;
         s->ra_len += r, s->rd_pos += r;
@@ -602,7 +669,9 @@ static void load_step(void)
         return;
     unsigned char *b = stream_mem + SND_STREAMS * 2 * SND_STREAM_CHUNK_MAX;
     unsigned int n = load.size - load_pos > SND_LOAD_STEP ? SND_LOAD_STEP : load.size - load_pos;
+    cd_who = 2;
     int r = df_read(load_fd, b, n);
+    cd_who = 0;
     if (r != (int)n) {
         df_close(load_fd);
         load_fd = -1;
@@ -861,7 +930,7 @@ static unsigned int job_lsn(const DiscJob *j)
  * head. Ties go to the oldest. */
 static void disc_step(void)
 {
-    DiscJob *j = NULL;
+    DiscJob *j = NULL, *old = NULL;
     unsigned int jd = 0;
     WaitSema(dq_sema);
     for (int i = 0; i < SND_DISC_SLOTS; i++) {
@@ -874,7 +943,15 @@ static void disc_step(void)
         if (!j || c->r.prio < j->r.prio ||
             (c->r.prio == j->r.prio && (d < jd || (d == jd && (int)(c->order - j->order) < 0))))
             j = c, jd = d;
+        if (!old || (int)(c->order - old->order) < 0)
+            old = c;
     }
+    /* No request waits for the sweep longer than DISC_AGE_MS: with requests arriving ahead of the head all the time
+     * (the pack of the block the player stands in) the sweep never wrapped round to another pack's, and map reads of
+     * the neighbour block sat 6-11 s in the map reader's 8 slots while the near level waited behind them (ISO
+     * iso_burg_taurus, "cell 0.66 37 KB in 6185 ms", 2026-11-12). The oldest one of the same urgency goes first then. */
+    if (j && old && old != j && old->r.prio <= j->r.prio && now_ms() - old->t0 > DISC_AGE_MS)
+        j = old, dstat_aged++;
     SignalSema(dq_sema);
     if (!j)
         return;
@@ -1115,8 +1192,15 @@ static void stream_thread(void *arg)
         for (int i = 0; i < SND_STREAMS; i++)
             status.stream_state[i] = streams[i].state;
         status.starving = starving;
-        if ((load_new || load_fd >= 0) && disc_take(&disc))
+        who_log();
+        /* A bank goes LOAD_TRIP steps (128 KB, ~150 ms of the drive) per trip: one SND_LOAD_STEP per pass sent the
+         * drive to the bank and back to the EE's map reads for every 16 KB, two far seeks (~240 ms) a step; the banks
+         * of a block's enemies took ~3 s of drive time in the 10 s a Burg block was loading (ISO, 2026-11-12). */
+        if ((load_new || load_fd >= 0) && disc_take(&disc)) {
             load_step();  /* after the refills: a stream never waits for a bank */
+            for (int k = 1; k < LOAD_TRIP && load_fd >= 0 && !load_new; k++)
+                load_step();
+        }
         if (disc > 0) {
             ChangeThreadPriority(TH_SELF, STREAM_PRIO);  /* back up before the drive goes to the disc thread */
             SignalSema(cd_sema);
