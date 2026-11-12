@@ -86,6 +86,10 @@ PX_MAX = float(os.environ.get("HZN_PX_MAX", 32.0))  # the budget never pushes th
 # the backdrop (Firelink's m8000 view of the Burg and the valley, 8-14k triangles; a few hundred elsewhere) has its own
 # ceiling, so it can't take the map's share in Firelink (ASSUMED)
 BD_KB = float(os.environ.get("HZN_BD_KB", 480))
+# colours pulled this far toward their texture's mean colour (0: the few texels sampled per corner, as before). From 32 m
+# the textured level it stands for shows mips 3-4, close to one colour per material; three texels per corner gave
+# every large horizon triangle its own tint (the pale and green shards north of the Burg bonfire)
+TEX_MEAN = float(os.environ.get("HZN_TEX_MEAN", 1.0))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
 # indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
@@ -210,6 +214,10 @@ def coarse_tris(b):
                 cnt = a.reshape(-1, 3).sum(1)
                 mean = np.where(cnt[:, None] > 0, tri_rgb / np.maximum(cnt, 1)[:, None], cen[:, :3])
                 rgb = np.where(a[:, None], rgb, np.repeat(mean, 3, 0))
+                if TEX_MEAN > 0:  # toward the texture's mean opaque colour (what its smallest mip shows)
+                    om = img[..., 3] > 0
+                    if om.any():
+                        rgb = rgb + (img[om][:, :3].astype(np.float64).mean(0) - rgb) * TEX_MEAN
             opaque = a.reshape(-1, 3).sum(1) + cen_a >= 2  # at least half of 4 samples
             Ps.append(p.reshape(-1, 3, 3))
             Cs.append(np.minimum(255.0, rgb * col / 128.0).reshape(-1, 3, 3))

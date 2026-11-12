@@ -1,5 +1,6 @@
 #!/bin/bash
 # DSR reference shots matching ps2/proto/tests/iso_burg_outline.txt (reference install, tools/dsr-ref.sh; save burg.sl2).
+# bf_e and street_c come out turned against the port's view although the tool reports the asked yaw (not understood yet).
 # court and the taurus_* views do not match yet: DSR draws by the draw groups of the collision under the player, and the
 # floating camera player keeps the bonfire's (TECH_DEBT tools). The port's eye: feet + 1.42 up, 4 m back along yaw / pitch (pitch > 0 looks down). Usage: tools/outline-dsr-shots.sh <outdir>
 set -e; T=$(cd "$(dirname "$0")" && pwd); O=$(realpath -m "$1"); mkdir -p "$O"
