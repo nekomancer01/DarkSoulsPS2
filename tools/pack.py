@@ -36,7 +36,9 @@ NATIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
 
 
 def lib():
-    so = os.path.join(NATIVE, "liblz4pack.so")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run as a script with -I: not on the path
+    import native_so
+    so = native_so.so(os.path.join(NATIVE, "liblz4pack"))
     src = os.path.join(NATIVE, "lz4pack.c")
     if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
         tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel pack job never loads half a library
