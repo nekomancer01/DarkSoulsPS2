@@ -16,18 +16,15 @@ typedef struct {
  * entries, per entry s16 x, y, z, 0: the CELL_GRID m cube (export_map.CHUNK_GRID) its triangles were grouped into by
  * centroid. Triangles are not cut at the cube, so a cell's box reaches past it (Undead Burg near cells: 12 m at the
  * median, up to 74 m: big wall / ground triangles); measured to the box, the near level of cells up to ~26 + 12 m away
- * was wanted and drawn, ~1.3x the near bytes the export budgets (tools/world_budget.py). MS_NEAR_CUBE (default on;
- * make DEFS=-DMS_NEAR_CUBE=0 = the box as before): the near level's distance (map.c's switch, mapstream's near ranks)
+ * was wanted and drawn, ~1.3x the near bytes the export budgets (tools/world_budget.py). Near by cube (built in:
+ * the frozen residency design, 2026-11-12): the near level's distance (map.c's switch, mapstream's near ranks)
  * is measured to the box clipped to the cube. Both levels lock the cell's cuts, so the switch stays
  * watertight; frustum and horizon tests keep the whole box. */
 #define CELLS_KEYS 2u
 #define CELL_GRID 32.0f
-#ifndef MS_NEAR_CUBE
-#define MS_NEAR_CUBE 1
-#endif
 static inline const short *cell_keys(const MapCell *tab, unsigned n)
 {
-    return MS_NEAR_CUBE && tab && (((const unsigned *)tab)[-3] & CELLS_KEYS) ? (const short *)(tab + n) : (const short *)0;
+    return tab && (((const unsigned *)tab)[-3] & CELLS_KEYS) ? (const short *)(tab + n) : (const short *)0;
 }
 /* squared distance from p to entry c's near level: its box, clipped to its cube when key (4 shorts) is given */
 static inline float cell_near_d2(const MapCell *c, const short *key, const float *p)
@@ -65,20 +62,18 @@ void *mapstream_alloc(unsigned n, const float pos[3]);
  * For optional data (world.c relief). NULL when there is no such room. */
 void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
-/* MS_POOLS (default 1; the Burg plan's step B2): the arena's top is split off for what is not map items, sized once
+/* Pools (the Burg plan's step B2; built in: the frozen residency design, 2026-11-12): the arena's top is split off for what is not map items, sized once
  * before the arena exists (world.c world_init, from the world table): a structural pool for the lite sets of the
  * WORLD_SLOTS blocks (MS_POOL_STRUCT) and a misc pool for the relief, a block's texture buffer and enemy model
  * temporaries (MS_POOL_MISC). Map items never use either, so the visual room (the pages below) is the same at every
  * spot; the boot log prints "mapstream: arena structural X KB, misc Y KB, visual Z KB". mapstream_alloc_pool takes
  * from one pool only and never drops a map item (NULL: the pool is full); mapstream_alloc / _soft try the misc pool,
- * then clear item pages as before. MS_POOLS=0: one arena (mapstream_pools does nothing). */
+ * then clear item pages as before. */
 enum { MS_POOL_STRUCT, MS_POOL_MISC };
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes);
 void *mapstream_alloc_pool(unsigned n, int pool);
 /* the same for n <= 64 KB, packed into partly used pages of the pool (collision tiles, src/coltile.c) */
 void *mapstream_alloc_pool_small(unsigned n, int pool);
-/* the visual room in bytes (the item pages; 0 before the arena exists) */
-unsigned mapstream_visual(void);
 int mapstream_pools_on(void);
 /* MS_POOLS is built in (before the arena exists; mapstream_pools_on says whether the arena has them) */
 int mapstream_pools_on_build(void);
@@ -101,11 +96,6 @@ int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent t
  * `bytes` more are free (each a 64 KB block); call when a heap allocation failed, then try it again. Returns the pages
  * given back (0: none borrowed, or every one still read by a chain). */
 unsigned mapstream_heap_release(unsigned bytes);
-/* Memory another system leaves idle for a while (world.c: the full pool's tail behind a smaller block's streams) holds
- * near cells too. mapstream_reclaim takes it back: drops the cells in it and returns 1 once none is left (0: a read
- * into it is in flight, call again after mapstream_update); the caller still waits for the chains that drew them. */
-void mapstream_lend(void *p, unsigned n);
-int mapstream_reclaim(void *p, unsigned n);
 /* World blocks: the map's resident level per cell instead of one piece (TECH_DEBT world-2 / world-5). Items of
  * instance k, each a byte range of the block's raw mapres.bin (tools/mapsplit.py): the resident chunks' streams of
  * cell `tag` (| MS_RES_FAR for backdrop chunks; export_map.py writes them grouped by cell; a large cell comes as several items of whole chunks, so no
@@ -163,7 +153,7 @@ void mapstream_update(const float pos[3]);
 const void *mapstream_get(unsigned i);
 
 /* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
- * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: mapstream_lend; room_fails: a wanted item found no room;
+ * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: pages borrowed from the heap (MS_BORROW); room_fails: a wanted item found no room;
  * vis_items / vis_kb: items (loaded or not) the visibility leaves out now (pvs.c) */
 typedef struct {
     unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails, vis_items, vis_kb;

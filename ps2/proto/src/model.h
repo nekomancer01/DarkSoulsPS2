@@ -42,8 +42,17 @@ void mdl_free_textures(Model *m);
 void mdl_free(Model *m);
 /* Free everything but the struct (which keeps the VRAM texture handles for mdl_share_textures); not drawable after */
 void mdl_strip(Model *m);
+/* Copy the texture table (sizes the skin batches' st are planned for) out of the blob, so a stripped texture model can
+ * still be the tex of mdl_load_tex after its blob is gone (objects.c OBJ_STREAM). 0 if out of memory */
+int mdl_keep_te(Model *m);
 /* dst draws with src's VRAM textures (a reloaded copy of the same model) instead of uploading its own */
 void mdl_share_textures(Model *dst, const Model *src);
+/* Room for n textures (more than a model's own MAX_TEX: a breakable texture set, objects.c); before mdl_upload. A model
+ * sharing such a set (mdl_share_textures) draws from its array. 0 if out of memory */
+int mdl_tex_capacity(Model *m, int n);
+/* Light the next mdl_draw calls as if they stood at p (x y z) instead of their placement position; NULL: back to the
+ * placement */
+void mdl_light_at(const float *p);
 /* Index of the baked animation with this Havok/TAE id, or -1 */
 int mdl_anim(const Model *m, int id);
 /* The Havok/TAE id of baked animation `anim` (sound cues, src/sound.c) */

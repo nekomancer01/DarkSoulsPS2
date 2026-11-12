@@ -49,6 +49,13 @@ void vu1_map_fog(float a, float b, float fmin, float fmax);
 /* the map programs' Z scale x k from the next vu1_map_fog on (Z = Zs / z: k > 1 draws as if nearer by z (1 - 1 / k),
  * screen position and fog unchanged); 1 restores it */
 void vu1_map_zbias(float k);
+/* The map programs' near plane from here on (metres; vu1_begin resets it to R_NEAR): Z scale ZMAX n, vu1clip's near
+ * plane at n, the programs' near CLIP test; constants 4-7 and the planes are sent again (map.c ZSPLIT: the far pass) */
+void vu1_map_near(float n);
+float vu1_map_near_get(void);
+/* While the map chain is built (after vu1_begin(0), before vu1_begin(1)): the idle character chain buffer as scratch
+ * (*bytes 0 and NULL otherwise) */
+void *vu1_scratch(int *bytes);
 /* Edge fog slope a2 (fog units per metre of view z, <= 0) for the following VU1_EDGE batches */
 void vu1_map_edge(float a2);
 /* Set n GS registers (pairs {value, register address}) between batches, in draw order (FLUSH + DIRECT) */

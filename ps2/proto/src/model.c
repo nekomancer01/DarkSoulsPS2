@@ -10,6 +10,7 @@
 #include "map.h"
 #include "vmath.h"
 #include "mapstream.h"
+#include "ticks.h"
 #ifdef VU1_CHECK
 #include <stdio.h>
 #endif
@@ -56,11 +57,16 @@ struct Model {
     int nanims;
     GSTEXTURE tex[MAX_TEX];
     int ntex;
+    /* the textures drawn with: tex, or a larger array (mdl_tex_capacity: breakable texture sets, objects.c) owned when
+     * tex_own, else another model's (mdl_share_textures of a set) */
+    GSTEXTURE *texv;
+    int texcap, tex_own;
     /* the textures the skin batches' st are built for (skin_plan / skin_step, load time only): the model's own, or for
      * animated objects the pack's shared texture model's (mdl_load_tex). nte also decides at draw time which packets
      * hold st (textured) and which colours */
     const TexEntry *te;
     int nte;
+    void *te_own;  /* mdl_keep_te: te copied out of the blob */
     void *sk_block;  /* the batch table, the windows and the page table (heap) */
     /* the packets, in pages of up to MDL_SKIN_PAGE bytes (sk_page[i], sk_psz[i] bytes; a page from the near-cell
      * arena when the heap had no hole: mapstream_owns) */
@@ -294,8 +300,7 @@ static int skin_alloc(Model *m)
 static int skin_step(Model *m, unsigned budget)
 {
     const TexEntry *te = m->te;
-    unsigned c0;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c0));
+    unsigned c0 = ticks();
     while (m->nsk < m->nplan) {
         int b = m->nsk;
         unsigned g = m->sk_batch[b].group, t0 = m->sk_batch[b].t0, nt = m->sk_batch[b].tris;
@@ -358,8 +363,7 @@ static int skin_step(Model *m, unsigned budget)
             }
         }
         m->nsk++;
-        unsigned c;
-        __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+        unsigned c = ticks();
         if (c - c0 >= budget && m->nsk < m->nplan)
             return 0;
     }
@@ -382,6 +386,7 @@ static Model *load_begin(const void *blob, const Model *tex)
     Model *m = calloc(1, sizeof *m);
     if (!m)
         return NULL;
+    m->texv = m->tex, m->texcap = MAX_TEX;
     m->bin = blob;
     m->hdr = hdr;
     m->parents = (const short *)(m->bin + hdr->parents);
@@ -447,8 +452,8 @@ int mdl_upload(Model *m, GSGLOBAL *gs)
     const TexEntry *te = (const TexEntry *)(m->bin + m->hdr->tex_off);
     static u16 clut16[256] __attribute__((aligned(64)));
     FlushCache(0);
-    for (m->ntex = 0; m->ntex < (int)m->hdr->textures && m->ntex < MAX_TEX; m->ntex++) {
-        GSTEXTURE *t = &m->tex[m->ntex];
+    for (m->ntex = 0; m->ntex < (int)m->hdr->textures && m->ntex < m->texcap; m->ntex++) {
+        GSTEXTURE *t = &m->texv[m->ntex];
         memset(t, 0, sizeof *t);
         t->Width = te[m->ntex].w;
         t->Height = te[m->ntex].h;
@@ -491,15 +496,15 @@ int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs)
     int r = mdl_upload(m, gs);
     m->hdr = h, m->bin = bin;
     for (int i = 0; i < m->ntex; i++)
-        m->tex[i].Mem = m->tex[i].Clut = NULL;
+        m->texv[i].Mem = m->texv[i].Clut = NULL;
     return r;
 }
 
 void mdl_free_textures(Model *m)
 {
     for (int i = 0; i < m->ntex; i++) {
-        r_vram_free_tex(m->tex[i].Vram, m->tex[i].Width, m->tex[i].Height, m->tex[i].PSM);
-        r_vram_free_clut(m->tex[i].VramClut, m->tex[i].ClutPSM);
+        r_vram_free_tex(m->texv[i].Vram, m->texv[i].Width, m->texv[i].Height, m->texv[i].PSM);
+        r_vram_free_clut(m->texv[i].VramClut, m->texv[i].ClutPSM);
     }
     m->ntex = 0;
 }
@@ -579,7 +584,7 @@ int mdl_compact(Model *m, unsigned blob_size)
         m->hdr = (const Header *)b;
         m->bin = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL, m->te = NULL;
         for (int i = 0; i < m->ntex; i++)
-            m->tex[i].Mem = m->tex[i].Clut = NULL;
+            m->texv[i].Mem = m->texv[i].Clut = NULL;
         m->own = b;
         return 1;
     }
@@ -610,7 +615,7 @@ int mdl_compact(Model *m, unsigned blob_size)
     m->hdr = (const Header *)b;
     m->bin = NULL, m->verts = NULL, m->tris = NULL, m->uvs = NULL, m->te = NULL;
     for (int i = 0; i < m->ntex; i++)
-        m->tex[i].Mem = m->tex[i].Clut = NULL;
+        m->texv[i].Mem = m->texv[i].Clut = NULL;
     m->own = b;
     return 1;
 }
@@ -626,19 +631,56 @@ void mdl_strip(Model *m)
     m->nsk = 0, m->nanims = 0;
 }
 
+int mdl_keep_te(Model *m)
+{
+    if (!m->te || m->te_own || !m->nte)
+        return 1;
+    void *c = malloc(m->nte * sizeof *m->te);
+    if (!c)
+        return 0;
+    memcpy(c, m->te, m->nte * sizeof *m->te);
+    m->te = c, m->te_own = c;
+    return 1;
+}
+
 void mdl_free(Model *m)
 {
     if (!m)
         return;
     mdl_strip(m);
+    free(m->te_own);
+    if (m->tex_own)
+        free(m->texv);
     free(m);
+}
+
+int mdl_tex_capacity(Model *m, int n)
+{
+    if (n <= m->texcap)
+        return 1;
+    GSTEXTURE *t = calloc(n, sizeof *t);
+    if (!t)
+        return 0;
+    memcpy(t, m->texv, m->ntex * sizeof *t);
+    if (m->tex_own)
+        free(m->texv);
+    m->texv = t, m->texcap = n, m->tex_own = 1;
+    return 1;
 }
 
 /* Textures already in VRAM (an earlier load of the same model): use them instead of uploading */
 void mdl_share_textures(Model *dst, const Model *src)
 {
     dst->ntex = src->ntex;
-    memcpy(dst->tex, src->tex, sizeof dst->tex);
+    if (src->ntex > MAX_TEX) {  /* a texture set (mdl_tex_capacity): drawn from its array */
+        if (dst->tex_own)
+            free(dst->texv), dst->tex_own = 0;
+        dst->texv = src->texv, dst->texcap = src->texcap;
+        return;
+    }
+    if (!dst->tex_own)
+        dst->texv = dst->tex, dst->texcap = MAX_TEX;
+    memcpy(dst->texv, src->texv, src->ntex * sizeof *src->texv);
 }
 
 int mdl_anim(const Model *m, int id)
@@ -839,7 +881,7 @@ static void skin_draw(const Model *m, int tint)
         }
         if (g->flags & m->hide)
             continue;
-        GSTEXTURE *gt = g->tex >= 0 && g->tex < m->ntex ? (GSTEXTURE *)&m->tex[g->tex] : NULL;
+        GSTEXTURE *gt = g->tex >= 0 && g->tex < m->ntex ? (GSTEXTURE *)&m->texv[g->tex] : NULL;
         int textured = g->tex >= 0 && g->tex < m->nte;  /* the packet's st kind (skin_step) */
 #ifdef VU1_CHECK
         if (!gt != !textured) {
@@ -856,6 +898,18 @@ static void skin_draw(const Model *m, int tint)
     }
 }
 
+/* mdl_light_at: where the next draws take their light from instead of their placement position (breakables pass world
+ * bone poses with the identity placement at the origin, so their light came from the world origin: no player point
+ * light, no bonfire light, src/objects.c) */
+static V3 light_at;
+static int light_at_on;
+void mdl_light_at(const float *p)
+{
+    light_at_on = p != NULL;
+    if (p)
+        light_at = v3(p[0], p[1], p[2]);
+}
+
 void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint)
 {
     /* the chain is built in view space (view folded into the root placement), straight into the palette: one VU0
@@ -863,7 +917,7 @@ void mdl_draw(const Model *m, const BoneLocal *pose, V3 pos, float yaw, int tint
     static float root[4][4] __attribute__((aligned(16))), local[4][4] __attribute__((aligned(16)));
     static float Lv[4] __attribute__((aligned(16)));
     M34 view = view_matrix(), place = placement(pos, yaw), vp = m34_mul(&view, &place);
-    skin_light(&view, pos, Lv);
+    skin_light(&view, light_at_on ? light_at : pos, Lv);
     c44_from_m34(&vp, root);
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         const float (*parent)[4] = m->parents[i] < 0 ? root : palette[m->parents[i]];
@@ -878,7 +932,7 @@ void mdl_draw_world(const Model *m, const float (*world)[12], V3 pos, int tint)
     static float vc[4][4] __attribute__((aligned(16))), wc[4][4] __attribute__((aligned(16)));
     static float Lv[4] __attribute__((aligned(16)));
     M34 view = view_matrix();
-    skin_light(&view, pos, Lv);
+    skin_light(&view, light_at_on ? light_at : pos, Lv);
     c44_from_m34(&view, vc);
     for (unsigned i = 0; i < m->hdr->bones; i++) {
         c44_from_m34((const M34 *)world[i], wc);

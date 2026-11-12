@@ -4,7 +4,7 @@ every pack in ps2/proto/data: packed size per pack, compression time, and decode
 Decode time on the host is a proxy for the EE; the sequence count (tokens) is printed too, since the EE loop cost is
 per token plus per byte.
 Usage: bench.py [pak ...]   (default: ps2/proto/data/*.pak)"""
-import ctypes, glob, os, re, struct, subprocess, sys, time
+import ctypes, glob, os, re, struct, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))

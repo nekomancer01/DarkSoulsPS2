@@ -30,6 +30,9 @@ unsigned world_struct_bytes(void);
 /* main.c after enemy_init / objects_init / fx_init: other blocks' enemy, breakable and effect types (boot time,
  * before the near-cell arena) */
 void world_systems(GSGLOBAL *gs);
+/* Background read of bytes at rel in block's objects.bin into dst (64-byte aligned): a pack_req_read ticket (pack.h),
+ * 0 when the block has no objects.bin or every request slot is taken (objects.c OBJ_STREAM) */
+int world_obj_read(int block, unsigned rel, void *dst, unsigned bytes);
 /* Once a frame with the player's feet (x, y, z) and the frame time: picks the block under the player, continues one
  * background read (a wanted block's lite set first, then the relief of the block underfoot), turns a fully read block on, unloads
  * the blocks the triangle under the player no longer keeps. Never waits for the IOP, except on a warp (> WORLD_WARP m in one frame: test spawns,

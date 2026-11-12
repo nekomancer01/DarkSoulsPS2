@@ -1,8 +1,9 @@
 # DSR -> PS2 port: what still needs implementing, by priority
 
 **What this is:** the original priority list for the port (P0 = foundations, P3 = polish), with a starting point for
-each item. It was written on 2026-10-30 and parts of it are done since; for the current status of each system, see
-`notes/PLAYTHROUGH.md`. Terms: EE = the PS2's main CPU, VU1 = its vector unit (draws the 3D), GS = its graphics chip.
+each item. It was written on 2026-10-30 and most of it is done since: the status table below (checked against the code
+on 2026-11-12) says where each item stands and which TECH_DEBT rows hold what is left. The tables after it are the
+original plan, kept as written. Terms: EE = the PS2's main CPU, VU1 = its vector unit (draws the 3D), GS = its graphics chip.
 
 Status (2026-10-30): the Warrior (real mesh, textures, Havok animations, TAE timing, R1 combo, roll/dash) walks
 Firelink Shrine (map pieces, textures, navmesh, back-face culling) in PCSX2 at 30 fps with the VU1 renderer. Tooling reads DCX, BND3/BXF3, FMG, PARAMDEF/PARAM,
@@ -10,6 +11,44 @@ TAE, ESD, FLVER2, TPF/DDS (BC1-3, BC7), MSB1, NVM, Havok 2015 tagfiles (skeleton
 
 Priority: **P0** = blocks most other work or makes the port unplayable; **P1** = core Dark Souls gameplay;
 **P2** = content and features after the core works; **P3** = polish / optional.
+
+## Status (2026-11-12)
+
+Done = the system exists in the port and its remaining differences from DSR are TECH_DEBT rows. Partial = part of the
+item is still missing (named in the Left column).
+
+| # | Item | Status | Left / where |
+|---|---|---|---|
+| 1 | VU1 renderer | Done | VU1 skinning, clipping and indexed map batches are in (vu1skin2 / vu1clip / vu1mapi). The frame target is 30 fps (tools/budget.py), not 60: render-5, vu1-1..5, hw-7 |
+| 2 | Better mesh simplification | Done | QEM with structure weight, shape envelope and triangle guard (tools/native/simplify.c, simplify.py): map-36..44 |
+| 3 | Memory and streaming plan | Done | World blocks (src/world.c) and the map streamer (src/mapstream.c), texture pool (texcache.c). Detail vs memory is still short in the Burg: world-10, world-14 (H) |
+| 4 | Real collision | Done | Havok collision decoded, capsule controller, falls, 16 m collision tiles: collision-1..10, world-15 |
+| 5 | ESD runtime | Done | c0000.esd interpreted (src/esd.c, player.c, esd_env_move.c): esd-1..9 |
+| 6 | Real-hardware test loop | Open | No run on a PS2 yet; tools/ps2-run.sh untested: hw-1 |
+| 7 | Exact player numbers | Partial | Several found in the exe (notes/EXE_FINDINGS.md); movement-set tiers not decoded: gameplay-13 |
+| 8 | Full movement set | Partial | Rolls, backstep, jump, falls in; no lock-on (esd-7), no player ladders |
+| 9 | Animation system | Partial | Fixed 0.15 s crossfade, layer args ignored: esd-6, esd-9 |
+| 10 | Combat | Partial | Physical damage only, no player poise / defence, no parry / backstab: combat-2..6 |
+| 11 | Character stats & equipment | Partial | Stats saved and shown in menus, but combat still uses the compile-time Warrior numbers: save-8 |
+| 12 | Enemies | Done | Lua AI on lua0 (ai.c), enemy ESD, navmesh moves: enemy-2..21 |
+| 13 | Event scripts (EMEVD) | Done | src/event.c with character / object / misc ops; remaining stubs: event-8 (H) |
+| 14 | Bonfire / Estus / death loop | Done | src/bonfire.c (rest, kindle, respawn, bloodstain): a4-2..7 |
+| 15 | HUD & menus | Done | DSR's HUD and Start menu screens from menu.drb: hud-2..7, menu-1..8; no title screen (menu-5) |
+| 16 | Audio | Done | SPU2 banks + disc streams through dsrsnd.irx: audio-2 (H, 8 kHz resident rate), audio-3..13 |
+| 17 | Save system | Done | Memory card saves (src/save.c): save-1..12 |
+| 18 | More areas + area streaming | Partial | Firelink, Undead Burg (three blocks), Undead Asylum stream as one world; rest of Lower Burg, the Parish church and the Depths are not blocks yet: world-1 |
+| 19 | Map objects | Partial | Breakables (physics-3), doors and levers (ObjAct, event-11) in; elevators stay static, ladders not usable |
+| 20 | Lighting & atmosphere | Done | Baked DSR light, fog, scattering, sky (tools/dsr_light.py): map-15..17, map-22, map-26..28; map specular / AO still missing: map-23 (H) |
+| 21 | Effects | Partial | FFX billboards on VU1; models, tracers, distortion skipped: fx-7 |
+| 22 | NPCs & dialogue | Partial | Human NPCs are stand-ins with the player's model; only the bonfire's talk ESD runs: enemy-14 |
+| 23 | Cutscenes & movies | Open | Cutscenes are skipped and their warps run: event-13 |
+| 24 | Disc build | Done | ISO from tools/ps2-iso.sh / tools/iso9660.py, packs read from cdrom0: by the disc server: world-6, world-8 |
+| 25 | Perspective-correct texturing | Done | Every VU1 program draws with STQ (src/vu1.c PRIM setup) |
+| 26 | Wall sliding on the navmesh | Done | Replaced by real collision (item 4): the capsule slides along walls |
+| 26b | Reverse Z precision | Partial | Still a 16-bit Z buffer; two depth ranges split at 50 m since 2026-11-11: render-1, render-15 |
+| 27 | Texture quality | Partial | Two mip levels, PSMT4 where it holds colour, map textures capped at 128 px: map-2, texstream-1..5 |
+| 28 | Character skin texture | Done | BD_M_body used: char-10 |
+| 29 | Multiplayer | Dropped | |
 
 ## P0: foundations
 

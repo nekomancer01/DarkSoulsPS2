@@ -39,6 +39,7 @@
 #include "ragdoll.h"
 #include "nav.h"
 #include "testscript.h"
+#include "ticks.h"
 
 #define MAX_TYPES 20  /* the boot area's + every world block's (enemy_block_types, at boot) */
 #define ACTIVE_DIST 45.0f   /* characters farther from the player than this are frozen (DSR: by draw group / distance) */
@@ -340,12 +341,6 @@ static void unload_model(ChrType *t)
     t->model = NULL;
 }
 
-static inline unsigned cpu_now(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* A type's model from its built model (mdl_load_begin + mdl_load_step on mb: size bytes in a buffer of alloc from
  * the arena or the heap, freed here): textures uploaded (or a loaded twin's), compact copy, sound bank */
@@ -390,7 +385,7 @@ static void model_path(char *path, unsigned cap, const ChrType *t)
 /* A model.bin loads in the background (pack_job_*), one type at a time: from cdrom0: the synchronous
  * open + load took 0.2-1.3 s per type, each a frame stall (33 loads, 10.5 s of stalls in one tests/world_cross.txt
  * run from the ISO, 2026-11-03) */
-static GSGLOBAL *gsg;  /* enemy_init's GS context (tentative definition: set below) */
+static GSGLOBAL *gsg;  /* enemy_init's GS context */
 static PackJob job;
 static ChrType *job_t;  /* the type job loads, NULL when idle */
 static Model *job_m;    /* its model while mdl_load_step builds the skin batches */
@@ -455,12 +450,12 @@ static int job_poll(void)
     }
     if (!mdl_load_step(job_m, SETUP_TICKS))
         return 0;
-    unsigned c0 = cpu_now();
+    unsigned c0 = ticks();
     Model *m = job_m;
     job_t = NULL, job_m = NULL;
     if (model_from(t, gsg, m, job.out, job.raw, job.alloc, job_arena)) {
         printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d, set-up %u ms\n", t->name, enemy_ram_free() >> 10,
-               r_vram_avail(gsg), (cpu_now() - c0) / 294912);
+               r_vram_avail(gsg), (ticks() - c0) / 294912);
         return 1;
     }
     t->near_d = 1e9f, t->retry = frame + 60;
@@ -648,8 +643,6 @@ static void think_of(AiThink *th, const ChrVar *v)
     th->call_range = v->call_range, th->call_min_target_dist = v->call_min_dist;
     memcpy(th->excel, v->excel, sizeof th->excel);
 }
-
-static GSGLOBAL *gsg;
 
 unsigned enemy_ram_free(void)
 {

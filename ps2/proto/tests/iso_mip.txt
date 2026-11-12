@@ -1,0 +1,92 @@
+# Mip chain A/B (vu1.c MIP_TRILINEAR, texcache.c MIP_BIAS): far textured walls from Firelink's graveyard mound (the
+# ring wall of TECH_DEBT render-12) and from the Burg bonfire, the camera turned in nine steps of 0.003 rad. Shots of
+# neighbouring steps show how much the texture shimmers under a slow turn.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_mip.txt <out> --iso build/proto.iso --timeout 600
+option god
+option nodemo
+option noenemies
+spawn -45.3 -55.4 111.7 6.0
+cam 6.000 0.2
+wait 14
+shot ring_0
+cam 6.003 0.2
+wait 1
+shot ring_1
+cam 6.006 0.2
+wait 1
+shot ring_2
+cam 6.009 0.2
+wait 1
+shot ring_3
+cam 6.012 0.2
+wait 1
+shot ring_4
+cam 6.015 0.2
+wait 1
+shot ring_5
+cam 6.018 0.2
+wait 1
+shot ring_6
+cam 6.021 0.2
+wait 1
+shot ring_7
+cam 6.024 0.2
+wait 1
+shot ring_8
+spawn -15.1 1.0 -19.7 3.14
+cam 3.140 0.0
+wait 14
+shot burg_0
+cam 3.143 0.0
+wait 1
+shot burg_1
+cam 3.146 0.0
+wait 1
+shot burg_2
+cam 3.149 0.0
+wait 1
+shot burg_3
+cam 3.152 0.0
+wait 1
+shot burg_4
+cam 3.155 0.0
+wait 1
+shot burg_5
+cam 3.158 0.0
+wait 1
+shot burg_6
+cam 3.161 0.0
+wait 1
+shot burg_7
+cam 3.164 0.0
+wait 1
+shot burg_8
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.400 0.14
+wait 14
+shot fl_0
+cam 2.403 0.14
+wait 1
+shot fl_1
+cam 2.406 0.14
+wait 1
+shot fl_2
+cam 2.409 0.14
+wait 1
+shot fl_3
+cam 2.412 0.14
+wait 1
+shot fl_4
+cam 2.415 0.14
+wait 1
+shot fl_5
+cam 2.418 0.14
+wait 1
+shot fl_6
+cam 2.421 0.14
+wait 1
+shot fl_7
+cam 2.424 0.14
+wait 1
+shot fl_8
+stats

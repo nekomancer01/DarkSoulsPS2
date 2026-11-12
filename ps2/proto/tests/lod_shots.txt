@@ -1,0 +1,55 @@
+# LOD quality A/B: matching Undead Burg shots per spot, enemies off (Burg entry, bonfire, stairs, Taurus tower)
+option nodemo
+option noenemies
+wait 3
+# Burg entry / world_cross wall (world_cross.txt cross_start, iso_burg_taurus.txt burg_start)
+spawn -43.5 -33.7 -7.5 4.0
+cam 4.0 0.1
+wait 8
+freeze 1
+shot cross_wall
+freeze 0
+spawn -48.5 -21.8 -35.5 0
+cam 0.0 0.1
+wait 8
+freeze 1
+shot burg_entry
+freeze 0
+spawn 23.16 9.5 -24.3 3.6652
+cam 3.6652 0.1
+wait 8
+freeze 1
+shot bg_A_bonfire
+freeze 0
+spawn 23.16 9.5 -24.3 0.0
+cam 0.0 0.1
+wait 4
+freeze 1
+shot bg_A_north
+freeze 0
+spawn 15.0 9.6 -40.0 3.14
+cam 3.14 0.1
+wait 4
+freeze 1
+shot bg_B_south
+freeze 0
+spawn 9.1 17.8 20.0 0.0
+cam 0.0 0.1
+wait 4
+freeze 1
+shot bg_C_north
+freeze 0
+# Taurus tower from the walkway end (iso_burg_taurus.txt tower_base), looking at the tower, then up its side
+spawn 21.3 -14.2 -105.9 5.0
+cam 5.0 0.25
+wait 8
+freeze 1
+shot taurus_tower
+freeze 0
+spawn 21.3 -14.2 -105.9 0
+cam 0.0 0.1
+wait 4
+freeze 1
+shot taurus_base
+freeze 0
+end

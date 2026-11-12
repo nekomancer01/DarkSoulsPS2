@@ -31,28 +31,21 @@ import sys
 
 import numpy as np
 
-NEAR_R = 20.0   # mapstream.c MS_R0_DRAW
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import residency  # noqa: E402 (ps2/proto/src/residency.h: the radii, the arena, the per-block budgets)
+
+RES = residency.RES
+NEAR_R = float(RES["RES_NEAR_R"])  # mapstream.c MS_R0_DRAW
 PIN_R = 64.0    # the soft tier's outer edge (coarse HARD_R..PIN_R); the runtime pins the coarse level to MS_R1_PIN 40 m
                 # (= HARD_R) and wants the ring beyond at a lower class out to MS_R_HZN 48 m; 64 m keeps the soft-tier log
                 # comparable with the numbers before the Burg plan's B3
 WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
-def _world_c(name, default):
-    """a #define of src/world.c (the build constants the runtime sizes its arena with)"""
-    import re
-    try:
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ps2", "proto", "src", "world.c")).read()
-        m = re.search(rf"^#define {name} \(?(\d+)", src, re.M)
-        return int(m[1]) if m else default
-    except OSError:
-        return default
-
-
-ARENA_KB = _world_c("WORLD_ARENA_KB", 8640)  # world.c: the arena's build-constant size
-FILL_PCT = 92        # mapstream.c MS_FILL_PCT
+ARENA_KB = RES["RES_ARENA_KB"]  # world.c WORLD_ARENA_KB: the arena's build-constant size
+FILL_PCT = RES["RES_FILL_PCT"]  # mapstream.c MS_FILL_PCT
 WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
-KEPT_HZN = os.environ.get("WORLD_KEPT_HZN", "1") != "0"  # world.c WORLD_KEPT_HZN
+KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -109,7 +102,7 @@ def col_budget(blocks):
     return best + best // CT_PACK_K
 
 
-EV_SHARED = os.environ.get("WORLD_EV_SHARED", "1") != "0"  # world.c WORLD_EV_SHARED
+EV_SHARED = True  # world.c: one events.bin per map
 
 
 def ev_parts(d):
@@ -140,7 +133,24 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
-    return total, tabs, r128(sz("bump.bin")), max(r128(sz("objects.bin")), r128(sz("fx.bin")))
+    return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
+
+
+def obj_tex_bytes(d):
+    """bytes of objects.bin world.c reads when the block turns on: v4 (export_objects.py OBJ_TEX_SHARED) only the
+    breakable texture tail from header word 14 (world.c obj_tail), older files whole"""
+    import struct
+    p = os.path.join(d, "objects.bin")
+    if not os.path.exists(p):
+        return 0
+    with open(p, "rb") as f:
+        h = f.read(64)
+    n = os.path.getsize(p)
+    if len(h) == 64 and h[:4] == b"DSRB" and struct.unpack_from("<I", h, 4)[0] >= 4:
+        tail = struct.unpack_from("<I", h, 56)[0]
+        if tail and tail < n and not tail & 127:
+            return n - tail
+    return n
 
 
 def structural(gen):
@@ -192,7 +202,7 @@ def structural(gen):
     best += cb
     return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
-NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
+NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of
 # block i, another block j of the same MSB counts only while the spot's links load it: tools/export_world.py loads j
 # from a triangle within LOAD_CELLS cells (xz) of j's cells (tools/area.py BLOCKS), so a block behind a cliff or past
@@ -203,9 +213,9 @@ LINKS = os.environ.get("WORLD_BUDGET_LINKS", "1") == "1"
 # --strict fails on any spot of a STRICT_BLOCKS block over the room, or on a block whose solve took the seam allowance at
 # more than ALLOW_PCT % of its spots (export_map.py WS_ALLOW_PX, map.bin.budget.json). The soft tier (coarse HARD_R to
 # PIN_R, the spot's backdrop and sky) is logged. The Asylum and Firelink are reported, not gated (TECH_DEBT world-10).
-HARD_NEAR_R, HARD_R = 20.0, 40.0
-ALLOW_PCT = 1.0        # over + allowance spots of all gated blocks together, % of their spots
-ALLOW_BLOCK_PCT = 5.0  # ... of one block's own spots: above it the build fails whatever the world total
+HARD_NEAR_R, HARD_R = float(RES["RES_NEAR_R"]), float(RES["RES_PIN_R"])
+ALLOW_PCT = float(RES["RES_ALLOW_PCT"])  # over + allowance spots of all gated blocks together, % of their spots
+ALLOW_BLOCK_PCT = float(RES["RES_ALLOW_BLOCK_PCT"])  # ... of one block's own spots: above it the build fails anyway
 STRICT_BLOCKS = os.environ.get("WORLD_BUDGET_STRICT", "m10_01_00_00_").split(",")
 LOAD_CELLS = 1.0  # export_world.py
 
@@ -250,6 +260,11 @@ def box_d(lo, hi, P):
     return np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
 
 
+# the last main() run's per-spot arrays (spots P, owning block index own, per-tier totals tot, total, gated, room), for
+# tools/lodview.py's spot heat map; main() itself only writes the percentiles
+LAST = {}
+
+
 def pct(x):
     return dict(p50=round(float(np.percentile(x, 50))), p90=round(float(np.percentile(x, 90))),
                 p99=round(float(np.percentile(x, 99))), max=round(float(x.max())))
@@ -266,7 +281,9 @@ def main(argv):
     out, dirs = args[0], args[1:]
     pools = structural(os.path.dirname(os.path.abspath(out)))
     if pools and "--room" not in argv:
-        room = (ARENA_KB - pools["structural_kb"] - pools["misc_kb"]) * FILL_PCT // 100
+        # (the pools in whole pages, as mapstream.c ensure_arena splits the arena: without the rounding this printed
+        # 4403 KB where the ISO's arena had 4239 KB, 2026-11-12)
+        room = residency.room_kb(pools["structural_kb"], pools["misc_kb"], ARENA_KB)
     env = {}
     for d in dirs:
         try:
@@ -332,6 +349,8 @@ def main(argv):
                               backdrop_kb=round(float(back.sum() + sky / 1024)), spots=int((own == k).sum())))
     total = tot["near"] + tot["coarse"] + tot["kept"] + tot["far"]
     gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if any(name.startswith(s) for s in STRICT_BLOCKS if s)])
+    LAST.clear()
+    LAST.update(P=P, own=own, tot=tot, total=total, gated=gated, room=room, names=[b[0] for b in blocks])
     hard_over = (tot["hard"] > room) & gated
     allow, allow_spots = {}, []  # per block and level its own spots' allowance %; the spots (x, y, z, block, level, KB)
     for d in dirs:
@@ -398,10 +417,23 @@ def main(argv):
     print(f"world budget: hard tier gate: {len(keys)} of {uniq} spots over or on the allowance ({world_pct} %, at most "
           f"{ALLOW_PCT} %); per block and level " + (", ".join(f"{k} {v} %" for k, v in allow.items()) or "none")
           + f" (at most {ALLOW_BLOCK_PCT} % each)")
-    fail = world_pct > ALLOW_PCT or bool(bad_allow)
+    # the per-block budgets (residency.h RES_BLOCK) the exports were solved against: none may promise more than the
+    # visual room this world leaves (the room shrinks when a lite set, the relief or a texture buffer grows)
+    contract = {}
+    for name, *_ in blocks:
+        blk = os.environ.get("MAP", "default") if name == "gen" else name
+        broom, bnear, own_row = residency.block_budget(blk)
+        contract[name] = dict(row=blk if own_row else "default", room_kb=broom, near_kb=bnear)
+    bad_room = {k: v["room_kb"] for k, v in contract.items() if v["room_kb"] > room}
+    res["contract"] = dict(room_kb=room, blocks=contract, over=bad_room)
+    print(f"world budget: per-block budgets (residency.h) " + ", ".join(f"{k} {v['room_kb']} KB" for k, v in contract.items())
+          + f" against the visual room {room:.0f} KB" + (f": OVER in {bad_room}" if bad_room else ": all fit"))
+    json.dump(res, open(out, "w"), indent=1)
+    fail = world_pct > ALLOW_PCT or bool(bad_allow) or bool(bad_room)
     if fail and strict:
         print(f"world budget: FAIL (--strict): hard tier {world_pct} % of the spots over or on the allowance"
-              + (f"; over {ALLOW_BLOCK_PCT} % in {bad_allow}" if bad_allow else ""))
+              + (f"; over {ALLOW_BLOCK_PCT} % in {bad_allow}" if bad_allow else "")
+              + (f"; block budgets over the {room:.0f} KB room: {bad_room} (lower RES_BLOCK in residency.h)" if bad_room else ""))
     return 1 if strict and fail else 0
 
 
