@@ -16,18 +16,15 @@ typedef struct {
  * entries, per entry s16 x, y, z, 0: the CELL_GRID m cube (export_map.CHUNK_GRID) its triangles were grouped into by
  * centroid. Triangles are not cut at the cube, so a cell's box reaches past it (Undead Burg near cells: 12 m at the
  * median, up to 74 m: big wall / ground triangles); measured to the box, the near level of cells up to ~26 + 12 m away
- * was wanted and drawn, ~1.3x the near bytes the export budgets (tools/world_budget.py). MS_NEAR_CUBE (default on;
- * make DEFS=-DMS_NEAR_CUBE=0 = the box as before): the near level's distance (map.c's switch, mapstream's near ranks)
+ * was wanted and drawn, ~1.3x the near bytes the export budgets (tools/world_budget.py). Near by cube (built in:
+ * the frozen residency design, 2026-11-12): the near level's distance (map.c's switch, mapstream's near ranks)
  * is measured to the box clipped to the cube. Both levels lock the cell's cuts, so the switch stays
  * watertight; frustum and horizon tests keep the whole box. */
 #define CELLS_KEYS 2u
 #define CELL_GRID 32.0f
-#ifndef MS_NEAR_CUBE
-#define MS_NEAR_CUBE 1
-#endif
 static inline const short *cell_keys(const MapCell *tab, unsigned n)
 {
-    return MS_NEAR_CUBE && tab && (((const unsigned *)tab)[-3] & CELLS_KEYS) ? (const short *)(tab + n) : (const short *)0;
+    return tab && (((const unsigned *)tab)[-3] & CELLS_KEYS) ? (const short *)(tab + n) : (const short *)0;
 }
 /* squared distance from p to entry c's near level: its box, clipped to its cube when key (4 shorts) is given */
 static inline float cell_near_d2(const MapCell *c, const short *key, const float *p)
@@ -65,13 +62,13 @@ void *mapstream_alloc(unsigned n, const float pos[3]);
  * For optional data (world.c relief). NULL when there is no such room. */
 void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
-/* MS_POOLS (default 1; the Burg plan's step B2): the arena's top is split off for what is not map items, sized once
+/* Pools (the Burg plan's step B2; built in: the frozen residency design, 2026-11-12): the arena's top is split off for what is not map items, sized once
  * before the arena exists (world.c world_init, from the world table): a structural pool for the lite sets of the
  * WORLD_SLOTS blocks (MS_POOL_STRUCT) and a misc pool for the relief, a block's texture buffer and enemy model
  * temporaries (MS_POOL_MISC). Map items never use either, so the visual room (the pages below) is the same at every
  * spot; the boot log prints "mapstream: arena structural X KB, misc Y KB, visual Z KB". mapstream_alloc_pool takes
  * from one pool only and never drops a map item (NULL: the pool is full); mapstream_alloc / _soft try the misc pool,
- * then clear item pages as before. MS_POOLS=0: one arena (mapstream_pools does nothing). */
+ * then clear item pages as before. */
 enum { MS_POOL_STRUCT, MS_POOL_MISC };
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes);
 void *mapstream_alloc_pool(unsigned n, int pool);

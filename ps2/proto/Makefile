@@ -473,7 +473,8 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/t
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
-		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json
+		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
+		$(TS)/residency.py.sum src/residency.h
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
@@ -544,8 +545,8 @@ WB_TABS = $(foreach d,$(PVS_WITH),$(d)/maptab.bin)
 $(WB_TABS): | $(if $(WORLD_BLOCKS),worldpacks)
 	@test -f $@ || { echo "$@ missing: the world block packs (worldpacks) did not write it"; exit 1; }
 $(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH) $(D)/world.pak \
-		$(A)/maptab.bin $(WB_TABS) ../../ps2/proto/src/world.c
-	$(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
+		$(A)/maptab.bin $(WB_TABS) ../../ps2/proto/src/world.c $(TS)/residency.py.sum src/residency.h
+	MAP=$(MAP) $(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
 $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin

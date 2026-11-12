@@ -6,6 +6,8 @@
 #     generated files are never hand-edited; regenerate and commit both)
 #   4 the game-data headers ps2/proto/src/{player,combat,progress}_data.h match tools/gamedata.py header <name>, and
 #     tools/gamedata_test.py (blob layout = what the EE compiler lays out, checked against offsetof tables)
+#   5 tools/ci/test_residency.py: the per-block budgets of ps2/proto/src/residency.h fit the arena, and
+#     tools/world_budget.py --strict fails a spot over the room (synthetic block, no game data)
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -42,5 +44,7 @@ done
 "$PY" -I tools/gamedata_test.py || fail "tools/gamedata_test.py"
 echo "== libmapx (the map exporter's C stages) against the Python code"
 "$PY" -I tools/mapx/test_mapx.py 0 40 || fail "tools/mapx/test_mapx.py"
+echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on a synthetic block)"
+"$PY" -I tools/ci/test_residency.py || fail "tools/ci/test_residency.py"
 echo "offline: $FAILED failed"
 exit $FAILED
