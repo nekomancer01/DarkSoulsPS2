@@ -125,7 +125,9 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
   A new compile-time switch (`#if` / `#ifdef` on a name the sources don't define) needs a row in
   `ps2/proto/src/switches.h`: its default, kind and the build CI makes of its fallback. The PCSX2 results go in the
   PR template's Verification section, scaled to the change: a scoped `tools/test-all.sh --no-build --areas ...`
-  run per PR, the full all-area suite before a public export or nightly.
+  run per PR, the full all-area suite before a public export or nightly. `.github/workflows/pcsx2-smoke.yml` runs
+  the Firelink + Burg smoke (`tools/ci/pcsx2-smoke.sh`) on the maintainer's PC after each merge to main and nightly
+  (self-hosted runner, `tools/ci/runner.sh`); only its step summary and budget table are published.
 
 ## 8. Where to start
 
