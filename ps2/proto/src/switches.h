@@ -56,6 +56,7 @@
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream.c   | arena size
  * MS_NEAR_CUBE        | 1        | fallback | -DMS_NEAR_CUBE=0                              | mapstream.h   | near parts cut on the cube grid
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
+ * MS_COPIES           | 1        | fallback | -DMS_COPIES=0                                 | mapstream.c   | another block's items read from the copy beside the current block; 0 = its own pack
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_RELIEF_SOFT   | 1        | fallback | -DWORLD_RELIEF_SOFT=0                         | world.c       | relief never drops wanted cells
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
