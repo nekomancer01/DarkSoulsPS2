@@ -38,7 +38,7 @@
 #include "mapstream_i.h"
 
 #ifndef MS_MIP0
-#define MS_MIP0 1  /* 0: no full-size map textures (plan_item) */
+#define MS_MIP0 0  /* no full-size map textures (plan_item); -DMS_MIP0=1: streamed as before 2026-11-12 */
 #endif
 
 #ifdef MS_MEDIA_RADII  /* the media radii (mapstream_i.h) */
@@ -268,9 +268,11 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = 0;
         if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
             return age <= 1 ? MS_MIP1_CLS : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
-        /* -DMS_MIP0=0: full-size textures are never read (the streamed mip 1 stays the sharpest level): a third fewer
-         * map reads on the ISO Taurus route and their ~0.5-0.9 MB of the arena for geometry, for softer surfaces
-         * within the 5-10 m where mip 0 shows. A compromise switch, off by default (TECH_DEBT world-16). */
+        /* MS_MIP0 0 (the default since 2026-11-12, Ame: geometry before textures): full-size textures are never read,
+         * the streamed mip 1 stays the sharpest level. Their reads and their 0.5-0.9 MB of the arena go to geometry:
+         * ISO iso_burg_taurus, on -> off: map reads 1440 -> 1196, read again within 30 s 510 -> 312, hard-tier "no
+         * room" refusals 50-57 -> 26, drive busy 58 -> 50 %, free EE RAM at the shots +0.7 MB, for softer surfaces
+         * within the 5-10 m where mip 0 showed (TECH_DEBT world-16). -DMS_MIP0=1: streamed as before. */
         if (!MS_MIP0)
             return age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;

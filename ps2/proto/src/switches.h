@@ -37,7 +37,7 @@
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
  * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
- * MS_MIP0             | 1        | fallback | -DMS_MIP0=0                                   | mapstream.c     | 0 = full-size (mip 0) map textures are never streamed (fewer reads, softer close-ups)
+ * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
  * MS_READ_BY_CLASS    | 0        | fallback | -DMS_READ_BY_CLASS=1                          | mapstream.c     | 1 = hard-tier reads go out by class, not nearest first
  * MS_LEND_ALL_DROP    | 0        | fallback | -DMS_LEND_ALL_DROP=1                          | msarena.c       | 1 = a pool allocation drops every lent item, not only those in its way
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
