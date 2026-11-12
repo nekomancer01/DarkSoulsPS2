@@ -1,4 +1,5 @@
 #include "map_i.h"
+int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
 MapInst mp_inst[MAP_INST] = {{.on = 0}};

@@ -45,6 +45,7 @@ float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #endif
 #endif
 
+MapStreamStats mapstream_stats;
 MsInst ms_inst[MS_INST];
 static int sel;  /* the instance mapstream_get / mapstream_res answer for */
 unsigned ms_frame;

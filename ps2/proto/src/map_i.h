@@ -244,7 +244,7 @@ typedef struct {
  * moving towards fog_row[fog_area] */
 #define FOG_NOW 27
 /* + specular: env up rgb [15], env down rgb [18], specular light rgb [21], its direction x 127 [24] (0: none) */
-int map_vu1_batches, map_ee_tris;
+extern int map_vu1_batches, map_ee_tris;
 /* The fog / light rows follow the instance the player stands in (pfog_*) */
 
 /* instance m's streams for resident chunk j, or NULL while its item is not in (mapstream.c: m selected) */

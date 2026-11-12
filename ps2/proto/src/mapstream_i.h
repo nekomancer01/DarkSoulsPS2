@@ -157,7 +157,6 @@ enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_PIN, C_NEAR, C_VIEW, 
 #define MS_MIP1_CLS C_PREF
 #endif
 
-MapStreamStats mapstream_stats;
 
 typedef struct {
     Pack pk;
