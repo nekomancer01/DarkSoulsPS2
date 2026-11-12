@@ -34,14 +34,19 @@
  * maps. room is at most the visual room world_budget.py computes for RES_ARENA_KB (4239 KB on main 0f087d7 +
  * this table: 9088 - 3520 structural - 960 misc, x 92 %), less RES_PAGE_KB of margin for a lite set growing a page.
  * (Before 2026-11-12 every block took export_map.py's WS_ROOM 4317 / WS_NEAR_KB 2590, solved against a room
- * world_budget.py printed without the pools' page rounding: 4403 KB against 4239 KB on the ISO.) */
+ * world_budget.py printed without the pools' page rounding: 4403 KB against 4239 KB on the ISO.)
+ * Since 2026-11-13 (TECH_DEBT world-17) the blocks of one MSB share a seam spot's room by demand (export_map.py
+ * WS_SHARE_TRIS) and their seam cells came back from the allowance; the lite sets grew with the chunks and the visual
+ * room is 4180 KB. 4110 / 2466 (the room less a page) for the blocks alone in their MSB; Parish 4050 / 2430, Burg west
+ * 3650 / 2190 and the bonfire block 3900 / 2340: with the neighbours' cells and ~620 KB of kept meshes the spots around
+ * the Burg bonfire held up to 4416 KB at 4050 (1.06 % of the gated spots over the room; 0.05 % now, max 4236 KB). */
 #ifdef RES_BLOCK
-RES_BLOCK(m10_02_00_00, 4175, 2505)
-RES_BLOCK(m10_01_00_00_w, 4175, 2505)
-RES_BLOCK(m10_01_00_00_b, 4175, 2505)
-RES_BLOCK(m10_01_00_00_p, 4175, 2505)
-RES_BLOCK(m18_01_00_00_a, 4175, 2505)
-RES_BLOCK(default, 4175, 2505)
+RES_BLOCK(m10_02_00_00, 4110, 2466)
+RES_BLOCK(m10_01_00_00_w, 3650, 2190)
+RES_BLOCK(m10_01_00_00_b, 3900, 2340)
+RES_BLOCK(m10_01_00_00_p, 4050, 2430)
+RES_BLOCK(m18_01_00_00_a, 4110, 2466)
+RES_BLOCK(default, 4110, 2466)
 #endif
 
 #endif

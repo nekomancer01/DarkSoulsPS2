@@ -718,6 +718,11 @@ def gather(game, map_id):
                 ui = list({i for t in tl for i in t})
                 Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
             if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
+                if mapcfg.WS_SHARE_TRIS:  # the whole MSB's source triangles per 32 m cell, before the cut (ws_shares)
+                    G = mapcfg.CHUNK_GRID
+                    for t in tl:
+                        ck = tuple(math.floor(sum(Wp[i][k] for i in t) / 3 / G) for k in range(3))
+                        mapcfg.WS_SRC_TRIS[ck] = mapcfg.WS_SRC_TRIS.get(ck, 0) + 1
                 tl = [t for t in tl if in_map(*(sum(Wp[i][k] for i in t) / 3 for k in range(3)))]
             if mapsimp.PANO_R and not sky:  # far panorama (tools/pano.py): beyond PANO_R of PANO_C it replaces the map
                 pc = mapsimp.PANO_C or sp
@@ -814,6 +819,8 @@ def gather(game, map_id):
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
                                # (objects move or break, cut-outs and blends let light through)
                                piece=part["name"],
+                               # cut-out cards (ivy): each leaf is a piece of its own for mapsimp.loose_pieces
+                               cutout="_alp" in m["mtd"].lower() or "_edge" in m["mtd"].lower(),
                                occ=int(part["type"] == 0 and not blend and not grass and not sky and not water and
                                        "_alp" not in m["mtd"].lower() and "_edge" not in m["mtd"].lower() and
                                        part["entity_id"] not in switched)))

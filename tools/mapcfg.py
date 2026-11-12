@@ -124,6 +124,36 @@ WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
 # their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
 # over the union of blocks stays at 0 %)
 WS_SHARE_K = float(os.environ.get("WS_SHARE_K", 1.0))
+# WS_DROP (default on; 0 = the old solve): loose pieces go whole before a wall bends. An edge collapse cannot remove a
+# closed shell, so barrels, ivy leaves, planks and rubble ended as lumps of a few triangles however far a cell's
+# threshold was raised, and the solve bent the structure around them instead (Undead Burg 2026-11-13: at the 12 px
+# cap 35 % of the near level's triangles were in pieces under 2 m; the seam allowance's 68 px took 6 % off the large
+# structure and its outline with it). A piece = triangles joined through shared positions (tools/mapx/pieces.c), at
+# most WS_DROP_DIAG m across (larger ones are the structure and never go). The error of leaving one out, on the
+# collapse's scale: sqrt(stand-off x size) at its view distance, stand-off = its farthest point from the structure
+# (at most WS_DROP_CAP m), at least WS_DROP_FLUSH x size (a board flat on the floor still changes the picture by its
+# face). Up to the level's cap a cell's pieces go at the cell's own threshold; a spot still over budget at the cap
+# then raises only the piece threshold, to WS_DROP_PX, and only after that the seam allowance bends anything.
+# ASSUMED measure and constants (TECH_DEBT map-45)
+WS_DROP = os.environ.get("WS_DROP", "1") == "1"
+WS_DROP_PX = float(os.environ.get("WS_DROP_PX", 144.0))
+WS_DROP_DIAG = float(os.environ.get("WS_DROP_DIAG", 8.0))
+WS_DROP_CAP = float(os.environ.get("WS_DROP_CAP", 4.0))
+WS_DROP_FLUSH = float(os.environ.get("WS_DROP_FLUSH", 0.1))
+# Pieces whose boxes come within WS_DROP_GAP m of each other are one thing and stay or go together, measured by the
+# cluster's size (the stones of an arch, the planks of a floor; each stone alone was small enough to go and the arch
+# by the Burg bonfire lost them one by one). Cut-out cards (ivy leaves) stay single.
+WS_DROP_GAP = float(os.environ.get("WS_DROP_GAP", 0.1))
+# A block's share of a seam spot's room by the source triangles in reach (WS_SHARE_TRIS, the default): the blocks of one MSB split a seam spot's room by
+# the game's own triangle counts of their cells within the tier's radius (mapgather counts every triangle of the MSB
+# per 32 m cell before the block cut, so each block's export sees the same table and the shares add up to 1).
+# WS_SHARE_TRIS=0: by area.
+WS_SHARE_TRIS = os.environ.get("WS_SHARE_TRIS", "1") == "1"
+# kept meshes beyond WS_FAR_KB at a spot come off its budgets (export_map.py); WS_KEPT=0: the flat allowance only
+WS_KEPT = os.environ.get("WS_KEPT", "1") == "1"
+WS_BPT_KEPT = int(os.environ.get("WS_BPT_KEPT", 48))  # ASSUMED bytes per kept triangle (lists: 44-45 measured, WS_BPT; 36 left the Burg bonfire 0.2-0.3 MB over)
+WS_KEPT_NEAR = float(os.environ.get("WS_KEPT_NEAR", 0.5))  # ASSUMED share of it the near level gives up
+WS_SRC_TRIS = {}  # (cx, cy, cz) -> source triangles of the whole MSB (mapgather.gather)
 CHUNK_BACKDROP = 128  # far background (far-only cells beyond STREAM_FAR of the navmesh): never distance / subpixel culled
 SPAWN_K = float(os.environ.get("SPAWN_K", 0.6))
 GAME_LOD = os.environ.get("GAME_LOD") == "1"

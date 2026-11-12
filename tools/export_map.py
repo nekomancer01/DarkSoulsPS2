@@ -118,6 +118,43 @@ def main():
             ws_bc = (mapcfg.WS_NEAR_R, mapcfg.WS_PIN_R, mapsimp.ws_shares(Ps, mapcfg.WS_PIN_R, game, map_id, nav_v) * (mapcfg.WS_ROOM - mapcfg.WS_NEAR_KB - mapcfg.WS_FAR_KB) * 1024,
                      "coarse level", mapcfg.WS_PX1)
             ws_bn = (0.0, mapcfg.WS_NEAR_R, mapsimp.ws_shares(Ps, mapcfg.WS_NEAR_R, game, map_id, nav_v) * mapcfg.WS_NEAR_KB * 1024, "near level", mapcfg.WS_PX0)
+            if mapcfg.WS_KEPT and mapsimp.WS_REACH:  # (blocks that share their MSB: the others keep the flat allowance)
+                # Kept meshes (blended, cut-out, effects: never simplified; not the foliage) are part of the hard tier within
+                # WS_PIN_R. WS_FAR_KB allowed 128 KB for them at every spot; around the Burg bonfire they hold ~620 KB
+                # (world_budget.py "kept"), which only fitted because the seam shares left room unused. With the room
+                # shared by demand (WS_SHARE_TRIS) what they hold beyond the allowance comes off the spot's budgets:
+                # WS_KEPT_NEAR of it off the near level's, the rest off the coarse level's.
+                kb = np.zeros(len(Ps))
+                for m in meshes_in:
+                    if not m["keep"] or m["grass"] or not len(m["tris"]):  # (foliage is the soft tier: mapstream.c MS_RES_GRASS)
+                        continue
+                    mp = mapgather._mesh_np(m)[0]
+                    if not len(mp):
+                        continue
+                    lo_, hi_ = mp.min(0), mp.max(0)
+                    dd = np.maximum(0, np.maximum(lo_[None] - Ps, Ps - hi_[None]))
+                    kb += ((dd * dd).sum(1) < mapcfg.WS_PIN_R ** 2) * (len(m["tris"]) * mapcfg.WS_BPT_KEPT)
+                kb_kept = kb
+                ex = np.maximum(0.0, kb - mapcfg.WS_FAR_KB * 1024)
+                print(f"budget: kept meshes within {mapcfg.WS_PIN_R:.0f} m of a spot (estimate, {mapcfg.WS_BPT_KEPT} B/tri): p50 "
+                      f"{np.percentile(kb, 50) / 1024:.0f} / p90 {np.percentile(kb, 90) / 1024:.0f} / max {kb.max() / 1024:.0f} KB; "
+                      f"{(ex > 0).mean() * 100:.0f} % of the spots over the {mapcfg.WS_FAR_KB:.0f} KB allowance")
+            else:
+                ex = kb_kept = np.zeros(len(Ps))
+            if mapcfg.WS_SHARE_TRIS:
+                # the budgets as functions of the share solve_budget counts over the cells it reaches (ws_reach_shares;
+                # None: the shares above stand)
+                sh_c, sh_n = ws_bc[2] / ((mapcfg.WS_ROOM - mapcfg.WS_NEAR_KB - mapcfg.WS_FAR_KB) * 1024), ws_bn[2] / (mapcfg.WS_NEAR_KB * 1024)
+                # (the flat allowance is shared out like the room: each block took all 128 KB of it before, up to
+                # 256 KB more than the room at a spot three blocks reach)
+                kex = lambda sh: np.maximum(0.0, kb_kept - sh * mapcfg.WS_FAR_KB * 1024)  # noqa: E731
+                f_c = lambda sh, a=sh_c: np.maximum(0.0, (a if sh is None else sh) * (mapcfg.WS_ROOM - mapcfg.WS_NEAR_KB - mapcfg.WS_FAR_KB) * 1024 - (1 - mapcfg.WS_KEPT_NEAR) * kex(a if sh is None else sh))  # noqa: E731
+                f_n = lambda sh, a=sh_n, c=sh_c: np.maximum(0.0, (a if sh is None else sh) * mapcfg.WS_NEAR_KB * 1024 - mapcfg.WS_KEPT_NEAR * kex(c))  # noqa: E731
+                ws_bc = (ws_bc[0], ws_bc[1], f_c, ws_bc[3], ws_bc[4])
+                ws_bn = (ws_bn[0], ws_bn[1], f_n, ws_bn[3], ws_bn[4])
+            else:
+                ws_bn = (ws_bn[0], ws_bn[1], np.maximum(0.0, ws_bn[2] - mapcfg.WS_KEPT_NEAR * ex), ws_bn[3], ws_bn[4])
+                ws_bc = (ws_bc[0], ws_bc[1], np.maximum(0.0, ws_bc[2] - (1 - mapcfg.WS_KEPT_NEAR) * ex), ws_bc[3], ws_bc[4])
         elif ws_s:
             ws_bc = (mapcfg.WS_R1_IN, mapcfg.WS_R1, mapcfg.WS_B1, "coarse level", mapcfg.WS_PX1)
             ws_bn = (0.0, mapcfg.WS_R0, mapcfg.WS_B0, "near level", mapcfg.WS_PX0)
