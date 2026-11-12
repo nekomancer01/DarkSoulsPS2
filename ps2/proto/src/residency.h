@@ -20,7 +20,9 @@
 #define RESIDENCY_H
 
 #define RES_NEAR_R 20      /* m: near level drawn and budgeted within (box clipped to the cell's cube) */
-#define RES_PIN_R 32       /* m: coarse level and kept meshes pinned within (map.c HZN_R: the horizon stands in beyond) */
+#define RES_PIN_R 32       /* m: coarse level and kept meshes pinned within (map.c HZN_R: the horizon stands in beyond).
+                            * 40 before 2026-11-12: the coarse level is the near geometry without clutter since
+                            * (tools/mapcfg.py WS_FAR_SHAPE), about 1.75x its old size, paid by the ring's area */
 #define RES_HZN_R 40       /* m: coarse cells with a horizon wanted within (soft), the horizon drawn beyond */
 #define RES_ARENA_KB 9088  /* the streamer's arena (world.c), what the heap gives at boot (9152 asked before 2026-11-12) */
 #define RES_PAGE_KB 64     /* arena page (mapstream.c MS_PAGE) */

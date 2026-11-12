@@ -69,7 +69,7 @@ ON = os.environ.get("HZN", "1") == "1"
 # mesh_err, not the collapse's own error bound): build() lowers the error it gives the weld and the collapse until the
 # measured ERR_Q quantile (by surface area, both ways) is at most PX (ASSUMED 0.99: specks the prune drops and slivers
 # may exceed it; the export line prints the quantile and the maximum)
-PX = float(os.environ.get("HZN_PX", 8.0))
+PX = float(os.environ.get("HZN_PX", 12.0))  # (8 before the coarse level took the near geometry, 2026-11-12: the denser source grew the Burg horizons 1.5 -> 1.95 MB)
 ERR_Q = float(os.environ.get("HZN_ERR_Q", 0.99))
 S_MIN = 0.25  # the weld + collapse error is searched down to S_MIN x PX
 ERR_CAP = 4.0  # distances are searched up to ERR_CAP x PX pixels (a larger one counts as that)
