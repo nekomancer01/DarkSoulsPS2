@@ -37,6 +37,10 @@
  * export shares live in residency.h. */
 #include "mapstream_i.h"
 
+#ifndef MS_MIP0
+#define MS_MIP0 1  /* 0: no full-size map textures (plan_item) */
+#endif
+
 #ifdef MS_MEDIA_RADII  /* the media radii (mapstream_i.h) */
 #ifdef MEDIA_CD
 float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
@@ -264,6 +268,11 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = 0;
         if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
             return age <= 1 ? MS_MIP1_CLS : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
+        /* -DMS_MIP0=0: full-size textures are never read (the streamed mip 1 stays the sharpest level): a third fewer
+         * map reads on the ISO Taurus route and their ~0.5-0.9 MB of the arena for geometry, for softer surfaces
+         * within the 5-10 m where mip 0 shows. A compromise switch, off by default (TECH_DEBT world-16). */
+        if (!MS_MIP0)
+            return age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
     }
     if (tag & MS_RES_SKY) {
@@ -350,7 +359,23 @@ static int room_fail, failed, evict_left, defrag_left;
 static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb;
 unsigned ms_cancel_kb;
 
-static int q_before(const MsQ *a, int cls, float key) { return a->cls > cls || (a->cls == cls && a->key <= key); }
+static unsigned flow_rd[3], flow_kb[3];
+static unsigned thr_n[3][MS_WHY_N], thr_kb[3], thr_cls[C_TOP + 1];
+/* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
+ * level within the draw radius, the pinned coarse level, coarse cells in view) go out nearest first whatever their
+ * class. By class, a block turning on read its whole pinned coarse ring out to 40 m (C_PIN0, hundreds of small items)
+ * before the first near part at the feet: 30-47 near parts within 20 m waited ~20 s with the reader busy (ISO
+ * iso_burg_taurus, "flow" log). The classes below keep their order after them. -DMS_READ_BY_CLASS=1: by class as
+ * before; a settle too (its plan has its own classes). */
+#ifndef MS_READ_BY_CLASS
+#define MS_READ_BY_CLASS 0
+#endif
+static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settling && cls >= C_NEAR2 ? C_TOP : cls; }
+static int q_before(const MsQ *a, int cls, float key)
+{
+    int ra = q_rank(a->cls), rc = q_rank(cls);
+    return ra > rc || (ra == rc && a->key <= key);
+}
 static void q_add(int k, unsigned id, int cls, float key)
 {
     int i = nq < MS_QUEUE ? nq++ : MS_QUEUE;
@@ -408,7 +433,12 @@ static void collect(int i, int r)
         }
         {
             unsigned l = m->ld ? m->ld[w.id] : 0;  /* read again within MS_THRASH_TICKS of its drop: thrash */
-            hitch_load(l != 0, l >= 2 && (unsigned short)((ms_frame >> 5) + 2 - l) <= MS_THRASH_TICKS, w.bytes);
+            int th = l >= 2 && (unsigned short)((ms_frame >> 5) + 2 - l) <= MS_THRASH_TICKS;
+            hitch_load(l != 0, th, w.bytes);
+            if (th && m->dw) {  /* the thrash log: by kind, by why it had gone and the class it had then */
+                int kd = !it_res(m, w.id) ? 0 : it_tex(m, w.id) ? 2 : 1, y = m->dw[w.id] & 15, c = m->dw[w.id] >> 4;
+                thr_n[kd][y < MS_WHY_N ? y : 0]++, thr_kb[kd] += w.bytes >> 10, thr_cls[c <= C_TOP ? c : 0]++;
+            }
         }
         for (unsigned j = w.id; j < w.id + w.n; j++) {
             if (m->ld)
@@ -559,6 +589,10 @@ static int issue(void)
             }
             mapstream_stats.cells++;
             mapstream_stats.bytes += b;
+        }
+        {  /* the flow line's reads by kind: near parts, resident geometry, textures */
+            int kd = !it_res(m, g) ? 0 : it_tex(m, g) ? 2 : 1;
+            flow_rd[kd]++, flow_kb[kd] += gb >> 10;
         }
         if (!ms_nrd)
             land_t = ticks();
@@ -737,7 +771,7 @@ static void plan_(const float *pos)
             ms_rd[i].cxl = 1;
             continue;
         }
-        ms_drop(ms_rd[i].k, ms_rd[i].id);
+        ms_why = MS_WHY_CANCEL, ms_drop(ms_rd[i].k, ms_rd[i].id);
         memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
         i--;
     }
@@ -853,6 +887,68 @@ static void plan_(const float *pos)
 }
 
 
+/* Why the near level is late (the "flow" line, every MS_FLOW_FRAMES outside settles): frames the reader was held for
+ * a lite set with reads queued, frames with every read slot busy, frames with nothing queued, and the near cells
+ * within the draw radius that are not in, by what keeps them out: the plan's cut (no room by its count), a refusal
+ * (blocked after "no room"), the visibility cut, or simply the disc (queued / reading). */
+#define MS_FLOW_FRAMES 60u
+#ifndef MS_HOLD_INFLIGHT
+#define MS_HOLD_INFLIGHT 3  /* ASSUMED; -DMS_HOLD_INFLIGHT=0: no map read while a lite set loads, as before */
+#endif
+static void flow_log(const float *pos)
+{
+    static unsigned n, held, full, idle;
+    if (ms_settling) {
+        n = held = full = idle = 0;
+        return;
+    }
+    held += hold && nq, full += ms_nrd == MS_INFLIGHT, idle += !nq && !ms_nrd;
+    if (++n < MS_FLOW_FRAMES)
+        return;
+    unsigned cut = 0, ref = 0, vis = 0, disc = 0, kb = 0;
+    for (int k = 0; k < MS_INST; k++) {
+        const MsInst *m = &ms_inst[k];
+        for (unsigned c = 0; c < m->ncell; c++) {
+            if (!m->tab[c].bytes || m->state[c] == MS_READY || near_d2(m, c, pos) >= sq(MS_R0_DRAW))
+                continue;
+            kb += m->tab[c].bytes >> 10;
+            if (vis_cut(m, c))
+                vis++;
+            else if (blocked(k, c))
+                ref++;
+            else if (m->cls[c] < C_PREF)
+                cut++;
+            else
+                disc++;
+        }
+    }
+    if (cut + ref + vis + disc + held + flow_rd[0] + flow_rd[1] + flow_rd[2])
+        printf("mapstream: flow %u frames: held %u full %u idle %u | near parts within %.0f m not in: cut %u refused %u "
+               "unseen %u disc %u (%u KB) | queue %d in flight %d, near wait %u ms | reads near %u (%u KB) resident %u (%u KB) "
+               "textures %u (%u KB)\n", n, held, full, idle,
+               (double)MS_R0_DRAW, cut, ref, vis, disc, kb, nq, ms_nrd, (unsigned)lat_avg, flow_rd[0], flow_kb[0],
+               flow_rd[1], flow_kb[1], flow_rd[2], flow_kb[2]);
+    n = held = full = idle = 0;
+    memset(flow_rd, 0, sizeof flow_rd), memset(flow_kb, 0, sizeof flow_kb);
+    static unsigned tn;
+    if (!(++tn % 5)) {  /* every 10 s: what was read again within ~30 s of its drop */
+        unsigned any = 0;
+        for (int i = 0; i < 3; i++)
+            for (int y = 0; y < MS_WHY_N; y++)
+                any += thr_n[i][y];
+        if (any)
+            printf("mapstream: thrash 10 s (freed / window / lent / borrow / cancel): near %u %u %u %u %u (%u KB) resident "
+                   "%u %u %u %u %u (%u KB) textures %u %u %u %u %u (%u KB) | class when dropped free %u keep %u pref %u "
+                   "farc %u view2 %u near2 %u pin %u near %u view %u pin0 %u\n",
+                   thr_n[0][0], thr_n[0][1], thr_n[0][2], thr_n[0][3], thr_n[0][4], thr_kb[0],
+                   thr_n[1][0], thr_n[1][1], thr_n[1][2], thr_n[1][3], thr_n[1][4], thr_kb[1],
+                   thr_n[2][0], thr_n[2][1], thr_n[2][2], thr_n[2][3], thr_n[2][4], thr_kb[2],
+                   thr_cls[C_FREE], thr_cls[C_KEEP], thr_cls[C_PREF], thr_cls[C_FARC], thr_cls[C_VIEW2], thr_cls[C_NEAR2],
+                   thr_cls[C_PIN], thr_cls[C_NEAR], thr_cls[C_VIEW], thr_cls[C_PIN0]);
+        memset(thr_n, 0, sizeof thr_n), memset(thr_kb, 0, sizeof thr_kb), memset(thr_cls, 0, sizeof thr_cls);
+    }
+}
+
 void mapstream_update(const float pos[3])
 {
 #if defined MS_MEDIA_RADII && !defined MEDIA_CD
@@ -910,9 +1006,14 @@ void mapstream_update(const float pos[3])
     defrag_left = 1;
     ms_pend_release();
     HITCH_BEGIN(is);
-    while (!hold && nq && ms_nrd < MS_INFLIGHT && issue())
+    /* While a block's lite set loads (hold) the map reads go on, MS_HOLD_INFLIGHT at a time: the lite set's own reads
+     * are served ahead of them (pack_req_read_first), so it waits for one 32 KB page at most. With no map read at all
+     * until the block was fully on, walking into the Burg bonfire block left the reader idle for ~11 s while 10 -> 41
+     * near parts within the draw radius waited (1.7 MB; "flow" log, ISO iso_burg_taurus 2026-11-12). */
+    while ((!hold || ms_nrd < MS_HOLD_INFLIGHT) && nq && ms_nrd < MS_INFLIGHT && issue())
         ;
     HITCH_END(is, HS_MSIO);
+    flow_log(pos);
 }
 
 void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb)
@@ -947,13 +1048,14 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
     m->ld = calloc(n, sizeof *m->ld);  /* (NULL: no churn count) */
+    m->dw = calloc(n, 1);
     m->wq = calloc(n, sizeof *m->wq);  /* (NULL: no wait measured) */
     m->cmark = calloc(n, 1);  /* (NULL: parts planned one by one) */
     m->rit = NULL, m->nres = 0, m->rgrp = NULL;
     if (!m->state || !m->cls || !m->buf || !m->used) {
         if (!m->borrowed)
             pack_close(&m->pk);
-        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->cmark), free(m->wq);
+        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->dw), free(m->cmark), free(m->wq);
         memset(m, 0, sizeof *m);
         return 0;
     }
@@ -1005,6 +1107,12 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
         else
             free(m->ld);
         m->ld = l;
+        unsigned char *w = realloc(m->dw, t);
+        if (w)
+            memset(w + m->ncell, 0, nitems);
+        else
+            free(m->dw);
+        m->dw = w;
     }
     m->rit = u ? malloc(nitems * sizeof *m->rit) : NULL;
     m->rgrp = m->rit ? malloc(nitems * sizeof *m->rgrp) : NULL;
@@ -1049,7 +1157,7 @@ void mapstream_close(int k)
     }
     if (!m->borrowed)
         pack_close(&m->pk);
-    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->cmark);
+    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->dw), free(m->cmark);
     free(m->wq);
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;

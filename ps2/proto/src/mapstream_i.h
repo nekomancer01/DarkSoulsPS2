@@ -172,6 +172,7 @@ typedef struct {
     void **buf;
     unsigned *used;        /* frame map.c last asked for it */
     unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
+    unsigned char *dw;     /* per item: why it was last dropped (MS_WHY_*) | its class then << 4 */
     unsigned short *ld;    /* per item (hitch.c churn): 0 never read, 1 in, else the tick (frame / 32) + 2 it was dropped */
     unsigned *wq;          /* per near part (near wait log): clk_ms + 1 of the plan that first wanted it while not in, 0 */
     unsigned char *cmark;  /* per cell, during the plan's cut: 1 its near parts are in the plan, 2 they are not */
@@ -224,6 +225,10 @@ void *ms_g_alloc_lend(unsigned n);
 void ms_g_free(void *ptr, unsigned n);
 int ms_ensure_arena(void);
 void ms_drop(int k, unsigned id);
+/* why an item was dropped: the plan freed it (class C_FREE), a read / allocation cleared its page, a lite set took
+ * its lent pool page, a borrowed heap page went back, its read was cancelled */
+enum { MS_WHY_FREE, MS_WHY_WINDOW, MS_WHY_LENT, MS_WHY_BORROW, MS_WHY_CANCEL, MS_WHY_N };
+extern int ms_why;
 int ms_grp_cls(const MsInst *m, unsigned id);
 int ms_grp_chain(const MsInst *m, unsigned id);
 extern int ms_nowin;

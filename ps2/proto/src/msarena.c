@@ -216,6 +216,7 @@ int ms_ensure_arena(void)
 
 
 /* free the group of item id */
+int ms_why;  /* why the next ms_drop drops (MS_WHY_*, set by its caller; back to MS_WHY_FREE after) */
 void ms_drop(int k, unsigned id)
 {
     MsInst *m = &ms_inst[k];
@@ -236,6 +237,8 @@ void ms_drop(int k, unsigned id)
         unsigned b = it_bytes(m, j);
         if (m->ld && m->ld[j])
             m->ld[j] = (unsigned short)((ms_frame >> 5) + 2);
+        if (m->dw)  /* why it went and the class it had (the thrash log) */
+            m->dw[j] = (unsigned char)(ms_why | m->cls[j] << 4);
         m->buf[j] = NULL;
         m->state[j] = MS_NONE;
         mapstream_stats.cells--;
@@ -245,6 +248,7 @@ void ms_drop(int k, unsigned id)
             m->rgrp[j - m->ncell] = (unsigned short)(j - m->ncell);
         }
     }
+    ms_why = MS_WHY_FREE;
 }
 
 /* the highest class over id's group (dropping it drops them all) */
@@ -275,7 +279,6 @@ static unsigned grp_used(const MsInst *m, unsigned id)
 
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
 static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near);
-static unsigned lend_reclaim(unsigned p0, unsigned p1) { return lend_reclaim_(p0, p1, 0); }
 /* keep_near: near parts stay (mapstream_pool_prepare: ahead of time, they are what the player is looking at) */
 static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
 {
@@ -300,11 +303,95 @@ static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
                     printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
                            grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
                 }
-                ms_drop(k, id);
+                ms_why = MS_WHY_LENT, ms_drop(k, id);
             }
         }
     }
     return busy;
+}
+
+/* Lent items go only where the room is needed (2026-11-12): n bytes of whole pool pages in [p0, p1), the cheapest run
+ * of pages that hold nothing but lent items and free granules (fewest item bytes; a run a chain still reads only when
+ * no other does). lend_reclaim dropped every lent item of the pool whenever one allocation found no hole, a 5 KB
+ * collision tile included: ~250 of ~600 items read again within 30 s of their drop on the ISO Taurus route had gone
+ * that way (the "thrash" log), most of them textures. Returns the items of the run a chain may still read (they stay:
+ * the caller waits for VU1 and asks again); *found 0: no such run, nothing dropped. */
+#define MS_POOL_PAGES_MAX 160
+static unsigned lend_reclaim_n(unsigned n, unsigned p0, unsigned p1, int keep_near, int *found)
+{
+    static unsigned short ig[MS_POOL_PAGES_MAX];
+    static unsigned char bz[MS_POOL_PAGES_MAX];
+    unsigned np = (n + MS_PAGE - 1) / MS_PAGE, npool = p1 - p0;
+    *found = 0;
+    if (!np || np > npool || npool > MS_POOL_PAGES_MAX)
+        return 0;
+    memset(ig, 0, npool * sizeof *ig), memset(bz, 0, npool);
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a, e;
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = g_of(m->buf[id]);
+            if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
+                continue;
+            unsigned p = g / MS_GPP - p0;
+            ig[p] += (unsigned short)((grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN);
+            if (keep_near && (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2))
+                bz[p] |= 2;  /* stays */
+            else if (!ms_settling && ms_grp_chain(m, id))
+                bz[p] |= 1;
+        }
+    }
+    int best = -1;
+    unsigned bc = 0;
+    for (unsigned p = 0; p + np <= npool; p++) {
+        unsigned c = 0, ok = 1;
+        for (unsigned j = p; j < p + np && ok; j++) {
+            ok = ms_pfree[p0 + j] + ig[j] == MS_GPP && !(bz[j] & 2);  /* only lent items and free room, none that stays */
+            c += ig[j] + (bz[j] & 1 ? 4 * MS_GPP : 0);
+        }
+        if (ok && (best < 0 || c < bc || (c == bc && np > 1)))  /* ties: page-sized ones low (tiles), runs high (lite sets) */
+            best = (int)p, bc = c;
+    }
+    if (best < 0)
+        return 0;
+    *found = 1;
+    unsigned busy = 0, w0 = (p0 + (unsigned)best) * MS_GPP, w1 = w0 + np * MS_GPP;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a;
+            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = g_of(m->buf[id]);
+            if (g == ~0u || g < w0 || g >= w1)
+                continue;
+            if (!ms_settling && ms_grp_chain(m, id)) {
+                busy++;
+                continue;
+            }
+            if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2) {
+                hitch_lent_near();
+                printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
+                       grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
+            }
+            ms_why = MS_WHY_LENT, ms_drop(k, id);
+        }
+    }
+    return busy;
+}
+/* the lent items in the way of n bytes of [p0, p1): the cheapest run's (MS_LEND_ALL_DROP 0, the default), else all */
+#ifndef MS_LEND_ALL_DROP
+#define MS_LEND_ALL_DROP 0
+#endif
+static unsigned lend_reclaim_for(unsigned n, unsigned p0, unsigned p1, int keep_near)
+{
+    int found = 0;
+    unsigned busy = MS_LEND_ALL_DROP ? 0 : lend_reclaim_n(n, p0, p1, keep_near, &found);
+    /* no run of lent-only pages: the pool's own blocks are in the way and dropping items cannot help, except in a
+     * settle or with MS_LEND_ALL_DROP, where the pool is cleared as before */
+    return found ? busy : MS_LEND_ALL_DROP || ms_settling ? lend_reclaim_(p0, p1, keep_near) : 0;
 }
 
 /* ---- making room ----
@@ -404,7 +491,7 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
                 if (kb)
                     *kb += grp_bytes(m, a, e) >> 10;
                 hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
-                ms_drop(k, id);
+                ms_why = MS_WHY_WINDOW, ms_drop(k, id);
             }
         }
     }
@@ -594,7 +681,7 @@ static int x_release(int force)
                 int chain = ms_grp_chain(m, id);
                 xstat_drop_kb += n >> 10;
                 hitch_drop(ms_grp_cls(m, id) >= C_PREF, n);
-                ms_drop(k, id);
+                ms_why = MS_WHY_BORROW, ms_drop(k, id);
                 if (chain && ms_npend < MS_DEFRAG_PEND) {  /* the granules stay used until no chain reads them */
                     g_mark(g0, ng, 1);
                     pend[ms_npend++] = (typeof(pend[0])){g0, ng, ms_frame};
@@ -614,7 +701,7 @@ static int x_release(int force)
             if (g0 >= w0 && g0 < w1) {
                 xstat_drop_kb += grp_bytes(m, a, e) >> 10;
                 hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
-                ms_drop(k, id);
+                ms_why = MS_WHY_BORROW, ms_drop(k, id);
             }
         }
     }
@@ -711,7 +798,7 @@ int mapstream_pool_prepare(int pool, unsigned n)
         return 1;
     }
     unsigned before = ms_lent_n;
-    lend_reclaim_(p0, p1, 1);
+    lend_reclaim_for(n, p0, p1, 1);
     early_n += before - ms_lent_n;
     return 0;
 }
@@ -724,12 +811,12 @@ void *mapstream_alloc_pool(unsigned n, int pool)
     void *p = g_alloc_range(n, p0, p1);
     pool_busy = 0;
     if (!p && ms_lent_n) {  /* MS_LEND: the lent items go */
-        if (lend_reclaim(p0, p1) && !(p = g_alloc_range(n, p0, p1))) {
+        if (lend_reclaim_for(n, p0, p1, 0) && !(p = g_alloc_range(n, p0, p1))) {
             /* some are in a chain: cells drawn every frame never leave it (a lite set waited 13.8 s behind them,
              * taurus 2026-11-09), so wait for VU1 once and drop them all */
             vu1_wait();
             ms_chains_done = 1;
-            pool_busy = lend_reclaim(p0, p1) > 0;
+            pool_busy = lend_reclaim_for(n, p0, p1, 0) > 0;
             ms_chains_done = 0;
         }
         if (!p)

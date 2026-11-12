@@ -293,14 +293,24 @@ def plan(data, layers=None, layer0_cap=None):
     regs = regions(data)
     used, groups = set(boot), []
     for ri, reg in enumerate(regs):
-        g = []
+        # A region's block packs lie back to back, in neighbour order: the map stream reads two or three neighbouring
+        # blocks' packs in turn all the time (near cells, coarse cells, collision tiles), and anything between them
+        # pushes those seeks out of the fast seek window. Until 2026-11-12 the areas' audio pack (27 MB for m10) sat in
+        # the middle of the region and each block's characters after its pack: every seek between the two Burg blocks
+        # was a far one, 150 of ~400 far seeks on the Taurus route (ISO, dsrsnd "far seeks" log), ~100 ms each against
+        # ~30 ms inside the window. Characters (read once per type as it comes near) and the audio (one trip of the
+        # drive per read-ahead top-up, far either way) follow the block packs.
+        g, chrs = [], []
         for i, name in enumerate(reg):
-            own = [name + ".pak"] + [p for p in paks if p.startswith(name + "/")]
+            g.append(name + ".pak")
+            chrs += [p for p in paks if p.startswith(name + "/")]
             if ri == 0 and i == 0:  # the boot block's characters are the top-level c*.pak
-                own += [p for p in paks if "/" not in p and p[0] == "c"]
-            if i == (len(reg) - 1) // 2:  # the areas' audio (BGM, ambience) in the middle of the region's blocks
-                own += sorted({"snd/" + n[:3] + ".pak" for n in reg})
-            g += [p for p in own if p in secs and p not in used and p not in g]
+                chrs += [p for p in paks if "/" not in p and p[0] == "c"]
+        own = g + chrs + sorted({"snd/" + n[:3] + ".pak" for n in reg})
+        g = []
+        for p in own:
+            if p in secs and p not in used and p not in g:
+                g.append(p)
         used.update(g)
         groups.append((reg, g))
     shared = [p for p in paks if p not in used]  # character sounds (snd/cXXXX.pak): any region may read them
