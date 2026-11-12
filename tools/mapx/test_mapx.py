@@ -6,15 +6,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import numpy as np
 import export_map as em
+import mapcfg  # the exporter's settings: set there, every module reads them at call time
 import mapx_native
 
 # C-only steps after the stages compared here (no Python twin): off, so both paths print and write the same
-em.SIMPLIFY_REFIT = False
-em.ST_ALIGN = False
-em.SIMPLIFY_ENV_NEAR = em.SIMPLIFY_ENV_FAR = 0.0
+mapcfg.SIMPLIFY_REFIT = False
+mapcfg.ST_ALIGN = False
+mapcfg.SIMPLIFY_ENV_NEAR = mapcfg.SIMPLIFY_ENV_FAR = 0.0
 # the triangle guard and its validation pass (SIMPLIFY_GUARD, PR #187) live only in the C simplifier: the Python twin
 # gives the guard-off log, so the comparison runs with both off; check_guard runs the C path with them on
-em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = False
+mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = False
 
 L = mapx_native.lib()
 assert L is not None, "libmapx did not build"
@@ -384,7 +385,7 @@ def check_simplify(rng):
               floor=None if rng.random() < 0.5 else 2.0, area_k=None if rng.random() < 0.5 else 0.0,
               eps_far=None if rng.random() < 0.5 else 3e-4)
     em.KEEP_POS[:] = [tuple(rng.uniform(-20, 20, 3).tolist())] if rng.random() < 0.5 else []
-    em.BUDGET = int(rng.integers(10, 3000))
+    mapcfg.BUDGET = int(rng.integers(10, 3000))
     for m in ms:
         m["tris_in"] = m["tris"]
 
@@ -420,19 +421,19 @@ def check_guard(rng):
     ms[0]["keep"] = False
     spawn = tuple(rng.uniform(-20, 20, 3).tolist())
     em.KEEP_POS[:] = []
-    em.BUDGET = int(rng.integers(10, 3000))
+    mapcfg.BUDGET = int(rng.integers(10, 3000))
     for m in ms:
         m["tris_in"] = m["tris"]
 
     def run(guard):
         M = copy.deepcopy(ms)
-        em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = guard
+        mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = guard
         f = io.StringIO()
         try:
             with contextlib.redirect_stdout(f):
                 em.simplify_meshes(M, spawn, nav_v, nav_t, src="tris_in", out="tris_far", env_pad=0.25)
         finally:
-            em.SIMPLIFY_GUARD = em.SIMPLIFY_VALIDATE = False
+            mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = False
         return sum(len(m.get("tris_far") or []) for m in M), f.getvalue()
     n_off, _ = run(False)
     n_on, log = run(True)
