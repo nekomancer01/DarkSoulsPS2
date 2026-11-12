@@ -260,6 +260,11 @@ def box_d(lo, hi, P):
     return np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
 
 
+# the last main() run's per-spot arrays (spots P, owning block index own, per-tier totals tot, total, gated, room), for
+# tools/lodview.py's spot heat map; main() itself only writes the percentiles
+LAST = {}
+
+
 def pct(x):
     return dict(p50=round(float(np.percentile(x, 50))), p90=round(float(np.percentile(x, 90))),
                 p99=round(float(np.percentile(x, 99))), max=round(float(x.max())))
@@ -344,6 +349,8 @@ def main(argv):
                               backdrop_kb=round(float(back.sum() + sky / 1024)), spots=int((own == k).sum())))
     total = tot["near"] + tot["coarse"] + tot["kept"] + tot["far"]
     gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if any(name.startswith(s) for s in STRICT_BLOCKS if s)])
+    LAST.clear()
+    LAST.update(P=P, own=own, tot=tot, total=total, gated=gated, room=room, names=[b[0] for b in blocks])
     hard_over = (tot["hard"] > room) & gated
     allow, allow_spots = {}, []  # per block and level its own spots' allowance %; the spots (x, y, z, block, level, KB)
     for d in dirs:
