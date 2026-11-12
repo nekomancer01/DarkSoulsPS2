@@ -96,6 +96,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
+| `ci/switches.py` | PR check: `ps2/proto/src/switches.h` lists every compile-time switch the sources test, and nothing else; `--list` prints the CI builds |
+| `ci/switches.sh` | PR check: one `-Werror` compile + link per fallback / debug build in `switches.h` (only the sources a switch reaches are rebuilt; ps2dev container, ~1.5 min) |
 
 ## Real hardware and profiling
 | Tool | What it does |
@@ -135,6 +137,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/newbuild` | Seed a new build dir (`make BUILD=...`) or a new clone's `build/` (`--from` another tree's build) from an existing build, stamps included, so only what changed re-exports |
 | `tools/srcsum.py` | The Makefile's tool stamps: hash of a Python tool's syntax tree without comments / docstrings, so comment edits re-export nothing |
 | `tools/later` | Night queue: `later add <cmd>` keeps long jobs (soaks, routes, sweeps) for the idle hours, `later run` starts them through `tools/qd` (exports to the VPS, PCSX2 runs here); `later timer` prints a systemd timer |
+| `tools/lodview.py` | LOD budget viewer: `tools/lodview.py [gen dir]`, then http://127.0.0.1:8771/. Three.js view of every streamed block cell by cell (near / coarse / kept / backdrop from map.bin + cells.bin); pick a meshoptimizer LOD per level or per cell and the distance bands (near, HZN_R, soft edge), and `tools/world_budget.py` recomputes room, arena want per spot, hard-tier gate and WS_B0 / WS_B1 live (~3 s for four blocks). Local only: serves game-derived data on 127.0.0.1 |
 | `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |

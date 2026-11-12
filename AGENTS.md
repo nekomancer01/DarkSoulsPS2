@@ -120,10 +120,14 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 - Mark AI-assisted work with a `Co-Authored-By:` trailer naming the agent.
 - PR description: what changed, how it was verified (spots, numbers, the headless command), and the TECH_DEBT IDs
   it opens or resolves.
-- Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/offline.sh` and
-  `tools/ci/compile.sh` (no game data, so no PCSX2). Run them locally before pushing. The PCSX2 results go in the
+- Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/switches.py`, `tools/ci/offline.sh`,
+  `tools/ci/compile.sh` and `tools/ci/switches.sh` (no game data, so no PCSX2). Run them locally before pushing.
+  A new compile-time switch (`#if` / `#ifdef` on a name the sources don't define) needs a row in
+  `ps2/proto/src/switches.h`: its default, kind and the build CI makes of its fallback. The PCSX2 results go in the
   PR template's Verification section, scaled to the change: a scoped `tools/test-all.sh --no-build --areas ...`
-  run per PR, the full all-area suite before a public export or nightly.
+  run per PR, the full all-area suite before a public export or nightly. `.github/workflows/pcsx2-smoke.yml` runs
+  the Firelink + Burg smoke (`tools/ci/pcsx2-smoke.sh`) on the maintainer's PC after each merge to main and nightly
+  (self-hosted runner, `tools/ci/runner.sh`); only its step summary and budget table are published.
 
 ## 8. Where to start
 
