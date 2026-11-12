@@ -31,37 +31,16 @@
  * BUMP_BAKED          | 1        | fallback | -DBUMP_BAKED=0                                | bump.c        | relief baked at export; 0 = the runtime CLUT relief pass (make BUMP_BAKE=0)
  * COL_TILES           | 1        | fallback | -DCOL_TILES=0                                 | coltile.h     | collision index and 16 m tiles streamed; 0 = collision.bin whole (make COL_TILES=0)
  * WORLD_LITE_DIET     | 1        | fallback | -DWORLD_LITE_DIET=0                           | world.c       | kept-only blocks hold collision and events only (make WORLD_LITE_DIET=0)
+ * RES_BLOCK           | undefined | make    | -                                             | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
- * MS_STEADY           | 1        | fallback | -DMS_STEADY=0                                 | mapstream.c   | class hysteresis and held textures; 0 = the old plan
- * MS_NEAR_FIRST       | 1        | fallback | -DMS_NEAR_FIRST=0                             | mapstream.c   | near parts planned before coarse ones
- * MS_NEAR_OVER        | 1        | fallback | -DMS_NEAR_OVER=0                              | mapstream.c   | near parts may take coarse room in view
- * MS_CANCEL           | 1        | fallback | -DMS_CANCEL=0                                 | mapstream.c   | stale reads cancelled after a warp or settle
- * MS_SETTLE_NEAR      | 1        | fallback | -DMS_SETTLE_NEAR=0                            | mapstream.c   | a settle waits for the near parts at the feet
- * MS_SETTLE_HZN       | 1        | fallback | -DMS_SETTLE_HZN=0                             | mapstream.c   | a settle skips coarse cells the horizon covers
- * MS_STABLE           | 1        | fallback | -DMS_STABLE=0                                 | mapstream.c   | distance-only ranks with a bonus for what is in
- * MS_WHOLE_CELLS      | 1        | fallback | -DMS_WHOLE_CELLS=0                            | mapstream.c   | a cell's near parts planned together
- * MS_POOLS            | 1        | fallback | -DMS_POOLS=0                                  | mapstream.c   | structural and item pools
- * MS_LEND             | 1        | fallback | -DMS_LEND=0                                   | mapstream.c   | idle structural pages lent to items
- * MS_LEND_ALL         | 0        | fallback | -DMS_LEND_ALL=1                               | mapstream.c   | 1 = lend to every class (the earlier setting)
- * MS_LEND_NEAR        | 1        | fallback | -DMS_LEND_NEAR=0                              | mapstream.c   | near parts may use lent pages
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream.c   | lent room near parts may hold
- * MS_PREP_NOLEND      | 0        | fallback | -DMS_PREP_NOLEND=60                           | mapstream.c   | frames a pool prepare keeps new items out (60 = the old hold)
- * MS_ITEMS_TOP        | 1        | fallback | -DMS_ITEMS_TOP=0                              | mapstream.c   | item pages taken from the top of the arena
- * MS_BORROW           | 1        | fallback | -DMS_BORROW=0                                 | mapstream.c   | free heap pages borrowed for map data; 0 = the fixed arena
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream.c   | heap kept free when borrowing
- * MS_DEFRAG           | 1        | fallback | -DMS_DEFRAG=0                                 | mapstream.c   | pages moved to close holes
- * MS_ONE_LOD          | 1        | fallback | -DMS_ONE_LOD=0                                | mapstream.c   | a cell's coarse item dropped once its near level is in
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream.c   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream.c   | arena size
- * MS_NEAR_CUBE        | 1        | fallback | -DMS_NEAR_CUBE=0                              | mapstream.h   | near parts cut on the cube grid
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
- * WORLD_RELIEF_SOFT   | 1        | fallback | -DWORLD_RELIEF_SOFT=0                         | world.c       | relief never drops wanted cells
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
- * WORLD_KEPT_HZN      | 1        | fallback | -DWORLD_KEPT_HZN=0                            | world.c       | kept-only blocks keep their horizon
- * WORLD_TAB_SPLIT     | 1        | fallback | -DWORLD_TAB_SPLIT=0                           | world.c       | the map table read in pieces
- * WORLD_EV_SHARED     | 1        | fallback | -DWORLD_EV_SHARED=0                           | world.c       | a map's shared event data read once
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
