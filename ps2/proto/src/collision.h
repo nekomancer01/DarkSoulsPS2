@@ -35,6 +35,16 @@ int col_block_tris(int block);
 /* EMEVD "Activate Hit" (src/event.c): switch triangles [first, first + count) of a block off (0) or on again; queries
  * skip switched-off triangles (a bitmap of ntris / 8 bytes, allocated on the first switch-off). 0 = bad range. */
 int col_tris_enable(int block, unsigned first, unsigned count, int on);
+/* Collision tiles (src/coltile.c, tools/export_collision.py COL_TILE): a paged collision.bin keeps its index resident
+ * and its pages (one tile's fragment data each) come and go. col_load_index loads the index alone (every page
+ * absent); col_load still takes a whole file. col_pages: pages of a loaded block (0 none), tile = the tile size;
+ * col_page_set: a page's data in memory (NULL: absent; the buffer stays the caller's). Queries skip the triangles of
+ * absent pages. */
+/* byte offset of the page table in a v2 file (head = its first 96 bytes): v 2 = CTP2 (after the patterns), 1 = CTP1 */
+unsigned col_ptab_at(const void *head, int v);
+int col_load_index(int block, const void *blob);
+int col_pages(int block, float *tile);
+void col_page_set(int block, int page, const void *data);
 /* Wall contacts resolved by col_push_capsule since start (for the HUD / debugging) */
 extern int col_contacts;
 

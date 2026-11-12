@@ -77,6 +77,9 @@ typedef struct {
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned));
 int pack_job_step(PackJob *j);
 void pack_job_cancel(PackJob *j);
+/* as pack_job_cancel without waiting for a read in flight: the job is left as cancelled at once, its buffer and file go
+ * back once the read lands (PACK_JOB_ABANDON) */
+void pack_job_abandon(PackJob *j);
 /* Kept for its callers: there is no shared async slot any more, every request has its own */
 void pack_async_free(void);
 /* Wait for pack_read_async's read (its result stays for pack_async_done) and, from host:, for fio's request in flight
@@ -94,11 +97,9 @@ extern void (*pack_wait_hook)(void);
 extern int pack_cdrom;
 /* cdrom0: goes through dsrsnd's disc server (iop/dsrsnd, the only reader of the drive while it streams sound).
  * pack_disc_boot is called once, when the first pack path is resolved to cdrom0: (src/sound.c: loads the IOP modules,
- * then pack_disc_attach); without it, or if it fails, cdrom0: is read through fio. pack_disc_stat: IOP RAM free (bytes),
- * the longest stream wait (ms), stream waits over 100 ms, KB served, as of the last request sent. */
+ * then pack_disc_attach); without it, or if it fails, cdrom0: is read through fio. */
 int pack_disc_boot(void);
 int pack_disc_attach(void);
-void pack_disc_stat(unsigned out[4]);
 /* the disc server's counters (dsrsnd_rpc.h SndDiscStat) as of its last reply; 0 without the server (host: runs).
  * pack_disc_poll asks for a fresh copy (an empty submit) when no request went out since the last call */
 int pack_disc_stats(void *out /* SndDiscStat */);

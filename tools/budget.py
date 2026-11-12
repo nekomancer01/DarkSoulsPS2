@@ -12,12 +12,16 @@ Per shot (the ELF's "TEST passes" line, src/testscript.c pb_print: p50 / p90 of 
 Per run (EE log): no disc layer change during play (the "disc:" lines without "(load)"), seeks <= 2 a second on average
   while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
   average of the timed frames and the worst one, for cull, plan, chain, tex, bump, total) are summarised (p90 of the
-  averages, the largest worst), not gated: the map pass as a whole is.
+  averages, the largest worst), not gated: the map pass as a whole is. The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" lines, tools/hitchsum.py stream_summary,
   after the first 30 s): near-class "no room" refusals, near pop-ins seen on screen, the median of cells drawn coarse
   while due near, and the share of seconds with a horizon-filled cell inside HZN_R. Their thresholds are per test
   script (STREAM_GATES), started at the measured numbers of main so nothing fails at first; a step of the plan may only
-  lower one (they ratchet one way).
+  lower one (they ratchet one way). The "logic: pass ms" lines (lpass.c, every 120
+  frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
+  the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
 Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
 import argparse, glob, json, os, re, sys
 
@@ -46,12 +50,17 @@ MIN_FRAMES = 10
 # share + 3 points; None = not gated. Lower them as the plan's steps land, never raise them.
 STREAM_GATE_KEYS = {"near_items": "near items refused for room (distinct)", "room_near": "near-class \"no room\" refusals", "popins": "near pop-ins",
                     "lent_near": "near parts lent a pool page and dropped for a lite set (MS_LEND)",
-                    "due_med": "median cells drawn coarse while due near", "hzn_pct": "% of seconds with horizon inside HZN_R",
+                    "due_med": "median cells drawn coarse while due near",
+                    "hard_items": "hard-tier items refused for room (distinct, residency.h)", "hzn_pct": "% of seconds with horizon inside HZN_R",
                     "cut": "most wanted items one plan cut for room (mapstream.c, step B4)"}
+# hard_items (2026-11-12, TECH_DEBT world-14): distinct items of residency.h's hard tier (mapstream.c's "no room ...,
+# hard" lines: near parts within RES_NEAR_R, pinned coarse within RES_PIN_R) refused for room, which the export
+# budgeted for; from two ISO runs of main 0f087d7 (taurus 38 / 27, report3 1 / 4) + 30 %. The arena's page holes are
+# the cause (page-sized groups with 0.3-1.8 MB free in holes); lower these as that is fixed.
 STREAM_GATES = {
-    "iso_ame_report3": {"near_items": 16, "popins": 4, "due_med": 11, "hzn_pct": 57.0},
+    "iso_ame_report3": {"near_items": 16, "popins": 4, "due_med": 11, "hzn_pct": 57.0, "hard_items": 5},
     "iso_burg_soak2": {"near_items": 95, "popins": 50, "due_med": 12, "hzn_pct": 100.0},
-    "iso_burg_taurus": {"near_items": 99, "popins": 36, "due_med": 8, "hzn_pct": 100.0},
+    "iso_burg_taurus": {"near_items": 99, "popins": 36, "due_med": 8, "hzn_pct": 100.0, "hard_items": 49},
     "world_route": {"near_items": 162, "popins": 60, "due_med": 3, "hzn_pct": 93.9},
     "world_sprint": {"near_items": 151, "popins": 89, "due_med": 4, "hzn_pct": 95.9},
     "iso_burg_soak": None,  # (the 8-lap soak: not measured for the baseline)
@@ -59,6 +68,7 @@ STREAM_GATES = {
 MEDIA = {0: "-", 1: "cd", 2: "dvd", 3: "dvd9"}
 
 MAP_PASS = re.compile(r"map: pass ms (.*)")
+LOGIC_PASS = re.compile(r"logic: pass ms (.*)")  # lpass.c (Burg plan B6): averages | worst frame | each part's max
 DISC = re.compile(r"disc: t (\d+) s media (\S+) kbps (\d+) seeks (\d+) far (\d+) \(([\d.]+)/s\) layer (\d+)( \(load\))? \| "
                   r"ee reads (\d+) wait avg (\d+) max (\d+) ms \| stream wait max (\d+) ms over100 (\d+) \| cache (\d+) KB "
                   r"hits (\d+) miss (\d+) \| busy (\d+) % \| iop free (\d+) KB")
@@ -71,7 +81,7 @@ def pct(vals, p):
 
 def log_summary(log):
     """the run's "disc:" and "map: pass ms" lines -> dict"""
-    disc, mp, under = [], {}, 0
+    disc, mp, lp, under = [], {}, {}, 0
     try:
         lines = open(log, errors="replace").read().splitlines()
     except OSError:
@@ -95,6 +105,16 @@ def log_summary(log):
                         mp.setdefault(k, {"avg": [], "max": []})[key].append(float(v.split("/")[0]))
                     except ValueError:
                         pass
+        m = LOGIC_PASS.search(line)
+        if m:  # "player A ... total T | worst player ... total T | max player ... other O (N frames)"
+            parts = m[1].split("|")
+            for part, key in zip(parts, ("avg", "worst", "max")):
+                t = part.replace("worst", "", 1).replace("max", "", 1).split("(")[0].split()
+                for k, v in zip(t[::2], t[1::2]):
+                    try:
+                        lp.setdefault(k, {"avg": [], "worst": [], "max": []})[key].append(float(v))
+                    except ValueError:
+                        pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
     for i, d in enumerate(disc):  # estimated drive time of each period (the gate above)
@@ -104,7 +124,9 @@ def log_summary(log):
                                     1000 * d["kbps"] * span / DRIVE_KBPS) / (1000 * span), 1)
     play = [d for d in disc if not d["load"]]
     out = {"underruns": under, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
-                                            for k, v in mp.items()}}
+                                            for k, v in mp.items()},
+           "logic_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
+                          for k, v in lp.items()}}
     if disc:
         n = max(1, len(play))
         out["disc"] = {
@@ -198,11 +220,47 @@ def check_result(path, disc_gates=True):
         key = script_key(res, d)
         out["script"] = key
         for k, b in (STREAM_GATES.get(key) or {}).items():
-            if b is not None and (st.get(k) or 0) > b:
+            if k != "hard_items" and b is not None and (st.get(k) or 0) > b:
                 out["fails"].append(f"run: {STREAM_GATE_KEYS[k]} {st[k]} > {b} ({key})")
     if run.get("underruns"):
         out["fails"].append(f"run: {run['underruns']} stream underruns")
+    out["fails"] += residency_gates(d, run, st, out)
     return out
+
+
+ARENA_UNDER = re.compile(r"mapstream: arena (\d+) KB is under the build's (\d+) KB")
+ARENA_POOLS = re.compile(r"mapstream: arena structural (\d+) KB, misc (\d+) KB, visual (\d+) KB")
+NO_ROOM = re.compile(r"mapstream: no room for item (\d+\.\d+) \(\d+ KB, class \d+, \d+ m(, hard)?\)")
+
+
+def residency_gates(d, run, st, out):
+    """The residency design's runtime checks (ps2/proto/src/residency.h, TECH_DEBT world-14): the arena came out at
+    RES_ARENA_KB, its visual room x RES_FILL_PCT holds the largest per-block budget the export was solved against, and
+    the hard tier's refusals (STREAM_GATES hard_items). Returns the fails."""
+    import residency
+    try:
+        log = open(os.path.join(d, "emulog.txt"), errors="replace").read()
+    except OSError:
+        return []
+    fails = []
+    m = ARENA_UNDER.search(log)
+    if m:
+        fails.append(f"run: arena {m[1]} KB under the build's {m[2]} KB (residency.h RES_ARENA_KB: the heap at boot)")
+    m = ARENA_POOLS.search(log)
+    if m:
+        room = int(m[3]) * residency.RES["RES_FILL_PCT"] // 100
+        need = max(r for r, _ in residency.BLOCKS.values())
+        run["visual_room_kb"] = room
+        if room < need:
+            fails.append(f"run: visual room {room} KB < the {need} KB the export's blocks were budgeted (residency.h)")
+    hard = {i for i, h in NO_ROOM.findall(log) if h}
+    run["hard_items"] = len(hard)
+    if st is not None and st:
+        st["hard_items"] = len(hard)
+        b = (STREAM_GATES.get(out.get("script")) or {}).get("hard_items")
+        if b is not None and len(hard) > b:
+            fails.append(f"run: {STREAM_GATE_KEYS['hard_items']} {len(hard)} > {b} ({out.get('script')})")
+    return fails
 
 
 def results(paths):
@@ -242,7 +300,12 @@ def table(r):
         st = run["stream"]
         o.append(f"  stream ({st['periods']} periods): no room {st['room']} (near {st['room_near']}, {st.get('near_items')} items), pop-ins "
                  f"{st['popins']}, lent near dropped {st.get('lent_near', 0)}, due near drawn coarse median {st['due_med']} max {st['due_max']}, horizon inside "
-                 f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %), plan cut at most {st.get('cut', 0)} items in a plan (near {st.get('cut_near', 0)})")
+                 f"HZN_R {st['hzn_s']} s ({st['hzn_pct']} %), plan cut at most {st.get('cut', 0)} items in a plan (near {st.get('cut_near', 0)}), "
+                 f"hard tier refused {st.get('hard_items', 0)} items, visual room {run.get('visual_room_kb', '-')} KB")
+    if run.get("logic_pass"):
+        o.append("  logic pass p90 (120-frame avgs)/max frame: " + " ".join(
+            f"{k} {v['p90_avg']:.2f}" + (f"/{v['max']:.1f}" if v["max"] is not None else "")
+            for k, v in run["logic_pass"].items() if v["p90_avg"] is not None))
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)
 

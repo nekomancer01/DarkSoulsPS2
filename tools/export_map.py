@@ -32,7 +32,7 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
           front (chunk_streams: the three streams form one VIF packet; DSM5 cell table flag CELLS_VIFPKT)
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
           nav_verts f32[3]  nav_tris u16[3]
-  fog     u32 rows, collision tris, 0, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
+  fog     u32 rows, collision tris, sky rows, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
           light, specular terms, far depth of field; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
           MSB collision part)
 DSM5 (STREAM=1, two levels; render-distance): as DSM4, plus header u32 cell table offset (after the fog offset);
@@ -136,9 +136,14 @@ WS_EXTENTS = os.environ.get("WS_EXTENTS", "1") == "1"
 # error caps of the solve (px at 640x448): ASSUMED twice the Burg's near / coarse thresholds (6 / 12 px)
 WS_PX0 = float(os.environ.get("WS_PX0", 12.0))
 WS_PX1 = float(os.environ.get("WS_PX1", 24.0))
+# ST_ALIGN (default on; 0 = every triangle keeps its own whole-repeat shift, the old export): triangles of a batch that
+# share a corner up to whole texture repeats get the same shift, so the indexed chunk stores the corner once
+# (tools/mapx/chunks.c st_batch)
+ST_ALIGN = os.environ.get("ST_ALIGN", "1") == "1"
 # bytes per triangle of a streamed chunk (positions, st, colours, padding, record: 44-45 measured over 4 blocks as lists;
-# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level)
-WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
+# indexed chunks (INDEXED, below): 31.2 measured on the Undead Burg west block's near level, 33 on its coarse level;
+# with ST_ALIGN 29.3 over both levels of that block, 31.8 without)
+WS_BPT = (29 if ST_ALIGN else 31) if os.environ.get("INDEXED", "1") == "1" else 45
 # WS_UNION (Burg plan B3, default on; WS_UNION=0 = the per-block budgets above): the spot budgets are what the arena's
 # visual room holds at a spot, shared by every block loaded there. The runtime measures a spot as tools/world_budget.py
 # does: near parts within WS_NEAR_R (mapstream.c MS_R0_DRAW) and the pinned coarse level from there to WS_PIN_R
@@ -151,13 +156,28 @@ WS_BPT = 31 if os.environ.get("INDEXED", "1") == "1" else 45
 WS_UNION = os.environ.get("WS_UNION", "1") == "1"
 # The hard tier (2026-11-08, the plan's review): near within 20 m, coarse and kept meshes within 40 m (map.c HZN_R 40:
 # the horizon stands in beyond), against the room world_budget.py prints for world.c's WORLD_ARENA_KB 9152 (3618 KB with the Burg's lite sets, 2026-11-08)
-WS_ROOM = float(os.environ.get("WS_ROOM", 3618))
-WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 1792))  # (2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+# 2026-11-10 refit: collision tiles (#157), one events.bin / texture set per map (#159-#163) shrank the structural pool
+# to 3376 KB and world_budget.py prints a 4450 KB room on main 4fa8d0d; WS_ROOM is that less 3 % (ASSUMED margin: more
+# chunks grow the structural pool, +41 KB with the structure weight, TECH_DEBT map-41). The near level gets 60 % of it
+# (was ~50 %): with the Burg's caps back at 12 / 24 px the strict gate is at 0.00 % (main 0.49 %), near level tris
+# +11..+29 % per block, hard tier max 4290 KB. The standalone Burg ELF (MAP=m10_01_00_00, no world) keeps the old
+# numbers (Makefile MAPENV_m10_01_00_00): its own arena crashed at these (grass_tris, 2.15 MB free).
+# Since 2026-11-12 (TECH_DEBT world-14) the room and its near share are the block's RES_BLOCK row of
+# ps2/proto/src/residency.h (tools/residency.py; set in main() once the block is known): 4175 / 2505 KB, the 4239 KB
+# visual room the ISO's arena has (9088 KB, pools in whole pages) less a page; 4317 / 2590 before, against a room the
+# runtime never had. WS_ROOM / WS_NEAR_KB in the environment (MAPENV) still win (A/B, the standalone Burg ELF).
+# (3618 room: near 1792; 2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+WS_ROOM = float(os.environ.get("WS_ROOM", 0))
+WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 0))
 WS_FAR_KB = float(os.environ.get("WS_FAR_KB", 128))  # kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)
 # a spot still over at the caps may take its cells past the cap up to WS_ALLOW_PX (the seam allowance: two blocks'
 # cells at one spot); world_budget.py fails the build when more than 1 % of the spots need it
-WS_NEAR_R = float(os.environ.get("WS_NEAR_R", 20.0))
-WS_PIN_R = float(os.environ.get("WS_PIN_R", 40.0))
+import residency  # noqa: E402 (ps2/proto/src/residency.h: radii and per-block budgets shared with the runtime)
+WS_NEAR_R = float(os.environ.get("WS_NEAR_R", residency.RES["RES_NEAR_R"]))
+WS_PIN_R = float(os.environ.get("WS_PIN_R", residency.RES["RES_PIN_R"]))
+# the export stops when, after the solve, more than this % of the block's own spots are still over its budget in a
+# level (the error caps and the seam allowance spent): the block's data cannot fit the room it was given
+WS_OVER_PCT = float(os.environ.get("WS_OVER_PCT", residency.RES["RES_ALLOW_BLOCK_PCT"]))
 WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
 # a block's share of a seam spot's room, x WS_SHARE_K (capped at the whole room): the neighbour's cells seldom fill
 # their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
@@ -191,6 +211,12 @@ PARK_DIST = 150.0  # metres: objects farther than this from every walkable navme
 HDR = 80
 CHUNK_CULL, CHUNK_BLEND, CHUNK_ADD, CHUNK_SKY = 1, 2, 4, 8
 CHUNK_ST1K = 32  # texture coordinates in 1/1024 units (some >= 16) instead of 1/4096
+# Sky chunks: flags bits 12-15 = 1 + index of the chunk's FogBank row in the fog section's sky rows (0: none). DSR fogs
+# every map piece by the row of its own MSB FogID (exe FUN_140565600 reads the row by id; a RenderDoc frame of Firelink
+# holds rows 20, 22 and 23 at once, TECH_DEBT map-15), the sky and far background included: Undead Burg's far pieces use
+# three rows (15, 16, 19) that end 1.6-2 km out, so their density still ramps where the pieces stand.
+CHUNK_SKY_ROW = 12
+SKY_FOG_ROWS = []  # gather: FogBank row ids of the sky meshes, in slot order
 # Light, fog colour and tone map follow DSR's own math (tools/dsr_light.py), from the area's own banks and MSB.
 # CHAR_ALB: sRGB albedo the character light is fitted for.
 SHADOWS = os.environ.get("SHADOWS", "1") == "1"  # bake sun shadows (dsr_light.ShadowMap)
@@ -208,6 +234,37 @@ TONES = {}  # (ToneMapID, ToneCorrectID) -> dsr_light.Tone, exposure adapted by 
 SKY_DIST = 500.0  # metres: meshes entirely this far from every walkable navmesh vertex are sky / background
 
 
+# Shape envelope (tools/native/simplify.c g_env_pad; the C simplifier only): no collapse may move the surface further
+# than this many metres from the source mesh, whatever error the budget solve asks of a cell, so a tower stays a tower
+# when its cell is pushed to the caps. SIMPLIFY_ENV_NEAR: the near level (and areas without levels), SIMPLIFY_ENV_FAR:
+# the coarse level and the backdrop. 0: off (the old export). ASSUMED values, see TECH_DEBT map-43
+# SIMPLIFY_ENV_STRICT (default 1, the maintainer's choice 2026-11-10: shapes first): the envelope holds in every cell,
+# also where the budget solve cannot pay for it (the world blocks grew 5-12 %, 0.31 % of the Burg's spots are over the
+# room and near cells were refused on the iso_ame_report3 route). 0: cells in reach of a spot the solve leaves over
+# budget take the run without the envelope (simplify_meshes_c), so no spot holds more than with the envelope off
+SIMPLIFY_ENV_STRICT = os.environ.get("SIMPLIFY_ENV_STRICT", "1") == "1"
+SIMPLIFY_ENV_NEAR = float(os.environ.get("SIMPLIFY_ENV_NEAR", 0.25))
+SIMPLIFY_ENV_FAR = float(os.environ.get("SIMPLIFY_ENV_FAR", 1.0))
+# Triangle guard (the maintainer's rule 2026-11-10: no exploded, stretched or sliver polygons, whatever it costs in
+# triangles or memory; tools/native/simplify.c g_qmin / g_flip_cos / g_shape_tol). No collapse may leave a triangle
+# turned more than SIMPLIFY_FLIP_DEG from its source triangle over all steps; with (almost) no area left; thinner than
+# SIMPLIFY_QMIN (shape quality 4 sqrt(3) area / sum of squared edges: 1 equilateral, 0.1 about 1 : 17, 0.05 about
+# 1 : 35 height to length) unless it got no thinner (0 by default: at 0.1 the world budget gate failed at 9.8 % of the
+# spots, at 0.05 at 4.1 %, against 0.71 % without it, limit 1 %); or with a corner, edge middle or centre further than the level's envelope
+# (SIMPLIFY_ENV_*) from every source triangle of its own mesh (a material stretched over another one's ground, the
+# board sliver of the 2026-11-10 play report). Then SIMPLIFY_VALIDATE measures every replayed triangle against its
+# source again, independently (simpmesh.c mx_simp_check), and steps each job with a failing triangle back to before
+# the collapse that last changed it until none fails (0 steps is the source: always passes); the export stops if one
+# still fails. SIMPLIFY_GUARD=0: neither (the old export). ASSUMED thresholds, see TECH_DEBT map-44
+SIMPLIFY_GUARD = os.environ.get("SIMPLIFY_GUARD", "1") == "1"
+SIMPLIFY_QMIN = float(os.environ.get("SIMPLIFY_QMIN", 0.0))
+SIMPLIFY_FLIP_DEG = float(os.environ.get("SIMPLIFY_FLIP_DEG", 90.0))
+SIMPLIFY_VALIDATE = SIMPLIFY_GUARD and os.environ.get("SIMPLIFY_VALIDATE", "1") == "1"
+SIMPLIFY_VALIDATE_TOL = float(os.environ.get("SIMPLIFY_VALIDATE_TOL", 0))  # metres; 0: the level's envelope (else 0.25)
+# SIMPLIFY_REFIT (default on; 0 = each surviving vertex keeps its source colour, the old export): after the simplifier,
+# a level's surviving wedges take the area-weighted mean colour of the source wedges that collapsed into them
+# (tools/mapx/simpmesh.c mx_simp_refit), per level, so the near and the coarse level each get their own colours
+SIMPLIFY_REFIT = os.environ.get("SIMPLIFY_REFIT", "1") == "1"
 CHUNK_TRIS = 54  # per VU1 batch: 7 header qwords + 3 qwords per vertex = 493 qw, the VU buffer (OFFSET 493): the limit
 CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are grouped by the grid cell of their centroid
 # (map.c culls by 32 m cells too), then cut into full, compact batches (split_batch)
@@ -279,10 +336,18 @@ def index_chunk(ntri, pos, st, col):
     return nv, P[src].tobytes(), S[src].tobytes(), C[src].tobytes(), idx.tobytes()
 
 
+
 def chunk_packet(ti, fl, ntri, pos, st, col):
     """chunk_streams of one chunk tuple, indexed when it pays (index_chunk; never foliage) ->
     (bytes, offsets, ntri word for the chunk record: ntri | nv << 16)"""
     ix = index_chunk(ntri, pos, st, col) if INDEXED and not fl & CHUNK_GRASS else None
+    if os.environ.get("CHUNK_STATS"):  # debugging: per chunk a line "texture flags tris P PS PC PSC nv bytes" (distinct
+        n = 3 * ntri                   # corners by position, + st, + colour, + both; indexed vertices; packet bytes)
+        P, S, C = (np.frombuffer(bytes(x[:w * n]), np.uint8).reshape(n, w) for x, w in ((pos, 6), (st, 4), (col, 4)))
+        u = lambda *a: len(np.unique(np.ascontiguousarray(np.concatenate(a, 1)), axis=0))
+        nb = len(chunk_streams(ntri, pos, st, col)[0] if ix is None else chunk_streams(ntri, *ix[1:4], ix[0], ix[4])[0])
+        with open(os.environ["CHUNK_STATS"], "a") as f:
+            f.write(f"{ti} {fl} {ntri} {u(P)} {u(P, S)} {u(P, C)} {u(P, S, C)} {0 if ix is None else ix[0]} {nb}\n")
     if ix is None:
         pk, offs = chunk_streams(ntri, pos, st, col)
         return pk, offs, ntri
@@ -657,6 +722,7 @@ def build_chunks_c(MX, entries, textures, centre, bkey, stream, draw_groups):
     ce = np.ascontiguousarray(np.array(centre, f64).reshape(3))
     arrs = [ti, fl, toff, woff, cpos, cw, wrgb, wa, wuv, tex, tuft, frank, fsize, tlev, tkey, dgv, entv, bkv, ce]
     arrs = [np.ascontiguousarray(x) for x in arrs]
+    MX.mx_chunks_st_align(1 if ST_ALIGN else 0)
     h = MX.mx_chunks_new(ne, *[x.ctypes.data for x in arrs[:15]], arrs[15].ctypes.data, arrs[16].ctypes.data,
                          arrs[17].ctypes.data, 1 if stream else 0, CHUNK_GRID, arrs[18].ctypes.data, GRASS_GRID,
                          min(1.0, (GRASS_D0 / GRASS_NEAR_D) ** 2), CHUNK_TRIS, export_normal.BUMP_MIN_GROUP, POS_MAX,
@@ -1635,8 +1701,12 @@ def gather(game, map_id):
                 sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
             else:
                 sky = False
+            sky_slot = 0
             if sky and fid in fog_rows:
                 sky_fog = fog_rows[fid]
+                if fid not in SKY_FOG_ROWS and len(SKY_FOG_ROWS) < 15:
+                    SKY_FOG_ROWS.append(fid)
+                sky_slot = SKY_FOG_ROWS.index(fid) + 1 if fid in SKY_FOG_ROWS else 0
             water = "water" in m["mtd"].lower()
             # "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" = alpha-tested cut-outs). Floor decals / dirt /
             # ground overlays (blood, soot, stains: M[D][L]_Alp) exported as cut-outs drew every texel above 50 % alpha at
@@ -1648,7 +1718,7 @@ def gather(game, map_id):
                                                        for k in ("decal", "dirt", "ground", "stain"))
             blend = is_effect(m["mtd"]) or decal or water
             flags = (CHUNK_BLEND if blend else 0) | (CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
-                (CHUNK_SKY if sky else 0)
+                (CHUNK_SKY if sky else 0) | sky_slot << CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
                 xf, xn = bone_xf(pxf, pxn, *bind[m["default_bone"]])
             else:
@@ -1704,6 +1774,9 @@ def gather(game, map_id):
             elif name and name in dds:
                 if (name, blend) not in tex_index:
                     dec = souls.dds_decode_rgba(dds[name], TEX_MAX)
+                    if dec and export_normal.BAKE and not blend and m.get("bump") in dds and export_normal.bumped(m["mtd"]):
+                        baked = export_normal.bake_rgba(*dec, dds[m["bump"]])  # the relief in the texels (BUMP_BAKE)
+                        dec = (dec[0], dec[1], baked) if baked is not None else dec
                     if dec:
                         tex_index[name, blend] = len(textures)
                         textures.append(texmap.encode(*dec, soft=blend, name=name))
@@ -2154,8 +2227,26 @@ def far_cells_c(L, meshes, nav_v):
     return far
 
 
+def struct_sat(eps_fixed, budget):
+    """The structure weight's saturation (simplify.simplify sat) for a level: the largest threshold the spot budget
+    solve reaches under its px cap (solve_budget's steps eps x 1.5^k), so a cell the solve takes to its cap simplifies
+    exactly as without the weight and the weight never costs memory the budget needs; below the cap crease / corner
+    collapses wait for the plain ones. No solve (budget None): no saturation (a global threshold fits the triangle
+    count anyway). Threshold searched instead of fixed: the cap itself, rounded down to a 1.5 step (ASSUMED close)."""
+    if not budget:
+        return math.inf
+    px_cap = budget[4]
+    eps = eps_fixed if eps_fixed is not None else EPS
+    if eps is None:
+        return (px_cap / 568) ** 2 / 1.5
+    K = 0
+    while K < 12 and math.sqrt(eps * 1.5 ** (K + 1)) * 568 <= px_cap + 1e-6:  # solve_budget's K
+        K += 1
+    return eps * 1.5 ** K
+
+
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None):
+                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None):
     """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
@@ -2168,9 +2259,20 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     import simplify
     import simplify_pool
     MX = mapx_native.lib()
+    sat = struct_sat(eps_fixed, budget)
     if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" and nav_t:
-        return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                                 budget, nav_s)
+        env_pad = SIMPLIFY_ENV_NEAR if env_pad is None else env_pad
+        MX.mx_simp_envelope(env_pad)  # for the jobs mx_simp_new runs
+        if SIMPLIFY_GUARD:
+            MX.mx_simp_guard(SIMPLIFY_QMIN, math.cos(math.radians(SIMPLIFY_FLIP_DEG)))
+            MX.mx_simp_shape(SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+        try:
+            return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
+                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad)
+        finally:
+            MX.mx_simp_envelope(0.0)
+            MX.mx_simp_guard(0.0, -2.0)
+            MX.mx_simp_shape(0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
 
@@ -2259,6 +2361,8 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     dist = view_distance([j[0] for j in jobs], spawn, nav_v, nav_t, floor=floor)
     for j, d in zip(jobs, dist):
         j[4] = [1.0 / (x * x) for x in d]
+        if simplify.STRUCT_W > 1.0 or simplify.STRUCT_FLAT_W != 1.0:  # crease / corner vertices first (struct_sat)
+            j += [simplify.structure_weight(j[0], j[1], j[2]), sat]
     # cached by job content, run on forkserver workers that are retried when one dies (tools/simplify_pool.py;
     # SIMPLIFY_PROCS / SIMPLIFY_CACHE / SIMPLIFY_NATIVE)
     logs = simplify_pool.run_jobs(jobs, area_k=area_k)
@@ -2289,7 +2393,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
     for mi in live:
         meshes[mi][out] = []
         meshes[mi][out + "_cell"] = []
-    for (pos, _, _, _, _), attr, lg, c in zip(jobs, attrs, logs, jcell):
+    for (pos, *_), attr, lg, c in zip(jobs, attrs, logs, jcell):
         for p0, a0, p1, a1, p2, a2 in simplify.replay_log(lg, eps_far if c == "far" and eps_far is not None else eps).tolist():
             mi = attr[a0][0]
             meshes[mi][out].append(((pos[p0], attr[a0][1]), (pos[p1], attr[a1][1]), (pos[p2], attr[a2][1])))
@@ -2551,7 +2655,7 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
     return np.minimum(1.0, np.where(nt > 0, no / np.maximum(nt, 1), 1.0) * WS_SHARE_K)
 
 
-def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
+def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=None):
     """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
     within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
     the heaviest cell around it that can still be raised goes one step up. Jobs outside cells (no cell cut, far-only
@@ -2643,12 +2747,16 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
             allow[p] = True
     mine = nb >= nb.max() * 0.999 if len(nb) else nb > 0  # the block's own spots (its whole share of the room)
     allow_pct = float(allow[mine].mean() * 100) if mine.any() else 0.0
+    own_over = float((W > nb)[mine].mean() * 100) if mine.any() else 0.0  # still over after the solve
     if allow.any():
         hot = sorted({cells[c] for c in np.flatnonzero(step > K).tolist()})
         print(f"budget {name}: seam allowance (past {px_cap:.0f} px, up to {WS_ALLOW_PX:.0f} px) at "
               f"{allow_pct:.1f} % of its own spots ({allow.mean() * 100:.1f} % of all), cells {hot}")
     job_eps = np.array([steps[step[jcell[i]]] if jcell[i] >= 0 else (eps_far if jc[i] == "far" and eps_far is not None
                                                                        else eps) for i in range(njobs)], np.float64)
+    if info is not None:  # per cell: in reach of a spot the solve left over budget; the spots' reach and budgets
+        overc = M[W > nb].any(0) if (W > nb).any() else np.zeros(len(cells), bool)
+        info.update(over=overc, M=M, nb=nb, jcell=jcell)
     nr = int((step > 0).sum())
     over = float((W > nb).mean() * 100)
     nbytes = float(np.median(nb))
@@ -2663,7 +2771,8 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None):
                               allow_cells=[list(cells[c]) for c in np.flatnonzero(step > K).tolist()],
                               worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
                               budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
-                              met=not stuck, spots_over_pct=round(over, 1),
+                              met=not stuck, spots_over_pct=round(over, 1), own_over_pct=round(own_over, 2),
+                              own_spots=int(mine.sum()),
                               p90_kb=round(float(np.percentile(W, 90)) / 1024)))
     return job_eps
 
@@ -2672,7 +2781,7 @@ BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.bud
 
 
 def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                      budget=None, nav_s=None):
+                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -2703,15 +2812,20 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
                             keep=keep, ti=ti, F=F, nv=nv, nt=nt, sp=sp, kp=kp, cells=int(bool(cells)),
                             floor=floor or NEAR, ak=ak, eps=-1.0 if eps_fixed is None else eps_fixed,
                             eps_far=-1.0 if eps_far is None else eps_far, names=np.array([m["name"] for m in meshes]),
-                            budget=np.array(budget[:3] if budget else (), f64),
+                            budget=np.array(budget[:2] if budget else (), f64),
+                            flags=np.array([m["flags"] for m in meshes] or [0], i64),
                             nav_s=np.array(nav_s if nav_s is not None else np.zeros((0, 3)), f64))
     t0 = time.time()
-    h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
-                       len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
-                       KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
-                       ak ** 2, simplify.MIN_COS)
-    if not h:
-        raise MemoryError("mx_simp_new")
+    def new_handle():
+        h = MX.mx_simp_new(nm, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(ti), 1 if cells else 0, CHUNK_GRID,
+                           len(F), a(F), len(nv), a(nv), len(nt), a(nt), a(sp), floor or NEAR, SPAWN_K, len(kp), a(kp),
+                           KEEP_R ** 2, KEEP_D, simplify.BORDER_W, simplify.SEAM_W, simplify.SEAM_K * simplify.SEAM_K,
+                           ak ** 2, simplify.MIN_COS, simplify.STRUCT_W, simplify.STRUCT_FLAT_W, sat,
+                           simplify.STRUCT_CREASE_COS, simplify.STRUCT_CORNER_COS)
+        if not h:
+            raise MemoryError("mx_simp_new")
+        return h
+    h = new_handle()
     try:
         st = np.zeros(3, i64)
         MX.mx_simp_stats(h, a(st))
@@ -2743,16 +2857,65 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         kind, ck = np.zeros(max(njobs, 1), i32), np.zeros((max(njobs, 1), 3), i64)
         MX.mx_simp_jobs(h, a(kind), a(ck))
         jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
-        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s,
-                               cell_extents(P, poff, W, woff, T, toff)) if budget and cells else None
-        if job_eps is not None:
+        info, ext = {}, cell_extents(P, poff, W, woff, T, toff) if budget and cells else None
+        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s, ext, info) if budget and cells else None
+        if job_eps is not None and env_pad and info["over"].any() and not SIMPLIFY_ENV_STRICT:
+            # The shape envelope costs triangles. Where the solve cannot pay for them (cells in reach of a spot it
+            # left over budget) the cells take the run without the envelope as its own solve leaves them, and then
+            # any cell whose spot would so hold more than its budget and more than without the envelope, until none
+            # does: no spot is worse off than with the envelope off
+            MX.mx_simp_envelope(0.0)
+            h0 = new_handle()
+            try:
+                del BUDGET_REPORT[-1]  # (the solve below reports this level)
+                eps0 = solve_budget(MX, h0, jc, eps, eps_far, budget, nav_s, ext)
+                MX.mx_simp_replay_jobs(h, job_eps.ctypes.data)
+                MX.mx_simp_replay_jobs(h0, eps0.ctypes.data)
+                jcell, Mf, nb, over = info["jcell"], info["M"].astype(np.float64), info["nb"], info["over"].copy()
+                ce, c0 = np.zeros(max(njobs, 1), i64), np.zeros(max(njobs, 1), i64)
+                MX.mx_simp_job_nout(h, a(ce))
+                MX.mx_simp_job_nout(h0, a(c0))
+                sel = jcell >= 0
+                be, b0 = (np.bincount(jcell[sel], weights=c[:njobs][sel], minlength=len(over)) * WS_BPT for c in (ce, c0))
+                lim = np.maximum(nb, Mf @ b0) + 1.0
+                while True:
+                    bad = Mf @ np.where(over, b0, be) > lim
+                    more = info["M"][bad].any(0) & ~over if bad.any() else np.zeros(len(over), bool)
+                    if not more.any():
+                        break
+                    over |= more
+                jover = np.array([jcell[i] >= 0 and bool(over[jcell[i]]) for i in range(njobs)], np.uint8)
+                n = int(MX.mx_simp_swap_jobs(h, h0, a(jover)))
+            finally:
+                MX.mx_simp_free(h0)
+            print(f"envelope ({env_pad} m): kept in {int((~over).sum())} of {len(over)} cells; {int(over.sum())} cells in "
+                  f"reach of spots over budget take the run without it")
+        elif job_eps is not None:
             n = int(MX.mx_simp_replay_jobs(h, job_eps.ctypes.data))
         else:
             n = int(MX.mx_simp_replay(h, eps, eps_far if eps_far is not None else 0.0, 1 if eps_far is not None else 0))
+        if SIMPLIFY_VALIDATE and njobs:
+            n = validate_jobs(MX, h, njobs, n, SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+            final_n = n
+        else:
+            final_n = None
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
-        final = grass + n if job_eps is not None else count(eps)
+        refit = None
+        if SIMPLIFY_REFIT and n:  # surviving wedges take the mean colour of what collapsed into them (simpmesh.c)
+            has = [len(m.get("wrgb", ())) == len(w) for m, w in zip(meshes, Ws)]  # (meshes without colours: as they are)
+            RGB = cat([_np_list(m, "wrgb", m["wrgb"], i32, 3) if k else np.zeros((len(w), 3), i32)
+                       for m, w, k in zip(meshes, Ws, has)], i32, 3)
+            acc = np.zeros((len(RGB), 4))
+            MX.mx_simp_refit(h, a(woff), a(RGB), a(acc))
+            hit = acc[:, 3] > 0
+            refit = RGB.copy()
+            refit[hit] = np.clip(np.rint(acc[hit, :3] / acc[hit, 3:4]), 0, 255).astype(i32)
+            d = np.abs(refit[hit] - RGB[hit]).max(1)
+            print(f"refit: {int(hit.sum())} surviving wedge colours averaged over their collapsed regions "
+                  f"({int((d > 8).sum())} moved by more than 8 / 255, {int((d > 32).sum())} by more than 32)")
+        final = grass + n if job_eps is not None or final_n is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
     # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
@@ -2775,10 +2938,36 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             sel = order[a:b]
             m[out] = mapx_native.Tris(np.ascontiguousarray(CP[sel]), np.ascontiguousarray(CW[sel])) if b > a else []
             m[out + "_cell"] = [jc[j] for j in tjl[a:b]]
+            if refit is not None and b > a and has[mi]:
+                m[out + "_wrgb"] = np.ascontiguousarray(refit[woff[mi]:woff[mi + 1]])
     print(f"simplify: {full} -> {final} tris ({grass} kept: effects, sky; foliage extra) in {ngroups} welded "
           f"groups / {njobs} jobs, eps {eps:.3g} "
           f"(error <= {math.sqrt(max(eps, 0)) * 568:.1f} px at 640x448)")
     return eps
+
+
+def validate_jobs(MX, h, njobs, n, tol):
+    """SIMPLIFY_VALIDATE: check every replayed triangle against its source (simpmesh.c mx_simp_check) and send the
+    jobs with a failing one back to half their collapse steps until none fails -> the surviving triangle count"""
+    import numpy as np
+    t0 = time.time()
+    fcos = math.cos(math.radians(SIMPLIFY_FLIP_DEG))
+    bad, cnt = np.zeros(njobs, np.uint8), np.zeros((njobs, 5), np.int64)
+    nb = int(MX.mx_simp_check(h, tol, SIMPLIFY_QMIN, fcos, None, bad.ctypes.data, cnt.ctypes.data))
+    c0, worst, n0, rounds, jobs = cnt[:, :4].sum(0), int(cnt[:, 4].max()), n, 0, set()
+    while nb and rounds < 100000:  # each round takes at least one step off every failing job: ends at the source
+        jobs.update(np.flatnonzero(bad).tolist())
+        n = int(MX.mx_simp_back_off(h, bad.ctypes.data))
+        only = bad.copy()
+        nb = int(MX.mx_simp_check(h, tol, SIMPLIFY_QMIN, fcos, only.ctypes.data, bad.ctypes.data, cnt.ctypes.data))
+        rounds += 1
+    if nb:
+        raise RuntimeError(f"validate: {nb} jobs still fail after {rounds} rounds")
+    print(f"validate (tol {tol} m, quality {SIMPLIFY_QMIN}, flip {SIMPLIFY_FLIP_DEG:g} deg): {int(c0[0])} degenerate, "
+          f"{int(c0[1])} thin, {int(c0[2])} flipped, {int(c0[3])} off-shape triangles (worst {worst} mm) in "
+          f"{len(jobs)} of {njobs} jobs; stepped back to before their last change in {rounds} rounds: {n0} -> {n} tris "
+          f"(+{n - n0}), {time.time() - t0:.1f} s", flush=True)
+    return n
 
 
 PVSIN_MAGIC = b"PVI1"
@@ -2969,6 +3158,15 @@ def write_cells(cells, res, all_chunks, nres):
 def main():
     game, out = sys.argv[1], sys.argv[2]
     map_id = sys.argv[3] if len(sys.argv) > 3 else "m10_02_00_00"
+    global WS_ROOM, WS_NEAR_KB
+    block = os.environ.get("AREA_BLOCK") or map_id
+    b_room, b_near, b_row = residency.block_budget(block)
+    if WS_UNION and STREAM and os.environ.get("AREA_BLOCK") and not b_row and not os.environ.get("WS_ROOM"):
+        raise SystemExit(f"export_map: world block {block} has no RES_BLOCK row in ps2/proto/src/residency.h")
+    WS_ROOM = WS_ROOM or float(b_room)
+    WS_NEAR_KB = WS_NEAR_KB or float(b_near)
+    print(f"budget: {block}: room {WS_ROOM:.0f} KB, near {WS_NEAR_KB:.0f} KB "
+          f"({'environment' if os.environ.get('WS_ROOM') else 'residency.h ' + (block if b_row else 'default')})")
     preview = sys.argv[4] if len(sys.argv) > 4 else None
     t_start = time.time()
     meshes_in, textures, nav_v, nav_t, spawn, (fog_id, fog), sky_fog = gather(game, map_id)
@@ -3004,7 +3202,7 @@ def main():
             ws_bn = (0.0, WS_R0, WS_B0, "near level", WS_PX0)
         simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=EPS_FAR, far=far,
                         floor=STREAM_D, cells=True, eps_far=min(EPS_FAR, BACKDROP_EPS),
-                        budget=ws_bc if ws_s else None, nav_s=ws_s)
+                        budget=ws_bc if ws_s else None, nav_s=ws_s, env_pad=SIMPLIFY_ENV_FAR)
         rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
@@ -3038,14 +3236,15 @@ def main():
             # far cells: the near run's triangles are dropped, the coarse ones are always drawn (tcell None)
             tl, cl = m["tris"], m.get("tris_cell", [])
             nt = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
-            entries.append(dict(m, tris=_take(tl, nt), tcell=[(1, cl[i]) for i in nt]))
+            entries.append(dict(m, tris=_take(tl, nt), tcell=[(1, cl[i]) for i in nt], wrgb=m.get("tris_wrgb", m["wrgb"])))
             tl, cl = m.get("tris_far", []), m.get("tris_far_cell", [])
             ct = [i for i, c in zip(range(len(tl)), cl) if c != "far"]
-            entries.append(dict(m, tris=_take(tl, ct), tcell=[(0, cl[i]) for i in ct], soft=True))
+            wf = m.get("tris_far_wrgb", m["wrgb"])  # the coarse level's refit colours (SIMPLIFY_REFIT)
+            entries.append(dict(m, tris=_take(tl, ct), tcell=[(0, cl[i]) for i in ct], soft=True, wrgb=wf))
             far_t = _take(tl, [i for i, c in zip(range(len(tl)), cl) if c == "far"])
             bd = backdrop_visible(m, far_t, nav_s) if BACKDROP else far_t
             if bd:  # far-only cells: one resident level; BACKDROP=1: the backdrop, drawn at any distance (map.c)
-                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True,
+                entries.append(dict(m, tris=bd, tcell=[None] * len(bd), soft=True, wrgb=wf,
                                     flags=m["flags"] | (CHUNK_BACKDROP if BACKDROP else 0)))
         else:
             entries.append(dict(m, tcell=None))
@@ -3122,6 +3321,12 @@ def main():
     align(4)
     sec["fog"] = len(blob) + HDR
     fog_blob, fog_info, gain = fog_section(game, map_id, fog_id)
+    # sky rows after the per-triangle bytes: f32 begin, end, max density; u8 r, g, b, 0 (as the header's fog)
+    sky_rows = b"".join(struct.pack("<3f4B", v["fogBeginZ"], v["fogEndZ"], v["degRotW"] / 100.0,
+                                    *fog_rgb(v, MAIN_TONE[0]), 0)
+                        for v in (draw_params(game, map_id[:3])[1][r] for r in SKY_FOG_ROWS))
+    fog_blob = fog_blob[:8] + struct.pack("<I", len(SKY_FOG_ROWS)) + fog_blob[12:] + b"\0" * (-len(fog_blob) % 4) + \
+        sky_rows
     blob += fog_blob
     cell_bin = b""
     if STREAM:
@@ -3162,6 +3367,16 @@ def main():
               f"bytes, largest cell {max(c[3] for c in CELL_SIZES) if CELL_SIZES else 0} bytes")
         with open(out + ".budget.json", "w") as f:  # the spot budget solve's results
             json.dump(BUDGET_REPORT, f, indent=1)
+        # the block's budget is a promise to the runtime (residency.h): a level whose own spots stay over it after the
+        # solve fails the export
+        bad = [f"{r['level']} {r['own_over_pct']} % of {r['own_spots']} spots over {r['budget_kb']} KB"
+               for r in BUDGET_REPORT if WS_UNION and r.get("own_over_pct", 0) > WS_OVER_PCT]
+        for r in BUDGET_REPORT:
+            print(f"budget {r['level']}: {r.get('own_over_pct', 0)} % of the block's own spots over its budget "
+                  f"(at most {WS_OVER_PCT:.0f} %), seam allowance {r['allow_pct']} %")
+        if bad:
+            raise SystemExit(f"export_map: over the block's budget after the solve: {'; '.join(bad)} "
+                             f"(residency.h RES_BLOCK, or raise the caps WS_PX0 / WS_PX1)")
         # per cell bytes by level, the resident level's other items and the navmesh spots: the world budget check
         # across blocks (tools/world_budget.py)
         sky = sum(RES_SIZE[i] for i in range(len(chunks)) if i < len(RES_SIZE) and chunks[i][1] & CHUNK_SKY)

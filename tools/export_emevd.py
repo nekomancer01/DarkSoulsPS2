@@ -123,6 +123,27 @@ def map_code(map_id):
     return bytes(int(x) for x in map_id[1:].split("_")) if map_id != "common" else b"\xff" * 4
 
 
+# Multiplayer checkpoint walls ("light walls", ObjectParam "Shining fog", events mAABB0090 "checkpoint passage"): DSR
+# shows them only in a multiplayer session (the exe keeps them as "MultiWall"s: CalcGetMultiWallEntityId,
+# GetMultiWallNum). Every area's event has the same head: skip 3 if this slot's flag is off, else deactivate the wall
+# object (X0), delete its SFX (X4) and end; then two action buttons on the wall's line segment, a short warp and the
+# 7410 walk. Single player never sees them, so the head's skip is dropped: the wall goes off at once. The Burg's
+# aqueduct doorway (o1419, -49.8 -21.8 -33.2) was a white SFX quad with a solid collider (TECH_DEBT event-20).
+# MULTI_WALLS=1 keeps the walls (the old export).
+MULTI_WALLS = os.environ.get("MULTI_WALLS", "0") == "1"
+
+
+def multi_wall(ev):
+    """1 if ev is a checkpoint light-wall event (the head above, a 3[18] action button and the 7410 walk)"""
+    I = ev.instrs
+    if len(I) < 6 or (I[0].bank, I[0].id) != (1003, 1) or list(I[0].args) != [3, 0, 2, 0]:
+        return False
+    if [(i.bank, i.id) for i in I[1:4]] != [(2005, 3), (2006, 1), (1000, 4)] or I[1].args[1] != 0:
+        return False
+    return any((i.bank, i.id) == (3, 18) for i in I[4:]) and \
+        any((i.bank, i.id) == (2003, 18) and i.args[1] == 7410 for i in I[4:])
+
+
 def encode_events(E):
     """-> (event records, instr bytes, subst bytes, per-class counts, {(bank, id, name): uses} unsupported)"""
     evs, ins_b, sub_b = [], bytearray(), bytearray()
@@ -130,7 +151,8 @@ def encode_events(E):
     nsub = 0
     for ev in E.events:
         off, first = len(ins_b), nsub
-        for k, ins in enumerate(ev.instrs):
+        drop = 0 if MULTI_WALLS or not multi_wall(ev) else 1  # instructions dropped from the head (multi_wall)
+        for k, ins in enumerate(ev.instrs[drop:]):
             op = OP_OF.get((ins.bank, ins.id), 0)
             if op and ins.defn is None:
                 op = 0
@@ -151,7 +173,7 @@ def encode_events(E):
             ins_b += struct.pack("<BBHHH", op, len(words), ins.bank, ins.id, ins.layer is not None)
             ins_b += struct.pack(f"<{len(words)}I", *words)
             for ii, dst, src, n, _ in ev.params:
-                if ii != k:
+                if ii - drop != k:
                     continue
                 if lay is None:
                     fmt_code, dpos = 7, dst
@@ -161,7 +183,8 @@ def encode_events(E):
                     fmt_code, dpos = ins.defn.args[idx]["type"], 4 * idx
                 sub_b += struct.pack("<HHHBB", k, dpos, src, fmt_code, n)
                 nsub += 1
-        evs.append(struct.pack("<IBBHIII", ev.id & 0xFFFFFFFF, ev.rest, 0, len(ev.instrs), off, first, nsub - first))
+        evs.append(struct.pack("<IBBHIII", ev.id & 0xFFFFFFFF, ev.rest, 0, len(ev.instrs) - drop, off, first,
+                               nsub - first))
     return evs, bytes(ins_b), bytes(sub_b), counts, missing
 
 

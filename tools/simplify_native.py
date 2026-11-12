@@ -7,7 +7,7 @@ The C code mirrors simplify.py operation for operation (same IEEE double arithme
 tie-breaking), so both return the same log, step for step. Check after any change to either file:
   simplify_native.py --test [n]      random meshes (seams, borders, locks, non-manifold edges) through both, compared
                                      exactly; also prints the speed-up"""
-import ctypes, os, subprocess, sys, tempfile
+import ctypes, math, os, subprocess, sys, tempfile
 
 import numpy as np
 
@@ -16,7 +16,8 @@ sys.path.insert(0, HERE)
 import simplify as pysimplify
 
 SRC = os.path.join(HERE, "native", "simplify.c")
-SO = os.path.join(HERE, "native", "libsimplify.so")
+import native_so
+SO = native_so.so(os.path.join(HERE, "native", "libsimplify"))
 _L = None
 
 
@@ -50,13 +51,13 @@ def lib():
         L = ctypes.CDLL(SO)
         dp, ip, bp = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ubyte)
         L.simplify_run.restype = ctypes.POINTER(_Result)
-        L.simplify_run.argtypes = [ctypes.c_int, dp, ctypes.c_int, ip, ctypes.c_int, ip, bp, dp] + [ctypes.c_double] * 5
+        L.simplify_run.argtypes = [ctypes.c_int, dp, ctypes.c_int, ip, ctypes.c_int, ip, bp, dp, dp] + [ctypes.c_double] * 6
         L.simplify_free.argtypes = [ctypes.POINTER(_Result)]
         _L = L
     return _L
 
 
-def simplify_log(pos, wpos, tris, locked, scale, area_k=None):
+def simplify_log(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area_k=None):
     """simplify.simplify in C -> its log in simplify.pack's compact form (numpy arrays, no per-step Python objects)"""
     L = lib()
     P = np.ascontiguousarray(np.asarray(pos, dtype=np.float64).reshape(-1, 3))
@@ -64,11 +65,12 @@ def simplify_log(pos, wpos, tris, locked, scale, area_k=None):
     T = np.ascontiguousarray(np.asarray(tris, dtype=np.int32).reshape(-1, 3))
     S = np.ascontiguousarray(np.asarray(scale, dtype=np.float64))
     K = None if locked is None else np.ascontiguousarray(np.asarray(locked, dtype=np.uint8))
+    Wt = None if weight is None else np.ascontiguousarray(np.asarray(weight, dtype=np.float64))
     ak = pysimplify.AREA_K if area_k is None else area_k
     dp, ip, bp = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ubyte)
     r = L.simplify_run(len(P), P.ctypes.data_as(dp), len(W), W.ctypes.data_as(ip), len(T), T.ctypes.data_as(ip),
                        K.ctypes.data_as(bp) if K is not None else None, S.ctypes.data_as(dp),
-                       pysimplify.BORDER_W, pysimplify.SEAM_W, pysimplify.SEAM_K * pysimplify.SEAM_K, ak ** 2,
+                       Wt.ctypes.data_as(dp) if Wt is not None else None, float(sat), pysimplify.BORDER_W, pysimplify.SEAM_W, pysimplify.SEAM_K * pysimplify.SEAM_K, ak ** 2,
                        pysimplify.MIN_COS)
     if not r:
         raise MemoryError("simplify_run returned NULL")
@@ -86,9 +88,9 @@ def simplify_log(pos, wpos, tris, locked, scale, area_k=None):
         L.simplify_free(r)
 
 
-def simplify(pos, wpos, tris, locked, scale, area_k=None):
+def simplify(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area_k=None):
     """simplify.simplify, in C: (T0, steps) exactly as it returns them"""
-    return pysimplify.unpack(simplify_log(pos, wpos, tris, locked, scale, area_k))
+    return pysimplify.unpack(simplify_log(pos, wpos, tris, locked, scale, weight, sat, area_k))
 
 
 def _test_mesh(rng, n):
@@ -147,6 +149,8 @@ def _test(count=40):
     tp = tn = 0.0
     for k in range(count):
         job = _test_mesh(rng, int(rng.integers(30, 2500)))
+        if k % 2:  # structure weight (crease / corner, cheaper plain vertices), saturating at a cap
+            job = job + (pysimplify.structure_weight(job[0], job[1], job[2], 3.0, 0.5), [1e-5, 1e-3, math.inf][k % 3])
         ak = [None, 0.0, 2.5][k % 3]
         t = time.time()
         a = pysimplify.simplify(*job, area_k=ak)

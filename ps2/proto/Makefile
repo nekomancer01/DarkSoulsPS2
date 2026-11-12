@@ -63,8 +63,8 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
@@ -84,12 +84,6 @@ EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 # model.h MDL_MAX_BONES sizes the pose / palette arrays for it
 CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
-# World streaming v2 (src/mapstream.c, 2026-11-06) is the default; MAPSTREAM_V1=1 builds the first streamer
-# (src/mapstream_v1.c) for A/B runs
-MAPSTREAM_V1 ?= 0
-ifeq ($(MAPSTREAM_V1),1)
-EE_CFLAGS += -DMAPSTREAM_V1
-endif
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
 PVS ?= 1
@@ -247,13 +241,14 @@ $(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@
 
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
+$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
 		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
 		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin pvs.bin=$(A)/pvs.bin \
 		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
 		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin) \
+		$(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) \
 		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
 # world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background
 # + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every cell, appended to maptab.bin so
@@ -266,12 +261,28 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin) $(A)/bump.bin
 WORLD_LITE_DIET ?= 1
 WORLD_MIP1_OUT ?= $(WORLD_LITE_DIET)
 EE_CFLAGS += -DWORLD_LITE_DIET=$(WORLD_LITE_DIET)
+# COL_TILES (the cube-grid plan's step 1, default 1): world blocks read their collision.bin's index with the lite set
+# and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structural pool (src/coltile.c).
+# COL_TILES=0: collision.bin read whole with the lite set (the export stays paged; COL_TILE=0 exports unpaged files).
+COL_TILES ?= 1
+# BUMP_BAKE (default 1): normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba);
+# bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: the runtime CLUT relief pass (needs a
+# re-export: make distclean of the map exports, the switch is not in the export stamps).
+BUMP_BAKE ?= 1
+export BUMP_BAKE
+EE_CFLAGS += -DBUMP_BAKED=$(BUMP_BAKE)
+EE_CFLAGS += -DCOL_TILES=$(COL_TILES)
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)
-	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' > $@ && touch -d @0 $@; \
-	else echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' | cmp -s - $@ || echo 'MIP1_OUT=$(WORLD_MIP1_OUT)' > $@; fi
-$(A)/maptab.bin $(A)/mapres.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv
-	MIP1_OUT=$(WORLD_MIP1_OUT) python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin
+	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_MIP1_OUT) TEX=$(WORLD_TEX_SHARED)' > $@ && touch -d @0 $@; \
+	else echo 'MIP1_OUT=$(WORLD_MIP1_OUT) TEX=$(WORLD_TEX_SHARED)' | cmp -s - $@ || echo 'MIP1_OUT=$(WORLD_MIP1_OUT) TEX=$(WORLD_TEX_SHARED)' > $@; fi
+# Shared textures (the cube-grid plan): the other blocks of this MSB in the world (PVS_PEERS whose directory is a block
+# of $(MAP)); textures two or more of them have go to maptex.bin, read once per map (src/world.c). WORLD_TEX_SHARED=0:
+# none (every block's maptab holds its own copy, as before).
+WORLD_TEX_SHARED ?= 1
+TEX_PEERS = $(if $(filter 1,$(WORLD_TEX_SHARED)),$(if $(BLOCK),$(foreach d,$(PVS_PEERS),$(if $(filter $(MAP)_%,$(notdir $(d))),$(d)/map.bin))))
+$(A)/maptab.bin $(A)/mapres.bin $(A)/maptex.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv $(TEX_PEERS)
+	MIP1_OUT=$(WORLD_MIP1_OUT) TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
 $(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
 		$(TS)/native/hzvis.c.sum $(TS)/native/hzerr.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
 	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
@@ -297,7 +308,7 @@ $(A)/area.sig: FORCE
 # + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
 # map leaves out of its static bake and the events out of their static colliders
 $(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
-		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG)
+		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(TS)/horizon.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
 # written by the objects.bin export, only when their content changes (map.bin depends on these, not objects.bin)
@@ -434,12 +445,17 @@ MAPENV_m10_02_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_
 # Undead Burg (render-distance): two levels (STREAM=1, map.bin DSM5 + cells.bin): coarse 12 px judged at >= 32 m
 # resident (140k tris, map.bin 10.1 MB), near 6 px (3 px was 150k tris within 24 m at the densest smoke point, 15 fps)
 # streamed per 32 m cell from cells.bin (src/mapstream.c, 8 MB pool nearest first, 4 MB heap kept free)
-MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446 WS_PX0=36 WS_PX1=54
+MAPENV_m10_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 # (WS_PX0 / WS_PX1: the spot budget solve's error caps, export_map.py. At 12 / 24 px no Burg block met its budgets
 # (near level 4.9-6.0 MB around the worst spots against 1.5 MB, coarse 2.6-3.0 MB against 2 MB): from the ISO up to
 # ~380 cells missing in a frame and near cells that never found room (2026-11-06). Detail drops only in the spots over
 # budget. ASSUMED caps. 2026-11-08, Burg plan B3: 36 / 54 px with the spot budgets shared over the blocks loaded at a
 # spot (export_map.py WS_UNION): at 24 / 36 px 80 % of the Burg's spots were over the visual room)
+# 2026-11-10 refit: the world's room grew 3618 -> 4450 KB (export_map.py WS_ROOM), and the world blocks pass the strict
+# gate at the default 12 / 24 px caps (0.00 %; at 36 / 54 px the near level of Burg west had 43 of 85 cells on the cap).
+# The standalone Burg ELF (MAP=m10_01_00_00 without BLOCK: the whole Burg as one map in its own arena) keeps the old
+# room and caps: at the new ones it grew 516k -> 582k tris and crashed in grass_tris at 2.15 MB free.
+MAPENV_m10_01_00_00 += $(if $(BLOCK),,WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_PX1=54)
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
@@ -457,7 +473,8 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/t
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
-		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json
+		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
+		$(TS)/residency.py.sum src/residency.h
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
@@ -483,7 +500,10 @@ $(A)/dg.bin: $(A)/map.bin
 # visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out. In world
 # builds every other block takes part (PVS_PEERS): cameras on its floors, its walls as occluders. Host C (OpenMP),
 # about 1-2 min per block.
-PVS_BAKE = $(BUILD)/host/pvs_bake
+# host executables are named per C library: the container build (tools/build-iso.sh, Alpine musl) and a host build
+# (glibc) may share one build dir, and the other one's binary does not run here but looks up to date (tools/native_so.py)
+HOST_TAG := $(shell ldd --version 2>&1 | grep -qi musl && echo -musl)
+PVS_BAKE = $(BUILD)/host/pvs_bake$(HOST_TAG)
 PVS_VALIDATE ?= 300
 PVS_ARGS ?=
 # -march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every
@@ -519,9 +539,14 @@ $(A)/map.bin.cells.json: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 $(WB_WITH): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
+# the other blocks' maptab.bin come from their blockpacks sub-makes (worldpacks): no rule here, as with WB_WITH, so a
+# fresh build dir (the container's /build) stopped on "No rule to make target .../maptab.bin" (2026-11-09)
+WB_TABS = $(foreach d,$(PVS_WITH),$(d)/maptab.bin)
+$(WB_TABS): | $(if $(WORLD_BLOCKS),worldpacks)
+	@test -f $@ || { echo "$@ missing: the world block packs (worldpacks) did not write it"; exit 1; }
 $(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB_WITH) $(D)/world.pak \
-		$(foreach d,$(PVS_PEERS),$(d)/maptab.bin) ../../ps2/proto/src/world.c
-	$(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
+		$(A)/maptab.bin $(WB_TABS) ../../ps2/proto/src/world.c $(TS)/residency.py.sum src/residency.h
+	MAP=$(MAP) $(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
 $(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin

@@ -152,7 +152,9 @@ make -C ps2/proto iso      # writes build/proto.iso
 
 `./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
 and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also copies the ISO elsewhere, `-c N` sets
-how many CPU threads it uses; `--help` lists every option. Without a ps2dev toolchain on the host it pulls the official
+how many CPU threads it uses; `--help` lists every option. In a terminal it shows a progress view (a progress bar,
+the current step and the latest output line) and writes the full log to `build/build-iso.log`; `--plain` (or
+`DSR_TUI=0`, or output to a file or pipe) prints the plain log instead. Without a ps2dev toolchain on the host it pulls the official
 ps2dev image (`ps2dev/ps2dev:v2.0.0`) and builds in a container on it with Docker or Podman (`tools/build-iso.sh`).
 
 To report a problem, play with `./play-report.sh` instead of opening the ISO yourself. It starts PCSX2 with
@@ -244,6 +246,7 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
+| three.js 0.160 (loaded from cdn.jsdelivr.net by the page) | `tools/lodview.py` (LOD budget viewer) | MIT |
 
 The name and layout references are read from fixed paths under `ext/` (or the environment variable, if set). Without
 them the tools still run: param rows keep their Japanese names, TAE events stay raw words, and EMEVD instructions keep

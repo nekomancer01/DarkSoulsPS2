@@ -34,7 +34,6 @@ void save_tick(const Player *pl, float dt);  /* once per frame */
 int save_busy(void);  /* a background card write is in progress (for a saving indicator) */
 int save_write(const Player *pl);  /* now; 0 ok */
 int save_load(void);  /* reload prog + flags from the device; 1 ok */
-int save_device(void);
 int save_resident_bytes(void);
 /* Test-script commands (testscript.c "flag / flags / souls / item / check / save / load / wipe"); 0 ok, -1 error
  * (prints "TEST error ...") */

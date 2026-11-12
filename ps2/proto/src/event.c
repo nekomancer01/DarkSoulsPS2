@@ -14,6 +14,7 @@
 #include "ev_misc.h"
 #include "ev_obj.h"
 #include "event.h"
+#include "lpass.h" /* LOGIC_SPREAD (Burg plan B6) */
 #include "flags.h"
 #include "hud.h"
 #include "fx.h"
@@ -22,6 +23,7 @@
 #include "save.h"
 #include "sound.h"
 #include "world.h"
+#include "ticks.h"
 
 /* Same order as OPS in tools/export_emevd.py (the op byte of each instruction) */
 enum Op {
@@ -101,6 +103,8 @@ enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
 
 typedef struct {
     const u8 *blob;
+    const u8 *secp[9];  /* each section's start: in blob, or (a world block's split events) the map's shared copy and
+                         * the block's own entities / hit ranges / colliders (event_block_on_split) */
     const EvHdr *h;
     const EvEvent *ev;
     const EvEnt *ent;
@@ -113,7 +117,7 @@ typedef struct {
 } Set;
 static Set sets[EV_SETS];
 
-#define SEC(s, k, T) ((const T *)((s)->blob + (s)->h->sec[k][0]))
+#define SEC(s, k, T) ((const T *)(s)->secp[k])
 #define NSEC(s, k) ((int)(s)->h->sec[k][1])
 
 /* ---- instances ---- */
@@ -131,6 +135,9 @@ typedef struct {
     u8 argn, flag_only;  /* MAIN waits only on flags / inventory / constants: re-evaluated when one of those changed */
     u8 warped;           /* warped the player to another map: finishes even if its block unloads (event_block_off) */
     u32 seen;            /* state_key() at the last evaluation */
+    u8 static_and;       /* MAIN group 0 holds a flag-type condition (static_cond, not a group) and no action button */
+    u8 sfalse;           /* (LOGIC_SPREAD) one of those was false at `seen`: the group stays false until the key moves */
+    u8 edge;             /* a condition true for one frame only (button, hit, ObjAct use): tested every frame */
     Reg *reg;
     u8 *args;
 } Inst;
@@ -140,6 +147,7 @@ static int free_hint;  /* no free slot below this */
 #define EV_BUDGET_US 2000  /* event_update time per frame before the rest waits for the next (33.3 ms frames) */
 
 EventStats event_stats;
+static unsigned ev_frame;  /* event_update calls (LOGIC_SPREAD: which half of the world-reading waits runs) */
 static Player *pl;
 static float dtime;
 static int act_press, act_used, trace = 1;
@@ -259,7 +267,7 @@ static Set *player_set(void)
 }
 
 /* ---- instruction access ---- */
-static const EvInstr *instr_at(const Set *s, u32 off) { return (const EvInstr *)(s->blob + s->h->sec[S_INSTRS][0] + off); }
+static const EvInstr *instr_at(const Set *s, u32 off) { return (const EvInstr *)(s->secp[S_INSTRS] + off); }
 static u32 instr_next(const Set *s, u32 off) { return off + 8 + 4 * instr_at(s, off)->nw; }
 
 /* Words of instruction idx at off with the instance's substitutions applied (into w, 64 words max) */
@@ -530,6 +538,31 @@ static int eval_group(Inst *in, int g, int depth)
             return 1;
     }
     return n && and;
+}
+
+/* LOGIC_SPREAD: AND group g (MAIN is group 0, AND_xx groups are positive) is false because of a flag-type condition
+ * alone: one of its own is false, or it asks for an AND group ON that is false that way. Depends only on state_key() */
+static int static_false(Inst *in, int g, int depth)
+{
+    if (g < 0 || depth > 8)
+        return 0;
+    const Set *s = &sets[in->set];
+    const EvEvent *ev = &s->ev[in->ev];
+    for (int i = 0; i < in->nreg; i++) {
+        if (in->reg[i].group != g)
+            continue;
+        int op = instr_at(s, ev->ioff + in->reg[i].off)->op;
+        if (op == OP_C_GROUP) {
+            u32 w[64];
+            load_instr(in, ev->ioff + in->reg[i].off, in->reg[i].idx, w);
+            int sg = (s8)w[2];
+            if (w[1] != 0 && sg > 0 && static_false(in, sg, depth + 1))
+                return 1;
+        } else if (static_cond(op) && !eval_cond(in, &in->reg[i], 0)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void clear_conds(Inst *in)
@@ -819,7 +852,19 @@ static void run(Inst *in)
         in->cond_t += dtime, in->cond_f++;
         if (in->flag_only && in->seen == state_key())
             return;
+        if (LOGIC_SPREAD && in->sfalse && in->seen == state_key())
+            return;
+        /* LOGIC_SPREAD: the MAIN waits that read the world (areas, distances, HP, deaths) are tested on every other
+         * frame, half of them on each (by slot): 33 ms more before such an event starts, ~0.7 ms of EE less a frame
+         * at the Burg (217 of them, 2026-11-08 ISO). A flag change tests them at once */
+        if (LOGIC_SPREAD && !in->edge && (((unsigned)(in - inst) ^ ev_frame) & 1) && in->seen == state_key())
+            return;
         in->seen = state_key();
+        in->sfalse = 0;
+        if (LOGIC_SPREAD && in->static_and && static_false(in, 0, 0)) {  /* AND group: false whatever the rest says */
+            in->sfalse = 1;
+            return;
+        }
         if (!eval_group(in, 0, 0))
             return;
         resolve(in);
@@ -863,6 +908,17 @@ static void run(Inst *in)
                     in->flag_only = 1;
                     for (int i = 0; i < in->nreg; i++)
                         in->flag_only &= static_cond(instr_at(s, ev->ioff + in->reg[i].off)->op);
+                    in->static_and = in->sfalse = in->edge = 0;
+                    for (int i = 0; i < in->nreg; i++) {
+                        int op = instr_at(s, ev->ioff + in->reg[i].off)->op;
+                        if (op == OP_C_ACTION || op == OP_C_ACTION_LINE || op == OP_C_ACTION_BOSS) {
+                            in->static_and = 0;  /* evaluating it takes the button press: keep the old order */
+                            in->edge = 1;
+                            break;
+                        }
+                        in->edge |= op == OP_C_DAMAGED || op == OP_C_ON_HIT || op == OP_C_OBJACT;
+                        in->static_and |= op != OP_C_GROUP && static_cond(op);
+                    }
                 }
             }
             continue;
@@ -1081,15 +1137,21 @@ static void run(Inst *in)
 }
 
 /* ---- public ---- */
-static int load_set(Set *s, const void *blob, int block)
+/* blob: the events.bin; h: its header (split: the block's own copy), mid: NULL, or the block's entities .. colliders
+ * read from file offset mid_off (the rest from blob, whose header gives its own offsets) */
+static int load_set(Set *s, const void *blob, int block, const EvHdr *h, const u8 *mid, u32 mid_off)
 {
-    const EvHdr *h = blob;
-    if (!h || memcmp(h->magic, "EVB1", 4) || h->version != 3) {  /* export_emevd.py VERSION */
+    const EvHdr *bh = blob;
+    h = h ? h : bh;
+    if (!h || !bh || memcmp(h->magic, "EVB1", 4) || h->version != 3 || memcmp(bh->magic, "EVB1", 4) ||
+        bh->version != 3 || memcmp(h->map, bh->map, 4)) {  /* export_emevd.py VERSION */
         printf("EVT bad events blob\n");
         return 0;
     }
     memset(s, 0, sizeof *s);
     s->blob = blob, s->h = h, s->block = block;
+    for (int k = 0; k < 9; k++)
+        s->secp[k] = mid && k >= S_ENTS && k <= S_COLS ? mid + (h->sec[k][0] - mid_off) : (const u8 *)blob + bh->sec[k][0];
     s->ev = SEC(s, S_EVENTS, EvEvent), s->nev = NSEC(s, S_EVENTS);
     s->ent = SEC(s, S_ENTS, EvEnt), s->nent = NSEC(s, S_ENTS);
     s->ent_off = calloc(s->nent + 1, 1);
@@ -1131,7 +1193,7 @@ int event_init(const void *common_blob)
 {
     if (!inst)
         inst = calloc(EV_MAX_INST, sizeof *inst);
-    if (!inst || !load_set(&sets[0], common_blob, -1))
+    if (!inst || !load_set(&sets[0], common_blob, -1, NULL, NULL, 0))
         return 0;
     event_stats.prompt = -1;
     ev_temp_flags_reset(1);  /* the game load (save_boot ran before): DSR's area-load reset, FUN_1404f1fb0 */
@@ -1140,12 +1202,14 @@ int event_init(const void *common_blob)
     return 1;
 }
 
-void event_block_on(int block, const void *blob)
+void event_block_on(int block, const void *blob) { event_block_on_split(block, blob, NULL, NULL, 0); }
+
+void event_block_on_split(int block, const void *blob, const void *hdr, const void *mid, unsigned mid_off)
 {
     int k;
     for (k = 1; k < EV_SETS && sets[k].blob; k++)
         ;
-    if (!blob || k == EV_SETS || !inst || !load_set(&sets[k], blob, block))
+    if (!blob || k == EV_SETS || !inst || !load_set(&sets[k], blob, block, hdr, mid, mid_off))
         return;
     Set *s = &sets[k];
     for (int j = 1; j < EV_SETS; j++)  /* another block of the same map runs its events: this one adds entities */
@@ -1163,7 +1227,6 @@ void event_block_on(int block, const void *blob)
            NSEC(s, S_OBJACTS), s->live ? "" : " (entities only)", act);
 }
 
-static inline unsigned ticks(void);
 
 /* Same events in both sets (blocks of one map: export_emevd.py writes the map's events, instrs and substs alike) */
 static int same_events(const Set *a, const Set *b)
@@ -1171,7 +1234,7 @@ static int same_events(const Set *a, const Set *b)
     for (int k = S_EVENTS; k <= S_SUBSTS; k++) {
         unsigned n = k == S_EVENTS ? NSEC(a, k) * sizeof(EvEvent) : k == S_INSTRS ? (unsigned)NSEC(a, k)
                      : NSEC(a, k) * sizeof(EvSubst);
-        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->blob + a->h->sec[k][0], b->blob + b->h->sec[k][0], n))
+        if (NSEC(a, k) != NSEC(b, k) || memcmp(a->secp[k], b->secp[k], n))
             return 0;
     }
     return 1;
@@ -1245,12 +1308,6 @@ void event_flush(void)
 
 void event_action(void) { act_press = 1; }
 
-static inline unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* ObjActParam key (spQualifiedType 1 = a good in the inventory, either of the two; ASSUMED: other types unmet, TECH_DEBT
  * event-11); spQualifiedPassEventFlag (on once the door was opened from the other side) opens it as well */
@@ -1346,6 +1403,7 @@ void event_update(Player *p, float dt)
     unsigned t0 = ticks();
     pl = p, dtime = dt;
     act_used = 0;
+    ev_frame++;
     ev_chr_update(dt);
     ev_misc_update(dt);
     event_stats.prompt = -1;

@@ -212,27 +212,42 @@ void hz_vis(int n, const float *tri, const int *set, int nview, const float *vie
         if (!ns || sets[ns - 1] != sets[i])
             sets[ns++] = sets[i];
     int R = res_o > res_p ? res_o : res_p;
-    float *zb0 = malloc(sizeof(float) * R * R), *zb = malloc(sizeof(float) * R * R);
-    const float o[3] = {0, 0, 0};
-    for (int di = 0; di < ndir; di++) {  /* orthographic, from directions on a Fibonacci sphere */
-        float y = 1.0f - 2.0f * (di + 0.5f) / ndir, r = sqrtf(1.0f - y * y), ph = di * 2.39996323f;
-        float d[3] = {r * cosf(ph), y, r * sinf(ph)}, fw[3] = {-d[0], -d[1], -d[2]}, rt[3], up[3];
-        basis(fw, rt, up);
-        float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
-        for (int i = 0; i < 3 * n; i++) {
-            const float *p = tri + 3 * i;
-            float u = p[0] * rt[0] + p[1] * rt[1] + p[2] * rt[2], v = p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
-            u0 = fminf(u0, u), u1 = fmaxf(u1, u), v0 = fminf(v0, v), v1 = fmaxf(v1, v);
+    /* The views are independent: with -fopenmp each thread renders its share of them into its own depth buffers and
+     * its own copy of out, OR-ed together at the end. A triangle is marked when any view sees it, so out is the same
+     * bytes with any thread count or order (the per-thread "already seen" skip only saves work). */
+    int nv = ndir + 6 * nview;
+#pragma omp parallel
+    {
+        float *zb0 = malloc(sizeof(float) * R * R), *zb = malloc(sizeof(float) * R * R);
+        unsigned char *mine = calloc(n, 1);
+        const float o[3] = {0, 0, 0};
+#pragma omp for schedule(dynamic, 1)
+        for (int k = 0; k < nv; k++) {
+            if (k < ndir) {  /* orthographic, from directions on a Fibonacci sphere */
+                int di = k;
+                float y = 1.0f - 2.0f * (di + 0.5f) / ndir, r = sqrtf(1.0f - y * y), ph = di * 2.39996323f;
+                float d[3] = {r * cosf(ph), y, r * sinf(ph)}, fw[3] = {-d[0], -d[1], -d[2]}, rt[3], up[3];
+                basis(fw, rt, up);
+                float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+                for (int i = 0; i < 3 * n; i++) {
+                    const float *p = tri + 3 * i;
+                    float u = p[0] * rt[0] + p[1] * rt[1] + p[2] * rt[2], v = p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
+                    u0 = fminf(u0, u), u1 = fmaxf(u1, u), v0 = fminf(v0, v), v1 = fmaxf(v1, v);
+                }
+                float ext = fmaxf(u1 - u0, v1 - v0) + 2.0f, s = (res_o - 2) / ext;
+                one_view(n, tri, set, sets, ns, 0, o, rt, up, fw, s, u0 - 1.0f, v0 - 1.0f, res_o, zb0, zb, mine);
+            } else {  /* cube maps at the eye points */
+                static const float F[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+                int vi = (k - ndir) / 6, f = (k - ndir) % 6;
+                float rt[3], up[3];
+                basis(F[f], rt, up);
+                one_view(n, tri, set, sets, ns, 1, view + 3 * vi, rt, up, F[f], 0, 0, 0, res_p, zb0, zb, mine);
+            }
         }
-        float ext = fmaxf(u1 - u0, v1 - v0) + 2.0f, s = (res_o - 2) / ext;
-        one_view(n, tri, set, sets, ns, 0, o, rt, up, fw, s, u0 - 1.0f, v0 - 1.0f, res_o, zb0, zb, out);
+#pragma omp critical
+        for (int i = 0; i < n; i++)
+            out[i] |= mine[i];
+        free(zb0), free(zb), free(mine);
     }
-    static const float F[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
-    for (int vi = 0; vi < nview; vi++)  /* cube maps at the eye points */
-        for (int f = 0; f < 6; f++) {
-            float rt[3], up[3];
-            basis(F[f], rt, up);
-            one_view(n, tri, set, sets, ns, 1, view + 3 * vi, rt, up, F[f], 0, 0, 0, res_p, zb0, zb, out);
-        }
-    free(zb0), free(zb), free(sets);
+    free(sets);
 }

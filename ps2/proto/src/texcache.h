@@ -36,6 +36,10 @@ int tc_relief_pool(int pool_kb);
  * block slot) that buffer, or NULL: mip 0 is then drawn only while still in VRAM, else mip 1. The caller keeps the old
  * buffer until the chains that uploaded from it are done. */
 #define TC_RES 0x80000000u
+/* World blocks of one map (tools/mapsplit.py TEX_PEERS): an entry offset with TC_SHR set is in the map's maptex.bin,
+ * given for slot b by tc_block_shared before tc_block_add (NULL: none); it must stay until tc_block_drop */
+#define TC_SHR 0x40000000u
+void tc_block_shared(int b, const void *buf);
 void tc_res(int slot, const unsigned char *res);
 /* World blocks stream mip 0 per texture instead (mapstream.c via map.c): texture i of slot (-1: the boot map's) gets
  * its mip l pixels at pix, or none (NULL). tc_res_age: frames since tc_get last asked for its mip l (~0u never, or
@@ -75,6 +79,7 @@ typedef struct {
     int resident;        /* KB of the pool in use */
     int pool;            /* pool KB */
     int mip_batches;     /* this frame: batches drawn with a GS mip chain (tc_mip) */
+    int press_n;         /* TC_PRESS spells so far (pool full: mip 1 drawn closer) */
 } TcStats;
 extern TcStats tc_stats;
 

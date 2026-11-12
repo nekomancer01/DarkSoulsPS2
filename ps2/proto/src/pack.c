@@ -11,8 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
+#include "lpass.h" /* LOGIC_SPREAD */
 #include "hitch.h"
 #include "dsrsnd_rpc.h"
+#include "ticks.h"
 
 struct PackEntry {
     char name[32];
@@ -30,12 +32,6 @@ struct PackEntry {
 PackStats pack_stats;
 static void log_flush(void);
 
-static unsigned ticks(void)
-{
-    unsigned c;
-    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
-    return c;
-}
 
 /* Boot device (tools-hwperf): booted from a disc, libcglue's cwd (argv[0]'s device) is "cdrom0:..." and PACK_ROOT
  * paths are mapped onto the ISO layout of `make iso` (tools/ps2-iso.sh): "host:data/m10_01_00_00/c1000.pak" ->
@@ -151,13 +147,6 @@ int pack_disc_attach(void)
            st->iop_free >> 10, st->iop_free_boot >> 10);
     io_srv = 1;
     return 1;
-}
-
-void pack_disc_stat(unsigned out[4])
-{
-    const volatile SndDiscStat *st = (const volatile SndDiscStat *)((unsigned)&io_rx | 0x20000000);
-    out[0] = io_srv ? st->iop_free : 0, out[1] = io_srv ? st->wait_max_ms : 0;
-    out[2] = io_srv ? st->waits_100 : 0, out[3] = io_srv ? st->kb : 0;
 }
 
 static void io_land(int k, int res)
@@ -425,7 +414,8 @@ int pack_req_cancel_async(int t)
     return 0;  /* lands (short) later: pack_req_done as usual */
 }
 
-void pack_pump(void) { io_pump(); }
+static void zombie_pump(void);
+void pack_pump(void) { io_pump(); zombie_pump(); }
 
 int pack_open_raw(Pack *p, const char *path)
 {
@@ -616,7 +606,9 @@ void pack_async_free(void) {}  /* every read has a slot of its own now: nothing 
 enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOSE };
 /* EE ms of LZ4 decode per pack_job_step: a model.bin took 10-20 ms in one frame (enemy types streaming in, smoke
  * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
-#define PACK_JOB_DECODE_MS 3
+/* LOGIC_SPREAD (Burg plan B6, lpass.h): 1 ms, the logic pass's budget is 5 ms (a character type's load then takes a
+ * few more frames) */
+#define PACK_JOB_DECODE_MS (LOGIC_SPREAD ? 1 : 3)
 
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
 {
@@ -697,6 +689,7 @@ static int job_done(PackJob *j, int *res)
 
 int pack_job_step(PackJob *j)
 {
+    zombie_pump();
     unsigned *head = j->head;  /* the first sector: header + up to 31 entries */
     int res;
     switch (j->state) {
@@ -833,6 +826,52 @@ void pack_job_cancel(PackJob *j)
         j->put(j->out, j->alloc);
     j->out = NULL;
     j->state = -1;
+}
+
+/* PACK_JOB_ABANDON (default 1): pack_job_abandon hands a job with a read in flight to a slot here instead of waiting for
+ * it. pack_job_cancel waits until nothing more lands in the job's buffer (io_cancel): behind the disc server's queue that
+ * was 236 ms of one frame when a character's sound bank was dropped mid-load (an enemy type unloaded right after it
+ * loaded, Burg, play report 2026-11-10). Here the cancel is sent, and the buffer and the file go back once the read has
+ * landed (pack_job_step / pack_pump poll the slots). 0: the old wait. */
+#ifndef PACK_JOB_ABANDON
+#define PACK_JOB_ABANDON 1
+#endif
+#define PACK_ZOMBIES 4
+static PackJob zomb[PACK_ZOMBIES];
+static int nzomb;
+
+static void zombie_pump(void)
+{
+    for (int i = 0; nzomb && i < PACK_ZOMBIES; i++) {
+        PackJob *j = &zomb[i];
+        int res;
+        if (!j->tk || !io_poll(j->tk, &res))
+            continue;
+        j->tk = 0;
+        if (j->state == J_OPENING && res >= 0)
+            j->fd = res;
+        if (j->fd >= 0)
+            job_close(j);
+        if (j->out && j->state != -2)
+            j->put(j->out, j->alloc);
+        j->out = NULL;
+        nzomb--;
+    }
+}
+
+void pack_job_abandon(PackJob *j)
+{
+    int i = 0;
+    while (i < PACK_ZOMBIES && zomb[i].tk)
+        i++;
+    /* only a data read (it lands in j->out, which goes with the slot); a header read lands in j->head, inside *j */
+    if (!PACK_JOB_ABANDON || !j->tk || j->state != J_READING || i == PACK_ZOMBIES || pack_req_cancel_async(j->tk)) {
+        pack_job_cancel(j);  /* nothing in flight (or never sent): no wait anyway */
+        return;
+    }
+    zomb[i] = *j;
+    nzomb++;
+    j->tk = 0, j->fd = -1, j->fdc = -1, j->out = NULL, j->state = -1;
 }
 
 static void *heap_get(unsigned n) { return memalign(128, n); }

@@ -12,7 +12,7 @@ Layout (little-endian, offsets from the start of the file):
   cells   u32[gw * gd + 1]: triangles of cell (ix, iz) are list[cells[iz * gw + ix] .. cells[iz * gw + ix + 1]]
   list    u16 triangle indices; a triangle is listed in every x/z cell its footprint overlaps
 """
-import os, struct, sys
+import math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import havok_collision
@@ -209,12 +209,12 @@ def floor(c, x, z, y_top, y_bottom=-1e9, solid=SOLID):
 FRAG_VERTS, FRAG_TRIS, TOP_CELL = 255, 255, 8.0
 
 
-def _fragments(c):
+def _fragments(c, idx0=None):
     """v1 build() -> [triangle indices] per fragment: kd split on centroids (longest axis) until a node has at most
-    FRAG_VERTS distinct vertices and FRAG_TRIS triangles"""
+    FRAG_VERTS distinct vertices and FRAG_TRIS triangles (idx0: only these triangles; default all)"""
     V, T = c["verts"], c["tris"]
     cen = [tuple(sum(V[t[i]][k] for i in range(3)) / 3 for k in range(3)) for t in T]
-    out, stack = [], [list(range(len(T)))]
+    out, stack = [], [list(range(len(T))) if idx0 is None else list(idx0)]
     while stack:
         idx = stack.pop()
         nv = len({v for i in idx for v in T[i][:3]})
@@ -237,12 +237,53 @@ def _fragments(c):
     return out
 
 
+# Collision tiles (the cube-grid plan's step 1, 2026-11-09; COL_TILE=0: one unpaged file as before). Triangles go to the
+# COL_TILE m cube (x, y, z) their centroid lies in and fragments never mix tiles, so a tile's fragment data is one byte
+# range: a page. The runtime (src/coltile.c) keeps a block's index resident (header, top grid, fragment records,
+# patterns, v1 numbers, page table) and reads the pages within reach of the player into the structural pool; at the
+# Burg test spots 0.7-1.0 MB of the blocks' 1.6 MB of collision lies within 56 m (xz) / 16 m (y). Pages are ordered by
+# their 32 m map cell (the tile key >> 1, eight tiles per cell) and lie next to each other on the disc, so the tiles of
+# one cell read in one request. No triangle is stored twice: a tile's page box is its fragments' true box (it overhangs
+# the cube by up to a triangle), and the runtime ranks pages by that box.
+#   page table (after the patterns, 16-aligned): u32 'CTP2', npage, data_lo (first page byte = the index's size),
+#           f32 tile; 32 B per page: s16 key[3] (tile, floor(centroid / tile)), u16 nfrag; u32 frag0, offset (file),
+#           bytes; s16 lo[3], hi[3] (quantized like the fragments: the page's box)
+#   pages   from data_lo, each 128-aligned: its fragments' data in fragment order (fragment data offsets stay file
+#           offsets: in a page buffer at offset - page offset), then the v1 numbers of its triangle slots (u16 each,
+#           slots frag0.tri0 .. the last fragment's tri0 + ntri: the page's last bytes), so the index holds none
+#   gid     the whole v1 number array again after the pages (off_gid: for the tools; the runtime never reads it)
+# (CTP1, the first paged layout: the page table after gid, gid in the index, no numbers in the pages)
+COL_TILE = float(os.environ.get("COL_TILE", 16))
+PAGE_ALIGN = 128
+
+
+def _tile_groups(c, tile):
+    """[(tile key, [triangle indices])] in page order: by 32 m cell (key >> 1), then the octant inside it"""
+    V, T, org = c["verts"], c["tris"], c["origin"]
+    groups = {}
+    for i, t in enumerate(T):
+        cen = [org[k] + sum(V[t[j]][k] for j in range(3)) / 3 * SCALE for k in range(3)]
+        key = tuple(int(math.floor(cen[k] / tile)) for k in range(3))
+        groups.setdefault(key, []).append(i)
+    order = sorted(groups, key=lambda k: (k[2] >> 1, k[0] >> 1, k[1] >> 1, k[2] & 1, k[0] & 1, k[1] & 1))
+    return [(k, groups[k]) for k in order]
+
+
 def write_v2(c, path):
     V, T, org, cell = c["verts"], c["tris"], c["origin"], c["cell"]
     W = lambda q: [org[k] + q[k] * SCALE for k in range(3)]
-    frags = _fragments(c)
+    tile = COL_TILE
+    if tile > 0:
+        groups = _tile_groups(c, tile)
+        frags, pages = [], []
+        for key, idx in groups:
+            fs = _fragments(c, idx)
+            pages.append((key, len(frags), len(fs)))
+            frags += fs
+    else:
+        frags, pages = _fragments(c), []
     pats, pat_of = [], {}
-    frec, data, gid = [], b"", []
+    frec, blobs, gid = [], [], []
     eps = 0.02
     hsize = 96
     for f in frags:
@@ -285,9 +326,9 @@ def write_v2(c, path):
         assert len(lst) < 65536
         blob = vb + tb + struct.pack(f"<{len(starts)}H", *starts) + bytes(lst)
         blob += b"\0" * (-len(blob) % 4)
-        frec.append((lo, hi, len(f), len(vs), len(gid), len(data), gw, gd))
+        frec.append([lo, hi, len(f), len(vs), len(gid), 0, gw, gd])
         gid += f
-        data += blob
+        blobs.append(blob)
     # top grid over the fragments' xz boxes
     allw = [W(v) for v in V]
     # the origin as v1 had it (build(): the unquantized minimum - 0.01 m): export_world's block bounds stay the same
@@ -308,10 +349,34 @@ def write_v2(c, path):
     off_top = hsize
     off_tl = off_top + 4 * len(tstarts)
     off_frag = (off_tl + 2 * len(tlist) + 15) & ~15
-    off_data = off_frag + 32 * len(frec)
-    off_pat = off_data + len(data)
-    off_gid = (off_pat + 2 * len(pats) + 3) & ~3
-    fb = b"".join(struct.pack("<3h3hHHIIBBH4x", *lo, *hi, nt, nv, t0, off_data + do, gw, gd, 0)
+    if pages:  # index first (fragment records, patterns, v1 numbers, page table), the pages after it
+        off_pat = off_frag + 32 * len(frec)
+        off_ptab = (off_pat + 2 * len(pats) + 15) & ~15
+        data_lo = (off_ptab + 16 + 32 * len(pages) + PAGE_ALIGN - 1) & ~(PAGE_ALIGN - 1)
+        data, prec = b"", []
+        for key, f0, nf in pages:
+            data += b"\0" * (-(data_lo + len(data)) % PAGE_ALIGN)
+            p0 = data_lo + len(data)
+            for fi in range(f0, f0 + nf):
+                frec[fi][5] = data_lo + len(data)
+                data += blobs[fi]
+            s0, s1 = frec[f0][4], frec[f0 + nf - 1][4] + frec[f0 + nf - 1][2]
+            data += struct.pack(f"<{s1 - s0}H", *gid[s0:s1])
+            lo = [min(frec[fi][0][k] for fi in range(f0, f0 + nf)) for k in range(3)]
+            hi = [max(frec[fi][1][k] for fi in range(f0, f0 + nf)) for k in range(3)]
+            assert all(-32768 <= v < 32768 for v in key)
+            prec.append(struct.pack("<3hHIII3h3h", *key, nf, f0, p0, data_lo + len(data) - p0, *lo, *hi))
+        ptab = struct.pack("<4sIIf", b"CTP2", len(pages), data_lo, tile) + b"".join(prec)
+        off_gid = (data_lo + len(data) + 3) & ~3
+    else:  # fragment data right after the records (the old layout)
+        off_data = off_frag + 32 * len(frec)
+        data = b""
+        for fi, blob in enumerate(blobs):
+            frec[fi][5] = off_data + len(data)
+            data += blob
+        off_pat = off_data + len(data)
+        off_gid = (off_pat + 2 * len(pats) + 3) & ~3
+    fb = b"".join(struct.pack("<3h3hHHIIBBH4x", *lo, *hi, nt, nv, t0, do, gw, gd, 0)
                   for lo, hi, nt, nv, t0, do, gw, gd in frec)
     ys = [p[1] for p in allw]
     hdr = struct.pack("<4sIII3ff3fII8I3f", b"DCOL", 2, sum(r[3] for r in frec), len(T), *org, SCALE, x0, z0, TOP_CELL,
@@ -319,12 +384,19 @@ def write_v2(c, path):
                       min(ys), max(ys), cell)
     assert len(hdr) == hsize, len(hdr)
     out = hdr + struct.pack(f"<{len(tstarts)}I", *tstarts) + struct.pack(f"<{len(tlist)}H", *tlist)
-    out += b"\0" * (off_frag - len(out)) + fb + data + struct.pack(f"<{len(pats)}H", *pats)
-    out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
+    out += b"\0" * (off_frag - len(out)) + fb
+    if pages:
+        out += struct.pack(f"<{len(pats)}H", *pats)
+        out += b"\0" * (off_ptab - len(out)) + ptab
+        out += b"\0" * (data_lo - len(out)) + data
+        out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
+    else:
+        out += data + struct.pack(f"<{len(pats)}H", *pats)
+        out += b"\0" * (off_gid - len(out)) + struct.pack(f"<{len(gid)}H", *gid)
     with open(path, "wb") as fo:
         fo.write(out)
     return dict(size=len(out), frags=len(frec), data=len(data), gid=2 * len(gid), top=4 * len(tstarts) + 2 * len(tlist),
-                verts=sum(r[3] for r in frec))
+                verts=sum(r[3] for r in frec), pages=len(pages), index=data_lo if pages else len(out))
 
 
 def v1_dict(path):
@@ -351,7 +423,7 @@ if __name__ == "__main__":
     if os.environ.get("COL_V1") != "1":  # DCOL v2 (write_v2), the default; COL_V1=1: the old layout
         st = write_v2(c, out)
         print(f"{out}: v2 {st['size']} bytes ({len(c['tris'])} tris in {st['frags']} fragments, {st['verts']} verts, "
-              f"v1 numbers {st['gid']} B, top grid {st['top']} B); MSB parts without hkx: {missing}; unplaced hkx: {unused}")
+              f"v1 numbers {st['gid']} B, top grid {st['top']} B, {st['pages']} tile pages, index {st['index']} B); MSB parts without hkx: {missing}; unplaced hkx: {unused}")
         sys.exit(0)
     st = write(c, out)
     lens = [len(x) for x in c["cells"]]

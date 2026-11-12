@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "collision.h"
+#include "lpass.h" /* LOGIC_SPREAD (Burg plan B6) */
 #include "vmath.h"
 
 
@@ -37,8 +38,27 @@ typedef struct {
     unsigned short pad, pad2[2];
 } Frag;
 _Static_assert(sizeof(Header2) == 96 && sizeof(Frag) == 32, "DCOL v2");
+/* Collision tiles (export_collision.py COL_TILE, the cube-grid plan's step 1): a v2 file whose fragments are grouped
+ * per tile has a page table after gid (16-aligned): 'CTP1', pages, data_lo (the index's size: everything before the
+ * first page), f32 tile; then ColPage records. A page is one tile's fragment data, a byte range from data_lo on; a
+ * fragment's data offset stays a file offset (in a page buffer at data - page off). col_load takes a whole file (every
+ * page in it); col_load_index the index alone, and src/coltile.c hands pages in and out with col_page_set: queries
+ * skip the fragments of absent pages, as they skip a block that is not loaded. */
+typedef struct {
+    short key[3];
+    unsigned short nfrag;
+    unsigned frag0, off, bytes;
+    short lo[3], hi[3];
+} ColPage;
+_Static_assert(sizeof(ColPage) == 32, "ColPage");
 
 #define MAX_PUSH_ITERS 4
+/* COL_SCAN (frame-time pass 2026-11-09, default on; DEFS=-DCOL_SCAN=0 = the old loop): each_tri2's list loop tests the
+ * triangle's integer box before its v1 number / stamp lookups and takes the fragment's vertex and number tables once
+ * (iso_ame_report3 caves: ~5000 list entries a frame for ~250 triangles tested) */
+#ifndef COL_SCAN
+#define COL_SCAN 1
+#endif
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
 
 /* One collision.bin per world block (src/world.c), all in one world frame. The queries below take the block they run
@@ -61,6 +81,13 @@ typedef struct {
     unsigned short *fstamp, fcur;
     float inv_top, inv_fcell;
     unsigned ntris;
+    /* collision tiles: page table (NULL: an unpaged file), per page its data (NULL: absent), per fragment its page */
+    const ColPage *pg;
+    unsigned npg, data_lo;
+    float tile;
+    const unsigned char **pbuf;
+    unsigned short *fpg;
+    unsigned *pgid;  /* CTP2: per page its first triangle slot and its v1 numbers' offset in the page (NULL: gid) */
 } ColBlock;
 static ColBlock blk[COL_BLOCKS];
 static int ray1(ColBlock *c, const float from[3], const float to[3], unsigned mask, ColHit *hit);
@@ -68,6 +95,8 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
 static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned mask, ColHit *hit);
 
 #define TRI_OFF(c, ti) ((c)->off && (c)->off[(ti) >> 3] >> ((ti) & 7) & 1)
+/* fragment fi's data is in memory (always, in an unpaged block) */
+#define FRAG_IN(c, fi) (!(c)->pbuf || (c)->pbuf[(c)->fpg[fi]])
 int col_contacts;
 
 /* 1 if the box [lo, hi] overlaps block c's bounds */
@@ -77,7 +106,29 @@ static inline int box_hits(const ColBlock *c, const float lo[3], const float hi[
            lo[2] <= c->hi[2] && hi[2] >= c->lo[2];
 }
 
-int col_load(int b, const void *blob)
+/* where a v2 file's page table may be: CTP2 after the patterns (v1 numbers in the pages), CTP1 after gid */
+unsigned col_ptab_at(const void *head, int v)
+{
+    const Header2 *h2 = head;
+    return v == 2 ? (h2->pat_off + 2 * h2->npat + 15) & ~15u : (h2->gid_off + 2 * h2->ntris + 15) & ~15u;
+}
+
+/* the page table of a v2 blob (NULL: none); *v = its version */
+static const unsigned *ptab_of(const Header2 *h2, int *v)
+{
+    for (*v = 2; *v >= 1; --*v) {
+        const unsigned *t = (const unsigned *)((const unsigned char *)h2 + col_ptab_at(h2, *v));
+        if (!memcmp(t, *v == 2 ? "CTP2" : "CTP1", 4))
+            return t;
+    }
+    return NULL;
+}
+
+static int load_blob(int b, const void *blob, int whole);
+int col_load(int b, const void *blob) { return load_blob(b, blob, 1); }
+int col_load_index(int b, const void *blob) { return load_blob(b, blob, 0); }
+
+static int load_blob(int b, const void *blob, int whole)
 {
     if (b < 0 || b >= COL_BLOCKS)
         return 0;
@@ -107,6 +158,44 @@ int col_load(int b, const void *blob)
         c->gid = (const unsigned short *)(p + h2->gid_off);
         c->inv_top = 1.0f / h2->cell, c->inv_fcell = 1.0f / h2->fcell;
         c->cur_stamp = c->fcur = 0;
+        int pv;
+        const unsigned *pt = ptab_of(h2, &pv);
+        if (pt) {
+            c->npg = pt[1], c->data_lo = pt[2];
+            memcpy(&c->tile, pt + 3, 4);
+            c->pg = (const ColPage *)(pt + 4);
+            c->pbuf = calloc(c->npg ? c->npg : 1, sizeof *c->pbuf);
+            c->fpg = malloc((h2->nfrag ? h2->nfrag : 1) * sizeof *c->fpg);
+            if (!c->pbuf || !c->fpg) {
+                free(c->pbuf), free(c->fpg), free(c->stamp), free(c->fstamp);
+                memset(c, 0, sizeof *c);
+                return 0;
+            }
+            if (pv == 2) {  /* the v1 numbers are at each page's end: its slots' first number, its offset in the page */
+                c->gid = NULL;
+                c->pgid = malloc(2 * (c->npg ? c->npg : 1) * sizeof *c->pgid);
+                if (!c->pgid) {
+                    free(c->pbuf), free(c->fpg), free(c->stamp), free(c->fstamp);
+                    memset(c, 0, sizeof *c);
+                    return 0;
+                }
+            }
+            for (unsigned i = 0; i < c->npg; i++) {
+                for (unsigned f = c->pg[i].frag0; f < c->pg[i].frag0 + c->pg[i].nfrag && f < h2->nfrag; f++)
+                    c->fpg[f] = i;
+                if (c->pgid && c->pg[i].nfrag) {
+                    const Frag *f0 = &c->frag[c->pg[i].frag0], *f1 = f0 + c->pg[i].nfrag - 1;
+                    c->pgid[2 * i] = f0->tri0;
+                    c->pgid[2 * i + 1] = c->pg[i].bytes - 2 * (f1->tri0 + f1->ntri - f0->tri0);
+                }
+                if (whole)
+                    c->pbuf[i] = p + c->pg[i].off;
+            }
+        } else if (!whole) {  /* an unpaged file has no index of its own */
+            free(c->stamp), free(c->fstamp);
+            memset(c, 0, sizeof *c);
+            return 0;
+        }
         float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
         for (unsigned i = 0; i < h2->nfrag; i++)
             for (int k = 0; k < 3; k++) {
@@ -147,6 +236,9 @@ void col_unload(int b)
     free(blk[b].stamp);
     free(blk[b].fstamp);
     free(blk[b].off);
+    free(blk[b].pbuf);
+    free(blk[b].fpg);
+    free(blk[b].pgid);
     memset(&blk[b], 0, sizeof blk[b]);
 }
 
@@ -169,6 +261,21 @@ int col_tris_enable(int b, unsigned first, unsigned count, int on)
         for (unsigned t = first; t < first + count; t++)
             c->off[t >> 3] = on ? c->off[t >> 3] & ~(1 << (t & 7)) : c->off[t >> 3] | 1 << (t & 7);
     return 1;
+}
+
+int col_pages(int b, float *tile)
+{
+    if (b < 0 || b >= COL_BLOCKS || !blk[b].hdr || !blk[b].pg)
+        return 0;
+    if (tile)
+        *tile = blk[b].tile;
+    return (int)blk[b].npg;
+}
+
+void col_page_set(int b, int i, const void *buf)
+{
+    if (b >= 0 && b < COL_BLOCKS && blk[b].pbuf && i >= 0 && (unsigned)i < blk[b].npg)
+        blk[b].pbuf[i] = buf;
 }
 
 int col_tris(void) { return blk[0].hdr ? (int)blk[0].hdr->ntris : 0; }
@@ -516,10 +623,26 @@ static int push1(ColBlock *cb, float pos[3], float r, float height, float step, 
 }
 
 /* ---- DCOL v2 (fragments) ---- */
+/* the v1 number of fragment f's triangle lt (FRAG_IN) */
+static inline unsigned gid_of(const ColBlock *c, const Frag *f, unsigned lt)
+{
+    if (!c->pgid)
+        return c->gid[f->tri0 + lt];
+    unsigned i = c->fpg[f - c->frag];
+    return ((const unsigned short *)(c->pbuf[i] + c->pgid[2 * i + 1]))[f->tri0 + lt - c->pgid[2 * i]];
+}
+/* fragment f's data (FRAG_IN: in memory) */
+static inline const unsigned char *fbase(const ColBlock *c, const Frag *f)
+{
+    if (!c->pbuf)
+        return (const unsigned char *)c->hdr + f->data;
+    const ColPage *g = &c->pg[c->fpg[f - c->frag]];
+    return c->pbuf[g - c->pg] + (f->data - g->off);
+}
 static inline void vert2(const ColBlock *c, const Frag *f, unsigned i, float *o)
 {
     const Header *h = c->hdr;
-    const unsigned short *v = (const unsigned short *)((const unsigned char *)c->hdr + f->data) + i * 3;
+    const unsigned short *v = (const unsigned short *)fbase(c, f) + i * 3;
     o[0] = h->origin[0] + (f->lo[0] + v[0]) * h->scale;
     o[1] = h->origin[1] + (f->lo[1] + v[1]) * h->scale;
     o[2] = h->origin[2] + (f->lo[2] + v[2]) * h->scale;
@@ -527,7 +650,7 @@ static inline void vert2(const ColBlock *c, const Frag *f, unsigned i, float *o)
 /* fragment f's triangles (4 bytes each, after its 4-aligned vertices), cell starts and lists */
 static inline const unsigned char *ftris(const ColBlock *c, const Frag *f)
 {
-    return (const unsigned char *)c->hdr + f->data + ((f->nvert * 6u + 3) & ~3u);
+    return fbase(c, f) + ((f->nvert * 6u + 3) & ~3u);
 }
 static inline const unsigned short *fcells(const ColBlock *c, const Frag *f) { return (const unsigned short *)(ftris(c, f) + f->ntri * 4u); }
 static inline const unsigned char *flist(const ColBlock *c, const Frag *f) { return (const unsigned char *)(fcells(c, f) + f->gw * f->gd + 1); }
@@ -563,7 +686,35 @@ static void next_fstamp(ColBlock *c)
 /* Calls fn(c, f, triangle bytes, gid, user) for every triangle of the fragments overlapping box [lo, hi] whose cells
  * overlap it, each triangle once per call (stamp by gid); fn returns nonzero to stop */
 typedef int (*TriFn)(ColBlock *c, const Frag *f, const unsigned char *t, unsigned gid, void *u);
-static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned mask, TriFn fn, void *u)
+/* Burg plan B6 (LOGIC_SPREAD, lpass.h): a triangle whose three vertices all lie below or all above the box the caller
+ * tests against, on one axis, can never be a hit there (push_tri, the gather's reach box, seg_tri all start with that
+ * test). On the fragment's 16-bit vertex grid that test is three integer compares instead of nine conversions to
+ * float: the box goes into grid units once per fragment, widened by a unit each side (it only rejects what the float
+ * test rejects too). 2026-11-08 ISO, Burg start with 16 characters active: ~3000 triangles visited a frame at
+ * ~1.2 us each, most outside the capsule's box. */
+typedef struct { int lo[3], hi[3]; } QBox;
+static inline void qbox(const ColBlock *c, const Frag *f, const float *flo, const float *fhi, QBox *q)
+{
+    const Header *h = c->hdr;
+    float inv = 1.0f / h->scale;
+    for (int k = 0; k < 3; k++) {
+        float a = (flo[k] - h->origin[k]) * inv - f->lo[k] - 1, b = (fhi[k] - h->origin[k]) * inv - f->lo[k] + 1;
+        a = a < -2 ? -2 : a > 70000 ? 70000 : a, b = b < -2 ? -2 : b > 70000 ? 70000 : b;
+        q->lo[k] = (int)floorf(a), q->hi[k] = (int)ceilf(b);
+    }
+}
+static inline int qbox_out(const ColBlock *c, const Frag *f, const unsigned char *t, const QBox *q)
+{
+    const unsigned short *v = (const unsigned short *)fbase(c, f);  /* (a paged block: in its page, collision tiles) */
+    const unsigned short *a = v + t[0] * 3, *b = v + t[1] * 3, *d = v + t[2] * 3;
+    for (int k = 0; k < 3; k++)
+        if ((a[k] < q->lo[k] && b[k] < q->lo[k] && d[k] < q->lo[k]) ||
+            (a[k] > q->hi[k] && b[k] > q->hi[k] && d[k] > q->hi[k]))
+            return 1;
+    return 0;
+}
+static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned mask, TriFn fn, void *u,
+                     const float *flo, const float *fhi)
 {
     const Header2 *h2 = c->h2;
     int tx0 = (int)floorf((lo[0] - h2->x0) * c->inv_top), tz0 = (int)floorf((lo[2] - h2->z0) * c->inv_top);
@@ -584,9 +735,12 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                     continue;
                 c->fstamp[fi] = fcur;
                 const Frag *f = &c->frag[fi];
-                if (!fbox_hits(c, f, lo, hi))
+                if (!FRAG_IN(c, fi) || !fbox_hits(c, f, lo, hi))
                     continue;
                 float fx0, fz0;
+                QBox qb;
+                if (flo)
+                    qbox(c, f, flo, fhi, &qb);
                 forigin(c, f, &fx0, &fz0);
                 int ix0 = (int)floorf((lo[0] - fx0) * c->inv_fcell), iz0 = (int)floorf((lo[2] - fz0) * c->inv_fcell);
                 int ix1 = (int)floorf((hi[0] - fx0) * c->inv_fcell), iz1 = (int)floorf((hi[2] - fz0) * c->inv_fcell);
@@ -594,16 +748,60 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                 ix1 = ix1 >= f->gw ? f->gw - 1 : ix1, iz1 = iz1 >= f->gd ? f->gd - 1 : iz1;
                 const unsigned char *tr = ftris(c, f), *ls = flist(c, f);
                 const unsigned short *cs = fcells(c, f);
+#if COL_SCAN
+                /* the fragment's vertices and v1 numbers once, then per list entry the integer box test first (on the
+                 * fragment's own vertex bytes), before the v1-number / stamp lookups (block-wide arrays, D-cache
+                 * misses on a PS2); a triangle the box rejects is rejected in every cell of this fragment, so its stamp is
+                 * not needed */
+                const unsigned short *fv = (const unsigned short *)fbase(c, f), *gt;
+                if (!c->pgid)
+                    gt = c->gid + f->tri0;
+                else {
+                    unsigned pi = c->fpg[fi];
+                    gt = (const unsigned short *)(c->pbuf[pi] + c->pgid[2 * pi + 1]) + (f->tri0 - c->pgid[2 * pi]);
+                }
                 for (int iz = iz0; iz <= iz1; iz++)
                     for (int ix = ix0; ix <= ix1; ix++) {
                         unsigned ck = iz * f->gw + ix;
                         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
-                            unsigned lt = ls[q], g = c->gid[f->tri0 + lt];
+                            unsigned lt = ls[q];
+                            const unsigned char *t = tr + lt * 4;
+                            if (flo) {
+                                const unsigned short *a = fv + t[0] * 3, *b = fv + t[1] * 3, *d = fv + t[2] * 3;
+                                if ((a[0] < qb.lo[0] && b[0] < qb.lo[0] && d[0] < qb.lo[0]) ||
+                                    (a[0] > qb.hi[0] && b[0] > qb.hi[0] && d[0] > qb.hi[0]) ||
+                                    (a[2] < qb.lo[2] && b[2] < qb.lo[2] && d[2] < qb.lo[2]) ||
+                                    (a[2] > qb.hi[2] && b[2] > qb.hi[2] && d[2] > qb.hi[2]) ||
+                                    (a[1] < qb.lo[1] && b[1] < qb.lo[1] && d[1] < qb.lo[1]) ||
+                                    (a[1] > qb.hi[1] && b[1] > qb.hi[1] && d[1] > qb.hi[1]))
+                                    continue;
+                            }
+                            if (!(mask >> (c->pat[t[3]] & 0xff) & 1))
+                                continue;
+                            unsigned g = gt[lt];
+                            if (c->stamp[g] == cur)
+                                continue;
+                            c->stamp[g] = cur;
+                            if (TRI_OFF(c, g))
+                                continue;
+                            if (fn(c, f, t, g, u))
+                                return 1;
+                        }
+                    }
+                continue;
+#endif
+                for (int iz = iz0; iz <= iz1; iz++)
+                    for (int ix = ix0; ix <= ix1; ix++) {
+                        unsigned ck = iz * f->gw + ix;
+                        for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
+                            unsigned lt = ls[q], g = gid_of(c, f, lt);
                             if (c->stamp[g] == cur)
                                 continue;
                             c->stamp[g] = cur;
                             const unsigned char *t = tr + lt * 4;
                             if (!(mask >> (c->pat[t[3]] & 0xff) & 1) || TRI_OFF(c, g))
+                                continue;
+                            if (flo && qbox_out(c, f, t, &qb))
                                 continue;
                             if (fn(c, f, t, g, u))
                                 return 1;
@@ -627,6 +825,8 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
     const Frag *bf = NULL;
     const unsigned char *bt = NULL;
     for (unsigned j = cb->top[k]; j < cb->top[k + 1]; j++) {
+        if (!FRAG_IN(cb, cb->toplist[j]))
+            continue;
         const Frag *f = &cb->frag[cb->toplist[j]];
         float fx0, fz0;
         forigin(cb, f, &fx0, &fz0);
@@ -636,10 +836,19 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
         const unsigned char *tr = ftris(cb, f), *ls = flist(cb, f);
         const unsigned short *cs = fcells(cb, f);
         unsigned ck = iz * f->gw + ix;
+        QBox qb;  /* the point's column [y_bottom, y_top]: a triangle beside it or wholly above / below has no h there */
+        if (LOGIC_SPREAD) {
+            const float flo[3] = {x, y_bottom, z}, fhi[3] = {x, y_top, z};
+            qbox(cb, f, flo, fhi, &qb);
+        }
         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
             const unsigned char *t = tr + ls[q] * 4;
-            unsigned g = cb->gid[f->tri0 + ls[q]];
+            if (COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))  /* the box first: no v1-number lookup */
+                continue;
+            unsigned g = gid_of(cb, f, ls[q]);
             if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
+                continue;
+            if (!COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
                 continue;
             float a[3], b[3], c[3];
             tri2(cb, f, t, a, b, c);
@@ -756,7 +965,7 @@ static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float
     TouchQ q;
     memcpy(q.pos, pos, 12), memcpy(q.p0, p0, 12), memcpy(q.p1, p1, 12), memcpy(q.lo, lo, 12), memcpy(q.hi, hi, 12);
     q.r = r;
-    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q);
+    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
     col_contacts = c0;  /* (push_tri counts the contact it found) */
     return hit;
 }
@@ -781,7 +990,7 @@ static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, fl
     float ghi[3] = {h2->x0 + (ix1 + 1) * h2->fcell + 0.03f, hi[1], h2->z0 + (iz1 + 1) * h2->fcell + 0.03f};
     for (int k = 0; k < 3; k += 2)
         glo[k] = glo[k] > q.blo[k] ? glo[k] : q.blo[k], ghi[k] = ghi[k] < q.bhi[k] ? ghi[k] : q.bhi[k];
-    each_tri2(cb, glo, ghi, mask, gather_cb, &q);
+    each_tri2(cb, glo, ghi, mask, gather_cb, &q, LOGIC_SPREAD ? q.blo : NULL, q.bhi);
     for (int i = 1; i < q.n; i++) {  /* insertion sort: a few dozen, mostly in order already */
         PushCand x = cand[i];
         int j = i;
@@ -813,7 +1022,7 @@ static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned m
     for (int k = 0; k < 3; k++)
         lo[k] = from[k] < to[k] ? from[k] : to[k], hi[k] = from[k] < to[k] ? to[k] : from[k];
     RayQ q = {from, to, 2, -1, NULL, NULL};
-    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q);
+    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
     if (q.tri < 0)
         return 0;
     if (hit) {

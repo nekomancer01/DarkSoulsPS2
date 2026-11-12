@@ -1,0 +1,37 @@
+# The PCSX2 smoke suite on the maintainer's PC (self-hosted runner with the game data; tools/ci/pcsx2-smoke.sh):
+# after each merge to main (scoped, --max 20) and nightly (--max 120). Only the step summary and the budget table are
+# published; screenshots and reports stay on that PC (AGENTS.md section 1).
+# Self-hosted runner on a public repo: this workflow has no pull_request trigger, and the repo's Actions setting
+# "Require approval for all external contributors" keeps a fork PR from running its own workflow on the runner.
+# Runner setup: tools/ci/runner.sh.
+name: PCSX2 smoke
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 16 * * *'  # 03:00 in Sydney (AEDT)
+  workflow_dispatch:
+    inputs:
+      max:
+        description: test-smoke.py --max (points per area)
+        default: '120'
+permissions:
+  contents: read
+concurrency:
+  group: pcsx2-smoke
+  cancel-in-progress: false
+jobs:
+  smoke:
+    if: github.repository == 'nekomancer01/DarkSoulsPS2'
+    runs-on: [self-hosted, dsr-pcsx2]
+    timeout-minutes: 360
+    steps:
+      # no actions/checkout: the script fetches the commit into the PC's own checkout, where the game data lives
+      - name: Build + smoke
+        env:
+          MAX: ${{ github.event_name == 'push' && '20' || inputs.max || '120' }}
+        run: |
+          S=$(mktemp)
+          git -C "${DSR_MAIN:-$HOME/DarkSoulsPS2}" fetch -q origin "$GITHUB_SHA"
+          git -C "${DSR_MAIN:-$HOME/DarkSoulsPS2}" show "$GITHUB_SHA:tools/ci/pcsx2-smoke.sh" > "$S"
+          bash "$S" "$GITHUB_SHA" --max "$MAX"

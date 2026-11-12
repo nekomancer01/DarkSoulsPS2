@@ -13,6 +13,9 @@
 #include "texcache.h"
 #include "map.h"
 #include "vu1.h"
+#ifndef BUMP_BAKED
+#define BUMP_BAKED 1  /* = the Makefile's BUMP_BAKE default */
+#endif
 
 /* bump.bin (tools/export_normal.py) */
 typedef struct {
@@ -119,6 +122,11 @@ static int set_init(int k, const void *blob, unsigned chunks)
 int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
 {
     gsg = gs;
+#if BUMP_BAKED  /* the relief is in the map textures (Makefile BUMP_BAKE): no pool, no CLUT area, no pass */
+    (void)blob, (void)chunks;
+    printf("bump: relief baked into the map textures (no relief pass)\n");
+    return 0;
+#endif
     if (!blob) {  /* streamed later (world.c): the relief pool and CLUT area now, where the resident set put them */
         tc_relief_pool(BUMP_POOL_KB);
         if (!clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= BUMP_CLUT_KB * 1024) {
@@ -131,6 +139,10 @@ int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
 
 int bump_block(int k, const void *blob, unsigned chunks)
 {
+#if BUMP_BAKED
+    (void)k, (void)blob, (void)chunks;
+    return 0;
+#endif
     if (k < 0 || k >= BUMP_INST || !gsg)
         return 0;
     nitems = 0;  /* items of this frame may point into the old set (bump_draw runs after the map's batches) */
@@ -171,15 +183,8 @@ static int item_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-#ifdef BUMP_LOG
-static inline unsigned ticks(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
-#endif
-
 void bump_draw(void)
 {
-#ifdef BUMP_LOG
-    unsigned t_start = ticks();
-#endif
     bump_batches = 0;
     if (!nitems)
         return;
@@ -192,7 +197,6 @@ void bump_draw(void)
         vu1_clut_reload();
     }
     int cap = b->bh->cap && b->bh->cap < BUMP_CAP ? (int)b->bh->cap : BUMP_CAP;
-    int cand = nitems;
     if (nitems > cap) {  /* keep the cap nearest: distance histogram, cut inside the bin that crosses the cap */
         enum { BINS = 64 };
         int hist[BINS] = {0}, cut = BINS, room = cap;
@@ -244,13 +248,5 @@ void bump_draw(void)
     }
     u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
     vu1_gs_regs(2, rr);
-#ifdef BUMP_LOG
-    static unsigned frame, acc;
-    acc += ticks() - t_start;
-    if (!(++frame & 63))
-        printf("BUMP cand %d drawn %d, bump_draw %u us / frame\n", cand, bump_batches, acc / 64 / 295), acc = 0;
-#else
-    (void)cand;
-#endif
     nitems = 0;
 }

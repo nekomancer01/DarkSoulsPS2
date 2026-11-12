@@ -1,5 +1,6 @@
 #!/bin/bash
 # Usage: ./build-iso.sh [-i GAME_DIR] [-o FILE] [-c N] [--build DIR] [--syms] [--no-queue] [--container]
+#                    [--plain]
 #
 # Builds the whole disc image from this checkout in one command: exports and packs the game data from your own copy
 # of Dark Souls Remastered, compiles the ELF and assembles build/proto.iso (README.md steps 5 and 6 in one go). Later
@@ -16,6 +17,9 @@
 #   --syms           keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
 #   --no-queue       run make directly instead of through the job queue (tools/q)
 #   --container      build in the ps2dev container (tools/build-iso.sh) even when the host has the toolchain
+#   --plain          print the whole build log instead of the progress view (also DSR_TUI=0). In a terminal the
+#                    default is the view (tools/buildtui.py): progress bar, current step, latest output line; the
+#                    full log goes to <build>/build-iso.log. Output to a file or pipe is always the plain log.
 # Example: ./build-iso.sh -c 6 -i "/path/to/DARK SOULS REMASTERED" -o ~/Downloads/DarkSoulsPS2.iso
 #
 # Toolchain: the host's ps2dev (ps2/env.sh) with Python (Pillow + numpy), gcc and xorriso, as in README.md. Without
@@ -25,7 +29,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-GAME=; OUT=; BUILD=$ROOT/build; JOBS=; SYMS=; QUEUE=1; CONTAINER=
+GAME=; OUT=; BUILD=$ROOT/build; JOBS=; SYMS=; QUEUE=1; CONTAINER=; TUI=${DSR_TUI:-1}
+ARGS=("$@")
 
 die() { echo "build-iso: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
@@ -41,6 +46,7 @@ while [ $# -gt 0 ]; do
         --syms) SYMS=1; shift ;;
         --no-queue) QUEUE=; shift ;;
         --container) CONTAINER=1; shift ;;
+        --plain) TUI=0; shift ;;
         -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -54,6 +60,18 @@ if [ -n "$GAME" ]; then
     GAME=$G
     [ -f "$GAME/DarkSoulsRemastered.exe" ] || die "$GAME has no DarkSoulsRemastered.exe (-i takes the game's install folder)"
 fi
+
+# progress view: run this script again under tools/buildtui.py, which shows a bar, the step and the latest output line
+# and logs everything; the inner run (DSR_TUI_INNER) plans the build and adds make --trace for it to follow
+INNER=${DSR_TUI_INNER:-}
+if [ "$TUI" != 0 ] && [ -z "$INNER" ] && [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && command -v python3 >/dev/null; then
+    mkdir -p "$BUILD"
+    DSR_TUI_INNER=1 DSR_TUI_ROOT=$ROOT exec python3 "$ROOT/tools/buildtui.py" --log "$BUILD/build-iso.log" \
+        --title build-iso -- "$ROOT/build-iso.sh" "${ARGS[@]}"
+fi
+unset DSR_TUI_INNER  # not for the container build or anything else this starts
+keep() { if [ -n "$INNER" ]; then printf '##tui keep %s\n' "$*"; else echo "$*"; fi; }
+[ -z "$INNER" ] || echo "##tui step checking the toolchain"
 
 container_build() {
     local a=(--out "${OUT:-$BUILD/proto.iso}")
@@ -97,6 +115,17 @@ fi
 MAKE=(make -C ps2/proto "BUILD=$BUILD")
 [ -n "$GAME" ] && MAKE+=("DSR_GAME=$GAME")
 [ -n "$JOBS" ] && MAKE+=("JOBS=$JOBS")
+if [ -n "$INNER" ]; then
+    # plan for the progress bar: the targets a dry run of both makes below would update (~1 s), less the ones only an
+    # unchanged tool stamp would rebuild (buildtui.py --plan). Sub-makes that need files a sibling has not made yet
+    # stop early in a dry run (a first build), so the count is then a lower bound
+    echo "##tui step planning (make dry run)"
+    DRY=("${MAKE[@]}")
+    N=$( { "${DRY[@]}" -n -k --trace; "${DRY[@]}" -n -k --trace ${SYMS:+ISO_SYMS=1} iso; } 2>&1 |
+        python3 "$ROOT/tools/buildtui.py" --plan "$ROOT/tools" ) || N=
+    [ -z "$N" ] || echo "##tui plan $N"
+    MAKE+=(--trace)
+fi
 [ -n "$QUEUE" ] && MAKE=("$ROOT/tools/q" "${MAKE[@]}")
 
 T0=$(date +%s)
@@ -116,4 +145,4 @@ if [ -n "$OUT" ] && [ "$OUT" != "$ISO" ]; then
     ISO=$OUT
 fi
 say "done in $(( ($(date +%s) - T0) / 60 )) min: $ISO ($(du -h "$ISO" | cut -f1)), from $(git rev-parse --short HEAD 2>/dev/null || echo '?')$(git diff --quiet HEAD 2>/dev/null || echo ' + local changes')"
-echo "Open it in PCSX2 (System > Start File). It is made from your copy of the game: never share it."
+keep "Open it in PCSX2 (System > Start File). It is made from your copy of the game: never share it."

@@ -25,19 +25,7 @@ static int flat_z;
 static V3 cam_eye, cam_right, cam_up, cam_fwd;
 static const V3 LIGHT = {0.4f, 0.8f, -0.45f};
 
-M3 m3_identity(void) { M3 r = {{1, 0, 0, 0, 1, 0, 0, 0, 1}}; return r; }
 M3 m3_rot_y(float a) { float c = cosf(a), s = sinf(a); M3 r = {{c, 0, s, 0, 1, 0, -s, 0, c}}; return r; }
-M3 m3_rot_x(float a) { float c = cosf(a), s = sinf(a); M3 r = {{1, 0, 0, 0, c, -s, 0, s, c}}; return r; }
-M3 m3_rot_z(float a) { float c = cosf(a), s = sinf(a); M3 r = {{c, -s, 0, s, c, 0, 0, 0, 1}}; return r; }
-
-M3 m3_mul(M3 a, M3 b)
-{
-    M3 r;
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            r.m[i * 3 + j] = a.m[i * 3] * b.m[j] + a.m[i * 3 + 1] * b.m[3 + j] + a.m[i * 3 + 2] * b.m[6 + j];
-    return r;
-}
 
 V3 m3_apply(M3 m, V3 v)
 {
@@ -204,8 +192,6 @@ void r_camera(V3 eye, V3 target)
     cam_up = v3cross(cam_fwd, cam_right);
 }
 
-void r_begin(void) {}
-
 void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
 {
     *eye = cam_eye, *right = cam_right, *up = cam_up, *fwd = cam_fwd;
@@ -287,30 +273,6 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
     }
 }
 
-void r_to_screen(V3 p, float out[3])
-{
-    V3 v = to_view(p);
-    if (v.z < NEAR) {
-        out[2] = -1;
-        return;
-    }
-    int z;
-    project(v, &out[0], &out[1], &z);
-    out[2] = (float)z;
-}
-
-void r_tri_screen(const float *a, const float *b, const float *c, u64 ca, u64 cb, u64 cc)
-{
-    gsKit_prim_triangle_gouraud_3d(gs, a[0], a[1], (int)a[2], b[0], b[1], (int)b[2], c[0], c[1], (int)c[2], ca, cb, cc);
-}
-
-void r_tri_screen_tex(GSTEXTURE *t, const float *a, const float *b, const float *c, const float *uv, u64 ca, u64 cb,
-                      u64 cc)
-{
-    gsKit_prim_triangle_goraud_texture_3d(gs, t, a[0], a[1], (int)a[2], uv[0], uv[1], b[0], b[1], (int)b[2], uv[2],
-                                          uv[3], c[0], c[1], (int)c[2], uv[4], uv[5], ca, cb, cc);
-}
-
 void r_line(V3 a, V3 b, int r, int g, int bl)
 {
     V3 va = to_view(a), vb = to_view(b);
@@ -338,31 +300,11 @@ int r_point_inside(const V3 *v)
     return v->z >= NEAR && fabsf(v->x) <= lim && fabsf(v->y) <= lim;
 }
 
-int r_point_vu_safe(const V3 *v)
-{
-    /* a little stricter than VU1's CLIP test, so a triangle VU1 skips is always caught here */
-    float lim = GUARD * 0.98f / FOCAL * v->z;
-    return v->z >= NEAR * 1.05f && fabsf(v->x) <= lim && fabsf(v->y) <= lim;
-}
-
 void r_view_to_screen(const V3 *v, float out[3])
 {
     int z;
     project(*v, &out[0], &out[1], &z);
     out[2] = (float)z;
-}
-
-int r_inside(const V3 *a, const V3 *b, const V3 *c)
-{
-    const V3 *v[3] = {a, b, c};
-    for (int i = 0; i < 3; i++) {
-        if (v[i]->z < NEAR)
-            return 0;
-        float lim = GUARD / FOCAL * v[i]->z;
-        if (fabsf(v[i]->x) > lim || fabsf(v[i]->y) > lim)
-            return 0;
-    }
-    return 1;
 }
 
 static ClipVert lerp_cv(const ClipVert *a, const ClipVert *b, float t)
@@ -506,24 +448,6 @@ void r_tri_clip(GSTEXTURE *t, const ClipVert *a, const ClipVert *b, const ClipVe
     }
     if (nl)
         tri_list(t, mode, nl, lv, (const float (*)[3])ls);
-}
-
-int r_box_visible(const float *mn, const float *mx)
-{
-    int out[5] = {0};
-    for (int k = 0; k < 8; k++) {
-        V3 v = to_view(v3(k & 1 ? mx[0] : mn[0], k & 2 ? mx[1] : mn[1], k & 4 ? mx[2] : mn[2]));
-        float lim = (SCREEN_W / 2 + 40) / FOCAL_X * v.z, limy = (SCREEN_H / 2 + 40) / FOCAL_Y * v.z;
-        out[0] += v.z < NEAR;
-        out[1] += v.x > lim;
-        out[2] += v.x < -lim;
-        out[3] += v.y > limy;
-        out[4] += v.y < -limy;
-    }
-    for (int i = 0; i < 5; i++)
-        if (out[i] == 8)
-            return 0;
-    return 1;
 }
 
 /* Bounding-sphere frustum test: one view transform and four plane distances per chunk */

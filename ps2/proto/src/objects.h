@@ -54,7 +54,7 @@ int objects_anim_end(int entity, int anim);
 int objects_anim_state(int entity, int *anim, float *t, int *playing);
 
 /* HUD: instances, broken ones, live / awake pieces, map queries last frame */
-typedef struct { int instances, broken, pieces, awake, queries, us; } ObjectsStats;  /* us: objects_update time */
+typedef struct { int instances, broken, pieces, awake, queries, us, streamed, dropped; } ObjectsStats;  /* streamed / dropped: OBJ_STREAM model loads / frees */  /* us: objects_update time */
 extern ObjectsStats objects_stats;
 
 #endif

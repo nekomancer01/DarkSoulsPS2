@@ -26,9 +26,10 @@ def git(*args):
 
 
 def source_zip(path, wasm):
-    """the converter's source tree: tracked tools/*.py and tools/native C files, ps2/proto/Makefile, the wasm .so"""
-    files = [f for f in git("ls-files", "tools", "ps2/proto/Makefile").split("\n")
-             if f == "ps2/proto/Makefile" or (f.count("/") == 1 and f.endswith(".py")) or
+    """the converter's source tree: tracked tools/*.py and tools/native C files, ps2/proto/Makefile, the residency
+    table the map export reads (ps2/proto/src/residency.h, tools/residency.py), the wasm .so"""
+    files = [f for f in git("ls-files", "tools", "ps2/proto/Makefile", "ps2/proto/src/residency.h").split("\n")
+             if f in ("ps2/proto/Makefile", "ps2/proto/src/residency.h") or (f.count("/") == 1 and f.endswith(".py")) or
              (f.startswith(("tools/native/", "tools/mapx/")) and f.endswith((".c", ".h")))]
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for f in files:

@@ -18,7 +18,9 @@ def lib():
     global _L
     if _L:
         return _L
-    so, src = os.path.join(HERE, "libvagenc.so"), os.path.join(HERE, "vagenc.c")
+    sys.path.insert(0, os.path.dirname(HERE))
+    import native_so
+    so, src = native_so.so(os.path.join(HERE, "libvagenc")), os.path.join(HERE, "vagenc.c")
     if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
         tmp = f"{so}.{os.getpid()}"  # built aside and renamed: a parallel process never loads half a library
         if os.system(f"gcc -O2 -ffp-contract=off -shared -fPIC -o '{tmp}' '{src}'"):

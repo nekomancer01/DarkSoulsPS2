@@ -93,11 +93,14 @@ if [ -n "$BURG" ]; then
 fi
 [ -n "$AREAS" ] || AREAS=$(ls "$BUILD"/data/m??_??_??_??.pak 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.pak$//' | paste -sd,)
 [ -n "$AREAS" ] || AREAS=m10_02_00_00
-if [ -n "$DO_BUILD" ]; then
-    for A in ${AREAS//,/ }; do
-        step build-$A tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto MAP=$A && make -C ps2/proto MAP=$A sym"
-    done
-fi
+# --no-build still builds an area's ELF when it is missing: the default make builds the world ELF only (proto.sym.elf),
+# not the single-area proto_<area>.sym.elf the smoke runs boot, so a scoped run in a fresh or world-only build dir
+# failed every area but the default with "no build" (2026-11-10). Exports stay cached; only the area link runs.
+for A in ${AREAS//,/ }; do
+    if [ -n "$DO_BUILD" ] || [ ! -e "$BUILD/proto_$A.sym.elf" -a ! \( "$A" = m10_02_00_00 -a -e "$BUILD/proto.sym.elf" \) ]; then
+        step build-$A tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto BUILD=$BUILD MAP=$A && make -C ps2/proto BUILD=$BUILD MAP=$A sym"
+    fi
+done
 # areas side by side (SMOKE_JOBS, default 2; tools/test-smoke.py --jobs): one headless PCSX2 each
 step smoke tools/q -m 4 "$PY" tools/test-smoke.py "$RUN/smoke" --areas "$AREAS" --max "$MAX" $GSDUMP
 LAST=$(readlink -f "$BUILD/test/last" 2>/dev/null)
