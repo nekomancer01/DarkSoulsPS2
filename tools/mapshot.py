@@ -18,13 +18,17 @@ levels the runtime draws once everything wanted is in:
   horizon        cells beyond HZN_R (hzn.bin, untextured) in place of their coarse level and opaque kept meshes
   kept meshes: always; backdrop and sky: those of the block the player stands in
 --levels near|coarse|hzn draws that level everywhere instead (near: every cell's near level), to look at one level
-alone. Not drawn: characters, objects, effects, the relief pass, draw-group and PVS culling, late or refused cells.
+alone. Under each picture: the memory the spot takes as tools/world_budget.py counts it (near level within RES_NEAR_R,
+far level and kept meshes within RES_PIN_R, all blocks given) against the block's room (residency.h RES_BLOCK), red
+when over; plus the pinned backdrop and sky and the blocks' horizons, which the room does not count.
+Not drawn: characters, objects, effects, the relief pass, draw-group and PVS culling, late or refused cells.
 
 --script: the `spawn x y z yaw`, `cam yaw pitch` and `shot name` lines of a test script (ps2/proto/src/testscript.c),
 one PNG per shot. --ref DIR: reference shots <name>.png (tools/outline-dsr-shots.sh; cropped to 4:3) in a first
 column of <out dir>/sheet.jpg. --vs GEN...: the same views of another export (a build before the change) next to
 them. The shots are game-derived: keep the out dir outside the repository (AGENTS.md section 1)."""
 import argparse
+import json
 import math
 import os
 import struct
@@ -41,6 +45,7 @@ import residency  # noqa: E402
 import texmap  # noqa: E402
 
 NEAR_R = float(residency.RES["RES_NEAR_R"])
+PIN_R = float(residency.RES["RES_PIN_R"])
 CELL_PART = 0x80000000
 CHUNK_HZN = 256
 
@@ -109,6 +114,13 @@ class Block:
                     self.cells[-1][2].extend(near)
                 else:
                     self.cells.append((box, list(range(first, first + nres)), near, i))
+        # the export's bytes per cell (map.bin.cells.json, what tools/world_budget.py reads): key, box, near bytes,
+        # coarse / kept / backdrop bytes of its resident items, near box
+        jp = os.path.join(gen, "map.bin.cells.json")
+        J = json.load(open(jp)) if os.path.exists(jp) else None
+        self.mem = np.array(J["cells"], np.float64).reshape(-1, 19) if J and J["cells"] else None
+        self.sky_kb = J["sky"] / 1024 if J else 0.0
+        self.hzn_kb = (os.path.getsize(os.path.join(gen, "hzn.bin")) / 1024) if os.path.exists(os.path.join(gen, "hzn.bin")) else 0.0
         self.hzn = []  # per cell: horizon chunks
         hpath = os.path.join(gen, "hzn.bin")
         hb = open(hpath, "rb").read() if os.path.exists(hpath) else b""
@@ -138,6 +150,37 @@ class Block:
         return out
 
 
+def memory(blocks, feet, home):
+    """What the streamer must hold with the player at feet, as tools/world_budget.py's hard tier counts it (KB):
+    near level of cells within RES_NEAR_R (box clipped to the cell's cube), coarse level of the other cells within
+    RES_PIN_R, kept meshes within RES_PIN_R, over all blocks given; pinned: the home block's backdrop and sky; room:
+    the home block's RES_BLOCK budget (residency.h). None without the exports' map.bin.cells.json."""
+    if any(b.mem is None for b in blocks):
+        return None
+    box_d = lambda lo, hi: np.sqrt((np.maximum(0, np.maximum(lo - feet, feet - hi)) ** 2).sum(1))
+    m = dict(near=0.0, coarse=0.0, kept=0.0)
+    for b in blocks:
+        c = b.mem
+        d = box_d(c[:, 3:6], c[:, 6:9])
+        k0 = c[:, 0:3] * 32.0
+        nlo = np.maximum(c[:, 3:6], k0)
+        dn = box_d(nlo, np.maximum(np.minimum(c[:, 6:9], k0 + 32.0), nlo))
+        m["near"] += c[dn < NEAR_R, 9].sum() / 1024
+        m["coarse"] += c[((dn >= NEAR_R) | (c[:, 9] == 0)) & (d < PIN_R), 10].sum() / 1024
+        m["kept"] += c[d < PIN_R, 11].sum() / 1024
+    h = blocks[home]
+    m["pinned"] = h.mem[:, 12].sum() / 1024 + h.sky_kb
+    m["hard"] = m["near"] + m["coarse"] + m["kept"]
+    m["room"] = float(residency.block_budget(os.path.basename(os.path.normpath(h.gen)))[0])
+    m["horizon"] = sum(b.hzn_kb for b in blocks)
+    return m
+
+
+def mem_line(m):
+    return (f"near {m['near']:.0f} + far {m['coarse']:.0f} + kept {m['kept']:.0f} = {m['hard']:.0f} of {m['room']:.0f} KB room"
+            f"{' OVER' if m['hard'] > m['room'] else ''}; backdrop + sky {m['pinned']:.0f}, horizon {m['horizon']:.0f} KB")
+
+
 def camera(x, y, z, yaw, pitch):
     """the port's eye and a point it looks at, for a player standing at (x, y, z)"""
     c = 4.0 * math.cos(pitch)
@@ -165,7 +208,15 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
            np.zeros(sum(len(p) for p in P)), np.concatenate(BX))
     # (foliage: every tuft; map.c thins it by distance)
     mapview.render_view(path, geo, tex, tuple(eye), tuple(tgt), W=size[0], H=size[1], fog=blocks[home].fog)
-    return len(geo[0])
+    m = memory(blocks, feet, home)
+    if m:  # the memory the spot takes, under the picture
+        from PIL import Image, ImageDraw
+        im = Image.open(path).convert("RGB")
+        out = Image.new("RGB", (im.size[0], im.size[1] + 16), (150, 0, 0) if m["hard"] > m["room"] else (0, 0, 0))
+        out.paste(im, (0, 0))
+        ImageDraw.Draw(out).text((4, im.size[1] + 2), mem_line(m), fill=(255, 255, 255))
+        out.save(path)
+    return len(geo[0]), m
 
 
 def script_shots(path):
@@ -187,9 +238,9 @@ def script_shots(path):
 
 
 def sheet(path, cols, names, size=(480, 336)):
-    """cols: [(label, dir)]; one row per name; a 16:9 reference is cropped to 4:3"""
+    """cols: [(label, dir)]; one row per name; a 16:9 reference is cropped to 4:3 (a shot keeps its memory line)"""
     from PIL import Image, ImageDraw
-    W, H = size
+    W, H = size[0], size[1] + 12
     im = Image.new("RGB", (W * len(cols), H * len(names)))
     for r, n in enumerate(names):
         for c, (label, d) in enumerate(cols):
@@ -198,7 +249,7 @@ def sheet(path, cols, names, size=(480, 336)):
                 continue
             t = Image.open(f).convert("RGB")
             w, h = t.size
-            if w * 3 > h * 4 + 3:
+            if w * 3 > h * 4 + 200:
                 x = int((w - h * 4 / 3) / 2)
                 t = t.crop((x, 0, w - x, h))
             im.paste(t.resize((W, H), Image.LANCZOS), (c * W, r * H))
@@ -236,8 +287,8 @@ def main():
         print(f"mapshot: {label}: {len(blocks)} blocks loaded in {time.time() - t0:.1f} s", flush=True)
         for name, pos, yaw, pitch in shots:
             t0 = time.time()
-            n = shot(os.path.join(d, name + ".png"), blocks, pos, yaw, pitch, a.levels)
-            print(f"mapshot: {label} {name}: {n} tris, {time.time() - t0:.1f} s", flush=True)
+            n, m = shot(os.path.join(d, name + ".png"), blocks, pos, yaw, pitch, a.levels)
+            print(f"mapshot: {label} {name}: {n} tris, {time.time() - t0:.1f} s" + (f"; {mem_line(m)}" if m else ""), flush=True)
         cols.append((label, d))
     if len(cols) > 1:
         sheet(os.path.join(a.out, "sheet.jpg"), cols, [s[0] for s in shots])
