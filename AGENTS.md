@@ -68,6 +68,11 @@ Several agents often work in the same tree at once.
 - **Job queue:** every heavy job (make, exporters, PCSX2 tests, Ghidra, whole-game scans) runs as `tools/q [-m GB] <cmd>`.
   It runs jobs one at a time, waits for free RAM and caps each job's memory. Exporters must stream per part or area
   instead of loading everything at once.
+- **Map looks without PCSX2:** judge a change to the map export (simplifier, levels, budgets, horizon) with
+  `tools/mapshot.py <out> build/gen/<block>... --script <test> [--ref <reference shots>] [--vs <gen dirs of a build before>]`:
+  it draws the exported blocks from the port's camera with the levels the runtime would show, a few seconds a view after
+  a one-minute block export. Boot PCSX2 once the pictures are right, for what only the runtime decides (loading in
+  time, memory, speed).
 - **Fast iteration:** a map re-export takes ~4 min, so most of a build-test loop is waiting on exports. A new clone
   or build dir starts from an existing build: `tools/newbuild "$PWD/build" --from <other tree>/build` (copies the tool
   stamps too, so only what your tree changes re-exports). Builds depend on what an export takes from another tool, not
