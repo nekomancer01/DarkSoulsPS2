@@ -42,9 +42,6 @@
 #define WORLD_SWAP_S 1.0f
 #define WORLD_RELIEF_RETRY_S 5.0f  /* a relief that found no room tries again after (ASSUMED) */
 static float relief_at;  /* in_cur_s from which the relief of the block underfoot may be tried */
-#ifndef WORLD_RELIEF_SOFT
-#define WORLD_RELIEF_SOFT 1  /* 0: the relief may drop wanted / drawn cells (the old way) */
-#endif
 /* Largest near arena: what the heap leaves beyond the reserves at boot (the old full pool's 7.8 MB went to it). It
  * took 0.4 MB more than full pool + arena did and route_enemies' RAM low point at the Burg entry fell 1.30 -> 0.60 MB
  * (ISO, 2026-11-05): WORLD_ARENA_LESS more stays outside it */
@@ -93,13 +90,10 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 /* The relief (bump.bin) stays out of the pools: it takes item room only where no map item is wanted
  * (mapstream_alloc_soft), never the heap. Sized into the misc pool (tried 2026-11-08, dropped) it left the Burg 2112 KB
  * of visual room in the 8640 KB arena (structural 4544 KB for the link that loads three Burg blocks, misc 1984 KB). */
-/* WORLD_KEPT_HZN (default 1): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
+/* Kept horizon (built in: the frozen residency design, 2026-11-12): a kept-only block keeps its cell table and horizon (maptab's last piece, E_TABC; ~0.45
  * MB in the Burg) and map.c draws its horizon (map_block_lean): its far cells are in view beyond the pinned 64 m, and
  * without the horizon they were holes (planning thread, 2026-11-08). 0: the tables go whole. */
-#ifndef WORLD_KEPT_HZN
-#define WORLD_KEPT_HZN 1
-#endif
-#define LEAN_E1 (WORLD_KEPT_HZN && WORLD_TAB_SPLIT ? E_TABB : E_TABC)  /* the last maptab piece a lean block lets go */
+#define LEAN_E1 E_TABB  /* the last maptab piece a lean block lets go */
 #define WORLD_LEAN_S 5.0f  /* ASSUMED: as WORLD_KEEP_S, so a seam the player walks back and forth over reads no tables */
 /* MS_LEND: a kept, still-off block within this of the feet gets its structural pool room cleared of lent items (not
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
@@ -150,23 +144,17 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * and freed after the uploads: allocated with the lite set (one arena block per entry) the Burg west block needed
  * 1508 + 475 KB at once and found no room beside the bonfire block with enemies loaded (2026-11-05, TECH_DEBT
  * world-5). */
-/* WORLD_TAB_SPLIT (default on; 0 = maptab.bin in one piece): a neighbour block's maptab.bin is read as three arena
+/* Split map tables (built in: the frozen residency design, 2026-11-12): a neighbour block's maptab.bin is read as three arena
  * blocks, cut at its section starts (map.c map_block_split): header + chunk table (E_TAB), textures + navmesh + fog
  * rows (E_TABB), cell table + horizon (E_TABC). In one piece the Burg bonfire block's 1185 KB needed a run of 19 free
  * arena pages, the largest the lite sets ask for; as pieces the largest is 549 KB. Most "no room" refusals had the
  * bytes free but no hole (TECH_DEBT world-5: 53 of 58 in world_route). The pieces' offsets come from the 80-byte
  * header, read once per block at boot. */
-#ifndef WORLD_TAB_SPLIT
-#define WORLD_TAB_SPLIT 1
-#endif
-/* WORLD_EV_SHARED (the cube-grid plan's step 2, default 1; 0 = every block reads its whole events.bin): the blocks of
+/* Shared events (the cube-grid plan's step 2, built in: the frozen residency design, 2026-11-12): the blocks of
  * one MSB carry the same events.bin but for their entities, hit ranges and colliders (export_emevd.py writes the map's
  * events, instrs, substs, treasures, objacts and lots alike; 67 of each Burg block's 68 KB). A block reads its own
  * middle part (E_EV: entities .. colliders, ~18 KB) and the whole file (E_EVM) only when no block of its map has one
  * in yet; the first copy is the map's (evm[], freed with the map's last block). event.c's split sets point there. */
-#ifndef WORLD_EV_SHARED
-#define WORLD_EV_SHARED 1
-#endif
 /* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
  * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
  * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
@@ -352,7 +340,7 @@ static void ev_split(BlockRt *r)
 {
     unsigned full = r->size[E_EV], f128 = (full + 127) & ~127u;
     r->total -= f128;  /* world_init's loop counted the second events.bin entry (E_EVM) whole */
-    if (!WORLD_EV_SHARED || full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
+    if (full < 96 || !read_sync(&r->pk, r->off[E_EV], r->evhdr, 128) ||
         memcmp(r->evhdr, "EVB1", 4) || r->evhdr[1] != 3)
         return;
     unsigned m0 = r->evhdr[4 + 2 * 3], m1 = r->evhdr[4 + 2 * 6];  /* sections: entities .. colliders, then treasures */
@@ -420,7 +408,7 @@ int world_init(const char *boot_area)
                 r->total += (r->size[e] + 127) & ~127u;
         }
         r->size[E_TABB] = r->size[E_TABC] = 0;  /* (the loop above gave them the whole maptab.bin) */
-        if (i && r->open && WORLD_TAB_SPLIT && !tab_split(r)) {
+        if (i && r->open && !tab_split(r)) {
             printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
             r->open = 0;
         }
@@ -1227,7 +1215,7 @@ static void bump_step(void)
     /* the relief is detail on top of the map: it takes room no wanted cell needs (WORLD_RELIEF_SOFT). Taking it like a
      * lite set dropped ~700 KB of drawn cells at every block change after 1 s in the Burg, which then read back
      * (soak on the ISO, 2026-11-07); the heap is the enemies' (WORLD_HEAP_MODELS) */
-    bump_buf = WORLD_RELIEF_SOFT ? mapstream_alloc_soft(sz) : mapstream_alloc(sz, feet_now);
+    bump_buf = mapstream_alloc_soft(sz);
     /* MS_POOLS: no heap fallback. The relief is optional detail, and in the heap it took RAM min on taurus to
      * 1417-1478 KB under the 1.5 MB floor once the enemies loaded (ISO 2026-11-09) */
     if (!bump_buf && !mapstream_pools_on() && enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz)

@@ -52,7 +52,7 @@ ARENA_KB = _world_c("WORLD_ARENA_KB", 8640)  # world.c: the arena's build-consta
 FILL_PCT = 92        # mapstream.c MS_FILL_PCT
 WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
-KEPT_HZN = os.environ.get("WORLD_KEPT_HZN", "1") != "0"  # world.c WORLD_KEPT_HZN
+KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -109,7 +109,7 @@ def col_budget(blocks):
     return best + best // CT_PACK_K
 
 
-EV_SHARED = os.environ.get("WORLD_EV_SHARED", "1") != "0"  # world.c WORLD_EV_SHARED
+EV_SHARED = True  # world.c: one events.bin per map
 
 
 def ev_parts(d):
@@ -209,7 +209,7 @@ def structural(gen):
     best += cb
     return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
-NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (runtime MS_NEAR_CUBE)
+NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of
 # block i, another block j of the same MSB counts only while the spot's links load it: tools/export_world.py loads j
 # from a triangle within LOAD_CELLS cells (xz) of j's cells (tools/area.py BLOCKS), so a block behind a cliff or past
