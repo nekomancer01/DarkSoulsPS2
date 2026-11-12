@@ -7,8 +7,10 @@
 
 unsigned lpass_t[LG_N];
 
+#if LOGIC_PASS_MS
 static const char *const lg_name[LG_N] = {"player", "stream", "enemy", "ai", "nav", "esd", "move", "ragdoll", "pose",
                                           "hits", "gc", "objects", "events", "bonfire"};
+#endif
 
 void lpass_frame(unsigned total)
 {

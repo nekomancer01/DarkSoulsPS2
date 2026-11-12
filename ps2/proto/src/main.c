@@ -126,9 +126,6 @@ static void z_clear(GSGLOBAL *gs)
     int n = 0;
     u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-#ifdef F9_HOLES
-    holes = 1;
-#endif
     REG(holes ? frame : frame | 0xFFFFFFFFull << 32, 0x4C);
     REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
     REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
@@ -352,9 +349,6 @@ int main(int argc, char **argv)
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
-#ifdef IDLE_DEMO
-    test_opts |= TEST_DEMO;  /* demo walk build (make EE_DBGINFOFLAGS=-DIDLE_DEMO): the idle demo without a script */
-#endif
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
         printf("DSRPROTO gamedata: missing or from another build; stopping\n");
         for (;;)
