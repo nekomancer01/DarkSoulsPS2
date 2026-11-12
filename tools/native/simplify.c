@@ -1,9 +1,16 @@
-/* C version of tools/simplify.py's simplify() (quadric half-edge collapse), for tools/simplify_native.py.
+/* The map simplifier (quadric half-edge collapse): the source of truth for what the export ships. Run by libmapx
+ * (tools/mapx/simp.c includes this file; export_map.py simplify_meshes_c) and by tools/simplify_native.py (horizon.py,
+ * simplify_pool.py, the in-browser converter).
  *
- * Same algorithm, same floating-point operations in the same order (build with -O2 -ffp-contract=off, no -ffast-math),
- * same tie-breaking (heap order by (cost, u, v, ver u, ver v), a vertex's triangles visited in ascending id order), so
- * it returns the same collapse log as simplify.py, step for step; tools/simplify_native.py --test compares the two.
- * Comments name the simplify.py function / line each part mirrors; the reasoning lives there.
+ * Its core collapse is tools/simplify.py's simplify(), which is frozen as the reference: same algorithm, same
+ * floating-point operations in the same order (build with -O2 -ffp-contract=off, no -ffast-math), same tie-breaking
+ * (heap order by (cost, u, v, ver u, ver v), a vertex's triangles visited in ascending id order), so with the rules
+ * below off it returns the same collapse log as simplify.py, step for step (tools/simplify_native.py --test,
+ * tools/mapx/test_mapx.py). Comments name the simplify.py function / line each part mirrors; the reasoning lives there.
+ * Rules simplify.py does not have live only here: the shape envelope (g_env_pad, snb), the triangle guard (g_qmin,
+ * g_flip_cos, g_shape_tol); each is off unless the caller sets it. New rules go here the same way, never into
+ * simplify.py. tools/mapx/test_simplify_golden.py pins the output at the shipped settings: a change that moves it
+ * updates tools/mapx/simplify_golden.json (--update) in the same commit, saying why.
  *
  * Build: cc -O2 -ffp-contract=off -shared -fPIC -o libsimplify.so simplify.c -lm  (simplify_native.py does this)
  */

@@ -1,0 +1,470 @@
+{
+ "cases": {
+  "core/0/far/ak0": {
+   "hash": "7276e70873fd44998a8386fa",
+   "tris": [
+    1123,
+    428,
+    289,
+    144
+   ]
+  },
+  "core/0/far/ak1": {
+   "hash": "7e75ca43ca183ff96ed10096",
+   "tris": [
+    1159,
+    450,
+    311,
+    157
+   ]
+  },
+  "core/0/near/ak0": {
+   "hash": "ee9a25cfd1096d787c92417d",
+   "tris": [
+    1123,
+    527,
+    431,
+    373
+   ]
+  },
+  "core/0/near/ak1": {
+   "hash": "1caa94628206b822d7a5604b",
+   "tris": [
+    1161,
+    575,
+    487,
+    428
+   ]
+  },
+  "core/0/off/ak0": {
+   "hash": "e38cabf51932d99cb56c4d4d",
+   "tris": [
+    1123,
+    424,
+    277,
+    98
+   ]
+  },
+  "core/0/off/ak1": {
+   "hash": "a5088edce517da436412423f",
+   "tris": [
+    1159,
+    449,
+    297,
+    97
+   ]
+  },
+  "core/1/far/ak0": {
+   "hash": "43261eef2c95a1314a60aed9",
+   "tris": [
+    699,
+    378,
+    314,
+    171
+   ]
+  },
+  "core/1/far/ak1": {
+   "hash": "3572acfbbb2277f8c658f573",
+   "tris": [
+    720,
+    383,
+    327,
+    187
+   ]
+  },
+  "core/1/near/ak0": {
+   "hash": "14e04440dae35387b7e80627",
+   "tris": [
+    721,
+    471,
+    428,
+    378
+   ]
+  },
+  "core/1/near/ak1": {
+   "hash": "2e755e4d93941196223454c8",
+   "tris": [
+    740,
+    469,
+    423,
+    369
+   ]
+  },
+  "core/1/off/ak0": {
+   "hash": "9a4a062a077d5ab247d4a32f",
+   "tris": [
+    699,
+    362,
+    281,
+    96
+   ]
+  },
+  "core/1/off/ak1": {
+   "hash": "c654fab6b03f2207976d9f50",
+   "tris": [
+    720,
+    360,
+    291,
+    94
+   ]
+  },
+  "core/2/far/ak0": {
+   "hash": "7af97662b8396673babc0a0e",
+   "tris": [
+    1065,
+    512,
+    351,
+    214
+   ]
+  },
+  "core/2/far/ak1": {
+   "hash": "afa05a2c6f31378b96c6496a",
+   "tris": [
+    1112,
+    526,
+    366,
+    225
+   ]
+  },
+  "core/2/near/ak0": {
+   "hash": "f86716e96e7beec9e4631f9d",
+   "tris": [
+    1067,
+    609,
+    490,
+    432
+   ]
+  },
+  "core/2/near/ak1": {
+   "hash": "e44ccc2d2ab3ad6d9ecf6d36",
+   "tris": [
+    1112,
+    628,
+    513,
+    428
+   ]
+  },
+  "core/2/off/ak0": {
+   "hash": "1bab719335f7dbc4044218ec",
+   "tris": [
+    1065,
+    492,
+    304,
+    105
+   ]
+  },
+  "core/2/off/ak1": {
+   "hash": "f5c525f50c1e2faef0b6ee2b",
+   "tris": [
+    1112,
+    508,
+    312,
+    102
+   ]
+  },
+  "core/3/far/ak0": {
+   "hash": "cb502c8d1f9e809af46c79ed",
+   "tris": [
+    1152,
+    662,
+    527,
+    252
+   ]
+  },
+  "core/3/far/ak1": {
+   "hash": "721d44aab56142f48f7455ae",
+   "tris": [
+    1212,
+    683,
+    555,
+    265
+   ]
+  },
+  "core/3/near/ak0": {
+   "hash": "e8b1f4a8078e2aad06d99708",
+   "tris": [
+    1155,
+    735,
+    617,
+    522
+   ]
+  },
+  "core/3/near/ak1": {
+   "hash": "90e97857164b5c6e48fe6fbf",
+   "tris": [
+    1214,
+    761,
+    643,
+    518
+   ]
+  },
+  "core/3/off/ak0": {
+   "hash": "b4f1850e5e279aff9167733e",
+   "tris": [
+    1152,
+    640,
+    472,
+    135
+   ]
+  },
+  "core/3/off/ak1": {
+   "hash": "3d6f25dbcb78311fca0bd047",
+   "tris": [
+    1212,
+    663,
+    509,
+    132
+   ]
+  },
+  "core/4/far/ak0": {
+   "hash": "1a4643ee3d455379f701d98d",
+   "tris": [
+    1418,
+    728,
+    487,
+    216
+   ]
+  },
+  "core/4/far/ak1": {
+   "hash": "1b58b74ddbb85ebef8ab8f2d",
+   "tris": [
+    1447,
+    732,
+    527,
+    237
+   ]
+  },
+  "core/4/near/ak0": {
+   "hash": "aa387e63751528f154c0de7a",
+   "tris": [
+    1418,
+    873,
+    731,
+    683
+   ]
+  },
+  "core/4/near/ak1": {
+   "hash": "85d73c29096c8ab284b8dff1",
+   "tris": [
+    1447,
+    892,
+    762,
+    676
+   ]
+  },
+  "core/4/off/ak0": {
+   "hash": "bc4f37c8f30b389d6c5c7d01",
+   "tris": [
+    1418,
+    728,
+    461,
+    118
+   ]
+  },
+  "core/4/off/ak1": {
+   "hash": "9bce6442d53b040aefd54427",
+   "tris": [
+    1447,
+    732,
+    509,
+    126
+   ]
+  },
+  "core/5/far/ak0": {
+   "hash": "e2f42ceaf8acdb37c9176578",
+   "tris": [
+    449,
+    335,
+    238,
+    65
+   ]
+  },
+  "core/5/far/ak1": {
+   "hash": "c2e1f31ce9c23f7efc1a71e3",
+   "tris": [
+    448,
+    341,
+    268,
+    68
+   ]
+  },
+  "core/5/near/ak0": {
+   "hash": "e5290cf62b49ecc77d6adcd3",
+   "tris": [
+    449,
+    343,
+    268,
+    213
+   ]
+  },
+  "core/5/near/ak1": {
+   "hash": "11ba4888528ae4caab84e805",
+   "tris": [
+    448,
+    349,
+    289,
+    218
+   ]
+  },
+  "core/5/off/ak0": {
+   "hash": "2aee2a40527bd9bb977bbc3b",
+   "tris": [
+    449,
+    335,
+    238,
+    21
+   ]
+  },
+  "core/5/off/ak1": {
+   "hash": "60b06daaf09cb25ae6b588ec",
+   "tris": [
+    448,
+    341,
+    268,
+    19
+   ]
+  },
+  "export/0/budget": {
+   "hash": "85daddb0c0554792304cbeea",
+   "tris": [
+    249,
+    450
+   ]
+  },
+  "export/1/budget": {
+   "hash": "a2269984c26fff1a7723ded9",
+   "tris": [
+    145,
+    386
+   ]
+  },
+  "export/10/budget": {
+   "hash": "8d99d29695ca1ef6a0fdaff1",
+   "tris": [
+    363,
+    1433
+   ]
+  },
+  "export/11": {
+   "hash": "e96694c86b17ccb0532de9b0",
+   "tris": [
+    1164,
+    1449
+   ]
+  },
+  "export/12/budget": {
+   "hash": "047c391edfa25e9302a4a630",
+   "tris": [
+    123,
+    778
+   ]
+  },
+  "export/13/budget": {
+   "hash": "c04b271a4aa8ed07b9aad43d",
+   "tris": [
+    125,
+    540
+   ]
+  },
+  "export/14/budget": {
+   "hash": "8c7da7ff0856e8730d7f36dd",
+   "tris": [
+    210,
+    482
+   ]
+  },
+  "export/15": {
+   "hash": "33df4966699099e69a22c34a",
+   "tris": [
+    1111,
+    1536
+   ]
+  },
+  "export/2/budget": {
+   "hash": "6c60a35d3781b4547604a90c",
+   "tris": [
+    296,
+    1352
+   ]
+  },
+  "export/3": {
+   "hash": "13ee3512478ee63395ebba84",
+   "tris": [
+    501,
+    642
+   ]
+  },
+  "export/4/budget": {
+   "hash": "be6592433aa30c5568e78c11",
+   "tris": [
+    287,
+    479
+   ]
+  },
+  "export/5/budget": {
+   "hash": "a3b506f0d1c5ca5f1232416f",
+   "tris": [
+    797,
+    1448
+   ]
+  },
+  "export/6/budget": {
+   "hash": "e49dc3f54e9f4afb1845efd9",
+   "tris": [
+    836,
+    1759
+   ]
+  },
+  "export/7": {
+   "hash": "7b626b891a8ef7ed01aac409",
+   "tris": [
+    582,
+    724
+   ]
+  },
+  "export/8/budget": {
+   "hash": "b49da7dd8a0b7359009bd8a5",
+   "tris": [
+    368,
+    850
+   ]
+  },
+  "export/9/budget": {
+   "hash": "58dac918499872a8d6ea4dfa",
+   "tris": [
+    507,
+    1240
+   ]
+  }
+ },
+ "frozen_simplify_py": "cce4b3649e421b09720e23fd",
+ "settings": {
+  "BACKDROP_EPS": 2.7896250743900017e-05,
+  "CHUNK_GRID": 32.0,
+  "EPS_FAR": 0.00011158500297560007,
+  "KEEP_D": 0.5,
+  "KEEP_R": 2.0,
+  "SIMPLIFY_ENV_FAR": 1.0,
+  "SIMPLIFY_ENV_NEAR": 0.25,
+  "SIMPLIFY_ENV_STRICT": true,
+  "SIMPLIFY_FLIP_DEG": 90.0,
+  "SIMPLIFY_GUARD": true,
+  "SIMPLIFY_QMIN": 0.0,
+  "SIMPLIFY_REFIT": true,
+  "SIMPLIFY_VALIDATE": true,
+  "SIMPLIFY_VALIDATE_TOL": 0.0,
+  "STREAM_D": 32.0,
+  "WS_PX0": 12.0,
+  "WS_PX1": 24.0,
+  "WS_R0": 30.0,
+  "WS_R1": 96.0,
+  "WS_R1_IN": 16.0,
+  "simplify.AREA_K": 1.0,
+  "simplify.BORDER_W": 20.0,
+  "simplify.MIN_COS": 0.25,
+  "simplify.SEAM_K": 0.05,
+  "simplify.SEAM_W": 4.0,
+  "simplify.STRUCT_FLAT_W": 1.0,
+  "simplify.STRUCT_W": 1.0
+ }
+}

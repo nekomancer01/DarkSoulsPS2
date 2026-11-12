@@ -32,8 +32,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 ## Exporters (game files -> PS2 data)
 | Tool | Output |
 |---|---|
-| `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
-| `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
+| `export_map.py` (+ `native/simplify.c`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `native/simplify.c`, `simplify_native.py` | The map simplifier, the source of truth (in libmapx for export_map; ctypes binding for horizon.py). Output at the shipped settings pinned by `mapx/test_simplify_golden.py` (`--update` after an intended change) |
+| `simplify.py`, `simplify_pool.py` | Frozen reference of simplify.c's core collapse (identical with simplify.c's own rules off: `simplify_native.py --test`, `mapx/test_mapx.py`), and the Python fallback's job pool / cache |
 | `export_collision.py` | collision.bin |
 | `export_normal.py` | bump.bin: normal-map relief for the map (CLUT dot3) |
 | `pose_obj.py` | Skinned MSB objects (corpses, hanging chains) posed once as static map geometry for export_map |

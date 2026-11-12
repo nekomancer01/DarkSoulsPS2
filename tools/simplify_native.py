@@ -1,10 +1,14 @@
-"""ctypes binding for tools/native/simplify.c: the same quadric edge collapse as tools/simplify.py's simplify(), in C.
+"""ctypes binding for tools/native/simplify.c, the map simplifier (the source of truth; tools/simplify.py is its frozen
+reference).
 
   simplify(pos, wpos, tris, locked, scale, area_k=None) -> (T0, steps)   exactly as simplify.simplify returns them
+  simplify_log(..., agrp=None)   the same as simplify.pack's compact log; agrp: source mesh per attribute vertex
+  rules(env_pad, qmin, flip_cos, shape_tol)   simplify.c's own rules (envelope, triangle guard); all off by default
   lib()   load (and build when missing or older than simplify.c) tools/native/libsimplify.so
 
-The C code mirrors simplify.py operation for operation (same IEEE double arithmetic in the same order, no FMA, same
-tie-breaking), so both return the same log, step for step. Check after any change to either file:
+With its own rules off the C code mirrors simplify.py operation for operation (same IEEE double arithmetic in the same
+order, no FMA, same tie-breaking), so both return the same log, step for step. Check after any change to simplify.c
+(CI runs both, tools/ci/offline.sh); the output at the shipped settings: tools/mapx/test_simplify_golden.py
   simplify_native.py --test [n]      random meshes (seams, borders, locks, non-manifold edges) through both, compared
                                      exactly; also prints the speed-up"""
 import ctypes, math, os, subprocess, sys, tempfile
@@ -50,15 +54,32 @@ def lib():
             _build()
         L = ctypes.CDLL(SO)
         dp, ip, bp = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ubyte)
-        L.simplify_run.restype = ctypes.POINTER(_Result)
+        L.simplify_run.restype = L.simplify_run_grp.restype = ctypes.POINTER(_Result)
         L.simplify_run.argtypes = [ctypes.c_int, dp, ctypes.c_int, ip, ctypes.c_int, ip, bp, dp, dp] + [ctypes.c_double] * 6
+        L.simplify_run_grp.argtypes = L.simplify_run.argtypes + [ip]
+        L.simplify_set_envelope.argtypes = [ctypes.c_double]
+        L.simplify_set_guard.argtypes = [ctypes.c_double, ctypes.c_double]
+        L.simplify_set_shape.argtypes = [ctypes.c_double]
         L.simplify_free.argtypes = [ctypes.POINTER(_Result)]
         _L = L
     return _L
 
 
-def simplify_log(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area_k=None):
-    """simplify.simplify in C -> its log in simplify.pack's compact form (numpy arrays, no per-step Python objects)"""
+def rules(env_pad=0.0, qmin=0.0, flip_cos=-2.0, shape_tol=0.0):
+    """Set simplify.c's rules that simplify.py does not have, for the following runs in this process: the shape
+    envelope (env_pad, metres), the triangle guard (qmin, flip_cos) and its shape tolerance (shape_tol, metres; needs
+    agrp). All off (the defaults here): the log simplify.py gives. export_map.py's defaults are SIMPLIFY_ENV_* and
+    SIMPLIFY_GUARD; libmapx sets the same globals through mx_simp_envelope / mx_simp_guard / mx_simp_shape."""
+    L = lib()
+    L.simplify_set_envelope(float(env_pad))
+    L.simplify_set_guard(float(qmin), float(flip_cos))
+    L.simplify_set_shape(float(shape_tol))
+
+
+def simplify_log(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area_k=None, agrp=None):
+    """simplify.simplify in C -> its log in simplify.pack's compact form (numpy arrays, no per-step Python objects).
+    agrp: per attribute vertex its source mesh (simplify_run_grp: material outlines for the envelope, the guard's
+    shape test); None: simplify_run."""
     L = lib()
     P = np.ascontiguousarray(np.asarray(pos, dtype=np.float64).reshape(-1, 3))
     W = np.ascontiguousarray(np.asarray(wpos, dtype=np.int32))
@@ -68,10 +89,16 @@ def simplify_log(pos, wpos, tris, locked, scale, weight=None, sat=math.inf, area
     Wt = None if weight is None else np.ascontiguousarray(np.asarray(weight, dtype=np.float64))
     ak = pysimplify.AREA_K if area_k is None else area_k
     dp, ip, bp = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ubyte)
-    r = L.simplify_run(len(P), P.ctypes.data_as(dp), len(W), W.ctypes.data_as(ip), len(T), T.ctypes.data_as(ip),
-                       K.ctypes.data_as(bp) if K is not None else None, S.ctypes.data_as(dp),
-                       Wt.ctypes.data_as(dp) if Wt is not None else None, float(sat), pysimplify.BORDER_W, pysimplify.SEAM_W, pysimplify.SEAM_K * pysimplify.SEAM_K, ak ** 2,
-                       pysimplify.MIN_COS)
+    args = [len(P), P.ctypes.data_as(dp), len(W), W.ctypes.data_as(ip), len(T), T.ctypes.data_as(ip),
+            K.ctypes.data_as(bp) if K is not None else None, S.ctypes.data_as(dp),
+            Wt.ctypes.data_as(dp) if Wt is not None else None, float(sat), pysimplify.BORDER_W, pysimplify.SEAM_W,
+            pysimplify.SEAM_K * pysimplify.SEAM_K, ak ** 2, pysimplify.MIN_COS]
+    if agrp is None:
+        r = L.simplify_run(*args)
+    else:
+        G = np.ascontiguousarray(np.asarray(agrp, dtype=np.int32))
+        assert len(G) == len(W), "agrp: one source mesh per attribute vertex"
+        r = L.simplify_run_grp(*args, G.ctypes.data_as(ip))
     if not r:
         raise MemoryError("simplify_run returned NULL")
     try:
