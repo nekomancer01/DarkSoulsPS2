@@ -317,7 +317,8 @@ def struct_sat(eps_fixed, budget):
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
                     far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None):
-    """Quadric edge collapse (tools/simplify.py) of every non-grass mesh. Meshes that share vertex positions (2 mm)
+    """Quadric edge collapse (tools/native/simplify.c, the source of truth; tools/simplify.py is its frozen reference and
+    the fallback below) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
     whose vertices move for both sides at once (no cracks); every triangle keeps its own mesh's UVs / colours.
     One process per group. Cost = error^2 / view distance^2 (angular error^2); one global threshold is searched to
@@ -345,6 +346,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_shape(0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
+    if mapcfg.SIMPLIFY_GUARD or env_pad or mapcfg.SIMPLIFY_ENV_NEAR:  # the fallback is simplify.py's reference collapse only
+        why = "no navmesh" if MX is not None and os.environ.get("SIMPLIFY_NATIVE") != "0" else "libmapx off or missing"
+        print(f"simplify: WARNING: Python fallback ({why}): no shape envelope, no triangle guard, unlike the C path")
 
     def key(p):
         return (round(p[0] * 500), round(p[1] * 500), round(p[2] * 500))  # 2 mm
