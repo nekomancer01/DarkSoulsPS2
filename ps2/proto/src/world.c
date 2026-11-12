@@ -9,6 +9,7 @@
 #include "collision.h"
 #include "map.h"
 #include "mapstream.h"
+#include "residency.h"
 #include "vu1.h"
 #include "objects.h"
 #include "fx.h"
@@ -49,9 +50,10 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 #define WORLD_POOL (24u << 20)
 /* MS_POOLS: the arena's size is this build constant, not whatever heap a boot spot leaves (8640 KB booted in the Burg
  * on the ISO, 2026-11-08; booted on world_route's spawn it was ~1.5 MB larger, so the visual room changed with the boot
- * spot). tools/world_budget.py reads this line: the export is solved against the same visual room the runtime prints.
- * A boot with less heap gets a smaller arena (logged by mapstream.c). */
-#define WORLD_ARENA_KB 9152  /* (8640 + the 512 KB WORLD_ARENA_LESS gave up, Burg plan B3) */
+ * spot). The size is residency.h's RES_ARENA_KB, the table the export and tools/world_budget.py solve against.
+ * A boot with less heap gets a smaller arena (logged by mapstream.c; tools/budget.py fails such a run). (9152 KB =
+ * 8640 + the 512 KB WORLD_ARENA_LESS gave up in the Burg plan's B3, until 2026-11-12: the ISO's heap gave 9088.) */
+#define WORLD_ARENA_KB RES_ARENA_KB
 /* A warp settles once the sky and the resident cells within WORLD_SETTLE_R of the feet are in, those of the block
  * the player is in out to WORLD_SETTLE_FOCUS_R: DSR's loading screen lasts until the area is loaded, and with 40 m
  * Firelink's horizon tree line and the aqueduct's rock wall were still missing 3 s after a warp back from the Burg

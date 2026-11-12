@@ -162,13 +162,22 @@ WS_UNION = os.environ.get("WS_UNION", "1") == "1"
 # (was ~50 %): with the Burg's caps back at 12 / 24 px the strict gate is at 0.00 % (main 0.49 %), near level tris
 # +11..+29 % per block, hard tier max 4290 KB. The standalone Burg ELF (MAP=m10_01_00_00, no world) keeps the old
 # numbers (Makefile MAPENV_m10_01_00_00): its own arena crashed at these (grass_tris, 2.15 MB free).
-WS_ROOM = float(os.environ.get("WS_ROOM", 4317))
-WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 2590))  # (3618 room: 1792; 2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+# Since 2026-11-12 (TECH_DEBT world-14) the room and its near share are the block's RES_BLOCK row of
+# ps2/proto/src/residency.h (tools/residency.py; set in main() once the block is known): 4175 / 2505 KB, the 4239 KB
+# visual room the ISO's arena has (9088 KB, pools in whole pages) less a page; 4317 / 2590 before, against a room the
+# runtime never had. WS_ROOM / WS_NEAR_KB in the environment (MAPENV) still win (A/B, the standalone Burg ELF).
+# (3618 room: near 1792; 2048: 4 more seam spots over; 1536: the Parish near level 19 % on the allowance)
+WS_ROOM = float(os.environ.get("WS_ROOM", 0))
+WS_NEAR_KB = float(os.environ.get("WS_NEAR_KB", 0))
 WS_FAR_KB = float(os.environ.get("WS_FAR_KB", 128))  # kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)
 # a spot still over at the caps may take its cells past the cap up to WS_ALLOW_PX (the seam allowance: two blocks'
 # cells at one spot); world_budget.py fails the build when more than 1 % of the spots need it
-WS_NEAR_R = float(os.environ.get("WS_NEAR_R", 20.0))
-WS_PIN_R = float(os.environ.get("WS_PIN_R", 40.0))
+import residency  # noqa: E402 (ps2/proto/src/residency.h: radii and per-block budgets shared with the runtime)
+WS_NEAR_R = float(os.environ.get("WS_NEAR_R", residency.RES["RES_NEAR_R"]))
+WS_PIN_R = float(os.environ.get("WS_PIN_R", residency.RES["RES_PIN_R"]))
+# the export stops when, after the solve, more than this % of the block's own spots are still over its budget in a
+# level (the error caps and the seam allowance spent): the block's data cannot fit the room it was given
+WS_OVER_PCT = float(os.environ.get("WS_OVER_PCT", residency.RES["RES_ALLOW_BLOCK_PCT"]))
 WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
 # a block's share of a seam spot's room, x WS_SHARE_K (capped at the whole room): the neighbour's cells seldom fill
 # their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
@@ -2738,6 +2747,7 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
             allow[p] = True
     mine = nb >= nb.max() * 0.999 if len(nb) else nb > 0  # the block's own spots (its whole share of the room)
     allow_pct = float(allow[mine].mean() * 100) if mine.any() else 0.0
+    own_over = float((W > nb)[mine].mean() * 100) if mine.any() else 0.0  # still over after the solve
     if allow.any():
         hot = sorted({cells[c] for c in np.flatnonzero(step > K).tolist()})
         print(f"budget {name}: seam allowance (past {px_cap:.0f} px, up to {WS_ALLOW_PX:.0f} px) at "
@@ -2761,7 +2771,8 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
                               allow_cells=[list(cells[c]) for c in np.flatnonzero(step > K).tolist()],
                               worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
                               budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
-                              met=not stuck, spots_over_pct=round(over, 1),
+                              met=not stuck, spots_over_pct=round(over, 1), own_over_pct=round(own_over, 2),
+                              own_spots=int(mine.sum()),
                               p90_kb=round(float(np.percentile(W, 90)) / 1024)))
     return job_eps
 
@@ -3147,6 +3158,15 @@ def write_cells(cells, res, all_chunks, nres):
 def main():
     game, out = sys.argv[1], sys.argv[2]
     map_id = sys.argv[3] if len(sys.argv) > 3 else "m10_02_00_00"
+    global WS_ROOM, WS_NEAR_KB
+    block = os.environ.get("AREA_BLOCK") or map_id
+    b_room, b_near, b_row = residency.block_budget(block)
+    if WS_UNION and STREAM and os.environ.get("AREA_BLOCK") and not b_row and not os.environ.get("WS_ROOM"):
+        raise SystemExit(f"export_map: world block {block} has no RES_BLOCK row in ps2/proto/src/residency.h")
+    WS_ROOM = WS_ROOM or float(b_room)
+    WS_NEAR_KB = WS_NEAR_KB or float(b_near)
+    print(f"budget: {block}: room {WS_ROOM:.0f} KB, near {WS_NEAR_KB:.0f} KB "
+          f"({'environment' if os.environ.get('WS_ROOM') else 'residency.h ' + (block if b_row else 'default')})")
     preview = sys.argv[4] if len(sys.argv) > 4 else None
     t_start = time.time()
     meshes_in, textures, nav_v, nav_t, spawn, (fog_id, fog), sky_fog = gather(game, map_id)
@@ -3347,6 +3367,16 @@ def main():
               f"bytes, largest cell {max(c[3] for c in CELL_SIZES) if CELL_SIZES else 0} bytes")
         with open(out + ".budget.json", "w") as f:  # the spot budget solve's results
             json.dump(BUDGET_REPORT, f, indent=1)
+        # the block's budget is a promise to the runtime (residency.h): a level whose own spots stay over it after the
+        # solve fails the export
+        bad = [f"{r['level']} {r['own_over_pct']} % of {r['own_spots']} spots over {r['budget_kb']} KB"
+               for r in BUDGET_REPORT if WS_UNION and r.get("own_over_pct", 0) > WS_OVER_PCT]
+        for r in BUDGET_REPORT:
+            print(f"budget {r['level']}: {r.get('own_over_pct', 0)} % of the block's own spots over its budget "
+                  f"(at most {WS_OVER_PCT:.0f} %), seam allowance {r['allow_pct']} %")
+        if bad:
+            raise SystemExit(f"export_map: over the block's budget after the solve: {'; '.join(bad)} "
+                             f"(residency.h RES_BLOCK, or raise the caps WS_PX0 / WS_PX1)")
         # per cell bytes by level, the resident level's other items and the navmesh spots: the world budget check
         # across blocks (tools/world_budget.py)
         sky = sum(RES_SIZE[i] for i in range(len(chunks)) if i < len(RES_SIZE) and chunks[i][1] & CHUNK_SKY)

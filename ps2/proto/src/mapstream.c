@@ -38,6 +38,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "mapstream.h"
+#include "residency.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
 #include "vu1.h"
@@ -50,7 +51,7 @@
  * margin), kept to MS_R1_KEEP. */
 /* (Burg plan B3, 2026-11-08: the export's hard tier holds the near level within 20 m, the coarse level within 40 m:
  * the radii follow it; 26 / 30 / 36 / 64 m before) */
-#define MS_R0_DRAW 20.0f
+#define MS_R0_DRAW ((float)RES_NEAR_R)  /* residency.h: the hard tier's near radius */
 /* read ahead out to MS_R0_WANT (export_map.WS_R0 budgets 30 m; the plan cut keeps the extra within the arena, C_PREF
  * is the lowest wanted class): at 30 m, 4 m past the draw radius, cells inside it were still coarse when the player
  * walked in (pop-in, ISO 2026-11-06) */
@@ -88,7 +89,7 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
  * smoothed over ~10 frames; ASSUMED 1.5 s: about the read time of a near cell group from cdrom0: plus a margin), so
  * the cells the player walks into come before those behind (MS_NEAR_FIRST) */
 #define MS_AHEAD_FRAMES 45.0f
-#define MS_R1_PIN 40.0f   /* pinned coarse: export_map.WS_PIN_R, the hard tier (the ring to MS_R_HZN ranks below the near level) */
+#define MS_R1_PIN ((float)RES_PIN_R)   /* pinned coarse: residency.h, the hard tier (the ring to MS_R_HZN ranks below the near level) */
 #define MS_R0_FIRST 12.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 20 m below (C_NEAR2) */
 /* Near level first (built in: the frozen residency design, 2026-11-12): the near parts within MS_R0_FIRST rank
  * above the pinned coarse level out of view (C_PIN0 within MS_R1_FIRST and the sky / backdrop of the player's block >
@@ -114,7 +115,7 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
  * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
 /* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
  * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
-#define MS_R_HZN 48.0f
+#define MS_R_HZN ((float)RES_HZN_R)
 #define MS_R_HZN_KEEP (56.0f + 2 * MS_KEEP_MORE)
 /* Stable ranks (built in: the frozen residency design, 2026-11-12): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
@@ -373,7 +374,9 @@ static void g_mark(unsigned g0, unsigned n, int on)
         pfree[g / MS_GPP] += on ? -1 : 1;
     }
 }
-/* n bytes (<= a page) inside one page: pages already in use first, so free pages stay whole */
+/* n bytes (<= a page) inside one page: pages already in use first, so free pages stay whole. (Best fit with small
+ * items from the top and page-sized groups from the bottom was tried, 2026-11-12: no-room refusals 440 -> 515 on
+ * iso_burg_taurus, 100 -> 162 on iso_ame_report3; not kept) */
 static void *g_alloc(unsigned n)
 {
     unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
@@ -1427,9 +1430,14 @@ static int issue(void)
                 unsigned fr = 0;
                 for (unsigned i = 0; i < ntot(); i++)
                     fr += pfree[i];
-                printf("mapstream: no room for item %d.%u (%u KB, class %d, %.0f m): nothing of a lower class to drop; "
+                /* ", hard": an item of residency.h's hard tier (the near level within RES_NEAR_R, the pinned coarse
+                 * level within RES_PIN_R) the export budgeted for: tools/budget.py counts those per run */
+                float d = sqrtf(w.key);
+                int hard = ((w.cls == C_NEAR || w.cls == C_NEAR2) && d <= MS_R0_DRAW) ||
+                           ((w.cls == C_PIN || w.cls == C_PIN0) && d <= MS_R1_PIN);
+                printf("mapstream: no room for item %d.%u (%u KB, class %d, %.0f m%s): nothing of a lower class to drop; "
                        "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB, borrowed %u KB\n", w.k, w.id,
-                       gb >> 10, w.cls, sqrtf(w.key), fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
+                       gb >> 10, w.cls, d, hard ? ", hard" : "", fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
                        mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
             }
             mapstream_stats.room_fails++;
@@ -1472,7 +1480,7 @@ static int issue(void)
 /* the plan's wanted items, sorted by rank; MS_FILL_PCT: the share (%) of the item pages the plan may fill (granule rounding,
  * read groups not filling their page, ASSUMED) */
 #define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
-#define MS_FILL_PCT 92u
+#define MS_FILL_PCT ((unsigned)RES_FILL_PCT)  /* residency.h */
 typedef struct { unsigned char k, cls; unsigned short id; float key; } MsW;
 static MsW want[MS_WANTED];
 static int w_cmp(const void *a, const void *b)
