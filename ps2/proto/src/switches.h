@@ -44,6 +44,9 @@
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream_i.h   | arena size
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
+ * MS_BEHIND_KEEP      | 1        | fallback | -DMS_BEHIND_KEEP=0                            | mapstream.c   | horizon-covered coarse items out of view past MS_BEHIND_R kept, never read
+ * MS_BEHIND_R         | 32 m     | tune     | -                                             | mapstream.c   | MS_BEHIND_KEEP distance
+ * MS_R_HZN            | 40 m     | make     | -DMS_R_HZN=48.0f                              | mapstream_i.h | coarse cells with a horizon wanted within (make BURG_HZN_NEAR=1: 40 with map.c HZN_R 32; 0 = residency.h RES_HZN_R 48)
  * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
  * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
@@ -58,7 +61,7 @@
  * MAP_PASS_MS         | 1        | fallback | -DMAP_PASS_MS=0                               | map.c         | "map: pass ms" timing log
  * SKY_ROWS            | 1        | fallback | -DSKY_ROWS=0                                  | map_i.h         | sky chunks under their own fog row
  * ZSPLIT              | 50 m     | fallback | -DZSPLIT=0                                    | map.c         | two Z ranges; 0 = one range
- * HZN_R               | 40 m     | tune     | -                                             | map_i.h         | horizon radius
+ * HZN_R               | 32 m     | make     | -DHZN_R=40.0f                                 | map_i.h         | horizon radius (make BURG_HZN_NEAR=1; 0 = 40 m, residency.h RES_PIN_R)
  * HZN_FADE            | 8 m      | fallback | -DHZN_FADE=0                                  | map_i.h         | horizon fade-in; 0 = hard switch
  * HZN_ZBIAS           | 0.03     | fallback | -DHZN_ZBIAS=0                                 | map_i.h         | fade depth bias; 0 = plain depth test
  * HZN_FADE_DEBUG      | 0        | debug    | -DHZN_FADE_DEBUG=1                            | map_i.h         | fade pass drawn solid magenta

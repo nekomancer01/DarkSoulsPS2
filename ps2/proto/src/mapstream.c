@@ -37,6 +37,17 @@
  * export shares live in residency.h. */
 #include "mapstream_i.h"
 
+/* MS_BEHIND_KEEP (default 1, Ame's pick 2026-11-10; 0 = read as before): a horizon-covered coarse item (MS_RES_LOD)
+ * out of view and at least MS_BEHIND_R away is kept while it is in but never read: behind the camera nothing draws it,
+ * and turning round shows the cell's horizon until it lands (map.c draws a missing coarse cell's horizon). At the Burg
+ * spots 96 % of the pinned coarse level 16-48 m was horizon-covered and 270-410 KB of a plan was coarse out of view. */
+#ifndef MS_BEHIND_KEEP
+#define MS_BEHIND_KEEP 1
+#endif
+#ifndef MS_BEHIND_R
+#define MS_BEHIND_R 32.0f
+#endif
+
 #ifndef MS_MIP0
 #define MS_MIP0 1  /* 0: no full-size map textures (plan_item) */
 #endif
@@ -326,6 +337,10 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * pinned above the near parts, the coarse level of the cells around the player held ~1 MB more than the budget at
      * the median spot until their near parts landed, and the near parts were refused ("no room", Burg soak 2026-11-08).
      * A cell whose near part is not in and whose coarse level is out draws its horizon (map.c), not a hole. */
+#if MS_BEHIND_KEEP
+    if ((tag & MS_RES_LOD) && !view && !ms_settling && d2 >= sq(MS_BEHIND_R))
+        return C_KEEP;
+#endif
     if ((tag & MS_RES_COARSE) && (m->tab[c].near & ~CELL_PART) && near_d2(m, c, pos) < sq(MS_R0_DRAW)) {
         *key = d2;
         return C_VIEW2;
