@@ -89,4 +89,12 @@ void r_text(float x, float y, float scale, const char *s, int r, int g, int b);
 /* Light text on a dark box, readable on any background */
 void r_text_outlined(float x, float y, float scale, const char *s);
 
+/* gsKit_queue_exec with the oneshot queue's fill measured: r_gsq_peak = the most bytes one exec sent (the 2D layer:
+ * HUD, menus, loading screen, clears). gsKit's queue has no bounds check, so R_GSQ_OS (main.c's
+ * gsKit_init_global_custom) is sized from this peak; a fill over 3/4 of it logs an error line. */
+#define R_GSQ_OS (256 * 1024)  /* x 2 buffers (gsKit's default: 1024 KB x 2) */
+#define R_GSQ_PER (16 * 1024)  /* persistent queue: unused (GS_ONESHOT), gsKit's default 256 KB */
+extern unsigned r_gsq_peak;
+void r_queue_exec(GSGLOBAL *gs);
+
 #endif

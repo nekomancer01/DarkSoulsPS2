@@ -541,3 +541,16 @@ void r_text_outlined(float x, float y, float s, const char *str)
     r_rect(x - s, y - s, (4 * strlen(str) + 1) * s, 7 * s, 0x18, 0x18, 0x18);
     r_text(x, y, s, str, 0xF0, 0xF0, 0xE0);
 }
+
+unsigned r_gsq_peak;
+void r_queue_exec(GSGLOBAL *gs)
+{
+    GSQUEUE *q = gs->Os_Queue;
+    unsigned n = (char *)q->pool_cur - (char *)q->pool[q->dbuf];
+    if (n > r_gsq_peak) {
+        r_gsq_peak = n;
+        if (n > R_GSQ_OS * 3 / 4)
+            printf("TEST error: gsKit queue %u of %u bytes (R_GSQ_OS)\n", n, (unsigned)R_GSQ_OS);
+    }
+    gsKit_queue_exec(gs);
+}

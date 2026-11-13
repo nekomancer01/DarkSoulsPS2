@@ -208,7 +208,9 @@ void mp_build_index(MapInst *mi)
         key[m][0] = k, key[m][1] = (unsigned)c->tex, key[m++][2] = i;
     }
     mi->nsky = nsky;
-    Cell *cells = mi->cells = calloc((mi->nctab > (unsigned)m ? mi->nctab : m) + 1, sizeof *cells);
+    /* (the exporter's cell table when there is one: sized for one cell per chunk, Firelink's 12179 chunks took 633 KB
+     * of heap for ~1 % of that many cells until 2026-11-13) */
+    Cell *cells = mi->cells = calloc((mi->ctab ? mi->nctab : (unsigned)m) + 1, sizeof *cells);
     int ncells = 0;
     if (mi->ctab) {  /* DSM5: the exporter's cells, resident chunks already grouped per cell (sky chunks after them) */
         const MapCell *ctab = mi->ctab;
