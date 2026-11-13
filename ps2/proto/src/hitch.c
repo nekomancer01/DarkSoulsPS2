@@ -19,6 +19,7 @@ void *__real_malloc(size_t n);
 void *__real_calloc(size_t n, size_t s);
 void *__real_realloc(void *p, size_t n);
 void *__real_memalign(size_t a, size_t n);
+void __real_free(void *p);
 
 unsigned hitch_acc[HS_N];
 HitchTotals hitch_total;
@@ -171,11 +172,81 @@ static void alloc_failed(const char *fn, unsigned n, void *caller)
            (unsigned)run_s);
     af_busy = 0;
 }
+
+#ifdef HEAPMAP
+/* Heap census (make HEAPMAP=1, a measuring build): every live allocation with its caller, summed per caller in a
+ * "heapmap:" block after each hitch line (tools: addr2line -e proto.sym.elf on the callers). */
+#define HM_N 16384
+char hm_tag[24];
+static struct { void *p; unsigned n, ra; char tag[24]; } hm[HM_N];
+static unsigned hm_lost;
+static void hm_add(void *p, unsigned n, void *ra)
+{
+    if (!p)
+        return;
+    unsigned i = ((unsigned)p >> 4) * 2654435761u >> 18;
+    for (unsigned k = 0; k < HM_N; k++, i = (i + 1) & (HM_N - 1))
+        if (!hm[i].p || hm[i].p == (void *)1) {
+            hm[i].p = p, hm[i].n = n, hm[i].ra = (unsigned)ra;
+            memcpy(hm[i].tag, hm_tag, sizeof hm_tag);
+            return;
+        }
+    hm_lost++;
+}
+static void hm_del(void *p)
+{
+    if (!p)
+        return;
+    unsigned i = ((unsigned)p >> 4) * 2654435761u >> 18;
+    for (unsigned k = 0; k < HM_N && hm[i].p; k++, i = (i + 1) & (HM_N - 1))
+        if (hm[i].p == p) {
+            hm[i].p = (void *)1;
+            return;
+        }
+}
+static void hm_dump(void)
+{
+    static struct { unsigned ra, n, cnt; const char *tag; } c[512];
+    unsigned nc = 0, tot = 0, blocks = 0;
+    for (unsigned i = 0; i < HM_N; i++) {
+        if (!hm[i].p || hm[i].p == (void *)1)
+            continue;
+        unsigned j;
+        for (j = 0; j < nc && (c[j].ra != hm[i].ra || strcmp(c[j].tag, hm[i].tag)); j++)
+            ;
+        if (j == nc) {
+            if (nc == 512)
+                continue;
+            c[nc].ra = hm[i].ra, c[nc].tag = hm[i].tag, c[nc].n = 0, c[nc].cnt = 0, nc++;
+        }
+        c[j].n += hm[i].n + 8, c[j].cnt++, tot += hm[i].n + 8, blocks++;
+    }
+    struct mallinfo mi = mallinfo();
+    extern char _end[];
+    extern unsigned r_gsq_peak;
+    printf("heapmap: t %u live %u KB in %u blocks (lost %u), gsq peak %u, sbrk 0x%x, _end 0x%x, arena %u, uordblks %u, fordblks %u\n",
+           (unsigned)run_s, tot >> 10, blocks, hm_lost, r_gsq_peak, (unsigned)sbrk(0), (unsigned)_end, mi.arena, mi.uordblks, mi.fordblks);
+    for (unsigned j = 0; j < nc; j++)
+        if (c[j].n >= 4096)
+            printf("heapmap: 0x%08x %u KB %u [%s]\n", c[j].ra, c[j].n >> 10, c[j].cnt, c[j].tag);
+}
+#define HM_ADD(p, n) hm_add(p, n, __builtin_return_address(0))
+#define HM_DEL(p) hm_del(p)
+#else
+#define HM_ADD(p, n)
+#define HM_DEL(p)
+#endif
+void __wrap_free(void *p)  /* (wrapped for the HEAPMAP census only) */
+{
+    HM_DEL(p);
+    __real_free(p);
+}
 void *__wrap_malloc(size_t n)
 {
     void *p = __real_malloc(n);
     if (!p && n)
         alloc_failed("malloc", n, __builtin_return_address(0));
+    HM_ADD(p, n);
     return p;
 }
 void *__wrap_calloc(size_t n, size_t s)
@@ -183,6 +254,7 @@ void *__wrap_calloc(size_t n, size_t s)
     void *p = __real_calloc(n, s);
     if (!p && n && s)
         alloc_failed("calloc", n * s, __builtin_return_address(0));
+    HM_ADD(p, n * s);
     return p;
 }
 void *__wrap_realloc(void *q, size_t n)
@@ -190,6 +262,9 @@ void *__wrap_realloc(void *q, size_t n)
     void *p = __real_realloc(q, n);
     if (!p && n)
         alloc_failed("realloc", n, __builtin_return_address(0));
+    if (p || !n)
+        HM_DEL(q);
+    HM_ADD(p, n);
     return p;
 }
 void *__wrap_memalign(size_t a, size_t n)
@@ -197,6 +272,7 @@ void *__wrap_memalign(size_t a, size_t n)
     void *p = __real_memalign(a, n);
     if (!p && n)
         alloc_failed("memalign", n, __builtin_return_address(0));
+    HM_ADD(p, n);
     return p;
 }
 
@@ -297,6 +373,9 @@ void hitch_frame(float dt_real)
         if (top[i].n > 1)
             printf(" %d.%u x%u", top[i].k, top[i].ci, top[i].n);
     printf("\n");
+#ifdef HEAPMAP
+    hm_dump();
+#endif
     stream_line();
     disc_line(per_s, n_load > 0);
     per_s = 0;

@@ -889,7 +889,9 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     if (!e)
         return NULL;
     unsigned t0 = ticks(), wait = 0, nb = e->blocks;
+    HM_TAG("%s", name);
     unsigned char *out = get((e->raw + 127) & ~127u);
+    HM_TAG0();
     unsigned *cs = memalign(64, (nb * 4 + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
     unsigned st = e->packed < STAGE ? (e->packed + 63) & ~63u : STAGE;
     st = st < STAGE_MIN ? STAGE_MIN : st;

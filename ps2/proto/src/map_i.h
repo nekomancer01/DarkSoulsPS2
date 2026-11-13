@@ -83,7 +83,7 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
  * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 40 m (horizon.py judges its error from 38 m; 56 / 54 m before the Burg plan's B3).
  * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
 #ifndef HZN_R
-#define HZN_R 32.0f  /* (40 before 2026-11-12, with residency.h RES_PIN_R) */  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
+#define HZN_R 48.0f  /* (residency.h RES_PIN_R: 40 until 2026-11-12, 32 for a day) */  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
 #endif
 #define HZN_HYST 2.0f
 /* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque

@@ -402,7 +402,7 @@ static void draw(float t)
     gs->PrimAlphaEnable = GS_SETTING_OFF;
     gsKit_set_test(gs, GS_ZTEST_ON);
     gsKit_set_test(gs, GS_ATEST_ON);
-    gsKit_queue_exec(gs);
+    r_queue_exec(gs);
     present(gs);
     loading_stats.frames++;
 }

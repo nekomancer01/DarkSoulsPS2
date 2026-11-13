@@ -88,7 +88,7 @@ extern float ms_r0_want, ms_r0_keep;
 /* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
  * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
 #define MS_R_HZN ((float)RES_HZN_R)
-#define MS_R_HZN_KEEP (56.0f + 2 * MS_KEEP_MORE)
+#define MS_R_HZN_KEEP ((float)RES_HZN_R + 8.0f + 2 * MS_KEEP_MORE)
 /* Stable ranks (built in: the frozen residency design, 2026-11-12): distance-only ranks inside MS_R1_PIN and a bonus for what is in
  * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
 #define MS_HOLD_K 0.7f

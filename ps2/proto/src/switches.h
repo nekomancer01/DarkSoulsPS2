@@ -23,6 +23,7 @@
  * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | model.h       | largest skeleton (make CHR_BONES=61: one VU1 palette window, the old path)
  * PROFILE             | off      | make     | -DPROFILE                                     | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
+ * HEAPMAP             | off      | make     | -DHEAPMAP                                     | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
