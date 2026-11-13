@@ -285,17 +285,22 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
     floor = blocks[home].floor_mask(feet)
     import area
     map_of = lambda b: area.BLOCKS.get(os.path.basename(os.path.normpath(b.gen)), {}).get("map", b.gen)
-    for bi, b in enumerate(blocks):
-        # the blocks of the player's map are on (their cells at the level the distance asks for); another map's block
-        # is kept for its horizon alone
-        for p, s, c, ti, fl, bx in b.pick(feet, eye, levels, floor, hz_only=map_of(b) != map_of(blocks[home])):
-            if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home:
-                continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
-            n = len(p)
-            P.append(p), ST.append(s), C.append(c), BX.append(np.tile(bx, (n, 1)))
-            TI.append(np.full(n, ti + len(tex) if ti >= 0 else -1))
-            FL.append(np.full(n, fl))
-        tex += b.tex
+    for attempt in (0, 1):
+        for bi, b in enumerate(blocks):
+            # the blocks of the player's map are on (their cells at the level the distance asks for); another map's block
+            # is kept for its horizon alone
+            for p, s, c, ti, fl, bx in b.pick(feet, eye, levels, floor, hz_only=map_of(b) != map_of(blocks[home])):
+                if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home:
+                    continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
+                n = len(p)
+                P.append(p), ST.append(s), C.append(c), BX.append(np.tile(bx, (n, 1)))
+                TI.append(np.full(n, ti + len(tex) if ti >= 0 else -1))
+                FL.append(np.full(n, fl))
+            tex += b.tex
+        if P or floor is None:
+            break
+        print(f"mapshot: nothing is shown from the floor under ({feet[0]:.1f}, {feet[1]:.1f}, {feet[2]:.1f}): drawn without draw groups")
+        floor = None
     geo = (np.concatenate(P), np.concatenate(ST), np.concatenate(C), np.concatenate(TI), np.concatenate(FL),
            np.zeros(sum(len(p) for p in P)), np.concatenate(BX))
     # (foliage: every tuft; map.c thins it by distance)
