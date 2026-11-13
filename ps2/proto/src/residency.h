@@ -22,7 +22,7 @@
 #define RES_NEAR_R 20      /* m: near level drawn and budgeted within (box clipped to the cell's cube) */
 #define RES_PIN_R 40       /* m: coarse level and kept meshes pinned within (map.c HZN_R: the horizon stands in beyond) */
 #define RES_HZN_R 48       /* m: coarse cells with a horizon wanted within (soft), the horizon drawn beyond */
-#define RES_ARENA_KB 9088  /* the streamer's arena (world.c), what the heap gives at boot (9152 asked before 2026-11-12) */
+#define RES_ARENA_KB 10752 /* the streamer's arena (world.c), what the heap gives at boot (9088 until 2026-11-13: gsKit's draw queues and the cell index gave 1.7 MB back; the ISO's heap gives 10816) */
 #define RES_PAGE_KB 64     /* arena page (mapstream.c MS_PAGE) */
 #define RES_FILL_PCT 92    /* share of the item pages the plan fills (granule rounding, groups not filling a page) */
 #define RES_ALLOW_PCT 1    /* % of a world's gated spots that may be over the room or on the seam allowance */
@@ -31,8 +31,9 @@
 /* Per-block budgets (KB): RES_BLOCK(block, room, near). room: the hard tier of a spot of the block (all blocks
  * loaded there together, the block's share at a seam); near: of it for the near level, the rest for the coarse level
  * and kept meshes. Every streamed block needs a row (the export stops otherwise); `default` covers single-area test
- * maps. room is at most the visual room world_budget.py computes for RES_ARENA_KB (4239 KB on main 0f087d7 +
- * this table: 9088 - 3520 structural - 960 misc, x 92 %), less RES_PAGE_KB of margin for a lite set growing a page.
+ * maps. room is at most the visual room world_budget.py computes for RES_ARENA_KB (5770 KB: 10752 - 3520 structural
+ * - 960 misc, x 92 %; 4239 KB with the 9088 KB arena these rows were solved against, so 1.5 MB of the room is not
+ * given to the hard tier yet), less RES_PAGE_KB of margin for a lite set growing a page.
  * (Before 2026-11-12 every block took export_map.py's WS_ROOM 4317 / WS_NEAR_KB 2590, solved against a room
  * world_budget.py printed without the pools' page rounding: 4403 KB against 4239 KB on the ISO.) */
 #ifdef RES_BLOCK

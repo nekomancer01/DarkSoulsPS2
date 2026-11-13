@@ -1,4 +1,13 @@
-"""Quadric-error edge-collapse simplification for the map exporter (pure Python).
+"""Quadric-error edge-collapse simplification for the map exporter (pure Python): the frozen reference.
+
+FROZEN (2026-11-12). tools/native/simplify.c is the simplifier the export runs and its source of truth; this file is
+the reference of its core collapse, which simplify.c must still give step for step with its own rules (shape envelope,
+triangle guard) off: tools/simplify_native.py --test and tools/mapx/test_mapx.py compare the two in CI. New rules go
+into simplify.c only. The functions here are pinned by tools/mapx/test_simplify_golden.py (FROZEN): change one only to
+fix a bug in the reference, with simplify.c fixed the same way in the same commit. The constants below are shipped
+settings (simplify.c gets them from here); changing one moves the golden outputs, which that test records.
+Still used as is: the export's fallback without the C library (SIMPLIFY_NATIVE=0 / MAPX=0, no envelope or guard),
+pack / unpack / replay_log for the C logs, structure_weight.
 
 Half-edge collapses (vertex u moves onto its neighbour v): every surviving vertex keeps its original position, so
 nothing is invented (no shards) and flat floors stay exactly flat. Cost of a collapse: the larger of

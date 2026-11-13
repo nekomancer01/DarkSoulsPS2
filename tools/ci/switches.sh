@@ -16,7 +16,7 @@ CC="mips64r5900el-ps2-elf-gcc -D_EE -G0 -O2 -std=gnu99 -Wall -Werror -fno-math-e
 -I$PS2SDK/common/include -I. -I$GSKIT/include -Isrc"
 LD="mips64r5900el-ps2-elf-gcc -T$PS2SDK/ee/startup/linkfile -O2"
 LDFLAGS="-L$PS2SDK/ee/lib -Wl,-zmax-page-size=128 -L$GSKIT/lib -Wl,--wrap=_write \
--Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign"
+-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=free"
 LIBS="-lgskit -ldmakit -lpacket2 -ldma -lpad -lmc -lpatches -lm"
 export CC LD LDFLAGS LIBS
 cd "$ROOT/ps2/proto" || exit 2
