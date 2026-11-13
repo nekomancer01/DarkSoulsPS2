@@ -424,6 +424,15 @@ int pack_req_cancel_async(int t)
 static void zombie_pump(void);
 void pack_pump(void) { io_pump(); zombie_pump(); }
 
+int pack_open_raw(Pack *p, const char *path)
+{
+    char cd_path[96];
+    memset(p, 0, sizeof *p);
+    path = pack_path(path, cd_path, sizeof cd_path);
+    p->fd = io_sync(SNDD_OPEN, -1, path, 0, NULL, 0);
+    return p->fd >= 0;
+}
+
 int pack_open(Pack *p, const char *path)
 {
     static unsigned head[16] __attribute__((aligned(64)));

@@ -19,6 +19,9 @@ typedef struct {
 
 /* Open a pack and read its table of contents; 0 on failure */
 int pack_open(Pack *p, const char *path);
+/* a plain file opened for pack_req_read (no pack header: tools/iso9660.py's copies of another pack's mapres.bin); 0 if
+ * missing */
+int pack_open_raw(Pack *p, const char *path);
 /* Load one entry into a new 128-byte aligned heap buffer (written back from the D-cache, ready for DMA).
  * Returns NULL if missing or on a read/decompression error; *size = its raw size. Free with free(). */
 void *pack_load(Pack *p, const char *name, unsigned *size);

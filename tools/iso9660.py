@@ -278,6 +278,25 @@ def regions(data):
     return out
 
 
+def mapres_slice(pak):
+    """(start, length) of a pack's raw mapres.bin entry's bytes (after its block-size table), None if it has none"""
+    try:
+        with open(pak, "rb") as f:
+            h = f.read(16)
+            if h[:4] != b"DSRP":
+                return None
+            n = struct.unpack_from("<I", h, 8)[0]
+            t = f.read(64 * n)
+    except OSError:
+        return None
+    for i in range(n):
+        name = t[64 * i:64 * i + 32].split(b"\0")[0]
+        off, raw, packed, blocks = struct.unpack_from("<4I", t, 64 * i + 32)
+        if name == b"mapres.bin" and packed == blocks * 4 + raw:
+            return off + blocks * 4, raw
+    return None
+
+
 def plan(data, layers=None, layer0_cap=None):
     """the disc's file order [(pack rel path, layer)], the shared packs copied to layer 1, dual (bool), report lines.
     Layer 0: the boot packs, the boot block's region, the packs every region reads in play (character sounds); layer 1:
@@ -288,9 +307,22 @@ def plan(data, layers=None, layer0_cap=None):
     paks = sorted(os.path.relpath(os.path.join(r, f), data).replace(os.sep, "/")
                   for r, _, fs in os.walk(data) for f in fs if f.endswith(".pak"))
     secs = {p: -(-os.path.getsize(os.path.join(data, p)) // SECTOR) for p in paks}
+    alias = {}
+    # Burg plan B8a: each world block's resident items (the raw mapres.bin entry: bytes after its block table) once
+    # more beside every other block of its walk region, as <that block>/<this block>.pak, right after that block's
+    # pack (src/mapstream.c copy_for reads block k's items from the copy of the block the player is in); a slice
+    # (pack, start, length), not a file of its own. ISO_MAP_COPIES=0: none
+    regs = regions(data)
+    if os.environ.get("ISO_MAP_COPIES", "1") != "0":
+        for reg in regs:
+            for k in reg:
+                sl = mapres_slice(os.path.join(data, k + ".pak"))
+                for j in reg if sl else ():
+                    if j != k:
+                        alias[j + "/" + k + ".pak"] = (k + ".pak",) + sl
+                        secs[j + "/" + k + ".pak"] = -(-sl[1] // SECTOR)
     size = lambda ps: sum(-(-secs[p] // ECC) * ECC for p in ps)  # noqa: E731
     boot = [p for p in BOOT_PACKS if p in secs]
-    regs = regions(data)
     used, groups = set(boot), []
     for ri, reg in enumerate(regs):
         # A region's block packs lie back to back, in neighbour order: the map stream reads two or three neighbouring
@@ -303,6 +335,7 @@ def plan(data, layers=None, layer0_cap=None):
         g, chrs = [], []
         for i, name in enumerate(reg):
             g.append(name + ".pak")
+            g += sorted(a for a in alias if a.startswith(name + "/"))  # B8a map copies: right after the block's own pack
             chrs += [p for p in paks if p.startswith(name + "/")]
             if ri == 0 and i == 0:  # the boot block's characters are the top-level c*.pak
                 chrs += [p for p in paks if "/" not in p and p[0] == "c"]
@@ -336,21 +369,32 @@ def plan(data, layers=None, layer0_cap=None):
            f"{len(shared)} shared packs)" + (f", {'layer 1' if dual else 'planned layer 1'} {mb(size(copies) + size(l1))} "
                                              f"MB (" + ", ".join('+'.join(r) for r, _ in rest) +
                                              f"; {len(copies)} shared packs copied)" if rest else "")]
-    return order, copies, dual, rep
+    return order, copies, dual, rep, alias
 
 
-def window_report(where, blocks, media):
-    """each block's pack, characters and audio against the fast seek window: lines to print"""
+def window_report(where, blocks, media, streams=None):
+    """each block's pack, characters and audio against the fast seek window: lines to print, and how many are over.
+    streams {block: iso path}: the pack its sound streams read in play, refilled every few hundred ms while the map
+    reads come in between, so the drive seeks between the two: the farthest of the block's files from it counts
+    (else the span over all of them)"""
     w = WINDOW.get(media, WINDOW["dvd"])
-    out = []
+    out, over = [], 0
     for name, packs in blocks:
         lb = [where[p] for p in packs if p in where]
         if not lb:
             continue
-        span = max(a + -(-n // SECTOR) for a, n in lb) - min(a for a, _ in lb)
-        out.append(f"  window {name}: {span * SECTOR >> 20} MB from its pack over its characters and audio"
+        st = where.get((streams or {}).get(name))
+        if st:
+            s0, s1 = st[0], st[0] + -(-st[1] // SECTOR)
+            span = max(max(abs(a + -(-n // SECTOR) - s0), abs(s1 - a)) for a, n in lb)
+            what = "seek from its music / ambience to the farthest of its pack and characters"
+        else:
+            span = max(a + -(-n // SECTOR) for a, n in lb) - min(a for a, _ in lb)
+            what = "from its pack over its characters and audio"
+        over += span > w
+        out.append(f"  window {name}: {span * SECTOR >> 20} MB {what}"
                    + ("" if span <= w else f" (over the {w * SECTOR >> 20} MB fast seek window)"))
-    return out
+    return out, over
 
 
 def iso_path(rel):
@@ -366,7 +410,7 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
     layer0_mb = layer0_mb or (float(os.environ["ISO_LAYER0_MB"]) if os.environ.get("ISO_LAYER0_MB") else None)
     if layer0_mb:
         layers = 2
-    order, copies, dual, rep = plan(data, layers, int(layer0_mb * 512) if layer0_mb else None)
+    order, copies, dual, rep, alias = plan(data, layers, int(layer0_mb * 512) if layer0_mb else None)
     for r in rep:
         log(r)
     cnf = f"BOOT2 = cdrom0:\\{boot_id};1\r\nVER = 1.00\r\nVMODE = NTSC\r\n".encode()
@@ -376,7 +420,14 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
     for p, layer in order:
         ip = iso_path(p) + ("@1" if p in seen else "")
         seen.add(p)
-        entries.append((ip, os.path.join(data, p), layer))
+        src = alias.get(p, p)
+        if isinstance(src, tuple):  # a slice of a pack (the map copies above)
+            with open(os.path.join(data, src[0]), "rb") as f:
+                f.seek(src[1])
+                src = f.read(src[2])
+        else:
+            src = os.path.join(data, src)
+        entries.append((ip, src, layer))
     size, where, l1 = write_iso(entries, out, media=media, dual=dual, copies=copy_paths)
     first1 = next((e[0] for e in entries if e[2] == 1), None)
     brk = l1 if dual else where[first1][0] if first1 else 0
@@ -392,14 +443,23 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
         o.write(layout.ljust(SECTOR, b"\0"))
     log(f"layout: media {media}, {'dual layer, break' if dual else 'one layer, planned break'} at LSN {brk}, "
         f"{len(pairs)} layer-1 copies")
-    blocks = []
+    blocks, streams = [], {}
     paks = [p for p, _ in order]
     for reg in regions(data):
         for n in reg:
-            blocks.append((n, [iso_path(p) for p in [n + ".pak", "snd/" + n[:3] + ".pak"] + paks
-                               if p == n + ".pak" or p.startswith(n + "/") or p == "snd/" + n[:3] + ".pak"]))
-    for line in window_report(where, blocks, "dvd9" if dual else media):
+            # what a walk through the block reads: its pack, its characters, its map's streams (snd/mAA_BB.pak), or
+            # without that split the area's (snd/mAA.pak: with it, read only when the area's bank loads)
+            mine = n + "/snd.pak" if n + "/snd.pak" in alias else "snd/" + n[:6] + ".pak"
+            split = mine in paks
+            own = (n + ".pak", mine) if split else (n + ".pak", "snd/" + n[:3] + ".pak")
+            blocks.append((n, [iso_path(p) for p in paks if p in own or p.startswith(n + "/")]))
+            if split:
+                streams[n] = iso_path(mine)
+    lines, over = window_report(where, blocks, "dvd9" if dual else media, streams)
+    for line in lines:
         log(line)
+    if over and os.environ.get("ISO_WINDOW_STRICT") == "1":  # Burg plan B8: a block over the window fails the disc
+        raise ValueError(f"{over} world blocks read in play over the fast seek window (ISO_WINDOW_STRICT=1)")
     return size
 
 
