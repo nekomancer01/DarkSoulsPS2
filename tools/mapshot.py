@@ -5,8 +5,8 @@
   mapshot.py <out dir> <gen dir>... --at X Y Z YAW [PITCH] [--name spot]
 
 Each <gen dir> holds one block's export (map.bin, cells.bin, hzn.bin: build/gen for the default map, build/gen/<block>
-for a world block); give the blocks that are on at the spots (the Burg blocks for a Burg view: Firelink's export
-carries the game's own low-detail Burg, which the runtime hides while the Burg blocks are on). A map or simplifier change is then judged in
+for a world block); give every block of the world. The blocks of the map the player stands in are drawn at their
+levels, the other maps' blocks by their horizon alone, as the runtime keeps them (Firelink from the Undead Burg). A map or simplifier change is then judged in
 seconds per view after the block's export (about a minute), not after the ELF, the ISO and a PCSX2 run. PCSX2 stays the
 check for anything the runtime decides: what is loaded in time, memory, speed, the GS.
 
@@ -21,7 +21,9 @@ levels the runtime draws once everything wanted is in:
 alone. Under each picture: the memory the spot takes as tools/world_budget.py counts it (near level within RES_NEAR_R,
 far level and kept meshes within RES_PIN_R, all blocks given) against the block's room (residency.h RES_BLOCK), red
 when over; plus the pinned backdrop and sky and the blocks' horizons, which the room does not count.
-Not drawn: characters, objects, effects, the relief pass, draw-group and PVS culling, late or refused cells.
+Draw groups (dg.bin, collision.bin) as DSR's rule: a piece is drawn while it shares a group with the collision part
+under the player.
+Not drawn: characters, objects, effects, the relief pass, PVS culling, late or refused cells.
 
 --script: the `spawn x y z yaw`, `cam yaw pitch` and `shot name` lines of a test script (ps2/proto/src/testscript.c),
 one PNG per shot. --ref DIR: reference shots <name>.png (tools/outline-dsr-shots.sh; cropped to 4:3) in a first
@@ -86,6 +88,34 @@ def chunks(b, off, n, base=0, st=True):
     return out
 
 
+def collision(path):
+    """collision.bin (tools/export_collision.py: version 1, or 2 in fragments) -> (triangles (n, 3, xyz) in world
+    metres, each one's number in the version 1 order, which dg.bin's collision masks follow), or None"""
+    if not os.path.exists(path):
+        return None
+    c = open(path, "rb").read()
+    if c[:4] != b"DCOL":
+        return None
+    ver, nv, nt = struct.unpack_from("<3I", c, 4)
+    org, sc = np.array(struct.unpack_from("<3f", c, 16)), struct.unpack_from("<f", c, 28)[0]
+    if ver == 1:
+        ov, ot = struct.unpack_from("<2I", c, 52)
+        V = np.frombuffer(c, np.int16, nv * 3, ov).reshape(-1, 3) * sc + org
+        T = np.frombuffer(c, np.dtype([("i", "<u2", 3), ("f", "u1", 2)]), nt, ot)["i"].astype(np.int64)
+        return V[T], np.arange(nt)
+    off_frag, nfrag = struct.unpack_from("<2I", c, 52)
+    off_gid = struct.unpack_from("<I", c, 80)[0]
+    gid = np.frombuffer(c, np.uint16, nt, off_gid)
+    tris, ids = [], []
+    for f in range(nfrag):
+        lo = np.array(struct.unpack_from("<3h", c, off_frag + 32 * f))
+        n, m, t0, do = struct.unpack_from("<2H2I", c, off_frag + 32 * f + 12)
+        V = (np.frombuffer(c, np.uint16, m * 3, do).reshape(-1, 3).astype(np.int64) + lo) * sc + org
+        T = np.frombuffer(c, np.uint8, n * 4, do + (-(-6 * m // 4)) * 4).reshape(-1, 4)[:, :3]
+        tris.append(V[T]), ids.append(gid[t0:t0 + n])
+    return (np.concatenate(tris), np.concatenate(ids).astype(np.int64)) if tris else None
+
+
 class Block:
     """one exported block: resident chunks (map.bin), cells with their near chunks (cells.bin), horizon (hzn.bin)"""
 
@@ -99,6 +129,17 @@ class Block:
         fc, sc = struct.unpack_from("<4B", b, 64), struct.unpack_from("<4B", b, 68)
         self.fog = (fb, fe, fm, fc[:3], sc[:3], sc[3] / 255.0)
         self.res = chunks(b, och, nch)
+        # draw groups (dg.bin, tools/drawgroups.py): the pieces' masks, the block's collision masks, a mask per chunk
+        self.dg_p, self.dg_c, self.dg_n, self.dg_t = [], [], b"", b""
+        dpath = os.path.join(gen, "dg.bin")
+        if os.path.exists(dpath):
+            d = open(dpath, "rb").read()
+            _, P, C, N = struct.unpack_from("<4I", d, 0)
+            self.dg_p = [struct.unpack_from("<4I", d, 32 + 16 * i) for i in range(P)]
+            self.dg_c = [struct.unpack_from("<4I", d, 32 + 16 * (P + i)) for i in range(C)]
+            self.dg_n = d[32 + 16 * (P + C):32 + 16 * (P + C) + N]
+            self.dg_t = d[32 + 16 * (P + C) + N:32 + 16 * (P + C) + N + struct.unpack_from("<I", d, 16)[0]]
+        self.col = collision(os.path.join(gen, "collision.bin")) if self.dg_c else None
         self.cells = []  # (box (6), resident chunk ids, near chunks, cell table entry)
         ocell = struct.unpack_from("<I", b, 76)[0] if magic == b"DSM5" else 0
         cpath = os.path.join(gen, "cells.bin")
@@ -106,14 +147,15 @@ class Block:
         if ocell:
             for i in range(struct.unpack_from("<I", b, ocell)[0]):
                 box = np.array(struct.unpack_from("<6f", b, ocell + 16 + 48 * i))
-                off, size, nn, first, nres, _ = struct.unpack_from("<6I", b, ocell + 16 + 48 * i + 24)
+                off, size, nn, first, nres, no = struct.unpack_from("<6I", b, ocell + 16 + 48 * i + 24)
                 near = chunks(cb, off, nn & ~CELL_PART, off) if size else []
                 # (a near chunk's record keeps its number in bump.bin in the flags' bits 8+; foliage its tuft bits)
                 near = [(p, s, c, ti, fl & 0xFF if not fl & mapchunks.CHUNK_GRASS else fl, bx) for p, s, c, ti, fl, bx in near]
+                dgs = [self.chunk_dg(no + j) for j in range(len(near))]  # (no: the part's first chunk number in dg.bin)
                 if nn & CELL_PART and self.cells:  # a later part of the cell before it
-                    self.cells[-1][2].extend(near)
+                    self.cells[-1][2].extend(near), self.cells[-1][4].extend(dgs)
                 else:
-                    self.cells.append((box, list(range(first, first + nres)), near, i))
+                    self.cells.append((box, list(range(first, first + nres)), near, i, dgs))
         # the export's bytes per cell (map.bin.cells.json, what tools/world_budget.py reads): key, box, near bytes,
         # coarse / kept / backdrop bytes of its resident items, near box
         jp = os.path.join(gen, "map.bin.cells.json")
@@ -131,22 +173,55 @@ class Block:
                 first, cnt, _ = struct.unpack_from("<2HI", hb, 16 + 32 * i + 24)
                 self.hzn.append(hc[first:first + cnt])
 
-    def pick(self, feet, eye, levels):
-        """the chunks drawn from here: [(chunk, texture offset applies)]"""
+    def chunk_dg(self, no):
+        return self.dg_n[no] if no < len(self.dg_n) else 0
+
+    def shown(self, dgi, floor):
+        """DSR's draw-group rule: a piece is drawn while it shares a group with the collision part under the player
+        (floor: that part's groups, Block.floor_mask)"""
+        if not dgi or floor is None or dgi >= len(self.dg_p):
+            return True
+        return any(a & b for a, b in zip(self.dg_p[dgi], floor))
+
+    def floor_mask(self, feet):
+        """the draw groups of the collision part under the player: the highest collision triangle within 3 m below the
+        feet (collision.bin), its mask in dg.bin. None: no collision there or no draw groups, everything drawn"""
+        if self.col is None:
+            return None
+        tri, ids = self.col
+        A, B, C = tri[:, 0], tri[:, 1], tri[:, 2]
+        x, z = feet[0], feet[2]
+        d = (B[:, 2] - C[:, 2]) * (A[:, 0] - C[:, 0]) + (C[:, 0] - B[:, 0]) * (A[:, 2] - C[:, 2])
+        with np.errstate(all="ignore"):
+            u = ((B[:, 2] - C[:, 2]) * (x - C[:, 0]) + (C[:, 0] - B[:, 0]) * (z - C[:, 2])) / d
+            v = ((C[:, 2] - A[:, 2]) * (x - C[:, 0]) + (A[:, 0] - C[:, 0]) * (z - C[:, 2])) / d
+            w = 1 - u - v
+            y = u * A[:, 1] + v * B[:, 1] + w * C[:, 1]
+            ok = (np.abs(d) > 1e-9) & (u >= 0) & (v >= 0) & (w >= 0) & (y <= feet[1] + 0.75) & (y >= feet[1] - 3.0)
+        if not ok.any():
+            return None
+        t = int(ids[np.flatnonzero(ok)[np.argmax(y[ok])]])
+        return list(self.dg_c[self.dg_t[t]]) if t < len(self.dg_t) and self.dg_t[t] < len(self.dg_c) else None
+
+    def pick(self, feet, eye, levels, floor=None, hz_only=False):
+        """the chunks drawn from here: [(chunk, texture offset applies)]; hz_only: a block that is not on (another
+        map's, kept for its horizon: map.c mp_draw_hz_only), every horizon chunk the floor's groups show"""
+        if hz_only:
+            return [(p, s, c, -1, fl & 0xFF, bx) for hz in self.hzn for p, s, c, _, fl, bx in hz if self.shown(fl >> 16 & 0xFF, floor)]
         out, coarse_off = [], set()
         covered = set()  # resident chunks a horizon stands for
-        for box, res, near, ci in self.cells:
+        for box, res, near, ci, ndg in self.cells:
             d_p = math.sqrt((np.maximum(0, np.maximum(box[:3] - feet, feet - box[3:])) ** 2).sum())
             d_e = math.sqrt((np.maximum(0, np.maximum(box[:3] - eye, eye - box[3:])) ** 2).sum())
             hz = self.hzn[ci] if ci < len(self.hzn) else []
             lv = levels or ("near" if near and d_p < NEAR_R else "hzn" if hz and d_e >= HZN_R else "coarse")
             if lv == "near" and near:
-                out += near
+                out += [c for c, g in zip(near, ndg) if self.shown(g, floor)]
                 coarse_off.update(i for i in res if self.res[i][4] & mapcfg.CHUNK_COARSE)
             elif lv == "hzn" and hz:
-                out += [(p, s, c, -1, fl & ~CHUNK_HZN, bx) for p, s, c, _, fl, bx in hz]
+                out += [(p, s, c, -1, fl & 0xFF, bx) for p, s, c, _, fl, bx in hz if self.shown(fl >> 16 & 0xFF, floor)]
                 covered.update(i for i in res if not self.res[i][4] & (mapcfg.CHUNK_BLEND | mapcfg.CHUNK_SKY | mapchunks.CHUNK_GRASS))
-        out += [c for i, c in enumerate(self.res) if i not in coarse_off and i not in covered]
+        out += [c for i, c in enumerate(self.res) if i not in coarse_off and i not in covered and self.shown(self.chunk_dg(i), floor)]
         return out
 
 
@@ -181,6 +256,19 @@ def mem_line(m):
             f"{' OVER' if m['hard'] > m['room'] else ''}; backdrop + sky {m['pinned']:.0f}, horizon {m['horizon']:.0f} KB")
 
 
+def home_block(blocks, feet):
+    """the block the player stands in: the one whose cells (tools/area.py BLOCKS, 32 m xz) hold the feet, else the
+    one with a cell box nearest to them (a block without cells in area.py: a whole map)"""
+    import area
+    for i, b in enumerate(blocks):
+        cs = area.BLOCKS.get(os.path.basename(os.path.normpath(b.gen)), {}).get("cells")
+        for x0, z0, x1, z1 in ([cs] if cs and isinstance(cs[0], (int, float)) else cs or ()):
+            if x0 * area.CELL <= feet[0] < (x1 + 1) * area.CELL and z0 * area.CELL <= feet[2] < (z1 + 1) * area.CELL:
+                return i
+    return min(range(len(blocks)), key=lambda i: min([float(((np.maximum(0, np.maximum(c[0][:3] - feet, feet - c[0][3:]))) ** 2).sum())
+                                                         for c in blocks[i].cells] or [1e30]))
+
+
 def camera(x, y, z, yaw, pitch):
     """the port's eye and a point it looks at, for a player standing at (x, y, z)"""
     c = 4.0 * math.cos(pitch)
@@ -193,10 +281,14 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
     feet = np.array(feet, np.float64)
     eye, tgt = camera(*feet, yaw, pitch)
     P, ST, C, TI, FL, BX, tex = [], [], [], [], [], [], []
-    home = min(range(len(blocks)), key=lambda i: min([float(((np.maximum(0, np.maximum(c[0][:3] - feet, feet - c[0][3:]))) ** 2).sum())
-                                                         for c in blocks[i].cells] or [1e30]))
+    home = home_block(blocks, feet)
+    floor = blocks[home].floor_mask(feet)
+    import area
+    map_of = lambda b: area.BLOCKS.get(os.path.basename(os.path.normpath(b.gen)), {}).get("map", b.gen)
     for bi, b in enumerate(blocks):
-        for p, s, c, ti, fl, bx in b.pick(feet, eye, levels):
+        # the blocks of the player's map are on (their cells at the level the distance asks for); another map's block
+        # is kept for its horizon alone
+        for p, s, c, ti, fl, bx in b.pick(feet, eye, levels, floor, hz_only=map_of(b) != map_of(blocks[home])):
             if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home:
                 continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
             n = len(p)
