@@ -16,6 +16,9 @@
 #define CT_WANT_Y 16.0f
 #define CT_KEEP_R 56.0f
 #define CT_KEEP_Y 24.0f
+/* pages this close to the feet (xz) are never refused: they take map item pages when the pool has no room (ASSUMED:
+ * a tile's width, so the floor under the player and the next step in any direction) */
+#define CT_MUST_R 16.0f
 #define CT_BUDGET_M 4.0f  /* coltile_budget: the feet are not only at page centres (ASSUMED margin) */
 /* coltile_budget: + 1/CT_PACK_K for the pages' packing into the pool's 64 KB pages (mapstream_alloc_pool_small: a page
  * never straddles two; ASSUMED, the log's "coltile:" line prints the pool pages the tiles touch) */
@@ -201,6 +204,17 @@ static int start(int b, int i, const float *f, int wanted)
     void *buf;
     while (!(buf = mapstream_alloc_pool_small(gran(p->bytes), MS_POOL_STRUCT)))
         if (!wanted || !evict(f)) {
+            /* The floor comes before the scenery: a wanted page within CT_MUST_R of the feet that finds no room in the
+             * structural pool takes map item pages (mapstream_alloc clears the cheapest window). A 66 KB tile under the
+             * Taurus tower spawn needs two pool pages in a row; with the pool in holes it was refused for good, the
+             * player was held for it, the hold's loading screen ended without it and held again: a warp / hold loop
+             * (iso_burg_taurus on the ISO, 1 run in ~6, 2026-11-11). */
+            if (wanted && within(p, f, CT_MUST_R, CT_WANT_Y) && (buf = mapstream_alloc(gran(p->bytes), f))) {
+                coltile_stats.must++;
+                printf("coltile: block %d page %d (%u bytes) took map room: none in the structural pool (%u times)\n",
+                       b, i, p->bytes, coltile_stats.must);
+                break;
+            }
             if (wanted) {
                 if (!coltile_stats.noroom++ || !(coltile_stats.noroom & 63))
                     printf("coltile: no room for block %d page %d (%u bytes), %u KB of tiles in, %d pages (%u refusals)\n",
@@ -209,7 +223,9 @@ static int start(int b, int i, const float *f, int wanted)
             }
             return 0;
         }
-    int t = pack_req_read(tb[b].pk, tb[b].base + p->off, buf, p->bytes);
+    /* the floor before the scenery, close by; the rest of the want window in the background (a block turning on wants
+     * ~180 tiles at once: all first, they held every map read back for ~10 s) */
+    int t = (within(p, f, CT_MUST_R, CT_WANT_Y) ? pack_req_read_first : pack_req_read)(tb[b].pk, tb[b].base + p->off, buf, p->bytes);
     if (!t) {
         mapstream_free(buf, gran(p->bytes));
         return 0;

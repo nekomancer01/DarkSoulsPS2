@@ -86,4 +86,15 @@ typedef struct {
 } HitchTotals;
 extern HitchTotals hitch_total;
 
+/* make HEAPMAP=1 (heap census, hitch.c): a label for the allocations made until HM_TAG0() */
+#ifdef HEAPMAP
+#include <stdio.h>
+extern char hm_tag[24];
+#define HM_TAG(...) snprintf(hm_tag, sizeof hm_tag, __VA_ARGS__)
+#define HM_TAG0() (hm_tag[0] = 0)
+#else
+#define HM_TAG(...) ((void)0)
+#define HM_TAG0() ((void)0)
+#endif
+
 #endif

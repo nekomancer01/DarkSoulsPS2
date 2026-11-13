@@ -42,6 +42,7 @@ unsigned pack_entry_size(const Pack *p, const char *name);
  * lines before reading it on the EE. pack_req_cancel drops one: a read already started stops after its current 64 KB
  * page; it returns once nothing more can land in dst. */
 int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes);
+int pack_req_read_first(Pack *p, unsigned offset, void *dst, unsigned bytes);  /* before the background ones queued */
 int pack_req_done(int t, int *result);
 void pack_req_cancel(int t);
 /* pack_req_cancel without the wait: 1 when the ticket is gone, 0 when the read stops after its current page and still

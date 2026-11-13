@@ -62,7 +62,7 @@ AREA_OBJS = $(O)/$(MAP)/main.o $(O)/$(MAP)/enemy.o
 endif
 A = $(AREA_SRC)
 
-EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapstream.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
+EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o)
@@ -70,7 +70,11 @@ EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
 # src/hitch.c: allocation failures in the EE log ("alloc:" lines, counted in "hitch:" lines)
-EE_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign
+EE_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=free
+# make HEAPMAP=1: heap census per caller in the EE log ("heapmap:" lines after each hitch line; a measuring build)
+ifeq ($(HEAPMAP),1)
+EE_CFLAGS += -DHEAPMAP
+endif
 EE_LIBS = -lgskit -ldmakit -lpacket2 -ldma -lpad -lmc -lpatches -lm
 EE_DVP = dvp-as
 # Float math (refactor target 3, 2026-11-05): the game code does no double arithmetic (tools/ci/compile.sh fails on
@@ -467,9 +471,11 @@ $(A)/mapenv: FORCE | $(TS)/export_map.py.sum
 	@mkdir -p $(@D)
 	@if [ ! -e $@ ]; then echo '$(MAPENV_LINE)' > $@ && touch -r $(TS)/export_map.py.sum $@; \
 	else echo '$(MAPENV_LINE)' | cmp -s - $@ || echo '$(MAPENV_LINE)' > $@; fi
+# the map exporter's Python modules (split from export_map.py 2026-11-12)
+MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells mapview,$(TS)/$(m).py.sum)
 # libmapx (tools/mapx: the map exporter's C rewrite, tools/mapx_native.py): every C source and header
 MAPX_SUMS = $(TS)/mapx_native.py.sum $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/mapx/*.c ../../tools/mapx/*.h))
-$(A)/map.bin: $(TS)/export_map.py.sum $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
+$(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \

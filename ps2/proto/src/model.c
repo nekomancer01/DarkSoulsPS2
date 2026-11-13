@@ -6,6 +6,7 @@
 #include <kernel.h>
 #include <dmaKit.h>
 #include "model.h"
+#include "hitch.h"
 #include "vu1.h"
 #include "map.h"
 #include "vmath.h"
@@ -246,6 +247,7 @@ static int skin_alloc(Model *m)
     ms = 1;
 #endif
     plan_bytes = 0, plan_npg = 0, plan_over = 0;
+    HM_TAG("skin b%u v%u", hdr->bones, hdr->verts);
     skin_plan(m, 0, ms, &n, &nw, &nid);
     if (plan_over)
         return 0;  /* more than SKIN_MAX_PG pages (16 MB of packets: no model comes near) */
@@ -423,7 +425,9 @@ static Model *load_begin(const void *blob, const Model *tex)
         p += a->frames * a->stride;
         a->a_len = (unsigned)(p - m->bin) - a->a_off;
     }
-    if (!skin_alloc(m))
+    int sk = skin_alloc(m);
+    HM_TAG0();
+    if (!sk)
         return free(m), NULL;
     return m;
 }
@@ -537,7 +541,16 @@ static void *page_get(unsigned n)
     return p;
 }
 
+static int compact(Model *m, unsigned blob_size);
 int mdl_compact(Model *m, unsigned blob_size)
+{
+    HM_TAG("anim b%u v%u", m->hdr->bones, m->hdr->verts);
+    int r = compact(m, blob_size);
+    HM_TAG0();
+    return r;
+}
+
+static int compact(Model *m, unsigned blob_size)
 {
     if (MDL_ANIM_PAGE && m->nanims) {
         const Header *h = m->hdr;

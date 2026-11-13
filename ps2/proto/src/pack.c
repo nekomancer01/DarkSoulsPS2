@@ -396,6 +396,13 @@ int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes)
     return io_submit(SNDD_READ, SNDD_PRIO_BG, p->fd, NULL, offset, dst, bytes);
 }
 
+/* pack_req_read ahead of every background request queued (the disc server serves it after the page in progress): the
+ * floor the player walks onto next, i.e. a block's lite set and the collision tiles (world.c, coltile.c) */
+int pack_req_read_first(Pack *p, unsigned offset, void *dst, unsigned bytes)
+{
+    return io_submit(SNDD_READ, SNDD_PRIO_SYNC, p->fd, NULL, offset, dst, bytes);
+}
+
 int pack_req_done(int t, int *result) { return io_poll(t, result); }
 
 void pack_req_cancel(int t) { io_cancel(t); }
@@ -891,7 +898,9 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     if (!e)
         return NULL;
     unsigned t0 = ticks(), wait = 0, nb = e->blocks;
+    HM_TAG("%s", name);
     unsigned char *out = get((e->raw + 127) & ~127u);
+    HM_TAG0();
     unsigned *cs = memalign(64, (nb * 4 + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
     unsigned st = e->packed < STAGE ? (e->packed + 63) & ~63u : STAGE;
     st = st < STAGE_MIN ? STAGE_MIN : st;

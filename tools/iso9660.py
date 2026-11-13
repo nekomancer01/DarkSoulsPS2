@@ -325,17 +325,25 @@ def plan(data, layers=None, layer0_cap=None):
     boot = [p for p in BOOT_PACKS if p in secs]
     used, groups = set(boot), []
     for ri, reg in enumerate(regs):
-        g = []
+        # A region's block packs lie back to back, in neighbour order: the map stream reads two or three neighbouring
+        # blocks' packs in turn all the time (near cells, coarse cells, collision tiles), and anything between them
+        # pushes those seeks out of the fast seek window. Until 2026-11-12 the areas' audio pack (27 MB for m10) sat in
+        # the middle of the region and each block's characters after its pack: every seek between the two Burg blocks
+        # was a far one, 150 of ~400 far seeks on the Taurus route (ISO, dsrsnd "far seeks" log), ~100 ms each against
+        # ~30 ms inside the window. Characters (read once per type as it comes near) and the audio (one trip of the
+        # drive per read-ahead top-up, far either way) follow the block packs.
+        g, chrs = [], []
         for i, name in enumerate(reg):
-            own = [name + ".pak"] + sorted(a for a in alias if a.startswith(name + "/")) + \
-                [p for p in paks if p.startswith(name + "/")]
+            g.append(name + ".pak")
+            g += sorted(a for a in alias if a.startswith(name + "/"))  # B8a map copies: right after the block's own pack
+            chrs += [p for p in paks if p.startswith(name + "/")]
             if ri == 0 and i == 0:  # the boot block's characters are the top-level c*.pak
-                own += [p for p in paks if "/" not in p and p[0] == "c"]
-            at = os.environ.get("ISO_AUDIO_AT", "end")  # B8a: end (default) / mid / start / index
-            ai = (len(reg) - 1) // 2 if at == "mid" else 0 if at == "start" else len(reg) - 1 if at == "end" else int(at)
-            if i == min(ai, len(reg) - 1):  # the areas' audio (BGM, ambience): after the last block (between two it split them)
-                own += sorted({"snd/" + n[:3] + ".pak" for n in reg})
-            g += [p for p in own if p in secs and p not in used and p not in g]
+                chrs += [p for p in paks if "/" not in p and p[0] == "c"]
+        own = g + chrs + sorted({"snd/" + n[:3] + ".pak" for n in reg})
+        g = []
+        for p in own:
+            if p in secs and p not in used and p not in g:
+                g.append(p)
         used.update(g)
         groups.append((reg, g))
     shared = [p for p in paks if p not in used]  # character sounds (snd/cXXXX.pak): any region may read them
