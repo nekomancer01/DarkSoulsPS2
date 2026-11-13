@@ -194,7 +194,7 @@ typedef struct {
 #define MS_DEFRAG_PEND 64            /* old copies waiting for their chains */
 #define MS_DEFRAG_KB 256u            /* most KB copied for a read (~2 ms of EE memcpy, ASSUMED); 3x for a relief window */
 #define MS_DEFRAG_WAIT 8u            /* frames a read waits at the queue head for a page being emptied */
-typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl; } MsRead;  /* cxl: cancelled, still landing */
+typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; } MsRead;  /* cxl: cancelled, still landing; cls: the class it went out at (MS_SCAN) */
 typedef struct { int k; unsigned id; int cls; float key; } MsQ;
 #define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
 #define MS_FILL_PCT ((unsigned)RES_FILL_PCT)  /* residency.h */

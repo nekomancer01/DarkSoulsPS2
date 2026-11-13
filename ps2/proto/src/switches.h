@@ -44,6 +44,8 @@
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream_i.h   | arena size
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
+ * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
+ * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
