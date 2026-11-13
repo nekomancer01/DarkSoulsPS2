@@ -29,97 +29,14 @@
  * Memory: one arena allocated at boot (as v1), managed in 256-byte granules on a grid of 64 KB pages: a read group of
  * up to a page never crosses one (export_map.NEAR_PART, map.c RES_ITEM keep items within a page), so any free page
  * fits any group; mapstream_alloc (lite sets, relief, enemy model buffers) takes runs of whole free pages from the
- * top, clearing the cheapest run first. */
-#include <kernel.h>
-#include <malloc.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include "mapstream.h"
-#include "residency.h"
-#include "pack.h"
-#include "dsrsnd_rpc.h"
-#include "vu1.h"
-#include "hitch.h"
-#include "ticks.h"
+ * top, clearing the cheapest run first.
+ *
+ * Files (split 2026-11-12, code moved as it was): this one plans (classes, the cut), reads (queue, issue, landing) and
+ * holds the open / close / settle API; msarena.c is the arena (granules, pools, borrowed pages, windows, defrag,
+ * mapstream_alloc); mapstream_i.h their shared state (names ms_*), the radii and the item helpers. The numbers the
+ * export shares live in residency.h. */
+#include "mapstream_i.h"
 
-/* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
- * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
- * MS_R1_PIN (export_map.WS_R1: the spot budget covers it), wanted out to MS_R1_WANT (map.c CULL_FAR 250 m + a box
- * margin), kept to MS_R1_KEEP. */
-/* (Burg plan B3, 2026-11-08: the export's hard tier holds the near level within 20 m, the coarse level within 40 m:
- * the radii follow it; 26 / 30 / 36 / 64 m before) */
-#define MS_R0_DRAW ((float)RES_NEAR_R)  /* residency.h: the hard tier's near radius */
-/* read ahead out to MS_R0_WANT (export_map.WS_R0 budgets 30 m; the plan cut keeps the extra within the arena, C_PREF
- * is the lowest wanted class): at 30 m, 4 m past the draw radius, cells inside it were still coarse when the player
- * walked in (pop-in, ISO 2026-11-06) */
-/* (2026-11-08) 30 / 36 m: the project's DVD-9 budget (draw radius + sprint speed x worst DVD read latency; a CD
- * would need 35 / 41). 40 / 46 m (MS_NEAR_FIRST's read-ahead since 2026-11-06) covered ~1.8x the ground of 30 m.
- * make DEFS=-DMS_R0_WANT=40 -DMS_R0_KEEP=46 = the old radii */
-/* Per media (budget doc proposal 2): the DVD radii on a DVD (and host: runs), 35 / 41 m on a CD (the read with a seek
- * takes up to 1 s there); the disc server reports the media once it has looked at the disc (pack_disc_media, checked
- * in mapstream_update). MEDIA=cd builds (MEDIA_CD) take the CD radii whatever the disc. DEFS radii stay fixed. */
-/* Steady plan (Burg plan B4; built in: the frozen residency design, 2026-11-12): with the export
- * sized to the visual room the plan has nothing to cut, so what is in may stay in. Keep radii rise (a kept item is the
- * first to go when a wanted one needs room, so keeping costs nothing but saves a read when the player turns back: ~25 %
- * of the map KB of a Burg soak was read again within 30 s, world-14); an item that is in (or being read) is measured
- * MS_CLS_HYST m nearer for its class, so a player standing on a class edge does not flip it every plan; and a plan that
- * has to cut a wanted item says so (hitch_cut, the "stream:" line's plan cut: a logged bug, gated by tools/budget.py). */
-#define MS_CLS_HYST 2.0f  /* m (ASSUMED: the near switch's own NEAR_HYST in map.c) */
-#define MS_KEEP_MORE 10.0f  /* m added to the near, horizon and foliage keep radii */
-#define MS_R0_WANT_DVD 24.0f
-#define MS_R0_KEEP_DVD (30.0f + MS_KEEP_MORE)
-#define MS_R0_WANT_CD 29.0f
-#define MS_R0_KEEP_CD (35.0f + MS_KEEP_MORE)
-#ifndef MS_R0_WANT
-#ifdef MEDIA_CD
-static float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
-#else
-static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
-#endif
-#define MS_R0_WANT ms_r0_want
-#define MS_R0_KEEP ms_r0_keep
-#define MS_MEDIA_RADII 1
-#elif !defined MS_R0_KEEP
-#define MS_R0_KEEP (MS_R0_WANT + 6.0f)
-#endif
-/* near parts rank by the nearer of the feet and a point MS_AHEAD_FRAMES ahead along the walking direction (velocity
- * smoothed over ~10 frames; ASSUMED 1.5 s: about the read time of a near cell group from cdrom0: plus a margin), so
- * the cells the player walks into come before those behind (MS_NEAR_FIRST) */
-#define MS_AHEAD_FRAMES 45.0f
-#define MS_R1_PIN ((float)RES_PIN_R)   /* pinned coarse: residency.h, the hard tier (the ring to MS_R_HZN ranks below the near level) */
-#define MS_R0_FIRST 12.0f /* near parts this close rank above coarse cells in view (C_NEAR), the rest of 20 m below (C_NEAR2) */
-/* Near level first (built in: the frozen residency design, 2026-11-12): the near parts within MS_R0_FIRST rank
- * above the pinned coarse level out of view (C_PIN0 within MS_R1_FIRST and the sky / backdrop of the player's block >
- * C_VIEW coarse in view > C_NEAR > C_PIN coarse out of view). With every pinned coarse cell of all blocks within 64 m and every one in view within 128 m ahead of
- * them, the near level around the player waited behind megabytes of far coarse cells after each spawn (user report,
- * 2026-11-06). The coarse cells close by still go first: a missing one is a hole at the player's feet. */
-#define MS_R1_FIRST 32.0f
-/* Cancelled reads (built in: the frozen residency design, 2026-11-12): a read in flight whose items all fell below C_PREF on a re-plan (the player moved
- * on or warped, a settle began) is cancelled and its pages freed (pack_req_cancel stops it after its current 64 KB
- * page). Without it up to MS_INFLIGHT x MS_RUN = 2 MB of stale reads went on landing ahead of what the new spot
- * needs. */
-/* Settle with the near level (built in: the frozen residency design, 2026-11-12): a settle (DSR's loading screen after a warp or
- * spawn) also reads the near parts within MS_R0_DRAW of the feet and waits for them (mapstream_busy), so the player
- * starts with the near level drawn instead of watching it stream in over the coarse one (Ame, 2026-11-06). world.c
- * still ends a settle after its time limit. */
-#define MS_SETTLE_NEAR_MS 10000u  /* ASSUMED cap: past it the settle ends with what is in, the rest streams in */
-/* Horizon (map.c HZN_R, tools/horizon.py): items tagged MS_RES_LOD (a cell's coarse level and kept opaque meshes, the
- * cell has a horizon) are wanted only within MS_R_HZN and kept to MS_R_HZN_KEEP; beyond, the resident horizon is
- * drawn. That leaves the reader the near detail: ~1000 small coarse items in view out to 260 m, a seek each, were the
- * Burg ISO route's holes and pop-in (2026-11-06). 64 = MS_R1_PIN: the export budget (WS_R1 96 m) covers it. */
-/* (2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m freed ~0.55 MB of pinned coarse cells
- * at the Burg spots of Ame's report, but the horizon grew 62 KB per block and the room went down with it: ~0.3 MB net
- * for a closer, coarser horizon; not kept. The "pin0 by distance" log line shows the bands.) */
-/* (Burg plan B3, 2026-11-08: 48 / 56 m with map.c HZN_R 40 and the horizon judged from 38 m, the export's hard tier
- * holding the coarse level within 40 m: HZN_R + HZN_HYST + the camera's ~5 m stay inside 48 m) */
-/* (Makefile BURG_HZN_NEAR, 2026-11-10, Ame's pick: map.c HZN_R 32 and MS_R_HZN 40: the horizon stands in from 32 m) */
-#ifndef MS_R_HZN
-#define MS_R_HZN ((float)RES_HZN_R)
-#endif
-#define MS_R_HZN_KEEP (MS_R_HZN + 8.0f + 2 * MS_KEEP_MORE)
 /* MS_BEHIND_KEEP (default 1, Ame's pick 2026-11-10; 0 = read as before): a horizon-covered coarse item (MS_RES_LOD)
  * out of view and at least MS_BEHIND_R away is kept while it is in but never read: behind the camera nothing draws it,
  * and turning round shows the cell's horizon until it lands (map.c draws a missing coarse cell's horizon). At the Burg
@@ -130,381 +47,33 @@ static float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
 #ifndef MS_BEHIND_R
 #define MS_BEHIND_R 32.0f
 #endif
-/* Stable ranks (built in: the frozen residency design, 2026-11-12): distance-only ranks inside MS_R1_PIN and a bonus for what is in
- * (MS_HOLD_K x the squared distance, ~16 % nearer), so what fits stays and what does not fit stays out */
-#define MS_HOLD_K 0.7f
-#define MS_THRASH_TICKS 28u  /* hitch.c: a read again within ~30 s of its drop counts as thrash (ticks of 32 frames) */
-#define MS_R1_VIEW 128.0f /* coarse cells in view this close: C_VIEW, beyond: C_VIEW2 */
-#define MS_R1_WANT 260.0f
-#define MS_R1_KEEP 280.0f
-/* foliage items (MS_RES_GRASS): map.c draws tufts at (GRASS_D0 10 m / d)^2 of their density, ~6 % at 40 m (ASSUMED
- * radius); kept 8 m more */
-#define MS_GRASS_WANT 40.0f
-#define MS_GRASS_KEEP (48.0f + MS_KEEP_MORE)
-/* backdrop chunks (MS_RES_FAR) rank as if no farther than this: they are the horizon wherever the player stands */
-#define MS_FAR_D 64.0f
-/* an item map.c asked for (drawn, or wanted while missing) within MS_VIEW_FRAMES counts as in view: its rank is
- * MS_VIEW_K x the squared distance (half the distance); ASSUMED 1 s so a look around does not flip classes */
-#define MS_VIEW_FRAMES 30u
-/* MS_STEADY: whether a coarse or backdrop item counts as in view for its class (C_VIEW / C_VIEW2 vs C_FARC) is judged
- * over MS_VIEW_STICKY frames: with the 1 s window another block's backdrop (Firelink's, behind the Burg) dropped to
- * C_FARC on every look away, went first when room was needed and was read again on the next look back: ~180 of 260
- * far seeks on the ISO world_route were Firelink's pack, 60-100 MB from the Burg's on the disc (B8b, 2026-11-08).
- * ASSUMED 10 s (a look around and back) */
-#define MS_VIEW_STICKY 300u
-#define MS_VIEW_K 0.25f
-/* re-plan when the player moved this far or this many frames passed (~5000 items over 5 blocks: a scan every frame
- * cost the Burg bonfire 30 -> 22 fps with v1) */
-#define MS_SCAN_D 4.0f
-#define MS_SCAN_FRAMES 16u
-/* a texture's mip 0 kept while texcache asked for it within this many frames (as v1) */
-#define MS_TEX_KEEP 600u  /* (MS_STEADY: 20 s, a mip 0 asked for again after a look around) */
-/* an item that found no room is passed over this many frames (the next one reads meanwhile) */
-#define MS_BLOCK_FRAMES 30u
-#ifndef MS_POOL
-#define MS_POOL (8u << 20)
-#endif
-/* EE heap left outside the arena when it is allocated (as v1): the 1.5 MB reserve + 1.5 MB for what loads later */
-#define MS_RESERVE (3u << 20)
-#define MS_PAGE (64u << 10)
-/* The top of the arena is kept for mapstream_alloc (block lite sets up to 1.7 MB, relief ~0.9 MB, enemy model.bin
- * buffers up to 0.6 MB): map items never go there. Without it the pinned and drawn items filled every page, model
- * buffers fell back to the heap and fragmented it (c2540 model.bin OUT OF RAM in world_cross, host ELF, 2026-11-06);
- * v1 dropped drawn cells for them instead, which hung PCSX2 when a queued chain still read them. Sized for one enemy
- * model.bin (lite sets and relief clear windows below it): 2 MB cost the route's map items 2 MB and its worst frame
- * went from 42 to 219 cells missing (ISO, 2026-11-06). ASSUMED size. */
-#define MS_OTHER (768u << 10)
-#define MS_GRAN 256u
-#define MS_GPP (MS_PAGE / MS_GRAN)  /* granules per page */
-#define MS_RUN (256u << 10)          /* bytes of neighbouring resident items per request (v1 step 5) */
-#define MS_INFLIGHT 8
-#define MS_QUEUE 64
-#define MS_BLOCKED 16
-/* pages a read may clear per frame (each clearing ranks every loaded item) */
-#define MS_EVICT_PASSES 2
-#define MS_FAIL_FRAMES 90u
-#define MS_FAIL_FRAMES_MAX (16 * MS_FAIL_FRAMES)
 
-enum { MS_NONE, MS_READING, MS_READY, MS_FAILED };
-/* classes, lowest first (the header comment lists them). Coarse cells in view within MS_R1_VIEW rank above near
- * parts: a missing near part draws its cell's coarse level, a missing coarse cell is a hole (with near parts first, the
- * route's worst frame had 211 cells missing instead of 42, ISO 2026-11-06) */
-enum { C_FREE, C_KEEP, C_PREF, C_FARC, C_VIEW2, C_NEAR2, C_PIN, C_NEAR, C_VIEW, C_PIN0 };
-#define C_TOP C_PIN0
-/* the class of a streamed mip 1 asked for lately (mapsplit.py MIP1_OUT). C_VIEW2 (the coarse cells in view) took
- * near-class "no room" refusals 12 -> 145 on iso_ame_report3 (one run, 2026-11-08): the 4 KB items spread over the
- * pages the near parts needed. C_PREF: as mip 0, after every near part */
-#ifndef MS_MIP1_CLS
-#define MS_MIP1_CLS C_PREF
+#ifndef MS_MIP0
+#define MS_MIP0 1  /* 0: no full-size map textures (plan_item) */
+#endif
+
+#ifdef MS_MEDIA_RADII  /* the media radii (mapstream_i.h) */
+#ifdef MEDIA_CD
+float ms_r0_want = MS_R0_WANT_CD, ms_r0_keep = MS_R0_KEEP_CD;
+#else
+float ms_r0_want = MS_R0_WANT_DVD, ms_r0_keep = MS_R0_KEEP_DVD;
+#endif
 #endif
 
 MapStreamStats mapstream_stats;
-
-typedef struct {
-    Pack pk;
-    int borrowed;
-    unsigned base, total;  /* cells.bin in the pack */
-    const MapCell *tab;
-    const short *keys;  /* cell keys (mapstream.h cell_keys), NULL: none */
-    unsigned ncell;
-    MapResItem *rit;
-    unsigned nres;
-    /* per item (ids [0, ncell) near entries, [ncell, ncell + nres) resident items) */
-    unsigned char *state, *cls;
-    void **buf;
-    unsigned *used;        /* frame map.c last asked for it */
-    unsigned short *rgrp;  /* resident item: first item (index into rit) of the group it was read with */
-    unsigned short *ld;    /* per item (hitch.c churn): 0 never read, 1 in, else the tick (frame / 32) + 2 it was dropped */
-    unsigned *wq;          /* per near part (near wait log): clk_ms + 1 of the plan that first wanted it while not in, 0 */
-    unsigned char *cmark;  /* per cell, during the plan's cut: 1 its near parts are in the plan, 2 they are not */
-    /* visibility (pvs.c): per item 1 while any of its chunks is seen, the tick (frame / 4) it was last seen; the
-     * vis_gen value they follow, items they cover */
-    unsigned char *visv;
-    unsigned short *vist;
-    unsigned visg, visn, vish, viskb;  /* + items outside it now, their KB */
-} MsInst;
-static MsInst ms[MS_INST];
+MsInst ms_inst[MS_INST];
 static int sel;  /* the instance mapstream_get / mapstream_res answer for */
-static unsigned frame;
+unsigned ms_frame;
 /* the frames of the last two map draws (mapstream_get / mapstream_res calls). An item handed out in either may be read
  * by a VIF chain that is built or still running: it is never freed (a warp settle advances `frame` many times without
  * a draw, and #110 freed cells of the last drawn frame's chain there: hang after a spawn, 2026-11-06) */
-static unsigned dcur, dprev;
+unsigned ms_dcur, ms_dprev;
 /* (an item that landed after the last draw has used > dcur: no chain has it. Counting those made every item read in
  * a settle undroppable: the near level filled the arena and the next block's lite set found no window, settle at its
  * 30 s cap, ISO 2026-11-06) */
 /* mapstream_alloc after vu1_wait: no chain reads the arena (map.c builds the map chain in map_draw and main.c kicks it
  * right after; no allocation runs in between) */
-static int chains_done;
-static inline int in_chain(unsigned used)
-{
-    if (chains_done)
-        return 0;
-    return dprev && (int)(used - dprev) >= 0 && (int)(used - dcur) <= 0;
-}
-static inline void drawn(void)
-{
-    if (frame != dcur)
-        dprev = dcur, dcur = frame;
-}
-
-static inline unsigned it_n(const MsInst *m) { return m->ncell + m->nres; }
-static inline int it_res(const MsInst *m, unsigned id) { return id >= m->ncell; }
-static inline unsigned it_bytes(const MsInst *m, unsigned id)
-{
-    return id < m->ncell ? m->tab[id].bytes : m->rit[id - m->ncell].bytes;
-}
-static inline unsigned it_off(const MsInst *m, unsigned id)
-{
-    return id < m->ncell ? m->base + m->tab[id].off : m->rit[id - m->ncell].off;
-}
-static inline int it_tex(const MsInst *m, unsigned id) { return id >= m->ncell && (m->rit[id - m->ncell].tag & MS_RES_TEX); }
-
-/* the items [*first, return) that share id's memory (one read group) */
-static unsigned grp_of(const MsInst *m, unsigned id, unsigned *first)
-{
-    if (!it_res(m, id)) {
-        *first = id;
-        return id + 1;
-    }
-    unsigned j0 = m->rgrp[id - m->ncell], e = j0 + 1;
-    while (e < m->nres && m->rgrp[e] == j0)
-        e++;
-    *first = m->ncell + j0;
-    return m->ncell + e;
-}
-static unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
-{
-    if (!it_res(m, a))
-        return it_bytes(m, a);
-    const MapResItem *r = m->rit;
-    return r[e - 1 - m->ncell].rel + r[e - 1 - m->ncell].bytes - r[a - m->ncell].rel;
-}
-
-/* ---- arena: granule bitmap on a page grid ---- */
-static unsigned char *arena;
-static unsigned arena_size, npages, ipages, *gmap;  /* ipages: pages map items may use (below MS_OTHER) */  /* bit per granule, 1 = used */
-static unsigned short *pfree;               /* free granules per page */
-/* Items over the top (built in: the frozen residency design, 2026-11-12): the pages map items may use now. Once mapstream_alloc holds more than
- * MS_OTHER (two Burg blocks' lite sets: 4.2 MB) the reserve is gone anyway, and the plan's cut already counts every
- * page not held by them as item room (cap = npages - other); items kept out of the reserve's free pages left that room
- * idle while 63 KB coarse cells of the pinned class found no room (384 KB of whole free pages there, ISO A/B of Ame's
- * play report 2026-11-08). mapstream_alloc clears item pages there like any other. */
-/* MS_POOLS: bytes asked for the structural / misc pools (mapstream_pools), their first pages once the arena exists
- * (struct: [spage0, npages), misc: [mpage0, spage0), items below mpage0 = ipages), bytes mapstream_alloc placed in
- * item pages (the plan leaves them out) */
-static unsigned pool_req[2], spage0, mpage0, items_other;
-static int pools_on, pool_busy;
-/* Lending (the planning thread's "drop-only lending", 2026-11-08; built in: the frozen residency design, 2026-11-12): the pools' idle pages hold map items of
- * the lowest classes the plan wants (read-ahead, coarse out of view or beyond the view radius, the pinned coarse ring:
- * MS_LEND_CLS), never a near part. They are never copied: a pool allocation that finds no room drops them (those a
- * chain may still read wait two draws: mapstream_pool_wait). The visual room the export solves against stays the item
- * pages; lent room only fills the horizon ring where fewer blocks are loaded than the pool is sized for. */
-static unsigned lent_n;  /* items in pool pages now (A/B log) */
-/* (a mapstream_pool_prepare does not keep new items out of the structural pool: with ~2 s of that, under B3's radii
- * the near parts lost the lent pages they relied on (soak2 pop-ins 25 / 37 -> 54 / 54, taurus 16 / 12 -> 35 / 35,
- * 2026-11-09); the drop after one VU1 wait in mapstream_alloc_pool is what ended the long seam holds) */
-static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_pool_prepare), for the log */
-/* near parts may take idle pool pages too, up to this much (the planning thread: a refused near part is not drawn
- * either; a lent one draws until a lite set needs its page). Their drops are logged and counted (hitch.c stream line) */
-/* Only items out of view or ahead of the player are lent (C_PREF, C_FARC, C_VIEW2), so a lite set's drop never
- * removes something drawn (lendable). Lending every class (near parts up to MS_LEND_NEAR_KB): with B3's radii
- * all-class lending cost ~25 world_route pop-ins (36 / 34 vs 10-13 with MS_LEND=0, 2026-11-09); without B3 it brought
- * iso_ame_report3's horizon share back to main's */
-#ifndef MS_LEND_NEAR_KB
-#define MS_LEND_NEAR_KB 900
-#endif
-/* Near parts lent (built in: the frozen residency design, 2026-11-12): near parts take idle pool pages once the item pages are full, up to
- * MS_LEND_NEAR_KB. Before (2026-11-10) they never could (lendable() is false for them), yet
- * the plan's cap_hi counted that room for them: near cells were planned in and then refused at the player's feet
- * while the structural pool had Firelink's 1.7 MB lite slot idle (Ame's ISO play report 2026-11-10: 252 "no room
- * for item", 167 of them near parts, with 1.4-4.5 MB of the arena free) */
-static unsigned lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
-static inline unsigned ilim(void)
-{
-    if (pools_on)
-        return ipages;
-    return (mapstream_stats.other_kb << 10) > MS_OTHER ? npages : ipages;
-}
-static unsigned reserve_extra, pool_max = MS_POOL;
-
-/* make_window's scores per page: bits 0-7 highest class + 1 of its clearable groups, 0x200 not clearable; cost;
- * granules of clearable groups (a page whose used granules are not all clearable groups holds a read in flight or a
- * mapstream_alloc block) */
-static unsigned *pcls, *pcost, *pitem;
-
-/* ---- pages borrowed from the heap (MS_BORROW) ----
- * The arena's size is fixed at boot, but the heap's free RAM is not idle: at the Taurus Demon on the ISO Burg route
- * (2026-11-08) the heap had 5.9 MB free (largest run 1.4 MB) while near and coarse cells found no arena room (plan
- * ~6.7 MB of items against ~3.7 MB of arena left by two lite sets and the relief). Map items are at most a page and
- * any free page fits any read group, so the streamer borrows single 64 KB heap blocks as extra item pages while the
- * heap keeps MS_BORROW_FLOOR free, and gives them back (dropping their items, never one a chain may still read) when
- * it falls below that, or at once when a heap allocation needs the room (mapstream_heap_release, the way re3's
- * CMemoryHeap::Malloc calls CStreaming::MakeSpaceFor before it fails: sdk-ref re3 src/rw/MemoryHeap.cpp). A page
- * fits a hole of the fragmented heap, so free RAM in pieces too small for an enemy model still holds map data.
- * Extra pages get page numbers npages.. npages + MS_XMAX - 1 in the granule map; an absent one is marked used.
- * Built in: the frozen residency design, 2026-11-12 */
-#define MS_XMAX 96                          /* pages that may be borrowed (6 MB) */
-/* heap kept free: AGENTS.md's 1.5 MB in the heaviest spot + one Burg enemy type's load (model.bin falls back to the
- * heap, then its skin pages and compact copy; ~1.2 MB, world.c WORLD_HEAP_MODELS) */
-#ifndef MS_BORROW_FLOOR
-#define MS_BORROW_FLOOR (2816u << 10)
-#endif
-#define MS_BORROW_HYST (256u << 10)         /* borrow only above floor + this (no borrow / give back each frame) */
-static unsigned char *xpage[MS_XMAX];
-static unsigned char xret[MS_XMAX];  /* being given back: no new items (its drawn ones wait for their chains) */
-static unsigned nx;  /* borrowed pages now */
-static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
-static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
-static inline unsigned ntot(void) { return npages + MS_XMAX; }
-static inline unsigned char *g_ptr(unsigned g)
-{
-    unsigned p = g / MS_GPP;
-    return (p < npages ? arena + (size_t)p * MS_PAGE : xpage[p - npages]) + (g % MS_GPP) * MS_GRAN;
-}
-static unsigned g_of(const void *ptr)
-{
-    const unsigned char *q = ptr;
-    if (q >= arena && q < arena + arena_size)
-        return (unsigned)(q - arena) / MS_GRAN;
-    for (unsigned i = 0; i < MS_XMAX; i++)
-        if (xpage[i] && q >= xpage[i] && q < xpage[i] + MS_PAGE)
-            return (npages + i) * MS_GPP + (unsigned)(q - xpage[i]) / MS_GRAN;
-    return ~0u;  /* not ours (a caller bug) */
-}
-/* the item pages: those below ilim(), then the borrowed ones (absent ones are marked full) */
-#define FOR_IPAGES(p) for (unsigned p##_i = 0, p; p##_i < ilim() + MS_XMAX && (p = p##_i < ilim() ? p##_i : npages + p##_i - ilim(), 1); p##_i++)
-
-static inline int g_used(unsigned g) { return gmap[g >> 5] >> (g & 31) & 1; }
-static void g_mark(unsigned g0, unsigned n, int on)
-{
-    for (unsigned g = g0; g < g0 + n; g++) {
-        unsigned b = 1u << (g & 31);
-        if (on)
-            gmap[g >> 5] |= b;
-        else
-            gmap[g >> 5] &= ~b;
-        pfree[g / MS_GPP] += on ? -1 : 1;
-    }
-}
-/* n bytes (<= a page) inside one page: pages already in use first, so free pages stay whole. (Best fit with small
- * items from the top and page-sized groups from the bottom was tried, 2026-11-12: no-room refusals 440 -> 515 on
- * iso_burg_taurus, 100 -> 162 on iso_ame_report3; not kept) */
-static void *g_alloc(unsigned n)
-{
-    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
-    if (!ng || ng > MS_GPP)
-        return NULL;
-    for (int pass = 0; pass < 2; pass++)
-        FOR_IPAGES(p) {
-            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP) || (p >= npages && xret[p - npages]))
-                continue;
-            unsigned run = 0, g0 = p * MS_GPP;
-            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
-                run = g_used(g) ? 0 : run + 1;
-                if (run == ng) {
-                    g_mark(g + 1 - ng, ng, 1);
-                    return g_ptr(g + 1 - ng);
-                }
-            }
-        }
-    return NULL;
-}
-/* n bytes in a run of whole free pages in [bot, top), the highest such run, placed at its top */
-static void *g_alloc_range(unsigned n, unsigned bot, unsigned top)
-{
-    unsigned np = (n + MS_PAGE - 1) / MS_PAGE, ng = (n + MS_GRAN - 1) / MS_GRAN, run = 0;
-    for (unsigned p = top; p-- > bot;) {
-        run = pfree[p] == MS_GPP ? run + 1 : 0;
-        if (run == np) {
-            unsigned end = (p + np) * MS_GPP;
-            g_mark(end - ng, ng, 1);
-            return arena + (size_t)(end - ng) * MS_GRAN;
-        }
-    }
-    return NULL;
-}
-static void *g_alloc_top(unsigned n, unsigned top) { return g_alloc_range(n, 0, top); }
-/* MS_LEND: n bytes (<= a page) inside one page of the pools, pages already in use first */
-static void *g_alloc_lend(unsigned n)
-{
-    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
-    if (!ng || ng > MS_GPP)
-        return NULL;
-    for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = mpage0; p < npages; p++) {
-            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
-                continue;
-            unsigned run = 0, g0 = p * MS_GPP;
-            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
-                run = g_used(g) ? 0 : run + 1;
-                if (run == ng) {
-                    g_mark(g + 1 - ng, ng, 1);
-                    return g_ptr(g + 1 - ng);
-                }
-            }
-        }
-    return NULL;
-}
-static void g_free(void *ptr, unsigned n)
-{
-    unsigned g0 = g_of(ptr);
-    g_mark(g0, (n + MS_GRAN - 1) / MS_GRAN, 0);
-}
-
-static unsigned heap_free(void)
-{
-    struct mallinfo mi = mallinfo();
-    return 32 * 1024 * 1024 - (unsigned)sbrk(0) + mi.fordblks;
-}
-
-
-static int ensure_arena(void)
-{
-    if (arena)
-        return 1;
-    unsigned hf = heap_free(), rs = MS_RESERVE + reserve_extra;
-    unsigned sz = hf > rs + (1u << 20) ? hf - rs : 0;
-    sz = (sz < pool_max ? sz : pool_max) & ~(MS_PAGE - 1);
-    arena = sz ? memalign(MS_PAGE, sz) : NULL;
-    if (arena) {
-        npages = sz / MS_PAGE;
-        unsigned nt = ntot();  /* + the borrowed pages' slots */
-        gmap = calloc((nt * MS_GPP + 31) / 32, 4);
-        pfree = malloc(nt * sizeof *pfree);
-        pcls = malloc(nt * sizeof *pcls), pcost = malloc(nt * sizeof *pcost);
-        pitem = malloc(nt * sizeof *pitem);
-        if (!gmap || !pfree || !pcls || !pcost || !pitem) {
-            free(arena), free(gmap), free(pfree), free(pcls), free(pcost), free(pitem);
-            pcls = pcost = pitem = NULL;
-            arena = NULL;
-        } else {
-            for (unsigned p = 0; p < npages; p++)
-                pfree[p] = MS_GPP;
-            for (unsigned p = npages; p < ntot(); p++)  /* not borrowed: full */
-                pfree[p] = 0, memset(&gmap[p * MS_GPP / 32], 0xff, MS_GPP / 8);
-            arena_size = sz;
-            ipages = npages > 2 * (MS_OTHER / MS_PAGE) ? npages - MS_OTHER / MS_PAGE : npages / 2;
-            unsigned sp = (pool_req[0] + MS_PAGE - 1) / MS_PAGE, mp = (pool_req[1] + MS_PAGE - 1) / MS_PAGE;
-            if (sp && sp + mp + 16 < npages) {  /* (16: at least 1 MB of items) */
-                pools_on = 1;
-                spage0 = npages - sp, mpage0 = spage0 - mp, ipages = mpage0;
-            }
-        }
-    }
-    printf("mapstream: v2 arena %u KB in %u pages (heap free %u KB)\n", arena ? arena_size >> 10 : 0, npages, hf >> 10);
-    if (pools_on && arena_size < pool_max)
-        printf("mapstream: arena %u KB is under the build's %u KB (heap): the visual room is smaller\n",
-               arena_size >> 10, pool_max >> 10);
-    if (pools_on)
-        printf("mapstream: arena structural %u KB, misc %u KB, visual %u KB\n", (npages - spage0) * (MS_PAGE >> 10),
-               (spage0 - mpage0) * (MS_PAGE >> 10), ipages * (MS_PAGE >> 10));
-    else if (arena && pool_req[0])
-        printf("mapstream: arena pools off (structural %u KB + misc %u KB asked of %u KB)\n",
-               pool_req[0] >> 10, pool_req[1] >> 10, arena_size >> 10);
-    return arena != NULL;
-}
-
+int ms_chains_done;
 /* ---- items ---- */
 static float box_d2(const MapCell *c, const float *p)
 {
@@ -519,7 +88,8 @@ static float box_d2(const MapCell *c, const float *p)
 /* the near level's distance (mapstream.h cell_near_d2: the box clipped to the cell's cube, MS_NEAR_CUBE) */
 #define near_d2(m, c, p) cell_near_d2(&(m)->tab[c], (m)->keys ? (m)->keys + 4 * (c) : (const short *)0, p)
 
-static int focus = -1, settling, hold;
+static int focus = -1, hold;
+int ms_settling;
 static float ahead[3], vel[3], last_pos[3];  /* the walking look-ahead point (MS_AHEAD_FRAMES) */
 static int ahead_on;
 /* how long a near part waits from the plan that first wants it to its landing (ms: running average and mean
@@ -530,7 +100,7 @@ static int ahead_on;
 static float lat_avg = 800.0f, lat_dev = 200.0f;
 static float settle_r, settle_rf;
 static unsigned (*tex_age)(int k, unsigned tag);
-static void (*tex_set)(int k, unsigned tag, const void *p);
+void (*ms_tex_set)(int k, unsigned tag, const void *p);
 
 /* ---- visibility (src/pvs.c via map.c, 2026-11-06) ----
  * Cells are a spatial index: a cell 20 m away behind a wall still holds parts no camera nearby can see. The vis hook
@@ -554,7 +124,7 @@ static struct { int k, fresh; unsigned id, g, nh, kb; } vjob = {-1};
 
 static void vis_begin(int k)
 {
-    MsInst *m = &ms[k];
+    MsInst *m = &ms_inst[k];
     unsigned n = it_n(m);
     int fresh = m->visn != n;  /* an item unseen at its first look was never seen: no hold */
     if (fresh) {
@@ -572,7 +142,7 @@ static void vis_begin(int k)
     vjob.k = k, vjob.fresh = fresh, vjob.id = 0, vjob.g = vis_gen(k), vjob.nh = vjob.kb = 0;
 }
 
-static int replan;
+int ms_replan;
 /* one slice of the visibility job (us of EE time); starts the next block's job when none runs */
 static void vis_step(unsigned us)
 {
@@ -583,18 +153,18 @@ static void vis_step(unsigned us)
     for (int pass = 0; pass < MS_INST; pass++) {
         if (vjob.k < 0) {
             for (int k = 0; k < MS_INST && vjob.k < 0; k++)
-                if (it_n(&ms[k]) && (ms[k].visn != it_n(&ms[k]) || ms[k].visg != vis_gen(k)))
+                if (it_n(&ms_inst[k]) && (ms_inst[k].visn != it_n(&ms_inst[k]) || ms_inst[k].visg != vis_gen(k)))
                     vis_begin(k);
             if (vjob.k < 0)
                 break;
         }
-        MsInst *m = &ms[vjob.k];
+        MsInst *m = &ms_inst[vjob.k];
         unsigned n = it_n(m), id = vjob.id;
         if (!m->visv || m->visn != n) {  /* the block closed or grew meanwhile: start it again */
             vjob.k = -1;
             continue;
         }
-        unsigned short tick = (unsigned short)(frame >> 2);
+        unsigned short tick = (unsigned short)(ms_frame >> 2);
         for (; id < n; id++) {
             if (!(id & 63) && ticks() - t0 > lim)
                 break;
@@ -612,7 +182,7 @@ static void vis_step(unsigned us)
         m->vish = vjob.nh, m->viskb = vjob.kb >> 10;
         m->visg = vjob.g;  /* (a crossing meanwhile: its gen moved on, the next job takes it) */
         vjob.k = -1;
-        replan = 1;
+        ms_replan = 1;
         if (ticks() - t0 > lim)
             break;
     }
@@ -623,7 +193,7 @@ static inline int vis_off(const MsInst *m, unsigned id) { return m->visv && id <
 /* out of the plan: outside the visibility now and for MS_VIS_HOLD ticks */
 static inline int vis_cut(const MsInst *m, unsigned id)
 {
-    return vis_off(m, id) && (unsigned short)((unsigned short)(frame >> 2) - m->vist[id]) > MS_VIS_HOLD;
+    return vis_off(m, id) && (unsigned short)((unsigned short)(ms_frame >> 2) - m->vist[id]) > MS_VIS_HOLD;
 }
 
 void mapstream_vis_hooks(int (*vis)(int k, unsigned id), unsigned (*gen)(int k))
@@ -676,10 +246,10 @@ static inline float steady_d2(const MsInst *m, unsigned id, float d2)
 /* class of item id of instance k with the player at pos; *key ranks it within the class (lower first) */
 static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, float *key)
 {
-    int view = frame - m->used[id] <= MS_VIEW_FRAMES;
+    int view = ms_frame - m->used[id] <= MS_VIEW_FRAMES;
     float vk = view ? MS_VIEW_K : 1.0f;
     /* (the rank keeps the 1 s view, the class the sticky one) */
-    view = frame - m->used[id] <= MS_VIEW_STICKY;
+    view = ms_frame - m->used[id] <= MS_VIEW_STICKY;
     if (id < m->ncell) {
         if (!m->tab[id].bytes)
             return C_FREE;
@@ -691,7 +261,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         /* a settle reads the near level within the draw radius (MS_SETTLE_NEAR) after the coarse level it waits for (as
          * C_NEAR it took the plan from coarse cells inside the settle radius, which the settle then waited for until its
          * 30 s cap: Firelink's near level within 26 m is 4.1 MB, ISO 2026-11-06); the rest streams in */
-        if (settling)
+        if (ms_settling)
             return d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
         if (ahead_on) {
             float da = near_d2(m, id, ahead);
@@ -709,6 +279,11 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = 0;
         if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
             return age <= 1 ? MS_MIP1_CLS : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
+        /* -DMS_MIP0=0: full-size textures are never read (the streamed mip 1 stays the sharpest level): a third fewer
+         * map reads on the ISO Taurus route and their ~0.5-0.9 MB of the arena for geometry, for softer surfaces
+         * within the 5-10 m where mip 0 shows. A compromise switch, off by default (TECH_DEBT world-16). */
+        if (!MS_MIP0)
+            return age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
     }
     if (tag & MS_RES_SKY) {
@@ -733,7 +308,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * and the near cells 0-5 m away popped in 2-7 s later; pinned coarse at 16-48 m was 96 % horizon-covered,
      * ~1.0-1.1 MB a plan (engine-gaps thread, ISO, 2026-11-09) */
 #define MS_SETTLE_HZN_D 24.0f  /* m (ASSUMED: past the near level's draw radius + its hysteresis) */
-    if (settling && (tag & MS_RES_LOD) && d2 >= sq(MS_SETTLE_HZN_D)) {
+    if (ms_settling && (tag & MS_RES_LOD) && d2 >= sq(MS_SETTLE_HZN_D)) {
         *key = d2 * vk;
         return C_KEEP;
     }
@@ -745,7 +320,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
-        return settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
+        return ms_settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
     /* (one level of detail per place: plan_ drops this item while its cell's near level stands for it, MS_ONE_LOD) */
     /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
      * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
@@ -763,7 +338,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * the median spot until their near parts landed, and the near parts were refused ("no room", Burg soak 2026-11-08).
      * A cell whose near part is not in and whose coarse level is out draws its horizon (map.c), not a hole. */
 #if MS_BEHIND_KEEP
-    if ((tag & MS_RES_LOD) && !view && !settling && d2 >= sq(MS_BEHIND_R))
+    if ((tag & MS_RES_LOD) && !view && !ms_settling && d2 >= sq(MS_BEHIND_R))
         return C_KEEP;
 #endif
     if ((tag & MS_RES_COARSE) && (m->tab[c].near & ~CELL_PART) && near_d2(m, c, pos) < sq(MS_R0_DRAW)) {
@@ -782,496 +357,22 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     return d2 < sq(MS_R1_FIRST) ? C_PIN0 : d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? C_FARC : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
                                                            : d2 < sq(MS_R1_KEEP) ? C_KEEP : C_FREE;
 }
-
-/* free the group of item id */
-static void drop(int k, unsigned id)
-{
-    MsInst *m = &ms[k];
-    unsigned a, e = grp_of(m, id, &a);
-    if (pools_on && lent_n) {  /* (MS_LEND: one in the pools' pages) */
-        unsigned g = g_of(m->buf[a]);
-        int in_pool = g != ~0u && g >= mpage0 * MS_GPP && g < npages * MS_GPP;
-        lent_n -= in_pool;
-        if (in_pool && (m->cls[a] == C_NEAR || m->cls[a] == C_NEAR2)) {
-            unsigned b = grp_bytes(m, a, e);
-            lent_near = lent_near > b ? lent_near - b : 0;
-        }
-    }
-    g_free(m->buf[a], grp_bytes(m, a, e));
-    for (unsigned j = a; j < e; j++) {
-        if (it_tex(m, j) && tex_set)
-            tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, NULL);
-        unsigned b = it_bytes(m, j);
-        if (m->ld && m->ld[j])
-            m->ld[j] = (unsigned short)((frame >> 5) + 2);
-        m->buf[j] = NULL;
-        m->state[j] = MS_NONE;
-        mapstream_stats.cells--;
-        mapstream_stats.bytes -= b;
-        if (it_res(m, j)) {
-            *(it_tex(m, j) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) -= (b + 1023) >> 10;
-            m->rgrp[j - m->ncell] = (unsigned short)(j - m->ncell);
-        }
-    }
-}
-
-/* the highest class over id's group (dropping it drops them all) */
-static int grp_cls(const MsInst *m, unsigned id)
-{
-    unsigned a, e = grp_of(m, id, &a);
-    int c = C_FREE;
-    for (unsigned j = a; j < e; j++)
-        c = m->cls[j] > c ? m->cls[j] : c;
-    return c;
-}
-/* any item of id's group handed out in the last two map draws */
-static int grp_chain(const MsInst *m, unsigned id)
-{
-    unsigned a, e = grp_of(m, id, &a);
-    for (unsigned j = a; j < e; j++)
-        if (in_chain(m->used[j]))
-            return 1;
-    return 0;
-}
-static unsigned grp_used(const MsInst *m, unsigned id)
-{
-    unsigned a, e = grp_of(m, id, &a), u = 0;
-    for (unsigned j = a; j < e; j++)
-        u = frame - m->used[j] < frame - u ? m->used[j] : u;
-    return u;
-}
-
-static inline int lendable(int cls)
-{
-    /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon
-     * for a moment, a near part would pop. With only the classes below C_PIN (and C_VIEW) lendable, iso_ame_report3
-     * drew the horizon inside HZN_R 99.5 % of the time (main 54 %; all classes lendable: 53 %) */
-    return pools_on && cls > C_KEEP && cls <= C_VIEW2;
-}
-/* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
-static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near);
-static unsigned lend_reclaim(unsigned p0, unsigned p1) { return lend_reclaim_(p0, p1, 0); }
-/* keep_near: near parts stay (mapstream_pool_prepare: ahead of time, they are what the player is looking at) */
-static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
-{
-    unsigned busy = 0;
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; m->state && id < it_n(m); id++) {
-            unsigned a;
-            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
-                continue;
-            unsigned g = g_of(m->buf[id]);
-            if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
-                continue;
-            if (keep_near && (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2))
-                continue;
-            if (!settling && grp_chain(m, id))  /* (a settle waited for VU1: no chain reads the arena; without this the
-                                                 * lite set waited out the settle: "settle stopped", taurus 2026-11-09) */
-                busy++;
-            else {
-                if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2) {
-                    hitch_lent_near();
-                    printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
-                           grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
-                }
-                drop(k, id);
-            }
-        }
-    }
-    return busy;
-}
-
-/* ---- making room ----
- * Clear `need` whole pages (a window; need = 1 for a read group): every group in the window must be loaded, of a class
- * below `below`, and not handed out in the last two map draws (in_chain). Cost per page: (highest class in it, then
- * the bytes and recency of its groups); the cheapest window from the top goes. 1 when cleared. */
-static int nowin = C_TOP + 2;  /* a window of 1 page was not found for this class or above since the last change */
-static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb);
-static int make_window(unsigned need, unsigned ng_need, int below, unsigned *kb)
-{
-    HITCH_BEGIN(w);
-    int r = make_window_(need, ng_need, below, kb);
-    HITCH_END(w, HS_MSWIN);
-    return r;
-}
-static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb)
-{
-    unsigned lim = ng_need || pools_on ? ilim() : npages;  /* a read's window lies where items may go (MS_POOLS: and
-                                                             * mapstream_alloc's beyond the pools) */
-    if (!need || need > npages || !pcls || (need == 1 && below >= nowin))
-        return 0;
-    memset(pcls, 0, ntot() * sizeof *pcls);
-    memset(pcost, 0, ntot() * sizeof *pcost);
-    memset(pitem, 0, ntot() * sizeof *pitem);
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            int c = grp_cls(m, id);
-            unsigned u = grp_used(m, id), n = grp_bytes(m, a, e);
-            unsigned g0 = g_of(m->buf[a]), ng = (n + MS_GRAN - 1) / MS_GRAN;
-            int ok = c < below && !grp_chain(m, id);
-            unsigned age = frame - u > 1000 ? 1000 : frame - u;  /* cost: bytes, older groups cheaper */
-            for (unsigned p = g0 / MS_GPP; p <= (g0 + ng - 1) / MS_GPP; p++) {
-                unsigned lo = p * MS_GPP > g0 ? p * MS_GPP : g0, hi = (p + 1) * MS_GPP < g0 + ng ? (p + 1) * MS_GPP : g0 + ng;
-                if (ok) {
-                    pitem[p] += hi - lo;
-                    if ((unsigned)c + 1 > (pcls[p] & 0xff))
-                        pcls[p] = (pcls[p] & ~0xffu) | (c + 1);
-                    pcost[p] += (n >> 8) + (1000 - age) / 10;
-                } else {
-                    pcls[p] |= 0x200;
-                }
-            }
-        }
-    }
-    /* a page is clearable when its used granules are all clearable groups; for one group of ng_need granules, also
-     * when its free granules and those of its clearable groups add up to that (the pinned and drawn groups of mixed
-     * pages stay; whether the hole is contiguous shows when the group is placed) */
-    for (unsigned p = 0; p < ntot(); p++) {
-        if (pitem[p] != MS_GPP - pfree[p])
-            pcls[p] |= 0x200;
-        if (need == 1 && (pcls[p] & 0x200) && pitem[p] && pfree[p] + pitem[p] >= ng_need)
-            pcls[p] = (pcls[p] & ~0x200u) | 0x400;  /* partly clearable: after the whole pages */
-    }
-    int best = -1;
-    unsigned long long bestc = ~0ull;
-    for (unsigned p = lim >= need ? lim - need + 1 : 0; p-- > 0;) {
-        unsigned hi = 0;
-        unsigned long long c = 0;
-        unsigned q;
-        for (q = p; q < p + need; q++) {
-            if (pcls[q] & 0x200)
-                break;
-            hi = (pcls[q] & 0x4ff) > hi ? pcls[q] & 0x4ff : hi;
-            c += pcost[q];
-        }
-        if (q < p + need)
-            continue;
-        unsigned long long score = (unsigned long long)hi << 40 | c;
-        if (score < bestc)
-            bestc = score, best = (int)p;
-    }
-    for (unsigned p = npages; need == 1 && ng_need && p < ntot(); p++) {  /* a read: borrowed pages too */
-        if (!xpage[p - npages] || xret[p - npages] || (pcls[p] & 0x200))
-            continue;
-        unsigned long long score = (unsigned long long)(pcls[p] & 0x4ff) << 40 | pcost[p];
-        if (score < bestc)
-            bestc = score, best = (int)p;
-    }
-    if (best < 0) {
-        if (need == 1 && below < nowin)
-            nowin = below;
-        return 0;
-    }
-    unsigned w0 = best * MS_GPP, w1 = (best + need) * MS_GPP;  /* granules */
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned o = g_of(m->buf[a]);
-            if (o < w1 && o + (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN > w0 && grp_cls(m, id) < below && !grp_chain(m, id)) {
-                if (kb)
-                    *kb += grp_bytes(m, a, e) >> 10;
-                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
-                drop(k, id);
-            }
-        }
-    }
-    return 1;
-}
-
-/* ---- moving items (MS_DEFRAG) ----
- * Ame's ISO play report (2026-11-08): 101 "no room" in 200 s with ~1 MB of the arena free. The free granules lay in
- * holes of ~10 KB over every page, and every page held a group drawn this frame or of a higher class, so make_window
- * found nothing to clear: near cells stayed at the coarse level or the horizon (holes, "never loads the higher LOD",
- * untextured stand-ins) and the relief window (732 KB) never came (normal maps). A group moves instead: copied into a
- * hole of another page, its pointers (and its texture's mip 0, tex_set) follow at once, and the old copy stays used
- * until no VIF chain built before the move can still read it (the in_chain rule: two map draws later), then frees.
- * Built in: the frozen residency design, 2026-11-12 */
-#define MS_DEFRAG_PEND 64            /* old copies waiting for their chains */
-#define MS_DEFRAG_KB 256u            /* most KB copied for a read (~2 ms of EE memcpy, ASSUMED); 3x for a relief window */
-#define MS_DEFRAG_WAIT 8u            /* frames a read waits at the queue head for a page being emptied */
-static struct { unsigned g0, ng, fr; } pend[MS_DEFRAG_PEND];
-static int npend;
-static unsigned pend_frame;  /* frame of the last move */
-static unsigned defrag_moves, defrag_kb;
-
-/* old copies no chain can read any more go back */
-static void pend_release(void)
-{
-    for (int i = 0; i < npend; i++)
-        if (chains_done || !dprev || (int)(dprev - pend[i].fr) > 0) {
-            g_mark(pend[i].g0, pend[i].ng, 0);
-            pend[i--] = pend[--npend];
-        }
-}
-
-/* n bytes inside one page outside pages [x0, x1) (below ilim): fullest page with a fitting hole first */
-static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
-{
-    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN, bp = ~0u, bg = 0;
-    if (!ng || ng > MS_GPP)
-        return NULL;
-    FOR_IPAGES(p) {
-        if ((p >= x0 && p < x1) || (p >= npages && xret[p - npages]) || pfree[p] < ng || (bp != ~0u && pfree[p] >= pfree[bp]))
-            continue;
-        unsigned run = 0, g0 = p * MS_GPP;
-        for (unsigned g = g0; g < g0 + MS_GPP; g++) {
-            run = g_used(g) ? 0 : run + 1;
-            if (run == ng) {
-                bp = p, bg = g + 1 - ng;
-                break;
-            }
-        }
-    }
-    if (bp == ~0u)
-        return NULL;
-    g_mark(bg, ng, 1);
-    return g_ptr(bg);
-}
-
-/* Empty `need` whole pages below `lim` by moving their groups elsewhere: the window whose used granules are all
- * movable groups (loaded, inside one page) with the fewest of them. 1 when every group of the window moved (its pages
- * free once the old copies go back, pend_release), 0 when no window qualifies or a group found no hole. */
-static int defrag(unsigned need, unsigned lim, unsigned max_kb)
-{
-    if (!pitem || npend > MS_DEFRAG_PEND - 16 || need > lim)
-        return 0;
-    HITCH_BEGIN(d);
-    memset(pitem, 0, ntot() * sizeof *pitem);
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned n = grp_bytes(m, a, e), g0 = g_of(m->buf[a]);
-            unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
-            if (g0 / MS_GPP == (g0 + ng - 1) / MS_GPP)
-                pitem[g0 / MS_GPP] += ng;
-        }
-    }
-    unsigned fr = 0;
-    FOR_IPAGES(p)
-        fr += pfree[p];
-    int best = -1;
-    unsigned bused = ~0u;
-    for (unsigned p = lim - need + 1; p-- > 0;) {
-        unsigned used = 0, q;
-        for (q = p; q < p + need; q++) {
-            unsigned u = MS_GPP - pfree[q];
-            if (pitem[q] != u)
-                break;  /* a read in flight, an old copy or a mapstream_alloc block */
-            used += u;
-        }
-        if (q < p + need || !used)
-            continue;
-        unsigned wfree = 0;
-        for (q = p; q < p + need; q++)
-            wfree += q < ilim() ? pfree[q] : 0;
-        if (used < bused && used <= max_kb * 1024 / MS_GRAN && fr - wfree >= used + used / 4)
-            bused = used, best = (int)p;
-    }
-    int ok = best >= 0;
-    if (ok) {
-        unsigned w0 = (unsigned)best * MS_GPP, w1 = w0 + need * MS_GPP, kb = 0;
-        for (int k = 0; k < MS_INST && ok; k++) {
-            MsInst *m = &ms[k];
-            for (unsigned id = 0; id < it_n(m) && ok; id++) {
-                unsigned a, e;
-                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                    continue;
-                unsigned char *src = m->buf[a];
-                unsigned n = grp_bytes(m, a, e), g0 = g_of(src), ng = (n + MS_GRAN - 1) / MS_GRAN;
-                if (g0 < w0 || g0 >= w1)
-                    continue;
-                unsigned char *dst = npend < MS_DEFRAG_PEND ? g_alloc_ex(n, (unsigned)best, (unsigned)best + need) : NULL;
-                if (!dst) {
-                    ok = 0;
-                    break;
-                }
-                memcpy(dst, src, n);
-                SyncDCache(dst, dst + n - 1);  /* the VIF / GIF DMA reads RAM */
-                for (unsigned j = a; j < e; j++) {
-                    m->buf[j] = dst + ((unsigned char *)m->buf[j] - src);
-                    if (it_tex(m, j) && tex_set)
-                        tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
-                }
-                pend[npend++] = (typeof(pend[0])){g0, ng, frame};
-                kb += n;
-                defrag_moves++;
-            }
-        }
-        defrag_kb += kb >> 10;
-        pend_frame = frame;
-    }
-    HITCH_END(d, HS_MSWIN);
-    return ok;
-}
-
-/* ---- borrowed pages: give back, borrow (MS_BORROW, comment at xpage) ---- */
-/* Give back the borrowed page whose items can all go now (loaded groups no chain reads: no read in flight, no old
- * defrag copy), the emptiest first. 1 when a page went back to the heap. */
-static int x_release(int force)
-{
-    unsigned ok[MS_XMAX];
-    if (!nx)
-        return 0;
-    memset(ok, 0, sizeof ok);
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned g0 = g_of(m->buf[a]);
-            if (g0 / MS_GPP < npages || g0 == ~0u || grp_chain(m, id))
-                continue;
-            ok[g0 / MS_GPP - npages] += (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN;
-        }
-    }
-    int best = -1;
-    for (unsigned i = 0; i < MS_XMAX; i++) {
-        unsigned p = npages + i;
-        if (xpage[i] && ok[i] == MS_GPP - pfree[p] && (best < 0 || pfree[p] > pfree[npages + best]))
-            best = (int)i;
-    }
-    if (best < 0) {
-        /* every borrowed page holds a group a chain may still read (cells drawn each frame stay in the last two
-         * draws: the heap sat at 1.48 MB with 448 KB lent at the Firelink cave, ISO 2026-11-08). Empty the
-         * fullest-free one now: its groups go (drawn ones keep their granules until their chains are done, as
-         * defrag's old copies, pend_release) and no new item goes in; the next call gives it back. */
-        if (!force)
-            return 0;
-        for (unsigned i = 0; i < MS_XMAX; i++)
-            if (xpage[i] && xret[i])
-                return 0;  /* one at a time: that one is still draining */
-        for (unsigned i = 0; i < MS_XMAX; i++)
-            if (xpage[i] && (best < 0 || pfree[npages + i] > pfree[npages + best]))
-                best = (int)i;
-        if (best < 0 || npend > MS_DEFRAG_PEND - 16)
-            return 0;
-        unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
-        xret[best] = 1;
-        for (int k = 0; k < MS_INST; k++) {
-            MsInst *m = &ms[k];
-            for (unsigned id = 0; id < it_n(m); id++) {
-                unsigned a, e;
-                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                    continue;
-                unsigned g0 = g_of(m->buf[a]);
-                if (g0 < w0 || g0 >= w1)
-                    continue;
-                unsigned n = grp_bytes(m, a, e), ng = (n + MS_GRAN - 1) / MS_GRAN;
-                int chain = grp_chain(m, id);
-                xstat_drop_kb += n >> 10;
-                hitch_drop(grp_cls(m, id) >= C_PREF, n);
-                drop(k, id);
-                if (chain && npend < MS_DEFRAG_PEND) {  /* the granules stay used until no chain reads them */
-                    g_mark(g0, ng, 1);
-                    pend[npend++] = (typeof(pend[0])){g0, ng, frame};
-                }
-            }
-        }
-        return 0;
-    }
-    unsigned p = npages + best, w0 = p * MS_GPP, w1 = w0 + MS_GPP;
-    for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
-        for (unsigned id = 0; id < it_n(m); id++) {
-            unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
-                continue;
-            unsigned g0 = g_of(m->buf[a]);
-            if (g0 >= w0 && g0 < w1) {
-                xstat_drop_kb += grp_bytes(m, a, e) >> 10;
-                hitch_drop(grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
-                drop(k, id);
-            }
-        }
-    }
-    if (pfree[p] != MS_GPP)  /* cannot happen (ok[] counted every used granule) */
-        return 0;
-    pfree[p] = 0;
-    memset(&gmap[w0 / 32], 0xff, MS_GPP / 8);
-    free(xpage[best]), xpage[best] = NULL, xret[best] = 0, nx--, xstat_back++;
-    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
-    return 1;
-}
-
-/* Once per frame: borrow a page while the item pages are (nearly) full and the heap has room over the floor; give
- * one back while the heap is under it */
-static void x_update(void)
-{
-    if (!arena)
-        return;
-    unsigned hf = heap_free(), floor = x_want > MS_BORROW_FLOOR ? x_want : MS_BORROW_FLOOR;
-    if (!nx || hf >= x_want)
-        x_want = 0;
-    if (nx && hf < floor) {  /* up to 4 pages a frame: back over the floor within a few frames */
-        for (int i = 0; i < 4 && hf < floor && x_release(1); i++)
-            hf = heap_free();
-        return;
-    }
-    unsigned fr = 0;
-    FOR_IPAGES(p)
-        fr += pfree[p];
-    if (nx >= MS_XMAX || fr >= 2 * MS_GPP || hf < MS_BORROW_FLOOR + MS_BORROW_HYST + MS_PAGE)
-        return;
-    for (unsigned j = 0; j < MS_XMAX; j++)
-        if (xret[j])
-            return;  /* one is being given back: none borrowed meanwhile */
-    unsigned i = 0;
-    while (xpage[i])
-        i++;
-    if (!(xpage[i] = memalign(MS_GRAN, MS_PAGE)))
-        return;
-    unsigned p = npages + i;
-    memset(&gmap[p * MS_GPP / 32], 0, MS_GPP / 8);
-    pfree[p] = MS_GPP;
-    nx++, xstat_borrow++;
-    mapstream_stats.lent_kb = nx * (MS_PAGE >> 10);
-    nowin = C_TOP + 2;  /* new room: windows may be found again */
-}
-
-unsigned mapstream_heap_release(unsigned bytes)
-{
-    unsigned n = 0, want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;
-    while (n < want && x_release(0))
-        n++;
-    if (n < want && nx) {  /* the rest drains over the next frames (pages with drawn cells: x_release) */
-        unsigned t = heap_free() + (want - n) * MS_PAGE;
-        x_want = t > x_want ? t : x_want;
-        x_release(1);
-    }
-    if (n)
-        printf("mapstream: gave %u borrowed pages back to the heap for %u KB (%u left)\n", n, bytes >> 10, nx);
-    return n;
-}
-
 /* ---- reads ---- */
-typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; } MsRead;  /* cxl: cancelled, still landing */
-static MsRead rd[MS_INFLIGHT];
-static int nrd;
+MsRead ms_rd[MS_INFLIGHT];
+int ms_nrd;
 static unsigned land_t;
-typedef struct { int k; unsigned id; int cls; float key; } MsQ;
 static MsQ q[MS_QUEUE];
 static int nq;
 static MsQ blk[MS_BLOCKED];
-static int nblk;
+int ms_nblk;
 static unsigned scan_frame, fail_frame, fail_wait;
 static float scan_pos[3];
 static int room_fail, failed, evict_left, defrag_left;
 /* load-time A/B (2026-11-06): a clock in ms over mapstream_update calls (COP0 Count wraps every 14.6 s), the settle
  * that ended last (its start / end on that clock), the first near cell and the full near level within MS_R0_FIRST of
  * the feet after it; KB of reads that landed with no class wanting them, KB of reads cancelled (MS_CANCEL) */
-static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb, cancel_kb;
+static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb;
+unsigned ms_cancel_kb;
 
 /* MS_SCAN (default 1; 0 = strict class then distance order): urgent reads (classes C_NEAR2 and up: near parts within the
  * draw radius, the coarse level in view and pinned) go nearest first; the read-ahead classes below them (C_VIEW2,
@@ -1291,7 +392,23 @@ static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, sta
 static int scan_k = -1;
 static unsigned scan_end;
 static int q_scan_pick(void);
-static int q_before(const MsQ *a, int cls, float key) { return a->cls > cls || (a->cls == cls && a->key <= key); }
+static unsigned flow_rd[3], flow_kb[3];
+static unsigned thr_n[3][MS_WHY_N], thr_kb[3], thr_cls[C_TOP + 1];
+/* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
+ * level within the draw radius, the pinned coarse level, coarse cells in view) go out nearest first whatever their
+ * class. By class, a block turning on read its whole pinned coarse ring out to 40 m (C_PIN0, hundreds of small items)
+ * before the first near part at the feet: 30-47 near parts within 20 m waited ~20 s with the reader busy (ISO
+ * iso_burg_taurus, "flow" log). The classes below keep their order after them. -DMS_READ_BY_CLASS=1: by class as
+ * before; a settle too (its plan has its own classes). */
+#ifndef MS_READ_BY_CLASS
+#define MS_READ_BY_CLASS 0
+#endif
+static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settling && cls >= C_NEAR2 ? C_TOP : cls; }
+static int q_before(const MsQ *a, int cls, float key)
+{
+    int ra = q_rank(a->cls), rc = q_rank(cls);
+    return ra > rc || (ra == rc && a->key <= key);
+}
 static void q_add(int k, unsigned id, int cls, float key)
 {
     int i = nq < MS_QUEUE ? nq++ : MS_QUEUE;
@@ -1306,7 +423,7 @@ static void q_add(int k, unsigned id, int cls, float key)
 }
 static int blocked(int k, unsigned id)
 {
-    for (int i = 0; i < nblk; i++)
+    for (int i = 0; i < ms_nblk; i++)
         if (blk[i].k == k && blk[i].id == id)
             return 1;
     return 0;
@@ -1314,12 +431,12 @@ static int blocked(int k, unsigned id)
 
 static void collect(int i, int r)
 {
-    MsRead w = rd[i];
-    memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
-    mapstream_stats.pending = nrd;
-    MsInst *m = &ms[w.k];
+    MsRead w = ms_rd[i];
+    memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
+    mapstream_stats.pending = ms_nrd;
+    MsInst *m = &ms_inst[w.k];
     if (w.cxl) {  /* cancelled (MS_CANCEL): the buffer is free once the read stopped */
-        drop(w.k, w.id);
+        ms_drop(w.k, w.id);
         return;
     }
     unsigned now = ticks(), t0 = (int)(w.t - land_t) > 0 ? w.t : land_t;
@@ -1338,7 +455,7 @@ static void collect(int i, int r)
         {  /* a near part's wait from the plan that wanted it to its landing (the reads queued and in
             * flight before it count); others (or one wanted before a settle) from the issue */
             float l = (float)(now - w.t) / 294912.0f;
-            if (!it_res(m, w.id) && m->wq && m->wq[w.id] && !settling) {
+            if (!it_res(m, w.id) && m->wq && m->wq[w.id] && !ms_settling) {
                 l = (float)(clk_ms + 1 - m->wq[w.id]);
                 for (unsigned j = w.id; j < w.id + w.n; j++)
                     m->wq[j] = 0;
@@ -1349,16 +466,21 @@ static void collect(int i, int r)
         }
         {
             unsigned l = m->ld ? m->ld[w.id] : 0;  /* read again within MS_THRASH_TICKS of its drop: thrash */
-            hitch_load(l != 0, l >= 2 && (unsigned short)((frame >> 5) + 2 - l) <= MS_THRASH_TICKS, w.bytes);
+            int th = l >= 2 && (unsigned short)((ms_frame >> 5) + 2 - l) <= MS_THRASH_TICKS;
+            hitch_load(l != 0, th, w.bytes);
+            if (th && m->dw) {  /* the thrash log: by kind, by why it had gone and the class it had then */
+                int kd = !it_res(m, w.id) ? 0 : it_tex(m, w.id) ? 2 : 1, y = m->dw[w.id] & 15, c = m->dw[w.id] >> 4;
+                thr_n[kd][y < MS_WHY_N ? y : 0]++, thr_kb[kd] += w.bytes >> 10, thr_cls[c <= C_TOP ? c : 0]++;
+            }
         }
         for (unsigned j = w.id; j < w.id + w.n; j++) {
             if (m->ld)
                 m->ld[j] = 1;
             m->state[j] = MS_READY;
-            m->used[j] = frame;
+            m->used[j] = ms_frame;
             mapstream_stats.loads++;
-            if (it_tex(m, j) && tex_set)
-                tex_set(w.k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
+            if (it_tex(m, j) && ms_tex_set)
+                ms_tex_set(w.k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
         }
         if (!it_tex(m, w.id))
             printf("mapstream: %s %d.%u (%u items) %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
@@ -1367,11 +489,11 @@ static void collect(int i, int r)
                    mapstream_stats.res_kb, mapstream_stats.tex_kb);
     } else {
         printf("mapstream: item %d.%u (%u items) read %d of %u bytes\n", w.k, w.id, w.n, r, w.bytes);
-        drop(w.k, w.id);
+        ms_drop(w.k, w.id);
         for (unsigned j = w.id; j < w.id + w.n; j++)
             m->state[j] = MS_FAILED;
         mapstream_stats.fails++;
-        failed = 1, fail_frame = frame;
+        failed = 1, fail_frame = ms_frame;
         fail_wait = !fail_wait ? MS_FAIL_FRAMES : fail_wait < MS_FAIL_FRAMES_MAX ? 2 * fail_wait : fail_wait;
     }
 }
@@ -1380,17 +502,17 @@ static void collect(int i, int r)
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
-    if (MS_SCAN && q[0].cls < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
+    if (MS_SCAN && q_rank(q[0].cls) < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
         int ra = 0;
-        for (int i = 0; i < nrd; i++)
-            ra += !rd[i].cxl && rd[i].cls < C_NEAR2;
+        for (int i = 0; i < ms_nrd; i++)
+            ra += !ms_rd[i].cxl && ms_rd[i].cls < C_NEAR2;
         if (ra >= MS_RA_INFLIGHT)
             return 0;
     }
     int qi = MS_SCAN ? q_scan_pick() : 0;
     MsQ w = q[qi];
     memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
-    MsInst *m = &ms[w.k];
+    MsInst *m = &ms_inst[w.k];
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
     unsigned wn = 1;
@@ -1407,14 +529,14 @@ static int issue(void)
         }
     }
     int sent = 0;
-    for (unsigned g = w.id; g < w.id + wn && nrd < MS_INFLIGHT;) {
+    for (unsigned g = w.id; g < w.id + wn && ms_nrd < MS_INFLIGHT;) {
         unsigned e = g + 1, gb = it_bytes(m, g);
         if (it_res(m, g)) {
             unsigned r0 = m->rit[g - m->ncell].rel;
             /* coarse items in groups of their own (they go first once the near level is in), except in a settle,
              * where split groups took 2.5x the reads (v1, ISO boot 6.0 -> 7.8 s) */
             while (e < w.id + wn && m->rit[e - m->ncell].rel + m->rit[e - m->ncell].bytes - r0 <= MS_PAGE &&
-                   (settling || !(m->rit[e - m->ncell].tag & MS_RES_COARSE) == !(m->rit[g - m->ncell].tag & MS_RES_COARSE)))
+                   (ms_settling || !(m->rit[e - m->ncell].tag & MS_RES_COARSE) == !(m->rit[g - m->ncell].tag & MS_RES_COARSE)))
                 e++;
             gb = grp_bytes(m, g, e);
         }
@@ -1430,32 +552,32 @@ static int issue(void)
                  (w.k != 0 || (w.cls == C_FARC && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_TEX)))) &&
                  !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR)));
         int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
-        if (nr && pools_on && gb <= MS_PAGE &&
+        if (nr && ms_pools_on && gb <= MS_PAGE &&
             !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))))
             lo = 1;
-        void *p = lo && !nr ? g_alloc_lend(gb) : NULL;
+        void *p = lo && !nr ? ms_g_alloc_lend(gb) : NULL;
         if (p)
-            lent_n++;
+            ms_lent_n++;
         else
-            p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
-        if (!p && lo && nr && lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = g_alloc_lend(gb)))
-            lent_n++, lent_near += gb;
+            p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
+        if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = ms_g_alloc_lend(gb)))
+            ms_lent_n++, ms_lent_near += gb;
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
             evict_left--;
             /* one page (or the pages of a group over a page) of items below this one's class, not drawn this frame
              * or the last */
-            if (make_window((gb + MS_PAGE - 1) / MS_PAGE, (gb + MS_GRAN - 1) / MS_GRAN, w.cls, NULL))
-                p = gb <= MS_PAGE ? g_alloc(gb) : g_alloc_top(gb, ilim());
+            if (ms_make_window((gb + MS_PAGE - 1) / MS_PAGE, (gb + MS_GRAN - 1) / MS_GRAN, w.cls, NULL))
+                p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
         }
         if (!p && !sent && gb <= MS_PAGE && nq < MS_QUEUE) {
             /* nothing to clear: empty a page by moving its groups (MS_DEFRAG); the read waits at the head of the queue
              * for the old copies to go (two draws), a few frames at most */
-            int moving = npend && frame - pend_frame <= MS_DEFRAG_WAIT;
+            int moving = ms_npend && ms_frame - ms_pend_frame <= MS_DEFRAG_WAIT;
             if (!moving && defrag_left > 0) {
                 defrag_left--;
-                moving = defrag(1, ilim(), MS_DEFRAG_KB);
+                moving = ms_defrag(1, ilim(), MS_DEFRAG_KB);
             }
             if (moving) {
                 memmove(q + 1, q, nq++ * sizeof *q);
@@ -1472,7 +594,7 @@ static int issue(void)
             if (!room_fail++) {
                 unsigned fr = 0;
                 for (unsigned i = 0; i < ntot(); i++)
-                    fr += pfree[i];
+                    fr += ms_pfree[i];
                 /* ", hard": an item of residency.h's hard tier (the near level within RES_NEAR_R, the pinned coarse
                  * level within RES_PIN_R) the export budgeted for: tools/budget.py counts those per run */
                 float d = sqrtf(w.key);
@@ -1485,15 +607,15 @@ static int issue(void)
             }
             mapstream_stats.room_fails++;
             hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2, w.k, w.id);
-            if (nblk == MS_BLOCKED)
-                memmove(blk, blk + 1, --nblk * sizeof *blk);
-            blk[nblk++] = (MsQ){w.k, w.id, 0, (float)frame};
+            if (ms_nblk == MS_BLOCKED)
+                memmove(blk, blk + 1, --ms_nblk * sizeof *blk);
+            blk[ms_nblk++] = (MsQ){w.k, w.id, 0, (float)ms_frame};
             return 1;  /* the next queued one may still fit */
         }
         room_fail = 0;
         int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
         if (!tk) {
-            g_free(p, gb);
+            ms_g_free(p, gb);
             if (!sent)
                 q_add(w.k, w.id, w.cls, w.key);
             return 0;
@@ -1509,11 +631,15 @@ static int issue(void)
             mapstream_stats.cells++;
             mapstream_stats.bytes += b;
         }
-        if (!nrd)
+        {  /* the flow line's reads by kind: near parts, resident geometry, textures */
+            int kd = !it_res(m, g) ? 0 : it_tex(m, g) ? 2 : 1;
+            flow_rd[kd]++, flow_kb[kd] += gb >> 10;
+        }
+        if (!ms_nrd)
             land_t = ticks();
-        rd[nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
+        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
         scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
-        mapstream_stats.pending = nrd;
+        mapstream_stats.pending = ms_nrd;
         sent++;
         g = e;
     }
@@ -1524,12 +650,12 @@ static int issue(void)
  * a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate. */
 static int q_scan_pick(void)
 {
-    if (q[0].cls >= C_NEAR2 || scan_k < 0)
+    if (q_rank(q[0].cls) >= C_NEAR2 || scan_k < 0)  /* the hard tier at the head: nearest first (q_rank) */
         return 0;
     int best = 0, bk = 3;
     unsigned bo = ~0u;
     for (int i = 0; i < nq; i++) {
-        const MsInst *m = &ms[q[i].k];
+        const MsInst *m = &ms_inst[q[i].k];
         if (q[i].id >= it_n(m))
             continue;
         unsigned o = it_off(m, q[i].id);
@@ -1545,10 +671,7 @@ static int q_scan_pick(void)
 /* ---- plan ---- */
 /* the plan's wanted items, sorted by rank; MS_FILL_PCT: the share (%) of the item pages the plan may fill (granule rounding,
  * read groups not filling their page, ASSUMED) */
-#define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
-#define MS_FILL_PCT ((unsigned)RES_FILL_PCT)  /* residency.h */
-typedef struct { unsigned char k, cls; unsigned short id; float key; } MsW;
-static MsW want[MS_WANTED];
+MsW ms_want[MS_WANTED];
 static int w_cmp(const void *a, const void *b)
 {
     const MsW *x = a, *y = b;
@@ -1566,11 +689,11 @@ static void plan_(const float *pos)
     unsigned pt[8], np_ = 0;  /* section times (PLAN_PROF) */
     pt[np_++] = ticks();
     nq = 0;
-    nowin = C_TOP + 2;
-    for (int i = 0; i < nblk; i++)
-        if (frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
-            blk[i--] = blk[--nblk];
-    int retry = failed && frame - fail_frame >= fail_wait;
+    ms_nowin = C_TOP + 2;
+    for (int i = 0; i < ms_nblk; i++)
+        if (ms_frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
+            blk[i--] = blk[--ms_nblk];
+    int retry = failed && ms_frame - fail_frame >= fail_wait;
     failed &= !retry;
     /* classes, then the cut: wanted items in rank order (class, then key) until their bytes fill the item pages; the
      * rest are only kept (never read, first to go). Without the cut the pinned coarse cells of Firelink + three Burg
@@ -1578,7 +701,7 @@ static void plan_(const float *pos)
      * stayed at its coarse level, with cells going missing (user report, 2026-11-06) */
     unsigned nw = 0;
     for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
+        MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             float key = 0;
             int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
@@ -1590,12 +713,12 @@ static void plan_(const float *pos)
             if (m->state[id] == MS_FAILED && retry)
                 m->state[id] = MS_NONE;
             if (c >= C_PREF && nw < MS_WANTED)
-                want[nw++] = (MsW){(unsigned char)k, (unsigned char)c, (unsigned short)id, key};
+                ms_want[nw++] = (MsW){(unsigned char)k, (unsigned char)c, (unsigned short)id, key};
         }
     }
     onelod_n = onelod_kb = 0;
-    for (int k = 0; !settling && k < MS_INST; k++) {
-        MsInst *m = &ms[k];
+    for (int k = 0; !ms_settling && k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
         for (unsigned j = 0; j < m->nres; j++) {
             unsigned tag = m->rit[j].tag, id = m->ncell + j, c = MS_RES_CELL(tag);
             if (!(tag & MS_RES_COARSE) || (tag & (MS_RES_SKY | MS_RES_TEX)) || c >= m->ncell || !near_in(m, c))
@@ -1616,7 +739,7 @@ static void plan_(const float *pos)
                 if (m->state[p] != MS_READY || m->cls[p] >= cc)
                     continue;
                 if (m->cls[p] < C_PREF && cc >= C_PREF && nw < MS_WANTED)
-                    want[nw++] = (MsW){(unsigned char)k, (unsigned char)cc, (unsigned short)p,
+                    ms_want[nw++] = (MsW){(unsigned char)k, (unsigned char)cc, (unsigned short)p,
                                        near_d2(m, p, pos) * MS_HOLD_K};
                 m->cls[p] = (unsigned char)cc;
             }
@@ -1625,18 +748,18 @@ static void plan_(const float *pos)
     {  /* the classes of the wanted list after that */
         unsigned o = 0;
         for (unsigned i = 0; i < nw; i++)
-            if ((want[i].cls = ms[want[i].k].cls[want[i].id]) >= C_PREF)
-                want[o++] = want[i];
+            if ((ms_want[i].cls = ms_inst[ms_want[i].k].cls[ms_want[i].id]) >= C_PREF)
+                ms_want[o++] = ms_want[i];
         nw = o;
     }
     pt[np_++] = ticks();
-    qsort(want, nw, sizeof *want, w_cmp);
+    qsort(ms_want, nw, sizeof *ms_want, w_cmp);
     /* what mapstream_alloc holds beyond its MS_OTHER top lies in item pages: the plan leaves it out */
-    unsigned other = mapstream_stats.other_kb << 10, over = pools_on ? items_other : other > MS_OTHER ? other - MS_OTHER : 0;
-    unsigned room = (ipages + nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
+    unsigned other = mapstream_stats.other_kb << 10, over = ms_pools_on ? ms_items_other : other > MS_OTHER ? other - MS_OTHER : 0;
+    unsigned room = (ms_ipages + ms_nx) * MS_PAGE;  /* + the pages borrowed from the heap (MS_BORROW) */
     unsigned lend = 0;
-    if (pools_on) {  /* the pools' room their own blocks leave: only the lowest classes may use it (lendable) */
-        unsigned own = other > items_other ? other - items_other : 0, pb = (npages - mpage0) * MS_PAGE;
+    if (ms_pools_on) {  /* the pools' room their own blocks leave: only the lowest classes may use it (lendable) */
+        unsigned own = other > ms_items_other ? other - ms_items_other : 0, pb = (ms_npages - ms_mpage0) * MS_PAGE;
         lend = pb > own ? pb - own : 0;
     }
     /* cap_hi: what the item pages hold, for every class; cap: + the lent room, which only lendable classes reach (with
@@ -1653,12 +776,12 @@ static void plan_(const float *pos)
     int near_missing = 0;
     pt[np_++] = ticks();
     for (int k = 0; k < MS_INST; k++)
-        if (ms[k].cmark)
-            memset(ms[k].cmark, 0, ms[k].ncell);
+        if (ms_inst[k].cmark)
+            memset(ms_inst[k].cmark, 0, ms_inst[k].ncell);
     unsigned cut = 0, cut_near = 0;  /* wanted items the cut left out (MS_STEADY: hitch_cut) */
     for (unsigned i = 0; i < nw; i++) {
-        MsInst *m = &ms[want[i].k];
-        unsigned id = want[i].id;
+        MsInst *m = &ms_inst[ms_want[i].k];
+        unsigned id = ms_want[i].id;
         if (id < m->ncell && m->cmark) {
             /* a cell's near level draws only with all its (seen) parts in: the parts go in together or not at all,
              * so the room is not spent on parts of cells that cannot be drawn (MS_WHOLE_CELLS) */
@@ -1679,62 +802,62 @@ static void plan_(const float *pos)
             }
             if (m->cmark[h] == 2) {
                 m->cls[id] = C_KEEP;
-                cut++, cut_near += want[i].cls == C_NEAR || want[i].cls == C_NEAR2;
+                cut++, cut_near += ms_want[i].cls == C_NEAR || ms_want[i].cls == C_NEAR2;
                 continue;
             }
         } else {
             unsigned b = (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
-            int lo = lendable(want[i].cls) && want[i].cls != C_NEAR && want[i].cls != C_NEAR2;
+            int lo = lendable(ms_want[i].cls) && ms_want[i].cls != C_NEAR && ms_want[i].cls != C_NEAR2;
             sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
             if (sum > cap || (!lo && sum_hi > cap_hi) || (lo && near_missing && sum > cap_hi)) {
                 m->cls[id] = C_KEEP;
-                cut++, cut_near += id < m->ncell && (want[i].cls == C_NEAR || want[i].cls == C_NEAR2);
+                cut++, cut_near += id < m->ncell && (ms_want[i].cls == C_NEAR || ms_want[i].cls == C_NEAR2);
                 continue;
             }
         }
-        if (m->state[want[i].id] == MS_NONE && !blocked(want[i].k, want[i].id))
-            q_add(want[i].k, want[i].id, want[i].cls, want[i].key);
+        if (m->state[ms_want[i].id] == MS_NONE && !blocked(ms_want[i].k, ms_want[i].id))
+            q_add(ms_want[i].k, ms_want[i].id, ms_want[i].cls, ms_want[i].key);
     }
-    if (!settling)
+    if (!ms_settling)
         hitch_cut(cut, cut_near);
     pt[np_++] = ticks();
-    for (int i = 0; i < nrd; i++) {  /* reads in flight that nothing wants any more */
-        MsInst *m = &ms[rd[i].k];
-        if (rd[i].cxl)
+    for (int i = 0; i < ms_nrd; i++) {  /* reads in flight that nothing wants any more */
+        MsInst *m = &ms_inst[ms_rd[i].k];
+        if (ms_rd[i].cxl)
             continue;
         int want = 0;
-        for (unsigned j = rd[i].id; j < rd[i].id + rd[i].n; j++)
+        for (unsigned j = ms_rd[i].id; j < ms_rd[i].id + ms_rd[i].n; j++)
             want |= m->cls[j] >= C_PREF;
         if (want)
             continue;
-        cancel_kb += rd[i].bytes >> 10;
-        if (!pack_req_cancel_async(rd[i].tk)) {  /* in flight: it stops after its page; collect() frees it then */
-            rd[i].cxl = 1;
+        ms_cancel_kb += ms_rd[i].bytes >> 10;
+        if (!pack_req_cancel_async(ms_rd[i].tk)) {  /* in flight: it stops after its page; collect() frees it then */
+            ms_rd[i].cxl = 1;
             continue;
         }
-        drop(rd[i].k, rd[i].id);
-        memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
+        ms_why = MS_WHY_CANCEL, ms_drop(ms_rd[i].k, ms_rd[i].id);
+        memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
         i--;
     }
-    mapstream_stats.pending = nrd;
+    mapstream_stats.pending = ms_nrd;
     {  /* what the plan wants per class (KB) against the room, every ~10 s of plans (tuning the classes) */
         static unsigned np;
         if (!(np++ % 40)) {
             unsigned kb[C_TOP + 1] = {0};
             for (unsigned i = 0; i < nw; i++)
-                kb[want[i].cls] += it_bytes(&ms[want[i].k], want[i].id) >> 10;
+                kb[ms_want[i].cls] += it_bytes(&ms_inst[ms_want[i].k], ms_want[i].id) >> 10;
             printf("mapstream: plan %u KB room: pin %u view %u near %u near2 %u view2 %u farc %u pref %u KB; stale reads "
                    "landed %u KB, cancelled %u KB; moved %u groups %u KB; one lod %u coarse items %u KB\n", cap >> 10, kb[C_PIN] + (C_PIN0 != C_PIN ? kb[C_PIN0] : 0),
-                   kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, cancel_kb,
-                   defrag_moves, defrag_kb, onelod_n, onelod_kb);
+                   kb[C_VIEW], kb[C_NEAR], kb[C_NEAR2], kb[C_VIEW2], kb[C_FARC], kb[C_PREF], stale_kb, ms_cancel_kb,
+                   ms_defrag_moves, ms_defrag_kb, onelod_n, onelod_kb);
             printf("mapstream: near wait %u ms (dev %u) from wanted to landed\n", (unsigned)lat_avg, (unsigned)lat_dev);
             /* the pinned coarse level by box distance of its cell (0-16-32-48-64 m, beyond), the backdrop and sky
              * apart, and what of it the horizon could stand for (MS_RES_LOD): sizing the pin radius (2026-11-08) */
             unsigned band[6] = {0}, lod[6] = {0}, far = 0, sky = 0;
             for (unsigned i = 0; i < nw; i++) {
-                const MsInst *m = &ms[want[i].k];
-                unsigned id = want[i].id;
-                if (want[i].cls != C_PIN0 || id < m->ncell)
+                const MsInst *m = &ms_inst[ms_want[i].k];
+                unsigned id = ms_want[i].id;
+                if (ms_want[i].cls != C_PIN0 || id < m->ncell)
                     continue;
                 unsigned tag = m->rit[id - m->ncell].tag, kb = it_bytes(m, id);
                 if (tag & MS_RES_SKY) {
@@ -1763,9 +886,9 @@ static void plan_(const float *pos)
              * the feet, within 8 m of them, or wholly more than 8 m above, of the classes at or above C_NEAR2 */
             unsigned vk_[2][3] = {{0}};
             for (unsigned i = 0; i < nw; i++) {
-                const MsInst *m = &ms[want[i].k];
-                unsigned id = want[i].id, c, nr = id < m->ncell;
-                if (want[i].cls < C_NEAR2)
+                const MsInst *m = &ms_inst[ms_want[i].k];
+                unsigned id = ms_want[i].id, c, nr = id < m->ncell;
+                if (ms_want[i].cls < C_NEAR2)
                     continue;
                 if (nr)
                     c = id;
@@ -1787,7 +910,7 @@ static void plan_(const float *pos)
     if (st_wait) {  /* after a settle: is the near level within MS_R0_FIRST of the feet in? */
         unsigned left = 0;
         for (int k = 0; k < MS_INST; k++) {
-            const MsInst *m = &ms[k];
+            const MsInst *m = &ms_inst[k];
             for (unsigned c = 0; c < m->ncell; c++)
                 if ((m->tab[c].near & ~CELL_PART) && !(m->tab[c].near & CELL_PART) && m->tab[c].bytes &&
                     near_d2(m, c, pos) < sq(MS_R0_FIRST) && !vis_cut(m, c) && !near_in(m, c))
@@ -1804,16 +927,16 @@ static void plan_(const float *pos)
     pt[np_++] = ticks();
     /* free what no class wants and no VIF chain reads (not asked for this frame or the last) */
     for (int k = 0; k < MS_INST; k++) {
-        MsInst *m = &ms[k];
+        MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a;
-            if (m->state[id] == MS_READY && (grp_of(m, id, &a), a == id) && grp_cls(m, id) == C_FREE &&
-                !grp_chain(m, id))
-                hitch_drop(0, 0), drop(k, id);
+            if (m->state[id] == MS_READY && (grp_of(m, id, &a), a == id) && ms_grp_cls(m, id) == C_FREE &&
+                !ms_grp_chain(m, id))
+                hitch_drop(0, 0), ms_drop(k, id);
         }
     }
-    for (int k = 0; !settling && k < MS_INST; k++) {  /* near parts the cut left wanted and not in: their wait starts */
-        MsInst *m = &ms[k];
+    for (int k = 0; !ms_settling && k < MS_INST; k++) {  /* near parts the cut left wanted and not in: their wait starts */
+        MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->wq && id < m->ncell; id++)
             if (m->cls[id] < C_PREF || m->state[id] == MS_READY)
                 m->wq[id] = 0;
@@ -1828,6 +951,68 @@ static void plan_(const float *pos)
 }
 
 
+/* Why the near level is late (the "flow" line, every MS_FLOW_FRAMES outside settles): frames the reader was held for
+ * a lite set with reads queued, frames with every read slot busy, frames with nothing queued, and the near cells
+ * within the draw radius that are not in, by what keeps them out: the plan's cut (no room by its count), a refusal
+ * (blocked after "no room"), the visibility cut, or simply the disc (queued / reading). */
+#define MS_FLOW_FRAMES 60u
+#ifndef MS_HOLD_INFLIGHT
+#define MS_HOLD_INFLIGHT 3  /* ASSUMED; -DMS_HOLD_INFLIGHT=0: no map read while a lite set loads, as before */
+#endif
+static void flow_log(const float *pos)
+{
+    static unsigned n, held, full, idle;
+    if (ms_settling) {
+        n = held = full = idle = 0;
+        return;
+    }
+    held += hold && nq, full += ms_nrd == MS_INFLIGHT, idle += !nq && !ms_nrd;
+    if (++n < MS_FLOW_FRAMES)
+        return;
+    unsigned cut = 0, ref = 0, vis = 0, disc = 0, kb = 0;
+    for (int k = 0; k < MS_INST; k++) {
+        const MsInst *m = &ms_inst[k];
+        for (unsigned c = 0; c < m->ncell; c++) {
+            if (!m->tab[c].bytes || m->state[c] == MS_READY || near_d2(m, c, pos) >= sq(MS_R0_DRAW))
+                continue;
+            kb += m->tab[c].bytes >> 10;
+            if (vis_cut(m, c))
+                vis++;
+            else if (blocked(k, c))
+                ref++;
+            else if (m->cls[c] < C_PREF)
+                cut++;
+            else
+                disc++;
+        }
+    }
+    if (cut + ref + vis + disc + held + flow_rd[0] + flow_rd[1] + flow_rd[2])
+        printf("mapstream: flow %u frames: held %u full %u idle %u | near parts within %.0f m not in: cut %u refused %u "
+               "unseen %u disc %u (%u KB) | queue %d in flight %d, near wait %u ms | reads near %u (%u KB) resident %u (%u KB) "
+               "textures %u (%u KB)\n", n, held, full, idle,
+               (double)MS_R0_DRAW, cut, ref, vis, disc, kb, nq, ms_nrd, (unsigned)lat_avg, flow_rd[0], flow_kb[0],
+               flow_rd[1], flow_kb[1], flow_rd[2], flow_kb[2]);
+    n = held = full = idle = 0;
+    memset(flow_rd, 0, sizeof flow_rd), memset(flow_kb, 0, sizeof flow_kb);
+    static unsigned tn;
+    if (!(++tn % 5)) {  /* every 10 s: what was read again within ~30 s of its drop */
+        unsigned any = 0;
+        for (int i = 0; i < 3; i++)
+            for (int y = 0; y < MS_WHY_N; y++)
+                any += thr_n[i][y];
+        if (any)
+            printf("mapstream: thrash 10 s (freed / window / lent / borrow / cancel): near %u %u %u %u %u (%u KB) resident "
+                   "%u %u %u %u %u (%u KB) textures %u %u %u %u %u (%u KB) | class when dropped free %u keep %u pref %u "
+                   "farc %u view2 %u near2 %u pin %u near %u view %u pin0 %u\n",
+                   thr_n[0][0], thr_n[0][1], thr_n[0][2], thr_n[0][3], thr_n[0][4], thr_kb[0],
+                   thr_n[1][0], thr_n[1][1], thr_n[1][2], thr_n[1][3], thr_n[1][4], thr_kb[1],
+                   thr_n[2][0], thr_n[2][1], thr_n[2][2], thr_n[2][3], thr_n[2][4], thr_kb[2],
+                   thr_cls[C_FREE], thr_cls[C_KEEP], thr_cls[C_PREF], thr_cls[C_FARC], thr_cls[C_VIEW2], thr_cls[C_NEAR2],
+                   thr_cls[C_PIN], thr_cls[C_NEAR], thr_cls[C_VIEW], thr_cls[C_PIN0]);
+        memset(thr_n, 0, sizeof thr_n), memset(thr_kb, 0, sizeof thr_kb), memset(thr_cls, 0, sizeof thr_cls);
+    }
+}
+
 void mapstream_update(const float pos[3])
 {
 #if defined MS_MEDIA_RADII && !defined MEDIA_CD
@@ -1841,31 +1026,31 @@ void mapstream_update(const float pos[3])
 #endif
     int any = 0;
     for (int k = 0; k < MS_INST; k++)
-        any |= ms[k].ncell != 0;
+        any |= ms_inst[k].ncell != 0;
     if (!any)
         return;
-    if (!ensure_arena()) {  /* no near level: the coarse one draws everywhere */
+    if (!ms_ensure_arena()) {  /* no near level: the coarse one draws everywhere */
         for (int k = 0; k < MS_INST; k++)
             mapstream_close(k);
         return;
     }
-    frame++;
-    x_update();
+    ms_frame++;
+    ms_x_update();
     {
         unsigned now = ticks(), dt = now - clk_last + clk_frac;  /* 294912 Count ticks per ms */
         clk_last = now;
-        if (frame > 1)
+        if (ms_frame > 1)
             clk_ms += dt / 294912, clk_frac = dt % 294912;
     }
     int r;
     HITCH_BEGIN(io);
-    for (int i = 0; i < nrd; i++)
-        if (pack_req_done(rd[i].tk, &r))
+    for (int i = 0; i < ms_nrd; i++)
+        if (pack_req_done(ms_rd[i].tk, &r))
             collect(i--, r);
     HITCH_END(io, HS_MSIO);
     {  /* walking velocity per frame (smoothed); a warp / teleport starts it again */
         float d[3] = {pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]};
-        int jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4.0f || settling;
+        int jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4.0f || ms_settling;
         for (int i = 0; i < 3; i++) {
             vel[i] = jump ? 0 : vel[i] + (d[i] - vel[i]) * 0.1f;
             ahead[i] = pos[i] + vel[i] * MS_AHEAD_FRAMES;
@@ -1873,33 +1058,38 @@ void mapstream_update(const float pos[3])
         }
         ahead_on = !jump && vel[0] * vel[0] + vel[2] * vel[2] > sq(0.02f);  /* moving faster than 0.6 m/s */
     }
-    vis_step(settling ? MS_VIS_SETTLE_US : MS_VIS_SLICE_US);  /* a row changed: the job re-plans once through (pvs.c) */
+    vis_step(ms_settling ? MS_VIS_SETTLE_US : MS_VIS_SLICE_US);  /* a row changed: the job re-plans once through (pvs.c) */
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
-    if (replan || !scan_frame || frame - scan_frame >= MS_SCAN_FRAMES || dx * dx + dy * dy + dz * dz > sq(MS_SCAN_D)) {
-        replan = 0;
-        scan_frame = frame;
+    if (ms_replan || !scan_frame || ms_frame - scan_frame >= MS_SCAN_FRAMES || dx * dx + dy * dy + dz * dz > sq(MS_SCAN_D)) {
+        ms_replan = 0;
+        scan_frame = ms_frame;
         memcpy(scan_pos, pos, sizeof scan_pos);
         plan(pos);
     }
     evict_left = MS_EVICT_PASSES;
     defrag_left = 1;
-    pend_release();
+    ms_pend_release();
     HITCH_BEGIN(is);
-    while (!hold && nq && nrd < MS_INFLIGHT && issue())
+    /* While a block's lite set loads (hold) the map reads go on, MS_HOLD_INFLIGHT at a time: the lite set's own reads
+     * are served ahead of them (pack_req_read_first), so it waits for one 32 KB page at most. With no map read at all
+     * until the block was fully on, walking into the Burg bonfire block left the reader idle for ~11 s while 10 -> 41
+     * near parts within the draw radius waited (1.7 MB; "flow" log, ISO iso_burg_taurus 2026-11-12). */
+    while ((!hold || ms_nrd < MS_HOLD_INFLIGHT) && nq && ms_nrd < MS_INFLIGHT && issue())
         ;
     HITCH_END(is, HS_MSIO);
+    flow_log(pos);
 }
 
 void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb)
 {
     unsigned fr = 0, run = 0, best = 0;
-    for (unsigned p = 0; pfree && p < npages; p++) {
-        fr += pfree[p];
-        run = pfree[p] == MS_GPP ? run + 1 : 0;
+    for (unsigned p = 0; ms_pfree && p < ms_npages; p++) {
+        fr += ms_pfree[p];
+        run = ms_pfree[p] == MS_GPP ? run + 1 : 0;
         best = run > best ? run : best;
     }
-    for (unsigned p = npages; pfree && p < ntot(); p++)  /* borrowed pages: free room, never part of a run */
-        fr += pfree[p];
+    for (unsigned p = ms_npages; ms_pfree && p < ntot(); p++)  /* borrowed pages: free room, never part of a run */
+        fr += ms_pfree[p];
     *free_kb = fr * MS_GRAN >> 10, *run_kb = best * (MS_PAGE >> 10), *other_kb = mapstream_stats.other_kb;
 }
 
@@ -1912,7 +1102,7 @@ int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n)
 
 static int open_cells(int k, const MapCell *cells, unsigned n)
 {
-    MsInst *m = &ms[k];
+    MsInst *m = &ms_inst[k];
     if (!pack_entry_raw(&m->pk, "cells.bin", &m->base, &m->total) || !m->total) {
         if (!m->borrowed)
             pack_close(&m->pk);
@@ -1922,17 +1112,18 @@ static int open_cells(int k, const MapCell *cells, unsigned n)
     m->state = calloc(n, 1), m->cls = calloc(n, 1);
     m->buf = calloc(n, sizeof *m->buf), m->used = calloc(n, sizeof *m->used);
     m->ld = calloc(n, sizeof *m->ld);  /* (NULL: no churn count) */
+    m->dw = calloc(n, 1);
     m->wq = calloc(n, sizeof *m->wq);  /* (NULL: no wait measured) */
     m->cmark = calloc(n, 1);  /* (NULL: parts planned one by one) */
     m->rit = NULL, m->nres = 0, m->rgrp = NULL;
     if (!m->state || !m->cls || !m->buf || !m->used) {
         if (!m->borrowed)
             pack_close(&m->pk);
-        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->cmark), free(m->wq);
+        free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->ld), free(m->dw), free(m->cmark), free(m->wq);
         memset(m, 0, sizeof *m);
         return 0;
     }
-    replan = 1;
+    ms_replan = 1;
     printf("mapstream: %u cells, cells.bin %u KB at %u (instance %d)%s\n", n, m->total >> 10, m->base, k,
            m->keys ? ", near level by cell cube" : "");
     return 1;
@@ -1944,8 +1135,8 @@ int mapstream_open(int k, const char *pak_path, const MapCell *cells, unsigned n
         return 0;
     mapstream_close(k);
     sel = k;
-    ms[k].borrowed = 0;
-    if (!n || !pack_open(&ms[k].pk, pak_path))
+    ms_inst[k].borrowed = 0;
+    if (!n || !pack_open(&ms_inst[k].pk, pak_path))
         return 0;
     return open_cells(k, cells, n);
 }
@@ -1956,8 +1147,8 @@ int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned 
         return 0;
     mapstream_close(k);
     sel = k;
-    ms[k].pk = *(const Pack *)pack;
-    ms[k].borrowed = 1;
+    ms_inst[k].pk = *(const Pack *)pack;
+    ms_inst[k].borrowed = 1;
     return open_cells(k, cells, n);
 }
 
@@ -1965,7 +1156,7 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
 {
     if (k < 0 || k >= MS_INST || !nitems)
         return 0;
-    MsInst *m = &ms[k];
+    MsInst *m = &ms_inst[k];
     if (!m->ncell || n != m->ncell || m->rit || m->ncell + nitems > 65535)  /* ids are u16 in the plan */
         return 0;
     unsigned t = m->ncell + nitems;
@@ -1980,6 +1171,12 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
         else
             free(m->ld);
         m->ld = l;
+        unsigned char *w = realloc(m->dw, t);
+        if (w)
+            memset(w + m->ncell, 0, nitems);
+        else
+            free(m->dw);
+        m->dw = w;
     }
     m->rit = u ? malloc(nitems * sizeof *m->rit) : NULL;
     m->rgrp = m->rit ? malloc(nitems * sizeof *m->rgrp) : NULL;
@@ -1996,7 +1193,7 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     memset(m->buf + m->ncell, 0, nitems * sizeof *m->buf);
     memset(m->used + m->ncell, 0, nitems * sizeof *m->used);
     m->nres = nitems;
-    replan = 1;
+    ms_replan = 1;
     unsigned cb = 0, tb = 0, nt = 0;
     for (unsigned j = 0; j < nitems; j++)
         *(items[j].tag & MS_RES_TEX ? &tb : &cb) += items[j].bytes, nt += !!(items[j].tag & MS_RES_TEX);
@@ -2007,34 +1204,34 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
 
 void mapstream_close(int k)
 {
-    if (k < 0 || k >= MS_INST || !ms[k].ncell)
+    if (k < 0 || k >= MS_INST || !ms_inst[k].ncell)
         return;
-    MsInst *m = &ms[k];
-    for (int i = 0; i < nrd; i++)  /* stop its reads (after their current page) before the buffers go back */
-        if (rd[i].k == k) {
-            pack_req_cancel(rd[i].tk);
-            memmove(rd + i, rd + i + 1, (--nrd - i) * sizeof *rd);
+    MsInst *m = &ms_inst[k];
+    for (int i = 0; i < ms_nrd; i++)  /* stop its reads (after their current page) before the buffers go back */
+        if (ms_rd[i].k == k) {
+            pack_req_cancel(ms_rd[i].tk);
+            memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
             i--;
         }
-    mapstream_stats.pending = nrd;
+    mapstream_stats.pending = ms_nrd;
     for (unsigned id = 0; id < it_n(m); id++) {
         unsigned a;
         if ((m->state[id] == MS_READY || m->state[id] == MS_READING) && (grp_of(m, id, &a), a == id))
-            drop(k, id);
+            ms_drop(k, id);
     }
     if (!m->borrowed)
         pack_close(&m->pk);
-    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->cmark);
+    free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->dw), free(m->cmark);
     free(m->wq);
     free(m->visv), free(m->vist);
     mapstream_stats.vis_items -= m->vish, mapstream_stats.vis_kb -= m->viskb;
     memset(m, 0, sizeof *m);
     if (vjob.k == k)
         vjob.k = -1;
-    nq = 0, replan = 1;
-    for (int i = 0; i < nblk; i++)
+    nq = 0, ms_replan = 1;
+    for (int i = 0; i < ms_nblk; i++)
         if (blk[i].k == k)
-            blk[i--] = blk[--nblk];
+            blk[i--] = blk[--ms_nblk];
     if (sel == k)
         sel = 0;
 }
@@ -2048,218 +1245,23 @@ void mapstream_select(int k)
 /* ---- the rest of the API ---- */
 void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k, unsigned tag, const void *p))
 {
-    tex_age = age, tex_set = set;
+    tex_age = age, ms_tex_set = set;
 }
 void mapstream_hold(int on) { hold = on; }
 void mapstream_settle(int on)
 {
-    if (on && !settling)
+    if (on && !ms_settling)
         st_t0 = clk_ms, st_wait = 0;
-    if (!on && settling)
+    if (!on && ms_settling)
         st_t1 = clk_ms, st_first = 0, st_wait = 1;
-    replan |= on != settling;
-    settling = on;
+    ms_replan |= on != ms_settling;
+    ms_settling = on;
 }
 void mapstream_focus(int k)
 {
-    replan |= k != focus;
+    ms_replan |= k != focus;
     focus = k;
 }
-void mapstream_pool(unsigned max) { pool_max = max; }
-void mapstream_reserve(unsigned extra) { reserve_extra = extra; }
-int mapstream_ready(void) { return arena != NULL; }
-int mapstream_arena(void)
-{
-    return ensure_arena();
-}
-int mapstream_owns(const void *p)
-{
-    return arena && (const unsigned char *)p >= arena && (const unsigned char *)p < arena + arena_size;
-}
-
-void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
-{
-    if (!arena)
-        pool_req[0] = struct_bytes, pool_req[1] = misc_bytes;
-}
-
-int mapstream_pools_on(void) { return pools_on; }
-int mapstream_pools_on_build(void) { return 1; }
-int mapstream_pool_wait(void) { return pool_busy; }
-unsigned mapstream_lend_early(void) { unsigned n = early_n; early_n = 0; return n; }
-
-int mapstream_pool_prepare(int pool, unsigned n)
-{
-    if (!pools_on || !lent_n)
-        return 1;
-    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
-    void *p = g_alloc_range(n, p0, p1);
-    if (p) {
-        g_free(p, n);
-        return 1;
-    }
-    unsigned before = lent_n;
-    lend_reclaim_(p0, p1, 1);
-    early_n += before - lent_n;
-    return 0;
-}
-
-void *mapstream_alloc_pool(unsigned n, int pool)
-{
-    if (!mapstream_arena() || !pools_on)
-        return NULL;
-    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
-    void *p = g_alloc_range(n, p0, p1);
-    pool_busy = 0;
-    if (!p && lent_n) {  /* MS_LEND: the lent items go */
-        if (lend_reclaim(p0, p1) && !(p = g_alloc_range(n, p0, p1))) {
-            /* some are in a chain: cells drawn every frame never leave it (a lite set waited 13.8 s behind them,
-             * taurus 2026-11-09), so wait for VU1 once and drop them all */
-            vu1_wait();
-            chains_done = 1;
-            pool_busy = lend_reclaim(p0, p1) > 0;
-            chains_done = 0;
-        }
-        if (!p)
-            p = g_alloc_range(n, p0, p1);
-    }
-    if (p)
-        mapstream_stats.other_kb += (n + 1023) >> 10;
-    return p;
-}
-
-/* mapstream_alloc_pool for blocks of at most a page (collision tiles, src/coltile.c: 1-55 KB each): granules inside
- * one page of the pool, pages already in use from the pool's bottom first, so whole pages stay free at its top for the
- * lite sets (g_alloc_range takes whole pages: a 3 KB tile there held a 64 KB page) */
-void *mapstream_alloc_pool_small(unsigned n, int pool)
-{
-    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
-    if (!mapstream_arena() || !pools_on || !ng || ng > MS_GPP)
-        return mapstream_alloc_pool(n, pool);
-    unsigned p0 = pool == MS_POOL_STRUCT ? spage0 : mpage0, p1 = pool == MS_POOL_STRUCT ? npages : spage0;
-    for (int pass = 0; pass < 2; pass++)
-        for (unsigned p = p0; p < p1; p++) {
-            if (pfree[p] < ng || (pass == 0) == (pfree[p] == MS_GPP))
-                continue;
-            unsigned run = 0, g0 = p * MS_GPP;
-            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
-                run = g_used(g) ? 0 : run + 1;
-                if (run == ng) {
-                    g_mark(g + 1 - ng, ng, 1);
-                    mapstream_stats.other_kb += (n + 1023) >> 10;
-                    return g_ptr(g + 1 - ng);
-                }
-            }
-        }
-    return mapstream_alloc_pool(n, pool);  /* (no hole: lent items may go) */
-}
-
-/* the top of the item pages mapstream_alloc may clear (all pages without pools) */
-static inline unsigned alloc_top(void) { return pools_on ? ipages : npages; }
-static void *alloc_items(unsigned n)
-{
-    void *p = g_alloc_top(n, alloc_top());
-    if (p && pools_on)
-        items_other += (n + MS_GRAN - 1) / MS_GRAN * MS_GRAN;
-    return p;
-}
-
-void *mapstream_alloc(unsigned n, const float pos[3])
-{
-    (void)pos;  /* ranks come from the last plan */
-    if (!mapstream_arena())
-        return NULL;
-    void *p = mapstream_alloc_pool(n, MS_POOL_MISC);  /* (MS_POOLS: enemy model temporaries and the like) */
-    if (!p && pool_busy) {
-        /* MS_LEND: map items lent the misc pool are in this or the last frame's chain. Wait for VU1 rather than clear
-         * item pages: enemy model temporaries took 300-600 KB of drawn cells from the visual room at each load, so the
-         * room the export was solved to was not a constant (taurus / report3 with enemies, 2026-11-09) */
-        vu1_wait();
-        chains_done = 1;
-        p = mapstream_alloc_pool(n, MS_POOL_MISC);
-        chains_done = 0;
-    }
-    if (p)
-        return p;
-    p = alloc_items(n);
-    unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
-    /* clear a window: of items below the near class first, then of anything but the pinned level, last of anything
-     * (a lite set holds the collision the player walks onto next); never of items a VIF chain may read (in_chain) */
-    if (!p && (make_window(need, 0, C_NEAR2, &kb) || make_window(need, 0, C_PIN, &kb) || make_window(need, 0, C_TOP + 1, &kb)))
-        p = alloc_items(n);
-    if (!p) {
-        /* every window holds a drawn item: the lite set of the block the player walks onto next (983 KB of the
-         * bonfire block's collision) found none for minutes and the player walked off the loaded floor (ISO
-         * 2026-11-06). Once VU1 is idle no chain of an earlier frame reads the arena: clear the cheapest window, drawn
-         * items too (they read back; a frame or two of coarse level or hole beats no floor) */
-        vu1_wait();
-        chains_done = 1;
-        nowin = C_TOP + 2;
-        if (make_window(need, 0, C_TOP + 1, &kb))
-            p = alloc_items(n);
-        if (!p && nrd) {
-            /* still none: the pages reads in flight land in cannot be cleared, and up to MS_INFLIGHT small reads are
-             * spread over the arena (indexed map data: more, smaller items; a 1.3 MB enemy model temporary at the
-             * Taurus tower warp fell back to the heap, RAM free 1.66 MB, ISO 2026-11-07). Stop them all (the plan asks
-             * again) and try once more */
-            unsigned c = 0;
-            for (int i = 0; i < nrd; i++) {
-                pack_req_cancel(rd[i].tk);  /* returns once nothing more lands in the buffer */
-                c += rd[i].bytes >> 10;
-                drop(rd[i].k, rd[i].id);
-            }
-            printf("mapstream: alloc %u KB: %d reads in flight (%u KB) cancelled for a window\n", n >> 10, nrd, c);
-            cancel_kb += c;
-            nrd = 0;
-            mapstream_stats.pending = 0;
-            if (make_window(need, 0, C_TOP + 1, &kb))
-                p = alloc_items(n);
-        }
-        chains_done = 0;
-    }
-    if (kb || !p)  /* the caller falls back to the heap on NULL */
-        printf("mapstream: alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
-    if (p)
-        mapstream_stats.other_kb += (n + 1023) >> 10;
-    return p;
-}
-
-void *mapstream_alloc_soft(unsigned n)
-{
-    if (!mapstream_arena())
-        return NULL;
-    void *p = alloc_items(n);
-    unsigned kb = 0;
-    if (!p && make_window((n + MS_PAGE - 1) / MS_PAGE, 0, C_PREF, &kb))  /* only what no class wants */
-        p = alloc_items(n);
-    if (p)
-        mapstream_stats.other_kb += (n + 1023) >> 10;
-    else {
-        /* the room is there but in holes (MS_DEFRAG): empty a window for the next call (world.c asks again) when
-         * the arena's free granules cover it with MS_DEFRAG_KB to spare */
-        unsigned fr = 0;
-        for (unsigned i = 0; i < npages; i++)
-            fr += pfree[i];
-        int mv = !npend && fr * MS_GRAN >= n + (MS_DEFRAG_KB << 10) &&
-                 defrag((n + MS_PAGE - 1) / MS_PAGE, alloc_top(), 3 * MS_DEFRAG_KB);
-        printf("mapstream: soft alloc %u KB: no room beside the wanted cells%s (%u KB free)\n", n >> 10,
-               mv ? ", window being emptied" : "", fr * MS_GRAN >> 10);
-    }
-    return p;
-}
-
-void mapstream_free(void *p, unsigned n)
-{
-    if (!p)
-        return;
-    if (pools_on && g_of(p) < ipages * MS_GPP)
-        items_other -= (n + MS_GRAN - 1) / MS_GRAN * MS_GRAN;
-    g_free(p, n);
-    mapstream_stats.other_kb -= (n + 1023) >> 10;
-    replan = 1;  /* room for what was refused */
-    nblk = 0, nowin = C_TOP + 2;
-}
-
 /* resident item j of instance k counts for a settle: the sky of the player's block, or a cell's coarse / kept items
  * within r (r_focus for that block) unless its near level stands for them */
 static int settle_item(int k, const MsInst *m, unsigned j, const float *pos, float r, float r_focus)
@@ -2281,14 +1283,14 @@ static int settle_item(int k, const MsInst *m, unsigned j, const float *pos, flo
 int mapstream_busy(const float pos[3], float r, float r_focus)
 {
     if (r != settle_r || r_focus != settle_rf)
-        replan = 1;
+        ms_replan = 1;
     settle_r = r, settle_rf = r_focus;
-    if (arena && (replan || !scan_frame))
+    if (ms_arena && (ms_replan || !scan_frame))
         return 1;  /* classes not planned yet (all C_FREE): the check below would find nothing to wait for (the boot
                     * settle ended after 0 ms with 51 cells missing, ISO 2026-11-06) */
-    for (int i = 0; i < nrd; i++) {  /* only the reads the settle waits for: the rest streams on behind the game */
-        const MsInst *m = &ms[rd[i].k];
-        if (it_res(m, rd[i].id) && settle_item(rd[i].k, m, rd[i].id - m->ncell, pos, r, r_focus))
+    for (int i = 0; i < ms_nrd; i++) {  /* only the reads the settle waits for: the rest streams on behind the game */
+        const MsInst *m = &ms_inst[ms_rd[i].k];
+        if (it_res(m, ms_rd[i].id) && settle_item(ms_rd[i].k, m, ms_rd[i].id - m->ncell, pos, r, r_focus))
             return 1;
     }
     if (room_fail)
@@ -2297,7 +1299,7 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
      * for at most MS_SETTLE_NEAR_MS of the settle */
     if (clk_ms - st_t0 < MS_SETTLE_NEAR_MS)
         for (int k = 0; k < MS_INST; k++) {
-            const MsInst *m = &ms[k];
+            const MsInst *m = &ms_inst[k];
             for (unsigned c = 0; c < m->ncell; c++)
                 if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING ||
                     (m->state[c] == MS_NONE && !blocked(k, c))) && !vis_off(m, c) &&
@@ -2305,7 +1307,7 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
                     return 1;
         }
     for (int k = 0; k < MS_INST; k++) {
-        const MsInst *m = &ms[k];
+        const MsInst *m = &ms_inst[k];
         for (unsigned j = 0; j < m->nres; j++)
             if (m->state[m->ncell + j] == MS_NONE && m->rit[j].bytes && m->cls[m->ncell + j] >= C_PREF &&
                 settle_item(k, m, j, pos, r, r_focus) && !blocked(k, m->ncell + j))  /* (not what the cut left out) */
@@ -2316,20 +1318,20 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
 
 const void *mapstream_get(unsigned i)
 {
-    MsInst *m = &ms[sel];
+    MsInst *m = &ms_inst[sel];
     if (i >= m->ncell)
         return NULL;
     drawn();
-    m->used[i] = frame;  /* asked for: in view (a missing one too) */
+    m->used[i] = ms_frame;  /* asked for: in view (a missing one too) */
     return m->state[i] == MS_READY ? m->buf[i] : NULL;
 }
 
 const unsigned char *mapstream_res(unsigned i)
 {
-    MsInst *m = &ms[sel];
+    MsInst *m = &ms_inst[sel];
     if (i >= m->nres)
         return NULL;
     drawn();
-    m->used[m->ncell + i] = frame;
+    m->used[m->ncell + i] = ms_frame;
     return m->state[m->ncell + i] == MS_READY ? (const unsigned char *)m->buf[m->ncell + i] - m->rit[i].rel : NULL;
 }

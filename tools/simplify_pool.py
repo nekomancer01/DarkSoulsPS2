@@ -1,5 +1,7 @@
-"""Runs tools/export_map.py's simplification jobs (one per welded group / cell, tools/simplify.py) with a result cache
-and a worker pool that survives killed workers.
+"""Runs tools/export_map.py's simplification jobs (one per welded group / cell) with a result cache and a worker pool
+that survives killed workers: export_map.simplify_meshes' fallback when libmapx is off or missing (MAPX=0,
+SIMPLIFY_NATIVE=0, no navmesh), without the C-only rules (shape envelope, triangle guard); the shipped export runs the
+jobs in libmapx (export_map.simplify_meshes_c, tools/native/simplify.c).
 
 Cache: simplify() returns a collapse log that replays at any threshold, so a job's result depends only on its inputs
 (positions, attribute vertices, triangles, locks, view weights, area_k) and the simplifier's code. Each result is

@@ -323,7 +323,7 @@ static void flip(GSGLOBAL *gs)
 
 int main(int argc, char **argv)
 {
-    GSGLOBAL *gs = gsKit_init_global();
+    GSGLOBAL *gs = gsKit_init_global_custom(R_GSQ_OS, R_GSQ_PER);  /* (render.h: 2.25 MB by default) */
     gs->Mode = GS_MODE_NTSC;
     gs->Interlace = GS_INTERLACED;
     gs->Field = GS_FIELD;
@@ -580,7 +580,7 @@ int main(int argc, char **argv)
         } else {
             gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
             r_ground(40, 2);
-            gsKit_queue_exec(gs);  /* before the character's VU1 chain draws on top */
+            r_queue_exec(gs);  /* before the character's VU1 chain draws on top */
             dmaKit_wait_fast();
         }
         HITCH_END(map, HS_MAP);
@@ -652,7 +652,7 @@ int main(int argc, char **argv)
         hitch_acc[HS_WAIT] += ticks() - t2;
         PROF_MARK(PROF_FLIP);
         HITCH_BEGIN(flip);
-        gsKit_queue_exec(gs);
+        r_queue_exec(gs);
         flip(gs);
         if (vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
             vram_free = r_vram_avail(gs);

@@ -32,8 +32,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 ## Exporters (game files -> PS2 data)
 | Tool | Output |
 |---|---|
-| `export_map.py` (+ `simplify.py`, `texmap.py`) | Map geometry, textures, lighting bake |
-| `simplify_pool.py`, `simplify_native.py` (+ `native/simplify.c`) | export_map's simplify jobs: result cache, worker pool, the C simplifier (same output as simplify.py, `--test`) |
+| `export_map.py` (+ `native/simplify.c`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `native/simplify.c`, `simplify_native.py` | The map simplifier, the source of truth (in libmapx for export_map; ctypes binding for horizon.py). Output at the shipped settings pinned by `mapx/test_simplify_golden.py` (`--update` after an intended change) |
+| `simplify.py`, `simplify_pool.py` | Frozen reference of simplify.c's core collapse (identical with simplify.c's own rules off: `simplify_native.py --test`, `mapx/test_mapx.py`), and the Python fallback's job pool / cache |
 | `export_collision.py` | collision.bin |
 | `export_normal.py` | bump.bin: normal-map relief for the map (CLUT dot3) |
 | `pose_obj.py` | Skinned MSB objects (corpses, hanging chains) posed once as static map geometry for export_map |
@@ -137,6 +138,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/srcsum.py` | The Makefile's tool stamps: hash of a Python tool's syntax tree without comments / docstrings, so comment edits re-export nothing |
 | `tools/later` | Night queue: `later add <cmd>` keeps long jobs (soaks, routes, sweeps) for the idle hours, `later run` starts them through `tools/qd` (exports to the VPS, PCSX2 runs here); `later timer` prints a systemd timer |
 | `tools/lodview.py` | LOD budget viewer: `tools/lodview.py [gen dir]`, then http://127.0.0.1:8771/. Three.js view of every streamed block cell by cell (near / coarse / kept / backdrop from map.bin + cells.bin); pick a meshoptimizer LOD per level or per cell and the distance bands (near, HZN_R, soft edge), and `tools/world_budget.py` recomputes room, arena want per spot, hard-tier gate and WS_B0 / WS_B1 live (~3 s for four blocks). Local only: serves game-derived data on 127.0.0.1 |
+| `tools/heapmap.py` | EE heap census: `make HEAPMAP=1` build, run a test, then `tools/heapmap.py <emulog.txt> <proto.sym.elf> [t ...]` lists the live heap per caller (addr2line) and label (pack entry, model) at the chosen hitch times |
 | `tools/worktree.sh` | One git worktree per work segment (`wt/<name>`): add, land the changes back, remove |
 | `tools/runstamp.py` | Git revision, uncommitted-change hash and ELF / script hashes of a test run (result.json, report) |
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |

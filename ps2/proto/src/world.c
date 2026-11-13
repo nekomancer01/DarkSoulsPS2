@@ -241,6 +241,9 @@ static int room_stuck;  /* this step a wanted block found no room and no kept bl
 /* blocks the player is held for: found by world_hold this frame, latched for step(); blocks a settle could not load
  * (no more holding for them until they turn on); seconds held */
 static unsigned hold_m, hold_want, hold_gone;
+#define WORLD_TILE_GONE_R 8.0f  /* ASSUMED: half a collision tile */
+static float tile_gone[3];
+static int tile_gone_on;
 static float hold_s;
 /* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
 static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
@@ -1044,7 +1047,7 @@ static void read_step(int i, int issue)
         return;  /* stage 1: the next texture entry once a read is free and the buffer has room */
     char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
-    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
+    if (!w_tk && (w_tk = (r->state == W_READING ? pack_req_read_first : pack_req_read)(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
         world_stats.reading = i, hitch_block_read(n);  /* else every request slot is taken: try next frame */
 }
 
@@ -1506,7 +1509,12 @@ int world_hold(const float *feet)
         return 0;
     unsigned m = 0;
     /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
-    if (coltile_under(feet))
+    if (tile_gone_on) {  /* (a tile that did not come in a hold's loading screen: no second hold at that spot) */
+        float dx = feet[0] - tile_gone[0], dy = feet[1] - tile_gone[1], dz = feet[2] - tile_gone[2];
+        if (dx * dx + dy * dy + dz * dz > WORLD_TILE_GONE_R * WORLD_TILE_GONE_R)
+            tile_gone_on = 0;
+    }
+    if (!tile_gone_on && coltile_under(feet))
         for (int i = 1; i < nblk; i++)
             if (rt[i].state == W_ON && rt[i].col_full && box_d(&tab[i], feet) <= 0.0f)
                 m |= 1u << i;
@@ -1553,6 +1561,13 @@ void world_update(const float *feet, float dt)
                     printf("world: block %d did not load under the player: no more holding for it\n", i);
                 }
             hold_want = 0, hold_s = 0;
+            if (coltile_under(feet)) {
+                /* the loading screen ended and a tile around the feet is still out (no room, a read error): holding
+                 * again would loop hold / loading screen for good; the player goes on as if it were open air */
+                memcpy(tile_gone, feet, sizeof tile_gone), tile_gone_on = 1;
+                printf("world: a collision tile at %.1f %.1f %.1f did not load: no more holding within %.0f m\n",
+                       feet[0], feet[1], feet[2], (double)WORLD_TILE_GONE_R);
+            }
         }
         return;
     }

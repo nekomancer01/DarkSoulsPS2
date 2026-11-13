@@ -33,7 +33,7 @@ int coltile_missing(const float feet[3], float r);
 int coltile_under(const float feet[3]);
 
 typedef struct {
-    unsigned reads, read_kb, failed, noroom, drops, in_kb, peak_kb, pages_in;
+    unsigned reads, read_kb, failed, noroom, drops, in_kb, peak_kb, pages_in, must;
 } ColTileStats;
 extern ColTileStats coltile_stats;
 
