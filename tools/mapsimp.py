@@ -960,7 +960,8 @@ def loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spaw
     with np.errstate(invalid="ignore", divide="ignore"):
         err = np.sqrt(np.maximum(prc, mapcfg.WS_DROP_FLUSH * size) * size)  # metres, per cluster (at its first piece)
         cost = np.where(pr >= 0, ((err / dist) ** 2)[pcl], np.inf)
-    owner = np.floor(((lo + hi) / 2)[pcl] / mapcfg.CHUNK_GRID).astype(np.int64)
+    with np.errstate(invalid="ignore"):  # (lo / hi are only set at a cluster's first piece, which pcl points at)
+        owner = np.floor(np.nan_to_num(((lo + hi) / 2)[pcl], posinf=0.0, neginf=0.0) / mapcfg.CHUNK_GRID).astype(np.int64)
     print(f"pieces: {n} ({int((pr >= 0).sum())} loose, at most {mapcfg.WS_DROP_DIAG:g} m across, in "
           f"{len(np.unique(pcl[pr >= 0]))} clusters), {time.time() - t0:.1f} s", flush=True)
     return dict(pp=pp, cost=cost, owner=owner, poff=poff)
