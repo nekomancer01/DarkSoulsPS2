@@ -36,6 +36,7 @@
  * mapstream_alloc); mapstream_i.h their shared state (names ms_*), the radii and the item helpers. The numbers the
  * export shares live in residency.h. */
 #include "mapstream_i.h"
+#include "world.h" /* world_current, world_pack: the neighbour copies (MS_COPIES) */
 
 /* MS_BEHIND_KEEP (default 1, Ame's pick 2026-11-10; 0 = read as before): a horizon-covered coarse item (MS_RES_LOD)
  * out of view and at least MS_BEHIND_R away is kept while it is in but never read: behind the camera nothing draws it,
@@ -498,10 +499,88 @@ static void collect(int i, int r)
     }
 }
 
+/* Burg plan B8b: why each run of resident items stopped, and how the reads it made sit on the disc ("mapstream: runs"
+ * line every MS_RUNLOG_FRAMES frames): a read that starts where the last one ended needs no seek. B4's ISO world_route,
+ * 2026-11-09: 3089 runs of 1.2 items in 6 min, 170 contiguous; most stops are the next item not wanted (class) or
+ * already in (state). Reading the kept neighbours along (up to 64 KB) took 388 more items but no fewer runs, and more
+ * "no room" refusals (97 -> 120): dropped */
+enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, RS_N };
+static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
+static unsigned rs_stop[RS_N], rs_runs, rs_items, rs_reads, rs_contig, rs_kb, rs_frame;
+static unsigned rs_last_end, rs_last_k = ~0u;
+static unsigned cpy_reads;  /* reads from a neighbour copy (MS_COPIES) since the last runs line */
+/* per instance (world block): reads, and of them far backdrop / coarse / sky / texture / mip 1 / other items */
+enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
+static unsigned rk[MS_INST][RK_N + 1];
+#define MS_RUNLOG_FRAMES 300
+static void rs_log(void)
+{
+    if (ms_frame - rs_frame < MS_RUNLOG_FRAMES)
+        return;
+    rs_frame = ms_frame;
+    if (!rs_runs)
+        return;
+    printf("mapstream: runs %u (%u items, %u KB), reads %u (%u from a neighbour copy), %u start where the last ended; "
+           "stops", rs_runs, rs_items, rs_kb, rs_reads, cpy_reads, rs_contig);
+    cpy_reads = 0;
+    for (int i = 0; i < RS_N; i++)
+        printf(" %s %u", rs_name[i], rs_stop[i]);
+    printf("; by block");
+    for (int k = 0; k < MS_INST; k++)
+        if (rk[k][RK_N])
+            printf(" %d: %u (far %u coarse %u sky %u tex %u mip1 %u other %u)", k, rk[k][RK_N], rk[k][RK_FAR],
+                   rk[k][RK_COARSE], rk[k][RK_SKY], rk[k][RK_TEX], rk[k][RK_MIP1], rk[k][RK_OTHER]);
+    printf("\n");
+    memset(rk, 0, sizeof rk);
+    memset(rs_stop, 0, sizeof rs_stop);
+    rs_runs = rs_items = rs_reads = rs_contig = rs_kb = 0;
+}
+
+/* Burg plan B8a (default on; DEFS=-DMS_COPIES=0 = always the block's own pack): tools/iso9660.py writes each world
+ * block's resident items (its mapres.bin entry, the bytes after the block table) once more beside every other block
+ * of its walk region, as <that block>/<this block>.pak. A read of block k's items while the player is in block j
+ * comes from j's copy, a short seek from what j itself reads, instead of from k's pack 60-100 MB away (ISO 2026-11-09:
+ * Burg <-> Firelink reads were ~half the far seeks in play). Opened on first use; host builds have no copies */
+#ifndef MS_COPIES
+#define MS_COPIES 1
+#endif
+static struct { signed char st; Pack pk; unsigned d0, len; } cpy[MS_INST][MS_INST];  /* [j][k]; st 0 ?, 1 open, -1 none */
+static Pack *copy_for(int k, unsigned *off, unsigned bytes)
+{
+    int j = world_current();
+    if (!MS_COPIES || j < 0 || j >= MS_INST || j == k)
+        return NULL;
+    if (!cpy[j][k].st) {
+        const char *pj = world_pack(j), *pk = world_pack(k);
+        unsigned d0, len;
+        char path[96];
+        cpy[j][k].st = -1;
+        if (pj && pk && pack_entry_raw(&ms_inst[k].pk, "mapres.bin", &d0, &len)) {
+            snprintf(path, sizeof path, PACK_ROOT "%s/%s.pak", pj, pk);
+            if (pack_open_raw(&cpy[j][k].pk, path))
+                cpy[j][k].st = 1, cpy[j][k].d0 = d0, cpy[j][k].len = len;
+        }
+    }
+    if (cpy[j][k].st < 0 || *off < cpy[j][k].d0 || *off + bytes > cpy[j][k].d0 + cpy[j][k].len)
+        return NULL;
+    *off -= cpy[j][k].d0;
+    cpy_reads++;
+    return &cpy[j][k].pk;
+}
+static void copies_close(int k)  /* block k's instance closed, its reads cancelled: the copies of its items go */
+{
+    for (int i = 0; i < MS_INST; i++) {
+        if (cpy[i][k].st > 0)
+            pack_close(&cpy[i][k].pk);  /* (io_close queues behind the handle's reads) */
+        cpy[i][k].st = 0;
+    }
+}
+
 /* the queue's head into the arena and read (its missing wanted neighbours in mapres.bin along, up to MS_RUN bytes, as
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
+    rs_log();
     if (MS_SCAN && q_rank(q[0].cls) < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
         int ra = 0;
         for (int i = 0; i < ms_nrd; i++)
@@ -516,18 +595,23 @@ static int issue(void)
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
     unsigned wn = 1;
+    int stop = RS_END;
     if (it_res(m, w.id)) {
         unsigned j = w.id - m->ncell, end = m->rit[j].rel + m->rit[j].bytes, tex = !!(m->rit[j].tag & MS_RES_TEX);
         while (j + wn < m->nres) {
             const MapResItem *c = &m->rit[j + wn];
             unsigned id = m->ncell + j + wn;
-            if (m->state[id] != MS_NONE || !c->bytes || c->rel < end || c->rel - end > 64 ||
-                c->off - c->rel != m->rit[j].off - m->rit[j].rel || c->rel + c->bytes - m->rit[j].rel > MS_RUN ||
-                !!(c->tag & MS_RES_TEX) != tex || m->cls[id] < C_PREF || blocked(w.k, id))
+            stop = m->state[id] != MS_NONE ? RS_STATE : !c->bytes || c->rel < end || c->rel - end > 64 ? RS_GAP :
+                   c->off - c->rel != m->rit[j].off - m->rit[j].rel ? RS_BASE :
+                   c->rel + c->bytes - m->rit[j].rel > MS_RUN ? RS_CAP : !!(c->tag & MS_RES_TEX) != tex ? RS_TEX :
+                   m->cls[id] < C_PREF ? RS_CLASS : blocked(w.k, id) ? RS_BLOCKED : -1;
+            if (stop >= 0)
                 break;
+            stop = RS_END;
             end = c->rel + c->bytes, wn++;
         }
     }
+    rs_runs++, rs_items += wn, rs_stop[stop]++;
     int sent = 0;
     for (unsigned g = w.id; g < w.id + wn && ms_nrd < MS_INFLIGHT;) {
         unsigned e = g + 1, gb = it_bytes(m, g);
@@ -613,7 +697,18 @@ static int issue(void)
             return 1;  /* the next queued one may still fit */
         }
         room_fail = 0;
-        int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        unsigned roff = it_off(m, g);
+        Pack *src = copy_for(w.k, &roff, gb);
+        int tk = pack_req_read(src ? src : &m->pk, roff, p, gb);
+        if (tk) {
+            unsigned o = it_off(m, g);
+            rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
+            rs_last_end = o + gb, rs_last_k = w.k;
+            unsigned tg = it_res(m, g) ? m->rit[g - m->ncell].tag : 0;
+            rk[w.k][RK_N]++;
+            rk[w.k][tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? RK_MIP1 : RK_TEX) : tg & MS_RES_SKY ? RK_SKY :
+                    tg & MS_RES_FAR ? RK_FAR : tg & MS_RES_COARSE ? RK_COARSE : RK_OTHER]++;
+        }
         if (!tk) {
             ms_g_free(p, gb);
             if (!sent)
@@ -1199,6 +1294,24 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
         *(items[j].tag & MS_RES_TEX ? &tb : &cb) += items[j].bytes, nt += !!(items[j].tag & MS_RES_TEX);
     printf("mapstream: instance %d resident level per cell: %u cells + sky in %u items %u KB, %u mip 0 textures %u KB\n",
            k, n, nitems - nt, cb >> 10, nt, tb >> 10);
+    {  /* Burg plan B8a: where each kind of item lies in the pack (a neighbour's backdrop read from far away) */
+        static const char *const kn[5] = {"far", "coarse", "near", "tex", "mip1"};
+        unsigned c[5] = {0}, kb[5] = {0}, lo[5], hi[5] = {0};
+        for (int q = 0; q < 5; q++)
+            lo[q] = ~0u;
+        for (unsigned j = 0; j < nitems; j++) {
+            unsigned tg = items[j].tag;
+            int q = tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? 4 : 3) : tg & MS_RES_FAR ? 0 : tg & MS_RES_COARSE ? 1 : 2;
+            c[q]++, kb[q] += items[j].bytes;
+            lo[q] = items[j].off < lo[q] ? items[j].off : lo[q];
+            hi[q] = items[j].off + items[j].bytes > hi[q] ? items[j].off + items[j].bytes : hi[q];
+        }
+        printf("mapstream: instance %d items in the pack:", k);
+        for (int q = 0; q < 5; q++)
+            if (c[q])
+                printf(" %s %u (%u KB) at %u..%u KB", kn[q], c[q], kb[q] >> 10, lo[q] >> 10, hi[q] >> 10);
+        printf("\n");
+    }
     return 1;
 }
 
@@ -1214,6 +1327,7 @@ void mapstream_close(int k)
             i--;
         }
     mapstream_stats.pending = ms_nrd;
+    copies_close(k);
     for (unsigned id = 0; id < it_n(m); id++) {
         unsigned a;
         if ((m->state[id] == MS_READY || m->state[id] == MS_READING) && (grp_of(m, id, &a), a == id))

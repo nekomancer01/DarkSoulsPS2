@@ -49,6 +49,7 @@
  * MS_R_HZN            | 40 m     | make     | -DMS_R_HZN=48.0f                              | mapstream_i.h | coarse cells with a horizon wanted within (make BURG_HZN_NEAR=1: 40 with map.c HZN_R 32; 0 = residency.h RES_HZN_R 48)
  * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
  * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
+ * MS_COPIES           | 1        | fallback | -DMS_COPIES=0                                 | mapstream.c   | another block's items read from the copy beside the current block; 0 = its own pack
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
