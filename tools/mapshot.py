@@ -297,10 +297,11 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
                 TI.append(np.full(n, ti + len(tex) if ti >= 0 else -1))
                 FL.append(np.full(n, fl))
             tex += b.tex
-        if P or floor is None:
+        if sum(map(len, P)) >= 100 or floor is None:  # (a few stray triangles: the floor lookup missed)
             break
         print(f"mapshot: nothing is shown from the floor under ({feet[0]:.1f}, {feet[1]:.1f}, {feet[2]:.1f}): drawn without draw groups")
         floor = None
+        P, ST, C, TI, FL, BX, tex = [], [], [], [], [], [], []
     geo = (np.concatenate(P), np.concatenate(ST), np.concatenate(C), np.concatenate(TI), np.concatenate(FL),
            np.zeros(sum(len(p) for p in P)), np.concatenate(BX))
     # (foliage: every tuft; map.c thins it by distance)

@@ -357,6 +357,44 @@ def load_object(game, model, dds, static=False):
     return souls.flver(files[model + ".flver"]) if model + ".flver" in files else None
 
 
+_RIGID = {}  # gather: id(mesh) -> (mesh, the mesh with every vertex in the model's space)
+
+
+def rigid_mesh(F, m, bind):
+    """A rigid FLVER mesh whose vertices sit on more than one bone -> a copy with positions and normals in the
+    model's space and no bone (m itself when all sit on the default bone). DSR's rigid meshes are bone-relative per
+    vertex: the first bone index of a vertex picks from the mesh's bone list (tools/export_objects.py reads objects
+    the same way), and map pieces use it to repeat a shape: the Undead Burg's arcade wall and the tower by the street
+    south of the bonfire are arches drawn once and placed by bones (95k of m10_01's triangles). Placed by the mesh's
+    default bone alone they all landed on the first copy, inside each other (found 2026-11-14: the wall was missing
+    against DSR). MAP_VBONE=0: the default bone for all (A/B)."""
+    e = _RIGID.get(id(m))
+    if e is not None and e[0] is m:
+        return e[1]
+    out = m
+    bi = m["verts"]["bone_idx"]
+    if mapcfg.MAP_VBONE and len(bi) and len(bi) == len(m["verts"]["pos"]) and m["bones"]:
+        BI = np.asarray(bi.a if isinstance(bi, souls.Rows) else bi, np.int64).reshape(len(bi), -1)[:, 0]
+        fb = np.array([m["bones"][k] if k < len(m["bones"]) else m["default_bone"] for k in range(int(BI.max()) + 1)])[BI]
+        if np.any(fb != m["default_bone"]) and fb.min() >= 0 and fb.max() < len(bind):
+            P, N = _vert_np(m["verts"]["pos"]).copy(), None
+            if len(m["verts"]["normal"]) == len(P):
+                N = _vert_np(m["verts"]["normal"]).copy()
+            for b in np.unique(fb):
+                bt, bq, bs = bind[b]
+                s = fb == b
+                P[s] = _qrot_np(bq, np.asarray(bs, np.float64) * P[s]) + np.asarray(bt, np.float64)
+                if N is not None:
+                    v = _qrot_np(bq, N[s][:, :3] / np.asarray(bs, np.float64))
+                    N[s, :3] = v / np.maximum(np.sqrt((v * v).sum(1)), 1e-12)[:, None]
+            verts = dict(m["verts"], pos=souls.Rows(P))
+            if N is not None:
+                verts["normal"] = souls.Rows(N)
+            out = dict(m, verts=verts, default_bone=-1)
+    _RIGID[id(m)] = (m, out)
+    return out
+
+
 _DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
 
 
@@ -666,6 +704,8 @@ def gather(game, map_id):
                 else:
                     P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
+            if not m["dynamic"]:
+                m = rigid_mesh(F, m, bind)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
                 sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
@@ -829,6 +869,7 @@ def gather(game, map_id):
         MX.mx_navgrid_free(mx_grid)
     souls.VERT_NP = None
     souls.VERT_ROWS = False
+    _RIGID.clear()
     _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
     _DEDUP.clear()
     mapchunks.rss(f"gather meshes ({len(meshes)})")
