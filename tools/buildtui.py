@@ -36,7 +36,7 @@ COMPILERS = (("gcc", "compile"), ("g++", "compile"), ("-ld", "link"), ("ar ", "a
              ("dvp-as", "assemble VU"), ("bin2c", "embed"))
 # Expected seconds per target by the tool that builds it: median run times of these jobs in notes/jobq.log
 # (2026-11-10, 46-3063 runs each). Anything else (compile, pack, small exports) counts 1 s.
-SECONDS = {"horizon.py": 47, "export_audio.py": 28, "export_map.py": 27, "export_items.py": 27, "world_budget.py": 11,
+SECONDS = {"horizon.py": 47, "farpano.py": 40, "export_audio.py": 28, "export_map.py": 27, "export_items.py": 27, "world_budget.py": 11,
            "export_model.py": 8, "export_objects.py": 7, "export_menu.py": 6, "export_screens.py": 5,
            "export_collision.py": 5, "export_chr.py": 4, "export_loading.py": 4, "export_world.py": 3,
            "export_emevd.py": 2, "ps2-iso.sh": 5}

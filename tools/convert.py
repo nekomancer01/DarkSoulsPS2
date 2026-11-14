@@ -149,9 +149,10 @@ def plan(game, build, mv=None):
         # "?" = a $(wildcard ...) entry: kept when the file exists by the time the step runs
         entries += [f"?cells.bin=raw:{A}/cells.bin", f"?pano.bin={A}/pano.bin"]
         if world_split:
-            entries += [f"maptab.bin=raw:{A}/maptab.bin", f"mapres.bin=raw:{A}/mapres.bin"]
+            entries += [f"maptab.bin=raw:{A}/maptab.bin", f"mapres.bin=raw:{A}/mapres.bin", f"far.bin=raw:{A}/far.bin"]
         entries += [f"?events.bin={raw}{A}/events.bin"]
-        S(f"{out}: pack", "pack.py", [f"{D}/{out}.pak"] + entries, [f"{D}/{out}.pak"])
+        # the pack comes after every block's horizon: its far panorama (farpano.py) is baked from the others'
+        packs.append((out, A, [f"{D}/{out}.pak"] + entries, world_split))
         steps.append(("enemies", msb, block, A, AD))  # expanded once enemies.bin exists (export_enemies.py --models)
         if not block:
             S(f"{out}: common AI", "lua50.py", ["--pack", "--msb", game, msb, f"{A}/ai_common.lua0",
@@ -159,6 +160,7 @@ def plan(game, build, mv=None):
             S(f"{out}: common pack", "pack.py", [f"{AD}/common.pak", f"esd.bin={G}/enemyCommon.esd.bin",
                                                  f"ai.lua0={A}/ai_common.lua0"], [f"{AD}/common.pak"])
 
+    packs = []
     # shared by every area
     S("player model", "export_model.py", [game, f"{G}/model.bin"], [f"{G}/model.bin"])
     S("player ESD", "export_esd.py", [game, f"{G}/esd.bin"], [f"{G}/esd.bin"])
@@ -187,6 +189,12 @@ def plan(game, build, mv=None):
         msb, block = b.split(":")
         area(msb, block, True)
     area(default, None, bool(blocks))
+    gens = [G] + [f"{G}/{b.split(':')[1]}" for b in blocks]  # Makefile PVS_PEERS: the world's blocks, boot map first
+    for out, A, args, world_split in packs:
+        if world_split:
+            S(f"{out}: far panorama", "farpano.py", [f"{A}/far.bin", A] + gens, [f"{A}/far.bin"],
+              inputs=[f"{g}/{f}" for g in gens for f in ("hzn.bin", "dg.bin", "map.bin")])
+        S(f"{out}: pack", "pack.py", args, [f"{D}/{out}.pak"])
     if blocks:
         # reads <gen dir>/collision.bin and <gen dir>/<block>/collision.bin (export_world.main)
         cols = [f"{G}/collision.bin"] + [f"{G}/{b.split(':')[1]}/collision.bin" for b in blocks]

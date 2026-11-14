@@ -39,6 +39,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `export_normal.py` | bump.bin: normal-map relief for the map (CLUT dot3) |
 | `pose_obj.py` | Skinned MSB objects (corpses, hanging chains) posed once as static map geometry for export_map |
 | `mapsplit.py`, `horizon.py` | A map.bin split for world streaming (maptab.bin + mapres.bin), and its resident far backdrop (hzn.bin) |
+| `farpano.py` | A world block's far panorama (far.bin): the other blocks of its area as a coarse coloured mesh of what is seen of them from the block, baked from their horizons; drawn while those blocks are not loaded (src/world.c, mapblock.c mp_draw_far) |
 | `drawgroups.py` | dg.bin: DSR's draw groups for the runtime (`src/drawgrp.c`) |
 | `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
 | `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |

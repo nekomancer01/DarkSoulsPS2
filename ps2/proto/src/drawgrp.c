@@ -191,6 +191,11 @@ void dg_tick(unsigned now)
 
 unsigned dg_stream_gen(void) { return ugen; }
 
+int dg_groups_shown(const unsigned m[4])
+{
+    return !sh_area || (m[0] & sh_mask[0]) | (m[1] & sh_mask[1]) | (m[2] & sh_mask[2]) | (m[3] & sh_mask[3]) ? 1 : 0;
+}
+
 int dg_stream_shown(int k, unsigned chunk)
 {
     if (k < 0 || k >= DG_INST)

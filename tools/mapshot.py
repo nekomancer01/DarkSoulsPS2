@@ -6,7 +6,9 @@
 
 Each <gen dir> holds one block's export (map.bin, cells.bin, hzn.bin: build/gen for the default map, build/gen/<block>
 for a world block); give every block of the world. The blocks of the map the player stands in are drawn at their
-levels, the other maps' blocks by their horizon alone, as the runtime keeps them (Firelink from the Undead Burg). A map or simplifier change is then judged in
+levels, the other maps' blocks by the far panorama of the player's block (far.bin, tools/farpano.py; give the gen
+dirs in the world's block order, boot map first), as the runtime shows them once they are let go (Firelink from the
+Undead Burg); --no-far: by their own horizon, the runtime before the panorama. A map or simplifier change is then judged in
 seconds per view after the block's export (about a minute), not after the ELF, the ISO and a PCSX2 run. PCSX2 stays the
 check for anything the runtime decides: what is loaded in time, memory, speed, the GS.
 
@@ -173,6 +175,22 @@ class Block:
                 first, cnt, _ = struct.unpack_from("<2HI", hb, 16 + 32 * i + 24)
                 self.hzn.append(hc[first:first + cnt])
 
+        # the far panorama (far.bin, tools/farpano.py): [(world block it shows, draw groups, chunks)]
+        self.far = []
+        fpath = os.path.join(gen, "far.bin")
+        fb = open(fpath, "rb").read() if os.path.exists(fpath) else b""
+        if fb[:4] == b"FARP":
+            ns, nc = struct.unpack_from("<2I", fb, 4)
+            fc = chunks(fb, 16 + 32 * ns, nc, 0, st=False)
+            for i in range(ns):
+                blk, first, cnt, *mask = struct.unpack_from("<7I", fb, 16 + 32 * i)
+                self.far.append((blk, mask, fc[first:first + cnt]))
+
+    def far_pick(self, blk, floor):
+        """the panorama's chunks that show world block blk from the floor under the player (map.c mp_draw_far)"""
+        return [(p, s, c, -1, fl & 0xFF, bx) for b, mask, ch in self.far if b == blk
+                and (floor is None or any(a & m for a, m in zip(floor, mask))) for p, s, c, _, fl, bx in ch]
+
     def chunk_dg(self, no):
         return self.dg_n[no] if no < len(self.dg_n) else 0
 
@@ -276,6 +294,9 @@ def camera(x, y, z, yaw, pitch):
     return eye, eye + np.array([math.sin(yaw) * math.cos(pitch), -math.sin(pitch), math.cos(yaw) * math.cos(pitch)])
 
 
+FAR = True  # --no-far: another map's blocks by their own horizon (the runtime before the far panorama)
+
+
 def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
     """one picture -> triangles drawn"""
     feet = np.array(feet, np.float64)
@@ -289,8 +310,13 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
         for bi, b in enumerate(blocks):
             # the blocks of the player's map are on (their cells at the level the distance asks for); another map's block
             # is kept for its horizon alone
-            for p, s, c, ti, fl, bx in b.pick(feet, eye, levels, floor, hz_only=map_of(b) != map_of(blocks[home])):
-                if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home:
+            other = map_of(b) != map_of(blocks[home])
+            # another map's block is off (world.c lets go of it away from its seam): the player's block's far
+            # panorama of it stands there; without one (--no-far, an export before it) its own horizon
+            use_far = other and FAR and bool(blocks[home].far)
+            for p, s, c, ti, fl, bx in (blocks[home].far_pick(bi, floor) if use_far else
+                                        b.pick(feet, eye, levels, floor, hz_only=other)):
+                if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home and not use_far:
                     continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
                 n = len(p)
                 P.append(p), ST.append(s), C.append(c), BX.append(np.tile(bx, (n, 1)))
@@ -366,7 +392,10 @@ def main():
     ap.add_argument("--levels", choices=("near", "coarse", "hzn"))
     ap.add_argument("--ref")
     ap.add_argument("--vs", nargs="+")
+    ap.add_argument("--no-far", action="store_true", help="other maps' blocks by their horizon, not the far panorama")
     a = ap.parse_args()
+    global FAR
+    FAR = not a.no_far
     shots = script_shots(a.script) if a.script else []
     if a.at:
         shots.append((a.name, tuple(a.at[:3]), a.at[3], a.at[4] if len(a.at) > 4 else 0.1))

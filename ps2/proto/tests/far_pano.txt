@@ -1,0 +1,31 @@
+# Far panorama (tools/farpano.py, src/world.c WORLD_BOOT_LEAN): from the Undead Burg bonfire Firelink Shrine is not
+# loaded; its great tree and the valley are the bonfire block's far panorama (far.bin), and the boot block's map
+# tables are let go. Back at Firelink they are read again.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/far_pano.txt <out> --iso build/proto.iso --timeout 600
+# Expect in the log: "boot block ... let go", "far panorama N tris (boot block let go)", "boot block ... back".
+option god
+option nodemo
+option noenemies
+wait 5
+shot firelink
+spawn -7.9 -10.1 -69.4 0.0
+cam 0.0 0.1
+wait 14
+freeze 1
+shot burg_bf_n
+freeze 0
+spawn -7.9 -10.1 -69.4 5.5
+cam 5.5 0.0
+wait 8
+freeze 1
+shot burg_bf_nw
+freeze 0
+spawn 14.5 28.5 102.2 3.6
+cam 3.6 0.15
+wait 10
+freeze 1
+shot parish_sw
+freeze 0
+spawn -47.6 -59.9 53.9 1.6
+wait 10
+shot firelink_back

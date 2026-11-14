@@ -113,7 +113,8 @@ int map_upload(GSGLOBAL *gs)
     MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
-    int r = tc_init(gs, m->map_bin, m->map_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
+    /* (tex_bin: the tables' texture piece when the boot block came in pieces, world.c WORLD_BOOT_LEAN; else map_bin) */
+    int r = tc_init(gs, m->tex_bin, m->tex_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
     if (!r)
         mp_tex_res(0);
     return r;
@@ -707,7 +708,7 @@ int mp_draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
     int fc, r = zs_route(c, &fc, cls), dn = 0;
     if ((r & 2) && zs_room(6)) {
         u32 *w = zs_buf + zs_n;
-        w[0] = ZS_HZ, w[1] = (u32)(m - mp_inst), w[2] = (u32)c, w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
+        w[0] = ZS_HZ, w[1] = (u32)m, w[2] = (u32)c,  /* (m: a map instance, or the far panorama's base, mapblock.c) */ w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
         zs_n += 6, dn = (int)c->tris;
     }
     if (r & 1)
@@ -769,7 +770,7 @@ static void zs_end(void)
             i += 8;
             break;
         case ZS_HZ:
-            draw_hz_(&mp_inst[w[1]], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
+            draw_hz_((const MapInst *)w[1], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
             i += 6;
             break;
         case ZS_REGS: {
@@ -840,6 +841,7 @@ typedef struct {
     unsigned holes;  /* visible cells with resident chunks not in and no near level drawn for them */
     unsigned hole_nohz, hole_unc, hole_ex[2];
     unsigned hz_fill, hz_tris;  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
+    unsigned far_tris;          /* of them the far panorama's (blocks that are not loaded) */
     unsigned pend, pops, pop_wait;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
     float pop_d;
     unsigned pvs_cut;  /* triangles the visibility rows left out (src/pvs.c) */
@@ -1118,7 +1120,7 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                 if (was[i] == D_DRAWN && now[i] != D_DRAWN) {
                     int r = now[i] < D_NR ? now[i] : D_NR;
                     cnt[r]++;
-                    if (i < mp_inst[0].hdr->chunks)
+                    if (mp_inst[0].hdr && i < mp_inst[0].hdr->chunks)
                         tris[r] += mp_inst[0].chunks[i].tris;
                     if (r != D_VIEW && r != D_CELL_VIEW && r != D_SWAP && r != D_NR && k < 300)
                         k += snprintf(line + k, sizeof line - k, " [%u %s]", i, dbg_name[r]);
@@ -1180,6 +1182,15 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                        MAP_INST > 1 ? lg->k_drawn[1] : 0, MAP_INST > 1 ? lg->k_cut[1] : 0, MAP_INST > 2 ? lg->k_drawn[2] : 0,
                        MAP_INST > 2 ? lg->k_cut[2] : 0);
             worst = cut_max = 0;
+            {  /* the far panorama, when what it draws changes by a tenth (tests read the line) */
+                static unsigned far_was;
+                unsigned d = lg->far_tris > far_was ? lg->far_tris - far_was : far_was - lg->far_tris;
+                if (d && d * 10 >= (far_was > 100 ? far_was : 100)) {
+                    printf("map: far panorama %u tris (boot block %s), eye %.1f %.1f %.1f, instance 0 drew %u\n", lg->far_tris,
+                           mp_inst[0].hdr ? "on" : "let go", (double)e[0], (double)e[1], (double)e[2], lg->k_drawn[0]);
+                    far_was = lg->far_tris;
+                }
+            }
         }
     }
 #ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
@@ -1640,7 +1651,7 @@ int map_draw(V3 eye)
             }
     MapInst *m = &mp_inst[sk];
     mapstream_select(sk);
-    {
+    if (m->hdr) {  /* (none: the boot block let go and no other block's map on yet, world.c WORLD_BOOT_LEAN) */
         MP_BEGIN
         mp_build_index(m);
         MP_END(MP_CULL)
@@ -1681,6 +1692,10 @@ int map_draw(V3 eye)
     nfx = nhzfade = nnrfade = 0;
     for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
         drawn += draw_block(k, e, fog, &lg);
+    {  /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
+        int dn = (int)mp_draw_far(e);
+        drawn += dn, lg.hz_tris += dn, lg.far_tris += dn;
+    }
     mapstream_select(0);
     if (nhzfade) {
         int dn = draw_hz_fades(nhzfade, e, a, b, fmin);
@@ -1716,7 +1731,7 @@ int map_draw(V3 eye)
 
 int map_floor(float x, float z, float y, float *out_y)
 {
-    const Header *hdr = mp_inst[0].hdr;
+    const Header *hdr = mp_inst[0].hdr ? mp_inst[0].hdr : &mp_boot_hdr;  /* (the navmesh stays with the block let go) */
     const float *navv = mp_inst[0].navv;
     const unsigned short *navt = mp_inst[0].navt;
     int found = 0;
