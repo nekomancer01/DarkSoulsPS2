@@ -9,6 +9,9 @@
 #define WORLD_H
 
 /* 1 (default): the boot block's relief streams like every block's (world.c), 0: resident from boot (main.c) */
+#ifndef WORLD_BOOT_LEAN
+#define WORLD_BOOT_LEAN 1  /* the boot block's map tables are let go away from it (world.c); 0: resident for good */
+#endif
 #ifndef WORLD_BOOT_RELIEF
 #define WORLD_BOOT_RELIEF 1
 #endif

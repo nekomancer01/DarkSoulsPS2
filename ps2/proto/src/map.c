@@ -113,7 +113,8 @@ int map_upload(GSGLOBAL *gs)
     MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
-    int r = tc_init(gs, m->map_bin, m->map_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
+    /* (tex_bin: the tables' texture piece when the boot block came in pieces, world.c WORLD_BOOT_LEAN; else map_bin) */
+    int r = tc_init(gs, m->tex_bin, m->tex_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
     if (!r)
         mp_tex_res(0);
     return r;
@@ -266,14 +267,21 @@ static void blend_regs(GSGLOBAL *gs, int mode)
     zs_gs_regs(2, r);
 }
 
-/* Far panorama (render-distance variant A, tools/pano.py): pano.bin in the area pack = u32 'PANO', chunks, chunk
- * offset, textures, texture offset; Chunk records as map.bin's (offsets from pano.bin, tex = its own texture index);
- * a world-fixed cylinder textured with the far map rendered offline, drawn after the sky, unfogged */
+/* The boot map's far backdrop as picture layers (tools/pano.py bake): pano.bin in the area pack = u32 'PANO', chunks,
+ * chunk offset, textures, texture offset; Chunk records as map.bin's (offsets from pano.bin, tex = its own texture
+ * index). DSR draws its distant pieces (CHUNK_BACKDROP: Firelink's ring walls and valley, 48k triangles, 1.6 MB)
+ * textured at full detail; the port never loaded them and drew the horizon's flat stand-in. The pieces beyond
+ * horizon.py's HZN_PANO_D of the walkable ground are instead rendered offline with their textures and baked light
+ * into 128 px tiles, drawn on world-fixed sheets at the depth they were seen at, under the map's fog (the horizon
+ * leaves those triangles out). Drawn after the sky from any block of the boot map's draw-group area (the sheets are
+ * fixed in the world; another area, the Undead Asylum, shows none). PANO=0 at build time: an empty file, the horizon
+ * keeps the backdrop. */
 static unsigned char *pano;
 static const Chunk *pano_chunk;
 static int pano_n, pano_tex = -1;
+static unsigned pano_drawn;  /* triangles this frame (the far panorama log line) */
 
-static void pano_open(const char *pak_path)
+void map_pano_open(const char *pak_path)
 {
     Pack pk;
     unsigned size;
@@ -284,7 +292,9 @@ static void pano_open(const char *pak_path)
     if (!pano)
         return;
     const unsigned *h = (const unsigned *)pano;
-    if (memcmp(pano, "PANO", 4) || (pano_tex = tc_add(pano, pano + h[4], h[3], 0)) < 0) {
+    if (memcmp(pano, "PANO", 4) || !h[1] || (pano_tex = tc_add(pano, pano + h[4], h[3], 0)) < 0) {
+        if (!memcmp(pano, "PANO", 4) && h[1])
+            printf("map: panorama NOT loaded (%u textures: no texture slots or CLUT VRAM)\n", h[3]);
         free(pano), pano = NULL;
         return;
     }
@@ -353,7 +363,7 @@ unsigned mp_vis_gen(int k) { return pvs_gen(k) + (MS_DG ? dg_stream_gen() << 16 
 
 int map_stream_open(const char *pak_path)
 {
-    pano_open(pak_path);
+    map_pano_open(pak_path);
     mapstream_vis_hooks(mp_vis, mp_vis_gen);
     return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
@@ -707,7 +717,7 @@ int mp_draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
     int fc, r = zs_route(c, &fc, cls), dn = 0;
     if ((r & 2) && zs_room(6)) {
         u32 *w = zs_buf + zs_n;
-        w[0] = ZS_HZ, w[1] = (u32)(m - mp_inst), w[2] = (u32)c, w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
+        w[0] = ZS_HZ, w[1] = (u32)m, w[2] = (u32)c,  /* (m: a map instance, or the far panorama's base, mapblock.c) */ w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
         zs_n += 6, dn = (int)c->tris;
     }
     if (r & 1)
@@ -769,7 +779,7 @@ static void zs_end(void)
             i += 8;
             break;
         case ZS_HZ:
-            draw_hz_(&mp_inst[w[1]], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
+            draw_hz_((const MapInst *)w[1], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
             i += 6;
             break;
         case ZS_REGS: {
@@ -840,6 +850,7 @@ typedef struct {
     unsigned holes;  /* visible cells with resident chunks not in and no near level drawn for them */
     unsigned hole_nohz, hole_unc, hole_ex[2];
     unsigned hz_fill, hz_tris;  /* cells inside HZN_R drawn by their horizon (coarse not in); horizon tris */
+    unsigned far_tris;          /* of them the far panorama's (blocks that are not loaded) */
     unsigned pend, pops, pop_wait;  /* pop-in: cells drawn coarse while due near; swaps seen; longest wait */
     float pop_d;
     unsigned pvs_cut;  /* triangles the visibility rows left out (src/pvs.c) */
@@ -909,21 +920,6 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
         }
     }
     blend_regs(gs, 0);
-    /* the far panorama (export_map.py PANO: sky chunks with CHUNK_BACKDROP, a cylinder textured with the far map
-     * rendered offline, DSR's fog baked in): over the sky, unfogged, alpha tested */
-    for (int i = 0, any = 0; i < pano_n && !sk; i++) {
-        const Chunk *c = &pano_chunk[i];
-        int cls = mp_visible(c, e, 1);
-        GSTEXTURE *t = cls ? tc_get(pano_tex + c->tex, 0) : NULL;
-        if (!t)
-            continue;
-        if (!any++)
-            zs_map_fog(0, 255, 255, 255);
-        vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, pano + c->pos, pano + c->st, pano + c->col,
-                   c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
-        drawn += c->tris;
-    }
-
     /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
      * send MIPTBP1 in its place) */
     zs_map_fog(a, b, fmin, 255);
@@ -936,6 +932,22 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
+    /* the far backdrop's picture layers (map_pano_open): over the sky, under the map's fog as the pieces they show
+     * (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first */
+    if (pano_n && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
+        zs_map_edge(0);
+        for (int i = 0; i < pano_n; i++) {
+            const Chunk *c = &pano_chunk[i];
+            int cls = mp_visible(c, e, 1);
+            GSTEXTURE *t = cls ? tc_get(pano_tex + c->tex, 0) : NULL;
+            if (!t)
+                continue;
+            vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, pano + c->pos, pano + c->st, pano + c->col,
+                       c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
+            drawn += c->tris, pano_drawn += c->tris;
+        }
+        zs_map_edge(edge_a2);
+    }
     return drawn;
 }
 
@@ -1118,7 +1130,7 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                 if (was[i] == D_DRAWN && now[i] != D_DRAWN) {
                     int r = now[i] < D_NR ? now[i] : D_NR;
                     cnt[r]++;
-                    if (i < mp_inst[0].hdr->chunks)
+                    if (mp_inst[0].hdr && i < mp_inst[0].hdr->chunks)
                         tris[r] += mp_inst[0].chunks[i].tris;
                     if (r != D_VIEW && r != D_CELL_VIEW && r != D_SWAP && r != D_NR && k < 300)
                         k += snprintf(line + k, sizeof line - k, " [%u %s]", i, dbg_name[r]);
@@ -1180,6 +1192,16 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                        MAP_INST > 1 ? lg->k_drawn[1] : 0, MAP_INST > 1 ? lg->k_cut[1] : 0, MAP_INST > 2 ? lg->k_drawn[2] : 0,
                        MAP_INST > 2 ? lg->k_cut[2] : 0);
             worst = cut_max = 0;
+            {  /* the far panorama, when what it draws changes by a tenth (tests read the line) */
+                static unsigned far_was;
+                unsigned d = lg->far_tris > far_was ? lg->far_tris - far_was : far_was - lg->far_tris;
+                if (d && d * 10 >= (far_was > 100 ? far_was : 100)) {
+                    printf("map: far panorama %u tris (boot block %s), eye %.1f %.1f %.1f, instance 0 drew %u, backdrop "
+                           "pictures %u tris\n", lg->far_tris, mp_inst[0].hdr ? "on" : "let go", (double)e[0],
+                           (double)e[1], (double)e[2], lg->k_drawn[0], pano_drawn);
+                    far_was = lg->far_tris;
+                }
+            }
         }
     }
 #ifdef MAP_STATS  /* A/B builds: batches, texture pool traffic and streamed cells, every 60 frames */
@@ -1640,7 +1662,7 @@ int map_draw(V3 eye)
             }
     MapInst *m = &mp_inst[sk];
     mapstream_select(sk);
-    {
+    if (m->hdr) {  /* (none: the boot block let go and no other block's map on yet, world.c WORLD_BOOT_LEAN) */
         MP_BEGIN
         mp_build_index(m);
         MP_END(MP_CULL)
@@ -1675,12 +1697,17 @@ int map_draw(V3 eye)
     fog_terms(&a, &b, &fmin);
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
     u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    pano_drawn = 0;
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
     nfx = nhzfade = nnrfade = 0;
     for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
         drawn += draw_block(k, e, fog, &lg);
+    {  /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
+        int dn = (int)mp_draw_far(e);
+        drawn += dn, lg.hz_tris += dn, lg.far_tris += dn;
+    }
     mapstream_select(0);
     if (nhzfade) {
         int dn = draw_hz_fades(nhzfade, e, a, b, fmin);
@@ -1716,7 +1743,7 @@ int map_draw(V3 eye)
 
 int map_floor(float x, float z, float y, float *out_y)
 {
-    const Header *hdr = mp_inst[0].hdr;
+    const Header *hdr = mp_inst[0].hdr ? mp_inst[0].hdr : &mp_boot_hdr;  /* (the navmesh stays with the block let go) */
     const float *navv = mp_inst[0].navv;
     const unsigned short *navt = mp_inst[0].navt;
     int found = 0;

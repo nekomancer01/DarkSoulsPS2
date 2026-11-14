@@ -284,6 +284,9 @@ void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsign
     split_k = k, split_b = b, split_boff = b_off, split_c = c, split_coff = c_off;
 }
 
+Header mp_boot_hdr;
+static int boot_back;  /* the boot block's tables are let go (map_boot_lean) */
+
 int map_block_init(int k, const void *tab, const void *res, int col_block)
 {
     if (k < 0 || k >= MAP_INST)
@@ -323,7 +326,11 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     mp_hz_parse(m);
     m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
     m->on = 1, m->col_block = col_block, m->hz_only = 0;
-    if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
+    if (!k)
+        mp_boot_hdr = *hdr;
+    if (!k && boot_back)  /* the boot block back after map_boot_lean: the fog follows the player as it did */
+        boot_back = 0;
+    else if (!k) {  /* the boot block: fog / light rows and the texture pool as map_init / map_upload */
         float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1],
                              hdr->fog_rgb[2], 64, 64, 64, 96, 96, 96, 0.40f * 127, 0.80f * 127, -0.45f * 127};
         memcpy(mp_fog_now, f0, sizeof mp_fog_now);
@@ -412,6 +419,67 @@ void map_block_lean(int k, int keep_hz)
     block_drop(k, 1);
     if (keep_hz && hc)  /* (they lie in maptab's last piece, which world.c keeps) */
         m->hz_cell = hc, m->hz_chunk = hk, m->hz_base = hb, m->nctab = n, m->hz_only = 1;
+}
+
+void map_boot_lean(void)
+{
+    MapInst *m = &mp_inst[0];
+    if (!m->on || !m->hdr)  /* (on: a world build's boot block, map_block_init) */
+        return;
+    mapstream_close(0);  /* its cells and sky go back to the arena; its textures' mip 0 is handed back (tex_hook_set) */
+    free(m->order), free(m->sky), free(m->cells), free(m->tiles), free(m->tcell);
+    m->indexed = NULL, m->order = m->sky = NULL, m->cells = NULL, m->ncells = m->nsky = 0;
+    m->tiles = NULL, m->tcell = NULL, m->ntiles = 0;
+    free(m->citem), free(m->rrange), free(m->rflag);
+    m->rrange = NULL, m->rflag = NULL, m->nritem = 0, m->citem = NULL, m->res_cells = 0;
+    /* no header: nothing of it is drawn or indexed (as a dropped block); fog rows, navmesh and textures stay */
+    m->hdr = NULL, m->chunks = NULL, m->ctab = NULL, m->ckeys = NULL, m->nctab = 0;
+    m->hz_cell = NULL, m->hz_chunk = NULL, m->hz_base = NULL;
+    boot_back = 1;
+    mapstream_select(0);
+}
+
+/* The far panorama (map_far_set; far.bin: 'FARP', sets, chunks, bytes; FarSet per set; Chunk records; streams from
+ * the file start). Untextured like the horizon, under the map's fog, never distance culled (CHUNK_BACKDROP). */
+typedef struct { unsigned blk, first, n, groups[4], pad; } FarSet;
+static MapInst far_inst;  /* (hz_base: the base mp_draw_hz adds the chunks' offsets to) */
+static const FarSet *far_set;
+static const Chunk *far_chunk;
+static unsigned far_sets;
+
+int map_far_set(const void *blob)
+{
+    const unsigned *h = blob;
+    far_set = NULL, far_sets = 0, far_inst.hz_base = NULL;
+    if (!h || memcmp(h, "FARP", 4) || ((unsigned)blob & 15) || 16 + 32 * h[1] + 64 * h[2] > h[3])
+        return 0;
+    far_set = (const FarSet *)(h + 4);
+    far_chunk = (const Chunk *)(far_set + h[1]);
+    far_sets = h[1];
+    far_inst.hz_base = blob;
+    return 1;
+}
+
+unsigned mp_draw_far(const float *e)
+{
+    unsigned n = 0;
+    for (unsigned s = 0; s < far_sets; s++) {
+        const FarSet *f = &far_set[s];
+        if (f->blk >= MAP_INST || f->first + f->n > ((const unsigned *)far_inst.hz_base)[2])
+            continue;
+        const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
+        if (f->blk ? p->on || p->hz_only : p->hdr != NULL)
+            continue;  /* that block draws itself (its cells, or its own horizon) */
+        if (!dg_groups_shown(f->groups))
+            continue;
+        for (unsigned j = 0; j < f->n; j++) {
+            const Chunk *c = &far_chunk[f->first + j];
+            int cls = mp_visible(c, e, 0);
+            if (cls)
+                n += mp_draw_hz(&far_inst, c, cls, 0, 0);
+        }
+    }
+    return n;
 }
 
 /* a kept-only block (hz_only): every horizon chunk in view, as the shown draw groups pick them */

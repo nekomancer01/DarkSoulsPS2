@@ -262,6 +262,63 @@ def chunk_dg(b, nch):
     return np.frombuffer(d, np.uint8, nch, 32 + 16 * (P + C)).astype(np.int64)
 
 
+# The far backdrop as picture layers (tools/pano.py bake; HZN_PANO_D metres, 0 = none: all of it stays horizon
+# geometry, as before): backdrop triangles (CHUNK_BACKDROP: the game's own distant pieces) at least that far from the
+# block's walkable ground, of draw-group sets at least PANO_SHOWN of the block's floor shows, are drawn from baked
+# textured pictures and leave the horizon. One rule for both tools (pano_tris), so nothing is drawn twice or lost.
+# ASSUMED 100 m: nearer pieces shift too much against a picture as the player walks; 0.5: a set most floors hide
+# (a neighbour map's stand-ins) keeps the draw-group test only geometry has
+PANO_D = float(os.environ.get("HZN_PANO_D", 100.0))
+PANO_SHOWN = float(os.environ.get("HZN_PANO_SHOWN", 0.5))
+
+
+def own_nav(b, src):
+    """the block's own walkable ground: map.bin's navmesh vertices inside its cells (a world block's map.bin carries
+    the whole MSB's navmesh; tools/area.py BLOCKS by the export directory's name)"""
+    import area
+    nav = nav_points(b)
+    cs = area.BLOCKS.get(os.path.basename(os.path.dirname(os.path.abspath(src))), {}).get("cells")
+    if cs and len(nav):
+        keep = np.zeros(len(nav), bool)
+        for x0, z0, x1, z1 in area.cell_rects(cs):
+            keep |= (nav[:, 0] >= x0 * area.CELL) & (nav[:, 0] < (x1 + 1) * area.CELL) & \
+                (nav[:, 2] >= z0 * area.CELL) & (nav[:, 2] < (z1 + 1) * area.CELL)
+        nav = nav[keep] if keep.any() else nav
+    return nav
+
+
+def pano_sets(src):
+    """draw-group sets (dg.bin piece mask indices) of the export at src that at least PANO_SHOWN of the block's own
+    collision triangles show; None without a dg.bin (every set)"""
+    path = os.path.join(os.path.dirname(os.path.abspath(src)), "dg.bin")
+    if not os.path.exists(path):
+        return None
+    d = open(path, "rb").read()
+    _mg, P, C, N, T = struct.unpack_from("<5I", d, 0)
+    pm = np.frombuffer(d, np.uint32, 4 * P, 32).reshape(P, 4)
+    cm = np.frombuffer(d, np.uint32, 4 * C, 32 + 16 * P).reshape(C, 4)
+    cnt = np.bincount(np.frombuffer(d, np.uint8, T, 32 + 16 * (P + C) + N), minlength=C)[:C].astype(np.float64)
+    if not cnt.sum():
+        return None
+    share = ((pm[:, None, :] & cm[None]).any(2) * cnt[None]).sum(1) / cnt.sum()
+    return {0} | {int(i) for i in np.flatnonzero(share >= PANO_SHOWN)}
+
+
+def pano_tris(cen, sets, bd, nav, src):
+    """(n,) bool: the backdrop triangles (centroids cen, draw-group sets, bd flags) the picture layers take"""
+    if PANO_D <= 0 or not len(cen) or not len(nav):
+        return np.zeros(len(cen), bool)
+    ok = pano_sets(src)
+    L = _nearest_lib()
+    ns = nav[::max(1, len(nav) // 4000)]
+    if L is not None:
+        Q, S_, d2 = np.ascontiguousarray(cen, np.float64), np.ascontiguousarray(ns, np.float64), np.empty(len(cen))
+        L.min_d2(len(Q), Q.ctypes.data, len(S_), S_.ctypes.data, 0.0, d2.ctypes.data)
+    else:
+        d2 = np.array([((ns - c) ** 2).sum(1).min() for c in cen])
+    return bd & (d2 >= PANO_D * PANO_D) & (np.isin(sets, list(ok)) if ok is not None else True)
+
+
 def nav_points(b):
     nv = struct.unpack_from("<I", b, 12)[0]
     navv_off = struct.unpack_from("<I", b, 44)[0]
@@ -615,6 +672,7 @@ def _place(V, VC, T, lo, hi, cfl):
 
 
 SRC = []
+PANO = os.environ.get("HZN_PANO", "1") == "1"  # (the Makefile's PANO switch: 0 = no picture layers, all horizon)
 
 
 def ntri(r):
@@ -664,6 +722,8 @@ def build(b):
     """-> (hzn.bin bytes, stats dict)"""
     assert b[:4] == b"DSM5", "horizon: not a DSM5 map.bin"
     P, C, keep, bd, dg, cells, cov = coarse_tris(b)
+    if PANO and len(P):  # the far backdrop the picture layers draw (tools/pano.py bake)
+        keep = keep & ~pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0])
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)

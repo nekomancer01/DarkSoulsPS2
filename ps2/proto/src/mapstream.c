@@ -1174,6 +1174,14 @@ void mapstream_close(int k)
         sel = 0;
 }
 
+int mapstream_reading(int k)
+{
+    int n = 0;
+    for (int i = 0; i < ms_nrd; i++)
+        n += ms_rd[i].k == k;
+    return n;
+}
+
 void mapstream_select(int k)
 {
     if (k >= 0 && k < MS_INST)

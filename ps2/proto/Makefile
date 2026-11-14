@@ -202,7 +202,15 @@ worldexports:
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldexport@,$(subst :,@,$(WORLD_BLOCKS)))
 worldexport@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockexport
-worldpacks: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+# The far panorama of a block (tools/farpano.py) is baked from every other block's horizon, so the horizons come before
+# the packs too: worldhzn (each block's sub-make and this make's own), then the packs.
+worldhzn: worldexports $(if $(WORLD_BLOCKS),$(A)/hzn.bin)
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockhzn@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockhzn@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockhzn
+blockhzn: $(A)/hzn.bin
+.PHONY: worldhzn blockhzn
+worldpacks: worldhzn $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks
@@ -245,13 +253,13 @@ $(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@
 
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
+$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin $(A)/far.bin) $(if $(WORLD_BLOCKS),$(A)/pano.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
 		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
 		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin pvs.bin=$(A)/pvs.bin \
 		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
-		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin) \
+		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) \
 		$(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) \
 		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
 # world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background
@@ -287,9 +295,31 @@ WORLD_TEX_SHARED ?= 1
 TEX_PEERS = $(if $(filter 1,$(WORLD_TEX_SHARED)),$(if $(BLOCK),$(foreach d,$(PVS_PEERS),$(if $(filter $(MAP)_%,$(notdir $(d))),$(d)/map.bin))))
 $(A)/maptab.bin $(A)/mapres.bin $(A)/maptex.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv $(TEX_PEERS)
 	MIP1_OUT=$(WORLD_MIP1_OUT) TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
-$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
+$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(AREA_PY) $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
 		$(TS)/native/hzvis.c.sum $(TS)/native/hzerr.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
-	HZN=$(or $(HZN),1) $(PY) -I ../../tools/horizon.py $< $@
+	HZN=$(or $(HZN),1) HZN_PANO=$(HZN_PANO) $(PY) -I ../../tools/horizon.py $< $@
+# The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
+# (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline with their textures into
+# 128 px tiles on sheets at the depth seen; horizon.py leaves those triangles out of hzn.bin (one rule, pano_tris).
+# PANO=0: an empty pano.bin and the whole backdrop stays in the horizon, as before. Only the boot map's is loaded
+# (map.c), so the world blocks keep theirs in the horizon (HZN_PANO 0).
+PANO ?= 1
+HZN_PANO = $(if $(and $(WORLD_BLOCKS),$(filter 1,$(PANO))),1,0)
+$(A)/pano.bin: $(A)/map.bin $(A)/dg.bin $(TS)/pano.py.sum $(TS)/horizon.py.sum $(TS)/mapshot.py.sum $(TS)/mapview.py.sum \
+		$(TS)/texmap.py.sum $(AREA_PY)
+	HZN_PANO=$(HZN_PANO) $(PY) -I ../../tools/pano.py bake $(A) $@
+
+# The far panorama (tools/farpano.py, src/world.c): the other blocks of the block's area as a coarse coloured mesh of
+# what is seen of them from this block, drawn while they are not loaded; with it the boot block's map tables are let
+# go away from its seams. FARPANO=0: an empty file (none: the boot block stays whole, the old path). The other blocks'
+# horizons and draw groups have no rule in this make: worldhzn (the top make, or a block's parent make) writes them.
+FARPANO ?= 1
+FAR_WITH = $(foreach d,$(PVS_WITH),$(d)/hzn.bin)
+$(FAR_WITH): | $(if $(WORLD_BLOCKS),worldhzn)
+	@test -f $@ || { echo "$@ missing: the world block horizons (worldhzn) did not write it"; exit 1; }
+$(A)/far.bin: $(A)/map.bin $(A)/dg.bin $(FAR_WITH) $(foreach d,$(PVS_WITH),$(d)/dg.bin) $(TS)/farpano.py.sum $(TS)/horizon.py.sum \
+		$(TS)/mapview.py.sum $(TS)/export_world.py.sum $(AREA_PY) $(TS)/native/meshopt/simplifier.cpp.sum
+	FARPANO=$(FARPANO) $(PY) -I ../../tools/farpano.py $@ $(A) $(PVS_PEERS)
 
 # Objects: src/*.c -> $(O)/*.o; area-dependent objects of a non-default area go to $(O)/<MAP>/
 $(O)/%.o: src/%.c $(O)/.cflags

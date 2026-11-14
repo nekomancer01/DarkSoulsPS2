@@ -57,6 +57,18 @@ void map_block_drop(int k);
 /* map_block_drop, but its draw groups stay (world.c WORLD_LITE_DIET: a block only kept keeps its collision, events and
  * characters, which dg_mask_shown still answers for; map_block_init brings the drawing back) */
 void map_block_lean(int k, int keep_hz);
+/* world.c WORLD_BOOT_LEAN: the boot block (instance 0) stops drawing and streaming; its chunk table and cell table +
+ * horizon pieces may be freed two frames later. Its textures, navmesh and fog rows (the middle piece) stay in use.
+ * map_block_split(0, ...) + map_block_init(0, ...) + map_block_stream_open(0, ...) bring it back. */
+void map_boot_lean(void);
+/* the boot map's far backdrop picture layers (pano.bin of the area pack, tools/pano.py bake; map.c): before the
+ * first frame (their CLUTs go up with the map's). map_stream_open calls it; world builds call it themselves. */
+void map_pano_open(const char *pak_path);
+/* The far panorama of the block the player is in (far.bin, tools/farpano.py; NULL: none): parts of other world blocks
+ * as seen from it, each drawn while its block (= map instance) is not drawn and the collision part under the player
+ * shows its draw groups. The buffer stays the caller's and must outlive the call that replaces it by two frames.
+ * Returns 0 for a blob that is not a panorama (nothing set). */
+int map_far_set(const void *blob);
 /* world.c world_systems, at boot: block k's dg.bin from its open Pack (per-block draw groups, src/drawgrp.c) */
 void map_block_dg(int k, void *pack);
 /* the boot instance's pvs.bin (main.c, from the area pack; kept loaded) */

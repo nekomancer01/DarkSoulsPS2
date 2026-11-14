@@ -416,7 +416,7 @@ int main(int argc, char **argv)
 #endif
     int map_ok = (world ? world_boot_map() : map_init(map_blob)) && map_upload(gs) == 0;
     if (world)
-        world_stream_open();
+        world_stream_open(), map_pano_open(PACK_ROOT AREA ".pak");
     else
         map_stream_open(PACK_ROOT AREA ".pak");  /* DSM5: near cells stream from the area pack (src/mapstream.c) */
     loading_tick(1);  /* the loading screen moves into the map pool now, before the uploads below reach the top of VRAM */
