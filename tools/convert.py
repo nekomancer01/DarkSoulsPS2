@@ -138,7 +138,8 @@ def plan(game, build, mv=None):
         S(f"{out}: map AI", "lua50.py", ["--pack", "--msb", game, msb, f"{A}/ai_map.lua0",
                                         f"{game}/script/{msb}.luabnd.dcx"], [f"{A}/ai_map.lua0"], benv)
         if world_split:
-            S(f"{out}: horizon", "horizon.py", [f"{A}/map.bin", f"{A}/hzn.bin"], [f"{A}/hzn.bin"])
+            S(f"{out}: horizon", "horizon.py", [f"{A}/map.bin", f"{A}/hzn.bin"], [f"{A}/hzn.bin"],
+              {"HZN_PANO": "1" if out == default else "0"})
             S(f"{out}: map split", "mapsplit.py", [f"{A}/map.bin", f"{A}/maptab.bin", f"{A}/mapres.bin", f"{A}/hzn.bin"],
               [f"{A}/maptab.bin", f"{A}/mapres.bin"])
         raw = "raw:" if block else ""
@@ -194,6 +195,8 @@ def plan(game, build, mv=None):
         if world_split:
             S(f"{out}: far panorama", "farpano.py", [f"{A}/far.bin", A] + gens, [f"{A}/far.bin"],
               inputs=[f"{g}/{f}" for g in gens for f in ("hzn.bin", "dg.bin", "map.bin")])
+        if world_split and out == default:  # the boot map's far backdrop as picture layers (Makefile $(A)/pano.bin)
+            S(f"{out}: backdrop pictures", "pano.py", ["bake", A, f"{A}/pano.bin"], [f"{A}/pano.bin"], {"HZN_PANO": "1"})
         S(f"{out}: pack", "pack.py", args, [f"{D}/{out}.pak"])
     if blocks:
         # reads <gen dir>/collision.bin and <gen dir>/<block>/collision.bin (export_world.main)

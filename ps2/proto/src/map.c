@@ -267,14 +267,21 @@ static void blend_regs(GSGLOBAL *gs, int mode)
     zs_gs_regs(2, r);
 }
 
-/* Far panorama (render-distance variant A, tools/pano.py): pano.bin in the area pack = u32 'PANO', chunks, chunk
- * offset, textures, texture offset; Chunk records as map.bin's (offsets from pano.bin, tex = its own texture index);
- * a world-fixed cylinder textured with the far map rendered offline, drawn after the sky, unfogged */
+/* The boot map's far backdrop as picture layers (tools/pano.py bake): pano.bin in the area pack = u32 'PANO', chunks,
+ * chunk offset, textures, texture offset; Chunk records as map.bin's (offsets from pano.bin, tex = its own texture
+ * index). DSR draws its distant pieces (CHUNK_BACKDROP: Firelink's ring walls and valley, 48k triangles, 1.6 MB)
+ * textured at full detail; the port never loaded them and drew the horizon's flat stand-in. The pieces beyond
+ * horizon.py's HZN_PANO_D of the walkable ground are instead rendered offline with their textures and baked light
+ * into 128 px tiles, drawn on world-fixed sheets at the depth they were seen at, under the map's fog (the horizon
+ * leaves those triangles out). Drawn after the sky from any block of the boot map's draw-group area (the sheets are
+ * fixed in the world; another area, the Undead Asylum, shows none). PANO=0 at build time: an empty file, the horizon
+ * keeps the backdrop. */
 static unsigned char *pano;
 static const Chunk *pano_chunk;
 static int pano_n, pano_tex = -1;
+static unsigned pano_drawn;  /* triangles this frame (the far panorama log line) */
 
-static void pano_open(const char *pak_path)
+void map_pano_open(const char *pak_path)
 {
     Pack pk;
     unsigned size;
@@ -285,7 +292,9 @@ static void pano_open(const char *pak_path)
     if (!pano)
         return;
     const unsigned *h = (const unsigned *)pano;
-    if (memcmp(pano, "PANO", 4) || (pano_tex = tc_add(pano, pano + h[4], h[3], 0)) < 0) {
+    if (memcmp(pano, "PANO", 4) || !h[1] || (pano_tex = tc_add(pano, pano + h[4], h[3], 0)) < 0) {
+        if (!memcmp(pano, "PANO", 4) && h[1])
+            printf("map: panorama NOT loaded (%u textures: no texture slots or CLUT VRAM)\n", h[3]);
         free(pano), pano = NULL;
         return;
     }
@@ -354,7 +363,7 @@ unsigned mp_vis_gen(int k) { return pvs_gen(k) + (MS_DG ? dg_stream_gen() << 16 
 
 int map_stream_open(const char *pak_path)
 {
-    pano_open(pak_path);
+    map_pano_open(pak_path);
     mapstream_vis_hooks(mp_vis, mp_vis_gen);
     return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
@@ -911,21 +920,6 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
         }
     }
     blend_regs(gs, 0);
-    /* the far panorama (export_map.py PANO: sky chunks with CHUNK_BACKDROP, a cylinder textured with the far map
-     * rendered offline, DSR's fog baked in): over the sky, unfogged, alpha tested */
-    for (int i = 0, any = 0; i < pano_n && !sk; i++) {
-        const Chunk *c = &pano_chunk[i];
-        int cls = mp_visible(c, e, 1);
-        GSTEXTURE *t = cls ? tc_get(pano_tex + c->tex, 0) : NULL;
-        if (!t)
-            continue;
-        if (!any++)
-            zs_map_fog(0, 255, 255, 255);
-        vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, pano + c->pos, pano + c->st, pano + c->col,
-                   c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
-        drawn += c->tris;
-    }
-
     /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
      * send MIPTBP1 in its place) */
     zs_map_fog(a, b, fmin, 255);
@@ -938,6 +932,22 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(edge_a2);
+    /* the far backdrop's picture layers (map_pano_open): over the sky, under the map's fog as the pieces they show
+     * (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first */
+    if (pano_n && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
+        zs_map_edge(0);
+        for (int i = 0; i < pano_n; i++) {
+            const Chunk *c = &pano_chunk[i];
+            int cls = mp_visible(c, e, 1);
+            GSTEXTURE *t = cls ? tc_get(pano_tex + c->tex, 0) : NULL;
+            if (!t)
+                continue;
+            vu1_add_ex(t, 0, VU1_FOG | (cls == 2 ? VU1_CLIP : 0), c->tris, pano + c->pos, pano + c->st, pano + c->col,
+                       c->org, c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f);
+            drawn += c->tris, pano_drawn += c->tris;
+        }
+        zs_map_edge(edge_a2);
+    }
     return drawn;
 }
 
@@ -1186,8 +1196,9 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
                 static unsigned far_was;
                 unsigned d = lg->far_tris > far_was ? lg->far_tris - far_was : far_was - lg->far_tris;
                 if (d && d * 10 >= (far_was > 100 ? far_was : 100)) {
-                    printf("map: far panorama %u tris (boot block %s), eye %.1f %.1f %.1f, instance 0 drew %u\n", lg->far_tris,
-                           mp_inst[0].hdr ? "on" : "let go", (double)e[0], (double)e[1], (double)e[2], lg->k_drawn[0]);
+                    printf("map: far panorama %u tris (boot block %s), eye %.1f %.1f %.1f, instance 0 drew %u, backdrop "
+                           "pictures %u tris\n", lg->far_tris, mp_inst[0].hdr ? "on" : "let go", (double)e[0],
+                           (double)e[1], (double)e[2], lg->k_drawn[0], pano_drawn);
                     far_was = lg->far_tris;
                 }
             }
@@ -1686,6 +1697,7 @@ int map_draw(V3 eye)
     fog_terms(&a, &b, &fmin);
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
     u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    pano_drawn = 0;
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;

@@ -186,6 +186,17 @@ class Block:
                 blk, first, cnt, *mask = struct.unpack_from("<7I", fb, 16 + 32 * i)
                 self.far.append((blk, mask, fc[first:first + cnt]))
 
+        # the far backdrop as picture layers (pano.bin, tools/pano.py bake): textured tiles on cylinders, the
+        # draw-group sets they stand for (the horizon's backdrop chunks of those sets are left out)
+        self.pano, self.pano_tex, self.pano_sets = [], [], set()
+        ppath = os.path.join(gen, "pano.bin")
+        pb = open(ppath, "rb").read() if os.path.exists(ppath) else b""
+        if pb[:4] == b"PANO" and struct.unpack_from("<I", pb, 4)[0]:
+            n, table, nt, otex = struct.unpack_from("<4I", pb, 4)
+            self.pano = chunks(pb, table, n, 0)
+            self.pano_tex = texmap.load(pb, nt, otex)
+            self.pano_sets = {i for i in range(256) if table >= 64 and pb[32 + (i >> 3)] >> (i & 7) & 1}
+
     def far_pick(self, blk, floor):
         """the panorama's chunks that show world block blk from the floor under the player (map.c mp_draw_far)"""
         return [(p, s, c, -1, fl & 0xFF, bx) for b, mask, ch in self.far if b == blk
@@ -221,7 +232,7 @@ class Block:
         t = int(ids[np.flatnonzero(ok)[np.argmax(y[ok])]])
         return list(self.dg_c[self.dg_t[t]]) if t < len(self.dg_t) and self.dg_t[t] < len(self.dg_c) else None
 
-    def pick(self, feet, eye, levels, floor=None, hz_only=False):
+    def pick(self, feet, eye, levels, floor=None, hz_only=False, pano=False):
         """the chunks drawn from here: [(chunk, texture offset applies)]; hz_only: a block that is not on (another
         map's, kept for its horizon: map.c mp_draw_hz_only), every horizon chunk the floor's groups show"""
         if hz_only:
@@ -237,7 +248,8 @@ class Block:
                 out += [c for c, g in zip(near, ndg) if self.shown(g, floor)]
                 coarse_off.update(i for i in res if self.res[i][4] & mapcfg.CHUNK_COARSE)
             elif lv == "hzn" and hz:
-                out += [(p, s, c, -1, fl & 0xFF, bx) for p, s, c, _, fl, bx in hz if self.shown(fl >> 16 & 0xFF, floor)]
+                out += [(p, s, c, -1, fl & 0xFF, bx) for p, s, c, _, fl, bx in hz if self.shown(fl >> 16 & 0xFF, floor)
+                        and not (pano and fl & mapcfg.CHUNK_BACKDROP and (fl >> 16 & 0xFF) in self.pano_sets)]
                 covered.update(i for i in res if not self.res[i][4] & (mapcfg.CHUNK_BLEND | mapcfg.CHUNK_SKY | mapchunks.CHUNK_GRASS))
         out += [c for i, c in enumerate(self.res) if i not in coarse_off and i not in covered and self.shown(self.chunk_dg(i), floor)]
         return out
@@ -294,6 +306,15 @@ def camera(x, y, z, yaw, pitch):
     return eye, eye + np.array([math.sin(yaw) * math.cos(pitch), -math.sin(pitch), math.cos(yaw) * math.cos(pitch)])
 
 
+def area_of(b):
+    """the map id of a whole-map export (the build's default map: its area.sig names it), else its directory"""
+    try:
+        return json.load(open(os.path.join(b.gen, "area.sig")))["map"]
+    except (OSError, ValueError, KeyError):
+        return b.gen
+
+
+PANO = True  # --no-pano: the far backdrop by its horizon chunks (the runtime before the picture layers)
 FAR = True  # --no-far: another map's blocks by their own horizon (the runtime before the far panorama)
 
 
@@ -305,7 +326,7 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
     home = home_block(blocks, feet)
     floor = blocks[home].floor_mask(feet)
     import area
-    map_of = lambda b: area.BLOCKS.get(os.path.basename(os.path.normpath(b.gen)), {}).get("map", b.gen)
+    map_of = lambda b: area.BLOCKS.get(os.path.basename(os.path.normpath(b.gen)), {}).get("map", "") or area_of(b)
     for attempt in (0, 1):
         for bi, b in enumerate(blocks):
             # the blocks of the player's map are on (their cells at the level the distance asks for); another map's block
@@ -314,8 +335,11 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
             # another map's block is off (world.c lets go of it away from its seam): the player's block's far
             # panorama of it stands there; without one (--no-far, an export before it) its own horizon
             use_far = other and FAR and bool(blocks[home].far)
+            # the boot map's far backdrop as picture layers: its horizon lacks those triangles; the sheets are
+            # drawn from every block of its area (map.c)
+            use_pano = PANO and bi == 0 and bool(b.pano) and map_of(blocks[home])[:3] == map_of(b)[:3]
             for p, s, c, ti, fl, bx in (blocks[home].far_pick(bi, floor) if use_far else
-                                        b.pick(feet, eye, levels, floor, hz_only=other)):
+                                        b.pick(feet, eye, levels, floor, hz_only=other, pano=use_pano)):
                 if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home and not use_far:
                     continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
                 n = len(p)
@@ -323,6 +347,12 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
                 TI.append(np.full(n, ti + len(tex) if ti >= 0 else -1))
                 FL.append(np.full(n, fl))
             tex += b.tex
+            if use_pano:
+                for p, s, c, ti, fl, bx in b.pano:
+                    n = len(p)
+                    P.append(p), ST.append(s), C.append(c), BX.append(np.tile(bx, (n, 1)))
+                    TI.append(np.full(n, ti + len(tex))), FL.append(np.full(n, mapcfg.CHUNK_BACKDROP))
+                tex += b.pano_tex
         if sum(map(len, P)) >= 100 or floor is None:  # (a few stray triangles: the floor lookup missed)
             break
         print(f"mapshot: nothing is shown from the floor under ({feet[0]:.1f}, {feet[1]:.1f}, {feet[2]:.1f}): drawn without draw groups")
@@ -392,10 +422,11 @@ def main():
     ap.add_argument("--levels", choices=("near", "coarse", "hzn"))
     ap.add_argument("--ref")
     ap.add_argument("--vs", nargs="+")
+    ap.add_argument("--no-pano", action="store_true", help="the far backdrop by its horizon, not the picture layers")
     ap.add_argument("--no-far", action="store_true", help="other maps' blocks by their horizon, not the far panorama")
     a = ap.parse_args()
-    global FAR
-    FAR = not a.no_far
+    global FAR, PANO
+    FAR, PANO = not a.no_far, not a.no_pano
     shots = script_shots(a.script) if a.script else []
     if a.at:
         shots.append((a.name, tuple(a.at[:3]), a.at[3], a.at[4] if len(a.at) > 4 else 0.1))
