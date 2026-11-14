@@ -2,6 +2,7 @@
 #include "mapx.h"
 #if MX_THREADS
 #include <pthread.h>
+#include <stdio.h>
 #include <unistd.h>
 #endif
 
@@ -165,6 +166,23 @@ long long mx_map_put(mx_map *m, const long long *key, int *added)
     if (added)
         *added = 1;
     return m->n - 1;
+}
+
+/* ---- profiling ticks ---- */
+#include <time.h>
+void mx_tick(const char *what)
+{
+    static int on = -1;
+    static double last;
+    if (on < 0)
+        on = getenv("MX_TIME") != NULL;
+    if (!on)
+        return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double t = ts.tv_sec + ts.tv_nsec * 1e-9;
+    fprintf(stderr, "  [mx] %-28s +%.2f s\n", what, last ? t - last : 0.0);
+    last = t;
 }
 
 /* ---- threads ---- */

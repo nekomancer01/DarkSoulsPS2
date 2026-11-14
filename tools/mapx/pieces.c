@@ -64,9 +64,18 @@ static int pc_root(int *par, int x)
     return x;
 }
 
+/* squared distance from q to a box (min xyz, max xyz): a lower bound of the distance to what is inside it */
+static double box_d2(const double *q, const double *B)
+{
+    double e0 = q[0] < B[0] ? B[0] - q[0] : q[0] > B[3] ? q[0] - B[3] : 0, e1 = q[1] < B[1] ? B[1] - q[1] : q[1] > B[4] ? q[1] - B[4] : 0,
+           e2 = q[2] < B[2] ? B[2] - q[2] : q[2] > B[5] ? q[2] - B[5] : 0;
+    return e0 * e0 + e1 * e1 + e2 * e2;
+}
+
 typedef struct {
     const double *P;
     const long long *tg;   /* per structure triangle: 3 global positions */
+    const double *bb;      /* per structure triangle: its box (min xyz, max xyz) */
     const pg_ent *G;
     long long ng;
     const int *big;
@@ -96,12 +105,16 @@ static double prot_point(const prot_ctx *c, const double *q)
                     else hi = m;
                 }
                 for (long long e = lo; e < c->ng && c->G[e].key == key; e++) {
+                    if (box_d2(q, c->bb + 6 * c->G[e].t) > best * 1.000001 + 1e-9)  /* (cannot be nearer than best) */
+                        continue;
                     const long long *t = c->tg + 3 * c->G[e].t;
                     double d = pt_tri_d2(q, c->P + 3 * t[0], c->P + 3 * t[1], c->P + 3 * t[2]);
                     if (d < best) best = d;
                 }
             }
     for (long long e = 0; e < c->nbig; e++) {
+        if (box_d2(q, c->bb + 6 * c->big[e]) > best * 1.000001 + 1e-9)
+            continue;
         const long long *t = c->tg + 3 * c->big[e];
         double d = pt_tri_d2(q, c->P + 3 * t[0], c->P + 3 * t[1], c->P + 3 * t[2]);
         if (d < best) best = d;
@@ -144,6 +157,7 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
                            double max_diag, double cap, double gap, int *ppiece, double *pdiag, double *pbox, int *pclus,
                            double *pprot)
 {
+    mx_tick("pieces start");
     long long npt = poff[nm], ntt = toff[nm];
     long long *kid = MX_NEW(long long, npt ? npt : 1);
     mx_map km;
@@ -220,6 +234,7 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
         small[i] = pdiag[i] <= max_diag;
         pprot[i] = small[i] ? 0.0 : -1.0;
     }
+    mx_tick("pieces union");
     /* the structure's triangles in a grid of cap-sized cells (by box; those over 512 cells on a list of their own) */
     long long ns = 0, *lt = tg;
     tg = MX_NEW(long long, 3 * (nlive ? nlive : 1));
@@ -255,9 +270,18 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
     }
     if (ng > 1)
         qsort(G, (size_t)ng, sizeof(pg_ent), pg_cmp);
+    mx_tick("pieces grid");
     double *td2 = MX_ZNEW(double, nlive ? nlive : 1);
-    prot_ctx c = {P, tg, G, ng, big, nbig, cs, cap * cap, lt, ppiece, small, td2};
+    double *bb = MX_NEW(double, 6 * (ns ? ns : 1));
+    for (long long t = 0; t < ns; t++)
+        for (int a = 0; a < 3; a++) {
+            double x = P[3 * tg[3 * t] + a], y = P[3 * tg[3 * t + 1] + a], z = P[3 * tg[3 * t + 2] + a];
+            bb[6 * t + a] = x < y ? (x < z ? x : z) : (y < z ? y : z);
+            bb[6 * t + 3 + a] = x > y ? (x > z ? x : z) : (y > z ? y : z);
+        }
+    prot_ctx c = {P, tg, bb, G, ng, big, nbig, cs, cap * cap, lt, ppiece, small, td2};
     mx_parallel_for(nlive, prot_one, &c);
+    mx_tick("pieces protrusion");
     for (long long t = 0; t < nlive; t++) {
         int pc = ppiece[lt[3 * t]];
         if (small[pc] && td2[t] > pprot[pc])
@@ -312,6 +336,6 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
         free(C);
     }
     free(tsolo), free(psolo);
-    free(kid), free(par), free(used), free(tg), free(pid), free(lo), free(hi), free(small), free(G), free(big), free(td2), free(lt);
+    free(kid), free(par), free(used), free(tg), free(pid), free(lo), free(hi), free(small), free(G), free(big), free(td2), free(lt), free(bb);
     return np;
 }
