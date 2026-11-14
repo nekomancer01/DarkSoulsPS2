@@ -124,6 +124,8 @@ WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
 # their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
 # over the union of blocks stays at 0 %)
 WS_SHARE_K = float(os.environ.get("WS_SHARE_K", 1.0))
+# rigid map / object meshes: each vertex on its own bone (mapgather.rigid_mesh); 0: the mesh's default bone (A/B)
+MAP_VBONE = os.environ.get("MAP_VBONE", "1") == "1"
 # WS_DROP (default on; 0 = the old solve): loose pieces go whole before a wall bends. An edge collapse cannot remove a
 # closed shell, so barrels, ivy leaves, planks and rubble ended as lumps of a few triangles however far a cell's
 # threshold was raised, and the solve bent the structure around them instead (Undead Burg 2026-11-13: at the 12 px
