@@ -316,7 +316,7 @@ def struct_sat(eps_fixed, budget):
 
 
 def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fixed=None, floor=None, cells=False,
-                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None):
+                    far=frozenset(), area_k=None, eps_far=None, budget=None, nav_s=None, env_pad=None, far_shape=False):
     """Quadric edge collapse (tools/native/simplify.c, the source of truth; tools/simplify.py is its frozen reference and
     the fallback below) of every non-grass mesh. Meshes that share vertex positions (2 mm)
     are welded into one group and simplified together, so seams between neighbouring meshes are ordinary edges
@@ -339,7 +339,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_shape(mapcfg.SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
-                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad)
+                                     eps_far, budget, nav_s, sat=sat, env_pad=env_pad, far_shape=far_shape)
         finally:
             MX.mx_simp_envelope(0.0)
             MX.mx_simp_guard(0.0, -2.0)
@@ -726,14 +726,67 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
         elif game:
             oth |= by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
     no, nt = own.sum(1), (own | oth).sum(1)
+    if mapcfg.WS_SHARE_TRIS and cfg.get("cells") and mapcfg.WS_SRC_TRIS:
+        # Shares by demand (2026-11-12). A cell is in a spot's tier with its whole bytes as soon as its box comes
+        # within r, and the Burg's detail is not spread evenly: one cell by the bonfire holds 628 KB of near level
+        # where its neighbours hold 2-130 KB. By the area of the disc, a spot 15 m inside the next block gave this
+        # block 1-17 % of the room for that cell: the spot stayed over at any error, and the solve took the cells at
+        # every seam to the allowance (31 of 85 near cells of the Burg west block past 12 px, up to 68 px) while
+        # 6-25 % of the room stayed unused at the tightest spot each of them sees (world_budget.py's sums). The
+        # blocks of this MSB now split the room by the source triangles of their cells whose 32 m cube lies within r;
+        # another MSB's part (Firelink, the Asylum) is taken off first, by area as before.
+        own_rs = rects(cfg["cells"])
+        all_rs = list(own_rs)
+        msb = own.copy()
+        for o in world:
+            ob = area_mod.BLOCKS.get(o)
+            if o != name and ob and ob.get("cells") and ob["map"] == cfg["map"]:
+                all_rs += rects(ob["cells"])
+                msb |= by_rects(rects(ob["cells"]))
+        inr = lambda rs, cx, cz: any(x0 <= cx <= x1 and z0 <= cz <= z1 for x0, z0, x1, z1 in rs)
+        to, ta = np.zeros(len(P)), np.zeros(len(P))
+        for (cx, cy, cz), n in mapcfg.WS_SRC_TRIS.items():
+            if not inr(all_rs, cx, cz):
+                continue
+            lo_ = np.array([cx, cy, cz], np.float64) * C
+            dd = np.maximum(0, np.maximum(lo_[None] - P, P - (lo_ + C)[None]))
+            m_ = (dd * dd).sum(1) < r * r
+            ta += m_ * n
+            if inr(own_rs, cx, cz):
+                to += m_ * n
+        part = np.where(nt > 0, msb.sum(1) / np.maximum(nt, 1), 1.0)  # this MSB's part of the room, by area
+        sh = np.where(ta > 0, to / np.maximum(ta, 1.0), np.where(nt > 0, no / np.maximum(nt, 1), 1.0))
+        # (for solve_budget's own count, ws_reach_shares: the neighbours' triangles in reach and the MSB's part)
+        WS_REACH[float(r)] = dict(n=len(P), oth=ta - to, part=part, area=np.where(nt > 0, no / np.maximum(nt, 1), 1.0))
+        return np.minimum(1.0, sh * part * mapcfg.WS_SHARE_K)
     return np.minimum(1.0, np.where(nt > 0, no / np.maximum(nt, 1), 1.0) * mapcfg.WS_SHARE_K)
 
 
-def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=None):
+WS_REACH = {}  # ws_shares(r): per spot the neighbour blocks' source triangles in reach, this MSB's part of the room
+
+
+def ws_reach_shares(M, cells, r):
+    """WS_SHARE_TRIS: the shares of ws_shares(r) with this block's side counted as the solve reaches its cells (M:
+    spots x cells, by their real boxes: a coarse cell's box overhangs its 32 m cube, and by the cube alone a spot that
+    holds the cell had no share for it); None when ws_shares(r) did not run by triangles"""
+    import numpy as np
+    w = WS_REACH.get(float(r))
+    if w is None or w["n"] != M.shape[0]:
+        return None
+    n = np.array([mapcfg.WS_SRC_TRIS.get(tuple(int(v) for v in c), 0) for c in cells], np.float64)
+    to = M.astype(np.float64) @ n
+    ta = to + w["oth"]
+    return np.minimum(1.0, np.where(ta > 0, to / np.maximum(ta, 1.0), w["area"]) * w["part"] * mapcfg.WS_SHARE_K)
+
+
+def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=None, drop=None):
     """World streaming v2: per-job thresholds so that at every sample point (navmesh) the bytes of the level's cells
     within [r_in, r) (r None: every cell) stay under nbytes. Each cell's threshold is eps x 1.5^k; while a point is over,
     the heaviest cell around it that can still be raised goes one step up. Jobs outside cells (no cell cut, far-only
-    cells) keep eps / eps_far. budget = (r_in, r, nbytes, name). Returns the per-job thresholds (float64) or None."""
+    cells) keep eps / eps_far. budget = (r_in, r, nbytes, name). Returns the per-job thresholds (float64) or None.
+    drop (WS_DROP, loose_pieces): a cell's loose pieces whose error is within its threshold are left out, and past the
+    cap the steps raise that piece threshold alone (to WS_DROP_PX) before the seam allowance raises the collapse's;
+    drop["cell_de"] gets each cell's piece threshold, drop["jcell"] each job's cell."""
     import numpy as np
     r_in, r, nbytes, name, px_cap = budget
     njobs = len(jc)
@@ -751,11 +804,26 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
     KA = K  # the seam allowance's cap (WS_UNION: WS_ALLOW_PX)
     while mapcfg.WS_UNION and KA < 16 and math.sqrt(eps * 1.5 ** (KA + 1)) * 568 <= max(px_cap, mapcfg.WS_ALLOW_PX) + 1e-6:
         KA += 1
-    steps = [eps * 1.5 ** k for k in range(KA + 1)]
+    # the ladder: per step the collapse threshold ce and the piece threshold de. To the cap both rise together, then
+    # (KD steps) the pieces' alone, then the seam allowance's collapse steps
+    KD = 0
+    while drop and KD < 16 and math.sqrt(eps * 1.5 ** (K + KD + 1)) * 568 <= max(px_cap, mapcfg.WS_DROP_PX) + 1e-6:
+        KD += 1
+    ce = [eps * 1.5 ** k for k in range(K + 1)] + [eps * 1.5 ** K] * KD + [eps * 1.5 ** k for k in range(K + 1, KA + 1)]
+    de = [eps * 1.5 ** k for k in range(K + KD + 1)] + [eps * 1.5 ** max(K + KD, k) for k in range(K + 1, KA + 1)]
+    KC, K, KA = K, K + KD, KA + KD  # KC: the collapse cap's step; K / KA from here on: the last step before / of the allowance
+    steps = ce
     cnt = np.zeros(max(njobs, 1), np.int64)
     by = np.zeros((len(cells), KA + 1))  # bytes of cell c at step k
     sel = jcell >= 0
-    for k, e in enumerate(steps):
+    if drop:  # per collapse threshold: the surviving triangles' cells and pieces, counted without the pieces within de
+        for e in sorted(set(ce)):
+            tj, g0 = _fetch_first(MX, h, int(MX.mx_simp_replay(h, e, e, 0)), drop["poff"])
+            c, cost = jcell[tj], drop["cost"][drop["pp"][g0]]
+            for k in [k for k in range(KA + 1) if ce[k] == e]:
+                m = (c >= 0) & (cost > de[k])
+                by[:, k] = np.bincount(c[m], minlength=len(cells)) * mapcfg.WS_BPT
+    for k, e in enumerate(steps if not drop else ()):
         MX.mx_simp_job_counts(h, e, cnt.ctypes.data)
         by[:, k] = np.bincount(jcell[sel], weights=cnt[:njobs][sel], minlength=len(cells)) * mapcfg.WS_BPT
     lo = np.array(cells, np.float64) * mapcfg.CHUNK_GRID
@@ -772,9 +840,11 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
             else:
                 lo[i], hi[i] = np.minimum(lo[i], e[0]), np.maximum(hi[i], e[1])
     P = np.asarray(samples, np.float64).reshape(-1, 3)
-    nb = np.broadcast_to(np.asarray(nbytes, np.float64), (len(P),))  # per spot (WS_UNION) or one for all
     d = np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
     M = (d >= r_in) & (d < r) if r else np.ones(d.shape, bool)
+    if callable(nbytes):  # (WS_SHARE_TRIS: the spot's budget from the block's share by its cells in reach)
+        nbytes = nbytes(ws_reach_shares(M | (d < r), cells, r) if r else None)
+    nb = np.broadcast_to(np.asarray(nbytes, np.float64), (len(P),))  # per spot (WS_UNION) or one for all
     Mf = M.astype(np.float64)
     step = np.zeros(len(cells), np.int64)
     cur = by[np.arange(len(cells)), step]
@@ -807,8 +877,10 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
         if not capped[p] or allow[p] or W[p] <= nb[p]:
             break
         cand = np.flatnonzero(M[p] & (step < KA) & (cur > 0))
-        if not len(cand):
-            allow[p] = True  # (no step left: stays over)
+        # (WS_DROP: a spot that would stay over with every cell at the allowance's end bends nothing. The Undead Burg's
+        # seam spots with a small share of the room took 29 near cells to 68 px for budgets no step could meet)
+        if not len(cand) or (drop and Mf[p] @ np.where(step < KA, by[:, KA], cur) > nb[p]):
+            allow[p] = True  # (no step left, or none that would do: stays over)
             continue
         cand = cand[step[cand] == step[cand].min()]
         for c in cand.tolist():
@@ -831,12 +903,16 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
     if info is not None:  # per cell: in reach of a spot the solve left over budget; the spots' reach and budgets
         overc = M[W > nb].any(0) if (W > nb).any() else np.zeros(len(cells), bool)
         info.update(over=overc, M=M, nb=nb, jcell=jcell)
+    if drop:
+        drop["cell_de"], drop["jcell"] = np.array(de)[step], jcell
+        print(f"budget {name}: loose pieces: {int((step > KC).sum())} of {len(cells)} cells past the {px_cap:.0f} px cap for "
+              f"pieces only (up to {math.sqrt(de[min(int(step.max()), K)]) * 568:.0f} px), {int((step > K).sum())} on the seam allowance")
     nr = int((step > 0).sum())
     over = float((W > nb).mean() * 100)
     nbytes = float(np.median(nb))
     print(f"budget {name}: worst spot {w0 / 1024:.0f} -> {W.max() / 1024:.0f} KB (budget {nbytes / 1024:.0f} KB"
           f"{' median' if nb.min() < nb.max() else ''}, "
-          f"{len(P)} navmesh points); {nr} of {len(cells)} cells coarser (up to {1.5 ** step.max():.1f}x the threshold, "
+          f"{len(P)} navmesh points); {nr} of {len(cells)} cells coarser (up to {steps[step.max()] / eps:.1f}x the threshold, "
           f"{math.sqrt(steps[step.max()]) * 568:.1f} px)" +
           (f"; {over:.1f} % of the spots over budget at the {px_cap:.0f} px cap" if stuck else ""))
     BUDGET_REPORT.append(dict(level=name, allow_pct=round(allow_pct, 2),
@@ -844,18 +920,58 @@ def solve_budget(MX, h, jc, eps, eps_far, budget, samples, extents=None, info=No
                                            for i in np.flatnonzero(allow & mine)[:500].tolist()],
                               allow_cells=[list(cells[c]) for c in np.flatnonzero(step > K).tolist()],
                               worst_kb=round(w0 / 1024), after_kb=round(W.max() / 1024),
-                              budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=1.5 ** int(step.max()),
+                              budget_kb=round(nbytes / 1024), cells=len(cells), coarser=nr, max_x=steps[int(step.max())] / eps,
                               met=not stuck, spots_over_pct=round(over, 1), own_over_pct=round(own_over, 2),
                               own_spots=int(mine.sum()),
                               p90_kb=round(float(np.percentile(W, 90)) / 1024)))
     return job_eps
 
 
+def _fetch_first(MX, h, n, poff):
+    """the last replay's n triangles: each one's job and the global position index of its first corner"""
+    tj, tm = np.zeros(max(n, 1), np.int32), np.zeros(max(n, 1), np.int32)
+    cm, cp, cw = (np.zeros(max(3 * n, 1), np.int32) for _ in range(3))
+    MX.mx_simp_fetch(h, tj.ctypes.data, tm.ctypes.data, cm.ctypes.data, cp.ctypes.data, cw.ctypes.data)
+    return tj[:n], (poff[cm[:3 * n:3]] + cp[:3 * n:3])
+
+
+def loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spawn, floor):
+    """WS_DROP: the loose pieces of the simplifier's input (tools/mapx/pieces.c) -> dict(pp: piece per position,
+    cost: per piece the squared angular error of leaving its cluster out (inf: structure), owner: per piece the
+    CHUNK_GRID cell key of its cluster's centre). The view distance is the simplifier's (view_distance), the nearest over the cluster."""
+    t0 = time.time()
+    a = lambda x: x.ctypes.data
+    nt = max(len(T), 1)
+    pp, pd, pb, pr = np.zeros(max(len(P), 1), np.int32), np.zeros(nt), np.zeros((nt, 6)), np.zeros(nt)
+    pcl = np.zeros(nt, np.int32)
+    solo = np.array([1 if m.get("cutout") else 0 for m in meshes] or [0], np.uint8)
+    n = int(MX.mx_pieces(len(poff) - 1, a(P), a(poff), a(W), a(woff), a(T), a(toff), a(keep), a(solo), mapcfg.WS_DROP_DIAG,
+                         mapcfg.WS_DROP_CAP, mapcfg.WS_DROP_GAP, a(pp), a(pd), a(pb), a(pcl), a(pr)))
+    pd, pb, pr, pcl = pd[:n], pb[:n], pr[:n], pcl[:n]
+    live = np.flatnonzero(pp[:len(P)] >= 0)
+    d = np.asarray(view_distance([P[live].tolist()], spawn, nav_v, nav_t, floor=floor)[0]) if len(live) else np.zeros(0)
+    dist = np.full(n, np.inf)
+    np.minimum.at(dist, pcl[pp[live]], d)
+    lo, hi, prc = np.full((n, 3), np.inf), np.full((n, 3), -np.inf), np.full(n, -1.0)
+    np.minimum.at(lo, pcl, pb[:, :3])
+    np.maximum.at(hi, pcl, pb[:, 3:])
+    np.maximum.at(prc, pcl, pr)
+    size = np.sqrt(((hi - lo) ** 2).sum(1))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        err = np.sqrt(np.maximum(prc, mapcfg.WS_DROP_FLUSH * size) * size)  # metres, per cluster (at its first piece)
+        cost = np.where(pr >= 0, ((err / dist) ** 2)[pcl], np.inf)
+    with np.errstate(invalid="ignore"):  # (lo / hi are only set at a cluster's first piece, which pcl points at)
+        owner = np.floor(np.nan_to_num(((lo + hi) / 2)[pcl], posinf=0.0, neginf=0.0) / mapcfg.CHUNK_GRID).astype(np.int64)
+    print(f"pieces: {n} ({int((pr >= 0).sum())} loose, at most {mapcfg.WS_DROP_DIAG:g} m across, in "
+          f"{len(np.unique(pcl[pr >= 0]))} clusters), {time.time() - t0:.1f} s", flush=True)
+    return dict(pp=pp, cost=cost, owner=owner, poff=poff)
+
+
 BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.budget.json)
 
 
 def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k, eps_far,
-                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0):
+                      budget=None, nav_s=None, sat=math.inf, env_pad=0.0, far_shape=False):
     """simplify_meshes in C (tools/mapx/simpmesh.c): the same groups, jobs, view distances, threshold and output, the
     jobs run on threads in process (no job cache: tools/native/simplify.c is the simplifier either way)"""
     import ctypes
@@ -899,6 +1015,13 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         if not h:
             raise MemoryError("mx_simp_new")
         return h
+    drop = None
+    if budget and cells and nav_s is not None and len(nav_s) and mapcfg.WS_DROP and (mapcfg.SIMPLIFY_ENV_STRICT or not env_pad):
+        # (WS_FAR_SHAPE's coarse pass: clutter as seen from where the coarse level starts, WS_FAR_DROP_K x sooner)
+        drop = loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spawn,
+                            mapcfg.WS_NEAR_R if far_shape else floor or mapcfg.NEAR)
+        if far_shape:
+            drop["cost"] = drop["cost"] / mapcfg.WS_FAR_DROP_K ** 2
     h = new_handle()
     try:
         st = np.zeros(3, i64)
@@ -932,7 +1055,7 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         MX.mx_simp_jobs(h, a(kind), a(ck))
         jc = [None if k == 0 else "far" if k == 1 else tuple(c) for k, c in zip(kind[:njobs].tolist(), ck.tolist())]
         info, ext = {}, cell_extents(P, poff, W, woff, T, toff) if budget and cells else None
-        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s, ext, info) if budget and cells else None
+        job_eps = solve_budget(MX, h, jc, eps, eps_far, budget, nav_s, ext, info, drop) if budget and cells else None
         if job_eps is not None and env_pad and info["over"].any() and not mapcfg.SIMPLIFY_ENV_STRICT:
             # The shape envelope costs triangles. Where the solve cannot pay for them (cells in reach of a spot it
             # left over budget) the cells take the run without the envelope as its own solve leaves them, and then
@@ -976,6 +1099,21 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
+        if drop and job_eps is not None and n:  # the loose pieces within their cell's piece threshold are left out,
+            # whole: a piece over a cell cut goes by the cell of its centre (when the solve has that cell)
+            pc_ = drop["pp"][poff[cm[:3 * n:3]] + cp[:3 * n:3]]
+            cid = {c: i for i, c in enumerate(sorted({c for c in jc if isinstance(c, tuple)}))}
+            own = np.array([cid.get(tuple(k), -1) for k in drop["owner"].tolist()], np.int64)
+            c_ = np.where(own[pc_] >= 0, own[pc_], drop["jcell"][tj[:n]])
+            gone = (c_ >= 0) & (drop["cost"][pc_] <= drop["cell_de"][np.maximum(c_, 0)])
+            keep_t = np.flatnonzero(~gone)
+            print(f"pieces: {int(gone.sum())} of {n} triangles in {len(np.unique(pc_[gone]))} loose pieces left out "
+                  f"(error within their cell's threshold)")
+            tj, tm = tj[keep_t], tm[keep_t]
+            k3 = (keep_t[:, None] * 3 + np.arange(3)).reshape(-1)
+            cm, cp, cw = cm[k3], cp[k3], cw[k3]
+            n = len(keep_t)
+            final_n = n
         refit = None
         if mapcfg.SIMPLIFY_REFIT and n:  # surviving wedges take the mean colour of what collapsed into them (simpmesh.c)
             has = [len(m.get("wrgb", ())) == len(w) for m, w in zip(meshes, Ws)]  # (meshes without colours: as they are)

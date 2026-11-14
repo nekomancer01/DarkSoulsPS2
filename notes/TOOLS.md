@@ -115,6 +115,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 |---|---|
 | `dsr-ref.sh` | Start, load, camera, savestates, screenshots |
 | `dsr-ref-cam.py` | Precise camera placement |
+| `mapshot.py` | Offline shots of exported map blocks at a spot or a test script's shots (levels as the runtime draws them), sheets next to reference shots and a build before the change: seconds per view, no PCSX2 |
 | `b9-dsr-shots.sh` | Reference shots matching `tests/iso_burg_looks.txt` |
 | `dsr_mem.py` | Read / write game memory (position, warp, HP) |
 | `dsr-ei.c` | Input injection |

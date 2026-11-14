@@ -1,0 +1,67 @@
+# Outline check (simplifier): matched DSR / PS2 views at the Burg bonfire, the street and the Taurus tower base,
+# fixed camera, no enemies (DSR eye = player + 1.42 up - 4 m along the view; tools/outline-dsr-shots.sh places it).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_outline.txt <out> --iso build/proto.iso --timeout 900
+option god
+option nodemo
+option noenemies
+spawn -7.9 -10.1 -69.4 0.0
+cam 0.0 0.1
+wait 14
+freeze 1
+shot bf_n
+freeze 0
+spawn -7.9 -10.1 -69.4 1.57
+cam 1.57 0.1
+wait 14
+freeze 1
+shot bf_e
+freeze 0
+spawn -7.9 -10.1 -69.4 3.14
+cam 3.14 0.1
+wait 14
+freeze 1
+shot bf_s
+freeze 0
+spawn -7.9 -10.1 -69.4 4.71
+cam 4.71 0.1
+wait 14
+freeze 1
+shot bf_w
+freeze 0
+spawn 2.0 -10.0 -62.0 3.0
+cam 3.0 0.14
+wait 14
+freeze 1
+shot street_a
+freeze 0
+spawn -6.0 -10.0 -73.0 2.0
+cam 2.0 0.14
+wait 14
+freeze 1
+shot street_c
+freeze 0
+spawn 12.0 -6.0 -100.0 1.2
+cam 1.2 0.1
+wait 14
+freeze 1
+shot court
+freeze 0
+spawn 21.3 -14.2 -105.9 5.0
+cam 5.0 0.25
+wait 14
+freeze 1
+shot taurus_base
+freeze 0
+spawn 21.3 -14.2 -105.9 2.2
+cam 2.2 -0.25
+wait 14
+freeze 1
+shot taurus_up
+freeze 0
+spawn 21.3 -14.2 -105.9 2.2
+cam 2.2 0.1
+wait 14
+freeze 1
+shot taurus_side
+freeze 0
+stats
