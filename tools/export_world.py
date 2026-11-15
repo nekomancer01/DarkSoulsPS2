@@ -7,14 +7,14 @@ ConnectCollision parts (tools/worldgraph.py) for the links between maps.
   export_world.py <game dir> <out world.bin> <boot map> <gen dir>
 
 world.bin (little-endian):
-  header  u32 'DSW1', version 3, blocks, links (total)
+  header  u32 'DSW1', version 4, blocks, links (total)
   block   (64 B) char pack[16] (pack name under PACK_ROOT without '.pak', NUL padded), char map[16] (MSB id);
           f32 min x, min z, max x, max z (xz bounds of the block's collision, world frame = the maps' shared frame);
           f32 min y, max y (its collision's height range: the Asylum lies over Firelink and the Burg in x / z);
           u32 flags (bit 0: boot block, already loaded by main.c), u32 neighbour mask (bit n = block n)
-  (version 2: char pack[24], no height range)
+  (version 3: 8 B links with u8 masks, at most 8 blocks; version 2: char pack[24], no height range)
   ranges  per block: u32 first link, u32 links (into the link table)
-  link    (8 B) u32 first triangle, u16 triangles, u8 load mask, u8 keep mask: while the player stands on triangles
+  link    (12 B) u32 first triangle, u16 triangles, u16 load mask, u16 keep mask, u16 0: while the player stands on triangles
           [first, first + n) of this block's collision.bin, the blocks in `load` are wanted (read in the background)
           and the blocks in `keep` stay loaded; a block in neither is unloaded. Sorted by first triangle; triangles
           with no link record want nothing.
@@ -122,7 +122,7 @@ def main():
         blocks.append((b, m, col_bounds(col), rect))
         heights.append(col_height(col))
     n = len(blocks)
-    assert n <= 8, "load / keep masks are u8 (world.c WORLD_MAX)"
+    assert n <= 16, "load / keep masks are u16 (world.c WORLD_MAX)"
     nbr = [0] * n
     for i, (a, ma, ba, _) in enumerate(blocks):
         for j, (b, mb, bb, _) in enumerate(blocks):
@@ -174,14 +174,14 @@ def main():
               f"y {heights[i][0]:.0f}..{heights[i][1]:.0f}, neighbours "
               f"{[blocks[j][0] for j in range(n) if nbr[i] >> j & 1]}, {len(links) - first} links over {len(masks)} "
               f"tris (load triangles per block {wl})")
-    blob = bytearray(struct.pack("<4s3I", b"DSW1", 3, n, len(links)))
+    blob = bytearray(struct.pack("<4s3I", b"DSW1", 4, n, len(links)))
     for i, (b, m, bb, _) in enumerate(blocks):
         assert len(b) < 16 and len(m) < 16
         blob += struct.pack("<16s16s6f2I", b.encode(), m.encode(), *bb, *heights[i], 1 if i == 0 else 0, nbr[i])
     for r in ranges:
         blob += struct.pack("<2I", *r)
     for l in links:
-        blob += struct.pack("<IH2B", *l)
+        blob += struct.pack("<I4H", *l, 0)
     with open(out, "wb") as f:
         f.write(blob)
 
