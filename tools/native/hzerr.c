@@ -95,6 +95,18 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
                 }
     }
     qsort(pr, n, sizeof *pr, cmp_pair);
+    /* per triangle its box (min xyz, max xyz): a triangle whose box is further from a point than the nearest found so
+       far can not be nearer, and is not measured (the margin covers rounding; the same distances come out) */
+    float *bb = malloc(sizeof(float) * 6 * (size_t)(nt > 0 ? nt : 1));
+    if (!bb) {
+        free(pr);
+        return -1;
+    }
+    for (int i = 0; i < nt; i++) {
+        const float *t = tri + 9 * (size_t)i;
+        for (int k = 0; k < 3; k++)
+            bb[6 * i + k] = fminf(t[k], fminf(t[3 + k], t[6 + k])), bb[6 * i + 3 + k] = fmaxf(t[k], fmaxf(t[3 + k], t[6 + k]));
+    }
     /* points are independent (each writes only out[i]): the same values with any thread count (-fopenmp, or serial) */
 #pragma omp parallel for schedule(dynamic, 512)
     for (int i = 0; i < np; i++) {
@@ -103,26 +115,57 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
         int64_t lo[3], hi[3];
         for (int k = 0; k < 3; k++)
             lo[k] = (int64_t)floor((p[k] - r) / h), hi[k] = (int64_t)floor((p[k] + r) / h);
-        for (int64_t x = lo[0]; x <= hi[0]; x++)
-            for (int64_t y = lo[1]; y <= hi[1]; y++)
-                for (int64_t z = lo[2]; z <= hi[2]; z++) {
-                    int64_t key = cell_key(x, y, z);
-                    size_t a = 0, b = n;  /* first pair with this key */
-                    while (a < b) {
-                        size_t m = (a + b) / 2;
-                        if (pr[m].key < key)
-                            a = m + 1;
-                        else
-                            b = m;
-                    }
-                    for (; a < n && pr[a].key == key; a++) {
-                        double d2 = tri_d2(p, tri + 9 * (size_t)pr[a].tri);
-                        if (d2 < best)
-                            best = d2;
+        /* the cells of the radius box in shells around the point's own cell (Chebyshev ring k), nearest first; a ring
+           whose cells all lie further than the nearest triangle found so far can not hold a nearer one, so the search
+           ends there (the minimum is the same in any order) */
+        int64_t c0[3], K = 0;
+        for (int k = 0; k < 3; k++) {
+            c0[k] = (int64_t)floor(p[k] / h);
+            if (c0[k] < lo[k]) c0[k] = lo[k];
+            if (c0[k] > hi[k]) c0[k] = hi[k];
+            if (c0[k] - lo[k] > K) K = c0[k] - lo[k];
+            if (hi[k] - c0[k] > K) K = hi[k] - c0[k];
+        }
+        for (int64_t k = 0; k <= K; k++) {
+            double gap = (double)(k - 1) * h;
+            if (k > 1 && gap * gap > best * 1.000001 + 1e-12)
+                break;
+            for (int64_t x = c0[0] - k; x <= c0[0] + k; x++) {
+                if (x < lo[0] || x > hi[0])
+                    continue;
+                for (int64_t y = c0[1] - k; y <= c0[1] + k; y++) {
+                    if (y < lo[1] || y > hi[1])
+                        continue;
+                    int edge = x == c0[0] - k || x == c0[0] + k || y == c0[1] - k || y == c0[1] + k;
+                    for (int64_t z = c0[2] - k; z <= c0[2] + k; z += edge || k == 0 ? 1 : 2 * k) {
+                        if (z < lo[2] || z > hi[2])
+                            continue;
+                        int64_t key = cell_key(x, y, z);
+                        size_t a = 0, b = n;  /* first pair with this key */
+                        while (a < b) {
+                            size_t m = (a + b) / 2;
+                            if (pr[m].key < key)
+                                a = m + 1;
+                            else
+                                b = m;
+                        }
+                        for (; a < n && pr[a].key == key; a++) {
+                            const float *B = bb + 6 * (size_t)pr[a].tri;
+                            double e0 = p[0] < B[0] ? B[0] - p[0] : p[0] > B[3] ? p[0] - B[3] : 0,
+                                   e1 = p[1] < B[1] ? B[1] - p[1] : p[1] > B[4] ? p[1] - B[4] : 0,
+                                   e2 = p[2] < B[2] ? B[2] - p[2] : p[2] > B[5] ? p[2] - B[5] : 0;
+                            if (e0 * e0 + e1 * e1 + e2 * e2 > best * 1.000001 + 1e-12)
+                                continue;
+                            double d2 = tri_d2(p, tri + 9 * (size_t)pr[a].tri);
+                            if (d2 < best)
+                                best = d2;
+                        }
                     }
                 }
+            }
+        }
         out[i] = (float)sqrt(best);
     }
-    free(pr);
+    free(pr), free(bb);
     return 0;
 }
