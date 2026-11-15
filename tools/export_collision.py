@@ -209,11 +209,18 @@ def floor(c, x, z, y_top, y_bottom=-1e9, solid=SOLID):
 FRAG_VERTS, FRAG_TRIS, TOP_CELL = 255, 255, 8.0
 
 
+_CEN = [None, None, None]  # (tris, verts, centroids) of the last build _fragments saw
+
+
 def _fragments(c, idx0=None):
     """v1 build() -> [triangle indices] per fragment: kd split on centroids (longest axis) until a node has at most
     FRAG_VERTS distinct vertices and FRAG_TRIS triangles (idx0: only these triangles; default all)"""
     V, T = c["verts"], c["tris"]
-    cen = [tuple(sum(V[t[i]][k] for i in range(3)) / 3 for k in range(3)) for t in T]
+    # the centroids of every triangle, once per build (write_v2 calls this once per tile: 165 times for a Burg block,
+    # 30 of its 39 s); the same expression, so the same floats
+    if _CEN[0] is not T or _CEN[1] is not V:
+        _CEN[:] = [T, V, [tuple(sum(V[t[i]][k] for i in range(3)) / 3 for k in range(3)) for t in T]]
+    cen = _CEN[2]
     out, stack = [], [list(range(len(T))) if idx0 is None else list(idx0)]
     while stack:
         idx = stack.pop()
