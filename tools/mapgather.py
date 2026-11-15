@@ -21,6 +21,21 @@ import maplight
 import mapsimp
 
 
+
+def split_tufts(fol):
+    """A foliage tuft bigger than one VU1 batch (mapcfg.CHUNK_TRIS; Darkroot's fern clumps, 116-132 triangles) as
+    sub-tufts of at most CHUNK_TRIS triangles with the tuft's rank: a foliage chunk holds whole tufts, and one this big
+    overflowed the chunk's 255-vertex unpack (mapchunks.chunk_streams). Smaller tufts are unchanged."""
+    seen, out = {}, []
+    for r, name, n in fol:
+        if n <= mapcfg.CHUNK_TRIS:
+            out.append((r, name, n))
+            continue
+        i = seen[name] = seen.get(name, -1) + 1
+        piece = i // mapcfg.CHUNK_TRIS
+        out.append((r, f"{name}#{piece}", min(mapcfg.CHUNK_TRIS, n - piece * mapcfg.CHUNK_TRIS)))
+    return out
+
 def _qrot_np(q, V):
     """havok_anim.qrot / souls._qrot on (n, 3) rows, the same operations in the same order"""
     x, y, z, w = q
@@ -776,6 +791,8 @@ def gather(game, map_id):
                 tl, fol, gpos = mapchunks.thin_foliage(tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
                                              "ivy" in m["mtd"].lower(),
                                              canopy=lambda vs, Vp=m["verts"]["pos"], xf=xf: is_canopy([xf(Vp[i]) for i in vs]))
+            if fol and max(f[2] for f in fol) > mapcfg.CHUNK_TRIS:
+                fol = split_tufts(fol)
             if not tl:
                 continue
             ti = -1
