@@ -40,6 +40,7 @@ REF_SET=
 BUILD_SET=
 SYMS=
 GPU=${DSR_GPU:-1}
+PVSM=
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
@@ -150,6 +151,7 @@ else
     # GPU occlusion bakes: a glibc side container with the GPU runs them (tools/pvs_gpu_server.py), handed over through
     # BUILD/pvs-gpu; without a GPU, or when anything here fails, every bake runs in the build container on the CPU
     GPU_CT=
+    [ "$GPU" != 0 ] || { say "PVS bake: CPU (--no-gpu)"; PVSM=CPU; }
     if [ "$GPU" != 0 ]; then
         GDF=$SRC/tools/iso-builder/Dockerfile.gpu
         GIMG=darksoulsps2-gpu:$(sha256sum "$GDF" | cut -c1-12)
@@ -189,10 +191,10 @@ else
             done
         fi
         if [ -n "$GPU_CT" ] && [ -f "$BUILD/pvs-gpu/ready" ]; then
-            say "occlusion bakes on the GPU: $(head -1 "$BUILD/pvs-gpu/ready")"
+            say "PVS bake: GPU ($(head -1 "$BUILD/pvs-gpu/ready"))"; PVSM=GPU
             RUN+=(-e DSR_PVS_SPOOL=/build/pvs-gpu)
         else
-            echo "no GPU for the occlusion bakes (an NVIDIA GPU with the container toolkit, or an AMD / Intel one through /dev/dri: see --no-gpu in --help): baking on the CPU"
+            PVSM=CPU; say "PVS bake: CPU (no GPU passed through: an NVIDIA GPU with the container toolkit, or an AMD / Intel one through /dev/dri; see --help)"
             GPU_CT=
         fi
     fi
@@ -207,6 +209,6 @@ if [ "$OUT" != "$BUILD/proto.iso" ]; then  # the repo-root build-iso.sh may ask 
     mkdir -p "$(dirname "$OUT")"
     cp -f "$BUILD/proto.iso" "$OUT"
 fi
-say "done: $OUT ($(du -h "$OUT" | cut -f1))"
+say "done: $OUT ($(du -h "$OUT" | cut -f1))${PVSM:+, PVS bake on the $PVSM}"
 echo "Open it in PCSX2 (System > Start File, or drag it onto the window). No BIOS settings or HostFs needed."
 echo "Never share the ISO or $BUILD: they are made from your copy of the game."
