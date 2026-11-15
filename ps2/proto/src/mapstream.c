@@ -398,6 +398,7 @@ static int blocked(int k, unsigned id)
     return 0;
 }
 
+static void orphan_pump(void);
 static void collect(int i, int r)
 {
     MsRead w = ms_rd[i];
@@ -985,6 +986,7 @@ void mapstream_update(const float pos[3])
     for (int i = 0; i < ms_nrd; i++)
         if (pack_req_done(ms_rd[i].tk, &r))
             collect(i--, r);
+    orphan_pump();
     HITCH_END(io, HS_MSIO);
     {  /* walking velocity per frame (smoothed); a warp / teleport starts it again */
         float d[3] = {pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]};
@@ -1140,6 +1142,24 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     return 1;
 }
 
+/* MS_ORPHAN (default on; 0 = mapstream_close waits for its reads in flight as before) */
+#ifndef MS_ORPHAN
+#define MS_ORPHAN 1
+#endif
+typedef struct { int tk; void *buf; unsigned bytes; } Orphan;
+static Orphan orphan[MS_INFLIGHT];
+static int n_orphan;
+/* cancelled reads of closed instances that were still landing: their buffers go back once they have */
+static void orphan_pump(void)
+{
+    int r;
+    for (int i = 0; i < n_orphan; i++)
+        if (pack_req_done(orphan[i].tk, &r)) {
+            ms_g_free(orphan[i].buf, orphan[i].bytes);
+            orphan[i--] = orphan[--n_orphan];
+        }
+}
+
 void mapstream_close(int k)
 {
     if (k < 0 || k >= MS_INST || !ms_inst[k].ncell)
@@ -1147,7 +1167,17 @@ void mapstream_close(int k)
     MsInst *m = &ms_inst[k];
     for (int i = 0; i < ms_nrd; i++)  /* stop its reads (after their current page) before the buffers go back */
         if (ms_rd[i].k == k) {
-            pack_req_cancel(ms_rd[i].tk);
+            /* without waiting (MS_ORPHAN): pack_req_cancel held the frame until the read in flight stopped, 117-418 ms
+             * of the world step whenever a block let go of its map tables (iso_neighbours, 2026-11-15); such a read
+             * keeps its buffer (an orphan) until it lands, collected by orphan_pump */
+            unsigned a, e = grp_of(m, ms_rd[i].id, &a);
+            if (!MS_ORPHAN || pack_req_cancel_async(ms_rd[i].tk) || n_orphan == MS_INFLIGHT) {
+                if (MS_ORPHAN && n_orphan == MS_INFLIGHT)
+                    pack_req_cancel(ms_rd[i].tk);
+            } else {
+                orphan[n_orphan++] = (Orphan){ms_rd[i].tk, m->buf[a], grp_bytes(m, a, e)};
+                ms_keep_buf = 1, ms_drop(k, a), ms_keep_buf = 0;  /* its items go; the buffer stays the read's */
+            }
             memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
             i--;
         }
