@@ -7,4 +7,7 @@ int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, 
 void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsigned *off, const unsigned *idx,
              uint32_t *bits);
 int gpu_words(void);
+void gpu_submit(int ncam, const float (*eye)[3], const float fbs[6][9], const unsigned *off, const unsigned *idx);
+void gpu_collect(uint32_t *bits);
+int gpu_instanced(void);
 int gpu_probe(void);

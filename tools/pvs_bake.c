@@ -888,6 +888,18 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
     uint32_t *bits = malloc(sizeof(uint32_t) * (size_t)B * (size_t)W);
     unsigned *idx = NULL;
     size_t idxcap = 0;
+    int pend = -1, pnb = 0, inst = gpu_instanced();
+    /* a collected batch's bits into its cells' rows */
+#define take(b0_, nb_) do { \
+        for (int c = 0; c < (nb_); c++) { \
+            Cell *ce = &cells[cc[(b0_) + c]]; \
+            const uint32_t *bc = bits + (size_t)c * W; \
+            for (unsigned u = 0; u < nun; u++) \
+                if (bc[u >> 5] >> (u & 31) & 1) \
+                    ce->row[u >> 3] |= 1 << (u & 7); \
+        } \
+        *tested += (unsigned long long)(nb_); \
+    } while (0)
     for (unsigned b0 = 0; b0 < ncam; b0 += B) {
         int nb = ncam - b0 < B ? (int)(ncam - b0) : B;
 #pragma omp parallel
@@ -898,8 +910,8 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
             for (int c = 0; c < nb; c++) {
                 const Cam *cm = &cells[cc[b0 + c]].cam[cs[b0 + c]];
                 unsigned nl = draw_list(cm->e, cm->b, cm->cm, list), n = 0;
-                for (unsigned j = 0; j < nl; j++)
-                    fm[j] = (unsigned char)box_faces(ch[list[j] & 0x3FFFFFFFu].mn, ch[list[j] & 0x3FFFFFFFu].mx, cm->e);
+                for (unsigned j = 0; j < nl; j++)  /* (instanced: face 0's lists stand for all six) */
+                    fm[j] = inst ? 1 : (unsigned char)box_faces(ch[list[j] & 0x3FFFFFFFu].mn, ch[list[j] & 0x3FFFFFFFu].mx, cm->e);
                 unsigned *o = malloc(sizeof(unsigned) * (12 * (size_t)nl + 13)), cnt[12] = {0};
                 /* list q = 2 f (occluders of face f) or 2 f + 1 (tests): counted, then filled */
                 for (unsigned j = 0; j < nl; j++) {
@@ -952,16 +964,15 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
             free(lst[c]);
         }
         off[12 * nb] = (unsigned)w;
-        gpu_run(nb, (const float (*)[3])eye, FB, off, idx, bits);
-        for (int c = 0; c < nb; c++) {
-            Cell *ce = &cells[cc[b0 + c]];
-            const uint32_t *bc = bits + (size_t)c * W;
-            for (unsigned u = 0; u < nun; u++)
-                if (bc[u >> 5] >> (u & 31) & 1)
-                    ce->row[u >> 3] |= 1 << (u & 7);
-        }
-        *tested += (unsigned long long)nb;
+        /* the previous batch's bits (the GPU drew it while the lists above were made), then this batch's draws */
+        if (pend >= 0)
+            { gpu_collect(bits); take(pend, pnb); }
+        gpu_submit(nb, (const float (*)[3])eye, FB, off, idx);
+        pend = (int)b0, pnb = nb;
     }
+    if (pend >= 0)
+        { gpu_collect(bits); take(pend, pnb); }
+#undef take
     free(cc), free(cs), free(off), free(eye), free(bits), free(idx);
 }
 #endif

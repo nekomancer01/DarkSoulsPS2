@@ -49,6 +49,57 @@ static const char *VS =
     "    gl_Position = vec4(x, y, z - 0.2, z);  /* near plane at z = 0.1 (raster()'s), no far plane */\n"
     "    vunit = unit[gl_BaseInstanceARB];\n"
     "}\n";
+/* layered batches (2026-11-15): a whole batch of cameras x 6 faces in one draw per pass. Each draw command's base
+ * instance points at its (chunk, layer, camera) in an SSBO; the vertex shader takes the camera's eye and the face's
+ * axes from there and writes gl_Layer (ARB_shader_viewport_layer_array), so every camera face gets its own layer of
+ * a 2D array texture. The same per-pixel work as the per-face draws, about 350 000 fewer driver calls per block. */
+static const char *VS_L =
+    "#version 450 core\n"
+    "#extension GL_ARB_shader_draw_parameters : require\n"
+    "#extension GL_ARB_shader_viewport_layer_array : require\n"
+    "layout(location = 0) in vec3 pos;\n"
+    "layout(std430, binding = 0) readonly buffer Units { uint unit[]; };\n"
+    "layout(std430, binding = 2) readonly buffer Info { uvec4 info[]; };\n"   /* chunk, layer, camera */
+    "layout(std430, binding = 3) readonly buffer Cams { vec4 eye[]; };\n"     /* per layer / 6 */
+    "uniform float fbs[54];\n"
+    "flat out uint vunit, vcam;\n"
+    "flat out int vlayer;\n"
+    "void main() {\n"
+    "    uvec4 k = info[gl_BaseInstanceARB];\n"
+    "    uint layer = k.y + uint(gl_InstanceID);\n"   /* instanced: one command draws all 6 faces */
+    "    int f = int(layer % 6u), o = 9 * f;\n"
+    "    vec3 d = pos - eye[layer / 6u].xyz;\n"
+    "    float x = d.x * fbs[o + 3] + d.y * fbs[o + 4] + d.z * fbs[o + 5];\n"
+    "    float y = d.x * fbs[o + 6] + d.y * fbs[o + 7] + d.z * fbs[o + 8];\n"
+    "    float z = d.x * fbs[o + 0] + d.y * fbs[o + 1] + d.z * fbs[o + 2];\n"
+    "    gl_Position = vec4(x, y, z - 0.2, z);\n"
+    "    gl_Layer = int(layer);\n"
+    "    vlayer = int(layer), vunit = unit[k.x], vcam = k.z;\n"
+    "}\n";
+static const char *FS_TEST_L =
+    "#version 450 core\n"
+    "layout(binding = 0) uniform sampler2DArray occ;\n"
+    "layout(std430, binding = 1) buffer Bits { uint bits[]; };\n"
+    "uniform uint words;\n"
+    "flat in uint vunit, vcam;\n"
+    "flat in int vlayer;\n"
+    "void main() {\n"
+    "    float z = texelFetch(occ, ivec3(ivec2(gl_FragCoord.xy), vlayer), 0).r, iz = gl_FragCoord.w;\n"
+    "    if (z == 0.0 || iz >= z / (1.01 + 0.02 * z))\n"
+    "        atomicOr(bits[vcam * words + (vunit >> 5)], 1u << (vunit & 31u));\n"
+    "}\n";
+static const char *FS_OCC_L =
+    "#version 450 core\n"
+    "layout(location = 0) out float iz;\n"
+    "flat in uint vunit, vcam;\n"
+    "flat in int vlayer;\n"
+    "void main() { iz = gl_FragCoord.w; }\n";
+#define LCAMS 64  /* cameras per layered draw (x 6 layers) */
+static int layered, instanced;
+static GLuint prog_occ_l, prog_test_l, tex_l, fbo_occ_l, fbo_test_l, info_buf, cams_buf;
+static GLint u_occ_l_fb, u_test_l_fb, u_test_l_words;
+static size_t info_cap;
+
 static const char *FS_OCC =
     "#version 450 core\n"
     "layout(location = 0) out float iz;\n"
@@ -81,9 +132,9 @@ static GLuint shader(GLenum kind, const char *src)
     return s;
 }
 
-static GLuint program(const char *fs)
+static GLuint program2(const char *vs, const char *fs)
 {
-    GLuint v = shader(GL_VERTEX_SHADER, VS), f = shader(GL_FRAGMENT_SHADER, fs);
+    GLuint v = shader(GL_VERTEX_SHADER, vs), f = shader(GL_FRAGMENT_SHADER, fs);
     if (!v || !f)
         return 0;
     GLuint p = glCreateProgram();
@@ -99,6 +150,7 @@ static GLuint program(const char *fs)
     }
     return p;
 }
+static GLuint program(const char *fs) { return program2(VS, fs); }
 
 /* PVS_GPU_SOFTWARE=1 (testing only): accept a software renderer (Mesa llvmpipe), to run this code without a GPU */
 static int soft_ok(void)
@@ -175,6 +227,33 @@ int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, 
         return 0;
     GLint next = 0;
     glGetIntegerv(GL_NUM_EXTENSIONS, &next);
+    const char *lv = getenv("PVS_GPU_LAYERED");
+    GLint maxl = 0;
+    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &maxl);
+    for (GLint i = 0; i < next && !(lv && *lv == '0') && maxl >= 6 * LCAMS; i++)
+        if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i), "GL_ARB_shader_viewport_layer_array"))
+            layered = 1;
+    const char *iv = getenv("PVS_GPU_INSTANCED");
+    if (layered && (!(prog_occ_l = program2(VS_L, FS_OCC_L)) || !(prog_test_l = program2(VS_L, FS_TEST_L))))
+        layered = 0;
+    if (layered) {
+        u_occ_l_fb = glGetUniformLocation(prog_occ_l, "fbs"), u_test_l_fb = glGetUniformLocation(prog_test_l, "fbs");
+        u_test_l_words = glGetUniformLocation(prog_test_l, "words");
+        glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &tex_l);
+        glTextureStorage3D(tex_l, 1, GL_R32F, R, R, 6 * LCAMS);
+        glCreateFramebuffers(1, &fbo_occ_l);
+        glNamedFramebufferTexture(fbo_occ_l, GL_COLOR_ATTACHMENT0, tex_l, 0);  /* (layered: gl_Layer picks the face) */
+        glCreateFramebuffers(1, &fbo_test_l);
+        glNamedFramebufferParameteri(fbo_test_l, GL_FRAMEBUFFER_DEFAULT_WIDTH, R);
+        glNamedFramebufferParameteri(fbo_test_l, GL_FRAMEBUFFER_DEFAULT_HEIGHT, R);
+        glNamedFramebufferParameteri(fbo_test_l, GL_FRAMEBUFFER_DEFAULT_LAYERS, 6 * LCAMS);
+        glCreateBuffers(1, &info_buf), glCreateBuffers(1, &cams_buf);
+        glNamedBufferStorage(cams_buf, sizeof(float) * 4 * LCAMS, NULL, GL_DYNAMIC_STORAGE_BIT);
+        if (glCheckNamedFramebufferStatus(fbo_occ_l, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+            glCheckNamedFramebufferStatus(fbo_test_l, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            layered = 0;
+    }
+    instanced = layered && !(iv && *iv == '0');
     /* PVS_GPU_CONSERVATIVE=1: conservative rasterisation for the test pass (GL_NV_conservative_raster): misses fewer
        pixels but marks many more units seen (Burg b: 349 instead of 291 per cell), so the runtime draws more; off */
     const char *cv = getenv("PVS_GPU_CONSERVATIVE");
@@ -185,7 +264,7 @@ int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, unit_ssbo);
     glDisable(GL_DEPTH_TEST), glDisable(GL_CULL_FACE), glDisable(GL_DITHER);
     glViewport(0, 0, R, R);
-    printf("pvs_gpu: %s, %d px faces%s\n", ren, R, conservative ? ", conservative rasterisation" : "");
+    printf("pvs_gpu: %s, %d px faces%s%s\n", ren, R, instanced ? ", layered + instanced batches" : layered ? ", layered batches" : "", conservative ? ", conservative rasterisation" : "");
     return 1;
 }
 
@@ -249,7 +328,113 @@ void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsig
     glGetNamedBufferSubData(bits_ssbo, 0, (GLsizeiptr)(nb * 4), bits);
 }
 
+static int pend_ncam;
+
+/* gpu_run in two halves, so the caller can make the next batch's lists while the GPU draws this one: gpu_submit
+ * queues the draws (layered batches when the GPU has them, else the per-face loop and its wait), gpu_collect waits
+ * for them and returns the bits. Same arguments and results as gpu_run. */
+void gpu_submit(int ncam, const float (*eye)[3], const float fbs[6][9], const unsigned *off, const unsigned *idx)
+{
+    pend_ncam = ncam;
+    if (!layered) {
+        static uint32_t *tmp;  /* the per-face path collects at once */
+        static size_t cap;
+        if ((size_t)ncam * W > cap)
+            cap = (size_t)ncam * W, tmp = realloc(tmp, cap * 4);
+        gpu_run(ncam, eye, fbs, off, idx, tmp);
+        return;
+    }
+    size_t ncmd = off[12 * (size_t)ncam];
+    if (ncmd > cmd_cap) {
+        cmd_cap = ncmd + ncmd / 2 + 1024;
+        glDeleteBuffers(1, &cmd_buf), glCreateBuffers(1, &cmd_buf);
+        glNamedBufferStorage(cmd_buf, (GLsizeiptr)(cmd_cap * sizeof(DrawCmd)), NULL, GL_DYNAMIC_STORAGE_BIT);
+    }
+    if (ncmd > info_cap) {
+        info_cap = ncmd + ncmd / 2 + 1024;
+        glDeleteBuffers(1, &info_buf), glCreateBuffers(1, &info_buf);
+        glNamedBufferStorage(info_buf, (GLsizeiptr)(info_cap * 16), NULL, GL_DYNAMIC_STORAGE_BIT);
+    }
+    size_t nb = (size_t)ncam * (size_t)W;
+    if (nb > bits_cap) {
+        bits_cap = nb;
+        glDeleteBuffers(1, &bits_ssbo), glCreateBuffers(1, &bits_ssbo);
+        glNamedBufferStorage(bits_ssbo, (GLsizeiptr)(bits_cap * 4 + 4), NULL, GL_DYNAMIC_STORAGE_BIT);
+    }
+    /* commands grouped per sub-batch of LCAMS cameras: its occluders, then its tests */
+    DrawCmd *cmd = malloc(sizeof *cmd * (ncmd ? ncmd : 1));
+    GLuint (*info)[4] = malloc(16 * (ncmd ? ncmd : 1));
+    size_t nsub = ((size_t)ncam + LCAMS - 1) / LCAMS, *sb = malloc(sizeof(size_t) * (2 * nsub + 1)), w = 0;
+    for (size_t sbi = 0; sbi < nsub; sbi++)
+        for (int pass = 0; pass < 2; pass++) {
+            sb[2 * sbi + pass] = w;
+            for (int c = (int)(sbi * LCAMS); c < ncam && c < (int)((sbi + 1) * LCAMS); c++)
+                for (int f = 0; f < 6; f++) {
+                    const unsigned *o = off + 12 * (size_t)c + 2 * f;
+                    for (unsigned k = o[pass]; k < o[pass + 1]; k++, w++) {
+                        unsigned i = idx[k];
+                        cmd[w].count = 3 * c_ntri[i], cmd[w].inst = instanced ? 6 : 1, cmd[w].first = 3 * c_first[i], cmd[w].base = (GLuint)w;
+                        info[w][0] = i, info[w][1] = (GLuint)(6 * (c % LCAMS) + f), info[w][2] = (GLuint)c, info[w][3] = 0;
+                    }
+                }
+        }
+    sb[2 * nsub] = w;
+    glNamedBufferSubData(cmd_buf, 0, (GLsizeiptr)(w * sizeof *cmd), cmd);
+    glNamedBufferSubData(info_buf, 0, (GLsizeiptr)(w * 16), info);
+    free(cmd), free(info);
+    static const GLuint zero = 0;
+    glClearNamedBufferSubData(bits_ssbo, GL_R32UI, 0, (GLsizeiptr)(nb * 4), GL_RED_INTEGER, GL_UNSIGNED_INT, &zero);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bits_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, info_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, cams_buf);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_buf);
+    glUseProgram(prog_occ_l), glUniform1fv(u_occ_l_fb, 54, &fbs[0][0]);
+    glUseProgram(prog_test_l), glUniform1fv(u_test_l_fb, 54, &fbs[0][0]), glUniform1ui(u_test_l_words, (GLuint)W);
+    for (size_t sbi = 0; sbi < nsub; sbi++) {
+        float e4[LCAMS][4] = {{0}};
+        for (int c = (int)(sbi * LCAMS); c < ncam && c < (int)((sbi + 1) * LCAMS); c++)
+            memcpy(e4[c % LCAMS], eye[c], 12);
+        glNamedBufferSubData(cams_buf, 0, sizeof e4, e4);
+        static const float z4[4] = {0, 0, 0, 0};
+        glClearTexImage(tex_l, 0, GL_RED, GL_FLOAT, z4);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_occ_l);
+        glUseProgram(prog_occ_l);
+        glEnable(GL_BLEND), glBlendEquation(GL_MAX), glBlendFunc(GL_ONE, GL_ONE);
+        if (sb[2 * sbi + 1] > sb[2 * sbi])
+            glMultiDrawArraysIndirect(GL_TRIANGLES, (const void *)(sizeof(DrawCmd) * sb[2 * sbi]), (GLsizei)(sb[2 * sbi + 1] - sb[2 * sbi]), 0);
+        glDisable(GL_BLEND);
+        glTextureBarrier();
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_test_l);
+        glUseProgram(prog_test_l);
+        glBindTextureUnit(0, tex_l);
+        if (conservative)
+            glEnable(GL_CONSERVATIVE_RASTERIZATION_NV);
+        if (sb[2 * sbi + 2] > sb[2 * sbi + 1])
+            glMultiDrawArraysIndirect(GL_TRIANGLES, (const void *)(sizeof(DrawCmd) * sb[2 * sbi + 1]), (GLsizei)(sb[2 * sbi + 2] - sb[2 * sbi + 1]), 0);
+        if (conservative)
+            glDisable(GL_CONSERVATIVE_RASTERIZATION_NV);
+        glBindTextureUnit(0, 0);
+    }
+    free(sb);
+    glFlush();
+}
+
+void gpu_collect(uint32_t *bits)
+{
+    size_t nb = (size_t)pend_ncam * (size_t)W;
+    if (!layered) {  /* gpu_submit already ran it into its buffer: the bits are still in bits_ssbo */
+        glGetNamedBufferSubData(bits_ssbo, 0, (GLsizeiptr)(nb * 4), bits);
+        return;
+    }
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glGetNamedBufferSubData(bits_ssbo, 0, (GLsizeiptr)(nb * 4), bits);
+}
+
 int gpu_words(void) { return W; }
+
+/* 1: gpu_submit draws every command into all 6 faces of its camera (instancing; the GPU clips what a face does not
+ * see), so the caller puts each chunk once, in face 0's lists, and skips the per-face box tests */
+int gpu_instanced(void) { return instanced; }
 
 /* pvs_bake --gpu-probe: 0 (and the renderer on stdout) when a hardware OpenGL 4.5 context comes up, else 1 */
 int gpu_probe(void)
