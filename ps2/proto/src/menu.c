@@ -506,9 +506,11 @@ int menu_update(unsigned short pressed)
         u32 id = cursor_item();
         if (detail_ok && id != text_have && !text_pending) {
             text_want = id;
-            if (id && item_text_request(id, text_buf, sizeof text_buf) > 0)
+            int q = id ? item_text_request(id, text_buf, sizeof text_buf) : -1;  /* (once: a second call could start
+                                                                                   * a read nobody collects) */
+            if (q > 0)
                 text_pending = 1;
-            else if (!id || item_text_request(id, text_buf, sizeof text_buf) < 0)
+            else if (q < 0)
                 text_have = id, text_desc = -1;
         }
         if (text_pending) {
