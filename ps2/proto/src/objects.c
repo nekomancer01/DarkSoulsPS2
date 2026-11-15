@@ -24,7 +24,9 @@
 #include "world.h"
 #include <kernel.h>
 
-#define MAX_TYPES 64           /* the boot area's + every world block's (objects_block_types; Undead Burg: 31) */
+/* the boot area's + every world block's (objects_block_types; Undead Burg: 31). 64 ran full at block 6 of the
+ * 14-block world (2026-11-15: the Depths and Darkroot got none of their own types) */
+#define MAX_TYPES 128
 #define MAX_INST 512           /* placed in the boot area and the blocks on (Burg blocks: 115 / 146 / 121) */
 #define MAX_LIVE 16            /* broken objects with pieces out at once (their body lists: live_body) */
 #define MAX_PIECES 32          /* per type */
@@ -66,7 +68,9 @@ typedef struct {
 /* objects.bin v4 (export_objects.py OBJ_TEX_SHARED): one texture model per map holds every breakable texture of the
  * MSB, the same list in each block of that map; the types' groups index it. Up in VRAM while any block of the map is
  * on (the boot area's: always); its types draw with its VRAM textures (mdl_share_textures after each upload). */
-#define MAX_TSETS 4
+/* one per map of the world (Firelink, Burg / Parish, Asylum, Depths, Darkroot: 5; with 4 every Darkroot block logged
+ * "breakable texture set did not load" and placed none, 2026-11-15) */
+#define MAX_TSETS 6
 static struct {
     int key, refs;   /* area x 100 + map (0: free slot); blocks on that hold it */
     Model *m;        /* texture handles only after objects_block_types (mdl_strip) */
