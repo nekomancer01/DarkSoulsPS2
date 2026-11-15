@@ -45,14 +45,32 @@
  * 3650 / 2190 and the bonfire block 3900 / 2340: with the neighbours' cells and ~620 KB of kept meshes the spots around
  * the Burg bonfire held up to 4416 KB at 4050 (1.06 % of the gated spots over the room; 0.05 % now, max 4236 KB). 
  * Since 2026-11-13 (the arena at 10752 KB, visual room 5770 KB) every row is 1530 KB larger: 300 KB of it for the near
- * level, the rest for the coarse level, now pinned to RES_PIN_R 48 m (the Burg's heaviest spot 4632 KB offline). */
+ * level, the rest for the coarse level, now pinned to RES_PIN_R 48 m (the Burg's heaviest spot 4632 KB offline).
+ * Since 2026-11-15 (14 blocks: Parish rest, Depths, Darkroot) every row is 650 KB smaller (130 KB of it near): the new
+ * blocks' draw groups and visibility come with their lite sets (WORLD_DG_LITE, they no longer cut the arena at boot)
+ * and the Parish block is wanted at the Burg seams, so the structural pool grew 3284 -> 4220 KB and the visual room
+ * 5770 -> 5122 KB. */
 #ifdef RES_BLOCK
-RES_BLOCK(m10_02_00_00, 5640, 2766)
-RES_BLOCK(m10_01_00_00_w, 5180, 2490)
-RES_BLOCK(m10_01_00_00_b, 5430, 2640)
-RES_BLOCK(m10_01_00_00_p, 5580, 2730)
-RES_BLOCK(m18_01_00_00_a, 5640, 2766)
-RES_BLOCK(default, 5640, 2766)
+RES_BLOCK(m10_02_00_00, 4990, 2636)
+RES_BLOCK(m10_01_00_00_w, 4530, 2360)
+RES_BLOCK(m10_01_00_00_b, 4780, 2510)
+RES_BLOCK(m10_01_00_00_p, 4930, 2600)
+RES_BLOCK(m18_01_00_00_a, 4990, 2636)
+/* 2026-11-15: the rest of the Parish (seams with the Parish bridge, the bonfire block and Burg west: as the bonfire
+ * block) and the Depths (the entry block at the Lower Burg's door: as the Parish bridge; the deep block alone in its MSB
+ * with the entry block) */
+RES_BLOCK(m10_01_00_00_c, 4780, 2510)
+RES_BLOCK(m10_00_00_00_a, 4930, 2600)
+RES_BLOCK(m10_00_00_00_b, 4990, 2636)
+/* Darkroot (2026-11-15): the garden entry block seams with the Parish's (as the Parish bridge), the rest are alone in
+ * their MSB (ASSUMED until a world_budget.py pass over them) */
+RES_BLOCK(m12_00_00_00_e, 4930, 2600)
+RES_BLOCK(m12_00_00_00_g, 4990, 2636)
+RES_BLOCK(m12_00_00_00_m, 4990, 2636)
+RES_BLOCK(m12_00_00_00_w, 4990, 2636)
+RES_BLOCK(m12_00_00_00_x, 4990, 2636)
+RES_BLOCK(m12_00_00_00_s, 4990, 2636)
+RES_BLOCK(default, 4990, 2636)
 #endif
 
 #endif

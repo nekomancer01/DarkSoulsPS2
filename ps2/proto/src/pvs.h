@@ -7,7 +7,7 @@
 #ifndef PVS_H
 #define PVS_H
 
-#define PVS_INST 5          /* >= MAP_INST */
+#define PVS_INST 16          /* >= MAP_INST */
 #define PVS_STREAM_R 16.0f  /* the streamer's union: rows of the cells within this of the camera (~2-3 s of running) */
 
 /* instance k's pvs.bin (kept loaded by the caller): chunks = the map's resident chunk count (the file covers at least

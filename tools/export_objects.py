@@ -124,14 +124,15 @@ def bodies(hkx):
         if st.name == "hkpConvexTranslateShape":
             centre = struct.unpack_from("<3f", D, soff + 64)
             ct, coff, _ = h.items[struct.unpack_from("<I", D, soff + 48)[0]]
-            assert ct.name == "hkpBoxShape", ct.name
-            shape = ("box", struct.unpack_from("<3f", D, coff + 48), centre, rad)
+            # a translated sphere (Depths barrels / pots) or another convex: bounds from the FLVER mesh, as below
+            shape = ("box", struct.unpack_from("<3f", D, coff + 48), centre, rad) if ct.name == "hkpBoxShape" else \
+                ("other", ct.name)
         elif st.name == "hkpBoxShape":
             shape = ("box", struct.unpack_from("<3f", D, soff + 48), (0, 0, 0), rad)
         elif st.name == "hkpCylinderShape":
             shape = ("cyl", struct.unpack_from("<f", D, soff + 40)[0], struct.unpack_from("<3f", D, soff + 48),
                      struct.unpack_from("<3f", D, soff + 64), rad)
-        else:  # hkpConvexVerticesShape, ... (Undead Burg crates): bounds taken from the FLVER mesh (type_model)
+        else:  # hkpConvexVerticesShape, hkpSphereShape, ... (Undead Burg crates): bounds from the FLVER mesh (type_model)
             shape = ("other", st.name)
         out.append((name, D[m + 16], rot, xf[12:15], imi, fr, rest, shape))
     return out

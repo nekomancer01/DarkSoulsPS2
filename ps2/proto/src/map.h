@@ -42,7 +42,7 @@ extern int map_vu1_batches, map_ee_tris;
  * (mapstream_res_open; no full swap, TECH_DEBT world-2 / world-5). col_block: its collision block (ColHit.block), for
  * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
  * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
-#define MAP_INST 5
+#define MAP_INST 16  /* = WORLD_MAX (world.h): block index = map instance */
 /* the next map_block_init(k, ...) takes maptab.bin in three pieces: tab = bytes [0, b_off + ...), b = the piece
  * from byte b_off (textures, navmesh, fog rows), c = the piece from byte c_off (cell table, horizon) (world.c
  * WORLD_TAB_SPLIT) */
@@ -71,6 +71,8 @@ void map_pano_open(const char *pak_path);
 int map_far_set(const void *blob);
 /* world.c world_systems, at boot: block k's dg.bin from its open Pack (per-block draw groups, src/drawgrp.c) */
 void map_block_dg(int k, void *pack);
+/* world.c (WORLD_DG_LITE): block k's dg.bin / pvs.bin from its lite set, before map_block_init; map_block_drop lets go */
+void map_block_dg_set(int k, const void *dg, const void *pvs);
 /* the boot instance's pvs.bin (main.c, from the area pack; kept loaded) */
 void map_pvs_init(const void *blob);
 /* world.c: block k's bump.bin while the player stands in it (normal-map relief, src/bump.c); NULL drops it */

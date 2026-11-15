@@ -250,6 +250,8 @@ void mp_build_index(MapInst *mi)
 /* a world block's dg.bin, at boot (src/world.c world_systems; the pack read waits on the IOP): kept for the session
  * (Burg west 44 KB), handed to drawgrp.c each time the block turns on */
 static void *blk_dg[MAP_INST], *blk_pvs[MAP_INST];
+/* blk_dg / blk_pvs of block k point into world.c's lite set (map_block_dg_set): let go with the block */
+static unsigned char blk_dg_ext[MAP_INST];
 /* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
  * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
 static signed char tslot[MAP_INST];
@@ -404,6 +406,8 @@ static void block_drop(int k, int keep_dg)
 void map_block_drop(int k)
 {
     block_drop(k, 0);
+    if (k > 0 && k < MAP_INST && blk_dg_ext[k])
+        blk_dg[k] = blk_pvs[k] = NULL, blk_dg_ext[k] = 0;
     if (k > 0 && k < MAP_INST)
         mp_inst[k].hz_only = 0, mp_inst[k].hz_cell = NULL, mp_inst[k].hz_chunk = NULL, mp_inst[k].hz_base = NULL;
 }
@@ -505,6 +509,15 @@ void map_pvs_init(const void *blob)
 {
     if (mp_inst[0].hdr)
         pvs_block_init(0, blob, mp_inst[0].hdr->chunks, mp_inst[0].nctab);
+}
+
+void map_block_dg_set(int k, const void *dg, const void *pvs)
+{
+    if (k <= 0 || k >= MAP_INST)
+        return;
+    if (!blk_dg_ext[k])  /* (one read at boot before: freed) */
+        free(blk_dg[k]), free(blk_pvs[k]);
+    blk_dg[k] = (void *)dg, blk_pvs[k] = (void *)pvs, blk_dg_ext[k] = 1;
 }
 
 void map_block_dg(int k, void *pack)

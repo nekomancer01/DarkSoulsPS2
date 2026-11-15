@@ -257,7 +257,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bi
 		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
-		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(A)/dg.bin pvs.bin=$(A)/pvs.bin \
+		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(if $(BLOCK),raw:)$(A)/dg.bin pvs.bin=$(if $(BLOCK),raw:)$(A)/pvs.bin \
 		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
 		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) \
 		$(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) \
@@ -493,6 +493,10 @@ MAPENV_m10_01_00_00 += $(if $(BLOCK),,WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
+# The Depths (world blocks m10_00_00_00_a / _b) and Darkroot (m12_00_00_00_*; 2026-11-15): two levels (STREAM=1, which
+# world blocks need) with the Burg's errors: their pieces are as dense as the Burg's (ASSUMED: not tuned on them yet)
+MAPENV_m10_00_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
+MAPENV_m12_00_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446
 # The knobs above as passed to this area's export (MAPENV + MAPENV_<area>, also as set in config.local.mk or on the
 # command line), rewritten only when they change like $(O)/.cflags: a knob edit re-exports that area's map.bin. A first
 # stamp takes export_map.py's stamp mtime, so adding it re-exports no map.
