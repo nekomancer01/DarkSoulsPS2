@@ -942,7 +942,7 @@ void snd_map(const char *map_id)
 #define CHR_QUEUE 16
 static char chr_queue[CHR_QUEUE][8];
 static int chr_nq;
-static struct { char name[8]; int stage; PackJob job; void *part[3]; unsigned xoff[2], xsize[2]; } chr_ld;
+static struct { char name[8]; int stage, has[3]; PackJob job; void *part[3]; unsigned xoff[2], xsize[2]; } chr_ld;
 static const char *const chr_part[3] = {"bank.bin", "cue.bin", "emit.bin"};
 static void *job_heap_get(unsigned n) { return memalign(128, n); }
 static void job_heap_put(void *p, unsigned n) { (void)n; free(p); }
@@ -987,12 +987,18 @@ static void chr_pump(void)
     }
     if (r > 0)
         chr_ld.part[chr_ld.stage] = chr_ld.job.out;
-    if (chr_ld.stage == 0)
+    if (chr_ld.stage == 0) {
         memcpy(chr_ld.xoff, chr_ld.job.xoff, sizeof chr_ld.xoff), memcpy(chr_ld.xsize, chr_ld.job.xsize, sizeof chr_ld.xsize);
-    if (++chr_ld.stage < 3) {
-        chr_part_start();
-        return;
+        /* the parts this pack has: a missing one was a job (an open or a cached-header pass) and a "no such entry"
+         * error for nothing (21 emit.bin errors in one ISO play report, 2026-11-10) */
+        for (int k = 1; k < 3; k++)
+            chr_ld.has[k] = pack_job_has(&chr_ld.job, chr_part[k]);
     }
+    while (++chr_ld.stage < 3)
+        if (chr_ld.has[chr_ld.stage]) {
+            chr_part_start();
+            return;
+        }
     Bank *b = bank_find(chr_ld.name) ? NULL : bank_free_slot();
     if (!b) {
         for (int k = 0; k < 3; k++)
