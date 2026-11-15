@@ -154,9 +154,10 @@ typedef struct {
     int npc, thinkid, entity, index;
     V3 pos, home;
     float yaw, home_yaw;
-    /* pose / from: pose_s for types of <= MAX_BONES bones, else the slot's big_pose block (place()) */
+    /* pose / from: for types of <= MAX_BONES bones a pose_pool slot (pose_slot, 1-based; NULL / 0 while it has none:
+     * not updated, not drawn), else the slot's big_pose block (place()) */
     BoneLocal *pose, *from;
-    BoneLocal pose_s[2][MAX_BONES];
+    int pose_slot;
     unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
     float blend, blend_time;
     /* action anim (attacks, steps, damage, death) started by the ESD; -1 = none (locomotion / idle) */
@@ -206,6 +207,7 @@ typedef struct {
 
 static ChrType types[MAX_TYPES];
 static void chr_attach(ChrType *t, void *cb);
+static void pose_put(Enemy *e);
 static int chr_same(const ChrType *t, const void *cb, unsigned size);
 static int ntypes;
 static Enemy enemies[MAX_ENEMIES];
@@ -228,6 +230,21 @@ static unsigned pose_gen, wcache_clock;
 
 static void pose_changed(Enemy *e) { e->pose_serial = ++pose_gen; }
 static unsigned pose_bytes(const Enemy *e) { return e->ct->h->bones * sizeof(BoneLocal); }
+/* Poses of the characters near the player (type loaded, within POSE_GET m or event always-on), taken when they come
+ * within POSE_GET and given back beyond POSE_PUT, when their type unloads or the slot is placed again. Each Enemy held
+ * its own pair before: 3.5 KB of a 4.8 KB slot in bss (229 KB at MAX_ENEMIES 64), though only the ACTIVE_MAX nearest
+ * update and the DRAW_MAX nearest within DRAW_DIST draw. POSE_GET covers ACTIVE_DIST and DRAW_DIST. With every slot
+ * taken, the farthest holder beyond POSE_GET gives its slot to a nearer character; one with none stays frozen and
+ * undrawn, as a placement of an unloaded type (logged with the peak). make DEFS=-DPOSE_SLOTS=MAX_ENEMIES = one each. */
+#ifndef POSE_SLOTS
+#define POSE_SLOTS 40
+#endif
+#define POSE_GET 50.0f
+#define POSE_PUT 55.0f
+static BoneLocal pose_pool[POSE_SLOTS][2][MAX_BONES];
+static void *pose_owner[POSE_SLOTS];
+static int pose_used, pose_peak;
+static unsigned pose_short;  /* frames a character within POSE_GET found no slot */
 static BoneLocal *big_pose[MAX_ENEMIES];  /* poses of slots placed with a type of more than MAX_BONES bones */
 static unsigned big_cap[MAX_ENEMIES];
 
@@ -351,7 +368,7 @@ static void unload_model(ChrType *t)
     chr_attach(t, NULL);
     for (int i = 0; i < nenemies; i++)  /* their anim indices point into what went: type_streamed_in finds them again */
         if (enemies[i].ct == t)
-            enemies[i].act_slot = -1, enemies[i].act_info = 0;
+            enemies[i].act_slot = -1, enemies[i].act_info = 0, pose_put(&enemies[i]);
 }
 
 
@@ -695,7 +712,8 @@ static void type_streamed_in(ChrType *t)
 
 static void start_action(Enemy *e, int anim, int layer, float blend, int loop)
 {
-    memcpy(e->from, e->pose, pose_bytes(e));
+    if (e->pose)
+        memcpy(e->from, e->pose, pose_bytes(e));
     e->blend = 0, e->blend_time = blend > 0 ? blend : 0.05f;
     e->act = anim, e->act_layer = layer, e->act_loop = loop;
     int full;
@@ -723,7 +741,7 @@ static int enemy_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             start_action(e, anim, layer, n > k + 2 ? a[k + 2] : 0.1f, n > k + 3 ? a[k + 3] != 0 : 0);
         else if (e->act >= 0 && e->act_layer == layer)
             e->act = -1, e->act_info = 0, e->blend = 0, e->blend_time = BLEND_DEFAULT,
-            memcpy(e->from, e->pose, pose_bytes(e));
+            e->pose ? memcpy(e->from, e->pose, pose_bytes(e)) : NULL;
         return 1;
     }
     case 101:  /* SetLocomotionEnabled */
@@ -798,6 +816,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     Enemy *e = &enemies[i];
     ent_gen++;
     rag_release(e);
+    pose_put(e);
     memset(e, 0, sizeof *e);
     ev_off[i] = 0;  /* a reused slot inherits no event state */
     if (t->h->bones > MAX_BONES) {  /* char-7: a big skeleton's poses in a block of the slot's own, kept for reuse */
@@ -808,13 +827,13 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
         if (!big_cap[i]) {  /* left as a free slot (as enemy_block_remove leaves one) */
             printf("enemy: %.5s: no RAM for a %u-bone pose, placement %d dropped\n", t->name, t->h->bones, i);
             ev_off[i] = EV_FREE;
-            e->ct = t, e->pose = e->pose_s[0], e->from = e->pose_s[1];
+            e->ct = t, e->pose = e->from = NULL;
             e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
             return;
         }
         e->pose = big_pose[i], e->from = big_pose[i] + t->h->bones;
     } else
-        e->pose = e->pose_s[0], e->from = e->pose_s[1];
+        e->pose = e->from = NULL;  /* a pose_pool slot once it comes near (pose_manage) */
     pose_changed(e);  /* the slot's old matrices in wcache are not this placement's */
     e->ct = t;
     e->block = block;
@@ -834,7 +853,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     e->act = -1;
     int full;
     e->loco_anim = anim_slot(e, 0, &full);
-    if (t->loaded)  /* else the pose is sampled once the type streams in */
+    if (t->loaded && e->pose)  /* else the pose is sampled when it gets one (pose_manage) */
         mdl_sample(t->model, e->loco_anim, 0, 1, e->pose);
     e->blend = 1;
     e->hostile = e->var->team_type != TEAM_NEUTRAL;
@@ -1704,6 +1723,77 @@ static int near(const Enemy *e, V3 d)
     return d.x * d.x + d.z * d.z <= ACTIVE_DIST * ACTIVE_DIST || (e->ev && e->ev->always_on);
 }
 
+static void pose_put(Enemy *e)
+{
+    if (!e->pose_slot)
+        return;  /* none, or a big type's own block */
+    pose_owner[e->pose_slot - 1] = NULL, pose_used--;
+    e->pose_slot = 0, e->pose = e->from = NULL;
+}
+
+/* e takes slot k, posed where its anims have it now (the action at its time, else the locomotion loop) */
+static void pose_take(Enemy *e, int k)
+{
+    pose_owner[k] = e, e->pose_slot = k + 1;
+    if (++pose_used > pose_peak && (pose_peak = pose_used) % 8 == 0)
+        printf("enemy: %d pose slots in use (of %d)\n", pose_used, POSE_SLOTS);
+    e->pose = pose_pool[k][0], e->from = pose_pool[k][1];
+    const Model *m = e->ct->model;
+    int full;
+    if (e->loco_anim < 0)  /* placed while the type was out */
+        e->loco_anim = anim_slot(e, 0, &full);
+    if (e->act >= 0 && e->act_slot >= 0)
+        mdl_sample(m, e->act_slot, e->act_t, e->act_loop, e->pose);
+    else if (e->loco_anim >= 0)
+        mdl_sample(m, e->loco_anim, e->loco_t, 1, e->pose);
+    else
+        memset(e->pose, 0, pose_bytes(e));
+    e->blend = 1;  /* the blend's start pose went with the slot it had */
+    pose_changed(e);
+}
+
+/* Hand pose_pool slots to the characters that may update or draw (POSE_SLOTS) */
+static void pose_manage(const Player *pl)
+{
+    float dd[MAX_ENEMIES];
+    for (int i = 0; i < nenemies; i++) {  /* xz distance², -1 = holds no slot / may not */
+        Enemy *e = &enemies[i];
+        float dx = e->pos.x - pl->pos.x, dz = e->pos.z - pl->pos.z, d = dx * dx + dz * dz;
+        int may = e->ct->loaded && e->ct->h->bones <= MAX_BONES && !(ev_off[i] & EV_FREE) && e->dead_t <= CORPSE_TIME;
+        if (may && e->ev && e->ev->always_on)
+            d = 0;
+        dd[i] = may ? d : -1;
+        if (e->pose_slot && (!may || (d > POSE_PUT * POSE_PUT && !e->registered))) {
+            rag_release(e);
+            pose_put(e);
+        }
+    }
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (e->pose_slot || dd[i] < 0 || dd[i] > POSE_GET * POSE_GET || e->ct->h->bones > MAX_BONES)
+            continue;
+        int k = 0;
+        while (k < POSE_SLOTS && pose_owner[k])
+            k++;
+        if (k == POSE_SLOTS) {  /* all taken: the farthest holder beyond POSE_GET and this one */
+            int far = -1;
+            for (int j = 0; j < nenemies; j++)
+                if (enemies[j].pose_slot && !enemies[j].registered && dd[j] > POSE_GET * POSE_GET && dd[j] > dd[i] &&
+                    (far < 0 || dd[j] > dd[far]))
+                    far = j;
+            if (far < 0) {
+                if (!pose_short++)
+                    printf("enemy: %.5s %d: all %d pose slots taken\n", e->ct->name, e->entity, POSE_SLOTS);
+                continue;
+            }
+            k = enemies[far].pose_slot - 1;
+            rag_release(&enemies[far]);
+            pose_put(&enemies[far]);
+        }
+        pose_take(e, k);
+    }
+}
+
 void enemy_stream(const Player *pl)
 {
     last_player = pl;
@@ -1798,6 +1888,7 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < nenemies; i++)
         team[i] = &enemies[i].ai, tpos[i] = enemies[i].pos;
     ai_team(team, tpos, nenemies);
+    pose_manage(pl);
     Enemy *act[MAX_ENEMIES];
     int na = 0;
     float d3[MAX_ENEMIES], lim = 1e30f;
@@ -1805,7 +1896,7 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < nenemies; i++) {
         V3 d = v3sub(enemies[i].pos, pl->pos);
         d3[i] = d.x * d.x + d.y * d.y + d.z * d.z;
-        nc += enemies[i].ct->loaded && near(&enemies[i], d) &&
+        nc += enemies[i].ct->loaded && enemies[i].pose && near(&enemies[i], d) &&
               enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg);
     }
     if (nc > ACTIVE_MAX) {  /* the ACTIVE_MAX-th smallest distance of the candidates */
@@ -1813,7 +1904,7 @@ void enemy_update(Player *pl, float dt)
         int m = 0;
         for (int i = 0; i < nenemies; i++) {
             V3 d = v3sub(enemies[i].pos, pl->pos);
-            if (enemies[i].ct->loaded && near(&enemies[i], d) &&
+            if (enemies[i].ct->loaded && enemies[i].pose && near(&enemies[i], d) &&
                 enemies[i].dead_t <= CORPSE_TIME && !ev_off[i] && dg_mask_shown(enemies[i].block, enemies[i].dg))
                 c[m++] = d3[i];
         }
@@ -1841,7 +1932,7 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         V3 d = v3sub(e->pos, pl->pos);
-        int on = e->ct->loaded && near(e, d) && e->dead_t <= CORPSE_TIME &&
+        int on = e->ct->loaded && e->pose && near(e, d) && e->dead_t <= CORPSE_TIME &&
                  !ev_off[i] && dg_mask_shown(e->block, e->dg) && d3[i] <= lim;
         if (!on)
             e->wc_ok = 0;  /* frozen: the next update starts a new segment */
@@ -1923,7 +2014,7 @@ void enemy_draw(void)
         float R = e->var->radius + 1.5f;
         const float mn[3] = {e->pos.x - R, e->pos.y - 0.5f, e->pos.z - R},
                     mx[3] = {e->pos.x + R, e->pos.y + e->var->height + 1.0f, e->pos.z + R};
-        d3[i] = !e->ct->loaded || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
+        d3[i] = !e->ct->loaded || !e->pose || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
                         d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST || !dg_mask_shown(e->block, e->dg) ||
                         !r_box_classify(mn, mx)
                     ? -1
