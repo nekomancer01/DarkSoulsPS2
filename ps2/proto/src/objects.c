@@ -60,6 +60,7 @@ typedef struct {
     int set;                   /* objects.bin v4: its map's texture set (tset), -1: textures of its own */
     int src_blk;               /* OBJ_STREAM: block whose objects.bin holds its model (0: loaded once, never dropped) */
     unsigned src_off, src_len; /* its model.bin there */
+    unsigned char src_fails;   /* OBJ_STREAM: reads of it that came back short (a disc error is tried again) */
 } Type;
 
 /* objects.bin v4 (export_objects.py OBJ_TEX_SHARED): one texture model per map holds every breakable texture of the
@@ -176,9 +177,12 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
         ty->id = (int)t[0], ty->nbodies = (int)t[3], ty->roots = t[6];
         ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
         ty->model = mdl_load_tex(b + t[1], tex);
-        if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || mdl_upload(ty->model, gs) < 0 ||
+        int up = 0;  /* its textures went up: a failure after that gives the VRAM back (mdl_free keeps it) */
+        if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || !(up = mdl_upload(ty->model, gs) >= 0) ||
             (compact && !mdl_compact(ty->model, t[2]))) {
             printf("objects: block %d: animated o%04d did not load\n", block, ty->id);
+            if (up)
+                mdl_free_textures(ty->model);
             if (ty->model)
                 mdl_free(ty->model);
             free(ty->body);
@@ -897,7 +901,10 @@ static void obj_stream(const float *f)
             printf("objects: o%04d in (%u KB read, %.0f m)\n", ty->id, ty->src_len >> 10, sqrtf(d2[st_type]));
         } else {
             printf("objects: o%04d did not load (read %d of %u bytes)\n", ty->id, r, ty->src_len);
-            ty->src_blk = 0;  /* not again */
+            /* a bad model: not again; a short read (a disc error) up to 3 times, or one error hid the
+             * type for the rest of the session */
+            if (r == (int)ty->src_len || ++ty->src_fails >= 3)
+                ty->src_blk = 0;
         }
         free(st_buf), st_buf = NULL, st_type = -1;
     }

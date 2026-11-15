@@ -192,9 +192,19 @@ void mp_build_index(MapInst *mi)
     free(mi->order), free(mi->sky), free(mi->cells), free(mi->tiles), free(mi->tcell);
     mi->tiles = NULL, mi->tcell = NULL, mi->ntiles = 0;
     unsigned n = mi->hdr->chunks;
-    unsigned (*key)[3] = malloc(n * sizeof *key);
-    unsigned short *order = mi->order = malloc(n * sizeof *order);
-    unsigned short *sky = mi->sky = malloc(n * sizeof *sky);
+    /* (the sort keys only without the exporter's cell table: Firelink's 12179 chunks took 146 KB of them) */
+    unsigned (*key)[3] = mi->ctab ? NULL : malloc((n ? n : 1) * sizeof *key);
+    unsigned short *order = mi->order = malloc((n ? n : 1) * sizeof *order);
+    unsigned short *sky = mi->sky = malloc((n ? n : 1) * sizeof *sky);
+    Cell *cells = mi->cells = calloc((mi->ctab ? mi->nctab : n) + 1, sizeof *cells);
+    if ((!key && !mi->ctab) || !order || !sky || !cells) {  /* a block turning on in a full heap: drawn as empty */
+        static unsigned warned;  /* (tried again on later draws) */
+        if (!warned++ || !(warned & 255))
+            printf("map: no RAM for the cell index of %u chunks (%u times)\n", n, warned);
+        free(key), free(order), free(sky), free(cells);
+        mi->order = mi->sky = NULL, mi->cells = NULL, mi->ncells = mi->nsky = 0;
+        return;
+    }
     int m = 0, nsky = 0;
     for (unsigned i = 0; i < n; i++) {
         const Chunk *c = &chunks[i];
@@ -202,6 +212,8 @@ void mp_build_index(MapInst *mi)
             sky[nsky++] = i;
             continue;
         }
+        if (!key)
+            continue;
         unsigned k = 0;
         for (int a = 0; a < 3; a++)
             k = k << 10 | (((int)((c->mn[a] + c->mx[a]) * 0.5f / CELL + 512)) & 1023);
@@ -210,7 +222,6 @@ void mp_build_index(MapInst *mi)
     mi->nsky = nsky;
     /* (the exporter's cell table when there is one: sized for one cell per chunk, Firelink's 12179 chunks took 633 KB
      * of heap for ~1 % of that many cells until 2026-11-13) */
-    Cell *cells = mi->cells = calloc((mi->ctab ? mi->nctab : (unsigned)m) + 1, sizeof *cells);
     int ncells = 0;
     if (mi->ctab) {  /* DSM5: the exporter's cells, resident chunks already grouped per cell (sky chunks after them) */
         const MapCell *ctab = mi->ctab;
@@ -223,7 +234,8 @@ void mp_build_index(MapInst *mi)
         }
         m = 0;
     }
-    qsort(key, m, sizeof *key, cell_key_cmp);
+    if (key)
+        qsort(key, m, sizeof *key, cell_key_cmp);
     for (int j = 0; j < m; j++) {
         const Chunk *c = &chunks[key[j][2]];
         order[j] = key[j][2];

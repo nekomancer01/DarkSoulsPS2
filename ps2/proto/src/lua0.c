@@ -232,6 +232,8 @@ static unsigned str_hash(const char *s, unsigned len)
 static void strt_resize(unsigned n)
 {
     LStr **t = calloc(n, sizeof *t);
+    if (!t)  /* no RAM for the larger table: the chains get longer, nothing breaks */
+        return;
     for (unsigned i = 0; i < strt_size; i++)
         for (LStr *s = strt[i], *nx; s; s = nx) {
             nx = s->hnext;

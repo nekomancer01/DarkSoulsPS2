@@ -280,7 +280,8 @@ static const EvInstr *load_instr(const Inst *in, u32 off, int idx, u32 *w)
     memcpy(w, ins + 1, 4 * nw);
     const EvSubst *su = SEC(s, S_SUBSTS, EvSubst) + ev->sfirst;
     for (u32 k = 0; k < ev->scount; k++) {
-        if (su[k].instr != idx || su[k].dst + 4 > 4 * nw + 4)
+        /* (a widened word ends inside the instruction: the old bound let one land a word past it, w[64] at nw 64) */
+        if (su[k].instr != idx || (su[k].fmt != 7 && su[k].dst + 4 > 4 * nw))
             continue;
         const u8 *a = in->args + su[k].src;
         if (su[k].src + su[k].n > in->argn)
@@ -1158,6 +1159,12 @@ static int load_set(Set *s, const void *blob, int block, const EvHdr *h, const u
     s->tr_state = calloc(NSEC(s, S_TREASURES) + 1, 1);
     s->oa_state = calloc(NSEC(s, S_OBJACTS) + 1, 1);
     s->ev_live = calloc(s->nev + 1, sizeof *s->ev_live);
+    if (!s->ent_off || !s->tr_state || !s->oa_state || !s->ev_live) {  /* (a block turning on in a full heap) */
+        printf("EVT block %d: no RAM for its event state\n", block);
+        free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
+        memset(s, 0, sizeof *s);
+        return 0;
+    }
     const EvTreasure *t = SEC(s, S_TREASURES, EvTreasure);
     for (int i = 0; i < NSEC(s, S_TREASURES); i++) {
         int left = 0;

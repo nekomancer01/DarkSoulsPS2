@@ -228,7 +228,7 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
     ref = (const FxRef *)(b + hdr->off_ref);
     inst = (const FxInst *)(b + hdr->off_inst);
     light = (const FxLight *)(b + hdr->off_light);
-    gtex = calloc(hdr->n_tex, sizeof *gtex);
+    gtex = calloc(hdr->n_tex ? hdr->n_tex : 1, sizeof *gtex);  /* (0 textures: calloc(0) may give NULL, read as out of RAM) */
     tkey = calloc(hdr->n_tex ? hdr->n_tex : 1, sizeof *tkey);
     for (u32 i = 0; tkey && i < hdr->n_tex; i++) {  /* FNV-1a over the pixels and the CLUT */
         u32 k = 2166136261u;
@@ -239,11 +239,12 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
         tkey[i] = k;
     }
     emit_first = calloc(hdr->n_inst + 1, sizeof *emit_first);
-    inst_on = calloc(hdr->n_inst, 1);
+    inst_on = calloc(hdr->n_inst ? hdr->n_inst : 1, 1);
     int ns = 0;
-    for (u32 i = 0; i < hdr->n_inst; i++)
+    for (u32 i = 0; emit_first && i < hdr->n_inst; i++)  /* (was walked before the out-of-RAM check below) */
         emit_first[i] = ns, ns += eff[inst[i].eff].n_ref;
-    emit_first[hdr->n_inst] = ns;
+    if (emit_first)
+        emit_first[hdr->n_inst] = ns;
     emit = calloc(ns ? ns : 1, sizeof *emit);
     kmax = calloc(hdr->n_sys ? hdr->n_sys : 1, sizeof *kmax);
     vtab = FX_VU1 ? memalign(16, (hdr->n_sys ? hdr->n_sys : 1) * VU1_FX_TABF * sizeof *vtab) : NULL;
@@ -262,6 +263,8 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
         SyncDCache(vtab, vtab + VU1_FX_TABF * hdr->n_sys);  /* vu1_fx_add sends the tables by DMA reference */
     if (!gtex || !tkey || !emit_first || !inst_on || !emit || !kmax || (FX_VU1 && !vtab)) {
         printf("DSRPROTO fx: out of RAM\n");
+        free(gtex), free(tkey), free(emit_first), free(inst_on), free(emit), free(kmax), free(vtab);
+        gtex = NULL, tkey = NULL, emit_first = NULL, inst_on = NULL, emit = NULL, kmax = NULL, vtab = NULL;
         hdr = 0;
         return 0;
     }
