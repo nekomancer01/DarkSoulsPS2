@@ -549,7 +549,7 @@ PVS_ARGS ?=
 # -march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every
 # float operation as written, so pvs.bin is the same bytes whatever the CPU (PVS_CFLAGS overrides).
 PVS_CFLAGS ?= -O3 -march=native -ffp-contract=off
-# GPU sampling (tools/pvs_gpu.c, OpenGL 4.6 over headless EGL, 2026-11-15): built in when the EGL / GL headers and
+# GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL: NVIDIA, or Mesa for AMD / Intel, 2026-11-15): built in when the EGL / GL headers and
 # libraries are there; at run time pvs_bake uses it when it finds a hardware GPU, else the CPU path. On the GPU it bakes
 # at PVS_GPU_RES with PVS_GPU_PER_CELL cameras per cell (Asylum: 0.0086 % -> 0.00035 % of pixels missed, ~300 -> ~80 CPU s;
 # Burg b: 0 -> 0.00001 %, units per cell 292 -> 291). PVS_GPU=0 (build or run): CPU only.
