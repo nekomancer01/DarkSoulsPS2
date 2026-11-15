@@ -241,6 +241,7 @@ static unsigned pose_bytes(const Enemy *e) { return e->ct->h->bones * sizeof(Bon
 #endif
 #define POSE_GET 50.0f
 #define POSE_PUT 55.0f
+#define POSE_TAKES 4  /* slots handed out a frame (each samples a pose): a warp into 30 characters spreads */
 static BoneLocal pose_pool[POSE_SLOTS][2][MAX_BONES];
 static void *pose_owner[POSE_SLOTS];
 static int pose_used, pose_peak;
@@ -283,6 +284,23 @@ static int blk_n[ENEMY_BLOCKS];
 #define ENEMY_KEEP_DEAD 1
 #endif
 static unsigned blk_dead[ENEMY_BLOCKS][(MAX_ENEMIES + 31) / 32];
+/* ENEMY_NEAR_PLACE (default on; 0 = every placement of a block when it turns on): a block's characters are placed
+ * (an Enemy slot: AI, ESD, combat body) only while their placement is within PLACE_DIST of the player, at most
+ * PLACE_PER_FRAME a frame, the nearest first, and taken out again beyond UNPLACE_DIST (Ame, 2026-11-15: "only load
+ * enemies when nearby"; a block turning on placed its 30 characters, their poses and type loads in one frame). One
+ * taken out keeps what DSR keeps while its map is loaded: dead (blk_dead, cleared by a rest / death: enemy_respawn) and
+ * its HP (blk_hp); event state lives in its EvChr record (off, dead: bosses and unique characters stay dead through
+ * their EMEVD flags) and applies whenever it is placed again. Events asking about an unplaced character get its
+ * record's answer (enemy_entity), or pull it in (damage). PLACE_DIST covers LOAD_DIST: a type loads by placements. */
+#ifndef ENEMY_NEAR_PLACE
+#define ENEMY_NEAR_PLACE 1
+#endif
+#define PLACE_DIST 70.0f
+#define UNPLACE_DIST 90.0f
+#define PLACE_PER_FRAME 4
+static short blk_slot[ENEMY_BLOCKS][MAX_ENEMIES];  /* slot of each kept placement while placed, -1 not */
+static short blk_hp[ENEMY_BLOCKS][MAX_ENEMIES];    /* HP left when taken out hurt, 0 = full */
+static unsigned char blk_on[ENEMY_BLOCKS];
 #define EV_FREE 0x80      /* ev_off: a slot of a block that turned off (reused by the next enemy_block_add) */
 #define ENT_FREE (-0x7fffffff)
 static unsigned char ev_off[MAX_ENEMIES];  /* EMEVD (src/event.c): bit 0 disabled (Change Character Enable State),
@@ -972,32 +990,122 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     return blk_n[block];
 }
 
+/* placement k of block `block` into a free slot; the slot, -1 when none is free */
+static int place_rec(int block, int k)
+{
+    ChrType *t = blk_type[block][k];
+    if (!t)
+        return -1;
+    int i = 0;
+    while (i < nenemies && !(ev_off[i] & EV_FREE))
+        i++;
+    if (i == MAX_ENEMIES)
+        return -1;
+    if (i == nenemies)
+        nenemies++;
+    place(t, blk_rec[block] + ENEMY_REC * k, i, block, k);
+    Enemy *e = &enemies[i];
+    if (ENEMY_KEEP_DEAD && blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
+        e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;
+    } else if (blk_hp[block][k] > 0 && blk_hp[block][k] < e->cc.hp_max) {
+        e->cc.hp = blk_hp[block][k];  /* hurt when it was taken out */
+    }
+    blk_hp[block][k] = 0;
+    blk_slot[block][k] = i;
+    return i;
+}
+
+/* slot i out of the roster (its block turns off, or it is far: unplace) */
+static void slot_free(int i)
+{
+    Enemy *e = &enemies[i];
+    if (e->registered)
+        combat_unregister(&e->cc), e->registered = 0;
+    /* its goal tree goes back to the pool (Lua terminate runs, as at death): place() memsets the slot, and a live
+     * tree was lost there. tests/world_blockoff.txt, 2026-11-01: ~100 of the 768 pool slots lost per Burg block
+     * off (623 in use after 6 rounds), 49 steady with this */
+    ai_reset(&e->ai);
+    rag_release(e);
+    pose_put(e);
+    e->ev = NULL;
+    ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
+    e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
+}
+
 void enemy_block_add(int block)
 {
     if (block <= 0 || block >= ENEMY_BLOCKS)
         return;
-    int i = 0, n = 0;
-    for (int k = 0; k < blk_n[block]; k++) {
-        const unsigned char *r = blk_rec[block] + ENEMY_REC * k;
-        ChrType *t = NULL;
-        t = blk_type[block][k];
-        if (!t)
-            continue;
-        while (i < nenemies && !(ev_off[i] & EV_FREE))
-            i++;
-        if (i == MAX_ENEMIES)
-            break;
-        if (i == nenemies)
-            nenemies++;
-        place(t, r, i, block, k);
-        if (ENEMY_KEEP_DEAD && blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
-            Enemy *e = &enemies[i];
-            e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;
-        }
-        n++;
-    }
+    int n = 0;
+    blk_on[block] = 1;
+    for (int k = 0; k < MAX_ENEMIES; k++)
+        blk_slot[block][k] = -1;
+    for (int k = 0; !ENEMY_NEAR_PLACE && k < blk_n[block]; k++)
+        n += place_rec(block, k) >= 0;
     npc_block(block, 1);
-    printf("enemy: block %d on: %d characters (%d slots), %d goals in use\n", block, n, nenemies, ai_goals_in_use());
+    printf("enemy: block %d on: %d characters (%d slots), %d placements by distance, %d goals in use\n", block, n,
+           nenemies, ENEMY_NEAR_PLACE ? blk_n[block] : 0, ai_goals_in_use());
+}
+
+/* ENEMY_NEAR_PLACE: place the on blocks' placements within PLACE_DIST (PLACE_PER_FRAME a frame, the nearest first),
+ * take out the placed ones beyond UNPLACE_DIST */
+static void place_near(const Player *pl)
+{
+    int got = 0;
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if ((ev_off[i] & EV_FREE) || e->block <= 0 || e->registered || e->rag || (e->ev && e->ev->always_on) ||
+            (e->cc.dead && !e->awarded))  /* its death is booked (blk_dead) by enemy_update first */
+            continue;
+        V3 d = v3sub(e->pos, pl->pos), h = v3sub(e->home, pl->pos);
+        if (d.x * d.x + d.y * d.y + d.z * d.z <= UNPLACE_DIST * UNPLACE_DIST ||
+            h.x * h.x + h.y * h.y + h.z * h.z <= UNPLACE_DIST * UNPLACE_DIST)
+            continue;
+        int b = e->block, k = e->seed_i;
+        if (k >= 0 && k < MAX_ENEMIES) {
+            blk_hp[b][k] = !e->cc.dead && e->cc.hp < e->cc.hp_max ? (short)e->cc.hp : 0;
+            blk_slot[b][k] = -1;
+        }
+        slot_free(i);
+        got = 1;
+    }
+    if (got) {
+        ent_gen++;
+        while (nenemies && (ev_off[nenemies - 1] & EV_FREE))
+            nenemies--;
+    }
+    for (int n = 0; n < PLACE_PER_FRAME; n++) {
+        int bb = -1, bk = -1;
+        float best = PLACE_DIST * PLACE_DIST;
+        for (int b = 1; b < ENEMY_BLOCKS; b++)
+            for (int k = 0; blk_on[b] && k < blk_n[b]; k++) {
+                if (blk_slot[b][k] >= 0 || !blk_type[b][k])
+                    continue;
+                float f[3];
+                memcpy(f, blk_rec[b] + ENEMY_REC * k + 20, 12);
+                float dx = f[0] - pl->pos.x, dy = f[1] - pl->pos.y, dz = f[2] - pl->pos.z, d = dx * dx + dy * dy + dz * dz;
+                if (d < best)
+                    best = d, bb = b, bk = k;
+            }
+        if (bb < 0 || place_rec(bb, bk) < 0)
+            break;
+    }
+}
+
+/* the kept placement of an on block with this entity id that is not placed now: its block (k in *kp), -1 none */
+static int unplaced_rec(int entity, int *kp)
+{
+    for (int b = 1; ENEMY_NEAR_PLACE && b < ENEMY_BLOCKS; b++)
+        for (int k = 0; blk_on[b] && k < blk_n[b]; k++)
+            if (blk_slot[b][k] < 0 && blk_type[b][k]) {
+                int ent;
+                memcpy(&ent, blk_rec[b] + ENEMY_REC * k + 16, 4);
+                if (ent == entity) {
+                    *kp = k;
+                    return b;
+                }
+            }
+    return -1;
 }
 
 /* Bonfire rest / death (src/bonfire.c): every placed character (all blocks that are on) back to its MSB placement with
@@ -1008,6 +1116,7 @@ void enemy_respawn(void)
 {
     int n = 0;
     memset(blk_dead, 0, sizeof blk_dead);
+    memset(blk_hp, 0, sizeof blk_hp);
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         if (ev_off[i] & EV_FREE)
@@ -1031,17 +1140,10 @@ void enemy_block_remove(int block)
         Enemy *e = &enemies[i];
         if (e->block != block || (ev_off[i] & EV_FREE))
             continue;
-        if (e->registered)
-            combat_unregister(&e->cc), e->registered = 0;
-        /* its goal tree goes back to the pool (Lua terminate runs, as at death): place() memsets the slot, and a live
-         * tree was lost there. tests/world_blockoff.txt, 2026-11-01: ~100 of the 768 pool slots lost per Burg block
-         * off (623 in use after 6 rounds), 49 steady with this */
-        ai_reset(&e->ai);
-        rag_release(e);
-        e->ev = NULL;
-        ev_off[i] = EV_FREE;  /* update / draw skip it (ev_off != 0); stream_types / status by dead_t */
-        e->entity = ENT_FREE, e->dead_t = 1e9f, e->pos = v3(1e6f, 0, 1e6f), e->block = -1;
+        slot_free(i);
     }
+    blk_on[block] = 0;
+    memset(blk_hp[block], 0, sizeof blk_hp[block]);  /* DSR: a map that unloads comes back at full HP */
     ent_gen++;
     while (nenemies && (ev_off[nenemies - 1] & EV_FREE))
         nenemies--;
@@ -1768,10 +1870,15 @@ static void pose_manage(const Player *pl)
             pose_put(e);
         }
     }
-    for (int i = 0; i < nenemies; i++) {
+    for (int n = 0; n < POSE_TAKES; n++) {  /* the nearest waiting ones first, POSE_TAKES a frame */
+        int i = -1;
+        for (int j = 0; j < nenemies; j++)
+            if (!enemies[j].pose_slot && dd[j] >= 0 && dd[j] <= POSE_GET * POSE_GET &&
+                enemies[j].ct->h->bones <= MAX_BONES && (i < 0 || dd[j] < dd[i]))
+                i = j;
+        if (i < 0)
+            break;
         Enemy *e = &enemies[i];
-        if (e->pose_slot || dd[i] < 0 || dd[i] > POSE_GET * POSE_GET || e->ct->h->bones > MAX_BONES)
-            continue;
         int k = 0;
         while (k < POSE_SLOTS && pose_owner[k])
             k++;
@@ -1784,7 +1891,7 @@ static void pose_manage(const Player *pl)
             if (far < 0) {
                 if (!pose_short++)
                     printf("enemy: %.5s %d: all %d pose slots taken\n", e->ct->name, e->entity, POSE_SLOTS);
-                continue;
+                break;
             }
             k = enemies[far].pose_slot - 1;
             rag_release(&enemies[far]);
@@ -1797,6 +1904,8 @@ static void pose_manage(const Player *pl)
 void enemy_stream(const Player *pl)
 {
     last_player = pl;
+    if (ENEMY_NEAR_PLACE)
+        place_near(pl);
     stream_types(pl);
 }
 
@@ -2137,7 +2246,31 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         return i;
     }
     int k = npc_entity(entity, pos, dead, hp_ratio, active);  /* a c0000 stand-in */
-    return k < 0 ? -1 : MAX_ENEMIES + k;
+    if (k >= 0)
+        return MAX_ENEMIES + k;
+    int b = unplaced_rec(entity, &k);  /* ENEMY_NEAR_PLACE: in the roster, not placed now: from its record */
+    if (b < 0)
+        return -1;
+    const unsigned char *r = blk_rec[b] + ENEMY_REC * k;
+    const EvChr *c = ev_chr_get(entity, 0);
+    int dd = (ENEMY_KEEP_DEAD && blk_dead[b][k >> 5] >> (k & 31) & 1) || (c && c->dead);
+    if (pos) {
+        float f[3];
+        memcpy(f, r + 20, 12);
+        *pos = v3(f[0], f[1], f[2]);
+    }
+    if (dead) *dead = dd;
+    if (hp_ratio) {
+        const ChrType *t = blk_type[b][k];
+        int npc, think, hp = blk_hp[b][k], hpm = 0;
+        memcpy(&npc, r + 8, 4), memcpy(&think, r + 12, 4);
+        for (unsigned v = 0; v < t->h->variants; v++)
+            if (!v || (t->vars[v].npc == npc && t->vars[v].think == think))
+                hpm = t->vars[v].hp;
+        *hp_ratio = dd ? 0 : hp > 0 && hpm > 0 ? (float)hp / hpm : 1;
+    }
+    if (active) *active = 0;
+    return 2 * MAX_ENEMIES + NPC_MAX + b * MAX_ENEMIES + k;  /* not a slot (enemy_view refuses it) */
 }
 
 int enemy_entity_enable(int entity, int on, int bit)
@@ -2165,12 +2298,25 @@ int enemy_entity_kill(int entity, int award)
             enemies[i].awarded = !award;
             return 1;
         }
+    int k, b = unplaced_rec(entity, &k);
+    if (b >= 0) {  /* not placed now: dead from its record (EvChr dead is set by ev_chr_kill) */
+        const unsigned char *r = blk_rec[b] + ENEMY_REC * k;
+        if (!(blk_dead[b][k >> 5] >> (k & 31) & 1)) {
+            blk_dead[b][k >> 5] |= 1u << (k & 31);
+            if (award)
+                progress_enemy_killed(r[36] | r[37] << 8, r[38], r[39]);
+        }
+        return 1;
+    }
     return npc_entity_kill(entity);
 }
 
 int enemy_entity_damage(int entity, int hp)
 {
     ev_chr_hit(entity);
+    int k, b = unplaced_rec(entity, &k);
+    if (b >= 0 && place_rec(b, k) >= 0)  /* not placed now: in, so the hit lands as on a placed one */
+        ent_gen++;
     for (int i = 0; i < nenemies; i++) {
         Enemy *e = &enemies[i];
         if (e->entity != entity || e->cc.dead || (e->ev && e->ev->invincible))
