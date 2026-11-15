@@ -88,7 +88,9 @@ typedef struct {
                               farthest sample */
 } prot_ctx;
 
-static double prot_point(const prot_ctx *c, const double *q)
+/* the squared distance from q to the structure, capped at cap2; may return early with any value <= stop once one is
+   found (the caller keeps the largest per triangle, so a point no farther than the largest so far changes nothing) */
+static double prot_point(const prot_ctx *c, const double *q, double stop)
 {
     long long g[3];
     for (int k = 0; k < 3; k++)
@@ -110,6 +112,8 @@ static double prot_point(const prot_ctx *c, const double *q)
                     const long long *t = c->tg + 3 * c->G[e].t;
                     double d = pt_tri_d2(q, c->P + 3 * t[0], c->P + 3 * t[1], c->P + 3 * t[2]);
                     if (d < best) best = d;
+                    if (best <= stop)
+                        return best;
                 }
             }
     for (long long e = 0; e < c->nbig; e++) {
@@ -137,7 +141,7 @@ static void prot_one(void *vc, long long t)
         double q[3];
         for (int k = 0; k < 3; k++)
             q[k] = Wt[s][0] * a[k] + Wt[s][1] * b[k] + Wt[s][2] * d[k];
-        double x = prot_point(c, q);
+        double x = prot_point(c, q, worst);
         if (x > worst) worst = x;
     }
     c->td2[t] = worst;

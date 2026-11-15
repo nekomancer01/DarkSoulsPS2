@@ -919,7 +919,7 @@ static void check_job(void *vc, long long i)
                 }
     }
     qsort(G, (size_t)ng, sizeof(gent), cmp_gent);
-    double worst = 0;
+    double worst = 0, wsq = 0;  /* the farthest point so far, in metres and squared */
     for (int t = 0; t < j->nout; t++) {
         const int *r = j->out + 6 * t, *s = R->t0 + 6 * j->oid[t];
         const double *a = j->pos + 3 * r[0], *b = j->pos + 3 * r[2], *d = j->pos + 3 * r[4];
@@ -947,7 +947,8 @@ static void check_job(void *vc, long long i)
             for (int k = 0; k < 3; k++) p[k] = W[sp][0] * a[k] + W[sp][1] * b[k] + W[sp][2] * d[k];
             long long g[3];
             for (int k = 0; k < 3; k++) g[k] = (long long)floor(p[k] / cs);
-            double best = c->tol * c->tol * 4 + 1;
+            double best = c->tol * c->tol * 4 + 1, stop = far_ > wsq ? far_ : wsq;
+            if (stop > c->tol * c->tol) stop = c->tol * c->tol;
             for (int dx = -1; dx <= 1; dx++)
                 for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++) {
@@ -966,6 +967,8 @@ static void check_job(void *vc, long long i)
                             cp_tri(p, j->pos + 3 * u[0], j->pos + 3 * u[2], j->pos + 3 * u[4], o);
                             double dd = (o[0] - p[0]) * (o[0] - p[0]) + (o[1] - p[1]) * (o[1] - p[1]) + (o[2] - p[2]) * (o[2] - p[2]);
                             if (dd < best) best = dd;
+                            if (best <= stop)  /* changes neither this triangle's farthest point nor the job's */
+                                goto found;
                         }
                     }
             for (long long e = 0; e < nbig; e++) {
@@ -977,10 +980,12 @@ static void check_job(void *vc, long long i)
                 double dd = (o[0] - p[0]) * (o[0] - p[0]) + (o[1] - p[1]) * (o[1] - p[1]) + (o[2] - p[2]) * (o[2] - p[2]);
                 if (dd < best) best = dd;
             }
+        found:
             if (best > far_) far_ = best;
             if (best > c->tol * c->tol)
                 break;
         }
+        if (far_ > wsq) wsq = far_;
         far_ = mx_sqrt(far_);
         if (far_ > worst) worst = far_;
         if (c->tol > 0 && far_ > c->tol)
