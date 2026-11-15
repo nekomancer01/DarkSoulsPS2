@@ -881,7 +881,7 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
         for (unsigned s2 = 0; s2 < m; s2++)
             cc[k] = i, cs[k] = s2, k++;
     }
-    enum { B = 256 };
+    enum { B = 64 };  /* cameras per batch (pvs_gpu.c LCAMS): its command lists stay small under tools/q's address cap */
     unsigned *lst[B], nlst[B];
     unsigned *off = malloc(sizeof(unsigned) * (12 * B + 1));
     float (*eye)[3] = malloc(sizeof(float[3]) * B);

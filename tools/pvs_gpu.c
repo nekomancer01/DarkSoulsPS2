@@ -280,6 +280,10 @@ void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsig
         glNamedBufferStorage(cmd_buf, (GLsizeiptr)(cmd_cap * sizeof(DrawCmd)), NULL, GL_DYNAMIC_STORAGE_BIT);
     }
     DrawCmd *cmd = malloc(sizeof *cmd * (ncmd ? ncmd : 1));
+    if (!cmd) {
+        fprintf(stderr, "pvs_gpu: out of memory for %zu draw commands (address space cap?)\n", ncmd);
+        exit(3);
+    }
     for (size_t k = 0; k < ncmd; k++) {
         unsigned i = idx[k];
         cmd[k].count = 3 * c_ntri[i], cmd[k].inst = 1, cmd[k].first = 3 * c_first[i], cmd[k].base = i;
@@ -365,6 +369,10 @@ void gpu_submit(int ncam, const float (*eye)[3], const float fbs[6][9], const un
     DrawCmd *cmd = malloc(sizeof *cmd * (ncmd ? ncmd : 1));
     GLuint (*info)[4] = malloc(16 * (ncmd ? ncmd : 1));
     size_t nsub = ((size_t)ncam + LCAMS - 1) / LCAMS, *sb = malloc(sizeof(size_t) * (2 * nsub + 1)), w = 0;
+    if (!cmd || !info || !sb) {
+        fprintf(stderr, "pvs_gpu: out of memory for %zu draw commands (address space cap?)\n", ncmd);
+        exit(3);
+    }
     for (size_t sbi = 0; sbi < nsub; sbi++)
         for (int pass = 0; pass < 2; pass++) {
             sb[2 * sbi + pass] = w;

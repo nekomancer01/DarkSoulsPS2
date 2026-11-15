@@ -556,7 +556,8 @@ PVS_CFLAGS ?= -O3 -march=native -ffp-contract=off
 # GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL: NVIDIA, or Mesa for AMD / Intel, 2026-11-15): built in when the EGL / GL headers and
 # libraries are there; at run time pvs_bake uses it when it finds a hardware GPU, else the CPU path. On the GPU it bakes
 # at PVS_GPU_RES with PVS_GPU_PER_CELL cameras per cell (Asylum: 0.0086 % -> 0.00035 % of pixels missed, ~300 -> ~80 CPU s;
-# Burg b: 0 -> 0.00001 %, units per cell 292 -> 291). PVS_GPU=0 (build or run): CPU only.
+# Burg b: 0 -> 0.00001 %, units per cell 292 -> 291). PVS_GPU=0 (build or run): CPU only. The GPU driver maps a few GB of
+# address space, so the bake's tools/q cap is 6 GB with the GPU path (2 GB: it segfaulted with 13 blocks' geometry).
 PVS_GPU ?= 1
 PVS_GPU_RES ?= 192
 PVS_GPU_PER_CELL ?= 32
@@ -575,7 +576,7 @@ $(PVS_WITH_FILES): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
 # (tools/pvs_cache.py: an earlier bake of the same inputs in any build dir or worktree is reused, PVS_CACHE=0 off)
 $(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES) $(TS)/pvs_cache.py.sum
-	$(abspath ../../tools/q) -m 2 python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) --res $(PVS_RES) --vres 192 \
+	$(abspath ../../tools/q) -m $(if $(PVS_GPU_OK),6,2) python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) --res $(PVS_RES) --vres 192 \
 		--gpu-res $(PVS_GPU_RES) --gpu-per-cell $(PVS_GPU_PER_CELL) \
 		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 # World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own
