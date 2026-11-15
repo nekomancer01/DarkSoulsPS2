@@ -541,6 +541,10 @@ $(A)/dg.bin: $(A)/map.bin
 HOST_TAG := $(shell ldd --version 2>&1 | grep -qi musl && echo -musl)
 PVS_BAKE = $(BUILD)/host/pvs_bake$(HOST_TAG)
 PVS_VALIDATE ?= 300
+# bake resolution (cube face pixels): 96 since 2026-11-15, the check (--validate) still renders at 192. On Asylum and
+# Burg b the 192 px bake and this one miss the same share of pixels (0.0085 % / 0 %) for 29 % less CPU: the cameras per
+# cell, not the resolution, set what a cell misses. PVS_RES=192: the old bake.
+PVS_RES ?= 96
 PVS_ARGS ?=
 # -march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every
 # float operation as written, so pvs.bin is the same bytes whatever the CPU (PVS_CFLAGS overrides).
@@ -558,7 +562,7 @@ $(PVS_WITH_FILES): | $(if $(WORLD_BLOCKS),worldexports)
 	@test -f $@ || { echo "$@ missing: the world block exports (worldexports) did not write it"; exit 1; }
 # (tools/pvs_cache.py: an earlier bake of the same inputs in any build dir or worktree is reused, PVS_CACHE=0 off)
 $(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(PVS_WITH_FILES) $(TS)/pvs_cache.py.sum
-	$(abspath ../../tools/q) -m 2 python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) \
+	$(abspath ../../tools/q) -m 2 python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $@ --validate $(PVS_VALIDATE) --res $(PVS_RES) --vres 192 \
 		$(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 # World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own
 # (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at each navmesh spot of each block

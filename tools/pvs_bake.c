@@ -853,7 +853,7 @@ int main(int argc, char **argv)
                         "[--cams N] [--cluster M] [--validate N] [--spot e,t,p ...] [--threads N]\n");
         return 2;
     }
-    int per_cell = 16, cams = 3, validate = 0, nspot = 0, nwith = 0;
+    int per_cell = 16, cams = 3, validate = 0, vres = 0, nspot = 0, nwith = 0;
     const char *with[MAXB][3];
     const char *spot[64];
     for (int a = 5; a < argc; a++) {
@@ -862,6 +862,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[a], "--per-cell") && a + 1 < argc) per_cell = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--cams") && a + 1 < argc) cams = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--validate") && a + 1 < argc) validate = atoi(argv[++a]);
+        else if (!strcmp(argv[a], "--vres") && a + 1 < argc) vres = atoi(argv[++a]);  /* validate at this resolution (default --res) */
         else if (!strcmp(argv[a], "--cluster") && a + 1 < argc) cluster = (float)atof(argv[++a]);
         else if (!strcmp(argv[a], "--spot") && a + 1 < argc && nspot < 64) spot[nspot++] = argv[++a];
         else if (!strcmp(argv[a], "--with") && a + 3 < argc && nwith < MAXB - 1)
@@ -1146,6 +1147,8 @@ int main(int argc, char **argv)
 
     /* ---- validation: fresh cameras, the full scene, pixels whose unit the row leaves out ---- */
     if (validate) {
+        if (vres > 0)
+            R = vres;
         uint64_t s2 = 0xC0FFEE1234ull;
         unsigned long long px = 0, miss = 0, norow = 0, bad = 0;
         double worst = 0;
