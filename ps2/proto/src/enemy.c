@@ -125,9 +125,15 @@ typedef struct {
     char name[8];
     const char *dir;  /* pack directory under PACK_ROOT: CHR_DIR, or a world block's "<block>/" (its own variants) */
     unsigned chr_size;
+    unsigned chr_hash;   /* FNV-1a of the whole chr.bin: same-name types of two blocks with equal files are one */
     unsigned model_raw;  /* model.bin's decoded size (stream_types: room for it before its load starts) */
+    /* chr.bin in two parts: h + vars (the header and the variants, ~0.3-2 KB) stay resident from boot in `head`;
+     * the anims, windows, root motion and ragdoll bodies (~95 % of the file, ~25 KB a type) are only read while
+     * the type's model is loaded, so the whole file streams in with it (`tail`, NULL while unloaded: anims, wins,
+     * root and rag NULL then). Resident before: 447 KB for the 20 types of the Burg boot. */
     const ChrHdr *h;
     const ChrVar *vars;
+    void *tail;
     const ChrAnim *anims;
     const ChrWin *wins;
     const float (*root)[3];
@@ -199,6 +205,8 @@ typedef struct {
 } Enemy;
 
 static ChrType types[MAX_TYPES];
+static void chr_attach(ChrType *t, void *cb);
+static int chr_same(const ChrType *t, const void *cb, unsigned size);
 static int ntypes;
 static Enemy enemies[MAX_ENEMIES];
 
@@ -282,7 +290,7 @@ static Enemy *rag_owner[RAG_POOL];
 
 static const ChrAnim *anim_info(const ChrType *t, int id)
 {
-    for (unsigned i = 0; i < t->h->anims; i++)
+    for (unsigned i = 0; t->anims && i < t->h->anims; i++)
         if (t->anims[i].id == id)
             return &t->anims[i];
     return NULL;
@@ -339,6 +347,11 @@ static void unload_model(ChrType *t)
     }
     mdl_free(t->model);
     t->model = NULL;
+    free(t->tail);
+    chr_attach(t, NULL);
+    for (int i = 0; i < nenemies; i++)  /* their anim indices point into what went: type_streamed_in finds them again */
+        if (enemies[i].ct == t)
+            enemies[i].act_slot = -1, enemies[i].act_info = 0;
 }
 
 
@@ -388,7 +401,9 @@ static void model_path(char *path, unsigned cap, const ChrType *t)
 static GSGLOBAL *gsg;  /* enemy_init's GS context */
 static PackJob job;
 static ChrType *job_t;  /* the type job loads, NULL when idle */
+static void type_streamed_in(ChrType *t);
 static Model *job_m;    /* its model while mdl_load_step builds the skin batches */
+static void *job_chr;   /* its chr.bin (the job's first entry), handed to the type with the model; NULL before */
 /* EE ticks per frame for building a streamed type's VU1 skin batches: in one frame mdl_load took up to 28 ms
  * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
 /* LOGIC_SPREAD: 1.5 ms (Burg plan B6: the 4 ms steps were the logic pass's spikes on every type load) */
@@ -416,8 +431,9 @@ static void job_begin(ChrType *t)
     }
     char path[64];
     model_path(path, sizeof path, t);
-    job_arena = mapstream_ready();
-    pack_job_start(&job, path, "model.bin", job_arena ? arena_get : heap_get, job_arena ? arena_put : heap_put);
+    /* chr.bin first (small, kept in the heap with the type), then model.bin from the same pack (job_poll) */
+    job_arena = 0, job_chr = NULL;
+    pack_job_start(&job, path, "chr.bin", heap_get, heap_put);
     job_t = t;
 }
 
@@ -429,12 +445,39 @@ static int job_poll(void)
     if (!job_t)
         return 0;
     ChrType *t = job_t;
+    if (!job_chr) {  /* stage 1: chr.bin */
+        int r = pack_job_step(&job);
+        if (!r)
+            return 0;
+        if (r > 0 && !chr_same(t, job.out, job.raw)) {
+            job.put(job.out, job.alloc);
+            printf("enemy: %s: chr.bin changed since boot\n", t->name);
+            r = -1;
+        }
+        if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
+            job.put(job.out, job.alloc);
+            job_t = NULL;
+            return 0;
+        }
+        if (r < 0) {
+            job_t = NULL;
+            t->near_d = 1e9f, t->retry = frame + 60;
+            return -1;
+        }
+        job_chr = job.out;
+        char path[64];
+        model_path(path, sizeof path, t);
+        job_arena = mapstream_ready();
+        pack_job_start(&job, path, "model.bin", job_arena ? arena_get : heap_get, job_arena ? arena_put : heap_put);
+        return 0;
+    }
     if (!job_m) {
         int r = pack_job_step(&job);
         if (!r)
             return 0;
         if (r > 0 && t->near_d > UNLOAD_DIST) {  /* walked away meanwhile */
             job.put(job.out, job.alloc);
+            free(job_chr), job_chr = NULL;
             job_t = NULL;
             return 0;
         }
@@ -444,6 +487,7 @@ static int job_poll(void)
             job.put(job.out, job.alloc);
             printf("enemy: %s: model.bin did not load\n", t->name);
         }
+        free(job_chr), job_chr = NULL;
         job_t = NULL;
         t->near_d = 1e9f, t->retry = frame + 60;  /* out of RAM: again in 2 s, not every frame */
         return -1;
@@ -452,18 +496,50 @@ static int job_poll(void)
         return 0;
     unsigned c0 = ticks();
     Model *m = job_m;
-    job_t = NULL, job_m = NULL;
+    void *cb = job_chr;
+    job_t = NULL, job_m = NULL, job_chr = NULL;
     if (model_from(t, gsg, m, job.out, job.raw, job.alloc, job_arena)) {
+        chr_attach(t, cb);
+        type_streamed_in(t);
         printf("enemy: %.5s loaded, RAM free %uK, VRAM free %d, set-up %u ms\n", t->name, enemy_ram_free() >> 10,
                r_vram_avail(gsg), (ticks() - c0) / 294912);
         return 1;
     }
+    free(cb);
     t->near_d = 1e9f, t->retry = frame + 60;
     return -1;
 }
 
+static unsigned fnv1a(const void *p, unsigned n)
+{
+    const unsigned char *b = p;
+    unsigned h = 2166136261u;
+    while (n--)
+        h = (h ^ *b++) * 16777619u;
+    return h;
+}
+
+/* t's chr.bin tail from the whole file cb (the copy streamed in with the model): anims, windows, root motion, ragdoll
+ * bodies; NULL detaches them */
+static void chr_attach(ChrType *t, void *cb)
+{
+    const ChrHdr *h = t->h;
+    t->tail = cb;
+    t->anims = cb ? (const ChrAnim *)((const char *)cb + h->anim_off) : NULL;
+    t->wins = cb ? (const ChrWin *)((const char *)cb + h->win_off) : NULL;
+    t->root = cb ? (const float (*)[3])((const char *)cb + h->root_off) : NULL;
+    t->rag = cb && h->rag_n ? (const RagBody *)((const char *)cb + h->rag_off) : NULL;
+}
+
+/* the chr.bin a type job read is the one load_type saw (the pack did not change under it) */
+static int chr_same(const ChrType *t, const void *cb, unsigned size)
+{
+    return cb && size == t->chr_size && fnv1a(cb, size) == t->chr_hash;
+}
+
 static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
 {
+    (void)gs;
     for (int i = 0; i < ntypes; i++)
         if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
             return &types[i];
@@ -477,35 +553,48 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     unsigned csize = 0, model_raw = pack_entry_size(&pk, "model.bin");
     void *cb = pack_load(&pk, "chr.bin", &csize);
     pack_close(&pk);
+    unsigned hash = cb ? fnv1a(cb, csize) : 0;
     for (int i = 0; cb && i < ntypes; i++)  /* the same character with the same variants in another block: one type */
-        if (!strncmp(types[i].name, name, 8) && types[i].chr_size == csize && !memcmp(types[i].h, cb, csize)) {
+        if (!strncmp(types[i].name, name, 8) && types[i].chr_size == csize && types[i].chr_hash == hash) {
             free(cb);
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || memcmp(h->magic, "DSRC", 4) || h->version != 7 || h->bones > MDL_MAX_BONES || !h->variants) {
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 7 || h->bones > MDL_MAX_BONES ||
+        !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
         return NULL;
     }
+    /* the resident part: header + variants */
+    unsigned head_n = sizeof *h + h->variants * sizeof(ChrVar);
+    char *head = malloc(head_n);
+    if (!head) {
+        printf("enemy: %s: no RAM for its chr.bin header\n", name);
+        free(cb);
+        return NULL;
+    }
+    memcpy(head, h, sizeof *h);
+    memcpy(head + sizeof *h, (const char *)cb + h->var_off, h->variants * sizeof(ChrVar));
     ChrType *t = &types[ntypes];
     memset(t, 0, sizeof *t);
     memcpy(t->name, name, 8);
     t->dir = dir;
     t->chr_size = csize;
+    t->chr_hash = hash;
     t->model_raw = model_raw;
-    ntypes++;  /* its model.bin and textures load once a placement comes near (stream_types) */
-    t->h = h;
-    t->vars = (const ChrVar *)((const char *)cb + h->var_off);
-    t->anims = (const ChrAnim *)((const char *)cb + h->anim_off);
-    t->wins = (const ChrWin *)((const char *)cb + h->win_off);
-    t->root = (const float (*)[3])((const char *)cb + h->root_off);
-    t->rag = h->rag_n ? (const RagBody *)((const char *)cb + h->rag_off) : NULL;
+    ntypes++;  /* its model.bin, chr.bin tail and textures load once a placement comes near (stream_types) */
+    t->h = (const ChrHdr *)head;
+    t->vars = (const ChrVar *)(head + sizeof *h);
     t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
+    chr_attach(t, cb);  /* the speeds from the whole file, once */
     t->walk_speed = loop_speed(t, 200);
     t->run_speed = loop_speed(t, 500);
+    chr_attach(t, NULL);
+    free(cb);
     t->near_d = 1e9f;
-    printf("enemy: %s %u variants, %u anims, RAM free %uK\n", name, h->variants, h->anims, enemy_ram_free() >> 10);
+    printf("enemy: %s %u variants, %u anims, chr.bin %u B (%u resident), RAM free %uK\n", name, t->h->variants,
+           t->h->anims, csize, head_n, enemy_ram_free() >> 10);
     return t;
 }
 
@@ -587,6 +676,21 @@ static int anim_slot(const Enemy *e, int anim, int *full)
     }
     *full = anim;
     return mdl_anim(e->ct->model, anim);
+}
+
+/* t's model and chr.bin tail just came in: actions its characters were given while it was out (an event's special
+ * wait, set when the placement went on) get their anim slot and windows now, at the time they had */
+static void type_streamed_in(ChrType *t)
+{
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (e->ct != t || e->act < 0)
+            continue;
+        int full;
+        e->act_slot = anim_slot(e, e->act, &full);
+        const ChrAnim *ai = anim_info(t, full);
+        e->act_info = ai ? (int)(ai - t->anims) + 1 : 0;
+    }
 }
 
 static void start_action(Enemy *e, int anim, int layer, float blend, int loop)
@@ -741,7 +845,7 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     cc->yaw = e->yaw, cc->radius = e->var->radius, cc->height = e->var->height, cc->team = TEAM_ENEMY;
     cc->hp = cc->hp_max = e->var->hp, cc->def_phys = e->var->def_phys;
     cc->poise_max = e->var->poise;
-    if (t->rag) {  /* + margin for poses reaching past the bind pose (ASSUMED 0.5 m / 0.3 m) */
+    if (t->h->rag_n) {  /* + margin for poses reaching past the bind pose (ASSUMED 0.5 m / 0.3 m) */
         cc->hit_test = hit_test, cc->owner = e;
         cc->reach = t->h->rag_reach + 0.5f, cc->top = t->h->rag_top + 0.3f;
     }
