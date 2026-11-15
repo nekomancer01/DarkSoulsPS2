@@ -241,3 +241,15 @@ void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsig
 }
 
 int gpu_words(void) { return W; }
+
+/* pvs_bake --gpu-probe: 0 (and the renderer on stdout) when a hardware OpenGL 4.6 context comes up, else 1 */
+int gpu_probe(void)
+{
+    if (!egl_up())
+        return 1;
+    const char *ren = (const char *)glGetString(GL_RENDERER);
+    if (!ren || strstr(ren, "llvmpipe") || strstr(ren, "softpipe"))
+        return 1;
+    printf("%s\n", ren);
+    return 0;
+}

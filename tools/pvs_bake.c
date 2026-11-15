@@ -968,6 +968,10 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
 
 int main(int argc, char **argv)
 {
+#ifdef PVS_GPU
+    if (argc == 2 && !strcmp(argv[1], "--gpu-probe"))  /* tools/pvs_gpu_server.py: is there a GPU to bake on? */
+        return gpu_probe();
+#endif
     if (argc < 5) {
         fprintf(stderr, "usage: pvs_bake pvsin.bin dg.bin collision.bin pvs.bin [--res N] [--cell M] [--per-cell N] "
                         "[--cams N] [--cluster M] [--validate N] [--spot e,t,p ...] [--threads N]\n");
