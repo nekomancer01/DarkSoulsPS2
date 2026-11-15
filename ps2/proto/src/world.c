@@ -174,10 +174,20 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 /* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
  * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
  * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_OBJ, E_FX, NENT };
+/* E_DG / E_PVS (WORLD_DG_LITE, default 1; 2026-11-15): the block's draw groups and visibility (dg.bin, pvs.bin) come
+ * with its lite set and stay while it is on (a lean block keeps them: its collision parts' groups), instead of being
+ * read for every block at boot and kept: with 14 blocks they took 3.3 MB of the heap the near-cell arena is cut from
+ * (arena 10752 -> 6592 KB). 0: read at boot as before (a pack whose dg.bin / pvs.bin are not raw does that too). */
+#ifndef WORLD_DG_LITE
+#define WORLD_DG_LITE 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "objects.bin", "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
+/* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
+ * read while the block draws; the draw groups stay, its collision parts' groups) */
+#define LEAN_ENT(e) (((e) >= E_TAB && (e) <= LEAN_E1) || (e) == E_PVS)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
@@ -191,10 +201,10 @@ _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
 /* triangles [first, first + n) of a block's collision.bin want the blocks in load and keep those in keep */
 typedef struct {
     unsigned first;
-    unsigned short n;
-    unsigned char load, keep;
+    unsigned short n, load, keep, pad;  /* world.bin v4: u16 masks (WORLD_MAX 16; v3 had u8 ones and at most 8 blocks) */
 } WorldLink;
-_Static_assert(sizeof(WorldLink) == 8, "WorldLink");
+_Static_assert(sizeof(WorldLink) == 12, "WorldLink");
+_Static_assert(WORLD_MAX <= 16, "world.bin v4 load / keep masks are u16");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 
@@ -400,7 +410,7 @@ int world_init(const char *boot_area)
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
     pack_close(&pk);
     const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || h[1] != 3 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
+    if (!h || memcmp(h, "DSW1", 4) || h[1] != 4 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
         free(wb);
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
@@ -425,6 +435,8 @@ int world_init(const char *boot_area)
         }
         for (unsigned e = 0; e < NENT; e++) {
             if (!pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]))
+                r->off[e] = r->size[e] = 0;
+            if ((e == E_DG || e == E_PVS) && (!WORLD_DG_LITE || !i))  /* (the boot block's are main.c's) */
                 r->off[e] = r->size[e] = 0;
             if (!r->size[e] && !E_OPTIONAL(e) && (i || e == E_TAB)) {
                 printf("world: block %d %s: %s missing or not raw\n", i, tab[i].pack, ENTRIES[e]);
@@ -500,12 +512,13 @@ int world_init(const char *boot_area)
     return 1;
 }
 
-/* WORLD_LITE_DIET: the map tables of block i (E_TAB .. E_TABC) */
+/* WORLD_LITE_DIET: what a lean block of block i lets go (LEAN_ENT: map tables, visibility) */
 static unsigned tab_bytes(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= LEAN_E1; e++)
-        n += (r->size[e] + 127) & ~127u;
+    for (int e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            n += (r->size[e] + 127) & ~127u;
     return n;
 }
 
@@ -633,19 +646,26 @@ void world_systems(GSGLOBAL *gs)
         unsigned n0, n1;
         if (!r->open)
             continue;
+        unsigned h0 = enemy_ram_free();
         unsigned char *p = read_tmp(r, "objects.bin", &n0);
         int no = p ? objects_block_types(gs, i, p) : -1;
         free(p);
+        unsigned h1 = enemy_ram_free();
         p = read_tmp(r, "fx.bin", &n0);
         int nf = p ? fx_block_load(gs, i, p, n0) : -1;
         free(p);
+        unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
         unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
         int ne = p ? enemy_block_types(gs, i, tab[i].pack, p, lua, lua ? (int)n1 : 0) : -1;
         free(lua);
         free(p);
-        printf("world: block %d types: objects %d, effects %d, enemies %d\n", i, no, nf, ne);
-        map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c), kept from boot */
+        unsigned h3 = enemy_ram_free();
+        if (!r->size[E_DG] || !r->size[E_PVS])  /* WORLD_DG_LITE 0, or not raw in the pack: from boot, kept */
+            map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c) */
+        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d\n",
+               i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
+               ((int)h3 - (int)enemy_ram_free()) >> 10);
     }
     if (cur >= 0 && nblk > 1)
         mapstream_arena();  /* now: no enemy model is loaded yet (enemy_init stripped them all) */
@@ -767,6 +787,8 @@ static void turn_on_col(int i)
     if (r->size[E_TABB])
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     mtx_on(i);
+    if (r->size[E_DG] && r->size[E_PVS])
+        map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);  /* WORLD_DG_LITE: from its lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
@@ -919,9 +941,17 @@ static void *lite_alloc(int want, unsigned sz, int *wait);
 static unsigned tab_kb(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= LEAN_E1; e++)
-        n += (r->size[e] + 127) & ~127u;
+    for (int e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            n += (r->size[e] + 127) & ~127u;
     return n >> 10;
+}
+
+static void free_lean(BlockRt *r)
+{
+    for (unsigned e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            free_ents(r, e, e + 1);
 }
 
 static void free_slot(int i)
@@ -954,7 +984,7 @@ static void lean_step(int i)
     BlockRt *r = &rt[i];
     if (r->lean == 1 && r->lean_drain > 0 && (--r->lean_drain <= 0 || warping)) {
         r->lean_drain = 0;
-        free_ents(r, E_TAB, LEAN_E1 + 1);
+        free_lean(r);
         world_stats.pool_used_kb -= tab_kb(r);
         r->tab_gone = 1;
     }
@@ -966,7 +996,8 @@ static int relite_start(int i)
     BlockRt *r = &rt[i];
     if (r->lean_drain > 0 || (r->retry_s > 0 && !warping) || world_stats.reading >= 0)
         return 0;
-    unsigned order[3] = {E_TAB, E_TABB, E_TABC}, n = LEAN_E1 - E_TAB + 1;
+    unsigned order[4] = {E_TAB, E_TABB, E_TABC, E_PVS}, n = LEAN_E1 - E_TAB + 1;
+    order[n++] = E_PVS;
     for (unsigned a = 0; a < n; a++)
         for (unsigned b = a + 1; b < n; b++)
             if (r->size[order[b]] > r->size[order[a]]) {
@@ -980,7 +1011,7 @@ static int relite_start(int i)
         int wait = 0;
         r->blob[e] = lite_alloc(i, sz, &wait);
         if (!r->blob[e]) {
-            free_ents(r, E_TAB, LEAN_E1 + 1);
+            free_lean(r);
             r->retry_s = wait ? 0.1f : WORLD_RETRY_S;
             return 0;
         }
@@ -1005,7 +1036,7 @@ static void relite_step(int i)
         if (res != (int)n) {
             printf("world: block %d tables read %d of %u bytes\n", i, res, n);
             world_stats.fails++;
-            free_ents(r, E_TAB, LEAN_E1 + 1);
+            free_lean(r);
             world_stats.pool_used_kb -= tab_kb(r);
             r->lean = 1, r->tab_gone = 1, r->retry_s = WORLD_RETRY_S;
             return;
@@ -1014,12 +1045,14 @@ static void relite_step(int i)
         if ((r->done += n) == r->size[r->ent])
             r->ent++, r->done = 0;
     }
-    while (r->ent <= LEAN_E1 && !r->size[r->ent])
+    while (r->ent <= E_PVS && (!LEAN_ENT(r->ent) || !r->size[r->ent]))
         r->ent++;
-    if (r->ent > LEAN_E1) {
+    if (r->ent > E_PVS) {
         unsigned t0 = ticks();
         if (r->size[E_TABB])
             map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+        if (r->size[E_DG] && r->size[E_PVS])
+            map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);
         int ok = map_block_init(i, r->blob[E_TAB], NULL, i);
         if (ok)
             map_block_stream_open(i, &r->pk);
@@ -1496,6 +1529,9 @@ static void step(const float *feet, float dt)
     } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen). Their
                * height range too: the Asylum lies over the Burg and Firelink in x / z, and loading all three at once
                * left no room in the near arena (settle looped, 2026-11-02) */
+        if (warping)  /* a warp: only the blocks around the new spot, not what the old spot's floor wanted (a warp
+                       * from Darkroot into the Depths kept two Darkroot blocks wanted and found no slot, 2026-11-15) */
+            wm = km = 0;
         for (int i = 1; i < nblk; i++)
             if (box_d(&tab[i], feet) <= 0.0f && feet[1] >= tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)

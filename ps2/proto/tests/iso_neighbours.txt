@@ -1,0 +1,91 @@
+# The areas next to the Undead Burg as world blocks (2026-11-15, tools/area.py): the rest of the Parish (m10_01_00_00_c),
+# the Depths (m10_00_00_00_a / _b) and Darkroot Garden / Basin (m12_00_00_00_e/_g/_m/_w/_x/_s), on the real disc with
+# enemies on. A spawn into each block (a warp: the frame waits for the blocks as behind DSR's loading screen), a look
+# around, then a walk from the Parish's Darkroot path down into the Darkroot entry block (a seam between two MSBs:
+# the m10_01 ConnectCollision parts h1043B1 / h1048B1 / h1049B1 load m12_00).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_neighbours.txt <out> --iso build/proto.iso --timeout 1200
+# Fails on a hang, an error line, "mapstream: alloc ... FAILED" or too many cells missing in a frame (test-run.py).
+option hud
+option god
+option nodemo
+wait 3
+shot boot
+stats
+# Parish bonfire (block c)
+spawn 86.4 15.0 105.6 0
+wait 4
+shot parish_bonfire
+stats
+spawn 86.4 15.0 105.6 3.14
+wait 2
+shot parish_bonfire_back
+# The walk from the Parish bonfire (block c) down the path to Darkroot and into its entry block (e): tools/navroute.py
+# m10_01_00_00 86.4,15.0,105.6 100,-5,45, then m12_00_00_00 97.9,-5.1,34.9 130,0,70
+# (the walker sticks on the bonfire's objects and at the gate by (90, 86) on the way down: the walk starts below it,
+# 30 m before the seam)
+spawn 87.8 7.6 91.6 3.14
+wait 3
+shot parish_darkroot_path
+stats
+spawn 95.9 6.0 63.8 3.14
+wait 3
+approach 96.4,59.1 0.8 1
+approach 95.5,53.5 0.8 1
+approach 96.5,49.2 0.8 1
+approach 97.2,44.9 0.8 1
+approach 97.9,34.9 0.8 1
+approach 101.1,34.0 0.8 1
+approach 105.1,32.0 0.8 1
+approach 109.5,30.1 0.8 1
+approach 114.1,30.7 0.8 1
+approach 119.2,30.4 0.8 1
+wait 2
+shot darkroot_entry_walk
+stats
+# Darkroot blocks
+spawn 97.9 -5.1 34.9 1.57
+wait 4
+shot darkroot_e
+stats
+spawn 224.0 26.0 64.0 0
+wait 4
+shot darkroot_g
+stats
+spawn 255.5 -3.3 -13.8 0
+wait 4
+shot darkroot_bonfire_m
+stats
+spawn 96.0 -68.9 -160.0 0
+wait 4
+shot darkroot_basin_w
+stats
+spawn 260.0 -12.4 -160.0 0
+wait 4
+shot darkroot_basin_x
+stats
+spawn 200.0 -12.1 -200.0 0
+wait 4
+shot darkroot_south_s
+stats
+# Depths
+spawn -99.1 -57.7 -10.7 3.14
+wait 4
+shot depths_entry_a
+stats
+spawn -118.0 -74.1 12.0 0
+wait 4
+shot depths_bonfire_a
+stats
+spawn -150.0 -78.2 -20.0 0
+wait 4
+shot depths_deep_b
+stats
+# back to the Burg bonfire (block b) and Firelink (boot block)
+spawn 23.1 9.5 -24.4 0
+wait 4
+shot burg_bonfire
+stats
+spawn -48.5 -21.8 -35.5 0
+wait 4
+shot burg_start
+stats
