@@ -501,9 +501,22 @@ static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
  * corner is a component of d or its negation, exactly the value the dot product gives (adding zeros changes no compare) */
 static unsigned box_faces(const float *mn, const float *mx, const float *e)
 {
+    /* box_in_face per face, with the corners' offsets taken once: every FB entry is 0 or +-1, so its dot products are
+     * exactly a signed component (a zero's sign never decides a comparison) */
+    float d[8][3];
+    for (int c = 0; c < 8; c++)
+        d[c][0] = (c & 1 ? mx[0] : mn[0]) - e[0], d[c][1] = (c & 2 ? mx[1] : mn[1]) - e[1], d[c][2] = (c & 4 ? mx[2] : mn[2]) - e[2];
     unsigned m = 0;
-    for (int f = 0; f < 6; f++)
-        m |= (unsigned)box_in_face(mn, mx, e, FB[f]) << f;
+    for (int f = 0; f < 6; f++) {
+        const float *fb = FB[f];
+        int out0 = 1, out1 = 1, out2 = 1, out3 = 1, out4 = 1;
+        for (int c = 0; c < 8; c++) {
+            float x = d[c][0] * fb[3] + d[c][1] * fb[4] + d[c][2] * fb[5], y = d[c][0] * fb[6] + d[c][1] * fb[7] + d[c][2] * fb[8];
+            float z = d[c][0] * fb[0] + d[c][1] * fb[1] + d[c][2] * fb[2];
+            out0 &= z < 0.1f, out1 &= x > z, out2 &= -x > z, out3 &= y > z, out4 &= -y > z;
+        }
+        m |= (unsigned)!(out0 | out1 | out2 | out3 | out4) << f;
+    }
     return m;
 }
 
