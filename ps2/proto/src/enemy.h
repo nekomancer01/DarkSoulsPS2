@@ -7,7 +7,7 @@
 #include <gsKit.h>
 #include "player.h"
 
-#define MAX_ENEMIES 64
+#define MAX_ENEMIES 128  /* slots of the blocks on (64 ran full with the Burg, Parish and Depths blocks on, 2026-11-15) */
 #define ENEMY_REC 40  /* enemies.bin placement record (tools/export_enemies.py) */
 
 /* Spawn every placement whose character pack exists (enemies.bin from the area pack, kept by the caller); loads the
