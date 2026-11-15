@@ -1,5 +1,6 @@
 /* GPU sampling for tools/pvs_bake.c (2026-11-15, build speed): the same cube-map test as its sample(), drawn with OpenGL
- * 4.6 on a headless EGL context (EGL_EXT_platform_device, no window or X server).
+ * 4.5 (+ ARB_shader_draw_parameters) on a headless EGL context (EGL_EXT_platform_device, no window or X server): NVIDIA's
+ * driver, or Mesa's for AMD (radeonsi) and Intel (iris).
  *
  * Per camera and cube face: the occluder chunks write 1 / depth into an R32F image with MAX blending (raster() mode 0:
  * the buffer keeps the nearest surface); then every block-0 chunk drawn from there is rasterised again (conservative
@@ -33,7 +34,8 @@ static size_t cmd_cap, bits_cap;
 static GLint u_occ_e, u_occ_fb, u_test_e, u_test_fb, u_test_cam;
 
 static const char *VS =
-    "#version 460 core\n"
+    "#version 450 core\n"
+    "#extension GL_ARB_shader_draw_parameters : require\n"
     "layout(location = 0) in vec3 pos;\n"
     "uniform vec3 eye;\n"
     "uniform float fb[9];\n"
@@ -45,14 +47,14 @@ static const char *VS =
     "    float y = d.x * fb[6] + d.y * fb[7] + d.z * fb[8];\n"
     "    float z = d.x * fb[0] + d.y * fb[1] + d.z * fb[2];\n"
     "    gl_Position = vec4(x, y, z - 0.2, z);  /* near plane at z = 0.1 (raster()'s), no far plane */\n"
-    "    vunit = unit[gl_BaseInstance];\n"
+    "    vunit = unit[gl_BaseInstanceARB];\n"
     "}\n";
 static const char *FS_OCC =
-    "#version 460 core\n"
+    "#version 450 core\n"
     "layout(location = 0) out float iz;\n"
     "void main() { iz = gl_FragCoord.w; }\n";
 static const char *FS_TEST =
-    "#version 460 core\n"
+    "#version 450 core\n"
     "layout(binding = 0) uniform sampler2D occ;\n"
     "layout(std430, binding = 1) buffer Bits { uint bits[]; };\n"
     "uniform uint cambase;\n"
@@ -98,6 +100,13 @@ static GLuint program(const char *fs)
     return p;
 }
 
+/* PVS_GPU_SOFTWARE=1 (testing only): accept a software renderer (Mesa llvmpipe), to run this code without a GPU */
+static int soft_ok(void)
+{
+    const char *e = getenv("PVS_GPU_SOFTWARE");
+    return e && *e == '1';
+}
+
 static int egl_up(void)
 {
     PFNEGLQUERYDEVICESEXTPROC qd = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
@@ -109,9 +118,9 @@ static int egl_up(void)
     EGLint nd = 0;
     if (!qd(16, dev, &nd) || nd < 1)
         return 0;
-    for (int i = 0; i < nd; i++) {  /* a hardware device first (software renderers list themselves too) */
+    for (int i = 0; i < nd; i++) {  /* hardware devices only (software renderers list themselves too) */
         const char *ext = qs ? qs(dev[i], EGL_EXTENSIONS) : NULL;
-        if (ext && strstr(ext, "EGL_MESA_device_software"))
+        if (ext && strstr(ext, "EGL_MESA_device_software") && !soft_ok())
             continue;
         dpy = gpd(EGL_PLATFORM_DEVICE_EXT, dev[i], NULL);
         EGLint maj, min;
@@ -119,7 +128,7 @@ static int egl_up(void)
             continue;
         if (!eglBindAPI(EGL_OPENGL_API))
             continue;
-        static const EGLint ca[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 6,
+        static const EGLint ca[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 5,
                                     EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
         ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, ca);
         if (ctx == EGL_NO_CONTEXT)
@@ -136,7 +145,7 @@ int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, 
     if (!egl_up())
         return 0;
     const char *ren = (const char *)glGetString(GL_RENDERER);
-    if (!ren || strstr(ren, "llvmpipe") || strstr(ren, "softpipe"))
+    if (!ren || ((strstr(ren, "llvmpipe") || strstr(ren, "softpipe")) && !soft_ok()))
         return 0;
     R = res, W = (int)((nun + 31) / 32), nchunks = nch, c_first = first, c_ntri = ntris;
     if (!(prog_occ = program(FS_OCC)) || !(prog_test = program(FS_TEST)))
@@ -242,13 +251,13 @@ void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsig
 
 int gpu_words(void) { return W; }
 
-/* pvs_bake --gpu-probe: 0 (and the renderer on stdout) when a hardware OpenGL 4.6 context comes up, else 1 */
+/* pvs_bake --gpu-probe: 0 (and the renderer on stdout) when a hardware OpenGL 4.5 context comes up, else 1 */
 int gpu_probe(void)
 {
     if (!egl_up())
         return 1;
     const char *ren = (const char *)glGetString(GL_RENDERER);
-    if (!ren || strstr(ren, "llvmpipe") || strstr(ren, "softpipe"))
+    if (!ren || ((strstr(ren, "llvmpipe") || strstr(ren, "softpipe")) && !soft_ok()))
         return 1;
     printf("%s\n", ren);
     return 0;

@@ -2,12 +2,14 @@
 # tools/pvs_bake.c with tools/pvs_gpu.c), next to the ps2dev build container. NVIDIA's driver libraries are glibc
 # builds and the ps2dev image is Alpine (musl), so the GPU can not be used from that one. The driver itself is not in
 # the image: podman / docker put the host's in when the container starts with the GPU (CDI, nvidia-container-toolkit:
-# --device nvidia.com/gpu=all). Without one the build runs every bake in the main container on the CPU, as before.
+# --device nvidia.com/gpu=all). AMD and Intel GPUs use Mesa from the image (radeonsi / iris, OpenGL 4.6) through
+# /dev/dri. Without one the build runs every bake in the main container on the CPU, as before.
 #   gcc + libc6-dev              builds pvs_bake from the checkout on first use
 #   libegl-dev libgl-dev libopengl-dev   EGL / OpenGL headers and the glvnd dispatch libraries (-lEGL -lOpenGL)
+#   libegl-mesa0 libgl1-mesa-dri  Mesa's EGL and its GPU drivers (AMD radeonsi, Intel iris) for /dev/dri
 #   libgomp1                     OpenMP (pvs_bake's CPU parts)
 #   python3                      the spool server
 FROM docker.io/library/debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libgomp1 libegl-dev libgl-dev \
-        libopengl-dev python3 && rm -rf /var/lib/apt/lists/*
+        libopengl-dev libegl-mesa0 libgl1-mesa-dri python3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

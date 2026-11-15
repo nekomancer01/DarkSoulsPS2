@@ -21,8 +21,9 @@
 #   --syms       keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
 #   --no-gpu     bake the occlusion data on the CPU even when the container engine can pass an NVIDIA GPU through
 #                (DSR_GPU=0 too). By default a second small container (tools/iso-builder/Dockerfile.gpu) runs the
-#                bakes on the GPU when there is one: podman needs the NVIDIA container toolkit's CDI spec
-#                (nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml), docker its --gpus support.
+#                bakes on the GPU when there is one. NVIDIA: podman needs the NVIDIA container toolkit's CDI spec
+#                (nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml), docker its --gpus support. AMD / Intel:
+#                Mesa in that container, through /dev/dri (this user needs the render or video group).
 #
 # Steps: fetch the source (unless run from a checkout) -> pull ps2dev/ps2dev and build the builder image on it once ->
 # make -C ps2/proto (exports the game data into the build dir, builds the ELF) -> make iso (tools/ps2-iso.sh) -> copy build/proto.iso to --out.
@@ -152,28 +153,47 @@ else
     if [ "$GPU" != 0 ]; then
         GDF=$SRC/tools/iso-builder/Dockerfile.gpu
         GIMG=darksoulsps2-gpu:$(sha256sum "$GDF" | cut -c1-12)
-        if [ "$ENGINE" = docker ]; then GDEV=(--gpus all); else GDEV=(--device nvidia.com/gpu=all); fi
-        if "$ENGINE" image inspect "$GIMG" >/dev/null 2>&1 ||
-            { say "building the GPU bake container (first run only)"; "$ENGINE" build -t "$GIMG" -f "$GDF" "$SRC/tools/iso-builder"; }; then
-            GRUN=(run -d --rm --init --security-opt label=disable -e HOME=/tmp "${GDEV[@]}" -v "$SRC:/src" -v "$BUILD:/build" -w /src)
-            [ "$ENGINE" = docker ] && GRUN+=(--user "$(id -u):$(id -g)")
-            mkdir -p "$BUILD/pvs-gpu"
-            rm -f "$BUILD/pvs-gpu/ready" "$BUILD/pvs-gpu/nogpu"
-            if GPU_CT=$("$ENGINE" "${GRUN[@]}" "$GIMG" python3 -I /src/tools/pvs_gpu_server.py /build/pvs-gpu 2>/dev/null); then
-                trap '"$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true' EXIT
-                for _ in $(seq 120); do  # its first run compiles pvs_bake (a few seconds)
-                    [ -f "$BUILD/pvs-gpu/ready" ] || [ -f "$BUILD/pvs-gpu/nogpu" ] || ! "$ENGINE" container inspect "$GPU_CT" >/dev/null 2>&1 && break
-                    sleep 0.5
-                done
-            fi
-            if [ -f "$BUILD/pvs-gpu/ready" ]; then
-                say "occlusion bakes on the GPU: $(head -1 "$BUILD/pvs-gpu/ready")"
-                RUN+=(-e DSR_PVS_SPOOL=/build/pvs-gpu)
+        # the ways to pass a GPU in, tried in turn: NVIDIA (podman: CDI, docker: --gpus), then the DRM render nodes
+        # (AMD / Intel through Mesa; podman keeps this user's video / render groups for them)
+        GDEVS=()
+        if [ -e /dev/nvidiactl ]; then
+            if [ "$ENGINE" = docker ]; then GDEVS+=("--gpus all"); else GDEVS+=("--device nvidia.com/gpu=all"); fi
+        fi
+        if ls /dev/dri/renderD* >/dev/null 2>&1; then
+            if [ "$ENGINE" = docker ]; then
+                G="--device /dev/dri"
+                for g in video render; do getent group $g >/dev/null && G+=" --group-add $(getent group $g | cut -d: -f3)"; done
+                GDEVS+=("$G")
             else
-                echo "no GPU for the occlusion bakes (needs an NVIDIA GPU passed through: see --no-gpu in --help): baking on the CPU"
+                GDEVS+=("--device /dev/dri --group-add keep-groups")
+            fi
+        fi
+        if [ ${#GDEVS[@]} -gt 0 ] && { "$ENGINE" image inspect "$GIMG" >/dev/null 2>&1 ||
+            { say "building the GPU bake container (first run only)"; "$ENGINE" build -t "$GIMG" -f "$GDF" "$SRC/tools/iso-builder"; }; }; then
+            mkdir -p "$BUILD/pvs-gpu"
+            for GDEV in "${GDEVS[@]}"; do
+                rm -f "$BUILD/pvs-gpu/ready" "$BUILD/pvs-gpu/nogpu"
+                # shellcheck disable=SC2206
+                GRUN=(run -d --rm --init --security-opt label=disable -e HOME=/tmp $GDEV -v "$SRC:/src" -v "$BUILD:/build" -w /src)
+                [ "$ENGINE" = docker ] && GRUN+=(--user "$(id -u):$(id -g)")
+                if GPU_CT=$("$ENGINE" "${GRUN[@]}" "$GIMG" python3 -I /src/tools/pvs_gpu_server.py /build/pvs-gpu 2>/dev/null); then
+                    trap '"$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true' EXIT
+                    for _ in $(seq 120); do  # its first run compiles pvs_bake (a few seconds)
+                        [ -f "$BUILD/pvs-gpu/ready" ] || [ -f "$BUILD/pvs-gpu/nogpu" ] || ! "$ENGINE" container inspect "$GPU_CT" >/dev/null 2>&1 && break
+                        sleep 0.5
+                    done
+                fi
+                [ -f "$BUILD/pvs-gpu/ready" ] && break
                 [ -n "$GPU_CT" ] && "$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true
                 GPU_CT=
-            fi
+            done
+        fi
+        if [ -n "$GPU_CT" ] && [ -f "$BUILD/pvs-gpu/ready" ]; then
+            say "occlusion bakes on the GPU: $(head -1 "$BUILD/pvs-gpu/ready")"
+            RUN+=(-e DSR_PVS_SPOOL=/build/pvs-gpu)
+        else
+            echo "no GPU for the occlusion bakes (an NVIDIA GPU with the container toolkit, or an AMD / Intel one through /dev/dri: see --no-gpu in --help): baking on the CPU"
+            GPU_CT=
         fi
     fi
     "$ENGINE" "${RUN[@]}" "$IMG" \

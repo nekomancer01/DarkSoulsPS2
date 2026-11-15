@@ -862,7 +862,7 @@ static int gpu_setup(int res)
     for (unsigned i = 0; i < nch; i++)
         g_cf[i] = ch[i].first, g_cn[i] = ch[i].ntri, g_cu[i] = ch[i].unit < nun ? ch[i].unit : 0;
     if (!gpu_init(res, (const float *)tri, ntri, g_cf, g_cn, g_cu, nch, nun)) {
-        printf("pvs_bake: no GPU (OpenGL 4.6 over EGL): sampling on the CPU\n");
+        printf("pvs_bake: no GPU (OpenGL 4.5 over EGL): sampling on the CPU\n");
         return 0;
     }
     return 1;

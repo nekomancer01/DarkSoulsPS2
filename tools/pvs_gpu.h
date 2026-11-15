@@ -1,6 +1,6 @@
-/* tools/pvs_gpu.c: pvs_bake's cube-map sampling on the GPU (OpenGL 4.6 over headless EGL) */
+/* tools/pvs_gpu.c: pvs_bake's cube-map sampling on the GPU (OpenGL 4.5 over headless EGL: NVIDIA, or Mesa for AMD / Intel) */
 #include <stdint.h>
-/* 1 when a hardware OpenGL 4.6 context is up: verts = ntri triangles x 9 floats (world space), per chunk its first
+/* 1 when a hardware OpenGL 4.5 context is up: verts = ntri triangles x 9 floats (world space), per chunk its first
  * triangle, triangle count and unit (all kept by the caller) */
 int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, const unsigned *ntris,
              const unsigned *unit, unsigned nch, unsigned nun);
