@@ -18,6 +18,7 @@
  *
  * name                | default  | kind     | CI                                            | where         | what
  * ------------------- | -------- | -------- | --------------------------------------------- | ------------- | ----
+ * AI_PERCEPT          | 1        | fallback | -DAI_PERCEPT=0                                | ai.c          | DSR sight (FUN_140618680: eye cones as half-angles, sight ray every 0.25 s) and hearing (FUN_140623d10); 0 = flat eye_angX cone, no sight line, hearing capped at ear_dist
  * AREA                | "m10_02_00_00" | make | -                                          | main.c        | the area pack (make MAP=)
  * CHR_DIR             | ""       | make     | -                                             | pack.h        | the area's enemy / common pack folder (make MAP=)
  * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | model.h       | largest skeleton (make CHR_BONES=61: one VU1 palette window, the old path)
