@@ -695,10 +695,72 @@ static void set_hit(Set *s, const EvEnt *e, int on)
     s->ent_off[e - s->ent] = !on;
 }
 
+/* EV_ENT_KEEP (default 1; -DEV_ENT_KEEP=0 = the old behaviour): what the events switched, kept by entity id for the
+ * blocks that are not on. A world block of a map whose events already run elsewhere turns on with entities only
+ * (event_block_on_split), so the constructors that disabled its objects ran before its entity table was there: the
+ * Burg's co-op checkpoint walls (11010000's 2005[03] list, e.g. 1011994 in the aqueduct doorway) stayed solid when
+ * the Parish rest block m10_01_00_00_c turned on first, from the Firelink stairs (the 14-block world, 2026-11-15), and
+ * the player could not walk from the aqueduct into the Burg. DSR holds a whole map, so a switch reaches every part of
+ * it; here each block that turns on gets the switches of its entities replayed (and a block that went off and came
+ * back keeps them too). */
+#ifndef EV_ENT_KEEP
+#define EV_ENT_KEEP 1
+#endif
+#define EV_KEEP_MAX 512
+static struct { s32 id; u8 kind, on, pad[2]; } kept[EV_KEEP_MAX];
+static int nkept;
+
+static void keep_entity(s32 id, int on, int kind)
+{
+    if (!EV_ENT_KEEP)
+        return;
+    int i;
+    for (i = 0; i < nkept && !(kept[i].id == id && kept[i].kind == kind); i++)
+        ;
+    if (i == nkept) {
+        if (nkept == EV_KEEP_MAX) {
+            static int warned;
+            if (!warned++)
+                printf("EVT entity switches: table full (%d), later ones are not kept for blocks still to come\n",
+                       EV_KEEP_MAX);
+            return;
+        }
+        nkept++;
+    }
+    kept[i].id = id, kept[i].kind = (u8)kind, kept[i].on = (u8)(on != 0);
+}
+
+static void set_hit(Set *s, const EvEnt *e, int on);
+
+/* a set that just loaded: the kept switches of its entities, in the order they were made */
+static void replay_kept(Set *s)
+{
+    int n = 0;
+    for (int i = 0; i < nkept; i++) {
+        const EvEnt *e = find_ent(s, kept[i].id);
+        int hit = 0;
+        for (; e && e < s->ent + s->nent && e->id == kept[i].id; e++) {
+            if (kept[i].kind && e->kind != kept[i].kind)
+                continue;
+            if (e->kind == ENT_COLLISION)
+                set_hit(s, e, kept[i].on);
+            else
+                s->ent_off[e - s->ent] = !kept[i].on;
+            hit = 1;
+        }
+        if (hit && (kept[i].kind == ENT_OBJECT || !kept[i].kind))
+            ev_obj_enable(kept[i].id, kept[i].on);  /* its breakable / animated object, placed with the block */
+        n += hit;
+    }
+    if (n)
+        printf("EVT block %d: %d entity switches made before it turned on\n", s->block, n);
+}
+
 /* Every record of an entity id in every set (objects / hits / SFX / map parts) */
 static int set_entity(int own, s32 id, int on, int kind)
 {
     int n = 0;
+    keep_entity(id, on, kind);
     for (int k = 0; k < EV_SETS; k++) {
         Set *s = &sets[k];
         if (!s->blob)
@@ -1219,6 +1281,7 @@ void event_block_on_split(int block, const void *blob, const void *hdr, const vo
     if (!blob || k == EV_SETS || !inst || !load_set(&sets[k], blob, block, hdr, mid, mid_off))
         return;
     Set *s = &sets[k];
+    replay_kept(s);
     for (int j = 1; j < EV_SETS; j++)  /* another block of the same map runs its events: this one adds entities */
         if (j != k && sets[j].blob && sets[j].live && !memcmp(sets[j].h->map, s->h->map, 4))
             s->live = 0;
