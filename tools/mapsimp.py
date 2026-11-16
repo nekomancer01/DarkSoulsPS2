@@ -340,6 +340,8 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         far_lv = out == "tris_far"  # the coarse level (shown from RES_NEAR_R out)
         MX.mx_simp_shape_cost(mapcfg.SIMPLIFY_SHAPE_K_FAR if far_lv else mapcfg.SIMPLIFY_SHAPE_K_NEAR)
         MX.mx_simp_place(1 if far_lv and mapcfg.SIMPLIFY_PLACE else 0)
+        # the cuts' seam pass: the same settings for both levels, so both lock the same thinner cuts
+        MX.mx_simp_seams(mapcfg.SIMPLIFY_SEAM_PX if cells else 0.0, mapcfg.NEAR, mapcfg.SIMPLIFY_ENV_NEAR, mapcfg.SIMPLIFY_SHAPE_K_NEAR)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
                                      eps_far, budget, nav_s, sat=sat, env_pad=env_pad, far_shape=far_shape)
@@ -349,6 +351,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_shape(0.0)
             MX.mx_simp_shape_cost(0.0)
             MX.mx_simp_place(0)
+            MX.mx_simp_seams(0.0, 1.0, 0.0, 0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
     if mapcfg.SIMPLIFY_GUARD or env_pad or mapcfg.SIMPLIFY_ENV_NEAR:  # the fallback is simplify.py's reference collapse only
@@ -1033,6 +1036,11 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         MX.mx_simp_stats(h, a(st))
         full, ngroups, njobs = (int(x) for x in st)
         print(f"simplify: {njobs} jobs, run in C in {time.time() - t0:.1f} s", flush=True)
+        if cells and mapcfg.SIMPLIFY_SEAM_PX > 0:
+            ss = np.zeros(2, i64)
+            MX.mx_simp_seam_stats(h, a(ss))
+            print(f"simplify: seam pass ({mapcfg.SIMPLIFY_SEAM_PX:g} px): {int(ss[0])} triangles along {int(ss[1])} "
+                  f"cut positions collapsed before the cell cut")
         dup = np.zeros(max(nm, 1), np.uint8)
         MX.mx_simp_dup(h, a(dup))
         for mi in np.flatnonzero(dup[:nm]).tolist():

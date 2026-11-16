@@ -255,6 +255,13 @@ SIMPLIFY_SHAPE_K_FAR = float(os.environ.get("SIMPLIFY_SHAPE_K_FAR", 0.1))
 # old export): a collapse may move the merged vertex to where the quadric error is smallest (minimiser near the edge,
 # else the best point on the edge), outlines only along themselves, cell cuts never. The near level keeps source
 # vertices (exact UVs up close). Burg block b's coarse level: -3 to -4 % triangles at the same error. TECH_DEBT map-48
+# Seam pass (tools/mapx/simpmesh.c seam_pass; 0: off, the old export): before the cell cut, each welded group's
+# vertices on the CHUNK_GRID cuts are simplified once (all others locked) at this error from the near distance, and
+# both levels lock the thinner cuts that leave (the same pass in both calls: no cracks between a near cell and its
+# coarse neighbour). Without it the cuts keep full source detail at every level (Burg block b: 15 % of the coarse
+# level at 24 px). 6 px: the near level's own base error, so a cut is never finer or coarser than the near cells.
+# ASSUMED, TECH_DEBT map-49
+SIMPLIFY_SEAM_PX = float(os.environ.get("SIMPLIFY_SEAM_PX", 6.0))
 SIMPLIFY_PLACE = os.environ.get("SIMPLIFY_PLACE", "1") == "1"
 SIMPLIFY_VALIDATE = SIMPLIFY_GUARD and os.environ.get("SIMPLIFY_VALIDATE", "1") == "1"
 SIMPLIFY_VALIDATE_TOL = float(os.environ.get("SIMPLIFY_VALIDATE_TOL", 0))  # metres; 0: the level's envelope (else 0.25)

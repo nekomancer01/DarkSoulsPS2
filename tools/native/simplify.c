@@ -460,6 +460,18 @@ static double tri_q(v3 a, v3 b, v3 c, double cross_len) {  /* 4 sqrt(3) area / s
  * step records the move (result plv / plx), so any prefix of the log replays with the positions it had. */
 static int g_place = 0;
 void simplify_set_place(int on) { g_place = on != 0; }
+/* Seam mode (libmapx's seam pass, simpmesh.c; 0: off): `locked` holds every vertex it names, not only those on open
+ * borders, and a collapse must carry every attribute of u over to one of v's (torn area 0), so its result is the same
+ * meshes with fewer triangles and no wedge moved: the caller rewrites the source triangles with it. */
+static int g_seam = 0;
+void simplify_set_seam(int on) { g_seam = on != 0; }
+/* the per-run rules as a block, so a caller can run one job with others and put them back */
+void simplify_get_rules(double *r) {
+    r[0] = g_env_pad, r[1] = g_qmin, r[2] = g_flip_cos, r[3] = g_shape_tol, r[4] = g_shape_k, r[5] = g_place, r[6] = g_seam;
+}
+void simplify_set_rules(const double *r) {
+    g_env_pad = r[0], g_qmin = r[1], g_flip_cos = r[2], g_shape_tol = r[3], g_shape_k = r[4], g_place = (int)r[5], g_seam = (int)r[6];
+}
 
 static v3 place(S *s, int u, int v, int nopl) {
     v3 pv = s->pos[v], pu = s->pos[u];
@@ -516,6 +528,7 @@ static void push(S *s, heap *h, int u, int v, int nopl) {
     double torn, dloc;
     v3 pv = place(s, u, v, nopl);
     if (!attr_map(s, u, v, pv, &torn, &dloc)) return;
+    if (g_seam && torn > 0) return;
     double w = s->Q[u][10] + s->Q[v][10];
     double e = w > 0 ? (qeval(s->Q[u], pv) + qeval(s->Q[v], pv) + s->seam_k2 * torn) / w : 0.0;
     double b = pmax(s->dlocv > 0 ? s->errm[v] + s->dlocv : s->errm[v], s->errm[u] + dloc);
@@ -699,7 +712,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         qadd(s.Q[b], q);
     }
     for (int p = 0; p < nv; p++)
-        if (s.bnb[p].n && (s.bnb[p].n > 2 || (locked && locked[p]))) s.lock[p] = 1;
+        if ((s.bnb[p].n || g_seam) && (s.bnb[p].n > 2 || (locked && locked[p]))) s.lock[p] = 1;
     s.errm = calloc(nv ? nv : 1, sizeof(double));
     s.alost = calloc(nv ? nv : 1, sizeof(double));
     s.ver = calloc(nv ? nv : 1, sizeof(int));
@@ -722,6 +735,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         double torn, dloc;
         v3 px = place(&s, u, v, he.nopl);
         if (!attr_map(&s, u, v, px, &torn, &dloc) || !s.removed.n) continue;
+        if (g_seam && torn > 0) continue;
         int moved = px.x != s.pos[v].x || px.y != s.pos[v].y || px.z != s.pos[v].z;
         /* link condition */
         s.opp.n = 0;
