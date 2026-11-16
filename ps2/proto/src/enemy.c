@@ -791,6 +791,7 @@ static void think_of(AiThink *th, const ChrVar *v)
     th->npc = v->npc, th->think = v->think, th->logic = v->logic, th->battle = v->battle;
     th->eye_dist = v->eye_dist, th->eye_ang_x = v->eye_ang_x, th->eye_ang_y = v->eye_ang_y;
     th->ear_dist = v->ear_dist, th->ear_cut = v->ear_cut;
+    th->nose_dist = v->nose_dist;  /* bosses 100 m (Taurus, Gargoyles, Asylum Demon): aware without a sight line */
     th->near_d = v->near_d, th->mid_d = v->mid_d, th->far_d = v->far_d, th->out_d = v->out_d;
     th->sight_forget = v->sight_forget, th->sound_forget = v->sound_forget;
     th->goal_action_caution = v->goal_action_caution, th->goal_id_caution = v->goal_id_caution;
