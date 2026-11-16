@@ -15,8 +15,10 @@
 #ifndef OMIT_H
 #define OMIT_H
 
+#include "cvar.h"
+
 #ifndef CHR_OMIT
-#define CHR_OMIT 1  /* 0 = every active character updates every frame (the old path) */
+#define CHR_OMIT cv_CHR_OMIT  /* runtime switch, default 1 (src/cvar.h); 0 = every active character every frame */
 #endif
 #ifndef OMIT_FULL_N
 #define OMIT_FULL_N 6   /* in-view characters at level 0 (exe +0x2c) */

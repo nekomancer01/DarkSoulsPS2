@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "cvar.h"
 #include "lpass.h" /* logic pass breakdown (Burg plan B6) */
 #include "progress.h"
 #include "model.h"
@@ -1247,7 +1248,7 @@ static void root_at(const Enemy *e, float t, float *o)
 enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
 /* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
 #ifndef ENEMY_WALLS
-#define ENEMY_WALLS 1
+#define ENEMY_WALLS cv_ENEMY_WALLS  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
@@ -1302,7 +1303,7 @@ static int wall_between(const Enemy *e, const float p[3])
  * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
  * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
 #ifndef SEP_CARRY
-#define SEP_CARRY 1
+#define SEP_CARRY cv_SEP_CARRY  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 

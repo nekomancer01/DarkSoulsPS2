@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "texcache.h"
+#include "cvar.h"
 #include "vu1.h"
 #include "render.h"
 
@@ -225,7 +226,7 @@ static int in_frame;
  * distance (and no near levels) for the next TC_PRESS_FRAMES frames: with more near detail kept in view (the cube-grid
  * stack, report3 burg_c 2026-11-09) the 896 KB pool ran full for ~4 s and 510 batches went undrawn. ASSUMED values */
 #ifndef TC_PRESS
-#define TC_PRESS 1
+#define TC_PRESS cv_TC_PRESS  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define TC_PRESS_PCT 90
 #define TC_PRESS_FRAMES 60
