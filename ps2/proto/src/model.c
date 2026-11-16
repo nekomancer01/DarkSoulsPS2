@@ -36,7 +36,15 @@ typedef struct {
 /* VU1 skinning streams (vu1skin2.vsm), built once per model: unindexed batches of <= VU1_SKIN_TRIS triangles per
  * group, each batch one prebuilt VIF packet (vu1_skin_packet, renderer plan PR 8) holding its streams */
 #define MAX_TEX 12  /* the Warrior: 7 armour / weapon / skin + back of head, face, eyes, hair */
-#define MAX_ANIMS 64
+/* The anim table is sized per model from its header (the player carries ~100, enemy types up to export_chr.py's
+ * MAX_ANIMS): a fixed 64 dropped every player anim past the 64th at load (they drew in the bind pose) */
+typedef struct MdlAnim {
+    int id, frames, fps, nrot, ntra, stride;
+    const PackedBone *data;  /* full anims: frames * bones; compact: the base pose */
+    const unsigned char *rot, *tra;
+    const unsigned char *fdata;
+    unsigned a_off, a_len;  /* the anim's bytes in the model.bin (mdl_compact copies them) */
+} MdlAnim;
 
 struct Model {
     const unsigned char *bin;
@@ -47,14 +55,9 @@ struct Model {
     const unsigned short *tris;
     const Group *groups;
     const float *uvs;  /* [tri][3][2] texels */
-    /* compact anims (tools/export_chr.py append_compact_anims): base pose + per-frame data of the moving bones only */
-    struct {
-        int id, frames, fps, nrot, ntra, stride;
-        const PackedBone *data;  /* full anims: frames * bones; compact: the base pose */
-        const unsigned char *rot, *tra;
-        const unsigned char *fdata;
-        unsigned a_off, a_len;  /* the anim's bytes in the model.bin (mdl_compact copies them) */
-    } anims[MAX_ANIMS];
+    /* compact anims (tools/export_chr.py append_compact_anims): base pose + per-frame data of the moving bones only;
+     * hdr->anims entries (heap, with apg) */
+    MdlAnim *anims;
     int nanims;
     GSTEXTURE tex[MAX_TEX];
     int ntex;
@@ -98,7 +101,7 @@ struct Model {
     unsigned char build_slot[256];  /* skin_step: skeleton bone -> palette slot after window win_built */
     unsigned hide;  /* group flag bits not drawn (model.h MDL_HIDE_*) */
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
-    void *apg[MAX_ANIMS];  /* MDL_ANIM_PAGES: the pages the anims were copied into */
+    void **apg;  /* MDL_ANIM_PAGES: the pages the anims were copied into (one per anim at most) */
     int napg;
 };
 
@@ -388,6 +391,11 @@ static Model *load_begin(const void *blob, const Model *tex)
     Model *m = calloc(1, sizeof *m);
     if (!m)
         return NULL;
+    unsigned na = hdr->anims ? hdr->anims : 1;
+    if (!(m->anims = calloc(na, sizeof *m->anims)) || !(m->apg = calloc(na, sizeof *m->apg))) {
+        free(m->anims), free(m);
+        return NULL;
+    }
     m->texv = m->tex, m->texcap = MAX_TEX;
     m->bin = blob;
     m->hdr = hdr;
@@ -401,7 +409,7 @@ static Model *load_begin(const void *blob, const Model *tex)
     if (tex && tex->te && !hdr->textures)  /* groups index the shared texture model's textures */
         m->te = tex->te, m->nte = tex->nte;
     const unsigned char *p = m->bin + hdr->anim_off;
-    for (m->nanims = 0; m->nanims < (int)hdr->anims && m->nanims < MAX_ANIMS; m->nanims++) {
+    for (m->nanims = 0; m->nanims < (int)hdr->anims; m->nanims++) {
         const unsigned *h = (const unsigned *)p;
         typeof(m->anims[0]) *a = &m->anims[m->nanims];
         a->a_off = (unsigned)(p - m->bin);
@@ -556,7 +564,7 @@ static int compact(Model *m, unsigned blob_size)
         const Header *h = m->hdr;
         unsigned np = (h->bones * 2 + 3) & ~3u, nr = h->bones * sizeof(PackedBone), ng = h->groups * sizeof(Group);
         /* page plan: anims in order, a page closes when the next one does not fit */
-        unsigned psz[MAX_ANIMS], npg = 0, cur = 0;
+        unsigned psz[m->nanims], npg = 0, cur = 0;
         for (int i = 0; i < m->nanims; i++) {
             unsigned n = (m->anims[i].a_len + 15) & ~15u;
             if (!npg || cur + n > MDL_ANIM_PAGE)
@@ -664,6 +672,7 @@ void mdl_free(Model *m)
     free(m->te_own);
     if (m->tex_own)
         free(m->texv);
+    free(m->anims), free(m->apg);
     free(m);
 }
 

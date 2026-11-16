@@ -662,7 +662,8 @@ static void update_requests(Player *p)
     /* hold requests (FUN_140388790), behind the stamina gate of FUN_140388020. Slot 21 (guard) latches once its
      * button has been down longer than one frame inside a hold window; the others on a press inside one. The held
      * result (f220 / f243) needs the slot's accept window too. ASSUMED (TECH_DEBT esd-8): the latch of slots other
-     * than 21 drops when the button is released (the exe's reset of ctx+0x3F4 for them was not found). */
+     * than 21 lasts until the next ESD anim starts, as the request latches (FUN_140388670); dropping it on release
+     * lost every tapped R2 combo (the second R2 never reached its accept window) */
     if (p->stamina < 1)
         return;
     for (int i = 0; i < REQ_SLOTS; i++) {
@@ -673,14 +674,13 @@ static void update_requests(Player *p)
                 p->hold_timer21 = 0, p->hold_latch[i] = 0;
             else if ((p->hold_timer21 += p->frame_dt) > p->frame_dt)
                 p->hold_latch[i] = 1;
-        } else if (!p->pad_held[i]) {
-            p->hold_latch[i] = 0;
         }
         if (p->hold_en[i] && p->trig[i])
             p->hold_latch[i] = 1;
         if (p->hold_acc[i] && p->hold_latch[i])
             p->held[i] = 1;
     }
+
 }
 
 void player_update(Player *p, const Input *in, float cam_yaw, float dt)
@@ -1085,7 +1085,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         break;
     case 112:   /* ctx+0x49D, set by FUN_140388790: some request is actionable now (f102 / f108 per slot) */
         for (int i = 0; i < REQ_SLOTS; i++)
-            v = v || requested(p, i);
+            v = v || requested(p, i) || p->held[i];  /* ... or ctx+0x2E1 (a held request: R2 combos, guard) */
         break;
     case 207: v = 1; break;      /* GetWeaponHoldStyle: one-handed */
     case 211: v = p->ctx_1dc & 1; break;
@@ -1222,7 +1222,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
         start_anim(p, st, anim, anims[anim].stamina);
         /* a new ESD anim clears the buffered requests unless ctx+0x1DC bit 19 is set (FUN_140388670) */
         if (!(p->ctx_1dc & 0x80000))
-            memset(p->latch, 0, sizeof p->latch);
+            memset(p->latch, 0, sizeof p->latch), memset(p->hold_latch, 0, sizeof p->hold_latch);
         return 1;
     }
     case 101:   /* SetLocomotionEnabled (ChrCtrl+0x1B0) */
