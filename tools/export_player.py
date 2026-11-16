@@ -91,6 +91,8 @@ ANIMS = [
     # Item use (Square, group 1 states 163 / 164 for goodsUseAnim 10 = Estus): c1_1 6209 (reach, layer 5), then
     # c1_3 6409 (drink; TAE 64 at 1.23 s = the heal)
     ("ITEM_REACH_10", "a00", 6209, False), ("ITEM_USE_10", "a00", 6409, False),
+    # Weapon switch (d-pad left / right: group 1 states 218 / 217, c1_4(2, 80 / 81) on layer 4)
+    ("SWITCH_L", "a00", 80, False), ("SWITCH_R", "a00", 81, False), ("SWITCH_END", "a00", 86, False),  # 221
     ("ROLL_B", "a00", 701, False), ("ROLL_L", "a00", 702, False), ("ROLL_R", "a00", 703, False),
     ("ROLL_M_F", "a00", 710, False), ("ROLL_M_B", "a00", 711, False), ("ROLL_M_L", "a00", 712, False),
     ("ROLL_M_R", "a00", 713, False), ("ROLL_H_F", "a00", 720, False), ("ROLL_H_B", "a00", 721, False),
