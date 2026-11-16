@@ -41,6 +41,7 @@
  * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
  * MS_READ_BY_CLASS    | 0        | fallback | -DMS_READ_BY_CLASS=1                          | mapstream.c     | 1 = hard-tier reads go out by class, not nearest first
+ * MS_ORPHAN           | 1        | fallback | -DMS_ORPHAN=0                                 | mapstream.c   | a closing block's reads are cancelled without waiting; 0 = mapstream_close waits for them
  * MS_LEND_ALL_DROP    | 0        | fallback | -DMS_LEND_ALL_DROP=1                          | msarena.c       | 1 = a pool allocation drops every lent item, not only those in its way
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream_i.h   | arena size
@@ -131,6 +132,8 @@
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
+ * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
+ * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
  * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move
@@ -143,6 +146,8 @@
  * COL_SCAN            | 1        | fallback | -DCOL_SCAN=0                                  | collision.c   | box test before the lookups
  * PUSH2_CELLS         | 1        | fallback | -DPUSH2_CELLS=0                               | collision.c   | push-out v2 by cells
  * NAV_QREJ            | 1        | fallback | -DNAV_QREJ=0                                  | nav.c         | integer box reject before barycentrics
+ * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
+ * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone
  * ESD_TRACE           | off      | host     | -                                             | esd.c         | ESD trace hook (native test harness)
  * OBJ_HOST            | off      | host     | -                                             | objects.c     | piece bodies for the host test harness
  *
