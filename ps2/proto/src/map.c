@@ -1,4 +1,5 @@
 #include "map_i.h"
+#include "testscript.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -1245,6 +1246,24 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
 /* Block k in map_draw: its cells in view, each at the level that is loaded (near, coarse or its horizon), with what
  * the later passes draw collected in fxl / hzfade / nrfade and the frame's counters in lg. A block that is kept only
  * for its horizon draws that alone. Returns the triangles drawn. */
+/* MAP_POP_LOG (default on in test runs; 0 = off): one line per pop-in (a cell that swaps coarse -> near in view
+ * after waiting): its in-view wait, the whole wait, its distance, why it waited (mapstream_why per in-view draw:
+ * unseen / refused / plan cut / disc / settle), and the draws since the last settle (a warp, a bonfire, a death) */
+#ifndef MAP_POP_LOG
+#define MAP_POP_LOG 1
+#endif
+static unsigned short pop_settle;  /* pop_fr of the last draw during a settle */
+static unsigned pop_lines;
+static void pop_note(int k, int ci, const Cell *ce, float d, unsigned w)
+{
+    if (!MAP_POP_LOG || !test_active() || pop_lines >= 200)
+        return;
+    pop_lines++;
+    printf("map: pop cell %d.%d at %.1f m: waited %u draws in view (%u in all), unseen %u refused %u cut %u disc %u "
+           "settle %u, %u draws after a settle\n", k, ci, (double)d, ce->win, w, ce->why[0], ce->why[1], ce->why[2],
+           ce->why[3], ce->why[4], (unsigned)(unsigned short)(pop_fr - pop_settle));
+}
+
 static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
 {
     MapInst *m;
@@ -1392,13 +1411,20 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 if (!nd) {
                     lg->pend++;
                     if (!ce->waiting)
-                        ce->wait0 = pop_fr, ce->waiting = 1;
+                        ce->wait0 = pop_fr, ce->waiting = 1, ce->win = 0, memset(ce->why, 0, sizeof ce->why);
+                    ce->win += ce->win < 0xFFFF;  /* (in view this draw) */
+                    int why = mapstream_why((unsigned)ci);
+                    if (why > 0 && why <= 5 && ce->why[why - 1] < 255)
+                        ce->why[why - 1]++;
                 } else if (ce->waiting) {
                     unsigned w = (unsigned short)(pop_fr - ce->wait0);
                     if (was && w >= 2) {
                         lg->pops++;
-                        lg->pop_wait = w > lg->pop_wait ? w : lg->pop_wait;
+                        /* the wait in view (it used to count the time out of view too: a cell that waited a frame,
+                         * left the view and came back 30 s later read as a 900-frame wait) */
+                        lg->pop_wait = ce->win > lg->pop_wait ? ce->win : lg->pop_wait;
                         lg->pop_d = d2 < lg->pop_d * lg->pop_d ? sqrtf(d2) : lg->pop_d;
+                        pop_note(k, ci, ce, sqrtf(d2), w);
                     }
                     ce->waiting = 0;
                 }
@@ -1712,6 +1738,8 @@ int map_draw(V3 eye)
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
+    if (mapstream_settling())
+        pop_settle = pop_fr;
     nfx = nhzfade = nnrfade = 0;
     for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
         drawn += draw_block(k, e, fog, &lg);
