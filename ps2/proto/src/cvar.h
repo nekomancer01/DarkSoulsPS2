@@ -16,6 +16,7 @@
     X(PACK_JOB_ABANDON, 1)    \
     X(MIP_TRILINEAR, 1)       \
     X(TC_PRESS, 1)            \
+    X(TC_PLAN, 1)             \
     X(LUA_POOL_GROW, 1)       \
     X(PUSH2_CELLS, 1)
 

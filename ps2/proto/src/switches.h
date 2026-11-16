@@ -97,6 +97,7 @@
  * textures and VU1 (texcache.c, vu1.c, vu1.h, model.c)
  * TC_RLIST            | 1        | fallback | -DTC_RLIST=0                                  | texcache.c    | resident-level list; 0 = walk every level
  * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | texcache.c    | mip 1 under pool pressure (runtime: option set TC_PRESS 0)
+ * TC_PLAN             | 1        | fallback | -DTC_PLAN=0                                   | texcache.c    | texture levels planned to the pool budget per texture (runtime: option set TC_PLAN 0)
  * TC_UP_OLD           | off      | fallback | -DTC_UP_OLD                                   | texcache.c    | the old 96 + 16 KB upload caps
  * TC_NO_NEAR          | off      | fallback | -DTC_NO_NEAR                                  | texcache.c    | near texture levels never drawn (A/B)
  * TC_HUD              | off      | debug    | -DTC_HUD                                      | texcache.c    | upload numbers on screen
