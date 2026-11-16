@@ -27,6 +27,7 @@ enum {
     STR_BF_ATTUNE, STR_BF_BOX, STR_BF_WARP, STR_BF_COVENANT, STR_BF_KINDLE, STR_BF_REVERSE_HOLLOWING, STR_BF_LEAVE,
     STR_BF_ASK_KINDLE, STR_BF_NO_HUMANITY, STR_BF_KINDLE_MAX, STR_BF_KINDLE_RITE, STR_BF_KINDLE_HOLLOW,
     STR_BF_NOT_HOLLOW, STR_BF_NO_HUMANITY2, STR_BF_ASK_REVERSE,
+    STR_PICKUP,  /* Event_text 10010103 "Pick up item": the treasure / drop prompt (src/pickup.c) */
     STR_COUNT
 };
 #define KIT_COUNT 9  /* icons: one per STR_WEP_R..STR_CRYSTAL */
@@ -60,6 +61,20 @@ float hud_text_width(const char *s);
 /* hud_text with alpha (0..0x80) and glyph scales sx, sy (1 = as drawn) */
 float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, int align, float sx, float sy);
 int hud_line_height(void);
+/* PS2 face buttons: these bytes inside a string draw the button's symbol inline (hud_text*, drb texts, prompts) */
+enum { HUD_BTN_CROSS = 1, HUD_BTN_CIRCLE, HUD_BTN_TRIANGLE, HUD_BTN_SQUARE };
+#define HUD_S_CROSS "\x01"
+#define HUD_S_CIRCLE "\x02"
+#define HUD_S_TRIANGLE "\x03"
+#define HUD_S_SQUARE "\x04"
+/* One button symbol, h px tall at x, y (alpha a, 0x80 opaque) */
+void hud_button(float x, float y, float h, int btn, int a);
+/* An action prompt as DSR's one-line help: button symbol + text in a box, centred at cx, top y */
+void hud_prompt(float cx, float y, int btn, const char *text);
+/* menu.pak help.bin (kept): the one-line action prompts by Event_text id (export_menu.py --help); hud_help NULL if
+ * missing. The HUD shows the prompt of the event action button in reach (event_stats.prompt, src/event.c). */
+void hud_help_init(const void *blob);
+const char *hud_help(int id);
 /* Begin / end a batch of HUD draws: alpha blending on, alpha and depth tests off (and back) */
 void hud_begin(void);
 void hud_end(void);

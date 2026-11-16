@@ -30,7 +30,7 @@ volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354
 int test_god;
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_L1, C_R2, C_L2, C_HIT, C_BEHIND, C_LOCK, C_STATUS, C_SQUARE, C_DPAD, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK, C_PICKUP };
 
 typedef struct {
     unsigned short op, line;
@@ -117,6 +117,8 @@ static int parse(Prog *p, char *text)
         {"save", C_GAME, 0}, {"load", C_GAME, 0}, {"wipe", C_GAME, 0},
         /* EMEVD runtime (event.c event_test_cmd): action, expect flag / obj / hit / treasure / x / y / z, warp, trace */
         {"ev", C_EV, 0},
+        /* world items (pickup.c pickup_test_cmd): drop NPC X Y Z, expect drops / dialog / shines N, summary */
+        {"pickup", C_PICKUP, 0},
     };
     int opts = 0, cap = 0, line = 0;
     memset(p, 0, sizeof *p);
@@ -164,7 +166,7 @@ static int parse(Prog *p, char *text)
                     c->a[3] = NAN;  /* spawn without yaw keeps the facing */
                     if (c->op == C_CAM && !strcmp(rest, "off"))
                         c->op = C_CAMOFF;
-                    else if (c->op == C_SHOT || c->op == C_LOG || c->op == C_EV)
+                    else if (c->op == C_SHOT || c->op == C_LOG || c->op == C_EV || c->op == C_PICKUP)
                         c->text = dupstr(rest, len);
                     else if (c->op == C_GAME)  /* the whole line: 8-digit flag ids do not fit a float */
                         c->text = dupstr(s + used - strlen(word), rest + len - (s + used - strlen(word)));
@@ -400,6 +402,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_LOG: printf("TEST log %s\n", c->text); break;
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
+        case C_PICKUP: pickup_test_cmd(c->text); break;
         case C_KILL: pl->hp = -1; break;
         case C_LOADSCR: loading_show(c->a[0]); break;
         case C_PAD: pad_pending |= (unsigned short)c->a[0]; break;

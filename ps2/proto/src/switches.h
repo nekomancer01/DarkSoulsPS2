@@ -34,6 +34,7 @@
  * WORLD_LITE_DIET     | 1        | fallback | -DWORLD_LITE_DIET=0                           | world.c       | kept-only blocks hold collision and events only (make WORLD_LITE_DIET=0)
  * WORLD_DG_LITE       | 1        | fallback | -DWORLD_DG_LITE=0                             | world.c       | a block's dg.bin / pvs.bin come with its lite set (pvs.bin let go while lean); 0 = read for every block at boot
  * RES_BLOCK           | undefined | make    | -                                             | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
+ * PICKUP              | 1        | fallback | -DPICKUP=0                                    | pickup.h event.c | treasure shine, pickup anim, item get dialog, enemy drops; 0 = treasures picked up with none of them, no drops
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold

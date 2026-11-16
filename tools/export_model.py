@@ -97,10 +97,12 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a00", aid, "c0000_a00_lo") for aid in (701, 702, 703, 710, 711, 712, 713, 720, 721, 722, 723, 730, 731, 732,
                                                   733, 690, 695, 696, 201, 202, 203, 501, 502, 503)] + [
          # bonfire (export_player.py): stored compact (COMPACT) - 11 anims, 37 s; full 30 fps poses would be ~1.1 MB
-         ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)]
+         ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)] + [
+         ("a00", 8000, "c0000_a00_md")]  # item pickup (export_player.py PICKUP), compact
 # Anims written in the compact layout (export_chr.append_compact_anims: 15 fps, only the bones that move; model.c reads
 # both kinds): long, slow anims whose poses interpolate well
 COMPACT = {7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722}
+COMPACT |= {8000}  # item pickup
 # The guard set, R2, kick, jumping attack, plunge landing and parry (PRs #216 / #218) as well: at full 30 fps they
 # made model.bin 0.97 MB bigger and boot RAM free 1 MB smaller (22.95 -> 21.94 MB)
 COMPACT |= {1, 210, 515, 520, 140, 141, 142, 3300, 3301, 3310, 3100, 3600, 3810, 5100, 3400, 3201}  # + throws (#219)
