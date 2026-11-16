@@ -37,6 +37,7 @@
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold
+ * MS_ORPHAN           | 1        | fallback | -DMS_ORPHAN=0                                 | mapstream.c   | mapstream_close leaves reads in flight; 0 = waits for them
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
  * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
@@ -133,6 +134,8 @@
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
+ * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed by distance; 0 = every placement of a block when it turns on
+ * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose buffers for drawn enemies (MAX_ENEMIES = one each)
  * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move
  * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | enemy.c       | no ESD / Lua
