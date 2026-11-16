@@ -16,8 +16,9 @@ ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002),  # R1 chain (export
                 ("a23", 3100), ("a23", 3600), ("a23", 3810)]  # kick, jumping attack, plunge landing
 WEAPON_PART, WEAPON_BONE = "WP_A_0201", "R_Weapon"
 DUMMY_NPC = 206000  # NpcParam: Depths ghoul (sword) - HP 203, def_phys 71, no poise: the debug dummy target
-GRAPH_ROWS = (100, 150, 113, 102)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
-# 102 = base defence from the stat sums of FUN_1402dc850 (FUN_1402dbda0, src/chrstat.c),
+GRAPH_ROWS = (100, 150, 113, 102, 110, 111, 112)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
+# 102 = base defence from the stat sums of FUN_1402dc850 (FUN_1402dbda0, src/chrstat.c), 110 / 111 / 112 = poison /
+# toxic resist at RES and bleed resist at END (FUN_1402dddd0 types 0-2, src/chrstat.c),
 # (FUN_1402df9a0), 150 = bonfire Estus refill by kindle points (回復スポットの最大補充数; FUN_1407a41b0, step lookup,
 # src/bonfire.c), 113 = curse resist base at min(humanity, 99) (FUN_1402dddd0 resist type 3, src/menu.c)
 

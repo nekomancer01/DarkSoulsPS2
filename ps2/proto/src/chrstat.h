@@ -23,7 +23,8 @@ typedef struct {
     int wep_types[2];           /* WT_* bits of each hand's weapon */
     float guard_cut[2][EL_COUNT]; /* EquipParamWeapon phys / mag / fire / thunGuardCutRate (%) */
     int guard_stab[2];          /* staminaGuardDef (stability) */
-    int guard_level[2];         /* guardLevel (0-4): the guard row of the reaction table (ESD f237) */
+    int guard_level[2];
+    float resist[4];            /* poison, toxic, bleed, curse: stat graph (FUN_1402dddd0) + armour */         /* guardLevel (0-4): the guard row of the reaction table (ESD f237) */
 } ChrStats;
 
 extern ChrStats chr_stats;

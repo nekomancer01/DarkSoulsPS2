@@ -24,6 +24,7 @@
 #include "collision.h"
 #include "combat.h"
 #include "chrstat.h"
+#include "status.h"
 #include "pack.h"
 #include "enemy.h"
 #include "objects.h"
@@ -447,7 +448,8 @@ int main(int argc, char **argv)
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
     loading_tick(1);
     combat_sweep_hook = objects_sweep_hook;
-    combat_throw_hook = enemy_throw_try;  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
+    combat_throw_hook = enemy_throw_try;
+    status_init();  /* the player's poison / toxic / bleed / curse (combat_status_hook) */  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
         vram_free = r_vram_avail(gs);
@@ -539,6 +541,7 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_PLAYER);
             LG_BEGIN(player);
             player_update(&pl, &in, cam_yaw, dt);
+            status_update(&pl, dt);
             combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
             /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
             event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */

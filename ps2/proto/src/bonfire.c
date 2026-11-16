@@ -7,6 +7,7 @@
 #include <libpad.h>
 
 #include "bonfire.h"
+#include "status.h"
 #include "lpass.h" /* lpass_now */
 #include "enemy.h"
 #include "ev_misc.h"
@@ -158,6 +159,7 @@ int bonfire_spawn(V3 *pos, float *yaw)
 
 void bonfire_revive(Player *p)
 {
+    status_clear();  /* a rest (or the respawn) cures poison / toxic and empties the meters */
     p->hp = p->hp_max;
     /* a respawn at a lit bonfire refills Estus to its count (exe FUN_1404de720); else the last maximum */
     prog.estus = prog.bonfire && ev_bonfire_points(prog.bonfire) ? ev_bonfire_estus(prog.bonfire) : prog.estus_max;
