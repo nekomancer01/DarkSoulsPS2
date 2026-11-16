@@ -1704,6 +1704,8 @@ void event_test_cmd(const char *cmd)
         printf("TEST ev flag %d = %d\n", id, flag_get(id));
     } else if (!strcmp(cmd, "action")) {
         event_action();
+    } else if (sscanf(cmd, "killnear %f", &v) == 1 && pl) {  /* ragdoll tests: enemies near the player die */
+        printf("TEST ev killnear %.1f: %d\n", v, enemy_kill_near(pl->pos, v));
     } else if (sscanf(cmd, "trace %d", &val) == 1) {
         trace = val;
     } else if (sscanf(cmd, "warp %d", &id) == 1 && pl) {

@@ -1,0 +1,28 @@
+# Ragdolls against the map and themselves on the real disc (TECH_DEBT enemy-17, ragdoll.c RAG_CONTACTS): the hollows
+# on the Burg street below the first bonfire die at once (`ev killnear`, a test hook: no souls) and fall into their
+# ragdolls; shots while they fall and once they rest. The EE log's 'rag: at rest' lines count wall / body pushes.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_burg_ragdoll.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option god
+option nodemo
+wait 3
+spawn 20.4 9.6 -30.0 2.74
+wait 5
+shot street_alive
+stats
+ev killnear 30
+wait 1.5
+shot street_falling
+wait 4
+shot street_down
+wait 8
+shot street_rest
+stats
+spawn -3.6 -9.0 -66.0 0.79
+wait 5
+ev killnear 30
+wait 3
+shot bonfire2_down
+wait 10
+shot bonfire2_rest
+stats

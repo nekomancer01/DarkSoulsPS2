@@ -163,6 +163,8 @@
  * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
  * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone
  * PLAYER_PROXY        | 1        | fallback | -DPLAYER_PROXY=0                              | player.c      | DSR's ChrProxy step (lift 0.31 m, edges ridden within 60 deg), step down 0.4 m, maxSlope 60 deg, slide over 35 deg; 0 = step 0.6 / 1.2, walls below 45 deg, no slide
+ * RAG_CONTACTS        | 1        | fallback | -DRAG_CONTACTS=0                              | ragdoll.c     | ragdoll bodies collide with the map's walls and with each other; 0 = floor only
+ * RAG_DEBUG           | 0        | debug    | -DRAG_DEBUG=1                                 | ragdoll.c     | EE log twice a second per awake ragdoll: fastest body, bodies at rest, body pushes
  * ESD_TRACE           | off      | host     | -                                             | esd.c         | ESD trace hook (native test harness)
  * OBJ_HOST            | off      | host     | -                                             | objects.c     | piece bodies for the host test harness
  *
