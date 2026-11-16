@@ -167,23 +167,19 @@ typedef struct {
     ivec removed, keep, amk, amv, nu, nv_, opp, vkeep;
 } S;
 
-/* Shape term in the collapse cost (export_map.py SIMPLIFY_SHAPE_K; 0: off, the log simplify.py gives). The guard
+/* Shape term in the collapse cost (export_map.py SIMPLIFY_SHAPE_K_*; 0: off, the log simplify.py gives). The guard
  * below refuses only past a hard limit; this prices every collapse by how much thinner it makes the triangles it
- * keeps, so of two collapses with about the same surface error the one that leaves better triangles goes first and
- * a fan of slivers costs what the error a sliver shows would cost. Per kept triangle: the drop of its shape quality
- * q (1 equilateral, 0 a line; a triangle that gets rounder costs nothing) times its longest new edge squared (a
- * sliver's shading and outline error grows with its length: metres squared, the plane error's unit), the largest over
- * the collapse's triangles, times g_shape_k, added to the error before the view distance scale. In the spirit of the
- * penalties the large engines add to quadric collapse costs instead of refusing (ASSUMED weight, TECH_DEBT map-47). */
+ * keeps: its cost is scaled by 1 + g_shape_k x the largest drop of shape quality q (1 equilateral, 0 a line; a triangle
+ * that gets rounder counts 0) among them, so of two collapses with about the same error the one that leaves better
+ * triangles goes first, as large engines add penalties to quadric costs instead of only refusing. A factor, not an
+ * added term: collapses of no error (flat ground) stay free, which an added term in metres made cost +6-7 % triangles
+ * and pushed the budget solve's worst coarse cell from 22 to 40 px on Burg block b. ASSUMED weight, TECH_DEBT map-47 */
 static double g_shape_k = 0.0;
 void simplify_set_shape_cost(double k) { g_shape_k = k > 0 ? k : 0.0; }
 static double tri_q(v3 a, v3 b, v3 c, double cross_len);
 static double shape_term(v3 a0, v3 b0, v3 c0, double l0, v3 a, v3 b, v3 c, double l) {
     double qo = tri_q(a0, b0, c0, l0), qn = tri_q(a, b, c, l);
-    if (qn >= qo) return 0.0;
-    v3 e0 = sub(b, a), e1 = sub(c, b), e2 = sub(a, c);
-    double m = pmax(pmax(dot(e0, e0), dot(e1, e1)), dot(e2, e2));
-    return (qo - qn) * m;
+    return qn >= qo ? 0.0 : qo - qn;
 }
 
 static int idx3(const int *t, int x) { return t[0] == x ? 0 : t[1] == x ? 1 : 2; }
@@ -537,7 +533,7 @@ static void push(S *s, heap *h, int u, int v, int nopl) {
     double m = e, bb = b * b, ar = s->ak2 * (s->alost[u] + s->alost[v] + s->lost);
     if (bb > m) m = bb;
     if (ar > m) m = ar;
-    m += g_shape_k * s->shape;
+    m *= 1.0 + g_shape_k * s->shape;
     double c = m * pmax(s->scale[u], s->scale[v]);
     if (s->weight && c < s->sat) {  /* simplify.py: structure weight, saturating at sat */
         double wc = c * pmax(s->weight[u], s->weight[v]);

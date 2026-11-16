@@ -243,14 +243,13 @@ SIMPLIFY_ENV_FAR = float(os.environ.get("SIMPLIFY_ENV_FAR", 1.0))
 SIMPLIFY_GUARD = os.environ.get("SIMPLIFY_GUARD", "1") == "1"
 SIMPLIFY_QMIN = float(os.environ.get("SIMPLIFY_QMIN", 0.0))
 SIMPLIFY_FLIP_DEG = float(os.environ.get("SIMPLIFY_FLIP_DEG", 90.0))
-# Shape term in the collapse cost (tools/native/simplify.c g_shape_k; 0: off, the old export): a collapse costs, besides
-# its surface error, how much thinner it makes the triangles it keeps (shape quality drop x longest new edge squared),
-# so cheap collapses that leave slivers wait for ones that do not. On Burg block b it cut the slivers (q < 0.1) the
-# simplifier makes by ~20 % for +6-7 % triangles at a fixed error (the budget solve then raises the error a little).
-# The near level is seen from closer, where the same metres weigh more: its weight is smaller. ASSUMED weights,
-# TECH_DEBT map-47
-SIMPLIFY_SHAPE_K_NEAR = float(os.environ.get("SIMPLIFY_SHAPE_K_NEAR", 0.01))
-SIMPLIFY_SHAPE_K_FAR = float(os.environ.get("SIMPLIFY_SHAPE_K_FAR", 0.1))
+# Shape term in the collapse cost (tools/native/simplify.c g_shape_k; 0: off, the old export): a collapse's cost is
+# scaled by 1 + k x how much thinner it makes the triangles it keeps (largest shape quality drop), so cheap collapses
+# that leave slivers wait for ones that do not; collapses of no error stay free. Burg block b: 3-4 % fewer slivers made
+# (q < 0.1) for +1-2 % triangles at a fixed error. An added term in metres did more (-20 %) but cost +6-7 % triangles
+# and doubled the budget solve's worst coarse cell error. ASSUMED weights, TECH_DEBT map-47
+SIMPLIFY_SHAPE_K_NEAR = float(os.environ.get("SIMPLIFY_SHAPE_K_NEAR", 1.0))
+SIMPLIFY_SHAPE_K_FAR = float(os.environ.get("SIMPLIFY_SHAPE_K_FAR", 1.0))
 # Vertex placement on the coarse level (tools/native/simplify.c g_place; 0: every vertex keeps its source position, the
 # old export): a collapse may move the merged vertex to where the quadric error is smallest (minimiser near the edge,
 # else the best point on the edge), outlines only along themselves, cell cuts never. The near level keeps source
