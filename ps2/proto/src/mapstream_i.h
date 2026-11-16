@@ -225,6 +225,7 @@ void *ms_g_alloc_lend(unsigned n);
 void ms_g_free(void *ptr, unsigned n);
 int ms_ensure_arena(void);
 void ms_drop(int k, unsigned id);
+extern int ms_keep_buf;
 /* why an item was dropped: the plan freed it (class C_FREE), a read / allocation cleared its page, a lite set took
  * its lent pool page, a borrowed heap page went back, its read was cancelled */
 enum { MS_WHY_FREE, MS_WHY_WINDOW, MS_WHY_LENT, MS_WHY_BORROW, MS_WHY_CANCEL, MS_WHY_N };
