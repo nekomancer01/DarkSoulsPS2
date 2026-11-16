@@ -19,6 +19,11 @@
 #   --jobs N     parallel jobs (default: every core). The first export peaks at ~6 GB RAM.
 #   --build DIR  build directory (default: build/ of the checkout, else WORK/build)
 #   --syms       keep the ELF symbols on the disc (ISO_SYMS=1, for the PCSX2 debugger)
+#   --no-gpu     bake the occlusion data on the CPU even when the container engine can pass an NVIDIA GPU through
+#                (DSR_GPU=0 too). By default a second small container (tools/iso-builder/Dockerfile.gpu) runs the
+#                bakes on the GPU when there is one. NVIDIA: podman needs the NVIDIA container toolkit's CDI spec
+#                (nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml), docker its --gpus support. AMD / Intel:
+#                Mesa in that container, through /dev/dri (this user needs the render or video group).
 #
 # Steps: fetch the source (unless run from a checkout) -> pull ps2dev/ps2dev and build the builder image on it once ->
 # make -C ps2/proto (exports the game data into the build dir, builds the ELF) -> make iso (tools/ps2-iso.sh) -> copy build/proto.iso to --out.
@@ -34,6 +39,8 @@ JOBS=
 REF_SET=
 BUILD_SET=
 SYMS=
+GPU=${DSR_GPU:-1}
+PVSM=
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
@@ -47,6 +54,7 @@ while [ $# -gt 0 ]; do
         --jobs) JOBS=$2; shift 2 ;;
         --build) BUILD_SET=$2; shift 2 ;;
         --syms) SYMS=1; shift ;;
+        --no-gpu) GPU=0; shift ;;
         -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -140,9 +148,60 @@ else
     [ -t 0 ] && [ -t 1 ] && RUN+=(-it)
     rm -f "$BUILD/proto.iso"
     [ -n "$SYMS" ] && RUN+=(-e ISO_SYMS=1)
+    # GPU occlusion bakes: a glibc side container with the GPU runs them (tools/pvs_gpu_server.py), handed over through
+    # BUILD/pvs-gpu; without a GPU, or when anything here fails, every bake runs in the build container on the CPU
+    GPU_CT=
+    [ "$GPU" != 0 ] || { say "PVS bake: CPU (--no-gpu)"; PVSM=CPU; }
+    if [ "$GPU" != 0 ]; then
+        GDF=$SRC/tools/iso-builder/Dockerfile.gpu
+        GIMG=darksoulsps2-gpu:$(sha256sum "$GDF" | cut -c1-12)
+        # the ways to pass a GPU in, tried in turn: NVIDIA (podman: CDI, docker: --gpus), then the DRM render nodes
+        # (AMD / Intel through Mesa; podman keeps this user's video / render groups for them)
+        GDEVS=()
+        if [ -e /dev/nvidiactl ]; then
+            if [ "$ENGINE" = docker ]; then GDEVS+=("--gpus all"); else GDEVS+=("--device nvidia.com/gpu=all"); fi
+        fi
+        if ls /dev/dri/renderD* >/dev/null 2>&1; then
+            if [ "$ENGINE" = docker ]; then
+                G="--device /dev/dri"
+                for g in video render; do getent group $g >/dev/null && G+=" --group-add $(getent group $g | cut -d: -f3)"; done
+                GDEVS+=("$G")
+            else
+                GDEVS+=("--device /dev/dri --group-add keep-groups")
+            fi
+        fi
+        if [ ${#GDEVS[@]} -gt 0 ] && { "$ENGINE" image inspect "$GIMG" >/dev/null 2>&1 ||
+            { say "building the GPU bake container (first run only)"; "$ENGINE" build -t "$GIMG" -f "$GDF" "$SRC/tools/iso-builder"; }; }; then
+            mkdir -p "$BUILD/pvs-gpu"
+            for GDEV in "${GDEVS[@]}"; do
+                rm -f "$BUILD/pvs-gpu/ready" "$BUILD/pvs-gpu/nogpu"
+                # shellcheck disable=SC2206
+                GRUN=(run -d --rm --init --security-opt label=disable -e HOME=/tmp $GDEV -v "$SRC:/src" -v "$BUILD:/build" -w /src)
+                [ "$ENGINE" = docker ] && GRUN+=(--user "$(id -u):$(id -g)")
+                if GPU_CT=$("$ENGINE" "${GRUN[@]}" "$GIMG" python3 -I /src/tools/pvs_gpu_server.py /build/pvs-gpu 2>/dev/null); then
+                    trap '"$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true' EXIT
+                    for _ in $(seq 120); do  # its first run compiles pvs_bake (a few seconds)
+                        [ -f "$BUILD/pvs-gpu/ready" ] || [ -f "$BUILD/pvs-gpu/nogpu" ] || ! "$ENGINE" container inspect "$GPU_CT" >/dev/null 2>&1 && break
+                        sleep 0.5
+                    done
+                fi
+                [ -f "$BUILD/pvs-gpu/ready" ] && break
+                [ -n "$GPU_CT" ] && "$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true
+                GPU_CT=
+            done
+        fi
+        if [ -n "$GPU_CT" ] && [ -f "$BUILD/pvs-gpu/ready" ]; then
+            say "PVS bake: GPU ($(head -1 "$BUILD/pvs-gpu/ready"))"; PVSM=GPU
+            RUN+=(-e DSR_PVS_SPOOL=/build/pvs-gpu)
+        else
+            PVSM=CPU; say "PVS bake: CPU (no GPU passed through: an NVIDIA GPU with the container toolkit, or an AMD / Intel one through /dev/dri; see --help)"
+            GPU_CT=
+        fi
+    fi
     "$ENGINE" "${RUN[@]}" "$IMG" \
         bash -c 'make "$@" DSR_GAME=/game BUILD=/build && make "$@" DSR_GAME=/game BUILD=/build ${ISO_SYMS:+ISO_SYMS=1} iso' \
         make "${MAKE_ARGS[@]}"
+    [ -z "$GPU_CT" ] || "$ENGINE" kill "$GPU_CT" >/dev/null 2>&1 || true
 fi
 
 [ -f "$BUILD/proto.iso" ] || die "the build finished without $BUILD/proto.iso"
@@ -150,6 +209,6 @@ if [ "$OUT" != "$BUILD/proto.iso" ]; then  # the repo-root build-iso.sh may ask 
     mkdir -p "$(dirname "$OUT")"
     cp -f "$BUILD/proto.iso" "$OUT"
 fi
-say "done: $OUT ($(du -h "$OUT" | cut -f1))"
+say "done: $OUT ($(du -h "$OUT" | cut -f1))${PVSM:+, PVS bake on the $PVSM}"
 echo "Open it in PCSX2 (System > Start File, or drag it onto the window). No BIOS settings or HostFs needed."
 echo "Never share the ISO or $BUILD: they are made from your copy of the game."
