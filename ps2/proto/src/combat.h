@@ -37,6 +37,10 @@ typedef struct CombatChr {
     int guard_hit, guard_broken;
     float guard_stamina_dmg;
     int *stamina;          /* owner's stamina (optional): a guarded hit takes its cost here */
+    int parrying;          /* owner-set: a parry window is open (player.c) */
+    int parried;           /* combat-set on an attacker whose parryable attack met a parry (its owner reacts and
+                            * clears it); new_parry on the parrying side */
+    int new_parry;
     /* combat-set (read by the owner / ESD env functions) */
     float poise;           /* current poise; regenerates in combat_update */
     int hit_count;         /* +1 per hit taken (owners compare with their last seen value) */
@@ -64,6 +68,8 @@ typedef struct CombatAttack {
     int attr;
     float stam_dmg;        /* AtkParam atkStam: stamina a guard pays for it */
     int unblockable;       /* AtkParam disableGuard */
+    int parryable;         /* the attacker's anim has ChrActionFlag 5 "Parry Possible" at this time */
+    struct CombatChr *src; /* the attacker's hurtbox (optional): told when it is parried */
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */

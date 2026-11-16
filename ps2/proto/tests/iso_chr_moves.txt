@@ -1,0 +1,33 @@
+# Kick, jumping attack and parry (PR C) at the Burg entry: stick flicked forward with R1 = kick (group 1 state 52,
+# a23 3100), with R2 = jumping attack (state 53, a23 3600); L2 = shield parry (state 86, a48 5100), and a parryable
+# test hit during its Parry window logs "combat: player parried a hit" with no damage. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_moves.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+option god
+wait 3
+spawn -48.5 -21.8 -35.5 3.14
+cam 3.14 0.25
+wait 3
+stick 0 1
+r1
+wait 0.3
+stick 0 0
+shot kick
+wait 2.5
+stick 0 1
+r2
+wait 0.5
+stick 0 0
+shot jump_attack
+wait 3
+l2
+wait 0.1
+hit 98 20
+wait 0.2
+shot parry
+wait 2
+hit 98 20
+wait 1
+stats
+end

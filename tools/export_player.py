@@ -73,6 +73,13 @@ ANIMS = [
     ("R2_1", "a23", 3300, False),
     ("R2_2", "a23", 3301, False),
     ("R2_3", "a23", 3310, False),
+    # Kick (stick forward + R1, group 1 state 52: a23 3100), jumping attack (forward + R2, state 53: a23 3600), plunge
+    # landing (group 0 states 21-23: a23 3810), shield parry (L2, state 86: c1_3(0, 5100 + f225(2)) on the left hand's
+    # weapon motion a48; its AttackBehavior of AttackType 64 "Parry" at 0-0.23 s is the parry window)
+    ("KICK", "a23", 3100, False),
+    ("JUMP_ATK", "a23", 3600, False),
+    ("PLUNGE_LAND_ATK", "a23", 3810, False),
+    ("PARRY", "a48", 5100, False),
     # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
     # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
     ("EVENT_FOG_WALK", "a00", 7410, False),
@@ -151,7 +158,7 @@ def main():
     taes = {souls.basename(n)[:-4]: souls.tae(d) for _, n, d in souls.bnd3(souls.read(f"{chr_dir}/c0000.anibnd.dcx"))
             if n.endswith(".tae")}
     hkx = {}
-    for f in ("c0000_a00_lo.anibnd.dcx", "c0000_a00_md.anibnd.dcx", "c0000_a2x.anibnd.dcx"):
+    for f in ("c0000_a00_lo.anibnd.dcx", "c0000_a00_md.anibnd.dcx", "c0000_a2x.anibnd.dcx", "c0000_a4x.anibnd.dcx"):
         for _, n, d in souls.bnd3(souls.read(f"{chr_dir}/{f}")):
             hkx[souls.basename(n)[:-4]] = d
     P = souls.game_params(game)

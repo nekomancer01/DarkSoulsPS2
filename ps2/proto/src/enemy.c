@@ -1457,7 +1457,8 @@ static void attack_sweeps(Enemy *e)
                             .poise_dmg = w->poise, .damage_level = w->dmg_level,
                             .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i,
                             .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr,
-                            .stam_dmg = w->stam, .unblockable = w->no_guard};
+                            .stam_dmg = w->stam, .unblockable = w->no_guard, .src = &e->cc,
+                            .parryable = in_window(e, F_PARRY)};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)

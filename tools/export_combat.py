@@ -12,7 +12,8 @@ from gamedata import FLOAT, INT, S8, S16, Ptr, Struct
 
 WARRIOR = 3000
 ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002),  # R1 chain (export_player.py ANIMS)
-                ("a23", 3300), ("a23", 3301), ("a23", 3310)]  # R2 (group 1 states 89 / 88 / 90)
+                ("a23", 3300), ("a23", 3301), ("a23", 3310),  # R2 (group 1 states 89 / 88 / 90)
+                ("a23", 3100), ("a23", 3600), ("a23", 3810)]  # kick, jumping attack, plunge landing
 WEAPON_PART, WEAPON_BONE = "WP_A_0201", "R_Weapon"
 DUMMY_NPC = 206000  # NpcParam: Depths ghoul (sword) - HP 203, def_phys 71, no poise: the debug dummy target
 GRAPH_ROWS = (100, 150, 113, 102)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
