@@ -313,7 +313,6 @@ def water_rgba(mp):
 
 
 BG_BLEND = os.environ.get("BG_BLEND", "1") == "1"
-POSE_KEEP = os.environ.get("POSE_KEEP", "1") == "1"
 
 
 def is_effect(mtd):
@@ -724,7 +723,8 @@ def gather(game, map_id):
                 else:
                     P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
-            if not m["dynamic"]:
+            if not m["dynamic"] and not posed:  # (posed: skinned into model space already; rigid_mesh would move
+                # each vertex by its bone a second time: the thin, stretched corpses of Ame's play test 2026-11-16)
                 m = rigid_mesh(F, m, bind)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
@@ -762,11 +762,7 @@ def gather(game, map_id):
                 continue
             # objects beyond the region (70 m+ from the spawn in Burg) take the game's lowest LOD, as DSR draws them
             # at that range (o1154 barrel + ropes: 5.9k -> 1.2k tris before QEM)
-            # posed skinned objects (corpses): the game's lowest LOD, not simplified (keep below). The simplifier took
-            # their thin limbs as loose pieces and left stretched shards (Ame's play test 2026-11-16, shot 07); DSR's
-            # own LOD2 keeps the body (o0500: 479 tris, LOD0 2399). POSE_KEEP=0 = LOD0 through the simplifier as before.
-            posed_keep = posed and POSE_KEEP and len(lods) > 1
-            low = mapcfg.GAME_LOD or far or posed_keep
+            low = mapcfg.GAME_LOD or far
             if mapcfg.FAR_LOD and not low and part["type"] == 0 and len(lods) > 1 and nav_tree is not None:
                 # map pieces whose LOD0 lies wholly beyond STREAM_FAR of the walkable space (whole-MSB areas) take the
                 # game's lowest LOD before QEM, as DSR draws them from there (render-distance option (a), map-36)
@@ -882,8 +878,7 @@ def gather(game, map_id):
             meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
-                               keep=grass or blend or sky or posed_keep or part["model"] in mapcfg.KEEP_MODELS,
-                               name=f"{part['name']}/{name}",
+                               keep=grass or blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
                                dg=mapchunks.DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0,
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
