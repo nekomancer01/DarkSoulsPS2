@@ -111,6 +111,7 @@ static int pad_input(Input *in, unsigned short *prev)
     in->circle = (btn & PAD_CIRCLE) != 0;
     in->r1_held = (btn & PAD_R1) != 0, in->r2_held = (btn & PAD_R2) != 0;
     in->l1_held = (btn & PAD_L1) != 0, in->l2_held = (btn & PAD_L2) != 0;
+    in->r3 = (btn & PAD_R3) && !(*prev & PAD_R3);
     if ((btn & PAD_CROSS) && !(*prev & PAD_CROSS))
         event_action();  /* DSR's action button (ObjActs, treasures, fog walls: src/event.c) */
     *prev = btn;
@@ -517,6 +518,15 @@ int main(int argc, char **argv)
         test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 
         cam_yaw += in.cx * 2.5f * dt;
+        {   /* lock-on: the camera turns to put the target behind the player (LockCamParam row 0; turn rate ASSUMED) */
+            float tp[3];
+            if (player_lock_target(&pl, tp)) {
+                float want = atan2f(tp[0] - pl.pos.x, tp[2] - pl.pos.z), d = want - cam_yaw;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                cam_yaw += d * (dt * 6 < 1 ? dt * 6 : 1);
+            }
+        }
         cam_pitch += in.cy * 1.5f * dt;
         /* LockCamParam row 0: rotRangeMinX -40 degrees (camera below the target, looking up) */
         cam_pitch = cam_pitch < -0.698f ? -0.698f : cam_pitch > 1.2f ? 1.2f : cam_pitch;

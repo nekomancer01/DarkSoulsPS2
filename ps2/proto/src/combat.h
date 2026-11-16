@@ -95,6 +95,11 @@ void combat_update(float dt);
 typedef struct { CombatChr *cc; int atk_anim; float hit_t, corr, yaw; } ThrowStart;
 extern int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
 
+/* Lock-on (player.c): the enemy hurtbox nearest to the line of view (yaw) within range, NULL none; whether a target
+ * is still registered and alive */
+CombatChr *combat_lock_pick(const float pos[3], float yaw, float range);
+int combat_lock_alive(const CombatChr *c);
+
 /* Debug dummy target (COMBAT_DUMMY builds / HUD): NpcParam 206000's hurtbox and defence */
 extern CombatChr combat_dummy;
 void combat_dummy_place(const float pos[3], float yaw);

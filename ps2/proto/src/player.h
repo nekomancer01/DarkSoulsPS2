@@ -11,6 +11,7 @@ typedef struct Input {
     int circle;        /* Circle held */
     /* held this frame (presses are found against the previous frame in player.c): R1, R2, L1, L2 */
     int r1_held, r2_held, l1_held, l2_held;
+    int r3;            /* R3 pressed this frame: lock-on toggle */
 } Input;
 
 /* ST_JUMP / ST_LAND play one animation like ST_ATTACK / ST_ROLL; ST_FALL = airborne loop; ST_DEAD = fall death */
@@ -70,6 +71,8 @@ typedef struct Player {
     float fwd_flick;       /* time since the stick went from the dead zone to forward (f212, kick / jump attack) */
     float prev_tilt;
     /* a backstab / riposte in progress (ThrowParam, combat_throw_hook): its target, damage time and motion value */
+    void *lock;            /* lock-on target (CombatChr), NULL none */
+    int strafe;            /* locked locomotion direction: 0 forward, 1 back, 2 left, 3 right */
     void *throw_cc;
     float throw_hit_t, throw_corr;
     int throw_anim, throw_done;
@@ -97,6 +100,8 @@ typedef struct Player {
 } Player;
 
 void player_init(Player *p);
+/* lock-on target position (feet), 0 when not locked */
+int player_lock_target(const Player *p, float out[3]);
 /* cam_yaw: camera heading, so stick input is camera-relative */
 void player_update(Player *p, const Input *in, float cam_yaw, float dt);
 void player_draw(const Player *p);

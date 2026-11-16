@@ -10,6 +10,9 @@ import gamedata, souls
 from gamedata import CHAR, FLOAT, INT, S16, Ptr, Struct
 
 # (C name, TAE file, anim id, loop) — a00 = shared movement, a23 = straight-sword attacks (behaviorVariationId 2300 / 100)
+# Movement sets by equip load (MoveParam rows: light, medium, heavy, overloaded; f110, src/player.c move_set)
+MOVE_SETS = (0, 5, 10, 15)
+
 ANIMS = [
     ("WALK", "a00", 200, True),
     ("RUN", "a00", 500, True),
@@ -83,6 +86,16 @@ ANIMS = [
     # Throws (ThrowParam atkAnimId on the right weapon's motion, played by the engine, not an ESD state): backstab
     # a23 3400, riposte a23 3201
     ("BACKSTAB", "a23", 3400, False),
+    # Lock-on (PR D): rolls back / left / right (group 1 states 33 / 35 / 34 via f110(1 / 2 / 3)) of every movement
+    # set, the other sets' forward rolls and steps, and the strafe loops (MoveParam row 0 walkB/L/R, dashB/L/R)
+    ("ROLL_B", "a00", 701, False), ("ROLL_L", "a00", 702, False), ("ROLL_R", "a00", 703, False),
+    ("ROLL_M_F", "a00", 710, False), ("ROLL_M_B", "a00", 711, False), ("ROLL_M_L", "a00", 712, False),
+    ("ROLL_M_R", "a00", 713, False), ("ROLL_H_F", "a00", 720, False), ("ROLL_H_B", "a00", 721, False),
+    ("ROLL_H_L", "a00", 722, False), ("ROLL_H_R", "a00", 723, False), ("ROLL_O_F", "a00", 730, False),
+    ("ROLL_O_B", "a00", 731, False), ("ROLL_O_L", "a00", 732, False), ("ROLL_O_R", "a00", 733, False),
+    ("STEP_M", "a00", 690, False), ("STEP_H", "a00", 695, False), ("STEP_O", "a00", 696, False),
+    ("WALK_B", "a00", 201, True), ("WALK_L", "a00", 202, True), ("WALK_R", "a00", 203, True),
+    ("RUN_B", "a00", 501, True), ("RUN_L", "a00", 502, True), ("RUN_R", "a00", 503, True),
     ("RIPOSTE", "a23", 3201, False),
     # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
     # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
@@ -127,9 +140,9 @@ ANIM = Struct("AnimData", [("name", Ptr(CHAR)), ("id", INT), ("key", INT), ("len
               "key: ESD anim id as resolved by c1_3: a00 ids as they are, weapon-motion files (aNN) NN * 10000 + id")
 RECORD = Struct("PlayerData", [
     ("start_end", INT), ("weapon_id", INT), ("weapon_weight", FLOAT), ("weapon_atk_phys", INT),
-    ("move_escape", S16, 6), ("weapon_motion_r", INT), ("weapon_motion_l", INT), ("guard_motion_r", INT),
+    ("move_escape", S16, 24), ("weapon_motion_r", INT), ("weapon_motion_l", INT), ("guard_motion_r", INT),
     ("guard_motion_l", INT), ("anims", ANIM, len(ANIMS))],
-    f"Warrior (CharaInitParam {WARRIOR}) with the Longsword; move_escape = f110(n): MoveParam row 0 escapeF/B/L/R, "
+    f"Warrior (CharaInitParam {WARRIOR}) with the Longsword; move_escape = f110(n) per movement set (equip load: MoveParam rows 0 / 5 / 10 / 15, 6 each): escapeF/B/L/R, "
     "stepMove, dashEscapeF")
 
 
@@ -219,7 +232,8 @@ def main():
     n = gamedata.write(out, "player", RECORD, {
         "start_end": init["baseEnd"], "weapon_id": init["equip_Wep_Right"], "weapon_weight": round(wep["weight"], 2),
         "weapon_atk_phys": wep["attackBasePhysics"],
-        "move_escape": [mp[k] for k in ("escapeF", "escapeB", "escapeL", "escapeR", "stepMove", "dashEscapeF")],
+        "move_escape": [P["MoveParam"][row][1][k] for row in MOVE_SETS
+                        for k in ("escapeF", "escapeB", "escapeL", "escapeR", "stepMove", "dashEscapeF")],
         "weapon_motion_r": wep["wepmotionCategory"], "weapon_motion_l": left["wepmotionCategory"],
         "guard_motion_r": wep["guardmotionCategory"], "guard_motion_l": left["guardmotionCategory"], "anims": anims})
     for a in anims:

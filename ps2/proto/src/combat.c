@@ -154,6 +154,37 @@ float combat_damage_on(const CombatChr *t, const CombatAttack *atk)
     return sum > 0 ? sum : 0;
 }
 
+/* Lock-on pick: living enemies within range, scored by distance plus 4 m per radian off the view (ASSUMED; DSR's
+ * pick rule is in the camera code, not decoded) */
+CombatChr *combat_lock_pick(const float pos[3], float yaw, float range)
+{
+    CombatChr *best = 0;
+    float bs = 1e9f;
+    for (int i = 0; i < COMBAT_MAX_CHRS; i++) {
+        CombatChr *c = chrs[i];
+        if (!c || c->team != TEAM_ENEMY || c->dead)
+            continue;
+        float dx = c->pos[0] - pos[0], dz = c->pos[2] - pos[2], d = sqrtf(dx * dx + dz * dz);
+        float a = atan2f(dx, dz) - yaw;
+        while (a > 3.14159265f) a -= 6.2831853f;
+        while (a < -3.14159265f) a += 6.2831853f;
+        if (d > range || fabsf(a) > 1.5707963f || fabsf(c->pos[1] - pos[1]) > 4)
+            continue;
+        float sc = d + 4 * fabsf(a);
+        if (sc < bs)
+            bs = sc, best = c;
+    }
+    return best;
+}
+
+int combat_lock_alive(const CombatChr *c)
+{
+    for (int i = 0; i < COMBAT_MAX_CHRS; i++)
+        if (chrs[i] == c)
+            return !c->dead;
+    return 0;
+}
+
 int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
 
 int combat_apply(CombatChr *t, const CombatAttack *atk)
