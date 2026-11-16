@@ -944,7 +944,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : s == 2 ? 0 : -1;
         break;
     /* f212: manipulator +0x204 > 0 (case 0xD4), a forward-input timer of the pad manipulator whose writer was not
-     * found. ASSUMED (TECH_DEBT esd-10): DS1's kick / jumping attack input, the stick pushed from neutral to forward
+     * found. ASSUMED (TECH_DEBT esd-12): DS1's kick / jumping attack input, the stick pushed from neutral to forward
      * within the last 0.2 s */
     case 212:
         v = p->fwd_flick < 0.2f;
