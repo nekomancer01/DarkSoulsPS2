@@ -9,7 +9,7 @@ ragdoll(hkx) -> dict(
   joints=[dict(child, parent (body indices), pivot_child, pivot_parent (body frames), axis_child, axis_parent (the
                twist axis in each body's frame), cone (rad), twist_min, twist_max, plane_min, plane_max)])
 None when the file has no ragdoll (c1000, objects)."""
-import math, struct
+import sys, math, struct
 
 import souls
 
@@ -39,6 +39,11 @@ def _mat_to_quat(c0, c1, c2):
 def ragdoll(hkx):
     h = souls.HkTag(hkx)
     if not h.objects("hkaRagdollInstance"):
+        return None
+    if not any(t.name == "hkpSetLocalTransformsConstraintAtom" for t in h.types):
+        # constraints without local-transform atoms (Darkroot's c3350): not a ragdoll this reader knows; no ragdoll,
+        # the death animation plays as for a character without one
+        print(f"havok_ragdoll: no hkpSetLocalTransformsConstraintAtom, no ragdoll", file=sys.stderr)
         return None
     D = h.data
     ptr = lambda o: struct.unpack_from("<I", D, o)[0]

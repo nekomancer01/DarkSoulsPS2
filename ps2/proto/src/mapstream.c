@@ -39,7 +39,7 @@
 #include "world.h" /* world_current, world_pack: the neighbour copies (MS_COPIES) */
 
 #ifndef MS_MIP0
-#define MS_MIP0 1  /* 0: no full-size map textures (plan_item) */
+#define MS_MIP0 0  /* no full-size map textures (plan_item); -DMS_MIP0=1: streamed as before 2026-11-12 */
 #endif
 
 #ifdef MS_MEDIA_RADII  /* the media radii (mapstream_i.h) */
@@ -269,9 +269,11 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = 0;
         if (tag & MS_RES_MIP1)  /* a streamed mip 1 (mapsplit.py MIP1_OUT): what a cell in view draws beyond the mip 0 range */
             return age <= 1 ? MS_MIP1_CLS : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
-        /* -DMS_MIP0=0: full-size textures are never read (the streamed mip 1 stays the sharpest level): a third fewer
-         * map reads on the ISO Taurus route and their ~0.5-0.9 MB of the arena for geometry, for softer surfaces
-         * within the 5-10 m where mip 0 shows. A compromise switch, off by default (TECH_DEBT world-16). */
+        /* MS_MIP0 0 (the default since 2026-11-12, Ame: geometry before textures): full-size textures are never read,
+         * the streamed mip 1 stays the sharpest level. Their reads and their 0.5-0.9 MB of the arena go to geometry:
+         * ISO iso_burg_taurus, on -> off: map reads 1440 -> 1196, read again within 30 s 510 -> 312, hard-tier "no
+         * room" refusals 50-57 -> 26, drive busy 58 -> 50 %, free EE RAM at the shots +0.7 MB, for softer surfaces
+         * within the 5-10 m where mip 0 showed (TECH_DEBT world-16). -DMS_MIP0=1: streamed as before. */
         if (!MS_MIP0)
             return age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
         return age <= 1 ? C_PREF : age <= MS_TEX_KEEP ? C_KEEP : C_FREE;
@@ -360,6 +362,24 @@ static int room_fail, failed, evict_left, defrag_left;
 static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb;
 unsigned ms_cancel_kb;
 
+/* MS_SCAN (default 1; 0 = strict class then distance order): urgent reads (classes C_NEAR2 and up: near parts within the
+ * draw radius, the coarse level in view and pinned) go nearest first; the read-ahead classes below them (C_VIEW2,
+ * C_FARC, C_PREF) go in disc order: the queued one at or after the end of the last read in the same pack first, then
+ * the lowest offset of that pack (a circular scan), then another pack. The technique of the RW-era PS2 streamers (re3
+ * CStreaming: priority requests first, the rest in image order from the head position): ordered by distance, B8b's
+ * read log showed ~3100 reads of 1.2 items per 6-min world_route, every one a seek (~8/s, the gate is 2). */
+#ifndef MS_SCAN
+#define MS_SCAN 1
+#endif
+/* MS_RA_INFLIGHT (with MS_SCAN): reads of the read-ahead classes in flight at once. The disc server serves reads in
+ * order, so a near part wanted at the feet waited behind up to MS_INFLIGHT read-ahead reads: Ame's ISO play
+ * (2026-11-10) had cells drawn coarse while due near for up to 169 frames at 0 m with no room refusal. */
+#ifndef MS_RA_INFLIGHT
+#define MS_RA_INFLIGHT 2
+#endif
+static int scan_k = -1;
+static unsigned scan_end;
+static int q_scan_pick(void);
 static unsigned flow_rd[3], flow_kb[3];
 static unsigned thr_n[3][MS_WHY_N], thr_kb[3], thr_cls[C_TOP + 1];
 /* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
@@ -397,6 +417,7 @@ static int blocked(int k, unsigned id)
     return 0;
 }
 
+static void orphan_pump(void);
 static void collect(int i, int r)
 {
     MsRead w = ms_rd[i];
@@ -548,8 +569,16 @@ static void copies_close(int k)  /* block k's instance closed, its reads cancell
 static int issue(void)
 {
     rs_log();
-    MsQ w = q[0];
-    memmove(q, q + 1, --nq * sizeof *q);
+    if (MS_SCAN && q_rank(q[0].cls) < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
+        int ra = 0;
+        for (int i = 0; i < ms_nrd; i++)
+            ra += !ms_rd[i].cxl && ms_rd[i].cls < C_NEAR2;
+        if (ra >= MS_RA_INFLIGHT)
+            return 0;
+    }
+    int qi = MS_SCAN ? q_scan_pick() : 0;
+    MsQ w = q[qi];
+    memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
     MsInst *m = &ms_inst[w.k];
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
@@ -599,12 +628,13 @@ static int issue(void)
             !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))))
             lo = 1;
         void *p = lo && !nr ? ms_g_alloc_lend(gb) : NULL;
+        int lent = 0;  /* 1 lent, 2 lent as a near part: undone when the read cannot go out below */
         if (p)
-            ms_lent_n++;
+            ms_lent_n++, lent = 1;
         else
             p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
         if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = ms_g_alloc_lend(gb)))
-            ms_lent_n++, ms_lent_near += gb;
+            ms_lent_n++, ms_lent_near += gb, lent = 2;
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -670,6 +700,11 @@ static int issue(void)
         }
         if (!tk) {
             ms_g_free(p, gb);
+            /* (the lending counts went up with the allocation: left as they were, every full request table while
+             * near parts were lent shrank MS_LEND_NEAR_KB's room for good) */
+            ms_lent_n -= lent > 0;
+            if (lent == 2)
+                ms_lent_near = ms_lent_near > gb ? ms_lent_near - gb : 0;
             if (!sent)
                 q_add(w.k, w.id, w.cls, w.key);
             return 0;
@@ -691,12 +726,35 @@ static int issue(void)
         }
         if (!ms_nrd)
             land_t = ticks();
-        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0};
+        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
+        scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
         mapstream_stats.pending = ms_nrd;
         sent++;
         g = e;
     }
     return 1;
+}
+
+/* MS_SCAN: the queue entry issue() takes. The queue is in rank order, so the urgent entries lead it; once the head is
+ * a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate. */
+static int q_scan_pick(void)
+{
+    if (q_rank(q[0].cls) >= C_NEAR2 || scan_k < 0)  /* the hard tier at the head: nearest first (q_rank) */
+        return 0;
+    int best = 0, bk = 3;
+    unsigned bo = ~0u;
+    for (int i = 0; i < nq; i++) {
+        const MsInst *m = &ms_inst[q[i].k];
+        if (q[i].id >= it_n(m))
+            continue;
+        unsigned o = it_off(m, q[i].id);
+        int rk = q[i].k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
+        if (rk == 2)
+            o = (unsigned)q[i].k << 26 | (o >> 6);  /* other packs: by block, then offset */
+        if (rk < bk || (rk == bk && o < bo))
+            best = i, bk = rk, bo = o;
+    }
+    return best;
 }
 
 /* ---- plan ---- */
@@ -1078,6 +1136,7 @@ void mapstream_update(const float pos[3])
     for (int i = 0; i < ms_nrd; i++)
         if (pack_req_done(ms_rd[i].tk, &r))
             collect(i--, r);
+    orphan_pump();
     HITCH_END(io, HS_MSIO);
     {  /* walking velocity per frame (smoothed); a warp / teleport starts it again */
         float d[3] = {pos[0] - last_pos[0], pos[1] - last_pos[1], pos[2] - last_pos[2]};
@@ -1251,6 +1310,24 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     return 1;
 }
 
+/* MS_ORPHAN (default on; 0 = mapstream_close waits for its reads in flight as before) */
+#ifndef MS_ORPHAN
+#define MS_ORPHAN 1
+#endif
+typedef struct { int tk; void *buf; unsigned bytes; } Orphan;
+static Orphan orphan[MS_INFLIGHT];
+static int n_orphan;
+/* cancelled reads of closed instances that were still landing: their buffers go back once they have */
+static void orphan_pump(void)
+{
+    int r;
+    for (int i = 0; i < n_orphan; i++)
+        if (pack_req_done(orphan[i].tk, &r)) {
+            ms_g_free(orphan[i].buf, orphan[i].bytes);
+            orphan[i--] = orphan[--n_orphan];
+        }
+}
+
 void mapstream_close(int k)
 {
     if (k < 0 || k >= MS_INST || !ms_inst[k].ncell)
@@ -1258,7 +1335,17 @@ void mapstream_close(int k)
     MsInst *m = &ms_inst[k];
     for (int i = 0; i < ms_nrd; i++)  /* stop its reads (after their current page) before the buffers go back */
         if (ms_rd[i].k == k) {
-            pack_req_cancel(ms_rd[i].tk);
+            /* without waiting (MS_ORPHAN): pack_req_cancel held the frame until the read in flight stopped, 117-418 ms
+             * of the world step whenever a block let go of its map tables (iso_neighbours, 2026-11-15); such a read
+             * keeps its buffer (an orphan) until it lands, collected by orphan_pump */
+            unsigned a, e = grp_of(m, ms_rd[i].id, &a);
+            if (!MS_ORPHAN || pack_req_cancel_async(ms_rd[i].tk) || n_orphan == MS_INFLIGHT) {
+                if (MS_ORPHAN && n_orphan == MS_INFLIGHT)
+                    pack_req_cancel(ms_rd[i].tk);
+            } else {
+                orphan[n_orphan++] = (Orphan){ms_rd[i].tk, m->buf[a], grp_bytes(m, a, e)};
+                ms_keep_buf = 1, ms_drop(k, a), ms_keep_buf = 0;  /* its items go; the buffer stays the read's */
+            }
             memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
             i--;
         }
@@ -1284,6 +1371,14 @@ void mapstream_close(int k)
             blk[i--] = blk[--ms_nblk];
     if (sel == k)
         sel = 0;
+}
+
+int mapstream_reading(int k)
+{
+    int n = 0;
+    for (int i = 0; i < ms_nrd; i++)
+        n += ms_rd[i].k == k;
+    return n;
 }
 
 void mapstream_select(int k)

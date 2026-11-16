@@ -9,13 +9,16 @@
 #define WORLD_H
 
 /* 1 (default): the boot block's relief streams like every block's (world.c), 0: resident from boot (main.c) */
+#ifndef WORLD_BOOT_LEAN
+#define WORLD_BOOT_LEAN 1  /* the boot block's map tables are let go away from it (world.c); 0: resident for good */
+#endif
 #ifndef WORLD_BOOT_RELIEF
 #define WORLD_BOOT_RELIEF 1
 #endif
 
 #include <gsKit.h>
 
-#define WORLD_MAX 8  /* blocks in world.bin */
+#define WORLD_MAX 16  /* blocks in world.bin (u16 load / keep masks, world.bin v4) */
 
 /* Before main.c loads the boot area: reads world.pak and opens every block's pack.
  * 0 = no world table, or one whose block 0 is not boot_area (single-area builds): main.c loads map.bin as before and

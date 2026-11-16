@@ -7,6 +7,8 @@
 #include "bonfire.h"
 #include "render.h"
 #include "progress.h"
+#include "event.h"
+#include "menu.h"
 
 typedef struct {
     char magic[4];
@@ -133,12 +135,79 @@ static void draw_layout(int i, int a)
 
 void hud_layout(int i, int a) { draw_layout(i, a); }
 
+/* PS2 face buttons for prompts and key guides (hud.h HUD_BTN_*): DSR's PC files carry keyboard / pad prompts in
+ * neither menu.tpf nor the fonts, so the symbols are drawn: a dark round plate with the symbol in its usual colour
+ * (Triangle green, Circle red, Cross blue, Square pink). Size = the text line height, a small gap after. */
+#define BTN_GAP 4.0f
+static float btn_size(void) { return ok ? gly['A' - 32].h : 20; }
+
+static void thick_line(float x0, float y0, float x1, float y1, float t, u64 c)
+{
+    float dx = x1 - x0, dy = y1 - y0, l = sqrtf(dx * dx + dy * dy);
+    if (l <= 0)
+        return;
+    float nx = -dy / l * t * 0.5f, ny = dx / l * t * 0.5f;
+    gsKit_prim_quad(gs, R_HX(x0 + nx), y0 + ny, R_HX(x1 + nx), y1 + ny, R_HX(x0 - nx), y0 - ny, R_HX(x1 - nx), y1 - ny,
+                    HUD_Z, c);
+}
+
+void hud_button(float x, float y, float h, int btn, int a)
+{
+    if (!gs)
+        return;
+    float r = h * 0.5f, cx = x + r, cy = y + r, t = h * 0.11f;
+    u64 plate = rgba(0x10, 0x10, 0x10, a * 3 / 4), ring = rgba(0x60, 0x60, 0x60, a);
+    enum { SEG = 16 };
+    for (int i = 0; i < SEG; i++) {  /* plate: a 16-sided disc and a thin rim */
+        float a0 = i * 6.2831853f / SEG, a1 = (i + 1) * 6.2831853f / SEG;
+        gsKit_prim_triangle(gs, R_HX(cx), cy, R_HX(cx + r * cosf(a0)), cy + r * sinf(a0), R_HX(cx + r * cosf(a1)),
+                            cy + r * sinf(a1), HUD_Z, plate);
+        thick_line(cx + r * cosf(a0), cy + r * sinf(a0), cx + r * cosf(a1), cy + r * sinf(a1), 1.0f, ring);
+    }
+    float k = r * 0.52f;  /* symbol half size */
+    switch (btn) {
+    case HUD_BTN_CROSS: {
+        u64 c = rgba(0x48, 0x70, 0x80, a);
+        thick_line(cx - k, cy - k, cx + k, cy + k, t, c);
+        thick_line(cx - k, cy + k, cx + k, cy - k, t, c);
+        break;
+    }
+    case HUD_BTN_CIRCLE: {
+        u64 c = rgba(0x80, 0x38, 0x38, a);
+        for (int i = 0; i < SEG; i++) {
+            float a0 = i * 6.2831853f / SEG, a1 = (i + 1) * 6.2831853f / SEG;
+            thick_line(cx + k * cosf(a0), cy + k * sinf(a0), cx + k * cosf(a1), cy + k * sinf(a1), t, c);
+        }
+        break;
+    }
+    case HUD_BTN_TRIANGLE: {
+        u64 c = rgba(0x38, 0x78, 0x58, a);
+        float y0 = cy - k * 1.05f, y1 = cy + k * 0.75f, hx = k * 1.05f;
+        thick_line(cx, y0, cx + hx, y1, t, c);
+        thick_line(cx + hx, y1, cx - hx, y1, t, c);
+        thick_line(cx - hx, y1, cx, y0, t, c);
+        break;
+    }
+    case HUD_BTN_SQUARE: {
+        u64 c = rgba(0x80, 0x50, 0x70, a);
+        float q = k * 0.85f;
+        thick_line(cx - q, cy - q, cx + q, cy - q, t, c);
+        thick_line(cx + q, cy - q, cx + q, cy + q, t, c);
+        thick_line(cx + q, cy + q, cx - q, cy + q, t, c);
+        thick_line(cx - q, cy + q, cx - q, cy - q, t, c);
+        break;
+    }
+    }
+}
+
 float hud_text_width(const char *s)
 {
     float w = 0;
     for (; ok && *s; s++)
         if (*s >= 32 && *s < 127)
             w += gly[*s - 32].adv;
+        else if (*s >= HUD_BTN_CROSS && *s <= HUD_BTN_SQUARE)
+            w += btn_size() + BTN_GAP;
     return w;
 }
 
@@ -150,6 +219,12 @@ float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, i
     if (align)
         x -= w;
     for (; *s; s++) {
+        if (*s >= HUD_BTN_CROSS && *s <= HUD_BTN_SQUARE) {  /* a button symbol in the text (hud.h) */
+            float bh = btn_size() * sy;
+            hud_button(x, y + (gly['A' - 32].h * sy - bh) * 0.5f, bh, *s, a);
+            x += (btn_size() + BTN_GAP) * sx;
+            continue;
+        }
         if (*s < 32 || *s >= 127)
             continue;
         const Glyph *gl = &gly[*s - 32];
@@ -160,6 +235,40 @@ float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, i
         x += gl->adv * sx;
     }
     return w;
+}
+
+static const u32 *help;
+void hud_help_init(const void *blob)
+{
+    help = blob && !memcmp(blob, "DSHL", 4) ? blob : NULL;
+}
+
+const char *hud_help(int id)
+{
+    if (!help)
+        return NULL;
+    int lo = 0, hi = (int)help[1] - 1;  /* rows sorted by id */
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        u32 k = help[2 + 2 * m];
+        if (k == (u32)id)
+            return (const char *)help + help[3 + 2 * m];
+        if (k < (u32)id)
+            lo = m + 1;
+        else
+            hi = m - 1;
+    }
+    return NULL;
+}
+
+void hud_prompt(float cx, float y, int btn, const char *text)
+{
+    char s[96];
+    snprintf(s, sizeof s, "%c %s", btn, text);
+    int lh = hud_line_height();
+    float w = hud_text_width(s) + 40;
+    hud_fill(cx - w / 2, y, w, lh + 10, 0, 0, 0, 0x60);  /* bonfire.c's prompt box */
+    hud_text(cx - w / 2 + 20, y + 5, s, 0x80, 0x80, 0x80, 0);
 }
 
 float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
@@ -322,5 +431,10 @@ void hud_draw(const Player *p, float dt)
                    (int)(0x80 * powf(ta, 1 / 2.2f)));
     }
     bonfire_hud(dt);  /* bonfire prompt, rest menu, dialogs, BONFIRE LIT (src/bonfire.c) */
+    /* an event's action button in reach (IfActionButton's help message id: "Open", "Examine" ...), with the PS2
+     * action button's symbol (Cross) */
+    const char *ht = event_stats.prompt >= 0 && p->hp > 0 && !menu_open() ? hud_help(event_stats.prompt) : NULL;
+    if (ht)
+        hud_prompt(320, 330, HUD_BTN_CROSS, ht);
     hud_end();
 }

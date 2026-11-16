@@ -7,7 +7,7 @@
 #include <gsKit.h>
 #include "player.h"
 
-#define MAX_ENEMIES 64
+#define MAX_ENEMIES 128  /* slots of the blocks on (64 ran full with the Burg, Parish and Depths blocks on, 2026-11-15) */
 #define ENEMY_REC 40  /* enemies.bin placement record (tools/export_enemies.py) */
 
 /* Spawn every placement whose character pack exists (enemies.bin from the area pack, kept by the caller); loads the
@@ -17,7 +17,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
 /* World blocks (src/world.c): at boot, block b's enemies.bin + map Lua (character packs from PACK_ROOT dir/) (types loaded and stripped, placements kept,
  * Lua run into the shared VM); enemy_block_add places them when the block turns on (before event_block_on), _remove
  * takes them out when it turns off (slots reused; an index is valid while its block is on) */
-#define ENEMY_BLOCKS 5
+#define ENEMY_BLOCKS 16  /* = WORLD_MAX (world.h) */
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, const void *map_lua,
                       int map_lua_size);
 void enemy_block_add(int block);
@@ -52,5 +52,10 @@ struct EvChr;
 void enemy_entity_bind(int entity, struct EvChr *c);
 /* Totals for the HUD: enemies updated / drawn this frame */
 extern int enemy_active, enemy_drawn;
+
+/* combat_throw_hook: start the enemy side of a player backstab / riposte (ThrowParam), see enemy.c */
+#include "combat.h"
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw);  /* test scripts */
+int enemy_throw_try(const float pos[3], float yaw, ThrowStart *out);
 
 #endif

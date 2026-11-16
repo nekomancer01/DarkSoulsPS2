@@ -28,7 +28,7 @@ int col_init(const void *blob);
 int col_tris(void);
 /* World blocks (src/world.c): up to COL_BLOCKS collision.bin blobs in one world frame, all queried together.
  * col_init(blob) = col_load(0, blob); col_tris() = block 0's triangles */
-#define COL_BLOCKS 5
+#define COL_BLOCKS 16  /* = WORLD_MAX (world.h): block index = collision block */
 int col_load(int block, const void *blob);
 void col_unload(int block);
 int col_block_tris(int block);
@@ -58,6 +58,13 @@ int col_floor_block(int block, float x, float z, float y_top, float y_bottom, un
  * horizontally only, so the caller's move slides along walls. The capsule spans pos.y + step .. pos.y + height
  * (radius r, rounded ends): anything lower than `step` (stairs, kerbs) is left to col_floor.
  * Returns the number of contacts resolved (0 = was free). */
+/* The normal.y below which col_push_capsule / col_move treat a triangle as wall (default COL_WALKABLE_NY). The
+ * player's character proxy sets its own while it moves (player.c PROXY_WALL_NY: hkpCharacterProxyCinfo maxSlope). */
+extern float col_wall_ny;
+/* col_ride (player.c while its proxy moves): a triangle the capsule touches from above, whose contact normal (from the
+ * touching point to the capsule axis) is within col_wall_ny of up, does not push: the capsule rides over that edge as
+ * Havok's character proxy treats a contact within maxSlope as ground. */
+extern int col_ride;
 int col_push_capsule(float pos[3], float r, float height, float step, unsigned mask);
 
 /* Move feet `pos` by the horizontal (dx, dz) in substeps of at most r / 2, pushing out after each: tunnel-free wall

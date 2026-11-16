@@ -5,7 +5,7 @@
 #ifndef DRAWGRP_H
 #define DRAWGRP_H
 
-#define DG_INST 5  /* >= MAP_INST */
+#define DG_INST 16  /* >= MAP_INST */
 
 /* blob: dg.bin of instance k (kept loaded); chunks: bump.bin's global chunk count it must cover, col_tris: that block's
  * collision.bin triangles. Returns 1 when the filter is on; without a matching blob every chunk stays shown.
@@ -39,5 +39,9 @@ int dg_entity_hidden(int id);
  * floats), -1 = not found (always shown); dg_mask_shown: 1 while that set shares a group with k's current part */
 int dg_char(int k, const float pos[3]);
 int dg_mask_shown(int k, int mask);
+/* DSR's rule for a piece of any map of the shared area group (DG_SHARED) by its draw groups themselves: 1 while they
+ * share a group with the collision part under the player, or no part's groups are known yet (the far panorama,
+ * mapblock.c mp_draw_far: pieces of blocks that are not loaded) */
+int dg_groups_shown(const unsigned m[4]);
 
 #endif

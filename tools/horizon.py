@@ -69,11 +69,11 @@ ON = os.environ.get("HZN", "1") == "1"
 # mesh_err, not the collapse's own error bound): build() lowers the error it gives the weld and the collapse until the
 # measured ERR_Q quantile (by surface area, both ways) is at most PX (ASSUMED 0.99: specks the prune drops and slivers
 # may exceed it; the export line prints the quantile and the maximum)
-PX = float(os.environ.get("HZN_PX", 8.0))
+PX = float(os.environ.get("HZN_PX", 12.0))  # (8 before the coarse level took the near geometry, 2026-11-12: the denser source grew the Burg horizons 1.5 -> 1.95 MB)
 ERR_Q = float(os.environ.get("HZN_ERR_Q", 0.99))
 S_MIN = 0.25  # the weld + collapse error is searched down to S_MIN x PX
 ERR_CAP = 4.0  # distances are searched up to ERR_CAP x PX pixels (a larger one counts as that)
-HZN_D = float(os.environ.get("HZN_D", 38.0))  # (54 before map.c HZN_R went 56 -> 40, Burg plan B3)  # metres: nearest view distance the error is judged from
+HZN_D = float(os.environ.get("HZN_D", 46.0))  # (54 before map.c HZN_R went 56 -> 40, Burg plan B3)  # metres: nearest view distance the error is judged from
 # Every block is cut to the same screen error (PX), so the far view has one quality across the game: the triangle count
 # follows how much each block shows, not a share of bytes. KB is only a safety ceiling (ASSUMED) for a block that would
 # overflow the mapstream arena (9984 KB; lite sets share it with the near cells, relief and enemy models, up to 3 slots,
@@ -86,6 +86,17 @@ PX_MAX = float(os.environ.get("HZN_PX_MAX", 32.0))  # the budget never pushes th
 # the backdrop (Firelink's m8000 view of the Burg and the valley, 8-14k triangles; a few hundred elsewhere) has its own
 # ceiling, so it can't take the map's share in Firelink (ASSUMED)
 BD_KB = float(os.environ.get("HZN_BD_KB", 480))
+# colours pulled this far toward their texture's mean colour (0: the few texels sampled per corner, as before). From 32 m
+# the textured level it stands for shows mips 3-4, close to one colour per material; three texels per corner gave
+# every large horizon triangle its own tint (the pale and green shards north of the Burg bonfire)
+TEX_MEAN = float(os.environ.get("HZN_TEX_MEAN", 1.0))
+# Tree crowns (HZN_CROWN_H metres, 0 = no foliage in the horizon, as before): the foliage chunks that stand at least that
+# high above every walkable spot within CROWN_R metres (xz) join the horizon as solid cards in their leaves' colour.
+# The horizon carried no foliage and map.c thins foliage to nothing with distance, so a tree seen from afar was its
+# bare trunk and branches: Firelink's great tree from the Undead Burg bonfire, where the game shows its crown against
+# the sky (2026-11-13). Ground tufts and bushes stay out (they are below CROWN_H). ASSUMED numbers
+CROWN_H = float(os.environ.get("HZN_CROWN_H", 4.0))
+CROWN_R = float(os.environ.get("HZN_CROWN_R", 8.0))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
 # indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
@@ -154,6 +165,7 @@ def coarse_tris(b):
     ncell = struct.unpack_from("<I", b, cell_off)[0]
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
+    nav = nav_points(b) if CROWN_H > 0 else np.zeros((0, 3))
     Ps, Cs, Ks, Bs, Ds, cov = [], [], [], [], [], set()
     cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
@@ -161,10 +173,18 @@ def coarse_tris(b):
             continue
         for j in range(ce[9], ce[9] + ce[10]):
             ti, fl, ntri, po, so, co = struct.unpack_from("<iII3I", b, chunk_off + 64 * j)
-            if fl & (CHUNK_BLEND | CHUNK_SKY | CHUNK_GRASS):
-                continue  # covered: coarse chunks, opaque kept ones and the backdrop (map.c hz_covers)
-            cov.add(ci)
+            if fl & (CHUNK_BLEND | CHUNK_SKY):
+                continue
             mn_mx_org_step = struct.unpack_from("<10f", b, chunk_off + 64 * j + 24)
+            crown = bool(fl & CHUNK_GRASS)
+            if crown:  # foliage: only what stands CROWN_H above every walkable spot around it (a tree's crown)
+                lo, hi = np.array(mn_mx_org_step[0:3]), np.array(mn_mx_org_step[3:6])
+                near = (np.maximum(0, np.maximum(lo[[0, 2]] - nav[:, [0, 2]], nav[:, [0, 2]] - hi[[0, 2]])) ** 2).sum(1) < CROWN_R ** 2 \
+                    if len(nav) else np.zeros(0, bool)
+                if CROWN_H <= 0 or (near.any() and lo[1] - nav[near, 1].max() < CROWN_H) or not len(nav):
+                    continue
+            else:
+                cov.add(ci)  # covered: coarse chunks, opaque kept ones and the backdrop (map.c hz_covers)
             org, step = np.array(mn_mx_org_step[6:9]), mn_mx_org_step[9]
             nv, ntri = ntri >> 16, ntri & 0xFFFF  # tris | nv << 16 (export_map.chunk_packet)
             n = 3 * ntri
@@ -210,7 +230,13 @@ def coarse_tris(b):
                 cnt = a.reshape(-1, 3).sum(1)
                 mean = np.where(cnt[:, None] > 0, tri_rgb / np.maximum(cnt, 1)[:, None], cen[:, :3])
                 rgb = np.where(a[:, None], rgb, np.repeat(mean, 3, 0))
+                if TEX_MEAN > 0:  # toward the texture's mean opaque colour (what its smallest mip shows)
+                    om = img[..., 3] > 0
+                    if om.any():
+                        rgb = rgb + (img[om][:, :3].astype(np.float64).mean(0) - rgb) * TEX_MEAN
             opaque = a.reshape(-1, 3).sum(1) + cen_a >= 2  # at least half of 4 samples
+            if crown:  # a crown's cards whole, in the leaves' colour: from the horizon's distance it is one dark mass
+                opaque = np.ones(ntri, bool)
             Ps.append(p.reshape(-1, 3, 3))
             Cs.append(np.minimum(255.0, rgb * col / 128.0).reshape(-1, 3, 3))
             Ks.append(opaque)
@@ -234,6 +260,63 @@ def chunk_dg(b, nch):
     if N < nch:
         return np.zeros(nch, np.int64)
     return np.frombuffer(d, np.uint8, nch, 32 + 16 * (P + C)).astype(np.int64)
+
+
+# The far backdrop as picture layers (tools/pano.py bake; HZN_PANO_D metres, 0 = none: all of it stays horizon
+# geometry, as before): backdrop triangles (CHUNK_BACKDROP: the game's own distant pieces) at least that far from the
+# block's walkable ground, of draw-group sets at least PANO_SHOWN of the block's floor shows, are drawn from baked
+# textured pictures and leave the horizon. One rule for both tools (pano_tris), so nothing is drawn twice or lost.
+# ASSUMED 100 m: nearer pieces shift too much against a picture as the player walks; 0.5: a set most floors hide
+# (a neighbour map's stand-ins) keeps the draw-group test only geometry has
+PANO_D = float(os.environ.get("HZN_PANO_D", 100.0))
+PANO_SHOWN = float(os.environ.get("HZN_PANO_SHOWN", 0.5))
+
+
+def own_nav(b, src):
+    """the block's own walkable ground: map.bin's navmesh vertices inside its cells (a world block's map.bin carries
+    the whole MSB's navmesh; tools/area.py BLOCKS by the export directory's name)"""
+    import area
+    nav = nav_points(b)
+    cs = area.BLOCKS.get(os.path.basename(os.path.dirname(os.path.abspath(src))), {}).get("cells")
+    if cs and len(nav):
+        keep = np.zeros(len(nav), bool)
+        for x0, z0, x1, z1 in area.cell_rects(cs):
+            keep |= (nav[:, 0] >= x0 * area.CELL) & (nav[:, 0] < (x1 + 1) * area.CELL) & \
+                (nav[:, 2] >= z0 * area.CELL) & (nav[:, 2] < (z1 + 1) * area.CELL)
+        nav = nav[keep] if keep.any() else nav
+    return nav
+
+
+def pano_sets(src):
+    """draw-group sets (dg.bin piece mask indices) of the export at src that at least PANO_SHOWN of the block's own
+    collision triangles show; None without a dg.bin (every set)"""
+    path = os.path.join(os.path.dirname(os.path.abspath(src)), "dg.bin")
+    if not os.path.exists(path):
+        return None
+    d = open(path, "rb").read()
+    _mg, P, C, N, T = struct.unpack_from("<5I", d, 0)
+    pm = np.frombuffer(d, np.uint32, 4 * P, 32).reshape(P, 4)
+    cm = np.frombuffer(d, np.uint32, 4 * C, 32 + 16 * P).reshape(C, 4)
+    cnt = np.bincount(np.frombuffer(d, np.uint8, T, 32 + 16 * (P + C) + N), minlength=C)[:C].astype(np.float64)
+    if not cnt.sum():
+        return None
+    share = ((pm[:, None, :] & cm[None]).any(2) * cnt[None]).sum(1) / cnt.sum()
+    return {0} | {int(i) for i in np.flatnonzero(share >= PANO_SHOWN)}
+
+
+def pano_tris(cen, sets, bd, nav, src):
+    """(n,) bool: the backdrop triangles (centroids cen, draw-group sets, bd flags) the picture layers take"""
+    if PANO_D <= 0 or not len(cen) or not len(nav):
+        return np.zeros(len(cen), bool)
+    ok = pano_sets(src)
+    L = _nearest_lib()
+    ns = nav[::max(1, len(nav) // 4000)]
+    if L is not None:
+        Q, S_, d2 = np.ascontiguousarray(cen, np.float64), np.ascontiguousarray(ns, np.float64), np.empty(len(cen))
+        L.min_d2(len(Q), Q.ctypes.data, len(S_), S_.ctypes.data, 0.0, d2.ctypes.data)
+    else:
+        d2 = np.array([((ns - c) ** 2).sum(1).min() for c in cen])
+    return bd & (d2 >= PANO_D * PANO_D) & (np.isin(sets, list(ok)) if ok is not None else True)
 
 
 def nav_points(b):
@@ -589,6 +672,7 @@ def _place(V, VC, T, lo, hi, cfl):
 
 
 SRC = []
+PANO = os.environ.get("HZN_PANO", "1") == "1"  # (the Makefile's PANO switch: 0 = no picture layers, all horizon)
 
 
 def ntri(r):
@@ -638,6 +722,8 @@ def build(b):
     """-> (hzn.bin bytes, stats dict)"""
     assert b[:4] == b"DSM5", "horizon: not a DSM5 map.bin"
     P, C, keep, bd, dg, cells, cov = coarse_tris(b)
+    if PANO and len(P):  # the far backdrop the picture layers draw (tools/pano.py bake)
+        keep = keep & ~pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0])
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)

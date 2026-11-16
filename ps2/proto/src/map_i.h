@@ -83,7 +83,7 @@ typedef struct { int tex; unsigned flags; unsigned short tris, nv; unsigned pos,
  * feet: HZN_R + HZN_HYST + the camera's ~5 m stay inside it. ASSUMED 40 m (horizon.py judges its error from 38 m; 56 / 54 m before the Burg plan's B3).
  * HZN=0 at build time: no horizon section, the old drawing; make DEFS=-DHZN_OFF=1 ignores one at runtime. */
 #ifndef HZN_R
-#define HZN_R 40.0f  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
+#define HZN_R 48.0f  /* (residency.h RES_PIN_R: 40 until 2026-11-12, 32 for a day) */  /* (Burg plan B3, 2026-11-08: 56 m before; the export's hard tier holds the coarse level to 40 m) */
 #endif
 #define HZN_HYST 2.0f
 /* the horizon fades in over the coarse level through the HZN_FADE metres inside HZN_R (GS alpha FIX, after the opaque
@@ -302,5 +302,7 @@ unsigned mp_list_build(const MapInst *m, int k, int ci, int nd, int use_hz, cons
 extern unsigned mp_chk_lists, mp_chk_bad;
 void mp_build_index(MapInst *mi);
 unsigned mp_draw_hz_only(int k, const float *e);
+unsigned mp_draw_far(const float *e);
+extern Header mp_boot_hdr;  /* the boot block's header (a copy: its tables may be let go, map_boot_lean) */
 
 #endif

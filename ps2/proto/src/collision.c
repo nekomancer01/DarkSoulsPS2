@@ -511,6 +511,9 @@ static float closest_seg_tri(const float *p, const float *q, const float *a, con
     return best;
 }
 
+float col_wall_ny = COL_WALKABLE_NY;
+int col_ride = 0;
+
 /* Capsule axis heights (push1): p0y .. p1y, radius r around it */
 static inline void capsule_axis(const float pos[3], float r, float height, float step, float *p0y, float *p1y)
 {
@@ -531,13 +534,15 @@ static int push_tri(float pos[3], float *p0, float *p1, float *lo, float *hi, fl
         return 0;
     float n[3];
     tri_normal(a, b, c, n);
-    if (n[1] >= COL_WALKABLE_NY || -n[1] >= COL_WALKABLE_NY)
+    if (n[1] >= col_wall_ny || -n[1] >= col_wall_ny)
         return 0; /* floors (col_floor) and flat ceilings do not push sideways */
     float cs[3], ct[3];
     float d2 = closest_seg_tri(p0, p1, a, b, c, cs, ct);
     if (d2 >= r * r)
         return 0;
     float dx = cs[0] - ct[0], dz = cs[2] - ct[2], dist = sqrtf(d2), hl = sqrtf(dx * dx + dz * dz);
+    if (col_ride && dist > 1e-4f && cs[1] - ct[1] >= col_wall_ny * dist)
+        return 0; /* col_ride: a contact under the capsule within the slope limit is ground it rides over, not wall */
     if (hl < 1e-4f) {
         /* segment touches/crosses the triangle: push along the horizontal normal, towards the side the capsule axis
          * is on */

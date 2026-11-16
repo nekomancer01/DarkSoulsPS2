@@ -4,6 +4,10 @@
    to fit BUDGET), and each job's log replayed. Python's dict orders (first appearance) are kept throughout. */
 #include "mapx.h"
 #include <math.h>
+#if MX_TIMING
+#include <stdio.h>
+#include <time.h>
+#endif
 
 typedef struct {
     int nt;
@@ -264,9 +268,19 @@ static void run_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
+#if MX_TIMING
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+#endif
     j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat,
                               h->border_w, h->seam_w, h->seam_k2, h->ak2, h->min_cos, j->amesh);
     mx_ok(j->log, 1);
+#if MX_TIMING
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double dt = t1.tv_sec - t0.tv_sec + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+    if (dt > 2 && getenv("MX_TIME"))
+        fprintf(stderr, "  [mx] job %lld: %d tris, %d pos, %.1f s\n", i, j->ntri, j->npos, dt);
+#endif
 }
 
 typedef struct {
@@ -302,6 +316,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
 {
     if (nm < 0)
         return NULL;
+    mx_tick("simp_new start");
     mx_simp *h = MX_ZNEW(mx_simp, 1);
     h->nm = nm;
     h->border_w = border_w, h->seam_w = seam_w, h->seam_k2 = seam_k2, h->ak2 = ak2, h->min_cos = min_cos;
@@ -325,6 +340,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
     }
     long long nk = km.n;
     mx_map_free(&km);
+    mx_tick("keys");
     /* identical copies: (ti, set of triangles as sets of keys) seen before -> emptied */
     {
         ctri **cs = MX_ZNEW(ctri *, nm);
@@ -392,6 +408,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         free(cs), free(cn), free(first);
         mx_map_free(&seen);
     }
+    mx_tick("dup copies");
     /* live meshes welded by shared keys; groups in order of their first member */
     int *live = MX_NEW(int, nm ? nm : 1), nlive = 0;
     for (int mi = 0; mi < nm; mi++)
@@ -442,6 +459,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         int added;
         mx_map_put(&farm, far + 3 * i, &added);
     }
+    mx_tick("weld groups");
     /* per group: cells in order of first appearance, one job each */
     int capj = 16;
     h->jobs = MX_ZNEW(sjob, capj);
@@ -546,6 +564,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
     }
     free(pmap), free(amap);
     mx_map_free(&farm);
+    mx_tick("build jobs");
     /* locks, view distances, scales */
     long long ntp = 0;
     for (int i = 0; i < h->njobs; i++)
@@ -557,8 +576,10 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         memcpy(AP + 3 * o, j->pos, sizeof(double) * 3 * (size_t)j->npos);
         o += j->npos;
     }
+    mx_tick("gather pos");
     vd_opt vo = {floor_, spawn_k, spawn, nkeep, keep_pos, keep_r2, keep_d};
     view_distance(ntp, AP, nnv, nv, nnt, nt, &vo, D);
+    mx_tick("view_distance");
     o = 0;
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
@@ -575,6 +596,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         }
     }
     free(AP), free(D), free(njk);
+    mx_tick("locks+struct_weight");
     /* simplify every job, largest first */
     int *sz = MX_NEW(int, h->njobs ? h->njobs : 1), *ordj = MX_NEW(int, h->njobs ? h->njobs : 1);
     for (int i = 0; i < h->njobs; i++)
@@ -584,6 +606,7 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
     run_ord ro = {h, ordj};
     mx_parallel_for(h->njobs, run_job_ord, &ro);
     free(sz), free(ordj);
+    mx_tick("run jobs");
     for (int i = 0; i < h->njobs; i++)
         h->full += h->jobs[i].log->nt, h->jobs[i].kcap = -1;
     free(kid), free(live), free(par), free(gid), free(gstart), free(gmem);
@@ -830,6 +853,14 @@ static void back_off_ord(void *vc, long long i)
     run_ord *o = vc;
     back_off_job(o->h, o->order[i]);
 }
+/* squared distance from q to a box (min xyz, max xyz): a lower bound of the distance to what is inside it */
+static double box_d2(const double *q, const double *B)
+{
+    double e0 = q[0] < B[0] ? B[0] - q[0] : q[0] > B[3] ? q[0] - B[3] : 0, e1 = q[1] < B[1] ? B[1] - q[1] : q[1] > B[4] ? q[1] - B[4] : 0,
+           e2 = q[2] < B[2] ? B[2] - q[2] : q[2] > B[5] ? q[2] - B[5] : 0;
+    return e0 * e0 + e1 * e1 + e2 * e2;
+}
+
 static mx_simp *g_vh;  /* the handle check_job reads (mx_simp_check runs one at a time) */
 
 static void check_job(void *vc, long long i)
@@ -862,6 +893,15 @@ static void check_job(void *vc, long long i)
     long long ng = 0, gcap = 0, nbig = 0;
     gent *G = NULL;
     int *big = MX_NEW(int, R->nt ? R->nt : 1);
+    double *bb = MX_NEW(double, 6 * (size_t)(R->nt ? R->nt : 1));  /* per source triangle its box */
+    for (int t = 0; t < R->nt; t++) {
+        const int *r = R->t0 + 6 * t;
+        for (int k = 0; k < 3; k++) {
+            double a = j->pos[3 * r[0] + k], b = j->pos[3 * r[2] + k], d = j->pos[3 * r[4] + k];
+            bb[6 * t + k] = a < b ? (a < d ? a : d) : (b < d ? b : d);
+            bb[6 * t + 3 + k] = a > b ? (a > d ? a : d) : (b > d ? b : d);
+        }
+    }
     for (int t = 0; t < R->nt; t++) {
         const int *r = R->t0 + 6 * t;
         long long lo[3], hi[3];
@@ -885,7 +925,7 @@ static void check_job(void *vc, long long i)
                 }
     }
     qsort(G, (size_t)ng, sizeof(gent), cmp_gent);
-    double worst = 0;
+    double worst = 0, wsq = 0;  /* the farthest point so far, in metres and squared */
     for (int t = 0; t < j->nout; t++) {
         const int *r = j->out + 6 * t, *s = R->t0 + 6 * j->oid[t];
         const double *a = j->pos + 3 * r[0], *b = j->pos + 3 * r[2], *d = j->pos + 3 * r[4];
@@ -913,7 +953,8 @@ static void check_job(void *vc, long long i)
             for (int k = 0; k < 3; k++) p[k] = W[sp][0] * a[k] + W[sp][1] * b[k] + W[sp][2] * d[k];
             long long g[3];
             for (int k = 0; k < 3; k++) g[k] = (long long)floor(p[k] / cs);
-            double best = c->tol * c->tol * 4 + 1;
+            double best = c->tol * c->tol * 4 + 1, stop = far_ > wsq ? far_ : wsq;
+            if (stop > c->tol * c->tol) stop = c->tol * c->tol;
             for (int dx = -1; dx <= 1; dx++)
                 for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++) {
@@ -926,27 +967,31 @@ static void check_job(void *vc, long long i)
                         }
                         for (long long e = lo; e < ng && G[e].key == key.key; e++) {
                             const int *u = R->t0 + 6 * G[e].t;
-                            if (j->amesh[u[1]] != mesh)
+                            if (j->amesh[u[1]] != mesh || box_d2(p, bb + 6 * G[e].t) > best * 1.000001 + 1e-9)
                                 continue;
                             double o[3];
                             cp_tri(p, j->pos + 3 * u[0], j->pos + 3 * u[2], j->pos + 3 * u[4], o);
                             double dd = (o[0] - p[0]) * (o[0] - p[0]) + (o[1] - p[1]) * (o[1] - p[1]) + (o[2] - p[2]) * (o[2] - p[2]);
                             if (dd < best) best = dd;
+                            if (best <= stop)  /* changes neither this triangle's farthest point nor the job's */
+                                goto found;
                         }
                     }
             for (long long e = 0; e < nbig; e++) {
                 const int *u = R->t0 + 6 * big[e];
-                if (j->amesh[u[1]] != mesh)
+                if (j->amesh[u[1]] != mesh || box_d2(p, bb + 6 * big[e]) > best * 1.000001 + 1e-9)
                     continue;
                 double o[3];
                 cp_tri(p, j->pos + 3 * u[0], j->pos + 3 * u[2], j->pos + 3 * u[4], o);
                 double dd = (o[0] - p[0]) * (o[0] - p[0]) + (o[1] - p[1]) * (o[1] - p[1]) + (o[2] - p[2]) * (o[2] - p[2]);
                 if (dd < best) best = dd;
             }
+        found:
             if (best > far_) far_ = best;
             if (best > c->tol * c->tol)
                 break;
         }
+        if (far_ > wsq) wsq = far_;
         far_ = mx_sqrt(far_);
         if (far_ > worst) worst = far_;
         if (c->tol > 0 && far_ > c->tol)
@@ -958,7 +1003,7 @@ static void check_job(void *vc, long long i)
         }
     }
     cnt[4] = (long long)(worst * 1000);
-    free(G), free(big);
+    free(G), free(big), free(bb);
 }
 
 /* Check the last replay of every job: a triangle fails when it has (almost) no area left where its source triangle
@@ -972,7 +1017,9 @@ MX_API long long mx_simp_check(mx_simp *h, double tol, double qmin, double flip_
     vchk c = {tol, qmin, flip_cos, only, bad, (long long (*)[5])cnt};
     memset(bad, 0, (size_t)h->njobs);
     g_vh = h;
+    mx_tick("check start");
     mx_parallel_for(h->njobs, check_job, &c);
+    mx_tick("check run");
     long long n = 0;
     for (int i = 0; i < h->njobs; i++)
         n += bad[i];

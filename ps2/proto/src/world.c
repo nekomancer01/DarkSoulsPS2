@@ -101,6 +101,20 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
  * time: soak2 pop-ins 25 / 37 -> 54 / 54 on the B3 + B4 stack (2026-11-09). ASSUMED: about one 32 m cell */
 #define WORLD_PREP_D 32.0f
+/* WORLD_BOOT_LEAN (world.h, default 1): the boot block lets go of its map tables too. It never unloaded: its tables
+ * are a heap buffer of their own and its collision, objects, events and characters are main.c's, so from deep in the
+ * Undead Burg Firelink still held its chunk table, cell table and horizon (1365 of its 1555 KB of tables) and drew up
+ * to 17k horizon triangles a frame (2026-11-13). With the far panorama of the block underfoot loaded (far_step: it
+ * shows the boot block from there), the boot block is neither underfoot nor kept by the triangle under the player, and
+ * the player WORLD_BOOT_OFF_D from the last spots where it was, its chunk table (E_TAB) and cell table + horizon
+ * (E_TABC) are freed (map.c map_boot_lean; textures, navmesh and fog rows, E_TABB, stay: texcache.c, map_floor and the
+ * fog point into them). They are read back when the player is within WORLD_BOOT_BACK_D of that spot again, or the
+ * boot block is kept or underfoot (a warp waits for them). ASSUMED distances: the seam's ConnectCollision parts are
+ * narrow, so the tables come back one coarse ring (RES_PIN_R) before the player can stand on them. */
+#define WORLD_BOOT_OFF_D 64.0f
+#define WORLD_BOOT_BACK_D 48.0f
+#define WORLD_BOOT_SPOTS 4      /* seams remembered (Firelink: the aqueduct to the Burg, the Parish elevator, ...) */
+#define WORLD_BOOT_SPOT_D 96.0f /* ASSUMED: farther than this from every remembered spot is another seam */
 /* metres moved in one frame that count as a warp (test script spawns; later bonfire warps / respawns): DSR shows a
  * loading screen there, so world_update then loads and swaps synchronously before the frame is drawn */
 #define WORLD_WARP 20.0f
@@ -160,10 +174,20 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
 /* maptex.bin (tools/mapsplit.py TEX_PEERS, the cube-grid plan): the textures two or more blocks of one MSB have,
  * shared by its blocks (texcache.c TC_SHR). Read (E_MTX) only when no block of the map has it in; the first copy is
  * the map's (mtx[]), freed once the map's last block has drained (free_slot). */
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_OBJ, E_FX, NENT };
+/* E_DG / E_PVS (WORLD_DG_LITE, default 1; 2026-11-15): the block's draw groups and visibility (dg.bin, pvs.bin) come
+ * with its lite set and stay while it is on (a lean block keeps them: its collision parts' groups), instead of being
+ * read for every block at boot and kept: with 14 blocks they took 3.3 MB of the heap the near-cell arena is cut from
+ * (arena 10752 -> 6592 KB). 0: read at boot as before (a pack whose dg.bin / pvs.bin are not raw does that too). */
+#ifndef WORLD_DG_LITE
+#define WORLD_DG_LITE 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "objects.bin", "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
+/* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
+ * read while the block draws; the draw groups stay, its collision parts' groups) */
+#define LEAN_ENT(e) (((e) >= E_TAB && (e) <= LEAN_E1) || (e) == E_PVS)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
@@ -177,10 +201,10 @@ _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
 /* triangles [first, first + n) of a block's collision.bin want the blocks in load and keep those in keep */
 typedef struct {
     unsigned first;
-    unsigned short n;
-    unsigned char load, keep;
+    unsigned short n, load, keep, pad;  /* world.bin v4: u16 masks (WORLD_MAX 16; v3 had u8 ones and at most 8 blocks) */
 } WorldLink;
-_Static_assert(sizeof(WorldLink) == 8, "WorldLink");
+_Static_assert(sizeof(WorldLink) == 12, "WorldLink");
+_Static_assert(WORLD_MAX <= 16, "world.bin v4 load / keep masks are u16");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 
@@ -192,6 +216,7 @@ typedef struct {
     void *texbuf;  /* objects.bin, then fx.bin (tex_total bytes) */
     float retry_s;  /* start() found no room: seconds until it tries again */
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
+    unsigned far_off, far_size;  /* far.bin (tools/farpano.py): its far panorama of the blocks that are off; 0 none */
     unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
@@ -234,6 +259,18 @@ static unsigned char *bump_buf, *bump_old;
 static unsigned bump_done, bump_t0, bump_old_n;
 static int bump_old_drain;
 static float in_cur_s;  /* seconds the player has stood in cur */
+/* the far panorama (far.bin of the block underfoot, a heap buffer: map.c map_far_set): block it is loaded for (-1
+ * none yet; its buffer may be NULL: the block has none, or no room), block being read, progress; a dropped buffer
+ * waits WORLD_DRAIN frames */
+static int far_blk = -1, far_rd = -1, far_reading;
+static unsigned char *far_buf, *far_cur, *far_old;  /* being read, drawn (of far_blk), draining */
+static unsigned far_done;
+static int far_old_drain;
+static float far_retry_s;
+/* WORLD_BOOT_LEAN: the last spots the boot block was underfoot or kept from (one per seam: spots WORLD_BOOT_SPOT_D
+ * apart; the nearest one follows the player while the block is underfoot or kept); the boot block is wanted back */
+static float boot_feet[WORLD_BOOT_SPOTS][3];
+static int boot_want = 1, boot_spots;
 static float last_feet[3];
 static int warping;  /* inside settle(): drains and the swap delay are skipped */
 static int lite_first;  /* a wanted block's lite set waits: the relief read and mapstream.c issue no new read (step) */
@@ -373,7 +410,7 @@ int world_init(const char *boot_area)
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
     pack_close(&pk);
     const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || h[1] != 3 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
+    if (!h || memcmp(h, "DSW1", 4) || h[1] != 4 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
         free(wb);
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
@@ -399,6 +436,8 @@ int world_init(const char *boot_area)
         for (unsigned e = 0; e < NENT; e++) {
             if (!pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]))
                 r->off[e] = r->size[e] = 0;
+            if ((e == E_DG || e == E_PVS) && (!WORLD_DG_LITE || !i))  /* (the boot block's are main.c's) */
+                r->off[e] = r->size[e] = 0;
             if (!r->size[e] && !E_OPTIONAL(e) && (i || e == E_TAB)) {
                 printf("world: block %d %s: %s missing or not raw\n", i, tab[i].pack, ENTRIES[e]);
                 r->open = 0;
@@ -417,6 +456,13 @@ int world_init(const char *boot_area)
             printf("world: block %d %s: maptab.bin header unreadable\n", i, tab[i].pack);
             r->open = 0;
         }
+        if (!i && r->open && WORLD_BOOT_LEAN) {  /* the boot block's tables in pieces too (world_boot_map) */
+            r->total += 2 * ((r->size[E_TAB] + 127) & ~127u);  /* (tab_split takes the loop's three counts back) */
+            if (!tab_split(r))
+                r->total = (r->size[E_TAB] + 127) & ~127u;
+        }
+        if (!pack_entry_raw(&r->pk, "far.bin", &r->far_off, &r->far_size) || r->far_size <= 16)
+            r->far_off = r->far_size = 0;  /* (16 bytes: an empty panorama, FARPANO=0) */
         if (i && r->open && COL_TILES && !col_paged(i, r))
             r->open = 0;
         r->off[E_EVM] = r->size[E_EVM] = 0;  /* (the loop above read it as a second events.bin: ev_split) */
@@ -466,12 +512,13 @@ int world_init(const char *boot_area)
     return 1;
 }
 
-/* WORLD_LITE_DIET: the map tables of block i (E_TAB .. E_TABC) */
+/* WORLD_LITE_DIET: what a lean block of block i lets go (LEAN_ENT: map tables, visibility) */
 static unsigned tab_bytes(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= LEAN_E1; e++)
-        n += (r->size[e] + 127) & ~127u;
+    for (int e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            n += (r->size[e] + 127) & ~127u;
     return n;
 }
 
@@ -538,9 +585,13 @@ int world_boot_map(void)
     /* the boot block: lite set (map tables) in a heap buffer of its own; its resident level streams per cell like every
      * block's (world_stream_open; the first frame's settle waits for the cells around the spawn). Collision and relief
      * are main.c's (collision block 0, bump_init) */
-    r->blob[E_TAB] = memalign(128, (r->size[E_TAB] + 127) & ~127u);
-    if (!r->blob[E_TAB] || !read_sync(&r->pk, r->off[E_TAB], r->blob[E_TAB], r->size[E_TAB]) ||
-        !map_block_init(0, r->blob[E_TAB], NULL, 0)) {
+    int ok = 1;
+    for (int e = E_TAB; e <= E_TABC && ok; e++)  /* one piece, or three (WORLD_BOOT_LEAN: tab_split at world_init) */
+        if (r->size[e])
+            ok = (r->blob[e] = memalign(128, (r->size[e] + 127) & ~127u)) && read_sync(&r->pk, r->off[e], r->blob[e], r->size[e]);
+    if (ok && r->size[E_TABB])
+        map_block_split(0, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+    if (!ok || !map_block_init(0, r->blob[E_TAB], NULL, 0)) {
         printf("world: boot block map did not load\n");
         return 0;
     }
@@ -596,19 +647,26 @@ void world_systems(GSGLOBAL *gs)
         unsigned n0, n1;
         if (!r->open)
             continue;
+        unsigned h0 = enemy_ram_free();
         unsigned char *p = read_tmp(r, "objects.bin", &n0);
         int no = p ? objects_block_types(gs, i, p) : -1;
         free(p);
+        unsigned h1 = enemy_ram_free();
         p = read_tmp(r, "fx.bin", &n0);
         int nf = p ? fx_block_load(gs, i, p, n0) : -1;
         free(p);
+        unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
         unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
         int ne = p ? enemy_block_types(gs, i, tab[i].pack, p, lua, lua ? (int)n1 : 0) : -1;
         free(lua);
         free(p);
-        printf("world: block %d types: objects %d, effects %d, enemies %d\n", i, no, nf, ne);
-        map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c), kept from boot */
+        unsigned h3 = enemy_ram_free();
+        if (!r->size[E_DG] || !r->size[E_PVS])  /* WORLD_DG_LITE 0, or not raw in the pack: from boot, kept */
+            map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c) */
+        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d\n",
+               i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
+               ((int)h3 - (int)enemy_ram_free()) >> 10);
     }
     if (cur >= 0 && nblk > 1)
         mapstream_arena();  /* now: no enemy model is loaded yet (enemy_init stripped them all) */
@@ -730,6 +788,8 @@ static void turn_on_col(int i)
     if (r->size[E_TABB])
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     mtx_on(i);
+    if (r->size[E_DG] && r->size[E_PVS])
+        map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);  /* WORLD_DG_LITE: from its lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
@@ -882,9 +942,17 @@ static void *lite_alloc(int want, unsigned sz, int *wait);
 static unsigned tab_kb(const BlockRt *r)
 {
     unsigned n = 0;
-    for (int e = E_TAB; e <= LEAN_E1; e++)
-        n += (r->size[e] + 127) & ~127u;
+    for (int e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            n += (r->size[e] + 127) & ~127u;
     return n >> 10;
+}
+
+static void free_lean(BlockRt *r)
+{
+    for (unsigned e = E_TAB; e <= E_PVS; e++)
+        if (LEAN_ENT(e))
+            free_ents(r, e, e + 1);
 }
 
 static void free_slot(int i)
@@ -917,7 +985,7 @@ static void lean_step(int i)
     BlockRt *r = &rt[i];
     if (r->lean == 1 && r->lean_drain > 0 && (--r->lean_drain <= 0 || warping)) {
         r->lean_drain = 0;
-        free_ents(r, E_TAB, LEAN_E1 + 1);
+        free_lean(r);
         world_stats.pool_used_kb -= tab_kb(r);
         r->tab_gone = 1;
     }
@@ -929,7 +997,8 @@ static int relite_start(int i)
     BlockRt *r = &rt[i];
     if (r->lean_drain > 0 || (r->retry_s > 0 && !warping) || world_stats.reading >= 0)
         return 0;
-    unsigned order[3] = {E_TAB, E_TABB, E_TABC}, n = LEAN_E1 - E_TAB + 1;
+    unsigned order[4] = {E_TAB, E_TABB, E_TABC, E_PVS}, n = LEAN_E1 - E_TAB + 1;
+    order[n++] = E_PVS;
     for (unsigned a = 0; a < n; a++)
         for (unsigned b = a + 1; b < n; b++)
             if (r->size[order[b]] > r->size[order[a]]) {
@@ -943,7 +1012,7 @@ static int relite_start(int i)
         int wait = 0;
         r->blob[e] = lite_alloc(i, sz, &wait);
         if (!r->blob[e]) {
-            free_ents(r, E_TAB, LEAN_E1 + 1);
+            free_lean(r);
             r->retry_s = wait ? 0.1f : WORLD_RETRY_S;
             return 0;
         }
@@ -968,7 +1037,7 @@ static void relite_step(int i)
         if (res != (int)n) {
             printf("world: block %d tables read %d of %u bytes\n", i, res, n);
             world_stats.fails++;
-            free_ents(r, E_TAB, LEAN_E1 + 1);
+            free_lean(r);
             world_stats.pool_used_kb -= tab_kb(r);
             r->lean = 1, r->tab_gone = 1, r->retry_s = WORLD_RETRY_S;
             return;
@@ -977,12 +1046,14 @@ static void relite_step(int i)
         if ((r->done += n) == r->size[r->ent])
             r->ent++, r->done = 0;
     }
-    while (r->ent <= LEAN_E1 && !r->size[r->ent])
+    while (r->ent <= E_PVS && (!LEAN_ENT(r->ent) || !r->size[r->ent]))
         r->ent++;
-    if (r->ent > LEAN_E1) {
+    if (r->ent > E_PVS) {
         unsigned t0 = ticks();
         if (r->size[E_TABB])
             map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+        if (r->size[E_DG] && r->size[E_PVS])
+            map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);
         int ok = map_block_init(i, r->blob[E_TAB], NULL, i);
         if (ok)
             map_block_stream_open(i, &r->pk);
@@ -1012,7 +1083,12 @@ static void read_step(int i, int issue)
         if (res != (int)n) {
             printf("world: block %d read %d of %u bytes\n", i, res, n);
             world_stats.fails++;
-            free_slot(i);
+            if (r->state == W_ON) {  /* stage 1 (a texture entry): its collision and map tables are in use; freeing the
+                                       * slot here left them pointing at freed memory */
+                turn_off(i);
+                r->retry_s = WORLD_RETRY_S;
+            } else
+                free_slot(i);
             return;
         }
         char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
@@ -1235,6 +1311,150 @@ static void bump_step(void)
     world_stats.pool_used_kb += sz >> 10;
 }
 
+/* The far panorama of the block underfoot (tools/farpano.py: the blocks of its area that are off, as seen from it):
+ * its raw far.bin read in the background (WORLD_READ at a time, after every waiting lite set) into a heap buffer while
+ * the heap keeps WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS, then handed to map.c (map_far_set), which draws the parts whose
+ * block is not drawn. The one of the block before stays drawn until the new one is in. */
+static void far_step(void)
+{
+    int res;
+    if (far_rd >= 0) {
+        BlockRt *r = &rt[far_rd];
+        if (far_reading) {
+            if (!pack_req_done(w_tk, &res))
+                return;
+            w_tk = 0;
+            unsigned n = r->far_size - far_done < WORLD_READ ? r->far_size - far_done : WORLD_READ;
+            far_reading = 0;
+            world_stats.reading = -1;
+            if (res != (int)n) {
+                printf("world: block %d far panorama read %d of %u bytes\n", far_rd, res, n);
+                world_stats.fails++;
+                free(far_buf);
+                far_buf = NULL, far_rd = -1, far_retry_s = WORLD_RETRY_S;
+                return;
+            }
+            InvalidDCache(far_buf + far_done, far_buf + far_done + n - 1);
+            if ((far_done += n) == r->far_size) {
+                unsigned char *was = map_far_set(far_buf) ? NULL : far_buf;  /* (not a panorama: freed below) */
+                if (far_old)  /* the one before the last is still draining: its chains are long done */
+                    free(far_old);
+                far_old = far_cur, far_old_drain = WORLD_DRAIN;
+                printf("world: block %d far panorama %s: %u KB (heap, RAM free %u KB)\n", far_rd, was ? "NOT VALID" : "on",
+                       r->far_size >> 10, enemy_ram_free() >> 10);
+                free(was);
+                far_blk = far_rd, far_rd = -1;
+                far_cur = was ? NULL : far_buf;
+                far_buf = NULL;
+                return;
+            }
+        }
+        unsigned n = r->far_size - far_done < WORLD_READ ? r->far_size - far_done : WORLD_READ;
+        if (!w_tk && world_stats.reading < 0 && (w_tk = pack_req_read(&r->pk, r->far_off + far_done, far_buf + far_done, n)))
+            far_reading = 1, world_stats.reading = far_rd, hitch_block_read(n);
+        return;
+    }
+    if (cur < 0 || cur == far_blk || (in_cur_s < WORLD_SWAP_S && !warping) || far_retry_s > 0 || lite_first)
+        return;
+    BlockRt *r = &rt[cur];
+    unsigned sz = (r->far_size + 127) & ~127u;
+    if (!r->far_size) {  /* this block has none: the last one's goes (it shows the world from another place) */
+        map_far_set(NULL);
+        if (far_cur) {
+            if (far_old)
+                free(far_old);
+            far_old = far_cur, far_old_drain = WORLD_DRAIN;
+            far_cur = NULL;
+        }
+        far_blk = cur;
+        return;
+    }
+    if (enemy_ram_free() < WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz || !(far_buf = memalign(128, sz))) {
+        far_retry_s = WORLD_RELIEF_RETRY_S;
+        printf("world: block %d far panorama: no heap for %u KB (RAM free %u KB)\n", cur, sz >> 10, enemy_ram_free() >> 10);
+        return;
+    }
+    far_rd = cur, far_done = 0;
+}
+
+/* WORLD_BOOT_LEAN: the boot block's chunk table and cell table + horizon go (see WORLD_BOOT_OFF_D) */
+static void boot_lean(void)
+{
+    BlockRt *r = &rt[0];
+    unsigned t0 = ticks();
+    map_boot_lean();
+    r->lean = 1, r->lean_drain = WORLD_DRAIN;
+    world_stats.leans++;
+    step_time(t0);
+    printf("world: boot block %s let go: chunk table %u KB and cells + horizon %u KB freed (far panorama of block %d "
+           "stands in), step %u us\n", tab[0].pack, r->size[E_TAB] >> 10, r->size[E_TABC] >> 10, far_blk,
+           (ticks() - t0) / 295);
+}
+
+/* a let-go boot block: its buffers are freed once the chains that drew from them are done; wanted back (boot_want),
+ * they are read again (E_TAB, then E_TABC; WORLD_READ at a time) and the map is on as at boot. issue 0: only a read
+ * in flight is collected */
+static void boot_step(int issue)
+{
+    BlockRt *r = &rt[0];
+    int res;
+    if (r->lean == 1 && r->lean_drain > 0 && (--r->lean_drain <= 0 || warping)) {
+        r->lean_drain = 0;
+        free(r->blob[E_TAB]), free(r->blob[E_TABC]);
+        r->blob[E_TAB] = r->blob[E_TABC] = NULL;
+    }
+    if (r->lean == 1 && !r->lean_drain && boot_want && issue && world_stats.reading < 0 && (r->retry_s <= 0 || warping)) {
+        r->blob[E_TAB] = memalign(128, (r->size[E_TAB] + 127) & ~127u);
+        r->blob[E_TABC] = memalign(128, (r->size[E_TABC] + 127) & ~127u);
+        if (!r->blob[E_TAB] || !r->blob[E_TABC]) {
+            printf("world: boot block tables: no heap (RAM free %u KB)\n", enemy_ram_free() >> 10);
+            free(r->blob[E_TAB]), free(r->blob[E_TABC]);
+            r->blob[E_TAB] = r->blob[E_TABC] = NULL;
+            r->retry_s = WORLD_RETRY_S;
+            return;
+        }
+        r->lean = 2, r->ent = E_TAB, r->done = 0, r->t0 = ticks();
+    }
+    if (r->lean != 2)
+        return;
+    if (world_stats.reading == 0) {
+        if (!pack_req_done(w_tk, &res))
+            return;
+        w_tk = 0;
+        unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
+        world_stats.reading = -1;
+        if (res != (int)n) {
+            printf("world: boot block tables read %d of %u bytes\n", res, n);
+            world_stats.fails++;
+            free(r->blob[E_TAB]), free(r->blob[E_TABC]);
+            r->blob[E_TAB] = r->blob[E_TABC] = NULL;
+            r->lean = 1, r->retry_s = WORLD_RETRY_S;
+            return;
+        }
+        InvalidDCache((char *)r->blob[r->ent] + r->done, (char *)r->blob[r->ent] + r->done + n - 1);
+        if ((r->done += n) == r->size[r->ent])
+            r->ent = r->ent == E_TAB ? E_TABC : NENT, r->done = 0;
+    }
+    if (r->ent == NENT) {
+        unsigned t0 = ticks();
+        map_block_split(0, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
+        int ok = map_block_init(0, r->blob[E_TAB], NULL, 0);
+        if (ok)
+            map_block_stream_open(0, &r->pk);
+        r->lean = 0;
+        world_stats.relites++;
+        step_time(t0);
+        printf("world: boot block %s back: tables %u KB in %u ms%s\n", tab[0].pack,
+               (r->size[E_TAB] + r->size[E_TABC]) >> 10, (ticks() - r->t0) / 294912, ok ? "" : " (map FAILED)");
+        return;
+    }
+    if (!issue || world_stats.reading >= 0)
+        return;
+    unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
+    if (!w_tk && (w_tk = pack_req_read(&r->pk, r->off[r->ent] + r->done, (char *)r->blob[r->ent] + r->done, n)))
+        world_stats.reading = 0, hitch_block_read(n);
+}
+
 /* a wanted block's lite set is being read or could start now (start()'s conditions, room aside) */
 static int lite_pending(void)
 {
@@ -1315,6 +1535,9 @@ static void step(const float *feet, float dt)
     } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen). Their
                * height range too: the Asylum lies over the Burg and Firelink in x / z, and loading all three at once
                * left no room in the near arena (settle looped, 2026-11-02) */
+        if (warping)  /* a warp: only the blocks around the new spot, not what the old spot's floor wanted (a warp
+                       * from Darkroot into the Depths kept two Darkroot blocks wanted and found no slot, 2026-11-15) */
+            wm = km = 0;
         for (int i = 1; i < nblk; i++)
             if (box_d(&tab[i], feet) <= 0.0f && feet[1] >= tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
@@ -1325,6 +1548,41 @@ static void step(const float *feet, float dt)
         printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km);
     want_m = wm, keep_m = km | wm;
     world_stats.want = want_m;
+    if (WORLD_BOOT_LEAN && rt[0].size[E_TABB]) {
+        float d2 = 1e30f;  /* to the nearest remembered spot (none: a boot straight into another block) */
+        int ni = 0;
+        for (int i = 0; i < boot_spots; i++) {
+            float dx = feet[0] - boot_feet[i][0], dy = feet[1] - boot_feet[i][1], dz = feet[2] - boot_feet[i][2];
+            if (dx * dx + dy * dy + dz * dz < d2)
+                d2 = dx * dx + dy * dy + dz * dz, ni = i;
+        }
+        if ((h.tri >= 0 && h.block == 0) || (keep_m & 1)) {  /* on its floor, or on a part that keeps it */
+            if (d2 > WORLD_BOOT_SPOT_D * WORLD_BOOT_SPOT_D) {  /* another seam: a new spot (the oldest goes) */
+                if (boot_spots == WORLD_BOOT_SPOTS)
+                    memmove(boot_feet, boot_feet + 1, (--boot_spots) * sizeof *boot_feet);
+                ni = boot_spots++;
+            }
+            memcpy(boot_feet[ni], feet, sizeof *boot_feet);  /* (the seam's spot follows the player) */
+            boot_want = 1;
+        } else if (cur == 0)
+            boot_want = 1;  /* (in the air over it, or before the first floor is known) */
+        else {
+            /* off only while a panorama is drawn (the block underfoot's, or for a moment the one of the block
+             * before: it shows the boot block as well); back without one (a block whose far.bin found no heap or
+             * that has none), or near the seam again */
+            if (!far_cur || d2 < WORLD_BOOT_BACK_D * WORLD_BOOT_BACK_D)
+                boot_want = 1;
+            else if (d2 > WORLD_BOOT_OFF_D * WORLD_BOOT_OFF_D)
+                boot_want = 0;
+        }
+        if (!boot_want && !rt[0].lean && world_stats.reading != 0 && (warping || !mapstream_reading(0)))
+            boot_lean();
+    }
+    far_retry_s = far_retry_s > dt ? far_retry_s - dt : 0;
+    if (far_old && (--far_old_drain <= 0 || warping)) {
+        free(far_old);
+        far_old = NULL;
+    }
     for (int i = 0; i < nblk; i++)
         unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
     for (int i = 0; i < nblk; i++)
@@ -1374,6 +1632,14 @@ static void step(const float *feet, float dt)
         if (bump_reading)
             goto unload;
     }
+    if (far_reading) {
+        far_step();
+        if (far_reading)
+            goto unload;
+    }
+    boot_step(0);  /* (its buffers' drain; a chunk of its tables in flight) */
+    if (world_stats.reading == 0)
+        goto unload;
     if (world_stats.reading > 0 && !bump_reading && rt[world_stats.reading].state == W_ON &&
         rt[world_stats.reading].lean == 2) {
         relite_step(world_stats.reading);  /* a lean block's tables coming back */
@@ -1425,8 +1691,13 @@ static void step(const float *feet, float dt)
         }
         if (want >= 0 && (rt[want].retry_s >= WORLD_RETRY_S || warping || slots_full()))
             room_stuck = !room_for(want, feet);  /* a fresh failure for room, or no slot */
-        else if (world_stats.reading < 0)
-            bump_step();  /* nothing for the lite sets: the relief of the block underfoot */
+        else if (world_stats.reading < 0) {
+            boot_step(1);  /* nothing for the lite sets: the boot block's tables when it is wanted back, */
+            if (world_stats.reading < 0)
+                far_step();  /* the far panorama of the block underfoot, */
+            if (world_stats.reading < 0)
+                bump_step();  /* and its relief */
+        }
     }
     for (int i = 1; i < nblk; i++)  /* then the textures, enemies and events of blocks whose collision is on */
         if (rt[i].state == W_ON && rt[i].stage == 1 && world_stats.reading < 0) {
@@ -1450,6 +1721,9 @@ static int settled(const float *feet)
     if (world_stats.reading >= 0 || mapstream_busy(feet, WORLD_SETTLE_R, WORLD_SETTLE_FOCUS_R) ||
         coltile_missing(feet, WORLD_SETTLE_COL_R))
         return 0;
+    if ((rt[0].lean && boot_want && rt[0].retry_s <= 0) || far_rd >= 0 ||
+        (cur >= 0 && cur != far_blk && rt[cur].far_size && far_retry_s <= 0))
+        return 0;  /* the boot block's tables, the far panorama of the block warped into */
     for (int i = 1; i < nblk; i++)
         if (rt[i].state == W_READING || (rt[i].state == W_ON && rt[i].stage == 1) ||
             (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)) ||
