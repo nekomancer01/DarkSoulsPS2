@@ -11,7 +11,8 @@ import gamedata, souls, havok_anim
 from gamedata import FLOAT, INT, S8, S16, Ptr, Struct
 
 WARRIOR = 3000
-ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002)]  # R1 chain (export_player.py ANIMS)
+ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002),  # R1 chain (export_player.py ANIMS)
+                ("a23", 3300), ("a23", 3301), ("a23", 3310)]  # R2 (group 1 states 89 / 88 / 90)
 WEAPON_PART, WEAPON_BONE = "WP_A_0201", "R_Weapon"
 DUMMY_NPC = 206000  # NpcParam: Depths ghoul (sword) - HP 203, def_phys 71, no poise: the debug dummy target
 GRAPH_ROWS = (100, 150, 113, 102)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
@@ -40,7 +41,8 @@ RECORD = Struct("CombatData", [
     [(f"graph_{rid}", FLOAT, 15) for rid in GRAPH_ROWS] + [
     ("sk_bones", INT), ("sk_r_weapon", INT), ("sk_parent", Ptr(S8)), ("wep_dummy", Ptr(DUMMY)), ("wep_dummies", INT),
     ("atk_windows", Ptr(WINDOW)), ("natk_windows", INT), ("dummy_hp", INT), ("dummy_def_phys", INT),
-    ("dummy_radius", FLOAT), ("dummy_height", FLOAT), ("dummy_poise", INT), ("graphs", Ptr(GRAPH)), ("ngraphs", INT)],
+    ("dummy_radius", FLOAT), ("dummy_height", FLOAT), ("dummy_poise", INT), ("graphs", Ptr(GRAPH)), ("ngraphs", INT),
+    ("sk_spine", INT)],
     "Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], "
     "adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam "
     f"{DUMMY_NPC}), every CalcCorrectGraph row a weapon correctType names (sorted by id)")
@@ -49,7 +51,7 @@ RECORD = Struct("CombatData", [
 def HEADER():
     names = ["PL_VIT", "PL_STR", "PL_DEX", "PL_END", "PL_EQUIP_WEIGHT", "WEP_ATK_PHYS", "WEP_CORRECT_STR",
              "WEP_CORRECT_DEX", "WEP_REQ_STR", "WEP_REQ_DEX", "WEP_POISE_DMG", "SK_BONES", "SK_R_WEAPON", "WEP_DUMMIES",
-             "DUMMY_HP", "DUMMY_DEF_PHYS", "DUMMY_RADIUS", "DUMMY_HEIGHT", "DUMMY_POISE"]
+             "DUMMY_HP", "DUMMY_DEF_PHYS", "DUMMY_RADIUS", "DUMMY_HEIGHT", "DUMMY_POISE", "SK_SPINE"]
     macros = [f"#define {m} (combat_data->{m.lower()})" for m in names]
     macros += ["#define ATK_WINDOWS (combat_data->natk_windows)", "#define NGRAPHS (combat_data->ngraphs)"]
     macros += [f"#define {a} (combat_data->{a})" for a in
@@ -143,6 +145,8 @@ def main():
     ctypes = sorted({f["correctType"] for _, f in P["EquipParamWeapon"].values()} & set(P["CalcCorrectGraph"]))
     value["graphs"] = [{"id": c, "g": [g6(v) for v in graph_row(P, c)]} for c in ctypes]
     value["ngraphs"] = len(ctypes)
+    # upper-body layer root for the guard poses (player.c): the first "Spine" bone, parents before children
+    value["sk_spine"] = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
     n = gamedata.write(out, "combat", RECORD, value)
     print(f"{out}: weight {weight:.1f}, {len(attacks)} attack windows, dummies {used_dp}, R_Weapon bone {wbone}, {n} B")
 

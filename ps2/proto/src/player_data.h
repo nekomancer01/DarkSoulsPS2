@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef PLAYER_DATA_H
 #define PLAYER_DATA_H
-#define PLAYER_LAYOUT 0x6a813e61u
+#define PLAYER_LAYOUT 0x6a8b3e79u
 
 #include <stddef.h>
 
@@ -17,7 +17,7 @@
 #define FLAG_DISABLE_FALL_MOTION 51
 #define EZ_MESSAGE (-300)  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */
 
-enum { ANIM_WALK, ANIM_RUN, ANIM_DASH, ANIM_ROLL, ANIM_R1_1, ANIM_R1_2, ANIM_R1_3, ANIM_BACKSTEP, ANIM_JUMP, ANIM_FALL_DEATH, ANIM_FALL_DEATH_LOOP, ANIM_FALL_DEATH_LAND, ANIM_ESD_FALL_START, ANIM_ESD_FALL_LOOP, ANIM_ESD_LAND_1750, ANIM_ESD_LAND_1755, ANIM_ESD_LAND_1760, ANIM_ESD_FALL_IMPACT, ANIM_ESD_FALL_IMPACT_END, ANIM_ESD_LAND_DEATH, ANIM_ESD_LAND_DEATH_END, ANIM_R1_DASH, ANIM_R1_ROLL, ANIM_PLUNGE, ANIM_PLUNGE_LAND, ANIM_DAMAGE_2000, ANIM_DAMAGE_2001, ANIM_DAMAGE_2002, ANIM_DAMAGE_2003, ANIM_DAMAGE_2004, ANIM_DAMAGE_2005, ANIM_DAMAGE_2006, ANIM_DAMAGE_2007, ANIM_GUARD, ANIM_GUARD_END, ANIM_GUARD_MOVE, ANIM_GUARD_MOVE_END, ANIM_EVENT_FOG_WALK, ANIM_BONFIRE_LIGHT, ANIM_BONFIRE_KINDLE, ANIM_BONFIRE_SIT_0, ANIM_BONFIRE_LOOP_0, ANIM_BONFIRE_STAND_0, ANIM_BONFIRE_SIT_1, ANIM_BONFIRE_LOOP_1, ANIM_BONFIRE_STAND_1, ANIM_BONFIRE_SIT_2, ANIM_BONFIRE_LOOP_2, ANIM_BONFIRE_STAND_2, ANIM_COUNT };
+enum { ANIM_WALK, ANIM_RUN, ANIM_DASH, ANIM_ROLL, ANIM_R1_1, ANIM_R1_2, ANIM_R1_3, ANIM_BACKSTEP, ANIM_JUMP, ANIM_FALL_DEATH, ANIM_FALL_DEATH_LOOP, ANIM_FALL_DEATH_LAND, ANIM_ESD_FALL_START, ANIM_ESD_FALL_LOOP, ANIM_ESD_LAND_1750, ANIM_ESD_LAND_1755, ANIM_ESD_LAND_1760, ANIM_ESD_FALL_IMPACT, ANIM_ESD_FALL_IMPACT_END, ANIM_ESD_LAND_DEATH, ANIM_ESD_LAND_DEATH_END, ANIM_R1_DASH, ANIM_R1_ROLL, ANIM_PLUNGE, ANIM_PLUNGE_LAND, ANIM_DAMAGE_2000, ANIM_DAMAGE_2001, ANIM_DAMAGE_2002, ANIM_DAMAGE_2003, ANIM_DAMAGE_2004, ANIM_DAMAGE_2005, ANIM_DAMAGE_2006, ANIM_DAMAGE_2007, ANIM_GUARD, ANIM_GUARD_END, ANIM_GUARD_MOVE, ANIM_GUARD_MOVE_END, ANIM_GUARD_HOLD, ANIM_GUARD_WALK, ANIM_GUARD_RUN, ANIM_GUARD_DASH, ANIM_GUARD_HIT_S, ANIM_GUARD_HIT_L, ANIM_GUARD_BREAK, ANIM_R2_1, ANIM_R2_2, ANIM_R2_3, ANIM_EVENT_FOG_WALK, ANIM_BONFIRE_LIGHT, ANIM_BONFIRE_KINDLE, ANIM_BONFIRE_SIT_0, ANIM_BONFIRE_LOOP_0, ANIM_BONFIRE_STAND_0, ANIM_BONFIRE_SIT_1, ANIM_BONFIRE_LOOP_1, ANIM_BONFIRE_STAND_1, ANIM_BONFIRE_SIT_2, ANIM_BONFIRE_LOOP_2, ANIM_BONFIRE_STAND_2, ANIM_COUNT };
 
 /* type: ChrActionFlag id, or -1 hit, -2 - sp regen % */
 typedef struct {
@@ -74,9 +74,9 @@ typedef struct {
     int weapon_motion_l;
     int guard_motion_r;
     int guard_motion_l;
-    AnimData anims[49];
+    AnimData anims[59];
 } PlayerData;
-_Static_assert(sizeof(PlayerData) == 2592 && offsetof(PlayerData, start_end) == 0 && offsetof(PlayerData, weapon_id) == 4 && offsetof(PlayerData, weapon_weight) == 8 && offsetof(PlayerData, weapon_atk_phys) == 12 && offsetof(PlayerData, move_escape) == 16 && offsetof(PlayerData, weapon_motion_r) == 28 && offsetof(PlayerData, weapon_motion_l) == 32 && offsetof(PlayerData, guard_motion_r) == 36 && offsetof(PlayerData, guard_motion_l) == 40 && offsetof(PlayerData, anims) == 44, "PlayerData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(PlayerData) == 3112 && offsetof(PlayerData, start_end) == 0 && offsetof(PlayerData, weapon_id) == 4 && offsetof(PlayerData, weapon_weight) == 8 && offsetof(PlayerData, weapon_atk_phys) == 12 && offsetof(PlayerData, move_escape) == 16 && offsetof(PlayerData, weapon_motion_r) == 28 && offsetof(PlayerData, weapon_motion_l) == 32 && offsetof(PlayerData, guard_motion_r) == 36 && offsetof(PlayerData, guard_motion_l) == 40 && offsetof(PlayerData, anims) == 44, "PlayerData layout differs from tools/gamedata.py");
 
 extern const PlayerData *player_data;  /* NULL until gamedata_init() */
 #define START_END (player_data->start_end)  /* Warrior END */

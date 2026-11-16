@@ -13,6 +13,7 @@
 #include <string.h>
 #include "player.h"
 #include "chrstat.h"
+#include "combat_data.h"
 #include "esd.h"
 #include "pack.h"
 #include "player_data.h"
@@ -129,6 +130,9 @@ void player_init(Player *p)
     p->stamina = p->stamina_max = chr_stats.valid ? chr_stats.stamina_max : stamina_max_for(START_END);
     p->hp = p->hp_max = combat_player_hp_max();  /* CalcCorrectGraph row 100 at VIT (FUN_1402df9a0): 594 */
     p->state = ST_IDLE;
+    p->ovl_anim = p->motion_mode = -1;
+    for (int i = 0; i < REQ_SLOTS; i++)
+        p->hold_time[i] = -1;
     p->loco = ANIM_WALK;
     p->gait = -1;
     p->esd_loco = 1;
@@ -540,12 +544,14 @@ static void set_slots(unsigned char *a, const unsigned char *slots, int n)
 
 /* One ChrActionFlag (TAE event 0) active this frame -> ctx fields, as FUN_140340580. "Key Input" flags open the input
  * buffer of their request slots (ctx+0x1A0), "Anim Cancel" flags enable them (ctx+0xF2); the rest are bits of
- * ctx+0xA0 / +0xA4. (The +0x127 / +0x15C slot arrays they also set feed the hold / R2 logic, not modelled.) */
+ * ctx+0xA0 / +0xA4. Some also open hold windows: ctx+0x127 (hold_en) / +0x15C (hold_acc), FUN_140340580 cases 1, 4,
+ * 21, 22, 87. */
 static void apply_flag(Player *p, int f)
 {
     static const unsigned char lh[] = {1, 19, 20, 51, 52}, magic[] = {2, 3},
         steps[] = {9, 10, 11, 12, 15, 16, 17, 18, 42},
-        common[] = {0, 1, 2, 3, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 42, 51, 52};
+        common[] = {0, 1, 2, 3, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 42, 51, 52},
+        guard[] = {1, 21, 51, 52}, common_hold[] = {0, 1, 5, 21, 51, 52};
     static const struct { unsigned char flag; unsigned bit; } a0[] = {
         {7, 1}, {3, 2}, {5, 4}, {6, 8}, {8, 0x10}, {11, 0x20}, {78, 0x20}, {17, 0x40}, {18, 0x80}, {56, 0x100},
         {57, 0x200}, {19, 0x800}, {27, 0x1000}, {51, 0x2000}, {39, 0x4000}, {50, 0x8000}, {44, 0x10000},
@@ -557,8 +563,12 @@ static void apply_flag(Player *p, int f)
         {74, 0x40000}, {75, 0x100000}, {80, 0x200000}, {81, 0x400000}, {76, 0x800000}, {72, 0x1000000},
         {82, 0x2000000}, {85, 0x4000000}, {88, 0x8000000}, {92, 0x10000000}, {94, 0x80000000u}};
     switch (f) {
-    case 1: p->req_buffer[REQ_R1] = 1; return;                            /* Right Hand Attack Key Input */
-    case 4: p->req_enable[REQ_R1] = 1; return;                            /* Right Hand Attack Anim Cancel */
+    case 1: p->req_buffer[REQ_R1] = 1;                                    /* Right Hand Attack Key Input */
+        p->hold_en[REQ_R1] = p->hold_en[REQ_R2] = 1; return;
+    case 4: p->req_enable[REQ_R1] = 1;                                    /* Right Hand Attack Anim Cancel */
+        p->hold_acc[REQ_R1] = p->hold_acc[REQ_R2] = 1; return;
+    case 21: set_slots(p->hold_en, guard, 4); return;                     /* Guard Key Input (hold) */
+    case 22: set_slots(p->hold_acc, guard, 4); return;                    /* Guard Anim Cancel (hold) */
     case 9: set_slots(p->req_buffer, lh, 5); return;                      /* Left Hand Attack Key Input */
     case 10: set_slots(p->req_buffer, magic, 2); return;                  /* Magic Key Input */
     case 16: set_slots(p->req_enable, lh, 5); return;                     /* Left Hand Attack Anim Cancel */
@@ -569,7 +579,8 @@ static void apply_flag(Player *p, int f)
     case 31: p->req_enable[14] = 1; return;                               /* Item Anim Cancel */
     case 35: p->req_buffer[7] = 1; return;                                /* First Step RH Attack Key Input */
     case 36: p->req_enable[7] = 1; return;                                /* First Step RH Attack Anim Cancel */
-    case 87: set_slots(p->req_buffer, common, sizeof common); return;     /* Common Key Input */
+    case 87: set_slots(p->req_buffer, common, sizeof common);             /* Common Key Input */
+        set_slots(p->hold_en, common_hold, sizeof common_hold); return;
     case 97: p->no_magic = 1; return;                                     /* Disable Magic / Item Use Cancel */
     }
     for (unsigned i = 0; i < sizeof a0 / sizeof a0[0]; i++)
@@ -585,6 +596,9 @@ static void update_requests(Player *p)
 {
     memset(p->req_enable, 0, sizeof p->req_enable);
     memset(p->req_buffer, 0, sizeof p->req_buffer);
+    memset(p->hold_en, 0, sizeof p->hold_en);
+    memset(p->hold_acc, 0, sizeof p->hold_acc);
+    memset(p->held, 0, sizeof p->held);
     p->ctx_a0 = p->ctx_a4 = 0;
     p->no_magic = 0;
     int anim = flag_anim(p);
@@ -597,7 +611,7 @@ static void update_requests(Player *p)
     }
     /* FUN_140388020: no stamina, no buffered requests */
     if (p->stamina < 1)
-        memset(p->latch, 0, sizeof p->latch);
+        memset(p->latch, 0, sizeof p->latch), memset(p->hold_latch, 0, sizeof p->hold_latch);
     /* c1_146 (ctx+0x1DC bit 19) accepts every input while the state that set it lasts (FUN_140388790) */
     int all = (p->ctx_1dc >> 19) & 1;
     if (all && esd_state(&esd, 1) != p->accept_all_state) {
@@ -610,6 +624,28 @@ static void update_requests(Player *p)
     for (int i = 0; i < REQ_SLOTS; i++)
         if (all || p->req_buffer[i])
             p->latch[i] |= p->trig[i];
+    /* hold requests (FUN_140388790), behind the stamina gate of FUN_140388020. Slot 21 (guard) latches once its
+     * button has been down longer than one frame inside a hold window; the others on a press inside one. The held
+     * result (f220 / f243) needs the slot's accept window too. ASSUMED (TECH_DEBT esd-8): the latch of slots other
+     * than 21 drops when the button is released (the exe's reset of ctx+0x3F4 for them was not found). */
+    if (p->stamina < 1)
+        return;
+    for (int i = 0; i < REQ_SLOTS; i++) {
+        if (i == REQ_GUARD) {
+            if (!p->hold_en[i])
+                p->hold_timer21 = 0;
+            else if (p->hold_time[i] <= 0)
+                p->hold_timer21 = 0, p->hold_latch[i] = 0;
+            else if ((p->hold_timer21 += p->frame_dt) > p->frame_dt)
+                p->hold_latch[i] = 1;
+        } else if (!p->pad_held[i]) {
+            p->hold_latch[i] = 0;
+        }
+        if (p->hold_en[i] && p->trig[i])
+            p->hold_latch[i] = 1;
+        if (p->hold_acc[i] && p->hold_latch[i])
+            p->held[i] = 1;
+    }
 }
 
 void player_update(Player *p, const Input *in, float cam_yaw, float dt)
@@ -661,6 +697,26 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* R1 also counts in the air: group 0's fall loop (state 15) turns it into the plunging attack (19 / 20) */
     if (p->state != ST_DEAD && in->r1)
         p->trig[REQ_R1] = 1;
+    /* held buttons (FUN_140396860: R1 -> 0 / 7, R2 -> 5, L1 -> 1 / 21, L2 -> 19) and their hold time (manipulator
+     * +0xF0[slot]); a press is held now and not last frame. R1's press stays the r1 edge above. */
+    memcpy(p->pad_prev, p->pad_held, sizeof p->pad_held);
+    memset(p->pad_held, 0, sizeof p->pad_held);
+    if (in->r1_held || in->r1)
+        p->pad_held[REQ_R1] = 1;
+    if (in->r2_held)
+        p->pad_held[REQ_R2] = 1;
+    if (in->l1_held)
+        p->pad_held[REQ_L1] = p->pad_held[REQ_GUARD] = 1;
+    if (in->l2_held)
+        p->pad_held[REQ_L2] = 1;
+    for (int i = 0; i < REQ_SLOTS; i++)
+        p->hold_time[i] = p->pad_held[i] ? (p->pad_prev[i] ? p->hold_time[i] + dt : 0) : -1;
+    if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
+        static const unsigned char slots[] = {REQ_R2, REQ_L1, REQ_GUARD, REQ_L2};
+        for (unsigned i = 0; i < sizeof slots; i++)
+            if (p->pad_held[slots[i]] && !p->pad_prev[slots[i]])
+                p->trig[slots[i]] = 1;
+    }
     if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
         if (jump_pressed && moving)
             p->trig[REQ_JUMP] = 1, p->jump_window = 0;
@@ -669,6 +725,16 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     }
     esd_moving = moving, esd_stick_yaw = stick_yaw;
     update_requests(p);
+    /* upper-body layer clock; guard up while a group-1 guard state (motion mode 11) shows a guard pose. Dead,
+     * airborne or a full-body action drop it (their anims own the whole body) */
+    if (p->ovl_anim >= 0) {
+        p->ovl_t += dt;
+        if (p->ovl_loop && anims[p->ovl_anim].length > 0)
+            p->ovl_t = fmodf(p->ovl_t, anims[p->ovl_anim].length);
+        if (p->state == ST_DEAD || p->state == ST_FALL || p->hp < 0)
+            p->ovl_anim = -1;
+    }
+    p->guarding = p->ovl_anim >= 0 && p->motion_mode == 11 && !esd_action(p);
 
     int ticked = 0;
     if (p->state == ST_FALL || p->state == ST_DEAD) {
@@ -823,14 +889,23 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     float v = 0;
     switch (id) {
     case 0:     /* IsAnimEnd: no ESD anim (ctx+0x80 handle) or it ended, or a move cancel cut it (FUN_14037b3e0) */
-    case 1:
+    case 1:     /* IsMoveAnimEnd: the c1_4 handle (ctx+0x78) */
+        /* the upper-body layer (guard): c1_3 on layer 4 answers f0, c1_4 / c1_13 answer f1 */
+        if (p->ovl_anim >= 0 && (id == 0) == (p->ovl_cmd == 3)) {
+            v = !p->ovl_loop && p->ovl_t >= anims[p->ovl_anim].length;
+            break;
+        }
         v = !(esd_action(p) || p->state == ST_DEAD) || p->t >= anims[p->anim].length ||
             (esd_moving && (p->ctx_a0 & 0x20));
         break;
     case 100: v = slot && gate(p, s) && p->trig[s]; break;                      /* IsButtonTriggered */
-    case 101: v = 0; break;      /* IsButtonReleased: no hold-type pad inputs are mapped (only R1 / Circle taps) */
+    case 101: v = slot && !p->pad_held[s] && p->pad_prev[s]; break;            /* IsButtonReleased */
     case 102: v = slot && requested(p, s); break;                                 /* IsActionRequested */
-    case 103: v = 0; break;      /* FUN_1403867b0: 1.0 while the slot's button is held (manipulator +0xF0[slot]) */
+    /* FUN_1403867b0: manipulator +0xF0[slot], the hold time. ASSUMED (TECH_DEBT esd-8): -1 while the button is up,
+     * since c0000 ends its guard states on f103(1) < 0 and enters them on f103(21) >= 0 */
+    case 103: v = slot ? p->hold_time[s] : -1; break;
+    case 220: v = slot && p->held[s]; break;                                    /* ctx+0x2E1[slot] */
+    case 243: v = gate(p, REQ_GUARD) && p->held[REQ_GUARD]; break;               /* FUN_140386a70(ctx, 21) */
     case 104: v = 0; break;      /* weapon hold-style change request (no two-handing input) */
     case 105: v = 0; break;      /* ctx+0x42C[i]: event / gesture requests (none) */
     case 108: v = slot && is_step(s) && requested(p, s); break;                 /* IsStepRequested */
@@ -910,7 +985,21 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
     case 3:     /* SetAnim(weaponSel, animId, layer, blend, loop) */
     case 12:    /* (weaponSel, animA, animB, layer, blend, loop, f272()): landings 1750 / 1755 (group 0 states 31 / 32);
                  * animA is played, the animB blend by f272 is not modelled (TECH_DEBT esd-6) */
-    case 4: {   /* SetMoveSyncAnim: same here (the speed sync is not modelled) */
+    case 4:     /* SetMoveSyncAnim: same here (the speed sync is not modelled) */
+    case 13: {  /* (weaponSel, animId, layer, blend, loop, ...): a looping c1_4, the guard holds (group 1 states 77,
+                 * 80-82) */
+        /* Layer 4 is the upper-body layer: the guard raise / hold / lower / hit anims of group 1 states 75-85 play
+         * over the locomotion instead of replacing it (ASSUMED: drawn on the Spine bone and its children, as
+         * enemy.c's guard pose layer; the exe's per-bone layer masks were not decoded, TECH_DEBT esd-9) */
+        int lay = id == 12 ? (n > 3 ? (int)a[3] : 0) : (n > 2 ? (int)a[2] : 0);
+        if (lay == 4 && id != 12 && n >= 2) {
+            int oa = (int)a[1] < 0 ? -1 : anim_for((int)a[0], (int)a[1]);
+            if (oa != p->ovl_anim || (int)a[1] < 0)
+                p->ovl_t = 0;
+            p->ovl_anim = oa, p->ovl_cmd = id == 3 ? 3 : 4;
+            p->ovl_loop = id == 13 ? (n > 4 && a[4] != 0) : (n > 4 && a[4] != 0) || (oa >= 0 && anims[oa].loop);
+            return 1;
+        }
         /* HP < 0: only the death reactions run (group 0 states 57-59: 6065 / 6066 / 6067 for a fall death); they
          * play as ST_DEAD, which the engine side (map-collision) ends with the respawn. Otherwise the airborne loop
          * and death states belong to the engine and ESD anims are not started there. */
@@ -949,6 +1038,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
     case 101:   /* SetLocomotionEnabled (ChrCtrl+0x1B0) */
         p->esd_loco = n > 0 && a[0] != 0;
         return 1;
+    case 109: p->motion_mode = n > 0 ? (int)a[0] : -1; return 1;  /* SetChrMotionMode (chr+0x270) */
     case 132: p->ctx_1dc |= 0x2000; return 1;
     case 133: p->ctx_1e0 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;
     case 140: p->ctx_454 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;
@@ -1019,5 +1109,28 @@ void player_draw(const Player *p)
         model_blend(from, target, blend, cur);
     else
         memcpy(cur, target, sizeof cur);
+    /* upper-body layer (guard poses, ESD layer 4): its pose replaces the Spine bone and every bone below it,
+     * faded in / out over the c1_4 blend time of the guard states (0.1 s) */
+    static BoneLocal ovl[MAX_BONES], mixed[MAX_BONES];
+    static unsigned char upper[MAX_BONES], upper_ok;
+    static float ovl_w;
+    static int ovl_last = -1;
+    if (!upper_ok) {
+        for (int i = 0; i < SK_BONES && i < MAX_BONES; i++)
+            upper[i] = i == SK_SPINE || (sk_parent[i] >= 0 && upper[(int)sk_parent[i]]);
+        upper_ok = 1;
+    }
+    if (p->ovl_anim >= 0)
+        ovl_last = p->ovl_anim;
+    ovl_w += (p->ovl_anim >= 0 ? 1 : -1) * p->frame_dt / 0.1f;
+    ovl_w = ovl_w < 0 ? 0 : ovl_w > 1 ? 1 : ovl_w;
+    if (ovl_w > 0 && ovl_last >= 0 && SK_SPINE >= 0) {
+        model_sample(model_anim(anims[ovl_last].id), p->ovl_anim >= 0 ? p->ovl_t : anims[ovl_last].length,
+                     anims[ovl_last].loop || p->ovl_loop, ovl);
+        model_blend(cur, ovl, ovl_w, mixed);
+        for (int i = 0; i < SK_BONES && i < MAX_BONES; i++)
+            if (upper[i])
+                cur[i] = mixed[i];
+    }
     model_draw(cur, p->pos, p->yaw, p->invincible);
 }

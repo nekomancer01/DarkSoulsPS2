@@ -29,6 +29,14 @@ typedef struct CombatChr {
     float def_el[3];       /* magic / fire / lightning defence (NpcParam def_mag / def_fire / def_thunder) */
     float def_typed[3];    /* physical defence against slash / blow / thrust attacks (has_typed; else def_phys) */
     int has_typed;
+    /* guard (owner-set each frame): raised, the shield's guard cut % per element, staminaGuardDef, guardLevel */
+    int guarding;
+    float guard_cut[4], guard_stab;
+    int guard_level;
+    /* combat-set by a guarded hit: stamina the owner takes off, and whether that broke the guard (owner decides) */
+    int guard_hit, guard_broken;
+    float guard_stamina_dmg;
+    int *stamina;          /* owner's stamina (optional): a guarded hit takes its cost here */
     /* combat-set (read by the owner / ESD env functions) */
     float poise;           /* current poise; regenerates in combat_update */
     int hit_count;         /* +1 per hit taken (owners compare with their last seen value) */
@@ -54,6 +62,8 @@ typedef struct CombatAttack {
      * atkAttribute (chrstat.h ATK_*: slash / blow / thrust pick the target's typed physical defence) */
     float el[3], el_rate[3];
     int attr;
+    float stam_dmg;        /* AtkParam atkStam: stamina a guard pays for it */
+    int unblockable;       /* AtkParam disableGuard */
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */

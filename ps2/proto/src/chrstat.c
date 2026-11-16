@@ -137,7 +137,8 @@ int chrstat_recalc(void)
         const ItemRow *r = id ? item_row(id) : 0;
         if (r) {
             c.poise_dmg[h] = r->x4 & 0xFFFF;
-            c.wep_types[h] = r->x4 >> 16;
+            c.wep_types[h] = (r->x4 >> 16) & 0xFF;
+            c.guard_level[h] = (r->x4 >> 24) & 0xF;
             for (int e = 0; e < EL_COUNT; e++)
                 c.guard_cut[h][e] = r->st[12 + e];
             c.guard_stab[h] = r->x0;

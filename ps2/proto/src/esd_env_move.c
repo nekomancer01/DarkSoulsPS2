@@ -45,8 +45,13 @@ int esd_env_move(EsdCtx *c, int id, const float *args, int nargs, float *out)
                                                  {0, 1, 1, 3, 3, 1, 3, 3, 1, 3, 4, 3},
                                                  {0, 1, 1, 3, 3, 1, 3, 3, 1, 3, 4, 3},
                                                  {0, 1, 1, 1, 3, 1, 3, 3, 1, 3, 4, 3}};
-        int level = me->new_hit ? me->damage_level : 0, guard = 0;  /* no guarding yet: guard level 0 */
-        *out = level >= 0 && level < 12 ? cls[guard][level] : 0;
+        /* guard row ctx+0x1F0 = the guarding weapon's EquipParamWeapon.guardLevel (Heater Shield 4, Longsword 2;
+         * ASSUMED from the 0-4 range of both), 0 unguarded. A guard emptied of stamina breaks: class 4 (group 1
+         * state 85, ASSUMED: the exe's break test is in the obfuscated .text) */
+        int level = me->new_hit ? me->damage_level : 0;
+        int guard = me->new_hit && me->guard_hit ? me->guard_level : 0;
+        guard = guard < 0 ? 0 : guard > 4 ? 4 : guard;
+        *out = me->new_hit && me->guard_hit && me->guard_broken ? 4 : level >= 0 && level < 12 ? cls[guard][level] : 0;
         return 1;
     }
     case F_DAMAGE_DIR: {

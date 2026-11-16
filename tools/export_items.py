@@ -25,7 +25,8 @@ Output (little-endian), four files that tools/pack.py puts into menu.pak:
                     physics / magic / fire / thunder, correctStrength / Agility / Magic / Faith, proper Strength /
                     Agility / Magic / Faith, phys / mag / fire / thun GuardCutRate; x2 reinforceTypeId, x3 correctType
                     (CalcCorrectGraph row of its stat scaling), x4 saWeaponDamage (poise damage) | atkAttribute
-                    types << 16 (bit 0 normal, 1 slash, 2 blow, 3 thrust: isNormal/Slash/Blow/ThrustAttackType)
+                    types << 16 (bit 0 normal, 1 slash, 2 blow, 3 thrust: isNormal/Slash/Blow/ThrustAttackType) |
+                    guardLevel << 24
         protector:  sub protectorCategory, x1 slot 0 head / 1 body / 2 arms / 3 legs, st: defense physics, blow
                     (strike), slash, thrust, magic, fire, thunder, resist poison, disease (toxic), blood, curse,
                     saDurability (poise)
@@ -117,7 +118,7 @@ def build(game):
         name, hlp, desc = text("Weapon", i, i - i % 1000)
         rows.append((CAT_WEAPON | i, f["sortId"], name, hlp, desc, f["iconId"], tab, f["weaponCategory"],
                      f["weight"], f["durabilityMax"], f["staminaGuardDef"], slots, st, f["reinforceTypeId"],
-                     f["correctType"], (f["saWeaponDamage"] & 0xFFFF) | (types << 16)))
+                     f["correctType"], (f["saWeaponDamage"] & 0xFFFF) | (types << 16) | ((f["guardLevel"] & 0xF) << 24)))
     for i, (_, f) in sorted(P["EquipParamProtector"].items()):
         slot = 0 if f["headEquip"] else 1 if f["bodyEquip"] else 2 if f["armEquip"] else 3
         st = [f["defensePhysics"], f["defenseBlow"], f["defenseSlash"], f["defenseThrust"], f["defenseMagic"],
