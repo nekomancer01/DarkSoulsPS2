@@ -105,13 +105,21 @@ typedef struct {
     float call_range, call_min_dist;
     int team_type;
     float excel[AI_EXCEL_N];
+    float def_el[3];          /* NpcParam def_mag / def_fire / def_thunder */
+    float def_type_pct[3];    /* NpcParam def_slash / def_blow / def_thrust: % on def_phys against typed attacks */
+    float nose_dist, ear_ang_x, ear_ang_y;  /* NpcThinkParam (read by the AI) */
+    int skip_arrival_visible_check;
 } ChrVar;
+_Static_assert(sizeof(ChrVar) == 256, "export_chr.py chr.bin variant record");
 typedef struct { int id; float length; unsigned first_win, nwin, first_root, nroot; } ChrAnim;
 typedef struct {
     short type, bone_a, bone_b, dmg_level;
     int atk_param;
     float start, end, phys, radius, poise, a[3], b[3], phys_rate;
+    int attr;                 /* AtkParam atkAttribute (chrstat.h ATK_*) */
+    float el[3];              /* atkMag / atkFire / atkThun x their corrections */
 } ChrWin;
+_Static_assert(sizeof(ChrWin) == 76, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
 #define F_NO_TURN 7
@@ -597,7 +605,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 7 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 8 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -883,6 +891,11 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     memcpy(cc->pos, &e->pos, 12);
     cc->yaw = e->yaw, cc->radius = e->var->radius, cc->height = e->var->height, cc->team = TEAM_ENEMY;
     cc->hp = cc->hp_max = e->var->hp, cc->def_phys = e->var->def_phys;
+    /* typed physical defence: def_phys x (100 + NpcParam def_slash / blow / thrust) / 100, as FUN_1402dbda0 applies
+     * the armour's typed %; ASSUMED the same rule for NpcParam (its caller is in the obfuscated .text, combat-2) */
+    for (int k = 0; k < 3; k++)
+        cc->def_el[k] = e->var->def_el[k], cc->def_typed[k] = e->var->def_phys * (100 + e->var->def_type_pct[k]) / 100;
+    cc->has_typed = 1;
     cc->poise_max = e->var->poise;
     if (t->h->rag_n) {  /* + margin for poses reaching past the bind pose (ASSUMED 0.5 m / 0.3 m) */
         cc->hit_test = hit_test, cc->owner = e;
@@ -1440,7 +1453,8 @@ static void attack_sweeps(Enemy *e)
         float fa[3] = {pa.x, pa.y, pa.z}, fb[3] = {pb.x, pb.y, pb.z};
         CombatAttack atk = {.team = TEAM_ENEMY, .atk_param = w->atk_param, .phys = w->phys, .atk_phys_rate = w->phys_rate,
                             .poise_dmg = w->poise, .damage_level = w->dmg_level,
-                            .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i};
+                            .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i,
+                            .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)

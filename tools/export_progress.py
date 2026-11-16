@@ -22,7 +22,7 @@ EQUIP = ["equip_Wep_Left", "equip_Wep_Right", "equip_Subwep_Left", "equip_Subwep
          "equip_SubArrow", "equip_SubBolt", "equip_Helm", "equip_Armer", "equip_Gaunt", "equip_Leg",
          "equip_Accessory01", "equip_Accessory02"]
 # Status screen order VIT ATT END STR DEX RES INT FAI (CharaInitParam: Wil = attunement, Luc = resistance, Mag = int)
-STATS = ["baseVit", "baseWil", "baseEnd", "baseStr", "baseDex", "baseLuc", "baseMag", "baseFai"]
+STATS = ["baseVit", "baseWil", "baseEnd", "baseStr", "baseDex", "baseDurability", "baseMag", "baseFai"]  # RES = baseDurability (Warrior 11; baseLuc 10 is unused in DS1)
 
 
 # exe tables (DarkSoulsRemastered.exe .rdata), [area 10..18][block 0..2][index 0..3]; -1 none

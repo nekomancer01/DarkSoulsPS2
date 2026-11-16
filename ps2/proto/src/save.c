@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "save.h"
+#include "chrstat.h"
 #include "flags.h"
 #include "pack.h"
 #include "progress.h"
@@ -591,6 +592,14 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("loaded", loaded, a);
         if (!strcmp(what, "deaths") && pl && sscanf(r, "%lu", &a) == 1)
             return check("deaths", pl->deaths, a);
+        long hp, st, def;  /* derived stats from the save's stats / equipment (chrstat.c) */
+        if (!strcmp(what, "chrstat") && sscanf(r, "%ld %ld %ld", &hp, &st, &def) == 3) {
+            int ok = chr_stats.valid && chr_stats.hp_max == hp && chr_stats.stamina_max == st &&
+                     (int)chr_stats.def[EL_PHYS] == def;
+            printf("TEST %scheck chrstat %ld %ld %ld: hp %d stamina %d def %d%s\n", ok ? "" : "error ", hp, st, def,
+                   chr_stats.hp_max, chr_stats.stamina_max, (int)chr_stats.def[EL_PHYS], ok ? " ok" : "");
+            return ok ? 0 : -1;
+        }
         if (!strcmp(what, "seq") && sscanf(r, "%lu", &a) == 1)  /* sequence of the last save written or loaded, 0 after wipe */
             return check("seq", seq, a);
         float px, py, pz, pr;  /* the player within r m of (x, y, z): a walked route really got there */

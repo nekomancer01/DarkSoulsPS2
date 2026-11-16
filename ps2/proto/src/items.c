@@ -44,7 +44,7 @@ int items_init(void)
     unsigned size;
     core = pack_load(&mp, "items.bin", &size);
     const u32 *h = (const u32 *)core;
-    if (!core || size < 32 || memcmp(core, "DSIT", 4) || h[1] != 1 || h[3] + h[2] * 8 > size || h[5] + h[4] * 8 > size) {
+    if (!core || size < 32 || memcmp(core, "DSIT", 4) || h[1] != 2 || h[3] + h[2] * 8 > size || h[5] + h[4] * 8 > size) {
         printf("items: items.bin missing or bad\n");
         free(core), core = 0;
         return 0;
@@ -184,7 +184,7 @@ int items_detail_step(void *(*alloc)(unsigned), void (*release)(void *, unsigned
         return xstate = -1;
     xbuf = xjob.out;
     const u32 *h = (const u32 *)xbuf;
-    if (memcmp(xbuf, "DSIX", 4) || h[1] != 1 || h[3] + h[2] * sizeof(ItemRow) > xjob.raw ||
+    if (memcmp(xbuf, "DSIX", 4) || h[1] != 2 || h[3] + h[2] * sizeof(ItemRow) > xjob.raw ||
         h[6] + h[7] > xjob.raw) {
         printf("items: itemx.bin bad\n");
         release(xbuf, xalloc), xbuf = 0;
@@ -205,6 +205,8 @@ void items_detail_free(void)
         xrelease(xbuf, xalloc);
     xbuf = 0, xrows = 0, nx = 0, xstate = 0;
 }
+
+int items_detail_ready(void) { return xstate == 2; }
 
 const ItemRow *item_row(u32 id)
 {

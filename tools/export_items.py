@@ -19,11 +19,13 @@ Output (little-endian), four files that tools/pack.py puts into menu.pak:
       row     72 B, sorted by id (category | param row; weapons at level 0):
               u32 id, u32 sortId, u32 name offset (into names), u32 text offset (into desc.bin),
               u16 help bytes, u16 description bytes, u16 icon id, u8 tab (TAB_*), u8 sub, u16 weight x100,
-              u16 durabilityMax, u16 x0, u16 x1, u16 x2, u16 0, s16 st[16], u32 0
+              u16 durabilityMax, u16 x0, u16 x1, u16 x2, u16 x3, s16 st[16], u32 x4
         weapon:     sub weaponCategory, x0 staminaGuardDef (stability), x1 slots (1 right, 2 left, 4 both,
                     8 arrow, 16 bolt, 32 magic, 64 sorcery, 128 miracle, 256 pyromancy flag spare), st: attackBase
                     physics / magic / fire / thunder, correctStrength / Agility / Magic / Faith, proper Strength /
-                    Agility / Magic / Faith, phys / mag / fire / thun GuardCutRate; x2 reinforceTypeId
+                    Agility / Magic / Faith, phys / mag / fire / thun GuardCutRate; x2 reinforceTypeId, x3 correctType
+                    (CalcCorrectGraph row of its stat scaling), x4 saWeaponDamage (poise damage) | atkAttribute
+                    types << 16 (bit 0 normal, 1 slash, 2 blow, 3 thrust: isNormal/Slash/Blow/ThrustAttackType)
         protector:  sub protectorCategory, x1 slot 0 head / 1 body / 2 arms / 3 legs, st: defense physics, blow
                     (strike), slash, thrust, magic, fire, thunder, resist poison, disease (toxic), blood, curse,
                     saDurability (poise)
@@ -51,7 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
-VERSION = 1
+VERSION = 2  # 2: weapon x3 correctType, x4 saWeaponDamage / attack types (combat stats, src/chrstat.c)
 ICON = 48  # stored icon size: on screen DSR's 85 x 95 icon box is 42 x 59 PS2 pixels (I02 button_item_equip)
 TAB_CONSUME, TAB_MATERIAL, TAB_KEY, TAB_SPELL, TAB_WEAPON, TAB_AMMO, TAB_ARMOR, TAB_RING = range(8)
 CAT_WEAPON, CAT_PROTECTOR, CAT_ACCESSORY, CAT_GOODS = 0x00000000, 0x10000000, 0x20000000, 0x40000000
@@ -110,9 +112,12 @@ def build(game):
               f["correctStrength"], f["correctAgility"], f["correctMagic"], f["correctFaith"],
               f["properStrength"], f["properAgility"], f["properMagic"], f["properFaith"],
               f["physGuardCutRate"], f["magGuardCutRate"], f["fireGuardCutRate"], f["thunGuardCutRate"]]
+        types = (1 if f["isNormalAttackType"] else 0) | (2 if f["isSlashAttackType"] else 0) | \
+                (4 if f["isBlowAttackType"] else 0) | (8 if f["isThrustAttackType"] else 0)
         name, hlp, desc = text("Weapon", i, i - i % 1000)
         rows.append((CAT_WEAPON | i, f["sortId"], name, hlp, desc, f["iconId"], tab, f["weaponCategory"],
-                     f["weight"], f["durabilityMax"], f["staminaGuardDef"], slots, st, f["reinforceTypeId"]))
+                     f["weight"], f["durabilityMax"], f["staminaGuardDef"], slots, st, f["reinforceTypeId"],
+                     f["correctType"], (f["saWeaponDamage"] & 0xFFFF) | (types << 16)))
     for i, (_, f) in sorted(P["EquipParamProtector"].items()):
         slot = 0 if f["headEquip"] else 1 if f["bodyEquip"] else 2 if f["armEquip"] else 3
         st = [f["defensePhysics"], f["defenseBlow"], f["defenseSlash"], f["defenseThrust"], f["defenseMagic"],
@@ -120,11 +125,11 @@ def build(game):
               f["resistCurse"], f["saDurability"]]
         name, hlp, desc = text("Armor", i, i - i % 1000)
         rows.append((CAT_PROTECTOR | i, f["sortId"], name, hlp, desc, f["iconIdM"], TAB_ARMOR,
-                     f["protectorCategory"], f["weight"], f["durabilityMax"], 0, slot, st, 0))
+                     f["protectorCategory"], f["weight"], f["durabilityMax"], 0, slot, st, 0, 0, 0))
     for i, (_, f) in sorted(P["EquipParamAccessory"].items()):
         name, hlp, desc = text("Accessory", i)
         rows.append((CAT_ACCESSORY | i, f["sortId"], name, hlp, desc, f["iconId"], TAB_RING,
-                     f["accessoryCategory"], f["weight"], 0, 0, 0, [f["refId"]], 0))
+                     f["accessoryCategory"], f["weight"], 0, 0, 0, [f["refId"]], 0, 0, 0))
     magic = P["Magic"]
     for i, (_, f) in sorted(P["EquipParamGoods"].items()):
         st = [f["consumeHeroPoint"], f["goodsUseAnim"], f["refId"], f["opmeMenuType"], f["maxNum"]]
@@ -141,7 +146,7 @@ def build(game):
             st[11] = sp[1]["heroPointDamage"]
         name, hlp, desc = text("Item", i)
         rows.append((CAT_GOODS | i, f["sortId"], name, hlp, desc, f["iconId"], goods_tab(f), f["goodsType"],
-                     f["weight"], 0, 0, goods_flags(f), st, 0))
+                     f["weight"], 0, 0, goods_flags(f), st, 0, 0, 0))
     rows.sort(key=lambda r: r[0])
 
     # items.bin
@@ -160,7 +165,7 @@ def build(game):
     names, name_of = bytearray(), {}
     desc = bytearray()
     body = bytearray()
-    for (iid, sort, name, hlp, dsc, icon, tab, sub, weight, dur, x0, x1, st, _rt) in rows:
+    for (iid, sort, name, hlp, dsc, icon, tab, sub, weight, dur, x0, x1, st, _rt, x3, x4) in rows:
         nb = ascii_text(name)
         if nb not in name_of:
             name_of[nb] = len(names)
@@ -171,7 +176,8 @@ def build(game):
         st = (list(st) + [0] * 16)[:16]
         body += struct.pack("<4I2HHBBHH4H16hI", iid, sort & 0xFFFFFFFF, name_of[nb], toff, min(len(hb), 0xFFFF),
                             min(len(db), 0xFFFF), icon & 0xFFFF, tab, sub & 0xFF, min(int(round(weight * 100)), 0xFFFF),
-                            min(dur, 0xFFFF), x0 & 0xFFFF, x1 & 0xFFFF, _rt & 0xFFFF, 0, *[i16(v) for v in st], 0)
+                            min(dur, 0xFFFF), x0 & 0xFFFF, x1 & 0xFFFF, _rt & 0xFFFF, x3 & 0xFFFF,
+                            *[i16(v) for v in st], x4 & 0xFFFFFFFF)
     rein = []
     for i, (_, f) in sorted(P["ReinforceParamWeapon"].items()):
         k = lambda n: min(0xFFFF, max(0, int(round(f[n] * 1000))))
