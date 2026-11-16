@@ -365,7 +365,12 @@ def main():
 
     # anim set: essentials + script constants (+ offset versions)
     goal_ids = {t["battleGoalID"] for _, _, _, t in variants} | {t["logicId"] for _, _, _, t in variants}
-    want = sorted(set(ANIMS) | script_anims(game, map_id, goal_ids) |
+    # the player's throws on this character (ThrowParam AtkChrId 0: backstab / riposte): its side of each, plus the
+    # generic rows' (DefChrId 0) reactions when it has those anims
+    chr_num = int(cid[1:]) if cid[1:].isdigit() else -1
+    throw_anims = {f["defAnimId"] for _, f in P["ThrowParam"].values()
+                   if f["AtkChrId"] == 0 and f["DefChrId"] in (chr_num, 0) and f["defAnimId"] > 0}
+    want = sorted(set(ANIMS) | throw_anims | script_anims(game, map_id, goal_ids) |
                   {t["callHelp_CallActionId"] for _, _, _, t in variants if t["callHelp_CallActionId"] > 0})
     offsets = sorted({npc["animIdOffset"] for _, _, npc, _ in variants if npc["animIdOffset"] > 0})
     ids = []

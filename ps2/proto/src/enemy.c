@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "combat_data.h"
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
@@ -124,6 +125,7 @@ typedef struct {
 _Static_assert(sizeof(ChrWin) == 84, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
+#define PARRIED_TIME 2.0f  /* s a parried enemy stays open to a riposte (ASSUMED, TECH_DEBT combat-11) */
 #define F_NO_TURN 7
 #define F_INVINCIBLE 8
 #define F_STEP_A 11      /* 11 / 79 -> ctx+0x19C bit1: f118 (steps) answers inside them */
@@ -194,6 +196,8 @@ typedef struct {
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
     int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
+    int thrown;      /* playing its side of the player's backstab / riposte (ThrowParam defAnimId): no AI / ESD */
+    float parried_t; /* > 0: parried this long ago at most (a riposte can start) */
     int awarded;  /* this death's souls / humanity points given (or none due: killed before, 2004[04] arg 2 = 0) */
     unsigned char rec[ENEMY_REC];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
     int seed_i;
@@ -1626,7 +1630,15 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->dt = dt;
     const AiOut *o = &e->ai.out;
     LG_BEGIN_X(ai);
-    if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off))
+    /* thrown: its throw anim plays to its end, then the ESD takes over again (a dead one goes on to its death) */
+    if (e->thrown && (e->act < 0 || act_ended(e)))
+        e->thrown = 0;
+    /* parried (combat.c, PR C): open for a riposte for PARRIED_TIME (ASSUMED, TECH_DEBT combat-11) */
+    if (e->parried_t > 0)
+        e->parried_t -= dt;
+    else if (e->cc.parried)  /* the AI (its parried reaction) clears cc.parried */
+        e->parried_t = PARRIED_TIME;
+    if (!e->cc.dead && !e->sp_on && !e->thrown && !(e->ev && e->ev->ai_off))
         ai_update(&e->ai, f);
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
@@ -1647,7 +1659,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
     }
     LG_END(nav, LG_NAV);
     LG_BEGIN(esd);
-    if (esd_ok) {
+    if (esd_ok && !e->thrown) {
         e->esd.dt = dt;
         esd_update(&e->esd);
     }
@@ -1988,6 +2000,57 @@ static void wall_check(Enemy *e)
                (double)e->var->radius, enemy_through_walls);
     else if (!(enemy_through_walls & 63))
         printf("enemy: through wall (lines over %d not printed); %u in the run\n", WC_LOG_MAX, enemy_through_walls);
+}
+
+/* The player's throws (combat_throw_hook; ThrowParam rows of AtkChrId 0 in combat.gd): a placed, living, hostile
+ * enemy within the row's Dist whose facing differs from the player's by DiffAngMin..DiffAngMax. Backstab (type 0):
+ * the player stands behind it; riposte (type 8): in front of it, while it is parried. Rows for its own chr id win
+ * over the generic DefChrId 0 rows; the enemy must carry the row's defAnimId. ASSUMED (TECH_DEBT combat-11): the
+ * "behind / in front" half-angle 60 deg; no alignment by the rows' sorb dummy polys (the player keeps its spot). */
+/* Test scripts ("behind"): the nearest placed, living enemy */
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw)
+{
+    float best = 1e9f;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const Enemy *e = &enemies[i];
+        if (!e->ct || !e->registered || e->cc.dead || !e->pose)
+            continue;
+        float dx = e->pos.x - pos[0], dy = e->pos.y - pos[1], dz = e->pos.z - pos[2], d = dx * dx + dy * dy + dz * dz;
+        if (d < best)
+            best = d, *at = e->pos, *yaw = e->yaw;
+    }
+    return best < 1e9f;
+}
+
+int enemy_throw_try(const float pos[3], float yaw, ThrowStart *out)
+{
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            Enemy *e = &enemies[i];
+            if (!e->ct || !e->registered || e->cc.dead || e->thrown || !e->pose || !e->ct->anims)
+                continue;
+            int num = atoi(e->ct->name + 1);
+            float dx = pos[0] - e->pos.x, dz = pos[2] - e->pos.z, d = sqrtf(dx * dx + dz * dz);
+            float face = fabsf(wrap(e->yaw - yaw)) * 57.29578f;
+            float side = fabsf(wrap(atan2f(dx, dz) - e->yaw)) * 57.29578f;  /* 0 = player in front of it */
+            for (int k = 0; k < NTHROWS; k++) {
+                const ThrowRow *r = &throws[k];
+                if (r->def_chr != (pass ? 0 : num) || d > r->dist || face < r->ang_min || face > r->ang_max)
+                    continue;
+                if (r->type == 0 ? side < 120 : (side > 60 || e->parried_t <= 0))
+                    continue;
+                int full;
+                if (anim_slot(e, r->def_anim, &full) < 0)
+                    continue;
+                e->thrown = 1, e->parried_t = 0;
+                start_action(e, r->def_anim, 0, 0.1f, 0);
+                *out = (ThrowStart){&e->cc, r->atk_anim, r->hit_t, (float)r->corr, atan2f(-dx, -dz)};
+                printf("enemy: %s %s by the player (row def %d, anims %d / %d)\n", e->ct->name,
+                       r->type == 0 ? "backstabbed" : "riposted", r->def_chr, r->atk_anim, r->def_anim);
+                return 1;
+            }
+        }
+    return 0;
 }
 
 void enemy_update(Player *pl, float dt)

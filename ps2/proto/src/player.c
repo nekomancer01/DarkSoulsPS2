@@ -117,6 +117,7 @@ static void set_stamina(Player *p, int v)
 }
 
 int player_esd_env(EsdCtx *c, int id, const float *args, int nargs, float *out);
+static int anim_for(int sel, int id);
 int player_esd_cmd(EsdCtx *c, int bank, int id, const float *args, int nargs);
 static EsdProgram esd_prog;
 static EsdCtx esd;
@@ -736,6 +737,21 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         else if (roll_pressed)
             p->trig[moving ? REQ_ROLL_F : REQ_BACKSTEP] = 1;
     }
+    /* R1 next to an enemy's back (or a parried enemy's front) throws instead of attacking: the engine starts the
+     * ThrowParam pair, outside the ESD (c0000.esd has no state for a23 3400 / 3201) */
+    if (p->trig[REQ_R1] && combat_throw_hook && !esd_action(p) && p->state != ST_FALL && p->state != ST_DEAD &&
+        !p->airborne) {
+        ThrowStart ts;
+        float pos[3] = {p->pos.x, p->pos.y, p->pos.z};
+        int a = combat_throw_hook(pos, p->yaw, &ts) ? anim_for(1, ts.atk_anim) : -1;
+        if (a >= 0) {
+            p->yaw = ts.yaw;
+            start_anim(p, ST_ATTACK, a, 0);
+            p->throw_cc = ts.cc, p->throw_hit_t = ts.hit_t, p->throw_corr = ts.corr, p->throw_anim = a;
+            p->throw_done = 0;
+            p->trig[REQ_R1] = 0, p->latch[REQ_R1] = 0;
+        }
+    }
     esd_moving = moving, esd_stick_yaw = stick_yaw;
     update_requests(p);
     /* upper-body layer clock; guard up while a group-1 guard state (motion mode 11) shows a guard pose. Dead,
@@ -748,6 +764,18 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->ovl_anim = -1;
     }
     p->guarding = p->ovl_anim >= 0 && p->motion_mode == 11 && !esd_action(p);
+    /* throw in progress: the thrower is invincible (ASSUMED, TAE flags 67 / 68 of the anim are not read) and the
+     * damage lands at its ThrowAttackBehavior time: AR x atkPhysCorrection / 100, through i-frames and guards */
+    if (p->throw_cc && (p->state != ST_ATTACK || p->anim != p->throw_anim))
+        p->throw_cc = 0;
+    if (p->throw_cc && !p->throw_done && p->t >= p->throw_hit_t) {
+        static int win = 0x7E000000;
+        CombatAttack atk = {.team = TEAM_PLAYER, .phys = combat_player_ar(), .atk_phys_rate = p->throw_corr / 100,
+                            .window = win++, .is_throw = 1};
+        atk.src_pos[0] = p->pos.x, atk.src_pos[1] = p->pos.y, atk.src_pos[2] = p->pos.z;
+        combat_apply((CombatChr *)p->throw_cc, &atk);
+        p->throw_done = 1;
+    }
     /* parry: the Parry AttackBehavior window of the parry anim (export_player.py records AttackBehaviors as type -1) */
     p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 

@@ -154,9 +154,11 @@ float combat_damage_on(const CombatChr *t, const CombatAttack *atk)
     return sum > 0 ? sum : 0;
 }
 
+int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
+
 int combat_apply(CombatChr *t, const CombatAttack *atk)
 {
-    if (t->invincible)
+    if (t->invincible && !atk->is_throw)
         return 0;
     float dx = atk->src_pos[0] - t->pos[0], dz = atk->src_pos[2] - t->pos[2], a = atan2f(dx, dz) - t->yaw;
     while (a > 3.14159265f) a -= 6.2831853f;
@@ -169,7 +171,7 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     /* Parry: DS1's parry is an AttackBehavior of AttackType 64 that meets an attack whose anim is in a "Parry
      * Possible" window (TAE flag 5). ASSUMED geometry (TECH_DEBT combat-10): an attack that reaches the parrying
      * character from its front half while the window is open counts as met by the shield */
-    if (t->parrying && atk->parryable && a > -1.5707963f && a < 1.5707963f) {
+    if (!atk->is_throw && t->parrying && atk->parryable && a > -1.5707963f && a < 1.5707963f) {
         if (atk->src)
             atk->src->parried = 1;
         t->new_parry = 1;
@@ -179,7 +181,7 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     }
     t->guard_hit = t->guard_broken = 0;
     float cut[4] = {1, 1, 1, 1};
-    if (t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
+    if (!atk->is_throw && t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
         for (int e = 0; e < 4; e++)
             cut[e] = 1 - t->guard_cut[e] / 100;
         float st = atk->stam_dmg * (100 - t->guard_stab) / 100;

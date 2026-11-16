@@ -1,0 +1,22 @@
+# Backstab (PR C2): at the Burg entry the player is put 1 m behind the nearest hollow, facing the same way, and
+# presses R1: ThrowParam's backstab pair plays (player a23 3400, the hollow its defAnimId) and the damage lands at
+# the TAE ThrowAttackBehavior time ("enemy: ... backstabbed", "combat: enemy hit by player"). Then a parry + riposte:
+# the next hollow's attack is parried by the test hit path only on the player side, so the riposte is checked by
+# hand. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_throws.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+option god
+wait 3
+spawn -48.5 -21.8 -35.5 3.14
+cam 3.14 0.25
+wait 10
+behind 1.0
+wait 0.1
+r1
+wait 0.6
+shot backstab
+wait 3
+shot after
+stats
+end

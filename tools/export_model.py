@@ -90,7 +90,8 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a23", 3310, "c0000_a2x"),
          # kick, jumping attack, plunge landing, shield parry (export_player.py, PR C)
          ("a23", 3100, "c0000_a2x"), ("a23", 3600, "c0000_a2x"), ("a23", 3810, "c0000_a2x"),
-         ("a48", 5100, "c0000_a4x")] + [
+         ("a48", 5100, "c0000_a4x"),
+         ("a23", 3400, "c0000_a2x"), ("a23", 3201, "c0000_a2x")] + [
          # bonfire (export_player.py): stored compact (COMPACT) - 11 anims, 37 s; full 30 fps poses would be ~1.1 MB
          ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)]
 # Anims written in the compact layout (export_chr.append_compact_anims: 15 fps, only the bones that move; model.c reads
