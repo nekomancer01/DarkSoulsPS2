@@ -65,6 +65,8 @@ int drb_icon(int icon, float x, float y, float w, float h, int alpha);
 
 /* Button names for the key guide tags (<?conclusion?> ...) */
 const char *drb_button_tag(const char *tag);
+/* PATH3 upload of a T8 / CT32 image to VRAM (the fixed chain above drb_tex_send: also the HUD's slot icons) */
+void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw);
 
 typedef struct { int vram_kb, ram_kb, icons_loaded, icon_misses; } DrbStats;
 extern DrbStats drb_stats;
