@@ -88,12 +88,14 @@ static void root_at(int anim, float t, float *fwd, float *side)
     int i = (int)f;
     if (i >= a->nroot - 1) {
         *fwd = -a->root[a->nroot - 1].z;
-        *side = a->root[a->nroot - 1].x;
+        *side = -a->root[a->nroot - 1].x;
         return;
     }
     float k = f - i;
     *fwd = -(a->root[i].z + (a->root[i + 1].z - a->root[i].z) * k);
-    *side = a->root[i].x + (a->root[i + 1].x - a->root[i].x) * k;
+    /* the model is drawn turned by pi (it faces -Z): both root axes flip; side was not, so a00 202 walk left (root
+     * x +2.0 m) moved right and the lock-on strafes / side rolls went the wrong way */
+    *side = -(a->root[i].x + (a->root[i + 1].x - a->root[i].x) * k);
 }
 
 /* Duration of a looping animation (its 30 fps root-motion samples; the TAE length is not the loop length) */
@@ -662,7 +664,8 @@ static void update_requests(Player *p)
     /* hold requests (FUN_140388790), behind the stamina gate of FUN_140388020. Slot 21 (guard) latches once its
      * button has been down longer than one frame inside a hold window; the others on a press inside one. The held
      * result (f220 / f243) needs the slot's accept window too. ASSUMED (TECH_DEBT esd-8): the latch of slots other
-     * than 21 drops when the button is released (the exe's reset of ctx+0x3F4 for them was not found). */
+     * than 21 lasts until the next ESD anim starts, as the request latches (FUN_140388670); dropping it on release
+     * lost every tapped R2 combo (the second R2 never reached its accept window) */
     if (p->stamina < 1)
         return;
     for (int i = 0; i < REQ_SLOTS; i++) {
@@ -673,14 +676,13 @@ static void update_requests(Player *p)
                 p->hold_timer21 = 0, p->hold_latch[i] = 0;
             else if ((p->hold_timer21 += p->frame_dt) > p->frame_dt)
                 p->hold_latch[i] = 1;
-        } else if (!p->pad_held[i]) {
-            p->hold_latch[i] = 0;
         }
         if (p->hold_en[i] && p->trig[i])
             p->hold_latch[i] = 1;
         if (p->hold_acc[i] && p->hold_latch[i])
             p->held[i] = 1;
     }
+
 }
 
 void player_update(Player *p, const Input *in, float cam_yaw, float dt)
@@ -901,8 +903,16 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
         p->pos.z += cy * df - sy * ds;
-        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim)
-            turn_toward(p, stick_yaw, dt);
+        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim) {
+            /* locked on, actions turn to the target and rolls / steps keep their facing (the side roll went with
+             * the stick before) */
+            float tp[3];
+            if (!player_lock_target(p, tp))
+                turn_toward(p, stick_yaw, dt);
+            else if (!(p->anim >= ANIM_ROLL_B && p->anim <= ANIM_STEP_O) && p->anim != ANIM_ROLL &&
+                     p->anim != ANIM_BACKSTEP)
+                turn_toward(p, atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z), dt);
+        }
         p->invincible = in_window(p->anim, FLAG_INVINCIBLE, p->t);
         p->hitting = in_window(p->anim, -1, p->t);
         stamina_tick(p, p->anim, p->t, dt);
@@ -924,7 +934,8 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         static int last1 = -1;
         int s1 = esd_state(&esd, 1);
         if (s1 != last1)
-            printf("player: esd 1 state %d (anim %s t %.2f)\n", s1, esd_action(p) ? anims[p->anim].name : "-", p->t);
+            printf("player: esd 1 state %d (anim %s t %.2f) at %.2f %.2f yaw %.2f\n", s1,
+                   esd_action(p) ? anims[p->anim].name : "-", p->t, p->pos.x, p->pos.z, p->yaw);
         last1 = s1;
     }
 
@@ -1085,7 +1096,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         break;
     case 112:   /* ctx+0x49D, set by FUN_140388790: some request is actionable now (f102 / f108 per slot) */
         for (int i = 0; i < REQ_SLOTS; i++)
-            v = v || requested(p, i);
+            v = v || requested(p, i) || p->held[i];  /* ... or ctx+0x2E1 (a held request: R2 combos, guard) */
         break;
     case 207: v = 1; break;      /* GetWeaponHoldStyle: one-handed */
     case 211: v = p->ctx_1dc & 1; break;
@@ -1222,7 +1233,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
         start_anim(p, st, anim, anims[anim].stamina);
         /* a new ESD anim clears the buffered requests unless ctx+0x1DC bit 19 is set (FUN_140388670) */
         if (!(p->ctx_1dc & 0x80000))
-            memset(p->latch, 0, sizeof p->latch);
+            memset(p->latch, 0, sizeof p->latch), memset(p->hold_latch, 0, sizeof p->hold_latch);
         return 1;
     }
     case 101:   /* SetLocomotionEnabled (ChrCtrl+0x1B0) */
