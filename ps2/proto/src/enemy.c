@@ -39,6 +39,7 @@
 #include "sound.h"
 #include "ragdoll.h"
 #include "nav.h"
+#include "pickup.h"
 #include "testscript.h"
 #include "ticks.h"
 
@@ -2075,6 +2076,9 @@ void enemy_update(Player *pl, float dt)
             if (e->block > 0 && e->block < ENEMY_BLOCKS && e->seed_i >= 0 && e->seed_i < MAX_ENEMIES)
                 blk_dead[e->block][e->seed_i >> 5] |= 1u << (e->seed_i & 31);
             progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
+            s32 npc;  /* FUN_1403fc600: NpcParam.itemLotId_1 rolled now, the drop at the corpse (src/pickup.c) */
+            memcpy(&npc, e->rec + 8, 4);
+            pickup_enemy_drop(npc, (const float[3]){e->pos.x, e->pos.y, e->pos.z});
         }
     }
     npc_update(pl, dt);

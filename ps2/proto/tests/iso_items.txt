@@ -1,0 +1,81 @@
+# World items (src/pickup.c, src/event.c): the Burg corpse treasure o0500_0029 (lot 1010440) next to the aqueduct
+# start shows the treasure shine, the action button picks it up (pickup anim a00 8000, item get dialog F25) and its
+# get flag keeps it taken; then an enemy drop (lot 1010400, the far corpse o0500_0021's, rolled as a drop) at the
+# player's feet glows and is picked up the same way (both give Soul of a Lost Undead, goods 400: "EVT item lot: item
+# 40000190" lines); 40 rolls of the Burg hollow's NpcParam lot (2 % a Broken
+# Straight Sword) log "dropped" / "dropped nothing". Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_items.txt <out> --iso build/proto.iso --timeout 600
+option nodemo
+option godmode
+wait 3
+spawn -46.1 -21.65 -35.8 2.23
+cam 2.23 0.35
+wait 4
+shot treasure_glow
+stick 0 0.5
+wait 1.2
+stick 0 0
+wait 1
+pickup summary
+shot treasure_prompt
+ev action
+wait 0.5
+pickup expect dialog 1
+shot pickup_anim
+wait 4
+shot item_dialog
+pickup summary
+wait 4
+pickup expect dialog 0
+pickup droplot 1010400 here
+wait 2
+pickup expect drops 1
+shot drop_glow
+ev action
+wait 1
+pickup expect drops 0
+pickup expect dialog 1
+wait 4
+shot drop_dialog
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup drop 250050 -44.6 -21.65 -36.4
+pickup summary
+wait 1

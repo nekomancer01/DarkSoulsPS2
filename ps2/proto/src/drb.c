@@ -480,9 +480,9 @@ const char *drb_button_tag(const char *tag)
 {
     /* DS1 on the PS3 confirmed with Cross and went back with Circle; the PC text tags name the actions */
     static const struct { const char *tag, *name; } map[] = {
-        {"conclusion", "X"}, {"cancel", "O"}, {"selectUD", "Up/Down"}, {"selectLR", "Left/Right"},
+        {"conclusion", HUD_S_CROSS}, {"cancel", HUD_S_CIRCLE}, {"selectUD", "Up/Down"}, {"selectLR", "Left/Right"},
         {"select", "D-pad"}, {"pageUp", "L1"}, {"pageDown", "R1"}, {"pageUp2", "L2"}, {"pageDown2", "R2"},
-        {"detail", "Square"}, {"sort", "Triangle"}, {"change", "Triangle"}, {"startAction", "START"},
+        {"detail", HUD_S_SQUARE}, {"sort", HUD_S_TRIANGLE}, {"change", HUD_S_TRIANGLE}, {"startAction", "START"},
         {"selectAction", "SELECT"},
     };
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
