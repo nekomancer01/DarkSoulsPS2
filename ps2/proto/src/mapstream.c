@@ -517,12 +517,13 @@ static int issue(void)
             !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))))
             lo = 1;
         void *p = lo && !nr ? ms_g_alloc_lend(gb) : NULL;
+        int lent = 0;  /* 1 lent, 2 lent as a near part: undone when the read cannot go out below */
         if (p)
-            ms_lent_n++;
+            ms_lent_n++, lent = 1;
         else
             p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
         if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = ms_g_alloc_lend(gb)))
-            ms_lent_n++, ms_lent_near += gb;
+            ms_lent_n++, ms_lent_near += gb, lent = 2;
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && evict_left > 0) {
@@ -577,6 +578,11 @@ static int issue(void)
         int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
         if (!tk) {
             ms_g_free(p, gb);
+            /* (the lending counts went up with the allocation: left as they were, every full request table while
+             * near parts were lent shrank MS_LEND_NEAR_KB's room for good) */
+            ms_lent_n -= lent > 0;
+            if (lent == 2)
+                ms_lent_near = ms_lent_near > gb ? ms_lent_near - gb : 0;
             if (!sent)
                 q_add(w.k, w.id, w.cls, w.key);
             return 0;

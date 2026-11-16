@@ -1082,7 +1082,12 @@ static void read_step(int i, int issue)
         if (res != (int)n) {
             printf("world: block %d read %d of %u bytes\n", i, res, n);
             world_stats.fails++;
-            free_slot(i);
+            if (r->state == W_ON) {  /* stage 1 (a texture entry): its collision and map tables are in use; freeing the
+                                       * slot here left them pointing at freed memory */
+                turn_off(i);
+                r->retry_s = WORLD_RETRY_S;
+            } else
+                free_slot(i);
             return;
         }
         char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
