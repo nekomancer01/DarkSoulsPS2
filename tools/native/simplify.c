@@ -92,7 +92,7 @@ static double qeval(const double *q, v3 p) { /* _qeval */
             + 2 * q[6] * y + q[7] * z * z + 2 * q[8] * z + q[9]);
 }
 
-typedef struct { double c; int u, v, vu, vv; } hent;
+typedef struct { double c; int u, v, vu, vv, nopl; } hent;  /* nopl: half-edge (no placement) */
 static int hless(const hent *a, const hent *b) {
     if (a->c != b->c) return a->c < b->c;
     if (a->u != b->u) return a->u < b->u;
@@ -136,11 +136,15 @@ typedef struct {
     int *rem;        /* removed triangle ids, concatenated */
     int *cha;        /* changes (t, k, p, a), concatenated */
     size_t nrem_all, ncha_all;
+    int *plv;        /* per step: the vertex the collapse moved (placement, g_place), -1 none; NULL: placement off */
+    double *plx;     /* per step: its new position (3 doubles) */
 } result;
 
 typedef struct {
     int nv, nt;
-    const v3 *pos;
+    const v3 *pos;   /* current positions (with placement: a copy that moves, else the source) */
+    const v3 *pos0;  /* the source positions */
+    v3 *pm;          /* the moving copy (placement on), else NULL */
     int (*TP)[3], (*TA)[3];
     ivec *vt, *bnb;
     ivec *snb;  /* seam neighbours (attribute seams), only while the shape envelope is on; NULL: off */
@@ -156,9 +160,30 @@ typedef struct {
     int (*P0)[3], *tmesh; /* source triangles' positions and mesh (agrp of corner 0) */
     const int *agrp;
     double lost, seam_k2, ak2;
+    double shape;  /* attr_map: the shape term of the last evaluated collapse (g_shape_k) */
+    double dlocv;  /* attr_map: how far v's own triangles moved off their planes (placement), else 0 */
     /* attr_map scratch */
-    ivec removed, keep, amk, amv, nu, nv_, opp;
+    ivec removed, keep, amk, amv, nu, nv_, opp, vkeep;
 } S;
+
+/* Shape term in the collapse cost (export_map.py SIMPLIFY_SHAPE_K; 0: off, the log simplify.py gives). The guard
+ * below refuses only past a hard limit; this prices every collapse by how much thinner it makes the triangles it
+ * keeps, so of two collapses with about the same surface error the one that leaves better triangles goes first and
+ * a fan of slivers costs what the error a sliver shows would cost. Per kept triangle: the drop of its shape quality
+ * q (1 equilateral, 0 a line; a triangle that gets rounder costs nothing) times its longest new edge squared (a
+ * sliver's shading and outline error grows with its length: metres squared, the plane error's unit), the largest over
+ * the collapse's triangles, times g_shape_k, added to the error before the view distance scale. In the spirit of the
+ * penalties the large engines add to quadric collapse costs instead of refusing (ASSUMED weight, TECH_DEBT map-47). */
+static double g_shape_k = 0.0;
+void simplify_set_shape_cost(double k) { g_shape_k = k > 0 ? k : 0.0; }
+static double tri_q(v3 a, v3 b, v3 c, double cross_len);
+static double shape_term(v3 a0, v3 b0, v3 c0, double l0, v3 a, v3 b, v3 c, double l) {
+    double qo = tri_q(a0, b0, c0, l0), qn = tri_q(a, b, c, l);
+    if (qn >= qo) return 0.0;
+    v3 e0 = sub(b, a), e1 = sub(c, b), e2 = sub(a, c);
+    double m = pmax(pmax(dot(e0, e0), dot(e1, e1)), dot(e2, e2));
+    return (qo - qn) * m;
+}
 
 static int idx3(const int *t, int x) { return t[0] == x ? 0 : t[1] == x ? 1 : 2; }
 
@@ -169,8 +194,8 @@ static int amap_get(S *s, int key, int *val) {
 }
 
 /* attr_map(u, v): returns 0 when the attribute map is inconsistent (Python: amap None) */
-static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
-    s->removed.n = s->keep.n = s->amk.n = s->amv.n = 0;
+static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out) {
+    s->removed.n = s->keep.n = s->amk.n = s->amv.n = s->vkeep.n = 0;
     iv_sort(&s->vt[u]);
     ivec *vu = &s->vt[u];
     for (int i = 0; i < vu->n; i++) {
@@ -187,8 +212,8 @@ static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
         } else
             iv_push(&s->keep, t);
     }
-    double torn = 0.0, dloc = 0.0;
-    v3 pu = s->pos[u], pv = s->pos[v];
+    double torn = 0.0, dloc = 0.0, shape = 0.0, dlocv = 0.0;
+    v3 pu = s->pos[u], pv = x;  /* pv: where the merged vertex goes (v's position, or the placement's) */
     double da = 0.0;
     for (int i = 0; i < s->removed.n; i++) {
         int *tp = s->TP[s->removed.a[i]];
@@ -202,11 +227,49 @@ static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
         double a0 = area3(p[0], p[1], p[2]);
         int k = idx3(tp, u), dummy;
         if (!amap_get(s, s->TA[t][k], &dummy)) torn += a0;
+        v3 q0 = p[0], q1 = p[1], q2 = p[2];
         p[k] = pv;
         da += a0 - area3(p[0], p[1], p[2]);
         v3 n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
         double ln = dot(n, n);
         if (ln > 0) dloc = pmax(dloc, fabs(dot(n, du)) / sqrt(ln));
+        if (g_shape_k > 0)
+            shape = pmax(shape, shape_term(q0, q1, q2, 2 * a0, p[0], p[1], p[2], sqrt(ln)));
+    }
+    v3 p_v = s->pos[v];
+    if (x.x != p_v.x || x.y != p_v.y || x.z != p_v.z) {  /* placement: v's own triangles move with it */
+        v3 dv = sub(p_v, x);
+        iv_sort(&s->vt[v]);
+        ivec *vv = &s->vt[v];
+        for (int i = 0; i < vv->n; i++) {
+            int t = vv->a[i];
+            int *tp = s->TP[t];
+            if (tp[0] == u || tp[1] == u || tp[2] == u) continue;  /* removed */
+            iv_push(&s->vkeep, t);
+            v3 p[3] = {s->pos[tp[0]], s->pos[tp[1]], s->pos[tp[2]]};
+            double a0 = area3(p[0], p[1], p[2]);
+            v3 q0 = p[0], q1 = p[1], q2 = p[2];
+            p[idx3(tp, v)] = x;
+            da += a0 - area3(p[0], p[1], p[2]);
+            v3 n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            double ln = dot(n, n);
+            if (ln > 0) dlocv = pmax(dlocv, fabs(dot(n, dv)) / sqrt(ln));
+            if (g_shape_k > 0)
+                shape = pmax(shape, shape_term(q0, q1, q2, 2 * a0, p[0], p[1], p[2], sqrt(ln)));
+        }
+        for (int l = 0; l < 2; l++) {  /* v's outline lines to its other neighbours turn: v's old place off them */
+            ivec *b = l ? (s->snb ? &s->snb[v] : NULL) : (s->border[v] ? &s->bnb[v] : NULL);
+            for (int i = 0; b && i < b->n; i++) {
+                int y = b->a[i];
+                if (y == u) continue;
+                v3 e = sub(s->pos[y], x);
+                double le = dot(e, e);
+                if (le > 0) {
+                    v3 c = cross(dv, e);
+                    dlocv = pmax(dlocv, sqrt(dot(c, c) / le));
+                }
+            }
+        }
     }
     if (s->border[u]) {
         ivec *b = &s->bnb[u];
@@ -241,6 +304,8 @@ static int attr_map(S *s, int u, int v, double *torn_out, double *dloc_out) {
         }
     }
     s->lost = fabs(da);
+    s->shape = shape;
+    s->dlocv = dlocv;
     *torn_out = torn;
     *dloc_out = dloc;
     return 1;
@@ -384,25 +449,87 @@ static double tri_q(v3 a, v3 b, v3 c, double cross_len) {  /* 4 sqrt(3) area / s
     return l > 0 ? 3.4641016151377544 * cross_len / l : 0.0;  /* 4 sqrt(3) * (cross_len / 2) / l */
 }
 
-static void push(S *s, heap *h, int u, int v) {
+/* Vertex placement (export_map.py SIMPLIFY_PLACE: the far levels only; 0: off, the half-edge collapse simplify.py
+ * gives). The merged vertex may go where the two vertices' quadrics are smallest instead of staying at v: the
+ * quadrics' minimiser when the system is well conditioned and the point lies near the edge (its box padded by half
+ * its length), else the best point on the edge, else v; a candidate is taken only when its error is clearly below
+ * v's. Vertices on the mesh's open borders, on material outlines (the envelope's seams) or locked (cell cuts, which
+ * the other level and the neighbouring cell share) never move, so outlines and cuts stay exact and both levels still
+ * meet. The wedges keep their attributes (UVs, colours): a moved vertex's texture slides by at most the move, which
+ * the envelope bounds (ASSUMED fine at the coarse level's distances; no attribute quadrics, TECH_DEBT map-48). Each
+ * step records the move (result plv / plx), so any prefix of the log replays with the positions it had. */
+static int g_place = 0;
+void simplify_set_place(int on) { g_place = on != 0; }
+
+static v3 place(S *s, int u, int v, int nopl) {
+    v3 pv = s->pos[v], pu = s->pos[u];
+    if (!s->pm || nopl || s->lock[v])
+        return pv;
+    /* on an outline (open border, material seam): only along the outline edge itself, so the outline keeps its line */
+    int line = s->border[u] || s->border[v] || (s->snb && (s->snb[u].n || s->snb[v].n));
+    if (line && !((s->border[u] && s->border[v] && iv_has(&s->bnb[u], v)) ||
+                  (s->snb && iv_has(&s->snb[u], v) && !s->border[u] && !s->border[v])))
+        return pv;
+    double q[11];
+    for (int i = 0; i < 11; i++) q[i] = s->Q[u][i] + s->Q[v][i];
+    double ev = qeval(q, pv), be = ev;
+    v3 best = pv, d = sub(pu, pv);
+    double len = sqrt(dot(d, d));
+    if (!(len > 0)) return pv;
+    /* the minimiser: A x = -b with A = [q0 q1 q2; q1 q4 q5; q2 q5 q7], b = (q3, q6, q8) */
+    double a00 = q[0], a01 = q[1], a02 = q[2], a11 = q[4], a12 = q[5], a22 = q[7];
+    double c00 = a11 * a22 - a12 * a12, c01 = a02 * a12 - a01 * a22, c02 = a01 * a12 - a02 * a11;
+    double det = a00 * c00 + a01 * c01 + a02 * c02;
+    double sc = pmax(pmax(fabs(a00), fabs(a11)), fabs(a22));
+    if (!line && sc > 0 && fabs(det) > 1e-9 * sc * sc * sc) {
+        double c11 = a00 * a22 - a02 * a02, c12 = a01 * a02 - a00 * a12, c22 = a00 * a11 - a01 * a01;
+        double b0 = -q[3], b1 = -q[6], b2 = -q[8];
+        v3 x = {(c00 * b0 + c01 * b1 + c02 * b2) / det, (c01 * b0 + c11 * b1 + c12 * b2) / det,
+                (c02 * b0 + c12 * b1 + c22 * b2) / det};
+        double pad = 0.5 * len;
+        int in = x.x >= fmin(pu.x, pv.x) - pad && x.x <= fmax(pu.x, pv.x) + pad && x.y >= fmin(pu.y, pv.y) - pad &&
+                 x.y <= fmax(pu.y, pv.y) + pad && x.z >= fmin(pu.z, pv.z) - pad && x.z <= fmax(pu.z, pv.z) + pad;
+        double ex = in ? qeval(q, x) : 1e300;
+        if (ex < be) be = ex, best = x;
+    }
+    {  /* on the edge: f(t) = qeval(pv + t d), a quadratic in t; its minimum within [0, 1] */
+        v3 ad = {a00 * d.x + a01 * d.y + a02 * d.z, a01 * d.x + a11 * d.y + a12 * d.z, a02 * d.x + a12 * d.y + a22 * d.z};
+        double qa = dot(ad, d);
+        v3 g = {a00 * pv.x + a01 * pv.y + a02 * pv.z + q[3], a01 * pv.x + a11 * pv.y + a12 * pv.z + q[6],
+                a02 * pv.x + a12 * pv.y + a22 * pv.z + q[8]};
+        double qb = 2 * dot(g, d);
+        if (qa > 0) {
+            double t = -qb / (2 * qa);
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            v3 x = {pv.x + t * d.x, pv.y + t * d.y, pv.z + t * d.z};
+            double ex = qeval(q, x);
+            if (ex < be) be = ex, best = x;
+        }
+    }
+    /* only a clear gain moves the vertex (flat ground keeps its source positions and UVs) */
+    return be < ev * 0.99 && ev - be > 1e-12 * (q[10] > 0 ? q[10] : 1) ? best : pv;
+}
+
+static void push(S *s, heap *h, int u, int v, int nopl) {
     if (s->lock[u]) return;
     if (s->border[u] && !iv_has(&s->bnb[u], v)) return;
     double torn, dloc;
-    if (!attr_map(s, u, v, &torn, &dloc)) return;
+    v3 pv = place(s, u, v, nopl);
+    if (!attr_map(s, u, v, pv, &torn, &dloc)) return;
     double w = s->Q[u][10] + s->Q[v][10];
-    v3 pv = s->pos[v];
     double e = w > 0 ? (qeval(s->Q[u], pv) + qeval(s->Q[v], pv) + s->seam_k2 * torn) / w : 0.0;
-    double b = pmax(s->errm[v], s->errm[u] + dloc);
+    double b = pmax(s->dlocv > 0 ? s->errm[v] + s->dlocv : s->errm[v], s->errm[u] + dloc);
     if (b > g_env_pad) return;  /* the surface would leave the envelope around the source shape: never collapsed */
     double m = e, bb = b * b, ar = s->ak2 * (s->alost[u] + s->alost[v] + s->lost);
     if (bb > m) m = bb;
     if (ar > m) m = ar;
+    m += g_shape_k * s->shape;
     double c = m * pmax(s->scale[u], s->scale[v]);
     if (s->weight && c < s->sat) {  /* simplify.py: structure weight, saturating at sat */
         double wc = c * pmax(s->weight[u], s->weight[v]);
         c = wc < s->sat ? wc : s->sat;
     }
-    hent he = {c, u, v, s->ver[u], s->ver[v]};
+    hent he = {c, u, v, s->ver[u], s->ver[v], nopl};
     hpush(h, he);
 }
 
@@ -452,7 +579,12 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     S s;
     memset(&s, 0, sizeof s);
     s.nv = nv;
-    s.pos = (const v3 *)posd;
+    s.pos = s.pos0 = (const v3 *)posd;
+    if (g_place) {
+        s.pm = malloc(sizeof(v3) * (nv ? nv : 1));
+        memcpy(s.pm, posd, sizeof(v3) * nv);
+        s.pos = s.pm;
+    }
     s.seam_k2 = seam_k2;
     s.ak2 = ak2;
     /* T0: input triangles minus those with repeated positions */
@@ -491,7 +623,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
             memcpy(s.P0[i], s.TP[i], sizeof(int[3]));
             s.tmesh[i] = agrp[s.TA[i][0]];
         }
-        sg_build(&s.sg, nv, s.pos, nt, s.P0, g_shape_tol);
+        sg_build(&s.sg, nv, s.pos0, nt, s.P0, g_shape_tol);
     }
     s.vt = calloc(nv ? nv : 1, sizeof(ivec));
     s.bnb = calloc(nv ? nv : 1, sizeof(ivec));
@@ -575,8 +707,8 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     s.weight = weight, s.sat = sat;
     heap h = {0};
     for (int ei = 0; ei < ne; ei++) {
-        push(&s, &h, E[ei].a, E[ei].b);
-        push(&s, &h, E[ei].b, E[ei].a);
+        push(&s, &h, E[ei].a, E[ei].b, 0);
+        push(&s, &h, E[ei].b, E[ei].a, 0);
     }
     free(E);
     size_t scap = 0, rcap = 0, ccap = 0;
@@ -588,7 +720,9 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         int u = he.u, v = he.v;
         if (s.dead[u] || s.dead[v] || s.ver[u] != he.vu || s.ver[v] != he.vv) continue;
         double torn, dloc;
-        if (!attr_map(&s, u, v, &torn, &dloc) || !s.removed.n) continue;
+        v3 px = place(&s, u, v, he.nopl);
+        if (!attr_map(&s, u, v, px, &torn, &dloc) || !s.removed.n) continue;
+        int moved = px.x != s.pos[v].x || px.y != s.pos[v].y || px.z != s.pos[v].z;
         /* link condition */
         s.opp.n = 0;
         for (int i = 0; i < s.removed.n; i++) {
@@ -611,7 +745,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
             }
             if (!ok || k != s.opp.n) continue;
         }
-        v3 pv = s.pos[v];
+        v3 pv = px;
         chg.n = 0;
         int ok = 1;
         for (int i = 0; i < s.keep.n; i++) {
@@ -638,10 +772,30 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
             if (s.n0 && sqrt(ln) <= 1e-5 * s.l0[t]) { ok = 0; break; }  /* the guard: (almost) no area left of its source's */
             if (s.P0) {  /* the guard: still on its own mesh's source surface (the mesh of corner 0's new attribute) */
                 int mesh = s.agrp[k == 0 ? na : s.TA[t][0]];
-                if (sg_off(&s.sg, p[0], p[1], p[2], s.pos, s.P0, s.tmesh, mesh, g_shape_tol)) { ok = 0; break; }
+                if (sg_off(&s.sg, p[0], p[1], p[2], s.pos0, s.P0, s.tmesh, mesh, g_shape_tol)) { ok = 0; break; }
             }
         }
-        if (!ok) continue;
+        for (int i = 0; ok && i < s.vkeep.n; i++) {  /* placement: v's own triangles, the same tests */
+            int t = s.vkeep.a[i];
+            int *tp = s.TP[t];
+            v3 p[3] = {s.pos[tp[0]], s.pos[tp[1]], s.pos[tp[2]]};
+            v3 old = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            p[idx3(tp, v)] = pv;
+            v3 nw_ = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            double lo = dot(old, old), ln = dot(nw_, nw_);
+            if (ln <= 1e-14 * pmax(lo, 1e-12) || dot(old, nw_) < min_cos * sqrt(lo * ln)) { ok = 0; break; }
+            if (g_qmin > 0) {
+                double qn = tri_q(p[0], p[1], p[2], sqrt(ln));
+                if (qn < g_qmin && qn < tri_q(s.pos[tp[0]], s.pos[tp[1]], s.pos[tp[2]], sqrt(lo))) { ok = 0; break; }
+            }
+            if (s.n0 && dot(s.n0[t], nw_) < g_flip_cos * sqrt(ln)) { ok = 0; break; }
+            if (s.n0 && sqrt(ln) <= 1e-5 * s.l0[t]) { ok = 0; break; }
+            if (s.P0 && sg_off(&s.sg, p[0], p[1], p[2], s.pos0, s.P0, s.tmesh, s.agrp[s.TA[t][0]], g_shape_tol)) { ok = 0; break; }
+        }
+        if (!ok) {
+            if (moved) push(&s, &h, u, v, 1);  /* the placement failed a test: the plain collapse to v may not */
+            continue;
+        }
         /* apply */
         for (int i = 0; i < s.removed.n; i++) {
             int t = s.removed.a[i];
@@ -656,7 +810,8 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         s.vt[u].n = 0;
         s.dead[u] = 1;
         qadd(s.Q[v], s.Q[u]);
-        s.errm[v] = pmax(s.errm[v], s.errm[u] + dloc);
+        s.errm[v] = pmax(s.dlocv > 0 ? s.errm[v] + s.dlocv : s.errm[v], s.errm[u] + dloc);
+        if (moved) s.pm[v] = pv;
         s.alost[v] += s.alost[u] + s.lost;
         s.ver[v] += 1;
         if (s.border[u]) {
@@ -682,6 +837,14 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
             R->cost = realloc(R->cost, sizeof(double) * scap);
             R->nrem = realloc(R->nrem, sizeof(int) * scap);
             R->ncha = realloc(R->ncha, sizeof(int) * scap);
+            if (s.pm) {
+                R->plv = realloc(R->plv, sizeof(int) * scap);
+                R->plx = realloc(R->plx, sizeof(double) * 3 * scap);
+            }
+        }
+        if (s.pm) {
+            R->plv[ns] = moved ? v : -1;
+            R->plx[3 * ns] = pv.x, R->plx[3 * ns + 1] = pv.y, R->plx[3 * ns + 2] = pv.z;
         }
         R->cost[ns] = runmax;
         R->nrem[ns] = s.removed.n;
@@ -698,8 +861,8 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         ivec nb = {0};
         for (int i = 0; i < s.nu.n; i++) iv_push(&nb, s.nu.a[i]);
         for (int i = 0; i < nb.n; i++) {
-            push(&s, &h, nb.a[i], v);
-            push(&s, &h, v, nb.a[i]);
+            push(&s, &h, nb.a[i], v, 0);
+            push(&s, &h, v, nb.a[i], 0);
         }
         free(nb.a);
     }
@@ -711,12 +874,13 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); free(s.sg.bb); }
     free(s.vt); free(s.bnb); free(s.TP); free(s.TA); free(s.lock); free(s.border); free(s.dead); free(s.Q);
     free(s.errm); free(s.alost); free(s.ver); free(h.a); free(chg.a);
+    free(s.pm); free(s.vkeep.a);
     free(s.removed.a); free(s.keep.a); free(s.amk.a); free(s.amv.a); free(s.nu.a); free(s.nv_.a); free(s.opp.a);
     return R;
 }
 
 void simplify_free(result *R) {
     if (!R) return;
-    free(R->t0); free(R->cost); free(R->nrem); free(R->ncha); free(R->rem); free(R->cha);
+    free(R->t0); free(R->cost); free(R->nrem); free(R->ncha); free(R->rem); free(R->cha); free(R->plv); free(R->plx);
     free(R);
 }

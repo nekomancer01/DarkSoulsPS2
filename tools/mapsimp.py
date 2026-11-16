@@ -337,6 +337,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         if mapcfg.SIMPLIFY_GUARD:
             MX.mx_simp_guard(mapcfg.SIMPLIFY_QMIN, math.cos(math.radians(mapcfg.SIMPLIFY_FLIP_DEG)))
             MX.mx_simp_shape(mapcfg.SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+        far_lv = out == "tris_far"  # the coarse level (shown from RES_NEAR_R out)
+        MX.mx_simp_shape_cost(mapcfg.SIMPLIFY_SHAPE_K_FAR if far_lv else mapcfg.SIMPLIFY_SHAPE_K_NEAR)
+        MX.mx_simp_place(1 if far_lv and mapcfg.SIMPLIFY_PLACE else 0)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
                                      eps_far, budget, nav_s, sat=sat, env_pad=env_pad, far_shape=far_shape)
@@ -344,6 +347,8 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_envelope(0.0)
             MX.mx_simp_guard(0.0, -2.0)
             MX.mx_simp_shape(0.0)
+            MX.mx_simp_shape_cost(0.0)
+            MX.mx_simp_place(0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
     if mapcfg.SIMPLIFY_GUARD or env_pad or mapcfg.SIMPLIFY_ENV_NEAR:  # the fallback is simplify.py's reference collapse only
@@ -1099,6 +1104,10 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
+        xyz = None
+        if mapcfg.SIMPLIFY_PLACE and out == "tris_far" and n:
+            xyz = np.zeros((n, 3, 3), f64)
+            MX.mx_simp_fetch_xyz(h, a(xyz))
         if drop and job_eps is not None and n:  # the loose pieces within their cell's piece threshold are left out,
             # whole: a piece over a cell cut goes by the cell of its centre (when the solve has that cell)
             pc_ = drop["pp"][poff[cm[:3 * n:3]] + cp[:3 * n:3]]
@@ -1110,6 +1119,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             print(f"pieces: {int(gone.sum())} of {n} triangles in {len(np.unique(pc_[gone]))} loose pieces left out "
                   f"(error within their cell's threshold)")
             tj, tm = tj[keep_t], tm[keep_t]
+            if xyz is not None:
+                xyz = xyz[keep_t]
             k3 = (keep_t[:, None] * 3 + np.arange(3)).reshape(-1)
             cm, cp, cw = cm[k3], cp[k3], cw[k3]
             n = len(keep_t)
@@ -1130,8 +1141,9 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         final = grass + n if job_eps is not None or final_n is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
-    # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
-    CP = P[poff[cm[:3 * n]] + cp[:3 * n]].reshape(-1, 3, 3)
+    # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp (with
+    # SIMPLIFY_PLACE where the replayed collapses moved them: xyz)
+    CP = xyz[:n] if xyz is not None else P[poff[cm[:3 * n]] + cp[:3 * n]].reshape(-1, 3, 3)
     CW = cw[:3 * n].reshape(-1, 3)
     tm, tj = tm[:n], tj[:n]
     order = np.argsort(tm, kind="stable")

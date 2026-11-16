@@ -16,6 +16,10 @@ mapcfg.SIMPLIFY_ENV_NEAR = mapcfg.SIMPLIFY_ENV_FAR = 0.0
 # the triangle guard and its validation pass (SIMPLIFY_GUARD, PR #187) live only in the C simplifier: the Python twin
 # gives the guard-off log, so the comparison runs with both off; check_guard runs the C path with them on
 mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = False
+# so do the shape term and the coarse level's vertex placement (SIMPLIFY_SHAPE_K_*, SIMPLIFY_PLACE); check_guard runs them
+SHIPPED_SHAPE = (mapcfg.SIMPLIFY_SHAPE_K_NEAR, mapcfg.SIMPLIFY_SHAPE_K_FAR, mapcfg.SIMPLIFY_PLACE)
+mapcfg.SIMPLIFY_SHAPE_K_NEAR = mapcfg.SIMPLIFY_SHAPE_K_FAR = 0.0
+mapcfg.SIMPLIFY_PLACE = False
 
 L = mapx_native.lib()
 assert L is not None, "libmapx did not build"
@@ -428,12 +432,16 @@ def check_guard(rng):
     def run(guard):
         M = copy.deepcopy(ms)
         mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = guard
+        if guard:  # (with the shipped shape term and placement: validation measures the moved vertices too)
+            mapcfg.SIMPLIFY_SHAPE_K_NEAR, mapcfg.SIMPLIFY_SHAPE_K_FAR, mapcfg.SIMPLIFY_PLACE = SHIPPED_SHAPE
         f = io.StringIO()
         try:
             with contextlib.redirect_stdout(f):
                 em.simplify_meshes(M, spawn, nav_v, nav_t, src="tris_in", out="tris_far", env_pad=0.25)
         finally:
             mapcfg.SIMPLIFY_GUARD = mapcfg.SIMPLIFY_VALIDATE = False
+            mapcfg.SIMPLIFY_SHAPE_K_NEAR = mapcfg.SIMPLIFY_SHAPE_K_FAR = 0.0
+            mapcfg.SIMPLIFY_PLACE = False
         return sum(len(m.get("tris_far") or []) for m in M), f.getvalue()
     n_off, _ = run(False)
     n_on, log = run(True)

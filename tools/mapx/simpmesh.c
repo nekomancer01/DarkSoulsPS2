@@ -18,6 +18,8 @@ typedef struct {
     int *rem;
     int *cha;
     size_t nrem_all, ncha_all;
+    int *plv;        /* simplify.c placement: per step the moved vertex (-1 none), NULL when off */
+    double *plx;
 } sresult;
 sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
                       const unsigned char *locked, const double *scale, const double *weight, double sat,
@@ -30,6 +32,8 @@ void simplify_free(sresult *R);
 void simplify_set_envelope(double pad);
 void simplify_set_guard(double qmin, double flip_cos);
 void simplify_set_shape(double tol);
+void simplify_set_shape_cost(double k);
+void simplify_set_place(int on);
 
 static double np_maximum(double a, double b) { return a >= b || a != a ? a : b; }
 static double np_minimum(double a, double b) { return a <= b || a != a ? a : b; }
@@ -222,6 +226,7 @@ typedef struct {
     /* replay */
     int nout;
     int *out;             /* nout x 6 (p, a) */
+    double *rpos;         /* npos x 3: the positions after the replayed steps (placement moved some), NULL: pos */
     int *oid;             /* per output triangle: its source triangle (log T0 index) */
     int ksteps;           /* log steps the last replay applied */
     int kcap;             /* mx_simp_back_off: at most this many steps (-1: no cap) */
@@ -690,7 +695,15 @@ static void replay_job(void *vc, long long i)
             memmove(Tt + 6 * m++, Tt + 6 * t, 6 * sizeof(int));
         }
     free(alive);
-    free(j->out), free(j->oid);
+    free(j->out), free(j->oid), free(j->rpos);
+    j->rpos = NULL;
+    if (R->plv) {  /* the moves of the replayed steps, in order */
+        j->rpos = MX_NEW(double, 3 * (size_t)(j->npos ? j->npos : 1));
+        memcpy(j->rpos, j->pos, sizeof(double) * 3 * (size_t)j->npos);
+        for (int s = 0; s < k; s++)
+            if (R->plv[s] >= 0)
+                memcpy(j->rpos + 3 * R->plv[s], R->plx + 3 * s, 3 * sizeof(double));
+    }
     j->out = Tt, j->oid = oid, j->nout = m, j->ksteps = k;
 }
 
@@ -740,6 +753,20 @@ MX_API void mx_simp_fetch(const mx_simp *h, int *tjob, int *tmesh, int *cmesh, i
     }
 }
 
+/* the replayed triangles' corner positions (3 doubles each), in mx_simp_fetch's order: the source positions, or where
+   the replayed steps' placement moved them */
+MX_API void mx_simp_fetch_xyz(const mx_simp *h, double *xyz)
+{
+    long long o = 0;
+    for (int i = 0; i < h->njobs; i++) {
+        const sjob *j = h->jobs + i;
+        const double *rp = j->rpos ? j->rpos : j->pos;
+        for (int t = 0; t < j->nout; t++, o++)
+            for (int q = 0; q < 3; q++)
+                memcpy(xyz + 9 * o + 3 * q, rp + 3 * j->out[6 * t + 2 * q], 3 * sizeof(double));
+    }
+}
+
 /* Jobs mask[i] of h take o's replayed result (log, triangles) and o takes h's: both handles were made from the same
    input, so their jobs match one to one (export_map.py: the cells whose spots stay over budget with the shape envelope
    take the run without it). Returns h's surviving triangle count. */
@@ -753,8 +780,10 @@ MX_API long long mx_simp_swap_jobs(mx_simp *h, mx_simp *o, const unsigned char *
             continue;
         sresult *l = a->log;
         int *out = a->out, *oid = a->oid, n = a->nout, k = a->ksteps, kc = a->kcap;
+        double *rp = a->rpos;
         a->log = b->log, a->out = b->out, a->oid = b->oid, a->nout = b->nout, a->ksteps = b->ksteps, a->kcap = b->kcap;
-        b->log = l, b->out = out, b->oid = oid, b->nout = n, b->ksteps = k, b->kcap = kc;
+        a->rpos = b->rpos;
+        b->log = l, b->out = out, b->oid = oid, b->nout = n, b->ksteps = k, b->kcap = kc, b->rpos = rp;
     }
     h->nout = o->nout = 0;
     for (int i = 0; i < h->njobs; i++)
@@ -777,6 +806,13 @@ MX_API void mx_simp_guard(double qmin, double flip_cos) { simplify_set_guard(qmi
 
 /* the guard's shape tolerance in metres for the next mx_simp_new (tools/native/simplify.c g_shape_tol); 0: off */
 MX_API void mx_simp_shape(double tol) { simplify_set_shape(tol); }
+
+/* the shape term's weight in the collapse cost for the next mx_simp_new (tools/native/simplify.c g_shape_k); 0: off */
+MX_API void mx_simp_shape_cost(double k) { simplify_set_shape_cost(k); }
+
+/* vertex placement for the next mx_simp_new (tools/native/simplify.c g_place: export_map.py SIMPLIFY_PLACE, the coarse
+   level); 0: off (every vertex keeps its source position) */
+MX_API void mx_simp_place(int on) { simplify_set_place(on); }
 
 /* ---- validation (export_map.py SIMPLIFY_VALIDATE): every replayed triangle checked against its source, independent
    of the simplifier's own bookkeeping (its bounds are conservative estimates; this measures the result) ---- */
@@ -928,7 +964,8 @@ static void check_job(void *vc, long long i)
     double worst = 0, wsq = 0;  /* the farthest point so far, in metres and squared */
     for (int t = 0; t < j->nout; t++) {
         const int *r = j->out + 6 * t, *s = R->t0 + 6 * j->oid[t];
-        const double *a = j->pos + 3 * r[0], *b = j->pos + 3 * r[2], *d = j->pos + 3 * r[4];
+        const double *rp = j->rpos ? j->rpos : j->pos;  /* (placement: where the replayed steps moved them) */
+        const double *a = rp + 3 * r[0], *b = rp + 3 * r[2], *d = rp + 3 * r[4];
         double n[3], n0[3], q, q0;
         tri_nq(a, b, d, n, &q);
         tri_nq(j->pos + 3 * s[0], j->pos + 3 * s[2], j->pos + 3 * s[4], n0, &q0);
@@ -1040,16 +1077,28 @@ static void back_off_job(void *vc, long long i)
     long long nc = 0;
     for (int s = 0; s < j->ksteps; s++)
         nc += R->ncha[s];
+    unsigned char *fv = NULL;  /* placement: the corners of the failing triangles (a step that moved one changed it) */
+    if (R->plv) {
+        fv = MX_ZNEW(unsigned char, j->npos ? j->npos : 1);
+        for (int t = 0; t < j->nout; t++)
+            if (f[j->oid[t]])
+                for (int q = 0; q < 3; q++)
+                    fv[j->out[6 * t + 2 * q]] = 1;
+    }
     int k = -1;
     for (int s = j->ksteps - 1; s >= 0 && k < 0; s--) {
         nc -= R->ncha[s];
+        if (fv && R->plv[s] >= 0 && fv[R->plv[s]]) {
+            k = s;
+            break;
+        }
         for (int c = 0; c < R->ncha[s]; c++)
             if (f[R->cha[4 * (nc + c)]]) {
                 k = s;
                 break;
             }
     }
-    free(f);
+    free(f), free(fv);
     j->kcap = k >= 0 ? k : j->ksteps / 2;
     replay_job(h, i);
 }
@@ -1139,7 +1188,7 @@ MX_API void mx_simp_free(mx_simp *h)
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
         free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
-        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out), free(j->oid), free(j->fail);
+        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out), free(j->oid), free(j->fail), free(j->rpos);
         if (j->log)
             simplify_free(j->log);
     }
