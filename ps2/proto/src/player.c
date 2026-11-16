@@ -159,6 +159,7 @@ void player_init(Player *p)
     p->hp = p->hp_max = combat_player_hp_max();  /* CalcCorrectGraph row 100 at VIT (FUN_1402df9a0): 594 */
     p->state = ST_IDLE;
     p->ovl_anim = p->motion_mode = -1;
+    p->hold_style = 1;
     p->fwd_flick = 1;
     for (int i = 0; i < REQ_SLOTS; i++)
         p->hold_time[i] = -1;
@@ -638,6 +639,13 @@ static void update_requests(Player *p)
             if (a->win[i].type > 0 && t >= a->win[i].start && t < a->win[i].end)
                 apply_flag(p, a->win[i].type);
     }
+    /* an upper-body anim the archives lack (the two-hand changes a00 30 / 42 / 90): its state waits for flags that
+     * never come, so it gets the idle anim's (a00 0: 4 16 26 29 31 32; ASSUMED) */
+    if (p->ovl_missing) {
+        static const unsigned char idle_flags[] = {4, 16, 26, 29, 31, 32};
+        for (unsigned i = 0; i < sizeof idle_flags; i++)
+            apply_flag(p, idle_flags[i]);
+    }
     /* the upper-body layer's anim carries ChrActionFlags too (the weapon switch end a00 86: flag 32 lets group 1
      * state 221 take the next switch; guard poses: flags 21 / 22 hold windows) */
     if (p->ovl_anim >= 0) {
@@ -774,6 +782,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
      * (none here: no magic yet), left / right switch the hand's weapon slot: the switch motion (f109 1 right /
      * 2 left -> group 1 states 217 / 218, a00 81 / 80 on the upper-body layer) and the stats of the other slot */
     p->switch_req = 0;
+    /* Triangle: two-hand toggle (manipulator +0x1C8 hold style; f104 answers it while it differs from f207) */
+    if (in->triangle)
+        p->hold_req = p->hold_style == 3 ? 1 : 3;
+    if (p->hold_req == p->hold_style)
+        p->hold_req = 0;
     if (in->dpad & 2)
         chrstat_cycle_quick();
     if (in->dpad & 12) {
@@ -1083,7 +1096,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 103: v = slot ? p->hold_time[s] : -1; break;
     case 220: v = slot && p->held[s]; break;                                    /* ctx+0x2E1[slot] */
     case 243: v = gate(p, REQ_GUARD) && p->held[REQ_GUARD]; break;               /* FUN_140386a70(ctx, 21) */
-    case 104: v = 0; break;      /* weapon hold-style change request (no two-handing input) */
+    case 104: v = p->hold_req != p->hold_style ? p->hold_req : 0; break;  /* FUN_140386d50: requested hold style */
     case 105: v = 0; break;      /* ctx+0x42C[i]: event / gesture requests (none) */
     case 108: v = slot && is_step(s) && requested(p, s); break;                 /* IsStepRequested */
     case 109: v = p->switch_req; break;  /* PlayerIns vt+0x438: weapon switch request (1 right, 2 left; ASSUMED) */
@@ -1098,12 +1111,13 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         for (int i = 0; i < REQ_SLOTS; i++)
             v = v || requested(p, i) || p->held[i];  /* ... or ctx+0x2E1 (a held request: R2 combos, guard) */
         break;
-    case 207: v = 1; break;      /* GetWeaponHoldStyle: one-handed */
+    case 207: v = p->hold_style; break;  /* GetWeaponHoldStyle: chr+0x198[0] */
     case 211: v = p->ctx_1dc & 1; break;
     case 219: v = p->state != ST_MOVE ? 0 : p->loco == ANIM_DASH ? 3 : p->loco == ANIM_RUN ? 2 : 1; break;
     case 225:   /* GetWeaponMotionCategory(hand): FUN_1403261d0 returns the hold style for -1 when one-handed; 2 reads
                  * chr+0x198 [3], 0 one-handed (ASSUMED: the parry anim c1_3(0, 5100 + f225(2)) is a48 5100) */
-        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : s == 2 ? 0 : -1;
+        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? (p->hold_style == 3 ? WEAPON_MOTION_R :
+            p->hold_style == 2 ? WEAPON_MOTION_L : 1) : s == 2 ? 0 : -1;
         break;
     /* f212: manipulator +0x204 > 0 (case 0xD4), a forward-input timer of the pad manipulator whose writer was not
      * found. ASSUMED (TECH_DEBT esd-12): DS1's kick / jumping attack input, the stick pushed from neutral to forward
@@ -1125,7 +1139,8 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 257: v = 0; break;      /* movement set (MoveParam row): row 0, as f110 */
     case 267: v = p->ctx_1e0; break;
     case 271: v = (p->ctx_a4 >> 10) & 1; break;    /* flag 66 Special Transition */
-    case 278: v = s == 0 ? GUARD_MOTION_L : s == 1 ? GUARD_MOTION_R : 0; break;  /* guardmotionCategory */
+    case 278: v = s == 0 ? GUARD_MOTION_L : s == 1 || (s == -1 && p->hold_style == 3) ? GUARD_MOTION_R : 0;
+        break;  /* guardmotionCategory (-1: the two-handed weapon's) */
     case 287: v = (p->ctx_1dc >> 15) & 1; break;
     case 293: v = p->ctx_454; break;
     case 298: v = (p->ctx_a4 >> 11) & 1; break;    /* flag 84 Special Transition 2 */
@@ -1176,7 +1191,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             int oa = (int)a[0] < 0 ? -1 : anim_for(2, (int)a[0]);
             if (oa != p->ovl_anim || (int)a[0] < 0)
                 p->ovl_t = 0;
-            p->ovl_anim = oa, p->ovl_cmd = 4, p->ovl_loop = n > 3 && a[3] != 0;
+            p->ovl_anim = oa, p->ovl_cmd = 4, p->ovl_loop = n > 3 && a[3] != 0, p->ovl_missing = oa < 0 && (int)a[0] >= 0;
         }
         return 1;
     case 3:     /* SetAnim(weaponSel, animId, layer, blend, loop) */
@@ -1193,7 +1208,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             int oa = (int)a[1] < 0 ? -1 : anim_for((int)a[0], (int)a[1]);
             if (oa != p->ovl_anim || (int)a[1] < 0)
                 p->ovl_t = 0;
-            p->ovl_anim = oa, p->ovl_cmd = id == 3 ? 3 : 4;
+            p->ovl_anim = oa, p->ovl_cmd = id == 3 ? 3 : 4, p->ovl_missing = oa < 0 && (int)a[1] >= 0;
             p->ovl_loop = id == 13 ? (n > 4 && a[4] != 0) : (n > 4 && a[4] != 0) || (oa >= 0 && anims[oa].loop);
             return 1;
         }
@@ -1240,6 +1255,14 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
         p->esd_loco = n > 0 && a[0] != 0;
         return 1;
     case 109: p->motion_mode = n > 0 ? (int)a[0] : -1; return 1;  /* SetChrMotionMode (chr+0x270) */
+    case 104:   /* SetWeaponHoldStyle (chr+0x198[0]): at the end of the hold change states (200 -> 3, 189 -> 1) */
+        if (n > 0) {
+            p->hold_style = (int)a[0];
+            chr_two_hand = p->hold_style == 3;
+            chrstat_select();
+            printf("player: hold style %d\n", p->hold_style);
+        }
+        return 1;
     case 132: p->ctx_1dc |= 0x2000; return 1;
     case 133: p->ctx_1e0 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;
     case 140: p->ctx_454 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;

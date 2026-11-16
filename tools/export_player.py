@@ -93,6 +93,15 @@ ANIMS = [
     ("ITEM_REACH_10", "a00", 6209, False), ("ITEM_USE_10", "a00", 6409, False),
     # Weapon switch (d-pad left / right: group 1 states 218 / 217, c1_4(2, 80 / 81) on layer 4)
     ("SWITCH_L", "a00", 80, False), ("SWITCH_R", "a00", 81, False), ("SWITCH_END", "a00", 86, False),  # 221
+    # Two-handing (Triangle -> f104 3 / 1): hold changes with a shield in the left hand (group 1 states 200 -> 203:
+    # a00 90 / 30; back 186 -> 189: a00 42 / 85; c1_104 sets the style) and the two-handed moveset c1_3(-1, ...):
+    # R1 4000-4002 (107-110), kick 4100 (112), R2 4300 / 4301 / 4310 (115 / 114 / 116), jumping attack 4600 (113)
+    # (a00 90 / 30 / 42 are not in DSR's c0000 anim archives: those states pass straight through, as c1_4 of a
+    # missing anim ends at once)
+    ("HOLD_1H_END", "a00", 85, False),
+    ("R1_2H_1", "a23", 4000, False), ("R1_2H_2", "a23", 4001, False), ("R1_2H_3", "a23", 4002, False),
+    ("KICK_2H", "a23", 4100, False), ("R2_2H_1", "a23", 4300, False), ("R2_2H_2", "a23", 4301, False),
+    ("R2_2H_3", "a23", 4310, False), ("JUMP_ATK_2H", "a23", 4600, False),
     ("ROLL_B", "a00", 701, False), ("ROLL_L", "a00", 702, False), ("ROLL_R", "a00", 703, False),
     ("ROLL_M_F", "a00", 710, False), ("ROLL_M_B", "a00", 711, False), ("ROLL_M_L", "a00", 712, False),
     ("ROLL_M_R", "a00", 713, False), ("ROLL_H_F", "a00", 720, False), ("ROLL_H_B", "a00", 721, False),
