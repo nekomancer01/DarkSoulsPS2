@@ -20,7 +20,7 @@ Animations: the ESD essentials (ANIMS) + every anim id the variants' battle / lo
 for variants that use them.
 
 chr.bin (little-endian):
-  header  "DSRC", u32 version 7, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
+  header  "DSRC", u32 version 8, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
           u32 hide_bits (every variant mesh bit used), i32 spine (the first "Spine" bone: it and its descendants
           are the guard pose layer; -1 none; parents come before their children), u32 bones (skeleton bones), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
           the bodies: horizontal distance from the root axis and height, radius included)                    (64 B)
@@ -28,12 +28,16 @@ chr.bin (little-endian):
           f32 radius, height, turn deg/s, def_phys, poise (superArmorDurability),
           f32 eye_dist, eye_ang_x, eye_ang_y, ear_dist, ear_cut, near, mid, far, out, sight_forget, sound_forget (s),
           i32 goal_action_caution, goal_id_caution, goal_action_find, goal_id_find, f32 call_range, call_min_dist,
-          i32 team_type, f32 excel[24] (AI_EXCEL_THINK_PARAM_TYPE__*)                                    (216 B)
+          i32 team_type, f32 excel[24] (AI_EXCEL_THINK_PARAM_TYPE__*),
+          f32 def_mag, def_fire, def_thunder (NpcParam), f32 def_slash, def_blow, def_thrust (NpcParam % adjustments of
+          def_phys against typed attacks), f32 nose_dist, ear_ang_x, ear_ang_y (deg), i32 skip_arrival_visible_check
+          (NpcThinkParam nose_dist, ear_angX, ear_angY, skipArrivalVisibleCheck)                          (256 B)
   anim    i32 id, f32 length s, u32 first window, u32 windows, u32 first root sample, u32 root samples   (24 B)
   window  i16 type (ChrActionFlag id, or -1 = attack hit), i16 bone A, i16 bone B, i16 damage level (AtkParam
           dmgLevel), i32 AtkParam_Npc row, f32 start, end, atkPhys, radius, poise damage (atkSuperArmor),
           f32 a[3], b[3] (capsule ends, bone-local: AtkParam hit0_DmyPoly1 / 2),
-          f32 atkPhysCorrection / 100 (0 on the NPC rows read as 1)                                        (60 B)
+          f32 atkPhysCorrection / 100 (0 on the NPC rows read as 1), i32 atkAttribute (1 slash, 2 blow, 3 thrust),
+          f32 atkMag, atkFire, atkThun (each x its atk*Correction / 100, 0 read as 1)                       (76 B)
   root    f32 x, z, yaw at 30 fps from the anim start (forward = -z), as souls.root_motion
   ragdoll (havok_ragdoll.py: the chrbnd hkx's hkaRagdollInstance) per body: i16 bone (skeleton bone it follows),
           i16 parent body (its joint's other body, -1 the root), f32 a[3], b[3] (capsule ends in the bone's space),
@@ -429,7 +433,7 @@ def main():
         first_win = len(windows)
         for etype, s, e, p in sorted(events, key=lambda e: e[1]):
             if etype == 0 and p[0] in FLAGS:
-                windows.append((p[0], 0, 0, 0, 0, s, e, 0, 0, 0, (0, 0, 0), (0, 0, 0), 1.0))
+                windows.append((p[0], 0, 0, 0, 0, s, e, 0, 0, 0, (0, 0, 0), (0, 0, 0), 1.0, 0, 0, 0, 0))
             elif etype == 1:  # AttackBehavior: AttackType, AttackIndex, BehaviorJudgeID
                 b = beh.get(200000000 + npc0["behaviorVariationId"] * 1000 + p[2])
                 a = atk.get(b[1]["refId"]) if b and b[1]["refId"] >= 0 else None
@@ -441,17 +445,18 @@ def main():
                 if remap:
                     ba, bb = remap.get(ba, 0), remap.get(bb, 0)
                 windows.append((-1, ba, bb, a["dmgLevel"], arow, s, e, a["atkPhys"], a["hit0_Radius"],
-                                a["atkSuperArmor"], pa, pb, a["atkPhysCorrection"] / 100 or 1.0))
+                                a["atkSuperArmor"], pa, pb, a["atkPhysCorrection"] / 100 or 1.0, a["atkAttribute"],
+                                *(a[f"atk{k}"] * (a[f"atk{k}Correction"] / 100 or 1.0) for k in ("Mag", "Fire", "Thun"))))
         info.append((full, length, first_win, len(windows) - first_win, first_root, len(roots) - first_root))
 
     os.makedirs(out_dir, exist_ok=True)
     write_model(os.path.join(out_dir, "model.bin"), names, parents, ref, mb, [])
     append_compact_anims(os.path.join(out_dir, "model.bin"), len(names), anims)
-    HDR, VAR = 64, 216
+    HDR, VAR, WIN = 64, 256, 76
     var_off = HDR
     anim_off = var_off + VAR * len(variants)
     win_off = anim_off + 24 * len(info)
-    root_off = win_off + 60 * len(windows)
+    root_off = win_off + WIN * len(windows)
     rag_off = root_off + 12 * len(roots)
     rag_blob, reach, top = ragdoll_blob(rag, names, full_names, full_parents, full_world)
     hide_bits = 0
@@ -467,16 +472,18 @@ def main():
                         t["goalAction_ToCaution"], t["goalID_ToCaution"], t["goalAction_ToFind"], t["goalID_ToFind"],
                         t["callHelp_CallValidRange"], t["callHelp_CallValidMinDistTarget"], npc["teamType"])
         v += struct.pack("<24f", *think_values(t, npc))
+        v += struct.pack("<9fi", npc["def_mag"], npc["def_fire"], npc["def_thunder"], npc["def_slash"], npc["def_blow"],
+                         npc["def_thrust"], t["nose_dist"], t["ear_angX"], t["ear_angY"], t["skipArrivalVisibleCheck"])
         assert len(v) == VAR, len(v)
         var_blob += v
     spine = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
     assert all(p < i for i, p in enumerate(parents)), f"{cid}: a parent after its child (enemy.c guard layer)"
-    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 7, len(info), len(windows), len(variants), anim_off, win_off, root_off,
+    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 8, len(info), len(windows), len(variants), anim_off, win_off, root_off,
                       var_off, hide_bits, spine, len(names), rag_off, len(rag_blob) // RAG_BODY, reach, top)
     assert len(hdr) == HDR
     body = var_blob + b"".join(struct.pack("<if4I", *i) for i in info)
-    body += b"".join(struct.pack("<4hi5f6ff", t, ba, bb, lvl, arow, s, e, dmg, rad, poise, *pa, *pb, rate)
-                     for t, ba, bb, lvl, arow, s, e, dmg, rad, poise, pa, pb, rate in windows)
+    body += b"".join(struct.pack("<4hi5f6ffi3f", t, ba, bb, lvl, arow, s, e, dmg, rad, poise, *pa, *pb, rate, attr, *el)
+                     for t, ba, bb, lvl, arow, s, e, dmg, rad, poise, pa, pb, rate, attr, *el in windows)
     body += b"".join(struct.pack("<3f", *r) for r in roots)
     body += rag_blob
     with open(os.path.join(out_dir, "chr.bin"), "wb") as f:

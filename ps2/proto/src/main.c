@@ -23,6 +23,7 @@
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
+#include "chrstat.h"
 #include "pack.h"
 #include "enemy.h"
 #include "objects.h"
@@ -360,6 +361,7 @@ int main(int argc, char **argv)
     loading_init(gs, flip, disp_buf);
     loading_hold();
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
+    chrstat_boot();  /* HP, stamina, defence, attack from the saved stats and equipment (itemx.bin for a moment) */
     /* sound: IOP modules, the player's bank and the boot area's into SPU2 RAM (the IOP reads them: no EE RAM) */
     if (snd_init())
         snd_map(AREA);

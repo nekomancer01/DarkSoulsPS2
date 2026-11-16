@@ -26,6 +26,9 @@ typedef struct CombatChr {
     float poise_max;       /* 0 = always staggered */
     int invincible;        /* i-frames (TAE ChrActionFlag 8) this frame */
     int super_armor;       /* TAE flag 24 this frame: damage taken, no hit reaction */
+    float def_el[3];       /* magic / fire / lightning defence (NpcParam def_mag / def_fire / def_thunder) */
+    float def_typed[3];    /* physical defence against slash / blow / thrust attacks (has_typed; else def_phys) */
+    int has_typed;
     /* combat-set (read by the owner / ESD env functions) */
     float poise;           /* current poise; regenerates in combat_update */
     int hit_count;         /* +1 per hit taken (owners compare with their last seen value) */
@@ -47,6 +50,10 @@ typedef struct CombatAttack {
     int damage_level;      /* AtkParam damageLevel */
     float src_pos[3];      /* attacker position, for the hit direction */
     int window;            /* attack window id: one target is hit at most once per window */
+    /* appended (zero = none): elemental attack ratings and AtkParam atkMag / Fire / ThunCorrection / 100, and
+     * atkAttribute (chrstat.h ATK_*: slash / blow / thrust pick the target's typed physical defence) */
+    float el[3], el_rate[3];
+    int attr;
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */
@@ -61,6 +68,8 @@ extern int (*combat_sweep_hook)(const float a[3], const float b[3], float r, con
 int combat_apply(CombatChr *target, const CombatAttack *atk);
 /* Raw damage, no hurtbox state: the physical damage formula */
 int combat_damage(float atk_phys, float def_phys, float absorb);
+/* Damage of an attack on a hurtbox (FUN_1402d9660: the four elements summed, each through the defence curve) */
+float combat_damage_on(const CombatChr *t, const CombatAttack *atk);
 /* Per frame: poise regeneration */
 void combat_update(float dt);
 

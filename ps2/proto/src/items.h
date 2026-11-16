@@ -27,15 +27,20 @@ enum { GOODS_NORMAL = 0, GOODS_KEY = 1, GOODS_MATERIAL = 2, GOODS_HUMANITY = 4, 
 #define ITEM_LEVEL(id) (ITEM_CAT(id) == ITEM_WEAPON ? (int)((id) % 100) : 0)
 #define ITEM_BASE(id) (ITEM_CAT(id) == ITEM_WEAPON ? (id) - (id) % 100 : (id))
 
-/* itemx.bin row (72 B, export_items.py) */
+/* itemx.bin row (72 B, export_items.py version 2; weapon x2 reinforceTypeId, x3 correctType) */
 typedef struct {
     u32 id, sort, name, text;
     u16 help_len, desc_len, icon;
     u8 tab, sub;
-    u16 weight, dur, x0, x1, x2, pad;
+    u16 weight, dur, x0, x1, x2, x3;
     s16 st[16];
-    u32 pad2;
+    u32 x4;   /* weapon: saWeaponDamage | attack type bits << 16 (WT_*) */
 } ItemRow;
+/* itemx.bin weapon attack type bits (x4 >> 16): isNormal / Slash / Blow / ThrustAttackType */
+#define WT_NORMAL 1
+#define WT_SLASH 2
+#define WT_BLOW 4
+#define WT_THRUST 8
 /* ReinforceParamWeapon row: atk rates phys / mag / fire / thunder, correct rates str / dex / int / fai, all x1000 */
 typedef struct {
     u32 id;
@@ -53,6 +58,7 @@ int item_tab(u32 id);              /* TAB_* from the id alone (goodsType / ammo 
  * 1 once loaded (call each frame until then: the read runs in the background), -1 failed. */
 int items_detail_step(void *(*alloc)(unsigned), void (*release)(void *, unsigned));
 void items_detail_free(void);
+int items_detail_ready(void);     /* itemx.bin loaded (item_row answers) */
 const ItemRow *item_row(u32 id);   /* NULL while not loaded or unknown */
 const ItemReinforce *item_reinforce(int type, int level);
 /* "Dagger+3"; "" unknown */

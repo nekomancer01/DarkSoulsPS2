@@ -18,6 +18,7 @@
 #include "progress.h"
 #include "combat.h"
 #include "combat_data.h"
+#include "chrstat.h"
 #include "save.h"
 
 enum { M_CLOSED, M_BAR, M_EQUIP, M_PICK, M_INV, M_POPUP, M_CONFIRM, M_STATUS, M_SYSTEM, M_SYS_CONFIRM };
@@ -215,15 +216,11 @@ static int attune_slots(int att)
     return n;
 }
 
-/* a weapon's attack rating at its reinforcement level: base x ReinforceParamWeapon rate (stat scaling not yet:
- * TECH_DEBT menu-4) */
+/* a weapon's attack rating per element at its reinforcement level with the current stats (chrstat.c, FUN_1402d9cb0) */
 static int weapon_ar(u32 id, int k)
 {
-    const ItemRow *r = item_row(id);
-    if (!r)
-        return 0;
-    const ItemReinforce *rf = item_reinforce(r->x2, ITEM_LEVEL(id));
-    return rf ? r->st[k] * rf->atk[k] / 1000 : r->st[k];
+    float ar[EL_COUNT];
+    return chrstat_weapon_ar(id, ar) ? (int)ar[k] : 0;
 }
 
 static char vbuf[64];
@@ -250,7 +247,7 @@ static const char *label_value(const char *label)
         snprintf(vbuf, sizeof vbuf, "%d.%d/%d.0", w / 100, w % 100 / 10, mx);
         return vbuf;
     }
-    if (!strcmp(label, "Poise")) return num(armor_sum(11));
+    if (!strcmp(label, "Poise")) return num((int)chr_stats.poise);
     if (!strcmp(label, "Item Discovery"))  /* ASSUMED (TECH_DEBT menu-4): 100 + 1 per humanity up to 10, no rings */
         return num(100 + (prog.humanity < 10 ? prog.humanity : 10));
     if (!strcmp(label, "Attunement Slots")) return num(attune_slots(prog.stats[ST_ATT]));
@@ -259,13 +256,13 @@ static const char *label_value(const char *label)
     if (!strcmp(label, "Venom Resist") || !strcmp(label, "Toxic Resist")) return num(armor_sum(8));
     if (!strcmp(label, "Curse Resist"))  /* FUN_1402dddd0 type 3: CalcCorrectGraph 113 at min(humanity, 99) + armour */
         return num((int)combat_graph(graph_113, prog.humanity < 99 ? prog.humanity : 99) + armor_sum(10));
-    if (!strcmp(label, "Physical Def.") || !strcmp(label, "PhysDef") || !strcmp(label, "Physical")) return num(armor_sum(0));
-    if (!strcmp(label, "VS strike") || !strcmp(label, "Strike")) return num(armor_sum(1));
-    if (!strcmp(label, "VS slash") || !strcmp(label, "Slash")) return num(armor_sum(2));
-    if (!strcmp(label, "VS thrust") || !strcmp(label, "Thrust")) return num(armor_sum(3));
-    if (!strcmp(label, "Magic DEF") || !strcmp(label, "MagDEF") || !strcmp(label, "Magic")) return num(armor_sum(4));
-    if (!strcmp(label, "Flame DEF") || !strcmp(label, "FireDEF") || !strcmp(label, "Fire")) return num(armor_sum(5));
-    if (!strcmp(label, "Lightning DEF") || !strcmp(label, "LitngDEF") || !strcmp(label, "Lightning")) return num(armor_sum(6));
+    if (!strcmp(label, "Physical Def.") || !strcmp(label, "PhysDef") || !strcmp(label, "Physical")) return num((int)chr_stats.def[EL_PHYS]);
+    if (!strcmp(label, "VS strike") || !strcmp(label, "Strike")) return num((int)chr_stats.def_typed[ATK_BLOW]);
+    if (!strcmp(label, "VS slash") || !strcmp(label, "Slash")) return num((int)chr_stats.def_typed[ATK_SLASH]);
+    if (!strcmp(label, "VS thrust") || !strcmp(label, "Thrust")) return num((int)chr_stats.def_typed[ATK_THRUST]);
+    if (!strcmp(label, "Magic DEF") || !strcmp(label, "MagDEF") || !strcmp(label, "Magic")) return num((int)chr_stats.def[EL_MAG]);
+    if (!strcmp(label, "Flame DEF") || !strcmp(label, "FireDEF") || !strcmp(label, "Fire")) return num((int)chr_stats.def[EL_FIRE]);
+    if (!strcmp(label, "Lightning DEF") || !strcmp(label, "LitngDEF") || !strcmp(label, "Lightning")) return num((int)chr_stats.def[EL_THUN]);
     if (!strcmp(label, "R Weapon 1")) return num(weapon_ar(equip_item(EQ_WEP_R1), 0));
     if (!strcmp(label, "R Weapon 2")) return num(weapon_ar(equip_item(EQ_WEP_R2), 0));
     if (!strcmp(label, "L Weapon 1")) return num(weapon_ar(equip_item(EQ_WEP_L1), 0));
@@ -502,6 +499,8 @@ int menu_update(unsigned short pressed)
         }
         if (mode >= M_EQUIP && !detail_ok)
             detail_ok = items_detail_step(ui_alloc, ui_free) > 0;
+        if (detail_ok)
+            chrstat_recalc();  /* level-ups and equipment changes reach combat / the HUD at once */
         /* help line of the item under the cursor */
         u32 id = cursor_item();
         if (detail_ok && id != text_have && !text_pending) {

@@ -184,7 +184,7 @@ int items_detail_step(void *(*alloc)(unsigned), void (*release)(void *, unsigned
         return xstate = -1;
     xbuf = xjob.out;
     const u32 *h = (const u32 *)xbuf;
-    if (memcmp(xbuf, "DSIX", 4) || h[1] != 1 || h[3] + h[2] * sizeof(ItemRow) > xjob.raw ||
+    if (memcmp(xbuf, "DSIX", 4) || h[1] != 2 || h[3] + h[2] * sizeof(ItemRow) > xjob.raw ||
         h[6] + h[7] > xjob.raw) {
         printf("items: itemx.bin bad\n");
         release(xbuf, xalloc), xbuf = 0;
@@ -205,6 +205,8 @@ void items_detail_free(void)
         xrelease(xbuf, xalloc);
     xbuf = 0, xrows = 0, nx = 0, xstate = 0;
 }
+
+int items_detail_ready(void) { return xstate == 2; }
 
 const ItemRow *item_row(u32 id)
 {

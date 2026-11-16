@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "player.h"
+#include "chrstat.h"
 #include "esd.h"
 #include "pack.h"
 #include "player_data.h"
@@ -125,7 +126,7 @@ static float esd_stick_yaw;
 void player_init(Player *p)
 {
     *p = (Player){0};
-    p->stamina = p->stamina_max = stamina_max_for(START_END);
+    p->stamina = p->stamina_max = chr_stats.valid ? chr_stats.stamina_max : stamina_max_for(START_END);
     p->hp = p->hp_max = combat_player_hp_max();  /* CalcCorrectGraph row 100 at VIT (FUN_1402df9a0): 594 */
     p->state = ST_IDLE;
     p->loco = ANIM_WALK;
@@ -497,6 +498,15 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
 {
     V3 old = p->pos;
     p->frame_dt = dt;
+    /* stats / equipment changed in a menu (level up, armour): new maxima at once (chrstat.c) */
+    if (chr_stats.valid && (p->hp_max != chr_stats.hp_max || p->stamina_max != chr_stats.stamina_max)) {
+        if (p->hp > 0)
+            p->hp = p->hp + (chr_stats.hp_max - p->hp_max) > 0 ? p->hp + (chr_stats.hp_max - p->hp_max) : 1;
+        p->hp_max = chr_stats.hp_max, p->stamina_max = chr_stats.stamina_max;
+        if (p->hp > p->hp_max)
+            p->hp = p->hp_max;
+        set_stamina(p, p->stamina);
+    }
     float tilt = sqrtf(in->mx * in->mx + in->my * in->my);
     if (tilt > 1)
         tilt = 1;

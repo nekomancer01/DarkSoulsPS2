@@ -11,6 +11,7 @@
 #include "model.h"
 #include "vmath.h"
 #include "testscript.h"
+#include "chrstat.h"
 
 CombatChr combat_dummy;
 CombatLast combat_last;
@@ -42,7 +43,11 @@ float combat_graph(const float *g, float x)
     return y < lo ? lo : y > hi ? hi : y;
 }
 
-int combat_player_hp_max(void) { return (int)combat_graph(graph_100, PL_VIT); }  /* Warrior VIT 11 -> 594 */
+/* From the saved stats and equipment (chrstat.c) once known; the class start values before that */
+int combat_player_hp_max(void)
+{
+    return chr_stats.valid ? chr_stats.hp_max : (int)combat_graph(graph_100, PL_VIT);  /* Warrior VIT 11 -> 594 */
+}
 
 /* FUN_1402dacd0: stat at or above the requirement -> 1 + graph(stat) / 100 * correct / 100 (the under-requirement
  * penalty branch is not needed for the Warrior) */
@@ -56,6 +61,8 @@ static float stat_factor(int stat, int req, float correct)
 /* FUN_1402d9cb0: STR and DEX factors combine as (a - 1) + (b - 1) + 1 */
 float combat_player_ar(void)
 {
+    if (chr_stats.valid)
+        return chr_stats.ar[HAND_R][EL_PHYS];
     float a = stat_factor(PL_STR, WEP_REQ_STR, WEP_CORRECT_STR), b = stat_factor(PL_DEX, WEP_REQ_DEX, WEP_CORRECT_DEX);
     return WEP_ATK_PHYS * ((a - 1) + (b - 1) + 1);
 }
@@ -90,7 +97,7 @@ float combat_fall_rate(float h)
     if (h >= 20)
         return 1;
     static const float X[5] = {1, 10, 30, 50, 100}, Y[5] = {1, 1, 0.95f, 0.9f, 0.7f};
-    float w = PL_EQUIP_WEIGHT, v = 1;
+    float w = chr_stats.valid ? chr_stats.equip_weight : PL_EQUIP_WEIGHT, v = 1;
     if (w <= 100) {
         v = (1 - w / 100) * 100;
         v = v < 1 ? 1 : v > 100 ? 100 : v;
@@ -128,11 +135,29 @@ void combat_unregister(CombatChr *c)
             chrs[i] = 0;
 }
 
+/* FUN_1402d9660: per element the defence curve FUN_1402d9890 of (attack, defence) times the element's rates, floored
+ * at 0, summed. Physical defence is the typed one for a slash / blow / thrust attack (FUN_1402dbda0 param 1-3). The
+ * function's extra factors (x1.4 by a flag, x1.125 / x0.8 by a sign test at 0x141A2B5B4..BC) come from callers in
+ * the obfuscated .text and are not applied (TECH_DEBT combat-2). Absorption stays the port's physical cut. */
+float combat_damage_on(const CombatChr *t, const CombatAttack *atk)
+{
+    float def = t->def_phys;
+    if (t->has_typed && atk->attr >= ATK_SLASH && atk->attr <= ATK_THRUST)
+        def = t->def_typed[atk->attr - 1];
+    float sum = combat_damage_f(atk->phys * atk->atk_phys_rate, def) * (1 - t->absorb_phys);
+    for (int e = 0; e < 3; e++) {
+        float a = atk->el[e] * atk->el_rate[e];
+        if (a > 0)
+            sum += combat_damage_f(a, t->def_el[e]);
+    }
+    return sum > 0 ? sum : 0;
+}
+
 int combat_apply(CombatChr *t, const CombatAttack *atk)
 {
     if (t->invincible)
         return 0;
-    int dmg = combat_damage(atk->phys * atk->atk_phys_rate, t->def_phys, t->absorb_phys);
+    int dmg = (int)combat_damage_on(t, atk);
     t->hp -= dmg;
     t->hit_count++;
     t->new_hit = 1;
@@ -242,6 +267,13 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
     if (hp > 0)
         player_chr.dead = 0;  /* respawned */
     player_chr.invincible = p->invincible;
+    if (chr_stats.valid) {  /* armour + stats (chrstat.c); no absorption in DS1's armour */
+        player_chr.def_phys = chr_stats.def[EL_PHYS];
+        for (int e = 0; e < 3; e++)
+            player_chr.def_el[e] = chr_stats.def[1 + e], player_chr.def_typed[e] = chr_stats.def_typed[1 + e];
+        player_chr.has_typed = 1;
+        player_chr.poise_max = chr_stats.poise;
+    }
     player_chr.new_hit = 0;  /* the ESD (in player_update, before this) has seen last frame's hit */
     combat_register(&player_chr);
     combat_update(dt);
@@ -269,8 +301,14 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             world[i] = sk_parent[i] < 0 ? m34_mul(&place, &local) : m34_mul(&world[(int)sk_parent[i]], &local);
         }
         CombatAttack atk = {TEAM_PLAYER, aw->atk_param, combat_player_ar(), aw->phys_corr / 100.0f,
-                            WEP_POISE_DMG * aw->sa_corr / 100.0f, aw->dmg_level,
-                            {p->pos.x, p->pos.y, p->pos.z}, window};
+                            (chr_stats.valid ? chr_stats.poise_dmg[HAND_R] : WEP_POISE_DMG) * aw->sa_corr / 100.0f,
+                            aw->dmg_level, {p->pos.x, p->pos.y, p->pos.z}, window};
+        atk.attr = aw->attr;
+        if (chr_stats.valid)
+            for (int e = 0; e < 3; e++)
+                atk.el[e] = chr_stats.ar[HAND_R][1 + e];
+        atk.el_rate[0] = aw->mag_corr / 100.0f, atk.el_rate[1] = aw->fire_corr / 100.0f;
+        atk.el_rate[2] = aw->thun_corr / 100.0f;
         for (int h = 0; h < aw->nhit; h++) {
             const float *d1 = dummy_pos(aw->hit[h].dp1), *d2 = dummy_pos(aw->hit[h].dp2);
             if (!d1 || !d2)

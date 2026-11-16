@@ -1,0 +1,40 @@
+/* The player's derived character values from the saved stats (prog.stats, prog.humanity) and equipment (prog.equip):
+ * max HP / stamina, equip load, defence per damage type, poise and the attack rating of each hand's weapon. Formulas
+ * from DarkSoulsRemastered.exe (chrstat.c). Item numbers come from itemx.bin, which is only loaded while a menu is
+ * open, so the values are computed into a resident snapshot: at boot (chrstat_boot loads itemx.bin for a moment) and
+ * whenever a menu has it loaded (menu.c calls chrstat_recalc every frame then: a level-up or an equipment change shows
+ * at once). Combat (combat.c), the player (player.c) and the Status screen (menu.c) read the snapshot. */
+#ifndef CHRSTAT_H
+#define CHRSTAT_H
+
+enum { EL_PHYS, EL_MAG, EL_FIRE, EL_THUN, EL_COUNT };    /* damage elements, AtkParam / EquipParam order */
+enum { ATK_NONE = 0, ATK_SLASH = 1, ATK_BLOW = 2, ATK_THRUST = 3 };  /* AtkParam.atkAttribute (typed physical) */
+enum { HAND_R, HAND_L };
+
+typedef struct {
+    int valid;                  /* 0 until the first recalc: users fall back to the class start values */
+    int hp_max, stamina_max;
+    float equip_weight, equip_max;
+    float def[EL_COUNT];        /* total defence: base from stats (graph 102) + armour */
+    float def_typed[4];         /* physical defence against ATK_* (index 0 = untyped = def[EL_PHYS]) */
+    float poise;                /* armour saDurability sum */
+    float ar[2][EL_COUNT];      /* attack rating of the active weapon per hand (EQ_WEP_R1 / EQ_WEP_L1) */
+    float poise_dmg[2];         /* EquipParamWeapon.saWeaponDamage per hand */
+    int wep_types[2];           /* WT_* bits of each hand's weapon */
+    float guard_cut[2][EL_COUNT]; /* EquipParamWeapon phys / mag / fire / thunGuardCutRate (%) */
+    int guard_stab[2];          /* staminaGuardDef (stability) */
+} ChrStats;
+
+extern ChrStats chr_stats;
+
+/* From prog + the loaded itemx rows; returns 0 (snapshot unchanged) when itemx.bin is not loaded */
+int chrstat_recalc(void);
+/* Boot, after the save loaded: loads itemx.bin from menu.pak into a temporary malloc buffer, recalcs, frees it */
+void chrstat_boot(void);
+/* CalcCorrectGraph row by id (combat_data graphs + the fixed rows), NULL unknown */
+const float *chrstat_graph(int id);
+/* Attack rating of a weapon item (id with its reinforcement level) for the current stats, per element; 0 if unknown
+ * or itemx.bin is not loaded */
+int chrstat_weapon_ar(unsigned id, float ar[EL_COUNT]);
+
+#endif

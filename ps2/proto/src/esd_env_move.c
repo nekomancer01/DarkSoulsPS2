@@ -9,6 +9,7 @@
 #include "player.h"
 #include "combat.h"
 #include "combat_data.h"
+#include "chrstat.h"
 
 /* EzStateActionEnv FUN_14038b540 case ids */
 #define F_ON_GROUND 201   /* FUN_1403868a0: character proxy (ChrCtrl+0x28) byte +0x32; the fall-death loop (state 58)
@@ -64,7 +65,8 @@ int esd_env_move(EsdCtx *c, int id, const float *args, int nargs, float *out)
         return 1;
     case F_EQUIP_LOAD:
         /* max load ASSUMED 40 + END (FUN_1402e19b0 not decoded); Warrior 21.4 / 52 -> 41 */
-        *out = (int)(PL_EQUIP_WEIGHT / (40.0f + PL_END) * 100);
+        *out = chr_stats.valid ? (int)(chr_stats.equip_weight / chr_stats.equip_max * 100)
+                               : (int)(PL_EQUIP_WEIGHT / (40.0f + PL_END) * 100);
         return 1;
     case F_LAND_VARIANT:
         *out = 0;

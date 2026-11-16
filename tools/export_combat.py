@@ -14,7 +14,8 @@ WARRIOR = 3000
 ATTACK_ANIMS = [("a23", 3000), ("a23", 3001), ("a23", 3002)]  # R1 chain (export_player.py ANIMS)
 WEAPON_PART, WEAPON_BONE = "WP_A_0201", "R_Weapon"
 DUMMY_NPC = 206000  # NpcParam: Depths ghoul (sword) - HP 203, def_phys 71, no poise: the debug dummy target
-GRAPH_ROWS = (100, 150, 113)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
+GRAPH_ROWS = (100, 150, 113, 102)  # CalcCorrectGraph rows used besides the weapon's correctType: 100 = max HP
+# 102 = base defence from the stat sums of FUN_1402dc850 (FUN_1402dbda0, src/chrstat.c),
 # (FUN_1402df9a0), 150 = bonfire Estus refill by kindle points (回復スポットの最大補充数; FUN_1407a41b0, step lookup,
 # src/bonfire.c), 113 = curse resist base at min(humanity, 99) (FUN_1402dddd0 resist type 3, src/menu.c)
 
@@ -25,9 +26,13 @@ DUMMY = Struct("DummyPoly", [("id", S16), ("p", FLOAT, 3)], "weapon dummy polys 
 HIT = Struct("AtkHit", [("r", FLOAT), ("dp1", S16), ("dp2", S16)],
              "radius, dummy poly 1, dummy poly 2; a sphere when both are the same")
 WINDOW = Struct("AtkWindow", [("anim", INT), ("start", FLOAT), ("end", FLOAT), ("atk_param", INT), ("phys_corr", INT),
-                              ("sa_corr", INT), ("dmg_level", INT), ("nhit", INT), ("hit", HIT, 4)],
+                              ("sa_corr", INT), ("dmg_level", INT), ("nhit", INT), ("hit", HIT, 4), ("attr", INT),
+                              ("mag_corr", INT), ("fire_corr", INT), ("thun_corr", INT)],
                 "AttackBehavior window: anim id, start, end, AtkParam_Pc row, atkPhysCorrection, "
-                "atkSuperArmorCorrection, dmgLevel, hit shapes")
+                "atkSuperArmorCorrection, dmgLevel, hit shapes, atkAttribute (1 slash, 2 blow, 3 thrust, else "
+                "untyped), atkMag / Fire / ThunCorrection")
+GRAPH = Struct("GraphRow", [("id", INT), ("g", FLOAT, 15)],
+               "CalcCorrectGraph row: id, stageMaxVal[5], stageMaxGrowVal[5], adjPt_maxGrowVal[5]")
 RECORD = Struct("CombatData", [
     ("pl_vit", INT), ("pl_str", INT), ("pl_dex", INT), ("pl_end", INT), ("pl_equip_weight", FLOAT),
     ("wep_atk_phys", INT), ("wep_correct_str", FLOAT), ("wep_correct_dex", FLOAT), ("wep_req_str", INT),
@@ -35,10 +40,10 @@ RECORD = Struct("CombatData", [
     [(f"graph_{rid}", FLOAT, 15) for rid in GRAPH_ROWS] + [
     ("sk_bones", INT), ("sk_r_weapon", INT), ("sk_parent", Ptr(S8)), ("wep_dummy", Ptr(DUMMY)), ("wep_dummies", INT),
     ("atk_windows", Ptr(WINDOW)), ("natk_windows", INT), ("dummy_hp", INT), ("dummy_def_phys", INT),
-    ("dummy_radius", FLOAT), ("dummy_height", FLOAT), ("dummy_poise", INT)],
+    ("dummy_radius", FLOAT), ("dummy_height", FLOAT), ("dummy_poise", INT), ("graphs", Ptr(GRAPH)), ("ngraphs", INT)],
     "Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], "
     "adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam "
-    f"{DUMMY_NPC})")
+    f"{DUMMY_NPC}), every CalcCorrectGraph row a weapon correctType names (sorted by id)")
 
 
 def HEADER():
@@ -46,10 +51,10 @@ def HEADER():
              "WEP_CORRECT_DEX", "WEP_REQ_STR", "WEP_REQ_DEX", "WEP_POISE_DMG", "SK_BONES", "SK_R_WEAPON", "WEP_DUMMIES",
              "DUMMY_HP", "DUMMY_DEF_PHYS", "DUMMY_RADIUS", "DUMMY_HEIGHT", "DUMMY_POISE"]
     macros = [f"#define {m} (combat_data->{m.lower()})" for m in names]
-    macros += ["#define ATK_WINDOWS (combat_data->natk_windows)"]
+    macros += ["#define ATK_WINDOWS (combat_data->natk_windows)", "#define NGRAPHS (combat_data->ngraphs)"]
     macros += [f"#define {a} (combat_data->{a})" for a in
-               ["graph_weapon"] + [f"graph_{rid}" for rid in GRAPH_ROWS] + ["sk_parent", "wep_dummy", "atk_windows"]]
-    return gamedata.header("combat", [DUMMY, HIT, WINDOW, RECORD], RECORD,
+               ["graph_weapon"] + [f"graph_{rid}" for rid in GRAPH_ROWS] + ["sk_parent", "wep_dummy", "atk_windows", "graphs"]]
+    return gamedata.header("combat", [DUMMY, HIT, WINDOW, GRAPH, RECORD], RECORD,
                            ([f"#define SK_BONES_MAX {SK_BONES_MAX}  /* cap for arrays sized by the skeleton */"], macros))
 
 
@@ -108,7 +113,8 @@ def main():
                 if r > 0 and d1 >= 0:
                     hits.append((r, d1, d2 if d2 >= 0 else d1))
             attacks.append((aid, s, e, b["refId"], a["atkPhysCorrection"], a["atkSuperArmorCorrection"],
-                            a["dmgLevel"], hits))
+                            a["dmgLevel"], hits, a["atkAttribute"], a["atkMagCorrection"], a["atkFireCorrection"],
+                            a["atkThunCorrection"]))
 
     npc = P["NpcParam"][DUMMY_NPC][1]
     used_dp = sorted({d for at in attacks for _, d1, d2 in at[7] for d in (d1, d2)})
@@ -117,8 +123,9 @@ def main():
     windows = [{"anim": aid, "start": r3(s), "end": r3(e), "atk_param": row, "phys_corr": pc, "sa_corr": sac,
                 "dmg_level": lvl, "nhit": len(hits),
                 "hit": [{"r": r3(r), "dp1": d1, "dp2": d2} for r, d1, d2 in hits] +
-                       [{"r": 0, "dp1": 0, "dp2": 0}] * (4 - len(hits))}
-               for aid, s, e, row, pc, sac, lvl, hits in attacks]
+                       [{"r": 0, "dp1": 0, "dp2": 0}] * (4 - len(hits)),
+                "attr": attr, "mag_corr": mc, "fire_corr": fc, "thun_corr": tc}
+               for aid, s, e, row, pc, sac, lvl, hits, attr, mc, fc, tc in attacks]
     g6 = lambda v: float(f"{float(v):.6g}")  # noqa: E731
     value = {
         "pl_vit": init["baseVit"], "pl_str": init["baseStr"], "pl_dex": init["baseDex"], "pl_end": init["baseEnd"],
@@ -133,6 +140,9 @@ def main():
         "dummy_height": r3(npc["hitHeight"]), "dummy_poise": npc["superArmorDurability"]}
     for rid in GRAPH_ROWS:
         value[f"graph_{rid}"] = [g6(v) for v in graph_row(P, rid)]
+    ctypes = sorted({f["correctType"] for _, f in P["EquipParamWeapon"].values()} & set(P["CalcCorrectGraph"]))
+    value["graphs"] = [{"id": c, "g": [g6(v) for v in graph_row(P, c)]} for c in ctypes]
+    value["ngraphs"] = len(ctypes)
     n = gamedata.write(out, "combat", RECORD, value)
     print(f"{out}: weight {weight:.1f}, {len(attacks)} attack windows, dummies {used_dp}, R_Weapon bone {wbone}, {n} B")
 
