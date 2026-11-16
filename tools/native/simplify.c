@@ -8,7 +8,8 @@
  * below off it returns the same collapse log as simplify.py, step for step (tools/simplify_native.py --test,
  * tools/mapx/test_mapx.py). Comments name the simplify.py function / line each part mirrors; the reasoning lives there.
  * Rules simplify.py does not have live only here: the shape envelope (g_env_pad, snb), the triangle guard (g_qmin,
- * g_flip_cos, g_shape_tol); each is off unless the caller sets it. New rules go here the same way, never into
+ * g_flip_cos, g_shape_tol), the shape term (g_shape_k), vertex placement (g_place) and the seam mode (g_seam); each is
+ * off unless the caller sets it. New rules go here the same way, never into
  * simplify.py. tools/mapx/test_simplify_golden.py pins the output at the shipped settings: a change that moves it
  * updates tools/mapx/simplify_golden.json (--update) in the same commit, saying why.
  *
