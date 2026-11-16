@@ -88,12 +88,14 @@ static void root_at(int anim, float t, float *fwd, float *side)
     int i = (int)f;
     if (i >= a->nroot - 1) {
         *fwd = -a->root[a->nroot - 1].z;
-        *side = a->root[a->nroot - 1].x;
+        *side = -a->root[a->nroot - 1].x;
         return;
     }
     float k = f - i;
     *fwd = -(a->root[i].z + (a->root[i + 1].z - a->root[i].z) * k);
-    *side = a->root[i].x + (a->root[i + 1].x - a->root[i].x) * k;
+    /* the model is drawn turned by pi (it faces -Z): both root axes flip; side was not, so a00 202 walk left (root
+     * x +2.0 m) moved right and the lock-on strafes / side rolls went the wrong way */
+    *side = -(a->root[i].x + (a->root[i + 1].x - a->root[i].x) * k);
 }
 
 /* Duration of a looping animation (its 30 fps root-motion samples; the TAE length is not the loop length) */
@@ -901,8 +903,16 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
         p->pos.z += cy * df - sy * ds;
-        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim)
-            turn_toward(p, stick_yaw, dt);
+        if (moving && !in_window(p->anim, FLAG_DISABLE_TURNING, p->t) && p->anim != event_anim) {
+            /* locked on, actions turn to the target and rolls / steps keep their facing (the side roll went with
+             * the stick before) */
+            float tp[3];
+            if (!player_lock_target(p, tp))
+                turn_toward(p, stick_yaw, dt);
+            else if (!(p->anim >= ANIM_ROLL_B && p->anim <= ANIM_STEP_O) && p->anim != ANIM_ROLL &&
+                     p->anim != ANIM_BACKSTEP)
+                turn_toward(p, atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z), dt);
+        }
         p->invincible = in_window(p->anim, FLAG_INVINCIBLE, p->t);
         p->hitting = in_window(p->anim, -1, p->t);
         stamina_tick(p, p->anim, p->t, dt);
@@ -924,7 +934,8 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         static int last1 = -1;
         int s1 = esd_state(&esd, 1);
         if (s1 != last1)
-            printf("player: esd 1 state %d (anim %s t %.2f)\n", s1, esd_action(p) ? anims[p->anim].name : "-", p->t);
+            printf("player: esd 1 state %d (anim %s t %.2f) at %.2f %.2f yaw %.2f\n", s1,
+                   esd_action(p) ? anims[p->anim].name : "-", p->t, p->pos.x, p->pos.z, p->yaw);
         last1 = s1;
     }
 
