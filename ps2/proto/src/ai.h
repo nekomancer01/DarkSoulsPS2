@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     int npc, think, logic, battle;
     float eye_dist, eye_ang_x, eye_ang_y, ear_dist, ear_cut;
+    float nose_dist;         /* NpcThinkParam nose_dist: seen within it in any direction, no sight line (0 = none) */
     float near_d, mid_d, far_d, out_d;
     float sight_forget, sound_forget;
     int goal_action_caution, goal_id_caution, goal_action_find, goal_id_find;
@@ -52,6 +53,9 @@ typedef struct {
     int combo_window;        /* TAE flag 86 open: the next combo request is taken (f120) */
     int cancel_window;       /* the action can be cancelled into movement (TAE flag 23 "AI combo" window) */
     int damaged;             /* a hit landed this frame */
+    float eye_h;             /* sight ray start above pos (the exe's sight record +0x30) */
+    float target_h;          /* sight ray end above the target's feet (target chr +0x224, record +0x4C) */
+    float target_r;          /* target capsule radius, added to the sight ranges (record +0x50) */
     float dt;
 } AiFrame;
 
@@ -68,7 +72,8 @@ typedef struct Ai {
     float seen_t, heard_t;   /* seconds since the target was last seen / heard (large = never) */
     V3 last_sight, sound_pos;
     int interupt;            /* interrupt being dispatched (IsInterupt), -1 none */
-    unsigned raised;         /* interrupt bits raised this frame */
+    unsigned long long raised;  /* interrupt bits (1 << INTERUPT_* code) raised this frame */
+    unsigned long long pending; /* raised by the game (ai_raise) for the next update */
     float timer[8], number[16];
     int force_battle;
     int called;              /* TeamHelp: a call from a peer is waiting for a reply */
@@ -107,12 +112,29 @@ void ai_replan(Ai *a, int forget);
 int ai_goals_in_use(void);  /* goal pool slots held (leak check at world block on / off) */
 /* A noise this frame at pos audible within radius (player footsteps, rolls, attacks): "heard" (ear_dist) */
 void ai_sound(V3 pos, float radius);
+/* Interrupts the game raises (INTERUPT_* codes of ai_define.lua, offered at the character's next update).
+ * ai_raise: to one character (its attack rebounded off a guard: 17, its guard held: 5, its guard broken: 9, ...).
+ * ai_event: something the target did this frame at pos, offered to every character in battle within radius
+ * (the player shooting: 10, using an item: 12, guarding: 7 / 8, swinging and missing: 6, ...). */
+enum { AI_I_SuccessGuard = 5, AI_I_MissSwing = 6, AI_I_GuardBegin = 7, AI_I_GuardFinish = 8, AI_I_GuardBreak = 9,
+       AI_I_Shoot = 10, AI_I_UseItem = 12, AI_I_ReboundByOpponentGuard = 17, AI_I_TargetIsGuard = 20,
+       AI_I_HitEnemyWall = 21, AI_I_SuccessParry = 22, AI_I_ParryTiming = 24, AI_I_MissSwingSelf = 33 };
+void ai_raise(Ai *a, int code);
+void ai_event(int code, V3 pos, float radius);
+/* ai:IsTargetGuard: the player is holding a guard (set by the player's code; 0 while it has none) */
+extern int ai_target_guard;
 /* After all enemies updated: drop this frame's sounds, collect garbage */
 void ai_end_frame(void);
 /* Deepest active goal's name (HUD) */
 const char *ai_goal_name(const Ai *a);
 /* Allies for call-help / team records / TARGET_FRI_0 (enemy.c registers every Ai with its position) */
 void ai_team(Ai **all, const V3 *pos, int n);
+/* AI_PERCEPT (default 1; DEFS=-DAI_PERCEPT=0 = the old flat eye_angX cone without a sight line, hearing capped at
+ * ear_dist): DSR's sight check FUN_140618680 and hearing check FUN_140623d10. ai_los answers whether nothing solid lies between two points (enemy.c: col_ray). */
+#ifndef AI_PERCEPT
+#define AI_PERCEPT 1
+#endif
+extern int (*ai_los)(V3 from, V3 to);
 extern unsigned ai_lua_heap, ai_lua_instr;
 extern int ai_lua_errors;
 extern char ai_last_error[224];

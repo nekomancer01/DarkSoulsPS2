@@ -783,6 +783,9 @@ static int enemy_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
 
 /* ---- spawn ---- */
 
+static int sight_line(V3 from, V3 to);
+static int swing_on, swing_hit, swing_missed;  /* player_swing (INTERUPT_MissSwing) */
+
 static void think_of(AiThink *th, const ChrVar *v)
 {
     th->npc = v->npc, th->think = v->think, th->logic = v->logic, th->battle = v->battle;
@@ -929,6 +932,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     pack_close(&pk);
     esd_ok = esd_load(&esd_prog, eb);
 #ifndef NO_AI_SCRIPTS
+    ai_los = sight_line;
     ai_scripts(lb, (int)lsize, map_lua, map_lua_size);
 #endif
     free(lb);  /* the VM keeps its own copy of the code */
@@ -1271,6 +1275,15 @@ static int leash_ok(Enemy *e, const float p[3], int on_floor)
     return x * x + z * z <= LEASH_M * LEASH_M;
 }
 
+/* AI_PERCEPT sight line (DSR FUN_140618a60 casts against the world collision, filter 0x28): seen when no solid
+ * triangle lies between the two points */
+static int sight_line(V3 from, V3 to)
+{
+    float a[3] = {from.x, from.y, from.z}, b[3] = {to.x, to.y, to.z};
+    ColHit hit;
+    return !col_ray(a, b, COL_SOLID, &hit);
+}
+
 /* ENEMY_WALLS: the move's push-out let the centre through a thin wall (the same test as wall_check, at WC_H above the
  * feet; two characters stacked on one spot on the Burg stairs, pushed apart into a wall, 2026-11-09 ISO) */
 static int wall_between(const Enemy *e, const float p[3])
@@ -1591,6 +1604,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->hits_seen = e->cc.hit_count;
         e->dmg_latch = 0.2f, e->dmg_state0 = esd_state(&e->esd, 0);
         new_hit = 1, e->hostile = 1;
+        swing_hit |= swing_on;
     } else if (e->dmg_latch > 0) {
         e->dmg_latch -= dt;
         if (esd_state(&e->esd, 0) != e->dmg_state0)
@@ -1623,11 +1637,18 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->combo_window = in_window(e, F_COMBO);
     f->cancel_window = in_window(e, F_AI_COMBO);
     f->damaged = new_hit;
+    f->eye_h = e->var->height * 0.9f;  /* ASSUMED: the exe reads it through the ChrIns vtable +0x28 (not decoded) */
+    f->target_h = COL_PLAYER_H * 0.9f, f->target_r = COL_PLAYER_R;
     f->dt = dt;
     const AiOut *o = &e->ai.out;
     LG_BEGIN_X(ai);
-    if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off))
+    if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off)) {
+        int st0 = e->ai.state;
         ai_update(&e->ai, f);
+        if (test_active() && e->ai.state != st0)  /* perception A/B (AI_PERCEPT): every state change, test runs */
+            printf("ai: state %d %s entity %d %d -> %d dist %.1f dy %.1f\n", e->index, e->ct->name, e->entity, st0,
+                   e->ai.state, (double)v3dist(e->pos, pl->pos), (double)(pl->pos.y - e->pos.y));
+    }
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
     LG_END_X(ai, LG_AI);
@@ -1990,6 +2011,24 @@ static void wall_check(Enemy *e)
         printf("enemy: through wall (lines over %d not printed); %u in the run\n", WC_LOG_MAX, enemy_through_walls);
 }
 
+/* INTERUPT_MissSwing (battle scripts attack into it at once): the player's attack ended without landing a hit.
+ * ASSUMED: raised when the attack state ends (the exe's source not located), offered within MISS_SWING_M like
+ * FindAttack. swing_hit is set by any enemy taking a hit while the attack plays. */
+#define MISS_SWING_M 8.0f
+
+static void player_swing(const Player *pl)
+{
+    if (swing_missed)
+        ai_event(AI_I_MissSwing, pl->pos, MISS_SWING_M);
+    swing_missed = 0;
+    int on = pl->state == ST_ATTACK && pl->hp > 0;
+    if (on && !swing_on)
+        swing_hit = 0;
+    if (!on && swing_on && !swing_hit)
+        swing_missed = 1;  /* offered next frame: this frame's ai_events are already in use */
+    swing_on = on;
+}
+
 void enemy_update(Player *pl, float dt)
 {
     last_player = pl;
@@ -1998,6 +2037,7 @@ void enemy_update(Player *pl, float dt)
         printf("enemy: frame %u, Lua heap %u, %d characters, RAM free %uK\n", frame, ai_lua_heap, nenemies,
                enemy_ram_free() >> 10);
     player_sounds(pl);
+    player_swing(pl);
     for (int i = 0; i < nenemies; i++) {  /* 2004[12] immortal: HP stays >= 1 (an event's kill still kills) */
         Enemy *e = &enemies[i];
         if (e->ev && e->ev->immortal && !e->ev->dead && e->cc.hp < 1 && e->dead_t == 0)
