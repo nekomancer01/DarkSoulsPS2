@@ -2,8 +2,13 @@
 #include "mapx.h"
 #if MX_THREADS
 #include <pthread.h>
-#include <stdio.h>
 #include <unistd.h>
+#endif
+#if MX_THREADS || MX_TIMING
+#include <stdio.h>
+#endif
+#if MX_TIMING
+#include <time.h>
 #endif
 
 double mx_np_pairwise(const double *a, long long n, long long st)
@@ -169,9 +174,11 @@ long long mx_map_put(mx_map *m, const long long *key, int *added)
 }
 
 /* ---- profiling ticks ---- */
-#include <time.h>
 void mx_tick(const char *what)
 {
+#if !MX_TIMING
+    (void)what;
+#else
     static int on = -1;
     static double last;
     if (on < 0)
@@ -183,6 +190,7 @@ void mx_tick(const char *what)
     double t = ts.tv_sec + ts.tv_nsec * 1e-9;
     fprintf(stderr, "  [mx] %-28s +%.2f s\n", what, last ? t - last : 0.0);
     last = t;
+#endif
 }
 
 /* ---- threads ---- */
