@@ -2313,6 +2313,20 @@ int enemy_entity_kill(int entity, int award)
     return npc_entity_kill(entity);
 }
 
+/* Test hook (testscript `ev killnear R`): every placed, living enemy within r m of p dies at once (ESD death anim, then
+ * its ragdoll), without souls. Returns how many */
+int enemy_kill_near(V3 p, float r)
+{
+    int n = 0;
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        float dx = e->pos.x - p.x, dy = e->pos.y - p.y, dz = e->pos.z - p.z;
+        if (!e->cc.dead && e->registered && dx * dx + dy * dy + dz * dz < r * r)
+            e->cc.hp = -1, e->cc.dead = 1, e->awarded = 1, n++;
+    }
+    return n;
+}
+
 int enemy_entity_damage(int entity, int hp)
 {
     ev_chr_hit(entity);
