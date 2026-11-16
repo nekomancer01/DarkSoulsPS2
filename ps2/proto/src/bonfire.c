@@ -418,10 +418,8 @@ void bonfire_hud(float dt)
     if (bf_state == BF_IDLE && pl && pl->hp > 0) {  /* DisplayOneLineHelp 10010182 / 10010183 */
         s32 e = ev_bonfire_near((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw);
         if (e) {
-            const char *t = hud_string(ev_bonfire_level(e) ? STR_BF_REST : STR_BF_LIGHT);
-            float w = hud_text_width(t) + 40;
-            box(320 - w / 2, 330, w, lh + 10);
-            hud_text(320 - w / 2 + 20, 335, t, 0x80, 0x80, 0x80, 0);
+            /* DSR shows the action button's symbol before the help text (PS2: Cross, the port's action button) */
+            hud_prompt(320, 330, HUD_BTN_CROSS, hud_string(ev_bonfire_level(e) ? STR_BF_REST : STR_BF_LIGHT));
         }
     }
     if (menu_open) {

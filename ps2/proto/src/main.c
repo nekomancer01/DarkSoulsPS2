@@ -39,6 +39,7 @@
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
 #include "hitch.h"  /* per-frame worst case, hitches, churn, RAM over time ("hitch:" EE log lines) */
 #include "testscript.h"
+#include "pickup.h"
 #include "debug_hud.h"  /* Select overlay, debug world drawing */
 #include "world.h"
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
@@ -413,7 +414,13 @@ int main(int argc, char **argv)
     }
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
-    void *menu_blob = pack_open(&pk, PACK_ROOT "menu.pak") ? pack_load(&pk, "menu.bin", 0) : 0;
+    void *menu_blob = NULL, *shine_blob = NULL;
+    unsigned shine_size = 0;
+    if (pack_open(&pk, PACK_ROOT "menu.pak")) {
+        menu_blob = pack_load(&pk, "menu.bin", 0);
+        shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
+        hud_help_init(pack_load(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+    }
     pack_close(&pk);
     t_load = ticks() - t_load;
     printf("DSRPROTO mem: elf %u, packs %u (read %u), heap end %u, stack %u, free %u; load %u ms, IOP wait %u ms\n",
@@ -456,6 +463,7 @@ int main(int argc, char **argv)
         printf("DSRPROTO events: off\n");
     if (!(map_ok && fx_init(gs, fx_blob)))  /* effect textures to VRAM; the blob stays (particle systems, lights) */
         free(fx_blob);
+    pickup_init(gs, shine_blob, shine_size);  /* the treasure shine's textures (~54 KB VRAM); frees the blob */
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
     loading_tick(1);
     combat_sweep_hook = objects_sweep_hook;
@@ -475,6 +483,7 @@ int main(int argc, char **argv)
     gsKit_set_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
 
     Player pl;
+    pickup_prompt_player(&pl);  /* the Pick up item prompt (src/pickup.c) */
     player_init(&pl);
     if (map_ok) {
         map_spawn(&pl.pos, &pl.yaw);
@@ -625,6 +634,8 @@ int main(int argc, char **argv)
             LG_END(objects, LG_OBJECTS);
             LG_BEGIN(events);
             event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
+            if (PICKUP)
+                pickup_update(dt);    /* item get dialog (src/pickup.c) */
             LG_END(events, LG_EVENTS);
             LG_BEGIN(bonfire);
             bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
@@ -667,6 +678,8 @@ int main(int argc, char **argv)
             debug_hud_draw(&dh, &pl, dt);
             HITCH_END(dbg, HS_DBG);
         }
+        if (PICKUP)
+            pickup_draw();  /* the item get dialog (menu.drb F25) */
         menu_draw(&pl);
         loading_overlay(dt);  /* the fade-in from black after a loading screen */
         PROF_DRAW();

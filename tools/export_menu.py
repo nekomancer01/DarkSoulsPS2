@@ -110,7 +110,7 @@ UI_STRINGS = [("Ingame_menu_.fmg", 110000), ("Ingame_menu_.fmg", 110001), ("Inga
     # bonfire (src/bonfire.c; ids from the bonfire talk ESDs t1xx1xx / t1xx2xx): prompts, menu entries, dialogs
     ("Event_text_.fmg", i) for i in (10010182, 10010183, 15000100, 15000111, 15000112, 15000120, 15000130, 15000220,
                                      15000150, 10010744, 15000170, 15000270, 15000005, 10010741, 10010722, 10010723,
-                                     10010724, 10010725, 10010730, 10010731, 10010732)]
+                                     10010724, 10010725, 10010730, 10010731, 10010732, 10010103)]  # + treasure / drop prompt
 
 
 def drb(b):
@@ -279,8 +279,29 @@ def icon_image(game, sheets, cells, icon_id):
     return resample.resize(sq, (ICON, ICON), Image.LANCZOS)
 
 
+def export_help(game, out):
+    """help.bin for src/hud.c hud_help: the one-line action prompts (Event_text_.fmg 10010000-10010999: ActionButton
+    help ids of the event scripts, "Open", "Examine", "Pick up item" ...) as 'DSHL', u32 count, count x (u32 id, u32
+    offset), then NUL-terminated ASCII (non-ASCII dropped)"""
+    msg = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(os.path.join(game, "msg", "ENGLISH",
+                                                                                   "menu.msgbnd.dcx")))}
+    f = souls.fmg(msg["Event_text_.fmg"])
+    rows = sorted((k, v) for k, v in f.items() if v and 10010000 <= k < 10011000)
+    body, tab = b"", b""
+    base = 8 + 8 * len(rows)
+    for k, v in rows:
+        tab += struct.pack("<II", k, base + len(body))
+        body += v.encode("ascii", "ignore") + b"\0"
+    with open(out, "wb") as fo:
+        fo.write(struct.pack("<4sI", b"DSHL", len(rows)) + tab + body)
+    print(f"{out}: {len(rows)} prompts, {8 + len(tab) + len(body)} bytes")
+
+
 def main():
     from PIL import Image
+    if sys.argv[2] == "--help":  # export_menu.py <game> --help <out help.bin>
+        export_help(sys.argv[1], sys.argv[3])
+        return
     game, out = sys.argv[1], sys.argv[2]
     preview = sys.argv[3] if len(sys.argv) > 3 else None
     drb_bytes = souls.read(os.path.join(game, "menu", "menu.drb.dcx"))

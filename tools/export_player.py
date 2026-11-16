@@ -129,6 +129,9 @@ ANIMS = [
     ("BONFIRE_SIT_2", "a00", 7720, False),
     ("BONFIRE_LOOP_2", "a00", 7721, True),
     ("BONFIRE_STAND_2", "a00", 7722, False),
+    # Item pickup (src/pickup.c: treasures, enemy drops): ObjActParam row 0 playerAnimId 8000 (the generic ObjAct; the
+    # treasure's own pickup anim is not found in the exe, ASSUMED the same, TECH_DEBT item-2)
+    ("PICKUP", "a00", 8000, False),
 ]
 # Played by the event Lua, which goes on at OnChrAnimEnd: the Havok clip's end, not the TAE's last event (their sound
 # events run past it, e.g. 7700: clip 66 frames = 2.17 s, TAE to 5.2 s)

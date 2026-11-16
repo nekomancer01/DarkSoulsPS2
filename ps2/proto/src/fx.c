@@ -74,6 +74,12 @@ typedef struct { u16 eff, flags; float pos[3], frame[9]; s32 entity; float pad; 
 #define FXI_FIRE 0x100
 #define FXI_LIGHT 0x200
 #define FXI_BURST 0x400
+#define FXI_DYN 0x800  /* = export_effects.SHINE_FLAG: placed at run time (fx_shine_*, set FX_SHINE) */
+#define FX_SHINE FX_SETS  /* the treasure shine set (menu.pak shine.bin) after the world blocks' */
+#define FX_NSETS (FX_SETS + 1)
+/* Shine instances emitting at once, nearest first: each white glow keeps ~80 particles alive (10 systems), the pool
+ * is FX_MAX for everything. ASSUMED cap (TECH_DEBT item-1) */
+#define SHINE_ACTIVE 4
 /* Emission time of a bonfire burst: 90007 (ignite) emits for ever in its data; its end comes from the FFX state
  * machine, which fx.c does not run. ASSUMED 0.5 s (TECH_DEBT fx-3) */
 #define FX_BURST_T 0.5f
@@ -127,9 +133,11 @@ typedef struct {
     float *vtab, *kmax;
     int on;
 } FxSet;
-static FxSet fset[FX_SETS];
+static FxSet fset[FX_NSETS];
 static int cur_set;
 static struct { int set, inst; float t; } bursts[FX_BURSTS];  /* bursts emitting (t > 0) */
+static u8 *shine_on;          /* per FX_SHINE instance: 0 free, 1 placed, 2 placed and near enough to emit */
+static FxInst *shine_inst;    /* FX_SHINE's instances, writable (their positions move) */
 
 /* the globals above describe set k */
 static void bind(int k)
@@ -348,7 +356,7 @@ void fx_block_on(int block, int on, const void *blob)
 int fx_entity_particles(int id, int kill)
 {
     int was = cur_set, found = 0, n = 0;
-    for (int k = 0; k < FX_SETS; k++) {
+    for (int k = 0; k < FX_NSETS; k++) {
         bind(k);
         if (!hdr)
             continue;
@@ -485,7 +493,7 @@ static void step(float dt, int emit_on)
         p->rot += p->spin * dt;
         i++;
     }
-    for (int k = 0; emit_on && k < FX_SETS; k++) {
+    for (int k = 0; emit_on && k < FX_NSETS; k++) {
         if (!fset[k].on)
             continue;
         bind(k);
@@ -526,6 +534,8 @@ static int burst_left(int ii)
 static int inst_state(int ii)
 {
     const FxInst *in = &inst[ii];
+    if (in->flags & FXI_DYN)
+        return shine_on && shine_on[ii] == 2;  /* placed and among the SHINE_ACTIVE nearest (fx_update) */
     if (!in->flags)
         return !(in->entity && dg_entity_hidden(in->entity));  /* Delete Map SFX (event.c) */
     int lv = ev_bonfire_level(in->entity);  /* -1: not registered (2009[03] creates the fire) */
@@ -539,7 +549,7 @@ static int inst_state(int ii)
 void fx_bonfire_burst(int entity, int n)
 {
     int was = cur_set;
-    for (int k = 0; k < FX_SETS; k++) {
+    for (int k = 0; k < FX_NSETS; k++) {
         if (!fset[k].on)
             continue;
         bind(k);
@@ -560,7 +570,7 @@ void fx_bonfire_burst(int entity, int n)
 void fx_update(float dt, V3 eye)
 {
     int any = 0;
-    for (int k = 0; k < FX_SETS; k++)
+    for (int k = 0; k < FX_NSETS; k++)
         any |= fset[k].on;
     if (!any)
         return;
@@ -569,7 +579,27 @@ void fx_update(float dt, V3 eye)
         dt = 0.1f;
     clock += dt;
     int active = 0;
-    for (int k = 0; k < FX_SETS; k++) {
+    if (shine_on) {  /* the SHINE_ACTIVE placed shines nearest the eye emit (inst_state reads 2) */
+        const FxHeader *h = fset[FX_SHINE].hdr;
+        float best[SHINE_ACTIVE];
+        int bi[SHINE_ACTIVE], nb = 0;
+        for (u32 ii = 0; ii < h->n_inst; ii++) {
+            if (!shine_on[ii])
+                continue;
+            shine_on[ii] = 1;
+            float dx = shine_inst[ii].pos[0] - eye.x, dy = shine_inst[ii].pos[1] - eye.y, dz = shine_inst[ii].pos[2] - eye.z;
+            float d = dx * dx + dy * dy + dz * dz;
+            if (nb == SHINE_ACTIVE && d >= best[nb - 1])
+                continue;
+            int k = nb < SHINE_ACTIVE ? nb++ : nb - 1;  /* (full: replaces the farthest) */
+            for (; k > 0 && best[k - 1] > d; k--)  /* best[] ascending */
+                best[k] = best[k - 1], bi[k] = bi[k - 1];
+            best[k] = d, bi[k] = ii;
+        }
+        for (int k = 0; k < nb; k++)
+            shine_on[bi[k]] = 2;
+    }
+    for (int k = 0; k < FX_NSETS; k++) {
         if (!fset[k].on)
             continue;
         bind(k);
@@ -858,7 +888,7 @@ void fx_draw(void)
 
 void fx_char_light(V3 pos, float amb[3])
 {
-    for (int k = 0; k < FX_SETS; k++) {
+    for (int k = 0; k < FX_NSETS; k++) {
         if (!fset[k].on)
             continue;
         bind(k);
@@ -886,4 +916,76 @@ void fx_char_light(V3 pos, float amb[3])
     }
     }
     bind(0);
+}
+
+/* Treasure shine (exe FUN_1403f89b0): set FX_SHINE from menu.pak shine.bin (tools/export_effects.py --shine), its
+ * textures resident (~54 KB VRAM), its instances placed by src/pickup.c */
+int fx_shine_init(GSGLOBAL *gs, const void *blob, unsigned size)
+{
+    int was = cur_set, r;
+    fx_gs = gs;
+    bind(FX_SHINE);
+    r = load_set(gs, blob, 1);
+    if (r) {  /* keep the tables (everything before the pixels) in a writable copy: the blob can go */
+        u32 keep = size;
+        for (u32 i = 0; i < hdr->n_tex; i++)
+            keep = tex[i].clut < keep ? tex[i].clut : keep, keep = tex[i].pix < keep ? tex[i].pix : keep;
+        u8 *t = memalign(16, keep);
+        shine_on = calloc(hdr->n_inst ? hdr->n_inst : 1, 1);
+        if (!t || !shine_on) {
+            free(t), free(shine_on), shine_on = NULL;
+            free_tex();
+            r = 0;
+        } else {
+            memcpy(t, blob, keep);
+            hdr = (const FxHeader *)t;
+            tex = (const FxTex *)(t + hdr->off_tex), sys = (const FxSys *)(t + hdr->off_sys);
+            eff = (const FxEff *)(t + hdr->off_eff), ref = (const FxRef *)(t + hdr->off_ref);
+            shine_inst = (FxInst *)(t + hdr->off_inst), inst = shine_inst;
+            light = (const FxLight *)(t + hdr->off_light);
+        }
+    }
+    if (!r)
+        hdr = 0;
+    fset[FX_SHINE].on = r;
+    bind(was);
+    printf("DSRPROTO fx: shine %s\n", r ? "on" : "off");
+    return r;
+}
+
+int fx_shine_add(int effect, const float pos[3])
+{
+    const FxHeader *h = fset[FX_SHINE].hdr;
+    for (u32 ii = 0; shine_on && ii < h->n_inst; ii++)
+        if (!shine_on[ii] && shine_inst[ii].eff == effect) {
+            memcpy(shine_inst[ii].pos, pos, sizeof shine_inst[ii].pos);
+            shine_on[ii] = 1;
+            return ii;
+        }
+    return -1;
+}
+
+void fx_shine_del(int h)
+{
+    if (!shine_on || h < 0 || h >= (int)fset[FX_SHINE].hdr->n_inst || !shine_on[h])
+        return;
+    shine_on[h] = 0;
+    for (int i = 0; i < n_alive;)  /* its particles go now (DSR deletes the slot's SFX on pickup) */
+        if (pool[i].set == FX_SHINE && pool[i].inst == h)
+            pool[i] = pool[--n_alive];
+        else
+            i++;
+    FxSet *c = &fset[FX_SHINE];
+    if (cur_set == FX_SHINE)
+        c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on;
+    memset(&c->emit[c->emit_first[h]], 0, (c->emit_first[h + 1] - c->emit_first[h]) * sizeof *c->emit);
+    c->inst_on[h] = 0;
+}
+
+int fx_shine_count(void)
+{
+    int n = 0;
+    for (u32 ii = 0; shine_on && ii < fset[FX_SHINE].hdr->n_inst; ii++)
+        n += shine_on[ii] != 0;
+    return n;
 }
