@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "combat_data.h"
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
@@ -38,6 +39,7 @@
 #include "sound.h"
 #include "ragdoll.h"
 #include "nav.h"
+#include "pickup.h"
 #include "testscript.h"
 #include "ticks.h"
 
@@ -105,15 +107,29 @@ typedef struct {
     float call_range, call_min_dist;
     int team_type;
     float excel[AI_EXCEL_N];
+    float def_el[3];          /* NpcParam def_mag / def_fire / def_thunder */
+    float def_type_pct[3];    /* NpcParam def_slash / def_blow / def_thrust: % on def_phys against typed attacks */
+    float nose_dist, ear_ang_x, ear_ang_y;  /* NpcThinkParam (read by the AI) */
+    int skip_arrival_visible_check;
 } ChrVar;
+_Static_assert(sizeof(ChrVar) == 256, "export_chr.py chr.bin variant record");
 typedef struct { int id; float length; unsigned first_win, nwin, first_root, nroot; } ChrAnim;
 typedef struct {
     short type, bone_a, bone_b, dmg_level;
     int atk_param;
     float start, end, phys, radius, poise, a[3], b[3], phys_rate;
+    int attr;                 /* AtkParam atkAttribute (chrstat.h ATK_*) */
+    float el[3];              /* atkMag / atkFire / atkThun x their corrections */
+    float stam;               /* AtkParam atkStam x atkStamCorrection: stamina a guard pays */
+    int no_guard;             /* AtkParam disableGuard */
+    int st_type, st_build;    /* status (1 poison, 2 toxic, 3 bleed, 4 curse) and its buildup per hit */
+    float st_hp, st_tick, st_time, st_rate;  /* its effect: hp per tick, tick s, duration s, hp % of max at once */
+    float knock, hit_stop;    /* AtkParam knockbackDist, hitStopTime */
 } ChrWin;
+_Static_assert(sizeof(ChrWin) == 116, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
+#define PARRIED_TIME 2.0f  /* s a parried enemy stays open to a riposte (ASSUMED, TECH_DEBT combat-11) */
 #define F_NO_TURN 7
 #define F_INVINCIBLE 8
 #define F_STEP_A 11      /* 11 / 79 -> ctx+0x19C bit1: f118 (steps) answers inside them */
@@ -184,6 +200,8 @@ typedef struct {
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
     int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
+    int thrown;      /* playing its side of the player's backstab / riposte (ThrowParam defAnimId): no AI / ESD */
+    float parried_t; /* > 0: parried this long ago at most (a riposte can start) */
     int awarded;  /* this death's souls / humanity points given (or none due: killed before, 2004[04] arg 2 = 0) */
     unsigned char rec[ENEMY_REC];  /* its enemies.bin record and seed index: enemy_respawn places it again from them */
     int seed_i;
@@ -597,7 +615,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 7 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 11 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -883,6 +901,11 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     memcpy(cc->pos, &e->pos, 12);
     cc->yaw = e->yaw, cc->radius = e->var->radius, cc->height = e->var->height, cc->team = TEAM_ENEMY;
     cc->hp = cc->hp_max = e->var->hp, cc->def_phys = e->var->def_phys;
+    /* typed physical defence: def_phys x (100 + NpcParam def_slash / blow / thrust) / 100, as FUN_1402dbda0 applies
+     * the armour's typed %; ASSUMED the same rule for NpcParam (its caller is in the obfuscated .text, combat-2) */
+    for (int k = 0; k < 3; k++)
+        cc->def_el[k] = e->var->def_el[k], cc->def_typed[k] = e->var->def_phys * (100 + e->var->def_type_pct[k]) / 100;
+    cc->has_typed = 1;
     cc->poise_max = e->var->poise;
     if (t->h->rag_n) {  /* + margin for poses reaching past the bind pose (ASSUMED 0.5 m / 0.3 m) */
         cc->hit_test = hit_test, cc->owner = e;
@@ -1440,7 +1463,12 @@ static void attack_sweeps(Enemy *e)
         float fa[3] = {pa.x, pa.y, pa.z}, fb[3] = {pb.x, pb.y, pb.z};
         CombatAttack atk = {.team = TEAM_ENEMY, .atk_param = w->atk_param, .phys = w->phys, .atk_phys_rate = w->phys_rate,
                             .poise_dmg = w->poise, .damage_level = w->dmg_level,
-                            .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i};
+                            .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i,
+                            .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr,
+                            .stam_dmg = w->stam, .unblockable = w->no_guard, .src = &e->cc,
+                            .parryable = in_window(e, F_PARRY),
+                            .st = {w->st_type, w->st_build, w->st_hp, w->st_tick, w->st_time, w->st_rate},
+                            .knock = w->knock};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)
@@ -1608,7 +1636,21 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->dt = dt;
     const AiOut *o = &e->ai.out;
     LG_BEGIN_X(ai);
-    if (!e->cc.dead && !e->sp_on && !(e->ev && e->ev->ai_off))
+    /* thrown: its throw anim plays to its end, then the ESD takes over again (a dead one goes on to its death) */
+    {   /* knockback of the latest hit (combat_knock_step), through its wall / ledge move */
+        float k[2];
+        combat_knock_step(&e->cc, dt, k);
+        if (k[0] != 0 || k[1] != 0)
+            move_by(e, k[0], k[1], 0);
+    }
+    if (e->thrown && (e->act < 0 || act_ended(e)))
+        e->thrown = 0;
+    /* parried (combat.c, PR C): open for a riposte for PARRIED_TIME (ASSUMED, TECH_DEBT combat-11) */
+    if (e->parried_t > 0)
+        e->parried_t -= dt;
+    else if (e->cc.parried)  /* the AI (its parried reaction) clears cc.parried */
+        e->parried_t = PARRIED_TIME;
+    if (!e->cc.dead && !e->sp_on && !e->thrown && !(e->ev && e->ev->ai_off))
         ai_update(&e->ai, f);
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
@@ -1629,7 +1671,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
     }
     LG_END(nav, LG_NAV);
     LG_BEGIN(esd);
-    if (esd_ok) {
+    if (esd_ok && !e->thrown) {
         e->esd.dt = dt;
         esd_update(&e->esd);
     }
@@ -1972,6 +2014,57 @@ static void wall_check(Enemy *e)
         printf("enemy: through wall (lines over %d not printed); %u in the run\n", WC_LOG_MAX, enemy_through_walls);
 }
 
+/* The player's throws (combat_throw_hook; ThrowParam rows of AtkChrId 0 in combat.gd): a placed, living, hostile
+ * enemy within the row's Dist whose facing differs from the player's by DiffAngMin..DiffAngMax. Backstab (type 0):
+ * the player stands behind it; riposte (type 8): in front of it, while it is parried. Rows for its own chr id win
+ * over the generic DefChrId 0 rows; the enemy must carry the row's defAnimId. ASSUMED (TECH_DEBT combat-11): the
+ * "behind / in front" half-angle 60 deg; no alignment by the rows' sorb dummy polys (the player keeps its spot). */
+/* Test scripts ("behind"): the nearest placed, living enemy */
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw)
+{
+    float best = 1e9f;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const Enemy *e = &enemies[i];
+        if (!e->ct || !e->registered || e->cc.dead || !e->pose)
+            continue;
+        float dx = e->pos.x - pos[0], dy = e->pos.y - pos[1], dz = e->pos.z - pos[2], d = dx * dx + dy * dy + dz * dz;
+        if (d < best)
+            best = d, *at = e->pos, *yaw = e->yaw;
+    }
+    return best < 1e9f;
+}
+
+int enemy_throw_try(const float pos[3], float yaw, ThrowStart *out)
+{
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            Enemy *e = &enemies[i];
+            if (!e->ct || !e->registered || e->cc.dead || e->thrown || !e->pose || !e->ct->anims)
+                continue;
+            int num = atoi(e->ct->name + 1);
+            float dx = pos[0] - e->pos.x, dz = pos[2] - e->pos.z, d = sqrtf(dx * dx + dz * dz);
+            float face = fabsf(wrap(e->yaw - yaw)) * 57.29578f;
+            float side = fabsf(wrap(atan2f(dx, dz) - e->yaw)) * 57.29578f;  /* 0 = player in front of it */
+            for (int k = 0; k < NTHROWS; k++) {
+                const ThrowRow *r = &throws[k];
+                if (r->def_chr != (pass ? 0 : num) || d > r->dist || face < r->ang_min || face > r->ang_max)
+                    continue;
+                if (r->type == 0 ? side < 120 : (side > 60 || e->parried_t <= 0))
+                    continue;
+                int full;
+                if (anim_slot(e, r->def_anim, &full) < 0)
+                    continue;
+                e->thrown = 1, e->parried_t = 0;
+                start_action(e, r->def_anim, 0, 0.1f, 0);
+                *out = (ThrowStart){&e->cc, r->atk_anim, r->hit_t, (float)r->corr, atan2f(-dx, -dz)};
+                printf("enemy: %s %s by the player (row def %d, anims %d / %d)\n", e->ct->name,
+                       r->type == 0 ? "backstabbed" : "riposted", r->def_chr, r->atk_anim, r->def_anim);
+                return 1;
+            }
+        }
+    return 0;
+}
+
 void enemy_update(Player *pl, float dt)
 {
     last_player = pl;
@@ -1991,6 +2084,9 @@ void enemy_update(Player *pl, float dt)
             if (e->block > 0 && e->block < ENEMY_BLOCKS && e->seed_i >= 0 && e->seed_i < MAX_ENEMIES)
                 blk_dead[e->block][e->seed_i >> 5] |= 1u << (e->seed_i & 31);
             progress_enemy_killed(e->rec[36] | e->rec[37] << 8, e->rec[38], e->rec[39]);
+            s32 npc;  /* FUN_1403fc600: NpcParam.itemLotId_1 rolled now, the drop at the corpse (src/pickup.c) */
+            memcpy(&npc, e->rec + 8, 4);
+            pickup_enemy_drop(npc, (const float[3]){e->pos.x, e->pos.y, e->pos.z});
         }
     }
     npc_update(pl, dt);

@@ -16,6 +16,9 @@
 #include "render.h"
 #define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #include "player.h"
+#ifndef DPAD_STICK
+#define DPAD_STICK 0  /* 1 = the d-pad moves (the old path, keyboard-mapped emulators) */
+#endif
 #include "model.h"
 #include "map.h"
 #include "bump.h"
@@ -23,6 +26,8 @@
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
+#include "chrstat.h"
+#include "status.h"
 #include "pack.h"
 #include "enemy.h"
 #include "objects.h"
@@ -34,6 +39,7 @@
 #include "prof.h"  /* PROF_* hooks: empty except in make PROFILE=1 (tools-hwperf) */
 #include "hitch.h"  /* per-frame worst case, hitches, churn, RAM over time ("hitch:" EE log lines) */
 #include "testscript.h"
+#include "pickup.h"
 #include "debug_hud.h"  /* Select overlay, debug world drawing */
 #include "world.h"
 #include "save.h"  /* A3: progression + event flags, loaded at boot, saved on request / autosave */
@@ -101,13 +107,23 @@ static int pad_input(Input *in, unsigned short *prev)
     in->my = -axis(st.ljoy_v);
     in->cx = axis(st.rjoy_h);
     in->cy = axis(st.rjoy_v);
-    /* d-pad works as a digital left stick (keyboard-mapped emulators) */
+#if DPAD_STICK
+    /* DPAD_STICK=1 (the old path): the d-pad works as a digital left stick (keyboard-mapped emulators) */
     if (btn & PAD_UP) in->my = 1;
     if (btn & PAD_DOWN) in->my = -1;
     if (btn & PAD_LEFT) in->mx = -1;
     if (btn & PAD_RIGHT) in->mx = 1;
+#else
+    /* the d-pad as in DSR: left / right switch the hand's weapon, down cycles the quick items, up the spells */
+    in->dpad = ((btn & PAD_UP) && !(*prev & PAD_UP) ? 1 : 0) | ((btn & PAD_DOWN) && !(*prev & PAD_DOWN) ? 2 : 0) |
+               ((btn & PAD_LEFT) && !(*prev & PAD_LEFT) ? 4 : 0) | ((btn & PAD_RIGHT) && !(*prev & PAD_RIGHT) ? 8 : 0);
+#endif
     in->r1 = (btn & PAD_R1) && !(*prev & PAD_R1);
     in->circle = (btn & PAD_CIRCLE) != 0;
+    in->r1_held = (btn & PAD_R1) != 0, in->r2_held = (btn & PAD_R2) != 0;
+    in->l1_held = (btn & PAD_L1) != 0, in->l2_held = (btn & PAD_L2) != 0;
+    in->r3 = (btn & PAD_R3) && !(*prev & PAD_R3);
+    in->square = (btn & PAD_SQUARE) && !(*prev & PAD_SQUARE);
     if ((btn & PAD_CROSS) && !(*prev & PAD_CROSS))
         event_action();  /* DSR's action button (ObjActs, treasures, fog walls: src/event.c) */
     *prev = btn;
@@ -360,6 +376,7 @@ int main(int argc, char **argv)
     loading_init(gs, flip, disp_buf);
     loading_hold();
     save_boot(argc, argv, AREA);  /* flags + progression from the newest save (mc0: / host:), else a new game */
+    chrstat_boot();  /* HP, stamina, defence, attack from the saved stats and equipment (itemx.bin for a moment) */
     /* sound: IOP modules, the player's bank and the boot area's into SPU2 RAM (the IOP reads them: no EE RAM) */
     if (snd_init())
         snd_map(AREA);
@@ -396,7 +413,13 @@ int main(int argc, char **argv)
     }
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
-    void *menu_blob = pack_open(&pk, PACK_ROOT "menu.pak") ? pack_load(&pk, "menu.bin", 0) : 0;
+    void *menu_blob = NULL, *shine_blob = NULL;
+    unsigned shine_size = 0;
+    if (pack_open(&pk, PACK_ROOT "menu.pak")) {
+        menu_blob = pack_load(&pk, "menu.bin", 0);
+        shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
+        hud_help_init(pack_load(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+    }
     pack_close(&pk);
     t_load = ticks() - t_load;
     printf("DSRPROTO mem: elf %u, packs %u (read %u), heap end %u, stack %u, free %u; load %u ms, IOP wait %u ms\n",
@@ -439,9 +462,12 @@ int main(int argc, char **argv)
         printf("DSRPROTO events: off\n");
     if (!(map_ok && fx_init(gs, fx_blob)))  /* effect textures to VRAM; the blob stays (particle systems, lights) */
         free(fx_blob);
+    pickup_init(gs, shine_blob, shine_size);  /* the treasure shine's textures (~54 KB VRAM); frees the blob */
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
     loading_tick(1);
-    combat_sweep_hook = objects_sweep_hook;  /* every weapon sweep (player and enemies) can break them */
+    combat_sweep_hook = objects_sweep_hook;
+    combat_throw_hook = enemy_throw_try;
+    status_init();  /* the player's poison / toxic / bleed / curse (combat_status_hook) */  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
         vram_free = r_vram_avail(gs);
@@ -456,6 +482,7 @@ int main(int argc, char **argv)
     gsKit_set_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
 
     Player pl;
+    pickup_prompt_player(&pl);  /* the Pick up item prompt (src/pickup.c) */
     player_init(&pl);
     if (map_ok) {
         map_spawn(&pl.pos, &pl.yaw);
@@ -512,6 +539,15 @@ int main(int argc, char **argv)
         test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 
         cam_yaw += in.cx * 2.5f * dt;
+        {   /* lock-on: the camera turns to put the target behind the player (LockCamParam row 0; turn rate ASSUMED) */
+            float tp[3];
+            if (player_lock_target(&pl, tp)) {
+                float want = atan2f(tp[0] - pl.pos.x, tp[2] - pl.pos.z), d = want - cam_yaw;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                cam_yaw += d * (dt * 6 < 1 ? dt * 6 : 1);
+            }
+        }
         cam_pitch += in.cy * 1.5f * dt;
         /* LockCamParam row 0: rotRangeMinX -40 degrees (camera below the target, looking up) */
         cam_pitch = cam_pitch < -0.698f ? -0.698f : cam_pitch > 1.2f ? 1.2f : cam_pitch;
@@ -524,6 +560,7 @@ int main(int argc, char **argv)
             PROF_MARK(PROF_PLAYER);
             LG_BEGIN(player);
             player_update(&pl, &in, cam_yaw, dt);
+            status_update(&pl, dt);
             combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
             /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
             event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
@@ -596,6 +633,8 @@ int main(int argc, char **argv)
             LG_END(objects, LG_OBJECTS);
             LG_BEGIN(events);
             event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
+            if (PICKUP)
+                pickup_update(dt);    /* item get dialog (src/pickup.c) */
             LG_END(events, LG_EVENTS);
             LG_BEGIN(bonfire);
             bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
@@ -638,6 +677,8 @@ int main(int argc, char **argv)
             debug_hud_draw(&dh, &pl, dt);
             HITCH_END(dbg, HS_DBG);
         }
+        if (PICKUP)
+            pickup_draw();  /* the item get dialog (menu.drb F25) */
         menu_draw(&pl);
         loading_overlay(dt);  /* the fade-in from black after a loading screen */
         PROF_DRAW();

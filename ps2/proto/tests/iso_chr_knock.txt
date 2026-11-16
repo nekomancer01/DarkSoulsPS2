@@ -1,0 +1,15 @@
+# Knockback and hit stop (PR G): a test hit (knockbackDist 0.7 m) pushes the player back along the hit; an R1 that
+# lands on a hollow holds the swing for the Longsword's hitStopTime 0.08 s and pushes it 0.72 m. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_knock.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+option god
+wait 3
+spawn -48.5 -21.8 -35.5 0
+wait 2
+stats
+hit 98 20
+wait 1.5
+check near -48.5 -21.8 -36.2 0.3
+stats
+end

@@ -44,6 +44,8 @@ Version 2: objacts grew from 40 B (key and anim fields), colliders cover every o
            only the items with a weight (lotItemBasePoint > 0). Every referenced lot comes with the rows that follow
            it (id + 1, id + 2, ... while they exist): DSR's draw (FUN_1403f5d90) rolls one item from each row of that run
 Version 3: lots carry every weighted item of each row (was: the first item, 20 B).
+Version 3 + header slot 10 (zero = absent, older files): npc lots  s32 NpcParam id, s32 itemLotId_1 (8 B), sorted by
+           id: the enemy drop of the map's enemy parts; lot rows' last byte = lotItem_Rarity (the shine SFX 99000 + it)
 """
 import collections, math, os, struct, sys
 
@@ -343,6 +345,15 @@ def treasures_objacts_lots(game, msb, E, common):
                                   g("spQualifiedType2", 0), 0, g("spQualifiedId", 0), g("spQualifiedId2", 0),
                                   g("spQualifiedPassEventFlag", -1)))
     IL = params.params("ItemLotParam")
+    # enemy drops (exe FUN_1403fc600 on a death): NpcParam.itemLotId_1 of the map's enemy parts (_2.._6 are unused in
+    # DSR's data: one row each, none a lot)
+    NP, npc_lots = params.params("NpcParam"), {}
+    for p in msb["parts"]:
+        if p.get("type_name") == "Enemy" and p.get("npc_id", -1) > 0:
+            row = NP.get(p["npc_id"])
+            if row is not None and row.itemLotId_1 > 0 and row.itemLotId_1 in IL:
+                npc_lots[p["npc_id"]] = row.itemLotId_1
+                lot_ids.add(row.itemLotId_1)
     for ev in list(E.events) + list(common.events if common else []):  # Award Items literals + int event args
         for ins in ev.instrs:
             if (ins.bank, ins.id) == (2003, 36) and ins.args:
@@ -361,9 +372,10 @@ def treasures_objacts_lots(game, msb, E, common):
         its = [struct.pack("<iiHBB", r[f"lotItemId0{k}"], r[f"getItemFlagId0{k}"], r[f"lotItemBasePoint0{k}"],
                            min(r[f"lotItemNum0{k}"], 255), (r[f"lotItemCategory0{k}"] & 0xFFFFFFFF) >> 28)
                for k in range(1, 9) if r[f"lotItemBasePoint0{k}"] > 0]
-        rows.append(struct.pack("<iiHBB", lid, r.getItemFlagId, len(items), len(its), 0))
+        rows.append(struct.pack("<iiHBB", lid, r.getItemFlagId, len(items), len(its), r.lotItem_Rarity & 0xFF))
         items += its
-    return tr, oa, (rows + items, len(rows))
+    npcl = [struct.pack("<ii", n, l) for n, l in sorted(npc_lots.items())]
+    return tr, oa, (rows + items, len(rows)), (npcl, len(npcl))
 
 
 def build(sections, map_id):
@@ -414,17 +426,17 @@ def foreign_warp_targets(game, map_id, E):
 def export(game, map_id, with_entities=True):
     E = emevd.load(map_id, game)
     evs, ins_b, sub_b, counts, missing = encode_events(E)
-    ents, ranges, cols, tr, oa, lots = [], [], [], [], [], ([], 0)
+    ents, ranges, cols, tr, oa, lots, npcl = [], [], [], [], [], ([], 0), ([], 0)
     if with_entities:
         msb = souls.msb1(souls.read(f"{game}/map/MapStudio/{map_id}.msb"))
         ents, ranges, cols = entities(game, map_id, msb, hit_ranges(game, map_id))
         ents = sorted(ents + foreign_warp_targets(game, map_id, E), key=lambda b: struct.unpack_from("<i", b)[0])
-        tr, oa, lots = treasures_objacts_lots(game, msb, E, emevd.load("common", game))
+        tr, oa, lots, npcl = treasures_objacts_lots(game, msb, E, emevd.load("common", game))
     data = build([(evs, len(evs)), (ins_b, len(ins_b)), (sub_b, len(sub_b) // 8), (ents, len(ents)),
-                  (ranges, len(ranges)), (cols, len(cols)), (tr, len(tr)), (oa, len(oa)), lots], map_id)
+                  (ranges, len(ranges)), (cols, len(cols)), (tr, len(tr)), (oa, len(oa)), lots, npcl], map_id)
     stats = dict(events=len(E.events), instrs=sum(counts.values()), counts=counts, missing=missing, bytes=len(data),
                  entities=len(ents), ranges=len(ranges), colliders=len(cols), treasures=len(tr), objacts=len(oa),
-                 lots=lots[1])
+                 lots=lots[1], npc_lots=npcl[1])
     return data, stats
 
 

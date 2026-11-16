@@ -26,6 +26,25 @@ typedef struct CombatChr {
     float poise_max;       /* 0 = always staggered */
     int invincible;        /* i-frames (TAE ChrActionFlag 8) this frame */
     int super_armor;       /* TAE flag 24 this frame: damage taken, no hit reaction */
+    float def_el[3];       /* magic / fire / lightning defence (NpcParam def_mag / def_fire / def_thunder) */
+    float def_typed[3];    /* physical defence against slash / blow / thrust attacks (has_typed; else def_phys) */
+    int has_typed;
+    /* guard (owner-set each frame): raised, the shield's guard cut % per element, staminaGuardDef, guardLevel */
+    int guarding;
+    float guard_cut[4], guard_stab;
+    int guard_level;
+    /* combat-set by a guarded hit: stamina the owner takes off, and whether that broke the guard (owner decides) */
+    int guard_hit, guard_broken;
+    float guard_stamina_dmg;
+    int *stamina;          /* owner's stamina (optional): a guarded hit takes its cost here */
+    int parrying;          /* owner-set: a parry window is open (player.c) */
+    int knock_row;         /* owner-set: KnockBackParam row (0 NPCs, 1 the player) */
+    /* combat-set knockback of the latest hit: direction (unit x / z), speed, time at speed, time since the hit
+     * (knock_dec), slow-down time (knock_dec0) */
+    float knock_dir[2], knock_v, knock_cont, knock_dec, knock_dec0;
+    int parried;           /* combat-set on an attacker whose parryable attack met a parry (its owner reacts and
+                            * clears it); new_parry on the parrying side */
+    int new_parry;
     /* combat-set (read by the owner / ESD env functions) */
     float poise;           /* current poise; regenerates in combat_update */
     int hit_count;         /* +1 per hit taken (owners compare with their last seen value) */
@@ -47,6 +66,19 @@ typedef struct CombatAttack {
     int damage_level;      /* AtkParam damageLevel */
     float src_pos[3];      /* attacker position, for the hit direction */
     int window;            /* attack window id: one target is hit at most once per window */
+    /* appended (zero = none): elemental attack ratings and AtkParam atkMag / Fire / ThunCorrection / 100, and
+     * atkAttribute (chrstat.h ATK_*: slash / blow / thrust pick the target's typed physical defence) */
+    float el[3], el_rate[3];
+    int attr;
+    float stam_dmg;        /* AtkParam atkStam: stamina a guard pays for it */
+    int unblockable;       /* AtkParam disableGuard */
+    int parryable;         /* the attacker's anim has ChrActionFlag 5 "Parry Possible" at this time */
+    struct CombatChr *src; /* the attacker's hurtbox (optional): told when it is parried */
+    int is_throw;          /* backstab / riposte damage: hits through i-frames, no guard / parry / poise */
+    /* status buildup carried by the hit (AtkParam spEffectId -> SpEffectParam, chr.bin window): type 1 poison,
+     * 2 toxic, 3 bleed, 4 curse; buildup; and the effect when the meter fills */
+    struct { int type, build; float hp, tick, time, rate; } st;
+    float knock;           /* AtkParam knockbackDist (m) */
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */
@@ -61,8 +93,26 @@ extern int (*combat_sweep_hook)(const float a[3], const float b[3], float r, con
 int combat_apply(CombatChr *target, const CombatAttack *atk);
 /* Raw damage, no hurtbox state: the physical damage formula */
 int combat_damage(float atk_phys, float def_phys, float absorb);
+/* Damage of an attack on a hurtbox (FUN_1402d9660: the four elements summed, each through the defence curve) */
+float combat_damage_on(const CombatChr *t, const CombatAttack *atk);
 /* Per frame: poise regeneration */
 void combat_update(float dt);
+
+/* The player's throws (backstab / riposte, ThrowParam): enemy.c finds a target and starts its side; the player
+ * plays atk_anim (right weapon motion) and deals AR x corr / 100 to cc at hit_t */
+typedef struct { CombatChr *cc; int atk_anim; float hit_t, corr, yaw; } ThrowStart;
+extern int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
+
+/* Lock-on (player.c): the enemy hurtbox nearest to the line of view (yaw) within range, NULL none; whether a target
+ * is still registered and alive */
+CombatChr *combat_lock_pick(const float pos[3], float yaw, float range);
+int combat_lock_alive(const CombatChr *c);
+
+/* Knockback this frame (owners move the character by it through their collision): x / z metres */
+void combat_knock_step(CombatChr *c, float dt, float out[2]);
+
+/* Status hook (status.c): a hit with st.type set landed on t (called by combat_apply unless guarded / parried) */
+extern void (*combat_status_hook)(CombatChr *t, const CombatAttack *atk);
 
 /* Debug dummy target (COMBAT_DUMMY builds / HUD): NpcParam 206000's hurtbox and defence */
 extern CombatChr combat_dummy;

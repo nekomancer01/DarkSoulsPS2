@@ -54,4 +54,9 @@ void enemy_entity_bind(int entity, struct EvChr *c);
 /* Totals for the HUD: enemies updated / drawn this frame */
 extern int enemy_active, enemy_drawn;
 
+/* combat_throw_hook: start the enemy side of a player backstab / riposte (ThrowParam), see enemy.c */
+#include "combat.h"
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw);  /* test scripts */
+int enemy_throw_try(const float pos[3], float yaw, ThrowStart *out);
+
 #endif
