@@ -102,6 +102,9 @@ static int nsounds;
 static struct { int code; V3 pos; float r; } events[MAX_EVENTS];  /* ai_event: this frame's target actions */
 static int nevents;
 int ai_target_guard;
+#define LOS_PERIOD 0.25f  /* s between one character's sight rays (PS2 budget, see sight()) */
+#define LOS_PER_FRAME 3
+static int los_budget = LOS_PER_FRAME;
 static Ai *cur;              /* the AI being updated */
 static int fallback_seen[64];
 unsigned ai_lua_heap, ai_lua_instr;
@@ -607,9 +610,16 @@ static int sight(Ai *a, float d)
     if (c_pitch < cosf(th->eye_ang_x * (PI / 180)))
         return 0;
     if (ai_los) {
-        V3 from = {f->pos.x, f->pos.y + f->eye_h, f->pos.z}, to = {f->target.x, f->target.y + f->target_h, f->target.z};
-        if (!ai_los(from, to))
-            return 0;
+        /* PS2 cost (a 20-40 m collision ray per character a frame was ~20 ms of EE on the Burg route): each
+         * character re-casts at most every LOS_PERIOD and at most LOS_PER_FRAME casts run in a frame; in between it
+         * keeps its last answer */
+        if (a->los_t <= 0 && los_budget > 0) {
+            V3 from = {f->pos.x, f->pos.y + f->eye_h, f->pos.z};
+            V3 to = {f->target.x, f->target.y + f->target_h, f->target.z};
+            a->los_ok = ai_los(from, to);
+            a->los_t = LOS_PERIOD, los_budget--;
+        }
+        return a->los_ok;
     }
     return 1;
 }
@@ -620,7 +630,7 @@ static void perceive(Ai *a)
     const AiFrame *f = a->f;
     const AiThink *th = a->th;
     float dt = f->dt;
-    a->seen_t += dt, a->heard_t += dt;
+    a->seen_t += dt, a->heard_t += dt, a->los_t -= dt;
     float d = v3dist(f->pos, f->target);
     int seen = 0, heard = 0;
     if (f->target_alive) {
@@ -855,7 +865,7 @@ static void mark_goals(void)
 
 void ai_end_frame(void)
 {
-    nsounds = 0, nevents = 0;
+    nsounds = 0, nevents = 0, los_budget = LOS_PER_FRAME;
     if (scripts_ok)
         lua0_gc_step(mark_goals, LUA_GC_KB * 1024, LUA_GC_STEP_US);
     ai_lua_heap = lua0_heap, ai_lua_instr = lua0_instructions;
