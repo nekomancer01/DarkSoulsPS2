@@ -38,6 +38,10 @@ typedef struct CombatChr {
     float guard_stamina_dmg;
     int *stamina;          /* owner's stamina (optional): a guarded hit takes its cost here */
     int parrying;          /* owner-set: a parry window is open (player.c) */
+    int knock_row;         /* owner-set: KnockBackParam row (0 NPCs, 1 the player) */
+    /* combat-set knockback of the latest hit: direction (unit x / z), speed, time at speed, time since the hit
+     * (knock_dec), slow-down time (knock_dec0) */
+    float knock_dir[2], knock_v, knock_cont, knock_dec, knock_dec0;
     int parried;           /* combat-set on an attacker whose parryable attack met a parry (its owner reacts and
                             * clears it); new_parry on the parrying side */
     int new_parry;
@@ -74,6 +78,7 @@ typedef struct CombatAttack {
     /* status buildup carried by the hit (AtkParam spEffectId -> SpEffectParam, chr.bin window): type 1 poison,
      * 2 toxic, 3 bleed, 4 curse; buildup; and the effect when the meter fills */
     struct { int type, build; float hp, tick, time, rate; } st;
+    float knock;           /* AtkParam knockbackDist (m) */
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */
@@ -102,6 +107,9 @@ extern int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
  * is still registered and alive */
 CombatChr *combat_lock_pick(const float pos[3], float yaw, float range);
 int combat_lock_alive(const CombatChr *c);
+
+/* Knockback this frame (owners move the character by it through their collision): x / z metres */
+void combat_knock_step(CombatChr *c, float dt, float out[2]);
 
 /* Status hook (status.c): a hit with st.type set landed on t (called by combat_apply unless guarded / parried) */
 extern void (*combat_status_hook)(CombatChr *t, const CombatAttack *atk);

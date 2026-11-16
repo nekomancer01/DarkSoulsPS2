@@ -35,7 +35,7 @@ Output (little-endian), four files that tools/pack.py puts into menu.pak:
                     maxNum, [5..8] spells only: Magic slotLength, requirementIntellect, requirementFaith,
                     maxQuantity, [9, 10] souls given on use (SpEffectParam.soul of refId, low / high 16 bits),
                     [11] SpEffectParam.heroPointDamage of refId (humanity lost on use: -1 Humanity, -2 Twin
-                    Humanities, -5 Fire Keeper Soul, 99 Darksign)
+                    Humanities, -5 Fire Keeper Soul, 99 Darksign), [12] HP healed on use (-changeHpPoint of refId)
       reinforce {u32 row; u16 physicsAtkRate, magicAtkRate, fireAtkRate, thunderAtkRate, correctStrengthRate,
               correctAgilityRate, correctMagicRate, correctFaithRate (all x1000)} sorted by row
       names   NUL-terminated ASCII
@@ -142,6 +142,9 @@ def build(game):
             st = (st + [0] * 16)[:16]
             st[9], st[10] = s16(sp[1]["soul"] & 0xFFFF), s16(sp[1]["soul"] >> 16)
         sp = P["SpEffectParam"].get(f["refId"]) if f["refCategory"] == 2 else None
+        if sp and sp[1]["changeHpPoint"] < 0:  # healing items: -changeHpPoint of refId (Estus 201: SpEffect 3020, 300)
+            st = (st + [0] * 16)[:16]
+            st[12] = min(-sp[1]["changeHpPoint"], 0x7FFF)
         if sp and sp[1]["heroPointDamage"]:  # humanity items: SpEffectParam.heroPointDamage (-1 Humanity, -2 Twin)
             st = (st + [0] * 16)[:16]
             st[11] = sp[1]["heroPointDamage"]

@@ -1,0 +1,21 @@
+# D-pad as in DSR (PR H): right switches the right hand to its second slot (the Warrior's is empty: bare hand, AR
+# drops) with the switch motion (group 1 state 217, a00 81), right again back to the Longsword; left does the same
+# for the shield (218, a00 80); down cycles the quick items (only the Estus is set: no change). Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_dpad.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+wait 3
+spawn -48.5 -21.8 -35.5 0
+wait 2
+dpad 8
+wait 0.3
+shot switch_right
+wait 1.5
+dpad 8
+wait 1.5
+dpad 4
+wait 1.5
+dpad 2
+wait 1
+stats
+end
