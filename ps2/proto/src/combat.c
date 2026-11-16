@@ -185,6 +185,8 @@ int combat_lock_alive(const CombatChr *c)
     return 0;
 }
 
+void (*combat_status_hook)(CombatChr *t, const CombatAttack *atk);
+
 int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
 
 int combat_apply(CombatChr *t, const CombatAttack *atk)
@@ -250,6 +252,8 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     }
     t->damage_level = level;
     t->hit_dir = a;
+    if (atk->st.type > 0 && combat_status_hook && !t->guard_hit)  /* a guarded hit builds no status (ASSUMED) */
+        combat_status_hook(t, atk);
     if (t->hp <= 0) {
         t->hp = -1;  /* the ESD death branches test f1000() < 0 */
         t->dead = 1;

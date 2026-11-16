@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef COMBAT_DATA_H
 #define COMBAT_DATA_H
-#define COMBAT_LAYOUT 0x40d4d05cu
+#define COMBAT_LAYOUT 0xd851cf8du
 
 #include <stddef.h>
 
@@ -80,6 +80,9 @@ typedef struct {
     float graph_150[15];
     float graph_113[15];
     float graph_102[15];
+    float graph_110[15];
+    float graph_111[15];
+    float graph_112[15];
     int sk_bones;
     int sk_r_weapon;
     const signed char *sk_parent;
@@ -98,7 +101,7 @@ typedef struct {
     const ThrowRow *throws;
     int nthrows;
 } CombatData;
-_Static_assert(sizeof(CombatData) == 412 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, sk_bones) == 344 && offsetof(CombatData, sk_r_weapon) == 348 && offsetof(CombatData, sk_parent) == 352 && offsetof(CombatData, wep_dummy) == 356 && offsetof(CombatData, wep_dummies) == 360 && offsetof(CombatData, atk_windows) == 364 && offsetof(CombatData, natk_windows) == 368 && offsetof(CombatData, dummy_hp) == 372 && offsetof(CombatData, dummy_def_phys) == 376 && offsetof(CombatData, dummy_radius) == 380 && offsetof(CombatData, dummy_height) == 384 && offsetof(CombatData, dummy_poise) == 388 && offsetof(CombatData, graphs) == 392 && offsetof(CombatData, ngraphs) == 396 && offsetof(CombatData, sk_spine) == 400 && offsetof(CombatData, throws) == 404 && offsetof(CombatData, nthrows) == 408, "CombatData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(CombatData) == 592 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, graph_110) == 344 && offsetof(CombatData, graph_111) == 404 && offsetof(CombatData, graph_112) == 464 && offsetof(CombatData, sk_bones) == 524 && offsetof(CombatData, sk_r_weapon) == 528 && offsetof(CombatData, sk_parent) == 532 && offsetof(CombatData, wep_dummy) == 536 && offsetof(CombatData, wep_dummies) == 540 && offsetof(CombatData, atk_windows) == 544 && offsetof(CombatData, natk_windows) == 548 && offsetof(CombatData, dummy_hp) == 552 && offsetof(CombatData, dummy_def_phys) == 556 && offsetof(CombatData, dummy_radius) == 560 && offsetof(CombatData, dummy_height) == 564 && offsetof(CombatData, dummy_poise) == 568 && offsetof(CombatData, graphs) == 572 && offsetof(CombatData, ngraphs) == 576 && offsetof(CombatData, sk_spine) == 580 && offsetof(CombatData, throws) == 584 && offsetof(CombatData, nthrows) == 588, "CombatData layout differs from tools/gamedata.py");
 
 extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define PL_VIT (combat_data->pl_vit)
@@ -129,6 +132,9 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define graph_150 (combat_data->graph_150)
 #define graph_113 (combat_data->graph_113)
 #define graph_102 (combat_data->graph_102)
+#define graph_110 (combat_data->graph_110)
+#define graph_111 (combat_data->graph_111)
+#define graph_112 (combat_data->graph_112)
 #define sk_parent (combat_data->sk_parent)
 #define wep_dummy (combat_data->wep_dummy)
 #define atk_windows (combat_data->atk_windows)

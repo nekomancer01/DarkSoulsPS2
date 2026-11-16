@@ -33,6 +33,9 @@ const float *chrstat_graph(int id)
     case 100: return graph_100;
     case 102: return graph_102;
     case 113: return graph_113;
+    case 110: return graph_110;
+    case 111: return graph_111;
+    case 112: return graph_112;
     case 150: return graph_150;
     }
     for (int i = 0; i < NGRAPHS; i++)
@@ -144,6 +147,15 @@ int chrstat_recalc(void)
             c.guard_stab[h] = r->x0;
         }
     }
+    /* resistances (FUN_1402dddd0): poison graph 110 and toxic 111 at RES (PlayerGameData +0x88), bleed 112 at END
+     * (+0x50), curse 113 at min(humanity, 99) (+0x84), each + the armour's resist (ASSUMED: plain sum) */
+    c.resist[0] = (int)combat_graph(graph_110, s[ST_RES]), c.resist[1] = (int)combat_graph(graph_111, s[ST_RES]);
+    c.resist[2] = (int)combat_graph(graph_112, s[ST_END]), c.resist[3] = (int)combat_graph(graph_113, hum);
+    for (int k = EQ_HELM; k <= EQ_LEG; k++) {
+        const ItemRow *r = item_row(equip_item(k));
+        for (int i = 0; r && i < 4; i++)
+            c.resist[i] += r->st[7 + i];
+    }
     c.valid = 1;
     chr_stats = c;
     return 1;
@@ -160,6 +172,8 @@ void chrstat_boot(void)
     if (r > 0)
         chrstat_recalc();
     items_detail_free();
+    printf("chrstat: resist poison %.0f toxic %.0f bleed %.0f curse %.0f\n", chr_stats.resist[0], chr_stats.resist[1],
+           chr_stats.resist[2], chr_stats.resist[3]);
     printf("chrstat: HP %d stamina %d load %.1f/%.0f def %.0f/%.0f/%.0f/%.0f poise %.0f AR R %.0f L %.0f%s\n",
            chr_stats.hp_max, chr_stats.stamina_max, chr_stats.equip_weight, chr_stats.equip_max, chr_stats.def[0],
            chr_stats.def[1], chr_stats.def[2], chr_stats.def[3], chr_stats.poise, chr_stats.ar[0][0],

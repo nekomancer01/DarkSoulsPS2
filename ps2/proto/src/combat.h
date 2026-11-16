@@ -71,6 +71,9 @@ typedef struct CombatAttack {
     int parryable;         /* the attacker's anim has ChrActionFlag 5 "Parry Possible" at this time */
     struct CombatChr *src; /* the attacker's hurtbox (optional): told when it is parried */
     int is_throw;          /* backstab / riposte damage: hits through i-frames, no guard / parry / poise */
+    /* status buildup carried by the hit (AtkParam spEffectId -> SpEffectParam, chr.bin window): type 1 poison,
+     * 2 toxic, 3 bleed, 4 curse; buildup; and the effect when the meter fills */
+    struct { int type, build; float hp, tick, time, rate; } st;
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */
@@ -99,6 +102,9 @@ extern int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
  * is still registered and alive */
 CombatChr *combat_lock_pick(const float pos[3], float yaw, float range);
 int combat_lock_alive(const CombatChr *c);
+
+/* Status hook (status.c): a hit with st.type set landed on t (called by combat_apply unless guarded / parried) */
+extern void (*combat_status_hook)(CombatChr *t, const CombatAttack *atk);
 
 /* Debug dummy target (COMBAT_DUMMY builds / HUD): NpcParam 206000's hurtbox and defence */
 extern CombatChr combat_dummy;

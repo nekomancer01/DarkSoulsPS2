@@ -121,8 +121,10 @@ typedef struct {
     float el[3];              /* atkMag / atkFire / atkThun x their corrections */
     float stam;               /* AtkParam atkStam x atkStamCorrection: stamina a guard pays */
     int no_guard;             /* AtkParam disableGuard */
+    int st_type, st_build;    /* status (1 poison, 2 toxic, 3 bleed, 4 curse) and its buildup per hit */
+    float st_hp, st_tick, st_time, st_rate;  /* its effect: hp per tick, tick s, duration s, hp % of max at once */
 } ChrWin;
-_Static_assert(sizeof(ChrWin) == 84, "export_chr.py chr.bin window record");
+_Static_assert(sizeof(ChrWin) == 108, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
 #define PARRIED_TIME 2.0f  /* s a parried enemy stays open to a riposte (ASSUMED, TECH_DEBT combat-11) */
@@ -611,7 +613,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 9 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 10 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -1462,7 +1464,8 @@ static void attack_sweeps(Enemy *e)
                             .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i,
                             .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr,
                             .stam_dmg = w->stam, .unblockable = w->no_guard, .src = &e->cc,
-                            .parryable = in_window(e, F_PARRY)};
+                            .parryable = in_window(e, F_PARRY),
+                            .st = {w->st_type, w->st_build, w->st_hp, w->st_tick, w->st_time, w->st_rate}};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)
