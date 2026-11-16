@@ -1722,8 +1722,13 @@ static void update_one(Enemy *e, Player *pl, float dt)
              * and searches the route again, as the ledge rule does. ASSUMED timings: DSR's own stuck rule is not decoded */
             float gx = e->pos.x - p0.x, gz = e->pos.z - p0.z, step = speed * dt;
             e->stuck = gx * gx + gz * gz < 0.01f * step * step ? e->stuck + 1 : 0;
-            if (e->stuck >= STUCK_FRAMES)
+            if (e->stuck >= STUCK_FRAMES) {
                 e->stuck = 0, e->stuck_t = STUCK_HOLD, e->nav_t = 0, moving = 0, loco = 0;
+                /* the scripts' answer to a wall in the way (INTERUPT_HitEnemyWall: e.g. a backing-off KeepDist /
+                 * LeaveTarget stops and attacks or turns). ASSUMED trigger: the exe's raise site is not located; the
+                 * native goals walk straight, as here, and NpcThinkParam BackHomeLife_OnHitEneWal goes with it */
+                ai_raise(&e->ai, AI_I_HitEnemyWall);
+            }
         }
         LG_END(walk, LG_MOVE);
     } else if (o->guard > 0 && !e->cc.dead)
