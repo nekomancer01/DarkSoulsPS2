@@ -786,7 +786,7 @@ static int enemy_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
 
 /* ---- spawn ---- */
 
-static int sight_line(V3 from, V3 to);
+static int sight_line(V3 from, V3 to) __attribute__((unused));  /* (NO_AI_SCRIPTS builds never hand it to ai.c) */
 static int swing_on, swing_hit, swing_missed;  /* player_swing (INTERUPT_MissSwing) */
 
 static void think_of(AiThink *th, const ChrVar *v)
