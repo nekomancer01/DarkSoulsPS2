@@ -13,6 +13,9 @@
 #include <string.h>
 #include "player.h"
 #include "chrstat.h"
+#include "testscript.h"
+#include "progress.h"
+#include "items.h"
 #include "combat_data.h"
 #include "esd.h"
 #include "pack.h"
@@ -757,6 +760,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         p->pad_held[REQ_L2] = 1;
     for (int i = 0; i < REQ_SLOTS; i++)
         p->hold_time[i] = p->pad_held[i] ? (p->pad_prev[i] ? p->hold_time[i] + dt : 0) : -1;
+    /* Square: item use, slots 2 / 3 (group 1 state 0 tests f100(3) || f100(2); FUN_140396860 writes +0x86 / +0x87
+     * together, ASSUMED to be Square) */
+    if (in->square && p->state != ST_FALL && p->state != ST_DEAD && !p->airborne)
+        p->trig[2] = p->trig[3] = 1;
     if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
         static const unsigned char slots[] = {REQ_R2, REQ_L1, REQ_GUARD, REQ_L2};
         for (unsigned i = 0; i < sizeof slots; i++)
@@ -818,6 +825,28 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         combat_apply((CombatChr *)p->throw_cc, &atk);
         p->throw_done = 1;
     }
+    /* item use: the item anim's TAE 64 window applies the quick item once (Estus: a charge for goods 201's heal) */
+    if (!esd_action(p))
+        p->item_used = 0;
+    if (esd_action(p) && in_window(p->anim, ITEM_USE, p->t) && p->item_used != p->anim + 1 && chr_stats.valid) {
+        p->item_used = p->anim + 1;
+        int estus = chr_stats.item_id == (ITEM_GOODS | ESTUS_ID);
+        if (estus ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0) {
+            if (estus)
+                prog.estus--;
+            else if (chr_stats.item_consume)
+                inv_add(chr_stats.item_id, -1);
+            if (chr_stats.item_heal && p->hp > 0)
+                p->hp = p->hp + chr_stats.item_heal > p->hp_max ? p->hp_max : p->hp + chr_stats.item_heal;
+            if (chr_stats.item_hum)
+                progress_add_humanity(chr_stats.item_hum);
+            if (chr_stats.item_souls)
+                progress_add_souls(chr_stats.item_souls);
+            progress_touch();
+            printf("player: used item %08x (heal %d), HP %d, Estus %d\n", chr_stats.item_id, chr_stats.item_heal, p->hp,
+                   prog.estus);
+        }
+    }
     /* parry: the Parry AttackBehavior window of the parry anim (export_player.py records AttackBehaviors as type -1) */
     p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 
@@ -845,7 +874,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float f0, s0, f1, s1;
         root_at(p->anim, p->t, &f0, &s0);
         float keep = 1 - clampf(grad_at(p->anim, 236, p->t, 0) * (1 - MOBILITY), 0, 1);
-        p->t += dt;
+        if (p->hitstop > 0)  /* hit stop: the anim (and its root motion) holds for hitStopTime (TECH_DEBT combat-12) */
+            p->hitstop -= dt;
+        else
+            p->t += dt;
         root_at(p->anim, p->t, &f1, &s1);
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
@@ -869,6 +901,13 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* the ESD: may start or end an action (player_esd_cmd) */
     esd.p = esd.chr = p, esd.in = in, esd.dt = dt;
     esd_update(&esd);
+    if (test_active()) {  /* test runs: the action group's state changes, for scripts that check a move */
+        static int last1 = -1;
+        int s1 = esd_state(&esd, 1);
+        if (s1 != last1)
+            printf("player: esd 1 state %d (anim %s t %.2f)\n", s1, esd_action(p) ? anims[p->anim].name : "-", p->t);
+        last1 = s1;
+    }
 
     if (!playing_anim(p) && p->state != ST_FALL && p->state != ST_DEAD) {
         p->invincible = p->hitting = 0;
@@ -924,6 +963,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             if (!ticked)
                 stamina_tick(p, -1, 0, dt);
         }
+    }
+    {   /* knockback of the latest hit (combat_knock_step): through constrain() as any other move */
+        float k[2];
+        combat_knock_step(combat_player(), dt, k);
+        p->pos.x += k[0], p->pos.z += k[1];
     }
     if (p->on_map)
         constrain(p, old);
@@ -1038,7 +1082,11 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         v = p->fwd_flick < 0.2f;
         break;
     case 226: v = (p->ctx_1dc >> 5) & 1; break;
-    case 227: v = -1; break;     /* selected item motion type: no item selected */
+    case 227: v = chr_stats.valid ? chr_stats.item_anim : -1; break;  /* goodsUseAnim of the quick item */
+    case 232:   /* HasUsableItem: a quick item that has a use (Estus: charges left) */
+        v = chr_stats.valid && chr_stats.item_anim >= 0 &&
+            (chr_stats.item_id == (ITEM_GOODS | ESTUS_ID) ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0);
+        break;
     case 231: v = 255; break;    /* selected spell motion type: 0xFF = not castable (the Warrior has no spells) */
     case 238: case 239: case 240: v = gate(p, id - 219) && p->trig[id - 219]; break;  /* f100(19 / 20 / 21) */
     case 241: case 242: v = requested(p, id - 241 + 19); break;                 /* f102(19 / 20) */
@@ -1092,6 +1140,15 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
         return 1;
     }
     switch (id) {
+    case 1:     /* (animId, layer, blend, loop, ...): an a00 anim on a layer, the item reach of states 157-182 on
+                 * layer 5 (drawn on the upper-body layer, as layer 4; ASSUMED) */
+        if (n >= 2) {
+            int oa = (int)a[0] < 0 ? -1 : anim_for(2, (int)a[0]);
+            if (oa != p->ovl_anim || (int)a[0] < 0)
+                p->ovl_t = 0;
+            p->ovl_anim = oa, p->ovl_cmd = 4, p->ovl_loop = n > 3 && a[3] != 0;
+        }
+        return 1;
     case 3:     /* SetAnim(weaponSel, animId, layer, blend, loop) */
     case 12:    /* (weaponSel, animA, animB, layer, blend, loop, f272()): landings 1750 / 1755 (group 0 states 31 / 32);
                  * animA is played, the animB blend by f272 is not modelled (TECH_DEBT esd-6) */

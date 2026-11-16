@@ -29,7 +29,7 @@
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 2};
 int test_god;
 
-enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_L1, C_R2, C_L2, C_HIT, C_BEHIND, C_LOCK, C_STATUS, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
+enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_L1, C_R2, C_L2, C_HIT, C_BEHIND, C_LOCK, C_STATUS, C_SQUARE, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
        C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK };
 
 typedef struct {
@@ -101,6 +101,7 @@ static int parse(Prog *p, char *text)
         {"spawn", C_SPAWN, 4}, {"cam", C_CAM, 2},   {"stick", C_STICK, 2}, {"rstick", C_RSTICK, 2},
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0}, {"l1", C_L1, 1}, {"r2", C_R2, 0}, {"l2", C_L2, 0},
         {"lock", C_LOCK, 0},
+        {"square", C_SQUARE, 0},  /* one Square press: use the quick item */
         {"status", C_STATUS, 4},  /* status <0 poison .. 3 curse> <buildup> <hp per tick> <hp % at once> */  /* one R3 press: lock-on toggle */
         {"behind", C_BEHIND, 1},  /* behind <m>: the player that far behind the nearest living enemy, same facing */
         {"hit", C_HIT, 2},  /* hit <physical attack> <stamina damage>: a parryable enemy hit from 1 m in front */   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
@@ -369,6 +370,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_L1: p->held.l1_held = c->a[0] != 0; break;  /* l1 1 = hold (guard), l1 0 = release */
         case C_R2: in->r2_held = 1; break;
         case C_LOCK: in->r3 = 1; break;
+        case C_SQUARE: in->square = 1; break;
         case C_STATUS: status_test_add((int)c->a[0], (int)c->a[1], c->a[2], 1.0f, 10.0f, c->a[3]); break;                  /* one frame press */
         case C_L2: in->l2_held = 1; break;
         case C_BEHIND: {
@@ -386,7 +388,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_HIT: {
             static int win = 0x7F000000;
             CombatAttack atk = {.team = TEAM_ENEMY, .phys = c->a[0], .atk_phys_rate = 1, .damage_level = 1,
-                                .window = win++, .stam_dmg = c->a[1], .parryable = 1};
+                                .window = win++, .stam_dmg = c->a[1], .parryable = 1, .knock = 0.7f};
             atk.src_pos[0] = pl->pos.x + sinf(pl->yaw), atk.src_pos[1] = pl->pos.y, atk.src_pos[2] = pl->pos.z + cosf(pl->yaw);
             combat_apply(combat_player(), &atk);
             break;
@@ -517,7 +519,7 @@ int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt
     }
     *in = p->held;
     in->r1 = mv.r1, in->r1_held = mv.r1_held;
-    in->r2_held |= mv.r2_held, in->l2_held |= mv.l2_held, in->r3 |= mv.r3;  /* one-frame presses (r2 / l2 commands) */
+    in->r2_held |= mv.r2_held, in->l2_held |= mv.l2_held, in->r3 |= mv.r3, in->square |= mv.square;  /* one-frame presses (r2 / l2 commands) */
     if (mv.my)  /* approach drives the stick itself */
         in->mx = mv.mx, in->my = mv.my;
     if (p->cam_on)

@@ -12,6 +12,7 @@ typedef struct Input {
     /* held this frame (presses are found against the previous frame in player.c): R1, R2, L1, L2 */
     int r1_held, r2_held, l1_held, l2_held;
     int r3;            /* R3 pressed this frame: lock-on toggle */
+    int square;        /* Square pressed this frame: use the quick item */
 } Input;
 
 /* ST_JUMP / ST_LAND play one animation like ST_ATTACK / ST_ROLL; ST_FALL = airborne loop; ST_DEAD = fall death */
@@ -72,6 +73,8 @@ typedef struct Player {
     float prev_tilt;
     /* a backstab / riposte in progress (ThrowParam, combat_throw_hook): its target, damage time and motion value */
     void *lock;            /* lock-on target (CombatChr), NULL none */
+    float hitstop;         /* s the playing action anim stays frozen (AtkParam hitStopTime of a hit that landed) */
+    int item_used;         /* ANIM_* + 1 of the item anim whose TAE 64 effect was applied, 0 none */
     int strafe;            /* locked locomotion direction: 0 forward, 1 back, 2 left, 3 right */
     void *throw_cc;
     float throw_hit_t, throw_corr;

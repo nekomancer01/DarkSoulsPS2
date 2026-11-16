@@ -156,6 +156,17 @@ int chrstat_recalc(void)
         for (int i = 0; r && i < 4; i++)
             c.resist[i] += r->st[7 + i];
     }
+    {   /* the quick item (ASSUMED: always quick slot 1; no item cycling on the pad, the d-pad is a digital stick) */
+        u32 id = equip_item(EQ_QUICK1);
+        const ItemRow *r = id ? item_row(id == (ITEM_GOODS | ESTUS_ID) ? ITEM_GOODS | (ESTUS_ID + 1) : id) : 0;
+        c.item_id = id, c.item_anim = -1;
+        if (r && ITEM_CAT(id) == ITEM_GOODS) {
+            c.item_anim = r->st[1] == 254 || r->st[1] == 255 ? -1 : r->st[1];
+            c.item_heal = r->st[12], c.item_hum = r->st[11] < 0 ? -r->st[11] : 0;
+            c.item_souls = (u16)r->st[9] | (int)(u16)r->st[10] << 16;
+            c.item_consume = (item_goods_flags(id) & IF_CONSUME) != 0;
+        }
+    }
     c.valid = 1;
     chr_stats = c;
     return 1;

@@ -24,7 +24,11 @@ typedef struct {
     float guard_cut[2][EL_COUNT]; /* EquipParamWeapon phys / mag / fire / thunGuardCutRate (%) */
     int guard_stab[2];          /* staminaGuardDef (stability) */
     int guard_level[2];
-    float resist[4];            /* poison, toxic, bleed, curse: stat graph (FUN_1402dddd0) + armour */         /* guardLevel (0-4): the guard row of the reaction table (ESD f237) */
+    float resist[4];
+    /* the quick item in use (EQ_QUICK1; Estus = goods 201's row): id, goodsUseAnim (ESD f227), HP healed,
+     * humanity (st 11) and souls (st 9 / 10) given, consumed on use */
+    unsigned item_id;
+    int item_anim, item_heal, item_hum, item_souls, item_consume;            /* poison, toxic, bleed, curse: stat graph (FUN_1402dddd0) + armour */         /* guardLevel (0-4): the guard row of the reaction table (ESD f237) */
 } ChrStats;
 
 extern ChrStats chr_stats;
