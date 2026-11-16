@@ -125,11 +125,22 @@ unsigned map_chunk_count(void)
     return mp_inst[0].hdr ? mp_inst[0].hdr->chunks : 0;
 }
 
+/* The boot map's spawn point, kept: the world build lets the boot block's tables go (world.c WORLD_BOOT_LEAN), and a
+ * fall onto a kill plane respawns here after that (player.c respawn read a NULL header: TLB misses at 0x14..0x20 and
+ * the player at 0 0 0, 2026-11-16) */
 void map_spawn(V3 *pos, float *yaw)
 {
+    static V3 kept_pos;
+    static float kept_yaw;
+    static int kept;
     const Header *hdr = mp_inst[0].hdr;
-    *pos = v3(hdr->spawn[0], hdr->spawn[1], hdr->spawn[2]);
-    *yaw = hdr->spawn_yaw;
+    if (hdr) {
+        kept_pos = v3(hdr->spawn[0], hdr->spawn[1], hdr->spawn[2]);
+        kept_yaw = hdr->spawn_yaw;
+        kept = 1;
+    }
+    if (kept)
+        *pos = kept_pos, *yaw = kept_yaw;
 }
 
 /* Chunks that touch the near plane or guard band also go to VU1, which skips the triangles that need clipping;

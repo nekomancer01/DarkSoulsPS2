@@ -82,6 +82,8 @@ typedef struct Player {
     int airborne;       /* character proxy in the air (no floor within the step limits) */
     V3 vel;             /* airborne velocity, m/s: x/z carried from take-off, y from gravity */
     float fall_y0;      /* height where the player left the ground (fall distance = fall_y0 - y) */
+    V3 slide;           /* ChrProxy+0x120: slide velocity on ground steeper than 35 deg (player.c PROXY_SLIDE) */
+    float floor_n[3];   /* normal of the floor the proxy stood on last frame (0 0 0 airborne) */
     float jump_window;  /* FUN_140398920 +0x340: 0.2 s after releasing Circle while dashing, a new press jumps */
 } Player;
 
