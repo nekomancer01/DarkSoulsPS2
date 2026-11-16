@@ -4,6 +4,7 @@
  * - physical defence FUN_1402d9890 (0x141A2B5F0..60C)
  * - player fall damage rate PlayerIns vtable+0x2A8 FUN_14035f750 -> FUN_1402df3a0 / FUN_1402df580 (0x141A2B61C..668) */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "combat.h"
 #include "combat_data.h"
@@ -185,6 +186,9 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     for (int i = 0; i < COMBAT_MAX_CHRS; i++)
         if (chrs[i] == t)
             since_hit[i] = 0;
+    printf("combat: %s hit by %s, atk %.0f def %.0f dmg %d hp %d level %d\n", t->team == TEAM_PLAYER ? "player" :
+           t->team == TEAM_ENEMY ? "enemy" : "dummy", atk->team == TEAM_PLAYER ? "player" : "enemy",
+           atk->phys * atk->atk_phys_rate, t->def_phys, dmg, t->hp, level);
     combat_last = (CombatLast){dmg, atk->atk_param, atk->phys * atk->atk_phys_rate, t->def_phys, t->hp, level};
     return dmg;
 }

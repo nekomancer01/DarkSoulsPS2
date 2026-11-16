@@ -1,0 +1,67 @@
+# Character stats from the save (src/chrstat.c, PR A): a new game's Warrior (VIT 11, END 12, Standard Helm / Hard
+# Leather set) gives max HP 594, stamina 95 and physical defence 87 (21 from stats through CalcCorrectGraph 102 + 66
+# armour). Then the Burg start without god mode: the hollows come, the player swings R1 and gets hit; the EE log's
+# "combat:" lines show typed / elemental damage both ways. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_stats.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+wait 3
+check chrstat 594 95 87
+spawn -48.5 -21.8 -35.5 3.14
+cam 3.14 0.25
+wait 4
+shot burg_start
+stick 0 0.6
+wait 2
+stick 0 0
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+r1
+wait 1.5
+shot after
+stats
+end
