@@ -673,10 +673,57 @@ def ws_foreign_spots(game, map_id, nav_v, reach=64.0, most=2000):
             for a in range(0, len(own), 1024):
                 d = np.minimum(d, np.sqrt(((pts[:, None] - own[None, a:a + 1024]) ** 2).sum(2)).min(1))
             pts = pts[d <= reach]
-        out += [tuple(p) for p in pts[::max(1, len(pts) // most)].tolist()]
+        pts = pts[::max(1, len(pts) // most)]
+        if mapcfg.WS_LINKS and len(pts):
+            pts = _link_filter(game, world, name, omap, pts)
+        out += [tuple(p) for p in pts.tolist()]
     if out:
         print(f"budget: {len(out)} spots of other maps within {reach:.0f} m share the room (WS_UNION)")
     return out
+
+
+_LINK_AT = {}  # WS_LINKS: spot (tuple) of another MSB -> world mask of the blocks loaded there (ws_foreign_spots)
+
+
+def _link_filter(game, world, name, omap, pts):
+    """WS_LINKS: the spots of map omap (another MSB) at which world.bin's links load block `name`, each standing on the
+    block of omap whose cells hold it (a whole-map block: anywhere); their loaded-block masks go to _LINK_AT"""
+    import worldlinks
+    me = world.index(name)
+    keep = np.zeros(len(pts), bool)
+    for f, fb in enumerate(world):
+        if worldlinks.block_map(fb) != omap:
+            continue
+        rs = worldlinks.cell_rects_m(fb)
+        on = np.ones(len(pts), bool) if not rs else np.zeros(len(pts), bool)
+        for x0, z0, x1, z1 in rs or ():
+            on |= (pts[:, 0] >= x0) & (pts[:, 0] < x1) & (pts[:, 2] >= z0) & (pts[:, 2] < z1)
+        on &= ~keep
+        if not on.any():
+            continue
+        idx = np.nonzero(on)[0]
+        mk = worldlinks.spot_masks(game, world, f, pts[idx]) | (1 << f)
+        for k, m_ in zip(idx, mk.tolist()):
+            _LINK_AT[tuple(pts[k].tolist())] = m_
+        keep[idx[(mk >> me) & 1 == 1]] = True
+    print(f"budget: {omap}: {int(keep.sum())} of {len(pts)} spots within reach load {name} (WS_LINKS)")
+    return pts[keep]
+
+
+def ws_link_masks(P, game, name):
+    """WS_LINKS: per spot the world mask of the blocks loaded there: a spot of another MSB as _link_filter found it,
+    this block's own spots by the links of the floor under them"""
+    import worldlinks
+    world = list(worldlinks.world_of(name))
+    me = world.index(name)
+    out = np.full(len(P), -1, np.int64)
+    for s, p in enumerate(P.tolist()):
+        out[s] = _LINK_AT.get(tuple(p), -1)
+        # (a navmesh vertex of another MSB that lies on this block too keeps its other MSB's mask)
+    own = out < 0
+    if own.any():
+        out[own] = worldlinks.spot_masks(game, world, me, P[own]) | (1 << me)
+    return out, world
 
 
 def ws_shares(P, r, game=None, map_id=None, nav_v=None):
@@ -716,6 +763,9 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
     else:
         return np.ones(len(P))
     oth = np.zeros(X.shape, bool)
+    lm = None
+    if mapcfg.WS_LINKS and game and any(area_mod.BLOCKS.get(o, {}).get("map", o) != cfg["map"] for o in world):
+        lm, lw = ws_link_masks(P, game, name)
     for o in world:
         if o == name:
             continue
@@ -724,7 +774,10 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
         if ob and ob.get("cells") and omap == cfg["map"] and cfg.get("cells"):
             oth |= by_rects(rects(ob["cells"]))
         elif game:
-            oth |= by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
+            cov = by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
+            if lm is not None:  # WS_LINKS: only at the spots whose links load it
+                cov &= ((lm >> lw.index(o)) & 1 == 1)[:, None]
+            oth |= cov
     no, nt = own.sum(1), (own | oth).sum(1)
     if mapcfg.WS_SHARE_TRIS and cfg.get("cells") and mapcfg.WS_SRC_TRIS:
         # Shares by demand (2026-11-12). A cell is in a spot's tier with its whole bytes as soon as its box comes

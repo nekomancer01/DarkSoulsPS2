@@ -345,9 +345,15 @@ def main():
         # across blocks (tools/world_budget.py)
         sky = sum(mapcells.RES_SIZE[i] for i in range(len(chunks)) if i < len(mapcells.RES_SIZE) and chunks[i][1] & mapcfg.CHUNK_SKY)
         sp = nav_v[::max(1, len(nav_v) // 4000)]
+        side = dict(cells=[[round(v, 2) if isinstance(v, float) else v for v in c] for c in mapcells.CELL_BUDGET],
+                    sky=sky, spots=[[round(v, 2) for v in q] for q in sp])
+        if mapcfg.WS_LINKS and len(sp):  # per spot the blocks of other MSBs its floor's links load (tools/worldlinks.py)
+            import worldlinks
+            wn = list(worldlinks.world_of(block))
+            if block in wn and any(worldlinks.block_map(o) != worldlinks.block_map(block) for o in wn):
+                side.update(world=wn, links=worldlinks.spot_masks(game, wn, wn.index(block), np.asarray(sp, np.float64)).tolist())
         with open(out + ".cells.json", "w") as f:
-            json.dump(dict(cells=[[round(v, 2) if isinstance(v, float) else v for v in c] for c in mapcells.CELL_BUDGET],
-                           sky=sky, spots=[[round(v, 2) for v in q] for q in sp]), f, separators=(",", ":"))
+            json.dump(side, f, separators=(",", ":"))
     print(f"{map_id}: {n_meshes} meshes -> {len(chunks)} chunks, {n_tris} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")

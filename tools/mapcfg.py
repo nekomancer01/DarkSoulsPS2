@@ -124,6 +124,11 @@ WS_ALLOW_PX = float(os.environ.get("WS_ALLOW_PX", 72.0))
 # their part of the disc as densely as the street they meet at (ASSUMED, sized so tools/world_budget.py's hard tier
 # over the union of blocks stays at 0 %)
 WS_SHARE_K = float(os.environ.get("WS_SHARE_K", 1.0))
+# WS_LINKS (world-10, default on; WS_LINKS=0 = the old guess): another MSB's block (Firelink, the Asylum) shares a seam
+# spot's room only where world.bin's links load it there: the ConnectCollision part under the spot (tools/worldlinks.py,
+# the code export_world.py writes the links with). Before, its 8 m navmesh voxels in the spot's disc counted whether or
+# not the runtime had it loaded, and a spot of another MSB counted for this block whether or not its links load it.
+WS_LINKS = os.environ.get("WS_LINKS", "1") == "1"
 # rigid map / object meshes: each vertex on its own bone (mapgather.rigid_mesh); 0: the mesh's default bone (A/B)
 MAP_VBONE = os.environ.get("MAP_VBONE", "1") == "1"
 # WS_DROP (default on; 0 = the old solve): loose pieces go whole before a wall bends. An edge collapse cannot remove a
