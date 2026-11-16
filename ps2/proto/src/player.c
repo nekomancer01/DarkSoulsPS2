@@ -131,6 +131,7 @@ void player_init(Player *p)
     p->hp = p->hp_max = combat_player_hp_max();  /* CalcCorrectGraph row 100 at VIT (FUN_1402df9a0): 594 */
     p->state = ST_IDLE;
     p->ovl_anim = p->motion_mode = -1;
+    p->fwd_flick = 1;
     for (int i = 0; i < REQ_SLOTS; i++)
         p->hold_time[i] = -1;
     p->loco = ANIM_WALK;
@@ -667,6 +668,18 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* camera-relative stick heading */
     float stick_yaw = cam_yaw + atan2f(in->mx, in->my);
     int moving = tilt > 0.2f;
+    {   /* f212 forward flick: the stick leaves the dead zone pointing within 45 deg of the facing */
+        float d = stick_yaw - p->yaw;
+        while (d > 3.14159265f) d -= 6.2831853f;
+        while (d < -3.14159265f) d += 6.2831853f;
+        if (p->prev_tilt <= 0.2f && tilt > 0.2f && d > -0.785f && d < 0.785f)
+            p->fwd_flick = 0;
+        else
+            p->fwd_flick += dt;
+        if (tilt <= 0.2f)
+            p->fwd_flick = 1;
+        p->prev_tilt = tilt;
+    }
 
     /* gait with the exe's walk/run hysteresis; dashing needs the run gait for > DASH_RUN_TIME */
     float mag = tilt / STICK_FULL;
@@ -735,6 +748,8 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->ovl_anim = -1;
     }
     p->guarding = p->ovl_anim >= 0 && p->motion_mode == 11 && !esd_action(p);
+    /* parry: the Parry AttackBehavior window of the parry anim (export_player.py records AttackBehaviors as type -1) */
+    p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 
     int ticked = 0;
     if (p->state == ST_FALL || p->state == ST_DEAD) {
@@ -924,8 +939,15 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 207: v = 1; break;      /* GetWeaponHoldStyle: one-handed */
     case 211: v = p->ctx_1dc & 1; break;
     case 219: v = p->state != ST_MOVE ? 0 : p->loco == ANIM_DASH ? 3 : p->loco == ANIM_RUN ? 2 : 1; break;
-    case 225:   /* GetWeaponMotionCategory(hand): FUN_1403261d0 returns the hold style for -1 when one-handed */
-        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : -1;
+    case 225:   /* GetWeaponMotionCategory(hand): FUN_1403261d0 returns the hold style for -1 when one-handed; 2 reads
+                 * chr+0x198 [3], 0 one-handed (ASSUMED: the parry anim c1_3(0, 5100 + f225(2)) is a48 5100) */
+        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : s == 2 ? 0 : -1;
+        break;
+    /* f212: manipulator +0x204 > 0 (case 0xD4), a forward-input timer of the pad manipulator whose writer was not
+     * found. ASSUMED (TECH_DEBT esd-12): DS1's kick / jumping attack input, the stick pushed from neutral to forward
+     * within the last 0.2 s */
+    case 212:
+        v = p->fwd_flick < 0.2f;
         break;
     case 226: v = (p->ctx_1dc >> 5) & 1; break;
     case 227: v = -1; break;     /* selected item motion type: no item selected */

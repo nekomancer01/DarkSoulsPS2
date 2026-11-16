@@ -22,11 +22,13 @@ typedef enum { ST_IDLE, ST_MOVE, ST_ATTACK, ST_ROLL, ST_JUMP, ST_FALL, ST_LAND, 
 #define REQ_BACKSTEP 10
 #define REQ_ROLL_F 15
 #define REQ_JUMP 42
-/* PadManipulator FUN_140396860 writes: R1 -> slots 0 and 7, R2 -> 5, L1 -> 1 and 21 (21 = the guard hold), L2 -> 19 */
+/* PadManipulator FUN_140396860 writes: R1 -> slots 0 and 7, R2 -> 5, L1 -> 1 and 21 (21 = the guard hold). L2 ->
+ * 20: c0000 group 1 state 0 enters the shield parry (86) on f239 = f100(20), the left-hand weapon attack (55) on
+ * f238 = f100(19); ASSUMED that L2 with a shield is slot 20 (the manipulator's write of +0x98 was not found) */
 #define REQ_R1_STEP 7
 #define REQ_L1 1
 #define REQ_R2 5
-#define REQ_L2 19
+#define REQ_L2 20
 #define REQ_GUARD 21
 typedef struct Player {
     V3 pos;
@@ -64,6 +66,9 @@ typedef struct Player {
     int motion_mode;       /* c1_109 (chr+0x270): 11 in every guard state of group 1 */
     int guarding;          /* guard up: an upper-body guard anim in motion mode 11 */
     int guard_hit;         /* a guarded hit landed this frame (f237 picks the guard row) */
+    int parrying;          /* the parry anim's Parry attack window (TAE AttackType 64) is open */
+    float fwd_flick;       /* time since the stick went from the dead zone to forward (f212, kick / jump attack) */
+    float prev_tilt;
     unsigned ctx_a0, ctx_a4;              /* ChrActionFlag bit sets (ctx+0xA0 / +0xA4) */
     unsigned ctx_1dc;                     /* ESD command flags (ctx+0x1DC; c1_107 ... c1_147) */
     int no_magic;                         /* ctx+0xF1 (flag 97): magic / item slots 2, 3, 14 disabled */

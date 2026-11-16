@@ -99,7 +99,7 @@ static int parse(Prog *p, char *text)
     static const struct { const char *name; int op, args; } ops[] = {
         {"spawn", C_SPAWN, 4}, {"cam", C_CAM, 2},   {"stick", C_STICK, 2}, {"rstick", C_RSTICK, 2},
         {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0}, {"l1", C_L1, 1}, {"r2", C_R2, 0}, {"l2", C_L2, 0},
-        {"hit", C_HIT, 2},  /* hit <physical attack> <stamina damage>: an enemy hit from 1 m in front of the player */   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
+        {"hit", C_HIT, 2},  /* hit <physical attack> <stamina damage>: a parryable enemy hit from 1 m in front */   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
         {"park", C_PARK, 0},  /* warm start (tools/warmstate.py): wait here for the next script from the host */
@@ -368,7 +368,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_HIT: {
             static int win = 0x7F000000;
             CombatAttack atk = {.team = TEAM_ENEMY, .phys = c->a[0], .atk_phys_rate = 1, .damage_level = 1,
-                                .window = win++, .stam_dmg = c->a[1]};
+                                .window = win++, .stam_dmg = c->a[1], .parryable = 1};
             atk.src_pos[0] = pl->pos.x + sinf(pl->yaw), atk.src_pos[1] = pl->pos.y, atk.src_pos[2] = pl->pos.z + cosf(pl->yaw);
             combat_apply(combat_player(), &atk);
             break;

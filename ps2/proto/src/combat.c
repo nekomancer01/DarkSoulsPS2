@@ -166,6 +166,17 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
      * shield's phys / mag / fire / thunGuardCutRate and costs stamina: AtkParam atkStam x (100 - staminaGuardDef)
      * / 100 (ASSUMED, the community's DS1 rule; the exe's guard code is in the obfuscated .text, TECH_DEBT combat-9).
      * Stamina below 0 breaks the guard. */
+    /* Parry: DS1's parry is an AttackBehavior of AttackType 64 that meets an attack whose anim is in a "Parry
+     * Possible" window (TAE flag 5). ASSUMED geometry (TECH_DEBT combat-10): an attack that reaches the parrying
+     * character from its front half while the window is open counts as met by the shield */
+    if (t->parrying && atk->parryable && a > -1.5707963f && a < 1.5707963f) {
+        if (atk->src)
+            atk->src->parried = 1;
+        t->new_parry = 1;
+        printf("combat: %s parried a hit (atk %.0f)\n", t->team == TEAM_PLAYER ? "player" : "enemy",
+               atk->phys * atk->atk_phys_rate);
+        return 0;
+    }
     t->guard_hit = t->guard_broken = 0;
     float cut[4] = {1, 1, 1, 1};
     if (t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
@@ -312,6 +323,7 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
         player_chr.guard_level = chr_stats.guard_level[HAND_L];
     }
     player_chr.guarding = p->guarding;
+    player_chr.parrying = p->parrying;
     player_chr.stamina = &p->stamina;  /* a guarded hit takes its stamina cost at once (combat_apply) */
     player_chr.new_hit = 0;  /* the ESD (in player_update, before this) has seen last frame's hit */
     combat_register(&player_chr);
