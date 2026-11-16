@@ -130,6 +130,11 @@
  * LOGIC_SPREAD        | 1        | fallback | -DLOGIC_SPREAD=0                              | lpass.h       | logic work spread across frames
  * LOGIC_PASS_MS       | 1        | fallback | -DLOGIC_PASS_MS=0                             | lpass.h       | logic pass timing log
  * ACTIVE_MAX          | 16       | tune     | -                                             | enemy.c       | characters updated a frame
+ * CHR_OMIT            | 1        | fallback | -DCHR_OMIT=0                                  | omit.h enemy.c | update omission levels (DSR FUN_14036e8d0); 0 = every active character every frame
+ * OMIT_FULL_N         | 6        | tune     | -                                             | omit.h        | CHR_OMIT: in-view characters at level 0
+ * OMIT_MID_N          | 10       | tune     | -                                             | omit.h        | CHR_OMIT: in-view characters at level 2 or better
+ * OMIT_NEAR_M         | 12 m     | tune     | -                                             | omit.h        | CHR_OMIT: out of view within this = level 5, not 30
+ * OMIT_DT_MAX         | 0.25 s   | tune     | -                                             | omit.h        | CHR_OMIT: longest step one update takes
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
