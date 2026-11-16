@@ -91,6 +91,8 @@ typedef struct Ai {
     int ez_anim;             /* DoEzAction guard pose (9910) held while ez_goal lives, for ez_life seconds */
     float ez_life;
     void *ez_goal;
+    float los_t;             /* AI_PERCEPT: seconds until the next sight ray; los_ok = its answer */
+    int los_ok;
     int ev_req[4];           /* EMEVD 2004[17] AI command per slot (ai:GetEventRequest), -1 none; set by enemy.c */
 } Ai;
 
