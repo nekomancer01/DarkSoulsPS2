@@ -10,7 +10,6 @@
  *                           ended or has no commands (off otherwise; "nodemo" is still accepted, a no-op) / a spawn
  *                           without collision floor skips to the next spawn / the player's HP stays full (enemies
  *                           on, for routes the walker cannot fight; combat.c)
- *   option set NAME VALUE   a runtime switch (src/cvar.h) for this run; an unknown name fails the run
  *   spawn x y z [yaw]       teleport the player onto the collision floor under (x, y, z) (y + 3 .. y - 10 m)
  *   cam yaw pitch           camera yaw / pitch in rad (absolute), held until "cam off"; "cam off" = pad/script stick
  *   pitch p                 camera pitch only (yaw as the last cam / approach set it)

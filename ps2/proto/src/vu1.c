@@ -13,7 +13,6 @@
 #include <kernel.h>
 #include <dma.h>
 #include "ticks.h"
-#include "cvar.h"
 /* gsKit's dmaInit.h (through render.h) defines these again with the same values spelled 0x0 / 0x1, a redefinition
  * warning; drop ps2sdk's spelling here, gsKit's takes over below */
 #undef DMA_CHANNEL_VIF0
@@ -678,7 +677,7 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
  * LINEAR_MIPMAP_NEAREST as before (one level, a visible step where it changes). PCSX2 does not time the second
  * texture read per pixel: the fill cost shows on real hardware only. */
 #ifndef MIP_TRILINEAR
-#define MIP_TRILINEAR cv_MIP_TRILINEAR  /* runtime switch, default 1 (src/cvar.h) */
+#define MIP_TRILINEAR 1
 #endif
 static int mip_mxl, mip_k;
 static u64 mip_tbp;

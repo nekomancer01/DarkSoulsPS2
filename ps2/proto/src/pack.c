@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
-#include "cvar.h"
 #include "lpass.h" /* LOGIC_SPREAD */
 #include "hitch.h"
 #include "dsrsnd_rpc.h"
@@ -842,7 +841,7 @@ void pack_job_cancel(PackJob *j)
  * loaded, Burg, play report 2026-11-10). Here the cancel is sent, and the buffer and the file go back once the read has
  * landed (pack_job_step / pack_pump poll the slots). 0: the old wait. */
 #ifndef PACK_JOB_ABANDON
-#define PACK_JOB_ABANDON cv_PACK_JOB_ABANDON  /* runtime switch, default 1 (src/cvar.h) */
+#define PACK_JOB_ABANDON 1
 #endif
 #define PACK_ZOMBIES 4
 static PackJob zomb[PACK_ZOMBIES];

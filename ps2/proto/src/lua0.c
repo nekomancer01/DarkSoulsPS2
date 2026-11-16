@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lua0.h"
-#include "cvar.h"
 #include "ticks.h"
 
 enum { OP_MOVE, OP_LOADK, OP_LOADBOOL, OP_LOADNIL, OP_GETUPVAL, OP_GETGLOBAL, OP_GETTABLE, OP_SETGLOBAL, OP_SETUPVAL,
@@ -125,7 +124,7 @@ unsigned lua0_heap, lua0_since_gc, lua0_instructions;
  * models (sdk303 _txt "No More Excuses - Use the IOP": keep long- and short-lived allocations apart). The chunks stay
  * for the run (the free lists recycle their objects); at most LP_CHUNKS of them. */
 #ifndef LUA_POOL_GROW
-#define LUA_POOL_GROW cv_LUA_POOL_GROW  /* runtime switch, default 1 (src/cvar.h) */
+#define LUA_POOL_GROW 1
 #endif
 #define LP_CHUNK (64u << 10)
 #define LP_CHUNKS 12

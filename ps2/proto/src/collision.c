@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "collision.h"
-#include "cvar.h"
 #include "lpass.h" /* LOGIC_SPREAD (Burg plan B6) */
 #include "vmath.h"
 
@@ -894,7 +893,7 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
  * them by (first such cell whose rectangle they overlap, as export_collision.build tests it, then v1 number). */
 #define PUSH2_MAX 512
 #ifndef PUSH2_CELLS
-#define PUSH2_CELLS cv_PUSH2_CELLS  /* runtime switch, default 1 (src/cvar.h) */
+#define PUSH2_CELLS 1
 #endif
 typedef struct { unsigned key; float a[3], b[3], c[3]; } PushCand;
 typedef struct { PushCand *c; int n; int ix0, iz0, nx, nz; float x0, z0, cell, blo[3], bhi[3]; } PushGather;

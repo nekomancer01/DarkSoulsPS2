@@ -80,7 +80,6 @@ typedef struct {
     int pool;            /* pool KB */
     int mip_batches;     /* this frame: batches drawn with a GS mip chain (tc_mip) */
     int press_n;         /* TC_PRESS spells so far (pool full: mip 1 drawn closer) */
-    int plan_kb;         /* TC_PLAN: map pool KB the last plan fits the wants into */
 } TcStats;
 extern TcStats tc_stats;
 
