@@ -6,6 +6,8 @@
  *
  * Set a switch with make DEFS='-DNAME=value' (or EE_DBGINFOFLAGS=, which also lands in the objects' .cflags stamp).
  * Defaults are the values a plain `make` builds (some come from the Makefile: "make X=" in the what column).
+ * Rows marked "runtime" are also runtime switches (src/cvar.h): a test script's "option set NAME VALUE" (or
+ * tools/test-run.py --set NAME=VALUE) flips them at boot in the same ELF / ISO, for one-build A/B runs.
  *
  * Columns: name | default | kind | CI | where | what
  *   kind  fallback  the other value builds the old path (project rule: new paths are on by default, the old one stays
@@ -51,7 +53,7 @@
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
- * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting
+ * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
  *
  * map drawing (map.c, render.c, drawgrp.c, bump.c, main.c)
@@ -94,14 +96,15 @@
  *
  * textures and VU1 (texcache.c, vu1.c, vu1.h, model.c)
  * TC_RLIST            | 1        | fallback | -DTC_RLIST=0                                  | texcache.c    | resident-level list; 0 = walk every level
- * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | texcache.c    | mip 1 under pool pressure
+ * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | texcache.c    | mip 1 under pool pressure (runtime: option set TC_PRESS 0)
+ * TC_PLAN             | 1        | fallback | -DTC_PLAN=0                                   | texcache.c    | texture levels planned to the pool budget per texture (runtime: option set TC_PLAN 0)
  * TC_UP_OLD           | off      | fallback | -DTC_UP_OLD                                   | texcache.c    | the old 96 + 16 KB upload caps
  * TC_NO_NEAR          | off      | fallback | -DTC_NO_NEAR                                  | texcache.c    | near texture levels never drawn (A/B)
  * TC_HUD              | off      | debug    | -DTC_HUD                                      | texcache.c    | upload numbers on screen
  * TC_NEAR_KB          | 256      | tune     | -                                             | texcache.c    | near level pool
  * MIP_BIAS            | 1.0      | tune     | -                                             | texcache.c    | LOD bias in levels
  * MIP0_AHEAD          | 1.3      | fallback | -DMIP0_AHEAD=0                                | texcache.c    | mip 0 asked ahead; 0 = where drawn
- * MIP_TRILINEAR       | 1        | fallback | -DMIP_TRILINEAR=0                             | vu1.c         | trilinear; 0 = LINEAR_MIPMAP_NEAREST
+ * MIP_TRILINEAR       | 1        | fallback | -DMIP_TRILINEAR=0                             | vu1.c         | trilinear; 0 = LINEAR_MIPMAP_NEAREST (runtime: option set MIP_TRILINEAR 0)
  * VU1_TEX_PATH2       | off      | fallback | -DVU1_TEX_PATH2                               | vu1.h         | map texture uploads on PATH2
  * VU1_NO_IMT          | off      | fallback | -DVU1_NO_IMT                                  | vu1.c         | PATH3 uploads without IMT
  * VU1_NO_PKT          | off      | fallback | -DVU1_NO_PKT                                  | vu1.c         | map batches as stream-by-stream REFs
@@ -130,22 +133,27 @@
  * LOGIC_SPREAD        | 1        | fallback | -DLOGIC_SPREAD=0                              | lpass.h       | logic work spread across frames
  * LOGIC_PASS_MS       | 1        | fallback | -DLOGIC_PASS_MS=0                             | lpass.h       | logic pass timing log
  * ACTIVE_MAX          | 16       | tune     | -                                             | enemy.c       | characters updated a frame
+ * CHR_OMIT            | 1        | fallback | -DCHR_OMIT=0                                  | omit.h enemy.c | update omission levels (DSR FUN_14036e8d0); 0 = every active character every frame (runtime: option set CHR_OMIT 0)
+ * OMIT_FULL_N         | 6        | tune     | -                                             | omit.h        | CHR_OMIT: in-view characters at level 0
+ * OMIT_MID_N          | 10       | tune     | -                                             | omit.h        | CHR_OMIT: in-view characters at level 2 or better
+ * OMIT_NEAR_M         | 12 m     | tune     | -                                             | omit.h        | CHR_OMIT: out of view within this = level 5, not 30
+ * OMIT_DT_MAX         | 0.25 s   | tune     | -                                             | omit.h        | CHR_OMIT: longest step one update takes
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
- * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move
+ * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
- * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move
+ * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move (runtime: option set SEP_CARRY 0)
  * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | enemy.c       | no ESD / Lua
  * ENEMY_ONLY          | off      | debug    | -DENEMY_ONLY=c2900_c2540                      | enemy.c       | only these types
  * ENEMY_HIT_TEST      | off      | debug    | -DENEMY_HIT_TEST                              | enemy.c       | a hit on the nearest enemy every 2 s
  * LUA_GC_STEP_US      | 1000     | fallback | -DLUA_GC_STEP_US=0                            | ai.c          | incremental Lua GC; 0 = stop the world
- * LUA_POOL_GROW       | 1        | fallback | -DLUA_POOL_GROW=0                             | lua0.c        | Lua small objects in their own chunks
+ * LUA_POOL_GROW       | 1        | fallback | -DLUA_POOL_GROW=0                             | lua0.c        | Lua small objects in their own chunks (runtime: option set LUA_POOL_GROW 0)
  * COL_SCAN            | 1        | fallback | -DCOL_SCAN=0                                  | collision.c   | box test before the lookups
- * PUSH2_CELLS         | 1        | fallback | -DPUSH2_CELLS=0                               | collision.c   | push-out v2 by cells
+ * PUSH2_CELLS         | 1        | fallback | -DPUSH2_CELLS=0                               | collision.c   | push-out v2 by cells (runtime: option set PUSH2_CELLS 0)
  * NAV_QREJ            | 1        | fallback | -DNAV_QREJ=0                                  | nav.c         | integer box reject before barycentrics
  * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
  * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone

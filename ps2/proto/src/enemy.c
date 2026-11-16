@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "cvar.h"
 #include "lpass.h" /* logic pass breakdown (Burg plan B6) */
 #include "progress.h"
 #include "model.h"
@@ -40,6 +41,7 @@
 #include "nav.h"
 #include "testscript.h"
 #include "ticks.h"
+#include "omit.h"
 
 /* the boot area's + every world block's (enemy_block_types, at boot). 20 ran full at block 2 of the 14-block world: the
  * Depths and Darkroot placed only characters an earlier block had (81 types, 2026-11-15) */
@@ -171,6 +173,7 @@ typedef struct {
     BoneLocal *pose, *from;
     int pose_slot;
     unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
+    Omit om;               /* update omission level (src/omit.c, CHR_OMIT) */
     float blend, blend_time;
     /* action anim (attacks, steps, damage, death) started by the ESD; -1 = none (locomotion / idle) */
     int act, act_slot, act_layer, act_info;
@@ -1245,7 +1248,7 @@ static void root_at(const Enemy *e, float t, float *o)
 enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
 /* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
 #ifndef ENEMY_WALLS
-#define ENEMY_WALLS 1
+#define ENEMY_WALLS cv_ENEMY_WALLS  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
@@ -1300,7 +1303,7 @@ static int wall_between(const Enemy *e, const float p[3])
  * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
  * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
 #ifndef SEP_CARRY
-#define SEP_CARRY 1
+#define SEP_CARRY cv_SEP_CARRY  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 
@@ -1767,7 +1770,9 @@ static void update_one(Enemy *e, Player *pl, float dt)
     float z = dv.x * fwd.x + dv.y * fwd.y + dv.z * fwd.z, dd = dv.x * dv.x + dv.z * dv.z;
     int on_screen = z > -(e->var->height + 2) && dd < DRAW_DIST * DRAW_DIST;
     int attacking = e->act >= 0 && e->act_info && t->anims[e->act_info - 1].nwin > 0;
-    if (!attacking && (!on_screen || (dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1)))) {
+    /* with CHR_OMIT a character past level 0 already updates every few frames: no parity skip on top */
+    int lod_skip = !(CHR_OMIT && e->om.level > 0) && dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1);
+    if (!attacking && (!on_screen || lod_skip)) {
         memcpy(e->cc.pos, &e->pos, 12);
         e->cc.yaw = e->yaw;
         e->cc.invincible = in_window(e, F_INVINCIBLE) || (e->ev && e->ev->invincible);
@@ -2064,8 +2069,8 @@ void enemy_update(Player *pl, float dt)
         team[i] = &enemies[i].ai, tpos[i] = enemies[i].pos;
     ai_team(team, tpos, nenemies);
     pose_manage(pl);
-    Enemy *act[MAX_ENEMIES];
-    int na = 0;
+    Enemy *act[MAX_ENEMIES], *cand[MAX_ENEMIES];
+    int na = 0, nc2 = 0;
     float d3[MAX_ENEMIES], lim = 1e30f;
     int nc = 0;
     for (int i = 0; i < nenemies; i++) {
@@ -2119,12 +2124,53 @@ void enemy_update(Player *pl, float dt)
             e->registered = combat_register(&e->cc) >= 0;
         else if (!want && e->registered)
             combat_unregister(&e->cc), e->registered = 0;
-        if (!on)
+        if (!on) {
+            omit_reset(&e->om);
             continue;
-        update_one(e, pl, dt);
+        }
+        cand[nc2++] = e;
+    }
+    enemy_active = nc2;
+    /* CHR_OMIT: levels for the active characters (src/omit.h: DSR FUN_14036e8d0), then the ones due this frame
+     * update with the time gathered since their last update; the rest stand as obstacles for the push-apart */
+    Enemy *idle[MAX_ENEMIES];
+    int ni = 0;
+    if (CHR_OMIT) {
+        static OmitIn oin[MAX_ENEMIES];
+        V3 eye, right, up, fwd;
+        float fo, fy, zs;
+        r_camera_basis(&eye, &right, &up, &fwd, &fo, &fy, &zs);
+        for (int k = 0; k < nc2; k++) {
+            Enemy *e = cand[k];
+            V3 dv = v3sub(e->pos, eye);
+            float r = e->var->radius, mn[3] = {e->pos.x - r, e->pos.y, e->pos.z - r},
+                  mx[3] = {e->pos.x + r, e->pos.y + e->var->height, e->pos.z + r};
+            int st = e->ai.state;
+            /* ASSUMED stand-ins for the exe's vtable +0x150 (always full) and +0x148 (level 5 out of view) tests */
+            int full = st == AIS_BATTLE || e->cc.hit_count != e->hits_seen || e->dmg_latch > 0 || e->rag || e->air ||
+                       (e->cc.dead && e->dead_t < 3.0f) ||
+                       (e->act >= 0 && e->act_info && e->ct->anims[e->act_info - 1].nwin > 0);
+            oin[k] = (OmitIn){.o = &e->om, .cam_d2 = dv.x * dv.x + dv.y * dv.y + dv.z * dv.z,
+                              .in_view = r_box_classify(mn, mx) != 0, .force_full = full,
+                              .alert = st == AIS_CAUTION || st == AIS_FIND};
+        }
+        omit_rank(oin, nc2);
+    }
+    for (int k = 0; k < nc2; k++) {
+        Enemy *e = cand[k];
+        float run_dt = dt;
+        if (CHR_OMIT && !omit_step(&e->om, dt, frame, (unsigned)e->index, &run_dt)) {
+            idle[ni++] = e;
+            continue;
+        }
+        update_one(e, pl, run_dt);
         act[na++] = e;
     }
-    enemy_active = na;
+    if (CHR_OMIT && test_active() && !(frame % 300)) {  /* every 10 s of frames at 30 fps */
+        printf("omit: %u updates run, %u left out (levels 0/2/5/30: %u %u %u %u)\n", omit_ran, omit_skipped,
+               omit_lv[0], omit_lv[1], omit_lv[2], omit_lv[3]);
+        omit_ran = omit_skipped = omit_lv[0] = omit_lv[1] = omit_lv[2] = omit_lv[3] = 0;
+    }
     LG_BEGIN(gc);
     ai_end_frame();
     LG_END(gc, LG_GC);
@@ -2162,6 +2208,9 @@ void enemy_update(Player *pl, float dt)
             separate(act[i], act[j]->pos, act[j]->var->radius, 0.5f);
             separate(act[j], pi, act[i]->var->radius, 0.5f);
         }
+        for (int j = 0; j < ni; j++)  /* left out this frame: they hold still, the updated one moves its share */
+            if (idle[j]->ct->drawable)
+                separate(act[i], idle[j]->pos, idle[j]->var->radius, 0.5f);
         if (LOGIC_SPREAD)
             sep_flush(act[i]);
         memcpy(act[i]->cc.pos, &act[i]->pos, 12);
