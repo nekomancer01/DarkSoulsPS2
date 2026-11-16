@@ -312,6 +312,10 @@ def water_rgba(mp):
     return bytes([round(255 * min(1.0, x) ** (1 / 2.2)) for x in rgb] + [round(255 * a)])
 
 
+BG_BLEND = os.environ.get("BG_BLEND", "1") == "1"
+POSE_KEEP = os.environ.get("POSE_KEEP", "1") == "1"
+
+
 def is_effect(mtd):
     """Translucent effect materials (light shafts '_Add', mist/cloud '[Dn]_Alp'): drawn opaque they become solid slabs.
     Skipped until the renderer has alpha blending."""
@@ -705,7 +709,8 @@ def gather(game, map_id):
         pxf, pxn = place(part)
         bind = bind_scaled(F)
         for m in F["meshes"]:
-            if part["type"] == 1 and m["dynamic"]:
+            posed = part["type"] == 1 and m["dynamic"]
+            if posed:
                 # skinned objects (corpses, o1950 chains): baked in the pose of their MSB init_anim (tools/pose_obj.py);
                 # in bind pose they would T-pose
                 pk = (part["model"], part.get("init_anim"))
@@ -739,8 +744,11 @@ def gather(game, map_id):
             # path (CT32 alpha, blended). Only those: blended meshes are kept unsimplified (keep=), and all _Alp meshes
             # together cost +43k tris / 36 fps at Burg spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs
             # (ASSUMED, TECH_DEBT map-30)
-            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower()
-                                                       for k in ("decal", "dirt", "ground", "stain"))
+            # Background cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose
+            # vertex alpha fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play
+            # test 2026-11-16): blended too, with their vertex alpha. BG_BLEND=0 = cut-outs as before.
+            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower() for k in
+                                                       ("decal", "dirt", "ground", "stain") + (("_bg_",) if BG_BLEND else ()))
             blend = is_effect(m["mtd"]) or decal or water
             flags = (mapcfg.CHUNK_BLEND if blend else 0) | (mapcfg.CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
                 (mapcfg.CHUNK_SKY if sky else 0) | sky_slot << mapcfg.CHUNK_SKY_ROW
@@ -754,7 +762,11 @@ def gather(game, map_id):
                 continue
             # objects beyond the region (70 m+ from the spawn in Burg) take the game's lowest LOD, as DSR draws them
             # at that range (o1154 barrel + ropes: 5.9k -> 1.2k tris before QEM)
-            low = mapcfg.GAME_LOD or far
+            # posed skinned objects (corpses): the game's lowest LOD, not simplified (keep below). The simplifier took
+            # their thin limbs as loose pieces and left stretched shards (Ame's play test 2026-11-16, shot 07); DSR's
+            # own LOD2 keeps the body (o0500: 479 tris, LOD0 2399). POSE_KEEP=0 = LOD0 through the simplifier as before.
+            posed_keep = posed and POSE_KEEP and len(lods) > 1
+            low = mapcfg.GAME_LOD or far or posed_keep
             if mapcfg.FAR_LOD and not low and part["type"] == 0 and len(lods) > 1 and nav_tree is not None:
                 # map pieces whose LOD0 lies wholly beyond STREAM_FAR of the walkable space (whole-MSB areas) take the
                 # game's lowest LOD before QEM, as DSR draws them from there (render-distance option (a), map-36)
@@ -870,7 +882,8 @@ def gather(game, map_id):
             meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
-                               keep=grass or blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
+                               keep=grass or blend or sky or posed_keep or part["model"] in mapcfg.KEEP_MODELS,
+                               name=f"{part['name']}/{name}",
                                dg=mapchunks.DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0,
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
