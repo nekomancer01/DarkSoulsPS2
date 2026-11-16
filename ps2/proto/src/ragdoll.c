@@ -3,10 +3,15 @@
  * Simulation: position-based rigid bodies (after Mueller et al. 2020, "Detailed Rigid Body Simulation with Extended
  * Position Based Dynamics", without compliance): each substep integrates gravity and velocities, then moves bodies
  * directly to satisfy the joints (pivot coincidence), the joint cone and twist limits from the hkx
- * (hkpRagdollConstraintData) and the floor, and derives the velocities from what moved. Approximations (TECH_DEBT
- * enemy-17): isotropic inertia from the capsule shape, no body-body or wall contacts, the floor as one plane per body
- * per frame, damping / friction values ASSUMED (the hkx motion damping is not exported). */
+ * (hkpRagdollConstraintData) and the floor, and derives the velocities from what moved. RAG_CONTACTS (default 1; 0 =
+ * floor only, as before 2026-11-16): Havok also collides a ragdoll's bodies with the map's walls and with each other
+ * (the hkpRagdollInstance bodies sit in one system group that only disables pairs joined by a constraint): walls push
+ * each body out once a frame (its capsule as an upright one through the map collision, collision.c), and capsule pairs
+ * that are neither parent / child nor siblings under one parent (ASSUMED: the system-group bits are not exported) are
+ * separated every substep. Approximations (TECH_DEBT enemy-17): isotropic inertia from the capsule shape, the floor as
+ * one plane per body per frame, damping / friction values ASSUMED (the hkx motion damping is not exported). */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "ragdoll.h"
 #include "collision.h"
@@ -24,6 +29,15 @@
                             * capsule ends: small bodies between two joint limits, the clavicles, keep a slight
                             * rotational jitter in this solver) */
 #define SLEEP_TIME 0.7f
+#ifndef RAG_CONTACTS
+#define RAG_CONTACTS 1
+#endif
+#ifndef RAG_DEBUG
+#define RAG_DEBUG 0
+#endif
+#define PAIR_MARGIN 0.05f  /* m: start-pose overlap test */
+#define PAIR_SLOP 0.01f    /* m: allowed overlap between bodies (no jitter at rest) */
+#define PAIR_MAX 0.01f     /* m: largest correction of one pair in one substep */
 #define MAX_AGE 10.0f      /* s: simulated at most this long after the last wake (EE budget) */
 
 static void quat_of(const M34 *a, float *q)
@@ -270,6 +284,132 @@ static int solve_floor(Ragdoll *r, int k, const float *xp, const float *qp)
     return touched;
 }
 
+int rag_wall_pushes, rag_pair_pushes;  /* EE log at rest (play-test reports) */
+
+/* body k's capsule ends in world space */
+static void body_ends(const Ragdoll *r, int k, float *a, float *b)
+{
+    const RagBody *d = &r->def[k];
+    float l[3], o[3];
+    for (int i = 0; i < 3; i++)
+        l[i] = d->ba[i] - r->com[k][i];
+    q_rot(r->q[k], l, o);
+    for (int i = 0; i < 3; i++)
+        a[i] = r->x[k][i] + o[i], l[i] = d->bb[i] - r->com[k][i];
+    q_rot(r->q[k], l, o);
+    for (int i = 0; i < 3; i++)
+        b[i] = r->x[k][i] + o[i];
+}
+
+/* closest points of segments p0-p1 and q0-q1 (clamped); returns the squared distance */
+static float seg_seg(const float *p0, const float *p1, const float *q0, const float *q1, float *cp, float *cq)
+{
+    float d1[3], d2[3], w[3];
+    for (int i = 0; i < 3; i++)
+        d1[i] = p1[i] - p0[i], d2[i] = q1[i] - q0[i], w[i] = p0[i] - q0[i];
+    float a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, w), s = 0, t = 0;
+    if (a < 1e-9f && e < 1e-9f)
+        s = t = 0;
+    else if (a < 1e-9f)
+        t = f / e;
+    else {
+        float c = dot3(d1, w);
+        if (e < 1e-9f)
+            s = -c / a;
+        else {
+            float b = dot3(d1, d2), den = a * e - b * b;
+            s = den > 1e-9f ? (b * f - c * e) / den : 0;
+            s = s < 0 ? 0 : s > 1 ? 1 : s;
+            t = (b * s + f) / e;
+            if (t < 0)
+                t = 0, s = -c / a;
+            else if (t > 1)
+                t = 1, s = (b - c) / a;
+        }
+    }
+    s = s < 0 ? 0 : s > 1 ? 1 : s, t = t < 0 ? 0 : t > 1 ? 1 : t;
+    float d2s = 0;
+    for (int i = 0; i < 3; i++) {
+        cp[i] = p0[i] + d1[i] * s, cq[i] = q0[i] + d2[i] * t;
+        d2s += (cp[i] - cq[i]) * (cp[i] - cq[i]);
+    }
+    return d2s;
+}
+
+/* RAG_CONTACTS: bodies not joined (parent / child, siblings) pushed apart along their capsules' closest points */
+static void solve_bodies(Ragdoll *r)
+{
+    float A[RAG_MAX][3], B[RAG_MAX][3];
+    for (int k = 0; k < r->n; k++)
+        body_ends(r, k, A[k], B[k]);
+    if (!r->pairs_ok) {  /* pairs touching in the pose the ragdoll starts from (shoulders / spine, thighs / pelvis)
+                          * stay apart from this test: the joints keep them where they are (ASSUMED, as the Havok
+                          * ragdoll toolkit disables bodies overlapping in the reference pose) */
+        memset(r->skip, 0, sizeof r->skip);
+        for (int i = 0; i < r->n; i++)
+            for (int j = i + 1; j < r->n; j++) {
+                float cp[3], cq[3], rr = r->def[i].radius + r->def[j].radius + PAIR_MARGIN;
+                if (seg_seg(A[i], B[i], A[j], B[j], cp, cq) < rr * rr)
+                    r->skip[i] |= 1u << j, r->skip[j] |= 1u << i;
+            }
+        r->pairs_ok = 1;
+    }
+    float C[RAG_MAX][3], R[RAG_MAX];  /* bounding spheres */
+    for (int k = 0; k < r->n; k++) {
+        float h2 = 0;
+        for (int i = 0; i < 3; i++)
+            C[k][i] = (A[k][i] + B[k][i]) * 0.5f, h2 += (A[k][i] - C[k][i]) * (A[k][i] - C[k][i]);
+        R[k] = sqrtf(h2) + r->def[k].radius;
+    }
+    for (int i = 0; i < r->n; i++)
+        for (int j = i + 1; j < r->n; j++) {
+            const RagBody *bi = &r->def[i], *bj = &r->def[j];
+            if (bi->parent == j || bj->parent == i || (r->skip[i] >> j & 1))
+                continue;
+            float dc[3] = {C[i][0] - C[j][0], C[i][1] - C[j][1], C[i][2] - C[j][2]}, rs = R[i] + R[j];
+            if (dot3(dc, dc) >= rs * rs)
+                continue;
+            float rr = bi->radius + bj->radius, cp[3], cq[3];
+            float d2 = seg_seg(A[i], B[i], A[j], B[j], cp, cq);
+            if (d2 >= (rr - PAIR_SLOP) * (rr - PAIR_SLOP) || d2 < 1e-10f)
+                continue;
+            float d = sqrtf(d2), n[3], ri[3], rj[3];
+            for (int k = 0; k < 3; k++)
+                n[k] = (cp[k] - cq[k]) / d, ri[k] = cp[k] - n[k] * bi->radius - r->x[i][k],
+                rj[k] = cq[k] + n[k] * bj->radius - r->x[j][k];
+            float w = gen_inv_mass(r, i, ri, n) + gen_inv_mass(r, j, rj, n);
+            if (w <= 0)
+                continue;
+            float pen = rr - PAIR_SLOP - d;
+            pen = pen > PAIR_MAX ? PAIR_MAX : pen;  /* deep overlaps resolve over several substeps (no explosions) */
+            float lam = pen / w, P[3] = {n[0] * lam, n[1] * lam, n[2] * lam};
+            apply_corr(r, i, ri, P, 1), apply_corr(r, j, rj, P, -1);
+            rag_pair_pushes++;
+        }
+}
+
+/* RAG_CONTACTS: each body out of the map's walls (collision.c pushes an upright capsule horizontally), its velocity
+ * into the wall removed; once a frame */
+static void solve_walls(Ragdoll *r)
+{
+    for (int k = 0; k < r->n; k++) {
+        float a[3], b[3];
+        body_ends(r, k, a, b);
+        float rad = r->def[k].radius, lo = (a[1] < b[1] ? a[1] : b[1]) - rad, hi = (a[1] > b[1] ? a[1] : b[1]) + rad;
+        float p[3] = {r->x[k][0], lo, r->x[k][2]};
+        if (!col_push_capsule(p, rad, hi - lo, 0, COL_SOLID))
+            continue;
+        float dx = p[0] - r->x[k][0], dz = p[2] - r->x[k][2], l = sqrtf(dx * dx + dz * dz);
+        r->x[k][0] = p[0], r->x[k][2] = p[2];
+        rag_wall_pushes++;
+        if (l > 1e-5f) {
+            float vn = (r->v[k][0] * dx + r->v[k][2] * dz) / l;
+            if (vn < 0)
+                r->v[k][0] -= dx / l * vn, r->v[k][2] -= dz / l * vn;
+        }
+    }
+}
+
 void rag_step(Ragdoll *r, float dt)
 {
     if (!r->on || r->asleep || dt <= 0)
@@ -298,6 +438,8 @@ void rag_step(Ragdoll *r, float dt)
         for (int k = 0; k < r->n; k++)
             if (r->def[k].parent >= 0 && r->def[k].parent < r->n)
                 solve_limits(r, k);
+        if (RAG_CONTACTS && (s & 1))  /* every other substep (EE cost) */
+            solve_bodies(r);
         unsigned char touch[RAG_MAX];
         for (int k = 0; k < r->n; k++)
             touch[k] = solve_floor(r, k, xp[k], qp[k]);
@@ -319,9 +461,25 @@ void rag_step(Ragdoll *r, float dt)
             fast = fast > lv ? fast : lv;
         }
     }
+    if (RAG_CONTACTS)
+        solve_walls(r);
+    if (RAG_DEBUG && (int)(r->age * 2) != (int)((r->age - dt) * 2)) {
+        int slow = 0, worst = 0;
+        float wv = 0;
+        for (int k = 0; k < r->n; k++) {
+            float lv = sqrtf(dot3(r->v[k], r->v[k]));
+            slow += lv < SLEEP_V;
+            if (lv > wv)
+                wv = lv, worst = k;
+        }
+        printf("rag dbg: age %.1f fast %.3f body %d (bone %d) slow %d/%d pairs %d\n", r->age, fast, worst, r->def[worst].bone, slow, r->n, rag_pair_pushes);
+    }
     r->still = fast < SLEEP_V ? r->still + dt : 0;
-    if (r->still > SLEEP_TIME || r->age > MAX_AGE)
+    if (r->still > SLEEP_TIME || r->age > MAX_AGE) {
         r->asleep = 1;
+        printf("rag: at rest after %.1f s at %.1f %.1f %.1f; wall pushes %d, body pushes %d so far\n", r->age, r->x[0][0],
+               r->x[0][1], r->x[0][2], rag_wall_pushes, rag_pair_pushes);
+    }
 }
 
 void rag_push(Ragdoll *r, const float feet[3], float radius, float height, const float vel[3])
