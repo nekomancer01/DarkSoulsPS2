@@ -123,6 +123,7 @@ static int pad_input(Input *in, unsigned short *prev)
     in->l1_held = (btn & PAD_L1) != 0, in->l2_held = (btn & PAD_L2) != 0;
     in->r3 = (btn & PAD_R3) && !(*prev & PAD_R3);
     in->square = (btn & PAD_SQUARE) && !(*prev & PAD_SQUARE);
+    in->triangle = (btn & PAD_TRIANGLE) && !(*prev & PAD_TRIANGLE);
     if ((btn & PAD_CROSS) && !(*prev & PAD_CROSS))
         event_action();  /* DSR's action button (ObjActs, treasures, fog walls: src/event.c) */
     *prev = btn;
