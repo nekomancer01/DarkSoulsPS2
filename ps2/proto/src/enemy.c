@@ -123,8 +123,9 @@ typedef struct {
     int no_guard;             /* AtkParam disableGuard */
     int st_type, st_build;    /* status (1 poison, 2 toxic, 3 bleed, 4 curse) and its buildup per hit */
     float st_hp, st_tick, st_time, st_rate;  /* its effect: hp per tick, tick s, duration s, hp % of max at once */
+    float knock, hit_stop;    /* AtkParam knockbackDist, hitStopTime */
 } ChrWin;
-_Static_assert(sizeof(ChrWin) == 108, "export_chr.py chr.bin window record");
+_Static_assert(sizeof(ChrWin) == 116, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
 #define PARRIED_TIME 2.0f  /* s a parried enemy stays open to a riposte (ASSUMED, TECH_DEBT combat-11) */
@@ -613,7 +614,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 10 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 11 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -1465,7 +1466,8 @@ static void attack_sweeps(Enemy *e)
                             .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr,
                             .stam_dmg = w->stam, .unblockable = w->no_guard, .src = &e->cc,
                             .parryable = in_window(e, F_PARRY),
-                            .st = {w->st_type, w->st_build, w->st_hp, w->st_tick, w->st_time, w->st_rate}};
+                            .st = {w->st_type, w->st_build, w->st_hp, w->st_tick, w->st_time, w->st_rate},
+                            .knock = w->knock};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)
@@ -1634,6 +1636,12 @@ static void update_one(Enemy *e, Player *pl, float dt)
     const AiOut *o = &e->ai.out;
     LG_BEGIN_X(ai);
     /* thrown: its throw anim plays to its end, then the ESD takes over again (a dead one goes on to its death) */
+    {   /* knockback of the latest hit (combat_knock_step), through its wall / ledge move */
+        float k[2];
+        combat_knock_step(&e->cc, dt, k);
+        if (k[0] != 0 || k[1] != 0)
+            move_by(e, k[0], k[1], 0);
+    }
     if (e->thrown && (e->act < 0 || act_ended(e)))
         e->thrown = 0;
     /* parried (combat.c, PR C): open for a riposte for PARRIED_TIME (ASSUMED, TECH_DEBT combat-11) */

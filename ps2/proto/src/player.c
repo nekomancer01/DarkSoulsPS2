@@ -874,7 +874,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float f0, s0, f1, s1;
         root_at(p->anim, p->t, &f0, &s0);
         float keep = 1 - clampf(grad_at(p->anim, 236, p->t, 0) * (1 - MOBILITY), 0, 1);
-        p->t += dt;
+        if (p->hitstop > 0)  /* hit stop: the anim (and its root motion) holds for hitStopTime (TECH_DEBT combat-12) */
+            p->hitstop -= dt;
+        else
+            p->t += dt;
         root_at(p->anim, p->t, &f1, &s1);
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
@@ -960,6 +963,11 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             if (!ticked)
                 stamina_tick(p, -1, 0, dt);
         }
+    }
+    {   /* knockback of the latest hit (combat_knock_step): through constrain() as any other move */
+        float k[2];
+        combat_knock_step(combat_player(), dt, k);
+        p->pos.x += k[0], p->pos.z += k[1];
     }
     if (p->on_map)
         constrain(p, old);

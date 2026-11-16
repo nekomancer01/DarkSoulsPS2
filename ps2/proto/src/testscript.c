@@ -388,7 +388,7 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_HIT: {
             static int win = 0x7F000000;
             CombatAttack atk = {.team = TEAM_ENEMY, .phys = c->a[0], .atk_phys_rate = 1, .damage_level = 1,
-                                .window = win++, .stam_dmg = c->a[1], .parryable = 1};
+                                .window = win++, .stam_dmg = c->a[1], .parryable = 1, .knock = 0.7f};
             atk.src_pos[0] = pl->pos.x + sinf(pl->yaw), atk.src_pos[1] = pl->pos.y, atk.src_pos[2] = pl->pos.z + cosf(pl->yaw);
             combat_apply(combat_player(), &atk);
             break;
