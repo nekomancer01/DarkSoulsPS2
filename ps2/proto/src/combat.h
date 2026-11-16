@@ -70,6 +70,7 @@ typedef struct CombatAttack {
     int unblockable;       /* AtkParam disableGuard */
     int parryable;         /* the attacker's anim has ChrActionFlag 5 "Parry Possible" at this time */
     struct CombatChr *src; /* the attacker's hurtbox (optional): told when it is parried */
+    int is_throw;          /* backstab / riposte damage: hits through i-frames, no guard / parry / poise */
 } CombatAttack;
 
 int combat_register(CombatChr *c);    /* returns a slot (>= 0) or -1 when full */
@@ -88,6 +89,11 @@ int combat_damage(float atk_phys, float def_phys, float absorb);
 float combat_damage_on(const CombatChr *t, const CombatAttack *atk);
 /* Per frame: poise regeneration */
 void combat_update(float dt);
+
+/* The player's throws (backstab / riposte, ThrowParam): enemy.c finds a target and starts its side; the player
+ * plays atk_anim (right weapon motion) and deals AR x corr / 100 to cc at hit_t */
+typedef struct { CombatChr *cc; int atk_anim; float hit_t, corr, yaw; } ThrowStart;
+extern int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
 
 /* Debug dummy target (COMBAT_DUMMY builds / HUD): NpcParam 206000's hurtbox and defence */
 extern CombatChr combat_dummy;

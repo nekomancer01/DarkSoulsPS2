@@ -69,6 +69,10 @@ typedef struct Player {
     int parrying;          /* the parry anim's Parry attack window (TAE AttackType 64) is open */
     float fwd_flick;       /* time since the stick went from the dead zone to forward (f212, kick / jump attack) */
     float prev_tilt;
+    /* a backstab / riposte in progress (ThrowParam, combat_throw_hook): its target, damage time and motion value */
+    void *throw_cc;
+    float throw_hit_t, throw_corr;
+    int throw_anim, throw_done;
     unsigned ctx_a0, ctx_a4;              /* ChrActionFlag bit sets (ctx+0xA0 / +0xA4) */
     unsigned ctx_1dc;                     /* ESD command flags (ctx+0x1DC; c1_107 ... c1_147) */
     int no_magic;                         /* ctx+0xF1 (flag 97): magic / item slots 2, 3, 14 disabled */

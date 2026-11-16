@@ -90,7 +90,8 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a23", 3310, "c0000_a2x"),
          # kick, jumping attack, plunge landing, shield parry (export_player.py, PR C)
          ("a23", 3100, "c0000_a2x"), ("a23", 3600, "c0000_a2x"), ("a23", 3810, "c0000_a2x"),
-         ("a48", 5100, "c0000_a4x")] + [
+         ("a48", 5100, "c0000_a4x"),
+         ("a23", 3400, "c0000_a2x"), ("a23", 3201, "c0000_a2x")] + [
          # bonfire (export_player.py): stored compact (COMPACT) - 11 anims, 37 s; full 30 fps poses would be ~1.1 MB
          ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)]
 # Anims written in the compact layout (export_chr.append_compact_anims: 15 fps, only the bones that move; model.c reads
@@ -98,7 +99,7 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
 COMPACT = {7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722}
 # The guard set, R2, kick, jumping attack, plunge landing and parry (PRs #216 / #218) as well: at full 30 fps they
 # made model.bin 0.97 MB bigger and boot RAM free 1 MB smaller (22.95 -> 21.94 MB)
-COMPACT |= {1, 210, 515, 520, 140, 141, 142, 3300, 3301, 3310, 3100, 3600, 3810, 5100}
+COMPACT |= {1, 210, 515, 520, 140, 141, 142, 3300, 3301, 3310, 3100, 3600, 3810, 5100, 3400, 3201}  # + throws (#219)
 # Turn-lean pairs: DSR has no straight dash; a00_0535 leans into a left turn (head 0.20 m left of the feet, shoulders
 # rolled -21 deg on average) and a00_0536 into a right turn, and the engine blends the two by turn rate
 # (WalkAnim_Twist). Played alone, 0535 made the dash lean left. Baked here as the 50/50 blend = running straight.

@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef COMBAT_DATA_H
 #define COMBAT_DATA_H
-#define COMBAT_LAYOUT 0xa51a5746u
+#define COMBAT_LAYOUT 0x40d4d05cu
 
 #include <stddef.h>
 
@@ -48,6 +48,20 @@ typedef struct {
 } GraphRow;
 _Static_assert(sizeof(GraphRow) == 64 && offsetof(GraphRow, id) == 0 && offsetof(GraphRow, g) == 4, "GraphRow layout differs from tools/gamedata.py");
 
+/* ThrowParam row of the player (AtkChrId 0): DefChrId (0 = any), Dist, DiffAngMin / Max (deg, between the two facings), throwType (0 backstab, 8 riposte), atkAnimId (on the right weapon's motion), defAnimId, atkPhysCorrection of the atk anim's ThrowAttackBehavior (TAE 304) and its time */
+typedef struct {
+    int def_chr;
+    float dist;
+    float ang_min;
+    float ang_max;
+    int type;
+    int atk_anim;
+    int def_anim;
+    int corr;
+    float hit_t;
+} ThrowRow;
+_Static_assert(sizeof(ThrowRow) == 36 && offsetof(ThrowRow, def_chr) == 0 && offsetof(ThrowRow, dist) == 4 && offsetof(ThrowRow, ang_min) == 8 && offsetof(ThrowRow, ang_max) == 12 && offsetof(ThrowRow, type) == 16 && offsetof(ThrowRow, atk_anim) == 20 && offsetof(ThrowRow, def_anim) == 24 && offsetof(ThrowRow, corr) == 28 && offsetof(ThrowRow, hit_t) == 32, "ThrowRow layout differs from tools/gamedata.py");
+
 /* Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam 206000), every CalcCorrectGraph row a weapon correctType names (sorted by id) */
 typedef struct {
     int pl_vit;
@@ -81,8 +95,10 @@ typedef struct {
     const GraphRow *graphs;
     int ngraphs;
     int sk_spine;
+    const ThrowRow *throws;
+    int nthrows;
 } CombatData;
-_Static_assert(sizeof(CombatData) == 404 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, sk_bones) == 344 && offsetof(CombatData, sk_r_weapon) == 348 && offsetof(CombatData, sk_parent) == 352 && offsetof(CombatData, wep_dummy) == 356 && offsetof(CombatData, wep_dummies) == 360 && offsetof(CombatData, atk_windows) == 364 && offsetof(CombatData, natk_windows) == 368 && offsetof(CombatData, dummy_hp) == 372 && offsetof(CombatData, dummy_def_phys) == 376 && offsetof(CombatData, dummy_radius) == 380 && offsetof(CombatData, dummy_height) == 384 && offsetof(CombatData, dummy_poise) == 388 && offsetof(CombatData, graphs) == 392 && offsetof(CombatData, ngraphs) == 396 && offsetof(CombatData, sk_spine) == 400, "CombatData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(CombatData) == 412 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, sk_bones) == 344 && offsetof(CombatData, sk_r_weapon) == 348 && offsetof(CombatData, sk_parent) == 352 && offsetof(CombatData, wep_dummy) == 356 && offsetof(CombatData, wep_dummies) == 360 && offsetof(CombatData, atk_windows) == 364 && offsetof(CombatData, natk_windows) == 368 && offsetof(CombatData, dummy_hp) == 372 && offsetof(CombatData, dummy_def_phys) == 376 && offsetof(CombatData, dummy_radius) == 380 && offsetof(CombatData, dummy_height) == 384 && offsetof(CombatData, dummy_poise) == 388 && offsetof(CombatData, graphs) == 392 && offsetof(CombatData, ngraphs) == 396 && offsetof(CombatData, sk_spine) == 400 && offsetof(CombatData, throws) == 404 && offsetof(CombatData, nthrows) == 408, "CombatData layout differs from tools/gamedata.py");
 
 extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define PL_VIT (combat_data->pl_vit)
@@ -107,6 +123,7 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define SK_SPINE (combat_data->sk_spine)
 #define ATK_WINDOWS (combat_data->natk_windows)
 #define NGRAPHS (combat_data->ngraphs)
+#define NTHROWS (combat_data->nthrows)
 #define graph_weapon (combat_data->graph_weapon)
 #define graph_100 (combat_data->graph_100)
 #define graph_150 (combat_data->graph_150)
@@ -116,5 +133,6 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define wep_dummy (combat_data->wep_dummy)
 #define atk_windows (combat_data->atk_windows)
 #define graphs (combat_data->graphs)
+#define throws (combat_data->throws)
 
 #endif

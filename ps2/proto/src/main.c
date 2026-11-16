@@ -445,7 +445,8 @@ int main(int argc, char **argv)
         free(fx_blob);
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
     loading_tick(1);
-    combat_sweep_hook = objects_sweep_hook;  /* every weapon sweep (player and enemies) can break them */
+    combat_sweep_hook = objects_sweep_hook;
+    combat_throw_hook = enemy_throw_try;  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
     free(lua_blob);
     if (vram_free >= 0)
         vram_free = r_vram_avail(gs);
