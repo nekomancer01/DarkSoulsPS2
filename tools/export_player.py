@@ -88,6 +88,9 @@ ANIMS = [
     ("BACKSTAB", "a23", 3400, False),
     # Lock-on (PR D): rolls back / left / right (group 1 states 33 / 35 / 34 via f110(1 / 2 / 3)) of every movement
     # set, the other sets' forward rolls and steps, and the strafe loops (MoveParam row 0 walkB/L/R, dashB/L/R)
+    # Item use (Square, group 1 states 163 / 164 for goodsUseAnim 10 = Estus): c1_1 6209 (reach, layer 5), then
+    # c1_3 6409 (drink; TAE 64 at 1.23 s = the heal)
+    ("ITEM_REACH_10", "a00", 6209, False), ("ITEM_USE_10", "a00", 6409, False),
     ("ROLL_B", "a00", 701, False), ("ROLL_L", "a00", 702, False), ("ROLL_R", "a00", 703, False),
     ("ROLL_M_F", "a00", 710, False), ("ROLL_M_B", "a00", 711, False), ("ROLL_M_L", "a00", 712, False),
     ("ROLL_M_R", "a00", 713, False), ("ROLL_H_F", "a00", 720, False), ("ROLL_H_B", "a00", 721, False),
@@ -125,6 +128,7 @@ FLAGS = {4: "RH_ATTACK_CANCEL", 7: "DISABLE_TURNING", 8: "INVINCIBLE", 11: "MOVE
 # Value ramps over an event window (Grad): TAE 300 ChrActionGradient with output 27 = gravity multiplier
 # (FUN_1403410f0 -> ctx+0x448 -> proxy+0x1E4), TAE 236 RootMotionReduction (FUN_140343660 -> ctx+0x198)
 GRAD_GRAVITY, GRAD_ROOT_REDUCTION = 27, 236
+ITEM_USE = -600  # Window type of TAE 64 (CastHighlightedMagic): the moment an item / spell takes effect
 EZ_MESSAGE = -300  # Window type of a TAE 231 EzState message n: EZ_MESSAGE - n (SP regen windows use -2 .. -257)
 WARRIOR, LONGSWORD = 3000, 201000
 
@@ -148,7 +152,8 @@ RECORD = Struct("PlayerData", [
 
 def HEADER():
     consts = (["/* ChrActionFlag ids (TAE event 0) */"] + [f"#define FLAG_{name} {fid}" for fid, name in FLAGS.items()] +
-              [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */"] +
+              [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */",
+               f"#define ITEM_USE ({ITEM_USE})  /* Window type of TAE 64: an item's / spell's effect starts */"] +
               ["", "enum { " + ", ".join(f"ANIM_{c}" for c, *_ in ANIMS) + ", ANIM_COUNT };"])
     names = [("START_END", "start_end", "Warrior END"), ("WEAPON_ID", "weapon_id", "EquipParamWeapon: Longsword"),
              ("WEAPON_WEIGHT", "weapon_weight", None), ("WEAPON_ATK_PHYS", "weapon_atk_phys", None),
@@ -204,6 +209,8 @@ def main():
                 wins.append((-2 - (p[0] & 0xFF), s, e))
             elif etype == 231:  # EzState message to the event Lua (OnCheckEzStateMessage: bonfire 10 / 20 / 30)
                 wins.append((EZ_MESSAGE - (p[0] & 0xFF), s, e))
+            elif etype == 64:  # CastHighlightedMagic: an item's / spell's effect starts here
+                wins.append((ITEM_USE, s, e))
             elif etype == 300 and p[0] & 0xFFFF == GRAD_GRAVITY:  # s16 output, s16 input (0), f32 from, f32 to
                 grads.append((GRAD_GRAVITY, s, e, f32(p[1]), f32(p[2])))
             elif etype == 236 and p[2] & 0xFF == 0:  # f32 at start, f32 at end, u8 type 0 (scaled by mobility)
