@@ -9,6 +9,8 @@ typedef struct Input {
     float cx, cy;      /* right stick */
     int r1;            /* R1 pressed this frame */
     int circle;        /* Circle held */
+    /* held this frame (presses are found against the previous frame in player.c): R1, R2, L1, L2 */
+    int r1_held, r2_held, l1_held, l2_held;
 } Input;
 
 /* ST_JUMP / ST_LAND play one animation like ST_ATTACK / ST_ROLL; ST_FALL = airborne loop; ST_DEAD = fall death */
@@ -20,7 +22,12 @@ typedef enum { ST_IDLE, ST_MOVE, ST_ATTACK, ST_ROLL, ST_JUMP, ST_FALL, ST_LAND, 
 #define REQ_BACKSTEP 10
 #define REQ_ROLL_F 15
 #define REQ_JUMP 42
-
+/* PadManipulator FUN_140396860 writes: R1 -> slots 0 and 7, R2 -> 5, L1 -> 1 and 21 (21 = the guard hold), L2 -> 19 */
+#define REQ_R1_STEP 7
+#define REQ_L1 1
+#define REQ_R2 5
+#define REQ_L2 19
+#define REQ_GUARD 21
 typedef struct Player {
     V3 pos;
     float yaw;          /* facing; forward = (sin yaw, 0, cos yaw) */
@@ -42,6 +49,21 @@ typedef struct Player {
     unsigned char latch[REQ_SLOTS];       /* buffered requests (ctx+0x468[slot]; f102 / f108) */
     unsigned char req_enable[REQ_SLOTS];  /* ctx+0xF2[slot]: "Anim Cancel" ChrActionFlags of the playing anim */
     unsigned char req_buffer[REQ_SLOTS];  /* ctx+0x1A0[slot]: "Key Input" ChrActionFlags: presses latch only here */
+    /* hold-type requests (FUN_140388790): the pad's held state and hold time (manipulator +0xF0[slot]), hold windows
+     * opened by ChrActionFlags (ctx+0x127 / +0x15C, FUN_140340580), the hold latch (ctx+0x3F4), the held result
+     * read by f220 / f243 (ctx+0x2E1) and the slot-21 hold timer (ctx+0x320) */
+    unsigned char pad_held[REQ_SLOTS], pad_prev[REQ_SLOTS];
+    float hold_time[REQ_SLOTS];
+    unsigned char hold_en[REQ_SLOTS], hold_acc[REQ_SLOTS], hold_latch[REQ_SLOTS], held[REQ_SLOTS];
+    float hold_timer21;
+    /* upper-body layer (ESD c1_4 / c1_13 on layer 4: the guard poses) over the locomotion */
+    int ovl_anim;          /* ANIM_* or -1 */
+    float ovl_t;
+    int ovl_loop;
+    int ovl_cmd;           /* ESD command that started it: 3 (c1_3, ends f0) or 4 / 13 (end f1) */
+    int motion_mode;       /* c1_109 (chr+0x270): 11 in every guard state of group 1 */
+    int guarding;          /* guard up: an upper-body guard anim in motion mode 11 */
+    int guard_hit;         /* a guarded hit landed this frame (f237 picks the guard row) */
     unsigned ctx_a0, ctx_a4;              /* ChrActionFlag bit sets (ctx+0xA0 / +0xA4) */
     unsigned ctx_1dc;                     /* ESD command flags (ctx+0x1DC; c1_107 ... c1_147) */
     int no_magic;                         /* ctx+0xF1 (flag 97): magic / item slots 2, 3, 14 disabled */

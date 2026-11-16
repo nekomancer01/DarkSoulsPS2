@@ -28,7 +28,7 @@
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 2};
 int test_god;
 
-enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
+enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_L1, C_R2, C_L2, C_HIT, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
        C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK };
 
 typedef struct {
@@ -98,7 +98,8 @@ static int parse(Prog *p, char *text)
 {
     static const struct { const char *name; int op, args; } ops[] = {
         {"spawn", C_SPAWN, 4}, {"cam", C_CAM, 2},   {"stick", C_STICK, 2}, {"rstick", C_RSTICK, 2},
-        {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0},   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
+        {"circle", C_CIRCLE, 1}, {"r1", C_R1, 0}, {"l1", C_L1, 1}, {"r2", C_R2, 0}, {"l2", C_L2, 0},
+        {"hit", C_HIT, 2},  /* hit <physical attack> <stamina damage>: an enemy hit from 1 m in front of the player */   {"wait", C_WAIT, 1},   {"frames", C_FRAMES, 1},
         {"approach", C_APPROACH, 3}, {"freeze", C_FREEZE, 1}, {"pitch", C_PITCH, 1}, {"stats", C_STATS, 0}, {"shot", C_SHOT, 0},
         {"log", C_LOG, 0}, {"loop", C_LOOP, 0}, {"end", C_END, 0},
         {"park", C_PARK, 0},  /* warm start (tools/warmstate.py): wait here for the next script from the host */
@@ -360,7 +361,18 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_STICK: p->held.mx = c->a[0], p->held.my = c->a[1]; break;
         case C_RSTICK: p->held.cx = c->a[0], p->held.cy = c->a[1]; break;
         case C_CIRCLE: p->held.circle = c->a[0] != 0; break;
-        case C_R1: in->r1 = 1; break;
+        case C_R1: in->r1 = 1, in->r1_held = 1; break;
+        case C_L1: p->held.l1_held = c->a[0] != 0; break;  /* l1 1 = hold (guard), l1 0 = release */
+        case C_R2: in->r2_held = 1; break;                  /* one frame press */
+        case C_L2: in->l2_held = 1; break;
+        case C_HIT: {
+            static int win = 0x7F000000;
+            CombatAttack atk = {.team = TEAM_ENEMY, .phys = c->a[0], .atk_phys_rate = 1, .damage_level = 1,
+                                .window = win++, .stam_dmg = c->a[1]};
+            atk.src_pos[0] = pl->pos.x + sinf(pl->yaw), atk.src_pos[1] = pl->pos.y, atk.src_pos[2] = pl->pos.z + cosf(pl->yaw);
+            combat_apply(combat_player(), &atk);
+            break;
+        }
         case C_FREEZE: frozen = c->a[0] != 0; break;
         case C_STATS: seg_reset(); break;
         case C_LOG: printf("TEST log %s\n", c->text); break;
@@ -486,7 +498,8 @@ int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt
         printf("TEST DONE frames %u\n", test_mb.frame);
     }
     *in = p->held;
-    in->r1 = mv.r1;
+    in->r1 = mv.r1, in->r1_held = mv.r1_held;
+    in->r2_held |= mv.r2_held, in->l2_held |= mv.l2_held;  /* one-frame presses (r2 / l2 commands) */
     if (mv.my)  /* approach drives the stick itself */
         in->mx = mv.mx, in->my = mv.my;
     if (p->cam_on)

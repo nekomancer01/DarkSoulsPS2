@@ -158,14 +158,44 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
 {
     if (t->invincible)
         return 0;
-    int dmg = (int)combat_damage_on(t, atk);
+    float dx = atk->src_pos[0] - t->pos[0], dz = atk->src_pos[2] - t->pos[2], a = atan2f(dx, dz) - t->yaw;
+    while (a > 3.14159265f) a -= 6.2831853f;
+    while (a < -3.14159265f) a += 6.2831853f;
+    /* Guarding (player.c guard states; enemies' guard layer): a hit from the front half (ASSUMED: EquipParamWeapon
+     * guardAngle is 0 on the starting shields, the exe's angle test was not found) is cut per element by the
+     * shield's phys / mag / fire / thunGuardCutRate and costs stamina: AtkParam atkStam x (100 - staminaGuardDef)
+     * / 100 (ASSUMED, the community's DS1 rule; the exe's guard code is in the obfuscated .text, TECH_DEBT combat-9).
+     * Stamina below 0 breaks the guard. */
+    t->guard_hit = t->guard_broken = 0;
+    float cut[4] = {1, 1, 1, 1};
+    if (t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
+        for (int e = 0; e < 4; e++)
+            cut[e] = 1 - t->guard_cut[e] / 100;
+        float st = atk->stam_dmg * (100 - t->guard_stab) / 100;
+        t->guard_stamina_dmg = st > 0 ? st : 0;
+        t->guard_hit = 1;
+        if (t->stamina) {  /* below 0 breaks the guard (ASSUMED, TECH_DEBT combat-9); floor -50 as FUN_140322cf0 */
+            *t->stamina -= (int)(t->guard_stamina_dmg + 0.5f);
+            t->guard_broken = *t->stamina < 0;
+            if (*t->stamina < -50)
+                *t->stamina = -50;
+        }
+    }
+    CombatAttack ga = *atk;
+    ga.atk_phys_rate *= cut[0];
+    for (int e = 0; e < 3; e++)
+        ga.el_rate[e] *= cut[1 + e];
+    int dmg = (int)combat_damage_on(t, &ga);
     t->hp -= dmg;
     t->hit_count++;
     t->new_hit = 1;
     t->last_damage = dmg;
-    /* poise: AtkParam damage level unless the hit is absorbed by poise / super armour */
+    /* poise: AtkParam damage level unless the hit is absorbed by poise / super armour; a guarded hit reacts through
+     * the guard row of the reaction table instead (f237, esd_env_move.c) */
     int level = atk->damage_level;
-    if (t->super_armor) {
+    if (t->guard_hit) {
+        /* level kept for the guard reaction class */
+    } else if (t->super_armor) {
         level = 0;
     } else if (t->poise_max > 0) {
         t->poise -= atk->poise_dmg;
@@ -175,9 +205,6 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
             t->poise = t->poise_max;
     }
     t->damage_level = level;
-    float dx = atk->src_pos[0] - t->pos[0], dz = atk->src_pos[2] - t->pos[2], a = atan2f(dx, dz) - t->yaw;
-    while (a > 3.14159265f) a -= 6.2831853f;
-    while (a < -3.14159265f) a += 6.2831853f;
     t->hit_dir = a;
     if (t->hp <= 0) {
         t->hp = -1;  /* the ESD death branches test f1000() < 0 */
@@ -186,9 +213,10 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     for (int i = 0; i < COMBAT_MAX_CHRS; i++)
         if (chrs[i] == t)
             since_hit[i] = 0;
-    printf("combat: %s hit by %s, atk %.0f def %.0f dmg %d hp %d level %d\n", t->team == TEAM_PLAYER ? "player" :
+    printf("combat: %s hit by %s, atk %.0f def %.0f dmg %d hp %d level %d dir %.0f%s%s\n", t->team == TEAM_PLAYER ? "player" :
            t->team == TEAM_ENEMY ? "enemy" : "dummy", atk->team == TEAM_PLAYER ? "player" : "enemy",
-           atk->phys * atk->atk_phys_rate, t->def_phys, dmg, t->hp, level);
+           atk->phys * atk->atk_phys_rate, t->def_phys, dmg, t->hp, level, a * 57.29578f,
+           t->guarding && !t->guard_hit ? " guard up" : "", t->guard_hit ? (t->guard_broken ? " guarded BROKEN" : " guarded") : "");
     combat_last = (CombatLast){dmg, atk->atk_param, atk->phys * atk->atk_phys_rate, t->def_phys, t->hp, level};
     return dmg;
 }
@@ -277,7 +305,14 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             player_chr.def_el[e] = chr_stats.def[1 + e], player_chr.def_typed[e] = chr_stats.def_typed[1 + e];
         player_chr.has_typed = 1;
         player_chr.poise_max = chr_stats.poise;
+        /* guard with the left-hand weapon (the guard states play the left hand's guardmotionCategory, f278(0)) */
+        for (int e = 0; e < 4; e++)
+            player_chr.guard_cut[e] = chr_stats.guard_cut[HAND_L][e];
+        player_chr.guard_stab = chr_stats.guard_stab[HAND_L];
+        player_chr.guard_level = chr_stats.guard_level[HAND_L];
     }
+    player_chr.guarding = p->guarding;
+    player_chr.stamina = &p->stamina;  /* a guarded hit takes its stamina cost at once (combat_apply) */
     player_chr.new_hit = 0;  /* the ESD (in player_update, before this) has seen last frame's hit */
     combat_register(&player_chr);
     combat_update(dt);

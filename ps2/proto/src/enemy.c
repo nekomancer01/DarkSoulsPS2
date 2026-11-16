@@ -118,8 +118,10 @@ typedef struct {
     float start, end, phys, radius, poise, a[3], b[3], phys_rate;
     int attr;                 /* AtkParam atkAttribute (chrstat.h ATK_*) */
     float el[3];              /* atkMag / atkFire / atkThun x their corrections */
+    float stam;               /* AtkParam atkStam x atkStamCorrection: stamina a guard pays */
+    int no_guard;             /* AtkParam disableGuard */
 } ChrWin;
-_Static_assert(sizeof(ChrWin) == 76, "export_chr.py chr.bin window record");
+_Static_assert(sizeof(ChrWin) == 84, "export_chr.py chr.bin window record");
 #define W_ATTACK -1
 #define F_PARRY 5
 #define F_NO_TURN 7
@@ -605,7 +607,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 8 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 9 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -1454,7 +1456,8 @@ static void attack_sweeps(Enemy *e)
         CombatAttack atk = {.team = TEAM_ENEMY, .atk_param = w->atk_param, .phys = w->phys, .atk_phys_rate = w->phys_rate,
                             .poise_dmg = w->poise, .damage_level = w->dmg_level,
                             .window = (e->index << 20) | ((e->act_serial & 0x3FFF) << 6) | (int)i,
-                            .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr};
+                            .el = {w->el[0], w->el[1], w->el[2]}, .el_rate = {1, 1, 1}, .attr = w->attr,
+                            .stam_dmg = w->stam, .unblockable = w->no_guard};
         memcpy(atk.src_pos, &e->pos, 12);
         int h = combat_sweep(fa, fb, w->radius, &atk);
         if (h)

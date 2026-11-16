@@ -59,6 +59,20 @@ ANIMS = [
     ("GUARD_END", "a00", 101, False),
     ("GUARD_MOVE", "a00", 106, False),
     ("GUARD_MOVE_END", "a00", 116, False),
+    # The rest of the guard set for guardmotionCategory 0 (Heater Shield; group 1 states 75-85, upper-body layer 4):
+    # hold loop 1 (c1_13, state 77), guard walk / run / dash loops 210 / 520 / 515 (states 80-82), guarded-hit
+    # reactions 140 / 141 / 142 (states 83 / 84 / 85 by f237 class 1 / 3 / 4 = guard break)
+    ("GUARD_HOLD", "a00", 1, True),
+    ("GUARD_WALK", "a00", 210, True),
+    ("GUARD_RUN", "a00", 520, True),
+    ("GUARD_DASH", "a00", 515, True),
+    ("GUARD_HIT_S", "a00", 140, False),
+    ("GUARD_HIT_L", "a00", 141, False),
+    ("GUARD_BREAK", "a00", 142, False),
+    # R2 (slot 5): group 1 state 89 = a23 3300, the R2 after an R1 / R2 = state 88 a23 3301, state 90 = 3310
+    ("R2_1", "a23", 3300, False),
+    ("R2_2", "a23", 3301, False),
+    ("R2_3", "a23", 3310, False),
     # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
     # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
     ("EVENT_FOG_WALK", "a00", 7410, False),
