@@ -10,6 +10,7 @@
 #include "hud.h"
 #include "items.h"
 #include "menu.h"
+#include "model.h"
 #include "pickup.h"
 #include "progress.h"
 
@@ -108,6 +109,8 @@ void pickup_anim(Player *p)
 {
     if (p && !player_event_anim_playing(p) && player_event_anim(p, PICKUP_ANIM) <= 0)
         printf("pickup: anim %d not in this build\n", PICKUP_ANIM);
+    else if (p && model_anim(PICKUP_ANIM) < 0)  /* in player.gd but not loaded (model.c MAX_ANIMS): bind pose */
+        printf("pickup: anim %d has no model clip (model.c drops anims past MAX_ANIMS)\n", PICKUP_ANIM);
 }
 
 /* ---- item get dialog (menu.drb F25: rows F25_item0 at the bottom, then up; each row's F25_text_line_02 holds
@@ -231,9 +234,16 @@ void pickup_draw(void)
         drb_draw(r, 0, 0, a, row_text, &k);
         const ItemRow *ir = item_row(rows[k].item);
         int ic = drb_child(line, "icon");
+        static int logged;
+        int shown = 0;
         if (ir && ic >= 0) {
             const DrbNode *n = drb_node(ic);
-            drb_icon(ir->icon, n->x0, n->y0, n->x1 - n->x0, n->y1 - n->y0, a);
+            shown = drb_icon(ir->icon, n->x0, n->y0, n->x1 - n->x0, n->y1 - n->y0, a);
+        }
+        if (logged != (int)rows[k].item + shown) {  /* once per item and state */
+            logged = (int)rows[k].item + shown;
+            printf("pickup: dialog row %d item %08x icon %d node %d %s\n", k, (unsigned)rows[k].item, ir ? ir->icon : -1,
+                   ic, shown ? "drawn" : "not drawn yet");
         }
     }
     hud_end();

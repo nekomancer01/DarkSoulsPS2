@@ -22,7 +22,7 @@ ev action
 wait 0.5
 pickup expect dialog 1
 shot pickup_anim
-wait 4
+wait 1.5
 shot item_dialog
 pickup summary
 wait 4
@@ -35,7 +35,7 @@ ev action
 wait 1
 pickup expect drops 0
 pickup expect dialog 1
-wait 4
+wait 1
 shot drop_dialog
 pickup drop 250050 -44.6 -21.65 -36.4
 pickup drop 250050 -44.6 -21.65 -36.4

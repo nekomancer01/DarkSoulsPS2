@@ -165,7 +165,7 @@ static int fail(const char *why)
  * before the send, a page-aligned sheet or other sheet contents did not change it (PCSX2, 2026-11-03).
  * Bytes: T8 w * h, CT32 w * h * 4 (the only formats drb sends), at most 32767 qw. */
 static u64 up_chain[22] __attribute__((aligned(64)));
-static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
+void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
 {
     int qw = (psm == GS_PSM_T8 ? w * h : w * h * 4) / 16;
     u64 *p = up_chain;
@@ -260,8 +260,8 @@ static int screen_setup(void)
     atlas.TBW = h->aw / 64;
     atlas.Vram = base, atlas.VramClut = base + atlas_bytes;
     FlushCache(0);
-    tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
-    tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
+    drb_tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
+    drb_tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
     /* keep header .. sprites (+ per-node visibility) */
     tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 5;
     tree = ui_alloc(tree_bytes);
@@ -360,10 +360,10 @@ static void icons_step(void)
     if (sheet_dirty || clut_dirty_lo || clut_dirty_hi) {
         FlushCache(0);
         if (sheet_dirty)
-            tex_send(sheet, 512, sheet_t.Height, sheet_t.Vram, GS_PSM_T8, 8);
+            drb_tex_send(sheet, 512, sheet_t.Height, sheet_t.Vram, GS_PSM_T8, 8);
         for (int i = 0; i < ncells; i++)
             if (i < 32 ? clut_dirty_lo >> i & 1 : clut_dirty_hi >> (i - 32) & 1)
-                tex_send(cluts + i * 1024, 16, 16, clut_vram + i * 1024, GS_PSM_CT32, 1);
+                drb_tex_send(cluts + i * 1024, 16, 16, clut_vram + i * 1024, GS_PSM_CT32, 1);
         sheet_dirty = 0, clut_dirty_lo = clut_dirty_hi = 0;
     }
 }

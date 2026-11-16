@@ -71,6 +71,7 @@ int item_text_done(int *desc);
 /* Icons (icons.bin, stored raw): index of icon id, -1 none; read cell k (CLUT 1 KB + pixels) into dst (64-byte
  * aligned, item_icon_bytes()) in the background: 1 started, 0 busy (try next frame) */
 int item_icon_index(int icon);
+int item_icon_of(u32 id);          /* the item's icon id (resident, any time: the HUD slots), -1 unknown */
 int item_icon_bytes(void);
 int item_icon_size(void);
 int item_icon_read(int k, void *dst);
