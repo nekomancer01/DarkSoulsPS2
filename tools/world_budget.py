@@ -46,6 +46,7 @@ FILL_PCT = RES["RES_FILL_PCT"]  # mapstream.c MS_FILL_PCT
 WORLD_SLOTS = 3      # world.c
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
+DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -131,8 +132,12 @@ def lite_entries(d):
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
     cp = col_pages(d)
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
+    if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
+        total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
+    if DG_LITE:  # (world.c LEAN_ENT)
+        tabs += r128(sz("pvs.bin"))
     return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
 
 
@@ -167,6 +172,7 @@ def structural(gen):
     maps = [b[32 + 64 * i:48 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     lr = struct.unpack_from(f"<{2 * n}I", b, 16 + 64 * n)
     lbase = 16 + 64 * n + 8 * n
+    v4 = struct.unpack_from("<I", b, 4)[0] >= 4  # export_world.py: v4 links are 12 B with u16 masks
     ent, evfull, mtxfull = {}, {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
@@ -178,7 +184,8 @@ def structural(gen):
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
-            first, cnt, load, keep = struct.unpack_from("<IHBB", b, lbase + 8 * (lr[2 * blk] + l))
+            first, cnt, load, keep = struct.unpack_from("<I3H", b, lbase + 12 * (lr[2 * blk] + l)) if v4 else \
+                struct.unpack_from("<IHBB", b, lbase + 8 * (lr[2 * blk] + l))
             load |= (1 << blk) if blk else 0
             keep |= load
             on = [i for i in ent if keep >> i & 1]

@@ -77,7 +77,7 @@ static double area3(v3 a, v3 b, v3 c) {
 static double pmax(double a, double b) { return b > a ? b : a; } /* Python max(a, b) */
 /* source triangles by grid cell (the triangle guard's shape check, sg_build) */
 typedef struct { unsigned long long key; int t; } sgent;
-typedef struct { double cs; sgent *g; long long ng; int *big, nbig; } sgrid;
+typedef struct { double cs; sgent *g; long long ng; int *big, nbig; double *bb; } sgrid;  /* bb: per triangle its box (min xyz, max xyz) */
 
 static void plane(double *q, v3 n, v3 p, double w) { /* _plane */
     double a = n.x, b = n.y, c = n.z;
@@ -312,6 +312,13 @@ static void sg_build(sgrid *g, int nv, const v3 *pos, int nt, int (*TP)[3], doub
         cs = pmax(cs, e);
     }
     g->cs = cs, g->ng = 0, g->nbig = 0;
+    g->bb = malloc(sizeof(double) * 6 * (size_t)(nt ? nt : 1));
+    for (int t = 0; t < nt; t++) {
+        v3 a = pos[TP[t][0]], b = pos[TP[t][1]], c = pos[TP[t][2]];
+        double *B = g->bb + 6 * t;
+        B[0] = fmin(a.x, fmin(b.x, c.x)), B[1] = fmin(a.y, fmin(b.y, c.y)), B[2] = fmin(a.z, fmin(b.z, c.z));
+        B[3] = fmax(a.x, fmax(b.x, c.x)), B[4] = fmax(a.y, fmax(b.y, c.y)), B[5] = fmax(a.z, fmax(b.z, c.z));
+    }
     long long cap = 0;
     g->g = NULL;
     g->big = malloc(sizeof(int) * (nt ? nt : 1));
@@ -331,34 +338,34 @@ static void sg_build(sgrid *g, int nv, const v3 *pos, int nt, int (*TP)[3], doub
     }
     if (g->ng > 1) qsort(g->g, (size_t)g->ng, sizeof(sgent), sg_cmp);
 }
-/* squared distance from p to the nearest source triangle t (T0 positions P0) with tmesh[t] == mesh, capped at lim2 */
-static double sg_d2(const sgrid *g, v3 p, const v3 *pos, int (*P0)[3], const int *tmesh, int mesh, double lim2) {
-    double best = lim2;
+/* Whether p is within sqrt(t2) of a source triangle t (T0 positions P0) with tmesh[t] == mesh (sg_off's test). Only the
+   comparison matters, so the search stops at the first triangle found within; a triangle whose box is further from p
+   than the limit can not be (box distance <= distance; the 1e-6 margin covers rounding) and is not measured. The old
+   search measured every triangle of the 27 cells and the big list and compared the nearest to t2. */
+static int sg_near(const sgrid *g, v3 p, const v3 *pos, int (*P0)[3], const int *tmesh, int mesh, double t2) {
+    double lim = t2 * 1.000001 + 1e-9;
     long long c[3] = {(long long)floor(p.x / g->cs), (long long)floor(p.y / g->cs), (long long)floor(p.z / g->cs)};
+#define SG_TRY(t) do { \
+        const double *B = g->bb + 6 * (t); \
+        double ex = p.x < B[0] ? B[0] - p.x : p.x > B[3] ? p.x - B[3] : 0, \
+               ey = p.y < B[1] ? B[1] - p.y : p.y > B[4] ? p.y - B[4] : 0, \
+               ez = p.z < B[2] ? B[2] - p.z : p.z > B[5] ? p.z - B[5] : 0; \
+        if (ex * ex + ey * ey + ez * ez <= lim && tmesh[t] == mesh) { \
+            v3 o; cp_tri3(p, pos[P0[t][0]], pos[P0[t][1]], pos[P0[t][2]], &o); \
+            v3 d = sub(o, p); \
+            if (dot(d, d) <= t2) return 1; \
+        } } while (0)
     for (int dx = -1; dx <= 1; dx++)
         for (int dy = -1; dy <= 1; dy++)
             for (int dz = -1; dz <= 1; dz++) {
                 unsigned long long key = sg_key(c[0] + dx, c[1] + dy, c[2] + dz);
                 long long lo = 0, hi = g->ng;
                 while (lo < hi) { long long m = (lo + hi) / 2; if (g->g[m].key < key) lo = m + 1; else hi = m; }
-                for (long long e = lo; e < g->ng && g->g[e].key == key; e++) {
-                    int t = g->g[e].t;
-                    if (tmesh[t] != mesh) continue;
-                    v3 o; cp_tri3(p, pos[P0[t][0]], pos[P0[t][1]], pos[P0[t][2]], &o);
-                    v3 d = sub(o, p);
-                    double dd = dot(d, d);
-                    if (dd < best) { best = dd; if (best == 0) return 0; }
-                }
+                for (long long e = lo; e < g->ng && g->g[e].key == key; e++) { int t = g->g[e].t; SG_TRY(t); }
             }
-    for (int e = 0; e < g->nbig; e++) {
-        int t = g->big[e];
-        if (tmesh[t] != mesh) continue;
-        v3 o; cp_tri3(p, pos[P0[t][0]], pos[P0[t][1]], pos[P0[t][2]], &o);
-        v3 d = sub(o, p);
-        double dd = dot(d, d);
-        if (dd < best) best = dd;
-    }
-    return best;
+    for (int e = 0; e < g->nbig; e++) { int t = g->big[e]; SG_TRY(t); }
+#undef SG_TRY
+    return 0;
 }
 /* 1 when one of the triangle's corners, edge middles or centre is further than tol from its mesh's source surface */
 static int sg_off(const sgrid *g, v3 a, v3 b, v3 c, const v3 *pos, int (*P0)[3], const int *tmesh, int mesh, double tol) {
@@ -367,7 +374,7 @@ static int sg_off(const sgrid *g, v3 a, v3 b, v3 c, const v3 *pos, int (*P0)[3],
     for (int s = 0; s < 7; s++) {
         v3 p = {W[s][0] * a.x + W[s][1] * b.x + W[s][2] * c.x, W[s][0] * a.y + W[s][1] * b.y + W[s][2] * c.y,
                 W[s][0] * a.z + W[s][1] * b.z + W[s][2] * c.z};
-        if (sg_d2(g, p, pos, P0, tmesh, mesh, t2 * 1.0001 + 1e-12) > t2) return 1;
+        if (!sg_near(g, p, pos, P0, tmesh, mesh, t2)) return 1;
     }
     return 0;
 }
@@ -701,7 +708,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     free(s.snb);
     free(s.n0);
     free(s.l0);
-    if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); }
+    if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); free(s.sg.bb); }
     free(s.vt); free(s.bnb); free(s.TP); free(s.TA); free(s.lock); free(s.border); free(s.dead); free(s.Q);
     free(s.errm); free(s.alost); free(s.ver); free(h.a); free(chg.a);
     free(s.removed.a); free(s.keep.a); free(s.amk.a); free(s.amv.a); free(s.nu.a); free(s.nv_.a); free(s.opp.a);

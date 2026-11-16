@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "player.h"
+#include "chrstat.h"
+#include "testscript.h"
+#include "progress.h"
+#include "items.h"
+#include "combat_data.h"
 #include "esd.h"
 #include "pack.h"
 #include "player_data.h"
@@ -115,6 +120,29 @@ static void set_stamina(Player *p, int v)
 }
 
 int player_esd_env(EsdCtx *c, int id, const float *args, int nargs, float *out);
+static int anim_for(int sel, int id);
+
+#define LOCK_RANGE 15.0f  /* LockCamParam row 0 chrLockRangeMaxRadius */
+
+/* Movement set (MoveParam row of f110, TECH_DEBT gameplay-13): by equip load, light <= 25 %, medium <= 50 %, heavy
+ * <= 100 %, overloaded above (ASSUMED: DS1's roll thresholds; the exe's ChrCtrl+0x210 selection was not decoded;
+ * rows 1 / 6 / 16 are ring variants) */
+static int move_set(void)
+{
+    if (!chr_stats.valid || chr_stats.equip_max <= 0)
+        return 0;
+    float r = chr_stats.equip_weight / chr_stats.equip_max;
+    return r <= 0.25f ? 0 : r <= 0.5f ? 1 : r <= 1.0f ? 2 : 3;
+}
+
+int player_lock_target(const Player *p, float out[3])
+{
+    if (!p->lock)
+        return 0;
+    const CombatChr *c = p->lock;
+    out[0] = c->pos[0], out[1] = c->pos[1], out[2] = c->pos[2];
+    return 1;
+}
 int player_esd_cmd(EsdCtx *c, int bank, int id, const float *args, int nargs);
 static EsdProgram esd_prog;
 static EsdCtx esd;
@@ -125,9 +153,13 @@ static float esd_stick_yaw;
 void player_init(Player *p)
 {
     *p = (Player){0};
-    p->stamina = p->stamina_max = stamina_max_for(START_END);
+    p->stamina = p->stamina_max = chr_stats.valid ? chr_stats.stamina_max : stamina_max_for(START_END);
     p->hp = p->hp_max = combat_player_hp_max();  /* CalcCorrectGraph row 100 at VIT (FUN_1402df9a0): 594 */
     p->state = ST_IDLE;
+    p->ovl_anim = p->motion_mode = -1;
+    p->fwd_flick = 1;
+    for (int i = 0; i < REQ_SLOTS; i++)
+        p->hold_time[i] = -1;
     p->loco = ANIM_WALK;
     p->gait = -1;
     p->esd_loco = 1;
@@ -275,6 +307,8 @@ static void respawn(Player *p)
     p->state = ST_IDLE;
     p->airborne = 0;
     p->vel = v3(0, 0, 0);
+    p->slide = v3(0, 0, 0);
+    p->floor_n[0] = p->floor_n[1] = p->floor_n[2] = 0;
     player_esd_reset(p);  /* both ESD groups back to their start states, no pending requests */
     if (died)
         bonfire_revive(p);  /* Estus, enemies, events as a rest */
@@ -310,6 +344,110 @@ static void land(Player *p, float y)
         p->state = ST_IDLE;
 }
 
+/* PLAYER_RIM (default 1; -DPLAYER_RIM=0 = the centre point alone, as before 2026-11-16): the player's floor is what the
+ * proxy's capsule rests on, not only the triangle under its axis. A wall triangle is no floor (the Burg stairs walkway
+ * below the second bonfire: the walkway's side face, normal y 0.02, read as a floor 0.4 m below the stone and the
+ * walkway 0.2 m above it, with a 0.25-0.35 m strip of nothing between them; the player stepped down the face, went
+ * airborne and fell to the kill plane in about half the iso_burg_taurus runs, TECH_DEBT collision-11). When the
+ * centre has no walkable floor, points around it carry the capsule: the highest walkable floor at RIM_R. */
+#ifndef PLAYER_RIM
+#define PLAYER_RIM 1
+#endif
+/* PLAYER_PROXY (default 1; -DPLAYER_PROXY=0 = the estimates used until 2026-11-16: step up 0.6, down 1.2, walls
+ * below 45 deg, rim 0.2 m, no slide): the ground handling of DSR's character proxy (ChrProxy, exe):
+ * - ChrProxy ctor (thunk 0x1402BA730 -> 0x142276EBB) sets +0xE0 0.8, +0xE4 0.31, +0xE8 0.8. FUN_1402BC650 lifts the
+ *   capsule by +0xE4 (+0xE8 while +0x6C is set: not seen for the player, not modelled) before hkpCharacterProxy::
+ *   integrate. The lifted capsule's rounded bottom rides over an edge while the contact normal stays within maxSlope
+ *   (below): an edge up to lift + r (1 - cos 60) = 0.31 + 0.2 = 0.51 m above the feet is climbed (DERIVED from the
+ *   lift, the capsule radius and maxSlope; Havok's proxy solver itself is not re-implemented), a taller one is a wall.
+ *   The Burg's Taurus-tower stairs have 0.35 m risers: a plain 0.31 m limit stops the walker there.
+ * - FUN_1402BCB00 (after integrate) sweeps a sphere of radius 0.8 x the capsule radius (+0x228 x DAT_1412B1A24) down
+ *   from the lifted feet; the proxy is on the ground when the hit lies within lift + capsule radius below the lifted
+ *   feet: a step down of up to the capsule radius (0.4 m) is followed, a deeper one is a fall. The sphere is what
+ *   carries the capsule over small gaps (RIM_R).
+ * - hkpCharacterProxyCinfo maxSlope = 1.0472 rad (60 deg; DAT_14130D8C4 stored at cinfo +0x78 before the
+ *   hkpCharacterProxy ctor FUN_140A78890 at 0x1402BAC87): steeper surfaces are walls to the proxy.
+ * - FUN_1402BCB00 / FUN_1402BD040: ground steeper than 35 deg (DAT_141A2AE50, cosine compare; cinfo byte +0x34 = 1)
+ *   sets +0x33, and FUN_1402BBE40 then slides the character: +0x120 += g - (g.n) n with g = (0, -0.5, 0)
+ *   (DAT_141A2AE48), clamped to |x|, |z| <= 35, |y| <= 60 m/s; on other frames +0x120 *= 0.65 (DAT_141A2AE4C) and is
+ *   zeroed below 0.005 squared (DAT_14130AD10). +0x120 adds to the move's velocity. These are per proxy update:
+ *   ASSUMED 60 updates a second (DSR's frame rate), scaled by dt here. Flags +0xEC / +0xED (no slide) are not decoded. */
+#ifndef PLAYER_PROXY
+#define PLAYER_PROXY 1
+#endif
+#if PLAYER_PROXY
+#define PROXY_LIFT 0.31f
+#define PROXY_STEP_UP (PROXY_LIFT + COL_PLAYER_R * (1 - PROXY_WALL_NY))
+#define PROXY_STEP_DOWN COL_PLAYER_R
+#define RIM_R (COL_PLAYER_R * 0.8f)
+#define PROXY_WALL_NY 0.5f      /* cos(maxSlope 60 deg) */
+#define FLOOR_NY 0.5f
+#define SLIDE_NY 0.81915204f    /* cos 35 deg */
+#else
+#define PROXY_STEP_UP COL_STEP_UP
+#define PROXY_STEP_DOWN COL_STEP_DOWN
+#define RIM_R (COL_PLAYER_R * 0.5f)
+#define PROXY_WALL_NY COL_WALKABLE_NY
+#define FLOOR_NY 0.5f
+#define SLIDE_NY 0.0f           /* never */
+#endif
+#define SLIDE_G 0.5f
+#define SLIDE_DECAY 0.65f
+#define SLIDE_STOP2 0.005f
+#define SLIDE_XZ_MAX 35.0f
+#define SLIDE_Y_MAX 60.0f
+#define PROXY_HZ 60.0f
+
+static int player_floor(float x, float z, float y_top, float y_bottom, ColHit *hit)
+{
+    ColHit h;
+    int ok = col_floor(x, z, y_top, y_bottom, COL_SOLID, &h);
+    if (!PLAYER_RIM || (ok && h.n[1] >= FLOOR_NY)) {
+        if (ok && hit)
+            *hit = h;
+        return ok;
+    }
+    static const float dir[8][2] = {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {-0.7071f, 0.7071f},
+                                    {-1, 0}, {-0.7071f, -0.7071f}, {0, -1}, {0.7071f, -0.7071f}};
+    ColHit r, best;
+    int found = 0;
+    for (int k = 0; k < 16; k++) {
+        float rr = k < 8 ? RIM_R * 0.5f : RIM_R;  /* the sphere meets nearer edges first */
+        if (col_floor(x + dir[k & 7][0] * rr, z + dir[k & 7][1] * rr, y_top, y_bottom, COL_SOLID, &r) &&
+            r.n[1] >= FLOOR_NY && (!found || r.y > best.y))
+            best = r, found = 1;
+    }
+    if (found) {
+        if (hit)
+            *hit = best;
+        return 1;
+    }
+    if (ok && hit)  /* only steep faces around: as before */
+        *hit = h;
+    return ok;
+}
+
+/* Resolve this frame's move against the map collision (collision.c), like the character proxy: on the ground the
+ * capsule slides along walls and the feet follow the floor within the step limits; without a floor the player is
+ * airborne: x/z keep the take-off velocity (a jump's root motion while it plays), y follows gravity, and the first
+ * floor crossed is the landing. Crossing a lethal-fall / kill plane, or dropping out of the map, respawns. */
+/* PROXY_SLIDE: one frame of ChrProxy+0x120 from last frame's floor normal (0 0 0 = airborne), see PLAYER_PROXY */
+static void proxy_slide(Player *p, float dt)
+{
+    float k = dt * PROXY_HZ, *n = p->floor_n;
+    if (n[1] > 0 && n[1] < SLIDE_NY && p->state != ST_DEAD) {
+        float gn = -SLIDE_G * n[1];  /* g . n */
+        p->slide.x = clampf(p->slide.x + (0 - gn * n[0]) * k, -SLIDE_XZ_MAX, SLIDE_XZ_MAX);
+        p->slide.y = clampf(p->slide.y + (-SLIDE_G - gn * n[1]) * k, -SLIDE_Y_MAX, SLIDE_Y_MAX);
+        p->slide.z = clampf(p->slide.z + (0 - gn * n[2]) * k, -SLIDE_XZ_MAX, SLIDE_XZ_MAX);
+    } else if (p->slide.x != 0 || p->slide.y != 0 || p->slide.z != 0) {
+        float f = powf(SLIDE_DECAY, k);
+        p->slide = v3(p->slide.x * f, p->slide.y * f, p->slide.z * f);
+        if (p->slide.x * p->slide.x + p->slide.y * p->slide.y + p->slide.z * p->slide.z < SLIDE_STOP2)
+            p->slide = v3(0, 0, 0);
+    }
+}
+
 /* Resolve this frame's move against the map collision (collision.c), like the character proxy: on the ground the
  * capsule slides along walls and the feet follow the floor within the step limits; without a floor the player is
  * airborne: x/z keep the take-off velocity (a jump's root motion while it plays), y follows gravity, and the first
@@ -323,15 +461,25 @@ static void constrain(Player *p, V3 old)
     float pos[3] = {old.x, old.y, old.z}, dt = p->frame_dt;
     float dx = p->pos.x - old.x, dz = p->pos.z - old.z;
     ColHit hit;
+    proxy_slide(p, dt);  /* every update (FUN_1402BBE40); airborne the floor normal is 0 and it decays */
     if (p->airborne && p->state != ST_JUMP)
         dx = p->vel.x * dt, dz = p->vel.z * dt;
-    col_move(pos, dx, dz, COL_PLAYER_R, COL_PLAYER_H, COL_STEP_UP, COL_SOLID);
+    else if (!p->airborne)
+        dx += p->slide.x * dt, dz += p->slide.z * dt;
+    float wall = col_wall_ny;
+    col_wall_ny = PROXY_WALL_NY;
+    col_ride = PLAYER_PROXY;  /* edges under the capsule within maxSlope are ridden over (the spiral stairs of the
+                               * Taurus tower: risers of the steps beside the walker pushed it back) */
+    col_move(pos, dx, dz, COL_PLAYER_R, COL_PLAYER_H, PROXY_STEP_UP, COL_SOLID);
+    col_wall_ny = wall;
+    col_ride = 0;
     if (!p->airborne) {
-        if (col_floor(pos[0], pos[2], pos[1] + COL_STEP_UP, pos[1] - COL_STEP_DOWN, COL_SOLID, &hit)) {
+        if (player_floor(pos[0], pos[2], pos[1] + PROXY_STEP_UP, pos[1] - PROXY_STEP_DOWN, &hit)) {
             /* ease the feet onto each step instead of snapping (the Havok proxy moves over steps over several
              * frames); the lag stays under STEP_LAG so the step window above still finds the floor */
             float y = old.y + (hit.y - old.y) * (1 - expf(-dt / STEP_EASE));
             p->pos = v3(pos[0], clampf(y, hit.y - STEP_LAG, hit.y + STEP_LAG), pos[2]);
+            memcpy(p->floor_n, hit.n, sizeof p->floor_n);
             return;
         }
         if (world_hold(pos)) {  /* the floor ahead is a world block still loading (src/world.c): wait at its edge */
@@ -345,6 +493,7 @@ static void constrain(Player *p, V3 old)
         p->vel.x = clampf(dx / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
         p->vel.z = clampf(dz / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
     }
+    p->floor_n[0] = p->floor_n[1] = p->floor_n[2] = 0;
     float vy0 = p->vel.y;
     p->vel.y = clampf(p->vel.y - GRAVITY * gravity_scale(p) * dt, -AIR_DOWN_MAX, AIR_UP_MAX);
     float y = pos[1] + p->vel.y * dt;
@@ -355,9 +504,10 @@ static void constrain(Player *p, V3 old)
     /* landed: the highest floor between the last height (plus a step, for slopes) and the new one. The fall itself
      * (1550 / 1500) is the ESD's: group 0 enters state 14 on f200 (airborne without Disable Fall Motion); a fall of
      * 20 m or more lands as state 97 (lethal) through f224, and the damage applied here */
-    if (col_floor(pos[0], pos[2], pos[1] + COL_STEP_UP, y, COL_SOLID, &hit)) {
+    if (player_floor(pos[0], pos[2], pos[1] + PROXY_STEP_UP, y, &hit)) {
         y = hit.y;
         land(p, y);
+        memcpy(p->floor_n, hit.n, sizeof p->floor_n);
     } else {
         float feet[3] = {pos[0], y, pos[2]};
         if (world_hold(feet)) {  /* falling into a world block still loading: hang until its collision is on */
@@ -421,12 +571,14 @@ static void set_slots(unsigned char *a, const unsigned char *slots, int n)
 
 /* One ChrActionFlag (TAE event 0) active this frame -> ctx fields, as FUN_140340580. "Key Input" flags open the input
  * buffer of their request slots (ctx+0x1A0), "Anim Cancel" flags enable them (ctx+0xF2); the rest are bits of
- * ctx+0xA0 / +0xA4. (The +0x127 / +0x15C slot arrays they also set feed the hold / R2 logic, not modelled.) */
+ * ctx+0xA0 / +0xA4. Some also open hold windows: ctx+0x127 (hold_en) / +0x15C (hold_acc), FUN_140340580 cases 1, 4,
+ * 21, 22, 87. */
 static void apply_flag(Player *p, int f)
 {
     static const unsigned char lh[] = {1, 19, 20, 51, 52}, magic[] = {2, 3},
         steps[] = {9, 10, 11, 12, 15, 16, 17, 18, 42},
-        common[] = {0, 1, 2, 3, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 42, 51, 52};
+        common[] = {0, 1, 2, 3, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 42, 51, 52},
+        guard[] = {1, 21, 51, 52}, common_hold[] = {0, 1, 5, 21, 51, 52};
     static const struct { unsigned char flag; unsigned bit; } a0[] = {
         {7, 1}, {3, 2}, {5, 4}, {6, 8}, {8, 0x10}, {11, 0x20}, {78, 0x20}, {17, 0x40}, {18, 0x80}, {56, 0x100},
         {57, 0x200}, {19, 0x800}, {27, 0x1000}, {51, 0x2000}, {39, 0x4000}, {50, 0x8000}, {44, 0x10000},
@@ -438,8 +590,12 @@ static void apply_flag(Player *p, int f)
         {74, 0x40000}, {75, 0x100000}, {80, 0x200000}, {81, 0x400000}, {76, 0x800000}, {72, 0x1000000},
         {82, 0x2000000}, {85, 0x4000000}, {88, 0x8000000}, {92, 0x10000000}, {94, 0x80000000u}};
     switch (f) {
-    case 1: p->req_buffer[REQ_R1] = 1; return;                            /* Right Hand Attack Key Input */
-    case 4: p->req_enable[REQ_R1] = 1; return;                            /* Right Hand Attack Anim Cancel */
+    case 1: p->req_buffer[REQ_R1] = 1;                                    /* Right Hand Attack Key Input */
+        p->hold_en[REQ_R1] = p->hold_en[REQ_R2] = 1; return;
+    case 4: p->req_enable[REQ_R1] = 1;                                    /* Right Hand Attack Anim Cancel */
+        p->hold_acc[REQ_R1] = p->hold_acc[REQ_R2] = 1; return;
+    case 21: set_slots(p->hold_en, guard, 4); return;                     /* Guard Key Input (hold) */
+    case 22: set_slots(p->hold_acc, guard, 4); return;                    /* Guard Anim Cancel (hold) */
     case 9: set_slots(p->req_buffer, lh, 5); return;                      /* Left Hand Attack Key Input */
     case 10: set_slots(p->req_buffer, magic, 2); return;                  /* Magic Key Input */
     case 16: set_slots(p->req_enable, lh, 5); return;                     /* Left Hand Attack Anim Cancel */
@@ -450,7 +606,8 @@ static void apply_flag(Player *p, int f)
     case 31: p->req_enable[14] = 1; return;                               /* Item Anim Cancel */
     case 35: p->req_buffer[7] = 1; return;                                /* First Step RH Attack Key Input */
     case 36: p->req_enable[7] = 1; return;                                /* First Step RH Attack Anim Cancel */
-    case 87: set_slots(p->req_buffer, common, sizeof common); return;     /* Common Key Input */
+    case 87: set_slots(p->req_buffer, common, sizeof common);             /* Common Key Input */
+        set_slots(p->hold_en, common_hold, sizeof common_hold); return;
     case 97: p->no_magic = 1; return;                                     /* Disable Magic / Item Use Cancel */
     }
     for (unsigned i = 0; i < sizeof a0 / sizeof a0[0]; i++)
@@ -466,6 +623,9 @@ static void update_requests(Player *p)
 {
     memset(p->req_enable, 0, sizeof p->req_enable);
     memset(p->req_buffer, 0, sizeof p->req_buffer);
+    memset(p->hold_en, 0, sizeof p->hold_en);
+    memset(p->hold_acc, 0, sizeof p->hold_acc);
+    memset(p->held, 0, sizeof p->held);
     p->ctx_a0 = p->ctx_a4 = 0;
     p->no_magic = 0;
     int anim = flag_anim(p);
@@ -476,9 +636,17 @@ static void update_requests(Player *p)
             if (a->win[i].type > 0 && t >= a->win[i].start && t < a->win[i].end)
                 apply_flag(p, a->win[i].type);
     }
+    /* the upper-body layer's anim carries ChrActionFlags too (the weapon switch end a00 86: flag 32 lets group 1
+     * state 221 take the next switch; guard poses: flags 21 / 22 hold windows) */
+    if (p->ovl_anim >= 0) {
+        const AnimData *a = &anims[p->ovl_anim];
+        for (int i = 0; i < a->nwin; i++)
+            if (a->win[i].type > 0 && p->ovl_t >= a->win[i].start && p->ovl_t < a->win[i].end)
+                apply_flag(p, a->win[i].type);
+    }
     /* FUN_140388020: no stamina, no buffered requests */
     if (p->stamina < 1)
-        memset(p->latch, 0, sizeof p->latch);
+        memset(p->latch, 0, sizeof p->latch), memset(p->hold_latch, 0, sizeof p->hold_latch);
     /* c1_146 (ctx+0x1DC bit 19) accepts every input while the state that set it lasts (FUN_140388790) */
     int all = (p->ctx_1dc >> 19) & 1;
     if (all && esd_state(&esd, 1) != p->accept_all_state) {
@@ -491,18 +659,61 @@ static void update_requests(Player *p)
     for (int i = 0; i < REQ_SLOTS; i++)
         if (all || p->req_buffer[i])
             p->latch[i] |= p->trig[i];
+    /* hold requests (FUN_140388790), behind the stamina gate of FUN_140388020. Slot 21 (guard) latches once its
+     * button has been down longer than one frame inside a hold window; the others on a press inside one. The held
+     * result (f220 / f243) needs the slot's accept window too. ASSUMED (TECH_DEBT esd-8): the latch of slots other
+     * than 21 drops when the button is released (the exe's reset of ctx+0x3F4 for them was not found). */
+    if (p->stamina < 1)
+        return;
+    for (int i = 0; i < REQ_SLOTS; i++) {
+        if (i == REQ_GUARD) {
+            if (!p->hold_en[i])
+                p->hold_timer21 = 0;
+            else if (p->hold_time[i] <= 0)
+                p->hold_timer21 = 0, p->hold_latch[i] = 0;
+            else if ((p->hold_timer21 += p->frame_dt) > p->frame_dt)
+                p->hold_latch[i] = 1;
+        } else if (!p->pad_held[i]) {
+            p->hold_latch[i] = 0;
+        }
+        if (p->hold_en[i] && p->trig[i])
+            p->hold_latch[i] = 1;
+        if (p->hold_acc[i] && p->hold_latch[i])
+            p->held[i] = 1;
+    }
 }
 
 void player_update(Player *p, const Input *in, float cam_yaw, float dt)
 {
     V3 old = p->pos;
     p->frame_dt = dt;
+    /* stats / equipment changed in a menu (level up, armour): new maxima at once (chrstat.c) */
+    if (chr_stats.valid && (p->hp_max != chr_stats.hp_max || p->stamina_max != chr_stats.stamina_max)) {
+        if (p->hp > 0)
+            p->hp = p->hp + (chr_stats.hp_max - p->hp_max) > 0 ? p->hp + (chr_stats.hp_max - p->hp_max) : 1;
+        p->hp_max = chr_stats.hp_max, p->stamina_max = chr_stats.stamina_max;
+        if (p->hp > p->hp_max)
+            p->hp = p->hp_max;
+        set_stamina(p, p->stamina);
+    }
     float tilt = sqrtf(in->mx * in->mx + in->my * in->my);
     if (tilt > 1)
         tilt = 1;
     /* camera-relative stick heading */
     float stick_yaw = cam_yaw + atan2f(in->mx, in->my);
     int moving = tilt > 0.2f;
+    {   /* f212 forward flick: the stick leaves the dead zone pointing within 45 deg of the facing */
+        float d = stick_yaw - p->yaw;
+        while (d > 3.14159265f) d -= 6.2831853f;
+        while (d < -3.14159265f) d += 6.2831853f;
+        if (p->prev_tilt <= 0.2f && tilt > 0.2f && d > -0.785f && d < 0.785f)
+            p->fwd_flick = 0;
+        else
+            p->fwd_flick += dt;
+        if (tilt <= 0.2f)
+            p->fwd_flick = 1;
+        p->prev_tilt = tilt;
+    }
 
     /* gait with the exe's walk/run hysteresis; dashing needs the run gait for > DASH_RUN_TIME */
     float mag = tilt / STICK_FULL;
@@ -529,18 +740,134 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* Pad -> ESD request slots (PadManipulator FUN_140398920 / FUN_140396860: byte +0x84 + slot): R1 = 0, Circle tap
      * with the stick = roll 15 (forward; 16-18 are the lock-on directions), without = backstep 10, the running jump 42.
      * Nothing is requested in the air or while dead. */
+    /* lock-on (R3): LockCamParam row 0 chrLockRangeMaxRadius 15 m to pick; lost when the target dies or goes past
+     * that range x 1.3 (ASSUMED; DSR's release distance was not decoded) */
+    if (in->r3)
+        p->lock = p->lock ? 0 : (void *)combat_lock_pick((const float *)&p->pos, cam_yaw, LOCK_RANGE);
+    if (p->lock) {
+        const CombatChr *c = p->lock;
+        float dx = c->pos[0] - p->pos.x, dz = c->pos[2] - p->pos.z;
+        if (!combat_lock_alive(c) || dx * dx + dz * dz > LOCK_RANGE * LOCK_RANGE * 1.69f || p->hp < 0)
+            p->lock = 0;
+    }
     memset(p->trig, 0, sizeof p->trig);
     /* R1 also counts in the air: group 0's fall loop (state 15) turns it into the plunging attack (19 / 20) */
     if (p->state != ST_DEAD && in->r1)
         p->trig[REQ_R1] = 1;
+    /* held buttons (FUN_140396860: R1 -> 0 / 7, R2 -> 5, L1 -> 1 / 21, L2 -> 19) and their hold time (manipulator
+     * +0xF0[slot]); a press is held now and not last frame. R1's press stays the r1 edge above. */
+    memcpy(p->pad_prev, p->pad_held, sizeof p->pad_held);
+    memset(p->pad_held, 0, sizeof p->pad_held);
+    if (in->r1_held || in->r1)
+        p->pad_held[REQ_R1] = 1;
+    if (in->r2_held)
+        p->pad_held[REQ_R2] = 1;
+    if (in->l1_held)
+        p->pad_held[REQ_L1] = p->pad_held[REQ_GUARD] = 1;
+    if (in->l2_held)
+        p->pad_held[REQ_L2] = 1;
+    for (int i = 0; i < REQ_SLOTS; i++)
+        p->hold_time[i] = p->pad_held[i] ? (p->pad_prev[i] ? p->hold_time[i] + dt : 0) : -1;
+    /* d-pad (DSR): down cycles the quick items (the HUD slot keeps its fixed icon, hud-3), up the attuned spells
+     * (none here: no magic yet), left / right switch the hand's weapon slot: the switch motion (f109 1 right /
+     * 2 left -> group 1 states 217 / 218, a00 81 / 80 on the upper-body layer) and the stats of the other slot */
+    p->switch_req = 0;
+    if (in->dpad & 2)
+        chrstat_cycle_quick();
+    if (in->dpad & 12) {
+        int h = in->dpad & 8 ? HAND_R : HAND_L;
+        if (chrstat_switch_hand(h))
+            p->switch_req = h == HAND_R ? 1 : 2;
+    }
+    /* Square: item use, slots 2 / 3 (group 1 state 0 tests f100(3) || f100(2); FUN_140396860 writes +0x86 / +0x87
+     * together, ASSUMED to be Square) */
+    if (in->square && p->state != ST_FALL && p->state != ST_DEAD && !p->airborne)
+        p->trig[2] = p->trig[3] = 1;
+    if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
+        static const unsigned char slots[] = {REQ_R2, REQ_L1, REQ_GUARD, REQ_L2};
+        for (unsigned i = 0; i < sizeof slots; i++)
+            if (p->pad_held[slots[i]] && !p->pad_prev[slots[i]])
+                p->trig[slots[i]] = 1;
+    }
     if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
         if (jump_pressed && moving)
             p->trig[REQ_JUMP] = 1, p->jump_window = 0;
-        else if (roll_pressed)
-            p->trig[moving ? REQ_ROLL_F : REQ_BACKSTEP] = 1;
+        else if (roll_pressed) {
+            /* locked on, the PadManipulator picks the roll by the stick against the facing: 15 forward, 16 back,
+             * 17 left, 18 right (group 1 states 32 / 33 / 35 / 34 play f110(0 / 1 / 2 / 3)) */
+            int slot = REQ_ROLL_F;
+            if (p->lock && moving) {
+                float d = stick_yaw - p->yaw;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                slot = fabsf(d) < 0.785f ? 15 : fabsf(d) > 2.356f ? 16 : d > 0 ? 18 : 17;
+            }
+            p->trig[moving ? slot : REQ_BACKSTEP] = 1;
+        }
+    }
+    /* R1 next to an enemy's back (or a parried enemy's front) throws instead of attacking: the engine starts the
+     * ThrowParam pair, outside the ESD (c0000.esd has no state for a23 3400 / 3201) */
+    if (p->trig[REQ_R1] && combat_throw_hook && !esd_action(p) && p->state != ST_FALL && p->state != ST_DEAD &&
+        !p->airborne) {
+        ThrowStart ts;
+        float pos[3] = {p->pos.x, p->pos.y, p->pos.z};
+        int a = combat_throw_hook(pos, p->yaw, &ts) ? anim_for(1, ts.atk_anim) : -1;
+        if (a >= 0) {
+            p->yaw = ts.yaw;
+            start_anim(p, ST_ATTACK, a, 0);
+            p->throw_cc = ts.cc, p->throw_hit_t = ts.hit_t, p->throw_corr = ts.corr, p->throw_anim = a;
+            p->throw_done = 0;
+            p->trig[REQ_R1] = 0, p->latch[REQ_R1] = 0;
+        }
     }
     esd_moving = moving, esd_stick_yaw = stick_yaw;
     update_requests(p);
+    /* upper-body layer clock; guard up while a group-1 guard state (motion mode 11) shows a guard pose. Dead,
+     * airborne or a full-body action drop it (their anims own the whole body) */
+    if (p->ovl_anim >= 0) {
+        p->ovl_t += dt;
+        if (p->ovl_loop && anims[p->ovl_anim].length > 0)
+            p->ovl_t = fmodf(p->ovl_t, anims[p->ovl_anim].length);
+        if (p->state == ST_DEAD || p->state == ST_FALL || p->hp < 0)
+            p->ovl_anim = -1;
+    }
+    p->guarding = p->ovl_anim >= 0 && p->motion_mode == 11 && !esd_action(p);
+    /* throw in progress: the thrower is invincible (ASSUMED, TAE flags 67 / 68 of the anim are not read) and the
+     * damage lands at its ThrowAttackBehavior time: AR x atkPhysCorrection / 100, through i-frames and guards */
+    if (p->throw_cc && (p->state != ST_ATTACK || p->anim != p->throw_anim))
+        p->throw_cc = 0;
+    if (p->throw_cc && !p->throw_done && p->t >= p->throw_hit_t) {
+        static int win = 0x7E000000;
+        CombatAttack atk = {.team = TEAM_PLAYER, .phys = combat_player_ar(), .atk_phys_rate = p->throw_corr / 100,
+                            .window = win++, .is_throw = 1};
+        atk.src_pos[0] = p->pos.x, atk.src_pos[1] = p->pos.y, atk.src_pos[2] = p->pos.z;
+        combat_apply((CombatChr *)p->throw_cc, &atk);
+        p->throw_done = 1;
+    }
+    /* item use: the item anim's TAE 64 window applies the quick item once (Estus: a charge for goods 201's heal) */
+    if (!esd_action(p))
+        p->item_used = 0;
+    if (esd_action(p) && in_window(p->anim, ITEM_USE, p->t) && p->item_used != p->anim + 1 && chr_stats.valid) {
+        p->item_used = p->anim + 1;
+        int estus = chr_stats.item_id == (ITEM_GOODS | ESTUS_ID);
+        if (estus ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0) {
+            if (estus)
+                prog.estus--;
+            else if (chr_stats.item_consume)
+                inv_add(chr_stats.item_id, -1);
+            if (chr_stats.item_heal && p->hp > 0)
+                p->hp = p->hp + chr_stats.item_heal > p->hp_max ? p->hp_max : p->hp + chr_stats.item_heal;
+            if (chr_stats.item_hum)
+                progress_add_humanity(chr_stats.item_hum);
+            if (chr_stats.item_souls)
+                progress_add_souls(chr_stats.item_souls);
+            progress_touch();
+            printf("player: used item %08x (heal %d), HP %d, Estus %d\n", chr_stats.item_id, chr_stats.item_heal, p->hp,
+                   prog.estus);
+        }
+    }
+    /* parry: the Parry AttackBehavior window of the parry anim (export_player.py records AttackBehaviors as type -1) */
+    p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 
     int ticked = 0;
     if (p->state == ST_FALL || p->state == ST_DEAD) {
@@ -566,7 +893,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         float f0, s0, f1, s1;
         root_at(p->anim, p->t, &f0, &s0);
         float keep = 1 - clampf(grad_at(p->anim, 236, p->t, 0) * (1 - MOBILITY), 0, 1);
-        p->t += dt;
+        if (p->hitstop > 0)  /* hit stop: the anim (and its root motion) holds for hitStopTime (TECH_DEBT combat-12) */
+            p->hitstop -= dt;
+        else
+            p->t += dt;
         root_at(p->anim, p->t, &f1, &s1);
         float df = (f1 - f0) * keep, ds = (s1 - s0) * keep, sy = sinf(p->yaw), cy = cosf(p->yaw);
         p->pos.x += sy * df + cy * ds;
@@ -590,11 +920,31 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* the ESD: may start or end an action (player_esd_cmd) */
     esd.p = esd.chr = p, esd.in = in, esd.dt = dt;
     esd_update(&esd);
+    if (test_active()) {  /* test runs: the action group's state changes, for scripts that check a move */
+        static int last1 = -1;
+        int s1 = esd_state(&esd, 1);
+        if (s1 != last1)
+            printf("player: esd 1 state %d (anim %s t %.2f)\n", s1, esd_action(p) ? anims[p->anim].name : "-", p->t);
+        last1 = s1;
+    }
 
     if (!playing_anim(p) && p->state != ST_FALL && p->state != ST_DEAD) {
         p->invincible = p->hitting = 0;
         if (moving && p->esd_loco) {
             int loco = dashing ? ANIM_DASH : p->gait == 1 ? ANIM_RUN : ANIM_WALK;
+            /* locked on (not sprinting): face the target and strafe with MoveParam row 0 walk / run B / L / R */
+            float tp[3], face = stick_yaw;
+            p->strafe = 0;
+            if (!dashing && player_lock_target(p, tp)) {
+                face = atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z);
+                float d = stick_yaw - face;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                p->strafe = fabsf(d) < 0.785f ? 0 : fabsf(d) > 2.356f ? 1 : d > 0 ? 3 : 2;
+                static const int walk[4] = {ANIM_WALK, ANIM_WALK_B, ANIM_WALK_L, ANIM_WALK_R},
+                                 run[4] = {ANIM_RUN, ANIM_RUN_B, ANIM_RUN_L, ANIM_RUN_R};
+                loco = p->gait == 1 ? run[p->strafe] : walk[p->strafe];
+            }
             if (loco != p->loco || p->state != ST_MOVE) {
                 /* keep the stride phase when switching walk/run/dash, as the loops are aligned at frame 0 */
                 float ph = p->loco_t / loop_len(p->loco);
@@ -602,7 +952,7 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
                 p->loco_t = (ph - floorf(ph)) * loop_len(loco);
             }
             p->state = ST_MOVE;
-            turn_toward(p, stick_yaw, dt);
+            turn_toward(p, face, dt);
             /* the loop's own root motion moves the character, as in the game (no constant speed) */
             float loop = loop_len(p->loco), t0 = fmodf(p->loco_t, loop), t1 = t0 + dt, f0, s0, f1, s1;
             root_at(p->loco, t0, &f0, &s0);
@@ -615,8 +965,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
                 f1 = fe + fw, s1 = se + sw;
             }
             p->speed = (f1 - f0) / dt;
-            p->pos.x += sinf(p->yaw) * (f1 - f0);
-            p->pos.z += cosf(p->yaw) * (f1 - f0);
+            /* strafe loops move sideways: both root components, as the action anims */
+            float df = f1 - f0, ds = p->strafe >= 2 ? s1 - s0 : 0;
+            p->pos.x += sinf(p->yaw) * df + cosf(p->yaw) * ds;
+            p->pos.z += cosf(p->yaw) * df - sinf(p->yaw) * ds;
             p->loco_t += dt;
             if (!ticked)
                 stamina_tick(p, p->loco, t0, dt);
@@ -624,9 +976,17 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->state = ST_IDLE;
             p->speed = 0;
             p->idle_t += dt;
+            float tp[3];  /* locked on: standing turns to the target */
+            if (player_lock_target(p, tp))
+                turn_toward(p, atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z), dt);
             if (!ticked)
                 stamina_tick(p, -1, 0, dt);
         }
+    }
+    {   /* knockback of the latest hit (combat_knock_step): through constrain() as any other move */
+        float k[2];
+        combat_knock_step(combat_player(), dt, k);
+        p->pos.x += k[0], p->pos.z += k[1];
     }
     if (p->on_map)
         constrain(p, old);
@@ -695,19 +1055,28 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     float v = 0;
     switch (id) {
     case 0:     /* IsAnimEnd: no ESD anim (ctx+0x80 handle) or it ended, or a move cancel cut it (FUN_14037b3e0) */
-    case 1:
+    case 1:     /* IsMoveAnimEnd: the c1_4 handle (ctx+0x78) */
+        /* the upper-body layer (guard): c1_3 on layer 4 answers f0, c1_4 / c1_13 answer f1 */
+        if (p->ovl_anim >= 0 && (id == 0) == (p->ovl_cmd == 3)) {
+            v = !p->ovl_loop && p->ovl_t >= anims[p->ovl_anim].length;
+            break;
+        }
         v = !(esd_action(p) || p->state == ST_DEAD) || p->t >= anims[p->anim].length ||
             (esd_moving && (p->ctx_a0 & 0x20));
         break;
     case 100: v = slot && gate(p, s) && p->trig[s]; break;                      /* IsButtonTriggered */
-    case 101: v = 0; break;      /* IsButtonReleased: no hold-type pad inputs are mapped (only R1 / Circle taps) */
+    case 101: v = slot && !p->pad_held[s] && p->pad_prev[s]; break;            /* IsButtonReleased */
     case 102: v = slot && requested(p, s); break;                                 /* IsActionRequested */
-    case 103: v = 0; break;      /* FUN_1403867b0: 1.0 while the slot's button is held (manipulator +0xF0[slot]) */
+    /* FUN_1403867b0: manipulator +0xF0[slot], the hold time. ASSUMED (TECH_DEBT esd-8): -1 while the button is up,
+     * since c0000 ends its guard states on f103(1) < 0 and enters them on f103(21) >= 0 */
+    case 103: v = slot ? p->hold_time[s] : -1; break;
+    case 220: v = slot && p->held[s]; break;                                    /* ctx+0x2E1[slot] */
+    case 243: v = gate(p, REQ_GUARD) && p->held[REQ_GUARD]; break;               /* FUN_140386a70(ctx, 21) */
     case 104: v = 0; break;      /* weapon hold-style change request (no two-handing input) */
     case 105: v = 0; break;      /* ctx+0x42C[i]: event / gesture requests (none) */
     case 108: v = slot && is_step(s) && requested(p, s); break;                 /* IsStepRequested */
-    case 109: v = 0; break;      /* PlayerIns vt+0x438: weapon / item switch request (none) */
-    case 110: v = s >= 0 && s < 6 ? move_escape[s] : -1; break;                 /* GetRollAnimId */
+    case 109: v = p->switch_req; break;  /* PlayerIns vt+0x438: weapon switch request (1 right, 2 left; ASSUMED) */
+    case 110: v = s >= 0 && s < 6 ? move_escape[move_set() * 6 + s] : -1; break;  /* GetRollAnimId */
     case 111:   /* FUN_140386bb0: FUN_140323c60(chr, ctx+0x49E any slot enabled) && manipulator +0x1C4 (some request
                  * made this frame) */
         for (int i = 0; i < REQ_SLOTS; i++)
@@ -721,11 +1090,22 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 207: v = 1; break;      /* GetWeaponHoldStyle: one-handed */
     case 211: v = p->ctx_1dc & 1; break;
     case 219: v = p->state != ST_MOVE ? 0 : p->loco == ANIM_DASH ? 3 : p->loco == ANIM_RUN ? 2 : 1; break;
-    case 225:   /* GetWeaponMotionCategory(hand): FUN_1403261d0 returns the hold style for -1 when one-handed */
-        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : -1;
+    case 225:   /* GetWeaponMotionCategory(hand): FUN_1403261d0 returns the hold style for -1 when one-handed; 2 reads
+                 * chr+0x198 [3], 0 one-handed (ASSUMED: the parry anim c1_3(0, 5100 + f225(2)) is a48 5100) */
+        v = s == 1 ? WEAPON_MOTION_R : s == 0 ? WEAPON_MOTION_L : s == -1 ? 1 : s == 2 ? 0 : -1;
+        break;
+    /* f212: manipulator +0x204 > 0 (case 0xD4), a forward-input timer of the pad manipulator whose writer was not
+     * found. ASSUMED (TECH_DEBT esd-12): DS1's kick / jumping attack input, the stick pushed from neutral to forward
+     * within the last 0.2 s */
+    case 212:
+        v = p->fwd_flick < 0.2f;
         break;
     case 226: v = (p->ctx_1dc >> 5) & 1; break;
-    case 227: v = -1; break;     /* selected item motion type: no item selected */
+    case 227: v = chr_stats.valid ? chr_stats.item_anim : -1; break;  /* goodsUseAnim of the quick item */
+    case 232:   /* HasUsableItem: a quick item that has a use (Estus: charges left) */
+        v = chr_stats.valid && chr_stats.item_anim >= 0 &&
+            (chr_stats.item_id == (ITEM_GOODS | ESTUS_ID) ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0);
+        break;
     case 231: v = 255; break;    /* selected spell motion type: 0xFF = not castable (the Warrior has no spells) */
     case 238: case 239: case 240: v = gate(p, id - 219) && p->trig[id - 219]; break;  /* f100(19 / 20 / 21) */
     case 241: case 242: v = requested(p, id - 241 + 19); break;                 /* f102(19 / 20) */
@@ -779,10 +1159,33 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
         return 1;
     }
     switch (id) {
+    case 1:     /* (animId, layer, blend, loop, ...): an a00 anim on a layer, the item reach of states 157-182 on
+                 * layer 5 (drawn on the upper-body layer, as layer 4; ASSUMED) */
+        if (n >= 2) {
+            int oa = (int)a[0] < 0 ? -1 : anim_for(2, (int)a[0]);
+            if (oa != p->ovl_anim || (int)a[0] < 0)
+                p->ovl_t = 0;
+            p->ovl_anim = oa, p->ovl_cmd = 4, p->ovl_loop = n > 3 && a[3] != 0;
+        }
+        return 1;
     case 3:     /* SetAnim(weaponSel, animId, layer, blend, loop) */
     case 12:    /* (weaponSel, animA, animB, layer, blend, loop, f272()): landings 1750 / 1755 (group 0 states 31 / 32);
                  * animA is played, the animB blend by f272 is not modelled (TECH_DEBT esd-6) */
-    case 4: {   /* SetMoveSyncAnim: same here (the speed sync is not modelled) */
+    case 4:     /* SetMoveSyncAnim: same here (the speed sync is not modelled) */
+    case 13: {  /* (weaponSel, animId, layer, blend, loop, ...): a looping c1_4, the guard holds (group 1 states 77,
+                 * 80-82) */
+        /* Layer 4 is the upper-body layer: the guard raise / hold / lower / hit anims of group 1 states 75-85 play
+         * over the locomotion instead of replacing it (ASSUMED: drawn on the Spine bone and its children, as
+         * enemy.c's guard pose layer; the exe's per-bone layer masks were not decoded, TECH_DEBT esd-9) */
+        int lay = id == 12 ? (n > 3 ? (int)a[3] : 0) : (n > 2 ? (int)a[2] : 0);
+        if (lay == 4 && id != 12 && n >= 2) {
+            int oa = (int)a[1] < 0 ? -1 : anim_for((int)a[0], (int)a[1]);
+            if (oa != p->ovl_anim || (int)a[1] < 0)
+                p->ovl_t = 0;
+            p->ovl_anim = oa, p->ovl_cmd = id == 3 ? 3 : 4;
+            p->ovl_loop = id == 13 ? (n > 4 && a[4] != 0) : (n > 4 && a[4] != 0) || (oa >= 0 && anims[oa].loop);
+            return 1;
+        }
         /* HP < 0: only the death reactions run (group 0 states 57-59: 6065 / 6066 / 6067 for a fall death); they
          * play as ST_DEAD, which the engine side (map-collision) ends with the respawn. Otherwise the airborne loop
          * and death states belong to the engine and ESD anims are not started there. */
@@ -809,7 +1212,11 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             return 1;
         }
         PlayerState st = anim == ANIM_JUMP ? ST_JUMP : anims[anim].key >= 10000 ? ST_ATTACK : ST_ROLL;
-        if (esd_moving && anim != ANIM_BACKSTEP)
+        float tp[3];
+        if (player_lock_target(p, tp) && !(anim >= ANIM_ROLL_B && anim <= ANIM_STEP_O) && anim != ANIM_ROLL &&
+            anim != ANIM_BACKSTEP)
+            p->yaw = atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z);  /* attacks go at the target */
+        else if (esd_moving && anim != ANIM_BACKSTEP && !p->lock)  /* locked: rolls keep the facing */
             p->yaw = esd_stick_yaw;
         /* attack stamina: BehaviorParam_PC of the anim's AttackBehavior, taken at the start (TECH_DEBT esd-3) */
         start_anim(p, st, anim, anims[anim].stamina);
@@ -821,6 +1228,7 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
     case 101:   /* SetLocomotionEnabled (ChrCtrl+0x1B0) */
         p->esd_loco = n > 0 && a[0] != 0;
         return 1;
+    case 109: p->motion_mode = n > 0 ? (int)a[0] : -1; return 1;  /* SetChrMotionMode (chr+0x270) */
     case 132: p->ctx_1dc |= 0x2000; return 1;
     case 133: p->ctx_1e0 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;
     case 140: p->ctx_454 = n > 0 ? (unsigned char)(int)a[0] : 0; return 1;
@@ -891,5 +1299,28 @@ void player_draw(const Player *p)
         model_blend(from, target, blend, cur);
     else
         memcpy(cur, target, sizeof cur);
+    /* upper-body layer (guard poses, ESD layer 4): its pose replaces the Spine bone and every bone below it,
+     * faded in / out over the c1_4 blend time of the guard states (0.1 s) */
+    static BoneLocal ovl[MAX_BONES], mixed[MAX_BONES];
+    static unsigned char upper[MAX_BONES], upper_ok;
+    static float ovl_w;
+    static int ovl_last = -1;
+    if (!upper_ok) {
+        for (int i = 0; i < SK_BONES && i < MAX_BONES; i++)
+            upper[i] = i == SK_SPINE || (sk_parent[i] >= 0 && upper[(int)sk_parent[i]]);
+        upper_ok = 1;
+    }
+    if (p->ovl_anim >= 0)
+        ovl_last = p->ovl_anim;
+    ovl_w += (p->ovl_anim >= 0 ? 1 : -1) * p->frame_dt / 0.1f;
+    ovl_w = ovl_w < 0 ? 0 : ovl_w > 1 ? 1 : ovl_w;
+    if (ovl_w > 0 && ovl_last >= 0 && SK_SPINE >= 0) {
+        model_sample(model_anim(anims[ovl_last].id), p->ovl_anim >= 0 ? p->ovl_t : anims[ovl_last].length,
+                     anims[ovl_last].loop || p->ovl_loop, ovl);
+        model_blend(cur, ovl, ovl_w, mixed);
+        for (int i = 0; i < SK_BONES && i < MAX_BONES; i++)
+            if (upper[i])
+                cur[i] = mixed[i];
+    }
     model_draw(cur, p->pos, p->yaw, p->invincible);
 }

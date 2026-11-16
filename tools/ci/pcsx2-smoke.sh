@@ -47,10 +47,14 @@ fi
 # 3 test
 cd "$TREE" || exit 1
 echo "== $(git log -1 --format='%h %s') | areas $AREAS | max $MAX"
+T0=$(date +%s)
 tools/test-all.sh --areas "$AREAS" --max "$MAX" 2>&1 | hide
 RUN=$(readlink -f build/test/last)
 STEPS=$RUN/steps.txt
 [ -f "$STEPS" ] || { echo "pcsx2-smoke: no steps.txt (test-all.sh did not get to the tests)"; exit 1; }
+# build/test/last moves only at the end of test-all.sh: a run that died before it left the last one's steps there,
+# which then reported an old pass for this commit
+[ "$(stat -c %Y "$RUN")" -ge "$T0" ] || { echo "pcsx2-smoke: build/test/last is an older run (test-all.sh ended early)"; exit 1; }
 GATE=0
 while read -r name status rest; do
     case $name in build-*|smoke) [ "$status" = PASS ] || GATE=1 ;; esac

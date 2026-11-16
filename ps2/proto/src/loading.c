@@ -286,8 +286,9 @@ static void open_screen(void)
     shown = 1;
     loading_stats.opens++;
     pack_async_free();  /* a background read (enemy model, menu icon) holds the slot no longer */
-    if (!read_file()) {
+    if (!read_file() || !H->nhints) {  /* (no hints: the pick below divided by zero) */
         printf("loading: no loading.bin, black screen only\n");
+        release();
         return;
     }
     /* FUN_1406fea10: the first hint at (last one + rand) % 62 (the first time: rand % 62) */

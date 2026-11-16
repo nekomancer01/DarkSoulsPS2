@@ -128,6 +128,19 @@ if [ -n "$INNER" ]; then
 fi
 [ -n "$QUEUE" ] && MAKE=("$ROOT/tools/q" "${MAKE[@]}")
 
+# which processor the occlusion (PVS) bakes will use: build the bake (a few seconds) and ask it for a GPU
+[ -z "$INNER" ] || echo "##tui step checking for a GPU (PVS bake)"
+PVSB=$(printf 'include Makefile\npvsbake-path:\n\t@echo $(PVS_BAKE)\n' | make -s --no-print-directory -C ps2/proto -f - \
+    "BUILD=$BUILD" ${GAME:+"DSR_GAME=$GAME"} pvsbake-path 2>/dev/null | tail -1) || PVSB=
+PVSMODE="CPU"
+if [ -n "$PVSB" ] && make -s --no-print-directory -C ps2/proto "BUILD=$BUILD" ${GAME:+"DSR_GAME=$GAME"} "$PVSB" >/dev/null 2>&1; then
+    if [ "${PVS_GPU:-1}" = 0 ]; then PVSMODE="CPU (PVS_GPU=0)"
+    elif G=$("$PVSB" --gpu-probe 2>/dev/null); then PVSMODE="GPU ($G)"
+    else PVSMODE="CPU (no GPU found: an NVIDIA, AMD or Intel GPU with OpenGL 4.5 and the EGL / GL dev packages)"
+    fi
+fi
+keep "PVS bake: $PVSMODE"
+
 T0=$(date +%s)
 FIRST=; [ -d "$BUILD/gen" ] || FIRST=" (first build: exports everything, long and several GB of RAM)"
 say "building game data and ELF into $BUILD$FIRST"
@@ -144,5 +157,5 @@ if [ -n "$OUT" ] && [ "$OUT" != "$ISO" ]; then
     cp -f "$ISO" "$OUT"
     ISO=$OUT
 fi
-say "done in $(( ($(date +%s) - T0) / 60 )) min: $ISO ($(du -h "$ISO" | cut -f1)), from $(git rev-parse --short HEAD 2>/dev/null || echo '?')$(git diff --quiet HEAD 2>/dev/null || echo ' + local changes')"
+say "done in $(( ($(date +%s) - T0) / 60 )) min (PVS bake: ${PVSMODE%% (*}): $ISO ($(du -h "$ISO" | cut -f1)), from $(git rev-parse --short HEAD 2>/dev/null || echo '?')$(git diff --quiet HEAD 2>/dev/null || echo ' + local changes')"
 keep "Open it in PCSX2 (System > Start File). It is made from your copy of the game: never share it."

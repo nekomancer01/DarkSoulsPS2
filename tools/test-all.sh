@@ -69,9 +69,16 @@ if [ -n "$BURG" ]; then
     burg_one() {  # <test> <timeout> <rep>
         local sc=ps2/proto/tests/$1.txt
         [ -e "$sc" ] || sc=$RUN/burg/$1.txt
+        local t0 rc
+        t0=$(date +%s)
         tools/q -m 2 "$PY" tools/test-run.py "$ELF" "$sc" "$RUN/burg/$1-$3" --iso "$IMG" --timeout "$2" --keep-going \
             --hitch --name "$1-$3" > "$RUN/burg/$1-$3.log" 2>&1
-        echo "$1-$3 rc $?"
+        rc=$?
+        echo "$1-$3 rc $rc"
+        # (in the background: the parent counts the failures from these files; a crashed or hung route used to leave
+        # the exit code to budget.py alone)
+        printf '%-8s %s  %4ss  %s\n' "$1-$3" "$([ $rc = 0 ] && echo PASS || echo "FAIL($rc)")" $(( $(date +%s) - t0 )) \
+            "test-run.py $sc" > "$RUN/burg/$1-$3.step"
     }
     n=0
     for r in $(seq 1 "$REPS"); do
@@ -82,6 +89,11 @@ if [ -n "$BURG" ]; then
         done
     done
     wait
+    for f in "$RUN"/burg/*.step; do
+        [ -e "$f" ] || continue
+        cat "$f" >> "$STEPS"
+        grep -q ' FAIL(' "$f" && FAILED=$((FAILED + 1))
+    done
     step budget "$PY" tools/budget.py "$RUN/burg" --json "$RUN/budget.json"
     "$PY" tools/runstamp.py "$ELF" > "$RUN/stamp.json" 2>/dev/null
     "$PY" tools/test-report.py "$RUN" > /dev/null

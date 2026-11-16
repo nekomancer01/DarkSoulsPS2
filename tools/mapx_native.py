@@ -65,6 +65,7 @@ def lib():
                                 ("mx_simp_replay", [vp, d, d, i], ll), ("mx_simp_refit", [vp, vp, vp, vp], None), ("mx_simp_envelope", [d], None), ("mx_simp_guard", [d, d], None), ("mx_simp_shape", [d], None), ("mx_simp_check", [vp, d, d, d, vp, vp, vp], ll), ("mx_simp_back_off", [vp, vp], ll), ("mx_simp_swap_jobs", [vp, vp, vp], ll), ("mx_simp_job_nout", [vp, vp], None), ("mx_simp_job_counts", [vp, d, vp], None),
                                 ("mx_simp_replay_jobs", [vp, vp], ll), ("mx_simp_fetch", [vp, vp, vp, vp, vp, vp], None),
                                 ("mx_simp_free", [vp], None),
+                                ("mx_pieces", [i] + [vp] * 8 + [d, d, d] + [vp] * 5, ll),
                                 ("mx_chunks_new", [i] + [vp] * 18 + [i, d, vp, d, d, i, i, d, ll, ll], vp),
                                 ("mx_chunks_count", [vp, vp], i), ("mx_chunks_fetch", [vp] + [vp] * 10, None),
                                 ("mx_chunks_free", [vp], None),

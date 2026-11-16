@@ -49,8 +49,8 @@ BONFIRE = "o0200"
 # was in no block, so past the second bonfire the world ended (no map, no collision; user report); x 0..1, z 1..3 the
 # bridge north to the Parish courtyard (route y 16 -> 28). The Lower Burg corner under the street (x -4..-2, z -5..-4)
 # goes with Burg west. keep: parts the block's enemy roster holds whatever their distance from the spawn (the boss of
-# the bridge; enemy_parts keeps the MAX_ENEMIES nearest otherwise). The Parish church (z 4, x 2..3) is not a block yet: map instance / collision block / enemy block index = world block index caps
-# a world build at 5 blocks (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS; TECH_DEBT world-1).
+# the bridge; enemy_parts keeps the MAX_ENEMIES nearest otherwise). Map instance / collision block / enemy block index = world block index caps a world build at WORLD_MAX 16 blocks
+# (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS, FX_SETS; world.bin v4 u16 masks; 5 until 2026-11-15, TECH_DEBT world-1).
 # obj_budget (MB, export_objects.py): every block's breakable types load at boot with their VRAM (world.c
 # world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
 # "Not enough VRAM", block 3's o1230 not loaded). ASSUMED cut until types load per block: the types with the fewest
@@ -62,11 +62,42 @@ BONFIRE = "o0200"
 CELL = 32.0
 BLOCK_OBJ_MB = float(os.environ.get("OBJ_BLOCK_MB", 1.3))
 BLOCKS = {
-    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=((-4, -3, -1, -1), (-4, -5, -2, -4)),
+    "m10_01_00_00_w": dict(map="m10_01_00_00", spawn="c0000_0000", cells=((-4, -3, -1, -1), (-4, -5, -2, -4), (-4, 0, -3, 0)),
                            obj_budget=BLOCK_OBJ_MB),
     "m10_01_00_00_b": dict(map="m10_01_00_00", spawn="c0000_0009", cells=((0, -3, 1, 0), (-1, -5, 2, -4)),
                            obj_budget=BLOCK_OBJ_MB, keep=("c2250_0000",)),
     "m10_01_00_00_p": dict(map="m10_01_00_00", spawn_at=(14.5, 28.5, 102.2), cells=(0, 1, 1, 3), obj_budget=BLOCK_OBJ_MB),
+    # The rest of m10_01 (2026-11-15, 19.5k collision triangles): the Parish church and its bell tower (x 0, z 4, y up
+    # to 83), the courtyard's east side with the Parish bonfire o0200_0005 (x 2..3, z 3) and the path down to Darkroot
+    # (x 2..3, z 1..2, y -5..9; h1043B1 / h1048B1 / h1049B1 -> m12_00, h1042B1 / h1080B1 -> m15_00), and the strip west
+    # of the Parish bridge (x -1, z 0..4) with the elevator to Firelink at its north end (h1024B1 -> m10_02). No player
+    # start: spawn at the Parish bonfire.
+    "m10_01_00_00_c": dict(map="m10_01_00_00", spawn_at=(86.4, 15.0, 105.6),
+                           cells=((-1, 0, -1, 4), (0, 4, 0, 4), (2, 1, 3, 4)), obj_budget=BLOCK_OBJ_MB),
+    # The Depths (m10_00_00_00, 69.2k collision triangles: over collision.bin's u16 indices whole), two blocks cut at
+    # x -5 | -4: the entry from the Lower Burg's door (player start c0000_0000, the Depths bonfire o0200_0000, the
+    # kitchen and the sewer ramps; x -4..0, 24.3k) and the deep sewers west of it to the Gaping Dragon's pit and the
+    # Blighttown door (x -7..-5, 44.9k; h0009B0 / h0020B0 / ... -> m14_00, not a block). DSR loads m10_00 with the Burg
+    # (m10.arealoadlist): the Lower Burg's ConnectCollision parts h1122B1..h1127B1 load it.
+    "m10_00_00_00_a": dict(map="m10_00_00_00", spawn="c0000_0000", cells=(-4, -2, 0, 2), obj_budget=BLOCK_OBJ_MB),
+    "m10_00_00_00_b": dict(map="m10_00_00_00", spawn_at=(-150.0, -78.2, -20.0), cells=(-7, -2, -5, 2),
+                           obj_budget=BLOCK_OBJ_MB),
+    # Darkroot Garden and Basin (m12_00_00_00, 201k collision triangles; the MSB the game's event file m12_00_00_00.emevd
+    # and m12.arealoadlist name, not the DLC copy m12_00_00_01; no MapOffset: the m10 frame), six blocks on 32 m cells:
+    # the garden entry from the Parish path (player start c0000_0000; x -1..4, z 0..4, 16k), the garden's east end
+    # (x 5..10, z 0..4, 39k), the middle with the Darkroot bonfire o0200_0000 (z -3..-1, 51k), the basin's west and east
+    # halves (z -6..-4, x -1..5 25k / x 6..10 32k) and the south (z -15..-7: the lake and the way to the Valley of Drakes,
+    # 39k). Spawns: points on their collision floor. Links to m12_01 (Oolacile) and m16 (New Londo) find no block.
+    "m12_00_00_00_e": dict(map="m12_00_00_00", spawn="c0000_0000", cells=(-1, 0, 4, 4), obj_budget=BLOCK_OBJ_MB),
+    "m12_00_00_00_g": dict(map="m12_00_00_00", spawn_at=(224.0, 26.0, 64.0), cells=(5, 0, 10, 4), obj_budget=BLOCK_OBJ_MB),
+    "m12_00_00_00_m": dict(map="m12_00_00_00", spawn_at=(255.5, -3.3, -11.8), cells=(-1, -3, 10, -1),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m12_00_00_00_w": dict(map="m12_00_00_00", spawn_at=(96.0, -68.9, -160.0), cells=(-1, -6, 5, -4),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m12_00_00_00_x": dict(map="m12_00_00_00", spawn_at=(260.0, -12.4, -160.0), cells=(6, -6, 10, -4),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m12_00_00_00_s": dict(map="m12_00_00_00", spawn_at=(200.0, -12.1, -200.0), cells=(-1, -15, 10, -7),
+                           obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
     # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
@@ -80,7 +111,9 @@ BLOCKS = {
 WORLDS = {
     # VRAM: enemy textures load with their types near the player, a block's effect textures and map CLUTs while it is
     # on (TECH_DEBT world-4)
-    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a"],
+    "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a",
+                     "m10_01_00_00_c", "m10_00_00_00_a", "m10_00_00_00_b", "m12_00_00_00_e", "m12_00_00_00_g",
+                     "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s"],
 }
 
 def block():

@@ -1,0 +1,16 @@
+# Status effects (PR E): the Warrior's resistances come from FUN_1402dddd0 (log line chrstat ... resist). Poison
+# buildup of 10 per hit (SpEffect 1200's poizonAttackPower) fills the meter after enough hits and starts 3 HP a tick;
+# a bleed buildup over the resistance takes 15 % of max HP at once. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_status.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+wait 3
+spawn -48.5 -21.8 -35.5 0
+wait 2
+status 0 400 3 0
+wait 5
+stats
+status 2 400 0 15
+wait 1
+stats
+end

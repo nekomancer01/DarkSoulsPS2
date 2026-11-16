@@ -217,6 +217,7 @@ int ms_ensure_arena(void)
 
 /* free the group of item id */
 int ms_why;  /* why the next ms_drop drops (MS_WHY_*, set by its caller; back to MS_WHY_FREE after) */
+int ms_keep_buf;  /* ms_drop leaves the buffer allocated (mapstream_close: a cancelled read still lands in it) */
 void ms_drop(int k, unsigned id)
 {
     MsInst *m = &ms_inst[k];
@@ -230,7 +231,8 @@ void ms_drop(int k, unsigned id)
             ms_lent_near = ms_lent_near > b ? ms_lent_near - b : 0;
         }
     }
-    ms_g_free(m->buf[a], grp_bytes(m, a, e));
+    if (!ms_keep_buf)
+        ms_g_free(m->buf[a], grp_bytes(m, a, e));
     for (unsigned j = a; j < e; j++) {
         if (it_tex(m, j) && ms_tex_set)
             ms_tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, NULL);

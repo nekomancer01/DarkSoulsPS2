@@ -442,8 +442,11 @@ int pack_open(Pack *p, const char *path)
         if (ok)
             InvalidDCache(p->entries, (char *)p->entries + n - 1);
     }
-    if (!ok && p->fd >= 0)
-        pack_close(p);
+    if (!ok) {
+        if (p->fd >= 0)
+            pack_close(p);
+        p->count = 0;  /* (a failed entry-table read left the count with no entries behind it) */
+    }
     return ok;
 }
 
@@ -465,9 +468,11 @@ static int lz4_decode(const unsigned char *s, unsigned n, unsigned char *dst, un
         unsigned tok = *s++, l = tok >> 4;
         if (l == 15) {
             unsigned b;
-            do
+            do {
+                if (s >= se)  /* (a corrupt block: the length ran past its end) */
+                    return -1;
                 l += b = *s++;
-            while (b == 255);
+            } while (b == 255);
         }
         if (o + l > oe || s + l > se)
             return -1;
@@ -475,13 +480,17 @@ static int lz4_decode(const unsigned char *s, unsigned n, unsigned char *dst, un
         o += l, s += l;
         if (s >= se)
             break;
+        if (se - s < 2)
+            return -1;
         unsigned off = s[0] | s[1] << 8, m = tok & 15;
         s += 2;
         if (m == 15) {
             unsigned b;
-            do
+            do {
+                if (s >= se)
+                    return -1;
                 m += b = *s++;
-            while (b == 255);
+            } while (b == 255);
         }
         m += 4;
         if (!off || (unsigned)(o - dst) < off || o + m > oe)
@@ -770,9 +779,9 @@ int pack_job_step(PackJob *j)
     case J_READING: {
         if (!job_done(j, &res))
             return 0;
-        job_close(j);
-        if (res != (int)j->packed)
+        if (res != (int)j->packed)  /* (before job_close: job_fail drops a cached handle that failed a read) */
             return job_fail(j, "read error");
+        job_close(j);
         InvalidDCache(j->in, j->in + j->packed - 1);
         if (j->blocks > sizeof j->cs / sizeof j->cs[0])
             return job_fail(j, "too many blocks");
@@ -784,7 +793,7 @@ int pack_job_step(PackJob *j)
         unsigned t0 = ticks();
         while (j->b < j->blocks && (ticks() - t0) < PACK_JOB_DECODE_MS * 294912u) {
             unsigned c = j->cs[j->b] & ~RAW_FLAG, want = j->raw - j->pos < j->bsize ? j->raw - j->pos : j->bsize;
-            if (j->cs[j->b] & RAW_FLAG ? (memmove(j->out + j->pos, j->src, c), c != want)
+            if (j->cs[j->b] & RAW_FLAG ? c != want || (memmove(j->out + j->pos, j->src, c), 0)
                                        : lz4_decode(j->src, c, j->out + j->pos, want) != (int)want)
                 return job_fail(j, "corrupt entry");
             j->src += c, j->pos += want, j->b++;
@@ -872,6 +881,19 @@ void pack_job_abandon(PackJob *j)
     j->tk = 0, j->fd = -1, j->fdc = -1, j->out = NULL, j->state = -1;
 }
 
+int pack_job_has(const PackJob *j, const char *name)
+{
+    const unsigned *head = j->head;
+    if (memcmp(head, "DSRP", 4))
+        return 0;
+    const struct PackEntry *e = (const struct PackEntry *)(head + 4);
+    unsigned n = head[2], cap = (sizeof j->head - 16) / sizeof *e;
+    for (unsigned i = 0; i < n && i < cap; i++)
+        if (!strncmp(e[i].name, name, sizeof e->name))
+            return 1;
+    return n > cap;  /* (beyond the first sector: not known, try it) */
+}
+
 static void *heap_get(unsigned n) { return memalign(128, n); }
 static void heap_put(void *p, unsigned n) { (void)n; free(p); }
 
@@ -935,8 +957,8 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
         for (; b < end && ok; b++) {
             unsigned c = cs[b] & ~RAW_FLAG, want = e->raw - pos < e->block_size ? e->raw - pos : e->block_size;
             if (cs[b] & RAW_FLAG) {
-                memcpy(out + pos, src, c);
-                ok = c == want;
+                if ((ok = c == want))  /* (copied only once its size is right: a bad size overran out) */
+                    memcpy(out + pos, src, c);
             } else {
                 ok = lz4_decode(src, c, out + pos, want) == (int)want;
             }

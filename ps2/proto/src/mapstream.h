@@ -48,11 +48,14 @@ static inline float cell_near_d2(const MapCell *c, const short *key, const float
 int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n);
 /* World blocks (src/world.c): instance k (0 = the boot area, which mapstream_init opens) of another map block's cell
  * table, all instances sharing the arena; mapstream_get answers for the selected instance */
-#define MS_INST 5  /* = MAP_INST (map.h): the Asylum is the fifth block */
+#define MS_INST 16  /* = MAP_INST (map.h) */
 int mapstream_open(int k, const char *pak_path, const MapCell *cells, unsigned n);
 /* the same with a Pack the caller opened and keeps open (pack.h; no pack_open / close here: no IOP wait) */
 int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned n);
 void mapstream_close(int k);
+/* reads of instance k in flight (mapstream_close waits for their current page: world.c lets the boot block go between
+ * reads, 286 ms on the frame otherwise, ISO world_route 2026-11-14) */
+int mapstream_reading(int k);
 void mapstream_select(int k);
 /* World blocks' lite sets (src/world.c) share the arena: n bytes (64-byte aligned), dropping the farthest cells no
  * chain reads (not used in the last two frames) until they fit; NULL if they cannot. The arena is allocated on the
