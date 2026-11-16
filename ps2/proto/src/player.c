@@ -636,6 +636,14 @@ static void update_requests(Player *p)
             if (a->win[i].type > 0 && t >= a->win[i].start && t < a->win[i].end)
                 apply_flag(p, a->win[i].type);
     }
+    /* the upper-body layer's anim carries ChrActionFlags too (the weapon switch end a00 86: flag 32 lets group 1
+     * state 221 take the next switch; guard poses: flags 21 / 22 hold windows) */
+    if (p->ovl_anim >= 0) {
+        const AnimData *a = &anims[p->ovl_anim];
+        for (int i = 0; i < a->nwin; i++)
+            if (a->win[i].type > 0 && p->ovl_t >= a->win[i].start && p->ovl_t < a->win[i].end)
+                apply_flag(p, a->win[i].type);
+    }
     /* FUN_140388020: no stamina, no buffered requests */
     if (p->stamina < 1)
         memset(p->latch, 0, sizeof p->latch), memset(p->hold_latch, 0, sizeof p->hold_latch);
@@ -760,6 +768,17 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         p->pad_held[REQ_L2] = 1;
     for (int i = 0; i < REQ_SLOTS; i++)
         p->hold_time[i] = p->pad_held[i] ? (p->pad_prev[i] ? p->hold_time[i] + dt : 0) : -1;
+    /* d-pad (DSR): down cycles the quick items (the HUD slot keeps its fixed icon, hud-3), up the attuned spells
+     * (none here: no magic yet), left / right switch the hand's weapon slot: the switch motion (f109 1 right /
+     * 2 left -> group 1 states 217 / 218, a00 81 / 80 on the upper-body layer) and the stats of the other slot */
+    p->switch_req = 0;
+    if (in->dpad & 2)
+        chrstat_cycle_quick();
+    if (in->dpad & 12) {
+        int h = in->dpad & 8 ? HAND_R : HAND_L;
+        if (chrstat_switch_hand(h))
+            p->switch_req = h == HAND_R ? 1 : 2;
+    }
     /* Square: item use, slots 2 / 3 (group 1 state 0 tests f100(3) || f100(2); FUN_140396860 writes +0x86 / +0x87
      * together, ASSUMED to be Square) */
     if (in->square && p->state != ST_FALL && p->state != ST_DEAD && !p->airborne)
@@ -1056,7 +1075,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 104: v = 0; break;      /* weapon hold-style change request (no two-handing input) */
     case 105: v = 0; break;      /* ctx+0x42C[i]: event / gesture requests (none) */
     case 108: v = slot && is_step(s) && requested(p, s); break;                 /* IsStepRequested */
-    case 109: v = 0; break;      /* PlayerIns vt+0x438: weapon / item switch request (none) */
+    case 109: v = p->switch_req; break;  /* PlayerIns vt+0x438: weapon switch request (1 right, 2 left; ASSUMED) */
     case 110: v = s >= 0 && s < 6 ? move_escape[move_set() * 6 + s] : -1; break;  /* GetRollAnimId */
     case 111:   /* FUN_140386bb0: FUN_140323c60(chr, ctx+0x49E any slot enabled) && manipulator +0x1C4 (some request
                  * made this frame) */

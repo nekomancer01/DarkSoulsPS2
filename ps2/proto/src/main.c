@@ -16,6 +16,9 @@
 #include "render.h"
 #define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #include "player.h"
+#ifndef DPAD_STICK
+#define DPAD_STICK 0  /* 1 = the d-pad moves (the old path, keyboard-mapped emulators) */
+#endif
 #include "model.h"
 #include "map.h"
 #include "bump.h"
@@ -103,11 +106,17 @@ static int pad_input(Input *in, unsigned short *prev)
     in->my = -axis(st.ljoy_v);
     in->cx = axis(st.rjoy_h);
     in->cy = axis(st.rjoy_v);
-    /* d-pad works as a digital left stick (keyboard-mapped emulators) */
+#if DPAD_STICK
+    /* DPAD_STICK=1 (the old path): the d-pad works as a digital left stick (keyboard-mapped emulators) */
     if (btn & PAD_UP) in->my = 1;
     if (btn & PAD_DOWN) in->my = -1;
     if (btn & PAD_LEFT) in->mx = -1;
     if (btn & PAD_RIGHT) in->mx = 1;
+#else
+    /* the d-pad as in DSR: left / right switch the hand's weapon, down cycles the quick items, up the spells */
+    in->dpad = ((btn & PAD_UP) && !(*prev & PAD_UP) ? 1 : 0) | ((btn & PAD_DOWN) && !(*prev & PAD_DOWN) ? 2 : 0) |
+               ((btn & PAD_LEFT) && !(*prev & PAD_LEFT) ? 4 : 0) | ((btn & PAD_RIGHT) && !(*prev & PAD_RIGHT) ? 8 : 0);
+#endif
     in->r1 = (btn & PAD_R1) && !(*prev & PAD_R1);
     in->circle = (btn & PAD_CIRCLE) != 0;
     in->r1_held = (btn & PAD_R1) != 0, in->r2_held = (btn & PAD_R2) != 0;
