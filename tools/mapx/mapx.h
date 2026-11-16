@@ -22,6 +22,11 @@
 #ifndef MX_THREADS
 #define MX_THREADS 1
 #endif
+/* MX_TIME profiling (mx_tick, per-job timings) needs <time.h> / <stdio.h>: native builds only, the browser build is
+   freestanding (-nostdinc, tools/native/wasm) and has neither */
+#ifndef MX_TIMING
+#define MX_TIMING MX_THREADS
+#endif
 #define MX_API __attribute__((visibility("default")))
 
 /* out of memory (the in-browser converter's heap has a cap): trap instead of writing through NULL (address 0 in wasm) */
@@ -77,7 +82,7 @@ void mx_md5(const void *msg, size_t n, uint8_t out[16]);
 /* parallel for: fn(ctx, i) for i in [0, n), on up to mx_threads() threads (1 in the browser); every i must write
    only its own outputs, so the result does not depend on the thread count */
 int mx_threads(void);
-/* MX_TIME=1: print the seconds since the last tick on stderr (profiling aid; main thread only) */
+/* MX_TIME=1: print the seconds since the last tick on stderr (profiling aid; main thread only; a no-op without MX_TIMING) */
 void mx_tick(const char *what);
 void mx_parallel_for(long long n, void (*fn)(void *ctx, long long i), void *ctx);
 
