@@ -73,6 +73,8 @@ BONFIRE_BURSTS = (90007, 90010)              # one-shots: ignite (index change i
 # FxInst.flags (= fx.c FXI_*): which runtime bonfire state shows an instance; 0 = always (MSB SFX)
 BF_FIRE, BF_LIGHT, BF_BURST = 0x100, 0x200, 0x400  # | kindle index / | burst number (BONFIRE_BURSTS order)
 CLASS_IDS = range(2000, 2200)  # EffectCall ids that are engine node classes, not effect files
+BARE_REFS = False  # walk(): follow action 14's bare effect ids (--shine sets it)
+TEX_H_MAX = 256    # px; the shine set (resident all game) halves its 128 x 128 sparkles to 128 x 64 (~50 KB VRAM)
 PS_CLASS, XFORM_CLASS = 2023, 2101
 APPEAR = {71, 70, 59, 27}
 EMIT = {28: 4, 29: 5, 30: 1, 31: 2, 32: 3}  # data subtype -> fx.h FX_SHAPE_*
@@ -153,7 +155,15 @@ def walk(e, load, out, xf=ID_XF, depth=0):
         for p in c["params"]:
             if not p:
                 continue
-            if p["t"] == 37 and p.get("container"):
+            if (BARE_REFS and p["t"] == 37 and not p.get("container") and p.get("EffectID", 0) > 0
+                    and p["EffectID"] not in CLASS_IDS):
+                # a bare effect-file reference (action 14's list, e.g. the treasure shine 99000 / 99002 / 99003 ->
+                # 99001): that effect at this frame. Only for the shine set so far: area fx.bin keep their old output
+                # (TECH_DEBT fx-15)
+                child = load(p["EffectID"])
+                if child:
+                    walk(child, load, out, xf, depth + 1)
+            elif p["t"] == 37 and p.get("container"):
                 cid, cc = p["EffectID"], p["container"]
                 if cid == PS_CLASS:
                     o = _offset(cc)
@@ -529,9 +539,24 @@ def quantize(img):
     return bytes(clut), q.tobytes()
 
 
-def export(game, map_id, out_path, tone_path=None, describe=False):
+# Treasure shine (exe FUN_1403f89b0, TECH_DEBT item-1): one set for the whole game, instances placed at run time
+# (src/fx.c fx_shine_*). A corpse / object treasure and an enemy drop show SFX 99000 + ItemLotParam.lotItem_Rarity
+# (ChrShineTreasureSlot / ObjShineTreasureSlot); 99000, 99002 and 99003 only call 99001 (the white glow) through action
+# 14, 99004.. call 99003: every rarity draws 99001, so the set has one white effect. 99046 is the gold glow (drop flags
+# & 3 == 1). SHINE_N instances of each, flagged SHINE_FLAG (= fx.c FXI_DYN).
+SHINE_FX = ((99000, 24), (99046, 4))
+SHINE_FLAG = 0x800
+
+
+class ShineArea:
+    def __init__(self, game, map_id):
+        I3 = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))  # local Y = world up (the systems rise along +Y)
+        self.inst = [(fid, (0.0, 0.0, 0.0), I3, f"shine{fid}", SHINE_FLAG, 0) for fid, n in SHINE_FX for _ in range(n)]
+
+
+def export(game, map_id, out_path, tone_path=None, describe=False, shine=False):
     from PIL import Image
-    A = Area(game, map_id)
+    A = ShineArea(game, map_id) if shine else Area(game, map_id)
     lib = Library(game, map_id)
     tone = load_tone(tone_path) or dsr_light.Tone(
         {"grayKeyValue": 0.18, "minAdaptedLum": 0.05, "maxAdapredLum": 0.18}, None)  # fallback only
@@ -552,7 +577,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False):
         img = Image.frombytes("RGBA", (w, h), bytes(px))
         s = min(1.0, TEX_MAX / max(w, h))
         # PSMT8 needs a buffer width of 128 (TBW 2): every effect texture is 128 wide, height by aspect
-        tw, th = 128, max(8, min(256, 1 << round(math.log2(max(1, 128 * h / w)))))
+        tw, th = 128, max(8, min(TEX_H_MAX, 1 << round(math.log2(max(1, 128 * h / w)))))
         img = resample.resize(img, (tw, th), Image.LANCZOS)
         clut, pix = quantize(img)
         tex_index[key] = len(texs)
@@ -664,6 +689,15 @@ def main():
         return
     if sys.argv[2] == "--static-lights":  # rewritten only when the lights change (srcsum.write_if_changed)
         srcsum.write_if_changed(sys.argv[3], json.dumps(static_lights(game, sys.argv[4])) + "\n")
+        return
+    if sys.argv[2] == "--shine":  # export_effects.py <game> --shine <out> <map_id for the tone> [--tone fx_tone.json]
+        global BARE_REFS, TEX_H_MAX
+        BARE_REFS, TEX_H_MAX = True, 64
+        tone = sys.argv[sys.argv.index("--tone") + 1] if "--tone" in sys.argv else None
+        if "--describe" in sys.argv:
+            export(game, sys.argv[4], None, tone, describe=True, shine=True)
+        else:
+            export(game, sys.argv[4], sys.argv[3], tone, shine=True)
         return
     out, map_id = sys.argv[2], sys.argv[3]
     tone = sys.argv[sys.argv.index("--tone") + 1] if "--tone" in sys.argv else None

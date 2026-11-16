@@ -68,6 +68,11 @@ Several agents often work in the same tree at once.
 - **Job queue:** every heavy job (make, exporters, PCSX2 tests, Ghidra, whole-game scans) runs as `tools/q [-m GB] <cmd>`.
   It runs jobs one at a time, waits for free RAM and caps each job's memory. Exporters must stream per part or area
   instead of loading everything at once.
+- **Map looks without PCSX2:** judge a change to the map export (simplifier, levels, budgets, horizon) with
+  `tools/mapshot.py <out> build/gen/<block>... --script <test> [--ref <reference shots>] [--vs <gen dirs of a build before>]`:
+  it draws the exported blocks from the port's camera with the levels the runtime would show, a few seconds a view after
+  a one-minute block export. Boot PCSX2 once the pictures are right, for what only the runtime decides (loading in
+  time, memory, speed).
 - **Fast iteration:** a map re-export takes ~4 min, so most of a build-test loop is waiting on exports. A new clone
   or build dir starts from an existing build: `tools/newbuild "$PWD/build" --from <other tree>/build` (copies the tool
   stamps too, so only what your tree changes re-exports). Builds depend on what an export takes from another tool, not
@@ -121,7 +126,7 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 - PR description: what changed, how it was verified (spots, numbers, the headless command), and the TECH_DEBT IDs
   it opens or resolves.
 - Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/switches.py`, `tools/ci/offline.sh`,
-  `tools/ci/compile.sh` and `tools/ci/switches.sh` (no game data, so no PCSX2). Run them locally before pushing.
+  `tools/ci/compile.sh`, `tools/ci/switches.sh` and `tools/native/build-wasm.sh` (no game data, so no PCSX2). Run them locally before pushing.
   A new compile-time switch (`#if` / `#ifdef` on a name the sources don't define) needs a row in
   `ps2/proto/src/switches.h`: its default, kind and the build CI makes of its fallback. The PCSX2 results go in the
   PR template's Verification section, scaled to the change: a scoped `tools/test-all.sh --no-build --areas ...`

@@ -21,7 +21,7 @@ void fx_char_light(V3 pos, float amb[3]);
 /* World blocks (src/world.c): at boot, block b's fx.bin tables (kept: the blob can be freed); fx_block_on(b, 1, blob)
  * when the block turns on uploads its textures from blob (its fx.bin again, read with the block), (b, 0, NULL) when
  * it turns off gives their VRAM back (its particles go). Only the blocks on hold VRAM (TECH_DEBT world-4). */
-#define FX_SETS 5
+#define FX_SETS 16  /* = WORLD_MAX (world.h): set k = world block k */
 int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size);
 void fx_block_on(int block, int on, const void *blob);
 /* Event-owned map SFX (MSB SFX with an entity id: fog walls): an instance stops emitting while its entity is on
@@ -32,6 +32,14 @@ int fx_entity_particles(int id, int kill);
 /* Bonfire instances (export_effects.py BF_*) follow ev_bonfire_level(entity): the fire of its kindle index, the light
  * while lit. fx_bonfire_burst(entity, n): one-shot n of that bonfire (0 ignite 90007, 1 rest 90010) at dummy 100 */
 void fx_bonfire_burst(int entity, int n);
+
+/* Treasure shine (src/pickup.c): menu.pak shine.bin as its own set, textures resident; fx_shine_add places one of
+ * its instances of effect (0 white 99001, 1 gold 99046) at pos and returns it (-1 all in use), fx_shine_del frees it
+ * and its particles. The SHINE_ACTIVE nearest placed shines emit. */
+int fx_shine_init(GSGLOBAL *gs, const void *blob, unsigned size);
+int fx_shine_add(int effect, const float pos[3]);
+void fx_shine_del(int h);
+int fx_shine_count(void);
 
 typedef struct {
     int particles;   /* alive */

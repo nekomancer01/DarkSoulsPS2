@@ -7,8 +7,12 @@ binary's bytes, every option, and the bytes of every input file (the block's and
 dir, a new worktree, or a map re-export that wrote the same pvsin.bin / dg.bin / collision.bin as before takes
 seconds instead of a bake (~2-3 CPU min per block). The output is the same bytes either way.
 Cache: PVS_CACHE (a directory; 0 = off), default <main tree>/build/cache/pvs (DSR_CACHE: the cache root), entries
-are small (pvs.bin ~60-210 KB). Entries are written by rename, so parallel builds never read half a one."""
-import hashlib, os, shutil, subprocess, sys
+are small (pvs.bin ~60-210 KB). Entries are written by rename, so parallel builds never read half a one.
+
+GPU hand-over (container builds, tools/build-iso.sh): when DSR_PVS_SPOOL names a spool directory whose server
+(tools/pvs_gpu_server.py, in a container with the GPU) is up, the bake runs there instead of here; the cache key then
+carries "gpu", as its output differs from a CPU bake's. When the server is not up, or stops, the bake runs here."""
+import hashlib, json, os, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = b"pvs-cache-1"
@@ -44,9 +48,45 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def key(argv):
+def spool():
+    """the GPU server's spool directory when it is up (ready refreshed within the last 5 s), else None"""
+    d = os.environ.get("DSR_PVS_SPOOL")
+    try:
+        return d if d and time.time() - os.path.getmtime(os.path.join(d, "ready")) < 5 else None
+    except OSError:
+        return None
+
+
+def remote(d, argv):
+    """the bake on the GPU server -> (exit code, output), or None when the server went away before it was done"""
+    name = f"{os.getpid()}-{time.time_ns()}"
+    job, tmp = os.path.join(d, name + ".job"), os.path.join(d, name + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump({"argv": argv, "cwd": os.getcwd()}, f)
+    os.replace(tmp, job)
+    done = os.path.join(d, name + ".done")
+    while not os.path.exists(done):
+        time.sleep(0.25)
+        if not spool():
+            try:
+                os.remove(job)  # not claimed yet: bake here
+            except OSError:
+                pass
+            if not os.path.exists(done):
+                return None
+    rc = int(open(done).read() or 1)
+    out = open(os.path.join(d, name + ".log")).read()
+    for ext in (".done", ".log"):
+        try:
+            os.remove(os.path.join(d, name + ext))
+        except OSError:
+            pass
+    return rc, out
+
+
+def key(argv, gpu=False):
     """argv = the bake's command line; the output (argv[4]) by position only, existing files by content"""
-    h = hashlib.sha256(VERSION)
+    h = hashlib.sha256(VERSION + (b"\0<gpu>" if gpu else b""))
     h.update(file_hash(argv[0]).encode())
     for i, a in enumerate(argv[1:], 1):
         if i == 4:
@@ -64,7 +104,8 @@ def main():
         sys.exit(__doc__)
     out = argv[4]
     d = cache_dir()
-    k = key(argv) if d else None
+    gs = spool()
+    k = key(argv, bool(gs)) if d else None
     if d:
         ent = os.path.join(d, k[:2], k)
         if os.path.isfile(ent + ".bin") and os.path.isfile(ent + ".log"):
@@ -73,18 +114,26 @@ def main():
             sys.stdout.write(open(ent + ".log").read())
             print(f"pvs_cache: {os.path.basename(os.path.dirname(os.path.abspath(out)))}: from the cache ({k[:12]})")
             return
-    r = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
-    sys.stdout.write(r.stdout)
+    res = remote(gs, argv) if gs else None
+    if res is None:
+        if gs:
+            print("pvs_cache: the GPU server stopped: baking here")
+            k = key(argv) if d else None
+        r = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
+        res = r.returncode, r.stdout
+    rc, log = res
+    sys.stdout.write(log)
     sys.stdout.flush()
-    if r.returncode:
-        sys.exit(r.returncode)
+    if rc:
+        sys.exit(rc)
     if d:
+        ent = os.path.join(d, k[:2], k)
         try:
             os.makedirs(os.path.dirname(ent), exist_ok=True)
             tmp = f"{ent}.{os.getpid()}"
             shutil.copyfile(out, tmp + ".bin")
             with open(tmp + ".log", "w") as f:
-                f.write(r.stdout)
+                f.write(log)
             os.replace(tmp + ".log", ent + ".log")
             os.replace(tmp + ".bin", ent + ".bin")
         except OSError as e:  # a full / read-only cache never fails the build

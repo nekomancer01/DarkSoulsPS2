@@ -156,10 +156,31 @@ def write_iso(entries, out, volid="DSRPS2", t=None, media="dvd", dual=False, cop
     # the BIOS file system reads a DVD's L path table from sector 257, whatever the volume descriptor says (cdvdman
     # CD_newmedia: "DVD Read mode", where a UDF bridge disc has it after its anchor at 256); a CD's from the descriptor
     pt = 257 if media != "cd" else 18
+    # a directory other than the root may take several sectors (records never cross one): dsrsnd.c df_scan reads
+    # every sector of DATA\'s subdirectories (SND\ held 61 character banks, 2746 B, with Darkroot and the Depths in
+    # the world; 2026-11-15); the BIOS reads only the root's first sector and the boot ELF in it
+    def packed(d, recs):
+        n, used = 1, 0
+        for r in recs:
+            if used + len(r) > SECTOR:
+                n, used = n + 1, 0
+            used += len(r)
+        return n, used
+
+    def kid_recs(d, lba_of=lambda c: 0, size_of=lambda c: SECTOR):
+        kids = [(c.name, lba_of(c), size_of(c), True) for c in d.dirs.values()] + [(f[1], f[4], f[3], False) for f in d.files]
+        return [_record(n, l, sz, isd, t) for n, l, sz, isd in sorted(kids, key=lambda k: k[0])]
+    for d in dirs:
+        recs = [_record(b"\0", 0, 0, True, t), _record(b"\1", 0, 0, True, t)] + kid_recs(d)
+        d.secs = packed(d, recs)[0]
+        if d is root and d.secs > 1:
+            raise ValueError(f"root directory needs {d.secs} sectors (the BIOS reads only the first)")
+        if d is root:
+            d.secs = root_secs
     lba = pt + 2
     for d in dirs:
         d.lba = lba
-        lba += root_secs if d is root else 1
+        lba += d.secs
     up = lambda n: -(-n // align) * align  # noqa: E731
     l1 = None
     for f in files:
@@ -184,16 +205,19 @@ def write_iso(entries, out, volid="DSRPS2", t=None, media="dvd", dual=False, cop
     assert len(lpt) <= SECTOR
 
     def dsize(d):
-        return SECTOR * (root_secs if d is root else 1)
+        return SECTOR * d.secs
 
     def dir_sector(d):
         recs = [_record(b"\0", d.lba, dsize(d), True, t), _record(b"\1", (d.parent or d).lba, dsize(d.parent or d), True, t)]
-        kids = [(c.name, c.lba, SECTOR, True) for c in d.dirs.values()] + [(f[1], f[4], f[3], False) for f in d.files]
-        recs += [_record(n, l, s, isd, t) for n, l, s, isd in sorted(kids, key=lambda k: k[0])]
-        b = b"".join(recs)
-        if len(b) > SECTOR:
-            raise ValueError(f"directory {d.name!r} needs {len(b)} B > one sector (the BIOS reads only the first)")
-        return b.ljust(dsize(d), b"\0")
+        recs += kid_recs(d, lambda c: c.lba, dsize)
+        out, cur = b"", b""
+        for r in recs:  # records never cross a sector: 0 pads the rest of one
+            if len(cur) + len(r) > SECTOR:
+                out, cur = out + cur.ljust(SECTOR, b"\0"), b""
+            cur += r
+        out += cur
+        assert len(out) <= dsize(d), (d.name, len(out))
+        return out.ljust(dsize(d), b"\0")
 
     pad = lambda s, n: s.encode().upper().ljust(n)[:n]  # noqa: E731
 
@@ -217,7 +241,7 @@ def write_iso(entries, out, volid="DSRPS2", t=None, media="dvd", dual=False, cop
         o.write(mpt.ljust(SECTOR, b"\0"))
         for d in dirs:
             o.write(dir_sector(d))
-        pos = pt + 2 + sum(root_secs if d is root else 1 for d in dirs)
+        pos = pt + 2 + sum(d.secs for d in dirs)
         for f in files:
             if l1 is not None and pos <= l1 <= f[4]:  # layer 1 opens with copies of the volume descriptor: at its first
                 o.write(bytes((l1 - pos) * SECTOR))  # sector (PCSX2 looks there) and 16 sectors in (cdvdman's layer search)

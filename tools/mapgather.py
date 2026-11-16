@@ -21,6 +21,21 @@ import maplight
 import mapsimp
 
 
+
+def split_tufts(fol):
+    """A foliage tuft bigger than one VU1 batch (mapcfg.CHUNK_TRIS; Darkroot's fern clumps, 116-132 triangles) as
+    sub-tufts of at most CHUNK_TRIS triangles with the tuft's rank: a foliage chunk holds whole tufts, and one this big
+    overflowed the chunk's 255-vertex unpack (mapchunks.chunk_streams). Smaller tufts are unchanged."""
+    seen, out = {}, []
+    for r, name, n in fol:
+        if n <= mapcfg.CHUNK_TRIS:
+            out.append((r, name, n))
+            continue
+        i = seen[name] = seen.get(name, -1) + 1
+        piece = i // mapcfg.CHUNK_TRIS
+        out.append((r, f"{name}#{piece}", min(mapcfg.CHUNK_TRIS, n - piece * mapcfg.CHUNK_TRIS)))
+    return out
+
 def _qrot_np(q, V):
     """havok_anim.qrot / souls._qrot on (n, 3) rows, the same operations in the same order"""
     x, y, z, w = q
@@ -357,6 +372,44 @@ def load_object(game, model, dds, static=False):
     return souls.flver(files[model + ".flver"]) if model + ".flver" in files else None
 
 
+_RIGID = {}  # gather: id(mesh) -> (mesh, the mesh with every vertex in the model's space)
+
+
+def rigid_mesh(F, m, bind):
+    """A rigid FLVER mesh whose vertices sit on more than one bone -> a copy with positions and normals in the
+    model's space and no bone (m itself when all sit on the default bone). DSR's rigid meshes are bone-relative per
+    vertex: the first bone index of a vertex picks from the mesh's bone list (tools/export_objects.py reads objects
+    the same way), and map pieces use it to repeat a shape: the Undead Burg's arcade wall and the tower by the street
+    south of the bonfire are arches drawn once and placed by bones (95k of m10_01's triangles). Placed by the mesh's
+    default bone alone they all landed on the first copy, inside each other (found 2026-11-14: the wall was missing
+    against DSR). MAP_VBONE=0: the default bone for all (A/B)."""
+    e = _RIGID.get(id(m))
+    if e is not None and e[0] is m:
+        return e[1]
+    out = m
+    bi = m["verts"]["bone_idx"]
+    if mapcfg.MAP_VBONE and len(bi) and len(bi) == len(m["verts"]["pos"]) and m["bones"]:
+        BI = np.asarray(bi.a if isinstance(bi, souls.Rows) else bi, np.int64).reshape(len(bi), -1)[:, 0]
+        fb = np.array([m["bones"][k] if k < len(m["bones"]) else m["default_bone"] for k in range(int(BI.max()) + 1)])[BI]
+        if np.any(fb != m["default_bone"]) and fb.min() >= 0 and fb.max() < len(bind):
+            P, N = _vert_np(m["verts"]["pos"]).copy(), None
+            if len(m["verts"]["normal"]) == len(P):
+                N = _vert_np(m["verts"]["normal"]).copy()
+            for b in np.unique(fb):
+                bt, bq, bs = bind[b]
+                s = fb == b
+                P[s] = _qrot_np(bq, np.asarray(bs, np.float64) * P[s]) + np.asarray(bt, np.float64)
+                if N is not None:
+                    v = _qrot_np(bq, N[s][:, :3] / np.asarray(bs, np.float64))
+                    N[s, :3] = v / np.maximum(np.sqrt((v * v).sum(1)), 1e-12)[:, None]
+            verts = dict(m["verts"], pos=souls.Rows(P))
+            if N is not None:
+                verts["normal"] = souls.Rows(N)
+            out = dict(m, verts=verts, default_bone=-1)
+    _RIGID[id(m)] = (m, out)
+    return out
+
+
 _DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
 
 
@@ -666,6 +719,8 @@ def gather(game, map_id):
                 else:
                     P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
+            if not m["dynamic"]:
+                m = rigid_mesh(F, m, bind)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
                 sky = is_sky(m["mtd"], xfm.many(_vert_np(m["verts"]["pos"])), nav_tree)
@@ -718,6 +773,11 @@ def gather(game, map_id):
                 ui = list({i for t in tl for i in t})
                 Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
             if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
+                if mapcfg.WS_SHARE_TRIS:  # the whole MSB's source triangles per 32 m cell, before the cut (ws_shares)
+                    G = mapcfg.CHUNK_GRID
+                    for t in tl:
+                        ck = tuple(math.floor(sum(Wp[i][k] for i in t) / 3 / G) for k in range(3))
+                        mapcfg.WS_SRC_TRIS[ck] = mapcfg.WS_SRC_TRIS.get(ck, 0) + 1
                 tl = [t for t in tl if in_map(*(sum(Wp[i][k] for i in t) / 3 for k in range(3)))]
             if mapsimp.PANO_R and not sky:  # far panorama (tools/pano.py): beyond PANO_R of PANO_C it replaces the map
                 pc = mapsimp.PANO_C or sp
@@ -731,6 +791,8 @@ def gather(game, map_id):
                 tl, fol, gpos = mapchunks.thin_foliage(tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
                                              "ivy" in m["mtd"].lower(),
                                              canopy=lambda vs, Vp=m["verts"]["pos"], xf=xf: is_canopy([xf(Vp[i]) for i in vs]))
+            if fol and max(f[2] for f in fol) > mapcfg.CHUNK_TRIS:
+                fol = split_tufts(fol)
             if not tl:
                 continue
             ti = -1
@@ -814,6 +876,8 @@ def gather(game, map_id):
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
                                # (objects move or break, cut-outs and blends let light through)
                                piece=part["name"],
+                               # cut-out cards (ivy): each leaf is a piece of its own for mapsimp.loose_pieces
+                               cutout="_alp" in m["mtd"].lower() or "_edge" in m["mtd"].lower(),
                                occ=int(part["type"] == 0 and not blend and not grass and not sky and not water and
                                        "_alp" not in m["mtd"].lower() and "_edge" not in m["mtd"].lower() and
                                        part["entity_id"] not in switched)))
@@ -822,6 +886,7 @@ def gather(game, map_id):
         MX.mx_navgrid_free(mx_grid)
     souls.VERT_NP = None
     souls.VERT_ROWS = False
+    _RIGID.clear()
     _VERT_NP.clear()  # per-FLVER arrays and deduplicated face sets: only for placing meshes
     _DEDUP.clear()
     mapchunks.rss(f"gather meshes ({len(meshes)})")

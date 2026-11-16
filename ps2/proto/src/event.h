@@ -10,6 +10,7 @@
 #define EVENT_H
 
 #include "player.h"
+#include "pickup.h"
 
 #define EV_SETS 6       /* set 0 = common.emevd, 1.. = loaded maps (one per world block) */
 #define EV_MAX_INST 768 /* event instances alive at once, all sets (common + 2 maps start ~610 at most) */
@@ -45,6 +46,15 @@ int event_entity(s32 id, float pos[3], float *yaw);
  * expect inv ITEM N | bonfires N | respawn SPAWNPOINT | value FIRST BITS V | region ENTITY X Y Z 0|1 (region-local point),
  * lot ID (award an item lot), rest, action, warp ENTITY, trace 0|1|2, summary. Prints "TEST ev ..." lines. */
 void event_test_cmd(const char *cmd);
+/* ItemLotParam lot `id` drawn as FUN_1403f5d90 (and the rows after it): up to max items into out, nothing given;
+ * -1 when no loaded map exported the lot. event_lot_give: those to the inventory and the item get dialog, then their
+ * get flags (AwardItemLot, treasures and drops all award this way). event_npc_lot: NpcParam npc's itemLotId_1 from a
+ * loaded map's npc lot table, -1 none */
+int event_lot_roll(s32 id, PickItem *out, int max);
+void event_lot_give(const PickItem *g, int n);
+s32 event_npc_lot(s32 npc);
+/* A corpse treasure the action button would take from pp (the Pick up item prompt) */
+int event_treasure_near(const float pp[3]);
 /* HUD line: instances running / waiting, conditions fired, last fired event, stubs, action prompt, update time */
 void event_status(char *buf, int n);
 

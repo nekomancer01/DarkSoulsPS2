@@ -30,7 +30,7 @@ objs=
 for f in "$MAPX"/*.c; do
     o="$TMP/mapx_$(basename "$f" .c).o"
     "$CLANG" --target=wasm32-unknown-emscripten -fPIC -O2 -fvisibility=default -ffp-contract=off -fno-fast-math \
-        -DMX_THREADS=0 -nostdinc -isystem "$RES" -isystem "$HERE/wasm" -c "$f" -o "$o"
+        -DMX_THREADS=0 -DMX_TIMING=0 -nostdinc -isystem "$RES" -isystem "$HERE/wasm" -c "$f" -o "$o"
     objs="$objs $o"
 done
 # shellcheck disable=SC2086

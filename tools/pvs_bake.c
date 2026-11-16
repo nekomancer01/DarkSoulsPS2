@@ -68,7 +68,7 @@ static Tri9 *tri;
 static unsigned nch, nun, ntri;
 /* blocks: 0 = the one baked, 1.. its neighbours (--with): their chunks (unit FOREIGN) occlude while the player stands
  * on them, their collision gives player positions; only block 0's units are recorded */
-#define MAXB 8
+#define MAXB 16  /* blocks: the one baked + its --with neighbours (world.h WORLD_MAX) */
 #define FOREIGN 0xFFFFFFFEu
 static int nblk = 1;
 static unsigned char *bshown[MAXB];  /* [coll][piece] per block, NULL: no draw groups */
@@ -321,6 +321,52 @@ static inline float box_d2(const float *mn, const float *mx, const float *p)
     return d2;
 }
 
+#ifdef __AVX2__
+#include <immintrin.h>
+/* One row of raster()'s modes 0 / 1 in AVX2, eight pixels at a time (2026-11-15, build speed): the scalar loop's exact
+ * operations in its order (separate multiplies and adds, no FMA; !(w < 0) as not-less-than, which holds for NaN as the
+ * scalar test does), lanes past x1 masked off; rows average 14 pixels. Asylum bake 426 -> 400 CPU s. PVS_SIMD=0: the
+ * scalar loop (A/B: pvs.bin must stay identical). The depth buffer has 8 spare floats after its last row for the last
+ * group's reads. */
+static void row_avx2(float *zr, int x0, int x1, float py, float ax, float ay, float az, float bx, float by, float bz,
+                     float ex, float ey, float ez, float ia, int mode, int *any, int *pass)
+{
+    const __m256 vbx = _mm256_set1_ps(bx), vex = _mm256_set1_ps(ex), vax = _mm256_set1_ps(ax);
+    const __m256 ey_py = _mm256_set1_ps(ey - py), by_py = _mm256_set1_ps(by - py), ay_py = _mm256_set1_ps(ay - py);
+    const __m256 via = _mm256_set1_ps(ia), one = _mm256_set1_ps(1.0f), zero = _mm256_setzero_ps(), half = _mm256_set1_ps(0.5f);
+    const __m256 vaz = _mm256_set1_ps(az), vbz = _mm256_set1_ps(bz), vez = _mm256_set1_ps(ez);
+    const __m256 k101 = _mm256_set1_ps(1.01f), k002 = _mm256_set1_ps(0.02f);
+    const __m256i lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    __m256 anyv = zero, passv = zero;
+    for (int x = x0; x <= x1; x += 8) {
+        __m256i xi = _mm256_add_epi32(_mm256_set1_epi32(x), lane);
+        __m256i inr = _mm256_cmpgt_epi32(_mm256_set1_epi32(x1 + 1), xi);  /* lanes x .. x1 */
+        __m256 px = _mm256_add_ps(_mm256_cvtepi32_ps(xi), half);
+        __m256 w0 = _mm256_mul_ps(_mm256_sub_ps(_mm256_mul_ps(_mm256_sub_ps(vbx, px), ey_py),
+                                                _mm256_mul_ps(by_py, _mm256_sub_ps(vex, px))), via);
+        __m256 w1 = _mm256_mul_ps(_mm256_sub_ps(_mm256_mul_ps(_mm256_sub_ps(vex, px), ay_py),
+                                                _mm256_mul_ps(ey_py, _mm256_sub_ps(vax, px))), via);
+        __m256 w2 = _mm256_sub_ps(_mm256_sub_ps(one, w0), w1);
+        __m256 cov = _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(w0, zero, _CMP_NLT_UQ), _mm256_cmp_ps(w1, zero, _CMP_NLT_UQ)),
+                                   _mm256_cmp_ps(w2, zero, _CMP_NLT_UQ));
+        cov = _mm256_and_ps(cov, _mm256_castsi256_ps(inr));
+        __m256 iz = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(w0, vaz), _mm256_mul_ps(w1, vbz)), _mm256_mul_ps(w2, vez));
+        __m256 z = _mm256_loadu_ps(zr + x);  /* (lanes past x1 read the next pixels, or the buffer's 8 spare floats) */
+        if (mode == 0) {
+            __m256 win = _mm256_and_ps(cov, _mm256_cmp_ps(iz, z, _CMP_GT_OQ));
+            _mm256_storeu_ps(zr + x, _mm256_blendv_ps(z, iz, win));  /* (other lanes write back what they read) */
+        } else {
+            __m256 lim = _mm256_div_ps(z, _mm256_add_ps(k101, _mm256_mul_ps(k002, z)));
+            __m256 ok = _mm256_or_ps(_mm256_cmp_ps(z, zero, _CMP_EQ_OQ), _mm256_cmp_ps(iz, lim, _CMP_GE_OQ));
+            passv = _mm256_or_ps(passv, _mm256_and_ps(cov, ok));
+        }
+        anyv = _mm256_or_ps(anyv, cov);
+    }
+    *any |= _mm256_movemask_ps(anyv) != 0;
+    *pass |= _mm256_movemask_ps(passv) != 0;
+}
+#endif
+static int simd = 1;
 /* mode 0: write depth; 1: test with bias, mark unit; 2: plain z test, write depth + unit id */
 static void raster(Ctx *c, float (*p)[3], unsigned unit, int mode)
 {
@@ -376,6 +422,12 @@ static void raster(Ctx *c, float (*p)[3], unsigned unit, int mode)
                 const float py = y + 0.5f;
                 float *zr = &c->zb[y * R];
                 int any = 0, pass = 0;
+#ifdef __AVX2__
+                if (simd) {
+                    row_avx2(zr, x0, x1, py, ax, ay, az, bx, by, bz, ex, ey, ez, ia, mode, &any, &pass);
+                    goto row_done;
+                }
+#endif
                 for (int x = x0; x <= x1; x++) {
                     float px = x + 0.5f;
                     float w0 = ((bx - px) * (ey - py) - (by - py) * (ex - px)) * ia;
@@ -392,6 +444,9 @@ static void raster(Ctx *c, float (*p)[3], unsigned unit, int mode)
                     }
                     any |= cov;
                 }
+#ifdef __AVX2__
+            row_done:
+#endif
                 if (pass) {
                     c->seen[unit] = c->stamp;
                     return;
@@ -501,9 +556,22 @@ static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
  * corner is a component of d or its negation, exactly the value the dot product gives (adding zeros changes no compare) */
 static unsigned box_faces(const float *mn, const float *mx, const float *e)
 {
+    /* box_in_face per face, with the corners' offsets taken once: every FB entry is 0 or +-1, so its dot products are
+     * exactly a signed component (a zero's sign never decides a comparison) */
+    float d[8][3];
+    for (int c = 0; c < 8; c++)
+        d[c][0] = (c & 1 ? mx[0] : mn[0]) - e[0], d[c][1] = (c & 2 ? mx[1] : mn[1]) - e[1], d[c][2] = (c & 4 ? mx[2] : mn[2]) - e[2];
     unsigned m = 0;
-    for (int f = 0; f < 6; f++)
-        m |= (unsigned)box_in_face(mn, mx, e, FB[f]) << f;
+    for (int f = 0; f < 6; f++) {
+        const float *fb = FB[f];
+        int out0 = 1, out1 = 1, out2 = 1, out3 = 1, out4 = 1;
+        for (int c = 0; c < 8; c++) {
+            float x = d[c][0] * fb[3] + d[c][1] * fb[4] + d[c][2] * fb[5], y = d[c][0] * fb[6] + d[c][1] * fb[7] + d[c][2] * fb[8];
+            float z = d[c][0] * fb[0] + d[c][1] * fb[1] + d[c][2] * fb[2];
+            out0 &= z < 0.1f, out1 &= x > z, out2 &= -x > z, out3 &= y > z, out4 &= -y > z;
+        }
+        m |= (unsigned)!(out0 | out1 | out2 | out3 | out4) << f;
+    }
     return m;
 }
 
@@ -778,14 +846,149 @@ static void load_dg(const char *path, int blk, unsigned c0, unsigned nc, unsigne
         ct[t0 + i].dg = td[i];
 }
 
+#ifdef PVS_GPU
+#include "pvs_gpu.h"
+/* the sampling on the GPU (tools/pvs_gpu.c): cameras in batches; per camera the CPU makes the same draw list and face
+ * masks as sample() (occluders of every block, then the block-0 chunks to test, per cube face), the GPU draws and
+ * returns the units seen. 0 when no GPU (PVS_GPU=0, no EGL device, a software renderer): the CPU path runs. */
+static unsigned *g_cf, *g_cn, *g_cu;  /* per chunk for the GPU: first triangle, triangles, unit */
+static int gpu_setup(int res)
+{
+    const char *g = getenv("PVS_GPU");
+    if (g && *g == '0')
+        return 0;
+    g_cf = malloc(sizeof(unsigned) * (nch ? nch : 1)), g_cn = malloc(sizeof(unsigned) * (nch ? nch : 1));
+    g_cu = malloc(sizeof(unsigned) * (nch ? nch : 1));
+    for (unsigned i = 0; i < nch; i++)
+        g_cf[i] = ch[i].first, g_cn[i] = ch[i].ntri, g_cu[i] = ch[i].unit < nun ? ch[i].unit : 0;
+    if (!gpu_init(res, (const float *)tri, ntri, g_cf, g_cn, g_cu, nch, nun)) {
+        printf("pvs_bake: no GPU (OpenGL 4.5 over EGL): sampling on the CPU\n");
+        return 0;
+    }
+    return 1;
+}
+
+static void gpu_bake(int per_cell, unsigned long long *tested)
+{
+    int W = gpu_words();
+    /* every camera sampled: (cell, camera) */
+    unsigned ncam = 0;
+    for (unsigned i = 0; i < ncell; i++)
+        ncam += cells[i].n < (unsigned)per_cell ? cells[i].n : (unsigned)per_cell;
+    unsigned *cc = malloc(sizeof(unsigned) * (ncam ? ncam : 1)), *cs = malloc(sizeof(unsigned) * (ncam ? ncam : 1)), k = 0;
+    for (unsigned i = 0; i < ncell; i++) {
+        unsigned m = cells[i].n < (unsigned)per_cell ? cells[i].n : (unsigned)per_cell;
+        for (unsigned s2 = 0; s2 < m; s2++)
+            cc[k] = i, cs[k] = s2, k++;
+    }
+    enum { B = 64 };  /* cameras per batch (pvs_gpu.c LCAMS): its command lists stay small under tools/q's address cap */
+    unsigned *lst[B], nlst[B];
+    unsigned *off = malloc(sizeof(unsigned) * (12 * B + 1));
+    float (*eye)[3] = malloc(sizeof(float[3]) * B);
+    uint32_t *bits = malloc(sizeof(uint32_t) * (size_t)B * (size_t)W);
+    unsigned *idx = NULL;
+    size_t idxcap = 0;
+    int pend = -1, pnb = 0, inst = gpu_instanced();
+    /* a collected batch's bits into its cells' rows */
+#define take(b0_, nb_) do { \
+        for (int c = 0; c < (nb_); c++) { \
+            Cell *ce = &cells[cc[(b0_) + c]]; \
+            const uint32_t *bc = bits + (size_t)c * W; \
+            for (unsigned u = 0; u < nun; u++) \
+                if (bc[u >> 5] >> (u & 31) & 1) \
+                    ce->row[u >> 3] |= 1 << (u & 7); \
+        } \
+        *tested += (unsigned long long)(nb_); \
+    } while (0)
+    for (unsigned b0 = 0; b0 < ncam; b0 += B) {
+        int nb = ncam - b0 < B ? (int)(ncam - b0) : B;
+#pragma omp parallel
+        {
+            unsigned *list = malloc(sizeof(unsigned) * (nch ? nch : 1));
+            unsigned char *fm = malloc(nch + 1);
+#pragma omp for schedule(dynamic, 1)
+            for (int c = 0; c < nb; c++) {
+                const Cam *cm = &cells[cc[b0 + c]].cam[cs[b0 + c]];
+                unsigned nl = draw_list(cm->e, cm->b, cm->cm, list), n = 0;
+                for (unsigned j = 0; j < nl; j++)  /* (instanced: face 0's lists stand for all six) */
+                    fm[j] = inst ? 1 : (unsigned char)box_faces(ch[list[j] & 0x3FFFFFFFu].mn, ch[list[j] & 0x3FFFFFFFu].mx, cm->e);
+                unsigned *o = malloc(sizeof(unsigned) * (12 * (size_t)nl + 13)), cnt[12] = {0};
+                /* list q = 2 f (occluders of face f) or 2 f + 1 (tests): counted, then filled */
+                for (unsigned j = 0; j < nl; j++) {
+                    unsigned i = list[j] & 0x3FFFFFFFu;
+                    if (!ch[i].ntri)
+                        continue;
+                    for (int f = 0; f < 6; f++)
+                        if (fm[j] >> f & 1) {
+                            if (list[j] >> 31) cnt[2 * f]++;
+                            if (i < nself) cnt[2 * f + 1]++;
+                        }
+                }
+                unsigned st[13];
+                st[0] = 13;
+                for (int q = 0; q < 12; q++)
+                    st[q + 1] = st[q] + cnt[q];
+                unsigned wr[12];
+                for (int q = 0; q < 12; q++)
+                    wr[q] = st[q];
+                for (unsigned j = 0; j < nl; j++) {
+                    unsigned i = list[j] & 0x3FFFFFFFu;
+                    if (!ch[i].ntri)
+                        continue;
+                    for (int f = 0; f < 6; f++)
+                        if (fm[j] >> f & 1) {
+                            if (list[j] >> 31) o[wr[2 * f]++] = i;
+                            if (i < nself) o[wr[2 * f + 1]++] = i;
+                        }
+                }
+                for (int q = 0; q < 13; q++)
+                    o[q] = st[q];  /* header: the 12 lists' starts and the end, from 13 */
+                n = st[12];
+                lst[c] = o, nlst[c] = n;
+                memcpy(eye[c], cm->e, sizeof eye[c]);
+            }
+            free(list), free(fm);
+        }
+        size_t tot = 0;
+        for (int c = 0; c < nb; c++)
+            tot += nlst[c] - 13;
+        if (tot > idxcap)
+            idxcap = tot + tot / 2, idx = realloc(idx, sizeof(unsigned) * (idxcap ? idxcap : 1));
+        size_t w = 0;
+        for (int c = 0; c < nb; c++) {
+            const unsigned *o = lst[c];
+            for (int q = 0; q < 12; q++)
+                off[12 * c + q] = (unsigned)(w + o[q] - 13);
+            memcpy(idx + w, o + 13, sizeof(unsigned) * (nlst[c] - 13));
+            w += nlst[c] - 13;
+            free(lst[c]);
+        }
+        off[12 * nb] = (unsigned)w;
+        /* the previous batch's bits (the GPU drew it while the lists above were made), then this batch's draws */
+        if (pend >= 0)
+            { gpu_collect(bits); take(pend, pnb); }
+        gpu_submit(nb, (const float (*)[3])eye, FB, off, idx);
+        pend = (int)b0, pnb = nb;
+    }
+    if (pend >= 0)
+        { gpu_collect(bits); take(pend, pnb); }
+#undef take
+    free(cc), free(cs), free(off), free(eye), free(bits), free(idx);
+}
+#endif
+
 int main(int argc, char **argv)
 {
+#ifdef PVS_GPU
+    if (argc == 2 && !strcmp(argv[1], "--gpu-probe"))  /* tools/pvs_gpu_server.py: is there a GPU to bake on? */
+        return gpu_probe();
+#endif
     if (argc < 5) {
         fprintf(stderr, "usage: pvs_bake pvsin.bin dg.bin collision.bin pvs.bin [--res N] [--cell M] [--per-cell N] "
                         "[--cams N] [--cluster M] [--validate N] [--spot e,t,p ...] [--threads N]\n");
         return 2;
     }
-    int per_cell = 16, cams = 3, validate = 0, nspot = 0, nwith = 0;
+    int per_cell = 16, cams = 3, validate = 0, vres = 0, nspot = 0, nwith = 0, gpu_res = 0, gpu_pc = 0;
     const char *with[MAXB][3];
     const char *spot[64];
     for (int a = 5; a < argc; a++) {
@@ -794,6 +997,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[a], "--per-cell") && a + 1 < argc) per_cell = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--cams") && a + 1 < argc) cams = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--validate") && a + 1 < argc) validate = atoi(argv[++a]);
+        else if (!strcmp(argv[a], "--vres") && a + 1 < argc) vres = atoi(argv[++a]);  /* validate at this resolution (default --res) */
+        else if (!strcmp(argv[a], "--gpu-res") && a + 1 < argc) gpu_res = atoi(argv[++a]);  /* on the GPU: this resolution, */
+        else if (!strcmp(argv[a], "--gpu-per-cell") && a + 1 < argc) gpu_pc = atoi(argv[++a]);  /* this many cameras per cell */
         else if (!strcmp(argv[a], "--cluster") && a + 1 < argc) cluster = (float)atof(argv[++a]);
         else if (!strcmp(argv[a], "--spot") && a + 1 < argc && nspot < 64) spot[nspot++] = argv[++a];
         else if (!strcmp(argv[a], "--with") && a + 3 < argc && nwith < MAXB - 1)
@@ -862,6 +1068,9 @@ int main(int argc, char **argv)
     }
     build_grid();
     TW = (R + TILE - 1) / TILE;
+    const char *sd = getenv("PVS_SIMD");
+    if (sd && *sd == '0')
+        simd = 0;
     const char *pt = getenv("PVS_PRETEST");
     pretest = !(pt && !strcmp(pt, "0"));
     tb = malloc((nch + 1) * sizeof *tb);
@@ -883,6 +1092,17 @@ int main(int argc, char **argv)
         if (ch[i].unit != 0xFFFFFFFFu && (ch[i].flags >> 8 & CHUNK_BACKDROP))
             always[ch[i].unit] = 1;
 
+#ifndef PVS_GPU
+    (void)gpu_res, (void)gpu_pc;  /* (a build without the GPU path takes and ignores them) */
+#else
+    int on_gpu = gpu_setup(gpu_res > 0 ? gpu_res : R);
+    if (on_gpu) {  /* the GPU's own resolution and cameras per cell (before the cells pick their cameras) */
+        if (gpu_res > 0)
+            R = gpu_res;
+        if (gpu_pc > 0)
+            per_cell = gpu_pc;
+    }
+#endif
     players();
     hcap2 = 1 << 20;
     chash = malloc(hcap2 * sizeof *chash);
@@ -916,9 +1136,15 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < ncell; i++)
         cells[i].row = calloc(rb, 1), cells[i].sampled = 1;
     unsigned long long tested = 0;
+#ifdef PVS_GPU
+    if (on_gpu) {
+        gpu_bake(per_cell, &tested);
+        goto sampled;
+    }
+#endif
 #pragma omp parallel
     {
-        Ctx c = {malloc(sizeof(float) * R * R), calloc(nun, sizeof(unsigned)), NULL, 0, malloc(sizeof(float) * TW * TW), 0};
+        Ctx c = {malloc(sizeof(float) * (R * R + 8)), calloc(nun, sizeof(unsigned)), NULL, 0, malloc(sizeof(float) * TW * TW), 0};
         unsigned *list = malloc(2 * nch * sizeof *list);
         unsigned char *fm = malloc(nch + 1);
 #pragma omp for schedule(dynamic, 1) reduction(+ : tested)
@@ -938,6 +1164,9 @@ int main(int argc, char **argv)
         }
         free(c.zb), free(c.seen), free(list), free(c.tmin), free(fm);
     }
+#ifdef PVS_GPU
+sampled:
+#endif
     /* dilation: each row ORs its 6 neighbours' (missed samples). Only sampled cells are stored: the runtime takes the
      * union of a missing cell's stored neighbours (pvs.c), "everything" when it has none */
     unsigned char **raw = malloc(nsampled * sizeof *raw);
@@ -1075,13 +1304,15 @@ int main(int argc, char **argv)
 
     /* ---- validation: fresh cameras, the full scene, pixels whose unit the row leaves out ---- */
     if (validate) {
+        if (vres > 0)
+            R = vres;
         uint64_t s2 = 0xC0FFEE1234ull;
         unsigned long long px = 0, miss = 0, norow = 0, bad = 0;
         double worst = 0;
         float we[3] = {0};
 #pragma omp parallel
         {
-            Ctx c = {malloc(sizeof(float) * R * R), NULL, malloc(sizeof(unsigned) * R * R), 0, NULL, 0};
+            Ctx c = {malloc(sizeof(float) * (R * R + 8)), NULL, malloc(sizeof(unsigned) * R * R), 0, NULL, 0};
             unsigned *list = malloc(2 * nch * sizeof *list);
             unsigned char *tmp = malloc(rb);
 #pragma omp for schedule(dynamic, 4) reduction(+ : px, miss, norow, bad)

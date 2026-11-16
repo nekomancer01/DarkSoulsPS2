@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "save.h"
+#include "chrstat.h"
 #include "flags.h"
 #include "pack.h"
 #include "progress.h"
@@ -196,6 +197,9 @@ static int mc_ready(void)
     return 1;
 }
 
+/* host: saves need a host file system: booted from a disc, there is none (PCSX2 HostFs off, a real console) */
+static int host_ready(void) { return pack_cdrom <= 0; }
+
 /* No fioRemove: the boot ROM's FILEIO (rom0, which this build talks to) creates a directory of that name instead,
  * on host: and mc0: alike (seen 2026-11-01). Saves are overwritten in place; a longer old file keeps its tail, which
  * read_slot ignores (the header has the size). */
@@ -246,6 +250,8 @@ int save_load(void)
     if (best_slot < 0)
         return 0;
     int n = read_slot(best_slot);
+    if (!n)  /* (buf holds the other slot when the second read of this one failed) */
+        return 0;
     u32 h[8];
     memcpy(h, buf, HDR);
     /* older / newer Progress layouts: fields present in both are kept, the rest stay at their new-game values */
@@ -275,7 +281,11 @@ int save_boot(int argc, char **argv, const char *boot_area)
         int test = 0;
         for (int i = 1; i < argc; i++)
             test |= !strncmp(argv[i], "test=", 5);
-        device = test ? SAVE_OFF : mc_ready() ? SAVE_MC : SAVE_HOST;
+        /* host: only where a host file system answers (PCSX2 HostFs, ps2link): booted from a disc without a card,
+         * every save was a write error every SAVE_INTERVAL (fd -5, ISO play report 2026-11-10) */
+        device = test ? SAVE_OFF : mc_ready() ? SAVE_MC : host_ready() ? SAVE_HOST : SAVE_OFF;
+        if (device == SAVE_OFF && !test)
+            printf("save: no formatted memory card in slot 1 and no host:, saves off\n");
     } else if (device == SAVE_MC && !mc_ready()) {
         printf("save: no formatted memory card in slot 1, saves off\n");
         device = SAVE_OFF;
@@ -582,6 +592,14 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("loaded", loaded, a);
         if (!strcmp(what, "deaths") && pl && sscanf(r, "%lu", &a) == 1)
             return check("deaths", pl->deaths, a);
+        long hp, st, def;  /* derived stats from the save's stats / equipment (chrstat.c) */
+        if (!strcmp(what, "chrstat") && sscanf(r, "%ld %ld %ld", &hp, &st, &def) == 3) {
+            int ok = chr_stats.valid && chr_stats.hp_max == hp && chr_stats.stamina_max == st &&
+                     (int)chr_stats.def[EL_PHYS] == def;
+            printf("TEST %scheck chrstat %ld %ld %ld: hp %d stamina %d def %d%s\n", ok ? "" : "error ", hp, st, def,
+                   chr_stats.hp_max, chr_stats.stamina_max, (int)chr_stats.def[EL_PHYS], ok ? " ok" : "");
+            return ok ? 0 : -1;
+        }
         if (!strcmp(what, "seq") && sscanf(r, "%lu", &a) == 1)  /* sequence of the last save written or loaded, 0 after wipe */
             return check("seq", seq, a);
         float px, py, pz, pr;  /* the player within r m of (x, y, z): a walked route really got there */

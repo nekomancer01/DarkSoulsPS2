@@ -112,17 +112,19 @@ rm -f "$OUT"
     -volid DSRPS2 -system_id PLAYSTATION -application_id "DSR PS2 PROTO" -map "$STAGE" / "${WEIGHTS[@]}" -commit \
     2>&1 | grep -v "^xorriso .* : RockRidge filesystem manipulator" | grep -v '^$' || true
 fi
-# Check what the BIOS can read: every directory in one sector, file names with ;1
+# Check what the BIOS can read: the root directory in one sector, file names with ;1 (other directories may take
+# several sectors: dsrsnd.c df_scan reads them all, the BIOS only opens the boot ELF in the root)
 python3 -I - "$OUT" <<'PY'
 import struct, sys
 f = open(sys.argv[1], 'rb')
 def sec(n, c=1):
     f.seek(n * 2048); return f.read(2048 * c)
 def walk(lba, size, path):
-    if size > 2048 and any(sec(lba + 1, (size - 1) // 2048)):  # (iso9660.py's DVD root: 32 sectors, the rest empty)
+    if not path and size > 2048 and any(sec(lba + 1, (size - 1) // 2048)):  # (iso9660.py's DVD root: 32 sectors, empty)
         sys.exit(f"ISO check: directory {path or '/'} is {size} B > one sector (the BIOS reads only the first)")
-    d, i = sec(lba), 0
-    while i < len(d) and d[i]:
+    for s in range((size + 2047) // 2048 if path else 1):
+      d, i = sec(lba + s), 0
+      while i < len(d) and d[i]:
         r = d[i:i + d[i]]; i += d[i]
         ext, sz, flags, name = struct.unpack('<I', r[2:6])[0], struct.unpack('<I', r[10:14])[0], r[25], r[33:33 + r[32]]
         if name in (b'\0', b'\1'): continue
@@ -130,6 +132,6 @@ def walk(lba, size, path):
         elif not name.endswith(b';1'): sys.exit(f"ISO check: {path}/{name} has no ;1 version")
 root = sec(16)[156:190]
 walk(struct.unpack('<I', root[2:6])[0], struct.unpack('<I', root[10:14])[0], '')
-print("ISO check: every directory fits one sector, names are ISO9660 level 1 with ;1")
+print("ISO check: the root directory fits one sector, names are ISO9660 level 1 with ;1")
 PY
 echo "ISO: $OUT ($(stat -c %s "$OUT") B), boot cdrom0:\\$ID;1"
