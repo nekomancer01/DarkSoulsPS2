@@ -33,6 +33,14 @@ int fx_entity_particles(int id, int kill);
  * while lit. fx_bonfire_burst(entity, n): one-shot n of that bonfire (0 ignite 90007, 1 rest 90010) at dummy 100 */
 void fx_bonfire_burst(int entity, int n);
 
+/* Treasure shine (src/pickup.c): menu.pak shine.bin as its own set, textures resident; fx_shine_add places one of
+ * its instances of effect (0 white 99001, 1 gold 99046) at pos and returns it (-1 all in use), fx_shine_del frees it
+ * and its particles. The SHINE_ACTIVE nearest placed shines emit. */
+int fx_shine_init(GSGLOBAL *gs, const void *blob, unsigned size);
+int fx_shine_add(int effect, const float pos[3]);
+void fx_shine_del(int h);
+int fx_shine_count(void);
+
 typedef struct {
     int particles;   /* alive */
     int active;      /* instances within range */

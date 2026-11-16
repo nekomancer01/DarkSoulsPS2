@@ -175,11 +175,7 @@ def plan(game, build, mv=None):
     screens = mv.get("SCREEN_NAMES", "").split()
     S("menu screens", "export_screens.py", [game, f"{G}/screens"], [f"{G}/screens/scr_{n}.bin" for n in screens])
     S("loading screen", "export_loading.py", [game, f"{G}/loading.bin"], [f"{G}/loading.bin"])
-    S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin", f"items.bin={G}/items/items.bin",
-                               f"itemx.bin={G}/items/itemx.bin", f"desc.bin=raw:{G}/items/desc.bin",
-                               f"icons.bin=raw:{G}/items/icons.bin"] +
-      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens] + [f"loading.bin={G}/loading.bin"],
-      [f"{D}/menu.pak"])
+    S("action prompts", "export_menu.py", [game, "--help", f"{G}/help.bin"], [f"{G}/help.bin"])
     S("enemy ESD", "export_esd.py", [game, f"{G}/enemyCommon.esd.bin", "enemyCommon"], [f"{G}/enemyCommon.esd.bin"])
     blocks = run_tool("area.py", ["--world", default], capture=True).split()  # Makefile WORLD_BLOCKS
     # $(A)/snd.stamp: every sound pack of the boot map and its world blocks' maps (SND_MAPS) in one export, which
@@ -190,6 +186,15 @@ def plan(game, build, mv=None):
         msb, block = b.split(":")
         area(msb, block, True)
     area(default, None, bool(blocks))
+    # the treasure shine takes the boot area's tone map (Makefile $(G)/shine.bin), so the menu pack follows the area
+    S("treasure shine", "export_effects.py", [game, "--shine", f"{G}/shine.bin", default, "--tone", f"{G}/fx_tone.json"],
+      [f"{G}/shine.bin"])
+    S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin", f"items.bin={G}/items/items.bin",
+                               f"itemx.bin={G}/items/itemx.bin", f"desc.bin=raw:{G}/items/desc.bin",
+                               f"icons.bin=raw:{G}/items/icons.bin"] +
+      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens] + [f"loading.bin={G}/loading.bin", f"shine.bin={G}/shine.bin",
+                                                                    f"help.bin={G}/help.bin"],
+      [f"{D}/menu.pak"])
     gens = [G] + [f"{G}/{b.split(':')[1]}" for b in blocks]  # Makefile PVS_PEERS: the world's blocks, boot map first
     for out, A, args, world_split in packs:
         if world_split:

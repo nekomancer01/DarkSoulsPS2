@@ -32,6 +32,14 @@ jobs:
           python-version: '3.12'
       - run: pip install numpy
       - run: tools/ci/offline.sh
+  wasm:
+    name: WebAssembly helpers (tools/native/build-wasm.sh, as the Pages build runs it)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: command -v wasm-ld || sudo apt-get install -y lld
+      - run: tools/native/build-wasm.sh "$RUNNER_TEMP/wasm"
   compile:
     name: Compile (ps2dev v2.0.0, -Werror, data-free sources)
     runs-on: ubuntu-latest

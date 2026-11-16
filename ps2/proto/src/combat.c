@@ -154,9 +154,65 @@ float combat_damage_on(const CombatChr *t, const CombatAttack *atk)
     return sum > 0 ? sum : 0;
 }
 
+/* Lock-on pick: living enemies within range, scored by distance plus 4 m per radian off the view (ASSUMED; DSR's
+ * pick rule is in the camera code, not decoded) */
+CombatChr *combat_lock_pick(const float pos[3], float yaw, float range)
+{
+    CombatChr *best = 0;
+    float bs = 1e9f;
+    for (int i = 0; i < COMBAT_MAX_CHRS; i++) {
+        CombatChr *c = chrs[i];
+        if (!c || c->team != TEAM_ENEMY || c->dead)
+            continue;
+        float dx = c->pos[0] - pos[0], dz = c->pos[2] - pos[2], d = sqrtf(dx * dx + dz * dz);
+        float a = atan2f(dx, dz) - yaw;
+        while (a > 3.14159265f) a -= 6.2831853f;
+        while (a < -3.14159265f) a += 6.2831853f;
+        if (d > range || fabsf(a) > 1.5707963f || fabsf(c->pos[1] - pos[1]) > 4)
+            continue;
+        float sc = d + 4 * fabsf(a);
+        if (sc < bs)
+            bs = sc, best = c;
+    }
+    return best;
+}
+
+int combat_lock_alive(const CombatChr *c)
+{
+    for (int i = 0; i < COMBAT_MAX_CHRS; i++)
+        if (chrs[i] == c)
+            return !c->dead;
+    return 0;
+}
+
+/* distance covered t s into a knockback: v0 for cont s, then slowing linearly to 0 over dec s */
+static float knock_dist(const CombatChr *c, float t)
+{
+    float s = c->knock_v * (t < c->knock_cont ? t : c->knock_cont), u = t - c->knock_cont;
+    if (u > 0) {
+        u = u < c->knock_dec0 ? u : c->knock_dec0;
+        s += c->knock_v * (u - (c->knock_dec0 > 0 ? u * u / (2 * c->knock_dec0) : 0));
+    }
+    return s;
+}
+
+void combat_knock_step(CombatChr *c, float dt, float out[2])
+{
+    out[0] = out[1] = 0;
+    if (c->knock_v <= 0 || c->knock_dec > c->knock_cont + c->knock_dec0)
+        return;
+    float d = knock_dist(c, c->knock_dec + dt) - knock_dist(c, c->knock_dec);  /* knock_dec: time since the hit */
+    c->knock_dec += dt;
+    out[0] = c->knock_dir[0] * d, out[1] = c->knock_dir[1] * d;
+}
+
+void (*combat_status_hook)(CombatChr *t, const CombatAttack *atk);
+
+int (*combat_throw_hook)(const float pos[3], float yaw, ThrowStart *out);
+
 int combat_apply(CombatChr *t, const CombatAttack *atk)
 {
-    if (t->invincible)
+    if (t->invincible && !atk->is_throw)
         return 0;
     float dx = atk->src_pos[0] - t->pos[0], dz = atk->src_pos[2] - t->pos[2], a = atan2f(dx, dz) - t->yaw;
     while (a > 3.14159265f) a -= 6.2831853f;
@@ -169,7 +225,7 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     /* Parry: DS1's parry is an AttackBehavior of AttackType 64 that meets an attack whose anim is in a "Parry
      * Possible" window (TAE flag 5). ASSUMED geometry (TECH_DEBT combat-10): an attack that reaches the parrying
      * character from its front half while the window is open counts as met by the shield */
-    if (t->parrying && atk->parryable && a > -1.5707963f && a < 1.5707963f) {
+    if (!atk->is_throw && t->parrying && atk->parryable && a > -1.5707963f && a < 1.5707963f) {
         if (atk->src)
             atk->src->parried = 1;
         t->new_parry = 1;
@@ -179,7 +235,7 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     }
     t->guard_hit = t->guard_broken = 0;
     float cut[4] = {1, 1, 1, 1};
-    if (t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
+    if (!atk->is_throw && t->guarding && a > -1.5707963f && a < 1.5707963f && !atk->unblockable) {
         for (int e = 0; e < 4; e++)
             cut[e] = 1 - t->guard_cut[e] / 100;
         float st = atk->stam_dmg * (100 - t->guard_stab) / 100;
@@ -217,6 +273,21 @@ int combat_apply(CombatChr *t, const CombatAttack *atk)
     }
     t->damage_level = level;
     t->hit_dir = a;
+    /* knockback: AtkParam knockbackDist along the hit (attacker -> target), covered at constant speed for the
+     * reaction size's KnockBackParam ContTime then slowing to 0 over DecTime: v0 = d / (cont + dec / 2) (ASSUMED
+     * profile and dmgLevel -> size order, TECH_DEBT combat-12); none while guarding, super armour or i-frames */
+    if (atk->knock > 0 && !atk->is_throw && !t->super_armor) {
+        const KnockRow *kr = &knock_rows[t->knock_row == 1];
+        int k = atk->damage_level >= 0 && atk->damage_level < 8 ? atk->damage_level : 2;
+        float cont = kr->cont[k], dec = kr->dec[k], d = atk->knock * (t->guard_hit ? 0.5f : 1);
+        float len = sqrtf(dx * dx + dz * dz);
+        if (cont + dec * 0.5f > 0 && len > 1e-3f) {
+            t->knock_dir[0] = -dx / len, t->knock_dir[1] = -dz / len;
+            t->knock_v = d / (cont + dec * 0.5f), t->knock_cont = cont, t->knock_dec0 = dec, t->knock_dec = 0;
+        }
+    }
+    if (atk->st.type > 0 && combat_status_hook && !t->guard_hit)  /* a guarded hit builds no status (ASSUMED) */
+        combat_status_hook(t, atk);
     if (t->hp <= 0) {
         t->hp = -1;  /* the ESD death branches test f1000() < 0 */
         t->dead = 1;
@@ -324,6 +395,7 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
     }
     player_chr.guarding = p->guarding;
     player_chr.parrying = p->parrying;
+    player_chr.knock_row = 1;
     player_chr.stamina = &p->stamina;  /* a guarded hit takes its stamina cost at once (combat_apply) */
     player_chr.new_hit = 0;  /* the ESD (in player_update, before this) has seen last frame's hit */
     combat_register(&player_chr);
@@ -355,6 +427,7 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
                             (chr_stats.valid ? chr_stats.poise_dmg[HAND_R] : WEP_POISE_DMG) * aw->sa_corr / 100.0f,
                             aw->dmg_level, {p->pos.x, p->pos.y, p->pos.z}, window};
         atk.attr = aw->attr;
+        atk.knock = aw->knock;
         if (chr_stats.valid)
             for (int e = 0; e < 3; e++)
                 atk.el[e] = chr_stats.ar[HAND_R][1 + e];
@@ -369,7 +442,10 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             m34_apply(&world[SK_R_WEAPON], d2, b);
             if (h == 0)
                 memcpy(combat_hit_a, a, 12), memcpy(combat_hit_b, b, 12), combat_hit_active = 1;
-            hits += combat_sweep(a, b, aw->hit[h].r, &atk);
+            int n = combat_sweep(a, b, aw->hit[h].r, &atk);
+            hits += n;
+            if (n && aw->hit_stop > p->hitstop)  /* AtkParam hitStopTime: the swing stops for a moment on contact */
+                p->hitstop = aw->hit_stop;
         }
     }
     p->hp = player_chr.hp;  /* (the player cannot hit itself; kept for symmetry) */
