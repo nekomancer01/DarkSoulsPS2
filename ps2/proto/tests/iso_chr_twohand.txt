@@ -1,0 +1,19 @@
+# Two-handing (PR I): Triangle requests hold style 3 (f104), group 1 goes 200 -> 203 (a00 90 / 30) and c1_104(3)
+# sets it ("player: hold style 3"); R1 then plays the two-handed a23 4000; Triangle again goes back (186 -> 189,
+# c1_104(1)). Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_twohand.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+wait 3
+spawn -48.5 -21.8 -35.5 0
+wait 2
+triangle
+wait 2
+r1
+wait 0.4
+shot r1_two_handed
+wait 2
+triangle
+wait 2
+stats
+end

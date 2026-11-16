@@ -26,14 +26,16 @@
 #include "progress.h"
 
 ChrStats chr_stats;
-int chr_hand_slot[2], chr_quick;
+int chr_hand_slot[2], chr_quick, chr_two_hand;
 
 void chrstat_select(void)
 {
     ChrStats *c = &chr_stats;
     for (int h = 0; h < 2; h++) {
         const ChrWep *w = &c->wep[h][chr_hand_slot[h] & 1];
-        memcpy(c->ar[h], w->ar, sizeof c->ar[h]);
+        if (chr_two_hand && h == HAND_L)  /* both hands on the right weapon: it guards (the left one is on the back) */
+            w = &c->wep[HAND_R][chr_hand_slot[HAND_R] & 1];
+        memcpy(c->ar[h], chr_two_hand && h == HAND_R ? w->ar2h : w->ar, sizeof c->ar[h]);
         c->poise_dmg[h] = w->poise_dmg, c->wep_types[h] = w->types, c->guard_level[h] = w->guard_level;
         memcpy(c->guard_cut[h], w->guard_cut, sizeof c->guard_cut[h]);
         c->guard_stab[h] = w->guard_stab;
@@ -183,6 +185,11 @@ int chrstat_recalc(void)
             ChrWep *w = &c.wep[h][k];
             w->id = id;
             chrstat_weapon_ar(id, w->ar);
+            /* two-handed: STR x 1.5 (ASSUMED: DS1's rule, capped at 99; the exe's adjustment was not found) */
+            int str = prog.stats[ST_STR];
+            prog.stats[ST_STR] = str * 3 / 2 > 99 ? 99 : str * 3 / 2;
+            chrstat_weapon_ar(id, w->ar2h);
+            prog.stats[ST_STR] = str;
             const ItemRow *r = id ? item_row(id) : 0;
             if (r) {
                 w->poise_dmg = r->x4 & 0xFFFF, w->types = (r->x4 >> 16) & 0xFF, w->guard_level = (r->x4 >> 24) & 0xF;
