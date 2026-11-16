@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "cvar.h"
 #include "lpass.h" /* logic pass breakdown (Burg plan B6) */
 #include "progress.h"
 #include "model.h"
@@ -42,6 +43,7 @@
 #include "pickup.h"
 #include "testscript.h"
 #include "ticks.h"
+#include "omit.h"
 
 /* the boot area's + every world block's (enemy_block_types, at boot). 20 ran full at block 2 of the 14-block world: the
  * Depths and Darkroot placed only characters an earlier block had (81 types, 2026-11-15) */
@@ -177,6 +179,7 @@ typedef struct {
     BoneLocal *pose, *from;
     int pose_slot;
     unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
+    Omit om;               /* update omission level (src/omit.c, CHR_OMIT) */
     float blend, blend_time;
     /* action anim (attacks, steps, damage, death) started by the ESD; -1 = none (locomotion / idle) */
     int act, act_slot, act_layer, act_info;
@@ -791,11 +794,15 @@ static int enemy_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
 
 /* ---- spawn ---- */
 
+static int sight_line(V3 from, V3 to) __attribute__((unused));  /* (NO_AI_SCRIPTS builds never hand it to ai.c) */
+static int swing_on, swing_hit, swing_missed;  /* player_swing (INTERUPT_MissSwing) */
+
 static void think_of(AiThink *th, const ChrVar *v)
 {
     th->npc = v->npc, th->think = v->think, th->logic = v->logic, th->battle = v->battle;
     th->eye_dist = v->eye_dist, th->eye_ang_x = v->eye_ang_x, th->eye_ang_y = v->eye_ang_y;
     th->ear_dist = v->ear_dist, th->ear_cut = v->ear_cut;
+    th->nose_dist = v->nose_dist;  /* bosses 100 m (Taurus, Gargoyles, Asylum Demon): aware without a sight line */
     th->near_d = v->near_d, th->mid_d = v->mid_d, th->far_d = v->far_d, th->out_d = v->out_d;
     th->sight_forget = v->sight_forget, th->sound_forget = v->sound_forget;
     th->goal_action_caution = v->goal_action_caution, th->goal_id_caution = v->goal_id_caution;
@@ -937,6 +944,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     pack_close(&pk);
     esd_ok = esd_load(&esd_prog, eb);
 #ifndef NO_AI_SCRIPTS
+    ai_los = sight_line;
     ai_scripts(lb, (int)lsize, map_lua, map_lua_size);
 #endif
     free(lb);  /* the VM keeps its own copy of the code */
@@ -1248,7 +1256,7 @@ static void root_at(const Enemy *e, float t, float *o)
 enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
 /* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
 #ifndef ENEMY_WALLS
-#define ENEMY_WALLS 1
+#define ENEMY_WALLS cv_ENEMY_WALLS  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
@@ -1279,6 +1287,15 @@ static int leash_ok(Enemy *e, const float p[3], int on_floor)
     return x * x + z * z <= LEASH_M * LEASH_M;
 }
 
+/* AI_PERCEPT sight line (DSR FUN_140618a60 casts against the world collision, filter 0x28): seen when no solid
+ * triangle lies between the two points */
+static int sight_line(V3 from, V3 to)
+{
+    float a[3] = {from.x, from.y, from.z}, b[3] = {to.x, to.y, to.z};
+    ColHit hit;
+    return !col_ray(a, b, COL_SOLID, &hit);
+}
+
 /* ENEMY_WALLS: the move's push-out let the centre through a thin wall (the same test as wall_check, at WC_H above the
  * feet; two characters stacked on one spot on the Burg stairs, pushed apart into a wall, 2026-11-09 ISO) */
 static int wall_between(const Enemy *e, const float p[3])
@@ -1294,7 +1311,7 @@ static int wall_between(const Enemy *e, const float p[3])
  * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
  * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
 #ifndef SEP_CARRY
-#define SEP_CARRY 1
+#define SEP_CARRY cv_SEP_CARRY  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 
@@ -1601,6 +1618,7 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->hits_seen = e->cc.hit_count;
         e->dmg_latch = 0.2f, e->dmg_state0 = esd_state(&e->esd, 0);
         new_hit = 1, e->hostile = 1;
+        swing_hit |= swing_on;
     } else if (e->dmg_latch > 0) {
         e->dmg_latch -= dt;
         if (esd_state(&e->esd, 0) != e->dmg_state0)
@@ -1633,6 +1651,8 @@ static void update_one(Enemy *e, Player *pl, float dt)
     f->combo_window = in_window(e, F_COMBO);
     f->cancel_window = in_window(e, F_AI_COMBO);
     f->damaged = new_hit;
+    f->eye_h = e->var->height * 0.9f;  /* ASSUMED: the exe reads it through the ChrIns vtable +0x28 (not decoded) */
+    f->target_h = COL_PLAYER_H * 0.9f, f->target_r = COL_PLAYER_R;
     f->dt = dt;
     const AiOut *o = &e->ai.out;
     LG_BEGIN_X(ai);
@@ -1650,8 +1670,13 @@ static void update_one(Enemy *e, Player *pl, float dt)
         e->parried_t -= dt;
     else if (e->cc.parried)  /* the AI (its parried reaction) clears cc.parried */
         e->parried_t = PARRIED_TIME;
-    if (!e->cc.dead && !e->sp_on && !e->thrown && !(e->ev && e->ev->ai_off))
+    if (!e->cc.dead && !e->sp_on && !e->thrown && !(e->ev && e->ev->ai_off)) {
+        int st0 = e->ai.state;
         ai_update(&e->ai, f);
+        if (test_active() && e->ai.state != st0)  /* perception A/B (AI_PERCEPT): every state change, test runs */
+            printf("ai: state %d %s entity %d %d -> %d dist %.1f dy %.1f\n", e->index, e->ct->name, e->entity, st0,
+                   e->ai.state, (double)v3dist(e->pos, pl->pos), (double)(pl->pos.y - e->pos.y));
+    }
     else if (!e->cc.dead)
         e->ai.out = (AiOut){.req = -1, .guard = -1};  /* logic off / special wait: stands still */
     LG_END_X(ai, LG_AI);
@@ -1725,8 +1750,13 @@ static void update_one(Enemy *e, Player *pl, float dt)
              * and searches the route again, as the ledge rule does. ASSUMED timings: DSR's own stuck rule is not decoded */
             float gx = e->pos.x - p0.x, gz = e->pos.z - p0.z, step = speed * dt;
             e->stuck = gx * gx + gz * gz < 0.01f * step * step ? e->stuck + 1 : 0;
-            if (e->stuck >= STUCK_FRAMES)
+            if (e->stuck >= STUCK_FRAMES) {
                 e->stuck = 0, e->stuck_t = STUCK_HOLD, e->nav_t = 0, moving = 0, loco = 0;
+                /* the scripts' answer to a wall in the way (INTERUPT_HitEnemyWall: e.g. a backing-off KeepDist /
+                 * LeaveTarget stops and attacks or turns). ASSUMED trigger: the exe's raise site is not located; the
+                 * native goals walk straight, as here, and NpcThinkParam BackHomeLife_OnHitEneWal goes with it */
+                ai_raise(&e->ai, AI_I_HitEnemyWall);
+            }
         }
         LG_END(walk, LG_MOVE);
     } else if (o->guard > 0 && !e->cc.dead)
@@ -1764,7 +1794,9 @@ static void update_one(Enemy *e, Player *pl, float dt)
     float z = dv.x * fwd.x + dv.y * fwd.y + dv.z * fwd.z, dd = dv.x * dv.x + dv.z * dv.z;
     int on_screen = z > -(e->var->height + 2) && dd < DRAW_DIST * DRAW_DIST;
     int attacking = e->act >= 0 && e->act_info && t->anims[e->act_info - 1].nwin > 0;
-    if (!attacking && (!on_screen || (dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1)))) {
+    /* with CHR_OMIT a character past level 0 already updates every few frames: no parity skip on top */
+    int lod_skip = !(CHR_OMIT && e->om.level > 0) && dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1);
+    if (!attacking && (!on_screen || lod_skip)) {
         memcpy(e->cc.pos, &e->pos, 12);
         e->cc.yaw = e->yaw;
         e->cc.invincible = in_window(e, F_INVINCIBLE) || (e->ev && e->ev->invincible);
@@ -2014,6 +2046,24 @@ static void wall_check(Enemy *e)
         printf("enemy: through wall (lines over %d not printed); %u in the run\n", WC_LOG_MAX, enemy_through_walls);
 }
 
+/* INTERUPT_MissSwing (battle scripts attack into it at once): the player's attack ended without landing a hit.
+ * ASSUMED: raised when the attack state ends (the exe's source not located), offered within MISS_SWING_M like
+ * FindAttack. swing_hit is set by any enemy taking a hit while the attack plays. */
+#define MISS_SWING_M 8.0f
+
+static void player_swing(const Player *pl)
+{
+    if (swing_missed)
+        ai_event(AI_I_MissSwing, pl->pos, MISS_SWING_M);
+    swing_missed = 0;
+    int on = pl->state == ST_ATTACK && pl->hp > 0;
+    if (on && !swing_on)
+        swing_hit = 0;
+    if (!on && swing_on && !swing_hit)
+        swing_missed = 1;  /* offered next frame: this frame's ai_events are already in use */
+    swing_on = on;
+}
+
 /* The player's throws (combat_throw_hook; ThrowParam rows of AtkChrId 0 in combat.gd): a placed, living, hostile
  * enemy within the row's Dist whose facing differs from the player's by DiffAngMin..DiffAngMax. Backstab (type 0):
  * the player stands behind it; riposte (type 8): in front of it, while it is parried. Rows for its own chr id win
@@ -2073,6 +2123,7 @@ void enemy_update(Player *pl, float dt)
         printf("enemy: frame %u, Lua heap %u, %d characters, RAM free %uK\n", frame, ai_lua_heap, nenemies,
                enemy_ram_free() >> 10);
     player_sounds(pl);
+    player_swing(pl);
     for (int i = 0; i < nenemies; i++) {  /* 2004[12] immortal: HP stays >= 1 (an event's kill still kills) */
         Enemy *e = &enemies[i];
         if (e->ev && e->ev->immortal && !e->ev->dead && e->cc.hp < 1 && e->dead_t == 0)
@@ -2096,8 +2147,8 @@ void enemy_update(Player *pl, float dt)
         team[i] = &enemies[i].ai, tpos[i] = enemies[i].pos;
     ai_team(team, tpos, nenemies);
     pose_manage(pl);
-    Enemy *act[MAX_ENEMIES];
-    int na = 0;
+    Enemy *act[MAX_ENEMIES], *cand[MAX_ENEMIES];
+    int na = 0, nc2 = 0;
     float d3[MAX_ENEMIES], lim = 1e30f;
     int nc = 0;
     for (int i = 0; i < nenemies; i++) {
@@ -2151,12 +2202,53 @@ void enemy_update(Player *pl, float dt)
             e->registered = combat_register(&e->cc) >= 0;
         else if (!want && e->registered)
             combat_unregister(&e->cc), e->registered = 0;
-        if (!on)
+        if (!on) {
+            omit_reset(&e->om);
             continue;
-        update_one(e, pl, dt);
+        }
+        cand[nc2++] = e;
+    }
+    enemy_active = nc2;
+    /* CHR_OMIT: levels for the active characters (src/omit.h: DSR FUN_14036e8d0), then the ones due this frame
+     * update with the time gathered since their last update; the rest stand as obstacles for the push-apart */
+    Enemy *idle[MAX_ENEMIES];
+    int ni = 0;
+    if (CHR_OMIT) {
+        static OmitIn oin[MAX_ENEMIES];
+        V3 eye, right, up, fwd;
+        float fo, fy, zs;
+        r_camera_basis(&eye, &right, &up, &fwd, &fo, &fy, &zs);
+        for (int k = 0; k < nc2; k++) {
+            Enemy *e = cand[k];
+            V3 dv = v3sub(e->pos, eye);
+            float r = e->var->radius, mn[3] = {e->pos.x - r, e->pos.y, e->pos.z - r},
+                  mx[3] = {e->pos.x + r, e->pos.y + e->var->height, e->pos.z + r};
+            int st = e->ai.state;
+            /* ASSUMED stand-ins for the exe's vtable +0x150 (always full) and +0x148 (level 5 out of view) tests */
+            int full = st == AIS_BATTLE || e->cc.hit_count != e->hits_seen || e->dmg_latch > 0 || e->rag || e->air ||
+                       (e->cc.dead && e->dead_t < 3.0f) ||
+                       (e->act >= 0 && e->act_info && e->ct->anims[e->act_info - 1].nwin > 0);
+            oin[k] = (OmitIn){.o = &e->om, .cam_d2 = dv.x * dv.x + dv.y * dv.y + dv.z * dv.z,
+                              .in_view = r_box_classify(mn, mx) != 0, .force_full = full,
+                              .alert = st == AIS_CAUTION || st == AIS_FIND};
+        }
+        omit_rank(oin, nc2);
+    }
+    for (int k = 0; k < nc2; k++) {
+        Enemy *e = cand[k];
+        float run_dt = dt;
+        if (CHR_OMIT && !omit_step(&e->om, dt, frame, (unsigned)e->index, &run_dt)) {
+            idle[ni++] = e;
+            continue;
+        }
+        update_one(e, pl, run_dt);
         act[na++] = e;
     }
-    enemy_active = na;
+    if (CHR_OMIT && test_active() && !(frame % 300)) {  /* every 10 s of frames at 30 fps */
+        printf("omit: %u updates run, %u left out (levels 0/2/5/30: %u %u %u %u)\n", omit_ran, omit_skipped,
+               omit_lv[0], omit_lv[1], omit_lv[2], omit_lv[3]);
+        omit_ran = omit_skipped = omit_lv[0] = omit_lv[1] = omit_lv[2] = omit_lv[3] = 0;
+    }
     LG_BEGIN(gc);
     ai_end_frame();
     LG_END(gc, LG_GC);
@@ -2194,6 +2286,9 @@ void enemy_update(Player *pl, float dt)
             separate(act[i], act[j]->pos, act[j]->var->radius, 0.5f);
             separate(act[j], pi, act[i]->var->radius, 0.5f);
         }
+        for (int j = 0; j < ni; j++)  /* left out this frame: they hold still, the updated one moves its share */
+            if (idle[j]->ct->drawable)
+                separate(act[i], idle[j]->pos, idle[j]->var->radius, 0.5f);
         if (LOGIC_SPREAD)
             sep_flush(act[i]);
         memcpy(act[i]->cc.pos, &act[i]->pos, 12);

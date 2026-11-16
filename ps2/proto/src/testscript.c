@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "testscript.h"
+#include "cvar.h"
 #include "fx.h"  /* TEST fx line per shot */
 #include "collision.h"
 #include "objects.h"
@@ -148,6 +149,14 @@ static int parse(Prog *p, char *text)
                 test_god |= !strcmp(rest, "god");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
+                if (!strncmp(rest, "set ", 4)) {  /* "option set NAME VALUE": a runtime switch (cvar.h) */
+                    char nm[32];
+                    int v;
+                    if (sscanf(rest + 4, "%31s %d", nm, &v) == 2 && cvar_set(nm, v))
+                        printf("TEST cvar %s %d\n", nm, v);
+                    else
+                        printf("TEST error line %d: option %s: not a runtime switch (src/cvar.h)\n", line, rest);
+                }
             } else {
                 unsigned k;
                 for (k = 0; k < sizeof ops / sizeof ops[0] && strcmp(word, ops[k].name); k++)
@@ -232,6 +241,7 @@ int test_init(int argc, char **argv)
     if (opts < 0)
         return 0;
     test_mb.state = script.n ? 1 : 0;
+    cvar_log();
     return opts;
 }
 

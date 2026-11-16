@@ -13,9 +13,11 @@
  * own (TC_NEAR_KB), so they never evict mip 0 / 1; at most TC_NEAR_UP bytes of them are uploaded a frame (no hitch),
  * beyond that or with the pool full the batch takes mip 0. */
 #include <kernel.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include "texcache.h"
+#include "cvar.h"
 #include "vu1.h"
 #include "render.h"
 
@@ -225,12 +227,32 @@ static int in_frame;
  * distance (and no near levels) for the next TC_PRESS_FRAMES frames: with more near detail kept in view (the cube-grid
  * stack, report3 burg_c 2026-11-09) the 896 KB pool ran full for ~4 s and 510 batches went undrawn. ASSUMED values */
 #ifndef TC_PRESS
-#define TC_PRESS 1
+#define TC_PRESS cv_TC_PRESS  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #define TC_PRESS_PCT 90
 #define TC_PRESS_FRAMES 60
 static int press;
 TcStats tc_stats;
+
+/* TC_PLAN (default on, runtime switch: option set TC_PLAN 0 = only TC_PRESS's reaction): the pool budget planned per
+ * texture before it runs out. Each frame tc_level notes the nearest distance every texture in view is drawn from; at
+ * tc_end those wants are added up (the level's blocks and its GS mip chain) against TC_PLAN_PCT % of the pool, and
+ * when they do not fit, the textures that gain least from their sharper level lose it first: near level -> mip 0 in
+ * the near pool, then mip 0 -> mip 1 in the map pool, ranked by how far inside its switch distance each one is
+ * (mip_d / d: the texel's size on screen). The next frame draws by that plan (a frame late, as the wants come from the
+ * frame before; textures new in view pick freely within the headroom). A texture cut last frame ranks a little lower
+ * (TC_PLAN_STICK), so one at the edge does not swap levels every frame. TC_PRESS stays as the backstop for fails. */
+#ifndef TC_PLAN
+#define TC_PLAN cv_TC_PLAN  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#define TC_PLAN_PCT 88     /* ASSUMED: the planned share of the pool, the rest for textures new in view */
+#define TC_PLAN_STICK 0.85f
+static float plan_d[MAX_TEX];               /* nearest distance tc_level saw this frame (0: not seen) */
+static unsigned char plan_cap[MAX_TEX];     /* 1 no near level, 2 mip 1 at best */
+static unsigned plan_at[MAX_TEX];           /* frame the cap was planned in (valid for the frame after) */
+static unsigned short plan_seen[MAX_TEX];   /* textures with plan_d set, plan_n of them */
+static int plan_n;
+static unsigned plan_cuts;                  /* textures cut, summed for the "tex:" line */
 
 /* one GS image transfer into the chain; counted in tc_stats */
 static int upload(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
@@ -684,8 +706,18 @@ int tc_level(int tex, float d)
 {
     if (tex < 0 || tex >= MAX_TEX || !te[tex])
         return 0;
+    int cap = 0;
+    if (TC_PLAN && in_frame) {
+        if (plan_d[tex] == 0)
+            plan_seen[plan_n++] = (unsigned short)tex, plan_d[tex] = d > 1e-3f ? d : 1e-3f;
+        else if (d < plan_d[tex])
+            plan_d[tex] = d > 1e-3f ? d : 1e-3f;
+        cap = plan_at[tex] + 1 == frame ? plan_cap[tex] : 0;
+    }
+    if (cap >= 2 && te[tex]->levels > 1)
+        return 1;  /* the plan gave its mip 0 room to a texture that needs it more */
 #ifndef TC_NO_NEAR  /* A/B builds: near levels never drawn */
-    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f && !press)
+    if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f && !press && !cap)
         return 2;  /* near level texels (half mip 0's) still >= 1 / MIP_K px */
 #endif
     if (press && te[tex]->levels > 1)
@@ -804,9 +836,67 @@ u32 tc_pin(int bytes)
 
 void tc_unpin(void) { pin_blk = 0; }
 
+/* blocks a texture holds in the map pool drawn at mip l (0 / 1) with its GS chain (mip 2 / 3 under it) */
+static int plan_cost(int t, int l)
+{
+    int n = lv[t][l].size;
+    if (te[t]->levels > 2 && te[t]->density > 0)
+        for (int m = l + 1; m < 4 && m < te[t]->levels; m++)
+            n += lv[t][m < 2 ? m : m + 1].size;
+    return n;
+}
+
+typedef struct { float gain; unsigned short tex; } PlanCand;
+static int cand_cmp(const void *a, const void *b)
+{
+    float x = ((const PlanCand *)a)->gain, y = ((const PlanCand *)b)->gain;
+    return x < y ? -1 : x > y;
+}
+
+static void plan(void)
+{
+    static PlanCand c0[MAX_TEX], cn[MAX_TEX];
+    int n0 = 0, nn = 0, used = 0, near_used = 0;
+    const int budget = (pool_blk - pin_blk) * TC_PLAN_PCT / 100, near_budget = pool3_blk * TC_PLAN_PCT / 100;
+    for (int k = 0; k < plan_n; k++) {
+        int t = plan_seen[k];
+        float d = plan_d[t], stick = plan_at[t] + 1 == frame && plan_cap[t] ? TC_PLAN_STICK : 1.0f;
+        plan_d[t] = 0, plan_cap[t] = 0, plan_at[t] = frame;
+        if (pool_of(t, 0) || te[t]->levels < 2)
+            continue;  /* tc_add's own pool, or one level only: nothing to plan */
+        if (lv[t][2].size && pool3_blk && d < mip_d[t] * 0.5f && !press) {
+            near_used += lv[t][2].size;
+            cn[nn++] = (PlanCand){mip_d[t] * 0.5f / d * stick, (unsigned short)t};
+        } else if (d <= mip_d[t]) {
+            used += plan_cost(t, 0);
+            c0[n0++] = (PlanCand){mip_d[t] / d * stick, (unsigned short)t};
+        } else
+            used += plan_cost(t, 1);
+    }
+    plan_n = 0;
+    if (near_used > near_budget) {  /* near level -> mip 0: the mip 0 joins the map pool's count */
+        qsort(cn, nn, sizeof *cn, cand_cmp);
+        for (int k = 0; k < nn && near_used > near_budget; k++) {
+            int t = cn[k].tex;
+            near_used -= lv[t][2].size, used += plan_cost(t, 0), plan_cap[t] = 1, plan_cuts++;
+            c0[n0++] = (PlanCand){cn[k].gain, (unsigned short)t};
+        }
+    }
+    if (used > budget) {  /* mip 0 -> mip 1, least gain first */
+        qsort(c0, n0, sizeof *c0, cand_cmp);
+        for (int k = 0; k < n0 && used > budget; k++) {
+            int t = c0[k].tex;
+            used -= plan_cost(t, 0) - plan_cost(t, 1), plan_cap[t] = 2, plan_cuts++;
+        }
+    }
+    tc_stats.plan_kb = used / 4;
+}
+
 void tc_end(void)
 {
     in_frame = 0;
+    if (TC_PLAN)
+        plan();
     if (frame == 2)
         tc_stats.first_bytes = tc_stats.bytes;
     else if (tc_stats.bytes > tc_stats.max_bytes)
@@ -829,7 +919,7 @@ void tc_end(void)
 #endif
     tc_stats.resident = used / 4;
     tc_stats.frame_kb = now / 4;
-    if (TC_PRESS && (tc_stats.fails || now * 100 > pool_blk * TC_PRESS_PCT)) {
+    if (TC_PRESS && (tc_stats.fails || (!TC_PLAN && now * 100 > pool_blk * TC_PRESS_PCT))) {
         if (!press)
             tc_stats.press_n++;
         press = TC_PRESS_FRAMES;
@@ -844,8 +934,9 @@ void tc_end(void)
         mip_short = 0;
         if (!(++fr % 120)) {
             printf("tex: %u uploads %u KB (most in a frame %u KB), %u fails, %u chains cut short over 120 frames; "
-                   "resident %d KB of %d, pressure spells %d\n", up, kb, kbmax, fails, shorts, tc_stats.resident,
-                   tc_stats.pool, tc_stats.press_n);
+                   "resident %d KB of %d, pressure spells %d, plan %d KB, %u cuts\n", up, kb, kbmax, fails, shorts,
+                   tc_stats.resident, tc_stats.pool, tc_stats.press_n, tc_stats.plan_kb, plan_cuts);
+            plan_cuts = 0;
             up = kb = fails = shorts = kbmax = 0;
         }
     }

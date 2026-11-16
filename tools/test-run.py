@@ -206,6 +206,12 @@ def run(a):
     gen = os.path.join(proto, "tests", "gen")
     os.makedirs(gen, exist_ok=True)
     rel = f"tests/gen/{name}.txt"
+    if a.set:  # runtime switches (src/cvar.h): option lines on top of the script, which the park script carries too
+        with open(a.script) as sf:
+            body = sf.read()
+        a.script = os.path.join(a.outdir, f"{name}.set.txt")
+        with open(a.script, "w") as sf:
+            sf.write("".join(f"option set {k} {v}\n" for k, v in (x.split("=", 1) for x in a.set)) + body)
     if os.path.realpath(a.script) != os.path.join(proto, rel):
         shutil.copy(a.script, os.path.join(proto, rel))
     hh = host_home()
@@ -478,6 +484,9 @@ def main():
     ap.add_argument("--gsdump", action="store_true")
     ap.add_argument("--holes", action="store_true", help="count magenta pixels (script needs 'option holes')")
     ap.add_argument("--name")
+    ap.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                    help="runtime switch for this run (src/cvar.h: option set NAME VALUE at the top of the script); "
+                         "repeat for several, e.g. --set CHR_OMIT=0 for the old path with the same ISO")
     ap.add_argument("--keep-going", action="store_true",
                     help="run to the end after an error line in the EE log (default: stop FAIL_GRACE s after it)")
     ap.add_argument("--turbo", nargs="?", const="1", default=os.environ.get("TURBO", "1"),
