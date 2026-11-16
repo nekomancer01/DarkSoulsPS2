@@ -281,6 +281,8 @@ static void respawn(Player *p)
     p->state = ST_IDLE;
     p->airborne = 0;
     p->vel = v3(0, 0, 0);
+    p->slide = v3(0, 0, 0);
+    p->floor_n[0] = p->floor_n[1] = p->floor_n[2] = 0;
     player_esd_reset(p);  /* both ESD groups back to their start states, no pending requests */
     if (died)
         bonfire_revive(p);  /* Estus, enemies, events as a rest */
@@ -316,6 +318,110 @@ static void land(Player *p, float y)
         p->state = ST_IDLE;
 }
 
+/* PLAYER_RIM (default 1; -DPLAYER_RIM=0 = the centre point alone, as before 2026-11-16): the player's floor is what the
+ * proxy's capsule rests on, not only the triangle under its axis. A wall triangle is no floor (the Burg stairs walkway
+ * below the second bonfire: the walkway's side face, normal y 0.02, read as a floor 0.4 m below the stone and the
+ * walkway 0.2 m above it, with a 0.25-0.35 m strip of nothing between them; the player stepped down the face, went
+ * airborne and fell to the kill plane in about half the iso_burg_taurus runs, TECH_DEBT collision-11). When the
+ * centre has no walkable floor, points around it carry the capsule: the highest walkable floor at RIM_R. */
+#ifndef PLAYER_RIM
+#define PLAYER_RIM 1
+#endif
+/* PLAYER_PROXY (default 1; -DPLAYER_PROXY=0 = the estimates used until 2026-11-16: step up 0.6, down 1.2, walls
+ * below 45 deg, rim 0.2 m, no slide): the ground handling of DSR's character proxy (ChrProxy, exe):
+ * - ChrProxy ctor (thunk 0x1402BA730 -> 0x142276EBB) sets +0xE0 0.8, +0xE4 0.31, +0xE8 0.8. FUN_1402BC650 lifts the
+ *   capsule by +0xE4 (+0xE8 while +0x6C is set: not seen for the player, not modelled) before hkpCharacterProxy::
+ *   integrate. The lifted capsule's rounded bottom rides over an edge while the contact normal stays within maxSlope
+ *   (below): an edge up to lift + r (1 - cos 60) = 0.31 + 0.2 = 0.51 m above the feet is climbed (DERIVED from the
+ *   lift, the capsule radius and maxSlope; Havok's proxy solver itself is not re-implemented), a taller one is a wall.
+ *   The Burg's Taurus-tower stairs have 0.35 m risers: a plain 0.31 m limit stops the walker there.
+ * - FUN_1402BCB00 (after integrate) sweeps a sphere of radius 0.8 x the capsule radius (+0x228 x DAT_1412B1A24) down
+ *   from the lifted feet; the proxy is on the ground when the hit lies within lift + capsule radius below the lifted
+ *   feet: a step down of up to the capsule radius (0.4 m) is followed, a deeper one is a fall. The sphere is what
+ *   carries the capsule over small gaps (RIM_R).
+ * - hkpCharacterProxyCinfo maxSlope = 1.0472 rad (60 deg; DAT_14130D8C4 stored at cinfo +0x78 before the
+ *   hkpCharacterProxy ctor FUN_140A78890 at 0x1402BAC87): steeper surfaces are walls to the proxy.
+ * - FUN_1402BCB00 / FUN_1402BD040: ground steeper than 35 deg (DAT_141A2AE50, cosine compare; cinfo byte +0x34 = 1)
+ *   sets +0x33, and FUN_1402BBE40 then slides the character: +0x120 += g - (g.n) n with g = (0, -0.5, 0)
+ *   (DAT_141A2AE48), clamped to |x|, |z| <= 35, |y| <= 60 m/s; on other frames +0x120 *= 0.65 (DAT_141A2AE4C) and is
+ *   zeroed below 0.005 squared (DAT_14130AD10). +0x120 adds to the move's velocity. These are per proxy update:
+ *   ASSUMED 60 updates a second (DSR's frame rate), scaled by dt here. Flags +0xEC / +0xED (no slide) are not decoded. */
+#ifndef PLAYER_PROXY
+#define PLAYER_PROXY 1
+#endif
+#if PLAYER_PROXY
+#define PROXY_LIFT 0.31f
+#define PROXY_STEP_UP (PROXY_LIFT + COL_PLAYER_R * (1 - PROXY_WALL_NY))
+#define PROXY_STEP_DOWN COL_PLAYER_R
+#define RIM_R (COL_PLAYER_R * 0.8f)
+#define PROXY_WALL_NY 0.5f      /* cos(maxSlope 60 deg) */
+#define FLOOR_NY 0.5f
+#define SLIDE_NY 0.81915204f    /* cos 35 deg */
+#else
+#define PROXY_STEP_UP COL_STEP_UP
+#define PROXY_STEP_DOWN COL_STEP_DOWN
+#define RIM_R (COL_PLAYER_R * 0.5f)
+#define PROXY_WALL_NY COL_WALKABLE_NY
+#define FLOOR_NY 0.5f
+#define SLIDE_NY 0.0f           /* never */
+#endif
+#define SLIDE_G 0.5f
+#define SLIDE_DECAY 0.65f
+#define SLIDE_STOP2 0.005f
+#define SLIDE_XZ_MAX 35.0f
+#define SLIDE_Y_MAX 60.0f
+#define PROXY_HZ 60.0f
+
+static int player_floor(float x, float z, float y_top, float y_bottom, ColHit *hit)
+{
+    ColHit h;
+    int ok = col_floor(x, z, y_top, y_bottom, COL_SOLID, &h);
+    if (!PLAYER_RIM || (ok && h.n[1] >= FLOOR_NY)) {
+        if (ok && hit)
+            *hit = h;
+        return ok;
+    }
+    static const float dir[8][2] = {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {-0.7071f, 0.7071f},
+                                    {-1, 0}, {-0.7071f, -0.7071f}, {0, -1}, {0.7071f, -0.7071f}};
+    ColHit r, best;
+    int found = 0;
+    for (int k = 0; k < 16; k++) {
+        float rr = k < 8 ? RIM_R * 0.5f : RIM_R;  /* the sphere meets nearer edges first */
+        if (col_floor(x + dir[k & 7][0] * rr, z + dir[k & 7][1] * rr, y_top, y_bottom, COL_SOLID, &r) &&
+            r.n[1] >= FLOOR_NY && (!found || r.y > best.y))
+            best = r, found = 1;
+    }
+    if (found) {
+        if (hit)
+            *hit = best;
+        return 1;
+    }
+    if (ok && hit)  /* only steep faces around: as before */
+        *hit = h;
+    return ok;
+}
+
+/* Resolve this frame's move against the map collision (collision.c), like the character proxy: on the ground the
+ * capsule slides along walls and the feet follow the floor within the step limits; without a floor the player is
+ * airborne: x/z keep the take-off velocity (a jump's root motion while it plays), y follows gravity, and the first
+ * floor crossed is the landing. Crossing a lethal-fall / kill plane, or dropping out of the map, respawns. */
+/* PROXY_SLIDE: one frame of ChrProxy+0x120 from last frame's floor normal (0 0 0 = airborne), see PLAYER_PROXY */
+static void proxy_slide(Player *p, float dt)
+{
+    float k = dt * PROXY_HZ, *n = p->floor_n;
+    if (n[1] > 0 && n[1] < SLIDE_NY && p->state != ST_DEAD) {
+        float gn = -SLIDE_G * n[1];  /* g . n */
+        p->slide.x = clampf(p->slide.x + (0 - gn * n[0]) * k, -SLIDE_XZ_MAX, SLIDE_XZ_MAX);
+        p->slide.y = clampf(p->slide.y + (-SLIDE_G - gn * n[1]) * k, -SLIDE_Y_MAX, SLIDE_Y_MAX);
+        p->slide.z = clampf(p->slide.z + (0 - gn * n[2]) * k, -SLIDE_XZ_MAX, SLIDE_XZ_MAX);
+    } else if (p->slide.x != 0 || p->slide.y != 0 || p->slide.z != 0) {
+        float f = powf(SLIDE_DECAY, k);
+        p->slide = v3(p->slide.x * f, p->slide.y * f, p->slide.z * f);
+        if (p->slide.x * p->slide.x + p->slide.y * p->slide.y + p->slide.z * p->slide.z < SLIDE_STOP2)
+            p->slide = v3(0, 0, 0);
+    }
+}
+
 /* Resolve this frame's move against the map collision (collision.c), like the character proxy: on the ground the
  * capsule slides along walls and the feet follow the floor within the step limits; without a floor the player is
  * airborne: x/z keep the take-off velocity (a jump's root motion while it plays), y follows gravity, and the first
@@ -329,15 +435,25 @@ static void constrain(Player *p, V3 old)
     float pos[3] = {old.x, old.y, old.z}, dt = p->frame_dt;
     float dx = p->pos.x - old.x, dz = p->pos.z - old.z;
     ColHit hit;
+    proxy_slide(p, dt);  /* every update (FUN_1402BBE40); airborne the floor normal is 0 and it decays */
     if (p->airborne && p->state != ST_JUMP)
         dx = p->vel.x * dt, dz = p->vel.z * dt;
-    col_move(pos, dx, dz, COL_PLAYER_R, COL_PLAYER_H, COL_STEP_UP, COL_SOLID);
+    else if (!p->airborne)
+        dx += p->slide.x * dt, dz += p->slide.z * dt;
+    float wall = col_wall_ny;
+    col_wall_ny = PROXY_WALL_NY;
+    col_ride = PLAYER_PROXY;  /* edges under the capsule within maxSlope are ridden over (the spiral stairs of the
+                               * Taurus tower: risers of the steps beside the walker pushed it back) */
+    col_move(pos, dx, dz, COL_PLAYER_R, COL_PLAYER_H, PROXY_STEP_UP, COL_SOLID);
+    col_wall_ny = wall;
+    col_ride = 0;
     if (!p->airborne) {
-        if (col_floor(pos[0], pos[2], pos[1] + COL_STEP_UP, pos[1] - COL_STEP_DOWN, COL_SOLID, &hit)) {
+        if (player_floor(pos[0], pos[2], pos[1] + PROXY_STEP_UP, pos[1] - PROXY_STEP_DOWN, &hit)) {
             /* ease the feet onto each step instead of snapping (the Havok proxy moves over steps over several
              * frames); the lag stays under STEP_LAG so the step window above still finds the floor */
             float y = old.y + (hit.y - old.y) * (1 - expf(-dt / STEP_EASE));
             p->pos = v3(pos[0], clampf(y, hit.y - STEP_LAG, hit.y + STEP_LAG), pos[2]);
+            memcpy(p->floor_n, hit.n, sizeof p->floor_n);
             return;
         }
         if (world_hold(pos)) {  /* the floor ahead is a world block still loading (src/world.c): wait at its edge */
@@ -351,6 +467,7 @@ static void constrain(Player *p, V3 old)
         p->vel.x = clampf(dx / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
         p->vel.z = clampf(dz / dt, -AIR_XZ_MAX, AIR_XZ_MAX);
     }
+    p->floor_n[0] = p->floor_n[1] = p->floor_n[2] = 0;
     float vy0 = p->vel.y;
     p->vel.y = clampf(p->vel.y - GRAVITY * gravity_scale(p) * dt, -AIR_DOWN_MAX, AIR_UP_MAX);
     float y = pos[1] + p->vel.y * dt;
@@ -361,9 +478,10 @@ static void constrain(Player *p, V3 old)
     /* landed: the highest floor between the last height (plus a step, for slopes) and the new one. The fall itself
      * (1550 / 1500) is the ESD's: group 0 enters state 14 on f200 (airborne without Disable Fall Motion); a fall of
      * 20 m or more lands as state 97 (lethal) through f224, and the damage applied here */
-    if (col_floor(pos[0], pos[2], pos[1] + COL_STEP_UP, y, COL_SOLID, &hit)) {
+    if (player_floor(pos[0], pos[2], pos[1] + PROXY_STEP_UP, y, &hit)) {
         y = hit.y;
         land(p, y);
+        memcpy(p->floor_n, hit.n, sizeof p->floor_n);
     } else {
         float feet[3] = {pos[0], y, pos[2]};
         if (world_hold(feet)) {  /* falling into a world block still loading: hang until its collision is on */
