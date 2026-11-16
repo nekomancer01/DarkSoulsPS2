@@ -118,6 +118,28 @@ static void set_stamina(Player *p, int v)
 
 int player_esd_env(EsdCtx *c, int id, const float *args, int nargs, float *out);
 static int anim_for(int sel, int id);
+
+#define LOCK_RANGE 15.0f  /* LockCamParam row 0 chrLockRangeMaxRadius */
+
+/* Movement set (MoveParam row of f110, TECH_DEBT gameplay-13): by equip load, light <= 25 %, medium <= 50 %, heavy
+ * <= 100 %, overloaded above (ASSUMED: DS1's roll thresholds; the exe's ChrCtrl+0x210 selection was not decoded;
+ * rows 1 / 6 / 16 are ring variants) */
+static int move_set(void)
+{
+    if (!chr_stats.valid || chr_stats.equip_max <= 0)
+        return 0;
+    float r = chr_stats.equip_weight / chr_stats.equip_max;
+    return r <= 0.25f ? 0 : r <= 0.5f ? 1 : r <= 1.0f ? 2 : 3;
+}
+
+int player_lock_target(const Player *p, float out[3])
+{
+    if (!p->lock)
+        return 0;
+    const CombatChr *c = p->lock;
+    out[0] = c->pos[0], out[1] = c->pos[1], out[2] = c->pos[2];
+    return 1;
+}
 int player_esd_cmd(EsdCtx *c, int bank, int id, const float *args, int nargs);
 static EsdProgram esd_prog;
 static EsdCtx esd;
@@ -707,6 +729,16 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     /* Pad -> ESD request slots (PadManipulator FUN_140398920 / FUN_140396860: byte +0x84 + slot): R1 = 0, Circle tap
      * with the stick = roll 15 (forward; 16-18 are the lock-on directions), without = backstep 10, the running jump 42.
      * Nothing is requested in the air or while dead. */
+    /* lock-on (R3): LockCamParam row 0 chrLockRangeMaxRadius 15 m to pick; lost when the target dies or goes past
+     * that range x 1.3 (ASSUMED; DSR's release distance was not decoded) */
+    if (in->r3)
+        p->lock = p->lock ? 0 : (void *)combat_lock_pick((const float *)&p->pos, cam_yaw, LOCK_RANGE);
+    if (p->lock) {
+        const CombatChr *c = p->lock;
+        float dx = c->pos[0] - p->pos.x, dz = c->pos[2] - p->pos.z;
+        if (!combat_lock_alive(c) || dx * dx + dz * dz > LOCK_RANGE * LOCK_RANGE * 1.69f || p->hp < 0)
+            p->lock = 0;
+    }
     memset(p->trig, 0, sizeof p->trig);
     /* R1 also counts in the air: group 0's fall loop (state 15) turns it into the plunging attack (19 / 20) */
     if (p->state != ST_DEAD && in->r1)
@@ -734,8 +766,18 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
         if (jump_pressed && moving)
             p->trig[REQ_JUMP] = 1, p->jump_window = 0;
-        else if (roll_pressed)
-            p->trig[moving ? REQ_ROLL_F : REQ_BACKSTEP] = 1;
+        else if (roll_pressed) {
+            /* locked on, the PadManipulator picks the roll by the stick against the facing: 15 forward, 16 back,
+             * 17 left, 18 right (group 1 states 32 / 33 / 35 / 34 play f110(0 / 1 / 2 / 3)) */
+            int slot = REQ_ROLL_F;
+            if (p->lock && moving) {
+                float d = stick_yaw - p->yaw;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                slot = fabsf(d) < 0.785f ? 15 : fabsf(d) > 2.356f ? 16 : d > 0 ? 18 : 17;
+            }
+            p->trig[moving ? slot : REQ_BACKSTEP] = 1;
+        }
     }
     /* R1 next to an enemy's back (or a parried enemy's front) throws instead of attacking: the engine starts the
      * ThrowParam pair, outside the ESD (c0000.esd has no state for a23 3400 / 3201) */
@@ -832,6 +874,19 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         p->invincible = p->hitting = 0;
         if (moving && p->esd_loco) {
             int loco = dashing ? ANIM_DASH : p->gait == 1 ? ANIM_RUN : ANIM_WALK;
+            /* locked on (not sprinting): face the target and strafe with MoveParam row 0 walk / run B / L / R */
+            float tp[3], face = stick_yaw;
+            p->strafe = 0;
+            if (!dashing && player_lock_target(p, tp)) {
+                face = atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z);
+                float d = stick_yaw - face;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                p->strafe = fabsf(d) < 0.785f ? 0 : fabsf(d) > 2.356f ? 1 : d > 0 ? 3 : 2;
+                static const int walk[4] = {ANIM_WALK, ANIM_WALK_B, ANIM_WALK_L, ANIM_WALK_R},
+                                 run[4] = {ANIM_RUN, ANIM_RUN_B, ANIM_RUN_L, ANIM_RUN_R};
+                loco = p->gait == 1 ? run[p->strafe] : walk[p->strafe];
+            }
             if (loco != p->loco || p->state != ST_MOVE) {
                 /* keep the stride phase when switching walk/run/dash, as the loops are aligned at frame 0 */
                 float ph = p->loco_t / loop_len(p->loco);
@@ -839,7 +894,7 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
                 p->loco_t = (ph - floorf(ph)) * loop_len(loco);
             }
             p->state = ST_MOVE;
-            turn_toward(p, stick_yaw, dt);
+            turn_toward(p, face, dt);
             /* the loop's own root motion moves the character, as in the game (no constant speed) */
             float loop = loop_len(p->loco), t0 = fmodf(p->loco_t, loop), t1 = t0 + dt, f0, s0, f1, s1;
             root_at(p->loco, t0, &f0, &s0);
@@ -852,8 +907,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
                 f1 = fe + fw, s1 = se + sw;
             }
             p->speed = (f1 - f0) / dt;
-            p->pos.x += sinf(p->yaw) * (f1 - f0);
-            p->pos.z += cosf(p->yaw) * (f1 - f0);
+            /* strafe loops move sideways: both root components, as the action anims */
+            float df = f1 - f0, ds = p->strafe >= 2 ? s1 - s0 : 0;
+            p->pos.x += sinf(p->yaw) * df + cosf(p->yaw) * ds;
+            p->pos.z += cosf(p->yaw) * df - sinf(p->yaw) * ds;
             p->loco_t += dt;
             if (!ticked)
                 stamina_tick(p, p->loco, t0, dt);
@@ -861,6 +918,9 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
             p->state = ST_IDLE;
             p->speed = 0;
             p->idle_t += dt;
+            float tp[3];  /* locked on: standing turns to the target */
+            if (player_lock_target(p, tp))
+                turn_toward(p, atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z), dt);
             if (!ticked)
                 stamina_tick(p, -1, 0, dt);
         }
@@ -953,7 +1013,7 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
     case 105: v = 0; break;      /* ctx+0x42C[i]: event / gesture requests (none) */
     case 108: v = slot && is_step(s) && requested(p, s); break;                 /* IsStepRequested */
     case 109: v = 0; break;      /* PlayerIns vt+0x438: weapon / item switch request (none) */
-    case 110: v = s >= 0 && s < 6 ? move_escape[s] : -1; break;                 /* GetRollAnimId */
+    case 110: v = s >= 0 && s < 6 ? move_escape[move_set() * 6 + s] : -1; break;  /* GetRollAnimId */
     case 111:   /* FUN_140386bb0: FUN_140323c60(chr, ctx+0x49E any slot enabled) && manipulator +0x1C4 (some request
                  * made this frame) */
         for (int i = 0; i < REQ_SLOTS; i++)
@@ -1076,7 +1136,11 @@ int player_esd_cmd(EsdCtx *c, int bank, int id, const float *a, int n)
             return 1;
         }
         PlayerState st = anim == ANIM_JUMP ? ST_JUMP : anims[anim].key >= 10000 ? ST_ATTACK : ST_ROLL;
-        if (esd_moving && anim != ANIM_BACKSTEP)
+        float tp[3];
+        if (player_lock_target(p, tp) && !(anim >= ANIM_ROLL_B && anim <= ANIM_STEP_O) && anim != ANIM_ROLL &&
+            anim != ANIM_BACKSTEP)
+            p->yaw = atan2f(tp[0] - p->pos.x, tp[2] - p->pos.z);  /* attacks go at the target */
+        else if (esd_moving && anim != ANIM_BACKSTEP && !p->lock)  /* locked: rolls keep the facing */
             p->yaw = esd_stick_yaw;
         /* attack stamina: BehaviorParam_PC of the anim's AttackBehavior, taken at the start (TECH_DEBT esd-3) */
         start_anim(p, st, anim, anims[anim].stamina);
