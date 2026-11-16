@@ -114,6 +114,9 @@ approach -3.6,-67.1 0.8 1
 approach -6.2,-70.3 0.8 1
 approach -7.2,-75.4 0.8 1
 approach -7.4,-82.1 0.8 1
+# on the walkway past the stone-to-wood step (the walker fell through its gap to the kill plane in about half the
+# runs until player.c PLAYER_RIM, TECH_DEBT collision-11)
+check near -7.4 -10.1 -82.1 1.5
 approach -7.2,-86.4 0.8 1
 approach -4.1,-90.0 0.8 1
 spawn -4.6 -14.3 -90.6 -2.43

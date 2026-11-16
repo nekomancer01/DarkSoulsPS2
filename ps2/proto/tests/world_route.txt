@@ -36,6 +36,9 @@ approach -36.6,-0.8 0.8 1
 approach -42.6,-4.5 0.8 1
 approach -44.8,-8.4 0.8 1
 approach -48.9,-11.0 0.8 1
+# through the aqueduct doorway into the Burg (stuck in front of its co-op checkpoint wall 1011994 until event.c
+# EV_ENT_KEEP, 2026-11-16: approach gives up silently, so check where the walker got to)
+check near -48.9 -33.6 -11.0 1.5
 shot aqueduct_out
 approach -53.2,-13.7 0.8 1
 approach -57.6,-16.4 0.8 1
