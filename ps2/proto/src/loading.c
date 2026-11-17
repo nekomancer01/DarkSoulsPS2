@@ -94,14 +94,14 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[1] = 0;
     p[2] = GIF_TAG(4, 0, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[3] = GIF_AD;
-    p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, vram / 256, tbw, psm);
-    p[5] = GS_BITBLTBUF;
-    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
-    p[7] = GS_TRXPOS;
-    p[8] = GS_SETREG_TRXREG(w, h);
-    p[9] = GS_TRXREG;
-    p[10] = GS_SETREG_TRXDIR(0);
-    p[11] = GS_TRXDIR;
+    p[4] = gs_blt_to(vram / 256, tbw, psm);
+    p[5] = GSR_BITBLTBUF;
+    p[6] = GS_TRXPOS_0;
+    p[7] = GSR_TRXPOS;
+    p[8] = gs_trxreg(w, h);
+    p[9] = GSR_TRXREG;
+    p[10] = GS_TRXDIR_HOST;
+    p[11] = GSR_TRXDIR;
     p[12] = GIF_TAG(qw, 0, 0, 0, GSKIT_GIF_FLG_IMAGE, 0);
     p[13] = 0;
     p[14] = DMA_TAG(qw, 0, DMA_REF, 0, (u32)mem, 0);
@@ -111,7 +111,7 @@ static void tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[18] = GIF_TAG(1, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[19] = GIF_AD;
     p[20] = 0;
-    p[21] = GS_TEXFLUSH;
+    p[21] = GSR_TEXFLUSH;
     SyncDCache((void *)mem, (char *)mem + qw * 16 - 1);
     SyncDCache(up_chain, (char *)up_chain + sizeof up_chain - 1);
     *(volatile u32 *)0x1000A020 = 0;
@@ -133,16 +133,16 @@ static void vram_copy(u32 src, u32 dst, u32 bytes)
     p[1] = 0;
     p[2] = GIF_TAG(5, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[3] = GIF_AD;
-    p[4] = GS_SETREG_BITBLTBUF(src / 256, 1, GS_PSM_CT32, dst / 256, 1, GS_PSM_CT32);
-    p[5] = GS_BITBLTBUF;
-    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
-    p[7] = GS_TRXPOS;
-    p[8] = GS_SETREG_TRXREG(64, bytes / 256);
-    p[9] = GS_TRXREG;
-    p[10] = GS_SETREG_TRXDIR(2);
-    p[11] = GS_TRXDIR;
+    p[4] = gs_blt(src / 256, 1, GS_PSM_CT32, dst / 256, 1, GS_PSM_CT32);
+    p[5] = GSR_BITBLTBUF;
+    p[6] = GS_TRXPOS_0;
+    p[7] = GSR_TRXPOS;
+    p[8] = gs_trxreg(64, bytes / 256);
+    p[9] = GSR_TRXREG;
+    p[10] = GS_TRXDIR_LOCAL;
+    p[11] = GSR_TRXDIR;
     p[12] = 0;
-    p[13] = GS_TEXFLUSH;
+    p[13] = GSR_TEXFLUSH;
     SyncDCache(chain, (char *)chain + sizeof chain - 1);
     *(volatile u32 *)0x1000A020 = 0;
     *(volatile u32 *)0x1000A030 = (u32)chain & 0x0FFFFFFF;
@@ -155,12 +155,21 @@ static void vram_copy(u32 src, u32 dst, u32 bytes)
 static u32 icon_vram(void) { return base + ((H->aw * H->ah + 8191) & ~8191u); }
 static u32 clut_vram(int i) { return icon_vram() + 8192 + i * 1024; }
 
+/* the VRAM the screen holds, counted as borrowed (gs.h: it lives in the map pool or the free top, no owner pays) */
+static int lent;
+static void lend(int bytes)
+{
+    gs_vram_borrow(bytes - lent);
+    lent = bytes;
+}
+
 static int vram_place(void)
 {
     need = ((H->aw * H->ah + 8191) & ~8191u) + 8192 + 8192;
     u32 b = tc_pin(need);
     if (b) {
         base = b, top = 0;
+        lend(need);
         return 1;
     }
     /* boot: no map pool yet; the top of VRAM is unallocated until the boot's last uploads (loading_tick moves the
@@ -169,6 +178,7 @@ static int vram_place(void)
     if ((u32)gs->CurrentPointer > b)
         return 0;
     base = b, top = 1;
+    lend(need);
     return 1;
 }
 
@@ -275,6 +285,11 @@ static void release(void)
     H = 0;
     if (!top)
         tc_unpin();
+    lend(0);
+    if (gs_vram_borrowed())
+        printf("TEST warn: gs vram load %d KB still borrowed after the loading screen\n", gs_vram_borrowed() >> 10);
+    if (gs)
+        gs_vram_log(gs, "loading closed");
     loading_stats.vram_kb = loading_stats.ram_kb = 0;
 }
 
@@ -353,8 +368,8 @@ static void draw(float t)
      * shown state, 0.25, DSR draws the hint at full brightness: reference captures 2026-11-03, TECH_DEBT load-2) */
     int al = (int)(a * 2 * 255);
     al = al < 0 ? 0 : al > 0x80 ? 0x80 : al;
-    gsKit_set_test(gs, GS_ATEST_OFF);
-    gsKit_set_test(gs, GS_ZTEST_OFF);
+    gs_test(gs, GS_ATEST_OFF);
+    gs_test(gs, GS_ZTEST_OFF);
     gs->PrimAlphaEnable = GS_SETTING_OFF;
     /* the last game frame fading to black under the screen (fade layer 2), black at boot */
     float k = disp_vram && loading_stats.opens > 1 ? 1 - t / PRE_FADE : 0;
@@ -369,7 +384,7 @@ static void draw(float t)
     } else
         gsKit_prim_sprite(gs, 0, 0, R_SCREEN_W, R_SCREEN_H, LD_Z, rgba(0, 0, 0, 0x80));
     gs->PrimAlphaEnable = GS_SETTING_ON;
-    gsKit_set_primalpha(gs, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
+    gs_primalpha(gs, GS_ALPHA_MIX);
     int atlas_ok = H && !(top && (u32)gs->CurrentPointer > base);
     for (unsigned i = 0; atlas_ok && i < H->nnodes; i++) {
         const LdNode *n = &nodes[i];
@@ -401,8 +416,8 @@ static void draw(float t)
         }
     }
     gs->PrimAlphaEnable = GS_SETTING_OFF;
-    gsKit_set_test(gs, GS_ZTEST_ON);
-    gsKit_set_test(gs, GS_ATEST_ON);
+    gs_test(gs, GS_ZTEST_ON);
+    gs_test(gs, GS_ATEST_ON);
     r_queue_exec(gs);
     present(gs);
     loading_stats.frames++;
@@ -527,9 +542,9 @@ void loading_overlay(float dt)
         return;
     }
     gs->PrimAlphaEnable = GS_SETTING_ON;
-    gsKit_set_primalpha(gs, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
-    gsKit_set_test(gs, GS_ZTEST_OFF);
+    gs_primalpha(gs, GS_ALPHA_MIX);
+    gs_test(gs, GS_ZTEST_OFF);
     gsKit_prim_sprite(gs, 0, 0, R_SCREEN_W, R_SCREEN_H, LD_Z, rgba(0, 0, 0, (int)(0x80 * k)));
-    gsKit_set_test(gs, GS_ZTEST_ON);
+    gs_test(gs, GS_ZTEST_ON);
     gs->PrimAlphaEnable = GS_SETTING_OFF;
 }

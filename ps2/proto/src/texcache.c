@@ -136,7 +136,7 @@ static void near_level(int i, const unsigned char *base)
     v->size = near_blocks(e->psm, e->w * 2, e->h * 2);
     if (!pool3_blk) {  /* first near level: allocate its pool */
         pool3_blk = TC_NEAR_KB * 4 < POOL_MAX ? TC_NEAR_KB * 4 : POOL_MAX;
-        pool3_vram = gsKit_vram_alloc(gsg, pool3_blk * 256, GSKIT_ALLOC_USERBUFFER);
+        pool3_vram = gs_vram_fixed(gsg, pool3_blk * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_POOL, "texcache near pool");
         if (pool3_vram == GSKIT_ALLOC_ERROR)
             pool3_blk = 0;
     }
@@ -283,8 +283,8 @@ int tc_init(GSGLOBAL *gs, const unsigned char *base, const void *table, int n, i
     int cb = 0;
     for (int i = 0; i < ntex; i++)
         cb += clut_blocks(te[i]);
-    clut_vram = gsKit_vram_alloc(gs, cb * 256, GSKIT_ALLOC_USERBUFFER);
-    pool_vram = gsKit_vram_alloc(gs, pool_blk * 256, GSKIT_ALLOC_USERBUFFER);
+    clut_vram = gs_vram_fixed(gs, cb * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_CLUT, "texcache CLUTs");
+    pool_vram = gs_vram_fixed(gs, pool_blk * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_POOL, "texcache pool");
     if (clut_vram == GSKIT_ALLOC_ERROR || pool_vram == GSKIT_ALLOC_ERROR)
         return -1;
     u32 c = clut_vram;
@@ -324,7 +324,7 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
         return -1;
     if (pool_kb > 0 && !pool2_blk) {
         pool2_blk = pool_kb * 4 < POOL_MAX ? pool_kb * 4 : POOL_MAX;
-        pool2_vram = gsKit_vram_alloc(gsg, pool2_blk * 256, GSKIT_ALLOC_USERBUFFER);
+        pool2_vram = gs_vram_fixed(gsg, pool2_blk * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_RELIEF, "texcache pool 2");
         if (pool2_vram == GSKIT_ALLOC_ERROR)
             return pool2_blk = 0, -1;
     }
@@ -333,7 +333,7 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb)
     int cb = 0;
     for (int i = 0; i < n; i++)
         cb += ((const TexEntry *)table)[i].clut ? clut_blocks((const TexEntry *)table + i) : 0;
-    u32 cv = cb ? gsKit_vram_alloc(gsg, cb * 256, GSKIT_ALLOC_USERBUFFER) : 0;
+    u32 cv = cb ? gs_vram_fixed(gsg, cb * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_CLUT, "texcache tc_add CLUTs") : 0;
     if (cb && cv == GSKIT_ALLOC_ERROR)  /* GSKIT_ALLOC_ERROR is 0: without CLUTs (bump.c's normal maps) cv = 0 is no error */
         return -1;
     for (int i = 0; i < n; i++, ntex++) {
@@ -380,7 +380,7 @@ int tc_block_add(int b, const unsigned char *base, const void *table, int n)
     for (int i = 0; i < n; i++) {
         const TexEntry *e = te[first + i] = (const TexEntry *)table + i;
         /* its CLUT's VRAM, one allocation each (fills the holes characters and blocks leave), until tc_block_drop */
-        u32 c = e->psm == GS_PSM_T4 ? r_vram_lin(gsg, 1) : r_vram_clut(gsg, e->cpsm);
+        u32 c = e->psm == GS_PSM_T4 ? r_vram_lin(gsg, 1, GSO_WORLD_CLUT) : r_vram_clut(gsg, e->cpsm, GSO_WORLD_CLUT);
         if (c == GSKIT_ALLOC_ERROR) {
             te[first + i] = NULL;
             blk_n[b] = i;
@@ -435,7 +435,7 @@ int tc_relief_pool(int pool_kb)
 {
     if (!pool2_blk && pool_kb > 0) {
         pool2_blk = pool_kb * 4 < POOL_MAX ? pool_kb * 4 : POOL_MAX;
-        pool2_vram = gsKit_vram_alloc(gsg, pool2_blk * 256, GSKIT_ALLOC_USERBUFFER);
+        pool2_vram = gs_vram_fixed(gsg, pool2_blk * 256, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_RELIEF, "texcache relief pool");
         if (pool2_vram == GSKIT_ALLOC_ERROR)
             pool2_blk = 0;
     }
@@ -665,7 +665,7 @@ void tc_begin(float focal)
     near_up = near_get = near_want = 0;
     in_frame = 1;
     /* CT16 CLUT alpha bit 0 -> 0 (cut-out texels, alpha test drops them), 1 -> 0x80 */
-    u64 texa[2] = {GS_SETREG_TEXA(0, 0, 0x80), GS_TEXA};
+    u64 texa[2] = {GS_TEXA_BIT, GSR_TEXA};
     vu1_gs_regs(1, texa);
     int nall = tex_end();
     for (int i = 0; i < nall; i++)
@@ -804,7 +804,7 @@ int tc_mip(int tex, const GSTEXTURE *t, float st_k, u64 *miptbp1, int *k)
         /* log2(density x 4096 / focal) - level + bias; log2 from the float's exponent and a quadratic on its mantissa
          * (error < 0.005 level) */
         float kf = fast_log2(te[tex]->density * 4096.0f / tc_focal) - level + MIP_BIAS;
-        mo->frame = frame, mo->n = n, mo->tbp = GS_SETREG_MIPTBP1(tbp[0], 2, tbp[1], 2, tbp[2], 2);
+        mo->frame = frame, mo->n = n, mo->tbp = gs_miptbp1(tbp[0], tbp[1], tbp[2]);
         mo->k = (short)(kf * 16 + (kf < 0 ? -0.5f : 0.5f));
     }
     if (!mo->n)

@@ -13,6 +13,7 @@
 #include "texcache.h"
 #include "map.h"
 #include "vu1.h"
+#include "gs.h"
 #ifndef BUMP_BAKED
 #define BUMP_BAKED 1  /* = the Makefile's BUMP_BAKE default */
 #endif
@@ -100,7 +101,7 @@ static int set_init(int k, const void *blob, unsigned chunks)
                 : tc_base_bump(b->bin, b->bin + bh->tex_off, bh->textures, BUMP_POOL_KB);
     unsigned kb = bh->clusters * bh->levels;
     if (b->tex0 >= 0 && !clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= kb * 1024) {  /* the first set sizes it */
-        clut_vram = gsKit_vram_alloc(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER);
+        clut_vram = gs_vram_fixed(gsg, kb * 1024, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_RELIEF, "bump CLUTs");
         clut_kb = clut_vram == GSKIT_ALLOC_ERROR ? 0 : kb;
     }
     if (b->tex0 < 0 || kb > clut_kb) {
@@ -130,7 +131,7 @@ int bump_init(GSGLOBAL *gs, const void *blob, unsigned chunks)
     if (!blob) {  /* streamed later (world.c): the relief pool and CLUT area now, where the resident set put them */
         tc_relief_pool(BUMP_POOL_KB);
         if (!clut_kb && 4 * 1024 * 1024 - gsg->CurrentPointer >= BUMP_CLUT_KB * 1024) {
-            clut_vram = gsKit_vram_alloc(gsg, BUMP_CLUT_KB * 1024, GSKIT_ALLOC_USERBUFFER);
+            clut_vram = gs_vram_fixed(gsg, BUMP_CLUT_KB * 1024, GSKIT_ALLOC_USERBUFFER, GSO_WORLD_RELIEF, "bump CLUTs");
             clut_kb = clut_vram == GSKIT_ALLOC_ERROR ? 0 : BUMP_CLUT_KB;
         }
     }
@@ -226,9 +227,9 @@ void bump_draw(void)
     GSGLOBAL *gs = gsg;
     /* Cd x As (As = CLUT alpha x vertex alpha 0x80; 0x80 = x1, up to ~x2), Z tested, not written */
 #ifdef BUMP_COVER  /* debug: every pixel the relief pass passes the depth test on turns black */
-    u64 r[4] = {GS_SETREG_ALPHA(1, 2, 2, 2, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    u64 r[4] = {GS_ALPHA_RELIEF_DARK, GSR_ALPHA, gs_zbuf(gs, 1), GSR_ZBUF};
 #else
-    u64 r[4] = {GS_SETREG_ALPHA(1, 2, 0, 2, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    u64 r[4] = {GS_ALPHA_RELIEF_LIT, GSR_ALPHA, gs_zbuf(gs, 1), GSR_ZBUF};
 #endif
     vu1_gs_regs(2, r);
     for (int i = 0; i < nitems; i++) {
@@ -246,7 +247,7 @@ void bump_draw(void)
                        it->org, it->st_k);
         bump_batches++;
     }
-    u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
+    u64 rr[4] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF};
     vu1_gs_regs(2, rr);
     nitems = 0;
 }

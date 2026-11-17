@@ -459,7 +459,7 @@ Model *mdl_load_tex(const void *blob, const Model *tex)
  * render.c's block allocator (V6). V5: the exporters write CT32 CLUTs; characters are drawn alpha-tested only (VU1
  * skin TEST GEQUAL 0x40, no blending), so they go up as CT16 (RGB5A1, A = alpha >= 0x40; gsKit's TEXA maps A to
  * 0 / 0x80): 512 B instead of 1 KB per CLUT. Returns the bytes of VRAM still free, or -1 if a texture did not fit. */
-int mdl_upload(Model *m, GSGLOBAL *gs)
+int mdl_upload(Model *m, GSGLOBAL *gs, GsOwner o)
 {
     const TexEntry *te = (const TexEntry *)(m->bin + m->hdr->tex_off);
     static u16 clut16[256] __attribute__((aligned(64)));
@@ -486,8 +486,8 @@ int mdl_upload(Model *m, GSGLOBAL *gs)
         SyncDCache(clut16, clut16 + 256);
         t->Clut = t->ClutPSM == GS_PSM_CT16 ? (u32 *)clut16 : (u32 *)c32;
         t->Filter = GS_FILTER_LINEAR;
-        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM);
-        t->VramClut = r_vram_clut(gs, t->ClutPSM);
+        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM, o);
+        t->VramClut = r_vram_clut(gs, t->ClutPSM, o);
         if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
             r_vram_free_tex(t->Vram, t->Width, t->Height, t->PSM);
             r_vram_free_clut(t->VramClut, t->ClutPSM);
@@ -500,12 +500,12 @@ int mdl_upload(Model *m, GSGLOBAL *gs)
     return r_vram_avail(gs);
 }
 
-int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs)
+int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs, GsOwner o)
 {
     const Header *h = m->hdr;
     const unsigned char *bin = m->bin;
     m->hdr = blob, m->bin = blob;
-    int r = mdl_upload(m, gs);
+    int r = mdl_upload(m, gs, o);
     m->hdr = h, m->bin = bin;
     for (int i = 0; i < m->ntex; i++)
         m->texv[i].Mem = m->texv[i].Clut = NULL;
@@ -973,7 +973,7 @@ int model_init(const void *blob)
     model_helmet(1);  /* the Warrior starts with the helm on */
     return 1;
 }
-int model_upload(GSGLOBAL *gs) { return mdl_upload(pm, gs); }
+int model_upload(GSGLOBAL *gs) { return mdl_upload(pm, gs, GSO_CHR_PLAYER); }
 int model_compact(void *blob, unsigned size)
 {
     if (!pm || !mdl_compact(pm, size))

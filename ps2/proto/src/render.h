@@ -3,6 +3,7 @@
 #define RENDER_H
 
 #include <gsKit.h>
+#include "gs.h"
 #include "vmath.h"
 
 #ifndef R_NEAR
@@ -70,12 +71,12 @@ void r_ground(float size, float cell);
  * texture's blocks are not contiguous). Each allocation takes the blocks its real footprint covers (PSMT8 with
  * vu1.c's TBW, CT32 / CT16 16x16 CLUTs), first fit in the free blocks of pages taken earlier, else new 8 KB pages
  * at gs->CurrentPointer (which stays page aligned for gsKit's own allocations after it). Byte address or
- * GSKIT_ALLOC_ERROR (0). r_vram_lin: n consecutive blocks (CLUT tables). The r_vram_free_* calls give an
+ * GSKIT_ALLOC_ERROR (0), charged to owner o (gs.h; a free credits the owner that paid). r_vram_lin: n consecutive blocks (CLUT tables). The r_vram_free_* calls give an
  * allocation's blocks back (the same w / h / psm / n it was made with) once the GS no longer reads them (callers free
  * between frames: the last frame's chains and gsKit queue are done before the next frame's updates run). */
-u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm);
-u32 r_vram_clut(GSGLOBAL *gs, int clut_psm);
-u32 r_vram_lin(GSGLOBAL *gs, int n);
+u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm, GsOwner o);
+u32 r_vram_clut(GSGLOBAL *gs, int clut_psm, GsOwner o);
+u32 r_vram_lin(GSGLOBAL *gs, int n, GsOwner o);
 void r_vram_free_tex(u32 vram, int w, int h, int psm);
 void r_vram_free_clut(u32 vram, int clut_psm);
 void r_vram_free_lin(u32 vram, int n);
@@ -99,12 +100,8 @@ void r_queue_exec(GSGLOBAL *gs);
 
 #ifdef HEAPMAP
 /* make HEAPMAP=1: VRAM census next to the heap census (render.c; "vrammap:" lines after each heapmap block). The
- * r_vram_* allocations are kept per caller (and hm_tag label), gsKit_vram_alloc calls of files including this header
- * per file:line; the frame / Z buffers gsKit_init_screen allocated are read from the GSGLOBAL. */
-u32 r_hm_vram_alloc(GSGLOBAL *g, u32 size, u8 type, const char *where);
-#define R_HM_STR2(x) #x
-#define R_HM_STR(x) R_HM_STR2(x)
-#define gsKit_vram_alloc(g, size, type) r_hm_vram_alloc(g, size, type, __FILE__ ":" R_HM_STR(__LINE__))
+ * r_vram_* allocations are kept per caller (and hm_tag label), gs_vram_fixed (gs.c) calls per call site, owners per
+ * row; the frame / Z buffers gsKit_init_screen allocated are read from the GSGLOBAL. */
 void r_vram_census(void);
 #endif
 

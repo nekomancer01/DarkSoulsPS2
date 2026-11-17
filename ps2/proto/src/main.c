@@ -141,19 +141,19 @@ static void z_clear(GSGLOBAL *gs)
 {
     u64 r[2 * 40];
     int n = 0;
-    u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
+    u64 frame = gs_frame(gs->ScreenBuffer[gs->ActiveBuffer & 1], gs->Width, gs->PSM, 0);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-    REG(holes ? frame : frame | 0xFFFFFFFFull << 32, 0x4C);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-    REG(GS_SETREG_RGBAQ(0xFF, 0x00, 0xFF, 0x80, 0), 0x01);
+    REG(holes ? frame : frame | 0xFFFFFFFFull << 32, GSR_FRAME);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS */
+    REG(gs_zbuf(gs, 0), GSR_ZBUF);
+    REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+    REG(GS_SETREG_RGBAQ(0xFF, 0x00, 0xFF, 0x80, 0), GSR_RGBAQ);
     for (int x = 0; x < gs->Width; x += 64) {
         int x1 = x + 64 < gs->Width ? x + 64 : gs->Width;
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, 0), 0x05);
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, 0), GSR_XYZ2);
     }
-    REG(frame, 0x4C);
+    REG(frame, GSR_FRAME);
 #undef REG
     vu1_gs_regs(n, r);
 }
@@ -178,18 +178,13 @@ static u32 disp_buf;
 
 static void display_init(GSGLOBAL *gs)
 {
-    disp_buf = gsKit_vram_alloc(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER);
-    /* gsKit set up 480i for its 448-line buffer: StartY / DH are interlaced raster lines (DY 50, DH 448) */
+    disp_buf = gs_vram_fixed(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER, GSO_FRAME,
+                             "display buffer");
 #ifdef V1B_INTERLACED
-    SetGsCrt(GS_INTERLACED, GS_MODE_NTSC, GS_FRAME);
-    int dy = gs->StartY + gs->StartYOffset, dh = 2 * DISP_H;  /* FFMD 1: DH counts both fields' lines */
+    gs_display_init(gs, disp_buf, R_SCREEN_W, DISP_H, 1);
 #else
-    SetGsCrt(GS_NONINTERLACED, GS_MODE_NTSC, GS_FRAME);
-    int dy = (gs->StartY + gs->StartYOffset) / 2, dh = DISP_H;  /* 25: gsKit's own 240p centring of 224 lines */
+    gs_display_init(gs, disp_buf, R_SCREEN_W, DISP_H, 0);
 #endif
-    GS_SET_PMODE(0, 1, 0, 1, 0, 0x80);
-    GS_SET_DISPFB2(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0, 0);
-    GS_SET_DISPLAY2(gs->StartX + gs->StartXOffset, dy, gs->MagH, 0, gs->DW - 1, dh - 1);
 }
 
 /* Frame cap (user, 2026-10-31: 30 fps target): flip at most every FPS_CAP_FIELDS vsyncs. A frame that finished early
@@ -224,19 +219,19 @@ static int dof_regs(GSGLOBAL *gs, u64 *p)
     int n = 0;
 #define REG(v, a) (*p++ = (v), *p++ = (a), n++)
 #define FULL(z)                                                                    \
-    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), 0x05),                         \
-     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), 0x05))
-    const u64 draw_a = GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
-    const u64 disp_a = GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), GSR_XYZ2),                         \
+     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), GSR_XYZ2))
+    const u64 draw_a = gs_frame(gs->ScreenBuffer[0], R_SCREEN_W, gs->PSM, 0x00FFFFFF);
+    const u64 disp_a = gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0x00FFFFFF);
     const u64 tex = GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 1, 1, 0, 0, 0, 0, 0);
     /* clear the draw buffer's alpha bits (Z always, not written) */
-    REG(draw_a, 0x4C);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), 0x01);
+    REG(draw_a, GSR_FRAME);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);
+    REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), GSR_RGBAQ);
     FULL(0);
-    REG(GS_SETREG_TEXA(0, 0, 0x80), DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
-    REG(0, 0x45);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
+    REG(GS_TEXA_BIT, DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
+    REG(0, GSR_DTHE);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
     for (int i = DOF_BANDS; i >= 1; i--) {
         /* a pixel between bands i and i + 1 gets bands 1..i: 1 - prod (1 - a_j) = mul x i / N */
         float z = b0 + (b1 - b0) * (i - 0.5f) / DOF_BANDS, s = mul * i / DOF_BANDS, s0 = mul * (i - 1) / DOF_BANDS;
@@ -244,47 +239,47 @@ static int dof_regs(GSGLOBAL *gs, u64 *p)
         float x = 1 - sqrtf(1 - a);  /* two taps blended in turn: 1 - (1 - x)^2 = a */
         int fix = (int)(x * 128 + 0.5f);
         /* mark: alpha 1 where the scene lies beyond z */
-        REG(draw_a, 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), 0x01);
+        REG(draw_a, GSR_FRAME);
+        REG(GS_TEST_ZGE, GSR_TEST);
+        REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), GSR_RGBAQ);
         FULL((u32)(65535.0f * R_NEAR / z));
-        REG(0, 0x3F);  /* TEXFLUSH: the marks are read back as texture */
+        REG(0, GSR_TEXFLUSH);  /* TEXFLUSH: the marks are read back as texture */
         /* marks into the display buffer's alpha (point sampled, line 2y) */
-        REG(disp_a, 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-        REG(tex, 0x06);
-        REG(GS_SETREG_TEX1(0, 0, 0, 0, 0, 0, 0), 0x14);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+        REG(disp_a, GSR_FRAME);
+        REG(GS_TEST_ZALWAYS, GSR_TEST);
+        REG(tex, GSR_TEX0);
+        REG(GS_TEX1_POINT, GSR_TEX1);
+        REG(GS_PRIM_SPRITE_UV, GSR_PRIM);
         for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
-            REG(GS_SETREG_UV((x0 << 4) + 8, 8), 0x03);
-            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), 0x03);
-            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+            REG(GS_SETREG_UV((x0 << 4) + 8, 8), GSR_UV);
+            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), GSR_UV);
+            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), GSR_XYZ2);
         }
         /* two offset bilinear taps over the marked pixels: Cd + (Cs - Cd) x fix / 128 */
-        REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 1, 1, 1, 1), 0x47);
-        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
-        REG(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
-        REG(GS_SETREG_ALPHA(0, 1, 2, 1, fix), 0x42);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0), 0x00);
+        REG(gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+        REG(GS_TEST_ZALWAYS_DATE, GSR_TEST);
+        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), GSR_TEX0);
+        REG(GS_TEX1_LINEAR, GSR_TEX1);
+        REG(GS_ALPHA_FIX(fix), GSR_ALPHA);
+        REG(GS_PRIM_SPRITE_UV_ABE, GSR_PRIM);
         for (int t = 0; t < 2; t++) {
             /* the sprite moves, not its UV (UV is unsigned: a negative start wraps): tap 0 shows texel x - DOF_DX,
              * lines 2y - 2 / 2y - 1 at (x, y), tap 1 texel x + DOF_DX, lines 2y + 2 / 2y + 3; the sharp copy has
              * x, lines 2y / 2y + 1. The uncovered edge column / line keeps the sharp copy. */
             int dx = (t ? -DOF_DX : DOF_DX) << 4, dy = t ? -16 : 16;
             for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
-                REG(GS_SETREG_UV(x0 << 4, 16), 0x03);
-                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), 0x05);
-                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), 0x03);
-                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), 0x05);
+                REG(GS_SETREG_UV(x0 << 4, 16), GSR_UV);
+                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), GSR_XYZ2);
+                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), GSR_UV);
+                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), GSR_XYZ2);
             }
         }
     }
-    REG(GS_SETREG_TEXA(0x80, 0, 0x80), DOF_TEXA);  /* gsKit's */
-    REG(1, 0x45);  /* DTHE back on (main: gs->Dithering) */
-    REG(gs->PrimAlpha, 0x42);
+    REG(GS_TEXA_GSKIT, DOF_TEXA);  /* gsKit's */
+    REG(1, GSR_DTHE);  /* DTHE back on (main: gs->Dithering) */
+    REG(gs->PrimAlpha, GSR_ALPHA);
 #undef FULL
 #undef REG
     return n;
@@ -306,29 +301,29 @@ static void flip(GSGLOBAL *gs)
     int n = 0;
     u64 *p = pk + 2;
 #define REG(v, a) (*p++ = (v), *p++ = (a), n++)
-    REG(0, 0x3F);  /* TEXFLUSH: the draw buffer is read as a texture right after being drawn */
-    REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-    REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
-    REG(GS_SETREG_TEX1(0, 0, filter, filter, 0, 0, 0), 0x14);
-    REG(GS_SETREG_CLAMP(1, 1, 0, 0, 0, 0), 0x08);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+    REG(0, GSR_TEXFLUSH);  /* TEXFLUSH: the draw buffer is read as a texture right after being drawn */
+    REG(gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+    REG(gs_zbuf(gs, 1), GSR_ZBUF);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);
+    REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), GSR_TEX0);
+    REG(GS_TEX1_FILTER(filter), GSR_TEX1);
+    REG(GS_CLAMP_CLAMP, GSR_CLAMP);
+    REG(GS_PRIM_SPRITE_UV, GSR_PRIM);
     for (int x = 0; x < R_SCREEN_W; x += 64) {
-        REG(GS_SETREG_UV(x << 4, v0), 0x03);
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-        REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), 0x03);
-        REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+        REG(GS_SETREG_UV(x << 4, v0), GSR_UV);
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+        REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), GSR_UV);
+        REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), GSR_XYZ2);
     }
     {
         int k = dof_regs(gs, p);
         p += 2 * k, n += k;
     }
     /* back to the draw buffer and the state the frame expects (main's TEST, repeat wrapping) */
-    REG(GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
-    REG(GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47);
-    REG(GS_SETREG_CLAMP(0, 0, 0, 0, 0, 0), 0x08);
+    REG(gs_frame(gs->ScreenBuffer[0], R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+    REG(gs_zbuf(gs, 0), GSR_ZBUF);
+    REG(GS_TEST_CUTOUT, GSR_TEST);
+    REG(GS_CLAMP_REPEAT, GSR_CLAMP);
 #undef REG
     pk[0] = GIF_TAG(n, 1, 0, 0, 0, 1);
     pk[1] = 0xE;
@@ -357,10 +352,12 @@ int main(int argc, char **argv)
     dmaKit_init(D_CTRL_RELE_OFF, D_CTRL_MFD_OFF, D_CTRL_STS_UNSPEC, D_CTRL_STD_OFF, D_CTRL_RCYC_8, 1 << DMA_CHANNEL_GIF);
     dmaKit_chan_init(DMA_CHANNEL_GIF);
     gsKit_init_screen(gs);
+    /* its draw and Z buffers from 0 (byte 1 = block 0: address 0 reads as GSKIT_ALLOC_ERROR) */
+    gs_vram_charge(GSO_FRAME, 1, gs->CurrentPointer / 256);
     display_init(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
     gs->Test->ZTST = 2;  /* GEQUAL: larger Z is nearer */
-    gsKit_set_test(gs, GS_ZTEST_ON);
+    gs_test(gs, GS_ZTEST_ON);
     r_init(gs);
     vu1_init(gs);
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
@@ -476,13 +473,14 @@ int main(int argc, char **argv)
         vram_free = r_vram_avail(gs);
     printf("DSRPROTO vram: free %d (%d after the last page), r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
            r_vram_avail(gs), 4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
+    gs_vram_log(gs, "boot");
     /* cut-out foliage: texels with CLUT alpha 0 are dropped (AFAIL keep = neither colour nor depth written) */
     gs->Test->ATE = 1;
     gs->Test->ATST = 5;  /* GEQUAL */
     gs->Test->AREF = 0x40;
     gs->Test->AFAIL = 0;
-    gsKit_set_test(gs, GS_ATEST_ON);
-    gsKit_set_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
+    gs_test(gs, GS_ATEST_ON);
+    gs_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
 
     Player pl;
     pickup_prompt_player(&pl);  /* the Pick up item prompt (src/pickup.c) */

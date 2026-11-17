@@ -175,14 +175,14 @@ void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[1] = 0;
     p[2] = GIF_TAG(4, 0, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[3] = GIF_AD;
-    p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, vram / 256, tbw, psm);
-    p[5] = GS_BITBLTBUF;
-    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
-    p[7] = GS_TRXPOS;
-    p[8] = GS_SETREG_TRXREG(w, h);
-    p[9] = GS_TRXREG;
-    p[10] = GS_SETREG_TRXDIR(0);
-    p[11] = GS_TRXDIR;
+    p[4] = gs_blt_to(vram / 256, tbw, psm);
+    p[5] = GSR_BITBLTBUF;
+    p[6] = GS_TRXPOS_0;
+    p[7] = GSR_TRXPOS;
+    p[8] = gs_trxreg(w, h);
+    p[9] = GSR_TRXREG;
+    p[10] = GS_TRXDIR_HOST;
+    p[11] = GSR_TRXDIR;
     p[12] = GIF_TAG(qw, 0, 0, 0, GSKIT_GIF_FLG_IMAGE, 0);
     p[13] = 0;
     p[14] = DMA_TAG(qw, 0, DMA_REF, 0, (u32)mem, 0);
@@ -192,7 +192,7 @@ void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[18] = GIF_TAG(1, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[19] = GIF_AD;
     p[20] = 0;
-    p[21] = GS_TEXFLUSH;
+    p[21] = GSR_TEXFLUSH;
     SyncDCache((void *)mem, (char *)mem + qw * 16 - 1);
     SyncDCache(up_chain, (char *)up_chain + sizeof up_chain - 1);
     *(volatile u32 *)0x1000A020 = 0;                         /* D2_QWC */
