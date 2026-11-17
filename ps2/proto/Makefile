@@ -63,7 +63,7 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
@@ -218,7 +218,7 @@ blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
 # (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
 # from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
-$(D)/world.pak: $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
 		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)
@@ -526,7 +526,7 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
-		$(TS)/residency.py.sum src/residency.h
+		$(TS)/residency.py.sum src/residency.h $(TS)/worldlinks.py.sum
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)

@@ -15,7 +15,7 @@
  *   the character: Wait, Stay, MoveToSomewhere, Guard, SidewayMove, KeepDist, BackToHome, SpinStep, LeaveTarget,
  *   ApproachStep, Parry, CommonAttack. Their parameter meanings come from how the scripts call them (TECH_DEBT
  *   enemy-1 lists what is assumed).
- * Perception (not in the scripts): sight = eye_dist and the eye_angX cone, hearing = a sound (ai_sound) within the
+ * Perception (not in the scripts): sight = DSR's FUN_140618680 (see sight()), hearing = a sound (ai_sound) within the
  * sound's radius and ear_dist; seen -> battle state, heard only -> caution; forgotten after Sight/SoundTargetForgetTime
  * (NpcThinkParam). The scripts' back-home rules (maxBackhomeDist / backhomeDist / backhomeBattleDist from home) end
  * a chase. */
@@ -34,6 +34,7 @@
 #define MAX_LOGICS 48
 #define MAX_TEAM 32
 #define MAX_SOUNDS 8
+#define MAX_EVENTS 8
 #define INF_LIFE 9999.0f  /* GetLife() of a goal added with life < 0 (never runs out) */
 
 enum { R_FAILED = -1, R_CONTINUE = 0, R_SUCCESS = 1 };
@@ -42,8 +43,15 @@ enum { R_FAILED = -1, R_CONTINUE = 0, R_SUCCESS = 1 };
 enum { T_NONE = -2, T_SELF = -1, T_ENE0 = 0, T_FRI0 = 10, T_EVENT = 20, T_LOCALPLAYER = 21, P_INITIAL = 100,
        P_MOVE_POINT = 103, P_AI_FIXED = 107, P_INIT_POSE = 111, P_CURR_REQ = 114, P_LAST_SIGHT = 118 };
 enum { DIR_CENTER, DIR_F, DIR_B, DIR_L, DIR_R };
-enum { I_FindEnemy = 0, I_FindAttack = 1, I_Damaged = 2, I_Inside_ObserveArea = 16, I_ForgetTarget = 18,
-       I_LoseSightTarget = 31 };
+/* INTERUPT_* codes (ai_define.lua) */
+enum { I_FindEnemy, I_FindAttack, I_Damaged, I_Damaged_Stranger, I_FindMissile, I_SuccessGuard, I_MissSwing,
+       I_GuardBegin, I_GuardFinish, I_GuardBreak, I_Shoot, I_ShootReady, I_UseItem, I_EnterBattleArea,
+       I_LeaveBattleArea, I_CANNOT_MOVE, I_Inside_ObserveArea, I_ReboundByOpponentGuard, I_ForgetTarget,
+       I_FriendRequestSupport, I_TargetIsGuard, I_HitEnemyWall, I_SuccessParry, I_CANNOT_MOVE_DisableInterupt,
+       I_ParryTiming, I_RideNode_LadderBottom, I_FLAG_RideNode_Door, I_StraightByPath, I_ChangedAnimIdOffset,
+       I_SuccessThrow, I_LookedTarget, I_LoseSightTarget, I_RideNode_InsideWall, I_MissSwingSelf, I_GuardBreakBlow,
+       I_COUNT };
+#define BIT(c) (1ull << (c))
 enum { X_maxBackhomeDist = 1, X_backhomeDist, X_backhomeBattleDist, X_nonBattleActLife, X_BattleStartDist,
        X_bMoveOnHearSound, X_CannotMoveAction, X_battleGoalID, X_callHelp_IsCall = 12, X_callHelp_IsReply,
        X_callHelp_MyPeerId, X_callHelp_CallPeerId, X_callHelp_DelayTime, X_callHelp_CallActionId };
@@ -91,6 +99,12 @@ static V3 team_pos[MAX_TEAM];
 static int nteam;
 static struct { V3 pos; float r; } sounds[MAX_SOUNDS];
 static int nsounds;
+static struct { int code; V3 pos; float r; } events[MAX_EVENTS];  /* ai_event: this frame's target actions */
+static int nevents;
+int ai_target_guard;
+#define LOS_PERIOD 0.25f  /* s between one character's sight rays (PS2 budget, see sight()) */
+#define LOS_PER_FRAME 3
+static int los_budget = LOS_PER_FRAME;
 static Ai *cur;              /* the AI being updated */
 static int fallback_seen[64];
 unsigned ai_lua_heap, ai_lua_instr;
@@ -567,21 +581,79 @@ static LogicReg *logic_of(int id)
 
 /* ---- perception ---- */
 
+int (*ai_los)(V3 from, V3 to);
+
+#if AI_PERCEPT
+/* DSR's sight test, FUN_140618680 (called per target from FUN_14061cda0):
+ * - within nose_dist + both radii: noticed, whatever the direction, no sight line;
+ * - else within eye_dist + both radii: the horizontal direction to the target within eye_angY degrees of the facing
+ *   (cos test on the xz vectors), its elevation within eye_angX degrees (|dy| against the xz distance), then a
+ *   collision ray (FUN_140618a60: filter 0x28) from eye height above the feet to target_h above the target's feet;
+ *   eye_dist is scaled by the target's sight rate (record +0x44, from its SpEffects: 1 for our player).
+ * Both angles are half-angles in degrees (DAT_141615c54 = pi / 180). */
+static int sight(Ai *a, float d)
+{
+    const AiFrame *f = a->f;
+    const AiThink *th = a->th;
+    float rr = f->radius + f->target_r;
+    if (th->nose_dist > 0 && d < th->nose_dist + rr)
+        return 1;
+    if (d >= th->eye_dist + rr)
+        return 0;
+    float dx = f->target.x - f->pos.x, dz = f->target.z - f->pos.z, h = sqrtf(dx * dx + dz * dz);
+    float fx = sinf(f->yaw), fz = cosf(f->yaw);
+    float c_yaw = h > 1e-4f ? (dx * fx + dz * fz) / h : 1.0f;
+    if (c_yaw < cosf(th->eye_ang_y * (PI / 180)))
+        return 0;
+    float dy = fabsf(f->target.y - f->pos.y), l = sqrtf(h * h + dy * dy);
+    float c_pitch = l > 1e-4f ? h / l : 1.0f;
+    if (c_pitch < cosf(th->eye_ang_x * (PI / 180)))
+        return 0;
+    if (ai_los) {
+        /* PS2 cost (a 20-40 m collision ray per character a frame was ~20 ms of EE on the Burg route): each
+         * character re-casts at most every LOS_PERIOD and at most LOS_PER_FRAME casts run in a frame; in between it
+         * keeps its last answer */
+        if (a->los_t <= 0 && los_budget > 0) {
+            V3 from = {f->pos.x, f->pos.y + f->eye_h, f->pos.z};
+            V3 to = {f->target.x, f->target.y + f->target_h, f->target.z};
+            a->los_ok = ai_los(from, to);
+            a->los_t = LOS_PERIOD, los_budget--;
+        }
+        return a->los_ok;
+    }
+    return 1;
+}
+#endif
+
 static void perceive(Ai *a)
 {
     const AiFrame *f = a->f;
     const AiThink *th = a->th;
     float dt = f->dt;
-    a->seen_t += dt, a->heard_t += dt;
+    a->seen_t += dt, a->heard_t += dt, a->los_t -= dt;
     float d = v3dist(f->pos, f->target);
     int seen = 0, heard = 0;
     if (f->target_alive) {
+#if AI_PERCEPT
+        seen = sight(a, d);
+#else
         float rel = fabsf(rel_angle(a, f->target));
         seen = d <= th->eye_dist && rel <= th->eye_ang_x * (PI / 360);
+#endif
         for (int i = 0; i < nsounds; i++) {
             float sd = v3dist(f->pos, sounds[i].pos);
+#if AI_PERCEPT
+            /* DSR FUN_140623b30 -> FUN_140623d10: heard when the distance between the two capsules' surfaces is
+             * under the sound's radius minus ear_soundcut_dist, plus scale * ear_dist / 100 (scale from the sound
+             * record +0x2C / +0x30, not decoded: 1 here). No ear_dist cap. Narrow ear cones (ear_angX < 90 or
+             * ear_angY < 180, 8 NpcThinkParam rows) take the cylinder test FUN_140624270: not done, heard as wide. */
+            float surf = sd - f->radius - f->target_r;
+            if (surf < sounds[i].r - th->ear_cut + th->ear_dist / 100.0f)
+                heard = 1, a->sound_pos = sounds[i].pos;
+#else
             if (sd <= sounds[i].r && sd <= th->ear_dist)
                 heard = 1, a->sound_pos = sounds[i].pos;
+#endif
         }
         if (f->damaged)
             seen = 1;
@@ -592,7 +664,7 @@ static void perceive(Ai *a)
     if (heard)
         a->heard_t = 0;
     if (was_seen && !seen && a->state == AIS_BATTLE)
-        a->raised |= 1u << I_LoseSightTarget;
+        a->raised |= BIT(I_LoseSightTarget);
     int st;
     if (!f->target_alive)
         st = AIS_NORMAL, a->seen_t = a->heard_t = 1e6f;
@@ -605,17 +677,21 @@ static void perceive(Ai *a)
     a->change = st != a->state;
     if (a->change) {
         if (st == AIS_BATTLE)
-            a->raised |= 1u << I_FindEnemy;
+            a->raised |= BIT(I_FindEnemy);
         if (a->state == AIS_BATTLE && st == AIS_NORMAL)
-            a->raised |= 1u << I_ForgetTarget;
+            a->raised |= BIT(I_ForgetTarget);
         a->prev_state = a->state;
         a->state = st;
     }
     if (f->damaged)
-        a->raised |= 1u << I_Damaged;
+        a->raised |= BIT(I_Damaged);
+    /* what the target did this frame (ai_event): offered to characters in battle within the event's radius */
+    for (int i = 0; i < nevents && a->state == AIS_BATTLE; i++)
+        if (dist_xz(f->pos, events[i].pos) <= events[i].r)
+            a->raised |= BIT(events[i].code);
     /* the target starting an attack nearby (dodges / guards in the battle goals' interrupts) */
     if (f->target_attack >= 0 && f->target_attack != a->prev_target_attack && d < 8 && a->state == AIS_BATTLE)
-        a->raised |= 1u << I_FindAttack;
+        a->raised |= BIT(I_FindAttack);
     a->prev_target_attack = f->target_attack;
     for (int i = 0; i < 4; i++) {
         if (!a->observe[i].on)
@@ -626,7 +702,7 @@ static void perceive(Ai *a)
         int in = dist_xz(f->pos, p) <= a->observe[i].dist &&
                  fabsf(wrap(rel - dir)) <= a->observe[i].angle * (PI / 360);
         if (in && !a->observe[i].inside)
-            a->raised |= 1u << I_Inside_ObserveArea;
+            a->raised |= BIT(I_Inside_ObserveArea);
         a->observe[i].inside = in;
     }
 }
@@ -693,13 +769,14 @@ void ai_update(Ai *a, const AiFrame *f)
         a->root = goal_new(a, NULL, top ? top->id : -1, -1, NULL, 0);
         a->root->activated = 1;
     }
-    a->raised = 0;
+    a->raised = a->pending;  /* raised by the game since the last update (ai_raise) */
+    a->pending = 0;
     perceive(a);
     LogicReg *lg = logic_of(a->th->logic);
     if (a->change && a->root->sub)
         goal_clear_subs(a->root);  /* replan on a state change */
-    for (int code = 0; code < 32; code++)
-        if (a->raised & (1u << code))
+    for (int code = 0; code < I_COUNT; code++)
+        if (a->raised & BIT(code))
             dispatch_interupt(a, code);
     if (!a->root->sub && lg && lg->f.t != LT_NIL) {
         LVal arg = lud(a, TAG_AI);
@@ -740,6 +817,18 @@ const char *ai_goal_name(const Ai *a)
     return g->reg && g->reg->name[0] ? g->reg->name : "?";
 }
 
+void ai_raise(Ai *a, int code)
+{
+    if (a && code >= 0 && code < I_COUNT)
+        a->pending |= BIT(code);
+}
+
+void ai_event(int code, V3 pos, float radius)
+{
+    if (nevents < MAX_EVENTS)
+        events[nevents].code = code, events[nevents].pos = pos, events[nevents].r = radius, nevents++;
+}
+
 void ai_sound(V3 pos, float radius)
 {
     if (nsounds < MAX_SOUNDS)
@@ -776,7 +865,7 @@ static void mark_goals(void)
 
 void ai_end_frame(void)
 {
-    nsounds = 0;
+    nsounds = 0, nevents = 0, los_budget = LOS_PER_FRAME;
     if (scripts_ok)
         lua0_gc_step(mark_goals, LUA_GC_KB * 1024, LUA_GC_STEP_US);
     ai_lua_heap = lua0_heap, ai_lua_instr = lua0_instructions;
@@ -1003,6 +1092,13 @@ static int m_IsSearchTarget(LVal *a, int n, LVal *o, const LVal *up)
 {
     (void)n, (void)up;
     RET_BOOL(SELF_AI->state != AIS_NORMAL);
+}
+
+/* exe FUN_1405b59d0: the target record (FUN_1405c9070) -> its vtable +0x10 (guard state) */
+static int m_IsTargetGuard(LVal *a, int n, LVal *o, const LVal *up)
+{
+    (void)a, (void)n, (void)up;
+    RET_BOOL(ai_target_guard);
 }
 
 static int m_IsInterupt(LVal *a, int n, LVal *o, const LVal *up)
@@ -1359,7 +1455,7 @@ static const struct { const char *name; LCFunc f; } METHODS[] = {
     {"IsInsideTarget", m_IsInsideTarget}, {"IsInsideTargetEx", m_IsInsideTargetEx}, {"TurnTo", m_TurnTo},
     {"IsLookToTarget", m_IsLookToTarget}, {"GetHpRate", m_GetHpRate}, {"IsBattleState", m_IsBattleState},
     {"IsCautionState", m_IsCautionState}, {"IsFindState", m_IsFindState}, {"IsChangeState", m_IsChangeState},
-    {"IsSearchTarget", m_IsSearchTarget}, {"IsInterupt", m_IsInterupt}, {"GetExcelParam", m_GetExcelParam},
+    {"IsSearchTarget", m_IsSearchTarget}, {"IsTargetGuard", m_IsTargetGuard}, {"IsInterupt", m_IsInterupt}, {"GetExcelParam", m_GetExcelParam},
     {"GetNpcThinkParamID", m_GetNpcThinkParamID}, {"GetBattleGoalId", m_GetBattleGoalId},
     {"GetDistParam", m_GetDistParam}, {"GetReplanningGoalAction", m_GetReplanningGoalAction},
     {"GetReplanningGoalID", m_GetReplanningGoalID}, {"GetMovePointNumber", m_GetMovePointNumber},
