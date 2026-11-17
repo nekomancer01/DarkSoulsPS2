@@ -30,6 +30,7 @@ SCREENSHOT_EXT = {'.jpg'}
 README_IMAGES = {'docs/logo.png'}
 # Path -> why it may exceed MAX_KB (third-party, not game data)
 ALLOW_LARGE = {
+    'notes/TECH_DEBT.md',  # hand-written debt register, not generated data
 }
 HOME_RE = re.compile(r'(?<![\w$])(/home/(?!runner/|user/|you/|<)[A-Za-z0-9_.-]+/|/Users/(?!<)[A-Za-z0-9_.-]+/'
                      r'|[A-Za-z]:\\\\?Users\\\\?(?!<)[A-Za-z0-9_.-]+)')

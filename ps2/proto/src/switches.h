@@ -58,6 +58,9 @@
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
  * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
  * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
+ * MS_DEADLINE         | 1        | fallback | -DMS_DEADLINE=0                               | mapstream.c   | deadline-aware hard-tier read order (late items first, rest by disc order); 0 = nearest first
+ * MS_DL_FIRST         | 1        | fallback | -DMS_DL_FIRST=0                               | mapstream.c   | a late item jumps the disc server queue (with MS_DEADLINE); 0 = queued by LSN like the rest
+ * MS_GAP_KB           | 96       | tune     | -DMS_GAP_KB=0                                 | mapstream.c   | a queued item within this many KB after the last read in the same pack goes next; 0 = off
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
