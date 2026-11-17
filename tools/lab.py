@@ -21,7 +21,8 @@ gcc with -m32) from Python, and compare a recorded PCSX2 run (test option `recor
       no menu), the failures (TEST
       error lines, a spawn outside the area's collision, a stub whose result the simulation reads back) and the
       presentation stubs reached. Saves go to build/host/save (never the console tests' build/save), emptied once per
-      invocation: `run tests/save_write.txt tests/save_check.txt` is the save round trip (tests/save_roundtrip.sh).
+      invocation: `run tests/save_check.txt` is the save round trip (tests/save_roundtrip.sh): a script's
+      "# needs: other.txt" lines run those first, in the same job.
       --state: the script run against the console's own run of it (its option record .state log): the same state
       sequence and the end position within --end-cm (tests/det_walk_open.txt: 0.04 cm). Frame counts differ (the
       console's boot frames), so the sequence is compared without frame numbers.
@@ -204,6 +205,45 @@ def run_script(build, area, script, max_frames=None, state_log=None, end_cm=1.0)
     return rep
 
 
+def needs(script):
+    """the scripts a script runs after ("# needs: other.txt" lines: a save pair's second half needs its first)"""
+    out = []
+    try:
+        for line in open(script):
+            if line.startswith("# needs:"):
+                out += [os.path.join(os.path.dirname(script), n) for n in line[len("# needs:"):].split()]
+    except OSError:
+        pass
+    return out
+
+
+def jobs(scripts):
+    """the scripts as jobs that run in order: a script with "# needs:" lines runs right after what it needs (pulled in
+    as a prerequisite when not listed), in one job, so no runner reports an ordering accident as a failure"""
+    norm = lambda p: os.path.realpath(p)
+    listed = {norm(s) for s in scripts}
+    taken, out = set(), []
+
+    def chain(s, seen=()):
+        pre = []
+        for n in needs(s):
+            if norm(n) not in seen:
+                pre += chain(n, seen + (norm(s),))
+        return pre + [s]
+
+    needed = {norm(n) for s in scripts for n in needs(s)}
+    for s in scripts:
+        if norm(s) in needed and norm(s) in listed:
+            continue  # (runs inside the job of the script that needs it)
+        job = [j for j in chain(s) if norm(j) not in taken]
+        taken |= {norm(j) for j in job}
+        out.append(job)
+    for s in scripts:  # a needed script whose dependent was not run: on its own
+        if norm(s) not in taken:
+            out.append([s]), taken.add(norm(s))
+    return out
+
+
 def print_run(rep, verbose):
     print(f"{'PASS' if rep['pass'] else 'FAIL'} {rep['script']}")
     print(f"  checks run: {len(rep['checks'])}" + ("" if rep["checks"] else
@@ -254,12 +294,14 @@ def main():
     if a.cmd == "run":
         import shutil
         shutil.rmtree(os.path.join(ROOT, a.build, "host", "save"), ignore_errors=True)
-        fails = 0
-        for sc in a.scripts:
-            rep = run_script(a.build, a.area, sc, a.max_frames, a.state, a.end_cm)
-            print_run(rep, a.v)
-            fails += not rep["pass"]
-        print(f"lab run: {len(a.scripts) - fails} passed, {fails} failed")
+        fails = n = 0
+        for job in jobs(a.scripts):
+            for sc in job:
+                rep = run_script(a.build, a.area, sc, a.max_frames, a.state, a.end_cm)
+                print_run(rep, a.v)
+                fails += not rep["pass"]
+                n += 1
+        print(f"lab run: {n - fails} passed, {fails} failed")
         return 1 if fails else 0
     with Lab(a.build, a.area) as lab:
         got = lab.replay(a.trace)
