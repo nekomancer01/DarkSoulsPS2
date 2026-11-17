@@ -1,4 +1,5 @@
 #include "map_i.h"
+#include "frame.h"
 #include "testscript.h"
 #include "world.h"
 int map_vu1_batches, map_ee_tris;
@@ -501,7 +502,7 @@ static void pl_step(void)
     for (int c = 0; c < 3; c++)
         t[c] = gate ? r->pl_rgb[c] : 0, t[3 + c] = r->pl_rgb[c];
     t[6] = r->pl_begin * 0.1f, t[7] = r->pl_end * 0.1f;
-    unsigned now = ticks();
+    unsigned now = frame_clock();  /* (by frames with option fixeddt: src/frame.h) */
     float dt = pl_init ? (now - pl_t0) / 294912000.0f : 0;
     pl_t0 = now;
     if (dt > 0.1f)

@@ -7,6 +7,7 @@
 #include <tamtypes.h>
 
 #include "bonfire.h"
+#include "frame.h"
 #include "ui_req.h"
 #include "collision.h"
 #include "drawgrp.h"
@@ -1586,7 +1587,7 @@ void event_update(Player *p, float dt)
 {
     if (!inst)
         return;
-    unsigned t0 = ticks();
+    unsigned t0 = ticks(), t0c = frame_clock();
     pl = p, dtime = dt;
     act_used = 0;
     ev_frame++;
@@ -1605,7 +1606,7 @@ void event_update(Player *p, float dt)
         Inst *in = &inst[i];
         if (in->state != I_FREE && in->state != I_DONE && in->state != I_STOPPED)
             run(in);
-        if (n + 1 < ninst && ticks() - t0 > EV_BUDGET_US * 295u) {
+        if (n + 1 < ninst && frame_clock() - t0c > EV_BUDGET_US * 295u) {  /* (the simulation clock, frame.h) */
             rr = (i + 1) % (n0 ? n0 : 1);
             event_stats.deferred++;
             break;

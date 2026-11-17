@@ -51,6 +51,22 @@ void frame_ui_request(void);
 /* one "frame:" line (hitch.c, each period) */
 void frame_log(void);
 
+/* Determinism for tests (Polaris 1.7a), set by test-script options:
+ *   option fixeddt MS   every frame's dt is exactly MS milliseconds (frame pacing stays real)
+ *   option seed N       rand() seeded with N (the loading screen's hint pick too)
+ *   option record NAME  each frame's input after the pad and test layers (+ dt, frame number, camera) to
+ *                       host:save/NAME (build/save/), its simulate state (position, yaw, state) to NAME.state
+ * With fixeddt, frame_clock() runs on frames (frames x dt, and it stops while a test shot is frozen), so the work cut
+ * by a real-time budget (lua0's collector step, event.c's instance runs) is cut by the same rule every run, the map's
+ * player-light blend steps by frames, and effects and HUD smoothing hold still on frozen frames. What depends on the
+ * disc (a block or an enemy model arriving) stays as non-deterministic as the drive: record traces at spots where
+ * everything needed is resident, after a settle wait. */
+extern float frame_det_dt;       /* 0: off */
+extern unsigned frame_det_seed;  /* 0: off */
+void frame_det_record(const char *path);
+/* the simulation clock in EE ticks: ticks() normally, frames x fixeddt with fixeddt */
+unsigned frame_clock(void);
+
 /* What main.c hands the loop: the boot's results and its platform helpers */
 typedef struct {
     GSGLOBAL *gs;

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lua0.h"
+#include "frame.h"
 #include "cvar.h"
 #include "ticks.h"
 
@@ -928,7 +929,7 @@ static void gc_mark(void (*extra_roots)(void))
  * limit). Objects allocated since the mark go in at the head of allgc, behind the sweep, and are live. */
 static int gc_sweep(unsigned budget)
 {
-    unsigned t0 = ticks(), n = 0;
+    unsigned t0 = frame_clock(), n = 0;  /* (the simulation clock: by frames with option fixeddt, frame.h) */
     GCH **pp = sweep_pp;
     while (*pp) {
         GCH *o = *pp;
@@ -961,7 +962,7 @@ static int gc_sweep(unsigned budget)
             lua0_heap -= size < lua0_heap ? size : lua0_heap;
             lrel(o);
         }
-        if (budget && !(++n & 63) && ticks() - t0 > budget)
+        if (budget && !(++n & 63) && frame_clock() - t0 > budget)
             break;
     }
     sweep_pp = pp;

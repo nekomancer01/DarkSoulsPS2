@@ -11,6 +11,7 @@
 #include "items.h"
 #include "loading.h"
 #include "mem.h"
+#include "frame.h"
 #include "hitch.h"
 #include "pack.h"
 #include "render.h"
@@ -81,7 +82,8 @@ void loading_init(GSGLOBAL *g, void (*p)(GSGLOBAL *), unsigned disp)
     return;
 #endif
     gs = g, present = p, disp_vram = disp;
-    srand(ticks());  /* FUN_1406fea10 draws the first hint at random (MT19937 in DSR) */
+    srand(frame_det_seed ? frame_det_seed : ticks());  /* FUN_1406fea10 draws the first hint at random (MT19937 in DSR);
+                                                         * option seed (frame.h) fixes it */
 }
 
 /* Own GIF chain for uploads (as drb.c: gsKit_texture_send from the update phase hung PATH3) */
