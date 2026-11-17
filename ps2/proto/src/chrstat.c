@@ -26,6 +26,51 @@
 #include "progress.h"
 
 ChrStats chr_stats;
+int chr_hand_slot[2], chr_quick, chr_two_hand;
+
+void chrstat_select(void)
+{
+    ChrStats *c = &chr_stats;
+    for (int h = 0; h < 2; h++) {
+        const ChrWep *w = &c->wep[h][chr_hand_slot[h] & 1];
+        if (chr_two_hand && h == HAND_L)  /* both hands on the right weapon: it guards (the left one is on the back) */
+            w = &c->wep[HAND_R][chr_hand_slot[HAND_R] & 1];
+        memcpy(c->ar[h], chr_two_hand && h == HAND_R ? w->ar2h : w->ar, sizeof c->ar[h]);
+        c->poise_dmg[h] = w->poise_dmg, c->wep_types[h] = w->types, c->guard_level[h] = w->guard_level;
+        memcpy(c->guard_cut[h], w->guard_cut, sizeof c->guard_cut[h]);
+        c->guard_stab[h] = w->guard_stab;
+    }
+    int q = chr_quick >= 0 && chr_quick < 5 ? chr_quick : 0;
+    c->item_id = c->quick[q].id, c->item_anim = c->quick[q].anim, c->item_heal = c->quick[q].heal;
+    c->item_hum = c->quick[q].hum, c->item_souls = c->quick[q].souls, c->item_consume = c->quick[q].consume;
+}
+
+/* DS1: a hand's weapon button switches to its other slot; an empty slot is the bare hand (ASSUMED) */
+int chrstat_switch_hand(int h)
+{
+    if (!chr_stats.valid || (!chr_stats.wep[h][0].id && !chr_stats.wep[h][1].id))
+        return 0;
+    chr_hand_slot[h] ^= 1;
+    chrstat_select();
+    printf("chrstat: %s hand slot %d (%08x), AR %.0f\n", h == HAND_R ? "right" : "left", chr_hand_slot[h] + 1,
+           chr_stats.wep[h][chr_hand_slot[h]].id, chr_stats.ar[h][EL_PHYS]);
+    return 1;
+}
+
+int chrstat_cycle_quick(void)
+{
+    for (int i = 1; i <= 5; i++) {
+        int q = (chr_quick + i) % 5;
+        if (chr_stats.quick[q].id) {
+            int changed = q != chr_quick;
+            chr_quick = q;
+            chrstat_select();
+            printf("chrstat: quick slot %d (%08x)\n", q + 1, chr_stats.item_id);
+            return changed;
+        }
+    }
+    return 0;
+}
 
 const float *chrstat_graph(int id)
 {
@@ -33,6 +78,9 @@ const float *chrstat_graph(int id)
     case 100: return graph_100;
     case 102: return graph_102;
     case 113: return graph_113;
+    case 110: return graph_110;
+    case 111: return graph_111;
+    case 112: return graph_112;
     case 150: return graph_150;
     }
     for (int i = 0; i < NGRAPHS; i++)
@@ -130,22 +178,49 @@ int chrstat_recalc(void)
             c.def_typed[t] += t ? r->st[0] * (r->st[typed_st[t]] + 100) * 0.01f : r->st[0];
         c.poise += r->st[11];
     }
-    /* weapons in the active slots */
-    for (int h = 0; h < 2; h++) {
-        u32 id = equip_item(h == HAND_R ? EQ_WEP_R1 : EQ_WEP_L1);
-        chrstat_weapon_ar(id, c.ar[h]);
-        const ItemRow *r = id ? item_row(id) : 0;
-        if (r) {
-            c.poise_dmg[h] = r->x4 & 0xFFFF;
-            c.wep_types[h] = (r->x4 >> 16) & 0xFF;
-            c.guard_level[h] = (r->x4 >> 24) & 0xF;
-            for (int e = 0; e < EL_COUNT; e++)
-                c.guard_cut[h][e] = r->st[12 + e];
-            c.guard_stab[h] = r->x0;
+    /* both weapon slots of each hand (the active one is picked by chrstat_select) */
+    for (int h = 0; h < 2; h++)
+        for (int k = 0; k < 2; k++) {
+            u32 id = equip_item(h == HAND_R ? (k ? EQ_WEP_R2 : EQ_WEP_R1) : (k ? EQ_WEP_L2 : EQ_WEP_L1));
+            ChrWep *w = &c.wep[h][k];
+            w->id = id;
+            chrstat_weapon_ar(id, w->ar);
+            /* two-handed: STR x 1.5 (ASSUMED: DS1's rule, capped at 99; the exe's adjustment was not found) */
+            int str = prog.stats[ST_STR];
+            prog.stats[ST_STR] = str * 3 / 2 > 99 ? 99 : str * 3 / 2;
+            chrstat_weapon_ar(id, w->ar2h);
+            prog.stats[ST_STR] = str;
+            const ItemRow *r = id ? item_row(id) : 0;
+            if (r) {
+                w->poise_dmg = r->x4 & 0xFFFF, w->types = (r->x4 >> 16) & 0xFF, w->guard_level = (r->x4 >> 24) & 0xF;
+                for (int e = 0; e < EL_COUNT; e++)
+                    w->guard_cut[e] = r->st[12 + e];
+                w->guard_stab = r->x0;
+            }
+        }
+    /* resistances (FUN_1402dddd0): poison graph 110 and toxic 111 at RES (PlayerGameData +0x88), bleed 112 at END
+     * (+0x50), curse 113 at min(humanity, 99) (+0x84), each + the armour's resist (ASSUMED: plain sum) */
+    c.resist[0] = (int)combat_graph(graph_110, s[ST_RES]), c.resist[1] = (int)combat_graph(graph_111, s[ST_RES]);
+    c.resist[2] = (int)combat_graph(graph_112, s[ST_END]), c.resist[3] = (int)combat_graph(graph_113, hum);
+    for (int k = EQ_HELM; k <= EQ_LEG; k++) {
+        const ItemRow *r = item_row(equip_item(k));
+        for (int i = 0; r && i < 4; i++)
+            c.resist[i] += r->st[7 + i];
+    }
+    for (int q = 0; q < 5; q++) {  /* the five quick slots */
+        u32 id = equip_item(EQ_QUICK1 + q);
+        const ItemRow *r = id ? item_row(id == (ITEM_GOODS | ESTUS_ID) ? ITEM_GOODS | (ESTUS_ID + 1) : id) : 0;
+        c.quick[q].id = id, c.quick[q].anim = -1;
+        if (r && ITEM_CAT(id) == ITEM_GOODS) {
+            c.quick[q].anim = r->st[1] == 254 || r->st[1] == 255 ? -1 : r->st[1];
+            c.quick[q].heal = r->st[12], c.quick[q].hum = r->st[11] < 0 ? -r->st[11] : 0;
+            c.quick[q].souls = (u16)r->st[9] | (int)(u16)r->st[10] << 16;
+            c.quick[q].consume = (item_goods_flags(id) & IF_CONSUME) != 0;
         }
     }
     c.valid = 1;
     chr_stats = c;
+    chrstat_select();
     return 1;
 }
 
@@ -160,6 +235,8 @@ void chrstat_boot(void)
     if (r > 0)
         chrstat_recalc();
     items_detail_free();
+    printf("chrstat: resist poison %.0f toxic %.0f bleed %.0f curse %.0f\n", chr_stats.resist[0], chr_stats.resist[1],
+           chr_stats.resist[2], chr_stats.resist[3]);
     printf("chrstat: HP %d stamina %d load %.1f/%.0f def %.0f/%.0f/%.0f/%.0f poise %.0f AR R %.0f L %.0f%s\n",
            chr_stats.hp_max, chr_stats.stamina_max, chr_stats.equip_weight, chr_stats.equip_max, chr_stats.def[0],
            chr_stats.def[1], chr_stats.def[2], chr_stats.def[3], chr_stats.poise, chr_stats.ar[0][0],

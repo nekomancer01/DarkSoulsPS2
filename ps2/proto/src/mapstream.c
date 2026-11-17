@@ -361,6 +361,24 @@ static int room_fail, failed, evict_left, defrag_left;
 static unsigned clk_ms, clk_last, clk_frac, st_t0, st_t1, st_first, st_wait, stale_kb;
 unsigned ms_cancel_kb;
 
+/* MS_SCAN (default 1; 0 = strict class then distance order): urgent reads (classes C_NEAR2 and up: near parts within the
+ * draw radius, the coarse level in view and pinned) go nearest first; the read-ahead classes below them (C_VIEW2,
+ * C_FARC, C_PREF) go in disc order: the queued one at or after the end of the last read in the same pack first, then
+ * the lowest offset of that pack (a circular scan), then another pack. The technique of the RW-era PS2 streamers (re3
+ * CStreaming: priority requests first, the rest in image order from the head position): ordered by distance, B8b's
+ * read log showed ~3100 reads of 1.2 items per 6-min world_route, every one a seek (~8/s, the gate is 2). */
+#ifndef MS_SCAN
+#define MS_SCAN 1
+#endif
+/* MS_RA_INFLIGHT (with MS_SCAN): reads of the read-ahead classes in flight at once. The disc server serves reads in
+ * order, so a near part wanted at the feet waited behind up to MS_INFLIGHT read-ahead reads: Ame's ISO play
+ * (2026-11-10) had cells drawn coarse while due near for up to 169 frames at 0 m with no room refusal. */
+#ifndef MS_RA_INFLIGHT
+#define MS_RA_INFLIGHT 2
+#endif
+static int scan_k = -1;
+static unsigned scan_end;
+static int q_scan_pick(void);
 static unsigned flow_rd[3], flow_kb[3];
 static unsigned thr_n[3][MS_WHY_N], thr_kb[3], thr_cls[C_TOP + 1];
 /* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
@@ -468,28 +486,77 @@ static void collect(int i, int r)
     }
 }
 
+/* Burg plan B8b: why each run of resident items stopped, and how the reads it made sit on the disc ("mapstream: runs"
+ * line every MS_RUNLOG_FRAMES frames): a read that starts where the last one ended needs no seek. B4's ISO world_route,
+ * 2026-11-09: 3089 runs of 1.2 items in 6 min, 170 contiguous; most stops are the next item not wanted (class) or
+ * already in (state). Reading the kept neighbours along (up to 64 KB) took 388 more items but no fewer runs, and more
+ * "no room" refusals (97 -> 120): dropped */
+enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, RS_N };
+static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
+static unsigned rs_stop[RS_N], rs_runs, rs_items, rs_reads, rs_contig, rs_kb, rs_frame;
+static unsigned rs_last_end, rs_last_k = ~0u;
+/* per instance (world block): reads, and of them far backdrop / coarse / sky / texture / mip 1 / other items */
+enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
+static unsigned rk[MS_INST][RK_N + 1];
+#define MS_RUNLOG_FRAMES 300
+static void rs_log(void)
+{
+    if (ms_frame - rs_frame < MS_RUNLOG_FRAMES)
+        return;
+    rs_frame = ms_frame;
+    if (!rs_runs)
+        return;
+    printf("mapstream: runs %u (%u items, %u KB), reads %u, %u start where the last ended; stops", rs_runs, rs_items,
+           rs_kb, rs_reads, rs_contig);
+    for (int i = 0; i < RS_N; i++)
+        printf(" %s %u", rs_name[i], rs_stop[i]);
+    printf("; by block");
+    for (int k = 0; k < MS_INST; k++)
+        if (rk[k][RK_N])
+            printf(" %d: %u (far %u coarse %u sky %u tex %u mip1 %u other %u)", k, rk[k][RK_N], rk[k][RK_FAR],
+                   rk[k][RK_COARSE], rk[k][RK_SKY], rk[k][RK_TEX], rk[k][RK_MIP1], rk[k][RK_OTHER]);
+    printf("\n");
+    memset(rk, 0, sizeof rk);
+    memset(rs_stop, 0, sizeof rs_stop);
+    rs_runs = rs_items = rs_reads = rs_contig = rs_kb = 0;
+}
+
 /* the queue's head into the arena and read (its missing wanted neighbours in mapres.bin along, up to MS_RUN bytes, as
  * groups of at most a page); 0 when nothing more goes out this frame */
 static int issue(void)
 {
-    MsQ w = q[0];
-    memmove(q, q + 1, --nq * sizeof *q);
+    rs_log();
+    if (MS_SCAN && q_rank(q[0].cls) < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
+        int ra = 0;
+        for (int i = 0; i < ms_nrd; i++)
+            ra += !ms_rd[i].cxl && ms_rd[i].cls < C_NEAR2;
+        if (ra >= MS_RA_INFLIGHT)
+            return 0;
+    }
+    int qi = MS_SCAN ? q_scan_pick() : 0;
+    MsQ w = q[qi];
+    memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
     MsInst *m = &ms_inst[w.k];
     if (w.id >= it_n(m) || m->state[w.id] != MS_NONE)
         return 1;
     unsigned wn = 1;
+    int stop = RS_END;
     if (it_res(m, w.id)) {
         unsigned j = w.id - m->ncell, end = m->rit[j].rel + m->rit[j].bytes, tex = !!(m->rit[j].tag & MS_RES_TEX);
         while (j + wn < m->nres) {
             const MapResItem *c = &m->rit[j + wn];
             unsigned id = m->ncell + j + wn;
-            if (m->state[id] != MS_NONE || !c->bytes || c->rel < end || c->rel - end > 64 ||
-                c->off - c->rel != m->rit[j].off - m->rit[j].rel || c->rel + c->bytes - m->rit[j].rel > MS_RUN ||
-                !!(c->tag & MS_RES_TEX) != tex || m->cls[id] < C_PREF || blocked(w.k, id))
+            stop = m->state[id] != MS_NONE ? RS_STATE : !c->bytes || c->rel < end || c->rel - end > 64 ? RS_GAP :
+                   c->off - c->rel != m->rit[j].off - m->rit[j].rel ? RS_BASE :
+                   c->rel + c->bytes - m->rit[j].rel > MS_RUN ? RS_CAP : !!(c->tag & MS_RES_TEX) != tex ? RS_TEX :
+                   m->cls[id] < C_PREF ? RS_CLASS : blocked(w.k, id) ? RS_BLOCKED : -1;
+            if (stop >= 0)
                 break;
+            stop = RS_END;
             end = c->rel + c->bytes, wn++;
         }
     }
+    rs_runs++, rs_items += wn, rs_stop[stop]++;
     int sent = 0;
     for (unsigned g = w.id; g < w.id + wn && ms_nrd < MS_INFLIGHT;) {
         unsigned e = g + 1, gb = it_bytes(m, g);
@@ -577,6 +644,15 @@ static int issue(void)
         }
         room_fail = 0;
         int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        if (tk) {
+            unsigned o = it_off(m, g);
+            rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
+            rs_last_end = o + gb, rs_last_k = w.k;
+            unsigned tg = it_res(m, g) ? m->rit[g - m->ncell].tag : 0;
+            rk[w.k][RK_N]++;
+            rk[w.k][tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? RK_MIP1 : RK_TEX) : tg & MS_RES_SKY ? RK_SKY :
+                    tg & MS_RES_FAR ? RK_FAR : tg & MS_RES_COARSE ? RK_COARSE : RK_OTHER]++;
+        }
         if (!tk) {
             ms_g_free(p, gb);
             /* (the lending counts went up with the allocation: left as they were, every full request table while
@@ -605,12 +681,35 @@ static int issue(void)
         }
         if (!ms_nrd)
             land_t = ticks();
-        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0};
+        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
+        scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
         mapstream_stats.pending = ms_nrd;
         sent++;
         g = e;
     }
     return 1;
+}
+
+/* MS_SCAN: the queue entry issue() takes. The queue is in rank order, so the urgent entries lead it; once the head is
+ * a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate. */
+static int q_scan_pick(void)
+{
+    if (q_rank(q[0].cls) >= C_NEAR2 || scan_k < 0)  /* the hard tier at the head: nearest first (q_rank) */
+        return 0;
+    int best = 0, bk = 3;
+    unsigned bo = ~0u;
+    for (int i = 0; i < nq; i++) {
+        const MsInst *m = &ms_inst[q[i].k];
+        if (q[i].id >= it_n(m))
+            continue;
+        unsigned o = it_off(m, q[i].id);
+        int rk = q[i].k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
+        if (rk == 2)
+            o = (unsigned)q[i].k << 26 | (o >> 6);  /* other packs: by block, then offset */
+        if (rk < bk || (rk == bk && o < bo))
+            best = i, bk = rk, bo = o;
+    }
+    return best;
 }
 
 /* ---- plan ---- */
@@ -1145,6 +1244,24 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
         *(items[j].tag & MS_RES_TEX ? &tb : &cb) += items[j].bytes, nt += !!(items[j].tag & MS_RES_TEX);
     printf("mapstream: instance %d resident level per cell: %u cells + sky in %u items %u KB, %u mip 0 textures %u KB\n",
            k, n, nitems - nt, cb >> 10, nt, tb >> 10);
+    {  /* Burg plan B8a: where each kind of item lies in the pack (a neighbour's backdrop read from far away) */
+        static const char *const kn[5] = {"far", "coarse", "near", "tex", "mip1"};
+        unsigned c[5] = {0}, kb[5] = {0}, lo[5], hi[5] = {0};
+        for (int q = 0; q < 5; q++)
+            lo[q] = ~0u;
+        for (unsigned j = 0; j < nitems; j++) {
+            unsigned tg = items[j].tag;
+            int q = tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? 4 : 3) : tg & MS_RES_FAR ? 0 : tg & MS_RES_COARSE ? 1 : 2;
+            c[q]++, kb[q] += items[j].bytes;
+            lo[q] = items[j].off < lo[q] ? items[j].off : lo[q];
+            hi[q] = items[j].off + items[j].bytes > hi[q] ? items[j].off + items[j].bytes : hi[q];
+        }
+        printf("mapstream: instance %d items in the pack:", k);
+        for (int q = 0; q < 5; q++)
+            if (c[q])
+                printf(" %s %u (%u KB) at %u..%u KB", kn[q], c[q], kb[q] >> 10, lo[q] >> 10, hi[q] >> 10);
+        printf("\n");
+    }
     return 1;
 }
 

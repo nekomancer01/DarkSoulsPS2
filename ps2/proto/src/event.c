@@ -19,6 +19,7 @@
 #include "hud.h"
 #include "fx.h"
 #include "objects.h"
+#include "pickup.h"
 #include "progress.h"
 #include "save.h"
 #include "sound.h"
@@ -76,8 +77,9 @@ static int op_noop(int op)
 }
 
 /* ---- file layout (tools/export_emevd.py) ---- */
-typedef struct { char magic[4]; u32 version; u8 map[4]; u32 flags; u32 sec[9][2]; } EvHdr;
-enum { S_EVENTS, S_INSTRS, S_SUBSTS, S_ENTS, S_RANGES, S_COLS, S_TREASURES, S_OBJACTS, S_LOTS };
+typedef struct { char magic[4]; u32 version; u8 map[4]; u32 flags; u32 sec[10][2]; } EvHdr;
+enum { S_EVENTS, S_INSTRS, S_SUBSTS, S_ENTS, S_RANGES, S_COLS, S_TREASURES, S_OBJACTS, S_LOTS, S_NPCLOTS };
+#define EV_NSEC 10  /* S_NPCLOTS: header slot 10 (zero in files exported before it: no npc lots) */
 typedef struct { u32 id; u8 rest, pad; u16 ninstr; u32 ioff, sfirst, scount; } EvEvent;
 typedef struct { u8 op, nw; u16 bank, id, layer; } EvInstr;
 typedef struct { u16 instr, dst, src; u8 fmt, n; } EvSubst;
@@ -95,7 +97,9 @@ typedef struct {
     u16 pad2;
     s32 sp_id, sp_id2, pass_flag;  /* the goods; spQualifiedPassEventFlag opens it without them */
 } EvObjAct;
-typedef struct { s32 id, flag; u16 first; u8 n, pad; } EvLot;  /* ItemLotParam row: getItemFlagId, its weighted items */
+typedef struct { s32 id, flag; u16 first; u8 n, rarity; } EvLot;  /* ItemLotParam row: getItemFlagId, its weighted
+                                                                     * items, lotItem_Rarity */
+typedef struct { s32 npc, lot; } EvNpcLot;  /* NpcParam id -> itemLotId_1 (enemy drops) */
 typedef struct { s32 item, flag; u16 point; u8 num, cat; } EvLotItem;  /* cat = lotItemCategory >> 28, 15 = none */
 enum { ENT_OBJECT = 2, ENT_ENEMY = 3, ENT_COLLISION = 5, ENT_REGION = 10 };
 enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
@@ -103,7 +107,7 @@ enum { SH_POINT, SH_CIRCLE, SH_SPHERE, SH_CYLINDER, SH_RECT, SH_BOX };
 
 typedef struct {
     const u8 *blob;
-    const u8 *secp[9];  /* each section's start: in blob, or (a world block's split events) the map's shared copy and
+    const u8 *secp[EV_NSEC];  /* each section's start: in blob, or (a world block's split events) the map's shared copy and
                          * the block's own entities / hit ranges / colliders (event_block_on_split) */
     const EvHdr *h;
     const EvEvent *ev;
@@ -111,6 +115,7 @@ typedef struct {
     int nev, nent, block, live;  /* live: this set runs the map's events (another block of the same map: entities only) */
     u8 *ent_off;                 /* per entity: 1 = disabled by an event (objects, map parts, SFX, hits) */
     u8 *tr_state;                /* per treasure: bit 0 on, bit 1 taken */
+    s16 *tr_shine;               /* per treasure: its shine (src/pickup.c), -1 none */
     u8 *oa_state;                /* per objact: bit 0 usable, bit 1 used this frame, bit 2 its object shows the state
                                   * flag's end pose (objact_flags) */
     u16 *ev_live;                /* per event: instances alive (InitializeEvent's duplicate check scans only then) */
@@ -827,22 +832,18 @@ static int lot_left(const EvLot *l, const EvLotItem *it)
     return 0;
 }
 
-/* ItemLotParam draw as DSR's FUN_1403f5d90 (called through FUN_1403fc940 for AwardItemLot and treasures): the lot and
- * every row after it (id + 1, ... while one exists) each roll one of their items, weighted by lotItemBasePoint,
- * leaving out items whose get flag is on; the chosen item is given unless it is "nothing" (lotItemNum 0, id or
- * category < 0); the get flags of what was given go on after the whole run (rows of one corpse share one flag). Luck
- * (enableLuck x item discovery) and cumulate counters (cumulateLotPoint / cumulateNumFlagId) are left out: TECH_DEBT
- * event-6. */
-static void award_lot(s32 id)
+/* ItemLotParam draw as DSR's FUN_1403f5d90 (called through FUN_1403fc940 for AwardItemLot and treasures, through
+ * FUN_1403fc600 for enemy drops): the lot and every row after it (id + 1, ... while one exists) each roll one of their
+ * items, weighted by lotItemBasePoint, leaving out items whose get flag is on; "nothing" (lotItemNum 0, id or category
+ * < 0) gives nothing. Luck (enableLuck x item discovery) and cumulate counters (cumulateLotPoint / cumulateNumFlagId)
+ * are left out: TECH_DEBT event-6. Fills out (up to max), returns the count; -1 when the lot is not exported. */
+int event_lot_roll(s32 id, PickItem *out, int max)
 {
     const EvLotItem *it;
     const EvLot *l = find_lot(id, &it);
-    if (!l) {
-        printf("EVT item lot %d: not exported\n", (int)id);
-        return;
-    }
-    s32 got_flag[16];
-    int ngot = 0;
+    if (!l)
+        return -1;
+    int n_out = 0;
     for (s32 r = id; l; l = find_lot(++r, &it)) {
         int w[8], total = 0, n = l->n < 8 ? l->n : 8;
         for (int k = 0; k < n; k++) {
@@ -860,15 +861,69 @@ static void award_lot(s32 id)
             printf("EVT item lot %d: nothing\n", (int)r);
             continue;
         }
-        u32 item = (u32)g->cat << 28 | ((u32)g->item & 0x0FFFFFFFu);  /* category = progress.h ITEM_* */
-        int held = inv_add(item, g->num);
-        printf("EVT item lot %d: item %08x x%d (now %d), flag %d\n", (int)r, (unsigned)item, g->num, held,
-               (int)lot_flag(l, g));
-        if (lot_flag(l, g) > 0 && ngot < 16)
-            got_flag[ngot++] = lot_flag(l, g);
+        if (n_out < max) {
+            out[n_out].item = (u32)g->cat << 28 | ((u32)g->item & 0x0FFFFFFFu);  /* category = progress.h ITEM_* */
+            out[n_out].num = g->num, out[n_out].flag = lot_flag(l, g), out[n_out].rarity = l->rarity;
+            n_out++;
+        }
     }
-    for (int i = 0; i < ngot; i++)
-        flag_set(got_flag[i], 1);
+    return n_out;
+}
+
+/* FUN_1403fc940's award: the items to the inventory (and the item get dialog), then their get flags (after the whole
+ * run: rows of one corpse share one flag) */
+void event_lot_give(const PickItem *g, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int held = inv_add(g[i].item, g[i].num);
+        printf("EVT item lot: item %08x x%d (now %d), flag %d\n", (unsigned)g[i].item, g[i].num, held, (int)g[i].flag);
+        if (PICKUP)
+            pickup_got(g[i].item, g[i].num);
+    }
+    for (int i = 0; i < n; i++)
+        if (g[i].flag > 0)
+            flag_set(g[i].flag, 1);
+}
+
+static void award_lot(s32 id)
+{
+    PickItem g[16];
+    int n = event_lot_roll(id, g, 16);
+    if (n < 0)
+        printf("EVT item lot %d: not exported\n", (int)id);
+    else
+        event_lot_give(g, n);
+}
+
+int event_treasure_near(const float pp[3])
+{
+    for (int k = 0; k < EV_SETS; k++) {
+        const Set *s = &sets[k];
+        if (!s->blob)
+            continue;
+        const EvTreasure *t = SEC(s, S_TREASURES, EvTreasure);
+        for (int i = 0; i < NSEC(s, S_TREASURES); i++) {
+            float dx = t[i].pos[0] - pp[0], dz = t[i].pos[2] - pp[2];
+            if (s->live && s->tr_state[i] == 1 && !t[i].in_chest && dx * dx + dz * dz <= 1.5f * 1.5f &&
+                fabsf(t[i].pos[1] - pp[1]) <= 2)
+                return 1;  /* the reach of use_action */
+        }
+    }
+    return 0;
+}
+
+s32 event_npc_lot(s32 npc)
+{
+    for (int k = 0; k < EV_SETS; k++) {
+        const Set *s = &sets[k];
+        if (!s->blob || !s->h->sec[S_NPCLOTS][0])
+            continue;
+        const EvNpcLot *n = SEC(s, S_NPCLOTS, EvNpcLot);
+        for (int i = 0; i < NSEC(s, S_NPCLOTS); i++)
+            if (n[i].npc == npc)
+                return n[i].lot;
+    }
+    return -1;
 }
 
 static void treasure_state(s32 entity, int on)
@@ -1213,17 +1268,19 @@ static int load_set(Set *s, const void *blob, int block, const EvHdr *h, const u
     }
     memset(s, 0, sizeof *s);
     s->blob = blob, s->h = h, s->block = block;
-    for (int k = 0; k < 9; k++)
+    for (int k = 0; k < EV_NSEC; k++)
         s->secp[k] = mid && k >= S_ENTS && k <= S_COLS ? mid + (h->sec[k][0] - mid_off) : (const u8 *)blob + bh->sec[k][0];
     s->ev = SEC(s, S_EVENTS, EvEvent), s->nev = NSEC(s, S_EVENTS);
     s->ent = SEC(s, S_ENTS, EvEnt), s->nent = NSEC(s, S_ENTS);
     s->ent_off = calloc(s->nent + 1, 1);
     s->tr_state = calloc(NSEC(s, S_TREASURES) + 1, 1);
+    s->tr_shine = malloc((NSEC(s, S_TREASURES) + 1) * sizeof *s->tr_shine);
     s->oa_state = calloc(NSEC(s, S_OBJACTS) + 1, 1);
     s->ev_live = calloc(s->nev + 1, sizeof *s->ev_live);
-    if (!s->ent_off || !s->tr_state || !s->oa_state || !s->ev_live) {  /* (a block turning on in a full heap) */
+    if (!s->ent_off || !s->tr_state || !s->tr_shine || !s->oa_state || !s->ev_live) {  /* (a block turning on in a
+                                                                                        * full heap) */
         printf("EVT block %d: no RAM for its event state\n", block);
-        free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
+        free(s->ent_off), free(s->tr_state), free(s->tr_shine), free(s->oa_state), free(s->ev_live);
         memset(s, 0, sizeof *s);
         return 0;
     }
@@ -1236,6 +1293,7 @@ static int load_set(Set *s, const void *blob, int block, const EvHdr *h, const u
             left |= l && lot_left(l, it);
         }
         s->tr_state[i] = (t[i].start_disabled ? 0 : 1) | (left ? 0 : 2);  /* picked up before: taken */
+        s->tr_shine[i] = -1;
     }
     const EvObjAct *oa = SEC(s, S_OBJACTS, EvObjAct);
     for (int i = 0; i < NSEC(s, S_OBJACTS); i++) {
@@ -1343,12 +1401,15 @@ void event_block_off(int block)
         }
         if (heir >= 0) {
             memcpy(sets[heir].ev_live, s->ev_live, (s->nev + 1) * sizeof *s->ev_live);
+            memcpy(sets[heir].tr_state, s->tr_state, NSEC(s, S_TREASURES));  /* taken / disabled treasures */
             sets[heir].live = 1;
             ev_bonfire_move(k, heir);
             printf("EVT block %d off: m%02d_%02d events (%d instances) go on in block %d\n", block, s->h->map[0],
                    s->h->map[1], moved, sets[heir].block);
         }
-        free(s->ent_off), free(s->tr_state), free(s->oa_state), free(s->ev_live);
+        for (int i = 0; i < NSEC(s, S_TREASURES); i++)
+            pickup_shine_del(s->tr_shine[i]);
+        free(s->ent_off), free(s->tr_state), free(s->tr_shine), free(s->oa_state), free(s->ev_live);
         memset(s, 0, sizeof *s);
         ev_bonfire_drop(k);
     }
@@ -1410,6 +1471,38 @@ static void objact_flags(void)
     }
 }
 
+/* Treasure shine (exe FUN_1403f89b0 kinds 3 / 4: the corpse object's ObjShineTreasureSlot, SFX 99000 + the lot's
+ * lotItem_Rarity = 99001 for every rarity): on while the treasure is on and not taken; none for a chest (its in_chest
+ * treasure is opened by the chest's ObjAct). At the part's origin + SHINE_UP: the slot's dummy poly is not exported
+ * (ASSUMED, TECH_DEBT item-1). */
+#define SHINE_UP 0.3f
+#define SHINE_NEAR 36.0f
+#define SHINE_FAR 40.0f
+static void treasure_shines(void)
+{
+    for (int k = 0; k < EV_SETS; k++) {
+        Set *s = &sets[k];
+        if (!s->blob)
+            continue;
+        const EvTreasure *t = SEC(s, S_TREASURES, EvTreasure);
+        for (int i = 0; i < NSEC(s, S_TREASURES); i++) {
+            /* only the map's live set: other blocks of the same map hold the same treasures (entities only); and
+             * within SHINE_NEAR of the player (the shine set has 24 instances, a Burg map has 42 treasures; fx.c
+             * draws none beyond FX_RANGE 40 m anyway), let go past SHINE_FAR */
+            float dx = t[i].pos[0] - pl->pos.x, dz = t[i].pos[2] - pl->pos.z, d2 = dx * dx + dz * dz;
+            float lim = s->tr_shine[i] >= 0 ? SHINE_FAR : SHINE_NEAR;
+            int want = s->live && s->tr_state[i] == 1 && !t[i].in_chest && d2 < lim * lim;
+            if (want && s->tr_shine[i] < 0) {
+                float p[3] = {t[i].pos[0], t[i].pos[1] + SHINE_UP, t[i].pos[2]};
+                s->tr_shine[i] = pickup_shine_add(p);
+            } else if (!want && s->tr_shine[i] >= 0) {
+                pickup_shine_del(s->tr_shine[i]);
+                s->tr_shine[i] = -1;
+            }
+        }
+    }
+}
+
 static void use_action(void)
 {
     const float *pp = &pl->pos.x;
@@ -1452,16 +1545,20 @@ static void use_action(void)
         const EvTreasure *t = SEC(s, S_TREASURES, EvTreasure);
         for (int i = 0; i < NSEC(s, S_TREASURES) && !act_used; i++) {
             float dx = t[i].pos[0] - pp[0], dz = t[i].pos[2] - pp[2];
-            if (s->tr_state[i] != 1 || dx * dx + dz * dz > 1.5f * 1.5f || fabsf(t[i].pos[1] - pp[1]) > 2)
-                continue;  /* ASSUMED 1.5 m pickup reach (event-4) */
+            if (!s->live || s->tr_state[i] != 1 || dx * dx + dz * dz > 1.5f * 1.5f || fabsf(t[i].pos[1] - pp[1]) > 2)
+                continue;  /* ASSUMED 1.5 m pickup reach (event-4); one map's blocks share its treasures: its live set's */
             s->tr_state[i] |= 2;
             act_used = 1;
             printf("EVT treasure at %.1f %.1f %.1f picked up\n", t[i].pos[0], t[i].pos[1], t[i].pos[2]);
+            if (PICKUP && !t[i].in_chest)  /* a chest's ObjAct already played the open anim (ASSUMED no pickup anim) */
+                pickup_anim(pl);
             for (int j = 0; j < 5; j++)
                 if (t[i].lot[j] > 0)
                     award_lot(t[i].lot[j]);
         }
     }
+    if (PICKUP && !act_used && pickup_action(pl))  /* enemy drops (src/pickup.c) */
+        act_used = 1;
     if (!act_used && ev_bonfire_action((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw))  /* 2009[03] */
         act_used = 1;
 }
@@ -1509,6 +1606,8 @@ void event_update(Player *p, float dt)
         for (int i = 0; sets[k].blob && i < NSEC(&sets[k], S_OBJACTS); i++)
             sets[k].oa_state[i] &= ~2;
     objact_flags();
+    if (PICKUP)
+        treasure_shines();
     act_press = 0;
     event_stats.running = act, event_stats.waiting = waiting;
     if (act > event_stats.peak)
@@ -1605,6 +1704,8 @@ void event_test_cmd(const char *cmd)
         printf("TEST ev flag %d = %d\n", id, flag_get(id));
     } else if (!strcmp(cmd, "action")) {
         event_action();
+    } else if (sscanf(cmd, "killnear %f", &v) == 1 && pl) {  /* ragdoll tests: enemies near the player die */
+        printf("TEST ev killnear %.1f: %d\n", v, enemy_kill_near(pl->pos, v));
     } else if (sscanf(cmd, "trace %d", &val) == 1) {
         trace = val;
     } else if (sscanf(cmd, "warp %d", &id) == 1 && pl) {

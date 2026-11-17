@@ -200,6 +200,20 @@ static inline void q64(u64 lo, u64 hi)
     cp += 2;
 }
 
+/* a u8 x4 colour stream of nv entries: REF to col, or (VU1_COLCP) copied into the chain */
+static void col_put(int mode, const void *col, int nv, u64 vif0, u64 vif1)
+{
+    int q = (nv * 4 + 15) / 16;
+    if (!(mode & VU1_COLCP)) {
+        tag(q, T_REF, col, vif0, vif1);
+        return;
+    }
+    tag(q, T_CNT, 0, vif0, vif1);
+    memset(cp, 0, q * 16);
+    memcpy(cp, col, nv * 4);
+    cp += 2 * q;
+}
+
 #ifdef VU1_CHECK
 /* debug (make DEFS='... -DVU1_CHECK'): decode every chain segment the way VIF1 will (tag transfer on: each tag's upper
  * two words are VIF codes, then its CNT / REF data) right before it is kicked, and again once its DMA is done. Reports
@@ -747,6 +761,8 @@ static void add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, 
 #ifdef VU1_NO_PKT  /* A/B: the stream-by-stream REFs of the old path */
     mode &= ~VU1_PKT;
 #endif
+    if (mode & VU1_COLCP)
+        mode &= ~VU1_PKT;
     int mxl = mip_mxl;  /* vu1_mip's chain applies to this call only (both halves of a split) */
     mip_mxl = 0;
     if ((mode & VU1_CLIP) && tris > VU1_CLIP_TRIS) {  /* the clip program keeps scratch after its batch */
@@ -766,9 +782,9 @@ static void add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, 
     if (tris <= 0)
         return;
     use_prog(mode & VU1_CLIP ? P_CLIP : clip ? P_MAP2 : P_MAP);
-    if (!room(12))
-        return;
     int n = tris * 3;
+    if (!room(12 + (mode & VU1_COLCP ? (n * 4 + 15) / 16 : 0)))
+        return;
     batch_head(t, cull, mode, tris, org, st_k, mxl, clip, NULL);
     /* quantised streams (R3): pos s16x3, st u16x2, colour u8x4; the program converts with ITOF */
     if (mode & VU1_PKT) {  /* code qword, pos, code qword, st, code qword, colour: one REF from pos's code qword */
@@ -777,7 +793,7 @@ static void add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, 
     } else {
         tag((n * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, n, U_FLG | 7));
         tag((n * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, n, U_FLG | U_USN | 8));
-        tag((n * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9));
+        col_put(mode, col, n, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, n, U_FLG | U_USN | 9));
     }
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, mode & VU1_CLIP ? CLIP_CODE : clip ? MAP2_CODE : 0));
 }
@@ -846,6 +862,8 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 #ifdef VU1_NO_PKT
     mode &= ~VU1_PKT;
 #endif
+    if (mode & VU1_COLCP)
+        mode &= ~VU1_PKT;
     int mxl = mip_mxl;
     mip_mxl = 0;
     if (tris <= 0 || nv <= 0 || tris > VU1_IDX_TRIS)
@@ -912,14 +930,14 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
     }
     if (entry == MAPI_CODE)
         use_prog(P_MAPI);
-    if (!room(14 + (nk * 4 + 15) / 16))
+    if (!room(14 + (nk * 4 + 15) / 16 + (mode & VU1_COLCP ? (nv * 4 + 15) / 16 : 0)))
         return;
     u32 hdr[2] = {(u32)nv / 3, MAPI_HDR + 3 * (u32)nv};
     batch_head(t, cull, mode, nk, org, st_k, mxl, 1, hdr);
     if (entry == MAPI_CODE && (nk < tris || (mode & VU1_CLIP))) {  /* the kept triangles' stream inline */
         tag((nv * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, nv, U_FLG | MAPI_HDR));
         tag((nv * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, nv, U_FLG | U_USN | (MAPI_HDR + 1)));
-        tag((nv * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2)));
+        col_put(mode, col, nv, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2)));
         int q = (nk * 4 + 15) / 16;
         tag(q, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_8, nk, U_FLG | U_USN | (MAPI_HDR + 3 * nv)));
         memset(cp, 0, q * 16);
@@ -931,7 +949,7 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
     } else {
         tag((nv * 6 + 15) / 16, T_REF, pos, VIF(V_STCYCL, 0, 0x0103), VIF(UNPACK_V3_16, nv, U_FLG | MAPI_HDR));
         tag((nv * 4 + 15) / 16, T_REF, st, VIF(V_NOP, 0, 0), VIF(UNPACK_V2_16, nv, U_FLG | U_USN | (MAPI_HDR + 1)));
-        tag((nv * 4 + 15) / 16, T_REF, col, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2)));
+        col_put(mode, col, nv, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, nv, U_FLG | U_USN | (MAPI_HDR + 2)));
         tag((tris * 4 + 15) / 16, T_REF, idx, VIF(V_STCYCL, 0, 0x0101),
             VIF(UNPACK_V4_8, tris, U_FLG | U_USN | (MAPI_HDR + 3 * nv)));
     }

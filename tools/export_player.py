@@ -10,6 +10,9 @@ import gamedata, souls
 from gamedata import CHAR, FLOAT, INT, S16, Ptr, Struct
 
 # (C name, TAE file, anim id, loop) — a00 = shared movement, a23 = straight-sword attacks (behaviorVariationId 2300 / 100)
+# Movement sets by equip load (MoveParam rows: light, medium, heavy, overloaded; f110, src/player.c move_set)
+MOVE_SETS = (0, 5, 10, 15)
+
 ANIMS = [
     ("WALK", "a00", 200, True),
     ("RUN", "a00", 500, True),
@@ -80,6 +83,34 @@ ANIMS = [
     ("JUMP_ATK", "a23", 3600, False),
     ("PLUNGE_LAND_ATK", "a23", 3810, False),
     ("PARRY", "a48", 5100, False),
+    # Throws (ThrowParam atkAnimId on the right weapon's motion, played by the engine, not an ESD state): backstab
+    # a23 3400, riposte a23 3201
+    ("BACKSTAB", "a23", 3400, False),
+    # Lock-on (PR D): rolls back / left / right (group 1 states 33 / 35 / 34 via f110(1 / 2 / 3)) of every movement
+    # set, the other sets' forward rolls and steps, and the strafe loops (MoveParam row 0 walkB/L/R, dashB/L/R)
+    # Item use (Square, group 1 states 163 / 164 for goodsUseAnim 10 = Estus): c1_1 6209 (reach, layer 5), then
+    # c1_3 6409 (drink; TAE 64 at 1.23 s = the heal)
+    ("ITEM_REACH_10", "a00", 6209, False), ("ITEM_USE_10", "a00", 6409, False),
+    # Weapon switch (d-pad left / right: group 1 states 218 / 217, c1_4(2, 80 / 81) on layer 4)
+    ("SWITCH_L", "a00", 80, False), ("SWITCH_R", "a00", 81, False), ("SWITCH_END", "a00", 86, False),  # 221
+    # Two-handing (Triangle -> f104 3 / 1): hold changes with a shield in the left hand (group 1 states 200 -> 203:
+    # a00 90 / 30; back 186 -> 189: a00 42 / 85; c1_104 sets the style) and the two-handed moveset c1_3(-1, ...):
+    # R1 4000-4002 (107-110), kick 4100 (112), R2 4300 / 4301 / 4310 (115 / 114 / 116), jumping attack 4600 (113)
+    # (a00 90 / 30 / 42 are not in DSR's c0000 anim archives: those states pass straight through, as c1_4 of a
+    # missing anim ends at once)
+    ("HOLD_1H_END", "a00", 85, False),
+    ("R1_2H_1", "a23", 4000, False), ("R1_2H_2", "a23", 4001, False), ("R1_2H_3", "a23", 4002, False),
+    ("KICK_2H", "a23", 4100, False), ("R2_2H_1", "a23", 4300, False), ("R2_2H_2", "a23", 4301, False),
+    ("R2_2H_3", "a23", 4310, False), ("JUMP_ATK_2H", "a23", 4600, False),
+    ("ROLL_B", "a00", 701, False), ("ROLL_L", "a00", 702, False), ("ROLL_R", "a00", 703, False),
+    ("ROLL_M_F", "a00", 710, False), ("ROLL_M_B", "a00", 711, False), ("ROLL_M_L", "a00", 712, False),
+    ("ROLL_M_R", "a00", 713, False), ("ROLL_H_F", "a00", 720, False), ("ROLL_H_B", "a00", 721, False),
+    ("ROLL_H_L", "a00", 722, False), ("ROLL_H_R", "a00", 723, False), ("ROLL_O_F", "a00", 730, False),
+    ("ROLL_O_B", "a00", 731, False), ("ROLL_O_L", "a00", 732, False), ("ROLL_O_R", "a00", 733, False),
+    ("STEP_M", "a00", 690, False), ("STEP_H", "a00", 695, False), ("STEP_O", "a00", 696, False),
+    ("WALK_B", "a00", 201, True), ("WALK_L", "a00", 202, True), ("WALK_R", "a00", 203, True),
+    ("RUN_B", "a00", 501, True), ("RUN_L", "a00", 502, True), ("RUN_R", "a00", 503, True),
+    ("RIPOSTE", "a23", 3201, False),
     # Played by EMEVD 2003[18] Force Animation Playback on the player (src/event.c -> player_event_anim): 7410 = the
     # walk through a boss fog wall (m10_01 events 11015370 / 11015380 / 11015390, Taurus / Capra / Gargoyles)
     ("EVENT_FOG_WALK", "a00", 7410, False),
@@ -98,6 +129,9 @@ ANIMS = [
     ("BONFIRE_SIT_2", "a00", 7720, False),
     ("BONFIRE_LOOP_2", "a00", 7721, True),
     ("BONFIRE_STAND_2", "a00", 7722, False),
+    # Item pickup (src/pickup.c: treasures, enemy drops): ObjActParam row 0 playerAnimId 8000 (the generic ObjAct; the
+    # treasure's own pickup anim is not found in the exe, ASSUMED the same, TECH_DEBT item-2)
+    ("PICKUP", "a00", 8000, False),
 ]
 # Played by the event Lua, which goes on at OnChrAnimEnd: the Havok clip's end, not the TAE's last event (their sound
 # events run past it, e.g. 7700: clip 66 frames = 2.17 s, TAE to 5.2 s)
@@ -108,6 +142,7 @@ FLAGS = {4: "RH_ATTACK_CANCEL", 7: "DISABLE_TURNING", 8: "INVINCIBLE", 11: "MOVE
 # Value ramps over an event window (Grad): TAE 300 ChrActionGradient with output 27 = gravity multiplier
 # (FUN_1403410f0 -> ctx+0x448 -> proxy+0x1E4), TAE 236 RootMotionReduction (FUN_140343660 -> ctx+0x198)
 GRAD_GRAVITY, GRAD_ROOT_REDUCTION = 27, 236
+ITEM_USE = -600  # Window type of TAE 64 (CastHighlightedMagic): the moment an item / spell takes effect
 EZ_MESSAGE = -300  # Window type of a TAE 231 EzState message n: EZ_MESSAGE - n (SP regen windows use -2 .. -257)
 WARRIOR, LONGSWORD = 3000, 201000
 
@@ -123,15 +158,16 @@ ANIM = Struct("AnimData", [("name", Ptr(CHAR)), ("id", INT), ("key", INT), ("len
               "key: ESD anim id as resolved by c1_3: a00 ids as they are, weapon-motion files (aNN) NN * 10000 + id")
 RECORD = Struct("PlayerData", [
     ("start_end", INT), ("weapon_id", INT), ("weapon_weight", FLOAT), ("weapon_atk_phys", INT),
-    ("move_escape", S16, 6), ("weapon_motion_r", INT), ("weapon_motion_l", INT), ("guard_motion_r", INT),
+    ("move_escape", S16, 24), ("weapon_motion_r", INT), ("weapon_motion_l", INT), ("guard_motion_r", INT),
     ("guard_motion_l", INT), ("anims", ANIM, len(ANIMS))],
-    f"Warrior (CharaInitParam {WARRIOR}) with the Longsword; move_escape = f110(n): MoveParam row 0 escapeF/B/L/R, "
+    f"Warrior (CharaInitParam {WARRIOR}) with the Longsword; move_escape = f110(n) per movement set (equip load: MoveParam rows 0 / 5 / 10 / 15, 6 each): escapeF/B/L/R, "
     "stepMove, dashEscapeF")
 
 
 def HEADER():
     consts = (["/* ChrActionFlag ids (TAE event 0) */"] + [f"#define FLAG_{name} {fid}" for fid, name in FLAGS.items()] +
-              [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */"] +
+              [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */",
+               f"#define ITEM_USE ({ITEM_USE})  /* Window type of TAE 64: an item's / spell's effect starts */"] +
               ["", "enum { " + ", ".join(f"ANIM_{c}" for c, *_ in ANIMS) + ", ANIM_COUNT };"])
     names = [("START_END", "start_end", "Warrior END"), ("WEAPON_ID", "weapon_id", "EquipParamWeapon: Longsword"),
              ("WEAPON_WEIGHT", "weapon_weight", None), ("WEAPON_ATK_PHYS", "weapon_atk_phys", None),
@@ -187,6 +223,8 @@ def main():
                 wins.append((-2 - (p[0] & 0xFF), s, e))
             elif etype == 231:  # EzState message to the event Lua (OnCheckEzStateMessage: bonfire 10 / 20 / 30)
                 wins.append((EZ_MESSAGE - (p[0] & 0xFF), s, e))
+            elif etype == 64:  # CastHighlightedMagic: an item's / spell's effect starts here
+                wins.append((ITEM_USE, s, e))
             elif etype == 300 and p[0] & 0xFFFF == GRAD_GRAVITY:  # s16 output, s16 input (0), f32 from, f32 to
                 grads.append((GRAD_GRAVITY, s, e, f32(p[1]), f32(p[2])))
             elif etype == 236 and p[2] & 0xFF == 0:  # f32 at start, f32 at end, u8 type 0 (scaled by mobility)
@@ -215,7 +253,8 @@ def main():
     n = gamedata.write(out, "player", RECORD, {
         "start_end": init["baseEnd"], "weapon_id": init["equip_Wep_Right"], "weapon_weight": round(wep["weight"], 2),
         "weapon_atk_phys": wep["attackBasePhysics"],
-        "move_escape": [mp[k] for k in ("escapeF", "escapeB", "escapeL", "escapeR", "stepMove", "dashEscapeF")],
+        "move_escape": [P["MoveParam"][row][1][k] for row in MOVE_SETS
+                        for k in ("escapeF", "escapeB", "escapeL", "escapeR", "stepMove", "dashEscapeF")],
         "weapon_motion_r": wep["wepmotionCategory"], "weapon_motion_l": left["wepmotionCategory"],
         "guard_motion_r": wep["guardmotionCategory"], "guard_motion_l": left["guardmotionCategory"], "anims": anims})
     for a in anims:

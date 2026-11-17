@@ -63,9 +63,9 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o)
+	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -218,7 +218,7 @@ blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
 # (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
 # from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
-$(D)/world.pak: $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
 		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)
@@ -443,7 +443,7 @@ $(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.p
 $(ITEM_FILES): $(G)/items/.stamp ;
 # Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
 # (tools/export_screens.py SCREENS)
-SCREEN_NAMES = R00 I02 I01 R02 I06
+SCREEN_NAMES = R00 I02 I01 R02 I06 F25
 SCREEN_FILES = $(SCREEN_NAMES:%=$(G)/screens/scr_%.bin)
 $(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
 		$(TS)/octree.py.sum $(TS)/souls.py.sum
@@ -459,11 +459,23 @@ $(G)/loading.bin: $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_loading.py "$(GAME)" $@
 
-$(D)/menu.pak: $(G)/menu.bin $(ITEM_FILES) $(SCREEN_FILES) $(G)/loading.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
+# Treasure shine (src/fx.c fx_shine_*, src/pickup.c): DSR's item glow SFX 99001 / 99046, placed at run time on corpse
+# treasures and enemy drops; the boot area's tone map (tools/export_effects.py --shine)
+$(G)/shine.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum \
+		$(TS)/souls.py.sum $(A)/map.bin
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/export_effects.py "$(GAME)" --shine $@ $(MAP) --tone $(A)/fx_tone.json
+
+# One-line action prompts (src/hud.c hud_help: Event_text 10010000-10010999, e.g. "Open", "Pick up item")
+$(G)/help.bin: $(TS)/export_menu.py.sum $(TS)/souls.py.sum
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/export_menu.py "$(GAME)" --help $@
+
+$(D)/menu.pak: $(G)/menu.bin $(ITEM_FILES) $(SCREEN_FILES) $(G)/loading.bin $(G)/shine.bin $(G)/help.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $@ menu.bin=$(G)/menu.bin items.bin=$(G)/items/items.bin itemx.bin=$(G)/items/itemx.bin \
 		desc.bin=raw:$(G)/items/desc.bin icons.bin=raw:$(G)/items/icons.bin $(foreach n,$(SCREEN_NAMES),scr_$(n).bin=$(G)/screens/scr_$(n).bin) \
-		loading.bin=$(G)/loading.bin
+		loading.bin=$(G)/loading.bin shine.bin=$(G)/shine.bin help.bin=$(G)/help.bin
 
 # Firelink Shrine: map pieces, textures, navmesh, area fog. Tuning: BUDGET (triangles after quadric simplification,
 # foliage not counted), SPAWN_K (detail falloff with distance from the spawn), GRASS_KEEP (1 foliage tuft in N kept,
@@ -514,7 +526,7 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
-		$(TS)/residency.py.sum src/residency.h
+		$(TS)/residency.py.sum src/residency.h $(TS)/worldlinks.py.sum
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)

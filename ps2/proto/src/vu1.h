@@ -31,6 +31,9 @@ void vu1_begin(int buffer);
 /* VU1_FLAT: untextured (tex may be NULL): PRIM with TME off, the vertex colour is the final colour (0x80 = half, not
  * 1.0); the st values VU1 writes are ignored (map.c's horizon level, tools/horizon.py: its packets have no st stream) */
 #define VU1_FLAT 32
+/* VU1_COLCP: the colour stream is copied into the chain (the caller's buffer may be reused at once: map.c's player
+ * light pass computes each batch's colours into one scratch array); clears VU1_PKT */
+#define VU1_COLCP 64
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
 /* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col

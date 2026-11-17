@@ -1,0 +1,18 @@
+# Estus (PR F): after a test hit (HP 594 -> 551), Square drinks: ESD group 1 states 163 / 164 (a00 6209 / 6409),
+# at the drink's TAE 64 one charge goes (5 -> 4) and goods 201's SpEffect 3020 heals 300 ("player: used item").
+# Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_estus.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+wait 3
+spawn -48.5 -21.8 -35.5 0
+wait 2
+hit 98 20
+wait 1
+square
+wait 0.8
+shot drinking
+wait 2.5
+shot after
+stats
+end

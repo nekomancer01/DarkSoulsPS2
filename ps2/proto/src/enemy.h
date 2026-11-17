@@ -45,6 +45,7 @@ unsigned enemy_ram_free(void);
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active);  /* c0000 stand-ins (npc.c) too */
 int enemy_entity_enable(int entity, int on, int bit);
 int enemy_entity_kill(int entity, int award);
+int enemy_kill_near(V3 p, float r);  /* test hook: enemies within r die (ragdoll tests) */
 /* A hit of hp from the player (test scripts: "ev chr ID damage HP"); 1 if it has such a character */
 int enemy_entity_damage(int entity, int hp);
 /* ev_chr.c: its record for that entity was created (placed characters read it from then on) */
@@ -52,5 +53,10 @@ struct EvChr;
 void enemy_entity_bind(int entity, struct EvChr *c);
 /* Totals for the HUD: enemies updated / drawn this frame */
 extern int enemy_active, enemy_drawn;
+
+/* combat_throw_hook: start the enemy side of a player backstab / riposte (ThrowParam), see enemy.c */
+#include "combat.h"
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw);  /* test scripts */
+int enemy_throw_try(const float pos[3], float yaw, ThrowStart *out);
 
 #endif

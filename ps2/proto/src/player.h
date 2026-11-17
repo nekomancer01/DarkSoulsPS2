@@ -11,6 +11,10 @@ typedef struct Input {
     int circle;        /* Circle held */
     /* held this frame (presses are found against the previous frame in player.c): R1, R2, L1, L2 */
     int r1_held, r2_held, l1_held, l2_held;
+    int r3;            /* R3 pressed this frame: lock-on toggle */
+    int square;        /* Square pressed this frame: use the quick item */
+    int triangle;      /* Triangle pressed this frame: two-hand toggle */
+    int dpad;          /* d-pad presses this frame: 1 up, 2 down, 4 left, 8 right */
 } Input;
 
 /* ST_JUMP / ST_LAND play one animation like ST_ATTACK / ST_ROLL; ST_FALL = airborne loop; ST_DEAD = fall death */
@@ -62,6 +66,7 @@ typedef struct Player {
     int ovl_anim;          /* ANIM_* or -1 */
     float ovl_t;
     int ovl_loop;
+    int ovl_missing;       /* the ESD asked for an upper-body anim DSR's archives do not have (a00 30 / 42 / 90) */
     int ovl_cmd;           /* ESD command that started it: 3 (c1_3, ends f0) or 4 / 13 (end f1) */
     int motion_mode;       /* c1_109 (chr+0x270): 11 in every guard state of group 1 */
     int guarding;          /* guard up: an upper-body guard anim in motion mode 11 */
@@ -69,6 +74,16 @@ typedef struct Player {
     int parrying;          /* the parry anim's Parry attack window (TAE AttackType 64) is open */
     float fwd_flick;       /* time since the stick went from the dead zone to forward (f212, kick / jump attack) */
     float prev_tilt;
+    /* a backstab / riposte in progress (ThrowParam, combat_throw_hook): its target, damage time and motion value */
+    void *lock;            /* lock-on target (CombatChr), NULL none */
+    int hold_style, hold_req;  /* ESD f207 (1 one-handed, 3 the right weapon two-handed) / f104 request (0 none) */
+    int switch_req;        /* ESD f109 this frame: 1 right weapon switch, 2 left (states 217 / 218) */
+    float hitstop;         /* s the playing action anim stays frozen (AtkParam hitStopTime of a hit that landed) */
+    int item_used;         /* ANIM_* + 1 of the item anim whose TAE 64 effect was applied, 0 none */
+    int strafe;            /* locked locomotion direction: 0 forward, 1 back, 2 left, 3 right */
+    void *throw_cc;
+    float throw_hit_t, throw_corr;
+    int throw_anim, throw_done;
     unsigned ctx_a0, ctx_a4;              /* ChrActionFlag bit sets (ctx+0xA0 / +0xA4) */
     unsigned ctx_1dc;                     /* ESD command flags (ctx+0x1DC; c1_107 ... c1_147) */
     int no_magic;                         /* ctx+0xF1 (flag 97): magic / item slots 2, 3, 14 disabled */
@@ -93,6 +108,8 @@ typedef struct Player {
 } Player;
 
 void player_init(Player *p);
+/* lock-on target position (feet), 0 when not locked */
+int player_lock_target(const Player *p, float out[3]);
 /* cam_yaw: camera heading, so stick input is camera-relative */
 void player_update(Player *p, const Input *in, float cam_yaw, float dt);
 void player_draw(const Player *p);

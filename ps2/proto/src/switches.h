@@ -30,6 +30,8 @@
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
+ * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * PLIGHT_RATIO        | 60       | tune     | -                                             | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
  * MEDIA_CD            | off      | fallback | -DMEDIA_CD                                    | mapstream.c mapstream_i.h   | CD streaming budgets on any disc (make MEDIA=cd)
  * BUMP_BAKED          | 1        | fallback | -DBUMP_BAKED=0                                | bump.c        | relief baked at export; 0 = the runtime CLUT relief pass (make BUMP_BAKE=0)
@@ -37,6 +39,7 @@
  * WORLD_LITE_DIET     | 1        | fallback | -DWORLD_LITE_DIET=0                           | world.c       | kept-only blocks hold collision and events only (make WORLD_LITE_DIET=0)
  * WORLD_DG_LITE       | 1        | fallback | -DWORLD_DG_LITE=0                             | world.c       | a block's dg.bin / pvs.bin come with its lite set (pvs.bin let go while lean); 0 = read for every block at boot
  * RES_BLOCK           | undefined | make    | -                                             | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
+ * PICKUP              | 1        | fallback | -DPICKUP=0                                    | pickup.h event.c | treasure shine, pickup anim, item get dialog, enemy drops; 0 = treasures picked up with none of them, no drops
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold
@@ -49,9 +52,12 @@
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | mapstream_i.h   | arena size
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
+ * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
+ * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
+ * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
@@ -142,6 +148,7 @@
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
+ * DPAD_STICK          | 0        | fallback | -DDPAD_STICK=1                                | main.c        | the d-pad moves like the left stick (old path); 0 = DSR's weapon / item d-pad
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
@@ -159,6 +166,8 @@
  * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
  * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone
  * PLAYER_PROXY        | 1        | fallback | -DPLAYER_PROXY=0                              | player.c      | DSR's ChrProxy step (lift 0.31 m, edges ridden within 60 deg), step down 0.4 m, maxSlope 60 deg, slide over 35 deg; 0 = step 0.6 / 1.2, walls below 45 deg, no slide
+ * RAG_CONTACTS        | 1        | fallback | -DRAG_CONTACTS=0                              | ragdoll.c     | ragdoll bodies collide with the map's walls and with each other; 0 = floor only
+ * RAG_DEBUG           | 0        | debug    | -DRAG_DEBUG=1                                 | ragdoll.c     | EE log twice a second per awake ragdoll: fastest body, bodies at rest, body pushes
  * ESD_TRACE           | off      | host     | -                                             | esd.c         | ESD trace hook (native test harness)
  * OBJ_HOST            | off      | host     | -                                             | objects.c     | piece bodies for the host test harness
  *

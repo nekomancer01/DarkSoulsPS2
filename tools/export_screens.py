@@ -57,6 +57,7 @@ SCREENS = {
     "I01": (["I01", "cursor00", "cursor01", "cursor07", "button_item_select", "I01-01", "F05"], 256),
     "R02": (["R02"], 224),                                 # status: DSR's three R02 columns (C01 is Level Up)
     "I06": (["I06", "F05"], 128),                          # System (F04 is the talk / bonfire list), yes / no
+    "F25": (["F25"], 64),                                  # item get dialog (src/pickup.c; FrpgMenuDlgItemGet)
 }
 
 

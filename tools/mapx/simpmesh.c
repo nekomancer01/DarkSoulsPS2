@@ -3,9 +3,11 @@
    navmesh samples (k-d tree), every job through simplify.c on threads, the global error threshold (fixed or searched
    to fit BUDGET), and each job's log replayed. Python's dict orders (first appearance) are kept throughout. */
 #include "mapx.h"
+#include <math.h>
+#if MX_TIMING
 #include <stdio.h>
 #include <time.h>
-#include <math.h>
+#endif
 
 typedef struct {
     int nt;
@@ -16,6 +18,8 @@ typedef struct {
     int *rem;
     int *cha;
     size_t nrem_all, ncha_all;
+    int *plv;        /* simplify.c placement: per step the moved vertex (-1 none), NULL when off */
+    double *plx;
 } sresult;
 sresult *simplify_run(int nv, const double *posd, int nw, const int *wpos, int ntri, const int *tris,
                       const unsigned char *locked, const double *scale, const double *weight, double sat,
@@ -28,6 +32,11 @@ void simplify_free(sresult *R);
 void simplify_set_envelope(double pad);
 void simplify_set_guard(double qmin, double flip_cos);
 void simplify_set_shape(double tol);
+void simplify_set_shape_cost(double k);
+void simplify_set_place(int on);
+void simplify_set_seam(int on);
+void simplify_get_rules(double *r);
+void simplify_set_rules(const double *r);
 
 static double np_maximum(double a, double b) { return a >= b || a != a ? a : b; }
 static double np_minimum(double a, double b) { return a <= b || a != a ? a : b; }
@@ -220,6 +229,7 @@ typedef struct {
     /* replay */
     int nout;
     int *out;             /* nout x 6 (p, a) */
+    double *rpos;         /* npos x 3: the positions after the replayed steps (placement moved some), NULL: pos */
     int *oid;             /* per output triangle: its source triangle (log T0 index) */
     int ksteps;           /* log steps the last replay applied */
     int kcap;             /* mx_simp_back_off: at most this many steps (-1: no cap) */
@@ -236,6 +246,7 @@ typedef struct mx_simp {
     double eps, eps_far;
     int use_far;
     const double *job_eps;  /* mx_simp_replay_jobs: per job threshold, else NULL */
+    long long seam_rem, seam_cut;  /* the seam pass: triangles it removed, positions on cuts */
     long long nout;
 } mx_simp;
 
@@ -266,15 +277,19 @@ static void run_job(void *vc, long long i)
 {
     mx_simp *h = vc;
     sjob *j = h->jobs + i;
+#if MX_TIMING
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
+#endif
     j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat,
                               h->border_w, h->seam_w, h->seam_k2, h->ak2, h->min_cos, j->amesh);
     mx_ok(j->log, 1);
+#if MX_TIMING
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double dt = t1.tv_sec - t0.tv_sec + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
     if (dt > 2 && getenv("MX_TIME"))
         fprintf(stderr, "  [mx] job %lld: %d tris, %d pos, %.1f s\n", i, j->ntri, j->npos, dt);
+#endif
 }
 
 typedef struct {
@@ -293,6 +308,225 @@ static int cmp_size_desc(const void *a, const void *b)
 {
     int x = *(const int *)a, y = *(const int *)b;
     return g_sz[x] != g_sz[y] ? (g_sz[x] > g_sz[y] ? -1 : 1) : (x < y ? -1 : x > y);
+}
+
+/* one job's arrays from n triangles (mesh im[ord[r]], triangle it[ord[r]], wedges from TW): positions by key (first
+   corner with a key), attributes by wedge, in first-appearance order; pmap / amap: scratch, all -1 on entry and exit */
+static void fill_job(sjob *j, int n, const int *ord, const int *im, const long long *it, const int *TW, const double *P,
+                     const long long *poff, const int *W, const long long *woff, const long long *kid, int *pmap, int *amap)
+{
+    j->ntri = n;
+    j->tris = MX_NEW(int, 3 * (size_t)(n ? n : 1));
+    int cap = 3 * n;
+    j->pos = MX_NEW(double, 3 * (size_t)(cap ? cap : 1));
+    j->pmesh = MX_NEW(int, cap ? cap : 1), j->ppi = MX_NEW(int, cap ? cap : 1);
+    j->pkid = MX_NEW(long long, cap ? cap : 1);
+    j->wpos = MX_NEW(int, cap ? cap : 1), j->amesh = MX_NEW(int, cap ? cap : 1), j->aw = MX_NEW(int, cap ? cap : 1);
+    for (int r = 0; r < n; r++) {
+        int i = ord[r], mi = im[i];
+        long long t = it[i];
+        for (int q = 0; q < 3; q++) {
+            int w = TW[3 * t + q];
+            long long wa = woff[mi] + w;
+            if (amap[wa] < 0) {
+                int pi = W[wa];
+                long long k = kid[poff[mi] + pi];
+                if (pmap[k] < 0) {
+                    pmap[k] = j->npos;
+                    memcpy(j->pos + 3 * j->npos, P + 3 * (poff[mi] + pi), 3 * sizeof(double));
+                    j->pmesh[j->npos] = mi, j->ppi[j->npos] = pi, j->pkid[j->npos] = k;
+                    j->npos++;
+                }
+                amap[wa] = j->nattr;
+                j->wpos[j->nattr] = pmap[k];
+                j->amesh[j->nattr] = mi, j->aw[j->nattr] = w;
+                j->nattr++;
+            }
+            j->tris[3 * r + q] = amap[wa];
+        }
+    }
+    for (int p = 0; p < j->npos; p++)
+        pmap[j->pkid[p]] = -1;
+    for (int a = 0; a < j->nattr; a++)
+        amap[woff[j->amesh[a]] + j->aw[a]] = -1;
+}
+
+/* Seam pass (export_map.py SIMPLIFY_SEAM_PX; 0: off): the positions on the cell cuts are locked in every cell's job, at
+   every level, so the cuts kept their full source detail whatever error a cell was given (Burg block b: 15 % of the
+   coarse level's triangles at 24 px). Large engines with fixed patch boundaries avoid this by grouping the patches
+   differently at each level, so a boundary locked at one level falls inside a patch at the next; their runtime then
+   switches whole groups at once. Ours switches near / coarse per cell, so every cut has to match on both levels.
+   Here each welded group is simplified once, uncut, with only the vertices on its cuts free to collapse and every
+   other vertex locked, at the near level's error seen from the near distance (the same input and settings for both
+   levels' calls, so both get the same cuts), and only collapses that carry all their wedges over (no wedge moves);
+   the source triangles are rewritten with the result and then cut into the cells' jobs as before, which lock the
+   thinner cuts. Cells are still chosen by the source triangles' centroids. */
+static double g_seam_px = 0, g_seam_floor = 1, g_seam_env = 0, g_seam_k = 0;
+MX_API void mx_simp_seams(double px, double floor_, double env, double shape_k)
+{
+    g_seam_px = px > 0 ? px : 0, g_seam_floor = floor_, g_seam_env = env, g_seam_k = shape_k;
+}
+
+typedef struct {
+    mx_simp *h;
+    sjob *jobs;
+} seam_ctx;
+
+static void run_seam(void *vc, long long i)
+{
+    seam_ctx *c = vc;
+    sjob *j = c->jobs + i;
+    j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, NULL, INFINITY,
+                              c->h->border_w, c->h->seam_w, c->h->seam_k2, 0.0, c->h->min_cos, j->amesh);
+    mx_ok(j->log, 1);
+}
+
+static void seam_pass(mx_simp *h, int nm, const double *P, const long long *poff, const int *W, const long long *woff,
+                      const int *T, const long long *toff, double grid, mx_map *farm, const long long *kid, long long nk,
+                      long long nwt, int ng, const int *gstart, const int *gmem, long long nnv, const double *nv,
+                      long long nnt, const int *nt, const double *spawn, double spawn_k, int nkeep, const double *keep_pos,
+                      double keep_r2, double keep_d, int **T2_out, unsigned char **dead_out)
+{
+    long long ntt = toff[nm];
+    long long *kcell = MX_NEW(long long, nk ? nk : 1);  /* per key: the cell (packed) of its first triangle, -1 none */
+    unsigned char *kcut = MX_ZNEW(unsigned char, nk ? nk : 1);
+    memset(kcell, 0xff, sizeof(long long) * (size_t)(nk ? nk : 1));
+    int *pmap = MX_NEW(int, nk ? nk : 1), *amap = MX_NEW(int, nwt ? nwt : 1);
+    memset(pmap, 0xff, sizeof(int) * (size_t)(nk ? nk : 1));
+    memset(amap, 0xff, sizeof(int) * (size_t)(nwt ? nwt : 1));
+    int nj = 0, capj = 16;
+    sjob *jobs = MX_ZNEW(sjob, capj);
+    int **jim = NULL;
+    long long **jit = NULL;
+    for (int g = 0; g < ng; g++) {
+        long long nit = 0;
+        for (int q = gstart[g]; q < gstart[g + 1]; q++)
+            nit += toff[gmem[q] + 1] - toff[gmem[q]];
+        int *im = MX_NEW(int, nit ? nit : 1);
+        long long *it = MX_NEW(long long, nit ? nit : 1);
+        long long s = 0;
+        int any = 0;
+        for (int q = gstart[g]; q < gstart[g + 1]; q++) {
+            int mi = gmem[q];
+            for (long long t = toff[mi]; t < toff[mi + 1]; t++, s++) {
+                im[s] = mi, it[s] = t;
+                long long c[3];
+                for (int a = 0; a < 3; a++) {  /* (the job builder's cell of a triangle) */
+                    double x[3];
+                    for (int k = 0; k < 3; k++)
+                        x[k] = P[3 * (poff[mi] + W[woff[mi] + T[3 * t + k]]) + a];
+                    c[a] = (long long)mx_floor(mx_py_sum3(x[0], x[1], x[2]) / 3 / grid);
+                }
+                long long cid = mx_map_get(farm, c) >= 0 ? (long long)INT64_MIN
+                                : (c[0] & 0x1fffff) << 42 | (c[1] & 0x1fffff) << 21 | (c[2] & 0x1fffff);
+                for (int k = 0; k < 3; k++) {
+                    long long key = kid[poff[mi] + W[woff[mi] + T[3 * t + k]]];
+                    if (kcell[key] == -1)
+                        kcell[key] = cid;
+                    else if (kcell[key] != cid)
+                        kcut[key] = 1, any = 1;
+                }
+            }
+        }
+        if (any) {
+            if (nj == capj) {
+                capj *= 2;
+                jobs = mx_realloc(jobs, sizeof(sjob) * (size_t)capj);
+            }
+            jim = mx_realloc(jim, sizeof(int *) * (size_t)(nj + 1));
+            jit = mx_realloc(jit, sizeof(long long *) * (size_t)(nj + 1));
+            sjob *j = jobs + nj;
+            memset(j, 0, sizeof *j);
+            int *ord = MX_NEW(int, nit ? nit : 1);
+            for (long long i = 0; i < nit; i++)
+                ord[i] = (int)i;
+            fill_job(j, (int)nit, ord, im, it, T, P, poff, W, woff, kid, pmap, amap);
+            free(ord);
+            j->locked = MX_NEW(unsigned char, j->npos ? j->npos : 1);
+            for (int p = 0; p < j->npos; p++)
+                j->locked[p] = !kcut[j->pkid[p]];
+            jim[nj] = im, jit[nj] = it, nj++;
+        } else {
+            free(im), free(it);
+        }
+    }
+    free(pmap), free(amap), free(kcell), free(kcut);
+    if (!nj) {
+        free(jobs), free(jim), free(jit);
+        return;
+    }
+    /* view distances from the near level's floor (the same for both levels' calls) */
+    long long ntp = 0;
+    for (int i = 0; i < nj; i++)
+        ntp += jobs[i].npos;
+    double *AP = MX_NEW(double, 3 * (ntp ? ntp : 1)), *D = MX_NEW(double, ntp ? ntp : 1);
+    long long o = 0;
+    for (int i = 0; i < nj; i++)
+        memcpy(AP + 3 * o, jobs[i].pos, sizeof(double) * 3 * (size_t)jobs[i].npos), o += jobs[i].npos;
+    vd_opt vo = {g_seam_floor, spawn_k, spawn, nkeep, keep_pos, keep_r2, keep_d};
+    view_distance(ntp, AP, nnv, nv, nnt, nt, &vo, D);
+    o = 0;
+    for (int i = 0; i < nj; i++) {
+        sjob *j = jobs + i;
+        j->scale = MX_NEW(double, j->npos ? j->npos : 1);
+        for (int p = 0; p < j->npos; p++, o++)
+            j->scale[p] = 1.0 / (D[o] * D[o]);
+    }
+    free(AP), free(D);
+    /* run them with the seam rules, then put the caller's back */
+    double saved[7], rules[7];
+    simplify_get_rules(saved);
+    memcpy(rules, saved, sizeof rules);
+    rules[0] = g_seam_env > 0 ? g_seam_env : 1e300, rules[3] = g_seam_env, rules[4] = g_seam_k, rules[5] = 0, rules[6] = 1;
+    simplify_set_rules(rules);
+    seam_ctx sc = {h, jobs};
+    mx_parallel_for(nj, run_seam, &sc);
+    simplify_set_rules(saved);
+    /* each job's log replayed at the seam threshold, written back into the source triangles */
+    int *T2 = MX_NEW(int, 3 * (size_t)(ntt ? ntt : 1));
+    memcpy(T2, T, sizeof(int) * 3 * (size_t)ntt);
+    unsigned char *dead = MX_ZNEW(unsigned char, ntt ? ntt : 1);
+    double eps = (g_seam_px / 568) * (g_seam_px / 568);
+    long long nrem = 0, ncut = 0;
+    for (int i = 0; i < nj; i++) {
+        sjob *j = jobs + i;
+        const sresult *R = j->log;
+        int k = 0;
+        while (k < R->nsteps && !(R->cost[k] > eps))
+            k++;
+        if (k) {
+            long long nr = 0, nc = 0;
+            for (int s = 0; s < k; s++)
+                nr += R->nrem[s], nc += R->ncha[s];
+            /* T0 index -> job triangle (simplify.c drops triangles with a repeated position) */
+            int *t0r = MX_NEW(int, R->nt ? R->nt : 1), m = 0;
+            for (int r = 0; r < j->ntri; r++) {
+                const int *tr = j->tris + 3 * r;
+                int p0 = j->wpos[tr[0]], p1 = j->wpos[tr[1]], p2 = j->wpos[tr[2]];
+                if (p0 != p1 && p1 != p2 && p0 != p2)
+                    t0r[m++] = r;
+            }
+            for (long long r = 0; r < nr; r++)
+                dead[jit[i][t0r[R->rem[r]]]] = 1;
+            for (long long c = 0; c < nc; c++) {
+                const int *C = R->cha + 4 * c;
+                int r = t0r[C[0]], mi = jim[i][r];
+                long long t = jit[i][r];
+                if (j->amesh[C[3]] == mi)  /* (always: the seam rule moves no wedge across meshes) */
+                    T2[3 * t + C[1]] = j->aw[C[3]];
+            }
+            nrem += nr;
+            free(t0r);
+        }
+        for (int p = 0; p < j->npos; p++)
+            ncut += !j->locked[p];
+        simplify_free(j->log);
+        free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
+        free(j->tris), free(j->locked), free(j->scale), free(jim[i]), free(jit[i]);
+    }
+    free(jobs), free(jim), free(jit);
+    h->seam_rem = nrem, h->seam_cut = ncut;
+    *T2_out = T2, *dead_out = dead;
 }
 
 /* Everything of export_map.simplify_meshes up to the threshold search, for nm meshes given flat:
@@ -454,6 +688,14 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         mx_map_put(&farm, far + 3 * i, &added);
     }
     mx_tick("weld groups");
+    const int *TW = T;            /* the triangles' wedges the jobs take (the seam pass's rewrite, else the source) */
+    unsigned char *tdead = NULL;  /* per triangle: removed by the seam pass */
+    int *T2 = NULL;
+    if (cells && g_seam_px > 0)
+        seam_pass(h, nm, P, poff, W, woff, T, toff, grid, &farm, kid, nk, nwt, ng, gstart, gmem, nnv, nv, nnt, nt, spawn,
+                  spawn_k, nkeep, keep_pos, keep_r2, keep_d, &T2, &tdead);
+    if (T2)
+        TW = T2;
     /* per group: cells in order of first appearance, one job each */
     int capj = 16;
     h->jobs = MX_ZNEW(sjob, capj);
@@ -465,6 +707,10 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         long long nit = 0;
         for (int q = gstart[g]; q < gstart[g + 1]; q++)
             nit += toff[gmem[q] + 1] - toff[gmem[q]];
+        if (tdead)
+            for (int q = gstart[g]; q < gstart[g + 1]; q++)
+                for (long long t = toff[gmem[q]]; t < toff[gmem[q] + 1]; t++)
+                    nit -= tdead[t];
         int *im = MX_NEW(int, nit), *icell = MX_NEW(int, nit);
         long long *it = MX_NEW(long long, nit);
         mx_map cm;
@@ -474,6 +720,10 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
         for (int q = gstart[g]; q < gstart[g + 1]; q++) {
             int mi = gmem[q];
             for (long long t = toff[mi]; t < toff[mi + 1]; t++, s++) {
+                if (tdead && tdead[t]) {
+                    s--;
+                    continue;
+                }
                 im[s] = mi, it[s] = t;
                 if (!cells) {
                     icell[s] = 0;
@@ -518,45 +768,14 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
             j->kind = ckind[c];
             if (j->kind == 2)
                 memcpy(j->ckey, cm.keys + 3 * c, sizeof j->ckey);
-            j->ntri = n;
-            j->tris = MX_NEW(int, 3 * (size_t)(n ? n : 1));
-            int cap = 3 * n;
-            j->pos = MX_NEW(double, 3 * (size_t)(cap ? cap : 1));
-            j->pmesh = MX_NEW(int, cap ? cap : 1), j->ppi = MX_NEW(int, cap ? cap : 1);
-            j->pkid = MX_NEW(long long, cap ? cap : 1);
-            j->wpos = MX_NEW(int, cap ? cap : 1), j->amesh = MX_NEW(int, cap ? cap : 1), j->aw = MX_NEW(int, cap ? cap : 1);
-            for (int r = 0; r < n; r++) {
-                int i = ord[cs[c] + r], mi = im[i];
-                long long t = it[i];
-                for (int q = 0; q < 3; q++) {
-                    int w = T[3 * t + q];
-                    long long wa = woff[mi] + w;
-                    if (amap[wa] < 0) {
-                        int pi = W[wa];
-                        long long k = kid[poff[mi] + pi];
-                        if (pmap[k] < 0) {
-                            pmap[k] = j->npos;
-                            memcpy(j->pos + 3 * j->npos, P + 3 * (poff[mi] + pi), 3 * sizeof(double));
-                            j->pmesh[j->npos] = mi, j->ppi[j->npos] = pi, j->pkid[j->npos] = k;
-                            j->npos++;
-                        }
-                        amap[wa] = j->nattr;
-                        j->wpos[j->nattr] = pmap[k];
-                        j->amesh[j->nattr] = mi, j->aw[j->nattr] = w;
-                        j->nattr++;
-                    }
-                    j->tris[3 * r + q] = amap[wa];
-                }
-            }
+            fill_job(j, n, ord + cs[c], im, it, TW, P, poff, W, woff, kid, pmap, amap);
             for (int p = 0; p < j->npos; p++)
-                pmap[j->pkid[p]] = -1, njk[j->pkid[p]]++;
-            for (int a = 0; a < j->nattr; a++)
-                amap[woff[j->amesh[a]] + j->aw[a]] = -1;
+                njk[j->pkid[p]]++;
         }
         free(im), free(icell), free(it), free(ckind), free(cs), free(ord);
         mx_map_free(&cm);
     }
-    free(pmap), free(amap);
+    free(pmap), free(amap), free(T2), free(tdead);
     mx_map_free(&farm);
     mx_tick("build jobs");
     /* locks, view distances, scales */
@@ -612,6 +831,12 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
 MX_API void mx_simp_stats(const mx_simp *h, long long *out)
 {
     out[0] = h->full, out[1] = h->ngroups, out[2] = h->njobs;
+}
+
+/* the seam pass: triangles it removed, positions on the cuts */
+MX_API void mx_simp_seam_stats(const mx_simp *h, long long *out)
+{
+    out[0] = h->seam_rem, out[1] = h->seam_cut;
 }
 
 MX_API void mx_simp_dup(const mx_simp *h, unsigned char *out) { memcpy(out, h->dup, (size_t)h->nm); }
@@ -684,7 +909,15 @@ static void replay_job(void *vc, long long i)
             memmove(Tt + 6 * m++, Tt + 6 * t, 6 * sizeof(int));
         }
     free(alive);
-    free(j->out), free(j->oid);
+    free(j->out), free(j->oid), free(j->rpos);
+    j->rpos = NULL;
+    if (R->plv) {  /* the moves of the replayed steps, in order */
+        j->rpos = MX_NEW(double, 3 * (size_t)(j->npos ? j->npos : 1));
+        memcpy(j->rpos, j->pos, sizeof(double) * 3 * (size_t)j->npos);
+        for (int s = 0; s < k; s++)
+            if (R->plv[s] >= 0)
+                memcpy(j->rpos + 3 * R->plv[s], R->plx + 3 * s, 3 * sizeof(double));
+    }
     j->out = Tt, j->oid = oid, j->nout = m, j->ksteps = k;
 }
 
@@ -734,6 +967,20 @@ MX_API void mx_simp_fetch(const mx_simp *h, int *tjob, int *tmesh, int *cmesh, i
     }
 }
 
+/* the replayed triangles' corner positions (3 doubles each), in mx_simp_fetch's order: the source positions, or where
+   the replayed steps' placement moved them */
+MX_API void mx_simp_fetch_xyz(const mx_simp *h, double *xyz)
+{
+    long long o = 0;
+    for (int i = 0; i < h->njobs; i++) {
+        const sjob *j = h->jobs + i;
+        const double *rp = j->rpos ? j->rpos : j->pos;
+        for (int t = 0; t < j->nout; t++, o++)
+            for (int q = 0; q < 3; q++)
+                memcpy(xyz + 9 * o + 3 * q, rp + 3 * j->out[6 * t + 2 * q], 3 * sizeof(double));
+    }
+}
+
 /* Jobs mask[i] of h take o's replayed result (log, triangles) and o takes h's: both handles were made from the same
    input, so their jobs match one to one (export_map.py: the cells whose spots stay over budget with the shape envelope
    take the run without it). Returns h's surviving triangle count. */
@@ -747,8 +994,10 @@ MX_API long long mx_simp_swap_jobs(mx_simp *h, mx_simp *o, const unsigned char *
             continue;
         sresult *l = a->log;
         int *out = a->out, *oid = a->oid, n = a->nout, k = a->ksteps, kc = a->kcap;
+        double *rp = a->rpos;
         a->log = b->log, a->out = b->out, a->oid = b->oid, a->nout = b->nout, a->ksteps = b->ksteps, a->kcap = b->kcap;
-        b->log = l, b->out = out, b->oid = oid, b->nout = n, b->ksteps = k, b->kcap = kc;
+        a->rpos = b->rpos;
+        b->log = l, b->out = out, b->oid = oid, b->nout = n, b->ksteps = k, b->kcap = kc, b->rpos = rp;
     }
     h->nout = o->nout = 0;
     for (int i = 0; i < h->njobs; i++)
@@ -771,6 +1020,13 @@ MX_API void mx_simp_guard(double qmin, double flip_cos) { simplify_set_guard(qmi
 
 /* the guard's shape tolerance in metres for the next mx_simp_new (tools/native/simplify.c g_shape_tol); 0: off */
 MX_API void mx_simp_shape(double tol) { simplify_set_shape(tol); }
+
+/* the shape term's weight in the collapse cost for the next mx_simp_new (tools/native/simplify.c g_shape_k); 0: off */
+MX_API void mx_simp_shape_cost(double k) { simplify_set_shape_cost(k); }
+
+/* vertex placement for the next mx_simp_new (tools/native/simplify.c g_place: export_map.py SIMPLIFY_PLACE, the coarse
+   level); 0: off (every vertex keeps its source position) */
+MX_API void mx_simp_place(int on) { simplify_set_place(on); }
 
 /* ---- validation (export_map.py SIMPLIFY_VALIDATE): every replayed triangle checked against its source, independent
    of the simplifier's own bookkeeping (its bounds are conservative estimates; this measures the result) ---- */
@@ -922,7 +1178,8 @@ static void check_job(void *vc, long long i)
     double worst = 0, wsq = 0;  /* the farthest point so far, in metres and squared */
     for (int t = 0; t < j->nout; t++) {
         const int *r = j->out + 6 * t, *s = R->t0 + 6 * j->oid[t];
-        const double *a = j->pos + 3 * r[0], *b = j->pos + 3 * r[2], *d = j->pos + 3 * r[4];
+        const double *rp = j->rpos ? j->rpos : j->pos;  /* (placement: where the replayed steps moved them) */
+        const double *a = rp + 3 * r[0], *b = rp + 3 * r[2], *d = rp + 3 * r[4];
         double n[3], n0[3], q, q0;
         tri_nq(a, b, d, n, &q);
         tri_nq(j->pos + 3 * s[0], j->pos + 3 * s[2], j->pos + 3 * s[4], n0, &q0);
@@ -1034,16 +1291,28 @@ static void back_off_job(void *vc, long long i)
     long long nc = 0;
     for (int s = 0; s < j->ksteps; s++)
         nc += R->ncha[s];
+    unsigned char *fv = NULL;  /* placement: the corners of the failing triangles (a step that moved one changed it) */
+    if (R->plv) {
+        fv = MX_ZNEW(unsigned char, j->npos ? j->npos : 1);
+        for (int t = 0; t < j->nout; t++)
+            if (f[j->oid[t]])
+                for (int q = 0; q < 3; q++)
+                    fv[j->out[6 * t + 2 * q]] = 1;
+    }
     int k = -1;
     for (int s = j->ksteps - 1; s >= 0 && k < 0; s--) {
         nc -= R->ncha[s];
+        if (fv && R->plv[s] >= 0 && fv[R->plv[s]]) {
+            k = s;
+            break;
+        }
         for (int c = 0; c < R->ncha[s]; c++)
             if (f[R->cha[4 * (nc + c)]]) {
                 k = s;
                 break;
             }
     }
-    free(f);
+    free(f), free(fv);
     j->kcap = k >= 0 ? k : j->ksteps / 2;
     replay_job(h, i);
 }
@@ -1133,7 +1402,7 @@ MX_API void mx_simp_free(mx_simp *h)
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
         free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
-        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out), free(j->oid), free(j->fail);
+        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out), free(j->oid), free(j->fail), free(j->rpos);
         if (j->log)
             simplify_free(j->log);
     }

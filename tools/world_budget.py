@@ -259,7 +259,12 @@ def load(d):
         return None
     j = json.load(open(p))
     c = np.asarray(j["cells"], np.float64).reshape(len(j["cells"]), -1)
-    return os.path.basename(os.path.normpath(d)), c, float(j.get("sky", 0)), np.asarray(j["spots"], np.float64).reshape(-1, 3)
+    name = os.path.basename(os.path.normpath(d))
+    LINK_SIDE[name] = (j["world"], np.asarray(j["links"], np.int64)) if "links" in j else None
+    return name, c, float(j.get("sky", 0)), np.asarray(j["spots"], np.float64).reshape(-1, 3)
+
+
+LINK_SIDE = {}  # block -> (world names, per spot the other MSBs' blocks its links load) from map.bin.cells.json
 
 
 def box_d(lo, hi, P):
@@ -319,9 +324,15 @@ def main(argv):
                     on[own == j] = near_k[own == j]
         if LINKS:  # another MSB's block (Firelink, the Asylum: ConnectCollision links): only at spots within
             # LOAD_CELLS cells of its own navmesh (its links sit on its walkable floors), never across a height range
+            # (world-10: by the links of the floor under each spot, from the export's sidecar; without one by distance)
             mine = P[own == k]
             for j in range(len(blocks)):
                 if j == k or (rects[j][1] is not None and rects[j][1] == rects[k][1]) or not len(mine):
+                    continue
+                ls = LINK_SIDE.get(blocks[j][0])
+                kn = os.environ.get("MAP", "m10_02_00_00") if blocks[k][0] == "gen" else blocks[k][0]  # (gen: the boot block)
+                if ls is not None and kn in ls[0] and len(ls[1]) == int((own == j).sum()):
+                    on[own == j] = (ls[1] >> ls[0].index(kn)) & 1 == 1
                     continue
                 Q = P[own == j]
                 dmin = np.full(len(Q), np.inf)

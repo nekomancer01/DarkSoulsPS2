@@ -337,6 +337,11 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         if mapcfg.SIMPLIFY_GUARD:
             MX.mx_simp_guard(mapcfg.SIMPLIFY_QMIN, math.cos(math.radians(mapcfg.SIMPLIFY_FLIP_DEG)))
             MX.mx_simp_shape(mapcfg.SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+        far_lv = out == "tris_far"  # the coarse level (shown from RES_NEAR_R out)
+        MX.mx_simp_shape_cost(mapcfg.SIMPLIFY_SHAPE_K_FAR if far_lv else mapcfg.SIMPLIFY_SHAPE_K_NEAR)
+        MX.mx_simp_place(1 if far_lv and mapcfg.SIMPLIFY_PLACE else 0)
+        # the cuts' seam pass: the same settings for both levels, so both lock the same thinner cuts
+        MX.mx_simp_seams(mapcfg.SIMPLIFY_SEAM_PX if cells else 0.0, mapcfg.NEAR, mapcfg.SIMPLIFY_ENV_NEAR, mapcfg.SIMPLIFY_SHAPE_K_NEAR)
         try:
             return simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floor, cells, far, area_k,
                                      eps_far, budget, nav_s, sat=sat, env_pad=env_pad, far_shape=far_shape)
@@ -344,6 +349,9 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
             MX.mx_simp_envelope(0.0)
             MX.mx_simp_guard(0.0, -2.0)
             MX.mx_simp_shape(0.0)
+            MX.mx_simp_shape_cost(0.0)
+            MX.mx_simp_place(0)
+            MX.mx_simp_seams(0.0, 1.0, 0.0, 0.0)
     if budget:
         print(f"simplify: no budget solve without the native simplifier ({budget[3]})")
     if mapcfg.SIMPLIFY_GUARD or env_pad or mapcfg.SIMPLIFY_ENV_NEAR:  # the fallback is simplify.py's reference collapse only
@@ -673,10 +681,57 @@ def ws_foreign_spots(game, map_id, nav_v, reach=64.0, most=2000):
             for a in range(0, len(own), 1024):
                 d = np.minimum(d, np.sqrt(((pts[:, None] - own[None, a:a + 1024]) ** 2).sum(2)).min(1))
             pts = pts[d <= reach]
-        out += [tuple(p) for p in pts[::max(1, len(pts) // most)].tolist()]
+        pts = pts[::max(1, len(pts) // most)]
+        if mapcfg.WS_LINKS and len(pts):
+            pts = _link_filter(game, world, name, omap, pts)
+        out += [tuple(p) for p in pts.tolist()]
     if out:
         print(f"budget: {len(out)} spots of other maps within {reach:.0f} m share the room (WS_UNION)")
     return out
+
+
+_LINK_AT = {}  # WS_LINKS: spot (tuple) of another MSB -> world mask of the blocks loaded there (ws_foreign_spots)
+
+
+def _link_filter(game, world, name, omap, pts):
+    """WS_LINKS: the spots of map omap (another MSB) at which world.bin's links load block `name`, each standing on the
+    block of omap whose cells hold it (a whole-map block: anywhere); their loaded-block masks go to _LINK_AT"""
+    import worldlinks
+    me = world.index(name)
+    keep = np.zeros(len(pts), bool)
+    for f, fb in enumerate(world):
+        if worldlinks.block_map(fb) != omap:
+            continue
+        rs = worldlinks.cell_rects_m(fb)
+        on = np.ones(len(pts), bool) if not rs else np.zeros(len(pts), bool)
+        for x0, z0, x1, z1 in rs or ():
+            on |= (pts[:, 0] >= x0) & (pts[:, 0] < x1) & (pts[:, 2] >= z0) & (pts[:, 2] < z1)
+        on &= ~keep
+        if not on.any():
+            continue
+        idx = np.nonzero(on)[0]
+        mk = worldlinks.spot_masks(game, world, f, pts[idx]) | (1 << f)
+        for k, m_ in zip(idx, mk.tolist()):
+            _LINK_AT[tuple(pts[k].tolist())] = m_
+        keep[idx[(mk >> me) & 1 == 1]] = True
+    print(f"budget: {omap}: {int(keep.sum())} of {len(pts)} spots within reach load {name} (WS_LINKS)")
+    return pts[keep]
+
+
+def ws_link_masks(P, game, name):
+    """WS_LINKS: per spot the world mask of the blocks loaded there: a spot of another MSB as _link_filter found it,
+    this block's own spots by the links of the floor under them"""
+    import worldlinks
+    world = list(worldlinks.world_of(name))
+    me = world.index(name)
+    out = np.full(len(P), -1, np.int64)
+    for s, p in enumerate(P.tolist()):
+        out[s] = _LINK_AT.get(tuple(p), -1)
+        # (a navmesh vertex of another MSB that lies on this block too keeps its other MSB's mask)
+    own = out < 0
+    if own.any():
+        out[own] = worldlinks.spot_masks(game, world, me, P[own]) | (1 << me)
+    return out, world
 
 
 def ws_shares(P, r, game=None, map_id=None, nav_v=None):
@@ -716,6 +771,9 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
     else:
         return np.ones(len(P))
     oth = np.zeros(X.shape, bool)
+    lm = None
+    if mapcfg.WS_LINKS and game and any(area_mod.BLOCKS.get(o, {}).get("map", o) != cfg["map"] for o in world):
+        lm, lw = ws_link_masks(P, game, name)
     for o in world:
         if o == name:
             continue
@@ -724,7 +782,10 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
         if ob and ob.get("cells") and omap == cfg["map"] and cfg.get("cells"):
             oth |= by_rects(rects(ob["cells"]))
         elif game:
-            oth |= by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
+            cov = by_nav(_nav_voxels(game, omap, to_m(rects(ob["cells"])) if ob and ob.get("cells") else None))
+            if lm is not None:  # WS_LINKS: only at the spots whose links load it
+                cov &= ((lm >> lw.index(o)) & 1 == 1)[:, None]
+            oth |= cov
     no, nt = own.sum(1), (own | oth).sum(1)
     if mapcfg.WS_SHARE_TRIS and cfg.get("cells") and mapcfg.WS_SRC_TRIS:
         # Shares by demand (2026-11-12). A cell is in a spot's tier with its whole bytes as soon as its box comes
@@ -1028,6 +1089,11 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         MX.mx_simp_stats(h, a(st))
         full, ngroups, njobs = (int(x) for x in st)
         print(f"simplify: {njobs} jobs, run in C in {time.time() - t0:.1f} s", flush=True)
+        if cells and mapcfg.SIMPLIFY_SEAM_PX > 0:
+            ss = np.zeros(2, i64)
+            MX.mx_simp_seam_stats(h, a(ss))
+            print(f"simplify: seam pass ({mapcfg.SIMPLIFY_SEAM_PX:g} px): {int(ss[0])} triangles along {int(ss[1])} "
+                  f"cut positions collapsed before the cell cut")
         dup = np.zeros(max(nm, 1), np.uint8)
         MX.mx_simp_dup(h, a(dup))
         for mi in np.flatnonzero(dup[:nm]).tolist():
@@ -1099,6 +1165,10 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         tj, tm = np.zeros(max(n, 1), i32), np.zeros(max(n, 1), i32)
         cm, cp, cw = (np.zeros(max(3 * n, 1), i32) for _ in range(3))
         MX.mx_simp_fetch(h, a(tj), a(tm), a(cm), a(cp), a(cw))
+        xyz = None
+        if mapcfg.SIMPLIFY_PLACE and out == "tris_far" and n:
+            xyz = np.zeros((n, 3, 3), f64)
+            MX.mx_simp_fetch_xyz(h, a(xyz))
         if drop and job_eps is not None and n:  # the loose pieces within their cell's piece threshold are left out,
             # whole: a piece over a cell cut goes by the cell of its centre (when the solve has that cell)
             pc_ = drop["pp"][poff[cm[:3 * n:3]] + cp[:3 * n:3]]
@@ -1110,6 +1180,8 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
             print(f"pieces: {int(gone.sum())} of {n} triangles in {len(np.unique(pc_[gone]))} loose pieces left out "
                   f"(error within their cell's threshold)")
             tj, tm = tj[keep_t], tm[keep_t]
+            if xyz is not None:
+                xyz = xyz[keep_t]
             k3 = (keep_t[:, None] * 3 + np.arange(3)).reshape(-1)
             cm, cp, cw = cm[k3], cp[k3], cw[k3]
             n = len(keep_t)
@@ -1130,8 +1202,9 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
         final = grass + n if job_eps is not None or final_n is not None else count(eps)
     finally:
         MX.mx_simp_free(h)
-    # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp
-    CP = P[poff[cm[:3 * n]] + cp[:3 * n]].reshape(-1, 3, 3)
+    # the output as Tris (corner arrays), per mesh in replay order: positions from the group mesh cm, vertex cp (with
+    # SIMPLIFY_PLACE where the replayed collapses moved them: xyz)
+    CP = xyz[:n] if xyz is not None else P[poff[cm[:3 * n]] + cp[:3 * n]].reshape(-1, 3, 3)
     CW = cw[:3 * n].reshape(-1, 3)
     tm, tj = tm[:n], tj[:n]
     order = np.argsort(tm, kind="stable")

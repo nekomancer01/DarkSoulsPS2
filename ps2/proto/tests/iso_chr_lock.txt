@@ -1,0 +1,31 @@
+# Lock-on (PR D) at the Burg entry: R3 locks the hollow nearest the view (15 m), the camera turns to it, the player
+# strafes left with the stick (row 0 walk L, a00 202) and rolls left (slot 17 -> group 1 state 35, a00 702), then
+# R3 again releases. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_lock.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option nodemo
+option god
+wait 3
+spawn -48.5 -21.8 -35.5 3.14
+cam 3.14 0.25
+wait 10
+cam off
+lock
+wait 1
+shot locked
+stick -0.5 0
+wait 1
+shot strafe_left
+stick -1 0
+circle 1
+wait 0.1
+circle 0
+wait 0.3
+shot roll_left
+stick 0 0
+wait 1.5
+lock
+wait 1
+shot released
+stats
+end
