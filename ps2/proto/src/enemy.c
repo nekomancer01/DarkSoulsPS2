@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "hitch.h"  /* HM_TAG (make HEAPMAP=1 only) */
 #include "combat_data.h"
 #include <string.h>
 #include <unistd.h>
@@ -453,9 +454,12 @@ static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned siz
         return 0;
     }
     const ChrType *twin = tex_holder(t);  /* the same character from another world block's packs: same textures */
+    HM_TAG("enemy %.5s", t->name);  /* HEAPMAP: its textures in the VRAM census (render.c) */
+    int up = twin ? 0 : mdl_upload(m, gs);
+    HM_TAG0();
     if (twin) {
         mdl_share_textures(m, twin->model);
-    } else if (mdl_upload(m, gs) < 0) {
+    } else if (up < 0) {
         printf("enemy: %s: textures do not fit in VRAM (free %d)\n", t->name, r_vram_avail(gs));
         mdl_free(m), FREE_MB();
         return 0;

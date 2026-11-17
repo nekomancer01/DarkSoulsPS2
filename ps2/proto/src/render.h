@@ -97,4 +97,15 @@ void r_text_outlined(float x, float y, float scale, const char *s);
 extern unsigned r_gsq_peak;
 void r_queue_exec(GSGLOBAL *gs);
 
+#ifdef HEAPMAP
+/* make HEAPMAP=1: VRAM census next to the heap census (render.c; "vrammap:" lines after each heapmap block). The
+ * r_vram_* allocations are kept per caller (and hm_tag label), gsKit_vram_alloc calls of files including this header
+ * per file:line; the frame / Z buffers gsKit_init_screen allocated are read from the GSGLOBAL. */
+u32 r_hm_vram_alloc(GSGLOBAL *g, u32 size, u8 type, const char *where);
+#define R_HM_STR2(x) #x
+#define R_HM_STR(x) R_HM_STR2(x)
+#define gsKit_vram_alloc(g, size, type) r_hm_vram_alloc(g, size, type, __FILE__ ":" R_HM_STR(__LINE__))
+void r_vram_census(void);
+#endif
+
 #endif

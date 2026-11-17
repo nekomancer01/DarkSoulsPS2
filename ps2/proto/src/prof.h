@@ -14,6 +14,8 @@ enum {
     PROF_ENEMY,    /* enemy_update: AI Lua, enemyCommon ESD, movement, sweeps */
     PROF_OBJECTS,  /* objects_update: breakables */
     PROF_CAMERA,   /* orbit camera, camera collision ray */
+    PROF_STREAM,   /* world_update + loading_frame: block reads, turn-on / off (Polaris census, main.c only) */
+    PROF_SOUND,    /* snd_map + snd_update: emitters, voices, the IOP RPC */
     PROF_MAP,      /* Z clear + map cull + VU1 chain build + kick */
     PROF_CHARS,    /* player / enemies / objects bone matrices + VU1 skin chains */
     PROF_HUD,      /* hud_draw, debug overlay, menu (gsKit queue) */
@@ -26,13 +28,20 @@ enum {
 void prof_mark(int pass);  /* end the running pass, start `pass` */
 void prof_frame(void);     /* frame boundary: close the frame, update averages / peaks, log, (GPROF) start / stop */
 void prof_hud(void);       /* the per-pass table on screen */
+/* Polaris census: frames of a running test script that are not frozen count into the whole-run percentiles (warm
+ * starts load a state parked after the boot, so the boot's frames stay out); state = test_mb.state, frozen =
+ * test_frozen(). The run's summary ("PROFSUM" lines) prints when the script ends (state 2) and every
+ * PROF_SUM_LOGS log lines. */
+void prof_gate(int state, int frozen);
 #define PROF_MARK(p) prof_mark(p)
 #define PROF_FRAME() prof_frame()
 #define PROF_DRAW() prof_hud()
+#define PROF_GATE(s, f) prof_gate(s, f)
 #else
 #define PROF_MARK(p) ((void)0)
 #define PROF_FRAME() ((void)0)
 #define PROF_DRAW() ((void)0)
+#define PROF_GATE(s, f) ((void)0)
 #endif
 
 #endif
