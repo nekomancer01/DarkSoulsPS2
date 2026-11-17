@@ -98,6 +98,7 @@
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | drawgrp.c     | draw groups shared across blocks
  * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
+ * DG_SEAM_HOLD        | 30       | tune     | -DDG_SEAM_HOLD=0                              | map.c         | frames a seam floor found ahead keeps adding its draw groups after the probe last hit it (0: none, the old path)
  * DG_SEAM_VIEW        | 1        | fallback | -DDG_SEAM_VIEW=0                              | map.c         | DG_SEAM probes the camera's view direction as well as the heading (border draw groups); 0 = the heading alone
  * MAP_FAR_SEAM        | 1        | fallback | -DMAP_FAR_SEAM=0                              | mapblock.c    | far panorama seam sets (farpano.py FAR_SEAM): the one nearest the camera within 48 m stands in for its block's main sets; 0 = main sets only
  * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | map.c         | last-resort backdrop: a fog-coloured band from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)

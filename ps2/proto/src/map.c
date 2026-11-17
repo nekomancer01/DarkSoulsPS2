@@ -401,6 +401,9 @@ int map_stream_open(const char *pak_path)
 #ifndef DG_SEAM_VIEW
 #define DG_SEAM_VIEW 1  /* the camera's view direction probed as well as the heading (below); 0 = the heading alone */
 #endif
+#ifndef DG_SEAM_HOLD
+#define DG_SEAM_HOLD 30  /* frames (1 s at 30 fps; ASSUMED: longer than a step's hit / miss flicker); 0 = no hold */
+#endif
 #define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
 /* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
 static int same_map(int j, int k)
@@ -446,6 +449,13 @@ void map_set_player(V3 feet)
                 if (lv > 0.1f)
                     dir[1][0] = fw.x / lv, dir[1][1] = fw.z / lv;
             }
+            /* DG_SEAM_HOLD frames: a floor found ahead keeps adding its groups that long after the probe last hit
+             * it. Without it the shared mask flapped between e0000000 and e0000000|80000040 at the aqueduct's exit
+             * (Ame's playtest 2026-11-17 21:31, t 93.0-94.1: the probe's 4 m steps hit and missed the Burg floor's
+             * edge frame to frame) and the exit showed a white spot */
+            static int held_j[2] = {-1, -1}, held_tri[2];
+            static unsigned held_fr[2], seam_fr;
+            seam_fr++;
             for (int d = 0; d < 2; d++) {
                 int found = 0;
                 for (float r = 4.0f; r <= DG_SEAM_R && !found && (dir[d][0] != 0 || dir[d][1] != 0); r += 4.0f)
@@ -455,8 +465,11 @@ void map_set_player(V3 feet)
                         if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
                             col_floor_block(cb, feet.x + dir[d][0] * r, feet.z + dir[d][1] * r, feet.y + 3, feet.y - 6,
                                             COL_SOLID, &hj))
-                            dg_seam(j, hj.tri), found = 1;
+                            dg_seam(j, hj.tri), found = 1, held_j[d] = j, held_tri[d] = hj.tri, held_fr[d] = seam_fr;
                     }
+                if (!found && held_j[d] >= 0 && seam_fr - held_fr[d] <= DG_SEAM_HOLD &&
+                    mp_inst_col_block(held_j[d]) >= 0 && dg_area(held_j[d]) == dg_area(k) && !same_map(held_j[d], k))
+                    dg_seam(held_j[d], held_tri[d]);
             }
         }
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
