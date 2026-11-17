@@ -204,52 +204,8 @@ def _ev(v, f):
     return v.at(f) if isinstance(v, _Spline) else v
 
 
-_ACACHE = []  # [cache dir or None, key prefix]
-
-
 def animation(hkx):
-    """-> (frame count, fps, track->bone list, frames: [[(t xyz, q xyzw, s xyz) per track]]). Decoded animations are
-    kept by content (2026-11-17: every block's chr export decoded the same .hkx again, ~half of export_chr's time):
-    ANIM_CACHE (a directory; 0 = off), default <main tree>/build/cache/anim (DSR_CACHE: the cache root); the key holds
-    this file's and souls.py's source, so a decoder change misses. Pickled floats come back as the same values"""
-    import hashlib, os, pickle
-    if not _ACACHE:
-        d = os.environ.get("ANIM_CACHE")
-        if d != "0":
-            if not d:
-                import simplify_pool
-                d = os.path.join(os.environ.get("DSR_CACHE") or os.path.join(simplify_pool.main_tree(), "build", "cache"),
-                                 "anim")
-            h = hashlib.sha256(b"anim-cache-1")
-            for f in (__file__, souls.__file__):
-                h.update(open(f, "rb").read())
-            _ACACHE[:] = [d, h.digest()]
-        else:
-            _ACACHE[:] = [None, b""]
-    d, pre = _ACACHE
-    if d is None:
-        return _animation(hkx)
-    k = hashlib.sha256(pre + bytes(hkx)).hexdigest()
-    p = os.path.join(d, k[:2], k + ".pkl")
-    try:
-        with open(p, "rb") as f:
-            return pickle.load(f)
-    except (OSError, EOFError, pickle.UnpicklingError):
-        pass
-    r = _animation(hkx)
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = f"{p}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(r, f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(tmp, p)
-    except OSError:
-        pass
-    return r
-
-
-def _animation(hkx):
-    """animation() without the cache"""
+    """-> (frame count, fps, track->bone list, frames: [[(t xyz, q xyzw, s xyz) per track]])"""
     h = souls.HkTag(hkx)
     A = h.type("hkaSplineCompressedAnimation")
     o = h.objects("hkaSplineCompressedAnimation")[0]
