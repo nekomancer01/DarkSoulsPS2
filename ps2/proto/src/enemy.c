@@ -77,6 +77,9 @@
  * A load counts twice the model: its model.bin buffer takes the heap when the arena has no room, beside the compact
  * copy (the Taurus Demon's load took RAM to 278 KB under the bridge, ISO 2026-11-06) */
 #define STREAM_RAM_FLOOR (1536u << 10)
+#ifndef ENEMY_TMP_GENTLE
+#define ENEMY_TMP_GENTLE 1  /* arena_get: never clear drawn cells while the heap has room (0 = the old order) */
+#endif
 /* A placement the player cannot meet yet holds its type only within LAZY_LOAD_DIST: one an event keeps off (the Taurus
  * Demon before its trigger, a later-phase NPC, the Asylum's dead-or-alive pairs) or in a draw group the map does not
  * show now (another room / level of the block: drawgrp.c). Within LOAD_DIST every such placement had its model in RAM
@@ -381,7 +384,16 @@ static const Player *last_player;
 static void *arena_get(unsigned n)
 {
     static const float none[3];
-    void *p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
+    void *p = NULL;
+    /* ENEMY_TMP_GENTLE (default on; 0 = the old order): the arena only where it holds nothing the player sees, else
+     * the heap while it keeps STREAM_RAM_FLOOR over the temporary (job_begin waits for that much), and only then
+     * the arena at any cost. The Taurus's 1.4 MB temporary cleared 1.4 MB of drawn cells around the player, near
+     * level and floor included, and untextured horizon stood in at 0 m (Ame's report 2026-11-17 21:31, t 264.2
+     * "random deloading": "alloc 1394 KB ok, 1378 KB of cells dropped") */
+    if (ENEMY_TMP_GENTLE && !(p = mapstream_alloc_gentle(n)) && enemy_ram_free() >= n + STREAM_RAM_FLOOR)
+        p = memalign(128, n);
+    if (!p)
+        p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
     if (!p && !(p = memalign(128, n)) && mapstream_heap_release(n))  /* the cells in it are all being drawn: the heap */
         p = memalign(128, n);  /* after the pages the streamer borrowed from it went back */
     return p;

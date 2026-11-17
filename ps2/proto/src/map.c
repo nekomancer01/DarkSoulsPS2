@@ -397,6 +397,9 @@ int map_stream_open(const char *pak_path)
 #ifndef DG_SEAM
 #define DG_SEAM 1
 #endif
+#ifndef MAP_PEER_ZBIAS
+#define MAP_PEER_ZBIAS 0.02f  /* depth push of other maps' blocks (map_draw; ASSUMED: about the coarse level's error, 12 px) */
+#endif
 #define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
 /* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
 static int same_map(int j, int k)
@@ -1977,8 +1980,20 @@ int map_draw(V3 eye)
     if (mapstream_settling())
         pop_settle = pop_fr;
     nfx = nhzfade = nnrfade = 0;
-    for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
+    for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
+        /* MAP_PEER_ZBIAS: another map's block is tested PEER_ZBIAS further away. Neighbouring maps carry the same
+         * pieces where they meet (Firelink's aqueduct and cliff walls are in m10_01 too: ~14k m2 of coplanar
+         * surface within 70 m of the Firelink stairs that DSR's draw groups show in both), and each block is
+         * simplified on its own, so the two copies fought (Ame's report 2026-11-17 21:31, t 61.1 / 80.1:
+         * "z-fighting with undead burg"). The map the player stands in wins; the other's copy shows where the
+         * player's has nothing. 0 = no bias */
+        int peer = MAP_PEER_ZBIAS > 0 && k != pinst && (k == 0 || mp_inst[k].on) && !same_map(k, pinst);
+        if (peer)
+            zs_map_zbias(1.0f - MAP_PEER_ZBIAS);
         drawn += draw_block(k, e, fog, &lg);
+        if (peer)
+            zs_map_zbias(1.0f);
+    }
     {  /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
         int dn = (int)mp_draw_far(e);
         drawn += dn, lg.hz_tris += dn, lg.far_tris += dn;

@@ -32,6 +32,7 @@
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
  * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
  * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
  * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
  * PLIGHT_RATIO        | 60       | tune     | -                                             | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
@@ -47,6 +48,7 @@
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold
  * MS_LEND_NEAR_ALL    | 1        | fallback | -DMS_LEND_NEAR_ALL=0                          | mapstream_i.h   | near parts may take all the pools' idle room; 0 = at most MS_LEND_NEAR_KB
  * MS_DEFRAG_LEND      | 1        | fallback | -DMS_DEFRAG_LEND=0                            | mapstream_i.h   | MS_DEFRAG moves groups into the pools' idle room too; 0 = item pages only
+ * MS_LEND_REHOME      | 1        | fallback | -DMS_LEND_REHOME=0                            | msarena.c       | a lent near group a lite set needs moves into the item pages instead of being dropped; 0 = dropped
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
  * MS_HOLD_INFLIGHT    | 0        | tune     | -DMS_HOLD_INFLIGHT=3                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 with WORLD_SEAM_BUNDLE (its lite set is one disc run), 3 without
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
@@ -160,6 +162,7 @@
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
+ * ENEMY_TMP_GENTLE    | 1        | fallback | -DENEMY_TMP_GENTLE=0                          | enemy.c       | model temporaries never clear drawn cells while the heap has room; 0 = the arena at any cost first
  * DPAD_STICK          | 0        | fallback | -DDPAD_STICK=1                                | main.c        | the d-pad moves like the left stick (old path); 0 = DSR's weapon / item d-pad
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
