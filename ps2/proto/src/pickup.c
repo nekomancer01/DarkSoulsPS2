@@ -102,9 +102,11 @@ int pickup_action(Player *p)
 }
 
 /* ---- pickup anim ---- */
-/* ObjActParam row 0 playerAnimId (the generic ObjAct): the treasure pickup's own anim id is not found in the exe
- * (ASSUMED the same, TECH_DEBT item-2) */
-#define PICKUP_ANIM 8000
+/* The pickup anim is not traced in the exe (TECH_DEBT item-2). 8000 (ObjActParam row 0, the generic ObjAct) is a lever
+ * pull (Ame's playtest 2026-11-17). a00 7503, an event-layer anim of the player ESD (c1_3(3, 7503, ...)), is the one
+ * c0000 anim that starts standing, crouches and reaches the right hand to the floor (R_Hand 0.18 m above the feet, the
+ * left at 0.41, pelvis 0.49 at its lowest; 2.5 s): ASSUMED the item pickup */
+#define PICKUP_ANIM 7503
 void pickup_anim(Player *p)
 {
     if (p && !player_event_anim_playing(p) && player_event_anim(p, PICKUP_ANIM) <= 0)
