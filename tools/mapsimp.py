@@ -1085,12 +1085,14 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
                             mapcfg.WS_NEAR_R if far_shape else floor or mapcfg.NEAR)
         if far_shape:
             drop["cost"] = drop["cost"] / mapcfg.WS_FAR_DROP_K ** 2
-    # the area guard (SIMPLIFY_AREA_GUARD) on the loose pieces' positions only: the boards, planks and shutters it is for
-    # (without the pieces, none: the guard on the whole structure is too dear)
-    amask = np.zeros(max(len(P), 1), np.uint8)
-    if drop is not None and mapcfg.SIMPLIFY_AREA_GUARD > 0 and len(P):
-        pp = drop["pp"][:len(P)]
-        amask[:len(P)] = (pp >= 0) & (drop["loose"][np.maximum(pp, 0)])
+    # the area guard (SIMPLIFY_AREA_GUARD) on every position; SIMPLIFY_AREA_PIECES=1: on WS_DROP's loose pieces only
+    # (the shutters' fix alone: the walkway deck by the Burg bonfire still lost a corner, Ame's play test 2026-11-17)
+    amask = np.ones(max(len(P), 1), np.uint8)
+    if os.environ.get("SIMPLIFY_AREA_PIECES") == "1":
+        amask[:] = 0
+        if drop is not None and len(P):
+            pp = drop["pp"][:len(P)]
+            amask[:len(P)] = (pp >= 0) & (drop["loose"][np.maximum(pp, 0)])
     MX.mx_simp_area_mask(a(amask))
     try:
         h = new_handle()

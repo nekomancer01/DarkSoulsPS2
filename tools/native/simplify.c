@@ -343,8 +343,8 @@ void simplify_set_guard(double qmin, double flip_cos) { g_qmin = qmin > 0 ? qmin
  * a corner collapse cuts away about half its own neighbourhood (Undead Burg m2270B1 shutters: 24 -> 4 triangles at
  * 12 px, drawn as dark wedges in the window; Ame's play test 2026-11-16). Collapses inside a surface or along a straight
  * border change the area by little; the global area term (AREA_K) costs +34 % triangles for the same picture.
- * simplify_set_area_mask: only collapses touching these positions (export_map: the loose pieces, WS_DROP's mx_pieces;
- * on all of the structure the guard put the Undead Asylum's near level 12 % of its spots over budget). */
+ * simplify_set_area_mask: only collapses touching these positions (NULL: all; export_map: all, or WS_DROP's loose
+ * pieces with SIMPLIFY_AREA_PIECES=1). The Undead Asylum's 3 px near level has no room for it (Makefile: off there). */
 static double g_alost = 0.0;
 void simplify_set_area_guard(double frac) { g_alost = frac > 0 ? frac : 0.0; }
 /* g_shape_tol (metres, 0: off; needs the per-attribute source mesh agrp): a triangle may not reach further than this

@@ -249,7 +249,8 @@ SIMPLIFY_GUARD = os.environ.get("SIMPLIFY_GUARD", "1") == "1"
 SIMPLIFY_QMIN = float(os.environ.get("SIMPLIFY_QMIN", 0.0))
 # SIMPLIFY_AREA_GUARD (simplify.c g_alost): no collapse may leave the surface lost around its two vertices above this
 # fraction of the source area they stand for (thin boards folded flat, then lost their corners at zero error: the Burg
-# window shutters, play test 2026-11-16). 0: off. ASSUMED 0.5
+# window shutters, play test 2026-11-16; a flat walkway deck lost a corner the same way: a missing triangle by the Burg
+# bonfire, 2026-11-17). 0: off. ASSUMED 0.5
 SIMPLIFY_AREA_GUARD = float(os.environ.get("SIMPLIFY_AREA_GUARD", 0.5))
 SIMPLIFY_FLIP_DEG = float(os.environ.get("SIMPLIFY_FLIP_DEG", 90.0))
 # Shape term in the collapse cost (tools/native/simplify.c g_shape_k; 0: off, the old export): a collapse's cost is
