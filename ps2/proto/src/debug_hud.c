@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "debug_hud.h"
+#include "mem.h"
 #include "render.h"
 #include "collision.h"
 #include "combat.h"
@@ -94,6 +95,12 @@ void debug_hud_draw(const DebugHud *d, const Player *pl, float dt)
     r_text_outlined(470, 410, 2, buf);
     snprintf(buf, sizeof buf, d->vram_free < 0 ? "VRAM FULL" : "VRAM FREE %dK", d->vram_free / 1024);
     r_text_outlined(470, 390, 2, buf);
+    {   /* memory regions (src/mem.h): static KB, frame high-water KB, heap allocations in play since boot */
+        unsigned skb, fkb, pa;
+        mem_hud(&skb, &fkb, &pa);
+        snprintf(buf, sizeof buf, "MEM S%uK F%uK P%u", skb, fkb, pa);
+        r_text_outlined(470, 430, 2, buf);
+    }
     snprintf(buf, sizeof buf, "%d FPS %dK TRIS%s", (int)(1 / d->avg_dt + 0.5f), d->tris_drawn / 1000,
              d->map_ok ? "" : " NO MAP");
     r_text_outlined(470, 370, 2, buf);

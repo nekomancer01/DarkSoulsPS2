@@ -34,6 +34,7 @@
  * PROFILE             | off      | make     | -DPROFILE                                     | core   | init  | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | core   | init  | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
  * HEAPMAP             | off      | make     | -DHEAPMAP                                     | core   | #203  | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
+ * MEM_STRICT          | off      | debug    | -DMEM_STRICT                                  | core   | new   | mem.c         | TEST error on a heap allocation in play outside a legacy tag (mem.h MEM_TAGS) or off the main thread
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | core   | init  | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
@@ -196,6 +197,7 @@
  * RAG_DEBUG           | 0        | debug    | -DRAG_DEBUG=1                                 | scene  | #241  | ragdoll.c     | EE log twice a second per awake ragdoll: fastest body, bodies at rest, body pushes
  * ESD_TRACE           | off      | host     | -                                             | game   | init  | esd.c         | ESD trace hook (native test harness)
  * OBJ_HOST            | off      | host     | -                                             | game   | init  | objects.c     | piece bodies for the host test harness
+ * MEM_HOST_TEST       | off      | host     | -                                             | core   | new   | mem.c         | the pages / bump / pool parts only, for tools/ci/test_mem.sh on the host
  *
  * scripted test builds (testscript.c, testscript.h, debug_hud.c, hud.c, loading.c, main.c)
  * TEST_SPAWN          | off      | debug    | -DTEST_SPAWN=0,0,0,0; -DTEST_SPAWN=0,0,0,0 -DCOMBAT_DUMMY; -DTEST_SPAWN=0,0,0,0 -DENEMY_VIEW=0,0,3 | core   | init  | testscript.c | start position x,y,z,angle

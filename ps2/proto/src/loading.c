@@ -9,6 +9,7 @@
 #include "drb.h"
 #include "items.h"
 #include "loading.h"
+#include "mem.h"
 #include "hitch.h"
 #include "pack.h"
 #include "render.h"
@@ -299,6 +300,7 @@ static void open_screen(void)
     a = 0, st = 1, hint_t = 0, icon_ok = 0, hint_next = -1;
     post_t = -1;
     shown = 1;
+    mem_set_state(MEM_LOAD);  /* warps, deaths, bonfire reloads: heap use here is a load, not play (src/mem.h) */
     loading_stats.opens++;
     pack_async_free();  /* a background read (enemy model, menu icon) holds the slot no longer */
     if (!read_file() || !H->nhints) {  /* (no hints: the pick below divided by zero) */
@@ -503,6 +505,7 @@ void loading_end(void)
     saved_hint = hint;
     release();
     shown = 0;
+    mem_set_state(MEM_PLAY);
     post_t = 0;
 }
 

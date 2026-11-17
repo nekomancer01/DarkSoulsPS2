@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pack.h"
+#include "mem.h"
 #include "cvar.h"
 #include "lpass.h" /* LOGIC_SPREAD */
 #include "hitch.h"
@@ -897,6 +898,25 @@ int pack_job_has(const PackJob *j, const char *name)
 
 static void *heap_get(unsigned n) { return memalign(128, n); }
 static void heap_put(void *p, unsigned n) { (void)n; free(p); }
+/* the regions of src/mem.h: static (boot lifetime) and boot-temp, the heap once they are full or sealed */
+static void *static_get(unsigned n) { return mem_static(n, 128); }
+static void static_put(void *p, unsigned n) { (void)n; mem_release(p); }
+static void *temp_get(unsigned n)
+{
+    void *p = mem_temp(n, 128);
+    return p ? p : memalign(128, n);
+}
+static void temp_put(void *p, unsigned n) { (void)n; mem_release(p); }
+
+void *pack_load_static(Pack *p, const char *name, unsigned *size)
+{
+    return pack_load_with(p, name, size, static_get, static_put);
+}
+
+void *pack_load_temp(Pack *p, const char *name, unsigned *size)
+{
+    return pack_load_with(p, name, size, temp_get, temp_put);
+}
 
 void *pack_load(Pack *p, const char *name, unsigned *size)
 {
@@ -915,11 +935,18 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     HM_TAG("%s", name);
     unsigned char *out = get((e->raw + 127) & ~127u);
     HM_TAG0();
-    unsigned *cs = memalign(64, (nb * 4 + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
+    /* the block sizes and the staging buffers live only for this call: boot-temp while booting (src/mem.h), so the
+     * boot's loads leave no holes in the heap under what they keep, else the heap / the caller's allocator */
+    unsigned tmark = mem_temp_mark();
+    void *(*sget)(unsigned) = mem_state == MEM_BOOT ? temp_get : get;
+    void (*sput)(void *, unsigned) = mem_state == MEM_BOOT ? temp_put : put;
+    unsigned *cs = mem_state == MEM_BOOT ? temp_get((nb * 4 + 63) & ~63u) : NULL;
+    if (!cs)
+        cs = memalign(64, (nb * 4 + 63) & ~63u);  /* DMA'd into: no cache line shared with the heap's */
     unsigned st = e->packed < STAGE ? (e->packed + 63) & ~63u : STAGE;
     st = st < STAGE_MIN ? STAGE_MIN : st;
     int one = e->packed <= st;  /* one batch: the second buffer is never read into */
-    unsigned char *stage[2] = {get(st), one ? NULL : get(st)};
+    unsigned char *stage[2] = {sget(st), one ? NULL : sget(st)};
     int ok = out && cs && stage[0] && (stage[1] || one), mem_ok = ok;
     if (!ok) {  /* loud: a NULL here used to end up as garbage in a DMA chain */
         struct mallinfo mi = mallinfo();
@@ -973,10 +1000,11 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     if (tk)
         io_wait(tk, 0);  /* a read still on its way into a staging buffer that goes back now */
     if (stage[0])
-        put(stage[0], st);
+        sput(stage[0], st);
     if (stage[1])
-        put(stage[1], st);
-    free(cs);
+        sput(stage[1], st);
+    mem_release(cs);
+    mem_temp_reset(tmark);  /* (the output, if it is boot-temp too, sits below the mark) */
     if (!ok || pos != e->raw) {
         if (mem_ok) {
             snprintf(pack_error, sizeof pack_error, "READ ERROR: %s", name);

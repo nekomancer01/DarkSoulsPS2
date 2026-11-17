@@ -26,6 +26,10 @@ void *pack_load(Pack *p, const char *name, unsigned *size);
  * the caller hands the output back with put(out, (*size + 127) & ~127)): enemy.c reads streamed models into the
  * near-cell arena, so their temporary buffers leave no holes in the heap */
 void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(unsigned), void (*put)(void *, unsigned));
+/* pack_load into the static region (boot-lifetime tables) / boot-temp (freed with mem_release before mem_boot_seal);
+ * both fall back to the heap (src/mem.h) */
+void *pack_load_static(Pack *p, const char *name, unsigned *size);
+void *pack_load_temp(Pack *p, const char *name, unsigned *size);
 void pack_close(Pack *p);
 /* Entries stored raw (tools/pack.py name=raw:file) can be read in place: file offset and size of the data; 0 if the
  * entry is missing or compressed */

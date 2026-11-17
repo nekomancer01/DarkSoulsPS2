@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "progress.h"
+#include "mem.h"
 #include "items.h"
 #include "pack.h"
 
@@ -44,11 +45,11 @@ int items_init(void)
     }
     mp_open = 1;
     unsigned size;
-    core = pack_load(&mp, "items.bin", &size);
+    core = pack_load_static(&mp, "items.bin", &size);  /* boot lifetime (src/mem.h) */
     const u32 *h = (const u32 *)core;
     if (!core || size < 32 || memcmp(core, "DSIT", 4) || h[1] != 2 || h[3] + h[2] * 8 > size || h[5] + h[4] * 8 > size) {
         printf("items: items.bin missing or bad\n");
-        free(core), core = 0;
+        mem_release(core), core = 0;
         return 0;
     }
     ngoods = h[2], goods = (const Goods *)(core + h[3]);

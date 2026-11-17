@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include "hitch.h"  /* HM_TAG (make HEAPMAP=1 only) */
 #include "combat_data.h"
+#include "mem.h"
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
@@ -973,8 +974,8 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     void *eb = NULL, *lb = NULL;
     unsigned lsize = 0;
     if (pack_open(&pk, PACK_ROOT CHR_DIR "common.pak")) {
-        eb = pack_load(&pk, "esd.bin", 0);
-        lb = pack_load(&pk, "ai.lua0", &lsize);  /* aiCommon.luabnd (tools/lua50.py --pack) */
+        eb = pack_load_static(&pk, "esd.bin", 0);  /* boot lifetime (src/mem.h) */
+        lb = pack_load_temp(&pk, "ai.lua0", &lsize);  /* aiCommon.luabnd (tools/lua50.py --pack) */
     }
     pack_close(&pk);
     esd_ok = esd_load(&esd_prog, eb);
@@ -982,7 +983,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     ai_los = sight_line;
     ai_scripts(lb, (int)lsize, map_lua, map_lua_size);
 #endif
-    free(lb);  /* the VM keeps its own copy of the code */
+    mem_release(lb);  /* the VM keeps its own copy of the code */
     unsigned count = *(const unsigned *)(b + 4);
     for (unsigned i = 0; i < count && nenemies < MAX_ENEMIES; i++) {
         const unsigned char *r = b + 8 + ENEMY_REC * i;
