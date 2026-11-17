@@ -1168,6 +1168,9 @@ static u32 sky_fog(const MapInst *m, unsigned row, float *a, float *b, float *fm
 #ifndef VOID_RING
 #define VOID_RING cv_VOID_RING  /* runtime switch, default 1 (src/cvar.h) */
 #endif
+#ifndef VOID_RING_SKY
+#define VOID_RING_SKY 1  /* the ring in the sky's fog colour; 0 = the map's fog colour */
+#endif
 #ifndef VOID_RING_TOP
 #define VOID_RING_TOP 0.0f   /* degrees above the horizon where the ring is still opaque (ASSUMED) */
 #endif
@@ -1262,7 +1265,11 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
         if (pass == 1) {
             if (!ring)
                 continue;
-            draw_void_ring(col);
+            /* VOID_RING_SKY (default 1; 0 = the map's fog colour): the sky's own fog colour (the header's sky row,
+             * what DSR's sky fades to at the horizon). In the map's fog colour the ring was a dark band with a hard
+             * edge over Firelink's cloud sea (graveyard, aqueduct exit; ISO 2026-11-17) */
+            draw_void_ring(VOID_RING_SKY && m->hdr ? (u32)(m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 |
+                                                           m->hdr->sky_fog[2] << 16) : col);
         }
         if (blend)
             blend_regs(gs, CHUNK_BLEND);

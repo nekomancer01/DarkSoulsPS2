@@ -103,6 +103,7 @@
  * HZ_ONLY_OWN         | 1        | fallback | -DHZ_ONLY_OWN=0                               | mapblock.c    | a kept-only block's horizon cells inside an on block of another map are left out; 0 = all drawn
  * MAP_FAR_SEAM        | 1        | fallback | -DMAP_FAR_SEAM=0                              | mapblock.c    | far panorama seam sets (farpano.py FAR_SEAM): the one nearest the camera within 48 m stands in for its block's main sets; 0 = main sets only
  * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | map.c         | last-resort backdrop: a fog-coloured band from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)
+ * VOID_RING_SKY       | 1        | fallback | -DVOID_RING_SKY=0                             | map.c         | VOID_RING in the sky's fog colour (header sky row); 0 = the map's current fog colour
  * VOID_RING_TOP       | 0.0f     | tune     | -                                             | map.c         | VOID_RING: degrees above the horizon where the band is still opaque
  * VOID_RING_FADE      | 6.0f     | tune     | -                                             | map.c         | VOID_RING: degrees over which it fades out above that
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | bump.c        | runtime relief: no relief pass (A/B)
