@@ -2,6 +2,7 @@
 #ifndef LAB_H
 #define LAB_H
 extern const char *lab_root;  /* the build directory (its data/ holds the packs) */
+extern int lab_noenemies;  /* the script's "option noenemies": the console places no enemies either */
 extern const char *lab_area;  /* the booted area pack ("m10_02_00_00") */
 const char *lab_path(const char *path, char *out, unsigned cap);
 /* a stub was called: counted per name, printed by "stubs" in two lists (Polaris 1.7c):

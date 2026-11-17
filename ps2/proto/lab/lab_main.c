@@ -1,13 +1,15 @@
-/* lab_main.c: the Lab (Polaris 1.7b): the player's simulate phase on the host, driven over stdin / stdout.
+/* lab_main.c: the Lab (Polaris 1.7b-c): the simulate phase on the host, driven over stdin / stdout.
  *
  * One command a line, test-script names where one exists (src/testscript.c), answers one line each:
- *   boot ROOT AREA          load from ROOT/data: c0000 (gamedata, the player's model and ESD), AREA.pak (collision)
+ *   boot ROOT AREA          load from ROOT/data as main.c does: c0000 (gamedata, the player's model and ESD), the world
+ *                           table, AREA.pak's collision, objects and events, the other blocks' types (world_systems)
  *   spawn X Y Z YAW         place the player (as the test command, without the streaming wait)
  *   cam YAW PITCH           the camera's yaw and pitch (they steer movement)
  *   stick MX MY             the left stick for the next steps (as the test command)
  *   input MX MY CX CY BITS  a whole Input for the next steps (BITS: the trace's button word, frame.c record_frame)
  *   fixeddt MS              dt of a step (default 33.333)
- *   step N                  run N frames of the simulate phase's player part (frame.c phase_sim_a)
+ *   step N                  run N frames of the simulate phase: the player (phase_sim_a), the world update (phase_world,
+ *                           settled: lab_main.c world_step), objects, events, world items, the bonfire (phase_sim_b)
  *   replay TRACE            run every frame of a recorded trace (option record), printing a state line per frame
  *   read                    "state FRAME X Y Z YAW STATE" (the format of option record's .state log)
  *   stubs                   the stub calls so far, "stub presentation|readback N NAME" (lab.h: readback = a layer
@@ -15,10 +17,11 @@
  *   quit
  * Script mode (Polaris 1.7c): `lab ROOT AREA SCRIPT [MAX_FRAMES]` boots as main.c does with a test script (test_init,
  * save_boot, save_apply_player), runs the script through src/testscript.c's own interpreter frame by frame (input,
- * camera, then the player's simulate phase unless frozen, test_frame_end, save_tick) until it ends, prints the stub
+ * camera, then the simulate phase unless frozen, test_frame_end, save_tick) until it ends, prints the stub
  * report and "ok"; its output is the console's TEST lines. tools/lab.py run reads them. `lab ROOT AREA SCRIPT 0 states`
  * also prints each frame's state line (the format of option record's .state log).
- * The camera follow and its collision ray are not simulated: the trace carries the camera's yaw / pitch per frame. */
+ * The camera follow and its collision ray are not simulated (the trace carries the camera's yaw / pitch per frame;
+ * nothing in simulate reads the camera's position except through r_camera_basis, a read-back stub). Enemies: 1.7c-3. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,10 +42,15 @@
 #include "frame.h"
 #include "save.h"
 #include "map.h"
+#include "world.h"
+#include "objects.h"
+#include "pickup.h"
+#include "bonfire.h"
 #include "testscript.h"
 #include <libpad.h>
 
 const char *lab_root = ".", *lab_area = "m10_02_00_00";
+int lab_noenemies;
 static Player pl;
 static Input in;
 static float yaw, pitch, dt = 1.0f / 30;
@@ -59,6 +67,16 @@ void lab_count(const char *name, int readback)
         stub[i].name = name, stub[i].n++, stub[i].readback = readback;
 }
 
+static void world_step(void);
+/* replay: the console's world_hold held the player this frame (trace flag 4: a block or collision tile still loading
+ * there). The Lab never waits for data, so it takes the hold from the trace (link option --wrap=world_hold). */
+static int lab_held;
+int __real_world_hold(const float *feet);
+int __wrap_world_hold(const float *feet) { return __real_world_hold(feet) || lab_held; }
+/* frame.h frame_clock: the simulation clock in EE ticks, by frames (option fixeddt's clock on the console) */
+static unsigned lab_clock;
+unsigned frame_clock(void) { return lab_clock; }
+
 static int boot(const char *root, const char *area, const char *script)
 {
     lab_root = strdup(root);
@@ -68,7 +86,7 @@ static int boot(const char *root, const char *area, const char *script)
     if (script) {  /* main.c's order: the script first (its options pick the save device), then the save */
         snprintf(test_arg, sizeof test_arg, "test=%s", script);
         argv[1] = test_arg;
-        test_init(2, argv);
+        lab_noenemies = (test_init(2, argv) & TEST_NOENEMIES) != 0;
         if (!test_active())
             return printf("error script %s\n", script), 0;
     }
@@ -83,27 +101,72 @@ static int boot(const char *root, const char *area, const char *script)
     pack_close(&pk);
     if (!model_init(model_blob))
         return printf("error model\n"), 0;
+    /* main.c's boot of the area: the world table, the boot block's collision, breakables, events, world items, the
+     * other blocks' types */
+    int world = world_init(area);
     char path[128];
     snprintf(path, sizeof path, PACK_ROOT "%s.pak", area);
-    void *col = pack_open(&pk, path) ? pack_load(&pk, "collision.bin", NULL) : NULL;
+    void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL;
+    if (pack_open(&pk, path)) {
+        col = pack_load(&pk, "collision.bin", NULL);
+        obj = pack_load(&pk, "objects.bin", NULL);
+        ev = pack_load(&pk, "events.bin", NULL);
+        evc = pack_load(&pk, "evcommon.bin", NULL);
+    }
     pack_close(&pk);
+    if (world)
+        world_boot_map(), world_stream_open();
     if (!col || !col_init(col))
         return printf("error collision %s\n", area), 0;
+    objects_init(NULL, obj);
+    if (ev && event_init(evc))
+        event_block_on(0, ev);
+    pickup_init(NULL, NULL, 0);
+    world_systems(NULL);
+    combat_sweep_hook = objects_sweep_hook;
     status_init();
     player_init(&pl);
     map_spawn(&pl.pos, &pl.yaw);  /* main.c's boot order: the area's spawn, the saved position, the script */
     pl.on_map = 1;
     save_apply_player(&pl);
+    bonfire_init(area);
+    world_step();  /* the boot position's blocks (main.c: the first frame's world update, a warp, settles them) */
     return 1;
 }
 
+/* frame.c phase_world's world update, then the same again until everything the feet want is in: the Lab's reads
+ * complete at once (lab_stubs.c), so no block, collision or event set is ever "still loading" when simulate runs */
+static void world_step(void)
+{
+    frame_phase = FP_WORLD;
+    world_update(&pl.pos.x, dt);
+    for (int g = 0; g < 64 && !world_settled(&pl.pos.x); g++) {
+        WorldStats w = world_stats;
+        world_update(&pl.pos.x, 0);
+        if (w.loads == world_stats.loads && w.unloads == world_stats.unloads && w.reading == world_stats.reading &&
+            w.loaded == world_stats.loaded)
+            break;  /* a wanted block waits for something only time or the player's moving frees (a slot): the
+                     * console's own rule, not a read in flight */
+    }
+}
+
+/* One frame of simulate in frame.c's order: phase_sim_a's player, phase_world's world update, phase_sim_b's objects,
+ * events, world items and bonfire (enemies: 1.7c-3) */
 static void step(void)
 {
+    lab_clock += (unsigned)(dt * 294912000.0f);
     frame_phase = FP_SIM_A;
     player_update(&pl, &in, yaw, dt);
     status_update(&pl, dt);
     combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);
     event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);
+    world_step();
+    frame_phase = FP_SIM_B;
+    objects_update(&pl, dt);
+    event_update(&pl, dt);
+    if (PICKUP)
+        pickup_update(dt);
+    bonfire_update(&pl, dt);
     frame++;
 }
 
@@ -126,12 +189,13 @@ static void run_script(unsigned max_frames, int states)
     for (frame = 0; test_active() && frame < max_frames; frame++) {
         in = (Input){0};
         unsigned short pressed = test_pad();
-        /* "pad" presses go to the UI only (frame.c phase_input: bonfire_input / menu_update), never to the player.
-         * With no menu or dialog open, which in the Lab is always (events, which open bonfire dialogs, fail on their
-         * own), only Start does anything: it opens the Start menu. Select is the debug overlay. */
-        if (pressed & PAD_START)
+        /* "pad" presses go to the UI only (frame.c phase_input: bonfire_input / menu_update), never to the player
+         * (the script's input replaces the frame's). The bonfire's menu is game logic (bonfire.c) and runs here; the
+         * Start menu does not: Start outside the bonfire fails the script. Select is the debug overlay. */
+        int ui = bonfire_input(pressed);  /* the bonfire's own menu and dialogs (frame.c: before the Start menu) */
+        if (!ui && (pressed & PAD_START))
             lab_unsupported("pad start", "the Start menu (UI)");
-        else if (pressed)
+        else if (!ui && pressed)
             LAB_COUNT("pad (no menu open: no effect)");
         test_input(&in, &pl, &yaw, &pitch, dt, 0);
         cam_input(&pl, &in, &yaw, &pitch, dt);
@@ -184,8 +248,10 @@ static void replay(const char *path)
         yaw = x[8], pitch = x[9];
         if (u[10] & 1 || first)  /* moved since the last frame (a test spawn, a warp), or the start: as recorded */
             pl.pos = v3(x[11], x[12], x[13]), pl.yaw = x[14];
+        lab_held = (u[10] & 4) != 0;  /* the console's world held the player (streaming): the Lab holds it the same */
         if (!(u[10] & 2))  /* (frozen frames run no simulate) */
             step();
+        lab_held = 0;
         first = 0;
         frame = u[0];  /* (the .state log names the frame the input belongs to) */
         state_line();

@@ -725,14 +725,14 @@ $(SYM_ELF): $(EE_OBJS)
 # with -m32 (multilib): on the distrobox, `distrobox-host-exec make -C ps2/proto lab`.
 LAB_CC ?= gcc -m32
 LAB_CFLAGS ?= -std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0
-LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c $(addprefix src/,gamedata.c flags.c progress.c chrstat.c \
+LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c lab/lab_world.c $(addprefix src/,gamedata.c flags.c progress.c chrstat.c \
 	items.c player.c esd.c esd_env_move.c combat.c physics.c collision.c coltile.c nav.c status.c cvar.c vmath.c \
-	model.c omit.c testscript.c save.c cam_input.c)
+	model.c omit.c testscript.c save.c cam_input.c objects.c event.c ev_chr.c ev_obj.c ev_misc.c bonfire.c pickup.c world.c)
 LAB_BIN = $(BUILD)/host/lab
 lab: $(LAB_BIN)
 $(LAB_BIN): $(LAB_SRCS) $(wildcard lab/*.h lab/stub/*.h src/*.h)
 	@mkdir -p $(@D)
-	$(LAB_CC) $(LAB_CFLAGS) -DLAB -Ilab/stub -Ilab -I$(GSKIT)/include -I$(PS2SDK)/common/include -Isrc $(LAB_SRCS) -o $@ -lm
+	$(LAB_CC) $(LAB_CFLAGS) -DLAB -Ilab/stub -Ilab -I$(GSKIT)/include -I$(PS2SDK)/common/include -Isrc $(LAB_SRCS) -o $@ -lm -Wl,--wrap=world_hold
 .PHONY: lab
 
 sym: $(SYM_ELF)

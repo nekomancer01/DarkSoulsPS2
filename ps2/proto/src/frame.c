@@ -128,10 +128,14 @@ void frame_det_record(const char *path)
 
 /* one 64-byte record a frame (version 2): 0 frame, 1 dt, 2-5 sticks, 6 buttons, 7 d-pad, 8-9 camera yaw / pitch (they
  * steer movement), 10 flags (1: the player was moved since the last frame's end: a test spawn, a warp, a respawn;
- * 2: frozen, the simulate phase does not run), 11-14 the player's position and yaw at the frame's start (flag 1) */
+ * 2: frozen, the simulate phase does not run; 4: the world held the player, world_hold: a block or tile still
+ * loading, which the Lab replays), 11-14 the player's position and yaw at the frame's start (flag 1) */
+static unsigned char rec_buf[64] __attribute__((aligned(4)));  /* this frame's record, written at the frame's end */
+static unsigned rec_holds;  /* world_stats.holds at this frame's input */
 static void record_frame(const Input *in, float dt, float yaw, float pitch, const Player *pl, int frozen)
 {
-    unsigned char r[64] = {0};
+    unsigned char *r = rec_buf;
+    memset(r, 0, sizeof rec_buf);
     unsigned *u = (unsigned *)r;
     float *f = (float *)r;
     u[0] = rec_frame, f[1] = dt, f[2] = in->mx, f[3] = in->my, f[4] = in->cx, f[5] = in->cy;
@@ -142,7 +146,7 @@ static void record_frame(const Input *in, float dt, float yaw, float pitch, cons
     int moved = pl->pos.x != rec_end.x || pl->pos.y != rec_end.y || pl->pos.z != rec_end.z || pl->yaw != rec_end_yaw;
     u[10] = (unsigned)moved | (unsigned)frozen << 1;
     f[11] = pl->pos.x, f[12] = pl->pos.y, f[13] = pl->pos.z, f[14] = pl->yaw;
-    fioWrite(rec, r, sizeof r);
+    rec_holds = world_stats.holds;
 }
 
 /* ---- the loop ---- */
@@ -516,6 +520,10 @@ void frame_run(const FrameBoot *b)
         phase_emit(&f);
         phase_present(&f);
         rec_end = f.pl->pos, rec_end_yaw = f.pl->yaw;
+        if (rec >= 0) {  /* flag 4: the world held the player this frame (world_hold: a block or tile still loading) */
+            ((unsigned *)rec_buf)[10] |= (unsigned)(world_stats.holds != rec_holds) << 2;
+            fioWrite(rec, rec_buf, sizeof rec_buf);
+        }
         if (rec_state >= 0) {
             int n = snprintf(rec_line, sizeof rec_line, "%u %.4f %.4f %.4f %.4f %s\n", rec_frame - 1, f.pl->pos.x,
                              f.pl->pos.y, f.pl->pos.z, f.pl->yaw, player_state_name(f.pl));
