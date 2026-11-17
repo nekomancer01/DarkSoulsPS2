@@ -195,6 +195,19 @@ void prof_frame(void)
             over[p] = 0;
             peak[p] = (Sample){0, 0, 0};
         }
+        {   /* Polaris 1.3: the frame phases (src/frame.h) as sums of the passes above, averages in ms */
+            float ph[6];
+            ph[0] = ms(avg_cyc[PROF_INPUT] + avg_cyc[PROF_PLAYER] + avg_cyc[PROF_CAMERA]);  /* input + simulate A */
+            ph[1] = ms(avg_cyc[PROF_STREAM] + avg_cyc[PROF_SOUND]);                      /* world */
+            ph[2] = ms(avg_cyc[PROF_MAP]);                                               /* emit map */
+            ph[3] = ms(avg_cyc[PROF_ENEMY] + avg_cyc[PROF_OBJECTS]);  /* simulate B (+ enemy type streaming) */
+            ph[4] = ms(avg_cyc[PROF_CHARS] + avg_cyc[PROF_HUD]);                         /* emit */
+            ph[5] = ms(avg_cyc[PROF_VU1WAIT] + avg_cyc[PROF_FLIP]);                      /* present */
+            printf("PROF phases avg ms: sim_a %d.%02d world %d.%02d emit_map %d.%02d sim_b %d.%02d emit %d.%02d present "
+                   "%d.%02d\n", (int)ph[0], (int)(ph[0] * 100) % 100, (int)ph[1], (int)(ph[1] * 100) % 100, (int)ph[2],
+                   (int)(ph[2] * 100) % 100, (int)ph[3], (int)(ph[3] * 100) % 100, (int)ph[4], (int)(ph[4] * 100) % 100,
+                   (int)ph[5], (int)(ph[5] * 100) % 100);
+        }
         frame_peak.cyc = 0;
         /* Polaris census: this interval's percentiles per pass and for the whole frame, lua0, SPU2 */
         if (n_iv) {

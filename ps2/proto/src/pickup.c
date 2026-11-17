@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "drb.h"
+#include "ui_req.h"
 #include "event.h"
 #include "fx.h"
 #include "hud.h"
@@ -145,7 +146,7 @@ void pickup_got(u32 item, int num)
 static void dialog_close(void)
 {
     if (opened && !menu_open() && !strcmp(drb_screen(), "F25")) {
-        drb_close();
+        ui_req_dialog_close();
         if (detail)
             items_detail_free();
     }
@@ -170,10 +171,10 @@ void pickup_update(float dt)
         return;
     }
     if (!opened) {
-        drb_open("F25", ROWS);
+        ui_req_dialog_open("F25", ROWS);
         opened = 1;
     }
-    if (drb_step() < 0) {
+    if (ui_req_dialog_step() < 0) {
         printf("pickup: item get dialog failed to load\n");
         dialog_close();
         return;

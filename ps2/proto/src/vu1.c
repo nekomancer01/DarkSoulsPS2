@@ -27,6 +27,7 @@
 #include <math.h>
 #include "render.h"
 #include "vu1.h"
+#include "frame.h"
 
 extern u32 VU1Map_CodeStart __attribute__((section(".vudata")));
 extern u32 VU1Map_CodeEnd __attribute__((section(".vudata")));
@@ -454,6 +455,7 @@ static float last_fog[4];
 
 void vu1_begin(int buffer)
 {
+    frame_draw_check(FE_VU1_BEGIN);
     cur = buffer == 2 ? 2 : buffer & 1;
     chain = cur == 2 ? chain_fx : cur ? chain_chr : chain_map;
     chain_end = cur == 2 ? chain_fx + CHAIN_FX_QW - 4 : cur ? chain_chr + CHAIN_CHR_QW - 4 : chain_map + CHAIN_MAP_QW - 4;
@@ -847,6 +849,7 @@ static unsigned add_calls;
 void vu1_add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k)
 {
+    FRAME_DRAW_STRICT(FE_VU1_ADD);
     vu1_stats.add_ex_n++;
     if (++add_calls % ADD_TICKS_EVERY) {
         add_ex(t, cull, mode, tris, pos, st, col, org, st_k);
@@ -964,6 +967,7 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 void vu1_add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const void *pos, const void *st, const void *col,
                  const void *idx, const float *org, float st_k)
 {
+    FRAME_DRAW_STRICT(FE_VU1_ADD);
     vu1_stats.add_idx_n++;
     if (++add_calls % ADD_TICKS_EVERY) {
         add_idx(t, cull, mode, tris, nv, pos, st, col, idx, org, st_k);
@@ -1142,6 +1146,7 @@ int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
 void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const void *pa, const void *pb,
                   const void *nrm, const void *st_or_col, int spec_k, const void *ms)
 {
+    FRAME_DRAW_STRICT(FE_VU1_ADD);
     vu1_skin_add_pkt(t, t != NULL, cull, tris, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
 }
 
@@ -1151,6 +1156,7 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
 void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tint, const void *pa, const void *pb,
                       const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes)
 {
+    FRAME_DRAW_STRICT(FE_VU1_ADD);
     if (tris <= 0)  /* an UNPACK of 0 vectors would take 256 */
         return;
     /* The unpacks must match the data. A V4_8 colour unpack of an st stream (texture missing) took n of its 2n words,
