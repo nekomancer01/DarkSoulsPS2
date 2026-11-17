@@ -42,6 +42,8 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
            triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
+Next to it, <hzn.bin>.far.npz (build only): the crown cards and the picture-layer backdrop left out of hzn.bin, for
+tools/farpano.py.
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
 HZN_VIS=0 no visibility cut; HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
@@ -96,6 +98,11 @@ TEX_MEAN = float(os.environ.get("HZN_TEX_MEAN", 1.0))
 # bare trunk and branches: Firelink's great tree from the Undead Burg bonfire, where the game shows its crown against
 # the sky (2026-11-13). Ground tufts and bushes stay out (they are below CROWN_H). ASSUMED numbers
 CROWN_H = float(os.environ.get("HZN_CROWN_H", 4.0))
+# ... but only in what the other blocks see (tools/farpano.py: the far panorama, 100 m and more away): in the block's
+# own horizon, drawn from 40 m and wherever its coarse level is late, the solid cards read as black boxes over Firelink's
+# graveyard (Ame's report 2026-11-17 t 85.1), where the textured cut-out leaves are drawn once the level is in.
+# HZN_CROWN_OWN=1: in the block's own horizon too (2026-11-13 .. 11-17)
+CROWN_OWN = os.environ.get("HZN_CROWN_OWN", "0") == "1"
 CROWN_R = float(os.environ.get("HZN_CROWN_R", 8.0))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
@@ -156,6 +163,12 @@ def texture_rgba(b, tex_off, t):
     return pal[idx].reshape(h, w, 4)
 
 
+LAST_CROWN = [np.zeros(0, bool)]
+# build: (crown cards, picture-layer backdrop) as (P, C, draw-group set) for main's sidecar <hzn>.far.npz, which
+# tools/farpano.py reads: what the other blocks' far panoramas show of this block beyond its own horizon
+FAR_SIDE = []  # coarse_tris: which of its triangles are crown cards (foliage, CROWN_H)
+
+
 def coarse_tris(b):
     """-> P (n, 3, 3) float64 corners, RGB (n, 3, 3) float baked colour (0..255), keep (n,) bool, backdrop (n,) bool
     (from CHUNK_BACKDROP chunks), the map's cells, the set of cells with covered chunks"""
@@ -166,7 +179,7 @@ def coarse_tris(b):
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
     nav = nav_points(b) if CROWN_H > 0 else np.zeros((0, 3))
-    Ps, Cs, Ks, Bs, Ds, cov = [], [], [], [], [], set()
+    Ps, Cs, Ks, Bs, Ds, Rs, cov = [], [], [], [], [], [], set()
     cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
         if ce[8] & 0x80000000:  # a later near part (no resident chunks)
@@ -242,6 +255,8 @@ def coarse_tris(b):
             Ks.append(opaque)
             Bs.append(np.full(ntri, bool(fl & CHUNK_BACKDROP)))
             Ds.append(np.full(ntri, cdg[j] if j < len(cdg) else 0, np.int64))
+            Rs.append(np.full(ntri, crown))
+    LAST_CROWN[:] = [np.concatenate(Rs) if Rs else np.zeros(0, bool)]
     if not Ps:
         z = np.zeros(0, bool)
         return np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), z, z, np.zeros(0, np.int64), cells, cov
@@ -722,8 +737,13 @@ def build(b):
     """-> (hzn.bin bytes, stats dict)"""
     assert b[:4] == b"DSM5", "horizon: not a DSM5 map.bin"
     P, C, keep, bd, dg, cells, cov = coarse_tris(b)
+    crown = LAST_CROWN[0] & keep if len(P) else np.zeros(0, bool)
+    pano = pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0]) & keep if PANO and len(P) else np.zeros(len(P), bool)
+    FAR_SIDE[:] = [(P[crown], C[crown], np.asarray(dg)[crown]), (P[pano], C[pano], np.asarray(dg)[pano])]
+    if not CROWN_OWN and len(P):  # the crowns go to the other blocks' far panoramas only (tools/farpano.py)
+        keep = keep & ~crown
     if PANO and len(P):  # the far backdrop the picture layers draw (tools/pano.py bake)
-        keep = keep & ~pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0])
+        keep = keep & ~pano
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)
@@ -866,6 +886,10 @@ def main():
     out, st = build(b)
     with open(dst, "wb") as f:
         f.write(out)
+    (cp, cc, cs), (pp, pc, ps) = FAR_SIDE or [(np.zeros((0, 3, 3)),) * 2 + (np.zeros(0, np.int64),)] * 2
+    with open(dst + ".far.npz", "wb") as f:
+        np.savez_compressed(f, crown_p=cp.astype(np.float32), crown_c=cc.astype(np.uint8), crown_s=cs.astype(np.int64),
+                            pano_p=pp.astype(np.float32), pano_c=pc.astype(np.uint8), pano_s=ps.astype(np.int64))
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
           f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
           f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
