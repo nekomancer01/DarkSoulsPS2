@@ -48,7 +48,7 @@
  * MS_LEND_NEAR_ALL    | 1        | fallback | -DMS_LEND_NEAR_ALL=0                          | mapstream_i.h   | near parts may take all the pools' idle room; 0 = at most MS_LEND_NEAR_KB
  * MS_DEFRAG_LEND      | 1        | fallback | -DMS_DEFRAG_LEND=0                            | mapstream_i.h   | MS_DEFRAG moves groups into the pools' idle room too; 0 = item pages only
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
- * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
+ * MS_HOLD_INFLIGHT    | 0        | tune     | -DMS_HOLD_INFLIGHT=3                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 with WORLD_SEAM_BUNDLE (its lite set is one disc run), 3 without
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
  * MS_READ_BY_CLASS    | 0        | fallback | -DMS_READ_BY_CLASS=1                          | mapstream.c     | 1 = hard-tier reads go out by class, not nearest first
  * MS_ORPHAN           | 1        | fallback | -DMS_ORPHAN=0                                 | mapstream.c   | a closing block's reads are cancelled without waiting; 0 = mapstream_close waits for them
@@ -64,9 +64,11 @@
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
+ * WORLD_SEAM_BUNDLE   | 1        | make     | -DWORLD_SEAM_BUNDLE=0                         | mapstream.c   | block packs lite set first in read order (make WORLD_SEAM_BUNDLE=), map reads held while a lite set loads; 0 = old order, MS_HOLD_INFLIGHT 3
  * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
  * WORLD_FAR_RESERVE   | 1        | fallback | -DWORLD_FAR_RESERVE=0                         | world.c       | a buffer of the largest far panorama reserved at boot for when the heap has no room; 0 = heap only
  * WORLD_WANT_3D       | 1        | fallback | -DWORLD_WANT_3D=0                             | world.c       | wanted blocks read nearest first counting the height range; 0 = x / z only
+ * WORLD_REACH         | 1        | fallback | -DWORLD_REACH=0                               | world.c       | neighbours wanted by walking time to their seam (world.bin v5 reach table) against the measured turn-on time; 0 = the links' load masks alone (runtime: option set WORLD_REACH 0)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
@@ -163,6 +165,7 @@
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
+ * ENEMY_ROOT_Y        | 1        | fallback | -DENEMY_ROOT_Y=0                              | enemy.c       | root-motion height inside TAE IGNORE_GRAVITY windows (Taurus Demon's 9061 jump down); 0 = flat root motion
  * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move (runtime: option set SEP_CARRY 0)
  * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | enemy.c       | no ESD / Lua

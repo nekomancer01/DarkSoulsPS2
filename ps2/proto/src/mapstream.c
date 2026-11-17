@@ -1118,8 +1118,21 @@ static void plan_(const float *pos)
  * within the draw radius that are not in, by what keeps them out: the plan's cut (no room by its count), a refusal
  * (blocked after "no room"), the visibility cut, or simply the disc (queued / reading). */
 #define MS_FLOW_FRAMES 60u
+/* WORLD_SEAM_BUNDLE (Makefile, default 1; TECH_DEBT world-16): a block pack holds the entries world.c reads to turn it
+ * on first and in read order, so a lite set is one run of the disc, and no map read goes out while it loads: a map read
+ * in between took the head away from that run and back (two seeks per read). ISO world_route (2026-11-17): block turn-on
+ * median 1.86 -> 1.0-1.14 s, far seeks 483 / 472 -> 394 / 361. 0: the old pack order, map reads go on MS_HOLD_INFLIGHT
+ * at a time (the lite set was spread over its pack: four far seeks per turn-on whatever the map reader did) */
+#ifndef WORLD_SEAM_BUNDLE
+#define WORLD_SEAM_BUNDLE 1
+#endif
+#if WORLD_SEAM_BUNDLE
+#define MS_HOLD_DEFAULT 0
+#else
+#define MS_HOLD_DEFAULT 3  /* ASSUMED */
+#endif
 #ifndef MS_HOLD_INFLIGHT
-#define MS_HOLD_INFLIGHT 3  /* ASSUMED; -DMS_HOLD_INFLIGHT=0: no map read while a lite set loads, as before */
+#define MS_HOLD_INFLIGHT MS_HOLD_DEFAULT  /* map reads in flight while a lite set loads */
 #endif
 static void flow_log(const float *pos)
 {

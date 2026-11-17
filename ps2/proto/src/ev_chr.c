@@ -242,7 +242,23 @@ void ev_chr_update(float dt)
 {
     player_hit_t += dt;
     for (int i = 0; i < nchr; i++)
-        chr[i].hit_t += dt;
+        chr[i].hit_t += dt, chr[i].force_age += dt;
+}
+
+/* 2003[18] Force Animation Playback on a character (enemy.c ev_apply plays it: the boss entries, e.g. the Taurus
+ * Demon's 9061 jump down in m10_01 event 11015382, which waits for it before the AI goes on). Only for entities a
+ * placement carries (enemy_entity / the anim the character's chr.bin has): other ids stay the caller's stub. */
+int ev_chr_force_anim(int entity, int anim, int loop, float *len)
+{
+    *len = 0;
+    if (enemy_entity(entity, NULL, NULL, NULL, NULL) < 0)
+        return 0;
+    EvChr *c = rec(entity);
+    if (!c)
+        return 0;
+    c->force_anim = anim, c->force_loop = loop, c->force_serial++, c->force_age = 0;
+    *len = enemy_entity_anim_length(entity, anim);
+    return 1;
 }
 
 /* "chr ID enable|ai|immortal|invincible|cmd SLOT V|team V|hit" and "expect chr ID off|dead|team|ai|aireq SLOT|
@@ -294,6 +310,10 @@ int ev_chr_test(const char *cmd, int *pass, int *fail)
             got = idx >= 0 ? dead : -999;
         else if (!strcmp(f, "hp"))  /* HP ratio in percent */
             got = idx >= 0 ? (int)(hp * 100 + 0.5f) : -999;
+        else if (!strcmp(f, "ybelow"))  /* 1 when its feet are below y V (the Taurus Demon's drop onto the bridge) */
+            got = idx >= 0 ? p.y < (float)v : -999, v = 1;
+        else if (!strcmp(f, "anim"))  /* the event anim it was last told to play (2003[18]) */
+            got = c ? c->force_anim : -1;
         else
             return 0;
         int ok = got == v;
