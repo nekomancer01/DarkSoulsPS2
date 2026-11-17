@@ -680,8 +680,10 @@ static int chunk_hidden(const Ctx *c, unsigned i, const float *e, const float *f
 
 /* every block-0 unit visible from eye e: c->seen[u] == c->stamp. Occluders within NEAR_FIRST m go first (bit 30 of
  * the list), then the tiles bound the rest; the order of depth writes changes nothing (the buffer keeps the maximum). */
-static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist, unsigned char *fm)
+static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist, unsigned char *fm, const unsigned char *row)
 {
+    /* row (the cell's row so far, or NULL): its units need no test; a face with nothing left to test draws nothing */
+#define SEEN_ROW(u) (row && (row[(u) >> 3] >> ((u) & 7) & 1))
     for (unsigned j = 0; j < nlist; j++) {
         unsigned i = list[j] & 0x3FFFFFFFu;
         fm[j] = (unsigned char)box_faces(ch[i].mn, ch[i].mx, e);
@@ -691,9 +693,15 @@ static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist, unsig
         memset(c->zb, 0, sizeof(float) * R * R);
         c->tvalid = 0;
         unsigned n = 0;
+        unsigned nt = 0;
         for (unsigned j = 0; j < nlist; j++)
-            if (fm[j] >> f & 1)
+            if (fm[j] >> f & 1) {
+                unsigned i = list[j] & 0x3FFFFFFFu;
                 list[nlist + n++] = list[j];
+                nt += i < nself && !SEEN_ROW(ch[i].unit);
+            }
+        if (!nt)
+            continue;
         for (int pass = 0; pass < 2; pass++) {
             unsigned since = 0;
             for (unsigned j = 0; j < n; j++) {
@@ -711,10 +719,11 @@ static void sample(Ctx *c, const float *e, unsigned *list, unsigned nlist, unsig
         }
         for (unsigned j = 0; j < n; j++) {
             unsigned i = list[nlist + j] & 0x3FFFFFFFu;
-            if (i < nself && c->seen[ch[i].unit] != c->stamp && !(c->tvalid && chunk_hidden(c, i, e, fb, 1)))
+            if (i < nself && c->seen[ch[i].unit] != c->stamp && !SEEN_ROW(ch[i].unit) && !(c->tvalid && chunk_hidden(c, i, e, fb, 1)))
                 draw_chunk(c, i, e, fb, 1);
         }
     }
+#undef SEEN_ROW
 }
 
 /* ---- samples ---- */
@@ -965,19 +974,44 @@ static int gpu_setup(int res)
     return 1;
 }
 
+/* the nearest (far = 0) or farthest (far = 1) depth of box mn..mx along cube face f's axis from e (FB[f]'s z axis is a
+ * signed unit axis) */
+static inline float face_z(const float *mn, const float *mx, const float *e, int f, int far)
+{
+    for (int k = 0; k < 3; k++)
+        if (FB[f][k] != 0) {
+            float a = FB[f][k] > 0 ? mn[k] - e[k] : e[k] - mx[k], b = FB[f][k] > 0 ? mx[k] - e[k] : e[k] - mn[k];
+            return far ? b : a;
+        }
+    return 0;
+}
+
 static void gpu_bake(int per_cell, unsigned long long *tested)
 {
+    const char *oc = getenv("PVS_OCC_CULL");
+    const int occ_cull = !(oc && *oc == '0');
     int W = gpu_words();
     /* every camera sampled: (cell, camera) */
     unsigned ncam = 0;
     for (unsigned i = 0; i < ncell; i++)
         ncam += cells[i].n < (unsigned)per_cell ? cells[i].n : (unsigned)per_cell;
     unsigned *cc = malloc(sizeof(unsigned) * (ncam ? ncam : 1)), *cs = malloc(sizeof(unsigned) * (ncam ? ncam : 1)), k = 0;
-    for (unsigned i = 0; i < ncell; i++) {
-        unsigned m = cells[i].n < (unsigned)per_cell ? cells[i].n : (unsigned)per_cell;
-        for (unsigned s2 = 0; s2 < m; s2++)
-            cc[k] = i, cs[k] = s2, k++;
-    }
+    /* camera s of every cell before camera s + 1 of any (PVS_ROUNDS=0: a cell's cameras in a row): a test chunk whose
+     * unit the cell's row already has is not drawn again (the row is the OR of its cameras), so later rounds draw
+     * little more than what no camera of the cell has seen yet. The same rows */
+    const char *rv = getenv("PVS_ROUNDS");
+    const int rounds = !(rv && *rv == '0');
+    if (rounds) {
+        for (unsigned s2 = 0; s2 < (unsigned)per_cell; s2++)
+            for (unsigned i = 0; i < ncell; i++)
+                if (s2 < cells[i].n)
+                    cc[k] = i, cs[k] = s2, k++;
+    } else
+        for (unsigned i = 0; i < ncell; i++) {
+            unsigned m = cells[i].n < (unsigned)per_cell ? cells[i].n : (unsigned)per_cell;
+            for (unsigned s2 = 0; s2 < m; s2++)
+                cc[k] = i, cs[k] = s2, k++;
+        }
     enum { B = 64 };  /* cameras per batch (pvs_gpu.c LCAMS): its command lists stay small under tools/q's address cap */
     unsigned *lst[B], nlst[B];
     unsigned *off = malloc(sizeof(unsigned) * (12 * B + 1));
@@ -1002,24 +1036,63 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
 #pragma omp parallel
         {
             unsigned *list = malloc(sizeof(unsigned) * (nch ? nch : 1));
-            unsigned char *fm = malloc(nch + 1);
+            unsigned char *fm = malloc(nch + 1), *om = malloc(nch + 1);
 #pragma omp for schedule(dynamic, 1)
             for (int c = 0; c < nb; c++) {
                 const Cam *cm = &cells[cc[b0 + c]].cam[cs[b0 + c]];
+                const unsigned char *crow = rounds ? cells[cc[b0 + c]].row : NULL;  /* (written only between batches) */
                 unsigned nl = draw_list(cm->e, cm->b, cm->cm, list), n = 0;
+                /* bit 30 (the CPU path's near-first flag, unused here) = not tested: a unit the cell has already seen.
+                 * Such a chunk stays in the list only as an occluder */
+                {
+                    unsigned w2 = 0;
+                    for (unsigned j = 0; j < nl; j++) {
+                        unsigned i = list[j] & 0x3FFFFFFFu, v = list[j] & ~0x40000000u;
+                        if (crow && i < nself && (crow[ch[i].unit >> 3] >> (ch[i].unit & 7) & 1)) {
+                            if (!(v >> 31))
+                                continue;
+                            v |= 0x40000000u;
+                        }
+                        list[w2++] = v;
+                    }
+                    nl = w2;
+                }
                 for (unsigned j = 0; j < nl; j++)  /* (instanced: face 0's lists stand for all six) */
                     fm[j] = inst ? 1 : (unsigned char)box_faces(ch[list[j] & 0x3FFFFFFFu].mn, ch[list[j] & 0x3FFFFFFFu].mx, cm->e);
                 unsigned *o = malloc(sizeof(unsigned) * (12 * (size_t)nl + 13)), cnt[12] = {0};
+                /* occluder faces (om): only faces with something to test, and only occluders not wholly behind every
+                 * test of that face (they cannot hide a test fragment: the depth image keeps the nearest occluder and
+                 * a test passes in front of it). The same bits; PVS_OCC_CULL=0 draws them all */
+                float tz[6];
+                for (int f = 0; f < 6; f++)
+                    tz[f] = -1e30f;
+                for (unsigned j = 0; j < nl; j++) {
+                    unsigned i = list[j] & 0x3FFFFFFFu;
+                    if (i >= nself || (list[j] >> 30 & 1) || !ch[i].ntri)
+                        continue;
+                    for (int f = 0; f < 6; f++)
+                        if (fm[j] >> f & 1)
+                            tz[f] = fmaxf(tz[f], inst ? 1e30f : face_z(ch[i].mn, ch[i].mx, cm->e, f, 1));
+                }
+                for (unsigned j = 0; j < nl; j++) {
+                    unsigned i = list[j] & 0x3FFFFFFFu;
+                    om[j] = 0;
+                    if (!(list[j] >> 31) || !ch[i].ntri)
+                        continue;
+                    for (int f = 0; f < 6; f++)
+                        if ((fm[j] >> f & 1) &&
+                            (!occ_cull || (tz[f] > -1e30f && (inst || face_z(ch[i].mn, ch[i].mx, cm->e, f, 0) <= tz[f] * 1.001f + 0.01f))))
+                            om[j] |= (unsigned char)(1u << f);
+                }
                 /* list q = 2 f (occluders of face f) or 2 f + 1 (tests): counted, then filled */
                 for (unsigned j = 0; j < nl; j++) {
                     unsigned i = list[j] & 0x3FFFFFFFu;
                     if (!ch[i].ntri)
                         continue;
-                    for (int f = 0; f < 6; f++)
-                        if (fm[j] >> f & 1) {
-                            if (list[j] >> 31) cnt[2 * f]++;
-                            if (i < nself) cnt[2 * f + 1]++;
-                        }
+                    for (int f = 0; f < 6; f++) {
+                        if (om[j] >> f & 1) cnt[2 * f]++;
+                        if ((fm[j] >> f & 1) && i < nself && !(list[j] >> 30 & 1)) cnt[2 * f + 1]++;
+                    }
                 }
                 unsigned st[13];
                 st[0] = 13;
@@ -1032,11 +1105,10 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
                     unsigned i = list[j] & 0x3FFFFFFFu;
                     if (!ch[i].ntri)
                         continue;
-                    for (int f = 0; f < 6; f++)
-                        if (fm[j] >> f & 1) {
-                            if (list[j] >> 31) o[wr[2 * f]++] = i;
-                            if (i < nself) o[wr[2 * f + 1]++] = i;
-                        }
+                    for (int f = 0; f < 6; f++) {
+                        if (om[j] >> f & 1) o[wr[2 * f]++] = i;
+                        if ((fm[j] >> f & 1) && i < nself && !(list[j] >> 30 & 1)) o[wr[2 * f + 1]++] = i;
+                    }
                 }
                 for (int q = 0; q < 13; q++)
                     o[q] = st[q];  /* header: the 12 lists' starts and the end, from 13 */
@@ -1044,7 +1116,7 @@ static void gpu_bake(int per_cell, unsigned long long *tested)
                 lst[c] = o, nlst[c] = n;
                 memcpy(eye[c], cm->e, sizeof eye[c]);
             }
-            free(list), free(fm);
+            free(list), free(fm), free(om);
         }
         size_t tot = 0;
         for (int c = 0; c < nb; c++)
@@ -1244,6 +1316,8 @@ int main(int argc, char **argv)
         goto sampled;
     }
 #endif
+    const char *rvc = getenv("PVS_ROUNDS");
+    const int rounds_cpu = !(rvc && *rvc == '0');  /* (sample(): units the cell has seen are not tested again) */
 #pragma omp parallel
     {
         Ctx c = {malloc(sizeof(float) * (R * R + 8)), calloc(nun, sizeof(unsigned)), NULL, 0, malloc(sizeof(float) * TW * TW), 0};
@@ -1257,7 +1331,7 @@ int main(int argc, char **argv)
                 const Cam *cm = &ce->cam[s];
                 unsigned nl = draw_list(cm->e, cm->b, cm->cm, list);
                 c.stamp++;
-                sample(&c, cm->e, list, nl, fm);
+                sample(&c, cm->e, list, nl, fm, rounds_cpu ? ce->row : NULL);
                 for (unsigned u = 0; u < nun; u++)
                     if (c.seen[u] == c.stamp)
                         ce->row[u >> 3] |= 1 << (u & 7);
