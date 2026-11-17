@@ -32,6 +32,7 @@ void simplify_free(sresult *R);
 void simplify_set_envelope(double pad);
 void simplify_set_guard(double qmin, double flip_cos);
 void simplify_set_area_guard(double frac);
+void simplify_set_area_mask(const unsigned char *mask);
 void simplify_set_shape(double tol);
 void simplify_set_shape_cost(double k);
 void simplify_set_place(int on);
@@ -224,6 +225,7 @@ typedef struct {
     unsigned char *locked;
     double *scale;
     double *weight;       /* structure weight per position (struct_weight) or NULL */
+    unsigned char *amask; /* per position: the area guard applies (mx_simp_area_mask), or NULL: everywhere */
     int kind;             /* 0 no cells, 1 "far", 2 cell key */
     long long ckey[3];
     sresult *log;
@@ -282,8 +284,10 @@ static void run_job(void *vc, long long i)
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 #endif
+    simplify_set_area_mask(j->amask);
     j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, j->weight, h->sat,
                               h->border_w, h->seam_w, h->seam_k2, h->ak2, h->min_cos, j->amesh);
+    simplify_set_area_mask(NULL);
     mx_ok(j->log, 1);
 #if MX_TIMING
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -377,8 +381,10 @@ static void run_seam(void *vc, long long i)
 {
     seam_ctx *c = vc;
     sjob *j = c->jobs + i;
+    simplify_set_area_mask(j->amask);
     j->log = simplify_run_grp(j->npos, j->pos, j->nattr, j->wpos, j->ntri, j->tris, j->locked, j->scale, NULL, INFINITY,
                               c->h->border_w, c->h->seam_w, c->h->seam_k2, 0.0, c->h->min_cos, j->amesh);
+    simplify_set_area_mask(NULL);
     mx_ok(j->log, 1);
 }
 
@@ -808,6 +814,11 @@ MX_API mx_simp *mx_simp_new(int nm, const double *P, const long long *poff, cons
             j->locked[p] = njk[j->pkid[p]] > 1;
             j->scale[p] = 1.0 / (D[o] * D[o]);
         }
+        if (g_amask_in) {
+            j->amask = MX_NEW(unsigned char, j->npos ? j->npos : 1);
+            for (int p = 0; p < j->npos; p++)
+                j->amask[p] = g_amask_in[poff[j->pmesh[p]] + j->ppi[p]];
+        }
     }
     free(AP), free(D), free(njk);
     mx_tick("locks+struct_weight");
@@ -1019,6 +1030,9 @@ MX_API void mx_simp_envelope(double pad) { simplify_set_envelope(pad); }
 /* the triangle guard for the next mx_simp_new (tools/native/simplify.c g_qmin / g_flip_cos); qmin 0, flip_cos -2: off */
 MX_API void mx_simp_guard(double qmin, double flip_cos) { simplify_set_guard(qmin, flip_cos); }
 MX_API void mx_simp_area_guard(double frac) { simplify_set_area_guard(frac); }
+/* the area guard's positions (one byte per position of P, as mx_simp_new's; NULL: all), read by the next mx_simp_new */
+static const unsigned char *g_amask_in;
+MX_API void mx_simp_area_mask(const unsigned char *mask) { g_amask_in = mask; }
 
 /* the guard's shape tolerance in metres for the next mx_simp_new (tools/native/simplify.c g_shape_tol); 0: off */
 MX_API void mx_simp_shape(double tol) { simplify_set_shape(tol); }
@@ -1404,7 +1418,7 @@ MX_API void mx_simp_free(mx_simp *h)
     for (int i = 0; i < h->njobs; i++) {
         sjob *j = h->jobs + i;
         free(j->pos), free(j->pmesh), free(j->ppi), free(j->pkid), free(j->wpos), free(j->amesh), free(j->aw);
-        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->out), free(j->oid), free(j->fail), free(j->rpos);
+        free(j->tris), free(j->locked), free(j->scale), free(j->weight), free(j->amask), free(j->out), free(j->oid), free(j->fail), free(j->rpos);
         if (j->log)
             simplify_free(j->log);
     }

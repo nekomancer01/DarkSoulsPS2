@@ -1027,7 +1027,7 @@ def loose_pieces(MX, meshes, P, poff, W, woff, T, toff, keep, nav_v, nav_t, spaw
         owner = np.floor(np.nan_to_num(((lo + hi) / 2)[pcl], posinf=0.0, neginf=0.0) / mapcfg.CHUNK_GRID).astype(np.int64)
     print(f"pieces: {n} ({int((pr >= 0).sum())} loose, at most {mapcfg.WS_DROP_DIAG:g} m across, in "
           f"{len(np.unique(pcl[pr >= 0]))} clusters), {time.time() - t0:.1f} s", flush=True)
-    return dict(pp=pp, cost=cost, owner=owner, poff=poff)
+    return dict(pp=pp, cost=cost, owner=owner, poff=poff, loose=pr >= 0)
 
 
 BUDGET_REPORT = []  # solve_budget results, written next to map.bin (map.bin.budget.json)
@@ -1085,7 +1085,17 @@ def simplify_meshes_c(MX, meshes, spawn, nav_v, nav_t, src, out, eps_fixed, floo
                             mapcfg.WS_NEAR_R if far_shape else floor or mapcfg.NEAR)
         if far_shape:
             drop["cost"] = drop["cost"] / mapcfg.WS_FAR_DROP_K ** 2
-    h = new_handle()
+    # the area guard (SIMPLIFY_AREA_GUARD) on the loose pieces' positions only: the boards, planks and shutters it is for
+    # (without the pieces, none: the guard on the whole structure is too dear)
+    amask = np.zeros(max(len(P), 1), np.uint8)
+    if drop is not None and mapcfg.SIMPLIFY_AREA_GUARD > 0 and len(P):
+        pp = drop["pp"][:len(P)]
+        amask[:len(P)] = (pp >= 0) & (drop["loose"][np.maximum(pp, 0)])
+    MX.mx_simp_area_mask(a(amask))
+    try:
+        h = new_handle()
+    finally:
+        MX.mx_simp_area_mask(None)
     try:
         st = np.zeros(3, i64)
         MX.mx_simp_stats(h, a(st))

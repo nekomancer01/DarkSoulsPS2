@@ -192,6 +192,9 @@ static int amap_get(S *s, int key, int *val) {
 
 /* attr_map(u, v): returns 0 when the attribute map is inconsistent (Python: amap None) */
 static double g_alost;  /* the area guard (simplify_set_area_guard, below) */
+/* the positions the area guard applies to (the caller's job, per thread; NULL: all) */
+static _Thread_local const unsigned char *t_amask;
+void simplify_set_area_mask(const unsigned char *mask) { t_amask = mask; }
 static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out) {
     s->removed.n = s->keep.n = s->amk.n = s->amv.n = s->vkeep.n = 0;
     iv_sort(&s->vt[u]);
@@ -308,7 +311,8 @@ static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out
     s->aring = aring;
     /* the guard: a surface cut away, not simplified (the area lost around u and v so far, against the source area
      * they stand for) */
-    if (g_alost > 0 && s->alost[u] + s->alost[v] + s->lost > g_alost * (s->aown[u] + s->aown[v])) return 0;
+    if (g_alost > 0 && (!t_amask || t_amask[u] || t_amask[v]) &&
+        s->alost[u] + s->alost[v] + s->lost > g_alost * (s->aown[u] + s->aown[v])) return 0;
     s->shape = shape;
     s->dlocv = dlocv;
     *torn_out = torn;
@@ -338,7 +342,9 @@ void simplify_set_guard(double qmin, double flip_cos) { g_qmin = qmin > 0 ? qmin
  * boards (window shutters, crate planks) first fold flat into a double card, then lose a corner at zero quadric error:
  * a corner collapse cuts away about half its own neighbourhood (Undead Burg m2270B1 shutters: 24 -> 4 triangles at
  * 12 px, drawn as dark wedges in the window; Ame's play test 2026-11-16). Collapses inside a surface or along a straight
- * border change the area by little; the global area term (AREA_K) costs +34 % triangles for the same picture. */
+ * border change the area by little; the global area term (AREA_K) costs +34 % triangles for the same picture.
+ * simplify_set_area_mask: only collapses touching these positions (export_map: the loose pieces, WS_DROP's mx_pieces;
+ * on all of the structure the guard put the Undead Asylum's near level 12 % of its spots over budget). */
 static double g_alost = 0.0;
 void simplify_set_area_guard(double frac) { g_alost = frac > 0 ? frac : 0.0; }
 /* g_shape_tol (metres, 0: off; needs the per-attribute source mesh agrp): a triangle may not reach further than this
