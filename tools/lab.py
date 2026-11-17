@@ -14,7 +14,20 @@ gcc with -m32) from Python, and compare a recorded PCSX2 run (test option `recor
       Long traces: the same sequence of states with each change within one frame, the end position within --end-cm.
       Always reported: the first frame more than 1 mm apart (how far the Lab drifts from the console).
 
-The commands are lab/lab_main.c's (test-script names where one exists)."""
+  lab.py run SCRIPT... [--area A] [--build B] [--state STATE_LOG [--end-cm 1]] [-v]
+      runs each test script (tests/*.txt) in the Lab through the game's own interpreter (src/testscript.c) and prints
+      per script: pass / fail, the checks that ran (a script whose checks all needed something the Lab lacks shows
+      none), the commands that are presentation only there (shot, stats, loadscreen; pad presses other than start reach
+      no menu), the failures (TEST
+      error lines, a spawn outside the area's collision, a stub whose result the simulation reads back) and the
+      presentation stubs reached. Saves go to build/host/save (never the console tests' build/save), emptied once per
+      invocation: `run tests/save_write.txt tests/save_check.txt` is the save round trip (tests/save_roundtrip.sh).
+      --state: the script run against the console's own run of it (its option record .state log): the same state
+      sequence and the end position within --end-cm (tests/det_walk_open.txt: 0.04 cm). Frame counts differ (the
+      console's boot frames), so the sequence is compared without frame numbers.
+
+The commands are lab/lab_main.c's (test-script names where one exists). The Lab is a 32-bit host program: on the
+distrobox run lab.py through `distrobox-host-exec` (the container has no 32-bit loader)."""
 import argparse
 import os
 import subprocess
@@ -117,6 +130,107 @@ def compare(lab_states, ps2_states, short, end_cm, start=0):
     return rep
 
 
+PRESENTATION = {"shot": "screenshot / GS dump", "stats": "frame-time segment", "loadscreen": "loading screen"}
+
+
+def group_errors(errors):
+    """the same message on many lines once, with its line numbers"""
+    import re
+    seen = {}
+    for e in errors:
+        m = re.match(r"TEST error line (\d+): (.*)", e)
+        key = m.group(2) if m else e
+        seen.setdefault(key, []).append(m.group(1) if m else None)
+    out = []
+    for k, ls in seen.items():
+        ls = [l for l in ls if l]
+        out.append(k if not ls else f"line {ls[0]}: {k}" if len(ls) == 1 else f"lines {', '.join(ls[:6])}"
+                   f"{' ...' if len(ls) > 6 else ''} ({len(ls)}x): {k}")
+    return out
+
+
+def run_script(build, area, script, max_frames=None, state_log=None, end_cm=1.0):
+    """one script in a fresh Lab: the report dict (pass, checks, errors, presentation, stubs, end); with state_log
+    (the console run's option record .state log) also the state sequence and the end position against it"""
+    build = os.path.abspath(os.path.join(ROOT, build))
+    args = [os.path.join(build, "host", "lab"), build, area, os.path.abspath(script), str(max_frames or 0)]
+    if state_log:
+        args.append("states")
+    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
+    lines = p.stdout.splitlines()
+    rep = {"script": os.path.relpath(os.path.abspath(script), os.getcwd()), "checks": [], "errors": [],
+           "presentation": {}, "readback": [], "stubs": [], "end": None, "done": False, "log": lines}
+    for s in lines:
+        if s.startswith("TEST check ") and s.endswith(" ok"):
+            rep["checks"].append(s[len("TEST check "):-len(" ok")])
+        elif s.startswith("TEST ") and "check " in s and " ok" in s and "error" not in s:
+            rep["checks"].append(s[len("TEST "):])
+        elif s.startswith("TEST error") or s.startswith("error "):
+            rep["errors"].append(s)
+        elif s.startswith("TEST spawn ") and " MISS " in s:
+            rep["errors"].append(s + f"  (outside {area}'s collision: pass --area)")
+        elif s.startswith("TEST DONE"):
+            rep["done"] = True
+        elif s.startswith("lab frames "):
+            rep["end"] = s[len("lab "):]
+        elif s.startswith("stub "):
+            kind, n, name = s.split(" ", 3)[1:]
+            (rep["readback"] if kind == "readback" else rep["stubs"]).append(f"{name} x{n}")
+    if not os.path.exists(script):
+        rep["errors"].append(f"no script {script}")
+    else:
+        with open(script) as f:
+            for line in f:
+                w = line.split("#")[0].split()
+                if not w:
+                    continue
+                if w[0] in PRESENTATION:
+                    rep["presentation"][w[0]] = rep["presentation"].get(w[0], 0) + 1
+                if w[0] == "pad" and "start" not in w[1:]:  # no menu open in the Lab: lab_main.c run_script
+                    rep["presentation"]["pad"] = rep["presentation"].get("pad", 0) + 1
+                if w[:2] == ["option", "noenemies"]:
+                    rep["noenemies"] = True
+    rep["pass"] = p.returncode == 0 and rep["done"] and not rep["errors"] and not rep["readback"]
+    if state_log:
+        lab = [parse_state(s) for s in lines if s.startswith("state ")]
+        ps2 = [parse_state(s) for s in open(state_log) if s.strip()]
+        seq = lambda ss: [s["state"] for i, s in enumerate(ss) if i == 0 or ss[i - 1]["state"] != s["state"]]
+        d = sum((a - b) ** 2 for a, b in zip(lab[-1]["pos"], ps2[-1]["pos"])) ** 0.5 if lab and ps2 else None
+        same = seq(lab) == seq(ps2)
+        rep["console"] = {"same_states": same, "state_changes": len(seq(ps2)) - 1,
+                          "end_cm": round(100 * d, 3) if d is not None else None,
+                          "frames": {"lab": len(lab), "console": len(ps2)}}
+        rep["pass"] = rep["pass"] and same and d is not None and d * 100 <= end_cm
+    return rep
+
+
+def print_run(rep, verbose):
+    print(f"{'PASS' if rep['pass'] else 'FAIL'} {rep['script']}")
+    print(f"  checks run: {len(rep['checks'])}" + ("" if rep["checks"] else
+          "  (none: the script passes by running to its end)"))
+    for c in rep["checks"]:
+        print(f"    {c}")
+    if rep["presentation"]:
+        print("  presentation only in the Lab: " + ", ".join(f"{k} x{v}" for k, v in rep["presentation"].items()))
+    if not rep.get("noenemies"):
+        print("  note: the console runs this script with enemies; the Lab has none yet (Polaris 1.7c-3)")
+    for e in group_errors(rep["errors"]):
+        print(f"  error: {e}")
+    for r in rep["readback"]:
+        print(f"  readback stub (the simulation depends on it): {r}")
+    if rep["stubs"]:
+        print("  presentation stubs: " + ", ".join(rep["stubs"]))
+    if not rep["done"]:
+        print("  error: the script did not reach its end")
+    if rep["end"]:
+        print(f"  end: {rep['end']}")
+    if "console" in rep:
+        print(f"  against the console run: {rep['console']}")
+    if verbose:
+        for s in rep["log"]:
+            print(f"  | {s}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -127,7 +241,26 @@ def main():
     c.add_argument("--build", default="build")
     c.add_argument("--short", action="store_true", help="the short-trace gate: 1 cm every frame, same states")
     c.add_argument("--end-cm", type=float, default=50.0, help="long traces: the end position bound")
+    r = sub.add_parser("run")
+    r.add_argument("scripts", nargs="+")
+    r.add_argument("--area", default="m10_02_00_00")
+    r.add_argument("--build", default="build")
+    r.add_argument("--max-frames", type=int)
+    r.add_argument("--state", help="one script: the console run's .state log (option record); the state sequence must"
+                   " match and the end position be within --end-cm")
+    r.add_argument("--end-cm", type=float, default=1.0)
+    r.add_argument("-v", action="store_true", help="the whole Lab output per script")
     a = ap.parse_args()
+    if a.cmd == "run":
+        import shutil
+        shutil.rmtree(os.path.join(ROOT, a.build, "host", "save"), ignore_errors=True)
+        fails = 0
+        for sc in a.scripts:
+            rep = run_script(a.build, a.area, sc, a.max_frames, a.state, a.end_cm)
+            print_run(rep, a.v)
+            fails += not rep["pass"]
+        print(f"lab run: {len(a.scripts) - fails} passed, {fails} failed")
+        return 1 if fails else 0
     with Lab(a.build, a.area) as lab:
         got = lab.replay(a.trace)
         stubs = lab.stubs()

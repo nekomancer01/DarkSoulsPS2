@@ -228,22 +228,7 @@ static void phase_input(Frame *f)
         MEM_LEGACY(TEST) test_input(&f->in, pl, &f->cam_yaw, &f->cam_pitch, dt, f->demo);
     test_build_input(&f->in, pl, &f->cam_yaw, &f->cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 
-    f->cam_yaw += f->in.cx * 2.5f * dt;
-    {   /* lock-on: the camera turns to put the target behind the player (LockCamParam row 0; turn rate ASSUMED) */
-        float tp[3];
-        if (player_lock_target(pl, tp)) {
-            float want = atan2f(tp[0] - pl->pos.x, tp[2] - pl->pos.z), d = want - f->cam_yaw;
-            while (d > 3.14159265f) d -= 6.2831853f;
-            while (d < -3.14159265f) d += 6.2831853f;
-            f->cam_yaw += d * (dt * 6 < 1 ? dt * 6 : 1);
-            static int lg;
-            if (test_active() && !(lg++ % 30))
-                printf("lock: cam %.2f want %.2f player %.2f target %.1f %.1f\n", f->cam_yaw, want, pl->yaw, tp[0], tp[2]);
-        }
-    }
-    f->cam_pitch += f->in.cy * 1.5f * dt;
-    /* LockCamParam row 0: rotRangeMinX -40 degrees (camera below the target, looking up) */
-    f->cam_pitch = f->cam_pitch < -0.698f ? -0.698f : f->cam_pitch > 1.2f ? 1.2f : f->cam_pitch;
+    cam_input(pl, &f->in, &f->cam_yaw, &f->cam_pitch, dt);  /* (src/cam_input.c: the Lab runs it too) */
 }
 
 static void phase_sim_a(Frame *f)
