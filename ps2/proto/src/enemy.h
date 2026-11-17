@@ -39,6 +39,8 @@ void enemy_status(char *buf, int n);
 int enemy_view(int index, V3 *pos, float *height, float *yaw);
 /* EE RAM free (sbrk headroom + malloc free list), for the HUD / load messages */
 unsigned enemy_ram_free(void);
+/* the capsule pushes of the enemies on the player since the player last moved (CHR_PUSH_WEIGHT; player.c zeroes it) */
+extern float enemy_player_push[2];
 /* EMEVD (src/event.c), by MSB entity id: placement index (-1 = not in the roster) with position, dead, HP ratio and
  * whether it is updated (enabled and near); enable / disable (not updated, drawn or hit) per cause bit (1 enable
  * state, 2 backread removed: off while either is set), kill (HP 0, death anim) */

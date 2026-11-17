@@ -199,6 +199,9 @@ STOP=
 trap 'STOP=1' INT TERM
 TTY=; [ -t 0 ] && TTY=1
 while kill -0 "$PID" 2>/dev/null && [ -z "$STOP" ]; do
+    # the host's load beside the game (other builds or tests slow PCSX2 down: frames that look fine in the EE log
+    # then play at 70 %; Ame's report 2026-11-17 21:31 "periodic hitches" during another tree's 14-job build)
+    printf '%s %s\n' "$(now)" "$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)" >> "$WORK/load.txt"
     if [ -n "$FOR" ] && python3 -c "import sys; sys.exit(0 if $(now) >= $FOR else 1)"; then break; fi
     shot
     if [ -n "$TTY" ]; then
@@ -258,6 +261,17 @@ print(info, '\n')
 marks = os.path.join(work, 'marks.txt')
 print('== marks')
 print(open(marks).read() if os.path.exists(marks) else '  (none)\n')
+ld = os.path.join(work, 'load.txt')
+if os.path.exists(ld):
+    rows = [l.split() for l in open(ld).read().splitlines()]
+    rows = [(float(a), float(b)) for a, b in (r for r in rows if len(r) == 2)]
+    if rows:
+        cpus = os.cpu_count() or 1
+        busy = [t for t, v in rows if v > cpus * 0.75]
+        print(f'== host load (1-min load average, {cpus} threads): mean {sum(v for _, v in rows) / len(rows):.1f}, '
+              f'max {max(v for _, v in rows):.1f}' + (f'; over 75 % of the threads from {busy[0]:.0f} s to {busy[-1]:.0f} s '
+              f'({len(busy)} samples): PCSX2 may have run slow there, not the game' if busy else ''))
+        print()
 print('== hitch summary (tools/hitchsum.py, one row per 5 min of game time, last row the whole run)')
 r = subprocess.run([sys.executable, '-I', hitchsum, log], capture_output=True, text=True)
 print(r.stdout or r.stderr or '  (no hitch: lines: the game did not reach the world, or an older build)')

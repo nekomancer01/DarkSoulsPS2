@@ -77,6 +77,11 @@
  * A load counts twice the model: its model.bin buffer takes the heap when the arena has no room, beside the compact
  * copy (the Taurus Demon's load took RAM to 278 KB under the bridge, ISO 2026-11-06) */
 #define STREAM_RAM_FLOOR (1536u << 10)
+#ifndef CHR_PUSH_WEIGHT
+#define CHR_PUSH_WEIGHT 1  /* the player / enemy capsule push shared by NpcParam weight (0 = the enemy takes it all) */
+#endif
+#define PLAYER_WEIGHT 100.0f  /* kg (ASSUMED: the human NpcParam rows) */
+float enemy_player_push[2];  /* this frame's capsule pushes on the player (player.c constrain walks them) */
 #ifndef ENEMY_TMP_GENTLE
 #define ENEMY_TMP_GENTLE 1  /* arena_get: never clear drawn cells while the heap has room (0 = the old order) */
 #endif
@@ -93,7 +98,7 @@
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
-/* chr.bin v12 (tools/export_chr.py) */
+/* chr.bin v13 (tools/export_chr.py) */
 typedef struct {
     char magic[4];
     unsigned version, anims, windows, variants, anim_off, win_off, root_off, var_off, hide_bits;
@@ -116,8 +121,10 @@ typedef struct {
     float def_type_pct[3];    /* NpcParam def_slash / def_blow / def_thrust: % on def_phys against typed attacks */
     float nose_dist, ear_ang_x, ear_ang_y;  /* NpcThinkParam (read by the AI) */
     int skip_arrival_visible_check;
+    float weight;             /* NpcParam weight (kg): how far the player's capsule pushes it (CHR_PUSH_WEIGHT) */
+    int pad[3];
 } ChrVar;
-_Static_assert(sizeof(ChrVar) == 256, "export_chr.py chr.bin variant record");
+_Static_assert(sizeof(ChrVar) == 272, "export_chr.py chr.bin variant record");
 typedef struct { int id; float length; unsigned first_win, nwin, first_root, nroot; int first_y; } ChrAnim;
 _Static_assert(sizeof(ChrAnim) == 28, "export_chr.py chr.bin anim record");
 typedef struct {
@@ -641,7 +648,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 12 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -2396,7 +2403,23 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < na; i++) {
         if (!act[i]->ct->drawable)
             continue;
-        separate(act[i], pl->pos, COL_PLAYER_R, 1.0f);
+        {
+            /* CHR_PUSH_WEIGHT (default on; 0 = the enemy takes the whole push, the old path): the overlap is
+             * shared by weight, the enemy moving PLAYER_WEIGHT / (both) of it and the player the rest (Havok
+             * character proxies push each other by mass: the Taurus Demon, NpcParam weight 500 kg, was shoved around
+             * like a hollow, Ame's report 2026-11-17 21:31 t 352.8). PLAYER_WEIGHT ASSUMED: the player's own row is
+             * not decoded; most human NpcParam rows say 100 kg */
+            float w = act[i]->var->weight > 1 ? act[i]->var->weight : PLAYER_WEIGHT;
+            float share = CHR_PUSH_WEIGHT ? PLAYER_WEIGHT / (PLAYER_WEIGHT + w) : 1.0f;
+            Enemy *e = act[i];
+            float dx = pl->pos.x - e->pos.x, dz = pl->pos.z - e->pos.z, d = sqrtf(dx * dx + dz * dz);
+            float min = e->var->radius + COL_PLAYER_R;
+            if (CHR_PUSH_WEIGHT && !e->cc.dead && fabsf(e->pos.y - pl->pos.y) <= e->var->height && d < min && d > 1e-3f) {
+                float k = (min - d) * (1 - share) / d;
+                enemy_player_push[0] += dx * k, enemy_player_push[1] += dz * k;
+            }
+            separate(e, pl->pos, COL_PLAYER_R, share);
+        }
         for (int j = i + 1; j < na; j++) {
             if (!act[j]->ct->drawable)
                 continue;
