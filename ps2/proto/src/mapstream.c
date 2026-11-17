@@ -393,7 +393,8 @@ unsigned ms_cancel_kb;
 #define MS_DL_FPS 30.0f      /* mapstream_update calls a second (vel is per call) */
 /* MS_DL_FIRST (default 1, with MS_DEADLINE): a panicking item already late (inside its radius) with two or more reads
  * ahead of it in the disc server goes out ahead of them (pack_req_read_first, as coltile.c's tiles under the feet):
- * the server sweeps its queue by LSN, so a late near part could wait for all MS_INFLIGHT reads. */
+ * the server sweeps its queue by LSN, so a late near part behind the head (or in another pack) could wait for all
+ * MS_INFLIGHT reads. One ahead of the head in the same pack goes the normal way: the sweep passes it. */
 #ifndef MS_DL_FIRST
 #define MS_DL_FIRST 1
 #endif
@@ -799,8 +800,12 @@ static int q_scan_pick(int ra_ok, int *first)
         }
         if (pi >= 0) {
             dl_panic++;
-            /* already late with reads ahead of it in the server: ahead of them */
-            *first = MS_DL_FIRST && pdl <= 0 && ms_nrd >= 2;
+            /* already late with reads ahead of it in the server: ahead of them, unless it lies ahead of the head in
+             * the same pack, where the server's LSN sweep reaches it on the way (jumping the queue there only added a
+             * seek out and one back: ISO 2026-11-17, ~100-130 firsts a run = +7-18 % EE seeks on the Burg tests) */
+            int prk;
+            scan_key(&q[pi], &prk);
+            *first = MS_DL_FIRST && pdl <= 0 && ms_nrd >= 2 && prk != 0;
             return pi;
         }
         if (gi >= 0)
