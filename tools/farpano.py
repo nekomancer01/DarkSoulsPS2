@@ -200,22 +200,38 @@ def sample(views, eye, deg, NV, S, f):
     import warnings
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # (cells that show nothing: all NaN)
-        cd = np.where(show, np.nanmedian(dc, 2), np.nan)                 # the cell's depth
+        cd = np.full(show.shape, np.nan)                                 # the cell's depth
+        cd[show] = np.nanmedian(dc[show], 1)  # (shown cells only: no all-NaN rows, no 2 M warnings)
         ccol = np.where(show[..., None], cc.sum(2) / np.maximum(cnt, 1)[..., None], 0.0)
     # corners: mean depth / colour of the cells around them within JUMP of the cell asking (a corner shared by a near
     # and a far cell gets one position for each side)
     V, VC, T, vid = [], [], [], {}
     azc = np.arange(naz + 1) / naz * 2 * math.pi
     elc = (np.arange(nel + 1) / nel * 2 - 1) * math.radians(EL)
-    for i, j in zip(*np.nonzero(show)):
+    # per shown cell and corner the mean depth / colour of its (up to 4) neighbours within JUMP, summed in the order the
+    # old per-cell loop appended them (a skipped one adds an exact 0), so r and c are the same floats
+    CI, CJ = np.nonzero(show)
+    CORN = ((0, 0), (0, 1), (1, 1), (1, 0))
+    rs, cols = [], []
+    for di, dj in CORN:
+        sd, sc, n = np.zeros(len(CI)), np.zeros((len(CI), 3)), np.zeros(len(CI))
+        for ai in (0, 1):
+            ii = CI + di - 1 + ai
+            inr = (ii >= 0) & (ii < nel)
+            iic = np.clip(ii, 0, nel - 1)
+            for bj in (0, 1):
+                jj = (CJ + dj - 1 + bj) % naz
+                dn, d0 = cd[iic, jj], cd[CI, CJ]
+                with np.errstate(invalid="ignore"):
+                    ok = inr & show[iic, jj] & (np.maximum(dn, d0) <= JUMP * np.minimum(dn, d0))
+                sd = sd + np.where(ok, dn, 0.0)
+                sc = sc + np.where(ok[:, None], ccol[iic, jj], 0.0)
+                n += ok
+        rs.append((sd / n).tolist()), cols.append(sc / n[:, None])
+    for q, (i, j) in enumerate(zip(CI.tolist(), CJ.tolist())):
         quad = []
-        for di, dj in ((0, 0), (0, 1), (1, 1), (1, 0)):
-            ds, cs = [], []
-            for ii in (i + di - 1, i + di):
-                for jj in ((j + dj - 1) % naz, (j + dj) % naz):
-                    if 0 <= ii < nel and show[ii, jj] and max(cd[ii, jj], cd[i, j]) <= JUMP * min(cd[ii, jj], cd[i, j]):
-                        ds.append(cd[ii, jj]), cs.append(ccol[ii, jj])
-            r, c = float(np.mean(ds)), np.mean(cs, 0)
+        for k, (di, dj) in enumerate(CORN):
+            r, c = rs[k][q], cols[k][q]
             a, e = azc[j + dj], elc[i + di]
             key = (i + di, (j + dj) % naz, round(r, 2))
             if key not in vid:
