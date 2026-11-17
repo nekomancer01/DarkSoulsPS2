@@ -99,6 +99,27 @@ def rect_d(rs, x, z):
     return d
 
 
+def block_masks(game, names, nbr, blocks, i):
+    """block i's [load, keep] masks per collision triangle (collision.bin order)"""
+    b, m, bb, rect = blocks[i]
+    masks = []  # per triangle [load, keep]
+    sub = crop(game, b, m)
+    for part, tris in sub:
+        for t in tris:
+            load = keep = 0
+            for j, (_, mj, bj, rj) in enumerate(blocks):
+                if nbr[i] >> j & 1 and mj == m and rj and rect:
+                    d = min(rect_d(rj, p[0], p[2]) for p in t)
+                    load |= (d <= LOAD_CELLS * area.CELL) << j
+                    keep |= (d <= KEEP_CELLS * area.CELL) << j
+            masks.append([load, keep])
+    # between MSBs: DSR's ConnectCollision parts (tools/worldlinks.py, shared with the map exporters' spot budgets)
+    for t, mk in enumerate(worldlinks.cross_masks(game, names, nbr, i, sub)):
+        masks[t][0] |= mk
+        masks[t][1] |= mk
+    return masks
+
+
 def main():
     game, out, boot, gen = sys.argv[1:5]
     names = area.WORLDS.get(boot, [boot])
@@ -120,22 +141,18 @@ def main():
             if i != j and gap <= LINK_GAP and (ma == mb or connect_parts(game, ma, mb) or connect_parts(game, mb, ma)):
                 nbr[i] |= 1 << j
     links, ranges = [], []
+    # the blocks' link masks are independent of each other (each block's collision crop is ~1-10 s of Python): worked
+    # out side by side in forked processes, put together in block order as before. EXPORT_WORLD_JOBS=1: one at a time
+    jobs = int(os.environ.get("EXPORT_WORLD_JOBS", "0")) or min(n, os.cpu_count() or 1)
+    args = [(game, names, nbr, blocks, i) for i in range(n)]
+    if jobs > 1 and n > 1:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(min(jobs, n)) as pool:
+            per = pool.starmap(block_masks, args, chunksize=1)
+    else:
+        per = [block_masks(*a) for a in args]
     for i, (b, m, bb, rect) in enumerate(blocks):
-        masks = []  # per triangle [load, keep]
-        sub = crop(game, b, m)
-        for part, tris in sub:
-            for t in tris:
-                load = keep = 0
-                for j, (_, mj, bj, rj) in enumerate(blocks):
-                    if nbr[i] >> j & 1 and mj == m and rj and rect:
-                        d = min(rect_d(rj, p[0], p[2]) for p in t)
-                        load |= (d <= LOAD_CELLS * area.CELL) << j
-                        keep |= (d <= KEEP_CELLS * area.CELL) << j
-                masks.append([load, keep])
-        # between MSBs: DSR's ConnectCollision parts (tools/worldlinks.py, shared with the map exporters' spot budgets)
-        for t, mk in enumerate(worldlinks.cross_masks(game, names, nbr, i, sub)):
-            masks[t][0] |= mk
-            masks[t][1] |= mk
+        masks = per[i]
         first = len(links)
         t = 0
         while t < len(masks):
