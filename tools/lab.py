@@ -109,6 +109,13 @@ def trace_start(trace):
     return start
 
 
+def trace_held(trace):
+    """frames the console's world held the player (record flag 4: a block or tile still loading)"""
+    import struct
+    b = open(trace, "rb").read()
+    return sum(1 for i in range((len(b) - 20) // 64) if struct.unpack_from("<I", b, 20 + 64 * i + 40)[0] & 4)
+
+
 def compare(lab_states, ps2_states, short, end_cm, start=0):
     ps2 = {s["frame"]: s for s in ps2_states}
     pairs = [(s, ps2[s["frame"]]) for s in lab_states if s["frame"] in ps2 and s["frame"] >= start]
@@ -297,6 +304,7 @@ def main():
     start = trace_start(a.trace)
     rep = compare(got, ps2, a.short, a.end_cm, start)
     rep["from_frame"] = start
+    rep["held_frames"] = trace_held(a.trace)  # (the console's disc waits in the reference: many = a poor reference)
     rep["stubs"] = stubs
     for k, v in rep.items():
         print(f"{k}: {v}")

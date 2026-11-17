@@ -55,9 +55,16 @@ with its block (`COL_TILES=0`: world.c's own fallback reads the whole `collision
 of it), never page by page. A wanted block can still stay off by world.c's own rules (no slot, `world: settle
 stopped: no room`); `lab.py run` lists those as findings, since the console does the same.
 
+Time: `ticks()` (the EE counter) moves 1 ms per read in the Lab (ticks.h `LAB`, lab_stubs.c lab_ticks):
+deterministic, so world.c's settle loop reaches its stuck timer and 30 s cap as on the console instead of spinning.
+Nothing in simulate measures gameplay time with it (1.7a moved that to `frame_clock`): in the Lab's modules it feeds
+world.c's settle / stuck timers and load-time log lines, the save writer's and objects' / events' timing logs, and
+model.c's skin-build budget (render).
+
 The console's world holds the player at a block or tile still loading (`world_hold`); the Lab never has to. Recorded
 traces carry those frames (flag 4) and a replay holds the player on them too, so a Burg walk compares frame by frame
-(`det_burg2`: 92 held frames, 0.01 cm). A script run has no trace, so a Burg script's timing can differ from the
+(`det_burg2`: 92 held frames, 0.01 cm; `lab.py compare` prints `held_frames`: a recording with many is a poor
+reference). The replay's hold is a link wrap (`--wrap=world_hold`, the Lab's build only). A script run has no trace, so a Burg script's timing can differ from the
 console's by the frames the console was held.
 
 The bonfire's menu and dialogs are bonfire.c's own state and run (script `pad` presses reach them as frame.c routes
