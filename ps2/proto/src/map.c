@@ -437,14 +437,19 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
  * around them, the map included: in the Depths' sewers (ambient ~(3, 8, 6), light 1.5-5.5 m (100, 77, 33)) it is the
  * only light there is. The port baked the map without it and gave it to the characters only (map_char_light), so the
  * walls stayed black around a lit player (Ame's playtest 2026-11-16). Here the opaque map chunks within its reach are
- * drawn a second time after the relief pass: colour = the light at each vertex (|N.L| from the triangle normals),
- * texture x colour added to the frame (Cs x As + Cd: cut-out texels add nothing), Z tested,
+ * drawn a second time after the relief pass: colour = the light's falloff at each vertex, texture x colour added to
+ * the frame (Cs x As + Cd: cut-out texels add nothing), Z tested,
  * not written, no fog (the light ends within 8 m). The light sits PLIGHT_H above the feet (ASSUMED: DSR hangs it on
- * the character model; the characters' own lighting measures from the feet). */
+ * the character model; the characters' own lighting measures from the feet). No N.L, as map_char_light adds it to
+ * the characters' ambient: per-vertex normals cost ~4 ms of EE a frame at the Firelink graveyard (the map streams have
+ * no normals; corner order is no facing either, about half of the Depths' floor triangles wind downwards). */
 #ifndef MAP_PLIGHT
 #define MAP_PLIGHT 1
 #endif
 #define PLIGHT_H 1.0f
+#ifndef PLIGHT_RATIO
+#define PLIGHT_RATIO 60  /* % of the area's character ambient the light must reach (ASSUMED) */
+#endif
 #define PLIGHT_MAX 96
 static struct {
     const unsigned char *base;
@@ -453,7 +458,7 @@ static struct {
     short tex, level;
 } pl_item[PLIGHT_MAX];
 static int pl_n, pl_on;
-static float pl_pos[3], pl_rgb[3], pl_b, pl_e;
+static float pl_pos[3], pl_rgb[3], pl_b, pl_e, pl_e2, pl_inv;  /* reach, its square, 1 / (end - begin) */
 static unsigned map_plight_batches;  /* batches of the last pass (debugger) */
 
 static void pl_begin(void)
@@ -463,7 +468,12 @@ static void pl_begin(void)
         return;
     const FogRow *r = &mp_pfog_row[mp_fog_area];
     pl_b = r->pl_begin * 0.1f, pl_e = r->pl_end * 0.1f;
-    pl_on = pl_e > pl_b && (r->pl_rgb[0] | r->pl_rgb[1] | r->pl_rgb[2]);
+    int pl_max = r->pl_rgb[0] > r->pl_rgb[1] ? r->pl_rgb[0] : r->pl_rgb[1], amb_max = r->amb[0] > r->amb[1] ? r->amb[0] : r->amb[1];
+    pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
+    /* only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at Firelink for
+     * a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
+    pl_on = pl_e > pl_b && pl_max * 100 >= amb_max * PLIGHT_RATIO && pl_max > 0;
+    pl_e2 = pl_e * pl_e, pl_inv = pl_on ? 1.0f / (pl_e - pl_b) : 0;
     for (int c = 0; c < 3; c++)
         pl_rgb[c] = r->pl_rgb[c];
     pl_pos[0] = player_feet.x, pl_pos[1] = player_feet.y + PLIGHT_H, pl_pos[2] = player_feet.z;
@@ -485,25 +495,23 @@ static void pl_add(const unsigned char *base, const Chunk *c, unsigned n, int cl
     pl_n++;
 }
 
-/* the light at world point p with unit normal nrm (two-sided: |N.L|) -> u8 x4 colour, alpha 0x80 */
-static u32 pl_col(const float p[3], const float nrm[3], int two)
+/* 1 / sqrt(x) without a divide or sqrt.s (one Newton step: < 0.2 % error): the pass runs it per vertex */
+static inline float pl_rsqrt(float x)
 {
-    float l[3] = {pl_pos[0] - p[0], pl_pos[1] - p[1], pl_pos[2] - p[2]};
-    float d = sqrtf(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]);
-    float att = (pl_e - d) / (pl_e - pl_b);
-    if (att <= 0)
-        return 0x80u << 24;
+    union { float f; u32 u; } v = {x};
+    v.u = 0x5F3759DFu - (v.u >> 1);
+    return v.f * (1.5f - 0.5f * x * v.f * v.f);
+}
+
+/* the light at squared distance d2 (< pl_e2) -> u8 x4 colour, alpha 0x80 */
+static inline u32 pl_col(float d2)
+{
+    float att = d2 > 1e-6f ? (pl_e - d2 * pl_rsqrt(d2)) * pl_inv : 1;
     if (att > 1)
         att = 1;
-    float ndl = d > 1e-3f ? (nrm[0] * l[0] + nrm[1] * l[1] + nrm[2] * l[2]) / d : 1;
-    if (two)
-        ndl = fabsf(ndl);
-    if (ndl <= 0)
-        return 0x80u << 24;
-    float k = att * ndl;
     u32 out = 0x80u << 24;
     for (int c = 0; c < 3; c++) {
-        int v = (int)(pl_rgb[c] * k + 0.5f);
+        int v = (int)(pl_rgb[c] * att + 0.5f);
         out |= (u32)(v > 255 ? 255 : v) << (8 * c);
     }
     return out;
@@ -515,7 +523,6 @@ static void pl_draw(void)
     if (!pl_n)
         return;
     static u32 col[256] __attribute__((aligned(16)));
-    static float vn[256][3];
     GSGLOBAL *gs = gsg;
     /* Cs x As + Cd (As = texel alpha: cut-out texels add nothing), Z tested, not written */
     u64 r[4] = {GS_SETREG_ALPHA(0, 2, 0, 1, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
@@ -531,46 +538,14 @@ static void pl_draw(void)
             continue;
         const short *ps = (const short *)(base + c->pos);
         const float *o = c->org, s = c->step;
-        int two = 1, lit = 0;  /* |N.L|: corner order does not tell the lit side (about half of the Depths' floor
-                                * triangles wind downwards), and a culled back face never shows */
-        if (nv) {  /* indexed: vertex normals from the triangles around each vertex (area weighted) */
-            const unsigned char *ix = base + CHUNK_IDX(c);
-            memset(vn, 0, nv * sizeof vn[0]);
-            for (unsigned t3 = 0; t3 < n; t3++, ix += 4) {
-                const short *a = ps + 3 * ix[0], *b = ps + 3 * ix[1], *cc = ps + 3 * ix[2];
-                float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v[3] = {cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]};
-                float f[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
-                for (int j = 0; j < 3; j++) {  /* (corner order is not a facing: align with the sum so far) */
-                    float *a3 = vn[ix[j]], sg = a3[0] * f[0] + a3[1] * f[1] + a3[2] * f[2] < 0 ? -1.0f : 1.0f;
-                    for (int k = 0; k < 3; k++)
-                        a3[k] += sg * f[k];
-                }
-            }
-            for (unsigned j = 0; j < nv; j++) {
-                const short *q = ps + 3 * j;
-                float p[3] = {o[0] + s * q[0], o[1] + s * q[1], o[2] + s * q[2]};
-                float l = sqrtf(vn[j][0] * vn[j][0] + vn[j][1] * vn[j][1] + vn[j][2] * vn[j][2]);
-                float nr[3] = {0, 1, 0};
-                if (l > 0)
-                    nr[0] = vn[j][0] / l, nr[1] = vn[j][1] / l, nr[2] = vn[j][2] / l;
-                col[j] = pl_col(p, nr, two);
-                lit |= col[j] & 0xF8F8F8;
-            }
-        } else {  /* lists: the face normal at each corner */
-            for (unsigned t3 = 0; t3 < n; t3++) {
-                const short *a = ps + 9 * t3, *b = a + 3, *cc = a + 6;
-                float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v[3] = {cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]};
-                float f[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
-                float l = sqrtf(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-                if (l > 0)
-                    f[0] /= l, f[1] /= l, f[2] /= l;
-                for (int j = 0; j < 3; j++) {
-                    const short *q = a + 3 * j;
-                    float p[3] = {o[0] + s * q[0], o[1] + s * q[1], o[2] + s * q[2]};
-                    col[3 * t3 + j] = pl_col(p, f, two);
-                    lit |= col[3 * t3 + j] & 0xF8F8F8;
-                }
-            }
+        int lit = 0;
+        unsigned nc = nv ? nv : 3 * n;
+        for (unsigned j = 0; j < nc; j++) {
+            const short *q = ps + 3 * j;
+            float d0 = pl_pos[0] - (o[0] + s * q[0]), d1 = pl_pos[1] - (o[1] + s * q[1]), d2 = pl_pos[2] - (o[2] + s * q[2]);
+            float dd = d0 * d0 + d1 * d1 + d2 * d2;
+            col[j] = dd < pl_e2 ? pl_col(dd) : 0x80u << 24;
+            lit |= col[j] & 0xF8F8F8;
         }
         if (!lit)
             continue;
