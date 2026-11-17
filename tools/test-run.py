@@ -76,7 +76,9 @@ WARM_WAIT = 60.0  # s a loaded warm state gets to show the parked ELF before the
 FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
 PROGRESS = 60.0  # s between progress lines
 LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error"
-                        r"|mapstream: alloc .* FAILED|TEST ev expect .*: \S+ FAIL", re.I)
+                        r"|mapstream: alloc .* FAILED|(?-i:TEST \w+ expect .*\bFAIL\b)", re.I)
+# (expect lines: "TEST ev expect ...: <got> FAIL", but also several words before FAIL (mapevents, settled, objbroken
+# "(not found)") and pickup's "FAIL (n)": the old ": \S+ FAIL" let those through as passes, ev_warp 2026-11-18)
 # map.c prints the most cells missing in one frame over each second; more than this is a hole in the world, not a cell
 # arriving a frame late (--cells-missing N, 0 = off)
 CELLS_MISSING = re.compile(r"map: cells missing (\d+)")
