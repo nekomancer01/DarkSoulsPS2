@@ -16,6 +16,7 @@
 #include "vu1.h"
 #include "hitch.h"
 #include "ticks.h"
+#include "cvar.h"
 
 /* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
@@ -199,6 +200,52 @@ typedef struct {
 #define MS_LEND_NEAR_ALL 1
 #endif
 extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) */
+/* MS_LIFE (default 1, runtime switch: option set MS_LIFE 0 = any group in any page, the old placement): items that
+ * stay long and items that go soon are kept in different pages (streaming research idea 5; Johnstone and Wilson, ISMM
+ * 1998: fragmentation comes from size and lifetime mixes the allocator cannot tell apart). The pinned coarse level
+ * (C_PIN0, C_PIN, C_VIEW at the read: kept while the player is within ~48 m) fills item pages from the top down, near
+ * parts and read-ahead from the bottom up, small texture items pages of their own; one pinned 4 KB item in a page of
+ * near parts kept that page from ever being whole again. A page takes its kind when its first group lands; a group
+ * goes to a page of its own kind with a hole first, then to a whole free page while more than MS_TIDY_LO are whole,
+ * then to any page with a hole (the old order), so the split never refuses what the old placement placed. (Small items
+ * from the top and page-sized groups from the bottom, by size alone, was tried on 2026-11-12 and not kept: no-room
+ * refusals 440 -> 515 on taurus; it took whole pages for small items even when the arena was tight.) */
+#ifndef MS_LIFE
+#define MS_LIFE cv_MS_LIFE  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+enum { MS_K_ANY, MS_K_LONG, MS_K_SHORT, MS_K_SMALL };
+#define MS_SMALL_KB 8u  /* texture items up to this are MS_K_SMALL (mip 1 levels: 4 KB) */
+/* MS_TIDY (default 1, runtime switch: option set MS_TIDY 0 = pages emptied only when a read waits for one): a reserve
+ * of whole free item pages, kept by compaction on quiet frames (streaming research idea 4; GTA's PS2 heap,
+ * re3 CMemoryHeap::TidyHeap: a block moves into the smallest free block that fits when that shrinks a hole). When fewer
+ * than MS_TIDY_LO item pages are whole, the emptiest page's groups move into holes of the fullest pages (MS_DEFRAG's
+ * move, its old copies wait for their chains), one page at a time, until MS_TIDY_HI are whole. A near part that
+ * becomes wanted then finds a whole page at once instead of waiting MS_DEFRAG_WAIT frames at the head of the queue or
+ * being refused. Never on a frame that planned or already moved groups for a read, never in a settle, at most one
+ * page (<= 64 KB of EE memcpy, ~0.5 ms ASSUMED) a frame. */
+#ifndef MS_TIDY
+#define MS_TIDY cv_MS_TIDY  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#define MS_TIDY_LO 4u   /* ASSUMED (the research note's marks) */
+#define MS_TIDY_HI 8u
+/* MS_QSCALE (default 1, runtime switch: option set MS_QSCALE 0 = fixed radii): the soft tier's radii shrink while the
+ * arena is under pressure (streaming research idea 12; UE5 Nanite r.Nanite.Streaming.QualityScale). Pressure: a "no
+ * room" refusal since the last plan, or the item pages over MS_QS_FULL % used with nothing whole free. The scale (1 down
+ * to MS_QS_MIN) then drops by MS_QS_DOWN a plan, and climbs back by MS_QS_UP a plan once neither holds. It shrinks only
+ * what the player cannot see go: the near level's read-ahead beyond the draw radius (C_PREF, MS_R0_WANT), the coarse
+ * level wanted out of view beyond the pinned ring (C_FARC) and foliage tufts past MS_QS_GRASS_MIN. The hard tier
+ * (near level within the draw radius, pinned coarse ring, coarse in view, textures, the horizon radius) never moves:
+ * Ame finds untextured geometry close to the player (the horizon standing in for a near cell) very jarring, so nothing
+ * here can bring the horizon or a lower level nearer to the player. */
+#ifndef MS_QSCALE
+#define MS_QSCALE cv_MS_QSCALE  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#define MS_QS_MIN 0.3f
+#define MS_QS_DOWN 0.1f
+#define MS_QS_UP 0.05f
+#define MS_QS_FULL 90u
+#define MS_QS_GRASS_MIN 20.0f  /* m: foliage within this stays wanted at any scale */
+extern float ms_qs;  /* the scale now (1 = full) */
 #ifndef MS_LEND_NEAR_KB
 #define MS_LEND_NEAR_KB 900
 #endif
@@ -237,6 +284,10 @@ extern unsigned ms_lent_n;
 extern unsigned ms_lent_near;
 extern unsigned ms_nx;
 void *ms_g_alloc(unsigned n);
+void *ms_g_alloc_k(unsigned n, int kind);
+unsigned ms_whole_free(void);
+void ms_tidy(void);
+extern unsigned ms_tidy_moves, ms_tidy_kb;
 void *ms_g_alloc_top(unsigned n, unsigned top);
 void *ms_g_alloc_lend(unsigned n);
 void ms_free_report(unsigned out[3][3]);
@@ -257,6 +308,7 @@ extern unsigned ms_pend_frame;
 extern unsigned ms_defrag_moves, ms_defrag_kb;
 void ms_pend_release(void);
 int ms_defrag(unsigned need, unsigned lim, unsigned max_kb);
+int ms_defrag_(unsigned need, unsigned lim, unsigned max_kb, int pool);
 void ms_x_update(void);
 
 static inline int in_chain(unsigned used)

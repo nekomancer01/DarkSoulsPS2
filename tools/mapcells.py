@@ -120,6 +120,54 @@ NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1" and mapcfg.CHUNK_GRID == 32.
 # a part of its own (it starts on a page).
 NEAR_PART = 64 * 1024
 NEAR_PARTS_MAX = 64  # map.c NEAR_PARTS
+# NEAR_CLASSES (default on; NEAR_CLASSES=0 = the greedy cut before 2026-11-17): a cell's parts are cut so each is either
+# "full" (NEAR_FULL_MIN up to a page) or a "tail" of at most NEAR_TAIL, so a page holds one full part and one tail and
+# every hole a dropped part leaves fits another part of its class. The greedy cut filled each part until the next chunk
+# did not fit: almost every part but a cell's last was 40-63 KB and needed a whole free page, while holes of 20-45 KB
+# took none of them (world-14: "page-sized groups (40-63 KB) with 0.3-1.8 MB free in holes"; streaming research idea
+# 3(b)). The parts stay runs of consecutive chunks (map.c / pvs.c read a part's chunks as one number range), so the
+# cut is a shortest path over the cut points: fewest parts in neither class, then fewest parts. A chunk over NEAR_TAIL
+# that cannot sit in a full part is a part of its own whatever its size.
+NEAR_CLASSES = os.environ.get("NEAR_CLASSES", "1") == "1"
+NEAR_TAIL = 16 * 1024
+NEAR_FULL_MIN = NEAR_PART - NEAR_TAIL
+
+
+def near_cut(sizes):
+    """Parts (lists of chunk indices, in order) for chunks of these blob sizes: NEAR_CLASSES' classed cut, else greedy."""
+    n = len(sizes)
+    if not NEAR_CLASSES or sum(sizes) + 63 <= NEAR_PART:
+        parts, cur, cb = [], [], 0
+        for j in range(n):
+            if cur and cb + sizes[j] + 63 > NEAR_PART:
+                parts.append(cur)
+                cur, cb = [], 0
+            cur.append(j)
+            cb += sizes[j]
+        parts.append(cur)
+        return parts
+    INF = (1 << 30, 0)
+    best = [INF] * (n + 1)  # best[i]: (mid parts, parts) for chunks [0, i)
+    prev = [0] * (n + 1)
+    best[0] = (0, 0)
+    for i in range(n):
+        if best[i] == INF:
+            continue
+        b = 0
+        for e in range(i + 1, n + 1):
+            b += sizes[e - 1]
+            if e - 1 > i and b + 63 > NEAR_PART:
+                break
+            t = b + (-b % 64)
+            mid = 0 if (t <= NEAR_TAIL or t >= NEAR_FULL_MIN or e - i == 1) else 1
+            c = (best[i][0] + mid, best[i][1] + 1)
+            if c < best[e]:
+                best[e], prev[e] = c, i
+    parts, e = [], n
+    while e > 0:
+        parts.append(list(range(prev[e], e)))
+        e = prev[e]
+    return parts[::-1]
 CELL_PART = 0x80000000
 
 
@@ -147,14 +195,7 @@ def write_cells(cells, res, all_chunks, nres):
 
         def size(j):  # bytes chunk gid + j adds to a blob: its record + its packet (VIF code qwords, streams)
             return 64 + len(pkts[j][0])
-        parts, cur, cb = [], [], 0
-        for j in range(len(n)):
-            if cur and cb + size(j) + 63 > NEAR_PART:
-                parts.append(cur)
-                cur, cb = [], 0
-            cur.append(j)
-            cb += size(j)
-        parts.append(cur)
+        parts = near_cut([size(j) for j in range(len(n))])
         assert len(parts) <= NEAR_PARTS_MAX, f"cell {key}: {len(parts)} near parts"
         for i in list(range(first, first + len(r))) + [gid + j for j in range(len(n))]:
             CHUNK_ENTRY[i] = len(CELL_SIZES)  # the cell's own (first) entry, also for its later near parts

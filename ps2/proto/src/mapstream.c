@@ -232,6 +232,43 @@ static inline float steady_d2(const MsInst *m, unsigned id, float d2)
     return d > 0 ? d * d : 0;
 }
 
+/* MS_QSCALE (mapstream_i.h): the soft radii at the scale now; the hard tier's radii never change */
+float ms_qs = 1.0f;
+static inline float qs_now(void) { return MS_QSCALE && !ms_settling ? ms_qs : 1.0f; }
+static inline float qs_r0_want(void) { return MS_R0_DRAW + (MS_R0_WANT - MS_R0_DRAW) * qs_now(); }
+static inline float qs_grass_want(void)
+{
+    float r = MS_GRASS_WANT * qs_now();
+    return r > MS_QS_GRASS_MIN ? r : MS_QS_GRASS_MIN;
+}
+/* coarse cells out of view: wanted out to MS_R1_WANT at full scale, down to MS_R1_VIEW (the in-view radius) */
+static inline float qs_farc_r(void) { return MS_R1_VIEW + (MS_R1_WANT - MS_R1_VIEW) * qs_now(); }
+/* once a plan: pressure lowers the scale, none raises it back */
+static void qs_step(void)
+{
+    static unsigned fails0;
+    static int nlog;
+    unsigned f = mapstream_stats.room_fails, fr = 0, tot = ilim() * MS_GPP;  /* (the item pages below ilim) */
+    for (unsigned p = 0; p < ilim(); p++)
+        fr += ms_pfree[p];
+    tot = tot ? tot : 1;
+    int press = f != fails0 || ((tot - fr) * 100u / tot > MS_QS_FULL && !ms_whole_free());
+    fails0 = f;
+    float q = ms_qs;
+    if (!MS_QSCALE)
+        q = 1.0f;
+    else if (press)
+        q = q - MS_QS_DOWN > MS_QS_MIN ? q - MS_QS_DOWN : MS_QS_MIN;
+    else
+        q = q + MS_QS_UP < 1.0f ? q + MS_QS_UP : 1.0f;
+    if ((q < 1.0f || ms_qs < 1.0f) && (q == MS_QS_MIN || q == 1.0f) && q != ms_qs && nlog++ < 200)
+        printf("mapstream: quality scale %.2f (%s): near read-ahead to %.0f m, foliage %.0f m, coarse out of view %.0f m\n",
+               (double)q, press ? "pressure" : "room", (double)(MS_R0_DRAW + (MS_R0_WANT - MS_R0_DRAW) * q),
+               (double)(MS_GRASS_WANT * q > MS_QS_GRASS_MIN ? MS_GRASS_WANT * q : MS_QS_GRASS_MIN),
+               (double)(MS_R1_VIEW + (MS_R1_WANT - MS_R1_VIEW) * q));
+    ms_qs = q;
+}
+
 /* class of item id of instance k with the player at pos; *key ranks it within the class (lower first) */
 static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, float *key)
 {
@@ -257,10 +294,10 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
             if (da < d2)
                 *key = da * vk;
             if (d2 >= sq(MS_R0_KEEP))
-                return da < sq(MS_R0_WANT) ? C_PREF : C_FREE;
+                return da < sq(qs_r0_want()) ? C_PREF : C_FREE;
             d2 = da < d2 ? da : d2;
         }
-        return d2 < sq(MS_R0_FIRST) ? C_NEAR : d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_WANT) ? C_PREF : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
+        return d2 < sq(MS_R0_FIRST) ? C_NEAR : d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(qs_r0_want()) ? C_PREF : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
     }
     unsigned tag = m->rit[id - m->ncell].tag;
     if (tag & MS_RES_TEX) {
@@ -311,7 +348,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
-        return ms_settling ? C_FREE : d2 < sq(MS_GRASS_WANT) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
+        return ms_settling ? C_FREE : d2 < sq(qs_grass_want()) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
     /* (one level of detail per place: plan_ drops this item while its cell's near level stands for it, MS_ONE_LOD) */
     /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
      * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
@@ -341,7 +378,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * view: C_PIN below them */
     if (d2 >= sq(MS_R1_FIRST) && d2 < sq(MS_R1_VIEW) && view)
         return C_VIEW;
-    return d2 < sq(MS_R1_FIRST) ? C_PIN0 : d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? C_FARC : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
+    return d2 < sq(MS_R1_FIRST) ? C_PIN0 : d2 < sq(MS_R1_PIN) ? C_PIN : d2 < sq(MS_R1_WANT) ? (!view ? (d2 < sq(qs_farc_r()) ? C_FARC : C_KEEP) : d2 < sq(MS_R1_VIEW) ? C_VIEW : C_VIEW2)
                                                            : d2 < sq(MS_R1_KEEP) ? C_KEEP : C_FREE;
 }
 /* ---- reads ---- */
@@ -581,6 +618,10 @@ static int issue(void)
                  (w.k != 0 || (w.cls == C_FARC && !(it_res(m, g) && (m->rit[g - m->ncell].tag & MS_RES_TEX)))) &&
                  !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR)));
         int nr = w.cls == C_NEAR || w.cls == C_NEAR2;  /* near parts: the item pages first, lent pages after */
+        /* MS_LIFE: the page kind it goes to (the pinned coarse level stays, near parts and read-ahead go soon) */
+        unsigned gtag = it_res(m, g) ? m->rit[g - m->ncell].tag : 0;
+        int kind = (gtag & MS_RES_TEX) && gb <= (MS_SMALL_KB << 10) ? MS_K_SMALL :
+                   it_res(m, g) && !(gtag & MS_RES_TEX) && (w.cls == C_PIN0 || w.cls == C_PIN || w.cls == C_VIEW) ? MS_K_LONG : MS_K_SHORT;
         if (nr && ms_pools_on && gb <= MS_PAGE &&
             !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))))
             lo = 1;
@@ -589,7 +630,7 @@ static int issue(void)
         if (p)
             ms_lent_n++, lent = 1;
         else
-            p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
+            p = gb <= MS_PAGE ? ms_g_alloc_k(gb, kind) : ms_g_alloc_top(gb, ilim());
         if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_ALL ? ms_lend_room : MS_LEND_NEAR_KB << 10) &&
             (p = ms_g_alloc_lend(gb)))
             ms_lent_n++, ms_lent_near += gb, lent = 2;
@@ -600,7 +641,7 @@ static int issue(void)
             /* one page (or the pages of a group over a page) of items below this one's class, not drawn this frame
              * or the last */
             if (ms_make_window((gb + MS_PAGE - 1) / MS_PAGE, (gb + MS_GRAN - 1) / MS_GRAN, w.cls, NULL))
-                p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
+                p = gb <= MS_PAGE ? ms_g_alloc_k(gb, kind) : ms_g_alloc_top(gb, ilim());
         }
         if (!p && !sent && gb <= MS_PAGE && nq < MS_QUEUE) {
             /* nothing to clear: empty a page by moving its groups (MS_DEFRAG); the read waits at the head of the queue
@@ -743,6 +784,8 @@ static void plan_(const float *pos)
     for (int i = 0; i < ms_nblk; i++)
         if (ms_frame - (unsigned)blk[i].key >= MS_BLOCK_FRAMES)
             blk[i--] = blk[--ms_nblk];
+    if (!ms_settling)
+        qs_step();
     int retry = failed && ms_frame - fail_frame >= fail_wait;
     failed &= !retry;
     /* classes, then the cut: wanted items in rank order (class, then key) until their bytes fill the item pages; the
@@ -1112,11 +1155,13 @@ void mapstream_update(const float pos[3])
     }
     vis_step(ms_settling ? MS_VIS_SETTLE_US : MS_VIS_SLICE_US);  /* a row changed: the job re-plans once through (pvs.c) */
     float dx = pos[0] - scan_pos[0], dy = pos[1] - scan_pos[1], dz = pos[2] - scan_pos[2];
+    int planned = 0;
     if (ms_replan || !scan_frame || ms_frame - scan_frame >= MS_SCAN_FRAMES || dx * dx + dy * dy + dz * dz > sq(MS_SCAN_D)) {
         ms_replan = 0;
         scan_frame = ms_frame;
         memcpy(scan_pos, pos, sizeof scan_pos);
         plan(pos);
+        planned = 1;
     }
     evict_left = MS_EVICT_PASSES;
     defrag_left = 1;
@@ -1129,6 +1174,8 @@ void mapstream_update(const float pos[3])
     while ((!hold || ms_nrd < MS_HOLD_INFLIGHT) && nq && ms_nrd < MS_INFLIGHT && issue())
         ;
     HITCH_END(is, HS_MSIO);
+    if (!planned && defrag_left > 0)  /* MS_TIDY: a quiet frame (no plan, no move for a read) keeps whole pages free */
+        ms_tidy();
     flow_log(pos);
 }
 
