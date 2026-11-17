@@ -62,7 +62,8 @@ typedef struct {
     float spread_k, dist, dist_sqrt; /* Spread, circle Distribution, 1 = sqrt of the radius (DistributionMode 0) */
     u16 fpr, nframes;
     float normal[3];                 /* circle plane normal (the system frame's local Z) */
-    u8 pad2[4];
+    u8 orient, pad2[3];              /* 1: the quad lies in the effect frame (FFX Orientation 2: fog walls) */
+    float qx[3], qy[3];              /* its x / y axes in the effect frame (export_effects FX_ORIENT) */
 } FxSys;
 
 typedef struct { u16 first_ref, n_ref, first_light, n_light; } FxEff;
@@ -223,7 +224,7 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
 static int load_set(GSGLOBAL *gs, const void *blob, int upload)
 {
     hdr = blob;
-    if (!blob || memcmp(hdr->magic, "DSFX", 4) || hdr->version != 1 || sizeof(FxSys) != 280 ||
+    if (!blob || memcmp(hdr->magic, "DSFX", 4) || hdr->version != 2 || sizeof(FxSys) != 304 ||
         sizeof(FxLight) != 88 || sizeof(FxInst) != 60) {
         printf("DSRPROTO fx: %s\n", blob ? "fx.bin bad" : "no fx.bin");
         hdr = 0;
@@ -808,7 +809,7 @@ void fx_draw(void)
         }
         if (!p)
             break;
-        if (FX_VU1 && vu_add(p, s, cen[ord[o].i], s->blend ? VU1_FX_FOG : VU1_FX_ADD))
+        if (FX_VU1 && !s->orient && vu_add(p, s, cen[ord[o].i], s->blend ? VU1_FX_FOG : VU1_FX_ADD))
             continue;
         cur_tex = s->tex, cur_mode = mode, cur_gt = &gtex[s->tex];
         /* curves at the particle's age */
@@ -859,6 +860,29 @@ void fx_draw(void)
                               v0 + (qy[j] > 0 ? 0.5f : ch - 0.5f), col[0], col[1], col[2], col[3]};
             if (inside)
                 qs[j][0] = s0[0] + ox * s1[0], qs[j][1] = s0[1] + oy * s1[1], qs[j][2] = s0[2];
+        }
+        if (s->orient) {
+            /* fixed in the effect frame (FFX Orientation 2: the fog-wall sheets, FUN_1411848b0): each corner at
+             * its own world point, the instance frame (columns) times the system's quad axes */
+            const float *F = inst[p->inst].frame;
+            float ax[3], ay[3];
+            for (int k = 0; k < 3; k++) {
+                ax[k] = F[k] * s->qx[0] + F[3 + k] * s->qx[1] + F[6 + k] * s->qx[2];
+                ay[k] = F[k] * s->qy[0] + F[3 + k] * s->qy[1] + F[6 + k] * s->qy[2];
+            }
+            hx = p->sx * kx, hy = p->sy * ky;
+            inside = 1;
+            for (int j = 0; j < 4; j++) {
+                float ox = (qx[j] * cr - qy[j] * sr) * hx, oy = (qx[j] * sr + qy[j] * cr) * hy;
+                V3 w = v3(p->p[0] + ox * ax[0] + oy * ay[0], p->p[1] + ox * ax[1] + oy * ay[1],
+                          p->p[2] + ox * ax[2] + oy * ay[2]);
+                V3 v = r_view(w);
+                q[j].x = v.x, q[j].y = v.y, q[j].z = v.z;
+                if (v.z <= R_NEAR + 0.05f || !r_point_inside(&v))
+                    inside = 0;
+                else
+                    r_view_to_screen(&v, qs[j]);
+            }
         }
         drawn++;
         if (!inside) {  /* near the camera: clipped triangles, own packets */

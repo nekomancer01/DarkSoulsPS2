@@ -20,7 +20,7 @@ Animations: the ESD essentials (ANIMS) + every anim id the variants' battle / lo
 for variants that use them.
 
 chr.bin (little-endian):
-  header  "DSRC", u32 version 11, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
+  header  "DSRC", u32 version 13, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
           u32 hide_bits (every variant mesh bit used), i32 spine (the first "Spine" bone: it and its descendants
           are the guard pose layer; -1 none; parents come before their children), u32 bones (skeleton bones), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
           the bodies: horizontal distance from the root axis and height, radius included)                    (64 B)
@@ -32,8 +32,9 @@ chr.bin (little-endian):
           f32 def_mag, def_fire, def_thunder (NpcParam), f32 def_slash, def_blow, def_thrust (NpcParam % adjustments of
           def_phys against typed attacks), f32 nose_dist, ear_ang_x, ear_ang_y (deg), i32 skip_arrival_visible_check
           (NpcThinkParam nose_dist, ear_angX, ear_angY, skipArrivalVisibleCheck)                          (256 B)
-  anim    i32 id, f32 length s, u32 first window, u32 windows, u32 first root sample, u32 root samples   (24 B)
-  window  i16 type (ChrActionFlag id, or -1 = attack hit), i16 bone A, i16 bone B, i16 damage level (AtkParam
+  anim    i32 id, f32 length s, u32 first window, u32 windows, u32 first root sample, u32 root samples,
+          i32 first root height (-1 none: only anims with an IGNORE_GRAVITY window that move up or down)    (28 B)
+  window  i16 type (ChrActionFlag id, -1 = attack hit, 10000 + id = TAE 231 event message), i16 bone A, i16 bone B, i16 damage level (AtkParam
           dmgLevel), i32 AtkParam_Npc row, f32 start, end, atkPhys, radius, poise damage (atkSuperArmor),
           f32 a[3], b[3] (capsule ends, bone-local: AtkParam hit0_DmyPoly1 / 2),
           f32 atkPhysCorrection / 100 (0 on the NPC rows read as 1), i32 atkAttribute (1 slash, 2 blow, 3 thrust),
@@ -50,6 +51,7 @@ chr.bin (little-endian):
           space), f32 pivot_child[3] (joint in this body's frame), pivot_parent[3] (in the parent body's frame),
           f32 axis_child[3], axis_parent[3] (the joint's twist axis in each body's frame),
           f32 cone (max angle between the two twist axes, rad), twist_min, twist_max (rad)                 (148 B)
+  height  f32 root y at 30 fps from the anim start, one per root sample of the anims that have one
 Usage: export_chr.py <game dir> <chr id e.g. c2900> <map id> <out dir> [lod 0/1/2] [tex max px] [max bones]"""
 import math, os, struct, sys
 
@@ -71,9 +73,12 @@ ANIMS = [0, 200, 201, 202, 203, 500, 700, 701, 702, 703, 2000, 2001, 2002, 2004,
 SCRIPT_ANIM = [(3000, 3999), (700, 799), (6000, 6999), (9900, 9999)]
 # ChrActionFlag: 5 parry window, 7 disable turning, 8 invincible, 24 super armour, and the enemy ESD gates (exe
 # FUN_140340580 -> ctx+0x19C): 23 bit0 (f107), 11 / 79 bit1 (f118 steps), 86 bit4 (f120 combo continuation);
+# 27 IGNORE_GRAVITY (export_player.py): inside it the root motion's height moves the character (the Taurus Demon's
+# 9061 jump down from its tower, 11.5 m; its 3008 jump attack);
 # 12: the ragdoll takes over (ASSUMED from where it sits: only in the deaths 22xx, ladder falls 16xx and thrown deaths
 # 25xx, near the moment the body reaches the ground; TECH_DEBT enemy-17)
-FLAGS = (5, 7, 8, 11, 12, 23, 24, 79, 86)
+FLAGS = (5, 7, 8, 11, 12, 23, 24, 27, 79, 86)
+EVENT_MSG = 10000  # window type of a TAE 231 event message: 10000 + its id (enemy.c W_EVENT_MSG)
 LODS = {0: 0x0, 1: 0x1000000, 2: 0x2000000}
 PALETTE = 61  # bones one VU1 window holds (vu1.c palette room); above it the unused bones are folded
 MAX_SKELETON = 255  # u8 bone ids (model.bin vertices, compact anims): the highest [max bones]
@@ -281,6 +286,49 @@ def append_compact_anims(path, nbones, anims):
     print(f"  compact anims: {len(blob) - anim_off} bytes for {len(anims)}")
 
 
+def event_anims(game, map_id, entities):
+    """Anim ids the map's events play on these character entities: 2003[18] Force Animation Playback and 2004[09]
+    Set Special Animation(s) (waiting, damage, cancel, death, return), with literal targets and through
+    InitializeEvent arguments (the called event's parameter substitutions applied to its instructions). The boss
+    entries (Taurus Demon 1010700: 11015382 waits in 9001 on the tower, then plays 9061, the jump down to the bridge)
+    are played by these alone: no battle script names them."""
+    import emevd
+    E = emevd.load(map_id, game)
+    C = emevd._common(game)
+    out = set()
+
+    def visit(ev, args):
+        for ii, ins in enumerate(ev.instrs):
+            if (ins.bank, ins.id) not in ((2003, 18), (2004, 9)) or not ins.defn or ins.args is None:
+                continue
+            vals = ins.args
+            if args is not None:
+                subs = [(dst, src, n) for i, dst, src, n, _ in ev.params if i == ii]
+                if not subs:
+                    continue  # literal: counted once by the plain pass
+                raw = bytearray(ins.raw)
+                for dst, src, n in subs:
+                    if src + n <= len(args):
+                        raw[dst:dst + n] = args[src:src + n]
+                try:
+                    vals, _ = emevd.decode_args(ins.defn, bytes(raw))
+                except ValueError:
+                    continue
+            if vals[0] not in entities:
+                continue
+            out.update(v for v in (vals[1:2] if ins.bank == 2003 else vals[1:6]) if isinstance(v, int) and v >= 0)
+
+    for ev in E.events:
+        visit(ev, None)
+    for ev in E.events:
+        for ins in ev.instrs:
+            if (ins.bank, ins.id) == (2000, 0) and ins.args and len(ins.raw) > 8:
+                target = E.by_id.get(ins.args[1]) or C.by_id.get(ins.args[1])
+                if target:
+                    visit(target, ins.raw[8:])
+    return out
+
+
 def think_values(think, npc):
     ex = [0.0] * 24
     for i, f in enumerate(EXCEL):
@@ -318,10 +366,12 @@ def main():
     chr_dir = os.path.join(game, "chr")
     P = souls.game_params(game)
     msb = souls.read(f"{game}/map/MapStudio/{map_id}.msb")
-    pairs = []
-    for model, npc_id, think_id, *_ in enemy_parts(msb, map_id):
+    pairs, entities = [], set()
+    for model, npc_id, think_id, entity, *_ in enemy_parts(msb, map_id):
         if model == cid and (npc_id, think_id) not in pairs:
             pairs.append((npc_id, think_id))
+        if model == cid and entity > 0:
+            entities.add(entity)
     if not pairs:
         raise SystemExit(f"{cid}: no placement in {map_id}")
     variants = []
@@ -391,8 +441,11 @@ def main():
     chr_num = int(cid[1:]) if cid[1:].isdigit() else -1
     throw_anims = {f["defAnimId"] for _, f in P["ThrowParam"].values()
                    if f["AtkChrId"] == 0 and f["DefChrId"] in (chr_num, 0) and f["defAnimId"] > 0}
-    want = sorted(set(ANIMS) | throw_anims | script_anims(game, map_id, goal_ids) |
-                  {t["callHelp_CallActionId"] for _, _, _, t in variants if t["callHelp_CallActionId"] > 0})
+    ev_anims = event_anims(game, map_id, entities) if entities else set()
+    # MAX_ANIMS keeps the first ones: the essentials and the events' anims before the script constants
+    want = sorted(set(ANIMS) | throw_anims | script_anims(game, map_id, goal_ids) | ev_anims |
+                  {t["callHelp_CallActionId"] for _, _, _, t in variants if t["callHelp_CallActionId"] > 0},
+                  key=lambda a: (a not in ANIMS and a not in ev_anims, a))
     offsets = sorted({npc["animIdOffset"] for _, _, npc, _ in variants if npc["animIdOffset"] > 0})
     ids = []
     for aid in want:
@@ -443,7 +496,7 @@ def main():
         names, parents, ref, remap, fold = reduce_skeleton(names, parents, ref, keep)
         mb, shown = build({n: i for i, n in enumerate(names)})
         print(f"  skeleton {full_bones} -> {len(names)} bones (by vertex weight + capsule bones + roots)")
-    anims, info, windows, roots = [], [], [], []
+    anims, info, windows, roots, roots_y = [], [], [], [], []
     ref_full = ha.skeleton(anibnd[skel])[2]
     for pre, aid, full in ids:
         key = f"{pre}_{aid:04d}.hkx"
@@ -456,12 +509,23 @@ def main():
         first_root = len(roots)
         roots += [(x - x0, z - z0, w - w0) for x, _, z, w in root]
         events = tae.get(full, tae.get(aid, {})).get("events", [])
+        # root height (from the anim start) of the anims with an IGNORE_GRAVITY window and some vertical motion
+        y0 = root[0][1] if root else 0
+        if any(et == 0 and p[0] == 27 for et, _, _, p in events) and any(abs(r[1] - y0) > 0.05 for r in root):
+            first_y = len(roots_y)
+            roots_y += [r[1] - y0 for r in root]
+        else:
+            first_y = -1
         length = max([e[2] for e in events] + [(nf - 1) / 30])
         first_win = len(windows)
         for etype, s, e, p in sorted(events, key=lambda e: e[1]):
             if etype == 0 and p[0] in FLAGS:
                 windows.append((p[0], 0, 0, 0, 0, s, e, 0, 0, 0, (0, 0, 0), (0, 0, 0), 1.0, 0, 0, 0, 0, 0, 0,
                                 (0, 0, 0, 0, 0, 0), 0.0, 0.0))
+            elif etype == 231 and p and 0 <= p[0] < 20000:  # event message (EMEVD 4[08] Character Has Event
+                # Message: the Taurus Demon's 3008 / 3009 jump attacks send 710 / 700, m10_01 event 11015386 aligns it)
+                windows.append((EVENT_MSG + p[0], 0, 0, 0, 0, s, e, 0, 0, 0, (0, 0, 0), (0, 0, 0), 1.0, 0, 0, 0, 0, 0,
+                                0, (0, 0, 0, 0, 0, 0), 0.0, 0.0))
             elif etype == 1:  # AttackBehavior: AttackType, AttackIndex, BehaviorJudgeID
                 b = beh.get(200000000 + npc0["behaviorVariationId"] * 1000 + p[2])
                 a = atk.get(b[1]["refId"]) if b and b[1]["refId"] >= 0 else None
@@ -477,15 +541,15 @@ def main():
                                 *(a[f"atk{k}"] * (a[f"atk{k}Correction"] / 100 or 1.0) for k in ("Mag", "Fire", "Thun")),
                                 a["atkStam"] * (a["atkStamCorrection"] / 100 or 1.0), a["disableGuard"],
                                 status_of(P, a), a["knockbackDist"], a["hitStopTime"]))
-        info.append((full, length, first_win, len(windows) - first_win, first_root, len(roots) - first_root))
+        info.append((full, length, first_win, len(windows) - first_win, first_root, len(roots) - first_root, first_y))
 
     os.makedirs(out_dir, exist_ok=True)
     write_model(os.path.join(out_dir, "model.bin"), names, parents, ref, mb, [])
     append_compact_anims(os.path.join(out_dir, "model.bin"), len(names), anims)
-    HDR, VAR, WIN = 64, 256, 116
+    HDR, VAR, WIN = 64, 272, 116
     var_off = HDR
     anim_off = var_off + VAR * len(variants)
-    win_off = anim_off + 24 * len(info)
+    win_off = anim_off + 28 * len(info)
     root_off = win_off + WIN * len(windows)
     rag_off = root_off + 12 * len(roots)
     rag_blob, reach, top = ragdoll_blob(rag, names, full_names, full_parents, full_world)
@@ -504,20 +568,22 @@ def main():
         v += struct.pack("<24f", *think_values(t, npc))
         v += struct.pack("<9fi", npc["def_mag"], npc["def_fire"], npc["def_thunder"], npc["def_slash"], npc["def_blow"],
                          npc["def_thrust"], t["nose_dist"], t["ear_angX"], t["ear_angY"], t["skipArrivalVisibleCheck"])
+        v += struct.pack("<f3i", npc["weight"], 0, 0, 0)  # NpcParam weight (kg): the capsule push share (enemy.c)
         assert len(v) == VAR, len(v)
         var_blob += v
     spine = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
     assert all(p < i for i, p in enumerate(parents)), f"{cid}: a parent after its child (enemy.c guard layer)"
-    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 11, len(info), len(windows), len(variants), anim_off, win_off, root_off,
+    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 13, len(info), len(windows), len(variants), anim_off, win_off, root_off,
                       var_off, hide_bits, spine, len(names), rag_off, len(rag_blob) // RAG_BODY, reach, top)
     assert len(hdr) == HDR
-    body = var_blob + b"".join(struct.pack("<if4I", *i) for i in info)
+    body = var_blob + b"".join(struct.pack("<if4Ii", *i) for i in info)
     body += b"".join(struct.pack("<4hi5f6ffi3ffi2i4f2f", t, ba, bb, lvl, arow, s, e, dmg, rad, poise, *pa, *pb, rate,
                                  attr, *el, stam, noguard, *st, kb, hs)
                      for t, ba, bb, lvl, arow, s, e, dmg, rad, poise, pa, pb, rate, attr, *el, stam, noguard, st, kb, hs
                      in windows)
     body += b"".join(struct.pack("<3f", *r) for r in roots)
     body += rag_blob
+    body += b"".join(struct.pack("<f", y) for y in roots_y)  # root heights: at rag_off + rag bodies * 148
     with open(os.path.join(out_dir, "chr.bin"), "wb") as f:
         f.write(hdr + body)
     print(f"{cid}: {len(variants)} variants {[(n, t) for n, t, _, _ in variants]}, {shown} meshes, {len(mb.tris)} tris, "

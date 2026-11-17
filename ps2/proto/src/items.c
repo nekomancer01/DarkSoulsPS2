@@ -19,6 +19,8 @@ static const Ammo *ammo;
 static int ngoods, nammo;
 static unsigned desc_off, icons_off, icons_size;
 static u16 *icon_ids;         /* icons.bin's id table */
+static const u32 *icon_map;   /* items.bin: (u32 item id, u16 icon, u16 0) sorted by id */
+static int nicon_map;
 static int nicons, icon_bytes, icon_size, icons_data;
 
 /* itemx.bin while a menu is open */
@@ -51,6 +53,8 @@ int items_init(void)
     }
     ngoods = h[2], goods = (const Goods *)(core + h[3]);
     nammo = h[4], ammo = (const Ammo *)(core + h[5]);
+    if (h[6] && h[7] + h[6] * 8 <= size)  /* (id, icon) of every item: the HUD slots (older items.bin: none) */
+        nicon_map = h[6], icon_map = (const u32 *)(core + h[7]);
     unsigned dsize;
     if (!pack_entry_raw(&mp, "desc.bin", &desc_off, &dsize))
         printf("items: desc.bin not stored raw\n");
@@ -76,6 +80,8 @@ int items_init(void)
             }
             if (r != tbytes)
                 nicons = 0;
+        } else {  /* (a silent 0 here hid every item icon for a day: say why) */
+            printf("items: icons.bin header unreadable or version %u (want DSIC 1): no item icons\n", (unsigned)ih[1]);
         }
     }
     printf("items: %d goods, %d ammo rows, %d icons (%d B each), resident %d B\n", ngoods, nammo, nicons, icon_bytes,
@@ -289,6 +295,22 @@ int item_text_done(int *desc)
     text_dst[text_bytes - 1] = 0;
     *desc = text_help;
     return text_state == 2 ? 1 : -1;
+}
+
+int item_icon_of(u32 id)
+{
+    id = ITEM_BASE(id);  /* a weapon's reinforcement level shares the base row's icon */
+    int lo = 0, hi = nicon_map - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (icon_map[2 * m] == id)
+            return (int)(icon_map[2 * m + 1] & 0xFFFF);
+        if (icon_map[2 * m] < id)
+            lo = m + 1;
+        else
+            hi = m - 1;
+    }
+    return -1;
 }
 
 int item_icon_index(int icon)

@@ -77,6 +77,14 @@
  * A load counts twice the model: its model.bin buffer takes the heap when the arena has no room, beside the compact
  * copy (the Taurus Demon's load took RAM to 278 KB under the bridge, ISO 2026-11-06) */
 #define STREAM_RAM_FLOOR (1536u << 10)
+#ifndef CHR_PUSH_WEIGHT
+#define CHR_PUSH_WEIGHT 1  /* the player / enemy capsule push shared by NpcParam weight (0 = the enemy takes it all) */
+#endif
+#define PLAYER_WEIGHT 100.0f  /* kg (ASSUMED: the human NpcParam rows) */
+float enemy_player_push[2];  /* this frame's capsule pushes on the player (player.c constrain walks them) */
+#ifndef ENEMY_TMP_GENTLE
+#define ENEMY_TMP_GENTLE 1  /* arena_get: never clear drawn cells while the heap has room (0 = the old order) */
+#endif
 /* A placement the player cannot meet yet holds its type only within LAZY_LOAD_DIST: one an event keeps off (the Taurus
  * Demon before its trigger, a later-phase NPC, the Asylum's dead-or-alive pairs) or in a draw group the map does not
  * show now (another room / level of the block: drawgrp.c). Within LOAD_DIST every such placement had its model in RAM
@@ -90,7 +98,7 @@
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
-/* chr.bin v7 (tools/export_chr.py) */
+/* chr.bin v13 (tools/export_chr.py) */
 typedef struct {
     char magic[4];
     unsigned version, anims, windows, variants, anim_off, win_off, root_off, var_off, hide_bits;
@@ -113,9 +121,12 @@ typedef struct {
     float def_type_pct[3];    /* NpcParam def_slash / def_blow / def_thrust: % on def_phys against typed attacks */
     float nose_dist, ear_ang_x, ear_ang_y;  /* NpcThinkParam (read by the AI) */
     int skip_arrival_visible_check;
+    float weight;             /* NpcParam weight (kg): how far the player's capsule pushes it (CHR_PUSH_WEIGHT) */
+    int pad[3];
 } ChrVar;
-_Static_assert(sizeof(ChrVar) == 256, "export_chr.py chr.bin variant record");
-typedef struct { int id; float length; unsigned first_win, nwin, first_root, nroot; } ChrAnim;
+_Static_assert(sizeof(ChrVar) == 272, "export_chr.py chr.bin variant record");
+typedef struct { int id; float length; unsigned first_win, nwin, first_root, nroot; int first_y; } ChrAnim;
+_Static_assert(sizeof(ChrAnim) == 28, "export_chr.py chr.bin anim record");
 typedef struct {
     short type, bone_a, bone_b, dmg_level;
     int atk_param;
@@ -138,6 +149,9 @@ _Static_assert(sizeof(ChrWin) == 116, "export_chr.py chr.bin window record");
 #define F_RAGDOLL 12     /* the ragdoll takes over (ASSUMED, export_chr.py FLAGS) */
 #define F_AI_COMBO 23    /* the AI may cancel / chain from here (IsEnableCancelMove) */
 #define F_SUPER_ARMOR 24
+#define EV_MSG_HOLD 0.1f   /* s a TAE event message stays visible to EMEVD 4[08] (ASSUMED, enemy_entity_msg) */
+#define W_EVENT_MSG 10000  /* window type 10000 + id: a TAE 231 event message (export_chr.py EVENT_MSG) */
+#define F_NO_GRAVITY 27  /* IGNORE_GRAVITY (export_player.py FLAG_IGNORE_GRAVITY): root motion sets the height */
 #define F_STEP_B 79
 #define F_COMBO 86       /* -> ctx+0x19C bit4: f120 (next attack of a combo) answers inside it */
 
@@ -157,6 +171,7 @@ typedef struct {
     const ChrAnim *anims;
     const ChrWin *wins;
     const float (*root)[3];
+    const float *root_y;  /* root heights of the anims with first_y >= 0 (IGNORE_GRAVITY jumps) */
     Model *model;   /* NULL while the type is unloaded */
     int loaded;     /* model data in RAM (types load / unload by the player's distance to their placements) */
     float near_d;   /* player's distance to the nearest placement of this type (last frame) */
@@ -201,7 +216,7 @@ typedef struct {
     int block;  /* world block (src/world.c) of the placement: 0 the boot area */
     int dg;     /* its MSB DrawGroups: piece-mask index in the block's dg.bin (drawgrp.c), -1 always shown */
     EvChr *ev;  /* what events set for its entity id (ev_chr.c), NULL none */
-    int ev_team, ev_sp, ev_rot, ev_replan, ev_reset;  /* ev's values / serials last applied */
+    int ev_team, ev_sp, ev_rot, ev_replan, ev_reset, ev_force;  /* ev's values / serials last applied */
     int sp_on;  /* in an event's special wait (2004[09]): its idle anim loops, no AI */
     int thrown;      /* playing its side of the player's backstab / riposte (ThrowParam defAnimId): no AI / ESD */
     float parried_t; /* > 0: parried this long ago at most (a riposte can start) */
@@ -211,6 +226,11 @@ typedef struct {
     /* physics */
     float vy, fall_y0;  /* airborne: vertical speed, height it left the ground at */
     int air;
+    int ev_msg;         /* the last TAE event message its action sent (EMEVD 4[08]), held EV_MSG_HOLD s */
+    float ev_msg_t;
+    int root_fly;       /* inside an IGNORE_GRAVITY window of an anim with root heights: the anim sets y (root_rise) */
+    float fly_peak;     /* the highest root height of this flight (a landing counts only coming down from it) */
+    unsigned fly_landed;/* act_serial + 1 of the action that landed: no second take-off in it */
     Ragdoll *rag;       /* from rag_pool while its ragdoll is simulated, NULL otherwise */
     int rag_done;       /* the ragdoll ran (the pose is its last, kept) */
     /* navmesh route (src/nav.c): next corner towards the AI's destination, replanned every NAV_REPLAN s */
@@ -371,7 +391,16 @@ static const Player *last_player;
 static void *arena_get(unsigned n)
 {
     static const float none[3];
-    void *p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
+    void *p = NULL;
+    /* ENEMY_TMP_GENTLE (default on; 0 = the old order): the arena only where it holds nothing the player sees, else
+     * the heap while it keeps STREAM_RAM_FLOOR over the temporary (job_begin waits for that much), and only then
+     * the arena at any cost. The Taurus's 1.4 MB temporary cleared 1.4 MB of drawn cells around the player, near
+     * level and floor included, and untextured horizon stood in at 0 m (Ame's report 2026-11-17 21:31, t 264.2
+     * "random deloading": "alloc 1394 KB ok, 1378 KB of cells dropped") */
+    if (ENEMY_TMP_GENTLE && !(p = mapstream_alloc_gentle(n)) && enemy_ram_free() >= n + STREAM_RAM_FLOOR)
+        p = memalign(128, n);
+    if (!p)
+        p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
     if (!p && !(p = memalign(128, n)) && mapstream_heap_release(n))  /* the cells in it are all being drawn: the heap */
         p = memalign(128, n);  /* after the pages the streamer borrowed from it went back */
     return p;
@@ -587,6 +616,7 @@ static void chr_attach(ChrType *t, void *cb)
     t->wins = cb ? (const ChrWin *)((const char *)cb + h->win_off) : NULL;
     t->root = cb ? (const float (*)[3])((const char *)cb + h->root_off) : NULL;
     t->rag = cb && h->rag_n ? (const RagBody *)((const char *)cb + h->rag_off) : NULL;
+    t->root_y = cb ? (const float *)((const char *)cb + h->rag_off + h->rag_n * sizeof(RagBody)) : NULL;
 }
 
 /* the chr.bin a type job read is the one load_type saw (the pack did not change under it) */
@@ -618,7 +648,7 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
             return &types[i];
         }
     const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 11 || h->bones > MDL_MAX_BONES ||
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
         !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
         printf("enemy: %s: bad chr.bin\n", name);
         free(cb);
@@ -828,6 +858,7 @@ static void ev_bind(Enemy *e, EvChr *c, int placing)
     e->ev_team = placing ? -2 : c->team;
     e->ev_sp = c->sp_serial - (placing && c->sp[0] >= 0);
     e->ev_rot = c->rot_serial, e->ev_replan = c->replan, e->ev_reset = c->anim_reset;
+    e->ev_force = c->force_serial - (placing && c->force_serial && c->force_age < 1.0f);  /* fresh: still plays */
     if (!placing)
         return;
     ev_off[e->index] = c->off;
@@ -1244,6 +1275,23 @@ static void root_at(const Enemy *e, float t, float *o)
         o[c] = e->ct->root[a->first_root + i][c] * (1 - k) + e->ct->root[a->first_root + j][c] * k;
 }
 
+/* Root height of the action anim at time t (m above its start; 0 for anims without one) */
+static float root_y_at(const Enemy *e, float t)
+{
+    const ChrAnim *a = &e->ct->anims[e->act_info - 1];
+    if (a->first_y < 0 || !a->nroot || !e->ct->root_y)
+        return 0;
+    float f = t * 30;
+    if (f < 0)
+        f = 0;
+    if (f > a->nroot - 1)
+        f = a->nroot - 1;
+    int i = (int)f, j = i + 1 < (int)a->nroot ? i + 1 : i;
+    float k = f - i;
+    const float *y = e->ct->root_y + a->first_y;
+    return y[i] * (1 - k) + y[j] * k;
+}
+
 /* A horizontal move over the map collision. walking: the AI's own locomotion, which stops at a ledge (DSR's AI keeps
  * to the navmesh); otherwise (root motion, push-outs) a move off a ledge leaves the character airborne and it falls
  * (fall_step). Returns 1 if it moved. */
@@ -1410,7 +1458,7 @@ static int move_prof(Enemy *e, float dx, float dz, int walking)
  * fall damage as a share of its HP (ASSUMED for enemies: combat_fall_rate, 5 m .. 20 m) */
 static void fall_step(Enemy *e, float dt)
 {
-    if (!e->air || (e->ev && e->ev->no_maphit))
+    if (!e->air || (e->ev && e->ev->no_maphit) || e->root_fly)
         return;
     e->wc_moves |= MV_FALL;
     e->vy -= 9.8f * dt;
@@ -1437,6 +1485,45 @@ static void fall_step(Enemy *e, float dt)
     e->pos.y = y;
     if (y < FALL_KILL_Y && !e->cc.dead)
         e->cc.hp = -1, e->cc.dead = 1;
+}
+
+/* ENEMY_ROOT_Y (default 1; DEFS=-DENEMY_ROOT_Y=0 = the old flat root motion): inside a TAE IGNORE_GRAVITY (27)
+ * window the root motion's height moves the character, as the player's gravity_scale reads the same flag. The Taurus
+ * Demon's entry (m10_01 event 11015382: 2003[18] Force Animation 9061 on 1010700) leaps up 3.3 m and comes down
+ * 11.5 m onto the bridge inside its 0-1.73 s window; its 3008 jump attack the same. Coming down, the first collision
+ * floor stops it (it lands there, no fall damage: DSR's anims carry DISABLE_FALL_MOTION 51 over the same window);
+ * the window over in the air, gravity takes it from there (fall_step). ASSUMED: DSR's ChrProxy is not decoded for
+ * root heights; the anims' own flag windows and the landing frames (TAE 96 / 144 at 1.70-1.80 s) match this. */
+#ifndef ENEMY_ROOT_Y
+#define ENEMY_ROOT_Y 1
+#endif
+/* the window over (or the anim): still in the air, gravity takes it from here; a fall is counted from here */
+static void fly_end(Enemy *e)
+{
+    if (e->root_fly && e->air)
+        e->fall_y0 = e->pos.y;
+    e->root_fly = 0;
+}
+
+#define FLY_LAND_DROP 0.3f  /* m below the flight's peak before a floor can stop it (the take-off floor is not one) */
+static void root_rise(Enemy *e, float dy, int may_land)
+{
+    if (dy >= 0 || !may_land) {
+        e->pos.y += dy;
+        return;
+    }
+    ColHit hit;
+    if (col_floor(e->pos.x, e->pos.z, e->pos.y + 0.05f, e->pos.y + dy, COL_SOLID | COL_DEATH, &hit)) {
+        e->pos.y = hit.y, e->air = 0, e->vy = 0, e->root_fly = 0, e->fly_landed = e->act_serial + 1u;
+        if ((1u << hit.hit_filter) & COL_DEATH && !e->cc.dead)
+            e->cc.hp = -1, e->cc.dead = 1;
+        if (ENEMY_WALL_CHECK && test_active())
+            printf("enemy: root landing %d %s entity %d at %.2f %.2f %.2f, %.1f m below its take-off\n", e->index,
+                   e->ct->name, e->entity, (double)e->pos.x, (double)e->pos.y, (double)e->pos.z,
+                   (double)(e->fall_y0 - e->pos.y));
+        return;
+    }
+    e->pos.y += dy;
 }
 
 /* The way to dest over the navmesh: the next corner, searched again every NAV_REPLAN s or when dest moved > 1 m;
@@ -1534,6 +1621,14 @@ static void ev_apply(Enemy *e, int new_hit)
             else
                 e->act = -1, e->act_info = 0;
         }
+    }
+    if (v->force_serial != e->ev_force) {  /* 2003[18]: the event's anim from its start (a boss entry: AI off meanwhile) */
+        e->ev_force = v->force_serial;
+        e->sp_on = 0;
+        start_action(e, v->force_anim, 0, 0.2f, v->force_loop);
+        if (test_active())
+            printf("enemy: event anim %d %s entity %d plays %d%s\n", e->index, e->ct->name, e->entity, v->force_anim,
+                   e->act_info ? "" : " (not in its chr.bin)");
     }
     if (e->sp_on && new_hit) {  /* a hit ends the wait (its damage anim if it has one; ASSUMED) */
         e->sp_on = 0;
@@ -1711,9 +1806,23 @@ static void update_one(Enemy *e, Player *pl, float dt)
     }
 
     /* animation time and movement */
+    if (e->ev_msg_t > 0)
+        e->ev_msg_t -= dt;
     if (e->act >= 0) {
         e->act_prev_t = e->act_t;
         e->act_t += dt;
+        if (e->act_info) {  /* TAE event messages the step passed (windows of one or two frames) */
+            const ChrAnim *a = &e->ct->anims[e->act_info - 1];
+            for (unsigned i = 0; i < a->nwin; i++) {
+                const ChrWin *w = &e->ct->wins[a->first_win + i];
+                if (w->type >= W_EVENT_MSG && w->start < e->act_t && w->end > e->act_prev_t) {
+                    if (test_active() && (e->ev_msg != w->type - W_EVENT_MSG || e->ev_msg_t <= 0))
+                        printf("enemy: event message %d %s entity %d anim %d msg %d\n", e->index, e->ct->name,
+                               e->entity, e->act, w->type - W_EVENT_MSG);
+                    e->ev_msg = w->type - W_EVENT_MSG, e->ev_msg_t = EV_MSG_HOLD;
+                }
+            }
+        }
         float len = act_length(e);
         if (e->act_loop && len > 0 && e->act_t >= len)
             e->act_t -= len, e->act_prev_t -= len;
@@ -1726,11 +1835,27 @@ static void update_one(Enemy *e, Player *pl, float dt)
             /* model space -> world: the model faces -Z; place rotation is yaw + pi */
             float c = cosf(e->yaw + PI), s = sinf(e->yaw + PI);
             mv_tag = MV_ROOT;
+            int fly = ENEMY_ROOT_Y && e->ct->anims[e->act_info - 1].first_y >= 0 && in_window(e, F_NO_GRAVITY);
+            if (fly && e->fly_landed == e->act_serial + 1u)
+                fly = 0;  /* came down already: the rest of the window stands on that floor */
+            if (fly && !e->root_fly && !e->air)  /* takes off: walls only from here (move_by), the anim sets y */
+                e->air = 1, e->vy = 0, e->fall_y0 = e->pos.y, e->fly_peak = root_y_at(e, e->act_prev_t);
+            if (!fly)
+                fly_end(e);
+            e->root_fly = fly && e->air;
             move_by(e, c * dx + s * dz, -s * dx + c * dz, 0);
+            if (e->root_fly) {
+                float y1 = root_y_at(e, e->act_t);
+                if (y1 > e->fly_peak)
+                    e->fly_peak = y1;
+                root_rise(e, y1 - root_y_at(e, e->act_prev_t), y1 < e->fly_peak - FLY_LAND_DROP);
+            }
             e->yaw = wrap(e->yaw - (r1[2] - r0[2]));
             LG_END(root, LG_MOVE);
-        }
-    }
+        } else
+            fly_end(e);
+    } else
+        fly_end(e);
     int moving = !e->cc.dead && !e->air && (e->act < 0 || act_ended(e)) && e->loco_enabled && o->move;
     int loco = 0;
     if (moving) {
@@ -2278,7 +2403,23 @@ void enemy_update(Player *pl, float dt)
     for (int i = 0; i < na; i++) {
         if (!act[i]->ct->drawable)
             continue;
-        separate(act[i], pl->pos, COL_PLAYER_R, 1.0f);
+        {
+            /* CHR_PUSH_WEIGHT (default on; 0 = the enemy takes the whole push, the old path): the overlap is
+             * shared by weight, the enemy moving PLAYER_WEIGHT / (both) of it and the player the rest (Havok
+             * character proxies push each other by mass: the Taurus Demon, NpcParam weight 500 kg, was shoved around
+             * like a hollow, Ame's report 2026-11-17 21:31 t 352.8). PLAYER_WEIGHT ASSUMED: the player's own row is
+             * not decoded; most human NpcParam rows say 100 kg */
+            float w = act[i]->var->weight > 1 ? act[i]->var->weight : PLAYER_WEIGHT;
+            float share = CHR_PUSH_WEIGHT ? PLAYER_WEIGHT / (PLAYER_WEIGHT + w) : 1.0f;
+            Enemy *e = act[i];
+            float dx = pl->pos.x - e->pos.x, dz = pl->pos.z - e->pos.z, d = sqrtf(dx * dx + dz * dz);
+            float min = e->var->radius + COL_PLAYER_R;
+            if (CHR_PUSH_WEIGHT && !e->cc.dead && fabsf(e->pos.y - pl->pos.y) <= e->var->height && d < min && d > 1e-3f) {
+                float k = (min - d) * (1 - share) / d;
+                enemy_player_push[0] += dx * k, enemy_player_push[1] += dz * k;
+            }
+            separate(e, pl->pos, COL_PLAYER_R, share);
+        }
         for (int j = i + 1; j < na; j++) {
             if (!act[j]->ct->drawable)
                 continue;
@@ -2417,6 +2558,46 @@ static int ent_slot(int entity)
     for (unsigned h = (unsigned)entity * 2654435761u >> 23 & (ENT_HASH - 1);; h = (h + 1) & (ENT_HASH - 1))
         if (ent_hash[h] < 0 || enemies[ent_hash[h]].entity == entity)
             return ent_hash[h];
+}
+
+/* EMEVD 4[08] Character Has Event Message: the action anim passed a TAE 231 window with this id lately (the event
+ * reads it the frame after; ASSUMED hold, DSR's message lifetime is not decoded) */
+int enemy_entity_msg(int entity, int msg)
+{
+    for (int i = 0; i < nenemies; i++)
+        if (enemies[i].entity == entity)
+            return enemies[i].ev_msg == msg && enemies[i].ev_msg_t > 0;
+    return 0;
+}
+
+/* EMEVD 2004[41] Issue Short Warp Request on a character: to pos, facing yaw (the Taurus Demon's jump alignment,
+ * m10_01 event 11015386); grounded on the floor there */
+int enemy_entity_warp(int entity, const float pos[3], float yaw)
+{
+    for (int i = 0; i < nenemies; i++) {
+        Enemy *e = &enemies[i];
+        if (e->entity != entity)
+            continue;
+        ColHit h;
+        int ok = col_floor(pos[0], pos[2], pos[1] + 2, pos[1] - 5, COL_SOLID, &h);
+        e->pos = v3(pos[0], ok ? h.y : pos[1], pos[2]);
+        e->yaw = yaw, e->air = 0, e->vy = 0, e->root_fly = 0, e->fall_y0 = e->pos.y;
+        if (test_active())
+            printf("enemy: event warp %d %s entity %d to %.2f %.2f %.2f\n", i, e->ct->name, entity, (double)e->pos.x,
+                   (double)e->pos.y, (double)e->pos.z);
+        return 1;
+    }
+    return 0;
+}
+
+float enemy_entity_anim_length(int entity, int anim)
+{
+    for (int i = 0; i < nenemies; i++)
+        if (enemies[i].entity == entity && enemies[i].ct && enemies[i].ct->anims) {
+            const ChrAnim *a = anim_info(enemies[i].ct, anim);
+            return a ? a->length : 0;
+        }
+    return 0;
 }
 
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
