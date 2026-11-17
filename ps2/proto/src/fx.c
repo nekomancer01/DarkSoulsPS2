@@ -62,7 +62,7 @@ typedef struct {
     float spread_k, dist, dist_sqrt; /* Spread, circle Distribution, 1 = sqrt of the radius (DistributionMode 0) */
     u16 fpr, nframes;
     float normal[3];                 /* circle plane normal (the system frame's local Z) */
-    u8 orient, pad2[3];              /* 1: the quad lies in the effect frame (FFX Orientation 1 / 2, fog walls) */
+    u8 orient, pad2[3];              /* 1: the quad lies in the effect frame (FFX Orientation 2: fog walls) */
     float qx[3], qy[3];              /* its x / y axes in the effect frame (export_effects FX_ORIENT) */
 } FxSys;
 
@@ -862,7 +862,7 @@ void fx_draw(void)
                 qs[j][0] = s0[0] + ox * s1[0], qs[j][1] = s0[1] + oy * s1[1], qs[j][2] = s0[2];
         }
         if (s->orient) {
-            /* fixed in the effect frame (FFX Orientation 1 / 2: the fog-wall sheets, FUN_1411848b0): each corner at
+            /* fixed in the effect frame (FFX Orientation 2: the fog-wall sheets, FUN_1411848b0): each corner at
              * its own world point, the instance frame (columns) times the system's quad axes */
             const float *F = inst[p->inst].frame;
             float ax[3], ay[3];

@@ -99,7 +99,7 @@ FX_OVERLAP = float(os.environ.get("FX_OVERLAP", 1.0))
 # 1.0 the bright texels clip red while green keeps rising, so the hue turns yellow where DSR's per-pixel tone map keeps
 # it orange. MEASURED (TECH_DEBT fx-2): see FX_OVERLAP
 FX_ADD_CAP = float(os.environ.get("FX_ADD_CAP", 1.0))
-FX_ORIENT = os.environ.get("FX_ORIENT", "1") == "1"  # Orientation 1 / 2 quads fixed in the effect frame: system()
+FX_ORIENT = os.environ.get("FX_ORIENT", "1") == "1"  # Orientation 2 quads fixed in the effect frame: system()
 FX_WALL_ALPHA = os.environ.get("FX_WALL_ALPHA", "1") == "1"  # BlendMode 1 (light / fog walls) alpha blended: system()
 
 SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x3f3f"  # = fx.h FxSys
@@ -335,9 +335,10 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     # camera), 1 the matrix it is handed, 2 the cluster's own frame (+0x50, orthonormalised by FUN_140094520), 3 / 4 / 5
     # replace row x / y / z with the world axis (4: upright, the cylindrical sprites of fx-2). The fog walls are
     # Orientation 2: a 2 x 3.5 m sheet fixed in the SFX region's frame, which fills its doorway; drawn camera-facing
-    # it turned with the view and stood out of the frame (Ame's report 2026-11-17). 1 and 2 are drawn here as fixed in
-    # the system frame R (x / y columns) times the instance frame; 3-5 stay camera-facing (TECH_DEBT fx-2).
-    orient = 1 if FX_ORIENT and ap.get("Orientation") in (1, 2) else 0
+    # it turned with the view and stood out of the frame (Ame's report 2026-11-17). 2 is drawn here as fixed in
+    # the system frame R (x / y columns) times the instance frame. 1 (the matrix the caller hands in, not traced: the
+    # fog walls' small motes use it) and 3-5 stay camera-facing (TECH_DEBT fx-2); fixed quads skip VU1 (EE path).
+    orient = 1 if FX_ORIENT and ap.get("Orientation") == 2 else 0
     qx, qy = _apply(R, [1.0, 0.0, 0.0]), _apply(R, [0.0, 1.0, 0.0])
     return dict(orient=orient, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
                 life=life, life_min=life_min, interval=interval, delay=max(0.0, delay), total=int(total),
