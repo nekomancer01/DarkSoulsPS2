@@ -313,37 +313,41 @@ def peer_eyes(nav, own_gen, peer_gen):
 
 
 def seam_split(nav, own_gen, peer_gen):
-    """(far, near): peer_eyes' spots, and for a block of the same MSB the rest of this block's ground (within the keep
+    """(far, near, near's distances to the peer's cells): peer_eyes' spots, and for a block of the same MSB the rest of
+    this block's ground (within the keep
     distance of it: there the peer is loaded once streaming caught up, and off until then); near is empty for another
     map's block"""
     import area
     import export_world
     a, b = (area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}) for g in (own_gen, peer_gen))
     if not a or not b or a.get("map") != b.get("map") or not b.get("cells"):
-        return nav, nav[:0]
+        return nav, nav[:0], np.zeros(0)
     d = np.full(len(nav), np.inf)
     for x0, z0, x1, z1 in area.cell_rects(b["cells"]):
         dx = np.maximum(0, np.maximum(x0 * area.CELL - nav[:, 0], nav[:, 0] - (x1 + 1) * area.CELL))
         dz = np.maximum(0, np.maximum(z0 * area.CELL - nav[:, 2], nav[:, 2] - (z1 + 1) * area.CELL))
         d = np.minimum(d, np.maximum(dx, dz))
     far = d > export_world.KEEP_CELLS * area.CELL
-    return nav[far], nav[~far]
+    # (the near spots closest to the peer first: seam_eyes covers the seam itself before the rest of the band)
+    o = np.argsort(d[~far], kind="stable")
+    return nav[far], nav[~far][o], d[~far][o]
 
 
 # Seam sets (map streaming research idea 9, 2026-11-17): a block of the same MSB is in the panorama only as seen from
 # the middle of the ground beyond the keep distance, so what the seam alone sees (the Burg past a tunnel's exit) was
-# missing while that block was still off at the seam: the sky showed. Each cluster of this block's ground within the
-# keep distance of the peer (at most SEAM_EYES, k-means on x / z) renders the peer once more from a navmesh spot near
-# the cluster's middle, at SEAM_DEG cells and with SEAM_NEAR as its near limit; flags FAR_SEAM plus that eye's x / z
+# missing while that block was still off at the seam: the sky showed. Eyes on this block's ground within SEAM_BAND of the
+# peer, spread until every such spot is within SEAM_COVER of one (at most SEAM_EYES, seam_eyes), each render the peer
+# once more, at SEAM_DEG cells and with SEAM_NEAR as its near limit; flags FAR_SEAM plus that eye's x / z
 # (4 m units), which mapblock.c draws in place of the peer's main sets while it is the seam set nearest the camera
 # within 48 m. FAR_SEAM=0: none, as before
 SEAM = os.environ.get("FAR_SEAM", "1") == "1"
-SEAM_EYES = int(os.environ.get("FAR_SEAM_EYES", 3))
+SEAM_EYES = int(os.environ.get("FAR_SEAM_EYES", 6))
+SEAM_COVER = float(os.environ.get("FAR_SEAM_COVER", 40.0))  # m: every seam spot this close to an eye (mapblock.c: 48)
+SEAM_BAND = float(os.environ.get("FAR_SEAM_BAND", 24.0))   # m: the spots eyes come from, nearest the peer
 SEAM_DEG = float(os.environ.get("FAR_SEAM_DEG", 1.5))   # ASSUMED: half the main sets' detail, they are a stopgap
 SEAM_DEG_MAX = float(os.environ.get("FAR_SEAM_DEG_MAX", DEG_MAX))  # the seam sets' coarsest cells
 SEAM_NEAR = float(os.environ.get("FAR_SEAM_NEAR", 8.0))  # ASSUMED: the peer's ground starts a few metres past a seam
 SEAM_MIN = 8  # navmesh spots a cluster needs
-SEAM_APART = 24.0  # metres between two seam eyes at least (ASSUMED: closer ones see the same)
 FAR_SEAM, FAR_HAS_SEAM = 2, 4
 
 
@@ -353,27 +357,25 @@ def seam_flags(eye):
     return FAR_SEAM | q(eye[0]) << 8 | q(eye[2]) << 20
 
 
-def seam_eyes(near):
-    """navmesh spots near (n, 3) -> one eye per cluster (a spot nearest its cluster's middle, 1.5 m up)"""
-    if len(near) < SEAM_MIN:
+def seam_eyes(near, dn):
+    """navmesh spots near (n, 3) with their distances dn to the peer's cells, nearest first (seam_split) -> eyes 1.5 m
+    up: a greedy cover of the spots within SEAM_BAND of the peer, the first eye the spot nearest it, each next one the
+    spot farthest from those chosen, until every spot of the band is within SEAM_COVER of an eye or SEAM_EYES are placed.
+    (The first version took 3 k-means centres over the whole 64 m keep band: long seams kept spots 50-90 m from any eye,
+    so the peer showed nothing while it loaded there; seam audit loading holes 30-95 % at Burg w -> b, p -> b, c -> p,
+    2026-11-18)"""
+    band = near[np.asarray(dn) <= SEAM_BAND]
+    if len(band) < SEAM_MIN:
+        band = near[:SEAM_MIN]
+    if len(band) < SEAM_MIN:
         return []
-    k = max(1, min(SEAM_EYES, len(near) // SEAM_MIN))
-    xz = near[:, [0, 2]]
-    cen = [xz[0]]
-    for _ in range(1, k):  # farthest-point start, then a few Lloyd steps
-        cen.append(xz[np.argmax(np.min([((xz - c) ** 2).sum(1) for c in cen], 0))])
-    cen = np.array(cen)
-    for _ in range(8):
-        lab = np.argmin(((xz[:, None] - cen[None]) ** 2).sum(2), 1)
-        cen = np.array([xz[lab == i].mean(0) if (lab == i).any() else cen[i] for i in range(k)])
-    lab = np.argmin(((xz[:, None] - cen[None]) ** 2).sum(2), 1)
-    out = []
-    for i in range(k):
-        pts = near[lab == i]
-        e = pts[np.argmin(((pts[:, [0, 2]] - cen[i]) ** 2).sum(1))] + np.array([0.0, 1.5, 0.0]) if len(pts) >= SEAM_MIN else None
-        if e is not None and all(((e - o) ** 2).sum() > SEAM_APART ** 2 for o in out):  # (one seam split in two)
-            out.append(e)
-    return out
+    out = [band[0]]
+    dmin = np.sqrt(((band[:, [0, 2]] - band[0, [0, 2]]) ** 2).sum(1))
+    while len(out) < SEAM_EYES and dmin.max() > SEAM_COVER:
+        k = int(np.argmax(dmin))
+        out.append(band[k])
+        dmin = np.minimum(dmin, np.sqrt(((band[:, [0, 2]] - band[k, [0, 2]]) ** 2).sum(1)))
+    return [e + np.array([0.0, 1.5, 0.0]) for e in out]
 
 
 def in_map(X, map_id):
@@ -425,8 +427,8 @@ def build(own, gens):
         if bi == own:
             continue
         pm, _c, _w, grp = dg_masks(g)
-        eyes, near = seam_split(nav, gens[own], g) if grp == area_grp else ([], [])
-        seams = seam_eyes(near) if SEAM and len(near) else []
+        eyes, near, dn = seam_split(nav, gens[own], g) if grp == area_grp else ([], [], [])
+        seams = seam_eyes(near, dn) if SEAM and len(near) else []
         if not len(eyes) and not seams:
             continue
         side = far_side(g)
