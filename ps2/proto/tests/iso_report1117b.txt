@@ -1,0 +1,40 @@
+# Ame's play report 2026-11-17 21:31: z-fighting with the Undead Burg's copy of the aqueduct below Firelink (t 61.1,
+# t 80.1; MAP_PEER_ZBIAS), the slippery grass slope (t 71.9: player drift between the two stats lines; SLIDE_SUPPORT).
+# Spots from the report's eye lines; waits long enough for Burg west / centre to turn on (WORLD_REACH).
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_report1117b.txt <out> --iso build/proto.iso --timeout 900
+option god
+option nodemo
+option noenemies
+spawn -33.5 -52.5 37.6 3.5
+wait 14
+cam 3.5 -0.3
+wait 1
+shot zf61_0
+cam 4.2 -0.3
+wait 1
+shot zf61_1
+spawn -12.0 -40.0 15.0 3.5
+wait 8
+cam 3.5 -0.35
+wait 1
+shot zf80_0
+cam 4.3 -0.35
+wait 1
+shot zf80_1
+cam 2.7 -0.35
+wait 1
+shot zf80_2
+cam 5.1 -0.35
+wait 1
+shot zf80_3
+spawn -33.9 -48.4 31.9 0.0
+wait 1
+stats
+wait 4
+stats
+shot slope
+spawn -36.0 -50.5 30.8 0.0
+wait 1
+stats
+wait 4
+stats
