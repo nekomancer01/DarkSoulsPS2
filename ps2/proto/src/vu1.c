@@ -1307,6 +1307,7 @@ float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const flo
 #ifdef OT_HASH
 #include <stdio.h>
 #include "ot.h"
+#include "gstrace.h"
 /* Polaris 1.4 gate (debug): the stream VIF1 receives, hashed per kick in transfer order. A tag's upper 64 bits (its
  * VIF codes, transferred with TTE) and every payload quadword it delivers (CNT / END: the words after it, REF / REFE:
  * the words at its address); the DMA tags' own words are not hashed (addresses differ between builds). One line per
@@ -1358,7 +1359,9 @@ void ot_hash_frame(int log)  /* frame.c, after the flip */
         for (int i = 0; i < ot_nkicks && n < (int)sizeof buf - 24; i++)
             n += snprintf(buf + n, sizeof buf - n, " %d:%08x", ot_kicks[i].buf, ot_kicks[i].h);
         buf[n] = 0;
-        printf("othash: %s kicks%s | gsq %u:%08x\n", ot_ab_old ? "old" : "ot", buf, ot_gsq_n, ot_gsq_h);
+        unsigned np, nu, hu, h2 = gstrace_end(&np, &hu, &nu);
+        printf("othash: %s kicks%s | gsq %u:%08x | 3d %u:%08x | ui %u:%08x\n", "ot", buf, ot_gsq_n,
+               ot_gsq_h, np, h2, nu, hu);
     }
     ot_nkicks = 0, ot_gsq_h = 0, ot_gsq_n = 0;
 }

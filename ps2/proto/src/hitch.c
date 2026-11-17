@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "frame.h"
 #include "ot.h"
+#include "g2d.h"
 #include "mapstream.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
@@ -394,6 +395,7 @@ void hitch_frame(float dt_real)
     mem_log();  /* regions and heap use per state (src/mem.h) */
     frame_log();  /* out-of-phase calls (src/frame.h) */
     ot_log();  /* the order table (src/ot.h) */
+    g2d_log();  /* the 2D writer (src/g2d.h) */
     per_s = 0;
     spikes = spikes_cut = af_n = af_kb = 0;
     n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;

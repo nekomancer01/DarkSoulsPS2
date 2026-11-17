@@ -104,12 +104,12 @@ void mem_pool_free(MemPool *p, void *slot)
  * packs. Both come back at mem_boot_seal, before the world arena is sized from the heap's free bytes; what is left is
  * one hole low in the heap, so they stay small: with 1536 + 1024 KB the largest free block at the routes' heap low
  * was up to 1 MB smaller than main's (golden routes, 2026-11-18). */
-#define MEM_STATIC_RESERVE (512 * 1024)
+#define MEM_STATIC_RESERVE ((512 + 2 * MEM_FRAME_KB + 64) * 1024)  /* + the frame buffers + g2d's loading pair */
 #define MEM_TEMP_RESERVE (640 * 1024)
 /* each of the two frame buffers, from the static region. 0 until the first user (packet building, Polaris 1.4) sizes
  * it: 2 x 16 KB of idle buffers were 32 KB less heap at the Burg low (golden routes, 2026-11-18). With 0 every
  * mem_frame call takes the heap (TEST warn) */
-#define MEM_FRAME_KB 0
+#define MEM_FRAME_KB 208  /* g2d.c: WORLD 40 + UI 168; with g2d's 2 x 32 KB loading pair, the 2 x 240 KB gsKit's queue gave up (Polaris 1.6) */
 
 MemState mem_state = MEM_BOOT;
 unsigned char mem_tag;

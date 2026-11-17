@@ -1,0 +1,17 @@
+# 2D writer gate (Polaris 1.6, OT_HASH builds), enemies on: the Taurus Demon's boss bar over the HUD.
+option save host ot2dboss
+option hud
+option nodemo
+wait 1
+wipe
+pad select
+spawn 52.41 16.86 -118.49 -1.5708
+cam -1.5708 0.3
+wait 2
+ev action
+wait 5
+ev chr 1010700 damage 10
+wait 1
+ev expect bossbar 0 1010700
+shot boss_bar
+end

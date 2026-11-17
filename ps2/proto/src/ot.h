@@ -18,8 +18,9 @@
  *             never spans two buffers today (each buffer is kicked before the next one is opened), so no END tag is
  *             ever rewritten; when a later step needs a run across buffers, it is joined by rewriting each END into a
  *             NEXT to the following segment (no CALL / RET: the VIF1 call stack stays free for prebuilt packets).
- *   deferred  a function run at the entry's turn, after VU1 / PATH1 are done: gsKit's queue (the EE-path triangles,
- *             the effects' gsKit packets, HUD, menus) and the flip. Polaris 1.6 replaces gsKit's queue with segments.
+ *   2D        a g2d stream (Polaris 1.6): WORLD (the EE-path triangles of map and effects, debug lines; BLEND..FX) and UI
+ *             (HUD, menus, dialogs, text; UI), each a GIF chain sent at its turn (PATH3) once VU1 / PATH1 are done.
+ *   deferred  a function run at the entry's turn, after VU1 / PATH1 are done: the flip with the far depth of field.
  * Each entry records the buckets it spans. The table keeps today's order: an entry whose first bucket is lower than the
  * one before it is counted ("ot:" line), which is where today's order and the bucket order disagree (gsKit's queue
  * spans BLEND..UI but runs after FX: TECH_DEBT render-18).
@@ -45,22 +46,17 @@ void ot_open(OtBucket first, OtBucket last);
 void ot_close(void);
 /* a deferred entry: run(arg) at its turn, once VU1 / PATH1 are done */
 void ot_deferred(OtBucket first, OtBucket last, void (*run)(void *), void *arg);
-/* a deferred entry running gsKit's queue (r_queue_exec), then (wait_after) the GIF DMA's end */
-void ot_queue(OtBucket first, OtBucket last, void *gs, int wait_after);
+/* a 2D segment (g2d.h stream, Polaris 1.6): its GIF chain sent at its turn, after VU1 / PATH1, the GIF channel idle */
+void ot_g2d(OtBucket first, OtBucket last, int stream);
+/* gsKit's draw queue, unused since 1.6: run whatever is in it (TEST warn once); frame.c, before the flip */
+void ot_gskit_leftover(void *gs);
 /* send every closed entry that may go now, in table order (stops at an open segment) */
 void ot_flush(void);
 /* wait for VU1 / PATH1 (the last kicked run) */
 void ot_wait(void);
 #ifdef OT_HASH
-/* Polaris 1.4 gate (debug builds only): on frozen test frames every other frame goes through the old sequence (the
- * begin / kick / wait calls main.c made before the table), so two frames of the same state compare old and new in one
- * run. Removed with Polaris 1.6 */
-extern int ot_ab_old;
-void ot_ab_frame(int frozen);
-void ot_old_begin(int buffer);
-void ot_old_kick(void);
-void ot_old_wait(void);
-void ot_old_queue(void *gs);
+/* the draw-trace hashes ("othash:" lines, vu1.c / gstrace.c) of this frame; frozen: a test shot is being taken */
+void ot_hash_begin(int frozen);
 #endif
 /* one "ot:" line (hitch.c, each period) */
 void ot_log(void);

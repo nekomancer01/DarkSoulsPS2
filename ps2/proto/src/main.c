@@ -16,6 +16,7 @@
 #include "render.h"
 #include "mem.h"
 #include "frame.h"
+#include "g2d.h"
 #include "player.h"
 #ifndef DPAD_STICK
 #define DPAD_STICK 0  /* 1 = the d-pad moves (the old path, keyboard-mapped emulators) */
@@ -363,6 +364,7 @@ int main(int argc, char **argv)
     vu1_init(gs);
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
     mem_boot_init();  /* static and boot-temp regions (src/mem.h), before the first pack load */
+    g2d_init(gs);     /* the 2D writer (src/g2d.h): the loading screen's buffers */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */

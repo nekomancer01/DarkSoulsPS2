@@ -16,6 +16,7 @@
 #include <kernel.h>
 #include <malloc.h>
 #include "fx.h"
+#include "g2d.h"
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
@@ -214,7 +215,7 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
         }
         t->Mem = (u32 *)(b + tex[i].pix);
         t->Clut = (u32 *)(b + tex[i].clut);
-        gsKit_texture_upload(gs, t);
+        g2d_tex_upload(gs, t);
         t->Mem = t->Clut = NULL;
         vtex[free_k].key = tkey[i], vtex[free_k].vram = t->Vram, vtex[free_k].clut = t->VramClut;
         vtex[free_k].w = t->Width, vtex[free_k].h = t->Height, vtex[free_k].refs = 1;
@@ -679,14 +680,7 @@ static void vu_flush(void)
         vb.n++;
     }
     if (!vb.chain) {  /* the particle chain: camera constants, the main fog row, the program's layout */
-        {
-#ifdef OT_HASH
-            if (ot_ab_old)
-                ot_old_begin(2);
-            else
-#endif
-                ot_open(OT_FX, OT_FX);
-        }
+        ot_open(OT_FX, OT_FX);
         vu1_map_fog(vb.fog[0], vb.fog[1], vb.fog[2], vb.fog[3]);
         vu1_fx_begin();
         vb.chain = 1;
@@ -753,12 +747,7 @@ void fx_kick(void)
     u64 zbuf = gs_zbuf(fx_gs, 0);
     const u64 r[6] = {fx_gs->PrimAlpha, GSR_ALPHA, zbuf, GSR_ZBUF, vb.fogbase, GSR_FOGCOL};
     vu1_gs_regs(3, r);
-#ifdef OT_HASH
-    if (ot_ab_old)
-        ot_old_kick();  /* (same-run A/B: the old sequence, ot.h) */
-    else
-#endif
-        ot_close();  /* frame.c sends it (src/ot.h) */
+    ot_close();  /* frame.c sends it (src/ot.h) */
     vb.chain = 0;
 }
 

@@ -6,6 +6,7 @@
 #include <dmaKit.h>
 #include <libpad.h>
 #include "frame.h"
+#include "g2d.h"
 #include "render.h"
 #include "mem.h"
 #include "ot.h"
@@ -117,8 +118,9 @@ static void phase_begin(Frame *f)
 {
     PROF_FRAME();
     ot_frame_begin();
+    g2d_frame_begin();  /* this frame's 2D buffers (frame region) */
 #ifdef OT_HASH
-    ot_ab_frame(test_frozen());  /* every other frozen frame: the old kick sequence (ot.h) */
+    ot_hash_begin(test_frozen());  /* the draw-trace hashes of this frame (ot.h) */
 #endif
     unsigned now = ticks();
     f->dt = (now - f->last) / 294912000.0f;
@@ -268,14 +270,6 @@ static void phase_emit_map(Frame *f)
     if (f->b->map_ok && !FRAME_SKIP_MAP) {
         /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
         unsigned t0 = ticks();
-#ifdef OT_HASH
-        if (ot_ab_old) {  /* the sequence before the order table (same-run A/B, ot.h) */
-            ot_old_begin(0);
-            f->b->z_clear(gs);
-            MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
-            ot_old_kick();
-        } else
-#endif
         {
             ot_open(OT_SKY, OT_BLEND);  /* map.c's own order inside: sky, panorama, horizon, world, relief, blended chunks */
             f->b->z_clear(gs);
@@ -286,10 +280,11 @@ static void phase_emit_map(Frame *f)
         }
         f->t_cull += ((ticks() - t0) / 294912.0f - f->t_cull) * 0.1f;
     } else if (!f->b->map_ok) {
-        gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
+        g2d_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
         r_ground(40, 2);
-        ot_queue(OT_WORLD, OT_WORLD, gs, 1);  /* before the character's VU1 chain draws on top */
+        ot_g2d(OT_WORLD, OT_WORLD, G2D_WORLD);  /* before the character's VU1 chain draws on top */
         ot_flush();
+        dmaKit_wait_fast();  /* (the WORLD stream is rebuilt in this frame's buffer from here on) */
     }
     HITCH_END(map, HS_MAP);
 }
@@ -335,15 +330,6 @@ static void phase_emit(Frame *f)
     float dt = f->dt;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
-#ifdef OT_HASH
-    if (ot_ab_old) {
-        ot_old_begin(1);
-        player_draw(pl);
-        enemy_draw();
-        objects_draw();
-        ot_old_kick();
-    } else
-#endif
     {
         ot_open(OT_CHR, OT_CHR);
 #ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
@@ -376,6 +362,7 @@ static void phase_emit(Frame *f)
     PROF_MARK(PROF_HUD);
     HITCH_BEGIN(hud);
     unsigned mt_ui = mem_legacy_begin(MEMT_UI);
+    g2d_select(G2D_UI);
 #ifndef MAP_PANO_R
     frame_draw_check(FE_HUD_DRAW);
     hud_draw(pl, dt);
@@ -410,11 +397,6 @@ static void phase_present(Frame *f)
     hitch_acc[HS_CHR] += ticks() - f->t1;
     unsigned t2 = ticks();
     fx_kick();   /* FX_VU1: the particle chain (closes its segment), after the characters' */
-#ifdef OT_HASH
-    if (ot_ab_old)
-        ot_old_wait();
-    else
-#endif
     {
         ot_flush();
         ot_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
@@ -426,14 +408,10 @@ static void phase_present(Frame *f)
     HITCH_BEGIN(flip);
     /* gsKit's queue: the EE-path triangles (BLEND), the effects' gsKit packets (FX), HUD and menus (UI); then the far
      * depth of field and the flip (POST). The queue's span starts below FX but runs after it: ot.h, TECH_DEBT render-18 */
-#ifdef OT_HASH
-    if (ot_ab_old) {
-        ot_old_queue(gs);
-        f->b->flip(gs);
-    } else
-#endif
     {
-        ot_queue(OT_BLEND, OT_UI, gs, 0);
+        ot_g2d(OT_BLEND, OT_FX, G2D_WORLD);  /* the EE-path triangles (map, effects) and debug lines */
+        ot_g2d(OT_UI, OT_UI, G2D_UI);         /* HUD, menus, dialogs, text: before the far depth of field, as before 1.6 */
+        ot_deferred(OT_UI, OT_UI, ot_gskit_leftover, gs);
         ot_deferred(OT_POST, OT_POST, run_flip, (void *)f->b);
         ot_flush();
     }
