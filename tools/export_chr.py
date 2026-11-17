@@ -20,7 +20,7 @@ Animations: the ESD essentials (ANIMS) + every anim id the variants' battle / lo
 for variants that use them.
 
 chr.bin (little-endian):
-  header  "DSRC", u32 version 12, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
+  header  "DSRC", u32 version 13, u32 anims, windows, variants, u32 anim_off, win_off, root_off, var_off,
           u32 hide_bits (every variant mesh bit used), i32 spine (the first "Spine" bone: it and its descendants
           are the guard pose layer; -1 none; parents come before their children), u32 bones (skeleton bones), u32 rag_off, rag_bodies, f32 rag_reach, rag_top (bind-pose bounds of
           the bodies: horizontal distance from the root axis and height, radius included)                    (64 B)
@@ -546,7 +546,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     write_model(os.path.join(out_dir, "model.bin"), names, parents, ref, mb, [])
     append_compact_anims(os.path.join(out_dir, "model.bin"), len(names), anims)
-    HDR, VAR, WIN = 64, 256, 116
+    HDR, VAR, WIN = 64, 272, 116
     var_off = HDR
     anim_off = var_off + VAR * len(variants)
     win_off = anim_off + 28 * len(info)
@@ -568,11 +568,12 @@ def main():
         v += struct.pack("<24f", *think_values(t, npc))
         v += struct.pack("<9fi", npc["def_mag"], npc["def_fire"], npc["def_thunder"], npc["def_slash"], npc["def_blow"],
                          npc["def_thrust"], t["nose_dist"], t["ear_angX"], t["ear_angY"], t["skipArrivalVisibleCheck"])
+        v += struct.pack("<f3i", npc["weight"], 0, 0, 0)  # NpcParam weight (kg): the capsule push share (enemy.c)
         assert len(v) == VAR, len(v)
         var_blob += v
     spine = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
     assert all(p < i for i, p in enumerate(parents)), f"{cid}: a parent after its child (enemy.c guard layer)"
-    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 12, len(info), len(windows), len(variants), anim_off, win_off, root_off,
+    hdr = struct.pack("<4s9Ii3I2f", b"DSRC", 13, len(info), len(windows), len(variants), anim_off, win_off, root_off,
                       var_off, hide_bits, spine, len(names), rag_off, len(rag_blob) // RAG_BODY, reach, top)
     assert len(hdr) == HDR
     body = var_blob + b"".join(struct.pack("<if4Ii", *i) for i in info)
