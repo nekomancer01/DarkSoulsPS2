@@ -1796,8 +1796,12 @@ static void update_one(Enemy *e, Player *pl, float dt)
             const ChrAnim *a = &e->ct->anims[e->act_info - 1];
             for (unsigned i = 0; i < a->nwin; i++) {
                 const ChrWin *w = &e->ct->wins[a->first_win + i];
-                if (w->type >= W_EVENT_MSG && w->start < e->act_t && w->end > e->act_prev_t)
+                if (w->type >= W_EVENT_MSG && w->start < e->act_t && w->end > e->act_prev_t) {
+                    if (test_active() && (e->ev_msg != w->type - W_EVENT_MSG || e->ev_msg_t <= 0))
+                        printf("enemy: event message %d %s entity %d anim %d msg %d\n", e->index, e->ct->name,
+                               e->entity, e->act, w->type - W_EVENT_MSG);
                     e->ev_msg = w->type - W_EVENT_MSG, e->ev_msg_t = EV_MSG_HOLD;
+                }
             }
         }
         float len = act_length(e);
