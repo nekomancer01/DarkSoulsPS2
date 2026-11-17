@@ -1185,8 +1185,11 @@ int map_holes;
 static int sky_low(const Chunk *c, const float e[3])
 {
     float dx = (c->mn[0] + c->mx[0]) * 0.5f - e[0], dz = (c->mn[2] + c->mx[2]) * 0.5f - e[2];
-    float dy = (c->mn[1] + c->mx[1]) * 0.5f - e[1];
-    return dy < 0.0875f * sqrtf(dx * dx + dz * dz);  /* tan 5 deg */
+    float dy = (c->mn[1] + c->mx[1]) * 0.5f - e[1], h = sqrtf(dx * dx + dz * dz);
+    /* and not a bowl reaching far below: Firelink's black underside (vertex colour 0, -4 to -82 degrees) and the
+     * Burg's dome bottom (-2 to -86) drew over the ring in another fog and left a hard edge across the cloud sea a few
+     * degrees down (graveyard, aqueduct exit, 2026-11-18); the ground rings span -6 to 0 (ASSUMED: 15 degrees, tan 0.27) */
+    return dy < 0.0875f * h && c->mn[1] - e[1] > -0.27f * h;  /* tan 5 deg */
 }
 
 /* screen row (draw buffer, 448 lines) of the directions el degrees above the horizon, camera pitch p (radians) */
