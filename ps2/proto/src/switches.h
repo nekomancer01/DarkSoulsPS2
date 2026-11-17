@@ -60,6 +60,8 @@
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
  * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
+ * WORLD_FAR_RESERVE   | 1        | fallback | -DWORLD_FAR_RESERVE=0                         | world.c       | a buffer of the largest far panorama reserved at boot for when the heap has no room; 0 = heap only
+ * WORLD_WANT_3D       | 1        | fallback | -DWORLD_WANT_3D=0                             | world.c       | wanted blocks read nearest first counting the height range; 0 = x / z only
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
