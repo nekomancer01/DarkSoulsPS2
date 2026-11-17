@@ -103,25 +103,3 @@ const char *hud_string(int s) { (void)s; return ""; }
 float hud_text(float x, float y, const char *s, int r, int g, int b, int align) { (void)y, (void)s, (void)r, (void)g, (void)b, (void)align; return x; }
 float hud_text_width(const char *s) { (void)s; return 0; }
 
-/* ---- enemies (Polaris 1.7c-3): none placed yet. A block's enemy roster coming and going is bookkeeping (presentation
- * until enemies are in); an event asking about or acting on an enemy reads back, except in a script with
- * "option noenemies", where the console has no enemies (nor NPC stand-ins) either and answers as these stubs do. ---- */
-#define ENEMY_READBACK(name) (lab_noenemies ? (void)0 : LAB_READBACK(name))
-void enemy_block_add(int block) { (void)block, LAB_COUNT("enemy_block_add (enemies: 1.7c-3)"); }
-void enemy_block_remove(int block) { (void)block; }
-int enemy_block_types(GSGLOBAL *gs, int block, const void *blob) { (void)gs, (void)block, (void)blob; return 1; }
-unsigned enemy_ram_free(void) { return 64u << 20; }
-void enemy_respawn(void) { LAB_COUNT("enemy_respawn (enemies: 1.7c-3)"); }
-int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
-{
-    (void)entity, (void)pos, (void)dead, (void)hp_ratio, (void)active, ENEMY_READBACK("enemy_entity (enemies: 1.7c-3)");
-    return -1;  /* (enemy.c: not an enemy, NPC or unplaced roster entry) */
-}
-float enemy_entity_anim_length(int entity, int anim) { (void)entity, (void)anim, ENEMY_READBACK("enemy_entity_anim_length"); return 0; }
-void enemy_entity_bind(int entity, struct EvChr *c) { (void)entity, (void)c; }
-int enemy_entity_damage(int entity, int hp) { (void)entity, (void)hp, ENEMY_READBACK("enemy_entity_damage"); return 0; }
-int enemy_entity_enable(int entity, int on, int bit) { (void)entity, (void)on, (void)bit, ENEMY_READBACK("enemy_entity_enable"); return 0; }
-int enemy_entity_kill(int entity, int award) { (void)entity, (void)award, ENEMY_READBACK("enemy_entity_kill"); return 0; }
-int enemy_entity_msg(int entity, int msg) { (void)entity, (void)msg, ENEMY_READBACK("enemy_entity_msg"); return 0; }
-int enemy_entity_warp(int entity, const float pos[3], float yaw) { (void)entity, (void)pos, (void)yaw, ENEMY_READBACK("enemy_entity_warp"); return 0; }
-int enemy_kill_near(V3 p, float r) { (void)p, (void)r, ENEMY_READBACK("enemy_kill_near"); return 0; }
