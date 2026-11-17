@@ -8,7 +8,12 @@
 #include "render.h"
 #include "progress.h"
 #include "event.h"
+#include "chrstat.h"
+#include "drb.h"
+#include "items.h"
 #include "menu.h"
+
+static void slots_init(void);  /* the HUD slots' icon textures (below) */
 
 typedef struct {
     char magic[4];
@@ -80,6 +85,7 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
         gsKit_texture_upload(gs, t);
     }
     ok = 1;
+    slots_init();
     return 0;
 }
 
@@ -309,11 +315,90 @@ static void bar(int bg, int plate, int fill, int frame, int end, int cur, int ma
     hud_sprite(en->sprite, fr->x + len, en->y, en->w, en->h, 0x80, 0x80, 0x80, 0x80);
 }
 
-static void slot_icon(int layout, int kit)
+/* Slot icons of what is equipped / selected (right weapon, left weapon, quick item): items.bin's icon table gives the
+ * icon id, icons.bin the 48 x 48 cell, read through the shared slot (items.c) into one small VRAM texture per slot.
+ * Until a slot's icon arrived (or with no icons.bin) it shows the starting kit's icon from menu.bin as before. */
+enum { SL_R, SL_L, SL_I, SL_N };
+static struct { GSTEXTURE t; int want, have, ok; } slot[SL_N];
+static u8 slot_stage[1024 + 64 * 48] __attribute__((aligned(64)));
+static u8 slot_pix[64 * 48] __attribute__((aligned(64)));
+static int slot_reading = -1;
+
+static void slots_init(void)
+{
+    for (int i = 0; i < SL_N; i++) {
+        GSTEXTURE *t = &slot[i].t;
+        t->Width = 64, t->Height = 64, t->PSM = GS_PSM_T8, t->ClutPSM = GS_PSM_CT32;
+        t->ClutStorageMode = GS_CLUT_STORAGE_CSM1, t->Filter = GS_FILTER_LINEAR;
+        t->Vram = r_vram_tex(gs, 64, 64, GS_PSM_T8);  /* 4 KB + 1 KB CLUT each */
+        t->VramClut = r_vram_clut(gs, GS_PSM_CT32);
+        slot[i].ok = t->Vram != GSKIT_ALLOC_ERROR && t->VramClut != GSKIT_ALLOC_ERROR;
+        slot[i].want = slot[i].have = -1;
+    }
+}
+
+static void slots_step(void)
+{
+    if (slot_reading >= 0) {
+        int r = item_icon_done();
+        if (!r)
+            return;
+        int i = slot_reading, px = item_icon_size();
+        slot_reading = -1;
+        if (r > 0 && px <= 48) {
+            for (int y = 0; y < px; y++)
+                memcpy(slot_pix + y * 64, slot_stage + 1024 + y * px, px);
+            FlushCache(0);
+            drb_tex_send(slot_pix, 64, px, slot[i].t.Vram, GS_PSM_T8, 1);
+            drb_tex_send(slot_stage, 16, 16, slot[i].t.VramClut, GS_PSM_CT32, 1);
+            slot[i].have = slot[i].want;
+            printf("hud: slot %d icon %d up\n", i, slot[i].have);
+        } else {
+            slot[i].have = -2;  /* failed: keep the kit icon */
+        }
+    }
+    for (int i = 0; i < SL_N && slot_reading < 0; i++) {
+        if (!slot[i].ok || slot[i].want == slot[i].have || slot[i].want < 0 || item_icon_bytes() > (int)sizeof slot_stage)
+            continue;
+        int k = item_icon_index(slot[i].want);
+        if (k < 0) {
+            slot[i].have = slot[i].want = -1;
+            continue;
+        }
+        if (item_icon_read(k, slot_stage))
+            slot_reading = i;
+        break;  /* the shared read slot is busy: next frame */
+    }
+}
+
+static u32 slot_item(int i)
+{
+    if (i == SL_I) {
+        u32 id = chr_stats.quick[chr_quick % 5].id;
+        if (id == (ITEM_GOODS | ESTUS_ID) && prog.estus > 0)
+            id = ITEM_GOODS | (ESTUS_ID + 1);  /* the filled flask's icon, as menu.c row_of */
+        return id;
+    }
+    int h = i == SL_R ? HAND_R : HAND_L;
+    return chr_stats.wep[h][chr_hand_slot[h] & 1].id;
+}
+
+static void slot_icon(int layout, int kit, int si)
 {
     const HudRect *e = &lay[layout];
     /* the slot's icon box is portrait (DSR's 160x180 cells): square icon centred at the box's width */
     float s = e->w < e->h ? e->w : e->h;
+    u32 id = slot_item(si);
+    slot[si].want = id ? item_icon_of(id) : -1;
+    if (!id)
+        return;  /* empty slot: no icon */
+    if (slot[si].have >= 0 && slot[si].have == slot[si].want) {
+        float px = item_icon_size();
+        gsKit_prim_sprite_texture(gs, &slot[si].t, R_HX(e->x + (e->w - s) / 2), e->y + (e->h - s) / 2, 0.5f, 0.5f,
+                                  R_HX(e->x + (e->w - s) / 2 + s), e->y + (e->h - s) / 2 + s, px - 0.5f, px - 0.5f,
+                                  HUD_Z, rgba(0x80, 0x80, 0x80, 0x80));
+        return;
+    }
     hud_sprite(hud_icon(kit), e->x + (e->w - s) / 2, e->y + (e->h - s) / 2, s, s, 0x80, 0x80, 0x80, 0x80);
 }
 
@@ -387,18 +472,24 @@ void hud_draw(const Player *p, float dt)
     humanity_counter();
     /* quick slots: left hand (shield), right hand (sword), item (Estus Flask) */
     draw_layout(HUD_SLOT_L_PLATE, 0x80);
-    slot_icon(HUD_SLOT_L_ICON, STR_WEP_L - STR_WEP_R);
+    slots_step();
+    slot_icon(HUD_SLOT_L_ICON, STR_WEP_L - STR_WEP_R, SL_L);
     draw_layout(HUD_SLOT_R_PLATE, 0x80);
-    slot_icon(HUD_SLOT_R_ICON, 0);
+    slot_icon(HUD_SLOT_R_ICON, 0, SL_R);
     draw_layout(HUD_SLOT_I_FRAME, 0x80);
     draw_layout(HUD_SLOT_I_PLATE, 0x80);
-    slot_icon(HUD_SLOT_I_ICON, STR_ESTUS - STR_WEP_R);
+    slot_icon(HUD_SLOT_I_ICON, STR_ESTUS - STR_WEP_R, SL_I);
     char buf[16];
     const HudRect *c = &lay[HUD_SLOT_I_COUNT];
-    snprintf(buf, sizeof buf, "%d", (int)prog.estus);  /* progress.c (A3) */
+    u32 qid = chr_stats.quick[chr_quick % 5].id;
+    int estus = !qid || ITEM_ROW(qid) == ESTUS_ID || ITEM_ROW(qid) == ESTUS_ID + 1;
+    snprintf(buf, sizeof buf, "%d", estus ? (int)prog.estus : inv_count(qid));  /* progress.c (A3) */
     hud_text(c->x + c->w / 2.0f + hud_text_width(buf) / 2, c->y, buf, 0x80, 0x80, 0x80, 1);
     const HudRect *n = &lay[HUD_ITEM_NAME];
-    hud_text(n->x, n->y, hud_string(STR_ESTUS), 0x80, 0x80, 0x80, 0);
+    /* the name: menu.bin holds Estus's only; other quick items' names need itemx.bin (TECH_DEBT hud-8) */
+    char nb[48];
+    const char *nm = estus ? hud_string(STR_ESTUS) : items_detail_ready() ? item_name(qid, nb, sizeof nb) : "";
+    hud_text(n->x, n->y, nm, 0x80, 0x80, 0x80, 0);
     /* souls */
     draw_layout(HUD_SOUL_PLATE, 0x80);
     draw_layout(HUD_SOUL_LINE, 0x80);

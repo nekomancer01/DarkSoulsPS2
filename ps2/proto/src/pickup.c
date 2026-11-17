@@ -10,6 +10,7 @@
 #include "hud.h"
 #include "items.h"
 #include "menu.h"
+#include "model.h"
 #include "pickup.h"
 #include "progress.h"
 
@@ -101,13 +102,17 @@ int pickup_action(Player *p)
 }
 
 /* ---- pickup anim ---- */
-/* ObjActParam row 0 playerAnimId (the generic ObjAct): the treasure pickup's own anim id is not found in the exe
- * (ASSUMED the same, TECH_DEBT item-2) */
-#define PICKUP_ANIM 8000
+/* The pickup anim is not traced in the exe (TECH_DEBT item-2). 8000 (ObjActParam row 0, the generic ObjAct) is a lever
+ * pull (Ame's playtest 2026-11-17). a00 7503, an event-layer anim of the player ESD (c1_3(3, 7503, ...)), is the one
+ * c0000 anim that starts standing, crouches and reaches the right hand to the floor (R_Hand 0.18 m above the feet, the
+ * left at 0.41, pelvis 0.49 at its lowest; 2.5 s): ASSUMED the item pickup */
+#define PICKUP_ANIM 7503
 void pickup_anim(Player *p)
 {
     if (p && !player_event_anim_playing(p) && player_event_anim(p, PICKUP_ANIM) <= 0)
         printf("pickup: anim %d not in this build\n", PICKUP_ANIM);
+    else if (p && model_anim(PICKUP_ANIM) < 0)  /* in player.gd but not loaded (model.c MAX_ANIMS): bind pose */
+        printf("pickup: anim %d has no model clip (model.c drops anims past MAX_ANIMS)\n", PICKUP_ANIM);
 }
 
 /* ---- item get dialog (menu.drb F25: rows F25_item0 at the bottom, then up; each row's F25_text_line_02 holds
@@ -231,9 +236,16 @@ void pickup_draw(void)
         drb_draw(r, 0, 0, a, row_text, &k);
         const ItemRow *ir = item_row(rows[k].item);
         int ic = drb_child(line, "icon");
+        static int logged;
+        int shown = 0;
         if (ir && ic >= 0) {
             const DrbNode *n = drb_node(ic);
-            drb_icon(ir->icon, n->x0, n->y0, n->x1 - n->x0, n->y1 - n->y0, a);
+            shown = drb_icon(ir->icon, n->x0, n->y0, n->x1 - n->x0, n->y1 - n->y0, a);
+        }
+        if (logged != (int)rows[k].item + shown) {  /* once per item and state */
+            logged = (int)rows[k].item + shown;
+            printf("pickup: dialog row %d item %08x icon %d node %d %s\n", k, (unsigned)rows[k].item, ir ? ir->icon : -1,
+                   ic, shown ? "drawn" : "not drawn yet");
         }
     }
     hud_end();
