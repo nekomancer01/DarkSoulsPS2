@@ -15,8 +15,7 @@ gcc with -m32) from Python, and compare a recorded PCSX2 run (test option `recor
       Always reported: the first frame more than 1 mm apart (how far the Lab drifts from the console).
       Version 3 traces recorded with enemies (NAME.trace.enemies): every enemy's (ESD, AI, action) and HP sequence must
       match the console's (the hard gate), positions within --enemy-cm are the target, the first frame more than 1 mm
-      apart per enemy is reported; a console row whose draw group was hidden makes the trace unsuitable (the Lab shows
-      every group until Polaris 1.7c-4).
+      apart per enemy is reported, and the enemies whose draw group the console hid are listed.
 
   lab.py run SCRIPT... [--area A] [--build B] [--state STATE_LOG [--end-cm 1]] [-j N] [-v]
       runs each test script (tests/*.txt) in the Lab through the game's own interpreter (src/testscript.c) and prints
@@ -32,7 +31,8 @@ gcc with -m32) from Python, and compare a recorded PCSX2 run (test option `recor
       --state: the script run against the console's own run of it (its option record .state log): the same state
       sequence and the end position within --end-cm (tests/det_walk_open.txt: 0.04 cm). Frame counts differ (the
       console's boot frames), so the sequence is compared without frame numbers.
-      Replays: frames where the console's world held the player (trace flag 4) are held in the Lab too.
+      Replays: frames where the console's world held the player (trace flag 4) are held in the Lab too. Version 3:
+      the draw-group state hash per frame (record word 21, drawgrp.c dg_state_hash) must match the Lab's.
 
 The commands are lab/lab_main.c's (test-script names where one exists). The Lab is a 32-bit host program: on the
 distrobox run lab.py through `distrobox-host-exec` (the container has no 32-bit loader)."""
@@ -73,6 +73,7 @@ class Lab:
     def replay(self, trace, enemies=None):
         """the Lab's state per frame; with a list for enemies, also its enemy rows (the replay's "enemy" lines)"""
         out = self.cmd("replay " + os.path.abspath(trace))
+        self.dg = {int(t[1]): int(t[2]) for t in (s.split() for s in out if s.startswith("dg "))}
         if enemies is not None:
             enemies += [parse_enemy(s[len("enemy "):]) for s in out if s.startswith("enemy ")]
         return [parse_state(s) for s in out if s.startswith("state ")]
@@ -158,8 +159,8 @@ def parse_enemy(s):
 
 def compare_enemies(lab_rows, ps2_rows, start, bound_cm=1.0):
     """per enemy (by entity) from frame `start`: the same sequence of (ESD, AI, action) states (the hard gate), HP
-    sequence, the largest distance, the first frame more than 1 mm apart; every console row must have its draw group
-    shown (the Lab shows every group until 1.7c-4), else the trace is unsuitable"""
+    sequence, the largest distance, the first frame more than 1 mm apart; the enemies whose draw group the console hid
+    are listed (the Lab runs the same draw groups since Polaris 1.7c-4)"""
     by = lambda rows: {}
     lab, ps2 = {}, {}
     lab_rows = [r for r in lab_rows if r]
@@ -190,7 +191,7 @@ def compare_enemies(lab_rows, ps2_rows, start, bound_cm=1.0):
             out[e]["first_state_difference"] = {"lab": sa[k] if k < len(sa) else None, "console": sb[k] if k < len(sb) else None}
     return {"enemies": len(out), "same_states": ok_states, "max_cm": round(100 * worst, 2),
             "within_bound": worst * 100 <= bound_cm, "hidden_groups_on_console": hidden,
-            "pass": ok_states and not hidden, "per_enemy": out}
+            "pass": ok_states, "per_enemy": out}
 
 
 def compare(lab_states, ps2_states, short, end_cm, start=0):
@@ -422,6 +423,7 @@ def main():
     rows = []
     with Lab(a.build, a.area, noenemies=noen) as lab:
         got = lab.replay(a.trace, rows)
+        lab_dg = lab.dg
         stubs = lab.stubs()
     ps2 = [parse_state(s) for s in open(a.state_log) if s.strip()]
     start = trace_start(a.trace)
@@ -429,6 +431,18 @@ def main():
     rep["from_frame"] = start
     rep["held_frames"] = trace_held(a.trace)  # (the console's disc waits in the reference: many = a poor reference)
     rep["stubs"] = stubs
+    if trace_header(a.trace)[0] >= 3:  # the draw-group state per frame (record word 21) against the Lab's
+        import struct
+        _, hb, rb, _ = trace_header(a.trace)
+        raw = open(a.trace, "rb").read()
+        rec_dg = {struct.unpack_from("<I", raw, hb + rb * i)[0]: struct.unpack_from("<I", raw, hb + rb * i + 84)[0]
+                  for i in range((len(raw) - hb) // rb)}
+        fr = sorted(f for f in rec_dg if f in lab_dg and f >= start) if any(rec_dg.values()) else []  # (0: recorded
+        # before the hash existed)
+        bad = [f for f in fr if rec_dg[f] != lab_dg[f]]
+        rep["dg_frames"] = len(fr)
+        rep["dg_first_difference"] = bad[0] if bad else None
+        rep["pass"] = rep["pass"] and not bad
     ef = a.trace + ".enemies"
     if not noen and os.path.exists(ef):
         er = compare_enemies(rows, [parse_enemy(s) for s in open(ef) if s.strip()], trace_first_input(a.trace),

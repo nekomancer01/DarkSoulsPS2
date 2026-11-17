@@ -14,16 +14,58 @@
 #include "mapstream.h"
 #include "ev_chr.h"
 #include "lpass.h"
+#include "drawgrp.h"
+#include "collision.h"
+#include "map.h"
+#include "pack.h"
+
+/* ---- the map's instances (mapblock.c), as far as the draw groups need them (Polaris 1.7c-4) ----
+ * drawgrp.c runs as on the console (dg_player, dg_mask_shown, dg_entity): each block's dg.bin is set up when the map
+ * turns the block on, with the chunk count of its maptab header (the first two words of map_i.h's Header) and the
+ * triangles of its collision, as mapblock.c map_block_init does; instance k = world block k = collision block k. */
+static int inst_on[MAP_INST], inst_col[MAP_INST];
+static unsigned inst_chunks[MAP_INST];
+unsigned map_chunk_count(void) { return inst_chunks[0]; }
+static void *blk_dg[MAP_INST];
+int mp_inst_col_block(int k) { return k == 0 ? inst_col[0] : k > 0 && k < MAP_INST && inst_on[k] ? inst_col[k] : -1; }
+int map_inst_of(int col_block)
+{
+    for (int k = 0; k < MAP_INST; k++)
+        if ((k == 0 || inst_on[k]) && inst_col[k] == col_block)
+            return k;
+    return -1;
+}
+int map_block_init(int k, const void *tab, const void *res, int col_block)
+{
+    const unsigned *h = tab;
+    (void)res;
+    if (k < 0 || k >= MAP_INST || !h || memcmp(h, "DSM5", 4))
+        return 0;
+    if (k)
+        dg_block_init(k, blk_dg[k], h[1], (unsigned)col_block_tris(col_block));
+    inst_on[k] = 1, inst_col[k] = col_block, inst_chunks[k] = h[1];
+    return 1;
+}
+/* mapblock.c block_drop: the instance goes off; map_block_drop also forgets its draw groups (their dg.bin goes with the
+ * block's lite set), map_block_lean keeps them (an instance already off drops nothing, as there) */
+void map_block_drop(int k)
+{
+    if (k <= 0 || k >= MAP_INST)
+        return;
+    if (inst_on[k])
+        dg_block_drop(k);
+    inst_on[k] = 0, blk_dg[k] = NULL;
+}
+void map_block_lean(int k, int keep_hz) { (void)keep_hz; if (k > 0 && k < MAP_INST) inst_on[k] = 0; }
+void map_block_dg_set(int k, const void *dg, const void *pvs) { (void)pvs; if (k > 0 && k < MAP_INST) blk_dg[k] = (void *)dg; }
+void map_block_dg(int k, void *pack)
+{
+    if (k > 0 && k < MAP_INST && pack && !blk_dg[k])
+        blk_dg[k] = pack_load(pack, "dg.bin", NULL);
+}
 
 /* ---- the map (render) and its streamer (memory: the host heap) ---- */
-int dg_entity(int id, int on) { (void)id, (void)on, LAB_COUNT("dg_entity (map parts shown / hidden)"); return 1; }
-int dg_entity_drawn(int id) { (void)id, LAB_COUNT("dg_entity_drawn (test query)"); return -1; }
 void map_block_bump(int k, const void *blob) { (void)k, (void)blob; }
-void map_block_dg(int k, void *pack) { (void)k, (void)pack; }
-void map_block_dg_set(int k, const void *dg, const void *pvs) { (void)k, (void)dg, (void)pvs; }
-void map_block_drop(int k) { (void)k; }
-int map_block_init(int k, const void *tab, const void *res, int col_block) { (void)k, (void)tab, (void)res, (void)col_block; return 1; }
-void map_block_lean(int k, int keep_hz) { (void)k, (void)keep_hz; }
 void map_block_shared(int k, const void *buf) { (void)k, (void)buf; }
 void map_block_split(int k, const void *b, unsigned b_off, const void *c, unsigned c_off) { (void)k, (void)b, (void)b_off, (void)c, (void)c_off; }
 int map_block_stream_open(int k, const void *pack) { (void)k, (void)pack; return 1; }
@@ -115,11 +157,6 @@ float hud_text_width(const char *s) { (void)s; return 0; }
 
 
 /* ---- what enemy.c / ai.c / npc.c reach outside simulate (Polaris 1.7c-3) ---- */
-/* Draw groups: the Lab shows every group until the draw-group player update moves out of map.c (Polaris 1.7c-4, after
- * PR #252; TECH_DEBT test-9): an enemy in a group the console hides updates here. det_burg3 is recorded where the
- * console's mask shows every enemy in range (checked from the recording, not assumed) */
-int dg_char(int k, const float pos[3]) { (void)k, (void)pos; return 0; }
-int dg_mask_shown(int k, int mask) { (void)k, (void)mask, LAB_COUNT("dg_mask_shown (the Lab shows every draw group: 1.7c-4)"); return 1; }
 unsigned lpass_t[LG_N];
 void *mapstream_alloc_gentle(unsigned n) { return malloc(n); }
 char pack_error[96];

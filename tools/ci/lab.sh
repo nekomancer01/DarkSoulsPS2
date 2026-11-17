@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 make -C "$ROOT/ps2/proto" lab || exit 1
 FAIL=0
 for t in "$ROOT"/build/save/det_walk_open.trace "$ROOT"/build/save/det_walk.trace "$ROOT"/build/save/det_burg2.trace \
-         "$ROOT"/build/save/det_burg3.trace; do  # (the gate traces: open ground, pots, a Burg walk the world held, Burg enemies)
+         "$ROOT"/build/save/det_burg3.trace "$ROOT"/build/save/det_seam.trace; do  # (the gate traces: open ground, pots, a Burg walk the world held, Burg enemies, the aqueduct seam's draw groups)
     [ -f "$t" ] && [ -f "$t.state" ] || continue
     python3 "$ROOT/tools/lab.py" compare "$t" "$t.state" --short || FAIL=$((FAIL + 1))
 done
