@@ -431,7 +431,9 @@ int main(int argc, char **argv)
     if (model_ok)
         model_helmet(0);  /* test builds: start with the helm off (make EE_DBGINFOFLAGS=-DHELM_OFF) */
 #endif
+    HM_TAG("player");  /* HEAPMAP: the player's textures in the VRAM census (render.c) */
     int vram_free = model_ok ? model_upload(gs) : -1;
+    HM_TAG0();
 #ifndef R2_OFF
     unsigned ram_before = ram_free();
     if (vram_free >= 0 && model_compact(model_blob, model_size))  /* R2: verts / tris / UVs / pixels now live in the
@@ -559,6 +561,7 @@ int main(int argc, char **argv)
          * the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera, draw
          * groups, streamed cells) is settled before the kick; what those updates change shows from the next frame */
         int frozen = test_frozen();  /* test scripts freeze the world while a shot is taken (and for render-only runs) */
+        PROF_GATE(test_mb.state, frozen);  /* PROFILE: whole-run percentiles over the running script's frames */
         HITCH_BEGIN(pre);
         if (!frozen) {
             PROF_MARK(PROF_PLAYER);
@@ -599,10 +602,12 @@ int main(int argc, char **argv)
         test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
         r_camera(eye, target);
 
+        PROF_MARK(PROF_STREAM);
         HITCH_BEGIN(world);
         world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
         loading_frame();  /* the boot's / a death's loading screen closes once this frame's loads settled */
         HITCH_END(world, HS_WORLD);
+        PROF_MARK(PROF_SOUND);
         HITCH_BEGIN(snd);
         snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
         snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */

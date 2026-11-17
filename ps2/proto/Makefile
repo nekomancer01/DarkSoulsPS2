@@ -112,7 +112,8 @@ DSRSND_DEFS = $(if $(filter 0,$(DISC_CACHE)),-DDSRSND_NO_CACHE)
 AREA_DEFS = $(if $(filter-out $(DEFAULT_MAP),$(MAP)),-DAREA='"$(MAP)"' -DCHR_DIR='"$(MAP)/"')
 ifeq ($(PROFILE),1)
 EE_BIN := $(EE_BIN:.elf=_prof.elf)
-EE_OBJS := $(filter-out $(AREA_OBJ)/main.o,$(EE_OBJS)) $(AREA_OBJ)/prof/main.o $(O)/prof.o
+# (ai.c too: its per-goal-script lua0 instruction counts, Polaris census)
+EE_OBJS := $(filter-out $(AREA_OBJ)/main.o $(O)/ai.o,$(EE_OBJS)) $(AREA_OBJ)/prof/main.o $(O)/prof/ai.o $(O)/prof.o
 endif
 ifeq ($(GPROF),1)
 EE_BIN := $(EE_BIN:.elf=_gprof.elf)
@@ -696,6 +697,9 @@ distclean:
 $(AREA_OBJ)/prof/main.o: src/main.c $(O)/.cflags
 	@mkdir -p $(@D)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -DPROFILE $(AREA_DEFS) -c $< -o $@
+$(O)/prof/ai.o: src/ai.c $(O)/.cflags
+	@mkdir -p $(@D)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -DPROFILE -c $< -o $@
 $(O)/gprof/%.o: src/%.c $(O)/.cflags
 	@mkdir -p $(@D)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -pg -DPROFILE -DGPROF $(AREA_DEFS) -c $< -o $@
