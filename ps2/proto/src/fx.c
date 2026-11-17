@@ -20,6 +20,7 @@
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
 #include "gs.h"
+#include "ot.h"
 #include "ticks.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
@@ -678,7 +679,14 @@ static void vu_flush(void)
         vb.n++;
     }
     if (!vb.chain) {  /* the particle chain: camera constants, the main fog row, the program's layout */
-        vu1_begin(2);
+        {
+#ifdef OT_HASH
+            if (ot_ab_old)
+                ot_old_begin(2);
+            else
+#endif
+                ot_open(OT_FX, OT_FX);
+        }
         vu1_map_fog(vb.fog[0], vb.fog[1], vb.fog[2], vb.fog[3]);
         vu1_fx_begin();
         vb.chain = 1;
@@ -745,7 +753,12 @@ void fx_kick(void)
     u64 zbuf = gs_zbuf(fx_gs, 0);
     const u64 r[6] = {fx_gs->PrimAlpha, GSR_ALPHA, zbuf, GSR_ZBUF, vb.fogbase, GSR_FOGCOL};
     vu1_gs_regs(3, r);
-    vu1_kick();
+#ifdef OT_HASH
+    if (ot_ab_old)
+        ot_old_kick();  /* (same-run A/B: the old sequence, ot.h) */
+    else
+#endif
+        ot_close();  /* frame.c sends it (src/ot.h) */
     vb.chain = 0;
 }
 

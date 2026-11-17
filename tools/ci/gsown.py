@@ -18,7 +18,12 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 SRC = os.path.join(ROOT, "ps2", "proto", "src")
 OWN = {"gs.h", "gs.c"}
-LEGACY = {"map.c": 14}  # map.c's count on main when the check was added: it may only go down
+LEGACY = {"map.c": 14}
+# Polaris 1.4: the order table (src/ot.c) alone starts transfers. Allowed elsewhere: the definitions, and the legacy
+# waits / loading-screen presents in files other threads own (count may only go down)
+KICK = re.compile(r"\b(vu1_begin|vu1_kick|vu1_wait|r_queue_exec|gsKit_queue_exec)\s*\(")
+KICK_OWN = {"ot.c", "vu1.c", "render.c", "vu1.h", "render.h", "ot.h"}
+KICK_LEGACY = {"msarena.c": 3, "world.c": 1, "loading.c": 1}  # map.c's count on main when the check was added: it may only go down
 STATE = re.compile(r"\bGS_SETREG_(TEST|ALPHA|ZBUF|FRAME_1|TEX1|CLAMP|TEXA|BITBLTBUF|TRXPOS|TRXREG|TRXDIR|MIPTBP1)\b"
                    r"|\bGS_SET_[A-Z0-9]+\b|\bSetGsCrt\b|\bgsKit_set_(test|primalpha|clamp)\b|\bgsKit_vram_alloc\s*\(")
 ADDR = re.compile(r"(?:\b(?:REG|q64)\(.*,\s*|\*p\+\+ = |p\[\d+\] = |\{.*,\s*|^\s*)"
@@ -44,6 +49,20 @@ def main():
         if f in LEGACY:
             print(f"gsown: {f}: {n} raw GS writes (allowed up to {LEGACY[f]} until Polaris 4.1)")
             if n > LEGACY[f]:
+                fails += hits
+        else:
+            fails += hits
+    for f in sorted(os.listdir(SRC)):
+        if not f.endswith((".c", ".h")) or f in KICK_OWN:
+            continue
+        hits = []
+        for i, line in enumerate(open(os.path.join(SRC, f), errors="replace"), 1):
+            code = re.sub(r"/\*.*?\*/|//.*", "", line)
+            if KICK.search(code):
+                hits.append(f"{f}:{i}: transfer started outside the order table: {line.strip()}")
+        if f in KICK_LEGACY:
+            print(f"gsown: {f}: {len(hits)} transfer calls (legacy, allowed up to {KICK_LEGACY[f]})")
+            if len(hits) > KICK_LEGACY[f]:
                 fails += hits
         else:
             fails += hits

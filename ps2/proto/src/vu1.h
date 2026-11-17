@@ -153,4 +153,8 @@ typedef struct {
 } Vu1Stats;
 extern Vu1Stats vu1_stats;
 
+#ifdef OT_HASH  /* Polaris 1.4 gate (debug): vu1.c */
+void ot_hash_gsq(const void *start, unsigned bytes);
+void ot_hash_frame(int log);
+#endif
 #endif

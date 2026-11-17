@@ -1307,10 +1307,74 @@ float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const flo
     return h;
 }
 
+#ifdef OT_HASH
+#include <stdio.h>
+#include "ot.h"
+/* Polaris 1.4 gate (debug): the stream VIF1 receives, hashed per kick in transfer order. A tag's upper 64 bits (its
+ * VIF codes, transferred with TTE) and every payload quadword it delivers (CNT / END: the words after it, REF / REFE:
+ * the words at its address); the DMA tags' own words are not hashed (addresses differ between builds). One line per
+ * frozen test frame (ot_hash_frame): the kicks in order with their buffer and hash, and gsKit's queue */
+static unsigned hash_mix(unsigned h, const u32 *w, int n)
+{
+    for (int i = 0; i < n; i++)
+        h = (h ^ w[i]) * 16777619u;
+    return h;
+}
+static unsigned hash_chain(const u128 *p)
+{
+    unsigned h = 2166136261u;
+    for (int guard = 0; guard < 1 << 20; guard++) {
+        const u32 *t = (const u32 *)p;
+        unsigned qwc = t[0] & 0xFFFF, id = t[0] >> 28 & 7;
+        const u128 *addr = (const u128 *)(t[1] & 0x0FFFFFF0);
+        h = hash_mix(h, t + 2, 2);  /* the VIF codes */
+        if (id == T_CNT || id == T_END) {
+            h = hash_mix(h, (const u32 *)(p + 1), 4 * qwc);
+            if (id == T_END)
+                break;
+            p += 1 + qwc;
+        } else if (id == T_REF || id == T_REFE) {
+            h = hash_mix(h, (const u32 *)addr, 4 * qwc);
+            if (id == T_REFE)
+                break;
+            p++;
+        } else {
+            h ^= 0xBAD0000u | id;
+            break;
+        }
+    }
+    return h;
+}
+#define OT_KICKS 16
+static struct { int buf; unsigned h; } ot_kicks[OT_KICKS];
+static int ot_nkicks;
+static unsigned ot_gsq_h, ot_gsq_n;
+void ot_hash_gsq(const void *start, unsigned bytes)  /* render.c r_queue_exec */
+{
+    ot_gsq_h = hash_mix(ot_gsq_h ? ot_gsq_h : 2166136261u, start, bytes / 4), ot_gsq_n++;
+}
+void ot_hash_frame(int log)  /* frame.c, after the flip */
+{
+    if (log) {
+        char buf[320];
+        int n = 0;
+        for (int i = 0; i < ot_nkicks && n < (int)sizeof buf - 24; i++)
+            n += snprintf(buf + n, sizeof buf - n, " %d:%08x", ot_kicks[i].buf, ot_kicks[i].h);
+        buf[n] = 0;
+        printf("othash: %s kicks%s | gsq %u:%08x\n", ot_ab_old ? "old" : "ot", buf, ot_gsq_n, ot_gsq_h);
+    }
+    ot_nkicks = 0, ot_gsq_h = 0, ot_gsq_n = 0;
+}
+#endif
+
 void vu1_kick(void)
 {
     /* FLUSH: wait for the last program and its PATH1 transfer before the DMA counts as finished */
     tag(0, T_END, 0, VIF(V_FLUSH, 0, 0), VIF(V_NOP, 0, 0));
+#ifdef OT_HASH
+    if (ot_nkicks < OT_KICKS)
+        ot_kicks[ot_nkicks].buf = cur, ot_kicks[ot_nkicks++].h = hash_chain(chain);
+#endif
     int qw = seg_qw + ((u128 *)cp - chain);
     vu1_stats.last[cur] = qw;
     vu1_stats.clut_loads[cur] = clut_loads;

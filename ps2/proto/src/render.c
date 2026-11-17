@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "render.h"
+#include "vu1.h"  /* ot_hash_gsq (OT_HASH builds) */
 #include <gsInline.h>
 #include <gif_tags.h>
 
@@ -602,6 +603,9 @@ void r_queue_exec(GSGLOBAL *gs)
         if (n > R_GSQ_OS * 3 / 4)
             printf("TEST error: gsKit queue %u of %u bytes (R_GSQ_OS)\n", n, (unsigned)R_GSQ_OS);
     }
+#ifdef OT_HASH
+    ot_hash_gsq(q->pool[q->dbuf], n);
+#endif
     gsKit_queue_exec(gs);
 }
 
