@@ -407,7 +407,7 @@ static int static_cond(int op)
     case OP_C_GROUP: case OP_C_FLAG: case OP_C_FLAG_RANGE: case OP_C_COUNT_FLAGS: case OP_C_EVENT_VALUE: case OP_C_MP:
     case OP_C_ONLINE: case OP_C_CYCLE: case OP_C_CLASS: case OP_C_COVENANT: case OP_C_ITEM: case OP_C_ITEM_BBOX:
     case OP_C_TENDENCY: case OP_C_MP_EVENT: case OP_C_MP_COUNT: case OP_C_DROPPED_AREA: case OP_C_DROPPED:
-    case OP_C_EVENT_MSG: case OP_C_CHR_TYPE:
+    case OP_C_CHR_TYPE:
         return 1;
     }
     return 0;
@@ -454,7 +454,8 @@ static int eval_cond(Inst *in, const Reg *r, int depth)
         int in_map = ps && ps->h->map[0] == (u8)iw[2] && ps->h->map[1] == (u8)iw[3];
         return in_map == (iw[1] != 0);
     }
-    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_EVENT_MSG: case OP_C_MP_COUNT:
+    case OP_C_EVENT_MSG: return (enemy_entity_msg(iw[1], iw[2]) != 0) == (iw[3] != 0);  /* (entity, message, has) */
+    case OP_C_MP_EVENT: case OP_C_DROPPED_AREA: case OP_C_DROPPED: case OP_C_MP_COUNT:
         return 0;  /* nothing of that kind happens offline / in the port yet */
     /* characters (ev_chr.c); the player's SpEffects are A6's: false as before */
     case OP_C_DAMAGED: return ev_chr_damaged(iw[1], iw[2]) == 1;
@@ -803,6 +804,20 @@ static void warp_to(int own, s32 dest)
         pl->yaw = e->yaw + 3.14159265f;  /* MSB rotY -> player yaw, as export_map.py's spawn (+ pi) */
     pl->vel = v3(0, 0, 0), pl->airborne = 0, pl->fall_y0 = pl->pos.y;
     printf("EVT warp player -> %d (%.2f %.2f %.2f)\n", (int)dest, pl->pos.x, pl->pos.y, pl->pos.z);
+}
+
+/* 2004[40] / [41] / [44] on a character: to the entity's position and facing (regions and points: MSB rotY -> yaw + pi,
+ * as warp_to) */
+static int chr_warp(int own, s32 chr, s32 dest)
+{
+    Set *s = NULL;
+    const EvEnt *e = ent_any(own, dest, &s);
+    float p[3];
+    if (!e && !ent_pos(own, dest, p))
+        return 0;
+    if (e)
+        memcpy(p, e->pos, 12);
+    return enemy_entity_warp(chr, p, e ? e->yaw + 3.14159265f : 0);
 }
 
 static const EvLot *find_lot(s32 id, const EvLotItem **items)
@@ -1190,7 +1205,7 @@ static void run(Inst *in)
         case OP_WARP_FLOOR: case OP_SHORT_WARP: case OP_WARP_COPY:
             if (iw[0] == PLAYER_ENTITY)
                 warp_to(in->set, iw[2]);
-            else
+            else if (!chr_warp(in->set, iw[0], iw[2]))
                 stub(in, op);
             break;
         /* object ops (ev_obj.c): stub = no breakable / animated object of that id (elevators: A9) */
@@ -1206,9 +1221,12 @@ static void run(Inst *in)
             float len = 0;
             if (iw[0] == PLAYER_ENTITY)  /* the player (fog-wall walk 7410): player.c, the exported anims only */
                 len = player_event_anim(pl, iw[1]);
-            if (!len && !ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len))
-                stub(in, op);  /* enemies / NPCs: A5 */
-            else if (iw[3] && !iw[2])
+            int done = iw[0] == PLAYER_ENTITY ? len > 0 : ev_obj_anim(iw[0], iw[1], iw[2] != 0, &len);
+            if (!done && iw[0] != PLAYER_ENTITY)  /* a character (boss entries: the Taurus Demon's 9061 jump) */
+                done = ev_chr_force_anim(iw[0], iw[1], iw[2] != 0, &len);
+            if (!done)
+                stub(in, op);
+            else if (iw[3] && !iw[2] && len > 0)
                 in->wait = len, in->state = I_WAIT_T, clear_conds(in);
             break;
         }

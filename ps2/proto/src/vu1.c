@@ -550,7 +550,11 @@ static float map_zk = 1.0f;
 
 void vu1_map_zbias(float k)
 {
+    if (k == map_zk)
+        return;
     map_zk = k;
+    if (rows_fog)  /* the constants again with the new Z scale (MAP_PEER_ZBIAS changes it between blocks) */
+        vu1_map_fog(last_fog[0], last_fog[1], last_fog[2], last_fog[3]);
 }
 
 void vu1_map_near(float n)

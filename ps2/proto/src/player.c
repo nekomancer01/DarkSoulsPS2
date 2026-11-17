@@ -17,6 +17,7 @@
 #include "progress.h"
 #include "items.h"
 #include "combat_data.h"
+#include "enemy.h"
 #include "esd.h"
 #include "pack.h"
 #include "player_data.h"
@@ -455,6 +456,35 @@ static void proxy_slide(Player *p, float dt)
  * capsule slides along walls and the feet follow the floor within the step limits; without a floor the player is
  * airborne: x/z keep the take-off velocity (a jump's root motion while it plays), y follows gravity, and the first
  * floor crossed is the landing. Crossing a lethal-fall / kill plane, or dropping out of the map, respawns. */
+/* SLIDE_SUPPORT (default on; 0 = the one triangle under the feet): the floor normal the slide reads is the mean of
+ * the walkable surface under the capsule, as Havok's proxy takes its support from every contact of its shape
+ * (hkpCharacterProxy::checkSupport averages the contact normals), not the one collision triangle under its centre.
+ * Bumpy ground of small facets steeper than 35 deg among flatter ones (the grass slope below Firelink's aqueduct)
+ * slid the player at each facet: "this spot is very slippery" (Ame's report 2026-11-17 21:31, t 71.9). Samples: the
+ * centre and 8 points at SUPPORT_R within the step window (ASSUMED) */
+#ifndef SLIDE_SUPPORT
+#define SLIDE_SUPPORT 1
+#endif
+#define SUPPORT_R (COL_PLAYER_R * 0.8f)
+static void support_normal(Player *p, const float pos[3], const ColHit *hit)
+{
+    memcpy(p->floor_n, hit->n, sizeof p->floor_n);
+    if (!SLIDE_SUPPORT || hit->n[1] >= SLIDE_NY)
+        return;  /* (only a steep centre can slide: the mean is asked only then) */
+    static const float dir[8][2] = {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {-0.7071f, 0.7071f},
+                                    {-1, 0}, {-0.7071f, -0.7071f}, {0, -1}, {0.7071f, -0.7071f}};
+    float n[3] = {hit->n[0], hit->n[1], hit->n[2]};
+    for (int k = 0; k < 8; k++) {
+        ColHit r;
+        if (col_floor(pos[0] + dir[k][0] * SUPPORT_R, pos[2] + dir[k][1] * SUPPORT_R, hit->y + PROXY_STEP_UP,
+                      hit->y - PROXY_STEP_DOWN, COL_SOLID, &r) && r.n[1] >= PROXY_WALL_NY)
+            n[0] += r.n[0], n[1] += r.n[1], n[2] += r.n[2];
+    }
+    float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (l > 1e-6f)
+        p->floor_n[0] = n[0] / l, p->floor_n[1] = n[1] / l, p->floor_n[2] = n[2] / l;
+}
+
 static void constrain(Player *p, V3 old)
 {
     if (!col_tris()) {
@@ -469,6 +499,11 @@ static void constrain(Player *p, V3 old)
         dx = p->vel.x * dt, dz = p->vel.z * dt;
     else if (!p->airborne)
         dx += p->slide.x * dt, dz += p->slide.z * dt;
+    if (!p->airborne && p->state != ST_DEAD) {  /* heavy enemies push back (enemy.c CHR_PUSH_WEIGHT), through the walls test */
+        float px = clampf(enemy_player_push[0], -0.25f, 0.25f), pz = clampf(enemy_player_push[1], -0.25f, 0.25f);
+        dx += px, dz += pz;
+    }
+    enemy_player_push[0] = enemy_player_push[1] = 0;
     float wall = col_wall_ny;
     col_wall_ny = PROXY_WALL_NY;
     col_ride = PLAYER_PROXY;  /* edges under the capsule within maxSlope are ridden over (the spiral stairs of the
@@ -482,7 +517,7 @@ static void constrain(Player *p, V3 old)
              * frames); the lag stays under STEP_LAG so the step window above still finds the floor */
             float y = old.y + (hit.y - old.y) * (1 - expf(-dt / STEP_EASE));
             p->pos = v3(pos[0], clampf(y, hit.y - STEP_LAG, hit.y + STEP_LAG), pos[2]);
-            memcpy(p->floor_n, hit.n, sizeof p->floor_n);
+            support_normal(p, pos, &hit);
             return;
         }
         if (world_hold(pos)) {  /* the floor ahead is a world block still loading (src/world.c): wait at its edge */

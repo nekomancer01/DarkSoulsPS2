@@ -21,7 +21,8 @@
     X(PUSH2_CELLS, 1)         \
     X(MS_LIFE, 1)             \
     X(MS_TIDY, 1)             \
-    X(MS_QSCALE, 1)
+    X(MS_QSCALE, 1)           \
+    X(WORLD_REACH, 1)
 
 #define CVAR_EXTERN(name, def) extern int cv_##name;
 CVAR_LIST(CVAR_EXTERN)

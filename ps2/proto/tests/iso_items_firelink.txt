@@ -1,0 +1,22 @@
+# World items at Firelink (Ame's playtest 2026-11-17, t59-62): the corpse treasure o0500_0000 (lot 1020000, goods 500
+# x3) at -39.4 -58.2 53.4 shows one glow, one pickup gives one dialog row, the pickup anim is a00 7503 (crouch, not
+# the lever pull 8000) and the item's icon shows in the dialog. Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_items_firelink.txt <out> --iso build/proto.iso --timeout 600
+option nodemo
+option godmode
+wait 3
+spawn -38.4 -58.2 54.4 -2.36
+cam -2.36 0.3
+wait 4
+pickup summary
+shot firelink_glow
+ev action
+wait 0.6
+shot firelink_pickup_anim
+pickup expect dialog 1
+wait 1.5
+shot firelink_dialog
+pickup summary
+ev action
+wait 1
+pickup summary

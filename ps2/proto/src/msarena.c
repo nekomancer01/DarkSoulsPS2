@@ -362,6 +362,42 @@ static unsigned grp_used(const MsInst *m, unsigned id)
     return u;
 }
 
+/* MS_LEND_REHOME (default on; 0 = the old drop): a lent near group a lite set needs the room of moves into the item
+ * pages instead of going: dropped, the cell had nothing to draw until it was read again (its coarse level had made
+ * way for it), and stairs and floors vanished for a moment at every block turn-on (Ame's report 2026-11-17 21:31,
+ * t 75.9 / 97.3 / 114.3: each right after "lent near dropped for a lite set"). Room: a hole in the item pages, else
+ * a page cleared of groups below the near classes. Called only for groups no chain reads (the old copy frees now).
+ * 1 when moved. */
+#ifndef MS_LEND_REHOME
+#define MS_LEND_REHOME 1
+#endif
+unsigned ms_rehome_n, ms_rehome_kb;
+static int lend_rehome(int k, unsigned a, unsigned e)
+{
+    MsInst *m = &ms_inst[k];
+    unsigned n = grp_bytes(m, a, e);
+    if (!MS_LEND_REHOME || n > MS_PAGE)
+        return 0;
+    unsigned char *src = m->buf[a], *dst = ms_g_alloc_k(n, MS_K_SHORT);
+    if (!dst && ms_make_window(1, (n + MS_GRAN - 1) / MS_GRAN, C_NEAR2, NULL))
+        dst = ms_g_alloc_k(n, MS_K_SHORT);
+    if (!dst)
+        return 0;
+    memcpy(dst, src, n);
+    SyncDCache(dst, dst + n - 1);  /* the VIF / GIF DMA reads RAM */
+    for (unsigned j = a; j < e; j++) {
+        m->buf[j] = dst + ((unsigned char *)m->buf[j] - src);
+        if (it_tex(m, j) && ms_tex_set)
+            ms_tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
+    }
+    ms_g_free(src, n);
+    ms_lent_n = ms_lent_n ? ms_lent_n - 1 : 0;
+    ms_lent_near = ms_lent_near > n ? ms_lent_near - n : 0;
+    ms_rehome_n++, ms_rehome_kb += n >> 10;
+    printf("mapstream: lent near moved out of a lite set's way: item %d.%u (%u KB)\n", k, a, n >> 10);
+    return 1;
+}
+
 /* MS_LEND: drop the lent items in pool pages [p0, p1) that no chain reads; the number a chain may still read */
 static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near);
 /* keep_near: near parts stay (mapstream_pool_prepare: ahead of time, they are what the player is looking at) */
@@ -384,6 +420,8 @@ static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
                 busy++;
             else {
                 if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2) {
+                    if (lend_rehome(k, id, grp_of(m, id, &a)))
+                        continue;
                     hitch_lent_near();
                     printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
                            grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
@@ -457,6 +495,8 @@ static unsigned lend_reclaim_n(unsigned n, unsigned p0, unsigned p1, int keep_ne
                 continue;
             }
             if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2) {
+                if (lend_rehome(k, id, grp_of(m, id, &a)))
+                    continue;
                 hitch_lent_near();
                 printf("mapstream: lent near dropped for a lite set: item %d.%u (%u KB)\n", k, id,
                        grp_bytes(m, id, grp_of(m, id, &a)) >> 10);
@@ -1043,6 +1083,25 @@ void *mapstream_alloc(unsigned n, const float pos[3])
     }
     if (kb || !p)  /* the caller falls back to the heap on NULL */
         printf("mapstream: alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
+    if (p)
+        mapstream_stats.other_kb += (n + 1023) >> 10;
+    return p;
+}
+
+/* mapstream_alloc without touching what the player sees: the misc pool, free item pages, windows of items below the
+ * pinned level; NULL rather than clear near, view or pinned cells (enemy model temporaries: ENEMY_TMP_GENTLE) */
+void *mapstream_alloc_gentle(unsigned n)
+{
+    if (!mapstream_arena())
+        return NULL;
+    void *p = mapstream_alloc_pool(n, MS_POOL_MISC);
+    if (p)
+        return p;
+    unsigned need = (n + MS_PAGE - 1) / MS_PAGE, kb = 0;
+    if (!(p = alloc_items(n)) && (ms_make_window(need, 0, C_NEAR2, &kb) || ms_make_window(need, 0, C_PIN, &kb)))
+        p = alloc_items(n);
+    if (kb)
+        printf("mapstream: gentle alloc %u KB %s, %u KB of cells dropped\n", n >> 10, p ? "ok" : "FAILED", kb);
     if (p)
         mapstream_stats.other_kb += (n + 1023) >> 10;
     return p;

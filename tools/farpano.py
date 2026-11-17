@@ -35,11 +35,12 @@ Built from the other blocks' horizons (hzn.bin, tools/horizon.py: untextured, co
 
 far.bin (little endian, 16-byte aligned; stream offsets from the file start):
   header (16 B): 'FARP', sets, chunks, bytes
-  per set (32 B): u32 world block it shows, first chunk, chunks, u32 draw groups[4] (all ones: always), u32 0
+  per set (32 B): u32 world block it shows, first chunk, chunks, u32 draw groups[4] (all ones: always), u32 flags
+                  (bit 0 FAR_PANO: the boot map's picture-layer backdrop, drawn while its pictures are not)
   chunk records (64 B, map.c Chunk as hzn.bin's: tex -1, flags CHUNK_HZN | CHUNK_BACKDROP)
   streams
 Env: FARPANO=0 writes an empty file (no panorama: world.c then keeps the boot block's tables, the old path);
-FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN."""
+FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN, FAR_PANO_SET."""
 import os
 import struct
 import sys
@@ -259,7 +260,7 @@ def groups(S, pm, coll, wgt):
 def write(res):
     """[(key (block, mask), V, VC, T)] -> far.bin bytes"""
     sets, recs, streams = [], [], bytearray()
-    for (blk, mask), V, col, T in res:
+    for (blk, mask, fl), V, col, T in res:
         if not len(T):
             continue
         cen = V[T].mean(1)
@@ -285,11 +286,11 @@ def write(res):
             pk, offs = horizon.idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
             recs.append((len(t) | nv << 16, len(streams), offs, pq.min(0), pq.max(0), org, step))
             streams += pk
-        sets.append((blk, first, len(recs) - first, mask))
+        sets.append((blk, first, len(recs) - first, mask, fl))
     s0 = 16 + 32 * len(sets) + 64 * len(recs)
     out = bytearray(struct.pack("<4s3I", b"FARP", len(sets), len(recs), 0))
-    for blk, first, n, mask in sets:
-        out += struct.pack("<8I", blk, first, n, *mask, 0)
+    for blk, first, n, mask, fl in sets:
+        out += struct.pack("<8I", blk, first, n, *mask, fl)
     for ntw, so, offs, mn, mx, org, step in recs:
         out += struct.pack("<iII3I6f4f", -1, CHUNK_HZN | CHUNK_BACKDROP, ntw, *(s0 + so + o for o in offs), *mn, *mx, *org, step)
     out += streams
@@ -327,6 +328,27 @@ def in_map(X, map_id):
     return out
 
 
+# The boot map's far backdrop that its picture layers draw (pano.bin, tools/pano.py; horizon.py leaves those triangles
+# out of its hzn.bin): a set of its own in the other blocks' panoramas, flagged FAR_PANO, which mapblock.c draws exactly
+# while map.c does not draw the pictures (the player outside the boot block). The pictures are flat sheets baked from
+# one eye at Firelink: seen from the Undead Burg they smeared and repeated their texture edges (Ame's report
+# 2026-11-17 t 245-253), and without them the Burg showed no ring walls. FAR_PANO_SET=0: none, as before
+FAR_PANO = 1
+PANO_SET = os.environ.get("FAR_PANO_SET", "1") == "1"
+
+
+def far_side(gen):
+    """{"crown": (P, C, S), "pano": (P, C, S)}: what gen's hzn.bin leaves out for the far panoramas (horizon.py's
+    sidecar hzn.bin.far.npz: crown cards, and the backdrop its picture layers draw); empty without one"""
+    z = np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), np.zeros(0, np.int64)
+    path = os.path.join(gen, "hzn.bin.far.npz")
+    if not os.path.exists(path):
+        return {"crown": z, "pano": z}
+    d = np.load(path)
+    return {k: (d[k + "_p"].astype(np.float64), d[k + "_c"].astype(np.float64), d[k + "_s"].astype(np.int64))
+            for k in ("crown", "pano")}
+
+
 def build(own, gens):
     """-> (far.bin bytes, log line)"""
     name = os.path.basename(os.path.normpath(gens[own]))
@@ -337,7 +359,7 @@ def build(own, gens):
     horizon.HZN_D = D  # (horizon.py's distance bands start at its module global)
     import area
     own_map = area.BLOCKS.get(name, {}).get("map")
-    src, n_in, n_hidden, n_standin, peers = [], 0, 0, 0, set()
+    src, n_in, peers, counts = [], 0, set(), {"hidden": 0, "standin": 0}
     own_tris = hzn_tris(os.path.join(gens[own], "hzn.bin"))[0] if horizon._err_lib() is not None else np.zeros((0, 3, 3))
     for bi, g in enumerate(gens):
         if bi == own:
@@ -346,31 +368,50 @@ def build(own, gens):
         eyes = peer_eyes(nav, gens[own], g) if grp == area_grp else []
         if not len(eyes):
             continue
-        P, C, S = hzn_tris(os.path.join(g, "hzn.bin"))
-        n_in += len(P)
-        peers.add(bi)
-        if own_map and area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") != own_map:
-            # another map's pieces inside this map's blocks are its stand-ins for this map (Firelink carries a
-            # low-detail Undead Burg): the real blocks, or their own part of the panorama, stand there
-            out = ~in_map(P.mean(1), own_map)
-            n_standin += int((~out).sum())
-            P, C, S = P[out], C[out], S[out]
-        if STANDIN > 0 and len(own_tris) and len(P):
-            # and a peer's surfaces that lie on this block's own (this block's stand-ins for the peer, or the peer's
-            # for this block: Firelink's low-detail Burg and the Burg itself, drawn twice from Firelink's stairs)
-            cen = P.mean(1)
-            on = horizon._dist(own_tris, cen, np.full(len(cen), STANDIN)) < STANDIN
-            n_standin += int(on.sum())
-            if on.mean() > STANDIN_ALL:  # this block's map has its own far view of that peer: none of it twice
-                n_standin += int((~on).sum())
-                continue
-            P, C, S = P[~on], C[~on], S[~on]
-        eye = eyes.mean(0) + np.array([0.0, 1.5, 0.0])
-        gs = groups(S, pm, coll, wgt)
-        n_hidden += int((~np.isin(S, [m for _mask, mem in gs for m in mem])).sum())
-        for mask, members in gs:
-            sel = np.isin(S, members)
-            src.append(((bi, mask), P[sel], C[sel], eye))
+        side = far_side(g)
+        hp, hc, hs = hzn_tris(os.path.join(g, "hzn.bin"))
+        cp, cc, cs = side["crown"]  # the peer's tree crowns (horizon.py: not in its own horizon)
+        cands = [(0, np.concatenate([hp, cp]), np.concatenate([hc, cc]), np.concatenate([hs, cs]))]
+        if PANO_SET and os.path.exists(os.path.join(g, "pano.bin")) and os.path.getsize(os.path.join(g, "pano.bin")) > 16:
+            cands.append((FAR_PANO, *side["pano"]))
+        for fl, P, C, S in cands:
+            n_in += len(P)
+            peers.add(bi)
+            peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts)
+    n_hidden, n_standin = counts["hidden"], counts["standin"]
+    return finish(src, name, n_in, n_hidden, n_standin, peers)
+
+
+def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts):
+    """one peer's triangles (its horizon, or the picture layers' backdrop: fl FAR_PANO) -> src entries"""
+    import area
+    if own_map and area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") != own_map:
+        # another map's pieces inside this map's blocks are its stand-ins for this map (Firelink carries a
+        # low-detail Undead Burg): the real blocks, or their own part of the panorama, stand there
+        out = ~in_map(P.mean(1), own_map)
+        counts["standin"] += int((~out).sum())
+        P, C, S = P[out], C[out], S[out]
+    if STANDIN > 0 and len(own_tris) and len(P):
+        # and a peer's surfaces that lie on this block's own (this block's stand-ins for the peer, or the peer's
+        # for this block: Firelink's low-detail Burg and the Burg itself, drawn twice from Firelink's stairs)
+        cen = P.mean(1)
+        on = horizon._dist(own_tris, cen, np.full(len(cen), STANDIN)) < STANDIN
+        counts["standin"] += int(on.sum())
+        if on.mean() > STANDIN_ALL:  # this block's map has its own far view of that peer: none of it twice
+            counts["standin"] += int((~on).sum())
+            return
+        P, C, S = P[~on], C[~on], S[~on]
+    if not len(P):
+        return
+    eye = eyes.mean(0) + np.array([0.0, 1.5, 0.0])
+    gs = groups(S, pm, coll, wgt)
+    counts["hidden"] += int((~np.isin(S, [m for _mask, mem in gs for m in mem])).sum())
+    for mask, members in gs:
+        sel = np.isin(S, members)
+        src.append(((bi, mask, fl), P[sel], C[sel], eye))
+
+
+def finish(src, name, n_in, n_hidden, n_standin, peers):
     deg = DEG
     memo = [{} for _ in src]
     while True:
@@ -381,7 +422,7 @@ def build(own, gens):
             if len(T) and horizon._meshopt() is not None:
                 T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * deg / DEG)
             if os.environ.get("FAR_LOG"):
-                print(f"farpano:   block {key[0]} groups {key[1][0]:08x}..: {len(P)} tris -> {n0} panorama -> {len(T)}")
+                print(f"farpano:   block {key[0]}{' backdrop' if key[2] else ''} groups {key[1][0]:08x}..: {len(P)} tris -> {n0} panorama -> {len(T)}")
             res.append((key, V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T))
         out = write(res)
         if len(out) <= KB * 1024 or deg >= DEG_MAX:

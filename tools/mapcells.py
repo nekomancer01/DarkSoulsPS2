@@ -70,9 +70,10 @@ def write_pvsin(path, all_chunks, nav_v, nav_t):
     print(f"pvsin.bin: {len(crec)} chunks, {len(urec)} units of {len(parts)} parts, {len(idx)} tris")
 
 
-def stream_cells(chunks):
+def stream_cells(chunks, spots=None):
     """STREAM: [(cell key, resident chunk indices (coarse level + kept meshes whose centre lies in the cell, by
-    texture), near chunk indices (by texture))] in Z order of the key (cell_zorder); sky chunks belong to no cell."""
+    texture), near chunk indices (by texture))] in the order of the disc: trace_order over the player spots when given
+    (TRACE_ORDER, default on), else Z order of the key (cell_zorder); sky chunks belong to no cell."""
     cells = {}
     for i, ch in enumerate(chunks):
         if ch[1] & mapcfg.CHUNK_SKY:
@@ -83,8 +84,97 @@ def stream_cells(chunks):
     def lev(i):  # kept chunks, then the coarse ones, each by texture: map.c cuts a cell's items by level (streaming v2)
         t = mapchunks.CHUNK_TAG[i]
         return (1 if t and t[0] == 0 else 0, chunks[i][0])
-    return [(k, sorted(r, key=lev), sorted(n, key=lambda i: chunks[i][0]))
-            for k, (r, n) in sorted(cells.items(), key=lambda kv: cell_zorder(kv[0]))]
+    keys = sorted(cells, key=cell_zorder)
+    if TRACE_ORDER and spots is not None and len(spots) and len(keys) > 2:
+        keys = trace_order(keys, cells, chunks, spots)
+    return [(k, sorted(cells[k][0], key=lev), sorted(cells[k][1], key=lambda i: chunks[i][0])) for k in keys]
+
+
+# TRACE_ORDER (default 1; TRACE_ORDER=0: Z order as before): the cells' order on the disc (cell table, mapres.bin,
+# cells.bin) from the reads a player makes, not from the grid alone. The map research's idea 10 (2026-11-17), after
+# Wassenberg ("Optimizing File Accesses via Ordering and Caching", 2006): record which files are read back to back,
+# then chain the most frequent pairs greedily (an approximate travelling salesman). The traces here are simulated at
+# export, one per player spot (navmesh vertices, as the spot budgets use): the cells of the spot's hard tier
+# (residency.h RES_PIN_R) in the order mapstream's hard tier reads them, nearest first. Every spot counts the same
+# (weighted by spot, not by a test route: no route's path is baked in). Pairs read back to back within the near
+# level's radius (RES_NEAR_R) count TRACE_NEAR_W: those reads wait at the player's feet. Z order put a block's cells
+# in quadrants of 2^n cells: a spot on a quadrant edge read cells 1-2 MB apart (B8b's runs log: ~8 seeks a second).
+TRACE_ORDER = os.environ.get("TRACE_ORDER", "1") != "0"
+TRACE_SPOTS = 3000  # spots at most (every n-th navmesh vertex)
+TRACE_NEAR_W = 2
+
+
+def trace_order(keys, cells, chunks, spots):
+    """keys (Z order) -> keys in the order of chained back-to-back reads (deterministic for the same input)"""
+    n = len(keys)
+    lo = np.full((n, 3), np.inf)
+    hi = np.full((n, 3), -np.inf)
+    for c, k in enumerate(keys):  # the cell's box: its resident and near chunks (map.c / mapstream box_d2)
+        for i in cells[k][0] + cells[k][1]:
+            lo[c] = np.minimum(lo[c], chunks[i][6])
+            hi[c] = np.maximum(hi[c], chunks[i][7])
+    P = np.asarray(spots, np.float64).reshape(-1, 3)
+    P = P[::max(1, len(P) // TRACE_SPOTS)]
+    pin_r, near_r = mapcfg.WS_PIN_R, mapcfg.WS_NEAR_R
+    w, sets = {}, []
+    for p in P:
+        d = np.sqrt((np.maximum(0, np.maximum(lo - p, p - hi)) ** 2).sum(1))
+        idx = np.nonzero(d < pin_r)[0]
+        if len(idx) < 2:
+            continue
+        sets.append(idx)
+        idx = idx[np.lexsort((idx, d[idx]))]  # nearest first, ties by Z order
+        for a, b in zip(idx[:-1], idx[1:]):
+            e = (min(a, b), max(a, b))
+            w[e] = w.get(e, 0) + (TRACE_NEAR_W if d[b] < near_r else 1)
+    if not w:
+        print(f"cells: trace order: no spot within {pin_r:.0f} m of two cells, Z order kept")
+        return keys
+    # greedy edge chaining: heaviest pairs first, joined while both ends are chain ends of different chains
+    nxt = [[] for _ in range(n)]
+    root = list(range(n))
+
+    def find(a):
+        while root[a] != a:
+            root[a] = root[root[a]]
+            a = root[a]
+        return a
+    for (a, b), _ in sorted(w.items(), key=lambda kv: (-kv[1], kv[0])):
+        if len(nxt[a]) < 2 and len(nxt[b]) < 2 and find(a) != find(b):
+            nxt[a].append(b), nxt[b].append(a)
+            root[find(a)] = find(b)
+    chains, seen = [], [False] * n
+    for s in range(n):  # chains from their lower (Z order) end; lone cells are chains of one
+        if seen[s] or len(nxt[s]) == 2:
+            continue
+        ch, prev, cur = [], -1, s
+        while cur >= 0:
+            seen[cur] = True
+            ch.append(cur)
+            nx = [x for x in nxt[cur] if x != prev and not seen[x]]
+            prev, cur = cur, (nx[0] if nx else -1)
+        chains.append(ch)
+    # chains one after another: from the one holding the first cell in Z order, each time the chain with an end
+    # nearest (cell box centres) to where the last one ended, turned to start at that end
+    ctr = np.where(np.isfinite(lo), (lo + hi) / 2, 0)
+    order, left = list(chains[0]), chains[1:]
+    while left:
+        e = ctr[order[-1]]
+        best = min(range(len(left)), key=lambda j: (min(((ctr[left[j][0]] - e) ** 2).sum(), ((ctr[left[j][-1]] - e) ** 2).sum()), j))
+        ch = left.pop(best)
+        if ((ctr[ch[-1]] - e) ** 2).sum() < ((ctr[ch[0]] - e) ** 2).sum():
+            ch = ch[::-1]
+        order += ch
+    assert sorted(order) == list(range(n))
+    pos = np.empty(n, np.int64)
+
+    def runs(o):  # contiguous runs on the disc per spot's hard tier: the seeks one spot's reads cost at least
+        pos[o] = np.arange(n)
+        return sum(1 + int((np.diff(np.sort(pos[s])) != 1).sum()) for s in sets) / len(sets)
+    rz, rt = runs(list(range(n))), runs(order)
+    print(f"cells: trace order: {len(sets)} spots, {n} cells in {len(chains)} chains; a spot's hard tier in "
+          f"{rz:.2f} runs on the disc (Z order) -> {rt:.2f}{'' if rt < rz else ', Z order kept'}")
+    return [keys[c] for c in order] if rt < rz else keys
 
 
 def cell_zorder(key):

@@ -234,7 +234,7 @@ blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
 # (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
 # from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
-$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(TS)/worldreach.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
 		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)
@@ -269,15 +269,37 @@ $(G)/esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_esd.py "$(GAME)" $@
 
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin $(A)/far.bin) $(if $(WORLD_BLOCKS),$(A)/pano.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
+# The pack's entries (pack.py order = disc order). LITE_RUN (WORLD_SEAM_BUNDLE, default 1; world block packs): the
+# entries src/world.c reads to turn a block on come first, in its read order (collision index, map tables, shared
+# textures, events, draw groups, visibility, then the breakable / effect texture tails), so a turn-on is one run of
+# the disc. In the old order they were spread over the whole pack (Burg bonfire block: collision at 3.3 MB, maptab
+# at 11.4, maptex and events past mapres.bin at 16.2-16.4, then back to dg / pvs at 6.1-6.2 and objects at 4.3 MB):
+# four far seeks per turn-on (~110 ms each in PCSX2's model, TECH_DEBT world-16); src/mapstream.c then holds the map
+# reads while a lite set loads (MS_HOLD_INFLIGHT 0). WORLD_SEAM_BUNDLE=0: the old order, map reads go on.
+WORLD_SEAM_BUNDLE ?= 1
+EE_CFLAGS += -DWORLD_SEAM_BUNDLE=$(WORLD_SEAM_BUNDLE)
+LITE_RUN = $(and $(filter 1,$(WORLD_SEAM_BUNDLE)),$(BLOCK),$(WORLD_SPLIT))
+PAK_OLD = map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
+	objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(if $(BLOCK),raw:)$(A)/dg.bin pvs.bin=$(if $(BLOCK),raw:)$(A)/pvs.bin \
+	$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
+	$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) \
+	$(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) \
+	$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
+PAK_LITE = collision.bin=raw:$(A)/collision.bin maptab.bin=raw:$(A)/maptab.bin $(if $(TEX_PEERS),maptex.bin=raw:$(A)/maptex.bin) \
+	$(if $(wildcard $(A)/events.bin),events.bin=raw:$(A)/events.bin) dg.bin=raw:$(A)/dg.bin pvs.bin=raw:$(A)/pvs.bin \
+	objects.bin=raw:$(A)/objects.bin fx.bin=raw:$(A)/fx.bin far.bin=raw:$(A)/far.bin bump.bin=raw:$(A)/bump.bin
+PAK_REST = enemies.bin=raw:$(A)/enemies.bin ai.lua0=raw:$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin \
+	$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
+	mapres.bin=raw:$(A)/mapres.bin map.bin=$(A)/map.bin
+# (a changed order re-packs: $(A)/pakenv; a tree without it that packs in the old order keeps its packs)
+$(A)/pakenv: FORCE
+	@mkdir -p $(@D)
+	@v='LITE_RUN=$(if $(LITE_RUN),1,0)'; if [ ! -e $@ ]; then echo "$$v" > $@; [ -n "$(LITE_RUN)" ] || touch -d @0 $@; \
+	else echo "$$v" | cmp -s - $@ || echo "$$v" > $@; fi
+$(D)/$(OUT).pak: $(A)/pakenv $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin $(A)/far.bin) $(if $(WORLD_BLOCKS),$(A)/pano.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(TS)/pack.py.sum \
 		$(TS)/native/lz4pack.c.sum $(A)/fx.bin
 	@mkdir -p $(@D)
-	python3 -I ../../tools/pack.py $@ map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin \
-		objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(if $(BLOCK),raw:)$(A)/dg.bin pvs.bin=$(if $(BLOCK),raw:)$(A)/pvs.bin \
-		$(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) \
-		$(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) \
-		$(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) \
-		$(if $(wildcard $(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin)
+	python3 -I ../../tools/pack.py $@ $(if $(LITE_RUN),$(PAK_LITE) $(PAK_REST),$(PAK_OLD))
 # world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background
 # + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every cell, appended to maptab.bin so
 # it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet). HZN=0: none (old path)
@@ -521,6 +543,9 @@ MAPENV_m10_01_00_00 += $(if $(BLOCK),,WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
+# The area guard (mapcfg SIMPLIFY_AREA_GUARD) off here: at Firelink's 3 px the Asylum's near level has no room for it
+# (0.5: 11.9 % of the block's spots over budget, 0.9: 4.9 %, against 0.05 % without; 2026-11-17)
+MAPENV_m18_01_00_00 += SIMPLIFY_AREA_GUARD=0
 # The Depths (world blocks m10_00_00_00_a / _b) and Darkroot (m12_00_00_00_*; 2026-11-15): two levels (STREAM=1, which
 # world blocks need) with the Burg's errors: their pieces are as dense as the Burg's (ASSUMED: not tuned on them yet)
 MAPENV_m10_00_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446

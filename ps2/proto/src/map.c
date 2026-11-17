@@ -1,5 +1,6 @@
 #include "map_i.h"
 #include "testscript.h"
+#include "world.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -315,6 +316,19 @@ void map_pano_open(const char *pak_path)
     printf("map: panorama %d chunks, %u textures, %u KB\n", pano_n, h[3], size >> 10);
 }
 
+/* The picture layers are drawn while the player stands in the boot block (MAP_PANO_NEAR, default on; 0 = from any
+ * block of its draw-group area, the old path): they are flat sheets baked from one eye in the middle of its walkable
+ * ground, and from the Undead Burg (~150 m off that eye) they smeared and repeated their texture edges (Ame's report
+ * 2026-11-17 t 245-253). Elsewhere the far panorama's FAR_PANO set (tools/farpano.py) shows that backdrop untextured,
+ * as it shows the rest of the far view. */
+#ifndef MAP_PANO_NEAR
+#define MAP_PANO_NEAR 1
+#endif
+int map_pano_shown(void)
+{
+    return pano_n && (!MAP_PANO_NEAR || pinst == 0);
+}
+
 /* mapstream.c's item visibility (pvs.c): item id of instance k (a near cell part, then a resident item) has a chunk
  * some camera cell within PVS_STREAM_R sees; textures, the sky and maps without pvs.bin count as seen */
 static int ms_pvs_vis(int k, unsigned id)
@@ -380,6 +394,20 @@ int map_stream_open(const char *pak_path)
     return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
 
+#ifndef DG_SEAM
+#define DG_SEAM 1
+#endif
+#ifndef MAP_PEER_ZBIAS
+#define MAP_PEER_ZBIAS 0.02f  /* depth push of other maps' blocks (map_draw; ASSUMED: about the coarse level's error, 12 px) */
+#endif
+#define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
+/* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
+static int same_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return !a || !b || !strcmp(a, b);
+}
+
 void map_set_player(V3 feet)
 {
     const float p[3] = {feet.x, feet.y, feet.z};
@@ -388,10 +416,36 @@ void map_set_player(V3 feet)
     mapstream_update(p);  /* every instance's near cells (src/mapstream.c) */
     /* DSR's fog follows the collision part under the player (its MSB FogID); in the air the last one stays */
     ColHit h;
-    player_feet = feet;
     int k = -1;
-    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0)
+    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0) {
+        /* DG_SEAM (default on; -DDG_SEAM=0 = the floor's groups alone): within DG_SEAM_R metres ahead of the player,
+         * the floor of another map of the area group (its block loaded) adds its part's groups. DSR shows what the
+         * floor part's DrawGroups list; at the end of Firelink's aqueduct tunnel (part h0030B2, groups e0000000)
+         * that hid all but 9 of Burg west's 64 piece sets, and the tunnel's exit showed the sky (Ame's play report
+         * 2026-11-17 t167 / t170; with draw groups off the exit draws the Burg: ISO iso_tunnel_look). ASSUMED: the
+         * port's seams stream and fog differently from DSR's whole-map residency, so the far side is shown a few
+         * metres early */
+        dg_seam(-1, 0);
+        if (DG_SEAM && dg_area(k)) {
+            static V3 last;
+            float dx = feet.x - last.x, dz = feet.z - last.z, l = sqrtf(dx * dx + dz * dz);
+            static float hx, hz;
+            if (l > 0.01f && l < 2.0f)
+                hx = dx / l, hz = dz / l;  /* the heading (a warp keeps the last one) */
+            last = feet;
+            int found = 0;
+            for (float r = 4.0f; r <= DG_SEAM_R && !found && (hx != 0 || hz != 0); r += 4.0f)
+                for (int j = 0; j < MAP_INST && !found; j++) {
+                    ColHit hj;
+                    int cb = mp_inst_col_block(j);
+                    if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
+                        col_floor_block(cb, feet.x + hx * r, feet.z + hz * r, feet.y + 3, feet.y - 6, COL_SOLID, &hj))
+                        dg_seam(j, hj.tri), found = 1;
+                }
+        }
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
+    }
+    player_feet = feet;  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
     /* a block outside the area group of the floor's block (drawgrp.c DG_SHARED; every block without one) takes its
      * draw groups from its own collision under the player: at a seam both blocks' collisions overlap (DSR's
      * ConnectCollision pairs, e.g. the Asylum's crow ledge h0054B1 and Firelink), each map shows what its own part
@@ -414,20 +468,80 @@ void map_set_player(V3 feet)
     }
 }
 
+/* The player's light (PointLightBank row of the collision part underfoot) as DSR changes it: a new row blends in
+ * linearly over PLIGHT_BLEND seconds (exe FUN_1402d3970 sets the draw-param banks' transitions to 0.5 s when the area
+ * underfoot changes, .rdata 0x141615c68; FUN_1401d77e0 advances them by the frame time; FUN_1401d7820: a transition
+ * back to the row it came from runs the elapsed part backwards). It switched at once before, for the characters and
+ * the map pass alike (Ame's report 2026-11-17 t 72.8: "the light turns on too jarringly"). pl_cur: map rgb (0 where
+ * MAP_PLIGHT's ratio gate leaves the pass off, so it fades out instead of cutting), character rgb, begin, end (m). */
+#ifndef MAP_PLIGHT
+#define MAP_PLIGHT 1  /* the player's light on the map (pl_draw below); 0 = characters only, the old path */
+#endif
+#ifndef PLIGHT_BLEND
+#define PLIGHT_BLEND 0.5f
+#endif
+static float pl_from[8], pl_to[8], pl_cur[8], pl_el, pl_dur;
+static int pl_init;
+static unsigned pl_t0;
+#ifndef PLIGHT_RATIO
+#define PLIGHT_RATIO 60  /* % of the area's character ambient the light must reach for the map pass (ASSUMED) */
+#endif
+
+static void pl_step(void)
+{
+    if (!mp_pfog_rows)
+        return;
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
+    int pl_max = r->pl_rgb[0] > r->pl_rgb[1] ? r->pl_rgb[0] : r->pl_rgb[1], amb_max = r->amb[0] > r->amb[1] ? r->amb[0] : r->amb[1];
+    pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
+    /* the map pass only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at
+     * Firelink for a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
+    int gate = MAP_PLIGHT && r->pl_end > r->pl_begin && pl_max * 100 >= amb_max * PLIGHT_RATIO;
+    float t[8];
+    for (int c = 0; c < 3; c++)
+        t[c] = gate ? r->pl_rgb[c] : 0, t[3 + c] = r->pl_rgb[c];
+    t[6] = r->pl_begin * 0.1f, t[7] = r->pl_end * 0.1f;
+    unsigned now = ticks();
+    float dt = pl_init ? (now - pl_t0) / 294912000.0f : 0;
+    pl_t0 = now;
+    if (dt > 0.1f)
+        dt = 0.1f;
+    if (!pl_init) {  /* (DSR: duration -1, at once) */
+        memcpy(pl_from, t, sizeof t), memcpy(pl_to, t, sizeof t), memcpy(pl_cur, t, sizeof t);
+        pl_el = pl_dur = 0, pl_init = 1;
+        return;
+    }
+    if (memcmp(t, pl_to, sizeof t)) {
+        if (pl_dur > 0 && !memcmp(t, pl_from, sizeof t))  /* back to where it came from: the elapsed part backwards */
+            memcpy(pl_from, pl_to, sizeof t), pl_el = pl_dur - pl_el;
+        else
+            memcpy(pl_from, pl_cur, sizeof t), pl_el = 0;
+        memcpy(pl_to, t, sizeof t);
+        pl_dur = PLIGHT_BLEND;
+    }
+    if (pl_dur > 0) {
+        pl_el += dt;
+        if (pl_el >= pl_dur)
+            pl_dur = 0;
+    }
+    float k = pl_dur > 0 ? pl_el / pl_dur : 1;
+    for (int i = 0; i < 8; i++)
+        pl_cur[i] = pl_from[i] + (pl_to[i] - pl_from[i]) * k;
+}
+
 void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
 {
     float l = sqrtf(mp_fog_now[12] * mp_fog_now[12] + mp_fog_now[13] * mp_fog_now[13] + mp_fog_now[14] * mp_fog_now[14]);
     for (int c = 0; c < 3; c++)
         amb[c] = mp_fog_now[6 + c], sun[c] = mp_fog_now[9 + c], dir[c] = l > 0 ? mp_fog_now[12 + c] / l : c == 1;
     /* the player's own light (DSR attaches the area's PointLightBank row to the player) */
-    if (mp_pfog_rows) {
-        const FogRow *r = &mp_pfog_row[mp_fog_area];
+    if (mp_pfog_rows && pl_init) {  /* (pl_step: the row blended in over PLIGHT_BLEND) */
         float dx = player_feet.x - pos.x, dy = player_feet.y - pos.y, dz = player_feet.z - pos.z;
-        float d = sqrtf(dx * dx + dy * dy + dz * dz), b = r->pl_begin * 0.1f, e = r->pl_end * 0.1f;
+        float d = sqrtf(dx * dx + dy * dy + dz * dz), b = pl_cur[6], e = pl_cur[7];
         float att = e > b ? (e - d) / (e - b) : 0;
         if (att > 0)
             for (int c = 0; c < 3; c++)
-                amb[c] += r->pl_rgb[c] * (att < 1 ? att : 1);
+                amb[c] += pl_cur[3 + c] * (att < 1 ? att : 1);
     }
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
 }
@@ -444,13 +558,7 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
  * the character model; the characters' own lighting measures from the feet). No N.L, as map_char_light adds it to
  * the characters' ambient: per-vertex normals cost ~4 ms of EE a frame at the Firelink graveyard (the map streams have
  * no normals; corner order is no facing either, about half of the Depths' floor triangles wind downwards). */
-#ifndef MAP_PLIGHT
-#define MAP_PLIGHT 1
-#endif
 #define PLIGHT_H 1.0f
-#ifndef PLIGHT_RATIO
-#define PLIGHT_RATIO 60  /* % of the area's character ambient the light must reach (ASSUMED) */
-#endif
 #define PLIGHT_MAX 96
 static struct {
     const unsigned char *base;
@@ -465,18 +573,14 @@ static unsigned map_plight_batches;  /* batches of the last pass (debugger) */
 static void pl_begin(void)
 {
     pl_n = pl_on = 0;
-    if (!MAP_PLIGHT || !mp_pfog_rows)
+    pl_step();
+    if (!MAP_PLIGHT || !mp_pfog_rows || !pl_init)
         return;
-    const FogRow *r = &mp_pfog_row[mp_fog_area];
-    pl_b = r->pl_begin * 0.1f, pl_e = r->pl_end * 0.1f;
-    int pl_max = r->pl_rgb[0] > r->pl_rgb[1] ? r->pl_rgb[0] : r->pl_rgb[1], amb_max = r->amb[0] > r->amb[1] ? r->amb[0] : r->amb[1];
-    pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
-    /* only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at Firelink for
-     * a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
-    pl_on = pl_e > pl_b && pl_max * 100 >= amb_max * PLIGHT_RATIO && pl_max > 0;
-    pl_e2 = pl_e * pl_e, pl_inv = pl_on ? 1.0f / (pl_e - pl_b) : 0;
+    pl_b = pl_cur[6], pl_e = pl_cur[7];
     for (int c = 0; c < 3; c++)
-        pl_rgb[c] = r->pl_rgb[c];
+        pl_rgb[c] = pl_cur[c];
+    pl_on = pl_e > pl_b && (pl_rgb[0] >= 1 || pl_rgb[1] >= 1 || pl_rgb[2] >= 1);
+    pl_e2 = pl_e * pl_e, pl_inv = pl_on ? 1.0f / (pl_e - pl_b) : 0;
     pl_pos[0] = player_feet.x, pl_pos[1] = player_feet.y + PLIGHT_H, pl_pos[2] = player_feet.z;
 }
 
@@ -1080,7 +1184,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     r_set_fog_edge(edge_a2);
     /* the far backdrop's picture layers (map_pano_open): over the sky, under the map's fog as the pieces they show
      * (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first */
-    if (pano_n && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
+    if (map_pano_shown() && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
         zs_map_edge(0);
         for (int i = 0; i < pano_n; i++) {
             const Chunk *c = &pano_chunk[i];
@@ -1876,8 +1980,20 @@ int map_draw(V3 eye)
     if (mapstream_settling())
         pop_settle = pop_fr;
     nfx = nhzfade = nnrfade = 0;
-    for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
+    for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
+        /* MAP_PEER_ZBIAS: another map's block is tested PEER_ZBIAS further away. Neighbouring maps carry the same
+         * pieces where they meet (Firelink's aqueduct and cliff walls are in m10_01 too: ~14k m2 of coplanar
+         * surface within 70 m of the Firelink stairs that DSR's draw groups show in both), and each block is
+         * simplified on its own, so the two copies fought (Ame's report 2026-11-17 21:31, t 61.1 / 80.1:
+         * "z-fighting with undead burg"). The map the player stands in wins; the other's copy shows where the
+         * player's has nothing. 0 = no bias */
+        int peer = MAP_PEER_ZBIAS > 0 && k != pinst && (k == 0 || mp_inst[k].on) && !same_map(k, pinst);
+        if (peer)
+            zs_map_zbias(1.0f - MAP_PEER_ZBIAS);
         drawn += draw_block(k, e, fog, &lg);
+        if (peer)
+            zs_map_zbias(1.0f);
+    }
     {  /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
         int dn = (int)mp_draw_far(e);
         drawn += dn, lg.hz_tris += dn, lg.far_tris += dn;

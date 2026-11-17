@@ -63,6 +63,8 @@ void mapstream_select(int k);
 void *mapstream_alloc(unsigned n, const float pos[3]);
 /* as mapstream_alloc, but clears only items no class wants (kept / cut): never a cell the plan wants or one drawn.
  * For optional data (world.c relief). NULL when there is no such room. */
+/* mapstream_alloc that never clears near, view or pinned cells: NULL instead (msarena.c) */
+void *mapstream_alloc_gentle(unsigned n);
 void *mapstream_alloc_soft(unsigned n);
 void mapstream_free(void *p, unsigned n);
 /* Pools (the Burg plan's step B2; built in: the frozen residency design, 2026-11-12): the arena's top is split off for what is not map items, sized once

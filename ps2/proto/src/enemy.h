@@ -39,11 +39,16 @@ void enemy_status(char *buf, int n);
 int enemy_view(int index, V3 *pos, float *height, float *yaw);
 /* EE RAM free (sbrk headroom + malloc free list), for the HUD / load messages */
 unsigned enemy_ram_free(void);
+/* the capsule pushes of the enemies on the player since the player last moved (CHR_PUSH_WEIGHT; player.c zeroes it) */
+extern float enemy_player_push[2];
 /* EMEVD (src/event.c), by MSB entity id: placement index (-1 = not in the roster) with position, dead, HP ratio and
  * whether it is updated (enabled and near); enable / disable (not updated, drawn or hit) per cause bit (1 enable
  * state, 2 backread removed: off while either is set), kill (HP 0, death anim) */
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active);  /* c0000 stand-ins (npc.c) too */
 int enemy_entity_enable(int entity, int on, int bit);
+float enemy_entity_anim_length(int entity, int anim);
+int enemy_entity_msg(int entity, int msg);  /* EMEVD 4[08] */
+int enemy_entity_warp(int entity, const float pos[3], float yaw);  /* EMEVD 2004[41] on a character */  /* s, 0 = not placed / the anim is not in its chr.bin */
 int enemy_entity_kill(int entity, int award);
 int enemy_kill_near(V3 p, float r);  /* test hook: enemies within r die (ragdoll tests) */
 /* A hit of hp from the player (test scripts: "ev chr ID damage HP"); 1 if it has such a character */

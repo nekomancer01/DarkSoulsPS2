@@ -30,7 +30,10 @@
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
+ * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
  * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
+ * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
  * PLIGHT_RATIO        | 60       | tune     | -                                             | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
  * MEDIA_CD            | off      | fallback | -DMEDIA_CD                                    | mapstream.c mapstream_i.h   | CD streaming budgets on any disc (make MEDIA=cd)
@@ -48,8 +51,9 @@
  * MS_LIFE             | 1        | fallback | -DMS_LIFE=0                                   | mapstream_i.h   | pinned coarse, near / read-ahead and small textures in pages of their own kind (runtime: option set MS_LIFE 0)
  * MS_TIDY             | 1        | fallback | -DMS_TIDY=0                                   | mapstream_i.h   | quiet frames compact the item pages to keep 4-8 whole free (runtime: option set MS_TIDY 0)
  * MS_QSCALE           | 1        | fallback | -DMS_QSCALE=0                                 | mapstream_i.h   | soft radii (read-ahead, foliage, coarse out of view) shrink under memory pressure (runtime: option set MS_QSCALE 0)
+ * MS_LEND_REHOME      | 1        | fallback | -DMS_LEND_REHOME=0                            | msarena.c       | a lent near group a lite set needs moves into the item pages instead of being dropped; 0 = dropped
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
- * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
+ * MS_HOLD_INFLIGHT    | 0        | tune     | -DMS_HOLD_INFLIGHT=3                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 with WORLD_SEAM_BUNDLE (its lite set is one disc run), 3 without
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)
  * MS_READ_BY_CLASS    | 0        | fallback | -DMS_READ_BY_CLASS=1                          | mapstream.c     | 1 = hard-tier reads go out by class, not nearest first
  * MS_ORPHAN           | 1        | fallback | -DMS_ORPHAN=0                                 | mapstream.c   | a closing block's reads are cancelled without waiting; 0 = mapstream_close waits for them
@@ -59,12 +63,17 @@
  * MS_DG               | 1        | fallback | -DMS_DG=0                                     | map.c         | draw groups count for unseen items; 0 = pvs only
  * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
  * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
+ * MS_DEADLINE         | 1        | fallback | -DMS_DEADLINE=0                               | mapstream.c   | deadline-aware hard-tier read order (late items first, rest by disc order); 0 = nearest first
+ * MS_DL_FIRST         | 1        | fallback | -DMS_DL_FIRST=0                               | mapstream.c   | a late item jumps the disc server queue (with MS_DEADLINE); 0 = queued by LSN like the rest
+ * MS_GAP_KB           | 96       | tune     | -DMS_GAP_KB=0                                 | mapstream.c   | a queued item within this many KB after the last read in the same pack goes next; 0 = off
  * WORLD_BOOT_RELIEF   | 1        | fallback | -DWORLD_BOOT_RELIEF=0                         | world.h       | the boot block's relief streams; 0 = resident from boot
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
+ * WORLD_SEAM_BUNDLE   | 1        | make     | -DWORLD_SEAM_BUNDLE=0                         | mapstream.c   | block packs lite set first in read order (make WORLD_SEAM_BUNDLE=), map reads held while a lite set loads; 0 = old order, MS_HOLD_INFLIGHT 3
  * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
  * WORLD_FAR_RESERVE   | 1        | fallback | -DWORLD_FAR_RESERVE=0                         | world.c       | a buffer of the largest far panorama reserved at boot for when the heap has no room; 0 = heap only
  * WORLD_WANT_3D       | 1        | fallback | -DWORLD_WANT_3D=0                             | world.c       | wanted blocks read nearest first counting the height range; 0 = x / z only
+ * WORLD_REACH         | 1        | fallback | -DWORLD_REACH=0                               | world.c       | neighbours wanted by walking time to their seam (world.bin v5 reach table) against the measured turn-on time; 0 = the links' load masks alone (runtime: option set WORLD_REACH 0)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
@@ -98,6 +107,7 @@
  * MAP_PANO_R          | off      | debug    | -DMAP_PANO_R=60.0f -DPANO_ZOOM=2.0f           | main.c map.c map_i.h  | panorama capture build (tools/pano.py)
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | drawgrp.c     | draw groups shared across blocks
+ * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | bump.c        | relief batches per frame
@@ -155,11 +165,13 @@
  * DRAW_MAX            | 16       | tune     | -                                             | enemy.c       | characters drawn a frame
  * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
  * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | enemy.c       | killed enemies stay dead until a rest
+ * ENEMY_TMP_GENTLE    | 1        | fallback | -DENEMY_TMP_GENTLE=0                          | enemy.c       | model temporaries never clear drawn cells while the heap has room; 0 = the arena at any cost first
  * DPAD_STICK          | 0        | fallback | -DDPAD_STICK=1                                | main.c        | the d-pad moves like the left stick (old path); 0 = DSR's weapon / item d-pad
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
+ * ENEMY_ROOT_Y        | 1        | fallback | -DENEMY_ROOT_Y=0                              | enemy.c       | root-motion height inside TAE IGNORE_GRAVITY windows (Taurus Demon's 9061 jump down); 0 = flat root motion
  * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move (runtime: option set SEP_CARRY 0)
  * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | enemy.c       | no ESD / Lua
@@ -173,6 +185,8 @@
  * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
  * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone
  * PLAYER_PROXY        | 1        | fallback | -DPLAYER_PROXY=0                              | player.c      | DSR's ChrProxy step (lift 0.31 m, edges ridden within 60 deg), step down 0.4 m, maxSlope 60 deg, slide over 35 deg; 0 = step 0.6 / 1.2, walls below 45 deg, no slide
+ * SLIDE_SUPPORT       | 1        | fallback | -DSLIDE_SUPPORT=0                             | player.c      | the slide reads the mean walkable normal under the capsule (Havok support), not one triangle; 0 = the triangle under the centre
+ * CHR_PUSH_WEIGHT     | 1        | fallback | -DCHR_PUSH_WEIGHT=0                           | enemy.c       | player / enemy capsule push shared by NpcParam weight (chr.bin v13); 0 = the enemy takes it all
  * RAG_CONTACTS        | 1        | fallback | -DRAG_CONTACTS=0                              | ragdoll.c     | ragdoll bodies collide with the map's walls and with each other; 0 = floor only
  * RAG_DEBUG           | 0        | debug    | -DRAG_DEBUG=1                                 | ragdoll.c     | EE log twice a second per awake ragdoll: fastest body, bodies at rest, body pushes
  * ESD_TRACE           | off      | host     | -                                             | esd.c         | ESD trace hook (native test harness)
