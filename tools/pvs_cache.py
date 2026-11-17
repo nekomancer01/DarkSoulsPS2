@@ -14,6 +14,11 @@ GPU hand-over (container builds, tools/build-iso.sh): when DSR_PVS_SPOOL names a
 carries "gpu", as its output differs from a CPU bake's. When the server is not up, or stops, the bake runs here."""
 import hashlib, json, os, shutil, subprocess, sys, time
 
+# pvs_bake's OpenMP threads sleep between its many short parallel loops instead of spinning (libgomp's default spins):
+# with the GPU path a bake spun ~200 of its ~270 CPU-s per Burg block, starving the rest of the build (2026-11-17);
+# the bytes are the same either way
+os.environ.setdefault("OMP_WAIT_POLICY", "passive")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = b"pvs-cache-1"
 

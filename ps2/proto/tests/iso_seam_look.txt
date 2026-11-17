@@ -1,0 +1,94 @@
+# Seam look test (world-10, 2026-11-16): the Firelink -> Burg aqueduct tunnel (the far end drew nothing while
+# Burg west was not loaded: playtest 'sewer white void') and the walk back out of the Burg (playtest 'z-fighting
+# while an area unloads'), a shot every waypoint or two. Waypoints from world_route.txt.
+option hud
+option noenemies
+option nodemo
+wait 3
+spawn -22.9 -41.8 21.0 4.0
+wait 0.5
+approach -19.3,17.4 0.8 1
+approach -16.5,14.6 0.8 1
+shot in_02
+approach -21.2,11.4 0.8 1
+approach -24.5,9.4 0.8 1
+shot in_04
+approach -26.9,5.5 0.8 1
+approach -32.5,1.8 0.8 1
+shot in_06
+approach -36.6,-0.8 0.8 1
+approach -42.6,-4.5 0.8 1
+shot in_08
+approach -44.8,-8.4 0.8 1
+approach -48.9,-11.0 0.8 1
+shot in_10
+# through the aqueduct doorway into the Burg (stuck in front of its co-op checkpoint wall 1011994 until event.c
+# EV_ENT_KEEP, 2026-11-16: approach gives up silently, so check where the walker got to)
+check near -48.9 -33.6 -11.0 1.5
+shot aqueduct_out
+approach -53.2,-13.7 0.8 1
+approach -57.6,-16.4 0.8 1
+shot in_12
+approach -61.5,-18.9 0.8 1
+approach -64.8,-21.4 0.8 1
+shot in_14
+approach -61.1,-25.9 0.8 1
+approach -57.7,-29.3 0.8 1
+shot in_16
+approach -52.8,-29.2 0.8 1
+approach -50.3,-32.6 0.8 1
+shot in_18
+approach -48.5,-35.5 0.8 1
+wait 3
+shot burg_entry
+shot in_end
+spawn -45.1 -18.5 -38.3 -1.40
+wait 0.5
+# step 2.3 m
+spawn -48.5 -20.8 -35.5 -0.88
+wait 2
+# the walker stops at the Burg entry corner going up (world_walk.txt): step back to where world_walk ends
+spawn -52.6 -29.6 -33.2 1.0
+wait 0.5
+approach -50.3,-32.6 0.8 1
+shot out_01
+approach -52.8,-29.2 0.8 1
+shot out_02
+approach -57.7,-29.3 0.8 1
+shot out_03
+approach -61.1,-25.9 0.8 1
+shot out_04
+spawn -61.5 -25.2 -18.9 1.0
+wait 0.5
+approach -57.6,-16.4 0.8 1
+shot out_05
+approach -53.2,-13.7 0.8 1
+shot out_06
+approach -48.9,-11.0 0.8 1
+shot out_07
+# after the Parish visit the walker stops under the aqueduct arch at (-47.3, -10.0) (not on the way out, nor in
+# world_walk.txt; EVT 11010609 repeats once a second from the Parish on): step through
+spawn -44.8 -32.6 -8.4 0.8
+wait 0.5
+approach -42.6,-4.5 0.8 1
+shot out_08
+spawn -36.6 -32.9 -0.8 0.6
+wait 0.5
+approach -32.5,1.8 0.8 1
+shot out_09
+approach -26.9,5.5 0.8 1
+shot out_10
+approach -24.5,9.4 0.8 1
+shot out_11
+approach -21.2,11.4 0.8 1
+shot out_12
+approach -16.5,14.6 0.8 1
+shot out_13
+approach -19.3,17.4 0.8 1
+shot out_14
+approach -22.9,21.0 0.8 1
+shot out_15
+wait 3
+wait 3
+shot out_end
+end

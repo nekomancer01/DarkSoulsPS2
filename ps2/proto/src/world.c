@@ -27,6 +27,12 @@
  * ConnectCollision parts are narrow, and stepping off one between stairs unloaded Burg west and read it again 1.3 s
  * later (world_route.txt 2026-11-01) */
 #define WORLD_KEEP_S 5.0f
+/* A wanted block with no free slot takes the slot of a wanted block farther away (world-10 seam holds, default on;
+ * -DWORLD_SLOT_NEAREST=0 = only blocks no triangle wants give up a slot; room_for) */
+#ifndef WORLD_SLOT_NEAREST
+#define WORLD_SLOT_NEAREST 1
+#endif
+#define WORLD_SLOT_MARGIN 16.0f
 /* Bytes per background read: one at a time through pack.c's async slot, shared with mapstream.c (a near cell waits for
  * at most one of these) */
 #define WORLD_READ (128u << 10)
@@ -1492,6 +1498,20 @@ static int room_for(int want, const float *feet)
             if (d > bd)
                 b = i, bd = d;
         }
+    if (b < 0 && WORLD_SLOT_NEAREST && want > 0 && slots_full()) {
+        /* every slot held by a wanted block: the farthest of them gives its slot to a nearer one. On the Burg bonfire
+         * block's floor by the Parish steps, the triangles want Burg west, the Parish and the Parish rest at once
+         * with three slots: the Parish (where the player was going) waited 9 s for a slot and the player was held
+         * at its stairs 0.8 s (ISO world_route 2026-11-16). WORLD_SLOT_MARGIN m of hysteresis, so the two never
+         * trade slots back and forth (ASSUMED) */
+        float dw = box_d(&tab[want], feet);
+        for (int i = 1; i < nblk; i++)
+            if (i != want && i != cur && rt[i].state == W_ON && world_stats.reading != i) {
+                float d = box_d(&tab[i], feet);
+                if (d > dw + WORLD_SLOT_MARGIN && d > bd)
+                    b = i, bd = d;
+            }
+    }
     if (b < 0)
         return 0;
     printf("world: block %d off to make room for block %d\n", b, want);
@@ -1543,8 +1563,8 @@ static void step(const float *feet, float dt)
                 wm |= 1u << i, km |= 1u << i;
     }
     wm |= hold_want, km |= hold_want;  /* the blocks the player is held for (world_hold) */
-    if (wm != want_m || km != keep_m)
-        printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km);
+    if (wm != want_m || (km | wm) != keep_m)
+        printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km | wm);
     want_m = wm, keep_m = km | wm;
     world_stats.want = want_m;
     if (WORLD_BOOT_LEAN && rt[0].size[E_TABB]) {

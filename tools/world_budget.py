@@ -259,7 +259,12 @@ def load(d):
         return None
     j = json.load(open(p))
     c = np.asarray(j["cells"], np.float64).reshape(len(j["cells"]), -1)
-    return os.path.basename(os.path.normpath(d)), c, float(j.get("sky", 0)), np.asarray(j["spots"], np.float64).reshape(-1, 3)
+    name = os.path.basename(os.path.normpath(d))
+    LINK_SIDE[name] = (j["world"], np.asarray(j["links"], np.int64)) if "links" in j else None
+    return name, c, float(j.get("sky", 0)), np.asarray(j["spots"], np.float64).reshape(-1, 3)
+
+
+LINK_SIDE = {}  # block -> (world names, per spot the other MSBs' blocks its links load) from map.bin.cells.json
 
 
 def box_d(lo, hi, P):
@@ -319,9 +324,15 @@ def main(argv):
                     on[own == j] = near_k[own == j]
         if LINKS:  # another MSB's block (Firelink, the Asylum: ConnectCollision links): only at spots within
             # LOAD_CELLS cells of its own navmesh (its links sit on its walkable floors), never across a height range
+            # (world-10: by the links of the floor under each spot, from the export's sidecar; without one by distance)
             mine = P[own == k]
             for j in range(len(blocks)):
                 if j == k or (rects[j][1] is not None and rects[j][1] == rects[k][1]) or not len(mine):
+                    continue
+                ls = LINK_SIDE.get(blocks[j][0])
+                kn = os.environ.get("MAP", "m10_02_00_00") if blocks[k][0] == "gen" else blocks[k][0]  # (gen: the boot block)
+                if ls is not None and kn in ls[0] and len(ls[1]) == int((own == j).sum()):
+                    on[own == j] = (ls[1] >> ls[0].index(kn)) & 1 == 1
                     continue
                 Q = P[own == j]
                 dmin = np.full(len(Q), np.inf)
@@ -330,24 +341,29 @@ def main(argv):
                 on[own == j] = dmin <= LOAD_CELLS * 32.0
         lo, hi = c[:, 3:6], c[:, 6:9]
         near, coarse, kept, back = (c[:, 9 + i] / 1024 for i in range(4))
-        d = box_d(lo, hi, P)
         if NEAR_CUBE:  # the near level by the box clipped to the cell's cube (mapstream.h cell_near_d2)
             k0 = c[:, 0:3] * 32.0
             nlo = np.maximum(lo, k0)
-            dn = box_d(nlo, np.maximum(np.minimum(hi, k0 + 32.0), nlo), P)
-        else:
-            dn = d
+            nhi = np.maximum(np.minimum(hi, k0 + 32.0), nlo)
         has_near = near > 0
-        n = ((dn < NEAR_R).astype(np.float64) @ near) * on
-        co = ((((dn >= NEAR_R) | ~has_near[None]) & (d < PIN_R)).astype(np.float64) @ coarse) * on
-        ke = ((d < PIN_R).astype(np.float64) @ kept) * on
         far = np.where(own == k, back.sum() + sky / 1024, 0.0)
-        hard = (((dn < HARD_NEAR_R).astype(np.float64) @ near) +
-                (((dn >= HARD_NEAR_R) | ~has_near[None]) & (d < HARD_R)).astype(np.float64) @ coarse +
-                (d < HARD_R).astype(np.float64) @ kept) * on
-        soft = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on + far
-        nws = (dn < WS_R0).astype(np.float64) @ near
-        cws = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
+        n, co, ke, hard, soft, nws, cws = (np.zeros(len(P)) for _ in range(7))
+        # spots in slices: the (spots x cells x 3) distance arrays of all spots at once took GBs (swapping: 60 CPU-s,
+        # 300 s wall, 2026-11-17); every spot's row is the same sum either way
+        step = max(1, int(os.environ.get("WB_SLICE", "2048")))
+        for s0 in range(0, len(P), step):
+            sl = slice(s0, s0 + step)
+            d = box_d(lo, hi, P[sl])
+            dn = box_d(nlo, nhi, P[sl]) if NEAR_CUBE else d
+            n[sl] = ((dn < NEAR_R).astype(np.float64) @ near) * on[sl]
+            co[sl] = ((((dn >= NEAR_R) | ~has_near[None]) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl]
+            ke[sl] = ((d < PIN_R).astype(np.float64) @ kept) * on[sl]
+            hard[sl] = (((dn < HARD_NEAR_R).astype(np.float64) @ near) +
+                        (((dn >= HARD_NEAR_R) | ~has_near[None]) & (d < HARD_R)).astype(np.float64) @ coarse +
+                        (d < HARD_R).astype(np.float64) @ kept) * on[sl]
+            soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl] + far[sl]
+            nws[sl] = (dn < WS_R0).astype(np.float64) @ near
+            cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
                        ("hard", hard), ("soft", soft)):
             tot[key] += v

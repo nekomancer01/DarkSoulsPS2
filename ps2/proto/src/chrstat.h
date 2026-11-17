@@ -11,7 +11,7 @@ enum { EL_PHYS, EL_MAG, EL_FIRE, EL_THUN, EL_COUNT };    /* damage elements, Atk
 enum { ATK_NONE = 0, ATK_SLASH = 1, ATK_BLOW = 2, ATK_THRUST = 3 };  /* AtkParam.atkAttribute (typed physical) */
 enum { HAND_R, HAND_L };
 
-typedef struct { unsigned id; float ar[EL_COUNT], poise_dmg, guard_cut[EL_COUNT]; int types, guard_stab, guard_level; }
+typedef struct { unsigned id; float ar[EL_COUNT], ar2h[EL_COUNT], poise_dmg, guard_cut[EL_COUNT]; int types, guard_stab, guard_level; }
     ChrWep;
 typedef struct { unsigned id; int anim, heal, hum, souls, consume; } ChrQuick;
 
@@ -42,6 +42,7 @@ extern ChrStats chr_stats;
 /* d-pad selection (DSR: left / right switch the hand's weapon slot, down cycles the quick items): the active
  * weapon slot per hand (0 = slot 1, 1 = slot 2) and the selected quick slot (0-4); runtime only (TECH_DEBT items-1) */
 extern int chr_hand_slot[2], chr_quick;
+extern int chr_two_hand;         /* the right weapon held in both hands (ESD hold style 3, c1_104) */
 void chrstat_select(void);       /* copy the selected slots of the snapshot into the active fields */
 int chrstat_switch_hand(int h);  /* toggle hand h's weapon slot; 1 if it changed */
 int chrstat_cycle_quick(void);   /* next quick slot holding an item; 1 if it changed */

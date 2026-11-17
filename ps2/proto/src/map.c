@@ -1,4 +1,5 @@
 #include "map_i.h"
+#include "testscript.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -431,6 +432,137 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
 }
 
+/* The player's light on the map (MAP_PLIGHT, default on; 0 = the old path: characters only). DSR attaches the area's
+ * PointLightBank row (the collision part's MSB lantern id) to the player and its deferred point light shader
+ * (FRPG_Deferred_PointLight, dsr_light.py: saturate((end - d) / (end - begin)) x colour x N.L) lights every surface
+ * around them, the map included: in the Depths' sewers (ambient ~(3, 8, 6), light 1.5-5.5 m (100, 77, 33)) it is the
+ * only light there is. The port baked the map without it and gave it to the characters only (map_char_light), so the
+ * walls stayed black around a lit player (Ame's playtest 2026-11-16). Here the opaque map chunks within its reach are
+ * drawn a second time after the relief pass: colour = the light's falloff at each vertex, texture x colour added to
+ * the frame (Cs x As + Cd: cut-out texels add nothing), Z tested,
+ * not written, no fog (the light ends within 8 m). The light sits PLIGHT_H above the feet (ASSUMED: DSR hangs it on
+ * the character model; the characters' own lighting measures from the feet). No N.L, as map_char_light adds it to
+ * the characters' ambient: per-vertex normals cost ~4 ms of EE a frame at the Firelink graveyard (the map streams have
+ * no normals; corner order is no facing either, about half of the Depths' floor triangles wind downwards). */
+#ifndef MAP_PLIGHT
+#define MAP_PLIGHT 1
+#endif
+#define PLIGHT_H 1.0f
+#ifndef PLIGHT_RATIO
+#define PLIGHT_RATIO 60  /* % of the area's character ambient the light must reach (ASSUMED) */
+#endif
+#define PLIGHT_MAX 96
+static struct {
+    const unsigned char *base;
+    const Chunk *c;
+    unsigned short n, clip;
+    short tex, level;
+} pl_item[PLIGHT_MAX];
+static int pl_n, pl_on;
+static float pl_pos[3], pl_rgb[3], pl_b, pl_e, pl_e2, pl_inv;  /* reach, its square, 1 / (end - begin) */
+static unsigned map_plight_batches;  /* batches of the last pass (debugger) */
+
+static void pl_begin(void)
+{
+    pl_n = pl_on = 0;
+    if (!MAP_PLIGHT || !mp_pfog_rows)
+        return;
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
+    pl_b = r->pl_begin * 0.1f, pl_e = r->pl_end * 0.1f;
+    int pl_max = r->pl_rgb[0] > r->pl_rgb[1] ? r->pl_rgb[0] : r->pl_rgb[1], amb_max = r->amb[0] > r->amb[1] ? r->amb[0] : r->amb[1];
+    pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
+    /* only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at Firelink for
+     * a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
+    pl_on = pl_e > pl_b && pl_max * 100 >= amb_max * PLIGHT_RATIO && pl_max > 0;
+    pl_e2 = pl_e * pl_e, pl_inv = pl_on ? 1.0f / (pl_e - pl_b) : 0;
+    for (int c = 0; c < 3; c++)
+        pl_rgb[c] = r->pl_rgb[c];
+    pl_pos[0] = player_feet.x, pl_pos[1] = player_feet.y + PLIGHT_H, pl_pos[2] = player_feet.z;
+}
+
+static void pl_add(const unsigned char *base, const Chunk *c, unsigned n, int clip, int tex, int level)
+{
+    if (!pl_on || pl_n >= PLIGHT_MAX || (c->flags & CHUNK_GRASS) || n != c->tris)
+        return;
+    float d2 = 0;
+    for (int k = 0; k < 3; k++) {
+        float o = pl_pos[k] < c->mn[k] ? c->mn[k] - pl_pos[k] : pl_pos[k] > c->mx[k] ? pl_pos[k] - c->mx[k] : 0;
+        d2 += o * o;
+    }
+    if (d2 >= pl_e * pl_e)
+        return;
+    pl_item[pl_n].base = base, pl_item[pl_n].c = c, pl_item[pl_n].n = (unsigned short)n;
+    pl_item[pl_n].clip = (unsigned short)clip, pl_item[pl_n].tex = (short)tex, pl_item[pl_n].level = (short)level;
+    pl_n++;
+}
+
+/* 1 / sqrt(x) without a divide or sqrt.s (one Newton step: < 0.2 % error): the pass runs it per vertex */
+static inline float pl_rsqrt(float x)
+{
+    union { float f; u32 u; } v = {x};
+    v.u = 0x5F3759DFu - (v.u >> 1);
+    return v.f * (1.5f - 0.5f * x * v.f * v.f);
+}
+
+/* the light at squared distance d2 (< pl_e2) -> u8 x4 colour, alpha 0x80 */
+static inline u32 pl_col(float d2)
+{
+    float att = d2 > 1e-6f ? (pl_e - d2 * pl_rsqrt(d2)) * pl_inv : 1;
+    if (att > 1)
+        att = 1;
+    u32 out = 0x80u << 24;
+    for (int c = 0; c < 3; c++) {
+        int v = (int)(pl_rgb[c] * att + 0.5f);
+        out |= (u32)(v > 255 ? 255 : v) << (8 * c);
+    }
+    return out;
+}
+
+static void pl_draw(void)
+{
+    map_plight_batches = 0;
+    if (!pl_n)
+        return;
+    static u32 col[256] __attribute__((aligned(16)));
+    GSGLOBAL *gs = gsg;
+    /* Cs x As + Cd (As = texel alpha: cut-out texels add nothing), Z tested, not written */
+    u64 r[4] = {GS_SETREG_ALPHA(0, 2, 0, 1, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    vu1_gs_regs(2, r);
+    for (int i = 0; i < pl_n; i++) {
+        const Chunk *c = pl_item[i].c;
+        const unsigned char *base = pl_item[i].base;
+        unsigned n = pl_item[i].n, nv = c->nv;
+        if (nv ? nv > 256 : n * 3 > 256)
+            continue;
+        GSTEXTURE *t = tc_get(pl_item[i].tex, pl_item[i].level);
+        if (!t)
+            continue;
+        const short *ps = (const short *)(base + c->pos);
+        const float *o = c->org, s = c->step;
+        int lit = 0;
+        unsigned nc = nv ? nv : 3 * n;
+        for (unsigned j = 0; j < nc; j++) {
+            const short *q = ps + 3 * j;
+            float d0 = pl_pos[0] - (o[0] + s * q[0]), d1 = pl_pos[1] - (o[1] + s * q[1]), d2 = pl_pos[2] - (o[2] + s * q[2]);
+            float dd = d0 * d0 + d1 * d1 + d2 * d2;
+            col[j] = dd < pl_e2 ? pl_col(dd) : 0x80u << 24;
+            lit |= col[j] & 0xF8F8F8;
+        }
+        if (!lit)
+            continue;
+        float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
+        int mode = VU1_BLEND | VU1_COLCP | pl_item[i].clip;
+        if (nv)
+            vu1_add_idx(t, c->flags & CHUNK_CULL, mode, n, nv, ps, base + c->st, col, base + CHUNK_IDX(c), c->org, st_k);
+        else
+            vu1_add_ex(t, c->flags & CHUNK_CULL, mode, n, ps, base + c->st, col, c->org, st_k);
+        map_plight_batches++;
+    }
+    u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
+    vu1_gs_regs(2, rr);
+    pl_n = 0;
+}
+
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
 {
     float l = sqrtf(mp_fog_now[24] * mp_fog_now[24] + mp_fog_now[25] * mp_fog_now[25] + mp_fog_now[26] * mp_fog_now[26]);
@@ -651,6 +783,8 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump && c->tex >= 0)  /* the player's light */
+            pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
@@ -816,6 +950,7 @@ static void zs_end(void)
             break;
         case ZS_BUMP:
             bump_draw();
+            pl_draw();
             i += 1;
             break;
         default:
@@ -1245,6 +1380,24 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
 /* Block k in map_draw: its cells in view, each at the level that is loaded (near, coarse or its horizon), with what
  * the later passes draw collected in fxl / hzfade / nrfade and the frame's counters in lg. A block that is kept only
  * for its horizon draws that alone. Returns the triangles drawn. */
+/* MAP_POP_LOG (default on in test runs; 0 = off): one line per pop-in (a cell that swaps coarse -> near in view
+ * after waiting): its in-view wait, the whole wait, its distance, why it waited (mapstream_why per in-view draw:
+ * unseen / refused / plan cut / disc / settle), and the draws since the last settle (a warp, a bonfire, a death) */
+#ifndef MAP_POP_LOG
+#define MAP_POP_LOG 1
+#endif
+static unsigned short pop_settle;  /* pop_fr of the last draw during a settle */
+static unsigned pop_lines;
+static void pop_note(int k, int ci, const Cell *ce, float d, unsigned w)
+{
+    if (!MAP_POP_LOG || !test_active() || pop_lines >= 200)
+        return;
+    pop_lines++;
+    printf("map: pop cell %d.%d at %.1f m: waited %u draws in view (%u in all), unseen %u refused %u cut %u disc %u "
+           "settle %u, %u draws after a settle\n", k, ci, (double)d, ce->win, w, ce->why[0], ce->why[1], ce->why[2],
+           ce->why[3], ce->why[4], (unsigned)(unsigned short)(pop_fr - pop_settle));
+}
+
 static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
 {
     MapInst *m;
@@ -1392,13 +1545,20 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 if (!nd) {
                     lg->pend++;
                     if (!ce->waiting)
-                        ce->wait0 = pop_fr, ce->waiting = 1;
+                        ce->wait0 = pop_fr, ce->waiting = 1, ce->win = 0, memset(ce->why, 0, sizeof ce->why);
+                    ce->win += ce->win < 0xFFFF;  /* (in view this draw) */
+                    int why = mapstream_why((unsigned)ci);
+                    if (why > 0 && why <= 5 && ce->why[why - 1] < 255)
+                        ce->why[why - 1]++;
                 } else if (ce->waiting) {
                     unsigned w = (unsigned short)(pop_fr - ce->wait0);
                     if (was && w >= 2) {
                         lg->pops++;
-                        lg->pop_wait = w > lg->pop_wait ? w : lg->pop_wait;
+                        /* the wait in view (it used to count the time out of view too: a cell that waited a frame,
+                         * left the view and came back 30 s later read as a 900-frame wait) */
+                        lg->pop_wait = ce->win > lg->pop_wait ? ce->win : lg->pop_wait;
                         lg->pop_d = d2 < lg->pop_d * lg->pop_d ? sqrtf(d2) : lg->pop_d;
+                        pop_note(k, ci, ce, sqrtf(d2), w);
                     }
                     ce->waiting = 0;
                 }
@@ -1679,6 +1839,7 @@ int map_draw(V3 eye)
         MP_END(MP_CULL)
     }
     bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
+    pl_begin();
     map_vu1_batches = map_ee_tris = 0;
 #ifdef MAP_DBG
     static int dbg_init;
@@ -1712,6 +1873,8 @@ int map_draw(V3 eye)
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
+    if (mapstream_settling())
+        pop_settle = pop_fr;
     nfx = nhzfade = nnrfade = 0;
     for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
         drawn += draw_block(k, e, fog, &lg);
@@ -1731,8 +1894,10 @@ int map_draw(V3 eye)
         if (zs_pass == 1) {  /* (ZSPLIT: in the near pass) */
             if (zs_room(1))
                 zs_buf[zs_n++] = ZS_BUMP;
-        } else
+        } else {
             bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
+            pl_draw();  /* the player's light (MAP_PLIGHT) */
+        }
         MP_END(MP_BUMP)
     }
 

@@ -131,22 +131,35 @@ def own_nav(gen):
     return nav
 
 
-def pano_mesh(P, C, eye, deg):
-    """triangles P (n, 3, 3) with corner colours C (n, 3, 3) as seen from eye -> (V, VC, T): the panorama's quads"""
+def pano_mesh(P, C, eye, deg, memo=None):
+    """triangles P (n, 3, 3) with corner colours C (n, 3, 3) as seen from eye -> (V, VC, T): the panorama's quads.
+    memo: a dict kept across calls for the same P, C, eye (build()'s coarser-cell retries): the six views are rendered
+    once (they do not depend on deg)"""
     import math
-    import tempfile
-    import mapview
-    from PIL import Image
     d = np.sqrt(((P.mean(1) - eye) ** 2).sum(1))
     P, C = P[d < FAR], C[d < FAR]
     if not len(P):
         return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3), np.int64)
     n = len(P)
+    NV, S, FOV = 6, 640, 100.0
+    f = S / 2 / math.tan(math.radians(FOV) / 2)
+    views = memo.get("views") if memo is not None else None
+    if views is None:
+        views = render6(P, C, eye, n, NV, S, FOV)
+        if memo is not None:
+            memo["views"] = views
+    return sample(views, eye, deg, NV, S, f)
+
+
+def render6(P, C, eye, n, NV, S, FOV):
+    """the six views around eye: (rgb, depth, forward) each"""
+    import math
+    import tempfile
+    import mapview
+    from PIL import Image
     col = np.concatenate([C * (128.0 / 150.0), np.full((n, 3, 1), 128.0)], 2)  # (render_view: 150 grey x colour / 128)
     geo = (P.astype(np.float32), np.zeros((n, 3, 2)), col, np.full(n, -1), np.zeros(n, np.int64), np.zeros(n),
            np.concatenate([P.min(1), P.max(1)], 1))
-    NV, S, FOV = 6, 640, 100.0
-    f = S / 2 / math.tan(math.radians(FOV) / 2)
     views = []
     with tempfile.TemporaryDirectory() as tmp:
         for k in range(NV):
@@ -155,6 +168,12 @@ def pano_mesh(P, C, eye, deg):
             z = []
             mapview.render_view(os.path.join(tmp, "v.png"), geo, [], tuple(eye), tuple(eye + fwd), W=S, H=S, fov_y=FOV, zout=z)
             views.append((np.asarray(Image.open(os.path.join(tmp, "v.png")).convert("RGB"), np.float64), z[0], fwd))
+    return views
+
+
+def sample(views, eye, deg, NV, S, f):
+    """the panorama's quads from the six views at deg degree cells"""
+    import math
     # the panorama's cells: azimuth x elevation, K x K samples each, taken from the view that faces them most
     K = 3
     naz, nel = int(round(360.0 / deg)), int(round(2 * EL / deg))
@@ -353,10 +372,11 @@ def build(own, gens):
             sel = np.isin(S, members)
             src.append(((bi, mask), P[sel], C[sel], eye))
     deg = DEG
+    memo = [{} for _ in src]
     while True:
         res = []
-        for key, P, C, eye in src:
-            V, VC, T = pano_mesh(P, C, eye, deg)
+        for (key, P, C, eye), mo in zip(src, memo):
+            V, VC, T = pano_mesh(P, C, eye, deg, mo)
             n0 = len(T)
             if len(T) and horizon._meshopt() is not None:
                 T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * deg / DEG)

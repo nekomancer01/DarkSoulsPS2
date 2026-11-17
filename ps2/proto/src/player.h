@@ -13,6 +13,7 @@ typedef struct Input {
     int r1_held, r2_held, l1_held, l2_held;
     int r3;            /* R3 pressed this frame: lock-on toggle */
     int square;        /* Square pressed this frame: use the quick item */
+    int triangle;      /* Triangle pressed this frame: two-hand toggle */
     int dpad;          /* d-pad presses this frame: 1 up, 2 down, 4 left, 8 right */
 } Input;
 
@@ -65,6 +66,7 @@ typedef struct Player {
     int ovl_anim;          /* ANIM_* or -1 */
     float ovl_t;
     int ovl_loop;
+    int ovl_missing;       /* the ESD asked for an upper-body anim DSR's archives do not have (a00 30 / 42 / 90) */
     int ovl_cmd;           /* ESD command that started it: 3 (c1_3, ends f0) or 4 / 13 (end f1) */
     int motion_mode;       /* c1_109 (chr+0x270): 11 in every guard state of group 1 */
     int guarding;          /* guard up: an upper-body guard anim in motion mode 11 */
@@ -74,6 +76,7 @@ typedef struct Player {
     float prev_tilt;
     /* a backstab / riposte in progress (ThrowParam, combat_throw_hook): its target, damage time and motion value */
     void *lock;            /* lock-on target (CombatChr), NULL none */
+    int hold_style, hold_req;  /* ESD f207 (1 one-handed, 3 the right weapon two-handed) / f104 request (0 none) */
     int switch_req;        /* ESD f109 this frame: 1 right weapon switch, 2 left (states 217 / 218) */
     float hitstop;         /* s the playing action anim stays frozen (AtkParam hitStopTime of a hit that landed) */
     int item_used;         /* ANIM_* + 1 of the item anim whose TAE 64 effect was applied, 0 none */

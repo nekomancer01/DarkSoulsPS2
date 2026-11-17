@@ -29,7 +29,7 @@ Links (TECH_DEBT world-3):
 import os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import area, souls
+import area, souls, worldlinks
 
 LINK_GAP = 20.0  # metres between two blocks' bounds that still count as touching (ASSUMED: one load radius apart)
 LOAD_CELLS, KEEP_CELLS = 1.0, 2.0  # in area.CELL units, see above
@@ -72,17 +72,7 @@ def col_height(path):
     return min(ys), max(ys)
 
 
-def msb(game, m, cache={}):
-    if m not in cache:
-        cache[m] = souls.msb1(souls.read(f"{game}/map/MapStudio/{m}.msb"))
-    return cache[m]
-
-
-def connect_parts(game, src, dst):
-    """collision part names of MSB src whose ConnectCollision part targets map dst (-1 fields = any)"""
-    want = [int(x) for x in dst[1:].split("_")]
-    return {p["collision"] for p in msb(game, src)["parts"]
-            if p["type"] == 11 and all(v < 0 or v == w for v, w in zip(p["map_id"], want))}
+msb, connect_parts = worldlinks.msb, worldlinks.connect_parts
 
 
 def crop(game, block, m):
@@ -109,6 +99,27 @@ def rect_d(rs, x, z):
     return d
 
 
+def block_masks(game, names, nbr, blocks, i):
+    """block i's [load, keep] masks per collision triangle (collision.bin order)"""
+    b, m, bb, rect = blocks[i]
+    masks = []  # per triangle [load, keep]
+    sub = crop(game, b, m)
+    for part, tris in sub:
+        for t in tris:
+            load = keep = 0
+            for j, (_, mj, bj, rj) in enumerate(blocks):
+                if nbr[i] >> j & 1 and mj == m and rj and rect:
+                    d = min(rect_d(rj, p[0], p[2]) for p in t)
+                    load |= (d <= LOAD_CELLS * area.CELL) << j
+                    keep |= (d <= KEEP_CELLS * area.CELL) << j
+            masks.append([load, keep])
+    # between MSBs: DSR's ConnectCollision parts (tools/worldlinks.py, shared with the map exporters' spot budgets)
+    for t, mk in enumerate(worldlinks.cross_masks(game, names, nbr, i, sub)):
+        masks[t][0] |= mk
+        masks[t][1] |= mk
+    return masks
+
+
 def main():
     game, out, boot, gen = sys.argv[1:5]
     names = area.WORLDS.get(boot, [boot])
@@ -130,35 +141,18 @@ def main():
             if i != j and gap <= LINK_GAP and (ma == mb or connect_parts(game, ma, mb) or connect_parts(game, mb, ma)):
                 nbr[i] |= 1 << j
     links, ranges = [], []
+    # the blocks' link masks are independent of each other (each block's collision crop is ~1-10 s of Python): worked
+    # out side by side in forked processes, put together in block order as before. EXPORT_WORLD_JOBS=1: one at a time
+    jobs = int(os.environ.get("EXPORT_WORLD_JOBS", "0")) or min(n, os.cpu_count() or 1)
+    args = [(game, names, nbr, blocks, i) for i in range(n)]
+    if jobs > 1 and n > 1:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(min(jobs, n)) as pool:
+            per = pool.starmap(block_masks, args, chunksize=1)
+    else:
+        per = [block_masks(*a) for a in args]
     for i, (b, m, bb, rect) in enumerate(blocks):
-        masks, by_part = [], {}  # per triangle [load, keep]; part -> its triangle indices
-        sub = crop(game, b, m)
-        for part, tris in sub:
-            for t in tris:
-                by_part.setdefault(part, []).append(len(masks))
-                load = keep = 0
-                for j, (_, mj, bj, rj) in enumerate(blocks):
-                    if nbr[i] >> j & 1 and mj == m and rj and rect:
-                        d = min(rect_d(rj, p[0], p[2]) for p in t)
-                        load |= (d <= LOAD_CELLS * area.CELL) << j
-                        keep |= (d <= KEEP_CELLS * area.CELL) << j
-                masks.append([load, keep])
-        cen = [(sum(p[0] for p in t) / 3, sum(p[2] for p in t) / 3) for _, tris in sub for t in tris]
-        for mj in {blocks[j][1] for j in range(n) if nbr[i] >> j & 1 and blocks[j][1] != m}:
-            for part in connect_parts(game, m, mj) & set(by_part):
-                # the block of map mj holding most of the part's triangle centroids in its cells; a part over no
-                # block's cells (the Parish elevator next to Firelink, not a block yet) links nothing. A whole-map
-                # block (no cells) is DSR's own unit and takes the part wherever it lies: the Asylum's crow ledge
-                # (h0054B1, z -95..-82) is outside Firelink's collision bounds (z >= -51)
-                ts = by_part[part]
-                inside = lambda rs: sum(any(r[0] <= cen[t][0] < r[2] and r[1] <= cen[t][1] < r[3] for r in rs) for t in ts)
-                cnt = {j: inside(blocks[j][3]) if blocks[j][3] else len(ts)
-                       for j in range(n) if nbr[i] >> j & 1 and blocks[j][1] == mj}
-                j = max(cnt, key=cnt.get, default=None)
-                if j is not None and cnt[j]:
-                    for t in ts:
-                        masks[t][0] |= 1 << j
-                        masks[t][1] |= 1 << j
+        masks = per[i]
         first = len(links)
         t = 0
         while t < len(masks):

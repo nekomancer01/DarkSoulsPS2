@@ -63,7 +63,7 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
@@ -210,7 +210,23 @@ worldblockhzn@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockhzn
 blockhzn: $(A)/hzn.bin
 .PHONY: worldhzn blockhzn
-worldpacks: worldhzn $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+# The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports
+# (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 min, and the occlusion bakes
+# waited for every horizon though they need none; the bakes, the GPU's turn per block, are the build's critical path):
+# worldpvs right after worldexports (alongside worldhzn), worldfar right after worldhzn. WORLD_EARLY_BAKES=0: as before
+WORLD_EARLY_BAKES ?= 1
+worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockpvs@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockpvs@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpvs
+blockpvs: $(A)/pvs.bin
+worldfar: worldhzn
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockfar@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockfar@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockfar
+blockfar: $(A)/far.bin
+.PHONY: worldpvs blockpvs worldfar blockfar
+worldpacks: worldhzn $(if $(filter 1,$(WORLD_EARLY_BAKES)),worldpvs worldfar $(if $(WORLD_BLOCKS),$(A)/pvs.bin $(A)/far.bin)) $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks
@@ -218,7 +234,7 @@ blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
 # (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
 # from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
-$(D)/world.pak: $(TS)/export_world.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
 		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)
@@ -526,7 +542,7 @@ $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.
 		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
-		$(TS)/residency.py.sum src/residency.h
+		$(TS)/residency.py.sum src/residency.h $(TS)/worldlinks.py.sum
 	@mkdir -p $(@D)
 	env $(MAPENV_LINE) STATIC_OBJ=$(A)/objects.bin.static ANIM_OBJ=$(A)/objects.bin.anim FX_LIGHTS_FILE=$(A)/lights.json \
 		$(PY) -I ../../tools/export_map.py "$(GAME)" $@ $(MAP)
@@ -578,6 +594,7 @@ PVS_GPU_OK := $(if $(filter 1,$(PVS_GPU)),$(shell printf '\043include <EGL/egl.h
 $(PVS_BAKE): ../../tools/pvs_bake.c ../../tools/pvs_gpu.c ../../tools/pvs_gpu.h
 	@mkdir -p $(@D)
 	gcc $(PVS_CFLAGS) -fopenmp -o $@ $< $(if $(PVS_GPU_OK),-DPVS_GPU ../../tools/pvs_gpu.c -lEGL -lOpenGL) -lm
+worldpvs: $(PVS_BAKE)  # (built once here, before the block sub-makes would race to build it)
 $(A)/pvsin.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))

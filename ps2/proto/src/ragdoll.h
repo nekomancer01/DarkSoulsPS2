@@ -39,6 +39,8 @@ typedef struct {
     float perp_p[RAG_MAX][3], perp_c[RAG_MAX][3];  /* twist reference axes (bind pose) */
     float fy[RAG_MAX], fn[RAG_MAX][3];    /* floor plane under each body: height, normal */
     unsigned char fok[RAG_MAX];
+    unsigned skip[RAG_MAX];               /* RAG_CONTACTS: body pairs that overlap at the start never collide */
+    int pairs_ok;
     float still, age;
     int asleep;
 } Ragdoll;
