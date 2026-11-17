@@ -121,13 +121,11 @@
  * FPS_CAP_FIELDS      | 2        | fallback | -DFPS_CAP_FIELDS=1                            | main   | init  | main.c        | 30 fps cap; 1 = uncapped
  * V1B_FIELD           | off      | debug    | -DV1B_FIELD                                   | main   | init  | main.c        | point-sampled field output
  * R2_OFF              | off      | fallback | -DR2_OFF                                      | main   | init  | main.c        | no VRAM layout pass after the model upload (A/B)
- * V6_OFF              | off      | fallback | -DV6_OFF                                      | gfx    | init  | render.c      | gsKit's VRAM allocator
  *
  * textures and VU1 (texcache.c, vu1.c, vu1.h, model.c)
  * TC_RLIST            | 1        | fallback | -DTC_RLIST=0                                  | gfx    | #143  | texcache.c    | resident-level list; 0 = walk every level
  * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | gfx    | #163  | texcache.c    | mip 1 under pool pressure (runtime: option set TC_PRESS 0)
  * TC_PLAN             | 1        | fallback | -DTC_PLAN=0                                   | gfx    | #234  | texcache.c    | texture levels planned to the pool budget per texture (runtime: option set TC_PLAN 0)
- * TC_UP_OLD           | off      | fallback | -DTC_UP_OLD                                   | gfx    | #143  | texcache.c    | the old 96 + 16 KB upload caps
  * TC_NO_NEAR          | off      | fallback | -DTC_NO_NEAR                                  | gfx    | init  | texcache.c    | near texture levels never drawn (A/B)
  * TC_HUD              | off      | debug    | -DTC_HUD                                      | gfx    | init  | texcache.c    | upload numbers on screen
  * TC_NEAR_KB          | 256      | tune     | -                                             | gfx    | init  | texcache.c    | near level pool
@@ -135,11 +133,7 @@
  * MIP0_AHEAD          | 1.3      | fallback | -DMIP0_AHEAD=0                                | gfx    | #156  | texcache.c    | mip 0 asked ahead; 0 = where drawn
  * MIP_TRILINEAR       | 1        | fallback | -DMIP_TRILINEAR=0                             | gfx    | #184  | vu1.c         | trilinear; 0 = LINEAR_MIPMAP_NEAREST (runtime: option set MIP_TRILINEAR 0)
  * VU1_TEX_PATH2       | off      | fallback | -DVU1_TEX_PATH2                               | gfx    | #104  | vu1.h         | map texture uploads on PATH2
- * VU1_NO_IMT          | off      | fallback | -DVU1_NO_IMT                                  | gfx    | #143  | vu1.c         | PATH3 uploads without IMT
- * VU1_NO_PKT          | off      | fallback | -DVU1_NO_PKT                                  | gfx    | #105  | vu1.c         | map batches as stream-by-stream REFs
- * VU1_NO_SKINPKT      | off      | fallback | -DVU1_NO_SKINPKT                              | gfx    | #112  | vu1.c         | skin batches as stream-by-stream REFs
  * VU1_MAP_OLD         | off      | fallback | -DVU1_MAP_OLD                                 | gfx    | init  | vu1.c         | the old map batch path
- * VU1_IDX_EE_CLIP     | off      | fallback | -DVU1_IDX_EE_CLIP                             | gfx    | #124  | vu1.c         | indexed clip batches split on the EE
  * VU1_IDX_LISTS       | off      | debug    | -DVU1_IDX_LISTS                               | gfx    | #124  | vu1.c         | indexed batches expanded to lists
  * VU1_IDX_NO_CLIP     | off      | debug    | -DVU1_IDX_NO_CLIP                             | gfx    | #124  | vu1.c         | indexed clip batches not drawn
  * VU1_NO_CLIP         | off      | debug    | -DVU1_NO_CLIP                                 | gfx    | init  | vu1.c         | clip batches through the plain program

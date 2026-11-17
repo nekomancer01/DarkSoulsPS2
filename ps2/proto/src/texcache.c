@@ -59,12 +59,8 @@ typedef struct {
 #endif
 /* Upload caps per frame (budget doc proposal 7, 2026-11-08): 512 KB of near and chain levels together over PATH3
  * (~0.5 ms of GS time as CT32 by the SDK's rates, ASSUMED; PCSX2 does not time it), mip 0 / 1 as before uncapped (a
- * miss there is a missing batch). make DEFS=-DTC_UP_OLD = the old 96 + 16 KB. */
-#ifdef TC_UP_OLD
-#define TC_NEAR_UP (96 * 1024)  /* near-level upload bytes per frame */
-#else
-#define TC_NEAR_UP (384 * 1024)
-#endif
+ * miss there is a missing batch). */
+#define TC_NEAR_UP (384 * 1024)  /* near-level upload bytes per frame */
 
 static const TexEntry *te[MAX_TEX];  /* map.bin's table, then tc_add's */
 static const unsigned char *bin;
@@ -84,11 +80,7 @@ static float mip_d[MAX_TEX];
 static float tc_focal = 487;
 /* chain level bytes uploaded a frame, at most (no hitch when a teleport or a turn brings many textures at once: those
  * batches draw without a chain until their levels are in; ASSUMED 16 KB, a few textures' mip 1 / 2 / 3) */
-#ifdef TC_UP_OLD
-#define TC_MIP_UP (16 * 1024)
-#else
 #define TC_MIP_UP (128 * 1024)
-#endif
 static int mip_up;
 static unsigned mip_short;  /* chains cut short this frame (the "tex:" log) */
 /* tc_mip's LOD bias in levels (ASSUMED 1: the next level once a texel is under 2 pixels by view depth; the GS LOD has
