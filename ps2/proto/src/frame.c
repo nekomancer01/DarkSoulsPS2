@@ -10,6 +10,7 @@
 #include <libpad.h>
 #include "frame.h"
 #include "pack.h"
+#include "drawgrp.h"
 #include "g2d.h"
 #include "render.h"
 #include "mem.h"
@@ -166,8 +167,8 @@ void frame_det_record(const char *path)
  * steer movement), 10 flags (1: the player was moved since the last frame's end: a test spawn, a warp, a respawn;
  * 2: frozen, the simulate phase does not run; 4: the world held the player, world_hold: a block or tile still
  * loading, which the Lab replays), 11-14 the player's position and yaw at the frame's start (flag 1), 15-17 the
- * camera's eye and 18-20 its target as simulate read them (enemy pose updates and omission levels follow the view);
- * the rest 0. NAME.enemies holds the frame's enemy rows (enemy_trace_lines). */
+ * camera's eye and 18-20 its target as simulate read them (enemy pose updates and omission levels follow the view),
+ * 21 the draw-group state at the frame's end (dg_state_hash); the rest 0. NAME.enemies holds the frame's enemy rows (enemy_trace_lines). */
 static unsigned char rec_buf[REC_SIZE] __attribute__((aligned(4)));  /* this frame's record, written at the frame's end */
 static unsigned rec_holds;  /* world_stats.holds at this frame's input */
 static void record_frame(const Input *in, float dt, float yaw, float pitch, const Player *pl, int frozen, int opts)
@@ -548,6 +549,7 @@ void frame_run(const FrameBoot *b)
             ((unsigned *)rec_buf)[10] |= (unsigned)(world_stats.holds != rec_holds) << 2;
             float *rf = (float *)rec_buf;
             rf[15] = f.eye.x, rf[16] = f.eye.y, rf[17] = f.eye.z, rf[18] = f.target.x, rf[19] = f.target.y, rf[20] = f.target.z;
+            ((unsigned *)rec_buf)[21] = dg_state_hash();  /* (the draw groups as the frame left them: drawgrp.h) */
             rec_put(0, rec_buf, sizeof rec_buf);
             int n = snprintf(rec_line, sizeof rec_line, "%u %.4f %.4f %.4f %.4f %s\n", rec_frame - 1, f.pl->pos.x,
                              f.pl->pos.y, f.pl->pos.z, f.pl->yaw, player_state_name(f.pl));

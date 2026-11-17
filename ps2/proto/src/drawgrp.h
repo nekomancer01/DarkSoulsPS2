@@ -46,5 +46,8 @@ int dg_mask_shown(int k, int mask);
  * share a group with the collision part under the player, or no part's groups are known yet (the far panorama,
  * mapblock.c mp_draw_far: pieces of blocks that are not loaded) */
 int dg_groups_shown(const unsigned m[4]);
+/* FNV-1a of what decides drawing and characters' activity (every instance's part in effect and shown pieces, the
+ * shared and streaming masks): frame.c's trace records it, so a recording shows the draw-group state frame by frame */
+unsigned dg_state_hash(void);
 
 #endif

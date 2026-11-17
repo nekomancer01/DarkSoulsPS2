@@ -296,3 +296,18 @@ int dg_mask_shown(int k, int mask)
     const Dg *d = &dg[k];
     return d->cur == -1 || (unsigned)mask >= d->n_pieces || d->shown[mask];
 }
+
+unsigned dg_state_hash(void)
+{
+    unsigned h = 2166136261u;
+#define DG_H(p, n) for (unsigned i_ = 0; i_ < (unsigned)(n); i_++) h = (h ^ ((const unsigned char *)(p))[i_]) * 16777619u
+    for (int k = 0; k < DG_INST; k++) {
+        DG_H(&dg[k].cur, sizeof dg[k].cur);
+        DG_H(dg[k].shown, dg[k].n_pieces < sizeof dg[k].shown ? dg[k].n_pieces : sizeof dg[k].shown);
+    }
+    DG_H(sh_mask, sizeof sh_mask);
+    DG_H(&sh_area, sizeof sh_area);
+    DG_H(uni, sizeof uni);
+#undef DG_H
+    return h;
+}
