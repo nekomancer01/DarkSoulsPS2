@@ -1,0 +1,59 @@
+# Taurus Demon on the real disc, part 2 of iso_taurus_entry.txt: the walk through the fog with the follow camera (Ame's
+# play report 2026-11-17 t284.9: the screen went all white while the camera crossed the fog), then the fight near the
+# entry tower, where the boss's jump attacks 3008 / 3009 send TAE event messages 710 / 700 and m10_01 event 11015386
+# warps it to its jump start (1012740 on the tower top / 1012741 on the bridge). Logs "enemy: event message" and
+# "enemy: event warp" lines; the jumps depend on the AI's choices, so they are logged, not expected.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_taurus_jumps.txt <out> --iso build/proto.iso --timeout 900
+option hud
+option god
+option nodemo
+wait 3
+spawn 52.41 16.86 -118.49 -1.5708
+wait 4
+ev action
+wait 0.3
+shot pass_0
+wait 0.4
+shot pass_1
+wait 0.4
+shot pass_2
+wait 0.4
+shot pass_3
+wait 0.4
+shot pass_4
+wait 0.4
+shot pass_5
+wait 0.4
+shot pass_6
+wait 0.4
+shot pass_7
+wait 0.4
+shot pass_8
+wait 1
+ev expect eventanim 0
+approach 40.0,-118.5 0.8 1
+approach 31.0,-119.6 0.8 1
+approach 22.8,-120.7 0.6 1
+wait 6
+ev expect flag 11015382 1
+shot fight_0
+approach 31.0,-119.6 0.8 1
+approach 40.0,-118.5 0.8 1
+approach 46.0,-119.3 0.8 1
+wait 5
+shot near_tower_0
+wait 5
+shot near_tower_1
+wait 5
+shot near_tower_2
+wait 5
+shot near_tower_3
+approach 35.0,-119.0 0.8 1
+wait 5
+shot bridge_0
+wait 5
+shot bridge_1
+wait 5
+shot bridge_2
+ev summary
+end
