@@ -11,7 +11,8 @@
 #   -m GB   address-space cap for this job (default 10)
 #   -r GB   reservation against BUDGET. Default: the measured peak of earlier runs of the same kind of job (user request
 #           2026-11-01: test jobs reserved 4 GB for a ~1 GB peak), the largest of the last 20 that weren't killed (a long
-#           window, so a run of no-op builds doesn't shrink a build's reservation), + 10 %, rounded up to whole GB.
+#           window, so a run of no-op builds doesn't shrink a build's reservation), + 10 %, rounded up to whole GB;
+#           runs of the same script version (content hash) when there are any, so a changed script starts from its own.
 #           Without history: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB.
 #           Kind = "make [MAP=..]" for a build, else the first *.py / *.sh in the command (test-run.py, export_map.py,
 #           test-all.sh, ...), else the command's name. tools/qpeak.py samples each job's tree (PSS + swap, plus the
@@ -42,11 +43,19 @@ LOGDIR=$ROOT/notes
 COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -d "${COMMON%/.git}/notes" ] && LOGDIR=${COMMON%/.git}/notes
 # DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
 [ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
-PEAKS=$LOGDIR/jobq-peaks.tsv  # <date time> TAB <kind> TAB <peak MB> TAB <rc>
+PEAKS=$LOGDIR/jobq-peaks.tsv  # <date time> TAB <kind> TAB <peak MB> TAB <rc> [TAB <script version>]
 if [ -n "$IS_MAKE" ]; then
     KIND="make $(printf '%s\n' "$*" | grep -o 'MAP=[^ ]*' | head -1)"; KIND=${KIND% }
 else
     KIND=$(printf '%s\n' "$*" | grep -o '[^ /]*\.\(py\|sh\)\b' | head -1); KIND=${KIND:-${1##*/}}
+fi
+# the script's version (its content hash): peaks of the same version come first, so a script whose memory use changed
+# reserves from its own runs at once (2026-11-17: world_budget.py went from ~3.8 GB to ~0.25 GB and kept reserving
+# 5 GB from 20 older runs, waiting up to 509 s for room); a version without runs yet falls back to every run of the kind
+KVER=
+if [ -z "$IS_MAKE" ]; then
+    SCRIPT=$(printf '%s\n' "$*" | grep -o '[^ ]*\.\(py\|sh\)\b' | head -1)
+    [ -n "$SCRIPT" ] && [ -f "$SCRIPT" ] && KVER=$(sha1sum < "$SCRIPT" | cut -c1-12)
 fi
 # an exporter run through q by a make that holds a reservation: reserves its own peak below (DSR_Q_IN_MAKE, set by
 # the outer q of a make); anything else nested runs inside the outer job's reservation
@@ -57,8 +66,9 @@ if [ -z "$R" ] && [ -n "$IS_MAKE" ] && [ -z "$DSR_Q_HELD" ]; then
 fi
 if [ -z "$R" ]; then
     # largest of the last 20 runs of this kind that weren't killed (rc < 128)
-    HIST=$(awk -F'\t' -v k="$KIND" '$2 == k && $4 < 128 {m[++n] = $3}
-        END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    HIST=$(awk -F'\t' -v k="$KIND" -v v="$KVER" '$2 == k && $4 < 128 {m[++n] = $3; if (v != "" && $5 == v) mv[++nv] = $3}
+        END {if (nv) {n = nv; for (i = 1; i <= n; i++) m[i] = mv[i]}
+             for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
     if [ -n "$HIST" ]; then
         R=$(( (HIST * 11 / 10 + 1023) / 1024 )); [ "$R" -lt 1 ] && R=1
     else  # no history: a build, or test-all.sh (its builds and tests run one after another inside it)
@@ -150,7 +160,7 @@ RC=$?
 rm -f "$RES/$$.$R"
 kill $QP 2>/dev/null; wait $QP 2>/dev/null
 PEAK=$(cat /tmp/dsr-q-peak/$$ 2>/dev/null); rm -f /tmp/dsr-q-peak/$$
-[ -n "$PEAK" ] && printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$KIND" "$PEAK" "$RC" >> "$PEAKS"
+[ -n "$PEAK" ] && printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$KIND" "$PEAK" "$RC" "$KVER" >> "$PEAKS"
 # "after" = wait + run (kept for old readers of the log); run = the job alone; peak = PSS + swap of the job (qpeak.py)
 echo "$(date '+%F %T') end   pid $$ rc $RC after $(( $(date +%s) - T0 )) s run $(( $(date +%s) - T1 )) s${PEAK:+ peak ${PEAK}M}" >> "$LOGDIR/jobq.log"
 exit $RC
