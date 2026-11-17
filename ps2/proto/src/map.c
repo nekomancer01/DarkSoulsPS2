@@ -431,6 +431,162 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
 }
 
+/* The player's light on the map (MAP_PLIGHT, default on; 0 = the old path: characters only). DSR attaches the area's
+ * PointLightBank row (the collision part's MSB lantern id) to the player and its deferred point light shader
+ * (FRPG_Deferred_PointLight, dsr_light.py: saturate((end - d) / (end - begin)) x colour x N.L) lights every surface
+ * around them, the map included: in the Depths' sewers (ambient ~(3, 8, 6), light 1.5-5.5 m (100, 77, 33)) it is the
+ * only light there is. The port baked the map without it and gave it to the characters only (map_char_light), so the
+ * walls stayed black around a lit player (Ame's playtest 2026-11-16). Here the opaque map chunks within its reach are
+ * drawn a second time after the relief pass: colour = the light at each vertex (|N.L| from the triangle normals),
+ * texture x colour added to the frame (Cs x As + Cd: cut-out texels add nothing), Z tested,
+ * not written, no fog (the light ends within 8 m). The light sits PLIGHT_H above the feet (ASSUMED: DSR hangs it on
+ * the character model; the characters' own lighting measures from the feet). */
+#ifndef MAP_PLIGHT
+#define MAP_PLIGHT 1
+#endif
+#define PLIGHT_H 1.0f
+#define PLIGHT_MAX 96
+static struct {
+    const unsigned char *base;
+    const Chunk *c;
+    unsigned short n, clip;
+    short tex, level;
+} pl_item[PLIGHT_MAX];
+static int pl_n, pl_on;
+static float pl_pos[3], pl_rgb[3], pl_b, pl_e;
+static unsigned map_plight_batches;  /* batches of the last pass (debugger) */
+
+static void pl_begin(void)
+{
+    pl_n = pl_on = 0;
+    if (!MAP_PLIGHT || !mp_pfog_rows)
+        return;
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
+    pl_b = r->pl_begin * 0.1f, pl_e = r->pl_end * 0.1f;
+    pl_on = pl_e > pl_b && (r->pl_rgb[0] | r->pl_rgb[1] | r->pl_rgb[2]);
+    for (int c = 0; c < 3; c++)
+        pl_rgb[c] = r->pl_rgb[c];
+    pl_pos[0] = player_feet.x, pl_pos[1] = player_feet.y + PLIGHT_H, pl_pos[2] = player_feet.z;
+}
+
+static void pl_add(const unsigned char *base, const Chunk *c, unsigned n, int clip, int tex, int level)
+{
+    if (!pl_on || pl_n >= PLIGHT_MAX || (c->flags & CHUNK_GRASS) || n != c->tris)
+        return;
+    float d2 = 0;
+    for (int k = 0; k < 3; k++) {
+        float o = pl_pos[k] < c->mn[k] ? c->mn[k] - pl_pos[k] : pl_pos[k] > c->mx[k] ? pl_pos[k] - c->mx[k] : 0;
+        d2 += o * o;
+    }
+    if (d2 >= pl_e * pl_e)
+        return;
+    pl_item[pl_n].base = base, pl_item[pl_n].c = c, pl_item[pl_n].n = (unsigned short)n;
+    pl_item[pl_n].clip = (unsigned short)clip, pl_item[pl_n].tex = (short)tex, pl_item[pl_n].level = (short)level;
+    pl_n++;
+}
+
+/* the light at world point p with unit normal nrm (two-sided: |N.L|) -> u8 x4 colour, alpha 0x80 */
+static u32 pl_col(const float p[3], const float nrm[3], int two)
+{
+    float l[3] = {pl_pos[0] - p[0], pl_pos[1] - p[1], pl_pos[2] - p[2]};
+    float d = sqrtf(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]);
+    float att = (pl_e - d) / (pl_e - pl_b);
+    if (att <= 0)
+        return 0x80u << 24;
+    if (att > 1)
+        att = 1;
+    float ndl = d > 1e-3f ? (nrm[0] * l[0] + nrm[1] * l[1] + nrm[2] * l[2]) / d : 1;
+    if (two)
+        ndl = fabsf(ndl);
+    if (ndl <= 0)
+        return 0x80u << 24;
+    float k = att * ndl;
+    u32 out = 0x80u << 24;
+    for (int c = 0; c < 3; c++) {
+        int v = (int)(pl_rgb[c] * k + 0.5f);
+        out |= (u32)(v > 255 ? 255 : v) << (8 * c);
+    }
+    return out;
+}
+
+static void pl_draw(void)
+{
+    map_plight_batches = 0;
+    if (!pl_n)
+        return;
+    static u32 col[256] __attribute__((aligned(16)));
+    static float vn[256][3];
+    GSGLOBAL *gs = gsg;
+    /* Cs x As + Cd (As = texel alpha: cut-out texels add nothing), Z tested, not written */
+    u64 r[4] = {GS_SETREG_ALPHA(0, 2, 0, 1, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    vu1_gs_regs(2, r);
+    for (int i = 0; i < pl_n; i++) {
+        const Chunk *c = pl_item[i].c;
+        const unsigned char *base = pl_item[i].base;
+        unsigned n = pl_item[i].n, nv = c->nv;
+        if (nv ? nv > 256 : n * 3 > 256)
+            continue;
+        GSTEXTURE *t = tc_get(pl_item[i].tex, pl_item[i].level);
+        if (!t)
+            continue;
+        const short *ps = (const short *)(base + c->pos);
+        const float *o = c->org, s = c->step;
+        int two = 1, lit = 0;  /* |N.L|: corner order does not tell the lit side (about half of the Depths' floor
+                                * triangles wind downwards), and a culled back face never shows */
+        if (nv) {  /* indexed: vertex normals from the triangles around each vertex (area weighted) */
+            const unsigned char *ix = base + CHUNK_IDX(c);
+            memset(vn, 0, nv * sizeof vn[0]);
+            for (unsigned t3 = 0; t3 < n; t3++, ix += 4) {
+                const short *a = ps + 3 * ix[0], *b = ps + 3 * ix[1], *cc = ps + 3 * ix[2];
+                float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v[3] = {cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]};
+                float f[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+                for (int j = 0; j < 3; j++) {  /* (corner order is not a facing: align with the sum so far) */
+                    float *a3 = vn[ix[j]], sg = a3[0] * f[0] + a3[1] * f[1] + a3[2] * f[2] < 0 ? -1.0f : 1.0f;
+                    for (int k = 0; k < 3; k++)
+                        a3[k] += sg * f[k];
+                }
+            }
+            for (unsigned j = 0; j < nv; j++) {
+                const short *q = ps + 3 * j;
+                float p[3] = {o[0] + s * q[0], o[1] + s * q[1], o[2] + s * q[2]};
+                float l = sqrtf(vn[j][0] * vn[j][0] + vn[j][1] * vn[j][1] + vn[j][2] * vn[j][2]);
+                float nr[3] = {0, 1, 0};
+                if (l > 0)
+                    nr[0] = vn[j][0] / l, nr[1] = vn[j][1] / l, nr[2] = vn[j][2] / l;
+                col[j] = pl_col(p, nr, two);
+                lit |= col[j] & 0xF8F8F8;
+            }
+        } else {  /* lists: the face normal at each corner */
+            for (unsigned t3 = 0; t3 < n; t3++) {
+                const short *a = ps + 9 * t3, *b = a + 3, *cc = a + 6;
+                float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v[3] = {cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]};
+                float f[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+                float l = sqrtf(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                if (l > 0)
+                    f[0] /= l, f[1] /= l, f[2] /= l;
+                for (int j = 0; j < 3; j++) {
+                    const short *q = a + 3 * j;
+                    float p[3] = {o[0] + s * q[0], o[1] + s * q[1], o[2] + s * q[2]};
+                    col[3 * t3 + j] = pl_col(p, f, two);
+                    lit |= col[3 * t3 + j] & 0xF8F8F8;
+                }
+            }
+        }
+        if (!lit)
+            continue;
+        float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
+        int mode = VU1_BLEND | VU1_COLCP | pl_item[i].clip;
+        if (nv)
+            vu1_add_idx(t, c->flags & CHUNK_CULL, mode, n, nv, ps, base + c->st, col, base + CHUNK_IDX(c), c->org, st_k);
+        else
+            vu1_add_ex(t, c->flags & CHUNK_CULL, mode, n, ps, base + c->st, col, c->org, st_k);
+        map_plight_batches++;
+    }
+    u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
+    vu1_gs_regs(2, rr);
+    pl_n = 0;
+}
+
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
 {
     float l = sqrtf(mp_fog_now[24] * mp_fog_now[24] + mp_fog_now[25] * mp_fog_now[25] + mp_fog_now[26] * mp_fog_now[26]);
@@ -651,6 +807,8 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump && c->tex >= 0)  /* the player's light */
+            pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
@@ -816,6 +974,7 @@ static void zs_end(void)
             break;
         case ZS_BUMP:
             bump_draw();
+            pl_draw();
             i += 1;
             break;
         default:
@@ -1679,6 +1838,7 @@ int map_draw(V3 eye)
         MP_END(MP_CULL)
     }
     bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
+    pl_begin();
     map_vu1_batches = map_ee_tris = 0;
 #ifdef MAP_DBG
     static int dbg_init;
@@ -1731,8 +1891,10 @@ int map_draw(V3 eye)
         if (zs_pass == 1) {  /* (ZSPLIT: in the near pass) */
             if (zs_room(1))
                 zs_buf[zs_n++] = ZS_BUMP;
-        } else
+        } else {
             bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
+            pl_draw();  /* the player's light (MAP_PLIGHT) */
+        }
         MP_END(MP_BUMP)
     }
 
