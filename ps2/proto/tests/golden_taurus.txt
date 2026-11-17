@@ -1,0 +1,33 @@
+# Golden route (tools/golden.py, Polaris 0.3): the Taurus Demon tower top at the fog wall and the bridge past it. Spots
+# from iso_burg_taurus.txt / iso_taurus_entry.txt (tower_2, taurus_fog_near, taurus_bridge), fixed cameras (segment
+# stats start 3 s after each teleport, so the load is not in them), no debug HUD, no enemies (no boss drop).
+option noenemies
+option nodemo
+option god
+wait 3
+spawn 64.5 8.6 -116.8 0
+cam 0 0.2
+wait 3
+stats
+wait 7
+shot tower_stair
+stats
+spawn 52.6 16.9 -118.5 -1.5708
+cam -1.5708 0.3
+wait 3
+stats
+wait 5
+shot fog_front
+stats
+spawn 40.0 16.1 -118.5 -1.5708
+cam -1.5708 0.2
+wait 3
+stats
+wait 5
+shot bridge_west
+stats
+cam 1.5708 0.2
+wait 2
+shot bridge_back
+stats
+end

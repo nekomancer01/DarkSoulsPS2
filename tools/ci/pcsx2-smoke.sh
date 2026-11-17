@@ -8,7 +8,9 @@
 #   2 build    its own build/ (seeded once from the main checkout's build with tools/newbuild, then incremental)
 #   3 test     tools/test-all.sh --areas $CI_AREAS --max N: make + make sym per area, smoke, render vs the previous
 #              CI run, perf history, budget (everything goes through tools/q, so it waits for other jobs on the PC)
-# Exit code: 0 when every gating step (build-*, smoke) passed. render / perf / budget are reported, not gating: their
+#   4 golden   make iso, then tools/golden.py compare --record-missing: the golden routes (ps2/proto/tests/golden_*.txt)
+#              on the disc vs the base in build/golden/base (recorded by the first run), picture / frame time / refusals
+# Exit code: 0 when every gating step (build-*, smoke) passed. render / perf / budget / golden are reported, not gating: their
 # limits are tuned per change, and a red nightly that nobody can fix in one PR would hide the breakages this run is for.
 # Home paths are printed as ~ (the run log and summary are public).
 # Env: DSR_MAIN (main checkout, default ~/DarkSoulsPS2), DSR_CI_TREE, CI_AREAS (default Firelink + Burg).
@@ -60,9 +62,21 @@ while read -r name status rest; do
     case $name in build-*|smoke) [ "$status" = PASS ] || GATE=1 ;; esac
     case $status in FAIL*) echo "::$([ "${name%%-*}" = build ] || [ "$name" = smoke ] && echo error || echo warning)::$name $status" ;; esac
 done < "$STEPS"
+# 4 golden (reported, not gating; the base is this PC's first run, rebuilt by deleting build/golden/base)
+PY=$(sed -n 's/^PY *= *//p' config.local.mk 2>/dev/null | tail -1); PY=${PY:-python3}
+GOLDEN=$RUN/golden.txt
+if tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto sym iso" > "$RUN/golden-iso.log" 2>&1; then
+    "$PY" tools/golden.py compare --record-missing > "$GOLDEN" 2>&1
+    echo "golden $(grep -q 'route(s) over' "$GOLDEN" && grep -o '[0-9]* route(s) over' "$GOLDEN" || echo 'no table')" | hide
+else
+    echo "golden FAIL (make iso, $RUN/golden-iso.log)" > "$GOLDEN"
+fi
 {
     echo "### PCSX2 smoke: $([ $GATE = 0 ] && echo pass || echo FAIL) ($(git log -1 --format=%h), $AREAS, max $MAX)"
     echo; echo '```'; hide < "$STEPS" | cut -c1-60; echo '```'
+    if [ -f "$GOLDEN" ]; then
+        echo; echo '<details><summary>golden routes</summary>'; echo; echo '```'; hide < "$GOLDEN"; echo '```'; echo '</details>'
+    fi
     if [ -f "$RUN/budget.log" ]; then
         echo; echo '<details><summary>budget table</summary>'; echo; echo '```'; hide < "$RUN/budget.log"; echo '```'; echo '</details>'
     fi
