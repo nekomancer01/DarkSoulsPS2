@@ -268,8 +268,13 @@ LINK_SIDE = {}  # block -> (world names, per spot the other MSBs' blocks its lin
 
 
 def box_d(lo, hi, P):
-    """(m spots) x (n boxes) box distances"""
-    return np.sqrt((np.maximum(0, np.maximum(lo[None] - P[:, None], P[:, None] - hi[None])) ** 2).sum(2))
+    """(m spots) x (n boxes) box distances (per axis without an (m, n, 3) array: the same sum, x + y then + z)"""
+    d2 = None
+    for k in range(3):
+        o = np.maximum(0, np.maximum(lo[None, :, k] - P[:, None, k], P[:, None, k] - hi[None, :, k]))
+        o *= o
+        d2 = o if d2 is None else d2 + o
+    return np.sqrt(d2)
 
 
 # the last main() run's per-spot arrays (spots P, owning block index own, per-tier totals tot, total, gated, room), for
@@ -351,19 +356,30 @@ def main(argv):
         # spots in slices: the (spots x cells x 3) distance arrays of all spots at once took GBs (swapping: 60 CPU-s,
         # 300 s wall, 2026-11-17); every spot's row is the same sum either way
         step = max(1, int(os.environ.get("WB_SLICE", "2048")))
+        # every term below needs a cell within RMAX of the spot, so a slice only looks at the cells within RMAX (+1 m)
+        # of its spots' box. The sizes are whole bytes / 1024, so their sums are exact in any order (WB_PRUNE=0: all)
+        prune = os.environ.get("WB_PRUNE", "1") != "0"
+        rmax = max(NEAR_R, PIN_R, HARD_NEAR_R, HARD_R, WS_R0, WS_R1) + 1.0
         for s0 in range(0, len(P), step):
             sl = slice(s0, s0 + step)
-            d = box_d(lo, hi, P[sl])
-            dn = box_d(nlo, nhi, P[sl]) if NEAR_CUBE else d
-            n[sl] = ((dn < NEAR_R).astype(np.float64) @ near) * on[sl]
-            co[sl] = ((((dn >= NEAR_R) | ~has_near[None]) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl]
-            ke[sl] = ((d < PIN_R).astype(np.float64) @ kept) * on[sl]
-            hard[sl] = (((dn < HARD_NEAR_R).astype(np.float64) @ near) +
-                        (((dn >= HARD_NEAR_R) | ~has_near[None]) & (d < HARD_R)).astype(np.float64) @ coarse +
-                        (d < HARD_R).astype(np.float64) @ kept) * on[sl]
-            soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl] + far[sl]
-            nws[sl] = (dn < WS_R0).astype(np.float64) @ near
-            cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
+            Ps = P[sl]
+            if prune and len(Ps):
+                bl, bh = Ps.min(0) - rmax, Ps.max(0) + rmax
+                cs = np.flatnonzero(((lo <= bh) & (hi >= bl)).all(1))
+            else:
+                cs = slice(None)
+            d = box_d(lo[cs], hi[cs], Ps)
+            dn = box_d(nlo[cs], nhi[cs], Ps) if NEAR_CUBE else d
+            hn, nr, cr, kp = has_near[cs], near[cs], coarse[cs], kept[cs]
+            n[sl] = ((dn < NEAR_R).astype(np.float64) @ nr) * on[sl]
+            co[sl] = ((((dn >= NEAR_R) | ~hn[None]) & (d < PIN_R)).astype(np.float64) @ cr) * on[sl]
+            ke[sl] = ((d < PIN_R).astype(np.float64) @ kp) * on[sl]
+            hard[sl] = (((dn < HARD_NEAR_R).astype(np.float64) @ nr) +
+                        (((dn >= HARD_NEAR_R) | ~hn[None]) & (d < HARD_R)).astype(np.float64) @ cr +
+                        (d < HARD_R).astype(np.float64) @ kp) * on[sl]
+            soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ cr) * on[sl] + far[sl]
+            nws[sl] = (dn < WS_R0).astype(np.float64) @ nr
+            cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ cr
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
                        ("hard", hard), ("soft", soft)):
             tot[key] += v

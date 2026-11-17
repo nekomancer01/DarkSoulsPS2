@@ -198,7 +198,7 @@ class Model:
 
     def box_d(self, lo, hi, P):
         """world_budget.box_d, memoized: the boxes and spots do not change with the picked levels (most of a run)"""
-        key = hash((lo.tobytes(), hi.tobytes(), P.shape))
+        key = hash((lo.tobytes(), hi.tobytes(), P.tobytes()))  # (world_budget passes the spots in slices)
         if key not in self._box:
             self._box[key] = self._box_d(lo, hi, P)
         return self._box[key]
