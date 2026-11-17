@@ -62,6 +62,22 @@ TEX = 64    # EE RAM / VRAM budget (< 0.3 MB for all breakables with the VU1 ski
 # FLVER face set (LOD) per state: LOD2 for both keeps all breakables under 0.3 MB of EE RAM (intact pots 96-124 tris;
 # LOD1 = 292-380 tris would cost 0.384 MB); pieces 176-226 tris for the whole pot
 LOD_INTACT, LOD_BROKEN = 2, 2
+# OBJ_LOD=auto (default): per breakable state the coarsest FLVER LOD whose shape stays close to LOD0's (lod_pick). DSR
+# switches LODs by distance, the port draws one: a fixed LOD2 showed the far LOD up close, crate stacks o1133 / o1152 as
+# open shells with whole panels missing, barrels crumpled (Ame's play test 2026-11-16: "boxes have open seams").
+# OBJ_LOD=2 = the old fixed LOD2.
+OBJ_LOD = os.environ.get("OBJ_LOD", "auto")
+# lod_pick, distances of LOD0 surface samples from the coarser LOD relative to the state's extent: the 95th percentile
+# at most LOD_TOL, and at most LOD_FAR of the samples farther than LOD_HOLE (missing panels). ASSUMED, picked from the
+# Burg / Depths types (reports: LOD2 p95 0.6-3 % on barrels, carts and walls that look right; 4-11 % with 8-57 % of
+# the surface past 2 % on the crates, crate stacks, chairs and tables that showed holes). The budget (area.py
+# obj_budget) holds: all Burg / Depths blocks keep the same breakable types.
+LOD_TOL = float(os.environ.get("OBJ_LOD_TOL", 0.04))
+LOD_FAR = float(os.environ.get("OBJ_LOD_FAR", 0.15))
+LOD_HOLE = 0.02
+# broken pieces fly apart and lie scattered: looser, only states whose LOD2 loses whole pieces move up
+LOD_TOL_BROKEN = float(os.environ.get("OBJ_LOD_TOL_BROKEN", 0.06))
+LOD_FAR_BROKEN = float(os.environ.get("OBJ_LOD_FAR_BROKEN", 0.3))
 MAX_PIECES = 32  # src/objects.c MAX_PIECES
 OBJ_BUDGET = 0.4  # MB of EE RAM for breakables (HANDOFF RAM table); per area: tools/area.py obj_budget
 SKIN_BATCH_TRIS, SKIN_BATCH_BYTES = 31, 96 * 32  # model.c: VU1_SKIN_TRIS, SK_V x 4 streams x 8 B
@@ -254,6 +270,73 @@ def cap_tris(groups, cap):
     return out
 
 
+def _lod_tris(F, lod):
+    """{FLVER bone: (n, 3, 3) bone-local triangles} of face set lod (the last one when a mesh has fewer)"""
+    import numpy as np
+    g = {}
+    for m in F["meshes"]:
+        V = m["verts"]
+        for t in souls.triangles(m["facesets"][min(lod, len(m["facesets"]) - 1)]):
+            fb = m["bones"][V["bone_idx"][t[0]][0]] if V["bone_idx"] and m["bones"] else m["default_bone"]
+            g.setdefault(fb, []).append([V["pos"][i] for i in t])
+    return {k: np.asarray(v, np.float64) for k, v in g.items()}
+
+
+def _pt_tri(P, T):
+    """distance of each point P (n, 3) to the nearest triangle of T (m, 3, 3)"""
+    import numpy as np
+    a, b, c = T[None, :, 0], T[None, :, 1], T[None, :, 2]
+    Q = P[:, None]
+    ab, ac = b - a, c - a
+    n = np.cross(ab, ac)
+    nn = np.maximum((n * n).sum(-1), 1e-30)
+    # barycentric coordinates of the point's projection on the triangle's plane
+    w = Q - a
+    v1 = (np.cross(w, ac) * n).sum(-1) / nn
+    v2 = (np.cross(ab, w) * n).sum(-1) / nn
+    inside = (v1 >= 0) & (v2 >= 0) & (v1 + v2 <= 1)
+    d = np.abs((w * n).sum(-1)) / np.sqrt(nn)
+    best = np.full(inside.shape, np.inf)
+    for s, e in ((a, b), (b, c), (c, a)):  # outside: nearest point on an edge
+        se = e - s
+        t = np.clip(((Q - s) * se).sum(-1) / np.maximum((se * se).sum(-1), 1e-30), 0, 1)
+        best = np.minimum(best, np.linalg.norm(Q - (s + se * t[..., None]), axis=-1))
+    return np.where(inside, d, best).min(1)
+
+
+def lod_pick(F, tol=LOD_TOL, far=LOD_FAR, samples=600):
+    """the coarsest FLVER LOD (face set 0-2) of one state whose surface stays close to LOD0's: LOD0 sampled by
+    area (fixed seed), each sample's distance to the coarser LOD's triangles of the same bone, relative to the state's
+    extent; passes when the 95th percentile is under tol and at most far of the samples are past LOD_HOLE. DSR's own
+    LOD2 of many Burg / Depths breakables leaves whole panels out (crate stack o1133: 36 % of LOD0's surface farther
+    than 2 %), meant for distance."""
+    import numpy as np
+    g0 = _lod_tris(F, 0)
+    if not g0:
+        return 0
+    allp = np.concatenate(list(g0.values())).reshape(-1, 3)
+    ext = float(np.linalg.norm(allp.max(0) - allp.min(0))) or 1.0
+    area = {k: np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1) / 2 for k, T in g0.items()}
+    total = sum(float(a.sum()) for a in area.values()) or 1.0
+    rng = np.random.default_rng(1)
+    S = {}
+    for k, T in g0.items():
+        n = max(8, int(samples * float(area[k].sum()) / total))
+        if area[k].sum() <= 0:
+            continue
+        j = rng.choice(len(T), n, p=area[k] / area[k].sum())
+        r1, r2 = np.sqrt(rng.random(n)), rng.random(n)
+        S[k] = T[j, 0] * (1 - r1)[:, None] + T[j, 1] * (r1 * (1 - r2))[:, None] + T[j, 2] * (r1 * r2)[:, None]
+    for lod in (2, 1):
+        if all(len(m["facesets"]) <= 1 for m in F["meshes"]):
+            return 0
+        gk = _lod_tris(F, lod)
+        d = np.concatenate([_pt_tri(P, gk[k]) if k in gk else np.full(len(P), ext) for k, P in S.items()]) / ext
+        if np.percentile(d, 95) <= tol and (d > LOD_HOLE).mean() <= far:
+            return lod
+    return 0
+
+
 def mo_simplify(pos, idx, target, error):
     """meshoptimizer's edge collapse (relative error, no attributes / locks) -> simplified triangle list. The tracked
     copy in tools/native/meshopt, built by horizon.py's _native (c++ on first use), as the far horizon uses it: the
@@ -328,9 +411,18 @@ def cluster_pieces(model, pieces, ref):
     return out, ref2, names, move
 
 
-def type_model(game, model, files, dds, shared=None):
+def state_lods(files, model):
+    """(intact, broken) FLVER LOD face set of a breakable type: OBJ_LOD auto -> lod_pick per state, else the fixed ones"""
+    if OBJ_LOD != "auto":
+        return LOD_INTACT, LOD_BROKEN
+    return (lod_pick(souls.flver(files[model + ".flver"])),
+            lod_pick(souls.flver(files[model + "_1.flver"]), LOD_TOL_BROKEN, LOD_FAR_BROKEN))
+
+
+def type_model(game, model, files, dds, shared=None, lods=(LOD_INTACT, LOD_BROKEN)):
     """shared: (texture list, {name: index}) of the map's breakables (OBJ_TEX_SHARED): the model then carries no
-    textures, its groups index that list. -> (model.bin bytes, pieces [(pos, q, half, centre, inv_mass, inv_inertia)], cylinder (r, y0, y1), fr, rest)"""
+    textures, its groups index that list. lods: the (intact, broken) FLVER face sets (state_lods).
+    -> (model.bin bytes, pieces [(pos, q, half, centre, inv_mass, inv_inertia)], cylinder (r, y0, y1), fr, rest)"""
     intact = souls.flver(files[model + ".flver"])
     broken = souls.flver(files[model + "_1.flver"])
     pieces_hk = {b[0]: b for b in bodies(files[model + "_1.hkx"])}
@@ -406,9 +498,10 @@ def type_model(game, model, files, dds, shared=None):
     # through MeshBuilder's rigid path
     for F, bits in ((intact, BITS_INTACT), (broken, BITS_BROKEN)):
         groups = []
+        lod = lods[0] if F is intact else lods[1]
         for m in F["meshes"]:
             V = m["verts"]
-            fs = m["facesets"][min(LOD_INTACT if F is intact else LOD_BROKEN, len(m["facesets"]) - 1)]
+            fs = m["facesets"][min(lod, len(m["facesets"]) - 1)]
             per_bone = {}
             for tri in souls.triangles(fs):
                 fb = m["bones"][V["bone_idx"][tri[0]][0]] if V["bone_idx"] and m["bones"] else m["default_bone"]
@@ -728,6 +821,7 @@ def main():
         dds.update(souls.tpf(souls.read(common)))
 
     types, parts, heaps = [], [], []
+    finer = {}  # type index -> (type tuple at the LODs lod_pick asks for, those LODs)
     keep = area_mod.region(msb, map_id)
     bnds = {}
 
@@ -744,8 +838,13 @@ def main():
             files = files_of(model)
             if not is_breakable(files, model):
                 continue
+            # the fixed LOD2 build first (the budget's floor), the finer one where lod_pick asks for it (upgraded below
+            # while the budget holds)
             types.append((model, files) + type_model(game, model, files, type_dds(dds, files), shared))
             heaps.append(types[-1][-1])
+            lods = state_lods(files, model)
+            if lods != (LOD_INTACT, LOD_BROKEN):
+                finer[len(types) - 1] = ((model, files) + type_model(game, model, files, type_dds(dds, files), shared, lods), lods)
         ti = [t[0] for t in types].index(model)
         assert all(abs(s - 1) < 1e-3 for s in part["scale"]), f"{part['name']}: scaled"
         parts.append((ti, part["pos"], souls._euler_deg_xzy(*part["rot"]), part["entity_id"]))
@@ -754,7 +853,9 @@ def main():
     # dropped types are listed in <out>.static and export_map.py draws them as static map objects (intact, no break)
     budget = area_mod.config(map_id).get("obj_budget", OBJ_BUDGET) * 1048576 - 24 * 1024
     block = area_mod.block() is not None
-    cost = [(t[-1] + COMPACT_HDR + 80 * len(t[3]) if block else len(t[2]) + t[-1]) + 128 for t in types]
+    def cost_of(t):
+        return (t[-1] + COMPACT_HDR + 80 * len(t[3]) if block else len(t[2]) + t[-1]) + 128
+    cost = [cost_of(t) for t in types]
     count = [sum(1 for p in parts if p[0] == k) for k in range(len(types))]
     order = sorted(range(len(types)), key=lambda k: -count[k] / cost[k])
     kept, used = set(), 0
@@ -767,6 +868,19 @@ def main():
         if used + cost[k] <= budget and len(types[k][3]) <= MAX_PIECES:
             kept.add(k)
             used += cost[k]
+    # finer LODs (lod_pick) for the kept types while the budget holds: intact states first (what stands in the level;
+    # broken pieces fly apart), the cheapest additions first; never at the cost of a type that breaks with LOD2 (block w
+    # at the 1.3 MB budget keeps o1122 / o1172 breakable and gets fewer)
+    for k in sorted((k for k in finer if k in kept),
+                    key=lambda k: (finer[k][1][0] == LOD_INTACT, cost_of(finer[k][0]) - cost[k])):
+        extra = cost_of(finer[k][0]) - cost[k]
+        if used + extra <= budget:
+            types[k] = finer[k][0]
+            used += extra
+            print(f"{types[k][0]}: LOD {finer[k][1][0]} intact / {finer[k][1][1]} broken (lod_pick), +{extra} B")
+        else:
+            print(f"{types[k][0]}: LOD 2 kept, LOD {finer[k][1][0]} / {finer[k][1][1]} would pass the budget by "
+                  f"{used + extra - budget} B")
     dropped = sorted(types[k][0] for k in range(len(types)) if k not in kept)
     remap = {k: i for i, k in enumerate(sorted(kept))}
     types = [types[k] for k in sorted(kept)]

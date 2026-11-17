@@ -312,6 +312,9 @@ def water_rgba(mp):
     return bytes([round(255 * min(1.0, x) ** (1 / 2.2)) for x in rgb] + [round(255 * a)])
 
 
+BG_BLEND = os.environ.get("BG_BLEND", "1") == "1"
+
+
 def is_effect(mtd):
     """Translucent effect materials (light shafts '_Add', mist/cloud '[Dn]_Alp'): drawn opaque they become solid slabs.
     Skipped until the renderer has alpha blending."""
@@ -705,7 +708,8 @@ def gather(game, map_id):
         pxf, pxn = place(part)
         bind = bind_scaled(F)
         for m in F["meshes"]:
-            if part["type"] == 1 and m["dynamic"]:
+            posed = part["type"] == 1 and m["dynamic"]
+            if posed:
                 # skinned objects (corpses, o1950 chains): baked in the pose of their MSB init_anim (tools/pose_obj.py);
                 # in bind pose they would T-pose
                 pk = (part["model"], part.get("init_anim"))
@@ -719,7 +723,8 @@ def gather(game, map_id):
                 else:
                     P, N = pose_obj.skin_mesh(F, m, poses[pk])
                 m = dict(m, verts=dict(m["verts"], pos=P, normal=N), dynamic=0, default_bone=-1)
-            if not m["dynamic"]:
+            if not m["dynamic"] and not posed:  # (posed: skinned into model space already; rigid_mesh would move
+                # each vertex by its bone a second time: the thin, stretched corpses of Ame's play test 2026-11-16)
                 m = rigid_mesh(F, m, bind)
             if part["type"] == 0 and m["verts"]["pos"]:
                 xfm = xf_part(part, F, m)  # once per mesh (was once per vertex: 1.9M placements in Burg)
@@ -739,8 +744,11 @@ def gather(game, map_id):
             # path (CT32 alpha, blended). Only those: blended meshes are kept unsimplified (keep=), and all _Alp meshes
             # together cost +43k tris / 36 fps at Burg spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs
             # (ASSUMED, TECH_DEBT map-30)
-            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower()
-                                                       for k in ("decal", "dirt", "ground", "stain"))
+            # Background cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose
+            # vertex alpha fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play
+            # test 2026-11-16): blended too, with their vertex alpha. BG_BLEND=0 = cut-outs as before.
+            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower() for k in
+                                                       ("decal", "dirt", "ground", "stain") + (("_bg_",) if BG_BLEND else ()))
             blend = is_effect(m["mtd"]) or decal or water
             flags = (mapcfg.CHUNK_BLEND if blend else 0) | (mapcfg.CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
                 (mapcfg.CHUNK_SKY if sky else 0) | sky_slot << mapcfg.CHUNK_SKY_ROW
