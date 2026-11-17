@@ -174,6 +174,16 @@ def _grid_depth(D, x0, y0):
     return out
 
 
+PANO_INSET = os.environ.get("PANO_INSET", "1") == "1"
+
+
+def _inset(u):
+    """a tile coordinate 0..1 -> the centres of its edge texels: the GS wraps (REPEAT) and filters, so a tile edge at
+    exactly 0 / 1 sampled the opposite edge's texels, often transparent (alpha test): dotted lines of sky along the
+    tile seams across Firelink's ring wall (Ame's play tests 2026-11-16 / 17). PANO_INSET=0: 0..1 as before."""
+    return (0.5 + u * (TILE - 1)) / TILE if PANO_INSET else u
+
+
 def _chunk(k_tex, P, uv):
     """triangle list P (corner positions) with uv -> a chunk tuple (texture, tris, pos, st, col, min, max, org, step)"""
     mn = [min(p[j] for p in P) for j in range(3)]
@@ -225,7 +235,7 @@ def write(out, layers, shown=b""):
                             tt = tb0 + (tb1 - tb0) * gy / GRID
                             r = float(dv[gy, gx])
                             P.append((cx + r * math.sin(a), cy + r * tt, cz + r * math.cos(a)))
-                            uv.append((gx / GRID, gy / GRID))
+                            uv.append((_inset(gx / GRID), _inset(gy / GRID)))
                     chunks.append(_chunk(k_tex, P, uv))
                 continue
             uv, P = [], []
@@ -236,7 +246,7 @@ def write(out, layers, shown=b""):
                 for i in (0, 1, 2, 0, 2, 3):
                     a, tt, u, v = q[i]
                     P.append((cx + R * math.sin(a), cy + R * tt, cz + R * math.cos(a)))
-                    uv.append((u, v))
+                    uv.append((_inset(u), _inset(v)))
             chunks.append(_chunk(k_tex, P, uv))
     HDR = 64
     blob = bytearray()
