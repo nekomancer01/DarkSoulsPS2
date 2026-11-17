@@ -215,7 +215,7 @@ blockhzn: $(A)/hzn.bin
 # waited for every horizon though they need none; the bakes, the GPU's turn per block, are the build's critical path):
 # worldpvs right after worldexports (alongside worldhzn), worldfar right after worldhzn. WORLD_EARLY_BAKES=0: as before
 WORLD_EARLY_BAKES ?= 1
-worldpvs: worldexports
+worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockpvs@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblockpvs@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpvs
