@@ -47,6 +47,39 @@ static const unsigned char BLK16[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 1
 
 static int vbit(int b) { return vfree[b >> 5] >> (b & 31) & 1; }
 
+#ifdef HEAPMAP
+#include "hitch.h"
+/* VRAM census (render.h): live r_vram_* allocations with their caller and label */
+#define VM_N 2048
+static struct { u32 addr; unsigned blocks, ra; char tag[24]; } vm[VM_N];
+static unsigned vm_lost;
+static void vm_add(u32 addr, unsigned blocks, void *ra)
+{
+    if (addr == GSKIT_ALLOC_ERROR)
+        return;
+    for (int i = 0; i < VM_N; i++)
+        if (!vm[i].blocks) {
+            vm[i].addr = addr, vm[i].blocks = blocks, vm[i].ra = (unsigned)ra;
+            memcpy(vm[i].tag, hm_tag, sizeof vm[i].tag);
+            return;
+        }
+    vm_lost++;
+}
+static void vm_del(u32 addr)
+{
+    for (int i = 0; i < VM_N; i++)
+        if (vm[i].blocks && vm[i].addr == addr) {
+            vm[i].blocks = 0;
+            return;
+        }
+}
+#define VM_ADD(a, n) vm_add(a, n, __builtin_return_address(0))
+#define VM_DEL(a) vm_del(a)
+#else
+#define VM_ADD(a, n) ((void)0)
+#define VM_DEL(a) ((void)0)
+#endif
+
 /* footprint of a w x h image in buffer width tbw (64-pixel units): block offsets from its base pointer */
 static int footprint(int w, int h, int psm, int tbw, unsigned short *out)
 {
@@ -130,7 +163,10 @@ u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
     r_vram_gskit += gsKit_texture_size(w, h, psm) / 256;
     if ((w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return GSKIT_ALLOC_ERROR;
-    return vram_place(g, fp, footprint(w, h, psm, tbw, fp));
+    int n = footprint(w, h, psm, tbw, fp);
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    return addr;
 }
 
 u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
@@ -140,7 +176,10 @@ u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
 #endif
     unsigned short fp[4];
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
-    return vram_place(g, fp, footprint(16, 16, clut_psm, 1, fp));  /* 256 entries, CSM1: 16 x 16 */
+    int n = footprint(16, 16, clut_psm, 1, fp);  /* 256 entries, CSM1: 16 x 16 */
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    return addr;
 }
 
 u32 r_vram_lin(GSGLOBAL *g, int n)
@@ -150,7 +189,9 @@ u32 r_vram_lin(GSGLOBAL *g, int n)
         return GSKIT_ALLOC_ERROR;
     for (int i = 0; i < n; i++)
         fp[i] = i;
-    return vram_place(g, fp, n);
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    return addr;
 }
 
 void r_vram_free_tex(u32 addr, int w, int h, int psm)
@@ -161,6 +202,7 @@ void r_vram_free_tex(u32 addr, int w, int h, int psm)
     static unsigned short fp[4096];
     if (addr == GSKIT_ALLOC_ERROR || (w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return;
+    VM_DEL(addr);
     vram_release(addr, fp, footprint(w, h, psm, tex_tbw(w, psm), fp));
 }
 
@@ -171,11 +213,13 @@ void r_vram_free_clut(u32 addr, int clut_psm)
 #endif
     unsigned short fp[4];
     if (addr != GSKIT_ALLOC_ERROR)
-        vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
+        VM_DEL(addr), vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
 }
 
 void r_vram_free_lin(u32 addr, int n)
 {
+    if (addr != GSKIT_ALLOC_ERROR)
+        VM_DEL(addr);
     for (int i = 0; addr != GSKIT_ALLOC_ERROR && i < n; i++) {
         unsigned short b = i;
         vram_release(addr + i * 256, &b, 1);
@@ -554,3 +598,48 @@ void r_queue_exec(GSGLOBAL *gs)
     }
     gsKit_queue_exec(gs);
 }
+
+#ifdef HEAPMAP
+/* VRAM census (render.h) */
+#undef gsKit_vram_alloc
+#define VF_N 32
+static struct { u32 addr, size; const char *where; } vf[VF_N];
+static unsigned nvf;
+u32 r_hm_vram_alloc(GSGLOBAL *g, u32 size, u8 type, const char *where)
+{
+    u32 a = gsKit_vram_alloc(g, size, type);
+    if (a != GSKIT_ALLOC_ERROR && nvf < VF_N)
+        vf[nvf].addr = a, vf[nvf].size = size, vf[nvf].where = where, nvf++;
+    return a;
+}
+void r_vram_census(void)
+{
+    static struct { unsigned ra, blocks, cnt; const char *tag; } c[128];
+    unsigned nc = 0, tot = 0;
+    for (int i = 0; i < VM_N; i++) {
+        if (!vm[i].blocks)
+            continue;
+        unsigned j;
+        for (j = 0; j < nc && (c[j].ra != vm[i].ra || strcmp(c[j].tag, vm[i].tag)); j++)
+            ;
+        if (j == nc) {
+            if (nc == 128)
+                continue;
+            c[nc].ra = vm[i].ra, c[nc].tag = vm[i].tag, c[nc].blocks = c[nc].cnt = 0, nc++;
+        }
+        c[j].blocks += vm[i].blocks, c[j].cnt++, tot += vm[i].blocks;
+    }
+    unsigned fixed = 0;
+    for (unsigned i = 0; i < nvf; i++)
+        fixed += vf[i].size;
+    unsigned fb = gsKit_texture_size(gs->Width, gs->Height, gs->PSM), zb = gsKit_texture_size(gs->Width, gs->Height, gs->PSMZ);
+    printf("vrammap: pointer %u KB, avail %d KB, r_vram live %u KB in %u pages (%u KB) holes %u KB lost %u; screen "
+           "buffers 0x%x 0x%x %u KB each, Z 0x%x %u KB; gsKit_vram_alloc calls %u KB\n", gs->CurrentPointer >> 10,
+           r_vram_avail(gs) >> 10, tot >> 2, r_vram_pages, r_vram_pages * 8, r_vram_holes >> 2, vm_lost,
+           gs->ScreenBuffer[0], gs->ScreenBuffer[1], fb >> 10, gs->ZBuffer, zb >> 10, fixed >> 10);
+    for (unsigned i = 0; i < nvf; i++)
+        printf("vrammap: fixed %s %u KB at 0x%x\n", vf[i].where, vf[i].size >> 10, vf[i].addr);
+    for (unsigned j = 0; j < nc; j++)
+        printf("vrammap: 0x%08x %u KB %u [%s]\n", c[j].ra, c[j].blocks >> 2, c[j].cnt, c[j].tag);
+}
+#endif
