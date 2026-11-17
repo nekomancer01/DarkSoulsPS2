@@ -251,12 +251,14 @@ def main():
                 hole, zz = masks[name]
                 img = np.zeros((H, W, 3), np.uint8)
                 fin = np.isfinite(zz)
-                img[fin] = np.clip(255 - zz[fin][:, None] * 0.8, 40, 230).astype(np.uint8)  # (near light, far dark)
+                # near light, far dark on a log scale (a linear one left everything within 30 m one grey)
+                img[fin] = np.clip(240 - 45 * np.log2(1 + zz[fin][:, None] / 2), 40, 240).astype(np.uint8)
                 img[hole] = (255, 0, 255)
                 img[:hz][hole[:hz]] = (255, 0, 0)
                 sh.paste(Image.fromarray(img), (c * W, r_ * (H + 12) + 12))
-                ImageDraw.Draw(sh).text((c * W + 2, r_ * (H + 12)), f"{r['seam']} s{r['spot']} y{r['yaw']:.2f} {name} "
-                                        f"{r[name]:.1f}%", fill=(255, 255, 0))
+                seam = r["seam"].replace("_00_00", "")  # (m10_01_00_00_w -> m10_01_w: the label fits the panel)
+                ImageDraw.Draw(sh).text((c * W + 2, r_ * (H + 12)), f"{seam} s{r['spot']} y{r['yaw']:.1f} {name[0]} "
+                                        f"{r[name]:.2f}%", fill=(255, 255, 0))
         sh.save(os.path.join(a.out, "sheet.jpg"), quality=88)
     print(f"seam_audit: {len(seams)} seams, {len(rows)} views, {len(fails)} over {a.fail} % steady holes; "
           f"{os.path.join(a.out, 'audit.json')} ({time.time() - t0:.0f} s)")
