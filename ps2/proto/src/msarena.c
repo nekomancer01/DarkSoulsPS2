@@ -41,6 +41,7 @@ static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_po
  * the plan's cap_hi counted that room for them: near cells were planned in and then refused at the player's feet
  * while the structural pool had Firelink's 1.7 MB lite slot idle (Ame's ISO play report 2026-11-10: 252 "no room
  * for item", 167 of them near parts, with 1.4-4.5 MB of the arena free) */
+unsigned ms_lend_room;
 unsigned ms_lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
 static unsigned reserve_extra, pool_max = MS_POOL;
 
@@ -154,6 +155,29 @@ void *ms_g_alloc_lend(unsigned n)
             }
         }
     return NULL;
+}
+/* where the arena's free granules are (the "no room" line): items (below ilim and borrowed), misc pool, structural
+ * pool; for each the free KB, the pages wholly free and the largest free run inside one page (KB) */
+void ms_free_report(unsigned out[3][3])
+{
+    memset(out, 0, 9 * sizeof(unsigned));
+    unsigned lim = ilim();
+    for (unsigned p = 0; p < ntot(); p++) {
+        int z = p < lim || p >= ms_npages ? 0 : !ms_pools_on ? 0 : p < spage0 ? 1 : 2;
+        if (p < ms_npages && p >= lim && !ms_pools_on)
+            continue;  /* (MS_OTHER's top pages: not for items) */
+        unsigned run = 0, best = 0, g0 = p * MS_GPP;
+        if (ms_pfree[p])
+            for (unsigned g = g0; g < g0 + MS_GPP; g++) {
+                run = g_used(g) ? 0 : run + 1;
+                best = run > best ? run : best;
+            }
+        out[z][0] += ms_pfree[p];
+        out[z][1] += ms_pfree[p] == MS_GPP;
+        out[z][2] = best > out[z][2] ? best : out[z][2];
+    }
+    for (int z = 0; z < 3; z++)
+        out[z][0] = out[z][0] * MS_GRAN >> 10, out[z][2] = out[z][2] * MS_GRAN >> 10;
 }
 void ms_g_free(void *ptr, unsigned n)
 {
@@ -571,6 +595,10 @@ int ms_defrag(unsigned need, unsigned lim, unsigned max_kb)
     unsigned fr = 0;
     FOR_IPAGES(p)
         fr += ms_pfree[p];
+    int to_pool = MS_DEFRAG_LEND && ms_pools_on && lim == ilim();  /* (an item read's window, not a lite set's) */
+    if (to_pool)  /* (the pools' idle pages take moved groups too) */
+        for (unsigned p = ms_mpage0; p < ms_npages; p++)
+            fr += ms_pfree[p];
     int best = -1;
     unsigned bused = ~0u;
     for (unsigned p = lim - need + 1; p-- > 0;) {
@@ -603,6 +631,12 @@ int ms_defrag(unsigned need, unsigned lim, unsigned max_kb)
                 if (g0 < w0 || g0 >= w1)
                     continue;
                 unsigned char *dst = ms_npend < MS_DEFRAG_PEND ? g_alloc_ex(n, (unsigned)best, (unsigned)best + need) : NULL;
+                if (!dst && to_pool && ms_npend < MS_DEFRAG_PEND && n <= MS_PAGE &&
+                    (dst = ms_g_alloc_lend(n))) {  /* lent from now on: a lite set's room takes it back (ms_drop) */
+                    ms_lent_n++;
+                    if (m->cls[a] == C_NEAR || m->cls[a] == C_NEAR2)
+                        ms_lent_near += n;
+                }
                 if (!dst) {
                     ok = 0;
                     break;
