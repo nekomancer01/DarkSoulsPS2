@@ -30,7 +30,8 @@ Built from the other blocks' horizons (hzn.bin, tools/horizon.py: untextured, co
      share corners unless their depths differ by more than FAR_JUMP (a silhouette against something far behind: the
      gap shows the sky from other spots rather than a stretched sheet);
   4. an edge collapse (horizon.py mo_simplify) at FAR_PX pixels seen from the eye merges the flat stretches; coarser
-     cells until the file fits FAR_KB (never past FAR_DEG_MAX);
+     cells until the file fits FAR_KB (never past FAR_DEG_MAX): the seam sets first (they stand in for a few
+     seconds while a peer loads), then all sets;
   5. indexed VU1 batches as the horizon's (horizon.py idx_batches / idx_streams), sorted along a Z curve.
 
 far.bin (little endian, 16-byte aligned; stream offsets from the file start):
@@ -43,7 +44,7 @@ far.bin (little endian, 16-byte aligned; stream offsets from the file start):
   streams
 Env: FARPANO=0 writes an empty file (no panorama: world.c then keeps the boot block's tables, the old path);
 FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN, FAR_PANO_SET,
-FAR_SEAM (0: no seam sets), FAR_SEAM_EYES, FAR_SEAM_DEG, FAR_SEAM_NEAR."""
+FAR_SEAM (0: no seam sets), FAR_SEAM_EYES, FAR_SEAM_DEG, FAR_SEAM_DEG_MAX, FAR_SEAM_NEAR."""
 import os
 import struct
 import sys
@@ -339,6 +340,7 @@ def seam_split(nav, own_gen, peer_gen):
 SEAM = os.environ.get("FAR_SEAM", "1") == "1"
 SEAM_EYES = int(os.environ.get("FAR_SEAM_EYES", 3))
 SEAM_DEG = float(os.environ.get("FAR_SEAM_DEG", 1.5))   # ASSUMED: half the main sets' detail, they are a stopgap
+SEAM_DEG_MAX = float(os.environ.get("FAR_SEAM_DEG_MAX", DEG_MAX))  # the seam sets' coarsest cells
 SEAM_NEAR = float(os.environ.get("FAR_SEAM_NEAR", 8.0))  # ASSUMED: the peer's ground starts a few metres past a seam
 SEAM_MIN = 8  # navmesh spots a cluster needs
 SEAM_APART = 24.0  # metres between two seam eyes at least (ASSUMED: closer ones see the same)
@@ -480,26 +482,35 @@ def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, c
 
 
 def finish(src, name, n_in, n_hidden, n_standin, peers):
+    # the seam sets coarsen first, up to FAR_DEG_MAX, and only then every set: with one level for both, 7-12 seam
+    # sets took the main sets of the Burg / Parish / Depths blocks from 1.17 to 2.86 degree cells (2026-11-17)
     deg = DEG
+    sdeg = max(DEG, SEAM_DEG)
     memo = [{} for _ in src]
+    has_seam = any(k[2] & FAR_SEAM for k, *_ in src)
     while True:
         res = []
         for (key, P, C, eye), mo in zip(src, memo):
             seam = key[2] & FAR_SEAM
-            V, VC, T = pano_mesh(P, C, eye, max(deg, SEAM_DEG) if seam else deg, mo, SEAM_NEAR if seam else NEAR)
+            dg = max(deg, sdeg) if seam else deg
+            V, VC, T = pano_mesh(P, C, eye, dg, mo, SEAM_NEAR if seam else NEAR)
             n0 = len(T)
             if len(T) and horizon._meshopt() is not None:
-                T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * deg / DEG)
+                T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * dg / DEG)
             if os.environ.get("FAR_LOG"):
                 print(f"farpano:   block {key[0]}{' backdrop' if key[2] & FAR_PANO else ' seam' if key[2] & FAR_SEAM else ''} groups {key[1][0]:08x}..: {len(P)} tris -> {n0} panorama -> {len(T)}")
             res.append((key, V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T))
         out = write(res)
         if len(out) <= KB * 1024 or deg >= DEG_MAX:
             break
-        deg = min(DEG_MAX, deg * 1.25)
+        if has_seam and sdeg < SEAM_DEG_MAX:
+            sdeg = min(SEAM_DEG_MAX, sdeg * 1.25)
+        else:
+            deg = min(DEG_MAX, deg * 1.25)
     nt = sum(len(r[3]) for r in res)
     return out, (f"farpano: {name}: {n_in} horizon tris of {len(peers)} blocks, {len(set(k[0][0] for k in src))} kept ({n_hidden} not shown from "
-                 f"here, {n_standin} stand-ins) -> {nt} tris in {sum(1 for r in res if len(r[3]))} draw-group meshes, {len(out) >> 10} KB, {deg:.2f} degree cells")
+                 f"here, {n_standin} stand-ins) -> {nt} tris in {sum(1 for r in res if len(r[3]))} draw-group meshes, {len(out) >> 10} KB, {deg:.2f} degree cells"
+                 + (f" (seam sets {max(deg, sdeg):.2f})" if has_seam else ""))
 
 
 def main():
