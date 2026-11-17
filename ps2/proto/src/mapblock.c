@@ -457,7 +457,7 @@ void map_boot_lean(void)
 
 /* The far panorama (map_far_set; far.bin: 'FARP', sets, chunks, bytes; FarSet per set; Chunk records; streams from
  * the file start). Untextured like the horizon, under the map's fog, never distance culled (CHUNK_BACKDROP). */
-typedef struct { unsigned blk, first, n, groups[4], flags; } FarSet;  /* flags bit 0: FAR_PANO (farpano.py) */
+typedef struct { unsigned blk, first, n, groups[4], flags; } FarSet;  /* flags: FAR_F_* below (farpano.py) */
 static MapInst far_inst;  /* (hz_base: the base mp_draw_hz adds the chunks' offsets to) */
 static const FarSet *far_set;
 static const Chunk *far_chunk;
@@ -476,19 +476,51 @@ int map_far_set(const void *blob)
     return 1;
 }
 
+/* FAR_SEAM sets (farpano.py, research idea 9): a block of the same MSB rendered from the ground near its seam, which
+ * the set's eye (flags bits 8-19 / 20-31: x / 4, z / 4 m, signed) stands on. The block's main sets are rendered from
+ * the middle of the ground beyond the distance world.bin keeps it loaded, so what only the seam sees (the far side of a
+ * tunnel's exit) was missing while the block was still off there. The seam set nearest the camera within
+ * MAP_FAR_SEAM_R stands in for the block's main sets (flags bit 2); MAP_FAR_SEAM=0: main sets only, the old path */
+#ifndef MAP_FAR_SEAM
+#define MAP_FAR_SEAM 1
+#endif
+#define MAP_FAR_SEAM_R 48.0f  /* m (ASSUMED: the seam eyes lie within world.bin's keep distance, 64 m, of the block) */
+#define FAR_F_PANO 1
+#define FAR_F_SEAM 2
+#define FAR_F_HAS_SEAM 4
+static inline float far_eye(unsigned flags, int sh) { return (float)((int)(flags << (20 - sh)) >> 20) * 4.0f; }
+
+static int far_self(const FarSet *f)
+{
+    const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
+    if (f->flags & FAR_F_PANO)  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
+        return map_pano_shown();
+    return f->blk ? p->on || p->hz_only : p->hdr != NULL;  /* that block draws itself (its cells, or its own horizon) */
+}
+
 unsigned mp_draw_far(const float *e)
 {
     unsigned n = 0;
+    int pick[MAP_INST];
+    float pick_d[MAP_INST];
+    for (int k = 0; k < MAP_INST; k++)
+        pick[k] = -1, pick_d[k] = MAP_FAR_SEAM_R * MAP_FAR_SEAM_R;
+    for (unsigned s = 0; MAP_FAR_SEAM && s < far_sets; s++) {  /* each block's seam set nearest the camera */
+        const FarSet *f = &far_set[s];
+        if (!(f->flags & FAR_F_SEAM) || f->blk >= MAP_INST || far_self(f))
+            continue;
+        float dx = e[0] - far_eye(f->flags, 8), dz = e[2] - far_eye(f->flags, 20), d = dx * dx + dz * dz;
+        if (d < pick_d[f->blk])
+            pick[f->blk] = (int)s, pick_d[f->blk] = d;
+    }
     for (unsigned s = 0; s < far_sets; s++) {
         const FarSet *f = &far_set[s];
         if (f->blk >= MAP_INST || f->first + f->n > ((const unsigned *)far_inst.hz_base)[2])
             continue;
-        const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
-        if (f->flags & 1) {  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
-            if (map_pano_shown())
-                continue;
-        } else if (f->blk ? p->on || p->hz_only : p->hdr != NULL)
-            continue;  /* that block draws itself (its cells, or its own horizon) */
+        if (far_self(f))
+            continue;
+        if ((f->flags & FAR_F_SEAM) ? pick[f->blk] != (int)s : (f->flags & FAR_F_HAS_SEAM) && pick[f->blk] >= 0)
+            continue;  /* the seam set near the camera stands in for the block's main sets */
         if (!dg_groups_shown(f->groups))
             continue;
         for (unsigned j = 0; j < f->n; j++) {
