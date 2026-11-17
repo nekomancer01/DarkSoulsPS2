@@ -11,7 +11,8 @@ between maps, the cut cells inside one MSB). For each seam up to --spots spots o
 apart), and from each --yaws camera yaws starting towards block j (the port's camera: feet + 1.42 m, 4 m back,
 pitch 0.1), three depth-only renders with tools/mapview.py's renderer (opaque pieces only, no sky):
 
-  ref      every block on at full detail (near level everywhere), no draw groups: what is there to see (--ref-dg:
+  ref      the blocks DSR has resident (the home block's area group and what its seams load; ref_blocks) at full
+           detail (near level everywhere), no draw groups: what is there to see (--ref-dg:
            under the draw groups of the floor's part, DSR's rule; a hole the default ref finds and this one does not
            is one a draw-group mask explains, which DSR may show the same way)
   steady   the runtime once streaming caught up: i and the blocks its triangle loads on at their levels (mapshot.py's
@@ -121,8 +122,9 @@ def scene(blocks, wb, home, feet, eye, fwd, on, mode):
     on at their levels, the others by the home block's far panorama)"""
     skip = mapcfg.CHUNK_SKY | mapcfg.CHUNK_BLEND
     if mode == "ref":
+        # (on: the blocks DSR has resident here, ref_blocks)
         floor = blocks[home].floor_mask(feet) if REF_DG else None
-        picks = [c for b in blocks for c in b.pick(feet, eye, "near", floor)]
+        picks = [c for k, b in enumerate(blocks) if k in on for c in b.pick(feet, eye, "near", floor)]
     else:
         floor = floor_seam(blocks, wb, home, feet, fwd, blocks[home].floor_mask(feet))
         picks = [c for k, b in enumerate(blocks)
@@ -151,6 +153,23 @@ def horizon_row(eye, tgt, H):
     return H / 2 - f * math.tan(-p)
 
 
+def area_group(gen):
+    """dg.bin's area group (tools/drawgroups.py: the AA of mAA when the map is in an area load list), 0 without one"""
+    try:
+        with open(os.path.join(gen, "dg.bin"), "rb") as f:
+            return struct.unpack_from("<8I", f.read(32), 0)[7]
+    except (OSError, struct.error):
+        return 0
+
+
+def ref_blocks(wb, i, on):
+    """the blocks DSR has resident at a spot of block i: its area group's (one area load list) and those i's seams load
+    (world.bin links). Every block of the world was the first run's ref: from Darkroot, the Asylum's and Firelink's
+    far planes covered the sky and read as 40-98 % holes (2026-11-18)"""
+    a = _AREA[i]
+    return set(on) | {k for k in range(len(wb)) if (a and _AREA[k] == a) or wb[k][1] == wb[i][1]}
+
+
 def view(job):
     """one camera: -> dict with the hole shares, and the masks for the sheet"""
     wb, i, j, feet, yaw, W, H, tmp = job
@@ -161,7 +180,7 @@ def view(job):
     for first, cnt, ld, _k in wb[i][3]:
         load |= ld
     on = {k for k in range(len(blocks)) if load >> k & 1}
-    zr = depth(scene(blocks, wb, i, feet, eye, fwd, None, "ref"), eye, tgt, W, H, tmp)
+    zr = depth(scene(blocks, wb, i, feet, eye, fwd, ref_blocks(wb, i, on), "ref"), eye, tgt, W, H, tmp)
     out = {"seam": f"{wb[i][0]}->{wb[j][0]}", "i": i, "j": j, "feet": [round(float(v), 2) for v in feet],
            "yaw": round(yaw, 3)}
     hz = int(np.clip(horizon_row(eye, tgt, H), 0, H))
@@ -176,6 +195,7 @@ def view(job):
 
 
 _BLOCKS = None
+_AREA = []
 REF_DG = False  # --ref-dg: the ref under DSR's draw-group rule (the floor's part alone), not everything
 
 
@@ -197,6 +217,9 @@ def main():
     t0 = time.time()
     wb = world(a.gen)
     _BLOCKS = [mapshot.Block(g) for _p, _m, g, _l in wb]
+    global _AREA
+    _AREA = [area_group(g) for _p, _m, g, _l in wb]
+    print("seam_audit: area groups " + " ".join(f"{p}:{a}" for (p, *_), a in zip(wb, _AREA)), flush=True)
     print(f"seam_audit: {len(wb)} blocks loaded in {time.time() - t0:.1f} s", flush=True)
     W, H = a.size
     tmp = os.path.join(a.out, ".v.png")
