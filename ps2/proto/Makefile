@@ -234,7 +234,7 @@ blockexport: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin
 .PHONY: worldpacks worldexports blockexport
 # (worldpacks order-only: as a prerequisite that phony goal re-made world.pak on every build, 2026-11-07; world.bin is read
 # from the blocks' collision.bin files, export_collision.area_collision and the game's MSBs)
-$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
+$(D)/world.pak: $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(TS)/worldreach.py.sum $(AREA_PY) $(A)/collision.bin $(foreach d,$(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS))),$(d)/collision.bin) \
 		$(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum | worldpacks
 	@mkdir -p $(@D)

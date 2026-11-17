@@ -64,6 +64,7 @@
  * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
  * WORLD_FAR_RESERVE   | 1        | fallback | -DWORLD_FAR_RESERVE=0                         | world.c       | a buffer of the largest far panorama reserved at boot for when the heap has no room; 0 = heap only
  * WORLD_WANT_3D       | 1        | fallback | -DWORLD_WANT_3D=0                             | world.c       | wanted blocks read nearest first counting the height range; 0 = x / z only
+ * WORLD_REACH         | 1        | fallback | -DWORLD_REACH=0                               | world.c       | neighbours wanted by walking time to their seam (world.bin v5 reach table) against the measured turn-on time; 0 = the links' load masks alone (runtime: option set WORLD_REACH 0)
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
