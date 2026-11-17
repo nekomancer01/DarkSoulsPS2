@@ -179,6 +179,29 @@ void g2d_set_clamp(GSGLOBAL *gs, u8 mode)
     ad(1, rv);
 }
 
+/* UI_ATEST (default 1; Polaris 1.6b): textured UI sprites draw with the alpha test GEQUAL 1, AFAIL KEEP, so their
+ * transparent texels write neither colour nor depth. Every UI atlas is PSMT8 with a CT32 CLUT (hud.c, drb.c), so a
+ * texel's alpha is its palette entry's (0 where transparent) x the vertex alpha: only a fully faded element fails it.
+ * Before this the whole sprite rectangle wrote Z = 0xFFFF, and the far depth of field (main.c flip, which marks by
+ * depth) left the scene under a sprite's transparent texels sharp. Flat and semi-transparent panels are unchanged.
+ * 0: the old path. */
+#ifndef UI_ATEST
+#define UI_ATEST 1
+#endif
+
+/* the TEST a primitive needs: gs->Test as gsKit's calls set it, or with the UI alpha test (textured UI sprites) */
+static void need_test(const GSGLOBAL *g, int ui_tex)
+{
+    const GSTEST *t = g->Test;
+    u64 v = ui_tex ? GS_SETREG_TEST(1, 5, 1, 0, t->DATE, t->DATM, t->ZTE, t->ZTST)
+                   : GS_SETREG_TEST(t->ATE, t->ATST, t->AREF, t->AFAIL, t->DATE, t->DATM, t->ZTE, t->ZTST);
+    if (v == c_test || (c_test == ~0ull && !ui_tex))
+        return;  /* (unknown and not the UI variant: whatever gsKit's state calls last wrote stays, as before) */
+    c_test = v;
+    const u64 rv[2] = {v, GSR_TEST};
+    ad(1, rv);
+}
+
 /* ---- primitives: gsKit's REGLIST shapes ---- */
 
 static inline u64 xy(const GSGLOBAL *g, float x, float y, int z)
@@ -249,6 +272,8 @@ static void reglist(int nreg, u64 regs, const u64 *v, const char *who)
 
 void g2d_prim_sprite(GSGLOBAL *gs, float x1, float y1, float x2, float y2, int z, u64 color)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[4] = {prim(gs, GS_PRIM_PRIM_SPRITE, 0, 0, 0), color, xy(gs, x1, y1, z), xy(gs, x2, y2, z)};
     reglist(4, REGS_SPRITE, v, "sprite");
 }
@@ -256,6 +281,8 @@ void g2d_prim_sprite(GSGLOBAL *gs, float x1, float y1, float x2, float y2, int z
 void g2d_prim_sprite_texture(GSGLOBAL *gs, const GSTEXTURE *t, float x1, float y1, float u1, float v1, float x2,
                              float y2, float u2, float v2, int z, u64 color)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 1);
     u64 tex1 = (u64)t->Filter << 5 | (u64)t->Filter << 6;
     if (tex1 != c_tex1) {
         c_tex1 = tex1;
@@ -273,6 +300,8 @@ void g2d_prim_sprite_texture(GSGLOBAL *gs, const GSTEXTURE *t, float x1, float y
 
 void g2d_prim_triangle(GSGLOBAL *gs, float x1, float y1, float x2, float y2, float x3, float y3, int z, u64 color)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[6] = {prim(gs, GS_PRIM_PRIM_TRIANGLE, 0, 0, 0), color, xy(gs, x1, y1, z), xy(gs, x2, y2, z),
                       xy(gs, x3, y3, z), 0};
     reglist(6, REGS_TRIANGLE, v, "triangle");
@@ -281,6 +310,8 @@ void g2d_prim_triangle(GSGLOBAL *gs, float x1, float y1, float x2, float y2, flo
 void g2d_prim_quad(GSGLOBAL *gs, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, int z,
                    u64 color)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[6] = {prim(gs, GS_PRIM_PRIM_TRISTRIP, 0, 0, 0), color, xy(gs, x1, y1, z), xy(gs, x2, y2, z),
                       xy(gs, x3, y3, z), xy(gs, x4, y4, z)};
     reglist(6, REGS_QUAD, v, "quad");
@@ -289,6 +320,8 @@ void g2d_prim_quad(GSGLOBAL *gs, float x1, float y1, float x2, float y2, float x
 void g2d_prim_quad_gouraud(GSGLOBAL *gs, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4,
                            int z, u64 c1, u64 c2, u64 c3, u64 c4)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[10] = {prim(gs, GS_PRIM_PRIM_TRISTRIP, 1, 0, 0), c1, xy(gs, x1, y1, z), c2, xy(gs, x2, y2, z), c3,
                        xy(gs, x3, y3, z), c4, xy(gs, x4, y4, z), c4};
     reglist(10, REGS_QUAD_GOURAUD, v, "quad_gouraud");
@@ -297,6 +330,8 @@ void g2d_prim_quad_gouraud(GSGLOBAL *gs, float x1, float y1, float x2, float y2,
 void g2d_prim_triangle_gouraud_3d(GSGLOBAL *gs, float x1, float y1, int z1, float x2, float y2, int z2, float x3,
                                   float y3, int z3, u64 c1, u64 c2, u64 c3)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[8] = {prim(gs, GS_PRIM_PRIM_TRIANGLE, 1, 0, 0), c1, xy(gs, x1, y1, z1), c2, xy(gs, x2, y2, z2), c3,
                       xy(gs, x3, y3, z3), 0};
     reglist(8, REGS_TRI_GOURAUD, v, "triangle_gouraud");
@@ -304,6 +339,8 @@ void g2d_prim_triangle_gouraud_3d(GSGLOBAL *gs, float x1, float y1, int z1, floa
 
 void g2d_prim_line_3d(GSGLOBAL *gs, float x1, float y1, int z1, float x2, float y2, int z2, u64 color)
 {
+    if (UI_ATEST && cur == G2D_UI)
+        need_test(gs, 0);
     const u64 v[4] = {prim(gs, GS_PRIM_PRIM_LINE, 0, 0, 0), color, xy(gs, x1, y1, z1), xy(gs, x2, y2, z2)};
     reglist(4, REGS_LINE, v, "line");
 }
