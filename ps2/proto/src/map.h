@@ -64,6 +64,8 @@ void map_boot_lean(void);
 /* the boot map's far backdrop picture layers (pano.bin of the area pack, tools/pano.py bake; map.c): before the
  * first frame (their CLUTs go up with the map's). map_stream_open calls it; world builds call it themselves. */
 void map_pano_open(const char *pak_path);
+/* whether the boot map's picture layers are drawn this frame (the player in the boot block: MAP_PANO_NEAR) */
+int map_pano_shown(void);
 /* The far panorama of the block the player is in (far.bin, tools/farpano.py; NULL: none): parts of other world blocks
  * as seen from it, each drawn while its block (= map instance) is not drawn and the collision part under the player
  * shows its draw groups. The buffer stays the caller's and must outlive the call that replaces it by two frames.

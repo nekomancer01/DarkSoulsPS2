@@ -457,7 +457,7 @@ void map_boot_lean(void)
 
 /* The far panorama (map_far_set; far.bin: 'FARP', sets, chunks, bytes; FarSet per set; Chunk records; streams from
  * the file start). Untextured like the horizon, under the map's fog, never distance culled (CHUNK_BACKDROP). */
-typedef struct { unsigned blk, first, n, groups[4], pad; } FarSet;
+typedef struct { unsigned blk, first, n, groups[4], flags; } FarSet;  /* flags bit 0: FAR_PANO (farpano.py) */
 static MapInst far_inst;  /* (hz_base: the base mp_draw_hz adds the chunks' offsets to) */
 static const FarSet *far_set;
 static const Chunk *far_chunk;
@@ -484,7 +484,10 @@ unsigned mp_draw_far(const float *e)
         if (f->blk >= MAP_INST || f->first + f->n > ((const unsigned *)far_inst.hz_base)[2])
             continue;
         const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
-        if (f->blk ? p->on || p->hz_only : p->hdr != NULL)
+        if (f->flags & 1) {  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
+            if (map_pano_shown())
+                continue;
+        } else if (f->blk ? p->on || p->hz_only : p->hdr != NULL)
             continue;  /* that block draws itself (its cells, or its own horizon) */
         if (!dg_groups_shown(f->groups))
             continue;
