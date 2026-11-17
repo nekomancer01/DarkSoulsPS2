@@ -65,7 +65,7 @@ def run(prog, entry, args, cull, edge, idx=None):
     return vu.kicks, cyc
 
 
-def main(seeds=12, tris=54):
+def main(seeds=12, tris=gen.CHUNK_TRIS):
     # sharing is set per seed: some batches reach 3 vertices per triangle (vertex numbers past 85, i.e. 3 v > 255)
     bad = 0
     cl = ci = 0
@@ -103,7 +103,7 @@ def main(seeds=12, tris=54):
     return bad
 
 
-def main_clip(seeds=12, tris=32):
+def main_clip(seeds=12, tris=gen.CLIP_TRIS):
     """vu1clip.vsm's indexed entry (VU1Clip_Idx) vs its list entry on the same near-plane / guard-band batches"""
     bad = 0
     out = 0

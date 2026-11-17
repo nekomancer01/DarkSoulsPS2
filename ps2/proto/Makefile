@@ -334,7 +334,7 @@ WORLD_TEX_SHARED ?= 1
 TEX_PEERS = $(if $(filter 1,$(WORLD_TEX_SHARED)),$(if $(BLOCK),$(foreach d,$(PVS_PEERS),$(if $(filter $(MAP)_%,$(notdir $(d))),$(d)/map.bin))))
 $(A)/maptab.bin $(A)/mapres.bin $(A)/maptex.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv $(TEX_PEERS)
 	MIP1_OUT=$(WORLD_MIP1_OUT) TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
-$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(AREA_PY) $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
+$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(AREA_PY) $(TS)/horizon.py.sum $(TS)/vu1/layout.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
 		$(TS)/native/hzvis.c.sum $(TS)/native/hzerr.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
 	HZN=$(or $(HZN),1) HZN_PANO=$(HZN_PANO) $(PY) -I ../../tools/horizon.py $< $@
 # The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
@@ -560,7 +560,7 @@ $(A)/mapenv: FORCE | $(TS)/export_map.py.sum
 	@if [ ! -e $@ ]; then echo '$(MAPENV_LINE)' > $@ && touch -r $(TS)/export_map.py.sum $@; \
 	else echo '$(MAPENV_LINE)' | cmp -s - $@ || echo '$(MAPENV_LINE)' > $@; fi
 # the map exporter's Python modules (split from export_map.py 2026-11-12)
-MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells mapview,$(TS)/$(m).py.sum)
+MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells mapview,$(TS)/$(m).py.sum) $(TS)/vu1layout.py.sum $(TS)/vu1/layout.py.sum
 # libmapx (tools/mapx: the map exporter's C rewrite, tools/mapx_native.py): every C source and header
 MAPX_SUMS = $(TS)/mapx_native.py.sum $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/mapx/*.c ../../tools/mapx/*.h))
 $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \

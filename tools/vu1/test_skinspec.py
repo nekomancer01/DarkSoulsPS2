@@ -5,6 +5,7 @@ centre 3..10 m away):
      the approximation error, reported as max / mean colour difference (0..255);
   3. m = f = 0: TexSpec colours bit-identical to the Tex entry (and to ref/vu1skin2_nospec.vsm, pre-specular)."""
 import math, random, sys, copy
+import gen
 from vuemu import VU1, U, F, vertices
 import test_skin as ts, gen
 
@@ -40,7 +41,7 @@ def setup(vu, rng, tris, cull, zero):
         q([(a - b) / 2 for a, b in zip(eu, ed)]), q(si), q(amb), q(sun)]
     for i, qw in enumerate(blk):
         vu.wq(gen.SPEC + i, qw, True)
-    top = 252
+    top = gen.SKIN_IN
     tint = [F(vu.mem[top + 1][c]) - 64 for c in range(3)]
     k1 = [t + a for t, a in zip(tint, amb)]
     vu.wq(top + 1, k1 + [128], True)
@@ -63,7 +64,7 @@ def references(vu0, sp, k1, ms, tris):
     model, exact = [], []
     a_, b_ = POW[sp['k']]
     for i in range(tris * 3):
-        a = 252 + 9 + 4 * i
+        a = gen.SKIN_IN + 9 + 4 * i
         pa, pb, nm = vu0.mem[a], vu0.mem[a + 1], vu0.mem[a + 2]
         A = [m4(8 + pa[3] + k) for k in range(4)]
         B = [m4(8 + pb[3] + k) for k in range(4)]

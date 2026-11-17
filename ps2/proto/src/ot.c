@@ -8,7 +8,8 @@
 #define OT_ENTRIES 16
 
 /* the VU1 chain buffer each bucket's segments are built in (vu1_begin's buffer numbers) */
-static const signed char bucket_buf[OT_N] = {0, 0, 0, 0, 1, 1, 1, 0, 2, -1, -1};
+static const signed char bucket_buf[OT_N] = {VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_SKIN,
+                                             VU1L_BUF_SKIN, VU1L_BUF_SKIN, VU1L_BUF_MAP, VU1L_BUF_FX, -1, -1};
 static const char *const bucket_name[OT_N] = {"sky", "pano", "horizon", "world", "chr", "obj", "alpha_test", "blend",
                                              "fx", "post", "ui"};
 

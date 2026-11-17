@@ -2,6 +2,8 @@
 #ifndef VU1_H
 #define VU1_H
 
+#include "vu1_layout.h"  /* the VU1 memory contract (generated: tools/vu1/layout.py) */
+
 #include <gsKit.h>
 
 /* Upload the microprogram, set up double buffering; call once after gsKit/dmaKit init */
@@ -18,8 +20,8 @@ void vu1_begin(int buffer);
 /* VU1_CLIP: the batch crosses the near plane or the guard band: drawn by the clipping program (vu1clip.vsm, F4),
  * which clips against both on VU1 (batches over VU1_CLIP_TRIS are split) */
 #define VU1_CLIP 4
-#define VU1_CLIP_TRIS 32
-#define VU1_IDX_TRIS 64  /* most triangles in one vu1_add_idx batch (map chunks: <= 54) */
+#define VU1_CLIP_TRIS VU1L_CLIP_TRIS
+#define VU1_IDX_TRIS VU1L_IDX_TRIS  /* most triangles in one vu1_add_idx batch (map chunks: <= 54) */
 /* VU1_EDGE: fog = max(min(fog, b + a2 z), 0) on top of the map fog (b = vu1_map_fog's b, a2 = vu1_map_edge): far
  * batches fade into the fog colour by map.c's cull distance (vu1map2 edge loop, 91 instead of 79 VU1 cycles per
  * triangle; ignored with VU1_CLIP) */
@@ -82,7 +84,7 @@ void vu1_skin_window(const void *palette, const unsigned char *win, int n);
 void vu1_skin_fade(float fmax);
 /* Light for the following textured skin batches: colour = amb + sun x max(n . L, 0) per channel, 0x80 = 1.0 */
 void vu1_skin_light(const float amb[3], const float sun[3]);
-#define VU1_SKIN_TRIS 24  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
+#define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
 /* One skinned batch (<= VU1_SKIN_TRIS triangles, unindexed): 16-byte aligned streams per vertex: pa/pb s16x4
  * (bone-local position * 4096, palette offset 4 * bone), nrm s16x4 (normal in bone A space * 4096, weight of A * 4096),
  * st f32x2 normalized (textured) or colour u8x4 (t == NULL). tint: added to the light (0x80 = 1.0 when textured). */
@@ -114,11 +116,11 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
  * done. Flipbook: cw / ch =
  * cell size, du / dv = cell - 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore
  * ALPHA / ZBUF / FOGCOL with vu1_gs_regs before gsKit draws again. */
-#define VU1_FX_N 64
-#define VU1_FX_SYS 8
+#define VU1_FX_N VU1L_FX_N
+#define VU1_FX_SYS VU1L_FX_SYS
 #define VU1_FX_TABF 24
-#define VU1_FX_TAB 15
-#define VU1_FX_PART (VU1_FX_TAB + 16 * VU1_FX_SYS)
+#define VU1_FX_TAB VU1L_FX_TAB
+#define VU1_FX_PART VU1L_FX_PART
 #define VU1_FX_ADD 1  /* additive (else alpha blended) */
 #define VU1_FX_FOG 2
 void vu1_fx_begin(void);

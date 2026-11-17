@@ -4,12 +4,13 @@
 #define MODEL_H
 
 #include "render.h"
+#include "vu1_layout.h"
 
 #define MAX_BONES 64       /* pose arrays of the single-model users (player, NPC stand-ins, objects: <= 61 bones) */
 #ifndef MDL_MAX_BONES     /* the largest model (Makefile: from CHR_BONES; <= 255, u8 vertex bone ids) */
 #define MDL_MAX_BONES 255
 #endif
-#define MDL_WIN_BONES 61   /* bones one VU1 palette window holds (vu1.c skin layout) */
+#define MDL_WIN_BONES VU1L_BONE_MAX  /* bones one VU1 palette window holds (vu1_layout.h bone window) */
 
 typedef struct { float q[4], t[3]; } BoneLocal;
 typedef struct Model Model;
