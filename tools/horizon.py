@@ -42,6 +42,8 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
            triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
 map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
+Next to it, <hzn.bin>.far.npz (build only): the crown cards and the picture-layer backdrop left out of hzn.bin, for
+tools/farpano.py.
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
 HZN_VIS=0 no visibility cut; HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
@@ -96,6 +98,11 @@ TEX_MEAN = float(os.environ.get("HZN_TEX_MEAN", 1.0))
 # bare trunk and branches: Firelink's great tree from the Undead Burg bonfire, where the game shows its crown against
 # the sky (2026-11-13). Ground tufts and bushes stay out (they are below CROWN_H). ASSUMED numbers
 CROWN_H = float(os.environ.get("HZN_CROWN_H", 4.0))
+# ... but only in what the other blocks see (tools/farpano.py: the far panorama, 100 m and more away): in the block's
+# own horizon, drawn from 40 m and wherever its coarse level is late, the solid cards read as black boxes over Firelink's
+# graveyard (Ame's report 2026-11-17 t 85.1), where the textured cut-out leaves are drawn once the level is in.
+# HZN_CROWN_OWN=1: in the block's own horizon too (2026-11-13 .. 11-17)
+CROWN_OWN = os.environ.get("HZN_CROWN_OWN", "0") == "1"
 CROWN_R = float(os.environ.get("HZN_CROWN_R", 8.0))
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
@@ -156,6 +163,14 @@ def texture_rgba(b, tex_off, t):
     return pal[idx].reshape(h, w, 4)
 
 
+LAST_CROWN = [np.zeros(0, bool)]
+LAST_CELL = [np.zeros(0, np.int64)]  # coarse_tris: the map cell each triangle comes from
+VCELL = {}  # cluster(): id(V) -> the source cell of each welded vertex (the most of its corners), for _place
+# build: (crown cards, picture-layer backdrop) as (P, C, draw-group set) for main's sidecar <hzn>.far.npz, which
+# tools/farpano.py reads: what the other blocks' far panoramas show of this block beyond its own horizon
+FAR_SIDE = []  # coarse_tris: which of its triangles are crown cards (foliage, CROWN_H)
+
+
 def coarse_tris(b):
     """-> P (n, 3, 3) float64 corners, RGB (n, 3, 3) float baked colour (0..255), keep (n,) bool, backdrop (n,) bool
     (from CHUNK_BACKDROP chunks), the map's cells, the set of cells with covered chunks"""
@@ -166,7 +181,7 @@ def coarse_tris(b):
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
     nav = nav_points(b) if CROWN_H > 0 else np.zeros((0, 3))
-    Ps, Cs, Ks, Bs, Ds, cov = [], [], [], [], [], set()
+    Ps, Cs, Ks, Bs, Ds, Rs, Ls, cov = [], [], [], [], [], [], [], set()
     cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
         if ce[8] & 0x80000000:  # a later near part (no resident chunks)
@@ -238,10 +253,14 @@ def coarse_tris(b):
             if crown:  # a crown's cards whole, in the leaves' colour: from the horizon's distance it is one dark mass
                 opaque = np.ones(ntri, bool)
             Ps.append(p.reshape(-1, 3, 3))
+            Ls.append(np.full(ntri, ci, np.int64))
             Cs.append(np.minimum(255.0, rgb * col / 128.0).reshape(-1, 3, 3))
             Ks.append(opaque)
             Bs.append(np.full(ntri, bool(fl & CHUNK_BACKDROP)))
             Ds.append(np.full(ntri, cdg[j] if j < len(cdg) else 0, np.int64))
+            Rs.append(np.full(ntri, crown))
+    LAST_CROWN[:] = [np.concatenate(Rs) if Rs else np.zeros(0, bool)]
+    LAST_CELL[:] = [np.concatenate(Ls) if Ls else np.zeros(0, np.int64)]
     if not Ps:
         z = np.zeros(0, bool)
         return np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), z, z, np.zeros(0, np.int64), cells, cov
@@ -398,7 +417,7 @@ def view_d(X, nav):
     return np.maximum(d, HZN_D)
 
 
-def cluster(P, C, nav, px):
+def cluster(P, C, nav, px, cl=None):
     """vertex clustering on a grid of px pixels at each corner's view distance, in octaves (grid x 2 per doubling of
     the distance, so a band is one consistent grid) -> (V positions (cluster means), VC colours (area weighted),
     T vertex triples); degenerate and duplicate triangles (either winding) dropped. Burg's coarse level is a soup of
@@ -419,6 +438,15 @@ def cluster(P, C, nav, px):
     VC = np.zeros((nv, 3))
     np.add.at(VC, inv, C.reshape(-1, 3) * wgt[:, None])
     VC /= np.bincount(inv, weights=wgt, minlength=nv)[:, None]
+    if cl is not None and SRC_CELL and nv:  # each welded vertex's source cell: the one most of its corners come from
+        pc = np.stack([inv, np.repeat(np.asarray(cl, np.int64), 3)], 1)
+        u, cnt = np.unique(pc, axis=0, return_counts=True)
+        o = np.lexsort((-cnt, u[:, 0]))
+        u = u[o]
+        firsts = np.concatenate([[True], u[1:, 0] != u[:-1, 0]])
+        vc = np.full(nv, -1, np.int64)
+        vc[u[firsts, 0]] = u[firsts, 1]
+        VCELL[id(V)] = vc
     T = inv.reshape(-1, 3)
     ok = (T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 0] != T[:, 2])
     T = T[ok]
@@ -659,19 +687,30 @@ def idx_batches(T):
 
 
 def _place(V, VC, T, lo, hi, cfl):
-    """triangles to cells (the box holding the centroid, else the nearest box), Z-curve order inside a cell"""
+    """triangles to cells, Z-curve order inside a cell: SRC_CELL (default) the cell the triangle's corners come from
+    (cluster's VCELL: two corners agreeing, else the first corner's), else / without one the box holding the centroid,
+    else the nearest box. map.c draws a cell's horizon only while the camera is HZN_R from its box, its textured level
+    nearer: a simplified triangle filed by its centroid under a nearer cell than its source was drawn by neither
+    (holes of sky in Firelink's colonnade from the graveyard, Ame's report 2026-11-17 t 102.7: 2292 such triangles
+    ahead of that spot)"""
     cen = V[T].mean(1) if len(T) else np.zeros((0, 3))
     tc = np.zeros(len(T), np.int64)
     for s in range(0, len(T), 4096):
         c = cen[s:s + 4096, None, :]
         dd = np.maximum(0, np.maximum(lo[None] - c, c - hi[None]))
         tc[s:s + 4096] = (dd * dd).sum(2).argmin(1)
+    vc = VCELL.get(id(V))
+    if vc is not None and len(T):
+        a, b, c = vc[T[:, 0]], vc[T[:, 1]], vc[T[:, 2]]
+        src = np.where((a == b) | (a == c), a, np.where(b == c, b, a))
+        tc = np.where(src >= 0, src, tc)
     glo = cen.min(0) if len(cen) else np.zeros(3)
     order = np.lexsort((zkey(cen, glo, 4.0), tc)) if len(T) else np.zeros(0, np.int64)
     return V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T[order], tc[order], cfl
 
 
 SRC = []
+SRC_CELL = os.environ.get("HZN_SRC_CELL", "1") == "1"  # _place by source cell (0: by centroid, as before)
 PANO = os.environ.get("HZN_PANO", "1") == "1"  # (the Makefile's PANO switch: 0 = no picture layers, all horizon)
 
 
@@ -722,8 +761,14 @@ def build(b):
     """-> (hzn.bin bytes, stats dict)"""
     assert b[:4] == b"DSM5", "horizon: not a DSM5 map.bin"
     P, C, keep, bd, dg, cells, cov = coarse_tris(b)
+    CL = LAST_CELL[0]
+    crown = LAST_CROWN[0] & keep if len(P) else np.zeros(0, bool)
+    pano = pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0]) & keep if PANO and len(P) else np.zeros(len(P), bool)
+    FAR_SIDE[:] = [(P[crown], C[crown], np.asarray(dg)[crown]), (P[pano], C[pano], np.asarray(dg)[pano])]
+    if not CROWN_OWN and len(P):  # the crowns go to the other blocks' far panoramas only (tools/farpano.py)
+        keep = keep & ~crown
     if PANO and len(P):  # the far backdrop the picture layers draw (tools/pano.py bake)
-        keep = keep & ~pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0])
+        keep = keep & ~pano
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)
@@ -756,7 +801,7 @@ def build(b):
         def run_mo(s):  # light weld, then meshoptimizer in distance bands, at s pixels
             out = []
             for dset, sel in raw:
-                V, VC, T = cluster(P[sel], C[sel], nav, s * WELD_FR)
+                V, VC, T = cluster(P[sel], C[sel], nav, s * WELD_FR, CL[sel])
                 out.append((dset, V, VC, mo_simplify(V, VC, T, view_d(V, nav), s), len(T)))
             return out
 
@@ -764,7 +809,7 @@ def build(b):
             # border), so on a block of open pieces the old path, which welds them at the full error, is often smaller
             out = []
             for dset, sel in raw:
-                V, VC, T = cluster(P[sel], C[sel], nav, s)
+                V, VC, T = cluster(P[sel], C[sel], nav, s, CL[sel])
                 out.append((dset, V, VC, replay(qlog(V, T, nav), (s / FOCAL) ** 2), len(T)))
             return out
 
@@ -866,6 +911,10 @@ def main():
     out, st = build(b)
     with open(dst, "wb") as f:
         f.write(out)
+    (cp, cc, cs), (pp, pc, ps) = FAR_SIDE or [(np.zeros((0, 3, 3)),) * 2 + (np.zeros(0, np.int64),)] * 2
+    with open(dst + ".far.npz", "wb") as f:
+        np.savez_compressed(f, crown_p=cp.astype(np.float32), crown_c=cc.astype(np.uint8), crown_s=cs.astype(np.int64),
+                            pano_p=pp.astype(np.float32), pano_c=pc.astype(np.uint8), pano_s=ps.astype(np.int64))
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
           f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
           f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")

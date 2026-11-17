@@ -184,7 +184,9 @@ def _chunk(k_tex, P, uv):
     for p in P:
         pos += struct.pack("<3h", *[int(round((p[j] - org[j]) / 2.0 ** e)) for j in range(3)])
     stb = bytearray()
-    for u, v in uv:
+    for u, v in uv:  # to the edge texels' centres: at 0 / 1 the GS (REPEAT) filtered in the tile's opposite edge (seams
+        # of the far wall's colour along the tile edges, Ame's report 2026-11-17 t 246.6)
+        u, v = (0.5 + u * (TILE - 1)) / TILE, (0.5 + v * (TILE - 1)) / TILE
         stb += struct.pack("<2H", min(65535, round(u * 4096)), min(65535, round(v * 4096)))
     return (k_tex, len(P) // 3, bytes(pos), bytes(stb), bytes([0x80, 0x80, 0x80, 0x80]) * len(P), mn, mx, org, 2.0 ** e)
 
