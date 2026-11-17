@@ -28,7 +28,7 @@ void vu1_begin(int buffer);
 #define VU1_EDGE 8
 /* VU1_PKT: pos / st / col are the streams of one prebuilt VIF packet (tools/export_map.py chunk_streams: a code qword
  * in front of each stream) holding exactly tris triangles: one DMA REF sends all three (render rebuild PR 1). Ignored
- * when the batch is split (VU1_CLIP over VU1_CLIP_TRIS) and in VU1_NO_PKT builds. */
+ * when the batch is split (VU1_CLIP over VU1_CLIP_TRIS). */
 #define VU1_PKT 16
 /* VU1_FLAT: untextured (tex may be NULL): PRIM with TME off, the vertex colour is the final colour (0x80 = half, not
  * 1.0); the st values VU1 writes are ignored (map.c's horizon level, tools/horizon.py: its packets have no st stream) */
