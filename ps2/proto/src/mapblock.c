@@ -2,6 +2,7 @@
  * its cell and tile indexes for culling, the miss scan, the resident items (res_open) and the block stream. map.c
  * draws them; map_i.h has the types and state both use. */
 #include "map_i.h"
+#include "world.h"
 
 /* index sort key: cell, then texture inside a cell (so neighbours share TEX0 / CLUT), then chunk number */
 static int cell_key_cmp(const void *a, const void *b)
@@ -533,13 +534,72 @@ unsigned mp_draw_far(const float *e)
     return n;
 }
 
+/* HZ_ONLY_OWN (default 1; 0 = every horizon cell, the old path): a kept-only block's horizon cell whose box centre
+ * lies inside a cell of an on block of another map is left out: there that map draws its own detailed pieces (the
+ * game's maps overlap at their seams: the Burg's horizon under Firelink's aqueduct drew a grey untextured wedge in
+ * the passage below it, Ame's playtest 2026-11-17 21:31 t 88.8, 166 triangles from mp_draw_hz_only). Worked out
+ * again when the set of on blocks changes */
+#ifndef HZ_ONLY_OWN
+#define HZ_ONLY_OWN 1
+#endif
+static unsigned char *hz_skip[MAP_INST];
+static unsigned hz_skip_key[MAP_INST], hz_skip_n[MAP_INST];
+
+static int hz_other_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return a && b && strcmp(a, b);
+}
+
+static const unsigned char *hz_skips(int k)
+{
+    const MapInst *m = &mp_inst[k];
+    unsigned key = 1;
+    for (int j = 0; j < MAP_INST; j++)
+        if (j != k && mp_inst[j].on && mp_inst[j].hz_cell && hz_other_map(j, k))
+            key |= 2u << j;
+    if (hz_skip[k] && hz_skip_key[k] == key && hz_skip_n[k] == m->nctab)
+        return hz_skip[k];
+    free(hz_skip[k]);
+    hz_skip[k] = m->nctab ? calloc(m->nctab, 1) : NULL;
+    hz_skip_key[k] = key, hz_skip_n[k] = m->nctab;
+    if (!hz_skip[k])
+        return NULL;
+    unsigned cut = 0;
+    for (unsigned ci = 0; ci < m->nctab; ci++) {
+        const HzCell *hc = &m->hz_cell[ci];
+        if (!hc->count)
+            continue;
+        float c[3] = {(hc->mn[0] + hc->mx[0]) * 0.5f, (hc->mn[1] + hc->mx[1]) * 0.5f, (hc->mn[2] + hc->mx[2]) * 0.5f};
+        for (int j = 0; j < MAP_INST && !hz_skip[k][ci]; j++) {
+            if (!(key >> (j + 1) & 1))
+                continue;
+            const MapInst *o = &mp_inst[j];
+            for (unsigned cj = 0; cj < o->nctab; cj++) {
+                const HzCell *h = &o->hz_cell[cj];
+                if (c[0] >= h->mn[0] && c[0] <= h->mx[0] && c[1] >= h->mn[1] && c[1] <= h->mx[1] && c[2] >= h->mn[2] &&
+                    c[2] <= h->mx[2]) {
+                    hz_skip[k][ci] = 1, cut++;
+                    break;
+                }
+            }
+        }
+    }
+    if (cut)
+        printf("map: block %d horizon: %u cells inside another map's on blocks left out\n", k, cut);
+    return hz_skip[k];
+}
+
 /* a kept-only block (hz_only): every horizon chunk in view, as the shown draw groups pick them */
 unsigned mp_draw_hz_only(int k, const float *e)
 {
     const MapInst *m = &mp_inst[k];
     unsigned n = 0;
+    const unsigned char *skip = HZ_ONLY_OWN ? hz_skips(k) : NULL;
     for (unsigned ci = 0; ci < m->nctab; ci++) {
         const HzCell *hc = &m->hz_cell[ci];
+        if (skip && skip[ci])
+            continue;
         for (unsigned j = 0; j < hc->count; j++) {
             const Chunk *c = &m->hz_chunk[hc->first + j];
             if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
