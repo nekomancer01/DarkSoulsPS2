@@ -1,6 +1,7 @@
 # E5 part 2 of 2 (after ev_boss_taurus.txt, same Burg build): the Taurus Demon stays dead after a save / load. m10_01
 # event 11010901 sees its flag on at the constructor and disables and kills 1010700; the fog o1405 1011890 is off and
 # no bar shows in the arena.
+# needs: ev_boss_taurus.txt
 option save host bosstest
 option hud
 option nodemo
