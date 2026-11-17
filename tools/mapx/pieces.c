@@ -96,9 +96,29 @@ static double prot_point(const prot_ctx *c, const double *q, double stop)
     for (int k = 0; k < 3; k++)
         g[k] = (long long)mx_floor(q[k] / c->cs);
     double best = c->cap2;
-    for (int dx = -1; dx <= 1; dx++)
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dz = -1; dz <= 1; dz++) {
+    /* the 27 cells nearest first, and none farther than best (2026-11-17): the minimum, and so the result, is the same
+       whatever the order (an early return is still <= stop), but best shrinks sooner and whole cells drop out. A
+       triangle within best of q has its nearest point in a cell within best of q, and it is listed in that cell */
+    double gap[3][3];
+    for (int k = 0; k < 3; k++) {
+        double c0 = (double)g[k] * c->cs, e0 = q[k] - c0, e1 = c0 + c->cs - q[k];
+        gap[k][0] = e0 > 0 ? e0 * e0 : 0, gap[k][1] = 0, gap[k][2] = e1 > 0 ? e1 * e1 : 0;
+    }
+    int ord[27];
+    double og[27];
+    for (int i = 0; i < 27; i++) {
+        double v = gap[0][i / 9] + gap[1][i / 3 % 3] + gap[2][i % 3];
+        int j = i;
+        while (j > 0 && og[j - 1] > v)  /* insertion sort, stable */
+            og[j] = og[j - 1], ord[j] = ord[j - 1], j--;
+        og[j] = v, ord[j] = i;
+    }
+    for (int oi = 0; oi < 27; oi++) {
+        if (og[oi] > best * 1.000001 + 1e-9)
+            break;
+        {
+            int dx = ord[oi] / 9 - 1, dy = ord[oi] / 3 % 3 - 1, dz = ord[oi] % 3 - 1;
+            {
                 unsigned long long key = pg_key(g[0] + dx, g[1] + dy, g[2] + dz);
                 long long lo = 0, hi = c->ng;
                 while (lo < hi) {
@@ -116,6 +136,8 @@ static double prot_point(const prot_ctx *c, const double *q, double stop)
                         return best;
                 }
             }
+        }
+    }
     for (long long e = 0; e < c->nbig; e++) {
         if (box_d2(q, c->bb + 6 * c->big[e]) > best * 1.000001 + 1e-9)
             continue;
