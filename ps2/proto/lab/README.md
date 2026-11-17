@@ -52,7 +52,9 @@ collision, breakables and events exist, is the console's own rule. What the Lab 
 read completes at once (lab_stubs.c), and each frame steps world_update until `world_settled` holds (the condition a
 warp's settle waits for), so nothing the feet want is ever still loading when simulate runs. Collision comes whole
 with its block (`COL_TILES=0`: world.c's own fallback reads the whole `collision.bin` with the lite set, every tile
-of it), never page by page. A wanted block can still stay off by world.c's own rules (no slot, `world: settle
+of it), never page by page. A warp's settle takes at least one step, as on the console where the near cells at the
+new spot always need reading (the Lab's `mapstream_busy` says busy once per settle): kept-only blocks lean and go in
+that step. A wanted block can still stay off by world.c's own rules (no slot, `world: settle
 stopped: no room`); `lab.py run` lists those as findings, since the console does the same.
 
 Time: `ticks()` (the EE counter) moves 1 ms per read in the Lab (ticks.h `LAB`, lab_stubs.c lab_ticks):
@@ -70,10 +72,26 @@ console's by the frames the console was held.
 The bonfire's menu and dialogs are bonfire.c's own state and run (script `pad` presses reach them as frame.c routes
 them); dialog screens (drb) are ready at once and draw nothing; the Start menu is not in the Lab.
 
-What is not, yet (Polaris 1.7c-3): enemies and their AI. An event that asks about or acts on an enemy is a read-back
-stub, except in a script with `option noenemies`, where the console has none either and answers the same. Never:
-sound, the map's drawing, menus and dialogs (an event or pickup that opens a dialog the game waits on is a read-back
-stub), and the streaming waits themselves: the Lab cannot reproduce a fall through a tile that had not loaded.
+Enemies and AI (Polaris 1.7c-3): enemy.c, ai.c (lua0 VM), npc.c and the ragdoll run unchanged, with the camera
+(src/camera.c, src/cam_input.c cam_follow: moved out of render.c / frame.c) as the console's simulate reads it.
+Placement by distance, the active cap, the view filters and the pose pool are the console's own; only the wait is left
+out: each frame steps enemy_stream until `enemy_stream_settled` (no type load in flight or waiting), so a type never
+arrives late. In a replay of a version 3 trace the residency itself comes from the recording (`enemy_load_gate`: a
+type is in exactly on the frames the console had it, whose loads also wait for RAM room) and so does the camera (eye
+and target per frame). Known limitation: the Lab shows every draw group (`dg_mask_shown` answers shown) until the
+draw-group player update moves out of map.c (Polaris 1.7c-4, after PR #252; TECH_DEBT test-9): an enemy in a group the
+console hides updates in the Lab, so enemy traces are recorded where the console shows every enemy in range, which
+lab.py compare checks from the recording's DG column. A script run (no recording) has every type at once, so a type
+the console loads seconds late (RAM room, the disc) can act earlier in the Lab: tests/ev_chr.txt's c3510 at Firelink
+notices the player from the boot spot in the Lab only, and one of its expects differs for that reason. Never: sound, the map's drawing, menus, and the streaming waits.
+
+Trace version 3 (frame.c): 96-byte records add the camera's eye and target, a 6-word header adds flags (1 = option
+noenemies: a replay then boots without enemies), and NAME.enemies holds per frame the loaded types ("FRAME T
+NAME@DIR...") and a row per loaded enemy (enemy.c enemy_trace_lines: entity, position, yaw, ESD states, AI state,
+action, HP, omission level, draw group shown, placement). `lab.py compare` gates on the same (ESD, AI, action) and HP
+sequence per enemy from the first input (the wait before it lets the console's types arrive; the Lab has them at
+once) and reports positions against --enemy-cm (det_burg3: 29 enemies, 0.0 cm). The recorder gathers its output in
+RAM and writes it after the streamer's reads (host writes beside async reads cut those short).
 
 32-bit because the loaders keep pointers in 32-bit fields of the loaded blobs (TECH_DEBT core-1); when formats move to
 chunk streams with base-plus-offset accessors (Polaris phase 3) the Lab can go 64-bit and load into Python directly.

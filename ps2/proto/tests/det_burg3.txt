@@ -1,0 +1,21 @@
+# Lab enemy gate trace (Polaris 1.7c-3): Burg, below the Taurus tower, with enemies. Fixed dt and seed, recorded with
+# the camera, the loaded enemy types and every loaded enemy per frame (build/save/det_burg3.trace, .state, .enemies).
+# The spawn is out of every enemy's perception, so the wait lets the console's blocks and types arrive while every
+# enemy stays idle (the Lab has them at once: lab.py compare starts the enemy comparison at the first input). The walk
+# then comes up the steps past three hollows, whose AI notices the player. god: the player takes no damage.
+option nodemo
+option god
+option fixeddt 33.333
+option seed 7
+option record det_burg3.trace
+wait 3
+spawn -48.5 -21.8 -35.5 3.3
+cam 3.3 0.14
+wait 10
+stick 0 1
+wait 2
+cam 1.73 0.14
+wait 1.5
+stick 0 0
+wait 8
+end

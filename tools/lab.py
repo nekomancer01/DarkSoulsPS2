@@ -13,6 +13,10 @@ gcc with -m32) from Python, and compare a recorded PCSX2 run (test option `recor
       (<name>.trace.state). Gate (--short, traces of 10-20 s): every frame within 1 cm and the same state sequence.
       Long traces: the same sequence of states with each change within one frame, the end position within --end-cm.
       Always reported: the first frame more than 1 mm apart (how far the Lab drifts from the console).
+      Version 3 traces recorded with enemies (NAME.trace.enemies): every enemy's (ESD, AI, action) and HP sequence must
+      match the console's (the hard gate), positions within --enemy-cm are the target, the first frame more than 1 mm
+      apart per enemy is reported; a console row whose draw group was hidden makes the trace unsuitable (the Lab shows
+      every group until Polaris 1.7c-4).
 
   lab.py run SCRIPT... [--area A] [--build B] [--state STATE_LOG [--end-cm 1]] [-j N] [-v]
       runs each test script (tests/*.txt) in the Lab through the game's own interpreter (src/testscript.c) and prints
@@ -41,11 +45,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Lab:
-    def __init__(self, build="build", area="m10_02_00_00", binary=None):
+    def __init__(self, build="build", area="m10_02_00_00", binary=None, noenemies=False):
         build = os.path.abspath(os.path.join(ROOT, build))
         binary = binary or os.path.join(build, "host", "lab")
-        self.p = subprocess.Popen([binary, build, area], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-                                  bufsize=1)
+        self.p = subprocess.Popen([binary, build, area] + (["noenemies"] if noenemies else []), stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True, bufsize=1)
 
     def cmd(self, line):
         """one command; returns its answer line (or the lines up to "ok" for multi-line answers)"""
@@ -66,8 +70,12 @@ class Lab:
     def step(self, n=1):
         return parse_state(self.cmd("step %d" % n))
 
-    def replay(self, trace):
-        return [parse_state(s) for s in self.cmd("replay " + os.path.abspath(trace)) if s.startswith("state ")]
+    def replay(self, trace, enemies=None):
+        """the Lab's state per frame; with a list for enemies, also its enemy rows (the replay's "enemy" lines)"""
+        out = self.cmd("replay " + os.path.abspath(trace))
+        if enemies is not None:
+            enemies += [parse_enemy(s[len("enemy "):]) for s in out if s.startswith("enemy ")]
+        return [parse_state(s) for s in out if s.startswith("state ")]
 
     def stubs(self):
         return [s.split(" ", 1)[1] for s in self.cmd("stubs") if s.startswith("stub ")]
@@ -95,15 +103,27 @@ def parse_state(s):
     return {"frame": int(t[0]), "pos": tuple(float(v) for v in t[1:4]), "yaw": float(t[4]), "state": " ".join(t[5:8])}
 
 
+def trace_header(trace):
+    """(version, header bytes, record bytes, flags): version 2 = 20-byte header, 64-byte records, no flags (its gate
+    traces were all recorded with option noenemies: flags 1); version 3 = 24 bytes with flags, records of h[4] bytes"""
+    import struct
+    h = struct.unpack_from("<6I", open(trace, "rb").read(24))
+    return (2, 20, 64, 1) if h[1] == 2 else (h[1], 24, h[4], h[5])
+
+
+def trace_records(trace):
+    import struct
+    _, hb, rb, _ = trace_header(trace)
+    b = open(trace, "rb").read()
+    for i in range((len(b) - hb) // rb):
+        yield struct.unpack_from("<16I", b, hb + rb * i), struct.unpack_from("<16f", b, hb + rb * i)
+
+
 def trace_start(trace):
     """the frame the comparison starts at: the last teleport (a test spawn, a warp: record flag 1) before the first
     frame with input, so the boot's own spot (in another block than the Lab loaded) is left out"""
-    import struct
-    b = open(trace, "rb").read()
-    start, n = 0, (len(b) - 20) // 64
-    for i in range(n):
-        u = struct.unpack_from("<16I", b, 20 + 64 * i)
-        f = struct.unpack_from("<16f", b, 20 + 64 * i)
+    start = 0
+    for u, f in trace_records(trace):
         if u[10] & 1:
             start = u[0]
         if any(abs(x) > 1e-6 for x in f[2:6]) or u[6] or u[7]:
@@ -111,11 +131,66 @@ def trace_start(trace):
     return start
 
 
+def trace_first_input(trace):
+    """the first frame with any input: enemy comparisons start there (the wait before it lets the console's enemy types
+    load; the Lab has them at once, so the two can only be compared once both have them)"""
+    for u, f in trace_records(trace):
+        if any(abs(x) > 1e-6 for x in f[2:6]) or u[6] or u[7]:
+            return u[0]
+    return 0
+
+
 def trace_held(trace):
     """frames the console's world held the player (record flag 4: a block or tile still loading)"""
-    import struct
-    b = open(trace, "rb").read()
-    return sum(1 for i in range((len(b) - 20) // 64) if struct.unpack_from("<I", b, 20 + 64 * i + 40)[0] & 4)
+    return sum(1 for u, _ in trace_records(trace) if u[10] & 4)
+
+
+def parse_enemy(s):
+    """an enemy row (enemy.c enemy_trace_lines): frame entity x y z yaw esd ai act hp omit dg hx hz, keyed by
+    (entity, hx, hz) (characters without an entity id are -1); None for a "FRAME T ..." types line"""
+    t = s.split()
+    if len(t) > 1 and t[1] == "T":  # (the frame's loaded types)
+        return None
+    key = (int(t[1]), t[12], t[13]) if len(t) > 13 else (int(t[1]),)
+    return {"frame": int(t[0]), "entity": key, "pos": tuple(float(v) for v in t[2:5]), "yaw": float(t[5]),
+            "state": " ".join(t[6:9]), "hp": int(t[9]), "omit": int(t[10]), "dg": int(t[11])}
+
+
+def compare_enemies(lab_rows, ps2_rows, start, bound_cm=1.0):
+    """per enemy (by entity) from frame `start`: the same sequence of (ESD, AI, action) states (the hard gate), HP
+    sequence, the largest distance, the first frame more than 1 mm apart; every console row must have its draw group
+    shown (the Lab shows every group until 1.7c-4), else the trace is unsuitable"""
+    by = lambda rows: {}
+    lab, ps2 = {}, {}
+    lab_rows = [r for r in lab_rows if r]
+    ps2_rows = [r for r in ps2_rows if r]
+    for r in lab_rows:
+        if r["frame"] >= start:
+            lab.setdefault(r["entity"], {})[r["frame"]] = r
+    for r in ps2_rows:
+        if r["frame"] >= start:
+            ps2.setdefault(r["entity"], {})[r["frame"]] = r
+    seq = lambda d, k: [v for i, v in enumerate([d[f][k] for f in sorted(d)]) if i == 0 or [d[f][k] for f in sorted(d)][i - 1] != v]
+    out, ok_states, worst = {}, True, 0.0
+    hidden = sorted({e for e, d in ps2.items() for r in d.values() if not r["dg"]})
+    for e in sorted(set(lab) | set(ps2)):
+        a, b = lab.get(e, {}), ps2.get(e, {})
+        frames = sorted(set(a) & set(b))
+        dist = [sum((x - y) ** 2 for x, y in zip(a[f]["pos"], b[f]["pos"])) ** 0.5 for f in frames]
+        same = seq(a, "state") == seq(b, "state") and seq(a, "hp") == seq(b, "hp") and set(a) == set(b)
+        ok_states &= same
+        worst = max([worst] + dist)
+        out[e] = {"frames": len(frames), "only_lab": len(set(a) - set(b)), "only_console": len(set(b) - set(a)),
+                  "same_states": same, "max_cm": round(100 * max(dist), 2) if dist else None,
+                  "first_over_1mm": next((f for f, d in zip(frames, dist) if d > 0.001), None),
+                  "states": len(seq(b, "state"))}
+        if not same:
+            sa, sb = seq(a, "state"), seq(b, "state")
+            k = next((i for i, (x, y) in enumerate(zip(sa, sb)) if x != y), min(len(sa), len(sb)))
+            out[e]["first_state_difference"] = {"lab": sa[k] if k < len(sa) else None, "console": sb[k] if k < len(sb) else None}
+    return {"enemies": len(out), "same_states": ok_states, "max_cm": round(100 * worst, 2),
+            "within_bound": worst * 100 <= bound_cm, "hidden_groups_on_console": hidden,
+            "pass": ok_states and not hidden, "per_enemy": out}
 
 
 def compare(lab_states, ps2_states, short, end_cm, start=0):
@@ -284,8 +359,6 @@ def print_run(rep, verbose):
             print(f"    {c}")
     if rep["presentation"]:
         print("  presentation only in the Lab: " + ", ".join(f"{k} x{v}" for k, v in rep["presentation"].items()))
-    if not rep.get("noenemies"):
-        print("  note: the console runs this script with enemies; the Lab has none yet (Polaris 1.7c-3)")
     for e in group_errors(rep["errors"]):
         print(f"  error: {e}")
     for f in rep.get("findings", []):
@@ -315,6 +388,9 @@ def main():
     c.add_argument("--build", default="build")
     c.add_argument("--short", action="store_true", help="the short-trace gate: 1 cm every frame, same states")
     c.add_argument("--end-cm", type=float, default=50.0, help="long traces: the end position bound")
+    c.add_argument("--enemy-cm", type=float, default=1.0, help="version 3 traces with enemies: the target position bound "
+                   "(reported; the gate is the state sequence)")
+    c.add_argument("-v", action="store_true", help="every enemy's comparison")
     r = sub.add_parser("run")
     r.add_argument("scripts", nargs="+")
     r.add_argument("--area", default="m10_02_00_00")
@@ -342,8 +418,10 @@ def main():
                     n += 1
         print(f"lab run: {n - fails} passed, {fails} failed")
         return 1 if fails else 0
-    with Lab(a.build, a.area) as lab:
-        got = lab.replay(a.trace)
+    noen = trace_header(a.trace)[3] & 1
+    rows = []
+    with Lab(a.build, a.area, noenemies=noen) as lab:
+        got = lab.replay(a.trace, rows)
         stubs = lab.stubs()
     ps2 = [parse_state(s) for s in open(a.state_log) if s.strip()]
     start = trace_start(a.trace)
@@ -351,6 +429,18 @@ def main():
     rep["from_frame"] = start
     rep["held_frames"] = trace_held(a.trace)  # (the console's disc waits in the reference: many = a poor reference)
     rep["stubs"] = stubs
+    ef = a.trace + ".enemies"
+    if not noen and os.path.exists(ef):
+        er = compare_enemies(rows, [parse_enemy(s) for s in open(ef) if s.strip()], trace_first_input(a.trace),
+                             a.enemy_cm)
+        per = er.pop("per_enemy")
+        rep["enemy_gate"] = er  # the hard gate: the same state sequence for every enemy (positions: the target bound)
+        rep["pass"] = rep["pass"] and er["pass"]
+        if a.v:
+            for e, d in per.items():
+                print(f"enemy {e}: {d}")
+        else:
+            rep["enemies_differing"] = {e: d for e, d in per.items() if not d["same_states"]}
     for k, v in rep.items():
         print(f"{k}: {v}")
     return 0 if rep["pass"] else 1

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <libpad.h>
 #include "frame.h"
+#include "pack.h"
 #include "g2d.h"
 #include "render.h"
 #include "mem.h"
@@ -39,7 +40,6 @@
 #include "sound.h"
 #include "ticks.h"
 
-#define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #ifndef FRAME_SKIP_MAP
 #define FRAME_SKIP_MAP cv_FRAME_SKIP_MAP  /* runtime switch, default 0 (src/cvar.h): EMIT_MAP writes no packets */
 #endif
@@ -101,39 +101,82 @@ unsigned frame_det_seed;
 static unsigned det_clock;
 static V3 rec_end;  /* the player at the last frame's end (record_frame: moved since?) */
 static float rec_end_yaw;
-static int rec = -1, rec_state = -1;  /* fio descriptors (host: save/, writable in test runs: pcsx2-run.sh) */
+static int rec = -1, rec_state = -1, rec_enemies = -1;  /* fio descriptors (host: save/, writable in test runs: pcsx2-run.sh) */
 static unsigned rec_frame;
+#define REC_SIZE 96  /* bytes of a trace record (version 3: record_frame) */
 static char rec_line[96];
+
+/* The recorder's output is gathered in RAM (taken at option record only) and written when a buffer is 3/4 full or the
+ * script ends, after the reads in flight (pack_async_wait): host writes each frame beside the streamer's async reads
+ * cut those reads short ("read 51 of 384 bytes", "model.bin: read error", det_burg3 2026-11-18) */
+typedef struct { int *fd; char *buf; unsigned n, cap; } RecOut;
+static RecOut rec_out[3] = {{&rec, 0, 0, 64u << 10}, {&rec_state, 0, 0, 48u << 10}, {&rec_enemies, 0, 0, 160u << 10}};
+static void rec_flush(int close)
+{
+    pack_async_wait();
+    for (int i = 0; i < 3; i++) {
+        RecOut *o = &rec_out[i];
+        if (o->n && *o->fd >= 0)
+            fioWrite(*o->fd, o->buf, (int)o->n);
+        o->n = 0;
+        if (close) {
+            free(o->buf), o->buf = NULL;
+            if (*o->fd >= 0)
+                fioClose(*o->fd), *o->fd = -1;
+        }
+    }
+}
+static char *rec_room(int i, unsigned n)  /* n bytes of output i (flushes first when they do not fit) */
+{
+    RecOut *o = &rec_out[i];
+    if (o->n + n > o->cap / 4 * 3)
+        rec_flush(0);
+    return o->buf + o->n;
+}
+static void rec_put(int i, const void *p, unsigned n)
+{
+    memcpy(rec_room(i, n), p, n);
+    rec_out[i].n += n;
+}
 
 unsigned frame_clock(void) { return frame_det_dt > 0 ? det_clock : ticks(); }
 
 void frame_det_record(const char *path)
 {
-    char p1[96], p2[104];
+    char p1[96], p2[104], p3[104];
     snprintf(p1, sizeof p1, "host:save/%s", path);  /* (build/save/, as test saves: save.c) */
     snprintf(p2, sizeof p2, "%s.state", p1);
+    snprintf(p3, sizeof p3, "%s.enemies", p1);
     rec = fioOpen(p1, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
     rec_state = fioOpen(p2, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
-    if (rec < 0 || rec_state < 0) {
+    rec_enemies = fioOpen(p3, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
+    if (rec < 0 || rec_state < 0 || rec_enemies < 0) {
         printf("TEST error: frame: cannot write the input trace %s\n", p1);
-        rec = rec_state = -1;
+        rec = rec_state = rec_enemies = -1;
         return;
     }
-    /* header: magic, version, seed, fixed dt (us), record size */
-    const unsigned h[5] = {0x54525344 /* DSRT */, 2, frame_det_seed, (unsigned)(frame_det_dt * 1e6f), 64};
-    fioWrite(rec, h, sizeof h);
-    rec_frame = 0;
+    rec_frame = 0;  /* (the header goes out with the first record: record_frame, once the options are all read) */
+    for (int i = 0; i < 3; i++)
+        rec_out[i].buf = malloc(rec_out[i].cap), rec_out[i].n = 0;
     rec_end = v3(1e30f, 1e30f, 1e30f);  /* (the first record carries the start position) */
 }
 
-/* one 64-byte record a frame (version 2): 0 frame, 1 dt, 2-5 sticks, 6 buttons, 7 d-pad, 8-9 camera yaw / pitch (they
+/* after a 24-byte header (version 2: 20 bytes, no flags), one 96-byte record a frame (version 3; version 2 was the first
+ * 64 bytes): 0 frame, 1 dt, 2-5 sticks, 6 buttons, 7 d-pad, 8-9 camera yaw / pitch (they
  * steer movement), 10 flags (1: the player was moved since the last frame's end: a test spawn, a warp, a respawn;
  * 2: frozen, the simulate phase does not run; 4: the world held the player, world_hold: a block or tile still
- * loading, which the Lab replays), 11-14 the player's position and yaw at the frame's start (flag 1) */
-static unsigned char rec_buf[64] __attribute__((aligned(4)));  /* this frame's record, written at the frame's end */
+ * loading, which the Lab replays), 11-14 the player's position and yaw at the frame's start (flag 1), 15-17 the
+ * camera's eye and 18-20 its target as simulate read them (enemy pose updates and omission levels follow the view);
+ * the rest 0. NAME.enemies holds the frame's enemy rows (enemy_trace_lines). */
+static unsigned char rec_buf[REC_SIZE] __attribute__((aligned(4)));  /* this frame's record, written at the frame's end */
 static unsigned rec_holds;  /* world_stats.holds at this frame's input */
-static void record_frame(const Input *in, float dt, float yaw, float pitch, const Player *pl, int frozen)
+static void record_frame(const Input *in, float dt, float yaw, float pitch, const Player *pl, int frozen, int opts)
 {
+    if (!rec_frame) {  /* header: magic, version, seed, fixed dt (us), record size, flags (1: option noenemies) */
+        const unsigned h[6] = {0x54525344 /* DSRT */, 3, frame_det_seed, (unsigned)(frame_det_dt * 1e6f), REC_SIZE,
+                               (opts & TEST_NOENEMIES) ? 1u : 0u};
+        rec_put(0, h, sizeof h);
+    }
     unsigned char *r = rec_buf;
     memset(r, 0, sizeof rec_buf);
     unsigned *u = (unsigned *)r;
@@ -263,26 +306,7 @@ static void phase_sim_a(Frame *f)
     HITCH_END(pre, HS_PRE);
 
     PROF_MARK(PROF_CAMERA);
-    /* third-person orbit camera behind the player */
-    /* LockCamParam row 0: camDistTarget 4.0 m, chrOrgOffset_Y 1.42 m */
-    /* the follow height eases after the feet (steps, landings) instead of copying them; teleports snap */
-    float ky = 1 - expf(-dt / 0.15f);
-    f->cam_y = fabsf(pl->pos.y - f->cam_y) > 3 ? pl->pos.y : f->cam_y + (pl->pos.y - f->cam_y) * ky;
-    f->target = v3(pl->pos.x, f->cam_y + 1.42f, pl->pos.z);
-    float d = test_build_cam_dist(4.0f);
-    f->eye = v3add(f->target, v3(-sinf(f->cam_yaw) * cosf(f->cam_pitch) * d, sinf(f->cam_pitch) * d,
-                                 -cosf(f->cam_yaw) * cosf(f->cam_pitch) * d));
-    /* camera collision: pull in at once in front of the first wall hit (CAM_WALL margin: the near plane plus
-     * 0.05 m, 0.3 m with the old 0.25 m plane), ease back out at 4 m/s */
-    float want = d;
-    ColHit ch;
-    float ray0[3] = {f->target.x, f->target.y, f->target.z}, ray1[3] = {f->eye.x, f->eye.y, f->eye.z};
-    if (f->b->col_ok && col_ray(ray0, ray1, COL_CAMERA, &ch))
-        want = ch.t * d - CAM_WALL > 0.2f ? ch.t * d - CAM_WALL : 0.2f;
-    f->cam_dist = want < f->cam_dist ? want : f->cam_dist + 4.0f * dt > want ? want : f->cam_dist + 4.0f * dt;
-    f->eye = v3add(f->target, v3scale(v3sub(f->eye, f->target), f->cam_dist / d));
-    test_build_camera(&f->eye, &f->target);  /* ENEMY_VIEW check build */
-    r_camera(f->eye, f->target);
+    cam_follow(pl, f->cam_yaw, f->cam_pitch, dt, f->b->col_ok, &f->cam_y, &f->cam_dist, &f->eye, &f->target);  /* (cam_input.c) */
 }
 
 static void phase_world(Frame *f)
@@ -508,7 +532,7 @@ void frame_run(const FrameBoot *b)
         phase_begin(&f);
         phase_input(&f);
         if (rec >= 0)
-            record_frame(&f.in, f.dt, f.cam_yaw, f.cam_pitch, f.pl, test_frozen()), rec_frame++;
+            record_frame(&f.in, f.dt, f.cam_yaw, f.cam_pitch, f.pl, test_frozen(), f.b->test_opts), rec_frame++;
         /* Frame order: the player, camera and world first, then the map chain is kicked and VU1 / the GS draw it
          * while the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera,
          * draw groups, streamed cells) is settled before the kick; what those updates change shows from the next
@@ -522,12 +546,17 @@ void frame_run(const FrameBoot *b)
         rec_end = f.pl->pos, rec_end_yaw = f.pl->yaw;
         if (rec >= 0) {  /* flag 4: the world held the player this frame (world_hold: a block or tile still loading) */
             ((unsigned *)rec_buf)[10] |= (unsigned)(world_stats.holds != rec_holds) << 2;
-            fioWrite(rec, rec_buf, sizeof rec_buf);
-        }
-        if (rec_state >= 0) {
+            float *rf = (float *)rec_buf;
+            rf[15] = f.eye.x, rf[16] = f.eye.y, rf[17] = f.eye.z, rf[18] = f.target.x, rf[19] = f.target.y, rf[20] = f.target.z;
+            rec_put(0, rec_buf, sizeof rec_buf);
             int n = snprintf(rec_line, sizeof rec_line, "%u %.4f %.4f %.4f %.4f %s\n", rec_frame - 1, f.pl->pos.x,
                              f.pl->pos.y, f.pl->pos.z, f.pl->yaw, player_state_name(f.pl));
-            fioWrite(rec_state, rec_line, n);
+            rec_put(1, rec_line, (unsigned)n);
+            char *e = rec_room(2, 18u << 10);
+            rec_out[2].n += (unsigned)enemy_trace_types(e, 2 << 10, rec_frame - 1);
+            rec_out[2].n += (unsigned)enemy_trace_lines(rec_out[2].buf + rec_out[2].n, 16 << 10, rec_frame - 1);
+            if (!test_active())  /* the script ended: the files are complete */
+                rec_flush(1);
         }
     }
 }

@@ -113,6 +113,10 @@ int player_lock_target(const Player *p, float out[3]);
 /* The camera's yaw and pitch from this frame's right stick and the lock-on target (src/cam_input.c: the frame's input
  * phase, and the Lab's script runner) */
 void cam_input(const Player *p, const Input *in, float *cam_yaw, float *cam_pitch, float dt);
+/* The orbit camera behind the player (frame.c's simulate phase): the follow height (*cam_y) and wall pull-in
+ * (*cam_dist) carried between frames, the eye and target out, then r_camera */
+void cam_follow(const Player *p, float cam_yaw, float cam_pitch, float dt, int col_ok, float *cam_y, float *cam_dist,
+                V3 *eye, V3 *target);
 /* cam_yaw: camera heading, so stick input is camera-relative */
 void player_update(Player *p, const Input *in, float cam_yaw, float dt);
 void player_draw(const Player *p);

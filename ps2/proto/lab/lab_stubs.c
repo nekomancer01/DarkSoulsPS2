@@ -25,7 +25,6 @@ unsigned lab_ticks(void)
     static unsigned t;
     return t += 294912;
 }
-float enemy_player_push[2];
 
 /* events, bonfire, enemies, world (1.7c brings events and enemies in) */
 void loading_hold(void) { LAB_COUNT("loading_hold"); }
@@ -102,11 +101,6 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
 int pack_job_step(PackJob *j) { return j->state; }
 void pack_job_cancel(PackJob *j) { (void)j; }
 /* render and VU1: nothing to draw */
-void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
-{
-    LAB_READBACK("r_camera_basis (camera read by simulate)");
-    *eye = *right = *up = *fwd = v3(0, 0, 0), *focal = *focal_y = *zscale = 1;
-}
 int r_vram_avail(const GSGLOBAL *gs) { (void)gs; return 4 << 20; }
 u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm, GsOwner o) { (void)gs, (void)w, (void)h, (void)psm, (void)o; return 256; }
 u32 r_vram_clut(GSGLOBAL *gs, int clut_psm, GsOwner o) { (void)gs, (void)clut_psm, (void)o; return 256; }
@@ -151,11 +145,6 @@ void lab_unsupported(const char *cmd, const char *needs)
     printf("TEST error line %d: '%s' needs %s (not in the Lab)\n", (int)test_mb.line, cmd, needs);
     lab_count(cmd, 1);
 }
-int enemy_nearest_live(const float pos[3], V3 *at, float *yaw)
-{
-    (void)pos, (void)at, (void)yaw, lab_unsupported("behind", "enemies (1.7c-3)");
-    return 0;
-}
 void loading_show(float s) { (void)s, LAB_COUNT("loading_show"); }
 /* determinism options: dt and seed are the runner's; the recorder is the console's (replay its traces with "replay") */
 float frame_det_dt;
@@ -166,7 +155,6 @@ FxStats fx_stats;
 Vu1Stats vu1_stats;
 unsigned hitch_acc[HS_N];
 int map_vu1_batches, map_ee_tris;
-int enemy_active, enemy_drawn;
 char _stack_size[1];
 int pack_cdrom;
 int pack_disc_stats(void *out) { (void)out; return 0; }
