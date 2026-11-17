@@ -31,6 +31,7 @@ sresult *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, i
 void simplify_free(sresult *R);
 void simplify_set_envelope(double pad);
 void simplify_set_guard(double qmin, double flip_cos);
+void simplify_set_area_guard(double frac);
 void simplify_set_shape(double tol);
 void simplify_set_shape_cost(double k);
 void simplify_set_place(int on);
@@ -1017,6 +1018,7 @@ MX_API void mx_simp_envelope(double pad) { simplify_set_envelope(pad); }
 
 /* the triangle guard for the next mx_simp_new (tools/native/simplify.c g_qmin / g_flip_cos); qmin 0, flip_cos -2: off */
 MX_API void mx_simp_guard(double qmin, double flip_cos) { simplify_set_guard(qmin, flip_cos); }
+MX_API void mx_simp_area_guard(double frac) { simplify_set_area_guard(frac); }
 
 /* the guard's shape tolerance in metres for the next mx_simp_new (tools/native/simplify.c g_shape_tol); 0: off */
 MX_API void mx_simp_shape(double tol) { simplify_set_shape(tol); }

@@ -337,6 +337,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         if mapcfg.SIMPLIFY_GUARD:
             MX.mx_simp_guard(mapcfg.SIMPLIFY_QMIN, math.cos(math.radians(mapcfg.SIMPLIFY_FLIP_DEG)))
             MX.mx_simp_shape(mapcfg.SIMPLIFY_VALIDATE_TOL or env_pad or 0.25)
+            MX.mx_simp_area_guard(mapcfg.SIMPLIFY_AREA_GUARD)
         far_lv = out == "tris_far"  # the coarse level (shown from RES_NEAR_R out)
         MX.mx_simp_shape_cost(mapcfg.SIMPLIFY_SHAPE_K_FAR if far_lv else mapcfg.SIMPLIFY_SHAPE_K_NEAR)
         MX.mx_simp_place(1 if far_lv and mapcfg.SIMPLIFY_PLACE else 0)
@@ -348,6 +349,7 @@ def simplify_meshes(meshes, spawn, nav_v, nav_t, src="tris", out="tris", eps_fix
         finally:
             MX.mx_simp_envelope(0.0)
             MX.mx_simp_guard(0.0, -2.0)
+            MX.mx_simp_area_guard(0.0)
             MX.mx_simp_shape(0.0)
             MX.mx_simp_shape_cost(0.0)
             MX.mx_simp_place(0)

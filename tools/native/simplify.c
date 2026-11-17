@@ -151,7 +151,7 @@ typedef struct {
     ivec *snb;  /* seam neighbours (attribute seams), only while the shape envelope is on; NULL: off */
     char *lock, *border, *dead;
     double (*Q)[11];
-    double *errm, *alost, *scale;
+    double *errm, *alost, *aown, *scale;  /* aown: source area each vertex stands for (a third of its triangles') */
     const double *weight;  /* NULL: all 1 */
     double sat;
     int *ver;
@@ -160,7 +160,7 @@ typedef struct {
     sgrid sg;            /* source triangles by cell, only while g_shape_tol is on (P0, tmesh set) */
     int (*P0)[3], *tmesh; /* source triangles' positions and mesh (agrp of corner 0) */
     const int *agrp;
-    double lost, seam_k2, ak2;
+    double lost, aring, seam_k2, ak2;  /* aring: attr_map: the area of the collapse's triangles before it */
     double shape;  /* attr_map: the shape term of the last evaluated collapse (g_shape_k) */
     double dlocv;  /* attr_map: how far v's own triangles moved off their planes (placement), else 0 */
     /* attr_map scratch */
@@ -191,6 +191,7 @@ static int amap_get(S *s, int key, int *val) {
 }
 
 /* attr_map(u, v): returns 0 when the attribute map is inconsistent (Python: amap None) */
+static double g_alost;  /* the area guard (simplify_set_area_guard, below) */
 static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out) {
     s->removed.n = s->keep.n = s->amk.n = s->amv.n = s->vkeep.n = 0;
     iv_sort(&s->vt[u]);
@@ -211,17 +212,19 @@ static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out
     }
     double torn = 0.0, dloc = 0.0, shape = 0.0, dlocv = 0.0;
     v3 pu = s->pos[u], pv = x;  /* pv: where the merged vertex goes (v's position, or the placement's) */
-    double da = 0.0;
+    double da = 0.0, aring = 0.0;
     for (int i = 0; i < s->removed.n; i++) {
         int *tp = s->TP[s->removed.a[i]];
         da += area3(s->pos[tp[0]], s->pos[tp[1]], s->pos[tp[2]]);
     }
+    aring = da;
     v3 du = sub(pu, pv);
     for (int i = 0; i < s->keep.n; i++) {
         int t = s->keep.a[i];
         int *tp = s->TP[t];
         v3 p[3] = {s->pos[tp[0]], s->pos[tp[1]], s->pos[tp[2]]};
         double a0 = area3(p[0], p[1], p[2]);
+        aring += a0;
         int k = idx3(tp, u), dummy;
         if (!amap_get(s, s->TA[t][k], &dummy)) torn += a0;
         v3 q0 = p[0], q1 = p[1], q2 = p[2];
@@ -245,6 +248,7 @@ static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out
             iv_push(&s->vkeep, t);
             v3 p[3] = {s->pos[tp[0]], s->pos[tp[1]], s->pos[tp[2]]};
             double a0 = area3(p[0], p[1], p[2]);
+            aring += a0;
             v3 q0 = p[0], q1 = p[1], q2 = p[2];
             p[idx3(tp, v)] = x;
             da += a0 - area3(p[0], p[1], p[2]);
@@ -301,6 +305,10 @@ static int attr_map(S *s, int u, int v, v3 x, double *torn_out, double *dloc_out
         }
     }
     s->lost = fabs(da);
+    s->aring = aring;
+    /* the guard: a surface cut away, not simplified (the area lost around u and v so far, against the source area
+     * they stand for) */
+    if (g_alost > 0 && s->alost[u] + s->alost[v] + s->lost > g_alost * (s->aown[u] + s->aown[v])) return 0;
     s->shape = shape;
     s->dlocv = dlocv;
     *torn_out = torn;
@@ -325,6 +333,14 @@ void simplify_set_envelope(double pad) { g_env_pad = pad > 0 ? pad : 1e300; }
  * g_flip_cos -2. */
 static double g_qmin = 0.0, g_flip_cos = -2.0, g_shape_tol = 0.0;
 void simplify_set_guard(double qmin, double flip_cos) { g_qmin = qmin > 0 ? qmin : 0.0; g_flip_cos = flip_cos; }
+/* g_alost (0: off): no collapse may leave the area lost around its two vertices (all collapses into them so far) above
+ * this fraction of the source area they stand for. Thin
+ * boards (window shutters, crate planks) first fold flat into a double card, then lose a corner at zero quadric error:
+ * a corner collapse cuts away about half its own neighbourhood (Undead Burg m2270B1 shutters: 24 -> 4 triangles at
+ * 12 px, drawn as dark wedges in the window; Ame's play test 2026-11-16). Collapses inside a surface or along a straight
+ * border change the area by little; the global area term (AREA_K) costs +34 % triangles for the same picture. */
+static double g_alost = 0.0;
+void simplify_set_area_guard(double frac) { g_alost = frac > 0 ? frac : 0.0; }
 /* g_shape_tol (metres, 0: off; needs the per-attribute source mesh agrp): a triangle may not reach further than this
  * from every source triangle of its own mesh (its corners, edge middles and centre are measured): a material may not
  * be stretched over ground another one covers, or across a gap of its own shape (play report 2026-11-10: a board on
@@ -712,6 +728,11 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         if ((s.bnb[p].n || g_seam) && (s.bnb[p].n > 2 || (locked && locked[p]))) s.lock[p] = 1;
     s.errm = calloc(nv ? nv : 1, sizeof(double));
     s.alost = calloc(nv ? nv : 1, sizeof(double));
+    s.aown = calloc(nv ? nv : 1, sizeof(double));
+    for (int i = 0; i < nt; i++) {
+        double a3 = area3(s.pos[s.TP[i][0]], s.pos[s.TP[i][1]], s.pos[s.TP[i][2]]) / 3;
+        for (int k = 0; k < 3; k++) s.aown[s.TP[i][k]] += a3;
+    }
     s.ver = calloc(nv ? nv : 1, sizeof(int));
     s.scale = (double *)scale;
     s.weight = weight, s.sat = sat;
@@ -824,6 +845,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
         s.errm[v] = pmax(s.dlocv > 0 ? s.errm[v] + s.dlocv : s.errm[v], s.errm[u] + dloc);
         if (moved) s.pm[v] = pv;
         s.alost[v] += s.alost[u] + s.lost;
+        s.aown[v] += s.aown[u];
         s.ver[v] += 1;
         if (s.border[u]) {
             ivec *b = &s.bnb[u];
@@ -884,7 +906,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     free(s.l0);
     if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); free(s.sg.bb); }
     free(s.vt); free(s.bnb); free(s.TP); free(s.TA); free(s.lock); free(s.border); free(s.dead); free(s.Q);
-    free(s.errm); free(s.alost); free(s.ver); free(h.a); free(chg.a);
+    free(s.errm); free(s.alost); free(s.aown); free(s.ver); free(h.a); free(chg.a);
     free(s.pm); free(s.vkeep.a);
     free(s.removed.a); free(s.keep.a); free(s.amk.a); free(s.amv.a); free(s.nu.a); free(s.nv_.a); free(s.opp.a);
     return R;
