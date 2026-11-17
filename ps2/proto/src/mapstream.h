@@ -154,6 +154,11 @@ void mapstream_pool(unsigned max);
 void mapstream_update(const float pos[3]);
 /* Cell i's near blob (chunk records + streams) if loaded, else NULL; marks it used this frame */
 const void *mapstream_get(unsigned i);
+/* why cell i (and its parts) of the selected instance is not at its near level: 0 in, 1 unseen, 2 refused, 3 plan cut,
+ * 4 disc, 5 settling (map.c's pop-in line) */
+int mapstream_why(unsigned i);
+/* 1 while a settle runs (after a warp / load: the near level around the new spot first) */
+int mapstream_settling(void);
 
 /* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
  * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: pages borrowed from the heap (MS_BORROW); room_fails: a wanted item found no room;

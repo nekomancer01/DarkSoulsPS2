@@ -239,7 +239,7 @@ def main():
         res = chunks, len(meshes), len(tris)
     chunks, n_meshes, n_tris = res
     mapchunks.rss("chunks")
-    cells = mapcells.stream_cells(chunks) if mapcfg.STREAM else None
+    cells = mapcells.stream_cells(chunks, nav_v) if mapcfg.STREAM else None
     if mapcfg.STREAM:  # resident chunks grouped by cell, then the near chunks; bump.bin numbers them in this order
         res_order = [i for c in cells for i in c[1]] + [i for i, ch in enumerate(chunks) if ch[1] & mapcfg.CHUNK_SKY]
         order = res_order + [i for c in cells for i in c[2]]

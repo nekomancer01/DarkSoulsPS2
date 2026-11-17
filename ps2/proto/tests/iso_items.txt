@@ -1,5 +1,5 @@
 # World items (src/pickup.c, src/event.c): the Burg corpse treasure o0500_0029 (lot 1010440) next to the aqueduct
-# start shows the treasure shine, the action button picks it up (pickup anim a00 8000, item get dialog F25) and its
+# start shows the treasure shine, the action button picks it up (pickup anim a00 7503, item get dialog F25) and its
 # get flag keeps it taken; then an enemy drop (lot 1010400, the far corpse o0500_0021's, rolled as a drop) at the
 # player's feet glows and is picked up the same way (both give Soul of a Lost Undead, goods 400: "EVT item lot: item
 # 40000190" lines); 40 rolls of the Burg hollow's NpcParam lot (2 % a Broken
@@ -22,7 +22,7 @@ ev action
 wait 0.5
 pickup expect dialog 1
 shot pickup_anim
-wait 4
+wait 1.5
 shot item_dialog
 pickup summary
 wait 4
@@ -35,7 +35,7 @@ ev action
 wait 1
 pickup expect drops 0
 pickup expect dialog 1
-wait 4
+wait 1
 shot drop_dialog
 pickup drop 250050 -44.6 -21.65 -36.4
 pickup drop 250050 -44.6 -21.65 -36.4

@@ -66,7 +66,7 @@ import area, dsr_light, ffx, souls, srcsum
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_map.py uses them without this file
 
-FX_VERSION = 1
+FX_VERSION = 2  # 2: FxSys orient + quad axes (FX_ORIENT)
 EVENT_SFX = os.environ.get("FX_EVENT_SFX", "1") == "1"  # MSB SFX with an entity id (event-owned) included
 BONFIRE_FIRE, BONFIRE_LIGHT = 90000, 90006   # fire = 90000 + kindle index 0..4, light (see the docstring)
 BONFIRE_BURSTS = (90007, 90010)              # one-shots: ignite (index change into 1..4), rest
@@ -99,8 +99,10 @@ FX_OVERLAP = float(os.environ.get("FX_OVERLAP", 1.0))
 # 1.0 the bright texels clip red while green keeps rising, so the hue turns yellow where DSR's per-pixel tone map keeps
 # it orange. MEASURED (TECH_DEBT fx-2): see FX_OVERLAP
 FX_ADD_CAP = float(os.environ.get("FX_ADD_CAP", 1.0))
+FX_ORIENT = os.environ.get("FX_ORIENT", "1") == "1"  # Orientation 2 quads fixed in the effect frame: system()
+FX_WALL_ALPHA = os.environ.get("FX_WALL_ALPHA", "1") == "1"  # BlendMode 1 (light / fog walls) alpha blended: system()
 
-SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x"  # = fx.h FxSys
+SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x3f3f"  # = fx.h FxSys
 LIGHT_FMT = "<H2x3ffff8f24Bf"
 
 
@@ -299,7 +301,14 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
         c1 = [_curve(_f(ap, "Color1" + ch), life) for ch in "RGBA"]
         c2 = [_curve(_f(ap, "Color2" + ch), life) for ch in "RGBA"]
     mod = [_curve(_f(ap, "ColorMod" + ch), life) for ch in "RGBA"]
-    blend = 1 if ap.get("BlendMode") == 6 else 0
+    # BlendMode 1 (FX_WALL_ALPHA, default on; FX_WALL_ALPHA=0 = the old additive export): only the light / fog walls
+    # use it (74 of ~1900 appearances in the game's bundles, all on the solid white s00917 / one other plain texture,
+    # 2026-11-17 survey), a 2 x 3.5 m sheet of colour 0.196 whose alpha ramps 0 -> 1 -> 0 over 5 s, emitted every
+    # 1 s: five sheets overlap. Added, they summed to 5 x 0.196 and clipped to a flat white box (Ame's play reports
+    # 2026-11-08 / 11-17, TECH_DEBT fx-12); blended by alpha they make the opaque grey-white sheet DSR's boss fog is
+    # (nothing behind it shows), with the BlendMode 4 noise layers adding the light swirls on top. ASSUMED: the
+    # exe's blend table for the FFX modes is not decoded (the RenderDoc check is in fx-12).
+    blend = 1 if ap.get("BlendMode") == 6 or (FX_WALL_ALPHA and ap.get("BlendMode") == 1) else 0
     mul = _curve(_f(ap, "ColorModMult"), life)
     rgba = []
     for i in range(N_CURVE):
@@ -320,7 +329,18 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     rate = 0.0
     if tl and tl.get("times") and max(tl["times"]) > 0:
         rate = (tl["values"][-1] - tl["values"][0]) / (max(tl["times"]) - min(tl["times"]))
-    return dict(tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
+    # Orientation (FX_ORIENT, default on; FX_ORIENT=0 = every quad camera-facing as before). The exe builds each
+    # cluster billboard's basis in FXClusterAppearance_Billboard.cpp FUN_1411848b0 (MultiTextureBillboard
+    # FUN_1411889b0, the same switch on the appearance's Orientation): 0 the camera's matrix (FUN_1400aee50: faces the
+    # camera), 1 the matrix it is handed, 2 the cluster's own frame (+0x50, orthonormalised by FUN_140094520), 3 / 4 / 5
+    # replace row x / y / z with the world axis (4: upright, the cylindrical sprites of fx-2). The fog walls are
+    # Orientation 2: a 2 x 3.5 m sheet fixed in the SFX region's frame, which fills its doorway; drawn camera-facing
+    # it turned with the view and stood out of the frame (Ame's report 2026-11-17). 2 is drawn here as fixed in
+    # the system frame R (x / y columns) times the instance frame. 1 (the matrix the caller hands in, not traced: the
+    # fog walls' small motes use it) and 3-5 stay camera-facing (TECH_DEBT fx-2); fixed quads skip VU1 (EE path).
+    orient = 1 if FX_ORIENT and ap.get("Orientation") == 2 else 0
+    qx, qy = _apply(R, [1.0, 0.0, 0.0]), _apply(R, [0.0, 1.0, 0.0])
+    return dict(orient=orient, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
                 life=life, life_min=life_min, interval=interval, delay=max(0.0, delay), total=int(total),
                 org=t, axis=axis, ext=_apply([[abs(x) for x in r] for r in R], ext), spread=spread,
                 spread_k=spread_k, dist=dist, dist_sqrt=dist_sqrt, normal=normal,
@@ -341,7 +361,10 @@ FX_LOD_ONE = os.environ.get("FX_LOD_ONE", "1") == "1"
 def _lod_key(s):
     def fz(v):
         return tuple(fz(x) for x in v) if isinstance(v, (list, tuple)) else round(v, 4) if isinstance(v, float) else v
-    return tuple((k, fz(v)) for k, v in sorted(s.items()) if k not in ("interval", "per_emit", "max_alive", "total"))
+    # the shine set (BARE_REFS): 99001 holds its systems twice, the second copy 0.2 m up (an LOD pair: DSR draws one;
+    # both made the corpse glow double), so its key leaves out the offset too
+    skip = ("interval", "per_emit", "max_alive", "total") + (("org",) if BARE_REFS else ())
+    return tuple((k, fz(v)) for k, v in sorted(s.items()) if k not in skip)
 
 
 def pack_sys(s, tex_fpr):
@@ -351,7 +374,7 @@ def pack_sys(s, tex_fpr):
                        *s["speed"], s["drag"], s["turn"], s["turn_dt"], *s["accel"], s["size"][0], s["size"][1],
                        s["size"][2], s["size"][3], *s["rot"], *s["spin"], *(s["kx"] + s["ky"]), *s["rgba"],
                        *s["frame"], s["rate"], float(s["total"]), s["spread_k"], s["dist"], s["dist_sqrt"], fpr, nfr,
-                       *s["normal"], 0)
+                       *s["normal"], s["orient"], *s["qx"], *s["qy"])
 
 
 # ---- lights ----

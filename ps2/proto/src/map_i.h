@@ -170,6 +170,8 @@ typedef struct {
     unsigned char waiting;               /* pop-in metric: in view inside the near radius, drawn coarse (not in yet) */
     unsigned char hz_on;                 /* beyond HZN_R (with HZN_HYST hysteresis): its horizon stands for it */
     unsigned short seen, wait0;          /* the map draw (pop_fr) it was last in view, the one its wait began */
+    unsigned short win;                  /* pop-in metric: draws of the wait it was in view */
+    unsigned char why[5];                /* pop-in metric: in-view waiting draws by mapstream_why's reason 1..5 */
     unsigned char lv, lv_prev;           /* hitch.c: level drawn (1 hole, 2 horizon, 3 coarse, 4 near), the one before */
     unsigned char nfade;                 /* NEAR_FADE: map draws left of its coarse level fading out over the near one */
     unsigned short lv_seen, lv_fr;       /* the draw it was last in view, the draw its level last changed */

@@ -107,6 +107,25 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
  * time: soak2 pop-ins 25 / 37 -> 54 / 54 on the B3 + B4 stack (2026-11-09). ASSUMED: about one 32 m cell */
 #define WORLD_PREP_D 32.0f
+/* WORLD_REACH (default 1, runtime switch; TECH_DEBT world-3): blocks are wanted by time-to-reach. world.bin v5 holds,
+ * per run of collision triangles, the walking distance along the block's floor to the seam of each neighbour of another
+ * MSB within 64 m: the ConnectCollision part that loads it (tools/worldreach.py; seams inside one MSB already load the
+ * neighbour within 32 m in x / z). A neighbour is wanted once the player could reach that seam at dash speed sooner
+ * than the block takes to turn on (on_est: the block's own lite-set load times, rising at once with a slow one and
+ * sinking slowly, seeded with WORLD_ON_SEED_MS) plus WORLD_REACH_MARGIN_S; the links' load masks still want it too, so
+ * no block is wanted later than before. Wanted blocks start nearest in time first, those the player walks away from
+ * last, and the structural pool is prepared (MS_LEND) WORLD_PREP_S ahead of that instead of within WORLD_PREP_D. A block
+ * within reach stays kept (hysteresis). ISO world_route (2026-11-17): Burg west on 37 s before the player crosses from
+ * Firelink, was 13 s. 0: the links' masks alone (as world.bin v4; a v4 file has no reach table either). */
+#include "cvar.h"
+#ifndef WORLD_REACH
+#define WORLD_REACH cv_WORLD_REACH  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#define WORLD_DASH 6.0f            /* m/s: ASSUMED dash speed (the dash loop's root motion is not read here) */
+#define WORLD_REACH_MARGIN_S 1.0f  /* ASSUMED: the near cells at the seam stream after the lite set */
+#define WORLD_ON_SEED_MS 3000.0f   /* a Burg lite set from cdrom0: 1.4-3.7 s (map streaming research, 2026-11-17) */
+#define WORLD_PREP_S 2.0f          /* ASSUMED: lent items drain in WORLD_DRAIN frames; a lead of a few reads */
+#define WORLD_AWAY_S 3.0f          /* rank penalty for a block whose seam gets farther (ASSUMED) */
 /* WORLD_BOOT_LEAN (world.h, default 1): the boot block lets go of its map tables too. It never unloaded: its tables
  * are a heap buffer of their own and its collision, objects, events and characters are main.c's, so from deep in the
  * Undead Burg Firelink still held its chunk table, cell table and horizon (1365 of its 1555 KB of tables) and drew up
@@ -210,6 +229,12 @@ typedef struct {
     unsigned short n, load, keep, pad;  /* world.bin v4: u16 masks (WORLD_MAX 16; v3 had u8 ones and at most 8 blocks) */
 } WorldLink;
 _Static_assert(sizeof(WorldLink) == 12, "WorldLink");
+/* world.bin v5 (WORLD_REACH): reach runs (u16 first triangle, u8 entry) and entries, the distances to the seams */
+typedef struct {
+    unsigned short mask;
+    unsigned char d[6];  /* per set bit of mask, low bit first: distance in reach_step metres (rounded down) */
+} WorldReach;
+_Static_assert(sizeof(WorldReach) == 8, "world.bin v5 reach");
 _Static_assert(WORLD_MAX <= 16, "world.bin v4 load / keep masks are u16");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
@@ -249,6 +274,21 @@ WorldStats world_stats = {.reading = -1, .full = -1};
 static const WorldBlock *tab;
 static const unsigned *lrange;  /* per block: first link, links */
 static const WorldLink *links;
+static const unsigned *rrange;  /* WORLD_REACH: per block first reach run, runs (NULL: no reach table) */
+static const unsigned short *rfirst;  /* per run its first triangle; rent: its entry (1-based, 0 none) */
+static const unsigned char *rent;
+static const WorldReach *reach_tab;
+static unsigned reach_n;
+static float reach_step;
+static float reach_d[WORLD_MAX], reach_v[WORLD_MAX];  /* m to each block's seam from the floor; last change's sign */
+static unsigned reach_m;  /* blocks with a distance from the triangle underfoot */
+/* wanted by the reach alone (not by the link's load mask): they start after the link-wanted ones, never take a slot or
+ * pool room from them (room_for) and never spill into the item pages (lite_alloc); a link-wanted block may turn them
+ * off, so the structural pool's size (world_struct_bytes, from the link masks) still holds */
+static unsigned ronly_m;
+static float on_est[WORLD_MAX];  /* ms a block's lite set takes to turn on (see WORLD_REACH) */
+static float clock_s;  /* seconds of world_update (ticks() wraps every 14.6 s) */
+static float want_s[WORLD_MAX], on_s[WORLD_MAX];  /* clock_s when a block was first wanted while off / turned on */
 static unsigned want_m, keep_m;  /* blocks the triangle under the player loads / keeps */
 static float unkept_s[WORLD_MAX];  /* seconds a loaded block has not been in keep_m */
 static BlockRt rt[WORLD_MAX];
@@ -270,8 +310,56 @@ static float in_cur_s;  /* seconds the player has stood in cur */
  * waits WORLD_DRAIN frames */
 static int far_blk = -1, far_rd = -1, far_reading;
 static unsigned char *far_buf, *far_cur, *far_old;  /* being read, drawn (of far_blk), draining */
-static unsigned far_done;
 static int far_old_drain;
+/* WORLD_FAR_RESERVE (default 1; -DWORLD_FAR_RESERVE=0 = heap only): one buffer of the largest panorama is taken from
+ * the heap at boot, before the streaming arena sizes itself, and a panorama that finds no heap room is read into it.
+ * In the Burg the heap sits at 1.6-2.7 MB, under WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + the panorama, so Burg west's
+ * panorama never came in from 180 to 250 s of Ame's play report (2026-11-17) and blocks not loaded drew nothing:
+ * white voids past the tunnels, "deloaded" map and missing chunks. Arena pages instead (tried): the 3 contiguous pages
+ * were found 2 times in 58 (only what no class wanted) and 0 in 46 (clearing items below the near classes). While the
+ * reserve still holds the panorama being drawn, it drains first (no panorama for WORLD_DRAIN draws) */
+#ifndef WORLD_WANT_3D  /* (wanted blocks nearest first, the height range counted: step) */
+#define WORLD_WANT_3D 1
+#endif
+#ifndef WORLD_FAR_RESERVE
+#define WORLD_FAR_RESERVE 1
+#endif
+static unsigned char *far_res;   /* the reserve (NULL: none) */
+static unsigned far_res_size;
+static int far_in_res;           /* the panorama being read lies in the reserve */
+static int far_swap;             /* the reserve's panorama drains for the next one: the boot block stays let go */
+static void far_free(unsigned char *p)
+{
+    if (p && p != far_res)
+        free(p);
+}
+static unsigned char *far_alloc(unsigned sz, int *in_res)
+{
+    *in_res = 0;
+    /* the reserve first: a panorama in the heap as well took the Burg's heap minimum from 1.47 to 0.42 MB (ISO
+     * iso_burg_walls, 2026-11-17); the heap only for the next one while the reserve's is drawn */
+    if (far_res && sz <= far_res_size && far_old != far_res && far_cur != far_res) {
+        *in_res = 1;
+        return far_res;
+    }
+    if (enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz) {
+        unsigned char *p = memalign(128, sz);
+        if (p)
+            return p;
+    }
+    if (!far_res || sz > far_res_size || far_old == far_res)
+        return NULL;  /* (none, or still draining: the next try) */
+    /* drawn from the reserve and no heap: let it drain, then read into it. (The boot block is not wanted back for
+     * that gap: with it, the swap read the boot block's 1.1 MB of tables back into the heap and took the Burg's heap
+     * minimum to 0.42 MB, iso_burg_walls 2026-11-17) */
+    far_swap = 1;
+    map_far_set(NULL);
+    far_old = far_cur, far_old_drain = WORLD_DRAIN;
+    far_cur = NULL;
+    return NULL;
+}
+static unsigned far_done;
+
 static float far_retry_s;
 /* WORLD_BOOT_LEAN: the last spots the boot block was underfoot or kept from (one per seam: spots WORLD_BOOT_SPOT_D
  * apart; the nearest one follows the player while the block is underfoot or kept); the boot block is wanted back */
@@ -416,7 +504,7 @@ int world_init(const char *boot_area)
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
     pack_close(&pk);
     const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || h[1] != 4 || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
+    if (!h || memcmp(h, "DSW1", 4) || (h[1] != 4 && h[1] != 5) || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
         free(wb);
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
@@ -427,6 +515,20 @@ int world_init(const char *boot_area)
     tab = (const WorldBlock *)(h + 4);
     lrange = (const unsigned *)(tab + h[2]);
     links = (const WorldLink *)(lrange + 2 * h[2]);
+    if (h[1] == 5) {  /* the reach table after the links */
+        const unsigned *rh = (const unsigned *)(links + h[3]);
+        float st;
+        memcpy(&st, rh + 2, 4);
+        rrange = rh + 3;
+        rfirst = (const unsigned short *)(rrange + 2 * h[2]);
+        rent = (const unsigned char *)(rfirst + rh[0]);
+        reach_tab = (const WorldReach *)((const unsigned char *)rfirst + ((3 * rh[0] + 3) & ~3u));
+        reach_n = rh[1], reach_step = st;
+        if (!reach_n)
+            rrange = NULL;
+    }
+    for (int i = 0; i < WORLD_MAX; i++)
+        on_est[i] = WORLD_ON_SEED_MS, reach_d[i] = -1;
     /* open every block's pack now (boot time: a pack_open waits for the IOP) and size the pools */
     for (int i = 0; i < nblk; i++) {
         BlockRt *r = &rt[i];
@@ -673,6 +775,13 @@ void world_systems(GSGLOBAL *gs)
                i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
                ((int)h3 - (int)enemy_ram_free()) >> 10);
     }
+    if (WORLD_FAR_RESERVE && nblk > 1) {  /* the panorama reserve, before the arena takes the heap */
+        for (int i = 0; i < nblk; i++)
+            far_res_size = rt[i].far_size > far_res_size ? rt[i].far_size : far_res_size;
+        far_res_size = (far_res_size + 127) & ~127u;
+        far_res = far_res_size ? memalign(128, far_res_size) : NULL;
+        printf("world: far panorama reserve %u KB%s\n", far_res_size >> 10, far_res || !far_res_size ? "" : " FAILED");
+    }
     if (cur >= 0 && nblk > 1)
         mapstream_arena();  /* now: no enemy model is loaded yet (enemy_init stripped them all) */
 }
@@ -808,6 +917,13 @@ static void turn_on_col(int i)
     world_stats.loads++;
     world_stats.load_ms = (ticks() - r->t0) / 294912;
     world_stats.read_kb = r->total >> 10;
+    /* WORLD_REACH's turn-on estimate: up at once with a slower load, down by an eighth of the gap (a running max) */
+    on_est[i] = world_stats.load_ms > on_est[i] ? world_stats.load_ms
+                                                : on_est[i] + ((float)world_stats.load_ms - on_est[i]) * 0.125f;
+    on_s[i] = clock_s;
+    if (!warping && want_s[i] > 0)
+        printf("world: block %d wanted %.0f ms before on (seam %.1f m, estimate %.0f ms)\n", i,
+               (double)((clock_s - want_s[i]) * 1000), (double)(reach_m >> i & 1 ? reach_d[i] : -1), (double)on_est[i]);
     step_time(t0);
     printf("world: block %d %s on%s: %u KB in %u ms, collision %d tris, step %u us; lite sets %u KB | collision %u "
            "chunks %u textures %u cells+horizon %u events %u KB\n", i,
@@ -1166,6 +1282,8 @@ static void *lite_alloc(int want, unsigned sz, int *wait)
         *wait = 1;
         return NULL;
     }
+    if (ronly_m >> want & 1)
+        return NULL;  /* (wanted by the reach alone: no item pages; it tries again in WORLD_RETRY_S) */
     p = mapstream_alloc(sz, feet_now);
     if (p)
         world_stats.pool_spills++;
@@ -1335,20 +1453,20 @@ static void far_step(void)
             if (res != (int)n) {
                 printf("world: block %d far panorama read %d of %u bytes\n", far_rd, res, n);
                 world_stats.fails++;
-                free(far_buf);
-                far_buf = NULL, far_rd = -1, far_retry_s = WORLD_RETRY_S;
+                far_free(far_buf);
+                far_buf = NULL, far_rd = -1, far_retry_s = WORLD_RETRY_S, far_swap = 0;
                 return;
             }
             InvalidDCache(far_buf + far_done, far_buf + far_done + n - 1);
             if ((far_done += n) == r->far_size) {
                 unsigned char *was = map_far_set(far_buf) ? NULL : far_buf;  /* (not a panorama: freed below) */
                 if (far_old)  /* the one before the last is still draining: its chains are long done */
-                    free(far_old);
+                    far_free(far_old);
                 far_old = far_cur, far_old_drain = WORLD_DRAIN;
-                printf("world: block %d far panorama %s: %u KB (heap, RAM free %u KB)\n", far_rd, was ? "NOT VALID" : "on",
-                       r->far_size >> 10, enemy_ram_free() >> 10);
-                free(was);
-                far_blk = far_rd, far_rd = -1;
+                printf("world: block %d far panorama %s: %u KB (%s, RAM free %u KB)\n", far_rd, was ? "NOT VALID" : "on",
+                       r->far_size >> 10, far_in_res ? "reserve" : "heap", enemy_ram_free() >> 10);
+                far_free(was);
+                far_blk = far_rd, far_rd = -1, far_swap = 0;
                 far_cur = was ? NULL : far_buf;
                 far_buf = NULL;
                 return;
@@ -1367,16 +1485,20 @@ static void far_step(void)
         map_far_set(NULL);
         if (far_cur) {
             if (far_old)
-                free(far_old);
+                far_free(far_old);
             far_old = far_cur, far_old_drain = WORLD_DRAIN;
             far_cur = NULL;
         }
         far_blk = cur;
         return;
     }
-    if (enemy_ram_free() < WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz || !(far_buf = memalign(128, sz))) {
+    if (!(far_buf = far_alloc(sz, &far_in_res))) {
+        if (far_swap) {  /* the reserve drains (WORLD_DRAIN draws): read into it right after */
+            far_retry_s = 0.2f;  /* (ASSUMED: a few draws) */
+            return;
+        }
         far_retry_s = WORLD_RELIEF_RETRY_S;
-        printf("world: block %d far panorama: no heap for %u KB (RAM free %u KB)\n", cur, sz >> 10, enemy_ram_free() >> 10);
+        printf("world: block %d far panorama: no room for %u KB (RAM free %u KB)\n", cur, sz >> 10, enemy_ram_free() >> 10);
         return;
     }
     far_rd = cur, far_done = 0;
@@ -1491,14 +1613,17 @@ static int slots_full(void)
 static int room_for(int want, const float *feet)
 {
     int b = -1;
-    float bd = -1;
+    float bd = -1e30f;
+    int ronly = ronly_m >> want & 1;
+    /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH) */
+    unsigned firm = ronly ? want_m : want_m & ~ronly_m;
     for (int i = 1; i < nblk; i++)
-        if (i != want && i != cur && rt[i].state == W_ON && !(want_m >> i & 1) && world_stats.reading != i) {
-            float d = box_d(&tab[i], feet);
+        if (i != want && i != cur && rt[i].state == W_ON && !(firm >> i & 1) && world_stats.reading != i) {
+            float d = box_d(&tab[i], feet) - ((want_m >> i & 1) ? 1e6f : 0);  /* (unwanted ones go first) */
             if (d > bd)
                 b = i, bd = d;
         }
-    if (b < 0 && WORLD_SLOT_NEAREST && want > 0 && slots_full()) {
+    if (b < 0 && WORLD_SLOT_NEAREST && want > 0 && !ronly && slots_full()) {
         /* every slot held by a wanted block: the farthest of them gives its slot to a nearer one. On the Burg bonfire
          * block's floor by the Parish steps, the triangles want Burg west, the Parish and the Parish rest at once
          * with three slots: the Parish (where the player was going) waited 9 s for a slot and the player was held
@@ -1517,6 +1642,30 @@ static int room_for(int want, const float *feet)
     printf("world: block %d off to make room for block %d\n", b, want);
     turn_off(b);
     return 1;
+}
+
+/* WORLD_REACH: the reach entry of triangle tri of block b, or NULL (binary search as link_at) */
+static const WorldReach *reach_at(int b, unsigned tri)
+{
+    if (!rrange || !WORLD_REACH)
+        return NULL;
+    const unsigned short *f = rfirst + rrange[2 * b];
+    int lo = 0, hi = (int)rrange[2 * b + 1] - 1, at = -1;
+    while (lo <= hi) {  /* the last run starting at or before tri */
+        int m = (lo + hi) >> 1;
+        if (f[m] <= tri)
+            at = m, lo = m + 1;
+        else
+            hi = m - 1;
+    }
+    unsigned e = at < 0 ? 0 : rent[rrange[2 * b] + at];
+    return e && e <= reach_n ? reach_tab + e - 1 : NULL;
+}
+
+/* WORLD_REACH: seconds until the player could stand on block i's seam (dash speed), -1 if unknown */
+static float reach_t(int i)
+{
+    return reach_m >> i & 1 ? reach_d[i] / WORLD_DASH : -1.0f;
 }
 
 /* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
@@ -1551,18 +1700,38 @@ static void step(const float *feet, float dt)
         cur = h.block;
         const WorldLink *l = link_at(h.block, h.tri);
         wm = l ? l->load : 0, km = l ? l->keep : 0;
+        const WorldReach *rc = reach_at(h.block, h.tri);
+        unsigned rm = 0;
+        for (int j = 0, k = 0; rc && j < nblk && k < 6; j++)
+            if (rc->mask >> j & 1) {
+                float d = rc->d[k++] * reach_step;
+                if (!(reach_m >> j & 1))  /* the way the distance went last: towards (-1) or away from (+1) */
+                    reach_v[j] = 0;
+                else if (d != reach_d[j])
+                    reach_v[j] = d > reach_d[j] ? 1.0f : -1.0f;
+                reach_d[j] = d, rm |= 1u << j;
+            }
+        reach_m = rm;
+        unsigned lm = wm;
+        for (int j = 1; j < nblk; j++)  /* reachable before it would be on: wanted; within reach: kept */
+            if ((rm >> j & 1) && reach_t(j) * 1000.0f < on_est[j] + WORLD_REACH_MARGIN_S * 1000.0f)
+                wm |= 1u << j;
+        ronly_m = wm & ~lm;
+        km |= rm & ~1u;  /* (the boot block comes back by its own spots: boot_step) */
     } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen). Their
                * height range too: the Asylum lies over the Burg and Firelink in x / z, and loading all three at once
                * left no room in the near arena (settle looped, 2026-11-02) */
         if (warping)  /* a warp: only the blocks around the new spot, not what the old spot's floor wanted (a warp
                        * from Darkroot into the Depths kept two Darkroot blocks wanted and found no slot, 2026-11-15) */
-            wm = km = 0;
+            wm = km = 0, reach_m = 0;
+        ronly_m = 0;
         for (int i = 1; i < nblk; i++)
             if (box_d(&tab[i], feet) <= 0.0f && feet[1] >= tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
                 wm |= 1u << i, km |= 1u << i;
     }
     wm |= hold_want, km |= hold_want;  /* the blocks the player is held for (world_hold) */
+    ronly_m &= ~hold_want;
     if (wm != want_m || (km | wm) != keep_m)
         printf("world: block %d tri %d: want %x keep %x\n", cur, h.tri, wm, km | wm);
     want_m = wm, keep_m = km | wm;
@@ -1589,7 +1758,7 @@ static void step(const float *feet, float dt)
             /* off only while a panorama is drawn (the block underfoot's, or for a moment the one of the block
              * before: it shows the boot block as well); back without one (a block whose far.bin found no heap or
              * that has none), or near the seam again */
-            if (!far_cur || d2 < WORLD_BOOT_BACK_D * WORLD_BOOT_BACK_D)
+            if ((!far_cur && !far_swap) || d2 < WORLD_BOOT_BACK_D * WORLD_BOOT_BACK_D)
                 boot_want = 1;
             else if (d2 > WORLD_BOOT_OFF_D * WORLD_BOOT_OFF_D)
                 boot_want = 0;
@@ -1599,24 +1768,30 @@ static void step(const float *feet, float dt)
     }
     far_retry_s = far_retry_s > dt ? far_retry_s - dt : 0;
     if (far_old && (--far_old_drain <= 0 || warping)) {
-        free(far_old);
+        far_free(far_old);
         far_old = NULL;
     }
     for (int i = 0; i < nblk; i++)
         unkept_s[i] = keep_m >> i & 1 ? 0 : unkept_s[i] + dt;
     for (int i = 0; i < nblk; i++)
         rt[i].retry_s = rt[i].retry_s > dt ? rt[i].retry_s - dt : 0;
+    clock_s += dt;
     for (int i = 1; i < nblk; i++) {  /* the hold log: since when a block is wanted while not on */
         int w = (want_m >> i & 1) && (rt[i].state == W_OFF || rt[i].state == W_READING);
         rt[i].want_t = w ? (rt[i].want_t ? rt[i].want_t : ticks() | 1) : 0;
+        want_s[i] = w ? (want_s[i] > 0 ? want_s[i] : clock_s + 1e-3f) : rt[i].state == W_ON ? want_s[i] : 0;
     }
+    if (cur != was && was >= 0 && cur > 0 && !warping)  /* crossing a seam: how long the block had been on */
+        printf("world: into block %d from %d: on %.0f ms before\n", cur, was, (double)((clock_s - on_s[cur]) * 1000));
     {  /* MS_LEND: a block one step from wanted (kept by the triangle, still off) gets its pool room cleared of lent
         * items now, so the lite set never waits for them to drain at the seam (the planning thread, 2026-11-09) */
         static float prep_s;
         prep_s -= dt;
         for (int i = 1; i < nblk && prep_s <= 0; i++)
             if (rt[i].open && rt[i].state == W_OFF && (keep_m >> i & 1) && mapstream_pools_on() &&
-                box_d(&tab[i], feet) < WORLD_PREP_D && !mapstream_pool_prepare(MS_POOL_STRUCT, rt[i].total))
+                (reach_t(i) >= 0 ? reach_t(i) * 1000.0f < on_est[i] + (WORLD_REACH_MARGIN_S + WORLD_PREP_S) * 1000.0f
+                                 : box_d(&tab[i], feet) < WORLD_PREP_D) &&
+                !mapstream_pool_prepare(MS_POOL_STRUCT, rt[i].total))
                 prep_s = 0.25f;
     }
     for (int i = 1; i < nblk; i++) {  /* WORLD_LITE_DIET: kept-only blocks let go of their map tables */
@@ -1679,12 +1854,23 @@ static void step(const float *feet, float dt)
                 read_step(i, 1);
             goto unload;
         }
-    {   /* start the nearest wanted block */
+    {   /* start the nearest wanted block (WORLD_REACH: those the links want before those the reach alone wants) */
         int want = -1;
         float wd = 1e30f;
         for (int i = 1; i < nblk; i++)
-            if (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)) {
+            if (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1) &&
+                (want < 0 || (ronly_m >> want & 1) || !(ronly_m >> i & 1))) {
+                /* nearest first, the height range counted too (WORLD_WANT_3D, default on; 0 = x / z only): on
+                 * Firelink's aqueduct floor, which wants Burg west and the Parish rest since a part loads every block
+                 * it touches, the Parish rest (x / z 8 m away, 29 m above) read first and Burg west, where the walk
+                 * goes, 3.4 s later (Ame's play report 2026-11-17, t 153: Burg pieces missing at the door) */
                 float d = box_d(&tab[i], feet);
+                if (WORLD_WANT_3D)
+                    d += feet[1] < tab[i].y0 ? tab[i].y0 - feet[1] : feet[1] > tab[i].y1 ? feet[1] - tab[i].y1 : 0;
+                if (reach_t(i) >= 0)  /* WORLD_REACH: by time to its seam, the ones walked away from last */
+                    d = (reach_t(i) + (reach_v[i] > 0.5f ? WORLD_AWAY_S : 0)) * WORLD_DASH;
+                if (want >= 0 && (ronly_m >> want & 1) && !(ronly_m >> i & 1))
+                    wd = 1e30f;  /* (a link-wanted block goes before any wanted by the reach alone) */
                 if (d < wd)
                     want = i, wd = d;
             }

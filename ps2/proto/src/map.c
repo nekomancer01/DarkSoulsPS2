@@ -1,4 +1,6 @@
 #include "map_i.h"
+#include "testscript.h"
+#include "world.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -314,6 +316,19 @@ void map_pano_open(const char *pak_path)
     printf("map: panorama %d chunks, %u textures, %u KB\n", pano_n, h[3], size >> 10);
 }
 
+/* The picture layers are drawn while the player stands in the boot block (MAP_PANO_NEAR, default on; 0 = from any
+ * block of its draw-group area, the old path): they are flat sheets baked from one eye in the middle of its walkable
+ * ground, and from the Undead Burg (~150 m off that eye) they smeared and repeated their texture edges (Ame's report
+ * 2026-11-17 t 245-253). Elsewhere the far panorama's FAR_PANO set (tools/farpano.py) shows that backdrop untextured,
+ * as it shows the rest of the far view. */
+#ifndef MAP_PANO_NEAR
+#define MAP_PANO_NEAR 1
+#endif
+int map_pano_shown(void)
+{
+    return pano_n && (!MAP_PANO_NEAR || pinst == 0);
+}
+
 /* mapstream.c's item visibility (pvs.c): item id of instance k (a near cell part, then a resident item) has a chunk
  * some camera cell within PVS_STREAM_R sees; textures, the sky and maps without pvs.bin count as seen */
 static int ms_pvs_vis(int k, unsigned id)
@@ -379,6 +394,17 @@ int map_stream_open(const char *pak_path)
     return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
 
+#ifndef DG_SEAM
+#define DG_SEAM 1
+#endif
+#define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
+/* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
+static int same_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return !a || !b || !strcmp(a, b);
+}
+
 void map_set_player(V3 feet)
 {
     const float p[3] = {feet.x, feet.y, feet.z};
@@ -387,10 +413,36 @@ void map_set_player(V3 feet)
     mapstream_update(p);  /* every instance's near cells (src/mapstream.c) */
     /* DSR's fog follows the collision part under the player (its MSB FogID); in the air the last one stays */
     ColHit h;
-    player_feet = feet;
     int k = -1;
-    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0)
+    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0) {
+        /* DG_SEAM (default on; -DDG_SEAM=0 = the floor's groups alone): within DG_SEAM_R metres ahead of the player,
+         * the floor of another map of the area group (its block loaded) adds its part's groups. DSR shows what the
+         * floor part's DrawGroups list; at the end of Firelink's aqueduct tunnel (part h0030B2, groups e0000000)
+         * that hid all but 9 of Burg west's 64 piece sets, and the tunnel's exit showed the sky (Ame's play report
+         * 2026-11-17 t167 / t170; with draw groups off the exit draws the Burg: ISO iso_tunnel_look). ASSUMED: the
+         * port's seams stream and fog differently from DSR's whole-map residency, so the far side is shown a few
+         * metres early */
+        dg_seam(-1, 0);
+        if (DG_SEAM && dg_area(k)) {
+            static V3 last;
+            float dx = feet.x - last.x, dz = feet.z - last.z, l = sqrtf(dx * dx + dz * dz);
+            static float hx, hz;
+            if (l > 0.01f && l < 2.0f)
+                hx = dx / l, hz = dz / l;  /* the heading (a warp keeps the last one) */
+            last = feet;
+            int found = 0;
+            for (float r = 4.0f; r <= DG_SEAM_R && !found && (hx != 0 || hz != 0); r += 4.0f)
+                for (int j = 0; j < MAP_INST && !found; j++) {
+                    ColHit hj;
+                    int cb = mp_inst_col_block(j);
+                    if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
+                        col_floor_block(cb, feet.x + hx * r, feet.z + hz * r, feet.y + 3, feet.y - 6, COL_SOLID, &hj))
+                        dg_seam(j, hj.tri), found = 1;
+                }
+        }
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
+    }
+    player_feet = feet;  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
     /* a block outside the area group of the floor's block (drawgrp.c DG_SHARED; every block without one) takes its
      * draw groups from its own collision under the player: at a seam both blocks' collisions overlap (DSR's
      * ConnectCollision pairs, e.g. the Asylum's crow ledge h0054B1 and Firelink), each map shows what its own part
@@ -413,22 +465,203 @@ void map_set_player(V3 feet)
     }
 }
 
+/* The player's light (PointLightBank row of the collision part underfoot) as DSR changes it: a new row blends in
+ * linearly over PLIGHT_BLEND seconds (exe FUN_1402d3970 sets the draw-param banks' transitions to 0.5 s when the area
+ * underfoot changes, .rdata 0x141615c68; FUN_1401d77e0 advances them by the frame time; FUN_1401d7820: a transition
+ * back to the row it came from runs the elapsed part backwards). It switched at once before, for the characters and
+ * the map pass alike (Ame's report 2026-11-17 t 72.8: "the light turns on too jarringly"). pl_cur: map rgb (0 where
+ * MAP_PLIGHT's ratio gate leaves the pass off, so it fades out instead of cutting), character rgb, begin, end (m). */
+#ifndef MAP_PLIGHT
+#define MAP_PLIGHT 1  /* the player's light on the map (pl_draw below); 0 = characters only, the old path */
+#endif
+#ifndef PLIGHT_BLEND
+#define PLIGHT_BLEND 0.5f
+#endif
+static float pl_from[8], pl_to[8], pl_cur[8], pl_el, pl_dur;
+static int pl_init;
+static unsigned pl_t0;
+#ifndef PLIGHT_RATIO
+#define PLIGHT_RATIO 60  /* % of the area's character ambient the light must reach for the map pass (ASSUMED) */
+#endif
+
+static void pl_step(void)
+{
+    if (!mp_pfog_rows)
+        return;
+    const FogRow *r = &mp_pfog_row[mp_fog_area];
+    int pl_max = r->pl_rgb[0] > r->pl_rgb[1] ? r->pl_rgb[0] : r->pl_rgb[1], amb_max = r->amb[0] > r->amb[1] ? r->amb[0] : r->amb[1];
+    pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
+    /* the map pass only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at
+     * Firelink for a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
+    int gate = MAP_PLIGHT && r->pl_end > r->pl_begin && pl_max * 100 >= amb_max * PLIGHT_RATIO;
+    float t[8];
+    for (int c = 0; c < 3; c++)
+        t[c] = gate ? r->pl_rgb[c] : 0, t[3 + c] = r->pl_rgb[c];
+    t[6] = r->pl_begin * 0.1f, t[7] = r->pl_end * 0.1f;
+    unsigned now = ticks();
+    float dt = pl_init ? (now - pl_t0) / 294912000.0f : 0;
+    pl_t0 = now;
+    if (dt > 0.1f)
+        dt = 0.1f;
+    if (!pl_init) {  /* (DSR: duration -1, at once) */
+        memcpy(pl_from, t, sizeof t), memcpy(pl_to, t, sizeof t), memcpy(pl_cur, t, sizeof t);
+        pl_el = pl_dur = 0, pl_init = 1;
+        return;
+    }
+    if (memcmp(t, pl_to, sizeof t)) {
+        if (pl_dur > 0 && !memcmp(t, pl_from, sizeof t))  /* back to where it came from: the elapsed part backwards */
+            memcpy(pl_from, pl_to, sizeof t), pl_el = pl_dur - pl_el;
+        else
+            memcpy(pl_from, pl_cur, sizeof t), pl_el = 0;
+        memcpy(pl_to, t, sizeof t);
+        pl_dur = PLIGHT_BLEND;
+    }
+    if (pl_dur > 0) {
+        pl_el += dt;
+        if (pl_el >= pl_dur)
+            pl_dur = 0;
+    }
+    float k = pl_dur > 0 ? pl_el / pl_dur : 1;
+    for (int i = 0; i < 8; i++)
+        pl_cur[i] = pl_from[i] + (pl_to[i] - pl_from[i]) * k;
+}
+
 void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
 {
     float l = sqrtf(mp_fog_now[12] * mp_fog_now[12] + mp_fog_now[13] * mp_fog_now[13] + mp_fog_now[14] * mp_fog_now[14]);
     for (int c = 0; c < 3; c++)
         amb[c] = mp_fog_now[6 + c], sun[c] = mp_fog_now[9 + c], dir[c] = l > 0 ? mp_fog_now[12 + c] / l : c == 1;
     /* the player's own light (DSR attaches the area's PointLightBank row to the player) */
-    if (mp_pfog_rows) {
-        const FogRow *r = &mp_pfog_row[mp_fog_area];
+    if (mp_pfog_rows && pl_init) {  /* (pl_step: the row blended in over PLIGHT_BLEND) */
         float dx = player_feet.x - pos.x, dy = player_feet.y - pos.y, dz = player_feet.z - pos.z;
-        float d = sqrtf(dx * dx + dy * dy + dz * dz), b = r->pl_begin * 0.1f, e = r->pl_end * 0.1f;
+        float d = sqrtf(dx * dx + dy * dy + dz * dz), b = pl_cur[6], e = pl_cur[7];
         float att = e > b ? (e - d) / (e - b) : 0;
         if (att > 0)
             for (int c = 0; c < 3; c++)
-                amb[c] += r->pl_rgb[c] * (att < 1 ? att : 1);
+                amb[c] += pl_cur[3 + c] * (att < 1 ? att : 1);
     }
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
+}
+
+/* The player's light on the map (MAP_PLIGHT, default on; 0 = the old path: characters only). DSR attaches the area's
+ * PointLightBank row (the collision part's MSB lantern id) to the player and its deferred point light shader
+ * (FRPG_Deferred_PointLight, dsr_light.py: saturate((end - d) / (end - begin)) x colour x N.L) lights every surface
+ * around them, the map included: in the Depths' sewers (ambient ~(3, 8, 6), light 1.5-5.5 m (100, 77, 33)) it is the
+ * only light there is. The port baked the map without it and gave it to the characters only (map_char_light), so the
+ * walls stayed black around a lit player (Ame's playtest 2026-11-16). Here the opaque map chunks within its reach are
+ * drawn a second time after the relief pass: colour = the light's falloff at each vertex, texture x colour added to
+ * the frame (Cs x As + Cd: cut-out texels add nothing), Z tested,
+ * not written, no fog (the light ends within 8 m). The light sits PLIGHT_H above the feet (ASSUMED: DSR hangs it on
+ * the character model; the characters' own lighting measures from the feet). No N.L, as map_char_light adds it to
+ * the characters' ambient: per-vertex normals cost ~4 ms of EE a frame at the Firelink graveyard (the map streams have
+ * no normals; corner order is no facing either, about half of the Depths' floor triangles wind downwards). */
+#define PLIGHT_H 1.0f
+#define PLIGHT_MAX 96
+static struct {
+    const unsigned char *base;
+    const Chunk *c;
+    unsigned short n, clip;
+    short tex, level;
+} pl_item[PLIGHT_MAX];
+static int pl_n, pl_on;
+static float pl_pos[3], pl_rgb[3], pl_b, pl_e, pl_e2, pl_inv;  /* reach, its square, 1 / (end - begin) */
+static unsigned map_plight_batches;  /* batches of the last pass (debugger) */
+
+static void pl_begin(void)
+{
+    pl_n = pl_on = 0;
+    pl_step();
+    if (!MAP_PLIGHT || !mp_pfog_rows || !pl_init)
+        return;
+    pl_b = pl_cur[6], pl_e = pl_cur[7];
+    for (int c = 0; c < 3; c++)
+        pl_rgb[c] = pl_cur[c];
+    pl_on = pl_e > pl_b && (pl_rgb[0] >= 1 || pl_rgb[1] >= 1 || pl_rgb[2] >= 1);
+    pl_e2 = pl_e * pl_e, pl_inv = pl_on ? 1.0f / (pl_e - pl_b) : 0;
+    pl_pos[0] = player_feet.x, pl_pos[1] = player_feet.y + PLIGHT_H, pl_pos[2] = player_feet.z;
+}
+
+static void pl_add(const unsigned char *base, const Chunk *c, unsigned n, int clip, int tex, int level)
+{
+    if (!pl_on || pl_n >= PLIGHT_MAX || (c->flags & CHUNK_GRASS) || n != c->tris)
+        return;
+    float d2 = 0;
+    for (int k = 0; k < 3; k++) {
+        float o = pl_pos[k] < c->mn[k] ? c->mn[k] - pl_pos[k] : pl_pos[k] > c->mx[k] ? pl_pos[k] - c->mx[k] : 0;
+        d2 += o * o;
+    }
+    if (d2 >= pl_e * pl_e)
+        return;
+    pl_item[pl_n].base = base, pl_item[pl_n].c = c, pl_item[pl_n].n = (unsigned short)n;
+    pl_item[pl_n].clip = (unsigned short)clip, pl_item[pl_n].tex = (short)tex, pl_item[pl_n].level = (short)level;
+    pl_n++;
+}
+
+/* 1 / sqrt(x) without a divide or sqrt.s (one Newton step: < 0.2 % error): the pass runs it per vertex */
+static inline float pl_rsqrt(float x)
+{
+    union { float f; u32 u; } v = {x};
+    v.u = 0x5F3759DFu - (v.u >> 1);
+    return v.f * (1.5f - 0.5f * x * v.f * v.f);
+}
+
+/* the light at squared distance d2 (< pl_e2) -> u8 x4 colour, alpha 0x80 */
+static inline u32 pl_col(float d2)
+{
+    float att = d2 > 1e-6f ? (pl_e - d2 * pl_rsqrt(d2)) * pl_inv : 1;
+    if (att > 1)
+        att = 1;
+    u32 out = 0x80u << 24;
+    for (int c = 0; c < 3; c++) {
+        int v = (int)(pl_rgb[c] * att + 0.5f);
+        out |= (u32)(v > 255 ? 255 : v) << (8 * c);
+    }
+    return out;
+}
+
+static void pl_draw(void)
+{
+    map_plight_batches = 0;
+    if (!pl_n)
+        return;
+    static u32 col[256] __attribute__((aligned(16)));
+    GSGLOBAL *gs = gsg;
+    /* Cs x As + Cd (As = texel alpha: cut-out texels add nothing), Z tested, not written */
+    u64 r[4] = {GS_SETREG_ALPHA(0, 2, 0, 1, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    vu1_gs_regs(2, r);
+    for (int i = 0; i < pl_n; i++) {
+        const Chunk *c = pl_item[i].c;
+        const unsigned char *base = pl_item[i].base;
+        unsigned n = pl_item[i].n, nv = c->nv;
+        if (nv ? nv > 256 : n * 3 > 256)
+            continue;
+        GSTEXTURE *t = tc_get(pl_item[i].tex, pl_item[i].level);
+        if (!t)
+            continue;
+        const short *ps = (const short *)(base + c->pos);
+        const float *o = c->org, s = c->step;
+        int lit = 0;
+        unsigned nc = nv ? nv : 3 * n;
+        for (unsigned j = 0; j < nc; j++) {
+            const short *q = ps + 3 * j;
+            float d0 = pl_pos[0] - (o[0] + s * q[0]), d1 = pl_pos[1] - (o[1] + s * q[1]), d2 = pl_pos[2] - (o[2] + s * q[2]);
+            float dd = d0 * d0 + d1 * d1 + d2 * d2;
+            col[j] = dd < pl_e2 ? pl_col(dd) : 0x80u << 24;
+            lit |= col[j] & 0xF8F8F8;
+        }
+        if (!lit)
+            continue;
+        float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
+        int mode = VU1_BLEND | VU1_COLCP | pl_item[i].clip;
+        if (nv)
+            vu1_add_idx(t, c->flags & CHUNK_CULL, mode, n, nv, ps, base + c->st, col, base + CHUNK_IDX(c), c->org, st_k);
+        else
+            vu1_add_ex(t, c->flags & CHUNK_CULL, mode, n, ps, base + c->st, col, c->org, st_k);
+        map_plight_batches++;
+    }
+    u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
+    vu1_gs_regs(2, rr);
+    pl_n = 0;
 }
 
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
@@ -651,6 +884,8 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
+        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump && c->tex >= 0)  /* the player's light */
+            pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
         if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
@@ -816,6 +1051,7 @@ static void zs_end(void)
             break;
         case ZS_BUMP:
             bump_draw();
+            pl_draw();
             i += 1;
             break;
         default:
@@ -945,7 +1181,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     r_set_fog_edge(edge_a2);
     /* the far backdrop's picture layers (map_pano_open): over the sky, under the map's fog as the pieces they show
      * (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first */
-    if (pano_n && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
+    if (map_pano_shown() && (mp_inst[0].on ? dg_area(pinst) == dg_area(0) : !sk)) {
         zs_map_edge(0);
         for (int i = 0; i < pano_n; i++) {
             const Chunk *c = &pano_chunk[i];
@@ -1245,6 +1481,24 @@ static void log_frame(const FrameLog *lg, const float e[3], int drawn)
 /* Block k in map_draw: its cells in view, each at the level that is loaded (near, coarse or its horizon), with what
  * the later passes draw collected in fxl / hzfade / nrfade and the frame's counters in lg. A block that is kept only
  * for its horizon draws that alone. Returns the triangles drawn. */
+/* MAP_POP_LOG (default on in test runs; 0 = off): one line per pop-in (a cell that swaps coarse -> near in view
+ * after waiting): its in-view wait, the whole wait, its distance, why it waited (mapstream_why per in-view draw:
+ * unseen / refused / plan cut / disc / settle), and the draws since the last settle (a warp, a bonfire, a death) */
+#ifndef MAP_POP_LOG
+#define MAP_POP_LOG 1
+#endif
+static unsigned short pop_settle;  /* pop_fr of the last draw during a settle */
+static unsigned pop_lines;
+static void pop_note(int k, int ci, const Cell *ce, float d, unsigned w)
+{
+    if (!MAP_POP_LOG || !test_active() || pop_lines >= 200)
+        return;
+    pop_lines++;
+    printf("map: pop cell %d.%d at %.1f m: waited %u draws in view (%u in all), unseen %u refused %u cut %u disc %u "
+           "settle %u, %u draws after a settle\n", k, ci, (double)d, ce->win, w, ce->why[0], ce->why[1], ce->why[2],
+           ce->why[3], ce->why[4], (unsigned)(unsigned short)(pop_fr - pop_settle));
+}
+
 static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
 {
     MapInst *m;
@@ -1392,13 +1646,20 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 if (!nd) {
                     lg->pend++;
                     if (!ce->waiting)
-                        ce->wait0 = pop_fr, ce->waiting = 1;
+                        ce->wait0 = pop_fr, ce->waiting = 1, ce->win = 0, memset(ce->why, 0, sizeof ce->why);
+                    ce->win += ce->win < 0xFFFF;  /* (in view this draw) */
+                    int why = mapstream_why((unsigned)ci);
+                    if (why > 0 && why <= 5 && ce->why[why - 1] < 255)
+                        ce->why[why - 1]++;
                 } else if (ce->waiting) {
                     unsigned w = (unsigned short)(pop_fr - ce->wait0);
                     if (was && w >= 2) {
                         lg->pops++;
-                        lg->pop_wait = w > lg->pop_wait ? w : lg->pop_wait;
+                        /* the wait in view (it used to count the time out of view too: a cell that waited a frame,
+                         * left the view and came back 30 s later read as a 900-frame wait) */
+                        lg->pop_wait = ce->win > lg->pop_wait ? ce->win : lg->pop_wait;
                         lg->pop_d = d2 < lg->pop_d * lg->pop_d ? sqrtf(d2) : lg->pop_d;
+                        pop_note(k, ci, ce, sqrtf(d2), w);
                     }
                     ce->waiting = 0;
                 }
@@ -1679,6 +1940,7 @@ int map_draw(V3 eye)
         MP_END(MP_CULL)
     }
     bump_owner(pinst);  /* relief for the player's block (bump.c: one CLUT area) */
+    pl_begin();
     map_vu1_batches = map_ee_tris = 0;
 #ifdef MAP_DBG
     static int dbg_init;
@@ -1712,6 +1974,8 @@ int map_draw(V3 eye)
     drawn += draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     pop_fr++;
+    if (mapstream_settling())
+        pop_settle = pop_fr;
     nfx = nhzfade = nnrfade = 0;
     for (int k = 0; k < MAP_INST; k++)  /* every loaded block (src/world.c); one instance in a single-area build */
         drawn += draw_block(k, e, fog, &lg);
@@ -1731,8 +1995,10 @@ int map_draw(V3 eye)
         if (zs_pass == 1) {  /* (ZSPLIT: in the near pass) */
             if (zs_room(1))
                 zs_buf[zs_n++] = ZS_BUMP;
-        } else
+        } else {
             bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
+            pl_draw();  /* the player's light (MAP_PLIGHT) */
+        }
         MP_END(MP_BUMP)
     }
 

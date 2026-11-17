@@ -32,6 +32,9 @@ typedef struct EvChr {
     float hit_t;             /* seconds since the player last damaged it (4[01]), large = never */
     float rot_to[3];         /* 2004[14] turn: face this point, once per rot_serial */
     int rot_serial, anim_reset;
+    int force_anim, force_loop;  /* 2003[18] Force Animation Playback: the anim, looping */
+    int force_serial;        /* +1 per 2003[18] on it: the character starts that anim when this moves */
+    float force_age;         /* seconds since that op (a character placed later starts it only while it is fresh) */
 } EvChr;
 
 /* Record of an entity (create: make one if missing; NULL when the table is full or entity <= 0) */
@@ -52,6 +55,8 @@ int ev_chr_dispmask(int entity, int bit, int mode);
 int ev_chr_speffect(int entity, int id, int on);
 int ev_chr_part(int entity, int part, int hp);
 int ev_chr_anim_reset(int entity);
+/* 2003[18] on a character: 1 = recorded; *len = the anim's length when the character is placed with it, else 0 */
+int ev_chr_force_anim(int entity, int anim, int loop, float *len);
 enum { EVC_IMMORTAL, EVC_INVINCIBLE, EVC_GRAVITY_OFF, EVC_MAPHIT_OFF, EVC_ALWAYS_ON };
 /* Conditions: 4[01] damaged (attacker 10000 = the player), 4[05] SpEffect, 4[06] event part HP vs v (cmp: event.c
  * ComparisonType), 4[03] character type; -1 = no such character (the condition is false) */

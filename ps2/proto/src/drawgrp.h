@@ -17,6 +17,9 @@ void dg_block_drop(int k);
 /* Triangle of instance k's collision under the player (col_floor hit): its part's draw groups become k's shown set,
  * and with an area group (DG_SHARED) the shown set of every block of that group */
 void dg_floor(int k, int tri);
+/* DG_SEAM: block j's floor triangle tri (another map of the area group, just ahead) adds its groups to the next
+ * dg_floor's shared mask; j < 0 clears it */
+void dg_seam(int j, int tri);
 /* the area group of instance k (dg.bin; 0 = none: k follows only its own floor) */
 int dg_area(int k);
 /* Streaming: dg_tick(frame) every frame; dg_stream_shown 1 when a floor of the last ~20 s (the union of their shared

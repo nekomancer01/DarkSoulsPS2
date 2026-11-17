@@ -376,9 +376,42 @@ unsigned ms_cancel_kb;
 #ifndef MS_RA_INFLIGHT
 #define MS_RA_INFLIGHT 2
 #endif
+/* MS_DEADLINE (default 1; 0 = the hard tier nearest first as before): deadline-aware read order, the map research's
+ * idea 6 (2026-11-17) after O3DE's IO scheduler (Scheduler::Thread_PrioritizeRequests: a request whose estimated
+ * completion falls after its deadline "panics" and goes first, by deadline; the rest go by the shortest seek from the
+ * last read's end). Here a hard-tier item's deadline is the time the player needs to come within MS_DL_NEAR_R of a
+ * near part (MS_DL_COARSE_R of a coarse item) at the smoothed walking speed (at least MS_DL_VMIN), and its estimated
+ * completion is its place in the disc-order scan of the queued hard tier, plus the reads in flight, times the measured
+ * time a read takes (rd_ms). Nearest first, every hard read was a seek of its own (B8b: ~8 seeks a second on
+ * world_route, ~1.2 items a run); in disc order the ones not late sweep the pack once. A settle keeps its class order. */
+#ifndef MS_DEADLINE
+#define MS_DEADLINE 1
+#endif
+#define MS_DL_NEAR_R 8.0f    /* m (ASSUMED: a cell drawn coarse within ~8 m is plain to see; the near level draws to 20 m) */
+#define MS_DL_COARSE_R MS_R0_DRAW  /* m: a coarse item stands in from the near level's draw radius out */
+#define MS_DL_VMIN 2.0f      /* m/s (ASSUMED: a standing player can be walking within the read; DSR's walk ~1.5-2 m/s) */
+#define MS_DL_FPS 30.0f      /* mapstream_update calls a second (vel is per call) */
+/* MS_DL_FIRST (default 1, with MS_DEADLINE): a panicking item already late (inside its radius) with two or more reads
+ * ahead of it in the disc server goes out ahead of them (pack_req_read_first, as coltile.c's tiles under the feet):
+ * the server sweeps its queue by LSN, so a late near part behind the head (or in another pack) could wait for all
+ * MS_INFLIGHT reads. One ahead of the head in the same pack goes the normal way: the sweep passes it. */
+#ifndef MS_DL_FIRST
+#define MS_DL_FIRST 1
+#endif
+/* MS_GAP_KB (default 96; 0 = off): map reads through small gaps, the research's idea 11, on top of dsrsnd's gap reads
+ * (PR #235, GAP_KB 96: a background read at most 96 KB ahead of the head reads the blocks between into the IOP cache
+ * instead of seeking). That only pays when the next map read is that close ahead: a queued item that starts within
+ * MS_GAP_KB after the end of the last read in the same pack goes next, before the scan's other picks (read-ahead
+ * classes too, within MS_RA_INFLIGHT), unless an item panics. ASSUMED 96 KB: a DVD seek of ~100-150 ms is worth
+ * ~200-300 KB of reading; matched to GAP_KB so the IOP reads the gap through. */
+#ifndef MS_GAP_KB
+#define MS_GAP_KB 96
+#endif
 static int scan_k = -1;
 static unsigned scan_end;
-static int q_scan_pick(void);
+static float rd_ms = 80.0f;  /* a read's service time (running average, ms): MS_DEADLINE's estimate */
+static unsigned dl_panic, dl_scan, dl_gap, dl_first;  /* picks, logged with the runs line */
+static int q_scan_pick(int ra_ok, int *first);
 static unsigned flow_rd[3], flow_kb[3];
 static unsigned thr_n[3][MS_WHY_N], thr_kb[3], thr_cls[C_TOP + 1];
 /* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
@@ -440,6 +473,7 @@ static void collect(int i, int r)
             st_first = clk_ms - st_t1 + 1;
         fail_wait = 0;
         mapstream_stats.ms_last = (now - t0) / 294912;
+        rd_ms += ((float)(mapstream_stats.ms_last < 2000 ? mapstream_stats.ms_last : 2000) - rd_ms) * 0.125f;
         {  /* a near part's wait from the plan that wanted it to its landing (the reads queued and in
             * flight before it count); others (or one wanted before a settle) from the issue */
             float l = (float)(now - w.t) / 294912.0f;
@@ -510,6 +544,8 @@ static void rs_log(void)
            rs_kb, rs_reads, rs_contig);
     for (int i = 0; i < RS_N; i++)
         printf(" %s %u", rs_name[i], rs_stop[i]);
+    printf("; picks panic %u first %u scan %u gap %u (read %u ms)", dl_panic, dl_first, dl_scan, dl_gap, (unsigned)rd_ms);
+    dl_panic = dl_first = dl_scan = dl_gap = 0;
     printf("; by block");
     for (int k = 0; k < MS_INST; k++)
         if (rk[k][RK_N])
@@ -526,14 +562,16 @@ static void rs_log(void)
 static int issue(void)
 {
     rs_log();
-    if (MS_SCAN && q_rank(q[0].cls) < C_NEAR2) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
+    int ra_ok = 1, first = 0;
+    if (MS_SCAN) {  /* read-ahead: at most MS_RA_INFLIGHT of them in flight */
         int ra = 0;
         for (int i = 0; i < ms_nrd; i++)
             ra += !ms_rd[i].cxl && ms_rd[i].cls < C_NEAR2;
-        if (ra >= MS_RA_INFLIGHT)
-            return 0;
+        ra_ok = ra < MS_RA_INFLIGHT;
     }
-    int qi = MS_SCAN ? q_scan_pick() : 0;
+    int qi = MS_SCAN ? q_scan_pick(ra_ok, &first) : 0;
+    if (qi < 0)
+        return 0;
     MsQ w = q[qi];
     memmove(q + qi, q + qi + 1, (--nq - qi) * sizeof *q);
     MsInst *m = &ms_inst[w.k];
@@ -590,7 +628,8 @@ static int issue(void)
             ms_lent_n++, lent = 1;
         else
             p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
-        if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = ms_g_alloc_lend(gb)))
+        if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_ALL ? ms_lend_room : MS_LEND_NEAR_KB << 10) &&
+            (p = ms_g_alloc_lend(gb)))
             ms_lent_n++, ms_lent_near += gb, lent = 2;
         if (!p && sent)
             break;  /* the rest waits for its turn */
@@ -634,6 +673,11 @@ static int issue(void)
                        "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB, borrowed %u KB\n", w.k, w.id,
                        gb >> 10, w.cls, d, hard ? ", hard" : "", fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
                        mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
+                unsigned fr3[3][3];
+                ms_free_report(fr3);
+                printf("mapstream: free room (KB, whole pages, largest run in a page KB): items %u %u %u | misc %u %u %u | "
+                       "structural %u %u %u; lent near %u KB, inflight %d\n", fr3[0][0], fr3[0][1], fr3[0][2],
+                       fr3[1][0], fr3[1][1], fr3[1][2], fr3[2][0], fr3[2][1], fr3[2][2], ms_lent_near >> 10, ms_nrd);
             }
             mapstream_stats.room_fails++;
             hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2, w.k, w.id);
@@ -643,7 +687,8 @@ static int issue(void)
             return 1;  /* the next queued one may still fit */
         }
         room_fail = 0;
-        int tk = pack_req_read(&m->pk, it_off(m, g), p, gb);
+        int tk = (first && !sent ? pack_req_read_first : pack_req_read)(&m->pk, it_off(m, g), p, gb);
+        dl_first += tk && first && !sent;
         if (tk) {
             unsigned o = it_off(m, g);
             rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
@@ -690,22 +735,94 @@ static int issue(void)
     return 1;
 }
 
-/* MS_SCAN: the queue entry issue() takes. The queue is in rank order, so the urgent entries lead it; once the head is
- * a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate. */
-static int q_scan_pick(void)
+/* MS_SCAN: the queue entry issue() takes (-1: none may go now). The queue is in rank order, so the urgent entries
+ * lead it; once the head is a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate.
+ * ra_ok: a read-ahead entry may go (MS_RA_INFLIGHT). *first: send it ahead of the disc server's queue (MS_DL_FIRST). */
+static unsigned scan_key(const MsQ *e, int *rk_out)
 {
-    if (q_rank(q[0].cls) >= C_NEAR2 || scan_k < 0)  /* the hard tier at the head: nearest first (q_rank) */
-        return 0;
+    const MsInst *m = &ms_inst[e->k];
+    if (e->id >= it_n(m))
+        return *rk_out = 3, ~0u;
+    unsigned o = it_off(m, e->id);
+    int rk = e->k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
+    if (rk == 2)
+        o = (unsigned)e->k << 26 | (o >> 6);  /* other packs: by block, then offset */
+    *rk_out = rk;
+    return o;
+}
+static int q_scan_pick(int ra_ok, int *first)
+{
+    *first = 0;
+    int hard = q_rank(q[0].cls) >= C_NEAR2;
+    if (!hard && !ra_ok)
+        return -1;
+    if (scan_k < 0 || (hard && (!MS_DEADLINE || ms_settling || MS_READ_BY_CLASS)))
+        return hard || ra_ok ? 0 : -1;  /* the hard tier at the head: nearest first (q_rank) */
+    int nh = 0;
+    while (nh < nq && q_rank(q[nh].cls) >= C_NEAR2)
+        nh++;
+    /* MS_GAP_KB: an entry starting a little after the last read's end in the same pack (the IOP reads the gap) */
+    int gi = -1;
+    unsigned go = ~0u;
+    for (int i = 0; MS_GAP_KB && i < nq; i++) {
+        const MsInst *m = &ms_inst[q[i].k];
+        if (q[i].k != scan_k || q[i].id >= it_n(m) || (i >= nh && !ra_ok))
+            continue;
+        unsigned o = it_off(m, q[i].id);
+        if (o >= scan_end && o - scan_end <= (unsigned)MS_GAP_KB << 10 && o < go)
+            gi = i, go = o;
+    }
+    if (nh) {
+        /* the hard tier in scan order (insertion sort of <= MS_QUEUE indices); each one's estimated completion is its
+         * place in that order behind the reads in flight; one that would land after its deadline panics */
+        static unsigned char ord[MS_QUEUE];
+        static unsigned okey[MS_QUEUE];
+        for (int i = 0; i < nh; i++) {
+            int rk;
+            unsigned o = scan_key(&q[i], &rk), kk = (unsigned)rk << 30 | (o >> 2 & 0x3fffffffu);
+            int j = i;
+            while (j > 0 && okey[j - 1] > kk)
+                ord[j] = ord[j - 1], okey[j] = okey[j - 1], j--;
+            ord[j] = (unsigned char)i, okey[j] = kk;
+        }
+        float v = sqrtf(vel[0] * vel[0] + vel[2] * vel[2]) * MS_DL_FPS;
+        v = v > MS_DL_VMIN ? v : MS_DL_VMIN;
+        int pi = -1;
+        float pdl = 0;
+        for (int j = 0; j < nh; j++) {
+            const MsQ *e = &q[ord[j]];
+            const MsInst *m = &ms_inst[e->k];
+            float r = e->id < it_n(m) && it_res(m, e->id) ? MS_DL_COARSE_R : MS_DL_NEAR_R;
+            float d = sqrtf(e->key) - r, dl = d > 0 ? d * 1000.0f / v : 0;
+            float est = (float)(ms_nrd + j + 1) * rd_ms;
+            if (dl < est && (pi < 0 || dl < pdl || (dl == pdl && e->key < q[pi].key)))
+                pi = ord[j], pdl = dl;
+        }
+        if (pi >= 0) {
+            dl_panic++;
+            /* already late with reads ahead of it in the server: ahead of them, unless it lies ahead of the head in
+             * the same pack, where the server's LSN sweep reaches it on the way (jumping the queue there only added a
+             * seek out and one back: ISO 2026-11-17, ~100-130 firsts a run = +7-18 % EE seeks on the Burg tests) */
+            int prk;
+            scan_key(&q[pi], &prk);
+            *first = MS_DL_FIRST && pdl <= 0 && ms_nrd >= 2 && prk != 0;
+            return pi;
+        }
+        if (gi >= 0)
+            return dl_gap++, gi;
+        dl_scan++;
+        return ord[0];
+    }
+    if (gi >= 0)
+        return dl_gap++, gi;
     int best = 0, bk = 3;
     unsigned bo = ~0u;
     for (int i = 0; i < nq; i++) {
         const MsInst *m = &ms_inst[q[i].k];
         if (q[i].id >= it_n(m))
             continue;
-        unsigned o = it_off(m, q[i].id);
-        int rk = q[i].k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
-        if (rk == 2)
-            o = (unsigned)q[i].k << 26 | (o >> 6);  /* other packs: by block, then offset */
+        int rk;
+        unsigned o = scan_key(&q[i], &rk);
         if (rk < bk || (rk == bk && o < bo))
             best = i, bk = rk, bo = o;
     }
@@ -809,8 +926,9 @@ static void plan_(const float *pos)
     /* cap_hi: what the item pages hold, for every class; cap: + the lent room, which only lendable classes reach (with
      * one cap the near parts were planned into room they could never use: near refusals 165 -> 1117 on taurus) */
     unsigned cap_hi = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, cap = cap_hi + lend / 100 * MS_FILL_PCT;
-    {  /* near parts may use lent room up to MS_LEND_NEAR_KB */
-        unsigned ln = lend < (MS_LEND_NEAR_KB << 10) ? lend : MS_LEND_NEAR_KB << 10;
+    ms_lend_room = lend;
+    {  /* near parts may use lent room: all of it (MS_LEND_NEAR_ALL), else up to MS_LEND_NEAR_KB */
+        unsigned ln = MS_LEND_NEAR_ALL || lend < (MS_LEND_NEAR_KB << 10) ? lend : MS_LEND_NEAR_KB << 10;
         cap_hi += ln / 100 * MS_FILL_PCT;
     }
     unsigned sum = 0, sum_hi = 0;
@@ -1000,8 +1118,21 @@ static void plan_(const float *pos)
  * within the draw radius that are not in, by what keeps them out: the plan's cut (no room by its count), a refusal
  * (blocked after "no room"), the visibility cut, or simply the disc (queued / reading). */
 #define MS_FLOW_FRAMES 60u
+/* WORLD_SEAM_BUNDLE (Makefile, default 1; TECH_DEBT world-16): a block pack holds the entries world.c reads to turn it
+ * on first and in read order, so a lite set is one run of the disc, and no map read goes out while it loads: a map read
+ * in between took the head away from that run and back (two seeks per read). ISO world_route (2026-11-17): block turn-on
+ * median 1.86 -> 1.0-1.14 s, far seeks 483 / 472 -> 394 / 361. 0: the old pack order, map reads go on MS_HOLD_INFLIGHT
+ * at a time (the lite set was spread over its pack: four far seeks per turn-on whatever the map reader did) */
+#ifndef WORLD_SEAM_BUNDLE
+#define WORLD_SEAM_BUNDLE 1
+#endif
+#if WORLD_SEAM_BUNDLE
+#define MS_HOLD_DEFAULT 0
+#else
+#define MS_HOLD_DEFAULT 3  /* ASSUMED */
+#endif
 #ifndef MS_HOLD_INFLIGHT
-#define MS_HOLD_INFLIGHT 3  /* ASSUMED; -DMS_HOLD_INFLIGHT=0: no map read while a lite set loads, as before */
+#define MS_HOLD_INFLIGHT MS_HOLD_DEFAULT  /* map reads in flight while a lite set loads */
 #endif
 static void flow_log(const float *pos)
 {
@@ -1333,6 +1464,26 @@ int mapstream_reading(int k)
     for (int i = 0; i < ms_nrd; i++)
         n += ms_rd[i].k == k;
     return n;
+}
+
+/* Why cell c of the selected instance (and its parts) is not drawn at its near level yet (map.c's pop-in line): 0 in,
+ * 1 no camera cell sees it (visibility cut), 2 refused (blocked after "no room"), 3 left out by the plan's cut,
+ * 4 queued / reading (the disc), 5 settling */
+int mapstream_settling(void) { return ms_settling; }
+
+int mapstream_why(unsigned c)
+{
+    const MsInst *m = &ms_inst[sel];
+    if (ms_settling)
+        return 5;
+    int why = 0;
+    for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++) {
+        if (!m->tab[p].bytes || m->state[p] == MS_READY)
+            continue;
+        int w = vis_cut(m, p) ? 1 : blocked(sel, p) ? 2 : m->cls[p] < C_PREF ? 3 : 4;
+        why = w > why ? w : why;  /* (the slowest reason of the cell's parts) */
+    }
+    return why;
 }
 
 void mapstream_select(int k)
