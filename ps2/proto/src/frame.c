@@ -99,6 +99,8 @@ void frame_log(void)
 float frame_det_dt;
 unsigned frame_det_seed;
 static unsigned det_clock;
+static V3 rec_end;  /* the player at the last frame's end (record_frame: moved since?) */
+static float rec_end_yaw;
 static int rec = -1, rec_state = -1;  /* fio descriptors (host: save/, writable in test runs: pcsx2-run.sh) */
 static unsigned rec_frame;
 static char rec_line[96];
@@ -118,13 +120,16 @@ void frame_det_record(const char *path)
         return;
     }
     /* header: magic, version, seed, fixed dt (us), record size */
-    const unsigned h[5] = {0x54525344 /* DSRT */, 1, frame_det_seed, (unsigned)(frame_det_dt * 1e6f), 64};
+    const unsigned h[5] = {0x54525344 /* DSRT */, 2, frame_det_seed, (unsigned)(frame_det_dt * 1e6f), 64};
     fioWrite(rec, h, sizeof h);
     rec_frame = 0;
+    rec_end = v3(1e30f, 1e30f, 1e30f);  /* (the first record carries the start position) */
 }
 
-/* one 64-byte record a frame: frame, dt, the Input struct's fields, camera yaw / pitch (they steer movement) */
-static void record_frame(const Input *in, float dt, float yaw, float pitch)
+/* one 64-byte record a frame (version 2): 0 frame, 1 dt, 2-5 sticks, 6 buttons, 7 d-pad, 8-9 camera yaw / pitch (they
+ * steer movement), 10 flags (1: the player was moved since the last frame's end: a test spawn, a warp, a respawn;
+ * 2: frozen, the simulate phase does not run), 11-14 the player's position and yaw at the frame's start (flag 1) */
+static void record_frame(const Input *in, float dt, float yaw, float pitch, const Player *pl, int frozen)
 {
     unsigned char r[64] = {0};
     unsigned *u = (unsigned *)r;
@@ -134,6 +139,9 @@ static void record_frame(const Input *in, float dt, float yaw, float pitch)
            (unsigned)in->l1_held << 4 | (unsigned)in->l2_held << 5 | (unsigned)in->r3 << 6 | (unsigned)in->square << 7 |
            (unsigned)in->triangle << 8;
     u[7] = (unsigned)in->dpad, f[8] = yaw, f[9] = pitch;
+    int moved = pl->pos.x != rec_end.x || pl->pos.y != rec_end.y || pl->pos.z != rec_end.z || pl->yaw != rec_end_yaw;
+    u[10] = (unsigned)moved | (unsigned)frozen << 1;
+    f[11] = pl->pos.x, f[12] = pl->pos.y, f[13] = pl->pos.z, f[14] = pl->yaw;
     fioWrite(rec, r, sizeof r);
 }
 
@@ -511,7 +519,7 @@ void frame_run(const FrameBoot *b)
         phase_begin(&f);
         phase_input(&f);
         if (rec >= 0)
-            record_frame(&f.in, f.dt, f.cam_yaw, f.cam_pitch), rec_frame++;
+            record_frame(&f.in, f.dt, f.cam_yaw, f.cam_pitch, f.pl, test_frozen()), rec_frame++;
         /* Frame order: the player, camera and world first, then the map chain is kicked and VU1 / the GS draw it
          * while the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera,
          * draw groups, streamed cells) is settled before the kick; what those updates change shows from the next
@@ -522,6 +530,7 @@ void frame_run(const FrameBoot *b)
         phase_sim_b(&f);
         phase_emit(&f);
         phase_present(&f);
+        rec_end = f.pl->pos, rec_end_yaw = f.pl->yaw;
         if (rec_state >= 0) {
             int n = snprintf(rec_line, sizeof rec_line, "%u %.4f %.4f %.4f %.4f %s\n", rec_frame - 1, f.pl->pos.x,
                              f.pl->pos.y, f.pl->pos.z, f.pl->yaw, player_state_name(f.pl));

@@ -329,3 +329,5 @@ WS_SHARE_K	env	1.0	tune	world	-	#156	mapcfg.py	-
 WS_SHARE_TRIS	env	1	flag	world	0	#204	mapcfg.py	-
 WS_UNION	env	1	flag	world	0	#156	mapcfg.py	-
 XDG_RUNTIME_DIR	env	unset	config	tools	-	init	dsr-ref-cam.py	-
+LAB_CC	make	gcc -m32	config	tools	-	new	Makefile:726	the Lab's host compiler (Polaris 1.7b, ps2/proto/lab): 32-bit, the loaders keep pointers in 32-bit blob fields (TECH_DEBT core-1)
+LAB_CFLAGS	make	-std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0	config	tools	-	new	Makefile:727	the Lab's flags: SSE scalar float, no fast-math, no contraction (never x87); whole-area collision

@@ -1,0 +1,19 @@
+# Lab check (Polaris 1.7b): the Burg west stairs without enemies, walk and run; input and state recorded
+# (build/save/det_burg2.trace, .state), compared with tools/lab.py --area m10_01_00_00_w.
+option nodemo
+option noenemies
+option god
+option fixeddt 33.333
+option seed 7
+option record det_burg2.trace
+wait 3
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.4 0.14
+wait 10
+stick 0 1
+wait 3
+stick 0.5 0.8
+wait 3
+stick 0 0
+wait 4
+end
