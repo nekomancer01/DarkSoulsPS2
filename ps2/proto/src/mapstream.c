@@ -1335,6 +1335,26 @@ int mapstream_reading(int k)
     return n;
 }
 
+/* Why cell c of the selected instance (and its parts) is not drawn at its near level yet (map.c's pop-in line): 0 in,
+ * 1 no camera cell sees it (visibility cut), 2 refused (blocked after "no room"), 3 left out by the plan's cut,
+ * 4 queued / reading (the disc), 5 settling */
+int mapstream_settling(void) { return ms_settling; }
+
+int mapstream_why(unsigned c)
+{
+    const MsInst *m = &ms_inst[sel];
+    if (ms_settling)
+        return 5;
+    int why = 0;
+    for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++) {
+        if (!m->tab[p].bytes || m->state[p] == MS_READY)
+            continue;
+        int w = vis_cut(m, p) ? 1 : blocked(sel, p) ? 2 : m->cls[p] < C_PREF ? 3 : 4;
+        why = w > why ? w : why;  /* (the slowest reason of the cell's parts) */
+    }
+    return why;
+}
+
 void mapstream_select(int k)
 {
     if (k >= 0 && k < MS_INST)

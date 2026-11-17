@@ -87,6 +87,7 @@
  * MAP_TWO_PASS_CHECK  | off      | debug    | -DMAP_TWO_PASS_CHECK                          | map.c mapblock.c         | two-pass lists compared with one pass
  * MAP_PROF            | off      | debug    | -DMAP_PROF                                    | map.c         | visibility / EE clip time on the HUD
  * MAP_STATS           | off      | debug    | -DMAP_STATS                                   | map.c         | batches, pool traffic, streamed cells every 60 frames
+ * MAP_POP_LOG         | 1        | debug    | -DMAP_POP_LOG=0                               | map.c         | "map: pop cell" line per pop-in in test runs (in-view wait, why, draws after a settle)
  * MAP_PANO_R          | off      | debug    | -DMAP_PANO_R=60.0f -DPANO_ZOOM=2.0f           | main.c map.c map_i.h  | panorama capture build (tools/pano.py)
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | drawgrp.c     | draw groups shared across blocks
