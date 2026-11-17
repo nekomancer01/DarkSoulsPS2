@@ -505,6 +505,9 @@ MAPENV_m10_01_00_00 += $(if $(BLOCK),,WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_
 # Undead Asylum (world block m18_01_00_00_a): two levels like Firelink (STREAM=1, which world blocks need), with
 # Firelink's errors and near radius (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
 MAPENV_m18_01_00_00 += STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24
+# The area guard (mapcfg SIMPLIFY_AREA_GUARD) off here: at Firelink's 3 px the Asylum's near level has no room for it
+# (0.5: 11.9 % of the block's spots over budget, 0.9: 4.9 %, against 0.05 % without; 2026-11-17)
+MAPENV_m18_01_00_00 += SIMPLIFY_AREA_GUARD=0
 # The Depths (world blocks m10_00_00_00_a / _b) and Darkroot (m12_00_00_00_*; 2026-11-15): two levels (STREAM=1, which
 # world blocks need) with the Burg's errors: their pieces are as dense as the Burg's (ASSUMED: not tuned on them yet)
 MAPENV_m10_00_00_00 += STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446

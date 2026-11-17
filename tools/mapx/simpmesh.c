@@ -213,6 +213,10 @@ static void struct_weight(int npos, const double *pos, const int *wpos, int ntri
     free(ft), free(fu), free(acc), free(ninc), free(inc), free(fill);
 }
 
+/* the area guard's positions (one byte per position of P, as mx_simp_new's; NULL: all), read by the next mx_simp_new
+ * (mx_simp_area_mask) */
+static const unsigned char *g_amask_in;
+
 /* ---- simplify_meshes ---- */
 typedef struct {
     int npos, nattr, ntri;
@@ -1030,8 +1034,6 @@ MX_API void mx_simp_envelope(double pad) { simplify_set_envelope(pad); }
 /* the triangle guard for the next mx_simp_new (tools/native/simplify.c g_qmin / g_flip_cos); qmin 0, flip_cos -2: off */
 MX_API void mx_simp_guard(double qmin, double flip_cos) { simplify_set_guard(qmin, flip_cos); }
 MX_API void mx_simp_area_guard(double frac) { simplify_set_area_guard(frac); }
-/* the area guard's positions (one byte per position of P, as mx_simp_new's; NULL: all), read by the next mx_simp_new */
-static const unsigned char *g_amask_in;
 MX_API void mx_simp_area_mask(const unsigned char *mask) { g_amask_in = mask; }
 
 /* the guard's shape tolerance in metres for the next mx_simp_new (tools/native/simplify.c g_shape_tol); 0: off */
