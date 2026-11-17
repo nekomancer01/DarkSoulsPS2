@@ -179,6 +179,9 @@ def _mesh_np(m):
     return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
+EDGE_2SIDED = os.environ.get("EDGE_2SIDED", "1") == "1"  # two-sided cut-out light (gather, below)
+
+
 def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd={}):
     """gather's per-wedge light (dsr_light.light_fn split=True + the static point lights) for one lit mesh ->
     dict(E (hemisphere + probe + point lights), S (directional), P (positions), N (unit normals)), (n, 3) arrays,
@@ -834,6 +837,18 @@ def gather(game, map_id):
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
                 # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
                 hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd)
+                if EDGE_2SIDED and "_edge" in m["mtd"].lower() and len(wpos):
+                    # cut-out cards ("_Edge" MTDs: leaves, ivy, fences) are two-sided: DSR's Phn pixel shaders read
+                    # SV_IsFrontFace and light the side in view with its own normal. Firelink's canopy cards (m7010B2,
+                    # M_Tree[D]_Edge) have normals straight down: baked with those alone they got ~2 % light and the
+                    # tone map drew them black (Ame's playtest 2026-11-16, "leaves are squares"). A vertex colour holds
+                    # one side, so each wedge takes the side the light reaches more (ASSUMED: the side seen is the
+                    # lit one). EDGE_2SIDED=0: the stored normal only, as before
+                    back = _wedge_light(lit, -_np_list({"_np": npd}, "wn", wn, np.float64, 3), pos, wpos, probes, probe_at,
+                                        plights, npd)
+                    pick = back["E"].sum(1) + back["S"].sum(1) > hdr["E"].sum(1) + hdr["S"].sum(1)
+                    if pick.any():
+                        hdr = {k: np.where(pick[:, None], back[k], v) for k, v in hdr.items()}
                 # [M] materials blend a second diffuse by vertex alpha; the PS2 draws the first only, so the vertex
                 # colour carries the blend: DSR's output for the blended mean colour / the first texture's mean
                 alb2 = albedo(m["diffuse2"]) if "[M]" in m["mtd"] and m.get("diffuse2") in dds else None
