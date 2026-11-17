@@ -1,0 +1,82 @@
+# Ame's play report 2026-11-17 21:31 (report-213158): spots from the report's eye lines, the player spawned under the
+# eye (the camera then sits 4 m behind it), four yaws each.
+#   t58.3  white line on the aqueduct wall above the Firelink cliff stairs (eye -32.1 -51.5 41.3)
+#   t61.1  missing terrain / z-fighting with the Burg from the cliff path (eye -32.6 -50.3 38.3)
+#   t88.8  grey wedge under the aqueduct (eye -29.2 -31.5 3.8; HZ_ONLY_OWN)
+#   t94.7  white spot at the aqueduct exit (eye -44.1 -31.5 -7.8; DG_SEAM_HOLD)
+#   t261.2 ghosting merlons on the Burg wall (eye 32.1 -7.5 -99.8)
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_report1117b.txt <out> --iso build/proto.iso --timeout 900
+option god
+option nodemo
+option noenemies
+spawn -32.1 -53.0 41.3 0.0
+wait 6
+cam 0.0 0.0
+wait 1
+shot stairs_0
+cam 1.5708 0.0
+wait 1
+shot stairs_1
+cam 3.1416 0.0
+wait 1
+shot stairs_2
+cam 4.7124 0.0
+wait 1
+shot stairs_3
+spawn -32.6 -51.7 38.3 0.0
+wait 6
+cam 0.0 -0.2
+wait 1
+shot cliff_0
+cam 1.5708 -0.2
+wait 1
+shot cliff_1
+cam 3.1416 -0.2
+wait 1
+shot cliff_2
+cam 4.7124 -0.2
+wait 1
+shot cliff_3
+spawn -29.2 -32.9 3.8 0.0
+wait 6
+cam 0.0 0.0
+wait 1
+shot wedge_0
+cam 1.5708 0.0
+wait 1
+shot wedge_1
+cam 3.1416 0.0
+wait 1
+shot wedge_2
+cam 4.7124 0.0
+wait 1
+shot wedge_3
+spawn -44.1 -32.9 -7.8 0.0
+wait 6
+cam 0.0 0.0
+wait 1
+shot exit_0
+cam 1.5708 0.0
+wait 1
+shot exit_1
+cam 3.1416 0.0
+wait 1
+shot exit_2
+cam 4.7124 0.0
+wait 1
+shot exit_3
+spawn 32.1 -8.9 -99.8 0.0
+wait 6
+cam 0.0 0.0
+wait 1
+shot merlon_0
+cam 1.5708 0.0
+wait 1
+shot merlon_1
+cam 3.1416 0.0
+wait 1
+shot merlon_2
+cam 4.7124 0.0
+wait 1
+shot merlon_3
+end
