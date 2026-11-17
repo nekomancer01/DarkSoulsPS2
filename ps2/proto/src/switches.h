@@ -155,6 +155,7 @@
  * POSE_SLOTS          | 40       | tune     | -                                             | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | enemy.c       | wall-hit log by move kind
+ * ENEMY_ROOT_Y        | 1        | fallback | -DENEMY_ROOT_Y=0                              | enemy.c       | root-motion height inside TAE IGNORE_GRAVITY windows (Taurus Demon's 9061 jump down); 0 = flat root motion
  * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | enemy.c       | separation rides the next move (runtime: option set SEP_CARRY 0)
  * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | enemy.c       | no ESD / Lua
