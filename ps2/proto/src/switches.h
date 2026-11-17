@@ -43,6 +43,8 @@
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | mapstream_i.h   | lent room near parts may hold
+ * MS_LEND_NEAR_ALL    | 1        | fallback | -DMS_LEND_NEAR_ALL=0                          | mapstream_i.h   | near parts may take all the pools' idle room; 0 = at most MS_LEND_NEAR_KB
+ * MS_DEFRAG_LEND      | 1        | fallback | -DMS_DEFRAG_LEND=0                            | mapstream_i.h   | MS_DEFRAG moves groups into the pools' idle room too; 0 = item pages only
  * MS_BORROW_FLOOR     | 2816 KB  | tune     | -                                             | mapstream_i.h   | heap kept free when borrowing
  * MS_HOLD_INFLIGHT    | 3        | fallback | -DMS_HOLD_INFLIGHT=0                          | mapstream.c     | map reads in flight while a block's lite set loads; 0 = none (the old hold)
  * MS_MIP0             | 0        | fallback | -DMS_MIP0=1                                   | mapstream.c     | 1 = full-size (mip 0) map textures streamed within 5-10 m (more reads, less room for geometry)

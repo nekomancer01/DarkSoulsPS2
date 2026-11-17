@@ -590,7 +590,8 @@ static int issue(void)
             ms_lent_n++, lent = 1;
         else
             p = gb <= MS_PAGE ? ms_g_alloc(gb) : ms_g_alloc_top(gb, ilim());
-        if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_KB << 10) && (p = ms_g_alloc_lend(gb)))
+        if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_ALL ? ms_lend_room : MS_LEND_NEAR_KB << 10) &&
+            (p = ms_g_alloc_lend(gb)))
             ms_lent_n++, ms_lent_near += gb, lent = 2;
         if (!p && sent)
             break;  /* the rest waits for its turn */
@@ -634,6 +635,11 @@ static int issue(void)
                        "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB, borrowed %u KB\n", w.k, w.id,
                        gb >> 10, w.cls, d, hard ? ", hard" : "", fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
                        mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
+                unsigned fr3[3][3];
+                ms_free_report(fr3);
+                printf("mapstream: free room (KB, whole pages, largest run in a page KB): items %u %u %u | misc %u %u %u | "
+                       "structural %u %u %u; lent near %u KB, inflight %d\n", fr3[0][0], fr3[0][1], fr3[0][2],
+                       fr3[1][0], fr3[1][1], fr3[1][2], fr3[2][0], fr3[2][1], fr3[2][2], ms_lent_near >> 10, ms_nrd);
             }
             mapstream_stats.room_fails++;
             hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2, w.k, w.id);
@@ -809,8 +815,9 @@ static void plan_(const float *pos)
     /* cap_hi: what the item pages hold, for every class; cap: + the lent room, which only lendable classes reach (with
      * one cap the near parts were planned into room they could never use: near refusals 165 -> 1117 on taurus) */
     unsigned cap_hi = room > over ? (room - over) / 100 * MS_FILL_PCT : 0, cap = cap_hi + lend / 100 * MS_FILL_PCT;
-    {  /* near parts may use lent room up to MS_LEND_NEAR_KB */
-        unsigned ln = lend < (MS_LEND_NEAR_KB << 10) ? lend : MS_LEND_NEAR_KB << 10;
+    ms_lend_room = lend;
+    {  /* near parts may use lent room: all of it (MS_LEND_NEAR_ALL), else up to MS_LEND_NEAR_KB */
+        unsigned ln = MS_LEND_NEAR_ALL || lend < (MS_LEND_NEAR_KB << 10) ? lend : MS_LEND_NEAR_KB << 10;
         cap_hi += ln / 100 * MS_FILL_PCT;
     }
     unsigned sum = 0, sum_hi = 0;

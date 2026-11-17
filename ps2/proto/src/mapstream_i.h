@@ -182,6 +182,23 @@ typedef struct {
     unsigned short *vist;
     unsigned visg, visn, vish, viskb;  /* + items outside it now, their KB */
 } MsInst;
+/* MS_LEND_NEAR_ALL (default 1; -DMS_LEND_NEAR_ALL=0 = at most MS_LEND_NEAR_KB): near parts may take all of the pools'
+ * idle room (what their own blocks' lite sets leave, the plan's "lend"), not only 900 KB of it. The long pop-ins at the
+ * player's feet (27-80 s at 0-9 m, ISO 2026-11-16/17) were near parts of 31-63 KB refused with the item pages full
+ * (~100 KB free in holes under 45 KB) while the misc and structural pools held 300-1100 KB idle, whole pages among it:
+ * the near parts' lent room stood at 891-898 of its 900 KB at every such refusal (walls, taurus, report3) */
+/* MS_DEFRAG_LEND (default 1; -DMS_DEFRAG_LEND=0 = item pages only): MS_DEFRAG moves a page's groups into the pools'
+ * idle room as well when the item pages have no hole for them. With near parts lending the pools' room (above), the
+ * refusals left were pinned coarse items of 24-64 KB (class 9) with ~150-200 KB free in the item pages in holes of at
+ * most 19-23 KB, while the pools still held 160-450 KB idle (ISO iso_burg_walls 2026-11-17): the groups of a page
+ * found no hole to move to, so no page could be emptied */
+#ifndef MS_DEFRAG_LEND
+#define MS_DEFRAG_LEND 1
+#endif
+#ifndef MS_LEND_NEAR_ALL
+#define MS_LEND_NEAR_ALL 1
+#endif
+extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) */
 #ifndef MS_LEND_NEAR_KB
 #define MS_LEND_NEAR_KB 900
 #endif
@@ -222,6 +239,7 @@ extern unsigned ms_nx;
 void *ms_g_alloc(unsigned n);
 void *ms_g_alloc_top(unsigned n, unsigned top);
 void *ms_g_alloc_lend(unsigned n);
+void ms_free_report(unsigned out[3][3]);
 void ms_g_free(void *ptr, unsigned n);
 int ms_ensure_arena(void);
 void ms_drop(int k, unsigned id);
