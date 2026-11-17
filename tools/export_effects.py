@@ -99,6 +99,7 @@ FX_OVERLAP = float(os.environ.get("FX_OVERLAP", 1.0))
 # 1.0 the bright texels clip red while green keeps rising, so the hue turns yellow where DSR's per-pixel tone map keeps
 # it orange. MEASURED (TECH_DEBT fx-2): see FX_OVERLAP
 FX_ADD_CAP = float(os.environ.get("FX_ADD_CAP", 1.0))
+FX_WALL_ALPHA = os.environ.get("FX_WALL_ALPHA", "1") == "1"  # BlendMode 1 (light / fog walls) alpha blended: system()
 
 SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x"  # = fx.h FxSys
 LIGHT_FMT = "<H2x3ffff8f24Bf"
@@ -299,7 +300,14 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
         c1 = [_curve(_f(ap, "Color1" + ch), life) for ch in "RGBA"]
         c2 = [_curve(_f(ap, "Color2" + ch), life) for ch in "RGBA"]
     mod = [_curve(_f(ap, "ColorMod" + ch), life) for ch in "RGBA"]
-    blend = 1 if ap.get("BlendMode") == 6 else 0
+    # BlendMode 1 (FX_WALL_ALPHA, default on; FX_WALL_ALPHA=0 = the old additive export): only the light / fog walls
+    # use it (74 of ~1900 appearances in the game's bundles, all on the solid white s00917 / one other plain texture,
+    # 2026-11-17 survey), a 2 x 3.5 m sheet of colour 0.196 whose alpha ramps 0 -> 1 -> 0 over 5 s, emitted every
+    # 1 s: five sheets overlap. Added, they summed to 5 x 0.196 and clipped to a flat white box (Ame's play reports
+    # 2026-11-08 / 11-17, TECH_DEBT fx-12); blended by alpha they make the opaque grey-white sheet DSR's boss fog is
+    # (nothing behind it shows), with the BlendMode 4 noise layers adding the light swirls on top. ASSUMED: the
+    # exe's blend table for the FFX modes is not decoded (the RenderDoc check is in fx-12).
+    blend = 1 if ap.get("BlendMode") == 6 or (FX_WALL_ALPHA and ap.get("BlendMode") == 1) else 0
     mul = _curve(_f(ap, "ColorModMult"), life)
     rgba = []
     for i in range(N_CURVE):

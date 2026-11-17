@@ -44,6 +44,9 @@ unsigned enemy_ram_free(void);
  * state, 2 backread removed: off while either is set), kill (HP 0, death anim) */
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active);  /* c0000 stand-ins (npc.c) too */
 int enemy_entity_enable(int entity, int on, int bit);
+float enemy_entity_anim_length(int entity, int anim);
+int enemy_entity_msg(int entity, int msg);  /* EMEVD 4[08] */
+int enemy_entity_warp(int entity, const float pos[3], float yaw);  /* EMEVD 2004[41] on a character */  /* s, 0 = not placed / the anim is not in its chr.bin */
 int enemy_entity_kill(int entity, int award);
 int enemy_kill_near(V3 p, float r);  /* test hook: enemies within r die (ragdoll tests) */
 /* A hit of hp from the player (test scripts: "ev chr ID damage HP"); 1 if it has such a character */

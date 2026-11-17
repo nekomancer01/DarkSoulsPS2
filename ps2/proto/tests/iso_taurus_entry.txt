@@ -1,0 +1,63 @@
+# Taurus Demon entry on the real disc (Ame's play report 2026-11-17, notes t281.5 / t292.9): the fog wall on top of the
+# Burg tower (o1405 1011890, SFX 81005 1011891), the walk through it (m10_01 event 11015380: turn to 1012897, a00 7410),
+# then along the bridge into region 1012701, which starts 11015382: the boss's special wait 9001 ends and 2003[18]
+# plays 9061 on 1010700, its jump down from its tower onto the bridge (11.5 m of root height inside the anim's
+# IGNORE_GRAVITY window, enemy.c ENEMY_ROOT_Y), the event waits for the anim, then the AI goes on and 11015384 shows
+# the bar. Enemies on, god mode (the walker cannot fight):
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_taurus_entry.txt <out> --iso build/proto.iso --timeout 600
+option hud
+option god
+option nodemo
+wait 3
+spawn 52.41 16.86 -118.49 -1.5708
+cam -1.5708 0.3
+wait 4
+shot fog_front
+ev expect obj 1011890 1
+ev expect bossbar 0 -1
+ev action
+wait 0.3
+ev expect eventanim 1
+shot fog_walk_0
+# side view: the walk's pose (the bind pose until 2026-11-17: 7410 was missing from the player model)
+cam 0 0.2
+wait 0.7
+shot fog_walk_1
+wait 1
+shot fog_walk_2
+cam -1.5708 0.3
+wait 1
+shot fog_walk_3
+wait 1.5
+ev expect eventanim 0
+ev expect x < 50.8
+cam off
+shot fog_after
+approach 40.0,-118.5 0.8 1
+check near 40.0 16.1 -118.5 1.5
+ev expect chr 1010700 sp 9001
+ev expect flag 11015382 0
+approach 31.0,-119.6 0.8 1
+cam off
+shot taurus_waiting
+approach 22.8,-120.7 0.6 1
+ev expect chr 1010700 anim 9061
+cam off
+shot jump_0
+wait 0.5
+shot jump_1
+wait 0.5
+shot jump_2
+wait 0.5
+shot jump_3
+wait 1
+shot jump_landed
+ev expect chr 1010700 ybelow 20
+# 11015382 ends (its flag goes on) once 9061 has played to its end: then the AI is on
+wait 2.5
+ev expect flag 11015382 1
+ev expect bossbar 0 1010700
+wait 2
+shot fight
+ev summary
+end
