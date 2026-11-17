@@ -118,6 +118,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `dsr-ref.sh` | Start, load, camera, savestates, screenshots |
 | `dsr-ref-cam.py` | Precise camera placement |
 | `mapshot.py` | Offline shots of exported map blocks at a spot or a test script's shots (levels as the runtime draws them), sheets next to reference shots and a build before the change: seconds per view, no PCSX2 |
+| `seam_audit.py` | Hole audit at every world seam (world.bin links): spots x yaws near each seam, depth renders of every block at full detail against the runtime's picks (blocks on at their levels, far panorama with seam sets, draw groups with DG_SEAM), steady and with the far block still loading; audit.json, a sheet of the worst views, exit 1 over --fail % steady holes |
 | `b9-dsr-shots.sh` | Reference shots matching `tests/iso_burg_looks.txt` |
 | `dsr_mem.py` | Read / write game memory (position, warp, HP) |
 | `dsr-ei.c` | Input injection |

@@ -138,10 +138,14 @@ unsigned dg_gen(void) { return shown_gen + hidden_gen; }
 static unsigned seam_mask[4];
 void dg_seam(int j, int tri)
 {
-    memset(seam_mask, 0, sizeof seam_mask);
-    if (j < 0 || j >= DG_INST || !dg[j].n_chunks || (unsigned)tri >= dg[j].n_tris)
+    if (j < 0) {
+        memset(seam_mask, 0, sizeof seam_mask);
         return;
-    memcpy(seam_mask, dg[j].coll[dg[j].tri_dg[tri]], sizeof seam_mask);
+    }
+    if (j >= DG_INST || !dg[j].n_chunks || (unsigned)tri >= dg[j].n_tris)
+        return;
+    for (int w = 0; w < 4; w++)  /* (several floors ahead: map.c DG_SEAM_VIEW) */
+        seam_mask[w] |= dg[j].coll[dg[j].tri_dg[tri]][w];
 }
 
 void dg_floor(int k, int tri)

@@ -30,17 +30,21 @@ Built from the other blocks' horizons (hzn.bin, tools/horizon.py: untextured, co
      share corners unless their depths differ by more than FAR_JUMP (a silhouette against something far behind: the
      gap shows the sky from other spots rather than a stretched sheet);
   4. an edge collapse (horizon.py mo_simplify) at FAR_PX pixels seen from the eye merges the flat stretches; coarser
-     cells until the file fits FAR_KB (never past FAR_DEG_MAX);
+     cells until the file fits FAR_KB (never past FAR_DEG_MAX): the seam sets first (they stand in for a few
+     seconds while a peer loads), then all sets;
   5. indexed VU1 batches as the horizon's (horizon.py idx_batches / idx_streams), sorted along a Z curve.
 
 far.bin (little endian, 16-byte aligned; stream offsets from the file start):
   header (16 B): 'FARP', sets, chunks, bytes
   per set (32 B): u32 world block it shows, first chunk, chunks, u32 draw groups[4] (all ones: always), u32 flags
-                  (bit 0 FAR_PANO: the boot map's picture-layer backdrop, drawn while its pictures are not)
+                  (bit 0 FAR_PANO: the boot map's picture-layer backdrop, drawn while its pictures are not; bit 1
+                  FAR_SEAM: a seam set, its eye's x / z in bits 8-19 / 20-31 (signed, 4 m units); bit 2 FAR_HAS_SEAM:
+                  a main set the block's seam sets stand in for near them)
   chunk records (64 B, map.c Chunk as hzn.bin's: tex -1, flags CHUNK_HZN | CHUNK_BACKDROP)
   streams
 Env: FARPANO=0 writes an empty file (no panorama: world.c then keeps the boot block's tables, the old path);
-FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN, FAR_PANO_SET."""
+FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN, FAR_PANO_SET,
+FAR_SEAM (0: no seam sets), FAR_SEAM_EYES, FAR_SEAM_DEG, FAR_SEAM_DEG_MAX, FAR_SEAM_NEAR."""
 import os
 import struct
 import sys
@@ -132,7 +136,7 @@ def own_nav(gen):
     return nav
 
 
-def pano_mesh(P, C, eye, deg, memo=None):
+def pano_mesh(P, C, eye, deg, memo=None, near=None):
     """triangles P (n, 3, 3) with corner colours C (n, 3, 3) as seen from eye -> (V, VC, T): the panorama's quads.
     memo: a dict kept across calls for the same P, C, eye (build()'s coarser-cell retries): the six views are rendered
     once (they do not depend on deg)"""
@@ -149,7 +153,7 @@ def pano_mesh(P, C, eye, deg, memo=None):
         views = render6(P, C, eye, n, NV, S, FOV)
         if memo is not None:
             memo["views"] = views
-    return sample(views, eye, deg, NV, S, f)
+    return sample(views, eye, deg, NV, S, f, NEAR if near is None else near)
 
 
 def render6(P, C, eye, n, NV, S, FOV):
@@ -172,7 +176,7 @@ def render6(P, C, eye, n, NV, S, FOV):
     return views
 
 
-def sample(views, eye, deg, NV, S, f):
+def sample(views, eye, deg, NV, S, f, near=None):
     """the panorama's quads from the six views at deg degree cells"""
     import math
     # the panorama's cells: azimuth x elevation, K x K samples each, taken from the view that faces them most
@@ -193,7 +197,7 @@ def sample(views, eye, deg, NV, S, f):
         y = np.clip(np.floor(S / 2 - f * Dr[m][:, 1] / dz).astype(np.int64), 0, S - 1)
         dist[m] = zb[y, x] / dz  # (depth along the view axis -> distance along the ray)
         rgb[m] = img[y, x]
-    ok = np.isfinite(dist) & (dist < FAR) & (dist >= NEAR)
+    ok = np.isfinite(dist) & (dist < FAR) & (dist >= (NEAR if near is None else near))
     blk = lambda a: a.reshape(nel, K, naz, K, *a.shape[2:]).swapaxes(1, 2).reshape(nel, naz, K * K, *a.shape[2:])
     okc, dc, cc = blk(ok), blk(np.where(ok, dist, np.nan)), blk(np.where(ok[..., None], rgb, 0.0))
     cnt = okc.sum(2)
@@ -305,15 +309,73 @@ def peer_eyes(nav, own_gen, peer_gen):
     than the link rule keeps it loaded (tools/export_world.py KEEP_CELLS cells from its cell rectangles)"""
     import area
     import export_world
+    return seam_split(nav, own_gen, peer_gen)[0]
+
+
+def seam_split(nav, own_gen, peer_gen):
+    """(far, near, near's distances to the peer's cells): peer_eyes' spots, and for a block of the same MSB the rest of
+    this block's ground (within the keep
+    distance of it: there the peer is loaded once streaming caught up, and off until then); near is empty for another
+    map's block"""
+    import area
+    import export_world
     a, b = (area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}) for g in (own_gen, peer_gen))
     if not a or not b or a.get("map") != b.get("map") or not b.get("cells"):
-        return nav
+        return nav, nav[:0], np.zeros(0)
     d = np.full(len(nav), np.inf)
     for x0, z0, x1, z1 in area.cell_rects(b["cells"]):
         dx = np.maximum(0, np.maximum(x0 * area.CELL - nav[:, 0], nav[:, 0] - (x1 + 1) * area.CELL))
         dz = np.maximum(0, np.maximum(z0 * area.CELL - nav[:, 2], nav[:, 2] - (z1 + 1) * area.CELL))
         d = np.minimum(d, np.maximum(dx, dz))
-    return nav[d > export_world.KEEP_CELLS * area.CELL]
+    far = d > export_world.KEEP_CELLS * area.CELL
+    # (the near spots closest to the peer first: seam_eyes covers the seam itself before the rest of the band)
+    o = np.argsort(d[~far], kind="stable")
+    return nav[far], nav[~far][o], d[~far][o]
+
+
+# Seam sets (map streaming research idea 9, 2026-11-17): a block of the same MSB is in the panorama only as seen from
+# the middle of the ground beyond the keep distance, so what the seam alone sees (the Burg past a tunnel's exit) was
+# missing while that block was still off at the seam: the sky showed. Eyes on this block's ground within SEAM_BAND of the
+# peer, spread until every such spot is within SEAM_COVER of one (at most SEAM_EYES, seam_eyes), each render the peer
+# once more, at SEAM_DEG cells and with SEAM_NEAR as its near limit; flags FAR_SEAM plus that eye's x / z
+# (4 m units), which mapblock.c draws in place of the peer's main sets while it is the seam set nearest the camera
+# within 48 m. FAR_SEAM=0: none, as before
+SEAM = os.environ.get("FAR_SEAM", "1") == "1"
+SEAM_EYES = int(os.environ.get("FAR_SEAM_EYES", 6))
+SEAM_COVER = float(os.environ.get("FAR_SEAM_COVER", 40.0))  # m: every seam spot this close to an eye (mapblock.c: 48)
+SEAM_BAND = float(os.environ.get("FAR_SEAM_BAND", 24.0))   # m: the spots eyes come from, nearest the peer
+SEAM_DEG = float(os.environ.get("FAR_SEAM_DEG", 1.5))   # ASSUMED: half the main sets' detail, they are a stopgap
+SEAM_DEG_MAX = float(os.environ.get("FAR_SEAM_DEG_MAX", DEG_MAX))  # the seam sets' coarsest cells
+SEAM_NEAR = float(os.environ.get("FAR_SEAM_NEAR", 8.0))  # ASSUMED: the peer's ground starts a few metres past a seam
+SEAM_MIN = 8  # navmesh spots a cluster needs
+FAR_SEAM, FAR_HAS_SEAM = 2, 4
+
+
+def seam_flags(eye):
+    """FAR_SEAM with the eye's x / z in bits 8-19 / 20-31 (signed, 4 m units)"""
+    q = lambda v: int(np.clip(np.rint(v / 4.0), -2048, 2047)) & 0xFFF
+    return FAR_SEAM | q(eye[0]) << 8 | q(eye[2]) << 20
+
+
+def seam_eyes(near, dn):
+    """navmesh spots near (n, 3) with their distances dn to the peer's cells, nearest first (seam_split) -> eyes 1.5 m
+    up: a greedy cover of the spots within SEAM_BAND of the peer, the first eye the spot nearest it, each next one the
+    spot farthest from those chosen, until every spot of the band is within SEAM_COVER of an eye or SEAM_EYES are placed.
+    (The first version took 3 k-means centres over the whole 64 m keep band: long seams kept spots 50-90 m from any eye,
+    so the peer showed nothing while it loaded there; seam audit loading holes 30-95 % at Burg w -> b, p -> b, c -> p,
+    2026-11-18)"""
+    band = near[np.asarray(dn) <= SEAM_BAND]
+    if len(band) < SEAM_MIN:
+        band = near[:SEAM_MIN]
+    if len(band) < SEAM_MIN:
+        return []
+    out = [band[0]]
+    dmin = np.sqrt(((band[:, [0, 2]] - band[0, [0, 2]]) ** 2).sum(1))
+    while len(out) < SEAM_EYES and dmin.max() > SEAM_COVER:
+        k = int(np.argmax(dmin))
+        out.append(band[k])
+        dmin = np.minimum(dmin, np.sqrt(((band[:, [0, 2]] - band[k, [0, 2]]) ** 2).sum(1)))
+    return [e + np.array([0.0, 1.5, 0.0]) for e in out]
 
 
 def in_map(X, map_id):
@@ -365,8 +427,9 @@ def build(own, gens):
         if bi == own:
             continue
         pm, _c, _w, grp = dg_masks(g)
-        eyes = peer_eyes(nav, gens[own], g) if grp == area_grp else []
-        if not len(eyes):
+        eyes, near, dn = seam_split(nav, gens[own], g) if grp == area_grp else ([], [], [])
+        seams = seam_eyes(near, dn) if SEAM and len(near) else []
+        if not len(eyes) and not seams:
             continue
         side = far_side(g)
         hp, hc, hs = hzn_tris(os.path.join(g, "hzn.bin"))
@@ -377,12 +440,20 @@ def build(own, gens):
         for fl, P, C, S in cands:
             n_in += len(P)
             peers.add(bi)
-            peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts)
+            if len(eyes):
+                peer_sets(src, fl | (FAR_HAS_SEAM if seams and not fl else 0), bi, g, P, C, S, eyes, own_map,
+                          own_tris, pm, coll, wgt, counts)
+            if not fl:  # (the boot map's picture backdrop has no seam sets: it is far from every seam)
+                for eye in seams:
+                    peer_sets(src, seam_flags(eye), bi, g, P, C, S, near, own_map, own_tris, pm, coll, wgt, counts,
+                              eye=eye)
+                counts["seam"] = counts.get("seam", 0) + len(seams)
     n_hidden, n_standin = counts["hidden"], counts["standin"]
-    return finish(src, name, n_in, n_hidden, n_standin, peers)
+    out, line = finish(src, name, n_in, n_hidden, n_standin, peers)
+    return out, line + (f", {counts['seam']} seam eyes" if counts.get("seam") else "")
 
 
-def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts):
+def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts, eye=None):
     """one peer's triangles (its horizon, or the picture layers' backdrop: fl FAR_PANO) -> src entries"""
     import area
     if own_map and area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") != own_map:
@@ -403,7 +474,8 @@ def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, c
         P, C, S = P[~on], C[~on], S[~on]
     if not len(P):
         return
-    eye = eyes.mean(0) + np.array([0.0, 1.5, 0.0])
+    if eye is None:
+        eye = eyes.mean(0) + np.array([0.0, 1.5, 0.0])
     gs = groups(S, pm, coll, wgt)
     counts["hidden"] += int((~np.isin(S, [m for _mask, mem in gs for m in mem])).sum())
     for mask, members in gs:
@@ -412,25 +484,35 @@ def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, c
 
 
 def finish(src, name, n_in, n_hidden, n_standin, peers):
+    # the seam sets coarsen first, up to FAR_DEG_MAX, and only then every set: with one level for both, 7-12 seam
+    # sets took the main sets of the Burg / Parish / Depths blocks from 1.17 to 2.86 degree cells (2026-11-17)
     deg = DEG
+    sdeg = max(DEG, SEAM_DEG)
     memo = [{} for _ in src]
+    has_seam = any(k[2] & FAR_SEAM for k, *_ in src)
     while True:
         res = []
         for (key, P, C, eye), mo in zip(src, memo):
-            V, VC, T = pano_mesh(P, C, eye, deg, mo)
+            seam = key[2] & FAR_SEAM
+            dg = max(deg, sdeg) if seam else deg
+            V, VC, T = pano_mesh(P, C, eye, dg, mo, SEAM_NEAR if seam else NEAR)
             n0 = len(T)
             if len(T) and horizon._meshopt() is not None:
-                T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * deg / DEG)
+                T = horizon.mo_simplify(V, VC, T, np.maximum(np.sqrt(((V - eye) ** 2).sum(1)), D), PX * dg / DEG)
             if os.environ.get("FAR_LOG"):
-                print(f"farpano:   block {key[0]}{' backdrop' if key[2] else ''} groups {key[1][0]:08x}..: {len(P)} tris -> {n0} panorama -> {len(T)}")
+                print(f"farpano:   block {key[0]}{' backdrop' if key[2] & FAR_PANO else ' seam' if key[2] & FAR_SEAM else ''} groups {key[1][0]:08x}..: {len(P)} tris -> {n0} panorama -> {len(T)}")
             res.append((key, V, np.clip(np.rint(VC), 0, 255).astype(np.uint8), T))
         out = write(res)
         if len(out) <= KB * 1024 or deg >= DEG_MAX:
             break
-        deg = min(DEG_MAX, deg * 1.25)
+        if has_seam and sdeg < SEAM_DEG_MAX:
+            sdeg = min(SEAM_DEG_MAX, sdeg * 1.25)
+        else:
+            deg = min(DEG_MAX, deg * 1.25)
     nt = sum(len(r[3]) for r in res)
     return out, (f"farpano: {name}: {n_in} horizon tris of {len(peers)} blocks, {len(set(k[0][0] for k in src))} kept ({n_hidden} not shown from "
-                 f"here, {n_standin} stand-ins) -> {nt} tris in {sum(1 for r in res if len(r[3]))} draw-group meshes, {len(out) >> 10} KB, {deg:.2f} degree cells")
+                 f"here, {n_standin} stand-ins) -> {nt} tris in {sum(1 for r in res if len(r[3]))} draw-group meshes, {len(out) >> 10} KB, {deg:.2f} degree cells"
+                 + (f" (seam sets {max(deg, sdeg):.2f})" if has_seam else ""))
 
 
 def main():

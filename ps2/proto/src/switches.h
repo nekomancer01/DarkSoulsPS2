@@ -113,6 +113,14 @@
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | gfx    | init  | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | world  | #131  | drawgrp.c     | draw groups shared across blocks
  * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | world  | #251  | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
+ * DG_SEAM_HOLD        | 30       | tune     | -DDG_SEAM_HOLD=0                              | world  | #252  | map.c         | frames a seam floor found ahead keeps adding its draw groups after the probe last hit it (0: none, the old path)
+ * DG_SEAM_VIEW        | 1        | fallback | -DDG_SEAM_VIEW=0                              | world  | #252  | map.c         | DG_SEAM probes the camera's view direction as well as the heading (border draw groups); 0 = the heading alone
+ * HZ_ONLY_OWN         | 1        | fallback | -DHZ_ONLY_OWN=0                               | world  | #252  | mapblock.c    | a kept-only block's horizon cells inside an on block of another map are left out; 0 = all drawn
+ * MAP_FAR_SEAM        | 1        | fallback | -DMAP_FAR_SEAM=0                              | world  | #252  | mapblock.c    | far panorama seam sets (farpano.py FAR_SEAM): the one nearest the camera within 48 m stands in for its block's main sets; 0 = main sets only
+ * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | world  | #252  | map.c         | last-resort backdrop: a band in the sky's fog colour from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)
+ * VOID_RING_SKY       | 1        | fallback | -DVOID_RING_SKY=0                             | world  | #252  | map.c         | VOID_RING in the sky's fog colour (header sky row); 0 = the map's current fog colour
+ * VOID_RING_TOP       | 0.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees above the horizon where the band is still opaque
+ * VOID_RING_FADE      | 6.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees over which it fades out above that
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | gfx    | init  | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | gfx    | init  | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | gfx    | init  | bump.c        | relief batches per frame
