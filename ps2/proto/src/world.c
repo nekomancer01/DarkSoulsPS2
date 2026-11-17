@@ -270,8 +270,56 @@ static float in_cur_s;  /* seconds the player has stood in cur */
  * waits WORLD_DRAIN frames */
 static int far_blk = -1, far_rd = -1, far_reading;
 static unsigned char *far_buf, *far_cur, *far_old;  /* being read, drawn (of far_blk), draining */
-static unsigned far_done;
 static int far_old_drain;
+/* WORLD_FAR_RESERVE (default 1; -DWORLD_FAR_RESERVE=0 = heap only): one buffer of the largest panorama is taken from
+ * the heap at boot, before the streaming arena sizes itself, and a panorama that finds no heap room is read into it.
+ * In the Burg the heap sits at 1.6-2.7 MB, under WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + the panorama, so Burg west's
+ * panorama never came in from 180 to 250 s of Ame's play report (2026-11-17) and blocks not loaded drew nothing:
+ * white voids past the tunnels, "deloaded" map and missing chunks. Arena pages instead (tried): the 3 contiguous pages
+ * were found 2 times in 58 (only what no class wanted) and 0 in 46 (clearing items below the near classes). While the
+ * reserve still holds the panorama being drawn, it drains first (no panorama for WORLD_DRAIN draws) */
+#ifndef WORLD_WANT_3D  /* (wanted blocks nearest first, the height range counted: step) */
+#define WORLD_WANT_3D 1
+#endif
+#ifndef WORLD_FAR_RESERVE
+#define WORLD_FAR_RESERVE 1
+#endif
+static unsigned char *far_res;   /* the reserve (NULL: none) */
+static unsigned far_res_size;
+static int far_in_res;           /* the panorama being read lies in the reserve */
+static int far_swap;             /* the reserve's panorama drains for the next one: the boot block stays let go */
+static void far_free(unsigned char *p)
+{
+    if (p && p != far_res)
+        free(p);
+}
+static unsigned char *far_alloc(unsigned sz, int *in_res)
+{
+    *in_res = 0;
+    /* the reserve first: a panorama in the heap as well took the Burg's heap minimum from 1.47 to 0.42 MB (ISO
+     * iso_burg_walls, 2026-11-17); the heap only for the next one while the reserve's is drawn */
+    if (far_res && sz <= far_res_size && far_old != far_res && far_cur != far_res) {
+        *in_res = 1;
+        return far_res;
+    }
+    if (enemy_ram_free() >= WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz) {
+        unsigned char *p = memalign(128, sz);
+        if (p)
+            return p;
+    }
+    if (!far_res || sz > far_res_size || far_old == far_res)
+        return NULL;  /* (none, or still draining: the next try) */
+    /* drawn from the reserve and no heap: let it drain, then read into it. (The boot block is not wanted back for
+     * that gap: with it, the swap read the boot block's 1.1 MB of tables back into the heap and took the Burg's heap
+     * minimum to 0.42 MB, iso_burg_walls 2026-11-17) */
+    far_swap = 1;
+    map_far_set(NULL);
+    far_old = far_cur, far_old_drain = WORLD_DRAIN;
+    far_cur = NULL;
+    return NULL;
+}
+static unsigned far_done;
+
 static float far_retry_s;
 /* WORLD_BOOT_LEAN: the last spots the boot block was underfoot or kept from (one per seam: spots WORLD_BOOT_SPOT_D
  * apart; the nearest one follows the player while the block is underfoot or kept); the boot block is wanted back */
@@ -672,6 +720,13 @@ void world_systems(GSGLOBAL *gs)
         printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d\n",
                i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
                ((int)h3 - (int)enemy_ram_free()) >> 10);
+    }
+    if (WORLD_FAR_RESERVE && nblk > 1) {  /* the panorama reserve, before the arena takes the heap */
+        for (int i = 0; i < nblk; i++)
+            far_res_size = rt[i].far_size > far_res_size ? rt[i].far_size : far_res_size;
+        far_res_size = (far_res_size + 127) & ~127u;
+        far_res = far_res_size ? memalign(128, far_res_size) : NULL;
+        printf("world: far panorama reserve %u KB%s\n", far_res_size >> 10, far_res || !far_res_size ? "" : " FAILED");
     }
     if (cur >= 0 && nblk > 1)
         mapstream_arena();  /* now: no enemy model is loaded yet (enemy_init stripped them all) */
@@ -1335,20 +1390,20 @@ static void far_step(void)
             if (res != (int)n) {
                 printf("world: block %d far panorama read %d of %u bytes\n", far_rd, res, n);
                 world_stats.fails++;
-                free(far_buf);
-                far_buf = NULL, far_rd = -1, far_retry_s = WORLD_RETRY_S;
+                far_free(far_buf);
+                far_buf = NULL, far_rd = -1, far_retry_s = WORLD_RETRY_S, far_swap = 0;
                 return;
             }
             InvalidDCache(far_buf + far_done, far_buf + far_done + n - 1);
             if ((far_done += n) == r->far_size) {
                 unsigned char *was = map_far_set(far_buf) ? NULL : far_buf;  /* (not a panorama: freed below) */
                 if (far_old)  /* the one before the last is still draining: its chains are long done */
-                    free(far_old);
+                    far_free(far_old);
                 far_old = far_cur, far_old_drain = WORLD_DRAIN;
-                printf("world: block %d far panorama %s: %u KB (heap, RAM free %u KB)\n", far_rd, was ? "NOT VALID" : "on",
-                       r->far_size >> 10, enemy_ram_free() >> 10);
-                free(was);
-                far_blk = far_rd, far_rd = -1;
+                printf("world: block %d far panorama %s: %u KB (%s, RAM free %u KB)\n", far_rd, was ? "NOT VALID" : "on",
+                       r->far_size >> 10, far_in_res ? "reserve" : "heap", enemy_ram_free() >> 10);
+                far_free(was);
+                far_blk = far_rd, far_rd = -1, far_swap = 0;
                 far_cur = was ? NULL : far_buf;
                 far_buf = NULL;
                 return;
@@ -1367,16 +1422,20 @@ static void far_step(void)
         map_far_set(NULL);
         if (far_cur) {
             if (far_old)
-                free(far_old);
+                far_free(far_old);
             far_old = far_cur, far_old_drain = WORLD_DRAIN;
             far_cur = NULL;
         }
         far_blk = cur;
         return;
     }
-    if (enemy_ram_free() < WORLD_HEAP_FLOOR + WORLD_HEAP_MODELS + sz || !(far_buf = memalign(128, sz))) {
+    if (!(far_buf = far_alloc(sz, &far_in_res))) {
+        if (far_swap) {  /* the reserve drains (WORLD_DRAIN draws): read into it right after */
+            far_retry_s = 0.2f;  /* (ASSUMED: a few draws) */
+            return;
+        }
         far_retry_s = WORLD_RELIEF_RETRY_S;
-        printf("world: block %d far panorama: no heap for %u KB (RAM free %u KB)\n", cur, sz >> 10, enemy_ram_free() >> 10);
+        printf("world: block %d far panorama: no room for %u KB (RAM free %u KB)\n", cur, sz >> 10, enemy_ram_free() >> 10);
         return;
     }
     far_rd = cur, far_done = 0;
@@ -1589,7 +1648,7 @@ static void step(const float *feet, float dt)
             /* off only while a panorama is drawn (the block underfoot's, or for a moment the one of the block
              * before: it shows the boot block as well); back without one (a block whose far.bin found no heap or
              * that has none), or near the seam again */
-            if (!far_cur || d2 < WORLD_BOOT_BACK_D * WORLD_BOOT_BACK_D)
+            if ((!far_cur && !far_swap) || d2 < WORLD_BOOT_BACK_D * WORLD_BOOT_BACK_D)
                 boot_want = 1;
             else if (d2 > WORLD_BOOT_OFF_D * WORLD_BOOT_OFF_D)
                 boot_want = 0;
@@ -1599,7 +1658,7 @@ static void step(const float *feet, float dt)
     }
     far_retry_s = far_retry_s > dt ? far_retry_s - dt : 0;
     if (far_old && (--far_old_drain <= 0 || warping)) {
-        free(far_old);
+        far_free(far_old);
         far_old = NULL;
     }
     for (int i = 0; i < nblk; i++)
@@ -1684,7 +1743,13 @@ static void step(const float *feet, float dt)
         float wd = 1e30f;
         for (int i = 1; i < nblk; i++)
             if (rt[i].open && rt[i].state == W_OFF && (want_m >> i & 1)) {
+                /* nearest first, the height range counted too (WORLD_WANT_3D, default on; 0 = x / z only): on
+                 * Firelink's aqueduct floor, which wants Burg west and the Parish rest since a part loads every block
+                 * it touches, the Parish rest (x / z 8 m away, 29 m above) read first and Burg west, where the walk
+                 * goes, 3.4 s later (Ame's play report 2026-11-17, t 153: Burg pieces missing at the door) */
                 float d = box_d(&tab[i], feet);
+                if (WORLD_WANT_3D)
+                    d += feet[1] < tab[i].y0 ? tab[i].y0 - feet[1] : feet[1] > tab[i].y1 ? feet[1] - tab[i].y1 : 0;
                 if (d < wd)
                     want = i, wd = d;
             }

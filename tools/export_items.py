@@ -9,10 +9,12 @@ id - id % 100, ReinforceParamWeapon row reinforceTypeId + level.
 
 Output (little-endian), four files that tools/pack.py puts into menu.pak:
   items.bin   resident (src/items.c, boot): what the inventory needs on a pickup
-      header  'DSIT', u32 version, u32 goods count, u32 goods offset, u32 ammo count, u32 ammo offset, 2 x u32 0
+      header  'DSIT', u32 version, u32 goods count, u32 goods offset, u32 ammo count, u32 ammo offset, u32 icon
+              count, u32 icon offset (0, 0 in older files)
       goods   {u32 row; u16 maxNum; u8 goodsType; u8 flags} sorted by row  (flags: 1 isConsume, 2 isDrop,
               4 isDeposit, 8 isOnlyOne, 16 isEquip)
       ammo    {u32 weapon row; u16 stack max; u16 0} sorted by row (arrowSlotEquipable / boltSlotEquipable rows)
+      icons   {u32 item id (category | row); u16 icon id; u16 0} sorted by id: the HUD slots' icons (src/hud.c)
   itemx.bin   loaded while a menu is open (src/items.c items_detail_load)
       header  'DSIX', u32 version, u32 rows, u32 rows offset, u32 reinforce rows, u32 reinforce offset,
               u32 names offset, u32 names bytes
@@ -55,6 +57,9 @@ import souls
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
 VERSION = 2  # 2: weapon x3 correctType, x4 saWeaponDamage / attack types (combat stats, src/chrstat.c)
+# icons.bin keeps its own version: its layout did not change with items.bin / itemx.bin v2 (sharing VERSION made it 2,
+# which src/items.c, expecting 1, read as "no icons": every item icon was missing from 7fefb2e on)
+ICON_VERSION = 1
 ICON = 48  # stored icon size: on screen DSR's 85 x 95 icon box is 42 x 59 PS2 pixels (I02 button_item_equip)
 TAB_CONSUME, TAB_MATERIAL, TAB_KEY, TAB_SPELL, TAB_WEAPON, TAB_AMMO, TAB_ARMOR, TAB_RING = range(8)
 CAT_WEAPON, CAT_PROTECTOR, CAT_ACCESSORY, CAT_GOODS = 0x00000000, 0x10000000, 0x20000000, 0x40000000
@@ -160,10 +165,15 @@ def build(game):
     hdr = 32
     goods_off = hdr
     ammo_off = goods_off + 8 * len(goods)
-    items = struct.pack("<4s7I", b"DSIT", VERSION, len(goods), goods_off, len(ammo), ammo_off, 0, 0)
+    # the HUD's quick slots need each equipped item's icon while itemx.bin is not loaded: (id, icon) of every row, in
+    # the header's two spare words (older runtimes read 0, 0 there: no table)
+    icon_tab = sorted((r[0], r[5] & 0xFFFF) for r in rows if 0 <= r[5] < 0xFFFF)
+    icon_off = ammo_off + 8 * len(ammo)
+    items = struct.pack("<4s7I", b"DSIT", VERSION, len(goods), goods_off, len(ammo), ammo_off, len(icon_tab), icon_off)
     items += b"".join(struct.pack("<IHBB", i, min(f["maxNum"], 0xFFFF), f["goodsType"], goods_flags(f))
                       for i, f in goods)
     items += b"".join(struct.pack("<IHH", i, m, 0) for i, m in ammo)
+    items += b"".join(struct.pack("<IHH", i, ic, 0) for i, ic in icon_tab)
 
     # itemx.bin + desc.bin
     names, name_of = bytearray(), {}
@@ -218,7 +228,7 @@ def icons(game, ids, preview=None):
     cell = 1024 + ICON * ICON
     table = struct.pack(f"<{n}H", *[i for i, _ in kept])
     table += b"\0" * ((-len(table)) % 64)
-    blob = struct.pack("<4s4I", b"DSIC", VERSION, n, cell, ICON) + b"\0" * (64 - 20) + table + b"".join(out)
+    blob = struct.pack("<4s4I", b"DSIC", ICON_VERSION, n, cell, ICON) + b"\0" * (64 - 20) + table + b"".join(out)
     if preview and kept:
         cols = 16
         sheet = Image.new("RGBA", (cols * ICON, ((n + cols - 1) // cols) * ICON), (40, 40, 40, 255))

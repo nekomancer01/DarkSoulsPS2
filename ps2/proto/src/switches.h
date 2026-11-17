@@ -30,7 +30,9 @@
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
+ * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
  * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
  * PLIGHT_RATIO        | 60       | tune     | -                                             | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
  * MEDIA_CD            | off      | fallback | -DMEDIA_CD                                    | mapstream.c mapstream_i.h   | CD streaming budgets on any disc (make MEDIA=cd)
@@ -60,6 +62,8 @@
  * WORLD_BOOT_LEAN     | 1        | fallback | -DWORLD_BOOT_LEAN=0                           | world.h       | the boot block's map tables are let go away from it (the far panorama stands in); 0 = resident for good
  * WORLD_STRUCT_WHOLE  | 2        | fallback | -DWORLD_STRUCT_WHOLE=3                        | world.c       | wanted blocks counted whole per link (3 = the earlier worst case)
  * WORLD_SLOT_NEAREST  | 1        | fallback | -DWORLD_SLOT_NEAREST=0                        | world.c       | with every slot taken by wanted blocks, the farthest gives its slot to a nearer wanted one; 0 = only unwanted blocks go
+ * WORLD_FAR_RESERVE   | 1        | fallback | -DWORLD_FAR_RESERVE=0                         | world.c       | a buffer of the largest far panorama reserved at boot for when the heap has no room; 0 = heap only
+ * WORLD_WANT_3D       | 1        | fallback | -DWORLD_WANT_3D=0                             | world.c       | wanted blocks read nearest first counting the height range; 0 = x / z only
  * OBJ_STREAM          | 1        | fallback | -DOBJ_STREAM=0                                | objects.c     | object types streamed by distance; 0 = all at load
  * PACK_JOB_ABANDON    | 1        | fallback | -DPACK_JOB_ABANDON=0                          | pack.c        | a dropped load cancels instead of waiting (runtime: option set PACK_JOB_ABANDON 0)
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | pack.c        | force disc (1) or host (0) paths
@@ -93,6 +97,7 @@
  * MAP_PANO_R          | off      | debug    | -DMAP_PANO_R=60.0f -DPANO_ZOOM=2.0f           | main.c map.c map_i.h  | panorama capture build (tools/pano.py)
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | drawgrp.c     | draw groups shared across blocks
+ * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | bump.c        | relief batches per frame

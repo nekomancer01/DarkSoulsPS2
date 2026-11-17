@@ -361,7 +361,10 @@ FX_LOD_ONE = os.environ.get("FX_LOD_ONE", "1") == "1"
 def _lod_key(s):
     def fz(v):
         return tuple(fz(x) for x in v) if isinstance(v, (list, tuple)) else round(v, 4) if isinstance(v, float) else v
-    return tuple((k, fz(v)) for k, v in sorted(s.items()) if k not in ("interval", "per_emit", "max_alive", "total"))
+    # the shine set (BARE_REFS): 99001 holds its systems twice, the second copy 0.2 m up (an LOD pair: DSR draws one;
+    # both made the corpse glow double), so its key leaves out the offset too
+    skip = ("interval", "per_emit", "max_alive", "total") + (("org",) if BARE_REFS else ())
+    return tuple((k, fz(v)) for k, v in sorted(s.items()) if k not in skip)
 
 
 def pack_sys(s, tex_fpr):
