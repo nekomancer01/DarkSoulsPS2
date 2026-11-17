@@ -540,10 +540,28 @@ static void draw_chunk(Ctx *c, unsigned i, const float *e, const float *fb, int 
 #define NEAR_FIRST 32.0f
 /* the chunks drawn from camera e (player on block pb, mask cm) into list, bit 31 = occluder, bit 30 = within
  * NEAR_FIRST m (drawn first); their count */
+static unsigned *blist[MAXB], bnl[MAXB];  /* per player block: its chunks and block 0's, ascending (drawn() skips the rest) */
+
+static void build_blists(void)
+{
+    if (getenv("PVS_BLIST") && !strcmp(getenv("PVS_BLIST"), "0"))
+        return;
+    for (int b = 0; b < nblk; b++) {
+        blist[b] = malloc(sizeof(unsigned) * (nch ? nch : 1)), bnl[b] = 0;
+        for (unsigned j = 0; j < nch; j++)
+            if (!cblk[j] || cblk[j] == b)
+                blist[b][bnl[b]++] = j;
+    }
+}
+
 static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
 {
     unsigned n = 0;
-    for (unsigned j = 0; j < nch; j++) {
+    /* the same chunks in the same order as the full loop: a chunk of another block than 0 and pb is never drawn */
+    const int bl = pb >= 0 && pb < nblk && blist[pb];
+    const unsigned m = bl ? bnl[pb] : nch;
+    for (unsigned jj = 0; jj < m; jj++) {
+        const unsigned j = bl ? blist[pb][jj] : jj;
         int d = drawn(j, e, pb, cm);
         if (d)
             list[n++] = j | (d == 2 ? 0x80000000u : 0) |
@@ -1067,6 +1085,7 @@ int main(int argc, char **argv)
         nblk++;
     }
     build_grid();
+    build_blists();
     TW = (R + TILE - 1) / TILE;
     const char *sd = getenv("PVS_SIMD");
     if (sd && *sd == '0')

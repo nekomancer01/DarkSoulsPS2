@@ -253,7 +253,10 @@ int gpu_init(int res, const float *verts, unsigned ntri, const unsigned *first, 
             glCheckNamedFramebufferStatus(fbo_test_l, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             layered = 0;
     }
-    instanced = layered && !(iv && *iv == '0');
+    /* instancing (every chunk into all 6 faces, the GPU clipping the rest) is off by default since 2026-11-17: the 6x
+     * vertex work made it GPU-bound (Burg b 33 -> 22 s wall, same bits); the CPU's per-face lists cost ~25 CPU-s more.
+     * PVS_GPU_INSTANCED=1: instanced */
+    instanced = layered && iv && *iv == '1';
     /* PVS_GPU_CONSERVATIVE=1: conservative rasterisation for the test pass (GL_NV_conservative_raster): misses fewer
        pixels but marks many more units seen (Burg b: 349 instead of 291 per cell), so the runtime draws more; off */
     const char *cv = getenv("PVS_GPU_CONSERVATIVE");

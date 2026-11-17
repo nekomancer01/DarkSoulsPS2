@@ -210,7 +210,23 @@ worldblockhzn@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockhzn
 blockhzn: $(A)/hzn.bin
 .PHONY: worldhzn blockhzn
-worldpacks: worldhzn $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+# The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports
+# (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 min, and the occlusion bakes
+# waited for every horizon though they need none; the bakes, the GPU's turn per block, are the build's critical path):
+# worldpvs right after worldexports (alongside worldhzn), worldfar right after worldhzn. WORLD_EARLY_BAKES=0: as before
+WORLD_EARLY_BAKES ?= 1
+worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockpvs@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockpvs@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpvs
+blockpvs: $(A)/pvs.bin
+worldfar: worldhzn
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockfar@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockfar@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockfar
+blockfar: $(A)/far.bin
+.PHONY: worldpvs blockpvs worldfar blockfar
+worldpacks: worldhzn $(if $(filter 1,$(WORLD_EARLY_BAKES)),worldpvs worldfar $(if $(WORLD_BLOCKS),$(A)/pvs.bin $(A)/far.bin)) $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks
@@ -578,6 +594,7 @@ PVS_GPU_OK := $(if $(filter 1,$(PVS_GPU)),$(shell printf '\043include <EGL/egl.h
 $(PVS_BAKE): ../../tools/pvs_bake.c ../../tools/pvs_gpu.c ../../tools/pvs_gpu.h
 	@mkdir -p $(@D)
 	gcc $(PVS_CFLAGS) -fopenmp -o $@ $< $(if $(PVS_GPU_OK),-DPVS_GPU ../../tools/pvs_gpu.c -lEGL -lOpenGL) -lm
+worldpvs: $(PVS_BAKE)  # (built once here, before the block sub-makes would race to build it)
 $(A)/pvsin.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
 PVS_WITH = $(filter-out $(abspath $(A)),$(abspath $(PVS_PEERS)))
