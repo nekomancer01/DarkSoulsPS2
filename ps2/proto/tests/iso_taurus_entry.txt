@@ -13,6 +13,15 @@ spawn 52.41 16.86 -118.49 -1.5708
 cam -1.5708 0.3
 wait 4
 shot fog_front
+# the sheet stays in the doorway's plane from the side too (FFX Orientation 2, export_effects FX_ORIENT)
+cam -2.2 0.25
+wait 0.5
+shot fog_side
+cam off
+wait 0.5
+shot fog_follow
+cam -1.5708 0.3
+wait 0.5
 ev expect obj 1011890 1
 ev expect bossbar 0 -1
 ev action
