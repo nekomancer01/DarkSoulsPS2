@@ -179,6 +179,7 @@ def _mesh_np(m):
     return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
+SKY_ALP_BLEND = os.environ.get("SKY_ALP_BLEND", "1") == "1"  # sky alpha layers blended (gather)
 EDGE_2SIDED = os.environ.get("EDGE_2SIDED", "1") == "1"  # two-sided cut-out light (gather, below)
 
 
@@ -752,7 +753,10 @@ def gather(game, map_id):
             # test 2026-11-16): blended too, with their vertex alpha. BG_BLEND=0 = cut-outs as before.
             decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower() for k in
                                                        ("decal", "dirt", "ground", "stain") + (("_bg_",) if BG_BLEND else ()))
-            blend = is_effect(m["mtd"]) or decal or water
+            # alpha cloud layers of the sky (A10_cloud[DB]_Alp) blend too: as cut-outs their soft edges became hard
+            # flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour banding"). SKY_ALP_BLEND=0:
+            # cut-outs, as before
+            blend = is_effect(m["mtd"]) or decal or water or (SKY_ALP_BLEND and sky and "_alp" in m["mtd"].lower())
             flags = (mapcfg.CHUNK_BLEND if blend else 0) | (mapcfg.CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
                 (mapcfg.CHUNK_SKY if sky else 0) | sky_slot << mapcfg.CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
