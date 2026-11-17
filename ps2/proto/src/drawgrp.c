@@ -134,6 +134,16 @@ void dg_block_drop(int k)
 
 unsigned dg_gen(void) { return shown_gen + hidden_gen; }
 
+/* DG_SEAM (map.c map_set_player): the groups of another map's floor just ahead, ORed into the shared mask */
+static unsigned seam_mask[4];
+void dg_seam(int j, int tri)
+{
+    memset(seam_mask, 0, sizeof seam_mask);
+    if (j < 0 || j >= DG_INST || !dg[j].n_chunks || (unsigned)tri >= dg[j].n_tris)
+        return;
+    memcpy(seam_mask, dg[j].coll[dg[j].tri_dg[tri]], sizeof seam_mask);
+}
+
 void dg_floor(int k, int tri)
 {
     if (k < 0 || k >= DG_INST)
@@ -141,7 +151,10 @@ void dg_floor(int k, int tri)
     Dg *d = &dg[k];
     if (!d->n_chunks || (unsigned)tri >= d->n_tris)
         return;
-    const unsigned *c = d->coll[d->tri_dg[tri]];
+    unsigned cs[4];
+    for (int w = 0; w < 4; w++)
+        cs[w] = d->coll[d->tri_dg[tri]][w] | (d->area ? seam_mask[w] : 0);
+    const unsigned *c = cs;
     if (d->area) {  /* DG_SHARED: this part's groups for every block of the area group */
         if (sh_area == d->area && !memcmp(sh_mask, c, sizeof sh_mask))
             return;

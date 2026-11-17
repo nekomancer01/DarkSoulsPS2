@@ -1,5 +1,6 @@
 #include "map_i.h"
 #include "testscript.h"
+#include "world.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -380,6 +381,17 @@ int map_stream_open(const char *pak_path)
     return mp_inst[0].ctab ? mapstream_init(pak_path, mp_inst[0].ctab, mp_inst[0].nctab) : 0;
 }
 
+#ifndef DG_SEAM
+#define DG_SEAM 1
+#endif
+#define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
+/* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
+static int same_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return !a || !b || !strcmp(a, b);
+}
+
 void map_set_player(V3 feet)
 {
     const float p[3] = {feet.x, feet.y, feet.z};
@@ -388,10 +400,36 @@ void map_set_player(V3 feet)
     mapstream_update(p);  /* every instance's near cells (src/mapstream.c) */
     /* DSR's fog follows the collision part under the player (its MSB FogID); in the air the last one stays */
     ColHit h;
-    player_feet = feet;
     int k = -1;
-    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0)
+    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0) {
+        /* DG_SEAM (default on; -DDG_SEAM=0 = the floor's groups alone): within DG_SEAM_R metres ahead of the player,
+         * the floor of another map of the area group (its block loaded) adds its part's groups. DSR shows what the
+         * floor part's DrawGroups list; at the end of Firelink's aqueduct tunnel (part h0030B2, groups e0000000)
+         * that hid all but 9 of Burg west's 64 piece sets, and the tunnel's exit showed the sky (Ame's play report
+         * 2026-11-17 t167 / t170; with draw groups off the exit draws the Burg: ISO iso_tunnel_look). ASSUMED: the
+         * port's seams stream and fog differently from DSR's whole-map residency, so the far side is shown a few
+         * metres early */
+        dg_seam(-1, 0);
+        if (DG_SEAM && dg_area(k)) {
+            static V3 last;
+            float dx = feet.x - last.x, dz = feet.z - last.z, l = sqrtf(dx * dx + dz * dz);
+            static float hx, hz;
+            if (l > 0.01f && l < 2.0f)
+                hx = dx / l, hz = dz / l;  /* the heading (a warp keeps the last one) */
+            last = feet;
+            int found = 0;
+            for (float r = 4.0f; r <= DG_SEAM_R && !found && (hx != 0 || hz != 0); r += 4.0f)
+                for (int j = 0; j < MAP_INST && !found; j++) {
+                    ColHit hj;
+                    int cb = mp_inst_col_block(j);
+                    if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
+                        col_floor_block(cb, feet.x + hx * r, feet.z + hz * r, feet.y + 3, feet.y - 6, COL_SOLID, &hj))
+                        dg_seam(j, hj.tri), found = 1;
+                }
+        }
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
+    }
+    player_feet = feet;  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
     /* a block outside the area group of the floor's block (drawgrp.c DG_SHARED; every block without one) takes its
      * draw groups from its own collision under the player: at a seam both blocks' collisions overlap (DSR's
      * ConnectCollision pairs, e.g. the Asylum's crow ledge h0054B1 and Firelink), each map shows what its own part
