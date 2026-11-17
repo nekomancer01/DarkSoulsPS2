@@ -93,6 +93,7 @@
  * MAP_PANO_R          | off      | debug    | -DMAP_PANO_R=60.0f -DPANO_ZOOM=2.0f           | main.c map.c map_i.h  | panorama capture build (tools/pano.py)
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | drawgrp.c     | draw groups shared across blocks
+ * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | bump.c        | relief batches per frame
