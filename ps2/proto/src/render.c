@@ -122,9 +122,6 @@ static void vram_release(u32 addr, const unsigned short *fp, int n)
 
 u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
 {
-#ifdef V6_OFF  /* A/B measurement builds: gsKit's allocator as before */
-    return gsKit_vram_alloc(g, gsKit_texture_size(w, h, psm), GSKIT_ALLOC_USERBUFFER);
-#endif
     static unsigned short fp[4096];
     int tbw = tex_tbw(w, psm);
     r_vram_gskit += gsKit_texture_size(w, h, psm) / 256;
@@ -135,9 +132,6 @@ u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
 
 u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
 {
-#ifdef V6_OFF
-    return gsKit_vram_alloc(g, gsKit_texture_size(16, 16, clut_psm), GSKIT_ALLOC_USERBUFFER);
-#endif
     unsigned short fp[4];
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
     return vram_place(g, fp, footprint(16, 16, clut_psm, 1, fp));  /* 256 entries, CSM1: 16 x 16 */
@@ -155,9 +149,6 @@ u32 r_vram_lin(GSGLOBAL *g, int n)
 
 void r_vram_free_tex(u32 addr, int w, int h, int psm)
 {
-#ifdef V6_OFF
-    return;
-#endif
     static unsigned short fp[4096];
     if (addr == GSKIT_ALLOC_ERROR || (w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return;
@@ -166,9 +157,6 @@ void r_vram_free_tex(u32 addr, int w, int h, int psm)
 
 void r_vram_free_clut(u32 addr, int clut_psm)
 {
-#ifdef V6_OFF
-    return;
-#endif
     unsigned short fp[4];
     if (addr != GSKIT_ALLOC_ERROR)
         vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
