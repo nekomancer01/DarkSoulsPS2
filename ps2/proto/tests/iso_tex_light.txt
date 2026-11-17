@@ -1,0 +1,56 @@
+# Ame's playtest 2026-11-16 (texture / lighting part): Firelink's canopy cards by the graveyard ("leaves are squares":
+# black, EDGE_2SIDED), the graveyard pots o1495-o1497 with their ivy cards ("white on breakable objects", OBJ_CUTOUT)
+# and the Depths' dark sewer ("zero lighting source": the player's point light on the map, MAP_PLIGHT). Boot the ISO:
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_tex_light.txt <out> --iso build/proto.iso --timeout 900
+option god
+option nodemo
+option noenemies
+spawn -24.0 -53.3 91.0 0.0
+wait 5
+shot grave_0
+cam 1.57 0.15
+wait 1
+shot grave_1
+cam 3.14 0.15
+wait 1
+shot grave_2
+cam 4.71 0.15
+wait 1
+shot grave_3
+cam 0.0 -0.5
+wait 1
+shot grave_up0
+cam 3.14 -0.5
+wait 1
+shot grave_up2
+spawn -25.6 -53.3 95.4 0.0
+wait 3
+shot pot_0
+cam 1.57 0.3
+wait 1
+shot pot_1
+cam 3.14 0.3
+wait 1
+shot pot_2
+cam 4.71 0.3
+wait 1
+shot pot_3
+spawn -47.41 -59.82 53.3 5.2185
+wait 4
+shot fl_bonfire
+cam 5.2185 -0.5
+wait 1
+shot fl_up
+spawn -150.0 -78.2 -20.0 3.1
+wait 6
+shot depths_spawn
+spawn -163.8 -77.3 -3.7 3.1
+wait 4
+shot depths_dark
+cam 1.57 0.1
+wait 1
+shot depths_dark_e
+cam 4.71 0.1
+wait 1
+shot depths_dark_w
+stats

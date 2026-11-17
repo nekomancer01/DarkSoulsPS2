@@ -99,6 +99,7 @@ ANIM_SKIP = set(os.environ.get("ANIM_SKIP", "o1460").split(","))
 # (with tools/area.py OBJ_BLOCK_MB=0.12) = the old path
 OBJ_TRIS = int(os.environ.get("OBJ_TRIS", 160))
 OBJ_TEX_H = int(os.environ.get("OBJ_TEX_H", 64))
+OBJ_CUTOUT = os.environ.get("OBJ_CUTOUT", "1") == "1"  # cut-out materials keep their alpha (obj_texture)
 # cap_tris's error bound, relative to each group's extent (meshoptimizer): the cap is a target, never reached by
 # flattening a shape (unbounded, the Burg barrel shell o1155 went 42 -> 6 triangles with 1.4 m slivers, drawn as shards)
 OBJ_TRI_ERR = float(os.environ.get("OBJ_TRI_ERR", 0.02))
@@ -211,7 +212,7 @@ def shared_textures(game, msb, dds, files_of):
             for m in souls.flver(files[name])["meshes"]:
                 tex = os.path.splitext(os.path.basename(m["diffuse"]))[0] if m["diffuse"] else ""
                 if tex:
-                    obj_texture(mb, tex, d.get(tex) or d.get(tex.lower()))
+                    obj_texture(mb, tex, d.get(tex) or d.get(tex.lower()), is_cutout(m["mtd"]))
     return shared
 
 
@@ -224,13 +225,33 @@ def type_dds(dds, files):
     return d
 
 
-def obj_texture(mb, name, d):
+def is_cutout(mtd):
+    """DSR's alpha-tested ("_Edge") and alpha ("_Alp") materials: the ivy cards on Firelink's pots (o1495-o1497,
+    m10_ivy_diteal_01, M[D]_Edge)"""
+    return "_edge" in (mtd or "").lower() or "_alp" in (mtd or "").lower()
+
+
+def obj_texture(mb, name, d, cutout=False):
     """Texture index of DDS d for a breakable: decoded at TEX texels at most, stretched to PSMT8's 128 texel width and
     kept at the decoded height (OBJ_TEX_H at most): a 64 x 64 source becomes 128 x 64 (the old path doubled it to
     128 x 128 with no more detail; the Burg barrels' rope m10_01_rope_02, 1:8, became 128 x 1024). UVs are normalised,
-    so this only resamples. -1 without one"""
+    so this only resamples. cutout (is_cutout: OBJ_CUTOUT, default on; 0 = RGB only, the old path): texels under 50 %
+    alpha become the transparent CLUT index, which objects.c's alpha test drops (RGB only drew the ivy cards' clear
+    texels as flat grey-white patches on the pots, Ame's playtest 2026-11-16). -1 without one"""
     if not d:
         return -1
+    if name not in mb.tex_index and cutout and OBJ_CUTOUT:
+        from PIL import Image
+        from export_map import quantize_rgba
+        dec = souls.dds_decode_rgba(d, TEX)
+        if dec:
+            w, h, px = dec
+            h2 = max(8, min(OBJ_TEX_H, h))
+            img = resample.resize(Image.frombytes("RGBA", (w, h), bytes(px)), (128, h2), Image.BILINEAR)
+            if img.getextrema()[3][0] < 128:  # some texel is cut out
+                mb.tex_index[name] = len(mb.textures)
+                mb.textures.append(quantize_rgba(128, h2, img.tobytes()))
+                return mb.tex_index[name]
     if name not in mb.tex_index:
         from PIL import Image
         from export_model import quantize
@@ -509,7 +530,7 @@ def type_model(game, model, files, dds, shared=None, lods=(LOD_INTACT, LOD_BROKE
             groups += [(m, fs, fb, idx) for fb, idx in per_bone.items()]
         for m, fs, fb, idx in cap_tris(groups, OBJ_TRIS):
             tex = os.path.splitext(os.path.basename(m["diffuse"]))[0] if m["diffuse"] else ""
-            ti = obj_texture(mb, tex, dds.get(tex) or dds.get(tex.lower())) if tex else -1
+            ti = obj_texture(mb, tex, dds.get(tex) or dds.get(tex.lower()), is_cutout(m["mtd"])) if tex else -1
             skb = 0 if F is intact else sk.get(F["bones"][fb][0], 0)
             mm = m
             R = None

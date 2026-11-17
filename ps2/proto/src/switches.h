@@ -30,6 +30,8 @@
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | prof.c        | GPROF: frames sampled
+ * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * PLIGHT_RATIO        | 60       | tune     | -                                             | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
  * MEDIA_CD            | off      | fallback | -DMEDIA_CD                                    | mapstream.c mapstream_i.h   | CD streaming budgets on any disc (make MEDIA=cd)
  * BUMP_BAKED          | 1        | fallback | -DBUMP_BAKED=0                                | bump.c        | relief baked at export; 0 = the runtime CLUT relief pass (make BUMP_BAKE=0)
