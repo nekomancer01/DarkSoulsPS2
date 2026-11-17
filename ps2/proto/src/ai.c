@@ -750,6 +750,31 @@ int ai_goals_in_use(void)
     return n;
 }
 
+#ifdef PROFILE
+/* Polaris census (make PROFILE=1, src/prof.c): lua0 instructions per battle goal (one row per enemy type's script),
+ * summed over each PROF log interval */
+#define AIP_N 32
+static struct { int battle; unsigned instr, calls; } aip[AIP_N];
+static void aip_add(const Ai *a, unsigned instr)
+{
+    int id = a->th ? a->th->battle : -1, i;
+    for (i = 0; i < AIP_N && aip[i].calls && aip[i].battle != id; i++)
+        ;
+    if (i == AIP_N)
+        i = AIP_N - 1, id = -2;  /* full: the last row collects the rest */
+    aip[i].battle = id, aip[i].instr += instr, aip[i].calls++;
+}
+void ai_prof_log(void)
+{
+    for (int i = 0; i < AIP_N && aip[i].calls; i++) {
+        const GoalReg *r = aip[i].battle >= 0 ? reg_get(aip[i].battle) : NULL;
+        printf("PROFQ ai battle %d %s: %u instr in %u updates (%u per update)\n", aip[i].battle,
+               r && r->name[0] ? r->name : "?", aip[i].instr, aip[i].calls, aip[i].instr / aip[i].calls);
+    }
+    memset(aip, 0, sizeof aip);
+}
+#endif
+
 void ai_update(Ai *a, const AiFrame *f)
 {
     a->f = f;
@@ -758,6 +783,9 @@ void ai_update(Ai *a, const AiFrame *f)
     if (!scripts_ok)
         return;
     cur = a;
+#ifdef PROFILE
+    unsigned prof_i0 = lua0_instructions;
+#endif
     for (int i = 0; i < 8; i++)
         if (a->timer[i] > 0)
             a->timer[i] = a->timer[i] > f->dt ? a->timer[i] - f->dt : 0;
@@ -805,6 +833,9 @@ void ai_update(Ai *a, const AiFrame *f)
         a->attack_started = 1;
     if (a->attack_started && (f->anim != a->attack_req || f->anim_t >= f->anim_len))
         a->attack_finished = 1;
+#ifdef PROFILE
+    aip_add(a, lua0_instructions - prof_i0);
+#endif
     cur = NULL;
 }
 

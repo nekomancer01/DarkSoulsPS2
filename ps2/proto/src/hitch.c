@@ -8,6 +8,9 @@
 #include "mapstream.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
+#ifdef HEAPMAP
+#include "render.h"  /* r_vram_census */
+#endif
 
 #define HITCH_PERIOD_S 10.0f
 #define TPMS 294912u  /* EE ticks per ms */
@@ -375,6 +378,7 @@ void hitch_frame(float dt_real)
     printf("\n");
 #ifdef HEAPMAP
     hm_dump();
+    r_vram_census();  /* render.c */
 #endif
     stream_line();
     disc_line(per_s, n_load > 0);
