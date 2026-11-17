@@ -1189,7 +1189,9 @@ static void draw_void_ring(u32 col)
     float y0 = ring_row(VOID_RING_TOP, p), y1 = ring_row(VOID_RING_TOP + VOID_RING_FADE, p);
     if (y1 >= (float)gs->Height)
         return;  /* the horizon is below the screen */
-    u64 r[2 * 24];
+    /* registers: 3 state + 9 fade band + 2 + 2 per 64-pixel strip + 2 restore = 36 at 640 pixels (24 overran into
+     * draw_sky's frame: TLB miss in sky_low on its eye pointer, ISO 2026-11-17); room for 1024 */
+    u64 r[2 * (16 + 2 * 16)];
     int n = 0;
     u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
     int ox = gs->OffsetX, oy = gs->OffsetY, w = gs->Width << 4, h = gs->Height << 4;
@@ -1211,7 +1213,8 @@ static void draw_void_ring(u32 col)
     if (iy0 < h) {  /* opaque from there to the bottom */
         REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
         REG(c0, 0x01);
-        for (int x = 0; x < w; x += 64 << 4) {  /* 64-pixel strips (z_clear's page-friendly pattern) */
+        for (int x = 0; x < w && n + 4 <= (int)(sizeof r / sizeof r[0] / 2); x += 64 << 4) {  /* 64-pixel strips
+                                                                                     (z_clear's page-friendly pattern) */
             int x1 = x + (64 << 4) < w ? x + (64 << 4) : w;
             REG(GS_SETREG_XYZ2(ox + x, oy + iy0, 0), 0x05);
             REG(GS_SETREG_XYZ2(ox + x1, oy + h, 0), 0x05);
