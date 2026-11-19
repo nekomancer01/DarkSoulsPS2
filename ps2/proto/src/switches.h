@@ -38,6 +38,7 @@
  * FRAME_STRICT        | off      | debug    | -DFRAME_STRICT                                | main   | new   | frame.c vu1.c | TEST error on a draw call in a simulate phase or a simulate call in an emit phase (frame.h), every vu1_add* checked
  * FRAME_SKIP_MAP      | 0        | debug    | -DFRAME_SKIP_MAP=1                            | main   | new   | frame.c       | runtime: the map pass writes no packets (the check that SIM_B reads nothing EMIT_MAP produced, frame.h)
  * OT_HASH             | off      | debug    | -DOT_HASH                                     | gfx    | new   | vu1.c render.c frame.c | "othash:" lines: the VIF1 stream per kick and the 2D draws (decoded, src/gstrace.c) hashed on frozen test frames (tests/ot_check.txt, ot2d_check.txt)
+ * UI_ATEST            | 1        | fallback | -DUI_ATEST=0                                  | ui     | new   | g2d.c         | textured UI sprites alpha-tested (GEQUAL 1, keep): transparent texels write no depth, so the far depth of field blurs the scene under them (0: the whole sprite rectangle writes Z, the old path)
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | core   | init  | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
