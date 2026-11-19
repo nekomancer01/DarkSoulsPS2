@@ -397,6 +397,8 @@ static void vu1_progs_init(void)
                                          progs[P_##name].addr = a;
     VU1_PROGRAMS(VU1_PROG_ROW)
 #undef VU1_PROG_ROW
+    memset(resident, 0, sizeof resident);
+    FlushCache(0);  /* the code goes to VIF1 by DMA from memory */
 }
 
 static void use_prog(int id)
