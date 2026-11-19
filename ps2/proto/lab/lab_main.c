@@ -10,8 +10,14 @@
  *   step N                  run N frames of the simulate phase's player part (frame.c phase_sim_a)
  *   replay TRACE            run every frame of a recorded trace (option record), printing a state line per frame
  *   read                    "state FRAME X Y Z YAW STATE" (the format of option record's .state log)
- *   stubs                   the stub calls so far (render, sound, IOP: layer violations to list)
+ *   stubs                   the stub calls so far, "stub presentation|readback N NAME" (lab.h: readback = a layer
+ *                           violation the simulation depends on)
  *   quit
+ * Script mode (Polaris 1.7c): `lab ROOT AREA SCRIPT [MAX_FRAMES]` boots as main.c does with a test script (test_init,
+ * save_boot, save_apply_player), runs the script through src/testscript.c's own interpreter frame by frame (input,
+ * camera, then the player's simulate phase unless frozen, test_frame_end, save_tick) until it ends, prints the stub
+ * report and "ok"; its output is the console's TEST lines. tools/lab.py run reads them. `lab ROOT AREA SCRIPT 0 states`
+ * also prints each frame's state line (the format of option record's .state log).
  * The camera follow and its collision ray are not simulated: the trace carries the camera's yaw / pitch per frame. */
 #include <math.h>
 #include <stdio.h>
@@ -31,32 +37,45 @@
 #include "flags.h"
 #include "progress.h"
 #include "frame.h"
+#include "save.h"
+#include "map.h"
+#include "testscript.h"
+#include <libpad.h>
 
-const char *lab_root = ".";
+const char *lab_root = ".", *lab_area = "m10_02_00_00";
 static Player pl;
 static Input in;
 static float yaw, pitch, dt = 1.0f / 30;
 static unsigned frame;
 
 #define NSTUB 128
-static struct { const char *name; unsigned n; } stub[NSTUB];
-void lab_count(const char *name)
+static struct { const char *name; unsigned n; int readback; } stub[NSTUB];
+void lab_count(const char *name, int readback)
 {
     int i;
     for (i = 0; i < NSTUB && stub[i].name && strcmp(stub[i].name, name); i++)
         ;
     if (i < NSTUB)
-        stub[i].name = name, stub[i].n++;
+        stub[i].name = name, stub[i].n++, stub[i].readback = readback;
 }
 
-static int boot(const char *root, const char *area)
+static int boot(const char *root, const char *area, const char *script)
 {
     lab_root = strdup(root);
+    lab_area = strdup(area);
+    char test_arg[600];
+    char *argv[3] = {"lab", "save=off", NULL};
+    if (script) {  /* main.c's order: the script first (its options pick the save device), then the save */
+        snprintf(test_arg, sizeof test_arg, "test=%s", script);
+        argv[1] = test_arg;
+        test_init(2, argv);
+        if (!test_active())
+            return printf("error script %s\n", script), 0;
+    }
     if (!gamedata_init())
         return printf("error gamedata\n"), 0;
-    flags_init();
-    progress_new_game();  /* (save_boot without a save: a new game) */
     items_init();
+    save_boot(2, argv, area);  /* flags + progress: a new game unless the script's "option save host" finds one */
     chrstat_boot();
     Pack pk;
     unsigned msize = 0;
@@ -72,7 +91,9 @@ static int boot(const char *root, const char *area)
         return printf("error collision %s\n", area), 0;
     status_init();
     player_init(&pl);
-    pl.on_map = 1;  /* (main.c: the player stands on the map once it is up) */
+    map_spawn(&pl.pos, &pl.yaw);  /* main.c's boot order: the area's spawn, the saved position, the script */
+    pl.on_map = 1;
+    save_apply_player(&pl);
     return 1;
 }
 
@@ -90,6 +111,49 @@ static void state_line(void)
 {
     printf("state %u %.4f %.4f %.4f %.4f %s\n", frame, pl.pos.x, pl.pos.y, pl.pos.z, pl.yaw, player_state_name(&pl));
 }
+
+static void stubs(void)
+{
+    for (int i = 0; i < NSTUB && stub[i].name; i++)
+        printf("stub %s %u %s\n", stub[i].readback ? "readback" : "presentation", stub[i].n, stub[i].name);
+}
+
+/* Script mode: frame.c's order for the parts the Lab has (phase_input's script and camera, phase_sim_a's player, the
+ * frame's end) */
+static void run_script(unsigned max_frames, int states)
+{
+    dt = frame_det_dt > 0 ? frame_det_dt : 1.0f / 30;  /* (no fixeddt: the console's 30 fps frame) */
+    for (frame = 0; test_active() && frame < max_frames; frame++) {
+        in = (Input){0};
+        unsigned short pressed = test_pad();
+        /* "pad" presses go to the UI only (frame.c phase_input: bonfire_input / menu_update), never to the player.
+         * With no menu or dialog open, which in the Lab is always (events, which open bonfire dialogs, fail on their
+         * own), only Start does anything: it opens the Start menu. Select is the debug overlay. */
+        if (pressed & PAD_START)
+            lab_unsupported("pad start", "the Start menu (UI)");
+        else if (pressed)
+            LAB_COUNT("pad (no menu open: no effect)");
+        test_input(&in, &pl, &yaw, &pitch, dt, 0);
+        cam_input(&pl, &in, &yaw, &pitch, dt);
+        test_mb.shot_ack = test_mb.shot_seq;  /* shots: nothing to capture, the host answers at once */
+        if (!test_frozen()) {
+            unsigned f = frame;
+            step();
+            frame = f;
+        }
+        test_frame_end(&pl, dt, dt, 0, 0, 0, 0, 0);
+        save_tick(&pl, dt);
+        if (states)  /* the frame's state line, as option record's .state log (lab.py run --state) */
+            state_line();
+    }
+    if (test_active())
+        printf("TEST error lab: still running after %u frames\n", max_frames);
+    printf("lab frames %u pos %.4f %.4f %.4f yaw %.4f state %s\n", frame, pl.pos.x, pl.pos.y, pl.pos.z, pl.yaw,
+           player_state_name(&pl));
+    stubs();
+    printf("ok\n");
+}
+
 
 static void set_bits(unsigned b)
 {
@@ -133,8 +197,13 @@ int main(int argc, char **argv)
 {
     char line[512];
     setvbuf(stdout, NULL, _IOLBF, 0);
-    if (argc >= 3 && !boot(argv[1], argv[2]))
+    if (argc >= 3 && !boot(argv[1], argv[2], argc >= 4 ? argv[3] : NULL))
         return 1;
+    if (argc >= 4) {
+        run_script(argc >= 5 && atoi(argv[4]) > 0 ? (unsigned)atoi(argv[4]) : 30 * 60 * 30,
+                   argc >= 6 && !strcmp(argv[5], "states"));
+        return 0;
+    }
     while (fgets(line, sizeof line, stdin)) {
         char cmd[32], a[256];
         float v[6];
@@ -142,7 +211,7 @@ int main(int argc, char **argv)
             continue;
         const char *rest = line + strlen(cmd) + (line[strlen(cmd)] ? 1 : 0);
         if (!strcmp(cmd, "boot") && sscanf(rest, "%255s %31s", a, cmd) == 2)
-            printf(boot(a, cmd) ? "ok\n" : "");
+            printf(boot(a, cmd, NULL) ? "ok\n" : "");
         else if (!strcmp(cmd, "spawn") && sscanf(rest, "%f %f %f %f", v, v + 1, v + 2, v + 3) == 4)
             pl.pos = v3(v[0], v[1], v[2]), pl.yaw = v[3], printf("ok\n");
         else if (!strcmp(cmd, "cam") && sscanf(rest, "%f %f", v, v + 1) == 2)
@@ -164,7 +233,7 @@ int main(int argc, char **argv)
             state_line();
         else if (!strcmp(cmd, "stubs")) {
             for (int i = 0; i < NSTUB && stub[i].name; i++)
-                printf("stub %s %u\n", stub[i].name, stub[i].n);
+                printf("stub %s %u %s\n", stub[i].readback ? "readback" : "presentation", stub[i].n, stub[i].name);
             printf("ok\n");
         } else if (!strcmp(cmd, "quit"))
             break;

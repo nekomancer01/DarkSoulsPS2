@@ -37,7 +37,7 @@ int pack_open(Pack *p, const char *path)
     if (!f || fread(head, 4, 4, f) != 4 || memcmp(head, "DSRP", 4) || head[1] != 1) {
         if (f)
             fclose(f);
-        LAB_COUNT("pack_open failed");
+        LAB_READBACK("pack_open failed");
         return 0;
     }
     p->count = head[2];
@@ -123,7 +123,7 @@ void *pack_load_with(Pack *p, const char *name, unsigned *size, void *(*get)(uns
     }
     free(cs), free(src);
     if (!ok) {
-        LAB_COUNT("pack_load failed");
+        LAB_READBACK("pack_load failed");
         return NULL;
     }
     if (size)

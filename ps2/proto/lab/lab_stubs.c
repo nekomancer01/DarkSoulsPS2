@@ -10,29 +10,49 @@
 #include "render.h"
 #include "vu1.h"
 #include "frame.h"
+#include "fx.h"
+#include "hitch.h"
+#include "map.h"
+#include "enemy.h"
+#include "objects.h"
+#include "testscript.h"
 
 FramePhase frame_phase;
-int test_god;
 float enemy_player_push[2];
 
 /* events, bonfire, enemies, world (1.7c brings events and enemies in) */
-void bonfire_death(const Player *p) { (void)p, LAB_COUNT("bonfire_death"); }
-void bonfire_revive(Player *p) { (void)p, LAB_COUNT("bonfire_revive"); }
-int bonfire_spawn(V3 *pos, float *yaw) { (void)pos, (void)yaw, LAB_COUNT("bonfire_spawn"); return 0; }
+void bonfire_death(const Player *p) { (void)p, LAB_READBACK("bonfire_death"); }
+void bonfire_revive(Player *p) { (void)p, LAB_READBACK("bonfire_revive (respawn spot)"); }
+int bonfire_spawn(V3 *pos, float *yaw) { (void)pos, (void)yaw, LAB_READBACK("bonfire_spawn"); return 0; }
 int event_push_player(float pos[3], float r, float h) { (void)pos, (void)r, (void)h; return 0; }  /* fog walls: none */
 int world_current(void) { return -1; }
 int world_hold(const float *feet) { (void)feet; return 0; }
 void loading_hold(void) { LAB_COUNT("loading_hold"); }
-void save_request(void) { LAB_COUNT("save_request"); }
-int test_active(void) { return 0; }
 void snd_anim(unsigned owner, int model, int anim, float t, const float pos[3])
 {
     (void)owner, (void)model, (void)anim, (void)t, (void)pos, LAB_COUNT("snd_anim (sound from simulate)");
 }
 /* map: the navmesh floor is the fallback where collision has none; the Lab has collision only (counted when asked) */
-int map_floor(float x, float z, float y, float *out_y) { (void)x, (void)z, (void)y, (void)out_y, LAB_COUNT("map_floor"); return 0; }
-void map_spawn(V3 *pos, float *yaw) { (void)pos, (void)yaw, LAB_COUNT("map_spawn"); }
-void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
+int map_floor(float x, float z, float y, float *out_y) { (void)x, (void)z, (void)y, (void)out_y, LAB_READBACK("map_floor (navmesh floor fallback)"); return 0; }
+/* the area's spawn point, from its map.bin header as map.c reads it (the first two fields of map_i.h's Header) */
+void map_spawn(V3 *pos, float *yaw)
+{
+    static float kept[4];
+    static int have;
+    if (!have) {
+        Pack pk;
+        char path[128];
+        snprintf(path, sizeof path, PACK_ROOT "%s.pak", lab_area);
+        const unsigned *h = pack_open(&pk, path) ? pack_load(&pk, "map.bin", NULL) : NULL;
+        pack_close(&pk);
+        if (!h)
+            return (void)LAB_READBACK("map_spawn (no map.bin)");
+        memcpy(kept, h + 5, sizeof kept);  /* (magic, chunks, textures, nav_verts, nav_tris, then spawn[3], spawn_yaw) */
+        free((void *)h);
+        have = 1;
+    }
+    *pos = v3(kept[0], kept[1], kept[2]), *yaw = kept[3];
+}void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
 {
     (void)pos, LAB_COUNT("map_char_light (render from simulate)");
     for (int i = 0; i < 3; i++)
@@ -83,7 +103,7 @@ void pack_job_cancel(PackJob *j) { (void)j; }
 /* render and VU1: nothing to draw */
 void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
 {
-    LAB_COUNT("r_camera_basis (render from simulate)");
+    LAB_READBACK("r_camera_basis (camera read by simulate)");
     *eye = *right = *up = *fwd = v3(0, 0, 0), *focal = *focal_y = *zscale = 1;
 }
 int r_vram_avail(const GSGLOBAL *gs) { (void)gs; return 4 << 20; }
@@ -123,3 +143,34 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
     (void)env_up, (void)env_down, (void)spec_i, (void)ls;
 }
 void vu1_skin_window(const void *palette, const unsigned char *win, int n) { (void)palette, (void)win, (void)n; }
+
+/* ---- the test-script runner (Polaris 1.7c): what testscript.c reaches outside the player ---- */
+void lab_unsupported(const char *cmd, const char *needs)
+{
+    printf("TEST error line %d: '%s' needs %s (not in the Lab)\n", (int)test_mb.line, cmd, needs);
+    lab_count(cmd, 1);
+}
+void event_test_cmd(const char *cmd) { (void)cmd, lab_unsupported("ev", "events (Polaris 1.7c-2)"); }
+void pickup_test_cmd(const char *cmd) { (void)cmd, lab_unsupported("pickup", "world items"); }
+int objects_nearest(const float p[3], float *out) { (void)p, (void)out, lab_unsupported("approach obj", "objects (1.7c-2)"); return -1; }
+int enemy_nearest_live(const float pos[3], V3 *at, float *yaw)
+{
+    (void)pos, (void)at, (void)yaw, lab_unsupported("behind", "enemies (1.7c-3)");
+    return 0;
+}
+void loading_show(float s) { (void)s, LAB_COUNT("loading_show"); }
+/* determinism options: dt and seed are the runner's; the recorder is the console's (replay its traces with "replay") */
+float frame_det_dt;
+unsigned frame_det_seed;
+int frame_det_seeded;
+void frame_det_record(const char *path) { (void)path, LAB_COUNT("frame_det_record (option record)"); }
+/* the stats testscript.c prints per shot: zero here (nothing is drawn or streamed) */
+FxStats fx_stats;
+Vu1Stats vu1_stats;
+unsigned hitch_acc[HS_N];
+int map_vu1_batches, map_ee_tris;
+int enemy_active, enemy_drawn;
+char _stack_size[1];
+int pack_cdrom;
+int pack_disc_stats(void *out) { (void)out; return 0; }
+void pack_disc_poll(void) {}

@@ -110,6 +110,9 @@ typedef struct Player {
 void player_init(Player *p);
 /* lock-on target position (feet), 0 when not locked */
 int player_lock_target(const Player *p, float out[3]);
+/* The camera's yaw and pitch from this frame's right stick and the lock-on target (src/cam_input.c: the frame's input
+ * phase, and the Lab's script runner) */
+void cam_input(const Player *p, const Input *in, float *cam_yaw, float *cam_pitch, float dt);
 /* cam_yaw: camera heading, so stick input is camera-relative */
 void player_update(Player *p, const Input *in, float cam_yaw, float dt);
 void player_draw(const Player *p);
