@@ -161,3 +161,5 @@ char _stack_size[1];
 int pack_cdrom;
 int pack_disc_stats(void *out) { (void)out; return 0; }
 void pack_disc_poll(void) {}
+void trail_tick(float dt) { (void)dt; }
+void trail_sample(const float base[3], const float tip[3]) { (void)base, (void)tip; }

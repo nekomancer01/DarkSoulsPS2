@@ -8,6 +8,7 @@
 #include <string.h>
 #include "combat.h"
 #include "combat_data.h"
+#include "trail.h"
 #include "player.h"
 #include "model.h"
 #include "vmath.h"
@@ -352,6 +353,21 @@ static const float *dummy_pos(int id)
     return 0;
 }
 
+/* the pose at t (no crossfade: attack windows start long after the 0.15 s blend), R_Weapon to world as model_draw
+ * places the model: rotate by yaw + pi (model faces -Z), translate to the feet; world[SK_R_WEAPON] after the call */
+static M34 world[SK_BONES_MAX];  /* gamedata_init refuses more bones */
+static void weapon_world(const Player *p, int anim_id, float t)
+{
+    static BoneLocal pose[MAX_BONES];
+    model_sample(model_anim(anim_id), t, 0, pose);
+    float c = cosf(p->yaw + 3.14159265f), s = sinf(p->yaw + 3.14159265f);
+    M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, p->pos.x, p->pos.y, p->pos.z}};
+    for (int i = 0; i <= SK_R_WEAPON; i++) {
+        M34 local = m34_from_qt(pose[i].q, pose[i].t);
+        world[i] = sk_parent[i] < 0 ? m34_mul(&place, &local) : m34_mul(&world[(int)sk_parent[i]], &local);
+    }
+}
+
 static CombatChr player_chr;
 float combat_hit_a[3], combat_hit_b[3];  /* last blade capsule (debug drawing) */
 int combat_hit_active;
@@ -412,17 +428,7 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             continue;
         if (cur_win != w)
             cur_win = w, window++;
-        /* the pose at t (no crossfade: attack windows start long after the 0.15 s blend), R_Weapon to world as
-         * model_draw places the model: rotate by yaw + pi (model faces -Z), translate to the feet */
-        static BoneLocal pose[MAX_BONES];
-        static M34 world[SK_BONES_MAX];  /* gamedata_init refuses more bones */
-        model_sample(model_anim(anim_id), t, 0, pose);
-        float c = cosf(p->yaw + 3.14159265f), s = sinf(p->yaw + 3.14159265f);
-        M34 place = {{c, 0, s, 0, 1, 0, -s, 0, c, p->pos.x, p->pos.y, p->pos.z}};
-        for (int i = 0; i <= SK_R_WEAPON; i++) {
-            M34 local = m34_from_qt(pose[i].q, pose[i].t);
-            world[i] = sk_parent[i] < 0 ? m34_mul(&place, &local) : m34_mul(&world[(int)sk_parent[i]], &local);
-        }
+        weapon_world(p, anim_id, t);
         CombatAttack atk = {TEAM_PLAYER, aw->atk_param, combat_player_ar(), aw->phys_corr / 100.0f,
                             (chr_stats.valid ? chr_stats.poise_dmg[HAND_R] : WEP_POISE_DMG) * aw->sa_corr / 100.0f,
                             aw->dmg_level, {p->pos.x, p->pos.y, p->pos.z}, window};
@@ -447,6 +453,19 @@ int combat_player_frame(Player *p, int anim_id, float t, float dt)
             if (n && aw->hit_stop > p->hitstop)  /* AtkParam hitStopTime: the swing stops for a moment on contact */
                 p->hitstop = aw->hit_stop;
         }
+    }
+    trail_tick(dt);  /* the weapon trail (trail.c): base and tip each frame of a SpawnFFX_Blade window */
+    for (int w = 0; w < NTRAILS; w++) {
+        const TrailWindow *tw = &trails[w];
+        const float *b = dummy_pos(tw->base), *e = dummy_pos(tw->tip);
+        if (tw->anim != anim_id || t < tw->start || t >= tw->end || !b || !e)
+            continue;
+        float a[3], c[3];
+        weapon_world(p, anim_id, t);
+        m34_apply(&world[SK_R_WEAPON], b, a);
+        m34_apply(&world[SK_R_WEAPON], e, c);
+        trail_sample(a, c);
+        break;
     }
     p->hp = player_chr.hp;  /* (the player cannot hit itself; kept for symmetry) */
     synced = p->hp;
