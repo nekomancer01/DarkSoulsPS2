@@ -165,6 +165,7 @@
  * MDL_PREBUILT        | 1        | fallback | -DMDL_PREBUILT=0                              | scene  | new   | model.c       | Polaris 2.2: a model's vu1skin2 batch headers built once and called per draw (palette + per-draw block + one CALL per segment); 0 = every batch's header written per draw
  * CHR_LIGHTS          | 1        | fallback | -DCHR_LIGHTS=0                                | scene  | new   | chrlight.c    | Polaris 2.2: characters lit by the sun + their 2 strongest point lights with N.L (the rest ambient); 0 = every point light in the ambient term (map_char_light)
  * SHADOW_BLOB         | 1        | fallback | -DSHADOW_BLOB=0                               | scene  | new   | shadow.c      | Polaris 2.2: a blob shadow on the floor under every drawn character (decal class state); 0 = none
+ * SHADOW_SIL          | 1        | fallback | -DSHADOW_SIL=0                                | scene  | new   | shadow.c      | Polaris 2.2: the player's shadow is its silhouette drawn from the sun into a 128 x 64 target and laid on the floor; 0 = a blob like the others
  * MDL_ANIM_PAGE       | 64 KB    | fallback | -DMDL_ANIM_PAGE=0                             | scene  | #140  | model.c       | anim section in pages; 0 = one copy
  * SPEC_TEST           | off      | debug    | -DSPEC_TEST=0.85,0.8                          | scene  | init  | model.c       | metal / specular on every vertex
  * NO_VU0              | off      | fallback | -DNO_VU0                                      | core   | #94   | vmath.c       | skin matrix product in C

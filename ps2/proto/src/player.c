@@ -1393,6 +1393,11 @@ void player_draw(const Player *p)
             if (upper[i])
                 cur[i] = mixed[i];
     }
+    /* the player's shadow (shadow.c): the silhouette, drawn from the sun into its target first; else a blob */
+    if (shadow_sil_begin(p->pos)) {
+        model_draw(cur, p->pos, p->yaw, 0);
+        shadow_sil_end();
+    } else
+        shadow_add(p->pos, COL_PLAYER_R, 1);
     model_draw(cur, p->pos, p->yaw, p->invincible);
-    shadow_add(p->pos, COL_PLAYER_R, 1);  /* blob shadow (shadow.c) */
 }

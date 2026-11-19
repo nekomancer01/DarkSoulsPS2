@@ -15,13 +15,14 @@
 
 #define GSB_FRAME_KB 1152      /* draw buffer 448 + Z 448 (512 x 448, 16-bit) + display buffer 256 (512 x 224) */
 #define GSB_WORLD_KB 1152      /* map pixel pool 896 + its CLUTs 72 + block textures / CLUTs 149 + relief / near pools */
-#define GSB_CHR_PLAYER_KB 496  /* the player's textures 485: never evicted */
+#define GSB_CHR_PLAYER_KB 528  /* the player's textures 485: never evicted; + its silhouette target and Z 32 (shadow.c) */
 #define GSB_CHR_KB 176         /* enemies and NPCs: 58 at the VRAM low, about 150 at the heap low */
 #define GSB_OBJ_KB 544         /* objects and breakables: 528 at the VRAM low, 362 at the heap low */
 #define GSB_FX_KB 320          /* effect textures: 311 / 285 */
 #define GSB_UI_KB 224          /* HUD atlases 209, menu DRB, font */
 #define GSB_HOLES_KB 0         /* free blocks inside pages already taken (r_vram's first fit fills them) */
-#define GSB_FREE_KB 32         /* pages never taken: 233 / 360 measured; the slack after the rows above */
+#define GSB_FREE_KB 0          /* pages never taken: 233 / 360 measured; the slack after the rows above (its 32 went to
+                                * the player's silhouette, Polaris 2.2 PR 6) */
 #define GSB_LOAD_KB 336        /* the loading screen: borrowed from the map pool (or the top of free VRAM at boot),
                                 * not part of the sum; it must come back to 0 after every loading screen */
 
