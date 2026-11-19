@@ -436,10 +436,9 @@ void vu1_init(GSGLOBAL *gs)
     dma_channel_send_packet2(p, DMA_CHANNEL_VIF1, 1);
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
     packet2_free(p);
-#if defined(VU1_TEX_PATH3) && !defined(VU1_NO_IMT)
+#if defined(VU1_TEX_PATH3)
     /* GIF MODE IMT (budget doc proposal 7): PATH3 IMAGE data in 8-qword slices, so PATH1 / PATH2 get the GIF between
-     * any two slices of an upload, not only between TEXQ_SLICE packets (M3R stays 0: PATH3 not masked).
-     * make DEFS=-DVU1_NO_IMT = continuous mode as before */
+     * any two slices of an upload, not only between TEXQ_SLICE packets (M3R stays 0: PATH3 not masked) */
     *(volatile u32 *)0x10003010 = 1u << 2;
 #endif
 }
@@ -764,9 +763,6 @@ static void add_ex(GSTEXTURE *t, int cull, int mode, int tris, const void *pos, 
 #ifdef VU1_NO_CLIP  /* debug: near / guard-band batches through the plain program (flagged triangles dropped) */
     mode &= ~VU1_CLIP;
 #endif
-#ifdef VU1_NO_PKT  /* A/B: the stream-by-stream REFs of the old path */
-    mode &= ~VU1_PKT;
-#endif
     if (mode & VU1_COLCP)
         mode &= ~VU1_PKT;
     int mxl = mip_mxl;  /* vu1_mip's chain applies to this call only (both halves of a split) */
@@ -866,9 +862,6 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 #ifdef VU1_NO_CLIP
     mode &= ~VU1_CLIP;
 #endif
-#ifdef VU1_NO_PKT
-    mode &= ~VU1_PKT;
-#endif
     if (mode & VU1_COLCP)
         mode &= ~VU1_PKT;
     int mxl = mip_mxl;
@@ -888,15 +881,12 @@ static void add_idx(GSTEXTURE *t, int cull, int mode, int tris, int nv, const vo
 #endif
     u8 keep[VU1_IDX_TRIS * 4];  /* VU1_CLIP: the triangles vu1mapi draws (no corner near the near plane / guard band) */
     int nk = tris, entry = MAPI_CODE;
-#ifndef VU1_IDX_EE_CLIP  /* fallback switch: the EE split below for every VU1_CLIP batch */
     if ((mode & VU1_CLIP) && MAPI_HDR + 3 * nv + tris <= CLIPI_MAX) {
         /* vu1clip.vsm's indexed entry reads the batch as vu1mapi does and clips the flagged triangles on VU1 */
         use_prog(P_CLIP);
         entry = CLIPI_CODE;
         vu1_stats.idx_vuclip++;
-    } else
-#endif
-    if (mode & VU1_CLIP) {
+    } else if (mode & VU1_CLIP) {
         unsigned t_in = ticks();
         /* the EE's conservative version of the programs' CLIP test (view z < near, |view x| > z x guard band...):
          * flagged triangles go to vu1clip.vsm as lists written into the chain, the others to vu1mapi with a triangle
@@ -1231,14 +1221,12 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
     /* PRIM tag template (triangle, gouraud, (textured, STQ), fog, context 1; STQ, RGBAQ, XYZF2): the program copies
      * it in front of each kick of output with NLOOP and EOP set */
     q64(GIF_SET_TAG(skin_clip ? 3 : 0, skin_clip, 1, (t ? 0x1B : 0x0B) | fge, 0, 3), 0x412);
-#ifndef VU1_NO_SKINPKT  /* fallback switch: the stream-by-stream path below for every batch */
     if (pkt) {  /* PR 8: the batch's prebuilt packet (vu1_skin_packet) in one REF */
         tag(pkt_bytes / 16, T_REF, pkt, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
         u32 entry = skin_clip ? SKINCLIP_CODE : !t ? SKIN2_FLAT : ms ? SKIN2_TEXSPEC : SKIN2_TEX;
         tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, entry));
         return;
     }
-#endif
     tag((n * 8 + 15) / 16, T_REF, pa, VIF(V_STCYCL, 0, 0x0104), VIF(UNPACK_V4_16, n, U_FLG | 9));
     tag((n * 8 + 15) / 16, T_REF, pb, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 10));
     tag((n * 8 + 15) / 16, T_REF, nrm, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_16, n, U_FLG | 11));

@@ -193,13 +193,22 @@ void mem_temp_reset(unsigned mark)
         tmp_n--;
 }
 /* (after the seal the heap reuses boot-temp's range: no boot-temp pointer may outlive the seal) */
-int mem_in_temp(const void *p) { return tmp.base && (const unsigned char *)p >= tmp.base && (const unsigned char *)p < tmp.base + tmp.size; }
+/* sealed: boot-temp's range lives on as tmp_hold (tmp_held bytes) until mem_boot_done frees it; a pointer into it is
+ * still boot-temp's (mem_release must not free() the middle of that heap block) */
+static unsigned tmp_held;
+int mem_in_temp(const void *p)
+{
+    const unsigned char *q = p;
+    if (tmp.base)
+        return q >= tmp.base && q < tmp.base + tmp.size;
+    return tmp_hold && q >= (const unsigned char *)tmp_hold && q < (const unsigned char *)tmp_hold + tmp_held;
+}
 int mem_in_static(const void *p) { return st.base && (const unsigned char *)p >= st.base && (const unsigned char *)p < st.base + st.size; }
 
 void mem_boot_done(void)
 {
     free(tmp_hold);
-    tmp_hold = NULL;
+    tmp_hold = NULL, tmp_held = 0;
 }
 
 void mem_release(void *p)
@@ -223,10 +232,11 @@ void mem_boot_seal(void)
         void *q = realloc(tmp.base, (tmp_left + 127) & ~127u);
         if (q != tmp.base)
             printf("TEST error: mem: boot-temp moved on shrink\n");
-        tmp_hold = q;
+        tmp_hold = q, tmp_held = tmp_left;
     } else
         free(tmp.base);
     mem_bump_init(&tmp, NULL, 0);
+    tmp_n = 0;  /* (no block is popped after the seal: mem_release leaves what lies in tmp_hold to mem_boot_done) */
     if (st.base) {
         unsigned keep = (st.used + 127) & ~127u;
         void *q = realloc(st.base, keep ? keep : 128);  /* shrink in place: the tables point into it */

@@ -365,6 +365,7 @@ int main(int argc, char **argv)
     mem_boot_init();  /* static and boot-temp regions (src/mem.h), before the first pack load */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
+    map_holes = holes;  /* (no void ring: map.c VOID_RING) */
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
         printf("DSRPROTO gamedata: missing or from another build; stopping\n");
         for (;;)

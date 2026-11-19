@@ -51,6 +51,13 @@ import texmap  # noqa: E402
 NEAR_R = float(residency.RES["RES_NEAR_R"])
 PIN_R = float(residency.RES["RES_PIN_R"])
 CELL_PART = 0x80000000
+FAR_SEAM, FAR_HAS_SEAM, FAR_SEAM_R = 2, 4, 48.0  # far.bin set flags (tools/farpano.py), mapblock.c MAP_FAR_SEAM_R
+
+
+def far_eye(fl, sh):
+    """a seam set's eye x (sh 8) or z (sh 20) from its flags: signed 12 bits, 4 m units"""
+    v = fl >> sh & 0xFFF
+    return (v - 4096 if v & 0x800 else v) * 4.0
 CHUNK_HZN = 256
 
 
@@ -184,7 +191,8 @@ class Block:
             fc = chunks(fb, 16 + 32 * ns, nc, 0, st=False)
             for i in range(ns):
                 blk, first, cnt, *mask = struct.unpack_from("<7I", fb, 16 + 32 * i)
-                self.far.append((blk, mask, fc[first:first + cnt]))
+                fl = struct.unpack_from("<I", fb, 16 + 32 * i + 28)[0]
+                self.far.append((blk, mask, fc[first:first + cnt], fl))
 
         # the far backdrop as picture layers (pano.bin, tools/pano.py bake): textured tiles on cylinders, the
         # draw-group sets they stand for (the horizon's backdrop chunks of those sets are left out)
@@ -197,9 +205,18 @@ class Block:
             self.pano_tex = texmap.load(pb, nt, otex)
             self.pano_sets = {i for i in range(256) if table >= 64 and pb[32 + (i >> 3)] >> (i & 7) & 1}
 
-    def far_pick(self, blk, floor):
-        """the panorama's chunks that show world block blk from the floor under the player (map.c mp_draw_far)"""
-        return [(p, s, c, -1, fl & 0xFF, bx) for b, mask, ch in self.far if b == blk
+    def far_pick(self, blk, floor, eye=None, seam=True):
+        """the panorama's chunks that show world block blk from the floor under the player (mapblock.c mp_draw_far:
+        the block's seam set nearest the eye within FAR_SEAM_R stands in for its main sets; seam=False: main sets
+        only, MAP_FAR_SEAM=0)"""
+        pick, best = None, FAR_SEAM_R ** 2
+        for i, (b, _m, _c, sf) in enumerate(self.far):
+            if seam and b == blk and sf & FAR_SEAM and eye is not None:
+                d = (eye[0] - far_eye(sf, 8)) ** 2 + (eye[2] - far_eye(sf, 20)) ** 2
+                if d < best:
+                    pick, best = i, d
+        return [(p, s, c, -1, fl & 0xFF, bx) for i, (b, mask, ch, sf) in enumerate(self.far) if b == blk
+                and (i == pick if sf & FAR_SEAM else not (sf & FAR_HAS_SEAM and pick is not None))
                 and (floor is None or any(a & m for a, m in zip(floor, mask))) for p, s, c, _, fl, bx in ch]
 
     def chunk_dg(self, no):
@@ -338,7 +355,7 @@ def shot(path, blocks, feet, yaw, pitch, levels=None, size=(640, 448)):
             # the boot map's far backdrop as picture layers: its horizon lacks those triangles; the sheets are
             # drawn from every block of its area (map.c)
             use_pano = PANO and bi == 0 and bool(b.pano) and map_of(blocks[home])[:3] == map_of(b)[:3]
-            for p, s, c, ti, fl, bx in (blocks[home].far_pick(bi, floor) if use_far else
+            for p, s, c, ti, fl, bx in (blocks[home].far_pick(bi, floor, eye) if use_far else
                                         b.pick(feet, eye, levels, floor, hz_only=other, pano=use_pano)):
                 if fl & (mapcfg.CHUNK_SKY | mapcfg.CHUNK_BACKDROP) and bi != home and not use_far:
                     continue  # one sky and one backdrop: the player's block's (another block's backdrop is this block)
