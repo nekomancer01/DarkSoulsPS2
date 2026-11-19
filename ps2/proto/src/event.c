@@ -1587,7 +1587,7 @@ void event_update(Player *p, float dt)
 {
     if (!inst)
         return;
-    unsigned t0 = ticks(), t0c = frame_clock();
+    unsigned t0 = ticks(), t0c = frame_budget_clock();
     pl = p, dtime = dt;
     act_used = 0;
     ev_frame++;
@@ -1606,7 +1606,7 @@ void event_update(Player *p, float dt)
         Inst *in = &inst[i];
         if (in->state != I_FREE && in->state != I_DONE && in->state != I_STOPPED)
             run(in);
-        if (n + 1 < ninst && frame_clock() - t0c > EV_BUDGET_US * 295u) {  /* (the simulation clock, frame.h) */
+        if (n + 1 < ninst && frame_budget_clock() - t0c > EV_BUDGET_US * 295u) {  /* (by work with fixeddt: frame.h) */
             rr = (i + 1) % (n0 ? n0 : 1);
             event_stats.deferred++;
             break;

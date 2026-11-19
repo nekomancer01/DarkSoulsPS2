@@ -155,7 +155,7 @@ static int parse(Prog *p, char *text)
                 if (!strncmp(rest, "fixeddt ", 8))
                     frame_det_dt = (float)atof(rest + 8) / 1000.0f;
                 if (!strncmp(rest, "seed ", 5))
-                    frame_det_seed = (unsigned)atoi(rest + 5), srand(frame_det_seed);
+                    frame_det_seed = (unsigned)atoi(rest + 5), frame_det_seeded = 1, srand(frame_det_seed);
                 if (!strncmp(rest, "record ", 7))
                     frame_det_record(rest + 7);
                 if (!strncmp(rest, "set ", 4)) {  /* "option set NAME VALUE": a runtime switch (cvar.h) */

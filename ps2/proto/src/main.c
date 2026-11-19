@@ -367,6 +367,7 @@ int main(int argc, char **argv)
     g2d_init(gs);     /* the 2D writer (src/g2d.h): the loading screen's buffers */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
+    map_holes = holes;  /* (no void ring: map.c VOID_RING) */
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
         printf("DSRPROTO gamedata: missing or from another build; stopping\n");
         for (;;)

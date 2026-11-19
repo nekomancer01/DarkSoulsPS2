@@ -76,7 +76,34 @@ WARM_WAIT = 60.0  # s a loaded warm state gets to show the parked ELF before the
 FAIL_GRACE = 5.0  # s the run goes on after its first error line, so the log holds what followed
 PROGRESS = 60.0  # s between progress lines
 LOG_ERRORS = re.compile(r"OUT OF RAM|READ ERROR|Not enough VRAM|TEST error|exception|TLB Miss|Unhandled|Bus error"
-                        r"|mapstream: alloc .* FAILED|TEST ev expect .*: \S+ FAIL", re.I)
+                        r"|mapstream: alloc .* FAILED", re.I)
+# Script checks are judged by shape, not by listing failures: every "TEST <module> expect ..." result line passes only
+# with the word PASS in it, every "TEST check ..." only ending in " ok" (anything else fails the run: a list of failure
+# shapes missed ev_warp's "...: block 5, 174 instances FAIL" until 2026-11-18); and a script with expect / check
+# commands that logged no result line at all fails too (check_results)
+EXPECT_LINE = re.compile(r"TEST \w+ expect ")
+CHECK_LINE = re.compile(r"TEST check ")
+
+
+def check_line_failed(line):
+    """an expect / check result line that is not a pass"""
+    t = line.split("] ", 1)[-1].strip()  # (without the EE log's time stamp)
+    if EXPECT_LINE.match(t):
+        return not re.search(r"\bPASS\b", t) or bool(re.search(r"\bFAIL\b", t))
+    if CHECK_LINE.match(t):
+        return not t.endswith(" ok")
+    return False
+
+
+def check_results(script, log_lines):
+    """the script declares checks (ev / pickup expect, check) but the log holds no result line: an error, else None"""
+    try:
+        cmds = [l.split("#")[0].split() for l in open(script)]
+    except OSError:
+        return None
+    declared = sum(1 for w in cmds if w and (w[0] == "check" or (len(w) > 1 and w[1] == "expect")))
+    got = sum(1 for l in log_lines if EXPECT_LINE.search(l) or CHECK_LINE.search(l) or "TEST error check" in l)
+    return f"the script declares {declared} checks but the log has no result line" if declared and not got else None
 # map.c prints the most cells missing in one frame over each second; more than this is a hole in the world, not a cell
 # arriving a frame late (--cells-missing N, 0 = off)
 CELLS_MISSING = re.compile(r"map: cells missing (\d+)")
@@ -92,7 +119,7 @@ WALLS_MAX = 0
 
 
 def log_error(line):
-    if LOG_ERRORS.search(line):
+    if LOG_ERRORS.search(line) or check_line_failed(line):
         return True
     m = CELLS_MISSING_MAX and CELLS_MISSING.search(line)
     if m and int(m[1]) > CELLS_MISSING_MAX:
@@ -412,6 +439,9 @@ def run(a):
             s["stats"] = stats.get(s["name"], {})
         if not any("TEST DONE" in l for l in res["log"]):
             res["errors"].append("script did not reach its end (no TEST DONE)")
+        e = check_results(a.script, res["log"])
+        if e:
+            res["errors"].append(e)
         if a.hitch:
             hitch_gates(log, res)
     else:

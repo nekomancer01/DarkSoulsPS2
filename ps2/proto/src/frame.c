@@ -98,6 +98,7 @@ void frame_log(void)
 
 float frame_det_dt;
 unsigned frame_det_seed;
+int frame_det_seeded;
 static unsigned det_clock;
 static V3 rec_end;  /* the player at the last frame's end (record_frame: moved since?) */
 static float rec_end_yaw;
@@ -140,6 +141,11 @@ static void rec_put(int i, const void *p, unsigned n)
 }
 
 unsigned frame_clock(void) { return frame_det_dt > 0 ? det_clock : ticks(); }
+static unsigned det_reads;  /* frame_budget_clock reads this frame (fixeddt) */
+unsigned frame_budget_clock(void)
+{
+    return frame_det_dt > 0 ? det_clock + ++det_reads * (unsigned)(FRAME_DET_READ_US * 295u) : ticks();
+}
 
 void frame_det_record(const char *path)
 {
@@ -242,6 +248,7 @@ static void phase_begin(Frame *f)
         f->dt = frame_det_dt;
         if (!f->frozen)
             det_clock += (unsigned)(frame_det_dt * 294912000.0f);
+        det_reads = 0;
     }
 }
 
