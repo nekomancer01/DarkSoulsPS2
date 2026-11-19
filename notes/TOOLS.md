@@ -33,6 +33,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | Output |
 |---|---|
 | `export_map.py` (+ `native/simplify.c`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `material.py` | Material classes (Polaris 2.1): MTD -> class (opaque, alpha test, blend, additive, water, foliage, skin, decal, sky), each with its VU1 program, GS state and passes; `material.py header` writes `ps2/proto/src/material_table.h`, `material.py test` checks the classifier (tools/ci/offline.sh runs both) |
+| `mtd_census.py <map id>...` | Census of a map's FLVER meshes per MTD: shader, g_BlendMode / g_LightingType / g_IsFoliage, the class material.py gives, the old exporter checks, textures carrying two classes (`--counts`: counts only) |
 | `native/simplify.c`, `simplify_native.py` | The map simplifier, the source of truth (in libmapx for export_map; ctypes binding for horizon.py). Output at the shipped settings pinned by `mapx/test_simplify_golden.py` (`--update` after an intended change) |
 | `simplify.py`, `simplify_pool.py` | Frozen reference of simplify.c's core collapse (identical with simplify.c's own rules off: `simplify_native.py --test`, `mapx/test_mapx.py`), and the Python fallback's job pool / cache |
 | `export_collision.py` | collision.bin |

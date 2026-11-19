@@ -19,6 +19,7 @@ import mapcfg
 import mapchunks
 import maplight
 import mapsimp
+import material
 
 
 
@@ -179,7 +180,6 @@ def _mesh_np(m):
     return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
-SKY_ALP_BLEND = os.environ.get("SKY_ALP_BLEND", "1") == "1"  # sky alpha layers blended (gather)
 EDGE_2SIDED = os.environ.get("EDGE_2SIDED", "1") == "1"  # two-sided cut-out light (gather, below)
 
 
@@ -316,22 +316,11 @@ def water_rgba(mp):
     return bytes([round(255 * min(1.0, x) ** (1 / 2.2)) for x in rgb] + [round(255 * a)])
 
 
-BG_BLEND = os.environ.get("BG_BLEND", "1") == "1"
-
-
-def is_effect(mtd):
-    """Translucent effect materials (light shafts '_Add', mist/cloud '[Dn]_Alp'): drawn opaque they become solid slabs.
-    Skipped until the renderer has alpha blending."""
-    m = mtd.lower()
-    return "_add" in m or ("[dn]" in m and "_alp" in m)
-
-
 def is_sky(mtd, pts, nav_tree):
     """Sky / background layer: a sky or cloud material (A10_Sky[Dn]_LS, A10_02_m9000_Sky, A10_cloud[DB]_Alp, ...), or
     a mesh entirely farther than SKY_DIST from the area's walkable navmesh (Firelink's m9000 ground ring, Undead
     Burg's m8000B1). Was: > SKY_DIST from the spawn, which only works when the spawn is central (TECH_DEBT build-6)."""
-    low = mtd.lower()
-    if "sky" in low or "cloud" in low:
+    if material.sky_mtd(mtd):
         return True
     if nav_tree is None or not len(pts):
         return False
@@ -741,29 +730,27 @@ def gather(game, map_id):
                 if fid not in mapcfg.SKY_FOG_ROWS and len(mapcfg.SKY_FOG_ROWS) < 15:
                     mapcfg.SKY_FOG_ROWS.append(fid)
                 sky_slot = mapcfg.SKY_FOG_ROWS.index(fid) + 1 if fid in mapcfg.SKY_FOG_ROWS else 0
-            water = "water" in m["mtd"].lower()
-            # "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" = alpha-tested cut-outs). Floor decals / dirt /
-            # ground overlays (blood, soot, stains: M[D][L]_Alp) exported as cut-outs drew every texel above 50 % alpha at
-            # full strength and the rest in the clear colour (dark patches on Burg's floors), so they take texmap's soft
-            # path (CT32 alpha, blended). Only those: blended meshes are kept unsimplified (keep=), and all _Alp meshes
-            # together cost +43k tris / 36 fps at Burg spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs
-            # (ASSUMED, TECH_DEBT map-30)
-            # Background cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose
-            # vertex alpha fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play
-            # test 2026-11-16): blended too, with their vertex alpha. BG_BLEND=0 = cut-outs as before.
-            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower() for k in
-                                                       ("decal", "dirt", "ground", "stain") + (("_bg_",) if BG_BLEND else ()))
-            # alpha cloud layers of the sky (A10_cloud[DB]_Alp) blend too: as cut-outs their soft edges became hard
-            # flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour banding"). SKY_ALP_BLEND=0:
-            # cut-outs, as before
-            blend = is_effect(m["mtd"]) or decal or water or (SKY_ALP_BLEND and sky and "_alp" in m["mtd"].lower())
-            flags = (mapcfg.CHUNK_BLEND if blend else 0) | (mapcfg.CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
-                (mapcfg.CHUNK_SKY if sky else 0) | sky_slot << mapcfg.CHUNK_SKY_ROW
+            # material class (tools/material.py classify: MTD suffix, the diffuse for decals / background cards /
+            # grass, the sky role). The cases it replaces: "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" =
+            # alpha-tested cut-outs). Floor decals / dirt / ground overlays (blood, soot, stains: M[D][L]_Alp)
+            # exported as cut-outs drew every texel above 50 % alpha at full strength and the rest in the clear colour
+            # (dark patches on Burg's floors), so they take texmap's soft path (CT32 alpha, blended). Only those:
+            # blended meshes are kept unsimplified (keep=), and all _Alp meshes together cost +43k tris / 36 fps at Burg
+            # spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs (ASSUMED, TECH_DEBT map-30). Background
+            # cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose vertex alpha
+            # fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play test
+            # 2026-11-16): blended too (BG_BLEND=0: cut-outs). Alpha cloud layers of the sky (A10_cloud[DB]_Alp) as
+            # cut-outs became hard flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour
+            # banding"): blended (SKY_ALP_BLEND=0: cut-outs).
+            mcls = material.classify(m["mtd"], m["diffuse"], sky)
+            water = mcls == material.WATER
+            blend = mcls in material.BLENDED
+            flags = material.chunk_flags(mcls, sky) | sky_slot << mapcfg.CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
                 xf, xn = bone_xf(pxf, pxn, *bind[m["default_bone"]])
             else:
                 xf, xn = pxf, pxn
-            grass = mapchunks.name_is_grass(m["diffuse"])
+            grass = material.is_grass(m["diffuse"])
             lods = {f[0] & 0x0F000000: f for f in m["facesets"] if not f[0] & 0x80000000}
             if not lods:
                 continue
@@ -831,6 +818,9 @@ def gather(game, map_id):
                             mapchunks.near_level(textures[-1], dds[name], name)
                 ti = tex_index.get((name, blend), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
+            if ti >= 0 and V["uv"]:  # the texture's class (map.bin texture entry flags, material.write_classes)
+                textures[ti]["cls"] = material.merge(textures[ti].get("cls"), material.texture_class(mcls, m["mtd"],
+                                                                                                    m["diffuse"]))
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
             Tl = np.array(tl, np.int64).reshape(-1, 3)
             used = np.flatnonzero(np.bincount(Tl.reshape(-1).astype(np.intp)))  # sorted, as np.unique
@@ -904,9 +894,9 @@ def gather(game, map_id):
                                # (objects move or break, cut-outs and blends let light through)
                                piece=part["name"],
                                # cut-out cards (ivy): each leaf is a piece of its own for mapsimp.loose_pieces
-                               cutout="_alp" in m["mtd"].lower() or "_edge" in m["mtd"].lower(),
+                               cutout=material.is_cutout(m["mtd"]),
                                occ=int(part["type"] == 0 and not blend and not grass and not sky and not water and
-                                       "_alp" not in m["mtd"].lower() and "_edge" not in m["mtd"].lower() and
+                                       not material.is_cutout(m["mtd"]) and
                                        part["entity_id"] not in switched)))
 
     if mx_grid is not None:
