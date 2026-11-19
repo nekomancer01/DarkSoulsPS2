@@ -1,9 +1,12 @@
 /* frame.c: the frame loop, one function per phase (frame.h has the phases and the rule). Moved from main.c as it was:
  * the same calls in the same order, except map_set_player, which moved from the start of the map pass to the end of
  * WORLD (it updates the draw groups enemies and events read; no packet depends on the order). */
+#define NEWLIB_PORT_AWARE  /* fio calls (the trace recorder), as save.c */
 #include <math.h>
 #include <stdio.h>
 #include <dmaKit.h>
+#include <fileio.h>
+#include <stdlib.h>
 #include <libpad.h>
 #include "frame.h"
 #include "g2d.h"
@@ -91,6 +94,57 @@ void frame_log(void)
            n ? "" : " none", buf, ui_from_sim, FRAME_SKIP_MAP ? " | map emit skipped" : "");
 }
 
+/* ---- determinism (frame.h) ---- */
+
+float frame_det_dt;
+unsigned frame_det_seed;
+int frame_det_seeded;
+static unsigned det_clock;
+static int rec = -1, rec_state = -1;  /* fio descriptors (host: save/, writable in test runs: pcsx2-run.sh) */
+static unsigned rec_frame;
+static char rec_line[96];
+
+unsigned frame_clock(void) { return frame_det_dt > 0 ? det_clock : ticks(); }
+static unsigned det_work;  /* work reported this frame, in EE ticks (fixeddt) */
+unsigned frame_budget_clock(void) { return frame_det_dt > 0 ? det_clock + det_work : ticks(); }
+void frame_det_work(unsigned t)
+{
+    if (frame_det_dt > 0)
+        det_work += t;
+}
+
+void frame_det_record(const char *path)
+{
+    char p1[96], p2[104];
+    snprintf(p1, sizeof p1, "host:save/%s", path);  /* (build/save/, as test saves: save.c) */
+    snprintf(p2, sizeof p2, "%s.state", p1);
+    rec = fioOpen(p1, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
+    rec_state = fioOpen(p2, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
+    if (rec < 0 || rec_state < 0) {
+        printf("TEST error: frame: cannot write the input trace %s\n", p1);
+        rec = rec_state = -1;
+        return;
+    }
+    /* header: magic, version, seed, fixed dt (us), record size */
+    const unsigned h[5] = {0x54525344 /* DSRT */, 1, frame_det_seed, (unsigned)(frame_det_dt * 1e6f), 64};
+    fioWrite(rec, h, sizeof h);
+    rec_frame = 0;
+}
+
+/* one 64-byte record a frame: frame, dt, the Input struct's fields, camera yaw / pitch (they steer movement) */
+static void record_frame(const Input *in, float dt, float yaw, float pitch)
+{
+    unsigned char r[64] = {0};
+    unsigned *u = (unsigned *)r;
+    float *f = (float *)r;
+    u[0] = rec_frame, f[1] = dt, f[2] = in->mx, f[3] = in->my, f[4] = in->cx, f[5] = in->cy;
+    u[6] = (unsigned)in->r1 | (unsigned)in->circle << 1 | (unsigned)in->r1_held << 2 | (unsigned)in->r2_held << 3 |
+           (unsigned)in->l1_held << 4 | (unsigned)in->l2_held << 5 | (unsigned)in->r3 << 6 | (unsigned)in->square << 7 |
+           (unsigned)in->triangle << 8;
+    u[7] = (unsigned)in->dpad, f[8] = yaw, f[9] = pitch;
+    fioWrite(rec, r, sizeof r);
+}
+
 /* ---- the loop ---- */
 
 /* the order table's deferred entries (ot.h) */
@@ -137,6 +191,12 @@ static void phase_begin(Frame *f)
         f->dt = 1.0f / 15;  /* below 15 fps the game slows down instead of skipping */
     if (f->dt < 1.0f / 60)
         f->dt = 1.0f / 60;
+    if (frame_det_dt > 0) {  /* option fixeddt (frame.h): the frame's dt and the simulation clock, by frames */
+        f->dt = frame_det_dt;
+        if (!f->frozen)
+            det_clock += (unsigned)(frame_det_dt * 294912000.0f);
+        det_work = 0;
+    }
 }
 
 static void phase_input(Frame *f)
@@ -347,7 +407,8 @@ static void phase_emit(Frame *f)
     }
     HITCH_BEGIN(fx);
     MEM_LEGACY(FX) {
-        fx_update(dt, f->eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
+        fx_update(frame_det_dt > 0 && f->frozen ? 0 : dt, f->eye);  /* effects: EE particles while VU1 draws (time held on a
+                                                                     * frozen frame with fixeddt) */
 #ifndef MAP_PANO_R
         frame_draw_check(FE_FX_DRAW);
         fx_draw();
@@ -365,7 +426,7 @@ static void phase_emit(Frame *f)
     g2d_select(G2D_UI);
 #ifndef MAP_PANO_R
     frame_draw_check(FE_HUD_DRAW);
-    hud_draw(pl, dt);
+    hud_draw(pl, frame_det_dt > 0 && f->frozen ? 0 : dt);
 #endif
     if (f->demo)
         r_text_outlined(30, 410, 2, "DEMO - PRESS ANY BUTTON");
@@ -382,7 +443,7 @@ static void phase_emit(Frame *f)
         pickup_draw();  /* the item get dialog (menu.drb F25) */
     frame_draw_check(FE_MENU_DRAW);
     menu_draw(pl);
-    loading_overlay(dt);  /* the fade-in from black after a loading screen */
+    loading_overlay(frame_det_dt > 0 && f->frozen ? 0 : dt);  /* the fade-in from black after a loading screen */
     mem_legacy_end(mt_ui);
     PROF_DRAW();
     HITCH_END(hud, HS_HUD);
@@ -458,6 +519,8 @@ void frame_run(const FrameBoot *b)
     for (;;) {
         phase_begin(&f);
         phase_input(&f);
+        if (rec >= 0)
+            record_frame(&f.in, f.dt, f.cam_yaw, f.cam_pitch), rec_frame++;
         /* Frame order: the player, camera and world first, then the map chain is kicked and VU1 / the GS draw it
          * while the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera,
          * draw groups, streamed cells) is settled before the kick; what those updates change shows from the next
@@ -468,5 +531,10 @@ void frame_run(const FrameBoot *b)
         phase_sim_b(&f);
         phase_emit(&f);
         phase_present(&f);
+        if (rec_state >= 0) {
+            int n = snprintf(rec_line, sizeof rec_line, "%u %.4f %.4f %.4f %.4f %s\n", rec_frame - 1, f.pl->pos.x,
+                             f.pl->pos.y, f.pl->pos.z, f.pl->yaw, player_state_name(f.pl));
+            fioWrite(rec_state, rec_line, n);
+        }
     }
 }

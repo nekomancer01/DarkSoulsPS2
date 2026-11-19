@@ -51,6 +51,31 @@ void frame_ui_request(void);
 /* one "frame:" line (hitch.c, each period) */
 void frame_log(void);
 
+/* Determinism for tests (Polaris 1.7a), set by test-script options:
+ *   option fixeddt MS   every frame's dt is exactly MS milliseconds (frame pacing stays real)
+ *   option seed N       rand() seeded with N (the loading screen's hint pick too)
+ *   option record NAME  each frame's input after the pad and test layers (+ dt, frame number, camera) to
+ *                       host:save/NAME (build/save/), its simulate state (position, yaw, state) to NAME.state
+ * With fixeddt, frame_clock() runs on frames (frames x dt, and it stops while a test shot is frozen): the map's
+ * player-light blend steps by frames, and effects and HUD smoothing hold still on frozen frames. The work a real-time
+ * budget cuts (lua0's collector step, event.c's instance runs) reads frame_budget_clock() instead, which with fixeddt
+ * counts work: the work done this frame as its callers report it (frame_det_work: event.c per instruction and per
+ * condition test, lua0 per object swept, at ASSUMED EE costs), so the budgets still cut in where real play's would
+ * (a block's constructors, a long sweep) and cut at the same point every run. What depends on the
+ * disc (a block or an enemy model arriving) stays as non-deterministic as the drive: record traces at spots where
+ * everything needed is resident, after a settle wait. */
+extern float frame_det_dt;       /* 0: off */
+extern unsigned frame_det_seed;  /* the seed when frame_det_seeded */
+extern int frame_det_seeded;     /* option seed N given (N may be 0) */
+void frame_det_record(const char *path);
+/* the simulation clock in EE ticks: ticks() normally, frames x fixeddt with fixeddt */
+unsigned frame_clock(void);
+/* the clock a per-frame work budget reads (elapsed = two reads apart): ticks() normally; with fixeddt the frame's
+ * clock plus the work reported this frame (deterministic) */
+unsigned frame_budget_clock(void);
+/* fixeddt only (else nothing): work done, as the EE ticks it stands for */
+void frame_det_work(unsigned ticks);
+
 /* What main.c hands the loop: the boot's results and its platform helpers */
 typedef struct {
     GSGLOBAL *gs;

@@ -1,0 +1,22 @@
+# Determinism check (Polaris 1.7a): a short walk with a roll and a turn at Firelink, fixed dt and seed, input and state
+# recorded (build/save/det_walk.trace, .state). Two runs of one build must give the same state log line for line.
+option noenemies
+option nodemo
+option fixeddt 33.333
+option seed 7
+option record det_walk.trace
+wait 3
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.1
+wait 4
+stick 0 1
+wait 2
+pad circle
+wait 1
+stick 0.7 0.7
+wait 2
+stick -1 0
+wait 1.5
+stick 0 0
+wait 1
+end
