@@ -92,10 +92,10 @@ command dispatch, not rewriting the state machine.
 does not support as unsupported or stub ops (logged, counted in the coverage report: `export_emevd.py --coverage`).
 
 **Lua AI.** `lua50.py --pack` re-serializes DSR's compiled Lua 5.0 chunks (floats instead of doubles, no debug info)
-and `lua0.c` runs them. Only the map's own script and the common library are loaded. On `main` all Lua runs on the
-interpreter. Translating the bytecode to C at ISO build time is planned as step 5.10, with the interpreter kept as the
-fallback; the phase 0 trial measured the translated code at 2 to 3 times the bytecode's size and no faster, so its
-design may change before it lands.
+and `lua0.c` runs them. Only the map's own script and the common library are loaded. All Lua, the AI included, runs on this
+interpreter, in the ELF and the ISO alike. Translating the bytecode to C at build time was trialled in phase 0 and
+dropped: the translated code was 2 to 3 times the bytecode's size and no faster. AI speed work goes into the C side
+of the enemy pass instead.
 
 **Maps.** The map exporter places every MSB piece, simplifies it to a per-block triangle budget solved against the
 residency design (`src/residency.h`), bakes DSR's light banks into vertex colours, splits the result into cells with

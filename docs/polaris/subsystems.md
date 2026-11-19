@@ -127,8 +127,8 @@ tables, closures, interned strings, light userdata with method tables, and a mar
 between calls under a time budget. `ai.c` is the engine side of DSR's goal system: logic functions per
 `NpcThinkParam`, Lua goals (`Activate` / `Update` / `Terminate` / `Interupt`), and the goals DSR implements natively
 (Wait, MoveToSomewhere, Guard, KeepDist, ApproachStep, CommonAttack and others) in C. DSR's sight cones and hearing
-are ported (`AI_PERCEPT`). On `main` all AI runs on the interpreter; a build-time translation of the Lua to C, with
-the interpreter as fallback, is planned as step 5.10 (see [data-pipeline.md](data-pipeline.md#how-each-kind-of-dsr-data-reaches-the-game)).
+are ported (`AI_PERCEPT`). All AI runs on the interpreter; a build-time translation of the Lua to C was trialled and
+dropped (see [data-pipeline.md](data-pipeline.md#how-each-kind-of-dsr-data-reaches-the-game)).
 
 **ESD runtime** (`esd.c`, `esd.h`, `esd_env_move.c`). Runs a character's EzState state machine as the exe does: each
 group steps once a frame, first true condition wins, transitions run exit, pass and entry commands, while-commands run
