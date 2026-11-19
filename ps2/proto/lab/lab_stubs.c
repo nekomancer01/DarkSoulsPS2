@@ -162,6 +162,7 @@ void loading_show(float s) { (void)s, LAB_COUNT("loading_show"); }
 /* determinism options: dt and seed are the runner's; the recorder is the console's (replay its traces with "replay") */
 float frame_det_dt;
 unsigned frame_det_seed;
+int frame_det_seeded;
 void frame_det_record(const char *path) { (void)path, LAB_COUNT("frame_det_record (option record)"); }
 /* the stats testscript.c prints per shot: zero here (nothing is drawn or streamed) */
 FxStats fx_stats;
