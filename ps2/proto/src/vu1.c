@@ -23,6 +23,7 @@
 #include <packet2.h>
 #include <packet2_utils.h>
 #include <gif_tags.h>
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include "render.h"

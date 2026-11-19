@@ -462,7 +462,8 @@ static void phase_emit(Frame *f)
     }
     HITCH_END(fx, HS_FX);
     if (obj_after_fx) {  /* test order: the character bank's programs again after vu1fx went over them (vu1.c R8) */
-        ot_flush();  /* the effects' buffer sent first (ot.h: one buffer open at a time) */
+        fx_kick();   /* the effects' segment closed and sent first (ot.h: one buffer open at a time); */
+        ot_flush();  /* phase_present's fx_kick then finds nothing open */
         ot_open(OT_OBJ, OT_OBJ);
 #ifndef MAP_PANO_R
         objects_draw();
