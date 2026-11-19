@@ -720,6 +720,21 @@ endif
 SYM_ELF = $(EE_BIN:.elf=.sym.elf)
 $(SYM_ELF): $(EE_OBJS)
 	$(EE_CC) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $(EE_OBJS) $(EE_LDFLAGS) $(EXTRA_LDFLAGS) $(EE_LIBS)
+# The Lab (Polaris 1.7b, lab/README.md): the player's simulate phase as a 32-bit host program driven over a pipe
+# (tools/lab.py). 32-bit because the loaders keep pointers in 32-bit blob fields (TECH_DEBT core-1); needs a host gcc
+# with -m32 (multilib): on the distrobox, `distrobox-host-exec make -C ps2/proto lab`.
+LAB_CC ?= gcc -m32
+LAB_CFLAGS ?= -std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0
+LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c $(addprefix src/,gamedata.c flags.c progress.c chrstat.c \
+	items.c player.c esd.c esd_env_move.c combat.c physics.c collision.c coltile.c nav.c status.c cvar.c vmath.c \
+	model.c omit.c)
+LAB_BIN = $(BUILD)/host/lab
+lab: $(LAB_BIN)
+$(LAB_BIN): $(LAB_SRCS) $(wildcard lab/*.h lab/stub/*.h src/*.h)
+	@mkdir -p $(@D)
+	$(LAB_CC) $(LAB_CFLAGS) -DLAB -Ilab/stub -Ilab -I$(GSKIT)/include -I$(PS2SDK)/common/include -Isrc $(LAB_SRCS) -o $@ -lm
+.PHONY: lab
+
 sym: $(SYM_ELF)
 # make iso: bootable disc image <elf>.iso (SYSTEM.CNF, the ELF as DSRP_000.01, every pack in data/ under DATA\, see
 # tools/ps2-iso.sh); booted from it, pack.c reads cdrom0:. ISO_SYMS=1 keeps the .symtab on the disc (PCSX2 debugger).
