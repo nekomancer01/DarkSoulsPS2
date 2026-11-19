@@ -86,24 +86,27 @@ CHECK_LINE = re.compile(r"TEST check ")
 
 
 def check_line_failed(line):
-    """an expect / check result line that is not a pass"""
-    t = line.split("] ", 1)[-1].strip()  # (without the EE log's time stamp)
-    if EXPECT_LINE.match(t):
+    """an expect / check result line that is not a pass (found anywhere in the line, whatever prefixes it)"""
+    m = EXPECT_LINE.search(line)
+    if m:
+        t = line[m.start():].strip()
         return not re.search(r"\bPASS\b", t) or bool(re.search(r"\bFAIL\b", t))
-    if CHECK_LINE.match(t):
-        return not t.endswith(" ok")
+    m = CHECK_LINE.search(line)
+    if m:
+        return not line.rstrip().endswith(" ok")
     return False
 
 
 def check_results(script, log_lines):
-    """the script declares checks (ev / pickup expect, check) but the log holds no result line: an error, else None"""
+    """the script declares more checks (ev / pickup expect, check) than the log holds result lines (one that stopped
+    before its last checks, or never reached any): an error, else None. A loop may print more than it declares."""
     try:
         cmds = [l.split("#")[0].split() for l in open(script)]
     except OSError:
         return None
     declared = sum(1 for w in cmds if w and (w[0] == "check" or (len(w) > 1 and w[1] == "expect")))
     got = sum(1 for l in log_lines if EXPECT_LINE.search(l) or CHECK_LINE.search(l) or "TEST error check" in l)
-    return f"the script declares {declared} checks but the log has no result line" if declared and not got else None
+    return f"the script declares {declared} checks but the log has {got} result lines" if got < declared else None
 # map.c prints the most cells missing in one frame over each second; more than this is a hole in the world, not a cell
 # arriving a frame late (--cells-missing N, 0 = off)
 CELLS_MISSING = re.compile(r"map: cells missing (\d+)")
