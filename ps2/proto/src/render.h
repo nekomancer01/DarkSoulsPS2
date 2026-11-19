@@ -3,6 +3,7 @@
 #define RENDER_H
 
 #include <gsKit.h>
+#include "gs.h"
 #include "vmath.h"
 
 #ifndef R_NEAR
@@ -70,12 +71,12 @@ void r_ground(float size, float cell);
  * texture's blocks are not contiguous). Each allocation takes the blocks its real footprint covers (PSMT8 with
  * vu1.c's TBW, CT32 / CT16 16x16 CLUTs), first fit in the free blocks of pages taken earlier, else new 8 KB pages
  * at gs->CurrentPointer (which stays page aligned for gsKit's own allocations after it). Byte address or
- * GSKIT_ALLOC_ERROR (0). r_vram_lin: n consecutive blocks (CLUT tables). The r_vram_free_* calls give an
+ * GSKIT_ALLOC_ERROR (0), charged to owner o (gs.h; a free credits the owner that paid). r_vram_lin: n consecutive blocks (CLUT tables). The r_vram_free_* calls give an
  * allocation's blocks back (the same w / h / psm / n it was made with) once the GS no longer reads them (callers free
  * between frames: the last frame's chains and gsKit queue are done before the next frame's updates run). */
-u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm);
-u32 r_vram_clut(GSGLOBAL *gs, int clut_psm);
-u32 r_vram_lin(GSGLOBAL *gs, int n);
+u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm, GsOwner o);
+u32 r_vram_clut(GSGLOBAL *gs, int clut_psm, GsOwner o);
+u32 r_vram_lin(GSGLOBAL *gs, int n, GsOwner o);
 void r_vram_free_tex(u32 vram, int w, int h, int psm);
 void r_vram_free_clut(u32 vram, int clut_psm);
 void r_vram_free_lin(u32 vram, int n);
@@ -92,9 +93,17 @@ void r_text_outlined(float x, float y, float scale, const char *s);
 /* gsKit_queue_exec with the oneshot queue's fill measured: r_gsq_peak = the most bytes one exec sent (the 2D layer:
  * HUD, menus, loading screen, clears). gsKit's queue has no bounds check, so R_GSQ_OS (main.c's
  * gsKit_init_global_custom) is sized from this peak; a fill over 3/4 of it logs an error line. */
-#define R_GSQ_OS (256 * 1024)  /* x 2 buffers (gsKit's default: 1024 KB x 2) */
+#define R_GSQ_OS (16 * 1024)  /* x 2 buffers: only gsKit's own init uses it since Polaris 1.6 (src/g2d.h writes the 2D);
+                               * the 2 x 240 KB it gave up are g2d's frame buffers (mem.h MEM_FRAME_KB) */
 #define R_GSQ_PER (16 * 1024)  /* persistent queue: unused (GS_ONESHOT), gsKit's default 256 KB */
 extern unsigned r_gsq_peak;
 void r_queue_exec(GSGLOBAL *gs);
+
+#ifdef HEAPMAP
+/* make HEAPMAP=1: VRAM census next to the heap census (render.c; "vrammap:" lines after each heapmap block). The
+ * r_vram_* allocations are kept per caller (and hm_tag label), gs_vram_fixed (gs.c) calls per call site, owners per
+ * row; the frame / Z buffers gsKit_init_screen allocated are read from the GSGLOBAL. */
+void r_vram_census(void);
+#endif
 
 #endif

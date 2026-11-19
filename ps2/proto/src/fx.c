@@ -16,9 +16,12 @@
 #include <kernel.h>
 #include <malloc.h>
 #include "fx.h"
+#include "g2d.h"
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
+#include "gs.h"
+#include "ot.h"
 #include "ticks.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
@@ -202,8 +205,8 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
             t->Vram = vtex[k].vram, t->VramClut = vtex[k].clut;
             continue;
         }
-        t->Vram = free_k >= 0 ? r_vram_tex(gs, t->Width, t->Height, t->PSM) : GSKIT_ALLOC_ERROR;
-        t->VramClut = t->Vram != GSKIT_ALLOC_ERROR ? r_vram_clut(gs, t->ClutPSM) : GSKIT_ALLOC_ERROR;
+        t->Vram = free_k >= 0 ? r_vram_tex(gs, t->Width, t->Height, t->PSM, GSO_FX) : GSKIT_ALLOC_ERROR;
+        t->VramClut = t->Vram != GSKIT_ALLOC_ERROR ? r_vram_clut(gs, t->ClutPSM, GSO_FX) : GSKIT_ALLOC_ERROR;
         if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
             r_vram_free_tex(t->Vram, t->Width, t->Height, t->PSM);
             t->Vram = 0;
@@ -212,7 +215,7 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
         }
         t->Mem = (u32 *)(b + tex[i].pix);
         t->Clut = (u32 *)(b + tex[i].clut);
-        gsKit_texture_upload(gs, t);
+        g2d_tex_upload(gs, t);
         t->Mem = t->Clut = NULL;
         vtex[free_k].key = tkey[i], vtex[free_k].vram = t->Vram, vtex[free_k].clut = t->VramClut;
         vtex[free_k].w = t->Width, vtex[free_k].h = t->Height, vtex[free_k].refs = 1;
@@ -677,7 +680,7 @@ static void vu_flush(void)
         vb.n++;
     }
     if (!vb.chain) {  /* the particle chain: camera constants, the main fog row, the program's layout */
-        vu1_begin(2);
+        ot_open(OT_FX, OT_FX);
         vu1_map_fog(vb.fog[0], vb.fog[1], vb.fog[2], vb.fog[3]);
         vu1_fx_begin();
         vb.chain = 1;
@@ -741,10 +744,10 @@ void fx_kick(void)
     if (!vb.chain)
         return;
     /* gsKit draws after this chain with its own ALPHA / ZBUF / FOGCOL (as tri_list leaves them) */
-    u64 zbuf = GS_SETREG_ZBUF(fx_gs->ZBuffer / 8192, fx_gs->PSMZ, 0);
-    const u64 r[6] = {fx_gs->PrimAlpha, 0x42, zbuf, 0x4E, vb.fogbase, 0x3D};
+    u64 zbuf = gs_zbuf(fx_gs, 0);
+    const u64 r[6] = {fx_gs->PrimAlpha, GSR_ALPHA, zbuf, GSR_ZBUF, vb.fogbase, GSR_FOGCOL};
     vu1_gs_regs(3, r);
-    vu1_kick();
+    ot_close();  /* frame.c sends it (src/ot.h) */
     vb.chain = 0;
 }
 

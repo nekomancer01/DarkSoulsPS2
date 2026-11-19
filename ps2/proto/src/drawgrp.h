@@ -5,6 +5,9 @@
 #ifndef DRAWGRP_H
 #define DRAWGRP_H
 
+#include "collision.h"
+#include "vmath.h"
+
 #define DG_INST 16  /* >= MAP_INST */
 
 /* blob: dg.bin of instance k (kept loaded); chunks: bump.bin's global chunk count it must cover, col_tris: that block's
@@ -18,7 +21,7 @@ void dg_block_drop(int k);
  * and with an area group (DG_SHARED) the shown set of every block of that group */
 void dg_floor(int k, int tri);
 /* DG_SEAM: block j's floor triangle tri (another map of the area group, just ahead) adds its groups to the next
- * dg_floor's shared mask; j < 0 clears it */
+ * dg_floor's shared mask (ORed with the floors added since the last clear); j < 0 clears it */
 void dg_seam(int j, int tri);
 /* the area group of instance k (dg.bin; 0 = none: k follows only its own floor) */
 int dg_area(int k);
@@ -46,5 +49,15 @@ int dg_mask_shown(int k, int mask);
  * share a group with the collision part under the player, or no part's groups are known yet (the far panorama,
  * mapblock.c mp_draw_far: pieces of blocks that are not loaded) */
 int dg_groups_shown(const unsigned m[4]);
+/* FNV-1a of what decides drawing and characters' activity (every instance's part in effect and shown pieces, the
+ * shared and streaming masks): frame.c's trace records it, so a recording shows the draw-group state frame by frame */
+unsigned dg_state_hash(void);
+/* Once a frame (map.c map_set_player, after dg_tick and the streamer's update): the collision part under the player's
+ * feet sets the shown draw groups (dg_floor; DG_SEAM: another map of the area group ahead or in view adds its part's;
+ * the blocks outside the floor's group follow their own floor). Returns the map instance of the floor (-1: no floor,
+ * or one in no instance) and its hit in *hit (map.c: the fog follows the same part). */
+int dg_player(V3 feet, ColHit *hit);
+/* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
+int dg_same_map(int j, int k);
 
 #endif

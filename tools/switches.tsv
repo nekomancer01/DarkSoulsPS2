@@ -1,0 +1,340 @@
+# Build-time switch registry (tools/ci/switches.py checks it, CI job "hygiene"). Engine switches are in
+# ps2/proto/src/switches.h; this file holds the rest: scope make = a variable of ps2/proto/Makefile (a ?= default, or one
+# the recipe reads but never sets); scope env = an environment variable a tool in tools/ reads.
+# Columns (tab-separated): name, scope, default, kind, owner, off, pr, where, what
+#   kind   flag (0 / 1), tune (a number), debug (logs, checks, dumps), opt (unset unless given), config (paths, tool
+#          and job settings, not a code path)
+#   owner  the Polaris module the switch belongs to (tools/ci/switches.py OWNERS)
+#   off    the value that selects the other / old path; - = none
+#   pr     the PR that added it: #N, init (first public release), c:<commit> (a direct commit), or new until the
+#          adding PR has a number
+# A new make variable or environment read needs a row here; "python3 -I tools/ci/switches.py --tsv" prints the whole
+# registry (engine and build-time) as one table.
+name	scope	default	kind	owner	off	pr	where	what
+ALIGNCHECK	make	unset	debug	core	1	#108	Makefile	-
+BLOCK	make	empty	config	tools	-	init	Makefile:23	World block (src/world.c, tools/area.py BLOCKS): `make MAP=<msb> BLOCK=<block> blockpacks` exports a cropped part of an MSB like an area into gen/<BLOCK>/ and data/<BLOCK>.pak; the exporters read AREA
+BUILD	make	unset	config	tools	-	init	Makefile	-
+BUMP_BAKE	make	1	flag	gfx	0	#165	Makefile:321	BUMP_BAKE (default 1): normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba); bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: th
+CHR_BONES	make	255	tune	scene	-	#107	Makefile:89	CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette wind
+COL_TILES	make	1	flag	world	0	#157	Makefile:317	COL_TILES (the cube-grid plan's step 1, default 1): world blocks read their collision.bin's index with the lite set and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structu
+DEFS	make	unset	config	tools	-	init	Makefile	-
+DISC_CACHE	make	1	flag	io	0	#144	Makefile:105	-
+DSR_ROOT	make	unset	config	tools	-	init	Makefile	-
+EE_CC	make	unset	config	tools	-	init	Makefile	-
+EE_DBGINFOFLAGS	make	unset	config	tools	-	init	Makefile	-
+EE_LINKFILE	make	unset	config	tools	-	init	Makefile	-
+EE_OPTFLAGS	make	unset	config	tools	-	init	Makefile	-
+EE_STRIP	make	unset	config	tools	-	init	Makefile	-
+ENEMIES	make	computed	config	game	-	init	Makefile:158	-
+EXTRA_LDFLAGS	make	unset	config	tools	-	init	Makefile	-
+FARPANO	make	1	flag	world	0	#206	Makefile:354	The far panorama (tools/farpano.py, src/world.c): the other blocks of the block's area as a coarse coloured mesh of what is seen of them from this block, drawn while they are not loaded; with it the b
+GAME	make	unset	config	tools	-	init	Makefile	-
+GPROF	make	unset	debug	core	1	init	Makefile	-
+GSKIT	make	unset	config	tools	-	init	Makefile	-
+HEAPMAP	make	unset	debug	core	1	#203	Makefile	-
+ISO_SYMS	make	unset	config	io	-	init	Makefile	-
+JOBS	make	computed	config	tools	-	#15	Makefile:8	Parallel by default: a plain make runs JOBS recipes side by side (default: every core); make -jN or JOBS=N overrides it. RAM stays within tools/q's make reservation: the only big exporter is export_ma
+MAP	make	m10_02_00_00	config	tools	-	init	Makefile:19	Area to build and load. Firelink (the default) builds proto.elf from $(BUILD)/gen/*.bin and $(BUILD)/data/*.pak; any other area (make MAP=m10_01_00_00) keeps its own outputs: gen/<MAP>/ (area bins, en
+MATHFLAGS	make	-fno-math-errno	config	tools	-	#94	Makefile:84	Float math (refactor target 3, 2026-11-05): the game code does no double arithmetic (tools/ci/compile.sh fails on any), and sqrtf is already an inline sqrt.s. -fno-math-errno lets gcc treat sinf/cosf/
+MEDIA	make	auto	config	io	-	#144	Makefile:101	Disc (budget doc proposals 2 and 4, 2026-11-08): the streaming budgets follow the media in the drive (dsrsnd reads the disc type at its first cdrom0: open: the DVD-9 column on a DVD, the CD column on 
+PANO	make	1	flag	world	0	#206	Makefile:344	The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline
+PROFILE	make	unset	debug	core	1	init	Makefile	-
+PS2SDK	make	unset	config	tools	-	init	Makefile	-
+PVS	make	1	flag	world	0	#116	Makefile:93	Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no 
+PVS_ARGS	make	empty	config	world	-	#116	Makefile:605	-
+PVS_CFLAGS	make	-O3 -march=native -ffp-contract=off	config	world	-	#129	Makefile:608	-march=native: the bake runs where it is built; its raster rows vectorise (AVX2: ~2.5x). -ffp-contract=off keeps every float operation as written, so pvs.bin is the same bytes whatever the CPU (PVS_CF
+PVS_GPU	make	1	flag	world	0	#211	Makefile:614	GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL: NVIDIA, or Mesa for AMD / Intel, 2026-11-15): built in when the EGL / GL headers and libraries are there; at run time pvs_bake uses it when
+PVS_GPU_PER_CELL	make	32	tune	world	-	#211	Makefile:616	-
+PVS_GPU_RES	make	192	tune	world	-	#211	Makefile:615	-
+PVS_PEERS	make	computed	config	world	-	#116	Makefile:200	Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexpor
+PVS_RES	make	96	tune	world	-	#211	Makefile:604	bake resolution (cube face pixels): 96 since 2026-11-15, the check (--validate) still renders at 192. On Asylum and Burg b the 192 px bake and this one miss the same share of pixels (0.0085 % / 0 %) f
+PVS_VALIDATE	make	300	debug	world	1	#116	Makefile:600	-
+WORLD_BUDGET_ARGS	make	--strict	config	world	-	#142	Makefile:645	World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at
+WORLD_EARLY_BAKES	make	1	flag	world	0	#246	Makefile:217	The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 m
+WORLD_J	make	empty	config	world	-	#9	Makefile:197	WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB).
+WORLD_LITE_DIET	make	1	flag	world	0	#147	Makefile:311	world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every c
+WORLD_MIP1_OUT	make	computed	config	world	-	#147	Makefile:312	-
+WORLD_SEAM_BUNDLE	make	1	flag	world	0	#255	Makefile:279	The pack's entries (pack.py order = disc order). LITE_RUN (WORLD_SEAM_BUNDLE, default 1; world block packs): the entries src/world.c reads to turn a block on come first, in its read order (collision i
+WORLD_TEX_SHARED	make	1	flag	world	0	#162	Makefile:332	Shared textures (the cube-grid plan): the other blocks of this MSB in the world (PVS_PEERS whose directory is a block of $(MAP)); textures two or more of them have go to maptex.bin, read once per map 
+ALIGN	env	1	flag	io	0	init	pack.py	-
+ANIM_BUDGET	env	0.25	tune	game	-	#19	export_objects.py	MB per area / block
+ANIM_LOD	env	0	flag	game	1	#19	export_objects.py	-
+ANIM_OBJ	env	unset	config	world	-	#19	export_emevd.py mapcfg.py	-
+ANIM_SKIP	env	o1460	tune	game	-	#19	export_objects.py	-
+ANIM_TEX_H	env	16	tune	game	-	#19	export_objects.py	texture height (width 128; VRAM: 2 KB each at 16)
+AREA_BLOCK	env	unset	config	world	-	init	area.py export_collision.py export_map.py export_world.py worldlinks.py	-
+AREA_DG_FIELD	env	draw_groups	config	world	-	init	area.py	-
+AREA_DRAW_FROM	env	unset	config	world	-	init	area.py	experiment: only what DSR shows from these collision parts (comma list)
+AREA_MAP_RADIUS	env	unset	config	world	-	init	area.py export_collision.py	-
+AREA_RADIUS	env	unset	config	world	-	init	area.py export_collision.py	-
+AREA_SPAWN	env	unset	config	world	-	init	area.py export_collision.py	-
+BACKDROP	env	1	flag	world	0	init	mapsimp.py	far-only cells as the backdrop (render-distance pick A2); BACKDROP=0: old cut
+BACKDROP_EPS	env	(3 / 568) ** 2	tune	world	-	#21	mapcfg.py	-
+BACKDROP_SIDE	env	0	flag	world	1	init	mapsimp.py	0: no back-face pruning (A/B); 1 / -1: front = n.(s-p) > 0 / < 0
+BG_BLEND	env	1	flag	world	0	#242	mapgather.py	-
+BUDGET	env	90000	tune	world	-	init	mapcfg.py	-
+BUILD	env	os.path.join(ROOT, "build")	config	tools	-	init	test-smoke.py	-
+BUMP	env	0" if BAKE else "1	tune	world	-	init	export_normal.py	-
+BUMP_BAKE	env	1	flag	world	0	#165	export_normal.py	-
+BUMP_BAKE_K	env	1.0	tune	world	-	#165	export_normal.py	relief strength (1 = the measured mean)
+BUMP_CAP	env	0	flag	world	1	init	export_normal.py	-
+BUMP_K	env	48	tune	world	-	init	export_normal.py	lighting clusters = CLUTs, one per chunk
+BUMP_MAX	env	128	tune	world	-	init	export_normal.py	px, largest normal-map side (VRAM pool / RAM)
+BUMP_MIN_GROUP	env	18	tune	world	-	init	export_normal.py	-
+BUMP_SPLIT	env	1	flag	world	0	init	export_normal.py	-
+CAM_DEBUG	env	unset	debug	tools	1	init	dsr-ref-cam.py	-
+CANOPY_H	env	2.5	tune	world	-	init	mapchunks.py	metres above the walkable ground: foliage up there is canopy / ivy
+CC	env	cc	config	world	-	init	geom_native.py horizon.py mapx_native.py simplify_native.py	-
+CELL	env	2	tune	world	-	init	export_collision.py	-
+CHUNK_GRID	env	32.0	tune	world	-	init	mapcfg.py	metres: triangles are grouped by the grid cell of their centroid
+CHUNK_STATS	env	unset	debug	world	1	#170	mapchunks.py	debugging: per chunk a line "texture flags tris P PS PC PSC nv bytes" (distinct
+COL_TILE	env	16	tune	world	-	#157	export_collision.py	-
+COL_TILES	env	1	flag	world	0	#157	world_budget.py	world.c / coltile.c (Makefile COL_TILES)
+COL_V1	env	unset	opt	world	-	#138	export_collision.py	DCOL v2 (write_v2), the default; COL_V1=1: the old layout
+CUT_CELLS	env	1	flag	world	0	#156	mapsimp.py	-
+CUT_MIN	env	4.0	tune	world	-	#156	mapsimp.py	-
+CXX	env	c++	config	world	-	#135	horizon.py	-
+DARKSCRIPT3	env	unset	config	game	-	init	emevd.py	-
+DG_GROUPS	env	1	flag	world	0	#131	drawgroups.py	-
+DISTROBOX_HOST_HOME	env	os.path.expanduser('~')	config	tools	-	init	dsr_rdc.py	-
+DRAW_GROUPS	env	1	flag	world	0	init	mapcfg.py	-
+DSR_ALLOW_UNSUPPORTED	env	unset	config	tools	-	init	verify_game.py	-
+DSR_AUDIO_JOBS	env	unset	config	snd	-	#85	export_audio.py	-
+DSR_CACHE	env	unset	config	world	-	#9	export_audio.py pvs_cache.py simplify_pool.py texmap.py warmstate.py	-
+DSR_GAME	env	unset	config	tools	-	init	gamepath.py test-smoke.py	-
+DSR_HANG_STATE	env	unset	config	tools	-	#141	test-run.py	a savestate of the hang (slot 9) for tools/hangstate.py
+DSR_MEMWATCH_TREES	env	-	config	tools	-	#4	memwatch.py	-
+DSR_PVS_SPOOL	env	unset	config	world	-	#211	pvs_cache.py	-
+DSR_Q_BUDGET	env	20	config	tools	-	init	qstat.py	-
+DSR_REF	env	os.path.join(os.environ.get('DISTROBOX_HOST_HOME', os.path.e	config	tools	-	init	dsr_rdc.py	-
+DSR_TUI_ROOT	env	os.getcwd()	config	tools	-	#173	buildtui.py	-
+EDGE_2SIDED	env	1	flag	world	0	#243	mapgather.py	two-sided cut-out light (gather, below)
+EPS	env	unset	opt	world	-	init	mapcfg.py	-
+EPS_FAR	env	(6 / 568) ** 2	tune	world	-	init	mapcfg.py	-
+EPS_MAX	env	(24 / 568) ** 2	tune	world	-	init	mapcfg.py	-
+EVENT_PARTS	env	1	flag	world	0	#16	mapchunks.py	-
+EXPORT_GC	env	unset	opt	world	-	#41	export_map.py	-
+EXPORT_WORLD_JOBS	env	0	config	world	-	#246	export_world.py	-
+FARPANO	env	1	flag	world	0	#206	farpano.py	-
+FAR_D	env	46.0	tune	world	-	#204	farpano.py	metres: nearest distance the collapse's error is judged from
+FAR_DEG	env	0.75	tune	world	-	#206	farpano.py	-
+FAR_DEG_MAX	env	3.0	tune	world	-	#206	farpano.py	-
+FAR_EL	env	45.0	tune	world	-	#206	farpano.py	degrees above and below the horizontal
+FAR_FAR	env	800.0	tune	world	-	#206	farpano.py	metres: nothing beyond
+FAR_JUMP	env	1.5	tune	world	-	#206	farpano.py	depth ratio between neighbouring cells that still share a corner
+FAR_KB	env	192	tune	world	-	#156	farpano.py	-
+FAR_LOD	env	1	flag	world	0	init	mapcfg.py	map pieces beyond STREAM_FAR of the navmesh: lowest game LOD (A/B: 0)
+FAR_LOG	env	unset	debug	world	1	#206	farpano.py	-
+FAR_NEAR	env	24.0	tune	world	-	#206	farpano.py	nor nearer (ASSUMED: a block that is off is a 32 m cell away at least)
+FAR_OBJ	env	1	flag	world	0	init	mapcfg.py	-
+FAR_PANO_SET	env	1	flag	world	0	#249	farpano.py	-
+FAR_PX	env	8.0	tune	world	-	#204	farpano.py	the collapse's screen error (about one cell)
+FAR_SETS	env	3	tune	world	-	#206	farpano.py	draw-group meshes per peer at most
+FAR_STANDIN	env	6.0	tune	world	-	#206	farpano.py	-
+FOL_IVY	env	1.0	tune	world	-	init	mapcfg.py	-
+FOL_XZ	env	1.0	tune	world	-	init	mapcfg.py	kept foliage tufts widened (see thin_foliage)
+FOL_Y	env	1.0	tune	world	-	init	mapcfg.py	-
+FX_ADD_CAP	env	1.0	tune	fx	-	#52	export_effects.py	-
+FX_EVENT_SFX	env	1	flag	fx	0	#16	export_effects.py	MSB SFX with an entity id (event-owned) included
+FX_EXPOSURE	env	1.0	tune	fx	-	init	export_effects.py	-
+FX_LIGHTS	env	1	flag	world	0	init	mapgather.py	-
+FX_LIGHTS_FILE	env	unset	config	world	-	#30	mapgather.py	-
+FX_LOD_ONE	env	1	flag	fx	0	#136	export_effects.py	-
+FX_ORIENT	env	1	flag	fx	0	#248	export_effects.py	Orientation 2 quads fixed in the effect frame: system()
+FX_OVERLAP	env	1.0	tune	fx	-	#52	export_effects.py	-
+FX_TEX_MAX	env	128	tune	fx	-	init	export_effects.py	px, longest side of an exported effect texture (VRAM)
+FX_WALL_ALPHA	env	1	flag	fx	0	#248	export_effects.py	BlendMode 1 (light / fog walls) alpha blended: system()
+GAME_LOD	env	unset	opt	world	-	init	mapcfg.py	-
+GEOM_NATIVE	env	1	flag	world	0	#41	geom_native.py	-
+GITHUB_REPOSITORY	env	unset	config	tools	-	#35	pages/build.py	-
+GITHUB_SHA	env	unset	config	tools	-	#35	pages/build.py	-
+GRASS_D0	env	10.0	tune	world	-	init	mapchunks.py	-
+GRASS_KEEP	env	16	tune	world	-	init	mapcfg.py	-
+GRASS_NEAR_D	env	22.0	tune	world	-	init	mapchunks.py	metres: full exported foliage density up to here, then (D0 / d)^2 (map.c)
+HAVOK_NP	env	1	config	world	-	#64	havok_collision.py	numpy for the vertices (the same values); 0: the per-vertex code
+HZN	env	1	flag	world	0	#122	horizon.py	-
+HZN_BD_KB	env	480	tune	world	-	#133	horizon.py	-
+HZN_CROWN_H	env	4.0	tune	world	-	#204	horizon.py	-
+HZN_CROWN_OWN	env	0	flag	world	1	#249	horizon.py	-
+HZN_CROWN_R	env	8.0	tune	world	-	#204	horizon.py	-
+HZN_CW	env	4.0	tune	world	-	#135	horizon.py	-
+HZN_D	env	46.0	tune	world	-	#122	horizon.py	(54 before map.c HZN_R went 56 -> 40, Burg plan B3) # metres: nearest view distance the error is judged from
+HZN_DG	env	1	flag	world	0	#132	horizon.py	-
+HZN_ERR_Q	env	0.99	tune	world	-	#135	horizon.py	-
+HZN_IDX	env	1	flag	world	0	#133	horizon.py	-
+HZN_KB	env	960	tune	world	-	#122	horizon.py	-
+HZN_NATIVE	env	1	flag	world	0	#129	horizon.py	-
+HZN_PANO	env	1	flag	world	0	#135	horizon.py pano.py	(the Makefile's PANO switch: 0 = no picture layers, all horizon)
+HZN_PANO_D	env	100.0	tune	world	-	#206	horizon.py	-
+HZN_PANO_SHOWN	env	0.5	tune	world	-	#206	horizon.py	-
+HZN_PX	env	12.0	tune	world	-	#122	horizon.py	(8 before the coarse level took the near geometry, 2026-11-12: the denser source grew the Burg horizons 1.5 -> 1.95 MB)
+HZN_PX_MAX	env	32.0	tune	world	-	#122	horizon.py	the budget never pushes the error past this (ASSUMED)
+HZN_SIMP	env	auto	tune	world	-	#135	horizon.py	-
+HZN_SRC_CELL	env	1	flag	world	0	#249	horizon.py	_place by source cell (0: by centroid, as before)
+HZN_ST	env	0	flag	world	1	#122	horizon.py	write the (zero) st stream too (A/B)
+HZN_TEX_MEAN	env	1.0	tune	world	-	#204	horizon.py	-
+HZN_VIS	env	1	flag	world	0	#135	horizon.py	-
+HZN_VIS_DIRS	env	64	tune	world	-	#135	horizon.py	-
+HZN_VIS_N	env	96	tune	world	-	#135	horizon.py	navmesh eye points at most
+HZN_WELD	env	0.35	tune	world	-	#122	horizon.py	metres: the finest clustering grid (ASSUMED)
+HZN_WELD_FR	env	0.25	tune	world	-	#135	horizon.py	weld grid / error grid (ASSUMED: closes cracks under 1/4 the error)
+INDEXED	env	1	flag	world	0	#124	mapcfg.py mapchunks.py	-
+ISO_LAYER0_MB	env	unset	opt	io	-	#144	iso9660.py	-
+ISO_LAYERS	env	unset	opt	io	-	#144	iso9660.py	-
+ISO_MEDIA	env	dvd	tune	io	-	#144	iso9660.py	-
+KEEP_D	env	0.5	tune	world	-	init	mapcfg.py	-
+KEEP_MODELS	env	o0200	tune	world	-	init	mapcfg.py	-
+KEEP_R	env	2.0	tune	world	-	init	mapcfg.py	-
+LOD_REPORT	env	unset	debug	world	1	init	export_map.py	per mesh: source / near / coarse triangles, size, navmesh distance (debugging)
+MAP	env	m10_02_00_00 / default	config	world	-	init	world_budget.py	(gen: the boot block)
+MAPX	env	1	flag	world	0	#63	mapx_native.py	-
+MAPX_CHECK	env	unset	debug	world	1	#63	export_normal.py	debugging: every C stage of the relief also run in numpy, compared
+MAPX_TEST_LIBM_LOG	env	1	debug	world	-	#63	mapx/test_mapx.py	numpy AVX-512 log differs from libm by an ulp
+MAPX_THREADS	env	unset	config	world	-	#63	mapx/common.c	-
+MAP_VBONE	env	1	flag	world	0	#205	mapcfg.py	-
+MEMWATCH_LOW_GB	env	1	config	tools	-	#9	memwatch.py	-
+MEMWATCH_PSI_CALM	env	5	config	tools	-	#14	memwatch.py	resume paused jobs below this (and no disk swap-in)
+MEMWATCH_PSI_KILL	env	30	config	tools	-	#14	memwatch.py	kill the largest job at this full avg10
+MEMWATCH_PSI_PAUSE	env	10	config	tools	-	#14	memwatch.py	pause the largest job at this full avg10 ...
+MEMWATCH_SWAPIN_MB	env	20	config	tools	-	#14	memwatch.py	... or this disk swap-in rate (B/s)
+MEMWATCH_SWAP_FREE_PCT	env	20	config	tools	-	#14	memwatch.py	-
+MIP1_OUT	env	1	flag	world	0	#147	mapsplit.py	-
+MULTI_WALLS	env	0	flag	game	1	#156	export_emevd.py	-
+MX_TIME	env	unset	debug	world	1	#207	mapx/common.c mapx/simpmesh.c	-
+NAVWALLS	env	unset	opt	world	-	#123	export_collision.py	-
+NEAR	env	4.0	tune	world	-	init	mapcfg.py	-
+NEAR_CUBE	env	1	flag	world	0	#142	mapcells.py world_budget.py	export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
+OBJ_BLOCK_MB	env	1.3	tune	world	-	#186	area.py	-
+OBJ_CUTOUT	env	1	flag	game	0	#243	export_objects.py	cut-out materials keep their alpha (obj_texture)
+OBJ_LOD	env	auto	tune	game	-	#242	export_objects.py	-
+OBJ_LOD_FAR	env	0.15	tune	game	-	#242	export_objects.py	-
+OBJ_LOD_FAR_BROKEN	env	0.3	tune	game	-	#242	export_objects.py	-
+OBJ_LOD_TOL	env	0.04	tune	game	-	#242	export_objects.py	-
+OBJ_LOD_TOL_BROKEN	env	0.06	tune	game	-	#242	export_objects.py	-
+OBJ_TEX_H	env	64	tune	game	-	#186	export_objects.py	-
+OBJ_TEX_SHARED	env	1	flag	game	0	#186	export_objects.py	-
+OBJ_TRIS	env	160	tune	game	-	#186	export_objects.py	-
+OBJ_TRI_ERR	env	0.02	tune	game	-	#186	export_objects.py	-
+PANO_C	env	unset	opt	world	-	init	mapsimp.py	-
+PANO_LAYERS	env	2	tune	world	-	#206	pano.py	depth layers at most
+PANO_ONLY	env	unset	opt	world	-	init	mapsimp.py	-
+PANO_R	env	0	flag	world	1	init	mapsimp.py	-
+PANO_SPLIT	env	1.4	tune	world	-	#206	pano.py	depth ratio between two layers at least
+PANO_W	env	1024	tune	world	-	#135	pano.py	texels round the cylinder (0.35 degrees each, ~3 screen pixels)
+PARAMDEX	env	unset	config	game	-	init	params.py	-
+PCSX2_GS	env	-	config	tools	-	#49	test-pcsx2-ini.py	-
+PINE	env	DEFAULT_SLOT	config	tools	-	init	pine.py	-
+POSE_OBJ	env	1	flag	world	0	init	mapcfg.py	-
+PVS	env	1	flag	world	0	#116	mapcfg.py	0: chunks ignore draw groups, dg.bin shows everything (A/B)
+PVS_BLIST	env	unset	opt	world	-	#246	pvs_bake.c	-
+PVS_CACHE	env	unset	opt	world	-	#129	pvs_cache.py	-
+PVS_GPU	env	unset	opt	world	-	#211	pvs_bake.c	-
+PVS_GPU_CONSERVATIVE	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_GPU_INSTANCED	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_GPU_JOBS	env	2	config	world	-	#211	pvs_gpu_server.py	bakes at once (each one's draw lists use every core)
+PVS_GPU_LAYERED	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_GPU_SOFTWARE	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_PRETEST	env	unset	opt	world	-	#129	pvs_bake.c	-
+PVS_SIMD	env	unset	opt	world	-	#211	pvs_bake.c	-
+RDC_IN	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
+RDC_OUT	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
+SHADOWS	env	1	flag	world	0	init	mapcfg.py	bake sun shadows (dsr_light.ShadowMap)
+SHADOW_AMB	env	0.8 * 0.75	tune	world	-	init	mapcfg.py	-
+SIMPLIFY_AREA_GUARD	env	0.5	tune	world	-	#256	mapcfg.py	-
+SIMPLIFY_AREA_PIECES	env	unset	opt	world	-	#256	mapsimp.py	-
+SIMPLIFY_CACHE	env	unset	opt	world	-	#9	mapx/test_mapx.py mapx/test_simplify_golden.py simplify_pool.py	-
+SIMPLIFY_CACHE_GB	env	10	config	world	-	#9	simplify_pool.py	-
+SIMPLIFY_ENV_FAR	env	1.0	tune	world	-	#174	mapcfg.py	-
+SIMPLIFY_ENV_NEAR	env	0.25	tune	world	-	#174	mapcfg.py	-
+SIMPLIFY_ENV_STRICT	env	1	flag	world	0	#174	mapcfg.py	-
+SIMPLIFY_FLIP_DEG	env	90.0	tune	world	-	#188	mapcfg.py	-
+SIMPLIFY_GUARD	env	1	flag	world	0	#188	mapcfg.py	-
+SIMPLIFY_NATIVE	env	-	tune	world	-	#9	mapsimp.py simplify_pool.py	-
+SIMPLIFY_PLACE	env	1	flag	world	0	#240	mapcfg.py	-
+SIMPLIFY_PROCS	env	16	config	world	-	init	mapx/test_mapx.py simplify_pool.py	-
+SIMPLIFY_QMIN	env	0.0	tune	world	-	#188	mapcfg.py	-
+SIMPLIFY_REFIT	env	1	flag	world	0	#170	mapcfg.py	-
+SIMPLIFY_SEAM_PX	env	6.0	tune	world	-	#240	mapcfg.py	-
+SIMPLIFY_SHAPE_K_FAR	env	1.0	tune	world	-	#240	mapcfg.py	-
+SIMPLIFY_SHAPE_K_NEAR	env	1.0	tune	world	-	#240	mapcfg.py	-
+SIMPLIFY_VALIDATE	env	1	debug	world	-	#188	mapcfg.py	-
+SIMPLIFY_VALIDATE_TOL	env	0	debug	world	-	#188	mapcfg.py	metres; 0: the level's envelope (else 0.25)
+SIMP_DUMP	env	unset	debug	world	1	#124	mapsimp.py	debugging: the simplifier's whole input, to rerun / analyse it without the game
+SKY_ALP_BLEND	env	1	flag	world	0	#249	mapgather.py	sky alpha layers blended (gather)
+SMOKE_JOBS	env	2	config	tools	-	#9	test-smoke.py	-
+SND_CACHE	env	unset	opt	snd	-	#121	export_audio.py	-
+SOFT_PX	env	2.0	tune	world	-	#33	mapcfg.py	-
+SOFT_R_PX	env	4.0	tune	world	-	#33	mapcfg.py	footprint radius of the colour average, px (ASSUMED)
+SOULS_NP	env	1	config	game	-	#43	souls.py	-
+SOULS_THREADS	env	unset	config	game	-	#64	souls.py	-
+SPAWN_K	env	0.6	tune	world	-	init	mapcfg.py	-
+SPEC_ZR	env	3,10	tune	gfx	-	init	vu1/test_skinspec.py	character centre distance (m)
+SPIRV_CROSS	env	os.path.join(os.environ.get('DSR_REF', os.path.join(os.envir	config	tools	-	init	dsr_rdc.py	-
+STATIC_OBJ	env	unset	config	world	-	init	mapcfg.py	-
+STREAM	env	unset	opt	world	-	init	mapcfg.py	-
+STREAM_D	env	32.0	tune	world	-	init	mapcfg.py	-
+STREAM_FAR	env	78.0	tune	world	-	init	mapcfg.py	-
+ST_ALIGN	env	1	flag	world	0	#170	mapcfg.py	-
+TEX_CACHE	env	unset	opt	world	-	#41	texmap.py	-
+TEX_FORCE4	env	-	tune	world	-	init	texmap.py	-
+TEX_FORCE8	env	-	tune	world	-	init	texmap.py	-
+TEX_NEAR	env	-	tune	world	-	init	mapchunks.py	-
+TEX_PEERS	env	-	config	world	-	#162	mapsplit.py	-
+TEX_SHEET	env	unset	opt	world	-	init	texmap.py	the contact sheet needs encode's REPORT entries
+TMPDIR	env	/tmp	config	game	-	init	export_objects.py	-
+TRACE_ORDER	env	1	debug	world	-	#254	mapcells.py	-
+TURBO	env	/ 1	config	tools	-	#9	test-pcsx2-ini.py test-run.py	-
+VERT_ROWS	env	1	flag	world	0	#66	mapgather.py	FLVER attributes as souls.Rows
+WARM_CACHE	env	unset	config	tools	-	#161	test-run.py warmstate.py	-
+WARM_DAYS	env	2	config	tools	-	#161	warmstate.py	-
+WARM_KEEP	env	60	config	tools	-	#161	warmstate.py	-
+WB_SLICE	env	2048	tune	world	-	#246	world_budget.py	-
+WORLD_BUDGET_LINKS	env	1	flag	world	0	#156	world_budget.py	-
+WORLD_BUDGET_STRICT	env	m10_01_00_00_	tune	world	-	#156	world_budget.py	-
+WORLD_DG_LITE	env	1	flag	world	0	#209	world_budget.py	world.c WORLD_DG_LITE (default 1)
+WORLD_LINK_ALL	env	1	flag	world	0	#236	worldlinks.py	-
+WORLD_LITE_DIET	env	1	flag	world	0	#147	world_budget.py	world.c WORLD_LITE_DIET
+WORLD_REACH	env	1	flag	world	0	#253	export_world.py	-
+WORLD_REACH_MAX	env	64	tune	world	-	#253	worldreach.py	m of walking a reach entry goes out to (ASSUMED: ~10 s at
+WORLD_REACH_SAME	env	0	flag	world	1	#253	worldreach.py	-
+WORLD_REACH_STEP	env	4	tune	world	-	#253	worldreach.py	m per distance unit (rounded down: wanted a bit early)
+WORLD_STRUCT_WHOLE	env	2	tune	world	-	#147	world_budget.py	world.c WORLD_STRUCT_WHOLE
+WS_ALLOW_PX	env	72.0	tune	world	-	#156	mapcfg.py	-
+WS_B0	env	2560 / env.get("WS_B0", 2560)	tune	world	-	#114	mapcfg.py world_budget.py	-
+WS_B1	env	2048 / env.get("WS_B1", 2048)	tune	world	-	#114	mapcfg.py world_budget.py	-
+WS_BPT_KEPT	env	48	tune	world	-	#204	mapcfg.py	ASSUMED bytes per kept triangle (lists: 44-45 measured, WS_BPT; 36 left the Burg bonfire 0.2-0.3 MB over)
+WS_BUDGET	env	1	flag	world	0	#114	mapcfg.py	-
+WS_DROP	env	1	flag	world	0	#204	mapcfg.py	-
+WS_DROP_CAP	env	4.0	tune	world	-	#204	mapcfg.py	-
+WS_DROP_DIAG	env	8.0	debug	world	-	#204	mapcfg.py	-
+WS_DROP_FLUSH	env	0.1	tune	world	-	#204	mapcfg.py	-
+WS_DROP_GAP	env	0.1	tune	world	-	#204	mapcfg.py	-
+WS_DROP_PX	env	144.0	tune	world	-	#204	mapcfg.py	-
+WS_EXTENTS	env	1	flag	world	0	#142	mapcfg.py	-
+WS_FAR_DROP_K	env	4.0	tune	world	-	#204	mapcfg.py	-
+WS_FAR_KB	env	128	tune	world	-	#156	mapcfg.py	kept meshes (ASSUMED: ~p90 of the Burg's within 40 m)
+WS_FAR_PX	env	18.0	tune	world	-	#204	mapcfg.py	-
+WS_FAR_SHAPE	env	1	flag	world	0	#204	mapcfg.py	-
+WS_KEPT	env	1	flag	world	0	#204	mapcfg.py	-
+WS_KEPT_NEAR	env	0.5	tune	world	-	#204	mapcfg.py	ASSUMED share of it the near level gives up
+WS_LINKS	env	1	flag	world	0	#236	mapcfg.py	-
+WS_NEAR_KB	env	0	flag	world	1	#156	mapcfg.py	-
+WS_NEAR_R	env	residency.RES["RES_NEAR_R"]	tune	world	-	#156	mapcfg.py	-
+WS_OVER_PCT	env	residency.RES["RES_ALLOW_BLOCK_PCT"]	tune	world	-	#198	mapcfg.py	-
+WS_PIN_R	env	residency.RES["RES_PIN_R"]	tune	world	-	#156	mapcfg.py	-
+WS_PX0	env	12.0	tune	world	-	#114	mapcfg.py	-
+WS_PX1	env	24.0	tune	world	-	#114	mapcfg.py	-
+WS_ROOM	env	0	flag	world	1	#156	export_map.py mapcfg.py	-
+WS_SHARE_K	env	1.0	tune	world	-	#156	mapcfg.py	-
+WS_SHARE_TRIS	env	1	flag	world	0	#204	mapcfg.py	-
+WS_UNION	env	1	flag	world	0	#156	mapcfg.py	-
+XDG_RUNTIME_DIR	env	unset	config	tools	-	init	dsr-ref-cam.py	-
+LAB_CC	make	gcc -m32	config	tools	-	new	Makefile:726	the Lab's host compiler (Polaris 1.7b, ps2/proto/lab): 32-bit, the loaders keep pointers in 32-bit blob fields (TECH_DEBT core-1)
+LAB_CFLAGS	make	-std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0	config	tools	-	new	Makefile:727	the Lab's flags: SSE scalar float, no fast-math, no contraction (never x87); whole-area collision
+FAR_SEAM	env	1	flag	world	0	#252	farpano.py	seam sets: same-MSB peers rendered again from eyes near the seam (0: none)
+FAR_SEAM_BAND	env	24.0	tune	world	-	#252	farpano.py	metres: the ground seam eyes come from, nearest the peer
+FAR_SEAM_COVER	env	40.0	tune	world	-	#252	farpano.py	metres: every seam spot this close to an eye
+FAR_SEAM_DEG	env	1.5	tune	world	-	#252	farpano.py	degrees: the seam sets' cells
+FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' coarsest cells (they coarsen first when over FAR_KB)
+FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
+FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit

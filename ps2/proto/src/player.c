@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "player.h"
+#include "mem.h"
 #include "chrstat.h"
 #include "testscript.h"
 #include "progress.h"
@@ -172,7 +173,7 @@ void player_init(Player *p)
     if (!blob) {
         Pack pk;
         if (pack_open(&pk, PACK_ROOT "c0000.pak")) {
-            blob = pack_load(&pk, "esd.bin", 0);
+            blob = pack_load_static(&pk, "esd.bin", 0);  /* boot lifetime (src/mem.h) */
             pack_close(&pk);
         }
         esd_ok = esd_load(&esd_prog, blob);

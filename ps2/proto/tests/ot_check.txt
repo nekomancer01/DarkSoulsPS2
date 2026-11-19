@@ -1,0 +1,31 @@
+# Order table gate (Polaris 1.4, OT_HASH builds): frozen shots whose VIF1 stream and gsKit queue are hashed
+# ("othash:" lines). Firelink bonfire (VU1 particles), the Start menu over the HUD, the Burg's far walls past the
+# 50 m depth split (ZSPLIT: Firelink south, the Burg), and a spawn into the Parish seam shot at once (a block turning on, uploads in flight).
+option noenemies
+option nodemo
+option god
+option hud
+wait 3
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.1
+wait 4
+shot bonfire_fx
+pad start
+wait 1.5
+shot menu_bar
+pad circle
+wait 1.5
+spawn -40.0 -61.0 120.6 3.14
+cam 3.14 0.1
+wait 6
+shot firelink_far
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.4 0.14
+wait 6
+shot burg_far
+spawn 86.4 15.0 105.6 0
+cam 0.0 0.1
+shot parish_turn_on
+wait 6
+shot parish_settled
+end

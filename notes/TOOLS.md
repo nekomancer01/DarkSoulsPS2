@@ -89,6 +89,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
 | `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
+| `gs_budget.py` | GS memory (VRAM) budget per owner from `ps2/proto/src/gs_budget.h` (Polaris 1.1); `tools/ci/gsown.py` (CI hygiene) checks the rows sum to 4096 KB and that GS register words are written only through `src/gs.h` |
 | `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |
 | `heapdrift.py` | EE heap drift from an EE log: GC sawtooth or a real leak |
 | `soaklaps.py` | Cuts the Burg soak script to its first N laps |
@@ -98,7 +99,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
-| `ci/switches.py` | PR check: `ps2/proto/src/switches.h` lists every compile-time switch the sources test, and nothing else; `--list` prints the CI builds |
+| `ci/switches.py` | PR check: the switch registry matches the sources. `ps2/proto/src/switches.h` lists every compile-time switch the engine tests, `tools/switches.tsv` every Makefile variable and every environment variable the tools read, each with its owner module and the PR that added it, and nothing else; `--list` prints the CI builds, `--tsv` the whole registry as one table |
 | `ci/switches.sh` | PR check: one `-Werror` compile + link per fallback / debug build in `switches.h` (only the sources a switch reaches are rebuilt; ps2dev container, ~1.5 min) |
 
 ## Real hardware and profiling
@@ -118,6 +119,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `dsr-ref.sh` | Start, load, camera, savestates, screenshots |
 | `dsr-ref-cam.py` | Precise camera placement |
 | `mapshot.py` | Offline shots of exported map blocks at a spot or a test script's shots (levels as the runtime draws them), sheets next to reference shots and a build before the change: seconds per view, no PCSX2 |
+| `seam_audit.py` | Hole audit at every world seam (world.bin links): spots x yaws near each seam, depth renders of every block at full detail against the runtime's picks (blocks on at their levels, far panorama with seam sets, draw groups with DG_SEAM), steady and with the far block still loading; audit.json, a sheet of the worst views, exit 1 over --fail % steady holes |
 | `b9-dsr-shots.sh` | Reference shots matching `tests/iso_burg_looks.txt` |
 | `dsr_mem.py` | Read / write game memory (position, warp, HP) |
 | `dsr-ei.c` | Input injection |

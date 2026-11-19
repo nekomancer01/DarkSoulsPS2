@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "drb.h"
+#include "g2d.h"
 #include "hud.h"
 #include "items.h"
 #include "mapstream.h"
@@ -175,14 +176,14 @@ void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[1] = 0;
     p[2] = GIF_TAG(4, 0, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[3] = GIF_AD;
-    p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, vram / 256, tbw, psm);
-    p[5] = GS_BITBLTBUF;
-    p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0);
-    p[7] = GS_TRXPOS;
-    p[8] = GS_SETREG_TRXREG(w, h);
-    p[9] = GS_TRXREG;
-    p[10] = GS_SETREG_TRXDIR(0);
-    p[11] = GS_TRXDIR;
+    p[4] = gs_blt_to(vram / 256, tbw, psm);
+    p[5] = GSR_BITBLTBUF;
+    p[6] = GS_TRXPOS_0;
+    p[7] = GSR_TRXPOS;
+    p[8] = gs_trxreg(w, h);
+    p[9] = GSR_TRXREG;
+    p[10] = GS_TRXDIR_HOST;
+    p[11] = GSR_TRXDIR;
     p[12] = GIF_TAG(qw, 0, 0, 0, GSKIT_GIF_FLG_IMAGE, 0);
     p[13] = 0;
     p[14] = DMA_TAG(qw, 0, DMA_REF, 0, (u32)mem, 0);
@@ -192,7 +193,7 @@ void drb_tex_send(const void *mem, int w, int h, u32 vram, int psm, int tbw)
     p[18] = GIF_TAG(1, 1, 0, 0, GSKIT_GIF_FLG_PACKED, 1);
     p[19] = GIF_AD;
     p[20] = 0;
-    p[21] = GS_TEXFLUSH;
+    p[21] = GSR_TEXFLUSH;
     SyncDCache((void *)mem, (char *)mem + qw * 16 - 1);
     SyncDCache(up_chain, (char *)up_chain + sizeof up_chain - 1);
     *(volatile u32 *)0x1000A020 = 0;                         /* D2_QWC */
@@ -451,7 +452,7 @@ static void sprite(const DrbNode *n, float x0, float y0, float x1, float y1, int
     if (s < 0 || s >= (int)hdr->sprites)
         return;
     const ScrSprite *p = &sprites[s];
-    gsKit_prim_sprite_texture(hud_gs(), &atlas, R_HX(x0), y0, p->u + 0.5f, p->v + 0.5f, R_HX(x1), y1,
+    g2d_prim_sprite_texture(hud_gs(), &atlas, R_HX(x0), y0, p->u + 0.5f, p->v + 0.5f, R_HX(x1), y1,
                               p->u + p->w - 0.5f, p->v + p->h - 0.5f, DRB_Z,
                               rgba((n->r + 1) >> 1, (n->g + 1) >> 1, (n->b + 1) >> 1, n->a * a >> 7));  /* DRB tint */
 }
@@ -462,7 +463,7 @@ static void rect(const DrbNode *n, float x0, float y0, float x1, float y1, int a
     if (n->spr >= 0 && (u32)n->spr < hdr->grads)
         hud_gradient(x0, y0, x1 - x0, y1 - y0, tree + hdr->grad_off + 16 * n->spr, a);
     else
-        gsKit_prim_sprite(hud_gs(), R_HX(x0), y0, R_HX(x1), y1, DRB_Z, rgba(n->r, n->g, n->b, n->a * a >> 7));
+        g2d_prim_sprite(hud_gs(), R_HX(x0), y0, R_HX(x1), y1, DRB_Z, rgba(n->r, n->g, n->b, n->a * a >> 7));
 }
 
 void drb_draw_at(int node, float x, float y, float w, float h, int alpha)
@@ -656,7 +657,7 @@ int drb_icon(int icon, float x, float y, float w, float h, int alpha)
                 return 0;
             float u = (i % ICON_COLS) * icon_px, v = (i / ICON_COLS) * icon_px;
             sheet_t.VramClut = clut_vram + i * 1024;
-            gsKit_prim_sprite_texture(hud_gs(), &sheet_t, R_HX(x), y, u + 0.5f, v + 0.5f, R_HX(x + w), y + h,
+            g2d_prim_sprite_texture(hud_gs(), &sheet_t, R_HX(x), y, u + 0.5f, v + 0.5f, R_HX(x + w), y + h,
                                       u + icon_px - 0.5f, v + icon_px - 0.5f, DRB_Z, rgba(0x80, 0x80, 0x80, alpha));
             return 1;
         }

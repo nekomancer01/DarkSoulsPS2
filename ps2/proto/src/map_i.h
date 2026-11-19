@@ -281,8 +281,6 @@ extern float mp_fog_now[FOG_NOW];
 extern int mp_fog_area;
 extern const FogRow *mp_pfog_row;
 extern unsigned mp_pfog_rows;
-int map_inst_of(int col_block);
-int mp_inst_col_block(int k);
 const unsigned char *mp_res_base(const MapInst *m, unsigned j);
 void mp_fog_ease(float rate);
 void mp_hz_parse(MapInst *m);

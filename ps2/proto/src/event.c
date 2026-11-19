@@ -7,6 +7,8 @@
 #include <tamtypes.h>
 
 #include "bonfire.h"
+#include "frame.h"
+#include "ui_req.h"
 #include "collision.h"
 #include "drawgrp.h"
 #include "enemy.h"
@@ -977,6 +979,12 @@ static void skip(Inst *in, int n)
 }
 
 /* Runs one instance until it waits or ends (instruction budget per frame) */
+/* option fixeddt (frame.h frame_det_work): what a condition test and an executed instruction stand for in the
+ * instance budget (ASSUMED: a map's constructors, 300+ instances of ~20 instructions, took 12-20 ms; a frame of waiting
+ * instances ~0.2 ms for 466 at the Burg) */
+#define EV_DET_TEST_TICKS (295u / 2)  /* 0.5 us */
+#define EV_DET_INSTR_TICKS (2u * 295u)  /* 2 us */
+
 static void run(Inst *in)
 {
     Set *s = &sets[in->set];
@@ -998,6 +1006,7 @@ static void run(Inst *in)
             in->sfalse = 1;
             return;
         }
+        frame_det_work(EV_DET_TEST_TICKS);
         if (!eval_group(in, 0, 0))
             return;
         resolve(in);
@@ -1014,6 +1023,7 @@ static void run(Inst *in)
             finish(in, 0);
             return;
         }
+        frame_det_work(EV_DET_INSTR_TICKS);
         const EvInstr *ins = load_instr(in, ev->ioff + in->pcoff, in->pc, w);
         s32 *iw = (s32 *)w;
         int op = ins->op, k = in->pc;
@@ -1147,7 +1157,7 @@ static void run(Inst *in)
         case OP_AWARD_LOT: award_lot(iw[0]); break;
         case OP_SAVE_REQ: save_request(); break;
         case OP_BOSS_BAR: /* 2003[11] (on, entity, slot, NpcParam name id) */
-            hud_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
+            ui_req_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
             printf("EVT %u/%d boss bar %s %d (slot %d, name %d)\n", (unsigned)ev->id, (int)in->slot,
                    iw[0] ? "on" : "off", (int)iw[1], (int)iw[2], (int)iw[3]);
             break;
@@ -1585,7 +1595,7 @@ void event_update(Player *p, float dt)
 {
     if (!inst)
         return;
-    unsigned t0 = ticks();
+    unsigned t0 = ticks(), t0c = frame_budget_clock();
     pl = p, dtime = dt;
     act_used = 0;
     ev_frame++;
@@ -1604,7 +1614,7 @@ void event_update(Player *p, float dt)
         Inst *in = &inst[i];
         if (in->state != I_FREE && in->state != I_DONE && in->state != I_STOPPED)
             run(in);
-        if (n + 1 < ninst && ticks() - t0 > EV_BUDGET_US * 295u) {
+        if (n + 1 < ninst && frame_budget_clock() - t0c > EV_BUDGET_US * 295u) {  /* (by work with fixeddt: frame.h) */
             rr = (i + 1) % (n0 ? n0 : 1);
             event_stats.deferred++;
             break;

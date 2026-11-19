@@ -2,27 +2,20 @@
 #include <stdio.h>
 #include <string.h>
 #include "render.h"
+#include "g2d.h"
+#include "vu1.h"  /* ot_hash_gsq (OT_HASH builds) */
+#ifdef OT_HASH
+#include "gstrace.h"
+#endif
 #include <gsInline.h>
 #include <gif_tags.h>
 
-#define SCREEN_W ((float)R_SCREEN_W)
-#define SCREEN_H ((float)R_SCREEN_H)
-#define NEAR R_NEAR
-/* LockCamParam row 0: camFovY 43 degrees. W x 448 is shown 4:3, so a pixel is (W / 448) / (4 / 3) times wider than
- * tall: FOCAL_Y = 224 / tan(21.5 deg), FOCAL_X = FOCAL_Y * (W / 448) / (4 / 3) (609 at 640, 487.2 at 512). */
-#ifndef PANO_ZOOM
-#define PANO_ZOOM 1.0f  /* tools/pano.py capture builds only (-DPANO_ZOOM=2.0f): narrower view, more texels per degree */
-#endif
-#define FOCAL_Y (568.4f * PANO_ZOOM)
-#define FOCAL_X (609.0f * R_SCREEN_W / 640.0f * PANO_ZOOM)
-#define FOCAL FOCAL_X  /* guard-band tests use the larger one, which is the stricter limit on both axes */
-#define ZMAX 65535.0f  /* 16-bit Z (PSMZ16S, matching the CT16 colour buffer); larger = nearer, tested GEQUAL */
+#include "camera_i.h"  /* SCREEN_W / H, NEAR, FOCAL_X / Y, ZMAX, GUARD: shared with camera.c */
 
 static GSGLOBAL *gs;
 /* The floor is drawn first at the farthest depth, so nothing on it can lose the depth test against it: with real
  * depths, large near-clipped floor tiles intermittently hid the character's lower body. */
 static int flat_z;
-static V3 cam_eye, cam_right, cam_up, cam_fwd;
 static const V3 LIGHT = {0.4f, 0.8f, -0.45f};
 
 M3 m3_rot_y(float a) { float c = cosf(a), s = sinf(a); M3 r = {{c, 0, s, 0, 1, 0, -s, 0, c}}; return r; }
@@ -46,6 +39,39 @@ static const unsigned char BLK16[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 1
                                           {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
 
 static int vbit(int b) { return vfree[b >> 5] >> (b & 31) & 1; }
+
+#ifdef HEAPMAP
+#include "hitch.h"
+/* VRAM census (render.h): live r_vram_* allocations with their caller and label */
+#define VM_N 2048
+static struct { u32 addr; unsigned blocks, ra; char tag[24]; } vm[VM_N];
+static unsigned vm_lost;
+static void vm_add(u32 addr, unsigned blocks, void *ra)
+{
+    if (addr == GSKIT_ALLOC_ERROR)
+        return;
+    for (int i = 0; i < VM_N; i++)
+        if (!vm[i].blocks) {
+            vm[i].addr = addr, vm[i].blocks = blocks, vm[i].ra = (unsigned)ra;
+            memcpy(vm[i].tag, hm_tag, sizeof vm[i].tag);
+            return;
+        }
+    vm_lost++;
+}
+static void vm_del(u32 addr)
+{
+    for (int i = 0; i < VM_N; i++)
+        if (vm[i].blocks && vm[i].addr == addr) {
+            vm[i].blocks = 0;
+            return;
+        }
+}
+#define VM_ADD(a, n) vm_add(a, n, __builtin_return_address(0))
+#define VM_DEL(a) vm_del(a)
+#else
+#define VM_ADD(a, n) ((void)0)
+#define VM_DEL(a) ((void)0)
+#endif
 
 /* footprint of a w x h image in buffer width tbw (64-pixel units): block offsets from its base pointer */
 static int footprint(int w, int h, int psm, int tbw, unsigned short *out)
@@ -120,62 +146,67 @@ static void vram_release(u32 addr, const unsigned short *fp, int n)
             vfree[(base + fp[i]) >> 5] |= 1u << ((base + fp[i]) & 31), r_vram_used--, r_vram_holes++;
 }
 
-u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
+u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm, GsOwner o)
 {
-#ifdef V6_OFF  /* A/B measurement builds: gsKit's allocator as before */
-    return gsKit_vram_alloc(g, gsKit_texture_size(w, h, psm), GSKIT_ALLOC_USERBUFFER);
-#endif
     static unsigned short fp[4096];
     int tbw = tex_tbw(w, psm);
     r_vram_gskit += gsKit_texture_size(w, h, psm) / 256;
     if ((w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return GSKIT_ALLOC_ERROR;
-    return vram_place(g, fp, footprint(w, h, psm, tbw, fp));
+    int n = footprint(w, h, psm, tbw, fp);
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
+    return addr;
 }
 
-u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
+u32 r_vram_clut(GSGLOBAL *g, int clut_psm, GsOwner o)
 {
-#ifdef V6_OFF
-    return gsKit_vram_alloc(g, gsKit_texture_size(16, 16, clut_psm), GSKIT_ALLOC_USERBUFFER);
-#endif
     unsigned short fp[4];
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
-    return vram_place(g, fp, footprint(16, 16, clut_psm, 1, fp));  /* 256 entries, CSM1: 16 x 16 */
+    int n = footprint(16, 16, clut_psm, 1, fp);  /* 256 entries, CSM1: 16 x 16 */
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
+    return addr;
 }
 
-u32 r_vram_lin(GSGLOBAL *g, int n)
+u32 r_vram_lin(GSGLOBAL *g, int n, GsOwner o)
 {
     static unsigned short fp[1024];
     if (n <= 0 || n > (int)(sizeof fp / sizeof *fp))
         return GSKIT_ALLOC_ERROR;
     for (int i = 0; i < n; i++)
         fp[i] = i;
-    return vram_place(g, fp, n);
+    u32 addr = vram_place(g, fp, n);
+    VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
+    return addr;
 }
 
 void r_vram_free_tex(u32 addr, int w, int h, int psm)
 {
-#ifdef V6_OFF
-    return;
-#endif
     static unsigned short fp[4096];
     if (addr == GSKIT_ALLOC_ERROR || (w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return;
-    vram_release(addr, fp, footprint(w, h, psm, tex_tbw(w, psm), fp));
+    VM_DEL(addr);
+    int n = footprint(w, h, psm, tex_tbw(w, psm), fp);
+    gs_vram_credit(addr, n);
+    vram_release(addr, fp, n);
 }
 
 void r_vram_free_clut(u32 addr, int clut_psm)
 {
-#ifdef V6_OFF
-    return;
-#endif
     unsigned short fp[4];
     if (addr != GSKIT_ALLOC_ERROR)
-        vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
+        VM_DEL(addr), gs_vram_credit(addr, footprint(16, 16, clut_psm, 1, fp)),
+            vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
 }
 
 void r_vram_free_lin(u32 addr, int n)
 {
+    if (addr != GSKIT_ALLOC_ERROR)
+        VM_DEL(addr), gs_vram_credit(addr, n);
     for (int i = 0; addr != GSKIT_ALLOC_ERROR && i < n; i++) {
         unsigned short b = i;
         vram_release(addr + i * 256, &b, 1);
@@ -183,28 +214,6 @@ void r_vram_free_lin(u32 addr, int n)
 }
 
 int r_vram_avail(const GSGLOBAL *g) { return 4 * 1024 * 1024 - (int)g->CurrentPointer + r_vram_holes * 256; }
-
-void r_camera(V3 eye, V3 target)
-{
-    cam_eye = eye;
-    cam_fwd = v3norm(v3sub(target, eye));
-    cam_right = v3norm(v3cross(v3(0, 1, 0), cam_fwd));
-    cam_up = v3cross(cam_fwd, cam_right);
-}
-
-void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
-{
-    *eye = cam_eye, *right = cam_right, *up = cam_up, *fwd = cam_fwd;
-    *focal = FOCAL_X;
-    *focal_y = FOCAL_Y;
-    *zscale = ZMAX * NEAR;
-}
-
-static V3 to_view(V3 p)
-{
-    V3 d = v3sub(p, cam_eye);
-    return v3(v3dot(d, cam_right), v3dot(d, cam_up), v3dot(d, cam_fwd));
-}
 
 static void project(V3 v, float *sx, float *sy, int *sz)
 {
@@ -238,9 +247,9 @@ static void tri_view(V3 a, V3 b, V3 c, u64 col)
     for (int i = 0; i < n; i++)
         project(out[i], &x[i], &y[i], &z[i]);
     if (n >= 3)
-        gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], col, col, col);
+        g2d_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], col, col, col);
     if (n == 4)
-        gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[2], y[2], z[2], x[3], y[3], z[3], col, col, col);
+        g2d_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[2], y[2], z[2], x[3], y[3], z[3], col, col, col);
 }
 
 static u64 shade(V3 n, int r, int g, int b)
@@ -257,15 +266,17 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
     static const unsigned char face[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 4, 7, 3},
                                              {1, 2, 6, 5}, {3, 7, 6, 2}, {0, 1, 5, 4}};
     static const signed char fn[6][3] = {{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
-    V3 w[8], v[8];
+    V3 w[8], v[8], eye, rt, up, fw;
+    float fo, fy, zs;
+    r_camera_basis(&eye, &rt, &up, &fw, &fo, &fy, &zs);
     for (int i = 0; i < 8; i++) {
         V3 l = v3(c.x + h.x * corner[i][0], c.y + h.y * corner[i][1], c.z + h.z * corner[i][2]);
         w[i] = v3add(pos, m3_apply(rot, l));
-        v[i] = to_view(w[i]);
+        v[i] = r_view(w[i]);
     }
     for (int f = 0; f < 6; f++) {
         V3 n = m3_apply(rot, v3(fn[f][0], fn[f][1], fn[f][2]));
-        if (v3dot(n, v3sub(w[face[f][0]], cam_eye)) >= 0)
+        if (v3dot(n, v3sub(w[face[f][0]], eye)) >= 0)
             continue;  /* back face */
         u64 col = shade(n, r, g, b);
         tri_view(v[face[f][0]], v[face[f][1]], v[face[f][2]], col);
@@ -275,7 +286,7 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
 
 void r_line(V3 a, V3 b, int r, int g, int bl)
 {
-    V3 va = to_view(a), vb = to_view(b);
+    V3 va = r_view(a), vb = r_view(b);
     if (va.z < NEAR && vb.z < NEAR)
         return;
     if (va.z < NEAR)
@@ -286,14 +297,10 @@ void r_line(V3 a, V3 b, int r, int g, int bl)
     int z1, z2;
     project(va, &x1, &y1, &z1);
     project(vb, &x2, &y2, &z2);
-    gsKit_prim_line_3d(gs, x1, y1, z1, x2, y2, z2, GS_SETREG_RGBAQ(r, g, bl, 0x80, 0));
+    g2d_prim_line_3d(gs, x1, y1, z1, x2, y2, z2, GS_SETREG_RGBAQ(r, g, bl, 0x80, 0));
 }
 
 /* White plane with a light grid every `cell` metres, centred on the origin */
-#define GUARD R_GUARD
-
-V3 r_view(V3 p) { return to_view(p); }
-
 int r_point_inside(const V3 *v)
 {
     float lim = GUARD / FOCAL * v->z;
@@ -358,24 +365,26 @@ void r_set_fog(float a, float b, float fmin, float fmax, u32 rgb, u32 base_rgb)
 static void tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const float (*s)[3])
 {
     int nq = 1 + 6 + 1 + 3 * nv + 1 + 3;
-    u64 *p = gsKit_heap_alloc(gs, nq - 1, (nq - 1) * 16, GIF_AD);
+    u64 *p = g2d_raw(nq);  /* (Polaris 1.6: the 2D writer, src/g2d.h) */
+    if (!p)
+        return;
     u32 tw = 0, th = 0;
     while (t && (1u << tw) < t->Width)
         tw++;
     while (t && (1u << th) < t->Height)
         th++;
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
+    u64 zbuf = gs_zbuf(gs, 0);
     *p++ = GIF_SET_TAG(6, 0, 0, 0, 0, 1), *p++ = 0xE;
     if (t)
         *p++ = GS_SETREG_TEX0(t->Vram / 256, (t->Width + 127) / 128 * 2, t->PSM, tw, th, 1, 0, t->VramClut / 256,
-                              t->ClutPSM, 0, 0, 1), *p++ = 0x06;
+                              t->ClutPSM, 0, 0, 1), *p++ = GSR_TEX0;
     else
-        *p++ = GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), *p++ = 0x14;
-    *p++ = GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), *p++ = 0x14;
-    *p++ = mode & R_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), *p++ = 0x47;
-    *p++ = mode & R_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), *p++ = 0x42;
-    *p++ = mode & R_BLEND ? zbuf | (1ull << 32) : zbuf, *p++ = 0x4E;  /* ZMSK: blended triangles do not write Z */
-    *p++ = fog_col, *p++ = 0x3D;
+        *p++ = GS_TEX1_LINEAR, *p++ = GSR_TEX1;
+    *p++ = GS_TEX1_LINEAR, *p++ = GSR_TEX1;
+    *p++ = mode & R_BLEND ? GS_TEST_ZGE : GS_TEST_CUTOUT, *p++ = GSR_TEST;
+    *p++ = mode & R_ADD ? GS_ALPHA_ADD : GS_ALPHA_MIX, *p++ = GSR_ALPHA;
+    *p++ = mode & R_BLEND ? zbuf | (1ull << 32) : zbuf, *p++ = GSR_ZBUF;  /* ZMSK: blended triangles do not write Z */
+    *p++ = fog_col, *p++ = GSR_FOGCOL;
     int prim = (t ? 0x1B : 0x0B) | (mode & R_FOG ? 0x20 : 0) | (mode & R_BLEND ? 0x40 : 0);
     *p++ = GIF_SET_TAG(nv, 0, 1, prim, 0, 3), *p++ = 0x412;
     for (int i = 0; i < nv; i++) {
@@ -396,9 +405,9 @@ static void tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const fl
         *p++ = ((u64)(u32)s[i][2] << 4) | ((u64)((int)f << 4) << 32);
     }
     *p++ = GIF_SET_TAG(3, 1, 0, 0, 0, 1), *p++ = 0xE;
-    *p++ = gs->PrimAlpha, *p++ = 0x42;
-    *p++ = zbuf, *p++ = 0x4E;
-    *p++ = fog_base, *p++ = 0x3D;
+    *p++ = gs->PrimAlpha, *p++ = GSR_ALPHA;
+    *p++ = zbuf, *p++ = GSR_ZBUF;
+    *p++ = fog_base, *p++ = GSR_FOGCOL;
 }
 
 void r_tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const float (*s)[3])
@@ -450,26 +459,6 @@ void r_tri_clip(GSTEXTURE *t, const ClipVert *a, const ClipVert *b, const ClipVe
         tri_list(t, mode, nl, lv, (const float (*)[3])ls);
 }
 
-/* Bounding-sphere frustum test: one view transform and four plane distances per chunk */
-int r_box_classify(const float *mn, const float *mx)
-{
-    V3 c = v3((mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
-    float dx = mx[0] - c.x, dy = mx[1] - c.y, dz = mx[2] - c.z, r = sqrtf(dx * dx + dy * dy + dz * dz);
-    V3 v = to_view(c);
-    if (v.z < NEAR - r)
-        return 0;
-    /* side planes |x| = t z with t = tan(half fov) (+40 px margin); signed distance = (|x| - t z) / sqrt(1 + t^2) */
-    const float tx = (SCREEN_W / 2 + 40) / FOCAL_X, ty = (SCREEN_H / 2 + 40) / FOCAL_Y;
-    const float kx = 1.0f / sqrtf(1 + tx * tx), ky = 1.0f / sqrtf(1 + ty * ty);
-    if ((fabsf(v.x) - tx * v.z) * kx > r || (fabsf(v.y) - ty * v.z) * ky > r)
-        return 0;
-    /* VU1-safe: the whole sphere in front of the near plane and inside the guard band */
-    const float tg = GUARD / FOCAL, kg = 1.0f / sqrtf(1 + tg * tg);
-    if (v.z - r >= NEAR && (fabsf(v.x) - tg * v.z) * kg < -r && (fabsf(v.y) - tg * v.z) * kg < -r)
-        return 1;
-    return 2;
-}
-
 void r_ground(float size, float cell)
 {
     u64 white = GS_SETREG_RGBAQ(0xF0, 0xF0, 0xF0, 0x80, 0);
@@ -479,8 +468,8 @@ void r_ground(float size, float cell)
     for (int i = 0; i < n; i++)
         for (int j = 0; j < n; j++) {
             float x0 = -size + i * t, z0 = -size + j * t;
-            V3 a = to_view(v3(x0, 0, z0)), b = to_view(v3(x0 + t, 0, z0)), c = to_view(v3(x0 + t, 0, z0 + t)),
-               d = to_view(v3(x0, 0, z0 + t));
+            V3 a = r_view(v3(x0, 0, z0)), b = r_view(v3(x0 + t, 0, z0)), c = r_view(v3(x0 + t, 0, z0 + t)),
+               d = r_view(v3(x0, 0, z0 + t));
             tri_view(a, b, c, white);
             tri_view(a, c, d, white);
         }
@@ -493,7 +482,7 @@ void r_ground(float size, float cell)
 
 void r_rect(float x, float y, float w, float h, int r, int g, int b)
 {
-    gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, (int)ZMAX, GS_SETREG_RGBAQ(r, g, b, 0x80, 0));
+    g2d_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, (int)ZMAX, GS_SETREG_RGBAQ(r, g, b, 0x80, 0));
 }
 
 /* 3x5 pixel font: each glyph is 5 rows of 3 bits */
@@ -552,5 +541,42 @@ void r_queue_exec(GSGLOBAL *gs)
         if (n > R_GSQ_OS * 3 / 4)
             printf("TEST error: gsKit queue %u of %u bytes (R_GSQ_OS)\n", n, (unsigned)R_GSQ_OS);
     }
+#ifdef OT_HASH
+    ot_hash_gsq(q->pool[q->dbuf], n);
+    const void *t0 = q->pool[q->dbuf], *t1 = q->pool_cur;
+#endif
     gsKit_queue_exec(gs);
+#ifdef OT_HASH
+    gstrace_chain(t0, t1);  /* after the exec: gsKit fixed up its tags (Polaris 1.6 gate) */
+#endif
 }
+
+#ifdef HEAPMAP
+/* VRAM census (render.h) */
+void r_vram_census(void)
+{
+    static struct { unsigned ra, blocks, cnt; const char *tag; } c[128];
+    unsigned nc = 0, tot = 0;
+    for (int i = 0; i < VM_N; i++) {
+        if (!vm[i].blocks)
+            continue;
+        unsigned j;
+        for (j = 0; j < nc && (c[j].ra != vm[i].ra || strcmp(c[j].tag, vm[i].tag)); j++)
+            ;
+        if (j == nc) {
+            if (nc == 128)
+                continue;
+            c[nc].ra = vm[i].ra, c[nc].tag = vm[i].tag, c[nc].blocks = c[nc].cnt = 0, nc++;
+        }
+        c[j].blocks += vm[i].blocks, c[j].cnt++, tot += vm[i].blocks;
+    }
+    unsigned fixed = gs_vram_census_fixed();
+    unsigned fb = gsKit_texture_size(gs->Width, gs->Height, gs->PSM), zb = gsKit_texture_size(gs->Width, gs->Height, gs->PSMZ);
+    printf("vrammap: pointer %u KB, avail %d KB, r_vram live %u KB in %u pages (%u KB) holes %u KB lost %u; screen "
+           "buffers 0x%x 0x%x %u KB each, Z 0x%x %u KB; gsKit_vram_alloc calls %u KB\n", gs->CurrentPointer >> 10,
+           r_vram_avail(gs) >> 10, tot >> 2, r_vram_pages, r_vram_pages * 8, r_vram_holes >> 2, vm_lost,
+           gs->ScreenBuffer[0], gs->ScreenBuffer[1], fb >> 10, gs->ZBuffer, zb >> 10, fixed >> 10);
+    for (unsigned j = 0; j < nc; j++)
+        printf("vrammap: 0x%08x %u KB %u [%s]\n", c[j].ra, c[j].blocks >> 2, c[j].cnt, c[j].tag);
+}
+#endif

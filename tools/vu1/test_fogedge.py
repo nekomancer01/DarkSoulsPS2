@@ -15,7 +15,7 @@ def run(args, cull, a2):
     cyc = vu.run('VU1Map2_CodeStart')
     return vertices(vu.kicks), cyc
 
-def main(seeds=10, tris=54, a2=-20.0):
+def main(seeds=10, tris=tc.gen.CHUNK_TRIS, a2=-20.0):
     a, b, fmin, fmax = tc.FOG
     bad = tot = edged = 0
     c0 = c1 = 0

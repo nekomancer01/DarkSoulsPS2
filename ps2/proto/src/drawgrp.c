@@ -1,6 +1,11 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "drawgrp.h"
+#include "collision.h"
+#include "map.h"
+#include "render.h"
+#include "world.h"
 
 /* dg.bin layout: tools/drawgroups.py ('DGM1': no character section, 'DGM2': no switched entities) */
 #define DGM1 0x314D4744
@@ -127,8 +132,12 @@ int dg_init(const void *blob, unsigned chunks, unsigned col_tris)
 
 void dg_block_drop(int k)
 {
-    if (k > 0 && k < DG_INST)
+    /* the whole entry goes: its piece / collision / character / entity tables lie in the block's dg.bin, which world.c
+     * frees, and dg_floor / dg_tick (by n_chunks and area), dg_char and the entity lookups read them otherwise */
+    if (k > 0 && k < DG_INST) {
+        memset(&dg[k], 0, sizeof dg[k]);
         dg[k].cur = -1;
+    }
     shown_gen++;
 }
 
@@ -138,10 +147,14 @@ unsigned dg_gen(void) { return shown_gen + hidden_gen; }
 static unsigned seam_mask[4];
 void dg_seam(int j, int tri)
 {
-    memset(seam_mask, 0, sizeof seam_mask);
-    if (j < 0 || j >= DG_INST || !dg[j].n_chunks || (unsigned)tri >= dg[j].n_tris)
+    if (j < 0) {
+        memset(seam_mask, 0, sizeof seam_mask);
         return;
-    memcpy(seam_mask, dg[j].coll[dg[j].tri_dg[tri]], sizeof seam_mask);
+    }
+    if (j >= DG_INST || !dg[j].n_chunks || (unsigned)tri >= dg[j].n_tris)
+        return;
+    for (int w = 0; w < 4; w++)  /* (several floors ahead: map.c DG_SEAM_VIEW) */
+        seam_mask[w] |= dg[j].coll[dg[j].tri_dg[tri]][w];
 }
 
 void dg_floor(int k, int tri)
@@ -291,4 +304,111 @@ int dg_mask_shown(int k, int mask)
         return 1;
     const Dg *d = &dg[k];
     return d->cur == -1 || (unsigned)mask >= d->n_pieces || d->shown[mask];
+}
+
+unsigned dg_state_hash(void)
+{
+    unsigned h = 2166136261u;
+#define DG_H(p, n) for (unsigned i_ = 0; i_ < (unsigned)(n); i_++) h = (h ^ ((const unsigned char *)(p))[i_]) * 16777619u
+    for (int k = 0; k < DG_INST; k++) {
+        DG_H(&dg[k].cur, sizeof dg[k].cur);
+        DG_H(dg[k].shown, dg[k].n_pieces < sizeof dg[k].shown ? dg[k].n_pieces : sizeof dg[k].shown);
+    }
+    DG_H(sh_mask, sizeof sh_mask);
+    DG_H(&sh_area, sizeof sh_area);
+    DG_H(uni, sizeof uni);
+#undef DG_H
+    return h;
+}
+
+/* ---- the player's floor (moved out of map.c's map_set_player, Polaris 1.7c-4: which draw groups show decides
+ * which characters update, so the simulate side and the Lab run it; map.c keeps the fog that follows the same part) */
+#ifndef DG_SEAM
+#define DG_SEAM 1
+#endif
+#ifndef DG_SEAM_VIEW
+#define DG_SEAM_VIEW 1  /* the camera's view direction probed as well as the heading (below); 0 = the heading alone */
+#endif
+#ifndef DG_SEAM_HOLD
+#define DG_SEAM_HOLD 30  /* frames (1 s at 30 fps; ASSUMED: longer than a step's hit / miss flicker); 0 = no hold */
+#endif
+#define DG_SEAM_R 16.0f  /* m ahead (ASSUMED: the aqueduct's exit arch is 4-12 m ahead of its last Firelink floor) */
+/* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
+int dg_same_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return !a || !b || !strcmp(a, b);
+}
+
+
+int dg_player(V3 feet, ColHit *hit)
+{
+    ColHit h;
+    int k = -1;
+    if (col_floor(feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &h) && (k = map_inst_of(h.block)) >= 0) {
+        /* DG_SEAM (default on; -DDG_SEAM=0 = the floor's groups alone): within DG_SEAM_R metres ahead of the player,
+         * the floor of another map of the area group (its block loaded) adds its part's groups. DSR shows what the
+         * floor part's DrawGroups list; at the end of Firelink's aqueduct tunnel (part h0030B2, groups e0000000)
+         * that hid all but 9 of Burg west's 64 piece sets, and the tunnel's exit showed the sky (Ame's play report
+         * 2026-11-17 t167 / t170; with draw groups off the exit draws the Burg: ISO iso_tunnel_look). ASSUMED: the
+         * port's seams stream and fog differently from DSR's whole-map residency, so the far side is shown a few
+         * metres early */
+        dg_seam(-1, 0);
+        if (DG_SEAM && dg_area(k)) {
+            static V3 last;
+            float dx = feet.x - last.x, dz = feet.z - last.z, l = sqrtf(dx * dx + dz * dz);
+            static float hx, hz;
+            if (l > 0.01f && l < 2.0f)
+                hx = dx / l, hz = dz / l;  /* the heading (a warp keeps the last one) */
+            last = feet;
+            /* DG_SEAM_VIEW (default 1; 0 = the heading alone): the border groups of research idea 9. The camera's
+             * view direction is probed as well, so the far side shows while the player stands at a seam looking
+             * through it, or walks backwards out of it (the heading alone found nothing standing still) */
+            float dir[2][2] = {{hx, hz}, {0, 0}};
+            if (DG_SEAM_VIEW) {
+                V3 ey, rt, up, fw;
+                float fx, fy, zs;
+                r_camera_basis(&ey, &rt, &up, &fw, &fx, &fy, &zs);
+                float lv = sqrtf(fw.x * fw.x + fw.z * fw.z);
+                if (lv > 0.1f)
+                    dir[1][0] = fw.x / lv, dir[1][1] = fw.z / lv;
+            }
+            /* DG_SEAM_HOLD frames: a floor found ahead keeps adding its groups that long after the probe last hit
+             * it. Without it the shared mask flapped between e0000000 and e0000000|80000040 at the aqueduct's exit
+             * (Ame's playtest 2026-11-17 21:31, t 93.0-94.1: the probe's 4 m steps hit and missed the Burg floor's
+             * edge frame to frame) and the exit showed a white spot */
+            static int held_j[2] = {-1, -1}, held_tri[2];
+            static unsigned held_fr[2], seam_fr;
+            seam_fr++;
+            for (int d = 0; d < 2; d++) {
+                int found = 0;
+                for (float r = 4.0f; r <= DG_SEAM_R && !found && (dir[d][0] != 0 || dir[d][1] != 0); r += 4.0f)
+                    for (int j = 0; j < MAP_INST && !found; j++) {
+                        ColHit hj;
+                        int cb = mp_inst_col_block(j);
+                        if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !dg_same_map(j, k) &&
+                            col_floor_block(cb, feet.x + dir[d][0] * r, feet.z + dir[d][1] * r, feet.y + 3, feet.y - 6,
+                                            COL_SOLID, &hj))
+                            dg_seam(j, hj.tri), found = 1, held_j[d] = j, held_tri[d] = hj.tri, held_fr[d] = seam_fr;
+                    }
+                if (!found && held_j[d] >= 0 && seam_fr - held_fr[d] <= DG_SEAM_HOLD &&
+                    mp_inst_col_block(held_j[d]) >= 0 && dg_area(held_j[d]) == dg_area(k) && !dg_same_map(held_j[d], k))
+                    dg_seam(held_j[d], held_tri[d]);
+            }
+        }
+        dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (TECH_DEBT area-5) */
+    }
+    /* a block outside the area group of the floor's block (drawgrp.c DG_SHARED; every block without one) takes its
+     * draw groups from its own collision under the player: at a seam both blocks' collisions overlap (DSR's
+     * ConnectCollision pairs, e.g. the Asylum's crow ledge h0054B1 and Firelink), each map shows what its own part
+     * shows. Elsewhere such a block keeps the set of the last of its parts the player stood on (ASSUMED, TECH_DEBT
+     * world-4). The blocks of the floor's group all follow the floor's part (one mask, as DSR) */
+    for (int j = 0; j < MAP_INST; j++) {
+        ColHit hj;
+        if (j != k && mp_inst_col_block(j) >= 0 && (k < 0 || !dg_area(k) || dg_area(j) != dg_area(k)) &&
+            col_floor_block(mp_inst_col_block(j), feet.x, feet.z, feet.y + 0.5f, feet.y - 3, COL_SOLID, &hj))
+            dg_floor(j, hj.tri);
+    }
+    *hit = h;
+    return k;
 }

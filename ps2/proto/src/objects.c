@@ -165,7 +165,7 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
     if (!h[6])
         return 0;
     Model *tex = h[11] ? mdl_load(b + h[11]) : NULL;  /* the pack's shared textures (one bone, no triangles) */
-    if (tex && mdl_upload(tex, gs) < 0)
+    if (tex && mdl_upload(tex, gs, GSO_OBJ) < 0)
         printf("objects: block %d: animated object textures did not fit in VRAM\n", block);
     int map[MAX_ATYPES];
     for (unsigned k = 0; k < h[6] && k < MAX_ATYPES; k++) {
@@ -182,7 +182,7 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
         ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
         ty->model = mdl_load_tex(b + t[1], tex);
         int up = 0;  /* its textures went up: a failure after that gives the VRAM back (mdl_free keeps it) */
-        if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || !(up = mdl_upload(ty->model, gs) >= 0) ||
+        if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || !(up = mdl_upload(ty->model, gs, GSO_OBJ) >= 0) ||
             (compact && !mdl_compact(ty->model, t[2]))) {
             printf("objects: block %d: animated o%04d did not load\n", block, ty->id);
             if (up)
@@ -469,7 +469,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
     for (int k = 0; k < OBJ_BLOCKS; k++)
         blk_set[k] = -1;
     int set = h[1] >= 4 && h[14] ? tset_get((int)h[15], b + h[14]) : -1;  /* the boot blob stays: no strip */
-    if (set >= 0 && mdl_upload(tset[set].m, gs) < 0)
+    if (set >= 0 && mdl_upload(tset[set].m, gs, GSO_OBJ) < 0)
         printf("objects: breakable textures do not fit in VRAM\n");
     if (set >= 0)
         tset[set].refs = 1, blk_set[0] = set;
@@ -487,7 +487,7 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         ty->model = set >= 0 ? mdl_load_tex(b + t[1], tset[set].m) : mdl_load(b + t[1]);
         if (!ty->model || mdl_bones(ty->model) != ty->pieces + 1)
             continue;
-        if (set < 0 && mdl_upload(ty->model, gs) < 0)
+        if (set < 0 && mdl_upload(ty->model, gs, GSO_OBJ) < 0)
             continue;
         if (set >= 0)
             mdl_share_textures(ty->model, tset[set].m);
@@ -619,7 +619,7 @@ void objects_block_add(int block, const void *blob)
     int set = blk_set[block];
     /* v4: blob = the map's texture model (world.c reads only that tail); up unless another block of the map holds it */
     if (set >= 0 && !tset[set].refs++) {
-        if (!blob || mdl_upload_from(tset[set].m, blob, obj_gs) < 0)
+        if (!blob || mdl_upload_from(tset[set].m, blob, obj_gs, GSO_OBJ) < 0)
             printf("objects: block %d: breakable textures %s (VRAM free %d)\n", block,
                    blob ? "do not fit in VRAM" : "missing", r_vram_avail(obj_gs));
         tset_share(set);
@@ -627,7 +627,7 @@ void objects_block_add(int block, const void *blob)
     for (int k = 0; k < blk_ntm[block] && set < 0; k++) {  /* textures of its types no other block on holds */
         Type *ty = &types[blk_tm[block][k].type];
         if (!ty->tex_refs++ && (!blob || mdl_upload_from(ty->model, (const unsigned char *)blob + blk_tm[block][k].off,
-                                                          obj_gs) < 0))
+                                                          obj_gs, GSO_OBJ) < 0))
             printf("objects: block %d: o%04d textures %s (VRAM free %d)\n", block, ty->id,
                    blob ? "do not fit in VRAM" : "missing", r_vram_avail(obj_gs));
     }

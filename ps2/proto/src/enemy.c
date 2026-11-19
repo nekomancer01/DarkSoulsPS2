@@ -18,7 +18,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "hitch.h"  /* HM_TAG (make HEAPMAP=1 only) */
 #include "combat_data.h"
+#include "mem.h"
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
@@ -453,9 +455,12 @@ static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned siz
         return 0;
     }
     const ChrType *twin = tex_holder(t);  /* the same character from another world block's packs: same textures */
+    HM_TAG("enemy %.5s", t->name);  /* HEAPMAP: its textures in the VRAM census (render.c) */
+    int up = twin ? 0 : mdl_upload(m, gs, GSO_CHR);
+    HM_TAG0();
     if (twin) {
         mdl_share_textures(m, twin->model);
-    } else if (mdl_upload(m, gs) < 0) {
+    } else if (up < 0) {
         printf("enemy: %s: textures do not fit in VRAM (free %d)\n", t->name, r_vram_avail(gs));
         mdl_free(m), FREE_MB();
         return 0;
@@ -969,8 +974,8 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     void *eb = NULL, *lb = NULL;
     unsigned lsize = 0;
     if (pack_open(&pk, PACK_ROOT CHR_DIR "common.pak")) {
-        eb = pack_load(&pk, "esd.bin", 0);
-        lb = pack_load(&pk, "ai.lua0", &lsize);  /* aiCommon.luabnd (tools/lua50.py --pack) */
+        eb = pack_load_static(&pk, "esd.bin", 0);  /* boot lifetime (src/mem.h) */
+        lb = pack_load_temp(&pk, "ai.lua0", &lsize);  /* aiCommon.luabnd (tools/lua50.py --pack) */
     }
     pack_close(&pk);
     esd_ok = esd_load(&esd_prog, eb);
@@ -978,7 +983,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     ai_los = sight_line;
     ai_scripts(lb, (int)lsize, map_lua, map_lua_size);
 #endif
-    free(lb);  /* the VM keeps its own copy of the code */
+    mem_release(lb);  /* the VM keeps its own copy of the code */
     unsigned count = *(const unsigned *)(b + 4);
     for (unsigned i = 0; i < count && nenemies < MAX_ENEMIES; i++) {
         const unsigned char *r = b + 8 + ENEMY_REC * i;
@@ -1216,6 +1221,31 @@ void enemy_block_remove(int block)
            enemy_ram_free() >> 10);
 }
 
+/* a type the player is near enough to load that is neither in nor loading, with room for it */
+int (*enemy_load_gate)(const char *key);
+
+/* a type's name in traces and enemy_load_gate: "c2540@" + its pack directory (same-name types of two blocks differ) */
+static const char *type_key(const ChrType *t)
+{
+    static char k[48];
+    snprintf(k, sizeof k, "%.8s@%s", t->name, t->dir ? t->dir : "");
+    return k;
+}
+
+static int wants_load(const ChrType *t)
+{
+    if (enemy_load_gate)  /* a replay: resident exactly while the recording had it (enemy.h) */
+        return !t->loaded && t != job_t && enemy_load_gate(type_key(t));
+    return !t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
+           /* + pages the streamer borrowed: they go back when the load needs them (mapstream_heap_release) */
+           enemy_ram_free() + (mapstream_stats.lent_kb << 10) >= STREAM_RAM_FLOOR + 2 * t->model_raw;
+}
+
+static int wants_unload(const ChrType *t)
+{
+    return t->loaded && (enemy_load_gate ? !enemy_load_gate(type_key(t)) : t->near_d > UNLOAD_DIST);
+}
+
 /* Load the types whose placements came within LOAD_DIST, one at a time in the background, the nearest first (also
  * on the first frame: loaded there at once, the 8 Firelink types kept the ISO's boot loading screen up 10.5 s longer);
  * free the ones beyond UNLOAD_DIST. A placement whose type is not in yet is not active: no AI, no combat body, not
@@ -1239,19 +1269,50 @@ static void stream_types(const Player *pl)
     ChrType *next = NULL;
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
-        if (t->loaded && t->near_d > UNLOAD_DIST) {
+        if (wants_unload(t)) {
             unload_model(t);
             printf("enemy: %.5s unloaded, RAM free %uK, VRAM free %d\n", t->name, enemy_ram_free() >> 10,
                    r_vram_avail(gsg));
-        } else if (!t->loaded && t->near_d < LOAD_DIST && t != job_t && frame >= t->retry &&
-                   /* + pages the streamer borrowed: they go back when the load needs them (mapstream_heap_release) */
-                   enemy_ram_free() + (mapstream_stats.lent_kb << 10) >= STREAM_RAM_FLOOR + 2 * t->model_raw &&
-                   (!next || t->near_d < next->near_d)) {
+        } else if (wants_load(t) && (!next || t->near_d < next->near_d)) {
             next = t;
         }
     }
     if (next && !job_t)
         job_begin(next);
+}
+
+int enemy_trace_lines(char *buf, int cap, unsigned frame)
+{
+    int n = 0;
+    for (int i = 0; i < nenemies && n < cap - 160; i++) {
+        const Enemy *e = &enemies[i];
+        if (!e->ct->loaded)
+            continue;
+        n += snprintf(buf + n, cap - n, "%u %d %.4f %.4f %.4f %.4f %d/%d %d %d %d %d %d %.1f %.1f\n", frame, e->entity, e->pos.x,
+                      e->pos.y, e->pos.z, e->yaw, e->esd.prog && e->esd.prog->ngroups > 0 ? e->esd.cur[0] : -1,
+                      e->esd.prog && e->esd.prog->ngroups > 1 ? e->esd.cur[1] : -1, e->ai.state, e->act, e->cc.hp, e->om.level,
+                      dg_mask_shown(e->block, e->dg), e->home.x, e->home.z);
+    }
+    return n;
+}
+
+int enemy_trace_types(char *buf, int cap, unsigned frame)
+{
+    int n = snprintf(buf, cap, "%u T", frame);
+    for (int i = 0; i < ntypes && n < cap - 48; i++)
+        if (types[i].loaded)
+            n += snprintf(buf + n, cap - n, " %s", type_key(&types[i]));
+    return n + snprintf(buf + n, cap - n, "\n");
+}
+
+int enemy_stream_settled(void)
+{
+    if (job_t)
+        return 0;
+    for (int i = 0; i < ntypes; i++)
+        if (wants_load(&types[i]))
+            return 0;
+    return 1;
 }
 
 /* ---- update ---- */

@@ -4,12 +4,13 @@
 #define MODEL_H
 
 #include "render.h"
+#include "vu1_layout.h"
 
 #define MAX_BONES 64       /* pose arrays of the single-model users (player, NPC stand-ins, objects: <= 61 bones) */
 #ifndef MDL_MAX_BONES     /* the largest model (Makefile: from CHR_BONES; <= 255, u8 vertex bone ids) */
 #define MDL_MAX_BONES 255
 #endif
-#define MDL_WIN_BONES 61   /* bones one VU1 palette window holds (vu1.c skin layout) */
+#define MDL_WIN_BONES VU1L_BONE_MAX  /* bones one VU1 palette window holds (vu1_layout.h bone window) */
 
 typedef struct { float q[4], t[3]; } BoneLocal;
 typedef struct Model Model;
@@ -27,7 +28,7 @@ Model *mdl_load_tex(const void *blob, const Model *tex);
 Model *mdl_load_begin(const void *blob);
 int mdl_load_step(Model *m, unsigned budget);
 /* Upload the textures; returns free VRAM bytes afterwards, or -1 if they did not fit */
-int mdl_upload(Model *m, GSGLOBAL *gs);
+int mdl_upload(Model *m, GSGLOBAL *gs, GsOwner o);  /* VRAM charged to owner o (gs.h) */
 int mdl_bones(const Model *m);
 /* Parent bone of each bone (-1 = a root), in skeleton order: parents come first */
 const short *mdl_parents(const Model *m);
@@ -35,7 +36,7 @@ const short *mdl_parents(const Model *m);
  * blob_size bytes, anims last as export_chr.py writes them) can be freed; 0 if out of memory */
 int mdl_compact(Model *m, unsigned blob_size);
 /* mdl_upload for a compacted model (mdl_compact): its textures from blob, the model.bin it was loaded from */
-int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs);
+int mdl_upload_from(Model *m, const void *blob, GSGLOBAL *gs, GsOwner o);
 /* Give the model's VRAM textures back (render.c r_vram_free_*, between frames) once nothing draws them: ntex = 0 */
 void mdl_free_textures(Model *m);
 /* Free a model (streams, mdl_compact block); its VRAM textures stay allocated */

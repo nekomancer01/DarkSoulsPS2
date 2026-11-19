@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mapcfg
+from vu1layout import L as VU1L  # the VU1 memory contract (tools/vu1/layout.py, Polaris 1.5)
 import mapgather
 
 
@@ -26,7 +27,7 @@ def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
     8 qwords), then a fourth code qword {NOP x 2, STCYCL 1,1, UNPACK V4-8 unsigned ntri -> TOPS+8+3 nv} and the
     triangle stream (u8 x4 per triangle). +64 bytes per chunk.
     Returns (bytes, [pos, st, col offsets in it])."""
-    n, a = (nv, MAPI_HDR) if nv else (3 * ntri, 7)
+    n, a = (nv, MAPI_HDR) if nv else (3 * ntri, VU1L.MAP_HDR)
     assert 0 < n < 256, n
     codes = ((0, 0, 0x01000103, 0x69008000 | a | n << 16), (0, 0, 0, 0x6500C000 | (a + 1) | n << 16),
              (0, 0, 0, 0x6E00C000 | (a + 2) | n << 16))
@@ -49,8 +50,8 @@ def chunk_streams(ntri, pos, st, col, nv=0, idx=None):
 # other indexed PS2 renderers. Undead Burg west: 1.61 distinct corners per triangle, 45 -> ~28 bytes per triangle.
 # INDEXED=0: lists as before (A/B)
 INDEXED = os.environ.get("INDEXED", "1") == "1"
-MAPI_HDR, MAPI_IN_QW = 8, 493  # tools/vu1/gen.py MAPI_HDR, MAP_IN_QW
-CLIPI_MAX = 336  # tools/vu1/gen.py CLIPI_MAX: the most an indexed batch may take to be clipped on VU1 (vu1clip's indexed
+MAPI_HDR, MAPI_IN_QW = VU1L.MAPI_HDR, VU1L.MAP_IN_QW
+CLIPI_MAX = VU1L.CLIPI_MAX  # the most an indexed batch may take to be clipped on VU1 (vu1clip's indexed
                  # entry); bigger ones would be split on the EE near the camera (~1 ms a frame at the crossing), so they
                  # stay unindexed (little sharing anyway: about 2 vertices per triangle)
 

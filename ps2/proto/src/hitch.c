@@ -5,9 +5,16 @@
 #include <string.h>
 #include <unistd.h>
 #include "hitch.h"
+#include "mem.h"
+#include "frame.h"
+#include "ot.h"
+#include "g2d.h"
 #include "mapstream.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
+#ifdef HEAPMAP
+#include "render.h"  /* r_vram_census */
+#endif
 
 #define HITCH_PERIOD_S 10.0f
 #define TPMS 294912u  /* EE ticks per ms */
@@ -239,6 +246,8 @@ static void hm_dump(void)
 void __wrap_free(void *p)  /* (wrapped for the HEAPMAP census only) */
 {
     HM_DEL(p);
+    if (p)
+        mem_count(1, __builtin_return_address(0));
     __real_free(p);
 }
 void *__wrap_malloc(size_t n)
@@ -246,6 +255,7 @@ void *__wrap_malloc(size_t n)
     void *p = __real_malloc(n);
     if (!p && n)
         alloc_failed("malloc", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n);
     return p;
 }
@@ -254,6 +264,7 @@ void *__wrap_calloc(size_t n, size_t s)
     void *p = __real_calloc(n, s);
     if (!p && n && s)
         alloc_failed("calloc", n * s, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n * s);
     return p;
 }
@@ -262,6 +273,7 @@ void *__wrap_realloc(void *q, size_t n)
     void *p = __real_realloc(q, n);
     if (!p && n)
         alloc_failed("realloc", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     if (p || !n)
         HM_DEL(q);
     HM_ADD(p, n);
@@ -272,6 +284,7 @@ void *__wrap_memalign(size_t a, size_t n)
     void *p = __real_memalign(a, n);
     if (!p && n)
         alloc_failed("memalign", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n);
     return p;
 }
@@ -375,9 +388,14 @@ void hitch_frame(float dt_real)
     printf("\n");
 #ifdef HEAPMAP
     hm_dump();
+    r_vram_census();  /* render.c */
 #endif
     stream_line();
     disc_line(per_s, n_load > 0);
+    mem_log();  /* regions and heap use per state (src/mem.h) */
+    frame_log();  /* out-of-phase calls (src/frame.h) */
+    ot_log();  /* the order table (src/ot.h) */
+    g2d_log();  /* the 2D writer (src/g2d.h) */
     per_s = 0;
     spikes = spikes_cut = af_n = af_kb = 0;
     n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;
