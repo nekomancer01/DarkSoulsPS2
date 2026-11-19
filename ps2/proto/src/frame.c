@@ -19,6 +19,7 @@
 #include "model.h"
 #include "map.h"
 #include "chrlight.h"
+#include "shadow.h"
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
@@ -441,6 +442,7 @@ static void phase_emit(Frame *f)
         frame_draw_check(FE_CHR_DRAW);
         player_draw(pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
         enemy_draw();      /* same path, one bone palette per enemy */
+        shadow_draw();     /* blob shadows of the characters just drawn (shadow.c, blended after them) */
 #endif
         ot_close();
         ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */

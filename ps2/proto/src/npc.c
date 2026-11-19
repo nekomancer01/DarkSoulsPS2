@@ -7,6 +7,7 @@
 #include "ev_chr.h"
 #include "model.h"
 #include "npc.h"
+#include "shadow.h"
 #include "render.h"
 #include "vu1.h"
 
@@ -149,6 +150,7 @@ void npc_draw(void)
     vu1_skin_fade(255);
     for (int k = 0; k < np; k++) {
         model_draw(pose, npcs[pick[k]].pos, npcs[pick[k]].yaw, 0);
+        shadow_add(npcs[pick[k]].pos, NPC_RADIUS, 1);  /* blob shadow (shadow.c) */
         npc_drawn++;
     }
 }
