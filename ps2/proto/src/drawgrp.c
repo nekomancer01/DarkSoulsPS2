@@ -127,8 +127,12 @@ int dg_init(const void *blob, unsigned chunks, unsigned col_tris)
 
 void dg_block_drop(int k)
 {
-    if (k > 0 && k < DG_INST)
+    /* the whole entry goes: its piece / collision / character / entity tables lie in the block's dg.bin, which world.c
+     * frees, and dg_floor / dg_tick (by n_chunks and area), dg_char and the entity lookups read them otherwise */
+    if (k > 0 && k < DG_INST) {
+        memset(&dg[k], 0, sizeof dg[k]);
         dg[k].cur = -1;
+    }
     shown_gen++;
 }
 
