@@ -338,3 +338,4 @@ FAR_SEAM_DEG	env	1.5	tune	world	-	#252	farpano.py	degrees: the seam sets' cells
 FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' coarsest cells (they coarsen first when over FAR_KB)
 FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
 FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit
+TEX_AUTHORED_MIPS	env	1	flag	world	0	new	texmap.py	every map level (mip 0-3) from the DDS authored levels on level 0's palette; 0 = resample + box filter

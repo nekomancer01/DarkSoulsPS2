@@ -820,13 +820,15 @@ def gather(game, map_id):
                 ti = tex_index[name, blend]
             elif name and name in dds:
                 if (name, blend) not in tex_index:
-                    dec = souls.dds_decode_rgba(dds[name], mapcfg.TEX_MAX)
+                    levels = souls.dds_decode_rgba_levels(dds[name], mapcfg.TEX_MAX, 4)
+                    dec, chain = (levels[0], levels[1:]) if levels else (None, None)
                     if dec and export_normal.BAKE and not blend and m.get("bump") in dds and export_normal.bumped(m["mtd"]):
                         baked = export_normal.bake_rgba(*dec, dds[m["bump"]])  # the relief in the texels (BUMP_BAKE)
                         dec = (dec[0], dec[1], baked) if baked is not None else dec
+                        chain = None if baked is not None else chain  # the authored levels have no relief: box filter
                     if dec:
                         tex_index[name, blend] = len(textures)
-                        textures.append(texmap.encode(*dec, soft=blend, name=name))
+                        textures.append(texmap.encode(*dec, soft=blend, name=name, chain=chain))
                         if not blend:
                             mapchunks.near_level(textures[-1], dds[name], name)
                 ti = tex_index.get((name, blend), -1)

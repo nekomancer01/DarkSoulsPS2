@@ -357,6 +357,7 @@ def main():
     print(f"{map_id}: {n_meshes} meshes -> {len(chunks)} chunks, {n_tris} tris, {texmap.stats(textures)}, "
           f"navmesh {len(nav_v)} verts / {len(nav_t)} tris, spawn {spawn['pos']}, "
           f"{len(header) + len(blob)} bytes, {time.time() - t_start:.1f} s (simplify {t1 - t0:.1f} s)")
+    print(f"{map_id}: " + texmap.mip_err_report(textures))
     print("area rows (fog, light, tone, tone correct, point light, probe, dof): " + ", ".join(
         f"{k} (fog {v['fogBeginZ']}..{v['fogEndZ']} m {v['degRotW']}% rgb {maplight.fog_rgb(v, gain[k])}, char amb "
         f"{[round(128 * x) for x in ch[0]]} sun {[round(128 * x) for x in ch[1]]}, player light {ch[3][1]} "
