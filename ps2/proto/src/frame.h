@@ -56,16 +56,26 @@ void frame_log(void);
  *   option seed N       rand() seeded with N (the loading screen's hint pick too)
  *   option record NAME  each frame's input after the pad and test layers (+ dt, frame number, camera) to
  *                       host:save/NAME (build/save/), its simulate state (position, yaw, state) to NAME.state
- * With fixeddt, frame_clock() runs on frames (frames x dt, and it stops while a test shot is frozen), so the work cut
- * by a real-time budget (lua0's collector step, event.c's instance runs) is cut by the same rule every run, the map's
- * player-light blend steps by frames, and effects and HUD smoothing hold still on frozen frames. What depends on the
+ * With fixeddt, frame_clock() runs on frames (frames x dt, and it stops while a test shot is frozen): the map's
+ * player-light blend steps by frames, and effects and HUD smoothing hold still on frozen frames. The work a real-time
+ * budget cuts (lua0's collector step, event.c's instance runs) reads frame_budget_clock() instead, which with fixeddt
+ * counts work: each read inside a frame adds FRAME_DET_READ_US, so the budgets still cut in (the deferred-event and
+ * partial-sweep paths of real play are taken) and cut at the same point every run. What depends on the
  * disc (a block or an enemy model arriving) stays as non-deterministic as the drive: record traces at spots where
  * everything needed is resident, after a settle wait. */
 extern float frame_det_dt;       /* 0: off */
-extern unsigned frame_det_seed;  /* 0: off */
+extern unsigned frame_det_seed;  /* the seed when frame_det_seeded */
+extern int frame_det_seeded;     /* option seed N given (N may be 0) */
 void frame_det_record(const char *path);
 /* the simulation clock in EE ticks: ticks() normally, frames x fixeddt with fixeddt */
 unsigned frame_clock(void);
+/* the clock a per-frame work budget reads (elapsed = two reads apart): ticks() normally; with fixeddt the frame's
+ * clock plus FRAME_DET_READ_US per read so far this frame (deterministic work units) */
+#ifndef FRAME_DET_READ_US
+#define FRAME_DET_READ_US 40  /* ASSUMED: about one EMEVD instance run or 64 collector sweeps on the EE (a map's
+                               * constructors: 300+ runs in 12-20 ms) */
+#endif
+unsigned frame_budget_clock(void);
 
 /* What main.c hands the loop: the boot's results and its platform helpers */
 typedef struct {
