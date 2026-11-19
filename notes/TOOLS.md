@@ -90,6 +90,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pose_check.py` | Offline reference pose for the character |
 | `golden.py` | Golden routes (Polaris 0.3): `record` runs the six short ISO routes `ps2/proto/tests/golden_*.txt` (Asylum, Firelink, Burg west, Burg bonfire, Taurus tower / bridge, Parish seam) with GS dumps into `build/golden/base/`; `compare` runs them again into `build/golden/new/` and reports per route the GS dump replay diff (test-gsdump.py), frame p50 / p90 / max and streamer refusals vs the base (`--gate`: exit code = routes over the noise thresholds). Reported, not gating, in `tools/ci/pcsx2-smoke.sh` |
 | `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
+| `gs_budget.py` | GS memory (VRAM) budget per owner from `ps2/proto/src/gs_budget.h` (Polaris 1.1); `tools/ci/gsown.py` (CI hygiene) checks the rows sum to 4096 KB and that GS register words are written only through `src/gs.h` |
 | `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |
 | `heapdrift.py` | EE heap drift from an EE log: GC sawtooth or a real leak |
 | `soaklaps.py` | Cuts the Burg soak script to its first N laps |
@@ -119,6 +120,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `dsr-ref.sh` | Start, load, camera, savestates, screenshots |
 | `dsr-ref-cam.py` | Precise camera placement |
 | `mapshot.py` | Offline shots of exported map blocks at a spot or a test script's shots (levels as the runtime draws them), sheets next to reference shots and a build before the change: seconds per view, no PCSX2 |
+| `seam_audit.py` | Hole audit at every world seam (world.bin links): spots x yaws near each seam, depth renders of every block at full detail against the runtime's picks (blocks on at their levels, far panorama with seam sets, draw groups with DG_SEAM), steady and with the far block still loading; audit.json, a sheet of the worst views, exit 1 over --fail % steady holes |
 | `b9-dsr-shots.sh` | Reference shots matching `tests/iso_burg_looks.txt` |
 | `dsr_mem.py` | Read / write game memory (position, warp, HP) |
 | `dsr-ei.c` | Input injection |

@@ -278,5 +278,6 @@ SIMPLIFY_VALIDATE_TOL = float(os.environ.get("SIMPLIFY_VALIDATE_TOL", 0))  # met
 # a level's surviving wedges take the area-weighted mean colour of the source wedges that collapsed into them
 # (tools/mapx/simpmesh.c mx_simp_refit), per level, so the near and the coarse level each get their own colours
 SIMPLIFY_REFIT = os.environ.get("SIMPLIFY_REFIT", "1") == "1"
-CHUNK_TRIS = 54  # per VU1 batch: 7 header qwords + 3 qwords per vertex = 493 qw, the VU buffer (OFFSET 493): the limit
+from vu1layout import L as _VU1L  # noqa: E402 (tools/vu1/layout.py: the VU1 memory contract, Polaris 1.5)
+CHUNK_TRIS = _VU1L.CHUNK_TRIS  # per VU1 batch: 7 header qwords + 3 qwords per vertex = 493 qw, the VU buffer (OFFSET 493): the limit
 CHUNK_GRID = float(os.environ.get("CHUNK_GRID", 32.0))  # metres: triangles are grouped by the grid cell of their centroid

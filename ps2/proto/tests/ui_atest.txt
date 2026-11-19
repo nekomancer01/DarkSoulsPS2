@@ -1,0 +1,17 @@
+# UI_ATEST before / after (Polaris 1.6b): the HUD over the Burg's far walls (the far depth of field's range), then the
+# Start menu over the same view. Run once with make DEFS=-DUI_ATEST=0 and once without; compare the shots.
+option hud
+option nodemo
+option god
+option noenemies
+wait 3
+pad select
+wait 1
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.4 0.14
+wait 6
+shot hud_far
+pad start
+wait 1.5
+shot menu_far
+end

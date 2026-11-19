@@ -1,5 +1,6 @@
 """vu1skinclip.vsm vs a Python reference (skinning as vu1skin2 + near / guard-band clipping + fan + cull)."""
 import math, random, sys
+import gen
 from vuemu import VU1, U, F, vertices
 import test_skin as ts, gen
 
@@ -9,7 +10,7 @@ PLANES = [(0, 0, 1, -NEAR), (-1, 0, G / FOC, 0), (1, 0, G / FOC, 0), (0, -1, G /
 
 def setup(vu, tris, rng, flat, cull, zrange):
     ts.setup(vu, 1, tris, rng, flat, cull, zrange=zrange)   # palette, constants (new style), vertices
-    top = 252
+    top = gen.SKIN_IN
     tint = [F(vu.mem[top + 1][k]) for k in range(3)]
     if not flat:
         tint = [t - 64 for t in tint]
@@ -49,7 +50,7 @@ def reference(vu0, tint, tris, flat, cull):
     m = lambda a: [F(x) for x in vu0.mem[a]]
     s16 = lambda u: (u - (1 << 32) if u & 0x80000000 else u) / 4096.0
     out = []
-    top = 252
+    top = gen.SKIN_IN
     for t in range(tris):
         poly = []
         for v in range(3):
@@ -130,7 +131,7 @@ def main(seeds=12, tris=12):
         # the program may only kick from its input header (TOPS + 4) or the skin pass's two output slots, and must
         # leave constants, palette and the specular / plane blocks alone (regression: slot toggle used map slots)
         bad_kicks = [a for a in vu.kick_addrs if a not in (256, gen.SKIN_OUT0, gen.SKIN_OUT1)]
-        bad_mem = [a for a in list(range(0, 252)) + list(range(992, 1024)) if vu.mem[a] != snap.mem[a]]
+        bad_mem = [a for a in list(range(0, gen.SKIN_IN)) + list(range(gen.SPEC, 1024)) if vu.mem[a] != snap.mem[a]]
         if bad_kicks or bad_mem:
             print('seed %d: kicks outside the slots %s, overwritten %s' % (seed, bad_kicks[:5], bad_mem[:8]))
             bad += 1

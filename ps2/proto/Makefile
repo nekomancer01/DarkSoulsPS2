@@ -64,7 +64,7 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1map.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	texcache.o gs.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
@@ -334,7 +334,7 @@ WORLD_TEX_SHARED ?= 1
 TEX_PEERS = $(if $(filter 1,$(WORLD_TEX_SHARED)),$(if $(BLOCK),$(foreach d,$(PVS_PEERS),$(if $(filter $(MAP)_%,$(notdir $(d))),$(d)/map.bin))))
 $(A)/maptab.bin $(A)/mapres.bin $(A)/maptex.bin: $(A)/map.bin $(A)/hzn.bin $(TS)/mapsplit.py.sum $(A)/splitenv $(TEX_PEERS)
 	MIP1_OUT=$(WORLD_MIP1_OUT) TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/mapsplit.py $< $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
-$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(AREA_PY) $(TS)/horizon.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
+$(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(AREA_PY) $(TS)/horizon.py.sum $(TS)/vu1/layout.py.sum $(TS)/native/nearest.c.sum $(TS)/simplify_native.py.sum $(TS)/simplify.py.sum $(TS)/native/simplify.c.sum \
 		$(TS)/native/hzvis.c.sum $(TS)/native/hzerr.c.sum $(TS)/native/meshopt/simplifier.cpp.sum
 	HZN=$(or $(HZN),1) HZN_PANO=$(HZN_PANO) $(PY) -I ../../tools/horizon.py $< $@
 # The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
@@ -560,7 +560,7 @@ $(A)/mapenv: FORCE | $(TS)/export_map.py.sum
 	@if [ ! -e $@ ]; then echo '$(MAPENV_LINE)' > $@ && touch -r $(TS)/export_map.py.sum $@; \
 	else echo '$(MAPENV_LINE)' | cmp -s - $@ || echo '$(MAPENV_LINE)' > $@; fi
 # the map exporter's Python modules (split from export_map.py 2026-11-12)
-MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells mapview,$(TS)/$(m).py.sum)
+MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells mapview,$(TS)/$(m).py.sum) $(TS)/vu1layout.py.sum $(TS)/vu1/layout.py.sum
 # libmapx (tools/mapx: the map exporter's C rewrite, tools/mapx_native.py): every C source and header
 MAPX_SUMS = $(TS)/mapx_native.py.sum $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/mapx/*.c ../../tools/mapx/*.h))
 $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
@@ -720,6 +720,21 @@ endif
 SYM_ELF = $(EE_BIN:.elf=.sym.elf)
 $(SYM_ELF): $(EE_OBJS)
 	$(EE_CC) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $(EE_OBJS) $(EE_LDFLAGS) $(EXTRA_LDFLAGS) $(EE_LIBS)
+# The Lab (Polaris 1.7b, lab/README.md): the player's simulate phase as a 32-bit host program driven over a pipe
+# (tools/lab.py). 32-bit because the loaders keep pointers in 32-bit blob fields (TECH_DEBT core-1); needs a host gcc
+# with -m32 (multilib): on the distrobox, `distrobox-host-exec make -C ps2/proto lab`.
+LAB_CC ?= gcc -m32
+LAB_CFLAGS ?= -std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0
+LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c lab/lab_world.c $(addprefix src/,gamedata.c flags.c progress.c chrstat.c \
+	items.c player.c esd.c esd_env_move.c combat.c physics.c collision.c coltile.c nav.c status.c cvar.c vmath.c \
+	model.c omit.c testscript.c save.c cam_input.c objects.c event.c ev_chr.c ev_obj.c ev_misc.c bonfire.c pickup.c world.c enemy.c ai.c lua0.c npc.c camera.c ragdoll.c drawgrp.c)
+LAB_BIN = $(BUILD)/host/lab
+lab: $(LAB_BIN)
+$(LAB_BIN): $(LAB_SRCS) $(wildcard lab/*.h lab/stub/*.h src/*.h)
+	@mkdir -p $(@D)
+	$(LAB_CC) $(LAB_CFLAGS) -DLAB -Ilab/stub -Ilab -I$(GSKIT)/include -I$(PS2SDK)/common/include -Isrc $(LAB_SRCS) -o $@ -lm -Wl,--wrap=world_hold
+.PHONY: lab
+
 sym: $(SYM_ELF)
 # make iso: bootable disc image <elf>.iso (SYSTEM.CNF, the ELF as DSRP_000.01, every pack in data/ under DATA\, see
 # tools/ps2-iso.sh); booted from it, pack.c reads cdrom0:. ISO_SYMS=1 keeps the .symtab on the disc (PCSX2 debugger).

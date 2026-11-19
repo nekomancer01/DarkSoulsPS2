@@ -36,6 +36,8 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
  * farDofMul as 0..1); 0 if the area has none. main.c's flip blurs by it. */
 int map_far_dof(float *begin, float *end, float *mul);
 extern int map_vu1_batches, map_ee_tris;
+/* hole builds (F9_HOLES / a test script's "option holes", main.c): no void ring, so uncovered pixels show magenta */
+extern int map_holes;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
  * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams), or
  * NULL: map_block_stream_open then streams them per cell from the block's mapres.bin, with each texture's mip 0
@@ -43,6 +45,10 @@ extern int map_vu1_batches, map_ee_tris;
  * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
  * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
 #define MAP_INST 16  /* = WORLD_MAX (world.h): block index = map instance */
+/* map instance of collision block col_block (-1: none on); the collision block of instance k (-1 while it is off):
+ * mapblock.c; drawgrp.c dg_player reads them */
+int map_inst_of(int col_block);
+int mp_inst_col_block(int k);
 /* the next map_block_init(k, ...) takes maptab.bin in three pieces: tab = bytes [0, b_off + ...), b = the piece
  * from byte b_off (textures, navmesh, fog rows), c = the piece from byte c_off (cell table, horizon) (world.c
  * WORLD_TAB_SPLIT) */

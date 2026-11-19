@@ -81,7 +81,7 @@ def pct(vals, p):
 
 def log_summary(log):
     """the run's "disc:" and "map: pass ms" lines -> dict"""
-    disc, mp, lp, under = [], {}, {}, 0
+    disc, mp, lp, under, gs_warn = [], {}, {}, 0, []
     try:
         lines = open(log, errors="replace").read().splitlines()
     except OSError:
@@ -117,13 +117,15 @@ def log_summary(log):
                         pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
+        if line.startswith("TEST warn: gs vram"):  # gs.c / loading.c: an owner over gs_budget.h, or LOAD left borrowed
+            gs_warn.append(line[len("TEST warn: gs vram "):].strip())
     for i, d in enumerate(disc):  # estimated drive time of each period (the gate above)
         span = d["t"] - disc[i - 1]["t"] if i else (disc[1]["t"] - d["t"] if len(disc) > 1 else 10)
         span = span if span > 0 else 10
         d["est_pct"] = round(100 * ((d["seeks"] - d["far"]) * SEEK_MS + d["far"] * FAR_SEEK_MS +
                                     1000 * d["kbps"] * span / DRIVE_KBPS) / (1000 * span), 1)
     play = [d for d in disc if not d["load"]]
-    out = {"underruns": under, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
+    out = {"underruns": under, "gs_vram_warn": gs_warn, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
                                             for k, v in mp.items()},
            "logic_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
                           for k, v in lp.items()}}
@@ -306,6 +308,8 @@ def table(r):
         o.append("  logic pass p90 (120-frame avgs)/max frame: " + " ".join(
             f"{k} {v['p90_avg']:.2f}" + (f"/{v['max']:.1f}" if v["max"] is not None else "")
             for k, v in run["logic_pass"].items() if v["p90_avg"] is not None))
+    if run.get("gs_vram_warn"):  # Polaris 1.1: VRAM owner budgets report only (gs_budget.h); 2.7 enforces
+        o.append(f"  gs vram over budget ({len(run['gs_vram_warn'])} warn lines): " + "; ".join(run["gs_vram_warn"][:4]))
     o += [f"  FAIL {x}" for x in r["fails"]]
     return "\n".join(o)
 

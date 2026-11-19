@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "testscript.h"
+#include "frame.h"
 #include "cvar.h"
 #include "fx.h"  /* TEST fx line per shot */
 #include "collision.h"
@@ -150,6 +151,13 @@ static int parse(Prog *p, char *text)
                 test_god |= !strcmp(rest, "god");
                 if (!strncmp(rest, "save ", 5))
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
+                /* determinism (frame.h, Polaris 1.7a): "option fixeddt MS", "option seed N", "option record PATH" */
+                if (!strncmp(rest, "fixeddt ", 8))
+                    frame_det_dt = (float)atof(rest + 8) / 1000.0f, frame_det_buffers();  /* (frame.h) */
+                if (!strncmp(rest, "seed ", 5))
+                    frame_det_seed = (unsigned)atoi(rest + 5), frame_det_seeded = 1, srand(frame_det_seed);
+                if (!strncmp(rest, "record ", 7))
+                    frame_det_record(rest + 7);
                 if (!strncmp(rest, "set ", 4)) {  /* "option set NAME VALUE": a runtime switch (cvar.h) */
                     char nm[32];
                     int v;

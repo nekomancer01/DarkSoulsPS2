@@ -14,7 +14,9 @@
 #include <gsKit.h>
 #include <dmaKit.h>
 #include "render.h"
-#define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
+#include "mem.h"
+#include "frame.h"
+#include "g2d.h"
 #include "player.h"
 #ifndef DPAD_STICK
 #define DPAD_STICK 0  /* 1 = the d-pad moves (the old path, keyboard-mapped emulators) */
@@ -141,19 +143,19 @@ static void z_clear(GSGLOBAL *gs)
 {
     u64 r[2 * 40];
     int n = 0;
-    u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
+    u64 frame = gs_frame(gs->ScreenBuffer[gs->ActiveBuffer & 1], gs->Width, gs->PSM, 0);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-    REG(holes ? frame : frame | 0xFFFFFFFFull << 32, 0x4C);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-    REG(GS_SETREG_RGBAQ(0xFF, 0x00, 0xFF, 0x80, 0), 0x01);
+    REG(holes ? frame : frame | 0xFFFFFFFFull << 32, GSR_FRAME);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS */
+    REG(gs_zbuf(gs, 0), GSR_ZBUF);
+    REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+    REG(GS_SETREG_RGBAQ(0xFF, 0x00, 0xFF, 0x80, 0), GSR_RGBAQ);
     for (int x = 0; x < gs->Width; x += 64) {
         int x1 = x + 64 < gs->Width ? x + 64 : gs->Width;
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, 0), 0x05);
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, 0), GSR_XYZ2);
     }
-    REG(frame, 0x4C);
+    REG(frame, GSR_FRAME);
 #undef REG
     vu1_gs_regs(n, r);
 }
@@ -178,18 +180,13 @@ static u32 disp_buf;
 
 static void display_init(GSGLOBAL *gs)
 {
-    disp_buf = gsKit_vram_alloc(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER);
-    /* gsKit set up 480i for its 448-line buffer: StartY / DH are interlaced raster lines (DY 50, DH 448) */
+    disp_buf = gs_vram_fixed(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER, GSO_FRAME,
+                             "display buffer");
 #ifdef V1B_INTERLACED
-    SetGsCrt(GS_INTERLACED, GS_MODE_NTSC, GS_FRAME);
-    int dy = gs->StartY + gs->StartYOffset, dh = 2 * DISP_H;  /* FFMD 1: DH counts both fields' lines */
+    gs_display_init(gs, disp_buf, R_SCREEN_W, DISP_H, 1);
 #else
-    SetGsCrt(GS_NONINTERLACED, GS_MODE_NTSC, GS_FRAME);
-    int dy = (gs->StartY + gs->StartYOffset) / 2, dh = DISP_H;  /* 25: gsKit's own 240p centring of 224 lines */
+    gs_display_init(gs, disp_buf, R_SCREEN_W, DISP_H, 0);
 #endif
-    GS_SET_PMODE(0, 1, 0, 1, 0, 0x80);
-    GS_SET_DISPFB2(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0, 0);
-    GS_SET_DISPLAY2(gs->StartX + gs->StartXOffset, dy, gs->MagH, 0, gs->DW - 1, dh - 1);
 }
 
 /* Frame cap (user, 2026-10-31: 30 fps target): flip at most every FPS_CAP_FIELDS vsyncs. A frame that finished early
@@ -224,19 +221,19 @@ static int dof_regs(GSGLOBAL *gs, u64 *p)
     int n = 0;
 #define REG(v, a) (*p++ = (v), *p++ = (a), n++)
 #define FULL(z)                                                                    \
-    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), 0x05),                         \
-     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), 0x05))
-    const u64 draw_a = GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
-    const u64 disp_a = GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0x00FFFFFF);
+    (REG(GS_SETREG_XYZ2(gs->OffsetX, gs->OffsetY, z), GSR_XYZ2),                         \
+     REG(GS_SETREG_XYZ2((R_SCREEN_W << 4) + gs->OffsetX, (R_SCREEN_H << 4) + gs->OffsetY, z), GSR_XYZ2))
+    const u64 draw_a = gs_frame(gs->ScreenBuffer[0], R_SCREEN_W, gs->PSM, 0x00FFFFFF);
+    const u64 disp_a = gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0x00FFFFFF);
     const u64 tex = GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 1, 1, 0, 0, 0, 0, 0);
     /* clear the draw buffer's alpha bits (Z always, not written) */
-    REG(draw_a, 0x4C);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), 0x01);
+    REG(draw_a, GSR_FRAME);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);
+    REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+    REG(GS_SETREG_RGBAQ(0, 0, 0, 0, 0), GSR_RGBAQ);
     FULL(0);
-    REG(GS_SETREG_TEXA(0, 0, 0x80), DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
-    REG(0, 0x45);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
+    REG(GS_TEXA_BIT, DOF_TEXA);  /* the copied alpha bit: 0 -> 0, 1 -> 0x80 */
+    REG(0, GSR_DTHE);  /* DTHE off: the 16-bit dither would add its pattern again on every blended tap */
     for (int i = DOF_BANDS; i >= 1; i--) {
         /* a pixel between bands i and i + 1 gets bands 1..i: 1 - prod (1 - a_j) = mul x i / N */
         float z = b0 + (b1 - b0) * (i - 0.5f) / DOF_BANDS, s = mul * i / DOF_BANDS, s0 = mul * (i - 1) / DOF_BANDS;
@@ -244,47 +241,47 @@ static int dof_regs(GSGLOBAL *gs, u64 *p)
         float x = 1 - sqrtf(1 - a);  /* two taps blended in turn: 1 - (1 - x)^2 = a */
         int fix = (int)(x * 128 + 0.5f);
         /* mark: alpha 1 where the scene lies beyond z */
-        REG(draw_a, 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), 0x01);
+        REG(draw_a, GSR_FRAME);
+        REG(GS_TEST_ZGE, GSR_TEST);
+        REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+        REG(GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0), GSR_RGBAQ);
         FULL((u32)(65535.0f * R_NEAR / z));
-        REG(0, 0x3F);  /* TEXFLUSH: the marks are read back as texture */
+        REG(0, GSR_TEXFLUSH);  /* TEXFLUSH: the marks are read back as texture */
         /* marks into the display buffer's alpha (point sampled, line 2y) */
-        REG(disp_a, 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-        REG(tex, 0x06);
-        REG(GS_SETREG_TEX1(0, 0, 0, 0, 0, 0, 0), 0x14);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+        REG(disp_a, GSR_FRAME);
+        REG(GS_TEST_ZALWAYS, GSR_TEST);
+        REG(tex, GSR_TEX0);
+        REG(GS_TEX1_POINT, GSR_TEX1);
+        REG(GS_PRIM_SPRITE_UV, GSR_PRIM);
         for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
-            REG(GS_SETREG_UV((x0 << 4) + 8, 8), 0x03);
-            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), 0x03);
-            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+            REG(GS_SETREG_UV((x0 << 4) + 8, 8), GSR_UV);
+            REG(GS_SETREG_XYZ2((x0 << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+            REG(GS_SETREG_UV(((x0 + 64) << 4) + 8, 8 + (R_SCREEN_H << 4)), GSR_UV);
+            REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), GSR_XYZ2);
         }
         /* two offset bilinear taps over the marked pixels: Cd + (Cs - Cd) x fix / 128 */
-        REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-        REG(GS_SETREG_TEST(0, 0, 0, 0, 1, 1, 1, 1), 0x47);
-        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
-        REG(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
-        REG(GS_SETREG_ALPHA(0, 1, 2, 1, fix), 0x42);
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0), 0x00);
+        REG(gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+        REG(GS_TEST_ZALWAYS_DATE, GSR_TEST);
+        REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), GSR_TEX0);
+        REG(GS_TEX1_LINEAR, GSR_TEX1);
+        REG(GS_ALPHA_FIX(fix), GSR_ALPHA);
+        REG(GS_PRIM_SPRITE_UV_ABE, GSR_PRIM);
         for (int t = 0; t < 2; t++) {
             /* the sprite moves, not its UV (UV is unsigned: a negative start wraps): tap 0 shows texel x - DOF_DX,
              * lines 2y - 2 / 2y - 1 at (x, y), tap 1 texel x + DOF_DX, lines 2y + 2 / 2y + 3; the sharp copy has
              * x, lines 2y / 2y + 1. The uncovered edge column / line keeps the sharp copy. */
             int dx = (t ? -DOF_DX : DOF_DX) << 4, dy = t ? -16 : 16;
             for (int x0 = 0; x0 < R_SCREEN_W; x0 += 64) {
-                REG(GS_SETREG_UV(x0 << 4, 16), 0x03);
-                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), 0x05);
-                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), 0x03);
-                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), 0x05);
+                REG(GS_SETREG_UV(x0 << 4, 16), GSR_UV);
+                REG(GS_SETREG_XYZ2((x0 << 4) + dx + gs->OffsetX, dy + gs->OffsetY, 0), GSR_XYZ2);
+                REG(GS_SETREG_UV((x0 + 64) << 4, 16 + (R_SCREEN_H << 4)), GSR_UV);
+                REG(GS_SETREG_XYZ2(((x0 + 64) << 4) + dx + gs->OffsetX, (DISP_H << 4) + dy + gs->OffsetY, 0), GSR_XYZ2);
             }
         }
     }
-    REG(GS_SETREG_TEXA(0x80, 0, 0x80), DOF_TEXA);  /* gsKit's */
-    REG(1, 0x45);  /* DTHE back on (main: gs->Dithering) */
-    REG(gs->PrimAlpha, 0x42);
+    REG(GS_TEXA_GSKIT, DOF_TEXA);  /* gsKit's */
+    REG(1, GSR_DTHE);  /* DTHE back on (main: gs->Dithering) */
+    REG(gs->PrimAlpha, GSR_ALPHA);
 #undef FULL
 #undef REG
     return n;
@@ -306,29 +303,29 @@ static void flip(GSGLOBAL *gs)
     int n = 0;
     u64 *p = pk + 2;
 #define REG(v, a) (*p++ = (v), *p++ = (a), n++)
-    REG(0, 0x3F);  /* TEXFLUSH: the draw buffer is read as a texture right after being drawn */
-    REG(GS_SETREG_FRAME_1(disp_buf / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);
-    REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), 0x06);
-    REG(GS_SETREG_TEX1(0, 0, filter, filter, 0, 0, 0), 0x14);
-    REG(GS_SETREG_CLAMP(1, 1, 0, 0, 0, 0), 0x08);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0), 0x00);
+    REG(0, GSR_TEXFLUSH);  /* TEXFLUSH: the draw buffer is read as a texture right after being drawn */
+    REG(gs_frame(disp_buf, R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+    REG(gs_zbuf(gs, 1), GSR_ZBUF);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);
+    REG(GS_SETREG_TEX0(gs->ScreenBuffer[0] / 256, R_SCREEN_W / 64, gs->PSM, 9, 9, 0, 1, 0, 0, 0, 0, 0), GSR_TEX0);
+    REG(GS_TEX1_FILTER(filter), GSR_TEX1);
+    REG(GS_CLAMP_CLAMP, GSR_CLAMP);
+    REG(GS_PRIM_SPRITE_UV, GSR_PRIM);
     for (int x = 0; x < R_SCREEN_W; x += 64) {
-        REG(GS_SETREG_UV(x << 4, v0), 0x03);
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), 0x05);
-        REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), 0x03);
-        REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), 0x05);
+        REG(GS_SETREG_UV(x << 4, v0), GSR_UV);
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, 0), GSR_XYZ2);
+        REG(GS_SETREG_UV((x + 64) << 4, v0 + (R_SCREEN_H << 4)), GSR_UV);
+        REG(GS_SETREG_XYZ2(((x + 64) << 4) + gs->OffsetX, (DISP_H << 4) + gs->OffsetY, 0), GSR_XYZ2);
     }
     {
         int k = dof_regs(gs, p);
         p += 2 * k, n += k;
     }
     /* back to the draw buffer and the state the frame expects (main's TEST, repeat wrapping) */
-    REG(GS_SETREG_FRAME_1(gs->ScreenBuffer[0] / 8192, R_SCREEN_W / 64, gs->PSM, 0), 0x4C);
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
-    REG(GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47);
-    REG(GS_SETREG_CLAMP(0, 0, 0, 0, 0, 0), 0x08);
+    REG(gs_frame(gs->ScreenBuffer[0], R_SCREEN_W, gs->PSM, 0), GSR_FRAME);
+    REG(gs_zbuf(gs, 0), GSR_ZBUF);
+    REG(GS_TEST_CUTOUT, GSR_TEST);
+    REG(GS_CLAMP_REPEAT, GSR_CLAMP);
 #undef REG
     pk[0] = GIF_TAG(n, 1, 0, 0, 0, 1);
     pk[1] = 0xE;
@@ -357,15 +354,20 @@ int main(int argc, char **argv)
     dmaKit_init(D_CTRL_RELE_OFF, D_CTRL_MFD_OFF, D_CTRL_STS_UNSPEC, D_CTRL_STD_OFF, D_CTRL_RCYC_8, 1 << DMA_CHANNEL_GIF);
     dmaKit_chan_init(DMA_CHANNEL_GIF);
     gsKit_init_screen(gs);
+    /* its draw and Z buffers from 0 (byte 1 = block 0: address 0 reads as GSKIT_ALLOC_ERROR) */
+    gs_vram_charge(GSO_FRAME, 1, gs->CurrentPointer / 256);
     display_init(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
     gs->Test->ZTST = 2;  /* GEQUAL: larger Z is nearer */
-    gsKit_set_test(gs, GS_ZTEST_ON);
+    gs_test(gs, GS_ZTEST_ON);
     r_init(gs);
     vu1_init(gs);
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
+    mem_boot_init();  /* static and boot-temp regions (src/mem.h), before the first pack load */
+    g2d_init(gs);     /* the 2D writer (src/g2d.h): the loading screen's buffers */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
+    map_holes = holes;  /* (no void ring: map.c VOID_RING) */
     if (!gamedata_init()) {  /* player / combat / start values: nothing below runs without them */
         printf("DSRPROTO gamedata: missing or from another build; stopping\n");
         for (;;)
@@ -410,16 +412,16 @@ int main(int argc, char **argv)
         obj_blob = pack_load(&pk, "objects.bin", 0);    /* breakable objects (tools/export_objects.py) */
         ev_blob = pack_load(&pk, "events.bin", 0);      /* EMEVD bytecode (tools/export_emevd.py, src/event.c) */
         evc_blob = pack_load(&pk, "evcommon.bin", 0);
-        lua_blob = pack_load(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
+        lua_blob = pack_load_temp(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
     }
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
     void *menu_blob = NULL, *shine_blob = NULL;
     unsigned shine_size = 0;
     if (pack_open(&pk, PACK_ROOT "menu.pak")) {
-        menu_blob = pack_load(&pk, "menu.bin", 0);
+        menu_blob = pack_load_static(&pk, "menu.bin", 0);
         shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
-        hud_help_init(pack_load(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+        hud_help_init(pack_load_static(&pk, "help.bin", 0));  /* action prompt texts (kept) */
     }
     pack_close(&pk);
     t_load = ticks() - t_load;
@@ -466,23 +468,31 @@ int main(int argc, char **argv)
     if (!(map_ok && fx_init(gs, fx_blob)))  /* effect textures to VRAM; the blob stays (particle systems, lights) */
         free(fx_blob);
     pickup_init(gs, shine_blob, shine_size);  /* the treasure shine's textures (~54 KB VRAM); frees the blob */
+    /* the area's AI pack (the VM has its copy since enemy_init) stays in boot-temp until mem_boot_done, after the arena:
+     * where main freed it, so the arena is sized as before (src/mem.h) */
+    int lua_heap = lua_blob && !mem_in_temp(lua_blob);  /* (boot-temp was full: the heap holds it) */
+    mem_boot_seal();  /* before the arena is sized from the heap: boot-temp and the static tail are back (src/mem.h) */
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
+    mem_boot_done();
+    if (lua_heap)
+        free(lua_blob);
+    lua_blob = NULL;
     loading_tick(1);
     combat_sweep_hook = objects_sweep_hook;
     combat_throw_hook = enemy_throw_try;
     status_init();  /* the player's poison / toxic / bleed / curse (combat_status_hook) */  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
-    free(lua_blob);
     if (vram_free >= 0)
         vram_free = r_vram_avail(gs);
     printf("DSRPROTO vram: free %d (%d after the last page), r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
            r_vram_avail(gs), 4 * 1024 * 1024 - (int)gs->CurrentPointer, r_vram_used, r_vram_pages, r_vram_gskit);
+    gs_vram_log(gs, "boot");
     /* cut-out foliage: texels with CLUT alpha 0 are dropped (AFAIL keep = neither colour nor depth written) */
     gs->Test->ATE = 1;
     gs->Test->ATST = 5;  /* GEQUAL */
     gs->Test->AREF = 0x40;
     gs->Test->AFAIL = 0;
-    gsKit_set_test(gs, GS_ATEST_ON);
-    gsKit_set_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
+    gs_test(gs, GS_ATEST_ON);
+    gs_clamp(gs, GS_CMODE_REPEAT);  /* DSR UVs run past 0..1 */
 
     Player pl;
     pickup_prompt_player(&pl);  /* the Pick up item prompt (src/pickup.c) */
@@ -494,242 +504,8 @@ int main(int argc, char **argv)
     save_apply_player(&pl);  /* saved position (same area), HP, deaths */
     bonfire_init(AREA);      /* bloodstain / respawn point (src/bonfire.c, A4) */
     test_build_spawn(&pl, col_ok);  /* TEST_SPAWN / COMBAT_DUMMY check builds */
-    float cam_yaw = pl.yaw, cam_pitch = 0.25f, cam_dist = 4.0f, idle = 99, avg_dt = 1.0f / 60;
-    unsigned last = ticks();
-    int tris_drawn = 0;
-    float t_cull = 0, t_char = 0, t_wait = 0;  /* ms, smoothed */
-    unsigned short prev = 0;
-    int hud_debug = debug_hud_default(test_opts);  /* Select: fps / VU1 / collision / load overlay (debug_hud.c) */
-
-    for (;;) {
-        PROF_FRAME();
-        unsigned now = ticks();
-        float dt = (now - last) / 294912000.0f;
-        float dt_real = dt;  /* test stats: the frame time before the clamps */
-        hitch_where(&pl.pos.x, world_current());  /* hitch / spike lines say where (src/hitch.c) */
-        hitch_frame(dt_real);  /* the last pass of this loop, its sections (src/hitch.c) */
-#ifdef SLOW_FRAME_LOG  /* make EE_DBGINFOFLAGS=-DSLOW_FRAME_LOG: frames over 100 ms in the EE log (ISO stalls) */
-        if (dt_real > 0.1f)
-            printf("DSRPROTO slow frame %d ms\n", (int)(dt_real * 1000));
-#endif
-        last = now;
-        avg_dt += (dt - avg_dt) * 0.1f;  /* real frame time, before the clamps below */
-        if (dt > 1.0f / 15)
-            dt = 1.0f / 15;  /* below 15 fps the game slows down instead of skipping */
-        if (dt < 1.0f / 60)
-            dt = 1.0f / 60;
-        Input in = {0};
-        unsigned short held = prev;
-        if (pad_input(&in, &prev))
-            idle = 0;
-        else
-            idle += dt;
-        unsigned short pressed = prev & ~held;
-        pressed |= test_pad();  /* test script "pad" presses */
-        if (pressed & PAD_SELECT)
-            hud_debug = !hud_debug;
-        if (pressed & PAD_L3) {  /* debug: helm off / on, to see the face (DSR's hide rule, model_helmet) */
-            static int helm_off;
-            model_helmet(!(helm_off = !helm_off));
-        }
-        if (bonfire_input(pressed) || menu_update(pressed)) {  /* bonfire / Start menu: no movement or attacks */
-            in = (Input){0};
-            idle = 0;
-        }
-        int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
-        if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
-            test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
-        test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
-
-        cam_yaw += in.cx * 2.5f * dt;
-        {   /* lock-on: the camera turns to put the target behind the player (LockCamParam row 0; turn rate ASSUMED) */
-            float tp[3];
-            if (player_lock_target(&pl, tp)) {
-                float want = atan2f(tp[0] - pl.pos.x, tp[2] - pl.pos.z), d = want - cam_yaw;
-                while (d > 3.14159265f) d -= 6.2831853f;
-                while (d < -3.14159265f) d += 6.2831853f;
-                cam_yaw += d * (dt * 6 < 1 ? dt * 6 : 1);
-                static int lg;
-                if (test_active() && !(lg++ % 30))
-                    printf("lock: cam %.2f want %.2f player %.2f target %.1f %.1f\n", cam_yaw, want, pl.yaw, tp[0], tp[2]);
-            }
-        }
-        cam_pitch += in.cy * 1.5f * dt;
-        /* LockCamParam row 0: rotRangeMinX -40 degrees (camera below the target, looking up) */
-        cam_pitch = cam_pitch < -0.698f ? -0.698f : cam_pitch > 1.2f ? 1.2f : cam_pitch;
-        /* Frame order: the player, camera and world first, then the map chain is kicked and VU1 / the GS draw it while
-         * the EE runs enemies, objects and events (refactor target 1, step A). What the map chain reads (camera, draw
-         * groups, streamed cells) is settled before the kick; what those updates change shows from the next frame */
-        int frozen = test_frozen();  /* test scripts freeze the world while a shot is taken (and for render-only runs) */
-        PROF_GATE(test_mb.state, frozen);  /* PROFILE: whole-run percentiles over the running script's frames */
-        HITCH_BEGIN(pre);
-        if (!frozen) {
-            PROF_MARK(PROF_PLAYER);
-            LG_BEGIN(player);
-            player_update(&pl, &in, cam_yaw, dt);
-            status_update(&pl, dt);
-            combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
-            /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
-            event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
-            LG_END(player, LG_PLAYER);
-            PROF_MARK(PROF_ENEMY);
-            LG_BEGIN(stream);
-            enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
-            LG_END(stream, LG_STREAM);
-        }
-        HITCH_END(pre, HS_PRE);
-
-        PROF_MARK(PROF_CAMERA);
-        /* third-person orbit camera behind the player */
-        /* LockCamParam row 0: camDistTarget 4.0 m, chrOrgOffset_Y 1.42 m */
-        /* the follow height eases after the feet (steps, landings) instead of copying them; teleports snap */
-        static float cam_y = -1e9f;
-        float ky = 1 - expf(-dt / 0.15f);
-        cam_y = fabsf(pl.pos.y - cam_y) > 3 ? pl.pos.y : cam_y + (pl.pos.y - cam_y) * ky;
-        V3 target = v3(pl.pos.x, cam_y + 1.42f, pl.pos.z);
-        float d = test_build_cam_dist(4.0f);
-        V3 eye = v3add(target, v3(-sinf(cam_yaw) * cosf(cam_pitch) * d, sinf(cam_pitch) * d,
-                                  -cosf(cam_yaw) * cosf(cam_pitch) * d));
-        /* camera collision: pull in at once in front of the first wall hit (CAM_WALL margin: the near plane plus
-         * 0.05 m, 0.3 m with the old 0.25 m plane), ease back out at 4 m/s */
-        float want = d;
-        ColHit ch;
-        float ray0[3] = {target.x, target.y, target.z}, ray1[3] = {eye.x, eye.y, eye.z};
-        if (col_ok && col_ray(ray0, ray1, COL_CAMERA, &ch))
-            want = ch.t * d - CAM_WALL > 0.2f ? ch.t * d - CAM_WALL : 0.2f;
-        cam_dist = want < cam_dist ? want : cam_dist + 4.0f * dt > want ? want : cam_dist + 4.0f * dt;
-        eye = v3add(target, v3scale(v3sub(eye, target), cam_dist / d));
-        test_build_camera(&eye, &target);  /* ENEMY_VIEW check build */
-        r_camera(eye, target);
-
-        PROF_MARK(PROF_STREAM);
-        HITCH_BEGIN(world);
-        world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
-        loading_frame();  /* the boot's / a death's loading screen closes once this frame's loads settled */
-        HITCH_END(world, HS_WORLD);
-        PROF_MARK(PROF_SOUND);
-        HITCH_BEGIN(snd);
-        snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
-        snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
-        HITCH_END(snd, HS_SND);
-        PROF_MARK(PROF_MAP);
-        HITCH_BEGIN(map);
-        if (map_ok) {
-            /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
-            unsigned t0 = ticks();
-            vu1_begin(0);
-            z_clear(gs);
-            map_set_player(pl.pos);
-            tris_drawn = map_draw(eye);
-            vu1_kick();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
-            t_cull += ((ticks() - t0) / 294912.0f - t_cull) * 0.1f;
-        } else {
-            gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
-            r_ground(40, 2);
-            r_queue_exec(gs);  /* before the character's VU1 chain draws on top */
-            dmaKit_wait_fast();
-        }
-        HITCH_END(map, HS_MAP);
-        HITCH_BEGIN(logic);
-        if (!frozen) {  /* nothing here may touch what the map chain reads (mapstream cells, PATH2/3 GS registers) */
-            PROF_MARK(PROF_ENEMY);
-            LG_BEGIN_X(enemy);
-            enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
-            LG_END_X(enemy, LG_ENEMY);
-            PROF_MARK(PROF_OBJECTS);
-            LG_BEGIN(objects);
-            objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
-            LG_END(objects, LG_OBJECTS);
-            LG_BEGIN(events);
-            event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
-            if (PICKUP)
-                pickup_update(dt);    /* item get dialog (src/pickup.c) */
-            LG_END(events, LG_EVENTS);
-            LG_BEGIN(bonfire);
-            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
-            LG_END(bonfire, LG_BONFIRE);
-        }
-        HITCH_END(logic, HS_LOGIC);
-        if (!frozen)  /* a frozen frame (test shots) runs no logic: not part of the averages */
-            lpass_frame(hitch_acc[HS_PRE] + hitch_acc[HS_LOGIC]);
-        PROF_MARK(PROF_CHARS);
-        unsigned t1 = ticks();
-        vu1_begin(1);
-#ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
-        player_draw(&pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
-        enemy_draw();      /* same path, one bone palette per enemy */
-        objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
-#endif
-        vu1_kick();
-        HITCH_BEGIN(fx);
-        fx_update(dt, eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
-#ifndef MAP_PANO_R
-        fx_draw();
-#endif
-        HITCH_END(fx, HS_FX);
-        bonfire_draw();  /* the bloodstain marker */
-        debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
-        t_char += ((ticks() - t1) / 294912.0f - t_char) * 0.1f;
-
-        /* HUD: DSR's bars, quick slots, souls, YOU DIED (hud.c); Start menu (menu.c); Select: debug overlay */
-        PROF_MARK(PROF_HUD);
-        HITCH_BEGIN(hud);
-#ifndef MAP_PANO_R
-        hud_draw(&pl, dt);
-#endif
-        if (demo)
-            r_text_outlined(30, 410, 2, "DEMO - PRESS ANY BUTTON");
-        if (hud_debug) {
-            const DebugHud dh = {cam_yaw, cam_pitch, cam_dist, cam_y, avg_dt, t_cull, t_char, t_wait, t_load, ram_free(),
-                                 tris_drawn, vram_free, model_ok, map_ok, col_ok, enemies, breakables};
-            HITCH_BEGIN(dbg);
-            debug_hud_draw(&dh, &pl, dt);
-            HITCH_END(dbg, HS_DBG);
-        }
-        if (PICKUP)
-            pickup_draw();  /* the item get dialog (menu.drb F25) */
-        menu_draw(&pl);
-        loading_overlay(dt);  /* the fade-in from black after a loading screen */
-        PROF_DRAW();
-        HITCH_END(hud, HS_HUD);
-
-        PROF_MARK(PROF_VU1WAIT);
-        hitch_acc[HS_CHR] += ticks() - t1;
-        unsigned t2 = ticks();
-        fx_kick();   /* FX_VU1: the particle chain, after the characters' */
-        vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
-        t_wait += ((ticks() - t2) / 294912.0f - t_wait) * 0.1f;
-        hitch_acc[HS_WAIT] += ticks() - t2;
-        PROF_MARK(PROF_FLIP);
-        HITCH_BEGIN(flip);
-        r_queue_exec(gs);
-        flip(gs);
-        if (vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
-            vram_free = r_vram_avail(gs);
-        HITCH_END(flip, HS_FLIP);
-        HITCH_BEGIN(save);
-        test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
-        save_tick(&pl, dt);  /* requested saves + autosave */
-        static unsigned log_frames;
-        if (++log_frames % 300 == 0)
-            printf("DSRPROTO chain qw: map %d peak %d, chr %d peak %d, segments %d; CLUT loads %d + %d, batches %d\n",
-                   vu1_stats.last[0], vu1_stats.peak[0], vu1_stats.last[1], vu1_stats.peak[1], vu1_stats.segments,
-                   vu1_stats.clut_loads[0], vu1_stats.clut_loads[1], map_vu1_batches);
-        if (log_frames % 300 == 0)  /* indexed map batches so far / EE-split clip triangles / batches clipped on VU1 */
-            printf("DSRPROTO idx batches %d, clip tris %d, vu clip batches %d; EE ms so far: idx clip split %u, "
-                   "chain waits %u\n", vu1_stats.idx_batches, vu1_stats.idx_clip, vu1_stats.idx_vuclip,
-                   (unsigned)(vu1_stats.idx_clip_ticks / 294912),
-                   (unsigned)(vu1_stats.wait_ticks / 294912));
-        if (log_frames % 300 == 0)  /* EE time in the batch builders so far (map and relief passes) */
-            printf("DSRPROTO add ms so far: idx %u (%d calls), ex %u (%d calls)\n",
-                   (unsigned)(vu1_stats.add_idx_ticks / 294912), vu1_stats.add_idx_n,
-                   (unsigned)(vu1_stats.add_ex_ticks / 294912), vu1_stats.add_ex_n);
-#ifdef VU1_TEX_PATH3
-        if (log_frames % 300 == 0)
-            printf("DSRPROTO tex path3 %d, path2 %d, gates %d\n", vu1_stats.tex_path3, vu1_stats.tex_path2,
-                   vu1_stats.tex_gates);
-#endif
-        HITCH_END(save, HS_SAVE);
-    }
+    const FrameBoot fb = {gs, &pl, test_opts, model_ok, map_ok, col_ok, enemies, breakables, vram_free, t_load, AREA,
+                          pad_input, z_clear, flip, ram_free};
+    frame_run(&fb);  /* the frame loop, in phases (src/frame.c) */
     return 0;
 }

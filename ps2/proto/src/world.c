@@ -1937,6 +1937,8 @@ static int settled(const float *feet)
     return 1;
 }
 
+int world_settled(const float *feet) { return cur < 0 || settled(feet); }
+
 /* A warp: finish every load / unload / swap the new position needs now (the frame waits, as DSR's loading screen) */
 static void settle(const float *feet)
 {
@@ -2003,6 +2005,7 @@ int world_hold(const float *feet)
             feet[1] >= tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= tab[i].y1 + WORLD_Y_MARGIN)
             m |= 1u << i;
     hold_m |= m;
+    world_stats.holds += m != 0;
     return m != 0;
 }
 

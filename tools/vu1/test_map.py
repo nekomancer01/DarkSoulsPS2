@@ -13,7 +13,7 @@ def run(prog, entry, args, cull, clipstyle):
     cyc = vu.run(entry)
     return vertices(vu.kicks), cyc
 
-def main(seeds=10, tris=54):
+def main(seeds=10, tris=tc.gen.CHUNK_TRIS):
     bad = tot = adc = 0
     co = cn = 0
     for seed in range(seeds):
