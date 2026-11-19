@@ -448,7 +448,7 @@ $(G)/progress.gd: $(TS)/export_progress.py.sum $(TS)/gamedata.py.sum $(TS)/param
 	python3 -I ../../tools/export_progress.py "$(GAME)" $@
 
 # HP / damage core: stats, CalcCorrectGraph rows, weapon dummy polys, AtkParam windows, the debug dummy's NpcParam
-$(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/gamedata.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
+$(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/gamedata.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_combat.py "$(GAME)" $@
 
