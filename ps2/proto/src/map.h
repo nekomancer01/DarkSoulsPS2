@@ -36,6 +36,8 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
  * farDofMul as 0..1); 0 if the area has none. main.c's flip blurs by it. */
 int map_far_dof(float *begin, float *end, float *mul);
 extern int map_vu1_batches, map_ee_tris;
+/* hole builds (F9_HOLES / a test script's "option holes", main.c): no void ring, so uncovered pixels show magenta */
+extern int map_holes;
 /* World blocks (src/world.c): instance k (0 = the boot block; MAP_INST at most) from a split map.bin: tab = the 80-byte
  * header + the map.bin bytes from the chunk table on, res = the bytes before it (the resident chunks' streams), or
  * NULL: map_block_stream_open then streams them per cell from the block's mapres.bin, with each texture's mip 0
