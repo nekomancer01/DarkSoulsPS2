@@ -47,6 +47,7 @@
 #include "objects.h"
 #include "enemy.h"
 #include "render.h"
+#include "drawgrp.h"
 #include "pickup.h"
 #include "bonfire.h"
 #include "testscript.h"
@@ -73,6 +74,7 @@ void lab_count(const char *name, int readback)
 }
 
 static void world_step(void);
+static void dg_step(void);
 /* replay: the console's world_hold held the player this frame (trace flag 4: a block or collision tile still loading
  * there). The Lab never waits for data, so it takes the hold from the trace (link option --wrap=world_hold). */
 static int lab_held;
@@ -153,10 +155,11 @@ static int boot(const char *root, const char *area, const char *script)
     int world = world_init(area);
     char path[128];
     snprintf(path, sizeof path, PACK_ROOT "%s.pak", area);
-    void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL, *enemy_blob = NULL, *lua = NULL;
+    void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL, *enemy_blob = NULL, *lua = NULL, *dgb = NULL;
     unsigned lua_size = 0;
     if (pack_open(&pk, path)) {
         col = pack_load(&pk, "collision.bin", NULL);
+        dgb = pack_load(&pk, "dg.bin", NULL);
         enemy_blob = pack_load(&pk, "enemies.bin", NULL);
         lua = pack_load(&pk, "ai.lua0", &lua_size);
         obj = pack_load(&pk, "objects.bin", NULL);
@@ -168,6 +171,7 @@ static int boot(const char *root, const char *area, const char *script)
         world_boot_map(), world_stream_open();
     if (!col || !col_init(col))
         return printf("error collision %s\n", area), 0;
+    dg_init(dgb, map_chunk_count(), (unsigned)col_tris());  /* (main.c: the boot block's draw groups) */
     if (!lab_noenemies)  /* (main.c: "option noenemies" places no enemy roster) */
         enemy_init(NULL, enemy_blob, lua, (int)lua_size);
     objects_init(NULL, obj);
@@ -188,7 +192,7 @@ static int boot(const char *root, const char *area, const char *script)
     return 1;
 }
 
-/* frame.c phase_world's world update, then the same again until everything the feet want is in: the Lab's reads
+/* frame.c phase_world: the world update, then the same again until everything the feet want is in: the Lab's reads
  * complete at once (lab_stubs.c), so no block, collision or event set is ever "still loading" when simulate runs */
 static void world_step(void)
 {
@@ -202,6 +206,16 @@ static void world_step(void)
             break;  /* a wanted block waits for something only time or the player's moving frees (a slot): the
                      * console's own rule, not a read in flight */
     }
+}
+
+/* map.c map_set_player's draw-group half (phase_world's last call, every frame from the first): which groups show, so
+ * which characters update (drawgrp.c dg_player) */
+static void dg_step(void)
+{
+    static unsigned dg_frames;
+    ColHit h;
+    dg_tick(++dg_frames);
+    dg_player(pl.pos, &h);
 }
 
 /* frame.c phase_sim_a's enemy_stream, then again until no type the player is near waits for its load (each call does one
@@ -229,6 +243,7 @@ static void step(void)
     if (lab_cam)
         eye = v3(lab_cam[0], lab_cam[1], lab_cam[2]), target = v3(lab_cam[3], lab_cam[4], lab_cam[5]), r_camera(eye, target);
     world_step();
+    dg_step();
     frame_phase = FP_SIM_B;
     enemy_update(&pl, dt);
     objects_update(&pl, dt);
@@ -273,6 +288,8 @@ static void run_script(unsigned max_frames, int states)
             unsigned f = frame;
             step();
             frame = f;
+        } else {
+            world_step(), dg_step();  /* (frame.c: the world phase runs on frozen frames too) */
         }
         test_frame_end(&pl, dt, dt, 0, 0, 0, 0, 0);
         save_tick(&pl, dt);
@@ -329,12 +346,16 @@ static void replay(const char *path)
         lab_held = (u[10] & 4) != 0;  /* the console's world held the player (streaming): the Lab holds it the same */
         /* version 3: the camera as the console's simulate read it (cam_follow's own result is replaced) */
         lab_cam = h[1] >= 3 ? x + 15 : NULL;
-        if (!(u[10] & 2))  /* (frozen frames run no simulate) */
+        if (!(u[10] & 2))  /* (frozen frames run no simulate; frame.c's world phase runs on them all the same) */
             step();
+        else
+            world_step(), dg_step();
         lab_held = 0;
         first = 0;
         frame = u[0];  /* (the .state log names the frame the input belongs to) */
         state_line();
+        if (h[1] >= 3)  /* the draw-group state as the frame left it (record word 21: lab.py compares) */
+            printf("dg %u %u\n", frame, dg_state_hash());
         int en = enemy_trace_lines(ebuf, sizeof ebuf, frame);  /* (the format of option record's NAME.enemies) */
         for (char *l = ebuf, *e; l < ebuf + en; l = e + 1) {
             e = strchr(l, '\n');

@@ -45,6 +45,10 @@ extern int map_holes;
  * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
  * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
 #define MAP_INST 16  /* = WORLD_MAX (world.h): block index = map instance */
+/* map instance of collision block col_block (-1: none on); the collision block of instance k (-1 while it is off):
+ * mapblock.c; drawgrp.c dg_player reads them */
+int map_inst_of(int col_block);
+int mp_inst_col_block(int k);
 /* the next map_block_init(k, ...) takes maptab.bin in three pieces: tab = bytes [0, b_off + ...), b = the piece
  * from byte b_off (textures, navmesh, fog rows), c = the piece from byte c_off (cell table, horizon) (world.c
  * WORLD_TAB_SPLIT) */

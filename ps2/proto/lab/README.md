@@ -78,10 +78,10 @@ Placement by distance, the active cap, the view filters and the pose pool are th
 out: each frame steps enemy_stream until `enemy_stream_settled` (no type load in flight or waiting), so a type never
 arrives late. In a replay of a version 3 trace the residency itself comes from the recording (`enemy_load_gate`: a
 type is in exactly on the frames the console had it, whose loads also wait for RAM room) and so does the camera (eye
-and target per frame). Known limitation: the Lab shows every draw group (`dg_mask_shown` answers shown) until the
-draw-group player update moves out of map.c (Polaris 1.7c-4, after PR #252; TECH_DEBT test-9): an enemy in a group the
-console hides updates in the Lab, so enemy traces are recorded where the console shows every enemy in range, which
-lab.py compare checks from the recording's DG column. A script run (no recording) has every type at once, so a type
+and target per frame). Draw groups (Polaris 1.7c-4): drawgrp.c runs as on the console, dg_player (moved out of map.c's
+map_set_player) once a frame after the world update, each block's dg.bin set up when it turns on (lab_world.c
+map_block_init, as mapblock.c); version 3 records carry the draw-group state hash (dg_state_hash), which lab.py compare
+matches frame by frame (det_seam: the aqueduct seam, 7 states, 357 frames identical). A script run (no recording) has every type at once, so a type
 the console loads seconds late (RAM room, the disc) can act earlier in the Lab: tests/ev_chr.txt's c3510 at Firelink
 notices the player from the boot spot in the Lab only, and one of its expects differs for that reason. Never: sound, the map's drawing, menus, and the streaming waits.
 
