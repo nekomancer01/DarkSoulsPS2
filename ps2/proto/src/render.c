@@ -153,7 +153,7 @@ static void vram_release(u32 addr, const unsigned short *fp, int n)
             vfree[(base + fp[i]) >> 5] |= 1u << ((base + fp[i]) & 31), r_vram_used--, r_vram_holes++;
 }
 
-u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
+u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm, GsOwner o)
 {
     static unsigned short fp[4096];
     int tbw = tex_tbw(w, psm);
@@ -163,20 +163,22 @@ u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm)
     int n = footprint(w, h, psm, tbw, fp);
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
     return addr;
 }
 
-u32 r_vram_clut(GSGLOBAL *g, int clut_psm)
+u32 r_vram_clut(GSGLOBAL *g, int clut_psm, GsOwner o)
 {
     unsigned short fp[4];
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
     int n = footprint(16, 16, clut_psm, 1, fp);  /* 256 entries, CSM1: 16 x 16 */
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
     return addr;
 }
 
-u32 r_vram_lin(GSGLOBAL *g, int n)
+u32 r_vram_lin(GSGLOBAL *g, int n, GsOwner o)
 {
     static unsigned short fp[1024];
     if (n <= 0 || n > (int)(sizeof fp / sizeof *fp))
@@ -185,6 +187,7 @@ u32 r_vram_lin(GSGLOBAL *g, int n)
         fp[i] = i;
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
+    gs_vram_charge(o, addr, n);
     return addr;
 }
 
@@ -194,20 +197,23 @@ void r_vram_free_tex(u32 addr, int w, int h, int psm)
     if (addr == GSKIT_ALLOC_ERROR || (w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return;
     VM_DEL(addr);
-    vram_release(addr, fp, footprint(w, h, psm, tex_tbw(w, psm), fp));
+    int n = footprint(w, h, psm, tex_tbw(w, psm), fp);
+    gs_vram_credit(addr, n);
+    vram_release(addr, fp, n);
 }
 
 void r_vram_free_clut(u32 addr, int clut_psm)
 {
     unsigned short fp[4];
     if (addr != GSKIT_ALLOC_ERROR)
-        VM_DEL(addr), vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
+        VM_DEL(addr), gs_vram_credit(addr, footprint(16, 16, clut_psm, 1, fp)),
+            vram_release(addr, fp, footprint(16, 16, clut_psm, 1, fp));
 }
 
 void r_vram_free_lin(u32 addr, int n)
 {
     if (addr != GSKIT_ALLOC_ERROR)
-        VM_DEL(addr);
+        VM_DEL(addr), gs_vram_credit(addr, n);
     for (int i = 0; addr != GSKIT_ALLOC_ERROR && i < n; i++) {
         unsigned short b = i;
         vram_release(addr + i * 256, &b, 1);
@@ -396,18 +402,18 @@ static void tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const fl
         tw++;
     while (t && (1u << th) < t->Height)
         th++;
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
+    u64 zbuf = gs_zbuf(gs, 0);
     *p++ = GIF_SET_TAG(6, 0, 0, 0, 0, 1), *p++ = 0xE;
     if (t)
         *p++ = GS_SETREG_TEX0(t->Vram / 256, (t->Width + 127) / 128 * 2, t->PSM, tw, th, 1, 0, t->VramClut / 256,
-                              t->ClutPSM, 0, 0, 1), *p++ = 0x06;
+                              t->ClutPSM, 0, 0, 1), *p++ = GSR_TEX0;
     else
-        *p++ = GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), *p++ = 0x14;
-    *p++ = GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), *p++ = 0x14;
-    *p++ = mode & R_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), *p++ = 0x47;
-    *p++ = mode & R_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), *p++ = 0x42;
-    *p++ = mode & R_BLEND ? zbuf | (1ull << 32) : zbuf, *p++ = 0x4E;  /* ZMSK: blended triangles do not write Z */
-    *p++ = fog_col, *p++ = 0x3D;
+        *p++ = GS_TEX1_LINEAR, *p++ = GSR_TEX1;
+    *p++ = GS_TEX1_LINEAR, *p++ = GSR_TEX1;
+    *p++ = mode & R_BLEND ? GS_TEST_ZGE : GS_TEST_CUTOUT, *p++ = GSR_TEST;
+    *p++ = mode & R_ADD ? GS_ALPHA_ADD : GS_ALPHA_MIX, *p++ = GSR_ALPHA;
+    *p++ = mode & R_BLEND ? zbuf | (1ull << 32) : zbuf, *p++ = GSR_ZBUF;  /* ZMSK: blended triangles do not write Z */
+    *p++ = fog_col, *p++ = GSR_FOGCOL;
     int prim = (t ? 0x1B : 0x0B) | (mode & R_FOG ? 0x20 : 0) | (mode & R_BLEND ? 0x40 : 0);
     *p++ = GIF_SET_TAG(nv, 0, 1, prim, 0, 3), *p++ = 0x412;
     for (int i = 0; i < nv; i++) {
@@ -428,9 +434,9 @@ static void tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const fl
         *p++ = ((u64)(u32)s[i][2] << 4) | ((u64)((int)f << 4) << 32);
     }
     *p++ = GIF_SET_TAG(3, 1, 0, 0, 0, 1), *p++ = 0xE;
-    *p++ = gs->PrimAlpha, *p++ = 0x42;
-    *p++ = zbuf, *p++ = 0x4E;
-    *p++ = fog_base, *p++ = 0x3D;
+    *p++ = gs->PrimAlpha, *p++ = GSR_ALPHA;
+    *p++ = zbuf, *p++ = GSR_ZBUF;
+    *p++ = fog_base, *p++ = GSR_FOGCOL;
 }
 
 void r_tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const float (*s)[3])
@@ -589,17 +595,6 @@ void r_queue_exec(GSGLOBAL *gs)
 
 #ifdef HEAPMAP
 /* VRAM census (render.h) */
-#undef gsKit_vram_alloc
-#define VF_N 32
-static struct { u32 addr, size; const char *where; } vf[VF_N];
-static unsigned nvf;
-u32 r_hm_vram_alloc(GSGLOBAL *g, u32 size, u8 type, const char *where)
-{
-    u32 a = gsKit_vram_alloc(g, size, type);
-    if (a != GSKIT_ALLOC_ERROR && nvf < VF_N)
-        vf[nvf].addr = a, vf[nvf].size = size, vf[nvf].where = where, nvf++;
-    return a;
-}
 void r_vram_census(void)
 {
     static struct { unsigned ra, blocks, cnt; const char *tag; } c[128];
@@ -617,16 +612,12 @@ void r_vram_census(void)
         }
         c[j].blocks += vm[i].blocks, c[j].cnt++, tot += vm[i].blocks;
     }
-    unsigned fixed = 0;
-    for (unsigned i = 0; i < nvf; i++)
-        fixed += vf[i].size;
+    unsigned fixed = gs_vram_census_fixed();
     unsigned fb = gsKit_texture_size(gs->Width, gs->Height, gs->PSM), zb = gsKit_texture_size(gs->Width, gs->Height, gs->PSMZ);
     printf("vrammap: pointer %u KB, avail %d KB, r_vram live %u KB in %u pages (%u KB) holes %u KB lost %u; screen "
            "buffers 0x%x 0x%x %u KB each, Z 0x%x %u KB; gsKit_vram_alloc calls %u KB\n", gs->CurrentPointer >> 10,
            r_vram_avail(gs) >> 10, tot >> 2, r_vram_pages, r_vram_pages * 8, r_vram_holes >> 2, vm_lost,
            gs->ScreenBuffer[0], gs->ScreenBuffer[1], fb >> 10, gs->ZBuffer, zb >> 10, fixed >> 10);
-    for (unsigned i = 0; i < nvf; i++)
-        printf("vrammap: fixed %s %u KB at 0x%x\n", vf[i].where, vf[i].size >> 10, vf[i].addr);
     for (unsigned j = 0; j < nc; j++)
         printf("vrammap: 0x%08x %u KB %u [%s]\n", c[j].ra, c[j].blocks >> 2, c[j].cnt, c[j].tag);
 }

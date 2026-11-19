@@ -651,10 +651,10 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
         u64 *p = tq;
         p[0] = TAG(6, T_CNT, 0), p[1] = 0;
         p[2] = GIF_SET_TAG(4, 0, 0, 0, 0, 1), p[3] = 0xE;
-        p[4] = GS_SETREG_BITBLTBUF(0, 0, 0, tbp, dbw, psm), p[5] = 0x50;
-        p[6] = GS_SETREG_TRXPOS(0, 0, 0, 0, 0), p[7] = 0x51;
-        p[8] = GS_SETREG_TRXREG(w, h), p[9] = 0x52;
-        p[10] = GS_SETREG_TRXDIR(0), p[11] = 0x53;
+        p[4] = gs_blt_to(tbp, dbw, psm), p[5] = GSR_BITBLTBUF;
+        p[6] = GS_TRXPOS_0, p[7] = GSR_TRXPOS;
+        p[8] = gs_trxreg(w, h), p[9] = GSR_TRXREG;
+        p[10] = GS_TRXDIR_HOST, p[11] = GSR_TRXDIR;
         p += 12;
         for (int s = 0, off = 0; s < slices; s++, off += TEXQ_SLICE) {
             int n = qw - off < TEXQ_SLICE ? qw - off : TEXQ_SLICE;
@@ -677,15 +677,15 @@ int vu1_upload_tex(u32 tbp, int psm, int w, int h, const void *pix, int bytes)
         return 0;
     tag(6, T_CNT, 0, VIF(V_FLUSH, 0, 0), VIF(V_DIRECT, 0, 6));
     q64(GIF_SET_TAG(4, 0, 0, 0, 0, 1), 0xE);
-    q64(GS_SETREG_BITBLTBUF(0, 0, 0, tbp, dbw, psm), 0x50);
-    q64(GS_SETREG_TRXPOS(0, 0, 0, 0, 0), 0x51);
-    q64(GS_SETREG_TRXREG(w, h), 0x52);
-    q64(GS_SETREG_TRXDIR(0), 0x53);
+    q64(gs_blt_to(tbp, dbw, psm), GSR_BITBLTBUF);
+    q64(GS_TRXPOS_0, GSR_TRXPOS);
+    q64(gs_trxreg(w, h), GSR_TRXREG);
+    q64(GS_TRXDIR_HOST, GSR_TRXDIR);
     q64(GIF_SET_TAG(qw, 1, 0, 0, 2, 0), 0);  /* IMAGE */
     tag(qw, T_REF, pix, VIF(V_NOP, 0, 0), VIF(V_DIRECT, 0, qw));
     tag(2, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_DIRECT, 0, 2));
     q64(GIF_SET_TAG(1, 1, 0, 0, 0, 1), 0xE);
-    q64(0, 0x3F);  /* TEXFLUSH */
+    q64(0, GSR_TEXFLUSH);  /* TEXFLUSH */
     return 1;
 }
 
@@ -721,7 +721,7 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
     q64(GIF_SET_TAG(3, clip, 0, 0, 0, 1), 0xE);  /* A+D: TEX0, TEX1, TEST (the clip program kicks it alone) */
     if (!t || (mode & VU1_FLAT)) {  /* untextured: TEX0 unused (no CLUT load: CLD 0) */
         mode |= VU1_FLAT;
-        q64(0, 0x06);
+        q64(0, GSR_TEX0);
     } else {
         /* TEX0 without CLD, kept for the next batch of the same texture (map chunks come grouped by texture) */
         static const GSTEXTURE *lt;
@@ -734,18 +734,18 @@ static void batch_head(GSTEXTURE *t, int cull, int mode, int tris, const float *
                                      t->VramClut / 256, t->ClutPSM, 0, 0, 0);
             lt = t, lt_vram = t->Vram, lt_clut = t->VramClut, lt_wh = wh;
         }
-        q64(lt_tex0 | (u64)cld(t->VramClut) << 61, 0x06);
+        q64(lt_tex0 | (u64)cld(t->VramClut) << 61, GSR_TEX0);
     }
     if (mxl && !(mode & VU1_BLEND)) {  /* vu1_mip: the mip chain's registers in place of TEST (set before) */
-        q64(GS_SETREG_TEX1(0, mxl, 1, MIP_TRILINEAR ? 5 : 4, 0, 0, mip_k), 0x14);
-        q64(mip_tbp, 0x34);  /* MIPTBP1_1 */
+        q64(gs_tex1_mip(mxl, MIP_TRILINEAR ? 5 : 4, mip_k), GSR_TEX1);
+        q64(mip_tbp, GSR_MIPTBP1);  /* MIPTBP1_1 */
     } else {
-        q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
+        q64(GS_TEX1_LINEAR, GSR_TEX1);
         /* TEST_1 set per batch: gsKit leaves the depth test at ALWAYS after its clear until its next primitive, and
          * PATH1 draws in between. Alpha test GEQUAL 0x40 (cut-outs), depth test GEQUAL (larger Z is nearer). */
         /* blended batches: no alpha test (soft edges), alpha comes from the CLUT x vertex alpha */
-        q64(mode & VU1_BLEND ? GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2) : GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2),
-            0x47);
+        q64(mode & VU1_BLEND ? GS_TEST_ZGE : GS_TEST_CUTOUT,
+            GSR_TEST);
     }
     /* PRIM: triangle, gouraud, textured, STQ (perspective-correct), context 1; FGE / ABE per mode. Registers ST,
      * RGBAQ, XYZF2: the program writes the fog factor even when FGE is off */
@@ -1206,12 +1206,12 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
         u32 tbw = (t->Width + 127) / 128 * 2;
         q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
                            t->ClutPSM, 0, 0, cld(t->VramClut)),
-            0x06);
+            GSR_TEX0);
     } else {
-        q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);  /* untextured: TEX1 twice keeps the 3-register A+D */
+        q64(GS_TEX1_LINEAR, GSR_TEX1);  /* untextured: TEX1 twice keeps the 3-register A+D */
     }
-    q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
-    q64(GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47);
+    q64(GS_TEX1_LINEAR, GSR_TEX1);
+    q64(GS_TEST_CUTOUT, GSR_TEST);
     /* PRIM tag template (triangle, gouraud, (textured, STQ), fog, context 1; STQ, RGBAQ, XYZF2): the program copies
      * it in front of each kick of output with NLOOP and EOP set */
     q64(GIF_SET_TAG(skin_clip ? 3 : 0, skin_clip, 1, (t ? 0x1B : 0x0B) | fge, 0, 3), 0x412);
@@ -1266,16 +1266,16 @@ float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const flo
     cp += 14;  /* header 0-6: the caller's */
     /* A+D as fx.c's EE path (render.c tri_list): alpha test off, depth test GEQUAL without Z write, additive or alpha
      * blending, FOGCOL */
-    u64 zbuf = GS_SETREG_ZBUF(gsg->ZBuffer / 8192, gsg->PSMZ, 0);
+    u64 zbuf = gs_zbuf(gsg, 0);
     q64(GIF_SET_TAG(6, 1, 0, 0, 0, 1), 0xE);
     q64(GS_SETREG_TEX0(t->Vram / 256, (t->Width + 127) / 128 * 2, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0,
                        t->VramClut / 256, t->ClutPSM, 0, 0, cld(t->VramClut)),
-        0x06);
-    q64(GS_SETREG_TEX1(0, 0, 1, 1, 0, 0, 0), 0x14);
-    q64(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 2), 0x47);
-    q64(mode & VU1_FX_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42);
-    q64(zbuf | (1ull << 32), 0x4E);
-    q64(fogcol, 0x3D);
+        GSR_TEX0);
+    q64(GS_TEX1_LINEAR, GSR_TEX1);
+    q64(GS_TEST_ZGE, GSR_TEST);
+    q64(mode & VU1_FX_ADD ? GS_ALPHA_ADD : GS_ALPHA_MIX, GSR_ALPHA);
+    q64(zbuf | (1ull << 32), GSR_ZBUF);
+    q64(fogcol, GSR_FOGCOL);
     /* PRIM: triangle strip, gouraud, textured, STQ, blended; FGE for the fogged (alpha) ones */
     q64(GIF_SET_TAG(0, 1, 1, 0x5C | (mode & VU1_FX_FOG ? 0x20 : 0), 0, 3), 0x412);
     for (int s = 0; s < nsys; s++) {  /* keys interleaved {size, colour} by STCYCL 2,1 */

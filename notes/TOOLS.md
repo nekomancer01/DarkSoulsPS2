@@ -89,6 +89,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
 | `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
+| `gs_budget.py` | GS memory (VRAM) budget per owner from `ps2/proto/src/gs_budget.h` (Polaris 1.1); `tools/ci/gsown.py` (CI hygiene) checks the rows sum to 4096 KB and that GS register words are written only through `src/gs.h` |
 | `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |
 | `heapdrift.py` | EE heap drift from an EE log: GC sawtooth or a real leak |
 | `soaklaps.py` | Cuts the Burg soak script to its first N laps |

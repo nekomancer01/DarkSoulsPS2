@@ -455,7 +455,7 @@ static int model_from(ChrType *t, GSGLOBAL *gs, Model *m, void *mb, unsigned siz
     }
     const ChrType *twin = tex_holder(t);  /* the same character from another world block's packs: same textures */
     HM_TAG("enemy %.5s", t->name);  /* HEAPMAP: its textures in the VRAM census (render.c) */
-    int up = twin ? 0 : mdl_upload(m, gs);
+    int up = twin ? 0 : mdl_upload(m, gs, GSO_CHR);
     HM_TAG0();
     if (twin) {
         mdl_share_textures(m, twin->model);

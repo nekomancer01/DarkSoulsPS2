@@ -19,6 +19,7 @@
 #include "drawgrp.h"  /* dg_entity_hidden: the list of entities events switched off (event-5) */
 #include "ev_misc.h"  /* ev_bonfire_level: a bonfire instance shows by its bonfire's state */
 #include "vu1.h"
+#include "gs.h"
 #include "ticks.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
@@ -202,8 +203,8 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
             t->Vram = vtex[k].vram, t->VramClut = vtex[k].clut;
             continue;
         }
-        t->Vram = free_k >= 0 ? r_vram_tex(gs, t->Width, t->Height, t->PSM) : GSKIT_ALLOC_ERROR;
-        t->VramClut = t->Vram != GSKIT_ALLOC_ERROR ? r_vram_clut(gs, t->ClutPSM) : GSKIT_ALLOC_ERROR;
+        t->Vram = free_k >= 0 ? r_vram_tex(gs, t->Width, t->Height, t->PSM, GSO_FX) : GSKIT_ALLOC_ERROR;
+        t->VramClut = t->Vram != GSKIT_ALLOC_ERROR ? r_vram_clut(gs, t->ClutPSM, GSO_FX) : GSKIT_ALLOC_ERROR;
         if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR) {
             r_vram_free_tex(t->Vram, t->Width, t->Height, t->PSM);
             t->Vram = 0;
@@ -741,8 +742,8 @@ void fx_kick(void)
     if (!vb.chain)
         return;
     /* gsKit draws after this chain with its own ALPHA / ZBUF / FOGCOL (as tri_list leaves them) */
-    u64 zbuf = GS_SETREG_ZBUF(fx_gs->ZBuffer / 8192, fx_gs->PSMZ, 0);
-    const u64 r[6] = {fx_gs->PrimAlpha, 0x42, zbuf, 0x4E, vb.fogbase, 0x3D};
+    u64 zbuf = gs_zbuf(fx_gs, 0);
+    const u64 r[6] = {fx_gs->PrimAlpha, GSR_ALPHA, zbuf, GSR_ZBUF, vb.fogbase, GSR_FOGCOL};
     vu1_gs_regs(3, r);
     vu1_kick();
     vb.chain = 0;

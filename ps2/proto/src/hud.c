@@ -78,8 +78,8 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
         t->Clut = (u32 *)(mb + ae[i].clut);
         t->Filter = GS_FILTER_LINEAR;
         /* V6 block allocator; the CLUTs stay CT32 (V5 does not apply: HUD sprites and glyphs blend with soft alpha) */
-        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM);
-        t->VramClut = r_vram_clut(gs, t->ClutPSM);
+        t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM, GSO_UI);
+        t->VramClut = r_vram_clut(gs, t->ClutPSM, GSO_UI);
         if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR)
             return -1;
         gsKit_texture_upload(gs, t);
@@ -285,16 +285,16 @@ float hud_text(float x, float y, const char *s, int r, int g, int b, int align)
 void hud_begin(void)
 {
     gs->PrimAlphaEnable = GS_SETTING_ON;
-    gsKit_set_primalpha(gs, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
-    gsKit_set_test(gs, GS_ATEST_OFF);
-    gsKit_set_test(gs, GS_ZTEST_OFF);
+    gs_primalpha(gs, GS_ALPHA_MIX);
+    gs_test(gs, GS_ATEST_OFF);
+    gs_test(gs, GS_ZTEST_OFF);
 }
 
 void hud_end(void)
 {
     gs->PrimAlphaEnable = GS_SETTING_OFF;
-    gsKit_set_test(gs, GS_ZTEST_ON);
-    gsKit_set_test(gs, GS_ATEST_ON);
+    gs_test(gs, GS_ZTEST_ON);
+    gs_test(gs, GS_ATEST_ON);
 }
 
 /* One bar: frame and plate sized by max / cap, fill by cur / max, tinted */
@@ -330,8 +330,8 @@ static void slots_init(void)
         GSTEXTURE *t = &slot[i].t;
         t->Width = 64, t->Height = 64, t->PSM = GS_PSM_T8, t->ClutPSM = GS_PSM_CT32;
         t->ClutStorageMode = GS_CLUT_STORAGE_CSM1, t->Filter = GS_FILTER_LINEAR;
-        t->Vram = r_vram_tex(gs, 64, 64, GS_PSM_T8);  /* 4 KB + 1 KB CLUT each */
-        t->VramClut = r_vram_clut(gs, GS_PSM_CT32);
+        t->Vram = r_vram_tex(gs, 64, 64, GS_PSM_T8, GSO_UI);  /* 4 KB + 1 KB CLUT each */
+        t->VramClut = r_vram_clut(gs, GS_PSM_CT32, GSO_UI);
         slot[i].ok = t->Vram != GSKIT_ALLOC_ERROR && t->VramClut != GSKIT_ALLOC_ERROR;
         slot[i].want = slot[i].have = -1;
     }
