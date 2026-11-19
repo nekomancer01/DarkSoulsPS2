@@ -1,6 +1,7 @@
 #include "map_i.h"
 #include "testscript.h"
 #include "world.h"
+#include "cvar.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -197,7 +198,7 @@ static inline unsigned mp_sum(void) { return mp_t[0] + mp_t[1] + mp_t[2] + mp_t[
 #endif
 
 /* camera (set per frame in map_draw): eye, right, up, forward; focal length in pixels */
-static float cam[12], cam_f;
+static float cam[12], cam_f, cam_fy;
 
 /* ZSPLIT (2026-11-11): two depth ranges for the 16-bit Z buffer. Z = ZMAX near / z leaves ~200 codes for everything
  * beyond 80 m with the 0.25 m near plane (40 cm a step at 80 m, 1.4 m at 150 m: far walls and roofs z-fought). The map
@@ -397,6 +398,12 @@ int map_stream_open(const char *pak_path)
 #ifndef DG_SEAM
 #define DG_SEAM 1
 #endif
+#ifndef DG_SEAM_VIEW
+#define DG_SEAM_VIEW 1  /* the camera's view direction probed as well as the heading (below); 0 = the heading alone */
+#endif
+#ifndef DG_SEAM_HOLD
+#define DG_SEAM_HOLD 30  /* frames (1 s at 30 fps; ASSUMED: longer than a step's hit / miss flicker); 0 = no hold */
+#endif
 #ifndef MAP_PEER_ZBIAS
 #define MAP_PEER_ZBIAS 0.02f  /* depth push of other maps' blocks (map_draw; ASSUMED: about the coarse level's error, 12 px) */
 #endif
@@ -433,15 +440,40 @@ void map_set_player(V3 feet)
             if (l > 0.01f && l < 2.0f)
                 hx = dx / l, hz = dz / l;  /* the heading (a warp keeps the last one) */
             last = feet;
-            int found = 0;
-            for (float r = 4.0f; r <= DG_SEAM_R && !found && (hx != 0 || hz != 0); r += 4.0f)
-                for (int j = 0; j < MAP_INST && !found; j++) {
-                    ColHit hj;
-                    int cb = mp_inst_col_block(j);
-                    if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
-                        col_floor_block(cb, feet.x + hx * r, feet.z + hz * r, feet.y + 3, feet.y - 6, COL_SOLID, &hj))
-                        dg_seam(j, hj.tri), found = 1;
-                }
+            /* DG_SEAM_VIEW (default 1; 0 = the heading alone): the border groups of research idea 9. The camera's
+             * view direction is probed as well, so the far side shows while the player stands at a seam looking
+             * through it, or walks backwards out of it (the heading alone found nothing standing still) */
+            float dir[2][2] = {{hx, hz}, {0, 0}};
+            if (DG_SEAM_VIEW) {
+                V3 ey, rt, up, fw;
+                float fx, fy, zs;
+                r_camera_basis(&ey, &rt, &up, &fw, &fx, &fy, &zs);
+                float lv = sqrtf(fw.x * fw.x + fw.z * fw.z);
+                if (lv > 0.1f)
+                    dir[1][0] = fw.x / lv, dir[1][1] = fw.z / lv;
+            }
+            /* DG_SEAM_HOLD frames: a floor found ahead keeps adding its groups that long after the probe last hit
+             * it. Without it the shared mask flapped between e0000000 and e0000000|80000040 at the aqueduct's exit
+             * (Ame's playtest 2026-11-17 21:31, t 93.0-94.1: the probe's 4 m steps hit and missed the Burg floor's
+             * edge frame to frame) and the exit showed a white spot */
+            static int held_j[2] = {-1, -1}, held_tri[2];
+            static unsigned held_fr[2], seam_fr;
+            seam_fr++;
+            for (int d = 0; d < 2; d++) {
+                int found = 0;
+                for (float r = 4.0f; r <= DG_SEAM_R && !found && (dir[d][0] != 0 || dir[d][1] != 0); r += 4.0f)
+                    for (int j = 0; j < MAP_INST && !found; j++) {
+                        ColHit hj;
+                        int cb = mp_inst_col_block(j);
+                        if (j != k && cb >= 0 && dg_area(j) == dg_area(k) && !same_map(j, k) &&
+                            col_floor_block(cb, feet.x + dir[d][0] * r, feet.z + dir[d][1] * r, feet.y + 3, feet.y - 6,
+                                            COL_SOLID, &hj))
+                            dg_seam(j, hj.tri), found = 1, held_j[d] = j, held_tri[d] = hj.tri, held_fr[d] = seam_fr;
+                    }
+                if (!found && held_j[d] >= 0 && seam_fr - held_fr[d] <= DG_SEAM_HOLD &&
+                    mp_inst_col_block(held_j[d]) >= 0 && dg_area(held_j[d]) == dg_area(k) && !same_map(held_j[d], k))
+                    dg_seam(held_j[d], held_tri[d]);
+            }
         }
         dg_floor(k, h.tri);  /* the shown draw groups follow the same collision part (drawgrp.c, TECH_DEBT area-5) */
     }
@@ -1125,6 +1157,97 @@ static u32 sky_fog(const MapInst *m, unsigned row, float *a, float *b, float *fm
     return s->rgb[0] | s->rgb[1] << 8 | s->rgb[2] << 16;
 }
 
+/* VOID_RING (default 1, runtime: option set VOID_RING 0 = the old path): the last-resort backdrop (map streaming
+ * research idea 2). main.c clears depth only, because the sky dome covers every pixel, so wherever no level covers
+ * the screen (a block still loading, a far panorama refused or not baked from there, a draw-group mask hiding the far
+ * side of a seam) the bright sky showed through: the "white voids" of Ame's play reports (2026-11-16 / 17). In DSR
+ * every map of the area is resident and those pixels show distant geometry, which the fog has taken to the fog
+ * colour at the port's edge fog distance (FAR). The ring is that stand-in: a band in the map's current fog colour
+ * from the horizon down, fading out VOID_RING_FADE degrees above it, drawn in screen space over the sky dome and
+ * under everything else (no Z written: every map piece, horizon and panorama draws over it). DSR's own distant
+ * ground (sky chunks low on the horizon, sky_low) still draws over it. Always resident: no memory, 2 strips, about
+ * 0.1 ms of GS fill (half the screen, opaque). ASSUMED: the camera has no roll (main.c's orbit camera), so the
+ * horizon is a screen row. Not drawn in hole builds (F9_HOLES / option holes: the magenta clear must show) */
+#ifndef VOID_RING
+#define VOID_RING cv_VOID_RING  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#ifndef VOID_RING_SKY
+#define VOID_RING_SKY 1  /* the ring in the sky's fog colour; 0 = the map's fog colour */
+#endif
+#ifndef VOID_RING_TOP
+#define VOID_RING_TOP 0.0f   /* degrees above the horizon where the ring is still opaque (ASSUMED) */
+#endif
+#ifndef VOID_RING_FADE
+#define VOID_RING_FADE 6.0f  /* degrees over which it fades out above that (ASSUMED: a soft edge, not a line) */
+#endif
+int map_holes;
+
+/* a sky chunk whose box centre lies within 5 degrees above the eye or lower (1): distant ground, drawn over the ring;
+ * 0: the dome (ASSUMED: DSR's dome pieces are cut by sky sector and reach far above the horizon, its ground rings
+ * not) */
+static int sky_low(const Chunk *c, const float e[3])
+{
+    float dx = (c->mn[0] + c->mx[0]) * 0.5f - e[0], dz = (c->mn[2] + c->mx[2]) * 0.5f - e[2];
+    float dy = (c->mn[1] + c->mx[1]) * 0.5f - e[1], h = sqrtf(dx * dx + dz * dz);
+    /* and not a bowl reaching far below: Firelink's black underside (vertex colour 0, -4 to -82 degrees) and the
+     * Burg's dome bottom (-2 to -86) drew over the ring in another fog and left a hard edge across the cloud sea a few
+     * degrees down (graveyard, aqueduct exit, 2026-11-18); the ground rings span -6 to 0 (ASSUMED: 15 degrees, tan 0.27) */
+    return dy < 0.0875f * h && c->mn[1] - e[1] > -0.27f * h;  /* tan 5 deg */
+}
+
+/* screen row (draw buffer, 448 lines) of the directions el degrees above the horizon, camera pitch p (radians) */
+static float ring_row(float el, float p)
+{
+    float a = el * (3.14159265f / 180.0f) - p;
+    a = a > 1.4f ? 1.4f : a < -1.4f ? -1.4f : a;  /* (beyond ~80 degrees off the view axis: off screen anyway) */
+    float y = 224.0f - cam_fy * tanf(a);
+    return y < -64.0f ? -64.0f : y > 512.0f ? 512.0f : y;
+}
+
+static void draw_void_ring(u32 col)
+{
+    GSGLOBAL *gs = gsg;
+    float p = asinf(cam[10] > 1 ? 1 : cam[10] < -1 ? -1 : cam[10]);  /* forward's y: the camera's pitch */
+    float y0 = ring_row(VOID_RING_TOP, p), y1 = ring_row(VOID_RING_TOP + VOID_RING_FADE, p);
+    if (y1 >= (float)gs->Height)
+        return;  /* the horizon is below the screen */
+    /* registers: 3 state + 9 fade band + 2 + 2 per 64-pixel strip + 2 restore = 36 at 640 pixels (24 overran into
+     * draw_sky's frame: TLB miss in sky_low on its eye pointer, ISO 2026-11-17); room for 1024 */
+    u64 r[2 * (16 + 2 * 16)];
+    int n = 0;
+    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
+    int ox = gs->OffsetX, oy = gs->OffsetY, w = gs->Width << 4, h = gs->Height << 4;
+    int iy0 = y0 > 0 ? (int)(y0 * 16) : 0, iy1 = y1 > 0 ? (int)(y1 * 16) : 0;
+    iy0 = iy0 > h ? h : iy0, iy1 = iy1 > h ? h : iy1;
+    u64 c0 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x80, 0);
+    u64 c1 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x00, 0);
+#define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
+    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS (the sky's own state) */
+    REG(zbuf | 1ull << 32, 0x4E);                        /* Z not written */
+    REG(GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42);           /* (Cs - Cd) As + Cd */
+    if (iy1 < iy0) {  /* the fade band: alpha 0 at its top, opaque at its foot (gouraud) */
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_TRISTRIP, 1, 0, 0, 1, 0, 0, 0, 0), 0x00);
+        REG(c1, 0x01), REG(GS_SETREG_XYZ2(ox, oy + iy1, 0), 0x05);
+        REG(c1, 0x01), REG(GS_SETREG_XYZ2(ox + w, oy + iy1, 0), 0x05);
+        REG(c0, 0x01), REG(GS_SETREG_XYZ2(ox, oy + iy0, 0), 0x05);
+        REG(c0, 0x01), REG(GS_SETREG_XYZ2(ox + w, oy + iy0, 0), 0x05);
+    }
+    if (iy0 < h) {  /* opaque from there to the bottom */
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+        REG(c0, 0x01);
+        for (int x = 0; x < w && n + 4 <= (int)(sizeof r / sizeof r[0] / 2); x += 64 << 4) {  /* 64-pixel strips
+                                                                                     (z_clear's page-friendly pattern) */
+            int x1 = x + (64 << 4) < w ? x + (64 << 4) : w;
+            REG(GS_SETREG_XYZ2(ox + x, oy + iy0, 0), 0x05);
+            REG(GS_SETREG_XYZ2(ox + x1, oy + h, 0), 0x05);
+        }
+    }
+    REG(gs->PrimAlpha, 0x42);
+    REG(zbuf, 0x4E);
+#undef REG
+    vu1_gs_regs(n, r);
+}
+
 /* The sky of block sk and the far panorama, then the fog and test registers of the opaque map (fog terms a, b, fmin,
  * colour col). Returns the triangles drawn. */
 static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
@@ -1137,8 +1260,24 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
     /* sky first, each piece under its own FogBank row as in DSR (SkyRow): opaque, then the alpha clouds. The rows in
      * turn, so the fog constants change once per row and pass at most. The edge fog is the map's, not the sky's. */
     r_set_fog_edge(0);
-    for (int pass = 0; pass < 2; pass++) {  /* the player's block's sky (its streams once they are in) */
-        if (pass)
+    /* passes: 0 the opaque sky (with VOID_RING: the pieces above the horizon), 1 (VOID_RING) the void ring, then the
+     * opaque pieces low on the horizon over it (DSR's distant ground rings, Firelink's m9000), 2 the alpha clouds */
+    int ring = VOID_RING && !map_holes;
+#ifdef MAP_PANO_R
+    ring = 0;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
+#endif
+    for (int pass = 0; pass < 3; pass++) {  /* the player's block's sky (its streams once they are in) */
+        int blend = pass == 2;
+        if (pass == 1) {
+            if (!ring)
+                continue;
+            /* VOID_RING_SKY (default 1; 0 = the map's fog colour): the sky's own fog colour (the header's sky row,
+             * what DSR's sky fades to at the horizon). In the map's fog colour the ring was a dark band with a hard
+             * edge over Firelink's cloud sea (graveyard, aqueduct exit; ISO 2026-11-17) */
+            draw_void_ring(VOID_RING_SKY && m->hdr ? (u32)(m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 |
+                                                           m->hdr->sky_fog[2] << 16) : col);
+        }
+        if (blend)
             blend_regs(gs, CHUNK_BLEND);
         for (unsigned row = 0; row <= m->sky_rows; row++) {
             int set = 0;
@@ -1148,7 +1287,9 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                 unsigned cr = CHUNK_SKY_ROW(c->flags);
                 if ((cr <= m->sky_rows ? cr : 0) != row)
                     continue;
-                if (!(c->flags & CHUNK_BLEND) != !pass || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
+                if (!(c->flags & CHUNK_BLEND) != !blend || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
+                    continue;
+                if (ring && !blend && sky_low(c, e) != pass)
                     continue;
 #ifdef MAP_PANO_R
                 continue;  /* panorama capture: no sky (the magenta clear marks the panorama's transparent texels) */
@@ -1165,7 +1306,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                     zs_gs_regs(1, r);
                     r_set_fog(sa, sb2, smin, 255, sky_col, col);
                 }
-                drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (pass ? R_BLEND : 0), no);
+                drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (blend ? R_BLEND : 0), no);
             }
         }
     }
@@ -1962,7 +2103,7 @@ int map_draw(V3 eye)
         r_camera_basis(&ey, &rt, &up, &fw, &fx, &fy, &zs);
         const float b[12] = {ey.x, ey.y, ey.z, rt.x, rt.y, rt.z, up.x, up.y, up.z, fw.x, fw.y, fw.z};
         memcpy(cam, b, sizeof cam);
-        cam_f = fx;
+        cam_f = fx, cam_fy = fy;
         vis_frame(fx, fy);
         MP_BEGIN
         tc_begin(fx);  /* this frame's texture uploads go into the chain from here on */
