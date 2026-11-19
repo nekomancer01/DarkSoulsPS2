@@ -987,6 +987,21 @@ static float skin_amb[3] = {64, 64, 64}, skin_sun[3] = {96, 96, 96};
 static float spec_up[3] = {64, 64, 64}, spec_down[3] = {32, 32, 32}, spec_i[3] = {96, 96, 96},
              spec_ls[3] = {0.40f, 0.80f, -0.45f};
 
+/* character lights of the next vu1_skin_begin (vu1_skin_lights; world, towards the light): the sun's direction (its
+ * colour is skin_sun) and up to two point lights */
+static float lt_sun[3] = {0.40f, 0.80f, -0.45f}, lt_dir[2][3], lt_col[2][3];
+static int lt_np;
+
+void vu1_skin_lights(const float sun_dir[3], int np, const float (*dir)[3], const float (*col)[3])
+{
+    lt_np = np < 0 ? 0 : np > 2 ? 2 : np;
+    for (int c = 0; c < 3; c++) {
+        lt_sun[c] = sun_dir[c];
+        for (int k = 0; k < lt_np; k++)
+            lt_dir[k][c] = dir[k][c], lt_col[k][c] = col[k][c];
+    }
+}
+
 /* i-frame tint of the next vu1_skin_begin's batches (vu1_skin_tint), into its per-draw block */
 static float skin_tint_tex[3], skin_tint_flat[3];
 
@@ -1048,7 +1063,7 @@ void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, in
     /* one call per skinned character in the chain: FLUSHE waits for the previous character's last batch (it reads
      * the palette about to be overwritten); OFFSET also resets the double buffer to BASE */
     int nup = win ? nwin : bones;
-    room(palette_qw(win, nup) + 8 + 2 + SPEC_QW + 1 + VU1L_SKIN_DRAW_QW);
+    room(palette_qw(win, nup) + 8 + 2 + SPEC_QW + 1 + VU1L_SKIN_DRAW_QW + 1 + VU1L_LIGHT_QW);
     tag(0, T_CNT, 0, VIF(V_FLUSHE, 0, 0), VIF(V_STCYCL, 0, 0x0101));
     tag(0, T_CNT, 0, VIF(V_BASE, 0, SKIN2_IN), VIF(V_OFFSET, 0, SKIN2_IN_QW));
     palette_put(palette, win, nup);
@@ -1125,6 +1140,29 @@ void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, in
     cp += 6;
     q64(GIF_SET_TAG(0, 0, 1, 0x1B | fge, 0, 3), 0x412);
     q64(GIF_SET_TAG(0, 0, 1, 0x0B | fge, 0, 3), 0x412);
+    /* Polaris 2.2 PR 3: the light block (layout.py LIGHT), view space: columns M_k = (Lsun_k, Lp1_k, Lp2_k, 1/255 in
+     * M_0.w), the colours (sun, point 1, point 2; 0 for a point light not picked) */
+    {
+        float lv[3][3] = {{0}}, lc[3][3] = {{0}};
+        const float *wd[3] = {lt_sun, lt_dir[0], lt_dir[1]};
+        for (int k = 0; k < 1 + lt_np; k++) {
+            lv[k][0] = right.x * wd[k][0] + right.y * wd[k][1] + right.z * wd[k][2];
+            lv[k][1] = up.x * wd[k][0] + up.y * wd[k][1] + up.z * wd[k][2];
+            lv[k][2] = fwd.x * wd[k][0] + fwd.y * wd[k][1] + fwd.z * wd[k][2];
+            for (int c = 0; c < 3; c++)
+                lc[k][c] = k ? lt_col[k - 1][c] : skin_sun[c];
+        }
+        tag(VU1L_LIGHT_QW, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, VU1L_LIGHT_QW, VU1L_LIGHT));
+        float *l = (float *)cp;
+        for (int c = 0; c < 3; c++) {
+            l[4 * c] = lv[0][c], l[4 * c + 1] = lv[1][c], l[4 * c + 2] = lv[2][c], l[4 * c + 3] = c ? 0 : 1 / 255.0f;
+            for (int k = 0; k < 3; k++)
+                l[12 + 4 * k + c] = lc[k][c];
+            l[12 + 4 * c + 3] = 0;
+        }
+        cp += 2 * VU1L_LIGHT_QW;
+        lt_np = 0;  /* (point lights for this draw only) */
+    }
     skin_tint_tex[0] = skin_tint_tex[1] = skin_tint_tex[2] = 0;  /* (for this draw only, like vu1_skin_fade) */
     skin_tint_flat[0] = skin_tint_flat[1] = skin_tint_flat[2] = 0;
 }
@@ -1296,7 +1334,7 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
         for (int c = 0; c < 3; c++) {
             if (t)
                 f[c] += skin_amb[c];
-            f[4 + c] = t ? 0 : 0.5f, f[8 + c] = t ? skin_sun[c] : 0.75f;
+            f[4 + c] = t ? 0 : 0.5f, f[8 + c] = t ? 0 : 0.75f;  /* textured: the sun is light 0 of LIGHT (PR 3) */
         }
         f[7] = t && ms ? 1 : 0, f[11] = kk;
         if (grey)

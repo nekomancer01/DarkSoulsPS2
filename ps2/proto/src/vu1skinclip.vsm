@@ -4,7 +4,8 @@
 ; header: 0 {tris, cull mask, textured (1.0 / 0.0), 255.0}, 1 K1 (.w 128), 2 A (.w: has m / f), 3 S (.w: k),
 ; 4 A+D tag (EOP), 5-7
 ; TEX0 / TEX1 / TEST, 8 PRIM tag with NLOOP 3 + EOP.
-; Per vertex (unpipelined): view = w A pa + (1 - w) B pb; colour = min(K1 + B (A + S max(n . L, 0)), 255 / 128)
+; Per vertex (unpipelined): view = w A pa + (1 - w) B pb; colour = min(K1 + B (A + S max(n . L, 0) + D), 255 / 128)
+; with D the character lights at LIGHT (textured only; their S is 0)
 ; with B = 1 textured, the vertex colour flat (vu1skin2's two formulas); st = st * textured, STQ z 1. CLIP of (x F/G, y F/G, z - 2 near) against
 ; z, then vu1clip.vsm's core (trivial reject, Sutherland-Hodgman against the planes at 1014, projection, fan, one
 ; triangle per kick from output slot VI08 = 834 / 907); scratch at TOPS+154.
@@ -120,21 +121,35 @@ skcPow0:
 	NOP                            	lq VF24,998(VI00)
 	mulaw ACC,VF30,VF00w           	NOP
 	maddx VF30,VF24,VF25x          	NOP
+	NOP                            	lq VF20,980(VI00)
+	NOP                            	lq VF21,981(VI00)
+	NOP                            	lq VF22,982(VI00)
+	mulax ACC,VF20,VF17x           	NOP
+	madday ACC,VF21,VF17y          	NOP
+	maddz VF23,VF22,VF17z          	NOP
+	maxx.xyz VF23,VF23,VF00x       	NOP
+	NOP                            	lq VF24,983(VI00)
+	NOP                            	lq VF25,984(VI00)
+	NOP                            	lq VF26,985(VI00)
+	mulax ACC,VF24,VF23x           	NOP
+	madday ACC,VF25,VF23y          	NOP
+	maddz VF22,VF26,VF23z          	NOP
+	mulz VF22,VF22,VF09z           	NOP
+	mulw VF23,VF22,VF20w           	NOP
 	itof0.zw VF31,VF14             	NOP
 	mulw.zw VF31,VF31,VF02w        	NOP
 	maxx.w VF17,VF17,VF00x         	NOP
 	mulaw ACC,VF02,VF00w           	NOP
 	maddw VF16,VF03,VF17w          	NOP
+	add VF16,VF16,VF22             	NOP
 	mul VF18,VF15,VF04             	NOP
 	addz VF18,VF18,VF09z           	NOP
 	mulaw ACC,VF01,VF00w           	NOP
 	madd VF19,VF18,VF16            	NOP
 	NOP                            	lq VF24,999(VI00)
-	NOP                            	lq VF26,1000(VI00)
-	mulz.w VF27,VF17,VF31z         	NOP
 	mulaw ACC,VF19,VF00w           	NOP
 	msubaz ACC,VF24,VF31z          	NOP
-	msubaw ACC,VF26,VF27w          	NOP
+	msubaz ACC,VF23,VF31z          	NOP
 	maddw VF19,VF30,VF31w          	NOP
 	miniw.xyz VF19,VF19,VF09w      	NOP
 	mini.w VF19,VF19,VF01          	NOP
@@ -234,21 +249,35 @@ skcPow1:
 	NOP                            	lq VF24,998(VI00)
 	mulaw ACC,VF30,VF00w           	NOP
 	maddx VF30,VF24,VF25x          	NOP
+	NOP                            	lq VF20,980(VI00)
+	NOP                            	lq VF21,981(VI00)
+	NOP                            	lq VF22,982(VI00)
+	mulax ACC,VF20,VF17x           	NOP
+	madday ACC,VF21,VF17y          	NOP
+	maddz VF23,VF22,VF17z          	NOP
+	maxx.xyz VF23,VF23,VF00x       	NOP
+	NOP                            	lq VF24,983(VI00)
+	NOP                            	lq VF25,984(VI00)
+	NOP                            	lq VF26,985(VI00)
+	mulax ACC,VF24,VF23x           	NOP
+	madday ACC,VF25,VF23y          	NOP
+	maddz VF22,VF26,VF23z          	NOP
+	mulz VF22,VF22,VF09z           	NOP
+	mulw VF23,VF22,VF20w           	NOP
 	itof0.zw VF31,VF14             	NOP
 	mulw.zw VF31,VF31,VF02w        	NOP
 	maxx.w VF17,VF17,VF00x         	NOP
 	mulaw ACC,VF02,VF00w           	NOP
 	maddw VF16,VF03,VF17w          	NOP
+	add VF16,VF16,VF22             	NOP
 	mul VF18,VF15,VF04             	NOP
 	addz VF18,VF18,VF09z           	NOP
 	mulaw ACC,VF01,VF00w           	NOP
 	madd VF19,VF18,VF16            	NOP
 	NOP                            	lq VF24,999(VI00)
-	NOP                            	lq VF26,1000(VI00)
-	mulz.w VF27,VF17,VF31z         	NOP
 	mulaw ACC,VF19,VF00w           	NOP
 	msubaz ACC,VF24,VF31z          	NOP
-	msubaw ACC,VF26,VF27w          	NOP
+	msubaz ACC,VF23,VF31z          	NOP
 	maddw VF19,VF30,VF31w          	NOP
 	miniw.xyz VF19,VF19,VF09w      	NOP
 	mini.w VF19,VF19,VF01          	NOP
@@ -348,21 +377,35 @@ skcPow2:
 	NOP                            	lq VF24,998(VI00)
 	mulaw ACC,VF30,VF00w           	NOP
 	maddx VF30,VF24,VF25x          	NOP
+	NOP                            	lq VF20,980(VI00)
+	NOP                            	lq VF21,981(VI00)
+	NOP                            	lq VF22,982(VI00)
+	mulax ACC,VF20,VF17x           	NOP
+	madday ACC,VF21,VF17y          	NOP
+	maddz VF23,VF22,VF17z          	NOP
+	maxx.xyz VF23,VF23,VF00x       	NOP
+	NOP                            	lq VF24,983(VI00)
+	NOP                            	lq VF25,984(VI00)
+	NOP                            	lq VF26,985(VI00)
+	mulax ACC,VF24,VF23x           	NOP
+	madday ACC,VF25,VF23y          	NOP
+	maddz VF22,VF26,VF23z          	NOP
+	mulz VF22,VF22,VF09z           	NOP
+	mulw VF23,VF22,VF20w           	NOP
 	itof0.zw VF31,VF14             	NOP
 	mulw.zw VF31,VF31,VF02w        	NOP
 	maxx.w VF17,VF17,VF00x         	NOP
 	mulaw ACC,VF02,VF00w           	NOP
 	maddw VF16,VF03,VF17w          	NOP
+	add VF16,VF16,VF22             	NOP
 	mul VF18,VF15,VF04             	NOP
 	addz VF18,VF18,VF09z           	NOP
 	mulaw ACC,VF01,VF00w           	NOP
 	madd VF19,VF18,VF16            	NOP
 	NOP                            	lq VF24,999(VI00)
-	NOP                            	lq VF26,1000(VI00)
-	mulz.w VF27,VF17,VF31z         	NOP
 	mulaw ACC,VF19,VF00w           	NOP
 	msubaz ACC,VF24,VF31z          	NOP
-	msubaw ACC,VF26,VF27w          	NOP
+	msubaz ACC,VF23,VF31z          	NOP
 	maddw VF19,VF30,VF31w          	NOP
 	miniw.xyz VF19,VF19,VF09w      	NOP
 	mini.w VF19,VF19,VF01          	NOP

@@ -65,6 +65,12 @@ SPEC_QW = 10  # 9: Eh / 2 (vu1skinclip's exact path)
 # flat batches (tint, .w 0), 3 / 4 the PRIM GIF tag template of textured / flat batches (FGE when the draw fogs)
 SKIN_DRAW = SPEC + SPEC_QW
 SKIN_DRAW_QW = 5
+# Character lights (Polaris 2.2 PR 3, written per draw by vu1_skin_begin; view space): 0-2 the light direction matrix's
+# columns M_k = (Lsun_k, Lp1_k, Lp2_k, k == 0 ? 1/255 : 0) (towards each light: the area's directional light and the two
+# point lights chrlight.c picked, from the character's centre), 3-5 their colours (0x80 = 1.0, .w 0). Textured
+# batches: diffuse D = sum_k colour_k max(n . L_k, 0) on the view-space normal (bone A rotation)
+LIGHT = 980
+LIGHT_QW = 6
 SKIN_CLIP_TRIS = 12
 SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
@@ -91,7 +97,7 @@ REGIONS = {
             ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
-             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
+             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("lights", LIGHT, LIGHT_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
     "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
@@ -120,8 +126,8 @@ PROGRAMS = (
     ("MAP", "VU1Map", 0, "map", "vu1map.vsm"),            # hand-written A/B program (VU1_MAP_OLD)
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
-    ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
-    ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
+    ("SKIN2", "VU1Skin2", 768, "chr", "vu1skin2.vsm"),          # (Polaris 2.2 PR 3: the light terms grew both skin
+    ("SKINCLIP", "VU1SkinClip", 0, "chr", "vu1skinclip.vsm"),    # programs; was 1024 / 384. Away from FX at the top)
     ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
 )

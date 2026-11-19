@@ -10,6 +10,7 @@
 #include "hitch.h"
 #include "vu1.h"
 #include "map.h"
+#include "chrlight.h"
 #include "vmath.h"
 #include "mapstream.h"
 #include "ticks.h"
@@ -1001,10 +1002,13 @@ static float palette[MDL_MAX_BONES][4][4] __attribute__((aligned(16)));
 /* The area light for a character at pos (sent to the skin program) and its direction in view space -> Lv */
 static void skin_light(const M34 *view, V3 pos, float *Lv)
 {
-    /* DSR-fitted light of the area (map.c map_char_light: area LightBank row, tone map, bonfire) */
-    float amb[3], sun[3], L[3];
-    map_char_light(pos, amb, sun, L);
+    /* DSR-fitted light of the area (map.c: area LightBank row, tone map) and the point lights around pos (chrlight.c:
+     * the two strongest with a direction, the rest in the ambient term; CHR_LIGHTS 0 = all in the ambient term) */
+    float amb[3], sun[3], L[3], pd[2][3], pc[2][3];
+    int np;
+    chrl_pick(pos, amb, sun, L, &np, pd, pc);
     vu1_skin_light(amb, sun);
+    vu1_skin_lights(L, np, (const float (*)[3])pd, (const float (*)[3])pc);
     {   /* specular terms of the area (map.c map_char_spec: GI_EnvSpc probe x envSpc, LightBank specular light) */
         float env_up[3], env_down[3], spec_i[3], spec_dir[3];
         map_char_spec(env_up, env_down, spec_i, spec_dir);

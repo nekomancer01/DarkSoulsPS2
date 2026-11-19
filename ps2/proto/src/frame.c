@@ -18,6 +18,7 @@
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
+#include "chrlight.h"
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
@@ -433,6 +434,7 @@ static void phase_emit(Frame *f)
     float dt = f->dt;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
+    chrl_frame();  /* the frame's point lights for the characters (chrlight.c) */
     {
         ot_open(OT_CHR, OT_CHR);
 #ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */

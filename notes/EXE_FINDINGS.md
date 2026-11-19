@@ -40,6 +40,7 @@ TurnAnim = PlayerCtrl+0x308. Frame time `dt` = chr+0x458.
 | NpcParam turnVellocity (+0x0C) for the player | not used | only EnemyCtrl (`FUN_14037fb90`, vtable +0xC8) reads NpcParam+0x0C (via EnemyCtrl+0x300); `ParamFieldReaders.java` finds no +0x0C read through the ChrIns param getter | decompile + scan | high |
 | Walk→run threshold | stick 0.97 ± 0.01 | WalkAnim_Twist +0x21C (0.97) / +0x220 (0.01), ctor `FUN_1403a4bc0`, used in `FUN_1403a5030` | decompile | high |
 | Quick-turn anim trigger | 105° | `FUN_14039f980` with DAT_141A2C154/158 = 105.0 (TurnAnim anims 602-605/620) | decompile | medium |
+| **Character point lights** = colour x falloff x max(N . L, 0) per light (Polaris 2.2 PR 3, src/chrlight.c) | 0x80 = 1.0 colour | FRPG_Deferred_PointLight pixel shader (decompiled for tools/dsr_light.py): saturate((end - d) / (end - begin)) for the player's PointLightBank light, saturate(((end - d) / (end - begin))^3) for FFX effect lights (fx-9); begin / end from the bank row / FFX light | shader decompile + RenderDoc light buffer (fx-9) | high (formula); the port's cap of 2 directional point lights per character is its own (char-16) |
 
 ## ESD names (full list with evidence: `data/esd_names.json`)
 Env functions: `EzStateActionEnv` vtable +0x8 = `FUN_14038b540` (switch on the id). Commands: `EzStateActionEvent`

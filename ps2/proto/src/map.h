@@ -28,6 +28,11 @@ void map_set_player(V3 feet);
  * with the LightID of the collision part, export_map.char_light), plus the player-attached point light by pos's
  * distance to the player (map_set_player). */
 void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3]);
+/* Polaris 2.2 (src/chrlight.c): map_char_light's parts. map_char_base: the area row only (amb, sun, dir as above);
+ * map_player_light: the player-attached point light (feet, colour in the units above, linear falloff begin..end
+ * metres), 0 if there is none. */
+void map_char_base(float amb[3], float sun[3], float dir[3]);
+int map_player_light(float feet[3], float rgb[3], float *begin, float *end);
 /* Specular terms of the player's area for vu1_skin_spec (0x80 = 1.0 for texture modulation): env reflection up /
  * down (GI_EnvSpc probe x LightBank envSpc), the LightBank specular light and its world direction; all 0 without a
  * map (no specular). */
