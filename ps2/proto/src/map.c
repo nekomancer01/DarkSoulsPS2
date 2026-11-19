@@ -117,8 +117,8 @@ int map_upload(GSGLOBAL *gs)
     gsg = gs;
     MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
-    mat_census(0, m->tex_bin + m->hdr->tex_off, m->ntex, m->chunks, m->hdr->chunks, sizeof(Chunk),  /* material.h */
-               m->ctab && ((const unsigned *)(m->cel_bin + m->hdr->cell_off))[1] & MAT_CELLS_FLAG);
+    m->matcls = m->ctab && ((const unsigned *)(m->cel_bin + m->hdr->cell_off))[1] & MAT_CELLS_FLAG;
+    mat_census(0, m->tex_bin + m->hdr->tex_off, m->ntex, m->chunks, m->hdr->chunks, sizeof(Chunk), m->matcls);
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
     /* (tex_bin: the tables' texture piece when the boot block came in pieces, world.c WORLD_BOOT_LEAN; else map_bin) */
     int r = tc_init(gs, m->tex_bin, m->tex_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
@@ -282,6 +282,15 @@ static void blend_regs(GSGLOBAL *gs, int mode)
                 mode ? zbuf | (1ull << 32) : zbuf, 0x4E};
     if (!mode)
         r[0] = gs->PrimAlpha;
+    zs_gs_regs(2, r);
+}
+
+/* GS registers of a material class row (material.h): its ALPHA, ZBUF with ZMSK when it writes no Z. TEST comes per
+ * batch from the blend bit (vu1.c: the rows' TEST words are what it writes, material.c asserts it) */
+static void row_regs(GSGLOBAL *gs, const MatRow *row)
+{
+    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
+    u64 r[4] = {row->alpha, 0x42, row->zmsk ? zbuf | (1ull << 32) : zbuf, 0x4E};
     zs_gs_regs(2, r);
 }
 
@@ -815,6 +824,7 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
      * has no untextured chunks (they would be skipped). */
     if (t) {
         MP_BEGIN
+        const unsigned passes = mode & R_BLEND ? 0 : mp_row(m, c)->passes;  /* the class's passes (material.h) */
         int vclip = cls == 2 && !(c->flags & CHUNK_SKY) ? VU1_CLIP : 0, edge = 0;
         if (!(c->flags & CHUNK_SKY)) {  /* reaches into the edge fog: the edge loop of vu1map2 */
             float zmax;
@@ -827,7 +837,7 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
             edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;  /* the backdrop: DSR's fog only */
         }
         float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && c->tex >= 0) {  /* GS mip chain (render-12) */
+        if ((passes & MP_MIPS) && c->tex >= 0) {  /* GS mip chain (render-12) */
             u64 mt;
             MP_SPLIT(MP_CHAIN);
             int k, mxl = tc_mip(m->tex_base + c->tex, t, st_k, &mt, &k);
@@ -845,9 +855,9 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump && c->tex >= 0)  /* the player's light */
+        if ((passes & MP_PLAYER_LIGHT) && !zs_nobump && c->tex >= 0)  /* the player's light */
             pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
+        if ((passes & MP_RELIEF) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
@@ -1203,8 +1213,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
             draw_void_ring(VOID_RING_SKY && m->hdr ? (u32)(m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 |
                                                            m->hdr->sky_fog[2] << 16) : col);
         }
-        if (blend)
-            blend_regs(gs, CHUNK_BLEND);
+        const MatRow *last = NULL;  /* the class row whose state is set (blended pass) */
         for (unsigned row = 0; row <= m->sky_rows; row++) {
             int set = 0;
             for (int i = 0; i < m->nsky; i++) {
@@ -1213,7 +1222,8 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                 unsigned cr = CHUNK_SKY_ROW(c->flags);
                 if ((cr <= m->sky_rows ? cr : 0) != row)
                     continue;
-                if (!(c->flags & CHUNK_BLEND) != !blend || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
+                const MatRow *mr = mp_row(m, c);
+                if (!mr->zmsk != !blend || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
                     continue;
                 if (ring && !blend && sky_low(c, e) != pass)
                     continue;
@@ -1232,6 +1242,8 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                     zs_gs_regs(1, r);
                     r_set_fog(sa, sb2, smin, 255, sky_col, col);
                 }
+                if (blend && mr != last)  /* the class's ALPHA / ZBUF (material.h) */
+                    row_regs(gs, mr), last = mr;
                 drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (blend ? R_BLEND : 0), no);
             }
         }
@@ -1349,8 +1361,9 @@ static int draw_near_fades(int n, const float e[3])
     return drawn;
 }
 
-/* The first n entries of fxl, after the opaque map: alpha-blended (mist) far to near, then additive (light shafts,
- * order-free); Z tested, not written. Returns the triangles drawn. */
+/* The first n entries of fxl, after the opaque map: alpha-blended (mist, decals, water) far to near, then additive
+ * (light shafts), then subtractive (both order-free); Z tested, not written; each chunk's GS state from its class row
+ * (material.h). Returns the triangles drawn. */
 static int draw_effects(int n, int fog)
 {
     GSGLOBAL *gs = gsg;
@@ -1360,15 +1373,16 @@ static int draw_effects(int n, int fog)
             FxItem tmp = fxl[j];
             fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
         }
-    for (int add = 0; add < 2; add++) {
-        int any = 0;
+    for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
+        const MatRow *last = NULL;
         for (int i = 0; i < n; i++) {
             const Chunk *c = fxl[i].c;
-            if (!(c->flags & CHUNK_ADD) != !add)
+            const MatRow *mr = mp_row(&mp_inst[fxl[i].k], c);
+            if ((mr->alpha == GS_ALPHA_ADD ? 1 : mr->alpha == GS_ALPHA_SUB ? 2 : 0) != pass)
                 continue;
-            if (!any++)
-                blend_regs(gs, CHUNK_BLEND | (add ? CHUNK_ADD : 0));
-            drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
+            if (mr != last)
+                row_regs(gs, mr), last = mr;
+            drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (pass == 1 ? R_ADD : 0),
                                 fxl[i].no);
         }
     }

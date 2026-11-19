@@ -219,6 +219,7 @@
  * NO_HUD              | off      | debug    | -DNO_HUD                                      | ui     | init  | hud.c         | HUD loaded, not drawn
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
+ * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H
