@@ -109,8 +109,9 @@ ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B
 # indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
 # ~18-19 bytes a triangle against ~36 (horizon meshes share fewer vertices than closed ones), about twice the triangles
 IDX = os.environ.get("HZN_IDX", "1") == "1"
-MAPI_HDR, CLIPI_MAX = 8, 336  # export_map / tools/vu1/gen.py
-IDX_TRIS = 64  # vu1.h VU1_IDX_TRIS
+from vu1layout import L as VU1L  # the VU1 memory contract (tools/vu1/layout.py, Polaris 1.5)
+MAPI_HDR, CLIPI_MAX = VU1L.MAPI_HDR, VU1L.CLIPI_MAX
+IDX_TRIS = VU1L.IDX_TRIS
 IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324 <= CLIPI_MAX)
 # bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
 # ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)

@@ -328,6 +328,16 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->nctab = *(const unsigned *)(cel_bin + hdr->cell_off);
     m->ckeys = cell_keys(m->ctab, m->nctab);
     m->pkt = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
+    {   /* the VU1 layout its packets were written for (tools/mapcells.py: cell table word 1 bits 8-31, Polaris 1.5) */
+        unsigned stamp = ((const unsigned *)(cel_bin + hdr->cell_off))[1] >> 8;
+        static unsigned unstamped;  /* blocks noted (an export from before the stamp: say so once a block, no error) */
+        if (!stamp && !(unstamped >> k & 1))
+            unstamped |= 1u << k, printf("map: block %d: no VU1 layout stamp (exported before Polaris 1.5): not checked; "
+                                         "re-export the map to check it\n", k);
+        else if (stamp && stamp != (VU1L_HASH & 0xFFFFFF))
+            printf("TEST error: map block %d: exported for VU1 layout %06x, this ELF has %06x (re-export the map)\n", k,
+                   stamp, VU1L_HASH & 0xFFFFFF);
+    }
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(tex_bin + hdr->fog_off);
     m->fog_ntris = ((const unsigned *)(tex_bin + hdr->fog_off))[1];

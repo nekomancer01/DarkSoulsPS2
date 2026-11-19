@@ -36,6 +36,12 @@ for pair in clip:vu1clip map:vu1map2 mapi:vu1mapi skin:vu1skin2 skinclip:vu1skin
     if cmp -s "$TMP/$kind.vsm" "$vsm"; then echo "${vsm#$ROOT/}: up to date"
     else diff -u "$vsm" "$TMP/$kind.vsm" | head -20; fail "${vsm#$ROOT/} differs from gen.py $kind (regenerate: cd tools/vu1 && python3 gen.py $kind > ../../${vsm#$ROOT/})"; fi
 done
+# the VU1 memory contract (Polaris 1.5): its own checks, and the EE header generated from it
+"$PY" layout.py > "$TMP/layout.txt" 2>&1 || { cat "$TMP/layout.txt"; fail "tools/vu1/layout.py check"; }
+h=$ROOT/ps2/proto/src/vu1_layout.h
+"$PY" gen.py layout > "$TMP/vu1_layout.h" 2> "$TMP/layout.err" || { tail -5 "$TMP/layout.err"; fail "gen.py layout"; }
+if cmp -s "$TMP/vu1_layout.h" "$h"; then echo "${h#$ROOT/}: up to date"
+else diff -u "$h" "$TMP/vu1_layout.h" | head -20; fail "${h#$ROOT/} differs (regenerate: cd tools/vu1 && python3 gen.py layout > ../../${h#$ROOT/})"; fi
 echo "== generated game-data headers up to date"
 cd "$ROOT" || exit 1
 for k in player combat progress; do

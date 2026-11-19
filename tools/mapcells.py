@@ -4,6 +4,7 @@ import math, os, struct
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from vu1layout import L as VU1L  # noqa: E402 (the VU1 memory contract, Polaris 1.5)
 import mapcfg
 import mapchunks
 import mapsimp
@@ -223,7 +224,8 @@ def write_cells(cells, res, all_chunks, nres):
     A cell whose blob would pass NEAR_PART bytes is split into parts of whole chunks (in their order): the first part
     in the cell's own entry, the others in the entries after it with near | CELL_PART, 0 resident chunks and the same
     box; each part is a blob of its own."""
-    tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT, 0, 0)), bytearray()
+    # word 1 bits 8-31: the VU1 layout the packets were written for (tools/vu1/layout.py layout_hash; mapblock.c checks)
+    tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT | (VU1L.layout_hash() & 0xFFFFFF) << 8, 0, 0)), bytearray()
     CELL_SIZES.clear()
     CELL_BUDGET.clear()
     CHUNK_ENTRY[:] = [None] * len(all_chunks)
@@ -276,6 +278,6 @@ def write_cells(cells, res, all_chunks, nres):
         gid += len(n)
     tab[0:4] = struct.pack("<I", len(CELL_SIZES))
     if NEAR_CUBE:  # the cell keys after the entries (mapstream.h CELLS_KEYS / cell_near_d2)
-        tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS)
+        tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS | (VU1L.layout_hash() & 0xFFFFFF) << 8)
         tab += b"".join(struct.pack("<4h", *key, 0) for key, *_ in CELL_SIZES)
     return bytes(tab), bytes(cbin)

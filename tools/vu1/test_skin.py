@@ -1,6 +1,7 @@
 """Compare ref/vu1skin.vsm (the old in-place skin program, kept only as this test's reference) with vu1skin2.vsm
 (pipelined) on random batches in the emulator."""
 import math, os, random, sys
+import gen
 from vuemu import VU1, U, vertices
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ps2/proto/src/')
@@ -41,7 +42,7 @@ def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12)):
         for j in range(3):
             w(8 + 4 * b + j, [R[0][j], R[1][j], R[2][j], L[j]])
         w(8 + 4 * b + 3, t + [0])
-    top = 252
+    top = gen.SKIN_IN
     vu.top = top
     tint = [rng.choice([0, 70, 90]), rng.choice([0, 45]), 0]
     vu.wq(top, [tris, 0x22 if cull else 0, 0, 0])
