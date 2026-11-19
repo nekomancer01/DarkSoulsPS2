@@ -4,6 +4,10 @@
 #include <dmaKit.h>
 #include "render.h"
 #include "vu1.h"
+#include "g2d.h"
+#ifdef OT_HASH
+#include "gstrace.h"
+#endif
 
 #define OT_ENTRIES 16
 
@@ -85,15 +89,33 @@ void ot_deferred(OtBucket first, OtBucket last, void (*run)(void *), void *arg)
     x->buf = -1, x->run = run, x->arg = arg, x->closed = 1;
 }
 
-static void run_queue(void *gs) { r_queue_exec(gs); }
-static void run_queue_wait(void *gs)
+static void run_g2d(void *stream)
 {
-    r_queue_exec(gs);
-    dmaKit_wait_fast();
+    void *chain = g2d_close((G2dStream)(int)stream);
+    dmaKit_wait_fast();  /* the GIF channel idle (texture uploads, the last 2D segment) before this one starts */
+    if (chain) {
+#ifdef OT_HASH
+        const u64 *t = chain;
+        gstrace_chain(chain, t + 2 + 2 * (t[0] & 0xFFFF));
+#endif
+        dmaKit_send_chain(DMA_CHANNEL_GIF, chain, 0);
+    }
 }
-void ot_queue(OtBucket first, OtBucket last, void *gs, int wait_after)
+void ot_g2d(OtBucket first, OtBucket last, int stream) { ot_deferred(first, last, run_g2d, (void *)stream); }
+
+/* gsKit's own queue after Polaris 1.6: nothing should write to it any more (the 2D goes through g2d); if something
+ * still does, run it here (its 16 KB have no bounds check) and say so once */
+void ot_gskit_leftover(void *gs_)
 {
-    ot_deferred(first, last, wait_after ? run_queue_wait : run_queue, gs);
+    GSGLOBAL *gs = gs_;
+    GSQUEUE *q = gs->Os_Queue;
+    if ((char *)q->pool_cur - (char *)q->pool[q->dbuf] > 16) {  /* (16: the DMA tag gsKit keeps at the start) */
+        static int said;
+        if (!said++)
+            printf("TEST warn: ot: gsKit's draw queue was used (%u bytes) after Polaris 1.6\n",
+                   (unsigned)((char *)q->pool_cur - (char *)q->pool[q->dbuf]));
+        r_queue_exec(gs);
+    }
 }
 
 void ot_flush(void)
@@ -123,12 +145,12 @@ void ot_flush(void)
 void ot_wait(void) { vu1_wait(); }
 
 #ifdef OT_HASH
-int ot_ab_old;
-void ot_ab_frame(int frozen) { ot_ab_old = frozen ? !ot_ab_old : 0; }
-void ot_old_begin(int buffer) { vu1_begin(buffer); }
-void ot_old_kick(void) { vu1_kick(); }
-void ot_old_wait(void) { vu1_wait(); }
-void ot_old_queue(void *gs) { r_queue_exec(gs); }
+void ot_hash_begin(int frozen)
+{
+    static int run;
+    run = frozen ? run + 1 : 0;
+    gstrace_begin(run == 2 || run == 3 ? 60 : 0);  /* a shot's second and third frozen frames: their 2D draws in the log */
+}
 #endif
 
 void ot_log(void)

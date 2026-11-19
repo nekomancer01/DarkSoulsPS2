@@ -2,7 +2,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "render.h"
+#include "g2d.h"
 #include "vu1.h"  /* ot_hash_gsq (OT_HASH builds) */
+#ifdef OT_HASH
+#include "gstrace.h"
+#endif
 #include <gsInline.h>
 #include <gif_tags.h>
 
@@ -277,9 +281,9 @@ static void tri_view(V3 a, V3 b, V3 c, u64 col)
     for (int i = 0; i < n; i++)
         project(out[i], &x[i], &y[i], &z[i]);
     if (n >= 3)
-        gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], col, col, col);
+        g2d_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], col, col, col);
     if (n == 4)
-        gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[2], y[2], z[2], x[3], y[3], z[3], col, col, col);
+        g2d_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[2], y[2], z[2], x[3], y[3], z[3], col, col, col);
 }
 
 static u64 shade(V3 n, int r, int g, int b)
@@ -325,7 +329,7 @@ void r_line(V3 a, V3 b, int r, int g, int bl)
     int z1, z2;
     project(va, &x1, &y1, &z1);
     project(vb, &x2, &y2, &z2);
-    gsKit_prim_line_3d(gs, x1, y1, z1, x2, y2, z2, GS_SETREG_RGBAQ(r, g, bl, 0x80, 0));
+    g2d_prim_line_3d(gs, x1, y1, z1, x2, y2, z2, GS_SETREG_RGBAQ(r, g, bl, 0x80, 0));
 }
 
 /* White plane with a light grid every `cell` metres, centred on the origin */
@@ -397,7 +401,9 @@ void r_set_fog(float a, float b, float fmin, float fmax, u32 rgb, u32 base_rgb)
 static void tri_list(GSTEXTURE *t, int mode, int nv, const ClipVert *v, const float (*s)[3])
 {
     int nq = 1 + 6 + 1 + 3 * nv + 1 + 3;
-    u64 *p = gsKit_heap_alloc(gs, nq - 1, (nq - 1) * 16, GIF_AD);
+    u64 *p = g2d_raw(nq);  /* (Polaris 1.6: the 2D writer, src/g2d.h) */
+    if (!p)
+        return;
     u32 tw = 0, th = 0;
     while (t && (1u << tw) < t->Width)
         tw++;
@@ -532,7 +538,7 @@ void r_ground(float size, float cell)
 
 void r_rect(float x, float y, float w, float h, int r, int g, int b)
 {
-    gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, (int)ZMAX, GS_SETREG_RGBAQ(r, g, b, 0x80, 0));
+    g2d_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, (int)ZMAX, GS_SETREG_RGBAQ(r, g, b, 0x80, 0));
 }
 
 /* 3x5 pixel font: each glyph is 5 rows of 3 bits */
@@ -593,8 +599,12 @@ void r_queue_exec(GSGLOBAL *gs)
     }
 #ifdef OT_HASH
     ot_hash_gsq(q->pool[q->dbuf], n);
+    const void *t0 = q->pool[q->dbuf], *t1 = q->pool_cur;
 #endif
     gsKit_queue_exec(gs);
+#ifdef OT_HASH
+    gstrace_chain(t0, t1);  /* after the exec: gsKit fixed up its tags (Polaris 1.6 gate) */
+#endif
 }
 
 #ifdef HEAPMAP

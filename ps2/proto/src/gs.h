@@ -74,10 +74,13 @@ static inline u64 gs_trxreg(int w, int h) { return GS_SETREG_TRXREG(w, h); }
 #define GS_TRXDIR_HOST (GS_SETREG_TRXDIR(0))   /* host -> local (upload) */
 #define GS_TRXDIR_LOCAL (GS_SETREG_TRXDIR(2))  /* local -> local (copy) */
 
-/* gsKit's queued state calls (the 2D layer until Polaris 1.6 replaces gsKit's queue) */
-static inline void gs_test(GSGLOBAL *g, u64 which) { gsKit_set_test(g, which); }
-static inline void gs_primalpha(GSGLOBAL *g, u64 alpha) { gsKit_set_primalpha(g, alpha, 0); }
-static inline void gs_clamp(GSGLOBAL *g, u8 mode) { gsKit_set_clamp(g, mode); }
+/* the 2D layer's state calls (g2d.c, Polaris 1.6: gsKit's queue is gone) */
+void g2d_set_test(GSGLOBAL *gs, u64 which);
+void g2d_set_primalpha(GSGLOBAL *gs, u64 alpha);
+void g2d_set_clamp(GSGLOBAL *gs, u8 mode);
+static inline void gs_test(GSGLOBAL *g, u64 which) { g2d_set_test(g, which); }
+static inline void gs_primalpha(GSGLOBAL *g, u64 alpha) { g2d_set_primalpha(g, alpha); }
+static inline void gs_clamp(GSGLOBAL *g, u8 mode) { g2d_set_clamp(g, mode); }
 
 /* Display: CRT mode, PMODE, DISPFB2 and DISPLAY2 for the one 224-line display buffer (main.c's flip() fills it). */
 void gs_display_init(GSGLOBAL *g, u32 disp_buf, int disp_w, int disp_h, int interlaced);

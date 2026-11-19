@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "enemy.h"
+#include "g2d.h"
 #include "hud.h"
 #include "bonfire.h"
 #include "render.h"
@@ -82,7 +83,7 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
         t->VramClut = r_vram_clut(gs, t->ClutPSM, GSO_UI);
         if (t->Vram == GSKIT_ALLOC_ERROR || t->VramClut == GSKIT_ALLOC_ERROR)
             return -1;
-        gsKit_texture_upload(gs, t);
+        g2d_tex_upload(gs, t);
     }
     ok = 1;
     slots_init();
@@ -109,13 +110,13 @@ void hud_sprite(int s, float x, float y, float w, float h, int r, int g, int b, 
         return;
     const Sprite *p = &spr[s];
     /* half-texel inset: bilinear filtering must not pull in the 1-texel gap around each atlas piece */
-    gsKit_prim_sprite_texture(gs, &atlas[p->atlas], R_HX(x), y, p->u + 0.5f, p->v + 0.5f, R_HX(x + w), y + h,
+    g2d_prim_sprite_texture(gs, &atlas[p->atlas], R_HX(x), y, p->u + 0.5f, p->v + 0.5f, R_HX(x + w), y + h,
                               p->u + p->w - 0.5f, p->v + p->h - 0.5f, HUD_Z, rgba(r, g, b, a));
 }
 
 void hud_fill(float x, float y, float w, float h, int r, int g, int b, int a)
 {
-    gsKit_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, HUD_Z, rgba(r, g, b, a));
+    g2d_prim_sprite(gs, R_HX(x), y, R_HX(x + w), y + h, HUD_Z, rgba(r, g, b, a));
 }
 
 void hud_gradient(float x, float y, float w, float h, const unsigned char c[16], int a)
@@ -124,7 +125,7 @@ void hud_gradient(float x, float y, float w, float h, const unsigned char c[16],
     u64 k[4];
     for (int i = 0; i < 4; i++)
         k[i] = rgba(c[4 * i], c[4 * i + 1], c[4 * i + 2], c[4 * i + 3] * a >> 7);
-    gsKit_prim_quad_gouraud(gs, R_HX(x), y, R_HX(x + w), y, R_HX(x), y + h, R_HX(x + w), y + h, HUD_Z,
+    g2d_prim_quad_gouraud(gs, R_HX(x), y, R_HX(x + w), y, R_HX(x), y + h, R_HX(x + w), y + h, HUD_Z,
                             k[0], k[1], k[3], k[2]);
 }
 
@@ -153,7 +154,7 @@ static void thick_line(float x0, float y0, float x1, float y1, float t, u64 c)
     if (l <= 0)
         return;
     float nx = -dy / l * t * 0.5f, ny = dx / l * t * 0.5f;
-    gsKit_prim_quad(gs, R_HX(x0 + nx), y0 + ny, R_HX(x1 + nx), y1 + ny, R_HX(x0 - nx), y0 - ny, R_HX(x1 - nx), y1 - ny,
+    g2d_prim_quad(gs, R_HX(x0 + nx), y0 + ny, R_HX(x1 + nx), y1 + ny, R_HX(x0 - nx), y0 - ny, R_HX(x1 - nx), y1 - ny,
                     HUD_Z, c);
 }
 
@@ -166,7 +167,7 @@ void hud_button(float x, float y, float h, int btn, int a)
     enum { SEG = 16 };
     for (int i = 0; i < SEG; i++) {  /* plate: a 16-sided disc and a thin rim */
         float a0 = i * 6.2831853f / SEG, a1 = (i + 1) * 6.2831853f / SEG;
-        gsKit_prim_triangle(gs, R_HX(cx), cy, R_HX(cx + r * cosf(a0)), cy + r * sinf(a0), R_HX(cx + r * cosf(a1)),
+        g2d_prim_triangle(gs, R_HX(cx), cy, R_HX(cx + r * cosf(a0)), cy + r * sinf(a0), R_HX(cx + r * cosf(a1)),
                             cy + r * sinf(a1), HUD_Z, plate);
         thick_line(cx + r * cosf(a0), cy + r * sinf(a0), cx + r * cosf(a1), cy + r * sinf(a1), 1.0f, ring);
     }
@@ -235,7 +236,7 @@ float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, i
             continue;
         const Glyph *gl = &gly[*s - 32];
         if (*s != ' ')
-            gsKit_prim_sprite_texture(gs, &atlas[0], R_HX(x + gl->pre * sx), y, gl->u, gl->v,
+            g2d_prim_sprite_texture(gs, &atlas[0], R_HX(x + gl->pre * sx), y, gl->u, gl->v,
                                       R_HX(x + (gl->pre + gl->w) * sx), y + gl->h * sy, gl->u + gl->w, gl->v + gl->h, HUD_Z,
                                       rgba(r, g, b, a));
         x += gl->adv * sx;
@@ -394,7 +395,7 @@ static void slot_icon(int layout, int kit, int si)
         return;  /* empty slot: no icon */
     if (slot[si].have >= 0 && slot[si].have == slot[si].want) {
         float px = item_icon_size();
-        gsKit_prim_sprite_texture(gs, &slot[si].t, R_HX(e->x + (e->w - s) / 2), e->y + (e->h - s) / 2, 0.5f, 0.5f,
+        g2d_prim_sprite_texture(gs, &slot[si].t, R_HX(e->x + (e->w - s) / 2), e->y + (e->h - s) / 2, 0.5f, 0.5f,
                                   R_HX(e->x + (e->w - s) / 2 + s), e->y + (e->h - s) / 2 + s, px - 0.5f, px - 0.5f,
                                   HUD_Z, rgba(0x80, 0x80, 0x80, 0x80));
         return;

@@ -6,6 +6,7 @@
 #include <kernel.h>
 #include <dmaKit.h>
 #include "model.h"
+#include "g2d.h"
 #include "hitch.h"
 #include "vu1.h"
 #include "map.h"
@@ -494,7 +495,7 @@ int mdl_upload(Model *m, GSGLOBAL *gs, GsOwner o)
             mdl_free_textures(m);  /* the ones before it: a failed upload holds no VRAM */
             return -1;
         }
-        gsKit_texture_upload(gs, t);
+        g2d_tex_upload(gs, t);
         t->Clut = NULL;  /* clut16 is reused by the next texture */
     }
     return r_vram_avail(gs);
