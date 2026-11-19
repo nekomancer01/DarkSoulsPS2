@@ -17,7 +17,7 @@ must not depend on AI), booted from the ISO as a player does (tools/test-run.py 
            <out>/new/<route>/gsdump.html), frame p50 / p90 / max and refusals vs the base. A route without a base is
            recorded as the base with --record-missing (tools/ci/pcsx2-smoke.sh), else skipped.
            Prints one table; exit code 0, or with --gate the number of routes over a threshold.
-Thresholds (defaults set just above the run-to-run noise of three runs of one build, 2026-11-18, see THRESH): a shot's
+Thresholds (defaults just above the run-to-run noise of one build: record + two compares, see THRESH): a shot's
 changed pixels > --img-fail, frame p90 up > --p90-ms, worst frame up > --max-ms, refusals up > --refusals.
 Every PCSX2 job goes through tools/q (-m 2). Results stay in build/golden/ (git-ignored: game pictures)."""
 import argparse, glob, json, os, re, shutil, subprocess, sys
@@ -28,9 +28,12 @@ sys.path.insert(0, TOOLS)
 import hitchsum  # noqa: E402
 
 ROUTES = ["asylum", "firelink", "burg_west", "burg_bonfire", "taurus", "parish_seam"]
-# Run-to-run noise of one build (ASSUMED until measured on more builds; record + 2 compares on main 2026-11-18):
-# see the PR / notes/TOOLS.md row. img: share of changed pixels in one shot; ms: frame time deltas; refusals: count.
-THRESH = {"img": 0.02, "p90_ms": 2.0, "max_ms": 20.0, "refusals": 5}
+# Run-to-run noise of one build (TECH_DEBT test-10), record + 2 compares each of main f3689ac (2026-11-18) and
+# c112f8b (2026-11-19): worst shot 1.14 % changed pixels (asylum/cell: the player's idle animation phase; every other
+# shot <= 0.60 %), frame p50 / p90 unchanged (vsync-quantised at 33.5 ms), worst frame +0.7 ms, refusals and pop-ins
+# unchanged. Limits: about 1.75x the picture noise, p90 a third of a vsync, the worst frame below one extra vsync
+# (16.7 ms), refusals a couple of items.
+THRESH = {"img": 0.02, "p90_ms": 1.0, "max_ms": 10.0, "refusals": 2}
 
 
 def q(cmd, log):
