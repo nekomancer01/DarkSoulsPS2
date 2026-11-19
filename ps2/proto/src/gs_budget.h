@@ -7,9 +7,11 @@
  * The rows sum to the GS's 4096 KB together with GSB_HOLES_KB (blocks free inside pages already taken) and
  * GSB_FREE_KB (pages never taken), so a new owner's budget has to come out of another row.
  *
- * In this step (Polaris 1.1) the budgets only report: an owner going over its row logs a "TEST warn" line, which
- * tools/budget.py counts. Enforcement (an allocation over its owner's budget refused) is Polaris 2.7. Running out of
- * the 4096 KB stays a hard failure as before ("Not enough VRAM", the GS draws nothing new). */
+ * An owner going over its row logs a "TEST warn" line, which tools/budget.py counts. Since Polaris 2.7 the owners
+ * that come and go with the world (CHR, OBJ, FX) are refused an allocation past their row (gs.c gs_vram_admit, "TEST
+ * warn: gs vram refused"; the caller drops that texture set as when VRAM is full); the rest still only report.
+ * GS_VRAM_ENFORCE=0 builds report only. Running out of the 4096 KB stays a hard failure as before ("Not enough VRAM",
+ * the GS draws nothing new). */
 #ifndef GS_BUDGET_H
 #define GS_BUDGET_H
 

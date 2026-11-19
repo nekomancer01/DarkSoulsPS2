@@ -47,6 +47,7 @@ _Static_assert(GSB_FRAME_KB + GSB_WORLD_KB + GSB_CHR_PLAYER_KB + GSB_CHR_KB + GS
 static unsigned char own[GS_BLOCKS / 2];  /* owner + 1 of the allocation starting at each block (4 bits), 0 = none */
 static unsigned used[GSO_N], peak[GSO_N], fold_peak[GSO_N];  /* blocks */
 static unsigned char warned[GSO_N];
+static unsigned refused[GSO_N], refused_kb[GSO_N];  /* gs_vram_admit refusals per (parent) owner */
 static int borrowed;
 
 static unsigned own_get(unsigned b) { return own[b >> 1] >> ((b & 1) * 4) & 15; }
@@ -77,6 +78,26 @@ void gs_vram_charge(GsOwner o, u32 vram, unsigned blocks)
         printf("TEST warn: gs vram %s %u KB over its %u KB budget (gs_budget.h)\n", gs_owner_name[p], f / 4, budget_kb[p]);
     } else if (f / 4 <= budget_kb[p])
         warned[p] = 0;
+}
+
+/* Polaris 2.7: the owners whose allocations come and go with the world (characters, objects, effects) are refused
+ * past their gs_budget.h row, so one of them cannot starve the others or the UI; the rest (frame, world pools, the
+ * player, UI) are placed once at boot or on a loading screen and keep reporting only. GS_VRAM_ENFORCE=0: report only
+ * for every owner (the Polaris 1.1 behaviour). */
+#ifndef GS_VRAM_ENFORCE
+#define GS_VRAM_ENFORCE 1
+#endif
+int gs_vram_admit(GsOwner o, unsigned blocks)
+{
+    if (o >= GSO_N)
+        return 1;
+    GsOwner p = parent[o];
+    if (!GS_VRAM_ENFORCE || !(p == GSO_CHR || p == GSO_OBJ || p == GSO_FX) || (folded(p) + blocks) / 4 <= budget_kb[p])
+        return 1;
+    refused[p]++, refused_kb[p] += blocks / 4;
+    printf("TEST warn: gs vram refused %s %u KB: %u of its %u KB in use (gs_budget.h)\n", gs_owner_name[p], blocks / 4,
+           folded(p) / 4, budget_kb[p]);
+    return 0;
 }
 
 void gs_vram_credit(u32 vram, unsigned blocks)
@@ -126,7 +147,10 @@ void gs_vram_log(const GSGLOBAL *g, const char *why)
     unsigned sum = 0;
     for (int i = 0; i < GSO_N; i++) {
         sum += used[i];
-        if (parent[i] == (GsOwner)i)
+        if (parent[i] == (GsOwner)i && refused[i])
+            n += snprintf(buf + n, sizeof buf - n, " %s %u/%u refused %u (%u KB)", gs_owner_name[i], folded(i) / 4,
+                          budget_kb[i], refused[i], refused_kb[i]);
+        else if (parent[i] == (GsOwner)i)
             n += snprintf(buf + n, sizeof buf - n, " %s %u/%u", gs_owner_name[i], folded(i) / 4, budget_kb[i]);
         else
             n += snprintf(buf + n, sizeof buf - n, " (%s %u)", gs_owner_name[i], used[i] / 4);
