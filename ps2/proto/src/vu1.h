@@ -102,7 +102,7 @@ void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_byt
 void *vu1_skin_seg_end(void *at, u32 entry);
 int vu1_skin_can_call(int textured);
 void vu1_skin_call(const void *seg, unsigned last_cbp);
-#define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
+#define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 40-bone palette window */
 /* One skinned batch (<= VU1_SKIN_TRIS triangles, unindexed): 16-byte aligned streams per vertex: pa/pb s16x4
  * (bone-local position * 4096, palette offset 4 * bone), nrm s16x4 (normal in bone A space * 4096, weight of A * 4096),
  * st f32x2 normalized (textured) or colour u8x4 (t == NULL). tint: added to the light (0x80 = 1.0 when textured). */

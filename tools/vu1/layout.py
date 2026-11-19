@@ -42,9 +42,12 @@ CLIPI_MAX = C2_POLYA  # indexed batches through the indexed entry: header + vert
 MAPI_HDR = 8  # header qwords of an indexed batch: vu1map2's 7 + {vertex passes, triangle stream offset, 0, 0}
 
 # skin pass (character chains: vu1skin2, vu1skinclip; VIF BASE SKIN_IN, OFFSET SKIN_IN_SIZE)
-BONE_WIN, BONE_QW, BONE_MAX = 8, 4, 61  # the bone palette window: 4 qwords a bone, 61 bones (vu1_skin_window pages bigger skeletons through it)
+# The bone palette window: 4 qwords a bone, 40 bones; model.c pages every skeleton over 40 through it by bone windows
+# (Polaris 2.2 PR 2; was 61, windows only above it). DSR's meshes use <= 38 bones each (FLVER mesh bone tables, all 171
+# chr/ FLVERs), so a window still spans whole meshes; the 21 slots freed pay for 27-triangle batches (were 24).
+BONE_WIN, BONE_QW, BONE_MAX = 8, 4, 40
 SKIN_KICK = 8
-SKIN_TRIS = 24
+SKIN_TRIS = 27
 SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 252
 SKIN_IN_SIZE = 9 + 12 * SKIN_TRIS
 SKIN_OUT0 = SKIN_IN + 2 * SKIN_IN_SIZE

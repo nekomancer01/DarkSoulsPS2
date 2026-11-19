@@ -21,11 +21,11 @@
 #define VU1L_MAPI_HDR 8
 #define VU1L_BONE_WIN 8
 #define VU1L_BONE_QW 4
-#define VU1L_BONE_MAX 61
-#define VU1L_SKIN_TRIS 24
-#define VU1L_SKIN_IN 252
-#define VU1L_SKIN_IN_SIZE 297
-#define VU1L_SKIN_OUT0 846
+#define VU1L_BONE_MAX 40
+#define VU1L_SKIN_TRIS 27
+#define VU1L_SKIN_IN 168
+#define VU1L_SKIN_IN_SIZE 333
+#define VU1L_SKIN_OUT0 834
 #define VU1L_SKIN_OUT_SIZE 73
 #define VU1L_SPEC 992
 #define VU1L_SPEC_QW 10
@@ -47,8 +47,8 @@
 /* VIF double buffering per chain kind: BASE, OFFSET */
 #define VU1L_VIF_MAP_BASE 8
 #define VU1L_VIF_MAP_OFFSET 493
-#define VU1L_VIF_SKIN_BASE 252
-#define VU1L_VIF_SKIN_OFFSET 297
+#define VU1L_VIF_SKIN_BASE 168
+#define VU1L_VIF_SKIN_OFFSET 333
 #define VU1L_VIF_FX_BASE 16
 #define VU1L_VIF_FX_OFFSET 271
 #define VU1L_BUF_MAP 0
@@ -74,7 +74,7 @@
 #define VU1L_CODE_MAPI 580
 
 /* hash of what exported VIF packets depend on (layout.layout_hash): stamped into map.bin's cell table */
-#define VU1L_HASH 0xee62b641u
+#define VU1L_HASH 0x94104096u
 /* VU1 registers carried from one program call to the next in a chain: none */
 
 #endif

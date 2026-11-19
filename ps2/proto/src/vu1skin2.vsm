@@ -21,7 +21,7 @@
 ; clamp(a z + b); CLIP of (x q F/G, y q F/G, 2 near q - 1) against 1 flags near / guard-band vertices (triangle
 ; skipped with ADC, as before); back faces: sign / zero of -((B - A) x (C - A)).z on screen, caught by the cull mask.
 
-; layout: SKIN_IN 252 (297 qw each), SKIN_OUT0 846, SKIN_OUT1 919 (73 qw each), end 992
+; layout: SKIN_IN 168 (333 qw each), SKIN_OUT0 834, SKIN_OUT1 907 (73 qw each), end 980
 ; Tex loop: 132 cycles per triangle (44.0 per vertex) in the tools/vu1 timing model
 ; TexSpec loop: 198 cycles per triangle (66.0 per vertex) in the tools/vu1 timing model
 ; Flat loop: 135 cycles per triangle (45.0 per vertex) in the tools/vu1 timing model
@@ -40,7 +40,7 @@ VU1Skin2_Tex:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
@@ -59,7 +59,7 @@ VU1Skin2_Tex:
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpTex
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpTex:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -209,7 +209,7 @@ skin2TriTex:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpTex
 	NOP                            	NOP
@@ -221,7 +221,7 @@ VU1Skin2_TexSpec:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
@@ -240,7 +240,7 @@ VU1Skin2_TexSpec:
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpTexSpec
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpTexSpec:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -456,7 +456,7 @@ skin2TriTexSpec:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpTexSpec
 	NOP                            	NOP
@@ -468,7 +468,7 @@ VU1Skin2_Flat:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
@@ -484,7 +484,7 @@ VU1Skin2_Flat:
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpFlat
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpFlat:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -637,7 +637,7 @@ skin2TriFlat:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpFlat
 	NOP                            	NOP
