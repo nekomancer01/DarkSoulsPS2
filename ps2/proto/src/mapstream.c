@@ -1300,6 +1300,17 @@ void mapstream_update(const float pos[3])
     HITCH_END(is, HS_MSIO);
     if (!planned && defrag_left > 0)  /* MS_TIDY: a quiet frame (no plan, no move for a read) keeps whole pages free */
         ms_tidy();
+    {  /* MS_QSCALE: the frames spent below full scale, a line per 300 frames (~10 s) that had any */
+        static unsigned qn, qlow;
+        static float qmin = 1.0f;
+        float q = qs_now();
+        qlow += q < 1.0f, qmin = q < qmin ? q : qmin;
+        if (++qn >= 300) {
+            if (qlow)
+                printf("mapstream: quality scale 300 frames: %u reduced, lowest %.2f\n", qlow, (double)qmin);
+            qn = qlow = 0, qmin = 1.0f;
+        }
+    }
     flow_log(pos);
 }
 

@@ -261,6 +261,24 @@ def near_cut(sizes):
 CELL_PART = 0x80000000
 
 
+def near_hist(hist, sizes, parts):
+    """Adds a cell's near parts to the export's size print, for the cut used and the greedy one (NEAR_CLASSES A/B)."""
+    global NEAR_CLASSES
+    cuts = [("classed" if NEAR_CLASSES else "greedy", parts)]
+    if NEAR_CLASSES:
+        NEAR_CLASSES = False
+        cuts.append(("greedy", near_cut(sizes)))
+        NEAR_CLASSES = True
+    for cut, ps in cuts:
+        h = hist.setdefault(cut, [0, 0, 0, 0, 0])
+        for part in ps:
+            b = sum(sizes[j] for j in part)
+            b += -b % 64
+            h[0 if b <= NEAR_TAIL else 2 if b >= NEAR_FULL_MIN else 1] += 1
+        h[3] += len(ps)
+        h[4] = max(h[4], len(ps))
+
+
 def write_cells(cells, res, all_chunks, nres):
     """DSM5 cell table + cells.bin. Table: u32 cells, flags (CELLS_VIFPKT), 0, 0; per cell (48 B) f32 min[3], max[3] (resident + near
     chunks), u32 blob offset, blob bytes (in cells.bin), near chunks, first resident chunk, resident chunks, number in
@@ -276,6 +294,7 @@ def write_cells(cells, res, all_chunks, nres):
     CELL_BUDGET.clear()
     CHUNK_ENTRY[:] = [None] * len(all_chunks)
     first, gid = 0, nres
+    hist = {}  # cut -> [tail, mid, full, parts, most parts in a cell] (the near part size print below)
     for key, r, n in cells:
         boxes = [all_chunks[i] for i in range(first, first + len(r))] + \
                 [all_chunks[gid + j] for j in range(len(n))]
@@ -286,6 +305,8 @@ def write_cells(cells, res, all_chunks, nres):
         def size(j):  # bytes chunk gid + j adds to a blob: its record + its packet (VIF code qwords, streams)
             return 64 + len(pkts[j][0])
         parts = near_cut([size(j) for j in range(len(n))])
+        if n:
+            near_hist(hist, [size(j) for j in range(len(n))], parts)
         assert len(parts) <= NEAR_PARTS_MAX, f"cell {key}: {len(parts)} near parts"
         for i in list(range(first, first + len(r))) + [gid + j for j in range(len(n))]:
             CHUNK_ENTRY[i] = len(CELL_SIZES)  # the cell's own (first) entry, also for its later near parts
@@ -315,6 +336,9 @@ def write_cells(cells, res, all_chunks, nres):
                             *(min(b[6][a] for b in nbx) for a in range(3)), *(max(b[7][a] for b in nbx) for a in range(3))])
         first += len(r)
         gid += len(n)
+    for cut, h in sorted(hist.items()):
+        print(f"  near parts ({cut}): {h[3]} = tail {h[0]} / mid {h[1]} / full {h[2]}, most in a cell {h[4]} "
+              f"(max {NEAR_PARTS_MAX})")
     tab[0:4] = struct.pack("<I", len(CELL_SIZES))
     if NEAR_CUBE:  # the cell keys after the entries (mapstream.h CELLS_KEYS / cell_near_d2)
         tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS)
