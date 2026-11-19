@@ -76,9 +76,10 @@ int __wrap_world_hold(const float *feet) { return __real_world_hold(feet) || lab
 /* frame.h frame_clock: the simulation clock in EE ticks, by frames (option fixeddt's clock on the console) */
 static unsigned lab_clock;
 unsigned frame_clock(void) { return lab_clock; }
-/* frame.h frame_budget_clock with fixeddt: the frame's clock plus FRAME_DET_READ_US per read this frame (work units) */
-static unsigned lab_reads;
-unsigned frame_budget_clock(void) { return lab_clock + ++lab_reads * (unsigned)(FRAME_DET_READ_US * 295u); }
+/* frame.h frame_budget_clock / frame_det_work with fixeddt: the frame's clock plus the work reported this frame */
+static unsigned lab_work;
+unsigned frame_budget_clock(void) { return lab_clock + lab_work; }
+void frame_det_work(unsigned t) { lab_work += t; }
 
 static int boot(const char *root, const char *area, const char *script)
 {
@@ -158,7 +159,7 @@ static void world_step(void)
 static void step(void)
 {
     lab_clock += (unsigned)(dt * 294912000.0f);
-    lab_reads = 0;
+    lab_work = 0;
     frame_phase = FP_SIM_A;
     player_update(&pl, &in, yaw, dt);
     status_update(&pl, dt);
