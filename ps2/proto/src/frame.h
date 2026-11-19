@@ -59,8 +59,9 @@ void frame_log(void);
  * With fixeddt, frame_clock() runs on frames (frames x dt, and it stops while a test shot is frozen): the map's
  * player-light blend steps by frames, and effects and HUD smoothing hold still on frozen frames. The work a real-time
  * budget cuts (lua0's collector step, event.c's instance runs) reads frame_budget_clock() instead, which with fixeddt
- * counts work: each read inside a frame adds FRAME_DET_READ_US, so the budgets still cut in (the deferred-event and
- * partial-sweep paths of real play are taken) and cut at the same point every run. What depends on the
+ * counts work: the work done this frame as its callers report it (frame_det_work: event.c per instruction and per
+ * condition test, lua0 per object swept, at ASSUMED EE costs), so the budgets still cut in where real play's would
+ * (a block's constructors, a long sweep) and cut at the same point every run. What depends on the
  * disc (a block or an enemy model arriving) stays as non-deterministic as the drive: record traces at spots where
  * everything needed is resident, after a settle wait. */
 extern float frame_det_dt;       /* 0: off */
@@ -73,12 +74,10 @@ int frame_det_buffers(void);
 /* the simulation clock in EE ticks: ticks() normally, frames x fixeddt with fixeddt */
 unsigned frame_clock(void);
 /* the clock a per-frame work budget reads (elapsed = two reads apart): ticks() normally; with fixeddt the frame's
- * clock plus FRAME_DET_READ_US per read so far this frame (deterministic work units) */
-#ifndef FRAME_DET_READ_US
-#define FRAME_DET_READ_US 40  /* ASSUMED: about one EMEVD instance run or 64 collector sweeps on the EE (a map's
-                               * constructors: 300+ runs in 12-20 ms) */
-#endif
+ * clock plus the work reported this frame (deterministic) */
 unsigned frame_budget_clock(void);
+/* fixeddt only (else nothing): work done, as the EE ticks it stands for */
+void frame_det_work(unsigned ticks);
 
 /* What main.c hands the loop: the boot's results and its platform helpers */
 typedef struct {

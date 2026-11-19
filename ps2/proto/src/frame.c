@@ -145,10 +145,12 @@ static void rec_put(int i, const void *p, unsigned n)
 }
 
 unsigned frame_clock(void) { return frame_det_dt > 0 ? det_clock : ticks(); }
-static unsigned det_reads;  /* frame_budget_clock reads this frame (fixeddt) */
-unsigned frame_budget_clock(void)
+static unsigned det_work;  /* work reported this frame, in EE ticks (fixeddt) */
+unsigned frame_budget_clock(void) { return frame_det_dt > 0 ? det_clock + det_work : ticks(); }
+void frame_det_work(unsigned t)
 {
-    return frame_det_dt > 0 ? det_clock + ++det_reads * (unsigned)(FRAME_DET_READ_US * 295u) : ticks();
+    if (frame_det_dt > 0)
+        det_work += t;
 }
 
 int frame_det_buffers(void)
@@ -269,7 +271,7 @@ static void phase_begin(Frame *f)
         f->dt = frame_det_dt;
         if (!f->frozen)
             det_clock += (unsigned)(frame_det_dt * 294912000.0f);
-        det_reads = 0;
+        det_work = 0;
     }
 }
 

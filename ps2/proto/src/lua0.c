@@ -927,6 +927,8 @@ static void gc_mark(void (*extra_roots)(void))
 
 /* Free unmarked objects from sweep_pp on until the list ends (returns 1) or `budget` ticks have passed (0 = no
  * limit). Objects allocated since the mark go in at the head of allgc, behind the sweep, and are live. */
+/* option fixeddt (frame.h frame_det_work): what 64 objects swept stand for in the collector's budget (ASSUMED 16 us) */
+#define LUA_DET_SWEEP64_TICKS (16u * 295u)
 static int gc_sweep(unsigned budget)
 {
     unsigned t0 = frame_budget_clock(), n = 0;  /* (by work with option fixeddt: frame.h) */
@@ -962,7 +964,7 @@ static int gc_sweep(unsigned budget)
             lua0_heap -= size < lua0_heap ? size : lua0_heap;
             lrel(o);
         }
-        if (budget && !(++n & 63) && frame_budget_clock() - t0 > budget)
+        if (budget && !(++n & 63) && (frame_det_work(LUA_DET_SWEEP64_TICKS), frame_budget_clock() - t0 > budget))
             break;
     }
     sweep_pp = pp;
