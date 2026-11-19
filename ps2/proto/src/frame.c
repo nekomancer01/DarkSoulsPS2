@@ -8,6 +8,7 @@
 #include "frame.h"
 #include "render.h"
 #include "mem.h"
+#include "ot.h"
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
@@ -91,6 +92,9 @@ void frame_log(void)
 
 /* ---- the loop ---- */
 
+/* the order table's deferred entries (ot.h) */
+static void run_flip(void *b) { ((const FrameBoot *)b)->flip(((const FrameBoot *)b)->gs); }
+
 typedef struct {
     const FrameBoot *b;
     GSGLOBAL *gs;
@@ -112,6 +116,10 @@ typedef struct {
 static void phase_begin(Frame *f)
 {
     PROF_FRAME();
+    ot_frame_begin();
+#ifdef OT_HASH
+    ot_ab_frame(test_frozen());  /* every other frozen frame: the old kick sequence (ot.h) */
+#endif
     unsigned now = ticks();
     f->dt = (now - f->last) / 294912000.0f;
     f->dt_real = f->dt;  /* test stats: the frame time before the clamps */
@@ -260,17 +268,28 @@ static void phase_emit_map(Frame *f)
     if (f->b->map_ok && !FRAME_SKIP_MAP) {
         /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
         unsigned t0 = ticks();
-        vu1_begin(0);
-        f->b->z_clear(gs);
-        frame_draw_check(FE_MAP_DRAW);
-        MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
-        vu1_kick();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
+#ifdef OT_HASH
+        if (ot_ab_old) {  /* the sequence before the order table (same-run A/B, ot.h) */
+            ot_old_begin(0);
+            f->b->z_clear(gs);
+            MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
+            ot_old_kick();
+        } else
+#endif
+        {
+            ot_open(OT_SKY, OT_BLEND);  /* map.c's own order inside: sky, panorama, horizon, world, relief, blended chunks */
+            f->b->z_clear(gs);
+            frame_draw_check(FE_MAP_DRAW);
+            MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
+            ot_close();
+            ot_flush();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
+        }
         f->t_cull += ((ticks() - t0) / 294912.0f - f->t_cull) * 0.1f;
     } else if (!f->b->map_ok) {
         gsKit_clear(gs, GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0));
         r_ground(40, 2);
-        r_queue_exec(gs);  /* before the character's VU1 chain draws on top */
-        dmaKit_wait_fast();
+        ot_queue(OT_WORLD, OT_WORLD, gs, 1);  /* before the character's VU1 chain draws on top */
+        ot_flush();
     }
     HITCH_END(map, HS_MAP);
 }
@@ -316,14 +335,30 @@ static void phase_emit(Frame *f)
     float dt = f->dt;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
-    vu1_begin(1);
-#ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
-    frame_draw_check(FE_CHR_DRAW);
-    player_draw(pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
-    enemy_draw();      /* same path, one bone palette per enemy */
-    objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
+#ifdef OT_HASH
+    if (ot_ab_old) {
+        ot_old_begin(1);
+        player_draw(pl);
+        enemy_draw();
+        objects_draw();
+        ot_old_kick();
+    } else
 #endif
-    vu1_kick();
+    {
+        ot_open(OT_CHR, OT_CHR);
+#ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
+        frame_draw_check(FE_CHR_DRAW);
+        player_draw(pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
+        enemy_draw();      /* same path, one bone palette per enemy */
+#endif
+        ot_close();
+        ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */
+#ifndef MAP_PANO_R
+        objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
+#endif
+        ot_close();
+        ot_flush();
+    }
     HITCH_BEGIN(fx);
     MEM_LEGACY(FX) {
         fx_update(dt, f->eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
@@ -374,17 +409,39 @@ static void phase_present(Frame *f)
     PROF_MARK(PROF_VU1WAIT);
     hitch_acc[HS_CHR] += ticks() - f->t1;
     unsigned t2 = ticks();
-    fx_kick();   /* FX_VU1: the particle chain, after the characters' */
-    vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
+    fx_kick();   /* FX_VU1: the particle chain (closes its segment), after the characters' */
+#ifdef OT_HASH
+    if (ot_ab_old)
+        ot_old_wait();
+    else
+#endif
+    {
+        ot_flush();
+        ot_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
+    }
     mem_frame_swap();  /* the frame buffer two frames old: its chains are done (mem.h) */
     f->t_wait += ((ticks() - t2) / 294912.0f - f->t_wait) * 0.1f;
     hitch_acc[HS_WAIT] += ticks() - t2;
     PROF_MARK(PROF_FLIP);
     HITCH_BEGIN(flip);
-    r_queue_exec(gs);
-    f->b->flip(gs);
+    /* gsKit's queue: the EE-path triangles (BLEND), the effects' gsKit packets (FX), HUD and menus (UI); then the far
+     * depth of field and the flip (POST). The queue's span starts below FX but runs after it: ot.h, TECH_DEBT render-18 */
+#ifdef OT_HASH
+    if (ot_ab_old) {
+        ot_old_queue(gs);
+        f->b->flip(gs);
+    } else
+#endif
+    {
+        ot_queue(OT_BLEND, OT_UI, gs, 0);
+        ot_deferred(OT_POST, OT_POST, run_flip, (void *)f->b);
+        ot_flush();
+    }
     if (f->vram_free >= 0)  /* character / block textures come and go (TECH_DEBT world-4) */
         f->vram_free = r_vram_avail(gs);
+#ifdef OT_HASH
+    ot_hash_frame(f->frozen);  /* (frozen test frames: the world holds still while a shot is taken) */
+#endif
     HITCH_END(flip, HS_FLIP);
     HITCH_BEGIN(save);
     MEM_LEGACY(TEST) test_frame_end(pl, f->avg_dt, f->dt_real, f->t_cull, f->t_char, f->t_wait, f->tris_drawn,

@@ -37,6 +37,7 @@
  * MEM_STRICT          | off      | debug    | -DMEM_STRICT                                  | core   | new   | mem.c         | TEST error on a heap allocation in play outside a legacy tag (mem.h MEM_TAGS) or off the main thread
  * FRAME_STRICT        | off      | debug    | -DFRAME_STRICT                                | main   | new   | frame.c vu1.c | TEST error on a draw call in a simulate phase or a simulate call in an emit phase (frame.h), every vu1_add* checked
  * FRAME_SKIP_MAP      | 0        | debug    | -DFRAME_SKIP_MAP=1                            | main   | new   | frame.c       | runtime: the map pass writes no packets (the check that SIM_B reads nothing EMIT_MAP produced, frame.h)
+ * OT_HASH             | off      | debug    | -DOT_HASH                                     | gfx    | new   | vu1.c render.c frame.c | "othash:" lines: the VIF1 stream per kick and gsKit's queue hashed on frozen test frames (the order table's byte check, tests/ot_check.txt)
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | core   | init  | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
