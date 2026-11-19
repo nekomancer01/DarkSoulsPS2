@@ -15,6 +15,7 @@
  *   stubs                   the stub calls so far, "stub presentation|readback N NAME" (lab.h: readback = a layer
  *                           violation the simulation depends on)
  *   quit
+ * `lab ROOT AREA noenemies` boots as a script with "option noenemies" would (a replay of such a trace: its header flag).
  * Script mode (Polaris 1.7c): `lab ROOT AREA SCRIPT [MAX_FRAMES]` boots as main.c does with a test script (test_init,
  * save_boot, save_apply_player), runs the script through src/testscript.c's own interpreter frame by frame (input,
  * camera, then the simulate phase unless frozen, test_frame_end, save_tick) until it ends, prints the stub
@@ -44,6 +45,8 @@
 #include "map.h"
 #include "world.h"
 #include "objects.h"
+#include "enemy.h"
+#include "render.h"
 #include "pickup.h"
 #include "bonfire.h"
 #include "testscript.h"
@@ -54,6 +57,8 @@ int lab_noenemies;
 static Player pl;
 static Input in;
 static float yaw, pitch, dt = 1.0f / 30;
+static float cam_y = -1e9f, cam_dist = 4.0f;  /* (frame.c's camera follow state) */
+static V3 eye, target;
 static unsigned frame;
 
 #define NSTUB 128
@@ -71,6 +76,44 @@ static void world_step(void);
 /* replay: the console's world_hold held the player this frame (trace flag 4: a block or collision tile still loading
  * there). The Lab never waits for data, so it takes the hold from the trace (link option --wrap=world_hold). */
 static int lab_held;
+static const float *lab_cam;  /* replay (trace version 3): the frame's eye and target, else NULL */
+/* replay (trace version 3 with NAME.enemies): the enemy types the console had loaded per frame ("FRAME T NAME..."
+ * lines); enemy_load_gate lets a type load only on a frame the console had it (its loads also wait for RAM room) */
+static char **lab_types;
+static unsigned lab_ntypes;
+static int lab_type_gate(const char *key)
+{
+    const char *l = frame < lab_ntypes ? lab_types[frame] : NULL;
+    size_t n = strlen(key);
+    for (const char *p = l; p && (p = strchr(p, ' ')) != NULL; p++)
+        if (!strncmp(p + 1, key, n) && (p[1 + n] == ' ' || p[1 + n] == 0))
+            return 1;
+    return 0;
+}
+static void load_types(const char *trace)
+{
+    char path[600], line[1 << 12];
+    snprintf(path, sizeof path, "%s.enemies", trace);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return;
+    while (fgets(line, sizeof line, f)) {
+        unsigned fr;
+        int k;
+        if (sscanf(line, "%u T%n", &fr, &k) != 1 || line[k - 1] != 'T')
+            continue;
+        if (fr >= lab_ntypes) {
+            unsigned n = fr + 1024;
+            lab_types = realloc(lab_types, n * sizeof *lab_types);
+            memset(lab_types + lab_ntypes, 0, (n - lab_ntypes) * sizeof *lab_types);
+            lab_ntypes = n;
+        }
+        line[strcspn(line, "\n")] = 0;
+        lab_types[fr] = strdup(line + k);  /* " NAME NAME ..." */
+    }
+    fclose(f);
+    enemy_load_gate = lab_type_gate;
+}
 int __real_world_hold(const float *feet);
 int __wrap_world_hold(const float *feet) { return __real_world_hold(feet) || lab_held; }
 /* frame.h frame_clock: the simulation clock in EE ticks, by frames (option fixeddt's clock on the console) */
@@ -110,9 +153,12 @@ static int boot(const char *root, const char *area, const char *script)
     int world = world_init(area);
     char path[128];
     snprintf(path, sizeof path, PACK_ROOT "%s.pak", area);
-    void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL;
+    void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL, *enemy_blob = NULL, *lua = NULL;
+    unsigned lua_size = 0;
     if (pack_open(&pk, path)) {
         col = pack_load(&pk, "collision.bin", NULL);
+        enemy_blob = pack_load(&pk, "enemies.bin", NULL);
+        lua = pack_load(&pk, "ai.lua0", &lua_size);
         obj = pack_load(&pk, "objects.bin", NULL);
         ev = pack_load(&pk, "events.bin", NULL);
         evc = pack_load(&pk, "evcommon.bin", NULL);
@@ -122,13 +168,17 @@ static int boot(const char *root, const char *area, const char *script)
         world_boot_map(), world_stream_open();
     if (!col || !col_init(col))
         return printf("error collision %s\n", area), 0;
+    if (!lab_noenemies)  /* (main.c: "option noenemies" places no enemy roster) */
+        enemy_init(NULL, enemy_blob, lua, (int)lua_size);
     objects_init(NULL, obj);
     if (ev && event_init(evc))
         event_block_on(0, ev);
     pickup_init(NULL, NULL, 0);
     world_systems(NULL);
     combat_sweep_hook = objects_sweep_hook;
+    combat_throw_hook = enemy_throw_try;
     status_init();
+    pickup_prompt_player(&pl);  /* (main.c: the Pick up item prompt and "pickup droplot ... here" follow this player) */
     player_init(&pl);
     map_spawn(&pl.pos, &pl.yaw);  /* main.c's boot order: the area's spawn, the saved position, the script */
     pl.on_map = 1;
@@ -154,6 +204,15 @@ static void world_step(void)
     }
 }
 
+/* frame.c phase_sim_a's enemy_stream, then again until no type the player is near waits for its load (each call does one
+ * part of a load: enemy.c job_poll): enemies never arrive late in the Lab */
+static void enemy_step(void)
+{
+    enemy_stream(&pl);
+    for (int g = 0; g < 256 && !enemy_stream_settled(); g++)
+        enemy_stream(&pl);
+}
+
 /* One frame of simulate in frame.c's order: phase_sim_a's player, phase_world's world update, phase_sim_b's objects,
  * events, world items and bonfire (enemies: 1.7c-3) */
 static void step(void)
@@ -165,8 +224,13 @@ static void step(void)
     status_update(&pl, dt);
     combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);
     event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);
+    enemy_step();
+    cam_follow(&pl, yaw, pitch, dt, 1, &cam_y, &cam_dist, &eye, &target);  /* (the enemies' pose updates read it) */
+    if (lab_cam)
+        eye = v3(lab_cam[0], lab_cam[1], lab_cam[2]), target = v3(lab_cam[3], lab_cam[4], lab_cam[5]), r_camera(eye, target);
     world_step();
     frame_phase = FP_SIM_B;
+    enemy_update(&pl, dt);
     objects_update(&pl, dt);
     event_update(&pl, dt);
     if (PICKUP)
@@ -212,8 +276,13 @@ static void run_script(unsigned max_frames, int states)
         }
         test_frame_end(&pl, dt, dt, 0, 0, 0, 0, 0);
         save_tick(&pl, dt);
-        if (states)  /* the frame's state line, as option record's .state log (lab.py run --state) */
+        if (states) {  /* the frame's state line, as option record's .state log (lab.py run --state), and enemy rows */
+            static char eb[1 << 16];
             state_line();
+            int en = enemy_trace_lines(eb, sizeof eb, frame);
+            for (char *l = eb, *e; l < eb + en; l = e + 1)
+                e = strchr(l, '\n'), printf("enemy %.*s\n", (int)(e - l), l);
+        }
     }
     if (test_active())
         printf("TEST error lab: still running after %u frames\n", max_frames);
@@ -233,16 +302,20 @@ static void set_bits(unsigned b)
 static void replay(const char *path)
 {
     FILE *f = fopen(path, "rb");
-    unsigned h[5];
-    if (!f || fread(h, 4, 5, f) != 5 || h[0] != 0x54525344 || h[1] != 2) {
+    unsigned h[6] = {0};
+    if (!f || fread(h, 4, 5, f) != 5 || h[0] != 0x54525344 || (h[1] != 2 && h[1] != 3) || h[4] > 256 || h[4] < 64 ||
+        (h[1] >= 3 && fread(h + 5, 4, 1, f) != 1)) {
         printf("error trace %s\n", path);
         if (f)
             fclose(f);
         return;
     }
-    unsigned char r[64];
+    unsigned char r[256];
     int first = 1;
-    while (fread(r, 64, 1, f) == 1) {
+    if (h[1] >= 3)
+        load_types(path);
+    static char ebuf[1 << 16];
+    while (fread(r, h[4], 1, f) == 1) {
         const unsigned *u = (const unsigned *)r;
         const float *x = (const float *)r;
         frame = u[0], dt = x[1];
@@ -254,12 +327,19 @@ static void replay(const char *path)
         if (u[10] & 1 || first)  /* moved since the last frame (a test spawn, a warp), or the start: as recorded */
             pl.pos = v3(x[11], x[12], x[13]), pl.yaw = x[14];
         lab_held = (u[10] & 4) != 0;  /* the console's world held the player (streaming): the Lab holds it the same */
+        /* version 3: the camera as the console's simulate read it (cam_follow's own result is replaced) */
+        lab_cam = h[1] >= 3 ? x + 15 : NULL;
         if (!(u[10] & 2))  /* (frozen frames run no simulate) */
             step();
         lab_held = 0;
         first = 0;
         frame = u[0];  /* (the .state log names the frame the input belongs to) */
         state_line();
+        int en = enemy_trace_lines(ebuf, sizeof ebuf, frame);  /* (the format of option record's NAME.enemies) */
+        for (char *l = ebuf, *e; l < ebuf + en; l = e + 1) {
+            e = strchr(l, '\n');
+            printf("enemy %.*s\n", (int)(e - l), l);
+        }
     }
     fclose(f);
 }
@@ -268,9 +348,11 @@ int main(int argc, char **argv)
 {
     char line[512];
     setvbuf(stdout, NULL, _IOLBF, 0);
-    if (argc >= 3 && !boot(argv[1], argv[2], argc >= 4 ? argv[3] : NULL))
+    int script = argc >= 4 && strcmp(argv[3], "noenemies");
+    lab_noenemies = argc >= 4 && !script;  /* `lab ROOT AREA noenemies`: a replay of a trace recorded without enemies */
+    if (argc >= 3 && !boot(argv[1], argv[2], script ? argv[3] : NULL))
         return 1;
-    if (argc >= 4) {
+    if (script) {
         run_script(argc >= 5 && atoi(argv[4]) > 0 ? (unsigned)atoi(argv[4]) : 30 * 60 * 30,
                    argc >= 6 && !strcmp(argv[5], "states"));
         return 0;

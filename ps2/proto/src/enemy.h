@@ -28,6 +28,20 @@ void enemy_respawn(void);
  * before the map chain is kicked: mapstream_alloc may drop cells, and a PATH3 upload must not interleave with the
  * map chain's PATH2 CLUT loads (shared BITBLTBUF / TRXDIR) */
 void enemy_stream(const Player *pl);
+/* 1 when no type load is in flight and no type near enough to load waits for one (with room for it): the Lab steps
+ * enemy_stream until this holds, so a type never arrives late there (read only) */
+int enemy_stream_settled(void);
+/* Trace rows (frame.c option record's NAME.enemies, the Lab's replay): a line per placed enemy whose type is loaded,
+ * "FRAME ENTITY X Y Z YAW ESD0/ESD1 AI ACT HP OMIT DG HX HZ" (ESD: current state per group; AI: perception state; ACT:
+ * action anim, -1 none; OMIT: omission level; DG: 1 when its draw group is shown; HX HZ: its placement, which keys
+ * characters without an entity id). Returns the bytes written to buf. */
+int enemy_trace_lines(char *buf, int cap, unsigned frame);
+/* "FRAME T NAME@DIR..." : the types loaded this frame (the same file; a replay loads only these: enemy_load_gate) */
+int enemy_trace_types(char *buf, int cap, unsigned frame);
+/* NULL on the console. The Lab's replay sets it: a type is resident exactly on the frames the recording had it loaded
+ * (it loads then and unloads when the recording's did), in place of the distance and RAM room rules (the console's
+ * loads also wait for RAM, STREAM_RAM_FLOOR, which the host's heap never runs short of, and arrive over frames) */
+extern int (*enemy_load_gate)(const char *key);  /* key: "c2540@m10_01_00_00_w/" */
 /* Perception, AI, ESD, animation, movement and hits for every enemy near the player (runs while VU1 draws the map) */
 void enemy_update(Player *pl, float dt);
 /* Skin + draw the visible enemies into the current VU1 chain (after vu1_begin, like player_draw) */

@@ -13,6 +13,7 @@
 #include "drb.h"
 #include "mapstream.h"
 #include "ev_chr.h"
+#include "lpass.h"
 
 /* ---- the map (render) and its streamer (memory: the host heap) ---- */
 int dg_entity(int id, int on) { (void)id, (void)on, LAB_COUNT("dg_entity (map parts shown / hidden)"); return 1; }
@@ -32,7 +33,16 @@ MapStreamStats mapstream_stats;
 void *mapstream_alloc_pool(unsigned n, int pool) { (void)pool; return malloc(n); }
 void *mapstream_alloc_soft(unsigned n) { return malloc(n); }
 int mapstream_arena(void) { return 1; }
-int mapstream_busy(const float pos[3], float r, float r_focus) { (void)pos, (void)r, (void)r_focus; return 0; }
+/* A warp's settle (world.c) loops while the streamer still reads the near cells at the new spot, which on the console
+ * is never none: the first check after mapstream_settle(1) says busy, so the settle takes the steps the console's does
+ * at least once (a step while warping is when kept-only blocks lean and go: tests/ev_chr.txt's far warp turns the Burg
+ * west block off on the console). Afterwards nothing is ever still reading. */
+static int settle_busy;
+int mapstream_busy(const float pos[3], float r, float r_focus)
+{
+    (void)pos, (void)r, (void)r_focus;
+    return settle_busy > 0 ? settle_busy-- : 0;
+}
 void mapstream_focus(int k) { (void)k; }
 void mapstream_hold(int on) { (void)on; }
 unsigned mapstream_lend_early(void) { return 0; }
@@ -44,7 +54,7 @@ int mapstream_pools_on_build(void) { return 0; }
 int mapstream_pool_wait(void) { return 0; }
 int mapstream_reading(int k) { (void)k; return 0; }
 void mapstream_reserve(unsigned extra) { (void)extra; }
-void mapstream_settle(int on) { (void)on; }
+void mapstream_settle(int on) { settle_busy = on ? 1 : 0; }
 void mapstream_update(const float pos[3]) { (void)pos; }
 void pack_pump(void) {}
 void hitch_block_read(unsigned bytes) { (void)bytes; }
@@ -103,25 +113,16 @@ const char *hud_string(int s) { (void)s; return ""; }
 float hud_text(float x, float y, const char *s, int r, int g, int b, int align) { (void)y, (void)s, (void)r, (void)g, (void)b, (void)align; return x; }
 float hud_text_width(const char *s) { (void)s; return 0; }
 
-/* ---- enemies (Polaris 1.7c-3): none placed yet. A block's enemy roster coming and going is bookkeeping (presentation
- * until enemies are in); an event asking about or acting on an enemy reads back, except in a script with
- * "option noenemies", where the console has no enemies (nor NPC stand-ins) either and answers as these stubs do. ---- */
-#define ENEMY_READBACK(name) (lab_noenemies ? (void)0 : LAB_READBACK(name))
-void enemy_block_add(int block) { (void)block, LAB_COUNT("enemy_block_add (enemies: 1.7c-3)"); }
-void enemy_block_remove(int block) { (void)block; }
-int enemy_block_types(GSGLOBAL *gs, int block, const void *blob) { (void)gs, (void)block, (void)blob; return 1; }
-unsigned enemy_ram_free(void) { return 64u << 20; }
-void enemy_respawn(void) { LAB_COUNT("enemy_respawn (enemies: 1.7c-3)"); }
-int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
-{
-    (void)entity, (void)pos, (void)dead, (void)hp_ratio, (void)active, ENEMY_READBACK("enemy_entity (enemies: 1.7c-3)");
-    return -1;  /* (enemy.c: not an enemy, NPC or unplaced roster entry) */
-}
-float enemy_entity_anim_length(int entity, int anim) { (void)entity, (void)anim, ENEMY_READBACK("enemy_entity_anim_length"); return 0; }
-void enemy_entity_bind(int entity, struct EvChr *c) { (void)entity, (void)c; }
-int enemy_entity_damage(int entity, int hp) { (void)entity, (void)hp, ENEMY_READBACK("enemy_entity_damage"); return 0; }
-int enemy_entity_enable(int entity, int on, int bit) { (void)entity, (void)on, (void)bit, ENEMY_READBACK("enemy_entity_enable"); return 0; }
-int enemy_entity_kill(int entity, int award) { (void)entity, (void)award, ENEMY_READBACK("enemy_entity_kill"); return 0; }
-int enemy_entity_msg(int entity, int msg) { (void)entity, (void)msg, ENEMY_READBACK("enemy_entity_msg"); return 0; }
-int enemy_entity_warp(int entity, const float pos[3], float yaw) { (void)entity, (void)pos, (void)yaw, ENEMY_READBACK("enemy_entity_warp"); return 0; }
-int enemy_kill_near(V3 p, float r) { (void)p, (void)r, ENEMY_READBACK("enemy_kill_near"); return 0; }
+
+/* ---- what enemy.c / ai.c / npc.c reach outside simulate (Polaris 1.7c-3) ---- */
+/* Draw groups: the Lab shows every group until the draw-group player update moves out of map.c (Polaris 1.7c-4, after
+ * PR #252; TECH_DEBT test-9): an enemy in a group the console hides updates here. det_burg3 is recorded where the
+ * console's mask shows every enemy in range (checked from the recording, not assumed) */
+int dg_char(int k, const float pos[3]) { (void)k, (void)pos; return 0; }
+int dg_mask_shown(int k, int mask) { (void)k, (void)mask, LAB_COUNT("dg_mask_shown (the Lab shows every draw group: 1.7c-4)"); return 1; }
+unsigned lpass_t[LG_N];
+void *mapstream_alloc_gentle(unsigned n) { return malloc(n); }
+char pack_error[96];
+void snd_chr_load(const char *model) { (void)model; }
+void snd_chr_unload(const char *model) { (void)model; }
+void vu1_skin_fade(float fmax) { (void)fmax; }

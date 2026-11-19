@@ -68,6 +68,9 @@ extern float frame_det_dt;       /* 0: off */
 extern unsigned frame_det_seed;  /* the seed when frame_det_seeded */
 extern int frame_det_seeded;     /* option seed N given (N may be 0) */
 void frame_det_record(const char *path);
+/* the recorder's buffers (272 KB), taken by option fixeddt and option record alike so a deterministic run's heap is the
+ * same recorded or not; 0 (TEST error) when the heap has no room */
+int frame_det_buffers(void);
 /* the simulation clock in EE ticks: ticks() normally, frames x fixeddt with fixeddt */
 unsigned frame_clock(void);
 /* the clock a per-frame work budget reads (elapsed = two reads apart): ticks() normally; with fixeddt the frame's

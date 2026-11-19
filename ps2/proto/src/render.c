@@ -10,24 +10,12 @@
 #include <gsInline.h>
 #include <gif_tags.h>
 
-#define SCREEN_W ((float)R_SCREEN_W)
-#define SCREEN_H ((float)R_SCREEN_H)
-#define NEAR R_NEAR
-/* LockCamParam row 0: camFovY 43 degrees. W x 448 is shown 4:3, so a pixel is (W / 448) / (4 / 3) times wider than
- * tall: FOCAL_Y = 224 / tan(21.5 deg), FOCAL_X = FOCAL_Y * (W / 448) / (4 / 3) (609 at 640, 487.2 at 512). */
-#ifndef PANO_ZOOM
-#define PANO_ZOOM 1.0f  /* tools/pano.py capture builds only (-DPANO_ZOOM=2.0f): narrower view, more texels per degree */
-#endif
-#define FOCAL_Y (568.4f * PANO_ZOOM)
-#define FOCAL_X (609.0f * R_SCREEN_W / 640.0f * PANO_ZOOM)
-#define FOCAL FOCAL_X  /* guard-band tests use the larger one, which is the stricter limit on both axes */
-#define ZMAX 65535.0f  /* 16-bit Z (PSMZ16S, matching the CT16 colour buffer); larger = nearer, tested GEQUAL */
+#include "camera_i.h"  /* SCREEN_W / H, NEAR, FOCAL_X / Y, ZMAX, GUARD: shared with camera.c */
 
 static GSGLOBAL *gs;
 /* The floor is drawn first at the farthest depth, so nothing on it can lose the depth test against it: with real
  * depths, large near-clipped floor tiles intermittently hid the character's lower body. */
 static int flat_z;
-static V3 cam_eye, cam_right, cam_up, cam_fwd;
 static const V3 LIGHT = {0.4f, 0.8f, -0.45f};
 
 M3 m3_rot_y(float a) { float c = cosf(a), s = sinf(a); M3 r = {{c, 0, s, 0, 1, 0, -s, 0, c}}; return r; }
@@ -227,28 +215,6 @@ void r_vram_free_lin(u32 addr, int n)
 
 int r_vram_avail(const GSGLOBAL *g) { return 4 * 1024 * 1024 - (int)g->CurrentPointer + r_vram_holes * 256; }
 
-void r_camera(V3 eye, V3 target)
-{
-    cam_eye = eye;
-    cam_fwd = v3norm(v3sub(target, eye));
-    cam_right = v3norm(v3cross(v3(0, 1, 0), cam_fwd));
-    cam_up = v3cross(cam_fwd, cam_right);
-}
-
-void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
-{
-    *eye = cam_eye, *right = cam_right, *up = cam_up, *fwd = cam_fwd;
-    *focal = FOCAL_X;
-    *focal_y = FOCAL_Y;
-    *zscale = ZMAX * NEAR;
-}
-
-static V3 to_view(V3 p)
-{
-    V3 d = v3sub(p, cam_eye);
-    return v3(v3dot(d, cam_right), v3dot(d, cam_up), v3dot(d, cam_fwd));
-}
-
 static void project(V3 v, float *sx, float *sy, int *sz)
 {
     *sx = SCREEN_W / 2 + FOCAL_X * v.x / v.z;
@@ -300,15 +266,17 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
     static const unsigned char face[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 4, 7, 3},
                                              {1, 2, 6, 5}, {3, 7, 6, 2}, {0, 1, 5, 4}};
     static const signed char fn[6][3] = {{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
-    V3 w[8], v[8];
+    V3 w[8], v[8], eye, rt, up, fw;
+    float fo, fy, zs;
+    r_camera_basis(&eye, &rt, &up, &fw, &fo, &fy, &zs);
     for (int i = 0; i < 8; i++) {
         V3 l = v3(c.x + h.x * corner[i][0], c.y + h.y * corner[i][1], c.z + h.z * corner[i][2]);
         w[i] = v3add(pos, m3_apply(rot, l));
-        v[i] = to_view(w[i]);
+        v[i] = r_view(w[i]);
     }
     for (int f = 0; f < 6; f++) {
         V3 n = m3_apply(rot, v3(fn[f][0], fn[f][1], fn[f][2]));
-        if (v3dot(n, v3sub(w[face[f][0]], cam_eye)) >= 0)
+        if (v3dot(n, v3sub(w[face[f][0]], eye)) >= 0)
             continue;  /* back face */
         u64 col = shade(n, r, g, b);
         tri_view(v[face[f][0]], v[face[f][1]], v[face[f][2]], col);
@@ -318,7 +286,7 @@ void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b)
 
 void r_line(V3 a, V3 b, int r, int g, int bl)
 {
-    V3 va = to_view(a), vb = to_view(b);
+    V3 va = r_view(a), vb = r_view(b);
     if (va.z < NEAR && vb.z < NEAR)
         return;
     if (va.z < NEAR)
@@ -333,10 +301,6 @@ void r_line(V3 a, V3 b, int r, int g, int bl)
 }
 
 /* White plane with a light grid every `cell` metres, centred on the origin */
-#define GUARD R_GUARD
-
-V3 r_view(V3 p) { return to_view(p); }
-
 int r_point_inside(const V3 *v)
 {
     float lim = GUARD / FOCAL * v->z;
@@ -495,26 +459,6 @@ void r_tri_clip(GSTEXTURE *t, const ClipVert *a, const ClipVert *b, const ClipVe
         tri_list(t, mode, nl, lv, (const float (*)[3])ls);
 }
 
-/* Bounding-sphere frustum test: one view transform and four plane distances per chunk */
-int r_box_classify(const float *mn, const float *mx)
-{
-    V3 c = v3((mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
-    float dx = mx[0] - c.x, dy = mx[1] - c.y, dz = mx[2] - c.z, r = sqrtf(dx * dx + dy * dy + dz * dz);
-    V3 v = to_view(c);
-    if (v.z < NEAR - r)
-        return 0;
-    /* side planes |x| = t z with t = tan(half fov) (+40 px margin); signed distance = (|x| - t z) / sqrt(1 + t^2) */
-    const float tx = (SCREEN_W / 2 + 40) / FOCAL_X, ty = (SCREEN_H / 2 + 40) / FOCAL_Y;
-    const float kx = 1.0f / sqrtf(1 + tx * tx), ky = 1.0f / sqrtf(1 + ty * ty);
-    if ((fabsf(v.x) - tx * v.z) * kx > r || (fabsf(v.y) - ty * v.z) * ky > r)
-        return 0;
-    /* VU1-safe: the whole sphere in front of the near plane and inside the guard band */
-    const float tg = GUARD / FOCAL, kg = 1.0f / sqrtf(1 + tg * tg);
-    if (v.z - r >= NEAR && (fabsf(v.x) - tg * v.z) * kg < -r && (fabsf(v.y) - tg * v.z) * kg < -r)
-        return 1;
-    return 2;
-}
-
 void r_ground(float size, float cell)
 {
     u64 white = GS_SETREG_RGBAQ(0xF0, 0xF0, 0xF0, 0x80, 0);
@@ -524,8 +468,8 @@ void r_ground(float size, float cell)
     for (int i = 0; i < n; i++)
         for (int j = 0; j < n; j++) {
             float x0 = -size + i * t, z0 = -size + j * t;
-            V3 a = to_view(v3(x0, 0, z0)), b = to_view(v3(x0 + t, 0, z0)), c = to_view(v3(x0 + t, 0, z0 + t)),
-               d = to_view(v3(x0, 0, z0 + t));
+            V3 a = r_view(v3(x0, 0, z0)), b = r_view(v3(x0 + t, 0, z0)), c = r_view(v3(x0 + t, 0, z0 + t)),
+               d = r_view(v3(x0, 0, z0 + t));
             tri_view(a, b, c, white);
             tri_view(a, c, d, white);
         }
