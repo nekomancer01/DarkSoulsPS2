@@ -219,7 +219,6 @@
  * NO_HUD              | off      | debug    | -DNO_HUD                                      | ui     | init  | hud.c         | HUD loaded, not drawn
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
- * TRAIL               | 1        | fallback | -DTRAIL=0                                     | fx     | new   | trail.c       | player weapon trail (FFX tracer 250); 0 = none
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H

@@ -2,7 +2,7 @@
  * game data: the values load at boot from c0000.pak (src/gamedata.c). */
 #ifndef COMBAT_DATA_H
 #define COMBAT_DATA_H
-#define COMBAT_LAYOUT 0xb62fd71bu
+#define COMBAT_LAYOUT 0x605cfb3fu
 
 #include <stddef.h>
 
@@ -71,17 +71,7 @@ typedef struct {
 } KnockRow;
 _Static_assert(sizeof(KnockRow) == 64 && offsetof(KnockRow, cont) == 0 && offsetof(KnockRow, dec) == 32, "KnockRow layout differs from tools/gamedata.py");
 
-/* weapon trail window (TAE SpawnFFX_Blade of the right weapon): anim id, start, end, blade base / tip dummy polys (src/trail.c) */
-typedef struct {
-    int anim;
-    float start;
-    float end;
-    short base;
-    short tip;
-} TrailWindow;
-_Static_assert(sizeof(TrailWindow) == 16 && offsetof(TrailWindow, anim) == 0 && offsetof(TrailWindow, start) == 4 && offsetof(TrailWindow, end) == 8 && offsetof(TrailWindow, base) == 12 && offsetof(TrailWindow, tip) == 14, "TrailWindow layout differs from tools/gamedata.py");
-
-/* Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam 206000), every CalcCorrectGraph row a weapon correctType names (sorted by id), the weapon trail windows and the trail's FFX tracer values (lifetime s, colour 0..0x80) */
+/* Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam 206000), every CalcCorrectGraph row a weapon correctType names (sorted by id) */
 typedef struct {
     int pl_vit;
     int pl_str;
@@ -120,12 +110,8 @@ typedef struct {
     const ThrowRow *throws;
     int nthrows;
     KnockRow knock_rows[2];
-    const TrailWindow *trails;
-    int ntrails;
-    float trail_time;
-    int trail_rgba[4];
 } CombatData;
-_Static_assert(sizeof(CombatData) == 748 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, graph_110) == 344 && offsetof(CombatData, graph_111) == 404 && offsetof(CombatData, graph_112) == 464 && offsetof(CombatData, sk_bones) == 524 && offsetof(CombatData, sk_r_weapon) == 528 && offsetof(CombatData, sk_parent) == 532 && offsetof(CombatData, wep_dummy) == 536 && offsetof(CombatData, wep_dummies) == 540 && offsetof(CombatData, atk_windows) == 544 && offsetof(CombatData, natk_windows) == 548 && offsetof(CombatData, dummy_hp) == 552 && offsetof(CombatData, dummy_def_phys) == 556 && offsetof(CombatData, dummy_radius) == 560 && offsetof(CombatData, dummy_height) == 564 && offsetof(CombatData, dummy_poise) == 568 && offsetof(CombatData, graphs) == 572 && offsetof(CombatData, ngraphs) == 576 && offsetof(CombatData, sk_spine) == 580 && offsetof(CombatData, throws) == 584 && offsetof(CombatData, nthrows) == 588 && offsetof(CombatData, knock_rows) == 592 && offsetof(CombatData, trails) == 720 && offsetof(CombatData, ntrails) == 724 && offsetof(CombatData, trail_time) == 728 && offsetof(CombatData, trail_rgba) == 732, "CombatData layout differs from tools/gamedata.py");
+_Static_assert(sizeof(CombatData) == 720 && offsetof(CombatData, pl_vit) == 0 && offsetof(CombatData, pl_str) == 4 && offsetof(CombatData, pl_dex) == 8 && offsetof(CombatData, pl_end) == 12 && offsetof(CombatData, pl_equip_weight) == 16 && offsetof(CombatData, wep_atk_phys) == 20 && offsetof(CombatData, wep_correct_str) == 24 && offsetof(CombatData, wep_correct_dex) == 28 && offsetof(CombatData, wep_req_str) == 32 && offsetof(CombatData, wep_req_dex) == 36 && offsetof(CombatData, wep_poise_dmg) == 40 && offsetof(CombatData, graph_weapon) == 44 && offsetof(CombatData, graph_100) == 104 && offsetof(CombatData, graph_150) == 164 && offsetof(CombatData, graph_113) == 224 && offsetof(CombatData, graph_102) == 284 && offsetof(CombatData, graph_110) == 344 && offsetof(CombatData, graph_111) == 404 && offsetof(CombatData, graph_112) == 464 && offsetof(CombatData, sk_bones) == 524 && offsetof(CombatData, sk_r_weapon) == 528 && offsetof(CombatData, sk_parent) == 532 && offsetof(CombatData, wep_dummy) == 536 && offsetof(CombatData, wep_dummies) == 540 && offsetof(CombatData, atk_windows) == 544 && offsetof(CombatData, natk_windows) == 548 && offsetof(CombatData, dummy_hp) == 552 && offsetof(CombatData, dummy_def_phys) == 556 && offsetof(CombatData, dummy_radius) == 560 && offsetof(CombatData, dummy_height) == 564 && offsetof(CombatData, dummy_poise) == 568 && offsetof(CombatData, graphs) == 572 && offsetof(CombatData, ngraphs) == 576 && offsetof(CombatData, sk_spine) == 580 && offsetof(CombatData, throws) == 584 && offsetof(CombatData, nthrows) == 588 && offsetof(CombatData, knock_rows) == 592, "CombatData layout differs from tools/gamedata.py");
 
 extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define PL_VIT (combat_data->pl_vit)
@@ -151,7 +137,6 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define ATK_WINDOWS (combat_data->natk_windows)
 #define NGRAPHS (combat_data->ngraphs)
 #define NTHROWS (combat_data->nthrows)
-#define NTRAILS (combat_data->ntrails)
 #define graph_weapon (combat_data->graph_weapon)
 #define graph_100 (combat_data->graph_100)
 #define graph_150 (combat_data->graph_150)
@@ -166,8 +151,5 @@ extern const CombatData *combat_data;  /* NULL until gamedata_init() */
 #define graphs (combat_data->graphs)
 #define throws (combat_data->throws)
 #define knock_rows (combat_data->knock_rows)
-#define trails (combat_data->trails)
-#define trail_time (combat_data->trail_time)
-#define trail_rgba (combat_data->trail_rgba)
 
 #endif
