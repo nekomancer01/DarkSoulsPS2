@@ -92,9 +92,9 @@ _Static_assert(VU1L_CONST == 0 && VU1L_MAP_IN == 8, "vu1map.vsm (hand-written) a
 #define MAP_IN VU1L_MAP_IN
 #define MAP_IN_QW VU1L_MAP_IN_QW
 #define MAP_PLANES VU1L_MAP_PLANES
-/* vu1fx.vsm (PR 7, generated): particles (fx.c FX_VU1). Shares 1812.. with the planned map specular variants (loaded
- * on demand, R8). Fx pass layout (must match gen.py FX_*): sin / cos coefficients FX_SC, input double buffer FX_IN
- * (FX_IN_QW each), output slots after it */
+/* vu1fx.vsm (PR 7, Polaris 2.6, generated): particles (fx.c). Over SKIN2 / SKINCLIP's micro memory (both reload after
+ * it, R8). Fx pass layout (vu1_layout.h): sin / cos and motion constants FX_SC.., input double buffer FX_IN (FX_IN_QW
+ * each), output slots after it */
 #define FX_CODE VU1L_CODE_FX
 #define FX_SC VU1L_FX_SC
 #define FX_IN VU1L_FX_IN
@@ -130,6 +130,7 @@ static u32 clut_last, clut_loads;
 #define V_NOP 0x00
 #define V_STCYCL 0x01
 #define V_STMASK 0x20
+#define V_STROW 0x30
 #define V_MPG 0x4A
 #define V_OFFSET 0x02
 #define V_BASE 0x03
@@ -302,6 +303,7 @@ static int chk_run(const u128 *start, const u128 *end, int ch, ChkVif *v, const 
                 case V_BASE: base = imm & 0x3FF; break;
                 case V_OFFSET: offset = imm & 0x3FF; break;
                 case V_STMASK: need = 1; break;
+                case V_STROW: need = 4; break;
                 case V_MPG: need = 2 * (num ? num : 256); break;
                 case V_DIRECT: need = 4 * (imm ? imm : 65536); break;
                 case 0x07: err = "MARK (never sent)"; break;
@@ -1246,25 +1248,29 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, entry));
 }
 
-/* sin(x) / x and cos(x) in x^2 for the half roll angle, times sqrt 2 (gen.py fx_coefs) */
-static const float fx_sc[20] __attribute__((aligned(16))) = {
-    1.41421356f, 1.41421356f, 0, 0, -0.23570226f, -0.70710678f, 0, 0, 0.01178511f, 0.05892557f, 0, 0,
-    -2.8059793e-4f, -1.9641855e-3f, 0, 0, 3.8971935e-6f, 3.5074741e-5f, 0, 0};
+/* FX_SC.. (vu1_layout.h, gen.py fx_coefs / fx_motion_const): sin(x) / x and cos(x) in x^2 for the half roll angle,
+ * times sqrt 2 (.xy), the motion series (.zw), the motion constants */
+static const float fx_sc[4 * (VU1L_FX_SC_QW + VU1L_FX_MK_QW)] __attribute__((aligned(16))) = {VU1L_FX_CONSTS};
+/* 0 in the four VIF ROW words (vu1_fx_add puts them back: the skin path's masked unpacks expect ROW = 0) */
+static const u32 fx_row0[4] __attribute__((aligned(16)));
 
 void vu1_fx_begin(void)
 {
-    if (!room(8))
+    if (!room(10))
         return;
     tag(0, T_CNT, 0, VIF(V_BASE, 0, FX_IN), VIF(V_OFFSET, 0, FX_IN_QW));
-    tag(5, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, 5, FX_SC));
+    tag(VU1L_FX_SC_QW + VU1L_FX_MK_QW, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101),
+        VIF(UNPACK_V4_32, VU1L_FX_SC_QW + VU1L_FX_MK_QW, FX_SC));
     memcpy(cp, fx_sc, sizeof fx_sc);
-    cp += 10;
+    cp += 2 * (VU1L_FX_SC_QW + VU1L_FX_MK_QW);
 }
 
-float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts)
+float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, const float *axes,
+                  float **parts)
 {
     use_prog(P_FX);
-    if (n <= 0 || n > VU1_FX_N || (n & 1) || nsys > VU1_FX_SYS || !room(VU1_FX_TAB + 2 * nsys + 2 * n + 4))
+    if (n <= 0 || n > VU1_FX_N || (n & 1) || nsys > VU1_FX_SYS ||
+        !room(VU1_FX_TAB + 3 * nsys + VU1_FX_PQW * n + 8))
         return NULL;
     tag(VU1_FX_TAB, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, VU1_FX_TAB, U_FLG));
     float *h = (float *)cp;
@@ -1283,13 +1289,25 @@ float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const flo
     q64(fogcol, GSR_FOGCOL);
     /* PRIM: triangle strip, gouraud, textured, STQ, blended; FGE for the fogged (alpha) ones */
     q64(GIF_SET_TAG(0, 1, 1, 0x5C | (mode & VU1_FX_FOG ? 0x20 : 0), 0, 3), 0x412);
-    for (int s = 0; s < nsys; s++) {  /* keys interleaved {size, colour} by STCYCL 2,1 */
-        tag(4, T_REF, tabs[s], VIF(V_STCYCL, 0, 0x0102), VIF(UNPACK_V2_32, 8, U_FLG | (VU1_FX_TAB + 16 * s)));
+    /* 15 / 16: the quad's world x / y axes (oriented batches; header 0.y says which loop runs) */
+    if (axes)
+        memcpy(cp, axes, 8 * sizeof(float));
+    else
+        memset(cp, 0, 8 * sizeof(float));
+    cp += 4;
+    /* curve tables: size keys {kx, ky} with .zw = (drag, gravity) from the VIF ROW (masked unpack, MASK 0x50: x / y
+     * from the data, z / w from ROW), colour keys u8; keys interleaved {size, colour} by STCYCL 2,1 */
+    tag(0, T_CNT, 0, VIF(V_STMASK, 0, 0), 0x50505050);
+    for (int s = 0; s < nsys; s++) {
+        tag(1, T_REF, tabs[s] + VU1_FX_ROWF, VIF(V_NOP, 0, 0), VIF(V_STROW, 0, 0));
+        tag(4, T_REF, tabs[s], VIF(V_STCYCL, 0, 0x0102),
+            VIF(UNPACK_V2_32 | 0x10, 8, U_FLG | (VU1_FX_TAB + 16 * s)));
         tag(2, T_REF, tabs[s] + 16, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_8, 8, U_FLG | U_USN | (VU1_FX_TAB + 16 * s + 1)));
     }
-    tag(2 * n, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, 2 * n, U_FLG | VU1_FX_PART));
+    tag(1, T_REF, fx_row0, VIF(V_NOP, 0, 0), VIF(V_STROW, 0, 0));
+    tag(VU1_FX_PQW * n, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, VU1_FX_PQW * n, U_FLG | VU1_FX_PART));
     *parts = (float *)cp;
-    cp += 4 * n;
+    cp += 2 * VU1_FX_PQW * n;
     tag(0, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(V_MSCAL, 0, FX_CODE));
     return h;
 }

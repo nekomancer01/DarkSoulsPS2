@@ -473,9 +473,10 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                        test_mb.vu1_batches, test_mb.ee_tris, pl->pos.x, pl->pos.y, pl->pos.z);
                 ft_print(c->text, ft_seg);
                 pb_print(c->text);
-                printf("TEST fx %s particles %d drawn %d vu1 %d batches %d ms %.3f draw %.3f breaks %d %d %d\n",
+                printf("TEST fx %s particles %d drawn %d vu1 %d batches %d ms %.3f draw %.3f breaks %d %d %d culled %d\n",
                        c->text, fx_stats.particles, fx_stats.drawn, fx_stats.vu1, fx_stats.batches, fx_stats.ms,
-                       fx_stats.ms_draw, fx_stats.vu1_breaks[0], fx_stats.vu1_breaks[1], fx_stats.vu1_breaks[2]);
+                       fx_stats.ms_draw, fx_stats.vu1_breaks[0], fx_stats.vu1_breaks[1], fx_stats.vu1_breaks[2],
+                       fx_stats.culled);
             }
             /* hold until the host acks (PINE): 3 s without a host, 60 s once the host has written shot_seq | 0x80000000
              * (capturing: screenshot + GS dump); frame time, as COP0 Count wraps every 14.6 s */

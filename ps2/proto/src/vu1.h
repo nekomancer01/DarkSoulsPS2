@@ -106,25 +106,31 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
  * (it then runs the plain textured program, which costs 131 instead of ~200 VU1 cycles per triangle). Per draw, before
  * vu1_skin_begin: hemisphere env colours (EnvUp / EnvDown) and specular light colour / direction (world), 0x80 = 1.0 */
 void vu1_skin_spec(const float env_up[3], const float env_down[3], const float spec_i[3], const float ls[3]);
-/* Particles (vu1fx.vsm, fx.c FX_VU1 builds): a third chain, vu1_begin(2) + vu1_map_fog + vu1_fx_begin, then batches of
- * n (even, <= VU1_FX_N) particles of one texture and mode. vu1_fx_add puts the batch in the chain and returns its
- * header (7 qwords) and *parts (2 n qwords) for the caller to fill: header 0 {n, 0, 0, 0}; 1 (cw, ch, 0.5, 1 / fpr);
- * 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0); 6 (fog min,
- * fog max, 0, 2048); particle i {world x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi), frame + 0.5}.
- * tabs[s] (s < nsys <= VU1_FX_SYS): curve tables of VU1_FX_TABF floats (96 bytes): 8 keys (kx, ky) f32, then 8 keys
- * (r, g, b, a) u8, sent by reference: 16-byte aligned, written back from the data cache, unchanged until the chain is
- * done. Flipbook: cw / ch =
- * cell size, du / dv = cell - 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore
- * ALPHA / ZBUF / FOGCOL with vu1_gs_regs before gsKit draws again. */
+/* Particles (vu1fx.vsm, fx.c): a third chain, vu1_begin(2) + vu1_map_fog + vu1_fx_begin, then batches of n (even,
+ * <= VU1_FX_N) particles of one texture and mode. vu1_fx_add puts the batch in the chain and returns its header (7
+ * qwords) and *parts (VU1_FX_PQW n qwords) for the caller to fill: header 0 {n, oriented, 0, 0}; 1 (cw, ch, 0.5,
+ * 1 / fpr); 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0);
+ * 6 (fog min, fog max, 0, 2048); particle i {spawn x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi),
+ * frame + 0.5}, {spawn velocity x, y, z, age} (VU1 moves it: drag and gravity of its table, fx.c ppos; velocity and
+ * age 0 = drawn where it is). Oriented batches (header 0.y = 1): axes = the quad's world x, y axes (x, y, z, -) x 2,
+ * else NULL. tabs[s] (s < nsys <= VU1_FX_SYS): curve tables of VU1_FX_TABF floats (112 bytes): 8 keys (kx, ky) f32,
+ * then 8 keys (r, g, b, a) u8, then (0, 0, drag, gravity) f32 at VU1_FX_ROWF, sent by reference: 16-byte aligned,
+ * written back from the data cache, unchanged until the chain is done. Flipbook: cw / ch = cell size, du / dv = cell -
+ * 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore ALPHA / ZBUF / FOGCOL with
+ * vu1_gs_regs before gsKit draws again. */
 #define VU1_FX_N VU1L_FX_N
 #define VU1_FX_SYS VU1L_FX_SYS
-#define VU1_FX_TABF 24
+#define VU1_FX_TABF 28
+#define VU1_FX_ROWF 24
 #define VU1_FX_TAB VU1L_FX_TAB
 #define VU1_FX_PART VU1L_FX_PART
+#define VU1_FX_PQW VU1L_FX_PQW
+#define VU1_FX_XMAX VU1L_FX_XMAX
 #define VU1_FX_ADD 1  /* additive (else alpha blended) */
 #define VU1_FX_FOG 2
 void vu1_fx_begin(void);
-float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts);
+float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, const float *axes,
+                  float **parts);
 /* Send the current chain to VIF1 (returns at once; the EE can keep working). Waits for the previous chain first.
  * Streams written by the EE this frame must be written back with SyncDCache before this. */
 void vu1_kick(void);

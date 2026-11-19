@@ -61,15 +61,21 @@ SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
 
 # particles (effect chains: vu1fx; VIF BASE FX_IN, OFFSET FX_IN_QW)
-FX_SC = 8                            # 5 qw sin / cos coefficients (vu1_fx_begin)
+FX_SC = 8                            # 5 qw: sin / cos coefficients in .xy, motion series phi2 / phi1 in .zw (vu1_fx_begin)
 FX_SC_QW = 5
+FX_MK = FX_SC + FX_SC_QW             # 2 qw motion constants (gen.py fx_motion_const) (vu1_fx_begin)
+FX_MK_QW = 2
+FX_DBL = 5                           # motion: drag x age halved FX_DBL times for the series, then doubled back
+FX_XMAX = 0.5 * 2 ** FX_DBL          # largest drag x life the series covers (|error| < 1e-4); fx.c sends others pre-moved
 FX_IN = 16                           # input double buffer (BASE / OFFSET)
-FX_N = 64                            # particles per batch (even: the loop takes FX_P at a time)
+FX_N = 56                            # particles per batch (even: the loop takes FX_P at a time)
 FX_SYS = 8                           # curve tables per batch
-FX_TAB = 15                          # batch offset of the curve tables (FX_SYS x 16 qw)
-FX_PART = FX_TAB + 16 * FX_SYS       # batch offset of the particles (2 qw each)
-FX_IN_QW = FX_PART + 2 * FX_N
-FX_KICK = 16                         # particles per output kick
+FX_HDR = 17                          # batch header qwords: 0-14 as before, 15 / 16 the quad axes of oriented batches
+FX_TAB = FX_HDR                      # batch offset of the curve tables (FX_SYS x 16 qw; size keys' .zw = drag, gravity)
+FX_PQW = 3                           # qwords per particle: {spawn xyz, key}, {half size x y, roll, frame}, {velocity, age}
+FX_PART = FX_TAB + 16 * FX_SYS       # batch offset of the particles
+FX_IN_QW = FX_PART + FX_PQW * FX_N
+FX_KICK = 14                         # particles per output kick
 FX_OUT0 = FX_IN + 2 * FX_IN_QW
 FX_OUT_QW = 1 + 12 * FX_KICK
 FX_OUT1 = FX_OUT0 + FX_OUT_QW
@@ -83,7 +89,7 @@ REGIONS = {
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
              ("specular", SPEC, SPEC_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
-    "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
+    "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("motion", FX_MK, FX_MK_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
 # VIF double buffering per chain kind: BASE, OFFSET (vu1.c sets them in each chain's preamble); programs read their
@@ -98,7 +104,8 @@ PREAMBLE = {
            "loaded on demand (MPG, R8)",
     "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block "
             "when used; the skin programs loaded on demand",
-    "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos block; vu1fx loaded",
+    "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos and motion blocks, the "
+          "VIF MASK of the masked curve-table unpacks; vu1fx loaded",
 }
 # VU1 registers a program expects to keep their value from an earlier call in the same chain. None today: every
 # program reloads its constants from data memory at its entry and keeps nothing in VF / VI registers between MSCALs.
@@ -113,7 +120,8 @@ PROGRAMS = (
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
     ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
     ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
-    ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
+    ("FX", "VU1Fx", 986, "fx", "vu1fx.vsm"),             # over SKIN2 / SKINCLIP's tail: both reload after it (R8),
+                                                         # 1812.. is too small since the motion pass (Polaris 2.6)
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
 )
 ALTERNATES = {("MAP", "CLIP")}  # never resident together (VU1_MAP_OLD builds only): allowed to overlap

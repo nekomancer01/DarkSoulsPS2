@@ -32,15 +32,23 @@
 #define VU1L_SKIN_CLIP_TRIS 12
 #define VU1L_FX_SC 8
 #define VU1L_FX_SC_QW 5
+#define VU1L_FX_MK 13
+#define VU1L_FX_MK_QW 2
+#define VU1L_FX_DBL 5
 #define VU1L_FX_IN 16
-#define VU1L_FX_N 64
+#define VU1L_FX_N 56
 #define VU1L_FX_SYS 8
-#define VU1L_FX_TAB 15
-#define VU1L_FX_PART 143
-#define VU1L_FX_IN_QW 271
-#define VU1L_FX_KICK 16
-#define VU1L_FX_OUT0 558
-#define VU1L_FX_OUT_QW 193
+#define VU1L_FX_HDR 17
+#define VU1L_FX_TAB 17
+#define VU1L_FX_PQW 3
+#define VU1L_FX_PART 145
+#define VU1L_FX_IN_QW 313
+#define VU1L_FX_KICK 14
+#define VU1L_FX_OUT0 642
+#define VU1L_FX_OUT_QW 169
+#define VU1L_FX_XMAX 16.0f  /* largest drag x age the motion pass covers */
+/* the fx chain's constants at FX_SC (FX_SC_QW + FX_MK_QW qw: gen.py fx_coefs, fx_motion_const) */
+#define VU1L_FX_CONSTS 1.4142136f, 1.4142136f, 16.0f, 1.0f, -0.23570226f, -0.70710678f, -5.3333333f, -0.5f, 0.011785113f, 0.058925565f, 1.3333333f, 0.16666667f, -0.00028059793f, -0.0019641855f, -0.26666667f, -0.041666667f, 3.8971935e-6f, 3.5074741e-5f, 0.044444444f, 0.0083333333f, 0.03125f, 0, 16.0f, 0, 0, 0, 0.5f, 1.0f
 
 /* VIF double buffering per chain kind: BASE, OFFSET */
 #define VU1L_VIF_MAP_BASE 8
@@ -48,7 +56,7 @@
 #define VU1L_VIF_SKIN_BASE 252
 #define VU1L_VIF_SKIN_OFFSET 297
 #define VU1L_VIF_FX_BASE 16
-#define VU1L_VIF_FX_OFFSET 271
+#define VU1L_VIF_FX_OFFSET 313
 #define VU1L_BUF_MAP 0
 #define VU1L_BUF_SKIN 1
 #define VU1L_BUF_FX 2
@@ -60,7 +68,7 @@
     X(CLIP, VU1Clip, 0, 0) \
     X(SKIN2, VU1Skin2, 1024, 1) \
     X(SKINCLIP, VU1SkinClip, 384, 1) \
-    X(FX, VU1Fx, 1812, 2) \
+    X(FX, VU1Fx, 986, 2) \
     X(MAPI, VU1MapI, 580, 0) \
 
 #define VU1L_CODE_MAP 0
@@ -68,11 +76,11 @@
 #define VU1L_CODE_CLIP 0
 #define VU1L_CODE_SKIN2 1024
 #define VU1L_CODE_SKINCLIP 384
-#define VU1L_CODE_FX 1812
+#define VU1L_CODE_FX 986
 #define VU1L_CODE_MAPI 580
 
 /* hash of what exported VIF packets depend on (layout.layout_hash): stamped into map.bin's cell table */
-#define VU1L_HASH 0xee62b641u
+#define VU1L_HASH 0x5f5dbf2au
 /* VU1 registers carried from one program call to the next in a chain: none */
 
 #endif
