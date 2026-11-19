@@ -239,8 +239,9 @@ static float len3(const float *v) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2
  * fastest launch over the longest life (drag only slows it), gravity over that life, and the largest rolled half size
  * the curves reach (twice that for quads fixed in the effect frame). Systems VU1 cannot move (vu1fx.vsm's motion pass:
  * drag in 0..VU1_FX_XMAX over the life, gravity only along world Y) get a negative srad: the EE moves them. */
-static void bounds(void)
+static int bounds(void)
 {
+    int vu_n = 0;
     for (u32 i = 0; i < hdr->n_sys; i++) {
         const FxSys *s = &sys[i];
         float sp = fabsf(s->speed[0]) * fmaxf(fabsf(s->speed[1]), fabsf(s->speed[1] + s->speed[2])) * fmaxf(1, len3(s->axis));
@@ -249,6 +250,7 @@ static void bounds(void)
         float r = len3(s->org) + len3(s->ext) + sp * L + 0.5f * len3(s->accel) * L * L + half * (s->orient ? 2 : 1);
         int vu = s->drag >= 0 && s->drag * L <= VU1_FX_XMAX && s->accel[0] == 0 && s->accel[2] == 0;
         srad[i] = vu ? r : -r;
+        vu_n += vu;
     }
     for (u32 ii = 0; ii < hdr->n_inst; ii++) {
         const FxInst *in = &inst[ii];
@@ -258,6 +260,7 @@ static void bounds(void)
             r = fmaxf(r, fabsf(srad[ref[e->first_ref + j].sys]));
         irad[ii] = r * k;
     }
+    return vu_n;
 }
 
 /* upload = 0: tables only, the textures go up with fx_block_on */
@@ -323,7 +326,7 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
         hdr = 0;
         return 0;
     }
-    bounds();
+    int vu_moved = bounds();
     if (upload && !upload_tex(gs, b)) {
         printf("DSRPROTO fx: VRAM full, effects off\n");
         hdr = 0;
@@ -332,8 +335,9 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
     int vram = 0;
     for (u32 i = 0; i < hdr->n_tex; i++)
         vram += tex[i].w * tex[i].h + 1024;
-    printf("DSRPROTO fx: %u instances, %u effects, %u systems, %u lights, %u textures (%d KB VRAM%s)\n", hdr->n_inst,
-           hdr->n_eff, hdr->n_sys, hdr->n_light, hdr->n_tex, vram / 1024, upload ? "" : " while on");
+    printf("DSRPROTO fx: %u instances, %u effects, %u systems (%d moved on VU1, %d on the EE), %u lights, %u textures "
+           "(%d KB VRAM%s)\n", hdr->n_inst, hdr->n_eff, hdr->n_sys, vu_moved, (int)hdr->n_sys - vu_moved, hdr->n_light,
+           hdr->n_tex, vram / 1024, upload ? "" : " while on");
     return 1;
 }
 

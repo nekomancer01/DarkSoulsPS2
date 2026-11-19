@@ -5,7 +5,7 @@
 ; header 0.y != 0: FFX Orientation 2, the fog-wall sheets).
 ; Constants: 0-3 view matrix columns, 4 scale (F, -F, Zs, fog a), 5 offset (cx, cy, 0, fog b) (vu1_begin +
 ; vu1_map_fog), 8-12 sin / cos coefficients (.xy) and motion series (.zw: phi2, phi1), 13 motion constants
-; (2^-5, 0, 1/4, 1/2) (vu1_fx_begin). Batch (input buffer, BASE 16 / OFFSET 313):
+; (2^-5, 0, 2^(5-1), 0), (0, 0, 1/2, 1) (vu1_fx_begin). Batch (input buffer, BASE 16 / OFFSET 313):
 ; 0 {particles (even), oriented, -, -}, 1 (cw, ch, 0.5, 1 / fpr), 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr), 3 (du, dv, 0,
 ; edge fog a2), 4 (du, 0, 0, 0), 5 (0, dv, 0, 0), 6 (fog min, fog max, 0, 2048), 7 A+D GIF tag (6 regs: TEX0 TEX1 TEST
 ; ALPHA ZBUF FOGCOL, EOP) + 8-13, 14 PRIM tag template (EOP, triangle strip, STQ RGBAQ XYZF2), 15 / 16 the quad's world
@@ -15,7 +15,8 @@
 ; texel (normalized).
 ; Motion (fx.c ppos): p = p0 + v0 t phi1(d t) + (0, gravity, 0) t^2 phi2(d t), phi1(x) = (1 - e^-x) / x, phi2(x) =
 ; (x - 1 + e^-x) / x^2: series at y = x 2^-5 (y <= 1/2), then 5 doublings of (E, phi2, phi1): E' = E^2,
-; phi1' = phi1 (1 + E) / 2, phi2' = (phi2 (1 + E) + phi1) / 4.
+; the .zw series hold 2^5 phi2 and phi1, so the doubling keeps G (phi1) and H (2^5 phi2) unscaled:
+; G' = G (1 + E), H' = H (1 + E) / 2 + 2^(5-1) G, then g = t' G, h = t'^2 H with t' = t 2^-5.
 ; Per particle: view v = M p; key k, f from .w: size = mix(K_k, K_k+1, f) x half size, colour likewise; corner =
 ; centre + qx A + qy B with A = (hx cos, hy sin), B = (-hx sin, hy cos) (roll, then size, as fx.c's EE path);
 ; screen xy at q = 1 / v.z; depth and fog at z' = v.z - max(hx, hy) (pulled toward the camera, fx.c); fog =

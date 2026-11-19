@@ -105,7 +105,9 @@ PREAMBLE = {
     "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block "
             "when used; the skin programs loaded on demand",
     "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos and motion blocks, the "
-          "VIF MASK of the masked curve-table unpacks; vu1fx loaded",
+          "VIF MASK 0x50505050 of the masked curve-table unpacks (per system ROW from its table; vu1_fx_add restores ROW to 0 "
+          "after the batch; the map and character masked unpacks set their own MASK 0xF0 first, which keeps .zw and never "
+          "reads ROW); vu1fx loaded",
 }
 # VU1 registers a program expects to keep their value from an earlier call in the same chain. None today: every
 # program reloads its constants from data memory at its entry and keeps nothing in VF / VI registers between MSCALs.
@@ -114,19 +116,36 @@ CARRIED_REGISTERS = ()
 # ---------------------------------------------------------------------------------------------- micro memory
 # One row per program variant: name (vu1.c enum P_<name>), code symbol prefix, address, chain bank, its .vsm.
 # Programs of one bank are resident together; another bank's program over them costs one reload (R8: on demand).
-PROGRAMS = (
+_PROGRAMS = (
     ("MAP", "VU1Map", 0, "map", "vu1map.vsm"),            # hand-written A/B program (VU1_MAP_OLD)
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
     ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
     ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
-    ("FX", "VU1Fx", 986, "fx", "vu1fx.vsm"),             # over SKIN2 / SKINCLIP's tail: both reload after it (R8),
-                                                         # 1812.. is too small since the motion pass (Polaris 2.6)
+    ("FX", "VU1Fx", None, "fx", "vu1fx.vsm"),             # placed by place_fx() below (Polaris 2.6)
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
 )
 ALTERNATES = {("MAP", "CLIP")}  # never resident together (VU1_MAP_OLD builds only): allowed to overlap
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ps2", "proto", "src")
+
+
+def place_fx(programs):
+    """the effect program's address, from the other programs' sizes (no fixed address assumes another program's size):
+    end-aligned in the largest gap the map bank leaves (the map chain starts every frame, so the effect program never
+    costs a map program reload); it may cover character programs, which reload on demand (R8) after an effect chain.
+    covers(): what it lies over"""
+    size = program_size([p for p in programs if p[0] == "FX"][0][4])
+    spans = sorted((p[2], p[2] + program_size(p[4])) for p in programs if p[3] == "map" and p[0] != "MAP")
+    gaps, at = [], 0
+    for a, b in spans + [(MICRO, MICRO)]:
+        if a - at >= size:
+            gaps.append((a - at, at, a))
+        at = max(at, b)
+    if not gaps:
+        raise ValueError("layout: no gap of %d pairs between the map programs for FX" % size)
+    _, lo, hi = max(gaps)
+    return (hi - size) & ~1
 
 
 def program_size(vsm):
@@ -143,6 +162,17 @@ def program_size(vsm):
         elif inside and not s.endswith(":") and not s.startswith("."):
             n += 1
     return n + (n & 1)
+
+
+PROGRAMS = tuple((p[0], p[1], place_fx(_PROGRAMS) if p[2] is None else p[2]) + p[3:] for p in _PROGRAMS)
+
+
+def covers(name="FX"):
+    """the other banks' programs a program lies over (each costs a reload when chains alternate): [(name, lo, hi)]"""
+    me = [p for p in PROGRAMS if p[0] == name][0]
+    a, b = me[2], me[2] + program_size(me[4])
+    return [(p[0], max(a, p[2]), min(b, p[2] + program_size(p[4])) - 1) for p in PROGRAMS
+            if p[3] != me[3] and p[2] < b and a < p[2] + program_size(p[4])]
 
 
 def check():
@@ -188,6 +218,7 @@ def report():
         used = sum(sizes[p[0]] for p in ps)
         out.append(f"micro {bank:4s}: {used:4d} of {MICRO} used by " + ", ".join(
             f"{p[0]} {p[2]}..{p[2] + sizes[p[0]] - 1}" for p in ps) + f"; {MICRO - used} free if only this bank is resident")
+    out.append("micro FX covers: " + (", ".join(f"{n} {a}..{b}" for n, a, b in covers()) or "nothing"))
     out.append(f"micro all : {len(taken)} of {MICRO} covered by some program, {MICRO - len(taken)} never used "
                f"(the A/B MAP {sizes['MAP']} included)")
     return "\n".join(out)

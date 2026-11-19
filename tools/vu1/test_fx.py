@@ -3,6 +3,7 @@ pass (drag and gravity in closed form, fx.c ppos), curve keys and fractions, rol
 camera, fog with edge fog, ADC strip restarts; and the oriented loop (quads fixed in the effect frame, per-corner
 projection)."""
 import math, os, random, sys
+import numpy as np
 from vuemu import VU1, vertices
 import gen
 from test_clip import gif_tag, FOC, FOCY, NEAR, FOG, CX, CY
@@ -158,6 +159,61 @@ def oriented(c, hx, hy, sr, cr, axes, col, u0, v0, cw, chh, W, H):
     return out
 
 
+def ppos_ee(p0, v0, t, d, g):
+    """fx.c ppos as the EE runs it (float32, its series below |x| 0.02, expf above)"""
+    f = np.float32
+    t, d = f(t), f(d)
+    x = d * t
+    if -0.02 < x < 0.02:
+        gg = t * (f(1) - x * (f(0.5) - x * f(1.0 / 6)))
+        hh = t * t * (f(0.5) - x * (f(1.0 / 6) - x * f(1.0 / 24)))
+    else:
+        gg = (f(1) - np.exp(-x, dtype=np.float32)) / d
+        hh = (t - gg) / d
+    a = (f(0), f(g), f(0))
+    return [float(f(p0[k]) + f(v0[k]) * gg + a[k] * hh) for k in range(3)]
+
+
+def agreement(seeds=40):
+    """fx.c's EE position (ppos, float32: what blended systems sort by and the EE path draws) against the VU1 motion
+    pass: the drawn centre (mean of the 4 corners) of each particle vs the EE position projected the same way, over
+    random ages, drags up to the series limit (drag x life = FX_XMAX) and gravity. Returns the worst error in pixels"""
+    vu = VU1(open(SRC + 'vu1fx.vsm').read())
+    worst = n = 0
+    for seed in range(seeds):
+        rng = random.Random(900 + seed)
+        b = make(rng, gen.FX_N)
+        for s, sy in enumerate(b['systems']):  # every third system at the limit, the rest anywhere up to it
+            life = sy[5]
+            drag = gen.FX_XMAX / life if s % 3 == 0 else rng.uniform(0, gen.FX_XMAX / life)
+            b['systems'][s] = sy[:3] + (drag, rng.choice((-9.8, rng.uniform(-3, 3))), life)
+        for p in b['parts']:  # respawn so that the moved position is in view (fast particles: p0 far from it)
+            drag, grav, life = b['systems'][p['sys']][3:]
+            p['age'] = rng.uniform(0, life)
+            p['t'] = p['age'] / life
+            p['v0'] = [rng.uniform(-6, 6), rng.uniform(-2, 8), rng.uniform(-6, 6)]
+            z = rng.uniform(1.5, 60)
+            at = [rng.uniform(-0.6, 0.6) * z, rng.uniform(-0.5, 0.5) * z, z]
+            moved = motion([0, 0, 0], p['v0'], p['age'], drag, grav)
+            p['p0'] = [float(np.float32(at[k] - moved[k])) for k in range(3)]
+        vu.batch, vu.kicks = seed, []
+        setup(vu, b)
+        vu.run('VU1Fx_CodeStart')
+        vs = vertices(vu.kicks[1:])
+        for i, p in enumerate(b['parts']):
+            drag, grav = b['systems'][p['sys']][3:5]
+            c = ppos_ee(p['p0'], p['v0'], p['age'], drag, grav)
+            q = 1 / c[2]  # the pull toward the camera scales x and z alike: the centre projects unchanged
+            ee = (16 * (CX + FOC * c[0] * q), 16 * (CY - FOCY * c[1] * q))
+            got = [sum(((v[k] - int(ee[j])) + 0x8000) % 0x10000 - 0x8000 for v in vs[4 * i:4 * i + 4]) / 4 + int(ee[j])
+                   for j, k in enumerate(('x', 'y'))]
+            err = max(abs(got[0] - ee[0]), abs(got[1] - ee[1])) / 16
+            worst = max(worst, err)
+            n += 1
+    print('EE ppos vs VU1 motion: %d particles, worst centre error %.4f px' % (n, worst))
+    return worst
+
+
 def main(seeds=12):
     vu = VU1(open(SRC + 'vu1fx.vsm').read())
     bad = tot = cyc = parts = 0
@@ -191,6 +247,9 @@ def main(seeds=12):
     print('worst |dx| %d |dy| %d (1/16 px), z %d, fog %d, stq %.2f / 4096' % tuple(worst))
     print('vertices compared %d, bad %d; %d particles, %.1f cycles per particle incl. batch setup' %
           (tot, bad, parts, cyc / parts))
+    if agreement() > 0.25:
+        bad += 1
+        print('EE ppos and VU1 motion disagree by more than 1/4 px')
     return bad
 
 

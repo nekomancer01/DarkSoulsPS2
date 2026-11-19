@@ -431,6 +431,7 @@ static void phase_emit(Frame *f)
     frame_phase = FP_EMIT;
     Player *pl = f->pl;
     float dt = f->dt;
+    int obj_after_fx = (f->b->test_opts & TEST_OBJ_AFTER_FX) != 0;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
     {
@@ -441,11 +442,13 @@ static void phase_emit(Frame *f)
         enemy_draw();      /* same path, one bone palette per enemy */
 #endif
         ot_close();
-        ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */
+        if (!obj_after_fx) {
+            ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */
 #ifndef MAP_PANO_R
-        objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
+            objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
 #endif
-        ot_close();
+            ot_close();
+        }
         ot_flush();
     }
     HITCH_BEGIN(fx);
@@ -458,6 +461,15 @@ static void phase_emit(Frame *f)
 #endif
     }
     HITCH_END(fx, HS_FX);
+    if (obj_after_fx) {  /* test order: the character bank's programs again after vu1fx went over them (vu1.c R8) */
+        ot_flush();  /* the effects' buffer sent first (ot.h: one buffer open at a time) */
+        ot_open(OT_OBJ, OT_OBJ);
+#ifndef MAP_PANO_R
+        objects_draw();
+#endif
+        ot_close();
+        ot_flush();
+    }
     bonfire_draw();  /* the bloodstain marker */
     debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
     f->t_char += ((ticks() - f->t1) / 294912.0f - f->t_char) * 0.1f;

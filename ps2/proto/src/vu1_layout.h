@@ -68,7 +68,7 @@
     X(CLIP, VU1Clip, 0, 0) \
     X(SKIN2, VU1Skin2, 1024, 1) \
     X(SKINCLIP, VU1SkinClip, 384, 1) \
-    X(FX, VU1Fx, 986, 2) \
+    X(FX, VU1Fx, 990, 2) \
     X(MAPI, VU1MapI, 580, 0) \
 
 #define VU1L_CODE_MAP 0
@@ -76,7 +76,7 @@
 #define VU1L_CODE_CLIP 0
 #define VU1L_CODE_SKIN2 1024
 #define VU1L_CODE_SKINCLIP 384
-#define VU1L_CODE_FX 986
+#define VU1L_CODE_FX 990
 #define VU1L_CODE_MAPI 580
 
 /* hash of what exported VIF packets depend on (layout.layout_hash): stamped into map.bin's cell table */
