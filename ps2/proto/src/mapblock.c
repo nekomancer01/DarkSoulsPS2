@@ -428,6 +428,12 @@ static void block_drop(int k, int keep_dg)
 
 void map_block_drop(int k)
 {
+    /* a block leaned before (map_block_lean: the instance off, its draw groups kept) has none of its own left to drop
+     * in block_drop, which returns for an instance that is off: its draw groups go here, before world.c frees the
+     * lite set their dg.bin lies in (they pointed into freed memory until the block came back, and every floor of
+     * the area group applied its mask to them: dg_floor; found by the Lab, Polaris 1.7c-4) */
+    if (k > 0 && k < MAP_INST && !mp_inst[k].on)
+        dg_block_drop(k);
     block_drop(k, 0);
     if (k > 0 && k < MAP_INST && blk_dg_ext[k])
         blk_dg[k] = blk_pvs[k] = NULL, blk_dg_ext[k] = 0;
