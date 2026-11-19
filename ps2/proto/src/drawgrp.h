@@ -18,7 +18,7 @@ void dg_block_drop(int k);
  * and with an area group (DG_SHARED) the shown set of every block of that group */
 void dg_floor(int k, int tri);
 /* DG_SEAM: block j's floor triangle tri (another map of the area group, just ahead) adds its groups to the next
- * dg_floor's shared mask; j < 0 clears it */
+ * dg_floor's shared mask (ORed with the floors added since the last clear); j < 0 clears it */
 void dg_seam(int j, int tri);
 /* the area group of instance k (dg.bin; 0 = none: k follows only its own floor) */
 int dg_area(int k);

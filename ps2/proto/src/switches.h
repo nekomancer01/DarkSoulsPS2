@@ -116,6 +116,14 @@
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | gfx    | init  | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | world  | #131  | drawgrp.c     | draw groups shared across blocks
  * DG_SEAM             | 1        | fallback | -DDG_SEAM=0                                   | world  | #251  | map.c         | the floor of another map of the area group within 16 m ahead adds its draw groups; 0 = the floor's alone
+ * DG_SEAM_HOLD        | 30       | tune     | -DDG_SEAM_HOLD=0                              | world  | #252  | map.c         | frames a seam floor found ahead keeps adding its draw groups after the probe last hit it (0: none, the old path)
+ * DG_SEAM_VIEW        | 1        | fallback | -DDG_SEAM_VIEW=0                              | world  | #252  | map.c         | DG_SEAM probes the camera's view direction as well as the heading (border draw groups); 0 = the heading alone
+ * HZ_ONLY_OWN         | 1        | fallback | -DHZ_ONLY_OWN=0                               | world  | #252  | mapblock.c    | a kept-only block's horizon cells inside an on block of another map are left out; 0 = all drawn
+ * MAP_FAR_SEAM        | 1        | fallback | -DMAP_FAR_SEAM=0                              | world  | #252  | mapblock.c    | far panorama seam sets (farpano.py FAR_SEAM): the one nearest the camera within 48 m stands in for its block's main sets; 0 = main sets only
+ * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | world  | #252  | map.c         | last-resort backdrop: a band in the sky's fog colour from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)
+ * VOID_RING_SKY       | 1        | fallback | -DVOID_RING_SKY=0                             | world  | #252  | map.c         | VOID_RING in the sky's fog colour (header sky row); 0 = the map's current fog colour
+ * VOID_RING_TOP       | 0.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees above the horizon where the band is still opaque
+ * VOID_RING_FADE      | 6.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees over which it fades out above that
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | gfx    | init  | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | gfx    | init  | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | gfx    | init  | bump.c        | relief batches per frame
@@ -124,13 +132,11 @@
  * FPS_CAP_FIELDS      | 2        | fallback | -DFPS_CAP_FIELDS=1                            | main   | init  | main.c        | 30 fps cap; 1 = uncapped
  * V1B_FIELD           | off      | debug    | -DV1B_FIELD                                   | main   | init  | main.c        | point-sampled field output
  * R2_OFF              | off      | fallback | -DR2_OFF                                      | main   | init  | main.c        | no VRAM layout pass after the model upload (A/B)
- * V6_OFF              | off      | fallback | -DV6_OFF                                      | gfx    | init  | render.c      | gsKit's VRAM allocator
  *
  * textures and VU1 (texcache.c, vu1.c, vu1.h, model.c)
  * TC_RLIST            | 1        | fallback | -DTC_RLIST=0                                  | gfx    | #143  | texcache.c    | resident-level list; 0 = walk every level
  * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | gfx    | #163  | texcache.c    | mip 1 under pool pressure (runtime: option set TC_PRESS 0)
  * TC_PLAN             | 1        | fallback | -DTC_PLAN=0                                   | gfx    | #234  | texcache.c    | texture levels planned to the pool budget per texture (runtime: option set TC_PLAN 0)
- * TC_UP_OLD           | off      | fallback | -DTC_UP_OLD                                   | gfx    | #143  | texcache.c    | the old 96 + 16 KB upload caps
  * TC_NO_NEAR          | off      | fallback | -DTC_NO_NEAR                                  | gfx    | init  | texcache.c    | near texture levels never drawn (A/B)
  * TC_HUD              | off      | debug    | -DTC_HUD                                      | gfx    | init  | texcache.c    | upload numbers on screen
  * TC_NEAR_KB          | 256      | tune     | -                                             | gfx    | init  | texcache.c    | near level pool
@@ -138,11 +144,7 @@
  * MIP0_AHEAD          | 1.3      | fallback | -DMIP0_AHEAD=0                                | gfx    | #156  | texcache.c    | mip 0 asked ahead; 0 = where drawn
  * MIP_TRILINEAR       | 1        | fallback | -DMIP_TRILINEAR=0                             | gfx    | #184  | vu1.c         | trilinear; 0 = LINEAR_MIPMAP_NEAREST (runtime: option set MIP_TRILINEAR 0)
  * VU1_TEX_PATH2       | off      | fallback | -DVU1_TEX_PATH2                               | gfx    | #104  | vu1.h         | map texture uploads on PATH2
- * VU1_NO_IMT          | off      | fallback | -DVU1_NO_IMT                                  | gfx    | #143  | vu1.c         | PATH3 uploads without IMT
- * VU1_NO_PKT          | off      | fallback | -DVU1_NO_PKT                                  | gfx    | #105  | vu1.c         | map batches as stream-by-stream REFs
- * VU1_NO_SKINPKT      | off      | fallback | -DVU1_NO_SKINPKT                              | gfx    | #112  | vu1.c         | skin batches as stream-by-stream REFs
  * VU1_MAP_OLD         | off      | fallback | -DVU1_MAP_OLD                                 | gfx    | init  | vu1.c         | the old map batch path
- * VU1_IDX_EE_CLIP     | off      | fallback | -DVU1_IDX_EE_CLIP                             | gfx    | #124  | vu1.c         | indexed clip batches split on the EE
  * VU1_IDX_LISTS       | off      | debug    | -DVU1_IDX_LISTS                               | gfx    | #124  | vu1.c         | indexed batches expanded to lists
  * VU1_IDX_NO_CLIP     | off      | debug    | -DVU1_IDX_NO_CLIP                             | gfx    | #124  | vu1.c         | indexed clip batches not drawn
  * VU1_NO_CLIP         | off      | debug    | -DVU1_NO_CLIP                                 | gfx    | init  | vu1.c         | clip batches through the plain program
