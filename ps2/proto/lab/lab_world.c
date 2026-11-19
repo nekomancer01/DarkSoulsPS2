@@ -46,14 +46,13 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     inst_on[k] = 1, inst_col[k] = col_block, inst_chunks[k] = h[1];
     return 1;
 }
-/* mapblock.c block_drop: the instance goes off; map_block_drop also forgets its draw groups (their dg.bin goes with the
- * block's lite set), map_block_lean keeps them (an instance already off drops nothing, as there) */
+/* mapblock.c: map_block_lean turns the instance off and keeps its draw groups; map_block_drop forgets them, leaned
+ * before or not (their dg.bin goes with the block's lite set: PR #274) */
 void map_block_drop(int k)
 {
     if (k <= 0 || k >= MAP_INST)
         return;
-    if (inst_on[k])
-        dg_block_drop(k);
+    dg_block_drop(k);
     inst_on[k] = 0, blk_dg[k] = NULL;
 }
 void map_block_lean(int k, int keep_hz) { (void)keep_hz; if (k > 0 && k < MAP_INST) inst_on[k] = 0; }
