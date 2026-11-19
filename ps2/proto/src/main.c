@@ -14,6 +14,7 @@
 #include <gsKit.h>
 #include <dmaKit.h>
 #include "render.h"
+#include "mem.h"
 #define CAM_WALL (R_NEAR > 0.25f ? R_NEAR + 0.05f : 0.3f)  /* camera margin in front of walls (m) */
 #include "player.h"
 #ifndef DPAD_STICK
@@ -361,6 +362,7 @@ int main(int argc, char **argv)
     r_init(gs);
     vu1_init(gs);
     pad_setup();  /* also SifInitRpc, which the fio reads below need */
+    mem_boot_init();  /* static and boot-temp regions (src/mem.h), before the first pack load */
     int test_opts = test_init(argc, argv);  /* test script (host:<file> from argv), before anything it configures */
     holes = test_opts & TEST_HOLES;
     map_holes = holes;  /* (no void ring: map.c VOID_RING) */
@@ -408,16 +410,16 @@ int main(int argc, char **argv)
         obj_blob = pack_load(&pk, "objects.bin", 0);    /* breakable objects (tools/export_objects.py) */
         ev_blob = pack_load(&pk, "events.bin", 0);      /* EMEVD bytecode (tools/export_emevd.py, src/event.c) */
         evc_blob = pack_load(&pk, "evcommon.bin", 0);
-        lua_blob = pack_load(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
+        lua_blob = pack_load_temp(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
     }
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
     void *menu_blob = NULL, *shine_blob = NULL;
     unsigned shine_size = 0;
     if (pack_open(&pk, PACK_ROOT "menu.pak")) {
-        menu_blob = pack_load(&pk, "menu.bin", 0);
+        menu_blob = pack_load_static(&pk, "menu.bin", 0);
         shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
-        hud_help_init(pack_load(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+        hud_help_init(pack_load_static(&pk, "help.bin", 0));  /* action prompt texts (kept) */
     }
     pack_close(&pk);
     t_load = ticks() - t_load;
@@ -464,12 +466,19 @@ int main(int argc, char **argv)
     if (!(map_ok && fx_init(gs, fx_blob)))  /* effect textures to VRAM; the blob stays (particle systems, lights) */
         free(fx_blob);
     pickup_init(gs, shine_blob, shine_size);  /* the treasure shine's textures (~54 KB VRAM); frees the blob */
+    /* the area's AI pack (the VM has its copy since enemy_init) stays in boot-temp until mem_boot_done, after the arena:
+     * where main freed it, so the arena is sized as before (src/mem.h) */
+    int lua_heap = lua_blob && !mem_in_temp(lua_blob);  /* (boot-temp was full: the heap holds it) */
+    mem_boot_seal();  /* before the arena is sized from the heap: boot-temp and the static tail are back (src/mem.h) */
     world_systems(gs);  /* other world blocks' enemy / breakable / effect types (before the near-cell arena) */
+    mem_boot_done();
+    if (lua_heap)
+        free(lua_blob);
+    lua_blob = NULL;
     loading_tick(1);
     combat_sweep_hook = objects_sweep_hook;
     combat_throw_hook = enemy_throw_try;
     status_init();  /* the player's poison / toxic / bleed / curse (combat_status_hook) */  /* the player's backstabs / ripostes (ThrowParam) */  /* every weapon sweep (player and enemies) can break them */
-    free(lua_blob);
     if (vram_free >= 0)
         vram_free = r_vram_avail(gs);
     printf("DSRPROTO vram: free %d (%d after the last page), r_vram %d blocks in %d pages (gsKit sizes: %d blocks)\n",
@@ -531,13 +540,15 @@ int main(int argc, char **argv)
             static int helm_off;
             model_helmet(!(helm_off = !helm_off));
         }
-        if (bonfire_input(pressed) || menu_update(pressed)) {  /* bonfire / Start menu: no movement or attacks */
+        int ui_took;
+        MEM_LEGACY(UI) ui_took = bonfire_input(pressed) || menu_update(pressed);
+        if (ui_took) {  /* bonfire / Start menu: no movement or attacks */
             in = (Input){0};
             idle = 0;
         }
         int demo = idle > 5 && (test_opts & TEST_DEMO) && !test_active();  /* test-only ("option demo") */
         if (test_active() || demo)  /* test script (pad ignored), else the idle demo when a script asked for it */
-            test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
+            MEM_LEGACY(TEST) test_input(&in, &pl, &cam_yaw, &cam_pitch, dt, demo);
         test_build_input(&in, &pl, &cam_yaw, &cam_pitch, dt);  /* COL_TEST / ESD_TEST / CHAR_CLOSEUP / ENEMY_VIEW */
 
         cam_yaw += in.cx * 2.5f * dt;
@@ -565,15 +576,17 @@ int main(int argc, char **argv)
         if (!frozen) {
             PROF_MARK(PROF_PLAYER);
             LG_BEGIN(player);
-            player_update(&pl, &in, cam_yaw, dt);
-            status_update(&pl, dt);
-            combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
-            /* fog walls / gates as the last frame's event_update left them: before the camera, which follows the feet */
-            event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
+            MEM_LEGACY(PLAYER) {
+                player_update(&pl, &in, cam_yaw, dt);
+                status_update(&pl, dt);
+                combat_player_frame(&pl, player_attack_anim(&pl), pl.t, dt);  /* hurtbox sync + weapon hit sweeps */
+                /* fog walls / gates as the last frame's event_update left them: before the camera (it follows the feet) */
+                event_push_player((float *)&pl.pos, COL_PLAYER_R, COL_PLAYER_H);  /* V3 as float[3]: &pl.pos.x trips gcc 15 -Wstringop-overflow */
+            }
             LG_END(player, LG_PLAYER);
             PROF_MARK(PROF_ENEMY);
             LG_BEGIN(stream);
-            enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
+            MEM_LEGACY(ENEMY) enemy_stream(&pl);  /* type loads: arena allocations and PATH3 texture uploads stay before the map kick */
             LG_END(stream, LG_STREAM);
         }
         HITCH_END(pre, HS_PRE);
@@ -603,13 +616,17 @@ int main(int argc, char **argv)
 
         PROF_MARK(PROF_STREAM);
         HITCH_BEGIN(world);
-        world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
-        loading_frame();  /* the boot's / a death's loading screen closes once this frame's loads settled */
+        MEM_LEGACY(WORLD) {
+            world_update(&pl.pos.x, dt);  /* background block reads; turns blocks on / off (src/world.c) */
+            loading_frame();
+        }  /* the boot's / a death's loading screen closes once this frame's loads settled */
         HITCH_END(world, HS_WORLD);
         PROF_MARK(PROF_SOUND);
         HITCH_BEGIN(snd);
-        snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
-        snd_update(dt);  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
+        MEM_LEGACY(SND) {
+            snd_map(world_current() >= 0 ? world_map(world_current()) : AREA);  /* area bank, ambience (src/sound.c) */
+            snd_update(dt);
+        }  /* listener = this camera; emitters, voices, streams; one RPC to the IOP */
         HITCH_END(snd, HS_SND);
         PROF_MARK(PROF_MAP);
         HITCH_BEGIN(map);
@@ -618,8 +635,8 @@ int main(int argc, char **argv)
             unsigned t0 = ticks();
             vu1_begin(0);
             z_clear(gs);
-            map_set_player(pl.pos);
-            tris_drawn = map_draw(eye);
+            MEM_LEGACY(WORLD) map_set_player(pl.pos);  /* (the streamer's update: heap pages, PVS rows) */
+            MEM_LEGACY(WORLD) tris_drawn = map_draw(eye);
             vu1_kick();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
             t_cull += ((ticks() - t0) / 294912.0f - t_cull) * 0.1f;
         } else {
@@ -633,19 +650,21 @@ int main(int argc, char **argv)
         if (!frozen) {  /* nothing here may touch what the map chain reads (mapstream cells, PATH2/3 GS registers) */
             PROF_MARK(PROF_ENEMY);
             LG_BEGIN_X(enemy);
-            enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
+            MEM_LEGACY(ENEMY) enemy_update(&pl, dt);  /* AI, enemyCommon ESD, movement, attack sweeps on the player */
             LG_END_X(enemy, LG_ENEMY);
             PROF_MARK(PROF_OBJECTS);
             LG_BEGIN(objects);
-            objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
+            MEM_LEGACY(OBJ) objects_update(&pl, dt);  /* breakables: push-out, roll / landing breaks, piece physics */
             LG_END(objects, LG_OBJECTS);
             LG_BEGIN(events);
-            event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
-            if (PICKUP)
-                pickup_update(dt);    /* item get dialog (src/pickup.c) */
+            MEM_LEGACY(EVENT) {
+                event_update(&pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
+                if (PICKUP)
+                    pickup_update(dt);    /* item get dialog (src/pickup.c) */
+            }
             LG_END(events, LG_EVENTS);
             LG_BEGIN(bonfire);
-            bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
+            MEM_LEGACY(EVENT) bonfire_update(&pl, dt);  /* bloodstain pickup (src/bonfire.c) */
             LG_END(bonfire, LG_BONFIRE);
         }
         HITCH_END(logic, HS_LOGIC);
@@ -661,10 +680,12 @@ int main(int argc, char **argv)
 #endif
         vu1_kick();
         HITCH_BEGIN(fx);
-        fx_update(dt, eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
+        MEM_LEGACY(FX) {
+            fx_update(dt, eye);  /* effects: EE particles while VU1 draws; gsKit packets run after vu1_wait (blended last) */
 #ifndef MAP_PANO_R
-        fx_draw();
+            fx_draw();
 #endif
+        }
         HITCH_END(fx, HS_FX);
         bonfire_draw();  /* the bloodstain marker */
         debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
@@ -673,6 +694,7 @@ int main(int argc, char **argv)
         /* HUD: DSR's bars, quick slots, souls, YOU DIED (hud.c); Start menu (menu.c); Select: debug overlay */
         PROF_MARK(PROF_HUD);
         HITCH_BEGIN(hud);
+        unsigned mt_ui = mem_legacy_begin(MEMT_UI);
 #ifndef MAP_PANO_R
         hud_draw(&pl, dt);
 #endif
@@ -689,6 +711,7 @@ int main(int argc, char **argv)
             pickup_draw();  /* the item get dialog (menu.drb F25) */
         menu_draw(&pl);
         loading_overlay(dt);  /* the fade-in from black after a loading screen */
+        mem_legacy_end(mt_ui);
         PROF_DRAW();
         HITCH_END(hud, HS_HUD);
 
@@ -697,6 +720,7 @@ int main(int argc, char **argv)
         unsigned t2 = ticks();
         fx_kick();   /* FX_VU1: the particle chain, after the characters' */
         vu1_wait();  /* PATH1 must finish before gsKit's PATH3 packets draw over it */
+        mem_frame_swap();  /* the frame buffer two frames old: its chains are done (mem.h) */
         t_wait += ((ticks() - t2) / 294912.0f - t_wait) * 0.1f;
         hitch_acc[HS_WAIT] += ticks() - t2;
         PROF_MARK(PROF_FLIP);
@@ -707,8 +731,8 @@ int main(int argc, char **argv)
             vram_free = r_vram_avail(gs);
         HITCH_END(flip, HS_FLIP);
         HITCH_BEGIN(save);
-        test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
-        save_tick(&pl, dt);  /* requested saves + autosave */
+        MEM_LEGACY(TEST) test_frame_end(&pl, avg_dt, dt_real, t_cull, t_char, t_wait, tris_drawn, vram_free);
+        MEM_LEGACY(SAVE) save_tick(&pl, dt);  /* requested saves + autosave */
         static unsigned log_frames;
         if (++log_frames % 300 == 0)
             printf("DSRPROTO chain qw: map %d peak %d, chr %d peak %d, segments %d; CLUT loads %d + %d, batches %d\n",

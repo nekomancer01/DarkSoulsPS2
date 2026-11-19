@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "gamedata.h"
+#include "mem.h"
 #include "pack.h"
 #include "player_data.h"
 #include "combat_data.h"
@@ -18,7 +19,7 @@ const ProgressData *progress_data;
 static const void *load(Pack *pk, const char *name, unsigned layout, unsigned record_size)
 {
     unsigned size;
-    unsigned char *b = pack_load(pk, name, &size);
+    unsigned char *b = pack_load_static(pk, name, &size);  /* boot lifetime (src/mem.h) */
     if (!b) {
         printf("DSRPROTO gamedata: %s missing from c0000.pak\n", name);
         return 0;
@@ -28,7 +29,7 @@ static const void *load(Pack *pk, const char *name, unsigned layout, unsigned re
         h[4] + h[3] * 4 > size) {
         printf("DSRPROTO gamedata: %s has layout %08x, this ELF expects %08x (rebuild the packs or the ELF)\n", name,
                size >= 8 ? h[1] : 0, layout);
-        free(b);
+        mem_release(b);
         return 0;
     }
     const unsigned *rel = (const unsigned *)(b + h[4]);

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "hitch.h"
+#include "mem.h"
 #include "mapstream.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
@@ -242,6 +243,8 @@ static void hm_dump(void)
 void __wrap_free(void *p)  /* (wrapped for the HEAPMAP census only) */
 {
     HM_DEL(p);
+    if (p)
+        mem_count(1, __builtin_return_address(0));
     __real_free(p);
 }
 void *__wrap_malloc(size_t n)
@@ -249,6 +252,7 @@ void *__wrap_malloc(size_t n)
     void *p = __real_malloc(n);
     if (!p && n)
         alloc_failed("malloc", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n);
     return p;
 }
@@ -257,6 +261,7 @@ void *__wrap_calloc(size_t n, size_t s)
     void *p = __real_calloc(n, s);
     if (!p && n && s)
         alloc_failed("calloc", n * s, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n * s);
     return p;
 }
@@ -265,6 +270,7 @@ void *__wrap_realloc(void *q, size_t n)
     void *p = __real_realloc(q, n);
     if (!p && n)
         alloc_failed("realloc", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     if (p || !n)
         HM_DEL(q);
     HM_ADD(p, n);
@@ -275,6 +281,7 @@ void *__wrap_memalign(size_t a, size_t n)
     void *p = __real_memalign(a, n);
     if (!p && n)
         alloc_failed("memalign", n, __builtin_return_address(0));
+    mem_count(0, __builtin_return_address(0));
     HM_ADD(p, n);
     return p;
 }
@@ -382,6 +389,7 @@ void hitch_frame(float dt_real)
 #endif
     stream_line();
     disc_line(per_s, n_load > 0);
+    mem_log();  /* regions and heap use per state (src/mem.h) */
     per_s = 0;
     spikes = spikes_cut = af_n = af_kb = 0;
     n_fr = o50 = o100 = o200 = worst_ms = sum_ms = n_load = load_max = 0;
