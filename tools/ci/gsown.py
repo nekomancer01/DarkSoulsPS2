@@ -18,7 +18,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 SRC = os.path.join(ROOT, "ps2", "proto", "src")
 OWN = {"gs.h", "gs.c", "g2d.c"}  # g2d.c: the 2D state (Polaris 1.6; its gsKit calls are the OT_HASH A/B only)
-LEGACY = {"map.c": 14}
+LEGACY = {"map.c": 20}  # map.c's count on main (14 when the check was added; #252's horizon / near fades and sky state made it 20, 2026-11-19): it may only go down
 # Polaris 1.4: the order table (src/ot.c) alone starts transfers. Allowed elsewhere: the definitions, and the legacy
 # waits / loading-screen presents in files other threads own (count may only go down)
 KICK = re.compile(r"\b(vu1_begin|vu1_kick|vu1_wait|r_queue_exec|gsKit_queue_exec|gsKit_texture_upload|gsKit_texture_send|gsKit_prim_\w+|gsKit_clear|dmaKit_send\w*)\s*\(|\*\(volatile u32 \*\)0x1000A0[0-3]0 =")

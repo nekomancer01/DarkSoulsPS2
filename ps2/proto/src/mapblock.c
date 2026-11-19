@@ -2,6 +2,7 @@
  * its cell and tile indexes for culling, the miss scan, the resident items (res_open) and the block stream. map.c
  * draws them; map_i.h has the types and state both use. */
 #include "map_i.h"
+#include "world.h"
 
 /* index sort key: cell, then texture inside a cell (so neighbours share TEX0 / CLUT), then chunk number */
 static int cell_key_cmp(const void *a, const void *b)
@@ -329,7 +330,11 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->pkt = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & 1 ? VU1_PKT : 0;
     {   /* the VU1 layout its packets were written for (tools/mapcells.py: cell table word 1 bits 8-31, Polaris 1.5) */
         unsigned stamp = ((const unsigned *)(cel_bin + hdr->cell_off))[1] >> 8;
-        if (stamp != (VU1L_HASH & 0xFFFFFF))
+        static unsigned unstamped;  /* blocks noted (an export from before the stamp: say so once a block, no error) */
+        if (!stamp && !(unstamped >> k & 1))
+            unstamped |= 1u << k, printf("map: block %d: no VU1 layout stamp (exported before Polaris 1.5): not checked; "
+                                         "re-export the map to check it\n", k);
+        else if (stamp && stamp != (VU1L_HASH & 0xFFFFFF))
             printf("TEST error: map block %d: exported for VU1 layout %06x, this ELF has %06x (re-export the map)\n", k,
                    stamp, VU1L_HASH & 0xFFFFFF);
     }
@@ -463,7 +468,7 @@ void map_boot_lean(void)
 
 /* The far panorama (map_far_set; far.bin: 'FARP', sets, chunks, bytes; FarSet per set; Chunk records; streams from
  * the file start). Untextured like the horizon, under the map's fog, never distance culled (CHUNK_BACKDROP). */
-typedef struct { unsigned blk, first, n, groups[4], flags; } FarSet;  /* flags bit 0: FAR_PANO (farpano.py) */
+typedef struct { unsigned blk, first, n, groups[4], flags; } FarSet;  /* flags: FAR_F_* below (farpano.py) */
 static MapInst far_inst;  /* (hz_base: the base mp_draw_hz adds the chunks' offsets to) */
 static const FarSet *far_set;
 static const Chunk *far_chunk;
@@ -482,19 +487,51 @@ int map_far_set(const void *blob)
     return 1;
 }
 
+/* FAR_SEAM sets (farpano.py, research idea 9): a block of the same MSB rendered from the ground near its seam, which
+ * the set's eye (flags bits 8-19 / 20-31: x / 4, z / 4 m, signed) stands on. The block's main sets are rendered from
+ * the middle of the ground beyond the distance world.bin keeps it loaded, so what only the seam sees (the far side of a
+ * tunnel's exit) was missing while the block was still off there. The seam set nearest the camera within
+ * MAP_FAR_SEAM_R stands in for the block's main sets (flags bit 2); MAP_FAR_SEAM=0: main sets only, the old path */
+#ifndef MAP_FAR_SEAM
+#define MAP_FAR_SEAM 1
+#endif
+#define MAP_FAR_SEAM_R 48.0f  /* m (ASSUMED: the seam eyes lie within world.bin's keep distance, 64 m, of the block) */
+#define FAR_F_PANO 1
+#define FAR_F_SEAM 2
+#define FAR_F_HAS_SEAM 4
+static inline float far_eye(unsigned flags, int sh) { return (float)((int)(flags << (20 - sh)) >> 20) * 4.0f; }
+
+static int far_self(const FarSet *f)
+{
+    const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
+    if (f->flags & FAR_F_PANO)  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
+        return map_pano_shown();
+    return f->blk ? p->on || p->hz_only : p->hdr != NULL;  /* that block draws itself (its cells, or its own horizon) */
+}
+
 unsigned mp_draw_far(const float *e)
 {
     unsigned n = 0;
+    int pick[MAP_INST];
+    float pick_d[MAP_INST];
+    for (int k = 0; k < MAP_INST; k++)
+        pick[k] = -1, pick_d[k] = MAP_FAR_SEAM_R * MAP_FAR_SEAM_R;
+    for (unsigned s = 0; MAP_FAR_SEAM && s < far_sets; s++) {  /* each block's seam set nearest the camera */
+        const FarSet *f = &far_set[s];
+        if (!(f->flags & FAR_F_SEAM) || f->blk >= MAP_INST || far_self(f))
+            continue;
+        float dx = e[0] - far_eye(f->flags, 8), dz = e[2] - far_eye(f->flags, 20), d = dx * dx + dz * dz;
+        if (d < pick_d[f->blk])
+            pick[f->blk] = (int)s, pick_d[f->blk] = d;
+    }
     for (unsigned s = 0; s < far_sets; s++) {
         const FarSet *f = &far_set[s];
         if (f->blk >= MAP_INST || f->first + f->n > ((const unsigned *)far_inst.hz_base)[2])
             continue;
-        const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
-        if (f->flags & 1) {  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
-            if (map_pano_shown())
-                continue;
-        } else if (f->blk ? p->on || p->hz_only : p->hdr != NULL)
-            continue;  /* that block draws itself (its cells, or its own horizon) */
+        if (far_self(f))
+            continue;
+        if ((f->flags & FAR_F_SEAM) ? pick[f->blk] != (int)s : (f->flags & FAR_F_HAS_SEAM) && pick[f->blk] >= 0)
+            continue;  /* the seam set near the camera stands in for the block's main sets */
         if (!dg_groups_shown(f->groups))
             continue;
         for (unsigned j = 0; j < f->n; j++) {
@@ -507,13 +544,72 @@ unsigned mp_draw_far(const float *e)
     return n;
 }
 
+/* HZ_ONLY_OWN (default 1; 0 = every horizon cell, the old path): a kept-only block's horizon cell whose box centre
+ * lies inside a cell of an on block of another map is left out: there that map draws its own detailed pieces (the
+ * game's maps overlap at their seams: the Burg's horizon under Firelink's aqueduct drew a grey untextured wedge in
+ * the passage below it, Ame's playtest 2026-11-17 21:31 t 88.8, 166 triangles from mp_draw_hz_only). Worked out
+ * again when the set of on blocks changes */
+#ifndef HZ_ONLY_OWN
+#define HZ_ONLY_OWN 1
+#endif
+static unsigned char *hz_skip[MAP_INST];
+static unsigned hz_skip_key[MAP_INST], hz_skip_n[MAP_INST];
+
+static int hz_other_map(int j, int k)
+{
+    const char *a = world_map(j), *b = world_map(k);
+    return a && b && strcmp(a, b);
+}
+
+static const unsigned char *hz_skips(int k)
+{
+    const MapInst *m = &mp_inst[k];
+    unsigned key = 1;
+    for (int j = 0; j < MAP_INST; j++)
+        if (j != k && mp_inst[j].on && mp_inst[j].hz_cell && hz_other_map(j, k))
+            key |= 2u << j;
+    if (hz_skip[k] && hz_skip_key[k] == key && hz_skip_n[k] == m->nctab)
+        return hz_skip[k];
+    free(hz_skip[k]);
+    hz_skip[k] = m->nctab ? calloc(m->nctab, 1) : NULL;
+    hz_skip_key[k] = key, hz_skip_n[k] = m->nctab;
+    if (!hz_skip[k])
+        return NULL;
+    unsigned cut = 0;
+    for (unsigned ci = 0; ci < m->nctab; ci++) {
+        const HzCell *hc = &m->hz_cell[ci];
+        if (!hc->count)
+            continue;
+        float c[3] = {(hc->mn[0] + hc->mx[0]) * 0.5f, (hc->mn[1] + hc->mx[1]) * 0.5f, (hc->mn[2] + hc->mx[2]) * 0.5f};
+        for (int j = 0; j < MAP_INST && !hz_skip[k][ci]; j++) {
+            if (!(key >> (j + 1) & 1))
+                continue;
+            const MapInst *o = &mp_inst[j];
+            for (unsigned cj = 0; cj < o->nctab; cj++) {
+                const HzCell *h = &o->hz_cell[cj];
+                if (c[0] >= h->mn[0] && c[0] <= h->mx[0] && c[1] >= h->mn[1] && c[1] <= h->mx[1] && c[2] >= h->mn[2] &&
+                    c[2] <= h->mx[2]) {
+                    hz_skip[k][ci] = 1, cut++;
+                    break;
+                }
+            }
+        }
+    }
+    if (cut)
+        printf("map: block %d horizon: %u cells inside another map's on blocks left out\n", k, cut);
+    return hz_skip[k];
+}
+
 /* a kept-only block (hz_only): every horizon chunk in view, as the shown draw groups pick them */
 unsigned mp_draw_hz_only(int k, const float *e)
 {
     const MapInst *m = &mp_inst[k];
     unsigned n = 0;
+    const unsigned char *skip = HZ_ONLY_OWN ? hz_skips(k) : NULL;
     for (unsigned ci = 0; ci < m->nctab; ci++) {
         const HzCell *hc = &m->hz_cell[ci];
+        if (skip && skip[ci])
+            continue;
         for (unsigned j = 0; j < hc->count; j++) {
             const Chunk *c = &m->hz_chunk[hc->first + j];
             if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
