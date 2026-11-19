@@ -34,6 +34,7 @@
  * PROFILE             | off      | make     | -DPROFILE                                     | core   | init  | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | core   | init  | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
  * HEAPMAP             | off      | make     | -DHEAPMAP                                     | core   | #203  | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
+ * LAB                 | off      | make     | -                                             | tools  | new   | ticks.h       | the Lab's host build (make lab, ps2/proto/lab): ticks() moves 1 ms per read (lab_stubs.c lab_ticks)
  * MEM_STRICT          | off      | debug    | -DMEM_STRICT                                  | core   | new   | mem.c         | TEST error on a heap allocation in play outside a legacy tag (mem.h MEM_TAGS) or off the main thread
  * FRAME_STRICT        | off      | debug    | -DFRAME_STRICT                                | main   | new   | frame.c vu1.c | TEST error on a draw call in a simulate phase or a simulate call in an emit phase (frame.h), every vu1_add* checked
  * FRAME_SKIP_MAP      | 0        | debug    | -DFRAME_SKIP_MAP=1                            | main   | new   | frame.c       | runtime: the map pass writes no packets (the check that SIM_B reads nothing EMIT_MAP produced, frame.h)

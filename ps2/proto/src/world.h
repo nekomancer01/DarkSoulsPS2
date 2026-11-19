@@ -45,6 +45,9 @@ void world_update(const float *feet, float dt);
  * no loaded floor is a short drop below), so the player stays where it is instead of stepping or falling in. The
  * block is then wanted; after WORLD_HOLD_S of holding the frame waits for it (loading screen). 0 without a world. */
 int world_hold(const float *feet);
+/* 1 when nothing the feet want is still loading (no lite set reading, every wanted block on): what a warp's settle
+ * waits for. Read only; the Lab (lab/lab_main.c) steps world_update until it holds, so its reads never lag. */
+int world_settled(const float *feet);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
 int world_current(void);
 /* MSB map id (mAA_BB_CC_DD) of a block, NULL if none (sound.c: area banks and ambience per map) */
@@ -63,6 +66,7 @@ typedef struct {
     int loads, unloads, fails;
     unsigned hold_ms;                /* time the player was held at a block still loading (world_hold) */
     int hold_settles;                /* holds that ran out (WORLD_HOLD_S) and waited behind the loading screen */
+    unsigned holds;                  /* world_hold calls that held the player (frame.c's trace: the frame's held flag) */
 } WorldStats;
 extern WorldStats world_stats;
 

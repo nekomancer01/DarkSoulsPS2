@@ -18,15 +18,16 @@
 #include "testscript.h"
 
 FramePhase frame_phase;
+/* ticks.h in the Lab: 1 ms of EE ticks per read. Deterministic (the same calls give the same times on every run), and
+ * a loop with a time cap (world.c settle: 30 s) ends as on the console instead of spinning for good */
+unsigned lab_ticks(void)
+{
+    static unsigned t;
+    return t += 294912;
+}
 float enemy_player_push[2];
 
 /* events, bonfire, enemies, world (1.7c brings events and enemies in) */
-void bonfire_death(const Player *p) { (void)p, LAB_READBACK("bonfire_death"); }
-void bonfire_revive(Player *p) { (void)p, LAB_READBACK("bonfire_revive (respawn spot)"); }
-int bonfire_spawn(V3 *pos, float *yaw) { (void)pos, (void)yaw, LAB_READBACK("bonfire_spawn"); return 0; }
-int event_push_player(float pos[3], float r, float h) { (void)pos, (void)r, (void)h; return 0; }  /* fog walls: none */
-int world_current(void) { return -1; }
-int world_hold(const float *feet) { (void)feet; return 0; }
 void loading_hold(void) { LAB_COUNT("loading_hold"); }
 void snd_anim(unsigned owner, int model, int anim, float t, const float pos[3])
 {
@@ -150,9 +151,6 @@ void lab_unsupported(const char *cmd, const char *needs)
     printf("TEST error line %d: '%s' needs %s (not in the Lab)\n", (int)test_mb.line, cmd, needs);
     lab_count(cmd, 1);
 }
-void event_test_cmd(const char *cmd) { (void)cmd, lab_unsupported("ev", "events (Polaris 1.7c-2)"); }
-void pickup_test_cmd(const char *cmd) { (void)cmd, lab_unsupported("pickup", "world items"); }
-int objects_nearest(const float p[3], float *out) { (void)p, (void)out, lab_unsupported("approach obj", "objects (1.7c-2)"); return -1; }
 int enemy_nearest_live(const float pos[3], V3 *at, float *yaw)
 {
     (void)pos, (void)at, (void)yaw, lab_unsupported("behind", "enemies (1.7c-3)");
