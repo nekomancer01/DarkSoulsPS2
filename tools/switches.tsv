@@ -331,3 +331,10 @@ WS_UNION	env	1	flag	world	0	#156	mapcfg.py	-
 XDG_RUNTIME_DIR	env	unset	config	tools	-	init	dsr-ref-cam.py	-
 LAB_CC	make	gcc -m32	config	tools	-	new	Makefile:726	the Lab's host compiler (Polaris 1.7b, ps2/proto/lab): 32-bit, the loaders keep pointers in 32-bit blob fields (TECH_DEBT core-1)
 LAB_CFLAGS	make	-std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0	config	tools	-	new	Makefile:727	the Lab's flags: SSE scalar float, no fast-math, no contraction (never x87); whole-area collision
+FAR_SEAM	env	1	flag	world	0	#252	farpano.py	seam sets: same-MSB peers rendered again from eyes near the seam (0: none)
+FAR_SEAM_BAND	env	24.0	tune	world	-	#252	farpano.py	metres: the ground seam eyes come from, nearest the peer
+FAR_SEAM_COVER	env	40.0	tune	world	-	#252	farpano.py	metres: every seam spot this close to an eye
+FAR_SEAM_DEG	env	1.5	tune	world	-	#252	farpano.py	degrees: the seam sets' cells
+FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' coarsest cells (they coarsen first when over FAR_KB)
+FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
+FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit
