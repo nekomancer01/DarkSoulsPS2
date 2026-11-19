@@ -107,9 +107,13 @@ static unsigned rec_frame;
 #define REC_SIZE 96  /* bytes of a trace record (version 3: record_frame) */
 static char rec_line[96];
 
-/* The recorder's output is gathered in RAM (taken at option record only) and written when a buffer is 3/4 full or the
- * script ends, after the reads in flight (pack_async_wait): host writes each frame beside the streamer's async reads
- * cut those reads short ("read 51 of 384 bytes", "model.bin: read error", det_burg3 2026-11-18) */
+/* The recorder's output is gathered in RAM and written when a buffer is 3/4 full, every REC_FLUSH_FRAMES frames (a run
+ * the harness stops on a timeout keeps all but the last few seconds) and when the script ends, after the reads in
+ * flight (pack_async_wait): host writes each frame beside the streamer's async reads cut those reads short ("read 51
+ * of 384 bytes", "model.bin: read error", det_burg3 2026-11-18). The buffers are taken by option fixeddt as well as by
+ * option record (frame_det_buffers, at the option: boot, before the world arena is sized), so a deterministic run has
+ * the same heap and arena whether it records or not (enemy type loads gate on free RAM) */
+#define REC_FLUSH_FRAMES 300
 typedef struct { int *fd; char *buf; unsigned n, cap; } RecOut;
 static RecOut rec_out[3] = {{&rec, 0, 0, 64u << 10}, {&rec_state, 0, 0, 48u << 10}, {&rec_enemies, 0, 0, 160u << 10}};
 static void rec_flush(int close)
@@ -147,9 +151,23 @@ unsigned frame_budget_clock(void)
     return frame_det_dt > 0 ? det_clock + ++det_reads * (unsigned)(FRAME_DET_READ_US * 295u) : ticks();
 }
 
+int frame_det_buffers(void)
+{
+    for (int i = 0; i < 3; i++)
+        if (!rec_out[i].buf && !(rec_out[i].buf = malloc(rec_out[i].cap))) {
+            printf("TEST error: frame: no %u KB for the recorder's buffers\n", rec_out[i].cap >> 10);
+            for (int j = 0; j < 3; j++)
+                free(rec_out[j].buf), rec_out[j].buf = NULL;
+            return 0;
+        }
+    return 1;
+}
+
 void frame_det_record(const char *path)
 {
     char p1[96], p2[104], p3[104];
+    if (!frame_det_buffers())
+        return;
     snprintf(p1, sizeof p1, "host:save/%s", path);  /* (build/save/, as test saves: save.c) */
     snprintf(p2, sizeof p2, "%s.state", p1);
     snprintf(p3, sizeof p3, "%s.enemies", p1);
@@ -158,12 +176,15 @@ void frame_det_record(const char *path)
     rec_enemies = fioOpen(p3, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC);
     if (rec < 0 || rec_state < 0 || rec_enemies < 0) {
         printf("TEST error: frame: cannot write the input trace %s\n", p1);
+        for (int i = 0; i < 3; i++)  /* (the ones that did open) */
+            if (*rec_out[i].fd >= 0)
+                fioClose(*rec_out[i].fd);
         rec = rec_state = rec_enemies = -1;
         return;
     }
     rec_frame = 0;  /* (the header goes out with the first record: record_frame, once the options are all read) */
     for (int i = 0; i < 3; i++)
-        rec_out[i].buf = malloc(rec_out[i].cap), rec_out[i].n = 0;
+        rec_out[i].n = 0;
     rec_end = v3(1e30f, 1e30f, 1e30f);  /* (the first record carries the start position) */
 }
 
@@ -564,6 +585,8 @@ void frame_run(const FrameBoot *b)
             rec_out[2].n += (unsigned)enemy_trace_lines(rec_out[2].buf + rec_out[2].n, 16 << 10, rec_frame - 1);
             if (!test_active())  /* the script ended: the files are complete */
                 rec_flush(1);
+            else if (rec_frame % REC_FLUSH_FRAMES == 0)
+                rec_flush(0);
         }
     }
 }

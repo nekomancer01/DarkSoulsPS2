@@ -153,7 +153,7 @@ static int parse(Prog *p, char *text)
                     save_select(rest + 5);  /* "option save mc|host [name]": saves on in this run (save.h) */
                 /* determinism (frame.h, Polaris 1.7a): "option fixeddt MS", "option seed N", "option record PATH" */
                 if (!strncmp(rest, "fixeddt ", 8))
-                    frame_det_dt = (float)atof(rest + 8) / 1000.0f;
+                    frame_det_dt = (float)atof(rest + 8) / 1000.0f, frame_det_buffers();  /* (frame.h) */
                 if (!strncmp(rest, "seed ", 5))
                     frame_det_seed = (unsigned)atoi(rest + 5), frame_det_seeded = 1, srand(frame_det_seed);
                 if (!strncmp(rest, "record ", 7))

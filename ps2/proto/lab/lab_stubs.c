@@ -151,6 +151,7 @@ float frame_det_dt;
 unsigned frame_det_seed;
 int frame_det_seeded;
 void frame_det_record(const char *path) { (void)path, LAB_COUNT("frame_det_record (option record)"); }
+int frame_det_buffers(void) { return 1; }
 /* the stats testscript.c prints per shot: zero here (nothing is drawn or streamed) */
 FxStats fx_stats;
 Vu1Stats vu1_stats;
