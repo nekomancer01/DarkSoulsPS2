@@ -2,7 +2,8 @@
 # the camera, the loaded enemy types and every loaded enemy per frame (build/save/det_burg3.trace, .state, .enemies).
 # The spawn is out of every enemy's perception, so the wait lets the console's blocks and types arrive while every
 # enemy stays idle (the Lab has them at once: lab.py compare starts the enemy comparison at the first input). The walk
-# then comes up the steps past three hollows, whose AI notices the player. god: the player takes no damage.
+# then comes up the steps past three hollows, whose AI notices the player. god: the player takes no damage. The event
+# summary at the end gives the frames event.c's budget deferred (fixeddt: by work, frame.h frame_budget_clock).
 option nodemo
 option god
 option fixeddt 33.333
@@ -18,4 +19,5 @@ cam 1.73 0.14
 wait 1.5
 stick 0 0
 wait 8
+ev summary
 end
