@@ -7,6 +7,7 @@
 #include <tamtypes.h>
 
 #include "bonfire.h"
+#include "ui_req.h"
 #include "collision.h"
 #include "drawgrp.h"
 #include "enemy.h"
@@ -1147,7 +1148,7 @@ static void run(Inst *in)
         case OP_AWARD_LOT: award_lot(iw[0]); break;
         case OP_SAVE_REQ: save_request(); break;
         case OP_BOSS_BAR: /* 2003[11] (on, entity, slot, NpcParam name id) */
-            hud_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
+            ui_req_boss_bar(iw[0] ? iw[2] : -1, iw[0] ? iw[1] : -1, iw[3]);
             printf("EVT %u/%d boss bar %s %d (slot %d, name %d)\n", (unsigned)ev->id, (int)in->slot,
                    iw[0] ? "on" : "off", (int)iw[1], (int)iw[2], (int)iw[3]);
             break;

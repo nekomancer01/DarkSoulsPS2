@@ -20,7 +20,8 @@
     X(LUA_POOL_GROW, 1)       \
     X(PUSH2_CELLS, 1)         \
     X(VOID_RING, 1)           \
-    X(WORLD_REACH, 1)
+    X(WORLD_REACH, 1)         \
+    X(FRAME_SKIP_MAP, 0)
 
 #define CVAR_EXTERN(name, def) extern int cv_##name;
 CVAR_LIST(CVAR_EXTERN)
