@@ -84,6 +84,24 @@ void vu1_skin_window(const void *palette, const unsigned char *win, int n);
 void vu1_skin_fade(float fmax);
 /* Light for the following textured skin batches: colour = amb + sun x max(n . L, 0) per channel, 0x80 = 1.0 */
 void vu1_skin_light(const float amb[3], const float sun[3]);
+/* Tint added to the next vu1_skin_begin's vu1skin2 batches (i-frames): textured / flat (0x80 = 1.0), NULL = none.
+ * For the next vu1_skin_begin only (the clip program still takes vu1_skin_add_pkt's tint) */
+void vu1_skin_tint(const float tex[3], const float flat[3]);
+/* Polaris 2.2 prebuilt model packets: a model's vu1skin2 batches as DMA segments built once (model.c skin_pk_build) and
+ * called per draw after vu1_skin_begin, which uploads the palette and the per-draw terms (light, tint, fog).
+ * vu1_skin_hdr writes a batch header block (VU1_SKIN_HDR_QW qwords: its VIF codes + vu1skin2's static header; the
+ * arguments as vu1_skin_add_pkt's) and returns its program entry. A segment is, per batch, vu1_skin_seg_batch (two
+ * REF tags: the header block, then the batch's stream packet; prev_entry: the MSCAL of the batch before, 0 for the
+ * first), closed by vu1_skin_seg_end (RET + the last batch's MSCAL). vu1_skin_can_call: 1 when this draw may call
+ * segments (not near the camera: the clip program takes another header; and the chain's first textured batch, which
+ * must load its CLUT with CLD 2, already sent). vu1_skin_call puts a CALL to a segment in the chain (last_cbp: the
+ * CLUT its last textured batch uses, 0 none: stats only). */
+#define VU1_SKIN_HDR_QW 10
+u32 vu1_skin_hdr(void *buf, GSTEXTURE *t, int st, int cull, int tris, int spec_k, int ms);
+void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_bytes, u32 prev_entry);
+void *vu1_skin_seg_end(void *at, u32 entry);
+int vu1_skin_can_call(int textured);
+void vu1_skin_call(const void *seg, unsigned last_cbp);
 #define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
 /* One skinned batch (<= VU1_SKIN_TRIS triangles, unindexed): 16-byte aligned streams per vertex: pa/pb s16x4
  * (bone-local position * 4096, palette offset 4 * bone), nrm s16x4 (normal in bone A space * 4096, weight of A * 4096),
@@ -143,6 +161,7 @@ void vu1_clut_reload(void);
 typedef struct {
     int last[3], peak[3], segments;  /* [2]: the particle chain */
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
+    int skin_calls;    /* Polaris 2.2: prebuilt model segments called, so far */
     int skin_windows;  /* char-7: bone windows uploaded after a character's first (models over 61 bones), so far */
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because
