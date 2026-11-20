@@ -30,7 +30,8 @@
  * AI_PERCEPT          | 1        | fallback | -DAI_PERCEPT=0                                | game   | #234  | ai.c          | DSR sight (FUN_140618680: eye cones as half-angles, sight ray every 0.25 s) and hearing (FUN_140623d10); 0 = flat eye_angX cone, no sight line, hearing capped at ear_dist
  * AREA                | "m10_02_00_00" | make | -                                          | main   | init  | main.c        | the area pack (make MAP=)
  * CHR_DIR             | ""       | make     | -                                             | io     | init  | pack.h        | the area's enemy / common pack folder (make MAP=)
- * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | scene  | #107  | model.h       | largest skeleton (make CHR_BONES=61: one VU1 palette window, the old path)
+ * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | scene  | #107  | model.h       | largest skeleton (make CHR_BONES=61: skeletons folded to 61 bones at export; the VU1 window size is make VU1_BONES)
+ * VU1_LAYOUT_FILE     | unset    | make     | -                                             | gfx    | #287  | vu1_layout.h  | the VU1 contract header to use instead (make VU1_BONES=61 sets it to the copy generated into the build dir)
  * PROFILE             | off      | make     | -DPROFILE                                     | core   | init  | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | core   | init  | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
  * HEAPMAP             | off      | make     | -DHEAPMAP                                     | core   | #203  | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
@@ -160,8 +161,16 @@
  * TEXQ_SLICE          | 512      | tune     | -                                             | gfx    | #104  | vu1.c         | IMAGE qwords per GIF packet
  * SKIN_CLIP_MARGIN    | 1.5 m    | tune     | -                                             | gfx    | init  | vu1.c         | bone origin to farthest vertex
  * FX_VU1              | 1        | fallback | -DFX_VU1=0                                    | fx     | #106  | fx.c          | particles on VU1; 0 = EE billboards
+ * FX_CLOSED           | 1        | fallback | -DFX_CLOSED=0                                 | fx     | #281  | fx.c          | particles keep their spawn state, position at an age in closed form (ppos), VU1 moves them; 0 = the EE integrates each particle every frame
+ * FX_CULL             | 1        | fallback | -DFX_CULL=0                                   | fx     | #281  | fx.c          | an effect instance whose bound is off screen is skipped whole (inst_class); 0 = only the per-particle near-plane test
+ * FX_VU_ORIENT        | 1        | fallback | -DFX_VU_ORIENT=0                              | fx     | #281  | fx.c          | quads fixed in the effect frame (FFX orientation 2, fog walls) on VU1; 0 = always the EE path
  * V5_OFF              | off      | fallback | -DV5_OFF                                      | scene  | init  | model.c       | character CLUTs as exported (CT32)
  * MDL_SKIN_PAGE       | 64 KB    | fallback | -DMDL_SKIN_PAGE=0                             | scene  | #138  | model.c       | skin packets in pages; 0 = one block
+ * OBJ_VIEW_CULL       | 1        | fallback | -DOBJ_VIEW_CULL=0                             | game   | new   | objects.c     | intact breakables outside the view (collision cylinder + 0.3 m) not drawn; 0 = distance / behind-camera tests only
+ * MDL_PREBUILT        | 1        | fallback | -DMDL_PREBUILT=0                              | scene  | new   | model.c       | Polaris 2.2: a model's vu1skin2 batch headers built once and called per draw (palette + per-draw block + one CALL per segment); 0 = every batch's header written per draw
+ * CHR_LIGHTS          | 1        | fallback | -DCHR_LIGHTS=0                                | scene  | new   | chrlight.c    | Polaris 2.2: characters lit by the sun + their 2 strongest point lights with N.L (the rest ambient); 0 = every point light in the ambient term (map_char_light)
+ * SHADOW_BLOB         | 1        | fallback | -DSHADOW_BLOB=0                               | scene  | new   | shadow.c      | Polaris 2.2: a blob shadow on the floor under every drawn character (decal class state); 0 = none
+ * SHADOW_SIL          | 1        | fallback | -DSHADOW_SIL=0                                | scene  | new   | shadow.c      | Polaris 2.2: the player's shadow is its silhouette drawn from the sun into a 128 x 64 target and laid on the floor; 0 = a blob like the others
  * MDL_ANIM_PAGE       | 64 KB    | fallback | -DMDL_ANIM_PAGE=0                             | scene  | #140  | model.c       | anim section in pages; 0 = one copy
  * SPEC_TEST           | off      | debug    | -DSPEC_TEST=0.85,0.8                          | scene  | init  | model.c       | metal / specular on every vertex
  * NO_VU0              | off      | fallback | -DNO_VU0                                      | core   | #94   | vmath.c       | skin matrix product in C

@@ -9,7 +9,10 @@
 ; Constants: 4 scale (F, -F, Zs, fog a), 5 offset (cx, cy, 0, fog b), 6 clip scale (F/G, F/G, 2 near, fog min),
 ; 7 (0, 0, -1, fog max). Bone b: columns of view * world, col0-2 .w = bone-space light vector.
 ; Batch (input buffer): 0 {tris, cull mask}, 1 K1, 2 K2, 3 clamp (255, 255, 255, 128), 4 A+D GIF tag (EOP),
-; 5-7 TEX0 / TEX1 / TEST, 8 PRIM GIF tag template (STQ, RGBAQ, XYZF2; NLOOP / EOP filled per kick),
+; 5-7 TEX0 / TEX1 / TEST, 8 PRIM GIF tag template (STQ, RGBAQ, XYZF2; NLOOP / EOP filled per kick). The header is static
+; per batch (a model's headers are built once, Polaris 2.2): the prologue adds the per-draw block at SKIN_DRAW to K1
+; (textured: tint + amb, flat: tint) and K2 (textured: sun) and takes the PRIM template from it (fog on / off per draw),
+; writing all three back into the header.
 ; 9.. vertices of 4 qwords: pa, pb (s16 x, y, z / 4096 + palette offset 4 b), normal + weight A (s16 / 4096),
 ; st (f32) or colour (u8).
 ; Textured: colour = min(K1 + K2 max(n . L, 0), clamp) with K1 = tint + 64, K2 = 96 (= 0x80 (0.5 + 0.75 n.L)).
@@ -18,9 +21,9 @@
 ; clamp(a z + b); CLIP of (x q F/G, y q F/G, 2 near q - 1) against 1 flags near / guard-band vertices (triangle
 ; skipped with ADC, as before); back faces: sign / zero of -((B - A) x (C - A)).z on screen, caught by the cull mask.
 
-; layout: SKIN_IN 252 (297 qw each), SKIN_OUT0 846, SKIN_OUT1 919 (73 qw each), end 992
-; Tex loop: 132 cycles per triangle (44.0 per vertex) in the tools/vu1 timing model
-; TexSpec loop: 198 cycles per triangle (66.0 per vertex) in the tools/vu1 timing model
+; layout: SKIN_IN 168 (333 qw each), SKIN_OUT0 834, SKIN_OUT1 907 (73 qw each), end 980
+; Tex loop: 150 cycles per triangle (50.0 per vertex) in the tools/vu1 timing model
+; TexSpec loop: 221 cycles per triangle (73.7 per vertex) in the tools/vu1 timing model
 ; Flat loop: 135 cycles per triangle (45.0 per vertex) in the tools/vu1 timing model
 
 		.vu
@@ -37,19 +40,26 @@ VU1Skin2_Tex:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1002(VI00)
+	NOP                            	lq VF09,1003(VI00)
+	add VF01,VF01,VF08             	lq VF10,1005(VI00)
+	add VF02,VF02,VF09             	NOP
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
+	NOP                            	sq VF02,2(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpTex
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpTex:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -90,116 +100,134 @@ skin2TriTex:
 	sub.xyz VF29,VF18,VF24         	lq VF28,10(VI13)
 	mulax ACC,VF22,VF19x           	lq VF30,11(VI12)
 	madday ACC,VF25,VF19y          	lq VF31,11(VI13)
-	maddaz ACC,VF27,VF19z          	ilw.w VI14,8(VI03)
-	NOP                            	ilw.w VI15,9(VI03)
-	maddw VF08,VF30,VF00w          	lq VF16,8(VI03)
-	mulax ACC,VF23,VF20x           	lq VF11,9(VI03)
-	madday ACC,VF26,VF20y          	lq VF13,6(VI03)
-	maddaz ACC,VF28,VF20z          	lq VF09,8(VI14)
-	maddw VF17,VF31,VF00w          	lq VF15,8(VI15)
-	adda.xyz ACC,VF24,VF00         	lq VF18,9(VI14)
-	maddw.xyz VF30,VF29,VF21w      	lq VF19,9(VI15)
-	itof12.xyz VF16,VF16           	lq VF23,10(VI14)
-	itof12.xyz VF11,VF11           	lq VF26,10(VI15)
-	itof12 VF13,VF13               	lq VF20,11(VI14)
-	mulax.w ACC,VF10,VF21x         	lq VF28,11(VI15)
-	sub.xyz VF31,VF08,VF17         	div Q,VF00w,VF30z
-	madday.w ACC,VF12,VF21y        	lq VF24,3(VI03)
-	maddz.w VF10,VF14,VF21z        	lq VF29,10(VI03)
-	mulax ACC,VF09,VF16x           	lq VF08,7(VI03)
-	madday ACC,VF18,VF16y          	lq VF12,11(VI03)
-	maddaz ACC,VF23,VF16z          	iaddiu VI03,VI03,12
-	maddw VF14,VF20,VF00w          	isubiu VI04,VI04,1
-	mulax ACC,VF15,VF11x           	waitq
-	madday ACC,VF19,VF11y          	NOP
-	maddaz ACC,VF26,VF11z          	NOP
-	maddw VF21,VF28,VF00w          	NOP
-	adda.xyz ACC,VF17,VF00         	NOP
-	maddw.xyz VF16,VF31,VF13w      	NOP
-	mulq.xy VF20,VF30,Q            	NOP
-	addq.z VF20,VF00,Q             	NOP
-	mulq.xy VF24,VF24,Q            	NOP
-	addq.z VF24,VF00,Q             	NOP
-	itof12 VF29,VF29               	div Q,VF00w,VF16z
-	sub.xyz VF15,VF14,VF21         	NOP
-	adda.xyz ACC,VF21,VF00         	NOP
-	maxx.w VF10,VF10,VF00x         	sq VF24,0(VI06)
-	NOP                            	NOP
-	maddw.xyz VF19,VF15,VF29w      	NOP
-	mulax.w ACC,VF22,VF13x         	NOP
-	mulq.xy VF11,VF16,Q            	waitq
-	addq.z VF11,VF00,Q             	NOP
-	mulq.xy VF08,VF08,Q            	NOP
-	addq.z VF08,VF00,Q             	NOP
-	madday.w ACC,VF25,VF13y        	div Q,VF00w,VF19z
-	maddz.w VF26,VF27,VF13z        	NOP
-	mulax.w ACC,VF09,VF29x         	NOP
-	madday.w ACC,VF18,VF29y        	sq VF08,3(VI06)
-	maddz.w VF28,VF23,VF29z        	NOP
+	maddaz ACC,VF27,VF19z          	lq VF08,8(VI03)
+	NOP                            	lq VF16,9(VI03)
+	maddw VF11,VF30,VF00w          	lq VF13,6(VI03)
+	mulax ACC,VF23,VF20x           	lq VF09,3(VI03)
+	madday ACC,VF26,VF20y          	ilw.w VI14,8(VI03)
+	maddaz ACC,VF28,VF20z          	ilw.w VI15,9(VI03)
+	maddw VF15,VF31,VF00w          	lq VF17,10(VI03)
+	adda.xyz ACC,VF24,VF00         	lq VF18,7(VI03)
+	maddw.xyz VF30,VF29,VF21w      	lq VF19,8(VI14)
+	itof12.xyz VF08,VF08           	lq VF23,8(VI15)
+	itof12.xyz VF16,VF16           	lq VF26,9(VI14)
+	itof12 VF13,VF13               	lq VF20,10(VI14)
+	itof12 VF17,VF17               	lq VF28,9(VI15)
+	mulax ACC,VF10,VF21x           	lq VF31,10(VI15)
+	madday ACC,VF12,VF21y          	lq VF24,11(VI14)
+	maddz VF10,VF14,VF21z          	lq VF29,11(VI15)
+	mulax ACC,VF19,VF08x           	div Q,VF00w,VF30z
+	madday ACC,VF26,VF08y          	lq VF12,11(VI03)
+	maddaz ACC,VF20,VF08z          	iaddiu VI03,VI03,12
+	maddw VF14,VF24,VF00w          	isubiu VI04,VI04,1
+	sub.xyz VF21,VF11,VF15         	NOP
+	mulax ACC,VF23,VF16x           	NOP
+	madday ACC,VF28,VF16y          	NOP
+	maddaz ACC,VF31,VF16z          	waitq
+	maddw VF08,VF29,VF00w          	lq VF24,980(VI00)
+	adda.xyz ACC,VF15,VF00         	lq VF11,981(VI00)
+	maddw.xyz VF28,VF21,VF13w      	lq VF23,982(VI00)
+	mulq.xy VF09,VF09,Q            	NOP
+	addq.z VF09,VF00,Q             	NOP
+	sub.xyz VF16,VF14,VF08         	NOP
+	mulax ACC,VF22,VF13x           	NOP
+	madday ACC,VF25,VF13y          	NOP
+	maddz VF29,VF27,VF13z          	lq VF31,980(VI00)
+	mulax ACC,VF19,VF17x           	lq VF15,980(VI00)
+	madday ACC,VF26,VF17y          	lq VF21,981(VI00)
+	maddz VF22,VF20,VF17z          	lq VF14,981(VI00)
+	adda.xyz ACC,VF08,VF00         	lq VF25,982(VI00)
+	maddw.xyz VF27,VF16,VF17w      	lq VF13,983(VI00)
+	mulax ACC,VF24,VF10x           	lq VF19,983(VI00)
+	madday ACC,VF11,VF10y          	lq VF26,984(VI00)
+	maddz VF20,VF23,VF10z          	lq VF08,984(VI00)
+	mulax ACC,VF31,VF29x           	lq VF16,985(VI00)
+	madday ACC,VF21,VF29y          	lq VF17,985(VI00)
+	maddz VF24,VF25,VF29z          	sq VF09,0(VI06)
+	mulq.xy VF10,VF30,Q            	lq VF11,982(VI00)
+	addq.z VF10,VF00,Q             	NOP
+	mulax ACC,VF15,VF22x           	div Q,VF00w,VF28z
+	madday ACC,VF14,VF22y          	lq VF23,983(VI00)
+	maddz VF21,VF11,VF22z          	lq VF31,984(VI00)
+	maxx.xyz VF20,VF20,VF00x       	lq VF09,985(VI00)
+	maxx.xyz VF24,VF24,VF00x       	NOP
 	mulaw.w ACC,VF04,VF00w         	NOP
-	maddz.w VF17,VF03,VF19z        	NOP
-	mulq.xy VF31,VF19,Q            	waitq
-	addq.z VF31,VF00,Q             	NOP
+	maxx.xyz VF21,VF21,VF00x       	NOP
+	mulq.xy VF18,VF18,Q            	waitq
+	addq.z VF18,VF00,Q             	NOP
+	maddz.w VF25,VF03,VF27z        	NOP
 	mulaw.xyz ACC,VF04,VF00w       	NOP
-	madd.xyz VF14,VF20,VF03        	NOP
+	madd.xyz VF29,VF10,VF03        	NOP
+	mulax ACC,VF13,VF20x           	sq VF18,3(VI06)
+	madday ACC,VF26,VF20y          	NOP
+	mulq.xy VF15,VF28,Q            	NOP
+	addq.z VF15,VF00,Q             	NOP
+	maddz VF14,VF16,VF20z          	div Q,VF00w,VF27z
 	mulaw.xyz ACC,VF04,VF00w       	NOP
-	madd.xyz VF21,VF11,VF03        	NOP
+	max.w VF25,VF25,VF05           	NOP
+	madd.xyz VF11,VF15,VF03        	NOP
+	mulax ACC,VF19,VF24x           	NOP
+	madday ACC,VF08,VF24y          	NOP
+	maddz VF22,VF17,VF24z          	NOP
+	mulq.xy VF13,VF27,Q            	waitq
+	addq.z VF13,VF00,Q             	NOP
 	mulaw.xyz ACC,VF04,VF00w       	NOP
-	madd.xyz VF17,VF31,VF03        	NOP
+	sub.xyz VF18,VF11,VF29         	NOP
+	add VF26,VF01,VF14             	NOP
+	madd.xyz VF25,VF13,VF03        	NOP
+	mulax ACC,VF23,VF21x           	NOP
+	madday ACC,VF31,VF21y          	NOP
+	maddz VF16,VF09,VF21z          	NOP
 	mulaw.w ACC,VF04,VF00w         	NOP
-	maddz.w VF14,VF03,VF30z        	NOP
+	maddz.w VF29,VF03,VF30z        	NOP
 	mulaw.w ACC,VF04,VF00w         	NOP
-	maddz.w VF21,VF03,VF16z        	NOP
-	maxx.w VF26,VF26,VF00x         	NOP
-	maxx.w VF28,VF28,VF00x         	NOP
-	mula.xyz ACC,VF20,VF05         	NOP
-	maddw.xyz VF24,VF06,VF00w      	NOP
-	mula.xyz ACC,VF11,VF05         	NOP
-	max.w VF17,VF17,VF05           	NOP
-	maddw.xyz VF15,VF06,VF00w      	NOP
-	mula.xyz ACC,VF31,VF05         	NOP
-	sub.xyz VF22,VF21,VF14         	NOP
-	sub.xyz VF25,VF17,VF14         	NOP
-	maddw.xyz VF13,VF06,VF00w      	NOP
-	mulaw ACC,VF01,VF00w           	NOP
-	max.w VF14,VF14,VF05           	NOP
-	max.w VF21,VF21,VF05           	NOP
-	maddw VF27,VF02,VF10w          	NOP
-	mulaw ACC,VF01,VF00w           	NOP
-	maddw VF09,VF02,VF26w          	NOP
-	mulaw ACC,VF01,VF00w           	NOP
-	maddw VF08,VF02,VF28w          	NOP
-	clipw.xyz VF24xyz,VF00w        	NOP
-	mini.w VF17,VF17,VF06          	NOP
-	clipw.xyz VF15xyz,VF00w        	NOP
-	opmula.xyz ACC,VF25,VF22       	NOP
-	clipw.xyz VF13xyz,VF00w        	NOP
-	opmsub.xyz VF18,VF22,VF25      	NOP
-	mini.w VF14,VF14,VF06          	NOP
-	mini.w VF21,VF21,VF06          	NOP
-	mini VF27,VF27,VF07            	fcand VI01,262143
-	mini VF09,VF09,VF07            	fmand VI10,VI05
-	mini VF08,VF08,VF07            	ior VI11,VI01,VI10
-	ftoi4 VF23,VF17                	iaddiu VI11,VI11,0x7fff
-	ftoi0 VF27,VF27                	iand VI11,VI11,VI09
-	ftoi0 VF09,VF09                	NOP
-	ftoi0 VF08,VF08                	NOP
-	mulq.xy VF12,VF12,Q            	mtir VI12,VF23w
-	addq.z VF12,VF00,Q             	sq VF23,8(VI06)
-	ftoi4 VF29,VF14                	ior VI11,VI11,VI12
-	ftoi4 VF19,VF21                	sq VF27,1(VI06)
-	NOP                            	sq VF09,4(VI06)
+	maddz.w VF11,VF03,VF28z        	NOP
+	mula.xyz ACC,VF10,VF05         	NOP
+	maddw.xyz VF20,VF06,VF00w      	NOP
+	mula.xyz ACC,VF15,VF05         	NOP
+	maddw.xyz VF19,VF06,VF00w      	NOP
+	mula.xyz ACC,VF13,VF05         	NOP
+	sub.xyz VF08,VF25,VF29         	NOP
+	maddw.xyz VF17,VF06,VF00w      	NOP
+	max.w VF29,VF29,VF05           	NOP
+	max.w VF11,VF11,VF05           	NOP
+	add VF24,VF01,VF22             	NOP
+	add VF27,VF01,VF16             	NOP
+	clipw.xyz VF20xyz,VF00w        	NOP
+	mini.w VF25,VF25,VF06          	NOP
+	clipw.xyz VF19xyz,VF00w        	NOP
+	opmula.xyz ACC,VF08,VF18       	NOP
+	clipw.xyz VF17xyz,VF00w        	NOP
+	opmsub.xyz VF14,VF18,VF08      	NOP
+	mini.w VF29,VF29,VF06          	NOP
+	mini.w VF11,VF11,VF06          	NOP
+	mini VF26,VF26,VF07            	fcand VI01,262143
+	mini VF24,VF24,VF07            	NOP
+	mini VF27,VF27,VF07            	NOP
+	ftoi4 VF23,VF25                	NOP
+	ftoi0 VF26,VF26                	NOP
+	ftoi0 VF24,VF24                	NOP
+	ftoi0 VF27,VF27                	NOP
+	mulq.xy VF12,VF12,Q            	sq VF23,8(VI06)
+	addq.z VF12,VF00,Q             	sq VF26,1(VI06)
+	ftoi4 VF31,VF29                	sq VF24,4(VI06)
+	ftoi4 VF09,VF11                	fmand VI10,VI05
+	NOP                            	ior VI11,VI01,VI10
+	NOP                            	iaddiu VI11,VI11,0x7fff
+	NOP                            	iand VI11,VI11,VI09
+	NOP                            	sq VF31,2(VI06)
+	NOP                            	mtir VI12,VF23w
+	NOP                            	ior VI11,VI11,VI12
+	NOP                            	sq VF09,5(VI06)
 	NOP                            	sq VF12,6(VI06)
-	NOP                            	sq VF29,2(VI06)
-	NOP                            	sq VF19,5(VI06)
-	NOP                            	sq VF08,7(VI06)
+	NOP                            	sq VF27,7(VI06)
 	NOP                            	isw.w VI11,8(VI06)
 	NOP                            	iaddiu VI06,VI06,9
 	NOP                            	ibne VI04,VI00,skin2TriTex
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpTex
 	NOP                            	NOP
@@ -211,19 +239,26 @@ VU1Skin2_TexSpec:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1002(VI00)
+	NOP                            	lq VF09,1003(VI00)
+	add VF01,VF01,VF08             	lq VF10,1005(VI00)
+	add VF02,VF02,VF09             	NOP
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
+	NOP                            	sq VF02,2(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpTexSpec
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpTexSpec:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -257,189 +292,212 @@ skin2TriTexSpec:
 	mulax ACC,VF04,VF02x           	lq VF13,4(VI03)
 	madday ACC,VF06,VF02y          	lq VF14,5(VI03)
 	maddaz ACC,VF08,VF02z          	lq VF15,6(VI03)
-	maddw VF16,VF10,VF00w          	lq VF17,10(VI03)
-	itof12 VF11,VF11               	lq VF18,8(VI12)
-	itof12.xyz VF13,VF13           	lq VF19,8(VI13)
-	itof12.xyz VF14,VF14           	lq VF20,9(VI12)
-	itof12 VF15,VF15               	lq VF21,9(VI13)
-	itof12 VF17,VF17               	lq VF22,10(VI12)
-	sub.xyz VF24,VF12,VF16         	lq VF23,10(VI13)
-	mulax ACC,VF18,VF13x           	lq VF25,11(VI12)
-	madday ACC,VF20,VF13y          	lq VF26,11(VI13)
-	maddaz ACC,VF22,VF13z          	lq VF27,8(VI03)
-	NOP                            	lq VF28,9(VI03)
-	maddw VF30,VF25,VF00w          	lq VF29,992(VI00)
-	mulax ACC,VF19,VF14x           	lq VF31,992(VI00)
-	madday ACC,VF21,VF14y          	lq VF01,992(VI00)
-	maddaz ACC,VF23,VF14z          	lq VF09,993(VI00)
-	maddw VF06,VF26,VF00w          	lq VF04,993(VI00)
-	mulax ACC,VF03,VF11x           	lq VF02,993(VI00)
-	madday ACC,VF05,VF11y          	lq VF08,994(VI00)
-	maddz VF12,VF07,VF11z          	lq VF10,994(VI00)
-	mulax ACC,VF18,VF15x           	lq VF13,994(VI00)
-	madday ACC,VF20,VF15y          	lq VF25,995(VI00)
-	maddz VF21,VF22,VF15z          	lq VF19,995(VI00)
-	adda.xyz ACC,VF16,VF00         	lq VF14,995(VI00)
-	maddw.xyz VF26,VF24,VF11w      	lq VF23,3(VI03)
-	itof12.xyz VF27,VF27           	ilw.w VI14,8(VI03)
-	itof12.xyz VF28,VF28           	ilw.w VI15,9(VI03)
-	mulax ACC,VF29,VF12x           	lq VF03,7(VI03)
-	sub.xyz VF05,VF30,VF06         	div Q,VF00w,VF26z
-	madday ACC,VF09,VF12y          	lq VF07,8(VI14)
-	maddz VF20,VF08,VF12z          	lq VF18,9(VI14)
-	mulax ACC,VF31,VF21x           	lq VF22,10(VI14)
-	madday ACC,VF04,VF21y          	lq VF16,8(VI15)
-	maddz VF24,VF10,VF21z          	lq VF11,9(VI15)
-	mulax ACC,VF07,VF17x           	lq VF29,10(VI15)
-	madday ACC,VF18,VF17y          	lq VF30,11(VI14)
-	maddz VF08,VF22,VF17z          	lq VF09,11(VI15)
-	mulax ACC,VF07,VF27x           	waitq
-	madday ACC,VF18,VF27y          	lq VF31,11(VI03)
-	maddaz ACC,VF22,VF27z          	iaddiu VI03,VI03,12
-	maddw VF04,VF30,VF00w          	isubiu VI04,VI04,1
-	mulax ACC,VF01,VF08x           	NOP
-	madday ACC,VF02,VF08y          	lq VF10,0(VI02)
-	maddz VF18,VF13,VF08z          	lq VF07,0(VI02)
-	mulax ACC,VF16,VF28x           	NOP
-	madday ACC,VF11,VF28y          	lq VF22,0(VI02)
-	maddaz ACC,VF29,VF28z          	lq VF27,995(VI00)
-	maddw VF30,VF09,VF00w          	lq VF01,995(VI00)
-	adda.xyz ACC,VF06,VF00         	lq VF02,995(VI00)
-	maddw.xyz VF16,VF05,VF15w      	lq VF13,996(VI00)
-	mulx.x VF11,VF20,VF25x         	lq VF28,996(VI00)
-	itof0.zw VF29,VF23             	NOP
-	mulq.xy VF23,VF23,Q            	NOP
-	addq.z VF23,VF00,Q             	NOP
-	sub.xyz VF09,VF04,VF30         	NOP
-	minix.w VF05,VF20,VF11x        	lq VF06,997(VI00)
-	adda.xyz ACC,VF30,VF00         	NOP
-	maxx.w VF12,VF12,VF00x         	lq VF15,998(VI00)
-	maddw.xyz VF25,VF09,VF17w      	sq VF23,0(VI06)
-	maxx.w VF05,VF05,VF00x         	lq VF04,5(VI00)
-	mulaw.w ACC,VF10,VF00w         	lq VF11,4(VI00)
-	maxx.w VF21,VF21,VF00x         	lq VF30,6(VI00)
-	maxx.w VF08,VF08,VF00x         	lq VF09,7(VI00)
-	maddz.w VF17,VF05,VF10z        	NOP
-	mulaw.y ACC,VF27,VF00w         	lq VF23,1(VI02)
-	maddz.y VF10,VF20,VF20z        	NOP
-	mulaw.y ACC,VF01,VF00w         	NOP
-	maddz.y VF27,VF24,VF24z        	NOP
-	mulaw.y ACC,VF02,VF00w         	NOP
-	maddz.y VF20,VF18,VF18z        	NOP
-	maxx.w VF17,VF17,VF00x         	NOP
-	mulaw ACC,VF13,VF00w           	lq VF01,2(VI02)
-	maddy VF02,VF06,VF10y          	NOP
-	mulaw.w ACC,VF04,VF00w         	NOP
-	mul.w VF13,VF17,VF17           	NOP
-	mulz.w VF10,VF12,VF29z         	lq VF06,999(VI00)
-	maddz.w VF17,VF11,VF26z        	lq VF04,1000(VI00)
-	mulaw ACC,VF02,VF00w           	lq VF11,3(VI02)
-	maddw VF02,VF15,VF13w          	NOP
-	mulq.xy VF13,VF26,Q            	NOP
-	addq.z VF13,VF00,Q             	NOP
-	mulaw ACC,VF23,VF00w           	div Q,VF00w,VF16z
-	maddaw ACC,VF01,VF12w          	NOP
-	msubaz ACC,VF06,VF29z          	NOP
-	msubaw ACC,VF04,VF10w          	NOP
-	mulx.x VF15,VF24,VF19x         	lq VF26,996(VI00)
-	max.w VF17,VF17,VF30           	lq VF23,997(VI00)
-	maddw VF05,VF02,VF29w          	lq VF01,997(VI00)
-	mulx.x VF12,VF18,VF14x         	waitq
-	minix.w VF04,VF24,VF15x        	lq VF06,5(VI00)
-	itof0.zw VF19,VF03             	lq VF10,5(VI00)
-	mulq.xy VF03,VF03,Q            	NOP
-	addq.z VF03,VF00,Q             	NOP
+	maddw VF16,VF10,VF00w          	ilw.w VI14,8(VI03)
+	itof12 VF11,VF11               	lq VF17,10(VI03)
+	itof12.xyz VF13,VF13           	lq VF18,8(VI12)
+	itof12.xyz VF14,VF14           	lq VF19,8(VI13)
+	itof12 VF15,VF15               	lq VF20,8(VI14)
+	itof12 VF17,VF17               	lq VF21,9(VI12)
+	mulax ACC,VF03,VF11x           	lq VF22,9(VI13)
+	madday ACC,VF05,VF11y          	lq VF23,9(VI14)
+	maddz VF25,VF07,VF11z          	lq VF24,10(VI12)
+	mulax ACC,VF18,VF15x           	lq VF26,10(VI13)
+	madday ACC,VF21,VF15y          	lq VF27,10(VI14)
+	NOP                            	lq VF28,11(VI12)
+	maddz VF30,VF24,VF15z          	lq VF29,11(VI13)
+	mulax ACC,VF18,VF13x           	ilw.w VI15,9(VI03)
+	madday ACC,VF21,VF13y          	lq VF31,8(VI03)
+	maddaz ACC,VF24,VF13z          	lq VF01,9(VI03)
+	maddw VF09,VF28,VF00w          	lq VF04,3(VI03)
+	mulax ACC,VF19,VF14x           	lq VF06,8(VI15)
+	madday ACC,VF22,VF14y          	lq VF02,9(VI15)
+	maddaz ACC,VF26,VF14z          	lq VF08,10(VI15)
+	maddw VF03,VF29,VF00w          	lq VF10,11(VI14)
+	mulax ACC,VF20,VF17x           	lq VF05,11(VI15)
+	madday ACC,VF23,VF17y          	lq VF07,7(VI03)
+	maddz VF18,VF27,VF17z          	lq VF21,11(VI03)
+	itof12.xyz VF31,VF31           	iaddiu VI03,VI03,12
+	itof12.xyz VF01,VF01           	isubiu VI04,VI04,1
+	sub.xyz VF13,VF12,VF16         	lq VF24,992(VI00)
+	adda.xyz ACC,VF16,VF00         	lq VF28,993(VI00)
+	sub.xyz VF22,VF09,VF03         	lq VF19,994(VI00)
+	itof0.zw VF14,VF04             	NOP
+	maddw.xyz VF26,VF13,VF11w      	NOP
+	mulax ACC,VF24,VF25x           	NOP
+	madday ACC,VF28,VF25y          	NOP
+	maddz VF29,VF19,VF25z          	NOP
+	mulax ACC,VF20,VF31x           	div Q,VF00w,VF26z
+	madday ACC,VF23,VF31y          	lq VF12,995(VI00)
+	maddaz ACC,VF27,VF31z          	lq VF16,0(VI02)
+	maddw VF09,VF10,VF00w          	NOP
+	mulax ACC,VF06,VF01x           	lq VF11,995(VI00)
+	madday ACC,VF02,VF01y          	lq VF13,996(VI00)
+	maddaz ACC,VF08,VF01z          	lq VF24,997(VI00)
+	maddw VF28,VF05,VF00w          	waitq
+	adda.xyz ACC,VF03,VF00         	lq VF19,980(VI00)
+	maddw.xyz VF23,VF22,VF15w      	lq VF20,981(VI00)
+	mulx.x VF27,VF29,VF12x         	lq VF31,982(VI00)
+	mulq.xy VF04,VF04,Q            	lq VF10,983(VI00)
+	addq.z VF04,VF00,Q             	lq VF06,984(VI00)
+	sub.xyz VF02,VF09,VF28         	lq VF01,985(VI00)
+	minix.w VF05,VF29,VF27x        	lq VF08,998(VI00)
+	adda.xyz ACC,VF28,VF00         	NOP
+	NOP                            	lq VF03,4(VI00)
+	maddw.xyz VF15,VF02,VF17w      	sq VF04,0(VI06)
+	mulax ACC,VF19,VF25x           	lq VF22,5(VI00)
+	maxx.w VF05,VF05,VF00x         	lq VF12,980(VI00)
+	madday ACC,VF20,VF25y          	lq VF09,1(VI02)
+	maddz VF27,VF31,VF25z          	lq VF28,999(VI00)
+	mulaw.w ACC,VF16,VF00w         	lq VF02,6(VI00)
+	maddz.w VF04,VF05,VF16z        	lq VF17,7(VI00)
+	mulaw.y ACC,VF11,VF00w         	lq VF19,3(VI02)
+	maxx.xyz VF27,VF27,VF00x       	NOP
+	maddz.y VF20,VF29,VF29z        	NOP
 	maxx.w VF04,VF04,VF00x         	NOP
-	mulaw.w ACC,VF07,VF00w         	NOP
-	mini.w VF17,VF17,VF09          	NOP
-	mini VF05,VF05,VF11            	lq VF30,5(VI00)
-	maddz.w VF29,VF04,VF07z        	lq VF02,5(VI00)
-	mulaw ACC,VF28,VF00w           	lq VF14,4(VI00)
-	maddy VF24,VF23,VF27y          	lq VF15,6(VI00)
-	mulaw ACC,VF26,VF00w           	lq VF09,7(VI00)
-	maxx.w VF29,VF29,VF00x         	sq VF03,3(VI06)
-	maddy VF07,VF01,VF20y          	lq VF11,4(VI00)
-	mulaw.xyz ACC,VF06,VF00w       	lq VF28,4(VI00)
-	madd.xyz VF17,VF13,VF14        	lq VF23,4(VI00)
-	mulaw.w ACC,VF30,VF00w         	lq VF27,5(VI00)
-	ftoi0 VF05,VF05                	lq VF26,998(VI00)
-	maddz.w VF03,VF28,VF25z        	NOP
-	mula.xyz ACC,VF13,VF15         	NOP
-	minix.w VF20,VF18,VF12x        	lq VF01,4(VI00)
-	mulq.xy VF14,VF16,Q            	lq VF06,1(VI02)
-	addq.z VF14,VF00,Q             	sq VF05,1(VI06)
-	itof0.zw VF30,VF31             	div Q,VF00w,VF25z
-	maxx.w VF20,VF20,VF00x         	NOP
-	maddw.xyz VF28,VF09,VF00w      	NOP
-	mulaw.w ACC,VF22,VF00w         	NOP
-	ftoi4 VF13,VF17                	NOP
-	maddz.w VF15,VF20,VF22z        	NOP
-	mulaw.xyz ACC,VF10,VF00w       	NOP
-	madd.xyz VF12,VF14,VF11        	waitq
-	mulaw.w ACC,VF27,VF00w         	sq VF13,2(VI06)
-	maxx.w VF15,VF15,VF00x         	lq VF18,998(VI00)
-	maddz.w VF12,VF01,VF16z        	lq VF05,1(VI02)
-	mulq.xy VF22,VF25,Q            	lq VF09,2(VI02)
-	addq.z VF22,VF00,Q             	lq VF10,6(VI00)
-	mulaw.xyz ACC,VF02,VF00w       	NOP
-	clipw.xyz VF28xyz,VF00w        	lq VF11,2(VI02)
-	mul.w VF13,VF29,VF29           	lq VF27,999(VI00)
-	madd.xyz VF03,VF22,VF23        	lq VF01,1000(VI00)
-	mulaw ACC,VF24,VF00w           	lq VF16,6(VI00)
-	mulz.w VF25,VF21,VF19z         	lq VF02,7(VI00)
-	maddw VF28,VF26,VF13w          	lq VF29,3(VI02)
-	mulaw ACC,VF06,VF00w           	NOP
-	maddaw ACC,VF09,VF21w          	NOP
-	msubaz ACC,VF27,VF19z          	lq VF23,7(VI00)
-	msubaw ACC,VF01,VF25w          	lq VF24,6(VI00)
-	mul.w VF13,VF15,VF15           	lq VF26,999(VI00)
-	max.w VF12,VF12,VF16           	lq VF06,6(VI00)
-	maddw VF04,VF28,VF19w          	lq VF09,1000(VI00)
-	mulaw ACC,VF07,VF00w           	lq VF21,7(VI00)
-	mulz.w VF27,VF08,VF30z         	lq VF01,7(VI00)
-	maddw VF25,VF18,VF13w          	NOP
-	mulaw ACC,VF05,VF00w           	lq VF15,3(VI02)
-	maddaw ACC,VF11,VF08w          	NOP
-	max.w VF03,VF03,VF24           	NOP
-	msubaz ACC,VF26,VF30z          	NOP
-	sub.xyz VF16,VF12,VF17         	NOP
-	sub.xyz VF19,VF03,VF17         	NOP
-	msubaw ACC,VF09,VF27w          	NOP
-	maddw VF20,VF25,VF30w          	NOP
-	mula.xyz ACC,VF14,VF10         	NOP
-	maddw.xyz VF28,VF23,VF00w      	NOP
-	mula.xyz ACC,VF22,VF06         	NOP
-	maddw.xyz VF07,VF21,VF00w      	NOP
-	mini.w VF03,VF03,VF01          	NOP
-	clipw.xyz VF28xyz,VF00w        	NOP
-	opmula.xyz ACC,VF19,VF16       	NOP
-	clipw.xyz VF07xyz,VF00w        	NOP
-	opmsub.xyz VF13,VF16,VF19      	NOP
-	mini.w VF12,VF12,VF02          	NOP
-	mini VF04,VF04,VF29            	NOP
-	mini VF20,VF20,VF15            	fcand VI01,262143
-	ftoi4 VF18,VF03                	NOP
-	ftoi4 VF05,VF12                	NOP
-	ftoi0 VF04,VF04                	NOP
-	ftoi0 VF20,VF20                	NOP
-	mulq.xy VF31,VF31,Q            	sq VF18,8(VI06)
-	addq.z VF31,VF00,Q             	sq VF05,5(VI06)
-	NOP                            	sq VF04,4(VI06)
-	NOP                            	fmand VI10,VI05
-	NOP                            	ior VI11,VI01,VI10
-	NOP                            	iaddiu VI11,VI11,0x7fff
-	NOP                            	iand VI11,VI11,VI09
-	NOP                            	mtir VI12,VF18w
-	NOP                            	ior VI11,VI11,VI12
-	NOP                            	sq VF31,6(VI06)
-	NOP                            	sq VF20,7(VI06)
-	NOP                            	isw.w VI11,8(VI06)
+	mulaw ACC,VF13,VF00w           	NOP
+	NOP                            	NOP
+	maddy VF25,VF24,VF20y          	NOP
+	mulax ACC,VF10,VF27x           	NOP
+	madday ACC,VF06,VF27y          	NOP
+	maddz VF31,VF01,VF27z          	NOP
+	mul.w VF16,VF04,VF04           	NOP
+	mulq.xy VF11,VF26,Q            	NOP
+	addq.z VF11,VF00,Q             	NOP
+	mulaw ACC,VF25,VF00w           	div Q,VF00w,VF23z
+	mulw VF29,VF31,VF12w           	lq VF13,6(VI00)
+	maddw VF20,VF08,VF16w          	NOP
+	itof0.zw VF10,VF07             	lq VF24,992(VI00)
+	mulaw.w ACC,VF22,VF00w         	lq VF06,993(VI00)
+	maddz.w VF27,VF03,VF26z        	lq VF01,994(VI00)
+	mulaw ACC,VF09,VF00w           	lq VF04,995(VI00)
+	mulq.xy VF07,VF07,Q            	waitq
+	addq.z VF07,VF00,Q             	lq VF25,5(VI00)
+	maddaw ACC,VF31,VF00w          	lq VF12,4(VI00)
+	msubaz ACC,VF28,VF14z          	lq VF08,7(VI00)
+	msubaz ACC,VF29,VF14z          	NOP
+	max.w VF27,VF27,VF02           	sq VF07,3(VI06)
+	maddw VF05,VF20,VF14w          	lq VF16,0(VI02)
+	mulax ACC,VF24,VF30x           	NOP
+	madday ACC,VF06,VF30y          	NOP
+	maddz VF22,VF01,VF30z          	NOP
+	mulaw.xyz ACC,VF25,VF00w       	NOP
+	madd.xyz VF27,VF11,VF12        	NOP
+	mula.xyz ACC,VF11,VF13         	NOP
+	maddw.xyz VF03,VF08,VF00w      	NOP
+	mini.w VF27,VF27,VF17          	NOP
+	mulx.x VF26,VF22,VF04x         	lq VF09,995(VI00)
+	mini VF05,VF05,VF19            	lq VF31,996(VI00)
+	clipw.xyz VF03xyz,VF00w        	lq VF28,997(VI00)
+	ftoi4 VF29,VF27                	lq VF02,998(VI00)
+	minix.w VF07,VF22,VF26x        	NOP
+	mulaw.y ACC,VF09,VF00w         	NOP
+	maddz.y VF14,VF22,VF22z        	NOP
+	mulaw ACC,VF31,VF00w           	sq VF29,2(VI06)
+	maxx.w VF07,VF07,VF00x         	NOP
+	ftoi0 VF05,VF05                	NOP
+	maddy VF24,VF28,VF14y          	lq VF20,980(VI00)
+	mulaw.w ACC,VF16,VF00w         	lq VF06,981(VI00)
+	maddz.w VF25,VF07,VF16z        	lq VF01,982(VI00)
+	NOP                            	lq VF12,983(VI00)
+	mulax ACC,VF20,VF30x           	lq VF11,984(VI00)
+	madday ACC,VF06,VF30y          	lq VF13,985(VI00)
+	maddz VF08,VF01,VF30z          	sq VF05,1(VI06)
+	maxx.w VF25,VF25,VF00x         	lq VF17,5(VI00)
+	NOP                            	lq VF04,980(VI00)
+	NOP                            	lq VF19,4(VI00)
+	maxx.xyz VF08,VF08,VF00x       	lq VF03,1(VI02)
+	mul.w VF26,VF25,VF25           	lq VF09,999(VI00)
+	mulq.xy VF29,VF23,Q            	lq VF22,6(VI00)
+	addq.z VF29,VF00,Q             	lq VF31,7(VI00)
+	mulax ACC,VF12,VF08x           	div Q,VF00w,VF15z
+	madday ACC,VF11,VF08y          	lq VF14,3(VI02)
+	maddz VF28,VF13,VF08z          	NOP
+	mulaw ACC,VF24,VF00w           	NOP
+	maddw VF16,VF02,VF26w          	lq VF20,6(VI00)
+	itof0.zw VF01,VF21             	lq VF06,992(VI00)
+	mulaw.w ACC,VF17,VF00w         	lq VF05,993(VI00)
+	mulw VF25,VF28,VF04w           	lq VF30,994(VI00)
+	maddz.w VF11,VF19,VF23z        	lq VF12,5(VI00)
+	mulax ACC,VF06,VF18x           	lq VF08,995(VI00)
+	madday ACC,VF05,VF18y          	lq VF13,4(VI00)
+	maddz VF02,VF30,VF18z          	lq VF24,7(VI00)
+	mulaw.xyz ACC,VF12,VF00w       	waitq
+	max.w VF11,VF11,VF22           	NOP
+	madd.xyz VF11,VF29,VF13        	lq VF26,0(VI02)
+	mulaw ACC,VF03,VF00w           	NOP
+	maddaw ACC,VF28,VF00w          	NOP
+	msubaz ACC,VF09,VF10z          	NOP
+	msubaz ACC,VF25,VF10z          	NOP
+	maddw VF07,VF16,VF10w          	NOP
+	mula.xyz ACC,VF29,VF20         	NOP
+	maddw.xyz VF17,VF24,VF00w      	NOP
+	mini.w VF11,VF11,VF31          	NOP
+	mulx.x VF04,VF02,VF08x         	lq VF19,995(VI00)
+	mini VF07,VF07,VF14            	lq VF23,996(VI00)
+	clipw.xyz VF17xyz,VF00w        	lq VF06,997(VI00)
+	ftoi4 VF05,VF11                	lq VF30,998(VI00)
+	minix.w VF12,VF02,VF04x        	NOP
+	mulaw.y ACC,VF19,VF00w         	NOP
+	maddz.y VF22,VF02,VF02z        	NOP
+	mulaw ACC,VF23,VF00w           	sq VF05,5(VI06)
+	maxx.w VF12,VF12,VF00x         	NOP
+	ftoi0 VF07,VF07                	NOP
+	maddy VF03,VF06,VF22y          	lq VF13,980(VI00)
+	mulaw.w ACC,VF26,VF00w         	lq VF28,981(VI00)
+	maddz.w VF25,VF12,VF26z        	lq VF09,982(VI00)
+	mulq.xy VF21,VF21,Q            	lq VF10,983(VI00)
+	mulax ACC,VF13,VF18x           	lq VF16,984(VI00)
+	madday ACC,VF28,VF18y          	lq VF20,985(VI00)
+	maddz VF29,VF09,VF18z          	sq VF07,4(VI06)
+	maxx.w VF25,VF25,VF00x         	lq VF24,5(VI00)
+	addq.z VF21,VF00,Q             	lq VF31,4(VI00)
+	NOP                            	lq VF08,980(VI00)
+	maxx.xyz VF29,VF29,VF00x       	lq VF14,1(VI02)
+	mul.w VF17,VF25,VF25           	lq VF04,6(VI00)
+	mulq.xy VF02,VF15,Q            	lq VF19,999(VI00)
+	addq.z VF02,VF00,Q             	lq VF05,7(VI00)
+	mulax ACC,VF10,VF29x           	lq VF23,3(VI02)
+	madday ACC,VF16,VF29y          	sq VF21,6(VI06)
+	maddz VF06,VF20,VF29z          	NOP
+	mulaw.w ACC,VF24,VF00w         	NOP
+	maddz.w VF22,VF31,VF15z        	NOP
+	mulaw ACC,VF03,VF00w           	NOP
+	mulw VF26,VF06,VF08w           	lq VF13,6(VI00)
+	maddw VF28,VF30,VF17w          	NOP
+	mulaw ACC,VF14,VF00w           	lq VF07,5(VI00)
+	maddaw ACC,VF06,VF00w          	lq VF09,4(VI00)
+	max.w VF22,VF22,VF04           	lq VF18,7(VI00)
+	msubaz ACC,VF19,VF01z          	NOP
+	sub.xyz VF25,VF11,VF27         	NOP
+	msubaz ACC,VF26,VF01z          	NOP
+	maddw VF12,VF28,VF01w          	NOP
+	mulaw.xyz ACC,VF07,VF00w       	NOP
+	madd.xyz VF22,VF02,VF09        	NOP
+	mula.xyz ACC,VF02,VF13         	NOP
+	maddw.xyz VF10,VF18,VF00w      	NOP
+	mini.w VF22,VF22,VF05          	NOP
+	sub.xyz VF16,VF22,VF27         	NOP
+	mini VF12,VF12,VF23            	NOP
+	clipw.xyz VF10xyz,VF00w        	NOP
+	ftoi4 VF21,VF22                	NOP
+	opmula.xyz ACC,VF16,VF25       	NOP
+	opmsub.xyz VF20,VF25,VF16      	NOP
+	ftoi0 VF12,VF12                	fcand VI01,262143
+	NOP                            	mtir VI10,VF21w
+	NOP                            	sq VF21,8(VI06)
+	NOP                            	fmand VI11,VI05
+	NOP                            	ior VI12,VI01,VI11
+	NOP                            	iaddiu VI12,VI12,0x7fff
+	NOP                            	iand VI12,VI12,VI09
+	NOP                            	ior VI12,VI12,VI10
+	NOP                            	sq VF12,7(VI06)
+	NOP                            	isw.w VI12,8(VI06)
 	NOP                            	iaddiu VI06,VI06,9
 	NOP                            	ibne VI04,VI00,skin2TriTexSpec
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpTexSpec
 	NOP                            	NOP
@@ -451,19 +509,23 @@ VU1Skin2_Flat:
 	NOP                            	lq VF05,6(VI00)
 	NOP                            	lq VF06,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI07,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1004(VI00)
+	add VF01,VF01,VF08             	lq VF10,1006(VI00)
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
 	NOP                            	iaddiu VI09,VI00,0x7fff
 	NOP                            	ibeq VI08,VI01,skin2GrpFlat
 	NOP                            	iaddiu VI09,VI09,1
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skin2GrpFlat:
 	NOP                            	iaddiu VI04,VI00,8
 	NOP                            	isubiu VI01,VI07,8
@@ -616,7 +678,7 @@ skin2TriFlat:
 	NOP                            	NOP
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 	NOP                            	ibne VI07,VI00,skin2GrpFlat
 	NOP                            	NOP

@@ -1,5 +1,5 @@
 /* Effects: DSR FFX particle systems and effect lights of the area (fx.bin, tools/export_effects.py).
- * Billboard particles on the EE, drawn through gsKit after the opaque passes (additive or alpha blended, Z tested,
+ * Billboard particles, moved and drawn on VU1 (near the camera: the EE), after the opaque passes (additive or alpha blended, Z tested,
  * no Z write); effect lights (bonfires) add to the character light. The map's static share of the same lights is
  * baked into map.bin by export_map.py. */
 #ifndef FX_H
@@ -18,6 +18,12 @@ void fx_draw(void);
 void fx_kick(void);
 /* add the effect lights near pos (bonfire flicker) to a character's ambient light (0x80 = 1.0 units) */
 void fx_char_light(V3 pos, float amb[3]);
+/* Polaris 2.2 (src/chrlight.c, once a frame): the lit effect lights, at most max, each with its world position, its
+ * flicker colour now (fx_char_light's units) and its cubic falloff begin..end metres. Returns the count. */
+typedef struct {
+    float pos[3], rgb[3], begin, end;
+} FxLightOut;
+int fx_lights(FxLightOut *out, int max);
 /* World blocks (src/world.c): at boot, block b's fx.bin tables (kept: the blob can be freed); fx_block_on(b, 1, blob)
  * when the block turns on uploads its textures from blob (its fx.bin again, read with the block), (b, 0, NULL) when
  * it turns off gives their VRAM back (its particles go). Only the blocks on hold VRAM (TECH_DEBT world-4). */
@@ -47,7 +53,8 @@ typedef struct {
     int drawn;       /* particles drawn this frame */
     int batches;     /* GS packets */
     int vu1;         /* of drawn: on VU1 (FX_VU1) */
-    int vu1_breaks[3];  /* VU1 batch ends: texture / mode change, full, out of curve tables */
+    int vu1_breaks[3];  /* VU1 batch ends: texture / mode / quad frame change, full, out of curve tables */
+    int culled;      /* of the alive: skipped with their instance's bound off screen */
     float ms;        /* EE time of update + draw (smoothed) */
     float ms_draw;   /* of which fx_draw */
 } FxStats;

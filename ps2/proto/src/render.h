@@ -29,6 +29,9 @@ void r_init(GSGLOBAL *gs);
 /* Current camera (for the VU1 renderer): eye, view basis, focal lengths in px (x, y), Z scale
  * (z_gs = zscale / view_z) */
 void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale);
+/* r_camera_basis answers basis = {eye, right, up, fwd} and these focal lengths until r_camera_override(NULL, 0, 0)
+ * (shadow.c: the player's silhouette drawn from the sun) */
+void r_camera_override(const V3 *basis, float focal, float focal_y);
 /* 0 = outside the frustum, 1 = entirely inside the near plane and guard band (VU1-safe), 2 = needs clipping */
 int r_box_classify(const float *mn, const float *mx);
 /* Camera at eye looking at target (y up) */

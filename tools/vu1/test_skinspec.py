@@ -20,7 +20,7 @@ def unit(v):
     return [x / n for x in v]
 
 
-def setup(vu, rng, tris, cull, zero):
+def setup(vu, rng, tris, cull, zero, split=False):
     ts.setup(vu, 1, tris, rng, 0, cull, zrange=(2, 12))
     centre = [rng.uniform(-1.5, 1.5), rng.uniform(-1, 1), rng.uniform(*ZR)]
     for b in range(20):  # character-like: bones near one centre
@@ -44,8 +44,13 @@ def setup(vu, rng, tris, cull, zero):
     top = gen.SKIN_IN
     tint = [F(vu.mem[top + 1][c]) - 64 for c in range(3)]
     k1 = [t + a for t, a in zip(tint, amb)]
-    vu.wq(top + 1, k1 + [128], True)
-    vu.wq(top + 2, sun + [0], True)
+    if split:  # Polaris 2.2: the static header of a prebuilt packet, the per-draw terms in SKIN_DRAW
+        vu.wq(top + 1, [0, 0, 0, 128], True), vu.wq(top + 2, [0, 0, 0, 0], True), vu.wq(top + 8, [0, 0, 0, 0])
+        vu.wq(gen.SKIN_DRAW, k1 + [0], True), vu.wq(gen.SKIN_DRAW + 1, sun + [0], True)
+    else:
+        vu.wq(top + 1, k1 + [128], True)
+        vu.wq(top + 2, sun + [0], True)
+    ts.put_lights(vu, [(vu.Lv, sun)])  # Polaris 2.2 PR 3: the sun from the LIGHT block
     vu.mem[top][2], vu.mem[top][3] = U(POW[k][0]), U(POW[k][1])
     ms = []
     for i in range(tris * 3):
@@ -95,10 +100,10 @@ def references(vu0, sp, k1, ms, tris):
     return model, exact
 
 
-def run(path, entry, seed, tris, zero):
+def run(path, entry, seed, tris, zero, split=False):
     rng = random.Random(seed)
     vu = VU1(open(path).read())
-    sp, k1, ms = setup(vu, rng, tris, seed % 2, zero)
+    sp, k1, ms = setup(vu, rng, tris, seed % 2, zero, split)
     snap = copy.deepcopy(vu)
     cyc = vu.run(entry)
     return vertices(vu.kicks), snap, sp, k1, ms, cyc
@@ -128,7 +133,10 @@ def main(seeds=10, tris=24):
         for path, entry in others:
             diff += sum(a != b for a, b in zip(base, run(path, entry, seed, tris, True)[0]))
     print('m = f = 0: %d vertices differ from %s' % (diff, ', '.join(p.split('/')[-1] + ':' + e for p, e in others)))
-    return mb + diff
+    split = sum(run(prog, 'VU1Skin2_TexSpec', seed, tris, False)[0] != run(prog, 'VU1Skin2_TexSpec', seed, tris, False, True)[0]
+                for seed in range(seeds))
+    print('static header + per-draw block: %d of %d batches differ from the whole header' % (split, seeds))
+    return mb + diff + split
 
 
 if __name__ == '__main__':

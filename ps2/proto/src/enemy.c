@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "shadow.h"
 #include "cvar.h"
 #include "lpass.h" /* logic pass breakdown (Burg plan B6) */
 #include "progress.h"
@@ -2557,6 +2558,7 @@ void enemy_draw(void)
             mdl_draw_world(e->ct->model, w, e->pos, 0);
         else
             mdl_draw(e->ct->model, e->pose, e->pos, e->yaw, 0);
+        shadow_add(e->pos, e->var->radius, fd);  /* blob shadow (shadow.c), fading with the model */
         enemy_drawn++;
     }
     npc_draw();
