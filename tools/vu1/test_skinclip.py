@@ -21,7 +21,8 @@ def setup(vu, tris, rng, flat, cull, zrange):
     else:
         k = rng.randint(1, 5)
         vu.wq(top + 1, [t + a for t, a in zip(tint, amb)] + [128], True)
-        vu.wq(top + 2, [0, 0, 0, 1], True); vu.wq(top + 3, sun + [k], True)  # .w: has m / f, k
+        vu.wq(top + 2, [0, 0, 0, 1], True); vu.wq(top + 3, [0, 0, 0, k], True)  # .w: has m / f, k
+        ts.put_lights(vu, [(vu.Lv, sun)])  # Polaris 2.2 PR 3: textured S = 0, the sun is light 0 of LIGHT
         tint = [t + a for t, a in zip(tint, amb)] + sun
         unit = lambda v: [x / math.sqrt(sum(y * y for y in v)) for x in v]
         Ls, Up = unit([rng.uniform(-1, 1) for _ in range(3)]), unit([rng.uniform(-0.3, 0.3), 1, 0.2])
@@ -130,7 +131,7 @@ def main(seeds=12, tris=12):
         vu.run('VU1SkinClip_CodeStart')
         # the program may only kick from its input header (TOPS + 4) or the skin pass's two output slots, and must
         # leave constants, palette and the specular / plane blocks alone (regression: slot toggle used map slots)
-        bad_kicks = [a for a in vu.kick_addrs if a not in (256, gen.SKIN_OUT0, gen.SKIN_OUT1)]
+        bad_kicks = [a for a in vu.kick_addrs if a not in (gen.SKIN_IN + 4, gen.SKIN_OUT0, gen.SKIN_OUT1)]
         bad_mem = [a for a in list(range(0, gen.SKIN_IN)) + list(range(gen.SPEC, 1024)) if vu.mem[a] != snap.mem[a]]
         if bad_kicks or bad_mem:
             print('seed %d: kicks outside the slots %s, overwritten %s' % (seed, bad_kicks[:5], bad_mem[:8]))

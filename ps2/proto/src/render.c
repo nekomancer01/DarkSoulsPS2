@@ -154,6 +154,8 @@ u32 r_vram_tex(GSGLOBAL *g, int w, int h, int psm, GsOwner o)
     if ((w + 15) / 16 * ((h + 15) / 16) > (int)(sizeof fp / sizeof *fp))
         return GSKIT_ALLOC_ERROR;
     int n = footprint(w, h, psm, tbw, fp);
+    if (!gs_vram_admit(o, n))
+        return GSKIT_ALLOC_ERROR;
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
     gs_vram_charge(o, addr, n);
@@ -165,6 +167,8 @@ u32 r_vram_clut(GSGLOBAL *g, int clut_psm, GsOwner o)
     unsigned short fp[4];
     r_vram_gskit += gsKit_texture_size(16, 16, clut_psm) / 256;
     int n = footprint(16, 16, clut_psm, 1, fp);  /* 256 entries, CSM1: 16 x 16 */
+    if (!gs_vram_admit(o, n))
+        return GSKIT_ALLOC_ERROR;
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
     gs_vram_charge(o, addr, n);
@@ -178,6 +182,8 @@ u32 r_vram_lin(GSGLOBAL *g, int n, GsOwner o)
         return GSKIT_ALLOC_ERROR;
     for (int i = 0; i < n; i++)
         fp[i] = i;
+    if (!gs_vram_admit(o, n))
+        return GSKIT_ALLOC_ERROR;
     u32 addr = vram_place(g, fp, n);
     VM_ADD(addr, n);
     gs_vram_charge(o, addr, n);

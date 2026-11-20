@@ -11,7 +11,8 @@
  *
  * VRAM. Every allocation is charged to an owner (GsOwner) and the owner is stored with it (a 4-bit owner per 256-byte
  * GS block), so a free credits the owner that paid. The budgets are gs_budget.h's rows; the rows plus page slack plus
- * never-taken pages sum to 4096 KB. Over-budget only reports in 1.1 ("TEST warn: gs vram ..."); Polaris 2.7 enforces.
+ * never-taken pages sum to 4096 KB. Over-budget reports ("TEST warn: gs vram ..."); since Polaris 2.7 the streaming
+ * owners (characters, objects, effects) are refused past their row (gs_vram_admit).
  * The loading screen's VRAM is borrowed (from the map pool, or the free top at boot), so it is counted on its own
  * (gs_vram_borrow) and checked to be back at 0 after each loading screen. */
 #ifndef GS_H
@@ -25,7 +26,7 @@ enum {
     GSR_PRIM = 0x00, GSR_RGBAQ = 0x01, GSR_ST = 0x02, GSR_UV = 0x03, GSR_XYZ2 = 0x05, GSR_TEX0 = 0x06,
     GSR_CLAMP = 0x08, GSR_TEX1 = 0x14, GSR_MIPTBP1 = 0x34, GSR_TEXA = 0x3B, GSR_FOGCOL = 0x3D, GSR_TEXFLUSH = 0x3F,
     GSR_ALPHA = 0x42, GSR_DTHE = 0x45, GSR_TEST = 0x47, GSR_FRAME = 0x4C, GSR_ZBUF = 0x4E, GSR_BITBLTBUF = 0x50,
-    GSR_TRXPOS = 0x51, GSR_TRXREG = 0x52, GSR_TRXDIR = 0x53,
+    GSR_TRXPOS = 0x51, GSR_TRXREG = 0x52, GSR_TRXDIR = 0x53, GSR_XYOFFSET = 0x18, GSR_SCISSOR = 0x40,
 };
 
 /* TEST (depth GEQUAL: larger Z is nearer, main.c) */
@@ -63,6 +64,8 @@ static inline u64 gs_frame(u32 vram, int width, int psm, u32 mask)
     return GS_SETREG_FRAME_1(vram / 8192, width / 64, psm, mask);
 }
 static inline u64 gs_zbuf(const GSGLOBAL *g, int no_write) { return GS_SETREG_ZBUF(g->ZBuffer / 8192, g->PSMZ, no_write); }
+/* a Z buffer at byte address vram (8 KB aligned) in format psmz: an offscreen target's own (shadow.c) */
+static inline u64 gs_zbuf_at(u32 vram, int psmz, int no_write) { return GS_SETREG_ZBUF(vram / 8192, psmz, no_write); }
 
 /* Image transfer header words, in the order the GS takes them: BITBLTBUF, TRXPOS, TRXREG, TRXDIR (then the image) */
 static inline u64 gs_blt_to(u32 tbp, int tbw, int psm) { return GS_SETREG_BITBLTBUF(0, 0, 0, tbp, tbw, psm); }
@@ -96,6 +99,9 @@ extern const char *const gs_owner_name[GSO_N];
  * (the owner stored at the charge) */
 void gs_vram_charge(GsOwner o, u32 vram, unsigned blocks);
 void gs_vram_credit(u32 vram, unsigned blocks);
+/* Polaris 2.7: may owner o take `blocks` more? 0 = refused (characters / objects / effects past their gs_budget.h row;
+ * logged and counted per owner in the "gsvram:" line); the r_vram_* allocators ask before placing */
+int gs_vram_admit(GsOwner o, unsigned blocks);
 /* gsKit_vram_alloc charged to an owner: the bytes gsKit's pointer moved (its rounding included) */
 u32 gs_vram_fixed(GSGLOBAL *g, u32 size, u8 type, GsOwner o, const char *where);
 /* the loading screen's borrowed bytes (+ when it places itself, - when it lets go) */
