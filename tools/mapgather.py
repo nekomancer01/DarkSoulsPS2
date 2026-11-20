@@ -20,6 +20,7 @@ import mapchunks
 import maplight
 import mapsimp
 import material
+import mapspec
 
 
 
@@ -647,6 +648,7 @@ def gather(game, map_id):
                 dds.update(souls.tpf(d))
 
     textures, tex_index, meshes = [], {}, []
+    mapspec.reset()  # the specular pass data of this map (tools/mapspec.py)
     flvers, poses = {}, {}
     # each FLVER is dropped after the last part that places it (with its gather caches): parsed FLVERs held to the
     # end of the loop were 1.6 GB of Burg's 2.3 GB, past what a browser tab's converter can grow to (tools/pages)
@@ -891,6 +893,8 @@ def gather(game, map_id):
             npd.pop("wn", None)  # used up (light, relief)
             if not (lit and not water):
                 npd.pop("wcol", None)  # the tone map below takes the lit meshes' wedge colours
+            if V["uv"]:  # specular pass eligibility and code of the texture (tools/mapspec.py)
+                mapspec.note(ti, mcls, sky, dds, m["diffuse"])
             meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,

@@ -15,6 +15,8 @@
 #define VU1L_MAP_OUT_QW 10
 #define VU1L_MAP_PLANES 1014
 #define VU1L_MAP_PLANES_QW 5
+#define VU1L_MAP_SPEC 1019
+#define VU1L_MAP_SPEC_QW 4
 #define VU1L_CLIP_TRIS 32
 #define VU1L_IDX_TRIS 64
 #define VU1L_CLIPI_MAX 336
@@ -61,6 +63,7 @@
     X(SKINCLIP, VU1SkinClip, 384, 1) \
     X(FX, VU1Fx, 1812, 2) \
     X(MAPI, VU1MapI, 580, 0) \
+    X(MAPSPEC, VU1MapSpec, 840, 0) \
 
 #define VU1L_CODE_MAP2 1608
 #define VU1L_CODE_CLIP 0
@@ -68,6 +71,7 @@
 #define VU1L_CODE_SKINCLIP 384
 #define VU1L_CODE_FX 1812
 #define VU1L_CODE_MAPI 580
+#define VU1L_CODE_MAPSPEC 840
 
 /* hash of what exported VIF packets depend on (layout.layout_hash): stamped into map.bin's cell table */
 #define VU1L_HASH 0xee62b641u

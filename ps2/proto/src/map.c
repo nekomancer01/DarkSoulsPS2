@@ -277,7 +277,7 @@ static float edge_a2, edge_z;
 /* GS registers of the opaque passes: gsKit's ALPHA, ZBUF writing Z */
 static void opaque_regs(GSGLOBAL *gs)
 {
-    u64 r[4] = {gs->PrimAlpha, 0x42, gs_zbuf(gs, 0), 0x4E};
+    u64 r[4] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF};
     zs_gs_regs(2, r);
 }
 
@@ -285,7 +285,7 @@ static void opaque_regs(GSGLOBAL *gs)
  * batch from the blend bit (vu1.c: the rows' TEST words are what it writes, material.c asserts it) */
 static void row_regs(GSGLOBAL *gs, const MatRow *row)
 {
-    u64 r[4] = {row->alpha, 0x42, gs_zbuf(gs, row->zmsk), 0x4E};
+    u64 r[4] = {row->alpha, GSR_ALPHA, gs_zbuf(gs, row->zmsk), GSR_ZBUF};
     zs_gs_regs(2, r);
 }
 
@@ -638,6 +638,153 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
     }
 }
 
+/* The specular / environment pass (Polaris 2.3, TECH_DEBT map-23 / render-21): the opaque chunks whose texture has a
+ * specular code (tools/mapspec.py: texture entry flags bits 2-3, from its _s map) drawn again by vu1mapspec.vsm within
+ * SPEC_DIST, untextured, added (GS ALPHA Cs x As + Cd) over the opaque map with depth GEQUAL and no Z write: DSR's
+ * probe reflection x envSpc and the LightBank specular light, by Fresnel (the program's doc). Collected while the
+ * opaque map is drawn (draw_chunk_; the near pass with ZSPLIT), drawn with the relief pass. The normals are computed
+ * here per chunk from its own triangles when it first comes within reach and kept in spec_nrm (no normals in map.bin:
+ * a stream of them was over the world budget). MAP_SPEC=0: no pass. */
+#ifndef MAP_SPEC
+#define MAP_SPEC cv_MAP_SPEC  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#ifndef SPEC_DIST
+#define SPEC_DIST 24.0f  /* m: the pass's reach (ASSUMED: DSR has none; VU1 cost ~2.3x the map program per triangle) */
+#endif
+#define SPEC_MAX 64      /* chunks a frame */
+#define SPEC_CACHE 48    /* chunks whose normals are kept (40 KB) */
+#define SPEC_NV 208      /* vertices of a chunk at most (indexed chunks up to 255: the rest go without) */
+#define SPEC_NEW_MAX 6   /* chunks whose normals are computed in one frame (~10-25 us each) */
+typedef struct { const MapInst *m; const unsigned char *base; const Chunk *c; } SpecItem;
+static SpecItem spec_l[SPEC_MAX];
+static int nspec, spec_new;
+static unsigned spec_frame;
+static struct { const void *key; unsigned check, last; } spec_slot[SPEC_CACHE];
+static unsigned char spec_nrm[SPEC_CACHE][SPEC_NV * 4] __attribute__((aligned(16)));
+unsigned map_spec_batches, map_spec_tris, map_spec_new;  /* this frame (logs) */
+/* per code (mapspec.py): Blinn fit (a, b) of c^(2^k) (vu1.c's skin table), Schlick's grazing weight G, F0. ASSUMED:
+ * G = 1 - the code's roughness, metal F0 0.6 (DSR tints it by the albedo, the pass is untextured) */
+static const float spec_tab[3][4] = {{1, 0, 0.15f, 0.04f}, {1.695f, -0.695f, 0.25f, 0.04f}, {1.695f, -0.695f, 0.25f, 0.6f}};
+
+static int spec_code(const MapInst *m, const Chunk *c)
+{
+    return c->tex >= 0 && c->tex < m->ntex ? (m->tex_bin + m->hdr->tex_off)[32 * c->tex + 7] >> 2 & 3 : 0;
+}
+
+static void spec_add(const MapInst *m, const unsigned char *base, const Chunk *c, float d)
+{
+    if (MAP_SPEC && nspec < SPEC_MAX && d < SPEC_DIST && !(c->flags & CHUNK_COARSE) && spec_code(m, c))
+        spec_l[nspec].m = m, spec_l[nspec].base = base, spec_l[nspec++].c = c;
+}
+
+/* the chunk's normal / F0 stream (s8 normal x 127, u8 F0 x 127 per vertex: vu1mapspec's input), or NULL this frame.
+ * Normals point out of DSR's triangles: -(b - a) x (c - a) (FLVER winding, measured on m10_02's map pieces:
+ * 198575 of 198806 faces). Indexed chunks: area-weighted over the triangles sharing a vertex; lists: per face. */
+static const unsigned char *spec_normals(const unsigned char *base, const Chunk *c, int f0)
+{
+    int n = c->nv ? c->nv : 3 * c->tris;
+    if (n > SPEC_NV || c->tris <= 0)
+        return NULL;
+    const short *p = (const short *)(base + c->pos);
+    const void *key = p;
+    unsigned check = (unsigned)c->tris | (unsigned)n << 8 | (unsigned)(unsigned short)p[0] << 16;
+    int lru = 0;
+    for (int i = 0; i < SPEC_CACHE; i++) {
+        if (spec_slot[i].key == key && spec_slot[i].check == check) {
+            spec_slot[i].last = spec_frame;
+            return spec_nrm[i];
+        }
+        if (spec_slot[i].last < spec_slot[lru].last)
+            lru = i;
+    }
+    if ((spec_slot[lru].key && spec_slot[lru].last == spec_frame) || spec_new >= SPEC_NEW_MAX)
+        return NULL;  /* every slot drawn this frame / enough computed this frame: next frame */
+    spec_new++;
+    float acc[SPEC_NV][3];
+    memset(acc, 0, sizeof(float) * 3 * (unsigned)n);
+    const unsigned char *ix = c->nv ? base + CHUNK_IDX(c) : NULL;
+    for (int t = 0; t < c->tris; t++) {
+        int a = ix ? ix[4 * t] : 3 * t, b = ix ? ix[4 * t + 1] : 3 * t + 1, d = ix ? ix[4 * t + 2] : 3 * t + 2;
+        if (a >= n || b >= n || d >= n)
+            continue;
+        float e1[3], e2[3];
+        for (int k = 0; k < 3; k++)
+            e1[k] = (float)(p[3 * b + k] - p[3 * a + k]), e2[k] = (float)(p[3 * d + k] - p[3 * a + k]);
+        float cr[3] = {e2[1] * e1[2] - e2[2] * e1[1], e2[2] * e1[0] - e2[0] * e1[2], e2[0] * e1[1] - e2[1] * e1[0]};
+        for (int k = 0; k < 3; k++)
+            acc[a][k] += cr[k], acc[b][k] += cr[k], acc[d][k] += cr[k];
+    }
+    unsigned char *o = spec_nrm[lru];
+    for (int i = 0; i < n; i++) {
+        float l = acc[i][0] * acc[i][0] + acc[i][1] * acc[i][1] + acc[i][2] * acc[i][2];
+        float k = l > 1e-12f ? 127.0f / sqrtf(l) : 0;
+        signed char *q = (signed char *)(o + 4 * i);
+        if (k > 0)
+            q[0] = (signed char)(acc[i][0] * k), q[1] = (signed char)(acc[i][1] * k), q[2] = (signed char)(acc[i][2] * k);
+        else
+            q[0] = 0, q[1] = 127, q[2] = 0;
+        o[4 * i + 3] = (unsigned char)f0;
+    }
+    /* zero to the qword's end: VIF reads the words after an UNPACK's data in the DMA's last qword as VIFcodes; then
+     * out of the data cache, the chain REFs it */
+    unsigned bytes = (4u * (unsigned)n + 15) & ~15u;
+    memset(o + 4 * n, 0, bytes - 4u * (unsigned)n);
+    SyncDCache(o, o + bytes);
+    spec_slot[lru].key = key, spec_slot[lru].check = check, spec_slot[lru].last = spec_frame;
+    map_spec_new++;
+    return o;
+}
+
+static void spec_draw(void)
+{
+    spec_frame++, spec_new = 0;
+    map_spec_batches = map_spec_tris = map_spec_new = 0;
+    if (!nspec)
+        return;
+    GSGLOBAL *gs = gsg;
+    float up[3], dn[3], si[3], ls[3];
+    map_char_spec(up, dn, si, ls);
+    /* added, depth GEQUAL against the opaque pass's own Z, no Z write, faded to black by the fog */
+    u64 r[8] = {GS_ALPHA_ADD, GSR_ALPHA, gs_zbuf(gs, 1), GSR_ZBUF, GS_TEST_ZGE, GSR_TEST, 0, GSR_FOGCOL};
+    vu1_gs_regs(4, r);
+    vu1_map_spec(up, dn, si);
+    for (int i = 0; i < nspec; i++) {
+        const SpecItem *it = &spec_l[i];
+        const Chunk *c = it->c;
+        const float *tb = spec_tab[spec_code(it->m, c) - 1];
+        const unsigned char *nrm = spec_normals(it->base, c, (int)(tb[3] * 127 + 0.5f));
+        if (!nrm)
+            continue;
+        float v[3], h[3], vl = 0, hl = 0;
+        for (int a = 0; a < 3; a++)
+            v[a] = cam[a] - (c->mn[a] + c->mx[a]) * 0.5f, vl += v[a] * v[a];
+        vl = vl > 1e-12f ? 1 / sqrtf(vl) : 0;
+        for (int a = 0; a < 3; a++)
+            v[a] *= vl, h[a] = ls[a] + v[a], hl += h[a] * h[a];
+        hl = hl > 1e-12f ? 1 / sqrtf(hl) : 0;
+        float rows[16];
+        for (int a = 0; a < 3; a++)  /* row a: component a of (Ls, 2 Up, V, H), / 127 for the s8 normals */
+            rows[4 * a] = ls[a] / 127, rows[4 * a + 1] = (a == 1 ? 2.0f : 0) / 127, rows[4 * a + 2] = v[a] / 127,
+            rows[4 * a + 3] = h[a] * hl / 127;
+        rows[12] = 1e6f, rows[13] = -v[1], rows[14] = tb[0], rows[15] = tb[1];
+        vu1_add_spec(c->flags & CHUNK_CULL, c->tris, c->nv, it->base + c->pos, nrm,
+                     c->nv ? it->base + CHUNK_IDX(c) : NULL, c->org, rows, tb[2]);
+        map_spec_batches++, map_spec_tris += c->tris;
+    }
+    nspec = 0;
+    {   /* every 300 frames: batches / triangles a frame (VU1 cost: vu1mapspec's doc) and normals computed */
+        static unsigned fr, sb, st, sn;
+        sb += map_spec_batches, st += map_spec_tris, sn += map_spec_new;
+        if (!(++fr % 300))
+            printf("map: spec pass %u batches %u tris a frame, %u chunks' normals computed in 300 frames\n", sb / 300,
+                   st / 300, sn), sb = st = sn = 0;
+    }
+    /* the map's state again: gsKit's ALPHA, Z written, its fog colour (TEST comes per batch) */
+    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    u64 rr[6] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF, col, GSR_FOGCOL};
+    vu1_gs_regs(3, rr);
+}
+
 int map_far_dof(float *begin, float *end, float *mul)
 {
     if (!mp_pfog_rows)
@@ -858,6 +1005,8 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
+        if ((passes & MP_ENV_SPEC) && !zs_nobump && !vclip && n == c->tris)  /* the specular pass (spec_draw) */
+            spec_add(m, base, c, sqrtf(d2));
         MP_END(MP_BUMP)
     }
     return n;
@@ -1020,6 +1169,7 @@ static void zs_end(void)
         case ZS_BUMP:
             bump_draw();
             pl_draw();
+            spec_draw();
             i += 1;
             break;
         default:
@@ -1455,7 +1605,7 @@ int map_draw_blend(void)
     vu1_map_resume();
     vu1_map_fog(a, b, fmin, 255);
     vu1_map_edge(edge_a2);
-    u64 r[2] = {col, 0x3D};  /* FOGCOL (the characters set their own) */
+    u64 r[2] = {col, GSR_FOGCOL};  /* the characters set their own fog colour */
     vu1_gs_regs(1, r);
     int n = draw_effects(nfx, R_FOG, 2, col);
     nfx_late = 0;
@@ -2166,6 +2316,7 @@ int map_draw(V3 eye)
         } else {
             bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
             pl_draw();  /* the player's light (MAP_PLIGHT) */
+            spec_draw();  /* the specular pass (Polaris 2.3) */
         }
         MP_END(MP_BUMP)
     }

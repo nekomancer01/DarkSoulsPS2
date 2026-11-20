@@ -41,6 +41,12 @@ void vu1_map_resume(void);
 #define VU1_COLCP 64
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
+/* the map's specular pass (Polaris 2.3, vu1mapspec.vsm): its constants (FogRow colours, 0x80 units), then one batch per
+ * chunk: the chunk's positions (list corners, or nv vertices + the triangle stream idx), its normal / F0 stream
+ * (tools/mapspec.py), origin / step, rows = the dot rows 0-2 and (BIG, -V.Up, a, b), g = the Schlick grazing weight */
+void vu1_map_spec(const float env_up[3], const float env_down[3], const float si[3]);
+void vu1_add_spec(int cull, int tris, int nv, const void *pos, const void *nrm, const void *idx, const float *org,
+                  const float rows[16], float g);
 /* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col
  * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: the vertex numbers of its
  * corners, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a

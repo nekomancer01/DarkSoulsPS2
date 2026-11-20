@@ -32,7 +32,8 @@ _LIT = ("RELIEF", "PLAYER_LIGHT", "MIPS", "EDGE_FOG")  # the passes of every unb
 # bump.bin has the chunk: export_normal.bumped leaves cut-outs and foliage out)
 CLASSES = [
     # opaque map pieces: cut-out test on (the CLUT's transparent index), relief, player light, mip chain, edge fog
-    ("OPAQUE", "MAP2", "GS_ALPHA_MIX", "GS_TEST_CUTOUT", 0, _LIT, "g_BlendMode 0"),
+    # ENV_SPEC: the specular pass (Polaris 2.3, map.c spec_draw) over its chunks that carry the data (tools/mapspec.py)
+    ("OPAQUE", "MAP2", "GS_ALPHA_MIX", "GS_TEST_CUTOUT", 0, _LIT + ("ENV_SPEC",), "g_BlendMode 0"),
     # _Edge cut-outs (leaves, ivy, fences) and the _Alp pieces still drawn as cut-outs (walls / cloth, TECH_DEBT
     # map-30): the same state as OPAQUE
     ("ALPHA_TEST", "MAP2", "GS_ALPHA_MIX", "GS_TEST_CUTOUT", 0, _LIT, "g_BlendMode 1, or 2 drawn as a cut-out"),
