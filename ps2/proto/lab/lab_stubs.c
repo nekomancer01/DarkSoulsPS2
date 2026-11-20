@@ -62,6 +62,8 @@ void map_spawn(V3 *pos, float *yaw)
 }
 /* shadow.c (not built here): render only */
 void shadow_add(V3 feet, float r, float fade) { (void)feet, (void)r, (void)fade; }
+int shadow_sil_begin(V3 feet) { (void)feet; return 0; }  /* 0: no silhouette pass in the Lab */
+void shadow_sil_end(void) {}
 /* chrlight.c (not built here): the old path's single call, so the count stays */
 void chrl_pick(V3 pos, float amb[3], float sun[3], float dir[3], int *np, float pdir[2][3], float pcol[2][3])
 {
