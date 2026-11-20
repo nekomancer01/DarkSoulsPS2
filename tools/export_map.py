@@ -31,6 +31,8 @@ Output map.bin (little-endian; streams 16-byte aligned, texture data 128-byte al
           blended chunks, else 0x80); each stream zero-padded to 16 bytes (build_chunks), with a VIF code qword in
           front (chunk_streams: the three streams form one VIF packet; DSM5 cell table flag CELLS_VIFPKT)
   textures 32-byte entries + CLUTs + mip 0 / 1 pixels, see tools/texmap.py (PSMT4 / PSMT8, CT16 / CT32 CLUTs)
+          entry flags bits 4-7 (DSM4 / DSM5 since 2026-11-19, Polaris 2.1): the texture's material class (tools/material.py;
+          0 OPAQUE in older files); a chunk's class = material.chunk_class(its texture's class, its flags)
           nav_verts f32[3]  nav_tris u16[3]
   fog     u32 rows, collision tris, sky rows, 0; rows (48 B, fog_section docstring: FogBank row, character light, player
           light, specular terms, far depth of field; row 0 = the header's); u8 row per collision.bin triangle (the draw-param set of its
@@ -70,6 +72,8 @@ import mapgather
 import maplight
 import mapsimp
 import mapview
+import material
+import mapspec
 # the modules' names, read through export_map as before (tools/mapx/test_mapx.py, export_model.quantize_rgba, ...);
 # settings are set on mapcfg (mapcfg.X = v), which every module reads at call time
 for _m in (mapcells, mapcfg, mapchunks, mapgather, maplight, mapsimp, mapview):
@@ -91,6 +95,7 @@ def main():
     preview = sys.argv[4] if len(sys.argv) > 4 else None
     t_start = time.time()
     meshes_in, textures, nav_v, nav_t, spawn, (fog_id, fog), sky_fog = mapgather.gather(game, map_id)
+    mapspec.finalize(textures)  # only textures that stayed OPAQUE carry specular data
     import havok_collision
     havok_collision.forget()  # the whole MSB's collision (gather's probes / spawn part); area_collision keeps its own
     if os.environ.get("EXPORT_GC") != "default":
@@ -275,6 +280,8 @@ def main():
     blob += b"".join(recs)
     align(16)
     sec["textures"] = texmap.write(blob, mapcfg.HDR, textures, all_chunks)  # texture table + CLUTs + mips (tools/texmap.py)
+    material.write_classes(blob, sec["textures"] - mapcfg.HDR, textures)  # entry flags bits 4-7 (tools/material.py)
+    mapspec.write_flags(blob, sec["textures"] - mapcfg.HDR, len(textures))  # bits 2-3: specular k (tools/mapspec.py)
     align(4)
     sec["nav_verts"] = len(blob) + mapcfg.HDR
     for p in nav_v:

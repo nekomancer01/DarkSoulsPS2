@@ -119,6 +119,14 @@ See PORTING.md "ESD runtime" and TECH_DEBT esd-1..7.
 | Item lot draw | `FUN_1403f5d90` (`FUN_1403f5360` is the online variant): rows id, id + 1, ... while one exists, each rolls one item: weight = basePoint x 100 (cumulate share by the counter, luck items x item discovery else x 1.0 at **0x141615c6c**), items whose get flag (getItemFlagId0N, else the row's) is on are skipped; roll = tempered random x 2^-23 (**0x14130ca90**) x total; "nothing" = lotItemNum 0 or id / category < 0. `FUN_1403fc940` then awards the results and sets their flags | decompile | high (luck factor value: unknown) |
 | Region box / cylinder test | FrpgRegionBox vtable 0x14133d258 +0x18 = `FUN_1403f00e0`: offset turned by -rotY, x in (-w/2, w/2), y in (0, h), z in (-d/2, d/2) (bounds from **0x14133d4e0** / **0x14133d490**, set in `FUN_1403efa00`); FrpgRegionCylinder +0x18 = `FUN_1403f0de0`: y in [0, h], xz distance < r | decompile + constants | high |
 
+## Material blend modes (2026-11-19, Polaris 2.1)
+- MTD `g_BlendMode` order: the exe's UTF-16 label table in .rdata at 0x141306b36 (file offset 0x1305336) lists the modes
+  as `(Normal)`, `(TexEdge)`, `(Blend)`, `(Water)`, `(Add)`, `(Sub)`, `(Mul)`, `(AddMul)`, `(SubMul)`, `(WaterWave)`, then the
+  same set prefixed `LS` (the + 32 values). So 0 normal, 1 alpha-tested edge, 2 blend, 3 water, 4 add, 5 subtract, 6 multiply,
+  7 add-multiply, 8 subtract-multiply, 9 water wave. tools/material.py classify uses it (SUBTRACT class for 5).
+- Not decoded: the D3D11 blend descs behind those modes (BLEND_OP / SRC / DEST per mode), and the FFX particle BlendMode
+  table (a different enum: 6 is alpha blend there). material.py SUBTRACT (Cd - Cs x As) and FFX_CLASS stay ASSUMED.
+
 ## Still unknown
 - Slot priority inside the anim player (ChrCtrl vt+0x38) when both ESD groups play anims; what f0 sees then (esd-9).
 - Which NpcParam row PlayerIns+0x7E0 points at (PlayerIns ctor is in the obfuscated .text). It no longer matters for
