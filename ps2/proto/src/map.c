@@ -3,6 +3,7 @@
 #include "testscript.h"
 #include "world.h"
 #include "cvar.h"
+#include "material.h"
 int map_vu1_batches, map_ee_tris;
 static unsigned short pop_fr;
 static unsigned pop_total;
@@ -116,6 +117,8 @@ int map_upload(GSGLOBAL *gs)
     gsg = gs;
     MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
+    mat_census(0, m->tex_bin + m->hdr->tex_off, m->ntex, m->chunks, m->hdr->chunks, sizeof(Chunk),  /* material.h */
+               m->ctab && ((const unsigned *)(m->cel_bin + m->hdr->cell_off))[1] & MAT_CELLS_FLAG);
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
     /* (tex_bin: the tables' texture piece when the boot block came in pieces, world.c WORLD_BOOT_LEAN; else map_bin) */
     int r = tc_init(gs, m->tex_bin, m->tex_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);

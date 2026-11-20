@@ -71,7 +71,7 @@ AREA_SPAWN	env	unset	config	world	-	init	area.py export_collision.py	-
 BACKDROP	env	1	flag	world	0	init	mapsimp.py	far-only cells as the backdrop (render-distance pick A2); BACKDROP=0: old cut
 BACKDROP_EPS	env	(3 / 568) ** 2	tune	world	-	#21	mapcfg.py	-
 BACKDROP_SIDE	env	0	flag	world	1	init	mapsimp.py	0: no back-face pruning (A/B); 1 / -1: front = n.(s-p) > 0 / < 0
-BG_BLEND	env	1	flag	world	0	#242	mapgather.py	-
+BG_BLEND	env	1	flag	world	0	#242	material.py	background cards (m10_bg_*) blended (material.classify)
 BUDGET	env	90000	tune	world	-	init	mapcfg.py	-
 BUILD	env	os.path.join(ROOT, "build")	config	tools	-	init	test-smoke.py	-
 BUMP	env	0" if BAKE else "1	tune	world	-	init	export_normal.py	-
@@ -260,7 +260,7 @@ SIMPLIFY_SHAPE_K_NEAR	env	1.0	tune	world	-	#240	mapcfg.py	-
 SIMPLIFY_VALIDATE	env	1	debug	world	-	#188	mapcfg.py	-
 SIMPLIFY_VALIDATE_TOL	env	0	debug	world	-	#188	mapcfg.py	metres; 0: the level's envelope (else 0.25)
 SIMP_DUMP	env	unset	debug	world	1	#124	mapsimp.py	debugging: the simplifier's whole input, to rerun / analyse it without the game
-SKY_ALP_BLEND	env	1	flag	world	0	#249	mapgather.py	sky alpha layers blended (gather)
+SKY_ALP_BLEND	env	1	flag	world	0	#249	material.py	sky alpha layers blended (material.classify)
 SMOKE_JOBS	env	2	config	tools	-	#9	test-smoke.py	-
 SND_CACHE	env	unset	opt	snd	-	#121	export_audio.py	-
 SOFT_PX	env	2.0	tune	world	-	#33	mapcfg.py	-
