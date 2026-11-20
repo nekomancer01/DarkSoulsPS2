@@ -19,6 +19,8 @@ import mapcfg
 import mapchunks
 import maplight
 import mapsimp
+import material
+import mapspec
 
 
 
@@ -179,7 +181,6 @@ def _mesh_np(m):
     return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
-SKY_ALP_BLEND = os.environ.get("SKY_ALP_BLEND", "1") == "1"  # sky alpha layers blended (gather)
 EDGE_2SIDED = os.environ.get("EDGE_2SIDED", "1") == "1"  # two-sided cut-out light (gather, below)
 
 
@@ -316,22 +317,11 @@ def water_rgba(mp):
     return bytes([round(255 * min(1.0, x) ** (1 / 2.2)) for x in rgb] + [round(255 * a)])
 
 
-BG_BLEND = os.environ.get("BG_BLEND", "1") == "1"
-
-
-def is_effect(mtd):
-    """Translucent effect materials (light shafts '_Add', mist/cloud '[Dn]_Alp'): drawn opaque they become solid slabs.
-    Skipped until the renderer has alpha blending."""
-    m = mtd.lower()
-    return "_add" in m or ("[dn]" in m and "_alp" in m)
-
-
 def is_sky(mtd, pts, nav_tree):
     """Sky / background layer: a sky or cloud material (A10_Sky[Dn]_LS, A10_02_m9000_Sky, A10_cloud[DB]_Alp, ...), or
     a mesh entirely farther than SKY_DIST from the area's walkable navmesh (Firelink's m9000 ground ring, Undead
     Burg's m8000B1). Was: > SKY_DIST from the spawn, which only works when the spawn is central (TECH_DEBT build-6)."""
-    low = mtd.lower()
-    if "sky" in low or "cloud" in low:
+    if material.sky_mtd(mtd):
         return True
     if nav_tree is None or not len(pts):
         return False
@@ -362,6 +352,79 @@ def navmesh_points(game, map_id, M, keep):
             xf, _ = place(part)
             out += [q for q in (xf(p) for p in souls.nvm(models[key])[0]) if keep(*q)]
     return out
+
+
+MAP_WATER = os.environ.get("MAP_WATER", "1") == "1"
+WATER_MARK = 0x57  # CLUT entry 3's last byte: the entry holds water terms (map.c water_colours)
+
+
+WATER_EDGE = float(os.environ.get("WATER_EDGE", 6.0))  # m: water triangles are cut to edges at most this long
+
+
+def subdivide_water(m):
+    """A water mesh with its LOD0 triangles cut in four (edge midpoints, shared along shared edges) until no edge is
+    longer than WATER_EDGE: DSR shades water per pixel; the port's Fresnel is per vertex (map.c water_colours), and
+    the FLVER's water is a few large triangles (Firelink's pool: 2 for 19 x 18 m), whose corners alone made it all
+    grazing. Every vertex attribute is the mean of its edge's two ends (bone indices: the first end's)."""
+    fss = [f for f in m["facesets"] if not f[0] & 0x80000000]
+    if not fss:
+        return m
+    fs = min(fss, key=lambda f: f[0] & 0x0F000000)
+    V = {k: list(v) for k, v in m["verts"].items()}
+    n = len(V["pos"])
+    V = {k: v for k, v in V.items() if len(v) == n}
+    cache = {}
+
+    def mid(a, b):
+        key = (min(a, b), max(a, b))
+        if key not in cache:
+            for k, v in V.items():
+                x, y = v[a], v[b]
+                if k.startswith("bone"):
+                    v.append(x)
+                elif isinstance(x, (tuple, list)):
+                    v.append(tuple((p + q) / 2 for p, q in zip(x, y)))
+                else:
+                    v.append((x + y) / 2)
+            cache[key] = len(V["pos"]) - 1
+        return cache[key]
+
+    def far(a, b):
+        return sum((p - q) ** 2 for p, q in zip(V["pos"][a][:3], V["pos"][b][:3])) > WATER_EDGE ** 2
+
+    out = []
+    work = [tuple(int(i) for i in t) for t in faceset_tris(fs)]
+    while work:
+        a, b, c = work.pop()
+        if far(a, b) or far(b, c) or far(c, a):
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            work += [(a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca)]
+        else:
+            out.append((a, b, c))
+    if len(out) == len(faceset_tris(fs)):
+        return m
+    return dict(m, verts=V, facesets=[(fs[0], False, [i for t in out for i in t], fs[3])])
+
+
+def water_texture(mp):
+    """The texture of a [We] water material (class WATER, Polaris 2.6). MAP_WATER (default): white, the colour and
+    opacity come per vertex from map.c (water_colours: DSR's Fresnel per vertex, from the eye's angle to the surface),
+    with the material's terms in CLUT entries 1-3, which no texel uses (the image is one colour: index 0):
+    1 g_WaterColor r, g, b, a (linear x 255); 2 g_FresnelColor r, g, b, g_FresnelBias (x 255); 3 g_FresnelScale x 255,
+    g_FresnelPow x 32, 0, WATER_MARK. MAP_WATER=0: the solid colour of water_rgba (one view angle), as before."""
+    if not MAP_WATER:
+        return texmap.encode(128, 16, water_rgba(mp) * (128 * 16), soft=True)
+    t = texmap.encode(128, 16, bytes([255, 255, 255, 255]) * (128 * 16), soft=True)
+    wc = mp.get("g_WaterColor", (0.1, 0.1, 0.1, 0.5))
+    fc = mp.get("g_FresnelColor", (1.0, 1.0, 1.0))
+    u8 = lambda x: max(0, min(255, round(255 * x)))
+    clut = bytearray(t["clut"])
+    clut[4:16] = bytes([u8(wc[0]), u8(wc[1]), u8(wc[2]), u8(wc[3]),
+                        u8(fc[0]), u8(fc[1]), u8(fc[2]), u8(mp.get("g_FresnelBias", (0.1,))[0]),
+                        u8(mp.get("g_FresnelScale", (1.0,))[0]), max(0, min(255, round(32 * mp.get("g_FresnelPow", (2.0,))[0]))),
+                        0, WATER_MARK])
+    t["clut"] = bytes(clut)
+    return t
 
 
 def load_object(game, model, dds, static=False):
@@ -658,6 +721,7 @@ def gather(game, map_id):
                 dds.update(souls.tpf(d))
 
     textures, tex_index, meshes = [], {}, []
+    mapspec.reset()  # the specular pass data of this map (tools/mapspec.py)
     flvers, poses = {}, {}
     # each FLVER is dropped after the last part that places it (with its gather caches): parsed FLVERs held to the
     # end of the loop were 1.6 GB of Burg's 2.3 GB, past what a browser tab's converter can grow to (tools/pages)
@@ -712,6 +776,8 @@ def gather(game, map_id):
         pxf, pxn = place(part)
         bind = bind_scaled(F)
         for m in F["meshes"]:
+            if MAP_WATER and material.classify(m["mtd"], m["diffuse"], False, mtds.get(m["mtd"])) == material.WATER:
+                m = subdivide_water(m)  # vertices close enough together for the per-vertex Fresnel (map.c)
             posed = part["type"] == 1 and m["dynamic"]
             if posed:
                 # skinned objects (corpses, o1950 chains): baked in the pose of their MSB init_anim (tools/pose_obj.py);
@@ -741,29 +807,35 @@ def gather(game, map_id):
                 if fid not in mapcfg.SKY_FOG_ROWS and len(mapcfg.SKY_FOG_ROWS) < 15:
                     mapcfg.SKY_FOG_ROWS.append(fid)
                 sky_slot = mapcfg.SKY_FOG_ROWS.index(fid) + 1 if fid in mapcfg.SKY_FOG_ROWS else 0
-            water = "water" in m["mtd"].lower()
-            # "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" = alpha-tested cut-outs). Floor decals / dirt /
-            # ground overlays (blood, soot, stains: M[D][L]_Alp) exported as cut-outs drew every texel above 50 % alpha at
-            # full strength and the rest in the clear colour (dark patches on Burg's floors), so they take texmap's soft
-            # path (CT32 alpha, blended). Only those: blended meshes are kept unsimplified (keep=), and all _Alp meshes
-            # together cost +43k tris / 36 fps at Burg spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs
-            # (ASSUMED, TECH_DEBT map-30)
-            # Background cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose
-            # vertex alpha fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play
-            # test 2026-11-16): blended too, with their vertex alpha. BG_BLEND=0 = cut-outs as before.
-            decal = "_alp" in m["mtd"].lower() and any(k in (m["diffuse"] or "").lower() for k in
-                                                       ("decal", "dirt", "ground", "stain") + (("_bg_",) if BG_BLEND else ()))
-            # alpha cloud layers of the sky (A10_cloud[DB]_Alp) blend too: as cut-outs their soft edges became hard
-            # flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour banding"). SKY_ALP_BLEND=0:
-            # cut-outs, as before
-            blend = is_effect(m["mtd"]) or decal or water or (SKY_ALP_BLEND and sky and "_alp" in m["mtd"].lower())
-            flags = (mapcfg.CHUNK_BLEND if blend else 0) | (mapcfg.CHUNK_ADD if "_add" in m["mtd"].lower() else 0) | \
-                (mapcfg.CHUNK_SKY if sky else 0) | sky_slot << mapcfg.CHUNK_SKY_ROW
+            # material class (tools/material.py classify: MTD suffix, the diffuse for decals / background cards /
+            # grass, the sky role). The cases it replaces: "_Alp" MTDs are DSR's alpha-blended materials ("_Edge" =
+            # alpha-tested cut-outs). Floor decals / dirt / ground overlays (blood, soot, stains: M[D][L]_Alp)
+            # exported as cut-outs drew every texel above 50 % alpha at full strength and the rest in the clear colour
+            # (dark patches on Burg's floors), so they take texmap's soft path (CT32 alpha, blended). Only those:
+            # blended meshes are kept unsimplified (keep=), and all _Alp meshes together cost +43k tris / 36 fps at Burg
+            # spot B (measured 2026-10-31); wall / cloth _Alp stay cut-outs (ASSUMED, TECH_DEBT map-30). Background
+            # cards (m10_bg_giant_tree: Firelink's far trunk, a 240 m tall ring of M[D]_Alp strips whose vertex alpha
+            # fades it out; m10_bg_cloud) drawn as cut-outs became solid dark slabs in the sky (Ame's play test
+            # 2026-11-16): blended too (BG_BLEND=0: cut-outs). Alpha cloud layers of the sky (A10_cloud[DB]_Alp) as
+            # cut-outs became hard flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour
+            # banding"): blended (SKY_ALP_BLEND=0: cut-outs).
+            mp = mtds.get(m["mtd"], {})
+            mcls = material.classify(m["mtd"], m["diffuse"], sky, mp)  # g_BlendMode where the names disagree (mat-1)
+            tcls = material.texture_class(mcls, m["mtd"], m["diffuse"], mp)
+            tkey = material.state_key(tcls)  # textures of different GS state are separate entries (mat-2)
+            water = mcls == material.WATER
+            blend = mcls in material.BLENDED
+            # blended meshes are kept unsimplified (keep=, below); a mesh blended only because g_BlendMode overrides its
+            # name (mat-1: Asylum's A19_Division, subtractive) keeps the geometry its name gave it: as the cut-out it
+            # was, kept whole it added 12.5k tris / 561 KB to the Asylum block (2026-11-19)
+            keep_blend = blend and (mcls == material.classify_names(m["mtd"], m["diffuse"], sky) or
+                                    material.classify_names(m["mtd"], m["diffuse"], sky) in material.BLENDED)
+            flags = material.chunk_flags(mcls, sky) | sky_slot << mapcfg.CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
                 xf, xn = bone_xf(pxf, pxn, *bind[m["default_bone"]])
             else:
                 xf, xn = pxf, pxn
-            grass = mapchunks.name_is_grass(m["diffuse"])
+            grass = material.is_grass(m["diffuse"])
             lods = {f[0] & 0x0F000000: f for f in m["facesets"] if not f[0] & 0x80000000}
             if not lods:
                 continue
@@ -801,10 +873,10 @@ def gather(game, map_id):
             fol, gpos = None, None
             if grass and MX is not None and m["verts"]["pos"] and type(m["verts"]["pos"][0][0]) is float:
                 tl, fol, gpos = mapchunks.thin_foliage_c(MX, tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
-                                               "ivy" in m["mtd"].lower(), xf.many(_vert_np(m["verts"]["pos"])), mx_grid)
+                                               material.is_ivy(m["mtd"]), xf.many(_vert_np(m["verts"]["pos"])), mx_grid)
             elif grass:
                 tl, fol, gpos = mapchunks.thin_foliage(tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
-                                             "ivy" in m["mtd"].lower(),
+                                             material.is_ivy(m["mtd"]),
                                              canopy=lambda vs, Vp=m["verts"]["pos"], xf=xf: is_canopy([xf(Vp[i]) for i in vs]))
             if fol and max(f[2] for f in fol) > mapcfg.CHUNK_TRIS:
                 fol = split_tufts(fol)
@@ -814,23 +886,25 @@ def gather(game, map_id):
             name = m["diffuse"]
             if water:  # no diffuse map: a solid texture in the water's colour (water_rgba)
                 name = "water:" + m["mtd"]
-                if (name, blend) not in tex_index:
-                    tex_index[name, blend] = len(textures)
-                    textures.append(texmap.encode(128, 16, water_rgba(mtds.get(m["mtd"], {})) * (128 * 16), soft=True))
-                ti = tex_index[name, blend]
+                if (name, tkey) not in tex_index:
+                    tex_index[name, tkey] = len(textures)
+                    textures.append(water_texture(mtds.get(m["mtd"], {})))
+                ti = tex_index[name, tkey]
             elif name and name in dds:
-                if (name, blend) not in tex_index:
+                if (name, tkey) not in tex_index:
                     dec = souls.dds_decode_rgba(dds[name], mapcfg.TEX_MAX)
                     if dec and export_normal.BAKE and not blend and m.get("bump") in dds and export_normal.bumped(m["mtd"]):
                         baked = export_normal.bake_rgba(*dec, dds[m["bump"]])  # the relief in the texels (BUMP_BAKE)
                         dec = (dec[0], dec[1], baked) if baked is not None else dec
                     if dec:
-                        tex_index[name, blend] = len(textures)
+                        tex_index[name, tkey] = len(textures)
                         textures.append(texmap.encode(*dec, soft=blend, name=name))
                         if not blend:
                             mapchunks.near_level(textures[-1], dds[name], name)
-                ti = tex_index.get((name, blend), -1)
+                ti = tex_index.get((name, tkey), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
+            if ti >= 0 and V["uv"]:  # the texture's class (map.bin texture entry flags, material.write_classes)
+                textures[ti]["cls"] = material.merge(textures[ti].get("cls"), tcls)
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
             Tl = np.array(tl, np.int64).reshape(-1, 3)
             used = np.flatnonzero(np.bincount(Tl.reshape(-1).astype(np.intp)))  # sorted, as np.unique
@@ -849,7 +923,7 @@ def gather(game, map_id):
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
                 # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
                 hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd)
-                if EDGE_2SIDED and "_edge" in m["mtd"].lower() and len(wpos):
+                if EDGE_2SIDED and material.two_sided(m["mtd"]) and len(wpos):
                     # cut-out cards ("_Edge" MTDs: leaves, ivy, fences) are two-sided: DSR's Phn pixel shaders read
                     # SV_IsFrontFace and light the side in view with its own normal. Firelink's canopy cards (m7010B2,
                     # M_Tree[D]_Edge) have normals straight down: baked with those alone they got ~2 % light and the
@@ -894,19 +968,21 @@ def gather(game, map_id):
             npd.pop("wn", None)  # used up (light, relief)
             if not (lit and not water):
                 npd.pop("wcol", None)  # the tone map below takes the lit meshes' wedge colours
+            if V["uv"]:  # specular pass eligibility and code of the texture (tools/mapspec.py)
+                mapspec.note(ti, mcls, sky, dds, m["diffuse"])
             meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
-                               keep=grass or blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
+                               keep=grass or keep_blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
                                dg=mapchunks.DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0,
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them
                                # (objects move or break, cut-outs and blends let light through)
                                piece=part["name"],
                                # cut-out cards (ivy): each leaf is a piece of its own for mapsimp.loose_pieces
-                               cutout="_alp" in m["mtd"].lower() or "_edge" in m["mtd"].lower(),
+                               cutout=material.is_cutout(m["mtd"]),
                                occ=int(part["type"] == 0 and not blend and not grass and not sky and not water and
-                                       "_alp" not in m["mtd"].lower() and "_edge" not in m["mtd"].lower() and
+                                       not material.is_cutout(m["mtd"]) and
                                        part["entity_id"] not in switched)))
 
     if mx_grid is not None:

@@ -1,0 +1,39 @@
+# The map's specular pass (Polaris 2.3): A/B shots against a build without it (make DEFS=-DMAP_SPEC=0, or the build
+# before it). Spot A is the camera of notes/visuals/ref's real-DSR capture (dsr-spotA-cam.png: Firelink bonfire, pitch
+# 0.25); the others are rd_firelink spots and the Burg bonfire street. Each settles, then 3 s of frame stats.
+#   tools/test-run.py build/proto.sym.elf ps2/proto/tests/spec_ab.txt <out> --iso build/proto.iso --timeout 600
+option nodemo
+option noenemies
+option god
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.25
+wait 6
+stats
+wait 3
+freeze 1
+shot A_dsr
+freeze 0
+spawn -47.41 -59.82 53.3 0.0
+cam 0.0 0.1
+wait 4
+stats
+wait 3
+freeze 1
+shot A_north
+freeze 0
+spawn -40.0 -61.0 120.6 3.14
+cam 3.14 0.1
+wait 4
+stats
+wait 3
+freeze 1
+shot M_south
+freeze 0
+spawn -1.0 -7.3 -64.0 0.5
+cam 0.5 0.14
+wait 6
+stats
+wait 3
+freeze 1
+shot burg_bonfire
+freeze 0
