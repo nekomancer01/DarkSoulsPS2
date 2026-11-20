@@ -253,7 +253,8 @@ static float len3(const float *v) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2
 
 /* the bound set's srad / irad: how far a particle can get from its instance's origin. Spawn offset + shape, the
  * fastest launch over the longest life (drag only slows it), gravity over that life, and the largest rolled half size
- * the curves reach (twice that for quads fixed in the effect frame). Systems VU1 cannot move (vu1fx.vsm's motion pass:
+ * the curves reach (twice that for quads fixed in the effect frame); negative drag scales the launch and gravity terms by
+ * its growth. Systems VU1 cannot move (vu1fx.vsm's motion pass:
  * drag in 0..VU1_FX_XMAX over the life, gravity only along world Y) get a negative srad: the EE moves them. */
 static int bounds(void)
 {
@@ -263,7 +264,12 @@ static int bounds(void)
         float sp = fabsf(s->speed[0]) * fmaxf(fabsf(s->speed[1]), fabsf(s->speed[1] + s->speed[2])) * fmaxf(1, len3(s->axis));
         float L = s->life > s->life_min ? s->life : s->life_min;
         float half = fmaxf(s->size[0], s->size[1]) * (s->size[2] + fmaxf(s->size[3], 0)) * kmax[i] * 1.42f;
-        float r = len3(s->org) + len3(s->ext) + sp * L + 0.5f * len3(s->accel) * L * L + half * (s->orient ? 2 : 1);
+        /* time factors of the launch and the acceleration over L: t and t^2 / 2 bound them for drag >= 0; negative
+         * drag (rising smoke, Burg street sys 49: drag -0.5, life 6 s, 51 m from its instance) grows both by e^(-drag t) */
+        float x = -s->drag * L, gv = L, ga = 0.5f * L * L;
+        if (x > 1e-3f)
+            gv = (expf(x) - 1) / -s->drag, ga = (expf(x) - 1 - x) / (s->drag * s->drag);
+        float r = len3(s->org) + len3(s->ext) + sp * gv + len3(s->accel) * ga + half * (s->orient ? 2 : 1);
         int vu = FX_CLOSED && (FX_VU_ORIENT || !s->orient) && s->drag >= 0 && s->drag * L <= VU1_FX_XMAX &&
                  s->accel[0] == 0 && s->accel[2] == 0;
         srad[i] = vu ? r : -r;
