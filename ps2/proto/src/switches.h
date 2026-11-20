@@ -223,6 +223,7 @@
  * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | map.c         | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
  * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | map.c         | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)
  * SPEC_DIST           | 24.0f    | tune     | -                                             | gfx    | new   | map.c         | metres: the specular pass's reach (ASSUMED, VU1 cost)
+ * MAP_WATER           | 1        | fallback | -DMAP_WATER=0                                 | gfx    | new   | map.c         | water colour / opacity per vertex from DSR's Fresnel at the eye's angle (Polaris 2.6); 0 = the fixed 60 deg angle of the old export (exports: env MAP_WATER=0 bakes it into the texture again)
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H
