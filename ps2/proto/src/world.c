@@ -107,7 +107,7 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * near parts) ahead of being wanted. Without the distance, with B3's radii every kept block cleared the pool all the
  * time: soak2 pop-ins 25 / 37 -> 54 / 54 on the B3 + B4 stack (2026-11-09). ASSUMED: about one 32 m cell */
 #define WORLD_PREP_D 32.0f
-/* WORLD_REACH (default 1, runtime switch; TECH_DEBT world-3): blocks are wanted by time-to-reach. world.bin v5 holds,
+/* WORLD_REACH (default 1, runtime switch; TECH_DEBT world-3): blocks are wanted by time-to-reach. world.bin's REAC chunk holds,
  * per run of collision triangles, the walking distance along the block's floor to the seam of each neighbour of another
  * MSB within 64 m: the ConnectCollision part that loads it (tools/worldreach.py; seams inside one MSB already load the
  * neighbour within 32 m in x / z). A neighbour is wanted once the player could reach that seam at dash speed sooner
@@ -116,7 +116,7 @@ static float relief_at;  /* in_cur_s from which the relief of the block underfoo
  * no block is wanted later than before. Wanted blocks start nearest in time first, those the player walks away from
  * last, and the structural pool is prepared (MS_LEND) WORLD_PREP_S ahead of that instead of within WORLD_PREP_D. A block
  * within reach stays kept (hysteresis). ISO world_route (2026-11-17): Burg west on 37 s before the player crosses from
- * Firelink, was 13 s. 0: the links' masks alone (as world.bin v4; a v4 file has no reach table either). */
+ * Firelink, was 13 s. 0: the links' masks alone (as a world.bin without REAC). */
 #include "cvar.h"
 #ifndef WORLD_REACH
 #define WORLD_REACH cv_WORLD_REACH  /* runtime switch, default 1 (src/cvar.h) */
@@ -215,6 +215,7 @@ static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab
 #define LEAN_ENT(e) (((e) >= E_TAB && (e) <= LEAN_E1) || (e) == E_PVS)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
 
+#include "chunk.h"
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
 
 typedef struct {
@@ -226,16 +227,16 @@ _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
 /* triangles [first, first + n) of a block's collision.bin want the blocks in load and keep those in keep */
 typedef struct {
     unsigned first;
-    unsigned short n, load, keep, pad;  /* world.bin v4: u16 masks (WORLD_MAX 16; v3 had u8 ones and at most 8 blocks) */
+    unsigned short n, load, keep, pad;  /* world.bin LINK v1: u16 masks (WORLD_MAX 16) */
 } WorldLink;
 _Static_assert(sizeof(WorldLink) == 12, "WorldLink");
-/* world.bin v5 (WORLD_REACH): reach runs (u16 first triangle, u8 entry) and entries, the distances to the seams */
+/* world.bin REAC v1 (WORLD_REACH): reach runs (u16 first triangle, u8 entry) and entries, the distances to the seams */
 typedef struct {
     unsigned short mask;
     unsigned char d[6];  /* per set bit of mask, low bit first: distance in reach_step metres (rounded down) */
 } WorldReach;
-_Static_assert(sizeof(WorldReach) == 8, "world.bin v5 reach");
-_Static_assert(WORLD_MAX <= 16, "world.bin v4 load / keep masks are u16");
+_Static_assert(sizeof(WorldReach) == 8, "world.bin REAC v1");
+_Static_assert(WORLD_MAX <= 16, "world.bin LINK v1 load / keep masks are u16");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 
@@ -501,30 +502,44 @@ static int map_lead(int i)
 int world_init(const char *boot_area)
 {
     Pack pk;
-    void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", 0) : NULL;
+    unsigned wsize = 0, nb = 0, nr = 0, nl = 0, nreach = 0;
+    void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", &wsize) : NULL;
     pack_close(&pk);
-    const unsigned *h = wb;
-    if (!h || memcmp(h, "DSW1", 4) || (h[1] != 4 && h[1] != 5) || !h[2] || strncmp(((const WorldBlock *)(h + 4))->pack, boot_area, 16)) {
+    /* world.bin: a chunk file (tools/export_world.py, src/chunk.h), read in place */
+    ChunkFile cf;
+    if (chunk_open(&cf, wb, wsize, CHUNK_ID('W', 'R', 'L', 'D'), "world.bin")) {
+        tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 1, &nb);
+        lrange = chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'G'), 1, &nr);
+        links = chunk_get(&cf, CHUNK_ID('L', 'I', 'N', 'K'), 1, &nl);
+        nb /= sizeof *tab, nl /= sizeof *links;
+    }
+    if (!tab || !lrange || !links || !nb || nr != 8 * nb || strncmp(tab[0].pack, boot_area, 16)) {
         free(wb);
+        tab = NULL;
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
     }
-    nblk = h[2] < WORLD_MAX ? h[2] : WORLD_MAX;
+    for (unsigned i = 0; i < nb; i++)
+        if (lrange[2 * i] > nl || lrange[2 * i + 1] > nl - lrange[2 * i]) {
+            printf("TEST error: chunk: world.bin: block %u's links %u + %u past the %u links\n", i, lrange[2 * i],
+                   lrange[2 * i + 1], nl);
+            free(wb);
+            tab = NULL;
+            return 0;
+        }
+    nblk = nb < WORLD_MAX ? nb : WORLD_MAX;
     if (nblk > MAP_INST || nblk > COL_BLOCKS)
         nblk = MAP_INST < COL_BLOCKS ? MAP_INST : COL_BLOCKS;  /* map instance / collision block = block index */
-    tab = (const WorldBlock *)(h + 4);
-    lrange = (const unsigned *)(tab + h[2]);
-    links = (const WorldLink *)(lrange + 2 * h[2]);
-    if (h[1] == 5) {  /* the reach table after the links */
-        const unsigned *rh = (const unsigned *)(links + h[3]);
+    const unsigned *rh = chunk_opt(&cf, CHUNK_ID('R', 'E', 'A', 'C'), 1, &nreach);
+    if (rh && nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; none: the links' masks alone) */
         float st;
         memcpy(&st, rh + 2, 4);
         rrange = rh + 3;
-        rfirst = (const unsigned short *)(rrange + 2 * h[2]);
+        rfirst = (const unsigned short *)(rrange + 2 * nb);
         rent = (const unsigned char *)(rfirst + rh[0]);
         reach_tab = (const WorldReach *)((const unsigned char *)rfirst + ((3 * rh[0] + 3) & ~3u));
         reach_n = rh[1], reach_step = st;
-        if (!reach_n)
+        if (!reach_n || (const unsigned char *)(reach_tab + reach_n) > (const unsigned char *)rh + nreach)
             rrange = NULL;
     }
     for (int i = 0; i < WORLD_MAX; i++)

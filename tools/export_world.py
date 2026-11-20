@@ -6,27 +6,24 @@ ConnectCollision parts (tools/worldgraph.py) for the links between maps.
 
   export_world.py <game dir> <out world.bin> <boot map> <gen dir>
 
-world.bin (little-endian):
-  header  u32 'DSW1', version 5, blocks, links (total)
-  block   (64 B) char pack[16] (pack name under PACK_ROOT without '.pak', NUL padded), char map[16] (MSB id);
-          f32 min x, min z, max x, max z (xz bounds of the block's collision, world frame = the maps' shared frame);
-          f32 min y, max y (its collision's height range: the Asylum lies over Firelink and the Burg in x / z);
-          u32 flags (bit 0: boot block, already loaded by main.c), u32 neighbour mask (bit n = block n)
-  (version 3: 8 B links with u8 masks, at most 8 blocks; version 2: char pack[24], no height range)
-  ranges  per block: u32 first link, u32 links (into the link table)
-  link    (12 B) u32 first triangle, u16 triangles, u16 load mask, u16 keep mask, u16 0: while the player stands on
-          triangles [first, first + n) of this block's collision.bin, the blocks in `load` are wanted (read in the
-          background) and the blocks in `keep` stay loaded; a block in neither is unloaded. Sorted by first triangle;
-          triangles with no link record want nothing.
-  (version 5, tools/worldreach.py; world.c WORLD_REACH wants a block once the player could reach its seam before it
-  turns on:)
-  u32 reach runs (total), u32 reach entries, f32 metres per distance unit
-  ranges  per block: u32 first reach run, u32 reach runs
-  runs    u16 first triangle per run, then u8 reach entry per run (1-based, 0 none), padded to 4 bytes: a run covers
-          its block's triangles from its first to the next run's first (or the last), sorted by first triangle
-  entry   (8 B) u16 block mask, u8 distance[6]: walking distance in worldreach.REACH_STEP units (rounded down) from the
-          run's triangles to the seam of each block in the mask, low bit first
-  (version 4 ends after the links)
+world.bin: a chunk file (tools/chunk.py, file id 'WRLD'; src/world.c reads it in place), little-endian:
+  BLKS v1  per block (64 B) char pack[16] (pack name under PACK_ROOT without '.pak', NUL padded), char map[16] (MSB
+           id); f32 min x, min z, max x, max z (xz bounds of the block's collision, world frame = the maps' shared
+           frame); f32 min y, max y (its collision's height range: the Asylum lies over Firelink and the Burg in x / z);
+           u32 flags (bit 0: boot block, already loaded by main.c), u32 neighbour mask (bit n = block n)
+  LRNG v1  per block: u32 first link, u32 links (into LINK)
+  LINK v1  per link (12 B) u32 first triangle, u16 triangles, u16 load mask, u16 keep mask, u16 0: while the player
+           stands on triangles [first, first + n) of this block's collision.bin, the blocks in `load` are wanted (read
+           in the background) and the blocks in `keep` stay loaded; a block in neither is unloaded. Sorted by first
+           triangle; triangles with no link record want nothing.
+  REAC v1  (optional; tools/worldreach.py; world.c WORLD_REACH wants a block once the player could reach its seam
+           before it turns on) u32 reach runs (total), u32 reach entries (0: none), f32 metres per distance unit;
+           per block u32 first reach run, u32 reach runs; u16 first triangle per run, then u8 reach entry per run
+           (1-based, 0 none), padded to 4 bytes: a run covers its block's triangles from its first to the next run's
+           first (or the last), sorted by first triangle; per entry (8 B) u16 block mask, u8 distance[6]: walking
+           distance in worldreach.REACH_STEP units (rounded down) from the run's triangles to the seam of each block in
+           the mask, low bit first
+  (before Polaris 3.3: one 'DSW1' blob, version 5, of the same sections behind a 16-byte header)
 Links (TECH_DEBT world-3):
 - between two MSBs, DSR's own rule: a ConnectCollision part (MSB type 11) names a collision part of map A and a map B;
   DSR loads B while the player stands on that part. Every triangle of such a part in block i links the block of map B
@@ -38,12 +35,12 @@ Links (TECH_DEBT world-3):
 import os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import area, souls, worldlinks, worldreach
+import area, chunk, souls, worldlinks, worldreach
 
 LINK_GAP = 20.0  # metres between two blocks' bounds that still count as touching (ASSUMED: one load radius apart)
 LOAD_CELLS, KEEP_CELLS = 1.0, 2.0  # in area.CELL units, see above
-# version 5 (world.c WORLD_REACH): the reach table, walking distances to the seams (tools/worldreach.py). WORLD_REACH=0
-# (env): no reach entries (the links as version 4 had them; world.c reads the file as before)
+# REAC (world.c WORLD_REACH): the reach table, walking distances to the seams (tools/worldreach.py). WORLD_REACH=0
+# (env): no reach entries (the links alone)
 REACH = os.environ.get("WORLD_REACH", "1") != "0"
 
 
@@ -208,26 +205,21 @@ def main():
               f"{[blocks[j][0] for j in range(n) if nbr[i] >> j & 1]}, {len(links) - first} links over {len(masks)} "
               f"tris (load triangles per block {wl}, reach triangles "
               f"{[sum(1 for r in rc if r and r[0] >> j & 1) for j in range(n)]}, {rranges[-1][1]} reach runs)")
-    blob = bytearray(struct.pack("<4s3I", b"DSW1", 5, n, len(links)))
-    for i, (b, m, bb, _) in enumerate(blocks):
-        assert len(b) < 16 and len(m) < 16
-        blob += struct.pack("<16s16s6f2I", b.encode(), m.encode(), *bb, *heights[i], 1 if i == 0 else 0, nbr[i])
-    for r in ranges:
-        blob += struct.pack("<2I", *r)
-    for l in links:
-        blob += struct.pack("<I4H", *l, 0)
+    blks = b"".join(struct.pack("<16s16s6f2I", b.encode(), m.encode(), *bb, *heights[i], 1 if i == 0 else 0, nbr[i])
+                    for i, (b, m, bb, _) in enumerate(blocks))
+    assert all(len(b) < 16 and len(m) < 16 for b, m, _, _ in blocks)
+    lrng = b"".join(struct.pack("<2I", *r) for r in ranges)
+    link = b"".join(struct.pack("<I4H", *l, 0) for l in links)
     assert len(reach) < 256 and all(len(m) <= 0xffff for m, _ in per), "reach runs: u8 entries, u16 triangles"
-    blob += struct.pack("<2If", len(rruns), len(reach), worldreach.REACH_STEP)
+    reac = bytearray(struct.pack("<2If", len(rruns), len(reach), worldreach.REACH_STEP))
     for r in rranges:
-        blob += struct.pack("<2I", *r)
-    blob += b"".join(struct.pack("<H", r[0]) for r in rruns)
-    blob += bytes(r[1] for r in rruns) + bytes(-(3 * len(rruns)) % 4)
+        reac += struct.pack("<2I", *r)
+    reac += b"".join(struct.pack("<H", r[0]) for r in rruns)
+    reac += bytes(r[1] for r in rruns) + bytes(-(3 * len(rruns)) % 4)
     for mask, ds in reach:
-        blob += struct.pack("<H6B", mask, *(ds + (0,) * (worldreach.REACH_N - len(ds))))
-    print(f"world.bin: {len(links)} links, {len(rruns)} reach runs, {len(reach)} reach entries, {len(blob)} bytes")
-    with open(out, "wb") as f:
-        f.write(blob)
-
+        reac += struct.pack("<H6B", mask, *(ds + (0,) * (worldreach.REACH_N - len(ds))))
+    size = chunk.write(out, b"WRLD", [(b"BLKS", 1, blks), (b"LRNG", 1, lrng), (b"LINK", 1, link), (b"REAC", 1, reac)])
+    print(f"world.bin: {len(links)} links, {len(rruns)} reach runs, {len(reach)} reach entries, {size} bytes")
 
 if __name__ == "__main__":
     main()

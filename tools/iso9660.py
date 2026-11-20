@@ -38,9 +38,10 @@ def _world_blocks(data):
         k = c & 0x7FFFFFFF
         w += d[p:p + k] if c >> 31 else _lz4(d[p:p + k], min(bs, raw - len(w)))
         p += k
-    assert w[:4] == b"DSW1", "world.pak: no world.bin"
-    fmt = "<24s16s4f2I" if struct.unpack_from("<I", w, 4)[0] == 2 else "<16s16s6f2I"
-    rows = [struct.unpack_from(fmt, w, 16 + 64 * i) for i in range(struct.unpack_from("<I", w, 8)[0])]
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import chunk
+    bl = chunk.File(w, b"WRLD", "world.pak world.bin").get(b"BLKS", 1)  # tools/export_world.py
+    rows = [struct.unpack_from("<16s16s6f2I", bl, 64 * i) for i in range(len(bl) // 64)]
     return [(r[0].rstrip(b"\0").decode(), r[-2] & 1, r[-1]) for r in rows]
 
 
