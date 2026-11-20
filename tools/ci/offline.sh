@@ -6,6 +6,7 @@
 #     generated files are never hand-edited; regenerate and commit both)
 #   4 the game-data headers ps2/proto/src/{player,combat,progress}_data.h match tools/gamedata.py header <name>, and
 #     tools/gamedata_test.py (blob layout = what the EE compiler lays out, checked against offsetof tables)
+#   4b tools/material.py test (the classifier against the exporter's old per-mesh checks) and material_table.h up to date
 #   5 tools/ci/test_residency.py: the per-block budgets of ps2/proto/src/residency.h fit the arena, and
 #     tools/world_budget.py --strict fails a spot over the room (synthetic block, no game data)
 #   6 libmapx against the Python code (tools/mapx/test_mapx.py); the map simplifier: tools/native/simplify.c (the source
@@ -30,7 +31,7 @@ done
 
 echo "== generated VU1 programs up to date"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for pair in clip:vu1clip map:vu1map2 mapi:vu1mapi skin:vu1skin2 skinclip:vu1skinclip fx:vu1fx; do
+for pair in clip:vu1clip map:vu1map2 mapi:vu1mapi mapspec:vu1mapspec skin:vu1skin2 skinclip:vu1skinclip fx:vu1fx; do
     kind=${pair%%:*}; vsm=$ROOT/ps2/proto/src/${pair#*:}.vsm
     "$PY" gen.py "$kind" > "$TMP/$kind.vsm" 2> "$TMP/$kind.err" || { tail -5 "$TMP/$kind.err"; fail "gen.py $kind"; continue; }
     if cmp -s "$TMP/$kind.vsm" "$vsm"; then echo "${vsm#$ROOT/}: up to date"
@@ -51,6 +52,12 @@ for k in player combat progress; do
     else diff -u "$h" "$TMP/$k.h" | head -20; fail "$h differs (regenerate: python3 tools/gamedata.py header $k > $h)"; fi
 done
 "$PY" -I tools/gamedata_test.py || fail "tools/gamedata_test.py"
+echo "== material classes (Polaris 2.1): tools/material.py self-test, ps2/proto/src/material_table.h up to date"
+"$PY" -I tools/material.py test || fail "tools/material.py test"
+h=ps2/proto/src/material_table.h
+"$PY" -I tools/material.py header > "$TMP/material_table.h" || fail "material.py header"
+if cmp -s "$TMP/material_table.h" "$h"; then echo "$h: up to date"
+else diff -u "$h" "$TMP/material_table.h" | head -20; fail "$h differs (regenerate: python3 tools/material.py header > $h)"; fi
 echo "== libmapx (the map exporter's C stages) against the Python code"
 "$PY" -I tools/mapx/test_mapx.py 0 40 || fail "tools/mapx/test_mapx.py"
 echo "== map simplifier: simplify.c against the frozen simplify.py, golden outputs at the shipped settings"

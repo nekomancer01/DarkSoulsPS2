@@ -12,6 +12,7 @@
 #include "texcache.h"
 #include "bump.h"
 #include "fx.h"
+#include "material.h"
 #include "mapstream.h"
 #include "hitch.h"
 #include "drawgrp.h"
@@ -221,6 +222,7 @@ typedef struct {
     const float *navv;
     const unsigned short *navt;
     int ntex, tex_base;
+    int matcls;  /* its texture entries carry material classes (material.h; set at load by mat_census) */
     const unsigned char *indexed;  /* the map.bin the index below was built for */
     unsigned short *order, *sky;
     Cell *cells;
@@ -304,5 +306,15 @@ void mp_build_index(MapInst *mi);
 unsigned mp_draw_hz_only(int k, const float *e);
 unsigned mp_draw_far(const float *e);
 extern Header mp_boot_hdr;  /* the boot block's header (a copy: its tables may be let go, map_boot_lean) */
+
+/* A chunk's material class row (material.h, Polaris 2.1): the blend / GS state and the passes it takes. From its
+ * texture entry's class (MAT_GS_TABLE, default 1), else (MAT_GS_TABLE=0, or a map exported before the classes) from
+ * the chunk flags as the passes chose state before the table (mat_flag_class). */
+static inline const MatRow *mp_row(const MapInst *m, const Chunk *c)
+{
+    if (MAT_GS_TABLE && m->matcls)
+        return &mat_rows[mat_chunk_class(m->tex_bin + m->hdr->tex_off, c->tex < m->ntex ? c->tex : -1, c->flags)];
+    return &mat_rows[mat_flag_class(c->flags)];
+}
 
 #endif

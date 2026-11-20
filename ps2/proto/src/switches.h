@@ -44,6 +44,7 @@
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
  * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | world  | #249  | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
+ * MAP_FX_FOG0         | 1        | fallback | -DMAP_FX_FOG0=0                               | world  | #286  | map.c         | additive and subtractive map chunks fog towards black (fade out with distance); 0 = towards the map's fog colour, as before (runtime: option set MAP_FX_FOG0 0)
  * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | world  | #243  | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
  * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | world  | #257  | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
  * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | world  | #249  | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
@@ -147,7 +148,6 @@
  * MIP0_AHEAD          | 1.3      | fallback | -DMIP0_AHEAD=0                                | gfx    | #156  | texcache.c    | mip 0 asked ahead; 0 = where drawn
  * MIP_TRILINEAR       | 1        | fallback | -DMIP_TRILINEAR=0                             | gfx    | #184  | vu1.c         | trilinear; 0 = LINEAR_MIPMAP_NEAREST (runtime: option set MIP_TRILINEAR 0)
  * VU1_TEX_PATH2       | off      | fallback | -DVU1_TEX_PATH2                               | gfx    | #104  | vu1.h         | map texture uploads on PATH2
- * VU1_MAP_OLD         | off      | fallback | -DVU1_MAP_OLD                                 | gfx    | init  | vu1.c         | the old map batch path
  * VU1_IDX_LISTS       | off      | debug    | -DVU1_IDX_LISTS                               | gfx    | #124  | vu1.c         | indexed batches expanded to lists
  * VU1_IDX_NO_CLIP     | off      | debug    | -DVU1_IDX_NO_CLIP                             | gfx    | #124  | vu1.c         | indexed clip batches not drawn
  * VU1_NO_CLIP         | off      | debug    | -DVU1_NO_CLIP                                 | gfx    | init  | vu1.c         | clip batches through the plain program
@@ -220,6 +220,11 @@
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
  * TRAIL               | 1        | fallback | -DTRAIL=0                                     | fx     | new   | trail.c       | player weapon trail (FFX tracer 250); 0 = none
+ * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
+ * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | map.c         | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
+ * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | map.c         | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)
+ * SPEC_DIST           | 24.0f    | tune     | -                                             | gfx    | new   | map.c         | metres: the specular pass's reach (ASSUMED, VU1 cost)
+ * MAP_WATER           | 1        | fallback | -DMAP_WATER=0                                 | gfx    | new   | map.c         | water colour / opacity per vertex from DSR's Fresnel at the eye's angle (Polaris 2.6); 0 = the fixed 60 deg angle of the old export (exports: env MAP_WATER=0 bakes it into the texture again)
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H
