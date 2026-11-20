@@ -17,6 +17,9 @@ unsigned map_chunk_count(void);
  * (alpha blend, then additive; Z tested, not written). GS ALPHA / ZBUF / FOGCOL are changed between batches and
  * restored to gsKit's values at the end. */
 int map_draw(V3 eye);
+/* the blended map chunks map_draw kept (nearer than ZSPLIT), drawn after the characters and objects in their chain
+ * buffer (frame.c OT_BLEND segment, render-19; MAP_BLEND_LATE=0: none, map_draw drew them). Returns triangles. */
+int map_draw_blend(void);
 /* Player feet, once a frame before map_draw: the fog follows the FogID of the collision part under them (DSR's area
  * draw params), easing over ~0.3 s; needs collision.bin loaded (col_init) */
 /* DSM5 maps: open the area pack's cells.bin for streaming the near level (after map_init); 0 if nothing streams.

@@ -1,12 +1,15 @@
-"""vu1map2.vsm (pipelined) vs vu1map.vsm on random R3 batches (incl. near / guard flagged and culled triangles)."""
-import random, sys
+"""vu1map2.vsm (pipelined) vs vu1map.vsm on random R3 batches (incl. near / guard flagged and culled triangles).
+vu1map.vsm is the first, hand-written map program: no longer built into the ELF (the VU1_MAP_OLD path left with the
+render-19 PR), it stays in tools/vu1/ab as the reference these tests compare against."""
+import os, random, sys
 from vuemu import VU1, vertices
 import test_clip as tc
 
 SRC = tc.SRC
+AB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ab', '')
 
-def run(prog, entry, args, cull, clipstyle):
-    vu = VU1(open(SRC + prog).read())
+def run(path, entry, args, cull, clipstyle):
+    vu = VU1(open(path).read())
     tc.setup(vu, 'clip' if clipstyle else 'map', args, cull)
     for k in range(4):  # matrix .w row = z row (view .w = view z)
         q = vu.mem[k]; q[3] = q[2]
@@ -20,8 +23,8 @@ def main(seeds=10, tris=tc.gen.CHUNK_TRIS):
         rng = random.Random(100 + seed)
         args = tc.make(rng, tris, 0.3)
         cull = seed % 2
-        vo, c1 = run('vu1map.vsm', 'VU1Map_CodeStart', args, cull, False)
-        vn, c2 = run('vu1map2.vsm', 'VU1Map2_CodeStart', args, cull, True)
+        vo, c1 = run(AB + 'vu1map.vsm', 'VU1Map_CodeStart', args, cull, False)
+        vn, c2 = run(SRC + 'vu1map2.vsm', 'VU1Map2_CodeStart', args, cull, True)
         co += c1; cn += c2
         assert len(vo) == len(vn), (len(vo), len(vn))
         for i, (a, b) in enumerate(zip(vo, vn)):

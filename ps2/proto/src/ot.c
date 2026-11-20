@@ -13,7 +13,8 @@
 
 /* the VU1 chain buffer each bucket's segments are built in (vu1_begin's buffer numbers) */
 static const signed char bucket_buf[OT_N] = {VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_MAP, VU1L_BUF_SKIN,
-                                             VU1L_BUF_SKIN, VU1L_BUF_SKIN, VU1L_BUF_MAP, VU1L_BUF_FX, -1, -1};
+                                             VU1L_BUF_SKIN, VU1L_BUF_SKIN, VU1L_BUF_SKIN, VU1L_BUF_FX, -1, -1};
+/* (BLEND: the blended map's segment after the objects, in their buffer: one kick with them, render-19) */
 static const char *const bucket_name[OT_N] = {"sky", "pano", "horizon", "world", "chr", "obj", "alpha_test", "blend",
                                              "fx", "post", "ui"};
 

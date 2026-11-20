@@ -1,0 +1,30 @@
+# Golden route (tools/golden.py, Polaris 0.3): Undead Asylum block. Spots from world_asylum.txt, fixed cameras (segment
+# stats start 3 s after each teleport, so the load is not in them), no debug HUD, no enemies (shots must not depend on
+# AI). The crow flag 11810000 stays 0 so the player stays in the Asylum.
+option noenemies
+option nodemo
+option god
+wait 3
+flag 11810000 0
+spawn -15.45 184.7 -46.8 0.6
+cam 3.74 0.35
+wait 3
+stats
+wait 5
+shot cell
+stats
+spawn 1.5 195.9 4.5 0
+cam 0 0.15
+wait 3
+stats
+wait 5
+shot courtyard
+stats
+spawn 31.0 196.7 -26.5 1.6
+cam 1.6 0.15
+wait 3
+stats
+wait 5
+shot bonfire2
+stats
+end

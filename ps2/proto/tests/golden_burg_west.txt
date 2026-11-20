@@ -1,0 +1,29 @@
+# Golden route (tools/golden.py, Polaris 0.3): Undead Burg west, the aqueduct stairs and the cave mouth. Spots from
+# iso_burg_looks.txt (its 14 s settle cut to 10 s), fixed cameras (segment stats start 3 s after each teleport, so the
+# load is not in them), no debug HUD, no enemies.
+option noenemies
+option nodemo
+option god
+wait 3
+spawn -63.0 -23.0 -26.0 2.4
+cam 2.4 0.14
+wait 3
+stats
+wait 7
+shot stairs
+stats
+spawn -56.0 -22.8 -29.5 2.0
+cam 2.0 0.1
+wait 3
+stats
+wait 7
+shot door_w
+stats
+spawn -49.0 -21.8 -36.0 2.6
+cam 2.6 0.1
+wait 3
+stats
+wait 7
+shot cave_a
+stats
+end
