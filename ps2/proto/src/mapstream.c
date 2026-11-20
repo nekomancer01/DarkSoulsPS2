@@ -1298,7 +1298,13 @@ void mapstream_update(const float pos[3])
     while ((!hold || ms_nrd < MS_HOLD_INFLIGHT) && nq && ms_nrd < MS_INFLIGHT && issue())
         ;
     HITCH_END(is, HS_MSIO);
-    if (!planned && defrag_left > 0)  /* MS_TIDY: a quiet frame (no plan, no move for a read) keeps whole pages free */
+    /* MS_TIDY: a quiet frame (no plan, no move for a read, no near part waiting to be read: a pending tidy move
+     * made a refused near read wait MS_DEFRAG_WAIT frames at the queue head, taurus pop-ins 35 -> 47; with no read
+     * waiting at all it seldom ran in the Burg and walls refusals rose 102 -> 118, 2026-11-20) keeps whole pages free */
+    int near_q = 0;
+    for (int i = 0; i < nq && !near_q; i++)
+        near_q = q[i].cls == C_NEAR || q[i].cls == C_NEAR2;
+    if (!planned && defrag_left > 0 && !near_q)
         ms_tidy();
     {  /* MS_QSCALE: the frames spent below full scale, a line per 300 frames (~10 s) that had any */
         static unsigned qn, qlow;
