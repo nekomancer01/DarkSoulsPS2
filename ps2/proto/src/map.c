@@ -646,7 +646,7 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
  * here per chunk from its own triangles when it first comes within reach and kept in spec_nrm (no normals in map.bin:
  * a stream of them was over the world budget). MAP_SPEC=0: no pass. */
 #ifndef MAP_SPEC
-#define MAP_SPEC 1
+#define MAP_SPEC cv_MAP_SPEC  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 #ifndef SPEC_DIST
 #define SPEC_DIST 24.0f  /* m: the pass's reach (ASSUMED: DSR has none; VU1 cost ~2.3x the map program per triangle) */
