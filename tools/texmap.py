@@ -46,6 +46,11 @@ ENTRY = 32
 # GS mip chain below mip 1 (render-12: far walls shimmer without it): mip 2, mip 3 stored after mip 1, levels = 2 + this.
 # texcache.c draws them with MXL / MIPTBP1 under a chunk's mip 0 / 1. MIP_CHAIN=0: the old two levels (A/B)
 MIP_CHAIN = int(__import__("os").environ.get("MIP_CHAIN", 2))
+# Every level (mip 0 too) from the DDS's own (authored) mip levels at the level's size when encode gets them, all
+# mapped to level 0's palette (Polaris 2.7: DSR samples its authored chain; ours was box-filtered from our 128 px mip 0,
+# itself resampled from the 256 px level). TEX_AUTHORED_MIPS=0: the old resample and box filter.
+import os as _os  # noqa: E402
+AUTHORED_MIPS = int(_os.environ.get("TEX_AUTHORED_MIPS", "1"))
 
 # GS block numbers inside a page: PSMT8 page 128x64 (blocks 16x16, 8 x 4), PSMT4 page 128x128 (blocks 32x16, 4 x 8)
 _BLK8 = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23], [8, 9, 12, 13, 24, 25, 28, 29],
@@ -219,16 +224,20 @@ def _cache():
     return _CACHE[0]
 
 
-def encode(w, h, rgba, soft=False, name=""):
+def encode(w, h, rgba, soft=False, name="", chain=None):
     """-> dict(w, h, psm, cpsm, clut, mips=[bytes, bytes], psnr4, psnr8). Results are cached across exports (_cache):
-    Undead Burg's blocks share most textures, and a re-export after a non-texture change encodes none."""
+    Undead Burg's blocks share most textures, and a re-export after a non-texture change encodes none. chain: the
+    source's authored mip levels after (w, h) [(w, h, RGBA bytes), ...] (souls.dds_decode_rgba_levels), or None."""
     import os, pickle, zlib
+    chain = chain if AUTHORED_MIPS and not soft else None
     c = _cache()
     if c is None:
-        return _encode(w, h, rgba, soft, name)
+        return _encode(w, h, rgba, soft, name, chain)
     k = c[1].copy()
-    k.update(repr((w, h, bool(soft), name, len(rgba))).encode())
+    k.update(repr((w, h, bool(soft), name, len(rgba), [(a, b) for a, b, _ in chain or ()])).encode())
     k.update(bytes(rgba))
+    for lw, lh, px in chain or ():
+        k.update(bytes(px))
     key = k.hexdigest()
     path = os.path.join(c[0], key[:2], key)
     try:
@@ -236,7 +245,7 @@ def encode(w, h, rgba, soft=False, name=""):
             return Tex(pickle.loads(zlib.decompress(f.read())))
     except (OSError, ValueError, EOFError, pickle.UnpicklingError, zlib.error):
         pass
-    t = _encode(w, h, rgba, soft, name)
+    t = _encode(w, h, rgba, soft, name, chain)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -248,13 +257,31 @@ def encode(w, h, rgba, soft=False, name=""):
     return t
 
 
-def _encode(w, h, rgba, soft=False, name=""):
+def _level(levels, tw, th):
+    """the authored level of exactly tw x th as a PIL image, else the smallest one at least that big (or the largest)
+    resampled to it; levels: [(w, h, RGBA bytes), ...] largest first"""
     from PIL import Image
+    big = [lv for lv in levels if lv[0] >= tw and lv[1] >= th]
+    lw, lh, px = big[-1] if big else levels[0]
+    img = Image.frombytes("RGBA", (lw, lh), px)
+    return img if (lw, lh) == (tw, th) else resample.resize(img, (tw, th), Image.BILINEAR)
+
+
+def _rms(rgb, pal, idx):
+    """RGB RMS error (0..255) of opaque texels drawn from palette entries idx"""
+    return float(np.sqrt(((rgb.astype(np.float32) - pal[idx].astype(np.float32)) ** 2).mean())) if len(idx) else 0.0
+
+
+def _encode(w, h, rgba, soft=False, name="", chain=None):
+    from PIL import Image
+    levels = [(w, h, rgba)] + list(chain or ())  # the source level and its authored mips (encode's chain)
     img = Image.frombytes("RGBA", (w, h), rgba)
     if w < 128:
         img = resample.resize(img, (128, h * 128 // w), Image.BILINEAR)
     if img.size[1] > 128:  # VRAM budget: 128x128 at most
         img = resample.resize(img, (img.size[0], 128), Image.BILINEAR)
+    if chain:  # mip 0 too from the authored chain at its size (a 256 px source: its own 128 px level, not a resample)
+        img = _level(levels, *img.size)
     w, h = img.size
     half = _half(img)
     if soft:  # blended effects: 256 colours with alpha, CT32 CLUT (alpha 0..0x80)
@@ -337,14 +364,33 @@ def _encode(w, h, rgba, soft=False, name=""):
     # averaged alpha is below 50 %
     pack = _pack4 if colours == 16 else (lambda x: x.astype(np.uint8).tobytes())
     mips = [pack(idx)]
-    lv, lh = half, h // 2
+    drawn = (_q5(pal) << 3) if ct16 else pal  # what the GS draws from the CLUT
+    err = [_rms(src[am], drawn, np.minimum(idx[am], len(pal) - 1))]  # per level: RMS error against level 0's palette
+    # every level from the authored chain at its size (chain), else the box filter of the level above
+    lh = h // 2
+    lv = np.asarray(_level(levels, w // 2, lh), np.float32) if chain else half
     while lh >= 8 and len(mips) < 2 + MIP_CHAIN:
         hp = lv.reshape(-1, 4)
         m = _nearest(np.clip(hp[:, :3] + 0.5, 0, 255), pal[:opaque_n])
-        mips.append(pack(np.where(hp[:, 3] >= 128, m, tr)))
-        lv, lh = _half(lv), lh // 2
+        op = hp[:, 3] >= 128
+        mips.append(pack(np.where(op, m, tr)))
+        err.append(_rms(np.clip(hp[op, :3] + 0.5, 0, 255).astype(np.uint8), drawn, m[op]))
+        k, lh = len(mips), lh // 2
+        lv = np.asarray(_level(levels, w >> k, lh), np.float32) if chain else _half(lv)
     return Tex(w=w, h=h, psm=PSMT4 if colours == 16 else PSMT8, cpsm=CT16 if ct16 else CT32, clut=bytes(clut), mips=mips,
-               name=name)
+               name=name, mip_err=[round(e, 2) for e in err])
+
+
+def mip_err_report(textures):
+    """one line: the worst palette error of a texture level against level 0's palette (all levels share it), and the
+    texture / level it is in (export_map prints it, Polaris 2.7)"""
+    rows = [(e, k, t.get("name", "")) for t in textures for k, e in enumerate(t.get("mip_err") or ())]
+    if not rows:
+        return "texmap: mip palette error: no levels"
+    e, k, n = max(rows)
+    lv0 = max(r[0] for r in rows if r[1] == 0)
+    return (f"texmap: mip palette error (RGB RMS vs level 0's palette, authored mips {'on' if AUTHORED_MIPS else 'off'}):"
+            f" worst {e:.1f} ({n} level {k}), worst level 0 {lv0:.1f}, median {sorted(r[0] for r in rows)[len(rows) // 2]:.1f}")
 
 
 def add_near(t, w2, h2, rgba2):

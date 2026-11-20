@@ -15,7 +15,7 @@ ALIGNCHECK	make	unset	debug	core	1	#108	Makefile	-
 BLOCK	make	empty	config	tools	-	init	Makefile:23	World block (src/world.c, tools/area.py BLOCKS): `make MAP=<msb> BLOCK=<block> blockpacks` exports a cropped part of an MSB like an area into gen/<BLOCK>/ and data/<BLOCK>.pak; the exporters read AREA
 BUILD	make	unset	config	tools	-	init	Makefile	-
 BUMP_BAKE	make	1	flag	gfx	0	#165	Makefile:321	BUMP_BAKE (default 1): normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba); bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: th
-CHR_BONES	make	255	tune	scene	-	#107	Makefile:89	CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette wind
+CHR_BONES	make	255	tune	scene	-	#107	Makefile:89	CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through per-batch bone windows (model.c); CHR_BONES=61 folds bigger skeletons to 61 bones at export
 COL_TILES	make	1	flag	world	0	#157	Makefile:317	COL_TILES (the cube-grid plan's step 1, default 1): world blocks read their collision.bin's index with the lite set and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structu
 DEFS	make	unset	config	tools	-	init	Makefile	-
 DISC_CACHE	make	1	flag	io	0	#144	Makefile:105	-
@@ -49,6 +49,8 @@ PVS_GPU_RES	make	192	tune	world	-	#211	Makefile:615	-
 PVS_PEERS	make	computed	config	world	-	#116	Makefile:200	Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexpor
 PVS_RES	make	96	tune	world	-	#211	Makefile:604	bake resolution (cube face pixels): 96 since 2026-11-15, the check (--validate) still renders at 192. On Asylum and Burg b the 192 px bake and this one miss the same share of pixels (0.0085 % / 0 %) f
 PVS_VALIDATE	make	300	debug	world	1	#116	Makefile:600	-
+VU1_BONE_MAX	env	40	tune	scene	61	#287	vu1/layout.py	the skin palette window size the VU1 contract is generated for (make VU1_BONES sets it)
+VU1_BONES	make	40	flag	scene	61	#287	Makefile	VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default): skeletons over 40 paged through bone windows, 27-triangle batches; 61 = the old path: one 61-bone window, 23-triangle batches (24 before the light block) (vu1_layout.h and the skin programs generated into the build dir)
 WORLD_BUDGET_ARGS	make	--strict	config	world	-	#142	Makefile:645	World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at
 WORLD_EARLY_BAKES	make	1	flag	world	0	#246	Makefile:217	The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 m
 WORLD_J	make	empty	config	world	-	#9	Makefile:197	WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB).
@@ -206,6 +208,7 @@ NEAR	env	4.0	tune	world	-	init	mapcfg.py	-
 NEAR_CUBE	env	1	flag	world	0	#142	mapcells.py world_budget.py	export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
 OBJ_BLOCK_MB	env	1.3	tune	world	-	#186	area.py	-
 OBJ_CUTOUT	env	1	flag	game	0	#243	export_objects.py	cut-out materials keep their alpha (obj_texture)
+OBJ_SPEC	env	1	flag	game	0	new	export_objects.py	Polaris 2.2: objects' metal / specular terms from their _s maps (obj_spec, vu1skin2 TexSpec); 0 = no object specular
 OBJ_LOD	env	auto	tune	game	-	#242	export_objects.py	-
 OBJ_LOD_FAR	env	0.15	tune	game	-	#242	export_objects.py	-
 OBJ_LOD_FAR_BROKEN	env	0.3	tune	game	-	#242	export_objects.py	-
@@ -338,8 +341,9 @@ FAR_SEAM_DEG	env	1.5	tune	world	-	#252	farpano.py	degrees: the seam sets' cells
 FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' coarsest cells (they coarsen first when over FAR_KB)
 FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
 FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit
-FX_MODEL	env	1	flag	fx	0	new	export_effects.py	model particles (action 108): flat one-mesh models drawn as the particle quad, blend from the material class
 MAT_GS_TABLE	env	1	flag	gfx	0	new	material.py	classes follow g_BlendMode (mat-1), texture entries split by GS state (mat-2), FFX blend from the table; 0 = the name rules / old keys / old FFX rule (with make DEFS=-DMAT_GS_TABLE=0: the old runtime too)
 MAP_SPEC	env	1	flag	gfx	0	new	mapspec.py	normal / F0 streams and texture k for the map's specular pass (Polaris 2.3); 0 = no data (map.bin as before)
 MAP_WATER	env	1	flag	gfx	0	new	mapgather.py	water: white texture + Fresnel terms in its CLUT, colour per vertex at runtime (Polaris 2.6); 0 = the solid water_rgba texture
 WATER_EDGE	env	6.0	tune	world	-	new	mapgather.py	metres: water triangles cut to edges at most this long (per-vertex Fresnel)
+TEX_AUTHORED_MIPS	env	1	flag	world	0	new	texmap.py	every map level (mip 0-3) from the DDS authored levels on level 0's palette; 0 = resample + box filter
+FX_MODEL	env	1	flag	fx	0	new	export_effects.py	model particles (action 108): flat one-mesh models drawn as the particle quad, blend from the material class

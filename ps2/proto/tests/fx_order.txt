@@ -1,0 +1,24 @@
+# Polaris 2.6: the objects' segment drawn after the effect chain (option objafterfx), so the character programs
+# vu1fx went over (tools/vu1/layout.py "micro FX covers") reload in the same frame. Under FRAME_STRICT, vu1.c's mscal
+# check makes any call into an overwritten program a TEST error. Compare the shots with obj1.txt / fx_burg.txt (same
+# pictures but where particles overlap a pot); the HUD's FX line shows the reloads (R) per frame.
+#   tools/q -m 4 python3 tools/test-run.py build/proto.sym.elf ps2/proto/tests/fx_order.txt build/test/fx_order
+option noenemies
+option hud
+option nodemo
+option objafterfx
+wait 0.5
+approach obj 1.9 0.6
+r1
+wait 1.0
+shot fx_order_hit
+wait 1.5
+pitch 0.95
+wait 0.5
+shot fx_order_pieces
+spawn 23.16 9.5 -24.30 3.6652
+cam 3.6652 0.2445
+wait 4
+freeze 1
+shot fx_order_bonfire
+end

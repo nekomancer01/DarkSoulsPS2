@@ -14,8 +14,26 @@ void r_camera(V3 eye, V3 target)
     cam_up = v3cross(cam_fwd, cam_right);
 }
 
+/* r_camera_override: another eye for the skinned draws between it and r_camera_override(NULL, ...) (shadow.c's
+ * silhouette pass draws the player from the sun); r_view and the culling helpers keep the frame's camera */
+static int ov_on;
+static V3 ov[4];
+static float ov_f[2];
+
+void r_camera_override(const V3 *basis, float focal, float focal_y)
+{
+    ov_on = basis != NULL;
+    if (ov_on)
+        ov[0] = basis[0], ov[1] = basis[1], ov[2] = basis[2], ov[3] = basis[3], ov_f[0] = focal, ov_f[1] = focal_y;
+}
+
 void r_camera_basis(V3 *eye, V3 *right, V3 *up, V3 *fwd, float *focal, float *focal_y, float *zscale)
 {
+    if (ov_on) {
+        *eye = ov[0], *right = ov[1], *up = ov[2], *fwd = ov[3], *focal = ov_f[0], *focal_y = ov_f[1];
+        *zscale = ZMAX * NEAR;
+        return;
+    }
     *eye = cam_eye, *right = cam_right, *up = cam_up, *fwd = cam_fwd;
     *focal = FOCAL_X;
     *focal_y = FOCAL_Y;

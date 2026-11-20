@@ -35,6 +35,14 @@
 #define SINK_TIME 2.0f
 #define SINK_DEPTH 0.5f
 #define DRAW_DIST 40.0f
+/* Intact breakables outside the view are not drawn (default on; make DEFS=-DOBJ_VIEW_CULL=0 = distance and
+ * behind-the-camera tests only, the old path). Each drawn pot costs ~0.1 ms of EE (16-bone palette, its light, the
+ * skin chain); on the iso_burg_taurus route 80 % of the ~31 drawn a frame were off screen (Polaris 2.2 census). The
+ * bound is the type's collision cylinder (objects.bin) plus OBJ_CULL_PAD for mesh beyond it (lips, handles; ASSUMED) */
+#ifndef OBJ_VIEW_CULL
+#define OBJ_VIEW_CULL 1
+#endif
+#define OBJ_CULL_PAD 0.3f
 /* OBJ_STREAM (default 1; 0 = every world block's breakable types loaded and compacted at boot, the old path): a
  * block's types are only listed at boot (pieces, cylinder, where the model is in its objects.bin); a type's model is
  * read and compacted once a placement of a block that is on comes within OBJ_LOAD_DIST of the player, and freed again
@@ -1004,6 +1012,7 @@ void objects_draw(void)
     r_camera_basis(&eye, &right, &up, &fwd, &focal, &focal_y, &zscale);
     anim_draw(eye, fwd);
     static BoneLocal pose[MAX_BONES];
+    objects_stats.drawn = objects_stats.culled = 0;
     for (int i = 0; i < ninst; i++) {
         Inst *in = &inst[i];
         Type *ty = &types[in->type];
@@ -1012,6 +1021,16 @@ void objects_draw(void)
         float dx = in->pos[0] - eye.x, dy = in->pos[1] - eye.y, dz = in->pos[2] - eye.z;
         if (dx * dx + dy * dy + dz * dz > DRAW_DIST * DRAW_DIST || dx * fwd.x + dy * fwd.y + dz * fwd.z < -3)
             continue;
+        if (OBJ_VIEW_CULL && !in->broken) {  /* intact: its collision cylinder (upright) plus OBJ_CULL_PAD, against the view */
+            const float mn[3] = {in->pos[0] - ty->cyl_r - OBJ_CULL_PAD, in->pos[1] + ty->cyl_y0 - OBJ_CULL_PAD,
+                                 in->pos[2] - ty->cyl_r - OBJ_CULL_PAD},
+                        mx[3] = {in->pos[0] + ty->cyl_r + OBJ_CULL_PAD, in->pos[1] + ty->cyl_y1 + OBJ_CULL_PAD,
+                                 in->pos[2] + ty->cyl_r + OBJ_CULL_PAD};
+            if (!r_box_classify(mn, mx)) {
+                objects_stats.culled++;
+                continue;
+            }
+        }
         memcpy(pose[0].q, in->q, 16);
         memcpy(pose[0].t, in->pos, 12);
         for (int j = 0; j < ty->pieces; j++) {
@@ -1028,6 +1047,7 @@ void objects_draw(void)
         mdl_light_at(in->pos);  /* the object's own light (player / bonfire point lights), not the origin's */
         mdl_draw(ty->model, pose, v3(0, 0, 0), -3.14159265f, 0);
         mdl_light_at(NULL);
+        objects_stats.drawn++;
     }
 }
 

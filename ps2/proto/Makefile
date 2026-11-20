@@ -64,7 +64,7 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
@@ -84,10 +84,14 @@ EE_DVP = dvp-as
 MATHFLAGS ?= -fno-math-errno
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 # CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through
-# per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette window, bigger skeletons folded).
+# per-batch bone windows (model.c); CHR_BONES=61 folds bigger skeletons to 61 bones at export.
 # model.h MDL_MAX_BONES sizes the pose / palette arrays for it
 CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
+# VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default, Polaris 2.2 PR 2): every
+# skeleton over 40 paged through bone windows, 27-triangle batches. VU1_BONES=61 is the old path: one 61-bone window
+# (windows only above 61), 23-triangle batches (24 before the light block); vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
+VU1_BONES ?= 40
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
 PVS ?= 1
@@ -112,8 +116,10 @@ DSRSND_DEFS = $(if $(filter 0,$(DISC_CACHE)),-DDSRSND_NO_CACHE)
 AREA_DEFS = $(if $(filter-out $(DEFAULT_MAP),$(MAP)),-DAREA='"$(MAP)"' -DCHR_DIR='"$(MAP)/"')
 ifeq ($(PROFILE),1)
 EE_BIN := $(EE_BIN:.elf=_prof.elf)
-# (ai.c too: its per-goal-script lua0 instruction counts, Polaris census)
-EE_OBJS := $(filter-out $(AREA_OBJ)/main.o $(O)/ai.o,$(EE_OBJS)) $(AREA_OBJ)/prof/main.o $(O)/prof/ai.o $(O)/prof.o
+# (ai.c too: its per-goal-script lua0 instruction counts, Polaris census; frame.c: the loop's PROF_MARK / PROF_FRAME /
+# PROF_GATE hooks moved there in Polaris 1.3)
+EE_OBJS := $(filter-out $(AREA_OBJ)/main.o $(O)/ai.o $(O)/frame.o,$(EE_OBJS)) $(AREA_OBJ)/prof/main.o $(O)/prof/ai.o \
+	$(O)/prof/frame.o $(O)/prof.o
 endif
 ifeq ($(GPROF),1)
 EE_BIN := $(EE_BIN:.elf=_gprof.elf)
@@ -675,6 +681,23 @@ $(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/na
 $(O)/%.o: src/%.vsm
 	@mkdir -p $(@D)
 	$(EE_DVP) $< -o $@
+# make VU1_BONES=61 (above): the old skin layout's header and programs, generated into the build dir
+ifneq ($(VU1_BONES),40)
+VU1G = $(O)/vu1gen
+EE_CFLAGS += -DVU1_LAYOUT_FILE='"$(abspath $(VU1G))/vu1_layout.h"'
+$(VU1G)/vu1_layout.h $(VU1G)/vu1skin2.vsm $(VU1G)/vu1skinclip.vsm &: ../../tools/vu1/layout.py ../../tools/vu1/gen.py $(O)/.cflags
+	@mkdir -p $(@D)
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py layout > $(abspath $(VU1G))/vu1_layout.h
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py skin > $(abspath $(VU1G))/vu1skin2.vsm
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py skinclip > $(abspath $(VU1G))/vu1skinclip.vsm
+$(O)/vu1skin2.o: $(VU1G)/vu1skin2.vsm
+	@mkdir -p $(@D)
+	$(EE_DVP) $< -o $@
+$(O)/vu1skinclip.o: $(VU1G)/vu1skinclip.vsm
+	@mkdir -p $(@D)
+	$(EE_DVP) $< -o $@
+$(filter-out %vu1skin2.o %vu1skinclip.o,$(EE_OBJS)): $(VU1G)/vu1_layout.h
+endif
 
 # Stale objects: every object depends on $(O)/.cflags, rewritten only when the compile flags change (a plain make after
 # make EE_DBGINFOFLAGS=-DCOL_TEST=1 recompiles), and on the headers it includes (-MMD writes $(O)/*.d)
@@ -698,6 +721,9 @@ $(AREA_OBJ)/prof/main.o: src/main.c $(O)/.cflags
 	@mkdir -p $(@D)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -DPROFILE $(AREA_DEFS) -c $< -o $@
 $(O)/prof/ai.o: src/ai.c $(O)/.cflags
+	@mkdir -p $(@D)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -DPROFILE -c $< -o $@
+$(O)/prof/frame.o: src/frame.c $(O)/.cflags
 	@mkdir -p $(@D)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -DPROFILE -c $< -o $@
 $(O)/gprof/%.o: src/%.c $(O)/.cflags

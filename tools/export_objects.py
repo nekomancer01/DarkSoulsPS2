@@ -100,6 +100,7 @@ ANIM_SKIP = set(os.environ.get("ANIM_SKIP", "o1460").split(","))
 OBJ_TRIS = int(os.environ.get("OBJ_TRIS", 160))
 OBJ_TEX_H = int(os.environ.get("OBJ_TEX_H", 64))
 OBJ_CUTOUT = os.environ.get("OBJ_CUTOUT", "1") == "1"  # cut-out materials keep their alpha (obj_texture)
+OBJ_SPEC = os.environ.get("OBJ_SPEC", "1") == "1"  # metal / specular from the _s maps (obj_spec)
 # cap_tris's error bound, relative to each group's extent (meshoptimizer): the cap is a target, never reached by
 # flattening a shape (unbounded, the Burg barrel shell o1155 went 42 -> 6 triangles with 1.4 m slivers, drawn as shards)
 OBJ_TRI_ERR = float(os.environ.get("OBJ_TRI_ERR", 0.02))
@@ -230,6 +231,20 @@ def is_cutout(mtd):
     m10_ivy_diteal_01, M[D]_Edge)"""
     import material
     return material.is_cutout(mtd or "")
+
+
+def obj_spec(d, m):
+    """The _s (PBR) map of object mesh m for MeshBuilder.add's specular terms (Polaris 2.2 PR 4): the material's
+    g_Specular, else the diffuse's name + "_s" as for characters (export_model); None without one or with OBJ_SPEC=0
+    (the old path: objects draw on vu1skin2's Tex entry, no specular)"""
+    if not OBJ_SPEC:
+        return None
+    for name in (m.get("specular"), (m["diffuse"] or "") + "_s" if m.get("diffuse") else None):
+        if name:
+            t = d.get(name) or d.get(name.lower())
+            if t:
+                return t
+    return None
 
 
 def obj_texture(mb, name, d, cutout=False):
@@ -552,7 +567,8 @@ def type_model(game, model, files, dds, shared=None, lods=(LOD_INTACT, LOD_BROKE
                         n = V["normal"][vi]
                         nrm[vi] = tuple(sum(R[r][c] * n[c] for c in range(3)) for r in range(3))
                 mm = dict(m, verts=dict(V, pos=pos, normal=nrm))
-            mb.add(F, None, mm, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False), bits=bits)
+            mb.add(F, None, mm, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False), bits=bits,
+                   spec=obj_spec(dds, m))
     out = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"export_objects_{os.getpid()}_{model}.bin")
     own = mb.textures
     if shared:
@@ -636,7 +652,7 @@ def anim_type_model(game, model, files, dds, shared_tex):
             ti = anim_texture(mb, tex, (dds.get(tex) or dds.get(tex.lower())) if tex else None)
             fs = m["facesets"][min(lod, len(m["facesets"]) - 1)]
             if m["dynamic"]:  # skinned (weights, model-space positions)
-                mb.add(F, bw, m, fs, ti, (128, 128, 128))
+                mb.add(F, bw, m, fs, ti, (128, 128, 128), spec=obj_spec(dds, m))
                 continue
             V = m["verts"]
             per_bone = {}
@@ -653,7 +669,8 @@ def anim_type_model(game, model, files, dds, shared_tex):
                     m2 = dict(m, verts=dict(V, pos=pos, normal=nrm))
                 else:
                     m2 = m
-                mb.add(F, None, m2, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False))
+                mb.add(F, None, m2, (fs[0], False, idx, fs[3]), ti, (128, 128, 128), rigid=(skb, False),
+                       spec=obj_spec(dds, m))
         tris = len(mb.tris)
         if tris <= ANIM_MAX_TRIS:
             break

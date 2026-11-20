@@ -788,8 +788,11 @@ def flver(b):
         # normal map (g_Bumpmap: BC5, red along the binormal, green along the tangent; FRPG_Phn_*Bmp* shaders)
         bump = next((basename(textures[t][0]).rsplit(".", 1)[0] for t in mat_tex[mat]
                      if textures[t][1].lower() == "g_bumpmap"), None) if mat < len(mats) else None
+        # specular / PBR map (g_Specular: DSR's _s, R roughness, G metalness; export_model.spec_terms)
+        specular = next((basename(textures[t][0]).rsplit(".", 1)[0] for t in mat_tex[mat]
+                         if textures[t][1].lower() == "g_specular"), None) if mat < len(mats) else None
         meshes.append({"dynamic": dyn, "material": mats[mat] if mat < len(mats) else "", "default_bone": dbone,
-                       "diffuse": diffuse, "diffuse2": diffuse2, "bump": bump, "mtd": mtds[mat] if mat < len(mtds) else "",
+                       "diffuse": diffuse, "diffuse2": diffuse2, "bump": bump, "specular": specular, "mtd": mtds[mat] if mat < len(mtds) else "",
                        "bones": mbones, "facesets": [fsets[i] for i in fs_idx], "verts": verts})
     return {"bones": bones, "meshes": meshes, "materials": mats, "textures": textures}
 
@@ -912,10 +915,17 @@ def bcdecode_lib():
 def dds_decode_rgba(d, max_dim=256):
     """DDS (BC1/2/3, or DX10 BC7) -> (w, h, RGBA bytes) of the largest mip with sides <= max_dim, via
     tools/native/libbcdecode.so (bcdec). None if the format is unsupported."""
+    levels = dds_decode_rgba_levels(d, max_dim, 1)
+    return levels[0] if levels else None
+
+
+def dds_decode_rgba_levels(d, max_dim=256, n=4):
+    """dds_decode_rgba's level and up to n - 1 of the authored mip levels after it (fewer if the DDS has fewer),
+    [(w, h, RGBA bytes), ...]; [] / None as dds_decode_rgba (texmap.encode's authored chain, Polaris 2.7)"""
     import ctypes
     bcdecode_lib()
     h, w = struct.unpack_from("<ii", d, 12)
-    mips = struct.unpack_from("<i", d, 28)[0]
+    mips = max(struct.unpack_from("<i", d, 28)[0], 1)
     four = d[84:88]
     data = 128
     if four == b"DX10":
@@ -926,16 +936,20 @@ def dds_decode_rgba(d, max_dim=256):
     if not fmt:
         return None
     bsize = 8 if fmt == 1 else 16
-    for _ in range(max(mips, 1) - 1):
-        if max(w, h) <= max_dim:
+    size = lambda w, h: max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * bsize
+    lv = 0
+    while lv < mips - 1 and max(w, h) > max_dim:
+        data += size(w, h)
+        w, h, lv = max(1, w // 2), max(1, h // 2), lv + 1
+    out = []
+    while len(out) < n and lv < mips and data + size(w, h) <= len(d):
+        buf = ctypes.create_string_buffer(w * h * 4)
+        if _bc.decode_image(d[data:data + size(w, h)], w, h, fmt, buf):
             break
-        data += max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * bsize
-        w, h = max(1, w // 2), max(1, h // 2)
-    out = ctypes.create_string_buffer(w * h * 4)
-    src = d[data:data + max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * bsize]
-    if _bc.decode_image(src, w, h, fmt, out):
-        return None
-    return w, h, out.raw
+        out.append((w, h, buf.raw))
+        data += size(w, h)
+        w, h, lv = max(1, w // 2), max(1, h // 2), lv + 1
+    return out or None
 
 
 def nvm(b):

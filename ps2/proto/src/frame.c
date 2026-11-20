@@ -18,6 +18,8 @@
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
+#include "chrlight.h"
+#include "shadow.h"
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
@@ -432,21 +434,26 @@ static void phase_emit(Frame *f)
     frame_phase = FP_EMIT;
     Player *pl = f->pl;
     float dt = f->dt;
+    int obj_after_fx = (f->b->test_opts & TEST_OBJ_AFTER_FX) != 0;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
+    chrl_frame();  /* the frame's point lights for the characters (chrlight.c) */
     {
         ot_open(OT_CHR, OT_CHR);
 #ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
         frame_draw_check(FE_CHR_DRAW);
         player_draw(pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
         enemy_draw();      /* same path, one bone palette per enemy */
+        shadow_draw();     /* blob shadows of the characters just drawn (shadow.c, blended after them) */
 #endif
         ot_close();
-        ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */
+        if (!obj_after_fx) {
+            ot_open(OT_OBJ, OT_OBJ);  /* (the characters' buffer: one kick with them, it inherits their state) */
 #ifndef MAP_PANO_R
-        objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
+            objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
 #endif
-        ot_close();
+            ot_close();
+        }
         ot_open(OT_BLEND, OT_BLEND);  /* the blended map over the characters and objects (render-19; same buffer) */
         if (f->b->map_ok && !FRAME_SKIP_MAP) {
             frame_draw_check(FE_MAP_DRAW);
@@ -465,6 +472,16 @@ static void phase_emit(Frame *f)
 #endif
     }
     HITCH_END(fx, HS_FX);
+    if (obj_after_fx) {  /* test order: the character bank's programs again after vu1fx went over them (vu1.c R8) */
+        fx_kick();   /* the effects' segment closed and sent first (ot.h: one buffer open at a time); */
+        ot_flush();  /* phase_present's fx_kick then finds nothing open */
+        ot_open(OT_OBJ, OT_OBJ);
+#ifndef MAP_PANO_R
+        objects_draw();
+#endif
+        ot_close();
+        ot_flush();
+    }
     bonfire_draw();  /* the bloodstain marker */
     debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
     f->t_char += ((ticks() - f->t1) / 294912.0f - f->t_char) * 0.1f;
