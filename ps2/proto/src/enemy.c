@@ -196,6 +196,7 @@ typedef struct {
      * not updated, not drawn), else the slot's big_pose block (place()) */
     BoneLocal *pose, *from;
     int pose_slot;
+    int posed;             /* pose holds a pose sampled from its type's current model (POSE_FILL) */
     unsigned pose_serial;  /* new value (pose_gen) at every write of pose: keys its world matrices in wcache */
     Omit om;               /* update omission level (src/omit.c, CHR_OMIT) */
     float blend, blend_time;
@@ -254,6 +255,7 @@ typedef struct {
 static ChrType types[MAX_TYPES];
 static void chr_attach(ChrType *t, void *cb);
 static void pose_put(Enemy *e);
+static void pose_fill(Enemy *e);
 static int chr_same(const ChrType *t, const void *cb, unsigned size);
 static int ntypes;
 static Enemy enemies[MAX_ENEMIES];
@@ -293,6 +295,17 @@ static void *pose_owner[POSE_SLOTS];
 static int pose_used, pose_peak;
 static unsigned pose_short;  /* frames a character within POSE_GET found no slot */
 static BoneLocal *big_pose[MAX_ENEMIES];  /* poses of slots placed with a type of more than MAX_BONES bones */
+/* POSE_FILL (default on; make DEFS=-DPOSE_FILL=0 = the old way): a big type's pose block (char-7, above MAX_BONES
+ * bones) was sampled only by place() when the type was already loaded. Placed first and streamed in later (the usual
+ * order: placements come by distance, types load by placements), the block kept whatever the heap held (malloc, or the
+ * last type of that slot) until update_one posed it, and a character out of the ACTIVE_MAX nearest or beyond
+ * ACTIVE_DIST is drawn (DRAW_DIST) without an update: c2550 / c3491 at 25-40 m skinned from garbage drew the
+ * half-screen beige / black triangles at the Burg's second bonfire (ISO, about 1 run in 3; 2026-11-20). Now
+ * pose_manage samples it once the type is in (pose_fill, as pose_take does for a pose_pool slot), a slot with no anim
+ * to sample takes the reference pose instead of zeros, and enemy_draw skips a character not posed yet. */
+#ifndef POSE_FILL
+#define POSE_FILL 1
+#endif
 static unsigned big_cap[MAX_ENEMIES];
 
 /* e's world matrices for its current pose: from wcache, else built there when `build` (NULL when not) */
@@ -441,7 +454,7 @@ static void unload_model(ChrType *t)
     chr_attach(t, NULL);
     for (int i = 0; i < nenemies; i++)  /* their anim indices point into what went: type_streamed_in finds them again */
         if (enemies[i].ct == t)
-            enemies[i].act_slot = -1, enemies[i].act_info = 0, pose_put(&enemies[i]);
+            enemies[i].act_slot = -1, enemies[i].act_info = 0, enemies[i].posed = 0, pose_put(&enemies[i]);
 }
 
 
@@ -935,8 +948,8 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
     e->act = -1;
     int full;
     e->loco_anim = anim_slot(e, 0, &full);
-    if (t->loaded && e->pose)  /* else the pose is sampled when it gets one (pose_manage) */
-        mdl_sample(t->model, e->loco_anim, 0, 1, e->pose);
+    if (t->loaded && e->pose)  /* else the pose is sampled when it gets one or the type comes in (pose_manage) */
+        mdl_sample(t->model, e->loco_anim, 0, 1, e->pose), e->posed = 1;
     e->blend = 1;
     e->hostile = e->var->team_type != TEAM_NEUTRAL;
     think_of(&e->think, e->var);
@@ -2093,7 +2106,7 @@ static void pose_put(Enemy *e)
     if (!e->pose_slot)
         return;  /* none, or a big type's own block */
     pose_owner[e->pose_slot - 1] = NULL, pose_used--;
-    e->pose_slot = 0, e->pose = e->from = NULL;
+    e->pose_slot = 0, e->pose = e->from = NULL, e->posed = 0;
 }
 
 /* e takes slot k, posed where its anims have it now (the action at its time, else the locomotion loop) */
@@ -2103,6 +2116,14 @@ static void pose_take(Enemy *e, int k)
     if (++pose_used > pose_peak && (pose_peak = pose_used) % 8 == 0)
         printf("enemy: %d pose slots in use (of %d)\n", pose_used, POSE_SLOTS);
     e->pose = pose_pool[k][0], e->from = pose_pool[k][1];
+    pose_fill(e);
+}
+
+/* e's pose (a pose_pool slot or its big type's block) sampled where its anims have it now: the action at its time,
+ * else the locomotion loop, else the reference pose (zeros before POSE_FILL: every bone at the root, and divides by a
+ * view depth of 0 where the clip program met them) */
+static void pose_fill(Enemy *e)
+{
     const Model *m = e->ct->model;
     int full;
     if (e->loco_anim < 0)  /* placed while the type was out */
@@ -2111,9 +2132,12 @@ static void pose_take(Enemy *e, int k)
         mdl_sample(m, e->act_slot, e->act_t, e->act_loop, e->pose);
     else if (e->loco_anim >= 0)
         mdl_sample(m, e->loco_anim, e->loco_t, 1, e->pose);
+    else if (POSE_FILL)
+        mdl_sample(m, -1, 0, 0, e->pose);
     else
         memset(e->pose, 0, pose_bytes(e));
-    e->blend = 1;  /* the blend's start pose went with the slot it had */
+    e->blend = 1;  /* the blend's start pose went with the slot it had (or is the garbage of a new block) */
+    e->posed = 1;
     pose_changed(e);
 }
 
@@ -2128,6 +2152,8 @@ static void pose_manage(const Player *pl)
         if (may && e->ev && e->ev->always_on)
             d = 0;
         dd[i] = may ? d : -1;
+        if (POSE_FILL && e->pose && !e->pose_slot && !e->posed && e->ct->loaded && !(ev_off[i] & EV_FREE))
+            pose_fill(e);  /* a big type's block (char-7), placed before its type came in */
         if (e->pose_slot && (!may || (d > POSE_PUT * POSE_PUT && !e->registered))) {
             rag_release(e);
             pose_put(e);
@@ -2519,7 +2545,7 @@ void enemy_draw(void)
         float R = e->var->radius + 1.5f;
         const float mn[3] = {e->pos.x - R, e->pos.y - 0.5f, e->pos.z - R},
                     mx[3] = {e->pos.x + R, e->pos.y + e->var->height + 1.0f, e->pos.z + R};
-        d3[i] = !e->ct->loaded || !e->pose || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
+        d3[i] = !e->ct->loaded || !e->pose || (POSE_FILL && !e->posed) || !e->ct->drawable || e->dead_t > CORPSE_TIME || ev_off[i] ||
                         d.x * d.x + d.z * d.z > DRAW_DIST * DRAW_DIST || !dg_mask_shown(e->block, e->dg) ||
                         !r_box_classify(mn, mx)
                     ? -1
