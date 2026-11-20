@@ -788,8 +788,11 @@ def flver(b):
         # normal map (g_Bumpmap: BC5, red along the binormal, green along the tangent; FRPG_Phn_*Bmp* shaders)
         bump = next((basename(textures[t][0]).rsplit(".", 1)[0] for t in mat_tex[mat]
                      if textures[t][1].lower() == "g_bumpmap"), None) if mat < len(mats) else None
+        # specular / PBR map (g_Specular: DSR's _s, R roughness, G metalness; export_model.spec_terms)
+        specular = next((basename(textures[t][0]).rsplit(".", 1)[0] for t in mat_tex[mat]
+                         if textures[t][1].lower() == "g_specular"), None) if mat < len(mats) else None
         meshes.append({"dynamic": dyn, "material": mats[mat] if mat < len(mats) else "", "default_bone": dbone,
-                       "diffuse": diffuse, "diffuse2": diffuse2, "bump": bump, "mtd": mtds[mat] if mat < len(mtds) else "",
+                       "diffuse": diffuse, "diffuse2": diffuse2, "bump": bump, "specular": specular, "mtd": mtds[mat] if mat < len(mtds) else "",
                        "bones": mbones, "facesets": [fsets[i] for i in fs_idx], "verts": verts})
     return {"bones": bones, "meshes": meshes, "materials": mats, "textures": textures}
 
