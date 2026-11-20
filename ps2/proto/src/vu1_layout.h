@@ -55,7 +55,6 @@
 
 /* micro memory: one row per program variant: X(name, code symbol prefix, address, chain bank 0 map 1 chr 2 fx) */
 #define VU1_PROGRAMS(X) \
-    X(MAP, VU1Map, 0, 0) \
     X(MAP2, VU1Map2, 1608, 0) \
     X(CLIP, VU1Clip, 0, 0) \
     X(SKIN2, VU1Skin2, 1024, 1) \
@@ -63,7 +62,6 @@
     X(FX, VU1Fx, 1812, 2) \
     X(MAPI, VU1MapI, 580, 0) \
 
-#define VU1L_CODE_MAP 0
 #define VU1L_CODE_MAP2 1608
 #define VU1L_CODE_CLIP 0
 #define VU1L_CODE_SKIN2 1024

@@ -108,7 +108,6 @@ CARRIED_REGISTERS = ()
 # One row per program variant: name (vu1.c enum P_<name>), code symbol prefix, address, chain bank, its .vsm.
 # Programs of one bank are resident together; another bank's program over them costs one reload (R8: on demand).
 PROGRAMS = (
-    ("MAP", "VU1Map", 0, "map", "vu1map.vsm"),            # hand-written A/B program (VU1_MAP_OLD)
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
     ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
@@ -116,7 +115,7 @@ PROGRAMS = (
     ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
 )
-ALTERNATES = {("MAP", "CLIP")}  # never resident together (VU1_MAP_OLD builds only): allowed to overlap
+ALTERNATES = set()  # pairs never resident together, allowed to overlap (none since the VU1_MAP_OLD program left, render-19 PR)
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ps2", "proto", "src")
 
@@ -176,12 +175,11 @@ def report():
     for p in PROGRAMS:
         taken |= set(range(p[2], p[2] + sizes[p[0]]))
     for bank in ("map", "chr", "fx"):
-        ps = [p for p in PROGRAMS if p[3] == bank and not (bank == "map" and p[0] == "MAP")]
+        ps = [p for p in PROGRAMS if p[3] == bank]
         used = sum(sizes[p[0]] for p in ps)
         out.append(f"micro {bank:4s}: {used:4d} of {MICRO} used by " + ", ".join(
             f"{p[0]} {p[2]}..{p[2] + sizes[p[0]] - 1}" for p in ps) + f"; {MICRO - used} free if only this bank is resident")
-    out.append(f"micro all : {len(taken)} of {MICRO} covered by some program, {MICRO - len(taken)} never used "
-               f"(the A/B MAP {sizes['MAP']} included)")
+    out.append(f"micro all : {len(taken)} of {MICRO} covered by some program, {MICRO - len(taken)} never used")
     return "\n".join(out)
 
 

@@ -374,7 +374,8 @@ static void phase_emit_map(Frame *f)
         /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
         unsigned t0 = ticks();
         {
-            ot_open(OT_SKY, OT_BLEND);  /* map.c's own order inside: sky, panorama, horizon, world, relief, blended chunks */
+            ot_open(OT_SKY, OT_WORLD);  /* map.c's own order inside: sky, panorama, horizon, world, relief, the blended
+                                         * chunks beyond ZSPLIT; the rest after the objects (OT_BLEND, render-19) */
             f->b->z_clear(gs);
             frame_draw_check(FE_MAP_DRAW);
             MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
@@ -445,6 +446,12 @@ static void phase_emit(Frame *f)
 #ifndef MAP_PANO_R
         objects_draw();    /* breakables: intact pots or their pieces, one palette per object */
 #endif
+        ot_close();
+        ot_open(OT_BLEND, OT_BLEND);  /* the blended map over the characters and objects (render-19; same buffer) */
+        if (f->b->map_ok && !FRAME_SKIP_MAP) {
+            frame_draw_check(FE_MAP_DRAW);
+            MEM_LEGACY(WORLD) f->tris_drawn += map_draw_blend();
+        }
         ot_close();
         ot_flush();
     }

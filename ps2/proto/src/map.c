@@ -795,12 +795,14 @@ static int visible_(const Chunk *c, const float *e, int sky)
 
 /* the first n triangles of chunk c (n < c->tris: foliage thinned by distance) */
 /* no: the chunk's number in bump.bin / dg.bin (resident: its index in the chunk table; near: NEAR_NO) */
+static GSTEXTURE *late_tex;  /* map_draw_blend: the texture the map pass resolved for the chunk being drawn */
+
 static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
                        unsigned no)
 {
-    GSTEXTURE *t = NULL;
+    GSTEXTURE *t = late_tex;
     float d2 = 0;
-    if (c->tex >= 0 && c->tex < m->ntex) {  /* mip level from the distance to the chunk's box */
+    if (!t && c->tex >= 0 && c->tex < m->ntex) {  /* mip level from the distance to the chunk's box */
         int tx = m->tex_base + c->tex;
         for (int k = 0; k < 3; k++) {
             float o = cam[k] < c->mn[k] ? c->mn[k] - cam[k] : cam[k] > c->mx[k] ? cam[k] - c->mx[k] : 0;
@@ -1051,7 +1053,7 @@ static int sky_in(int k)
 /* map_draw keeps what its later passes draw in these lists while it walks the cells: effect chunks (sorted far to
  * near, drawn after the opaque map), horizons fading in over their cells' coarse level (HZN_FADE) and coarse levels
  * fading out over their near level (NEAR_FADE) */
-typedef struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } FxItem;
+typedef struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; GSTEXTURE *late; } FxItem;
 typedef struct { unsigned char k, a; unsigned short ci; } FadeItem;
 static FxItem fxl[MAX_FX];
 static FadeItem hzfade[MAX_HZ_FADE], nrfade[MAX_NEAR_FADE];
@@ -1356,33 +1358,95 @@ static int draw_near_fades(int n, const float e[3])
     return drawn;
 }
 
+#ifndef MAP_BLEND_LATE
+#define MAP_BLEND_LATE 1  /* make DEFS=-DMAP_BLEND_LATE=0: the blended map inside the map segment, before the characters */
+#endif
+static int nfx_late;  /* fxl entries map_draw_blend draws (late != NULL) */
+
 /* The first n entries of fxl, after the opaque map: alpha-blended (mist, decals, water) far to near, then additive
  * (light shafts), then subtractive (both order-free); Z tested, not written; each chunk's GS state from its class row
- * (material.h). Returns the triangles drawn. */
-static int draw_effects(int n, int fog)
+ * (material.h). which: 0 all of them here (MAP_BLEND_LATE=0); 1 the map segment's share: with ZSPLIT the part beyond
+ * it now, in the far pass (its Z range is gone once the near pass clears Z), the rest kept for map_draw_blend with its
+ * texture resolved now (its upload goes in the map chain, tc_begin..tc_end); 2 map_draw_blend: the kept ones, after
+ * the characters and objects (render-19: a character behind a blended surface is drawn under it, as in DSR).
+ * Returns the triangles drawn. */
+static int draw_effects(int n, int fog, int which)
 {
     GSGLOBAL *gs = gsg;
     int drawn = 0;
-    for (int i = 1; i < n; i++)  /* insertion sort by distance, far first; a few dozen per frame */
-        for (int j = i; j > 0 && fxl[j].d > fxl[j - 1].d; j--) {
-            FxItem tmp = fxl[j];
-            fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
-        }
+    if (which != 2) {
+        for (int i = 1; i < n; i++)  /* insertion sort by distance, far first; a few dozen per frame */
+            for (int j = i; j > 0 && fxl[j].d > fxl[j - 1].d; j--) {
+                FxItem tmp = fxl[j];
+                fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
+            }
+        nfx_late = 0;
+        for (int i = 0; i < n; i++)
+            fxl[i].late = NULL;
+    }
     for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
         const MatRow *last = NULL;
         for (int i = 0; i < n; i++) {
             const Chunk *c = fxl[i].c;
-            const MatRow *mr = mp_row(&mp_inst[fxl[i].k], c);
+            const MapInst *mi = &mp_inst[fxl[i].k];
+            const MatRow *mr = mp_row(mi, c);
             if ((mr->alpha == GS_ALPHA_ADD ? 1 : mr->alpha == GS_ALPHA_SUB ? 2 : 0) != pass)
+                continue;
+            int cls = fxl[i].cls, mode = fog | R_BLEND | (pass == 1 ? R_ADD : 0), far = 0;
+            if (which == 1) {
+                int r = 2;
+                if (zs_pass == 1)
+                    r = zs_route(c, &cls, fxl[i].cls);
+                if ((r & 2) && c->tex >= 0 && c->tex < mi->ntex) {  /* nearer than ZSPLIT: drawn after the characters */
+                    int tx = mi->tex_base + c->tex;
+                    float d2 = 0;
+                    for (int a = 0; a < 3; a++) {
+                        float o = cam[a] < c->mn[a] ? c->mn[a] - cam[a] : cam[a] > c->mx[a] ? cam[a] - c->mx[a] : 0;
+                        d2 += o * o;
+                    }
+                    MP_BEGIN
+                    fxl[i].late = tc_get(tx, tc_level(tx, sqrtf(d2)));
+                    MP_END(MP_TEX)
+                    nfx_late += fxl[i].late != NULL;
+                }
+                if (!(r & 1))
+                    continue;
+                far = 1;
+            } else if (which == 2 && !fxl[i].late)
                 continue;
             if (mr != last)
                 row_regs(gs, mr), last = mr;
-            drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (pass == 1 ? R_ADD : 0),
-                                fxl[i].no);
+            if (far) {  /* (draw_chunk would record the near part again: the far part alone, as it draws it) */
+                zs_nobump = 1;
+                drawn += draw_chunk_(mi, fxl[i].base, c, c->tris, cls, mode, fxl[i].no);
+                zs_nobump = 0;
+            } else {
+                late_tex = which == 2 ? fxl[i].late : NULL;
+                drawn += draw_chunk(mi, fxl[i].base, c, c->tris, cls, mode, fxl[i].no);
+                late_tex = NULL;
+            }
         }
     }
     opaque_regs(gs);
     return drawn;
+}
+
+int map_draw_blend(void)
+{
+    if (!MAP_BLEND_LATE || !nfx_late || !gsg)
+        return 0;
+    float a, b, fmin;
+    fog_terms(&a, &b, &fmin);
+    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    /* a segment in the characters' buffer (ot.h OT_BLEND): the map programs' layout, constants and fog again */
+    vu1_map_resume();
+    vu1_map_fog(a, b, fmin, 255);
+    vu1_map_edge(edge_a2);
+    u64 r[2] = {col, 0x3D};  /* FOGCOL (the characters set their own) */
+    vu1_gs_regs(1, r);
+    int n = draw_effects(nfx, R_FOG, 2);
+    nfx_late = 0;
+    return n;
 }
 
 #if MAP_PASS_MS
@@ -2094,7 +2158,7 @@ int map_draw(V3 eye)
     }
 
     MF_BEGIN
-    drawn += draw_effects(nfx, fog);
+    drawn += draw_effects(nfx, fog, MAP_BLEND_LATE ? 1 : 0);  /* the rest after the characters: map_draw_blend */
     MF_END(MF_FX)
     zs_end();
     {
