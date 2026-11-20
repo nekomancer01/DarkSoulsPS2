@@ -29,6 +29,7 @@ import atexit, hashlib, os, pickle, sys, zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = b"buildcache-1"  # entry format; a new value orphans every entry (the size cap removes them)
 DEFAULT_GB = 4
+NAMESPACES = ("pvs", "simplify", "snd", "tex")  # the CLI's default set (build/cache/warm is warmstate.py's, not ours)
 
 
 def main_tree():
@@ -264,7 +265,7 @@ def trim_dir(d, cap):
 def main(argv):
     cmd = argv[0] if argv else "stats"
     r = root()
-    names = argv[1:] or sorted(n for n in os.listdir(r) if os.path.isdir(os.path.join(r, n))) if os.path.isdir(r) else []
+    names = argv[1:] or [n for n in NAMESPACES if os.path.isdir(os.path.join(r, n))]
     if cmd == "stats":
         print(f"cache root {r} (DSR_CACHE)")
         for n in names:
