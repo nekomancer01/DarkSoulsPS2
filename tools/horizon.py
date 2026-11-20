@@ -275,11 +275,11 @@ def chunk_dg(b, nch):
     path = os.path.join(os.path.dirname(os.path.abspath(SRC[0])), "dg.bin") if SRC else ""
     if os.environ.get("HZN_DG", "1") != "1" or not path or not os.path.exists(path):
         return np.zeros(nch, np.int64)
-    d = open(path, "rb").read()
-    _mg, P, C, N = struct.unpack_from("<4I", d, 0)
-    if N < nch:
+    import drawgroups
+    d = drawgroups.read(path)
+    if len(d.chunk_dg) < nch:
         return np.zeros(nch, np.int64)
-    return np.frombuffer(d, np.uint8, nch, 32 + 16 * (P + C)).astype(np.int64)
+    return np.frombuffer(d.chunk_dg, np.uint8, nch).astype(np.int64)
 
 
 # The far backdrop as picture layers (tools/pano.py bake; HZN_PANO_D metres, 0 = none: all of it stays horizon
@@ -313,11 +313,12 @@ def pano_sets(src):
     path = os.path.join(os.path.dirname(os.path.abspath(src)), "dg.bin")
     if not os.path.exists(path):
         return None
-    d = open(path, "rb").read()
-    _mg, P, C, N, T = struct.unpack_from("<5I", d, 0)
-    pm = np.frombuffer(d, np.uint32, 4 * P, 32).reshape(P, 4)
-    cm = np.frombuffer(d, np.uint32, 4 * C, 32 + 16 * P).reshape(C, 4)
-    cnt = np.bincount(np.frombuffer(d, np.uint8, T, 32 + 16 * (P + C) + N), minlength=C)[:C].astype(np.float64)
+    import drawgroups
+    d = drawgroups.read(path)
+    C = len(d.colls)
+    pm = np.array(d.pieces, np.uint32).reshape(-1, 4)
+    cm = np.array(d.colls, np.uint32).reshape(-1, 4)
+    cnt = np.bincount(np.frombuffer(d.tri_dg, np.uint8), minlength=C)[:C].astype(np.float64)
     if not cnt.sum():
         return None
     share = ((pm[:, None, :] & cm[None]).any(2) * cnt[None]).sum(1) / cnt.sum()

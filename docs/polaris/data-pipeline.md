@@ -132,6 +132,8 @@ Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chu
 | File | Id | Chunks |
 |---|---|---|
 | `world.bin` | `WRLD` | `BLKS` blocks, `LRNG` link ranges, `LINK` links, `REAC` reach table (optional) |
+| `dg.bin` | `DGRP` | `DHDR`, `PMSK`, `CMSK`, `CHDG`, `TRDG`, `CHRS`, `ENTS`, `CHEN` |
+| `pvs.bin` (written by `pvs_bake.c` with `chunkw.h`) | `PVS ` | `PHDR`, `EOFF`, `ULST`, `LOC `, `KEYS`, `ROWO`, `ROWS` |
 
 The layout of each chunk is documented at the top of the exporter that writes it. Formats not yet moved (map.bin,
 cells.bin, model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they

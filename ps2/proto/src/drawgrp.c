@@ -2,18 +2,17 @@
 #include <string.h>
 #include <math.h>
 #include "drawgrp.h"
+#include "chunk.h"
 #include "collision.h"
 #include "map.h"
 #include "render.h"
 #include "world.h"
 
-/* dg.bin layout: tools/drawgroups.py ('DGM1': no character section, 'DGM2': no switched entities) */
-#define DGM1 0x314D4744
-#define DGM2 0x324D4744
-#define DGM3 0x334D4744
+/* dg.bin: a chunk file 'DGRP' (tools/drawgroups.py), read in place */
+#define ID(a, b, c, d) CHUNK_ID(a, b, c, d)
 typedef struct {
-    unsigned magic, pieces, colls, chunks, tris, chars, ents, area;  /* area: 0 in files older than 2026-11-07 */
-} DgHeader;
+    unsigned pieces, colls, chunks, tris, chars, ents, area;
+} DgHeader;  /* DHDR v1 */
 typedef struct { float pos[3]; unsigned mask; } DgChar;
 
 typedef struct {
@@ -24,7 +23,7 @@ typedef struct {
     int cur;                   /* collision mask in effect (-1: none yet, all shown; DG_SHARED: -2 = the shared mask) */
     unsigned area;             /* area group (dg.bin header): blocks of one group share the mask (DG_SHARED) */
     unsigned char shown[256];  /* per piece mask: shares a group with coll[cur] */
-    const int *ent;            /* switched entity ids (DGM3) */
+    const int *ent;            /* switched entity ids (ENTS; NULL: none) */
     const unsigned char *chunk_ent;  /* per chunk: 1 + index into ent, 0 none */
     unsigned n_ents, gen;
     unsigned char ent_off[256];  /* per switched entity: hidden (from the list below at generation gen) */
@@ -82,36 +81,45 @@ static unsigned hidden_gen = 1;
 
 int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris)
 {
-    const DgHeader *h = blob;
     if (k < 0 || k >= DG_INST)
         return 0;
     Dg *d = &dg[k];
     memset(d, 0, sizeof *d);
     d->cur = -1;
     shown_gen++;
-    if (!h || (h->magic != DGM1 && h->magic != DGM2 && h->magic != DGM3) || h->chunks < chunks || h->tris != col_tris ||
-        h->pieces > 256) {
+    ChunkFile f;
+    unsigned np, nc, ncd, ntd, nch, nen, nce;
+    char name[24];
+    snprintf(name, sizeof name, "dg.bin (block %d)", k);
+    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, ID('D', 'G', 'R', 'P'), name))
+        return 0;
+    const DgHeader *h = chunk_get(&f, ID('D', 'H', 'D', 'R'), 1, NULL);
+    d->piece = chunk_get(&f, ID('P', 'M', 'S', 'K'), 1, &np);
+    d->coll = chunk_get(&f, ID('C', 'M', 'S', 'K'), 1, &nc);
+    d->chunk_dg = chunk_get(&f, ID('C', 'H', 'D', 'G'), 1, &ncd);
+    d->tri_dg = chunk_get(&f, ID('T', 'R', 'D', 'G'), 1, &ntd);
+    d->chars = chunk_get(&f, ID('C', 'H', 'R', 'S'), 1, &nch);
+    d->ent = chunk_get(&f, ID('E', 'N', 'T', 'S'), 1, &nen);
+    d->chunk_ent = chunk_get(&f, ID('C', 'H', 'E', 'N'), 1, &nce);
+    if (!h || !d->piece || !d->coll || !d->chunk_dg || !d->tri_dg || !d->chars || !d->ent || !d->chunk_ent ||
+        np != 16 * h->pieces || nc != 16 * h->colls || ncd != h->chunks || ntd != h->tris || nch != sizeof(DgChar) * h->chars ||
+        nen != 4 * h->ents || nce != h->chunks || h->chunks < chunks || h->tris != col_tris || h->pieces > 256) {
         if (h)
             printf("DSRPROTO drawgrp: %d: dg.bin does not match (chunks %u / %u, tris %u / %u): off\n", k, h->chunks,
                    chunks, h->tris, col_tris);
+        memset(d, 0, sizeof *d);
+        d->cur = -1;
         return 0;
     }
-    d->piece = (const void *)(h + 1);
-    d->coll = (const void *)(d->piece + h->pieces);
-    d->chunk_dg = (const unsigned char *)(d->coll + h->colls);
-    d->tri_dg = d->chunk_dg + h->chunks;
-    d->chars = (const DgChar *)(d->chunk_dg + ((h->chunks + h->tris + 3) & ~3u));
-    d->n_chars = h->magic != DGM1 ? h->chars : 0;
+    d->n_chars = h->chars;
     d->n_pieces = h->pieces;
     d->n_chunks = h->chunks;
     d->n_tris = h->tris;
     d->area = DG_SHARED ? h->area : 0;
-    if (h->magic == DGM3 && h->ents && h->ents < 256) {
-        d->ent = (const int *)(d->chars + d->n_chars);
-        d->chunk_ent = (const unsigned char *)(d->ent + h->ents);
-        d->n_ents = h->ents;
-        d->gen = 0;  /* ent_off from the hidden list at the first dg_shown */
-    }
+    if (h->ents && h->ents < 256)
+        d->n_ents = h->ents, d->gen = 0;  /* ent_off from the hidden list at the first dg_shown */
+    else
+        d->ent = NULL, d->chunk_ent = NULL;
     printf("DSRPROTO drawgrp: %d: %u piece / %u collision group sets, %u chunks, %u characters, %u switched parts, "
            "area %u\n", k, h->pieces, h->colls, h->chunks, d->n_chars, d->n_ents, d->area);
     if (d->area && d->area == sh_area) {  /* a block turning on shows what the part under the player shows */

@@ -3,11 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pvs.h"
+#include "chunk.h"
 
-/* pvs.bin 'PVS3' (tools/pvs_bake.c): header u32 magic, row bits, chunks, entries, cells, rows, row bytes, f32 cell
- * size; u16 x (entries + 1) list starts; u16 lists (a unit's row bit, PVS_ALWAYS, PVS_NEVER); u8 per chunk (index in
- * its entry's list, 0xFF always drawn); u32 key + u16 row per sampled camera cell; rows */
-#define PVS3 0x33535650u
+/* pvs.bin: a chunk file 'PVS ' (tools/pvs_bake.c, layout there), read in place: PHDR (row bits, chunks, entries, cells,
+ * rows, row bytes, f32 cell size), EOFF u16 x (entries + 1) list starts, ULST u16 lists (a unit's row bit, PVS_ALWAYS,
+ * PVS_NEVER), LOC u8 per chunk (index in its entry's list, 0xFF always drawn), KEYS u32 key + ROWO u16 row per sampled
+ * camera cell, ROWS */
 #define PVS_ALWAYS 0xFFFFu
 #define PVS_NEVER 0xFFFEu
 typedef struct {
@@ -39,23 +40,36 @@ int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries)
     (void)blob, (void)chunks, (void)entries;
     return 0;
 #else
-    const unsigned *h = blob;
-    if (!h || h[0] != PVS3 || !h[4] || h[2] < chunks || h[3] != entries) {
-        if (h && h[0] == PVS3 && h[4])
-            printf("DSRPROTO pvs: %d: pvs.bin does not match (chunks %u / %u, entries %u / %u): off\n", k, h[2], chunks,
-                   h[3], entries);
+    ChunkFile f;
+    char name[24];
+    unsigned sz[7];
+    snprintf(name, sizeof name, "pvs.bin (block %d)", k);
+    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('P', 'V', 'S', ' '), name))
+        return 0;
+    const unsigned *h = chunk_get(&f, CHUNK_ID('P', 'H', 'D', 'R'), 1, &sz[0]);
+    if (!h || sz[0] < 28 || !h[3])  /* no camera cells: everything drawn */
+        return 0;
+    if (h[1] < chunks || h[2] != entries) {
+        printf("DSRPROTO pvs: %d: pvs.bin does not match (chunks %u / %u, entries %u / %u): off\n", k, h[1], chunks,
+               h[2], entries);
         return 0;
     }
-    const unsigned char *b = blob;
-    unsigned o = 32;
-    p->units = h[1], p->chunks = h[2], p->entries = h[3], p->cells = h[4], p->nrows = h[5], p->rb = h[6];
-    memcpy(&p->cell, &h[7], 4);
-    p->eoff = (const unsigned short *)(b + o), o += (2 * (p->entries + 1) + 3) & ~3u;
-    p->ulist = (const unsigned short *)(b + o), o += (2 * p->eoff[p->entries] + 3) & ~3u;
-    p->loc = b + o, o += (p->chunks + 3) & ~3u;
-    p->keys = (const unsigned *)(b + o), o += 4 * p->cells;
-    p->row_of = (const unsigned short *)(b + o), o += (2 * p->cells + 3) & ~3u;
-    p->rows = b + o;
+    p->units = h[0], p->chunks = h[1], p->entries = h[2], p->cells = h[3], p->nrows = h[4], p->rb = h[5];
+    memcpy(&p->cell, &h[6], 4);
+    p->eoff = chunk_get(&f, CHUNK_ID('E', 'O', 'F', 'F'), 1, &sz[1]);
+    p->ulist = chunk_get(&f, CHUNK_ID('U', 'L', 'S', 'T'), 1, &sz[2]);
+    p->loc = chunk_get(&f, CHUNK_ID('L', 'O', 'C', ' '), 1, &sz[3]);
+    p->keys = chunk_get(&f, CHUNK_ID('K', 'E', 'Y', 'S'), 1, &sz[4]);
+    p->row_of = chunk_get(&f, CHUNK_ID('R', 'O', 'W', 'O'), 1, &sz[5]);
+    p->rows = chunk_get(&f, CHUNK_ID('R', 'O', 'W', 'S'), 1, &sz[6]);
+    if (!p->eoff || !p->ulist || !p->loc || !p->keys || !p->row_of || !p->rows || sz[1] != 2 * (p->entries + 1) ||
+        sz[2] != 2 * p->eoff[p->entries] || sz[3] != p->chunks || sz[4] != 4 * p->cells || sz[5] != 2 * p->cells ||
+        sz[6] != p->nrows * p->rb) {
+        printf("TEST error: chunk: %s: chunk sizes do not match PHDR\n", name);
+        memset(p, 0, sizeof *p);
+        p->key = ~0u;
+        return 0;
+    }
     p->uni = malloc(p->rb + 1), p->tmp = malloc(p->rb + 1);
     if (!p->uni || !p->tmp || !(p->cell > 0)) {
         free(p->uni), free(p->tmp);

@@ -153,11 +153,12 @@ def horizon_row(eye, tgt, H):
 
 def area_group(gen):
     """dg.bin's area group (tools/drawgroups.py: the AA of mAA when the map is in an area load list), 0 without one"""
+    import drawgroups
     try:
-        with open(os.path.join(gen, "dg.bin"), "rb") as f:
-            return struct.unpack_from("<8I", f.read(32), 0)[7]
-    except (OSError, struct.error):
+        d = drawgroups.read(os.path.join(gen, "dg.bin"))
+    except ValueError:
         return 0
+    return d.area if d else 0
 
 
 def ref_blocks(wb, i, on):

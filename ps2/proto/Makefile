@@ -571,7 +571,7 @@ MAPPY_SUMS = $(foreach m,mapcfg mapchunks maplight mapgather mapsimp mapcells ma
 MAPX_SUMS = $(TS)/mapx_native.py.sum $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/mapx/*.c ../../tools/mapx/*.h))
 $(A)/map.bin: $(TS)/export_map.py.sum $(MAPPY_SUMS) $(MAPX_SUMS) $(TS)/resample.py.sum $(TS)/texmap.py.sum $(TS)/octree.py.sum $(TS)/simplify.py.sum $(TS)/souls.py.sum $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum \
 		$(TS)/export_normal.py.sum $(TS)/dsr_light.py.sum \
-		$(TS)/drawgroups.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
+		$(TS)/drawgroups.py.sum $(TS)/chunkfile.py.sum $(TS)/pose_obj.py.sum $(TS)/simplify_pool.py.sum $(TS)/simplify_native.py.sum \
 		$(TS)/native/simplify.c.sum $(TS)/native/geom.c.sum $(TS)/geom_native.py.sum $(TS)/emevd.py.sum \
 		$(TS)/havok_collision.py.sum $(TS)/havok_anim.py.sum $(AREA_SIG) $(A)/mapenv $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json \
 		$(TS)/residency.py.sum src/residency.h $(TS)/worldlinks.py.sum
@@ -623,9 +623,9 @@ PVS_GPU_RES ?= 192
 PVS_GPU_PER_CELL ?= 32
 PVS_GPU_OK := $(if $(filter 1,$(PVS_GPU)),$(shell printf '\043include <EGL/egl.h>\n\043include <GL/gl.h>\n\043include <GL/glext.h>\nint main(void) { return eglGetError() == 0; }\n' | \
 	gcc -x c - -o /dev/null -lEGL -lOpenGL 2>/dev/null && echo 1))
-$(PVS_BAKE): ../../tools/pvs_bake.c ../../tools/pvs_gpu.c ../../tools/pvs_gpu.h
+$(PVS_BAKE): ../../tools/pvs_bake.c ../../tools/pvs_gpu.c ../../tools/pvs_gpu.h src/chunk.c src/chunk.h ../../tools/native/chunkw.h
 	@mkdir -p $(@D)
-	gcc $(PVS_CFLAGS) -fopenmp -o $@ $< $(if $(PVS_GPU_OK),-DPVS_GPU ../../tools/pvs_gpu.c -lEGL -lOpenGL) -lm
+	gcc $(PVS_CFLAGS) -fopenmp -o $@ $< src/chunk.c $(if $(PVS_GPU_OK),-DPVS_GPU ../../tools/pvs_gpu.c -lEGL -lOpenGL) -lm
 worldpvs: $(PVS_BAKE)  # (built once here, before the block sub-makes would race to build it)
 $(A)/pvsin.bin: $(A)/map.bin
 	@test -f $@ || { echo "$@ missing: re-export map.bin"; rm -f $<; exit 1; }
