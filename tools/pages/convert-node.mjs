@@ -113,7 +113,7 @@ json.dumps(convert.groups("/game", "/build"))
   console.log(`[lanes] all groups in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
 
-// the converter's source tree as tools/pages/build.py zips it: tracked tools/*.py, tools/native C files, the Makefile,
+// the converter's source tree as tools/pages/build.py zips it: tracked tools/*.py, tools/native C files, tools/recipe.toml,
 // plus the wasm helpers, dated after their sources so the tools load them instead of compiling
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "convert-node-"));
 const rows = [];  // --prof
@@ -123,8 +123,9 @@ try {
     execFileSync(path.join(ROOT, "tools/native/build-wasm.sh"), [wasm], { stdio: "inherit" });
   }
   const src = path.join(tmp, "src");
-  const files = execFileSync("git", ["ls-files", "tools", "ps2/proto/Makefile"], { cwd: ROOT, encoding: "utf8" })
-    .split("\n").filter((f) => f === "ps2/proto/Makefile" || (f.split("/").length === 2 && f.endsWith(".py")) ||
+  const files = execFileSync("git", ["ls-files", "tools", "ps2/proto/src/residency.h"], { cwd: ROOT, encoding: "utf8" })
+    .split("\n").filter((f) => f === "tools/recipe.toml" || f === "ps2/proto/src/residency.h" ||
+      (f.split("/").length === 2 && f.endsWith(".py")) ||
       ((f.startsWith("tools/native/") || f.startsWith("tools/mapx/")) && /\.(c|h)$/.test(f)));
   for (const f of files) {
     fs.mkdirSync(path.dirname(path.join(src, f)), { recursive: true });

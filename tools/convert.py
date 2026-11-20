@@ -1,6 +1,6 @@
 """The default build's packs (`make -C ps2/proto`: Firelink + its world blocks) without make, the shell or a compiler:
 every export runs in this Python process. The project page's in-browser converter (tools/pages, Pyodide) runs this;
-natively it is the check that it still matches the Makefile.
+natively it is the check that both builds write the same packs.
 
     python3 tools/convert.py <game dir> <build dir> [--lean] [--only STEP...] [--list] [--groups]
     python3 tools/convert.py --compare <build dir> <make's build dir>     (same packs, byte for byte)
@@ -8,60 +8,26 @@ natively it is the check that it still matches the Makefile.
 Writes <build dir>/gen/... and <build dir>/data/*.pak exactly as the Makefile's recipes do (same tools, arguments and
 environment); the ELF is the game-free one from CI (make -C ps2/proto elf) and tools/iso9660.py makes the disc.
 
-The steps mirror ps2/proto/Makefile by hand: when a recipe there changes (a new export, new arguments, a new pack
-entry), change plan() here the same way. Knob variables (MAPENV, MAPENV_<map>, LOD_<chr>, TEX_<chr>, DEFAULT_MAP) are
-read from the Makefile itself, so retuning an area needs no change here. Each step runs like its own process: the
-tools' modules are dropped from sys.modules first and the environment is the recipe's, so module-level knobs read
-the right values.
+The steps, their knobs (MAPENV, LOD / TEX per enemy type, DEFAULT_MAP, ...) and the pack entries are tools/recipe.toml's,
+the file the Makefile's export rules are generated from (tools/recipe.py), so the two cannot drift apart. The steps
+that run a host program (the occlusion bake, tools/pvs_bake.c) build it natively as make does; the browser, which has
+no build of it, skips them and leaves their pack entries out, as it skips the sound packs (no MP3 decoder). Each step
+runs like its own process: the tools' modules are dropped from sys.modules first and the environment is the recipe's,
+so module-level knobs read the right values.
 
 --lean (the in-browser converter, whose files all live in memory): each intermediate under <build dir>/gen is removed
 once no later step names it (in its arguments, environment or extra inputs), so the gen tree never holds more than
 the steps still to come need. The packs come out the same; check with --compare against make's build.
 """
-import gc, os, re, runpy, shlex, sys, time
+import gc, os, runpy, sys, time
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
-MAKEFILE = os.path.join(ROOT, "ps2", "proto", "Makefile")
+sys.path.insert(0, TOOLS)
+import recipe  # noqa: E402
+from recipe import Step  # noqa: E402
+
 GC_THRESHOLD = gc.get_threshold()
-
-
-def make_vars(path=MAKEFILE):
-    """Plain assignments of the Makefile (NAME = / := / ?= / += value; no functions): {name: value}"""
-    v = {}
-    for line in open(path, encoding="utf-8"):
-        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(\+=|\?=|:=|=)\s*(.*?)\s*$", line)
-        if not m or "$(" in m.group(3):
-            continue
-        name, op, val = m.groups()
-        val = val.split("#")[0].strip()
-        if op == "+=":
-            v[name] = (v.get(name, "") + " " + val).strip()
-        elif op == "?=":
-            v.setdefault(name, val)
-        else:
-            v[name] = val
-    return v
-
-
-class Step:
-    def __init__(self, name, tool, args, outputs, env=None, inputs=()):
-        """inputs: files the tool reads that no argument or environment value names (a directory argument)"""
-        self.name, self.tool, self.args, self.outputs, self.env = name, tool, args, outputs, env or {}
-        self.inputs = list(inputs)
-
-    def files(self):
-        """every path the step names: arguments and environment values (pack.py's "name=raw:path" and "?" entries
-        stripped to the path) and its extra inputs"""
-        out = set()
-        for x in list(self.args) + list(self.env.values()) + self.inputs:
-            x = x.lstrip("?").split("=", 1)[-1]
-            out.add(os.path.normpath(x[4:] if x.startswith("raw:") else x))
-        return out
-
-    def __repr__(self):
-        env = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())
-        return f"{env + ' ' if env else ''}{self.tool} {' '.join(shlex.quote(a) for a in self.args)}"
 
 
 def run_tool(tool, args, env=None, capture=False):
@@ -99,130 +65,18 @@ def run_tool(tool, args, env=None, capture=False):
     return buf.getvalue() if capture else None
 
 
-def plan(game, build, mv=None):
-    """The steps of `make -C ps2/proto` (default map with its world blocks), in an order that respects every recipe's
-    inputs. Paths follow the Makefile: G = gen, D = data, A = the area's gen dir, AREA_DATA = its pack dir."""
-    mv = mv or make_vars()
-    G, D = os.path.join(build, "gen"), os.path.join(build, "data")
-    default = mv.get("DEFAULT_MAP", "m10_02_00_00")
-    steps = []
-
-    def S(name, tool, args, outputs, env=None, inputs=()):
-        steps.append(Step(name, tool, [str(a) for a in args], outputs, env, inputs))
-
-    def mapenv(msb):
-        kv = (mv.get("MAPENV", "") + " " + mv.get(f"MAPENV_{msb}", "")).split()
-        return dict(x.split("=", 1) for x in kv)
-
-    def area(msb, block, world_split):
-        """one area (block=None) or world block: everything $(D)/$(OUT).pak needs, then its enemy packs; common.pak
-        only for an area (blockpacks has none)"""
-        out = block or msb
-        A = G if out == default else os.path.join(G, out)
-        AD = D if out == default else os.path.join(D, out)
-        benv = {"AREA_BLOCK": block} if block else {}
-        S(f"{out}: objects", "export_objects.py", [game, f"{A}/objects.bin", msb], [f"{A}/objects.bin"], benv)
-        S(f"{out}: lights", "export_effects.py", [game, "--static-lights", f"{A}/lights.json", msb],
-          [f"{A}/lights.json"], benv)
-        S(f"{out}: map", "export_map.py", [game, f"{A}/map.bin", msb], [f"{A}/map.bin", f"{A}/bump.bin", f"{A}/dg.bin"],
-          {**benv, **mapenv(msb), "STATIC_OBJ": f"{A}/objects.bin.static", "ANIM_OBJ": f"{A}/objects.bin.anim",
-           "FX_LIGHTS_FILE": f"{A}/lights.json"})
-        S(f"{out}: effects", "export_effects.py", [game, f"{A}/fx.bin", msb, "--tone", f"{A}/fx_tone.json"],
-          [f"{A}/fx.bin"], benv)
-        S(f"{out}: collision", "export_collision.py", [game, f"{A}/collision.bin", msb, "h"], [f"{A}/collision.bin"],
-          benv)
-        S(f"{out}: events", "export_emevd.py", [game, f"{A}/events.bin", msb, "--common", f"{A}/evcommon.bin",
-                                                 "--report", f"{A}/events.txt"],
-          [f"{A}/events.bin", f"{A}/evcommon.bin"], {**benv, "ANIM_OBJ": f"{A}/objects.bin.anim"})
-        S(f"{out}: enemies", "export_enemies.py", [game, f"{A}/enemies.bin", msb], [f"{A}/enemies.bin"], benv)
-        S(f"{out}: map AI", "lua50.py", ["--pack", "--msb", game, msb, f"{A}/ai_map.lua0",
-                                        f"{game}/script/{msb}.luabnd.dcx"], [f"{A}/ai_map.lua0"], benv)
-        if world_split:
-            S(f"{out}: horizon", "horizon.py", [f"{A}/map.bin", f"{A}/hzn.bin"], [f"{A}/hzn.bin"],
-              {"HZN_PANO": "1" if out == default else "0"})
-            S(f"{out}: map split", "mapsplit.py", [f"{A}/map.bin", f"{A}/maptab.bin", f"{A}/mapres.bin", f"{A}/hzn.bin"],
-              [f"{A}/maptab.bin", f"{A}/mapres.bin"])
-        raw = "raw:" if block else ""
-        entries = [f"map.bin={A}/map.bin", f"collision.bin={raw}{A}/collision.bin", f"enemies.bin={raw}{A}/enemies.bin",
-                   f"objects.bin={raw}{A}/objects.bin", f"ai.lua0={raw}{A}/ai_map.lua0",
-                   f"evcommon.bin={A}/evcommon.bin", f"bump.bin={raw}{A}/bump.bin", f"fx.bin={raw}{A}/fx.bin",
-                   f"dg.bin={A}/dg.bin"]
-        # "?" = a $(wildcard ...) entry: kept when the file exists by the time the step runs
-        entries += [f"?cells.bin=raw:{A}/cells.bin", f"?pano.bin={A}/pano.bin"]
-        if world_split:
-            entries += [f"maptab.bin=raw:{A}/maptab.bin", f"mapres.bin=raw:{A}/mapres.bin", f"far.bin=raw:{A}/far.bin"]
-        entries += [f"?events.bin={raw}{A}/events.bin"]
-        # the pack comes after every block's horizon: its far panorama (farpano.py) is baked from the others'
-        packs.append((out, A, [f"{D}/{out}.pak"] + entries, world_split))
-        steps.append(("enemies", msb, block, A, AD))  # expanded once enemies.bin exists (export_enemies.py --models)
-        if not block:
-            S(f"{out}: common AI", "lua50.py", ["--pack", "--msb", game, msb, f"{A}/ai_common.lua0",
-                                               f"{game}/script/aiCommon.luabnd.dcx"], [f"{A}/ai_common.lua0"])
-            S(f"{out}: common pack", "pack.py", [f"{AD}/common.pak", f"esd.bin={G}/enemyCommon.esd.bin",
-                                                 f"ai.lua0={A}/ai_common.lua0"], [f"{AD}/common.pak"])
-
-    packs = []
-    # shared by every area
-    S("player model", "export_model.py", [game, f"{G}/model.bin"], [f"{G}/model.bin"])
-    S("player ESD", "export_esd.py", [game, f"{G}/esd.bin"], [f"{G}/esd.bin"])
-    for k in ("player", "combat", "progress"):
-        S(f"{k} values", f"export_{k}.py", [game, f"{G}/{k}.gd"], [f"{G}/{k}.gd"])
-    S("player pack", "pack.py", [f"{D}/c0000.pak", f"model.bin={G}/model.bin", f"esd.bin={G}/esd.bin"] +
-      [f"{k}.gd={G}/{k}.gd" for k in ("player", "combat", "progress")], [f"{D}/c0000.pak"])
-    S("menu", "export_menu.py", [game, f"{G}/menu.bin"], [f"{G}/menu.bin"])
-    items = [f"{G}/items/{f}" for f in ("items.bin", "itemx.bin", "desc.bin", "icons.bin")]
-    S("items", "export_items.py", [game, f"{G}/items"], items)
-    screens = mv.get("SCREEN_NAMES", "").split()
-    S("menu screens", "export_screens.py", [game, f"{G}/screens"], [f"{G}/screens/scr_{n}.bin" for n in screens])
-    S("loading screen", "export_loading.py", [game, f"{G}/loading.bin"], [f"{G}/loading.bin"])
-    S("action prompts", "export_menu.py", [game, "--help", f"{G}/help.bin"], [f"{G}/help.bin"])
-    S("enemy ESD", "export_esd.py", [game, f"{G}/enemyCommon.esd.bin", "enemyCommon"], [f"{G}/enemyCommon.esd.bin"])
-    blocks = run_tool("area.py", ["--world", default], capture=True).split()  # Makefile WORLD_BLOCKS
-    # $(A)/snd.stamp: every sound pack of the boot map and its world blocks' maps (SND_MAPS) in one export, which
-    # chooses the SPU2 sample rate over the whole set; it reads only the game folder (DSR_GAME)
-    snd_maps = sorted({default} | {b.split(":")[0] for b in blocks})
-    S("sound", "export_audio.py", [f"{D}/snd", f"{G}/snd"] + snd_maps, [f"{D}/snd/main.pak"])
-    for b in blocks:  # worldpacks: one sub-make per block (MAP=<msb> BLOCK=<block> blockpacks)
-        msb, block = b.split(":")
-        area(msb, block, True)
-    area(default, None, bool(blocks))
-    # the treasure shine takes the boot area's tone map (Makefile $(G)/shine.bin), so the menu pack follows the area
-    S("treasure shine", "export_effects.py", [game, "--shine", f"{G}/shine.bin", default, "--tone", f"{G}/fx_tone.json"],
-      [f"{G}/shine.bin"])
-    S("menu pack", "pack.py", [f"{D}/menu.pak", f"menu.bin={G}/menu.bin", f"items.bin={G}/items/items.bin",
-                               f"itemx.bin={G}/items/itemx.bin", f"desc.bin=raw:{G}/items/desc.bin",
-                               f"icons.bin=raw:{G}/items/icons.bin"] +
-      [f"scr_{n}.bin={G}/screens/scr_{n}.bin" for n in screens] + [f"loading.bin={G}/loading.bin", f"shine.bin={G}/shine.bin",
-                                                                    f"help.bin={G}/help.bin"],
-      [f"{D}/menu.pak"])
-    gens = [G] + [f"{G}/{b.split(':')[1]}" for b in blocks]  # Makefile PVS_PEERS: the world's blocks, boot map first
-    for out, A, args, world_split in packs:
-        if world_split:
-            S(f"{out}: far panorama", "farpano.py", [f"{A}/far.bin", A] + gens, [f"{A}/far.bin"],
-              inputs=[f"{g}/{f}" for g in gens for f in ("hzn.bin", "dg.bin", "map.bin")])
-        if world_split and out == default:  # the boot map's far backdrop as picture layers (Makefile $(A)/pano.bin)
-            S(f"{out}: backdrop pictures", "pano.py", ["bake", A, f"{A}/pano.bin"], [f"{A}/pano.bin"], {"HZN_PANO": "1"})
-        S(f"{out}: pack", "pack.py", args, [f"{D}/{out}.pak"])
-    if blocks:
-        # reads <gen dir>/collision.bin and <gen dir>/<block>/collision.bin (export_world.main)
-        cols = [f"{G}/collision.bin"] + [f"{G}/{b.split(':')[1]}/collision.bin" for b in blocks]
-        S("world", "export_world.py", [game, f"{G}/world.bin", default, G], [f"{G}/world.bin"], inputs=cols)
-        S("world pack", "pack.py", [f"{D}/world.pak", f"world.bin={G}/world.bin"], [f"{D}/world.pak"])
-    return steps
+def plan(game, build, over=None):
+    """The steps of `make -C ps2/proto` (default map with its world blocks) from tools/recipe.toml, in an order that
+    respects every step's inputs: Step instances, and ("chr", ctx) placeholders for an area's enemy types (expanded
+    when reached: the list comes from the game, export_enemies.py --models)."""
+    global PLAN
+    PLAN = recipe.Plan(game, build, run_tool, over)
+    return PLAN.steps()
 
 
-def enemy_steps(game, msb, block, A, AD, mv):
-    """$(ENEMIES:%=$(AREA_DATA)/%.pak) for one area / block: export_chr.py per enemy type, then its pack"""
-    env = {"AREA_BLOCK": block} if block else {}
-    chrs = run_tool("export_enemies.py", ["--models", game, msb], env, capture=True).split()
-    out = []
-    for c in chrs:
-        lod, tex = mv.get(f"LOD_{c}", "1"), mv.get(f"TEX_{c}", "64")
-        out.append(Step(f"{block or msb}: {c}", "export_chr.py", [game, c, msb, f"{A}/{c}", lod, tex, mv["CHR_BONES"]],
-                        [f"{A}/{c}/chr.bin"], env))
-        out.append(Step(f"{block or msb}: {c} pack", "pack.py", [f"{AD}/{c}.pak", f"model.bin={A}/{c}/model.bin",
-                                                                  f"chr.bin={A}/{c}/chr.bin"], [f"{AD}/{c}.pak"]))
-    return out
+def enemy_steps(placeholder):
+    """an area's / block's enemy types: export_chr.py + its pack each (recipe scope "chr")"""
+    return PLAN.expand_chr(placeholder[1])
 
 
 def free_unneeded(steps, i, build):
@@ -249,25 +103,25 @@ def run(game, build, only=None, log=print, progress=None, lean=False):
 
 def step_name(s):
     """a plan entry's name: a Step's, or for an enemy placeholder (expanded when reached) '<area>: enemy types'"""
-    return s.name if isinstance(s, Step) else f"{s[2] or s[1]}: enemy types"
+    return recipe.step_name(s)
 
 
 def group_of(s):
-    """the group a plan entry belongs to: its area / block ('<out>: ...' steps and enemy placeholders), 'world' for the
-    world steps, 'sound' for the sound packs, 'shared' for the steps every area uses (player, menu, enemy ESD)"""
+    """the group a plan entry belongs to (recipe.Plan.instance): its area / block for its exports and enemy types,
+    '<area> packs' for the steps that read other areas' outputs (map split, far panorama, visibility, the pack), 'world'
+    for the world steps, 'sound', 'menu' (after the boot area: the treasure shine takes its tone map), 'shared' for the
+    rest every area uses (player, menu exports, enemy ESD)"""
     if isinstance(s, tuple):
-        return s[2] or s[1]
-    if ": " in s.name:
-        return s.name.split(": ", 1)[0]
-    return "world" if s.name.startswith("world") else "sound" if s.name == "sound" else "shared"
+        return s[1]["OUT"]
+    return s.group
 
 
-def groups(game, build, mv=None):
+def groups(game, build, over=None):
     """The plan's groups in plan order, for running them side by side (the in-browser converter's parallel workers):
     [{name, deps, maps}], deps = the groups whose outputs a step of this group names (so they must have finished and
     their build files be present first), maps = how many map exports it runs (the heavy steps; scheduled first). Enemy
     steps read only the game and their own outputs, so their placeholders need no expansion here."""
-    steps = plan(game, build, mv)
+    steps = plan(game, build, over)
     made, order, out = {}, [], {}
     for s in steps:
         g = group_of(s)
@@ -299,8 +153,9 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
     select: run only the steps of these groups (group_of; the parallel workers run one group each, see groups());
     the step indices then count the plan with only those groups' enemy lists expanded, the same in every run with
     the same select."""
-    mv = make_vars()
-    steps = plan(game, build, mv)
+    steps = plan(game, build)
+    browser = sys.platform == "emscripten"
+    skipped = set()  # outputs of steps the browser cannot run: their pack entries are left out
     times, i = [], 0
     while i < len(steps):
         s = steps[i]
@@ -308,7 +163,7 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
             i += 1
             continue
         if isinstance(s, tuple):  # enemy list known now
-            steps[i:i + 1] = enemy_steps(game, *s[1:], mv)
+            steps[i:i + 1] = enemy_steps(s)
             continue
         if i < start:
             i += 1
@@ -319,19 +174,27 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
         if only and not any(o in s.name for o in only):
             i += 1
             continue
-        if s.name == "sound" and sys.platform == "emscripten":
-            # fsb4.py decodes DSR's MP3 banks with libmpg123, which has no WebAssembly build here yet: the disc boots
-            # without data/snd (sound.c stays silent) rather than the whole conversion failing
-            log(f"[{i + 1}/{n}] sound: skipped in the browser (no MP3 decoder); build-iso.sh makes the sound packs")
+        if browser and (s.raw.get("browser") is False or s.raw.get("host")):
+            # sound: fsb4.py decodes DSR's MP3 banks with libmpg123, which has no WebAssembly build here yet: the disc
+            # boots without data/snd (sound.c stays silent). Host programs (the occlusion bake): no browser build yet,
+            # the packs go without pvs.bin (src/pvs.c: every chunk visible). TECH_DEBT build-13.
+            why = "no MP3 decoder" if s.raw.get("browser") is False else f"no browser build of {s.raw['host']}"
+            log(f"[{i + 1}/{n}] {s.name}: skipped in the browser ({why}); build-iso.sh makes it")
+            skipped |= {os.path.normpath(o) for o in s.outputs}
             i += 1
             continue
+        if s.raw.get("host") and not browser:
+            PLAN.host(s.raw["host"], log)
         for o in s.outputs:
             os.makedirs(os.path.dirname(o), exist_ok=True)
         args = []
         for x in s.args:  # "?name=path": a pack entry the Makefile adds with $(wildcard)
+            path = x.lstrip("?").split("=", 1)[-1]
+            path = os.path.normpath(path[4:] if path.startswith("raw:") else path)
+            if s.tool == "pack.py" and "=" in x and path in skipped:
+                continue
             if x.startswith("?"):
-                path = x.split("=", 1)[1]
-                if not os.path.exists(path[4:] if path.startswith("raw:") else path):
+                if not os.path.exists(path):
                     continue
                 x = x[1:]
             args.append(x)
@@ -392,7 +255,7 @@ def main():
         return
     if "--list" in a:
         for s in plan(game, build):
-            print(s if isinstance(s, Step) else f"(enemy types of {s[2] or s[1]}: export_chr.py + pack.py each)")
+            print(s if isinstance(s, Step) else f"(enemy types of {s[1]['OUT']}: export_chr.py + pack.py each)")
         return
     only = [x for x in a[a.index("--only") + 1:] if x != "--lean"] if "--only" in a else None
     t = time.time()
