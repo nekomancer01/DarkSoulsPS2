@@ -11,6 +11,9 @@ void vu1_init(GSGLOBAL *gs);
 /* Start a chain in buffer 0 or 1 (two chains can be built while the other one is drawing): camera constants
  * (view matrix from render.c's camera) */
 void vu1_begin(int buffer);
+/* a map segment after other programs in the same chain buffer (map.c map_draw_blend: the blended map after the
+ * characters, render-19): the map programs' double buffer, clip planes and constants again (vu1_begin's preamble) */
+void vu1_map_resume(void);
 /* Queue one map batch: tris unindexed triangles from 16-byte aligned, zero-padded quantised streams (map.bin R3):
  * pos s16x3 (world = org[0..2] + n x org[3]), st u16x2 (normalized = n / st_k), colour u8x4. cull: drop back faces.
  * mode bits: VU1_FOG (GS fog from the per-vertex factor), VU1_BLEND (alpha blending on, alpha test off; the ALPHA /
