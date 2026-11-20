@@ -35,7 +35,7 @@ Links (TECH_DEBT world-3):
 import os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import area, chunk, souls, worldlinks, worldreach
+import area, chunkfile as chunk, souls, worldlinks, worldreach
 
 LINK_GAP = 20.0  # metres between two blocks' bounds that still count as touching (ASSUMED: one load radius apart)
 LOAD_CELLS, KEEP_CELLS = 1.0, 2.0  # in area.CELL units, see above
