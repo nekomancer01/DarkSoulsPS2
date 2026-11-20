@@ -8,6 +8,7 @@ from vu1layout import L as VU1L  # noqa: E402 (the VU1 memory contract, Polaris 
 import mapcfg
 import mapchunks
 import mapsimp
+import material
 
 
 def write_pvsin(path, all_chunks, nav_v, nav_t):
@@ -201,6 +202,8 @@ CELLS_VIFPKT = 1  # cell table word 1, format flags: bit 0 = chunk streams are V
 # cut, and the Undead Burg's near cells reach 12 m past their cube at the median (big wall and ground triangles), so a
 # near level was wanted ~12 m early (2026-11-08, TECH_DEBT world-10). The runtime's CELL_GRID is 32 m.
 CELLS_KEYS = 2
+# bit 2: map.bin texture entries carry their material class in flags bits 4-7 (tools/material.py, Polaris 2.1)
+CELLS_MATCLS = material.CELLS_FLAG
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1" and mapcfg.CHUNK_GRID == 32.0
 # Near cell blobs over NEAR_PART bytes are written as several parts (consecutive cell table entries, the later ones
 # marked CELL_PART in their near count): each part is a mapstream item of its own, so no near cell needs one big hole
@@ -225,7 +228,7 @@ def write_cells(cells, res, all_chunks, nres):
     in the cell's own entry, the others in the entries after it with near | CELL_PART, 0 resident chunks and the same
     box; each part is a blob of its own."""
     # word 1 bits 8-31: the VU1 layout the packets were written for (tools/vu1/layout.py layout_hash; mapblock.c checks)
-    tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT | (VU1L.layout_hash() & 0xFFFFFF) << 8, 0, 0)), bytearray()
+    tab, cbin = bytearray(struct.pack("<4I", len(cells), CELLS_VIFPKT | CELLS_MATCLS | (VU1L.layout_hash() & 0xFFFFFF) << 8, 0, 0)), bytearray()
     CELL_SIZES.clear()
     CELL_BUDGET.clear()
     CHUNK_ENTRY[:] = [None] * len(all_chunks)
@@ -278,6 +281,6 @@ def write_cells(cells, res, all_chunks, nres):
         gid += len(n)
     tab[0:4] = struct.pack("<I", len(CELL_SIZES))
     if NEAR_CUBE:  # the cell keys after the entries (mapstream.h CELLS_KEYS / cell_near_d2)
-        tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS | (VU1L.layout_hash() & 0xFFFFFF) << 8)
+        tab[4:8] = struct.pack("<I", CELLS_VIFPKT | CELLS_KEYS | CELLS_MATCLS | (VU1L.layout_hash() & 0xFFFFFF) << 8)
         tab += b"".join(struct.pack("<4h", *key, 0) for key, *_ in CELL_SIZES)
     return bytes(tab), bytes(cbin)

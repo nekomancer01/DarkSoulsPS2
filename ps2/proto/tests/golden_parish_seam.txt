@@ -1,0 +1,25 @@
+# Golden route (tools/golden.py, Polaris 0.3): the Burg -> Undead Parish seam, where world_route.txt crosses into the
+# Parish block (its "parish" spot), and the Parish bonfire from iso_neighbours.txt. Fixed cameras, no enemies.
+option noenemies
+option nodemo
+option god
+wait 3
+spawn 21.46 28.22 107.96 0
+cam 0 0.2
+wait 3
+stats
+wait 7
+shot seam_north
+stats
+cam 3.14 0.2
+wait 3
+shot seam_south
+stats
+spawn 86.4 15.0 105.6 0
+cam 0 0.15
+wait 3
+stats
+wait 7
+shot parish_bonfire
+stats
+end

@@ -37,6 +37,7 @@ enum {
 /* ALPHA: (A - B) x C / 128 + D, A/B/D 0 Cs 1 Cd 2 zero, C 0 As 1 Ad 2 FIX */
 #define GS_ALPHA_MIX (GS_SETREG_ALPHA(0, 1, 0, 1, 0))        /* Cs x As + Cd x (1 - As): gsKit's default */
 #define GS_ALPHA_ADD (GS_SETREG_ALPHA(0, 2, 0, 1, 0))        /* Cs x As + Cd */
+#define GS_ALPHA_SUB (GS_SETREG_ALPHA(2, 0, 0, 1, 0))        /* Cd - Cs x As (clamped at 0): subtractive materials */
 #define GS_ALPHA_FIX(f) (GS_SETREG_ALPHA(0, 1, 2, 1, f))     /* Cs x f + Cd x (1 - f) */
 #define GS_ALPHA_RELIEF_DARK (GS_SETREG_ALPHA(1, 2, 2, 2, 0))  /* bump.c: Cd x (1 - ...) relief passes */
 #define GS_ALPHA_RELIEF_LIT (GS_SETREG_ALPHA(1, 2, 0, 2, 0))

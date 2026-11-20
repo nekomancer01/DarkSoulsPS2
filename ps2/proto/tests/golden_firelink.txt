@@ -1,0 +1,35 @@
+# Golden route (tools/golden.py, Polaris 0.3): Firelink Shrine, the boot block. Spots from rd_firelink.txt, fixed
+# cameras, no enemies.
+option noenemies
+option nodemo
+option god
+wait 3
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.1
+wait 3
+stats
+wait 3
+shot bonfire
+stats
+spawn -47.41 -59.82 53.3 0.0
+cam 0.0 0.1
+wait 3
+stats
+wait 3
+shot north
+stats
+spawn -40.0 -61.0 120.6 3.14
+cam 3.14 0.1
+wait 3
+stats
+wait 3
+shot south
+stats
+spawn -53.5 -59.8 56.7 5.2185
+cam 5.2185 0.1
+wait 3
+stats
+wait 3
+shot arch
+stats
+end
