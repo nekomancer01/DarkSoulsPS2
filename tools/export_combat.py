@@ -69,9 +69,9 @@ RECORD = Struct("CombatData", [
 
 
 TAE_BLADE = 118  # SpawnFFX_Blade (DSAnimStudio TAE.Template.DS1.xml)
-TRAIL_GAIN = 8.0  # ASSUMED: the tracer's ColorA x ColorModA (0.137 x 0.2 for 250) as a GS add is ~7 / 255, invisible;
-# DSR's blend mode 4 in HDR plus the tone map shows a faint white arc. 8x gives ~50 / 255 at the brightest row (TECH_DEBT
-# fx-16: compare with a DSR capture)
+TRAIL_GAIN = 16.0  # ASSUMED: the tracer's ColorA x ColorModA (0.137 x 0.2 for 250) as a GS add is ~7 / 255, invisible;
+# DSR's blend mode 4 in HDR plus the tone map shows a white arc. In PCSX2, 8x read as a faint grey band at Firelink and
+# 24x as near-white; 16x is a clearly visible light streak (TECH_DEBT fx-16: compare with a DSR capture)
 
 
 def tracer(game, fx_ids):
