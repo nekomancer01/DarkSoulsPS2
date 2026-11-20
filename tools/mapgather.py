@@ -742,9 +742,17 @@ def gather(game, map_id):
             # 2026-11-16): blended too (BG_BLEND=0: cut-outs). Alpha cloud layers of the sky (A10_cloud[DB]_Alp) as
             # cut-outs became hard flat blotches over the Undead Burg (Ame's report 2026-11-17 t 245.4, "colour
             # banding"): blended (SKY_ALP_BLEND=0: cut-outs).
-            mcls = material.classify(m["mtd"], m["diffuse"], sky)
+            mp = mtds.get(m["mtd"], {})
+            mcls = material.classify(m["mtd"], m["diffuse"], sky, mp)  # g_BlendMode where the names disagree (mat-1)
+            tcls = material.texture_class(mcls, m["mtd"], m["diffuse"], mp)
+            tkey = material.state_key(tcls)  # textures of different GS state are separate entries (mat-2)
             water = mcls == material.WATER
             blend = mcls in material.BLENDED
+            # blended meshes are kept unsimplified (keep=, below); a mesh blended only because g_BlendMode overrides its
+            # name (mat-1: Asylum's A19_Division, subtractive) keeps the geometry its name gave it: as the cut-out it
+            # was, kept whole it added 12.5k tris / 561 KB to the Asylum block (2026-11-19)
+            keep_blend = blend and (mcls == material.classify_names(m["mtd"], m["diffuse"], sky) or
+                                    material.classify_names(m["mtd"], m["diffuse"], sky) in material.BLENDED)
             flags = material.chunk_flags(mcls, sky) | sky_slot << mapcfg.CHUNK_SKY_ROW
             if not m["dynamic"] and 0 <= m["default_bone"] < len(bind):
                 xf, xn = bone_xf(pxf, pxn, *bind[m["default_bone"]])
@@ -788,10 +796,10 @@ def gather(game, map_id):
             fol, gpos = None, None
             if grass and MX is not None and m["verts"]["pos"] and type(m["verts"]["pos"][0][0]) is float:
                 tl, fol, gpos = mapchunks.thin_foliage_c(MX, tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
-                                               "ivy" in m["mtd"].lower(), xf.many(_vert_np(m["verts"]["pos"])), mx_grid)
+                                               material.is_ivy(m["mtd"]), xf.many(_vert_np(m["verts"]["pos"])), mx_grid)
             elif grass:
                 tl, fol, gpos = mapchunks.thin_foliage(tl, m["verts"]["pos"], f"{part['name']}/{len(meshes)}",
-                                             "ivy" in m["mtd"].lower(),
+                                             material.is_ivy(m["mtd"]),
                                              canopy=lambda vs, Vp=m["verts"]["pos"], xf=xf: is_canopy([xf(Vp[i]) for i in vs]))
             if fol and max(f[2] for f in fol) > mapcfg.CHUNK_TRIS:
                 fol = split_tufts(fol)
@@ -801,26 +809,25 @@ def gather(game, map_id):
             name = m["diffuse"]
             if water:  # no diffuse map: a solid texture in the water's colour (water_rgba)
                 name = "water:" + m["mtd"]
-                if (name, blend) not in tex_index:
-                    tex_index[name, blend] = len(textures)
+                if (name, tkey) not in tex_index:
+                    tex_index[name, tkey] = len(textures)
                     textures.append(texmap.encode(128, 16, water_rgba(mtds.get(m["mtd"], {})) * (128 * 16), soft=True))
-                ti = tex_index[name, blend]
+                ti = tex_index[name, tkey]
             elif name and name in dds:
-                if (name, blend) not in tex_index:
+                if (name, tkey) not in tex_index:
                     dec = souls.dds_decode_rgba(dds[name], mapcfg.TEX_MAX)
                     if dec and export_normal.BAKE and not blend and m.get("bump") in dds and export_normal.bumped(m["mtd"]):
                         baked = export_normal.bake_rgba(*dec, dds[m["bump"]])  # the relief in the texels (BUMP_BAKE)
                         dec = (dec[0], dec[1], baked) if baked is not None else dec
                     if dec:
-                        tex_index[name, blend] = len(textures)
+                        tex_index[name, tkey] = len(textures)
                         textures.append(texmap.encode(*dec, soft=blend, name=name))
                         if not blend:
                             mapchunks.near_level(textures[-1], dds[name], name)
-                ti = tex_index.get((name, blend), -1)
+                ti = tex_index.get((name, tkey), -1)
             V = dict(m["verts"], pos=gpos) if gpos else m["verts"]
             if ti >= 0 and V["uv"]:  # the texture's class (map.bin texture entry flags, material.write_classes)
-                textures[ti]["cls"] = material.merge(textures[ti].get("cls"), material.texture_class(mcls, m["mtd"],
-                                                                                                    m["diffuse"]))
+                textures[ti]["cls"] = material.merge(textures[ti].get("cls"), tcls)
             # weld by world position (0.1 mm), wedges = (position, UV, colour); normals of merged wedges summed
             Tl = np.array(tl, np.int64).reshape(-1, 3)
             used = np.flatnonzero(np.bincount(Tl.reshape(-1).astype(np.intp)))  # sorted, as np.unique
@@ -839,7 +846,7 @@ def gather(game, map_id):
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
                 # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
                 hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd)
-                if EDGE_2SIDED and "_edge" in m["mtd"].lower() and len(wpos):
+                if EDGE_2SIDED and material.two_sided(m["mtd"]) and len(wpos):
                     # cut-out cards ("_Edge" MTDs: leaves, ivy, fences) are two-sided: DSR's Phn pixel shaders read
                     # SV_IsFrontFace and light the side in view with its own normal. Firelink's canopy cards (m7010B2,
                     # M_Tree[D]_Edge) have normals straight down: baked with those alone they got ~2 % light and the
@@ -887,7 +894,7 @@ def gather(game, map_id):
             meshes.append(dict(pos=pos, wpos=wpos, _np=npd, wuv=wuv, wrgb=wrgb, wa=wa, tris=mtris,
                                bump=bump,
                                ti=ti if V["uv"] else -1, flags=(1 if fs[3] else 0) | flags, grass=grass, fol=fol,
-                               keep=grass or blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
+                               keep=grass or keep_blend or sky or part["model"] in mapcfg.KEEP_MODELS, name=f"{part['name']}/{name}",
                                dg=mapchunks.DG.add(part["draw_groups"]),
                                ent=part["entity_id"] if part["entity_id"] in switched else 0,
                                # PVS unit and occluder class: only static, opaque map pieces hide what is behind them

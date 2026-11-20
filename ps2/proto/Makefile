@@ -380,7 +380,7 @@ $(A)/area.sig: FORCE
 	@python3 -I ../../tools/area.py --sig $(MAP) $@
 # + animated objects (doors, levers, gates, chests: objects.bin v3); their part names in objects.bin.anim, which the
 # map leaves out of its static bake and the events out of their static colliders
-$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
+$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/material.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum \
 		$(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(TS)/horizon.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $@ $(MAP)
@@ -500,7 +500,7 @@ $(G)/loading.bin: $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/
 
 # Treasure shine (src/fx.c fx_shine_*, src/pickup.c): DSR's item glow SFX 99001 / 99046, placed at run time on corpse
 # treasures and enemy drops; the boot area's tone map (tools/export_effects.py --shine)
-$(G)/shine.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum \
+$(G)/shine.bin: $(TS)/export_effects.py.sum $(TS)/material.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum \
 		$(TS)/souls.py.sum $(A)/map.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" --shine $@ $(MAP) --tone $(A)/fx_tone.json
@@ -659,7 +659,7 @@ $(G)/world_budget.json: ../../tools/world_budget.py $(A)/map.bin.cells.json $(WB
 	MAP=$(MAP) $(PY) -I ../../tools/world_budget.py $@ $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 # effects (tools/export_effects.py, src/fx.c): particle systems, textures, effect lights; colours use the map bake's
 # tone map (fx_tone.json, written by the map.bin export)
-$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin
+$(A)/fx.bin: $(TS)/export_effects.py.sum $(TS)/material.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/ffx.py.sum $(TS)/dsr_light.py.sum $(TS)/souls.py.sum $(AREA_SIG) $(A)/map.bin
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" $@ $(MAP) --tone $(A)/fx_tone.json
 

@@ -2,8 +2,8 @@
  * generated from tools/material.py); each names its VU1 program, GS state and passes. The exporter assigns the class
  * (tools/material.py classify) and stores it per map.bin texture entry (flags bits 4-7); a chunk's class is its
  * texture's class with the chunk flags applied (MAT_CHUNK_CLASS: additive chunks, the sky role).
- * PR 1 (this file's first version) records the classes and checks them against the chunk flags at load; the map
- * passes still choose their GS state from the flags (map.c blend_regs) until Polaris 2.1 PR 2 reads the table. */
+ * The map passes take a chunk's ALPHA, Z mask, blend bit (the batch TEST) and passes from its class row (map_i.h mp_row,
+ * Polaris 2.1 PR 2); mat_census checks at load that the chunk flags the streaming code still reads agree. */
 #ifndef MATERIAL_H
 #define MATERIAL_H
 
@@ -21,17 +21,29 @@ typedef struct {
 
 extern const MatRow mat_rows[MAT_COUNT];
 
-/* a map.bin texture entry's class (tex_tab = the texture table, 32-byte entries); tex < 0: OPAQUE */
+#ifndef MAT_GS_TABLE
+#define MAT_GS_TABLE 1  /* make DEFS=-DMAT_GS_TABLE=0: blend state from the chunk flags as before the table (map_i.h mp_row) */
+#endif
+
+/* a map.bin texture entry's class (tex_tab = the texture table, 32-byte entries) */
 static inline int mat_tex_class(const unsigned char *tex_tab, int tex)
 {
-    int c = tex < 0 ? MAT_OPAQUE : tex_tab[32 * tex + 7] >> MAT_TEX_SHIFT;
+    int c = tex_tab[32 * tex + 7] >> MAT_TEX_SHIFT;
     return c < MAT_COUNT ? c : MAT_OPAQUE;
 }
 
-/* a chunk's class from its texture and flags */
+/* the class the chunk flags alone give (MAT_GS_TABLE=0, maps exported before the classes, untextured chunks): what the
+ * passes drew before the table: blended (additive outside the sky pass), sky, else opaque (material.flag_class) */
+static inline int mat_flag_class(unsigned flags)
+{
+    return flags & 2 ? (flags & 4 && !(flags & 8) ? MAT_ADDITIVE : MAT_BLEND) : flags & 8 ? MAT_SKY : MAT_OPAQUE;
+}
+
+/* a chunk's class (material.chunk_class): its texture's class, SKY for an unblended sky-role chunk; tex < 0: from its
+ * flags */
 static inline int mat_chunk_class(const unsigned char *tex_tab, int tex, unsigned flags)
 {
-    return MAT_CHUNK_CLASS(mat_tex_class(tex_tab, tex), flags);
+    return tex < 0 ? mat_flag_class(flags) : MAT_CHUNK_CLASS(mat_tex_class(tex_tab, tex), flags);
 }
 
 /* At map / block load: chunks per class to the EE log, and each chunk's class checked against its flags (blended and

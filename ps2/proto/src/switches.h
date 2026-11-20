@@ -44,6 +44,7 @@
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
  * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | world  | #249  | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
+ * MAP_FX_FOG0         | 1        | fallback | -DMAP_FX_FOG0=0                               | world  | #286  | map.c         | additive and subtractive map chunks fog towards black (fade out with distance); 0 = towards the map's fog colour, as before (runtime: option set MAP_FX_FOG0 0)
  * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | world  | #243  | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
  * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | world  | #257  | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
  * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | world  | #249  | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
@@ -219,6 +220,7 @@
  * NO_HUD              | off      | debug    | -DNO_HUD                                      | ui     | init  | hud.c         | HUD loaded, not drawn
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
+ * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H
