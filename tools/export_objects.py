@@ -228,7 +228,8 @@ def type_dds(dds, files):
 def is_cutout(mtd):
     """DSR's alpha-tested ("_Edge") and alpha ("_Alp") materials: the ivy cards on Firelink's pots (o1495-o1497,
     m10_ivy_diteal_01, M[D]_Edge)"""
-    return "_edge" in (mtd or "").lower() or "_alp" in (mtd or "").lower()
+    import material
+    return material.is_cutout(mtd or "")
 
 
 def obj_texture(mb, name, d, cutout=False):

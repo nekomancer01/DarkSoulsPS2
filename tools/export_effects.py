@@ -329,7 +329,9 @@ def system(cc, xf, pxf, tone, tex_of, coverage, model_of=lambda mid: None):
     # 2026-11-08 / 11-17, TECH_DEBT fx-12); blended by alpha they make the opaque grey-white sheet DSR's boss fog is
     # (nothing behind it shows), with the BlendMode 4 noise layers adding the light swirls on top. ASSUMED: the
     # exe's blend table for the FFX modes is not decoded (the RenderDoc check is in fx-12).
-    blend = 1 if ap.get("BlendMode") == 6 or (FX_WALL_ALPHA and ap.get("BlendMode") == 1) else 0
+    import material  # the FFX BlendMode -> class map (Polaris 2.1; MAT_GS_TABLE=0: the rule above, 6 and FX_WALL_ALPHA 1)
+    blend = material.ffx_blended(ap.get("BlendMode")) if material.GS_TABLE else \
+        1 if ap.get("BlendMode") == 6 or (FX_WALL_ALPHA and ap.get("BlendMode") == 1) else 0
     if mdl:  # the model's material decides (Polaris 2.1 classes): additive for ADDITIVE, alpha blended otherwise
         blend = 0 if mdl["cls"] == material.ADDITIVE else 1
     mul = _curve(_f(ap, "ColorModMult"), life)

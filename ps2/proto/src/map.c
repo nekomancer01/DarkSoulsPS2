@@ -117,8 +117,8 @@ int map_upload(GSGLOBAL *gs)
     gsg = gs;
     MapInst *m = &mp_inst[0];
     m->ntex = m->hdr->textures < MAX_TEX ? m->hdr->textures : MAX_TEX;
-    mat_census(0, m->tex_bin + m->hdr->tex_off, m->ntex, m->chunks, m->hdr->chunks, sizeof(Chunk),  /* material.h */
-               m->ctab && ((const unsigned *)(m->cel_bin + m->hdr->cell_off))[1] & MAT_CELLS_FLAG);
+    m->matcls = m->ctab && ((const unsigned *)(m->cel_bin + m->hdr->cell_off))[1] & MAT_CELLS_FLAG;
+    mat_census(0, m->tex_bin + m->hdr->tex_off, m->ntex, m->chunks, m->hdr->chunks, sizeof(Chunk), m->matcls);
     /* the textures stream through a VRAM pool (texcache.c: uploads in the VIF1 chain, LRU); the CLUTs stay resident */
     /* (tex_bin: the tables' texture piece when the boot block came in pieces, world.c WORLD_BOOT_LEAN; else map_bin) */
     int r = tc_init(gs, m->tex_bin, m->tex_bin + m->hdr->tex_off, m->ntex, TEX_POOL_KB);
@@ -274,14 +274,18 @@ static void zs_map_edge(float a2)
 /* edge fog this frame (fog_terms): slope a2 of b + a2 z and the view depth beyond which it is below the DSR fog */
 static float edge_a2, edge_z;
 
-/* GS registers for the blend passes: ALPHA (Cs - Cd) * As + Cd or Cs * As + Cd, ZBUF with or without ZMSK */
-static void blend_regs(GSGLOBAL *gs, int mode)
+/* GS registers of the opaque passes: gsKit's ALPHA, ZBUF writing Z */
+static void opaque_regs(GSGLOBAL *gs)
 {
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
-    u64 r[4] = {mode & CHUNK_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42,
-                mode ? zbuf | (1ull << 32) : zbuf, 0x4E};
-    if (!mode)
-        r[0] = gs->PrimAlpha;
+    u64 r[4] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF};
+    zs_gs_regs(2, r);
+}
+
+/* GS registers of a material class row (material.h): its ALPHA, ZBUF with ZMSK when it writes no Z. TEST comes per
+ * batch from the blend bit (vu1.c: the rows' TEST words are what it writes, material.c asserts it) */
+static void row_regs(GSGLOBAL *gs, const MatRow *row)
+{
+    u64 r[4] = {row->alpha, GSR_ALPHA, gs_zbuf(gs, row->zmsk), GSR_ZBUF};
     zs_gs_regs(2, r);
 }
 
@@ -634,6 +638,153 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
     }
 }
 
+/* The specular / environment pass (Polaris 2.3, TECH_DEBT map-23 / render-21): the opaque chunks whose texture has a
+ * specular code (tools/mapspec.py: texture entry flags bits 2-3, from its _s map) drawn again by vu1mapspec.vsm within
+ * SPEC_DIST, untextured, added (GS ALPHA Cs x As + Cd) over the opaque map with depth GEQUAL and no Z write: DSR's
+ * probe reflection x envSpc and the LightBank specular light, by Fresnel (the program's doc). Collected while the
+ * opaque map is drawn (draw_chunk_; the near pass with ZSPLIT), drawn with the relief pass. The normals are computed
+ * here per chunk from its own triangles when it first comes within reach and kept in spec_nrm (no normals in map.bin:
+ * a stream of them was over the world budget). MAP_SPEC=0: no pass. */
+#ifndef MAP_SPEC
+#define MAP_SPEC cv_MAP_SPEC  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+#ifndef SPEC_DIST
+#define SPEC_DIST 24.0f  /* m: the pass's reach (ASSUMED: DSR has none; VU1 cost ~2.3x the map program per triangle) */
+#endif
+#define SPEC_MAX 64      /* chunks a frame */
+#define SPEC_CACHE 48    /* chunks whose normals are kept (40 KB) */
+#define SPEC_NV 208      /* vertices of a chunk at most (indexed chunks up to 255: the rest go without) */
+#define SPEC_NEW_MAX 6   /* chunks whose normals are computed in one frame (~10-25 us each) */
+typedef struct { const MapInst *m; const unsigned char *base; const Chunk *c; } SpecItem;
+static SpecItem spec_l[SPEC_MAX];
+static int nspec, spec_new;
+static unsigned spec_frame;
+static struct { const void *key; unsigned check, last; } spec_slot[SPEC_CACHE];
+static unsigned char spec_nrm[SPEC_CACHE][SPEC_NV * 4] __attribute__((aligned(16)));
+unsigned map_spec_batches, map_spec_tris, map_spec_new;  /* this frame (logs) */
+/* per code (mapspec.py): Blinn fit (a, b) of c^(2^k) (vu1.c's skin table), Schlick's grazing weight G, F0. ASSUMED:
+ * G = 1 - the code's roughness, metal F0 0.6 (DSR tints it by the albedo, the pass is untextured) */
+static const float spec_tab[3][4] = {{1, 0, 0.15f, 0.04f}, {1.695f, -0.695f, 0.25f, 0.04f}, {1.695f, -0.695f, 0.25f, 0.6f}};
+
+static int spec_code(const MapInst *m, const Chunk *c)
+{
+    return c->tex >= 0 && c->tex < m->ntex ? (m->tex_bin + m->hdr->tex_off)[32 * c->tex + 7] >> 2 & 3 : 0;
+}
+
+static void spec_add(const MapInst *m, const unsigned char *base, const Chunk *c, float d)
+{
+    if (MAP_SPEC && nspec < SPEC_MAX && d < SPEC_DIST && !(c->flags & CHUNK_COARSE) && spec_code(m, c))
+        spec_l[nspec].m = m, spec_l[nspec].base = base, spec_l[nspec++].c = c;
+}
+
+/* the chunk's normal / F0 stream (s8 normal x 127, u8 F0 x 127 per vertex: vu1mapspec's input), or NULL this frame.
+ * Normals point out of DSR's triangles: -(b - a) x (c - a) (FLVER winding, measured on m10_02's map pieces:
+ * 198575 of 198806 faces). Indexed chunks: area-weighted over the triangles sharing a vertex; lists: per face. */
+static const unsigned char *spec_normals(const unsigned char *base, const Chunk *c, int f0)
+{
+    int n = c->nv ? c->nv : 3 * c->tris;
+    if (n > SPEC_NV || c->tris <= 0)
+        return NULL;
+    const short *p = (const short *)(base + c->pos);
+    const void *key = p;
+    unsigned check = (unsigned)c->tris | (unsigned)n << 8 | (unsigned)(unsigned short)p[0] << 16;
+    int lru = 0;
+    for (int i = 0; i < SPEC_CACHE; i++) {
+        if (spec_slot[i].key == key && spec_slot[i].check == check) {
+            spec_slot[i].last = spec_frame;
+            return spec_nrm[i];
+        }
+        if (spec_slot[i].last < spec_slot[lru].last)
+            lru = i;
+    }
+    if ((spec_slot[lru].key && spec_slot[lru].last == spec_frame) || spec_new >= SPEC_NEW_MAX)
+        return NULL;  /* every slot drawn this frame / enough computed this frame: next frame */
+    spec_new++;
+    float acc[SPEC_NV][3];
+    memset(acc, 0, sizeof(float) * 3 * (unsigned)n);
+    const unsigned char *ix = c->nv ? base + CHUNK_IDX(c) : NULL;
+    for (int t = 0; t < c->tris; t++) {
+        int a = ix ? ix[4 * t] : 3 * t, b = ix ? ix[4 * t + 1] : 3 * t + 1, d = ix ? ix[4 * t + 2] : 3 * t + 2;
+        if (a >= n || b >= n || d >= n)
+            continue;
+        float e1[3], e2[3];
+        for (int k = 0; k < 3; k++)
+            e1[k] = (float)(p[3 * b + k] - p[3 * a + k]), e2[k] = (float)(p[3 * d + k] - p[3 * a + k]);
+        float cr[3] = {e2[1] * e1[2] - e2[2] * e1[1], e2[2] * e1[0] - e2[0] * e1[2], e2[0] * e1[1] - e2[1] * e1[0]};
+        for (int k = 0; k < 3; k++)
+            acc[a][k] += cr[k], acc[b][k] += cr[k], acc[d][k] += cr[k];
+    }
+    unsigned char *o = spec_nrm[lru];
+    for (int i = 0; i < n; i++) {
+        float l = acc[i][0] * acc[i][0] + acc[i][1] * acc[i][1] + acc[i][2] * acc[i][2];
+        float k = l > 1e-12f ? 127.0f / sqrtf(l) : 0;
+        signed char *q = (signed char *)(o + 4 * i);
+        if (k > 0)
+            q[0] = (signed char)(acc[i][0] * k), q[1] = (signed char)(acc[i][1] * k), q[2] = (signed char)(acc[i][2] * k);
+        else
+            q[0] = 0, q[1] = 127, q[2] = 0;
+        o[4 * i + 3] = (unsigned char)f0;
+    }
+    /* zero to the qword's end: VIF reads the words after an UNPACK's data in the DMA's last qword as VIFcodes; then
+     * out of the data cache, the chain REFs it */
+    unsigned bytes = (4u * (unsigned)n + 15) & ~15u;
+    memset(o + 4 * n, 0, bytes - 4u * (unsigned)n);
+    SyncDCache(o, o + bytes);
+    spec_slot[lru].key = key, spec_slot[lru].check = check, spec_slot[lru].last = spec_frame;
+    map_spec_new++;
+    return o;
+}
+
+static void spec_draw(void)
+{
+    spec_frame++, spec_new = 0;
+    map_spec_batches = map_spec_tris = map_spec_new = 0;
+    if (!nspec)
+        return;
+    GSGLOBAL *gs = gsg;
+    float up[3], dn[3], si[3], ls[3];
+    map_char_spec(up, dn, si, ls);
+    /* added, depth GEQUAL against the opaque pass's own Z, no Z write, faded to black by the fog */
+    u64 r[8] = {GS_ALPHA_ADD, GSR_ALPHA, gs_zbuf(gs, 1), GSR_ZBUF, GS_TEST_ZGE, GSR_TEST, 0, GSR_FOGCOL};
+    vu1_gs_regs(4, r);
+    vu1_map_spec(up, dn, si);
+    for (int i = 0; i < nspec; i++) {
+        const SpecItem *it = &spec_l[i];
+        const Chunk *c = it->c;
+        const float *tb = spec_tab[spec_code(it->m, c) - 1];
+        const unsigned char *nrm = spec_normals(it->base, c, (int)(tb[3] * 127 + 0.5f));
+        if (!nrm)
+            continue;
+        float v[3], h[3], vl = 0, hl = 0;
+        for (int a = 0; a < 3; a++)
+            v[a] = cam[a] - (c->mn[a] + c->mx[a]) * 0.5f, vl += v[a] * v[a];
+        vl = vl > 1e-12f ? 1 / sqrtf(vl) : 0;
+        for (int a = 0; a < 3; a++)
+            v[a] *= vl, h[a] = ls[a] + v[a], hl += h[a] * h[a];
+        hl = hl > 1e-12f ? 1 / sqrtf(hl) : 0;
+        float rows[16];
+        for (int a = 0; a < 3; a++)  /* row a: component a of (Ls, 2 Up, V, H), / 127 for the s8 normals */
+            rows[4 * a] = ls[a] / 127, rows[4 * a + 1] = (a == 1 ? 2.0f : 0) / 127, rows[4 * a + 2] = v[a] / 127,
+            rows[4 * a + 3] = h[a] * hl / 127;
+        rows[12] = 1e6f, rows[13] = -v[1], rows[14] = tb[0], rows[15] = tb[1];
+        vu1_add_spec(c->flags & CHUNK_CULL, c->tris, c->nv, it->base + c->pos, nrm,
+                     c->nv ? it->base + CHUNK_IDX(c) : NULL, c->org, rows, tb[2]);
+        map_spec_batches++, map_spec_tris += c->tris;
+    }
+    nspec = 0;
+    {   /* every 300 frames: batches / triangles a frame (VU1 cost: vu1mapspec's doc) and normals computed */
+        static unsigned fr, sb, st, sn;
+        sb += map_spec_batches, st += map_spec_tris, sn += map_spec_new;
+        if (!(++fr % 300))
+            printf("map: spec pass %u batches %u tris a frame, %u chunks' normals computed in 300 frames\n", sb / 300,
+                   st / 300, sn), sb = st = sn = 0;
+    }
+    /* the map's state again: gsKit's ALPHA, Z written, its fog colour (TEST comes per batch) */
+    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    u64 rr[6] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF, col, GSR_FOGCOL};
+    vu1_gs_regs(3, rr);
+}
+
 int map_far_dof(float *begin, float *end, float *mul)
 {
     if (!mp_pfog_rows)
@@ -791,12 +942,63 @@ static int visible_(const Chunk *c, const float *e, int sky)
 
 /* the first n triangles of chunk c (n < c->tris: foliage thinned by distance) */
 /* no: the chunk's number in bump.bin / dg.bin (resident: its index in the chunk table; near: NEAR_NO) */
+/* Water (class WATER, Polaris 2.6, TECH_DEBT map-19): DSR's [We] shader mixes the refraction tinted by g_WaterColor
+ * (alpha = its opacity) with a Fresnel reflection of g_FresnelColor, F = saturate(bias + scale (1 - cos)^pow), cos =
+ * the view direction's angle to the surface (water is level: the normal is up). Per vertex here, each frame, from
+ * the eye's position (the exporter's water_rgba took cos 0.5 for all); colour = WaterColor (1 - F) + FresnelColor F,
+ * opacity = a + (1 - a) F, linear -> sRGB, over the white texture whose CLUT entries 1-3 carry the terms
+ * (mapgather.water_texture, marker 0x57). MAP_WATER=0: the fixed angle (cos 0.5), the old look. ASSUMED: no waves,
+ * no reflection image (g_FresnelColor stands for it), no refraction. */
+#ifndef MAP_WATER
+#define MAP_WATER 1
+#endif
+static u32 water_col[256] __attribute__((aligned(16)));
+static unsigned char water_srgb[256];
+
+static const void *water_colours(const GSTEXTURE *t, const unsigned char *base, const Chunk *c, unsigned n)
+{
+    const unsigned char *k = t ? (const unsigned char *)t->Clut : NULL;
+    unsigned nv = c->nv ? c->nv : 3 * n;
+    if (!k || k[15] != 0x57 || nv > 256)
+        return NULL;  /* an export from before the water terms: its colour is in the texture */
+    if (!water_srgb[255])
+        for (int i = 0; i < 256; i++)
+            water_srgb[i] = (unsigned char)(255.0f * powf(i / 255.0f, 1 / 2.2f) + 0.5f);
+    float wc[4], fc[3], bias = k[11] / 255.0f, scale = k[12] / 255.0f, pw = k[13] / 32.0f;
+    for (int i = 0; i < 4; i++)
+        wc[i] = k[4 + i] / 255.0f;
+    for (int i = 0; i < 3; i++)
+        fc[i] = k[8 + i] / 255.0f;
+    int ip = (int)pw;
+    const short *p = (const short *)(base + c->pos);
+    float s = c->step;
+    for (unsigned v = 0; v < nv; v++, p += 3) {
+        float dx = cam[0] - (c->org[0] + s * p[0]), dy = cam[1] - (c->org[1] + s * p[1]),
+              dz = cam[2] - (c->org[2] + s * p[2]), l2 = dx * dx + dy * dy + dz * dz;
+        float cs = MAP_WATER && l2 > 1e-6f ? fabsf(dy) / sqrtf(l2) : 0.5f, x = 1 - cs, xp = 1;
+        if (pw == (float)ip)
+            for (int i = 0; i < ip; i++)
+                xp *= x;
+        else
+            xp = powf(x, pw);
+        float f = bias + scale * xp;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        unsigned char *o = (unsigned char *)&water_col[v];
+        for (int i = 0; i < 3; i++)
+            o[i] = (unsigned char)((water_srgb[(int)((wc[i] * (1 - f) + fc[i] * f) * 255 + 0.5f)] * 128 + 127) / 255);
+        o[3] = (unsigned char)((wc[3] + (1 - wc[3]) * f) * 128 + 0.5f);
+    }
+    return water_col;
+}
+
+static GSTEXTURE *late_tex;  /* map_draw_blend: the texture the map pass resolved for the chunk being drawn */
+
 static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
                        unsigned no)
 {
-    GSTEXTURE *t = NULL;
+    GSTEXTURE *t = late_tex;
     float d2 = 0;
-    if (c->tex >= 0 && c->tex < m->ntex) {  /* mip level from the distance to the chunk's box */
+    if (!t && c->tex >= 0 && c->tex < m->ntex) {  /* mip level from the distance to the chunk's box */
         int tx = m->tex_base + c->tex;
         for (int k = 0; k < 3; k++) {
             float o = cam[k] < c->mn[k] ? c->mn[k] - cam[k] : cam[k] > c->mx[k] ? cam[k] - c->mx[k] : 0;
@@ -815,6 +1017,7 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
      * has no untextured chunks (they would be skipped). */
     if (t) {
         MP_BEGIN
+        const unsigned passes = mode & R_BLEND ? 0 : mp_row(m, c)->passes;  /* the class's passes (material.h) */
         int vclip = cls == 2 && !(c->flags & CHUNK_SKY) ? VU1_CLIP : 0, edge = 0;
         if (!(c->flags & CHUNK_SKY)) {  /* reaches into the edge fog: the edge loop of vu1map2 */
             float zmax;
@@ -827,7 +1030,7 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
             edge = zmax > edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;  /* the backdrop: DSR's fog only */
         }
         float st_k = c->flags & CHUNK_ST1K ? 1024.0f : 4096.0f;
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && c->tex >= 0) {  /* GS mip chain (render-12) */
+        if ((passes & MP_MIPS) && c->tex >= 0) {  /* GS mip chain (render-12) */
             u64 mt;
             MP_SPLIT(MP_CHAIN);
             int k, mxl = tc_mip(m->tex_base + c->tex, t, st_k, &mt, &k);
@@ -837,20 +1040,28 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         }
         int pkt = n == c->tris ? m->pkt : 0;  /* a foliage prefix sends its streams one by one */
         int vm = (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge | pkt;
+        const void *colp = base + c->col;
+        if (mp_row(m, c)->passes & MP_FRESNEL) {  /* water: colour and opacity per vertex (water_colours) */
+            const void *wc = water_colours(t, base, c, n);
+            if (wc)
+                colp = wc, vm |= VU1_COLCP;
+        }
         if (c->nv)  /* indexed (whole chunks only: foliage, the only prefix drawer, stays in lists) */
-            vu1_add_idx(t, c->flags & CHUNK_CULL, vm, n, c->nv, base + c->pos, base + c->st, base + c->col,
-                        base + CHUNK_IDX(c), c->org, st_k);
+            vu1_add_idx(t, c->flags & CHUNK_CULL, vm, n, c->nv, base + c->pos, base + c->st, colp, base + CHUNK_IDX(c),
+                        c->org, st_k);
         else
-            vu1_add_ex(t, c->flags & CHUNK_CULL, vm, n, base + c->pos, base + c->st, base + c->col, c->org, st_k);
+            vu1_add_ex(t, c->flags & CHUNK_CULL, vm, n, base + c->pos, base + c->st, colp, c->org, st_k);
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump && c->tex >= 0)  /* the player's light */
+        if ((passes & MP_PLAYER_LIGHT) && !zs_nobump && c->tex >= 0)  /* the player's light */
             pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
-        if (!(mode & R_BLEND) && !(c->flags & (CHUNK_SKY | CHUNK_BLEND)) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
+        if ((passes & MP_RELIEF) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
             bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
+        if ((passes & MP_ENV_SPEC) && !zs_nobump && !vclip && n == c->tris)  /* the specular pass (spec_draw) */
+            spec_add(m, base, c, sqrtf(d2));
         MP_END(MP_BUMP)
     }
     return n;
@@ -1013,6 +1224,7 @@ static void zs_end(void)
         case ZS_BUMP:
             bump_draw();
             pl_draw();
+            spec_draw();
             i += 1;
             break;
         default:
@@ -1046,7 +1258,7 @@ static int sky_in(int k)
 /* map_draw keeps what its later passes draw in these lists while it walks the cells: effect chunks (sorted far to
  * near, drawn after the opaque map), horizons fading in over their cells' coarse level (HZN_FADE) and coarse levels
  * fading out over their near level (NEAR_FADE) */
-typedef struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; } FxItem;
+typedef struct { float d; const Chunk *c; const unsigned char *base; int cls, k; unsigned no; GSTEXTURE *late; } FxItem;
 typedef struct { unsigned char k, a; unsigned short ci; } FadeItem;
 static FxItem fxl[MAX_FX];
 static FadeItem hzfade[MAX_HZ_FADE], nrfade[MAX_NEAR_FADE];
@@ -1203,8 +1415,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
             draw_void_ring(VOID_RING_SKY && m->hdr ? (u32)(m->hdr->sky_fog[0] | m->hdr->sky_fog[1] << 8 |
                                                            m->hdr->sky_fog[2] << 16) : col);
         }
-        if (blend)
-            blend_regs(gs, CHUNK_BLEND);
+        const MatRow *last = NULL;  /* the class row whose state is set (blended pass) */
         for (unsigned row = 0; row <= m->sky_rows; row++) {
             int set = 0;
             for (int i = 0; i < m->nsky; i++) {
@@ -1213,7 +1424,8 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                 unsigned cr = CHUNK_SKY_ROW(c->flags);
                 if ((cr <= m->sky_rows ? cr : 0) != row)
                     continue;
-                if (!(c->flags & CHUNK_BLEND) != !blend || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
+                const MatRow *mr = mp_row(m, c);
+                if (!mr->zmsk != !blend || (c->flags & CHUNK_BACKDROP) || !dg_shown(sk, no))
                     continue;
                 if (ring && !blend && sky_low(c, e) != pass)
                     continue;
@@ -1232,11 +1444,13 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
                     zs_gs_regs(1, r);
                     r_set_fog(sa, sb2, smin, 255, sky_col, col);
                 }
+                if (blend && mr != last)  /* the class's ALPHA / ZBUF (material.h) */
+                    row_regs(gs, mr), last = mr;
                 drawn += draw_chunk(m, sb, c, c->tris, cls, R_FOG | (blend ? R_BLEND : 0), no);
             }
         }
     }
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
      * send MIPTBP1 in its place) */
     zs_map_fog(a, b, fmin, 255);
@@ -1311,7 +1525,7 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
         r_get_fog(f, &fc[0], &fb);
         zs_gs_regs(1, fc);
     }
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     return drawn;
 }
 
@@ -1345,35 +1559,112 @@ static int draw_near_fades(int n, const float e[3])
     }
     mapstream_select(0);
     zs_map_zbias(1.0f);
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     return drawn;
 }
 
-/* The first n entries of fxl, after the opaque map: alpha-blended (mist) far to near, then additive (light shafts,
- * order-free); Z tested, not written. Returns the triangles drawn. */
-static int draw_effects(int n, int fog)
+#ifndef MAP_BLEND_LATE
+#define MAP_BLEND_LATE 1  /* make DEFS=-DMAP_BLEND_LATE=0: the blended map inside the map segment, before the characters */
+#endif
+static int nfx_late;  /* fxl entries map_draw_blend draws (late != NULL) */
+
+/* The first n entries of fxl, after the opaque map: alpha-blended (mist, decals, water) far to near, then additive
+ * (light shafts), then subtractive (both order-free); Z tested, not written; each chunk's GS state from its class row
+ * (material.h). which: 0 all of them here (MAP_BLEND_LATE=0); 1 the map segment's share: with ZSPLIT the part beyond
+ * it now, in the far pass (its Z range is gone once the near pass clears Z), the rest kept for map_draw_blend with its
+ * texture resolved now (its upload goes in the map chain, tc_begin..tc_end); 2 map_draw_blend: the kept ones, after
+ * the characters and objects (render-19: a character behind a blended surface is drawn under it, as in DSR).
+ * The GS fogs a chunk's colour before blending, so additive and subtractive chunks fog towards black (fading out, as
+ * fx.c's additive particles); fogged towards the map's fog colour col they would add / subtract it with distance.
+ * MAP_FX_FOG0=0: all three towards col, as before. Returns the triangles drawn. */
+#ifndef MAP_FX_FOG0
+#define MAP_FX_FOG0 cv_MAP_FX_FOG0  /* runtime switch, default 1 (src/cvar.h) */
+#endif
+static int draw_effects(int n, int fog, int which, u32 col)
 {
     GSGLOBAL *gs = gsg;
     int drawn = 0;
-    for (int i = 1; i < n; i++)  /* insertion sort by distance, far first; a few dozen per frame */
-        for (int j = i; j > 0 && fxl[j].d > fxl[j - 1].d; j--) {
-            FxItem tmp = fxl[j];
-            fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
+    if (which != 2) {
+        for (int i = 1; i < n; i++)  /* insertion sort by distance, far first; a few dozen per frame */
+            for (int j = i; j > 0 && fxl[j].d > fxl[j - 1].d; j--) {
+                FxItem tmp = fxl[j];
+                fxl[j] = fxl[j - 1], fxl[j - 1] = tmp;
+            }
+        nfx_late = 0;
+        for (int i = 0; i < n; i++)
+            fxl[i].late = NULL;
+    }
+    for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
+        const MatRow *last = NULL;
+        if (MAP_FX_FOG0 && pass == 1) {
+            u64 fc[2] = {0, 0x3D};  /* FOGCOL black for the order-free passes */
+            zs_gs_regs(1, fc);
         }
-    for (int add = 0; add < 2; add++) {
-        int any = 0;
         for (int i = 0; i < n; i++) {
             const Chunk *c = fxl[i].c;
-            if (!(c->flags & CHUNK_ADD) != !add)
+            const MapInst *mi = &mp_inst[fxl[i].k];
+            const MatRow *mr = mp_row(mi, c);
+            if ((mr->alpha == GS_ALPHA_ADD ? 1 : mr->alpha == GS_ALPHA_SUB ? 2 : 0) != pass)
                 continue;
-            if (!any++)
-                blend_regs(gs, CHUNK_BLEND | (add ? CHUNK_ADD : 0));
-            drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (add ? R_ADD : 0),
-                                fxl[i].no);
+            int cls = fxl[i].cls, mode = fog | R_BLEND | (pass == 1 ? R_ADD : 0), far = 0;
+            if (which == 1) {
+                int r = 2;
+                if (zs_pass == 1)
+                    r = zs_route(c, &cls, fxl[i].cls);
+                if ((r & 2) && c->tex >= 0 && c->tex < mi->ntex) {  /* nearer than ZSPLIT: drawn after the characters */
+                    int tx = mi->tex_base + c->tex;
+                    float d2 = 0;
+                    for (int a = 0; a < 3; a++) {
+                        float o = cam[a] < c->mn[a] ? c->mn[a] - cam[a] : cam[a] > c->mx[a] ? cam[a] - c->mx[a] : 0;
+                        d2 += o * o;
+                    }
+                    MP_BEGIN
+                    fxl[i].late = tc_get(tx, tc_level(tx, sqrtf(d2)));
+                    MP_END(MP_TEX)
+                    nfx_late += fxl[i].late != NULL;
+                }
+                if (!(r & 1))
+                    continue;
+                far = 1;
+            } else if (which == 2 && !fxl[i].late)
+                continue;
+            if (mr != last)
+                row_regs(gs, mr), last = mr;
+            if (far) {  /* (draw_chunk would record the near part again: the far part alone, as it draws it) */
+                zs_nobump = 1;
+                drawn += draw_chunk_(mi, fxl[i].base, c, c->tris, cls, mode, fxl[i].no);
+                zs_nobump = 0;
+            } else {
+                late_tex = which == 2 ? fxl[i].late : NULL;
+                drawn += draw_chunk(mi, fxl[i].base, c, c->tris, cls, mode, fxl[i].no);
+                late_tex = NULL;
+            }
         }
     }
-    blend_regs(gs, 0);
+    if (MAP_FX_FOG0) {
+        u64 fc[2] = {col, 0x3D};
+        zs_gs_regs(1, fc);
+    }
+    opaque_regs(gs);
     return drawn;
+}
+
+int map_draw_blend(void)
+{
+    if (!MAP_BLEND_LATE || !nfx_late || !gsg)
+        return 0;
+    float a, b, fmin;
+    fog_terms(&a, &b, &fmin);
+    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    /* a segment in the characters' buffer (ot.h OT_BLEND): the map programs' layout, constants and fog again */
+    vu1_map_resume();
+    vu1_map_fog(a, b, fmin, 255);
+    vu1_map_edge(edge_a2);
+    u64 r[2] = {col, GSR_FOGCOL};  /* the characters set their own fog colour */
+    vu1_gs_regs(1, r);
+    int n = draw_effects(nfx, R_FOG, 2, col);
+    nfx_late = 0;
+    return n;
 }
 
 #if MAP_PASS_MS
@@ -2080,12 +2371,13 @@ int map_draw(V3 eye)
         } else {
             bump_draw();  /* relief over the opaque map (bump.c), before the blended effects */
             pl_draw();  /* the player's light (MAP_PLIGHT) */
+            spec_draw();  /* the specular pass (Polaris 2.3) */
         }
         MP_END(MP_BUMP)
     }
 
     MF_BEGIN
-    drawn += draw_effects(nfx, fog);
+    drawn += draw_effects(nfx, fog, MAP_BLEND_LATE ? 1 : 0, col);  /* the rest after the characters: map_draw_blend */
     MF_END(MF_FX)
     zs_end();
     {

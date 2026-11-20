@@ -9,6 +9,7 @@
 #define MP_MIPS 4
 #define MP_ENV_SPEC 8
 #define MP_EDGE_FOG 16
+#define MP_FRESNEL 32
 
 typedef enum {
     MAT_OPAQUE,
@@ -20,25 +21,27 @@ typedef enum {
     MAT_SKIN,
     MAT_DECAL,
     MAT_SKY,
+    MAT_SUBTRACT,
 } MatClass;
 
 /* X(name, VU1 program, GS ALPHA, GS TEST, Z write masked, passes): one row per class, in enum order */
 #define MAT_CLASSES(X) \
-    X(OPAQUE, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_RELIEF | MP_PLAYER_LIGHT | MP_MIPS | MP_EDGE_FOG) \
-    X(ALPHA_TEST, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_PLAYER_LIGHT | MP_MIPS | MP_EDGE_FOG) \
+    X(OPAQUE, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_RELIEF | MP_PLAYER_LIGHT | MP_MIPS | MP_EDGE_FOG | MP_ENV_SPEC) \
+    X(ALPHA_TEST, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_RELIEF | MP_PLAYER_LIGHT | MP_MIPS | MP_EDGE_FOG) \
     X(BLEND, MAP2, GS_ALPHA_MIX, GS_TEST_ZGE, 1, MP_EDGE_FOG) \
     X(ADDITIVE, MAP2, GS_ALPHA_ADD, GS_TEST_ZGE, 1, MP_EDGE_FOG) \
-    X(WATER, MAP2, GS_ALPHA_MIX, GS_TEST_ZGE, 1, MP_EDGE_FOG) \
-    X(FOLIAGE, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_PLAYER_LIGHT | MP_EDGE_FOG) \
+    X(WATER, MAP2, GS_ALPHA_MIX, GS_TEST_ZGE, 1, MP_EDGE_FOG | MP_FRESNEL) \
+    X(FOLIAGE, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_RELIEF | MP_PLAYER_LIGHT | MP_MIPS | MP_EDGE_FOG) \
     X(SKIN, SKIN, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, MP_ENV_SPEC) \
     X(DECAL, MAP2, GS_ALPHA_MIX, GS_TEST_ZGE, 1, MP_EDGE_FOG) \
-    X(SKY, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, 0)
+    X(SKY, MAP2, GS_ALPHA_MIX, GS_TEST_CUTOUT, 0, 0) \
+    X(SUBTRACT, MAP2, GS_ALPHA_SUB, GS_TEST_ZGE, 1, MP_EDGE_FOG)
 
-#define MAT_COUNT 9
+#define MAT_COUNT 10
 #define MAT_TEX_SHIFT 4  /* texture entry flags bits 4-7 */
 #define MAT_CELLS_FLAG 4  /* cell table word 1: the export wrote classes (tools/mapcells.py) */
 /* chunk class from the texture's class and the chunk flags (material.chunk_class) */
-#define MAT_CHUNK_CLASS(tex_cls, flags) ((flags) & 4 ? MAT_ADDITIVE : (flags) & 8 && !MAT_BLENDED(tex_cls) ? MAT_SKY : (tex_cls))
-#define MAT_BLENDED(c) ((c) == MAT_BLEND || (c) == MAT_ADDITIVE || (c) == MAT_WATER || (c) == MAT_DECAL)
+#define MAT_CHUNK_CLASS(tex_cls, flags) ((flags) & 8 && !MAT_BLENDED(tex_cls) ? MAT_SKY : (tex_cls))
+#define MAT_BLENDED(c) ((c) == MAT_BLEND || (c) == MAT_ADDITIVE || (c) == MAT_WATER || (c) == MAT_DECAL || (c) == MAT_SUBTRACT)
 
 #endif

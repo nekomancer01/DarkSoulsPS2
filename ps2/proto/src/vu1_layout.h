@@ -15,6 +15,8 @@
 #define VU1L_MAP_OUT_QW 10
 #define VU1L_MAP_PLANES 1014
 #define VU1L_MAP_PLANES_QW 5
+#define VU1L_MAP_SPEC 1019
+#define VU1L_MAP_SPEC_QW 4
 #define VU1L_CLIP_TRIS 32
 #define VU1L_IDX_TRIS 64
 #define VU1L_CLIPI_MAX 336
@@ -55,21 +57,21 @@
 
 /* micro memory: one row per program variant: X(name, code symbol prefix, address, chain bank 0 map 1 chr 2 fx) */
 #define VU1_PROGRAMS(X) \
-    X(MAP, VU1Map, 0, 0) \
     X(MAP2, VU1Map2, 1608, 0) \
     X(CLIP, VU1Clip, 0, 0) \
     X(SKIN2, VU1Skin2, 1024, 1) \
     X(SKINCLIP, VU1SkinClip, 384, 1) \
     X(FX, VU1Fx, 1812, 2) \
     X(MAPI, VU1MapI, 580, 0) \
+    X(MAPSPEC, VU1MapSpec, 840, 0) \
 
-#define VU1L_CODE_MAP 0
 #define VU1L_CODE_MAP2 1608
 #define VU1L_CODE_CLIP 0
 #define VU1L_CODE_SKIN2 1024
 #define VU1L_CODE_SKINCLIP 384
 #define VU1L_CODE_FX 1812
 #define VU1L_CODE_MAPI 580
+#define VU1L_CODE_MAPSPEC 840
 
 /* hash of what exported VIF packets depend on (layout.layout_hash): stamped into map.bin's cell table */
 #define VU1L_HASH 0xee62b641u

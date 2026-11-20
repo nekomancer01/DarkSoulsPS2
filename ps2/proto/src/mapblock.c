@@ -351,8 +351,8 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->streams = res, m->res_cells = 0, m->citem = NULL;
     mp_hz_parse(m);
     m->ntex = hdr->textures < MAX_TEX ? hdr->textures : MAX_TEX;
-    mat_census(k, tex_bin + hdr->tex_off, m->ntex, m->chunks, hdr->chunks, sizeof(Chunk),  /* material.h */
-               ((const unsigned *)(cel_bin + hdr->cell_off))[1] & MAT_CELLS_FLAG);
+    m->matcls = ((const unsigned *)(cel_bin + hdr->cell_off))[1] & MAT_CELLS_FLAG ? 1 : 0;
+    mat_census(k, tex_bin + hdr->tex_off, m->ntex, m->chunks, hdr->chunks, sizeof(Chunk), m->matcls);  /* material.h */
     m->on = 1, m->col_block = col_block, m->hz_only = 0;
     if (!k)
         mp_boot_hdr = *hdr;

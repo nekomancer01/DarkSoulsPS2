@@ -6,6 +6,10 @@
 #define MAT_ROW(name, prog, alpha, test, zmsk, passes) {#name, VU1L_CODE_##prog, alpha, test, zmsk, passes},
 #define VU1L_CODE_SKIN VU1L_CODE_SKIN2  /* the SKIN row: vu1skin2 (vu1skinclip for the batches it clips) */
 const MatRow mat_rows[MAT_COUNT] = {MAT_CLASSES(MAT_ROW)};
+/* the batch TEST word vu1.c writes follows the blend bit (VU1_BLEND: GS_TEST_ZGE, else GS_TEST_CUTOUT): every row's TEST
+ * must be that word for its Z mask */
+#define MAT_TEST_OK(name, prog, alpha, test, zmsk, passes) && (test) == ((zmsk) ? GS_TEST_ZGE : GS_TEST_CUTOUT)
+_Static_assert(1 MAT_CLASSES(MAT_TEST_OK), "material_table.h: a row's TEST differs from what vu1.c writes for its blend bit");
 
 /* chunk flag bits the check reads (map_i.h CHUNK_BLEND / CHUNK_ADD) */
 #define F_BLEND 2
@@ -27,6 +31,7 @@ int mat_census(int block, const unsigned char *tex_tab, int ntex, const void *ch
         int k = mat_chunk_class(tex_tab, tex < ntex ? tex : -1, fl);
         count[k]++;
         const MatRow *r = &mat_rows[k];
+        /* the streaming / culling code still routes by CHUNK_BLEND; CHUNK_ADD = the additive row (the sky role aside) */
         if (r->zmsk != !!(fl & F_BLEND) || (r->alpha == GS_ALPHA_ADD) != !!(fl & F_ADD)) {
             if (bad++ < 4)
                 printf("TEST error: material: block %d chunk %d: class %s, flags %x\n", block, i, r->name, fl);
