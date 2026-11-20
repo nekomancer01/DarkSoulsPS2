@@ -52,15 +52,15 @@ MAP_SPEC_QW = 4
 # The bone palette window: 4 qwords a bone, 40 bones; model.c pages every skeleton over 40 through it by bone windows
 # (Polaris 2.2 PR 2; was 61, windows only above it). DSR's meshes use <= 38 bones each (FLVER mesh bone tables, all 171
 # chr/ FLVERs), so a window still spans whole meshes; the 21 slots freed pay for 27-triangle batches (were 24).
-# VU1_BONE_MAX=61 in the environment (make VU1_BONES=61) builds the old layout: one 61-bone window, 24-triangle batches,
+# VU1_BONE_MAX=61 in the environment (make VU1_BONES=61) builds the old layout: one 61-bone window, 23-triangle batches,
 # windows only for skeletons over 61. The Makefile then generates this header and the skin programs into the build dir.
 BONE_WIN, BONE_QW, BONE_MAX = 8, 4, int(os.environ.get("VU1_BONE_MAX") or 40)
 SKIN_KICK = 8
 SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 168 (61 bones: 252)
 SKIN_OUT_SIZE = 1 + 9 * SKIN_KICK
-SKIN_TOP = 992  # SPEC: the skin pass's input double buffer and two output slots end below it
+SKIN_TOP = 980  # LIGHT (Polaris 2.2 PR 3; was SPEC 992): the skin pass's input double buffer and two output slots end below it
 # the most triangles a batch can take: 2 input buffers of 9 + 12 per triangle and 2 output slots between SKIN_IN and SKIN_TOP
-SKIN_TRIS = ((SKIN_TOP - SKIN_IN - 2 * SKIN_OUT_SIZE) // 2 - 9) // 12  # 27 (61 bones: 24)
+SKIN_TRIS = ((SKIN_TOP - SKIN_IN - 2 * SKIN_OUT_SIZE) // 2 - 9) // 12  # 27 (61 bones: 23)
 SKIN_IN_SIZE = 9 + 12 * SKIN_TRIS
 SKIN_OUT0 = SKIN_IN + 2 * SKIN_IN_SIZE
 SKIN_OUT1 = SKIN_OUT0 + SKIN_OUT_SIZE
@@ -76,6 +76,12 @@ SPEC_QW = 10  # 9: Eh / 2 (vu1skinclip's exact path)
 # flat batches (tint, .w 0), 3 / 4 the PRIM GIF tag template of textured / flat batches (FGE when the draw fogs)
 SKIN_DRAW = SPEC + SPEC_QW
 SKIN_DRAW_QW = 5
+# Character lights (Polaris 2.2 PR 3, written per draw by vu1_skin_begin; view space): 0-2 the light direction matrix's
+# columns M_k = (Lsun_k, Lp1_k, Lp2_k, k == 0 ? 1/255 : 0) (towards each light: the area's directional light and the two
+# point lights chrlight.c picked, from the character's centre), 3-5 their colours (0x80 = 1.0, .w 0). Textured
+# batches: diffuse D = sum_k colour_k max(n . L_k, 0) on the view-space normal (bone A rotation)
+LIGHT = 980
+LIGHT_QW = 6
 SKIN_CLIP_TRIS = 12
 SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
@@ -102,7 +108,7 @@ REGIONS = {
             ("clip planes", MAP_PLANES, MAP_PLANES_QW), ("map specular", MAP_SPEC, MAP_SPEC_QW)],
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
-             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
+             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("lights", LIGHT, LIGHT_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
     "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
@@ -130,8 +136,8 @@ CARRIED_REGISTERS = ()
 PROGRAMS = (
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
-    ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
-    ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
+    ("SKIN2", "VU1Skin2", 768, "chr", "vu1skin2.vsm"),          # (Polaris 2.2 PR 3: the light terms grew both skin
+    ("SKINCLIP", "VU1SkinClip", 0, "chr", "vu1skinclip.vsm"),    # programs; was 1024 / 384. Away from FX at the top)
     ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
     ("MAPSPEC", "VU1MapSpec", 840, "map", "vu1mapspec.vsm"),  # the specular pass (Polaris 2.3): after MAPI's range

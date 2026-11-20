@@ -64,7 +64,7 @@ A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
-	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
+	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
@@ -90,7 +90,7 @@ CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
 # VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default, Polaris 2.2 PR 2): every
 # skeleton over 40 paged through bone windows, 27-triangle batches. VU1_BONES=61 is the old path: one 61-bone window
-# (windows only above 61), 24-triangle batches; vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
+# (windows only above 61), 23-triangle batches (24 before the light block); vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
 VU1_BONES ?= 40
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)

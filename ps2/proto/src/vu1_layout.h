@@ -39,6 +39,8 @@
 #define VU1L_SPEC_QW 10
 #define VU1L_SKIN_DRAW 1002
 #define VU1L_SKIN_DRAW_QW 5
+#define VU1L_LIGHT 980
+#define VU1L_LIGHT_QW 6
 #define VU1L_SKIN_CLIP_TRIS 12
 #define VU1L_FX_SC 8
 #define VU1L_FX_SC_QW 5
@@ -67,16 +69,16 @@
 #define VU1_PROGRAMS(X) \
     X(MAP2, VU1Map2, 1608, 0) \
     X(CLIP, VU1Clip, 0, 0) \
-    X(SKIN2, VU1Skin2, 1024, 1) \
-    X(SKINCLIP, VU1SkinClip, 384, 1) \
+    X(SKIN2, VU1Skin2, 768, 1) \
+    X(SKINCLIP, VU1SkinClip, 0, 1) \
     X(FX, VU1Fx, 1812, 2) \
     X(MAPI, VU1MapI, 580, 0) \
     X(MAPSPEC, VU1MapSpec, 840, 0) \
 
 #define VU1L_CODE_MAP2 1608
 #define VU1L_CODE_CLIP 0
-#define VU1L_CODE_SKIN2 1024
-#define VU1L_CODE_SKINCLIP 384
+#define VU1L_CODE_SKIN2 768
+#define VU1L_CODE_SKINCLIP 0
 #define VU1L_CODE_FX 1812
 #define VU1L_CODE_MAPI 580
 #define VU1L_CODE_MAPSPEC 840

@@ -945,6 +945,39 @@ void fx_char_light(V3 pos, float amb[3])
     bind(0);
 }
 
+int fx_lights(FxLightOut *out, int max)
+{
+    int n = 0;
+    for (int k = 0; k < FX_NSETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+    for (u32 ii = 0; ii < hdr->n_inst && n < max; ii++) {
+        const FxEff *e = &eff[inst[ii].eff];
+        if (!e->n_light || !inst_state(ii))  /* an unlit bonfire's light, a burst that is over */
+            continue;
+        for (int l = 0; l < e->n_light && n < max; l++) {
+            const FxLight *L = &light[e->first_light + l];
+            float w[3];
+            frame_apply(&inst[ii], L->off, w);
+            if (!(L->radius > L->begin))
+                continue;
+            FxLightOut *o = &out[n++];
+            for (int c = 0; c < 3; c++)
+                o->pos[c] = inst[ii].pos[c] + w[c];
+            o->begin = L->begin, o->end = L->radius;
+            float ph = fmodf(clock / (L->period > 0 ? L->period : 1), 1.0f) * FX_CURVE;
+            int k0 = (int)ph % FX_CURVE, k1 = (k0 + 1) % FX_CURVE;
+            float f = ph - (int)ph;
+            for (int c = 0; c < 3; c++)
+                o->rgb[c] = L->amb[k0][c] + (L->amb[k1][c] - L->amb[k0][c]) * f;
+        }
+    }
+    }
+    bind(0);
+    return n;
+}
+
 /* Treasure shine (exe FUN_1403f89b0): set FX_SHINE from menu.pak shine.bin (tools/export_effects.py --shine), its
  * textures resident (~54 KB VRAM), its instances placed by src/pickup.c */
 int fx_shine_init(GSGLOBAL *gs, const void *blob, unsigned size)

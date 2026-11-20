@@ -50,6 +50,7 @@ def setup(vu, rng, tris, cull, zero, split=False):
     else:
         vu.wq(top + 1, k1 + [128], True)
         vu.wq(top + 2, sun + [0], True)
+    ts.put_lights(vu, [(vu.Lv, sun)])  # Polaris 2.2 PR 3: the sun from the LIGHT block
     vu.mem[top][2], vu.mem[top][3] = U(POW[k][0]), U(POW[k][1])
     ms = []
     for i in range(tris * 3):

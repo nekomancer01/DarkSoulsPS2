@@ -93,6 +93,10 @@ void vu1_skin_window(const void *palette, const unsigned char *win, int n);
 void vu1_skin_fade(float fmax);
 /* Light for the following textured skin batches: colour = amb + sun x max(n . L, 0) per channel, 0x80 = 1.0 */
 void vu1_skin_light(const float amb[3], const float sun[3]);
+/* Polaris 2.2 PR 3: the next vu1_skin_begin's directional lights, world directions towards each light: the sun (its
+ * colour from vu1_skin_light) and np (0..2) point lights with their colours (0x80 = 1.0); the point lights are for
+ * that draw only */
+void vu1_skin_lights(const float sun_dir[3], int np, const float (*dir)[3], const float (*col)[3]);
 /* Tint added to the next vu1_skin_begin's vu1skin2 batches (i-frames): textured / flat (0x80 = 1.0), NULL = none.
  * For the next vu1_skin_begin only (the clip program still takes vu1_skin_add_pkt's tint) */
 void vu1_skin_tint(const float tex[3], const float flat[3]);

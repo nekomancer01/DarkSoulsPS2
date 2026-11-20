@@ -26,6 +26,20 @@ def rot(rng):
     return mm(mm(Rz, Ry), Rx)
 
 
+def unit(v):
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v]
+
+
+def put_lights(vu, lights):
+    """the LIGHT block (layout.py) for lights = [(view-space direction towards the light, colour)] (<= 3)"""
+    lights = (list(lights) + [([0, 0, 1], [0, 0, 0])] * 3)[:3]
+    for k in range(3):
+        vu.wq(gen.LIGHT + k, [lights[0][0][k], lights[1][0][k], lights[2][0][k], 1 / 255 if k == 0 else 0], True)
+        vu.wq(gen.LIGHT + 3 + k, list(lights[k][1]) + [0], True)
+    vu.lights = lights
+
+
 def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12), split=False):
     """split: the batch header as a prebuilt model packet holds it (K1 / K2 without the per-draw terms, no PRIM
     template) and the per-draw terms in the SKIN_DRAW block (vu1.c vu1_skin_begin); else everything in the header and
@@ -37,14 +51,18 @@ def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12), split=Fals
     else:
         w(4, [FOC, -FOCY, ZS, FOG[0]]); w(5, [CX, CY, 0, FOG[1]])
         w(6, [FOC / G, FOCY / G, 1, FOG[2]]); w(7, [0, 0, -2 * NEAR, FOG[3]])
+    Lv = unit([0.4 + 0.1 * (tris % 3), 0.8, -0.45])  # one view-space light for the draw (as model.c; not from rng)
     for b in range(bones):
         R = rot(rng)
         t = [rng.uniform(-3, 3), rng.uniform(-2, 2), rng.uniform(*zrange)]
-        L = [rng.uniform(-1, 1) for _ in range(3)]
-        n = math.sqrt(sum(x * x for x in L)); L = [x / n for x in L]
+        [rng.uniform(-1, 1) for _ in range(3)]  # (was a random light per bone: keeps the random sequence)
+        L = [sum(R[i][j] * Lv[i] for i in range(3)) for j in range(3)]  # bone space: R^T Lv
         for j in range(3):
             w(8 + 4 * b + j, [R[0][j], R[1][j], R[2][j], L[j]])
         w(8 + 4 * b + 3, t + [0])
+    vu.Lv = Lv
+    if new:  # textured batches light from LIGHT (Polaris 2.2 PR 3): the same light as the old K2 term
+        put_lights(vu, [(Lv, [96, 96, 96])])
     top = gen.SKIN_IN
     vu.top = top
     tint = [rng.choice([0, 70, 90]), rng.choice([0, 45]), 0]
@@ -135,5 +153,38 @@ def compare(seeds=20, tris=24):
           'cycles old %d new %d (%.2fx)' % (tot, bad, adc_mis, split_mis, cyc_o, cyc_n, cyc_o / cyc_n))
     return bad + adc_mis + split_mis
 
+def lights_check(seeds=8, tris=24):
+    """Polaris 2.2 PR 3: textured colour = min(K1 + sum_k colour_k max(n . L_k, 0), clamp) for three lights (the sun and
+    two point lights) on the view-space normal (bone A rotation), against a Python reference"""
+    from vuemu import F
+    s16 = lambda u: (u - (1 << 32) if u & 0x80000000 else u) / 4096.0
+    bad = n = 0
+    for seed in range(seeds):
+        rng = random.Random(100 + seed)
+        vu = VU1(open(SRC + 'vu1skin2.vsm').read())
+        setup(vu, 1, tris, rng, 0, 0, zrange=(2, 12))
+        lights = [(unit([rng.uniform(-1, 1) for _ in range(3)]), [rng.uniform(0, 120) for _ in range(3)]) for _ in range(3)]
+        put_lights(vu, lights)
+        top = gen.SKIN_IN
+        k1 = [F(x) for x in vu.mem[top + 1]]
+        mem = [list(q) for q in vu.mem]
+        vu.run('VU1Skin2_Tex')
+        got = vertices(vu.kicks)
+        for i, g in enumerate(got):
+            a = top + 9 + 4 * i
+            pa, nm = mem[a], mem[a + 2]
+            A = [[F(x) for x in mem[8 + pa[3] + k]] for k in range(3)]
+            nv = [sum(A[k][j] * s16(nm[k]) for k in range(3)) for j in range(3)]
+            ref = [min(k1[c] + sum(col[c] * max(0.0, sum(L[j] * nv[j] for j in range(3))) for L, col in lights), 255)
+                   for c in range(3)]
+            n += 1
+            if max(abs(int(r) - x) for r, x in zip(ref, g['rgba'][:3])) > 2 or g['rgba'][3] != 128:
+                bad += 1
+                if bad <= 3:
+                    print('lights seed %d v %d: got %s ref %s' % (seed, i, g['rgba'], [int(r) for r in ref]))
+    print('three lights: %d of %d vertices off by > 2' % (bad, n))
+    return bad
+
+
 if __name__ == '__main__':
-    sys.exit(1 if compare(int(sys.argv[1]) if len(sys.argv) > 1 else 12) else 0)
+    sys.exit(1 if compare(int(sys.argv[1]) if len(sys.argv) > 1 else 12) + lights_check() else 0)

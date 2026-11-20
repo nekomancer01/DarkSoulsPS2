@@ -11,6 +11,7 @@
 #include "vu1.h"
 #include "frame.h"
 #include "fx.h"
+#include "chrlight.h"
 #include "hitch.h"
 #include "map.h"
 #include "enemy.h"
@@ -57,6 +58,12 @@ void map_spawn(V3 *pos, float *yaw)
     (void)pos, LAB_COUNT("map_char_light (render from simulate)");
     for (int i = 0; i < 3; i++)
         amb[i] = sun[i] = dir[i] = 0;
+}
+/* chrlight.c (not built here): the old path's single call, so the count stays */
+void chrl_pick(V3 pos, float amb[3], float sun[3], float dir[3], int *np, float pdir[2][3], float pcol[2][3])
+{
+    (void)pdir, (void)pcol, *np = 0;
+    map_char_light(pos, amb, sun, dir);
 }
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
 {
@@ -116,6 +123,10 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
 }
 void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, int nwin) { (void)palette, (void)bones, (void)win, (void)nwin; }
 void vu1_skin_light(const float amb[3], const float sun[3]) { (void)amb, (void)sun; }
+void vu1_skin_lights(const float sun_dir[3], int np, const float (*dir)[3], const float (*col)[3])
+{
+    (void)sun_dir, (void)np, (void)dir, (void)col;
+}
 /* the skin streams' layout as vu1.c builds it (model.c fills the streams; the VIF codes are left zero here) */
 int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
 {
