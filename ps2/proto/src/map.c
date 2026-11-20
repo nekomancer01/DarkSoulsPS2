@@ -274,14 +274,10 @@ static void zs_map_edge(float a2)
 /* edge fog this frame (fog_terms): slope a2 of b + a2 z and the view depth beyond which it is below the DSR fog */
 static float edge_a2, edge_z;
 
-/* GS registers for the blend passes: ALPHA (Cs - Cd) * As + Cd or Cs * As + Cd, ZBUF with or without ZMSK */
-static void blend_regs(GSGLOBAL *gs, int mode)
+/* GS registers of the opaque passes: gsKit's ALPHA, ZBUF writing Z */
+static void opaque_regs(GSGLOBAL *gs)
 {
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
-    u64 r[4] = {mode & CHUNK_ADD ? GS_SETREG_ALPHA(0, 2, 0, 1, 0) : GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42,
-                mode ? zbuf | (1ull << 32) : zbuf, 0x4E};
-    if (!mode)
-        r[0] = gs->PrimAlpha;
+    u64 r[4] = {gs->PrimAlpha, 0x42, gs_zbuf(gs, 0), 0x4E};
     zs_gs_regs(2, r);
 }
 
@@ -289,8 +285,7 @@ static void blend_regs(GSGLOBAL *gs, int mode)
  * batch from the blend bit (vu1.c: the rows' TEST words are what it writes, material.c asserts it) */
 static void row_regs(GSGLOBAL *gs, const MatRow *row)
 {
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
-    u64 r[4] = {row->alpha, 0x42, row->zmsk ? zbuf | (1ull << 32) : zbuf, 0x4E};
+    u64 r[4] = {row->alpha, 0x42, gs_zbuf(gs, row->zmsk), 0x4E};
     zs_gs_regs(2, r);
 }
 
@@ -1248,7 +1243,7 @@ static int draw_sky(int sk, const float e[3], u32 col, float a, float b, float f
             }
         }
     }
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     /* opaque map with the map's main fog row, and the edge fog; TEST for the batches with a mip chain (vu1_mip: they
      * send MIPTBP1 in its place) */
     zs_map_fog(a, b, fmin, 255);
@@ -1323,7 +1318,7 @@ static int draw_hz_fades(int n, const float e[3], float a, float b, float fmin)
         r_get_fog(f, &fc[0], &fb);
         zs_gs_regs(1, fc);
     }
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     return drawn;
 }
 
@@ -1357,7 +1352,7 @@ static int draw_near_fades(int n, const float e[3])
     }
     mapstream_select(0);
     zs_map_zbias(1.0f);
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     return drawn;
 }
 
@@ -1386,7 +1381,7 @@ static int draw_effects(int n, int fog)
                                 fxl[i].no);
         }
     }
-    blend_regs(gs, 0);
+    opaque_regs(gs);
     return drawn;
 }
 
