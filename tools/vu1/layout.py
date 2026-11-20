@@ -45,13 +45,17 @@ MAPI_HDR = 8  # header qwords of an indexed batch: vu1map2's 7 + {vertex passes,
 # The bone palette window: 4 qwords a bone, 40 bones; model.c pages every skeleton over 40 through it by bone windows
 # (Polaris 2.2 PR 2; was 61, windows only above it). DSR's meshes use <= 38 bones each (FLVER mesh bone tables, all 171
 # chr/ FLVERs), so a window still spans whole meshes; the 21 slots freed pay for 27-triangle batches (were 24).
-BONE_WIN, BONE_QW, BONE_MAX = 8, 4, 40
+# VU1_BONE_MAX=61 in the environment (make VU1_BONES=61) builds the old layout: one 61-bone window, 23-triangle batches,
+# windows only for skeletons over 61. The Makefile then generates this header and the skin programs into the build dir.
+BONE_WIN, BONE_QW, BONE_MAX = 8, 4, int(os.environ.get("VU1_BONE_MAX") or 40)
 SKIN_KICK = 8
-SKIN_TRIS = 27
-SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 252
+SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 168 (61 bones: 252)
+SKIN_OUT_SIZE = 1 + 9 * SKIN_KICK
+SKIN_TOP = 980  # LIGHT (Polaris 2.2 PR 3; was SPEC 992): the skin pass's input double buffer and two output slots end below it
+# the most triangles a batch can take: 2 input buffers of 9 + 12 per triangle and 2 output slots between SKIN_IN and SKIN_TOP
+SKIN_TRIS = ((SKIN_TOP - SKIN_IN - 2 * SKIN_OUT_SIZE) // 2 - 9) // 12  # 27 (61 bones: 23)
 SKIN_IN_SIZE = 9 + 12 * SKIN_TRIS
 SKIN_OUT0 = SKIN_IN + 2 * SKIN_IN_SIZE
-SKIN_OUT_SIZE = 1 + 9 * SKIN_KICK
 SKIN_OUT1 = SKIN_OUT0 + SKIN_OUT_SIZE
 # Specular constant block (skin pass, written per draw by vu1_skin_begin; view space): 0-2 Mn_k = (Ls_k, 2 Up_k,
 # Vc_k, Hc_k) with Vc = towards the camera from the character's centre, Hc = normalize(Ls + Vc); 3 (BIG, -Vc.Up, 0, 0);
@@ -176,7 +180,8 @@ def check():
 
 def layout_hash():
     """hash of everything an exported packet depends on (batch headers, buffer sizes, stream destinations)"""
-    key = repr((MAP_HDR, CHUNK_TRIS, MAP_IN_QW, MAPI_HDR, CLIPI_MAX, IDX_TRIS, SKIN_IN_SIZE, FX_IN_QW)).encode()
+    # (no skin term: no exporter writes skin packets, model.c builds them at load, so VU1_BONE_MAX=61 reads the same map.bin)
+    key = repr((MAP_HDR, CHUNK_TRIS, MAP_IN_QW, MAPI_HDR, CLIPI_MAX, IDX_TRIS, FX_IN_QW)).encode()
     return int.from_bytes(hashlib.sha1(key).digest()[:4], "little")
 
 
