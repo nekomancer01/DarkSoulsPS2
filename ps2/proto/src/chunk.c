@@ -1,4 +1,4 @@
-/* Chunk streams (chunk.h; format at the top of chunk.h and tools/chunk.py) */
+/* Chunk streams (chunk.h; format at the top of chunk.h and tools/chunkfile.py) */
 #include <stdio.h>
 #include <string.h>
 #include "chunk.h"

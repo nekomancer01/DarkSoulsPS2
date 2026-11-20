@@ -118,7 +118,7 @@ committed headers match their declarations. The headers hold layouts only, never
 
 Exported files the runtime reads in place are chunk streams (Polaris 3.3): a 16-byte header (`CHNK`, a four-letter
 file id, the total size, the chunk count), chunks of (four-letter id, version, size) with 16-byte aligned payloads,
-and a footer that repeats the size. `tools/chunk.py` writes and reads them in Python, `tools/native/chunkw.h` writes
+and a footer that repeats the size. `tools/chunkfile.py` writes and reads them in Python, `tools/native/chunkw.h` writes
 them from the C tools (`pvs_bake`, libmapx), and `ps2/proto/src/chunk.c` reads them in the runtime and the Lab.
 
 A loader asks for each chunk by id and the one version it reads. Another version, a missing required chunk, another

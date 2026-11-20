@@ -6,7 +6,7 @@ ConnectCollision parts (tools/worldgraph.py) for the links between maps.
 
   export_world.py <game dir> <out world.bin> <boot map> <gen dir>
 
-world.bin: a chunk file (tools/chunk.py, file id 'WRLD'; src/world.c reads it in place), little-endian:
+world.bin: a chunk file (tools/chunkfile.py, file id 'WRLD'; src/world.c reads it in place), little-endian:
   BLKS v1  per block (64 B) char pack[16] (pack name under PACK_ROOT without '.pak', NUL padded), char map[16] (MSB
            id); f32 min x, min z, max x, max z (xz bounds of the block's collision, world frame = the maps' shared
            frame); f32 min y, max y (its collision's height range: the Asylum lies over Firelink and the Burg in x / z);

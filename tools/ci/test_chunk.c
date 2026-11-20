@@ -1,5 +1,5 @@
 /* Host test of the chunk streams (Polaris 3.3; tools/ci/test_chunk.sh): the C writer (tools/native/chunkw.h) and the
- * runtime reader (ps2/proto/src/chunk.c), built 64-bit. Writes argv[1] for test_chunk.sh to compare with tools/chunk.py,
+ * runtime reader (ps2/proto/src/chunk.c), built 64-bit. Writes argv[1] for test_chunk.sh to compare with tools/chunkfile.py,
  * then checks every refusal: another version, a missing chunk, another file id, a pre-3.3 file, a truncated file (cut
  * mid-chunk and at a chunk boundary, known and unknown size), a chunk length past the end, a VU1 stamp mismatch. */
 #include <stdio.h>

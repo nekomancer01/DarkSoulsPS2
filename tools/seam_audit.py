@@ -51,7 +51,7 @@ UP = 0.7          # walkable: the triangle's normal y at least (ASSUMED: about 4
 
 def world(gen):
     """world.bin -> [(pack, map, gen dir, [(first tri, tris, load mask, keep mask)])]"""
-    import chunk
+    import chunkfile as chunk
     w = chunk.read(os.path.join(gen, "world.bin"), b"WRLD")  # tools/export_world.py
     bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)
     blocks = []

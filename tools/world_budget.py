@@ -164,7 +164,7 @@ def structural(gen):
     p = os.path.join(gen, "world.bin")
     if not os.path.exists(p):
         return None
-    import chunk
+    import chunkfile as chunk
     try:
         w = chunk.read(p, b"WRLD")  # tools/export_world.py
         bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)

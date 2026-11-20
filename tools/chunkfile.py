@@ -1,6 +1,6 @@
 """Chunk streams (Polaris 3.3): the container every exported file the runtime reads in place is written in.
 
-  python3 tools/chunk.py <file>...    list each file's id and chunks (id, version, payload bytes)
+  python3 tools/chunkfile.py <file>...    list each file's id and chunks (id, version, payload bytes)
 
 Layout (little-endian, every part 16-byte aligned; the C side is ps2/proto/src/chunk.h, tools/native/chunkw.h):
   header  u32 'CHNK', u32 file id (four characters, e.g. b"WRLD"), u32 total bytes (header to footer end), u32 chunks
