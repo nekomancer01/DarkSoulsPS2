@@ -26,7 +26,7 @@ import sys
 # batch), GS ALPHA word (gs.h name), TEST word (gs.h name), ZBUF mask (1: no Z write), passes (MP_ bits below), what
 # it is. The map passes read ALPHA, the Z mask (= the batch's blend bit, which picks TEST in vu1.c; material.c asserts
 # TEST matches) and the passes (map_i.h mp_row, map.c row_regs).
-PASSES = ("RELIEF", "PLAYER_LIGHT", "MIPS", "ENV_SPEC", "EDGE_FOG")  # MP_ bit order
+PASSES = ("RELIEF", "PLAYER_LIGHT", "MIPS", "ENV_SPEC", "EDGE_FOG", "FRESNEL")  # MP_ bit order
 GS_TABLE = os.environ.get("MAT_GS_TABLE", "1") == "1"
 _LIT = ("RELIEF", "PLAYER_LIGHT", "MIPS", "EDGE_FOG")  # the passes of every unblended map class (relief only where
 # bump.bin has the chunk: export_normal.bumped leaves cut-outs and foliage out)
@@ -41,8 +41,10 @@ CLASSES = [
     ("BLEND", "MAP2", "GS_ALPHA_MIX", "GS_TEST_ZGE", 1, ("EDGE_FOG",), "g_BlendMode 2"),
     # additive light shafts (_Add); no Z write
     ("ADDITIVE", "MAP2", "GS_ALPHA_ADD", "GS_TEST_ZGE", 1, ("EDGE_FOG",), "g_BlendMode 4"),
-    # [We] water: one colour from g_WaterColor / Fresnel (mapgather.water_rgba), blended; no Z write
-    ("WATER", "MAP2", "GS_ALPHA_MIX", "GS_TEST_ZGE", 1, ("EDGE_FOG",), "g_BlendMode 3"),
+    # [We] water (Polaris 2.6): blended, no Z write; FRESNEL: per-vertex colour and opacity on the EE from the eye's
+    # angle to the surface (map.c water_colours: DSR's refraction tint g_WaterColor and Fresnel reflection
+    # g_FresnelColor, F = bias + scale (1 - cos)^pow) over a white texture (mapgather.water_texture)
+    ("WATER", "MAP2", "GS_ALPHA_MIX", "GS_TEST_ZGE", 1, ("EDGE_FOG", "FRESNEL"), "g_BlendMode 3"),
     # grass / fern cards, thinned into tufts by distance (mapchunks foliage chunks): cut-out state
     ("FOLIAGE", "MAP2", "GS_ALPHA_MIX", "GS_TEST_CUTOUT", 0, _LIT, "grass / fern diffuse"),
     # characters and skinned objects (vu1skin / vu1skinclip): not in map.bin; the row is for the character streams

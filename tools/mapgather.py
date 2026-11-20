@@ -354,6 +354,79 @@ def navmesh_points(game, map_id, M, keep):
     return out
 
 
+MAP_WATER = os.environ.get("MAP_WATER", "1") == "1"
+WATER_MARK = 0x57  # CLUT entry 3's last byte: the entry holds water terms (map.c water_colours)
+
+
+WATER_EDGE = float(os.environ.get("WATER_EDGE", 6.0))  # m: water triangles are cut to edges at most this long
+
+
+def subdivide_water(m):
+    """A water mesh with its LOD0 triangles cut in four (edge midpoints, shared along shared edges) until no edge is
+    longer than WATER_EDGE: DSR shades water per pixel; the port's Fresnel is per vertex (map.c water_colours), and
+    the FLVER's water is a few large triangles (Firelink's pool: 2 for 19 x 18 m), whose corners alone made it all
+    grazing. Every vertex attribute is the mean of its edge's two ends (bone indices: the first end's)."""
+    fss = [f for f in m["facesets"] if not f[0] & 0x80000000]
+    if not fss:
+        return m
+    fs = min(fss, key=lambda f: f[0] & 0x0F000000)
+    V = {k: list(v) for k, v in m["verts"].items()}
+    n = len(V["pos"])
+    V = {k: v for k, v in V.items() if len(v) == n}
+    cache = {}
+
+    def mid(a, b):
+        key = (min(a, b), max(a, b))
+        if key not in cache:
+            for k, v in V.items():
+                x, y = v[a], v[b]
+                if k.startswith("bone"):
+                    v.append(x)
+                elif isinstance(x, (tuple, list)):
+                    v.append(tuple((p + q) / 2 for p, q in zip(x, y)))
+                else:
+                    v.append((x + y) / 2)
+            cache[key] = len(V["pos"]) - 1
+        return cache[key]
+
+    def far(a, b):
+        return sum((p - q) ** 2 for p, q in zip(V["pos"][a][:3], V["pos"][b][:3])) > WATER_EDGE ** 2
+
+    out = []
+    work = [tuple(int(i) for i in t) for t in faceset_tris(fs)]
+    while work:
+        a, b, c = work.pop()
+        if far(a, b) or far(b, c) or far(c, a):
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            work += [(a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca)]
+        else:
+            out.append((a, b, c))
+    if len(out) == len(faceset_tris(fs)):
+        return m
+    return dict(m, verts=V, facesets=[(fs[0], False, [i for t in out for i in t], fs[3])])
+
+
+def water_texture(mp):
+    """The texture of a [We] water material (class WATER, Polaris 2.6). MAP_WATER (default): white, the colour and
+    opacity come per vertex from map.c (water_colours: DSR's Fresnel per vertex, from the eye's angle to the surface),
+    with the material's terms in CLUT entries 1-3, which no texel uses (the image is one colour: index 0):
+    1 g_WaterColor r, g, b, a (linear x 255); 2 g_FresnelColor r, g, b, g_FresnelBias (x 255); 3 g_FresnelScale x 255,
+    g_FresnelPow x 32, 0, WATER_MARK. MAP_WATER=0: the solid colour of water_rgba (one view angle), as before."""
+    if not MAP_WATER:
+        return texmap.encode(128, 16, water_rgba(mp) * (128 * 16), soft=True)
+    t = texmap.encode(128, 16, bytes([255, 255, 255, 255]) * (128 * 16), soft=True)
+    wc = mp.get("g_WaterColor", (0.1, 0.1, 0.1, 0.5))
+    fc = mp.get("g_FresnelColor", (1.0, 1.0, 1.0))
+    u8 = lambda x: max(0, min(255, round(255 * x)))
+    clut = bytearray(t["clut"])
+    clut[4:16] = bytes([u8(wc[0]), u8(wc[1]), u8(wc[2]), u8(wc[3]),
+                        u8(fc[0]), u8(fc[1]), u8(fc[2]), u8(mp.get("g_FresnelBias", (0.1,))[0]),
+                        u8(mp.get("g_FresnelScale", (1.0,))[0]), max(0, min(255, round(32 * mp.get("g_FresnelPow", (2.0,))[0]))),
+                        0, WATER_MARK])
+    t["clut"] = bytes(clut)
+    return t
+
+
 def load_object(game, model, dds, static=False):
     """obj/<model>.objbnd: the FLVER named after the model (not the _1 broken/alternate state); its TPF textures are
     added to dds. None if the archive or FLVER is missing, or the object is breakable (<model>_1.hkx in the objbnd)
@@ -703,6 +776,8 @@ def gather(game, map_id):
         pxf, pxn = place(part)
         bind = bind_scaled(F)
         for m in F["meshes"]:
+            if MAP_WATER and material.classify(m["mtd"], m["diffuse"], False, mtds.get(m["mtd"])) == material.WATER:
+                m = subdivide_water(m)  # vertices close enough together for the per-vertex Fresnel (map.c)
             posed = part["type"] == 1 and m["dynamic"]
             if posed:
                 # skinned objects (corpses, o1950 chains): baked in the pose of their MSB init_anim (tools/pose_obj.py);
@@ -813,7 +888,7 @@ def gather(game, map_id):
                 name = "water:" + m["mtd"]
                 if (name, tkey) not in tex_index:
                     tex_index[name, tkey] = len(textures)
-                    textures.append(texmap.encode(128, 16, water_rgba(mtds.get(m["mtd"], {})) * (128 * 16), soft=True))
+                    textures.append(water_texture(mtds.get(m["mtd"], {})))
                 ti = tex_index[name, tkey]
             elif name and name in dds:
                 if (name, tkey) not in tex_index:

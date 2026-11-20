@@ -942,6 +942,55 @@ static int visible_(const Chunk *c, const float *e, int sky)
 
 /* the first n triangles of chunk c (n < c->tris: foliage thinned by distance) */
 /* no: the chunk's number in bump.bin / dg.bin (resident: its index in the chunk table; near: NEAR_NO) */
+/* Water (class WATER, Polaris 2.6, TECH_DEBT map-19): DSR's [We] shader mixes the refraction tinted by g_WaterColor
+ * (alpha = its opacity) with a Fresnel reflection of g_FresnelColor, F = saturate(bias + scale (1 - cos)^pow), cos =
+ * the view direction's angle to the surface (water is level: the normal is up). Per vertex here, each frame, from
+ * the eye's position (the exporter's water_rgba took cos 0.5 for all); colour = WaterColor (1 - F) + FresnelColor F,
+ * opacity = a + (1 - a) F, linear -> sRGB, over the white texture whose CLUT entries 1-3 carry the terms
+ * (mapgather.water_texture, marker 0x57). MAP_WATER=0: the fixed angle (cos 0.5), the old look. ASSUMED: no waves,
+ * no reflection image (g_FresnelColor stands for it), no refraction. */
+#ifndef MAP_WATER
+#define MAP_WATER 1
+#endif
+static u32 water_col[256] __attribute__((aligned(16)));
+static unsigned char water_srgb[256];
+
+static const void *water_colours(const GSTEXTURE *t, const unsigned char *base, const Chunk *c, unsigned n)
+{
+    const unsigned char *k = t ? (const unsigned char *)t->Clut : NULL;
+    unsigned nv = c->nv ? c->nv : 3 * n;
+    if (!k || k[15] != 0x57 || nv > 256)
+        return NULL;  /* an export from before the water terms: its colour is in the texture */
+    if (!water_srgb[255])
+        for (int i = 0; i < 256; i++)
+            water_srgb[i] = (unsigned char)(255.0f * powf(i / 255.0f, 1 / 2.2f) + 0.5f);
+    float wc[4], fc[3], bias = k[11] / 255.0f, scale = k[12] / 255.0f, pw = k[13] / 32.0f;
+    for (int i = 0; i < 4; i++)
+        wc[i] = k[4 + i] / 255.0f;
+    for (int i = 0; i < 3; i++)
+        fc[i] = k[8 + i] / 255.0f;
+    int ip = (int)pw;
+    const short *p = (const short *)(base + c->pos);
+    float s = c->step;
+    for (unsigned v = 0; v < nv; v++, p += 3) {
+        float dx = cam[0] - (c->org[0] + s * p[0]), dy = cam[1] - (c->org[1] + s * p[1]),
+              dz = cam[2] - (c->org[2] + s * p[2]), l2 = dx * dx + dy * dy + dz * dz;
+        float cs = MAP_WATER && l2 > 1e-6f ? fabsf(dy) / sqrtf(l2) : 0.5f, x = 1 - cs, xp = 1;
+        if (pw == (float)ip)
+            for (int i = 0; i < ip; i++)
+                xp *= x;
+        else
+            xp = powf(x, pw);
+        float f = bias + scale * xp;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        unsigned char *o = (unsigned char *)&water_col[v];
+        for (int i = 0; i < 3; i++)
+            o[i] = (unsigned char)((water_srgb[(int)((wc[i] * (1 - f) + fc[i] * f) * 255 + 0.5f)] * 128 + 127) / 255);
+        o[3] = (unsigned char)((wc[3] + (1 - wc[3]) * f) * 128 + 0.5f);
+    }
+    return water_col;
+}
+
 static GSTEXTURE *late_tex;  /* map_draw_blend: the texture the map pass resolved for the chunk being drawn */
 
 static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
@@ -991,11 +1040,17 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         }
         int pkt = n == c->tris ? m->pkt : 0;  /* a foliage prefix sends its streams one by one */
         int vm = (mode & R_FOG ? VU1_FOG : 0) | (mode & R_BLEND ? VU1_BLEND : 0) | vclip | edge | pkt;
+        const void *colp = base + c->col;
+        if (mp_row(m, c)->passes & MP_FRESNEL) {  /* water: colour and opacity per vertex (water_colours) */
+            const void *wc = water_colours(t, base, c, n);
+            if (wc)
+                colp = wc, vm |= VU1_COLCP;
+        }
         if (c->nv)  /* indexed (whole chunks only: foliage, the only prefix drawer, stays in lists) */
-            vu1_add_idx(t, c->flags & CHUNK_CULL, vm, n, c->nv, base + c->pos, base + c->st, base + c->col,
-                        base + CHUNK_IDX(c), c->org, st_k);
+            vu1_add_idx(t, c->flags & CHUNK_CULL, vm, n, c->nv, base + c->pos, base + c->st, colp, base + CHUNK_IDX(c),
+                        c->org, st_k);
         else
-            vu1_add_ex(t, c->flags & CHUNK_CULL, vm, n, base + c->pos, base + c->st, base + c->col, c->org, st_k);
+            vu1_add_ex(t, c->flags & CHUNK_CULL, vm, n, base + c->pos, base + c->st, colp, c->org, st_k);
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
