@@ -1358,8 +1358,13 @@ static int draw_near_fades(int n, const float e[3])
 
 /* The first n entries of fxl, after the opaque map: alpha-blended (mist, decals, water) far to near, then additive
  * (light shafts), then subtractive (both order-free); Z tested, not written; each chunk's GS state from its class row
- * (material.h). Returns the triangles drawn. */
-static int draw_effects(int n, int fog)
+ * (material.h). The GS fogs a chunk's colour before blending, so additive and subtractive chunks fog towards black
+ * (fading out, as fx.c's additive particles); fogged towards the map's fog colour they would add / subtract it with
+ * distance. MAP_FX_FOG0=0: all three towards col, as before. Returns the triangles drawn. */
+#ifndef MAP_FX_FOG0
+#define MAP_FX_FOG0 1
+#endif
+static int draw_effects(int n, int fog, u32 col)
 {
     GSGLOBAL *gs = gsg;
     int drawn = 0;
@@ -1370,6 +1375,10 @@ static int draw_effects(int n, int fog)
         }
     for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
         const MatRow *last = NULL;
+        if (MAP_FX_FOG0 && pass == 1) {
+            u64 fc[2] = {0, 0x3D};  /* FOGCOL black for the order-free passes */
+            zs_gs_regs(1, fc);
+        }
         for (int i = 0; i < n; i++) {
             const Chunk *c = fxl[i].c;
             const MatRow *mr = mp_row(&mp_inst[fxl[i].k], c);
@@ -1380,6 +1389,10 @@ static int draw_effects(int n, int fog)
             drawn += draw_chunk(&mp_inst[fxl[i].k], fxl[i].base, c, c->tris, fxl[i].cls, fog | R_BLEND | (pass == 1 ? R_ADD : 0),
                                 fxl[i].no);
         }
+    }
+    if (MAP_FX_FOG0) {
+        u64 fc[2] = {col, 0x3D};
+        zs_gs_regs(1, fc);
     }
     opaque_regs(gs);
     return drawn;
@@ -2094,7 +2107,7 @@ int map_draw(V3 eye)
     }
 
     MF_BEGIN
-    drawn += draw_effects(nfx, fog);
+    drawn += draw_effects(nfx, fog, col);
     MF_END(MF_FX)
     zs_end();
     {
