@@ -113,7 +113,7 @@ MODEL_FLAT = 0.02  # a model is flat when its extent across its XY plane is unde
 if FX_MODEL:
     APPEAR = APPEAR | {108}
 
-SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x3f3f"  # = fx.h FxSys
+SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fBB2x3f3f"  # = fx.h FxSys
 LIGHT_FMT = "<H2x3ffff8f24Bf"
 
 
@@ -363,7 +363,7 @@ def system(cc, xf, pxf, tone, tex_of, coverage, model_of=lambda mid: None):
     # fog walls' small motes use it) and 3-5 stay camera-facing (TECH_DEBT fx-2); fixed quads skip VU1 (EE path).
     orient = 1 if FX_ORIENT and ap.get("Orientation") == 2 else 0
     qx, qy = _apply(R, [1.0, 0.0, 0.0]), _apply(R, [0.0, 1.0, 0.0])
-    return dict(orient=orient, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
+    return dict(orient=orient, model=1 if mdl else 0, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
                 life=life, life_min=life_min, interval=interval, delay=max(0.0, delay), total=int(total),
                 org=t, axis=axis, ext=_apply([[abs(x) for x in r] for r in R], ext), spread=spread,
                 spread_k=spread_k, dist=dist, dist_sqrt=dist_sqrt, normal=normal,
@@ -397,7 +397,7 @@ def pack_sys(s, tex_fpr):
                        *s["speed"], s["drag"], s["turn"], s["turn_dt"], *s["accel"], s["size"][0], s["size"][1],
                        s["size"][2], s["size"][3], *s["rot"], *s["spin"], *(s["kx"] + s["ky"]), *s["rgba"],
                        *s["frame"], s["rate"], float(s["total"]), s["spread_k"], s["dist"], s["dist_sqrt"], fpr, nfr,
-                       *s["normal"], s["orient"], *s["qx"], *s["qy"])
+                       *s["normal"], s["orient"], s.get("model", 0), *s["qx"], *s["qy"])
 
 
 # ---- lights ----
