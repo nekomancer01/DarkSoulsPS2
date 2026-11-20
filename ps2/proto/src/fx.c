@@ -86,7 +86,8 @@ typedef struct {
     float spread_k, dist, dist_sqrt; /* Spread, circle Distribution, 1 = sqrt of the radius (DistributionMode 0) */
     u16 fpr, nframes;
     float normal[3];                 /* circle plane normal (the system frame's local Z) */
-    u8 orient, pad2[3];              /* 1: the quad lies in the effect frame (FFX Orientation 2: fog walls) */
+    u8 orient, model, pad2[2];       /* orient 1: the quad lies in the effect frame (FFX Orientation 2: fog walls);
+                                      * model 1: the quad stands for an FFX model (export_effects FX_MODEL) */
     float qx[3], qy[3];              /* its x / y axes in the effect frame (export_effects FX_ORIENT) */
 } FxSys;
 
@@ -765,7 +766,7 @@ static struct {
     u64 fogcol, fogbase;
     float part[VU1_FX_N][4 * VU1_FX_PQW] __attribute__((aligned(16)));
 } vb;
-static int vu_drawn, vu_batches, vu_breaks[3];  /* breaks: texture / mode / quad frame, full, tables */
+static int vu_drawn, vu_batches, vu_breaks[3], model_drawn;  /* breaks: texture / mode / quad frame, full, tables */
 
 static void vu_flush(void)
 {
@@ -854,7 +855,7 @@ static int vu_add(const Particle *p, const FxSys *s, const float *w, V3 c, int m
     }
     q[3] = 8 * k + t;
     q[4] = p->sx, q[5] = p->sy, q[6] = rot, q[7] = fr + 0.5f;
-    vu_drawn++;
+    vu_drawn++, model_drawn += s->model;
     return 1;
 }
 
@@ -892,7 +893,7 @@ void fx_draw(void)
 {
     bind(0);
     if (!n_alive) {
-        fx_stats.drawn = fx_stats.batches = fx_stats.vu1 = fx_stats.culled = 0;
+        fx_stats.drawn = fx_stats.batches = fx_stats.vu1 = fx_stats.culled = fx_stats.model = 0;
         return;
     }
     unsigned t0 = ticks();
@@ -953,7 +954,7 @@ void fx_draw(void)
     for (int t = 0; t < nb; t++)
         for (int i = head[t]; i >= 0; i = next[i])
             ord[n].z = -1e6f - t, ord[n].i = i, n++;
-    vu_drawn = vu_batches = 0;
+    vu_drawn = vu_batches = model_drawn = 0;
     memset(vu_breaks, 0, sizeof vu_breaks);
     if (FX_VU1)
         r_get_fog(vb.fog, &vb.fogcol, &vb.fogbase);
@@ -1050,7 +1051,7 @@ void fx_draw(void)
                     r_view_to_screen(&v, qs[j]);
             }
         }
-        drawn++;
+        drawn++, model_drawn += s->model;
         if (!inside) {  /* near the camera: clipped triangles, own packets */
             r_tri_clip(&gtex[s->tex], &q[0], &q[1], &q[2], 0, mode);
             r_tri_clip(&gtex[s->tex], &q[0], &q[2], &q[3], 0, mode);
@@ -1069,6 +1070,7 @@ void fx_draw(void)
     fx_stats.batches = batches + vu_batches;
     fx_stats.vu1 = vu_drawn;
     fx_stats.culled = culled;
+    fx_stats.model = model_drawn;
     for (int k = 0; k < 3; k++)
         fx_stats.vu1_breaks[k] = vu_breaks[k];
     unsigned t1 = ticks();

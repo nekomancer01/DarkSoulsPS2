@@ -53,6 +53,7 @@ typedef struct {
     int drawn;       /* particles drawn this frame */
     int batches;     /* GS packets */
     int vu1;         /* of drawn: on VU1 (FX_VU1) */
+    int model;       /* of drawn: quads standing for FFX models (FX_MODEL) */
     int vu1_breaks[3];  /* VU1 batch ends: texture / mode / quad frame change, full, out of curve tables */
     int culled;      /* of the alive: skipped with their instance's bound off screen */
     float ms;        /* EE time of update + draw (smoothed) */

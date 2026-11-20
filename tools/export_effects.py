@@ -42,6 +42,10 @@ FFX interpretation (tools/ffx.py has the layout; the semantics below are read of
   rotation only places it); circle = the system's local XY plane, radius U^(1 + Distribution) or
   1 - U^(1 - Distribution), sqrt for DistributionMode 0. Movement Gravity g: acceleration -g m/s^2 along world up
   (ASSUMED units, fits the captured rise); movement 84 / 105 wobble is not decoded and left out.
+- Model particles (action 108, FX_MODEL): the placed areas use one model, s00019 (a flat 1.7 m octagon, MTD
+  S[DB]_Alp_water, the Depths / Darkroot water ripples), so a flat one-mesh model is drawn as the particle's quad
+  over its XY extent with its own diffuse; blend from its material class (material.classify: WATER -> alpha
+  blended), not the FFX BlendMode. Other models are skipped with a log line (TECH_DEBT fx-7).
 - Blend: 6 = alpha blend, every other mode additive (ASSUMED from the textures: mode 0 / 7 sprites have opaque
   black backgrounds, mode 6 mist has soft alpha).
 - Light (action 24): p0 colour curve RGBA (A = intensity), p2 radius; HDR = 30 x (A c)^2.2 (see above), DSR's
@@ -62,7 +66,7 @@ fx.bin (version FX_VERSION, little endian):
 import json, math, os, random, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import area, dsr_light, ffx, souls, srcsum
+import area, dsr_light, ffx, material, souls, srcsum
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_map.py uses them without this file
 
@@ -76,7 +80,7 @@ CLASS_IDS = range(2000, 2200)  # EffectCall ids that are engine node classes, no
 BARE_REFS = False  # walk(): follow action 14's bare effect ids (--shine sets it)
 TEX_H_MAX = 256    # px; the shine set (resident all game) halves its 128 x 128 sparkles to 128 x 64 (~50 KB VRAM)
 PS_CLASS, XFORM_CLASS = 2023, 2101
-APPEAR = {71, 70, 59, 27}
+APPEAR = {71, 70, 59, 27}  # (| 108 under FX_MODEL, below)
 EMIT = {28: 4, 29: 5, 30: 1, 31: 2, 32: 3}  # data subtype -> fx.h FX_SHAPE_*
 MOVE = {55, 84, 105}
 N_CURVE = 8
@@ -101,8 +105,15 @@ FX_OVERLAP = float(os.environ.get("FX_OVERLAP", 1.0))
 FX_ADD_CAP = float(os.environ.get("FX_ADD_CAP", 1.0))
 FX_ORIENT = os.environ.get("FX_ORIENT", "1") == "1"  # Orientation 2 quads fixed in the effect frame: system()
 FX_WALL_ALPHA = os.environ.get("FX_WALL_ALPHA", "1") == "1"  # BlendMode 1 (light / fog walls) alpha blended: system()
+# Model particles (action 108, Polaris 2.6 PR 2): a flat one-mesh effect model is drawn as the particle's quad, sized by
+# the model's extent, with the model's own diffuse texture and its material class's blend (tools/material.py).
+# FX_MODEL=0: model particles skipped as before (TECH_DEBT fx-7).
+FX_MODEL = os.environ.get("FX_MODEL", "1") == "1"
+MODEL_FLAT = 0.02  # a model is flat when its extent across its XY plane is under this share of its width
+if FX_MODEL:
+    APPEAR = APPEAR | {108}
 
-SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fB3x3f3f"  # = fx.h FxSys
+SYS_FMT = "<HBBHHffff3f3f3ff3ffff3f4f2f3f16f32B2ff4f2H3fBB2x3f3f"  # = fx.h FxSys
 LIGHT_FMT = "<H2x3ffff8f24Bf"
 
 
@@ -225,8 +236,9 @@ def _node_val(n, default=0.0):
     return default
 
 
-def system(cc, xf, pxf, tone, tex_of, coverage):
-    """Class-2023 container -> dict for SYS_FMT, or None when it has no supported appearance."""
+def system(cc, xf, pxf, tone, tex_of, coverage, model_of=lambda mid: None):
+    """Class-2023 container -> dict for SYS_FMT, or None when it has no supported appearance. model_of(model id) ->
+    Library.model's record (model particles, action 108)."""
     params = cc["params"]
     datas = {}
     for p in params:
@@ -237,7 +249,14 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     ap = datas.get("appear")
     if ap is None:
         return None
-    tid = ap.get("TextureID", ap.get("TextureID1", -1))
+    mdl = None
+    if ap["sub"] == 108:  # model particle: a flat model only (its quad), texture and blend from the model's material
+        mdl = model_of(ap.get("ModelID", -1))
+        if mdl is None:
+            return None
+        tid = mdl["tex"]
+    else:
+        tid = ap.get("TextureID", ap.get("TextureID1", -1))
     tex = tex_of(tid, ap.get("FramesPerRow", 1) or 1, ap.get("FrameCount", 1) or 1)
     if tex is None:
         return None
@@ -293,6 +312,8 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     bx, ba, bb = _rand(s1x, 0.1)
     by = _rand(s1y, 0.1)[0]
     bx, by = bx * 0.5, by * 0.5
+    if mdl:  # Scale multiplies the model: the quad spans its XY extent (the model's centre offset is left out)
+        bx, by = bx * mdl["w"], by * mdl["h"]
     kx, ky = _curve(s2x, life), _curve(s2y, life)
     if ap["sub"] == 59:
         c1 = [_curve(_f(ap, "Color" + ch), life) for ch in "RGBA"]
@@ -311,6 +332,8 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     import material  # the FFX BlendMode -> class map (Polaris 2.1; MAT_GS_TABLE=0: the rule above, 6 and FX_WALL_ALPHA 1)
     blend = material.ffx_blended(ap.get("BlendMode")) if material.GS_TABLE else \
         1 if ap.get("BlendMode") == 6 or (FX_WALL_ALPHA and ap.get("BlendMode") == 1) else 0
+    if mdl:  # the model's material decides (Polaris 2.1 classes): additive for ADDITIVE, alpha blended otherwise
+        blend = 0 if mdl["cls"] == material.ADDITIVE else 1
     mul = _curve(_f(ap, "ColorModMult"), life)
     rgba = []
     for i in range(N_CURVE):
@@ -342,7 +365,7 @@ def system(cc, xf, pxf, tone, tex_of, coverage):
     # fog walls' small motes use it) and 3-5 stay camera-facing (TECH_DEBT fx-2); fixed quads skip VU1 (EE path).
     orient = 1 if FX_ORIENT and ap.get("Orientation") == 2 else 0
     qx, qy = _apply(R, [1.0, 0.0, 0.0]), _apply(R, [0.0, 1.0, 0.0])
-    return dict(orient=orient, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
+    return dict(orient=orient, model=1 if mdl else 0, qx=qx, qy=qy, tex=tex, blend=blend, shape=shape, per_emit=max(1, int(per_emit)), max_alive=max(1, int(max_alive)),
                 life=life, life_min=life_min, interval=interval, delay=max(0.0, delay), total=int(total),
                 org=t, axis=axis, ext=_apply([[abs(x) for x in r] for r in R], ext), spread=spread,
                 spread_k=spread_k, dist=dist, dist_sqrt=dist_sqrt, normal=normal,
@@ -376,7 +399,7 @@ def pack_sys(s, tex_fpr):
                        *s["speed"], s["drag"], s["turn"], s["turn_dt"], *s["accel"], s["size"][0], s["size"][1],
                        s["size"][2], s["size"][3], *s["rot"], *s["spin"], *(s["kx"] + s["ky"]), *s["rgba"],
                        *s["frame"], s["rate"], float(s["total"]), s["spread_k"], s["dist"], s["dist_sqrt"], fpr, nfr,
-                       *s["normal"], s["orient"], *s["qx"], *s["qy"])
+                       *s["normal"], s["orient"], s.get("model", 0), *s["qx"], *s["qy"])
 
 
 # ---- lights ----
@@ -491,7 +514,7 @@ class Library:
         self.paths = [os.path.join(d, f"FRPG_SfxBnd_{s}.ffxbnd.dcx")
                       for s in ("Patch", map_id[:6], map_id[:3], "CommonEffects")]
         self.paths = [p for p in self.paths if os.path.exists(p)]
-        self._ffx, self._tpf, self.parsed = {}, {}, {}
+        self._ffx, self._tpf, self._flver, self._models, self.parsed = {}, {}, {}, {}, {}
         for p in self.paths:  # first bundle listed wins (Patch overrides CommonEffects)
             for _, name, data in ffx.bundle_entries(p):
                 base = name.replace("\\", "/").rsplit("/", 1)[-1]
@@ -499,12 +522,35 @@ class Library:
                     self._ffx.setdefault(int(base[1:-4]), data)
                 elif base.endswith(".tpf"):
                     self._tpf.setdefault(base[:-4], data)
+                elif base.endswith(".flver"):
+                    self._flver.setdefault(base[:-6], data)
 
     def effect(self, fid):
         if fid not in self.parsed:
             b = self._ffx.get(fid)
             self.parsed[fid] = ffx.parse(b) if b else None
         return self.parsed[fid]
+
+    def model(self, mid):
+        """{w, h, tex, cls, mtd} of effect model sNNNNN.flver when it is flat (one mesh in its XY plane, the ripple
+        rings; drawn as the particle's quad), else None (logged once)"""
+        if mid in self._models:
+            return self._models[mid]
+        b, out = self._flver.get(f"s{mid:05d}"), None
+        if b is not None:
+            F = souls.flver(b)
+            ms = [m for m in F["meshes"] if m["verts"]["pos"]]
+            pos = [p for m in ms for p in m["verts"]["pos"]]
+            lo, hi = [min(p[k] for p in pos) for k in range(3)], [max(p[k] for p in pos) for k in range(3)]
+            w, h, d = (hi[k] - lo[k] for k in range(3))
+            dif = ms[0]["diffuse"] if len(ms) == 1 else None
+            if dif and d <= MODEL_FLAT * max(w, h) and dif[:1] == "s" and dif[1:].isdigit():
+                out = dict(w=w, h=h, tex=int(dif[1:]), cls=material.classify(ms[0]["mtd"], dif), mtd=ms[0]["mtd"])
+            else:
+                print(f"export_effects: model s{mid:05d} is not one flat textured mesh ({len(ms)} meshes, "
+                      f"extent {w:.2f} x {h:.2f} x {d:.2f}): its particles skipped (TECH_DEBT fx-7)")
+        self._models[mid] = out
+        return out
 
     def texture(self, tid):
         t = self._tpf.get(f"s{tid:05d}")
@@ -626,7 +672,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False, shine=False):
         lod_seen = set()
         for kind, cc, xf, pxf in found:
             if kind == "ps" and len(refs) - first < MAX_SYS_PER_EFFECT:
-                s = system(cc, xf, pxf, fx_tone, tex_of, lambda i: covs[i])
+                s = system(cc, xf, pxf, fx_tone, tex_of, lambda i: covs[i], lib.model)
                 if s and FX_LOD_ONE:
                     key = _lod_key(s)
                     if key in lod_seen:

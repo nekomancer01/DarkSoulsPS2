@@ -475,9 +475,9 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
                 ft_print(c->text, ft_seg);
                 pb_print(c->text);
                 static int mpg_shot;  /* VU1 program uploads (R8 reloads) over the shot's segment */
-                printf("TEST fx %s particles %d drawn %d vu1 %d batches %d ms %.3f draw %.3f breaks %d %d %d culled %d "
+                printf("TEST fx %s particles %d drawn %d vu1 %d model %d batches %d ms %.3f draw %.3f breaks %d %d %d culled %d "
                        "mpg %d\n",
-                       c->text, fx_stats.particles, fx_stats.drawn, fx_stats.vu1, fx_stats.batches, fx_stats.ms,
+                       c->text, fx_stats.particles, fx_stats.drawn, fx_stats.vu1, fx_stats.model, fx_stats.batches, fx_stats.ms,
                        fx_stats.ms_draw, fx_stats.vu1_breaks[0], fx_stats.vu1_breaks[1], fx_stats.vu1_breaks[2],
                        fx_stats.culled, vu1_stats.mpg_loads - mpg_shot);
                 mpg_shot = vu1_stats.mpg_loads;
