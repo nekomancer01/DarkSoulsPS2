@@ -31,6 +31,7 @@
  * AREA                | "m10_02_00_00" | make | -                                          | main   | init  | main.c        | the area pack (make MAP=)
  * CHR_DIR             | ""       | make     | -                                             | io     | init  | pack.h        | the area's enemy / common pack folder (make MAP=)
  * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | scene  | #107  | model.h       | largest skeleton (make CHR_BONES=61: skeletons folded to 61 bones at export; the VU1 window size is make VU1_BONES)
+ * VU1_LAYOUT_FILE     | unset    | make     | -                                             | gfx    | #287  | vu1_layout.h  | the VU1 contract header to use instead (make VU1_BONES=61 sets it to the copy generated into the build dir)
  * PROFILE             | off      | make     | -DPROFILE                                     | core   | init  | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | core   | init  | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
  * HEAPMAP             | off      | make     | -DHEAPMAP                                     | core   | #203  | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
