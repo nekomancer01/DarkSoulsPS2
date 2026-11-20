@@ -132,6 +132,10 @@ Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chu
 | File | Id | Chunks |
 |---|---|---|
 | `world.bin` | `WRLD` | `BLKS` blocks, `LRNG` link ranges, `LINK` links, `REAC` reach table (optional) |
+| `items/items.bin`, `itemx.bin` | `ITEM`, `ITMX` | `GOOD`, `AMMO`, `ICMP`; `ROWS`, `REIN`, `NAME` |
+| `items/desc.bin`, `icons.bin` (raw, read by offset) | `DESC`, `ICON` | `TEXT`; `IHDR`, `IDS `, `CELL` (64-byte aligned) |
+| `menu.bin`, `help.bin` | `MENU`, `HELP` | `MHDR`, `ATLS`, `TEXL` (128-byte aligned), `SPRT`, `GLYP`, `LAYT`, `GRAD`, `STRS`; `HIDX`, `HTXT` |
+| `screens/scr_*.bin`, `loading.bin` | `SCRN`, `LOAD` | header, tables, then `CLUT` and `PIXL` (128-byte aligned): the runtime keeps the chunks before `CLUT` |
 
 The layout of each chunk is documented at the top of the exporter that writes it. Formats not yet moved (map.bin,
 cells.bin, model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they

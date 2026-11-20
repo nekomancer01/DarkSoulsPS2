@@ -14,22 +14,23 @@ ScrollText +24 colour a, b, g, r, +28 u8 font size class, +30 u8 alignment (1 ri
 4 bottom: inferred from where labels and values sit), +36 u32 msgbnd file id, +40 u32 FMG text id (the text, which
 for most elements is a <?tag?> the game fills in).
 
-Output scr_<name>.bin (little-endian):
-  header  'DSCR', u32 version, u32 nodes, u32 node offset, u32 roots, u32 root offset, u32 strings, u32 string offset,
-          u16 atlas w, h, u32 clut offset, u32 pixel offset, u32 sprites, u32 sprite offset, u32 gradients,
-          u32 gradient offset; padded to 64
-  node    {s16 x0, y0, x1, y1 (640x448, absolute); u8 type; u8 align; u16 end (index after its subtree);
+Output scr_<name>.bin: a chunk file (tools/chunkfile.py, file id 'SCRN'; src/drb.c reads it in place), little-endian:
+  SHDR v1 u32 nodes, roots, strings, sprites, gradients; u16 atlas w, h
+  NODE v1 per node   {s16 x0, y0, x1, y1 (640x448, absolute); u8 type; u8 align; u16 end (index after its subtree);
            s16 sprite (atlas sprite; Text: string index; GouraudRect: gradient index; -1 none); u8 font; u8 flags (1: hidden by default: a "bk_"
            backup or "mg_" (the cut MP stat) element, or wholly off screen = a template the code moves);
            u32 colour (r, g, b, a with a 0..0x80);
            u32 name hash (FNV-1a 32 of the element name)}  24 B
           types: 0 Null, 1 Dialog, 2 Sprite, 3 Rect (MonoRect / GouraudRect), 4 Text (also ScrollText)
-  root    u32 node index (the root's node is a Dialog named after the DRB dialog)
-  strings u32 offsets, then NUL-terminated ASCII (FMG text, <?tags?> kept)
-  sprite  {u16 u, v, w, h}  (texels in the atlas)
-  gradient {u8 r, g, b, a} x 4: top left, top right, bottom right, bottom left (a 0..0x80); the node's colour is
+  ROOT v1 u32 node index (the root's node is a Dialog named after the DRB dialog)
+  STRS v1 u32 offset per string (into this payload), then NUL-terminated ASCII (FMG text, <?tags?> kept)
+  SPRT v1 {u16 u, v, w, h}  (texels in the atlas)
+  GRAD v1 {u8 r, g, b, a} x 4: top left, top right, bottom right, bottom left (a 0..0x80); the node's colour is
           their average
-  atlas   CLUT (256 x RGBA, CSM1, alpha 0..0x80) at its offset, PSMT8 pixels at theirs, both 128-byte aligned
+  CLUT v1 (128-byte aligned) 256 x RGBA, CSM1, alpha 0..0x80
+  PIXL v1 (128-byte aligned) the atlas's PSMT8 pixels
+  The chunks before CLUT are what src/drb.c keeps while the screen is open (the atlas goes to VRAM).
+  (before Polaris 3.3: one 'DSCR' version 2 blob of the same tables behind a 64-byte header, offsets from its start)
 Usage: export_screens.py <game dir> <out dir> [preview dir]"""
 import os, struct, sys
 
@@ -38,8 +39,8 @@ import souls
 import export_menu as em
 import export_items
 import resample
+import chunkfile
 
-VERSION = 2
 SX, SY = 640 / 1280, 448 / 720
 T_NULL, T_DIALOG, T_SPRITE, T_RECT, T_TEXT = range(5)
 MENU_COLORS = {}  # MenuColorTableParam row -> (r, g, b, a), set in main
@@ -263,42 +264,22 @@ def export(game, name, roots, kb, dlgs, tex_names, texs, fmgs, out_dir, preview_
                             align, end, spr, font, flags, *col, fnv(el))
     assert len(body) == 24 * len(nodes)
 
-    HDR = 64
-    blob = bytearray(b"\0" * HDR)
-
-    def align_to(n):
-        blob.extend(b"\0" * ((-len(blob)) % n))
-    node_off = len(blob)
-    blob += body
-    root_off = len(blob)
-    blob += struct.pack(f"<{len(root_idx)}I", *root_idx)
-    str_off = len(blob)
-    sb = bytearray()
-    so = []
+    sb, so = bytearray(), []
     for s in strings:
         so.append(len(sb))
         sb += s.encode("ascii", "replace") + b"\0"
-    blob += struct.pack(f"<{len(so)}I", *[str_off + 4 * len(so) + o for o in so]) + sb
-    align_to(4)
-    spr_off = len(blob)
-    for s in sprites:
-        blob += struct.pack("<4H", *s)
-    grad_off = len(blob)
-    for g in grads:
-        blob += g
-    align_to(128)
-    clut_off = len(blob)
-    blob += clut
-    align_to(128)
-    pix_off = len(blob)
-    blob += pix
-    struct.pack_into("<4s7I2H6I", blob, 0, b"DSCR", VERSION, len(nodes), node_off, len(root_idx), root_off,
-                     len(strings), str_off, aw, used_h, clut_off, pix_off, len(sprites), spr_off, len(grads), grad_off)
-    with open(os.path.join(out_dir, f"scr_{name}.bin"), "wb") as f:
-        f.write(blob)
+    size = chunkfile.write(os.path.join(out_dir, f"scr_{name}.bin"), b"SCRN", [
+        (b"SHDR", 1, struct.pack("<5I2H", len(nodes), len(root_idx), len(strings), len(sprites), len(grads), aw, used_h)),
+        (b"NODE", 1, body),
+        (b"ROOT", 1, struct.pack(f"<{len(root_idx)}I", *root_idx)),
+        (b"STRS", 1, struct.pack(f"<{len(so)}I", *[4 * len(so) + o for o in so]) + sb),
+        (b"SPRT", 1, b"".join(struct.pack("<4H", *s) for s in sprites)),
+        (b"GRAD", 1, b"".join(grads)),
+        (b"CLUT", 1, clut, 128),
+        (b"PIXL", 1, pix, 128)])
     vram = len(clut) + len(pix)
     print(f"scr_{name}: {len(nodes)} nodes, {len(sprites)} sprites, {len(grads)} gradients, atlas {aw}x{used_h} ({vram // 1024} KB VRAM), "
-          f"{len(strings)} strings, {len(blob)} B")
+          f"{len(strings)} strings, {size} B")
     if preview_dir:
         atlas.save(os.path.join(preview_dir, f"scr_{name}_atlas.png"))
     return vram

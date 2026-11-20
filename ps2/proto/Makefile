@@ -474,14 +474,14 @@ $(G)/model.bin: $(TS)/export_model.py.sum $(TS)/resample.py.sum $(TS)/havok_anim
 
 
 # HUD and menus: DSR's menu sprites (menu.drb layout), DSFont24, item icons, English FMG text (tools/export_menu.py)
-$(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+$(G)/menu.bin: $(TS)/chunkfile.py.sum $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" $@
 
 # Item database (src/items.c): stack sizes / kinds (resident), names, stats, descriptions and icons (read while a menu
 # is open; desc.bin and icons.bin stored raw for reads in place) (tools/export_items.py)
 ITEM_FILES = $(addprefix $(G)/items/,items.bin itemx.bin desc.bin icons.bin)
-$(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.py.sum
+$(G)/items/.stamp: $(TS)/chunkfile.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_items.py "$(GAME)" $(@D)
 	@touch $@
@@ -490,7 +490,7 @@ $(ITEM_FILES): $(G)/items/.stamp ;
 # (tools/export_screens.py SCREENS)
 SCREEN_NAMES = R00 I02 I01 R02 I06 F25
 SCREEN_FILES = $(SCREEN_NAMES:%=$(G)/screens/scr_%.bin)
-$(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
+$(G)/screens/.stamp: $(TS)/chunkfile.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum \
 		$(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_screens.py "$(GAME)" $(@D)
@@ -499,7 +499,7 @@ $(SCREEN_FILES): $(G)/screens/.stamp ;
 
 # Loading screen (src/loading.c): menu.drb E00_00, the nowloading.tpf bonfire cells, DSFont24, the exe's hint table with
 # the items' names and long descriptions (tools/export_loading.py; the icons are icons.bin's)
-$(G)/loading.bin: $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum \
+$(G)/loading.bin: $(TS)/chunkfile.py.sum $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum \
 		$(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_loading.py "$(GAME)" $@
@@ -512,7 +512,7 @@ $(G)/shine.bin: $(TS)/export_effects.py.sum $(TS)/material.py.sum $(TS)/resample
 	$(PY) -I ../../tools/export_effects.py "$(GAME)" --shine $@ $(MAP) --tone $(A)/fx_tone.json
 
 # One-line action prompts (src/hud.c hud_help: Event_text 10010000-10010999, e.g. "Open", "Pick up item")
-$(G)/help.bin: $(TS)/export_menu.py.sum $(TS)/souls.py.sum
+$(G)/help.bin: $(TS)/chunkfile.py.sum $(TS)/export_menu.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" --help $@
 
