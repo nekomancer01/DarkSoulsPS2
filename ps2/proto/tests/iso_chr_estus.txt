@@ -1,5 +1,7 @@
-# Estus (PR F): after a test hit (HP 594 -> 551), Square drinks: ESD group 1 states 163 / 164 (a00 6209 / 6409),
-# at the drink's TAE 64 one charge goes (5 -> 4) and goods 201's SpEffect 3020 heals 300 ("player: used item").
+# Estus (PR F, anims fixed 2026-11-21): after a test hit (HP 594 -> 551), Square (request slot 14) drinks: ESD group 1
+# state 16 (a00 7585, raise the flask), 18 (7586, drink), 19 (7587, lower). At 7586's TAE 65 ConsumeCurrentGoods
+# (0.27 s) one charge goes (5 -> 4) and goods 201's SpEffect 3020 heals 300 ("player: used item"). Before the fix
+# Square went down the spell branch (states 163 / 164, a00 6209 / 6409 = a two-handed cast).
 # Boot the ISO:
 #   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_chr_estus.txt <out> --iso build/proto.iso --timeout 600
 option hud
@@ -11,7 +13,15 @@ hit 98 20
 wait 1
 square
 wait 0.8
+shot raise1
+wait 1.0
+shot raise2
+wait 0.9
 shot drinking
+wait 0.6
+shot drinking2
+wait 1.2
+shot lower
 wait 2.5
 shot after
 stats

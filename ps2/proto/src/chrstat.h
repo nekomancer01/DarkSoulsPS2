@@ -29,7 +29,7 @@ typedef struct {
     int guard_stab[2];          /* staminaGuardDef (stability) */
     int guard_level[2];
     float resist[4];
-    /* the selected quick item (chr_quick; Estus = goods 201's row): id, goodsUseAnim (ESD f227), HP healed,
+    /* the selected quick item (chr_quick; Estus = goods 201's row): id, goodsUseAnim (ESD f231), HP healed,
      * humanity (st 11) and souls (st 9 / 10) given, consumed on use */
     unsigned item_id;
     int item_anim, item_heal, item_hum, item_souls, item_consume;

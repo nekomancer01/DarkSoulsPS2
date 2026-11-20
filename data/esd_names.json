@@ -92,27 +92,27 @@
    "confidence": "high"
   },
   "227": {
-   "name": "GetSelectedItemMotionType",
+   "name": "GetSelectedSpellMotionType",
    "args": "()",
-   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe3 -> FUN_1403239f0: current goods (vt+0x2f8) row byte +0x25, 0xfe when not usable, -1 none",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe3 -> FUN_1403239f0: current magic (vt+0x2f8, param table 14 = MagicParam) row byte +0x25 refType, 0xfe when not usable, -1 none",
    "confidence": "medium"
   },
   "231": {
-   "name": "GetSelectedSpellMotionType",
+   "name": "GetSelectedItemMotionType",
    "args": "()",
-   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe7 -> FUN_140323b20: current magic (vt+0x308) row byte +0x3e, 0xff when not castable",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe7 -> FUN_140323b20: current goods (vt+0x308, param table 3 = EquipParamGoods) row byte +0x3e goodsUseAnim, 0xff when not usable",
    "confidence": "medium"
   },
   "232": {
-   "name": "HasUsableItem",
+   "name": "CanCastSpell",
    "args": "()",
-   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe8 -> FUN_140323bf0: goods id from vt+0x2f8 resolves and vt+0x390(-1, id) accepts",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe8 -> FUN_140323bf0: magic id from vt+0x2f8 (param table 14) resolves and vt+0x390(-1, id) accepts",
    "confidence": "medium"
   },
   "233": {
-   "name": "CanCastSpell",
+   "name": "HasUsableItem",
    "args": "()",
-   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe9 -> FUN_140325230: magic slot >=0, FUN_1402e05e0 requirement check on the current spell",
+   "evidence": "EzStateActionEnv::Eval FUN_14038b540 case 0xe9 -> FUN_140325230: quick slot >=0, FUN_1402e05e0 use check on the current goods (vt+0x308, FUN_14052bc30 = param table 3)",
    "confidence": "medium"
   },
   "236": {

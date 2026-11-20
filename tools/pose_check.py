@@ -6,8 +6,10 @@ yaw = spawn yaw, pitch 0.25, 4 m, target 1.42 m up; FOCAL_X 609 / FOCAL_Y 568.4 
 next to a PCSX2 capture of the same frame (proto built with a forced pose and the player pinned at the spawn).
 Also prints the body's lean: head and neck relative to the feet/pelvis in the character's own frame.
 
-Usage: pose_check.py <game dir> <anim id> <frame> <out.png> [--map map.bin] [--shot pcsx2.png] [--blend id] [--mirror]
+Usage: pose_check.py <game dir> <anim id> <frame> <out.png> [--map map.bin] [--shot pcsx2.png] [--blend id] [--archive name --prefix aNN] [--mirror]
   --blend   50/50 blend with another animation of the same archive (export_model.py TURN_PAIR, e.g. 535 + 536)
+  --archive / --prefix  anim archive and file prefix (default c0000_a00_lo / a00 below id 3000, else c0000_a2x / a23;
+            e.g. --archive c0000_a00_md --prefix a00 for the item-use and bonfire anims)
   --mirror  also render the model mirrored on X (left-handed data shown right-handed) for a side-by-side check"""
 import math, os, struct, sys
 
@@ -133,15 +135,16 @@ def main():
     chr_dir = os.path.join(game, "chr")
     anibnd = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(f"{chr_dir}/c0000.anibnd.dcx"))}
     names, parents, ref = ha.skeleton(anibnd["Skeleton.hkx"])
-    archive = "c0000_a00_lo" if aid < 3000 else "c0000_a2x"
+    archive = opt("--archive") or ("c0000_a00_lo" if aid < 3000 else "c0000_a2x")
+    pre = opt("--prefix") or ("a00" if aid < 3000 else "a23")
     files = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(f"{chr_dir}/{archive}.anibnd.dcx"))}
-    nf, fps, t2b, frames = ha.animation(files[f"{'a00' if aid < 3000 else 'a23'}_{aid:04d}.hkx"])
+    nf, fps, t2b, frames = ha.animation(files[f"{pre}_{aid:04d}.hkx"])
     pose_local = list(ref)
     for tr, b in enumerate(t2b):
         pose_local[b] = frames[min(frame, nf - 1)][tr]
     if opt("--blend"):
         bid = int(opt("--blend"))
-        nf2, _, t2b2, frames2 = ha.animation(files[f"{'a00' if bid < 3000 else 'a23'}_{bid:04d}.hkx"])
+        nf2, _, t2b2, frames2 = ha.animation(files[f"{pre}_{bid:04d}.hkx"])
         other = list(ref)
         for tr, b in enumerate(t2b2):
             other[b] = frames2[min(frame, nf2 - 1)][tr]
