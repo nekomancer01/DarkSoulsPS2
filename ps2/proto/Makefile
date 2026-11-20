@@ -404,7 +404,7 @@ $(A)/events.bin: $(TS)/export_emevd.py.sum $(TS)/emevd.py.sum $(TS)/export_colli
 $(A)/evcommon.bin: $(A)/events.bin
 
 # (export_progress.py: the humanity zone keys; params.py: NpcParam getSoul / humanityLotId, ItemLotParam)
-$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(TS)/export_progress.py.sum \
+$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/chunkfile.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(TS)/export_progress.py.sum \
 		$(TS)/gamedata.py.sum $(TS)/params.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $@ $(MAP)
