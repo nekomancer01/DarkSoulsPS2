@@ -11,7 +11,8 @@
  *
  * VRAM. Every allocation is charged to an owner (GsOwner) and the owner is stored with it (a 4-bit owner per 256-byte
  * GS block), so a free credits the owner that paid. The budgets are gs_budget.h's rows; the rows plus page slack plus
- * never-taken pages sum to 4096 KB. Over-budget only reports in 1.1 ("TEST warn: gs vram ..."); Polaris 2.7 enforces.
+ * never-taken pages sum to 4096 KB. Over-budget reports ("TEST warn: gs vram ..."); since Polaris 2.7 the streaming
+ * owners (characters, objects, effects) are refused past their row (gs_vram_admit).
  * The loading screen's VRAM is borrowed (from the map pool, or the free top at boot), so it is counted on its own
  * (gs_vram_borrow) and checked to be back at 0 after each loading screen. */
 #ifndef GS_H
@@ -98,6 +99,9 @@ extern const char *const gs_owner_name[GSO_N];
  * (the owner stored at the charge) */
 void gs_vram_charge(GsOwner o, u32 vram, unsigned blocks);
 void gs_vram_credit(u32 vram, unsigned blocks);
+/* Polaris 2.7: may owner o take `blocks` more? 0 = refused (characters / objects / effects past their gs_budget.h row;
+ * logged and counted per owner in the "gsvram:" line); the r_vram_* allocators ask before placing */
+int gs_vram_admit(GsOwner o, unsigned blocks);
 /* gsKit_vram_alloc charged to an owner: the bytes gsKit's pointer moved (its rounding included) */
 u32 gs_vram_fixed(GSGLOBAL *g, u32 size, u8 type, GsOwner o, const char *where);
 /* the loading screen's borrowed bytes (+ when it places itself, - when it lets go) */

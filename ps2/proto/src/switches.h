@@ -228,6 +228,7 @@
  * NO_HUD              | off      | debug    | -DNO_HUD                                      | ui     | init  | hud.c         | HUD loaded, not drawn
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
+ * GS_VRAM_ENFORCE     | 1        | fallback | -DGS_VRAM_ENFORCE=0                           | gfx    | new   | gs.c          | characters / objects / effects refused past their gs_budget.h row; 0 = report only (Polaris 1.1)
  * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
  * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | map.c         | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
  * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | map.c         | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)
