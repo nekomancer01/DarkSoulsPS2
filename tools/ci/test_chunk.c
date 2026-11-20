@@ -27,6 +27,7 @@ int main(int argc, char **argv)
     chunkw_start(&w, "HEAD", 2), chunkw_put(&w, hdr, sizeof hdr), chunkw_end(&w);
     chunkw_start(&w, "DATA", 1), chunkw_put(&w, "abcdefghijklmnopq", 17), chunkw_end(&w);
     chunkw_start(&w, "NONE", 7), chunkw_end(&w);
+    chunkw_align(&w, 256), chunkw_start(&w, "ALGN", 1), chunkw_put(&w, "256", 3), chunkw_end(&w);
     chunkw_start(&w, "VU1L", 1), chunkw_put(&w, &stamp, 4), chunkw_end(&w);
     chunkw_finish(&w);
     if (w.err)
@@ -37,12 +38,14 @@ int main(int argc, char **argv)
     unsigned n = (unsigned)w.len, sz;
     ChunkFile f;
 
-    CHECK(chunk_open(&f, b, n, CHUNK_ID('T', 'E', 'S', 'T'), "test.bin") && f.n == 4, "open a good file");
+    CHECK(chunk_open(&f, b, n, CHUNK_ID('T', 'E', 'S', 'T'), "test.bin") && f.n == 6, "open a good file (one PAD)");
     const unsigned *h = chunk_get(&f, CHUNK_ID('H', 'E', 'A', 'D'), 2, &sz);
     CHECK(h && sz == 12 && h[2] == 3 && ((size_t)h & 15) == 0, "HEAD v2 in place, 16-byte aligned");
     const char *d = chunk_get(&f, CHUNK_ID('D', 'A', 'T', 'A'), 1, &sz);
     CHECK(d && sz == 17 && !memcmp(d, "abcdefghijklmnopq", 17), "DATA v1");
     CHECK(chunk_get(&f, CHUNK_ID('N', 'O', 'N', 'E'), 7, &sz) && sz == 0, "empty chunk");
+    d = chunk_get(&f, CHUNK_ID('A', 'L', 'G', 'N'), 1, &sz);
+    CHECK(d && sz == 3 && (d - (const char *)b) % 256 == 0 && !memcmp(d, "256", 3), "ALGN payload 256-byte aligned");
     CHECK(chunk_open(&f, b, CHUNK_SIZE_UNKNOWN, CHUNK_ID('T', 'E', 'S', 'T'), "test.bin"), "open, size unknown");
     CHECK(chunk_vu1_check(&f), "VU1 stamp matches");
     CHECK(chunk_refusals == 0, "no refusal so far");

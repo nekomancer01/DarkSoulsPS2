@@ -5,6 +5,7 @@
  *   ChunkW w; chunkw_begin(&w, "PVS ");
  *   chunkw_start(&w, "PHDR", 1); chunkw_put(&w, hdr, sizeof hdr); chunkw_end(&w);
  *   ...
+ *   chunkw_align(&w, 128) before a chunkw_start: that payload 128-byte aligned in the file (a PAD chunk before it)
  *   chunkw_finish(&w);  then w.buf / w.len (malloc'd; free(w.buf)), or chunkw_save(&w, path)
  * A failed allocation sets w.err; every call after it does nothing and chunkw_save returns 0. */
 #ifndef CHUNKW_H
@@ -62,6 +63,20 @@ static void chunkw_start(ChunkW *w, const char id[4], unsigned version)
     h[4] = version & 0xFF, h[5] = version >> 8 & 0xFF;
     w->open = w->len + 1;
     chunkw_put(w, h, 16);
+}
+
+/* before chunkw_start: the next payload starts at a multiple of align (a power of two, 16 or more) from the file's
+ * start, behind a PAD chunk (tools/chunkfile.py pack() align) */
+static void chunkw_align(ChunkW *w, size_t align)
+{
+    if (w->err || (w->len + 16) % align == 0)
+        return;
+    size_t k = (align - (w->len + 32) % align) % align;
+    unsigned char h[16] = {'P', 'A', 'D', ' '};
+    chunkw_u32(h + 8, (unsigned)k);
+    chunkw_put(w, h, 16);
+    chunkw_put(w, NULL, k);
+    w->count++;
 }
 
 static void chunkw_end(ChunkW *w)

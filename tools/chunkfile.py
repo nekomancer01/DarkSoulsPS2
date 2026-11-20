@@ -6,7 +6,8 @@ Layout (little-endian, every part 16-byte aligned; the C side is ps2/proto/src/c
   header  u32 'CHNK', u32 file id (four characters, e.g. b"WRLD"), u32 total bytes (header to footer end), u32 chunks
   chunk   u32 id (four characters), u16 version, u16 flags (0), u32 payload bytes, u32 0; payload, zero-padded to 16
   footer  u32 'CEND', u32 total bytes, u32 0, u32 0
-Ids are unique in a file. The runtime asks for each chunk by id and the version it reads and refuses any other
+Ids are unique in a file, except PAD chunks (version 0, zero payload): a writer puts one before a chunk whose payload
+must start at a multiple of more than 16 bytes from the file's start (pack(): align). The runtime asks for each chunk by id and the version it reads and refuses any other
 version, a missing required chunk, another file id and a truncated file (a "TEST error: chunk:" line). Bump a chunk's
 version when its payload layout changes; adding a chunk needs no bump.
 
@@ -16,7 +17,7 @@ Payloads hold offsets, never pointers: the runtime reads them in place (base + o
 import struct
 import sys
 
-MAGIC, END = b"CHNK", b"CEND"
+MAGIC, END, PAD = b"CHNK", b"CEND", b"PAD "
 HDR = 16
 
 # The VU1 layout stamp (tools/vu1/layout.py layout_hash) of a file whose payloads hold VIF packets (chunk.h CHUNK_VU1L)
@@ -30,16 +31,24 @@ def _id(i):
 
 
 def pack(file_id, chunks):
-    """file_id: four characters; chunks: [(id, version, payload bytes)] in file order -> the file's bytes"""
+    """file_id: four characters; chunks: [(id, version, payload bytes[, align])] in file order -> the file's bytes.
+    align (a power of two, 16 or more): the payload starts at a multiple of it from the file's start (a PAD chunk
+    before it takes up the difference; readers skip PAD chunks like any chunk they do not ask for)."""
     ids = [_id(c[0]) for c in chunks]
-    assert len(set(ids)) == len(ids), f"duplicate chunk ids {ids}"
-    body = bytearray()
-    for cid, (_, ver, data) in zip(ids, chunks):
+    assert len(set(ids)) == len(ids) and PAD not in ids, f"duplicate or reserved chunk ids {ids}"
+    body, n = bytearray(), 0
+    for cid, c in zip(ids, chunks):
+        ver, data, align = c[1], bytes(c[2]), (c[3] if len(c) > 3 else 16)
         assert 0 <= ver <= 0xFFFF, f"chunk {cid}: version {ver}"
-        data = bytes(data)
+        assert align >= 16 and not align & (align - 1), f"chunk {cid}: align {align}"
+        if (HDR + len(body) + HDR) % align:
+            k = -(HDR + len(body) + 2 * HDR) % align
+            body += struct.pack("<4sHHII", PAD, 0, 0, k, 0) + bytes(k)
+            n += 1
         body += struct.pack("<4sHHII", cid, ver, 0, len(data), 0) + data + b"\0" * (-len(data) % 16)
+        n += 1
     total = HDR + len(body) + HDR
-    return struct.pack("<4s4sII", MAGIC, _id(file_id), total, len(chunks)) + bytes(body) + struct.pack("<4sIII", END, total, 0, 0)
+    return struct.pack("<4s4sII", MAGIC, _id(file_id), total, n) + bytes(body) + struct.pack("<4sIII", END, total, 0, 0)
 
 
 def write(path, file_id, chunks):
@@ -78,8 +87,9 @@ class File:
             cid, ver, _f, ln, _r = struct.unpack_from("<4sHHII", b, o)
             if o + HDR + ln > total - HDR:
                 raise ChunkError(f"{name}: chunk {cid!r} runs past the end")
-            self.chunks[cid] = (ver, b[o + HDR:o + HDR + ln])
-            self.order.append(cid)
+            if cid != PAD:
+                self.chunks[cid] = (ver, b[o + HDR:o + HDR + ln])
+                self.order.append(cid)
             o += HDR + ln + (-ln % 16)
         if o != total - HDR:
             raise ChunkError(f"{name}: {n} chunks do not fill {total} bytes")

@@ -4,7 +4,9 @@
  *   header  u32 'CHNK', u32 file id (four characters: what the file is, e.g. 'WRLD'), u32 total bytes (header to
  *           footer end), u32 chunk count
  *   chunk   u32 id (four characters), u16 version, u16 flags (0), u32 payload bytes, u32 0; the payload, zero-padded
- *           to 16 bytes. Ids are unique in a file; the order is the writer's.
+ *           to 16 bytes. Ids are unique in a file, except 'PAD ' chunks (version 0, zero payload) a writer puts
+ *           before a chunk whose payload must start at a multiple of more than 16 bytes (128 for model data); the
+ *           order is the writer's.
  *   footer  u32 'CEND', u32 total bytes, u32 0, u32 0
  * Writers: tools/chunkfile.py (exporters), tools/native/chunkw.h (C tools: pvs_bake, libmapx). Readers: this (runtime and
  * Lab), tools/chunkfile.py (Python tools that read an export back).
