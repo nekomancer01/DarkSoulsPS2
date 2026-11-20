@@ -62,6 +62,8 @@ static inline u64 gs_frame(u32 vram, int width, int psm, u32 mask)
     return GS_SETREG_FRAME_1(vram / 8192, width / 64, psm, mask);
 }
 static inline u64 gs_zbuf(const GSGLOBAL *g, int no_write) { return GS_SETREG_ZBUF(g->ZBuffer / 8192, g->PSMZ, no_write); }
+/* a Z buffer at byte address vram (8 KB aligned) in format psmz: an offscreen target's own (shadow.c) */
+static inline u64 gs_zbuf_at(u32 vram, int psmz, int no_write) { return GS_SETREG_ZBUF(vram / 8192, psmz, no_write); }
 
 /* Image transfer header words, in the order the GS takes them: BITBLTBUF, TRXPOS, TRXREG, TRXDIR (then the image) */
 static inline u64 gs_blt_to(u32 tbp, int tbw, int psm) { return GS_SETREG_BITBLTBUF(0, 0, 0, tbp, tbw, psm); }

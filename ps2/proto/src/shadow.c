@@ -124,7 +124,7 @@ int shadow_sil_begin(V3 feet)
     int n = 0;
 #define REG(v, a) (rg[2 * n] = (v), rg[2 * n + 1] = (a), n++)
     REG(gs_frame(sil_vram, SIL_W, GS_PSM_CT16, 0), GSR_FRAME);
-    REG(GS_SETREG_ZBUF(sil_z / 8192, GS_PSMZ_16S, 0), GSR_ZBUF);
+    REG(gs_zbuf_at(sil_z, GS_PSMZ_16S, 0), GSR_ZBUF);
     REG(SIL_SCISSOR(0, SIL_W - 1, 0, SIL_H - 1), GSR_SCISSOR);
     REG(SIL_XYOFFSET(ox, oy), GSR_XYOFFSET);
     REG(GS_TEST_ZALWAYS, GSR_TEST);
