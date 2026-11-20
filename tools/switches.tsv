@@ -15,7 +15,7 @@ ALIGNCHECK	make	unset	debug	core	1	#108	Makefile	-
 BLOCK	make	empty	config	tools	-	init	Makefile:23	World block (src/world.c, tools/area.py BLOCKS): `make MAP=<msb> BLOCK=<block> blockpacks` exports a cropped part of an MSB like an area into gen/<BLOCK>/ and data/<BLOCK>.pak; the exporters read AREA
 BUILD	make	unset	config	tools	-	init	Makefile	-
 BUMP_BAKE	make	1	flag	gfx	0	#165	Makefile:321	BUMP_BAKE (default 1): normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba); bump.bin stays empty and src/bump.c reserves no relief VRAM pool / CLUT area. 0: th
-CHR_BONES	make	255	tune	scene	-	#107	Makefile:89	CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette wind
+CHR_BONES	make	255	tune	scene	-	#107	Makefile:89	CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through per-batch bone windows (model.c); CHR_BONES=61 folds bigger skeletons to 61 bones at export
 COL_TILES	make	1	flag	world	0	#157	Makefile:317	COL_TILES (the cube-grid plan's step 1, default 1): world blocks read their collision.bin's index with the lite set and its 16 m tiles (tools/export_collision.py COL_TILE) by distance into the structu
 DEFS	make	unset	config	tools	-	init	Makefile	-
 DISC_CACHE	make	1	flag	io	0	#144	Makefile:105	-
@@ -49,6 +49,8 @@ PVS_GPU_RES	make	192	tune	world	-	#211	Makefile:615	-
 PVS_PEERS	make	computed	config	world	-	#116	Makefile:200	Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexpor
 PVS_RES	make	96	tune	world	-	#211	Makefile:604	bake resolution (cube face pixels): 96 since 2026-11-15, the check (--validate) still renders at 192. On Asylum and Burg b the 192 px bake and this one miss the same share of pixels (0.0085 % / 0 %) f
 PVS_VALIDATE	make	300	debug	world	1	#116	Makefile:600	-
+VU1_BONE_MAX	env	40	tune	scene	61	#287	vu1/layout.py	the skin palette window size the VU1 contract is generated for (make VU1_BONES sets it)
+VU1_BONES	make	40	flag	scene	61	#287	Makefile	VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default): skeletons over 40 paged through bone windows, 27-triangle batches; 61 = the old path: one 61-bone window, 23-triangle batches (24 before the light block) (vu1_layout.h and the skin programs generated into the build dir)
 WORLD_BUDGET_ARGS	make	--strict	config	world	-	#142	Makefile:645	World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at
 WORLD_EARLY_BAKES	make	1	flag	world	0	#246	Makefile:217	The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 m
 WORLD_J	make	empty	config	world	-	#9	Makefile:197	WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB).
