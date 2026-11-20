@@ -146,6 +146,34 @@ from an existing one: `tools/newbuild "$PWD/build" --from <other tree>/build`.
 
 Build-time variables that change what is exported are registered in `tools/switches.tsv`.
 
+## Build cache
+
+`tools/buildcache.py` is a content-addressed cache for export results. An entry's key is a SHA-256 of everything
+that decides the result: the step's code (its source files, or the bytes of a compiled tool), the environment values
+it reads, its arguments and the bytes of its inputs. Paths and modification times are never part of a key, so a hit
+is reused by any build dir, any worktree, another machine sharing the directory, or a change that was reverted. The
+output is the same bytes with the cache on or off.
+
+| Namespace | Step | Own switch |
+|---|---|---|
+| `pvs` | occlusion bake per block (`pvs_cache.py` around `pvs_bake`) | `PVS_CACHE` |
+| `simplify` | Python simplifier jobs (`simplify_pool.py`, the fallback when libmapx is off) | `SIMPLIFY_CACHE`, cap `SIMPLIFY_CACHE_GB` (10) |
+| `snd` | one sound sample's ADPCM encode (`export_audio.py`) | `SND_CACHE` |
+| `tex` | one map texture's palette encode (`texmap.py`) | `TEX_CACHE` |
+
+- **Location.** `<main tree>/build/cache/<namespace>/<key[:2]>/<key>`, shared by every worktree of the checkout.
+  `DSR_CACHE` moves the root; a namespace switch set to a path moves that namespace.
+- **Size cap.** `BUILDCACHE_GB` per namespace (default 4 GB). Reads refresh an entry's time; past the cap the least
+  recently used entries go until the namespace is at 80 %.
+- **Bypass.** `BUILDCACHE=0` turns every namespace off (a namespace switch set to `0` turns off just that one).
+- **Verify.** `BUILDCACHE_VERIFY=1` recomputes every hit and compares it with the entry. A difference means a key
+  misses an input: the step stops with an error naming the namespace and key, also written to `<root>/verify.log`.
+- **Inspect.** `python3 tools/buildcache.py stats` (entries and size per namespace), `trim`, `clear <namespace>`.
+
+A new cached step builds a `buildcache.Cache(namespace, version, sources=..., extra=..., where=...)` with every file
+and environment value that changes its output, then calls `cache.cached(key, compute)`. Phase 3 part 2 wraps every
+recipe step this way.
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the

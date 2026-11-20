@@ -47,7 +47,7 @@ Usage: export_audio.py <pak dir> <work dir> <map id> [map id ...]  (the packs th
                                                                    packed, one directory per pack)
        Decoding and encoding run in DSR_AUDIO_JOBS worker processes (default: every core, at most 8); the packs are
        the same bytes whatever the count (each sample is encoded alone, results are written in order). Encoded
-       samples are cached across exports and trees (cache(), SND_CACHE=0 = off): the packs are the same bytes either way.
+       samples are cached across exports and trees (cache(): tools/buildcache.py, SND_CACHE=0 = off): the packs are the same bytes either way.
        export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)"""
 import glob, os, re, struct, sys, time
 import multiprocessing
@@ -288,32 +288,23 @@ _CACHE = []
 
 
 def cache():
-    """(dir, key hash) of the encoded-sample cache, or None: SND_CACHE (default <main tree>/build/cache/snd, shared by
-    every tree and build dir like the texture cache; 0 = off). The key covers the encoder (adpcm.py, vagenc.c, _encode,
-    downmix, STREAM_RATE, numpy) and, per sample, its decoded PCM and the arguments, so a hit is what _encode returns:
-    an export after a change elsewhere (souls.py, area.py, a new map) encodes only samples it has not seen."""
+    """the encoded-sample namespace of the build cache (tools/buildcache.py "snd"; SND_CACHE: 0 = off, a path = its
+    directory), or None when off. The key covers the encoder (adpcm.py, vagenc.c, _encode, downmix, STREAM_RATE, numpy)
+    and, per sample, its decoded PCM and the arguments, so a hit is what _encode returns: an export after a change
+    elsewhere (souls.py, area.py, a new map) encodes only samples it has not seen."""
     if not _CACHE:
-        import hashlib, inspect
-        d = os.environ.get("SND_CACHE")
-        if d == "0":
-            _CACHE.append(None)
-            return None
-        if not d:
-            import simplify_pool
-            d = os.path.join(os.environ.get("DSR_CACHE") or os.path.join(simplify_pool.main_tree(), "build", "cache"),
-                             "snd")
-        h = hashlib.sha256(b"snd-cache-1")
-        for f in ("adpcm.py", "vagenc.c"):
-            h.update(open(os.path.join(HERE, "adpcm", f), "rb").read())
-        h.update(repr((inspect.getsource(_encode), inspect.getsource(downmix), STREAM_RATE, np.__version__)).encode())
-        _CACHE.append((d, h))
+        import inspect
+        import buildcache
+        c = buildcache.Cache("snd", b"snd-cache-2", sources=[os.path.join(HERE, "adpcm", f) for f in ("adpcm.py", "vagenc.c")],
+                             extra=[inspect.getsource(_encode), inspect.getsource(downmix), STREAM_RATE, np.__version__],
+                             where=os.environ.get("SND_CACHE"))
+        _CACHE.append(c if c.dir else None)
     return _CACHE[0]
 
 
 def encode_sample(job):
     """one sample -> (ADPCM blobs per channel, SNR of channel 0 or None), from the cache when it has it; runs in a
     worker process"""
-    import pickle
     path, index, tier, loop, rate = job
     b = _FSB.get(path) or _FSB.setdefault(path, fsb4.FSB4(path))
     s = b.samples[index]
@@ -321,26 +312,8 @@ def encode_sample(job):
     c = cache()
     if c is None:
         return _encode(pcm, s, tier, loop, rate)
-    k = c[1].copy()
-    k.update(repr((pcm.shape, s.freq, s.channels, tier, bool(loop), rate)).encode())
-    k.update(np.ascontiguousarray(pcm).tobytes())
-    key = k.hexdigest()
-    p = os.path.join(c[0], key[:2], key)
-    try:
-        with open(p, "rb") as f:
-            return pickle.load(f)
-    except (OSError, ValueError, EOFError, pickle.UnpicklingError):
-        pass
-    r = _encode(pcm, s, tier, loop, rate)
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = f"{p}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(r, f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(tmp, p)
-    except OSError as e:
-        print(f"export_audio: cache write failed ({e})", flush=True)
-    return r
+    return c.cached(c.key(pcm.shape, s.freq, s.channels, tier, bool(loop), rate, pcm),
+                    lambda: _encode(pcm, s, tier, loop, rate))
 
 
 POOL = None  # main(): worker pool, None = encode in this process (Pyodide has no processes)
@@ -356,7 +329,7 @@ def start_pool():
             POOL = multiprocessing.get_context("fork").Pool(n)
         except Exception:  # no processes here (Pyodide): encode in this one
             POOL = None
-    print(f"encoding in {n if POOL else 1} process(es) (DSR_AUDIO_JOBS); sample cache {c[0] if c else 'off'}"
+    print(f"encoding in {n if POOL else 1} process(es) (DSR_AUDIO_JOBS); sample cache {c.dir if c else 'off'}"
           " (SND_CACHE)", flush=True)
 
 

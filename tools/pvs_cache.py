@@ -6,13 +6,16 @@ Runs the bake, or copies pvs.bin and the bake's log from an earlier run with the
 binary's bytes, every option, and the bytes of every input file (the block's and its --with peers'), so a new build
 dir, a new worktree, or a map re-export that wrote the same pvsin.bin / dg.bin / collision.bin as before takes
 seconds instead of a bake (~2-3 CPU min per block). The output is the same bytes either way.
-Cache: PVS_CACHE (a directory; 0 = off), default <main tree>/build/cache/pvs (DSR_CACHE: the cache root), entries
-are small (pvs.bin ~60-210 KB). Entries are written by rename, so parallel builds never read half a one.
+Cache: the "pvs" namespace of tools/buildcache.py (<cache root>/pvs; PVS_CACHE: 0 = off, a path = its directory;
+BUILDCACHE=0 bypasses it, BUILDCACHE_VERIFY=1 bakes on a hit too and compares). Entries are small (pvs.bin ~60-210 KB).
 
 GPU hand-over (container builds, tools/build-iso.sh): when DSR_PVS_SPOOL names a spool directory whose server
 (tools/pvs_gpu_server.py, in a container with the GPU) is up, the bake runs there instead of here; the cache key then
 carries "gpu", as its output differs from a CPU bake's. When the server is not up, or stops, the bake runs here."""
-import hashlib, json, os, shutil, subprocess, sys, time
+import json, os, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run with python3 -I: no script dir on sys.path
+import buildcache
 
 # pvs_bake's OpenMP threads sleep between its many short parallel loops instead of spinning (libgomp's default spins):
 # with the GPU path a bake spun ~200 of its ~270 CPU-s per Burg block, starving the rest of the build (2026-11-17);
@@ -20,37 +23,12 @@ import hashlib, json, os, shutil, subprocess, sys, time
 os.environ.setdefault("OMP_WAIT_POLICY", "passive")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = b"pvs-cache-1"
+VERSION = b"pvs-cache-2"  # 2: one buildcache entry {"bin", "log"}
 
 
-def main_tree():
-    """The main working tree of this repo (tools/simplify_pool.main_tree, without its numpy imports)"""
-    root = os.path.dirname(HERE)
-    g = os.path.join(root, ".git")
-    try:
-        if os.path.isfile(g):
-            gitdir = open(g).read().split("gitdir:", 1)[1].strip()
-            gitdir = os.path.normpath(os.path.join(root, gitdir))
-            common = open(os.path.join(gitdir, "commondir")).read().strip()
-            return os.path.dirname(os.path.normpath(os.path.join(gitdir, common)))
-    except (OSError, IndexError):
-        pass
-    return root
-
-
-def cache_dir():
-    c = os.environ.get("PVS_CACHE")
-    if c == "0":
-        return None
-    return c or os.path.join(os.environ.get("DSR_CACHE") or os.path.join(main_tree(), "build", "cache"), "pvs")
-
-
-def file_hash(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
+def cache():
+    """the PVS namespace of the build cache (tools/buildcache.py; PVS_CACHE: 0 = off, a path = its directory)"""
+    return buildcache.Cache("pvs", VERSION, where=os.environ.get("PVS_CACHE"))
 
 
 def spool():
@@ -89,18 +67,24 @@ def remote(d, argv):
     return rc, out
 
 
-def key(argv, gpu=False):
-    """argv = the bake's command line; the output (argv[4]) by position only, existing files by content"""
-    h = hashlib.sha256(VERSION + (b"\0<gpu>" if gpu else b""))
-    h.update(file_hash(argv[0]).encode())
+def key(c, argv, gpu=False):
+    """argv = the bake's command line; the bake binary and every existing input file by content, the output (argv[4])
+    by position only, the rest as given"""
+    parts = ["gpu" if gpu else "cpu", buildcache.File(argv[0])]
     for i, a in enumerate(argv[1:], 1):
-        if i == 4:
-            h.update(b"\0<out>")
-        elif os.path.isfile(a):
-            h.update(b"\0<file>" + file_hash(a).encode())
-        else:
-            h.update(b"\0" + a.encode())
-    return h.hexdigest()
+        parts.append("<out>" if i == 4 else buildcache.File(a) if os.path.isfile(a) else a)
+    return c.key(*parts)
+
+
+def bake(gs, argv):
+    """-> (exit code, log, gpu): on the GPU server when it is up, else here"""
+    res = remote(gs, argv) if gs else None
+    if res is None:
+        if gs:
+            print("pvs_cache: the GPU server stopped: baking here")
+        r = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
+        return r.returncode, r.stdout, False
+    return res[0], res[1], True
 
 
 def main():
@@ -108,41 +92,34 @@ def main():
     if len(argv) < 5:
         sys.exit(__doc__)
     out = argv[4]
-    d = cache_dir()
+    c = cache()
     gs = spool()
-    k = key(argv, bool(gs)) if d else None
-    if d:
-        ent = os.path.join(d, k[:2], k)
-        if os.path.isfile(ent + ".bin") and os.path.isfile(ent + ".log"):
-            shutil.copyfile(ent + ".bin", out + ".tmp")
-            os.replace(out + ".tmp", out)
-            sys.stdout.write(open(ent + ".log").read())
-            print(f"pvs_cache: {os.path.basename(os.path.dirname(os.path.abspath(out)))}: from the cache ({k[:12]})")
-            return
-    res = remote(gs, argv) if gs else None
-    if res is None:
-        if gs:
-            print("pvs_cache: the GPU server stopped: baking here")
-            k = key(argv) if d else None
-        r = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
-        res = r.returncode, r.stdout
-    rc, log = res
+    k = key(c, argv, bool(gs)) if c.dir else None
+    hit = c.get(k)
+    if hit is not None:
+        if c.verify:  # recompute; the key carries cpu / gpu, so verify on the same path as the entry was made
+            rc, log, gpu = bake(gs, argv)
+            if rc:
+                sys.exit(rc)
+            if gpu == bool(gs):
+                c.check(k, hit["bin"], open(out, "rb").read())
+            print(f"pvs_cache: verified against the cache ({k[:12]})")
+        tmp = f"{out}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(hit["bin"])
+        os.replace(tmp, out)
+        sys.stdout.write(hit["log"])
+        print(f"pvs_cache: {os.path.basename(os.path.dirname(os.path.abspath(out)))}: from the cache ({k[:12]})")
+        return
+    rc, log, gpu = bake(gs, argv)
     sys.stdout.write(log)
     sys.stdout.flush()
     if rc:
         sys.exit(rc)
-    if d:
-        ent = os.path.join(d, k[:2], k)
-        try:
-            os.makedirs(os.path.dirname(ent), exist_ok=True)
-            tmp = f"{ent}.{os.getpid()}"
-            shutil.copyfile(out, tmp + ".bin")
-            with open(tmp + ".log", "w") as f:
-                f.write(log)
-            os.replace(tmp + ".log", ent + ".log")
-            os.replace(tmp + ".bin", ent + ".bin")
-        except OSError as e:  # a full / read-only cache never fails the build
-            print(f"pvs_cache: not stored ({e})")
+    if c.dir:
+        if gpu != bool(gs):
+            k = key(c, argv, gpu)
+        c.put(k, {"bin": open(out, "rb").read(), "log": log})
 
 
 if __name__ == "__main__":
