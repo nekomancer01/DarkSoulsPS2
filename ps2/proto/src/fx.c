@@ -7,6 +7,10 @@
  * their flipbook. A newly active instance is prewarmed by one particle life. Particles face the camera; additive
  * ones are unfogged (fog would add its colour), alpha ones are sorted far to near and fogged. All of them are depth
  * tested against the map / characters without writing Z (render.c tri_list, R_BLEND).
+ * A particle keeps its spawn state (position, velocity, age): its position at an age is closed form (ppos), so the EE
+ * does not move particles. Each frame an instance's particles are classed together by a bound of everything they can
+ * reach (inst_class): off screen (skipped), clear of the near plane and the guard band (VU1 moves, animates and expands
+ * them: vu1fx.vsm, Polaris 2.6), or near the camera (each one moved on the EE, then VU1 or the EE clip path).
  * Effect lights (FFX action 24, e.g. the bonfire's 90006) light characters by distance with DSR's cubic falloff and
  * the light's flicker (amb samples precomputed in map_char_light's units, 0x80 = 1.0, for the area's tone map). */
 #include <math.h>
@@ -25,10 +29,27 @@
 #include "ticks.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
- * PR 7): the EE sends one 2-qword vertex per particle, VU1 does the curves, roll, flipbook, projection and the sprite;
- * the rest keep the EE billboards below. FX_VU1=0 builds draw them all on the EE (A/B; TECH_DEBT fx-14) */
+ * PR 7, Polaris 2.6): the EE sends one 3-qword vertex per particle (spawn state and age), VU1 does the motion, curves,
+ * roll, flipbook, projection and the sprite, camera-facing or fixed in the effect frame (fog walls); the rest keep the
+ * EE billboards below. FX_VU1=0 builds draw them all on the EE (A/B; TECH_DEBT fx-14) */
 #ifndef FX_VU1
 #define FX_VU1 1
+#endif
+/* Polaris 2.6 fallbacks (each 1 by default; 0 = the path before it):
+ * FX_CLOSED  particles keep their spawn state and ppos gives the position at an age (VU1 moves them); 0 = the EE
+ *            integrates every particle each frame (v = (v + a dt)(1 - drag dt), p += v dt, roll += spin dt) and VU1
+ *            only expands what the EE moved
+ * FX_CULL    an instance whose bound is off screen is skipped whole (inst_class); 0 = every particle goes on to the
+ *            per-particle near-plane test
+ * FX_VU_ORIENT  quads fixed in the effect frame (FFX orientation 2) move and draw on VU1; 0 = always the EE path */
+#ifndef FX_CLOSED
+#define FX_CLOSED 1
+#endif
+#ifndef FX_CULL
+#define FX_CULL 1
+#endif
+#ifndef FX_VU_ORIENT
+#define FX_VU_ORIENT 1
 #endif
 
 #define FX_MAX 384        /* particle pool (all instances) */
@@ -96,6 +117,7 @@ typedef struct {
     float pad2;
 } FxLight;
 
+/* p, v: position and velocity at spawn (ppos gives the position at its age); rot: roll at spawn */
 typedef struct {
     float p[3], v[3];
     float age, life, sx, sy, rot, spin, f0;
@@ -120,6 +142,9 @@ static u8 *inst_on;
 static u32 *tkey;             /* per texture: content hash (pixels + CLUT), the key of the shared VRAM copy */
 static float *vtab;           /* FX_VU1: per system VU1_FX_TABF floats: 8 x (kx, ky), then 8 x u8 (r, g, b, a) */
 static float *kmax;           /* per system: largest size multiplier of its curves */
+static float *srad;           /* per system: farthest a particle reaches from its instance (m); < 0: not VU1-movable */
+static float *irad;           /* per instance: the largest srad of its systems (scaled by its frame) */
+static u8 *icls;              /* per instance: FXC_* this frame (0 not classed yet) */
 /* one set per fx.bin: 0 the boot area (fx_init), k world block k (fx_block_load at boot, on while the block is) */
 typedef struct {
     const FxHeader *hdr;
@@ -134,7 +159,8 @@ typedef struct {
     int *emit_first;
     u8 *inst_on;
     u32 *tkey;
-    float *vtab, *kmax;
+    float *vtab, *kmax, *srad, *irad;
+    u8 *icls;
     int on;
 } FxSet;
 static FxSet fset[FX_NSETS];
@@ -149,11 +175,11 @@ static void bind(int k)
     FxSet *c = &fset[cur_set];
     c->hdr = hdr, c->tex = tex, c->sys = sys, c->eff = eff, c->ref = ref, c->inst = inst, c->light = light;
     c->gtex = gtex, c->emit = emit, c->emit_first = emit_first, c->inst_on = inst_on, c->tkey = tkey;
-    c->vtab = vtab, c->kmax = kmax;
+    c->vtab = vtab, c->kmax = kmax, c->srad = srad, c->irad = irad, c->icls = icls;
     const FxSet *n = &fset[cur_set = k];
     hdr = n->hdr, tex = n->tex, sys = n->sys, eff = n->eff, ref = n->ref, inst = n->inst, light = n->light;
     gtex = n->gtex, emit = n->emit, emit_first = n->emit_first, inst_on = n->inst_on, tkey = n->tkey;
-    vtab = n->vtab, kmax = n->kmax;
+    vtab = n->vtab, kmax = n->kmax, srad = n->srad, irad = n->irad, icls = n->icls;
 }
 static Particle pool[FX_MAX];
 static int n_alive;
@@ -223,6 +249,43 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
     return 1;
 }
 
+static float len3(const float *v) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+
+/* the bound set's srad / irad: how far a particle can get from its instance's origin. Spawn offset + shape, the
+ * fastest launch over the longest life (drag only slows it), gravity over that life, and the largest rolled half size
+ * the curves reach (twice that for quads fixed in the effect frame); negative drag scales the launch and gravity terms by
+ * its growth. Systems VU1 cannot move (vu1fx.vsm's motion pass:
+ * drag in 0..VU1_FX_XMAX over the life, gravity only along world Y) get a negative srad: the EE moves them. */
+static int bounds(void)
+{
+    int vu_n = 0;
+    for (u32 i = 0; i < hdr->n_sys; i++) {
+        const FxSys *s = &sys[i];
+        float sp = fabsf(s->speed[0]) * fmaxf(fabsf(s->speed[1]), fabsf(s->speed[1] + s->speed[2])) * fmaxf(1, len3(s->axis));
+        float L = s->life > s->life_min ? s->life : s->life_min;
+        float half = fmaxf(s->size[0], s->size[1]) * (s->size[2] + fmaxf(s->size[3], 0)) * kmax[i] * 1.42f;
+        /* time factors of the launch and the acceleration over L: t and t^2 / 2 bound them for drag >= 0; negative
+         * drag (rising smoke, Burg street sys 49: drag -0.5, life 6 s, 51 m from its instance) grows both by e^(-drag t) */
+        float x = -s->drag * L, gv = L, ga = 0.5f * L * L;
+        if (x > 1e-3f)
+            gv = (expf(x) - 1) / -s->drag, ga = (expf(x) - 1 - x) / (s->drag * s->drag);
+        float r = len3(s->org) + len3(s->ext) + sp * gv + len3(s->accel) * ga + half * (s->orient ? 2 : 1);
+        int vu = FX_CLOSED && (FX_VU_ORIENT || !s->orient) && s->drag >= 0 && s->drag * L <= VU1_FX_XMAX &&
+                 s->accel[0] == 0 && s->accel[2] == 0;
+        srad[i] = vu ? r : -r;
+        vu_n += vu;
+    }
+    for (u32 ii = 0; ii < hdr->n_inst; ii++) {
+        const FxInst *in = &inst[ii];
+        const FxEff *e = &eff[in->eff];
+        float k = fmaxf(1, fmaxf(len3(in->frame), fmaxf(len3(in->frame + 3), len3(in->frame + 6)))), r = 0;
+        for (int j = 0; j < e->n_ref; j++)
+            r = fmaxf(r, fabsf(srad[ref[e->first_ref + j].sys]));
+        irad[ii] = r * k;
+    }
+    return vu_n;
+}
+
 /* upload = 0: tables only, the textures go up with fx_block_on */
 static int load_set(GSGLOBAL *gs, const void *blob, int upload)
 {
@@ -259,6 +322,9 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
         emit_first[hdr->n_inst] = ns;
     emit = calloc(ns ? ns : 1, sizeof *emit);
     kmax = calloc(hdr->n_sys ? hdr->n_sys : 1, sizeof *kmax);
+    srad = calloc(hdr->n_sys ? hdr->n_sys : 1, sizeof *srad);
+    irad = calloc(hdr->n_inst ? hdr->n_inst : 1, sizeof *irad);
+    icls = calloc(hdr->n_inst ? hdr->n_inst : 1, 1);
     vtab = FX_VU1 ? memalign(16, (hdr->n_sys ? hdr->n_sys : 1) * VU1_FX_TABF * sizeof *vtab) : NULL;
     for (u32 i = 0; kmax && i < hdr->n_sys; i++)
         for (int k = 0; k < FX_CURVE; k++) {
@@ -270,16 +336,20 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
             float *t = &vtab[VU1_FX_TABF * i];
             t[2 * k] = y->kx[k], t[2 * k + 1] = y->ky[k];
             memcpy(&t[16 + k], y->rgba[k], 4);
+            t[VU1_FX_ROWF] = t[VU1_FX_ROWF + 1] = 0, t[VU1_FX_ROWF + 2] = y->drag, t[VU1_FX_ROWF + 3] = y->accel[1];
         }
     if (vtab)
         SyncDCache(vtab, vtab + VU1_FX_TABF * hdr->n_sys);  /* vu1_fx_add sends the tables by DMA reference */
-    if (!gtex || !tkey || !emit_first || !inst_on || !emit || !kmax || (FX_VU1 && !vtab)) {
+    if (!gtex || !tkey || !emit_first || !inst_on || !emit || !kmax || !srad || !irad || !icls || (FX_VU1 && !vtab)) {
         printf("DSRPROTO fx: out of RAM\n");
         free(gtex), free(tkey), free(emit_first), free(inst_on), free(emit), free(kmax), free(vtab);
+        free(srad), free(irad), free(icls);
         gtex = NULL, tkey = NULL, emit_first = NULL, inst_on = NULL, emit = NULL, kmax = NULL, vtab = NULL;
+        srad = irad = NULL, icls = NULL;
         hdr = 0;
         return 0;
     }
+    int vu_moved = bounds();
     if (upload && !upload_tex(gs, b)) {
         printf("DSRPROTO fx: VRAM full, effects off\n");
         hdr = 0;
@@ -288,8 +358,9 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
     int vram = 0;
     for (u32 i = 0; i < hdr->n_tex; i++)
         vram += tex[i].w * tex[i].h + 1024;
-    printf("DSRPROTO fx: %u instances, %u effects, %u systems, %u lights, %u textures (%d KB VRAM%s)\n", hdr->n_inst,
-           hdr->n_eff, hdr->n_sys, hdr->n_light, hdr->n_tex, vram / 1024, upload ? "" : " while on");
+    printf("DSRPROTO fx: %u instances, %u effects, %u systems (%d moved on VU1, %d on the EE), %u lights, %u textures "
+           "(%d KB VRAM%s)\n", hdr->n_inst, hdr->n_eff, hdr->n_sys, vu_moved, (int)hdr->n_sys - vu_moved, hdr->n_light,
+           hdr->n_tex, vram / 1024, upload ? "" : " while on");
     return 1;
 }
 
@@ -469,6 +540,28 @@ static void spawn(int ii, int si)
     p->sys = si, p->inst = ii, p->set = cur_set;
 }
 
+/* particle p (system s) at its age: the motion v' = accel - drag v in closed form, p = p0 + v0 t phi1(x) + accel t^2
+ * phi2(x), x = drag t, phi1 = (1 - e^-x) / x, phi2 = (x - 1 + e^-x) / x^2 (vu1fx.vsm's motion pass computes the same).
+ * The exe's particle integrator is not decoded (TECH_DEBT fx-6); this is the continuous form of the old per-frame
+ * steps v = (v + a dt)(1 - drag dt), p += v dt, without their frame-rate dependence. */
+static void ppos(const Particle *p, const FxSys *s, float out[3])
+{
+    if (!FX_CLOSED) {  /* step() moved it */
+        out[0] = p->p[0], out[1] = p->p[1], out[2] = p->p[2];
+        return;
+    }
+    float t = p->age, d = s->drag, x = d * t, g, h;
+    if (x < 0.02f && x > -0.02f) {  /* series: (1 - e) / d and (t - g) / d lose their digits here */
+        g = t * (1 - x * (0.5f - x * (1.0f / 6)));
+        h = t * t * (0.5f - x * (1.0f / 6 - x * (1.0f / 24)));
+    } else {
+        g = (1 - expf(-x)) / d;
+        h = (t - g) / d;
+    }
+    for (int k = 0; k < 3; k++)
+        out[k] = p->p[k] + p->v[k] * g + s->accel[k] * h;
+}
+
 static void step(float dt, int emit_on)
 {
     int was = cur_set;
@@ -476,7 +569,6 @@ static void step(float dt, int emit_on)
         Particle *p = &pool[i];
         if (p->set != cur_set)
             bind(p->set);
-        const FxSys *s = &sys[p->sys];
         p->age += dt;
         if (p->age >= p->life) {
             int es = emit_first[p->inst];
@@ -488,13 +580,16 @@ static void step(float dt, int emit_on)
             *p = pool[--n_alive];
             continue;
         }
-        float dr = 1 - s->drag * dt;
-        dr = dr < 0 ? 0 : dr;
-        for (int k = 0; k < 3; k++) {
-            p->v[k] = (p->v[k] + s->accel[k] * dt) * dr;
-            p->p[k] += p->v[k] * dt;
+        if (!FX_CLOSED) {  /* the old per-frame steps (FX_CLOSED=0) */
+            const FxSys *s = &sys[p->sys];
+            float dr = 1 - s->drag * dt;
+            dr = dr < 0 ? 0 : dr;
+            for (int k = 0; k < 3; k++) {
+                p->v[k] = (p->v[k] + s->accel[k] * dt) * dr;
+                p->p[k] += p->v[k] * dt;
+            }
+            p->rot += p->spin * dt;
         }
-        p->rot += p->spin * dt;
         i++;
     }
     for (int k = 0; emit_on && k < FX_NSETS; k++) {
@@ -658,17 +753,19 @@ static int by_depth(const void *a, const void *b)
     return d > 0 ? 1 : d < 0 ? -1 : 0;
 }
 
-/* FX_VU1: the VU1 batch being collected (one texture and mode, <= VU1_FX_SYS curve tables) and the fog terms */
+/* FX_VU1: the VU1 batch being collected (one texture, mode and quad frame, <= VU1_FX_SYS curve tables) and the fog
+ * terms */
 static struct {
     GSTEXTURE *gt;
     const FxTex *tx;
-    int mode, n, nsys, chain;
+    int mode, n, nsys, chain, orient;
     const float *tab[VU1_FX_SYS];
+    float axes[8] __attribute__((aligned(16)));  /* oriented: the quad's world x / y axes */
     float fog[5];
     u64 fogcol, fogbase;
-    float part[VU1_FX_N][8] __attribute__((aligned(16)));
+    float part[VU1_FX_N][4 * VU1_FX_PQW] __attribute__((aligned(16)));
 } vb;
-static int vu_drawn, vu_batches, vu_breaks[3];  /* breaks: texture / mode, full, tables */
+static int vu_drawn, vu_batches, vu_breaks[3];  /* breaks: texture / mode / quad frame, full, tables */
 
 static void vu_flush(void)
 {
@@ -685,7 +782,7 @@ static void vu_flush(void)
         vu1_fx_begin();
         vb.chain = 1;
     }
-    float *pt, *b = vu1_fx_add(vb.gt, vb.mode, vb.fogcol, vb.n, vb.nsys, vb.tab, &pt);
+    float *pt, *b = vu1_fx_add(vb.gt, vb.mode, vb.fogcol, vb.n, vb.nsys, vb.tab, vb.orient ? vb.axes : NULL, &pt);
     if (b) {
         const FxTex *tx = vb.tx;
         int nf = tx->nframes ? tx->nframes : 1, fpr = tx->fpr ? tx->fpr : 1, rows = (nf + fpr - 1) / fpr;
@@ -694,38 +791,53 @@ static void vu_flush(void)
         const float h[28] = {0, 0, 0, 0, cw, ch, 0.5f, 1.0f / fpr, mu - cw * 0.5f, mv, 0, (float)fpr,
                              du, dv, 0, vb.fog[4], du, 0, 0, 0, 0, dv, 0, 0, vb.fog[2], vb.fog[3], 0, 2048};
         memcpy(b, h, sizeof h);
-        ((u32 *)b)[0] = vb.n;
-        memcpy(pt, vb.part, vb.n * 8 * sizeof(float));
+        ((u32 *)b)[0] = vb.n, ((u32 *)b)[1] = vb.orient;
+        memcpy(pt, vb.part, vb.n * sizeof vb.part[0]);
         vu_batches++;
     }
     vb.n = vb.nsys = 0;
 }
 
-/* p (system s of the bound set, view centre c) to the VU1 batch; 0 = not VU1-safe (near plane / guard band), drawn
- * by the EE path */
-static int vu_add(const Particle *p, const FxSys *s, V3 c, int mode)
+/* p (system s of the bound set) to the VU1 batch. w = NULL: VU1 moves it from its spawn state (its instance is clear
+ * of the near plane and the guard band); else w is where the EE moved it and c its view position, and 0 = not
+ * VU1-safe (near plane / guard band, or a quad fixed in the effect frame), drawn by the EE path */
+static int vu_add(const Particle *p, const FxSys *s, const float *w, V3 c, int mode)
 {
-    float rad = (p->sx > p->sy ? p->sx : p->sy) * kmax[p->sys];  /* the largest half size its curves reach */
-    V3 ext = v3(fabsf(c.x) + 1.42f * rad, fabsf(c.y) + 1.42f * rad, c.z - rad);  /* rolled corner <= sqrt 2 */
-    if (ext.z <= R_NEAR + 0.05f || !r_point_inside(&ext))
-        return 0;
-    float t = p->age / p->life * (FX_CURVE - 1), rot = p->rot;
+    if (w) {
+        float rad = (p->sx > p->sy ? p->sx : p->sy) * kmax[p->sys];  /* the largest half size its curves reach */
+        V3 ext = v3(fabsf(c.x) + 1.42f * rad, fabsf(c.y) + 1.42f * rad, c.z - rad);  /* rolled corner <= sqrt 2 */
+        if (s->orient || ext.z <= R_NEAR + 0.05f || !r_point_inside(&ext))
+            return 0;
+    }
+    float t = p->age / p->life * (FX_CURVE - 1), rot = p->rot + (FX_CLOSED ? p->spin * p->age : 0);
     t = t < FX_CURVE - 1.0001f ? t : FX_CURVE - 1.0001f;
     int k0 = (int)t;
     if (s->rgba[k0][3] + (s->rgba[k0 + 1][3] - s->rgba[k0][3]) * (t - k0) < 1)
         return 1;  /* invisible at this age (as the EE path) */
     GSTEXTURE *gt = &gtex[s->tex];
     const float *tab = &vtab[VU1_FX_TABF * p->sys];
+    float ax[8];
+    if (s->orient) {  /* the instance frame (columns) times the system's quad axes, as the EE path */
+        const float *F = inst[p->inst].frame;
+        for (int k = 0; k < 3; k++) {
+            ax[k] = F[k] * s->qx[0] + F[3 + k] * s->qx[1] + F[6 + k] * s->qx[2];
+            ax[4 + k] = F[k] * s->qy[0] + F[3 + k] * s->qy[1] + F[6 + k] * s->qy[2];
+        }
+        ax[3] = ax[7] = 0;
+    }
     int k = 0;
     while (k < vb.nsys && vb.tab[k] != tab)
         k++;
-    if (vb.n && (gt != vb.gt || mode != vb.mode || vb.n >= VU1_FX_N || k == VU1_FX_SYS)) {
-        vu_breaks[gt != vb.gt || mode != vb.mode ? 0 : vb.n >= VU1_FX_N ? 1 : 2]++;
+    int frame = s->orient != vb.orient || (s->orient && memcmp(ax, vb.axes, sizeof ax));
+    if (vb.n && (gt != vb.gt || mode != vb.mode || frame || vb.n >= VU1_FX_N || k == VU1_FX_SYS)) {
+        vu_breaks[gt != vb.gt || mode != vb.mode || frame ? 0 : vb.n >= VU1_FX_N ? 1 : 2]++;
         vu_flush(), k = 0;
     }
     if (k == vb.nsys)
         vb.tab[vb.nsys++] = tab;
-    vb.gt = gt, vb.tx = &tex[s->tex], vb.mode = mode;
+    vb.gt = gt, vb.tx = &tex[s->tex], vb.mode = mode, vb.orient = s->orient != 0;
+    if (s->orient)
+        memcpy(vb.axes, ax, sizeof ax);
     const FxTex *tx = vb.tx;
     int nf = tx->nframes ? tx->nframes : 1;
     int fr = (int)(p->f0 + s->rate * p->age) % nf;
@@ -733,10 +845,35 @@ static int vu_add(const Particle *p, const FxSys *s, V3 c, int mode)
     rot -= 6.2831853f * (int)(rot * 0.15915494f);  /* the program's sin / cos take -pi..pi */
     rot = rot > 3.1415927f ? rot - 6.2831853f : rot < -3.1415927f ? rot + 6.2831853f : rot;
     float *q = vb.part[vb.n++];
-    q[0] = p->p[0], q[1] = p->p[1], q[2] = p->p[2], q[3] = 8 * k + t;
+    if (w) {  /* moved already: velocity and age 0 leave it where it is */
+        q[0] = w[0], q[1] = w[1], q[2] = w[2];
+        q[8] = q[9] = q[10] = q[11] = 0;
+    } else {
+        q[0] = p->p[0], q[1] = p->p[1], q[2] = p->p[2];
+        q[8] = p->v[0], q[9] = p->v[1], q[10] = p->v[2], q[11] = p->age;
+    }
+    q[3] = 8 * k + t;
     q[4] = p->sx, q[5] = p->sy, q[6] = rot, q[7] = fr + 0.5f;
     vu_drawn++;
     return 1;
+}
+
+/* Instance classes for a frame (fx_draw): the sphere of irad around the instance's origin, in view space */
+#define FXC_CULL 1  /* outside the view frustum: none of its particles can show */
+#define FXC_VU 2    /* in front of the near plane and inside the guard band: VU1 moves and draws them */
+#define FXC_NEAR 3  /* the rest: each particle moved and tested on the EE */
+static float cull_tx, cull_ty, cull_kx, cull_ky;  /* half screen / focal, sqrt(1 + that^2) (fx_draw) */
+
+static int inst_class(int ii)
+{
+    const FxInst *in = &inst[ii];
+    float r = irad[ii];
+    V3 c = r_view(v3(in->pos[0], in->pos[1], in->pos[2]));
+    if (FX_CULL && (c.z + r < R_NEAR || fabsf(c.x) - cull_tx * c.z > r * cull_kx ||
+                    fabsf(c.y) - cull_ty * c.z > r * cull_ky))
+        return FXC_CULL;
+    V3 ext = v3(fabsf(c.x) + r, fabsf(c.y) + r, c.z - r);  /* the bound's worst corner for the guard band */
+    return FX_VU1 && ext.z > R_NEAR + 0.05f && r_point_inside(&ext) ? FXC_VU : FXC_NEAR;
 }
 
 void fx_kick(void)
@@ -755,29 +892,59 @@ void fx_draw(void)
 {
     bind(0);
     if (!n_alive) {
-        fx_stats.drawn = fx_stats.batches = 0;
+        fx_stats.drawn = fx_stats.batches = fx_stats.vu1 = fx_stats.culled = 0;
         return;
     }
     unsigned t0 = ticks();
     static Order ord[FX_MAX];
     static V3 cen[FX_MAX];
+    static float wpos[FX_MAX][3];  /* EE-moved particles: world position */
+    static u8 moved[FX_MAX];       /* 1: VU1 moves it (FXC_VU), 0: moved on the EE (wpos, cen) */
     /* alpha blended: sorted far to near; additive (order-free) after them, bucketed by texture: few GS packets */
     static int head[FX_TEX_BUCKETS], next[FX_MAX];
-    int n = 0, nb = !hdr ? 0 : hdr->n_tex < FX_TEX_BUCKETS ? hdr->n_tex : FX_TEX_BUCKETS;  /* set 0's textures */
+    V3 eye, rt, up, fw;
+    float focal_px, focal_y, zs;
+    r_camera_basis(&eye, &rt, &up, &fw, &focal_px, &focal_y, &zs);
+    cull_tx = R_SCREEN_W * 0.5f / focal_px, cull_ty = R_SCREEN_H * 0.5f / focal_y;
+    cull_kx = sqrtf(1 + cull_tx * cull_tx), cull_ky = sqrtf(1 + cull_ty * cull_ty);
+    for (int k = 0; k < FX_NSETS; k++)
+        if (fset[k].on && fset[k].icls)
+            memset(fset[k].icls, 0, fset[k].hdr->n_inst);
+    int n = 0, culled = 0, nb = !hdr ? 0 : hdr->n_tex < FX_TEX_BUCKETS ? hdr->n_tex : FX_TEX_BUCKETS;  /* set 0's textures */
     for (int t = 0; t < nb; t++)
         head[t] = -1;
     for (int i = 0; i < n_alive; i++) {
         Particle *p = &pool[i];
-        V3 c = r_view(v3(p->p[0], p->p[1], p->p[2]));
-        float rad = (p->sx > p->sy ? p->sx : p->sy) * 3.75f;  /* largest size multiplier in the bonfire curves */
-        if (c.z < R_NEAR - rad)
-            continue;
-        cen[i] = c;
         if (p->set != cur_set)
             bind(p->set);
-        int t = sys[p->sys].tex;
-        if (sys[p->sys].blend || t >= nb || p->set)  /* other sets' additive ones: sorted by set and texture */
-            ord[n].z = sys[p->sys].blend ? c.z : -1e6f - t - 256.0f * p->set, ord[n].i = i, n++;
+        u8 *cl = &icls[p->inst];
+        if (!*cl)
+            *cl = inst_class(p->inst);
+        if (*cl == FXC_CULL) {
+            culled++;
+            continue;
+        }
+        const FxSys *s = &sys[p->sys];
+        float z = 0;
+        if (*cl == FXC_VU && srad[p->sys] >= 0) {
+            moved[i] = 1;
+            if (s->blend) {  /* the sort key: its view depth (additive ones need no position at all) */
+                float w[3];
+                ppos(p, s, w);
+                z = (w[0] - eye.x) * fw.x + (w[1] - eye.y) * fw.y + (w[2] - eye.z) * fw.z;
+            }
+        } else {
+            moved[i] = 0;
+            ppos(p, s, wpos[i]);
+            V3 c = r_view(v3(wpos[i][0], wpos[i][1], wpos[i][2]));
+            float rad = (p->sx > p->sy ? p->sx : p->sy) * kmax[p->sys] * 1.42f;
+            if (c.z < R_NEAR - rad)
+                continue;
+            cen[i] = c, z = c.z;
+        }
+        int t = s->tex;
+        if (s->blend || t >= nb || p->set)  /* other sets' additive ones: sorted by set and texture */
+            ord[n].z = s->blend ? z : -1e6f - t - 256.0f * p->set, ord[n].i = i, n++;
         else
             next[i] = head[t], head[t] = i;
     }
@@ -786,22 +953,17 @@ void fx_draw(void)
     for (int t = 0; t < nb; t++)
         for (int i = head[t]; i >= 0; i = next[i])
             ord[n].z = -1e6f - t, ord[n].i = i, n++;
-    float focal_px;
-    {
-        V3 e, rt, up, fw;
-        float fy, zs;
-        r_camera_basis(&e, &rt, &up, &fw, &focal_px, &fy, &zs);
-    }
     vu_drawn = vu_batches = 0;
     memset(vu_breaks, 0, sizeof vu_breaks);
     if (FX_VU1)
         r_get_fog(vb.fog, &vb.fogcol, &vb.fogbase);
     static ClipVert cv[FX_BATCH * 6];
     static float sc[FX_BATCH * 6][3];
-    int nv = 0, cur_tex = -1, cur_mode = 0, drawn = 0, batches = 0;
+    int nv = 0, cur_mode = 0, drawn = 0, batches = 0;
     GSTEXTURE *cur_gt = NULL;
     for (int o = 0; o <= n; o++) {
-        const Particle *p = o < n ? &pool[ord[o].i] : 0;
+        int i = o < n ? ord[o].i : 0;
+        const Particle *p = o < n ? &pool[i] : 0;
         if (p && p->set != cur_set)
             bind(p->set);
         const FxSys *s = p ? &sys[p->sys] : 0;
@@ -812,9 +974,10 @@ void fx_draw(void)
         }
         if (!p)
             break;
-        if (FX_VU1 && !s->orient && vu_add(p, s, cen[ord[o].i], s->blend ? VU1_FX_FOG : VU1_FX_ADD))
+        int vmode = s->blend ? VU1_FX_FOG : VU1_FX_ADD;
+        if (FX_VU1 && vu_add(p, s, moved[i] ? NULL : wpos[i], moved[i] ? v3(0, 0, 0) : cen[i], vmode))
             continue;
-        cur_tex = s->tex, cur_mode = mode, cur_gt = &gtex[s->tex];
+        cur_mode = mode, cur_gt = &gtex[s->tex];
         /* curves at the particle's age */
         float t = p->age / p->life * (FX_CURVE - 1);
         int k0 = (int)t;
@@ -827,8 +990,8 @@ void fx_draw(void)
         if (col[3] < 1)
             continue;
         float hx = p->sx * kx, hy = p->sy * ky, cr = 1, sr = 0;
-        if ((hx > hy ? hx : hy) * focal_px > 1.5f * cen[ord[o].i].z)  /* roll only matters above ~1.5 px */
-            fast_sincos(p->rot, &sr, &cr);
+        if ((hx > hy ? hx : hy) * focal_px > 1.5f * cen[i].z)  /* roll only matters above ~1.5 px */
+            fast_sincos(p->rot + (FX_CLOSED ? p->spin * p->age : 0), &sr, &cr);
         /* flipbook cell */
         const FxTex *tx = &tex[s->tex];
         int nf = tx->nframes ? tx->nframes : 1, fpr = tx->fpr ? tx->fpr : 1, rows = (nf + fpr - 1) / fpr;
@@ -839,7 +1002,7 @@ void fx_draw(void)
         const float qx[4] = {-1, 1, 1, -1}, qy[4] = {1, 1, -1, -1};
         ClipVert q[4];
         float qs[4][3], s0[3], s1[3];
-        V3 c = cen[ord[o].i];
+        V3 c = cen[i];
         /* pulled toward the camera by its own half size, same screen size, so the quad is not cut by the surface it
          * rises from (bonfire ash). ASSUMED stand-in for DSR's per-pixel depth handling, TECH_DEBT fx-5 */
         float bias = hx > hy ? hx : hy, kz = c.z - bias > R_NEAR + 0.05f ? (c.z - bias) / c.z : 1;
@@ -867,7 +1030,7 @@ void fx_draw(void)
         if (s->orient) {
             /* fixed in the effect frame (FFX Orientation 2: the fog-wall sheets, FUN_1411848b0): each corner at
              * its own world point, the instance frame (columns) times the system's quad axes */
-            const float *F = inst[p->inst].frame;
+            const float *F = inst[p->inst].frame, *pw = wpos[i];
             float ax[3], ay[3];
             for (int k = 0; k < 3; k++) {
                 ax[k] = F[k] * s->qx[0] + F[3 + k] * s->qx[1] + F[6 + k] * s->qx[2];
@@ -877,8 +1040,8 @@ void fx_draw(void)
             inside = 1;
             for (int j = 0; j < 4; j++) {
                 float ox = (qx[j] * cr - qy[j] * sr) * hx, oy = (qx[j] * sr + qy[j] * cr) * hy;
-                V3 w = v3(p->p[0] + ox * ax[0] + oy * ay[0], p->p[1] + ox * ax[1] + oy * ay[1],
-                          p->p[2] + ox * ax[2] + oy * ay[2]);
+                V3 w = v3(pw[0] + ox * ax[0] + oy * ay[0], pw[1] + ox * ax[1] + oy * ay[1],
+                          pw[2] + ox * ax[2] + oy * ay[2]);
                 V3 v = r_view(w);
                 q[j].x = v.x, q[j].y = v.y, q[j].z = v.z;
                 if (v.z <= R_NEAR + 0.05f || !r_point_inside(&v))
@@ -902,10 +1065,10 @@ void fx_draw(void)
     }
     bind(0);
     vu_flush();
-    (void)cur_tex;
     fx_stats.drawn = drawn + vu_drawn;
     fx_stats.batches = batches + vu_batches;
     fx_stats.vu1 = vu_drawn;
+    fx_stats.culled = culled;
     for (int k = 0; k < 3; k++)
         fx_stats.vu1_breaks[k] = vu_breaks[k];
     unsigned t1 = ticks();
@@ -943,6 +1106,39 @@ void fx_char_light(V3 pos, float amb[3])
     }
     }
     bind(0);
+}
+
+int fx_lights(FxLightOut *out, int max)
+{
+    int n = 0;
+    for (int k = 0; k < FX_NSETS; k++) {
+        if (!fset[k].on)
+            continue;
+        bind(k);
+    for (u32 ii = 0; ii < hdr->n_inst && n < max; ii++) {
+        const FxEff *e = &eff[inst[ii].eff];
+        if (!e->n_light || !inst_state(ii))  /* an unlit bonfire's light, a burst that is over */
+            continue;
+        for (int l = 0; l < e->n_light && n < max; l++) {
+            const FxLight *L = &light[e->first_light + l];
+            float w[3];
+            frame_apply(&inst[ii], L->off, w);
+            if (!(L->radius > L->begin))
+                continue;
+            FxLightOut *o = &out[n++];
+            for (int c = 0; c < 3; c++)
+                o->pos[c] = inst[ii].pos[c] + w[c];
+            o->begin = L->begin, o->end = L->radius;
+            float ph = fmodf(clock / (L->period > 0 ? L->period : 1), 1.0f) * FX_CURVE;
+            int k0 = (int)ph % FX_CURVE, k1 = (k0 + 1) % FX_CURVE;
+            float f = ph - (int)ph;
+            for (int c = 0; c < 3; c++)
+                o->rgb[c] = L->amb[k0][c] + (L->amb[k1][c] - L->amb[k0][c]) * f;
+        }
+    }
+    }
+    bind(0);
+    return n;
 }
 
 /* Treasure shine (exe FUN_1403f89b0): set FX_SHINE from menu.pak shine.bin (tools/export_effects.py --shine), its

@@ -93,7 +93,29 @@ void vu1_skin_window(const void *palette, const unsigned char *win, int n);
 void vu1_skin_fade(float fmax);
 /* Light for the following textured skin batches: colour = amb + sun x max(n . L, 0) per channel, 0x80 = 1.0 */
 void vu1_skin_light(const float amb[3], const float sun[3]);
-#define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 61-bone palette */
+/* Polaris 2.2 PR 3: the next vu1_skin_begin's directional lights, world directions towards each light: the sun (its
+ * colour from vu1_skin_light) and np (0..2) point lights with their colours (0x80 = 1.0); the point lights are for
+ * that draw only */
+void vu1_skin_lights(const float sun_dir[3], int np, const float (*dir)[3], const float (*col)[3]);
+/* Tint added to the next vu1_skin_begin's vu1skin2 batches (i-frames): textured / flat (0x80 = 1.0), NULL = none.
+ * For the next vu1_skin_begin only (the clip program still takes vu1_skin_add_pkt's tint) */
+void vu1_skin_tint(const float tex[3], const float flat[3]);
+/* Polaris 2.2 prebuilt model packets: a model's vu1skin2 batches as DMA segments built once (model.c skin_pk_build) and
+ * called per draw after vu1_skin_begin, which uploads the palette and the per-draw terms (light, tint, fog).
+ * vu1_skin_hdr writes a batch header block (VU1_SKIN_HDR_QW qwords: its VIF codes + vu1skin2's static header; the
+ * arguments as vu1_skin_add_pkt's) and returns its program entry. A segment is, per batch, vu1_skin_seg_batch (two
+ * REF tags: the header block, then the batch's stream packet; prev_entry: the MSCAL of the batch before, 0 for the
+ * first), closed by vu1_skin_seg_end (RET + the last batch's MSCAL). vu1_skin_can_call: 1 when this draw may call
+ * segments (not near the camera: the clip program takes another header; and the chain's first textured batch, which
+ * must load its CLUT with CLD 2, already sent). vu1_skin_call puts a CALL to a segment in the chain (last_cbp: the
+ * CLUT its last textured batch uses, 0 none: stats only). */
+#define VU1_SKIN_HDR_QW 10
+u32 vu1_skin_hdr(void *buf, GSTEXTURE *t, int st, int cull, int tris, int spec_k, int ms);
+void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_bytes, u32 prev_entry);
+void *vu1_skin_seg_end(void *at, u32 entry);
+int vu1_skin_can_call(int textured);
+void vu1_skin_call(const void *seg, unsigned last_cbp);
+#define VU1_SKIN_TRIS VU1L_SKIN_TRIS  /* vu1skin2.vsm: input double buffer + two output slots next to a 40-bone palette window */
 /* One skinned batch (<= VU1_SKIN_TRIS triangles, unindexed): 16-byte aligned streams per vertex: pa/pb s16x4
  * (bone-local position * 4096, palette offset 4 * bone), nrm s16x4 (normal in bone A space * 4096, weight of A * 4096),
  * st f32x2 normalized (textured) or colour u8x4 (t == NULL). tint: added to the light (0x80 = 1.0 when textured). */
@@ -115,25 +137,31 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
  * (it then runs the plain textured program, which costs 131 instead of ~200 VU1 cycles per triangle). Per draw, before
  * vu1_skin_begin: hemisphere env colours (EnvUp / EnvDown) and specular light colour / direction (world), 0x80 = 1.0 */
 void vu1_skin_spec(const float env_up[3], const float env_down[3], const float spec_i[3], const float ls[3]);
-/* Particles (vu1fx.vsm, fx.c FX_VU1 builds): a third chain, vu1_begin(2) + vu1_map_fog + vu1_fx_begin, then batches of
- * n (even, <= VU1_FX_N) particles of one texture and mode. vu1_fx_add puts the batch in the chain and returns its
- * header (7 qwords) and *parts (2 n qwords) for the caller to fill: header 0 {n, 0, 0, 0}; 1 (cw, ch, 0.5, 1 / fpr);
- * 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0); 6 (fog min,
- * fog max, 0, 2048); particle i {world x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi), frame + 0.5}.
- * tabs[s] (s < nsys <= VU1_FX_SYS): curve tables of VU1_FX_TABF floats (96 bytes): 8 keys (kx, ky) f32, then 8 keys
- * (r, g, b, a) u8, sent by reference: 16-byte aligned, written back from the data cache, unchanged until the chain is
- * done. Flipbook: cw / ch =
- * cell size, du / dv = cell - 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore
- * ALPHA / ZBUF / FOGCOL with vu1_gs_regs before gsKit draws again. */
+/* Particles (vu1fx.vsm, fx.c): a third chain, vu1_begin(2) + vu1_map_fog + vu1_fx_begin, then batches of n (even,
+ * <= VU1_FX_N) particles of one texture and mode. vu1_fx_add puts the batch in the chain and returns its header (7
+ * qwords) and *parts (VU1_FX_PQW n qwords) for the caller to fill: header 0 {n, oriented, 0, 0}; 1 (cw, ch, 0.5,
+ * 1 / fpr); 2 (0.5 / W - cw / 2, 0.5 / H, 0, fpr); 3 (du, dv, 0, edge fog a2); 4 (du, 0, 0, 0); 5 (0, dv, 0, 0);
+ * 6 (fog min, fog max, 0, 2048); particle i {spawn x, y, z, 8 s + 7 age / life}, {half size x, y, roll (-pi..pi),
+ * frame + 0.5}, {spawn velocity x, y, z, age} (VU1 moves it: drag and gravity of its table, fx.c ppos; velocity and
+ * age 0 = drawn where it is). Oriented batches (header 0.y = 1): axes = the quad's world x, y axes (x, y, z, -) x 2,
+ * else NULL. tabs[s] (s < nsys <= VU1_FX_SYS): curve tables of VU1_FX_TABF floats (112 bytes): 8 keys (kx, ky) f32,
+ * then 8 keys (r, g, b, a) u8, then (0, 0, drag, gravity) f32 at VU1_FX_ROWF, sent by reference: 16-byte aligned,
+ * written back from the data cache, unchanged until the chain is done. Flipbook: cw / ch = cell size, du / dv = cell -
+ * 1 texel, all normalized. NULL: no room. GS registers: as render.c's tri_list; restore ALPHA / ZBUF / FOGCOL with
+ * vu1_gs_regs before gsKit draws again. */
 #define VU1_FX_N VU1L_FX_N
 #define VU1_FX_SYS VU1L_FX_SYS
-#define VU1_FX_TABF 24
+#define VU1_FX_TABF 28
+#define VU1_FX_ROWF 24
 #define VU1_FX_TAB VU1L_FX_TAB
 #define VU1_FX_PART VU1L_FX_PART
+#define VU1_FX_PQW VU1L_FX_PQW
+#define VU1_FX_XMAX VU1L_FX_XMAX
 #define VU1_FX_ADD 1  /* additive (else alpha blended) */
 #define VU1_FX_FOG 2
 void vu1_fx_begin(void);
-float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, float **parts);
+float *vu1_fx_add(GSTEXTURE *t, int mode, u64 fogcol, int n, int nsys, const float *const *tabs, const float *axes,
+                  float **parts);
 /* Send the current chain to VIF1 (returns at once; the EE can keep working). Waits for the previous chain first.
  * Streams written by the EE this frame must be written back with SyncDCache before this. */
 void vu1_kick(void);
@@ -152,6 +180,7 @@ void vu1_clut_reload(void);
 typedef struct {
     int last[3], peak[3], segments;  /* [2]: the particle chain */
     int mpg_loads;  /* R8: program uploads put in chains so far (only when a program is not resident) */
+    int skin_calls;    /* Polaris 2.2: prebuilt model segments called, so far */
     int skin_windows;  /* char-7: bone windows uploaded after a character's first (models over 61 bones), so far */
     int clut_loads[3];  /* CLUT loads the GS does per chain with CLD 4 (V7); before: one per textured batch */
     int tex_path3, tex_path2, tex_gates;  /* VU1_TEX_PATH3 builds: uploads queued on PATH3 / sent on PATH2 because

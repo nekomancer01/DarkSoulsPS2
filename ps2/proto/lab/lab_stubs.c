@@ -11,6 +11,8 @@
 #include "vu1.h"
 #include "frame.h"
 #include "fx.h"
+#include "chrlight.h"
+#include "shadow.h"
 #include "hitch.h"
 #include "map.h"
 #include "enemy.h"
@@ -57,6 +59,16 @@ void map_spawn(V3 *pos, float *yaw)
     (void)pos, LAB_COUNT("map_char_light (render from simulate)");
     for (int i = 0; i < 3; i++)
         amb[i] = sun[i] = dir[i] = 0;
+}
+/* shadow.c (not built here): render only */
+void shadow_add(V3 feet, float r, float fade) { (void)feet, (void)r, (void)fade; }
+int shadow_sil_begin(V3 feet) { (void)feet; return 0; }  /* 0: no silhouette pass in the Lab */
+void shadow_sil_end(void) {}
+/* chrlight.c (not built here): the old path's single call, so the count stays */
+void chrl_pick(V3 pos, float amb[3], float sun[3], float dir[3], int *np, float pdir[2][3], float pcol[2][3])
+{
+    (void)pdir, (void)pcol, *np = 0;
+    map_char_light(pos, amb, sun, dir);
 }
 void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float spec_dir[3])
 {
@@ -116,6 +128,10 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
 }
 void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, int nwin) { (void)palette, (void)bones, (void)win, (void)nwin; }
 void vu1_skin_light(const float amb[3], const float sun[3]) { (void)amb, (void)sun; }
+void vu1_skin_lights(const float sun_dir[3], int np, const float (*dir)[3], const float (*col)[3])
+{
+    (void)sun_dir, (void)np, (void)dir, (void)col;
+}
 /* the skin streams' layout as vu1.c builds it (model.c fills the streams; the VIF codes are left zero here) */
 int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
 {
@@ -138,6 +154,20 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
     (void)env_up, (void)env_down, (void)spec_i, (void)ls;
 }
 void vu1_skin_window(const void *palette, const unsigned char *win, int n) { (void)palette, (void)win, (void)n; }
+void vu1_skin_tint(const float tex[3], const float flat[3]) { (void)tex, (void)flat; }
+u32 vu1_skin_hdr(void *buf, GSTEXTURE *t, int st, int cull, int tris, int spec_k, int ms)
+{
+    (void)buf, (void)t, (void)st, (void)cull, (void)tris, (void)spec_k, (void)ms;
+    return 0;
+}
+void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_bytes, u32 prev_entry)
+{
+    (void)hdr, (void)pkt, (void)pkt_bytes, (void)prev_entry;
+    return (char *)at + 32;
+}
+void *vu1_skin_seg_end(void *at, u32 entry) { (void)entry; return (char *)at + 16; }
+int vu1_skin_can_call(int textured) { (void)textured; return 0; }
+void vu1_skin_call(const void *seg, unsigned last_cbp) { (void)seg, (void)last_cbp; }
 
 /* ---- the test-script runner (Polaris 1.7c): what testscript.c reaches outside the player ---- */
 void lab_unsupported(const char *cmd, const char *needs)

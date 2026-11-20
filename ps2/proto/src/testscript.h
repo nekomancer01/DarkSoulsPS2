@@ -48,6 +48,8 @@
 #define TEST_HUD 2
 #define TEST_HOLES 4
 #define TEST_DEMO 8  /* "option demo": idle demo walk on (off by default) */
+#define TEST_OBJ_AFTER_FX 16  /* "option objafterfx": the objects' segment after the effects (frame.c; Polaris 2.6: the
+                               * character programs reload after vu1fx went over them, tests/fx_order.txt) */
 
 /* Shared with the host (tools/pine.py MAILBOX layout): keep field order and sizes, bump version on change */
 typedef struct {
