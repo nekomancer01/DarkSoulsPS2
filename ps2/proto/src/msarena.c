@@ -8,6 +8,7 @@ unsigned char *ms_arena;
 static unsigned arena_size, *gmap;  /* bit per granule, 1 = used */
 unsigned ms_npages, ms_ipages;  /* ipages: pages map items may use (below MS_OTHER) */
 unsigned short *ms_pfree;               /* free granules per page */
+static unsigned char *pkind;            /* MS_LIFE: per page the kind (MS_K_*) of the group that opened it, 0 while whole free */
 /* Items over the top (built in: the frozen residency design, 2026-11-12): the pages map items may use now. Once mapstream_alloc holds more than
  * MS_OTHER (two Burg blocks' lite sets: 4.2 MB) the reserve is gone anyway, and the plan's cut already counts every
  * page not held by them as item room (cap = npages - other); items kept out of the reserve's free pages left that room
@@ -96,10 +97,67 @@ static void g_mark(unsigned g0, unsigned n, int on)
             gmap[g >> 5] &= ~b;
         ms_pfree[g / MS_GPP] += on ? -1 : 1;
     }
+    if (!on && pkind && n)
+        for (unsigned p = g0 / MS_GPP; p <= (g0 + n - 1) / MS_GPP; p++)
+            if (ms_pfree[p] == MS_GPP)
+                pkind[p] = MS_K_ANY;
 }
 /* n bytes (<= a page) inside one page: pages already in use first, so free pages stay whole. (Best fit with small
  * items from the top and page-sized groups from the bottom was tried, 2026-11-12: no-room refusals 440 -> 515 on
  * iso_burg_taurus, 100 -> 162 on iso_ame_report3; not kept) */
+/* ng granules in one run inside page p (not a page being given back); NULL: none */
+static void *g_in_page(unsigned p, unsigned ng)
+{
+    if (ms_pfree[p] < ng || (p >= ms_npages && xret[p - ms_npages]))
+        return NULL;
+    unsigned run = 0, g0 = p * MS_GPP;
+    for (unsigned g = g0; g < g0 + MS_GPP; g++) {
+        run = g_used(g) ? 0 : run + 1;
+        if (run == ng) {
+            g_mark(g + 1 - ng, ng, 1);
+            return g_ptr(g + 1 - ng);
+        }
+    }
+    return NULL;
+}
+/* the item pages and the borrowed ones counted i = 0.. (FOR_IPAGES order), or for long-lived groups the item pages
+ * from the top down and the borrowed ones last (a borrowed page goes back to the heap, its groups with it) */
+static inline unsigned life_page(unsigned i, int kind)
+{
+    unsigned lim = ilim();
+    return i >= lim ? ms_npages + i - lim : kind == MS_K_LONG ? lim - 1 - i : i;
+}
+/* item pages wholly free now (borrowed ones too, not those being given back) */
+unsigned ms_whole_free(void)
+{
+    unsigned n = 0;
+    FOR_IPAGES(p)
+        n += ms_pfree[p] == MS_GPP && !(p >= ms_npages && xret[p - ms_npages]);
+    return n;
+}
+/* MS_LIFE: n bytes (<= a page) for a group of this kind (mapstream_i.h MS_LIFE): a hole in a page of its kind, a whole
+ * free page while more than MS_TIDY_LO are whole, then ms_g_alloc's order */
+void *ms_g_alloc_k(unsigned n, int kind)
+{
+    unsigned ng = (n + MS_GRAN - 1) / MS_GRAN, np = ilim() + MS_XMAX;
+    if (!MS_LIFE || kind == MS_K_ANY || !pkind || !ng || ng > MS_GPP)
+        return ms_g_alloc(n);
+    void *r;
+    for (unsigned i = 0; i < np; i++) {
+        unsigned p = life_page(i, kind);
+        if (pkind[p] == kind && ms_pfree[p] != MS_GPP && (r = g_in_page(p, ng)))
+            return r;
+    }
+    if (ms_whole_free() > MS_TIDY_LO)
+        for (unsigned i = 0; i < np; i++) {
+            unsigned p = life_page(i, kind);
+            if (ms_pfree[p] == MS_GPP && (r = g_in_page(p, ng))) {
+                pkind[p] = (unsigned char)kind;
+                return r;
+            }
+        }
+    return ms_g_alloc(n);
+}
 void *ms_g_alloc(unsigned n)
 {
     unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
@@ -207,9 +265,10 @@ int ms_ensure_arena(void)
         ms_pfree = malloc(nt * sizeof *ms_pfree);
         pcls = malloc(nt * sizeof *pcls), pcost = malloc(nt * sizeof *pcost);
         pitem = malloc(nt * sizeof *pitem);
+        pkind = calloc(nt, 1);  /* (NULL: MS_LIFE places as before) */
         if (!gmap || !ms_pfree || !pcls || !pcost || !pitem) {
-            free(ms_arena), free(gmap), free(ms_pfree), free(pcls), free(pcost), free(pitem);
-            pcls = pcost = pitem = NULL;
+            free(ms_arena), free(gmap), free(ms_pfree), free(pcls), free(pcost), free(pitem), free(pkind);
+            pcls = pcost = pitem = NULL, pkind = NULL;
             ms_arena = NULL;
         } else {
             for (unsigned p = 0; p < ms_npages; p++)
@@ -319,9 +378,9 @@ static int lend_rehome(int k, unsigned a, unsigned e)
     unsigned n = grp_bytes(m, a, e);
     if (!MS_LEND_REHOME || n > MS_PAGE)
         return 0;
-    unsigned char *src = m->buf[a], *dst = ms_g_alloc(n);
+    unsigned char *src = m->buf[a], *dst = ms_g_alloc_k(n, MS_K_SHORT);
     if (!dst && ms_make_window(1, (n + MS_GRAN - 1) / MS_GRAN, C_NEAR2, NULL))
-        dst = ms_g_alloc(n);
+        dst = ms_g_alloc_k(n, MS_K_SHORT);
     if (!dst)
         return 0;
     memcpy(dst, src, n);
@@ -614,7 +673,9 @@ static void *g_alloc_ex(unsigned n, unsigned x0, unsigned x1)
 /* Empty `need` whole pages below `lim` by moving their groups elsewhere: the window whose used granules are all
  * movable groups (loaded, inside one page) with the fewest of them. 1 when every group of the window moved (its pages
  * free once the old copies go back, pend_release), 0 when no window qualifies or a group found no hole. */
-int ms_defrag(unsigned need, unsigned lim, unsigned max_kb)
+int ms_defrag(unsigned need, unsigned lim, unsigned max_kb) { return ms_defrag_(need, lim, max_kb, 1); }
+/* pool 0: the moved groups stay in the item pages (MS_TIDY: lent pages go back to a lite set, near parts with them) */
+int ms_defrag_(unsigned need, unsigned lim, unsigned max_kb, int pool)
 {
     if (!pitem || ms_npend > MS_DEFRAG_PEND - 16 || need > lim)
         return 0;
@@ -635,7 +696,7 @@ int ms_defrag(unsigned need, unsigned lim, unsigned max_kb)
     unsigned fr = 0;
     FOR_IPAGES(p)
         fr += ms_pfree[p];
-    int to_pool = MS_DEFRAG_LEND && ms_pools_on && lim == ilim();  /* (an item read's window, not a lite set's) */
+    int to_pool = pool && MS_DEFRAG_LEND && ms_pools_on && lim == ilim();  /* (an item read's window, not a lite set's) */
     if (to_pool)  /* (the pools' idle pages take moved groups too) */
         for (unsigned p = ms_mpage0; p < ms_npages; p++)
             fr += ms_pfree[p];
@@ -698,6 +759,34 @@ int ms_defrag(unsigned need, unsigned lim, unsigned max_kb)
     }
     HITCH_END(d, HS_MSWIN);
     return ok;
+}
+
+/* MS_TIDY (mapstream_i.h): one page emptied on a quiet frame while the whole free item pages are under the low mark,
+ * on until the high mark */
+unsigned ms_tidy_moves, ms_tidy_kb;
+void ms_tidy(void)
+{
+    static int on;
+    static unsigned last_log, fail_w = ~0u, fail_f;
+    if (!MS_TIDY || !ms_arena || ms_settling || ms_npend)
+        return;
+    unsigned w = ms_whole_free();
+    if (w == fail_w && ms_frame - fail_f < MS_SCAN_FRAMES)
+        return;  /* nothing could move at this count: not every frame (the search ranks every loaded group) */
+    on = w < MS_TIDY_LO || (on && w < MS_TIDY_HI);
+    if (!on)
+        return;
+    unsigned m0 = ms_defrag_moves, k0 = ms_defrag_kb;
+    if (ms_defrag_(1, ilim(), MS_PAGE >> 10, 0)) {
+        ms_tidy_moves += ms_defrag_moves - m0, ms_tidy_kb += ms_defrag_kb - k0;
+        if (ms_frame - last_log >= 300) {  /* ~10 s */
+            last_log = ms_frame;
+            printf("mapstream: tidy: %u whole free item pages, page emptied (%u groups %u KB moved so far)\n", w,
+                   ms_tidy_moves, ms_tidy_kb);
+        }
+    } else {
+        fail_w = w, fail_f = ms_frame;  /* no page to empty into the holes there are */
+    }
 }
 
 /* ---- borrowed pages: give back, borrow (MS_BORROW, comment at xpage) ---- */
