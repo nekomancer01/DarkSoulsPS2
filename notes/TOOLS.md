@@ -33,6 +33,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | Tool | Output |
 |---|---|
 | `export_map.py` (+ `native/simplify.c`, `texmap.py`) | Map geometry, textures, lighting bake |
+| `material.py` | Material classes (Polaris 2.1): MTD -> class (opaque, alpha test, blend, additive, water, foliage, skin, decal, sky), each with its VU1 program, GS state and passes; `material.py header` writes `ps2/proto/src/material_table.h`, `material.py test` checks the classifier (tools/ci/offline.sh runs both) |
+| `mtd_census.py <map id>...` | Census of a map's FLVER meshes per MTD: shader, g_BlendMode / g_LightingType / g_IsFoliage, the class material.py gives, the old exporter checks, textures carrying two classes (`--counts`: counts only) |
 | `native/simplify.c`, `simplify_native.py` | The map simplifier, the source of truth (in libmapx for export_map; ctypes binding for horizon.py). Output at the shipped settings pinned by `mapx/test_simplify_golden.py` (`--update` after an intended change) |
 | `simplify.py`, `simplify_pool.py` | Frozen reference of simplify.c's core collapse (identical with simplify.c's own rules off: `simplify_native.py --test`, `mapx/test_mapx.py`), and the Python fallback's job pool / cache |
 | `export_collision.py` | collision.bin |
@@ -88,6 +90,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `test-pcsx2-ini.py` | PCSX2 config for one headless test instance |
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
+| `golden.py` | Golden routes (Polaris 0.3): `record` runs the six short ISO routes `ps2/proto/tests/golden_*.txt` (Asylum, Firelink, Burg west, Burg bonfire, Taurus tower / bridge, Parish seam) with GS dumps into `build/golden/base/`; `compare` runs them again into `build/golden/new/` and reports per route the GS dump replay diff (test-gsdump.py), frame p50 / p90 / max and streamer refusals vs the base (`--gate`: exit code = routes over the noise thresholds). Reported, not gating, in `tools/ci/pcsx2-smoke.sh` |
 | `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
 | `gs_budget.py` | GS memory (VRAM) budget per owner from `ps2/proto/src/gs_budget.h` (Polaris 1.1); `tools/ci/gsown.py` (CI hygiene) checks the rows sum to 4096 KB and that GS register words are written only through `src/gs.h` |
 | `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |

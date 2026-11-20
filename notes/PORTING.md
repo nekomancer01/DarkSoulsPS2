@@ -194,7 +194,7 @@ Translation and the code-index rebuild are both resumable: start Ollama (`fndb/o
 - "Flipped normals" were back faces: vertex normals point outward, but DS front faces are clockwise on screen
   (Direct3D) and nothing was culled, so the inside of sky/background/walls showed. The FLVER face-set cull flag is now
   exported (map chunks, character groups) and honoured: EE r_backface(), VU1 cross-product sign.
-- ps2/proto/src/vu1map.vsm: hand-scheduled VU1 microprogram (dvp-as): per triangle, 3 vertices -> view transform,
+- vu1map.vsm (ps2/proto/src until 2026-11-20; now tools/vu1/ab/vu1map.vsm, only the VU1 tests' reference): hand-scheduled VU1 microprogram (dvp-as): per triangle, 3 vertices -> view transform,
   1/z (DIV + WAITQ), screen = v q scale + offset, STQ (perspective-correct texturing), RGBAQ from the vertex colour,
   XYZ2; CLIP of (x F/guard, y F/guard, z - 2 near) vs w = z marks vertices behind the near plane or outside the guard
   band, OPMULA/OPMSUB gives the screen cross product; either sets ADC on the third vertex (GS skips the triangle).

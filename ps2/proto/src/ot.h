@@ -4,9 +4,10 @@
  * exceptions listed there).
  *
  * Buckets, in the order the frame should reach the GS:
- *   SKY PANO HORIZON WORLD   the map pass (map.c, one segment for all of SKY..BLEND until Polaris 4.1 splits map.c)
+ *   SKY PANO HORIZON WORLD   the map pass (map.c, one segment for SKY..WORLD; its blended chunks beyond ZSPLIT too)
  *   CHR OBJ                  characters (player, enemies, NPCs), objects (breakables)
- *   ALPHA_TEST BLEND         (no entries of their own yet: the map's are in its segment, the EE path's in gsKit's queue)
+ *   ALPHA_TEST BLEND         BLEND: the blended map nearer than ZSPLIT (map.c map_draw_blend, render-19), a segment in
+ *                            the characters' buffer after OBJ with the map programs' preamble (vu1_map_resume)
  *   FX                       VU1 particles
  *   POST                     the far depth-of-field bands and the flip (main.c flip)
  *   UI                       HUD, menus, the loading overlay
