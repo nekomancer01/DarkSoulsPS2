@@ -33,6 +33,7 @@
 #include "prof.h"
 #include "hitch.h"
 #include "testscript.h"
+#include "trail.h"
 #include "pickup.h"
 #include "debug_hud.h"
 #include "world.h"
@@ -482,6 +483,7 @@ static void phase_emit(Frame *f)
         ot_close();
         ot_flush();
     }
+    trail_draw();    /* the player's weapon trail (trail.c, EE path) */
     bonfire_draw();  /* the bloodstain marker */
     debug_draw_world();  /* COMBAT_DUMMY hurtbox, blade capsule */
     f->t_char += ((ticks() - f->t1) / 294912.0f - f->t_char) * 0.1f;

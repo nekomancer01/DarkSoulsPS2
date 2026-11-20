@@ -47,6 +47,9 @@ THROW = Struct("ThrowRow", [("def_chr", INT), ("dist", FLOAT), ("ang_min", FLOAT
                "ThrowParam row of the player (AtkChrId 0): DefChrId (0 = any), Dist, DiffAngMin / Max (deg, between the "
                "two facings), throwType (0 backstab, 8 riposte), atkAnimId (on the right weapon's motion), defAnimId, "
                "atkPhysCorrection of the atk anim's ThrowAttackBehavior (TAE 304) and its time")
+TRAIL = Struct("TrailWindow", [("anim", INT), ("start", FLOAT), ("end", FLOAT), ("base", S16), ("tip", S16)],
+               "weapon trail window (TAE SpawnFFX_Blade of the right weapon): anim id, start, end, blade base / tip "
+               "dummy polys (src/trail.c)")
 GRAPH = Struct("GraphRow", [("id", INT), ("g", FLOAT, 15)],
                "CalcCorrectGraph row: id, stageMaxVal[5], stageMaxGrowVal[5], adjPt_maxGrowVal[5]")
 RECORD = Struct("CombatData", [
@@ -57,10 +60,41 @@ RECORD = Struct("CombatData", [
     ("sk_bones", INT), ("sk_r_weapon", INT), ("sk_parent", Ptr(S8)), ("wep_dummy", Ptr(DUMMY)), ("wep_dummies", INT),
     ("atk_windows", Ptr(WINDOW)), ("natk_windows", INT), ("dummy_hp", INT), ("dummy_def_phys", INT),
     ("dummy_radius", FLOAT), ("dummy_height", FLOAT), ("dummy_poise", INT), ("graphs", Ptr(GRAPH)), ("ngraphs", INT),
-    ("sk_spine", INT), ("throws", Ptr(THROW)), ("nthrows", INT), ("knock_rows", KNOCK, 2)],
+    ("sk_spine", INT), ("throws", Ptr(THROW)), ("nthrows", INT), ("knock_rows", KNOCK, 2),
+    ("trails", Ptr(TRAIL)), ("ntrails", INT), ("trail_time", FLOAT), ("trail_rgba", INT, 4)],
     "Warrior stats + start equip weight, Longsword values, CalcCorrectGraph rows (stageMaxVal[5], stageMaxGrowVal[5], "
     "adjPt_maxGrowVal[5]; graph_weapon = the weapon's correctType), c0000 skeleton, debug dummy (NpcParam "
-    f"{DUMMY_NPC}), every CalcCorrectGraph row a weapon correctType names (sorted by id)")
+    f"{DUMMY_NPC}), every CalcCorrectGraph row a weapon correctType names (sorted by id), the weapon trail windows "
+    "and the trail's FFX tracer values (lifetime s, colour 0..0x80)")
+
+
+TAE_BLADE = 118  # SpawnFFX_Blade (DSAnimStudio TAE.Template.DS1.xml)
+TRAIL_GAIN = 16.0  # ASSUMED: the tracer's ColorA x ColorModA (0.137 x 0.2 for 250) as a GS add is ~7 / 255, invisible;
+# DSR's blend mode 4 in HDR plus the tone map shows a white arc. In PCSX2, 8x read as a faint grey band at Firelink and
+# 24x as near-white; 16x is a clearly visible light streak (TECH_DEBT fx-16: compare with a DSR capture)
+
+
+def tracer(game, fx_ids):
+    """(TrailMaxTime s, [r, g, b, a] 0..0x80) of the first tracer (action 40) in the given effects (CommonEffects),
+    or the defaults (0.3 s, faint white) when there is none"""
+    import export_effects, ffx
+    lib = export_effects.Library(game, "m10_02_00_00")
+    for fid in fx_ids:
+        e = lib.effect(fid)
+        for d in (e.datas.values() if e else ()):
+            if d.get("sub") != 40:
+                continue
+            def val(k, dflt=1.0):
+                f = export_effects._f(d, k)
+                if f is not None:
+                    v = ffx.field_eval(f, 0.0)
+                    return v[0] if isinstance(v, list) else v
+                v = d.get(k)
+                return v if isinstance(v, (int, float)) else dflt
+            a = val("ColorA") * val("ColorModA") * val("ColorModMult") * TRAIL_GAIN
+            rgb = [min(0x80, round(0x80 * val(f"Color{c}") * val(f"ColorMod{c}"))) for c in "RGB"]
+            return round(float(val("TrailMaxTime", 0.3)), 3), rgb + [min(0x80, round(0x80 * a))]
+    return 0.3, [0x80, 0x80, 0x80, 28]
 
 
 def HEADER():
@@ -69,10 +103,11 @@ def HEADER():
              "DUMMY_HP", "DUMMY_DEF_PHYS", "DUMMY_RADIUS", "DUMMY_HEIGHT", "DUMMY_POISE", "SK_SPINE"]
     macros = [f"#define {m} (combat_data->{m.lower()})" for m in names]
     macros += ["#define ATK_WINDOWS (combat_data->natk_windows)", "#define NGRAPHS (combat_data->ngraphs)",
-               "#define NTHROWS (combat_data->nthrows)"]
+               "#define NTHROWS (combat_data->nthrows)", "#define NTRAILS (combat_data->ntrails)"]
     macros += [f"#define {a} (combat_data->{a})" for a in
-               ["graph_weapon"] + [f"graph_{rid}" for rid in GRAPH_ROWS] + ["sk_parent", "wep_dummy", "atk_windows", "graphs", "throws", "knock_rows"]]
-    return gamedata.header("combat", [DUMMY, HIT, WINDOW, GRAPH, THROW, KNOCK, RECORD], RECORD,
+               ["graph_weapon"] + [f"graph_{rid}" for rid in GRAPH_ROWS] + ["sk_parent", "wep_dummy", "atk_windows", "graphs", "throws", "knock_rows",
+                "trails", "trail_time", "trail_rgba"]]
+    return gamedata.header("combat", [DUMMY, HIT, WINDOW, GRAPH, THROW, KNOCK, TRAIL, RECORD], RECORD,
                            ([f"#define SK_BONES_MAX {SK_BONES_MAX}  /* cap for arrays sized by the skeleton */"], macros))
 
 
@@ -135,7 +170,22 @@ def main():
                             a["atkThunCorrection"], a["hitStopTime"], a["knockbackDist"]))
 
     npc = P["NpcParam"][DUMMY_NPC][1]
-    used_dp = sorted({d for at in attacks for _, d1, d2 in at[7] for d in (d1, d2)})
+    # weapon trails (src/trail.c): TAE SpawnFFX_Blade (type 118: FFXID s32, DummyPolySource s16 (2 = right weapon),
+    # BladeBase s16, BladeTip s16, SlotID s16; DSAnimStudio's DS1 template) in the exported attacks, and the FFX's
+    # tracer (action 40: TrailMaxTime, ColorA x ColorModA)
+    trails, trail_fx = [], set()
+    for tfile, aid in ATTACK_ANIMS:
+        for etype, s, e, p in sorted(taes[tfile][aid]["events"], key=lambda ev: ev[1]):
+            if etype != TAE_BLADE or len(p) < 3:
+                continue
+            src, base = struct.unpack("<hh", struct.pack("<I", p[1]))
+            tip = struct.unpack("<hh", struct.pack("<I", p[2]))[0]
+            if src == 2 and base in dummies and tip in dummies:
+                trails.append({"anim": aid, "start": round(s, 3), "end": round(e, 3), "base": base, "tip": tip})
+                trail_fx.add(p[0])
+    trail_time, trail_rgba = tracer(game, sorted(trail_fx)[:1])
+    used_dp = sorted({d for at in attacks for _, d1, d2 in at[7] for d in (d1, d2)} |
+                     {d for t in trails for d in (t["base"], t["tip"])})
     assert len(parents) <= SK_BONES_MAX, f"{len(parents)} bones > SK_BONES_MAX"
     r3, r4 = (lambda v: round(v, 3)), (lambda v: round(v, 4))  # as the old generated header printed them
     windows = [{"anim": aid, "start": r3(s), "end": r3(e), "atk_param": row, "phys_corr": pc, "sa_corr": sac,
@@ -187,6 +237,8 @@ def main():
     value["knock_rows"] = [{"cont": [r3(kb[row][1][f"damage_{k}_ContTime"]) for k in KNOCK_KINDS],
                        "dec": [r3(kb[row][1][f"damage_{k}_DecTime"]) for k in KNOCK_KINDS]} for row in (0, 1)]
     value["sk_spine"] = next((i for i, n in enumerate(names) if "spine" in n.lower()), -1)
+    value["trails"] = trails or [{"anim": -1, "start": 0, "end": 0, "base": 0, "tip": 0}]
+    value["ntrails"], value["trail_time"], value["trail_rgba"] = len(trails), trail_time, trail_rgba
     n = gamedata.write(out, "combat", RECORD, value)
     print(f"{out}: weight {weight:.1f}, {len(attacks)} attack windows, dummies {used_dp}, R_Weapon bone {wbone}, {n} B")
 

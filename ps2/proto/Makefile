@@ -63,7 +63,7 @@ endif
 A = $(AREA_SRC)
 
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1skin2.o vu1clip.o \
-	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
+	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o trail.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
@@ -454,7 +454,7 @@ $(G)/progress.gd: $(TS)/export_progress.py.sum $(TS)/gamedata.py.sum $(TS)/param
 	python3 -I ../../tools/export_progress.py "$(GAME)" $@
 
 # HP / damage core: stats, CalcCorrectGraph rows, weapon dummy polys, AtkParam windows, the debug dummy's NpcParam
-$(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/gamedata.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
+$(G)/combat.gd: $(TS)/export_combat.py.sum $(TS)/export_effects.py.sum $(TS)/ffx.py.sum $(TS)/gamedata.py.sum $(TS)/havok_anim.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_combat.py "$(GAME)" $@
 
