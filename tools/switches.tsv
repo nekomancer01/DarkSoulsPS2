@@ -341,6 +341,7 @@ FAR_SEAM_DEG	env	1.5	tune	world	-	#252	farpano.py	degrees: the seam sets' cells
 FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' coarsest cells (they coarsen first when over FAR_KB)
 FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
 FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit
+TEX_AUTHORED_MIPS	env	1	flag	world	0	new	texmap.py	every map level (mip 0-3) from the DDS authored levels on level 0's palette; 0 = resample + box filter
 MAT_GS_TABLE	env	1	flag	gfx	0	new	material.py	classes follow g_BlendMode (mat-1), texture entries split by GS state (mat-2), FFX blend from the table; 0 = the name rules / old keys / old FFX rule (with make DEFS=-DMAT_GS_TABLE=0: the old runtime too)
 MAP_SPEC	env	1	flag	gfx	0	new	mapspec.py	normal / F0 streams and texture k for the map's specular pass (Polaris 2.3); 0 = no data (map.bin as before)
 MAP_WATER	env	1	flag	gfx	0	new	mapgather.py	water: white texture + Fresnel terms in its CLUT, colour per vertex at runtime (Polaris 2.6); 0 = the solid water_rgba texture
