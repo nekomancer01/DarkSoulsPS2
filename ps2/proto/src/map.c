@@ -1574,8 +1574,13 @@ static int nfx_late;  /* fxl entries map_draw_blend draws (late != NULL) */
  * it now, in the far pass (its Z range is gone once the near pass clears Z), the rest kept for map_draw_blend with its
  * texture resolved now (its upload goes in the map chain, tc_begin..tc_end); 2 map_draw_blend: the kept ones, after
  * the characters and objects (render-19: a character behind a blended surface is drawn under it, as in DSR).
- * Returns the triangles drawn. */
-static int draw_effects(int n, int fog, int which)
+ * The GS fogs a chunk's colour before blending, so additive and subtractive chunks fog towards black (fading out, as
+ * fx.c's additive particles); fogged towards the map's fog colour col they would add / subtract it with distance.
+ * MAP_FX_FOG0=0: all three towards col, as before. Returns the triangles drawn. */
+#ifndef MAP_FX_FOG0
+#define MAP_FX_FOG0 1
+#endif
+static int draw_effects(int n, int fog, int which, u32 col)
 {
     GSGLOBAL *gs = gsg;
     int drawn = 0;
@@ -1591,6 +1596,10 @@ static int draw_effects(int n, int fog, int which)
     }
     for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
         const MatRow *last = NULL;
+        if (MAP_FX_FOG0 && pass == 1) {
+            u64 fc[2] = {0, 0x3D};  /* FOGCOL black for the order-free passes */
+            zs_gs_regs(1, fc);
+        }
         for (int i = 0; i < n; i++) {
             const Chunk *c = fxl[i].c;
             const MapInst *mi = &mp_inst[fxl[i].k];
@@ -1632,6 +1641,10 @@ static int draw_effects(int n, int fog, int which)
             }
         }
     }
+    if (MAP_FX_FOG0) {
+        u64 fc[2] = {col, 0x3D};
+        zs_gs_regs(1, fc);
+    }
     opaque_regs(gs);
     return drawn;
 }
@@ -1649,7 +1662,7 @@ int map_draw_blend(void)
     vu1_map_edge(edge_a2);
     u64 r[2] = {col, GSR_FOGCOL};  /* the characters set their own fog colour */
     vu1_gs_regs(1, r);
-    int n = draw_effects(nfx, R_FOG, 2);
+    int n = draw_effects(nfx, R_FOG, 2, col);
     nfx_late = 0;
     return n;
 }
@@ -2364,7 +2377,7 @@ int map_draw(V3 eye)
     }
 
     MF_BEGIN
-    drawn += draw_effects(nfx, fog, MAP_BLEND_LATE ? 1 : 0);  /* the rest after the characters: map_draw_blend */
+    drawn += draw_effects(nfx, fog, MAP_BLEND_LATE ? 1 : 0, col);  /* the rest after the characters: map_draw_blend */
     MF_END(MF_FX)
     zs_end();
     {
