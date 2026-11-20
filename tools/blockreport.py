@@ -139,6 +139,8 @@ def vram(gen):
             ntex, otex = _u32(b, 8), _u32(b, 32)
             tot = sum(w * h + 1024 for w, h in (struct.unpack_from("<HH", b, otex + 16 * i) for i in range(ntex)))
             out["fx"] = dict(kb=round(tot / 1024, 1), textures=ntex)
+        else:  # a format this report does not read (a chunk-stream fx.bin, Polaris 3.3): a miss, never a silent 0
+            out["fx"] = dict(kb=None, unread=b[:4].decode("latin1"))
     op = os.path.join(gen, "objects.bin")
     if os.path.exists(op):
         b = open(op, "rb").read()
@@ -161,6 +163,8 @@ def vram(gen):
                     t, n = _dsrm_tex(b, mo)
                     tot, ntex = tot + t, ntex + n
             out["obj"] = dict(kb=round(tot / 1024, 1), textures=ntex)
+        else:
+            out["obj"] = dict(kb=None, unread=b[:4].decode("latin1"))
     chr_kb = chr_n = 0
     for d in sorted(os.listdir(gen)):
         mp = os.path.join(gen, d, "model.bin")
@@ -175,7 +179,7 @@ def vram(gen):
     for k, v in out.items():
         v["row_kb"] = gs_budget.GSB.get(k)
         v["gated"] = k in GATED_VRAM
-        v["over"] = bool(v["gated"] and v["row_kb"] is not None and v["kb"] > v["row_kb"])
+        v["over"] = bool(v["gated"] and v["row_kb"] is not None and v["kb"] is not None and v["kb"] > v["row_kb"])
     return out
 
 
@@ -317,6 +321,8 @@ def main(argv):
         for owner, v in r["vram"].items():
             if v["over"]:
                 misses.append(f"{name}: VRAM {owner} {v['kb']} KB over its gs_budget.h row {v['row_kb']} KB")
+            if v.get("unread"):
+                misses.append(f"{name}: VRAM {owner}: file format '{v['unread']}' not read by blockreport.py (update it)")
         r["scripts"] = scripts(d, boot)
         for key, v in r["scripts"].items():
             if key.startswith("lua") and v["outside_vm"]:
