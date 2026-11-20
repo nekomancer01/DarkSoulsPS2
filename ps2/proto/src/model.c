@@ -86,6 +86,7 @@ struct Model {
      * has none); st = st normalized (f32x2), or colour u8x4 if untextured */
     struct SkBatch {
         short group, tris, spec, win;
+        short hdr;  /* Polaris 2.2: its header block (skin_pk_build) */
         unsigned t0;
         int bytes;
         void *pkt, *pa, *pb, *n, *ms, *st;
@@ -101,6 +102,21 @@ struct Model {
     int win_built;              /* skin_step: the last window applied to build_slot */
     unsigned char build_slot[256];  /* skin_step: skeleton bone -> palette slot after window win_built */
     unsigned hide;  /* group flag bits not drawn (model.h MDL_HIDE_*) */
+    /* Polaris 2.2 prebuilt packets (skin_pk_*): one heap block made when the last batch is built, filled at the first
+     * draw and again when a texture changes (pk_sig): vu1skin2 header blocks (one per group, triangle count and
+     * specular), the segments (runs of batches with one bone window and one set of hideable group flags, each a DMA
+     * chain ending in RET) and their table */
+    void *pk_block;
+    u64 *pk_hdr;              /* pk_nhdr x VU1_SKIN_HDR_QW qwords */
+    u64 *pk_chain;            /* the segments' tags: 2 qw per batch, 1 RET per segment */
+    struct SkSeg {
+        void *at;
+        short win, textured;
+        unsigned flags, cbp;  /* group flags (mdl_hide bits), CLUT of the last textured batch (stats) */
+    } *pk_seg;
+    unsigned short *pk_entry;  /* program entry of each header block */
+    int pk_nhdr, pk_nseg, pk_textured;
+    unsigned pk_sig;          /* the textures the headers were built for (skin_pk_sig); 0 = not built */
     void *own;      /* mdl_compact's copy of the sections kept after load (freed by mdl_free) */
     void **apg;  /* MDL_ANIM_PAGES: the pages the anims were copied into (one per anim at most) */
     int napg;
@@ -302,6 +318,117 @@ static int skin_alloc(Model *m)
     return 1;
 }
 
+/* Polaris 2.2 prebuilt packets (default on; make DEFS=-DMDL_PREBUILT=0 = every batch's header written per draw, the
+ * old path). Per draw the EE writes the palette, the per-draw block (vu1_skin_begin) and one CALL per segment instead
+ * of a header (11 qw) and two tags per batch. Draws near the camera (vu1skinclip) and a chain's first textured draw
+ * (CLD 2) still go batch by batch. */
+#ifndef MDL_PREBUILT
+#define MDL_PREBUILT 1
+#endif
+#define MDL_HIDE_BITS (~1u & ~0xF0000000u)  /* the group flag bits mdl_hide can hide (bit 0 cull, 28-31 spec k) */
+
+/* header block of batch b: the first batch before it in its group with the same triangle count and specular, or -1 */
+static int pk_same(const Model *m, int b)
+{
+    const struct SkBatch *sb = &m->sk_batch[b];
+    for (int j = b - 1; j >= 0 && m->sk_batch[j].group == sb->group; j--)
+        if (m->sk_batch[j].tris == sb->tris && !m->sk_batch[j].spec == !sb->spec)
+            return j;
+    return -1;
+}
+
+/* a new segment starts at batch b */
+static int pk_cut(const Model *m, int b)
+{
+    const struct SkBatch *sb = &m->sk_batch[b];
+    return !b || sb->win != sb[-1].win ||
+           ((m->groups[sb->group].flags ^ m->groups[sb[-1].group].flags) & MDL_HIDE_BITS);
+}
+
+/* the block for a model whose batches are all built (skin_step); without it (MDL_PREBUILT 0, out of memory) every draw
+ * goes batch by batch */
+static void skin_pk_alloc(Model *m)
+{
+    if (!MDL_PREBUILT || m->pk_block || !m->nsk)
+        return;
+    int nh = 0, ns = 0;
+    for (int b = 0; b < m->nsk; b++)
+        nh += pk_same(m, b) < 0, ns += pk_cut(m, b);
+    unsigned hq = nh * VU1_SKIN_HDR_QW, cq = 2 * m->nsk + ns;
+    unsigned st = (ns * sizeof *m->pk_seg + nh * sizeof *m->pk_entry + 15) & ~15u;
+    unsigned char *q = memalign(64, (hq + cq) * 16 + st);
+    if (!q)
+        return;
+    m->pk_block = q;
+    m->pk_hdr = (u64 *)q, m->pk_chain = (u64 *)(q + hq * 16);
+    m->pk_seg = (void *)(q + (hq + cq) * 16), m->pk_entry = (unsigned short *)(m->pk_seg + ns);
+    m->pk_nhdr = nh, m->pk_nseg = ns, m->pk_sig = 0;
+}
+
+static void skin_pk_free(Model *m)
+{
+    free(m->pk_block);
+    m->pk_block = NULL, m->pk_nseg = 0, m->pk_sig = 0;
+}
+
+static inline const GSTEXTURE *pk_tex(const Model *m, const Group *g)
+{
+    return g->tex >= 0 && g->tex < m->ntex ? &m->texv[g->tex] : NULL;
+}
+
+/* what the headers depend on: the textures' VRAM places and formats (uploads, shared sets, frees) */
+static unsigned skin_pk_sig(const Model *m)
+{
+    unsigned h = 2166136261u ^ (unsigned)m->ntex;
+    for (int i = 0; i < m->ntex; i++) {
+        const GSTEXTURE *t = &m->texv[i];
+        const unsigned w[6] = {t->Vram, t->VramClut, t->Width, t->Height, t->PSM, t->ClutPSM};
+        for (int k = 0; k < 6; k++)
+            h = (h ^ w[k]) * 16777619u;
+    }
+    return h ? h : 1;
+}
+
+/* the header blocks and segments for the current textures (between frames: no chain refers to them while this runs,
+ * textures change only in simulate phases) */
+static void skin_pk_build(Model *m)
+{
+    u64 *c = m->pk_chain;
+    int nh = 0, s = -1;
+    u32 prev = 0;
+    m->pk_textured = 0;
+    for (int b = 0; b < m->nsk; b++) {
+        struct SkBatch *sb = &m->sk_batch[b];
+        const Group *g = &m->groups[sb->group];
+        GSTEXTURE *gt = (GSTEXTURE *)pk_tex(m, g);
+        int textured = g->tex >= 0 && g->tex < m->nte;  /* the packet's st kind (skin_step) */
+        if (pk_cut(m, b)) {
+            if (s >= 0)
+                c = vu1_skin_seg_end(c, prev);
+            s++;
+            m->pk_seg[s].at = c, m->pk_seg[s].win = sb->win, m->pk_seg[s].flags = g->flags & MDL_HIDE_BITS;
+            m->pk_seg[s].textured = 0, m->pk_seg[s].cbp = 0;
+            prev = 0;
+        }
+        int j = pk_same(m, b), h;
+        if (j < 0) {
+            h = nh++;
+            m->pk_entry[h] = vu1_skin_hdr(m->pk_hdr + h * 2 * VU1_SKIN_HDR_QW, gt, textured, g->flags & 1, sb->tris,
+                                          g->flags >> 28 ? g->flags >> 28 : 1, sb->ms && sb->spec);
+        } else {
+            h = m->sk_batch[j].hdr;
+        }
+        sb->hdr = h;
+        c = vu1_skin_seg_batch(c, m->pk_hdr + h * 2 * VU1_SKIN_HDR_QW, sb->pkt, sb->bytes, prev);
+        prev = m->pk_entry[h];
+        if (gt && textured)
+            m->pk_seg[s].textured = 1, m->pk_seg[s].cbp = gt->VramClut, m->pk_textured = 1;
+    }
+    if (s >= 0)
+        vu1_skin_seg_end(c, prev);
+    SyncDCache(m->pk_block, (char *)m->pk_seg);  /* headers and tags go to VIF1 by DMA from memory */
+}
+
 /* The planned skin batches from nsk on, until `budget` EE ticks have passed: 1 when every batch is built */
 static int skin_step(Model *m, unsigned budget)
 {
@@ -373,6 +500,7 @@ static int skin_step(Model *m, unsigned budget)
         if (c - c0 >= budget && m->nsk < m->nplan)
             return 0;
     }
+    skin_pk_alloc(m);
     FlushCache(0);  /* the streams go to VIF1 by DMA straight from memory */
     return 1;
 }
@@ -644,6 +772,7 @@ static int compact(Model *m, unsigned blob_size)
 
 void mdl_strip(Model *m)
 {
+    skin_pk_free(m);
     if (m->sk_block)
         skin_free_pages(m);
     anim_free_pages(m);
@@ -887,13 +1016,32 @@ static void skin_light(const M34 *view, V3 pos, float *Lv)
 }
 
 /* Skin chains of the palette's pose */
-static void skin_draw(const Model *m, int tint)
+static void skin_draw(const Model *cm, int tint)
 {
     /* light: amb + sun max(n . L, 0) for texture modulation, vertex colour * 0x80 (0.5 + 0.75 max(n . L, 0)) when
      * untextured; i-frames add a warm gold */
     static const float tint_tex[3] = {70, 45, 0}, tint_flat[3] = {90, 60, 0}, none[3] = {0, 0, 0};
+    Model *m = (Model *)cm;  /* (the prebuilt packets are a cache: built here at the first draw) */
     int win = m->nwin ? 0 : -1;
+    vu1_skin_tint(tint ? tint_tex : NULL, tint ? tint_flat : NULL);
     vu1_skin_begin(palette, m->hdr->bones, m->nwin ? m->win_ids : NULL, m->nwin ? m->win_n[0] : 0);
+    if (m->pk_block && m->nsk == m->nplan) {  /* Polaris 2.2: the model's segments, one CALL each */
+        unsigned sig = skin_pk_sig(m);
+        if (sig != m->pk_sig)
+            skin_pk_build(m), m->pk_sig = sig;
+        if (vu1_skin_can_call(m->pk_textured)) {
+            for (int s = 0; s < m->pk_nseg; s++) {
+                const struct SkSeg *sg = &m->pk_seg[s];
+                while (win >= 0 && win < sg->win) {  /* windows in order even past hidden segments */
+                    win++;
+                    vu1_skin_window(palette, m->win_ids + 2 * m->win_first[win], m->win_n[win]);
+                }
+                if (!(sg->flags & m->hide))
+                    vu1_skin_call(sg->at, sg->textured ? sg->cbp : 0);
+            }
+            return;
+        }
+    }
     for (int b = 0; b < m->nsk; b++) {
         const struct SkBatch *sb = &m->sk_batch[b];
         const Group *g = &m->groups[sb->group];

@@ -9,7 +9,10 @@
 ; Constants: 4 scale (F, -F, Zs, fog a), 5 offset (cx, cy, 0, fog b), 6 clip scale (F/G, F/G, 2 near, fog min),
 ; 7 (0, 0, -1, fog max). Bone b: columns of view * world, col0-2 .w = bone-space light vector.
 ; Batch (input buffer): 0 {tris, cull mask}, 1 K1, 2 K2, 3 clamp (255, 255, 255, 128), 4 A+D GIF tag (EOP),
-; 5-7 TEX0 / TEX1 / TEST, 8 PRIM GIF tag template (STQ, RGBAQ, XYZF2; NLOOP / EOP filled per kick),
+; 5-7 TEX0 / TEX1 / TEST, 8 PRIM GIF tag template (STQ, RGBAQ, XYZF2; NLOOP / EOP filled per kick). The header is static
+; per batch (a model's headers are built once, Polaris 2.2): the prologue adds the per-draw block at SKIN_DRAW to K1
+; (textured: tint + amb, flat: tint) and K2 (textured: sun) and takes the PRIM template from it (fog on / off per draw),
+; writing all three back into the header.
 ; 9.. vertices of 4 qwords: pa, pb (s16 x, y, z / 4096 + palette offset 4 b), normal + weight A (s16 / 4096),
 ; st (f32) or colour (u8).
 ; Textured: colour = min(K1 + K2 max(n . L, 0), clamp) with K1 = tint + 64, K2 = 96 (= 0x80 (0.5 + 0.75 n.L)).
@@ -43,6 +46,13 @@ VU1Skin2_Tex:
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1002(VI00)
+	NOP                            	lq VF09,1003(VI00)
+	add VF01,VF01,VF08             	lq VF10,1005(VI00)
+	add VF02,VF02,VF09             	NOP
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
+	NOP                            	sq VF02,2(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
@@ -217,6 +227,13 @@ VU1Skin2_TexSpec:
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1002(VI00)
+	NOP                            	lq VF09,1003(VI00)
+	add VF01,VF01,VF08             	lq VF10,1005(VI00)
+	add VF02,VF02,VF09             	NOP
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
+	NOP                            	sq VF02,2(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
@@ -457,6 +474,10 @@ VU1Skin2_Flat:
 	NOP                            	lq VF01,1(VI02)
 	NOP                            	lq VF02,2(VI02)
 	NOP                            	lq VF07,3(VI02)
+	NOP                            	lq VF08,1004(VI00)
+	add VF01,VF01,VF08             	lq VF10,1006(VI00)
+	NOP                            	sq VF10,8(VI02)
+	NOP                            	sq VF01,1(VI02)
 	NOP                            	iaddiu VI06,VI02,4
 	NOP                            	xgkick VI06
 	NOP                            	iaddiu VI03,VI02,9
