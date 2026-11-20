@@ -7,7 +7,7 @@
 ; Per vertex (unpipelined): view = w A pa + (1 - w) B pb; colour = min(K1 + B (A + S max(n . L, 0)), 255 / 128)
 ; with B = 1 textured, the vertex colour flat (vu1skin2's two formulas); st = st * textured, STQ z 1. CLIP of (x F/G, y F/G, z - 2 near) against
 ; z, then vu1clip.vsm's core (trivial reject, Sutherland-Hodgman against the planes at 1014, projection, fan, one
-; triangle per kick from output slot VI08 = 846 / 919); scratch at TOPS+154.
+; triangle per kick from output slot VI08 = 834 / 907); scratch at TOPS+154.
 
 		.vu
 		.align 4
@@ -19,7 +19,7 @@ VU1SkinClip_CodeStart:
 	NOP                            	lq VF07,6(VI00)
 	NOP                            	lq VF08,7(VI00)
 	NOP                            	xtop VI02
-	NOP                            	iaddiu VI01,VI00,919
+	NOP                            	iaddiu VI01,VI00,907
 	NOP                            	ilw.x VI04,0(VI02)
 	NOP                            	ilw.y VI05,0(VI02)
 	NOP                            	lq VF09,0(VI02)
@@ -34,7 +34,7 @@ VU1SkinClip_CodeStart:
 	subz VF04,VF29,VF09z           	NOP
 	NOP                            	ibeq VI08,VI01,skcTri
 	NOP                            	NOP
-	NOP                            	iaddiu VI08,VI00,846
+	NOP                            	iaddiu VI08,VI00,834
 skcTri:
 	NOP                            	ilw.w VI10,0(VI03)
 	NOP                            	ilw.w VI11,1(VI03)
@@ -654,7 +654,7 @@ skcFan:
 	NOP                            	sq VF22,9(VI08)
 	NOP                            	NOP
 	NOP                            	xgkick VI08
-	NOP                            	iaddiu VI01,VI00,1765
+	NOP                            	iaddiu VI01,VI00,1741
 	NOP                            	isub VI08,VI01,VI08
 skcFanNext:
 	NOP                            	iaddiu VI07,VI07,4

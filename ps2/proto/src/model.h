@@ -6,7 +6,7 @@
 #include "render.h"
 #include "vu1_layout.h"
 
-#define MAX_BONES 64       /* pose arrays of the single-model users (player, NPC stand-ins, objects: <= 61 bones) */
+#define MAX_BONES 64       /* pose arrays of the single-model users (player, NPC stand-ins, objects: <= 64 bones) */
 #ifndef MDL_MAX_BONES     /* the largest model (Makefile: from CHR_BONES; <= 255, u8 vertex bone ids) */
 #define MDL_MAX_BONES 255
 #endif
