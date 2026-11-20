@@ -176,7 +176,7 @@ $(A)/hzn.bin: $(A)/map.bin $(A)/dg.bin $(TS)/area.py.sum $(TS)/horizon.py.sum $(
 	HZN='$(or $(HZN),1)' HZN_PANO='$(HZN_PANO)' $(PY) -I ../../tools/horizon.py $(A)/map.bin $(A)/hzn.bin
 
 # map split (area): tools/mapsplit.py
-$(A)/maptab.bin $(A)/mapres.bin $(A)/maptex.bin &: $(A)/map.bin $(A)/hzn.bin $(TEX_PEERS) $(TS)/mapsplit.py.sum $(A)/splitenv
+$(A)/maptab.bin $(A)/mapres.bin $(if $(TEX_PEERS),$(A)/maptex.bin) &: $(A)/map.bin $(A)/hzn.bin $(TEX_PEERS) $(TS)/mapsplit.py.sum $(A)/splitenv
 	@mkdir -p $(@D)
 	MIP1_OUT='$(WORLD_MIP1_OUT)' TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/mapsplit.py $(A)/map.bin $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
 
@@ -196,7 +196,7 @@ $(A)/pvs.bin: $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(PVS_BAKE) $(foreac
 	$(abspath ../../tools/q) -m $(if $(PVS_BAKE_GPU_OK),6,2) python3 -I ../../tools/pvs_cache.py $(PVS_BAKE) $(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin $(A)/pvs.bin --validate $(PVS_VALIDATE) --res $(PVS_RES) --vres 192 --gpu-res $(PVS_GPU_RES) --gpu-per-cell $(PVS_GPU_PER_CELL) $(foreach d,$(PVS_WITH),--with $(d)/pvsin.bin $(d)/dg.bin $(d)/collision.bin) $(PVS_ARGS)
 
 # pack (area): tools/pack.py
-$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/maptex.bin $(A)/far.bin) $(if $(WORLD_BLOCKS),$(A)/pano.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(A)/fx.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum $(A)/pakenv
+$(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/far.bin) $(if $(TEX_PEERS),$(A)/maptex.bin) $(if $(WORLD_BLOCKS),$(A)/pano.bin) $(A)/bump.bin $(A)/dg.bin $(A)/pvs.bin $(A)/collision.bin $(A)/enemies.bin $(A)/objects.bin $(A)/ai_map.lua0 $(A)/events.bin $(A)/fx.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum $(A)/pakenv
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $(D)/$(OUT).pak $(if $(LITE_RUN),collision.bin=raw:$(A)/collision.bin maptab.bin=raw:$(A)/maptab.bin $(if $(TEX_PEERS),maptex.bin=raw:$(A)/maptex.bin) $(if $(wildcard $(A)/events.bin),events.bin=raw:$(A)/events.bin) dg.bin=raw:$(A)/dg.bin pvs.bin=raw:$(A)/pvs.bin objects.bin=raw:$(A)/objects.bin fx.bin=raw:$(A)/fx.bin far.bin=raw:$(A)/far.bin bump.bin=raw:$(A)/bump.bin enemies.bin=raw:$(A)/enemies.bin ai.lua0=raw:$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin $(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) mapres.bin=raw:$(A)/mapres.bin map.bin=$(A)/map.bin,map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(if $(BLOCK),raw:)$(A)/dg.bin pvs.bin=$(if $(BLOCK),raw:)$(A)/pvs.bin $(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) $(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) $(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) $(if $(wildcard $(if $(BLOCK),raw:)$(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin))
 

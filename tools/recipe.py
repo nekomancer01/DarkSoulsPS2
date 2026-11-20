@@ -173,7 +173,9 @@ def make_rules(r):
     for step in r["step"]:
         m = Make()
         mk = step.get("make", {})
-        outs = m.items(step["out"], True).split()
+        # one make word per out item (a conditional item, $(if ...), stays one word)
+        outs = [w for x in as_list(step["out"]) for w in ([m.items([x], True)] if isinstance(x, dict) and "if" in x
+                                                           else m.items([x], True).split()) if w]
         target = m.s(mk["target"], True) if "target" in mk else None
         prereq = [m.items(step_inputs(step), True)] + tool_sums(step.get("tools", [])) + list(mk.get("deps", []))
         prereq = " ".join(p for p in prereq if p)

@@ -534,7 +534,9 @@ stage = "late"
 tool = "mapsplit.py"
 args = ["{A}/map.bin", "{A}/maptab.bin", "{A}/mapres.bin", "{A}/hzn.bin", "{A}/maptex.bin"]
 env = { MIP1_OUT = "{WORLD_MIP1_OUT}", TEX_PEERS = "{TEX_PEERS}" }
-out = ["{A}/maptab.bin", "{A}/mapres.bin", "{A}/maptex.bin"]
+# maptex.bin is only written when the block shares textures (TEX_PEERS): listed as an output only then, else the boot
+# map's split (no peers) and its pack re-ran on every build (2026-11-21)
+out = ["{A}/maptab.bin", "{A}/mapres.bin", { if = "tex_peers", then = "{A}/maptex.bin" }]
 inputs = ["{A}/map.bin", "{A}/hzn.bin", "{TEX_PEERS}"]
 reads = ["{A}/cells.bin"]
 tools = ["mapsplit.py"]
@@ -625,7 +627,7 @@ entries = [{ if = "lite_run", then = [
     "?events.bin={RAW}{A}/events.bin",
   ] }]
 inputs = ["{A}/map.bin",
-          { if = "world_split", then = ["{A}/maptab.bin", "{A}/maptex.bin", "{A}/far.bin"] },
+          { if = "world_split", then = ["{A}/maptab.bin", "{A}/far.bin"] }, { if = "tex_peers", then = "{A}/maptex.bin" },
           { if = "world", then = "{A}/pano.bin" },
           "{A}/bump.bin", "{A}/dg.bin", "{A}/pvs.bin", "{A}/collision.bin", "{A}/enemies.bin", "{A}/objects.bin",
           "{A}/ai_map.lua0", "{A}/events.bin", "{A}/fx.bin"]
