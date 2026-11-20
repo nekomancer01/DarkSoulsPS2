@@ -130,22 +130,31 @@ ALTERNATES = {("MAP", "CLIP")}  # never resident together (VU1_MAP_OLD builds on
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ps2", "proto", "src")
 
 
+# Map programs the effect program may lie over when no gap between the map programs fits it: the specular pass
+# (Polaris 2.3, vu1mapspec) runs once per frame in the map chain, so covering it costs one reload a frame (R8)
+FX_MAY_COVER = ("MAPSPEC",)
+
+
 def place_fx(programs):
     """the effect program's address, from the other programs' sizes (no fixed address assumes another program's size):
     end-aligned in the largest gap the map bank leaves (the map chain starts every frame, so the effect program never
     costs a map program reload); it may cover character programs, which reload on demand (R8) after an effect chain.
-    covers(): what it lies over"""
+    When no gap fits (the map bank with the specular pass leaves 556 pairs), the highest address that covers only
+    FX_MAY_COVER map programs. covers(): what it lies over"""
     size = program_size([p for p in programs if p[0] == "FX"][0][4])
-    spans = sorted((p[2], p[2] + program_size(p[4])) for p in programs if p[3] == "map" and p[0] != "MAP")
+    spans = sorted((p[2], p[2] + program_size(p[4]), p[0]) for p in programs if p[3] == "map" and p[0] != "MAP")
     gaps, at = [], 0
-    for a, b in spans + [(MICRO, MICRO)]:
+    for a, b, _ in spans + [(MICRO, MICRO, None)]:
         if a - at >= size:
             gaps.append((a - at, at, a))
         at = max(at, b)
-    if not gaps:
-        raise ValueError("layout: no gap of %d pairs between the map programs for FX" % size)
-    _, lo, hi = max(gaps)
-    return (hi - size) & ~1
+    if gaps:
+        _, lo, hi = max(gaps)
+        return (hi - size) & ~1
+    for a in range((MICRO - size) & ~1, -1, -2):
+        if all(n in FX_MAY_COVER for lo, hi, n in spans if lo < a + size and a < hi):
+            return a
+    raise ValueError("layout: no room of %d pairs for FX over the map programs it may cover %s" % (size, FX_MAY_COVER))
 
 
 def program_size(vsm):

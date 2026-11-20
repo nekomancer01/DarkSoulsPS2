@@ -35,6 +35,22 @@
 #ifndef FX_VU1
 #define FX_VU1 1
 #endif
+/* Polaris 2.6 fallbacks (each 1 by default; 0 = the path before it):
+ * FX_CLOSED  particles keep their spawn state and ppos gives the position at an age (VU1 moves them); 0 = the EE
+ *            integrates every particle each frame (v = (v + a dt)(1 - drag dt), p += v dt, roll += spin dt) and VU1
+ *            only expands what the EE moved
+ * FX_CULL    an instance whose bound is off screen is skipped whole (inst_class); 0 = every particle goes on to the
+ *            per-particle near-plane test
+ * FX_VU_ORIENT  quads fixed in the effect frame (FFX orientation 2) move and draw on VU1; 0 = always the EE path */
+#ifndef FX_CLOSED
+#define FX_CLOSED 1
+#endif
+#ifndef FX_CULL
+#define FX_CULL 1
+#endif
+#ifndef FX_VU_ORIENT
+#define FX_VU_ORIENT 1
+#endif
 
 #define FX_MAX 384        /* particle pool (all instances) */
 #define FX_RANGE 40.0f    /* m: instances farther from the eye stop emitting (their particles finish) */
@@ -248,7 +264,8 @@ static int bounds(void)
         float L = s->life > s->life_min ? s->life : s->life_min;
         float half = fmaxf(s->size[0], s->size[1]) * (s->size[2] + fmaxf(s->size[3], 0)) * kmax[i] * 1.42f;
         float r = len3(s->org) + len3(s->ext) + sp * L + 0.5f * len3(s->accel) * L * L + half * (s->orient ? 2 : 1);
-        int vu = s->drag >= 0 && s->drag * L <= VU1_FX_XMAX && s->accel[0] == 0 && s->accel[2] == 0;
+        int vu = FX_CLOSED && (FX_VU_ORIENT || !s->orient) && s->drag >= 0 && s->drag * L <= VU1_FX_XMAX &&
+                 s->accel[0] == 0 && s->accel[2] == 0;
         srad[i] = vu ? r : -r;
         vu_n += vu;
     }
@@ -523,6 +540,10 @@ static void spawn(int ii, int si)
  * steps v = (v + a dt)(1 - drag dt), p += v dt, without their frame-rate dependence. */
 static void ppos(const Particle *p, const FxSys *s, float out[3])
 {
+    if (!FX_CLOSED) {  /* step() moved it */
+        out[0] = p->p[0], out[1] = p->p[1], out[2] = p->p[2];
+        return;
+    }
     float t = p->age, d = s->drag, x = d * t, g, h;
     if (x < 0.02f && x > -0.02f) {  /* series: (1 - e) / d and (t - g) / d lose their digits here */
         g = t * (1 - x * (0.5f - x * (1.0f / 6)));
@@ -552,6 +573,16 @@ static void step(float dt, int emit_on)
                 }
             *p = pool[--n_alive];
             continue;
+        }
+        if (!FX_CLOSED) {  /* the old per-frame steps (FX_CLOSED=0) */
+            const FxSys *s = &sys[p->sys];
+            float dr = 1 - s->drag * dt;
+            dr = dr < 0 ? 0 : dr;
+            for (int k = 0; k < 3; k++) {
+                p->v[k] = (p->v[k] + s->accel[k] * dt) * dr;
+                p->p[k] += p->v[k] * dt;
+            }
+            p->rot += p->spin * dt;
         }
         i++;
     }
@@ -772,7 +803,7 @@ static int vu_add(const Particle *p, const FxSys *s, const float *w, V3 c, int m
         if (s->orient || ext.z <= R_NEAR + 0.05f || !r_point_inside(&ext))
             return 0;
     }
-    float t = p->age / p->life * (FX_CURVE - 1), rot = p->rot + p->spin * p->age;
+    float t = p->age / p->life * (FX_CURVE - 1), rot = p->rot + (FX_CLOSED ? p->spin * p->age : 0);
     t = t < FX_CURVE - 1.0001f ? t : FX_CURVE - 1.0001f;
     int k0 = (int)t;
     if (s->rgba[k0][3] + (s->rgba[k0 + 1][3] - s->rgba[k0][3]) * (t - k0) < 1)
@@ -832,7 +863,8 @@ static int inst_class(int ii)
     const FxInst *in = &inst[ii];
     float r = irad[ii];
     V3 c = r_view(v3(in->pos[0], in->pos[1], in->pos[2]));
-    if (c.z + r < R_NEAR || fabsf(c.x) - cull_tx * c.z > r * cull_kx || fabsf(c.y) - cull_ty * c.z > r * cull_ky)
+    if (FX_CULL && (c.z + r < R_NEAR || fabsf(c.x) - cull_tx * c.z > r * cull_kx ||
+                    fabsf(c.y) - cull_ty * c.z > r * cull_ky))
         return FXC_CULL;
     V3 ext = v3(fabsf(c.x) + r, fabsf(c.y) + r, c.z - r);  /* the bound's worst corner for the guard band */
     return FX_VU1 && ext.z > R_NEAR + 0.05f && r_point_inside(&ext) ? FXC_VU : FXC_NEAR;
@@ -953,7 +985,7 @@ void fx_draw(void)
             continue;
         float hx = p->sx * kx, hy = p->sy * ky, cr = 1, sr = 0;
         if ((hx > hy ? hx : hy) * focal_px > 1.5f * cen[i].z)  /* roll only matters above ~1.5 px */
-            fast_sincos(p->rot + p->spin * p->age, &sr, &cr);
+            fast_sincos(p->rot + (FX_CLOSED ? p->spin * p->age : 0), &sr, &cr);
         /* flipbook cell */
         const FxTex *tx = &tex[s->tex];
         int nf = tx->nframes ? tx->nframes : 1, fpr = tx->fpr ? tx->fpr : 1, rows = (nf + fpr - 1) / fpr;
