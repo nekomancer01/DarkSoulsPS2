@@ -84,10 +84,14 @@ EE_DVP = dvp-as
 MATHFLAGS ?= -fno-math-errno
 EE_CFLAGS += -O2 -std=gnu99 -Wall $(MATHFLAGS) $(DEFS)
 # CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255 (default): every skeleton whole, drawn through
-# per-batch bone windows (model.c); CHR_BONES=61 is the fallback (one VU1 palette window, bigger skeletons folded).
+# per-batch bone windows (model.c); CHR_BONES=61 folds bigger skeletons to 61 bones at export.
 # model.h MDL_MAX_BONES sizes the pose / palette arrays for it
 CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
+# VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default, Polaris 2.2 PR 2): every
+# skeleton over 40 paged through bone windows, 27-triangle batches. VU1_BONES=61 is the old path: one 61-bone window
+# (windows only above 61), 24-triangle batches; vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
+VU1_BONES ?= 40
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
 PVS ?= 1
@@ -677,6 +681,23 @@ $(A)/collision.bin: $(TS)/export_collision.py.sum $(TS)/navwalls.py.sum $(TS)/na
 $(O)/%.o: src/%.vsm
 	@mkdir -p $(@D)
 	$(EE_DVP) $< -o $@
+# make VU1_BONES=61 (above): the old skin layout's header and programs, generated into the build dir
+ifneq ($(VU1_BONES),40)
+VU1G = $(O)/vu1gen
+EE_CFLAGS += -DVU1_LAYOUT_FILE='"$(abspath $(VU1G))/vu1_layout.h"'
+$(VU1G)/vu1_layout.h $(VU1G)/vu1skin2.vsm $(VU1G)/vu1skinclip.vsm &: ../../tools/vu1/layout.py ../../tools/vu1/gen.py $(O)/.cflags
+	@mkdir -p $(@D)
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py layout > $(abspath $(VU1G))/vu1_layout.h
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py skin > $(abspath $(VU1G))/vu1skin2.vsm
+	cd ../../tools/vu1 && VU1_BONE_MAX=$(VU1_BONES) python3 gen.py skinclip > $(abspath $(VU1G))/vu1skinclip.vsm
+$(O)/vu1skin2.o: $(VU1G)/vu1skin2.vsm
+	@mkdir -p $(@D)
+	$(EE_DVP) $< -o $@
+$(O)/vu1skinclip.o: $(VU1G)/vu1skinclip.vsm
+	@mkdir -p $(@D)
+	$(EE_DVP) $< -o $@
+$(filter-out %vu1skin2.o %vu1skinclip.o,$(EE_OBJS)): $(VU1G)/vu1_layout.h
+endif
 
 # Stale objects: every object depends on $(O)/.cflags, rewritten only when the compile flags change (a plain make after
 # make EE_DBGINFOFLAGS=-DCOL_TEST=1 recompiles), and on the headers it includes (-MMD writes $(O)/*.d)
