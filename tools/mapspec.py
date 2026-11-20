@@ -13,8 +13,9 @@ map.c turns the code into the Blinn fit, Schlick's grazing weight and F0 (spec_d
 exported: map.c computes them per chunk from the chunk's own triangles when it first comes within reach (a stream of
 4 bytes per vertex pushed the world budget's hard tier to 8.3 % of the spots over, 2026-11-20). Per-vertex _s values
 are therefore per texture (ASSUMED, TECH_DEBT map-23).
-Eligible: textures every mesh of which is opaque (class OPAQUE: no cut-outs, the pass would light their holes), lit
-(not sky) and has an <diffuse>_s map. MAP_SPEC=0: no codes (the pass then has nothing to draw)."""
+Eligible: textures every mesh of which is opaque (class OPAQUE: no cut-outs, the pass would light their holes), with
+no texel below 50 % alpha (texmap makes those transparent even in an OPAQUE texture), lit (not sky) and has an
+<diffuse>_s map. MAP_SPEC=0: no codes (the pass then has nothing to draw)."""
 import math
 import os
 
@@ -50,10 +51,18 @@ def note(ti, mcls, sky, dds, diffuse):
     e[0] = e[0] and mcls == material.OPAQUE and not sky and sp is not None
     if e[0] and not e[1]:
         dec = souls.dds_decode_rgba(sp, SPEC_RES)
-        if dec is None:
+        if dec is None or _holes(dds.get(diffuse or "")):
             e[0] = False
         else:
             e[1] = _code(dec)
+
+
+def _holes(d):
+    """the diffuse has texels below 50 % alpha at the exported size: texmap.encode makes them the transparent index, so
+    an OPAQUE-class texture still has cut-out holes (GS_TEST_CUTOUT) the pass would light (m10_01_articles_01: 40 of
+    128 x 128, 2026-11-20). Unreadable counts as holes"""
+    dec = souls.dds_decode_rgba(d, 128) if d else None
+    return dec is None or min(dec[2][3::4]) < 128
 
 
 def finalize(textures):
