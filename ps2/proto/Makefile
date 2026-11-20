@@ -90,7 +90,7 @@ CHR_BONES ?= 255
 EE_CFLAGS += -DMDL_MAX_BONES=$(shell [ $(CHR_BONES) -gt 64 ] && echo $(CHR_BONES) || echo 64)
 # VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default, Polaris 2.2 PR 2): every
 # skeleton over 40 paged through bone windows, 27-triangle batches. VU1_BONES=61 is the old path: one 61-bone window
-# (windows only above 61), 24-triangle batches; vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
+# (windows only above 61), 23-triangle batches (24 before the light block); vu1_layout.h and the two skin programs are generated into $(O)/vu1gen
 VU1_BONES ?= 40
 # Occlusion (src/pvs.c, tools/pvs_bake.c, 2026-11-06) is the default: map.c draws a chunk only when the camera's cell
 # sees its part, and mapstream.c reads only what cells near the camera see. PVS=0: no pvs.bin is used (A/B fallback)
