@@ -26,7 +26,10 @@ def rot(rng):
     return mm(mm(Rz, Ry), Rx)
 
 
-def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12)):
+def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12), split=False):
+    """split: the batch header as a prebuilt model packet holds it (K1 / K2 without the per-draw terms, no PRIM
+    template) and the per-draw terms in the SKIN_DRAW block (vu1.c vu1_skin_begin); else everything in the header and
+    the SKIN_DRAW adds zero"""
     w = lambda a, v: vu.wq(a, v, True)
     if new:
         w(4, [FOC, -FOCY, ZS, FOG[0]]); w(5, [CX, CY, 0, FOG[1]])
@@ -47,8 +50,16 @@ def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12)):
     tint = [rng.choice([0, 70, 90]), rng.choice([0, 45]), 0]
     vu.wq(top, [tris, 0x22 if cull else 0, 0, 0])
     if new:
-        if not flat:
+        d = gen.SKIN_DRAW
+        for i in range(3):
+            w(d + i, [0, 0, 0, 0])
+        if not flat and split:
+            w(top + 1, [0, 0, 0, 128]); w(top + 2, [0, 0, 0, 0])
+            w(d, [tint[0] + 64, tint[1] + 64, tint[2] + 64, 0]); w(d + 1, [96, 96, 96, 0])
+        elif not flat:
             w(top + 1, [tint[0] + 64, tint[1] + 64, tint[2] + 64, 128]); w(top + 2, [96, 96, 96, 0])
+        elif split:
+            w(top + 1, [0, 0, 0, 128]); w(top + 2, [0.5, 0.75, 0, 0]); w(d + 2, tint + [0])
         else:
             w(top + 1, tint + [128]); w(top + 2, [0.5, 0.75, 0, 0])
         w(top + 3, [255, 255, 255, 128])
@@ -60,7 +71,10 @@ def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12)):
         vu.wq(top + 5 + k, [0x1234 + k, 0, 0x06 + k, 0])
     n = tris * 3
     if new:
-        vu.wq(top + 8, gif_tag(0, 0, 1, 0x1B, 0, 3) + [0x412, 0])
+        prim = gif_tag(0, 0, 1, 0x0B if flat else 0x1B, 0, 3) + [0x412, 0]
+        vu.wq(top + 8, [0, 0, 0, 0] if split else prim)
+        vu.wq(gen.SKIN_DRAW + 3, gif_tag(0, 0, 1, 0x1B, 0, 3) + [0x412, 0])
+        vu.wq(gen.SKIN_DRAW + 4, gif_tag(0, 0, 1, 0x0B, 0, 3) + [0x412, 0])
     else:
         vu.wq(top + 8, gif_tag(n, 1, 1, 0x1B, 0, 4) + [0xF412, 0])
     s16 = lambda v: max(-32768, min(32767, int(round(v * 4096)))) & 0xFFFFFFFF
@@ -79,16 +93,16 @@ def setup(vu, new, tris, rng, flat, cull, bones=20, zrange=(0.1, 12)):
             vu.wq(a + 3, [U(rng.random()), U(rng.random()), 0, 0])
 
 
-def run(path, entry, new, tris, seed, flat, cull, zrange):
+def run(path, entry, new, tris, seed, flat, cull, zrange, split=False):
     vu = VU1(open(path).read())
     rng = random.Random(seed)
-    setup(vu, new, tris, rng, flat, cull, zrange=zrange)
+    setup(vu, new, tris, rng, flat, cull, zrange=zrange, split=split)
     cyc = vu.run(entry)
     return vertices(vu.kicks), cyc, vu
 
 
 def compare(seeds=20, tris=24):
-    bad = tot = adc_mis = 0
+    bad = tot = adc_mis = split_mis = 0
     worst = 0
     cyc_o = cyc_n = 0
     for seed in range(seeds):
@@ -97,6 +111,12 @@ def compare(seeds=20, tris=24):
         vo, co, _ = run(REF + 'vu1skin.vsm', 'VU1Skin_Flat' if flat else 'VU1Skin_Tex', 0, tris, seed, flat, cull, zr)
         vn, cn, _ = run(SRC + 'vu1skin2.vsm', 'VU1Skin2_Flat' if flat else 'VU1Skin2_Tex', 1, tris, seed, flat, cull, zr)
         cyc_o += co; cyc_n += cn
+        # Polaris 2.2: a static header + the per-draw block draws exactly what the whole header drew
+        _, _, vs = run(SRC + 'vu1skin2.vsm', 'VU1Skin2_Flat' if flat else 'VU1Skin2_Tex', 1, tris, seed, flat, cull, zr, True)
+        _, _, vw = run(SRC + 'vu1skin2.vsm', 'VU1Skin2_Flat' if flat else 'VU1Skin2_Tex', 1, tris, seed, flat, cull, zr)
+        if vs.kicks != vw.kicks:
+            split_mis += 1
+            print('seed %d: static header + per-draw block kicks differ from the whole header' % seed)
         assert len(vo) == len(vn) == tris * 3, (len(vo), len(vn))
         for i, (a, b) in enumerate(zip(vo, vn)):
             tot += 1
@@ -111,9 +131,9 @@ def compare(seeds=20, tris=24):
                 bad += 1
                 if bad <= 5:
                     print('seed %d v %d: old %s\n            new %s' % (seed, i, a, b))
-    print('vertices %d, differing (>2 units) %d, triangle ADC mismatches %d; cycles old %d new %d (%.2fx)' %
-          (tot, bad, adc_mis, cyc_o, cyc_n, cyc_o / cyc_n))
-    return bad + adc_mis
+    print('vertices %d, differing (>2 units) %d, triangle ADC mismatches %d, split-header mismatches %d; '
+          'cycles old %d new %d (%.2fx)' % (tot, bad, adc_mis, split_mis, cyc_o, cyc_n, cyc_o / cyc_n))
+    return bad + adc_mis + split_mis
 
 if __name__ == '__main__':
     sys.exit(1 if compare(int(sys.argv[1]) if len(sys.argv) > 1 else 12) else 0)

@@ -63,6 +63,12 @@ SKIN_OUT1 = SKIN_OUT0 + SKIN_OUT_SIZE
 # 0..255, colour lanes .w = 0), 9 Eh / 2. Batch header 0.zw = (a, b): d = max(0, a n.H + b)^2 ~ (n.H)^(2^k) (vu1.c).
 SPEC = 992
 SPEC_QW = 10  # 9: Eh / 2 (vu1skinclip's exact path)
+# Per-draw skin terms (Polaris 2.2 prebuilt packets: a model's vu1skin2 batch headers are built once and called, so what
+# changes per draw lives here, written by vu1_skin_begin; each vu1skin2 entry adds them to its batch header in its
+# prologue): 0 K1 add of textured batches (tint + amb, .w 0), 1 K2 add of textured batches (sun, .w 0), 2 K1 add of
+# flat batches (tint, .w 0), 3 / 4 the PRIM GIF tag template of textured / flat batches (FGE when the draw fogs)
+SKIN_DRAW = SPEC + SPEC_QW
+SKIN_DRAW_QW = 5
 SKIN_CLIP_TRIS = 12
 SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
@@ -89,7 +95,7 @@ REGIONS = {
             ("clip planes", MAP_PLANES, MAP_PLANES_QW), ("map specular", MAP_SPEC, MAP_SPEC_QW)],
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
-             ("specular", SPEC, SPEC_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
+             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
     "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
@@ -103,8 +109,8 @@ CHAIN_BUF = {"map": 0, "skin": 1, "fx": 2}
 PREAMBLE = {
     "map": "FLUSHE; STCYCL 1,1; BASE / OFFSET (VIF above); camera + fog constants 0-7; clip planes; the map programs "
            "loaded on demand (MPG, R8)",
-    "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block "
-            "when used; the skin programs loaded on demand",
+    "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block, "
+            "the per-draw block (SKIN_DRAW); the skin programs loaded on demand",
     "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos block; vu1fx loaded",
 }
 # VU1 registers a program expects to keep their value from an earlier call in the same chain. None today: every

@@ -152,6 +152,8 @@ static u32 clut_last, clut_loads;
 #define T_REFE 0
 #define T_CNT 1
 #define T_REF 3
+#define T_CALL 5  /* Polaris 2.2: a model's prebuilt skin segment (vu1_skin_call); VIF1 DMA keeps two return addresses */
+#define T_RET 6
 #define T_END 7
 
 #ifdef VU1_TEX_PATH3
@@ -243,11 +245,11 @@ static int chk_run(const u128 *start, const u128 *end, int ch, ChkVif *v, const 
 {
     int cl = v->cl, wl = v->wl, base = v->base, offset = v->offset, ntag = 0;
     u32 need = 0, code = 0;  /* data words the current command still takes */
-    const u64 *t = (const u64 *)start, *hist[8];
+    const u64 *t = (const u64 *)start, *hist[8], *ret = NULL;  /* ret: after the CALL being followed */
     const char *err = NULL;
     const u32 *bad = NULL, *blo = NULL, *bhi = NULL;
     for (;;) {
-        if ((const u128 *)t >= end) {
+        if (!ret && (const u128 *)t >= end) {
             err = "chain runs past its END";
             break;
         }
@@ -259,7 +261,12 @@ static int chk_run(const u128 *start, const u128 *end, int ch, ChkVif *v, const 
             break;
         }
         const u32 *data = id == T_REF || id == T_REFE ? (const u32 *)addr : (const u32 *)(t + 2);
-        if (id != T_CNT && id != T_REF && id != T_END && id != T_REFE) {
+        if ((id == T_CALL && ret) || (id == T_RET && !ret)) {
+            err = id == T_CALL ? "CALL inside a called segment (never sent)" : "RET without a CALL",
+            bad = (const u32 *)t, blo = bad, bhi = bad + 4;
+            break;
+        }
+        if (id != T_CNT && id != T_REF && id != T_END && id != T_REFE && id != T_CALL && id != T_RET) {
             err = "unknown DMA tag id", bad = (const u32 *)t, blo = bad, bhi = bad + 4;
             break;
         }
@@ -318,7 +325,12 @@ static int chk_run(const u128 *start, const u128 *end, int ch, ChkVif *v, const 
                 err = "chain ends while a command still takes data";
             break;
         }
-        t = id == T_CNT ? t + 2 + 2 * qwc : t + 2;
+        if (id == T_CALL)
+            ret = t + 2 + 2 * qwc, t = (const u64 *)addr;
+        else if (id == T_RET)
+            t = ret, ret = NULL;
+        else
+            t = id == T_CNT ? t + 2 + 2 * qwc : t + 2;
     }
     v->cl = cl, v->wl = wl, v->base = base, v->offset = offset;
     if (!err)
@@ -1038,6 +1050,15 @@ static float skin_amb[3] = {64, 64, 64}, skin_sun[3] = {96, 96, 96};
 static float spec_up[3] = {64, 64, 64}, spec_down[3] = {32, 32, 32}, spec_i[3] = {96, 96, 96},
              spec_ls[3] = {0.40f, 0.80f, -0.45f};
 
+/* i-frame tint of the next vu1_skin_begin's batches (vu1_skin_tint), into its per-draw block */
+static float skin_tint_tex[3], skin_tint_flat[3];
+
+void vu1_skin_tint(const float tex[3], const float flat[3])
+{
+    for (int c = 0; c < 3; c++)
+        skin_tint_tex[c] = tex ? tex[c] : 0, skin_tint_flat[c] = flat ? flat[c] : 0;
+}
+
 void vu1_skin_spec(const float env_up[3], const float env_down[3], const float si[3], const float ls[3])
 {
     for (int c = 0; c < 3; c++)
@@ -1090,7 +1111,7 @@ void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, in
     /* one call per skinned character in the chain: FLUSHE waits for the previous character's last batch (it reads
      * the palette about to be overwritten); OFFSET also resets the double buffer to BASE */
     int nup = win ? nwin : bones;
-    room(palette_qw(win, nup) + 8 + 2 + SPEC_QW);
+    room(palette_qw(win, nup) + 8 + 2 + SPEC_QW + 1 + VU1L_SKIN_DRAW_QW);
     tag(0, T_CNT, 0, VIF(V_FLUSHE, 0, 0), VIF(V_STCYCL, 0, 0x0101));
     tag(0, T_CNT, 0, VIF(V_BASE, 0, SKIN2_IN), VIF(V_OFFSET, 0, SKIN2_IN_QW));
     palette_put(palette, win, nup);
@@ -1156,6 +1177,19 @@ void vu1_skin_begin(const void *palette, int bones, const unsigned char *win, in
     tag(SPEC_QW, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, SPEC_QW, SPEC_ADDR));
     memcpy(cp, b, sizeof b);
     cp += SPEC_QW * 2;
+    /* Polaris 2.2: the per-draw terms vu1skin2 adds to its static batch headers (layout.py SKIN_DRAW): K1 of textured
+     * batches (tint + amb), their K2 (sun), K1 of flat ones (tint), the PRIM templates (FGE only when the row fogs) */
+    int fge = skin_fog[2] < 255 || skin_fmax < 255 ? 0x20 : 0;
+    tag(VU1L_SKIN_DRAW_QW, T_CNT, 0, VIF(V_NOP, 0, 0), VIF(UNPACK_V4_32, VU1L_SKIN_DRAW_QW, VU1L_SKIN_DRAW));
+    float *d = (float *)cp;
+    for (int c = 0; c < 3; c++)
+        d[c] = skin_tint_tex[c] + skin_amb[c], d[4 + c] = skin_sun[c], d[8 + c] = skin_tint_flat[c];
+    d[3] = d[7] = d[11] = 0;
+    cp += 6;
+    q64(GIF_SET_TAG(0, 0, 1, 0x1B | fge, 0, 3), 0x412);
+    q64(GIF_SET_TAG(0, 0, 1, 0x0B | fge, 0, 3), 0x412);
+    skin_tint_tex[0] = skin_tint_tex[1] = skin_tint_tex[2] = 0;  /* (for this draw only, like vu1_skin_fade) */
+    skin_tint_flat[0] = skin_tint_flat[1] = skin_tint_flat[2] = 0;
 }
 
 
@@ -1163,6 +1197,85 @@ void vu1_skin_light(const float amb[3], const float sun[3])
 {
     for (int c = 0; c < 3; c++)
         skin_amb[c] = amb[c], skin_sun[c] = sun[c];
+}
+
+/* unlit colour of a batch whose texture is missing (not a DSR value: makes the gap visible instead of hiding it) */
+#define SKIN_NOTEX_GREY 96.0f
+/* Blinn power fit: header 0.zw = (a, b), max(0, a x + b)^2 fits x^(2^k) on 0..1 (least squares, a + b = 1) */
+static const float skin_pw[5][2] = {{1, 0}, {1.695f, -0.695f}, {3.125f, -2.125f}, {5.99f, -4.99f}, {11.73f, -10.73f}};
+
+/* vu1skin2's batch header (9 qwords at q), the same for every draw since Polaris 2.2 (what changes per draw is in the
+ * SKIN_DRAW block of vu1_skin_begin): 0 {tris, cull, Blinn fit}, 1 K1, 2 K2 (static parts: (0, 0, 0, 128) and 0 when
+ * textured; (grey, 128) and (0.5, 0.75) or 0 when flat), 3 clamp, 4-7 A+D TEX0 / TEX1 / TEST, 8 PRIM template (replaced
+ * from SKIN_DRAW by the program). t: the texture (NULL: flat program), grey: st data without its texture, cldv: TEX0's
+ * CLD. Returns the program entry. */
+static u32 skin2_hdr(u64 *q, GSTEXTURE *t, int grey, int cull, int tris, int kk, int ms, int cldv)
+{
+    float *f = (float *)(q + 2);
+    q[0] = (u64)tris | ((u64)(cull ? 0x22 : 0) << 32), q[1] = 0;
+    if (t && ms)
+        memcpy(&q[1], skin_pw[kk - 1], 8);
+    float g = grey ? SKIN_NOTEX_GREY : 0;
+    f[0] = f[1] = f[2] = g, f[3] = 128;
+    f[4] = t || grey ? 0 : 0.5f, f[5] = t || grey ? 0 : 0.75f, f[6] = f[7] = 0;
+    f[8] = f[9] = f[10] = 255, f[11] = 128;
+    q[8] = GIF_SET_TAG(3, 1, 0, 0, 0, 1), q[9] = 0xE;  /* A+D: TEX0, TEX1, TEST; kicked on its own from the input buffer */
+    if (t) {
+        u32 tbw = (t->Width + 127) / 128 * 2;
+        q[10] = GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
+                               t->ClutPSM, 0, 0, cldv);
+        q[11] = GSR_TEX0;
+    } else {
+        q[10] = GS_TEX1_LINEAR, q[11] = GSR_TEX1;  /* untextured: TEX1 twice keeps the 3-register A+D */
+    }
+    q[12] = GS_TEX1_LINEAR, q[13] = GSR_TEX1;
+    q[14] = GS_TEST_CUTOUT, q[15] = GSR_TEST;
+    q[16] = GIF_SET_TAG(0, 0, 1, t ? 0x1B : 0x0B, 0, 3), q[17] = 0x412;
+    return !t ? SKIN2_FLAT : ms ? SKIN2_TEXSPEC : SKIN2_TEX;
+}
+
+u32 vu1_skin_hdr(void *buf, GSTEXTURE *t, int st, int cull, int tris, int spec_k, int ms)
+{
+    u64 *q = buf;
+    if (!st)
+        t = NULL;
+    int grey = st && !t, kk = spec_k < 1 ? 1 : spec_k > 5 ? 5 : spec_k;
+    q[0] = 0, q[1] = VIF(V_STCYCL, 0, 0x0101) | (u64)VIF(UNPACK_V4_32, 9, U_FLG) << 32;
+    /* CLD 4: the GS loads a CLUT only when CBP changes; vu1_skin_can_call keeps the chain's first textured batch, which
+     * needs CLD 2 (cld()), on the per-batch path */
+    return skin2_hdr(q + 2, t, grey, cull, tris, kk, ms && !grey, 4);
+}
+
+int vu1_skin_can_call(int textured)
+{
+    return !skin_clip && (clut_sync || !textured);
+}
+
+void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_bytes, u32 prev_entry)
+{
+    u64 *p = at;
+    p[0] = TAG(VU1_SKIN_HDR_QW, T_REF, hdr), p[1] = prev_entry ? VIF(V_MSCAL, 0, prev_entry) : VIF(V_NOP, 0, 0);
+    p[2] = TAG(pkt_bytes / 16, T_REF, pkt), p[3] = 0;
+    return p + 4;
+}
+
+void *vu1_skin_seg_end(void *at, u32 entry)
+{
+    u64 *p = at;
+    p[0] = TAG(0, T_RET, 0), p[1] = VIF(V_MSCAL, 0, entry);
+    return p + 2;
+}
+
+void vu1_skin_call(const void *seg, unsigned last_cbp)
+{
+    FRAME_DRAW_STRICT(FE_VU1_ADD);
+    use_prog(P_SKIN2);
+    if (!room(1))
+        return;
+    tag(0, T_CALL, seg, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
+    if (last_cbp)  /* (stats: the CLUT the segment's last textured batch leaves loaded) */
+        clut_last = last_cbp;
+    vu1_stats.skin_calls++;
 }
 
 int vu1_skin_packet(void *buf, int tris, int textured, int ms, void *streams[5])
@@ -1202,9 +1315,6 @@ void vu1_skin_add(GSTEXTURE *t, int cull, int tris, const float *tint, const voi
     vu1_skin_add_pkt(t, t != NULL, cull, tris, tint, pa, pb, nrm, st_or_col, spec_k, ms, NULL, 0);
 }
 
-/* unlit colour of a batch whose texture is missing (not a DSR value: makes the gap visible instead of hiding it) */
-#define SKIN_NOTEX_GREY 96.0f
-
 void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tint, const void *pa, const void *pb,
                       const void *nrm, const void *st_or_col, int spec_k, const void *ms, const void *pkt, int pkt_bytes)
 {
@@ -1234,13 +1344,15 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
         return;
     int n = tris * 3, fge = skin_fog[2] < 255 || skin_fmax < 255 ? 0x20 : 0;  /* FGE only when the row fogs at all */
     tag(9, T_CNT, 0, VIF(V_STCYCL, 0, 0x0101), VIF(UNPACK_V4_32, 9, U_FLG));
-    q64((u64)tris | ((u64)(cull ? 0x22 : 0) << 32), 0);
-    float *f = (float *)cp;
-    /* K1, K2, clamp: textured colour = min(K1 + K2 max(n . L, 0), clamp) = tint + amb + sun n . L (vu1_skin_light);
-     * flat: min(K1 + vertex colour (K2.x + K2.y max(n . L, 0)), clamp); alpha 0x80 through the clamp's .w */
     int kk = spec_k < 1 ? 1 : spec_k > 5 ? 5 : spec_k;
-    if (skin_clip) {  /* vu1skinclip.vsm: header 0.zw {textured, 255}, 1 K1, 2 A (.w has m / f), 3 S (.w k):
-                       * K1 + B (A + S n . L), exact per-vertex specular when m / f are there */
+    if (!skin_clip) {  /* vu1skin2: the static header (skin2_hdr); tint, amb, sun and fog come from the SKIN_DRAW block */
+        skin2_hdr(cp, t, grey, cull, tris, kk, ms != NULL, t ? cld(t->VramClut) : 0);
+        cp += 18;
+    } else {
+        q64((u64)tris | ((u64)(cull ? 0x22 : 0) << 32), 0);
+        float *f = (float *)cp;
+        /* vu1skinclip.vsm: header 0.zw {textured, 255}, 1 K1, 2 A (.w has m / f), 3 S (.w k): K1 + B (A + S n . L),
+         * exact per-vertex specular when m / f are there */
         float h[2] = {t ? 1.0f : 0, 255};
         memcpy((char *)cp - 8, h, 8);
         f[0] = tint[0], f[1] = tint[1], f[2] = tint[2], f[3] = 128;
@@ -1253,36 +1365,22 @@ void vu1_skin_add_pkt(GSTEXTURE *t, int st, int cull, int tris, const float *tin
         if (grey)
             for (int c = 0; c < 3; c++)
                 f[c] += SKIN_NOTEX_GREY, f[4 + c] = f[8 + c] = 0;
-    } else if (t) {
-        if (ms) {  /* header 0.zw = (a, b): max(0, a x + b)^2 fits x^(2^k) on 0..1 (least squares, a + b = 1) */
-            static const float pw[5][2] = {{1, 0}, {1.695f, -0.695f}, {3.125f, -2.125f}, {5.99f, -4.99f},
-                                           {11.73f, -10.73f}};
-            memcpy((char *)cp - 8, pw[kk - 1], 8);
+        cp += 6;
+        q64(GIF_SET_TAG(3, 1, 0, 0, 0, 1), 0xE);  /* A+D: TEX0, TEX1, TEST; kicked on its own from the input buffer */
+        if (t) {
+            u32 tbw = (t->Width + 127) / 128 * 2;
+            q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
+                               t->ClutPSM, 0, 0, cld(t->VramClut)),
+                GSR_TEX0);
+        } else {
+            q64(GS_TEX1_LINEAR, GSR_TEX1);  /* untextured: TEX1 twice keeps the 3-register A+D */
         }
-        f[0] = tint[0] + skin_amb[0], f[1] = tint[1] + skin_amb[1], f[2] = tint[2] + skin_amb[2], f[3] = 128;
-        f[4] = skin_sun[0], f[5] = skin_sun[1], f[6] = skin_sun[2], f[7] = 0;
-    } else {
-        float g = grey ? SKIN_NOTEX_GREY : 0;
-        f[0] = tint[0] + g, f[1] = tint[1] + g, f[2] = tint[2] + g, f[3] = 128;
-        f[4] = grey ? 0 : 0.5f, f[5] = grey ? 0 : 0.75f, f[6] = 0, f[7] = 0;
+        q64(GS_TEX1_LINEAR, GSR_TEX1);
+        q64(GS_TEST_CUTOUT, GSR_TEST);
+        /* PRIM tag template (triangle, gouraud, (textured, STQ), fog, context 1; STQ, RGBAQ, XYZF2): the program copies
+         * it in front of each kick of output with NLOOP and EOP set */
+        q64(GIF_SET_TAG(3, 1, 1, (t ? 0x1B : 0x0B) | fge, 0, 3), 0x412);
     }
-    if (!skin_clip)
-        f[8] = f[9] = f[10] = 255, f[11] = 128;
-    cp += 6;
-    q64(GIF_SET_TAG(3, 1, 0, 0, 0, 1), 0xE);  /* A+D: TEX0, TEX1, TEST; kicked on its own from the input buffer */
-    if (t) {
-        u32 tbw = (t->Width + 127) / 128 * 2;
-        q64(GS_SETREG_TEX0(t->Vram / 256, tbw, t->PSM, ilog2(t->Width), ilog2(t->Height), 1, 0, t->VramClut / 256,
-                           t->ClutPSM, 0, 0, cld(t->VramClut)),
-            GSR_TEX0);
-    } else {
-        q64(GS_TEX1_LINEAR, GSR_TEX1);  /* untextured: TEX1 twice keeps the 3-register A+D */
-    }
-    q64(GS_TEX1_LINEAR, GSR_TEX1);
-    q64(GS_TEST_CUTOUT, GSR_TEST);
-    /* PRIM tag template (triangle, gouraud, (textured, STQ), fog, context 1; STQ, RGBAQ, XYZF2): the program copies
-     * it in front of each kick of output with NLOOP and EOP set */
-    q64(GIF_SET_TAG(skin_clip ? 3 : 0, skin_clip, 1, (t ? 0x1B : 0x0B) | fge, 0, 3), 0x412);
     if (pkt) {  /* PR 8: the batch's prebuilt packet (vu1_skin_packet) in one REF */
         tag(pkt_bytes / 16, T_REF, pkt, VIF(V_NOP, 0, 0), VIF(V_NOP, 0, 0));
         u32 entry = skin_clip ? SKINCLIP_CODE : !t ? SKIN2_FLAT : ms ? SKIN2_TEXSPEC : SKIN2_TEX;
@@ -1374,16 +1472,22 @@ static unsigned hash_mix(unsigned h, const u32 *w, int n)
 static unsigned hash_chain(const u128 *p)
 {
     unsigned h = 2166136261u;
+    const u128 *ret = NULL;  /* after the CALL being followed (Polaris 2.2 model segments) */
     for (int guard = 0; guard < 1 << 20; guard++) {
         const u32 *t = (const u32 *)p;
         unsigned qwc = t[0] & 0xFFFF, id = t[0] >> 28 & 7;
         const u128 *addr = (const u128 *)(t[1] & 0x0FFFFFF0);
         h = hash_mix(h, t + 2, 2);  /* the VIF codes */
-        if (id == T_CNT || id == T_END) {
+        if (id == T_CNT || id == T_END || id == T_CALL) {
             h = hash_mix(h, (const u32 *)(p + 1), 4 * qwc);
             if (id == T_END)
                 break;
             p += 1 + qwc;
+            if (id == T_CALL)
+                ret = p, p = addr;
+        } else if (id == T_RET && ret) {
+            h = hash_mix(h, (const u32 *)(p + 1), 4 * qwc);
+            p = ret, ret = NULL;
         } else if (id == T_REF || id == T_REFE) {
             h = hash_mix(h, (const u32 *)addr, 4 * qwc);
             if (id == T_REFE)

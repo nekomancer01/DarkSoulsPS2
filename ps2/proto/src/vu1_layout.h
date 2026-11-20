@@ -31,6 +31,8 @@
 #define VU1L_SKIN_OUT_SIZE 73
 #define VU1L_SPEC 992
 #define VU1L_SPEC_QW 10
+#define VU1L_SKIN_DRAW 1002
+#define VU1L_SKIN_DRAW_QW 5
 #define VU1L_SKIN_CLIP_TRIS 12
 #define VU1L_FX_SC 8
 #define VU1L_FX_SC_QW 5

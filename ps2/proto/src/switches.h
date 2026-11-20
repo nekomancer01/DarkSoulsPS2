@@ -162,6 +162,7 @@
  * FX_VU1              | 1        | fallback | -DFX_VU1=0                                    | fx     | #106  | fx.c          | particles on VU1; 0 = EE billboards
  * V5_OFF              | off      | fallback | -DV5_OFF                                      | scene  | init  | model.c       | character CLUTs as exported (CT32)
  * MDL_SKIN_PAGE       | 64 KB    | fallback | -DMDL_SKIN_PAGE=0                             | scene  | #138  | model.c       | skin packets in pages; 0 = one block
+ * MDL_PREBUILT        | 1        | fallback | -DMDL_PREBUILT=0                              | scene  | new   | model.c       | Polaris 2.2: a model's vu1skin2 batch headers built once and called per draw (palette + per-draw block + one CALL per segment); 0 = every batch's header written per draw
  * MDL_ANIM_PAGE       | 64 KB    | fallback | -DMDL_ANIM_PAGE=0                             | scene  | #140  | model.c       | anim section in pages; 0 = one copy
  * SPEC_TEST           | off      | debug    | -DSPEC_TEST=0.85,0.8                          | scene  | init  | model.c       | metal / specular on every vertex
  * NO_VU0              | off      | fallback | -DNO_VU0                                      | core   | #94   | vmath.c       | skin matrix product in C

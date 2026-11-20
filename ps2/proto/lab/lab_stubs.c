@@ -138,6 +138,20 @@ void vu1_skin_spec(const float env_up[3], const float env_down[3], const float s
     (void)env_up, (void)env_down, (void)spec_i, (void)ls;
 }
 void vu1_skin_window(const void *palette, const unsigned char *win, int n) { (void)palette, (void)win, (void)n; }
+void vu1_skin_tint(const float tex[3], const float flat[3]) { (void)tex, (void)flat; }
+u32 vu1_skin_hdr(void *buf, GSTEXTURE *t, int st, int cull, int tris, int spec_k, int ms)
+{
+    (void)buf, (void)t, (void)st, (void)cull, (void)tris, (void)spec_k, (void)ms;
+    return 0;
+}
+void *vu1_skin_seg_batch(void *at, const void *hdr, const void *pkt, int pkt_bytes, u32 prev_entry)
+{
+    (void)hdr, (void)pkt, (void)pkt_bytes, (void)prev_entry;
+    return (char *)at + 32;
+}
+void *vu1_skin_seg_end(void *at, u32 entry) { (void)entry; return (char *)at + 16; }
+int vu1_skin_can_call(int textured) { (void)textured; return 0; }
+void vu1_skin_call(const void *seg, unsigned last_cbp) { (void)seg, (void)last_cbp; }
 
 /* ---- the test-script runner (Polaris 1.7c): what testscript.c reaches outside the player ---- */
 void lab_unsupported(const char *cmd, const char *needs)
