@@ -16,7 +16,7 @@ Per block (<out.json> "blocks", and blockreport/<block>.json next to it):
             (RES_BLOCK) against that room. The numbers are tools/world_budget.py's own: it is run here (its main(),
             unchanged), and this report reads its per-spot totals (world_budget.LAST)
   vram      per GS owner (src/gs_budget.h rows): FX = fx.bin textures (PSMT8 + CT32 CLUT, as export_effects.py counts
-            them), OBJ = objects.bin texture models (animated + breakable sets), CHR = every enemy model.bin in the
+            them), OBJ = objects.bin texture models (animated + breakable sets; the 'DSRB' blob or the Polaris 3.3 chunk file), CHR = every enemy model.bin in the
             block (the runtime pages them: reported, not gated), WORLD = maptex.bin size (the textures stream through
             the map pixel pool: reported)
   scripts   EMEVD instruction classes (events.txt, export_emevd.py's line), Lua opcodes of the packed ai_map.lua0 (and
@@ -129,6 +129,34 @@ def _dsrm_tex(b, o):
     return tot, ntex
 
 
+def chunks(b):
+    """a chunk file (Polaris 3.3, tools/chunkfile.py: 'CHNK', file id, total, count; chunks u32 id, u16 version, u16 0,
+    u32 payload bytes, u32 0, payload padded to 16) -> (file id, {chunk id: payload offset in b, payload bytes})"""
+    n, pos, out = _u32(b, 12), 16, {}
+    for _ in range(n):
+        cid, size = b[pos:pos + 4], _u32(b, pos + 8)
+        out[cid] = (pos + 16, size)
+        pos += 16 + size + (-size % 16)
+    return b[4:8], out
+
+
+def _objs_tex(b):
+    """VRAM bytes and texture count of a chunked objects.bin (file id OBJS): the ATEX / BTEX texture models, and each
+    breakable type's own model (TYPE -> MODL) when there is no BTEX"""
+    _, c = chunks(b)
+    tot = ntex = 0
+    for cid in (b"ATEX", b"BTEX"):
+        if cid in c:
+            t, n = _dsrm_tex(b, c[cid][0])
+            tot, ntex = tot + t, ntex + n
+    if b"BTEX" not in c and b"TYPE" in c and b"MODL" in c:
+        to, tsz = c[b"TYPE"]
+        for i in range(tsz // 64):
+            t, n = _dsrm_tex(b, c[b"MODL"][0] + _u32(b, to + 64 * i + 4))
+            tot, ntex = tot + t, ntex + n
+    return tot, ntex
+
+
 def vram(gen):
     """{owner: dict(kb, textures, row_kb, gated)}"""
     out = {}
@@ -162,6 +190,9 @@ def vram(gen):
                     mo = _u32(b, toff + 64 * i + 4)
                     t, n = _dsrm_tex(b, mo)
                     tot, ntex = tot + t, ntex + n
+            out["obj"] = dict(kb=round(tot / 1024, 1), textures=ntex)
+        elif b[:4] == b"CHNK" and b[4:8] == b"OBJS":
+            tot, ntex = _objs_tex(b)
             out["obj"] = dict(kb=round(tot / 1024, 1), textures=ntex)
         else:
             out["obj"] = dict(kb=None, unread=b[:4].decode("latin1"))

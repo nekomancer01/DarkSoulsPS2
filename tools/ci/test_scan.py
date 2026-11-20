@@ -5,7 +5,7 @@
     know, and souls.skipped() reaches the scan's hook, or raises under SOULS_STRICT
   2 tools/scan/support.py reads the runtime's handler tables (lua0.c opcodes, ESD handlers, export_emevd classes)
   3 tools/blockreport.py --strict on a synthetic block passes, and fails when the block's effect textures exceed
-    gs_budget.h's FX row or its Lua pack holds an opcode lua0.c lacks
+    gs_budget.h's FX row or its Lua pack holds an opcode lua0.c lacks; it reads the Polaris 3.3 chunked objects.bin
 Exit code = number of failed checks."""
 import json
 import os
@@ -113,5 +113,17 @@ with tempfile.TemporaryDirectory() as tmp:
                              capture_output=True, text=True, env=dict(os.environ, MAP="default",
                                                                       BLOCKREPORT_STRICT="0")).returncode, ""
     check(rc == 0, "BLOCKREPORT_STRICT=0 reports a miss without failing")
+import blockreport  # noqa: E402
+# a Polaris 3.3 chunked objects.bin (file id OBJS) whose BTEX texture model holds one 128 x 64 texture
+dsrm = b"DSRM" + struct.pack("<6I", 0, 0, 0, 0, 1, 0) + struct.pack("<8I", 0, 0, 0, 0, 0, 64, 0, 0) + bytes(4)
+dsrm += struct.pack("<4I", 128, 64, 0, 0)
+body = struct.pack("<4sHHII", b"BTEX", 1, 0, len(dsrm), 0) + dsrm + bytes(-len(dsrm) % 16)
+objs = struct.pack("<4s4sII", b"CHNK", b"OBJS", 32 + len(body), 1) + body + struct.pack("<4sIII", b"CEND", 0, 0, 0)
+with tempfile.TemporaryDirectory() as tmp:
+    open(os.path.join(tmp, "objects.bin"), "wb").write(objs)
+    v = blockreport.vram(tmp).get("obj", {})
+    check(v.get("kb") == 9.0 and v.get("textures") == 1, f"blockreport reads a chunked objects.bin's BTEX textures ({v})")
+    open(os.path.join(tmp, "objects.bin"), "wb").write(b"NEW?" + bytes(60))
+    check(blockreport.vram(tmp)["obj"].get("unread") == "NEW?", "blockreport flags an objects.bin format it cannot read")
 print(f"test_scan: {len(FAILS)} failed")
 sys.exit(len(FAILS))
