@@ -214,6 +214,7 @@ and the `proto*.elf` files. `ps2/proto/proto.elf` and `ps2/proto/data` are links
 | See the plan by priority | `notes/ROADMAP.md` |
 | Know how the port differs from the original | `notes/TECH_DEBT.md` |
 | Find a tool or script | `notes/TOOLS.md` |
+| Understand the engine (Polaris): architecture, subsystems, data pipeline, testing, adding a mechanic | `docs/polaris/README.md` |
 | Understand file formats and engine decisions | `notes/PORTING.md` |
 | Look up values found in the game's exe | `notes/EXE_FINDINGS.md` |
 | Contribute (people and AI agents) | `AGENTS.md` |

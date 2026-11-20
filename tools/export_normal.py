@@ -30,7 +30,7 @@ bump.bin (little-endian, 16-byte aligned sections, pixels 128-byte aligned):
   pixels       per texture mip 0, mip 1 (8-bit, linear rows)
 """
 import collections.abc
-import math, os, re, struct
+import math, os, struct
 
 import numpy as np
 
@@ -113,11 +113,9 @@ _STATE = {}       # assign() -> write(): textures, palette, CLUTs, densities
 
 
 def bumped(mtd):
-    """MTDs whose shader reads g_Bumpmap: a B in the letter block ([DB], [DSB], [DB][M]); cut-outs (_Edge), blends
-    (_Alp / _Add) and foliage / trees are left out (a second pass over cut-out texels would darken what is behind)."""
-    low = mtd.lower()
-    return bool(re.search(r"\[[a-z]*b[a-z]*\]", low)) and not any(k in low for k in ("_edge", "_alp", "_add",
-                                                                                    "foliage", "ivy", "tree"))
+    """MTDs whose shader reads g_Bumpmap (material.has_relief: the MTD name rules live in tools/material.py)"""
+    import material
+    return material.has_relief(mtd)
 
 
 def register(m, V, fvw, wn, xn, light_row, alb, probe_of, wn_np=None):

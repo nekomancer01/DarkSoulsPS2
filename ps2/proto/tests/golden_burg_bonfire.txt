@@ -1,0 +1,29 @@
+# Golden route (tools/golden.py, Polaris 0.3): the Undead Burg bonfire and the street around it. Spots from
+# iso_burg_looks.txt, fixed cameras (segment stats start 3 s after each teleport, so the load is not in them), no debug
+# HUD, no enemies.
+option noenemies
+option nodemo
+option god
+wait 3
+spawn -1.0 -7.3 -64.0 0.5
+cam 0.5 0.14
+wait 3
+stats
+wait 7
+shot bonfire
+stats
+spawn 2.0 -10.0 -62.0 3.0
+cam 3.0 0.14
+wait 3
+stats
+wait 7
+shot street
+stats
+spawn -6.0 -10.0 -73.0 2.0
+cam 2.0 0.14
+wait 3
+stats
+wait 7
+shot burg_c
+stats
+end

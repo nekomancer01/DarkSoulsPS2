@@ -11,6 +11,9 @@ void vu1_init(GSGLOBAL *gs);
 /* Start a chain in buffer 0 or 1 (two chains can be built while the other one is drawing): camera constants
  * (view matrix from render.c's camera) */
 void vu1_begin(int buffer);
+/* a map segment after other programs in the same chain buffer (map.c map_draw_blend: the blended map after the
+ * characters, render-19): the map programs' double buffer, clip planes and constants again (vu1_begin's preamble) */
+void vu1_map_resume(void);
 /* Queue one map batch: tris unindexed triangles from 16-byte aligned, zero-padded quantised streams (map.bin R3):
  * pos s16x3 (world = org[0..2] + n x org[3]), st u16x2 (normalized = n / st_k), colour u8x4. cull: drop back faces.
  * mode bits: VU1_FOG (GS fog from the per-vertex factor), VU1_BLEND (alpha blending on, alpha test off; the ALPHA /
@@ -38,6 +41,12 @@ void vu1_begin(int buffer);
 #define VU1_COLCP 64
 void vu1_add_ex(GSTEXTURE *tex, int cull, int mode, int tris, const void *pos, const void *st, const void *col,
                 const float *org, float st_k);
+/* the map's specular pass (Polaris 2.3, vu1mapspec.vsm): its constants (FogRow colours, 0x80 units), then one batch per
+ * chunk: the chunk's positions (list corners, or nv vertices + the triangle stream idx), its normal / F0 stream
+ * (tools/mapspec.py), origin / step, rows = the dot rows 0-2 and (BIG, -V.Up, a, b), g = the Schlick grazing weight */
+void vu1_map_spec(const float env_up[3], const float env_down[3], const float si[3]);
+void vu1_add_spec(int cull, int tris, int nv, const void *pos, const void *nrm, const void *idx, const float *org,
+                  const float rows[16], float g);
 /* Indexed map batch (vu1mapi.vsm; tools/export_map.py index_chunk): nv shared vertices (a multiple of 3; pos / st / col
  * streams as vu1_add_ex, one entry per vertex) and tris triangles in idx, u8 x4 each: the vertex numbers of its
  * corners, 0. 8 + 3 nv + tris <= 493 (the VU1 input buffer). VU1_PKT: the four streams of one prebuilt VIF packet (a
