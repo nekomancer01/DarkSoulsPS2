@@ -182,6 +182,7 @@
  * DPAD_STICK          | 0        | fallback | -DDPAD_STICK=1                                | main   | #228  | main.c        | the d-pad moves like the left stick (old path); 0 = DSR's weapon / item d-pad
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | game   | #210  | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | game   | #212  | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
+ * POSE_FILL           | 1        | fallback | -DPOSE_FILL=0                                 | game   | #297  | enemy.c       | a big type's pose block (above MAX_BONES bones) sampled once the type is in, reference pose without an anim, unposed characters not drawn; 0 = sampled only by place() when the type was already loaded
  * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | game   | #156  | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
  * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | game   | #156  | enemy.c       | wall-hit log by move kind
  * ENEMY_ROOT_Y        | 1        | fallback | -DENEMY_ROOT_Y=0                              | game   | #248  | enemy.c       | root-motion height inside TAE IGNORE_GRAVITY windows (Taurus Demon's 9061 jump down); 0 = flat root motion
