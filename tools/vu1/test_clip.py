@@ -1,5 +1,5 @@
 """vu1clip.vsm vs a Python reference (near + guard-band Sutherland-Hodgman, fan, screen-space cull) on random map
-batches in the R3 format; unclipped triangles are also checked against vu1map.vsm's output."""
+batches in the R3 format (test_map.py checks the unclipped path: vu1map2.vsm against the hand-written tools/vu1/ab/vu1map.vsm)."""
 import os, random, sys
 from vuemu import VU1, U, vertices
 import gen
