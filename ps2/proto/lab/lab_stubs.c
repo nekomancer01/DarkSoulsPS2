@@ -12,6 +12,7 @@
 #include "frame.h"
 #include "fx.h"
 #include "chrlight.h"
+#include "shadow.h"
 #include "hitch.h"
 #include "map.h"
 #include "enemy.h"
@@ -59,6 +60,8 @@ void map_spawn(V3 *pos, float *yaw)
     for (int i = 0; i < 3; i++)
         amb[i] = sun[i] = dir[i] = 0;
 }
+/* shadow.c (not built here): render only */
+void shadow_add(V3 feet, float r, float fade) { (void)feet, (void)r, (void)fade; }
 /* chrlight.c (not built here): the old path's single call, so the count stays */
 void chrl_pick(V3 pos, float amb[3], float sun[3], float dir[3], int *np, float pdir[2][3], float pcol[2][3])
 {

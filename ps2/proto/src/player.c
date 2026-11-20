@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "player.h"
+#include "shadow.h"
 #include "mem.h"
 #include "chrstat.h"
 #include "testscript.h"
@@ -1393,4 +1394,5 @@ void player_draw(const Player *p)
                 cur[i] = mixed[i];
     }
     model_draw(cur, p->pos, p->yaw, p->invincible);
+    shadow_add(p->pos, COL_PLAYER_R, 1);  /* blob shadow (shadow.c) */
 }

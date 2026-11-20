@@ -166,6 +166,7 @@
  * OBJ_VIEW_CULL       | 1        | fallback | -DOBJ_VIEW_CULL=0                             | game   | new   | objects.c     | intact breakables outside the view (collision cylinder + 0.3 m) not drawn; 0 = distance / behind-camera tests only
  * MDL_PREBUILT        | 1        | fallback | -DMDL_PREBUILT=0                              | scene  | new   | model.c       | Polaris 2.2: a model's vu1skin2 batch headers built once and called per draw (palette + per-draw block + one CALL per segment); 0 = every batch's header written per draw
  * CHR_LIGHTS          | 1        | fallback | -DCHR_LIGHTS=0                                | scene  | new   | chrlight.c    | Polaris 2.2: characters lit by the sun + their 2 strongest point lights with N.L (the rest ambient); 0 = every point light in the ambient term (map_char_light)
+ * SHADOW_BLOB         | 1        | fallback | -DSHADOW_BLOB=0                               | scene  | new   | shadow.c      | Polaris 2.2: a blob shadow on the floor under every drawn character (decal class state); 0 = none
  * MDL_ANIM_PAGE       | 64 KB    | fallback | -DMDL_ANIM_PAGE=0                             | scene  | #140  | model.c       | anim section in pages; 0 = one copy
  * SPEC_TEST           | off      | debug    | -DSPEC_TEST=0.85,0.8                          | scene  | init  | model.c       | metal / specular on every vertex
  * NO_VU0              | off      | fallback | -DNO_VU0                                      | core   | #94   | vmath.c       | skin matrix product in C
