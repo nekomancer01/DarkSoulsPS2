@@ -1,5 +1,5 @@
 /* Effects: DSR FFX particle systems and effect lights of the area (fx.bin, tools/export_effects.py).
- * Billboard particles on the EE, drawn through gsKit after the opaque passes (additive or alpha blended, Z tested,
+ * Billboard particles, moved and drawn on VU1 (near the camera: the EE), after the opaque passes (additive or alpha blended, Z tested,
  * no Z write); effect lights (bonfires) add to the character light. The map's static share of the same lights is
  * baked into map.bin by export_map.py. */
 #ifndef FX_H
@@ -53,7 +53,8 @@ typedef struct {
     int drawn;       /* particles drawn this frame */
     int batches;     /* GS packets */
     int vu1;         /* of drawn: on VU1 (FX_VU1) */
-    int vu1_breaks[3];  /* VU1 batch ends: texture / mode change, full, out of curve tables */
+    int vu1_breaks[3];  /* VU1 batch ends: texture / mode / quad frame change, full, out of curve tables */
+    int culled;      /* of the alive: skipped with their instance's bound off screen */
     float ms;        /* EE time of update + draw (smoothed) */
     float ms_draw;   /* of which fx_draw */
 } FxStats;

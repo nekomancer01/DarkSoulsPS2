@@ -138,7 +138,10 @@ void debug_hud_draw(const DebugHud *d, const Player *pl, float dt)
     event_status(buf, sizeof buf);  /* EMEVD: instances / waiting, fired, last fired id, stubs */
     r_text_outlined(238, 278, 2, buf);
     /* effects: particles alive / drawn, instances in range, GS packets, EE ms (update + draw) */
-    snprintf(buf, sizeof buf, "FX %d/%d I%d B%d %d.%dMS", fx_stats.particles, fx_stats.drawn, fx_stats.active,
-             fx_stats.batches, (int)fx_stats.ms, (int)(fx_stats.ms * 10) % 10);
+    /* + R: VU1 program uploads since the last HUD frame (R8 reloads; the effect program shares micro memory) */
+    static int mpg_last;
+    snprintf(buf, sizeof buf, "FX %d/%d I%d B%d %d.%dMS R%d", fx_stats.particles, fx_stats.drawn, fx_stats.active,
+             fx_stats.batches, (int)fx_stats.ms, (int)(fx_stats.ms * 10) % 10, vu1_stats.mpg_loads - mpg_last);
+    mpg_last = vu1_stats.mpg_loads;
     r_text_outlined(30, 230, 2, buf);
 }

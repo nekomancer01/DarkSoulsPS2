@@ -87,15 +87,21 @@ SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
 
 # particles (effect chains: vu1fx; VIF BASE FX_IN, OFFSET FX_IN_QW)
-FX_SC = 8                            # 5 qw sin / cos coefficients (vu1_fx_begin)
+FX_SC = 8                            # 5 qw: sin / cos coefficients in .xy, motion series phi2 / phi1 in .zw (vu1_fx_begin)
 FX_SC_QW = 5
+FX_MK = FX_SC + FX_SC_QW             # 2 qw motion constants (gen.py fx_motion_const) (vu1_fx_begin)
+FX_MK_QW = 2
+FX_DBL = 5                           # motion: drag x age halved FX_DBL times for the series, then doubled back
+FX_XMAX = 0.5 * 2 ** FX_DBL          # largest drag x life the series covers (|error| < 1e-4); fx.c sends others pre-moved
 FX_IN = 16                           # input double buffer (BASE / OFFSET)
-FX_N = 64                            # particles per batch (even: the loop takes FX_P at a time)
+FX_N = 56                            # particles per batch (even: the loop takes FX_P at a time)
 FX_SYS = 8                           # curve tables per batch
-FX_TAB = 15                          # batch offset of the curve tables (FX_SYS x 16 qw)
-FX_PART = FX_TAB + 16 * FX_SYS       # batch offset of the particles (2 qw each)
-FX_IN_QW = FX_PART + 2 * FX_N
-FX_KICK = 16                         # particles per output kick
+FX_HDR = 17                          # batch header qwords: 0-14 as before, 15 / 16 the quad axes of oriented batches
+FX_TAB = FX_HDR                      # batch offset of the curve tables (FX_SYS x 16 qw; size keys' .zw = drag, gravity)
+FX_PQW = 3                           # qwords per particle: {spawn xyz, key}, {half size x y, roll, frame}, {velocity, age}
+FX_PART = FX_TAB + 16 * FX_SYS       # batch offset of the particles
+FX_IN_QW = FX_PART + FX_PQW * FX_N
+FX_KICK = 14                         # particles per output kick
 FX_OUT0 = FX_IN + 2 * FX_IN_QW
 FX_OUT_QW = 1 + 12 * FX_KICK
 FX_OUT1 = FX_OUT0 + FX_OUT_QW
@@ -109,7 +115,7 @@ REGIONS = {
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
              ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("lights", LIGHT, LIGHT_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
-    "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
+    "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("motion", FX_MK, FX_MK_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
 # VIF double buffering per chain kind: BASE, OFFSET (vu1.c sets them in each chain's preamble); programs read their
@@ -124,7 +130,10 @@ PREAMBLE = {
            "loaded on demand (MPG, R8)",
     "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block, "
             "the per-draw block (SKIN_DRAW); the skin programs loaded on demand",
-    "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos block; vu1fx loaded",
+    "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos and motion blocks, the "
+          "VIF MASK 0x50505050 of the masked curve-table unpacks (per system ROW from its table; vu1_fx_add restores ROW to 0 "
+          "after the batch; the map and character masked unpacks set their own MASK 0xF0 first, which keeps .zw and never "
+          "reads ROW); vu1fx loaded",
 }
 # VU1 registers a program expects to keep their value from an earlier call in the same chain. None today: every
 # program reloads its constants from data memory at its entry and keeps nothing in VF / VI registers between MSCALs.
@@ -133,18 +142,45 @@ CARRIED_REGISTERS = ()
 # ---------------------------------------------------------------------------------------------- micro memory
 # One row per program variant: name (vu1.c enum P_<name>), code symbol prefix, address, chain bank, its .vsm.
 # Programs of one bank are resident together; another bank's program over them costs one reload (R8: on demand).
-PROGRAMS = (
+_PROGRAMS = (
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
     ("SKIN2", "VU1Skin2", 768, "chr", "vu1skin2.vsm"),          # (Polaris 2.2 PR 3: the light terms grew both skin
     ("SKINCLIP", "VU1SkinClip", 0, "chr", "vu1skinclip.vsm"),    # programs; was 1024 / 384. Away from FX at the top)
-    ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
+    ("FX", "VU1Fx", None, "fx", "vu1fx.vsm"),             # placed by place_fx() below (Polaris 2.6)
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
     ("MAPSPEC", "VU1MapSpec", 840, "map", "vu1mapspec.vsm"),  # the specular pass (Polaris 2.3): after MAPI's range
 )
 ALTERNATES = set()  # pairs never resident together, allowed to overlap (none since the VU1_MAP_OLD program left, render-19 PR)
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ps2", "proto", "src")
+
+
+# Map programs the effect program may lie over when no gap between the map programs fits it: the specular pass
+# (Polaris 2.3, vu1mapspec) runs once per frame in the map chain, so covering it costs one reload a frame (R8)
+FX_MAY_COVER = ("MAPSPEC",)
+
+
+def place_fx(programs):
+    """the effect program's address, from the other programs' sizes (no fixed address assumes another program's size):
+    end-aligned in the largest gap the map bank leaves (the map chain starts every frame, so the effect program never
+    costs a map program reload); it may cover character programs, which reload on demand (R8) after an effect chain.
+    When no gap fits (the map bank with the specular pass leaves 556 pairs), the highest address that covers only
+    FX_MAY_COVER map programs. covers(): what it lies over"""
+    size = program_size([p for p in programs if p[0] == "FX"][0][4])
+    spans = sorted((p[2], p[2] + program_size(p[4]), p[0]) for p in programs if p[3] == "map" and p[0] != "MAP")
+    gaps, at = [], 0
+    for a, b, _ in spans + [(MICRO, MICRO, None)]:
+        if a - at >= size:
+            gaps.append((a - at, at, a))
+        at = max(at, b)
+    if gaps:
+        _, lo, hi = max(gaps)
+        return (hi - size) & ~1
+    for a in range((MICRO - size) & ~1, -1, -2):
+        if all(n in FX_MAY_COVER for lo, hi, n in spans if lo < a + size and a < hi):
+            return a
+    raise ValueError("layout: no room of %d pairs for FX over the map programs it may cover %s" % (size, FX_MAY_COVER))
 
 
 def program_size(vsm):
@@ -161,6 +197,17 @@ def program_size(vsm):
         elif inside and not s.endswith(":") and not s.startswith("."):
             n += 1
     return n + (n & 1)
+
+
+PROGRAMS = tuple((p[0], p[1], place_fx(_PROGRAMS) if p[2] is None else p[2]) + p[3:] for p in _PROGRAMS)
+
+
+def covers(name="FX"):
+    """the other banks' programs a program lies over (each costs a reload when chains alternate): [(name, lo, hi)]"""
+    me = [p for p in PROGRAMS if p[0] == name][0]
+    a, b = me[2], me[2] + program_size(me[4])
+    return [(p[0], max(a, p[2]), min(b, p[2] + program_size(p[4])) - 1) for p in PROGRAMS
+            if p[3] != me[3] and p[2] < b and a < p[2] + program_size(p[4])]
 
 
 def check():
@@ -207,6 +254,7 @@ def report():
         used = sum(sizes[p[0]] for p in ps)
         out.append(f"micro {bank:4s}: {used:4d} of {MICRO} used by " + ", ".join(
             f"{p[0]} {p[2]}..{p[2] + sizes[p[0]] - 1}" for p in ps) + f"; {MICRO - used} free if only this bank is resident")
+    out.append("micro FX covers: " + (", ".join(f"{n} {a}..{b}" for n, a, b in covers()) or "nothing"))
     out.append(f"micro all : {len(taken)} of {MICRO} covered by some program, {MICRO - len(taken)} never used")
     return "\n".join(out)
 

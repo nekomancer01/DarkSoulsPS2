@@ -161,6 +161,9 @@
  * TEXQ_SLICE          | 512      | tune     | -                                             | gfx    | #104  | vu1.c         | IMAGE qwords per GIF packet
  * SKIN_CLIP_MARGIN    | 1.5 m    | tune     | -                                             | gfx    | init  | vu1.c         | bone origin to farthest vertex
  * FX_VU1              | 1        | fallback | -DFX_VU1=0                                    | fx     | #106  | fx.c          | particles on VU1; 0 = EE billboards
+ * FX_CLOSED           | 1        | fallback | -DFX_CLOSED=0                                 | fx     | #281  | fx.c          | particles keep their spawn state, position at an age in closed form (ppos), VU1 moves them; 0 = the EE integrates each particle every frame
+ * FX_CULL             | 1        | fallback | -DFX_CULL=0                                   | fx     | #281  | fx.c          | an effect instance whose bound is off screen is skipped whole (inst_class); 0 = only the per-particle near-plane test
+ * FX_VU_ORIENT        | 1        | fallback | -DFX_VU_ORIENT=0                              | fx     | #281  | fx.c          | quads fixed in the effect frame (FFX orientation 2, fog walls) on VU1; 0 = always the EE path
  * V5_OFF              | off      | fallback | -DV5_OFF                                      | scene  | init  | model.c       | character CLUTs as exported (CT32)
  * MDL_SKIN_PAGE       | 64 KB    | fallback | -DMDL_SKIN_PAGE=0                             | scene  | #138  | model.c       | skin packets in pages; 0 = one block
  * OBJ_VIEW_CULL       | 1        | fallback | -DOBJ_VIEW_CULL=0                             | game   | new   | objects.c     | intact breakables outside the view (collision cylinder + 0.3 m) not drawn; 0 = distance / behind-camera tests only
