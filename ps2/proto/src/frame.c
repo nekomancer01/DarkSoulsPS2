@@ -18,6 +18,8 @@
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
+#include "chrlight.h"
+#include "shadow.h"
 #include "vu1.h"
 #include "collision.h"
 #include "combat.h"
@@ -435,12 +437,14 @@ static void phase_emit(Frame *f)
     int obj_after_fx = (f->b->test_opts & TEST_OBJ_AFTER_FX) != 0;
     PROF_MARK(PROF_CHARS);
     f->t1 = ticks();
+    chrl_frame();  /* the frame's point lights for the characters (chrlight.c) */
     {
         ot_open(OT_CHR, OT_CHR);
 #ifndef MAP_PANO_R  /* panorama capture builds (render-distance, map.c): the far map only */
         frame_draw_check(FE_CHR_DRAW);
         player_draw(pl);  /* bone matrices on the EE, skinning + triangles on VU1 (vu1skin.vsm) */
         enemy_draw();      /* same path, one bone palette per enemy */
+        shadow_draw();     /* blob shadows of the characters just drawn (shadow.c, blended after them) */
 #endif
         ot_close();
         if (!obj_after_fx) {

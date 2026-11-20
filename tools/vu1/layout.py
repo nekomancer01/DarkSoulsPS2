@@ -49,13 +49,20 @@ MAP_SPEC = MAP_PLANES + MAP_PLANES_QW
 MAP_SPEC_QW = 4
 
 # skin pass (character chains: vu1skin2, vu1skinclip; VIF BASE SKIN_IN, OFFSET SKIN_IN_SIZE)
-BONE_WIN, BONE_QW, BONE_MAX = 8, 4, 61  # the bone palette window: 4 qwords a bone, 61 bones (vu1_skin_window pages bigger skeletons through it)
+# The bone palette window: 4 qwords a bone, 40 bones; model.c pages every skeleton over 40 through it by bone windows
+# (Polaris 2.2 PR 2; was 61, windows only above it). DSR's meshes use <= 38 bones each (FLVER mesh bone tables, all 171
+# chr/ FLVERs), so a window still spans whole meshes; the 21 slots freed pay for 27-triangle batches (were 24).
+# VU1_BONE_MAX=61 in the environment (make VU1_BONES=61) builds the old layout: one 61-bone window, 23-triangle batches,
+# windows only for skeletons over 61. The Makefile then generates this header and the skin programs into the build dir.
+BONE_WIN, BONE_QW, BONE_MAX = 8, 4, int(os.environ.get("VU1_BONE_MAX") or 40)
 SKIN_KICK = 8
-SKIN_TRIS = 24
-SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 252
+SKIN_IN = BONE_WIN + BONE_QW * BONE_MAX  # 168 (61 bones: 252)
+SKIN_OUT_SIZE = 1 + 9 * SKIN_KICK
+SKIN_TOP = 980  # LIGHT (Polaris 2.2 PR 3; was SPEC 992): the skin pass's input double buffer and two output slots end below it
+# the most triangles a batch can take: 2 input buffers of 9 + 12 per triangle and 2 output slots between SKIN_IN and SKIN_TOP
+SKIN_TRIS = ((SKIN_TOP - SKIN_IN - 2 * SKIN_OUT_SIZE) // 2 - 9) // 12  # 27 (61 bones: 23)
 SKIN_IN_SIZE = 9 + 12 * SKIN_TRIS
 SKIN_OUT0 = SKIN_IN + 2 * SKIN_IN_SIZE
-SKIN_OUT_SIZE = 1 + 9 * SKIN_KICK
 SKIN_OUT1 = SKIN_OUT0 + SKIN_OUT_SIZE
 # Specular constant block (skin pass, written per draw by vu1_skin_begin; view space): 0-2 Mn_k = (Ls_k, 2 Up_k,
 # Vc_k, Hc_k) with Vc = towards the camera from the character's centre, Hc = normalize(Ls + Vc); 3 (BIG, -Vc.Up, 0, 0);
@@ -63,6 +70,18 @@ SKIN_OUT1 = SKIN_OUT0 + SKIN_OUT_SIZE
 # 0..255, colour lanes .w = 0), 9 Eh / 2. Batch header 0.zw = (a, b): d = max(0, a n.H + b)^2 ~ (n.H)^(2^k) (vu1.c).
 SPEC = 992
 SPEC_QW = 10  # 9: Eh / 2 (vu1skinclip's exact path)
+# Per-draw skin terms (Polaris 2.2 prebuilt packets: a model's vu1skin2 batch headers are built once and called, so what
+# changes per draw lives here, written by vu1_skin_begin; each vu1skin2 entry adds them to its batch header in its
+# prologue): 0 K1 add of textured batches (tint + amb, .w 0), 1 K2 add of textured batches (sun, .w 0), 2 K1 add of
+# flat batches (tint, .w 0), 3 / 4 the PRIM GIF tag template of textured / flat batches (FGE when the draw fogs)
+SKIN_DRAW = SPEC + SPEC_QW
+SKIN_DRAW_QW = 5
+# Character lights (Polaris 2.2 PR 3, written per draw by vu1_skin_begin; view space): 0-2 the light direction matrix's
+# columns M_k = (Lsun_k, Lp1_k, Lp2_k, k == 0 ? 1/255 : 0) (towards each light: the area's directional light and the two
+# point lights chrlight.c picked, from the character's centre), 3-5 their colours (0x80 = 1.0, .w 0). Textured
+# batches: diffuse D = sum_k colour_k max(n . L_k, 0) on the view-space normal (bone A rotation)
+LIGHT = 980
+LIGHT_QW = 6
 SKIN_CLIP_TRIS = 12
 SPOLYA = 9 + 12 * SKIN_CLIP_TRIS + 1
 SPOLYB, SPV = SPOLYA + 27, SPOLYA + 54
@@ -95,7 +114,7 @@ REGIONS = {
             ("clip planes", MAP_PLANES, MAP_PLANES_QW), ("map specular", MAP_SPEC, MAP_SPEC_QW)],
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
-             ("specular", SPEC, SPEC_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
+             ("specular", SPEC, SPEC_QW), ("per draw", SKIN_DRAW, SKIN_DRAW_QW), ("lights", LIGHT, LIGHT_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
     "fx": [("constants", CONST, CONST_QW), ("sin / cos", FX_SC, FX_SC_QW), ("motion", FX_MK, FX_MK_QW), ("input x2", FX_IN, 2 * FX_IN_QW),
            ("output x2", FX_OUT0, 2 * FX_OUT_QW)],
 }
@@ -109,8 +128,8 @@ CHAIN_BUF = {"map": 0, "skin": 1, "fx": 2}
 PREAMBLE = {
     "map": "FLUSHE; STCYCL 1,1; BASE / OFFSET (VIF above); camera + fog constants 0-7; clip planes; the map programs "
            "loaded on demand (MPG, R8)",
-    "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block "
-            "when used; the skin programs loaded on demand",
+    "skin": "as map, then vu1_skin_begin: BASE / OFFSET for the skin pass, the bone window, the light / specular block, "
+            "the per-draw block (SKIN_DRAW); the skin programs loaded on demand",
     "fx": "as map, then vu1_map_fog and vu1_fx_begin: BASE / OFFSET for particles, the sin / cos and motion blocks, the "
           "VIF MASK 0x50505050 of the masked curve-table unpacks (per system ROW from its table; vu1_fx_add restores ROW to 0 "
           "after the batch; the map and character masked unpacks set their own MASK 0xF0 first, which keeps .zw and never "
@@ -126,8 +145,8 @@ CARRIED_REGISTERS = ()
 _PROGRAMS = (
     ("MAP2", "VU1Map2", 1608, "map", "vu1map2.vsm"),
     ("CLIP", "VU1Clip", 0, "map", "vu1clip.vsm"),
-    ("SKIN2", "VU1Skin2", 1024, "chr", "vu1skin2.vsm"),
-    ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
+    ("SKIN2", "VU1Skin2", 768, "chr", "vu1skin2.vsm"),          # (Polaris 2.2 PR 3: the light terms grew both skin
+    ("SKINCLIP", "VU1SkinClip", 0, "chr", "vu1skinclip.vsm"),    # programs; was 1024 / 384. Away from FX at the top)
     ("FX", "VU1Fx", None, "fx", "vu1fx.vsm"),             # placed by place_fx() below (Polaris 2.6)
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
     ("MAPSPEC", "VU1MapSpec", 840, "map", "vu1mapspec.vsm"),  # the specular pass (Polaris 2.3): after MAPI's range
@@ -215,7 +234,8 @@ def check():
 
 def layout_hash():
     """hash of everything an exported packet depends on (batch headers, buffer sizes, stream destinations)"""
-    key = repr((MAP_HDR, CHUNK_TRIS, MAP_IN_QW, MAPI_HDR, CLIPI_MAX, IDX_TRIS, SKIN_IN_SIZE, FX_IN_QW)).encode()
+    # (no skin term: no exporter writes skin packets, model.c builds them at load, so VU1_BONE_MAX=61 reads the same map.bin)
+    key = repr((MAP_HDR, CHUNK_TRIS, MAP_IN_QW, MAPI_HDR, CLIPI_MAX, IDX_TRIS, FX_IN_QW)).encode()
     return int.from_bytes(hashlib.sha1(key).digest()[:4], "little")
 
 

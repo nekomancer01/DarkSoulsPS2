@@ -491,19 +491,36 @@ static void pl_step(void)
         pl_cur[i] = pl_from[i] + (pl_to[i] - pl_from[i]) * k;
 }
 
-void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
+void map_char_base(float amb[3], float sun[3], float dir[3])
 {
     float l = sqrtf(mp_fog_now[12] * mp_fog_now[12] + mp_fog_now[13] * mp_fog_now[13] + mp_fog_now[14] * mp_fog_now[14]);
     for (int c = 0; c < 3; c++)
         amb[c] = mp_fog_now[6 + c], sun[c] = mp_fog_now[9 + c], dir[c] = l > 0 ? mp_fog_now[12 + c] / l : c == 1;
+}
+
+int map_player_light(float feet[3], float rgb[3], float *begin, float *end)
+{
+    if (!mp_pfog_rows || !pl_init || !(pl_cur[7] > pl_cur[6]))  /* (pl_step: the row blended in over PLIGHT_BLEND) */
+        return 0;
+    feet[0] = player_feet.x, feet[1] = player_feet.y, feet[2] = player_feet.z;
+    for (int c = 0; c < 3; c++)
+        rgb[c] = pl_cur[3 + c];
+    *begin = pl_cur[6], *end = pl_cur[7];
+    return 1;
+}
+
+void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
+{
+    map_char_base(amb, sun, dir);
     /* the player's own light (DSR attaches the area's PointLightBank row to the player) */
-    if (mp_pfog_rows && pl_init) {  /* (pl_step: the row blended in over PLIGHT_BLEND) */
-        float dx = player_feet.x - pos.x, dy = player_feet.y - pos.y, dz = player_feet.z - pos.z;
-        float d = sqrtf(dx * dx + dy * dy + dz * dz), b = pl_cur[6], e = pl_cur[7];
-        float att = e > b ? (e - d) / (e - b) : 0;
+    float feet[3], rgb[3], b, e;
+    if (map_player_light(feet, rgb, &b, &e)) {
+        float dx = feet[0] - pos.x, dy = feet[1] - pos.y, dz = feet[2] - pos.z;
+        float d = sqrtf(dx * dx + dy * dy + dz * dz);
+        float att = (e - d) / (e - b);
         if (att > 0)
             for (int c = 0; c < 3; c++)
-                amb[c] += pl_cur[3 + c] * (att < 1 ? att : 1);
+                amb[c] += rgb[c] * (att < 1 ? att : 1);
     }
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
 }

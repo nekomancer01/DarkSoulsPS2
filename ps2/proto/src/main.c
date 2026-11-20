@@ -13,6 +13,7 @@
 #include <malloc.h>
 #include <gsKit.h>
 #include <dmaKit.h>
+#include "shadow.h"
 #include "render.h"
 #include "mem.h"
 #include "frame.h"
@@ -182,6 +183,7 @@ static void display_init(GSGLOBAL *gs)
 {
     disp_buf = gs_vram_fixed(gs, gsKit_texture_size(R_SCREEN_W, DISP_H, gs->PSM), GSKIT_ALLOC_SYSBUFFER, GSO_FRAME,
                              "display buffer");
+    shadow_init(gs);  /* the player silhouette's target (shadow.c), with the frame's fixed VRAM */
 #ifdef V1B_INTERLACED
     gs_display_init(gs, disp_buf, R_SCREEN_W, DISP_H, 1);
 #else

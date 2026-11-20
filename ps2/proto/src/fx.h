@@ -18,6 +18,12 @@ void fx_draw(void);
 void fx_kick(void);
 /* add the effect lights near pos (bonfire flicker) to a character's ambient light (0x80 = 1.0 units) */
 void fx_char_light(V3 pos, float amb[3]);
+/* Polaris 2.2 (src/chrlight.c, once a frame): the lit effect lights, at most max, each with its world position, its
+ * flicker colour now (fx_char_light's units) and its cubic falloff begin..end metres. Returns the count. */
+typedef struct {
+    float pos[3], rgb[3], begin, end;
+} FxLightOut;
+int fx_lights(FxLightOut *out, int max);
 /* World blocks (src/world.c): at boot, block b's fx.bin tables (kept: the blob can be freed); fx_block_on(b, 1, blob)
  * when the block turns on uploads its textures from blob (its fx.bin again, read with the block), (b, 0, NULL) when
  * it turns off gives their VRAM back (its particles go). Only the blocks on hold VRAM (TECH_DEBT world-4). */

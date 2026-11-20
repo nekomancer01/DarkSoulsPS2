@@ -25,7 +25,7 @@ enum {
     GSR_PRIM = 0x00, GSR_RGBAQ = 0x01, GSR_ST = 0x02, GSR_UV = 0x03, GSR_XYZ2 = 0x05, GSR_TEX0 = 0x06,
     GSR_CLAMP = 0x08, GSR_TEX1 = 0x14, GSR_MIPTBP1 = 0x34, GSR_TEXA = 0x3B, GSR_FOGCOL = 0x3D, GSR_TEXFLUSH = 0x3F,
     GSR_ALPHA = 0x42, GSR_DTHE = 0x45, GSR_TEST = 0x47, GSR_FRAME = 0x4C, GSR_ZBUF = 0x4E, GSR_BITBLTBUF = 0x50,
-    GSR_TRXPOS = 0x51, GSR_TRXREG = 0x52, GSR_TRXDIR = 0x53,
+    GSR_TRXPOS = 0x51, GSR_TRXREG = 0x52, GSR_TRXDIR = 0x53, GSR_XYOFFSET = 0x18, GSR_SCISSOR = 0x40,
 };
 
 /* TEST (depth GEQUAL: larger Z is nearer, main.c) */
@@ -63,6 +63,8 @@ static inline u64 gs_frame(u32 vram, int width, int psm, u32 mask)
     return GS_SETREG_FRAME_1(vram / 8192, width / 64, psm, mask);
 }
 static inline u64 gs_zbuf(const GSGLOBAL *g, int no_write) { return GS_SETREG_ZBUF(g->ZBuffer / 8192, g->PSMZ, no_write); }
+/* a Z buffer at byte address vram (8 KB aligned) in format psmz: an offscreen target's own (shadow.c) */
+static inline u64 gs_zbuf_at(u32 vram, int psmz, int no_write) { return GS_SETREG_ZBUF(vram / 8192, psmz, no_write); }
 
 /* Image transfer header words, in the order the GS takes them: BITBLTBUF, TRXPOS, TRXREG, TRXDIR (then the image) */
 static inline u64 gs_blt_to(u32 tbp, int tbw, int psm) { return GS_SETREG_BITBLTBUF(0, 0, 0, tbp, tbw, psm); }
