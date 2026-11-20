@@ -76,6 +76,14 @@ int main(int argc, char **argv)
         free(c);
     }
     CHECK(!chunk_open(&f, NULL, 0, CHUNK_ID('T', 'E', 'S', 'T'), "none") && chunk_refusals == r, "no file: no message");
+    /* read in pieces: the first 64 bytes hold HEAD and DATA's header; DATA's payload offset from them */
+    CHECK(chunk_open_part(&f, b, 64, n, CHUNK_ID('T', 'E', 'S', 'T'), "part.bin") && chunk_get(&f, CHUNK_ID('H', 'E', 'A', 'D'), 2, NULL),
+          "open part, HEAD in the head");
+    d = chunk_get(&f, CHUNK_ID('D', 'A', 'T', 'A'), 1, &sz);
+    CHECK(d && sz == 17 && chunk_offset(&f, d) == 64, "part: DATA's header in the head, payload offset 64");
+    CHECK(!chunk_opt(&f, CHUNK_ID('A', 'L', 'G', 'N'), 1, NULL) && chunk_refusals == r, "part: ALGN's header past the head: not found");
+    CHECK(!chunk_open_part(&f, b, 64, n - 16, CHUNK_ID('T', 'E', 'S', 'T'), "part.bin") && chunk_refusals == ++r,
+          "part: entry shorter than the total refused");
     free(b), free(w.buf);
     printf("test_chunk: %s (%d failed)\n", fails ? "FAIL" : "ok", fails);
     return fails != 0;

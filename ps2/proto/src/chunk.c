@@ -70,7 +70,45 @@ int chunk_open(ChunkFile *f, const void *blob, unsigned size, unsigned file_id, 
     }
     if (o != total - CHUNK_HDR || k != count)
         return refuse(f, name, "%u chunks found, header says %u", k, count);
+    f->base = b, f->name = name, f->file_id = file_id, f->size = f->have = total, f->n = count;
+    return 1;
+}
+
+int chunk_open_part(ChunkFile *f, const void *head, unsigned have, unsigned size, unsigned file_id, const char *name)
+{
+    const unsigned char *b = head;
+    char n1[5], n2[5];
+    memset(f, 0, sizeof *f);
+    if (!b)
+        return 0;
+    if (have < CHUNK_HDR || size < 2 * CHUNK_HDR)
+        return refuse(f, name, "truncated (%u bytes, a chunk file has at least %u)", size, 2 * CHUNK_HDR);
+    if (rd(b) != CHUNK_MAGIC) {
+        chunk_refusals++;
+        printf("TEST error: chunk: %s: not a chunk file (starts %s; an export from before Polaris 3.3?) "
+               "(re-export it with this build's tools)\n", name ? name : "?", chunk_name(rd(b), n1));
+        return 0;
+    }
+    if (rd(b + 4) != file_id) {
+        chunk_refusals++;
+        printf("TEST error: chunk: %s: file id %s, this build reads %s\n", name ? name : "?", chunk_name(rd(b + 4), n1),
+               chunk_name(file_id, n2));
+        return 0;
+    }
+    unsigned total = rd(b + 8), count = rd(b + 12);
+    if (total < 2 * CHUNK_HDR || total & 15)
+        return refuse(f, name, "bad total %u bytes%.0u", total, 0);
+    if (total > size)
+        return refuse(f, name, "truncated (%u of %u bytes)", size, total);
+    unsigned o = CHUNK_HDR, k = 0;
+    while (k < count && o + CHUNK_HDR <= have && o < total - CHUNK_HDR) {
+        unsigned len = rd(b + o + 8);
+        if (len > total - CHUNK_HDR - o - CHUNK_HDR)
+            return refuse(f, name, "chunk %u runs past the end (%u bytes)", k, len);
+        o += CHUNK_HDR + ((len + 15) & ~15u), k++;
+    }
     f->base = b, f->name = name, f->file_id = file_id, f->size = total, f->n = count;
+    f->have = have < total ? have : total;
     return 1;
 }
 
@@ -81,7 +119,7 @@ static const void *find(const ChunkFile *f, unsigned id, unsigned version, unsig
         *size = 0;
     if (!f || !f->base)
         return NULL;
-    for (unsigned o = CHUNK_HDR, k = 0; k < f->n; k++) {
+    for (unsigned o = CHUNK_HDR, k = 0; k < f->n && o + CHUNK_HDR <= f->have; k++) {
         const unsigned char *c = f->base + o;
         unsigned len = rd(c + 8), ver = (unsigned)c[4] | (unsigned)c[5] << 8;
         if (rd(c) == id) {

@@ -34,6 +34,7 @@ typedef struct {
     const unsigned char *base;  /* the file (16-byte aligned) */
     const char *name;           /* for messages: "world.bin", "m10_01_00_00/dg.bin" */
     unsigned file_id, size, n;  /* size: header + chunks + footer */
+    unsigned have;              /* bytes of the file at base (chunk_open: size; chunk_open_part: the head) */
 } ChunkFile;
 
 /* the base-plus-offset accessor: a typed view of bytes at offset off of base (no pointer is stored in the blob) */
@@ -42,6 +43,13 @@ typedef struct {
 /* check blob as a chunk file of file_id: magic, id, total within size, footer, every chunk inside. 0 (and a TEST
  * error line) when it is not; f is zeroed then. A NULL blob is no file: 0 without a message. */
 int chunk_open(ChunkFile *f, const void *blob, unsigned size, unsigned file_id, const char *name);
+/* a file read in pieces (a raw pack entry read by offset): head holds its first have bytes, size is the whole entry's.
+ * Checks the header against size (a total past it: truncated) and the chunk headers that lie within head; chunk_get /
+ * chunk_opt then find chunks whose header lies within head (the payload may lie beyond: chunk_offset gives its file
+ * offset for the read). The footer is not checked (not read). */
+int chunk_open_part(ChunkFile *f, const void *head, unsigned have, unsigned size, unsigned file_id, const char *name);
+/* file offset of a payload chunk_get returned (from the file's start) */
+#define chunk_offset(f, payload) ((unsigned)((const unsigned char *)(payload) - (f)->base))
 /* the payload of chunk id at version (its byte count in *size when size is not NULL). Missing or another version:
  * NULL and a TEST error line. */
 const void *chunk_get(const ChunkFile *f, unsigned id, unsigned version, unsigned *size);
