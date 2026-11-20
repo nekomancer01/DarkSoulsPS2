@@ -1578,7 +1578,7 @@ static int nfx_late;  /* fxl entries map_draw_blend draws (late != NULL) */
  * fx.c's additive particles); fogged towards the map's fog colour col they would add / subtract it with distance.
  * MAP_FX_FOG0=0: all three towards col, as before. Returns the triangles drawn. */
 #ifndef MAP_FX_FOG0
-#define MAP_FX_FOG0 1
+#define MAP_FX_FOG0 cv_MAP_FX_FOG0  /* runtime switch, default 1 (src/cvar.h) */
 #endif
 static int draw_effects(int n, int fog, int which, u32 col)
 {
