@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "objects.h"
+#include "chunk.h"
 #include "physics.h"
 #include "model.h"
 #include "player.h"
@@ -149,35 +150,75 @@ static int natypes, nainst;
 static APart *ablk_part[OBJ_BLOCKS];
 static int ablk_nparts[OBJ_BLOCKS];
 
-/* objects.bin v3 animated types of a pack (block 0: the boot area, blob kept; compact: a block's, blob freed after) and
- * its placements; returns the placements */
-static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
+/* objects.bin: a chunk file 'OBJS' (tools/export_objects.py), read in place */
+typedef struct {
+    unsigned types, parts, atypes, aparts, statics, key, btex_off, pad;
+} ObjHeader;  /* OHDR v1 */
+typedef struct {
+    const ObjHeader *h;
+    const unsigned char *type, *piec, *part, *atyp, *body, *aprt, *sanm, *modl, *atex, *btex;
+    unsigned modl_off;  /* MODL's payload offset in the file: model offsets are relative to it */
+} ObjFile;
+
+static int obj_open(ObjFile *o, const void *blob, int block)
 {
-    const unsigned *h = blob;
-    if (block < 0 || block >= OBJ_BLOCKS || h[1] < 3)
+    ChunkFile f;
+    char nm[32];
+    unsigned n[8];
+    memset(o, 0, sizeof *o);
+    snprintf(nm, sizeof nm, "objects.bin (block %d)", block);
+    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('O', 'B', 'J', 'S'), nm))
         return 0;
-    const unsigned char *b = blob;
-    for (unsigned k = 0; k < h[12]; k++) {  /* static ones: lengths only (block -2 - b: block b's, not placed) */
+    o->h = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
+    o->type = chunk_get(&f, CHUNK_ID('T', 'Y', 'P', 'E'), 1, &n[0]);
+    o->piec = chunk_get(&f, CHUNK_ID('P', 'I', 'E', 'C'), 1, &n[1]);
+    o->part = chunk_get(&f, CHUNK_ID('P', 'A', 'R', 'T'), 1, &n[2]);
+    o->atyp = chunk_get(&f, CHUNK_ID('A', 'T', 'Y', 'P'), 1, &n[3]);
+    o->body = chunk_get(&f, CHUNK_ID('B', 'O', 'D', 'Y'), 1, &n[4]);
+    o->aprt = chunk_get(&f, CHUNK_ID('A', 'P', 'R', 'T'), 1, &n[5]);
+    o->sanm = chunk_get(&f, CHUNK_ID('S', 'A', 'N', 'M'), 1, &n[6]);
+    o->modl = chunk_get(&f, CHUNK_ID('M', 'O', 'D', 'L'), 1, &n[7]);
+    o->atex = chunk_opt(&f, CHUNK_ID('A', 'T', 'E', 'X'), 1, NULL);
+    o->btex = chunk_opt(&f, CHUNK_ID('B', 'T', 'E', 'X'), 1, NULL);
+    if (!o->h || !o->type || !o->piec || !o->part || !o->atyp || !o->body || !o->aprt || !o->sanm || !o->modl ||
+        n[0] != 64 * o->h->types || n[2] != 48 * o->h->parts || n[3] != 32 * o->h->atypes || n[5] != 48 * o->h->aparts ||
+        n[6] != 72 * o->h->statics) {
+        printf("TEST error: chunk: %s: tables do not match OHDR\n", nm);
+        memset(o, 0, sizeof *o);
+        return 0;
+    }
+    o->modl_off = chunk_offset(&f, o->modl);
+    return 1;
+}
+
+/* animated types of a pack (block 0: the boot area, blob kept; compact: a block's, blob freed after) and its
+ * placements; returns the placements */
+static int anim_load(GSGLOBAL *gs, int block, const ObjFile *o, int compact)
+{
+    if (block < 0 || block >= OBJ_BLOCKS)
+        return 0;
+    const ObjHeader *h = o->h;
+    for (unsigned k = 0; k < h->statics; k++) {  /* static ones: lengths only (block -2 - b: block b's, not placed) */
         int j = 0;
         while (j < MAX_ASTATIC && astatic[j].entity)
             j++;
         if (j == MAX_ASTATIC)
             break;
-        const int *r = (const int *)(b + h[13] + 72 * k);
+        const int *r = (const int *)(o->sanm + 72 * k);
         AStatic *a = &astatic[j];
         memset(a, 0, sizeof *a);
         a->entity = r[0], a->n = r[1] < 8 ? r[1] : 8, a->block = -2 - block, a->anim = -1;  /* placed by anim_add */
         for (int i = 0; i < a->n; i++)
             a->aid[i] = r[2 + 2 * i], memcpy(&a->alen[i], &r[3 + 2 * i], 4);
     }
-    if (!h[6])
+    if (!h->atypes)
         return 0;
-    Model *tex = h[11] ? mdl_load(b + h[11]) : NULL;  /* the pack's shared textures (one bone, no triangles) */
+    Model *tex = o->atex ? mdl_load(o->atex) : NULL;  /* the pack's shared textures (one bone, no triangles) */
     if (tex && mdl_upload(tex, gs, GSO_OBJ) < 0)
         printf("objects: block %d: animated object textures did not fit in VRAM\n", block);
     int map[MAX_ATYPES];
-    for (unsigned k = 0; k < h[6] && k < MAX_ATYPES; k++) {
-        const unsigned *t = (const unsigned *)(b + h[8] + 32 * k);
+    for (unsigned k = 0; k < h->atypes && k < MAX_ATYPES; k++) {
+        const unsigned *t = (const unsigned *)(o->atyp + 32 * k);
         map[k] = -1;
         for (int j = 0; j < natypes; j++)
             if (atypes[j].id == (int)t[0])
@@ -188,7 +229,7 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
         memset(ty, 0, sizeof *ty);
         ty->id = (int)t[0], ty->nbodies = (int)t[3], ty->roots = t[6];
         ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
-        ty->model = mdl_load_tex(b + t[1], tex);
+        ty->model = mdl_load_tex(o->modl + t[1], tex);
         int up = 0;  /* its textures went up: a failure after that gives the VRAM back (mdl_free keeps it) */
         if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || !(up = mdl_upload(ty->model, gs, GSO_OBJ) >= 0) ||
             (compact && !mdl_compact(ty->model, t[2]))) {
@@ -202,18 +243,18 @@ static int anim_load(GSGLOBAL *gs, int block, const void *blob, int compact)
         }
         if (tex)
             mdl_share_textures(ty->model, tex);
-        memcpy(ty->body, b + h[10] + 48 * t[4], ty->nbodies * sizeof(ABody));
+        memcpy(ty->body, o->body + 48 * t[4], ty->nbodies * sizeof(ABody));
         map[k] = natypes++;
     }
     if (tex)
         mdl_free(tex);  /* its VRAM textures stay (now the types') */
     free(ablk_part[block]);
-    ablk_part[block] = malloc(h[7] * sizeof(APart) + 1);
+    ablk_part[block] = malloc(h->aparts * sizeof(APart) + 1);
     ablk_nparts[block] = 0;
-    for (unsigned k = 0; ablk_part[block] && k < h[7]; k++) {
-        const unsigned char *p = b + h[9] + 48 * k;
+    for (unsigned k = 0; ablk_part[block] && k < h->aparts; k++) {
+        const unsigned char *p = o->aprt + 48 * k;
         int ti = *(const unsigned short *)p;
-        if (ti >= (int)h[6] || ti >= MAX_ATYPES || map[ti] < 0)
+        if (ti >= (int)h->atypes || ti >= MAX_ATYPES || map[ti] < 0)
             continue;
         APart *pt = &ablk_part[block][ablk_nparts[block]++];
         pt->type = map[ti];
@@ -465,34 +506,33 @@ static void tset_share(int k)
 
 int objects_init(GSGLOBAL *gs, const void *blob)
 {
-    const unsigned *h = blob;
+    ObjFile o;
     ntypes = ninst = 0;
     memset(bodies, 0, sizeof bodies);
     memset(live_of, 0xFF, sizeof live_of);
-    if (!blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 4)
+    if (!obj_open(&o, blob, 0))
         return 0;
-    const unsigned char *b = blob;
-    unsigned ps = h[1] >= 2 ? 48 : 32;  /* part record (export_objects.py: version 2 adds the entity id) */
+    const ObjHeader *h = o.h;
     memset(tset, 0, sizeof tset);
     for (int k = 0; k < OBJ_BLOCKS; k++)
         blk_set[k] = -1;
-    int set = h[1] >= 4 && h[14] ? tset_get((int)h[15], b + h[14]) : -1;  /* the boot blob stays: no strip */
+    int set = o.btex ? tset_get((int)h->key, o.btex) : -1;  /* the boot blob stays: no strip */
     if (set >= 0 && mdl_upload(tset[set].m, gs, GSO_OBJ) < 0)
         printf("objects: breakable textures do not fit in VRAM\n");
     if (set >= 0)
         tset[set].refs = 1, blk_set[0] = set;
-    for (unsigned k = 0; k < h[2] && ntypes < MAX_TYPES; k++) {
-        const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
+    for (unsigned k = 0; k < h->types && ntypes < MAX_TYPES; k++) {
+        const unsigned *t = (const unsigned *)(o.type + 64 * k);
         const float *f = (const float *)t;
         Type *ty = &types[ntypes];
         ty->id = (int)t[0];
         ty->pieces = t[3] < MAX_PIECES ? (int)t[3] : MAX_PIECES;
-        ty->piece = (const float *)(b + t[4]);
+        ty->piece = (const float *)(o.piec + t[4]);
         ty->hp = (int)t[5], ty->defense = (int)t[6];
         ty->cyl_r = f[7], ty->cyl_y0 = f[8], ty->cyl_y1 = f[9], ty->fr = f[10], ty->rest = f[11];
         ty->intact_bits = t[12], ty->broken_bits = t[13];
         ty->set = set;
-        ty->model = set >= 0 ? mdl_load_tex(b + t[1], tset[set].m) : mdl_load(b + t[1]);
+        ty->model = set >= 0 ? mdl_load_tex(o.modl + t[1], tset[set].m) : mdl_load(o.modl + t[1]);
         if (!ty->model || mdl_bones(ty->model) != ty->pieces + 1)
             continue;
         if (set < 0 && mdl_upload(ty->model, gs, GSO_OBJ) < 0)
@@ -502,8 +542,8 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         ty->tex_refs = 1;
         ntypes++;
     }
-    for (unsigned k = 0; k < h[3] && ninst < MAX_INST; k++) {
-        const unsigned char *p = b + h[5] + ps * k;
+    for (unsigned k = 0; k < h->parts && ninst < MAX_INST; k++) {
+        const unsigned char *p = o.part + 48 * k;
         int ti = *(const unsigned short *)p;
         if (ti >= ntypes)
             continue;
@@ -513,19 +553,19 @@ int objects_init(GSGLOBAL *gs, const void *blob)
         in->type = ti;
         memcpy(in->pos, p + 4, 12);
         memcpy(in->q, p + 16, 16);
-        in->entity = ps == 48 ? *(const int *)(p + 32) : -1;
+        memcpy(&in->entity, p + 32, 4);
     }
     for (int i = 0; i < ninst; i++)
         inst[i].block = 0;
     objects_stats.instances = ninst;
-    anim_load(gs, 0, blob, 0);
+    anim_load(gs, 0, &o, 0);
     anim_add(0);
     return ninst;
 }
 
 /* a breakable type of a block's objects.bin (b, type record t): model compacted (the blob is freed after
  * objects_block_types), textures not uploaded (objects_block_add does, from the objects.bin read with the block) */
-static int load_block_type(int block, const unsigned char *b, const unsigned *t, int set, const Model *tm)
+static int load_block_type(int block, const ObjFile *o, const unsigned *t, int set, const Model *tm)
 {
     const float *f = (const float *)t;
     Type *ty = &types[ntypes];
@@ -538,12 +578,12 @@ static int load_block_type(int block, const unsigned char *b, const unsigned *t,
     ty->set = set;
     float *pc = malloc(ty->pieces * 20 * sizeof *pc);  /* the blob goes after objects_block_types */
     if (OBJ_STREAM && tm && set >= 0 && pc) {  /* listed only: obj_stream reads the model when it is near */
-        ty->src_blk = block, ty->src_off = t[1], ty->src_len = t[2];
-        memcpy(pc, b + t[4], ty->pieces * 20 * sizeof *pc);
+        ty->src_blk = block, ty->src_off = o->modl_off + t[1], ty->src_len = t[2];  /* (file offset) */
+        memcpy(pc, o->piec + t[4], ty->pieces * 20 * sizeof *pc);
         ty->piece = pc;
         return ntypes++;
     }
-    ty->model = tm ? mdl_load_tex(b + t[1], tm) : mdl_load(b + t[1]);
+    ty->model = tm ? mdl_load_tex(o->modl + t[1], tm) : mdl_load(o->modl + t[1]);
     if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || !mdl_compact(ty->model, t[2])) {
         printf("objects: block %d: o%04d did not load\n", block, ty->id);
         if (ty->model)
@@ -551,71 +591,70 @@ static int load_block_type(int block, const unsigned char *b, const unsigned *t,
         free(pc);
         return -1;
     }
-    memcpy(pc, b + t[4], ty->pieces * 20 * sizeof *pc);
+    memcpy(pc, o->piec + t[4], ty->pieces * 20 * sizeof *pc);
     ty->piece = pc;
     return ntypes++;
 }
 
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
 {
-    const unsigned *h = blob;
-    if (block <= 0 || block >= OBJ_BLOCKS || !blob || memcmp(blob, "DSRB", 4) || h[1] < 1 || h[1] > 4)
+    ObjFile o;
+    if (block <= 0 || block >= OBJ_BLOCKS || !obj_open(&o, blob, block))
         return 0;
+    const ObjHeader *h = o.h;
     obj_gs = gs;
-    const unsigned char *b = blob;
-    unsigned ps = h[1] >= 2 ? 48 : 32;
     int map[MAX_TYPES * 2];
     blk_ntm[block] = 0;
     /* v4: the map's texture set; this block's copy of its texture model for the type loads (st per texture size) */
     int set = -1, fresh = 0;
     Model *tm = NULL;
-    if (h[1] >= 4 && h[14] && h[2]) {
+    if (o.btex && h->types) {
         for (int k = 0; k < MAX_TSETS; k++)
-            if (tset[k].key == (int)h[15])
+            if (tset[k].key == (int)h->key)
                 set = k;
         fresh = set < 0;
         if (fresh)
-            set = tset_get((int)h[15], b + h[14]);
+            set = tset_get((int)h->key, o.btex);
         if (fresh && set >= 0 && OBJ_STREAM && !mdl_keep_te(tset[set].m))  /* streamed types are planned for it later */
             set = -1;
-        tm = set < 0 ? NULL : fresh ? tset[set].m : mdl_load(b + h[14]);
+        tm = set < 0 ? NULL : fresh ? tset[set].m : mdl_load(o.btex);
         if (!tm) {
             printf("objects: block %d: breakable texture set did not load\n", block);
             set = -1;
         }
     }
     blk_set[block] = set;
-    for (unsigned k = 0; k < h[2] && k < MAX_TYPES * 2; k++) {
-        const unsigned *t = (const unsigned *)(b + h[4] + 64 * k);
+    for (unsigned k = 0; k < h->types && k < MAX_TYPES * 2; k++) {
+        const unsigned *t = (const unsigned *)(o.type + 64 * k);
         map[k] = -1;
         for (int j = 0; j < ntypes; j++)  /* the same object model in another block of its map: one type */
             if (types[j].id == (int)t[0] && types[j].set == set)
                 map[k] = j;
-        if (map[k] < 0 && ntypes < MAX_TYPES && (set >= 0 || !h[14]))
-            map[k] = load_block_type(block, b, t, set, tm);
-        if (map[k] >= 0 && blk_ntm[block] < MAX_TYPES)
-            blk_tm[block][blk_ntm[block]].type = map[k], blk_tm[block][blk_ntm[block]++].off = t[1];
+        if (map[k] < 0 && ntypes < MAX_TYPES && (set >= 0 || !o.btex))
+            map[k] = load_block_type(block, &o, t, set, tm);
+        if (map[k] >= 0 && blk_ntm[block] < MAX_TYPES)  /* (file offset: objects_block_add gets the whole file) */
+            blk_tm[block][blk_ntm[block]].type = map[k], blk_tm[block][blk_ntm[block]++].off = o.modl_off + t[1];
     }
     free(blk_part[block]);
-    blk_part[block] = malloc(h[3] * sizeof(Part));
+    blk_part[block] = malloc(h->parts * sizeof(Part));
     blk_nparts[block] = 0;
-    for (unsigned k = 0; blk_part[block] && k < h[3]; k++) {
-        const unsigned char *p = b + h[5] + ps * k;
+    for (unsigned k = 0; blk_part[block] && k < h->parts; k++) {
+        const unsigned char *p = o.part + 48 * k;
         int ti = *(const unsigned short *)p;
-        if (ti >= (int)h[2] || ti >= MAX_TYPES * 2 || map[ti] < 0)
+        if (ti >= (int)h->types || ti >= MAX_TYPES * 2 || map[ti] < 0)
             continue;
         Part *pt = &blk_part[block][blk_nparts[block]++];
         pt->type = map[ti];
         memcpy(pt->pos, p + 4, 12);
         memcpy(pt->q, p + 16, 16);
-        pt->entity = ps == 48 ? *(const int *)(p + 32) : -1;
+        memcpy(&pt->entity, p + 32, 4);
     }
     if (tm && fresh)
         mdl_strip(tm);  /* the set keeps its texture handles only (the blob goes) */
     else if (tm)
         mdl_free(tm);
     printf("objects: block %d: %d placements, %d types loaded\n", block, blk_nparts[block], ntypes);
-    return blk_nparts[block] + anim_load(gs, block, blob, 1);
+    return blk_nparts[block] + anim_load(gs, block, &o, 1);
 }
 
 static void retire(Inst *in);

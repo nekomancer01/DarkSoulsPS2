@@ -10,38 +10,38 @@ One model.bin per type (export_model.py layout, shared MeshBuilder / write_model
 meshes carry group bit BITS_INTACT), bones 1..n = the pieces (bit BITS_BROKEN). All bones are roots; bone bind poses
 are the FLVER's, which equal the Havok bodies' rest transforms (checked here).
 
-objects.bin (little-endian, models 128-byte aligned from the blob start; pack_load gives 128-aligned blobs):
-  header  "DSRB", u32 version 2, u32 types, u32 parts, u32 type_off, u32 part_off, u32 0, u32 0           (32 B)
-  type    i32 model id (1497 = o1497), u32 model_off, u32 model_size, u32 pieces, u32 piece_off, i32 hp,
-          i32 defense, f32 cylinder radius, y0, y1 (intact shape, model space, convex radius included),
-          f32 friction, restitution, u32 intact bits, u32 broken bits, u32 0, u32 0                       (64 B)
-  piece   f32 pos[3], q[4] (x y z w: rest transform, model space), half[3] (box half extents + convex radius),
-          f32 centre[3] (box centre in the piece frame), inv_mass, inv_inertia[3] (piece frame), 3 x f32 0 (80 B)
-  part    u16 type, u16 0, f32 pos[3], q[4] (MSB placement; scale is 1 for every breakable at m10_02), i32 MSB
-          entity id (-1 none: EMEVD addresses a breakable by it), u32 0 x 3                                (48 B)
-          (version 1: 32 B parts, no entity id; version 2: 32 B header)
-Version 3 adds animated objects (doors, levers, gates, chests: src/objects.c, events play their anims) and grows the
-header to 48 B:
-  header  "DSRB", u32 3, u32 types, u32 parts, u32 type_off, u32 part_off, u32 anim types, u32 anim parts,
-          u32 anim type_off, u32 anim part_off, u32 body_off, u32 texture model off (0 none), u32 static anims,
-          u32 static anim off, u32 0 x 2                                                                    (64 B)
-  The animated types' models carry no textures: their groups index the texture model's (one bone, no triangles),
-  whose VRAM textures every type shares (mdl_share_textures).
-  atype   i32 model id, u32 model_off, u32 model_size (compact anims last: mdl_compact frees the blob), u32 bodies,
-          u32 first body, u32 EE RAM after mdl_compact (B, estimate), u32 root bones (bit per bone: objects.c
-          puts the placement rotation into the roots' pose; types with more than 32 bones stay static), u32 0  (32 B)
-  body    i32 bone, f32 centre[3], q[4] (x y z w), half[3] (box in the bone's frame, convex radius included), u32 0
+objects.bin: a chunk file (tools/chunkfile.py, file id 'OBJS'; src/objects.c reads it in place), little-endian:
+  OHDR v1 u32 types, parts, anim types, anim parts, static anims, texture set key (area x 100 + map: 1001 for
+          m10_01), u32 BTEX payload's offset in the file (0 none: world.c reads only that tail when a block turns
+          on), u32 0                                                                                       (32 B)
+  TYPE v1 per breakable type: i32 model id (1497 = o1497), u32 model offset (into MODL), u32 model size, u32 pieces,
+          u32 piece offset (into PIEC), i32 hp, i32 defense, f32 cylinder radius, y0, y1 (intact shape, model space,
+          convex radius included), f32 friction, restitution, u32 intact bits, u32 broken bits, u32 0, u32 0 (64 B)
+  PIEC v1 per piece: f32 pos[3], q[4] (x y z w: rest transform, model space), half[3] (box half extents + convex
+          radius), f32 centre[3] (box centre in the piece frame), inv_mass, inv_inertia[3] (piece frame), 3 x f32 0
+          (80 B)
+  PART v1 per placement: u16 type, u16 0, f32 pos[3], q[4] (MSB placement; scale is 1 for every breakable at m10_02),
+          i32 MSB entity id (-1 none: EMEVD addresses a breakable by it), u32 0 x 3                          (48 B)
+  Animated objects (doors, levers, gates, chests: src/objects.c, events play their anims):
+  ATYP v1 i32 model id, u32 model offset (into MODL), u32 model size (compact anims last: mdl_compact frees the
+          blob), u32 bodies, u32 first body, u32 EE RAM after mdl_compact (B, estimate), u32 root bones (bit per
+          bone: objects.c puts the placement rotation into the roots' pose; types with more than 32 bones stay
+          static), u32 0                                                                                     (32 B)
+  BODY v1 i32 bone, f32 centre[3], q[4] (x y z w), half[3] (box in the bone's frame, convex radius included), u32 0
           (48 B): every hkpRigidBody of <model>.hkx (keyframed, named after its bone); cylinders / convex shapes as
           their bounding box (convex: the bone's mesh bounds, TECH_DEBT event-11)
-  apart   u16 atype, u16 0, f32 pos[3], q[4] (MSB placement), i32 MSB entity id, i32 MSB init anim (-1 none),
+  APRT v1 u16 atype, u16 0, f32 pos[3], q[4] (MSB placement), i32 MSB entity id, i32 MSB init anim (-1 none),
           u32 0 x 2 (48 B); scaled placements stay static
-  sanim   i32 entity, u32 anims, 8 x (i32 anim id, f32 length s) (72 B): objects the events animate that stay static
+  SANM v1 i32 entity, u32 anims, 8 x (i32 anim id, f32 length s) (72 B): objects the events animate that stay static
           map objects (elevators, ...), so 2003[18] "wait for completion" waits as long as in DSR
-Version 4 (2026-11-10) uses the header's last two words: u32 breakable texture model offset (0 none: each breakable
-type's model carries its own textures, as before), u32 texture set key (area x 100 + map: 1001 for m10_01). That
-texture model (one bone, no triangles) holds every breakable texture of the whole MSB, the same list in every block of
-one map, and is the file's last part, so world.c reads only it when a block turns on; the types' models carry no
-textures and their groups index it (objects.c: one upload per map while any of its blocks is on).
+  MODL v1 (128-byte aligned in the file) the types' model.bin files (export_model.py layout), breakables then
+          animated, each 128-byte aligned
+  ATEX v1 (128-byte aligned, optional) the animated types' texture model: their models carry no textures, their
+          groups index it (one bone, no triangles), whose VRAM textures every type shares (mdl_share_textures)
+  BTEX v1 (128-byte aligned, optional, last) the breakable texture model: every breakable texture of the whole MSB,
+          the same list in every block of one map; the types' models carry no textures and their groups index it
+          (objects.c: one upload per map while any of its blocks is on)
+  (before Polaris 3.3: one 'DSRB' version 4 blob of the same records behind a 64-byte header, offsets from its start)
 Animated = an MSB object whose objbnd has an anibnd (skeleton + a00_NNNN.hkx anims) and that the map's EMEVD animates
 (2005[07] End Of Animation / 2003[18] Force Animation on its entity id) or an ObjAct uses; not breakables, not the
 models in ANIM_SKIP (elevators: their moving floor is A9's). Their part names go to <out>.anim and export_map.py leaves
@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import area as area_mod
 import srcsum
+import chunkfile
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 import havok_anim as ha
 from export_model import MeshBuilder, bind_world, write_model
@@ -934,71 +935,55 @@ def main():
     atypes, aparts, atex, astatic = anim_objects(game, map_id, msb, keep, dds)
     srcsum.write_if_changed(out_path + ".anim", "".join(p[0] + "\n" for p in aparts))
 
-    TYPE, PIECE, PART = 64, 80, 48
-    type_off = 64
-    piece_off = type_off + TYPE * len(types)
-    part_off = piece_off + PIECE * sum(len(t[3]) for t in types)
-    blob = bytearray(part_off + PART * len(parts))
-    struct.pack_into("<4s5I", blob, 0, b"DSRB", 3, len(types), len(parts), type_off, part_off)
-    pi = 0
-    for k, (model, files, mbin, pieces, cyl, fr, rest, heap) in enumerate(types):
-        blob.extend(b"\0" * (-len(blob) % 128))
-        moff = len(blob)
-        blob += mbin
-        mid = int(model[1:])
+    modl = bytearray()
+
+    def model(mbin):
+        modl.extend(b"\0" * (-len(modl) % 128))
+        o = len(modl)
+        modl.extend(mbin)
+        return o
+    typ, piec, pi = bytearray(), bytearray(), 0
+    for k, (model_, files, mbin, pieces, cyl, fr, rest, heap) in enumerate(types):
+        mid = int(model_[1:])
         row = params.get(mid, (None, {}))[1]
-        struct.pack_into("<i4I2i5f4I", blob, type_off + TYPE * k, mid, moff, len(mbin), len(pieces),
-                         piece_off + PIECE * pi, row.get("hp", 1), row.get("defense", 0), *cyl, fr, rest,
-                         BITS_INTACT, BITS_BROKEN, 0, 0)
+        typ += struct.pack("<i4I2i5f4I", mid, model(mbin), len(mbin), len(pieces), 80 * pi, row.get("hp", 1),
+                           row.get("defense", 0), *cyl, fr, rest, BITS_INTACT, BITS_BROKEN, 0, 0)
         for j, (t, q, half, centre, inv_mass, inv_inertia) in enumerate(pieces):
-            struct.pack_into("<20f", blob, piece_off + PIECE * (pi + j), *t, *q, *half, *centre, inv_mass,
-                             *inv_inertia, 0, 0, 0)
+            piec += struct.pack("<20f", *t, *q, *half, *centre, inv_mass, *inv_inertia, 0, 0, 0)
         pi += len(pieces)
-        print(f"{model}: {len(pieces)} pieces, cylinder r {cyl[0]:.3f} y {cyl[1]:.3f}..{cyl[2]:.3f}, hp {row.get('hp')}, "
+        print(f"{model_}: {len(pieces)} pieces, cylinder r {cyl[0]:.3f} y {cyl[1]:.3f}..{cyl[2]:.3f}, hp {row.get('hp')}, "
               f"model {len(mbin)} B + skin streams {heap} B, {sum(1 for p in parts if p[0] == k)} parts")
-    for k, (ti, pos, q, ent) in enumerate(parts):
-        struct.pack_into("<HH3f4fi3I", blob, part_off + PART * k, ti, 0, *pos, *q, ent, 0, 0, 0)
-    # animated objects (version 3): types, bodies, parts after the breakables
-    blob.extend(b"\0" * (-len(blob) % 16))
-    atype_off = len(blob)
-    blob += b"\0" * (32 * len(atypes))
-    body_off = len(blob)
-    nb = 0
-    for k, (model, mbin, bods, heap, roots) in enumerate(atypes):
-        struct.pack_into("<i5I2I", blob, atype_off + 32 * k, int(model[1:]), 0, len(mbin), len(bods), nb, heap, roots, 0)
+    part = b"".join(struct.pack("<HH3f4fi3I", ti, 0, *pos, *q, ent, 0, 0, 0) for ti, pos, q, ent in parts)
+    atyp, body, nb = bytearray(), bytearray(), 0
+    for model_, mbin, bods, heap, roots in atypes:
+        atyp += struct.pack("<i5I2I", int(model_[1:]), model(mbin), len(mbin), len(bods), nb, heap, roots, 0)
         for bone, c, q, half in bods:
-            blob += struct.pack("<i3f4f3fI", bone, *c, *q, *half, 0)
+            body += struct.pack("<i3f4f3fI", bone, *c, *q, *half, 0)
         nb += len(bods)
-    apart_off = len(blob)
-    for name, ti, pos, q, ent, init in aparts:
-        blob += struct.pack("<HH3f4fii2I", ti, 0, *pos, *q, ent, init, 0, 0)
-    for k, (model, mbin, bods, heap, roots) in enumerate(atypes):
-        blob.extend(b"\0" * (-len(blob) % 128))
-        struct.pack_into("<I", blob, atype_off + 32 * k + 4, len(blob))
-        blob += mbin
-    tex_off = 0
-    if atex:
-        blob.extend(b"\0" * (-len(blob) % 128))
-        tex_off = len(blob)
-        blob += atex
-    static_off = len(blob)
+    aprt = b"".join(struct.pack("<HH3f4fii2I", ti, 0, *pos, *q, ent, init, 0, 0) for name, ti, pos, q, ent, init in aparts)
+    sanm = bytearray()
     for ent, lens in astatic:
         lens = lens + [(-1, 0.0)] * (8 - len(lens))
-        blob += struct.pack("<iI", ent, sum(1 for a, _ in lens if a >= 0)) + b"".join(struct.pack("<if", a, l) for a, l in lens)
-    # version 4: the map's shared breakable textures last (world.c reads only this tail when a block turns on)
-    brk_off, key = 0, int(map_id[1:3]) * 100 + int(map_id[4:6])
-    if shared and types:
-        blob.extend(b"\0" * (-len(blob) % 128))
-        brk_off = len(blob)
-        blob += anim_texture_model(shared)
-        print(f"breakable textures: {len(shared[0])} shared, {len(blob) - brk_off} bytes "
+        sanm += struct.pack("<iI", ent, sum(1 for a, _ in lens if a >= 0)) + b"".join(struct.pack("<if", a, l) for a, l in lens)
+    key = int(map_id[1:3]) * 100 + int(map_id[4:6])
+    btex = anim_texture_model(shared) if shared and types else b""
+    if btex:
+        print(f"breakable textures: {len(shared[0])} shared, {len(btex)} bytes "
               f"{sorted({(t[0], t[1]) for t in shared[0]})}")
-    struct.pack_into("<I", blob, 4, 4)
-    struct.pack_into("<10I", blob, 24, len(atypes), len(aparts), atype_off, apart_off, body_off, tex_off, len(astatic),
-                     static_off, brk_off, key)
-    anim_ram = sum(t[3] for t in atypes)
+
+    def chunks(btex_off):
+        return [(b"OHDR", 1, struct.pack("<8I", len(types), len(parts), len(atypes), len(aparts), len(astatic), key,
+                                         btex_off, 0)),
+                (b"TYPE", 1, typ), (b"PIEC", 1, piec), (b"PART", 1, part), (b"ATYP", 1, atyp), (b"BODY", 1, body),
+                (b"APRT", 1, aprt), (b"SANM", 1, sanm), (b"MODL", 1, modl, 128)] + \
+            ([(b"ATEX", 1, atex, 128)] if atex else []) + ([(b"BTEX", 1, btex, 128)] if btex else [])
+    blob = chunkfile.pack(b"OBJS", chunks(0))
+    if btex:  # the file again with BTEX's payload offset in OHDR (BTEX is last: before the footer)
+        blob = chunkfile.pack(b"OBJS", chunks(len(blob) - 16 - (len(btex) + 15) // 16 * 16))
+    assert not btex or blob[struct.unpack_from("<I", blob, 32 + 24)[0]:][:len(btex)] == btex
     with open(out_path, "wb") as f:
         f.write(blob)
+    anim_ram = sum(t[3] for t in atypes)
     print(f"{len(atypes)} animated types ({' '.join(t[0] for t in atypes)}), {len(aparts)} parts, models + skin streams "
           f"{anim_ram / 1048576:.3f} MB (budget {ANIM_BUDGET} MB)")
     print(f"{len(types)} breakable types, {len(parts)} parts, {len(blob)} bytes -> {out_path}; EE RAM with the skin "

@@ -142,20 +142,17 @@ def lite_entries(d):
 
 
 def obj_tex_bytes(d):
-    """bytes of objects.bin world.c reads when the block turns on: v4 (export_objects.py OBJ_TEX_SHARED) only the
-    breakable texture tail from header word 14 (world.c obj_tail), older files whole"""
-    import struct
+    """bytes of objects.bin world.c reads when the block turns on: only the breakable texture tail (BTEX, world.c
+    obj_tail) when the file has one, else the whole file"""
+    import chunkfile
     p = os.path.join(d, "objects.bin")
     if not os.path.exists(p):
         return 0
-    with open(p, "rb") as f:
-        h = f.read(64)
-    n = os.path.getsize(p)
-    if len(h) == 64 and h[:4] == b"DSRB" and struct.unpack_from("<I", h, 4)[0] >= 4:
-        tail = struct.unpack_from("<I", h, 56)[0]
-        if tail and tail < n and not tail & 127:
-            return n - tail
-    return n
+    try:
+        b = chunkfile.read(p, b"OBJS").opt(b"BTEX", 1)
+    except chunkfile.ChunkError:
+        b = None
+    return len(b) if b is not None else os.path.getsize(p)
 
 
 def structural(gen):
