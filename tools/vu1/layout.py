@@ -40,6 +40,13 @@ LIST = MODE + 1       # pass 1: TOPS-relative address of each flagged triangle (
 assert 7 + 9 * CLIP_TRIS <= C2_POLYA and LIST + IDX_TRIS + 1 <= MAP_IN_QW
 CLIPI_MAX = C2_POLYA  # indexed batches through the indexed entry: header + vertices + triangle stream <= this
 MAPI_HDR = 8  # header qwords of an indexed batch: vu1map2's 7 + {vertex passes, triangle stream offset, 0, 0}
+# Map specular constants (vu1mapspec, Polaris 2.3, written by vu1_map_spec before the pass; world space): 0 Ec = (EnvUp +
+# EnvDown) / 2 with .w = 128 (the vertex alpha), 1 Eh = (EnvUp - EnvDown) / 2, 2 SpecI (colours in 0x80 units, .w 0),
+# 3 (255, 255, 255, 1 / 127) the colour clamp and the scale of the vertices' u8 F0. The batch header
+# carries the rest (per chunk: the dot rows and the Blinn fit; vu1mapspec.vsm's doc). In the 5 qwords after the clip
+# planes (render-21: 1 left free)
+MAP_SPEC = MAP_PLANES + MAP_PLANES_QW
+MAP_SPEC_QW = 4
 
 # skin pass (character chains: vu1skin2, vu1skinclip; VIF BASE SKIN_IN, OFFSET SKIN_IN_SIZE)
 BONE_WIN, BONE_QW, BONE_MAX = 8, 4, 61  # the bone palette window: 4 qwords a bone, 61 bones (vu1_skin_window pages bigger skeletons through it)
@@ -79,7 +86,7 @@ FX_P = 2                             # particles per loop pass
 # the rest of its own input buffer as scratch (the clip programs: POLYA.., C2_*, SPOLYA..): inside the buffer rows.
 REGIONS = {
     "map": [("constants", CONST, CONST_QW), ("input x2", MAP_IN, 2 * MAP_IN_QW), ("output x2", MAP_OUT0, 2 * MAP_OUT_QW),
-            ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
+            ("clip planes", MAP_PLANES, MAP_PLANES_QW), ("map specular", MAP_SPEC, MAP_SPEC_QW)],
     "skin": [("constants", CONST, CONST_QW), ("bone window", BONE_WIN, BONE_QW * BONE_MAX),
              ("input x2", SKIN_IN, 2 * SKIN_IN_SIZE), ("output x2", SKIN_OUT0, 2 * SKIN_OUT_SIZE),
              ("specular", SPEC, SPEC_QW), ("clip planes", MAP_PLANES, MAP_PLANES_QW)],
@@ -114,6 +121,7 @@ PROGRAMS = (
     ("SKINCLIP", "VU1SkinClip", 384, "chr", "vu1skinclip.vsm"),
     ("FX", "VU1Fx", 1812, "fx", "vu1fx.vsm"),
     ("MAPI", "VU1MapI", 580, "map", "vu1mapi.vsm"),
+    ("MAPSPEC", "VU1MapSpec", 840, "map", "vu1mapspec.vsm"),  # the specular pass (Polaris 2.3): after MAPI's range
 )
 ALTERNATES = set()  # pairs never resident together, allowed to overlap (none since the VU1_MAP_OLD program left, render-19 PR)
 

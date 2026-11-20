@@ -339,3 +339,4 @@ FAR_SEAM_DEG_MAX	env	3.0	tune	world	-	#252	farpano.py	degrees: the seam sets' co
 FAR_SEAM_EYES	env	6	tune	world	-	#252	farpano.py	seam eyes per peer at most
 FAR_SEAM_NEAR	env	8.0	tune	world	-	#252	farpano.py	metres: the seam sets' near limit
 MAT_GS_TABLE	env	1	flag	gfx	0	new	material.py	classes follow g_BlendMode (mat-1), texture entries split by GS state (mat-2), FFX blend from the table; 0 = the name rules / old keys / old FFX rule (with make DEFS=-DMAT_GS_TABLE=0: the old runtime too)
+MAP_SPEC	env	1	flag	gfx	0	new	mapspec.py	normal / F0 streams and texture k for the map's specular pass (Polaris 2.3); 0 = no data (map.bin as before)
