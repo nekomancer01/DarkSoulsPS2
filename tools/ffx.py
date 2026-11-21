@@ -193,9 +193,17 @@ def _read_layout(r, o, spec, d):
     return o
 
 
+def _unknown(kind, value, detail=""):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import souls
+    return souls.UnknownVariant(kind, value, detail)
+
+
 def read_action_data(r, o):
     sub, size = r.i32(o), r.i32(o + 4)
     nres, res_ids, res_fields = r.var(o + 8), r.var(o + 16), r.var(o + 24)
+    if sub not in DATA_LAYOUT:
+        raise _unknown("ffx action data", sub)
     kind, spec = DATA_LAYOUT[sub]
     d = {"sub": sub, "kind": kind, "size": size}
     end = _read_layout(r, o + 40, spec, d)
@@ -227,8 +235,10 @@ NODE_LAYOUT = {
 
 class Effect:
     def __init__(self, b):
-        assert b[:4] == b"FXR\0" and struct.unpack_from("<I", b, 4)[0] == 0x10000, "not a DSR FXR1 file"
-        assert struct.unpack_from("<I", b, 0xC)[0] in (0, 0xCDCDCDCD), "32-bit FXR1 (PTDE) not supported"
+        if b[:4] != b"FXR\0" or struct.unpack_from("<I", b, 4)[0] != 0x10000:
+            raise _unknown("ffx format", b[:8].hex(), "not a DSR FXR1 file")
+        if struct.unpack_from("<I", b, 0xC)[0] not in (0, 0xCDCDCDCD):
+            raise _unknown("ffx format", "32-bit", "FXR1 of PTDE not supported")
         self.r = Reader(b)
         self.nodes, self.containers, self.states, self.datas = {}, {}, {}, {}
         self.root = self.node(self.r.var(8))
@@ -245,6 +255,8 @@ class Effect:
         d = {"t": t, "@": o}
         self.nodes[o] = d
         p = o + V
+        if t not in NODE_LAYOUT:
+            raise _unknown("ffx node type", t)
         for tok in NODE_LAYOUT[t].split():
             c, name = tok[0], tok[1:]
             if c == "T":
@@ -310,6 +322,8 @@ class Effect:
         if mo:
             mt = r.i32(mo)
             m = {"t": mt}
+            if mt not in MODIFIER_LAYOUT:
+                raise _unknown("ffx modifier", mt)
             _read_layout(r, mo + 4, MODIFIER_LAYOUT[mt], m)
             d["modifier"] = m
         return d

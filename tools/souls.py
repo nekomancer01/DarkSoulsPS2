@@ -3,10 +3,40 @@ Little-endian DSR PC files only. Layouts follow SoulsFormats (github.com/JKAnder
 import math, os, struct, zlib
 
 
+class UnknownVariant(AssertionError, ValueError):
+    """A file variant a reader does not know (a version, a type id, a layout member, ...): raised instead of guessing
+    or failing somewhere further on. Subclasses AssertionError and ValueError, the errors the readers raised before, so
+    existing handlers still catch it. kind names the variant family ("flver version", "ffx node type"), value is the
+    id. tools/scan lists them over every game file."""
+
+    def __init__(self, kind, value, detail=""):
+        self.kind, self.value = kind, value
+        super().__init__(f"unknown {kind} {value!r}" + (f" ({detail})" if detail else ""))
+
+
+# Variants a reader passes over without failing (a vertex attribute it doesn't read, an MSB type it leaves unnamed):
+# skipped() tells SEEN (tools/scan sets it to a callable(kind, value)); SOULS_STRICT=1 makes them UnknownVariant.
+SEEN = None
+STRICT = os.environ.get("SOULS_STRICT") == "1"
+
+
+def skipped(kind, value):
+    if STRICT:
+        raise UnknownVariant(kind, value, "SOULS_STRICT=1")
+    if SEEN is not None:
+        SEEN(kind, value)
+
+
+DCX_FORMATS = (b"DFLT",)
+
+
 def undcx(b):
     """DCX 'DFLT' container -> payload; anything else is returned unchanged."""
     if b[:4] != b"DCX\0":
         return b
+    fmt = b[b.find(b"DCP\0") + 4:][:4]
+    if fmt not in DCX_FORMATS:
+        raise UnknownVariant("dcx compression", fmt.decode("latin1"))
     return zlib.decompress(b[b.find(b"DCA\0") + 8:])
 
 
@@ -29,7 +59,10 @@ def wstr(b, off):
 def bnd3(b, data=None):
     """BND3 -> [(id, name, bytes)]. The format byte is stored bit-reversed (unless bit-big-endian is set).
     With `data`, b is a BHF3 header (.xxxbhd) whose file offsets point into the BDF3 `data` (.xxxbdt)."""
-    assert b[:4] in (b"BND3", b"BHF3"), "not a BND3/BHF3"
+    if b[:4] not in (b"BND3", b"BHF3"):
+        raise UnknownVariant("binder magic", b[:4].decode("latin1"), "not a BND3/BHF3")
+    if b[0xD]:  # big-endian binder (the debug map m99_99_97_00's navmeshes): the offsets below are little-endian only
+        raise UnknownVariant("binder byte order", "big-endian")
     src = b if data is None else data
     raw, bitbig = b[0xC], b[0xE]
     fmt = raw if bitbig else int(f"{raw:08b}"[::-1], 2)
@@ -103,6 +136,13 @@ _MSB1_DRAW_FLAGS = ("is_shadow_src", "is_shadow_dest", "is_shadow_only", "draw_b
                     "draw_only_reflect_cam", "use_depth_bias_float", "disable_point_light_effect")
 
 
+def _msb_name(table, kind, v, default=None):
+    if v not in table:
+        skipped(kind, v)
+        return default
+    return table[v]
+
+
 def msb1(b):
     """DS1 / DSR MSB -> dict(models, parts, events, regions); every field SoulsFormatsNEXT MSB1 reads
     (github.com/soulsmods/SoulsFormatsNEXT, Formats/MSB/MSB1/*.cs). Indices between entries are resolved to names.
@@ -130,7 +170,7 @@ def msb1(b):
     for o in model_offs:
         name_off, mtype, _, sib_off, inst = struct.unpack_from("<5i", b, o)
         models.append((cstr(b, o + name_off), mtype))
-        model_info.append({"name": models[-1][0], "type": mtype, "type_name": MSB1_MODEL_TYPES.get(mtype),
+        model_info.append({"name": models[-1][0], "type": mtype, "type_name": _msb_name(MSB1_MODEL_TYPES, "msb model type", mtype),
                            "sib": cstr(b, o + sib_off), "instances": inst})
     part_names = [cstr(b, o + struct.unpack_from("<i", b, o)[0]) for o in part_offs]
     region_names = [cstr(b, o + struct.unpack_from("<i", b, o)[0]) for o in region_offs]
@@ -142,7 +182,7 @@ def msb1(b):
         _, _, _, shape = struct.unpack_from("<4i", b, o)
         pos, rot = struct.unpack_from("<3f", b, o + 16), struct.unpack_from("<3f", b, o + 28)
         shape_off, ent_off = struct.unpack_from("<ii", b, o + 48)
-        r = {"name": name, "shape": MSB1_SHAPES.get(shape, shape), "pos": pos, "rot": rot,
+        r = {"name": name, "shape": _msb_name(MSB1_SHAPES, "msb region shape", shape, shape), "pos": pos, "rot": rot,
              "entity_id": struct.unpack_from("<i", b, o + ent_off)[0]}
         s = o + shape_off
         if shape in (1, 2):
@@ -162,7 +202,7 @@ def msb1(b):
     for o in event_offs:
         name_off, event_id, etype, _, base_off, type_off = struct.unpack_from("<6i", b, o)
         pi, ri, ent = struct.unpack_from("<3i", b, o + base_off)
-        e = {"name": cstr(b, o + name_off), "type": etype, "type_name": MSB1_EVENT_TYPES.get(etype),
+        e = {"name": cstr(b, o + name_off), "type": etype, "type_name": _msb_name(MSB1_EVENT_TYPES, "msb event type", etype),
              "event_id": event_id, "part": pname(pi), "region": rname(ri), "entity_id": ent}
         t = o + type_off
         if etype == 0:
@@ -210,7 +250,7 @@ def msb1(b):
         _, ptype, _, model, sib_off = struct.unpack_from("<5i", b, o)
         pos, rot, scl = (struct.unpack_from("<3f", b, o + 20 + 12 * k) for k in range(3))
         ent_off, type_off = struct.unpack_from("<ii", b, o + 88)
-        p = {"name": name, "type": ptype, "type_name": MSB1_PART_TYPES.get(ptype),
+        p = {"name": name, "type": ptype, "type_name": _msb_name(MSB1_PART_TYPES, "msb part type", ptype),
              "model": models[model][0] if model >= 0 else None, "pos": pos, "rot": rot, "scale": scl,
              "draw_groups": struct.unpack_from("<4I", b, o + 56), "disp_groups": struct.unpack_from("<4I", b, o + 72),
              "sib": cstr(b, o + sib_off), "entity_id": struct.unpack_from("<i", b, o + ent_off)[0]}
@@ -274,7 +314,9 @@ def fmg(b):
 def tae(b):
     """DS1 TAE (version 0x1000B, also used by DSR's x64 files: offsets stay 32-bit) ->
     {anim id: {"events": [(type, start, end, [u32 params])], "ref": file offset of the anim-file block}}"""
-    assert b[:4] == b"TAE " and struct.unpack_from("<I", b, 8)[0] == 0x1000B, "not a DS1 TAE"
+    if b[:4] != b"TAE " or struct.unpack_from("<I", b, 8)[0] != 0x1000B:
+        raise UnknownVariant("tae version", "%s %#x" % (b[:4].decode("latin1"), struct.unpack_from("<I", b, 8)[0]),
+                             "not a DS1 TAE")
     count, ids_off = struct.unpack_from("<II", b, 0x54)
     anims, bodies = {}, set()
     for i in range(count):
@@ -426,7 +468,9 @@ def game_params(game):
     out = {}
     for _, n, d in bnd3(read(game + "/param/GameParam/GameParam.parambnd.dcx")):
         ptype = cstr(d, 0xC).strip()
-        if ptype in defs:
+        if ptype not in defs:
+            skipped("param without paramdef", ptype)
+        else:
             out[basename(n).rsplit(".", 1)[0]] = param(d, defs[ptype])
     return out
 
@@ -473,7 +517,8 @@ class HkTag:
     Pointer, string and array fields hold a u32 index into the ITEM list (type, DATA offset, count)."""
 
     def __init__(self, b):
-        assert b[4:8] == b"TAG0", "not a Havok 2015 tagfile"
+        if b[4:8] != b"TAG0":
+            raise UnknownVariant("havok file", b[4:8].decode("latin1"), "not a Havok 2015 tagfile")
         top = _hk_sections(b, 8, struct.unpack_from(">I", b, 0)[0] & 0x3FFFFFFF)
         self.data = b[top["DATA"][0]:top["DATA"][1]]
         typ = _hk_sections(b, *top["TYPE"])
@@ -635,6 +680,15 @@ class Rows:
     def __iter__(self):
         return iter(list(map(tuple, self.a.tolist())))
 _FL_SNORM = (0x10, 0x11, 0x13, 0x2F)
+FLVER_VERSIONS = (0x2000C, 0x2000D)  # 0x2000D: 43 DSR files (c4520, c5210, hair parts, the Asylum's m9000B1A18), same
+# layout (SoulsFormats FLVER2 reads both alike; checked: the scan's decode of every one is finite and in range)
+
+
+def flver_member_read(typ, sem, si):
+    """True when flver() reads this vertex layout member (semantic, type, semantic index); the same tests as its
+    per-vertex loop and _flver_verts_np. The others are passed over (skipped("flver vertex member"))."""
+    return ((sem == 0 and typ == 0x02) or (sem == 3 and typ in _FL_SNORM) or sem in (1, 2)
+            or (sem in (6, 7, 10) and si == 0 and typ in _FL_SNORM) or (sem == 5 and si == 0 and typ in (0x15, 0x16)))
 
 
 def _flver_verts_np(b, base, vsize, vcount, layout, verts):
@@ -690,7 +744,10 @@ def flver(b):
     default_bone, diffuse, diffuse2, bump,
     bones, facesets=[(flags, strip, indices)], verts=dict(pos, normal, bone_idx, bone_w, uv, uv2, color, tangent,
     binormal))], materials=[name])"""
-    assert b[:6] == b"FLVER\0", "not a FLVER"
+    if b[:6] != b"FLVER\0":
+        raise UnknownVariant("flver magic", b[:6].decode("latin1"), "not a FLVER")
+    if struct.unpack_from("<I", b, 8)[0] not in FLVER_VERSIONS:
+        skipped("flver version", hex(struct.unpack_from("<I", b, 8)[0]))
     data_off = struct.unpack_from("<i", b, 0xC)[0]
     n_dummy, n_mat, n_bone, n_mesh, n_vb = struct.unpack_from("<5i", b, 0x14)
     idx_size = b[0x48]
@@ -726,6 +783,8 @@ def flver(b):
         o = p + 0x20 * i
         flags, strip, cull, _, count, ioff = struct.unpack_from("<IBBhii", b, o)
         isz = struct.unpack_from("<i", b, o + 0x18)[0] or idx_size
+        if isz not in (16, 32):
+            skipped("flver index size", isz)
         fmt = "H" if isz == 16 else "I"
         if VERT_ROWS:  # gather: the indices as an int64 array (export_map.faceset_tris; triangles() takes it too)
             import numpy as np
@@ -740,6 +799,9 @@ def flver(b):
     for i in range(n_layout):
         cnt, _, _, m_off = struct.unpack_from("<4i", b, p + 0x10 * i)
         layouts.append([struct.unpack_from("<5i", b, m_off + 0x14 * k) for k in range(cnt)])
+        for _, _, typ, sem, si in layouts[-1]:
+            if not flver_member_read(typ, sem, si):
+                skipped("flver vertex member", f"sem {sem} type {typ:#x} index {si}")
     p += 0x10 * n_layout
     rd = wstr if b[0x49] else cstr
     textures = []  # (path, type) e.g. ("N:\\...\\BD_M_9360_1.tif", "g_Diffuse")

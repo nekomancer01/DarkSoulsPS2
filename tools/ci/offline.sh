@@ -13,6 +13,8 @@
 #   6 libmapx against the Python code (tools/mapx/test_mapx.py); the map simplifier: tools/native/simplify.c (the source
 #     of truth) against its frozen reference tools/simplify.py with its own rules off, and its golden outputs at the
 #     shipped settings (tools/mapx/test_simplify_golden.py, simplify_golden.json)
+#   7 tools/ci/test_scan.py: the readers raise souls.UnknownVariant on files they do not know, the coverage scan's
+#     runtime tables parse, and tools/blockreport.py --strict fails a synthetic block over its VRAM row
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -69,5 +71,7 @@ echo "== map simplifier: simplify.c against the frozen simplify.py, golden outpu
 "$PY" -I tools/mapx/test_simplify_golden.py || fail "tools/mapx/test_simplify_golden.py (intended change: check it, then --update)"
 echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on a synthetic block)"
 "$PY" -I tools/ci/test_residency.py || fail "tools/ci/test_residency.py"
+echo "== coverage scan reader errors and the block report gate (tools/scan, tools/blockreport.py)"
+"$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
 echo "offline: $FAILED failed"
 exit $FAILED

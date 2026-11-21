@@ -58,9 +58,9 @@ class _R:
 
 def load(b):
     if b[:5] != b"\x1bLuaP":
-        raise ValueError("not a Lua 5.0 chunk")
+        raise souls.UnknownVariant("lua chunk", b[:5].hex(), "not a Lua 5.0 chunk")
     if tuple(b[5:14]) != (1, 4, 8, 4, 6, 8, 9, 9, 8):
-        raise ValueError(f"unexpected header {tuple(b[5:14])}")
+        raise souls.UnknownVariant("lua header", tuple(b[5:14]))
     r = _R(b, 14)
     r.num()  # test number
     return _proto(r)
@@ -77,6 +77,8 @@ def _proto(r):
     f.k = []
     for _ in range(r.i32()):
         t = r.u8()
+        if t not in (0, 3, 4):  # Lua 5.0 constants: nil, number, string
+            raise souls.UnknownVariant("lua constant type", t)
         f.k.append(r.num() if t == 3 else r.str() if t == 4 else None)
     f.p = [_proto(r) for _ in range(r.i32())]
     f.code = [struct.unpack_from("<I", r.b, r.p + 4 * i)[0] for i in range(r.i32())]
