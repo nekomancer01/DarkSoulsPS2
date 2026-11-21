@@ -135,6 +135,28 @@ def step_inputs(step):
     return step["inputs"] if "inputs" in step else pack_inputs(step)
 
 
+EXPORTED = []  # the recipe's export list (make_rules sets it): environment every step's tool sees
+
+
+def step_cache_prefix(step, m):
+    """tools/stepcache.py's arguments before the tool (Polaris 3.2 part 2: the build cache's "step" namespace), or ""
+    for a step that is not cached: packs (cheap, and as large as their inputs), steps with a directory among their
+    maybe outputs (sound: its samples have their own cache) and cache = false. The wrapper hashes make's $^, the reads, the step's
+    environment and its command line, and stores out, side and the maybe files (absent ones as absent); see
+    tools/stepcache.py"""
+    maybe = as_list(step.get("maybe", []))
+    if step["tool"] == "pack.py" or step.get("cache") is False or \
+            any(isinstance(x, str) and x.endswith("/") for x in maybe):
+        return ""
+    outs = m.items(as_list(step["out"]) + as_list(step.get("side", [])) + maybe)
+    reads = m.items(step.get("reads", []))
+    envs = list(step.get("env", {})) + EXPORTED
+    if "env_line" in step:
+        envs.append(m.s(step["env_line"], quote_game=False))
+    name = m.s(step["name"], quote_game=False).replace("'", "")
+    return f"stepcache.py $(BUILD) '{name}' {outs} :: $^ :: {reads} :: {' '.join(envs)} :: ../../tools/"
+
+
 def make_command(step, m):
     mk = step.get("make", {})
     if "runner" in mk:
@@ -148,7 +170,7 @@ def make_command(step, m):
     args = list(step.get("args", []))
     if step["tool"] == "pack.py":
         args += step.get("entries", [])
-    words = [f"{runner} -I ../../tools/{step['tool']}", m.items(args)]
+    words = [f"{runner} -I ../../tools/{step_cache_prefix(step, m)}{step['tool']}", m.items(args)]
     env = " ".join(f"{k}='{m.s(v, quote_game=False)}'" for k, v in step.get("env", {}).items())
     cmd = " ".join(w for w in words if w)
     if env:
@@ -164,6 +186,8 @@ def make_command(step, m):
 def make_rules(r):
     """export_rules.mk: one rule per step (the shared, area, chr and world scopes all live in every make: the targets
     it builds are chosen by the hand-written goals in ps2/proto/Makefile)"""
+    EXPORTED[:] = r.get("export", [])
+    made = {x for st in r["step"] for x in as_list(st["out"]) + as_list(st.get("side", [])) if isinstance(x, str)}
     out = [HEADER, ""]
     for name, h in r.get("host", {}).items():
         var = name.upper()
@@ -180,8 +204,12 @@ def make_rules(r):
         target = m.s(mk["target"], True) if "target" in mk else None
         prereq = [m.items(step_inputs(step), True)] + tool_sums(step.get("tools", [])) + list(mk.get("deps", []))
         prereq = " ".join(p for p in prereq if p)
-        if mk.get("order_only"):
-            prereq += " | " + " ".join(mk["order_only"])
+        # reads another step makes come first (order only: not a reason to re-run), so a read is never missing or
+        # half-written while the step runs and the step cache's key sees the same reads every build
+        made_reads = [m.s(x, True) for x in as_list(step.get("reads", [])) if isinstance(x, str) and x in made]
+        order = list(mk.get("order_only", [])) + made_reads
+        if order:
+            prereq += " | " + " ".join(order)
         out.append(f"# {m.s(step['name'], quote_game=False).replace('c$*', 'c####')} ({step['scope']}): tools/{step['tool']}")
         for k, v in mk.get("vars", {}).items():
             out.append(f"{target or outs[0]}: {k} := {v}")

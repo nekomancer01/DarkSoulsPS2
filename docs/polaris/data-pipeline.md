@@ -210,6 +210,7 @@ output is the same bytes with the cache on or off.
 | `simplify` | Python simplifier jobs (`simplify_pool.py`, the fallback when libmapx is off) | `SIMPLIFY_CACHE`, cap `SIMPLIFY_CACHE_GB` (10) |
 | `snd` | one sound sample's ADPCM encode (`export_audio.py`) | `SND_CACHE` |
 | `tex` | one map texture's palette encode (`texmap.py`) | `TEX_CACHE` |
+| `step` | every recipe step but packs, whole (`stepcache.py`, below) | `STEPCACHE`, cap `STEPCACHE_GB` (12) |
 
 - **Location.** `<main tree>/build/cache/<namespace>/<key[:2]>/<key>`, shared by every worktree of the checkout.
   `DSR_CACHE` moves the root; a namespace switch set to a path moves that namespace.
@@ -220,9 +221,19 @@ output is the same bytes with the cache on or off.
   misses an input: the step stops with an error naming the namespace and key, also written to `<root>/verify.log`.
 - **Inspect.** `python3 tools/buildcache.py stats` (entries and size per namespace), `trim`, `clear <namespace>`.
 
-A new cached step builds a `buildcache.Cache(namespace, version, sources=..., extra=..., where=...)` with every file
-and environment value that changes its output, then calls `cache.cached(key, compute)`. Phase 3 part 2 wraps every
-recipe step this way.
+**Export steps.** The generated make rules (`tools/recipe.py make`) run every recipe step except the packs through
+`tools/stepcache.py`. Its key is make's prerequisites (`$^`: the step's inputs, the code stamps of its `tools`, the knob
+and area stamps), the bytes of its `reads`, its command line and environment (the recipe's `env` and `env_line`, the
+exported knobs, every registered switch that is set), with the build dir, the repo and the game folder written as
+placeholders, plus the game version (`tools/verify_game.py`; a copy that is not a supported version is never cached).
+A hit writes the step's `out` and `side` files and replays the tool's output; make then carries on as after a run, so
+the steps after it hit too. A fresh worktree or build dir with a warm cache rebuilds without running an exporter.
+Each step prints `stepcache: hit|miss|verified|off <name>`, and the progress view counts the hits. A step that reads a
+file it does not declare (in `inputs` or `reads`) can be restored stale: run a full build with
+`BUILDCACHE_VERIFY=1` after changing what a step reads.
+
+A new cached computation inside a tool builds a `buildcache.Cache(namespace, version, sources=..., extra=...,
+where=...)` with every file and environment value that changes its output, then calls `cache.cached(key, compute)`.
 
 ## Coverage scan and block reports
 

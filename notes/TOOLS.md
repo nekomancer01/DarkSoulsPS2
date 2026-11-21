@@ -47,6 +47,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `drawgroups.py` | dg.bin: DSR's draw groups for the runtime (`src/drawgrp.c`) |
 | `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
 | `buildcache.py` | Content-addressed build cache shared by the export steps (pvs, simplify, snd, tex namespaces under build/cache; BUILDCACHE=0 bypass, BUILDCACHE_VERIFY=1 recompute and compare, BUILDCACHE_GB cap); `python3 tools/buildcache.py stats` / `trim` / `clear <ns>` |
+| `stepcache.py` | Runs one export step of the generated make rules, or restores its outputs from the build cache's step namespace (key: prerequisites, reads, command line, environment, game version); STEPCACHE=0 runs the tools directly |
 | `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |
 | `blockreport.py` | Per-block report and budget gate (Polaris 3.6): triangles and bytes per level, hard tier vs room and residency.h (world_budget.py run unchanged), VRAM per gs_budget.h owner, script / effect coverage; `--strict` fails on a miss (BLOCKREPORT_STRICT=0 reports), `--check` compares with the build's world_budget.json |
 | `pano.py` | Far panorama for capture builds (render-distance variant A) |
