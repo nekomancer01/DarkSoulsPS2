@@ -458,7 +458,7 @@ scope = "area"
 tool = "export_enemies.py"
 args = ["{GAME}", "{A}/enemies.bin", "{MAP}"]
 out = ["{A}/enemies.bin"]
-tools = ["export_enemies.py", "souls.py", "havok_anim.py", "export_progress.py", "gamedata.py", "params.py"]
+tools = ["chunkfile.py", "export_enemies.py", "souls.py", "havok_anim.py", "export_progress.py", "gamedata.py", "params.py"]
 make = { deps = ["$(AREA_SIG)"] }
 
 # DSR's AI scripts (Lua 5.0 bytecode) re-packed for the lua0 VM: the map's own, and aiCommon in common.pak

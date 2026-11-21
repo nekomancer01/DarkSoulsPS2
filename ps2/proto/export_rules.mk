@@ -138,7 +138,7 @@ $(A)/evcommon.bin: $(A)/events.bin
 	@test -f $@ || { echo "$@ missing: re-export events.bin"; rm -f $<; exit 1; }
 
 # enemies (area): tools/export_enemies.py
-$(A)/enemies.bin: $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(TS)/export_progress.py.sum $(TS)/gamedata.py.sum $(TS)/params.py.sum $(AREA_SIG)
+$(A)/enemies.bin: $(TS)/chunkfile.py.sum $(TS)/export_enemies.py.sum $(TS)/souls.py.sum $(TS)/havok_anim.py.sum $(TS)/export_progress.py.sum $(TS)/gamedata.py.sum $(TS)/params.py.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	python3 -I ../../tools/export_enemies.py "$(GAME)" $(A)/enemies.bin $(MAP)
 
