@@ -46,6 +46,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pano.py bake` | The boot map's far backdrop as textured picture layers (pano.bin): the distant pieces horizon.py leaves out (pano_tris), rendered offline into 128 px tiles placed at the depth seen; `mapshot.py` previews them (`--no-pano` = before). The script / build modes are the older PS2-capture path |
 | `drawgroups.py` | dg.bin: DSR's draw groups for the runtime (`src/drawgrp.c`) |
 | `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
+| `buildcache.py` | Content-addressed build cache shared by the export steps (pvs, simplify, snd, tex namespaces under build/cache; BUILDCACHE=0 bypass, BUILDCACHE_VERIFY=1 recompute and compare, BUILDCACHE_GB cap); `python3 tools/buildcache.py stats` / `trim` / `clear <ns>` |
 | `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |
 | `blockreport.py` | Per-block report and budget gate (Polaris 3.6): triangles and bytes per level, hard tier vs room and residency.h (world_budget.py run unchanged), VRAM per gs_budget.h owner, script / effect coverage; `--strict` fails on a miss (BLOCKREPORT_STRICT=0 reports), `--check` compares with the build's world_budget.json |
 | `pano.py` | Far panorama for capture builds (render-distance variant A) |
