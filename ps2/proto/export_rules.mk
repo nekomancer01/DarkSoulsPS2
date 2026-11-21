@@ -218,7 +218,7 @@ $(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map
 # coverage scan (world): tools/scan/scan.py
 $(BUILD)/scan/files.json: src/lua0.c src/player.c src/enemy.c src/esd_env_move.c ../../tools/scan/known.tsv $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/scan/*.py)) $(TS)/souls.py.sum $(TS)/emevd.py.sum $(TS)/esd.py.sum $(TS)/ffx.py.sum $(TS)/havok_anim.py.sum $(TS)/havok_collision.py.sum $(TS)/havok_ragdoll.py.sum $(TS)/lua50.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/material.py.sum $(TS)/mapgather.py.sum $(TS)/export_emevd.py.sum $(TS)/export_effects.py.sum
 	@mkdir -p $(@D)
-	$(PY) -I ../../tools/scan/scan.py --game "$(GAME)" --out $(BUILD)/scan -j 4
+	$(PY) -I ../../tools/stepcache.py $(BUILD) 'coverage scan' $(BUILD)/scan/files.json $(BUILD)/scan/scan.json $(BUILD)/scan/summary.md :: $^ ::  :: BUMP_BAKE :: ../../tools/scan/scan.py --game "$(GAME)" --out $(BUILD)/scan -j 4
 $(BUILD)/scan/scan.json: $(BUILD)/scan/files.json
 	@test -f $@ || { echo "$@ missing: re-export files.json"; rm -f $<; exit 1; }
 $(BUILD)/scan/summary.md: $(BUILD)/scan/files.json

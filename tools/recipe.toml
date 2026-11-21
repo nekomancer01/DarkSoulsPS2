@@ -710,7 +710,6 @@ queue = 12
 args = ["--game", "{GAME}", "--out", "{BUILD}/scan", "-j", "4"]
 out = ["{BUILD}/scan/files.json"]
 side = ["{BUILD}/scan/scan.json", "{BUILD}/scan/summary.md"]
-cache = false  # scan.json differs run to run (reader timings, which file is each variant's example); per-file cache in build/scan
 inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "{TOOLS}/scan/known.tsv"]
 tools = ["scan/*.py", "souls.py", "emevd.py", "esd.py", "ffx.py", "havok_anim.py", "havok_collision.py",
          "havok_ragdoll.py", "lua50.py", "fev.py", "fsb4.py", "material.py", "mapgather.py", "export_emevd.py",

@@ -141,7 +141,7 @@ EXPORTED = []  # the recipe's export list (make_rules sets it): environment ever
 def step_cache_prefix(step, m):
     """tools/stepcache.py's arguments before the tool (Polaris 3.2 part 2: the build cache's "step" namespace), or ""
     for a step that is not cached: packs (cheap, and as large as their inputs), steps with a directory among their
-    maybe outputs (sound: its samples have their own cache) and cache = false (the coverage scan: not deterministic). The wrapper hashes make's $^, the reads, the step's
+    maybe outputs (sound: its samples have their own cache) and cache = false. The wrapper hashes make's $^, the reads, the step's
     environment and its command line, and stores out, side and the maybe files (absent ones as absent); see
     tools/stepcache.py"""
     maybe = as_list(step.get("maybe", []))
