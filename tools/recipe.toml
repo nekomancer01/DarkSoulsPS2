@@ -708,7 +708,7 @@ queue = 12
 args = ["--game", "{GAME}", "--out", "{BUILD}/scan", "-j", "4"]
 out = ["{BUILD}/scan/files.json"]
 side = ["{BUILD}/scan/scan.json", "{BUILD}/scan/summary.md"]
-inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "../../tools/scan/known.tsv"]
+inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "{TOOLS}/scan/known.tsv"]
 tools = ["scan/*.py", "souls.py", "emevd.py", "esd.py", "ffx.py", "havok_anim.py", "havok_collision.py",
          "havok_ragdoll.py", "lua50.py", "fev.py", "fsb4.py", "material.py", "mapgather.py", "export_emevd.py",
          "export_effects.py"]
@@ -732,8 +732,7 @@ inputs = ["{G}/world_budget.json", "{A}/map.bin", "{A}/hzn.bin", "{A}/far.bin", 
           "{A}/events.bin", "{A}/ai_map.lua0", "{A}/ai_common.lua0",
           { foreach = "PVS_WITH", as = "d", do = ["{d}/map.bin", "{d}/hzn.bin", "{d}/far.bin", "{d}/fx.bin",
                                                    "{d}/objects.bin", "{d}/events.bin", "{d}/ai_map.lua0"] },
-          "{SRC}/residency.h", "{SRC}/gs_budget.h", "{SRC}/lua0.c"]
-reads = ["{BUILD}/scan/files.json", { foreach = "PVS_PEERS", as = "d", do = ["{d}/cells.bin", "{d}/events.txt",
+          "{SRC}/residency.h", "{SRC}/gs_budget.h", "{SRC}/lua0.c", "{BUILD}/scan/files.json"]
+reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/cells.bin", "{d}/events.txt",
          "{d}/maptex.bin"] }]
 tools = ["blockreport.py", "world_budget.py", "residency.py", "gs_budget.py", "mapcfg.py", "lua50.py", "scan/support.py"]
-make = { order_only = ["$(BUILD)/scan/files.json"] }

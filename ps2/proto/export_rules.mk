@@ -225,7 +225,7 @@ $(BUILD)/scan/summary.md: $(BUILD)/scan/files.json
 	@test -f $@ || { echo "$@ missing: re-export files.json"; rm -f $<; exit 1; }
 
 # block report (world): tools/blockreport.py
-$(G)/blockreport.json: $(G)/world_budget.json $(A)/map.bin $(A)/hzn.bin $(A)/far.bin $(A)/fx.bin $(A)/objects.bin $(A)/events.bin $(A)/ai_map.lua0 $(A)/ai_common.lua0 $(foreach d,$(PVS_WITH),$(d)/map.bin $(d)/hzn.bin $(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0) src/residency.h src/gs_budget.h src/lua0.c $(TS)/blockreport.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum $(TS)/gs_budget.py.sum $(TS)/mapcfg.py.sum $(TS)/lua50.py.sum $(TS)/scan/support.py.sum | $(BUILD)/scan/files.json
+$(G)/blockreport.json: $(G)/world_budget.json $(A)/map.bin $(A)/hzn.bin $(A)/far.bin $(A)/fx.bin $(A)/objects.bin $(A)/events.bin $(A)/ai_map.lua0 $(A)/ai_common.lua0 $(foreach d,$(PVS_WITH),$(d)/map.bin $(d)/hzn.bin $(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0) src/residency.h src/gs_budget.h src/lua0.c $(BUILD)/scan/files.json $(TS)/blockreport.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum $(TS)/gs_budget.py.sum $(TS)/mapcfg.py.sum $(TS)/lua50.py.sum $(TS)/scan/support.py.sum
 	@mkdir -p $(@D)
 	MAP='$(MAP)' $(PY) -I ../../tools/blockreport.py $(G)/blockreport.json $(PVS_PEERS) --scan $(BUILD)/scan/files.json --check $(G)/world_budget.json --strict
 $(G)/blockreport.world_budget.json: $(G)/blockreport.json
