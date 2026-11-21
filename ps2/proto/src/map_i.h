@@ -1,4 +1,7 @@
-/* map.c and mapblock.c: shared types, state and helpers (not for other modules). */
+/* The map files' shared types, state and helpers (not for other modules): map.c (level drawing: load, the cells of
+ * each block, map_draw), mapblock.c (world blocks, horizon-only and far panorama), mapvis.c (visibility),
+ * maplight.c (fog and light state), mapchunk.c (chunk drawing, ZSPLIT), mappass.c (sky, fades, effects), maplog.c
+ * (timers and log lines); each part's own interface in its header. */
 #ifndef MAP_I_H
 #define MAP_I_H
 #include <kernel.h>
@@ -279,6 +282,7 @@ extern int map_vu1_batches, map_ee_tris;
 #endif
 
 extern MapInst mp_inst[MAP_INST];
+extern GSGLOBAL *mp_gs;  /* the GS context the map passes write state for (map_upload) */
 extern float mp_fog_now[FOG_NOW];
 extern int mp_fog_area;
 extern const FogRow *mp_pfog_row;

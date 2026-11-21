@@ -4,7 +4,7 @@
  *   INPUT     pad and test input, UI input (bonfire / Start menu), the camera's yaw and pitch
  *   SIM_A     the player (update, status, hit sweeps, fog-wall push), enemy type streaming, the camera
  *   WORLD     block streaming, the loading screen's close, sound, the player's floor and draw groups
- *             (map_set_player: what enemies and events read about visibility is final here)
+ *             (dg_player / map_set_floor: what enemies and events read about visibility is final here)
  *   EMIT_MAP  the map chain (Z clear, map, kick). It reads only the camera, the world / streamer state and the
  *             visibility result, all final before it starts. VU1 draws it while SIM_B runs on the EE
  *   SIM_B     enemies, objects, events, item pickup, bonfire. Nothing here reads a result EMIT_MAP produced (it runs

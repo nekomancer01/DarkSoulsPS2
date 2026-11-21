@@ -28,6 +28,7 @@ int dg_area(int k);
 /* Streaming: dg_tick(frame) every frame; dg_stream_shown 1 when a floor of the last ~20 s (the union of their shared
  * masks) shows instance k's chunk (always 1 outside the shared area group); dg_stream_gen changes with that union */
 void dg_tick(unsigned now);
+void dg_step(void);  /* dg_tick with this frame's number (frame.c, once a frame) */
 int dg_stream_shown(int k, unsigned chunk);
 unsigned dg_stream_gen(void);
 /* Chunk number in bump.bin's order (resident index, near chunks: flags >> 8): 1 = draw */
@@ -52,10 +53,10 @@ int dg_groups_shown(const unsigned m[4]);
 /* FNV-1a of what decides drawing and characters' activity (every instance's part in effect and shown pieces, the
  * shared and streaming masks): frame.c's trace records it, so a recording shows the draw-group state frame by frame */
 unsigned dg_state_hash(void);
-/* Once a frame (map.c map_set_player, after dg_tick and the streamer's update): the collision part under the player's
+/* Once a frame (frame.c, after dg_step and the streamer's update): the collision part under the player's
  * feet sets the shown draw groups (dg_floor; DG_SEAM: another map of the area group ahead or in view adds its part's;
  * the blocks outside the floor's group follow their own floor). Returns the map instance of the floor (-1: no floor,
- * or one in no instance) and its hit in *hit (map.c: the fog follows the same part). */
+ * or one in no instance) and its hit in *hit (map_set_floor: the fog follows the same part). */
 int dg_player(V3 feet, ColHit *hit);
 /* instances k and j are blocks of one map (world.c world_map; no world: the one map) */
 int dg_same_map(int j, int k);

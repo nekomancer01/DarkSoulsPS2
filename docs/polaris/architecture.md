@@ -17,7 +17,7 @@ Polaris is organised in layers. A layer may call only the layers below it. The s
 | 1 Core | `core` | memory regions, cvars, profiler, hitch monitor, logging, math | `mem.c`, `cvar.c`, `prof.c`, `hitch.c`, `vmath.c`, `ticks.h`, `aligncheck.c` |
 | 2 IO | `io` + IOP module | packs, async disc and host reads, the disc server, sound RPC | `pack.c`, `iop/dsrsnd/` |
 | 3 Graphics | `gfx` | order table, VU1 programs and contract, 2D writer, texture cache, relief, light passes | `ot.c`, `vu1.c`, `vu1_layout.h`, `g2d.c`, `render.c`, `texcache.c`, `bump.c`, `lpass.c`, `gstrace.c` |
-| 4 World | `world` | blocks, cells, level-of-detail chain, residency, PVS, draw groups, collision and navmesh | `world.c`, `wblock.c`, `wextra.c`, `wplan.c`, `map.c`, `mapblock.c`, `mapstream.c`, `msplan.c`, `msread.c`, `msevict.c`, `msarena.c`, `residency.h`, `pvs.c`, `drawgrp.c`, `collision.c`, `coltile.c`, `nav.c` |
+| 4 World | `world` | blocks, cells, level-of-detail chain, residency, PVS, draw groups, collision and navmesh | `world.c` (+ `wblock.c`, `wextra.c`, `wplan.c`), `map.c` (+ `mapvis.c`, `maplight.c`, `mapchunk.c`, `mappass.c`, `maplog.c`), `mapblock.c`, `mapstream.c` (+ `msplan.c`, `msread.c`, `msevict.c`), `msarena.c`, `residency.h`, `pvs.c`, `drawgrp.c`, `collision.c`, `coltile.c`, `nav.c` |
 | 5 Scene | `scene` | skinned models, poses, ragdolls | `model.c`, `ragdoll.c` |
 | 6 Game | `game` | DSR's managers: player, enemies, AI, ESD, EMEVD, combat, stats, status, items, flags, progress, objects, bonfire, save | `player.c`, `enemy.c`, `ai.c`, `lua0.c`, `esd.c`, `event.c`, `ev_*.c`, `combat.c`, `chrstat.c`, `status.c`, `items.c`, `flags.c`, `progress.c`, `objects.c`, `physics.c`, `pickup.c`, `npc.c`, `omit.c`, `bonfire.c`, `save.c`, `gamedata.c`, `camera.c` |
 | 7 Front end | `ui`, `snd`, `fx`, `cine` | HUD, DRB menus, loading screen, sound, effects | `hud.c`, `menu.c`, `drb.c`, `loading.c`, `sound.c`, `fx.c` |
@@ -87,7 +87,7 @@ The budget the regions are checked against: at least 1.5 MB of heap free at the 
 table starts transfers (VU1 chain kicks, the VU1 / PATH1 wait, the 2D chains, the flip).
 
 Buckets, in the order the GS should receive them: `SKY`, `PANO`, `HORIZON`, `WORLD` (one map segment covers all of
-these until step 4.1 splits `map.c`), `CHR`, `OBJ`, `ALPHA_TEST`, `BLEND`, `FX`, `POST` (far depth-of-field bands
+these until step 4.2 splits it into buckets), `CHR`, `OBJ`, `ALPHA_TEST`, `BLEND`, `FX`, `POST` (far depth-of-field bands
 and the flip), `UI`.
 
 Entry kinds:
@@ -110,7 +110,7 @@ which is where today's draw order and the bucket order still disagree (TECH_DEBT
 `src/gs.h` names every GS register value the engine writes: A+D register addresses (`GSR_*`), test, alpha, filter,
 clamp and TEXA words, FRAME / ZBUF builders, image-transfer headers and the display registers. Code outside `gs.h` /
 `gs.c` writes GS state through those names; `tools/ci/gsown.py` fails on a raw register macro or gsKit state call
-anywhere else. `map.c` keeps its own literals until it is split, and `gs.c` asserts they equal the named values.
+anywhere else. No file is exempt (the map files' hand-written words went through `gs.h` in step 4.1).
 
 VRAM is charged to an owner. `src/gs_budget.h` has one row per owner, in KB, and the rows plus slack sum to the GS's
 4096 KB:

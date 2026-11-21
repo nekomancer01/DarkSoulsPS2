@@ -1,6 +1,7 @@
 /* frame.c: the frame loop, one function per phase (frame.h has the phases and the rule). Moved from main.c as it was:
- * the same calls in the same order, except map_set_player, which moved from the start of the map pass to the end of
- * WORLD (it updates the draw groups enemies and events read; no packet depends on the order). */
+ * the same calls in the same order, except the player's world update (draw group tick, streamer, floor: map_set_player
+ * until Polaris 4.1, now called here), which moved from the start of the map pass to the end of WORLD (it updates the
+ * draw groups enemies and events read; no packet depends on the order). */
 #define NEWLIB_PORT_AWARE  /* fio calls (the trace recorder), as save.c */
 #include <math.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
+#include "mapstream.h"
 #include "chrlight.h"
 #include "shadow.h"
 #include "vu1.h"
@@ -364,7 +366,16 @@ static void phase_world(Frame *f)
     HITCH_END(snd, HS_SND);
     PROF_MARK(PROF_STREAM);  /* (the STREAM pass again: before the split this ran inside the MAP pass) */
     if (f->b->map_ok)  /* the floor's draw groups (enemies and events read them in SIM_B) and the streamer's update */
-        MEM_LEGACY(WORLD) map_set_player(f->pl->pos);
+        MEM_LEGACY(WORLD) {
+            const float p[3] = {f->pl->pos.x, f->pl->pos.y, f->pl->pos.z};
+            dg_step();             /* the recent floors' draw groups for streaming (drawgrp.c) */
+            mapstream_update(p);   /* every instance's near cells (src/mapstream.c) */
+            /* the shown draw groups follow the collision part under the player (dg_player: also DG_SEAM, and the
+             * blocks outside the floor's area group); the fog and the player's light follow the same part */
+            ColHit h = {0};
+            int k = dg_player(f->pl->pos, &h);
+            map_set_floor(f->pl->pos, k, h.block, h.tri);
+        }
 }
 
 static void phase_emit_map(Frame *f)

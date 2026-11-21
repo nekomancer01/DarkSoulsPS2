@@ -84,7 +84,7 @@ rm -f "$OUT"
     2>&1 | grep -v "^xorriso .* : RockRidge filesystem manipulator" | grep -v '^$' || true
 fi
 # Check what the BIOS can read: the root directory in one sector, file names with ;1 (other directories may take
-# several sectors: dsrsnd.c df_scan reads them all, the BIOS only opens the boot ELF in the root)
+# several sectors: disc.c df_scan reads them all, the BIOS only opens the boot ELF in the root)
 python3 -I - "$OUT" <<'PY'
 import struct, sys
 f = open(sys.argv[1], 'rb')

@@ -63,7 +63,7 @@ AREA_OBJS = $(O)/$(MAP)/main.o $(O)/$(MAP)/enemy.o
 endif
 A = $(AREA_SRC)
 
-EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msplan.o msread.o msevict.o msarena.o vu1.o vu1skin2.o vu1clip.o \
+EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapvis.o maplight.o mapchunk.o mappass.o maplog.o mapblock.o mapstream.o msplan.o msread.o msevict.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o trail.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o lpass.o world.o wblock.o wextra.o wplan.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o chunk.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
@@ -143,7 +143,7 @@ endif
 # After the PROFILE / GPROF lists: these objects have no source in src/.
 IRX_OBJS = $(O)/irx/dsrsnd_irx.o $(O)/irx/libsd_irx.o
 EE_OBJS += $(IRX_OBJS)
-$(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
+$(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/disc.c iop/dsrsnd/snd.c iop/dsrsnd/dsrsnd_i.h iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
 	@mkdir -p $(@D)
 	$(MAKE) --no-print-directory -C iop/dsrsnd IOP_OBJS_DIR=$(abspath $(@D))/ IOP_BIN=$(abspath $@) DSRSND_DEFS='$(DSRSND_DEFS)'
 $(O)/irx/libsd.irx: $(PS2SDK)/iop/irx/libsd.irx
@@ -169,7 +169,7 @@ PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.
 # each built by a sub-make, and data/world.pak with their table (tools/export_world.py). Only for the default map.
 WORLD_BLOCKS := $(if $(GAMEFREE)$(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
 ifneq ($(WORLD_BLOCKS),)
-PACKS += worldpacks $(D)/world.pak $(G)/world_budget.json $(BUILD)/scan/files.json $(G)/blockreport.json
+PACKS += worldpacks $(D)/world.pak $(G)/world_manifest.json $(G)/world_budget.json $(BUILD)/scan/files.json $(G)/blockreport.json
 endif
 WORLD_SPLIT = $(or $(BLOCK),$(WORLD_BLOCKS))
 
