@@ -10,6 +10,7 @@
 #include "g2d.h"
 #include "items.h"
 #include "loading.h"
+#include "chunk.h"
 #include "mem.h"
 #include "frame.h"
 #include "hitch.h"
@@ -33,14 +34,12 @@
 #define POST_FADE 0.5f
 #define FRAME_TICKS (294912000u / 30)  /* at most 30 fps, as the game */
 
+/* loading.bin: a chunk file 'LOAD' (tools/export_loading.py), read in place */
 typedef struct {
-    char magic[4];
-    u32 version;
     u16 aw, ah;
-    u32 clut_off, pix_off, nspr, spr_off, nnodes, node_off, glyph_off;
+    u32 nspr, nnodes, nanim, nhints, str_bytes;
     u16 font_h, line_h;
-    u32 nanim, anim_off, nhints, hint_off, str_bytes, str_off;
-} LdHeader;
+} LdHeader;  /* LHDR v1 */
 typedef struct { u16 u, v, w, h; u8 clut, pad; u16 pad2; } LdSprite;
 typedef struct { s16 x0, y0, x1, y1; u8 kind, align; s16 spr; u8 r, g, b, a; } LdNode;
 typedef struct { u16 u, v, w, h; s16 pre, adv; } LdGlyph;
@@ -55,7 +54,7 @@ static u32 disp_vram;
 static int depth, held, shown;
 static Pack lp;
 static int lp_open;
-static unsigned char *keep;  /* header .. strings of loading.bin while open */
+static unsigned char *keep;  /* loading.bin up to its CLUT chunk (header .. strings) while open */
 static unsigned keep_bytes;
 static const LdHeader *H;
 static const LdSprite *spr;
@@ -186,7 +185,7 @@ static int vram_place(void)
     return 1;
 }
 
-static int upload(const unsigned char *file)
+static int upload(const unsigned char *clut, const unsigned char *pix)
 {
     if (!vram_place()) {
         printf("loading: no VRAM for %u KB (VRAM pointer %u KB)\n", need >> 10, (unsigned)gs->CurrentPointer >> 10);
@@ -200,9 +199,9 @@ static int upload(const unsigned char *file)
         tex[i].Vram = base, tex[i].VramClut = clut_vram(i);
     }
     FlushCache(0);
-    tex_send(file + H->pix_off, H->aw, H->ah, base, GS_PSM_T8, H->aw / 64);
-    tex_send(file + H->clut_off, 16, 16, clut_vram(0), GS_PSM_CT32, 1);
-    tex_send(file + H->clut_off + 1024, 16, 16, clut_vram(1), GS_PSM_CT32, 1);
+    tex_send(pix, H->aw, H->ah, base, GS_PSM_T8, H->aw / 64);
+    tex_send(clut, 16, 16, clut_vram(0), GS_PSM_CT32, 1);
+    tex_send(clut + 1024, 16, 16, clut_vram(1), GS_PSM_CT32, 1);
     loading_stats.vram_kb = need >> 10;
     return 1;
 }
@@ -216,23 +215,37 @@ static int read_file(void)
     unsigned char *file = pack_load_with(&lp, "loading.bin", &size, ui_alloc, ui_free);
     if (!file)
         return 0;
-    const LdHeader *h = (const LdHeader *)file;
-    int ok = !memcmp(h->magic, "DSLD", 4) && h->version == 1 && h->pix_off + h->aw * h->ah <= size;
+    ChunkFile f;
+    unsigned ncl = 0, npx = 0, n[7];
+    const LdHeader *h = chunk_open(&f, file, size, CHUNK_ID('L', 'O', 'A', 'D'), "loading.bin") ?
+                        chunk_get(&f, CHUNK_ID('L', 'H', 'D', 'R'), 1, NULL) : NULL;
+    const unsigned char *clut = chunk_get(&f, CHUNK_ID('C', 'L', 'U', 'T'), 1, &ncl);
+    const unsigned char *pix = chunk_get(&f, CHUNK_ID('P', 'I', 'X', 'L'), 1, &npx);
+    int ok = h && clut && pix && ncl >= 2048 && npx >= (unsigned)h->aw * h->ah;
+    unsigned at = ok ? chunk_offset(&f, clut) : 0;
     if (ok && !keep) {
-        keep_bytes = (h->clut_off + 127) & ~127u;
+        keep_bytes = (at + 127) & ~127u;
         keep = ui_alloc(keep_bytes);
         if (keep)
-            memcpy(keep, file, h->clut_off);
+            memcpy(keep, file, at);
     }
     if (ok && keep) {
-        H = (const LdHeader *)keep;
-        spr = (const LdSprite *)(keep + H->spr_off);
-        nodes = (const LdNode *)(keep + H->node_off);
-        gly = (const LdGlyph *)(keep + H->glyph_off);
-        anim = (const u16 *)(keep + H->anim_off);
-        hints = (const LdHint *)(keep + H->hint_off);
-        strs = (const char *)(keep + H->str_off);
-        ok = upload(file);
+        ChunkFile t;  /* the same chunks, in the kept copy */
+        chunk_open_part(&t, keep, at, f.size, CHUNK_ID('L', 'O', 'A', 'D'), "loading.bin");
+        unsigned nh = 0;
+        H = chunk_get(&t, CHUNK_ID('L', 'H', 'D', 'R'), 1, &nh);
+        spr = chunk_get(&t, CHUNK_ID('S', 'P', 'R', 'T'), 1, &n[0]);
+        nodes = chunk_get(&t, CHUNK_ID('N', 'O', 'D', 'E'), 1, &n[1]);
+        gly = chunk_get(&t, CHUNK_ID('G', 'L', 'Y', 'P'), 1, &n[2]);
+        anim = chunk_get(&t, CHUNK_ID('A', 'N', 'I', 'M'), 1, &n[3]);
+        hints = chunk_get(&t, CHUNK_ID('H', 'I', 'N', 'T'), 1, &n[4]);
+        strs = chunk_get(&t, CHUNK_ID('S', 'T', 'R', 'S'), 1, &n[5]);
+        ok = H && spr && nodes && gly && anim && hints && strs && nh == sizeof *H && n[0] == H->nspr * sizeof *spr &&
+             n[1] == H->nnodes * sizeof *nodes && n[2] == 95 * sizeof *gly && n[3] == 2 * H->nanim &&
+             n[4] == H->nhints * sizeof *hints && n[5] == H->str_bytes && (!n[5] || !strs[n[5] - 1]);
+        if (!ok)
+            printf("TEST error: chunk: loading.bin: tables do not match LHDR\n");
+        ok = ok && upload(clut, pix);
     } else if (ok)
         printf("loading: no RAM for the tables\n");
     ui_free(file, (size + 127) & ~127u);

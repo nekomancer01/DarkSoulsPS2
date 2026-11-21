@@ -35,7 +35,7 @@ enum {
 typedef struct { int sprite; short x, y, w, h; unsigned char r, g, b, a; } HudRect;
 
 /* Parse menu.bin and upload its two atlases (194 KB VRAM); 0 on success, -1 bad data / VRAM full */
-int hud_init(GSGLOBAL *gs, const void *menu_bin);
+int hud_init(GSGLOBAL *gs, const void *menu_bin, unsigned size);
 /* In-game HUD for the player; souls / Estus charges from the progression state (progress.h) */
 void hud_draw(const Player *p, float dt);
 
@@ -73,7 +73,7 @@ void hud_button(float x, float y, float h, int btn, int a);
 void hud_prompt(float cx, float y, int btn, const char *text);
 /* menu.pak help.bin (kept): the one-line action prompts by Event_text id (export_menu.py --help); hud_help NULL if
  * missing. The HUD shows the prompt of the event action button in reach (event_stats.prompt, src/event.c). */
-void hud_help_init(const void *blob);
+void hud_help_init(const void *blob, unsigned size);
 const char *hud_help(int id);
 /* Begin / end a batch of HUD draws: alpha blending on, alpha and depth tests off (and back) */
 void hud_begin(void);

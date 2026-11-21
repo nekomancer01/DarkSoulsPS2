@@ -7,19 +7,16 @@ Item ids are DSR's: category in the top nibble (progress.h ITEM_*), the param ro
 reinforcement level in the last two digits (Dagger 100000, Dagger+3 100003, Crystal Dagger 100100): the param row is
 id - id % 100, ReinforceParamWeapon row reinforceTypeId + level.
 
-Output (little-endian), four files that tools/pack.py puts into menu.pak:
-  items.bin   resident (src/items.c, boot): what the inventory needs on a pickup
-      header  'DSIT', u32 version, u32 goods count, u32 goods offset, u32 ammo count, u32 ammo offset, u32 icon
-              count, u32 icon offset (0, 0 in older files)
-      goods   {u32 row; u16 maxNum; u8 goodsType; u8 flags} sorted by row  (flags: 1 isConsume, 2 isDrop,
+Output: four chunk files (tools/chunkfile.py; src/items.c reads them in place), little-endian, that tools/pack.py puts
+into menu.pak:
+  items.bin   'ITEM', resident (src/items.c, boot): what the inventory needs on a pickup
+      GOOD v1 {u32 row; u16 maxNum; u8 goodsType; u8 flags} sorted by row  (flags: 1 isConsume, 2 isDrop,
               4 isDeposit, 8 isOnlyOne, 16 isEquip)
-      ammo    {u32 weapon row; u16 stack max; u16 0} sorted by row (arrowSlotEquipable / boltSlotEquipable rows)
-      icons   {u32 item id (category | row); u16 icon id; u16 0} sorted by id: the HUD slots' icons (src/hud.c)
-  itemx.bin   loaded while a menu is open (src/items.c items_detail_load)
-      header  'DSIX', u32 version, u32 rows, u32 rows offset, u32 reinforce rows, u32 reinforce offset,
-              u32 names offset, u32 names bytes
-      row     72 B, sorted by id (category | param row; weapons at level 0):
-              u32 id, u32 sortId, u32 name offset (into names), u32 text offset (into desc.bin),
+      AMMO v1 {u32 weapon row; u16 stack max; u16 0} sorted by row (arrowSlotEquipable / boltSlotEquipable rows)
+      ICMP v1 {u32 item id (category | row); u16 icon id; u16 0} sorted by id: the HUD slots' icons (src/hud.c)
+  itemx.bin   'ITMX', loaded while a menu is open (src/items.c items_detail_load)
+      ROWS v1 72 B per row, sorted by id (category | param row; weapons at level 0):
+              u32 id, u32 sortId, u32 name offset (into NAME), u32 text offset (into desc.bin's TEXT),
               u16 help bytes, u16 description bytes, u16 icon id, u8 tab (TAB_*), u8 sub, u16 weight x100,
               u16 durabilityMax, u16 x0, u16 x1, u16 x2, u16 x3, s16 st[16], u32 x4
         weapon:     sub weaponCategory, x0 staminaGuardDef (stability), x1 slots (1 right, 2 left, 4 both,
@@ -38,14 +35,18 @@ Output (little-endian), four files that tools/pack.py puts into menu.pak:
                     maxQuantity, [9, 10] souls given on use (SpEffectParam.soul of refId, low / high 16 bits),
                     [11] SpEffectParam.heroPointDamage of refId (humanity lost on use: -1 Humanity, -2 Twin
                     Humanities, -5 Fire Keeper Soul, 99 Darksign), [12] HP healed on use (-changeHpPoint of refId)
-      reinforce {u32 row; u16 physicsAtkRate, magicAtkRate, fireAtkRate, thunderAtkRate, correctStrengthRate,
+      REIN v1 {u32 row; u16 physicsAtkRate, magicAtkRate, fireAtkRate, thunderAtkRate, correctStrengthRate,
               correctAgilityRate, correctMagicRate, correctFaithRate (all x1000)} sorted by row
-      names   NUL-terminated ASCII
-  desc.bin    stored raw (read in place per item): the help line then the long description of each row, ASCII,
-              each NUL-terminated (help bytes / description bytes include the NUL)
-  icons.bin   stored raw: header 'DSIC', u32 version, u32 count, u32 cell bytes, u32 cell size; u16 icon ids sorted
-              (count of them) padded to 64 B; then per icon at 64 + 64 x ceil(count / 32) + k x cell bytes: CLUT
-              (256 x RGBA, CSM1 order, alpha 0..0x80) then ICON x ICON PSMT8 pixels
+      NAME v1 NUL-terminated ASCII
+  desc.bin    'DESC', stored raw (read in place per item by offset)
+      TEXT v1 the help line then the long description of each row, ASCII, each NUL-terminated (help bytes /
+              description bytes include the NUL)
+  icons.bin   'ICON', stored raw (read by offset)
+      IHDR v1 u32 count, u32 cell bytes, u32 cell size (ICON), u32 0
+      IDS  v1 u16 icon ids sorted (count of them)
+      CELL v1 (64-byte aligned in the file) per icon, cell bytes each: CLUT (256 x RGBA, CSM1 order, alpha 0..0x80)
+              then ICON x ICON PSMT8 pixels
+(before Polaris 3.3: 'DSIT' / 'DSIX' / 'DSIC' blobs of the same sections behind their own headers; desc.bin plain)
 
 Tabs (the Inventory's eight, I01_tab_select order): 0 consumables, 1 materials, 2 key items, 3 spells, 4 weapons and
 shields, 5 ammunition, 6 armor, 7 rings.
@@ -54,12 +55,9 @@ import os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
+import chunkfile
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
-VERSION = 2  # 2: weapon x3 correctType, x4 saWeaponDamage / attack types (combat stats, src/chrstat.c)
-# icons.bin keeps its own version: its layout did not change with items.bin / itemx.bin v2 (sharing VERSION made it 2,
-# which src/items.c, expecting 1, read as "no icons": every item icon was missing from 7fefb2e on)
-ICON_VERSION = 1
 ICON = 48  # stored icon size: on screen DSR's 85 x 95 icon box is 42 x 59 PS2 pixels (I02 button_item_equip)
 TAB_CONSUME, TAB_MATERIAL, TAB_KEY, TAB_SPELL, TAB_WEAPON, TAB_AMMO, TAB_ARMOR, TAB_RING = range(8)
 CAT_WEAPON, CAT_PROTECTOR, CAT_ACCESSORY, CAT_GOODS = 0x00000000, 0x10000000, 0x20000000, 0x40000000
@@ -162,18 +160,13 @@ def build(game):
     goods = [(i, f) for i, (_, f) in sorted(P["EquipParamGoods"].items())]
     ammo = [(i, 99) for i, (_, f) in sorted(P["EquipParamWeapon"].items())
             if f["arrowSlotEquipable"] or f["boltSlotEquipable"]]  # ASSUMED (TECH_DEBT inv-2): DS1 stacks ammo to 99
-    hdr = 32
-    goods_off = hdr
-    ammo_off = goods_off + 8 * len(goods)
-    # the HUD's quick slots need each equipped item's icon while itemx.bin is not loaded: (id, icon) of every row, in
-    # the header's two spare words (older runtimes read 0, 0 there: no table)
+    # the HUD's quick slots need each equipped item's icon while itemx.bin is not loaded: (id, icon) of every row
     icon_tab = sorted((r[0], r[5] & 0xFFFF) for r in rows if 0 <= r[5] < 0xFFFF)
-    icon_off = ammo_off + 8 * len(ammo)
-    items = struct.pack("<4s7I", b"DSIT", VERSION, len(goods), goods_off, len(ammo), ammo_off, len(icon_tab), icon_off)
-    items += b"".join(struct.pack("<IHBB", i, min(f["maxNum"], 0xFFFF), f["goodsType"], goods_flags(f))
-                      for i, f in goods)
-    items += b"".join(struct.pack("<IHH", i, m, 0) for i, m in ammo)
-    items += b"".join(struct.pack("<IHH", i, ic, 0) for i, ic in icon_tab)
+    items = chunkfile.pack(b"ITEM", [
+        (b"GOOD", 1, b"".join(struct.pack("<IHBB", i, min(f["maxNum"], 0xFFFF), f["goodsType"], goods_flags(f))
+                              for i, f in goods)),
+        (b"AMMO", 1, b"".join(struct.pack("<IHH", i, m, 0) for i, m in ammo)),
+        (b"ICMP", 1, b"".join(struct.pack("<IHH", i, ic, 0) for i, ic in icon_tab))])
 
     # itemx.bin + desc.bin
     names, name_of = bytearray(), {}
@@ -198,12 +191,8 @@ def build(game):
         rein.append(struct.pack("<I8H", i, k("physicsAtkRate"), k("magicAtkRate"), k("fireAtkRate"),
                                 k("thunderAtkRate"), k("correctStrengthRate"), k("correctAgilityRate"),
                                 k("correctMagicRate"), k("correctFaithRate")))
-    hx = 32
-    rows_off = hx
-    rein_off = rows_off + len(body)
-    names_off = rein_off + 20 * len(rein)
-    itemx = struct.pack("<4s7I", b"DSIX", VERSION, len(rows), rows_off, len(rein), rein_off, names_off, len(names))
-    itemx += body + b"".join(rein) + names
+    itemx = chunkfile.pack(b"ITMX", [(b"ROWS", 1, body), (b"REIN", 1, b"".join(rein)), (b"NAME", 1, names)])
+    desc = chunkfile.pack(b"DESC", [(b"TEXT", 1, desc)])
     return P, rows, bytes(items), bytes(itemx), bytes(desc)
 
 
@@ -226,9 +215,9 @@ def icons(game, ids, preview=None):
         kept.append((i, img))
     n = len(kept)
     cell = 1024 + ICON * ICON
-    table = struct.pack(f"<{n}H", *[i for i, _ in kept])
-    table += b"\0" * ((-len(table)) % 64)
-    blob = struct.pack("<4s4I", b"DSIC", ICON_VERSION, n, cell, ICON) + b"\0" * (64 - 20) + table + b"".join(out)
+    blob = chunkfile.pack(b"ICON", [(b"IHDR", 1, struct.pack("<4I", n, cell, ICON, 0)),
+                                    (b"IDS ", 1, struct.pack(f"<{n}H", *[i for i, _ in kept])),
+                                    (b"CELL", 1, b"".join(out), 64)])
     if preview and kept:
         cols = 16
         sheet = Image.new("RGBA", (cols * ICON, ((n + cols - 1) // cols) * ICON), (40, 40, 40, 255))

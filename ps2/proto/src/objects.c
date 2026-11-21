@@ -160,14 +160,14 @@ typedef struct {
     unsigned modl_off;  /* MODL's payload offset in the file: model offsets are relative to it */
 } ObjFile;
 
-static int obj_open(ObjFile *o, const void *blob, int block)
+static int obj_open(ObjFile *o, const void *blob, unsigned size, int block)
 {
     ChunkFile f;
     char nm[32];
     unsigned n[8];
     memset(o, 0, sizeof *o);
     snprintf(nm, sizeof nm, "objects.bin (block %d)", block);
-    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('O', 'B', 'J', 'S'), nm))
+    if (!chunk_open(&f, blob, size, CHUNK_ID('O', 'B', 'J', 'S'), nm))
         return 0;
     o->h = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
     o->type = chunk_get(&f, CHUNK_ID('T', 'Y', 'P', 'E'), 1, &n[0]);
@@ -504,13 +504,13 @@ static void tset_share(int k)
             mdl_share_textures(types[j].model, tset[k].m);
 }
 
-int objects_init(GSGLOBAL *gs, const void *blob)
+int objects_init(GSGLOBAL *gs, const void *blob, unsigned size)
 {
     ObjFile o;
     ntypes = ninst = 0;
     memset(bodies, 0, sizeof bodies);
     memset(live_of, 0xFF, sizeof live_of);
-    if (!obj_open(&o, blob, 0))
+    if (!obj_open(&o, blob, size, 0))
         return 0;
     const ObjHeader *h = o.h;
     memset(tset, 0, sizeof tset);
@@ -596,10 +596,10 @@ static int load_block_type(int block, const ObjFile *o, const unsigned *t, int s
     return ntypes++;
 }
 
-int objects_block_types(GSGLOBAL *gs, int block, const void *blob)
+int objects_block_types(GSGLOBAL *gs, int block, const void *blob, unsigned size)
 {
     ObjFile o;
-    if (block <= 0 || block >= OBJ_BLOCKS || !obj_open(&o, blob, block))
+    if (block <= 0 || block >= OBJ_BLOCKS || !obj_open(&o, blob, size, block))
         return 0;
     const ObjHeader *h = o.h;
     obj_gs = gs;

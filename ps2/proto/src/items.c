@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "items.h"
 #include "pack.h"
+#include "chunk.h"
 
 typedef struct { u32 row; u16 max; u8 type, flags; } Goods;
 typedef struct { u32 row; u16 max, pad; } Ammo;
@@ -19,7 +20,8 @@ static const Goods *goods;
 static const Ammo *ammo;
 static int ngoods, nammo;
 static unsigned desc_off, icons_off, icons_size;
-static u16 *icon_ids;         /* icons.bin's id table */
+static unsigned char *icon_head; /* icons.bin's first bytes: its header and id table (icon_ids points into it) */
+static const u16 *icon_ids;   /* icons.bin's IDS chunk */
 static const u32 *icon_map;   /* items.bin: (u32 item id, u16 icon, u16 0) sorted by id */
 static int nicon_map;
 static int nicons, icon_bytes, icon_size, icons_data;
@@ -37,6 +39,19 @@ static int nx, nrein;
 
 static int reading;           /* the shared async slot (pack.c) carries this file's read */
 
+/* bytes [0, n) of a raw entry at offset off into dst (64-byte aligned, n a multiple of 64) */
+static int read_head(unsigned off, void *dst, unsigned n)
+{
+    int r = -1;
+    pack_async_wait();
+    if (pack_read_async(&mp, off, dst, n)) {
+        pack_async_wait();
+        pack_async_done(&r);
+        InvalidDCache(dst, (char *)dst + n - 1);
+    }
+    return r == (int)n;
+}
+
 int items_init(void)
 {
     if (!pack_open(&mp, PACK_ROOT "menu.pak")) {
@@ -44,45 +59,51 @@ int items_init(void)
         return 0;
     }
     mp_open = 1;
-    unsigned size;
+    unsigned size, n1, n2, n3;
     core = pack_load_static(&mp, "items.bin", &size);  /* boot lifetime (src/mem.h) */
-    const u32 *h = (const u32 *)core;
-    if (!core || size < 32 || memcmp(core, "DSIT", 4) || h[1] != 2 || h[3] + h[2] * 8 > size || h[5] + h[4] * 8 > size) {
+    ChunkFile f;  /* items.bin: chunk file 'ITEM' (tools/export_items.py), read in place */
+    if (chunk_open(&f, core, size, CHUNK_ID('I', 'T', 'E', 'M'), "items.bin")) {
+        goods = chunk_get(&f, CHUNK_ID('G', 'O', 'O', 'D'), 1, &n1);
+        ammo = chunk_get(&f, CHUNK_ID('A', 'M', 'M', 'O'), 1, &n2);
+        icon_map = chunk_get(&f, CHUNK_ID('I', 'C', 'M', 'P'), 1, &n3);
+    }
+    if (!core || !goods || !ammo || !icon_map) {
         printf("items: items.bin missing or bad\n");
         mem_release(core), core = 0;
+        goods = 0, ammo = 0, icon_map = 0;
         return 0;
     }
-    ngoods = h[2], goods = (const Goods *)(core + h[3]);
-    nammo = h[4], ammo = (const Ammo *)(core + h[5]);
-    if (h[6] && h[7] + h[6] * 8 <= size)  /* (id, icon) of every item: the HUD slots (older items.bin: none) */
-        nicon_map = h[6], icon_map = (const u32 *)(core + h[7]);
+    ngoods = n1 / sizeof(Goods), nammo = n2 / sizeof(Ammo), nicon_map = n3 / 8;
     unsigned dsize;
+    static u32 dh[16] __attribute__((aligned(64)));
     if (!pack_entry_raw(&mp, "desc.bin", &desc_off, &dsize))
         printf("items: desc.bin not stored raw\n");
+    else if (read_head(desc_off, dh, 64)) {  /* desc.bin 'DESC': the TEXT payload's offset; texts are read from it */
+        const void *t = chunk_open_part(&f, dh, 64, dsize, CHUNK_ID('D', 'E', 'S', 'C'), "desc.bin") ?
+                        chunk_get(&f, CHUNK_ID('T', 'E', 'X', 'T'), 1, NULL) : NULL;
+        desc_off = t ? desc_off + chunk_offset(&f, t) : 0;
+    } else
+        desc_off = 0;
     if (pack_entry_raw(&mp, "icons.bin", &icons_off, &icons_size)) {
+        /* icons.bin 'ICON': the header and IHDR first, then the head again with the IDS table and CELL's header */
         static u32 ih[16] __attribute__((aligned(64)));
-        int r = -1;
-        pack_async_wait();
-        if (pack_read_async(&mp, icons_off, ih, 64)) {
-            pack_async_wait();
-            pack_async_done(&r);
-            InvalidDCache(ih, (char *)ih + 63);
-        }
-        if (r == 64 && !memcmp(ih, "DSIC", 4) && ih[1] == 1) {
-            nicons = ih[2], icon_bytes = ih[3], icon_size = ih[4];
-            int tbytes = (nicons * 2 + 63) & ~63;
-            icons_data = 64 + tbytes;
-            icon_ids = memalign(64, tbytes);
-            r = -1;
-            if (icon_ids && pack_read_async(&mp, icons_off + 64, icon_ids, tbytes)) {
-                pack_async_wait();
-                pack_async_done(&r);
-                InvalidDCache(icon_ids, (char *)icon_ids + tbytes - 1);
-            }
-            if (r != tbytes)
-                nicons = 0;
+        const u32 *ihdr = NULL;
+        if (read_head(icons_off, ih, 64) && chunk_open_part(&f, ih, 64, icons_size, CHUNK_ID('I', 'C', 'O', 'N'), "icons.bin"))
+            ihdr = chunk_get(&f, CHUNK_ID('I', 'H', 'D', 'R'), 1, NULL);
+        unsigned hb = ihdr ? (64 + ihdr[0] * 2 + 64 + 63) & ~63u : 0, idb;
+        if (hb > icons_size)
+            hb = (icons_size + 63) & ~63u;
+        icon_head = hb ? memalign(64, hb) : NULL;
+        const void *cell;
+        if (icon_head && read_head(icons_off, icon_head, hb) &&
+            chunk_open_part(&f, icon_head, hb, icons_size, CHUNK_ID('I', 'C', 'O', 'N'), "icons.bin") &&
+            (icon_ids = chunk_get(&f, CHUNK_ID('I', 'D', 'S', ' '), 1, &idb)) &&
+            (cell = chunk_get(&f, CHUNK_ID('C', 'E', 'L', 'L'), 1, NULL)) && idb == 2 * ihdr[0]) {
+            nicons = ihdr[0], icon_bytes = ihdr[1], icon_size = ihdr[2];
+            icons_data = (int)chunk_offset(&f, cell);
         } else {  /* (a silent 0 here hid every item icon for a day: say why) */
-            printf("items: icons.bin header unreadable or version %u (want DSIC 1): no item icons\n", (unsigned)ih[1]);
+            printf("items: icons.bin unreadable: no item icons\n");
+            free(icon_head), icon_head = NULL, icon_ids = NULL, nicons = 0;
         }
     }
     printf("items: %d goods, %d ammo rows, %d icons (%d B each), resident %d B\n", ngoods, nammo, nicons, icon_bytes,
@@ -190,16 +211,19 @@ int items_detail_step(void *(*alloc)(unsigned), void (*release)(void *, unsigned
     if (r < 0)
         return xstate = -1;
     xbuf = xjob.out;
-    const u32 *h = (const u32 *)xbuf;
-    if (memcmp(xbuf, "DSIX", 4) || h[1] != 2 || h[3] + h[2] * sizeof(ItemRow) > xjob.raw ||
-        h[6] + h[7] > xjob.raw) {
+    ChunkFile f;  /* itemx.bin: chunk file 'ITMX', read in place */
+    unsigned n1, n2, n3;
+    if (chunk_open(&f, xbuf, xjob.raw, CHUNK_ID('I', 'T', 'M', 'X'), "itemx.bin")) {
+        xrows = chunk_get(&f, CHUNK_ID('R', 'O', 'W', 'S'), 1, &n1);
+        xrein = chunk_get(&f, CHUNK_ID('R', 'E', 'I', 'N'), 1, &n2);
+        xnames = chunk_get(&f, CHUNK_ID('N', 'A', 'M', 'E'), 1, &n3);
+    }
+    if (!xrows || !xrein || !xnames || n1 % sizeof(ItemRow)) {
         printf("items: itemx.bin bad\n");
-        release(xbuf, xalloc), xbuf = 0;
+        release(xbuf, xalloc), xbuf = 0, xrows = 0;
         return xstate = -1;
     }
-    nx = h[2], xrows = (const ItemRow *)(xbuf + h[3]);
-    nrein = h[4], xrein = (const ItemReinforce *)(xbuf + h[5]);
-    xnames = (const char *)(xbuf + h[6]);
+    nx = n1 / sizeof(ItemRow), nrein = n2 / sizeof(ItemReinforce);
     xstate = 2;
     return 1;
 }

@@ -3,7 +3,7 @@
 # tools/pages): the same sources and flags as the gcc builds in pack.py / souls.py / simplify_native.py, linked with
 # wasm-ld's dynamic-linking (dylink.0) format, so Pyodide's ctypes.CDLL loads them like the native .so files and
 # resolves memcpy / malloc / qsort from its own libc. Needs clang and wasm-ld (LLVM 17 or newer; Ubuntu: clang lld).
-# Usage: tools/native/build-wasm.sh <out dir>     -> <out dir>/lib{lz4pack,bcdecode,simplify,geom,mapx}.so
+# Usage: tools/native/build-wasm.sh <out dir>     -> <out dir>/lib{lz4pack,bcdecode,simplify,geom,nearest,hzerr,hzvis,meshopt,mapx}.so
 # libmapx (tools/mapx, the map exporter's C rewrite) is one module from all of tools/mapx/*.c, single-threaded.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -14,9 +14,11 @@ WASMLD=${WASMLD:-wasm-ld}
 RES=$("$CLANG" -print-resource-dir)/include
 "$WASMLD" --version
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for m in lz4pack bcdecode simplify geom; do
+for m in lz4pack bcdecode simplify geom nearest hzerr hzvis; do
     extra=
-    { [ $m = simplify ] || [ $m = geom ]; } && extra="-ffp-contract=off -fno-fast-math"  # as simplify_native.py: same collapses as simplify.py
+    # as simplify_native.py: same collapses as simplify.py; horizon.py _native builds nearest / hzerr / hzvis the same
+    # way (their OpenMP loops run serial here: the same values with any thread count)
+    case $m in simplify|geom|nearest|hzerr|hzvis) extra="-ffp-contract=off -fno-fast-math -Wno-source-uses-openmp" ;; esac
     # shellcheck disable=SC2086
     "$CLANG" --target=wasm32-unknown-emscripten -fPIC -O2 -fvisibility=default $extra -nostdinc -isystem "$RES" \
         -isystem "$HERE/wasm" -c "$HERE/$m.c" -o "$TMP/$m.o"
@@ -25,6 +27,19 @@ for m in lz4pack bcdecode simplify geom; do
     "$WASMLD" --experimental-pic -shared --export-dynamic --allow-undefined -o "$OUT/lib$m.so" "$TMP/$m.o"
     echo "$OUT/lib$m.so: $(wc -c < "$OUT/lib$m.so") B"
 done
+# meshoptimizer (tools/native/meshopt, C++; horizon.py _meshopt, export_objects.py): C++ without exceptions or RTTI,
+# its allocator's cache off (no <atomic> / thread_local), operator new / delete on Pyodide's malloc (wasm/cxxrt.cpp)
+mo=
+for f in "$HERE/meshopt/simplifier.cpp" "$HERE/meshopt/allocator.cpp" "$HERE/wasm/cxxrt.cpp"; do
+    o="$TMP/meshopt_$(basename "$f" .cpp).o"
+    "$CLANG" --target=wasm32-unknown-emscripten -x c++ -std=c++11 -fno-exceptions -fno-rtti -fPIC -O2 \
+        -fvisibility=default -ffp-contract=off -fno-fast-math -DMESHOPTIMIZER_ALLOC_NOCACHE -nostdinc -isystem "$RES" \
+        -isystem "$HERE/wasm" -c "$f" -o "$o"
+    mo="$mo $o"
+done
+# shellcheck disable=SC2086
+"$WASMLD" --experimental-pic -shared --export-dynamic --allow-undefined -o "$OUT/libmeshopt.so" $mo
+echo "$OUT/libmeshopt.so: $(wc -c < "$OUT/libmeshopt.so") B"
 MAPX=$HERE/../mapx
 objs=
 for f in "$MAPX"/*.c; do

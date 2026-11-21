@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "enemy.h"
+#include "chunk.h"
 #include "shadow.h"
 #include "cvar.h"
 #include "lpass.h" /* logic pass breakdown (Burg plan B6) */
@@ -977,12 +978,32 @@ static void place(ChrType *t, const unsigned char *r, int i, int block, int seed
 
 static int inited;  /* enemy_init ran (not with the test option noenemies): the VM / ESD exist */
 
-int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int map_lua_size)
+/* enemies.bin: a chunk file 'ENMY' (tools/export_enemies.py), read in place: PLAC (ENEMY_REC bytes per placement)
+ * and an optional NAV (src/nav.c). The placements (count in *n), NULL when the file is missing or refused. */
+static const unsigned char *placements_of(const void *blob, unsigned blob_size, int block, unsigned *n, const void **nav,
+                                          unsigned *nav_size)
+{
+    ChunkFile f;
+    char name[32];
+    snprintf(name, sizeof name, "enemies.bin (block %d)", block);
+    *n = 0, *nav = NULL, *nav_size = 0;
+    if (!chunk_open(&f, blob, blob_size, CHUNK_ID('E', 'N', 'M', 'Y'), name))
+        return NULL;
+    unsigned size;
+    const unsigned char *r = chunk_get(&f, CHUNK_ID('P', 'L', 'A', 'C'), 1, &size);
+    *nav = chunk_opt(&f, CHUNK_ID('N', 'A', 'V', ' '), 1, nav_size);
+    *n = r ? size / ENEMY_REC : 0;
+    return r;
+}
+
+int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, const void *map_lua, int map_lua_size)
 {
     gsg = gs;
     inited = 1;
-    const unsigned char *b = placements;
-    if (!b || memcmp(b, "DSRN", 4))
+    unsigned count, nav_size;
+    const void *nav;
+    const unsigned char *b = placements_of(placements, placements_size, 0, &count, &nav, &nav_size);
+    if (!b)
         return 0;
     Pack pk;
     void *eb = NULL, *lb = NULL;
@@ -998,9 +1019,8 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
     ai_scripts(lb, (int)lsize, map_lua, map_lua_size);
 #endif
     mem_release(lb);  /* the VM keeps its own copy of the code */
-    unsigned count = *(const unsigned *)(b + 4);
     for (unsigned i = 0; i < count && nenemies < MAX_ENEMIES; i++) {
-        const unsigned char *r = b + 8 + ENEMY_REC * i;
+        const unsigned char *r = b + ENEMY_REC * i;
         char name[9] = {0};
         memcpy(name, r, 8);
 #ifdef ENEMY_ONLY
@@ -1018,7 +1038,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
             continue;
         place(t, r, nenemies++, 0, i);
     }
-    int ntri = nav_load(0, b, 0);
+    int ntri = nav_load(0, nav, nav_size);
     /* every type starts unloaded; enemy_update loads the ones near the player */
     printf("enemy: %d characters of %d types, navmesh %d tris (%u B), RAM free %uK after unloading\n", nenemies,
            ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
@@ -1028,19 +1048,22 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
 static char blk_dir[ENEMY_BLOCKS][32];
 static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
 
-int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, const void *map_lua,
-                      int map_lua_size)
+int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
+                      const void *map_lua, int map_lua_size)
 {
-    const unsigned char *b = placements;
-    if (!inited || block <= 0 || block >= ENEMY_BLOCKS || !b || memcmp(b, "DSRN", 4))
+    unsigned count, nav_size;
+    const void *nav;
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS)
         return 0;
-    unsigned count = *(const unsigned *)(b + 4);
+    const unsigned char *b = placements_of(placements, placements_size, block, &count, &nav, &nav_size);
+    if (!b)
+        return 0;
     snprintf(blk_dir[block], sizeof blk_dir[block], "%s/", dir);
     free(blk_rec[block]);
     blk_rec[block] = malloc(count * ENEMY_REC + 1);
     blk_n[block] = 0;
     for (unsigned i = 0; blk_rec[block] && i < count && i < MAX_ENEMIES; i++) {
-        const unsigned char *r = b + 8 + ENEMY_REC * i;
+        const unsigned char *r = b + ENEMY_REC * i;
         char name[9] = {0};
         memcpy(name, r, 8);
         int npc, think;
@@ -1067,7 +1090,7 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     if (map_lua)
         ai_scripts_add(map_lua, map_lua_size);  /* the block's map logic functions join the one VM */
 #endif
-    int ntri = nav_load(block, b, 0);  /* kept for the session, as the placements */
+    int ntri = nav_load(block, nav, nav_size);  /* kept for the session, as the placements */
     printf("enemy: block %d: %d placements, %d types, navmesh %d tris (%u B all blocks), RAM free %uK\n", block,
            blk_n[block], ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
     return blk_n[block];

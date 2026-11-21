@@ -16,31 +16,32 @@ the HUD's (tools/export_menu.py font). The hint table is read from the user's ex
 build), names and descriptions from msg/ENGLISH/item.msgbnd (the *_name_ / *_long_desc_ FMGs), icon ids from the
 EquipParam banks: the icon pixels are icons.bin's (tools/export_items.py), read at run time.
 
-Output loading.bin (little-endian, version 1):
-  header  'DSLD', u32 version, u16 atlas w, h, u32 clut offset (2 x 1 KB CSM1 CLUTs, alpha 0..0x80), u32 pixel
-          offset (PSMT8), u32 sprites, sprite offset, u32 nodes, node offset, u32 glyph offset (95 glyphs, ASCII
-          32..126), u16 font line height, u16 text line height (the caption's rule spacing), u32 anim steps, anim
-          offset, u32 hints, hint offset, u32 string bytes, string offset; padded to 80
-  sprite  {u16 u, v, w, h; u8 clut; u8 0, u16 0}  12 B
-  node    {s16 x0, y0, x1, y1 (640x448); u8 kind; u8 align; s16 sprite; u8 r, g, b, a (a 0..0x80)}  16 B, in the
+Output loading.bin: a chunk file (tools/chunkfile.py, file id 'LOAD'; src/loading.c reads it in place), little-endian:
+  LHDR v1 u16 atlas w, h; u32 sprites, nodes, anim steps, hints, string bytes; u16 font line height, u16 text line
+          height (the caption's rule spacing)
+  SPRT v1 {u16 u, v, w, h; u8 clut; u8 0, u16 0}  12 B
+  NODE v1 {s16 x0, y0, x1, y1 (640x448); u8 kind; u8 align; s16 sprite; u8 r, g, b, a (a 0..0x80)}  16 B, in the
           DRB's draw order. kind 0 sprite, 1 rect, 2 hint name text, 3 hint caption text, 4 hint icon box,
           5 the animated bonfire (icon_soul1: sprite = the animation's first sprite)
-  glyph   {u16 u, v, w, h; s16 pre-space, advance}  12 B (CLUT 0)
-  anim    u16 sprite per step (100: soul_0..soul_99, the cell each step shows)
-  hint    {u32 item id; u16 icon id; u16 0; u32 name offset, u32 caption offset (into strings)}  16 B
-  strings NUL-terminated ASCII
+  GLYP v1 {u16 u, v, w, h; s16 pre-space, advance}  12 B (CLUT 0), 95 glyphs (ASCII 32..126)
+  ANIM v1 u16 sprite per step (100: soul_0..soul_99, the cell each step shows)
+  HINT v1 {u32 item id; u16 icon id; u16 0; u32 name offset, u32 caption offset (into STRS)}  16 B
+  STRS v1 NUL-terminated ASCII
+  CLUT v1 (128-byte aligned) 2 x 1 KB CSM1 CLUTs (alpha 0..0x80)
+  PIXL v1 (128-byte aligned) the atlas's PSMT8 pixels
+  The chunks before CLUT are what src/loading.c keeps (the atlas goes to VRAM).
+  (before Polaris 3.3: one 'DSLD' version 1 blob of the same tables behind an 80-byte header, offsets from its start)
 Usage: export_loading.py <game dir> <out.bin> [preview.png]"""
 import os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
 import resample
+import chunkfile
 import export_menu as em
 import export_screens as es
 import export_items
 
-VERSION = 1
-HDR = 80  # header bytes (68 used)
 BX, BY = 512 / 1280, 448 / 720  # frame-buffer pixels per DSR 720p pixel
 HINTS_VA, HINTS_N = 0x141A327D0, 62  # FUN_1406fec50: (idx + 1) % 0x3e over the u32 table at this .data address
 K_SPRITE, K_RECT, K_NAME, K_CAPTION, K_ICON, K_ANIM = range(6)
@@ -220,41 +221,20 @@ def main():
         sb += cap + b"\0"
         hint_rows.append((iid, icon, no, co))
 
-    blob = bytearray(HDR)
-
-    def align(n):
-        blob.extend(b"\0" * ((-len(blob)) % n))
-    spr_off = len(blob)
-    for s in sprites:
-        blob += struct.pack("<4HBBH", *s, 0, 0)
-    node_off = len(blob)
-    for n in body:
-        blob += struct.pack("<4hBBh4B", *n)
-    align(4)
-    glyph_off = len(blob)
-    for u, v, w, h, pre, adv in glyphs:
-        blob += struct.pack("<4H2h", u, v + fy, w, h, pre, adv)
-    anim_off = len(blob)
-    blob += struct.pack(f"<{len(anim)}H", *anim)
-    align(4)
-    hint_off = len(blob)
-    for h in hint_rows:
-        blob += struct.pack("<IHHII", h[0], h[1], 0, h[2], h[3])
-    str_off = len(blob)
-    blob += sb
-    align(128)
-    clut_off = len(blob)
-    blob += clut0 + clut1
-    pix_off = len(blob)
-    blob += pix
-    struct.pack_into("<4sI2H7I2H6I", blob, 0, b"DSLD", VERSION, aw, ah, clut_off, pix_off, len(sprites), spr_off,
-                     len(body), node_off, glyph_off, em.FONT_H, round(line_h), len(anim), anim_off,
-                     len(hint_rows), hint_off, len(sb), str_off)
-    with open(out, "wb") as f:
-        f.write(blob)
+    size = chunkfile.write(out, b"LOAD", [
+        (b"LHDR", 1, struct.pack("<2H5I2H", aw, ah, len(sprites), len(body), len(anim), len(hint_rows), len(sb),
+                                 em.FONT_H, round(line_h))),
+        (b"SPRT", 1, b"".join(struct.pack("<4HBBH", *s, 0, 0) for s in sprites)),
+        (b"NODE", 1, b"".join(struct.pack("<4hBBh4B", *n) for n in body)),
+        (b"GLYP", 1, b"".join(struct.pack("<4H2h", u, v + fy, w, h, pre, adv) for u, v, w, h, pre, adv in glyphs)),
+        (b"ANIM", 1, struct.pack(f"<{len(anim)}H", *anim)),
+        (b"HINT", 1, b"".join(struct.pack("<IHHII", h[0], h[1], 0, h[2], h[3]) for h in hint_rows)),
+        (b"STRS", 1, bytes(sb)),
+        (b"CLUT", 1, clut0 + clut1, 128),
+        (b"PIXL", 1, pix, 128)])
     print(f"loading: {len(body)} nodes, {len(sprites)} sprites ({len(anim_keys)} bonfire cells {want[anim_keys[0]]}), "
           f"atlas {aw}x{ah} ({(aw * ah + 2048) // 1024} KB VRAM), {len(hint_rows)} hints, line {line_h:.1f} px, "
-          f"{len(blob)} B")
+          f"{size} B")
     if preview:
         pv = Image.new("RGBA", (aw, ah), (40, 0, 40, 255))
         pv.alpha_composite(atlas[0])

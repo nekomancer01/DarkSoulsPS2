@@ -13,13 +13,13 @@
 /* Spawn every placement whose character pack exists (enemies.bin from the area pack, kept by the caller); loads the
  * character packs, enemyCommon's ESD and the AI scripts (aiCommon from common.pak + the area's map_lua, both lua0
  * packs; map_lua may be freed afterwards), uploads textures. Returns the number spawned. */
-int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int map_lua_size);
+int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, const void *map_lua, int map_lua_size);
 /* World blocks (src/world.c): at boot, block b's enemies.bin + map Lua (character packs from PACK_ROOT dir/) (types loaded and stripped, placements kept,
  * Lua run into the shared VM); enemy_block_add places them when the block turns on (before event_block_on), _remove
  * takes them out when it turns off (slots reused; an index is valid while its block is on) */
 #define ENEMY_BLOCKS 16  /* = WORLD_MAX (world.h) */
-int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, const void *map_lua,
-                      int map_lua_size);
+int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
+                      const void *map_lua, int map_lua_size);
 void enemy_block_add(int block);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */
