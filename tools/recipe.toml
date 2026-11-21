@@ -561,7 +561,7 @@ make = { deps = ["$(A)/splitenv"] }
 # The disc layout of the streamed near parts (Polaris 4.7, tools/discalign.py): cells.bin with every part on the drive's
 # 32 KB ECC blocks (none touches more blocks than its size needs: 31 % extra blocks read before), maptab.bin's cell table
 # pointing at the new places. The packs take these two; the export's own maptab.bin / cells.bin stay for the offline
-# tools. DISC_ALIGN=0: copies (the old layout).
+# tools. DISC_ALIGN=0: copies (the old layout). A changed DISC_ALIGN redoes the layout ($(A)/discenv).
 [[step]]
 name = "disc layout"
 scope = "area"
@@ -569,6 +569,7 @@ stage = "late"
 tool = "discalign.py"
 args = ["{A}/maptab.bin", "{A}/cells.bin", "{A}/maptab.disc.bin", "{A}/cells.disc.bin"]
 env = { DISC_ALIGN = "{DISC_ALIGN}" }
+make = { deps = ["$(A)/discenv"] }
 out = ["{A}/maptab.disc.bin"]
 maybe = ["{A}/cells.disc.bin"]
 inputs = ["{A}/maptab.bin"]

@@ -74,4 +74,4 @@ sleep "$T"
 WIN=$(DISPLAY=$D xwininfo -root -children 2>/dev/null | awk '/^ +0x/{split($0,a,"  ");print $1}' | while read w; do
     DISPLAY=$D xwininfo -id "$w" 2>/dev/null | awk -v w="$w" '/Width:/{x=$2}/Height:/{y=$2}END{print x*y, w}'; done | sort -n | tail -1 | cut -d' ' -f2)
 DISPLAY=$D import -window "${WIN:-root}" "$(realpath -m "$SHOT")"
-[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; }
+[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; [ -z "$PINE" ] || rm -f "/tmp/pcsx2-headless/slot.$PINE.inst"; }

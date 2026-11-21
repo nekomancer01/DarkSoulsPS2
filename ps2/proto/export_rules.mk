@@ -181,7 +181,7 @@ $(A)/maptab.bin $(A)/mapres.bin $(if $(TEX_PEERS),$(A)/maptex.bin) &: $(A)/map.b
 	MIP1_OUT='$(WORLD_MIP1_OUT)' TEX_PEERS='$(TEX_PEERS)' python3 -I ../../tools/stepcache.py $(BUILD) 'map split' $(A)/maptab.bin $(A)/mapres.bin $(if $(TEX_PEERS),$(A)/maptex.bin) :: $^ :: $(A)/cells.bin :: MIP1_OUT TEX_PEERS BUMP_BAKE :: ../../tools/mapsplit.py $(A)/map.bin $(A)/maptab.bin $(A)/mapres.bin $(A)/hzn.bin $(A)/maptex.bin
 
 # disc layout (area): tools/discalign.py
-$(A)/maptab.disc.bin: $(A)/maptab.bin $(TS)/discalign.py.sum
+$(A)/maptab.disc.bin: $(A)/maptab.bin $(TS)/discalign.py.sum $(A)/discenv
 	@mkdir -p $(@D)
 	DISC_ALIGN='$(DISC_ALIGN)' python3 -I ../../tools/stepcache.py $(BUILD) 'disc layout' $(A)/maptab.disc.bin $(A)/cells.disc.bin :: $^ :: $(A)/cells.bin :: DISC_ALIGN BUMP_BAKE :: ../../tools/discalign.py $(A)/maptab.bin $(A)/cells.bin $(A)/maptab.disc.bin $(A)/cells.disc.bin
 

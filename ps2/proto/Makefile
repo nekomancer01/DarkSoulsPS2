@@ -263,6 +263,12 @@ COL_TILES ?= 1
 # re-export: make distclean of the map exports, the switch is not in the export stamps).
 EE_CFLAGS += -DBUMP_BAKED=$(BUMP_BAKE)
 EE_CFLAGS += -DCOL_TILES=$(COL_TILES)
+# DISC_ALIGN (tools/recipe.toml): a changed value redoes the disc layout of the near parts (a new file starts old, so a
+# tree built before keeps its layout until the value changes)
+$(A)/discenv: FORCE
+	@mkdir -p $(@D)
+	@if [ ! -e $@ ]; then echo 'DISC_ALIGN=$(DISC_ALIGN)' > $@ && touch -d @0 $@; \
+	else echo 'DISC_ALIGN=$(DISC_ALIGN)' | cmp -s - $@ || echo 'DISC_ALIGN=$(DISC_ALIGN)' > $@; fi
 $(A)/splitenv: FORCE
 	@mkdir -p $(@D)
 	@if [ ! -e $@ ]; then echo 'MIP1_OUT=$(WORLD_MIP1_OUT) TEX=$(WORLD_TEX_SHARED)' > $@ && touch -d @0 $@; \
