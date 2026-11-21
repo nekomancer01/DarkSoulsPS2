@@ -13,17 +13,16 @@
 #include "drb.h"
 #include "items.h"
 #include "menu.h"
+#include "chunk.h"
 
 static void slots_init(void);  /* the HUD slots' icon textures (below) */
 
+/* menu.bin: a chunk file 'MENU' (tools/export_menu.py), read in place */
 typedef struct {
-    char magic[4];
-    unsigned version, atlases, sprites, glyphs, layout, strings;
-    unsigned atlas_off, sprite_off, glyph_off, layout_off, string_off;
+    unsigned atlases, sprites, glyphs, layout, strings, grads;  /* grads: GouraudRect corners (layout sprite -2 - k) */
     unsigned short font_h, icon0;
-    unsigned grads, grad_off;  /* version 2: GouraudRect corners (layout sprite -2 - k) */
-} MenuHeader;
-typedef struct { unsigned w, h, clut, pix; } AtlasEntry;
+} MenuHeader;  /* MHDR v1 */
+typedef struct { unsigned w, h, clut, pix; } AtlasEntry;  /* ATLS v1: clut / pix offsets into TEXL */
 typedef struct { unsigned short atlas, u, v, w, h, pad; } Sprite;
 typedef struct { unsigned short u, v, w, h; short pre, adv; } Glyph;
 typedef struct { short sprite, x, y, w, h; unsigned char r, g, b, a; } LayoutEntry;
@@ -36,8 +35,8 @@ typedef struct { short sprite, x, y, w, h; unsigned char r, g, b, a; } LayoutEnt
 #define HUD_Z 0xFFFF
 
 static GSGLOBAL *gs;
-static const unsigned char *mb;
 static const MenuHeader *hdr;
+static const unsigned char *strs;  /* STRS: u32 offset per string into itself, then the strings */
 static const Sprite *spr;
 static const Glyph *gly;
 static const unsigned char *grad;  /* 16 B per gradient: r, g, b, a of the top left, top right, bottom right, bottom left */
@@ -47,25 +46,34 @@ static int ok;
 static const char *fail = "MENU.PAK MISSING";  /* why hud_init failed, shown instead of the HUD */
 static float died_t;
 
-int hud_init(GSGLOBAL *g, const void *menu_bin)
+int hud_init(GSGLOBAL *g, const void *menu_bin, unsigned size)
 {
     gs = g;
     if (!menu_bin)
         return -1;
-    mb = menu_bin;
-    hdr = menu_bin;
     fail = "MENU.BIN BAD";
-    if (memcmp(hdr->magic, "DSMN", 4) || hdr->version != 2 || hdr->atlases != 2 || hdr->layout != HUD_LAYOUT_COUNT ||
-        hdr->strings != STR_COUNT)
+    ChunkFile f;
+    unsigned n[8];
+    if (!chunk_open(&f, menu_bin, size, CHUNK_ID('M', 'E', 'N', 'U'), "menu.bin"))
         return -1;
+    hdr = chunk_get(&f, CHUNK_ID('M', 'H', 'D', 'R'), 1, &n[0]);
+    const AtlasEntry *ae = chunk_get(&f, CHUNK_ID('A', 'T', 'L', 'S'), 1, &n[1]);
+    const unsigned char *texl = chunk_get(&f, CHUNK_ID('T', 'E', 'X', 'L'), 1, &n[2]);
+    spr = chunk_get(&f, CHUNK_ID('S', 'P', 'R', 'T'), 1, &n[3]);
+    gly = chunk_get(&f, CHUNK_ID('G', 'L', 'Y', 'P'), 1, &n[4]);
+    const LayoutEntry *le = chunk_get(&f, CHUNK_ID('L', 'A', 'Y', 'T'), 1, &n[5]);
+    grad = chunk_get(&f, CHUNK_ID('G', 'R', 'A', 'D'), 1, &n[6]);
+    strs = chunk_get(&f, CHUNK_ID('S', 'T', 'R', 'S'), 1, &n[7]);
+    if (!hdr || !ae || !texl || !spr || !gly || !le || !grad || !strs || n[0] != sizeof *hdr || hdr->atlases != 2 ||
+        hdr->glyphs < 95 || n[4] != hdr->glyphs * sizeof *gly || hdr->layout != HUD_LAYOUT_COUNT || hdr->strings != STR_COUNT || n[1] != 2 * sizeof *ae ||
+        n[3] != hdr->sprites * sizeof *spr || n[5] != hdr->layout * sizeof *le || n[6] != 16 * hdr->grads ||
+        n[7] < 4 * hdr->strings) {
+        hdr = NULL;
+        return -1;
+    }
     fail = "HUD VRAM FULL";
-    spr = (const Sprite *)(mb + hdr->sprite_off);
-    gly = (const Glyph *)(mb + hdr->glyph_off);
-    grad = mb + hdr->grad_off;
-    const LayoutEntry *le = (const LayoutEntry *)(mb + hdr->layout_off);
     for (int i = 0; i < HUD_LAYOUT_COUNT; i++)
         lay[i] = (HudRect){le[i].sprite, le[i].x, le[i].y, le[i].w, le[i].h, le[i].r, le[i].g, le[i].b, le[i].a};
-    const AtlasEntry *ae = (const AtlasEntry *)(mb + hdr->atlas_off);
     FlushCache(0);
     for (int i = 0; i < 2; i++) {
         GSTEXTURE *t = &atlas[i];
@@ -75,8 +83,8 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
         t->PSM = GS_PSM_T8;
         t->ClutPSM = GS_PSM_CT32;
         t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
-        t->Mem = (u32 *)(mb + ae[i].pix);
-        t->Clut = (u32 *)(mb + ae[i].clut);
+        t->Mem = (u32 *)(texl + ae[i].pix);
+        t->Clut = (u32 *)(texl + ae[i].clut);
         t->Filter = GS_FILTER_LINEAR;
         /* V6 block allocator; the CLUTs stay CT32 (V5 does not apply: HUD sprites and glyphs blend with soft alpha) */
         t->Vram = r_vram_tex(gs, t->Width, t->Height, t->PSM, GSO_UI);
@@ -96,10 +104,10 @@ const char *hud_string(int s)
 {
     if (!ok || s < 0 || s >= STR_COUNT)
         return "";
-    return (const char *)(mb + ((const unsigned *)(mb + hdr->string_off))[s]);
+    return (const char *)(strs + ((const unsigned *)strs)[s]);
 }
 
-int hud_icon(int kit) { return hdr->icon0 + kit; }
+int hud_icon(int kit) { return hdr ? hdr->icon0 + kit : -1; }
 int hud_line_height(void) { return ok ? hdr->font_h : 8; }
 
 static u64 rgba(int r, int g, int b, int a) { return GS_SETREG_RGBAQ(r, g, b, a, 0); }
@@ -244,22 +252,31 @@ float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, i
     return w;
 }
 
-static const u32 *help;
-void hud_help_init(const void *blob)
+static const u32 *help;      /* help.bin 'HELP' (tools/export_menu.py export_help): HIDX (id, offset into HTXT) */
+static const char *help_txt;
+static unsigned help_n;
+void hud_help_init(const void *blob, unsigned size)
 {
-    help = blob && !memcmp(blob, "DSHL", 4) ? blob : NULL;
+    ChunkFile f;
+    unsigned n = 0, nt = 0;
+    help = NULL;
+    if (chunk_open(&f, blob, size, CHUNK_ID('H', 'E', 'L', 'P'), "help.bin") &&
+        (help = chunk_get(&f, CHUNK_ID('H', 'I', 'D', 'X'), 1, &n)) &&
+        !(help_txt = chunk_get(&f, CHUNK_ID('H', 'T', 'X', 'T'), 1, &nt)))
+        help = NULL;
+    help_n = n / 8;
 }
 
 const char *hud_help(int id)
 {
     if (!help)
         return NULL;
-    int lo = 0, hi = (int)help[1] - 1;  /* rows sorted by id */
+    int lo = 0, hi = (int)help_n - 1;  /* rows sorted by id */
     while (lo <= hi) {
         int m = (lo + hi) / 2;
-        u32 k = help[2 + 2 * m];
+        u32 k = help[2 * m];
         if (k == (u32)id)
-            return (const char *)help + help[3 + 2 * m];
+            return help_txt + help[2 * m + 1];
         if (k < (u32)id)
             lo = m + 1;
         else

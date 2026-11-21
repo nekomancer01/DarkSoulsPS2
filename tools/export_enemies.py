@@ -1,16 +1,15 @@
 """Enemy placements of a map (MSB enemy parts, type 2) for the PS2 prototype: enemies.bin in the area pack.
 
-Layout (little-endian):
-  header  "DSRN", u32 count
-  entry   char model[8] ("c2900"), i32 npc param, i32 think param, i32 entity id, f32 x, y, z, yaw,
+Layout: a chunk file (tools/chunkfile.py, file id 'ENMY'; src/enemy.c, src/nav.c read it in place), little-endian:
+  PLAC v1 per placement: char model[8] ("c2900"), i32 npc param, i32 think param, i32 entity id, f32 x, y, z, yaw,
           u16 souls (NpcParam.getSoul), u8 humanity points (NpcParam.humanityLotId -> ItemLotParam: lotItemId01 x
           lotItemNum01; every humanity lot is one 100 % slot), u8 humanity zone (export_progress.zone_key of the
           PlayRegionID of the part's MSB collision, + 1; 0 none)                                             (40 B)
-  navmesh (after the entries; older runtimes stop at count): the map's MSB navmesh parts (type 8) placing the
+  NAV  v1 (optional: none when the area has no navmesh or too many triangles): the map's MSB navmesh parts (type 8) placing the
           map/<map>/<map>.nvmbnd NVM models, triangles within NAV_REACH of a non-c0000 placement and inside the area's
           region, vertices welded (NAV_WELD) so the parts connect, for enemy pathfinding (ps2/proto/src/nav.c)
-          "NAV1", u32 verts, tris, grid w, grid h, f32 origin x, y, z, f32 grid x0, z0 (low corner), f32 grid cell
-          (m), u32 list entries                                                                              (48 B)
+          u32 verts, tris, grid w, grid h, f32 origin x, y, z, f32 grid x0, z0 (low corner), f32 grid cell (m),
+          u32 list entries                                                                                   (44 B)
           vert   i16 x, y, z: (position - origin) * NAV_Q                                                  (6 B)
           tri    u16 v[3], u16 nbr[3] (triangle across edge v[i] -> v[i+1], 0xFFFF none)                  (12 B)
           grid   u16 start[w * h + 1] into list, u16 list[] (the triangles whose x/z box meets the cell), padded
@@ -19,7 +18,8 @@ Layout (little-endian):
 yaw: radians in the game's convention (forward = (sin yaw, 0, cos yaw)) = MSB rot.y + pi, as the map's player spawn.
 MSB enemy fields (think_id, npc_id, entity_id) come from souls.msb1. c0000 parts (human NPCs and phantoms) come after
 the others, inside the area's region and not counted against the roster limit: the runtime places them as stand-ins
-(ps2/proto/src/npc.c, TECH_DEBT enemy-14); older runtimes skip them (no c0000 chr.bin).
+(ps2/proto/src/npc.c, TECH_DEBT enemy-14).
+(Before Polaris 3.3: one "DSRN" blob, u32 count, the placements, then the navmesh with a "NAV1" tag.)
 Usage: export_enemies.py <game dir> <out.bin> <map id>      (only the parts inside the area's region, tools/area.py)
        export_enemies.py --models <game dir> <map id>      (prints the area's enemy types)"""
 import math, os, struct, sys
@@ -29,6 +29,7 @@ import souls
 import area
 import havok_anim as ha
 import params
+import chunkfile
 from export_progress import zone_key  # zones: export_progress.py's docstring
 
 # enemy_parts / npc_parts / MAX_ENEMIES live in area.py (per-area selection), so export_chr.py and lua50.py do not
@@ -109,7 +110,7 @@ def nav_blob(verts, tris):
     for c in cells:
         lst += c
         starts.append(len(lst))
-    head = struct.pack("<4s4I6fI", b"NAV1", len(verts), len(tris), gw, gh, *org, lo[0], lo[2], NAV_CELL, len(lst))
+    head = struct.pack("<4I6fI", len(verts), len(tris), gw, gh, *org, lo[0], lo[2], NAV_CELL, len(lst))
     body = b"".join(struct.pack("<3h", *v) for v in qv)
     if len(lst) > 0xFFFF:
         return b""
@@ -136,18 +137,17 @@ def main():
     coll = {(p["model"], p["npc_id"], p["think_id"], p["entity_id"], tuple(p["pos"])): p["collision"]
             for p in M["parts"] if p["type"] == 2}
     kills = []
-    with open(out, "wb") as f:
-        f.write(struct.pack("<4sI", b"DSRN", len(rows)))
-        for model, npc, think, ent, pos, rot in rows:
-            n = NP[npc] if npc in NP else None
-            lot = LOT[n["humanityLotId"]] if n and n["humanityLotId"] in LOT else None
-            hum = min(255, max(0, lot["lotItemId01"] * lot["lotItemNum01"])) if lot else 0
-            zone = zone_key(region.get(coll.get((model, npc, think, ent, tuple(pos))), -1)) + 1
-            souls_ = min(0xFFFF, max(0, n["getSoul"])) if n else 0
-            kills.append((souls_, hum, zone))
-            f.write(struct.pack("<8s3i4fHBB", model.encode(), npc, think, ent, *pos, math.radians(rot[1]) + math.pi,
-                                souls_, hum, zone))
-        f.write(nav)
+    plac = bytearray()
+    for model, npc, think, ent, pos, rot in rows:
+        n = NP[npc] if npc in NP else None
+        lot = LOT[n["humanityLotId"]] if n and n["humanityLotId"] in LOT else None
+        hum = min(255, max(0, lot["lotItemId01"] * lot["lotItemNum01"])) if lot else 0
+        zone = zone_key(region.get(coll.get((model, npc, think, ent, tuple(pos))), -1)) + 1
+        souls_ = min(0xFFFF, max(0, n["getSoul"])) if n else 0
+        kills.append((souls_, hum, zone))
+        plac += struct.pack("<8s3i4fHBB", model.encode(), npc, think, ent, *pos, math.radians(rot[1]) + math.pi,
+                            souls_, hum, zone)
+    chunkfile.write(out, b"ENMY", [(b"PLAC", 1, plac)] + ([(b"NAV ", 1, nav)] if nav else []))
     models = sorted({r[0] for r in rows if r[0] != "c0000"})
     nnpc = sum(r[0] == "c0000" for r in rows)
     print(f"{map_id}: {len(rows) - nnpc} enemies + {nnpc} c0000 NPCs, models {models}; navmesh {len(verts)} verts "

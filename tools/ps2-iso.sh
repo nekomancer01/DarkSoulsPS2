@@ -20,7 +20,7 @@ XORRISO=${XORRISO:-$(command -v xorriso || echo "$HOME/tools/xorriso/bin/xorriso
 STRIP=${STRIP:-mips64r5900el-ps2-elf-strip}
 [ -f "$ELF" ] && [ -d "$DATA" ] || { echo "usage: $0 <elf> <data dir> <out.iso> [boot id]" >&2; exit 1; }
 [[ $ID =~ ^[A-Z]{4}_[0-9]{3}\.[0-9]{2}$ ]] || { echo "boot id must look like ABCD_123.45" >&2; exit 1; }
-STAGE=$(mktemp -d "${TMPDIR:-/tmp}/ps2iso.XXXXXX"); trap 'rm -rf "$STAGE"' EXIT
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/ps2iso.XXXXXX"); ORDER=$STAGE.order; trap 'rm -rf "$STAGE" "$ORDER"' EXIT
 iso_name() {  # one path component -> ISO9660 level 1 name (same rule as pack.c)
     local b=${1%%.*} e=; [[ $1 == *.* ]] && e=.${1#*.}
     b=$(tr -d _ <<<"$b" | tr a-z A-Z); e=$(tr a-z A-Z <<<"$e")
@@ -39,51 +39,13 @@ fi
 if [ "${ISO_WRITER:-}" = xorriso ]; then
 WEIGHTS=(-find /SYSTEM.CNF -exec sort_weight 100000 -- -find "/$ID" -exec sort_weight 99999 --)
 mkdir -p "$STAGE/DATA"
-w=90000
-while IFS= read -r f; do
-    rel=${f#$DATA/}; dst=DATA
-    IFS=/ read -ra parts <<<"$rel"
-    for p in "${parts[@]}"; do dst=$dst/$(iso_name "$p"); done
-    [ -e "$STAGE/$dst" ] && { echo "ISO name clash: $rel -> $dst" >&2; exit 1; }
-    mkdir -p "$(dirname "$STAGE/$dst")"; cp "$f" "$STAGE/$dst"
-    WEIGHTS+=(-find "/$dst" -exec sort_weight $w --); w=$((w - 1))
-    echo "  $rel -> $dst ($(stat -c %s "$f") B)"
-done < <(python3 -I - "$DATA" <<'PY'
-import os, struct, sys
+python3 -I - "$DATA" "$(dirname "$(realpath "$0")")" >"$ORDER" <<'PY'
+import os, sys
 data = sys.argv[1]
-def lz4(src, n):  # LZ4 block format (tools/pack.py entries)
-    out, i = bytearray(), 0
-    while i < len(src):
-        t = src[i]; i += 1
-        l = t >> 4
-        if l == 15:
-            while True:
-                b = src[i]; i += 1; l += b
-                if b != 255: break
-        out += src[i:i + l]; i += l
-        if i >= len(src): break
-        off = src[i] | src[i + 1] << 8; i += 2
-        m = t & 15
-        if m == 15:
-            while True:
-                b = src[i]; i += 1; m += b
-                if b != 255: break
-        for _ in range(m + 4): out.append(out[-off])
-    return bytes(out[:n])
-def world_blocks():  # data/world.pak (tools/export_world.py world.bin): [(pack name, neighbour mask)], boot first
-    try:
-        d = open(os.path.join(data, 'world.pak'), 'rb').read()
-    except OSError:
-        return []
-    off, raw, _, blocks, bs = struct.unpack_from('<5I', d, 16 + 32)
-    cs, p, w = struct.unpack_from(f'<{blocks}I', d, off), off + 4 * blocks, b''
-    for c in cs:
-        k = c & 0x7fffffff
-        w += d[p:p + k] if c >> 31 else lz4(d[p:p + k], min(bs, raw - len(w))); p += k
-    assert w[:4] == b'DSW1', 'world.pak: no world.bin'
-    fmt = '<24s16s4f2I' if struct.unpack_from('<I', w, 4)[0] == 2 else '<16s16s6f2I'  # version 3: height range
-    rows = [struct.unpack_from(fmt, w, 16 + 64 * i) for i in range(struct.unpack_from('<I', w, 8)[0])]
-    return [(r[0].rstrip(b'\0').decode(), r[-2] & 1, r[-1]) for r in rows]
+sys.path.insert(0, sys.argv[2])
+from iso9660 import _world_blocks  # the default writer's reader (world.bin is a chunk file since Polaris 3.3)
+def world_blocks():  # data/world.pak (tools/export_world.py world.bin): [(pack name, boot flag, neighbour mask)]
+    return _world_blocks(data)
 paks = sorted(os.path.relpath(os.path.join(r, f), data) for r, _, fs in os.walk(data) for f in fs if f.endswith('.pak'))
 top = [p for p in paks if '/' not in p]
 order = [p for p in ('menu.pak', 'world.pak', 'common.pak', 'c0000.pak') if p in top]
@@ -106,7 +68,16 @@ for p in paks:  # other areas (single-area builds' packs), each with its directo
 order += [p for p in paks if p not in order]
 print('\n'.join(os.path.join(data, p) for p in order))
 PY
-)
+w=90000
+while IFS= read -r f; do
+    rel=${f#$DATA/}; dst=DATA
+    IFS=/ read -ra parts <<<"$rel"
+    for p in "${parts[@]}"; do dst=$dst/$(iso_name "$p"); done
+    [ -e "$STAGE/$dst" ] && { echo "ISO name clash: $rel -> $dst" >&2; exit 1; }
+    mkdir -p "$(dirname "$STAGE/$dst")"; cp "$f" "$STAGE/$dst"
+    WEIGHTS+=(-find "/$dst" -exec sort_weight $w --); w=$((w - 1))
+    echo "  $rel -> $dst ($(stat -c %s "$f") B)"
+done < "$ORDER"
 rm -f "$OUT"
 "$XORRISO" -report_about WARNING -outdev "$OUT" -rockridge off -joliet off -compliance iso_9660_level=1 \
     -volid DSRPS2 -system_id PLAYSTATION -application_id "DSR PS2 PROTO" -map "$STAGE" / "${WEIGHTS[@]}" -commit \

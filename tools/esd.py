@@ -61,6 +61,7 @@ def expr(b):
         elif o == 0xA1:
             pass
         else:
+            souls.skipped("esd expression op", f"{o:#04x}")
             st.append(f"?{o:02x}")
         i += 1
     return " ; ".join(st)
@@ -68,7 +69,8 @@ def expr(b):
 
 class ESD:
     def __init__(self, b):
-        assert b[:4] == b"fsSL", "only long-format (DSR) ESD"
+        if b[:4] != b"fsSL":
+            raise souls.UnknownVariant("esd format", b[:4].decode("latin1"), "only long-format (DSR) ESD")
         self.b = b
         n_groups = struct.unpack_from("<i", b, 0x28)[0]
         n_states, n_conds = struct.unpack_from("<i", b, 0x30)[0], struct.unpack_from("<i", b, 0x38)[0]

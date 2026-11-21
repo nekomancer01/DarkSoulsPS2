@@ -13,8 +13,8 @@
 /* blob: dg.bin of instance k (kept loaded); chunks: bump.bin's global chunk count it must cover, col_tris: that block's
  * collision.bin triangles. Returns 1 when the filter is on; without a matching blob every chunk stays shown.
  * dg_init(...) = dg_block_init(0, ...): the boot area (main.c). */
-int dg_init(const void *blob, unsigned chunks, unsigned col_tris);
-int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris);
+int dg_init(const void *blob, unsigned size, unsigned chunks, unsigned col_tris);
+int dg_block_init(int k, const void *blob, unsigned size, unsigned chunks, unsigned col_tris);
 /* Block k turned off: its set is forgotten (all shown when it comes back, until the player's floor in it is known) */
 void dg_block_drop(int k);
 /* Triangle of instance k's collision under the player (col_floor hit): its part's draw groups become k's shown set,

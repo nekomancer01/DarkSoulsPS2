@@ -6,9 +6,9 @@
 
 #define NAV_BLOCKS 16  /* = ENEMY_BLOCKS (enemy.h) */
 
-/* enemies.bin of world block `block` (0 = the boot area; size 0 = unknown): copies its navmesh section, if any, into
- * an own block (the caller may free the blob). Returns the number of triangles (0: none, enemies walk straight). */
-int nav_load(int block, const void *enemies_bin, unsigned size);
+/* the NAV chunk of world block `block`'s enemies.bin (0 = the boot area; nav NULL: none): copies the navmesh into an
+ * own block (the caller may free the blob). Returns the number of triangles (0: none, enemies walk straight). */
+int nav_load(int block, const void *nav, unsigned size);
 void nav_free(int block);
 /* Navmesh bytes held (RAM report) */
 unsigned nav_bytes(void);

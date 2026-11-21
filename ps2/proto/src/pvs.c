@@ -27,7 +27,7 @@ typedef struct {
 static Pvs pv[PVS_INST];
 static unsigned gen[PVS_INST];  /* per instance: a crossing in one block's camera grid re-checks only its items */
 
-int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries)
+int pvs_block_init(int k, const void *blob, unsigned size, unsigned chunks, unsigned entries)
 {
     if (k < 0 || k >= PVS_INST)
         return 0;
@@ -37,14 +37,14 @@ int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries)
     p->key = ~0u;
     gen[k]++;
 #ifdef NO_PVS
-    (void)blob, (void)chunks, (void)entries;
+    (void)blob, (void)size, (void)chunks, (void)entries;
     return 0;
 #else
     ChunkFile f;
     char name[24];
     unsigned sz[7];
     snprintf(name, sizeof name, "pvs.bin (block %d)", k);
-    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('P', 'V', 'S', ' '), name))
+    if (!chunk_open(&f, blob, size, CHUNK_ID('P', 'V', 'S', ' '), name))
         return 0;
     const unsigned *h = chunk_get(&f, CHUNK_ID('P', 'H', 'D', 'R'), 1, &sz[0]);
     if (!h || sz[0] < 28 || !h[3])  /* no camera cells: everything drawn */

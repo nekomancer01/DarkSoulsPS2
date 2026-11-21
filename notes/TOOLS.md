@@ -28,6 +28,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `fev.py`, `fsb4.py` | FMOD event projects (FEV1), sample banks (FSB4) |
 | `ffx.py` | DSR effects (FXR1 in sfx/*.ffxbnd): nodes, states, actions, particle data, curves; `--check` |
 | `xcheck.py` | Cross-check of the readers against soulstruct |
+| `scan/scan.py` | Coverage scan (Polaris 3.4): every reader over every game file (per-file cache in build/scan), variants per kind with status ok / unported / unknown; fails on an unknown not in `scan/known.tsv` (rows point at TECH_DEBT). Readers raise `souls.UnknownVariant`; `SOULS_STRICT=1` makes their silent skips raise too |
 
 ## Exporters (game files -> PS2 data)
 | Tool | Output |
@@ -46,6 +47,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `drawgroups.py` | dg.bin: DSR's draw groups for the runtime (`src/drawgrp.c`) |
 | `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
 | `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |
+| `blockreport.py` | Per-block report and budget gate (Polaris 3.6): triangles and bytes per level, hard tier vs room and residency.h (world_budget.py run unchanged), VRAM per gs_budget.h owner, script / effect coverage; `--strict` fails on a miss (BLOCKREPORT_STRICT=0 reports), `--check` compares with the build's world_budget.json |
 | `pano.py` | Far panorama for capture builds (render-distance variant A) |
 | `navwalls.py` | Walls of one collision part that seal a doorway another part leaves open (navmesh crosses them onto another part's floor); export_collision.py drops them (NAVWALLS=0 keeps them). `navwalls.py <map>` lists them |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
@@ -153,7 +155,8 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/memwatch.py` | Host memory watchdog (memwatch.service): under memory pressure (PSI, disk swap-ins; zram and page cache don't count) pauses, then kills, the largest job of its own checkout (plus folder names in `DSR_MEMWATCH_TREES`), never other apps; state in `/tmp/memwatch.json` |
 | `tools/py` | Runs the exporters' Python (Pillow + numpy) |
 | `tools/techdebt-site/build.py` | Builds the tech-debt web page |
-| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Mirrors the Makefile's recipes: change it with them. `--lean` removes each intermediate once no later step needs it (the browser's run) |
+| `tools/recipe.py` | The export recipe (tools/recipe.toml: every export step's tool, arguments, environment, inputs, outputs, knobs). `make` regenerates ps2/proto/export_vars.mk + export_rules.mk after a recipe edit (`make --check`: CI), `list <game> <build> [--json]` prints the default build's step instances, `format` the field reference |
+| `tools/convert.py` | The default build's packs without make (every export in one Python process; what the in-browser converter runs). `--list` shows the steps, `--compare <dir> build` checks them byte for byte against make's. Its steps are tools/recipe.toml's, as make's are. `--lean` removes each intermediate once no later step needs it (the browser's run) |
 | `tools/pages/convert-node.mjs` | The in-browser converter's run under Node (same Pyodide, 32-bit numpy, Pillow and wasm C helpers as the page): `node tools/pages/convert-node.mjs <game> <build dir>`, then `tools/convert.py --compare <build dir> build` shows whether the browser's packs are the same bytes as a native build (TECH_DEBT build-7). `--prof F.tsv`: seconds and wasm heap per step (export_map prints the heap per stage); it restarts Pyodide as worker.js does (`--old-rule` for the previous rule) |
 | `tools/resample.py` | `resize(img, size, resample)`: Image.resize with the two passes in a fixed order (horizontal, then vertical, premultiplied), the pixels of Pillow <= 12 on every Pillow version (13 orders them per shape) and in the browser. Every export's resize goes through it |
 | `tools/octree.py` | Pillow's FASTOCTREE quantizer in numpy with a stable bucket sort: the same palettes natively and in the browser (Pillow's own depends on the platform's qsort). Used by texmap, export_map, export_effects, export_menu |

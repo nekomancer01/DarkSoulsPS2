@@ -13,17 +13,16 @@
 #include "pack.h"
 #include "render.h"
 #include "texcache.h"
+#include "chunk.h"
 
 #define DRB_Z 0xFFFF
 #define ICON_COLS 10  /* icon sheet: ICON_COLS cells per row of a 512-wide PSMT8 texture */
 
+/* scr_<name>.bin: a chunk file 'SCRN' (tools/export_screens.py), read in place */
 typedef struct {
-    char magic[4];
-    u32 version, nodes, node_off, roots, root_off, strings, string_off;
+    u32 nodes, roots, strings, sprites, grads;  /* grads: GouraudRect corners, 16 B each (hud_gradient order) */
     u16 aw, ah;
-    u32 clut_off, pix_off, sprites, sprite_off;
-    u32 grads, grad_off;  /* version 2: GouraudRect corners, 16 B each (hud_gradient order); a rect's spr indexes them */
-} ScrHeader;
+} ScrHeader;  /* SHDR v1 */
 typedef struct { u16 u, v, w, h; } ScrSprite;
 
 DrbStats drb_stats;
@@ -34,12 +33,13 @@ static int state;  /* 0 closed, 1 loading, 2 pin + upload, 3 ready, -1 failed */
 static PackJob job;
 static unsigned char *file;  /* the whole scr file while loading / uploading */
 static unsigned file_alloc;
-static unsigned char *tree;  /* header .. sprite table, kept while open */
+static unsigned char *tree;  /* the file up to its CLUT chunk (header .. gradients), kept while open */
 static unsigned tree_bytes;
 static const ScrHeader *hdr;
 static const DrbNode *nodes;
 static const u32 *roots;
 static const ScrSprite *sprites;
+static const unsigned char *strs, *grads;  /* STRS (u32 offsets into itself, then the strings), GRAD */
 static s8 *vis;
 static s16 *pair, *vleft;  /* value candidates (npair: narrow right-aligned texts); per node: last drawn left edge */
 static int npair;
@@ -239,9 +239,15 @@ static float label_room(int k)
 
 static int screen_setup(void)
 {
-    const ScrHeader *h = (const ScrHeader *)file;
-    if (memcmp(h->magic, "DSCR", 4) || h->version != 2 || h->pix_off + h->aw * h->ah > job.raw ||
-        h->node_off + h->nodes * sizeof(DrbNode) > h->clut_off)
+    ChunkFile f;
+    char nm[24];
+    unsigned ncl, npx;
+    snprintf(nm, sizeof nm, "scr_%s.bin", name_open);
+    const ScrHeader *h = chunk_open(&f, file, job.raw, CHUNK_ID('S', 'C', 'R', 'N'), nm) ?
+                         chunk_get(&f, CHUNK_ID('S', 'H', 'D', 'R'), 1, NULL) : NULL;
+    const unsigned char *clut = chunk_get(&f, CHUNK_ID('C', 'L', 'U', 'T'), 1, &ncl);
+    const unsigned char *pix = chunk_get(&f, CHUNK_ID('P', 'I', 'X', 'L'), 1, &npx);
+    if (!h || !clut || !pix || npx < (unsigned)h->aw * h->ah || ncl < 1024)
         return fail("bad screen file");
     icon_px = item_icon_size();
     icon_cell_bytes = item_icon_bytes();
@@ -261,20 +267,30 @@ static int screen_setup(void)
     atlas.TBW = h->aw / 64;
     atlas.Vram = base, atlas.VramClut = base + atlas_bytes;
     FlushCache(0);
-    drb_tex_send(file + h->pix_off, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
-    drb_tex_send(file + h->clut_off, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
-    /* keep header .. sprites (+ per-node visibility) */
-    tree_bytes = ((h->clut_off + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 5;
+    drb_tex_send(pix, h->aw, h->ah, atlas.Vram, GS_PSM_T8, atlas.TBW);
+    drb_tex_send(clut, 16, 16, atlas.VramClut, GS_PSM_CT32, 1);
+    /* keep the chunks before CLUT (+ per-node visibility) */
+    unsigned keep = chunk_offset(&f, clut), nn, nr, ns, nsp, ng;
+    tree_bytes = ((keep + 127) & ~127) + ((h->nodes + 127) & ~127) + h->nodes * 5;
     tree = ui_alloc(tree_bytes);
     if (!tree)
         return fail("no RAM for the tree");
-    memcpy(tree, file, h->clut_off);
+    memcpy(tree, file, keep);
     ui_free(file, file_alloc), file = 0;
-    hdr = (const ScrHeader *)tree;
-    nodes = (const DrbNode *)(tree + hdr->node_off);
-    roots = (const u32 *)(tree + hdr->root_off);
-    sprites = (const ScrSprite *)(tree + hdr->sprite_off);
-    vis = (s8 *)(tree + ((hdr->clut_off + 127) & ~127));
+    ChunkFile t;  /* the same chunks, in the kept copy */
+    chunk_open_part(&t, tree, keep, f.size, CHUNK_ID('S', 'C', 'R', 'N'), nm);
+    hdr = chunk_get(&t, CHUNK_ID('S', 'H', 'D', 'R'), 1, NULL);
+    nodes = chunk_get(&t, CHUNK_ID('N', 'O', 'D', 'E'), 1, &nn);
+    roots = chunk_get(&t, CHUNK_ID('R', 'O', 'O', 'T'), 1, &nr);
+    strs = chunk_get(&t, CHUNK_ID('S', 'T', 'R', 'S'), 1, &ns);
+    sprites = chunk_get(&t, CHUNK_ID('S', 'P', 'R', 'T'), 1, &nsp);
+    grads = chunk_get(&t, CHUNK_ID('G', 'R', 'A', 'D'), 1, &ng);
+    if (!hdr || !nodes || !roots || !strs || !sprites || !grads || nn != hdr->nodes * sizeof(DrbNode) ||
+        nr != 4 * hdr->roots || ns < 4 * hdr->strings || nsp != hdr->sprites * sizeof(ScrSprite) || ng != 16 * hdr->grads) {
+        ui_free(tree, tree_bytes), tree = 0, hdr = NULL;
+        return fail("bad screen file");
+    }
+    vis = (s8 *)(tree + ((keep + 127) & ~127));
     memset(vis, -1, hdr->nodes);
     pair = (s16 *)(vis + ((hdr->nodes + 127) & ~127)), vleft = pair + hdr->nodes;
     vstamp = (u8 *)(vleft + hdr->nodes);
@@ -398,7 +414,7 @@ const char *drb_string(int s)
 {
     if (state != 3 || s < 0 || s >= (int)hdr->strings)
         return "";
-    return (const char *)(tree + ((const u32 *)(tree + hdr->string_off))[s]);
+    return (const char *)(strs + ((const u32 *)strs)[s]);
 }
 
 int drb_child(int parent, const char *name)
@@ -461,7 +477,7 @@ static void sprite(const DrbNode *n, float x0, float y0, float x1, float y1, int
 static void rect(const DrbNode *n, float x0, float y0, float x1, float y1, int a)
 {
     if (n->spr >= 0 && (u32)n->spr < hdr->grads)
-        hud_gradient(x0, y0, x1 - x0, y1 - y0, tree + hdr->grad_off + 16 * n->spr, a);
+        hud_gradient(x0, y0, x1 - x0, y1 - y0, grads + 16 * n->spr, a);
     else
         g2d_prim_sprite(hud_gs(), R_HX(x0), y0, R_HX(x1), y1, DRB_Z, rgba(n->r, n->g, n->b, n->a * a >> 7));
 }

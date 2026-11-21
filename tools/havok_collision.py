@@ -62,7 +62,7 @@ def _indices(h, ms, M, so_k, sub_t, ntri, stride):
         if ni or not ntri:
             break
     else:
-        raise ValueError(f"subpart with {ntri} triangles has no index array")
+        raise souls.UnknownVariant("havok collision index array", "none", f"subpart with {ntri} triangles")
     if not ntri:
         return (), 3  # empty model: the stride may be anything
     size = struct.calcsize(code)
@@ -86,7 +86,8 @@ def hkx_meshes(hkx_bytes, arrays=False):
             break
     else:
         names = {t.name for t, _, _ in h.items if t}
-        raise ValueError("no hkpStorageExtendedMeshShape; types: " + ", ".join(sorted(names)))
+        raise souls.UnknownVariant("havok collision shape", ",".join(sorted(n for n in names if "Shape" in n)) or "none",
+                                   "no hkpStorageExtendedMeshShape")
     for so in shapes:
         S = h.type(tname)
         sub_t, sub_o, nsub = h.item(so, S, "trianglesSubparts")

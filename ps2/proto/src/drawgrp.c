@@ -79,7 +79,7 @@ static void uni_push(const unsigned *c, unsigned now)
 static int hidden[DG_HIDDEN], n_hidden;
 static unsigned hidden_gen = 1;
 
-int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris)
+int dg_block_init(int k, const void *blob, unsigned size, unsigned chunks, unsigned col_tris)
 {
     if (k < 0 || k >= DG_INST)
         return 0;
@@ -91,7 +91,7 @@ int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris)
     unsigned np, nc, ncd, ntd, nch, nen, nce;
     char name[24];
     snprintf(name, sizeof name, "dg.bin (block %d)", k);
-    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, ID('D', 'G', 'R', 'P'), name))
+    if (!chunk_open(&f, blob, size, ID('D', 'G', 'R', 'P'), name))
         return 0;
     const DgHeader *h = chunk_get(&f, ID('D', 'H', 'D', 'R'), 1, NULL);
     d->piece = chunk_get(&f, ID('P', 'M', 'S', 'K'), 1, &np);
@@ -133,9 +133,9 @@ int dg_block_init(int k, const void *blob, unsigned chunks, unsigned col_tris)
     return 1;
 }
 
-int dg_init(const void *blob, unsigned chunks, unsigned col_tris)
+int dg_init(const void *blob, unsigned size, unsigned chunks, unsigned col_tris)
 {
-    return dg_block_init(0, blob, chunks, col_tris);
+    return dg_block_init(0, blob, size, chunks, col_tris);
 }
 
 void dg_block_drop(int k)

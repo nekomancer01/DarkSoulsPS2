@@ -394,7 +394,7 @@ int main(int argc, char **argv)
     pack_close(&pk);
     void *map_blob = 0, *col_blob = 0, *enemy_blob = 0, *lua_blob = 0, *obj_blob = 0, *bump_blob = 0, *fx_blob = 0,
          *dg_blob = 0, *ev_blob = 0, *evc_blob = 0, *pvs_blob = 0;
-    unsigned lua_size = 0;
+    unsigned lua_size = 0, enemy_size = 0, obj_size = 0, dg_size = 0, pvs_size = 0;
     int world = world_init(AREA);  /* world build: blocks stream in by position (src/world.c, data/world.pak) */
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
         map_blob = world ? NULL : pack_load(&pk, "map.bin", 0);  /* world: split map, world_boot_map */
@@ -405,13 +405,13 @@ int main(int argc, char **argv)
         bump_blob = world && WORLD_BOOT_RELIEF ? NULL : pack_load(&pk, "bump.bin", 0);
         fx_blob = pack_load(&pk, "fx.bin", 0);      /* effects: bonfire fire, MSB SFX (tools/export_effects.py, src/fx.c) */
 #endif
-        dg_blob = pack_load(&pk, "dg.bin", 0);      /* MSB draw groups per chunk (tools/drawgroups.py, src/drawgrp.c) */
+        dg_blob = pack_load(&pk, "dg.bin", &dg_size);  /* MSB draw groups per chunk (tools/drawgroups.py, src/drawgrp.c) */
 #ifndef NO_PVS
-        pvs_blob = pack_load(&pk, "pvs.bin", 0);    /* visibility per camera cell (tools/pvs_bake.c, src/pvs.c) */
+        pvs_blob = pack_load(&pk, "pvs.bin", &pvs_size);  /* visibility per camera cell (tools/pvs_bake.c, src/pvs.c) */
 #endif
         col_blob = pack_load(&pk, "collision.bin", 0);
-        enemy_blob = pack_load(&pk, "enemies.bin", 0);  /* MSB enemy parts (tools/export_enemies.py) */
-        obj_blob = pack_load(&pk, "objects.bin", 0);    /* breakable objects (tools/export_objects.py) */
+        enemy_blob = pack_load(&pk, "enemies.bin", &enemy_size);  /* MSB enemy parts (tools/export_enemies.py) */
+        obj_blob = pack_load(&pk, "objects.bin", &obj_size);  /* breakable objects (tools/export_objects.py) */
         ev_blob = pack_load(&pk, "events.bin", 0);      /* EMEVD bytecode (tools/export_emevd.py, src/event.c) */
         evc_blob = pack_load(&pk, "evcommon.bin", 0);
         lua_blob = pack_load_temp(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
@@ -419,11 +419,12 @@ int main(int argc, char **argv)
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
     void *menu_blob = NULL, *shine_blob = NULL;
-    unsigned shine_size = 0;
+    unsigned shine_size = 0, menu_size = 0, help_size = 0;
     if (pack_open(&pk, PACK_ROOT "menu.pak")) {
-        menu_blob = pack_load_static(&pk, "menu.bin", 0);
+        menu_blob = pack_load_static(&pk, "menu.bin", &menu_size);
         shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
-        hud_help_init(pack_load_static(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+        void *help = pack_load_static(&pk, "help.bin", &help_size);
+        hud_help_init(help, help_size);  /* action prompt texts (kept) */
     }
     pack_close(&pk);
     t_load = ticks() - t_load;
@@ -454,15 +455,16 @@ int main(int argc, char **argv)
         printf("DSRPROTO bump: relief off\n");
     int col_ok = map_ok && col_init(col_blob);  /* collision.bin: without it the player walks on the navmesh */
     if (col_ok)
-        dg_init(dg_blob, map_chunk_count(), (unsigned)col_tris());
+        dg_init(dg_blob, dg_size, map_chunk_count(), (unsigned)col_tris());
     if (map_ok)
-        map_pvs_init(pvs_blob);
-    hud_init(gs, menu_blob);  /* 194 KB VRAM for its two atlases */
+        map_pvs_init(pvs_blob, pvs_size);
+    hud_init(gs, menu_blob, menu_size);  /* 194 KB VRAM for its two atlases */
     /* enemies: character packs data/c####.pak + enemyCommon.esd (data/common.pak), placed from enemies.bin */
     /* "option noenemies" (breakables tests): no enemy roster, RAM / VRAM for the pots, no AI in the shots */
-    int enemies = map_ok && !(test_opts & TEST_NOENEMIES) ? enemy_init(gs, enemy_blob, lua_blob, (int)lua_size) : 0;
+    int enemies =
+        map_ok && !(test_opts & TEST_NOENEMIES) ? enemy_init(gs, enemy_blob, enemy_size, lua_blob, (int)lua_size) : 0;
     loading_tick(1);
-    int breakables = map_ok ? objects_init(gs, obj_blob) : 0;  /* pots: intact + pre-fractured models */
+    int breakables = map_ok ? objects_init(gs, obj_blob, obj_size) : 0;  /* pots: intact + pre-fractured models */
     if (map_ok && col_ok && ev_blob && event_init(evc_blob))  /* after enemies + collision */
         event_block_on(0, ev_blob);
     else

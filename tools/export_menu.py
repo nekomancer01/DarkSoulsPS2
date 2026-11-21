@@ -17,22 +17,25 @@ start with s16 left, top, right, bottom (relative to the parent dialog's left/to
 right, bottom, +24 s16 texture index; Dialog: +16 u8 child DLG index; MonoRect: +24 colour a, b, g, r; GouraudRect:
 +20 four such corner colours, top left, top right, bottom right, bottom left (SoulsFormats DRB.GouraudRect order).
 
-Output menu.bin (little-endian):
-  header  'DSMN', u32 version 2, atlases, sprites, glyphs, layout entries, strings; u32 offsets of each table;
-          u16 font line height, first icon sprite; u32 gradients, gradient offset; pad to 64
-  atlas   {u32 w, h, clut offset, pixel offset}  (PSMT8 pixels, CSM1 CLUT of RGBA, alpha 0..0x80)
-  sprite  {u16 atlas, u, v, w, h, pad}           (texels)
-  glyph   {u16 u, v, w, h; s16 pre-space, advance} for ASCII 32..126 (atlas 0)
-  layout  {s16 sprite (-1: solid rect, -2 - k: gradient rect k), x, y, w, h (640x448 pixels); u8 r, g, b, a (solid
+Output menu.bin: a chunk file (tools/chunkfile.py, file id 'MENU'; src/hud.c reads it in place), little-endian:
+  MHDR v1 u32 atlases, sprites, glyphs, layout entries, strings, gradients; u16 font line height, first icon sprite
+  ATLS v1 {u32 w, h, clut offset, pixel offset} per atlas, offsets into TEXL (PSMT8 pixels, CSM1 CLUT of RGBA, alpha
+          0..0x80)
+  TEXL v1 (128-byte aligned in the file) the atlases' CLUTs and pixels, each 128-byte aligned
+  SPRT v1 {u16 atlas, u, v, w, h, pad}           (texels)
+  GLYP v1 {u16 u, v, w, h; s16 pre-space, advance} for ASCII 32..126 (atlas 0)
+  LAYT v1 {s16 sprite (-1: solid rect, -2 - k: gradient rect k), x, y, w, h (640x448 pixels); u8 r, g, b, a (solid
           rects: their colour; sprites: 255, 255, 255, 0x80 or a TINT colour)}  in the order of LAYOUT (a gradient's
           r, g, b, a are its corners' average)
-  gradient {u8 r, g, b, a} x 4 corners: top left, top right, bottom right, bottom left (a 0..0x80)
-  strings u32 offsets, then NUL-terminated ASCII, in the order of STRINGS
+  GRAD v1 {u8 r, g, b, a} x 4 corners: top left, top right, bottom right, bottom left (a 0..0x80)
+  STRS v1 u32 offset per string (into this payload), then NUL-terminated ASCII, in the order of STRINGS
+  (before Polaris 3.3: one 'DSMN' version 2 blob of the same tables behind a 64-byte header, offsets from its start)
 Usage: export_menu.py <game dir> <out.bin> [preview.png]"""
 import math, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import souls
+import chunkfile
 import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 
 SX, SY = 640 / 1280, 448 / 720
@@ -281,20 +284,18 @@ def icon_image(game, sheets, cells, icon_id):
 
 def export_help(game, out):
     """help.bin for src/hud.c hud_help: the one-line action prompts (Event_text_.fmg 10010000-10010999: ActionButton
-    help ids of the event scripts, "Open", "Examine", "Pick up item" ...) as 'DSHL', u32 count, count x (u32 id, u32
-    offset), then NUL-terminated ASCII (non-ASCII dropped)"""
+    help ids of the event scripts, "Open", "Examine", "Pick up item" ...) as a chunk file 'HELP': HIDX v1 (u32 id, u32
+    offset into HTXT) per prompt sorted by id, HTXT v1 NUL-terminated ASCII (non-ASCII dropped)"""
     msg = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(os.path.join(game, "msg", "ENGLISH",
                                                                                    "menu.msgbnd.dcx")))}
     f = souls.fmg(msg["Event_text_.fmg"])
     rows = sorted((k, v) for k, v in f.items() if v and 10010000 <= k < 10011000)
     body, tab = b"", b""
-    base = 8 + 8 * len(rows)
     for k, v in rows:
-        tab += struct.pack("<II", k, base + len(body))
+        tab += struct.pack("<II", k, len(body))
         body += v.encode("ascii", "ignore") + b"\0"
-    with open(out, "wb") as fo:
-        fo.write(struct.pack("<4sI", b"DSHL", len(rows)) + tab + body)
-    print(f"{out}: {len(rows)} prompts, {8 + len(tab) + len(body)} bytes")
+    chunkfile.write(out, b"HELP", [(b"HIDX", 1, tab), (b"HTXT", 1, body)])
+    print(f"{out}: {len(rows)} prompts, {len(tab) + len(body)} bytes of tables")
 
 
 def main():
@@ -382,61 +383,34 @@ def main():
     strings = names + [souls.fmg(menu_msg[f]).get(i, "") for f, i in UI_STRINGS]
 
     atlases = [quantize(atlas), quantize(icons)]
-    blob = bytearray()
-    HDR = 64
-
-    def align(n):
-        blob.extend(b"\0" * ((-(len(blob) + HDR)) % n))
-    offs = {}
-    align(16)
-    offs["atlas"] = len(blob) + HDR
-    table = len(blob)
-    blob += b"\0" * (16 * len(atlases))
-    for k, ((clut, pix), img) in enumerate(zip(atlases, (atlas, icons))):
-        align(128)
-        c = len(blob) + HDR
-        blob += clut
-        align(128)
-        p = len(blob) + HDR
-        blob += pix
-        struct.pack_into("<4I", blob, table + 16 * k, img.size[0], img.size[1], c, p)
-    align(4)
-    offs["sprites"] = len(blob) + HDR
-    for s_ in sprites:
-        blob += struct.pack("<6H", *s_, 0)
-    offs["glyphs"] = len(blob) + HDR
-    for g in glyphs:
-        blob += struct.pack("<4H2h", *g)
-    offs["layout"] = len(blob) + HDR
-    for e in layout + menu_layout:
-        blob += struct.pack("<5h4B", *e)
-    # the layout entries are 14 B each: realign, since the PS2 reads the gradient and string tables as words (a lw at a
-    # misaligned address is an address error on the EE; PCSX2 does it anyway)
-    align(4)
-    offs["grads"] = len(blob) + HDR
-    for g in grads:
-        blob += g
-    align(4)
-    offs["strings"] = len(blob) + HDR
-    st = bytearray()
-    so = []
+    texl, atls = bytearray(), b""
+    for (clut, pix), img in zip(atlases, (atlas, icons)):
+        texl += b"\0" * (-len(texl) % 128)
+        c = len(texl)
+        texl += clut
+        texl += b"\0" * (-len(texl) % 128)
+        p = len(texl)
+        texl += pix
+        atls += struct.pack("<4I", img.size[0], img.size[1], c, p)
+    st, so = bytearray(), []
     for t in strings:
         so.append(len(st))
         st += t.encode("ascii", "replace") + b"\0"
-    base = offs["strings"] + 4 * len(strings)
-    blob += struct.pack(f"<{len(so)}I", *[base + o for o in so]) + st
-    header = struct.pack("<4s6I5I2H2I", b"DSMN", 2, len(atlases), len(sprites), len(glyphs),
-                         len(layout) + len(menu_layout), len(strings), offs["atlas"], offs["sprites"],
-                         offs["glyphs"], offs["layout"], offs["strings"], FONT_H, icon_sprite0, len(grads),
-                         offs["grads"])
-    assert len(header) <= HDR
-    header += b"\0" * (HDR - len(header))
-    with open(out, "wb") as f:
-        f.write(header + blob)
+    strs = struct.pack(f"<{len(so)}I", *[4 * len(so) + o for o in so]) + st
+    size = chunkfile.write(out, b"MENU", [
+        (b"MHDR", 1, struct.pack("<6I2H", len(atlases), len(sprites), len(glyphs), len(layout) + len(menu_layout),
+                                 len(strings), len(grads), FONT_H, icon_sprite0)),
+        (b"ATLS", 1, atls),
+        (b"TEXL", 1, texl, 128),
+        (b"SPRT", 1, b"".join(struct.pack("<6H", *s_, 0) for s_ in sprites)),
+        (b"GLYP", 1, b"".join(struct.pack("<4H2h", *g) for g in glyphs)),
+        (b"LAYT", 1, b"".join(struct.pack("<5h4B", *e) for e in layout + menu_layout)),
+        (b"GRAD", 1, b"".join(grads)),
+        (b"STRS", 1, strs)])
     vram = sum(len(c) + len(p) for c, p in atlases)
     print(f"menu.bin: {len(sprites)} sprites ({pk.y + pk.row} of {ATLAS_H} atlas rows used), {len(glyphs)} glyphs, "
           f"{len(layout) + len(menu_layout)} layout entries, {len(grads)} gradients, {len(strings)} strings, VRAM {vram // 1024} KB, "
-          f"{len(header) + len(blob)} bytes")
+          f"{size} bytes")
     if preview:
         prev_img = Image.new("RGBA", (640, 448), (60, 70, 80, 255))
         for spr, x, y, w, h, r, g, b, a in layout:

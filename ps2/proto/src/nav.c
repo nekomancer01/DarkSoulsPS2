@@ -1,4 +1,4 @@
-/* Enemy pathfinding (nav.h). Data: tools/export_enemies.py "NAV1" section after the enemies.bin placements. */
+/* Enemy pathfinding (nav.h). Data: enemies.bin's NAV chunk (tools/export_enemies.py), read in place. */
 #include <malloc.h>
 #include <math.h>
 #include <string.h>
@@ -6,12 +6,11 @@
 #include "enemy.h"  /* ENEMY_REC */
 
 typedef struct {
-    char magic[4];
     unsigned verts, tris, gw, gh;
     float org[3], x0, z0, cell;
     unsigned list;
 } NavHdr;
-_Static_assert(sizeof(NavHdr) == 48, "export_enemies.py NAV1 header");
+_Static_assert(sizeof(NavHdr) == 44, "export_enemies.py NAV header");
 typedef struct { unsigned short v[3], nbr[3]; } NavTri;
 #define NONE 0xFFFF
 /* NAV_QREJ (frame-time pass 2026-11-09, default on; DEFS=-DNAV_QREJ=0 = off): tri_at rejects a cell's triangles by
@@ -32,28 +31,23 @@ typedef struct {
 static Nav navs[NAV_BLOCKS];
 int nav_searches, nav_searches_total;
 
-int nav_load(int block, const void *blob, unsigned size)
+int nav_load(int block, const void *nav, unsigned size)
 {
-    if (!size)
-        size = ~0u;  /* unknown: the section is trusted (enemies.bin from the same build) */
-    if (block < 0 || block >= NAV_BLOCKS || !blob || size < 8)
+    if (block < 0 || block >= NAV_BLOCKS || !nav || size < sizeof(NavHdr))
         return 0;
     nav_free(block);
-    const unsigned char *b = blob;
-    unsigned count = *(const unsigned *)(b + 4), at = 8 + ENEMY_REC * count;
-    if (at + sizeof(NavHdr) > size || memcmp(b + at, "NAV1", 4))
-        return 0;
+    const unsigned char *b = nav;
     NavHdr h;
-    memcpy(&h, b + at, sizeof h);
+    memcpy(&h, b, sizeof h);
     unsigned vbytes = (h.verts * 6 + 3) & ~3u, tbytes = h.tris * sizeof(NavTri), gbytes = (h.gw * h.gh + 1) * 2,
              n = vbytes + tbytes + gbytes + h.list * 2;
-    if (!h.tris || at + sizeof h + n > size)
+    if (!h.tris || sizeof h + n > size)
         return 0;
     Nav *nv = &navs[block];
     nv->mem = malloc(n);
     if (!nv->mem)
         return 0;
-    memcpy(nv->mem, b + at + sizeof h, n);
+    memcpy(nv->mem, b + sizeof h, n);
     nv->bytes = n;
     nv->h = h;
     const unsigned char *m = nv->mem;
