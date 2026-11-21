@@ -89,6 +89,13 @@ typedef struct {
 #define SNDD_READ 2    /* fd, offset, size bytes to EE dst -> result bytes read */
 #define SNDD_CLOSE 3   /* fd -> result */
 #define SNDD_CANCEL 4  /* stop the read in slot / seq after its current page (result -1); takes no slot itself */
+/* scatter read (Polaris 4.6): fd, size bytes from offset, read as one run of the disc, delivered to nseg segments
+ * (SndDiscSeg in path[], in file order, their bytes summing to size; dst 0 = bytes read and dropped, a gap) -> result
+ * size, or < 0 (all or nothing: a short read is an error). Every segment's dst is 16-byte aligned and every segment
+ * but the last is a whole number of qwords, so each starts on a qword of the run: the IOP DMAs pages straight into
+ * them, and only the last one's tail comes in the SndDiscDone (edge, ntail; nhead 0). */
+#define SNDD_READV 5
+#define SND_SEGS 12
 #define SNDD_PRIO_SYNC 0  /* the EE waits for it (pack_open, pack_load): before every background request */
 #define SNDD_PRIO_BG 1    /* map streaming, background jobs; in order of submission */
 
@@ -98,9 +105,13 @@ typedef struct {
     unsigned char op, prio;
     int fd;
     unsigned int offset, size, dst;  /* dst: EE address, any alignment (the edges come in the SndDiscDone) */
-    unsigned int pad;
-    char path[96];           /* SNDD_OPEN: cdrom0:\... */
+    unsigned int nseg;       /* SNDD_READV: segments in path[] */
+    char path[96];           /* SNDD_OPEN: cdrom0:\...; SNDD_READV: SndDiscSeg[nseg] */
 } SndDiscReq;  /* 128 bytes */
+
+typedef struct {
+    unsigned int dst, bytes;  /* EE address (0: skip these bytes), bytes */
+} SndDiscSeg;
 
 typedef struct {
     unsigned char edge[32];  /* bytes of dst the DMA cannot write (not within 16-byte aligned qwords): head, then tail */

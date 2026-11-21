@@ -34,7 +34,8 @@ reads (`pack_read_async`) feed the streamer.
 `disc.c` is the drive (the sector table from the ISO9660 directory, the disc server the packs read through, the IOP
 page cache, the drive counters and the drive lock), `snd.c` is sound (SPU2 voices through libsd, the disc streams and
 their read-ahead, sample bank loads), `dsrsnd.c` the RPC servers and the module start; `dsrsnd_i.h` is what they share.
-The sound part reads the disc only through the disc part (`df_*`, `drive_poll` / `drive_give`).
+The sound part reads the disc only through the disc part (`df_*`, `drive_poll` / `drive_give`). Scatter reads (step 4.6, `pack.h pack_req_readv`, request `SNDD_READV`): one run of the disc delivered to up
+to 12 EE destinations, the gaps between them read through; the streamer's near parts are its caller.
 
 ## Graphics
 

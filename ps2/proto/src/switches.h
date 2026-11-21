@@ -41,6 +41,7 @@
  * FRAME_SKIP_MAP      | 0        | debug    | -DFRAME_SKIP_MAP=1                            | main   | new   | frame.c       | runtime: the map pass writes no packets (the check that SIM_B reads nothing EMIT_MAP produced, frame.h)
  * OT_HASH             | off      | debug    | -DOT_HASH                                     | gfx    | new   | vu1.c render.c frame.c | "othash:" lines: the VIF1 stream per kick and the 2D draws (decoded, src/gstrace.c) hashed on frozen test frames (tests/ot_check.txt, ot2d_check.txt)
  * UI_ATEST            | 1        | fallback | -DUI_ATEST=0                                  | ui     | new   | g2d.c         | textured UI sprites alpha-tested (GEQUAL 1, keep): transparent texels write no depth, so the far depth of field blurs the scene under them (0: the whole sprite rectangle writes Z, the old path)
+ * PACK_READV_CHECK    | off      | debug    | -DPACK_READV_CHECK                            | io     | new   | pack.c        | at boot, one pack_req_readv compared with plain reads ("pack: readv check ok"), Polaris 4.6
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | core   | init  | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
