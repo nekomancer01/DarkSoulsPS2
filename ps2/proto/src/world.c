@@ -780,7 +780,7 @@ void world_systems(GSGLOBAL *gs)
         unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
         unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
-        int ne = p ? enemy_block_types(gs, i, tab[i].pack, p, lua, lua ? (int)n1 : 0) : -1;
+        int ne = p ? enemy_block_types(gs, i, tab[i].pack, p, n0, lua, lua ? (int)n1 : 0) : -1;
         free(lua);
         free(p);
         unsigned h3 = enemy_ram_free();

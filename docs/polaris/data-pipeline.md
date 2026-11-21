@@ -132,6 +132,7 @@ Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chu
 | File | Id | Chunks |
 |---|---|---|
 | `world.bin` | `WRLD` | `BLKS` blocks, `LRNG` link ranges, `LINK` links, `REAC` reach table (optional) |
+| `enemies.bin` | `ENMY` | `PLAC` placements, `NAV ` navmesh (optional) |
 | `items/items.bin`, `itemx.bin` | `ITEM`, `ITMX` | `GOOD`, `AMMO`, `ICMP`; `ROWS`, `REIN`, `NAME` |
 | `items/desc.bin`, `icons.bin` (raw, read by offset) | `DESC`, `ICON` | `TEXT`; `IHDR`, `IDS `, `CELL` (64-byte aligned) |
 | `menu.bin`, `help.bin` | `MENU`, `HELP` | `MHDR`, `ATLS`, `TEXL` (128-byte aligned), `SPRT`, `GLYP`, `LAYT`, `GRAD`, `STRS`; `HIDX`, `HTXT` |
