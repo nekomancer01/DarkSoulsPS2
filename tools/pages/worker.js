@@ -1,4 +1,4 @@
-// In-browser converter (tools/pages): Pyodide runs the port's own exporters (tools/convert.py, the Makefile's steps)
+// In-browser converter (tools/pages): Pyodide runs the port's own exporters (tools/convert.py: the steps of tools/recipe.toml)
 // on the player's game folder, then tools/iso9660.py packs the game-free ELF from CI and the packs into a disc image.
 // Everything stays in this worker's memory: the game files are read in place (WORKERFS over the File objects the page
 // passes in), nothing is sent anywhere. In: {convert: {build, base, files, start, carry, select, iso}} (select: the
@@ -20,7 +20,7 @@ async function setup(build, base) {
   py.setStderr({ batched: (s) => post({ log: s }) });
   await py.loadPackage(["numpy", "pillow"], { messageCallback: () => {} });
   post({ log: "Loading the converter (source " + build.commit.slice(0, 10) + ")…" });
-  // the port's tools, the Makefile (for its knobs) and the C helpers built for WebAssembly, at the page's commit
+  // the port's tools, the export recipe (tools/recipe.toml) and the C helpers built for WebAssembly, at the page's commit
   const src = await (await fetch(new URL("convert-src.zip", base))).arrayBuffer();
   py.unpackArchive(src, "zip", { extractDir: "/src" });
   // export_map.py logs its memory from /proc/self/status, which a browser has none of

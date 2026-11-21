@@ -146,6 +146,31 @@ from an existing one: `tools/newbuild "$PWD/build" --from <other tree>/build`.
 
 Build-time variables that change what is exported are registered in `tools/switches.tsv`.
 
+## The export recipe
+
+`tools/recipe.toml` lists every export step once: its tool, arguments, environment, the files it writes, the files it
+reads, the `tools/` sources it runs and, for packs, the entries. It also holds every knob an export reads: the
+`?=` defaults (PVS bake settings, world split switches, `CHR_BONES`, ...), `DEFAULT_MAP`, the per-area map tuning
+(`[mapenv]`, formerly `MAPENV_<area>`) and the per-enemy-type LOD and texture caps (`[chr.lod]`, `[chr.tex]`).
+`config.local.mk` and the make command line still override the knobs. Everything reads the recipe:
+
+- **make.** `ps2/proto/export_vars.mk` (knobs) and `export_rules.mk` (one rule per step) are generated from it and
+  committed: `python3 tools/recipe.py make` after editing the recipe, CI (`tools/ci/offline.sh`) fails when they are
+  stale. The ELF, IOP module, ISO and the world sub-make orchestration (`worldexports`, `worldhzn`, ...) stay
+  hand-written in `ps2/proto/Makefile`, with the small "derived" values both sides compute (PVS_PEERS, TEX_PEERS,
+  LITE_RUN, ...; their Python twins are `recipe.Plan.ctx`).
+- **The converter.** `tools/convert.py` (and through it the in-browser converter) runs the same step instances in one
+  process, ordered by their files, the steps the goals need and nothing else. Steps that run a host program (the
+  occlusion bake) or need the MP3 decoder (sound) are skipped in the browser and their pack entries left out
+  (TECH_DEBT build-18).
+- **Tools that look at steps.** `python3 tools/recipe.py list <game> <build> --json` prints every step instance of
+  the default build with its inputs, outputs, tools and environment: the hook for the export cache and the build
+  gates.
+
+Adding an export is one `[[step]]` plus its pack entry, then `python3 tools/recipe.py make`. `python3 tools/recipe.py
+format` prints the field reference (the comment block at the top of the recipe). Check a change with a dry run of the
+whole world build: `make -n -B -C ps2/proto BUILD=<empty dir>` before and after lists the commands of every step.
+
 ## Build cache
 
 `tools/buildcache.py` is a content-addressed cache for export results. An entry's key is a SHA-256 of everything

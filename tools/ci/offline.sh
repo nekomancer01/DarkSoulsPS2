@@ -4,6 +4,7 @@
 #   2 tools/vu1/test_*.py: the VU1 microprograms on the VU1 emulator (tools/vu1/vuemu.py), needs numpy
 #   3 the generated VU1 programs are up to date: tools/vu1/gen.py <kind> == ps2/proto/src/<file>.vsm (AGENTS.md 5:
 #     generated files are never hand-edited; regenerate and commit both)
+#   3b the export rules ps2/proto/export_{vars,rules}.mk are generated from tools/recipe.toml (tools/recipe.py make)
 #   4 the game-data headers ps2/proto/src/{player,combat,progress}_data.h match tools/gamedata.py header <name>, and
 #     tools/gamedata_test.py (blob layout = what the EE compiler lays out, checked against offsetof tables)
 #   4b tools/material.py test (the classifier against the exporter's old per-mesh checks) and material_table.h up to date
@@ -45,6 +46,9 @@ h=$ROOT/ps2/proto/src/vu1_layout.h
 "$PY" gen.py layout > "$TMP/vu1_layout.h" 2> "$TMP/layout.err" || { tail -5 "$TMP/layout.err"; fail "gen.py layout"; }
 if cmp -s "$TMP/vu1_layout.h" "$h"; then echo "${h#$ROOT/}: up to date"
 else diff -u "$h" "$TMP/vu1_layout.h" | head -20; fail "${h#$ROOT/} differs (regenerate: cd tools/vu1 && python3 gen.py layout > ../../${h#$ROOT/})"; fi
+echo "== export rules generated from the recipe"
+"$PY" "$ROOT/tools/recipe.py" make --check && echo "ps2/proto/export_vars.mk, export_rules.mk: up to date" ||
+    fail "ps2/proto/export_*.mk differ from tools/recipe.toml (regenerate: python3 tools/recipe.py make)"
 echo "== generated game-data headers up to date"
 cd "$ROOT" || exit 1
 for k in player combat progress; do
