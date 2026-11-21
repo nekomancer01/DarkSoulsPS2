@@ -218,7 +218,7 @@ $(G)/world_manifest.md: $(G)/world_manifest.json
 	@test -f $@ || { echo "$@ missing: re-export world_manifest.json"; rm -f $<; exit 1; }
 
 # world budget (world): tools/world_budget.py
-$(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world.c src/residency.h $(TS)/chunkfile.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum
+$(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world_i.h src/wplan.c src/residency.h $(TS)/chunkfile.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum
 	@mkdir -p $(@D)
 	MAP='$(MAP)' $(PY) -I ../../tools/stepcache.py $(BUILD) 'world budget' $(G)/world_budget.json :: $^ ::  :: MAP BUMP_BAKE :: ../../tools/world_budget.py $(G)/world_budget.json $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 

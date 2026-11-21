@@ -67,12 +67,16 @@ enforcement.
 
 ## World
 
-**World blocks** (`world.c`, `world.h`). The game world is a set of blocks: each one an exported part of an MSB map
+**World blocks** (`world.c`, `wblock.c`, `wextra.c`, `wplan.c`, `world.h`, `world_i.h`). The game world is a set of blocks: each one an exported part of an MSB map
 with its own pack (`tools/area.py` BLOCKS, the block table in `world.pak` from `tools/export_world.py`). Blocks turn
 on and off in the background by the player's position and time-to-reach (`WORLD_REACH`), so walking between areas
 needs no loading screen. A block that is on holds its "lite" set (collision index, map tables, events, draw groups);
 its visual cells stream separately. When a block turns on, `world.c` turns on its enemies, events, objects and
-effects. Warps and deaths settle the world behind the loading screen (`world_settled`).
+effects. Warps and deaths settle the world behind the loading screen (`world_settled`). The block lifecycle is four
+files over one private header (Polaris 4.1): `world.c` the table, boot, settle and API, `wblock.c` a block's lite set
+(reads, turn on / off, lean, read back), `wextra.c` the relief, far panorama and the boot block letting go, `wplan.c`
+what is wanted (links, reach, slots, the read order). `world_block_res(k)` tells other modules what of a block is
+resident (lite set, map tables, kept horizon, far panorama).
 
 **Map drawing** (`map.h` public, `map_i.h` shared by the map files, each part's state behind its own header). Draws
 every on block's map: sky, panorama, horizon, coarse and near levels per cell, each level drawn where the finer one is
@@ -89,11 +93,16 @@ point light is added on the map around them (`MAP_PLIGHT`). Split by role (Polar
 | `mappass.c` / `mappass.h` | sky, void ring, backdrop pictures, horizon / coarse fades, blended effects (`map_draw_blend`) |
 | `maplog.c` / `maplog.h` | map pass timers, debug counters, pop-in metric and the per-frame log lines |
 
-**Streamer** (`mapstream.c`, `mapstream_i.h`, `msarena.c`, `residency.h`). A residency plan ranks every streamable
+**Streamer** (`mapstream.c`, `msplan.c`, `msread.c`, `msevict.c`, `mapstream_i.h`, `msarena.c`, `msarena.h`,
+`residency.h`). A residency plan ranks every streamable
 item (coarse cells, near parts, backdrops, textures, collision tiles) into classes by distance and visibility, cuts the
 plan to fit the arena, then reads the missing items highest class first, nearest first, merging neighbours into one
 request. The arena is 10,752 KB of 64 KB pages; budgets per block are solved at export so what a spot needs fits
-(`tools/world_budget.py` fails the build otherwise).
+(`tools/world_budget.py` fails the build otherwise). Since Polaris 4.1 it is two parts: the residency planner
+(`mapstream.c` API and frame, `msplan.c` classes and the cut, `msread.c` queue and reads, `msevict.c` making room)
+over `mapstream_i.h`, and the page arena (`msarena.c`), a `MemPages` instance of 256-byte granules whose state only
+`msarena.h` reaches and which knows nothing of map items. `tools/ci/partown.py` keeps the private headers inside their
+parts.
 
 **Visibility** (`pvs.c`, `drawgrp.c`). PVS from `tools/pvs_bake.c`: one row of visible units per 8 m camera cell.
 DSR's draw groups: a map chunk draws only while the collision part under the player shares a draw group with it.
@@ -105,7 +114,7 @@ that stream with the player (`COL_TILES`).
 **Navmesh** (`nav.c`). DSR's MSB navmesh parts near a block's enemies: A* over the triangles, then the funnel through
 shared edges.
 
-Planned (phase 4): split these files into lifecycle, planner, page arena, level drawing and visibility; one level
+Planned (phase 4; `map.c` is split by role since Polaris 4.1): one level
 chain with resident parents; streaming sources with velocity (player, warp target, respawn point); DSR's read
 priority classes; 32 KB disc alignment; a whole-game manifest.
 
