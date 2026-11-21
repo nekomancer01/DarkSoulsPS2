@@ -15,6 +15,7 @@
  *   C_NEAR2  near parts within MS_R0_DRAW (map.c draws them there), foliage within MS_GRASS_WANT
  *   C_VIEW2  coarse cells in view out to MS_R1_WANT, another block's backdrop in view
  *   C_FARC   coarse cells and backdrop not in view (behind the camera)
+ *   (MS_BEHIND_KEEP: a coarse item the horizon covers, not in, out of view for MS_VIEW_STICKY and past 32 m is C_KEEP)
  *   C_PREF   near parts within MS_R0_WANT (read ahead of walking in), mip 0 textures asked for
  *   C_KEEP   loaded and within its keep radius, or anything ranked past what the arena holds: kept while there is
  *            room, never read

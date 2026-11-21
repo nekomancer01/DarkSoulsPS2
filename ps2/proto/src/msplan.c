@@ -213,7 +213,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         return ms_settle_plan() ? C_FREE : d2 < sq(qs_grass_want()) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
     /* (one level of detail per place: plan_ drops this item while its cell's near level stands for it, MS_ONE_LOD) */
     /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
-     * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
+     * camera looks at (but for MS_BEHIND_KEEP above: one the horizon covers, not in, behind the camera past 32 m). In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
      * two classes on every look around; with the arena holding ~half of what the Burg pins (two blocks' lite sets
      * beside it) each turn evicted what the last one read: 80 % of all map reads were re-reads, ~1750 swaps between
      * near / coarse / horizon on screen in 40 min (Burg soak on the ISO, 2026-11-07). All of it ranks above the near
@@ -231,9 +231,11 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = d2;
         return C_VIEW2;
     }
-    /* MS_BEHIND_KEEP (mapstream_i.h): out of view, horizon-covered and past MS_BEHIND_D: not read (kept while in) */
+    /* MS_BEHIND_KEEP (mapstream_i.h): out of view, horizon-covered and past MS_BEHIND_D: not read while out (one that
+     * is in keeps its class below). Not while the cell's near level is its only level in memory: its near parts take
+     * this item's class (plan_'s one-lod loop) and would lose their pin */
     if (MS_BEHIND_KEEP && !ms_settle_plan() && (tag & MS_RES_LOD) && !view && d2 >= sq(MS_BEHIND_D) &&
-        (m->state[id] == MS_NONE || m->state[id] == MS_FAILED)) {
+        (m->state[id] == MS_NONE || m->state[id] == MS_FAILED) && !ms_near_in(m, c)) {
         *key = d2;
         return C_KEEP;
     }
