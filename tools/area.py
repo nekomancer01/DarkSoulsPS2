@@ -217,9 +217,10 @@ def drawn(groups, part_dg):
 
 
 # ---- enemy placements of the area (export_enemies.py, export_chr.py variants, lua50.py) ----
-# The roster of a cropped area / block: enemy.h MAX_ENEMIES, the slots of every block on (each block's placements are
-# kept per block up to it: enemy.c blk_slot / blk_dead; ENEMY_NEAR_PLACE places only those within 70 m). 32 until
-# 2026-11-21 (TECH_DEBT world-45: the Burg and Depths blocks dropped 9-26 placements each, the farthest from their
+# The roster of a cropped area / block, at most enemy.h MAX_ENEMIES (128 slots shared by the blocks on; each block's placements are
+# kept per block up to it: enemy.c blk_slot / blk_dead; ENEMY_NEAR_PLACE places only those within 70 m, which keeps the
+# shared slots enough). 32 until
+# 2026-11-22 (TECH_DEBT world-45: the Burg and Depths blocks dropped 9-26 placements each, the farthest from their
 # spawn); AREA_MAX_ENEMIES=32 = the old roster.
 MAX_ENEMIES = int(os.environ.get("AREA_MAX_ENEMIES", 128))
 
