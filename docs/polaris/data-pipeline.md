@@ -162,7 +162,7 @@ reads, the `tools/` sources it runs and, for packs, the entries. It also holds e
 - **The converter.** `tools/convert.py` (and through it the in-browser converter) runs the same step instances in one
   process, ordered by their files, the steps the goals need and nothing else. Steps that run a host program (the
   occlusion bake) or need the MP3 decoder (sound) are skipped in the browser and their pack entries left out
-  (TECH_DEBT build-16).
+  (TECH_DEBT build-18).
 - **Tools that look at steps.** `python3 tools/recipe.py list <game> <build> --json` prints every step instance of
   the default build with its inputs, outputs, tools and environment: the hook for the export cache and the build
   gates.

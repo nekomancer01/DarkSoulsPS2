@@ -200,7 +200,7 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
         if browser and (s.raw.get("browser") is False or s.raw.get("host")):
             # sound: fsb4.py decodes DSR's MP3 banks with libmpg123, which has no WebAssembly build here yet: the disc
             # boots without data/snd (sound.c stays silent). Host programs (the occlusion bake): no browser build yet,
-            # the packs go without pvs.bin (src/pvs.c: every chunk visible). TECH_DEBT build-16.
+            # the packs go without pvs.bin (src/pvs.c: every chunk visible). TECH_DEBT build-18.
             why = "no MP3 decoder" if s.raw.get("browser") is False else f"no browser build of {s.raw['host']}"
             log(f"[{i + 1}/{n}] {s.name}: skipped in the browser ({why}); build-iso.sh makes it")
             skipped |= {os.path.normpath(o) for o in s.outputs}
