@@ -147,7 +147,12 @@ static int room_for(int want, const float *feet)
  * PCSX2, 2026-11-18). 0: the settle waits for it as before */
 int w_slot_deferred(int i, const float *feet)
 {
-    return WORLD_SLOT_DEFER && i > 0 && slots_full() && room_pick(i, feet) < 0;
+    if (!WORLD_SLOT_DEFER || i <= 0 || !slots_full())
+        return 0;
+    for (int s = 0; s < WORLD_SLOTS; s++)  /* a draining block frees its slot at the next step: not deferred */
+        if (w_rt[w_slot_of[s]].state == W_DRAIN)
+            return 0;
+    return room_pick(i, feet) < 0;
 }
 
 /* WORLD_REACH: the reach entry of triangle tri of block b, or NULL (binary search as link_at) */
@@ -449,9 +454,12 @@ void w_step(const float *feet, float dt)
             int def = w_slot_deferred(want, feet);
             w_room_stuck = !room_for(want, feet) && !def;  /* a fresh failure for room, or no slot (not a deferred one) */
             static int def_last = -1;
-            if (def && def_last != want)
-                printf("world: block %d wanted, no slot: deferred until the player moves (slots %d %d %d)\n", want,
-                       w_slot_of[0], w_slot_of[1], w_slot_of[2]);
+            if (def && def_last != want) {
+                printf("world: block %d wanted, no slot: deferred until the player moves (slots", want);
+                for (int s = 0; s < WORLD_SLOTS; s++)
+                    printf(" %d", w_slot_of[s]);
+                printf(")\n");
+            }
             def_last = def ? want : -1;
         }
         else if (world_stats.reading < 0) {
