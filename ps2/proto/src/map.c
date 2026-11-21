@@ -1,6 +1,6 @@
 /* Level drawing: map.bin load and textures, each block's cells at the level that is in (near, coarse, horizon) and
- * map_draw's order of passes. Visibility is mapvis.c, fog and light maplight.c, chunk drawing and ZSPLIT mapchunk.c,
- * the sky / fades / effects mappass.c, timers and logs maplog.c. */
+ * the order of passes (map_draw_sky / _pano / _world). Visibility is mapvis.c, fog and light maplight.c, chunk
+ * drawing and ZSPLIT mapchunk.c, the sky / fades / effects mappass.c, timers and logs maplog.c. */
 #include "map_i.h"
 #include "mapvis.h"
 #include "maplight.h"
