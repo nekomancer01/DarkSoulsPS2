@@ -76,8 +76,8 @@ Several agents often work in the same tree at once.
 - **Fast iteration:** a map re-export takes ~4 min, so most of a build-test loop is waiting on exports. A new clone
   or build dir starts from an existing build: `tools/newbuild "$PWD/build" --from <other tree>/build` (copies the tool
   stamps too, so only what your tree changes re-exports). Builds depend on what an export takes from another tool, not
-  on its whole file (ps2/proto/Makefile, "Narrow dependencies"): when a new export reads another exporter's code or
-  data, add that to its prerequisites the same way rather than the other tool's whole stamp. Long functional runs
+  on its whole file (tools/recipe.toml: each step's `tools`, `inputs` and `reads`): when a new export reads another
+  exporter's code or data, add that to its step the same way rather than the other tool's whole stamp. Long functional runs
   (soaks, routes) stop at the first error in the EE log (`tools/test-run.py --keep-going` to run on); test-run.py
   runs unthrottled and ISO runs start from a cached savestate of the build parked at the script's first spawn (`--realtime`,
   `--cold` for the old behaviour); queue the ones that need no answer today with `tools/later add <cmd>` for the night queue.

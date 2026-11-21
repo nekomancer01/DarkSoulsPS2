@@ -232,15 +232,17 @@ static int read_file(void)
     if (ok && keep) {
         ChunkFile t;  /* the same chunks, in the kept copy */
         chunk_open_part(&t, keep, at, f.size, CHUNK_ID('L', 'O', 'A', 'D'), "loading.bin");
-        H = chunk_get(&t, CHUNK_ID('L', 'H', 'D', 'R'), 1, NULL);
+        unsigned nh = 0;
+        H = chunk_get(&t, CHUNK_ID('L', 'H', 'D', 'R'), 1, &nh);
         spr = chunk_get(&t, CHUNK_ID('S', 'P', 'R', 'T'), 1, &n[0]);
         nodes = chunk_get(&t, CHUNK_ID('N', 'O', 'D', 'E'), 1, &n[1]);
         gly = chunk_get(&t, CHUNK_ID('G', 'L', 'Y', 'P'), 1, &n[2]);
         anim = chunk_get(&t, CHUNK_ID('A', 'N', 'I', 'M'), 1, &n[3]);
         hints = chunk_get(&t, CHUNK_ID('H', 'I', 'N', 'T'), 1, &n[4]);
         strs = chunk_get(&t, CHUNK_ID('S', 'T', 'R', 'S'), 1, &n[5]);
-        ok = H && spr && nodes && gly && anim && hints && strs && n[0] == H->nspr * sizeof *spr &&
-             n[1] == H->nnodes * sizeof *nodes && n[3] == 2 * H->nanim && n[4] == H->nhints * sizeof *hints;
+        ok = H && spr && nodes && gly && anim && hints && strs && nh == sizeof *H && n[0] == H->nspr * sizeof *spr &&
+             n[1] == H->nnodes * sizeof *nodes && n[2] == 95 * sizeof *gly && n[3] == 2 * H->nanim &&
+             n[4] == H->nhints * sizeof *hints && n[5] == H->str_bytes && (!n[5] || !strs[n[5] - 1]);
         if (!ok)
             printf("TEST error: chunk: loading.bin: tables do not match LHDR\n");
         ok = ok && upload(clut, pix);

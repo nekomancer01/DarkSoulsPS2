@@ -419,11 +419,12 @@ int main(int argc, char **argv)
     pack_close(&pk);
     /* HUD / menu: DSR's menu sprites, font, icons and English text (tools/export_menu.py) */
     void *menu_blob = NULL, *shine_blob = NULL;
-    unsigned shine_size = 0;
+    unsigned shine_size = 0, menu_size = 0, help_size = 0;
     if (pack_open(&pk, PACK_ROOT "menu.pak")) {
-        menu_blob = pack_load_static(&pk, "menu.bin", 0);
+        menu_blob = pack_load_static(&pk, "menu.bin", &menu_size);
         shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
-        hud_help_init(pack_load_static(&pk, "help.bin", 0));  /* action prompt texts (kept) */
+        void *help = pack_load_static(&pk, "help.bin", &help_size);
+        hud_help_init(help, help_size);  /* action prompt texts (kept) */
     }
     pack_close(&pk);
     t_load = ticks() - t_load;
@@ -457,7 +458,7 @@ int main(int argc, char **argv)
         dg_init(dg_blob, map_chunk_count(), (unsigned)col_tris());
     if (map_ok)
         map_pvs_init(pvs_blob);
-    hud_init(gs, menu_blob);  /* 194 KB VRAM for its two atlases */
+    hud_init(gs, menu_blob, menu_size);  /* 194 KB VRAM for its two atlases */
     /* enemies: character packs data/c####.pak + enemyCommon.esd (data/common.pak), placed from enemies.bin */
     /* "option noenemies" (breakables tests): no enemy roster, RAM / VRAM for the pots, no AI in the shots */
     int enemies = map_ok && !(test_opts & TEST_NOENEMIES) ? enemy_init(gs, enemy_blob, lua_blob, (int)lua_size) : 0;

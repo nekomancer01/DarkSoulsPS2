@@ -46,7 +46,7 @@ static int ok;
 static const char *fail = "MENU.PAK MISSING";  /* why hud_init failed, shown instead of the HUD */
 static float died_t;
 
-int hud_init(GSGLOBAL *g, const void *menu_bin)
+int hud_init(GSGLOBAL *g, const void *menu_bin, unsigned size)
 {
     gs = g;
     if (!menu_bin)
@@ -54,7 +54,7 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     fail = "MENU.BIN BAD";
     ChunkFile f;
     unsigned n[8];
-    if (!chunk_open(&f, menu_bin, CHUNK_SIZE_UNKNOWN, CHUNK_ID('M', 'E', 'N', 'U'), "menu.bin"))
+    if (!chunk_open(&f, menu_bin, size, CHUNK_ID('M', 'E', 'N', 'U'), "menu.bin"))
         return -1;
     hdr = chunk_get(&f, CHUNK_ID('M', 'H', 'D', 'R'), 1, &n[0]);
     const AtlasEntry *ae = chunk_get(&f, CHUNK_ID('A', 'T', 'L', 'S'), 1, &n[1]);
@@ -64,8 +64,8 @@ int hud_init(GSGLOBAL *g, const void *menu_bin)
     const LayoutEntry *le = chunk_get(&f, CHUNK_ID('L', 'A', 'Y', 'T'), 1, &n[5]);
     grad = chunk_get(&f, CHUNK_ID('G', 'R', 'A', 'D'), 1, &n[6]);
     strs = chunk_get(&f, CHUNK_ID('S', 'T', 'R', 'S'), 1, &n[7]);
-    if (!hdr || !ae || !texl || !spr || !gly || !le || !grad || !strs || hdr->atlases != 2 ||
-        hdr->layout != HUD_LAYOUT_COUNT || hdr->strings != STR_COUNT || n[1] != 2 * sizeof *ae ||
+    if (!hdr || !ae || !texl || !spr || !gly || !le || !grad || !strs || n[0] != sizeof *hdr || hdr->atlases != 2 ||
+        hdr->glyphs < 95 || n[4] != hdr->glyphs * sizeof *gly || hdr->layout != HUD_LAYOUT_COUNT || hdr->strings != STR_COUNT || n[1] != 2 * sizeof *ae ||
         n[3] != hdr->sprites * sizeof *spr || n[5] != hdr->layout * sizeof *le || n[6] != 16 * hdr->grads ||
         n[7] < 4 * hdr->strings) {
         hdr = NULL;
@@ -255,12 +255,12 @@ float hud_text_ex(float x, float y, const char *s, int r, int g, int b, int a, i
 static const u32 *help;      /* help.bin 'HELP' (tools/export_menu.py export_help): HIDX (id, offset into HTXT) */
 static const char *help_txt;
 static unsigned help_n;
-void hud_help_init(const void *blob)
+void hud_help_init(const void *blob, unsigned size)
 {
     ChunkFile f;
     unsigned n = 0, nt = 0;
     help = NULL;
-    if (chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('H', 'E', 'L', 'P'), "help.bin") &&
+    if (chunk_open(&f, blob, size, CHUNK_ID('H', 'E', 'L', 'P'), "help.bin") &&
         (help = chunk_get(&f, CHUNK_ID('H', 'I', 'D', 'X'), 1, &n)) &&
         !(help_txt = chunk_get(&f, CHUNK_ID('H', 'T', 'X', 'T'), 1, &nt)))
         help = NULL;
