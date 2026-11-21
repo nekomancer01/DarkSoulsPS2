@@ -160,8 +160,8 @@ static int sky_in(int k)
  * panorama of the block underfoot stands in for it, mapblock.c mp_draw_far); within a block whose cells are in, each
  * cell at the finest level that is wanted at its distance and complete in memory (cell_level). A finer level that is
  * complete stands in for a coarser one that is not (the near level for a coarse level still reading: the same pieces
- * at full detail); a level whose parent is gone is never left as the only cover, because a coarser level that is in
- * takes its place. Nothing complete: the coarse level as far as it is in, a hole (counted, "map: cells missing"). */
+ * at full detail; it draws even when its coarse parent is not all in, TECH_DEBT world-23); an incomplete level gives
+ * way to a coarser one that is in (the horizon). Nothing complete: the coarse level as far as it is in, a hole (counted, "map: cells missing"). */
 enum { LV_HOLE = 1, LV_HZN = 2, LV_COARSE = 3, LV_NEAR = 4 };  /* (hitch.c's level codes) */
 /* near_in: the near level is wanted (or stands in) and every part the camera sees is in; has_hz: the cell has a
  * horizon (in with the block's lite set); hzf: beyond HZN_R; miss / mcov: mp_miss_scan's resident chunks not in
