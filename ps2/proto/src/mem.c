@@ -41,6 +41,18 @@ void mem_pages_free(MemPages *m, void *p, unsigned n)
             m->bits[k >> 5] &= ~(1u << (k & 31)), m->used--;
 }
 
+void mem_pages_mark(MemPages *m, unsigned first, unsigned n, int on)
+{
+    for (unsigned k = first; k < first + n && k < m->npages; k++) {
+        unsigned b = 1u << (k & 31);
+        if (on && !(m->bits[k >> 5] & b))
+            m->bits[k >> 5] |= b, m->used++;
+        else if (!on && (m->bits[k >> 5] & b))
+            m->bits[k >> 5] &= ~b, m->used--;
+    }
+    m->peak = m->used > m->peak ? m->used : m->peak;
+}
+
 /* ---- bump ---- */
 
 void mem_bump_init(MemBump *b, void *base, unsigned size)

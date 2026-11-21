@@ -713,8 +713,8 @@ args = ["{G}/world_budget.json", "{PVS_PEERS}", "{WORLD_BUDGET_ARGS}"]
 env = { MAP = "{MAP}" }
 out = ["{G}/world_budget.json"]
 inputs = ["{A}/map.bin.cells.json", { foreach = "PVS_WITH", as = "d", do = "{d}/map.bin.cells.json" }, "{D}/world.pak",
-          "{A}/maptab.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/maptab.bin" }, "{SRC}/world.c",
-          "{SRC}/residency.h"]
+          "{A}/maptab.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/maptab.bin" }, "{SRC}/world_i.h",
+          "{SRC}/wplan.c", "{SRC}/residency.h"]
 tools = ["chunkfile.py", "world_budget.py", "residency.py"]
 
 # Coverage scan (Polaris 3.4, tools/scan): every reader over every file of the game, cached per file in build/scan;

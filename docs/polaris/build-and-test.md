@@ -171,6 +171,7 @@ Every pull request runs `.github/workflows/pr-checks.yml`, with no game data. Ru
 | Hygiene | `python3 -I tools/ci/hygiene.py` | game data or derived files, images outside the allowed list, personal paths, duplicate TECH_DEBT IDs |
 | Switch registry | `python3 -I tools/ci/switches.py` | a `#if` on a name with no row in `src/switches.h`, or a stale row |
 | GS ownership | `python3 -I tools/ci/gsown.py` | a raw GS register write outside `gs.h` / `gs.c`, a VU1 kick or wait outside `ot.c`, VRAM rows not summing to 4096 KB |
+| Part ownership | `python3 -I tools/ci/partown.py` | a world streaming part's private header (`world_i.h`, `mapstream_i.h`, `msarena.h`) included outside the part, the page arena seeing map items, an `extern` of a part's shared name elsewhere |
 | Memory regions | `sh tools/ci/test_mem.sh` | a host test of the region allocators (`mem.c` built with `MEM_HOST_TEST`) |
 | Offline | `tools/ci/offline.sh` | VU1 emulator tests, generated `.vsm` / `vu1_layout.h` / `*_data.h` out of date, Python that does not compile |
 | Compile | `tools/ci/compile.sh` | a warning or error in the data-free ELF build (ps2dev v2.0.0, `-Werror`) |
