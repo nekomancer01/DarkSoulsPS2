@@ -29,7 +29,9 @@ int df_read(int fd, void *dst, unsigned int n);
  * (the disc thread leaves it after its current page); drive_give hands it back */
 int drive_poll(unsigned int *waited);
 void drive_give(void);
-void who_log(void);  /* the "dsrsnd: drive" lines, every DRIVE_LOG_MS */
+void who_log(void);
+#define DRIVE_ANY 0xffffffffu  /* drive work that reads nothing (an open, a close): served where the head is */
+unsigned int df_lsn(int fd, unsigned int off);  /* the sector of byte off of fd, DRIVE_ANY when not read by sector */  /* the "dsrsnd: drive" lines, every DRIVE_LOG_MS */
 void disc_submit(const SndDiscReq *q, int n);
 void disc_thread(void *arg);
 int disc_init_semas(void);
@@ -49,5 +51,9 @@ void stream_thread(void *arg);
 int snd_init_semas(void);
 int snd_init_mem(void);
 void snd_init_ra(void);
+/* one queue (snd.c DSRSND_ONE_QUEUE): the sound part's next drive work, -1 none, 0 urgent (before every EE request),
+ * 1 background (*lsn where it reads, DRIVE_ANY anywhere; *t0 since when it waits); snd_drive_step does one step of it */
+int snd_drive_want(unsigned int *lsn, unsigned int *t0);
+void snd_drive_step(void);
 
 #endif

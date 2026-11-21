@@ -107,7 +107,10 @@ ifeq ($(MEDIA),cd)
 EE_CFLAGS += -DMEDIA_CD
 endif
 DISC_CACHE ?= 1
-DSRSND_DEFS = $(if $(filter 0,$(DISC_CACHE)),-DDSRSND_NO_CACHE)
+# DSRSND_ONE_QUEUE=0 (Polaris 4.5 fallback): dsrsnd's stream thread takes the drive itself between the disc thread's
+# pages, as before the one drive queue (iop/dsrsnd/snd.c). Same rebuild caveat as DISC_CACHE.
+DSRSND_ONE_QUEUE ?= 1
+DSRSND_DEFS = $(if $(filter 0,$(DISC_CACHE)),-DDSRSND_NO_CACHE) $(if $(filter 0,$(DSRSND_ONE_QUEUE)),-DDSRSND_ONE_QUEUE=0)
 
 # Profiling builds (tools-hwperf: src/prof.c, notes/threads/tools-hwperf.md); the shared objects and proto.elf stay as
 # they are. make PROFILE=1 -> proto_prof.elf: main.c with -DPROFILE (per-pass EE cycles + I$ / D$ misses from the COP0

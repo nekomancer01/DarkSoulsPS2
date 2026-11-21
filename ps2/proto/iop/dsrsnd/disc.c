@@ -464,8 +464,13 @@ static void cd_take(void)
     WaitSema(cd_sema);
 }
 
+unsigned int df_lsn(int fd, unsigned int off) { return df_is(fd) ? df_h[fd - DF_FD].lsn + off / 2048 : DRIVE_ANY; }
+
 static int disc_work(void)
 {
+    unsigned int lsn, t0;
+    if (snd_drive_want(&lsn, &t0) >= 0)
+        return 1;
     for (int i = 0; i < SND_DISC_SLOTS; i++)
         if (dq[i].live)
             return 1;
@@ -692,6 +697,11 @@ static void disc_step(void)
 {
     DiscJob *j = NULL, *old = NULL;
     unsigned int jd = 0;
+    /* the sound part's next drive work (one queue, snd.c DSRSND_ONE_QUEUE): urgent before everything, background in the
+     * sweep with the EE's background reads, as one more of them */
+    unsigned int a_lsn = 0, a_t0 = 0;
+    int a = snd_drive_want(&a_lsn, &a_t0);
+    unsigned int ad = a < 0 ? 0 : a_lsn == DRIVE_ANY ? 0 : a_lsn - (cd_head - 1);
     WaitSema(dq_sema);
     for (int i = 0; i < SND_DISC_SLOTS; i++) {
         DiscJob *c = &dq[i];
@@ -713,6 +723,20 @@ static void disc_step(void)
     if (j && old && old != j && old->r.prio <= j->r.prio && now_ms() - old->t0 > DISC_AGE_MS)
         j = old, dstat_aged++;
     SignalSema(dq_sema);
+    /* the sound part's work: urgent before everything; background like one more background request (after a sync one;
+     * the one further back in the sweep waits, unless one of the two waited past DISC_AGE_MS: then the older) */
+    int pick = a == 0 || (a == 1 && !j);
+    if (a == 1 && j && j->r.prio == SNDD_PRIO_BG) {
+        unsigned int now = now_ms();
+        int a_aged = now - a_t0 > DISC_AGE_MS, j_aged = now - j->t0 > DISC_AGE_MS;
+        pick = a_aged || j_aged ? a_aged && (!j_aged || (int)(a_t0 - j->t0) <= 0) : ad <= jd;
+    }
+    if (pick) {
+        cd_take();
+        snd_drive_step();
+        SignalSema(cd_sema);
+        return;
+    }
     if (!j)
         return;
     switch (j->r.op) {
