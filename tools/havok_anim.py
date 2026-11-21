@@ -183,7 +183,7 @@ def _block(data, ntracks):
     tracks = []
     for q, pos_t, rot_t, scl_t in masks:
         pq, rq, sq = q & 3, (q >> 2) & 0xF, (q >> 6) & 3
-        if rq not in ROT_ALIGN:
+        if rot_t & 0xFF and rq not in ROT_ALIGN:  # only a track with rotation data reads its quantization
             raise souls.UnknownVariant("havok rotation quantization", rq)
         pos = _vec_track(r, pos_t, pq, 0.0)
         r.pad(4)

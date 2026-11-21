@@ -30,6 +30,29 @@ from recipe import Step  # noqa: E402
 GC_THRESHOLD = gc.get_threshold()
 
 
+def wasm_numpy():
+    """Pyodide's numpy is 32-bit (intp = int32): bincount and repeat refuse int64 index / count arrays that 64-bit numpy
+    takes as they are ("Cannot cast ... according to the rule 'safe'"), and the exporters build such arrays everywhere.
+    In the browser both take them cast to intp first: the same values (an index or count past 2**31 cannot exist in a
+    32-bit address space), so the packs stay the same bytes (TECH_DEBT build-7)."""
+    import numpy as np
+    if getattr(np, "_dsr_wasm", False) or np.dtype(np.intp).itemsize == 8:
+        return
+    bincount, repeat = np.bincount, np.repeat
+
+    def intp(a):
+        a = np.asarray(a)
+        return a.astype(np.intp) if a.dtype.kind in "iu" and a.dtype.itemsize > np.dtype(np.intp).itemsize else a
+
+    np.bincount = lambda x, weights=None, minlength=0: bincount(intp(x), weights, minlength)
+    np.repeat = lambda a, repeats, axis=None: repeat(a, intp(repeats), axis)
+    np._dsr_wasm = True
+
+
+if sys.platform == "emscripten":
+    wasm_numpy()
+
+
 def run_tool(tool, args, env=None, capture=False):
     """Run tools/<tool> as `python3 -I tools/<tool> args` would, in this process. Returns its stdout when capture."""
     import io
@@ -177,7 +200,7 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
         if browser and (s.raw.get("browser") is False or s.raw.get("host")):
             # sound: fsb4.py decodes DSR's MP3 banks with libmpg123, which has no WebAssembly build here yet: the disc
             # boots without data/snd (sound.c stays silent). Host programs (the occlusion bake): no browser build yet,
-            # the packs go without pvs.bin (src/pvs.c: every chunk visible). TECH_DEBT build-13.
+            # the packs go without pvs.bin (src/pvs.c: every chunk visible). TECH_DEBT build-18.
             why = "no MP3 decoder" if s.raw.get("browser") is False else f"no browser build of {s.raw['host']}"
             log(f"[{i + 1}/{n}] {s.name}: skipped in the browser ({why}); build-iso.sh makes it")
             skipped |= {os.path.normpath(o) for o in s.outputs}

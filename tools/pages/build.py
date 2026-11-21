@@ -26,15 +26,17 @@ def git(*args):
 
 
 def source_zip(path, wasm):
-    """the converter's source tree: tracked tools/*.py and tools/native C files, the export recipe (tools/recipe.toml),
+    """the converter's source tree: every tracked tools/**/*.py (tools/vu1/layout.py: the map export's VU1 contract,
+    which sizes the programs from ps2/proto/src/*.vsm, zipped too)
+    and the tools/native C files, the export recipe (tools/recipe.toml),
     the residency table the map export reads (ps2/proto/src/residency.h, tools/residency.py), the wasm .so"""
-    files = [f for f in git("ls-files", "tools", "ps2/proto/src/residency.h").split("\n")
-             if f in ("tools/recipe.toml", "ps2/proto/src/residency.h") or (f.count("/") == 1 and f.endswith(".py")) or
-             (f.startswith(("tools/native/", "tools/mapx/")) and f.endswith((".c", ".h")))]
+    files = [f for f in git("ls-files", "tools", "ps2/proto/src/residency.h", "ps2/proto/src/*.vsm").split("\n")
+             if f in ("tools/recipe.toml", "ps2/proto/src/residency.h") or f.endswith((".py", ".vsm")) or
+             (f.startswith(("tools/native/", "tools/mapx/")) and f.endswith((".c", ".h", ".cpp")))]
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for f in files:
             z.write(os.path.join(ROOT, f), f)
-        for m in ("lz4pack", "bcdecode", "simplify", "geom"):
+        for m in ("lz4pack", "bcdecode", "simplify", "geom", "nearest", "hzerr", "hzvis", "meshopt"):
             z.write(os.path.join(wasm, f"lib{m}.so"), f"tools/native/lib{m}.so")
         z.write(os.path.join(wasm, "libmapx.so"), "tools/mapx/libmapx.so")
     return os.path.getsize(path)

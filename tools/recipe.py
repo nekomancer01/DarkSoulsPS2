@@ -167,7 +167,8 @@ def make_rules(r):
     out = [HEADER, ""]
     for name, h in r.get("host", {}).items():
         var = name.upper()
-        srcs = " ".join(f"../../tools/{s}" for s in h["sources"])
+        # a source is a path under tools/, or a template ("{SRC}/chunk.c": ps2/proto/src)
+        srcs = " ".join(Make().s(s, quote_game=False) if s.startswith("{") else f"../../tools/{s}" for s in h["sources"])
         cmd = h["cmd"].replace("{out}", "$@").replace("{GPU}", f"$(if $({var}_GPU_OK),{h['gpu_flags']})")
         out += [f"{Make().s('{' + var + '}', True)}: {srcs}", "\t@mkdir -p $(@D)", "\t" + Make().s(cmd, quote_game=False), ""]
     for step in r["step"]:
@@ -340,6 +341,7 @@ class Step:
         self.name, self.tool, self.args, self.outputs, self.env = name, tool, list(args), list(outputs), env or {}
         self.inputs = list(inputs)
         self.group, self.raw, self.inst = group, raw or {}, inst
+        self.maybe = []  # outputs written only sometimes (recipe "maybe"; also in outputs)
 
     def files(self):
         """every path the step names: arguments and environment values (pack.py's "name=raw:path" and "?" entries
@@ -430,8 +432,10 @@ class Plan:
             name = f"{c['OUT']}: {name}"
         group = step.get("group") or ("world" if step["scope"] == "world" else "shared" if step["scope"] == "shared"
                                       else c["OUT"] + (" packs" if step.get("stage") == "late" else ""))
-        return Step(name, step["tool"], args, c.items(step["out"]) + c.items(step.get("side", [])), env, inputs,
-                    group, step, inst)
+        S = Step(name, step["tool"], args, c.items(step["out"]) + c.items(step.get("side", [])) +
+                 [os.path.normpath(m) for m in c.items(step.get("maybe", []))], env, inputs, group, step, inst)
+        S.maybe = [os.path.normpath(m) for m in c.items(step.get("maybe", []))]
+        return S
 
     def steps(self):
         """every step instance of the default build that its goals need, in recipe order per instance (shared, the
@@ -498,7 +502,7 @@ class Plan:
         h = self.r["host"][name]
         c = self.base
         out = c.s(h["out"])
-        srcs = [os.path.join(TOOLS, s) for s in h["sources"]]
+        srcs = [c.s(s) if s.startswith("{") else os.path.join(TOOLS, s) for s in h["sources"]]
         if os.path.exists(out) and all(os.path.getmtime(s) <= os.path.getmtime(out) for s in srcs):
             return out
         gpu = ""
@@ -535,7 +539,8 @@ def main():
             if "--json" in a:
                 print(json.dumps({"name": step_name(s)} if not isinstance(s, Step) else
                                  {"name": s.name, "group": s.group, "tool": s.tool, "args": s.args, "env": s.env,
-                                  "outputs": s.outputs, "inputs": s.inputs, "tools": s.raw.get("tools", [])}))
+                                  "outputs": s.outputs, "maybe": s.maybe, "inputs": s.inputs,
+                                  "tools": s.raw.get("tools", [])}))
             else:
                 print(f"[{s.group if isinstance(s, Step) else s[1]['OUT']}] {step_name(s)}")
         return

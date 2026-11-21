@@ -1,7 +1,7 @@
 # The export recipe (Polaris 3.1): every step that turns the player's copy of DSR into the files of build/gen and the
 # packs of build/data, as plain data. tools/recipe.py reads it for every consumer:
-#   - ps2/proto/export.mk, the Makefile's export rules, is generated from it (python3 tools/recipe.py make; CI checks
-#     the committed file is current). The ELF / IOP / ISO rules and the world sub-make orchestration stay hand-written
+#   - ps2/proto/export_vars.mk (the knobs) and export_rules.mk (the Makefile's export rules) are generated from it
+#     (python3 tools/recipe.py make; CI checks the committed files are current). The ELF / IOP / ISO rules and the world sub-make orchestration stay hand-written
 #     in ps2/proto/Makefile.
 #   - tools/convert.py (the in-browser converter, tools/pages, and its native check) runs these steps in one process.
 #   - the export cache and the build gates attach to the steps' declared inputs, outputs, tools and environment.
@@ -25,7 +25,9 @@
 #            (the Makefile's $(PY))
 #   args, env (values are templates), env_line (a "K=V K=V" template prepended as environment)
 #   out      the files the step writes (the first is make's target); side: written by the same run, never made alone
-#            (make: a rule that checks they exist); reads: other files the tool reads, not make prerequisites
+#            (make: a rule that checks they exist); maybe: files (or directories, "dir/") it writes only sometimes or
+#            for its own use (logs, reports, work dirs): no make rule, but the converter and the export cache track
+#            them; reads: other files the tool reads, not make prerequisites
 #   inputs   files read that make treats as prerequisites (a pack's default: every entry's file)
 #   tools    tools/ sources the step runs (make: their stamps $(TS)/<tool>.sum; globs allowed)
 #   entries  pack.py steps: the pack's entries, name=path (raw: stored uncompressed; "?name=path": only when the file
@@ -164,6 +166,8 @@ ENEMIES = { tool = "export_enemies.py", args = ["--models", "{GAME}", "{MAP}"], 
 # Host programs steps run (built by make's rule from the same fields; convert.py builds them natively)
 [host.pvs_bake]
 out = "{BUILD}/host/pvs_bake{HOST_TAG}"
+# (make prerequisites and the convert.py rebuild check: paths under tools/, or templates such as "{SRC}/chunk.c";
+# cmd: {out}, {TOOLS}, {SRC}, {GPU} = gpu_flags when the probe passes, knobs)
 sources = ["pvs_bake.c", "pvs_gpu.c", "pvs_gpu.h"]
 cmd = "gcc {PVS_CFLAGS} -fopenmp -o {out} {TOOLS}/pvs_bake.c {GPU} -lm"
 # GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL) when PVS_GPU=1 and this compiles and links
@@ -310,6 +314,8 @@ goal = true
 browser = false
 args = ["{D}/snd", "{A}/snd", "{SND_MAPS}"]
 out = ["{D}/snd/main.pak"]
+# every other sound pack (mAA.pak per map, cXXXX.pak per enemy type), the work dir and the log
+maybe = ["{D}/snd/", "{A}/snd/", "{A}/snd.log"]
 tools = ["export_audio.py", "fev.py", "fsb4.py", "souls.py", "pack.py", "adpcm/adpcm.py", "adpcm/vagenc.c",
          "native/lz4pack.c", "area.py"]
 make = { target = "{A}/snd.stamp", outs = "none", mkdir = ["{D}/snd"], vars = { SHELL = "/bin/bash", ".SHELLFLAGS" = "-o pipefail -c" }, pre = ["@echo \"sound: exporting every bank of {SND_MAPS} (log in {A}/snd.log)\""], wrap = "{cmd} | tee {A}/snd.log", post = ["touch $@"] }
@@ -391,6 +397,8 @@ env_line = "{MAPENV_LINE}"
 env = { STATIC_OBJ = "{A}/objects.bin.static", ANIM_OBJ = "{A}/objects.bin.anim", FX_LIGHTS_FILE = "{A}/lights.json" }
 out = ["{A}/map.bin"]
 side = ["{A}/bump.bin", "{A}/dg.bin", "{A}/pvsin.bin", "{A}/map.bin.cells.json", "{A}/fx_tone.json"]
+# cells.bin: two-level maps only (STREAM=1); map.bin.budget.json: the spot budget solve's results (world blocks)
+maybe = ["{A}/cells.bin", "{A}/map.bin.budget.json"]
 inputs = ["{A}/objects.bin.static", "{A}/objects.bin.anim", "{A}/lights.json", "{SRC}/residency.h"]
 tools = ["export_map.py", "mapcfg.py", "mapchunks.py", "maplight.py", "mapgather.py", "mapsimp.py", "mapcells.py",
          "mapview.py", "material.py", "mapspec.py", "vu1layout.py", "vu1/layout.py", "mapx_native.py", "mapx/*.c",
@@ -435,6 +443,7 @@ args = ["{GAME}", "{A}/events.bin", "{MAP}", "--common", "{A}/evcommon.bin", "--
 env = { ANIM_OBJ = "{A}/objects.bin.anim" }
 out = ["{A}/events.bin"]
 side = ["{A}/evcommon.bin"]
+maybe = ["{A}/events.txt"]
 inputs = ["{A}/objects.bin"]
 reads = ["{A}/objects.bin.anim"]
 tools = ["export_emevd.py", "emevd.py", "export_collision.py", "navwalls.py", "navroute.py", "havok_collision.py",
@@ -519,6 +528,8 @@ queue = 12
 args = ["{A}/map.bin", "{A}/hzn.bin"]
 env = { HZN = "{HZN}", HZN_PANO = "{HZN_PANO}" }
 out = ["{A}/hzn.bin"]
+# the crown cards and the picture-layer backdrop hzn.bin leaves out, for the far panoramas (build only)
+maybe = ["{A}/hzn.bin.far.npz"]
 inputs = ["{A}/map.bin", "{A}/dg.bin"]
 reads = ["{A}/cells.bin"]
 tools = ["area.py", "horizon.py", "vu1/layout.py", "native/nearest.c", "simplify_native.py", "simplify.py",
