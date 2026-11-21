@@ -588,6 +588,8 @@ int save_test_cmd(const char *line, const Player *pl)
             return check("souls", prog.souls, a);
         if (!strcmp(what, "item") && sscanf(r, "%li %lu", (long *)&a, &b) == 2)
             return check("item", inv_count(a), b);
+        if (!strcmp(what, "estus") && sscanf(r, "%lu", &a) == 1)
+            return check("estus", prog.estus, a);
         if (!strcmp(what, "loaded") && sscanf(r, "%lu", &a) == 1)
             return check("loaded", loaded, a);
         if (!strcmp(what, "deaths") && pl && sscanf(r, "%lu", &a) == 1)

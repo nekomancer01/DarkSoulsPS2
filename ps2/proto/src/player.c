@@ -897,10 +897,13 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         p->throw_done = 1;
     }
     /* item use: the item anim's TAE 65 ConsumeCurrentGoods window applies the quick item once per play of the anim
-     * (Estus: a charge for goods 201's heal; drinking again restarts 7586, so a restart re-arms it) */
+     * (Estus: a charge for goods 201's heal; drinking again restarts 7586, so a restart re-arms it). Not while an
+     * event anim plays: the pickup crouch a00 7503 (also goodsUseAnim 8) carries TAE 65 too, and in DSR a pickup
+     * uses no item; the item anims come from the ESD, never through player_event_anim */
     if (!esd_action(p) || p->t < p->item_t)
         p->item_used = 0;
-    if (esd_action(p) && in_window(p->anim, ITEM_USE, p->t) && p->item_used != p->anim + 1 && chr_stats.valid) {
+    if (esd_action(p) && !player_event_anim_playing(p) && in_window(p->anim, ITEM_USE, p->t) &&
+        p->item_used != p->anim + 1 && chr_stats.valid) {
         p->item_used = p->anim + 1, p->item_t = p->t;
         int estus = chr_stats.item_id == (ITEM_GOODS | ESTUS_ID);
         if (estus ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0) {

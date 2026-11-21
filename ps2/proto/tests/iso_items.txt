@@ -3,7 +3,8 @@
 # get flag keeps it taken; then an enemy drop (lot 1010400, the far corpse o0500_0021's, rolled as a drop) at the
 # player's feet glows and is picked up the same way (both give Soul of a Lost Undead, goods 400: "EVT item lot: item
 # 40000190" lines); 40 rolls of the Burg hollow's NpcParam lot (2 % a Broken
-# Straight Sword) log "dropped" / "dropped nothing". Boot the ISO:
+# Straight Sword) log "dropped" / "dropped nothing". "check estus 5" after the first pickup: 7503 carries TAE 65,
+# and a pickup must not drink from the flask (the quick slot holds the Estus Flask). Boot the ISO:
 #   tools/test-run.py build/proto.sym.elf ps2/proto/tests/iso_items.txt <out> --iso build/proto.iso --timeout 600
 option nodemo
 option godmode
@@ -27,6 +28,7 @@ shot item_dialog
 pickup summary
 wait 4
 pickup expect dialog 0
+check estus 5
 pickup droplot 1010400 here
 wait 2
 pickup expect drops 1

@@ -72,7 +72,8 @@ def spec_terms(sp, uv):
     g = [px[4 * (((y + dy) % h) * w + (x + dx) % w) + 1] for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
     return round(sum(g) / 9), 255
 TEX_MAX = 256
-# (TAE file prefix, anim id, archive): the same list and order as export_player.py's ANIMS, plus idle first
+# (TAE file prefix, anim id, archive): the same anims as export_player.py's ANIMS, plus idle first (the item anims
+# are appended here but sit after BACKSTAB there; lookups go by anim id, so the order does not matter)
 # Item use by goodsUseAnim (group 1 states 1-23: Estus 7585-7588, the other goods' anims, 7510 = nothing to use)
 ITEM_ANIMS = (7585, 7586, 7587, 7588, 7510, 7500, 7501, 7502, 7530, 7540, 7550, 7560, 7561, 7562, 7570, 7571, 7580,
               6212, 6412)
