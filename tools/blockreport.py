@@ -297,7 +297,36 @@ def effects(map_id, scan):
                 unported_by_subtype=missing)
 
 
+def set_aside(paths):
+    """a failed gate leaves no target make would take as up to date: each file it wrote becomes <file>.failed (kept
+    to read), and an older copy under the real name goes too"""
+    for p in paths:
+        real = p[:-4] if p.endswith(".tmp") else p
+        if os.path.exists(p):
+            os.replace(p, real + ".failed")
+        if os.path.exists(real):
+            os.remove(real)
+
+
 def main(argv):
+    """the outputs appear under their names only when the gate passes (else <file>.failed): a rerun of make after a
+    miss runs the gate again instead of finding a fresh blockreport.json"""
+    written = []
+    try:
+        rc = report(argv, written)
+    except BaseException:
+        set_aside(written)
+        raise
+    if rc:
+        set_aside(written)
+    else:
+        for p in written:
+            if p.endswith(".tmp"):
+                os.replace(p, p[:-4])
+    return rc
+
+
+def report(argv, written):
     strict = "--strict" in argv and os.environ.get("BLOCKREPORT_STRICT", "1") != "0"
     args = [a for a in argv if a != "--strict"]
     scan = None
@@ -320,10 +349,12 @@ def main(argv):
     real_structural = wb.structural
     wb.structural = lambda _d: real_structural(boot)
     log = io.StringIO()
+    wb_out = os.path.splitext(out)[0] + ".world_budget.json.tmp"
+    written.append(wb_out)
     with contextlib.redirect_stdout(log):
-        wb_rc = wb.main([os.path.splitext(out)[0] + ".world_budget.json"] + dirs + ["--strict"])
+        wb_rc = wb.main([wb_out] + dirs + ["--strict"])
     wb.structural = real_structural
-    res = json.load(open(os.path.splitext(out)[0] + ".world_budget.json"))
+    res = json.load(open(wb_out))
     L = wb.LAST
     names = L.get("names", [])
     room = res["room_kb"]
@@ -361,13 +392,16 @@ def main(argv):
         r["effects"] = effects(map_id, scan)
         blocks.append(r)
         os.makedirs(os.path.join(os.path.dirname(os.path.abspath(out)), "blockreport"), exist_ok=True)
-        with open(os.path.join(os.path.dirname(os.path.abspath(out)), "blockreport", name + ".json"), "w") as f:
+        bp = os.path.join(os.path.dirname(os.path.abspath(out)), "blockreport", name + ".json.tmp")
+        written.append(bp)
+        with open(bp, "w") as f:
             json.dump(r, f, indent=1)
     if wb_rc:
         misses.insert(0, "world_budget.py --strict: " + next((ln for ln in log.getvalue().splitlines()
                                                             if "FAIL" in ln), "failed"))
     summary = dict(room_kb=room, world_budget_rc=wb_rc, gsb=gs_budget.GSB, misses=misses, blocks=blocks)
-    with open(out, "w") as f:
+    written.append(out + ".tmp")
+    with open(out + ".tmp", "w") as f:
         json.dump(summary, f, indent=1)
     for r in blocks:
         lv, rr, vr = r["levels"] or {}, r["residency"], r["vram"]

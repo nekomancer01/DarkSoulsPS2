@@ -693,3 +693,46 @@ inputs = ["{A}/map.bin.cells.json", { foreach = "PVS_WITH", as = "d", do = "{d}/
           "{A}/maptab.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/maptab.bin" }, "{SRC}/world.c",
           "{SRC}/residency.h"]
 tools = ["world_budget.py", "residency.py"]
+
+# Coverage scan (Polaris 3.4, tools/scan): every reader over every file of the game, cached per file in build/scan;
+# fails on an unknown variant tools/scan/known.tsv does not list (rows there point at TECH_DEBT). Whole game: about 2
+# minutes cold on 4 workers, seconds cached. Not in the browser (6000 files in Pyodide): the block report then has no
+# effect coverage ("no scan").
+[[step]]
+name = "coverage scan"
+scope = "world"
+goal = true
+browser = false
+tool = "scan/scan.py"
+queue = 12
+args = ["--game", "{GAME}", "--out", "{BUILD}/scan", "-j", "4"]
+out = ["{BUILD}/scan/files.json"]
+side = ["{BUILD}/scan/scan.json", "{BUILD}/scan/summary.md"]
+inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "{TOOLS}/scan/known.tsv"]
+tools = ["scan/*.py", "souls.py", "emevd.py", "esd.py", "ffx.py", "havok_anim.py", "havok_collision.py",
+         "havok_ragdoll.py", "lua50.py", "fev.py", "fsb4.py", "material.py", "mapgather.py", "export_emevd.py",
+         "export_effects.py"]
+
+# Block reports and the budget gate (Polaris 3.6, tools/blockreport.py): per world block triangles and bytes per level,
+# the hard tier and residency.h row against the visual room (world_budget.py run unchanged; --check: the same numbers as
+# world_budget.json), VRAM per gs_budget.h owner, EMEVD / Lua / effect coverage. --strict fails the build on a miss;
+# BLOCKREPORT_STRICT=0 reports only.
+[[step]]
+name = "block report"
+scope = "world"
+goal = true
+tool = "blockreport.py"
+queue = 12
+args = ["{G}/blockreport.json", "{PVS_PEERS}", "--scan", "{BUILD}/scan/files.json", "--check", "{G}/world_budget.json",
+        "--strict"]
+env = { MAP = "{MAP}" }
+out = ["{G}/blockreport.json"]
+side = ["{G}/blockreport.world_budget.json"]
+inputs = ["{G}/world_budget.json", "{A}/map.bin", "{A}/hzn.bin", "{A}/far.bin", "{A}/fx.bin", "{A}/objects.bin",
+          "{A}/events.bin", "{A}/ai_map.lua0", "{A}/ai_common.lua0",
+          { foreach = "PVS_WITH", as = "d", do = ["{d}/map.bin", "{d}/hzn.bin", "{d}/far.bin", "{d}/fx.bin",
+                                                   "{d}/objects.bin", "{d}/events.bin", "{d}/ai_map.lua0"] },
+          "{SRC}/residency.h", "{SRC}/gs_budget.h", "{SRC}/lua0.c", "{BUILD}/scan/files.json"]
+reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/cells.bin", "{d}/events.txt",
+         "{d}/maptex.bin"] }]
+tools = ["blockreport.py", "world_budget.py", "residency.py", "gs_budget.py", "mapcfg.py", "lua50.py", "scan/support.py"]

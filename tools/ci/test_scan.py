@@ -105,6 +105,10 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, out = run(tmp, [(128, 128)] * n)
     check(rc == 1 and "VRAM fx" in out, f"blockreport --strict fails {n * 17} KB of effect textures over the {row} KB FX row"
           + ("" if rc == 1 else "\n" + out))
+    left = [f for f in ("br.json", "br.world_budget.json", os.path.join("blockreport", "m10_01_00_00_t.json"))
+            if os.path.exists(os.path.join(tmp, f))]
+    check(not left and os.path.exists(os.path.join(tmp, "br.json.failed")),
+          f"a failed gate leaves its outputs as .failed only, so a second make runs it again (left: {left})")
     rc, out = run(tmp, [(128, 128)], lua50.OPS.index("TFORLOOP") if "TFORLOOP" not in support.lua_ops() else 63)
     check(rc == 1 and "opcodes lua0.c lacks" in out, "blockreport --strict fails a Lua pack with an opcode lua0.c lacks"
           + ("" if rc == 1 else "\n" + out))

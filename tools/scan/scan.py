@@ -188,20 +188,29 @@ def main():
                 print(f"scan: {i + 1}/{len(jobs)} files ({cached} cached), {time.time() - t0:.0f} s", flush=True)
     agg = summarize(results)
     known = load_known()
-    with open(os.path.join(a.out, "scan.json"), "w") as f:
+    # written as <name>.tmp, renamed when the scan passes, else <name>.failed (and no file under the real name): a
+    # rerun of make after a failed scan scans again instead of finding a fresh files.json
+    outs = [os.path.join(a.out, n) for n in ("scan.json", "files.json") + (() if a.only else ("summary.md",))]
+    for p in outs:
+        for old in (p, p + ".failed"):
+            if os.path.exists(old):
+                os.remove(old)
+    with open(os.path.join(a.out, "scan.json.tmp"), "w") as f:
         json.dump({"version": ver, "files": len(files), "reader_secs": round(secs, 1),
                    "variants": [dict(kind=k, value=v, **e, tech_debt=known_id(known, k, v))
                                 for (k, v), e in sorted(agg.items())]}, f, indent=1)
-    with open(os.path.join(a.out, "files.json"), "w") as f:  # per game file (tools/blockreport.py: effect coverage)
+    with open(os.path.join(a.out, "files.json.tmp"), "w") as f:  # per game file (tools/blockreport.py: effect coverage)
         json.dump({rel: [r[:4] for r in rows] for rel, rows in sorted(results.items()) if rows}, f)
     if not a.only:
-        write_summary(os.path.join(a.out, "summary.md"), agg, known, len(files), secs)
+        write_summary(os.path.join(a.out, "summary.md.tmp"), agg, known, len(files), secs)
     bad = [(k, v, e) for (k, v), e in sorted(agg.items()) if e["status"] in ("unknown", "error") and not known_id(known, k, v)]
     for k, v, e in bad:
         print(f"scan: {e['status']} {k} {v}: {e['count']} x in {e['files']} files, e.g. {e['example']}")
     st = collections.Counter(e["status"] for e in agg.values())
     print(f"scan: {len(files)} files, {len(agg)} variants ({dict(st)}), {len(bad)} unknown / error not in known.tsv, "
           f"{time.time() - t0:.0f} s; {a.out}/scan.json")
+    for p in outs:
+        os.replace(p + ".tmp", p + ".failed" if bad else p)
     return 1 if bad else 0
 
 
