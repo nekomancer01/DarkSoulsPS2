@@ -196,31 +196,24 @@ _CACHE = []
 
 
 def _cache():
-    """(cache dir, key prefix hash) for encode(), or None: TEX_CACHE (default <main tree>/build/cache/tex, shared like the
-    simplify cache; 0 = off). The key covers this file, the liq binding and library, the Pillow / numpy versions, the
-    knobs encode reads and the arguments, so a hit is the record encode would return."""
+    """the build cache's "tex" namespace for encode() (tools/buildcache.py; TEX_CACHE: 0 = off, a path = its directory),
+    or None when off. The key covers this file, the liq binding and library, the Pillow / numpy versions, the knobs
+    encode reads and the arguments, so a hit is the record encode would return."""
     if not _CACHE:
-        import hashlib, os
-        d = os.environ.get("TEX_CACHE")
-        if d == "0" or os.environ.get("TEX_SHEET"):  # the contact sheet needs encode's REPORT entries
+        import os, sys
+        if os.environ.get("TEX_SHEET"):  # the contact sheet needs encode's REPORT entries
             _CACHE.append(None)
             return None
-        if not d:
-            import simplify_pool
-            d = os.path.join(os.environ.get("DSR_CACHE") or os.path.join(simplify_pool.main_tree(), "build", "cache"),
-                             "tex")
         import PIL
-        h = hashlib.sha256(b"texmap-cache-1")
         here = os.path.dirname(os.path.abspath(__file__))
-        for f in (__file__, os.path.join(here, "liq", "liq.py"), os.path.join(here, "liq", "libimagequant.so")):
-            try:
-                h.update(open(f, "rb").read())
-            except OSError:
-                h.update(b"-")
-        knobs = [PIL.__version__, np.__version__, QUANT, MIP_CHAIN, sorted(PSM_OVERRIDE.items()),
-                 os.environ.get("TEX_FORCE4", ""), os.environ.get("TEX_FORCE8", "")]
-        h.update(repr(knobs).encode())
-        _CACHE.append((d, h))
+        sys.path.insert(0, here)
+        import buildcache
+        c = buildcache.Cache("tex", b"texmap-cache-2",
+                             sources=[__file__, os.path.join(here, "liq", "liq.py"), os.path.join(here, "liq", "libimagequant.so")],
+                             extra=[PIL.__version__, np.__version__, QUANT, MIP_CHAIN, sorted(PSM_OVERRIDE.items()),
+                                    os.environ.get("TEX_FORCE4", ""), os.environ.get("TEX_FORCE8", "")],
+                             where=os.environ.get("TEX_CACHE"))
+        _CACHE.append(c if c.dir else None)
     return _CACHE[0]
 
 
@@ -228,33 +221,12 @@ def encode(w, h, rgba, soft=False, name="", chain=None):
     """-> dict(w, h, psm, cpsm, clut, mips=[bytes, bytes], psnr4, psnr8). Results are cached across exports (_cache):
     Undead Burg's blocks share most textures, and a re-export after a non-texture change encodes none. chain: the
     source's authored mip levels after (w, h) [(w, h, RGBA bytes), ...] (souls.dds_decode_rgba_levels), or None."""
-    import os, pickle, zlib
     chain = chain if AUTHORED_MIPS and not soft else None
     c = _cache()
     if c is None:
         return _encode(w, h, rgba, soft, name, chain)
-    k = c[1].copy()
-    k.update(repr((w, h, bool(soft), name, len(rgba), [(a, b) for a, b, _ in chain or ()])).encode())
-    k.update(bytes(rgba))
-    for lw, lh, px in chain or ():
-        k.update(bytes(px))
-    key = k.hexdigest()
-    path = os.path.join(c[0], key[:2], key)
-    try:
-        with open(path, "rb") as f:
-            return Tex(pickle.loads(zlib.decompress(f.read())))
-    except (OSError, ValueError, EOFError, pickle.UnpicklingError, zlib.error):
-        pass
-    t = _encode(w, h, rgba, soft, name, chain)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
-            f.write(zlib.compress(pickle.dumps(dict(t), protocol=pickle.HIGHEST_PROTOCOL), 1))
-        os.replace(tmp, path)
-    except OSError as e:
-        print(f"texmap: cache write failed ({e})")
-    return t
+    k = c.key(w, h, bool(soft), name, bytes(rgba), [(a, b, bytes(px)) for a, b, px in chain or ()])
+    return Tex(c.cached(k, lambda: dict(_encode(w, h, rgba, soft, name, chain))))
 
 
 def _level(levels, tw, th):

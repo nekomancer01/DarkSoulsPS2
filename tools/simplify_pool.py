@@ -8,8 +8,9 @@ Cache: simplify() returns a collapse log that replays at any threshold, so a job
 stored under a hash of exactly those in a cache shared by every build dir (and every worktree of the repo, see
 tools/worktree.sh): re-exports after changes to lighting, textures, draw groups, effects, chunking or EPS / BUDGET
 tuning skip the quadric collapses, and a hit starts no worker at all.
-  SIMPLIFY_CACHE    cache dir (default <main tree>/build/cache/simplify; 0 = off)
-  SIMPLIFY_CACHE_GB size cap (default 10): oldest entries go first
+  SIMPLIFY_CACHE    the "simplify" namespace of tools/buildcache.py (default <cache root>/simplify; 0 = off, a path = its
+                    directory; BUILDCACHE=0 bypasses it, BUILDCACHE_VERIFY=1 runs the hits too and compares)
+  SIMPLIFY_CACHE_GB size cap (default 10): least recently used entries go first
 
 Pool: workers come from a forkserver, so each holds only its job instead of a copy-on-write fork of the 3-4 GB
 exporter (memwatch counted every fork's shared pages as its own and killed them, 2026-10-31 / 11-01). A worker that
@@ -18,37 +19,38 @@ run again with half the workers, down to one.
   SIMPLIFY_PROCS    workers (default 16, at most the CPU count)
   SIMPLIFY_NATIVE   1: the C simplifier (tools/native/simplify.c via simplify_native.py), 0: simplify.py; default:
                     C when its library builds (same collapses, see simplify_native.py)"""
-import hashlib, os, pickle, sys, time, zlib
+import os, sys, time
 
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import simplify
+import buildcache, simplify
 
-CACHE_VERSION = b"simplify-cache-2"  # 2: entries are compact logs (simplify.pack)
+CACHE_VERSION = b"simplify-cache-3"  # 2: entries are compact logs (simplify.pack), 3: buildcache entries
 
 
-def main_tree():
-    """The main working tree of this repo (a worktree's .git file points into <main>/.git/worktrees/<name>)"""
-    root = os.path.dirname(HERE)
-    g = os.path.join(root, ".git")
-    try:
-        if os.path.isfile(g):
-            gitdir = open(g).read().split("gitdir:", 1)[1].strip()
-            gitdir = os.path.normpath(os.path.join(root, gitdir))
-            common = open(os.path.join(gitdir, "commondir")).read().strip()
-            return os.path.dirname(os.path.normpath(os.path.join(gitdir, common)))
-    except (OSError, IndexError):
-        pass
-    return root
+main_tree = buildcache.main_tree
+
+
+_CACHES = {}
+
+
+def cache(be):
+    """the simplify namespace of the build cache (tools/buildcache.py; SIMPLIFY_CACHE: 0 = off, a path = its directory;
+    SIMPLIFY_CACHE_GB: its size cap); the key prefix is the chosen simplifier's code. One Cache per backend and
+    setting for the process: building one hashes the simplifier sources and registers an exit trim"""
+    where, cap = os.environ.get("SIMPLIFY_CACHE"), os.environ.get("SIMPLIFY_CACHE_GB", 10)
+    k = (be, where, cap, os.environ.get("DSR_CACHE"), os.environ.get("BUILDCACHE"))
+    if k not in _CACHES:
+        files = ["simplify.py"] + (["simplify_native.py", os.path.join("native", "simplify.c")] if be == "native" else [])
+        _CACHES[k] = buildcache.Cache("simplify", CACHE_VERSION, sources=[os.path.join(HERE, f) for f in files],
+                                      where=where, cap_gb=cap)
+    return _CACHES[k]
 
 
 def cache_dir():
-    c = os.environ.get("SIMPLIFY_CACHE")
-    if c == "0":
-        return None
-    return c or os.path.join(os.environ.get("DSR_CACHE") or os.path.join(main_tree(), "build", "cache"), "simplify")
+    return cache(backend()).dir
 
 
 def backend():
@@ -67,78 +69,15 @@ def backend():
         return "python"
 
 
-def _code_hash(be):
-    h = hashlib.sha256(CACHE_VERSION)
-    files = ["simplify.py"] + (["simplify_native.py", os.path.join("native", "simplify.c")] if be == "native" else [])
-    for f in files:
-        h.update(open(os.path.join(HERE, f), "rb").read())
-    return h
-
-
-def job_key(code, job, area_k):
+def job_key(c, job, area_k):
     pos, wpos, tris, locked, scale = job[:5]
-    h = code.copy()
     eff = simplify.AREA_K if area_k is None else area_k
-    h.update(repr(float(eff)).encode())
-    for a, dt in ((pos, np.float64), (wpos, np.int64), (tris, np.int64), (scale, np.float64)):
-        b = np.ascontiguousarray(np.asarray(a, dtype=dt)).tobytes()
-        h.update(len(b).to_bytes(8, "little") + b)
-    lk = b"" if locked is None else np.asarray(locked, dtype=np.uint8).tobytes()
-    h.update(len(lk).to_bytes(8, "little") + (b"N" if locked is None else lk))
+    parts = [float(eff), np.asarray(pos, dtype=np.float64), np.asarray(wpos, dtype=np.int64),
+             np.asarray(tris, dtype=np.int64), np.asarray(scale, dtype=np.float64),
+             None if locked is None else np.asarray(locked, dtype=np.uint8)]
     if len(job) > 5 and job[5] is not None:  # structure weight and its saturation (simplify.simplify weight / sat)
-        b = np.ascontiguousarray(np.asarray(job[5], dtype=np.float64)).tobytes()
-        h.update(b"W" + len(b).to_bytes(8, "little") + b + repr(float(job[6])).encode())
-    return h.hexdigest()
-
-
-def _load(path):
-    try:
-        with open(path, "rb") as f:
-            r = pickle.loads(zlib.decompress(f.read()))
-        os.utime(path)  # recently used: kept by the size cap
-        return r
-    except (OSError, ValueError, EOFError, pickle.UnpicklingError, zlib.error):
-        return None
-
-
-def _save(path, res):
-    tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "wb") as f:
-            f.write(zlib.compress(pickle.dumps(res, protocol=pickle.HIGHEST_PROTOCOL), 1))
-        os.replace(tmp, path)
-    except OSError as e:
-        print(f"simplify: cache write failed ({e})", flush=True)
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-
-
-def _trim(d):
-    cap = float(os.environ.get("SIMPLIFY_CACHE_GB", 10)) * (1 << 30)
-    ents = []
-    for sub in os.listdir(d):
-        p = os.path.join(d, sub)
-        if not os.path.isdir(p):
-            continue
-        for n in os.listdir(p):
-            try:
-                st = os.stat(os.path.join(p, n))
-                ents.append((st.st_mtime, st.st_size, os.path.join(p, n)))
-            except OSError:
-                pass
-    total = sum(e[1] for e in ents)
-    if total <= cap:
-        return
-    for _, size, p in sorted(ents):
-        try:
-            os.remove(p)
-        except OSError:
-            continue
-        total -= size
-        if total <= 0.8 * cap:
-            break
+        parts += [np.asarray(job[5], dtype=np.float64), float(job[6])]
+    return c.key(*parts)
 
 
 def work(job, area_k, be):
@@ -158,21 +97,22 @@ def run_jobs(jobs, area_k=None):
     order"""
     t0 = time.time()
     be = backend()
-    d = cache_dir()
+    c = cache(be)
+    d = c.dir
     res = [None] * len(jobs)
     keys = [None] * len(jobs)
     if d:
-        code = _code_hash(be)
         for i, j in enumerate(jobs):
-            keys[i] = job_key(code, j, area_k)
-            res[i] = _load(os.path.join(d, keys[i][:2], keys[i]))
+            keys[i] = job_key(c, j, area_k)
+            res[i] = c.get(keys[i])
     hits = sum(r is not None for r in res)
-    todo = sorted((i for i in range(len(jobs)) if res[i] is None), key=lambda i: -len(jobs[i][2]))
+    cached = {i: r for i, r in enumerate(res) if r is not None} if c.verify else {}  # verify mode: run the hits too
+    todo = sorted((i for i in range(len(jobs)) if res[i] is None or i in cached), key=lambda i: -len(jobs[i][2]))
     procs = max(1, min(int(os.environ.get("SIMPLIFY_PROCS", 16)), os.cpu_count() or 1, len(todo) or 1))
     if procs == 1:  # one worker: in process (no pool to kill, nothing to pickle; the browser converter has no processes)
         for i in list(todo):
             res[i] = work(jobs[i], area_k, be)
-            _store(d, keys[i], res[i])
+            _store(c, keys[i], res[i], cached.get(i))
         todo = []
     else:  # imported only here: Pyodide has no _multiprocessing
         import multiprocessing
@@ -187,7 +127,7 @@ def run_jobs(jobs, area_k=None):
                 for f in as_completed(futs):
                     i = futs[f]
                     res[i] = f.result()
-                    _store(d, keys[i], res[i])
+                    _store(c, keys[i], res[i], cached.get(i))
                     todo.remove(i)
         except BrokenProcessPool:
             tries += 1
@@ -196,17 +136,13 @@ def run_jobs(jobs, area_k=None):
             procs = max(1, procs // 2)
             print(f"simplify: a worker died (killed or out of memory); {len(todo)} jobs again with {procs} workers",
                   flush=True)
-    if d:
-        try:
-            _trim(d)
-        except OSError:
-            pass
     print(f"simplify: {len(jobs)} jobs, {hits} from the cache{f' ({d})' if d else ' (cache off)'}, "
-          f"{len(jobs) - hits} run ({be}) in {time.time() - t0:.1f} s", flush=True)
+          f"{len(jobs) - hits} run ({be}){f', {len(cached)} verified' if cached else ''} in {time.time() - t0:.1f} s", flush=True)
     return res
 
 
-def _store(d, key, r):
-    if d and key:
-        os.makedirs(os.path.join(d, key[:2]), exist_ok=True)
-        _save(os.path.join(d, key[:2], key), r)
+def _store(c, key, r, was=None):
+    if was is not None:  # verify mode: a hit recomputed
+        c.check(key, was, r)
+    else:
+        c.put(key, r)
