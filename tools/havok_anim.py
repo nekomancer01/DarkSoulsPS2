@@ -89,10 +89,12 @@ def _quat(r, qt):
         return tuple(q)
     if qt == 5:
         return r.un("4f")
-    raise NotImplementedError(f"rotation quantization {qt}")
+    raise souls.UnknownVariant("havok rotation quantization", qt)
 
 
 def _scalar(r, lo, hi, qt):
+    if qt not in (0, 1):
+        souls.skipped("havok scalar quantization", qt)  # read as 16-bit (BITS16), as before
     v = r.u8() / 255.0 if qt == 0 else r.un("H") / 65535.0
     return lo + (hi - lo) * v
 
@@ -181,6 +183,8 @@ def _block(data, ntracks):
     tracks = []
     for q, pos_t, rot_t, scl_t in masks:
         pq, rq, sq = q & 3, (q >> 2) & 0xF, (q >> 6) & 3
+        if rot_t & 0xFF and rq not in ROT_ALIGN:  # only a track with rotation data reads its quantization
+            raise souls.UnknownVariant("havok rotation quantization", rq)
         pos = _vec_track(r, pos_t, pq, 0.0)
         r.pad(4)
         if rot_t & 0xF0:
@@ -207,6 +211,9 @@ def _ev(v, f):
 def animation(hkx):
     """-> (frame count, fps, track->bone list, frames: [[(t xyz, q xyzw, s xyz) per track]])"""
     h = souls.HkTag(hkx)
+    if not h.objects("hkaSplineCompressedAnimation"):
+        raise souls.UnknownVariant("havok animation class", ",".join(sorted(
+            t.name for t in h.types if t.name and t.name.startswith("hka") and t.name.endswith("Animation"))) or "none")
     A = h.type("hkaSplineCompressedAnimation")
     o = h.objects("hkaSplineCompressedAnimation")[0]
     nframes, nblocks = h.get(o, A, "numFrames", "i"), h.get(o, A, "numBlocks", "i")

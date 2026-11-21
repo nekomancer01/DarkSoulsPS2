@@ -174,6 +174,25 @@ A new cached step builds a `buildcache.Cache(namespace, version, sources=..., ex
 and environment value that changes its output, then calls `cache.cached(key, compute)`. Phase 3 part 2 wraps every
 recipe step this way.
 
+## Coverage scan and block reports
+
+**Coverage scan** (`tools/scan/scan.py`, Polaris 3.4). Runs every reader over every file of the game once and lists
+what it meets per kind: FLVER versions and vertex layouts, MTD blend modes against the material classes, TAE event
+types, Havok classes and quantizations, FFX node / action types, EMEVD instructions, ESD commands and env functions per
+character kind, MSB part / event / region types, Lua opcodes, param types and DDS formats. Each variant is `ok`,
+`unported` (the reader knows it, the port does not run it: the coverage list), `unknown` (the reader does not know
+it) or `error` (a reader failure). Readers raise `souls.UnknownVariant` (an AssertionError and a ValueError, so old
+handlers still catch it) where they used to assert or guess, and report what they pass over through `souls.skipped()`
+(`SOULS_STRICT=1` makes that raise). Results are cached per game file under `build/scan` (about 2 minutes on four
+workers cold, seconds cached); `summary.md` holds ids and counts only. The scan fails on an unknown variant that
+`tools/scan/known.tsv` does not list; every row there points at a TECH_DEBT row (scan-1..7).
+
+**Block reports** (`tools/blockreport.py`, Polaris 3.6). One report per world block from the export's own outputs:
+triangles and bytes per detail level, the hard tier and the block's `residency.h` row against the visual room (from
+`tools/world_budget.py`, run unchanged), VRAM per `gs_budget.h` owner, EMEVD classes and packed Lua opcodes, and the
+effect coverage of the block's FFX bundle from the scan. `--strict` fails the build on a miss: world_budget's own
+verdict, FX or OBJ textures over their rows, or a Lua opcode `lua0.c` lacks (`BLOCKREPORT_STRICT=0` reports only).
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the

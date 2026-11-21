@@ -351,3 +351,5 @@ MAP_WATER	env	1	flag	gfx	0	new	mapgather.py	water: white texture + Fresnel terms
 WATER_EDGE	env	6.0	tune	world	-	new	mapgather.py	metres: water triangles cut to edges at most this long (per-vertex Fresnel)
 TEX_AUTHORED_MIPS	env	1	flag	world	0	new	texmap.py	every map level (mip 0-3) from the DDS authored levels on level 0's palette; 0 = resample + box filter
 FX_MODEL	env	1	flag	fx	0	new	export_effects.py	model particles (action 108): flat one-mesh models drawn as the particle quad, blend from the material class
+BLOCKREPORT_STRICT	env	1	flag	tools	0	new	blockreport.py	blockreport.py --strict fails the build on a budget miss (hard tier, residency.h rows, FX / OBJ VRAM rows, Lua opcodes outside lua0.c); 0 = report only
+SOULS_STRICT	env	unset	debug	game	-	new	souls.py	1 = a variant a reader passes over (souls.skipped: an unread FLVER vertex member, an unnamed MSB type, a param without paramdef) raises souls.UnknownVariant instead

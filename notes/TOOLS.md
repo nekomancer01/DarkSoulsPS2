@@ -28,6 +28,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `fev.py`, `fsb4.py` | FMOD event projects (FEV1), sample banks (FSB4) |
 | `ffx.py` | DSR effects (FXR1 in sfx/*.ffxbnd): nodes, states, actions, particle data, curves; `--check` |
 | `xcheck.py` | Cross-check of the readers against soulstruct |
+| `scan/scan.py` | Coverage scan (Polaris 3.4): every reader over every game file (per-file cache in build/scan), variants per kind with status ok / unported / unknown; fails on an unknown not in `scan/known.tsv` (rows point at TECH_DEBT). Readers raise `souls.UnknownVariant`; `SOULS_STRICT=1` makes their silent skips raise too |
 
 ## Exporters (game files -> PS2 data)
 | Tool | Output |
@@ -47,6 +48,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pvs_bake.c`, `pvs_cache.py` | pvs.bin: the occlusion bake (sampled visible set per camera cell) and its content cache |
 | `buildcache.py` | Content-addressed build cache shared by the export steps (pvs, simplify, snd, tex namespaces under build/cache; BUILDCACHE=0 bypass, BUILDCACHE_VERIFY=1 recompute and compare, BUILDCACHE_GB cap); `python3 tools/buildcache.py stats` / `trim` / `clear <ns>` |
 | `export_world.py`, `world_budget.py` | World block table (which block packs exist, neighbours, link triangles); streaming budget check across blocks |
+| `blockreport.py` | Per-block report and budget gate (Polaris 3.6): triangles and bytes per level, hard tier vs room and residency.h (world_budget.py run unchanged), VRAM per gs_budget.h owner, script / effect coverage; `--strict` fails on a miss (BLOCKREPORT_STRICT=0 reports), `--check` compares with the build's world_budget.json |
 | `pano.py` | Far panorama for capture builds (render-distance variant A) |
 | `navwalls.py` | Walls of one collision part that seal a doorway another part leaves open (navmesh crosses them onto another part's floor); export_collision.py drops them (NAVWALLS=0 keeps them). `navwalls.py <map>` lists them |
 | `export_model.py`, `export_player.py`, `export_combat.py` | Warrior model + animations, player data, combat data |
