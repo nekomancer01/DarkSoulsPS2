@@ -53,11 +53,13 @@ def reap_slot(n):
         inst = open(path).read().strip()
     except OSError:
         return
+    if not inst.isdigit():  # a flatpak instance id; anything else is not this tool's note
+        inst = ""
     if inst:
         r = subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
         if r.returncode == 0:
             print(f"[test-run] slot {n}: killed PCSX2 instance {inst} left by a dead run", flush=True)
-    for f in (path, f"/tmp/pcsx2-headless/{inst}"):
+    for f in (path, f"/tmp/pcsx2-headless/{inst}") if inst else (path,):
         try:
             os.remove(f)
         except OSError:
@@ -522,6 +524,9 @@ def hitch_gates(log, res):
 
 
 def _stop(sig, frame):
+    import signal
+    for s in (signal.SIGTERM, signal.SIGHUP):  # a second signal must not cut run()'s finally (the kill) short
+        signal.signal(s, signal.SIG_IGN)
     raise SystemExit(128 + sig)  # (run()'s finally kills the PCSX2 instance)
 
 
