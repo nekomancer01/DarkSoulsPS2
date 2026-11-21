@@ -677,6 +677,27 @@ out = ["{D}/world.pak"]
 entries = ["world.bin={G}/world.bin"]
 tools = ["pack.py", "native/lz4pack.c"]
 
+# World manifest (Polaris 4.8, tools/worldmanifest.py): every map of Lordran cut into blocks on the 32 m cells (the
+# hand-set cuts of tools/area.py BLOCKS pinned, the other maps cut automatically), with collision and enemy counts,
+# seams, lead and RES_BLOCK row per block; --check fails the build when a block of the world build has no RES_BLOCK row
+# or spawn, pinned blocks overlap or the world has more than WORLD_MAX blocks. Reads every map's MSB and h collision
+# (~25 s cold, cached per map in build/cache/worldmanifest). Not in the browser (no world gate there, as the scan).
+[[step]]
+name = "world manifest"
+scope = "world"
+goal = true
+browser = false
+tool = "worldmanifest.py"
+queue = 12
+args = ["{GAME}", "{G}/world_manifest.json", "--md", "{G}/world_manifest.md", "--cache", "{BUILD}/cache/worldmanifest",
+        "--check"]
+out = ["{G}/world_manifest.json"]
+side = ["{G}/world_manifest.md"]
+maybe = ["{BUILD}/cache/worldmanifest/"]
+inputs = ["{SRC}/residency.h", "{SRC}/world.h", "{A}/area.sig", { foreach = "PVS_WITH", as = "d", do = "{d}/area.sig" }]
+tools = ["worldmanifest.py", "worldgraph.py", "area.py", "gamepath.py", "havok_collision.py", "souls.py", "residency.py",
+         "export_world.py"]
+
 # World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own;
 # this sums what all blocks ask of mapstream's arena at each navmesh spot of each block (near level within the draw
 # radius, coarse level to the pin radius, kept meshes, the spot's backdrop and sky) and fails the build (--strict, since

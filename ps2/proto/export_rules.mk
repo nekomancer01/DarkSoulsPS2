@@ -210,6 +210,13 @@ $(D)/world.pak: $(G)/world.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	@mkdir -p $(@D)
 	python3 -I ../../tools/pack.py $(D)/world.pak world.bin=$(G)/world.bin
 
+# world manifest (world): tools/worldmanifest.py
+$(G)/world_manifest.json: src/residency.h src/world.h $(A)/area.sig $(foreach d,$(PVS_WITH),$(d)/area.sig) $(TS)/worldmanifest.py.sum $(TS)/worldgraph.py.sum $(TS)/area.py.sum $(TS)/gamepath.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(TS)/residency.py.sum $(TS)/export_world.py.sum
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/worldmanifest.py "$(GAME)" $(G)/world_manifest.json --md $(G)/world_manifest.md --cache $(BUILD)/cache/worldmanifest --check
+$(G)/world_manifest.md: $(G)/world_manifest.json
+	@test -f $@ || { echo "$@ missing: re-export world_manifest.json"; rm -f $<; exit 1; }
+
 # world budget (world): tools/world_budget.py
 $(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world.c src/residency.h $(TS)/chunkfile.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum
 	@mkdir -p $(@D)

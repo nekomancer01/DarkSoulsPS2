@@ -257,6 +257,22 @@ verdict, FX or OBJ textures over their rows, or a Lua opcode `lua0.c` lacks (`BL
 Both are world goals of the default build (recipe steps "coverage scan" and "block report", after "world
 budget"); the browser converter skips the scan (the report then shows no effect coverage).
 
+## World manifest
+
+**World manifest** (`tools/worldmanifest.py`, Polaris 4.8). One description of every map of Lordran as world blocks,
+from the game's own data: the maps and their links from `tools/worldgraph.py` (load lists, MapOffset events,
+ConnectCollision parts), every map's h collision counted per 32 m cell, and the MSB's player starts, bonfires and
+enemies. Maps with hand-set cuts in `tools/area.py` BLOCKS keep them (pinned); every other map is cut automatically by
+the same cell rules (whole 32 m cells, blocks of one MSB tile it, collision under collision.bin's u16 indices: the
+occupied rectangle is split along its longer axis at the line that balances the halves, until each is under 60000
+triangles). Per block: cells, collision, enemy roster against `area.MAX_ENEMIES`, spawn (a player start, else a floor
+point), its `residency.h` row (or the default row, flagged) and whether a world build holds it; per seam: the blocks of
+one MSB whose cells touch and the ConnectCollision links, with the lead `export_world.py` gives them (one cell). Maps
+are listed in DSR's progression order with the cells no pinned block covers yet. `worldmanifest.py <game> --propose
+<map>` prints a map's automatic cut as BLOCKS rows, to pin it when the area is added. Recipe step "world manifest"
+(world goal, `gen/world_manifest.json` + `.md`); `--check` fails the build when a block of the world build has no
+RES_BLOCK row or spawn, pinned blocks overlap, or the world has more than WORLD_MAX blocks.
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the
