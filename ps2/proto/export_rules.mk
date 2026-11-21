@@ -211,7 +211,7 @@ $(D)/world.pak: $(G)/world.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	python3 -I ../../tools/pack.py $(D)/world.pak world.bin=$(G)/world.bin
 
 # world manifest (world): tools/worldmanifest.py
-$(G)/world_manifest.json: src/residency.h $(A)/area.sig $(foreach d,$(PVS_WITH),$(d)/area.sig) $(TS)/worldmanifest.py.sum $(TS)/worldgraph.py.sum $(TS)/area.py.sum $(TS)/gamepath.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(TS)/residency.py.sum
+$(G)/world_manifest.json: src/residency.h src/world.h $(A)/area.sig $(foreach d,$(PVS_WITH),$(d)/area.sig) $(TS)/worldmanifest.py.sum $(TS)/worldgraph.py.sum $(TS)/area.py.sum $(TS)/gamepath.py.sum $(TS)/havok_collision.py.sum $(TS)/souls.py.sum $(TS)/residency.py.sum $(TS)/export_world.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/worldmanifest.py "$(GAME)" $(G)/world_manifest.json --md $(G)/world_manifest.md --cache $(BUILD)/cache/worldmanifest --check
 $(G)/world_manifest.md: $(G)/world_manifest.json

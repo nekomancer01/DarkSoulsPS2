@@ -33,7 +33,7 @@ Lead: export_world.py's LOAD_CELLS (one cell, 32 m) ahead of a seam, in seconds 
 --check fails (exit 1) when a block of a world build (area.WORLDS) has no RES_BLOCK row of its own or no spawn, two
 pinned blocks of a map overlap, or a world build has more than WORLD_MAX blocks; cells of a built map that no pinned block covers are listed (not a failure:
 they are the areas still to add)."""
-import glob, json, math, os, sys
+import glob, json, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import area, gamepath, worldgraph
@@ -42,10 +42,22 @@ VERSION = 1
 CELL = area.CELL
 COL_CAP = 65535  # collision.bin u16 triangle indices
 COL_CUT = 60000  # the automatic cut's target (a margin under COL_CAP)
-WORLD_MAX = 16  # ps2/proto/src/world.h
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _const(path, pat, conv):
+    """a constant read from another source file, so the two cannot drift apart"""
+    with open(os.path.join(_HERE, path)) as f:
+        m = re.search(pat, f.read(), re.M)
+    if not m:
+        raise SystemExit(f"worldmanifest: cannot read {pat!r} from {path}")
+    return conv(m.group(1))
+
+
+WORLD_MAX = _const("../ps2/proto/src/world.h", r"^#define WORLD_MAX (\d+)", int)
 ENEMY_CAP = area.MAX_ENEMIES
 SPRINT_MS = 6.0  # ASSUMED dash speed (m/s) for lead seconds (TECH_DEBT world-10's 6 m/s sprint)
-LOAD_CELLS = 1.0  # export_world.LOAD_CELLS (kept in step by --check)
+LOAD_CELLS = _const("export_world.py", r"^LOAD_CELLS, KEEP_CELLS = ([\d.]+),", float)
 # DSR's progression order (the main route of a first playthrough: Asylum, Firelink, Burg and Parish, Depths, Darkroot,
 # Blighttown, Quelaag's domain / Demon Ruins (one MSB with Lost Izalith), Sen's Fortress, Anor Londo, the Painted
 # World, New Londo, the Duke's Archives, the Catacombs, the Tomb of the Giants, the Great Hollow / Ash Lake, the Kiln;
@@ -113,7 +125,7 @@ def map_cells(game, mid, cache=None):
                 kc = f"{c[0]},{c[1]}"
                 pc[kc] = pc.get(kc, 0) + 1
     havok_collision.forget()
-    if cpath:
+    if cpath and not out["error"]:  # a read error is not cached: a reader fix or a transient failure re-reads
         os.makedirs(cache, exist_ok=True)
         with open(cpath + ".tmp", "w") as f:
             json.dump(out, f)
@@ -278,6 +290,10 @@ def manifest(game, cache=None, log=print):
             warnings.append(f"{mid}: collision unreadable ({mc['error']})")
         blocks += mblocks
         log(f"{mid}: {source}, {len(mblocks)} blocks, {mc['tris']} collision, {len(left)} cells left")
+    names = {b["name"] for b in blocks}
+    for b, w in sorted(built.items()):
+        if b not in names:
+            errors.append(f"{b}: in area.WORLDS[{w!r}] but no map or BLOCKS entry makes a block of that name")
     # seams
     byname = {b["name"]: b for b in blocks}
     seams = []
@@ -360,6 +376,9 @@ def propose(M, mid):
         if b["map"] != mid:
             continue
         sp = b["spawn"]
+        if not sp:
+            rows.append(f'    # {b["name"]}: no spawn (no player start, no floor): add spawn_at by hand')
+            continue
         spawn = f'spawn="{sp}"' if isinstance(sp, str) else f"spawn_at=({sp[0]}, {sp[1]}, {sp[2]})"
         cells = ", ".join("(%d, %d, %d, %d)" % tuple(r) for r in b["cells"]) if b["cells"] else None
         rows.append(f'    "{b["name"]}": dict(map="{mid}", {spawn}' + (f", cells=({cells},)" if cells else "") +
@@ -376,7 +395,11 @@ if __name__ == "__main__":
         M = manifest(game, cache, log=lambda m: print(m, file=sys.stderr))
         print(propose(M, opt("--propose")))
         sys.exit(0)
-    out = a[1]
+    pos = [x for i, x in enumerate(a) if not x.startswith("--") and (i == 0 or a[i - 1] not in ("--cache", "--md"))]
+    if len(pos) < 2:
+        sys.exit("usage: worldmanifest.py <game> <out.json> [--md <out.md>] [--cache <dir>] [--check] | "
+                 "<game> --propose <map>")
+    out = pos[1]
     M = manifest(game, cache, log=lambda m: print("worldmanifest: " + m, file=sys.stderr))
     with open(out + ".tmp", "w") as f:
         json.dump(M, f, indent=1)
@@ -390,4 +413,7 @@ if __name__ == "__main__":
         print("worldmanifest: ERROR " + e, file=sys.stderr)
     print(f"worldmanifest: {len(M['maps'])} maps, {len(M['blocks'])} blocks, {len(M['seams'])} seams, "
           f"{len(M['errors'])} errors -> {out}", file=sys.stderr)
-    sys.exit(1 if "--check" in a and M["errors"] else 0)
+    if "--check" in a and M["errors"]:
+        os.replace(out, out + ".failed")  # no target left behind: the next make re-runs and fails again
+        print(f"worldmanifest: --check failed, manifest kept as {out}.failed", file=sys.stderr)
+        sys.exit(1)
