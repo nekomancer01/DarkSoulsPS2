@@ -213,11 +213,14 @@ void world_source_off(int kind)
 }
 /* the blocks a source other than the player wants: those its floor's links load / keep (the block it stands in too)
  * when that block is on, else every block whose bounds and height range hold it (as the player without a floor) */
+static int src_boot;  /* a source stands in the boot block (its tables come back: boot_want) */
+static unsigned src_only_m;  /* last step's blocks wanted by the other sources alone (not by the player) */
 static void src_wants(const float *p, unsigned *wm, unsigned *km)
 {
     ColHit h = {.tri = -1};
     *wm = *km = 0;
     if (col_floor(p[0], p[2], p[1] + 1.0f, p[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk && w_rt[h.block].state == W_ON) {
+        src_boot |= h.block == 0;
         const WorldLink *l = link_at(h.block, h.tri);
         unsigned self = h.block ? 1u << h.block : 0;
         *wm = (l ? l->load : 0) | self, *km = (l ? l->keep : 0) | self;
@@ -268,6 +271,7 @@ void w_step(const float *feet, float dt)
                        * from Darkroot into the Depths kept two Darkroot blocks wanted and found no slot, 2026-11-15) */
             wm = km = 0, w_reach_m = 0;
         w_ronly_m = 0;
+        wm &= ~src_only_m;  /* (last step's source blocks come back below as the sources' again, not the player's) */
         for (int i = 1; i < w_nblk; i++)
             if (box_d(&w_tab[i], feet) <= 0.0f && feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
@@ -277,10 +281,17 @@ void w_step(const float *feet, float dt)
         * (mapstream_sources) */
         float sp[WSRC_N][3];
         int ns = 0;
+        src_boot = 0;
+        unsigned pw = wm;  /* the player's wants */
+        src_only_m = 0;
         for (int s = WSRC_PLAYER + 1; WORLD_SOURCES && s < WSRC_N; s++)
             if (w_src[s].on) {
                 unsigned sw, sk;
                 src_wants(w_src[s].pos, &sw, &sk);
+                /* wanted as by the reach alone (w_ronly_m): after the player's, never taking a slot or pool room
+                 * from a block the player's floor wants, never spilling into the item pages */
+                w_ronly_m |= sw & ~wm;
+                src_only_m |= sw & ~pw;
                 wm |= sw, km |= sk;
                 memcpy(sp[ns++], w_src[s].pos, sizeof sp[0]);
             }
@@ -319,6 +330,7 @@ void w_step(const float *feet, float dt)
             else if (d2 > WORLD_BOOT_OFF_D * WORLD_BOOT_OFF_D)
                 w_boot_want = 0;
         }
+        w_boot_want |= src_boot;  /* (a respawn point in the boot block: its tables come back for it) */
         if (!w_boot_want && !w_rt[0].lean && world_stats.reading != 0 && (w_warping || !mapstream_reading(0)))
             w_boot_lean();
     }
