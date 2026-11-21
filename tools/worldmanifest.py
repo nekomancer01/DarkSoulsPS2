@@ -252,7 +252,7 @@ def manifest(game, cache=None, log=print):
                  "issues": []}
             if col > COL_CAP:
                 b["issues"].append(f"collision {col} > {COL_CAP}")
-            if len(ens) > ENEMY_CAP:
+            if rects is not None and len(ens) > ENEMY_CAP:  # a whole MSB keeps every placement
                 b["issues"].append(f"enemies {len(ens)} > {ENEMY_CAP} (enemy_parts drops the farthest)")
             if b["world"] and not own:
                 b["issues"].append("no RES_BLOCK row of its own")

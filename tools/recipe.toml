@@ -694,7 +694,7 @@ args = ["{GAME}", "{G}/world_manifest.json", "--md", "{G}/world_manifest.md", "-
 out = ["{G}/world_manifest.json"]
 side = ["{G}/world_manifest.md"]
 maybe = ["{BUILD}/cache/worldmanifest/"]
-inputs = ["{SRC}/residency.h"]
+inputs = ["{SRC}/residency.h", "{A}/area.sig", { foreach = "PVS_WITH", as = "d", do = "{d}/area.sig" }]
 tools = ["worldmanifest.py", "worldgraph.py", "area.py", "gamepath.py", "havok_collision.py", "souls.py", "residency.py"]
 
 # World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own;
