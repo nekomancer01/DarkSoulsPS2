@@ -268,8 +268,15 @@ int mp_draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
     }
     r_set_fog(a, b, fmin, 255, col, col);
     r_set_fog_edge(mp_edge_a2);
-    /* the far backdrop's picture layers (map_pano_open): over the sky, under the map's fog as the pieces they show
-     * (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first */
+    return drawn;
+}
+
+/* The far backdrop's picture layers (map_pano_open) for the sky of block sk: over the sky, under the map's fog as the
+ * pieces they show (the backdrop: DSR's fog only, no edge fog), alpha tested, far layer first. After mp_draw_sky (its
+ * fog and test registers). Returns triangles. */
+int mp_draw_pictures(int sk, const float e[3])
+{
+    int drawn = 0;
     if (map_pano_shown() && (mp_inst[0].on ? dg_area(mp_pinst) == dg_area(0) : !sk)) {
         mp_zs_edge(0);
         for (int i = 0; i < pano_n; i++) {

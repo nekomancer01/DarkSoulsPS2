@@ -11,12 +11,15 @@ int map_upload(GSGLOBAL *gs);
 void map_spawn(V3 *pos, float *yaw);
 /* Chunks in the loaded map.bin (bump.bin's chunk table follows them) */
 unsigned map_chunk_count(void);
-/* Queue the chunks visible from eye: inside ones as VU1 batches (between vu1_begin and vu1_end), ones crossing the
- * near plane or guard band clipped on the EE through gsKit. Returns triangles submitted. */
-/* Passes: sky (its own constant fog, no distance cull), opaque map (map fog), then blended effects sorted far to near
- * (alpha blend, then additive; Z tested, not written). GS ALPHA / ZBUF / FOGCOL are changed between batches and
+/* Queue the chunks visible from eye as VU1 batches (between vu1_begin and vu1_end), one order-table bucket per call,
+ * in this order (frame.c opens a segment for each): map_draw_sky (OT_SKY: the sky under its own fog rows, the void
+ * ring), map_draw_pano (OT_PANO: the boot map's backdrop pictures, the far panorama), map_draw_world (OT_HORIZON..
+ * OT_WORLD: the cells at the level that is in, horizon / coarse fades, relief, blended chunks beyond ZSPLIT, the ZSPLIT
+ * near pass). Each returns the triangles it submitted. GS ALPHA / ZBUF / FOGCOL are changed between batches and
  * restored to gsKit's values at the end. */
-int map_draw(V3 eye);
+int map_draw_sky(V3 eye);
+int map_draw_pano(void);
+int map_draw_world(void);
 /* the blended map chunks map_draw kept (nearer than ZSPLIT), drawn after the characters and objects in their chain
  * buffer (frame.c OT_BLEND segment, render-19; MAP_BLEND_LATE=0: none, map_draw drew them). Returns triangles. */
 int map_draw_blend(void);

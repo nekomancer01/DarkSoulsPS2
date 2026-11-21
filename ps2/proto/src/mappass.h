@@ -9,9 +9,10 @@
 #endif
 /* map_draw, before the cells: the lists below emptied */
 void mp_pass_reset(void);
-/* the sky of block sk, the void ring and the backdrop pictures, then the opaque map's fog (a, b, fmin, colour col)
+/* the sky of block sk and the void ring, then the opaque map's fog (a, b, fmin, colour col)
  * and test registers. Returns triangles. */
 int mp_draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin);
+int mp_draw_pictures(int sk, const float e[3]);  /* the boot map's backdrop pictures (OT_PANO) */
 /* kept while map_draw walks the cells: a blended chunk (sorted far to near, drawn after the opaque map), a horizon
  * fading in over its cell's coarse level (HZN_FADE, alpha al of 128), a coarse level fading out over its near level
  * (NEAR_FADE); full lists drop the rest */
