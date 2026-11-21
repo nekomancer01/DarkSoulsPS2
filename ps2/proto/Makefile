@@ -143,7 +143,7 @@ endif
 # After the PROFILE / GPROF lists: these objects have no source in src/.
 IRX_OBJS = $(O)/irx/dsrsnd_irx.o $(O)/irx/libsd_irx.o
 EE_OBJS += $(IRX_OBJS)
-$(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
+$(O)/irx/dsrsnd.irx: iop/dsrsnd/dsrsnd.c iop/dsrsnd/disc.c iop/dsrsnd/snd.c iop/dsrsnd/dsrsnd_i.h iop/dsrsnd/imports.lst iop/dsrsnd/irx_imports.h iop/dsrsnd/Makefile src/dsrsnd_rpc.h
 	@mkdir -p $(@D)
 	$(MAKE) --no-print-directory -C iop/dsrsnd IOP_OBJS_DIR=$(abspath $(@D))/ IOP_BIN=$(abspath $@) DSRSND_DEFS='$(DSRSND_DEFS)'
 $(O)/irx/libsd.irx: $(PS2SDK)/iop/irx/libsd.irx

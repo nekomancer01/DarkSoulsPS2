@@ -85,9 +85,10 @@ IOPCC="mipsel-none-elf-gcc -D_IOP -fno-builtin -G0 -O2 -Wall -Werror -msoft-floa
 -I$PS2SDK/iop/include -I$PS2SDK/common/include -Isrc -Iiop/dsrsnd"
 { printf '#include "irx_imports.h"\n'; cat iop/dsrsnd/imports.lst; } > "$B/dsrsnd_imports.c"
 # shellcheck disable=SC2086
-{ $IOPCC -c iop/dsrsnd/dsrsnd.c -o "$B/dsrsnd.io" && $IOPCC -fno-toplevel-reorder -c "$B/dsrsnd_imports.c" -o \
+{ $IOPCC -c iop/dsrsnd/dsrsnd.c -o "$B/dsrsnd.io" && $IOPCC -c iop/dsrsnd/disc.c -o "$B/dsrsnd_disc.io" && \
+  $IOPCC -c iop/dsrsnd/snd.c -o "$B/dsrsnd_snd.io" && $IOPCC -fno-toplevel-reorder -c "$B/dsrsnd_imports.c" -o \
   "$B/dsrsnd_imports.io" && $IOPCC -T"$PS2SDK/iop/startup/linkfile" -nostdlib -dc -r -o "$B/dsrsnd.irx" \
-  "$B/dsrsnd.io" "$B/dsrsnd_imports.io"; } || FAIL=1
+  "$B/dsrsnd.io" "$B/dsrsnd_disc.io" "$B/dsrsnd_snd.io" "$B/dsrsnd_imports.io"; } || FAIL=1
 cp "$PS2SDK/iop/irx/libsd.irx" "$B/libsd.irx"
 for m in dsrsnd libsd; do
     bin2c "$B/$m.irx" "$B/${m}_irx.c" "${m}_irx" > /dev/null && $CC -c "$B/${m}_irx.c" -o "$B/${m}_irx.o" || FAIL=1
