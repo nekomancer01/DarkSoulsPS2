@@ -44,8 +44,9 @@ IOPCC="mipsel-none-elf-gcc -D_IOP -fno-builtin -G0 -O2 -Wall -Werror -msoft-floa
 N=$((N + 1))
 { printf '#include "irx_imports.h"\n'; cat iop/dsrsnd/imports.lst; } > "$OUT/dsrsnd_imports.c"
 # shellcheck disable=SC2086  # $IOPCC is a word list
-{ $IOPCC -c iop/dsrsnd/dsrsnd.c -o "$OUT/dsrsnd.o" && $IOPCC -fno-toplevel-reorder -c "$OUT/dsrsnd_imports.c" -o \
+{ $IOPCC -c iop/dsrsnd/dsrsnd.c -o "$OUT/dsrsnd.o" && $IOPCC -c iop/dsrsnd/disc.c -o "$OUT/dsrsnd_disc.o" && \
+  $IOPCC -c iop/dsrsnd/snd.c -o "$OUT/dsrsnd_snd.o" && $IOPCC -fno-toplevel-reorder -c "$OUT/dsrsnd_imports.c" -o \
   "$OUT/dsrsnd_imports.o" && $IOPCC -T"$PS2SDK/iop/startup/linkfile" -nostdlib -dc -r -o "$OUT/dsrsnd.elf" \
-  "$OUT/dsrsnd.o" "$OUT/dsrsnd_imports.o"; } || { echo "FAIL iop/dsrsnd"; FAIL=$((FAIL + 1)); }
+  "$OUT/dsrsnd.o" "$OUT/dsrsnd_disc.o" "$OUT/dsrsnd_snd.o" "$OUT/dsrsnd_imports.o"; } || { echo "FAIL iop/dsrsnd"; FAIL=$((FAIL + 1)); }
 echo "compiled $N files, $FAIL failed"
 [ "$FAIL" = 0 ]

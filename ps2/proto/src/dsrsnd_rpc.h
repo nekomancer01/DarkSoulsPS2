@@ -1,4 +1,5 @@
-/* Protocol between the EE sound runtime (src/sound.c) and its IOP module (iop/dsrsnd/dsrsnd.c, dsrsnd.irx).
+/* Protocol between the EE sound runtime (src/sound.c) and its IOP module (dsrsnd.irx: iop/dsrsnd/dsrsnd.c RPC,
+ * disc.c, snd.c).
  * The EE owns every decision (SPU2 memory map, voice allocation, 3D volumes); the IOP only applies them through libsd
  * and keeps the two disc streams fed.
  *   SNDF_INIT    (no args) -> SndStatus: libsd cold init, both cores unmuted, no reverb
