@@ -12,7 +12,7 @@
 
 /* instance k's pvs.bin (kept loaded by the caller): chunks = the map's resident chunk count (the file covers at least
  * these), entries = its cell table entries. Returns 1 when on. */
-int pvs_block_init(int k, const void *blob, unsigned chunks, unsigned entries);
+int pvs_block_init(int k, const void *blob, unsigned size, unsigned chunks, unsigned entries);
 void pvs_block_drop(int k);
 /* once per frame before the map draw: every instance's row for camera e, the streaming union */
 void pvs_eye(const float e[3]);

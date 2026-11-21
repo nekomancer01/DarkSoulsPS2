@@ -27,6 +27,7 @@ static int inst_on[MAP_INST], inst_col[MAP_INST];
 static unsigned inst_chunks[MAP_INST];
 unsigned map_chunk_count(void) { return inst_chunks[0]; }
 static void *blk_dg[MAP_INST];
+static unsigned blk_dg_n[MAP_INST];
 int mp_inst_col_block(int k) { return k == 0 ? inst_col[0] : k > 0 && k < MAP_INST && inst_on[k] ? inst_col[k] : -1; }
 int map_inst_of(int col_block)
 {
@@ -42,7 +43,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     if (k < 0 || k >= MAP_INST || !h || memcmp(h, "DSM5", 4))
         return 0;
     if (k)
-        dg_block_init(k, blk_dg[k], h[1], (unsigned)col_block_tris(col_block));
+        dg_block_init(k, blk_dg[k], blk_dg_n[k], h[1], (unsigned)col_block_tris(col_block));
     inst_on[k] = 1, inst_col[k] = col_block, inst_chunks[k] = h[1];
     return 1;
 }
@@ -53,14 +54,19 @@ void map_block_drop(int k)
     if (k <= 0 || k >= MAP_INST)
         return;
     dg_block_drop(k);
-    inst_on[k] = 0, blk_dg[k] = NULL;
+    inst_on[k] = 0, blk_dg[k] = NULL, blk_dg_n[k] = 0;
 }
 void map_block_lean(int k, int keep_hz) { (void)keep_hz; if (k > 0 && k < MAP_INST) inst_on[k] = 0; }
-void map_block_dg_set(int k, const void *dg, const void *pvs) { (void)pvs; if (k > 0 && k < MAP_INST) blk_dg[k] = (void *)dg; }
+void map_block_dg_set(int k, const void *dg, unsigned dg_size, const void *pvs, unsigned pvs_size)
+{
+    (void)pvs, (void)pvs_size;
+    if (k > 0 && k < MAP_INST)
+        blk_dg[k] = (void *)dg, blk_dg_n[k] = dg_size;
+}
 void map_block_dg(int k, void *pack)
 {
     if (k > 0 && k < MAP_INST && pack && !blk_dg[k])
-        blk_dg[k] = pack_load(pack, "dg.bin", NULL);
+        blk_dg[k] = pack_load(pack, "dg.bin", &blk_dg_n[k]);
 }
 
 /* ---- the map (render) and its streamer (memory: the host heap) ---- */

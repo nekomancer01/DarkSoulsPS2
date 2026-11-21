@@ -927,7 +927,7 @@ static void turn_on_col(int i)
         map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     mtx_on(i);
     if (r->size[E_DG] && r->size[E_PVS])
-        map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);  /* WORLD_DG_LITE: from its lite set */
+        map_block_dg_set(i, r->blob[E_DG], r->size[E_DG], r->blob[E_PVS], r->size[E_PVS]);  /* WORLD_DG_LITE: lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
@@ -1198,7 +1198,7 @@ static void relite_step(int i)
         if (r->size[E_TABB])
             map_block_split(i, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
         if (r->size[E_DG] && r->size[E_PVS])
-            map_block_dg_set(i, r->blob[E_DG], r->blob[E_PVS]);
+            map_block_dg_set(i, r->blob[E_DG], r->size[E_DG], r->blob[E_PVS], r->size[E_PVS]);
         int ok = map_block_init(i, r->blob[E_TAB], NULL, i);
         if (ok)
             map_block_stream_open(i, &r->pk);

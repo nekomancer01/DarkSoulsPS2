@@ -29,18 +29,25 @@
  * budget lost most of the culling too; the tables stay small by storing only sampled cells (a missing cell takes the
  * union of its stored neighbours at runtime) and giving no bit to units every cell or no cell sees.
  *
- * pvs.bin (little endian):
- *   header (32 B): 'PVS3', row bits, chunks, cell table entries, camera cells, rows, row bytes, f32 cell size
- *   u16 x (entries + 1): start of each entry's unit list in the next array (the last: its length), padded
- *   u16 unit lists: the unit's bit in a row, 0xFFFF seen from every cell, 0xFFFE from none; padded
- *   u8 per chunk (map.bin / dg.bin order): index into its entry's list, 0xFF always drawn (sky), padded
- *   u32 key per camera cell (sorted; x + 512 | y + 512 << 10 | z + 512 << 20 of floor(eye / cell)), u16 row each, padded
- *   rows: row bytes each (bit b & 7 of byte b >> 3: the unit of row bit b visible) */
+ * pvs.bin: a chunk file 'PVS ' (ps2/proto/src/chunk.h, written with tools/native/chunkw.h; src/pvs.c reads it in
+ * place), little endian:
+ *   PHDR v1 (28 B): row bits, chunks, cell table entries, camera cells (0: no rows, everything drawn), rows, row bytes,
+ *           f32 cell size
+ *   EOFF v1 u16 x (entries + 1): start of each entry's unit list in ULST (the last: its length)
+ *   ULST v1 u16 unit lists: the unit's bit in a row, 0xFFFF seen from every cell, 0xFFFE from none
+ *   LOC  v1 u8 per chunk (map.bin / dg.bin order): index into its entry's list, 0xFF always drawn (sky)
+ *   KEYS v1 u32 key per camera cell (sorted; x + 512 | y + 512 << 10 | z + 512 << 20 of floor(eye / cell))
+ *   ROWO v1 u16 row per camera cell
+ *   ROWS v1 rows: row bytes each (bit b & 7 of byte b >> 3: the unit of row bit b visible)
+ *   (before Polaris 3.3: one 'PVS3' blob, the same sections behind a 32-byte header, padded to 4 bytes)
+ * dg.bin (input): tools/drawgroups.py's chunk file 'DGRP', read with ps2/proto/src/chunk.c */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "native/chunkw.h"
+#include "../ps2/proto/src/chunk.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -844,15 +851,33 @@ static void load_dg(const char *path, int blk, unsigned c0, unsigned nc, unsigne
 {
     size_t dn;
     unsigned char *dgb = slurp(path, &dn);
-    const unsigned *dh = (const unsigned *)dgb;
-    if (dh[3] < nc || dh[4] != nt) {
-        fprintf(stderr, "pvs_bake: %s: %u chunks / %u collision tris for %u / %u: draw groups ignored\n", path, dh[3],
-                dh[4], nc, nt);
+    ChunkFile f;  /* dg.bin: chunk file 'DGRP' (tools/drawgroups.py) */
+    unsigned szh, szp, szc, szcd, sztd;
+    const unsigned *dh = NULL;
+    const unsigned (*pm)[4] = NULL, (*cmk)[4] = NULL;
+    const unsigned char *cd = NULL, *td = NULL;
+    if (chunk_open(&f, dgb, (unsigned)dn, CHUNK_ID('D', 'G', 'R', 'P'), path)) {
+        dh = chunk_get(&f, CHUNK_ID('D', 'H', 'D', 'R'), 1, &szh);
+        pm = chunk_get(&f, CHUNK_ID('P', 'M', 'S', 'K'), 1, &szp);
+        cmk = chunk_get(&f, CHUNK_ID('C', 'M', 'S', 'K'), 1, &szc);
+        cd = chunk_get(&f, CHUNK_ID('C', 'H', 'D', 'G'), 1, &szcd);
+        td = chunk_get(&f, CHUNK_ID('T', 'R', 'D', 'G'), 1, &sztd);
+    }
+    if (!dh || !pm || !cmk || !cd || !td) {
+        fprintf(stderr, "pvs_bake: %s: not a dg.bin this bake reads\n", path);
+        exit(1);
+    }
+    /* DHDR: pieces, colls, chunks, tris, ... */
+    if (dh[2] < nc || dh[3] != nt || szcd != dh[2] || sztd != dh[3]) {
+        fprintf(stderr, "pvs_bake: %s: %u chunks / %u collision tris for %u / %u: draw groups ignored\n", path, dh[2],
+                dh[3], nc, nt);
         return;
     }
-    unsigned np = dh[1], ncl = dh[2];
-    const unsigned (*pm)[4] = (const void *)(dh + 8), (*cmk)[4] = (const void *)(dh + 8 + 4 * np);
-    const unsigned char *cd = (const unsigned char *)(dh + 8 + 4 * np + 4 * ncl), *td = cd + dh[3];
+    unsigned np = dh[0], ncl = dh[1];
+    if (szp != 16 * np || szc != 16 * ncl) {
+        fprintf(stderr, "pvs_bake: %s: mask chunks do not match DHDR\n", path);
+        exit(1);
+    }
     bshown[blk] = malloc((size_t)ncl * np + 1), bnp[blk] = np, bnc[blk] = ncl;
     for (unsigned c = 0; c < ncl; c++)
         for (unsigned i = 0; i < np; i++)
@@ -1033,9 +1058,13 @@ int main(int argc, char **argv)
     FILE *out = fopen(argv[4], "wb");
     if (!out) { perror(argv[4]); return 1; }
     if (memcmp(in, "PVI1", 4) || !h[1]) {  /* no input: a pvs.bin with no cells (everything drawn) */
-        unsigned hd[8] = {0x33535650, 0, 0, 0, 0, 0, 0, 0};
-        fwrite(hd, 4, 8, out);
+        unsigned hd[7] = {0};  /* PHDR with no cells */
+        ChunkW w;
+        chunkw_begin(&w, "PVS ");
+        chunkw_start(&w, "PHDR", 1), chunkw_put(&w, hd, sizeof hd), chunkw_end(&w);
+        chunkw_finish(&w);
         fclose(out);
+        if (!chunkw_save(&w, argv[4])) { perror(argv[4]); return 1; }
         printf("pvs_bake: %s has no chunks: empty pvs.bin\n", argv[1]);
         return 0;
     }
@@ -1288,35 +1317,43 @@ sampled:
         free(first), free(next);
     }
     if (nul >= 0xFFFF) { fprintf(stderr, "pvs_bake: %u unit list entries (u16)\n", nul); return 1; }
-    unsigned hd[8] = {0x33535650, nv, nself, nent, ncell, nrow, vb, 0};
-    memcpy(&hd[7], &cellsz, 4);
-    fwrite(hd, 4, 8, out);
+    unsigned hd[7] = {nv, nself, nent, ncell, nrow, vb, 0};
+    memcpy(&hd[6], &cellsz, 4);
+    ChunkW w;
+    chunkw_begin(&w, "PVS ");
+    chunkw_start(&w, "PHDR", 1), chunkw_put(&w, hd, sizeof hd), chunkw_end(&w);
+    chunkw_start(&w, "EOFF", 1);
     for (unsigned e = 0; e <= nent; e++) {
         uint16_t v = (uint16_t)eoff[e];
-        fwrite(&v, 2, 1, out);
+        chunkw_put(&w, &v, 2);
     }
-    if (!(nent & 1))
-        fwrite("\0\0", 2, 1, out);
+    chunkw_end(&w);
+    chunkw_start(&w, "ULST", 1);
     for (unsigned j = 0; j < nul; j++) {
         uint16_t v = (uint16_t)vbit[ul[j]];  /* row bit, 0xFFFF always, 0xFFFE never */
-        fwrite(&v, 2, 1, out);
+        chunkw_put(&w, &v, 2);
     }
-    if (nul & 1)
-        fwrite("\0\0", 2, 1, out);
-    fwrite(loc, 1, nself, out);
-    fwrite("\0\0\0", 1, (4 - (nself & 3)) & 3, out);
+    chunkw_end(&w);
+    chunkw_start(&w, "LOC ", 1), chunkw_put(&w, loc, nself), chunkw_end(&w);
+    chunkw_start(&w, "KEYS", 1);
     for (unsigned i = 0; i < ncell; i++)
-        fwrite(&cells[ord[i]].key, 4, 1, out);
+        chunkw_put(&w, &cells[ord[i]].key, 4);
+    chunkw_end(&w);
+    chunkw_start(&w, "ROWO", 1);
     for (unsigned i = 0; i < ncell; i++) {
         uint16_t r = (uint16_t)rowid[ord[i]];
-        fwrite(&r, 2, 1, out);
+        chunkw_put(&w, &r, 2);
     }
-    if (ncell & 1)
-        fwrite("\0\0", 2, 1, out);
+    chunkw_end(&w);
+    chunkw_start(&w, "ROWS", 1);
     for (unsigned i = 0; i < nrow; i++)
-        fwrite(rows[i], 1, vb, out);
-    long sz = ftell(out);
+        chunkw_put(&w, rows[i], vb);
+    chunkw_end(&w);
+    chunkw_finish(&w);
+    long sz = (long)w.len;
     fclose(out);
+    if (!chunkw_save(&w, argv[4])) { perror(argv[4]); return 1; }
+    free(w.buf);
     printf("pvs_bake: %llu cube maps at %d px, %u cells, %u rows of %u bits (%u units always seen, %u never), mean "
            "%.0f of %u units visible from a cell; pvs.bin %ld bytes\n", tested, R, ncell, nrow, nv, nalw, nnev,
            vis / (ncell ? ncell : 1), nun, sz);

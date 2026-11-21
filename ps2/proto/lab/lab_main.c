@@ -156,10 +156,10 @@ static int boot(const char *root, const char *area, const char *script)
     char path[128];
     snprintf(path, sizeof path, PACK_ROOT "%s.pak", area);
     void *col = NULL, *obj = NULL, *ev = NULL, *evc = NULL, *enemy_blob = NULL, *lua = NULL, *dgb = NULL;
-    unsigned lua_size = 0, enemy_size = 0, obj_size = 0;
+    unsigned lua_size = 0, enemy_size = 0, obj_size = 0, dg_size = 0;
     if (pack_open(&pk, path)) {
         col = pack_load(&pk, "collision.bin", NULL);
-        dgb = pack_load(&pk, "dg.bin", NULL);
+        dgb = pack_load(&pk, "dg.bin", &dg_size);
         enemy_blob = pack_load(&pk, "enemies.bin", &enemy_size);
         lua = pack_load(&pk, "ai.lua0", &lua_size);
         obj = pack_load(&pk, "objects.bin", &obj_size);
@@ -171,7 +171,7 @@ static int boot(const char *root, const char *area, const char *script)
         world_boot_map(), world_stream_open();
     if (!col || !col_init(col))
         return printf("error collision %s\n", area), 0;
-    dg_init(dgb, map_chunk_count(), (unsigned)col_tris());  /* (main.c: the boot block's draw groups) */
+    dg_init(dgb, dg_size, map_chunk_count(), (unsigned)col_tris());  /* (main.c: the boot block's draw groups) */
     if (!lab_noenemies)  /* (main.c: "option noenemies" places no enemy roster) */
         enemy_init(NULL, enemy_blob, enemy_size, lua, (int)lua_size);
     objects_init(NULL, obj, obj_size);

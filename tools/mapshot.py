@@ -142,12 +142,9 @@ class Block:
         self.dg_p, self.dg_c, self.dg_n, self.dg_t = [], [], b"", b""
         dpath = os.path.join(gen, "dg.bin")
         if os.path.exists(dpath):
-            d = open(dpath, "rb").read()
-            _, P, C, N = struct.unpack_from("<4I", d, 0)
-            self.dg_p = [struct.unpack_from("<4I", d, 32 + 16 * i) for i in range(P)]
-            self.dg_c = [struct.unpack_from("<4I", d, 32 + 16 * (P + i)) for i in range(C)]
-            self.dg_n = d[32 + 16 * (P + C):32 + 16 * (P + C) + N]
-            self.dg_t = d[32 + 16 * (P + C) + N:32 + 16 * (P + C) + N + struct.unpack_from("<I", d, 16)[0]]
+            import drawgroups
+            d = drawgroups.read(dpath)
+            self.dg_p, self.dg_c, self.dg_n, self.dg_t = d.pieces, d.colls, d.chunk_dg, d.tri_dg
         self.col = collision(os.path.join(gen, "collision.bin")) if self.dg_c else None
         self.cells = []  # (box (6), resident chunk ids, near chunks, cell table entry)
         ocell = struct.unpack_from("<I", b, 76)[0] if magic == b"DSM5" else 0

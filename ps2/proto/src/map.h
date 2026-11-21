@@ -88,9 +88,9 @@ int map_far_set(const void *blob);
 /* world.c world_systems, at boot: block k's dg.bin from its open Pack (per-block draw groups, src/drawgrp.c) */
 void map_block_dg(int k, void *pack);
 /* world.c (WORLD_DG_LITE): block k's dg.bin / pvs.bin from its lite set, before map_block_init; map_block_drop lets go */
-void map_block_dg_set(int k, const void *dg, const void *pvs);
+void map_block_dg_set(int k, const void *dg, unsigned dg_size, const void *pvs, unsigned pvs_size);
 /* the boot instance's pvs.bin (main.c, from the area pack; kept loaded) */
-void map_pvs_init(const void *blob);
+void map_pvs_init(const void *blob, unsigned size);
 /* world.c: block k's bump.bin while the player stands in it (normal-map relief, src/bump.c); NULL drops it */
 void map_block_bump(int k, const void *blob);
 /* Height of the navmesh floor under (x, z) closest to y (within the step limits), or 0 if there is none */

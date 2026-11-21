@@ -168,8 +168,8 @@ ENEMIES = { tool = "export_enemies.py", args = ["--models", "{GAME}", "{MAP}"], 
 out = "{BUILD}/host/pvs_bake{HOST_TAG}"
 # (make prerequisites and the convert.py rebuild check: paths under tools/, or templates such as "{SRC}/chunk.c";
 # cmd: {out}, {TOOLS}, {SRC}, {GPU} = gpu_flags when the probe passes, knobs)
-sources = ["pvs_bake.c", "pvs_gpu.c", "pvs_gpu.h"]
-cmd = "gcc {PVS_CFLAGS} -fopenmp -o {out} {TOOLS}/pvs_bake.c {GPU} -lm"
+sources = ["pvs_bake.c", "pvs_gpu.c", "pvs_gpu.h", "{SRC}/chunk.c", "{SRC}/chunk.h", "native/chunkw.h"]
+cmd = "gcc {PVS_CFLAGS} -fopenmp -o {out} {TOOLS}/pvs_bake.c {SRC}/chunk.c {GPU} -lm"
 # GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL) when PVS_GPU=1 and this compiles and links
 gpu_probe = "printf '\\043include <EGL/egl.h>\\n\\043include <GL/gl.h>\\n\\043include <GL/glext.h>\\nint main(void) { return eglGetError() == 0; }\\n' | gcc -x c - -o /dev/null -lEGL -lOpenGL 2>/dev/null && echo 1"
 gpu_flags = "-DPVS_GPU {TOOLS}/pvs_gpu.c -lEGL -lOpenGL"
@@ -380,7 +380,7 @@ tool = "export_effects.py"
 queue = 12
 args = ["{GAME}", "--static-lights", "{A}/lights.json", "{MAP}"]
 out = ["{A}/lights.json"]
-tools = ["export_effects.py", "ffx.py", "dsr_light.py", "souls.py"]
+tools = ["chunkfile.py", "export_effects.py", "ffx.py", "dsr_light.py", "souls.py"]
 make = { deps = ["$(AREA_SIG)"], target = "{A}/lights.stamp", outs = "check", wrap = "@j={A}/lights.json; test -e $$j || new=1; {cmd} && if [ -n \"$$new\" ]; then touch -r $(TS)/export_effects.py.sum $$j; fi", post = ["@touch $@"] }
 
 # Map pieces, textures, navmesh, area fog (tools/export_map.py and the map tools; tuning in [mapenv]). Also writes the
@@ -400,7 +400,7 @@ side = ["{A}/bump.bin", "{A}/dg.bin", "{A}/pvsin.bin", "{A}/map.bin.cells.json",
 # cells.bin: two-level maps only (STREAM=1); map.bin.budget.json: the spot budget solve's results (world blocks)
 maybe = ["{A}/cells.bin", "{A}/map.bin.budget.json"]
 inputs = ["{A}/objects.bin.static", "{A}/objects.bin.anim", "{A}/lights.json", "{SRC}/residency.h"]
-tools = ["export_map.py", "mapcfg.py", "mapchunks.py", "maplight.py", "mapgather.py", "mapsimp.py", "mapcells.py",
+tools = ["chunkfile.py", "export_map.py", "mapcfg.py", "mapchunks.py", "maplight.py", "mapgather.py", "mapsimp.py", "mapcells.py",
          "mapview.py", "material.py", "mapspec.py", "vu1layout.py", "vu1/layout.py", "mapx_native.py", "mapx/*.c",
          "mapx/*.h", "resample.py", "texmap.py", "octree.py", "simplify.py", "souls.py", "export_collision.py",
          "navwalls.py", "navroute.py", "export_normal.py", "dsr_light.py", "drawgroups.py", "pose_obj.py",
@@ -532,7 +532,7 @@ out = ["{A}/hzn.bin"]
 maybe = ["{A}/hzn.bin.far.npz"]
 inputs = ["{A}/map.bin", "{A}/dg.bin"]
 reads = ["{A}/cells.bin"]
-tools = ["area.py", "horizon.py", "vu1/layout.py", "native/nearest.c", "simplify_native.py", "simplify.py",
+tools = ["drawgroups.py", "chunkfile.py", "area.py", "horizon.py", "vu1/layout.py", "native/nearest.c", "simplify_native.py", "simplify.py",
          "native/simplify.c", "native/hzvis.c", "native/hzerr.c", "native/meshopt/simplifier.cpp"]
 
 # World builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background.
@@ -587,7 +587,7 @@ out = ["{A}/far.bin"]
 inputs = ["{A}/map.bin", "{A}/dg.bin", { foreach = "PVS_WITH", as = "d", do = ["{d}/hzn.bin", "{d}/dg.bin"] },
           "{G}/pano.bin"]
 reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/hzn.bin", "{d}/hzn.bin.far.npz", "{d}/map.bin"] }]
-tools = ["area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp"]
+tools = ["drawgroups.py", "chunkfile.py", "area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp"]
 
 # Occlusion (tools/pvs_bake.c, src/pvs.c): the bake renders ID cube maps from camera samples over the walkable collision
 # and writes the visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out.

@@ -138,6 +138,8 @@ Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chu
 | `menu.bin`, `help.bin` | `MENU`, `HELP` | `MHDR`, `ATLS`, `TEXL` (128-byte aligned), `SPRT`, `GLYP`, `LAYT`, `GRAD`, `STRS`; `HIDX`, `HTXT` |
 | `screens/scr_*.bin`, `loading.bin` | `SCRN`, `LOAD` | header, tables, then `CLUT` and `PIXL` (128-byte aligned): the runtime keeps the chunks before `CLUT` |
 | `objects.bin` | `OBJS` | `OHDR`, `TYPE`, `PIEC`, `PART`, `ATYP`, `BODY`, `APRT`, `SANM`, `MODL` (128-byte aligned model.bin files), `ATEX`, `BTEX` (texture models; BTEX last, read alone when a block turns on) |
+| `dg.bin` | `DGRP` | `DHDR`, `PMSK`, `CMSK`, `CHDG`, `TRDG`, `CHRS`, `ENTS`, `CHEN` |
+| `pvs.bin` (written by `pvs_bake.c` with `chunkw.h`) | `PVS ` | `PHDR`, `EOFF`, `ULST`, `LOC `, `KEYS`, `ROWO`, `ROWS` |
 
 The layout of each chunk is documented at the top of the exporter that writes it. Formats not yet moved (map.bin,
 cells.bin, model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they

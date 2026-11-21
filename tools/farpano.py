@@ -109,16 +109,15 @@ def hzn_tris(path):
 def dg_masks(gen):
     """dg.bin -> (piece masks [(4 x u32)], the collision masks this block's own collision triangles use, each one's
     share of those triangles, area group); ([], [], [], 0) without one"""
-    p = os.path.join(gen, "dg.bin")
-    if not os.path.exists(p):
+    import drawgroups
+    d = drawgroups.read(os.path.join(gen, "dg.bin"))
+    if d is None:
         return [], [], [], 0
-    d = open(p, "rb").read()
-    _mg, P, C, N, T, _E, _S, area = struct.unpack_from("<8I", d, 0)
-    pm = [struct.unpack_from("<4I", d, 32 + 16 * i) for i in range(P)]
-    cnt = np.bincount(np.frombuffer(d, np.uint8, T, 32 + 16 * (P + C) + N), minlength=C)[:C]  # (the table holds the whole area's)
+    C = len(d.colls)
+    cnt = np.bincount(np.frombuffer(d.tri_dg, np.uint8), minlength=C)[:C]  # (the table holds the whole area's)
     used = np.flatnonzero(cnt)
-    cm = [struct.unpack_from("<4I", d, 32 + 16 * (P + int(i))) for i in used]
-    return pm, cm, cnt[used] / max(1, cnt.sum()), area
+    cm = [d.colls[int(i)] for i in used]
+    return d.pieces, cm, cnt[used] / max(1, cnt.sum()), d.area
 
 
 def own_nav(gen):
