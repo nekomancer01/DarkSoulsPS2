@@ -99,7 +99,8 @@ static int lite_pending(void)
     return 0;
 }
 
-static int room_for(int want, const float *feet)
+/* the block room_for would turn off for block want, -1 none */
+static int room_pick(int want, const float *feet)
 {
     int b = -1;
     float bd = -1e30f;
@@ -126,11 +127,32 @@ static int room_for(int want, const float *feet)
                     b = i, bd = d;
             }
     }
+    return b;
+}
+static int room_for(int want, const float *feet)
+{
+    int b = room_pick(want, feet);
     if (b < 0)
         return 0;
     printf("world: block %d off to make room for block %d\n", b, want);
     w_turn_off(b);
     return 1;
+}
+
+/* WORLD_SLOT_DEFER (default 1; TECH_DEBT world-22): a wanted block that cannot have a slot now: every slot holds a
+ * block room_for keeps for it (wanted, and not WORLD_SLOT_MARGIN farther than it). It waits for the player to move:
+ * a settle does not wait for it and it is no "no room" (room_stuck). 1.6 % of the 14 blocks' collision triangles
+ * (6668 of 407575, most on the Burg bonfire block by the Parish steps) want four blocks besides the boot block with
+ * WORLD_SLOTS 3; at tests/burg.txt's spawn the warp's settle waited out WORLD_STUCK_MS for the fourth (2.3 s on
+ * PCSX2, 2026-11-18). 0: the settle waits for it as before */
+int w_slot_deferred(int i, const float *feet)
+{
+    if (!WORLD_SLOT_DEFER || i <= 0 || !slots_full())
+        return 0;
+    for (int s = 0; s < WORLD_SLOTS; s++)  /* a draining block frees its slot at the next step: not deferred */
+        if (w_rt[w_slot_of[s]].state == W_DRAIN)
+            return 0;
+    return room_pick(i, feet) < 0;
 }
 
 /* WORLD_REACH: the reach entry of triangle tri of block b, or NULL (binary search as link_at) */
@@ -428,8 +450,18 @@ void w_step(const float *feet, float dt)
             if (lw >= 0 && w_rt[lw].retry_s >= WORLD_RETRY_S)
                 w_room_stuck = !room_for(lw, feet);
         }
-        if (want >= 0 && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full()))
-            w_room_stuck = !room_for(want, feet);  /* a fresh failure for room, or no slot */
+        if (want >= 0 && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full())) {
+            int def = w_slot_deferred(want, feet);
+            w_room_stuck = !room_for(want, feet) && !def;  /* a fresh failure for room, or no slot (not a deferred one) */
+            static int def_last = -1;
+            if (def && def_last != want) {
+                printf("world: block %d wanted, no slot: deferred until the player moves (slots", want);
+                for (int s = 0; s < WORLD_SLOTS; s++)
+                    printf(" %d", w_slot_of[s]);
+                printf(")\n");
+            }
+            def_last = def ? want : -1;
+        }
         else if (world_stats.reading < 0) {
             w_boot_step(1);  /* nothing for the lite sets: the boot block's tables when it is wanted back, */
             if (world_stats.reading < 0)
