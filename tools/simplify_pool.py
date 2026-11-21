@@ -33,12 +33,20 @@ CACHE_VERSION = b"simplify-cache-3"  # 2: entries are compact logs (simplify.pac
 main_tree = buildcache.main_tree
 
 
+_CACHES = {}
+
+
 def cache(be):
     """the simplify namespace of the build cache (tools/buildcache.py; SIMPLIFY_CACHE: 0 = off, a path = its directory;
-    SIMPLIFY_CACHE_GB: its size cap); the key prefix is the chosen simplifier's code"""
-    files = ["simplify.py"] + (["simplify_native.py", os.path.join("native", "simplify.c")] if be == "native" else [])
-    return buildcache.Cache("simplify", CACHE_VERSION, sources=[os.path.join(HERE, f) for f in files],
-                            where=os.environ.get("SIMPLIFY_CACHE"), cap_gb=os.environ.get("SIMPLIFY_CACHE_GB", 10))
+    SIMPLIFY_CACHE_GB: its size cap); the key prefix is the chosen simplifier's code. One Cache per backend and
+    setting for the process: building one hashes the simplifier sources and registers an exit trim"""
+    where, cap = os.environ.get("SIMPLIFY_CACHE"), os.environ.get("SIMPLIFY_CACHE_GB", 10)
+    k = (be, where, cap, os.environ.get("DSR_CACHE"), os.environ.get("BUILDCACHE"))
+    if k not in _CACHES:
+        files = ["simplify.py"] + (["simplify_native.py", os.path.join("native", "simplify.c")] if be == "native" else [])
+        _CACHES[k] = buildcache.Cache("simplify", CACHE_VERSION, sources=[os.path.join(HERE, f) for f in files],
+                                      where=where, cap_gb=cap)
+    return _CACHES[k]
 
 
 def cache_dir():
