@@ -489,7 +489,7 @@ static void disc_finish(DiscJob *j, int res)
     j->live = 0;
     SignalSema(dq_sema);
     dstat.reqs++;
-    if (j->r.op == SNDD_READ) {
+    if (j->r.op == SNDD_READ || j->r.op == SNDD_READV) {
         unsigned int w = now_ms() - j->t0;
         dstat.lat_ms += w, dstat.lat_n++;
         dstat.lat_max = w > dstat.lat_max ? w : dstat.lat_max;
@@ -613,6 +613,30 @@ static int pc_read(int fd, unsigned int off, unsigned char *p, unsigned int n, u
     return n;
 }
 
+/* SNDD_READV: the got bytes of run position j->done at p (p qword aligned for a qword of the run) to the segments they
+ * fall in; the last segment's tail into d's edge. The id of the last DMA (0: none) */
+static int scatter_send(DiscJob *j, const unsigned char *p, unsigned int got, SndDiscDone *d)
+{
+    const SndDiscSeg *sg = (const SndDiscSeg *)j->r.path;
+    unsigned int pos = 0, lo = j->done, hi = j->done + got;
+    int id = 0;
+    if (!j->done)
+        d->nhead = 0, d->ntail = 0;
+    for (unsigned int i = 0; i < j->r.nseg && pos < hi; pos += sg[i++].bytes) {
+        unsigned int s0 = pos > lo ? pos : lo, s1 = pos + sg[i].bytes < hi ? pos + sg[i].bytes : hi;
+        if (!sg[i].dst || s1 <= s0)
+            continue;
+        unsigned int e = s1 == j->r.size ? s1 & ~15u : s1;  /* only the run's end may fall inside a qword */
+        if (e > s0)
+            id = dma_send((void *)(p + (s0 - lo)), sg[i].dst + (s0 - pos), e - s0);
+        if (s1 > e) {
+            d->ntail = s1 - e;
+            memcpy(d->edge, p + (e - lo), d->ntail);
+        }
+    }
+    return id;
+}
+
 /* One page of the read in j. Page ends are 16-byte aligned on the EE (the first page is shorter when dst is not), so
  * only the first page has head bytes and only the last a tail. The page lands at the same address mod 16 in the IOP
  * buffer as on the EE, so the qwords it DMAs are aligned on both sides. A background read of a disc file goes through
@@ -626,7 +650,8 @@ static void disc_page(DiscJob *j)
         disc_finish(j, j->cancel ? -1 : (int)j->done);
         return;
     }
-    unsigned int ee = r->dst + j->done, n = r->size - j->done;
+    int v = r->op == SNDD_READV;  /* scatter: ee counts from the run's start (its segments are qword aligned there) */
+    unsigned int ee = (v ? 0 : r->dst) + j->done, n = r->size - j->done;
     int cached = pc_n && r->prio == SNDD_PRIO_BG && df_is(r->fd);
     if (cached) {
         unsigned int pos = r->offset + j->done, lsn = df_h[r->fd - DF_FD].lsn + pos / 2048;
@@ -653,8 +678,21 @@ static void disc_page(DiscJob *j)
     SignalSema(cd_sema);
     if (direct)
         p = direct;
-    if (got <= 0) {
-        disc_finish(j, j->done ? (int)j->done : got < 0 ? got : 0);
+    if (got <= 0 || (v && got < (int)n)) {
+        if (v)
+            printf("dsrsnd: scatter read seq %u failed at %u of %u (page %u, got %d%s)\n", r->seq, j->done, r->size, n,
+                   got, cached ? ", cached" : "");
+        disc_finish(j, v ? -1 : j->done ? (int)j->done : got < 0 ? got : 0);
+        return;
+    }
+    if (v) {
+        int id = scatter_send(j, p, got, d);
+        if (id)
+            *(direct ? &pc_dma[pc_slot] : &dbuf_dma[b]) = id;
+        j->done += got;
+        dstat.pages++, dstat.kb += got >> 10;
+        if (j->done >= r->size)
+            disc_finish(j, j->done);
         return;
     }
     unsigned int a = (ee + 15) & ~15u, e = (ee + got) & ~15u;
@@ -683,7 +721,7 @@ static void disc_page(DiscJob *j)
 /* the disc sector job j reads next (an open, a close or a host: read: where the head is, so it goes now) */
 static unsigned int job_lsn(const DiscJob *j)
 {
-    if (j->r.op != SNDD_READ || !df_is(j->r.fd))
+    if ((j->r.op != SNDD_READ && j->r.op != SNDD_READV) || !df_is(j->r.fd))
         return cd_head;
     return df_h[j->r.fd - DF_FD].lsn + (j->r.offset + j->done) / 2048;
 }
@@ -760,6 +798,7 @@ static void disc_step(void)
         break;
     }
     case SNDD_READ:
+    case SNDD_READV:
         disc_page(j);
         break;
     default:
@@ -785,6 +824,21 @@ void disc_submit(const SndDiscReq *q, int n)
         if (j->live) {
             printf("dsrsnd: disc slot %u busy (seq %u, new %u)\n", r->slot, j->r.seq, r->seq);
             continue;
+        }
+        if (r->op == SNDD_READV) {  /* a segment list that does not add up is dropped with an error result */
+            const SndDiscSeg *sg = (const SndDiscSeg *)r->path;
+            unsigned int sum = 0, ok = r->nseg && r->nseg <= SND_SEGS;
+            for (unsigned int k = 0; ok && k < r->nseg; k++)
+                ok = !(sg[k].dst & 15) && (k + 1 == r->nseg || !(sg[k].bytes & 15)), sum += sg[k].bytes;
+            if (!ok || sum != r->size) {
+                printf("dsrsnd: scatter read seq %u: bad segment list (%u segments, %u of %u bytes)\n", r->seq, r->nseg,
+                       sum, r->size);
+                memcpy(&j->r, r, sizeof *r);
+                j->r.op = 0;  /* finished with -1 by disc_step's default case */
+                j->done = 0, j->cancel = 0, j->order = dq_order++, j->t0 = now_ms();
+                j->live = 1;
+                continue;
+            }
         }
         memcpy(&j->r, r, sizeof *r);
         j->done = 0, j->cancel = 0, j->order = dq_order++, j->t0 = now_ms();

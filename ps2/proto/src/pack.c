@@ -101,8 +101,10 @@ enum { IO_FREE, IO_QUEUED, IO_SENT, IO_DONE };
 typedef struct {
     unsigned seq, order, off, size;
     int state, op, prio, fd, result, drop;  /* drop: nobody collects it (a close), freed when it lands */
-    unsigned char *dst;
+    unsigned char *dst;  /* SNDD_READV: where the run's end would be if it went to the last segment (its edge bytes) */
     const char *path;  /* SNDD_OPEN: the caller's, kept until it lands */
+    unsigned nseg, vseg, vdone;  /* SNDD_READV: segments; fio: the segment in flight and the bytes before it */
+    SndDiscSeg seg[SND_SEGS];
 } IoReq;
 static IoReq io[IO_SLOTS];
 static unsigned io_seq, io_order;
@@ -168,7 +170,7 @@ static void srv_pump(void)
             continue;
         int res = d->result;
         unsigned nh = d->nhead, nt = d->ntail;
-        if (q->op == SNDD_READ && res > 0 && (nh || nt)) {  /* the bytes outside whole qwords, written uncached */
+        if ((q->op == SNDD_READ || (q->op == SNDD_READV && res == (int)q->size)) && res > 0 && (nh || nt)) {  /* the bytes outside whole qwords, written uncached */
             unsigned char *a = q->dst, *b = q->dst + res - nt;
             if (nh)
                 SyncDCache(a, a + nh - 1);
@@ -205,6 +207,8 @@ static void srv_pump(void)
         r->offset = q->off, r->size = q->size, r->dst = (unsigned)q->dst;
         if (q->path)
             snprintf(r->path, sizeof r->path, "%s", q->path);
+        if (q->op == SNDD_READV)
+            r->nseg = q->nseg, memcpy(r->path, q->seg, q->nseg * sizeof *q->seg);
         q->state = IO_SENT;
     }
     if (!n && !io_stat_want)
@@ -232,6 +236,29 @@ void pack_disc_poll(void)
 
 unsigned pack_disc_media(void) { return io_srv ? io_last.media : 0; }
 
+/* fio, SNDD_READV: segment by segment (host: has no seeks to save). r: the result of the segment that just landed (0 to
+ * start). 1 when the next segment's read is in flight, 0 when the request is over (vdone bytes, or r < 0 failed) */
+static int fio_next_seg(IoReq *q, int r)
+{
+    if (q->vseg) {  /* the segment q->vseg - 1 landed */
+        const SndDiscSeg *s = &q->seg[q->vseg - 1];
+        if (r != (int)s->bytes) {
+            q->vdone = (unsigned)-1;
+            return 0;
+        }
+        q->vdone += s->bytes;
+    }
+    while (q->vseg < q->nseg && !q->seg[q->vseg].dst)
+        q->vdone += q->seg[q->vseg++].bytes;  /* a gap: nothing to read */
+    if (q->vseg >= q->nseg)
+        return 0;
+    const SndDiscSeg *s = &q->seg[q->vseg++];
+    fioLseek(q->fd, q->off + q->vdone, SEEK_SET);
+    fioSetBlockMode(FIO_NOWAIT);
+    fioRead(q->fd, (void *)s->dst, s->bytes);
+    return 1;
+}
+
 /* fio: the request in flight if it ended, then the next one (sync first, then in order) */
 static void fio_pump(void)
 {
@@ -241,7 +268,10 @@ static void fio_pump(void)
             if (fioSync(FIO_NOWAIT, &r) != FIO_COMPLETE)
                 return;
             fioSetBlockMode(FIO_WAIT);
-            io_land(io_run, r);
+            IoReq *v = &io[io_run];
+            if (v->op == SNDD_READV && fio_next_seg(v, r))
+                return;  /* its next segment is in flight */
+            io_land(io_run, v->op == SNDD_READV ? (r < 0 ? r : (int)v->vdone) : r);
             io_run = -1;
             log_flush();
         }
@@ -258,6 +288,16 @@ static void fio_pump(void)
             io_land(k, fioClose(q->fd));
             continue;
         }
+        q->state = IO_SENT;
+        io_run = k;
+        if (q->op == SNDD_READV) {
+            q->vseg = 0, q->vdone = 0;
+            if (fio_next_seg(q, 0))
+                continue;
+            io_land(k, (int)q->vdone);  /* (no segment with a destination) */
+            io_run = -1;
+            continue;
+        }
         if (q->op == SNDD_READ)
             fioLseek(q->fd, q->off, SEEK_SET);
         fioSetBlockMode(FIO_NOWAIT);
@@ -265,19 +305,20 @@ static void fio_pump(void)
             fioOpen(q->path, O_RDONLY);
         else
             fioRead(q->fd, q->dst, q->size);
-        q->state = IO_SENT;
-        io_run = k;
     }
 }
 
 /* fio: wait for the request in flight (fio back in WAIT mode) */
 static void fio_finish(void)
 {
-    if (io_run >= 0) {
+    while (io_run >= 0) {
         int r;
         fioSync(FIO_WAIT, &r);
         fioSetBlockMode(FIO_WAIT);
-        io_land(io_run, r);
+        IoReq *v = &io[io_run];
+        if (v->op == SNDD_READV && fio_next_seg(v, r))
+            continue;  /* the next segment: wait for it too */
+        io_land(io_run, v->op == SNDD_READV ? (r < 0 ? r : (int)v->vdone) : r);
         io_run = -1;
     }
     log_flush();
@@ -292,7 +333,9 @@ static void io_pump(void)
 }
 
 /* a new request; its ticket, 0 when every slot is taken */
-static int io_submit(int op, int prio, int fd, const char *path, unsigned off, void *dst, unsigned size)
+/* a new request; its ticket, 0 when every slot is taken. SNDD_READV: seg[n] (pack_req_readv checked them) */
+static int io_submit_v(int op, int prio, int fd, const char *path, unsigned off, void *dst, unsigned size,
+                       const PackSeg *seg, unsigned n)
 {
     int k = -1;
     for (int pass = 0; pass < 2 && k < 0; pass++) {
@@ -310,8 +353,24 @@ static int io_submit(int op, int prio, int fd, const char *path, unsigned off, v
                     .prio = prio, .fd = fd, .dst = dst, .path = path};
     if (op == SNDD_READ && size)
         SyncDCache(dst, (char *)dst + size - 1);  /* no dirty line written back over the DMA'd data later */
+    if (op == SNDD_READV) {
+        IoReq *q = &io[k];
+        q->nseg = n;
+        for (unsigned i = 0; i < n; i++) {
+            q->seg[i] = (SndDiscSeg){(unsigned)seg[i].dst, seg[i].bytes};
+            if (seg[i].dst && seg[i].bytes)
+                SyncDCache(seg[i].dst, (char *)seg[i].dst + seg[i].bytes - 1);
+        }
+        /* the last segment's tail comes as edge bytes for dst + size - ntail (srv_pump): dst puts the run's end there */
+        q->dst = (unsigned char *)seg[n - 1].dst + seg[n - 1].bytes - size;
+    }
     io_pump();
     return k + 1;
+}
+
+static int io_submit(int op, int prio, int fd, const char *path, unsigned off, void *dst, unsigned size)
+{
+    return io_submit_v(op, prio, fd, path, off, dst, size, NULL, 0);
 }
 
 /* 1 once ticket t landed (*res its result; the ticket is free again) */
@@ -379,7 +438,8 @@ static int io_cancel(int t)
         q->state = IO_FREE;
         return -1;
     }
-    if (io_srv && q->state == IO_SENT && q->op == SNDD_READ && io_ncxl < IO_SLOTS)
+    if (io_srv && q->state == IO_SENT && (q->op == SNDD_READ || q->op == SNDD_READV) &&
+        io_ncxl < IO_SLOTS)
         io_cxl[io_ncxl].slot = t - 1, io_cxl[io_ncxl++].seq = q->seq;
     return io_wait(t, 0);
 }
@@ -405,6 +465,19 @@ int pack_req_read_first(Pack *p, unsigned offset, void *dst, unsigned bytes)
     return io_submit(SNDD_READ, SNDD_PRIO_SYNC, p->fd, NULL, offset, dst, bytes);
 }
 
+int pack_req_readv(Pack *p, unsigned offset, const PackSeg *seg, unsigned n, int first)
+{
+    unsigned sum = 0;
+    if (!n || n > PACK_SEGS || !seg[n - 1].dst)
+        return -1;
+    for (unsigned i = 0; i < n; i++) {
+        if (((unsigned)seg[i].dst & 15) || (i + 1 < n && (seg[i].bytes & 15)))
+            return -1;
+        sum += seg[i].bytes;
+    }
+    return io_submit_v(SNDD_READV, first ? SNDD_PRIO_SYNC : SNDD_PRIO_BG, p->fd, NULL, offset, NULL, sum, seg, n);
+}
+
 int pack_req_done(int t, int *result) { return io_poll(t, result); }
 
 void pack_req_cancel(int t) { io_cancel(t); }
@@ -418,13 +491,54 @@ int pack_req_cancel_async(int t)
         q->state = IO_FREE;
         return 1;
     }
-    if (io_srv && q->state == IO_SENT && q->op == SNDD_READ && io_ncxl < IO_SLOTS)
+    if (io_srv && q->state == IO_SENT && (q->op == SNDD_READ || q->op == SNDD_READV) &&
+        io_ncxl < IO_SLOTS)
         io_cxl[io_ncxl].slot = t - 1, io_cxl[io_ncxl++].seq = q->seq;
     return 0;  /* lands (short) later: pack_req_done as usual */
 }
 
 static void zombie_pump(void);
 void pack_pump(void) { io_pump(); zombie_pump(); }
+
+#ifdef PACK_READV_CHECK
+/* make DEFS=-DPACK_READV_CHECK: the first pack opened with an entry of 300 KB or more is read once with pack_req_readv
+ * (three segments with a gap between, the last one ending inside a qword, at an offset inside a sector) and once with
+ * pack_req_read per segment; "pack: readv check" says whether the bytes match (disc server from cdrom0:, fio from host:) */
+static void readv_check(Pack *p, const char *path)
+{
+    static int done;
+    unsigned big = 0, off = 0;
+    for (unsigned i = 0; i < p->count; i++)
+        if (p->entries[i].packed > big)
+            big = p->entries[i].packed, off = p->entries[i].offset;
+    if (done || big < 300 * 1024)
+        return;
+    done = 1;
+    static const unsigned len[4] = {64 * 1024 + 48, 9600, 50 * 1024 + 16, 777};  /* a, gap, b, c */
+    unsigned total = len[0] + len[1] + len[2] + len[3], o = off + 1000;
+    unsigned char *v = memalign(64, 3 * 128 * 1024), *r = memalign(64, 3 * 128 * 1024);
+    if (!v || !r) {
+        free(v), free(r);
+        return;
+    }
+    memset(v, 0xa5, 3 * 128 * 1024), memset(r, 0x5a, 3 * 128 * 1024);
+    PackSeg sg[4] = {{v, len[0]}, {NULL, len[1]}, {v + 128 * 1024, len[2]}, {v + 256 * 1024, len[3]}};
+    int res = -2, ra = -2, rb = -2, rc = -2;
+    int t = pack_req_readv(p, o, sg, 4, 0);
+    if (t > 0)
+        res = io_wait(t, 0);
+    ra = io_wait(pack_req_read(p, o, r, len[0]), 0);
+    rb = io_wait(pack_req_read(p, o + len[0] + len[1], r + 128 * 1024, len[2]), 0);
+    rc = io_wait(pack_req_read(p, o + len[0] + len[1] + len[2], r + 256 * 1024, len[3]), 0);
+    InvalidDCache(v, v + 3 * 128 * 1024 - 1), InvalidDCache(r, r + 3 * 128 * 1024 - 1);
+    int same = !memcmp(v, r, len[0]) && !memcmp(v + 128 * 1024, r + 128 * 1024, len[2]) &&
+               !memcmp(v + 256 * 1024, r + 256 * 1024, len[3]) && v[256 * 1024 + len[3]] == 0xa5 &&
+               v[len[0]] == 0xa5 && v[128 * 1024 + len[2]] == 0xa5;  /* and nothing past the segments */
+    printf("pack: readv check %s on %s (%u bytes, result %d; reads %d %d %d)\n",
+           res == (int)total && same ? "ok" : "FAILED", path, total, res, ra, rb, rc);
+    free(v), free(r);
+}
+#endif
 
 int pack_open(Pack *p, const char *path)
 {
@@ -449,6 +563,10 @@ int pack_open(Pack *p, const char *path)
             pack_close(p);
         p->count = 0;  /* (a failed entry-table read left the count with no entries behind it) */
     }
+#ifdef PACK_READV_CHECK
+    if (ok)
+        readv_check(p, path);
+#endif
     return ok;
 }
 

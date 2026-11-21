@@ -44,6 +44,28 @@ def display_for(slot):
 _slot_locks = []
 
 
+def reap_slot(n):
+    """kill the PCSX2 a dead run left on slot n. The flatpak runs under bwrap, which is reparented to systemd when
+    the harness dies (a session restart killed it; the emulator then held the shared PCSX2 lock queue for 37-50 min,
+    2026-11-21): whoever takes the slot's lock next kills the instance the last holder wrote down."""
+    path = f"/tmp/pcsx2-headless/slot.{n}.inst"
+    try:
+        inst = open(path).read().strip()
+    except OSError:
+        return
+    if not inst.isdigit():  # a flatpak instance id; anything else is not this tool's note
+        inst = ""
+    if inst:
+        r = subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
+        if r.returncode == 0:
+            print(f"[test-run] slot {n}: killed PCSX2 instance {inst} left by a dead run", flush=True)
+    for f in (path, f"/tmp/pcsx2-headless/{inst}") if inst else (path,):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
 def acquire_slot(slot=None, wait=600):
     """Lock a PINE slot for this process: the given one (waits while another run holds it) or the first free one."""
     os.makedirs("/tmp/pcsx2-headless", exist_ok=True)
@@ -57,6 +79,7 @@ def acquire_slot(slot=None, wait=600):
                 f.close()
                 continue
             _slot_locks.append(f)
+            reap_slot(n)
             return n
         if time.time() - t0 > wait:
             raise RuntimeError(f"no free PINE slot after {wait} s")
@@ -280,6 +303,8 @@ def run(a):
         res["errors"].append("PCSX2 did not start: " + out.stdout + out.stderr)
         return res
     inst = inst[1]
+    with open(f"/tmp/pcsx2-headless/slot.{a.slot}.inst", "w") as sf:  # reap_slot's note, removed with the instance
+        sf.write(inst)
     try:
         p = pine.connect(a.slot, wait=30)
         syms = pine.elf_symbols(elf)
@@ -419,10 +444,11 @@ def run(a):
     finally:
         time.sleep(0.5)
         subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
-        try:
-            os.remove(f"/tmp/pcsx2-headless/{inst}")
-        except OSError:
-            pass
+        for f in (f"/tmp/pcsx2-headless/{inst}", f"/tmp/pcsx2-headless/slot.{a.slot}.inst"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
     time.sleep(0.5)
     if os.path.exists(log):
         shutil.copy(log, os.path.join(a.outdir, "emulog.txt"))
@@ -497,7 +523,17 @@ def hitch_gates(log, res):
                                  f"{a['o50']} -> {b['o50']} per {HITCH_WINDOW} s)")
 
 
+def _stop(sig, frame):
+    import signal
+    for s in (signal.SIGTERM, signal.SIGHUP):  # a second signal must not cut run()'s finally (the kill) short
+        signal.signal(s, signal.SIG_IGN)
+    raise SystemExit(128 + sig)  # (run()'s finally kills the PCSX2 instance)
+
+
 def main():
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("elf")
     ap.add_argument("script")

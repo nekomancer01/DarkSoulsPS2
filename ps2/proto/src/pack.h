@@ -44,6 +44,19 @@ unsigned pack_entry_size(const Pack *p, const char *name);
  * page; it returns once nothing more can land in dst. */
 int pack_req_read(Pack *p, unsigned offset, void *dst, unsigned bytes);
 int pack_req_read_first(Pack *p, unsigned offset, void *dst, unsigned bytes);  /* before the background ones queued */
+/* Scatter read (Polaris 4.6): one run of the disc from offset, its bytes delivered to n <= PACK_SEGS segments in file
+ * order (dst NULL: bytes read and dropped, a gap between wanted items; the last one has a dst). dst as pack_req_read's
+ * (64-byte aligned is safe for the cache lines); every segment but the last is a whole number of 16-byte qwords (round
+ * an item up over its padding). Same tickets as pack_req_read; the result is the run's bytes, or < 0 (all or nothing).
+ * first: ahead of the background requests, as pack_req_read_first. -1: a segment list that breaks these rules. From
+ * cdrom0: the disc server reads the run as one request (one seek, the gaps read through); from host: fio reads the
+ * segments one by one. */
+#define PACK_SEGS 12  /* dsrsnd_rpc.h SND_SEGS */
+typedef struct {
+    void *dst;
+    unsigned bytes;
+} PackSeg;
+int pack_req_readv(Pack *p, unsigned offset, const PackSeg *seg, unsigned n, int first);
 int pack_req_done(int t, int *result);
 void pack_req_cancel(int t);
 /* pack_req_cancel without the wait: 1 when the ticket is gone, 0 when the read stops after its current page and still
