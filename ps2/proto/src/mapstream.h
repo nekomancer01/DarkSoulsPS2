@@ -149,6 +149,10 @@ void mapstream_settle(int on);
  * mapstream_focus instance) is still to load or being read (0 once the arena had no room for the next one: nothing
  * more can come) */
 int mapstream_busy(const float pos[3], float r, float r_focus);
+/* Streaming sources besides the player (world.c, Polaris 4.3): n positions (x, y, z each), each planned by the
+ * target rule (the classes a settle's spot gets), an item taking the highest class any source gives it (a respawn
+ * point while a death plays) */
+void mapstream_sources(const float *pos, int n);
 /* largest arena (default MS_POOL; world builds: the full pool's RAM went to it), before it is allocated */
 void mapstream_pool(unsigned max);
 /* Once per frame: finish / start reads, free far cells (blobs drawn in the last two frames are kept: the VIF chains

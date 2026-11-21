@@ -95,6 +95,7 @@ static inline float steady_d2(const MsInst *m, unsigned id, float d2)
 
 /* MS_QSCALE (mapstream_i.h): the soft radii at the scale now; the hard tier's radii never change */
 float ms_qs = 1.0f;
+int ms_target;
 float ms_qs_now(void) { return MS_QSCALE && !ms_settling ? ms_qs : 1.0f; }
 static inline float qs_r0_want(void) { return MS_R0_DRAW + (MS_R0_WANT - MS_R0_DRAW) * ms_qs_now(); }
 static inline float qs_grass_want(void)
@@ -148,7 +149,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         /* a settle reads the near level within the draw radius (MS_SETTLE_NEAR) after the coarse level it waits for (as
          * C_NEAR it took the plan from coarse cells inside the settle radius, which the settle then waited for until its
          * 30 s cap: Firelink's near level within 26 m is 4.1 MB, ISO 2026-11-06); the rest streams in */
-        if (ms_settling)
+        if (ms_settle_plan())
             return d2 < sq(MS_R0_DRAW) ? C_NEAR2 : d2 < sq(MS_R0_KEEP) ? C_KEEP : C_FREE;
         if (ms_ahead_on) {
             float da = near_d2(m, id, ms_ahead);
@@ -197,7 +198,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
      * and the near cells 0-5 m away popped in 2-7 s later; pinned coarse at 16-48 m was 96 % horizon-covered,
      * ~1.0-1.1 MB a plan (engine-gaps thread, ISO, 2026-11-09) */
 #define MS_SETTLE_HZN_D 24.0f  /* m (ASSUMED: past the near level's draw radius + its hysteresis) */
-    if (ms_settling && (tag & MS_RES_LOD) && d2 >= sq(MS_SETTLE_HZN_D)) {
+    if (ms_settle_plan() && (tag & MS_RES_LOD) && d2 >= sq(MS_SETTLE_HZN_D)) {
         *key = d2 * vk;
         return C_KEEP;
     }
@@ -209,7 +210,7 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
     }
     *key = d2 * vk;
     if (tag & MS_RES_GRASS)
-        return ms_settling ? C_FREE : d2 < sq(qs_grass_want()) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
+        return ms_settle_plan() ? C_FREE : d2 < sq(qs_grass_want()) ? C_NEAR2 : d2 < sq(MS_GRASS_KEEP) ? C_KEEP : C_FREE;
     /* (one level of detail per place: plan_ drops this item while its cell's near level stands for it, MS_ONE_LOD) */
     /* the coarse level the horizon does not stand for yet (within MS_R1_PIN): one order by distance whatever the
      * camera looks at. In view (C_VIEW, above the near parts) or not (C_PIN, below them) flipped those cells between
@@ -283,6 +284,17 @@ static void plan_(const float *pos)
         for (unsigned id = 0; id < it_n(m); id++) {
             float key = 0;
             int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
+            for (int s = 0; WORLD_SOURCES && s < ms_nsrc && c < C_TOP && it_bytes(m, id); s++) {
+                /* another streaming source (a respawn point): the highest class any source gives the item, the key of
+                 * that source, by the target rule (ms_settle_plan; no walking look-ahead) */
+                float k2 = 0;
+                int ao = ms_ahead_on;
+                ms_ahead_on = 0, ms_target = 1;
+                int c2 = plan_item(k, m, id, ms_src[s], &k2);
+                ms_ahead_on = ao, ms_target = 0;
+                if (c2 > c || (c2 == c && k2 < key))
+                    c = c2, key = k2;
+            }
             if (c > C_KEEP && vis_cut(m, id))
                 c = C_KEEP;  /* no camera cell near the camera sees it (pvs.c) */
             if (m->state[id] != MS_NONE && m->state[id] != MS_FAILED)
@@ -295,7 +307,7 @@ static void plan_(const float *pos)
         }
     }
     onelod_n = onelod_kb = 0;
-    for (int k = 0; !ms_settling && k < MS_INST; k++) {
+    for (int k = 0; !ms_settle_plan() && k < MS_INST; k++) {
         MsInst *m = &ms_inst[k];
         for (unsigned j = 0; j < m->nres; j++) {
             unsigned tag = m->rit[j].tag, id = m->ncell + j, c = MS_RES_CELL(tag);

@@ -126,6 +126,12 @@
 #ifndef WORLD_REACH
 #define WORLD_REACH cv_WORLD_REACH  /* runtime switch, default 1 (src/cvar.h) */
 #endif
+/* WORLD_SOURCES (default 1, runtime switch; Polaris 4.3, world.h): sources besides the player (the respawn point while
+ * a death plays) want their blocks and cells too. 0: the player's spot alone */
+#ifndef WORLD_SOURCES
+#define WORLD_SOURCES cv_WORLD_SOURCES
+#endif
+typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #define WORLD_DASH 6.0f            /* m/s: ASSUMED dash speed (the dash loop's root motion is not read here) */
 #define WORLD_REACH_MARGIN_S 1.0f  /* ASSUMED: the near cells at the seam stream after the lite set */
 #define WORLD_ON_SEED_MS 3000.0f   /* a Burg lite set from cdrom0: 1.4-3.7 s (map streaming research, 2026-11-17) */
@@ -331,6 +337,7 @@ extern int w_warping;
 extern int w_lite_first;
 extern int w_room_stuck;
 extern unsigned w_hold_m, w_hold_want, w_hold_gone;
+extern WorldSrc w_src[WSRC_N];
 int w_read_sync(Pack *pk, unsigned off, void *dst, unsigned n);
 unsigned world_struct_bytes(void);
 void w_step_time(unsigned t0);

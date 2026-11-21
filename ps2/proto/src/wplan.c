@@ -168,6 +168,44 @@ static const WorldLink *link_at(int b, unsigned tri)
     return NULL;
 }
 
+/* Streaming sources (world.h): their state; the player's is world_update's feet */
+WorldSrc w_src[WSRC_N];
+void world_source(int kind, const float pos[3])
+{
+    if (kind < 0 || kind >= WSRC_N)
+        return;
+    WorldSrc *s = &w_src[kind];
+    for (int a = 0; a < 3; a++)
+        s->vel[a] = s->on ? pos[a] - s->pos[a] : 0, s->pos[a] = pos[a];
+    if (!s->on && kind != WSRC_PLAYER)
+        printf("world: source %d on at %.1f %.1f %.1f\n", kind, (double)pos[0], (double)pos[1], (double)pos[2]);
+    s->on = 1;
+}
+void world_source_off(int kind)
+{
+    if (kind < 0 || kind >= WSRC_N || !w_src[kind].on)
+        return;
+    w_src[kind].on = 0;
+    if (kind != WSRC_PLAYER)
+        printf("world: source %d off\n", kind);
+}
+/* the blocks a source other than the player wants: those its floor's links load / keep (the block it stands in too)
+ * when that block is on, else every block whose bounds and height range hold it (as the player without a floor) */
+static void src_wants(const float *p, unsigned *wm, unsigned *km)
+{
+    ColHit h = {.tri = -1};
+    *wm = *km = 0;
+    if (col_floor(p[0], p[2], p[1] + 1.0f, p[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk && w_rt[h.block].state == W_ON) {
+        const WorldLink *l = link_at(h.block, h.tri);
+        unsigned self = h.block ? 1u << h.block : 0;
+        *wm = (l ? l->load : 0) | self, *km = (l ? l->keep : 0) | self;
+        return;
+    }
+    for (int i = 1; i < w_nblk; i++)
+        if (box_d(&w_tab[i], p) <= 0.0f && p[1] >= w_tab[i].y0 - WORLD_Y_MARGIN && p[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
+            *wm |= 1u << i, *km |= 1u << i;
+}
+
 void w_step(const float *feet, float dt)
 {
     coltile_step(feet);  /* collision tiles around the feet (also in a settle's loop) */
@@ -212,6 +250,19 @@ void w_step(const float *feet, float dt)
             if (box_d(&w_tab[i], feet) <= 0.0f && feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
                 wm |= 1u << i, km |= 1u << i;
+    }
+    {  /* the other streaming sources (a respawn point while a death plays): their blocks too, and their cells
+        * (mapstream_sources) */
+        float sp[WSRC_N][3];
+        int ns = 0;
+        for (int s = WSRC_PLAYER + 1; WORLD_SOURCES && s < WSRC_N; s++)
+            if (w_src[s].on) {
+                unsigned sw, sk;
+                src_wants(w_src[s].pos, &sw, &sk);
+                wm |= sw, km |= sk;
+                memcpy(sp[ns++], w_src[s].pos, sizeof sp[0]);
+            }
+        mapstream_sources(ns ? sp[0] : NULL, ns);
     }
     wm |= w_hold_want, km |= w_hold_want;  /* the blocks the player is held for (world_hold) */
     w_ronly_m &= ~w_hold_want;

@@ -210,6 +210,14 @@ extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) 
 #ifndef MS_TIDY
 #define MS_TIDY cv_MS_TIDY  /* runtime switch, default 1 (src/cvar.h) */
 #endif
+/* WORLD_SOURCES (world_i.h, runtime switch): the other sources' items are planned too, by the target rule
+ * (mapstream_sources, ms_settle_plan). 0: the player's spot alone */
+#ifndef WORLD_SOURCES
+#define WORLD_SOURCES cv_WORLD_SOURCES
+#endif
+#define MS_NSRC 3  /* sources besides the player at most (world.h WSRC_N - 1) */
+extern float ms_src[MS_NSRC][3];
+extern int ms_nsrc;
 /* (MS_TIDY_LO / MS_TIDY_HI and the MS_K_* page kinds: msarena.h) */
 /* MS_QSCALE (default 1, runtime switch: option set MS_QSCALE 0 = fixed radii): the soft tier's radii shrink while the
  * arena is under pressure (streaming research idea 12; UE5 Nanite r.Nanite.Streaming.QualityScale). Pressure: a "no
@@ -563,6 +571,11 @@ static inline int vis_cut(const MsInst *m, unsigned id)
 }
 
 static inline float sq(float x) { return x * x; }
-static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settling && cls >= C_NEAR2 ? C_TOP : cls; }
+/* the target rule (Polaris 4.3): a place being loaded rather than walked in (a settle's spot, a respawn point while a
+ * death plays) is planned with the hard tier it is waited for in (plan_item: the near level within the draw radius,
+ * no read-ahead or foliage, the horizon standing in from MS_SETTLE_HZN_D), read by class */
+extern int ms_target;  /* plan_item is classifying for a target source (msplan.c) */
+static inline int ms_settle_plan(void) { return ms_settling || ms_target; }
+static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settle_plan() && cls >= C_NEAR2 ? C_TOP : cls; }
 
 #endif
