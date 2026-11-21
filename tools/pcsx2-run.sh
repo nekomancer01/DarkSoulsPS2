@@ -64,6 +64,9 @@ fi
     > '$H/tools/pcsx2-headless.log' 2>&1 < /dev/null 3> '$ID' &
     for _ in \$(seq 50); do [ -s '$ID' ] && break; sleep 0.1; done"
 INST=$(cat "$ID"); rm -f "$ID"; touch "/tmp/pcsx2-headless/$INST"
+# the slot's note for tools/test-run.py reap_slot, written here as soon as the instance exists: a harness that dies
+# while this script is still launching leaves no PCSX2 behind that the slot's next run cannot find
+[ -n "$PINE" ] && [ -n "$INST" ] && echo "$INST" > "/tmp/pcsx2-headless/slot.$PINE.inst"
 [ -n "$KEEP" ] && echo "INST=$INST"
 [ "$SHOT" = "-" ] && exit 0
 sleep "$T"
@@ -71,4 +74,4 @@ sleep "$T"
 WIN=$(DISPLAY=$D xwininfo -root -children 2>/dev/null | awk '/^ +0x/{split($0,a,"  ");print $1}' | while read w; do
     DISPLAY=$D xwininfo -id "$w" 2>/dev/null | awk -v w="$w" '/Width:/{x=$2}/Height:/{y=$2}END{print x*y, w}'; done | sort -n | tail -1 | cut -d' ' -f2)
 DISPLAY=$D import -window "${WIN:-root}" "$(realpath -m "$SHOT")"
-[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; }
+[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; [ -z "$PINE" ] || rm -f "/tmp/pcsx2-headless/slot.$PINE.inst"; }

@@ -65,6 +65,9 @@ WORLD_SEAM_BUNDLE = "1"
 # is only kept holds its collision and events. WORLD_MIP1_OUT is the mip 1 half alone (mapsplit.py MIP1_OUT).
 WORLD_LITE_DIET = "1"
 WORLD_MIP1_OUT = "{WORLD_LITE_DIET}"
+# DISC_ALIGN: world blocks' near parts on the drive's 32 KB ECC blocks (tools/discalign.py, Polaris 4.7); 0 = packed back to
+# back as tools/mapcells.py writes them (then remove gen/*/maptab.disc.bin: the knob is not in the step's make stamps)
+DISC_ALIGN = "1"
 # WORLD_TEX_SHARED: textures two or more blocks of one MSB have go to maptex.bin, read once per map (src/world.c);
 # 0 = every block's maptab holds its own copy
 WORLD_TEX_SHARED = "1"
@@ -555,6 +558,24 @@ reads = ["{A}/cells.bin"]
 tools = ["mapsplit.py"]
 make = { deps = ["$(A)/splitenv"] }
 
+# The disc layout of the streamed near parts (Polaris 4.7, tools/discalign.py): cells.bin with every part on the drive's
+# 32 KB ECC blocks (none touches more blocks than its size needs: 31 % extra blocks read before), maptab.bin's cell table
+# pointing at the new places. The packs take these two; the export's own maptab.bin / cells.bin stay for the offline
+# tools. DISC_ALIGN=0: copies (the old layout). A changed DISC_ALIGN redoes the layout ($(A)/discenv).
+[[step]]
+name = "disc layout"
+scope = "area"
+stage = "late"
+tool = "discalign.py"
+args = ["{A}/maptab.bin", "{A}/cells.bin", "{A}/maptab.disc.bin", "{A}/cells.disc.bin"]
+env = { DISC_ALIGN = "{DISC_ALIGN}" }
+make = { deps = ["$(A)/discenv"] }
+out = ["{A}/maptab.disc.bin"]
+maybe = ["{A}/cells.disc.bin"]
+inputs = ["{A}/maptab.bin"]
+reads = ["{A}/cells.bin"]
+tools = ["discalign.py"]
+
 # The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
 # (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline with their textures into 128 px
 # tiles on sheets at the depth seen; horizon.py leaves those triangles out of hzn.bin (one rule, pano_tris). Only the
@@ -626,24 +647,25 @@ tool = "pack.py"
 args = ["{D}/{OUT}.pak"]
 out = ["{D}/{OUT}.pak"]
 entries = [{ if = "lite_run", then = [
-    "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:{A}/maptab.bin",
+    "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:{A}/maptab.disc.bin",
     { if = "tex_peers", then = "maptex.bin=raw:{A}/maptex.bin" },
     "?events.bin=raw:{A}/events.bin", "dg.bin=raw:{A}/dg.bin", "pvs.bin=raw:{A}/pvs.bin",
     "objects.bin=raw:{A}/objects.bin", "fx.bin=raw:{A}/fx.bin", "far.bin=raw:{A}/far.bin", "bump.bin=raw:{A}/bump.bin",
     "enemies.bin=raw:{A}/enemies.bin", "ai.lua0=raw:{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
-    "?cells.bin=raw:{A}/cells.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:{A}/mapres.bin", "map.bin={A}/map.bin",
+    "?cells.bin=raw:{A}/cells.disc.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:{A}/mapres.bin", "map.bin={A}/map.bin",
   ], else = [
     "map.bin={A}/map.bin", "collision.bin={RAW}{A}/collision.bin", "enemies.bin={RAW}{A}/enemies.bin",
     "objects.bin={RAW}{A}/objects.bin", "ai.lua0={RAW}{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
     "bump.bin={RAW}{A}/bump.bin", "fx.bin={RAW}{A}/fx.bin", "dg.bin={RAW}{A}/dg.bin", "pvs.bin={RAW}{A}/pvs.bin",
-    "?cells.bin=raw:{A}/cells.bin", "?pano.bin={A}/pano.bin",
-    { if = "world_split", then = ["maptab.bin=raw:{A}/maptab.bin", "mapres.bin=raw:{A}/mapres.bin",
+    { if = "world_split", then = "?cells.bin=raw:{A}/cells.disc.bin", else = "?cells.bin=raw:{A}/cells.bin" },
+    "?pano.bin={A}/pano.bin",
+    { if = "world_split", then = ["maptab.bin=raw:{A}/maptab.disc.bin", "mapres.bin=raw:{A}/mapres.bin",
                                   "far.bin=raw:{A}/far.bin"] },
     { if = ["world_split", "block", "tex_peers"], then = "maptex.bin=raw:{A}/maptex.bin" },
     "?events.bin={RAW}{A}/events.bin",
   ] }]
 inputs = ["{A}/map.bin",
-          { if = "world_split", then = ["{A}/maptab.bin", "{A}/far.bin"] }, { if = "tex_peers", then = "{A}/maptex.bin" },
+          { if = "world_split", then = ["{A}/maptab.disc.bin", "{A}/far.bin"] }, { if = "tex_peers", then = "{A}/maptex.bin" },
           { if = "world", then = "{A}/pano.bin" },
           "{A}/bump.bin", "{A}/dg.bin", "{A}/pvs.bin", "{A}/collision.bin", "{A}/enemies.bin", "{A}/objects.bin",
           "{A}/ai_map.lua0", "{A}/events.bin", "{A}/fx.bin"]
