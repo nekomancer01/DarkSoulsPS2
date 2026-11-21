@@ -116,9 +116,26 @@ committed headers match their declarations. The headers hold layouts only, never
 
 ## Binary formats
 
-Each exporter documents its format at the top of the file and carries a magic and a version field; bump the version
-when the layout changes and make the runtime refuse what it cannot read. Most formats keep pointers in 32-bit fields
-that the loader relocates in place (TECH_DEBT core-1). Versioned chunk streams for every format are phase 3.
+Exported files the runtime reads in place are chunk streams (Polaris 3.3): a 16-byte header (`CHNK`, a four-letter
+file id, the total size, the chunk count), chunks of (four-letter id, version, size) with 16-byte aligned payloads,
+and a footer that repeats the size. `tools/chunkfile.py` writes and reads them in Python, `tools/native/chunkw.h` writes
+them from the C tools (`pvs_bake`, libmapx), and `ps2/proto/src/chunk.c` reads them in the runtime and the Lab.
+
+A loader asks for each chunk by id and the one version it reads. Another version, a missing required chunk, another
+file id and a truncated file are refused with a `TEST error: chunk:` line naming the file, the chunk and both
+versions, so packs from an older or newer build fail at boot instead of being misread. Bump a chunk's version when
+its payload layout changes; a new optional chunk needs no bump. Payloads hold offsets, not pointers: the loaders keep
+the chunk's base and read through it (`CHUNK_AT`), which is what lets a 64-bit host build run them (TECH_DEBT core-1).
+Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chunk, checked by `chunk_vu1_check`
+(map.bin keeps its stamp word until phase 4 and goes through the same check).
+
+| File | Id | Chunks |
+|---|---|---|
+| `world.bin` | `WRLD` | `BLKS` blocks, `LRNG` link ranges, `LINK` links, `REAC` reach table (optional) |
+
+The layout of each chunk is documented at the top of the exporter that writes it. Formats not yet moved (map.bin,
+cells.bin, model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they
+move with their owner's rewrite (phases 4 and 5).
 
 ## Packs
 

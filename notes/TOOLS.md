@@ -104,6 +104,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `gamedata_test.py` | Offline test of `gamedata.py` (run by `ci/offline.sh`) |
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
+| `ci/test_chunk.sh` | PR check (hygiene): the chunk reader and C writer built 64-bit, every refusal (bumped version, missing chunk, other file, truncated), and `tools/chunkfile.py` writing the same bytes as `chunkw.h` |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |
 | `ci/switches.py` | PR check: the switch registry matches the sources. `ps2/proto/src/switches.h` lists every compile-time switch the engine tests, `tools/switches.tsv` every Makefile variable and every environment variable the tools read, each with its owner module and the PR that added it, and nothing else; `--list` prints the CI builds, `--tsv` the whole registry as one table |
 | `ci/switches.sh` | PR check: one `-Werror` compile + link per fallback / debug build in `switches.h` (only the sources a switch reaches are rebuilt; ps2dev container, ~1.5 min) |
@@ -161,6 +162,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `tools/resample.py` | `resize(img, size, resample)`: Image.resize with the two passes in a fixed order (horizontal, then vertical, premultiplied), the pixels of Pillow <= 12 on every Pillow version (13 orders them per shape) and in the browser. Every export's resize goes through it |
 | `tools/octree.py` | Pillow's FASTOCTREE quantizer in numpy with a stable bucket sort: the same palettes natively and in the browser (Pillow's own depends on the platform's qsort). Used by texmap, export_map, export_effects, export_menu |
 | `tools/iso9660.py` | Bootable disc image in pure Python, same layout and pack order as `ps2-iso.sh` (no xorriso) |
+| `tools/chunkfile.py` | Chunk streams (Polaris 3.3): the container the exported files the runtime reads in place are written in (`pack`/`write`), and read back (`read`, `File.get(id, version)`); `python3 tools/chunkfile.py <file>` lists a file's chunks. C side: `ps2/proto/src/chunk.[ch]` (runtime reader), `tools/native/chunkw.h` (writer for pvs_bake / libmapx) |
 | `tools/gamedata.py` | Layout of the game values the ELF loads at boot (player.gd / combat.gd / progress.gd) and the generator of `src/*_data.h` |
 | `tools/native/build-wasm.sh` | The C helpers as WebAssembly side modules for Pyodide (clang + wasm-ld) |
 | `tools/pages/build.py` | Builds the GitHub Pages site (`.github/workflows/pages.yml`): checks the player's game copy in the browser, hands out `build-iso.sh` pinned to the deployed main commit |

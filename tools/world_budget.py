@@ -164,15 +164,16 @@ def structural(gen):
     p = os.path.join(gen, "world.bin")
     if not os.path.exists(p):
         return None
-    b = open(p, "rb").read()
-    if b[:4] != b"DSW1":
+    import chunkfile as chunk
+    try:
+        w = chunk.read(p, b"WRLD")  # tools/export_world.py
+        bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)
+    except chunk.ChunkError:
         return None
-    n = struct.unpack_from("<I", b, 8)[0]
-    names = [b[16 + 64 * i:32 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
-    maps = [b[32 + 64 * i:48 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
-    lr = struct.unpack_from(f"<{2 * n}I", b, 16 + 64 * n)
-    lbase = 16 + 64 * n + 8 * n
-    v4 = struct.unpack_from("<I", b, 4)[0] >= 4  # export_world.py: v4 links are 12 B with u16 masks
+    n = len(bl) // 64
+    names = [bl[64 * i:16 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
+    maps = [bl[16 + 64 * i:32 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
+    lr = struct.unpack_from(f"<{2 * n}I", lr, 0)
     ent, evfull, mtxfull = {}, {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
@@ -184,8 +185,7 @@ def structural(gen):
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
-            first, cnt, load, keep = struct.unpack_from("<I3H", b, lbase + 12 * (lr[2 * blk] + l)) if v4 else \
-                struct.unpack_from("<IHBB", b, lbase + 8 * (lr[2 * blk] + l))
+            first, cnt, load, keep = struct.unpack_from("<I3H", lk, 12 * (lr[2 * blk] + l))
             load |= (1 << blk) if blk else 0
             keep |= load
             on = [i for i in ent if keep >> i & 1]

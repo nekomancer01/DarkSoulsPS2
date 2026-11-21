@@ -201,7 +201,7 @@ $(D)/$(OUT).pak: $(A)/map.bin $(if $(WORLD_SPLIT),$(A)/maptab.bin $(A)/far.bin) 
 	python3 -I ../../tools/pack.py $(D)/$(OUT).pak $(if $(LITE_RUN),collision.bin=raw:$(A)/collision.bin maptab.bin=raw:$(A)/maptab.bin $(if $(TEX_PEERS),maptex.bin=raw:$(A)/maptex.bin) $(if $(wildcard $(A)/events.bin),events.bin=raw:$(A)/events.bin) dg.bin=raw:$(A)/dg.bin pvs.bin=raw:$(A)/pvs.bin objects.bin=raw:$(A)/objects.bin fx.bin=raw:$(A)/fx.bin far.bin=raw:$(A)/far.bin bump.bin=raw:$(A)/bump.bin enemies.bin=raw:$(A)/enemies.bin ai.lua0=raw:$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin $(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) mapres.bin=raw:$(A)/mapres.bin map.bin=$(A)/map.bin,map.bin=$(A)/map.bin collision.bin=$(if $(BLOCK),raw:)$(A)/collision.bin enemies.bin=$(if $(BLOCK),raw:)$(A)/enemies.bin objects.bin=$(if $(BLOCK),raw:)$(A)/objects.bin ai.lua0=$(if $(BLOCK),raw:)$(A)/ai_map.lua0 evcommon.bin=$(A)/evcommon.bin bump.bin=$(if $(BLOCK),raw:)$(A)/bump.bin fx.bin=$(if $(BLOCK),raw:)$(A)/fx.bin dg.bin=$(if $(BLOCK),raw:)$(A)/dg.bin pvs.bin=$(if $(BLOCK),raw:)$(A)/pvs.bin $(if $(wildcard $(A)/cells.bin),cells.bin=raw:$(A)/cells.bin) $(if $(wildcard $(A)/pano.bin),pano.bin=$(A)/pano.bin) $(if $(WORLD_SPLIT),maptab.bin=raw:$(A)/maptab.bin mapres.bin=raw:$(A)/mapres.bin far.bin=raw:$(A)/far.bin) $(if $(and $(WORLD_SPLIT),$(BLOCK),$(TEX_PEERS)),maptex.bin=raw:$(A)/maptex.bin) $(if $(wildcard $(if $(BLOCK),raw:)$(A)/events.bin),events.bin=$(if $(BLOCK),raw:)$(A)/events.bin))
 
 # world (world): tools/export_world.py
-$(G)/world.bin: $(A)/collision.bin $(foreach d,$(PVS_WITH),$(d)/collision.bin) $(TS)/area.py.sum $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(TS)/worldreach.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum $(TS)/souls.py.sum | worldpacks
+$(G)/world.bin: $(A)/collision.bin $(foreach d,$(PVS_WITH),$(d)/collision.bin) $(TS)/chunkfile.py.sum $(TS)/area.py.sum $(TS)/export_world.py.sum $(TS)/worldlinks.py.sum $(TS)/worldreach.py.sum $(TS)/export_collision.py.sum $(TS)/havok_collision.py.sum $(TS)/navwalls.py.sum $(TS)/navroute.py.sum $(TS)/souls.py.sum | worldpacks
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_world.py "$(GAME)" $(G)/world.bin $(MAP) $(G)
 
@@ -211,7 +211,7 @@ $(D)/world.pak: $(G)/world.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 	python3 -I ../../tools/pack.py $(D)/world.pak world.bin=$(G)/world.bin
 
 # world budget (world): tools/world_budget.py
-$(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world.c src/residency.h $(TS)/world_budget.py.sum $(TS)/residency.py.sum
+$(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world.c src/residency.h $(TS)/chunkfile.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum
 	@mkdir -p $(@D)
 	MAP='$(MAP)' $(PY) -I ../../tools/world_budget.py $(G)/world_budget.json $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
 
@@ -225,7 +225,7 @@ $(BUILD)/scan/summary.md: $(BUILD)/scan/files.json
 	@test -f $@ || { echo "$@ missing: re-export files.json"; rm -f $<; exit 1; }
 
 # block report (world): tools/blockreport.py
-$(G)/blockreport.json: $(G)/world_budget.json $(A)/map.bin $(A)/hzn.bin $(A)/far.bin $(A)/fx.bin $(A)/objects.bin $(A)/events.bin $(A)/ai_map.lua0 $(A)/ai_common.lua0 $(foreach d,$(PVS_WITH),$(d)/map.bin $(d)/hzn.bin $(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0) src/residency.h src/gs_budget.h src/lua0.c $(BUILD)/scan/files.json $(TS)/blockreport.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum $(TS)/gs_budget.py.sum $(TS)/mapcfg.py.sum $(TS)/lua50.py.sum $(TS)/scan/support.py.sum
+$(G)/blockreport.json: $(G)/world_budget.json $(A)/map.bin $(A)/hzn.bin $(A)/far.bin $(A)/fx.bin $(A)/objects.bin $(A)/events.bin $(A)/ai_map.lua0 $(A)/ai_common.lua0 $(foreach d,$(PVS_WITH),$(d)/map.bin $(d)/hzn.bin $(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0) src/residency.h src/gs_budget.h src/lua0.c $(BUILD)/scan/files.json $(TS)/chunkfile.py.sum $(TS)/blockreport.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum $(TS)/gs_budget.py.sum $(TS)/mapcfg.py.sum $(TS)/lua50.py.sum $(TS)/scan/support.py.sum
 	@mkdir -p $(@D)
 	MAP='$(MAP)' $(PY) -I ../../tools/blockreport.py $(G)/blockreport.json $(PVS_PEERS) --scan $(BUILD)/scan/files.json --check $(G)/world_budget.json --strict
 $(G)/blockreport.world_budget.json: $(G)/blockreport.json

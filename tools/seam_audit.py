@@ -51,17 +51,15 @@ UP = 0.7          # walkable: the triangle's normal y at least (ASSUMED: about 4
 
 def world(gen):
     """world.bin -> [(pack, map, gen dir, [(first tri, tris, load mask, keep mask)])]"""
-    b = open(os.path.join(gen, "world.bin"), "rb").read()
-    magic, ver, n, nl = struct.unpack_from("<4s3I", b, 0)
-    assert magic == b"DSW1" and ver == 4, "world.bin v4 (tools/export_world.py)"
-    blocks, o = [], 16
-    for i in range(n):
-        pack, mp = (x.split(b"\0")[0].decode() for x in struct.unpack_from("<16s16s", b, o))
+    import chunkfile as chunk
+    w = chunk.read(os.path.join(gen, "world.bin"), b"WRLD")  # tools/export_world.py
+    bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)
+    blocks = []
+    for i in range(len(bl) // 64):
+        pack, mp = (x.split(b"\0")[0].decode() for x in struct.unpack_from("<16s16s", bl, 64 * i))
         blocks.append([pack, mp, gen if i == 0 else os.path.join(gen, pack), []])
-        o += 64
-    ranges = [struct.unpack_from("<2I", b, o + 8 * i) for i in range(n)]
-    o += 8 * n
-    links = [struct.unpack_from("<I3H", b, o + 12 * i) for i in range(nl)]
+    ranges = [struct.unpack_from("<2I", lr, 8 * i) for i in range(len(blocks))]
+    links = [struct.unpack_from("<I3H", lk, 12 * i) for i in range(len(lk) // 12)]
     for i, (first, cnt) in enumerate(ranges):
         blocks[i][3] = links[first:first + cnt]
     return blocks

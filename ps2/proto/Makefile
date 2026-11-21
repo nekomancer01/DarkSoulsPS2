@@ -66,7 +66,7 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapblock.o mapstream.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o trail.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o lpass.o world.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
+	gamedata.o chunk.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -421,7 +421,7 @@ $(SYM_ELF): $(EE_OBJS)
 # with -m32 (multilib): on the distrobox, `distrobox-host-exec make -C ps2/proto lab`.
 LAB_CC ?= gcc -m32
 LAB_CFLAGS ?= -std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math -w -DCOL_TILES=0
-LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c lab/lab_world.c $(addprefix src/,gamedata.c flags.c progress.c chrstat.c \
+LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c lab/lab_world.c $(addprefix src/,gamedata.c chunk.c flags.c progress.c chrstat.c \
 	items.c player.c esd.c esd_env_move.c combat.c physics.c collision.c coltile.c nav.c status.c cvar.c vmath.c \
 	model.c omit.c testscript.c save.c cam_input.c objects.c event.c ev_chr.c ev_obj.c ev_misc.c bonfire.c pickup.c world.c enemy.c ai.c lua0.c npc.c camera.c ragdoll.c drawgrp.c)
 LAB_BIN = $(BUILD)/host/lab

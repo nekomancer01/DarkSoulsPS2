@@ -661,7 +661,7 @@ queue = 12
 args = ["{GAME}", "{G}/world.bin", "{MAP}", "{G}"]
 out = ["{G}/world.bin"]
 inputs = ["{A}/collision.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/collision.bin" }]
-tools = ["area.py", "export_world.py", "worldlinks.py", "worldreach.py", "export_collision.py", "havok_collision.py",
+tools = ["chunkfile.py", "area.py", "export_world.py", "worldlinks.py", "worldreach.py", "export_collision.py", "havok_collision.py",
          "navwalls.py", "navroute.py", "souls.py"]
 make = { order_only = ["worldpacks"] }
 
@@ -692,7 +692,7 @@ out = ["{G}/world_budget.json"]
 inputs = ["{A}/map.bin.cells.json", { foreach = "PVS_WITH", as = "d", do = "{d}/map.bin.cells.json" }, "{D}/world.pak",
           "{A}/maptab.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/maptab.bin" }, "{SRC}/world.c",
           "{SRC}/residency.h"]
-tools = ["world_budget.py", "residency.py"]
+tools = ["chunkfile.py", "world_budget.py", "residency.py"]
 
 # Coverage scan (Polaris 3.4, tools/scan): every reader over every file of the game, cached per file in build/scan;
 # fails on an unknown variant tools/scan/known.tsv does not list (rows there point at TECH_DEBT). Whole game: about 2
@@ -735,4 +735,4 @@ inputs = ["{G}/world_budget.json", "{A}/map.bin", "{A}/hzn.bin", "{A}/far.bin", 
           "{SRC}/residency.h", "{SRC}/gs_budget.h", "{SRC}/lua0.c", "{BUILD}/scan/files.json"]
 reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/cells.bin", "{d}/events.txt",
          "{d}/maptex.bin"] }]
-tools = ["blockreport.py", "world_budget.py", "residency.py", "gs_budget.py", "mapcfg.py", "lua50.py", "scan/support.py"]
+tools = ["chunkfile.py", "blockreport.py", "world_budget.py", "residency.py", "gs_budget.py", "mapcfg.py", "lua50.py", "scan/support.py"]

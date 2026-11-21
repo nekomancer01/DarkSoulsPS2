@@ -2,6 +2,7 @@
  * its cell and tile indexes for culling, the miss scan, the resident items (res_open) and the block stream. map.c
  * draws them; map_i.h has the types and state both use. */
 #include "map_i.h"
+#include "chunk.h"
 #include "world.h"
 #include "material.h"
 
@@ -335,9 +336,11 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
         if (!stamp && !(unstamped >> k & 1))
             unstamped |= 1u << k, printf("map: block %d: no VU1 layout stamp (exported before Polaris 1.5): not checked; "
                                          "re-export the map to check it\n", k);
-        else if (stamp && stamp != (VU1L_HASH & 0xFFFFFF))
-            printf("TEST error: map block %d: exported for VU1 layout %06x, this ELF has %06x (re-export the map)\n", k,
-                   stamp, VU1L_HASH & 0xFFFFFF);
+        else if (stamp) {  /* the shared check (src/chunk.c): chunk files carry the stamp as a 'VU1L' chunk */
+            char nm[24];
+            snprintf(nm, sizeof nm, "map block %d", k);
+            chunk_vu1_check_hash(nm, stamp, 0xFFFFFF);
+        }
     }
     m->chunks = (const Chunk *)(map_bin + hdr->chunk_off);
     m->fog_rows = *(const unsigned *)(tex_bin + hdr->fog_off);
