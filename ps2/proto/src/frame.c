@@ -388,11 +388,18 @@ static void phase_emit_map(Frame *f)
         /* Z clear and the map in one VU1 chain (PATH2 + PATH1), then gsKit (PATH3) for the rest */
         unsigned t0 = ticks();
         {
-            ot_open(OT_SKY, OT_WORLD);  /* map.c's own order inside: sky, panorama, horizon, world, relief, the blended
-                                         * chunks beyond ZSPLIT; the rest after the objects (OT_BLEND, render-19) */
+            /* the map's buckets, back to back in its chain buffer (one kick); its blended chunks nearer than ZSPLIT
+             * after the objects (OT_BLEND, render-19) */
+            ot_open(OT_SKY, OT_SKY);
             f->b->z_clear(gs);
             frame_draw_check(FE_MAP_DRAW);
-            MEM_LEGACY(WORLD) f->tris_drawn = map_draw(f->eye);
+            MEM_LEGACY(WORLD) f->tris_drawn = map_draw_sky(f->eye);
+            ot_close();
+            ot_open(OT_PANO, OT_PANO);
+            MEM_LEGACY(WORLD) f->tris_drawn += map_draw_pano();
+            ot_close();
+            ot_open(OT_HORIZON, OT_WORLD);  /* (cells interleave their horizon, coarse and near levels) */
+            MEM_LEGACY(WORLD) f->tris_drawn += map_draw_world();
             ot_close();
             ot_flush();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
         }

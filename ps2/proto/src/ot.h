@@ -4,7 +4,8 @@
  * exceptions listed there).
  *
  * Buckets, in the order the frame should reach the GS:
- *   SKY PANO HORIZON WORLD   the map pass (map.c, one segment for SKY..WORLD; its blended chunks beyond ZSPLIT too)
+ *   SKY PANO HORIZON WORLD   the map pass (map.c map_draw_sky / _pano / _world: segments SKY, PANO, HORIZON..WORLD
+ *                            back to back in the map buffer, one kick; its blended chunks beyond ZSPLIT in WORLD)
  *   CHR OBJ                  characters (player, enemies, NPCs), objects (breakables)
  *   ALPHA_TEST BLEND         BLEND: the blended map nearer than ZSPLIT (map.c map_draw_blend, render-19), a segment in
  *                            the characters' buffer after OBJ with the map programs' preamble (vu1_map_resume)

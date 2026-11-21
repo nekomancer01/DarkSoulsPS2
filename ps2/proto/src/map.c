@@ -1,6 +1,6 @@
 /* Level drawing: map.bin load and textures, each block's cells at the level that is in (near, coarse, horizon) and
- * map_draw's order of passes. Visibility is mapvis.c, fog and light maplight.c, chunk drawing and ZSPLIT mapchunk.c,
- * the sky / fades / effects mappass.c, timers and logs maplog.c. */
+ * the order of passes (map_draw_sky / _pano / _world). Visibility is mapvis.c, fog and light maplight.c, chunk
+ * drawing and ZSPLIT mapchunk.c, the sky / fades / effects mappass.c, timers and logs maplog.c. */
 #include "map_i.h"
 #include "mapvis.h"
 #include "maplight.h"
@@ -553,13 +553,27 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
     return drawn;
 }
 
-int map_draw(V3 eye)
+/* One map draw, in the order table's buckets (frame.c: a segment each, back to back in the map chain buffer, so they
+ * go out in one kick as before): map_draw_sky (OT_SKY: the frame's setup, the sky, the void ring), map_draw_pano
+ * (OT_PANO: the boot map's backdrop pictures, the far panorama of the blocks that are not loaded), map_draw_world
+ * (OT_HORIZON..OT_WORLD: each block's cells at the level that is in, the fades, relief and the blended chunks beyond
+ * ZSPLIT, then the ZSPLIT near pass). The blended chunks nearer than ZSPLIT come after the characters (map_draw_blend,
+ * OT_BLEND). Within a cell the horizon, coarse and near levels interleave, so HORIZON and WORLD are one segment; the
+ * map's alpha-tested pieces draw with the opaque ones (no blending: order-free). */
+static struct {
+    float e[3], a, b, fmin;
+    u32 col;
+    int sk, drawn;
+    unsigned mp_t0;
+    FrameLog lg;
+} fr;
+
+int map_draw_sky(V3 eye)
 {
-    int drawn = 0;
+    fr.drawn = 0;
     static unsigned mp_fr;
     mp_on = MAP_PASS_MS && !(mp_fr++ % MAP_PASS_EVERY);
-    unsigned mp_t0 = mp_on ? ticks() : 0;
-    (void)mp_t0;
+    fr.mp_t0 = mp_on ? ticks() : 0;
     memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
     if (!mp_inst[mp_pinst].on && mp_pinst)
         mp_pinst = 0;
@@ -571,6 +585,7 @@ int map_draw(V3 eye)
                 sk = k;
                 break;
             }
+    fr.sk = sk;
     MapInst *m = &mp_inst[sk];
     mapstream_select(sk);
     if (m->hdr) {  /* (none: the boot block let go and no other block's map on yet, world.c WORLD_BOOT_LEAN) */
@@ -584,7 +599,8 @@ int map_draw(V3 eye)
 #ifdef MAP_DBG
     mp_dbg_begin();
 #endif
-    const float e[3] = {eye.x, eye.y, eye.z};
+    fr.e[0] = eye.x, fr.e[1] = eye.y, fr.e[2] = eye.z;
+    const float *e = fr.e;
     {
         MP_BEGIN
         pvs_eye(e);  /* every instance's visibility row for this camera cell (src/pvs.c) */
@@ -597,13 +613,31 @@ int map_draw(V3 eye)
         MP_END(MP_TEX)
     }
     mp_zs_begin();
-    float a, b, fmin;
-    mp_fog_terms(&a, &b, &fmin);
+    mp_fog_terms(&fr.a, &fr.b, &fr.fmin);
+    fr.col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    mp_pass_reset();  /* before the sky pass: the pictures count pano_drawn (the far panorama log line) */
+    int dn = mp_draw_sky(sk, e, fr.col, fr.a, fr.b, fr.fmin);
+    fr.drawn += dn;
+    return dn;
+}
+
+int map_draw_pano(void)
+{
+    int dn = mp_draw_pictures(fr.sk, fr.e);
+    fr.lg = (FrameLog){.hole_ex = {~0u, 0}, .pop_d = 1e9f};
+    /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
+    int fd = (int)mp_draw_far(fr.e);
+    fr.lg.hz_tris += fd, fr.lg.far_tris += fd;
+    fr.drawn += dn + fd;
+    return dn + fd;
+}
+
+int map_draw_world(void)
+{
+    const float *e = fr.e;
+    int drawn = 0;
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
-    u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
-    mp_pass_reset();  /* before the sky pass: it counts pano_drawn (the far panorama log line) */
-    drawn += mp_draw_sky(sk, e, col, a, b, fmin);
-    FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
+    FrameLog *lg = &fr.lg;
     mp_pop_fr++;
     if (mapstream_settling())
         mp_pop_settle = mp_pop_fr;
@@ -617,18 +651,14 @@ int map_draw(V3 eye)
         int peer = MAP_PEER_ZBIAS > 0 && k != mp_pinst && (k == 0 || mp_inst[k].on) && !dg_same_map(k, mp_pinst);
         if (peer)
             mp_zs_zbias(1.0f - MAP_PEER_ZBIAS);
-        drawn += draw_block(k, e, fog, &lg);
+        drawn += draw_block(k, e, fog, lg);
         if (peer)
             mp_zs_zbias(1.0f);
     }
-    {  /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
-        int dn = (int)mp_draw_far(e);
-        drawn += dn, lg.hz_tris += dn, lg.far_tris += dn;
-    }
     mapstream_select(0);
     {
-        int dn = mp_draw_hz_fades(e, a, b, fmin);
-        drawn += dn, lg.hz_tris += dn;
+        int dn = mp_draw_hz_fades(e, fr.a, fr.b, fr.fmin);
+        drawn += dn, lg->hz_tris += dn;
     }
     drawn += mp_draw_near_fades(e);
     {
@@ -638,7 +668,7 @@ int map_draw(V3 eye)
     }
 
     MF_BEGIN
-    drawn += mp_draw_effects(fog, MAP_BLEND_LATE ? 1 : 0, col);  /* the rest after the characters: map_draw_blend */
+    drawn += mp_draw_effects(fog, MAP_BLEND_LATE ? 1 : 0, fr.col);  /* the rest after the characters: map_draw_blend */
     MF_END(MF_FX)
     mp_zs_end();
     {
@@ -646,10 +676,11 @@ int map_draw(V3 eye)
         tc_end();
         MP_END(MP_TEX)
     }
+    fr.drawn += drawn;
 #if MAP_PASS_MS
-    mp_log_pass_ms(mp_t0);
+    mp_log_pass_ms(fr.mp_t0);
 #endif
-    mp_log_frame(&lg, e, drawn);
+    mp_log_frame(lg, e, fr.drawn);
     return drawn;
 }
 

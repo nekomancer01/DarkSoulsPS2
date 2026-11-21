@@ -85,7 +85,7 @@ point light is added on the map around them (`MAP_PLIGHT`). Split by role (Polar
 
 | File | Role |
 |---|---|
-| `map.c` | map.bin load and textures, each block's cells at the level that is in, `map_draw`'s order of passes |
+| `map.c` | map.bin load and textures, each block's cells at the level that is in, the order of passes (`map_draw_sky` / `_pano` / `_world`, one per order-table bucket) |
 | `mapblock.c` | world blocks' map tables, kept-horizon blocks, the far panorama |
 | `mapvis.c` / `mapvis.h` | the frame's camera, chunk and box view tests, foliage thinning, the streamer's item visibility |
 | `maplight.c` / `maplight.h` | fog of the floor underfoot, edge and sky fog, character light terms, the player's light and specular passes |

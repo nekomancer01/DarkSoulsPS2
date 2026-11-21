@@ -22,7 +22,7 @@ enum {
     HS_PRE,    /* player, combat, enemy type loads (enemy_stream) */
     HS_WORLD,  /* world_update: block reads, settles (mapstream_update inside) */
     HS_SND,    /* snd_map + snd_update (one RPC) */
-    HS_MAP,    /* map_draw + vu1_kick */
+    HS_MAP,    /* map_draw_sky / _pano / _world + vu1_kick */
     HS_LOGIC,  /* enemies, objects, events, bonfire */
     HS_CHR,    /* characters, effects, HUD */
     HS_WAIT,   /* vu1_wait */
