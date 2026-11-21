@@ -46,7 +46,7 @@ map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the ol
 Next to it, <hzn.bin>.far.npz (build only): the crown cards and the picture-layer backdrop left out of hzn.bin, for
 tools/farpano.py.
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
-HZN_VIS=0 no visibility cut; HZN_CUT=0 no cut-out cards; HZN_CUT_MIN, HZN_CUT_OFF, HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D,
+HZN_VIS=0 no visibility cut; HZN_CUT=0 no cut-out cards; HZN_CUT_MIN, HZN_CUT_OFF, HZN_CUT_SAME, HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D,
 HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
 import struct
@@ -121,6 +121,10 @@ CUT_MIN = float(os.environ.get("HZN_CUT_MIN", 0.15))  # opaque share below which
 # CROWN_R (bushes, hanging plants: the sky behind a tree line is above the ground): every card cost the Burg's horizons
 # 50-110 KB each and the world budget its hard-tier gate (1.39 % of the spots over, 2026-11-21). ASSUMED
 CUT_OFF = float(os.environ.get("HZN_CUT_OFF", 1.0))
+# ... and within the triangles the block's horizon takes without them (the rest of it a little coarser): they still
+# grew the Burg's lite sets 20-57 KB and the world budget's structural pool 67 KB, its hard-tier gate 0.75 -> 1.11 %
+# of the spots over (at most 1 %, 2026-11-22). HZN_CUT_SAME=0: on top
+CUT_SAME = os.environ.get("HZN_CUT_SAME", "1") == "1"
 CUT_N = 4  # barycentric samples per edge (15 a triangle)
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
@@ -751,7 +755,12 @@ def ntri(r):
     return sum(len(x[3]) for x in r)
 
 
-def fit(run, measure, cap):
+def nbytes(r):
+    """about the indexed batches' bytes: 10 a distinct vertex, 4 a triangle (idx_streams)"""
+    return sum(10 * len(np.unique(x[3])) + 4 * len(x[3]) for x in r if len(x[3]))
+
+
+def fit(run, measure, cap, size=ntri):
     """run(s) -> [(set, V, VC, T, welded)] at weld + collapse error s; measure(result) -> mesh_err. -> (measured, s,
     result): the largest s in [S_MIN PX, PX] whose result measures at most PX (geometric bisection, ~5 % apart at the
     end); past the ceiling cap (triangles), the smallest s up to PX_MAX that fits it"""
@@ -776,12 +785,12 @@ def fit(run, measure, cap):
                 else:
                     hi_s = mid
             s = lo_s
-    if ntri(ev(s)[1]) > cap:  # the ceiling: coarser until it fits (never past PX_MAX)
+    if size(ev(s)[1]) > cap:  # the ceiling: coarser until it fits (never past PX_MAX)
         lo_s, hi_s = s, PX_MAX
-        if ntri(ev(hi_s)[1]) <= cap:
+        if size(ev(hi_s)[1]) <= cap:
             for _ in range(7):
                 mid = (lo_s * hi_s) ** 0.5
-                if ntri(ev(mid)[1]) <= cap:
+                if size(ev(mid)[1]) <= cap:
                     hi_s = mid
                 else:
                     lo_s = mid
@@ -867,17 +876,31 @@ def build(b):
                 out.append((dset, V, VC, replay(qlog(V, T, nav), (s / FOCAL) ** 2), len(T)))
             return out
 
+        size, cap_b = ntri, None
+        if not g and cards.any() and CUT_SAME:  # the crown cards within the bytes the horizon took without them
+            full, raw = raw, [(dset, sel & ~cards) for dset, sel in raw if (sel & ~cards).any()]
+            alone = []
+            if mo:
+                alone.append(fit(run_mo, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap))
+            if SIMP in ("auto", "qem") or not mo:
+                alone.append(fit(run_qem, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap))
+            # (cards are loose triangles: three vertices each, so the bytes, not the triangles, are held)
+            cap_b = min(min(nbytes(x[2]) for x in alone), cap * BPT)
+            raw = full
+            size, cap = nbytes, cap_b
         cand = []  # (measured, s, method, [(set, V, VC, T, welded triangles)])
         if mo:
-            e, s_, r = fit(run_mo, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap)
+            e, s_, r = fit(run_mo, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap,
+                           size)
             cand.append((e, s_, "meshopt", r))
         if SIMP in ("auto", "qem") or not mo:
-            e, s_, r = fit(run_qem, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap)
+            e, s_, r = fit(run_qem, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap,
+                           size)
             cand.append((e, s_, "qem", r))
 
         def key(c):  # meeting PX first, then fewer triangles; a block past the ceiling: the lower measured error
             m = c[0][0] if c[0] is not None else c[1]
-            return (m > PX * 1.01, round(m, 1) if m > PX * 1.01 else 0, ntri(c[3]), c[2] != "meshopt")
+            return (m > PX * 1.01, round(m, 1) if m > PX * 1.01 else 0, size(c[3]), c[2] != "meshopt")
         meas, s_used, method, res = min(cand, key=key)
         px = meas[0] if meas is not None else s_used
         used.append(("bd " if g else "") + method)

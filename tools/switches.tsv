@@ -166,6 +166,8 @@ HZN_CROWN_R	env	8.0	tune	world	-	#204	horizon.py	-
 HZN_CW	env	4.0	tune	world	-	#135	horizon.py	-
 HZN_CUT	env	1	flag	world	0	new	horizon.py	mostly transparent cut-out cards stay as solid cards shrunk to their opaque share (0: dropped)
 HZN_CUT_MIN	env	0.15	tune	world	-	new	horizon.py	opaque share below which a cut-out card is dropped
+HZN_CUT_OFF	env	1.0	tune	world	-	new	horizon.py	metres: a cut-out card this near the opaque surfaces stays out
+HZN_CUT_SAME	env	1	flag	world	0	new	horizon.py	the horizon with its cut-out cards fits the bytes of the one without (0: on top)
 HZN_D	env	46.0	tune	world	-	#122	horizon.py	(54 before map.c HZN_R went 56 -> 40, Burg plan B3) # metres: nearest view distance the error is judged from
 HZN_DG	env	1	flag	world	0	#132	horizon.py	-
 HZN_ERR_Q	env	0.99	tune	world	-	#135	horizon.py	-
