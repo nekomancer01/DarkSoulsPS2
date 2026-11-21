@@ -340,6 +340,7 @@ class Step:
         self.name, self.tool, self.args, self.outputs, self.env = name, tool, list(args), list(outputs), env or {}
         self.inputs = list(inputs)
         self.group, self.raw, self.inst = group, raw or {}, inst
+        self.maybe = []  # outputs written only sometimes (recipe "maybe"; also in outputs)
 
     def files(self):
         """every path the step names: arguments and environment values (pack.py's "name=raw:path" and "?" entries
@@ -430,8 +431,10 @@ class Plan:
             name = f"{c['OUT']}: {name}"
         group = step.get("group") or ("world" if step["scope"] == "world" else "shared" if step["scope"] == "shared"
                                       else c["OUT"] + (" packs" if step.get("stage") == "late" else ""))
-        return Step(name, step["tool"], args, c.items(step["out"]) + c.items(step.get("side", [])), env, inputs,
-                    group, step, inst)
+        S = Step(name, step["tool"], args, c.items(step["out"]) + c.items(step.get("side", [])) +
+                 [os.path.normpath(m) for m in c.items(step.get("maybe", []))], env, inputs, group, step, inst)
+        S.maybe = [os.path.normpath(m) for m in c.items(step.get("maybe", []))]
+        return S
 
     def steps(self):
         """every step instance of the default build that its goals need, in recipe order per instance (shared, the
@@ -535,7 +538,8 @@ def main():
             if "--json" in a:
                 print(json.dumps({"name": step_name(s)} if not isinstance(s, Step) else
                                  {"name": s.name, "group": s.group, "tool": s.tool, "args": s.args, "env": s.env,
-                                  "outputs": s.outputs, "inputs": s.inputs, "tools": s.raw.get("tools", [])}))
+                                  "outputs": s.outputs, "maybe": s.maybe, "inputs": s.inputs,
+                                  "tools": s.raw.get("tools", [])}))
             else:
                 print(f"[{s.group if isinstance(s, Step) else s[1]['OUT']}] {step_name(s)}")
         return
