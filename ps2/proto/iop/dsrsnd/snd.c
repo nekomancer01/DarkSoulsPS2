@@ -31,6 +31,19 @@
 #define STREAM_RA_ALSO (STREAM_RA * 3 / 4)  /* the others top up with it from here */
 /* below this the stream is starving (~1.3 s left, or a half it cannot fill): reported in status.starving */
 #define STREAM_RA_LOW (STREAM_RA / 4)
+/* One queue (Polaris 4.5, default on; DSRSND_DEFS=-DDSRSND_ONE_QUEUE=0 = the stream thread takes the drive itself
+ * between the disc thread's pages, as before): the stream thread never reads the drive. What it needs from the disc
+ * (opens, closes, read-ahead top-ups, bank load steps) is one more entry in the disc thread's queue (snd_drive_want /
+ * snd_drive_step, disc.c disc_step): a stream running low (STREAM_RA_LOW, ~1.3 s left) or opening goes before every EE
+ * request; a top-up from STREAM_RA_TOP and a bank load are background requests at their place on the disc, in the
+ * same sweep and age rule as the map reads, a page (SND_DISC_PAGE) at a time. Before, the stream thread took the
+ * drive whenever it was free and kept it for the whole top-up of every stream (up to 3 x 160 KB, ~0.5 s with seeks)
+ * and bank trip, wherever the map reader's head was. Without read-ahead memory (snd_init_ra) the old path stays. */
+#ifndef DSRSND_ONE_QUEUE
+#define DSRSND_ONE_QUEUE 1
+#endif
+static int snd_one_queue;
+
 /* opens that find ioman's file table full (EMFILE_, dsrsnd_i.h) are retried for this long */
 #define OPEN_RETRY_MS 10000
 #define ADSR1_FLAT SD_SET_ADSR1(SD_ADSR_AR_LINEARi, 0, 0xf, 0xf)  /* instant attack, no decay, sustain level max */
@@ -51,6 +64,9 @@ typedef struct {
     int due, starved;    /* due: the voice left a half that is not refilled yet; starved: keyed off by an underrun */
     SndStreamOpen req;   /* SNDS_OPENING: the open the stream thread does once it has the drive */
     unsigned int open_t0;  /* when its open first found ioman's file table full (0: it did not) */
+    int topping;           /* one queue: a top-up under way (read a page at a time until the read-ahead is full) */
+    unsigned int top_t0, low_t0;  /* one queue: when it first wanted a top-up / ran low (0: it does not) */
+    unsigned int open_last;       /* one queue: its last open try (an open that found the file table full waits) */
 } Stream;
 static Stream streams[SND_STREAMS];
 static unsigned char *stream_mem;  /* SND_STREAMS x 2 x SND_STREAM_CHUNK_MAX, then SND_LOAD_STEP for loads */
@@ -121,9 +137,9 @@ static inline int stream_ra_want(const Stream *s)
 
 /* Top the read-ahead up to full from the file (the caller holds the drive: disc_take). Loops are unrolled into it: at the end
  * of a looping stream the read goes on from its start. Reads end on a sector boundary where they can. */
-static int stream_ra_fill(Stream *s)
+__attribute__((noinline)) static int stream_ra_fill_n(Stream *s, unsigned int cap)
 {
-    while (s->ra_len < STREAM_RA && stream_ra_more(s)) {
+    for (unsigned int got = 0; got < cap && s->ra_len < STREAM_RA && stream_ra_more(s);) {
         if (s->rd_pos >= s->size) {
             s->rd_pos = 0;
             df_lseek(s->fd, s->offset);
@@ -131,6 +147,8 @@ static int stream_ra_fill(Stream *s)
         unsigned int w = (s->ra_pos + s->ra_len) % STREAM_RA, n = STREAM_RA - s->ra_len;
         if (n > STREAM_RA - w)
             n = STREAM_RA - w;
+        if (n > cap - got)
+            n = cap - got;
         if (n > s->size - s->rd_pos)
             n = s->size - s->rd_pos;
         else if (n > 2048)
@@ -140,10 +158,11 @@ static int stream_ra_fill(Stream *s)
         cd_who = 0;
         if (r <= 0)
             return -1;
-        s->ra_len += r, s->rd_pos += r;
+        s->ra_len += r, s->rd_pos += r, got += r;
     }
     return 0;
 }
+static int stream_ra_fill(Stream *s) { return stream_ra_fill_n(s, STREAM_RA); }
 
 /* n bytes of the stream at the current position: from the read-ahead (the caller checked it holds them; no disc), or
  * without one from the file (the caller holds the drive, n <= what is left of the file: it wraps loops) */
@@ -213,7 +232,8 @@ static int stream_fill(Stream *s, int slot, int h)
 
 /* One step of the bank load: open it when new, then SND_LOAD_STEP bytes into SPU2 RAM */
 static unsigned int load_t0;  /* when the queued load first found the file table full (0: it did not) */
-static void load_step(void)
+static unsigned int load_want_t0;  /* one queue: when the bank load first waited for the drive */
+__attribute__((noinline)) static void load_step(void)
 {
     if (load_new) {
         if (load_fd >= 0)
@@ -283,6 +303,8 @@ static void stream_start(Stream *s);
  * leaves the drive after it: drive_poll asked for it), 0 not asked yet */
 static int disc_take(int *d)
 {
+    if (snd_one_queue)
+        return 0;  /* the disc thread does this thread's drive work (snd_drive_step) */
     if (!*d) {
         unsigned int waited;
         if (!drive_poll(&waited)) {
@@ -481,7 +503,7 @@ static void take_requests(void)
 }
 
 /* the stream thread, holding stream_sema and the drive: open and fill a queued stream, key its voices on */
-static void stream_start(Stream *s)
+__attribute__((noinline)) static void stream_start(Stream *s)
 {
     const SndStreamOpen *o = &s->req;
     char path[sizeof o->path];
@@ -629,6 +651,119 @@ void snd_frame(const SndFrame *f)
     }
 }
 
+/* ---- one queue: the sound part's drive work, done by the disc thread (disc.c disc_step) ---- */
+
+#define DW_RETRY_MS 20  /* an open that found ioman's file table full is tried again after this (the EE's pages go between) */
+static unsigned int load_last;
+enum { DW_NONE, DW_CLOSE, DW_OPEN, DW_TOP, DW_BANK };
+typedef struct { int what, slot, urgent; unsigned int lsn, t0; } DriveWork;
+
+/* the next drive work of the sound part (read without stream_sema: snd_drive_step looks again under it) */
+__attribute__((noinline)) static DriveWork drive_next(unsigned int now)
+{
+    DriveWork w = {DW_NONE, -1, 0, DRIVE_ANY, now};
+    int lo = -1;
+    for (int i = 0; i < SND_STREAMS; i++) {
+        Stream *s = &streams[i];
+        if (s->close_fd >= 0)
+            return (DriveWork){DW_CLOSE, i, 1, DRIVE_ANY, now};  /* no seek: right away */
+        if (s->state == SNDS_OPENING && !(s->open_t0 && now - s->open_last < DW_RETRY_MS))
+            return (DriveWork){DW_OPEN, i, 1, DRIVE_ANY, now};  /* a stream starts (music change, area ambience) */
+        if (!stream_ra_want(s)) {
+            s->topping = 0, s->top_t0 = s->low_t0 = 0;
+            continue;
+        }
+        if (s->ra_len <= STREAM_RA_TOP && !s->topping)
+            s->topping = 1;
+        if (s->topping && !s->top_t0)
+            s->top_t0 = now | 1;
+        if (s->ra_len < STREAM_RA_LOW || s->starved || s->due) {
+            if (!s->low_t0)
+                s->low_t0 = now | 1;
+        } else
+            s->low_t0 = 0;
+        if (s->topping && (lo < 0 || s->ra_len < streams[lo].ra_len))
+            lo = i;
+    }
+    if (lo >= 0) {
+        Stream *s = &streams[lo];
+        unsigned int pos = s->rd_pos >= s->size ? 0 : s->rd_pos;
+        return (DriveWork){DW_TOP, lo, s->low_t0 != 0, df_lsn(s->fd, s->offset + pos), s->low_t0 ? s->low_t0 : s->top_t0};
+    }
+    if ((load_new || load_pend || load_fd >= 0) && !(load_t0 && now - load_last < DW_RETRY_MS)) {
+        if (!load_want_t0)
+            load_want_t0 = now | 1;
+        return (DriveWork){DW_BANK, -1, 0, load_new || load_fd < 0 ? DRIVE_ANY : df_lsn(load_fd, load.offset + load_pos),
+                           load_want_t0};
+    }
+    load_want_t0 = 0;
+    return w;
+}
+
+int snd_drive_want(unsigned int *lsn, unsigned int *t0)
+{
+    if (!snd_one_queue)
+        return -1;
+    DriveWork w = drive_next(now_ms());
+    if (w.what == DW_NONE)
+        return -1;
+    *lsn = w.lsn, *t0 = w.t0;
+    return w.urgent ? 0 : 1;
+}
+
+/* the disc thread, holding the drive: one step of the sound part's drive work (a page of a top-up, LOAD_TRIP bank load
+ * steps, an open with its first fill, the pending closes) */
+void snd_drive_step(void)
+{
+    WaitSema(stream_sema);
+    take_requests();
+    unsigned int now = now_ms();
+    DriveWork w = drive_next(now);
+    Stream *s = w.slot >= 0 ? &streams[w.slot] : NULL;
+    if (w.urgent && w.t0 && w.what == DW_TOP)
+        cd_wait_note(now - w.t0);  /* how long a low stream waited for the drive */
+    switch (w.what) {
+    case DW_CLOSE:
+        for (int i = 0; i < SND_STREAMS; i++)
+            if (streams[i].close_fd >= 0)
+                df_close(streams[i].close_fd), streams[i].close_fd = -1;
+        break;
+    case DW_OPEN:
+        s->open_last = now;
+        stream_start(s);
+        s->topping = 0, s->top_t0 = s->low_t0 = 0;
+        break;
+    case DW_TOP:
+        if (stream_ra_fill_n(s, SND_DISC_PAGE) < 0) {
+            status.errors++;
+            stream_close(s, w.slot);
+            df_close(s->close_fd), s->close_fd = -1;
+            s->state = SNDS_ERROR;
+            break;
+        }
+        if (s->low_t0)  /* served: a further urgent page waits from now (not counting this page's own read) */
+            s->low_t0 = now_ms() | 1;
+        if (s->ra_len >= STREAM_RA || !stream_ra_more(s)) {
+            s->topping = 0, s->top_t0 = s->low_t0 = 0;
+            /* the others top up with it from STREAM_RA_ALSO: one trip of the drive to the audio for all of them */
+            for (int i = 0; i < SND_STREAMS; i++)
+                if (stream_ra_want(&streams[i]) && streams[i].ra_len <= STREAM_RA_ALSO)
+                    streams[i].topping = 1;
+        }
+        break;
+    case DW_BANK:
+        load_last = now;
+        load_step();
+        for (int k = 1; k < LOAD_TRIP && load_fd >= 0 && !load_new; k++)
+            load_step();
+        load_want_t0 = 0;
+        break;
+    default:
+        break;
+    }
+    SignalSema(stream_sema);
+}
+
 /* ---- setup and the RPC side (dsrsnd.c) ---- */
 
 void snd_init(void)
@@ -669,4 +804,5 @@ void snd_init_ra(void)
         printf("dsrsnd: no IOP RAM for stream read-ahead, reading per refill\n");
     for (int i = 0; i < SND_STREAMS; i++)
         streams[i].fd = streams[i].close_fd = -1, streams[i].ra = ra ? ra + i * STREAM_RA : NULL;
+    snd_one_queue = DSRSND_ONE_QUEUE && ra;
 }

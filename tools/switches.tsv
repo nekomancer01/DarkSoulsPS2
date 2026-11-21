@@ -355,3 +355,4 @@ TEX_AUTHORED_MIPS	env	1	flag	world	0	new	texmap.py	every map level (mip 0-3) fro
 FX_MODEL	env	1	flag	fx	0	new	export_effects.py	model particles (action 108): flat one-mesh models drawn as the particle quad, blend from the material class
 BLOCKREPORT_STRICT	env	1	flag	tools	0	new	blockreport.py	blockreport.py --strict fails the build on a budget miss (hard tier, residency.h rows, FX / OBJ VRAM rows, Lua opcodes outside lua0.c); 0 = report only
 SOULS_STRICT	env	unset	debug	game	-	new	souls.py	1 = a variant a reader passes over (souls.skipped: an unread FLVER vertex member, an unnamed MSB type, a param without paramdef) raises souls.UnknownVariant instead
+DSRSND_ONE_QUEUE	make	1	flag	io	0	new	Makefile	Polaris 4.5: the stream thread's drive work (top-ups, opens, closes, bank steps) goes through the disc thread's one queue; 0 = the stream thread takes the drive itself between pages
