@@ -89,7 +89,7 @@ $(D)/menu.pak: $(G)/menu.bin $(G)/items/items.bin $(G)/items/itemx.bin $(G)/item
 	python3 -I ../../tools/pack.py $(D)/menu.pak menu.bin=$(G)/menu.bin items.bin=$(G)/items/items.bin itemx.bin=$(G)/items/itemx.bin desc.bin=raw:$(G)/items/desc.bin icons.bin=raw:$(G)/items/icons.bin $(foreach n,$(SCREEN_NAMES),scr_$(n).bin=$(G)/screens/scr_$(n).bin) loading.bin=$(G)/loading.bin shine.bin=$(G)/shine.bin help.bin=$(G)/help.bin
 
 # objects (area): tools/export_objects.py
-$(A)/objects.bin: $(TS)/export_objects.py.sum $(TS)/material.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum $(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(TS)/horizon.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(AREA_SIG)
+$(A)/objects.bin: $(TS)/chunkfile.py.sum $(TS)/export_objects.py.sum $(TS)/material.py.sum $(TS)/resample.py.sum $(TS)/export_model.py.sum $(TS)/souls.py.sum $(TS)/export_chr.py.sum $(TS)/emevd.py.sum $(TS)/havok_anim.py.sum $(TS)/horizon.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(AREA_SIG)
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_objects.py "$(GAME)" $(A)/objects.bin $(MAP)
 $(A)/objects.bin.static: $(A)/objects.bin

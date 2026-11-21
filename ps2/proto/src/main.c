@@ -394,7 +394,7 @@ int main(int argc, char **argv)
     pack_close(&pk);
     void *map_blob = 0, *col_blob = 0, *enemy_blob = 0, *lua_blob = 0, *obj_blob = 0, *bump_blob = 0, *fx_blob = 0,
          *dg_blob = 0, *ev_blob = 0, *evc_blob = 0, *pvs_blob = 0;
-    unsigned lua_size = 0, enemy_size = 0;
+    unsigned lua_size = 0, enemy_size = 0, obj_size = 0;
     int world = world_init(AREA);  /* world build: blocks stream in by position (src/world.c, data/world.pak) */
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
         map_blob = world ? NULL : pack_load(&pk, "map.bin", 0);  /* world: split map, world_boot_map */
@@ -411,7 +411,7 @@ int main(int argc, char **argv)
 #endif
         col_blob = pack_load(&pk, "collision.bin", 0);
         enemy_blob = pack_load(&pk, "enemies.bin", &enemy_size);  /* MSB enemy parts (tools/export_enemies.py) */
-        obj_blob = pack_load(&pk, "objects.bin", 0);    /* breakable objects (tools/export_objects.py) */
+        obj_blob = pack_load(&pk, "objects.bin", &obj_size);  /* breakable objects (tools/export_objects.py) */
         ev_blob = pack_load(&pk, "events.bin", 0);      /* EMEVD bytecode (tools/export_emevd.py, src/event.c) */
         evc_blob = pack_load(&pk, "evcommon.bin", 0);
         lua_blob = pack_load_temp(&pk, "ai.lua0", &lua_size);  /* the area's AI scripts (tools/lua50.py --pack) */
@@ -464,7 +464,7 @@ int main(int argc, char **argv)
     int enemies =
         map_ok && !(test_opts & TEST_NOENEMIES) ? enemy_init(gs, enemy_blob, enemy_size, lua_blob, (int)lua_size) : 0;
     loading_tick(1);
-    int breakables = map_ok ? objects_init(gs, obj_blob) : 0;  /* pots: intact + pre-fractured models */
+    int breakables = map_ok ? objects_init(gs, obj_blob, obj_size) : 0;  /* pots: intact + pre-fractured models */
     if (map_ok && col_ok && ev_blob && event_init(evc_blob))  /* after enemies + collision */
         event_block_on(0, ev_blob);
     else

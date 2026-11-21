@@ -426,16 +426,25 @@ static int tab_split(BlockRt *r)
     return 1;
 }
 
-/* objects.bin v4 (tools/export_objects.py OBJ_TEX_SHARED): the breakable texture model is the file's last part (header
- * word 14 = its offset), and the types were loaded at boot (world_systems), so turning a block on reads only that tail
- * (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. Older files stay whole. */
+/* objects.bin (tools/export_objects.py OBJ_TEX_SHARED): the breakable texture model is the file's last chunk (BTEX,
+ * its payload offset in OHDR), and the types were loaded at boot (world_systems), so turning a block on reads only that
+ * tail (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. A file without BTEX
+ * stays whole. */
 static void obj_tail(BlockRt *r)
 {
-    static unsigned hd[16] __attribute__((aligned(64)));
-    if (!read_sync(&r->pk, r->off[E_OBJ], hd, 64) || memcmp(hd, "DSRB", 4) || hd[1] < 4 || !hd[14] ||
-        hd[14] >= r->size[E_OBJ] || (hd[14] & 127))
+    static unsigned hd[32] __attribute__((aligned(64)));
+    ChunkFile f;
+    const unsigned *oh = NULL;  /* objects.bin: chunk file 'OBJS'; OHDR word 6 = BTEX's payload offset (0: none) */
+    if (read_sync(&r->pk, r->off[E_OBJ], hd, 64) &&
+        chunk_open_part(&f, hd, 64, r->size[E_OBJ], CHUNK_ID('O', 'B', 'J', 'S'), "objects.bin"))
+        oh = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
+    unsigned at = oh ? oh[6] : 0;
+    if (!at || at & 127 || at >= r->size[E_OBJ] || !read_sync(&r->pk, r->off[E_OBJ] + at - 64, hd + 16, 64))
         return;
-    r->off[E_OBJ] += hd[14], r->size[E_OBJ] -= hd[14];
+    const unsigned *ch = hd + 16 + 12;  /* BTEX's chunk header: the 16 bytes before its payload */
+    if (ch[0] != CHUNK_ID('B', 'T', 'E', 'X') || (ch[1] & 0xFFFF) != 1 || ch[2] > r->size[E_OBJ] - at)
+        return;
+    r->off[E_OBJ] += at, r->size[E_OBJ] = ch[2];
 }
 
 /* COL_TILES: a paged collision.bin (tools/export_collision.py COL_TILE) reads its index with the lite set and its pages
@@ -771,7 +780,7 @@ void world_systems(GSGLOBAL *gs)
             continue;
         unsigned h0 = enemy_ram_free();
         unsigned char *p = read_tmp(r, "objects.bin", &n0);
-        int no = p ? objects_block_types(gs, i, p) : -1;
+        int no = p ? objects_block_types(gs, i, p, n0) : -1;
         free(p);
         unsigned h1 = enemy_ram_free();
         p = read_tmp(r, "fx.bin", &n0);

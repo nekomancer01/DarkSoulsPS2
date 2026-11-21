@@ -365,7 +365,7 @@ queue = 12
 args = ["{GAME}", "{A}/objects.bin", "{MAP}"]
 out = ["{A}/objects.bin"]
 side = ["{A}/objects.bin.static", "{A}/objects.bin.anim"]
-tools = ["export_objects.py", "material.py", "resample.py", "export_model.py", "souls.py", "export_chr.py", "emevd.py",
+tools = ["chunkfile.py", "export_objects.py", "material.py", "resample.py", "export_model.py", "souls.py", "export_chr.py", "emevd.py",
          "havok_anim.py", "horizon.py", "native/meshopt/simplifier.cpp"]
 make = { deps = ["$(AREA_SIG)"] }
 
