@@ -15,7 +15,7 @@ spot of every block, what all blocks together ask of the arena:
   far     the backdrop and sky of the spot's own block (pinned)
 
 The sum is checked against ROOM (KB): with the arena's pools (mapstream.c MS_POOLS, the Burg plan's step B2) the visual
-room is the arena's build-constant size (world.c WORLD_ARENA_KB) less the structural pool (world.c world_struct_bytes, computed here the
+room is the arena's build-constant size (world_i.h WORLD_ARENA_KB) less the structural pool (wplan.c world_struct_bytes, computed here the
 same way from world.bin's links and the blocks' lite-set entries: "structural_kb") and the misc pool (largest relief +
 largest texture buffer + WORLD_MISC_EXTRA), x MS_FILL_PCT 92 %; without world.bin, the old ROOM_KB (one neighbour's
 lite set of up to 2064 KB out). The per-block budgets the per-block budgets are summed across blocks (near within WS_R0 against WS_B0,
@@ -43,7 +43,7 @@ WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
 ARENA_KB = RES["RES_ARENA_KB"]  # world.c WORLD_ARENA_KB: the arena's build-constant size
 FILL_PCT = RES["RES_FILL_PCT"]  # mapstream.c MS_FILL_PCT
-WORLD_SLOTS = 3      # world.c
+WORLD_SLOTS = 3      # world_i.h
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)

@@ -158,35 +158,35 @@ static void draw_void_ring(u32 col)
      * draw_sky's frame: TLB miss in sky_low on its eye pointer, ISO 2026-11-17); room for 1024 */
     u64 r[2 * (16 + 2 * 16)];
     int n = 0;
-    u64 zbuf = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0);
+    u64 zbuf = gs_zbuf(gs, 0);
     int ox = gs->OffsetX, oy = gs->OffsetY, w = gs->Width << 4, h = gs->Height << 4;
     int iy0 = y0 > 0 ? (int)(y0 * 16) : 0, iy1 = y1 > 0 ? (int)(y1 * 16) : 0;
     iy0 = iy0 > h ? h : iy0, iy1 = iy1 > h ? h : iy1;
     u64 c0 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x80, 0);
     u64 c1 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x00, 0);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS (the sky's own state) */
-    REG(zbuf | 1ull << 32, 0x4E);                        /* Z not written */
-    REG(GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0x42);           /* (Cs - Cd) As + Cd */
+    REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS (the sky's own state) */
+    REG(zbuf | 1ull << 32, GSR_ZBUF);                    /* Z not written */
+    REG(GS_ALPHA_MIX, GSR_ALPHA);                        /* (Cs - Cd) As + Cd */
     if (iy1 < iy0) {  /* the fade band: alpha 0 at its top, opaque at its foot (gouraud) */
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_TRISTRIP, 1, 0, 0, 1, 0, 0, 0, 0), 0x00);
-        REG(c1, 0x01), REG(GS_SETREG_XYZ2(ox, oy + iy1, 0), 0x05);
-        REG(c1, 0x01), REG(GS_SETREG_XYZ2(ox + w, oy + iy1, 0), 0x05);
-        REG(c0, 0x01), REG(GS_SETREG_XYZ2(ox, oy + iy0, 0), 0x05);
-        REG(c0, 0x01), REG(GS_SETREG_XYZ2(ox + w, oy + iy0, 0), 0x05);
+        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_TRISTRIP, 1, 0, 0, 1, 0, 0, 0, 0), GSR_PRIM);
+        REG(c1, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox, oy + iy1, 0), GSR_XYZ2);
+        REG(c1, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox + w, oy + iy1, 0), GSR_XYZ2);
+        REG(c0, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox, oy + iy0, 0), GSR_XYZ2);
+        REG(c0, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox + w, oy + iy0, 0), GSR_XYZ2);
     }
     if (iy0 < h) {  /* opaque from there to the bottom */
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
-        REG(c0, 0x01);
+        REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
+        REG(c0, GSR_RGBAQ);
         for (int x = 0; x < w && n + 4 <= (int)(sizeof r / sizeof r[0] / 2); x += 64 << 4) {  /* 64-pixel strips
                                                                                      (z_clear's page-friendly pattern) */
             int x1 = x + (64 << 4) < w ? x + (64 << 4) : w;
-            REG(GS_SETREG_XYZ2(ox + x, oy + iy0, 0), 0x05);
-            REG(GS_SETREG_XYZ2(ox + x1, oy + h, 0), 0x05);
+            REG(GS_SETREG_XYZ2(ox + x, oy + iy0, 0), GSR_XYZ2);
+            REG(GS_SETREG_XYZ2(ox + x1, oy + h, 0), GSR_XYZ2);
         }
     }
-    REG(gs->PrimAlpha, 0x42);
-    REG(zbuf, 0x4E);
+    REG(gs->PrimAlpha, GSR_ALPHA);
+    REG(zbuf, GSR_ZBUF);
 #undef REG
     vu1_gs_regs(n, r);
 }
@@ -198,7 +198,7 @@ int mp_draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
     GSGLOBAL *gs = mp_gs;
     MapInst *m = &mp_inst[sk];
     int drawn = 0;
-    u64 r[2] = {0, 0x3D};
+    u64 r[2] = {0, GSR_FOGCOL};
 
     /* sky first, each piece under its own FogBank row as in DSR (SkyRow): opaque, then the alpha clouds. The rows in
      * turn, so the fog constants change once per row and pass at most. The edge fog is the map's, not the sky's. */
@@ -263,7 +263,7 @@ int mp_draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
     r[0] = col;
     mp_zs_regs(1, r);
     {
-        u64 rt[2] = {GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2), 0x47};
+        u64 rt[2] = {GS_TEST_CUTOUT, GSR_TEST};
         mp_zs_regs(1, rt);
     }
     r_set_fog(a, b, fmin, 255, col, col);
@@ -303,16 +303,16 @@ int mp_draw_hz_fades(const float e[3], float a, float b, float fmin)
     mp_zs_zbias(1.0f + HZN_ZBIAS);
     mp_zs_fog(a, b, fmin, 255);
     mp_zs_edge(mp_edge_a2);
-    u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+    u64 zb = gs_zbuf(gs, 1);
     for (int i = 0; i < n; i++) {
         const MapInst *mk = &mp_inst[hzfade[i].k];
         const HzCell *hc = &mk->hz_cell[hzfade[i].ci];
         if (HZN_FADE_DEBUG && !i) {
-            u64 fc[2] = {0xFF00FFull, 0x3D};  /* FOGCOL r, g, b */
+            u64 fc[2] = {0xFF00FFull, GSR_FOGCOL};  /* FOGCOL r, g, b */
             mp_zs_regs(1, fc);
             mp_zs_fog(a, b, 0, 0);
         }
-        u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, HZN_FADE_DEBUG ? 0x80 : hzfade[i].a), 0x42, zb, 0x4E};
+        u64 r[4] = {GS_ALPHA_FIX(HZN_FADE_DEBUG ? 0x80 : hzfade[i].a), GSR_ALPHA, zb, GSR_ZBUF};
         mp_zs_regs(2, r);
         for (unsigned j = 0; j < hc->count; j++) {
             const Chunk *c = &mk->hz_chunk[hc->first + j];
@@ -329,7 +329,7 @@ int mp_draw_hz_fades(const float e[3], float a, float b, float fmin)
     mp_zs_fog(a, b, fmin, 255);
     if (HZN_FADE_DEBUG) {  /* the frame's fog colour back for what is drawn after */
         float f[5];
-        u64 fc[2] = {0, 0x3D}, fb;
+        u64 fc[2] = {0, GSR_FOGCOL}, fb;
         r_get_fog(f, &fc[0], &fb);
         mp_zs_regs(1, fc);
     }
@@ -348,11 +348,11 @@ int mp_draw_near_fades(const float e[3])
     /* coarse levels fading out (NEAR_FADE) over their cells' near level, as the horizon fade above: Cs a + Cd
      * (1 - a), Z tested HZN_ZBIAS nearer and not written (the coarse surface is the near one simplified) */
     mp_zs_zbias(1.0f + HZN_ZBIAS);
-    u64 zb = GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0) | (1ull << 32);
+    u64 zb = gs_zbuf(gs, 1);
     for (int i = 0; i < n; i++) {
         const MapInst *mk = &mp_inst[nrfade[i].k];
         const Cell *ce = &mk->cells[nrfade[i].ci];
-        u64 r[4] = {GS_SETREG_ALPHA(0, 1, 2, 1, nrfade[i].a), 0x42, zb, 0x4E};
+        u64 r[4] = {GS_ALPHA_FIX(nrfade[i].a), GSR_ALPHA, zb, GSR_ZBUF};
         mp_zs_regs(2, r);
         mapstream_select(nrfade[i].k);  /* mapstream_res answers for that instance */
         for (unsigned j = ce->first; j < (unsigned)ce->first + ce->count; j++) {
@@ -406,7 +406,7 @@ int mp_draw_effects(int fog, int which, u32 col)
     for (int pass = 0; pass < 3; pass++) {  /* 0 blended, 1 additive, 2 subtractive */
         const MatRow *last = NULL;
         if (MAP_FX_FOG0 && pass == 1) {
-            u64 fc[2] = {0, 0x3D};  /* FOGCOL black for the order-free passes */
+            u64 fc[2] = {0, GSR_FOGCOL};  /* FOGCOL black for the order-free passes */
             mp_zs_regs(1, fc);
         }
         for (int i = 0; i < n; i++) {
@@ -447,7 +447,7 @@ int mp_draw_effects(int fog, int which, u32 col)
         }
     }
     if (MAP_FX_FOG0) {
-        u64 fc[2] = {col, 0x3D};
+        u64 fc[2] = {col, GSR_FOGCOL};
         mp_zs_regs(1, fc);
     }
     mp_opaque_regs(gs);

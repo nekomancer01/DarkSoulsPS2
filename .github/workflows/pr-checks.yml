@@ -22,6 +22,7 @@ jobs:
       - run: python3 -I tools/ci/hygiene.py
       - run: python3 -I tools/ci/switches.py
       - run: python3 -I tools/ci/gsown.py
+      - run: python3 -I tools/ci/partown.py
       - run: sh tools/ci/test_mem.sh
       - run: sh tools/ci/test_chunk.sh
   offline:

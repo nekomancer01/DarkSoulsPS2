@@ -50,6 +50,13 @@ int world_hold(const float *feet);
 int world_settled(const float *feet);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
 int world_current(void);
+/* What of block k is resident now (Polaris 4.1, for the level chain in map.c): WB_ON its lite set is on (collision,
+ * events, objects); WB_TABLES its map tables are in (chunk table, textures, cell table), so its levels may stream and
+ * draw; WB_HORIZON its cell table and horizon are in (also while it is only kept and has let go of the rest:
+ * WORLD_LITE_DIET); WB_FAR the far panorama of the block underfoot is drawn, which stands in for the blocks of its area
+ * that are off. 0 without a world. */
+enum { WB_ON = 1, WB_TABLES = 2, WB_HORIZON = 4, WB_FAR = 8 };
+unsigned world_block_res(int k);
 /* MSB map id (mAA_BB_CC_DD) of a block, NULL if none (sound.c: area banks and ambience per map) */
 const char *world_map(int block);
 

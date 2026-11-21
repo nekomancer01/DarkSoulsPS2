@@ -106,6 +106,7 @@ void mapstream_update(const float pos[3]) { (void)pos; }
 void pack_pump(void) {}
 void hitch_block_read(unsigned bytes) { (void)bytes; }
 void vu1_wait(void) {}
+void ot_wait(void) {}
 M3 m3_rot_y(float a) { float c = cosf(a), s = sinf(a); M3 r = {{c, 0, s, 0, 1, 0, -s, 0, c}}; return r; }
 void r_box(V3 pos, M3 rot, V3 c, V3 h, int r, int g, int b) { (void)pos, (void)rot, (void)c, (void)h, (void)r, (void)g, (void)b; }
 

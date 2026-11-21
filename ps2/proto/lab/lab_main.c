@@ -74,7 +74,7 @@ void lab_count(const char *name, int readback)
 }
 
 static void world_step(void);
-static void dg_step(void);
+static void lab_dg_step(void);
 /* replay: the console's world_hold held the player this frame (trace flag 4: a block or collision tile still loading
  * there). The Lab never waits for data, so it takes the hold from the trace (link option --wrap=world_hold). */
 static int lab_held;
@@ -208,13 +208,12 @@ static void world_step(void)
     }
 }
 
-/* map.c map_set_player's draw-group half (phase_world's last call, every frame from the first): which groups show, so
- * which characters update (drawgrp.c dg_player) */
-static void dg_step(void)
+/* frame.c phase_world's draw-group calls (its last ones, every frame from the first): which groups show, so which
+ * characters update (drawgrp.c dg_step, dg_player) */
+static void lab_dg_step(void)
 {
-    static unsigned dg_frames;
     ColHit h;
-    dg_tick(++dg_frames);
+    dg_step();
     dg_player(pl.pos, &h);
 }
 
@@ -243,7 +242,7 @@ static void step(void)
     if (lab_cam)
         eye = v3(lab_cam[0], lab_cam[1], lab_cam[2]), target = v3(lab_cam[3], lab_cam[4], lab_cam[5]), r_camera(eye, target);
     world_step();
-    dg_step();
+    lab_dg_step();
     frame_phase = FP_SIM_B;
     enemy_update(&pl, dt);
     objects_update(&pl, dt);
@@ -289,7 +288,7 @@ static void run_script(unsigned max_frames, int states)
             step();
             frame = f;
         } else {
-            world_step(), dg_step();  /* (frame.c: the world phase runs on frozen frames too) */
+            world_step(), lab_dg_step();  /* (frame.c: the world phase runs on frozen frames too) */
         }
         test_frame_end(&pl, dt, dt, 0, 0, 0, 0, 0);
         save_tick(&pl, dt);
@@ -349,7 +348,7 @@ static void replay(const char *path)
         if (!(u[10] & 2))  /* (frozen frames run no simulate; frame.c's world phase runs on them all the same) */
             step();
         else
-            world_step(), dg_step();
+            world_step(), lab_dg_step();
         lab_held = 0;
         first = 0;
         frame = u[0];  /* (the .state log names the frame the input belongs to) */

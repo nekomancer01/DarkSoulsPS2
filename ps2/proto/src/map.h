@@ -20,16 +20,17 @@ int map_draw(V3 eye);
 /* the blended map chunks map_draw kept (nearer than ZSPLIT), drawn after the characters and objects in their chain
  * buffer (frame.c OT_BLEND segment, render-19; MAP_BLEND_LATE=0: none, map_draw drew them). Returns triangles. */
 int map_draw_blend(void);
-/* Player feet, once a frame before map_draw: the fog follows the FogID of the collision part under them (DSR's area
- * draw params), easing over ~0.3 s; needs collision.bin loaded (col_init) */
 /* DSM5 maps: open the area pack's cells.bin for streaming the near level (after map_init); 0 if nothing streams.
- * map_set_player then drives the streamer every frame (src/mapstream.c) */
+ * frame.c then drives the streamer every frame (mapstream_update) */
 int map_stream_open(const char *pak_path);
-void map_set_player(V3 feet);
+/* Player feet, once a frame before map_draw, with the floor drawgrp.c dg_player found (instance k, collision block
+ * and triangle; k -1: none): the fog follows the FogID of that collision part (DSR's area draw params), easing over
+ * ~0.3 s, and the player's light the feet */
+void map_set_floor(V3 feet, int k, int block, int tri);
 /* Light for a skinned character at pos (feet), in 0x80 units for texture modulation: colour = amb + sun x
  * max(n . dir, 0) with dir the world direction towards the sun. From the player's area row (DSR lights characters
  * with the LightID of the collision part, export_map.char_light), plus the player-attached point light by pos's
- * distance to the player (map_set_player). */
+ * distance to the player (map_set_floor). */
 void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3]);
 /* Polaris 2.2 (src/chrlight.c): map_char_light's parts. map_char_base: the area row only (amb, sun, dir as above);
  * map_player_light: the player-attached point light (feet, colour in the units above, linear falloff begin..end

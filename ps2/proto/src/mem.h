@@ -2,8 +2,9 @@
  * plus the state machine that tells boot / load / play apart for the malloc-in-play check.
  *
  * Kinds:
- *   pages   MemPages: fixed-size pages over a block the caller hands in (first fit of n contiguous pages). Knows
- *           nothing of the streamer: mapstream's arena (msarena.c) becomes an instance of it in Polaris 4.1.
+ *   pages   MemPages: fixed-size pages over a block the caller hands in (first fit of n contiguous pages, or marks
+ *           by a caller with its own placement). Knows nothing of the streamer: mapstream's arena (msarena.c) is an
+ *           instance of it since Polaris 4.1, with its 256-byte granules as the pages.
  *   bump    MemBump: a stack with marks over one block; the building block of the regions below.
  *   static  boot lifetime (params, item / menu / help tables, ESD programs): mem_static. Reserved generously at boot,
  *           shrunk in place at mem_boot_seal (the base must not move), the tail goes back to the heap. Sizes come
@@ -16,8 +17,8 @@
  *           references lives until then. An overflow falls back to malloc ("TEST warn", counted) and is freed at the
  *           buffer's next reset: never NULL into a chain. The two VU1 chain buffers are not in it (Polaris 1.4).
  *   pool    MemPool: fixed-size slots with a free list and a generation per slot (handles, Polaris 5.1).
- *   block   lifetime of a world block: the interface only here (its pages come from the streamer's arena, which
- *           Polaris 4.1 turns into a MemPages instance; no new boot reservation, which would shrink the arena).
+ *   block   lifetime of a world block: the interface only here (its pages come from the streamer's arena, a
+ *           MemPages instance since Polaris 4.1; no new boot reservation, which would shrink the arena).
  *   scratchpad  the EE's 16 KB scratchpad RAM as a claimed resource: one claimant at a time, nothing kept across a
  *           release, never a DMA REF source. No user yet (the first is packet building, Polaris 1.4).
  *
@@ -42,6 +43,10 @@ typedef struct {
 void mem_pages_init(MemPages *m, void *base, unsigned bytes, unsigned page, unsigned *bits);
 void *mem_pages_alloc(MemPages *m, unsigned n);
 void mem_pages_free(MemPages *m, void *p, unsigned n);
+/* page i taken; mark pages [first, first + n) taken (on) or free, counting used / peak (an allocator with its own
+ * placement on top: the streamer's arena, msarena.c, whose pages here are its 256-byte granules) */
+static inline int mem_pages_taken(const MemPages *m, unsigned i) { return m->bits[i >> 5] >> (i & 31) & 1; }
+void mem_pages_mark(MemPages *m, unsigned first, unsigned n, int on);
 
 /* ---- bump ---- */
 typedef struct {
