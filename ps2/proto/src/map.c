@@ -601,12 +601,12 @@ int map_draw(V3 eye)
     mp_fog_terms(&a, &b, &fmin);
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
     u32 col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
+    mp_pass_reset();  /* before the sky pass: it counts pano_drawn (the far panorama log line) */
     drawn += mp_draw_sky(sk, e, col, a, b, fmin);
     FrameLog lg = {.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     mp_pop_fr++;
     if (mapstream_settling())
         mp_pop_settle = mp_pop_fr;
-    mp_pass_reset();
     for (int k = 0; k < MAP_INST; k++) {  /* every loaded block (src/world.c); one instance in a single-area build */
         /* MAP_PEER_ZBIAS: another map's block is tested PEER_ZBIAS further away. Neighbouring maps carry the same
          * pieces where they meet (Firelink's aqueduct and cliff walls are in m10_01 too: ~14k m2 of coplanar
