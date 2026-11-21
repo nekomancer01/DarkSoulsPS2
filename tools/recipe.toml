@@ -571,7 +571,10 @@ queue = 12
 args = ["{A}/far.bin", "{A}", "{PVS_PEERS}"]
 env = { FARPANO = "{FARPANO}" }
 out = ["{A}/far.bin"]
-inputs = ["{A}/map.bin", "{A}/dg.bin", { foreach = "PVS_WITH", as = "d", do = ["{d}/hzn.bin", "{d}/dg.bin"] }]
+# (and the boot map's pano.bin: farpano.py adds the backdrop its pictures draw as a set of its own when that file holds
+# any; before 2026-11-21 nothing ordered the two, so a far.bin baked before the pictures lacked that set)
+inputs = ["{A}/map.bin", "{A}/dg.bin", { foreach = "PVS_WITH", as = "d", do = ["{d}/hzn.bin", "{d}/dg.bin"] },
+          "{G}/pano.bin"]
 reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/hzn.bin", "{d}/hzn.bin.far.npz", "{d}/map.bin"] }]
 tools = ["area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp"]
 

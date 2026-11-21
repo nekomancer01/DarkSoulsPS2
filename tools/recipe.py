@@ -351,9 +351,10 @@ class Step:
         return out
 
     def need_files(self):
-        """files() without the "?" pack entries: a file that only may be there pulls no step into the plan"""
-        return self.files() - {os.path.normpath(x.split("=", 1)[-1].replace("raw:", "", 1)) for x in self.args
-                               if x.startswith("?")}
+        """files() without the "?" pack entries: a file that only may be there pulls no step into the plan (unless the
+        step also lists it as an input)"""
+        return Step(self.name, self.tool, [x for x in self.args if not x.startswith("?")], [], self.env,
+                    self.inputs).files()
 
     def __repr__(self):
         env = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())

@@ -216,7 +216,7 @@ worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/coll
 worldblockpvs@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpvs
 blockpvs: $(A)/pvs.bin
-worldfar: worldhzn
+worldfar: worldhzn $(if $(WORLD_BLOCKS),$(A)/pano.bin)  # (far.bin reads the boot map's pano.bin: recipe.toml)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockfar@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblockfar@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockfar
@@ -334,6 +334,12 @@ $(TEX_WITH): | $(if $(WORLD_BLOCKS),worldexports)
 FAR_WITH = $(foreach d,$(PVS_WITH),$(d)/hzn.bin)
 $(FAR_WITH): | $(if $(WORLD_BLOCKS),worldhzn)
 	@test -f $@ || { echo "$@ missing: the world block horizons (worldhzn) did not write it"; exit 1; }
+
+# the boot map's backdrop pictures, which every block's far panorama reads, come from the top make (worldfar)
+ifneq ($(BLOCK),)
+$(G)/pano.bin:
+	@test -f $@ || { echo "$@ missing: the boot map's backdrop pictures (worldfar) did not write it"; exit 1; }
+endif
 
 # The export rules: one per step of tools/recipe.toml (generated: python3 tools/recipe.py make)
 include export_rules.mk

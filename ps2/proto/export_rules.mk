@@ -186,7 +186,7 @@ $(A)/pano.bin: $(A)/map.bin $(A)/dg.bin $(TS)/pano.py.sum $(TS)/horizon.py.sum $
 	HZN_PANO='$(HZN_PANO)' $(PY) -I ../../tools/pano.py bake $(A) $(A)/pano.bin
 
 # far panorama (area): tools/farpano.py
-$(A)/far.bin: $(A)/map.bin $(A)/dg.bin $(foreach d,$(PVS_WITH),$(d)/hzn.bin $(d)/dg.bin) $(TS)/area.py.sum $(TS)/farpano.py.sum $(TS)/horizon.py.sum $(TS)/mapview.py.sum $(TS)/export_world.py.sum $(TS)/native/meshopt/simplifier.cpp.sum
+$(A)/far.bin: $(A)/map.bin $(A)/dg.bin $(foreach d,$(PVS_WITH),$(d)/hzn.bin $(d)/dg.bin) $(G)/pano.bin $(TS)/area.py.sum $(TS)/farpano.py.sum $(TS)/horizon.py.sum $(TS)/mapview.py.sum $(TS)/export_world.py.sum $(TS)/native/meshopt/simplifier.cpp.sum
 	@mkdir -p $(@D)
 	FARPANO='$(FARPANO)' $(PY) -I ../../tools/farpano.py $(A)/far.bin $(A) $(PVS_PEERS)
 
