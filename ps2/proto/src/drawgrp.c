@@ -151,7 +151,7 @@ void dg_block_drop(int k)
 
 unsigned dg_gen(void) { return shown_gen + hidden_gen; }
 
-/* DG_SEAM (map.c map_set_player): the groups of another map's floor just ahead, ORed into the shared mask */
+/* DG_SEAM (dg_player, from frame.c): the groups of another map's floor just ahead, ORed into the shared mask */
 static unsigned seam_mask[4];
 void dg_seam(int j, int tri)
 {
@@ -197,6 +197,12 @@ void dg_floor(int k, int tri)
     d->cur = d->tri_dg[tri];
     printf("drawgrp: %d: groups %08x %08x %08x %08x\n", k, c[0], c[1], c[2], c[3]);  /* tests compare builds by it */
     dg_apply(d, c);
+}
+
+void dg_step(void)
+{
+    static unsigned frames;
+    dg_tick(++frames);
 }
 
 void dg_tick(unsigned now)

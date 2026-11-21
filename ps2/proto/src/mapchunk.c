@@ -300,19 +300,19 @@ static void zs_clear(void)
     GSGLOBAL *gs = mp_gs;
     u64 r[2 * 32];
     int n = 0;
-    u64 frame = GS_SETREG_FRAME_1(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0);
+    u64 frame = gs_frame(gs->ScreenBuffer[gs->ActiveBuffer & 1], gs->Width, gs->PSM, 0);
     u32 z = (u32)(65535.0f * R_NEAR / (ZSPLIT > 0 ? ZSPLIT : 1));  /* (ZSPLIT=0 builds never call it) */
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
-    REG(frame | 0xFFFFFFFFull << 32, 0x4C);
-    REG(GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1), 0x47);  /* ZTE, ZTST ALWAYS */
-    REG(GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E);
-    REG(GS_SETREG_PRIM(GS_PRIM_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0), 0x00);
+    REG(frame | 0xFFFFFFFFull << 32, GSR_FRAME);
+    REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS */
+    REG(gs_zbuf(gs, 0), GSR_ZBUF);
+    REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
     for (int x = 0; x < gs->Width && n < 30; x += 64) {
         int x1 = x + 64 < gs->Width ? x + 64 : gs->Width;
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, z), 0x05);
-        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, z), 0x05);
+        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, z), GSR_XYZ2);
+        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, z), GSR_XYZ2);
     }
-    REG(frame, 0x4C);
+    REG(frame, GSR_FRAME);
 #undef REG
     vu1_gs_regs(n, r);
 }

@@ -4,7 +4,7 @@
 #include <string.h>
 #include "gs.h"
 
-/* map.c writes its GS words by hand until Polaris 4.1 (gs.h); they must stay the values gs.h names */
+/* the GS words map.c wrote by hand before Polaris 4.1 moved the map files onto gs.h's names: the names keep those values */
 _Static_assert((GS_SETREG_TEST(1, 5, 0x40, 0, 0, 0, 1, 2)) == GS_TEST_CUTOUT, "map.c TEST (cut-out)");
 _Static_assert((GS_SETREG_TEST(0, 0, 0, 0, 0, 0, 1, 1)) == GS_TEST_ZALWAYS, "map.c TEST (Z clear)");
 _Static_assert((GS_SETREG_ALPHA(0, 2, 0, 1, 0)) == GS_ALPHA_ADD, "map.c ALPHA (additive chunks, sky)");

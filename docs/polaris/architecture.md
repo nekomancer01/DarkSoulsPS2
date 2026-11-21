@@ -110,8 +110,7 @@ which is where today's draw order and the bucket order still disagree (TECH_DEBT
 `src/gs.h` names every GS register value the engine writes: A+D register addresses (`GSR_*`), test, alpha, filter,
 clamp and TEXA words, FRAME / ZBUF builders, image-transfer headers and the display registers. Code outside `gs.h` /
 `gs.c` writes GS state through those names; `tools/ci/gsown.py` fails on a raw register macro or gsKit state call
-anywhere else. The map files (`mapchunk.c`, `maplight.c`, `mappass.c`) keep their own literals until they go through `gs.h`, and
-`gs.c` asserts they equal the named values.
+anywhere else. No file is exempt (the map files' hand-written words went through `gs.h` in step 4.1).
 
 VRAM is charged to an owner. `src/gs_budget.h` has one row per owner, in KB, and the rows plus slack sum to the GS's
 4096 KB:
