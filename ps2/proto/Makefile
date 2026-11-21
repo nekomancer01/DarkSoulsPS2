@@ -169,7 +169,7 @@ PACKS = $(D)/c0000.pak $(D)/$(OUT).pak $(D)/menu.pak $(ENEMIES:%=$(AREA_DATA)/%.
 # each built by a sub-make, and data/world.pak with their table (tools/export_world.py). Only for the default map.
 WORLD_BLOCKS := $(if $(GAMEFREE)$(BLOCK)$(filter-out $(DEFAULT_MAP),$(MAP)),,$(shell python3 -I ../../tools/area.py --world $(MAP)))
 ifneq ($(WORLD_BLOCKS),)
-PACKS += worldpacks $(D)/world.pak $(G)/world_budget.json $(BUILD)/scan/files.json $(G)/blockreport.json
+PACKS += worldpacks $(D)/world.pak $(G)/world_manifest.json $(G)/world_budget.json $(BUILD)/scan/files.json $(G)/blockreport.json
 endif
 WORLD_SPLIT = $(or $(BLOCK),$(WORLD_BLOCKS))
 
