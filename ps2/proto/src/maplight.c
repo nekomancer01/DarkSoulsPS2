@@ -27,25 +27,18 @@ void mp_fog_ease(float rate)
         mp_fog_now[i] += (t[i] - mp_fog_now[i]) * rate;
 }
 
-void map_set_player(V3 feet)
+/* DSR's fog follows the collision part under the player (its MSB FogID), the part drawgrp.c dg_player found for the
+ * draw groups; in the air the last one stays */
+void map_set_floor(V3 feet, int k, int block, int tri)
 {
-    const float p[3] = {feet.x, feet.y, feet.z};
-    static unsigned dg_frames;
-    dg_tick(++dg_frames);  /* the recent floors' draw groups for streaming (drawgrp.c) */
-    mapstream_update(p);  /* every instance's near cells (src/mapstream.c) */
-    /* the shown draw groups follow the collision part under the player (drawgrp.c dg_player: also DG_SEAM, and the
-     * blocks outside the floor's area group); DSR's fog follows the same part (its MSB FogID), in the air the last
-     * one stays */
-    ColHit h;
-    int k = dg_player(feet, &h);
     player_feet = feet;
     if (k >= 0) {
         const MapInst *m = &mp_inst[k];
         mp_pinst = k;
-        if (m->fog_rows && m->fog_ntris == (unsigned)col_block_tris(h.block) && (unsigned)h.tri < m->fog_ntris &&
-            m->fog_tri[h.tri] < m->fog_rows) {
+        if (m->fog_rows && m->fog_ntris == (unsigned)col_block_tris(block) && (unsigned)tri < m->fog_ntris &&
+            m->fog_tri[tri] < m->fog_rows) {
             mp_pfog_row = m->fog_row, mp_pfog_rows = m->fog_rows;
-            mp_fog_area = m->fog_tri[h.tri];
+            mp_fog_area = m->fog_tri[tri];
         }
     }
 }
@@ -229,7 +222,7 @@ void mp_pl_draw(void)
     static u32 col[256] __attribute__((aligned(16)));
     GSGLOBAL *gs = mp_gs;
     /* Cs x As + Cd (As = texel alpha: cut-out texels add nothing), Z tested, not written */
-    u64 r[4] = {GS_SETREG_ALPHA(0, 2, 0, 1, 0), 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 1), 0x4E};
+    u64 r[4] = {GS_ALPHA_ADD, GSR_ALPHA, gs_zbuf(gs, 1), GSR_ZBUF};
     vu1_gs_regs(2, r);
     for (int i = 0; i < pl_n; i++) {
         const Chunk *c = pl_item[i].c;
@@ -261,7 +254,7 @@ void mp_pl_draw(void)
             vu1_add_ex(t, c->flags & CHUNK_CULL, mode, n, ps, base + c->st, col, c->org, st_k);
         map_plight_batches++;
     }
-    u64 rr[4] = {gs->PrimAlpha, 0x42, GS_SETREG_ZBUF(gs->ZBuffer / 8192, gs->PSMZ, 0), 0x4E};
+    u64 rr[4] = {gs->PrimAlpha, GSR_ALPHA, gs_zbuf(gs, 0), GSR_ZBUF};
     vu1_gs_regs(2, rr);
     pl_n = 0;
 }

@@ -5,7 +5,7 @@
 #include "map_i.h"
 
 /* (mp_fog_now, mp_fog_area, mp_pfog_row / rows, mp_fog_ease: map_i.h) */
-extern int mp_pinst;  /* the instance the player stands in (sky, fog rows; map_set_player) */
+extern int mp_pinst;  /* the instance the player stands in (sky, fog rows; map_set_floor) */
 /* this frame's fog terms F = clamp(a z + b, fmin, 255) of the eased row; sets the edge fog below */
 void mp_fog_terms(float *a, float *b, float *fmin);
 /* edge fog this frame: slope a2 of b + a2 z and the view depth beyond which it is below the DSR fog */

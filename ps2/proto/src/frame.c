@@ -18,6 +18,7 @@
 #include "cvar.h"
 #include "model.h"
 #include "map.h"
+#include "mapstream.h"
 #include "chrlight.h"
 #include "shadow.h"
 #include "vu1.h"
@@ -364,7 +365,16 @@ static void phase_world(Frame *f)
     HITCH_END(snd, HS_SND);
     PROF_MARK(PROF_STREAM);  /* (the STREAM pass again: before the split this ran inside the MAP pass) */
     if (f->b->map_ok)  /* the floor's draw groups (enemies and events read them in SIM_B) and the streamer's update */
-        MEM_LEGACY(WORLD) map_set_player(f->pl->pos);
+        MEM_LEGACY(WORLD) {
+            const float p[3] = {f->pl->pos.x, f->pl->pos.y, f->pl->pos.z};
+            dg_step();             /* the recent floors' draw groups for streaming (drawgrp.c) */
+            mapstream_update(p);   /* every instance's near cells (src/mapstream.c) */
+            /* the shown draw groups follow the collision part under the player (dg_player: also DG_SEAM, and the
+             * blocks outside the floor's area group); the fog and the player's light follow the same part */
+            ColHit h = {0};
+            int k = dg_player(f->pl->pos, &h);
+            map_set_floor(f->pl->pos, k, h.block, h.tri);
+        }
 }
 
 static void phase_emit_map(Frame *f)
