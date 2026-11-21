@@ -929,6 +929,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 
     int ticked = 0;
+    if (respawn_src && p->hp >= 0) {  /* hp restored without a respawn (test god, regen) */
+        respawn_src = 0;
+        world_source_off(WSRC_RESPAWN);
+    }
     if (p->state == ST_FALL || p->state == ST_DEAD) {
         /* airborne loop / fall death: no control; constrain() moves the body and detects the landing */
         p->t += dt;

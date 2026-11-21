@@ -292,6 +292,8 @@ static void plan_(const float *pos)
                 ms_ahead_on = 0, ms_target = 1;
                 int c2 = plan_item(k, m, id, ms_src[s], &k2);
                 ms_ahead_on = ao, ms_target = 0;
+                if (c2 > C_VIEW2)  /* below the player's hard tier: the preload never outranks what the player sees now */
+                    c2 = C_VIEW2;
                 if (c2 > c || (c2 == c && k2 < key))
                     c = c2, key = k2;
             }
