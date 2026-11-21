@@ -8,7 +8,7 @@ Fails on any of these outside gs.h / gs.c:
     packet store: use GSR_*
   - the display registers (GS_SET_*, SetGsCrt) and gsKit's state calls (gsKit_set_test / _primalpha / _clamp,
     gsKit_vram_alloc): gs_display_init, gs_test / gs_primalpha / gs_clamp, gs_vram_fixed
-map.c is allowed its hand-written words until Polaris 4.1 splits it (streaming work is live there); gs.c's
+map.c's hand-written words (now in mapchunk.c, maplight.c and mappass.c since Polaris 4.1 split it) are allowed until they go through gs.h; gs.c's
 _Static_asserts keep them equal to gs.h's names. The count of those is printed so it only goes down.
 Also checks gs_budget.h: its rows sum to 4096 KB (tools/gs_budget.py)."""
 import os
@@ -18,7 +18,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 SRC = os.path.join(ROOT, "ps2", "proto", "src")
 OWN = {"gs.h", "gs.c", "g2d.c"}  # g2d.c: the 2D state (Polaris 1.6; its gsKit calls are the OT_HASH A/B only)
-LEGACY = {"map.c": 20}  # map.c's count on main (14 when the check was added; #252's horizon / near fades and sky state made it 20, 2026-11-19): it may only go down
+LEGACY = {"mapchunk.c": 5, "maplight.c": 2, "mappass.c": 11}  # map.c's 18 on main, split with it (Polaris 4.1; 14 when the check was added, 20 after #252): they may only go down
 # Polaris 1.4: the order table (src/ot.c) alone starts transfers. Allowed elsewhere: the definitions, and the legacy
 # waits / loading-screen presents in files other threads own (count may only go down)
 KICK = re.compile(r"\b(vu1_begin|vu1_kick|vu1_wait|r_queue_exec|gsKit_queue_exec|gsKit_texture_upload|gsKit_texture_send|gsKit_prim_\w+|gsKit_clear|dmaKit_send\w*)\s*\(|\*\(volatile u32 \*\)0x1000A0[0-3]0 =")
@@ -49,7 +49,7 @@ def main():
             continue
         n, hits = scan(os.path.join(SRC, f))
         if f in LEGACY:
-            print(f"gsown: {f}: {n} raw GS writes (allowed up to {LEGACY[f]} until Polaris 4.1)")
+            print(f"gsown: {f}: {n} raw GS writes (allowed up to {LEGACY[f]} until they go through gs.h)")
             if n > LEGACY[f]:
                 fails += hits
         else:

@@ -71,10 +71,20 @@ needs no loading screen. A block that is on holds its "lite" set (collision inde
 its visual cells stream separately. When a block turns on, `world.c` turns on its enemies, events, objects and
 effects. Warps and deaths settle the world behind the loading screen (`world_settled`).
 
-**Map drawing** (`map.c`, `mapblock.c`, `map.h`, `map_i.h`). Draws every on block's map: sky, panorama, horizon,
-coarse and near levels per cell, each level drawn where the finer one is missing or out of range. Draw-group and PVS
-filters choose the chunks; the frustum test runs per chunk. The player's point light is added on the map around
-them (`MAP_PLIGHT`).
+**Map drawing** (`map.h` public, `map_i.h` shared by the map files, each part's state behind its own header). Draws
+every on block's map: sky, panorama, horizon, coarse and near levels per cell, each level drawn where the finer one is
+missing or out of range. Draw-group and PVS filters choose the chunks; the frustum test runs per chunk. The player's
+point light is added on the map around them (`MAP_PLIGHT`). Split by role (Polaris 4.1):
+
+| File | Role |
+|---|---|
+| `map.c` | map.bin load and textures, each block's cells at the level that is in, `map_draw`'s order of passes |
+| `mapblock.c` | world blocks' map tables, kept-horizon blocks, the far panorama |
+| `mapvis.c` / `mapvis.h` | the frame's camera, chunk and box view tests, foliage thinning, the streamer's item visibility |
+| `maplight.c` / `maplight.h` | fog of the floor underfoot, edge and sky fog, character light terms, the player's light and specular passes |
+| `mapchunk.c` / `mapchunk.h` | one chunk into the chain (texture, mips, edge fog, water colours), the ZSPLIT far / near passes |
+| `mappass.c` / `mappass.h` | sky, void ring, backdrop pictures, horizon / coarse fades, blended effects (`map_draw_blend`) |
+| `maplog.c` / `maplog.h` | map pass timers, debug counters, pop-in metric and the per-frame log lines |
 
 **Streamer** (`mapstream.c`, `mapstream_i.h`, `msarena.c`, `residency.h`). A residency plan ranks every streamable
 item (coarse cells, near parts, backdrops, textures, collision tiles) into classes by distance and visibility, cuts the

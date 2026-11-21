@@ -44,12 +44,12 @@
  * PROF_LOG_FRAMES     | 300      | tune     | -                                             | core   | init  | prof.c        | PROFILE: frames between log lines
  * PROF_GPROF_START    | 120      | tune     | -                                             | core   | init  | prof.c        | GPROF: frames before sampling starts
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
- * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | world  | #249  | map.c         | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
- * MAP_FX_FOG0         | 1        | fallback | -DMAP_FX_FOG0=0                               | world  | #286  | map.c         | additive and subtractive map chunks fog towards black (fade out with distance); 0 = towards the map's fog colour, as before (runtime: option set MAP_FX_FOG0 0)
- * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | world  | #243  | map.c         | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
+ * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | world  | #249  | mappass.c     | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
+ * MAP_FX_FOG0         | 1        | fallback | -DMAP_FX_FOG0=0                               | world  | #286  | mappass.c     | additive and subtractive map chunks fog towards black (fade out with distance); 0 = towards the map's fog colour, as before (runtime: option set MAP_FX_FOG0 0)
+ * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | world  | #243  | maplight.c    | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
  * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | world  | #257  | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
- * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | world  | #249  | map.c         | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
- * PLIGHT_RATIO        | 60       | tune     | -                                             | world  | #243  | map.c         | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
+ * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | world  | #249  | maplight.c    | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
+ * PLIGHT_RATIO        | 60       | tune     | -                                             | world  | #243  | maplight.c    | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
  * NO_PVS              | off      | fallback | -DNO_PVS                                      | main   | #116  | main.c mapblock.c mapstream.c  | no occlusion (make PVS=0)
  * MEDIA_CD            | off      | fallback | -DMEDIA_CD                                    | world  | #144  | mapstream.c mapstream_i.h   | CD streaming budgets on any disc (make MEDIA=cd)
  * BUMP_BAKED          | 1        | fallback | -DBUMP_BAKED=0                                | gfx    | #165  | bump.c        | relief baked at export; 0 = the runtime CLUT relief pass (make BUMP_BAKE=0)
@@ -75,7 +75,7 @@
  * MS_LEND_ALL_DROP    | 0        | fallback | -DMS_LEND_ALL_DROP=1                          | world  | #201  | msarena.c       | 1 = a pool allocation drops every lent item, not only those in its way
  * MS_MIP1_CLS         | C_PREF   | fallback | -DMS_MIP1_CLS=C_VIEW2                         | world  | #147  | mapstream_i.h   | class of a streamed mip 1 (C_VIEW2 = the old one)
  * MS_POOL             | 8 MB     | tune     | -                                             | world  | init  | mapstream_i.h   | arena size
- * MS_DG               | 1        | fallback | -DMS_DG=0                                     | world  | #131  | map.c         | draw groups count for unseen items; 0 = pvs only
+ * MS_DG               | 1        | fallback | -DMS_DG=0                                     | world  | #131  | mapvis.c      | draw groups count for unseen items; 0 = pvs only
  * MS_SCAN             | 1        | fallback | -DMS_SCAN=0                                   | world  | #79   | mapstream.c   | read-ahead issued in disc order (circular scan); 0 = class and distance order
  * MS_RA_INFLIGHT      | 2        | fallback | -DMS_RA_INFLIGHT=8                            | world  | #166  | mapstream.c   | read-ahead reads in flight at most (8 = MS_INFLIGHT, the old cap)
  * MS_DEADLINE         | 1        | fallback | -DMS_DEADLINE=0                               | world  | #254  | mapstream.c   | deadline-aware hard-tier read order (late items first, rest by disc order); 0 = nearest first
@@ -99,7 +99,7 @@
  * MAP_TWO_PASS        | 1        | fallback | -DMAP_TWO_PASS=0                              | world  | #148  | map_i.h         | per-cell pre-pass and cached draw list, then the emit pass (off under MAP_DBG / MAP_PANO_R); 0 = the per-chunk loop
  * MAP_PASS_MS         | 1        | fallback | -DMAP_PASS_MS=0                               | world  | #143  | map.c         | "map: pass ms" timing log
  * SKY_ROWS            | 1        | fallback | -DSKY_ROWS=0                                  | world  | #183  | map_i.h         | sky chunks under their own fog row
- * ZSPLIT              | 50 m     | fallback | -DZSPLIT=0                                    | world  | #190  | map.c         | two Z ranges; 0 = one range
+ * ZSPLIT              | 50 m     | fallback | -DZSPLIT=0                                    | world  | #190  | mapchunk.c    | two Z ranges; 0 = one range
  * HZN_R               | 40 m     | tune     | -                                             | world  | #122  | map_i.h         | horizon radius
  * HZN_FADE            | 8 m      | fallback | -DHZN_FADE=0                                  | world  | #135  | map_i.h         | horizon fade-in; 0 = hard switch
  * HZN_ZBIAS           | 0.03     | fallback | -DHZN_ZBIAS=0                                 | world  | #135  | map_i.h         | fade depth bias; 0 = plain depth test
@@ -115,11 +115,11 @@
  * LPOOL_N             | 12288    | tune     | -                                             | world  | #148  | map_i.h         | draw list pool entries
  * MAP_DBG             | off      | debug    | -DMAP_DBG=60; -DMAP_DBG=60 -DMAP_DBG_ALL -DMAP_DBG_FLIP | world  | init  | map.c map_i.h | chunks / tris dropped per step every N frames
  * MAP_DBG_ALL         | off      | debug    | (with MAP_DBG)                                | world  | init  | map.c         | MAP_DBG: no frustum skip
- * MAP_DBG_FLIP        | off      | debug    | (with MAP_DBG)                                | world  | init  | map.c         | MAP_DBG: chunks drawn last frame, not now
+ * MAP_DBG_FLIP        | off      | debug    | (with MAP_DBG)                                | world  | init  | maplog.c      | MAP_DBG: chunks drawn last frame, not now
  * MAP_TWO_PASS_CHECK  | off      | debug    | -DMAP_TWO_PASS_CHECK                          | world  | #148  | map.c mapblock.c         | two-pass lists compared with one pass
- * MAP_PROF            | off      | debug    | -DMAP_PROF                                    | world  | init  | map.c         | visibility / EE clip time on the HUD
- * MAP_STATS           | off      | debug    | -DMAP_STATS                                   | world  | init  | map.c         | batches, pool traffic, streamed cells every 60 frames
- * MAP_POP_LOG         | 1        | debug    | -DMAP_POP_LOG=0                               | world  | #244  | map.c         | "map: pop cell" line per pop-in in test runs (in-view wait, why, draws after a settle)
+ * MAP_PROF            | off      | debug    | -DMAP_PROF                                    | world  | init  | maplog.c      | visibility / EE clip time on the HUD
+ * MAP_STATS           | off      | debug    | -DMAP_STATS                                   | world  | init  | maplog.c      | batches, pool traffic, streamed cells every 60 frames
+ * MAP_POP_LOG         | 1        | debug    | -DMAP_POP_LOG=0                               | world  | #244  | maplog.c      | "map: pop cell" line per pop-in in test runs (in-view wait, why, draws after a settle)
  * MAP_PANO_R          | off      | debug    | -DMAP_PANO_R=60.0f -DPANO_ZOOM=2.0f           | main   | init  | main.c map.c map_i.h  | panorama capture build (tools/pano.py)
  * PANO_ZOOM           | 1.0      | debug    | (with MAP_PANO_R)                             | gfx    | init  | render.c      | panorama capture focal length
  * DG_SHARED           | 1        | fallback | -DDG_SHARED=0                                 | world  | #131  | drawgrp.c     | draw groups shared across blocks
@@ -128,10 +128,10 @@
  * DG_SEAM_VIEW        | 1        | fallback | -DDG_SEAM_VIEW=0                              | world  | #252  | drawgrp.c     | DG_SEAM probes the camera's view direction as well as the heading (border draw groups); 0 = the heading alone
  * HZ_ONLY_OWN         | 1        | fallback | -DHZ_ONLY_OWN=0                               | world  | #252  | mapblock.c    | a kept-only block's horizon cells inside an on block of another map are left out; 0 = all drawn
  * MAP_FAR_SEAM        | 1        | fallback | -DMAP_FAR_SEAM=0                              | world  | #252  | mapblock.c    | far panorama seam sets (farpano.py FAR_SEAM): the one nearest the camera within 48 m stands in for its block's main sets; 0 = main sets only
- * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | world  | #252  | map.c         | last-resort backdrop: a band in the sky's fog colour from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)
- * VOID_RING_SKY       | 1        | fallback | -DVOID_RING_SKY=0                             | world  | #252  | map.c         | VOID_RING in the sky's fog colour (header sky row); 0 = the map's current fog colour
- * VOID_RING_TOP       | 0.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees above the horizon where the band is still opaque
- * VOID_RING_FADE      | 6.0f     | tune     | -                                             | world  | #252  | map.c         | VOID_RING: degrees over which it fades out above that
+ * VOID_RING           | 1        | fallback | -DVOID_RING=0                                 | world  | #252  | mappass.c     | last-resort backdrop: a band in the sky's fog colour from the horizon down over the sky dome, so voids read as fog, not sky (runtime: option set VOID_RING 0)
+ * VOID_RING_SKY       | 1        | fallback | -DVOID_RING_SKY=0                             | world  | #252  | mappass.c     | VOID_RING in the sky's fog colour (header sky row); 0 = the map's current fog colour
+ * VOID_RING_TOP       | 0.0f     | tune     | -                                             | world  | #252  | mappass.c     | VOID_RING: degrees above the horizon where the band is still opaque
+ * VOID_RING_FADE      | 6.0f     | tune     | -                                             | world  | #252  | mappass.c     | VOID_RING: degrees over which it fades out above that
  * BUMP_OFF            | off      | fallback | -DBUMP_OFF -DBUMP_BAKED=0                     | gfx    | init  | bump.c        | runtime relief: no relief pass (A/B)
  * BUMP_COVER          | off      | debug    | -DBUMP_COVER -DBUMP_BAKED=0                   | gfx    | init  | bump.c        | runtime relief: covered pixels black
  * BUMP_CAP            | 1536     | tune     | -                                             | gfx    | init  | bump.c        | relief batches per frame
@@ -233,10 +233,10 @@
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
  * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
  * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
- * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | map.c         | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
- * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | map.c         | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)
- * SPEC_DIST           | 24.0f    | tune     | -                                             | gfx    | new   | map.c         | metres: the specular pass's reach (ASSUMED, VU1 cost)
- * MAP_WATER           | 1        | fallback | -DMAP_WATER=0                                 | gfx    | new   | map.c         | water colour / opacity per vertex from DSR's Fresnel at the eye's angle (Polaris 2.6); 0 = the fixed 60 deg angle of the old export (exports: env MAP_WATER=0 bakes it into the texture again)
+ * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | mappass.h     | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
+ * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | maplight.c    | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)
+ * SPEC_DIST           | 24.0f    | tune     | -                                             | gfx    | new   | maplight.c    | metres: the specular pass's reach (ASSUMED, VU1 cost)
+ * MAP_WATER           | 1        | fallback | -DMAP_WATER=0                                 | gfx    | new   | mapchunk.c    | water colour / opacity per vertex from DSR's Fresnel at the eye's angle (Polaris 2.6); 0 = the fixed 60 deg angle of the old export (exports: env MAP_WATER=0 bakes it into the texture again)
  * GS_VRAM_ENFORCE     | 1        | fallback | -DGS_VRAM_ENFORCE=0                           | gfx    | new   | gs.c          | characters / objects / effects refused past their gs_budget.h row; 0 = report only (Polaris 1.1)
  * TRAIL               | 1        | fallback | -DTRAIL=0                                     | fx     | new   | trail.c       | player weapon trail (FFX tracer 250); 0 = none
  */
