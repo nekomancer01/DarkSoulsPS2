@@ -17,6 +17,14 @@ int main(void)
     assert(!mem_pages_alloc(&m, 1));
     mem_pages_free(&m, b, 5);
     assert(mem_pages_alloc(&m, 4) == b && m.used == 15 && m.peak == 16);
+    /* marks (an allocator with its own placement on top, msarena.c): taken bits and the used count follow */
+    mem_pages_free(&m, a, 3);
+    mem_pages_mark(&m, 1, 2, 1);
+    assert(!mem_pages_taken(&m, 0) && mem_pages_taken(&m, 1) && mem_pages_taken(&m, 2) && m.used == 14);
+    mem_pages_mark(&m, 1, 2, 1);  /* (marking again counts nothing) */
+    assert(m.used == 14);
+    mem_pages_mark(&m, 2, 1, 0);
+    assert(!mem_pages_taken(&m, 2) && m.used == 13 && mem_pages_alloc(&m, 1) == block);
     /* bump: alignment, marks, full */
     static unsigned char bb[1024];
     MemBump r;

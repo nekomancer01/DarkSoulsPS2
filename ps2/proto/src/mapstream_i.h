@@ -10,10 +10,11 @@
 #include <string.h>
 #include <unistd.h>
 #include "mapstream.h"
+#include "msarena.h"
 #include "residency.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
-#include "vu1.h"
+#include "ot.h"  /* ot_wait: no VIF chain reads the arena any more */
 #include "hitch.h"
 #include "ticks.h"
 #include "cvar.h"
@@ -121,21 +122,7 @@ extern float ms_r0_want, ms_r0_keep;
 #define MS_TEX_KEEP 600u  /* (MS_STEADY: 20 s, a mip 0 asked for again after a look around) */
 /* an item that found no room is passed over this many frames (the next one reads meanwhile) */
 #define MS_BLOCK_FRAMES 30u
-#ifndef MS_POOL
-#define MS_POOL (8u << 20)
-#endif
-/* EE heap left outside the arena when it is allocated (as v1): the 1.5 MB reserve + 1.5 MB for what loads later */
-#define MS_RESERVE (3u << 20)
-#define MS_PAGE (64u << 10)
-/* The top of the arena is kept for mapstream_alloc (block lite sets up to 1.7 MB, relief ~0.9 MB, enemy model.bin
- * buffers up to 0.6 MB): map items never go there. Without it the pinned and drawn items filled every page, model
- * buffers fell back to the heap and fragmented it (c2540 model.bin OUT OF RAM in world_cross, host ELF, 2026-11-06);
- * v1 dropped drawn cells for them instead, which hung PCSX2 when a queued chain still read them. Sized for one enemy
- * model.bin (lite sets and relief clear windows below it): 2 MB cost the route's map items 2 MB and its worst frame
- * went from 42 to 219 cells missing (ISO, 2026-11-06). ASSUMED size. */
-#define MS_OTHER (768u << 10)
-#define MS_GRAN 256u
-#define MS_GPP (MS_PAGE / MS_GRAN)  /* granules per page */
+/* (the arena's sizes, MS_PAGE / MS_GRAN / MS_OTHER / MS_XMAX: msarena.h) */
 #define MS_RUN (256u << 10)          /* bytes of neighbouring resident items per request (v1 step 5) */
 #define MS_INFLIGHT 8
 #define MS_QUEUE 64
@@ -213,7 +200,6 @@ extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) 
 #ifndef MS_LIFE
 #define MS_LIFE cv_MS_LIFE  /* runtime switch, default 1 (src/cvar.h) */
 #endif
-enum { MS_K_ANY, MS_K_LONG, MS_K_SHORT, MS_K_SMALL };
 #define MS_SMALL_KB 8u  /* texture items up to this are MS_K_SMALL (mip 1 levels: 4 KB) */
 /* MS_TIDY (default 1, runtime switch: option set MS_TIDY 0 = pages emptied only when a read waits for one): a reserve
  * of whole free item pages, kept by compaction on quiet frames (streaming research idea 4; GTA's PS2 heap,
@@ -226,8 +212,7 @@ enum { MS_K_ANY, MS_K_LONG, MS_K_SHORT, MS_K_SMALL };
 #ifndef MS_TIDY
 #define MS_TIDY cv_MS_TIDY  /* runtime switch, default 1 (src/cvar.h) */
 #endif
-#define MS_TIDY_LO 4u   /* ASSUMED (the research note's marks) */
-#define MS_TIDY_HI 8u
+/* (MS_TIDY_LO / MS_TIDY_HI and the MS_K_* page kinds: msarena.h) */
 /* MS_QSCALE (default 1, runtime switch: option set MS_QSCALE 0 = fixed radii): the soft tier's radii shrink while the
  * arena is under pressure (streaming research idea 12; UE5 Nanite r.Nanite.Streaming.QualityScale). Pressure: a "no
  * room" refusal since the last plan, or the item pages over MS_QS_FULL % used with nothing whole free. The scale (1 down
@@ -249,17 +234,16 @@ extern float ms_qs;  /* the scale now (1 = full) */
 #ifndef MS_LEND_NEAR_KB
 #define MS_LEND_NEAR_KB 900
 #endif
-#define MS_XMAX 96                          /* pages that may be borrowed (6 MB) */
 #ifndef MS_BORROW_FLOOR
 #define MS_BORROW_FLOOR (2816u << 10)
 #endif
 #define MS_BORROW_HYST (256u << 10)         /* borrow only above floor + this (no borrow / give back each frame) */
-#define FOR_IPAGES(p) for (unsigned p##_i = 0, p; p##_i < ilim() + MS_XMAX && (p = p##_i < ilim() ? p##_i : ms_npages + p##_i - ilim(), 1); p##_i++)
 #define MS_DEFRAG_PEND 64            /* old copies waiting for their chains */
 #define MS_DEFRAG_KB 256u            /* most KB copied for a read (~2 ms of EE memcpy, ASSUMED); 3x for a relief window */
 #define MS_DEFRAG_WAIT 8u            /* frames a read waits at the queue head for a page being emptied */
 typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; } MsRead;  /* cxl: cancelled, still landing; cls: the class it went out at (MS_SCAN) */
 typedef struct { int k; unsigned id; int cls; float key; } MsQ;
+typedef struct { int k, fresh; unsigned id, g, nh, kb; } MsVisJob;  /* the visibility refresh (msplan.c vis_step) */
 #define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
 #define MS_FILL_PCT ((unsigned)RES_FILL_PCT)  /* residency.h */
 typedef struct { unsigned char k, cls; unsigned short id; float key; } MsW;
@@ -275,24 +259,10 @@ extern int ms_nrd;
 extern int ms_nblk;
 extern unsigned ms_cancel_kb;
 extern MsW ms_want[MS_WANTED];
-extern unsigned char *ms_arena;
-extern unsigned ms_npages, ms_ipages;
-extern unsigned short *ms_pfree;
-extern unsigned ms_mpage0, ms_items_other;
-extern int ms_pools_on;
-extern unsigned ms_lent_n;
+extern unsigned ms_lent_n, ms_items_other;  /* (msevict.c) */
 extern unsigned ms_lent_near;
-extern unsigned ms_nx;
-void *ms_g_alloc(unsigned n);
-void *ms_g_alloc_k(unsigned n, int kind);
-unsigned ms_whole_free(void);
 void ms_tidy(void);
 extern unsigned ms_tidy_moves, ms_tidy_kb;
-void *ms_g_alloc_top(unsigned n, unsigned top);
-void *ms_g_alloc_lend(unsigned n);
-void ms_free_report(unsigned out[3][3]);
-void ms_g_free(void *ptr, unsigned n);
-int ms_ensure_arena(void);
 void ms_drop(int k, unsigned id);
 extern int ms_keep_buf;
 /* why an item was dropped: the plan freed it (class C_FREE), a read / allocation cleared its page, a lite set took
@@ -356,19 +326,253 @@ static inline unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
     return r[e - 1 - m->ncell].rel + r[e - 1 - m->ncell].bytes - r[a - m->ncell].rel;
 }
 
-static inline unsigned ilim(void)
-{
-    if (ms_pools_on)
-        return ms_ipages;
-    return (mapstream_stats.other_kb << 10) > MS_OTHER ? ms_npages : ms_ipages;
-}
-static inline unsigned ntot(void) { return ms_npages + MS_XMAX; }
+/* the item pages now, all page slots (msarena.h) */
+static inline unsigned ilim(void) { return msa_ilim(); }
+static inline unsigned ntot(void) { return msa_ntot(); }
 static inline int lendable(int cls)
 {
     /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon
      * for a moment, a near part would pop. With only the classes below C_PIN (and C_VIEW) lendable, iso_ame_report3
      * drew the horizon inside HZN_R 99.5 % of the time (main 54 %; all classes lendable: 53 %) */
-    return ms_pools_on && cls > C_KEEP && cls <= C_VIEW2;
+    return msa_pools_on() && cls > C_KEEP && cls <= C_VIEW2;
 }
+
+
+/* moved from the split files */
+
+#ifndef MS_MIP0
+#define MS_MIP0 0  /* no full-size map textures (plan_item); -DMS_MIP0=1: streamed as before 2026-11-12 */
+#endif
+
+/* the near level's distance (mapstream.h cell_near_d2: the box clipped to the cell's cube, MS_NEAR_CUBE) */
+#define near_d2(m, c, p) cell_near_d2(&(m)->tab[c], (m)->keys ? (m)->keys + 4 * (c) : (const short *)0, p)
+
+/* ---- visibility (src/pvs.c via map.c, 2026-11-06) ----
+ * Cells are a spatial index: a cell 20 m away behind a wall still holds parts no camera nearby can see. The vis hook
+ * says whether any chunk of an item is in the precomputed visibility of a camera cell within PVS_STREAM_R; an item
+ * outside it for MS_VIS_HOLD ticks is planned no higher than C_KEEP: not read, not pinned, kept while there is room
+ * (a turn back finds it in). The camera cell changes smoothly; the draw-group cut tried first (floor part, which
+ * flips every 1-7 s at the Burg) churned. The design follows Vice City's streamer (re3 CStreaming: entities of
+ * another area are neither requested nor kept). `make PVS=0` (-DNO_PVS): every item is planned by distance only. */
+#define MS_VIS_HOLD 15u  /* ticks of 4 frames: 2 s, ASSUMED (a look through a doorway and back) */
+/* The answers change whenever the camera crosses into another camera cell of a block's grid (every few seconds of
+ * walking). Asking every item of all five blocks at once (~45k pvs ranges) cost 0.2-1.1 s in one frame: the walking
+ * hitches of the 40 min Burg soak (ISO, 2026-11-07; tools/hitchsum.py). The refresh runs as a job instead, one block
+ * at a time (only the block whose grid was crossed), MS_VIS_SLICE_US of EE time per frame (MS_VIS_SETTLE_US in a
+ * settle); answers update in place as it goes and the plan is redone once a block is through. An item keeps its old
+ * answer until the job reaches it: a few frames late, never wrong for longer. */
+#define MS_VIS_SLICE_US 1500u
+#define MS_VIS_SETTLE_US 20000u
+
+/* One level per cell (built in: the frozen residency design, 2026-11-12): one level
+ * of detail in memory per place (the SDK / re3 rule). 70-90 % of each block's resident level is coarse chunks (Burg
+ * west 3.4 of 3.8 MB, Parish 3.1 of 3.3 MB) that map.c skips wherever the cell's near level is drawn; kept in the arena
+ * beside those near cells they ranked above them (C_PIN0 within MS_R1_PIN) and the near level found no room. A cell's
+ * coarse items are planned C_KEEP while all its near parts are in and the cell is within MS_COARSE_R: never read, the
+ * first to go when a wanted item needs room, kept while nothing does (as C_FREE they went at once and were read again
+ * on the way out: the ISO world_route read 58 -> 69 MB, 780 -> 1110 re-reads, 2026-11-08); beyond it they are wanted
+ * again at their own class. While any coarse item of the cell is not in, its loaded near parts take that
+ * class (map.c draws the near level wherever the coarse level misses, at any distance), so a near part never goes
+ * before the coarse level is back: #110's first try (c24273d, reverted) left the near parts at their own class, a near
+ * part went next and the cell was a hole (~200 cells missing in the Burg, ISO 2026-11-06). Its teleport hang was the
+ * settle freeing items of the last drawn frame's chain (fixed by the dcur / dprev in_chain rule). Not in a settle: a
+ * settle reads no coarse item whose near level is in (settle_item). */
+#define MS_COARSE_R (MS_R0_KEEP - MS_KEEP_MORE - 8.0f)  /* (the near keep radius before MS_STEADY, less 8 m) */
+
+/* MS_SCAN (default 1; 0 = strict class then distance order): urgent reads (classes C_NEAR2 and up: near parts within the
+ * draw radius, the coarse level in view and pinned) go nearest first; the read-ahead classes below them (C_VIEW2,
+ * C_FARC, C_PREF) go in disc order: the queued one at or after the end of the last read in the same pack first, then
+ * the lowest offset of that pack (a circular scan), then another pack. The technique of the RW-era PS2 streamers (re3
+ * CStreaming: priority requests first, the rest in image order from the head position): ordered by distance, B8b's
+ * read log showed ~3100 reads of 1.2 items per 6-min world_route, every one a seek (~8/s, the gate is 2). */
+#ifndef MS_SCAN
+#define MS_SCAN 1
+#endif
+/* MS_RA_INFLIGHT (with MS_SCAN): reads of the read-ahead classes in flight at once. The disc server serves reads in
+ * order, so a near part wanted at the feet waited behind up to MS_INFLIGHT read-ahead reads: Ame's ISO play
+ * (2026-11-10) had cells drawn coarse while due near for up to 169 frames at 0 m with no room refusal. */
+#ifndef MS_RA_INFLIGHT
+#define MS_RA_INFLIGHT 2
+#endif
+/* MS_DEADLINE (default 1; 0 = the hard tier nearest first as before): deadline-aware read order, the map research's
+ * idea 6 (2026-11-17) after O3DE's IO scheduler (Scheduler::Thread_PrioritizeRequests: a request whose estimated
+ * completion falls after its deadline "panics" and goes first, by deadline; the rest go by the shortest seek from the
+ * last read's end). Here a hard-tier item's deadline is the time the player needs to come within MS_DL_NEAR_R of a
+ * near part (MS_DL_COARSE_R of a coarse item) at the smoothed walking speed (at least MS_DL_VMIN), and its estimated
+ * completion is its place in the disc-order scan of the queued hard tier, plus the reads in flight, times the measured
+ * time a read takes (rd_ms). Nearest first, every hard read was a seek of its own (B8b: ~8 seeks a second on
+ * world_route, ~1.2 items a run); in disc order the ones not late sweep the pack once. A settle keeps its class order. */
+#ifndef MS_DEADLINE
+#define MS_DEADLINE 1
+#endif
+#define MS_DL_NEAR_R 8.0f    /* m (ASSUMED: a cell drawn coarse within ~8 m is plain to see; the near level draws to 20 m) */
+#define MS_DL_COARSE_R MS_R0_DRAW  /* m: a coarse item stands in from the near level's draw radius out */
+#define MS_DL_VMIN 2.0f      /* m/s (ASSUMED: a standing player can be walking within the read; DSR's walk ~1.5-2 m/s) */
+#define MS_DL_FPS 30.0f      /* mapstream_update calls a second (vel is per call) */
+/* MS_DL_FIRST (default 1, with MS_DEADLINE): a panicking item already late (inside its radius) with two or more reads
+ * ahead of it in the disc server goes out ahead of them (pack_req_read_first, as coltile.c's tiles under the feet):
+ * the server sweeps its queue by LSN, so a late near part behind the head (or in another pack) could wait for all
+ * MS_INFLIGHT reads. One ahead of the head in the same pack goes the normal way: the sweep passes it. */
+#ifndef MS_DL_FIRST
+#define MS_DL_FIRST 1
+#endif
+/* MS_GAP_KB (default 96; 0 = off): map reads through small gaps, the research's idea 11, on top of dsrsnd's gap reads
+ * (PR #235, GAP_KB 96: a background read at most 96 KB ahead of the head reads the blocks between into the IOP cache
+ * instead of seeking). That only pays when the next map read is that close ahead: a queued item that starts within
+ * MS_GAP_KB after the end of the last read in the same pack goes next, before the scan's other picks (read-ahead
+ * classes too, within MS_RA_INFLIGHT), unless an item panics. ASSUMED 96 KB: a DVD seek of ~100-150 ms is worth
+ * ~200-300 KB of reading; matched to GAP_KB so the IOP reads the gap through. */
+#ifndef MS_GAP_KB
+#define MS_GAP_KB 96
+#endif
+/* Read order (2026-11-12): the classes rank what stays in memory; the reads of the hard tier (C_NEAR2 and up: the near
+ * level within the draw radius, the pinned coarse level, coarse cells in view) go out nearest first whatever their
+ * class. By class, a block turning on read its whole pinned coarse ring out to 40 m (C_PIN0, hundreds of small items)
+ * before the first near part at the feet: 30-47 near parts within 20 m waited ~20 s with the reader busy (ISO
+ * iso_burg_taurus, "flow" log). The classes below keep their order after them. -DMS_READ_BY_CLASS=1: by class as
+ * before; a settle too (its plan has its own classes). */
+#ifndef MS_READ_BY_CLASS
+#define MS_READ_BY_CLASS 0
+#endif
+
+/* Burg plan B8b: why each run of resident items stopped, and how the reads it made sit on the disc ("mapstream: runs"
+ * line every MS_RUNLOG_FRAMES frames): a read that starts where the last one ended needs no seek. B4's ISO world_route,
+ * 2026-11-09: 3089 runs of 1.2 items in 6 min, 170 contiguous; most stops are the next item not wanted (class) or
+ * already in (state). Reading the kept neighbours along (up to 64 KB) took 388 more items but no fewer runs, and more
+ * "no room" refusals (97 -> 120): dropped */
+enum { RS_END, RS_STATE, RS_GAP, RS_BASE, RS_CAP, RS_TEX, RS_CLASS, RS_BLOCKED, RS_N };
+static const char *const rs_name[RS_N] = {"end", "state", "gap", "base", "cap", "tex", "class", "blocked"};
+/* per instance (world block): reads, and of them far backdrop / coarse / sky / texture / mip 1 / other items */
+enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
+#define MS_RUNLOG_FRAMES 300
+
+
+/* Why the near level is late (the "flow" line, every MS_FLOW_FRAMES outside settles): frames the reader was held for
+ * a lite set with reads queued, frames with every read slot busy, frames with nothing queued, and the near cells
+ * within the draw radius that are not in, by what keeps them out: the plan's cut (no room by its count), a refusal
+ * (blocked after "no room"), the visibility cut, or simply the disc (queued / reading). */
+#define MS_FLOW_FRAMES 60u
+/* WORLD_SEAM_BUNDLE (Makefile, default 1; TECH_DEBT world-16): a block pack holds the entries world.c reads to turn it
+ * on first and in read order, so a lite set is one run of the disc, and no map read goes out while it loads: a map read
+ * in between took the head away from that run and back (two seeks per read). ISO world_route (2026-11-17): block turn-on
+ * median 1.86 -> 1.0-1.14 s, far seeks 483 / 472 -> 394 / 361. 0: the old pack order, map reads go on MS_HOLD_INFLIGHT
+ * at a time (the lite set was spread over its pack: four far seeks per turn-on whatever the map reader did) */
+#ifndef WORLD_SEAM_BUNDLE
+#define WORLD_SEAM_BUNDLE 1
+#endif
+#if WORLD_SEAM_BUNDLE
+#define MS_HOLD_DEFAULT 0
+#else
+#define MS_HOLD_DEFAULT 3  /* ASSUMED */
+#endif
+#ifndef MS_HOLD_INFLIGHT
+#define MS_HOLD_INFLIGHT MS_HOLD_DEFAULT  /* map reads in flight while a lite set loads */
+#endif
+
+/* MS_ORPHAN (default on; 0 = mapstream_close waits for its reads in flight as before) */
+#ifndef MS_ORPHAN
+#define MS_ORPHAN 1
+#endif
+typedef struct { int tk; void *buf; unsigned bytes; } Orphan;
+/* mapstream's arena (split from mapstream.c 2026-11-12, moved as it was): 256-byte granules on a grid of 64 KB
+ * pages, the pools, pages borrowed from the heap, clearing windows and moving items (defrag), and the
+ * mapstream_alloc / _pool / _free API. mapstream.c's header comment has the design. */
+#include "mapstream_i.h"
+
+/* MS_LEND_REHOME (default on; 0 = the old drop): a lent near group a lite set needs the room of moves into the item
+ * pages instead of going: dropped, the cell had nothing to draw until it was read again (its coarse level had made
+ * way for it), and stairs and floors vanished for a moment at every block turn-on (Ame's report 2026-11-17 21:31,
+ * t 75.9 / 97.3 / 114.3: each right after "lent near dropped for a lite set"). Room: a hole in the item pages, else
+ * a page cleared of groups below the near classes. Called only for groups no chain reads (the old copy frees now).
+ * 1 when moved. */
+#ifndef MS_LEND_REHOME
+#define MS_LEND_REHOME 1
+#endif
+
+/* Lent items go only where the room is needed (2026-11-12): n bytes of whole pool pages in [p0, p1), the cheapest run
+ * of pages that hold nothing but lent items and free granules (fewest item bytes; a run a chain still reads only when
+ * no other does). lend_reclaim dropped every lent item of the pool whenever one allocation found no hole, a 5 KB
+ * collision tile included: ~250 of ~600 items read again within 30 s of their drop on the ISO Taurus route had gone
+ * that way (the "thrash" log), most of them textures. Returns the items of the run a chain may still read (they stay:
+ * the caller waits for VU1 and asks again); *found 0: no such run, nothing dropped. */
+#define MS_POOL_PAGES_MAX 160
+/* the lent items in the way of n bytes of [p0, p1): the cheapest run's (MS_LEND_ALL_DROP 0, the default), else all */
+#ifndef MS_LEND_ALL_DROP
+#define MS_LEND_ALL_DROP 0
+#endif
+
+extern MapStreamStats mapstream_stats;
+extern MsInst ms_inst[MS_INST];
+extern unsigned ms_frame;
+extern unsigned ms_dcur, ms_dprev;
+extern int ms_chains_done;
+extern int ms_focus, ms_hold;
+extern int ms_settling;
+extern float ms_ahead[3], ms_vel[3], ms_last_pos[3];
+extern int ms_ahead_on;
+extern float ms_lat_avg, ms_lat_dev;
+extern unsigned (*ms_tex_age)(int k, unsigned tag);
+extern void (*ms_tex_set)(int k, unsigned tag, const void *p);
+extern int (*ms_vis_hook)(int k, unsigned id);
+extern unsigned (*ms_vis_gen)(int k);
+extern MsVisJob ms_vjob;
+extern int ms_replan;
+void ms_vis_step(unsigned us);
+int ms_near_in(const MsInst *m, unsigned c);
+float ms_qs_now(void);
+extern MsRead ms_rd[MS_INFLIGHT];
+extern int ms_nrd;
+extern MsQ ms_q[MS_QUEUE];
+extern int ms_nq;
+extern MsQ ms_blk[MS_BLOCKED];
+extern int ms_nblk;
+extern unsigned ms_scan_frame, ms_fail_frame, ms_fail_wait;
+extern int ms_room_fail, ms_failed, ms_evict_left, ms_defrag_left;
+extern unsigned ms_clk_ms, ms_clk_last, ms_clk_frac, ms_st_t0, ms_st_t1, ms_st_first, ms_st_wait, ms_stale_kb;
+extern unsigned ms_cancel_kb;
+void ms_q_add(int k, unsigned id, int cls, float key);
+int ms_blocked(int k, unsigned id);
+void ms_collect(int i, int r);
+int ms_issue(void);
+extern MsW ms_want[MS_WANTED];
+void ms_plan(const float *pos);
+void ms_flow_log(const float *pos);
+extern unsigned ms_lent_n;
+extern unsigned ms_lend_room;
+extern unsigned ms_lent_near;
+extern int ms_why;
+extern int ms_keep_buf;
+void ms_drop(int k, unsigned id);
+int ms_grp_cls(const MsInst *m, unsigned id);
+int ms_grp_chain(const MsInst *m, unsigned id);
+extern int ms_nowin;
+int ms_make_window(unsigned need, unsigned ng_need, int below, unsigned *kb);
+extern int ms_npend;
+extern unsigned ms_pend_frame;
+extern unsigned ms_defrag_moves, ms_defrag_kb;
+void ms_pend_release(void);
+int ms_defrag(unsigned need, unsigned lim, unsigned max_kb);
+void ms_tidy(void);
+void ms_x_update(void);
+/* ---- items ---- */
+static inline float box_d2(const MapCell *c, const float *p)
+{
+    float d2 = 0;
+    for (int k = 0; k < 3; k++) {
+        float o = p[k] < c->mn[k] ? c->mn[k] - p[k] : p[k] > c->mx[k] ? p[k] - c->mx[k] : 0;
+        d2 += o * o;
+    }
+    return d2;
+}
+/* outside the visibility now */
+static inline int vis_off(const MsInst *m, unsigned id) { return m->visv && id < m->visn && !m->visv[id]; }
+/* out of the plan: outside the visibility now and for MS_VIS_HOLD ticks */
+static inline int vis_cut(const MsInst *m, unsigned id)
+{
+    return vis_off(m, id) && (unsigned short)((unsigned short)(ms_frame >> 2) - m->vist[id]) > MS_VIS_HOLD;
+}
+
+static inline float sq(float x) { return x * x; }
+static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settling && cls >= C_NEAR2 ? C_TOP : cls; }
 
 #endif
