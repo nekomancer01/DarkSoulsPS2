@@ -425,7 +425,31 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
                                if p == n + ".pak" or p.startswith(n + "/") or p == "snd/" + n[:3] + ".pak"]))
     for line in window_report(where, blocks, "dvd9" if dual else media):
         log(line)
+    align_check(where, data, order, log)
     return size
+
+
+def align_check(where, data, order, log=print):
+    """the ECC block rule (Polaris 4.7): every pack starts on a 32 KB block of the disc, its entries are placed as
+    tools/pack.py places them and a world block's near parts touch no more blocks than their size needs
+    (tools/discalign.py). ValueError when not, unless the build asked for the old layout (DISC_ALIGN=0 / ALIGN=0): then
+    the problems are only listed."""
+    import discalign
+    bad = []
+    for p, _ in order:
+        lba = where.get(iso_path(p), (0,))[0]
+        if lba % ECC:
+            bad.append(f"{p}: starts at LSN {lba}, not on a 32 KB block")
+        bad += discalign.check_pack(os.path.join(data, p))
+    if not bad:
+        log(f"align: {len(order)} packs on 32 KB blocks, every near part within the blocks its size needs")
+        return
+    for b in bad[:20]:
+        log(f"align: {b}")
+    if os.environ.get("DISC_ALIGN", "1") == "0" or os.environ.get("ALIGN", "1") == "0":
+        log(f"align: {len(bad)} problems (the old layout was asked for: DISC_ALIGN=0 / ALIGN=0)")
+        return
+    raise ValueError(f"{len(bad)} alignment problems on the 32 KB ECC blocks (tools/discalign.py; DISC_ALIGN=0 builds the old layout)")
 
 
 def main():

@@ -446,7 +446,7 @@ sym: $(SYM_ELF)
 # It packages the packs already in data/ (run make first; iso itself never re-runs the exporters).
 ISO = $(EE_BIN:.elf=.iso)
 iso: $(SYM_ELF)
-	NOSTRIP=$(ISO_SYMS) ../../tools/ps2-iso.sh $(SYM_ELF) $(D) $(ISO)
+	NOSTRIP=$(ISO_SYMS) DISC_ALIGN=$(DISC_ALIGN) ../../tools/ps2-iso.sh $(SYM_ELF) $(D) $(ISO)
 .PHONY: iso sym
 
 include $(PS2SDK)/samples/Makefile.pref

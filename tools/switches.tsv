@@ -356,3 +356,5 @@ FX_MODEL	env	1	flag	fx	0	new	export_effects.py	model particles (action 108): fla
 BLOCKREPORT_STRICT	env	1	flag	tools	0	new	blockreport.py	blockreport.py --strict fails the build on a budget miss (hard tier, residency.h rows, FX / OBJ VRAM rows, Lua opcodes outside lua0.c); 0 = report only
 SOULS_STRICT	env	unset	debug	game	-	new	souls.py	1 = a variant a reader passes over (souls.skipped: an unread FLVER vertex member, an unnamed MSB type, a param without paramdef) raises souls.UnknownVariant instead
 DSRSND_ONE_QUEUE	make	1	flag	io	0	new	Makefile	Polaris 4.5: the stream thread's drive work (top-ups, opens, closes, bank steps) goes through the disc thread's one queue; 0 = the stream thread takes the drive itself between pages
+DISC_ALIGN	make	1	flag	io	0	new	recipe.toml	World blocks' near parts placed on the 32 KB ECC blocks (tools/discalign.py); 0 = packed back to back, and the ISO alignment check only warns
+DISC_ALIGN	env	1	flag	io	0	new	discalign.py iso9660.py	the same for the tools: discalign.py copies its inputs, iso9660.py lists alignment problems without failing
