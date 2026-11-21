@@ -155,20 +155,40 @@ static int sky_in(int k)
     mp_build_index(m);
     return m->nsky && mp_res_base(m, m->sky[0]);
 }
-/* Block k in map_draw: its cells in view, each at the level that is loaded (near, coarse or its horizon), with what
- * the later passes draw collected in fxl / hzfade / nrfade and the frame's counters in lg. A block that is kept only
- * for its horizon draws that alone. Returns the triangles drawn. */
+/* The level chain (Polaris 4.2): backdrop (the void ring, always), far panorama, horizon, coarse, near. A block is
+ * drawn at the finest of its levels that is in memory (mp_block_level: its cells, its horizon alone, or the far
+ * panorama of the block underfoot stands in for it, mapblock.c mp_draw_far); within a block whose cells are in, each
+ * cell at the finest level that is wanted at its distance and complete in memory (cell_level). A finer level that is
+ * complete stands in for a coarser one that is not (the near level for a coarse level still reading: the same pieces
+ * at full detail); a level whose parent is gone is never left as the only cover, because a coarser level that is in
+ * takes its place. Nothing complete: the coarse level as far as it is in, a hole (counted, "map: cells missing"). */
+enum { LV_HOLE = 1, LV_HZN = 2, LV_COARSE = 3, LV_NEAR = 4 };  /* (hitch.c's level codes) */
+/* near_in: the near level is wanted (or stands in) and every part the camera sees is in; has_hz: the cell has a
+ * horizon (in with the block's lite set); hzf: beyond HZN_R; miss / mcov: mp_miss_scan's resident chunks not in
+ * (any / ones the horizon stands for) */
+static inline int cell_level(int near_in, int has_hz, int hzf, int miss, int mcov)
+{
+    if (near_in)
+        return LV_NEAR;
+    if (has_hz && (hzf || mcov))
+        return LV_HZN;
+    return miss && !has_hz ? LV_HOLE : LV_COARSE;  /* (with a horizon only blended effects can be late: no hole) */
+}
+
+/* Block k in map_draw: its cells in view, each at its level (cell_level), with what the later passes draw collected in
+ * the effect / fade lists and the frame's counters in lg; at the horizon level, its horizon alone. Returns the
+ * triangles drawn. */
 static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
 {
     MapInst *m;
     int drawn = 0;
-    if (k && !mp_inst[k].on) {
-        if (mp_inst[k].hz_only) {  /* a kept-only block: its horizon alone */
-            unsigned dn = mp_draw_hz_only(k, e);
-            drawn += dn, lg->k_drawn[k] += dn, lg->hz_tris += dn;
-        }
-        return drawn;
+    int bl = mp_block_level(k);
+    if (bl == MB_HZN) {
+        unsigned dn = mp_draw_hz_only(k, e);
+        drawn += dn, lg->k_drawn[k] += dn, lg->hz_tris += dn;
     }
+    if (bl != MB_CELLS)
+        return drawn;
     m = &mp_inst[k];
     mapstream_select(k);  /* mapstream_get / mapstream_res below answer for k */
     if (!m->hdr)
@@ -330,11 +350,11 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 nnear += ctab[ci + p].near & ~CELL_PART;
             MF_END(MF_NEAR)
         }
-        /* the horizon in place of the coarse level: far, or the coarse level not complete (never mixed) */
-        int use_hz = hc && !nd && (hzf || mcov);
+        /* the cell's level (the level chain above); the horizon is never mixed with the coarse level */
+        const int lv = cell_level(nd, hc != NULL, hzf, miss, mcov);
+        int use_hz = lv == LV_HZN;
         {
-            /* with the horizon only blended effects (mist, light shafts) can be missing: late, but no hole */
-            unsigned h = use_hz ? 0 : miss && !nd && (!hc || mcov);
+            unsigned h = lv == LV_HOLE;
             lg->holes += h;
             lg->hole_nohz += h && !hc, lg->hole_unc += hc && miss == 2 && !nd;  /* no horizon for the cell; effects late */
             if (h && lg->hole_ex[0] == ~0u)
@@ -352,11 +372,10 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 mp_hzfade_add(k, ci, al);
         }
         {  /* level-of-detail flips of a cell in view (hitch.c): near / coarse / horizon / hole */
-            unsigned char lv = nd ? 4 : use_hz ? 2 : miss && (!hc || mcov) ? 1 : 3;
             if (NEAR_FADE > 0) {  /* coarse -> near while in view: the coarse level fades out over it */
-                if (lv != 4)
+                if (lv != LV_NEAR)
                     ce->nfade = 0;
-                else if (ce->lv == 3 && (unsigned short)(mp_pop_fr - ce->lv_seen) == 1)
+                else if (ce->lv == LV_COARSE && (unsigned short)(mp_pop_fr - ce->lv_seen) == 1)
                     ce->nfade = NEAR_FADE;
                 if (ce->nfade)
                     mp_nrfade_add(k, ci, ce->nfade * 128 / (NEAR_FADE + 1));

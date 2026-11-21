@@ -515,12 +515,22 @@ int map_far_set(const void *blob)
 #define FAR_F_HAS_SEAM 4
 static inline float far_eye(unsigned flags, int sh) { return (float)((int)(flags << (20 - sh)) >> 20) * 4.0f; }
 
+/* the level chain (map.c): block k's finest level in memory. Cells: its map tables (instance 0: the boot map while
+ * its tables are kept, world.c WORLD_BOOT_LEAN); horizon: a block kept for its horizon alone (world.c WORLD_KEPT_HZN);
+ * else the far panorama of the block underfoot stands in for it, where it has a set for it */
+int mp_block_level(int k)
+{
+    const MapInst *p = &mp_inst[k];  /* (map instance = world block, world.c) */
+    if (k ? p->on : p->hdr != NULL)
+        return MB_CELLS;
+    return k && p->hz_only ? MB_HZN : MB_PANO;
+}
+
 static int far_self(const FarSet *f)
 {
-    const MapInst *p = &mp_inst[f->blk];  /* (map instance = world block, world.c) */
     if (f->flags & FAR_F_PANO)  /* the boot map's backdrop its picture layers draw: here while they are not (map.c) */
         return map_pano_shown();
-    return f->blk ? p->on || p->hz_only : p->hdr != NULL;  /* that block draws itself (its cells, or its own horizon) */
+    return mp_block_level((int)f->blk) > MB_PANO;  /* a finer level of that block is drawn (its cells or horizon) */
 }
 
 unsigned mp_draw_far(const float *e)
