@@ -39,6 +39,9 @@
 #define WORLD_SLOT_NEAREST 1
 #endif
 #define WORLD_SLOT_MARGIN 16.0f
+#ifndef WORLD_SLOT_DEFER
+#define WORLD_SLOT_DEFER 1  /* (wplan.c w_slot_deferred) */
+#endif
 /* Bytes per background read: one at a time through pack.c's async slot, shared with mapstream.c (a near cell waits for
  * at most one of these) */
 #define WORLD_READ (128u << 10)
@@ -356,6 +359,7 @@ void w_far_step(void);
 void w_boot_lean(void);
 void w_boot_step(int issue);
 void w_step(const float *feet, float dt);
+int w_slot_deferred(int i, const float *feet);
 
 
 static inline float box_d(const WorldBlock *b, const float *p)
