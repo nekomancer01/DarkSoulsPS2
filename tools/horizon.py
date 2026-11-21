@@ -817,7 +817,7 @@ def build(b):
     cards = np.zeros(len(P), bool)
     if CUT and len(P):  # the cut-out cards, shrunk to their opaque share (CUT)
         cover = LAST_COVER[0]
-        cand = np.flatnonzero(~keep & (cover >= CUT_MIN) & ~pano & ~crown)
+        cand = np.flatnonzero(~keep & (cover >= CUT_MIN) & ~pano & ~crown & ~bd)  # (not the backdrop)
         if len(cand) and CUT_OFF > 0 and keep.any() and _err_lib() is not None:
             cand = cand[_dist(P[keep], P[cand].mean(1), np.full(len(cand), CUT_OFF)) >= CUT_OFF]
         if len(cand) and CROWN_H > 0 and len(nav):  # and only up in the crowns, as the foliage crowns (CROWN_H)
