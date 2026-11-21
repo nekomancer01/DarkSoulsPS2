@@ -231,6 +231,12 @@ static int plan_item(int k, const MsInst *m, unsigned id, const float *pos, floa
         *key = d2;
         return C_VIEW2;
     }
+    /* MS_BEHIND_KEEP (mapstream_i.h): out of view, horizon-covered and past MS_BEHIND_D: not read (kept while in) */
+    if (MS_BEHIND_KEEP && !ms_settle_plan() && (tag & MS_RES_LOD) && !view && d2 >= sq(MS_BEHIND_D) &&
+        (m->state[id] == MS_NONE || m->state[id] == MS_FAILED)) {
+        *key = d2;
+        return C_KEEP;
+    }
     if (d2 < sq(MS_R1_PIN)) {  /* and all of it above the near parts: the near level gets what is left */
         *key = d2;
         return C_PIN0;

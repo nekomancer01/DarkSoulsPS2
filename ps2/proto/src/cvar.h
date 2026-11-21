@@ -22,6 +22,7 @@
     X(MS_LIFE, 1)             \
     X(MS_TIDY, 1)             \
     X(MS_QSCALE, 1)           \
+    X(MS_BEHIND_KEEP, 1)      \
     X(VOID_RING, 1)           \
     X(WORLD_REACH, 1)         \
     X(WORLD_SOURCES, 1)       \

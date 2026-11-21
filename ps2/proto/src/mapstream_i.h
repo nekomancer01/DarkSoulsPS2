@@ -215,6 +215,14 @@ extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) 
 #ifndef WORLD_SOURCES
 #define WORLD_SOURCES cv_WORLD_SOURCES
 #endif
+/* MS_BEHIND_KEEP (default 1, runtime switch; thread C's draft #169 on the split planner): a coarse item the horizon
+ * stands for (MS_RES_LOD), out of view for MS_VIEW_STICKY and at least MS_BEHIND_D away, is not read while out: kept
+ * while it is in, so turning round shows its cell's horizon until the item lands. Not in a settle (nothing is in view
+ * there yet). 0: read at its distance class whatever the view */
+#ifndef MS_BEHIND_KEEP
+#define MS_BEHIND_KEEP cv_MS_BEHIND_KEEP
+#endif
+#define MS_BEHIND_D 32.0f  /* m (ASSUMED, #169's) */
 #define MS_NSRC 3  /* sources besides the player at most (world.h WSRC_N - 1) */
 extern float ms_src[MS_NSRC][3];
 extern int ms_nsrc;
