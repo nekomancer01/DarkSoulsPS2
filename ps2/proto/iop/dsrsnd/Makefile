@@ -9,3 +9,6 @@ IOP_WARNFLAGS = -Wall -Werror
 IOP_CFLAGS += $(DSRSND_DEFS)
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.iopglobal
+# the ps2sdk rule is %.o: %.c only: rebuild every C object when a shared header changes (after the includes, so this
+# names the objects as Makefile.iopglobal does, with or without the obj dir prefix)
+$(filter-out %imports.o,$(addprefix $(IOP_OBJS_DIR),$(notdir $(IOP_OBJS)))): dsrsnd_i.h ../../src/dsrsnd_rpc.h

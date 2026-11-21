@@ -157,7 +157,7 @@ def write_iso(entries, out, volid="DSRPS2", t=None, media="dvd", dual=False, cop
     # the BIOS file system reads a DVD's L path table from sector 257, whatever the volume descriptor says (cdvdman
     # CD_newmedia: "DVD Read mode", where a UDF bridge disc has it after its anchor at 256); a CD's from the descriptor
     pt = 257 if media != "cd" else 18
-    # a directory other than the root may take several sectors (records never cross one): dsrsnd.c df_scan reads
+    # a directory other than the root may take several sectors (records never cross one): disc.c df_scan reads
     # every sector of DATA\'s subdirectories (SND\ held 61 character banks, 2746 B, with Darkroot and the Depths in
     # the world; 2026-11-15); the BIOS reads only the root's first sector and the boot ELF in it
     def packed(d, recs):
@@ -406,7 +406,7 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
     first1 = next((e[0] for e in entries if e[2] == 1), None)
     brk = l1 if dual else where[first1][0] if first1 else 0
     pairs = [(where[a][0], where[b][0]) for a, b in copy_paths]
-    # DSRLAYER.BIN (dsrsnd.c df_layout): u32 "DSRL", version 1, layer 1's first LSN (dual: the real break; one layer:
+    # DSRLAYER.BIN (disc.c df_layout): u32 "DSRL", version 1, layer 1's first LSN (dual: the real break; one layer:
     # the planned one, 0 = no second region), volume sectors, copies n, then n x {u32 layer-0 LSN, u32 layer-1 LSN}
     layout = struct.pack("<4s4I", b"DSRL", 1, brk, size // SECTOR, len(pairs)) + b"".join(
         struct.pack("<2I", a, b) for a, b in pairs)

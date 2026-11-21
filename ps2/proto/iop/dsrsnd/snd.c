@@ -8,9 +8,10 @@
 #define DISC_WAIT_LOG_MS 100  /* a gap between stream passes longer than this is logged (the plan's one-page bound) */
 #define LOAD_TRIP 8  /* SND_LOAD_STEP reads of a bank per trip of the drive (ASSUMED: under a stream's half second) */
 #define STREAM_DMA 1  /* SPU2 DMA channel of the stream thread (refills and bank loads) */
-/* the stream thread's priority while it holds the drive (STREAM_PRIO otherwise, dsrsnd_i.h): below every thread but the disc thread (120). A CD read keeps its thread busy
- * until the data is in, so at 45 a read-ahead top-up (up to 128 KB, ~150 ms) held up fileio for its whole length:
- * every EE printf in that time waited (frames of 100-480 ms; 57-59 frames over 100 ms on the ISO route, 2026-11-06).
+/* the stream thread's priority while it holds the drive (STREAM_PRIO otherwise, dsrsnd_i.h): below every thread
+ * but the disc thread (120). A CD read keeps its thread busy until the data is in, so at 45 a read-ahead top-up
+ * (up to 128 KB, ~150 ms) held up fileio for its whole length: every EE printf in that time waited (frames of
+ * 100-480 ms; 57-59 frames over 100 ms on the ISO route, 2026-11-06).
  * Above the disc thread, so the EE's page reads never hold a top-up back. */
 #define STREAM_PRIO_DISC 119
 /* read-ahead per stream: one disc read fills this much, the refills then come from IOP RAM. Each read from a stream
