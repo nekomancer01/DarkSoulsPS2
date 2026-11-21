@@ -515,15 +515,22 @@ int map_far_set(const void *blob)
 #define FAR_F_HAS_SEAM 4
 static inline float far_eye(unsigned flags, int sh) { return (float)((int)(flags << (20 - sh)) >> 20) * 4.0f; }
 
-/* the level chain (map.c): block k's finest level in memory. Cells: its map tables (instance 0: the boot map while
- * its tables are kept, world.c WORLD_BOOT_LEAN); horizon: a block kept for its horizon alone (world.c WORLD_KEPT_HZN);
- * else the far panorama of the block underfoot stands in for it, where it has a set for it */
+/* the level chain (map.c): block k's finest level in memory, from what world.c says is resident (world_block_res):
+ * its cells while its map tables are in (WB_TABLES), its horizon alone while only the cell table and horizon are
+ * (WB_HORIZON: a kept or lean block, world.c WORLD_KEPT_HZN), else the far panorama of the block underfoot stands in
+ * for it (WB_FAR; where it has a set for the block). The instance's own pointers must agree: a level is drawn only
+ * from tables this file holds. No world (a single-area build): instance 0's map, while it has one. */
 int mp_block_level(int k)
 {
     const MapInst *p = &mp_inst[k];  /* (map instance = world block, world.c) */
-    if (k ? p->on : p->hdr != NULL)
+    if (world_current() < 0)
+        return !k && p->hdr ? MB_CELLS : MB_PANO;
+    unsigned r = world_block_res(k);
+    if ((r & WB_TABLES) && p->hdr && (k ? p->on : 1))
         return MB_CELLS;
-    return k && p->hz_only ? MB_HZN : MB_PANO;
+    if ((r & WB_HORIZON) && k && p->hz_only && p->hz_cell)
+        return MB_HZN;
+    return MB_PANO;
 }
 
 static int far_self(const FarSet *f)
