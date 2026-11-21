@@ -1,0 +1,10 @@
+# Unknown variants of the coverage scan that have a TECH_DEBT row (tools/scan/scan.py does not fail on them).
+# Columns (tab-separated): kind, value (* = every value of the kind), TECH_DEBT id, note. Ids and names only.
+flver vertex member	sem 5 type 0x15 index 1	scan-1	map pieces' lightmap UV set
+flver vertex member	sem 5 type 0x16 index 1	scan-1	map pieces' lightmap UV set
+tae event type (remo)	*	scan-3	cutscene TAE events
+tae event type	8	scan-4	c0000 a00.tae
+mtd missing from Mtd.mtdbnd	A11_cloud[Dn]_Add.mtd	scan-5	m11 map piece
+mtd missing from Mtd.mtdbnd	C_Wet[DSB]_spec.mtd	scan-5	c3200
+havok ragdoll constraint	no hkpSetLocalTransformsConstraintAtom	scan-6	c3350, c3430
+binder byte order	big-endian	scan-7	debug map m99_99_97_00

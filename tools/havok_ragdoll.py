@@ -44,6 +44,7 @@ def ragdoll(hkx):
         # constraints without local-transform atoms (Darkroot's c3350): not a ragdoll this reader knows; no ragdoll,
         # the death animation plays as for a character without one
         print(f"havok_ragdoll: no hkpSetLocalTransformsConstraintAtom, no ragdoll", file=sys.stderr)
+        souls.skipped("havok ragdoll constraint", "no hkpSetLocalTransformsConstraintAtom")
         return None
     D = h.data
     ptr = lambda o: struct.unpack_from("<I", D, o)[0]

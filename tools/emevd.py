@@ -71,7 +71,8 @@ class InstrDef:
 
 def edf(b):
     """EMEDF bytes -> ({(bank, id): InstrDef}, {enum offset: (name, {value: name})}, class names {bank: name})."""
-    assert b[:4] == b"EDF\0", "not an EMEDF"
+    if b[:4] != b"EDF\0":
+        raise souls.UnknownVariant("emedf format", b[:4].decode("latin1"), "not an EMEDF")
     tabs = [struct.unpack_from("<II", b, 0x10 + 8 * i) for i in range(9)]
     (ncls, ocls), (_, oins), (_, oarg) = tabs[0], tabs[1], tabs[2]
     (nenum, oenum), (_, oval), (_, ostr) = tabs[6], tabs[7], tabs[8]
@@ -142,7 +143,8 @@ def definitions(game=None):
 
 def eld(b):
     """EMELD bytes -> {event id: name}."""
-    assert b[:4] == b"ELD\0", "not an EMELD"
+    if b[:4] != b"ELD\0":
+        raise souls.UnknownVariant("emeld format", b[:4].decode("latin1"), "not an EMELD")
     n, off = struct.unpack_from("<II", b, 0x10)
     sofs = struct.unpack_from("<I", b, 0x2C)[0]
     return {struct.unpack_from("<i", b, off + 12 * i)[0]: _wstr(b, sofs + struct.unpack_from("<i", b, off + 12 * i + 4)[0])
@@ -182,7 +184,8 @@ def decode_args(defn, raw):
 
 def parse(b, defs=None, names=None):
     """EMEVD bytes -> EMEVD; instructions decoded with defs (from definitions()) when given."""
-    assert b[:4] == b"EVD\0" and b[4:8] == b"\0\0\0\0", "not a 32-bit LE DS1 EMEVD"
+    if b[:4] != b"EVD\0" or b[4:8] != b"\0\0\0\0":
+        raise souls.UnknownVariant("emevd format", b[:8].hex(), "not a 32-bit LE DS1 EMEVD")
     t = [struct.unpack_from("<II", b, 0x10 + 8 * i) for i in range(8)]
     (nev, oev), (_, oins), _, (_, olay), (_, oprm), (nlink, olink), (_, oargs), (nstr, ostr) = t
     events = []
@@ -196,6 +199,8 @@ def parse(b, defs=None, names=None):
             ins.bank, ins.id, ins.raw = bank, iid, b[oargs + aoff:oargs + aoff + alen] if alen else b""
             ins.layer = struct.unpack_from("<I", b, olay + loff + 4)[0] if loff != -1 else None
             ins.defn = (defs or {}).get((bank, iid))
+            if defs is not None and ins.defn is None:
+                souls.skipped("emevd instruction", f"{bank}[{iid:02d}]")
             ins.args, ins.extra = (decode_args(ins.defn, ins.raw) if ins.defn else (None, None))
             ev.instrs.append(ins)
         ev.params = [struct.unpack_from("<5i", b, oprm + po + 20 * k) for k in range(npr)]

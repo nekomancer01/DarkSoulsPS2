@@ -22,6 +22,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SRC = os.path.join(ROOT, 'ps2', 'proto', 'src')
 HEADER = os.path.join(SRC, 'switches.h')
 MAKEFILE = os.path.join(ROOT, 'ps2', 'proto', 'Makefile')
+# the export knobs and rules ps2/proto/Makefile includes, generated from tools/recipe.toml (tools/recipe.py make)
+MAKE_PARTS = [MAKEFILE] + [os.path.join(ROOT, 'ps2', 'proto', f) for f in ('export_vars.mk', 'export_rules.mk')]
 TOOLS = os.path.join(ROOT, 'tools')
 BUILD_TSV = os.path.join(TOOLS, 'switches.tsv')
 KINDS = {'fallback', 'debug', 'tune', 'make', 'host'}
@@ -88,7 +90,8 @@ def rows(full=False):
 
 def make_names():
     """Makefile switches: name -> where ('?=' for an overridable default, 'read' for a variable read but never set)."""
-    text = re.sub(r'(?m)(?<!\\)#.*$', '', open(MAKEFILE, encoding='utf-8').read())
+    text = re.sub(r'(?m)(?<!\\)#.*$', '', '\n'.join(open(p, encoding='utf-8').read() for p in MAKE_PARTS
+                                                     if os.path.exists(p)))
     assigned = set(re.findall(r'^\s*(?:override\s+|export\s+)?([A-Za-z_]\w*)\s*(?:\?|:|\+|::)?=', text, re.M))
     soft = set(re.findall(r'^\s*([A-Za-z_]\w*)\s*\?=', text, re.M))
     used = set(re.findall(r'\$[({]([A-Z_][A-Z0-9_]*)[)}]', text)) | set(re.findall(r'^\s*if(?:n?def)\s+([A-Z_]\w*)', text, re.M))

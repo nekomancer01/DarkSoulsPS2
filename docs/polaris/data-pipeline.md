@@ -163,6 +163,53 @@ from an existing one: `tools/newbuild "$PWD/build" --from <other tree>/build`.
 
 Build-time variables that change what is exported are registered in `tools/switches.tsv`.
 
+## The export recipe
+
+`tools/recipe.toml` lists every export step once: its tool, arguments, environment, the files it writes, the files it
+reads, the `tools/` sources it runs and, for packs, the entries. It also holds every knob an export reads: the
+`?=` defaults (PVS bake settings, world split switches, `CHR_BONES`, ...), `DEFAULT_MAP`, the per-area map tuning
+(`[mapenv]`, formerly `MAPENV_<area>`) and the per-enemy-type LOD and texture caps (`[chr.lod]`, `[chr.tex]`).
+`config.local.mk` and the make command line still override the knobs. Everything reads the recipe:
+
+- **make.** `ps2/proto/export_vars.mk` (knobs) and `export_rules.mk` (one rule per step) are generated from it and
+  committed: `python3 tools/recipe.py make` after editing the recipe, CI (`tools/ci/offline.sh`) fails when they are
+  stale. The ELF, IOP module, ISO and the world sub-make orchestration (`worldexports`, `worldhzn`, ...) stay
+  hand-written in `ps2/proto/Makefile`, with the small "derived" values both sides compute (PVS_PEERS, TEX_PEERS,
+  LITE_RUN, ...; their Python twins are `recipe.Plan.ctx`).
+- **The converter.** `tools/convert.py` (and through it the in-browser converter) runs the same step instances in one
+  process, ordered by their files, the steps the goals need and nothing else. Steps that run a host program (the
+  occlusion bake) or need the MP3 decoder (sound) are skipped in the browser and their pack entries left out
+  (TECH_DEBT build-18).
+- **Tools that look at steps.** `python3 tools/recipe.py list <game> <build> --json` prints every step instance of
+  the default build with its inputs, outputs, tools and environment: the hook for the export cache and the build
+  gates.
+
+Adding an export is one `[[step]]` plus its pack entry, then `python3 tools/recipe.py make`. `python3 tools/recipe.py
+format` prints the field reference (the comment block at the top of the recipe). Check a change with a dry run of the
+whole world build: `make -n -B -C ps2/proto BUILD=<empty dir>` before and after lists the commands of every step.
+
+## Coverage scan and block reports
+
+**Coverage scan** (`tools/scan/scan.py`, Polaris 3.4). Runs every reader over every file of the game once and lists
+what it meets per kind: FLVER versions and vertex layouts, MTD blend modes against the material classes, TAE event
+types, Havok classes and quantizations, FFX node / action types, EMEVD instructions, ESD commands and env functions per
+character kind, MSB part / event / region types, Lua opcodes, param types and DDS formats. Each variant is `ok`,
+`unported` (the reader knows it, the port does not run it: the coverage list), `unknown` (the reader does not know
+it) or `error` (a reader failure). Readers raise `souls.UnknownVariant` (an AssertionError and a ValueError, so old
+handlers still catch it) where they used to assert or guess, and report what they pass over through `souls.skipped()`
+(`SOULS_STRICT=1` makes that raise). Results are cached per game file under `build/scan` (about 2 minutes on four
+workers cold, seconds cached); `summary.md` holds ids and counts only. The scan fails on an unknown variant that
+`tools/scan/known.tsv` does not list; every row there points at a TECH_DEBT row (scan-1..7).
+
+**Block reports** (`tools/blockreport.py`, Polaris 3.6). One report per world block from the export's own outputs:
+triangles and bytes per detail level, the hard tier and the block's `residency.h` row against the visual room (from
+`tools/world_budget.py`, run unchanged), VRAM per `gs_budget.h` owner, EMEVD classes and packed Lua opcodes, and the
+effect coverage of the block's FFX bundle from the scan. `--strict` fails the build on a miss: world_budget's own
+verdict, FX or OBJ textures over their rows, or a Lua opcode `lua0.c` lacks (`BLOCKREPORT_STRICT=0` reports only).
+
+Both are world goals of the default build (recipe steps "coverage scan" and "block report", after "world
+budget"); the browser converter skips the scan (the report then shows no effect coverage).
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the

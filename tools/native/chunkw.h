@@ -1,6 +1,6 @@
-/* Chunk stream writer for the C tools (Polaris 3.3): pvs_bake, libmapx. Header-only; the format is at the top of
- * ps2/proto/src/chunk.h and tools/chunkfile.py (the Python writer the exporters use). Output is byte-identical to
- * tools/chunkfile.py pack() for the same chunks.
+/* Chunk stream writer for the C tools (Polaris 3.3): pvs_bake (libmapx from phase 4). Header-only; the format is
+ * at the top of ps2/proto/src/chunk.h and tools/chunkfile.py (the Python writer the exporters use). Output is
+ * byte-identical to tools/chunkfile.py pack() for the same chunks.
  *
  *   ChunkW w; chunkw_begin(&w, "PVS ");
  *   chunkw_start(&w, "PHDR", 1); chunkw_put(&w, hdr, sizeof hdr); chunkw_end(&w);
