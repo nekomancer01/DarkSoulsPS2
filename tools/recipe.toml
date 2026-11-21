@@ -166,6 +166,8 @@ ENEMIES = { tool = "export_enemies.py", args = ["--models", "{GAME}", "{MAP}"], 
 # Host programs steps run (built by make's rule from the same fields; convert.py builds them natively)
 [host.pvs_bake]
 out = "{BUILD}/host/pvs_bake{HOST_TAG}"
+# (make prerequisites and the convert.py rebuild check: paths under tools/, or templates such as "{SRC}/chunk.c";
+# cmd: {out}, {TOOLS}, {SRC}, {GPU} = gpu_flags when the probe passes, knobs)
 sources = ["pvs_bake.c", "pvs_gpu.c", "pvs_gpu.h"]
 cmd = "gcc {PVS_CFLAGS} -fopenmp -o {out} {TOOLS}/pvs_bake.c {GPU} -lm"
 # GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL) when PVS_GPU=1 and this compiles and links

@@ -167,7 +167,8 @@ def make_rules(r):
     out = [HEADER, ""]
     for name, h in r.get("host", {}).items():
         var = name.upper()
-        srcs = " ".join(f"../../tools/{s}" for s in h["sources"])
+        # a source is a path under tools/, or a template ("{SRC}/chunk.c": ps2/proto/src)
+        srcs = " ".join(Make().s(s, quote_game=False) if s.startswith("{") else f"../../tools/{s}" for s in h["sources"])
         cmd = h["cmd"].replace("{out}", "$@").replace("{GPU}", f"$(if $({var}_GPU_OK),{h['gpu_flags']})")
         out += [f"{Make().s('{' + var + '}', True)}: {srcs}", "\t@mkdir -p $(@D)", "\t" + Make().s(cmd, quote_game=False), ""]
     for step in r["step"]:
@@ -501,7 +502,7 @@ class Plan:
         h = self.r["host"][name]
         c = self.base
         out = c.s(h["out"])
-        srcs = [os.path.join(TOOLS, s) for s in h["sources"]]
+        srcs = [c.s(s) if s.startswith("{") else os.path.join(TOOLS, s) for s in h["sources"]]
         if os.path.exists(out) and all(os.path.getmtime(s) <= os.path.getmtime(out) for s in srcs):
             return out
         gpu = ""
