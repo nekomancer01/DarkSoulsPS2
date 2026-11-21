@@ -29,9 +29,9 @@ int df_read(int fd, void *dst, unsigned int n);
  * (the disc thread leaves it after its current page); drive_give hands it back */
 int drive_poll(unsigned int *waited);
 void drive_give(void);
-void who_log(void);
+void who_log(void);  /* the "dsrsnd: drive" lines, every DRIVE_LOG_MS */
 #define DRIVE_ANY 0xffffffffu  /* drive work that reads nothing (an open, a close): served where the head is */
-unsigned int df_lsn(int fd, unsigned int off);  /* the sector of byte off of fd, DRIVE_ANY when not read by sector */  /* the "dsrsnd: drive" lines, every DRIVE_LOG_MS */
+unsigned int df_lsn(int fd, unsigned int off);  /* the sector of byte off of fd, DRIVE_ANY when not read by sector */
 void disc_submit(const SndDiscReq *q, int n);
 void disc_thread(void *arg);
 int disc_init_semas(void);

@@ -741,6 +741,8 @@ void snd_drive_step(void)
             s->state = SNDS_ERROR;
             break;
         }
+        if (s->low_t0)  /* served: a further urgent page waits from now (not counting this page's own read) */
+            s->low_t0 = now_ms() | 1;
         if (s->ra_len >= STREAM_RA || !stream_ra_more(s)) {
             s->topping = 0, s->top_t0 = s->low_t0 = 0;
             /* the others top up with it from STREAM_RA_ALSO: one trip of the drive to the audio for all of them */

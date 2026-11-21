@@ -96,8 +96,10 @@ int _start(int argc, char *argv[])
     if (id < 0)
         return MODULE_NO_RESIDENT_END;
     StartThread(id, NULL);
-    /* the disc thread below everything (IOP priorities run 1-127, lower is more urgent) */
-    iop_thread_t dt = {.attr = TH_C, .thread = disc_thread, .priority = 120, .stacksize = 0x800, .option = 0};
+    /* the disc thread below everything (IOP priorities run 1-127, lower is more urgent). 4 KB of stack: with one drive
+     * queue it also runs the stream thread's deepest chain (disc_step -> snd_drive_step -> stream_start -> df_open ->
+     * df_scan -> df_read, two 96-byte paths and printf on the error paths) on top of its own frames */
+    iop_thread_t dt = {.attr = TH_C, .thread = disc_thread, .priority = 120, .stacksize = 0x1000, .option = 0};
     if ((id = CreateThread(&dt)) < 0)
         return MODULE_NO_RESIDENT_END;
     StartThread(id, NULL);
