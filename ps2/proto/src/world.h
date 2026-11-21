@@ -50,6 +50,17 @@ int world_hold(const float *feet);
 int world_settled(const float *feet);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
 int world_current(void);
+/* Streaming sources (Polaris 4.3): every place the world streams for, each with a position and a velocity (from
+ * its last positions), all through one planner (wplan.c for the blocks, msplan.c for the cells). The player is one
+ * (world_update's feet), planned by the walking rule; the others are targets, planned by the rule a warp's spot has
+ * behind the loading screen (the hard tier it waits for, no read-ahead): a death puts one on the respawn point while
+ * the death plays, so its blocks and cells are in or on their way when the respawn's loading screen opens
+ * (player.c); a warp target and a cutscene camera are kinds for the code that knows them ahead. A warp (the player
+ * moved > WORLD_WARP m in a frame) is the player's source turned target until world_settled. WORLD_SOURCES 0
+ * (runtime switch): no source but the player. */
+enum { WSRC_PLAYER, WSRC_WARP, WSRC_RESPAWN, WSRC_CAMERA, WSRC_N };
+void world_source(int kind, const float pos[3]);
+void world_source_off(int kind);
 /* What of block k is resident now (Polaris 4.1, for the level chain in map.c): WB_ON its lite set is on (collision,
  * events, objects); WB_TABLES its map tables are in (chunk table, textures, cell table), so its levels may stream and
  * draw; WB_HORIZON its cell table and horizon are in (also while it is only kept and has let go of the rest:

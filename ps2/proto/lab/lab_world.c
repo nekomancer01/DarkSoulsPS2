@@ -92,6 +92,7 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
 }
 void mapstream_focus(int k) { (void)k; }
 void mapstream_hold(int on) { (void)on; }
+void mapstream_sources(const float *pos, int n) { (void)pos, (void)n; }
 unsigned mapstream_lend_early(void) { return 0; }
 void mapstream_pool(unsigned max) { (void)max; }
 int mapstream_pool_prepare(int pool, unsigned n) { (void)pool, (void)n; return 1; }

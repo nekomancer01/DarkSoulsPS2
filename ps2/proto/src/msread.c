@@ -344,7 +344,7 @@ static int q_scan_pick(int ra_ok, int *first)
     int hard = q_rank(ms_q[0].cls) >= C_NEAR2;
     if (!hard && !ra_ok)
         return -1;
-    if (scan_k < 0 || (hard && (!MS_DEADLINE || ms_settling || MS_READ_BY_CLASS)))
+    if (scan_k < 0 || (hard && (!MS_DEADLINE || ms_settle_plan() || MS_READ_BY_CLASS)))
         return hard || ra_ok ? 0 : -1;  /* the hard tier at the head: nearest first (q_rank) */
     int nh = 0;
     while (nh < ms_nq && q_rank(ms_q[nh].cls) >= C_NEAR2)

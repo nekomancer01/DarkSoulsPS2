@@ -24,6 +24,7 @@
     X(MS_QSCALE, 1)           \
     X(VOID_RING, 1)           \
     X(WORLD_REACH, 1)         \
+    X(WORLD_SOURCES, 1)       \
     X(MAP_SPEC, 1)            \
     X(MAP_FX_FOG0, 1)         \
     X(FRAME_SKIP_MAP, 0)

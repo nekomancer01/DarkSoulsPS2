@@ -414,6 +414,16 @@ void mapstream_tex_hooks(unsigned (*age)(int k, unsigned tag), void (*set)(int k
     ms_tex_age = age, ms_tex_set = set;
 }
 void mapstream_hold(int on) { ms_hold = on; }
+float ms_src[MS_NSRC][3];
+int ms_nsrc;
+void mapstream_sources(const float *pos, int n)
+{
+    n = n < 0 ? 0 : n > MS_NSRC ? MS_NSRC : n;
+    ms_replan |= n != ms_nsrc || (n && memcmp(ms_src, pos, n * sizeof ms_src[0]));
+    if (n)
+        memcpy(ms_src, pos, n * sizeof ms_src[0]);
+    ms_nsrc = n;
+}
 void mapstream_settle(int on)
 {
     if (on && !ms_settling)

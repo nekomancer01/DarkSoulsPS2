@@ -292,9 +292,12 @@ static float gravity_scale(const Player *p)
     return grad_at(p->anim, 27, p->t, 1);
 }
 
+static int respawn_src;  /* this death's respawn point is a streaming source (world_source) */
 static void respawn(Player *p)
 {
     int died = p->hp < 0;
+    respawn_src = 0;
+    world_source_off(WSRC_RESPAWN);  /* (the player stands there now: the player's source) */
     if (died) {
         loading_hold();    /* DSR reloads the map behind its loading screen (src/loading.c); a far respawn point's
                             * blocks load under it this frame (world.c settle) */
@@ -926,11 +929,25 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
     p->parrying = esd_action(p) && p->anim == ANIM_PARRY && in_window(p->anim, -1, p->t);
 
     int ticked = 0;
+    if (respawn_src && p->hp >= 0) {  /* hp restored without a respawn (test god, regen) */
+        respawn_src = 0;
+        world_source_off(WSRC_RESPAWN);
+    }
     if (p->state == ST_FALL || p->state == ST_DEAD) {
         /* airborne loop / fall death: no control; constrain() moves the body and detects the landing */
         p->t += dt;
         p->invincible = p->hitting = 0;
         if (p->state == ST_DEAD) {
+            /* a death: the respawn point streams in while the death plays (Polaris 4.3 streaming source, world.h), so
+             * the respawn's loading screen waits for less */
+            if (p->hp < 0 && !respawn_src) {
+                V3 at;
+                float yaw;
+                respawn_src = 1;
+                if (!bonfire_spawn(&at, &yaw))  /* (as respawn(): the respawn point, else the map's spawn) */
+                    map_spawn(&at, &yaw);
+                world_source(WSRC_RESPAWN, (float *)&at);  /* (V3 as float[3]) */
+            }
             /* the ESD switches the death anims; the engine side respawns once the last one has played: 6067 (state 59,
              * death in the air), 6170 (98, lethal landing), 6173 (100, died on a short landing) */
             /* a death on the ground (enemy hit, hurt): the ESD's death anim, once it ends with the player on the floor

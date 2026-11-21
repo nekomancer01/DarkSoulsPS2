@@ -477,6 +477,7 @@ void world_update(const float *feet, float dt)
 {
     if (w_cur < 0)
         return;
+    world_source(WSRC_PLAYER, feet);
     float dx = feet[0] - last_feet[0], dy = feet[1] - last_feet[1], dz = feet[2] - last_feet[2];
     int warp = dx * dx + dy * dy + dz * dz > WORLD_WARP * WORLD_WARP;  /* also the first frame: boot settles */
     memcpy(last_feet, feet, sizeof last_feet);
