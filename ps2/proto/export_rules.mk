@@ -214,3 +214,19 @@ $(D)/world.pak: $(G)/world.bin $(TS)/pack.py.sum $(TS)/native/lz4pack.c.sum
 $(G)/world_budget.json: $(A)/map.bin.cells.json $(foreach d,$(PVS_WITH),$(d)/map.bin.cells.json) $(D)/world.pak $(A)/maptab.bin $(foreach d,$(PVS_WITH),$(d)/maptab.bin) src/world.c src/residency.h $(TS)/world_budget.py.sum $(TS)/residency.py.sum
 	@mkdir -p $(@D)
 	MAP='$(MAP)' $(PY) -I ../../tools/world_budget.py $(G)/world_budget.json $(PVS_PEERS) $(WORLD_BUDGET_ARGS)
+
+# coverage scan (world): tools/scan/scan.py
+$(BUILD)/scan/files.json: src/lua0.c src/player.c src/enemy.c src/esd_env_move.c ../../tools/scan/known.tsv $(patsubst ../../tools/%,$(TS)/%.sum,$(wildcard ../../tools/scan/*.py)) $(TS)/souls.py.sum $(TS)/emevd.py.sum $(TS)/esd.py.sum $(TS)/ffx.py.sum $(TS)/havok_anim.py.sum $(TS)/havok_collision.py.sum $(TS)/havok_ragdoll.py.sum $(TS)/lua50.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/material.py.sum $(TS)/mapgather.py.sum $(TS)/export_emevd.py.sum $(TS)/export_effects.py.sum
+	@mkdir -p $(@D)
+	$(PY) -I ../../tools/scan/scan.py --game "$(GAME)" --out $(BUILD)/scan -j 4
+$(BUILD)/scan/scan.json: $(BUILD)/scan/files.json
+	@test -f $@ || { echo "$@ missing: re-export files.json"; rm -f $<; exit 1; }
+$(BUILD)/scan/summary.md: $(BUILD)/scan/files.json
+	@test -f $@ || { echo "$@ missing: re-export files.json"; rm -f $<; exit 1; }
+
+# block report (world): tools/blockreport.py
+$(G)/blockreport.json: $(G)/world_budget.json $(A)/map.bin $(A)/hzn.bin $(A)/far.bin $(A)/fx.bin $(A)/objects.bin $(A)/events.bin $(A)/ai_map.lua0 $(A)/ai_common.lua0 $(foreach d,$(PVS_WITH),$(d)/map.bin $(d)/hzn.bin $(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0) src/residency.h src/gs_budget.h src/lua0.c $(TS)/blockreport.py.sum $(TS)/world_budget.py.sum $(TS)/residency.py.sum $(TS)/gs_budget.py.sum $(TS)/mapcfg.py.sum $(TS)/lua50.py.sum $(TS)/scan/support.py.sum | $(BUILD)/scan/files.json
+	@mkdir -p $(@D)
+	MAP='$(MAP)' $(PY) -I ../../tools/blockreport.py $(G)/blockreport.json $(PVS_PEERS) --scan $(BUILD)/scan/files.json --check $(G)/world_budget.json --strict
+$(G)/blockreport.world_budget.json: $(G)/blockreport.json
+	@test -f $@ || { echo "$@ missing: re-export blockreport.json"; rm -f $<; exit 1; }

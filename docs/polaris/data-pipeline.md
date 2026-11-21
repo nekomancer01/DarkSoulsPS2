@@ -190,6 +190,9 @@ triangles and bytes per detail level, the hard tier and the block's `residency.h
 effect coverage of the block's FFX bundle from the scan. `--strict` fails the build on a miss: world_budget's own
 verdict, FX or OBJ textures over their rows, or a Lua opcode `lua0.c` lacks (`BLOCKREPORT_STRICT=0` reports only).
 
+Both are world goals of the default build (recipe steps "coverage scan" and "block report", after "world
+budget"); the browser converter skips the scan (the report then shows no effect coverage).
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the
