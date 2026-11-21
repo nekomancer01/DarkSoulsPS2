@@ -214,6 +214,7 @@ void world_source_off(int kind)
 /* the blocks a source other than the player wants: those its floor's links load / keep (the block it stands in too)
  * when that block is on, else every block whose bounds and height range hold it (as the player without a floor) */
 static int src_boot;  /* a source stands in the boot block (its tables come back: boot_want) */
+static unsigned src_only_m;  /* last step's blocks wanted by the other sources alone (not by the player) */
 static void src_wants(const float *p, unsigned *wm, unsigned *km)
 {
     ColHit h = {.tri = -1};
@@ -270,6 +271,7 @@ void w_step(const float *feet, float dt)
                        * from Darkroot into the Depths kept two Darkroot blocks wanted and found no slot, 2026-11-15) */
             wm = km = 0, w_reach_m = 0;
         w_ronly_m = 0;
+        wm &= ~src_only_m;  /* (last step's source blocks come back below as the sources' again, not the player's) */
         for (int i = 1; i < w_nblk; i++)
             if (box_d(&w_tab[i], feet) <= 0.0f && feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
@@ -280,6 +282,8 @@ void w_step(const float *feet, float dt)
         float sp[WSRC_N][3];
         int ns = 0;
         src_boot = 0;
+        unsigned pw = wm;  /* the player's wants */
+        src_only_m = 0;
         for (int s = WSRC_PLAYER + 1; WORLD_SOURCES && s < WSRC_N; s++)
             if (w_src[s].on) {
                 unsigned sw, sk;
@@ -287,6 +291,7 @@ void w_step(const float *feet, float dt)
                 /* wanted as by the reach alone (w_ronly_m): after the player's, never taking a slot or pool room
                  * from a block the player's floor wants, never spilling into the item pages */
                 w_ronly_m |= sw & ~wm;
+                src_only_m |= sw & ~pw;
                 wm |= sw, km |= sk;
                 memcpy(sp[ns++], w_src[s].pos, sizeof sp[0]);
             }
