@@ -36,31 +36,31 @@ $(D)/c0000.pak: $(G)/model.bin $(G)/esd.bin $(G)/player.gd $(G)/combat.gd $(G)/p
 	python3 -I ../../tools/pack.py $(D)/c0000.pak model.bin=$(G)/model.bin esd.bin=$(G)/esd.bin player.gd=$(G)/player.gd combat.gd=$(G)/combat.gd progress.gd=$(G)/progress.gd
 
 # menu (shared): tools/export_menu.py
-$(G)/menu.bin: $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+$(G)/menu.bin: $(TS)/chunkfile.py.sum $(TS)/export_menu.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" $(G)/menu.bin
 
 # items (shared): tools/export_items.py
-$(G)/items/.stamp: $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.py.sum
+$(G)/items/.stamp: $(TS)/chunkfile.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_items.py "$(GAME)" $(G)/items
 	@touch $@
 $(G)/items/items.bin $(G)/items/itemx.bin $(G)/items/desc.bin $(G)/items/icons.bin: $(G)/items/.stamp ;
 
 # menu screens (shared): tools/export_screens.py
-$(G)/screens/.stamp: $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+$(G)/screens/.stamp: $(TS)/chunkfile.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_screens.py "$(GAME)" $(G)/screens
 	@touch $@
 $(foreach n,$(SCREEN_NAMES),$(G)/screens/scr_$(n).bin): $(G)/screens/.stamp ;
 
 # loading screen (shared): tools/export_loading.py
-$(G)/loading.bin: $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
+$(G)/loading.bin: $(TS)/chunkfile.py.sum $(TS)/export_loading.py.sum $(TS)/export_screens.py.sum $(TS)/export_menu.py.sum $(TS)/export_items.py.sum $(TS)/resample.py.sum $(TS)/octree.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_loading.py "$(GAME)" $(G)/loading.bin
 
 # action prompts (shared): tools/export_menu.py
-$(G)/help.bin: $(TS)/export_menu.py.sum $(TS)/souls.py.sum
+$(G)/help.bin: $(TS)/chunkfile.py.sum $(TS)/export_menu.py.sum $(TS)/souls.py.sum
 	@mkdir -p $(@D)
 	$(PY) -I ../../tools/export_menu.py "$(GAME)" --help $(G)/help.bin
 

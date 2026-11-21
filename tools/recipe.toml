@@ -243,7 +243,7 @@ tool = "export_menu.py"
 queue = 12
 args = ["{GAME}", "{G}/menu.bin"]
 out = ["{G}/menu.bin"]
-tools = ["export_menu.py", "resample.py", "octree.py", "souls.py"]
+tools = ["chunkfile.py", "export_menu.py", "resample.py", "octree.py", "souls.py"]
 
 # Item database (src/items.c): stack sizes / kinds (resident), names, stats, descriptions and icons (read while a menu
 # is open; desc.bin and icons.bin stored raw for reads in place)
@@ -254,7 +254,7 @@ tool = "export_items.py"
 queue = 12
 args = ["{GAME}", "{G}/items"]
 out = ["{G}/items/items.bin", "{G}/items/itemx.bin", "{G}/items/desc.bin", "{G}/items/icons.bin"]
-tools = ["export_items.py", "resample.py", "souls.py"]
+tools = ["chunkfile.py", "export_items.py", "resample.py", "souls.py"]
 make = { target = "{G}/items/.stamp", outs = "stamp", post = ["@touch $@"] }
 
 # Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
@@ -265,7 +265,7 @@ tool = "export_screens.py"
 queue = 12
 args = ["{GAME}", "{G}/screens"]
 out = [{ foreach = "SCREEN_NAMES", as = "n", do = "{G}/screens/scr_{n}.bin" }]
-tools = ["export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py", "souls.py"]
+tools = ["chunkfile.py", "export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py", "souls.py"]
 make = { target = "{G}/screens/.stamp", outs = "stamp", post = ["@touch $@"] }
 
 # Loading screen (src/loading.c): menu.drb E00_00, the nowloading.tpf bonfire cells, DSFont24, the exe's hint table with
@@ -277,7 +277,7 @@ tool = "export_loading.py"
 queue = 12
 args = ["{GAME}", "{G}/loading.bin"]
 out = ["{G}/loading.bin"]
-tools = ["export_loading.py", "export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py",
+tools = ["chunkfile.py", "export_loading.py", "export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py",
          "souls.py"]
 
 # One-line action prompts (src/hud.c hud_help: Event_text 10010000-10010999, e.g. "Open", "Pick up item")
@@ -288,7 +288,7 @@ tool = "export_menu.py"
 queue = 12
 args = ["{GAME}", "--help", "{G}/help.bin"]
 out = ["{G}/help.bin"]
-tools = ["export_menu.py", "souls.py"]
+tools = ["chunkfile.py", "export_menu.py", "souls.py"]
 
 # Shared enemy behaviour: enemyCommon.esd (every enemy's ESD in DS1)
 [[step]]
