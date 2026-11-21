@@ -395,7 +395,7 @@ static int settled(const float *feet)
         return 0;  /* the boot block's tables, the far panorama of the block warped into */
     for (int i = 1; i < w_nblk; i++)
         if (w_rt[i].state == W_READING || (w_rt[i].state == W_ON && w_rt[i].stage == 1) ||
-            (w_rt[i].open && w_rt[i].state == W_OFF && (w_want_m >> i & 1)) ||
+            (w_rt[i].open && w_rt[i].state == W_OFF && (w_want_m >> i & 1) && !w_slot_deferred(i, feet)) ||
             (w_rt[i].state == W_ON && w_rt[i].lean && (w_want_m >> i & 1 || i == w_cur)))
             return 0;
     return 1;
