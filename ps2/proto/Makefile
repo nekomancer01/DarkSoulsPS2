@@ -334,6 +334,12 @@ $(TEX_WITH): | $(if $(WORLD_BLOCKS),worldexports)
 FAR_WITH = $(foreach d,$(PVS_WITH),$(d)/hzn.bin)
 $(FAR_WITH): | $(if $(WORLD_BLOCKS),worldhzn)
 	@test -f $@ || { echo "$@ missing: the world block horizons (worldhzn) did not write it"; exit 1; }
+# the other blocks' files the block report reads (recipe.toml "block report") come from their sub-makes (worldpacks):
+# without these rules a fresh build dir stopped on "No rule to make target .../map.bin, needed by blockreport.json"
+BR_WITH = $(filter-out $(TEX_WITH),$(foreach d,$(PVS_WITH),$(d)/map.bin)) \
+	$(foreach d,$(PVS_WITH),$(d)/far.bin $(d)/fx.bin $(d)/objects.bin $(d)/events.bin $(d)/ai_map.lua0)
+$(BR_WITH): | $(if $(WORLD_BLOCKS),worldpacks)
+	@test -f $@ || { echo "$@ missing: the world block packs (worldpacks) did not write it"; exit 1; }
 
 # the boot map's backdrop pictures, which every block's far panorama reads, come from the top make (worldfar)
 ifneq ($(BLOCK),)
