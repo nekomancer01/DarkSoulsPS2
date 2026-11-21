@@ -119,7 +119,7 @@ def ffx_data():
 TAE_TYPES = {
     0: "ChrActionFlag (export_player.py, export_chr.py)",
     1: "AttackBehavior (export_player.py, export_chr.py)",
-    64: "CastHighlightedMagic (export_player.py)",
+    65: "ConsumeCurrentGoods (export_player.py)",
     118: "SpawnFFX_Blade (export_combat.py TAE_BLADE)",
     128: "PlaySound_CenterBody (export_audio.py)",
     129: "PlaySound_ByStateInfo (export_audio.py)",
