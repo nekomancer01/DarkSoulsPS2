@@ -283,7 +283,7 @@ static void plan_(const float *pos)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             float key = 0;
-            int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE;
+            int c = it_bytes(m, id) ? plan_item(k, m, id, pos, &key) : C_FREE, from_src = 0;
             for (int s = 0; WORLD_SOURCES && s < ms_nsrc && c < C_TOP && it_bytes(m, id); s++) {
                 /* another streaming source (a respawn point): the highest class any source gives the item, the key of
                  * that source, by the target rule (ms_settle_plan; no walking look-ahead) */
@@ -295,10 +295,12 @@ static void plan_(const float *pos)
                 if (c2 > C_VIEW2)  /* below the player's hard tier: the preload never outranks what the player sees now */
                     c2 = C_VIEW2;
                 if (c2 > c || (c2 == c && k2 < key))
-                    c = c2, key = k2;
+                    c = c2, key = k2, from_src = 1;
             }
-            if (c > C_KEEP && vis_cut(m, id))
-                c = C_KEEP;  /* no camera cell near the camera sees it (pvs.c) */
+            /* no camera cell near the camera sees it (pvs.c); not for a source's item: the camera is not there (with
+             * the filter most of a respawn point's preload was cut by the death camera's view) */
+            if (c > C_KEEP && !from_src && vis_cut(m, id))
+                c = C_KEEP;
             if (m->state[id] != MS_NONE && m->state[id] != MS_FAILED)
                 key *= MS_HOLD_K;  /* in (or on its way): ranks as if nearer, so the cut does not flip at its edge */
             m->cls[id] = (unsigned char)c;

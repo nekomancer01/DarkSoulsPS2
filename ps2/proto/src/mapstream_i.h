@@ -573,7 +573,8 @@ static inline int vis_cut(const MsInst *m, unsigned id)
 static inline float sq(float x) { return x * x; }
 /* the target rule (Polaris 4.3): a place being loaded rather than walked in (a settle's spot, a respawn point while a
  * death plays) is planned with the hard tier it is waited for in (plan_item: the near level within the draw radius,
- * no read-ahead or foliage, the horizon standing in from MS_SETTLE_HZN_D), read by class */
+ * no read-ahead or foliage, the horizon standing in from MS_SETTLE_HZN_D). The read order (q_rank, q_scan_pick) is a
+ * settle's (by class) only while a settle runs: a source's items queue with the player's in the walking order */
 extern int ms_target;  /* plan_item is classifying for a target source (msplan.c) */
 static inline int ms_settle_plan(void) { return ms_settling || ms_target; }
 static inline int q_rank(int cls) { return !MS_READ_BY_CLASS && !ms_settle_plan() && cls >= C_NEAR2 ? C_TOP : cls; }
