@@ -30,8 +30,11 @@ counters (cache misses read 0 in PCSX2). `lpass.c` breaks the logic pass down by
 HostFs) or `cdrom0:` (the ISO). Reads go to the IOP as requests while the EE decompresses the previous batch. Async
 reads (`pack_read_async`) feed the streamer.
 
-**IOP module** (`ps2/proto/iop/dsrsnd/`, protocol in `dsrsnd_rpc.h`). One module holds the sound server (SPU2
-voices, disc streams) and the disc server the packs read through. Splitting the two is step 4.5.
+**IOP module** (`ps2/proto/iop/dsrsnd/`, protocol in `dsrsnd_rpc.h`). One module, three sources since step 4.5:
+`disc.c` is the drive (the sector table from the ISO9660 directory, the disc server the packs read through, the IOP
+page cache, the drive counters and the drive lock), `snd.c` is sound (SPU2 voices through libsd, the disc streams and
+their read-ahead, sample bank loads), `dsrsnd.c` the RPC servers and the module start; `dsrsnd_i.h` is what they share.
+The sound part reads the disc only through the disc part (`df_*`, `drive_poll` / `drive_give`).
 
 ## Graphics
 
