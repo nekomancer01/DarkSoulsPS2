@@ -1,0 +1,738 @@
+# The export recipe (Polaris 3.1): every step that turns the player's copy of DSR into the files of build/gen and the
+# packs of build/data, as plain data. tools/recipe.py reads it for every consumer:
+#   - ps2/proto/export_vars.mk (the knobs) and export_rules.mk (the Makefile's export rules) are generated from it
+#     (python3 tools/recipe.py make; CI checks the committed files are current). The ELF / IOP / ISO rules and the world sub-make orchestration stay hand-written
+#     in ps2/proto/Makefile.
+#   - tools/convert.py (the in-browser converter, tools/pages, and its native check) runs these steps in one process.
+#   - the export cache and the build gates attach to the steps' declared inputs, outputs, tools and environment.
+# Adding an export is one [[step]] here (plus its pack entry), then `python3 tools/recipe.py make`.
+#
+# Templates: "{NAME}" in any string. Paths: G = build/gen, D = build/data, A = the area's / block's gen dir, AD = its pack
+# dir, BUILD, GAME (the game folder), SRC = ps2/proto/src. Context: MAP (the MSB), BLOCK (empty for an area), OUT
+# (BLOCK or MAP), CHR (chr steps: the enemy type, c####). Any other name is a knob ([knobs], [vars]) or a value
+# tools/recipe.py derives (DERIVED there: PVS_PEERS, PVS_WITH, TEX_PEERS, SND_MAPS, MAPENV_LINE, HZN_PANO, LOD, TEX,
+# PVS_BAKE; the Makefile defines the same names). An argument that is exactly "{NAME}" of a list value expands to its
+# words (none when empty).
+# List items may be conditional, {if = COND, then = item or [items], else = ...}, or repeated,
+# {foreach = LIST, as = "d", do = item or [items]}. COND: block, world (the boot area of a world), world_split (a block,
+# or the boot area of a world), lite_run, tex_peers, "exists:<path>" (the file exists when the step runs: make's
+# $(wildcard) in a recipe), "not:<cond>", or a list of conds (all must hold).
+#
+# [[step]] fields:
+#   name     what the progress views show; scope: shared (once), area (per area / world block: A, MAP, BLOCK),
+#            chr (per enemy type of an area: CHR), world (once, only when the boot area has world blocks)
+#   tool     tools/<tool>, run as `python3 -I tools/<tool> args`; queue = N: through the job queue with an N GB cap
+#            (the Makefile's $(PY))
+#   args, env (values are templates), env_line (a "K=V K=V" template prepended as environment)
+#   out      the files the step writes (the first is make's target); side: written by the same run, never made alone
+#            (make: a rule that checks they exist); maybe: files (or directories, "dir/") it writes only sometimes or
+#            for its own use (logs, reports, work dirs): no make rule, but the converter and the export cache track
+#            them; reads: other files the tool reads, not make prerequisites
+#   inputs   files read that make treats as prerequisites (a pack's default: every entry's file)
+#   tools    tools/ sources the step runs (make: their stamps $(TS)/<tool>.sum; globs allowed)
+#   entries  pack.py steps: the pack's entries, name=path (raw: stored uncompressed; "?name=path": only when the file
+#            exists when the step runs)
+#   stage    "late": reads other areas' outputs (the browser converter runs it in a later group); group: a fixed group
+#   goal     a file every default build ends with (convert.py runs what the goals need); when: the instances it applies
+#            to (convert.py)
+#   host     a host program the step runs (tools/recipe.py HOST; no browser build: the browser converter skips the step
+#            and drops pack entries naming its outputs); browser = false: skipped in the browser (sound: no MP3 decoder)
+#   make     make-only details: deps (extra prerequisites: the knob / area stamps the Makefile keeps), order_only,
+#            target (when the rule's target is a stamp), outs ("stamp": out files hang off the target with an empty
+#            recipe; "check": they get the exists check), runner (instead of $(PY) / python3), wrap (the command line,
+#            {cmd} = the tool call), pre / post (recipe lines), vars (target-specific variables), mkdir (extra dirs)
+
+version = 1
+# knobs exported to every tool's environment (make: export NAME)
+export = ["BUMP_BAKE"]
+
+# Knobs: variables that change what an export writes. Here and only here (the Makefile includes them from export.mk as
+# ?= defaults: config.local.mk or the command line override them; convert.py uses these values). Switches that also
+# change the ELF keep their EE_CFLAGS line in the Makefile (CHR_BONES, BUMP_BAKE, WORLD_SEAM_BUNDLE, WORLD_LITE_DIET).
+[knobs]
+# CHR_BONES: skeleton bones kept per character (TECH_DEBT char-7). 255: every skeleton whole, drawn through per-batch
+# bone windows (model.c); 61 folds bigger skeletons to 61 bones at export (the Makefile sizes MDL_MAX_BONES from it)
+CHR_BONES = "255"
+# BUMP_BAKE: normal-map relief baked into the diffuse texels at export (tools/export_normal.py bake_rgba); 0 = the
+# runtime CLUT relief pass (needs a re-export of the maps: the switch is not in the export stamps). Exported to every tool.
+BUMP_BAKE = "1"
+# WORLD_SEAM_BUNDLE: a world block's pack lists the entries src/world.c reads to turn a block on first, in its read
+# order (LITE_RUN, the pack step below); 0 = the old order
+WORLD_SEAM_BUNDLE = "1"
+# WORLD_LITE_DIET (the Burg plan's step B1): mip 1 of textures with a mip chain streams from mapres.bin and a block that
+# is only kept holds its collision and events. WORLD_MIP1_OUT is the mip 1 half alone (mapsplit.py MIP1_OUT).
+WORLD_LITE_DIET = "1"
+WORLD_MIP1_OUT = "{WORLD_LITE_DIET}"
+# WORLD_TEX_SHARED: textures two or more blocks of one MSB have go to maptex.bin, read once per map (src/world.c);
+# 0 = every block's maptab holds its own copy
+WORLD_TEX_SHARED = "1"
+# PANO: the boot map's far backdrop as picture layers (tools/pano.py); 0 = an empty pano.bin, the backdrop stays in the
+# horizon. FARPANO: the far panorama of each block (tools/farpano.py); 0 = an empty far.bin (the boot block stays whole)
+PANO = "1"
+FARPANO = "1"
+# Occlusion bake (tools/pvs_bake.c, pvs_cache.py): PVS_VALIDATE fresh cameras checked per block; PVS_RES cube face pixels
+# (96 since 2026-11-15, the check still renders at 192); the GPU path (pvs_gpu.c, built in when EGL / GL are there) bakes
+# at PVS_GPU_RES with PVS_GPU_PER_CELL cameras per cell. PVS_GPU=0: CPU only. PVS_ARGS: extra bake options.
+PVS_VALIDATE = "300"
+PVS_RES = "96"
+PVS_ARGS = ""
+PVS_GPU = "1"
+PVS_GPU_RES = "192"
+PVS_GPU_PER_CELL = "32"
+# -march=native: the bake runs where it is built (AVX2 ~2.5x); -ffp-contract=off keeps pvs.bin the same bytes on any CPU
+PVS_CFLAGS = "-O3 -march=native -ffp-contract=off"
+# World budget check (tools/world_budget.py, TECH_DEBT world-10): --strict fails the build when the hard tier is over
+# the visual room at any spot; empty = report only
+WORLD_BUDGET_ARGS = "--strict"
+
+# Plain values (the Makefile gets NAME = value)
+[vars]
+DEFAULT_MAP = "m10_02_00_00"
+# Menu screens (src/drb.c): DSR's menu.drb dialog trees (tools/export_screens.py SCREENS)
+SCREEN_NAMES = "R00 I02 I01 R02 I06 F25"
+
+# Map export tuning (tools/export_map.py): BUDGET (triangles after quadric simplification, foliage not counted),
+# SPAWN_K (detail falloff with distance from the spawn), GRASS_KEEP (1 foliage tuft in N kept, ivy 1 in N / 2),
+# FOL_XZ / FOL_Y / FOL_IVY (kept tufts widened to make up for the rest). The fog section numbers collision triangles
+# like export_collision.py. MAPENV applies to every area, then each [[mapenv]] row of the area's MSB in order (later
+# assignments win; when = a condition as in the steps). A knob edit re-exports that area's map.bin ($(A)/mapenv).
+[mapenv]
+all = "BUDGET=76000 SPAWN_K=0.6 GRASS_KEEP=4 FOL_XZ=1.3 FOL_Y=1.1 FOL_IVY=1.2"
+
+# Firelink (render-distance, 2026-10-31): two levels (STREAM=1): near 3 px judged at max(4 m, distance to the navmesh)
+# streamed per 32 m cell, coarse 12 px judged at >= 32 m resident
+[[mapenv.area]]
+map = "m10_02_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24"
+
+# Undead Burg (render-distance): two levels (STREAM=1, map.bin DSM5 + cells.bin): coarse 12 px judged at >= 32 m
+# resident, near 6 px streamed per 32 m cell from cells.bin (src/mapstream.c)
+[[mapenv.area]]
+map = "m10_01_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
+
+# (WS_PX0 / WS_PX1: the spot budget solve's error caps, export_map.py.) 2026-11-10 refit: the world's room grew
+# 3618 -> 4450 KB (export_map.py WS_ROOM) and the world blocks pass the strict gate at the default 12 / 24 px caps. The
+# standalone Burg ELF (MAP=m10_01_00_00 without BLOCK: the whole Burg as one map in its own arena) keeps the old room and
+# caps: at the new ones it grew 516k -> 582k tris and crashed in grass_tris at 2.15 MB free.
+[[mapenv.area]]
+map = "m10_01_00_00"
+when = "not:block"
+env = "WS_ROOM=3618 WS_NEAR_KB=1792 WS_PX0=36 WS_PX1=54"
+
+# Undead Asylum (world block m18_01_00_00_a): two levels like Firelink, with Firelink's errors and near radius
+# (ASSUMED: not tuned on the Asylum yet, TECH_DEBT world-7)
+[[mapenv.area]]
+map = "m18_01_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.0000279 EPS_FAR=0.000198 STREAM_D=24"
+
+# The area guard (mapcfg SIMPLIFY_AREA_GUARD) off here: at Firelink's 3 px the Asylum's near level has no room for it
+# (0.5: 11.9 % of the block's spots over budget, 0.9: 4.9 %, against 0.05 % without; 2026-11-17)
+[[mapenv.area]]
+map = "m18_01_00_00"
+env = "SIMPLIFY_AREA_GUARD=0"
+
+# The Depths (m10_00_00_00_a / _b) and Darkroot (m12_00_00_00_*; 2026-11-15): two levels with the Burg's errors: their
+# pieces are as dense as the Burg's (ASSUMED: not tuned on them yet)
+[[mapenv.area]]
+map = "m10_00_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
+
+[[mapenv.area]]
+map = "m12_00_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
+
+# Per enemy type (export_chr.py): FLVER LOD (default 1; LOD2 for all but the two most common melee types: EE RAM, skin
+# streams) and texture height cap in px (default 64; width stays >= 128 for PSMT8: every type's textures stay in VRAM next
+# to the map's). ASSUMED: tuned on Firelink's types (TECH_DEBT build-6); new types take the defaults.
+[chr.lod]
+c1201 = "2"
+c2510 = "2"
+c2550 = "2"
+c2750 = "2"
+c2910 = "2"
+c3510 = "2"
+c5330 = "2"
+
+[chr.tex]
+c2540 = "128"
+c2900 = "128"
+
+# Lists the build reads from tools (convert.py; the Makefile's ENEMIES / WORLD_BLOCKS lines run the same commands)
+[lists]
+WORLD_BLOCKS = { tool = "area.py", args = ["--world", "{DEFAULT_MAP}"] }
+ENEMIES = { tool = "export_enemies.py", args = ["--models", "{GAME}", "{MAP}"], env = { AREA_BLOCK = "{BLOCK}" } }
+
+# Host programs steps run (built by make's rule from the same fields; convert.py builds them natively)
+[host.pvs_bake]
+out = "{BUILD}/host/pvs_bake{HOST_TAG}"
+# (make prerequisites and the convert.py rebuild check: paths under tools/, or templates such as "{SRC}/chunk.c";
+# cmd: {out}, {TOOLS}, {SRC}, {GPU} = gpu_flags when the probe passes, knobs)
+sources = ["pvs_bake.c", "pvs_gpu.c", "pvs_gpu.h"]
+cmd = "gcc {PVS_CFLAGS} -fopenmp -o {out} {TOOLS}/pvs_bake.c {GPU} -lm"
+# GPU sampling (tools/pvs_gpu.c, OpenGL 4.5 over headless EGL) when PVS_GPU=1 and this compiles and links
+gpu_probe = "printf '\\043include <EGL/egl.h>\\n\\043include <GL/gl.h>\\n\\043include <GL/glext.h>\\nint main(void) { return eglGetError() == 0; }\\n' | gcc -x c - -o /dev/null -lEGL -lOpenGL 2>/dev/null && echo 1"
+gpu_flags = "-DPVS_GPU {TOOLS}/pvs_gpu.c -lEGL -lOpenGL"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Shared by every area: player, menus, enemy ESD
+
+# Real mesh, textures and Havok animations
+[[step]]
+name = "player model"
+scope = "shared"
+tool = "export_model.py"
+queue = 12
+args = ["{GAME}", "{G}/model.bin"]
+out = ["{G}/model.bin"]
+tools = ["export_model.py", "resample.py", "havok_anim.py", "souls.py"]
+
+# The player's action logic: c0000.esd (state groups, conditions, bytecode) packed for src/esd.c
+[[step]]
+name = "player ESD"
+scope = "shared"
+tool = "export_esd.py"
+args = ["{GAME}", "{G}/esd.bin"]
+out = ["{G}/esd.bin"]
+tools = ["export_esd.py", "esd.py", "souls.py"]
+
+# player.gd / combat.gd / progress.gd: the game values the engine loads at boot (src/gamedata.c, tools/gamedata.py);
+# their layouts are the committed src/*_data.h (tools/gamedata.py header <name>), so the ELF needs no game
+[[step]]
+name = "player values"
+scope = "shared"
+tool = "export_player.py"
+args = ["{GAME}", "{G}/player.gd"]
+out = ["{G}/player.gd"]
+tools = ["export_player.py", "gamedata.py", "souls.py"]
+
+# HP / damage core: stats, CalcCorrectGraph rows, weapon dummy polys, AtkParam windows, the debug dummy's NpcParam
+[[step]]
+name = "combat values"
+scope = "shared"
+tool = "export_combat.py"
+args = ["{GAME}", "{G}/combat.gd"]
+out = ["{G}/combat.gd"]
+tools = ["export_combat.py", "export_effects.py", "ffx.py", "gamedata.py", "havok_anim.py", "souls.py"]
+
+# New-game progression (src/progress.c): CharaInitParam of the starting class
+[[step]]
+name = "progress values"
+scope = "shared"
+tool = "export_progress.py"
+args = ["{GAME}", "{G}/progress.gd"]
+out = ["{G}/progress.gd"]
+tools = ["export_progress.py", "gamedata.py", "params.py", "souls.py"]
+
+[[step]]
+name = "player pack"
+scope = "shared"
+tool = "pack.py"
+goal = true
+args = ["{D}/c0000.pak"]
+out = ["{D}/c0000.pak"]
+entries = ["model.bin={G}/model.bin", "esd.bin={G}/esd.bin", "player.gd={G}/player.gd", "combat.gd={G}/combat.gd",
+           "progress.gd={G}/progress.gd"]
+tools = ["pack.py", "native/lz4pack.c"]
+
+# HUD and menus: DSR's menu sprites (menu.drb layout), DSFont24, item icons, English FMG text
+[[step]]
+name = "menu"
+scope = "shared"
+tool = "export_menu.py"
+queue = 12
+args = ["{GAME}", "{G}/menu.bin"]
+out = ["{G}/menu.bin"]
+tools = ["export_menu.py", "resample.py", "octree.py", "souls.py"]
+
+# Item database (src/items.c): stack sizes / kinds (resident), names, stats, descriptions and icons (read while a menu
+# is open; desc.bin and icons.bin stored raw for reads in place)
+[[step]]
+name = "items"
+scope = "shared"
+tool = "export_items.py"
+queue = 12
+args = ["{GAME}", "{G}/items"]
+out = ["{G}/items/items.bin", "{G}/items/itemx.bin", "{G}/items/desc.bin", "{G}/items/icons.bin"]
+tools = ["export_items.py", "resample.py", "souls.py"]
+make = { target = "{G}/items/.stamp", outs = "stamp", post = ["@touch $@"] }
+
+# Menu screens (src/drb.c): DSR's menu.drb dialog trees at their own layout with their sprite atlases
+[[step]]
+name = "menu screens"
+scope = "shared"
+tool = "export_screens.py"
+queue = 12
+args = ["{GAME}", "{G}/screens"]
+out = [{ foreach = "SCREEN_NAMES", as = "n", do = "{G}/screens/scr_{n}.bin" }]
+tools = ["export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py", "souls.py"]
+make = { target = "{G}/screens/.stamp", outs = "stamp", post = ["@touch $@"] }
+
+# Loading screen (src/loading.c): menu.drb E00_00, the nowloading.tpf bonfire cells, DSFont24, the exe's hint table with
+# the items' names and long descriptions (the icons are icons.bin's)
+[[step]]
+name = "loading screen"
+scope = "shared"
+tool = "export_loading.py"
+queue = 12
+args = ["{GAME}", "{G}/loading.bin"]
+out = ["{G}/loading.bin"]
+tools = ["export_loading.py", "export_screens.py", "export_menu.py", "export_items.py", "resample.py", "octree.py",
+         "souls.py"]
+
+# One-line action prompts (src/hud.c hud_help: Event_text 10010000-10010999, e.g. "Open", "Pick up item")
+[[step]]
+name = "action prompts"
+scope = "shared"
+tool = "export_menu.py"
+queue = 12
+args = ["{GAME}", "--help", "{G}/help.bin"]
+out = ["{G}/help.bin"]
+tools = ["export_menu.py", "souls.py"]
+
+# Shared enemy behaviour: enemyCommon.esd (every enemy's ESD in DS1)
+[[step]]
+name = "enemy ESD"
+scope = "shared"
+tool = "export_esd.py"
+args = ["{GAME}", "{G}/enemyCommon.esd.bin", "enemyCommon"]
+out = ["{G}/enemyCommon.esd.bin"]
+tools = ["export_esd.py", "esd.py", "souls.py"]
+
+# Sound packs (tools/export_audio.py, src/sound.c): data/snd/main.pak (player + global sounds), mAA.pak per area (music,
+# ambience, MSB emitters), cXXXX.pak per enemy type, for the boot map and every map of its world blocks. One export
+# writes them all (the SPU2 sample rate is chosen over the whole set); $(A)/snd.stamp records it. Encoded samples come
+# from the shared sample cache (export_audio.py cache(), <main tree>/build/cache/snd). Reads only the game folder.
+# The browser has no MP3 decoder (fsb4.py needs libmpg123): its disc boots without data/snd (sound.c stays silent).
+[[step]]
+name = "sound"
+scope = "shared"
+group = "sound"
+tool = "export_audio.py"
+queue = 12
+goal = true
+browser = false
+args = ["{D}/snd", "{A}/snd", "{SND_MAPS}"]
+out = ["{D}/snd/main.pak"]
+# every other sound pack (mAA.pak per map, cXXXX.pak per enemy type), the work dir and the log
+maybe = ["{D}/snd/", "{A}/snd/", "{A}/snd.log"]
+tools = ["export_audio.py", "fev.py", "fsb4.py", "souls.py", "pack.py", "adpcm/adpcm.py", "adpcm/vagenc.c",
+         "native/lz4pack.c", "area.py"]
+make = { target = "{A}/snd.stamp", outs = "none", mkdir = ["{D}/snd"], vars = { SHELL = "/bin/bash", ".SHELLFLAGS" = "-o pipefail -c" }, pre = ["@echo \"sound: exporting every bank of {SND_MAPS} (log in {A}/snd.log)\""], wrap = "{cmd} | tee {A}/snd.log", post = ["touch $@"] }
+
+# Treasure shine (src/fx.c fx_shine_*, src/pickup.c): DSR's item glow SFX 99001 / 99046, placed at run time on corpse
+# treasures and enemy drops; the boot area's tone map
+[[step]]
+name = "treasure shine"
+scope = "shared"
+group = "menu"
+tool = "export_effects.py"
+queue = 12
+args = ["{GAME}", "--shine", "{G}/shine.bin", "{MAP}", "--tone", "{A}/fx_tone.json"]
+out = ["{G}/shine.bin"]
+inputs = ["{A}/map.bin"]
+reads = ["{A}/fx_tone.json"]
+tools = ["export_effects.py", "material.py", "resample.py", "octree.py", "ffx.py", "dsr_light.py", "souls.py"]
+
+[[step]]
+name = "menu pack"
+scope = "shared"
+group = "menu"
+tool = "pack.py"
+goal = true
+args = ["{D}/menu.pak"]
+out = ["{D}/menu.pak"]
+entries = ["menu.bin={G}/menu.bin", "items.bin={G}/items/items.bin", "itemx.bin={G}/items/itemx.bin",
+           "desc.bin=raw:{G}/items/desc.bin", "icons.bin=raw:{G}/items/icons.bin",
+           { foreach = "SCREEN_NAMES", as = "n", do = "scr_{n}.bin={G}/screens/scr_{n}.bin" },
+           "loading.bin={G}/loading.bin", "shine.bin={G}/shine.bin", "help.bin={G}/help.bin"]
+tools = ["pack.py", "native/lz4pack.c"]
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Per area / world block (A = its gen dir). Per-area exports depend on $(A)/area.sig (tools/area.py --sig: that area's
+# config + area.py's code), so a new block re-exports only that block.
+
+# Breakable objects (pots) of the area: intact + pre-fractured models, piece bodies, placements (types over the RAM
+# budget are listed in objects.bin.static and drawn by the map as static objects) + animated objects (doors, levers,
+# gates, chests: objects.bin v3); their part names in objects.bin.anim, which the map leaves out of its static bake and
+# the events out of their static colliders. The two lists are rewritten only when their content changes (map.bin
+# depends on them, not on objects.bin).
+[[step]]
+name = "objects"
+scope = "area"
+tool = "export_objects.py"
+queue = 12
+args = ["{GAME}", "{A}/objects.bin", "{MAP}"]
+out = ["{A}/objects.bin"]
+side = ["{A}/objects.bin.static", "{A}/objects.bin.anim"]
+tools = ["export_objects.py", "material.py", "resample.py", "export_model.py", "souls.py", "export_chr.py", "emevd.py",
+         "havok_anim.py", "horizon.py", "native/meshopt/simplifier.cpp"]
+make = { deps = ["$(AREA_SIG)"] }
+
+# The map bake's static point lights (export_effects.static_lights), rewritten only when they change. The export runs
+# for lights.stamp (touched each run): a lights.json left as it was stays older than its tools' stamps, and as the target
+# it re-ran the export on every build (2026-11-07). A first lights.json takes the export_effects.py stamp's mtime:
+# adding it to a build re-exports no map.
+[[step]]
+name = "lights"
+scope = "area"
+tool = "export_effects.py"
+queue = 12
+args = ["{GAME}", "--static-lights", "{A}/lights.json", "{MAP}"]
+out = ["{A}/lights.json"]
+tools = ["export_effects.py", "ffx.py", "dsr_light.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)"], target = "{A}/lights.stamp", outs = "check", wrap = "@j={A}/lights.json; test -e $$j || new=1; {cmd} && if [ -n \"$$new\" ]; then touch -r $(TS)/export_effects.py.sum $$j; fi", post = ["@touch $@"] }
+
+# Map pieces, textures, navmesh, area fog (tools/export_map.py and the map tools; tuning in [mapenv]). Also writes the
+# normal-map relief (bump.bin), the MSB draw groups per chunk + collision triangle (dg.bin, tools/drawgroups.py), the
+# occlusion bake's input (pvsin.bin), the cell sizes world_budget.py sums (map.bin.cells.json), the tone map the
+# effects take (fx_tone.json) and, for two-level maps, cells.bin.
+[[step]]
+name = "map"
+scope = "area"
+tool = "export_map.py"
+queue = 12
+args = ["{GAME}", "{A}/map.bin", "{MAP}"]
+env_line = "{MAPENV_LINE}"
+env = { STATIC_OBJ = "{A}/objects.bin.static", ANIM_OBJ = "{A}/objects.bin.anim", FX_LIGHTS_FILE = "{A}/lights.json" }
+out = ["{A}/map.bin"]
+side = ["{A}/bump.bin", "{A}/dg.bin", "{A}/pvsin.bin", "{A}/map.bin.cells.json", "{A}/fx_tone.json"]
+# cells.bin: two-level maps only (STREAM=1); map.bin.budget.json: the spot budget solve's results (world blocks)
+maybe = ["{A}/cells.bin", "{A}/map.bin.budget.json"]
+inputs = ["{A}/objects.bin.static", "{A}/objects.bin.anim", "{A}/lights.json", "{SRC}/residency.h"]
+tools = ["export_map.py", "mapcfg.py", "mapchunks.py", "maplight.py", "mapgather.py", "mapsimp.py", "mapcells.py",
+         "mapview.py", "material.py", "mapspec.py", "vu1layout.py", "vu1/layout.py", "mapx_native.py", "mapx/*.c",
+         "mapx/*.h", "resample.py", "texmap.py", "octree.py", "simplify.py", "souls.py", "export_collision.py",
+         "navwalls.py", "navroute.py", "export_normal.py", "dsr_light.py", "drawgroups.py", "pose_obj.py",
+         "simplify_pool.py", "simplify_native.py", "native/simplify.c", "native/geom.c", "geom_native.py", "emevd.py",
+         "havok_collision.py", "havok_anim.py", "residency.py", "worldlinks.py"]
+make = { deps = ["$(AREA_SIG)", "$(A)/mapenv"] }
+
+# Effects (src/fx.c): particle systems, textures, effect lights; colours use the map bake's tone map
+[[step]]
+name = "effects"
+scope = "area"
+tool = "export_effects.py"
+queue = 12
+args = ["{GAME}", "{A}/fx.bin", "{MAP}", "--tone", "{A}/fx_tone.json"]
+out = ["{A}/fx.bin"]
+inputs = ["{A}/map.bin"]
+reads = ["{A}/fx_tone.json"]
+tools = ["export_effects.py", "material.py", "resample.py", "octree.py", "ffx.py", "dsr_light.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+# Map collision from the Havok hkx files (h = high detail; l = low detail, 0.24 MB smaller)
+[[step]]
+name = "collision"
+scope = "area"
+tool = "export_collision.py"
+queue = 12
+args = ["{GAME}", "{A}/collision.bin", "{MAP}", "h"]
+out = ["{A}/collision.bin"]
+tools = ["export_collision.py", "navwalls.py", "navroute.py", "havok_collision.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+# EMEVD bytecode (src/event.c): the map's events + entity table (hit ranges of this area / block's collision.bin),
+# common.emevd as evcommon.bin; coverage per map in events.txt
+[[step]]
+name = "events"
+scope = "area"
+tool = "export_emevd.py"
+queue = 12
+args = ["{GAME}", "{A}/events.bin", "{MAP}", "--common", "{A}/evcommon.bin", "--report", "{A}/events.txt"]
+env = { ANIM_OBJ = "{A}/objects.bin.anim" }
+out = ["{A}/events.bin"]
+side = ["{A}/evcommon.bin"]
+maybe = ["{A}/events.txt"]
+inputs = ["{A}/objects.bin"]
+reads = ["{A}/objects.bin.anim"]
+tools = ["export_emevd.py", "emevd.py", "export_collision.py", "navwalls.py", "navroute.py", "havok_collision.py",
+         "souls.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+# MSB enemy parts of the area (model, NpcParam / ThinkParam ids, position, yaw), souls and humanity drops
+# (export_progress.py: the humanity zone keys; params.py: NpcParam getSoul / humanityLotId, ItemLotParam)
+[[step]]
+name = "enemies"
+scope = "area"
+tool = "export_enemies.py"
+args = ["{GAME}", "{A}/enemies.bin", "{MAP}"]
+out = ["{A}/enemies.bin"]
+tools = ["chunkfile.py", "export_enemies.py", "souls.py", "havok_anim.py", "export_progress.py", "gamedata.py", "params.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+# DSR's AI scripts (Lua 5.0 bytecode) re-packed for the lua0 VM: the map's own, and aiCommon in common.pak
+[[step]]
+name = "map AI"
+scope = "area"
+tool = "lua50.py"
+queue = 12
+args = ["--pack", "--msb", "{GAME}", "{MAP}", "{A}/ai_map.lua0", "{GAME}/script/{MAP}.luabnd.dcx"]
+out = ["{A}/ai_map.lua0"]
+tools = ["lua50.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+[[step]]
+name = "common AI"
+scope = "area"
+when = "not:block"
+tool = "lua50.py"
+queue = 12
+args = ["--pack", "--msb", "{GAME}", "{MAP}", "{A}/ai_common.lua0", "{GAME}/script/aiCommon.luabnd.dcx"]
+out = ["{A}/ai_common.lua0"]
+tools = ["lua50.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)"] }
+
+[[step]]
+name = "common pack"
+scope = "area"
+when = "not:block"
+goal = true
+tool = "pack.py"
+args = ["{AD}/common.pak"]
+out = ["{AD}/common.pak"]
+entries = ["esd.bin={G}/enemyCommon.esd.bin", "ai.lua0={A}/ai_common.lua0"]
+tools = ["pack.py", "native/lz4pack.c"]
+
+# Enemy / NPC characters (one pack each): FLVER, skeleton, anims, TAE windows, one variant per placed NpcParam /
+# ThinkParam pair (enemy_parts lives in area.py: an export_enemies.py edit re-exports enemies.bin only)
+[[step]]
+name = "{CHR}"
+scope = "chr"
+tool = "export_chr.py"
+queue = 12
+args = ["{GAME}", "{CHR}", "{MAP}", "{A}/{CHR}", "{LOD}", "{TEX}", "{CHR_BONES}"]
+out = ["{A}/{CHR}/chr.bin"]
+side = ["{A}/{CHR}/model.bin"]
+tools = ["export_chr.py", "resample.py", "export_model.py", "havok_anim.py", "havok_ragdoll.py", "lua50.py", "souls.py"]
+make = { deps = ["$(AREA_SIG)", "$(A)/.chr_bones"] }
+
+[[step]]
+name = "{CHR} pack"
+scope = "chr"
+goal = true
+tool = "pack.py"
+args = ["{AD}/{CHR}.pak"]
+out = ["{AD}/{CHR}.pak"]
+entries = ["model.bin={A}/{CHR}/model.bin", "chr.bin={A}/{CHR}/chr.bin"]
+inputs = ["{A}/{CHR}/chr.bin"]
+tools = ["pack.py", "native/lz4pack.c"]
+
+# The resident far backdrop (tools/horizon.py): a very coarse untextured level of every cell, appended to maptab.bin so
+# it loads with the block; map.c draws it beyond HZN_R and in place of coarse cells not in yet. HZN=0: none (old path)
+[[step]]
+name = "horizon"
+scope = "area"
+tool = "horizon.py"
+queue = 12
+args = ["{A}/map.bin", "{A}/hzn.bin"]
+env = { HZN = "{HZN}", HZN_PANO = "{HZN_PANO}" }
+out = ["{A}/hzn.bin"]
+# the crown cards and the picture-layer backdrop hzn.bin leaves out, for the far panoramas (build only)
+maybe = ["{A}/hzn.bin.far.npz"]
+inputs = ["{A}/map.bin", "{A}/dg.bin"]
+reads = ["{A}/cells.bin"]
+tools = ["area.py", "horizon.py", "vu1/layout.py", "native/nearest.c", "simplify_native.py", "simplify.py",
+         "native/simplify.c", "native/hzvis.c", "native/hzerr.c", "native/meshopt/simplifier.cpp"]
+
+# World builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background.
+# Shared textures: textures two or more blocks of this MSB have (TEX_PEERS: the world's other blocks of $(MAP)) go to
+# maptex.bin. A changed MIP1_OUT / WORLD_TEX_SHARED re-splits every block ($(A)/splitenv).
+[[step]]
+name = "map split"
+scope = "area"
+stage = "late"
+tool = "mapsplit.py"
+args = ["{A}/map.bin", "{A}/maptab.bin", "{A}/mapres.bin", "{A}/hzn.bin", "{A}/maptex.bin"]
+env = { MIP1_OUT = "{WORLD_MIP1_OUT}", TEX_PEERS = "{TEX_PEERS}" }
+# maptex.bin is only written when the block shares textures (TEX_PEERS): listed as an output only then, else the boot
+# map's split (no peers) and its pack re-ran on every build (2026-11-21)
+out = ["{A}/maptab.bin", "{A}/mapres.bin", { if = "tex_peers", then = "{A}/maptex.bin" }]
+inputs = ["{A}/map.bin", "{A}/hzn.bin", "{TEX_PEERS}"]
+reads = ["{A}/cells.bin"]
+tools = ["mapsplit.py"]
+make = { deps = ["$(A)/splitenv"] }
+
+# The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
+# (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline with their textures into 128 px
+# tiles on sheets at the depth seen; horizon.py leaves those triangles out of hzn.bin (one rule, pano_tris). Only the
+# boot map's is loaded (map.c), so the world blocks keep theirs in the horizon (HZN_PANO 0).
+[[step]]
+name = "backdrop pictures"
+scope = "area"
+stage = "late"
+tool = "pano.py"
+queue = 12
+args = ["bake", "{A}", "{A}/pano.bin"]
+env = { HZN_PANO = "{HZN_PANO}" }
+out = ["{A}/pano.bin"]
+inputs = ["{A}/map.bin", "{A}/dg.bin"]
+reads = ["{A}/cells.bin", "{A}/hzn.bin"]
+tools = ["pano.py", "horizon.py", "mapshot.py", "mapview.py", "texmap.py", "area.py"]
+
+# The far panorama (tools/farpano.py, src/world.c): the other blocks of the block's area as a coarse coloured mesh of
+# what is seen of them from this block, drawn while they are not loaded; with it the boot block's map tables are let go
+# away from its seams. The other blocks' horizons and draw groups come from their own exports (worldhzn in make).
+[[step]]
+name = "far panorama"
+scope = "area"
+stage = "late"
+tool = "farpano.py"
+queue = 12
+args = ["{A}/far.bin", "{A}", "{PVS_PEERS}"]
+env = { FARPANO = "{FARPANO}" }
+out = ["{A}/far.bin"]
+# (and the boot map's pano.bin: farpano.py adds the backdrop its pictures draw as a set of its own when that file holds
+# any; before 2026-11-21 nothing ordered the two, so a far.bin baked before the pictures lacked that set)
+inputs = ["{A}/map.bin", "{A}/dg.bin", { foreach = "PVS_WITH", as = "d", do = ["{d}/hzn.bin", "{d}/dg.bin"] },
+          "{G}/pano.bin"]
+reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/hzn.bin", "{d}/hzn.bin.far.npz", "{d}/map.bin"] }]
+tools = ["area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp"]
+
+# Occlusion (tools/pvs_bake.c, src/pvs.c): the bake renders ID cube maps from camera samples over the walkable collision
+# and writes the visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out.
+# In world builds every other block takes part (PVS_WITH): cameras on its floors, its walls as occluders. tools/pvs_cache.py
+# reuses an earlier bake of the same inputs from any build dir or worktree (PVS_CACHE=0 off). The GPU driver maps a few
+# GB of address space: the queue cap is 6 GB with the GPU path, else 2 GB.
+[[step]]
+name = "visibility"
+scope = "area"
+stage = "late"
+tool = "pvs_cache.py"
+host = "pvs_bake"
+args = ["{PVS_BAKE}", "{A}/pvsin.bin", "{A}/dg.bin", "{A}/collision.bin", "{A}/pvs.bin", "--validate", "{PVS_VALIDATE}",
+        "--res", "{PVS_RES}", "--vres", "192", "--gpu-res", "{PVS_GPU_RES}", "--gpu-per-cell", "{PVS_GPU_PER_CELL}",
+        { foreach = "PVS_WITH", as = "d", do = ["--with", "{d}/pvsin.bin", "{d}/dg.bin", "{d}/collision.bin"] },
+        "{PVS_ARGS}"]
+out = ["{A}/pvs.bin"]
+inputs = ["{A}/pvsin.bin", "{A}/dg.bin", "{A}/collision.bin", "{PVS_BAKE}",
+          { foreach = "PVS_WITH", as = "d", do = ["{d}/pvsin.bin", "{d}/dg.bin", "{d}/collision.bin"] }]
+tools = ["pvs_cache.py"]
+make = { runner = "$(abspath ../../tools/q) -m $(if $(PVS_BAKE_GPU_OK),6,2) python3" }
+
+# The area's / block's pack (pack.py order = disc order). lite_run (WORLD_SEAM_BUNDLE, world blocks): the entries
+# src/world.c reads to turn a block on come first, in its read order (collision index, map tables, shared textures,
+# events, draw groups, visibility, then the breakable / effect texture tails), so a turn-on is one run of the disc; in
+# the old order they were spread over the whole pack (four far seeks per turn-on, TECH_DEBT world-16). A changed order
+# re-packs ($(A)/pakenv).
+[[step]]
+name = "pack"
+scope = "area"
+stage = "late"
+goal = true
+tool = "pack.py"
+args = ["{D}/{OUT}.pak"]
+out = ["{D}/{OUT}.pak"]
+entries = [{ if = "lite_run", then = [
+    "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:{A}/maptab.bin",
+    { if = "tex_peers", then = "maptex.bin=raw:{A}/maptex.bin" },
+    "?events.bin=raw:{A}/events.bin", "dg.bin=raw:{A}/dg.bin", "pvs.bin=raw:{A}/pvs.bin",
+    "objects.bin=raw:{A}/objects.bin", "fx.bin=raw:{A}/fx.bin", "far.bin=raw:{A}/far.bin", "bump.bin=raw:{A}/bump.bin",
+    "enemies.bin=raw:{A}/enemies.bin", "ai.lua0=raw:{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
+    "?cells.bin=raw:{A}/cells.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:{A}/mapres.bin", "map.bin={A}/map.bin",
+  ], else = [
+    "map.bin={A}/map.bin", "collision.bin={RAW}{A}/collision.bin", "enemies.bin={RAW}{A}/enemies.bin",
+    "objects.bin={RAW}{A}/objects.bin", "ai.lua0={RAW}{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
+    "bump.bin={RAW}{A}/bump.bin", "fx.bin={RAW}{A}/fx.bin", "dg.bin={RAW}{A}/dg.bin", "pvs.bin={RAW}{A}/pvs.bin",
+    "?cells.bin=raw:{A}/cells.bin", "?pano.bin={A}/pano.bin",
+    { if = "world_split", then = ["maptab.bin=raw:{A}/maptab.bin", "mapres.bin=raw:{A}/mapres.bin",
+                                  "far.bin=raw:{A}/far.bin"] },
+    { if = ["world_split", "block", "tex_peers"], then = "maptex.bin=raw:{A}/maptex.bin" },
+    "?events.bin={RAW}{A}/events.bin",
+  ] }]
+inputs = ["{A}/map.bin",
+          { if = "world_split", then = ["{A}/maptab.bin", "{A}/far.bin"] }, { if = "tex_peers", then = "{A}/maptex.bin" },
+          { if = "world", then = "{A}/pano.bin" },
+          "{A}/bump.bin", "{A}/dg.bin", "{A}/pvs.bin", "{A}/collision.bin", "{A}/enemies.bin", "{A}/objects.bin",
+          "{A}/ai_map.lua0", "{A}/events.bin", "{A}/fx.bin"]
+tools = ["pack.py", "native/lz4pack.c"]
+make = { deps = ["$(A)/pakenv"] }
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The world (src/world.c): only when the boot area has world blocks
+
+# The world block table, links and reach distances (read from every block's collision.bin, export_collision.area_collision
+# and the game's MSBs). Order-only on worldpacks: as a prerequisite that phony goal re-made world.pak on every build.
+[[step]]
+name = "world"
+scope = "world"
+tool = "export_world.py"
+queue = 12
+args = ["{GAME}", "{G}/world.bin", "{MAP}", "{G}"]
+out = ["{G}/world.bin"]
+inputs = ["{A}/collision.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/collision.bin" }]
+tools = ["chunkfile.py", "area.py", "export_world.py", "worldlinks.py", "worldreach.py", "export_collision.py", "havok_collision.py",
+         "navwalls.py", "navroute.py", "souls.py"]
+make = { order_only = ["worldpacks"] }
+
+[[step]]
+name = "world pack"
+scope = "world"
+goal = true
+tool = "pack.py"
+args = ["{D}/world.pak"]
+out = ["{D}/world.pak"]
+entries = ["world.bin={G}/world.bin"]
+tools = ["pack.py", "native/lz4pack.c"]
+
+# World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own;
+# this sums what all blocks ask of mapstream's arena at each navmesh spot of each block (near level within the draw
+# radius, coarse level to the pin radius, kept meshes, the spot's backdrop and sky) and fails the build (--strict, since
+# the Burg plan's step B3) when the hard tier is over the visual room at any spot, with at most 1 % of the spots on the
+# solve's seam allowance; the soft tier is logged. world_budget.json holds the numbers.
+[[step]]
+name = "world budget"
+scope = "world"
+goal = true
+tool = "world_budget.py"
+queue = 12
+args = ["{G}/world_budget.json", "{PVS_PEERS}", "{WORLD_BUDGET_ARGS}"]
+env = { MAP = "{MAP}" }
+out = ["{G}/world_budget.json"]
+inputs = ["{A}/map.bin.cells.json", { foreach = "PVS_WITH", as = "d", do = "{d}/map.bin.cells.json" }, "{D}/world.pak",
+          "{A}/maptab.bin", { foreach = "PVS_WITH", as = "d", do = "{d}/maptab.bin" }, "{SRC}/world.c",
+          "{SRC}/residency.h"]
+tools = ["chunkfile.py", "world_budget.py", "residency.py"]
+
+# Coverage scan (Polaris 3.4, tools/scan): every reader over every file of the game, cached per file in build/scan;
+# fails on an unknown variant tools/scan/known.tsv does not list (rows there point at TECH_DEBT). Whole game: about 2
+# minutes cold on 4 workers, seconds cached. Not in the browser (6000 files in Pyodide): the block report then has no
+# effect coverage ("no scan").
+[[step]]
+name = "coverage scan"
+scope = "world"
+goal = true
+browser = false
+tool = "scan/scan.py"
+queue = 12
+args = ["--game", "{GAME}", "--out", "{BUILD}/scan", "-j", "4"]
+out = ["{BUILD}/scan/files.json"]
+side = ["{BUILD}/scan/scan.json", "{BUILD}/scan/summary.md"]
+inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "{TOOLS}/scan/known.tsv"]
+tools = ["scan/*.py", "souls.py", "emevd.py", "esd.py", "ffx.py", "havok_anim.py", "havok_collision.py",
+         "havok_ragdoll.py", "lua50.py", "fev.py", "fsb4.py", "material.py", "mapgather.py", "export_emevd.py",
+         "export_effects.py"]
+
+# Block reports and the budget gate (Polaris 3.6, tools/blockreport.py): per world block triangles and bytes per level,
+# the hard tier and residency.h row against the visual room (world_budget.py run unchanged; --check: the same numbers as
+# world_budget.json), VRAM per gs_budget.h owner, EMEVD / Lua / effect coverage. --strict fails the build on a miss;
+# BLOCKREPORT_STRICT=0 reports only.
+[[step]]
+name = "block report"
+scope = "world"
+goal = true
+tool = "blockreport.py"
+queue = 12
+args = ["{G}/blockreport.json", "{PVS_PEERS}", "--scan", "{BUILD}/scan/files.json", "--check", "{G}/world_budget.json",
+        "--strict"]
+env = { MAP = "{MAP}" }
+out = ["{G}/blockreport.json"]
+side = ["{G}/blockreport.world_budget.json"]
+inputs = ["{G}/world_budget.json", "{A}/map.bin", "{A}/hzn.bin", "{A}/far.bin", "{A}/fx.bin", "{A}/objects.bin",
+          "{A}/events.bin", "{A}/ai_map.lua0", "{A}/ai_common.lua0",
+          { foreach = "PVS_WITH", as = "d", do = ["{d}/map.bin", "{d}/hzn.bin", "{d}/far.bin", "{d}/fx.bin",
+                                                   "{d}/objects.bin", "{d}/events.bin", "{d}/ai_map.lua0"] },
+          "{SRC}/residency.h", "{SRC}/gs_budget.h", "{SRC}/lua0.c", "{BUILD}/scan/files.json"]
+reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/cells.bin", "{d}/events.txt",
+         "{d}/maptex.bin"] }]
+tools = ["chunkfile.py", "blockreport.py", "world_budget.py", "residency.py", "gs_budget.py", "mapcfg.py", "lua50.py", "scan/support.py"]

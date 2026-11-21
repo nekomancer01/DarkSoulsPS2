@@ -4,6 +4,7 @@
 #   2 tools/vu1/test_*.py: the VU1 microprograms on the VU1 emulator (tools/vu1/vuemu.py), needs numpy
 #   3 the generated VU1 programs are up to date: tools/vu1/gen.py <kind> == ps2/proto/src/<file>.vsm (AGENTS.md 5:
 #     generated files are never hand-edited; regenerate and commit both)
+#   3b the export rules ps2/proto/export_{vars,rules}.mk are generated from tools/recipe.toml (tools/recipe.py make)
 #   4 the game-data headers ps2/proto/src/{player,combat,progress}_data.h match tools/gamedata.py header <name>, and
 #     tools/gamedata_test.py (blob layout = what the EE compiler lays out, checked against offsetof tables)
 #   4b tools/material.py test (the classifier against the exporter's old per-mesh checks) and material_table.h up to date
@@ -12,6 +13,8 @@
 #   6 libmapx against the Python code (tools/mapx/test_mapx.py); the map simplifier: tools/native/simplify.c (the source
 #     of truth) against its frozen reference tools/simplify.py with its own rules off, and its golden outputs at the
 #     shipped settings (tools/mapx/test_simplify_golden.py, simplify_golden.json)
+#   7 tools/ci/test_scan.py: the readers raise souls.UnknownVariant on files they do not know, the coverage scan's
+#     runtime tables parse, and tools/blockreport.py --strict fails a synthetic block over its VRAM row
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -43,6 +46,9 @@ h=$ROOT/ps2/proto/src/vu1_layout.h
 "$PY" gen.py layout > "$TMP/vu1_layout.h" 2> "$TMP/layout.err" || { tail -5 "$TMP/layout.err"; fail "gen.py layout"; }
 if cmp -s "$TMP/vu1_layout.h" "$h"; then echo "${h#$ROOT/}: up to date"
 else diff -u "$h" "$TMP/vu1_layout.h" | head -20; fail "${h#$ROOT/} differs (regenerate: cd tools/vu1 && python3 gen.py layout > ../../${h#$ROOT/})"; fi
+echo "== export rules generated from the recipe"
+"$PY" "$ROOT/tools/recipe.py" make --check && echo "ps2/proto/export_vars.mk, export_rules.mk: up to date" ||
+    fail "ps2/proto/export_*.mk differ from tools/recipe.toml (regenerate: python3 tools/recipe.py make)"
 echo "== generated game-data headers up to date"
 cd "$ROOT" || exit 1
 for k in player combat progress; do
@@ -65,5 +71,7 @@ echo "== map simplifier: simplify.c against the frozen simplify.py, golden outpu
 "$PY" -I tools/mapx/test_simplify_golden.py || fail "tools/mapx/test_simplify_golden.py (intended change: check it, then --update)"
 echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on a synthetic block)"
 "$PY" -I tools/ci/test_residency.py || fail "tools/ci/test_residency.py"
+echo "== coverage scan reader errors and the block report gate (tools/scan, tools/blockreport.py)"
+"$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
 echo "offline: $FAILED failed"
 exit $FAILED

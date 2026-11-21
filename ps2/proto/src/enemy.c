@@ -980,13 +980,14 @@ static int inited;  /* enemy_init ran (not with the test option noenemies): the 
 
 /* enemies.bin: a chunk file 'ENMY' (tools/export_enemies.py), read in place: PLAC (ENEMY_REC bytes per placement)
  * and an optional NAV (src/nav.c). The placements (count in *n), NULL when the file is missing or refused. */
-static const unsigned char *placements_of(const void *blob, int block, unsigned *n, const void **nav, unsigned *nav_size)
+static const unsigned char *placements_of(const void *blob, unsigned blob_size, int block, unsigned *n, const void **nav,
+                                          unsigned *nav_size)
 {
     ChunkFile f;
     char name[32];
     snprintf(name, sizeof name, "enemies.bin (block %d)", block);
     *n = 0, *nav = NULL, *nav_size = 0;
-    if (!chunk_open(&f, blob, CHUNK_SIZE_UNKNOWN, CHUNK_ID('E', 'N', 'M', 'Y'), name))
+    if (!chunk_open(&f, blob, blob_size, CHUNK_ID('E', 'N', 'M', 'Y'), name))
         return NULL;
     unsigned size;
     const unsigned char *r = chunk_get(&f, CHUNK_ID('P', 'L', 'A', 'C'), 1, &size);
@@ -995,13 +996,13 @@ static const unsigned char *placements_of(const void *blob, int block, unsigned 
     return r;
 }
 
-int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int map_lua_size)
+int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, const void *map_lua, int map_lua_size)
 {
     gsg = gs;
     inited = 1;
     unsigned count, nav_size;
     const void *nav;
-    const unsigned char *b = placements_of(placements, 0, &count, &nav, &nav_size);
+    const unsigned char *b = placements_of(placements, placements_size, 0, &count, &nav, &nav_size);
     if (!b)
         return 0;
     Pack pk;
@@ -1047,14 +1048,14 @@ int enemy_init(GSGLOBAL *gs, const void *placements, const void *map_lua, int ma
 static char blk_dir[ENEMY_BLOCKS][32];
 static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
 
-int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, const void *map_lua,
-                      int map_lua_size)
+int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
+                      const void *map_lua, int map_lua_size)
 {
     unsigned count, nav_size;
     const void *nav;
     if (!inited || block <= 0 || block >= ENEMY_BLOCKS)
         return 0;
-    const unsigned char *b = placements_of(placements, block, &count, &nav, &nav_size);
+    const unsigned char *b = placements_of(placements, placements_size, block, &count, &nav, &nav_size);
     if (!b)
         return 0;
     snprintf(blk_dir[block], sizeof blk_dir[block], "%s/", dir);

@@ -8,8 +8,8 @@
  *           before a chunk whose payload must start at a multiple of more than 16 bytes (128 for model data); the
  *           order is the writer's.
  *   footer  u32 'CEND', u32 total bytes, u32 0, u32 0
- * Writers: tools/chunkfile.py (exporters), tools/native/chunkw.h (C tools: pvs_bake, libmapx). Readers: this (runtime and
- * Lab), tools/chunkfile.py (Python tools that read an export back).
+ * Writers: tools/chunkfile.py (exporters), tools/native/chunkw.h (C tools: pvs_bake; libmapx from phase 4).
+ * Readers: this (runtime and Lab), tools/chunkfile.py (Python tools that read an export back).
  *
  * A loader asks for each chunk by id and the one version it reads. A chunk of another version, a missing required
  * chunk, a file of another id and a truncated file are refused with a "TEST error: chunk:" line naming the file (and the
