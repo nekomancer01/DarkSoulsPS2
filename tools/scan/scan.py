@@ -11,6 +11,8 @@ Writes to --out (default build/scan, git-ignored: the full report names game fil
   scan.json           every (kind, value): status, count, files, an example file
   files.json          per game file its variants (kind, value, status, count)
   summary.md          ids and counts only (no file names, no game strings): the form that may leave the machine
+  timing.log          one line per run (reader and wall seconds); the three files above hold no timings and are the
+                      same bytes for the same inputs, whatever order the workers finish in
 Exit status 1 when a variant is unknown or a reader failed (status unknown / error) and is not listed in
 tools/scan/known.tsv (a variant with a TECH_DEBT row), else 0.
 
@@ -110,13 +112,14 @@ def known_id(known, kind, value):
 
 
 def summarize(results):
-    """{(kind, value): dict(status, count, files, example)}"""
+    """{(kind, value): dict(status, count, files, example)}. The same for any order the pool returned the files in:
+    the example is the first file (by path) with the variant at its worst status."""
     from kinds import SEVERITY
     agg = {}
-    for rel, rows in results.items():
-        for kind, value, status, n, ex in rows:
+    for rel in sorted(results):
+        for kind, value, status, n, ex in results[rel]:
             e = agg.setdefault((kind, value), {"status": status, "count": 0, "files": 0, "example": ex})
-            if SEVERITY[status] > SEVERITY[e["status"]]:
+            if SEVERITY[status] > SEVERITY[e["status"]] or (status == e["status"] and ex < e["example"]):
                 e["status"], e["example"] = status, ex
             e["count"] += n
             e["files"] += 1
@@ -128,11 +131,11 @@ def summarize(results):
 NAMED_KINDS = ("mtd (map)", "mtd missing from Mtd.mtdbnd", "flver vertex layout")
 
 
-def write_summary(path, agg, known, nfiles, secs):
+def write_summary(path, agg, known, nfiles):
     by_kind = collections.defaultdict(list)
     for (k, v), e in agg.items():
         by_kind[k].append((v, e))
-    L = ["# Coverage scan summary", "", f"{nfiles} game files, {secs:.0f} s of reader time. Status per variant: ok, "
+    L = ["# Coverage scan summary", "", f"{nfiles} game files. Status per variant: ok, "
          "info (seen, nothing claimed), unported (the reader knows it, the port does not run it), stub, unknown (the "
          "reader does not know it), error (a reader failure). Counts are occurrences; files = game files they occur in.",
          ""]
@@ -196,13 +199,18 @@ def main():
             if os.path.exists(old):
                 os.remove(old)
     with open(os.path.join(a.out, "scan.json.tmp"), "w") as f:
-        json.dump({"version": ver, "files": len(files), "reader_secs": round(secs, 1),
+        json.dump({"version": ver, "files": len(files),
                    "variants": [dict(kind=k, value=v, **e, tech_debt=known_id(known, k, v))
                                 for (k, v), e in sorted(agg.items())]}, f, indent=1)
     with open(os.path.join(a.out, "files.json.tmp"), "w") as f:  # per game file (tools/blockreport.py: effect coverage)
         json.dump({rel: [r[:4] for r in rows] for rel, rows in sorted(results.items()) if rows}, f)
     if not a.only:
-        write_summary(os.path.join(a.out, "summary.md.tmp"), agg, known, len(files), secs)
+        write_summary(os.path.join(a.out, "summary.md.tmp"), agg, known, len(files))
+    # timings only here (scan.json, files.json and summary.md are the same bytes for the same inputs: the step cache
+    # verifies that)
+    with open(os.path.join(a.out, "timing.log"), "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {len(files)} files, {cached} cached, reader {secs:.1f} s, "
+                f"wall {time.time() - t0:.1f} s\n")
     bad = [(k, v, e) for (k, v), e in sorted(agg.items()) if e["status"] in ("unknown", "error") and not known_id(known, k, v)]
     for k, v, e in bad:
         print(f"scan: {e['status']} {k} {v}: {e['count']} x in {e['files']} files, e.g. {e['example']}")
