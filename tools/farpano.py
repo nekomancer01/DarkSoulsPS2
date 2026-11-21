@@ -18,11 +18,11 @@ Built from the other blocks' horizons (hzn.bin, tools/horizon.py: untextured, co
      the same MSB counts only when part of this block's ground lies beyond the distance world.bin keeps it loaded;
   2. each peer's horizon pieces are grouped by how this block's collision parts show them (DSR's rule: a piece is
      drawn while it shares a draw group with the collision part under the player): pieces no part of this block shows
-     are left out, and so are another map's pieces inside this map's blocks and any peer surface within FAR_STANDIN
-     of this block's own horizon (stand-ins: the same place twice; a peer mostly made of them is left out whole:
-     Firelink has the game's own low-detail Burg); the rest become at most FAR_SETS meshes of pieces shown
-     from about the same floors, each with the union of its pieces' draw groups, which the runtime tests against the
-     part under the player;
+     are left out, and so are another map's pieces inside this map's blocks on its surfaces (FAR_STANDIN_MAP) and
+     any peer surface within FAR_STANDIN of this block's own horizon (stand-ins: the same place twice; a peer mostly
+     made of them is left out whole: Firelink has the game's own low-detail Burg); the rest become at most FAR_SETS
+     meshes of pieces shown from about the same floors, each with the union of its pieces' draw groups, which the
+     runtime tests against the part under the player;
   3. each such group is rendered from one eye (the middle of the ground the peer is seen from) into a panorama of
      FAR_DEG degrees a cell (tools/mapview.py's software renderer, six views), and every cell that shows something
      becomes a quad at the depth it was seen at, in the colour seen there: a surface of what can be seen from here,
@@ -43,8 +43,9 @@ far.bin (little endian, 16-byte aligned; stream offsets from the file start):
   chunk records (64 B, map.c Chunk as hzn.bin's: tex -1, flags CHUNK_HZN | CHUNK_BACKDROP)
   streams
 Env: FARPANO=0 writes an empty file (no panorama: world.c then keeps the boot block's tables, the old path);
-FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN, FAR_PANO_SET,
-FAR_SEAM (0: no seam sets), FAR_SEAM_EYES, FAR_SEAM_DEG, FAR_SEAM_DEG_MAX, FAR_SEAM_NEAR."""
+FAR_DEG, FAR_DEG_MAX, FAR_EL, FAR_JUMP, FAR_PX, FAR_KB, FAR_D, FAR_SETS, FAR_FAR, FAR_NEAR, FAR_STANDIN,
+FAR_STANDIN_MAP, FAR_PANO_SET, FAR_SEAM (0: no seam sets), FAR_SEAM_EYES, FAR_SEAM_DEG, FAR_SEAM_DEG_MAX,
+FAR_SEAM_NEAR."""
 import os
 import struct
 import sys
@@ -73,6 +74,12 @@ D = float(os.environ.get("FAR_D", 46.0))       # metres: nearest distance the co
 # metres: a peer's triangle this near to one of this block's own horizon is the same place drawn twice (ASSUMED: the
 # game's stand-ins lie within a few metres of the detailed pieces; 0: off)
 STANDIN = float(os.environ.get("FAR_STANDIN", 6.0))
+# metres: another map's piece inside this map's cells is its stand-in for this map only this near to this map's own
+# surfaces (its horizon, every block of the map). The xz cells alone (FAR_STANDIN_MAP=0, the rule before 2026-11-21)
+# took the Undead Burg above the Depths and Firelink's cliffs beside the Burg for stand-ins: the Depths' panorama had no
+# Burg over its entrance (seam audit 31-46 % holes), the Burg's none of the cliffs by the aqueduct. ASSUMED: the game's
+# low-detail copies follow the real surfaces within a few metres
+STANDIN_MAP = float(os.environ.get("FAR_STANDIN_MAP", 8.0))
 STANDIN_ALL = 0.5  # share of a peer on this block's surfaces from which the block is taken to stand in for all of it
 SETS = int(os.environ.get("FAR_SETS", 3))      # draw-group meshes per peer at most
 ALL = (0xFFFFFFFF,) * 4
@@ -422,6 +429,11 @@ def build(own, gens):
     own_map = area.BLOCKS.get(name, {}).get("map")
     src, n_in, peers, counts = [], 0, set(), {"hidden": 0, "standin": 0}
     own_tris = hzn_tris(os.path.join(gens[own], "hzn.bin"))[0] if horizon._err_lib() is not None else np.zeros((0, 3, 3))
+    # this map's surfaces, every block of it (STANDIN_MAP)
+    same = [g for bi, g in enumerate(gens) if bi != own and own_map and
+            area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") == own_map]
+    map_tris = np.concatenate([own_tris] + [hzn_tris(os.path.join(g, "hzn.bin"))[0] for g in same]) \
+        if len(own_tris) else own_tris
     for bi, g in enumerate(gens):
         if bi == own:
             continue
@@ -441,24 +453,28 @@ def build(own, gens):
             peers.add(bi)
             if len(eyes):
                 peer_sets(src, fl | (FAR_HAS_SEAM if seams and not fl else 0), bi, g, P, C, S, eyes, own_map,
-                          own_tris, pm, coll, wgt, counts)
+                          own_tris, pm, coll, wgt, counts, map_tris=map_tris)
             if not fl:  # (the boot map's picture backdrop has no seam sets: it is far from every seam)
                 for eye in seams:
                     peer_sets(src, seam_flags(eye), bi, g, P, C, S, near, own_map, own_tris, pm, coll, wgt, counts,
-                              eye=eye)
+                              eye=eye, map_tris=map_tris)
                 counts["seam"] = counts.get("seam", 0) + len(seams)
     n_hidden, n_standin = counts["hidden"], counts["standin"]
     out, line = finish(src, name, n_in, n_hidden, n_standin, peers)
     return out, line + (f", {counts['seam']} seam eyes" if counts.get("seam") else "")
 
 
-def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts, eye=None):
+def peer_sets(src, fl, bi, g, P, C, S, eyes, own_map, own_tris, pm, coll, wgt, counts, eye=None, map_tris=None):
     """one peer's triangles (its horizon, or the picture layers' backdrop: fl FAR_PANO) -> src entries"""
     import area
     if own_map and area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") != own_map:
-        # another map's pieces inside this map's blocks are its stand-ins for this map (Firelink carries a
-        # low-detail Undead Burg): the real blocks, or their own part of the panorama, stand there
-        out = ~in_map(P.mean(1), own_map)
+        # another map's pieces inside this map's blocks, on its surfaces, are its stand-ins for this map (Firelink
+        # carries a low-detail Undead Burg): the real blocks, or their own part of the panorama, stand there
+        cen = P.mean(1)
+        out = ~in_map(cen, own_map)
+        if STANDIN_MAP > 0 and map_tris is not None and len(map_tris) and (~out).any():
+            far = horizon._dist(map_tris, cen[~out], np.full(int((~out).sum()), STANDIN_MAP)) >= STANDIN_MAP
+            out[np.flatnonzero(~out)[far]] = True
         counts["standin"] += int((~out).sum())
         P, C, S = P[out], C[out], S[out]
     if STANDIN > 0 and len(own_tris) and len(P):

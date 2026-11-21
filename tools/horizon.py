@@ -13,7 +13,8 @@ MS_R_HZN of the player.
 Built from the map's own resident level (the CHUNK_COARSE chunks, the opaque kept ones and the backdrop of every cell, as map.bin
 stores them), so it needs no re-export:
   1. every triangle gets its colour baked: texel of the texture's mip 1 at the corner's UV x the corner's light (the
-     GS's modulate, 0x80 = 1.0); cut-out triangles mostly transparent are dropped (a fence is no wall at 60 m);
+     GS's modulate, 0x80 = 1.0); cut-out triangles mostly transparent become solid cards shrunk to their opaque
+     share (HZN_CUT), or are dropped under HZN_CUT_MIN of it (a fence is no wall at 60 m);
   1b. triangles no view can see are dropped (HZN_VIS, tools/native/hzvis.c: cube maps at navmesh points and
      orthographic views from all round, conservative);
   2. the whole block is welded on a grid of WELD_FR x the error's pixels at each vertex's view distance (meshes, UV
@@ -45,7 +46,8 @@ map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the ol
 Next to it, <hzn.bin>.far.npz (build only): the crown cards and the picture-layer backdrop left out of hzn.bin, for
 tools/farpano.py.
 Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
-HZN_VIS=0 no visibility cut; HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D, HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
+HZN_VIS=0 no visibility cut; HZN_CUT=0 no cut-out cards; HZN_CUT_MIN, HZN_CUT_OFF, HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D,
+HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
 import os
 import struct
 import sys
@@ -104,6 +106,22 @@ CROWN_H = float(os.environ.get("HZN_CROWN_H", 4.0))
 # HZN_CROWN_OWN=1: in the block's own horizon too (2026-11-13 .. 11-17)
 CROWN_OWN = os.environ.get("HZN_CROWN_OWN", "0") == "1"
 CROWN_R = float(os.environ.get("HZN_CROWN_R", 8.0))
+# Cut-out cards (leaves, ivy, branches: alpha-tested, not foliage chunks) mostly transparent at their corners and
+# centre were dropped whole (step 1), so wherever the horizon drew a Darkroot tree line it was trunks against the sky
+# (seam audit 2026-11-21: 1-5 % sky holes at every Darkroot seam, leaf cards of the blocks' own cells at 60-170 m).
+# They stay now as solid cards in the leaves' colour, shrunk about their centroid to the share of their texels that
+# are opaque (barycentric samples, CUT_N per edge): the sky shows through about as much as through the textured
+# cards, without the full solid cards that read as black boxes (the crowns of Ame's report 2026-11-17). (A gate on
+# view distance does not work: every tree stands within HZN_D of some walkable spot.) ASSUMED numbers; HZN_CUT=0:
+# none, the old horizon
+CUT = os.environ.get("HZN_CUT", "1") == "1"
+CUT_MIN = float(os.environ.get("HZN_CUT_MIN", 0.15))  # opaque share below which a card stays out (a wisp)
+# metres: a card this near to the block's opaque surfaces (ivy and moss on walls, vines on stone) hides nothing the
+# surface behind it does not, so it stays out, and so does one lower than CROWN_H above the walkable ground within
+# CROWN_R (bushes, hanging plants: the sky behind a tree line is above the ground): every card cost the Burg's horizons
+# 50-110 KB each and the world budget its hard-tier gate (1.39 % of the spots over, 2026-11-21). ASSUMED
+CUT_OFF = float(os.environ.get("HZN_CUT_OFF", 1.0))
+CUT_N = 4  # barycentric samples per edge (15 a triangle)
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
 ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
 # indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
@@ -165,6 +183,7 @@ def texture_rgba(b, tex_off, t):
 
 
 LAST_CROWN = [np.zeros(0, bool)]
+LAST_COVER = [np.zeros(0)]  # coarse_tris: opaque share of each cut-out triangle step 1 drops (0: kept or none)
 LAST_CELL = [np.zeros(0, np.int64)]  # coarse_tris: the map cell each triangle comes from
 VCELL = {}  # cluster(): id(V) -> the source cell of each welded vertex (the most of its corners), for _place
 # build: (crown cards, picture-layer backdrop) as (P, C, draw-group set) for main's sidecar <hzn>.far.npz, which
@@ -182,7 +201,7 @@ def coarse_tris(b):
     cells = [struct.unpack_from("<6f6I", b, cell_off + 16 + 48 * i) for i in range(ncell)]
     tex = {}
     nav = nav_points(b) if CROWN_H > 0 else np.zeros((0, 3))
-    Ps, Cs, Ks, Bs, Ds, Rs, Ls, cov = [], [], [], [], [], [], [], set()
+    Ps, Cs, Ks, Bs, Ds, Rs, Ls, Vs, cov = [], [], [], [], [], [], [], [], set()
     cdg = chunk_dg(b, nch)
     for ci, ce in enumerate(cells):
         if ce[8] & 0x80000000:  # a later near part (no resident chunks)
@@ -251,8 +270,19 @@ def coarse_tris(b):
                     if om.any():
                         rgb = rgb + (img[om][:, :3].astype(np.float64).mean(0) - rgb) * TEX_MEAN
             opaque = a.reshape(-1, 3).sum(1) + cen_a >= 2  # at least half of 4 samples
+            cover = np.zeros(ntri)
             if crown:  # a crown's cards whole, in the leaves' colour: from the horizon's distance it is one dark mass
                 opaque = np.ones(ntri, bool)
+            elif img is not None and CUT and not opaque.all():  # the cut-out cards step 1 drops: opaque share
+                cut = np.flatnonzero(~opaque)
+                tst = st.reshape(-1, 3, 2)[cut]
+                hits = np.zeros(len(cut))
+                ws = [(i / CUT_N, j / CUT_N) for i in range(CUT_N + 1) for j in range(CUT_N + 1 - i)]
+                for u, v in ws:
+                    q = tst[:, 0] * (1 - u - v) + tst[:, 1] * u + tst[:, 2] * v
+                    hits += sample(q)[:, 3] > 0
+                cover[cut] = hits / len(ws)
+            Vs.append(cover)
             Ps.append(p.reshape(-1, 3, 3))
             Ls.append(np.full(ntri, ci, np.int64))
             Cs.append(np.minimum(255.0, rgb * col / 128.0).reshape(-1, 3, 3))
@@ -261,6 +291,7 @@ def coarse_tris(b):
             Ds.append(np.full(ntri, cdg[j] if j < len(cdg) else 0, np.int64))
             Rs.append(np.full(ntri, crown))
     LAST_CROWN[:] = [np.concatenate(Rs) if Rs else np.zeros(0, bool)]
+    LAST_COVER[:] = [np.concatenate(Vs) if Vs else np.zeros(0)]
     LAST_CELL[:] = [np.concatenate(Ls) if Ls else np.zeros(0, np.int64)]
     if not Ps:
         z = np.zeros(0, bool)
@@ -774,6 +805,27 @@ def build(b):
     ncell = len(cells)
     n_in = len(P)
     nav = nav_points(b)
+    cards = np.zeros(len(P), bool)
+    if CUT and len(P):  # the cut-out cards, shrunk to their opaque share (CUT)
+        cover = LAST_COVER[0]
+        cand = np.flatnonzero(~keep & (cover >= CUT_MIN) & ~pano & ~crown)
+        if len(cand) and CUT_OFF > 0 and keep.any() and _err_lib() is not None:
+            cand = cand[_dist(P[keep], P[cand].mean(1), np.full(len(cand), CUT_OFF)) >= CUT_OFF]
+        if len(cand) and CROWN_H > 0 and len(nav):  # and only up in the crowns, as the foliage crowns (CROWN_H)
+            cen = P[cand].mean(1)
+            up = np.ones(len(cand), bool)
+            for k in range(0, len(cand), 512):
+                c = cen[k:k + 512]
+                dxz = ((c[:, None, [0, 2]] - nav[None, :, [0, 2]]) ** 2).sum(2) < CROWN_R ** 2
+                top = np.where(dxz, nav[None, :, 1], -np.inf).max(1)
+                up[k:k + 512] = c[:, 1] - top >= CROWN_H
+            cand = cand[up]
+        if len(cand):
+            cen = P[cand].mean(1)[:, None, :]
+            P = P.copy()
+            P[cand] = cen + (P[cand] - cen) * np.sqrt(cover[cand])[:, None, None]
+            cards[cand] = True
+            keep = keep | cards
     lo = np.array([c[0:3] for c in cells]).reshape(-1, 3)
     hi = np.array([c[3:6] for c in cells]).reshape(-1, 3)
     part = np.array([bool(c[8] & 0x80000000) for c in cells], bool)
@@ -783,7 +835,7 @@ def build(b):
     # one mesh per draw-group set (dg.bin: map.c draws a horizon chunk only while the floor's groups show its set):
     # merged into one surface, a cell's stand-ins and the detail they stand in for, Firelink's views of the Burg and the
     # Burg itself, drew all at once, spiky and purple, wherever the horizon was used (Ame's ISO report, 2026-11-07)
-    groups, stats = [], dict(opaque=0, clustered=0, px=PX, hidden=0)
+    groups, stats = [], dict(opaque=0, clustered=0, px=PX, hidden=0, cards=int(cards.sum()))
     # one screen error for the whole block (every set at once): the smallest at or above PX whose triangles fit the
     # budget. Shared by triangle count, each set hit its own cap apart: small sets stayed at PX while the big ones went
     # to PX_MAX (Firelink: every block at 32 px, 2026-11-07)
@@ -897,7 +949,7 @@ def build(b):
     st = dict(cells=ncell, tris_in=n_in, tris_opaque=stats["opaque"], tris_welded=stats["clustered"],
               tris=sum(len(g[2]) for g in groups), bd_tris=sum(len(g[2]) for g in groups if g[4] & CHUNK_BACKDROP),
               sets=len(groups), chunks=nchunks, bytes=len(out),
-              px=stats["px"], covered=len(cov), hidden=stats["hidden"],
+              px=stats["px"], covered=len(cov), hidden=stats["hidden"], cards=stats["cards"],
               simp="/".join(used) + (f" [{stats['px_alt']}]" if stats.get("px_alt") else ""))
     return bytes(out), st
 
@@ -918,7 +970,7 @@ def main():
         np.savez_compressed(f, crown_p=cp.astype(np.float32), crown_c=cc.astype(np.uint8), crown_s=cs.astype(np.int64),
                             pano_p=pp.astype(np.float32), pano_c=pc.astype(np.uint8), pano_s=ps.astype(np.int64))
     print(f"horizon: {os.path.basename(os.path.dirname(os.path.abspath(src)))}: {st['tris_in']} coarse tris "
-          f"({st['tris_opaque']} opaque, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
+          f"({st['tris_opaque']} opaque, {st['cards']} cut-out cards, {st['hidden']} unseen, {st['tris_welded']} welded, {st['simp']}) -> {st['tris']} tris in {st['chunks']} chunks over "
           f"{st['cells']} cells ({st['covered']} covered, {st['bd_tris']} backdrop tris, {st['sets']} draw-group meshes), {st['bytes'] >> 10} KB, {st['px']:.1f} px at {HZN_D:.0f} m")
 
 
