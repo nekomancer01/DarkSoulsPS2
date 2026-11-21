@@ -88,9 +88,21 @@ ANIMS = [
     ("BACKSTAB", "a23", 3400, False),
     # Lock-on (PR D): rolls back / left / right (group 1 states 33 / 35 / 34 via f110(1 / 2 / 3)) of every movement
     # set, the other sets' forward rolls and steps, and the strafe loops (MoveParam row 0 walkB/L/R, dashB/L/R)
-    # Item use (Square, group 1 states 163 / 164 for goodsUseAnim 10 = Estus): c1_1 6209 (reach, layer 5), then
-    # c1_3 6409 (drink; TAE 64 at 1.23 s = the heal)
-    ("ITEM_REACH_10", "a00", 6209, False), ("ITEM_USE_10", "a00", 6409, False),
+    # Item use (Square = request slot 14, Item Key Input): group 1 state 0 branches on f231 = the quick item's
+    # goodsUseAnim (EquipParamGoods +0x3E, FUN_140323b20) and plays c1_3(3, a00 id) on layer 6; the anim's TAE 65
+    # ConsumeCurrentGoods is the moment the item takes effect. Estus (goodsUseAnim 10, empty flask 254): state 16 7585
+    # (raise), 18 7586 (drink, TAE 65 at 0.27 s; Square again in its Item Key Input window drinks again), 19 7587
+    # (lower), empty flask state 17 7588. Other goodsUseAnim values: 0 -> 7500, 1 -> 7530, 2 -> 7540, 3 -> 7550,
+    # 4 -> 7560 / 7561 (loop) / 7562, 5 -> 7502, 6 -> 7570, 7 -> 7580, 8 -> 7503 (PICKUP), 9 -> 7501, 11 -> 6212 /
+    # 6412, 13 -> 7571 / 7570, 15 -> 7571, no usable item -> 7510. (12 -> 6312 / 6512 and 14 -> 7581 / 7582 are not in
+    # DSR's c0000 anim archives.) a00 62xx-65xx (groups 1 states 133-181: f227 = MagicParam refType) are spell casts.
+    ("ESTUS_RAISE", "a00", 7585, False), ("ESTUS_DRINK", "a00", 7586, False), ("ESTUS_LOWER", "a00", 7587, False),
+    ("ESTUS_EMPTY", "a00", 7588, False), ("ITEM_NONE", "a00", 7510, False),
+    ("ITEM_7500", "a00", 7500, False), ("ITEM_7501", "a00", 7501, False), ("ITEM_7502", "a00", 7502, False),
+    ("ITEM_7530", "a00", 7530, False), ("ITEM_7540", "a00", 7540, False), ("ITEM_7550", "a00", 7550, False),
+    ("ITEM_7560", "a00", 7560, False), ("ITEM_7561", "a00", 7561, True), ("ITEM_7562", "a00", 7562, False),
+    ("ITEM_7570", "a00", 7570, False), ("ITEM_7571", "a00", 7571, False), ("ITEM_7580", "a00", 7580, False),
+    ("ITEM_6212", "a00", 6212, False), ("ITEM_6412", "a00", 6412, False),
     # Weapon switch (d-pad left / right: group 1 states 218 / 217, c1_4(2, 80 / 81) on layer 4)
     ("SWITCH_L", "a00", 80, False), ("SWITCH_R", "a00", 81, False), ("SWITCH_END", "a00", 86, False),  # 221
     # Two-handing (Triangle -> f104 3 / 1): hold changes with a shield in the left hand (group 1 states 200 -> 203:
@@ -142,7 +154,7 @@ FLAGS = {4: "RH_ATTACK_CANCEL", 7: "DISABLE_TURNING", 8: "INVINCIBLE", 11: "MOVE
 # Value ramps over an event window (Grad): TAE 300 ChrActionGradient with output 27 = gravity multiplier
 # (FUN_1403410f0 -> ctx+0x448 -> proxy+0x1E4), TAE 236 RootMotionReduction (FUN_140343660 -> ctx+0x198)
 GRAD_GRAVITY, GRAD_ROOT_REDUCTION = 27, 236
-ITEM_USE = -600  # Window type of TAE 64 (CastHighlightedMagic): the moment an item / spell takes effect
+ITEM_USE = -600  # Window type of TAE 65 (ConsumeCurrentGoods): the moment the quick item takes effect
 EZ_MESSAGE = -300  # Window type of a TAE 231 EzState message n: EZ_MESSAGE - n (SP regen windows use -2 .. -257)
 WARRIOR, LONGSWORD = 3000, 201000
 
@@ -167,7 +179,7 @@ RECORD = Struct("PlayerData", [
 def HEADER():
     consts = (["/* ChrActionFlag ids (TAE event 0) */"] + [f"#define FLAG_{name} {fid}" for fid, name in FLAGS.items()] +
               [f"#define EZ_MESSAGE ({EZ_MESSAGE})  /* Window type of TAE 231 EzState message n: EZ_MESSAGE - n */",
-               f"#define ITEM_USE ({ITEM_USE})  /* Window type of TAE 64: an item's / spell's effect starts */"] +
+               f"#define ITEM_USE ({ITEM_USE})  /* Window type of TAE 65: the quick item takes effect */"] +
               ["", "enum { " + ", ".join(f"ANIM_{c}" for c, *_ in ANIMS) + ", ANIM_COUNT };"])
     names = [("START_END", "start_end", "Warrior END"), ("WEAPON_ID", "weapon_id", "EquipParamWeapon: Longsword"),
              ("WEAPON_WEIGHT", "weapon_weight", None), ("WEAPON_ATK_PHYS", "weapon_atk_phys", None),
@@ -223,7 +235,7 @@ def main():
                 wins.append((-2 - (p[0] & 0xFF), s, e))
             elif etype == 231:  # EzState message to the event Lua (OnCheckEzStateMessage: bonfire 10 / 20 / 30)
                 wins.append((EZ_MESSAGE - (p[0] & 0xFF), s, e))
-            elif etype == 64:  # CastHighlightedMagic: an item's / spell's effect starts here
+            elif etype == 65:  # ConsumeCurrentGoods: the quick item takes effect (64 CastHighlightedMagic = spells)
                 wins.append((ITEM_USE, s, e))
             elif etype == 300 and p[0] & 0xFFFF == GRAD_GRAVITY:  # s16 output, s16 input (0), f32 from, f32 to
                 grads.append((GRAD_GRAVITY, s, e, f32(p[1]), f32(p[2])))

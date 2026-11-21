@@ -72,7 +72,11 @@ def spec_terms(sp, uv):
     g = [px[4 * (((y + dy) % h) * w + (x + dx) % w) + 1] for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
     return round(sum(g) / 9), 255
 TEX_MAX = 256
-# (TAE file prefix, anim id, archive): the same list and order as export_player.py's ANIMS, plus idle first
+# (TAE file prefix, anim id, archive): the same anims as export_player.py's ANIMS, plus idle first (the item anims
+# are appended here but sit after BACKSTAB there; lookups go by anim id, so the order does not matter)
+# Item use by goodsUseAnim (group 1 states 1-23: Estus 7585-7588, the other goods' anims, 7510 = nothing to use)
+ITEM_ANIMS = (7585, 7586, 7587, 7588, 7510, 7500, 7501, 7502, 7530, 7540, 7550, 7560, 7561, 7562, 7570, 7571, 7580,
+              6212, 6412)
 ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, "c0000_a00_lo"),
          ("a00", 535, "c0000_a00_lo"), ("a00", 700, "c0000_a00_lo"), ("a23", 3000, "c0000_a2x"),
          ("a23", 3001, "c0000_a2x"), ("a23", 3002, "c0000_a2x"), ("a00", 680, "c0000_a00_lo"),
@@ -92,7 +96,7 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a23", 3100, "c0000_a2x"), ("a23", 3600, "c0000_a2x"), ("a23", 3810, "c0000_a2x"),
          ("a48", 5100, "c0000_a4x"),
          ("a23", 3400, "c0000_a2x"), ("a23", 3201, "c0000_a2x")] + [
-         ("a00", 6209, "c0000_a00_md"), ("a00", 6409, "c0000_a00_md"), ("a00", 80, "c0000_a00_lo"),
+         ("a00", 80, "c0000_a00_lo"),
          ("a00", 81, "c0000_a00_lo"), ("a00", 86, "c0000_a00_lo"), ("a00", 85, "c0000_a00_lo")] + [
          ("a23", aid, "c0000_a2x") for aid in (4000, 4001, 4002, 4100, 4300, 4301, 4310, 4600)] + [
          ("a00", aid, "c0000_a00_lo") for aid in (701, 702, 703, 710, 711, 712, 713, 720, 721, 722, 723, 730, 731, 732,
@@ -103,7 +107,9 @@ ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, 
          ("a00", 7410, "c0000_a00_md")] + [
          # bonfire (export_player.py): stored compact (COMPACT) - 11 anims, 37 s; full 30 fps poses would be ~1.1 MB
          ("a00", aid, "c0000_a00_md") for aid in (7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722)] + [
-         ("a00", 7503, "c0000_a00_md")]  # item pickup (export_player.py PICKUP), compact
+         ("a00", 7503, "c0000_a00_md")] + [  # item pickup (export_player.py PICKUP), compact
+         # item use by goodsUseAnim (export_player.py ESTUS_* / ITEM_*), compact
+         ("a00", aid, "c0000_a00_md") for aid in ITEM_ANIMS]
 # Anims written in the compact layout (export_chr.append_compact_anims: 15 fps, only the bones that move; model.c reads
 # both kinds): long, slow anims whose poses interpolate well
 COMPACT = {7698, 7699, 7700, 7701, 7702, 7710, 7711, 7712, 7720, 7721, 7722}
@@ -113,8 +119,9 @@ COMPACT |= {7410}  # fog-wall walk
 # made model.bin 0.97 MB bigger and boot RAM free 1 MB smaller (22.95 -> 21.94 MB)
 COMPACT |= {1, 210, 515, 520, 140, 141, 142, 3300, 3301, 3310, 3100, 3600, 3810, 5100, 3400, 3201}  # + throws (#219)
 COMPACT |= {701, 702, 703, 710, 711, 712, 713, 720, 721, 722, 723, 730, 731, 732, 733, 690, 695, 696, 201, 202, 203,
-            501, 502, 503, 6209, 6409, 80, 81, 86, 85, 4000, 4001, 4002,
-            4100, 4300, 4301, 4310, 4600}  # lock-on rolls / steps / strafes, item use, weapon switch
+            501, 502, 503, 80, 81, 86, 85, 4000, 4001, 4002,
+            4100, 4300, 4301, 4310, 4600}  # lock-on rolls / steps / strafes, weapon switch
+COMPACT |= set(ITEM_ANIMS)  # item use
 # Turn-lean pairs: DSR has no straight dash; a00_0535 leans into a left turn (head 0.20 m left of the feet, shoulders
 # rolled -21 deg on average) and a00_0536 into a right turn, and the engine blends the two by turn rate
 # (WalkAnim_Twist). Played alone, 0535 made the dash lean left. Baked here as the 50/50 blend = running straight.

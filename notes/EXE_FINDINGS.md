@@ -51,7 +51,7 @@ vtable +0x8 = `FUN_14038dae0`. The id is the case value (f102 = case 0x66).
 | f0 / f1 | IsAnimEnd / IsMoveAnimEnd | – | anim handle ctx+0x80 (c1_3) / ctx+0x78 (c1_4) finished |
 | f100 | IsButtonTriggered | slot | pad request cur && !prev |
 | f101 | IsButtonReleased | slot | !cur && prev |
-| f102 | IsActionRequested | slot | latched request ctx+0x468, stamina ≥ 1 gate, delay timer ctx+0x320 ≤ 0. Slots: 0/7 R1, 5 R2, 10 backstep, 15-18 rolls, 42 jump; 14 → spell states, 2/3 → item states |
+| f102 | IsActionRequested | slot | latched request ctx+0x468, stamina ≥ 1 gate, delay timer ctx+0x320 ≤ 0. Slots: 0/7 R1, 5 R2, 10 backstep, 15-18 rolls, 42 jump; 14 → item states (Square, TAE flag 30 Item Key Input), 2/3 → spell states (flag 10 Magic Key Input) |
 | f108 | IsStepRequested | slot | same, only slots 9-12/15-18/42 |
 | f110 | GetRollAnimId | dir 0-5 | anim from ChrCtrl movement set (+0x1C0[+0x210]) |
 | f207 | GetWeaponHoldStyle | – | chr+0x198[0]: 1 one-hand, 2/3 two-hand |
@@ -59,8 +59,8 @@ vtable +0x8 = `FUN_14038dae0`. The id is the case value (f102 = case 0x66).
 | f220 | IsSlotHeld | slot | ctx+0x2E1[slot] |
 | f222 | GetDamageDirection | – | ctx+0x1E8 |
 | f225 | GetWeaponMotionCategory | hand | EquipParamWeapon.wepmotionCategory of the hand's weapon (23 straight sword, 44 bow, 46 crossbow …) |
-| f227 / f231 | GetSelectedItemMotionType / GetSelectedSpellMotionType | – | goods +0x25 / magic +0x3E, 0xFE/0xFF = unusable |
-| f232 / f233 | HasUsableItem / CanCastSpell | – | current goods / magic checks |
+| f227 / f231 | GetSelectedSpellMotionType / GetSelectedItemMotionType | – | `FUN_1403239f0`: MagicParam (param table 14) refType +0x25, 0xFE unusable / `FUN_140323b20`: EquipParamGoods (table 3) goodsUseAnim +0x3E, 0xFF unusable |
+| f232 / f233 | CanCastSpell / HasUsableItem | – | `FUN_140323bf0` attuned magic / `FUN_140325230` quick-slot goods checks |
 | f236 / f237 | GetDamageLevel / GetDamageReactionClass | – | ctx+0x1EC / table 0x141A2B780[lvl][ctx+0x1F0] |
 | f241 / f242 / f243 | IsActionRequested19 / 20 / IsSlotHeld21 | – | fixed slots 19, 20, 21 |
 | f284 / f285 | GetDamageInfo3 / 4 | – | ctx+0x1F4 / ctx+0x1F8 (meaning open) |

@@ -831,10 +831,10 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         if (chrstat_switch_hand(h))
             p->switch_req = h == HAND_R ? 1 : 2;
     }
-    /* Square: item use, slots 2 / 3 (group 1 state 0 tests f100(3) || f100(2); FUN_140396860 writes +0x86 / +0x87
-     * together, ASSUMED to be Square) */
+    /* Square: item use, request slot 14 (group 1 state 0 tests f100(14) && f233() and branches on f231; TAE flag 30
+     * "Item Key Input" opens slot 14). Slots 2 / 3 are the spell slots (flag 10 "Magic Key Input", f227 / f232). */
     if (in->square && p->state != ST_FALL && p->state != ST_DEAD && !p->airborne)
-        p->trig[2] = p->trig[3] = 1;
+        p->trig[14] = 1;
     if (p->state != ST_FALL && p->state != ST_DEAD && !p->airborne) {
         static const unsigned char slots[] = {REQ_R2, REQ_L1, REQ_GUARD, REQ_L2};
         for (unsigned i = 0; i < sizeof slots; i++)
@@ -896,11 +896,15 @@ void player_update(Player *p, const Input *in, float cam_yaw, float dt)
         combat_apply((CombatChr *)p->throw_cc, &atk);
         p->throw_done = 1;
     }
-    /* item use: the item anim's TAE 64 window applies the quick item once (Estus: a charge for goods 201's heal) */
-    if (!esd_action(p))
+    /* item use: the item anim's TAE 65 ConsumeCurrentGoods window applies the quick item once per play of the anim
+     * (Estus: a charge for goods 201's heal; drinking again restarts 7586, so a restart re-arms it). Not while an
+     * event anim plays: the pickup crouch a00 7503 (also goodsUseAnim 8) carries TAE 65 too, and in DSR a pickup
+     * uses no item; the item anims come from the ESD, never through player_event_anim */
+    if (!esd_action(p) || p->t < p->item_t)
         p->item_used = 0;
-    if (esd_action(p) && in_window(p->anim, ITEM_USE, p->t) && p->item_used != p->anim + 1 && chr_stats.valid) {
-        p->item_used = p->anim + 1;
+    if (esd_action(p) && !player_event_anim_playing(p) && in_window(p->anim, ITEM_USE, p->t) &&
+        p->item_used != p->anim + 1 && chr_stats.valid) {
+        p->item_used = p->anim + 1, p->item_t = p->t;
         int estus = chr_stats.item_id == (ITEM_GOODS | ESTUS_ID);
         if (estus ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0) {
             if (estus)
@@ -1163,12 +1167,19 @@ int player_esd_env(EsdCtx *c, int id, const float *a, int n, float *out)
         v = p->fwd_flick < 0.2f;
         break;
     case 226: v = (p->ctx_1dc >> 5) & 1; break;
-    case 227: v = chr_stats.valid ? chr_stats.item_anim : -1; break;  /* goodsUseAnim of the quick item */
-    case 232:   /* HasUsableItem: a quick item that has a use (Estus: charges left) */
-        v = chr_stats.valid && chr_stats.item_anim >= 0 &&
-            (chr_stats.item_id == (ITEM_GOODS | ESTUS_ID) ? prog.estus > 0 : inv_count(chr_stats.item_id) > 0);
+    /* f227 / f232 (FUN_1403239f0 / FUN_140323bf0): the attuned spell's MagicParam (param table 14) refType (+0x25) /
+     * castable; f231 / f233 (FUN_140323b20 / FUN_140325230): the quick item's EquipParamGoods (table 3) goodsUseAnim
+     * (+0x3E, 0xFF when unusable) / usable. No spells in this build: f227 0xFF, f232 0. */
+    case 227: v = 255; break;
+    case 232: v = 0; break;
+    case 231:   /* goodsUseAnim of the quick item; DSR swaps an empty Estus Flask for goods 200 (goodsUseAnim 254) */
+        v = !chr_stats.valid || chr_stats.item_anim < 0 ? 255 :
+            chr_stats.item_id == (ITEM_GOODS | ESTUS_ID) && prog.estus <= 0 ? 254 : chr_stats.item_anim;
         break;
-    case 231: v = 255; break;    /* selected spell motion type: 0xFF = not castable (the Warrior has no spells) */
+    case 233:   /* HasUsableItem: a quick item with a use (the Estus Flask always: empty it plays 7588) */
+        v = chr_stats.valid && chr_stats.item_anim >= 0 &&
+            (chr_stats.item_id == (ITEM_GOODS | ESTUS_ID) || inv_count(chr_stats.item_id) > 0);
+        break;
     case 238: case 239: case 240: v = gate(p, id - 219) && p->trig[id - 219]; break;  /* f100(19 / 20 / 21) */
     case 241: case 242: v = requested(p, id - 241 + 19); break;                 /* f102(19 / 20) */
     case 249: v = (p->ctx_1dc >> 9) & 1; break;

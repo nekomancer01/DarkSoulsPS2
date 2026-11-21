@@ -79,7 +79,8 @@ typedef struct Player {
     int hold_style, hold_req;  /* ESD f207 (1 one-handed, 3 the right weapon two-handed) / f104 request (0 none) */
     int switch_req;        /* ESD f109 this frame: 1 right weapon switch, 2 left (states 217 / 218) */
     float hitstop;         /* s the playing action anim stays frozen (AtkParam hitStopTime of a hit that landed) */
-    int item_used;         /* ANIM_* + 1 of the item anim whose TAE 64 effect was applied, 0 none */
+    int item_used;         /* ANIM_* + 1 of the item anim whose TAE 65 effect was applied, 0 none */
+    float item_t;          /* its anim time then (a restart of the same anim re-arms it) */
     int strafe;            /* locked locomotion direction: 0 forward, 1 back, 2 left, 3 right */
     void *throw_cc;
     float throw_hit_t, throw_corr;
