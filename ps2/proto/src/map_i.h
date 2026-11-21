@@ -308,6 +308,9 @@ unsigned mp_list_build(const MapInst *m, int k, int ci, int nd, int use_hz, cons
 extern unsigned mp_chk_lists, mp_chk_bad;
 void mp_build_index(MapInst *mi);
 unsigned mp_draw_hz_only(int k, const float *e);
+/* the level chain: block k's finest level in memory (mapblock.c; map.c cell_level for the cells) */
+enum { MB_PANO = 1, MB_HZN = 2, MB_CELLS = 3 };
+int mp_block_level(int k);
 unsigned mp_draw_far(const float *e);
 extern Header mp_boot_hdr;  /* the boot block's header (a copy: its tables may be let go, map_boot_lean) */
 
