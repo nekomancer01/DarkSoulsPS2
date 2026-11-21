@@ -37,6 +37,8 @@
 #            to (convert.py)
 #   host     a host program the step runs (tools/recipe.py HOST; no browser build: the browser converter skips the step
 #            and drops pack entries naming its outputs); browser = false: skipped in the browser (sound: no MP3 decoder)
+#   cache    false: the step cache (tools/stepcache.py) always runs the tool; by default every step but packs and steps
+#            with a directory among their maybe outputs is cached
 #   make     make-only details: deps (extra prerequisites: the knob / area stamps the Makefile keeps), order_only,
 #            target (when the rule's target is a stamp), outs ("stamp": out files hang off the target with an empty
 #            recipe; "check": they get the exists check), runner (instead of $(PY) / python3), wrap (the command line,
@@ -708,6 +710,7 @@ queue = 12
 args = ["--game", "{GAME}", "--out", "{BUILD}/scan", "-j", "4"]
 out = ["{BUILD}/scan/files.json"]
 side = ["{BUILD}/scan/scan.json", "{BUILD}/scan/summary.md"]
+cache = false  # scan.json differs run to run (reader timings, which file is each variant's example); per-file cache in build/scan
 inputs = ["{SRC}/lua0.c", "{SRC}/player.c", "{SRC}/enemy.c", "{SRC}/esd_env_move.c", "{TOOLS}/scan/known.tsv"]
 tools = ["scan/*.py", "souls.py", "emevd.py", "esd.py", "ffx.py", "havok_anim.py", "havok_collision.py",
          "havok_ragdoll.py", "lua50.py", "fev.py", "fsb4.py", "material.py", "mapgather.py", "export_emevd.py",

@@ -28,7 +28,8 @@ import time
 
 TRACE = re.compile(r"^\S+:\d+: (?:update )?target '(.+)' due to: ")
 TRACE_OTHER = re.compile(r"^\S+:\d+: target '.+' does not exist$")
-TOOL = re.compile(r"(?:^|[\s/])((?!q\b)[\w.-]+\.(?:py|sh))\b")
+TOOL = re.compile(r"(?:^|[\s/])((?!q\b|stepcache\.py)[\w.-]+\.(?:py|sh))\b")
+CACHE = re.compile(r"^stepcache: (hit|miss|verified|off) ")  # tools/stepcache.py, one line per export step
 STAMP = re.compile(r"/stamp/(.+)\.sum$")
 KEEP = re.compile(r"\*\*\*|\berror:|^Traceback|^build-iso:|^\[q\] (?:killed|failed)", re.I)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
@@ -82,6 +83,7 @@ class View:
         self.drawn = 0  # lines of the view currently on screen
         self.last = 0.0
         self.done = None  # None while running, else the exit code
+        self.cache = {}  # export steps by stepcache result: hit / miss / verified / off
 
     # --- input ---
     def short(self, s):
@@ -125,6 +127,9 @@ class View:
             return
         if TRACE_OTHER.match(s):
             return
+        m = CACHE.match(s)
+        if m:
+            self.cache[m.group(1)] = self.cache.get(m.group(1), 0) + 1
         if self.pending is not None:
             name = tool_of(s)
             if name:
@@ -183,6 +188,8 @@ class View:
             total = max(self.plan_n, n)
             count = f"{n}/{'≥' if self.plan_min and n < total else ''}{total} steps"
             right = f" {frac * 100:3.0f}%  {count}  {clock}"
+        if self.cache:
+            right = f" cache {self.cache.get('hit', 0)}/{sum(self.cache.values())}" + right
         inner = max(10, w - len(right) - 2)
         colour = C_BAR if self.done is None else C_DONE if self.done == 0 else C_FAIL
         if frac is None:  # no plan: a block that sweeps across to show it is alive
@@ -332,6 +339,8 @@ def main():
         view.done = rc
         if rc == 0:
             view.phase = "finished"
+            if view.cache:  # export steps restored from the build cache (tools/stepcache.py)
+                view.phase += "  (export steps: " + ", ".join(f"{n} {k}" for k, n in sorted(view.cache.items())) + ")"
         elif rc < 0 or rc in (130, 143):
             view.phase = "interrupted"
         else:
