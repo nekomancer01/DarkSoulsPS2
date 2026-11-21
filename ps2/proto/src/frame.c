@@ -1,6 +1,7 @@
 /* frame.c: the frame loop, one function per phase (frame.h has the phases and the rule). Moved from main.c as it was:
- * the same calls in the same order, except map_set_player, which moved from the start of the map pass to the end of
- * WORLD (it updates the draw groups enemies and events read; no packet depends on the order). */
+ * the same calls in the same order, except the player's world update (draw group tick, streamer, floor: map_set_player
+ * until Polaris 4.1, now called here), which moved from the start of the map pass to the end of WORLD (it updates the
+ * draw groups enemies and events read; no packet depends on the order). */
 #define NEWLIB_PORT_AWARE  /* fio calls (the trace recorder), as save.c */
 #include <math.h>
 #include <stdio.h>

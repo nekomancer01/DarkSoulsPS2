@@ -4,8 +4,8 @@
  * words the frame uses (depth / alpha tests, blend equations, filters, wrapping, TEXA), the FRAME / ZBUF words built
  * from the screen buffers, the image-transfer header words, and the display registers (gs_display_init in gs.c). Code
  * outside gs.h / gs.c writes GS state through these names; tools/ci/gsown.py (CI job "hygiene") fails on a raw
- * GS_SETREG_<state register>, GS_SET_<display register>, SetGsCrt or gsKit state call anywhere else. map.c keeps its
- * own literals until Polaris 4.1 splits it (streaming work is live there); gs.c asserts they equal the names.
+ * GS_SETREG_<state register>, GS_SET_<display register>, SetGsCrt or gsKit state call anywhere else (no file is
+ * exempt since Polaris 4.1 moved the map files onto these names; gs.c still asserts the values they wrote before).
  * Two call sites that write nearly the same word keep two names (the packets stay byte-identical); TECH_DEBT render-16
  * lists the near-duplicates to merge with the order table (Polaris 1.4).
  *
