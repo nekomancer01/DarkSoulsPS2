@@ -36,7 +36,7 @@ def main():
     files = [(d, f) for d in (SRC, LAB) if os.path.isdir(d) for f in sorted(os.listdir(d)) if f.endswith((".c", ".h"))]
     for d, f in files:
         text = code(open(os.path.join(d, f), errors="replace").read())
-        incs = INC.findall(text)
+        incs = [os.path.basename(i) for i in INC.findall(text)]  # "../src/world_i.h" counts too
         for hdr, allowed in RULES:
             if hdr in incs and (d != SRC or f not in allowed):
                 fails.append(f"{os.path.relpath(os.path.join(d, f), ROOT)} includes {hdr} (only {' '.join(sorted(allowed))})")

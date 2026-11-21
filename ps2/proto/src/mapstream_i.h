@@ -197,9 +197,7 @@ extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) 
  * then to any page with a hole (the old order), so the split never refuses what the old placement placed. (Small items
  * from the top and page-sized groups from the bottom, by size alone, was tried on 2026-11-12 and not kept: no-room
  * refusals 440 -> 515 on taurus; it took whole pages for small items even when the arena was tight.) */
-#ifndef MS_LIFE
-#define MS_LIFE cv_MS_LIFE  /* runtime switch, default 1 (src/cvar.h) */
-#endif
+/* (the MS_LIFE default is in msarena.h: the arena places by it) */
 #define MS_SMALL_KB 8u  /* texture items up to this are MS_K_SMALL (mip 1 levels: 4 KB) */
 /* MS_TIDY (default 1, runtime switch: option set MS_TIDY 0 = pages emptied only when a read waits for one): a reserve
  * of whole free item pages, kept by compaction on quiet frames (streaming research idea 4; GTA's PS2 heap,
@@ -474,11 +472,6 @@ enum { RK_FAR, RK_COARSE, RK_SKY, RK_TEX, RK_MIP1, RK_OTHER, RK_N };
 #define MS_ORPHAN 1
 #endif
 typedef struct { int tk; void *buf; unsigned bytes; } Orphan;
-/* mapstream's arena (split from mapstream.c 2026-11-12, moved as it was): 256-byte granules on a grid of 64 KB
- * pages, the pools, pages borrowed from the heap, clearing windows and moving items (defrag), and the
- * mapstream_alloc / _pool / _free API. mapstream.c's header comment has the design. */
-#include "mapstream_i.h"
-
 /* MS_LEND_REHOME (default on; 0 = the old drop): a lent near group a lite set needs the room of moves into the item
  * pages instead of going: dropped, the cell had nothing to draw until it was read again (its coarse level had made
  * way for it), and stairs and floors vanished for a moment at every block turn-on (Ame's report 2026-11-17 21:31,
@@ -537,9 +530,6 @@ int ms_issue(void);
 extern MsW ms_want[MS_WANTED];
 void ms_plan(const float *pos);
 void ms_flow_log(const float *pos);
-extern unsigned ms_lent_n;
-extern unsigned ms_lend_room;
-extern unsigned ms_lent_near;
 extern int ms_why;
 extern int ms_keep_buf;
 void ms_drop(int k, unsigned id);

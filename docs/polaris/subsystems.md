@@ -114,7 +114,7 @@ that stream with the player (`COL_TILES`).
 **Navmesh** (`nav.c`). DSR's MSB navmesh parts near a block's enemies: A* over the triangles, then the funnel through
 shared edges.
 
-Planned (phase 4): split `map.c` into level drawing and visibility (thread A); one level
+Planned (phase 4; `map.c` is split by role since Polaris 4.1): one level
 chain with resident parents; streaming sources with velocity (player, warp target, respawn point); DSR's read
 priority classes; 32 KB disc alignment; a whole-game manifest.
 

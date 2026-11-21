@@ -13,9 +13,6 @@
 #include "mem.h"
 #include "cvar.h"
 
-#ifndef MS_LIFE
-#define MS_LIFE cv_MS_LIFE  /* runtime switch, default 1 (src/cvar.h; mapstream_i.h has the design) */
-#endif
 
 /* ---- arena: granule bitmap on a page grid ---- */
 static unsigned char *arena;

@@ -18,6 +18,10 @@
 #ifndef MS_POOL
 #define MS_POOL (8u << 20)
 #endif
+#include "cvar.h"
+#ifndef MS_LIFE
+#define MS_LIFE cv_MS_LIFE  /* runtime switch, default 1 (src/cvar.h; mapstream_i.h has the design) */
+#endif
 /* EE heap left outside the arena when it is allocated (as v1): the 1.5 MB reserve + 1.5 MB for what loads later */
 #define MS_RESERVE (3u << 20)
 /* The top of the arena is kept for mapstream_alloc (block lite sets up to 1.7 MB, relief ~0.9 MB, enemy model.bin
