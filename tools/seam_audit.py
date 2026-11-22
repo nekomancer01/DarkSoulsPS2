@@ -9,7 +9,8 @@ blocks', as ps2/proto/Makefile lays them out). Seams come from world.bin's links
 triangle of block i whose load mask names another block j stands at the seam i -> j (DSR's ConnectCollision parts
 between maps, the cut cells inside one MSB). For each seam up to --spots spots on its walkable triangles (farthest
 apart), and from each --yaws camera yaws starting towards block j (the port's camera: feet + 1.42 m, 4 m back,
-pitch 0.1), three depth-only renders with tools/mapview.py's renderer (opaque pieces only, no sky):
+pitch 0.1, pulled in front of the resident blocks' collision as src/cam_input.c does), three depth-only renders
+with tools/mapview.py's renderer (opaque pieces only, no sky):
 
   ref      the blocks DSR has resident (the home block's area group and what its seams load; ref_blocks) at full
            detail (near level everywhere), no draw groups: what is there to see (--ref-dg:
@@ -20,6 +21,9 @@ pitch 0.1), three depth-only renders with tools/mapview.py's renderer (opaque pi
            included), draw groups of the floor under the player plus DG_SEAM's floors 4-16 m ahead along the view
            (map.c map_set_player)
   loading  the same with j still off: drawn by i's far panorama only (the frames while j's lite set is read)
+
+The ref leaves out another map's stand-ins for the home block's map (tools/farpano.py's rule, FAR_STANDIN_MAP;
+--standins: kept), and both renders alpha-test the textured map pieces (--no-alpha: every triangle solid).
 
 A hole is a pixel the ref covers and the runtime leaves empty; "sky" holes are those above the horizon, which the
 void ring does not cover. The audit fails (exit 1) when a view's steady holes exceed --fail % of the frame (default
@@ -117,29 +121,45 @@ def floor_seam(blocks, wb, home, feet, fwd, floor):
 
 def scene(blocks, wb, home, feet, eye, fwd, on, mode):
     """the opaque, non-sky triangles drawn: mode 'ref' (every block, near level, no draw groups) or 'run' (blocks in
-    on at their levels, the others by the home block's far panorama)"""
+    on at their levels, the others by the home block's far panorama) -> (P, ST, TI, textures). ALPHA keeps the
+    textures, so cut-out texels test through as on the GS (Darkroot's leaf cards are 60 % transparent: as solid walls
+    the ref counted the sky between the leaves as holes, 2026-11-21); TI -1: untextured (horizon, panorama)"""
     skip = mapcfg.CHUNK_SKY | mapcfg.CHUNK_BLEND
     if mode == "ref":
         # (on: the blocks DSR has resident here, ref_blocks)
         floor = blocks[home].floor_mask(feet) if REF_DG else None
-        picks = [c for k, b in enumerate(blocks) if k in on for c in b.pick(feet, eye, "near", floor)]
+        picks = [(k, c) for k, b in enumerate(blocks) if k in on for c in b.pick(feet, eye, "near", floor)]
+        if CUT_STANDINS:
+            picks = [(k, c) for k, c in (standin_cut(wb, home, k, c) for k, c in picks) if c is not None]
     else:
         floor = floor_seam(blocks, wb, home, feet, fwd, blocks[home].floor_mask(feet))
-        picks = [c for k, b in enumerate(blocks)
+        picks = [(k, c) for k, b in enumerate(blocks)
                  for c in (b.pick(feet, eye, None, floor) if k in on else blocks[home].far_pick(k, floor, eye))]
-    P = [c[0] for c in picks if not c[4] & skip and len(c[0])]
-    return np.concatenate(P) if P else np.zeros((0, 3, 3), np.float32)
+    picks = [(k, c) for k, c in picks if not c[4] & skip and len(c[0])]
+    if not picks:
+        return np.zeros((0, 3, 3), np.float32), np.zeros((0, 3, 2)), np.zeros(0, np.int64), []
+    base, tex = {}, []
+    if ALPHA:
+        for k in sorted({k for k, _c in picks}):
+            base[k] = len(tex)
+            tex += blocks[k].tex
+    tx = lambda k, c: ALPHA and c[3] >= 0 and c[1] is not None and len(c[1]) == len(c[0])
+    P = np.concatenate([c[0] for _k, c in picks])
+    ST = np.concatenate([c[1] if tx(k, c) else np.zeros((len(c[0]), 3, 2)) for k, c in picks])
+    TI = np.concatenate([np.full(len(c[0]), base[k] + c[3] if tx(k, c) else -1, np.int64) for k, c in picks])
+    return P, ST, TI, tex
 
 
-def depth(P, eye, tgt, W, H, tmp):
-    """opaque depth (H, W), inf where nothing is drawn"""
+def depth(S, eye, tgt, W, H, tmp):
+    """opaque depth (H, W), inf where nothing is drawn (S: scene()'s)"""
+    P, ST, TI, tex = S
     n = len(P)
     if not n:
         return np.full((H, W), np.inf)
-    geo = (P.astype(np.float32), np.zeros((n, 3, 2)), np.full((n, 3, 4), 128.0), np.full(n, -1), np.zeros(n, np.int64),
+    geo = (P.astype(np.float32), ST, np.full((n, 3, 4), 128.0), TI, np.zeros(n, np.int64),
            np.zeros(n), np.concatenate([P.min(1), P.max(1)], 1))
     z = []
-    mapview.render_view(tmp, geo, [], tuple(eye), tuple(tgt), W=W, H=H, zout=z)
+    mapview.render_view(tmp, geo, tex, tuple(eye), tuple(tgt), W=W, H=H, zout=z, alpha_pal=True)
     return z[0]
 
 
@@ -161,6 +181,38 @@ def area_group(gen):
     return d.area if d else 0
 
 
+def standin_cut(wb, home, k, c):
+    """(k, chunk) without the triangles that are another map's stand-ins for the home block's map, by
+    tools/farpano.py's rule (inside that map's cells and within FAR_STANDIN_MAP of its surfaces: Firelink's low-detail
+    Burg and its backdrop's view of it). DSR draws both, the real map in front; the port draws the real map and leaves
+    the copy out, so the copy is no hole (2026-11-21: Firelink's far backdrop 70-140 m away and a Firelink card 1 m
+    from the eye on a Burg roof were most of the Burg -> Burg failures). (k, None): nothing left"""
+    own = wb[home][1]
+    if wb[k][1] == own or not len(c[0]):
+        return k, c
+    key = (own, k, id(c[0]))
+    if key not in _SI:
+        import farpano
+        import horizon
+        if own not in _SI_TRIS:
+            T = [h[0] for kk, b in enumerate(_BLOCKS) if wb[kk][1] == own for hz in b.hzn for h in hz if len(h[0])]
+            _SI_TRIS[own] = np.concatenate(T) if T else np.zeros((0, 3, 3))
+        cen = c[0].mean(1).astype(np.float64)
+        cut = farpano.in_map(cen, own)
+        # (FAR_STANDIN_MAP 0, or no native distance library / no horizon: farpano.py's xz-cell rule alone)
+        if cut.any() and STANDIN_MAP > 0 and len(_SI_TRIS[own]) and horizon._err_lib() is not None:
+            cut[cut] = horizon._dist(_SI_TRIS[own], cen[cut], np.full(int(cut.sum()), STANDIN_MAP)) < STANDIN_MAP
+        _SI[key] = cut
+    cut = _SI[key]
+    if not cut.any():
+        return k, c
+    if cut.all():
+        return k, None
+    keep = ~cut
+    return k, (c[0][keep], c[1][keep] if c[1] is not None and len(c[1]) == len(keep) else c[1], c[2][keep]
+               if c[2] is not None and len(c[2]) == len(keep) else c[2], c[3], c[4], c[5])
+
+
 def ref_blocks(wb, i, on):
     """the blocks DSR has resident at a spot of block i: its area group's (one area load list) and those i's seams load
     (world.bin links). Every block of the world was the first run's ref: from Darkroot, the Asylum's and Firelink's
@@ -169,16 +221,56 @@ def ref_blocks(wb, i, on):
     return set(on) | {k for k in range(len(wb)) if (a and _AREA[k] == a) or wb[k][1] == wb[i][1]}
 
 
+CAM_D, CAM_HEAD, CAM_WALL, CAM_MIN = 4.0, 1.42, 0.55, 0.2  # src/cam_input.c cam_follow (CAM_WALL: R_NEAR + 0.05)
+
+
+def cam_pull(feet, yaw, pitch, cols):
+    """the port's camera (src/cam_input.c cam_follow): mapshot.camera's eye pulled in front of the first collision
+    triangle on the ray from the head to it (cols: the collision of the blocks resident there, every triangle taken as
+    solid). Without it a spot by a wall put the eye inside the rock of the next map, and the audit counted that rock's
+    back faces as holes (2026-11-21: most of the Depths -> Burg failures)"""
+    eye, tgt = mapshot.camera(*feet, yaw, pitch)
+    head = np.array([feet[0], feet[1] + CAM_HEAD, feet[2]])
+    d = eye - head
+    lo, hi = np.minimum(head, eye) - 0.01, np.maximum(head, eye) + 0.01
+    t_hit = 1.0
+    for T in cols:
+        m = (T.max(1) >= lo).all(1) & (T.min(1) <= hi).all(1)
+        if not m.any():
+            continue
+        A, e1, e2 = T[m, 0], T[m, 1] - T[m, 0], T[m, 2] - T[m, 0]
+        pv = np.cross(d, e2)
+        det = (e1 * pv).sum(1)
+        with np.errstate(all="ignore"):
+            inv = 1.0 / det
+            s = head - A
+            u = (s * pv).sum(1) * inv
+            q = np.cross(s, e1)
+            v = (q * d).sum(1) * inv
+            t = (e2 * q).sum(1) * inv
+        ok = (np.abs(det) > 1e-12) & (u >= 0) & (v >= 0) & (u + v <= 1) & (t >= 0) & (t <= t_hit)
+        if ok.any():
+            t_hit = float(t[ok].min())
+    if t_hit < 1.0:
+        want = max(t_hit * CAM_D - CAM_WALL, CAM_MIN)
+        eye = head + d * (want / CAM_D)
+        tgt = tgt + (eye - mapshot.camera(*feet, yaw, pitch)[0])
+    return eye, tgt
+
+
 def view(job):
     """one camera: -> dict with the hole shares, and the masks for the sheet"""
     wb, i, j, feet, yaw, W, H, tmp = job
     blocks = _BLOCKS
-    eye, tgt = mapshot.camera(*feet, yaw, 0.1)
-    fwd = np.array([math.sin(yaw), 0.0, math.cos(yaw)])
     load = 1 << i
     for first, cnt, ld, _k in wb[i][3]:
         load |= ld
     on = {k for k in range(len(blocks)) if load >> k & 1}
+    if CAM_COL:
+        eye, tgt = cam_pull(feet, yaw, 0.1, [_COLS[k] for k in ref_blocks(wb, i, on) if _COLS[k] is not None])
+    else:
+        eye, tgt = mapshot.camera(*feet, yaw, 0.1)
+    fwd = np.array([math.sin(yaw), 0.0, math.cos(yaw)])
     zr = depth(scene(blocks, wb, i, feet, eye, fwd, ref_blocks(wb, i, on), "ref"), eye, tgt, W, H, tmp)
     out = {"seam": f"{wb[i][0]}->{wb[j][0]}", "i": i, "j": j, "feet": [round(float(v), 2) for v in feet],
            "yaw": round(yaw, 3)}
@@ -195,6 +287,12 @@ def view(job):
 
 _BLOCKS = None
 _AREA = []
+_COLS = []      # per block its collision triangles (cam_pull)
+_SI, _SI_TRIS = {}, {}  # standin_cut's masks per (home map, block, chunk) and each map's horizon triangles
+STANDIN_MAP = float(os.environ.get("FAR_STANDIN_MAP", 8.0))  # tools/farpano.py's (0: its xz-cell rule)
+CUT_STANDINS = True  # --standins: kept in the ref (counted as holes)
+ALPHA = True    # --no-alpha: every map triangle solid (the audit before 2026-11-21)
+CAM_COL = True  # --no-cam-col: the eye 4 m back whatever is in the way (the audit before 2026-11-21)
 REF_DG = False  # --ref-dg: the ref under DSR's draw-group rule (the floor's part alone), not everything
 
 
@@ -209,15 +307,22 @@ def main():
     ap.add_argument("--fail", type=float, default=0.5, help="steady hole share of a view that fails, percent")
     ap.add_argument("--only", help="comma-separated block packs: seams from these blocks only")
     ap.add_argument("--ref-dg", action="store_true", help="ref under DSR's draw groups (fewer holes a mask explains)")
+    ap.add_argument("--no-cam-col", action="store_true", help="no camera collision (the eye always 4 m back)")
+    ap.add_argument("--no-alpha", action="store_true", help="no alpha test (cut-out map triangles count as solid)")
+    ap.add_argument("--standins", action="store_true", help="count another map's stand-ins for this map as holes")
     a = ap.parse_args()
-    global REF_DG
+    global REF_DG, CAM_COL, ALPHA, _COLS, CUT_STANDINS
+    CUT_STANDINS = not a.standins
     REF_DG = a.ref_dg
+    CAM_COL = not a.no_cam_col
+    ALPHA = not a.no_alpha
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
     wb = world(a.gen)
     _BLOCKS = [mapshot.Block(g) for _p, _m, g, _l in wb]
     global _AREA
     _AREA = [area_group(g) for _p, _m, g, _l in wb]
+    _COLS = [(b.col or mapshot.collision(os.path.join(b.gen, "collision.bin")) or (None,))[0] for b in _BLOCKS]
     print("seam_audit: area groups " + " ".join(f"{p}:{a}" for (p, *_), a in zip(wb, _AREA)), flush=True)
     print(f"seam_audit: {len(wb)} blocks loaded in {time.time() - t0:.1f} s", flush=True)
     W, H = a.size

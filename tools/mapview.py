@@ -55,7 +55,7 @@ def load_map_bin(path):
         tex, spawn, fog
 
 
-def render_view(path, geo, tex, eye, target, W=960, H=540, fov_y=43.0, fog=None, zout=None):
+def render_view(path, geo, tex, eye, target, W=960, H=540, fov_y=43.0, fog=None, zout=None, alpha_pal=False):
     """Z-buffered, perspective-correct textured software render like the PS2: CLUT textures x vertex light, alpha
     test on opaque chunks, back faces culled where the chunk flag says so, near plane 0.1 m; blended chunks after the
     opaque ones, far to near per pixel (alpha or additive, Z tested, not written); fog from load_map_bin's fog (sky
@@ -166,7 +166,9 @@ def render_view(path, geo, tex, eye, target, W=960, H=540, fov_y=43.0, fog=None,
                     vc = COL[tt, 0] * b0[:, None] + COL[tt, 1] * b1[:, None] + COL[tt, 2] * b2[:, None]
                     col = tc[:, :3] * vc[:, :3]
                     alpha = tc[:, 3] / 128 * vc[:, 3]
-                    ok = (fl & 2).astype(bool) | (texel != 255) | ~textured  # alpha test on opaque cut-outs
+                    # alpha test on opaque cut-outs: index 255, the 8-bit transparent one (alpha_pal: the palette's
+                    # alpha, which also catches the 16-colour textures' index 15; tools/seam_audit.py)
+                    ok = (fl & 2).astype(bool) | ((tc[:, 3] > 0) if alpha_pal else (texel != 255)) | ~textured
                     z = 1 / iz
                     if fog:
                         fb, fe, fm, fc, sc, sd = fog
