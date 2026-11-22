@@ -429,11 +429,11 @@ def build(own, gens):
     own_map = area.BLOCKS.get(name, {}).get("map")
     src, n_in, peers, counts = [], 0, set(), {"hidden": 0, "standin": 0}
     own_tris = hzn_tris(os.path.join(gens[own], "hzn.bin"))[0] if horizon._err_lib() is not None else np.zeros((0, 3, 3))
-    # this map's surfaces, every block of it (STANDIN_MAP)
+    # this map's surfaces, every block of it (STANDIN_MAP; none without the native distance library: the xz cells alone)
     same = [g for bi, g in enumerate(gens) if bi != own and own_map and
             area.BLOCKS.get(os.path.basename(os.path.normpath(g)), {}).get("map") == own_map]
     map_tris = np.concatenate([own_tris] + [hzn_tris(os.path.join(g, "hzn.bin"))[0] for g in same]) \
-        if len(own_tris) else own_tris
+        if horizon._err_lib() is not None else own_tris
     for bi, g in enumerate(gens):
         if bi == own:
             continue

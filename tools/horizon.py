@@ -853,6 +853,8 @@ def build(b):
         stats["hidden"] = int((~vis).sum())
         keep = keep.copy()
         keep[np.flatnonzero(keep)[~vis]] = False
+        cards &= keep
+        stats["cards"] = int(cards.sum())
     mo = SIMP in ("auto", "meshopt") and _meshopt() is not None
     used = []
     for g in (1, 0):  # the backdrop (BD_KB), then the map (KB)
@@ -877,15 +879,23 @@ def build(b):
             return out
 
         size, cap_b = ntri, None
-        if not g and cards.any() and CUT_SAME:  # the crown cards within the bytes the horizon took without them
-            full, raw = raw, [(dset, sel & ~cards) for dset, sel in raw if (sel & ~cards).any()]
+        part = [(dset, sel & ~cards) for dset, sel in raw if (sel & ~cards).any()]
+        if not g and (selg & cards).any() and CUT_SAME and IDX and part:
+            # the crown cards within the bytes the horizon took without them: the fit key() below would have picked
+            full, raw = raw, part
             alone = []
             if mo:
-                alone.append(fit(run_mo, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap))
+                alone.append((*fit(run_mo, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav),
+                                   cap), "meshopt"))
             if SIMP in ("auto", "qem") or not mo:
-                alone.append(fit(run_qem, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)], nav), cap))
-            # (cards are loose triangles: three vertices each, so the bytes, not the triangles, are held)
-            cap_b = min(min(nbytes(x[2]) for x in alone), cap * BPT)
+                alone.append((*fit(run_qem, lambda r: mesh_err([(P[sel], x[1][x[3]]) for (_, sel), x in zip(raw, r)],
+                                                                nav), cap), "qem"))
+            m_ = lambda c: c[0][0] if c[0] is not None else c[1]
+            pick = min(alone, key=lambda c: (m_(c) > PX * 1.01, round(m_(c), 1) if m_(c) > PX * 1.01 else 0, ntri(c[2]),
+                                             c[3] != "meshopt"))
+            # (cards are loose triangles: three vertices each, so the bytes, not the triangles, are held; nbytes
+            # counts indexed batches, hence IDX)
+            cap_b = min(nbytes(pick[2]), cap * BPT)
             raw = full
             size, cap = nbytes, cap_b
         cand = []  # (measured, s, method, [(set, V, VC, T, welded triangles)])

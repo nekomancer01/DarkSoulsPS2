@@ -129,7 +129,7 @@ def scene(blocks, wb, home, feet, eye, fwd, on, mode):
         # (on: the blocks DSR has resident here, ref_blocks)
         floor = blocks[home].floor_mask(feet) if REF_DG else None
         picks = [(k, c) for k, b in enumerate(blocks) if k in on for c in b.pick(feet, eye, "near", floor)]
-        if STANDIN_MAP > 0:
+        if CUT_STANDINS:
             picks = [(k, c) for k, c in (standin_cut(wb, home, k, c) for k, c in picks) if c is not None]
     else:
         floor = floor_seam(blocks, wb, home, feet, fwd, blocks[home].floor_mask(feet))
@@ -159,7 +159,7 @@ def depth(S, eye, tgt, W, H, tmp):
     geo = (P.astype(np.float32), ST, np.full((n, 3, 4), 128.0), TI, np.zeros(n, np.int64),
            np.zeros(n), np.concatenate([P.min(1), P.max(1)], 1))
     z = []
-    mapview.render_view(tmp, geo, tex, tuple(eye), tuple(tgt), W=W, H=H, zout=z)
+    mapview.render_view(tmp, geo, tex, tuple(eye), tuple(tgt), W=W, H=H, zout=z, alpha_pal=True)
     return z[0]
 
 
@@ -199,10 +199,9 @@ def standin_cut(wb, home, k, c):
             _SI_TRIS[own] = np.concatenate(T) if T else np.zeros((0, 3, 3))
         cen = c[0].mean(1).astype(np.float64)
         cut = farpano.in_map(cen, own)
-        if cut.any() and len(_SI_TRIS[own]):
+        # (FAR_STANDIN_MAP 0, or no native distance library / no horizon: farpano.py's xz-cell rule alone)
+        if cut.any() and STANDIN_MAP > 0 and len(_SI_TRIS[own]) and horizon._err_lib() is not None:
             cut[cut] = horizon._dist(_SI_TRIS[own], cen[cut], np.full(int(cut.sum()), STANDIN_MAP)) < STANDIN_MAP
-        else:
-            cut[:] = False
         _SI[key] = cut
     cut = _SI[key]
     if not cut.any():
@@ -290,7 +289,8 @@ _BLOCKS = None
 _AREA = []
 _COLS = []      # per block its collision triangles (cam_pull)
 _SI, _SI_TRIS = {}, {}  # standin_cut's masks per (home map, block, chunk) and each map's horizon triangles
-STANDIN_MAP = float(os.environ.get("FAR_STANDIN_MAP", 8.0))  # tools/farpano.py's; --standins: 0 (counted as holes)
+STANDIN_MAP = float(os.environ.get("FAR_STANDIN_MAP", 8.0))  # tools/farpano.py's (0: its xz-cell rule)
+CUT_STANDINS = True  # --standins: kept in the ref (counted as holes)
 ALPHA = True    # --no-alpha: every map triangle solid (the audit before 2026-11-21)
 CAM_COL = True  # --no-cam-col: the eye 4 m back whatever is in the way (the audit before 2026-11-21)
 REF_DG = False  # --ref-dg: the ref under DSR's draw-group rule (the floor's part alone), not everything
@@ -311,9 +311,8 @@ def main():
     ap.add_argument("--no-alpha", action="store_true", help="no alpha test (cut-out map triangles count as solid)")
     ap.add_argument("--standins", action="store_true", help="count another map's stand-ins for this map as holes")
     a = ap.parse_args()
-    global REF_DG, CAM_COL, ALPHA, _COLS, STANDIN_MAP
-    if a.standins:
-        STANDIN_MAP = 0.0
+    global REF_DG, CAM_COL, ALPHA, _COLS, CUT_STANDINS
+    CUT_STANDINS = not a.standins
     REF_DG = a.ref_dg
     CAM_COL = not a.no_cam_col
     ALPHA = not a.no_alpha
