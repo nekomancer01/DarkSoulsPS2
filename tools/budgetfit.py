@@ -62,6 +62,12 @@ HELD = "held: a cut did not shrink the ask (the export is at its error caps, [ma
 HELD_MARK = "/* fit: held */"
 
 
+def held_row(r_room, r_near, cap):
+    """a held row keeps its numbers, but never above the room less a page (the gate's bad_room)"""
+    new = min(r_room, int(cap // STEP_KB * STEP_KB))
+    return new, int(round(r_near * new / r_room))
+
+
 def held_in_header(path=residency.HEADER):
     """rows an earlier fit held (marked HELD_MARK after the row in residency.h)"""
     return set(re.findall(r"^RES_BLOCK\((\w+), \d+, \d+\) " + re.escape(HELD_MARK), open(path).read(), re.M))
@@ -129,11 +135,11 @@ def fit(dirs, boot_map, prev_fit=None):
         prev = (prev_fit or {}).get(row_name)
         if f < 1 and (row_name in held_rows or (prev and prev.get("note", "").startswith("held"))):
             # held by an earlier fit (marked in residency.h, or the --prev fit's note): stays until it has headroom
-            new, near, note = r_room, r_near, HELD
+            (new, near), note = held_row(r_room, r_near, room - page), HELD
         elif f < 1 and prev and prev.get("cut") and prev["fit"][0] == r_room and \
                 prev.get("own_p99", prev["hard_p99"]) - own_p99 < 0.005 * own_p99:
             # the last fit cut this row and the ask did not follow: the export is at its error caps; hold the row
-            new, near = r_room, r_near
+            new, near = held_row(r_room, r_near, room - page)
             note = HELD
         elif f < 1 and cap:
             note = f"{cap} level(s) at the export's error caps: a smaller row may not shrink them ([mapenv] WS_PX0 / WS_PX1)"
