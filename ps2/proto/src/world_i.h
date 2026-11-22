@@ -360,6 +360,8 @@ void w_boot_lean(void);
 void w_boot_step(int issue);
 void w_step(const float *feet, float dt);
 int w_slot_deferred(int i, const float *feet);
+/* block i is wanted by a source besides the player alone (a settle does not wait for it: the player is not there) */
+int w_src_only(int i);
 
 
 static inline float box_d(const WorldBlock *b, const float *p)

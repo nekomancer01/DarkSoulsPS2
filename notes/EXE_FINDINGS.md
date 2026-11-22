@@ -128,6 +128,20 @@ See PORTING.md "ESD runtime" and TECH_DEBT esd-1..7.
 - Not decoded: the D3D11 blend descs behind those modes (BLEND_OP / SRC / DEST per mode), and the FFX particle BlendMode
   table (a different enum: 6 is alpha blend there). material.py SUBTRACT (Cd - Cs x As) and FFX_CLASS stay ASSUMED.
 
+## File read queues and block loads (2026-11-10, thread el8v8a; written up 2026-11-21, Polaris 4.4)
+- FUN_14059f530 creates five file-read queues; FUN_14059e300 serves them strictly in order each frame, the work after a
+  read capped at about 95 % of a 60 Hz frame. Order (queue names from the exe's strings): Default, BackRead_MapHit
+  (collision), BackRead_MapDefault (map), BackRead_MapTpf (textures), Prefetch. A request's queue is its byte +0x39,
+  >> 2 & 7. So a block's collision is read before its map, its map before its textures, and prefetch last.
+- Block load (WorldBlockRes.cpp, FUN_1403dac50; FUN_1403e1000 walks the blocks, 0x270 bytes each): both the h and the l
+  hkxbhd collision of every block are mounted (FUN_1403da1d0), the tpfbhd per area in four groups (_0000.._0003) plus
+  GI_EnvM, then the steps WorldBlockNvmPrepare and WorldBlockChrPrepare (characters load with the block, not by
+  distance). Area lists: arealoadlist / WorldMsbList.worldloadlistlist (FUN_14027a770). What the l collision is used
+  for is not confirmed.
+- Ported as far as it helps (TECH_DEBT world-16, world-32): lite sets (collision index + tables) and the collision
+  tiles within 16 m go out ahead of map reads; a strict queue order and "map waits for the tiles under it" were
+  measured and not adopted (thread el8v8a 2026-11-10, world-32).
+
 ## Still unknown
 - Slot priority inside the anim player (ChrCtrl vt+0x38) when both ESD groups play anims; what f0 sees then (esd-9).
 - Which NpcParam row PlayerIns+0x7E0 points at (PlayerIns ctor is in the obfuscated .text). It no longer matters for

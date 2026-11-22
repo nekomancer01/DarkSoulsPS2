@@ -99,14 +99,21 @@ static int lite_pending(void)
     return 0;
 }
 
+static unsigned src_only_m;  /* blocks wanted by the other sources alone (not by the player): this step's from where
+                               * w_step computes it (its start reads the last step's) */
+int w_src_only(int i) { return i > 0 && (src_only_m >> i & 1); }
 /* the block room_for would turn off for block want, -1 none */
 static int room_pick(int want, const float *feet)
 {
     int b = -1;
     float bd = -1e30f;
     int ronly = w_ronly_m >> want & 1;
-    /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH) */
+    /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH). For a block
+     * only another source wants (a respawn point), never a kept one (w_keep_m: what the player's floor and reach keep,
+     * and the sources' own): the preload must not take the player's surroundings away */
     unsigned firm = ronly ? w_want_m : w_want_m & ~w_ronly_m;
+    if (src_only_m >> want & 1)
+        firm |= w_keep_m;
     for (int i = 1; i < w_nblk; i++)
         if (i != want && i != w_cur && w_rt[i].state == W_ON && !(firm >> i & 1) && world_stats.reading != i) {
             float d = box_d(&w_tab[i], feet) - ((w_want_m >> i & 1) ? 1e6f : 0);  /* (unwanted ones go first) */
@@ -214,7 +221,6 @@ void world_source_off(int kind)
 /* the blocks a source other than the player wants: those its floor's links load / keep (the block it stands in too)
  * when that block is on, else every block whose bounds and height range hold it (as the player without a floor) */
 static int src_boot;  /* a source stands in the boot block (its tables come back: boot_want) */
-static unsigned src_only_m;  /* last step's blocks wanted by the other sources alone (not by the player) */
 static void src_wants(const float *p, unsigned *wm, unsigned *km)
 {
     ColHit h = {.tri = -1};
@@ -299,6 +305,7 @@ void w_step(const float *feet, float dt)
     }
     wm |= w_hold_want, km |= w_hold_want;  /* the blocks the player is held for (world_hold) */
     w_ronly_m &= ~w_hold_want;
+    src_only_m &= ~w_hold_want;  /* (the player's now) */
     if (wm != w_want_m || (km | wm) != w_keep_m)
         printf("world: block %d tri %d: want %x keep %x\n", w_cur, h.tri, wm, km | wm);
     w_want_m = wm, w_keep_m = km | wm;
@@ -437,6 +444,8 @@ void w_step(const float *feet, float dt)
                     d += feet[1] < w_tab[i].y0 ? w_tab[i].y0 - feet[1] : feet[1] > w_tab[i].y1 ? feet[1] - w_tab[i].y1 : 0;
                 if (reach_t(i) >= 0)  /* WORLD_REACH: by time to its seam, the ones walked away from last */
                     d = (reach_t(i) + (w_reach_v[i] > 0.5f ? WORLD_AWAY_S : 0)) * WORLD_DASH;
+                if (src_only_m >> i & 1)
+                    d += 1e6f;  /* (a source's block after the player's reach-only ones) */
                 if (want >= 0 && (w_ronly_m >> want & 1) && !(w_ronly_m >> i & 1))
                     wd = 1e30f;  /* (a link-wanted block goes before any wanted by the reach alone) */
                 if (d < wd)
@@ -462,7 +471,10 @@ void w_step(const float *feet, float dt)
             if (lw >= 0 && w_rt[lw].retry_s >= WORLD_RETRY_S)
                 w_room_stuck = !room_for(lw, feet);
         }
-        if (want >= 0 && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full())) {
+        /* a block only a source wants (a respawn point) with nothing it may turn off waits without holding the rest
+         * of the chain back: the boot block's tables, the panorama and the relief go on */
+        int src_wait = want >= 0 && (src_only_m >> want & 1) && room_pick(want, feet) < 0;
+        if (want >= 0 && !src_wait && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full())) {
             int def = w_slot_deferred(want, feet);
             w_room_stuck = !room_for(want, feet) && !def;  /* a fresh failure for room, or no slot (not a deferred one) */
             static int def_last = -1;
