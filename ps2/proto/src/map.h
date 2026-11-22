@@ -56,7 +56,7 @@ extern int map_holes;
  * (mapstream_res_open; no full swap, TECH_DEBT world-2 / world-5). col_block: its collision block (ColHit.block), for
  * the fog / light rows and draw groups under the player. k = 0 then needs map_upload; k > 0 takes a free texture
  * slot. Buffers stay owned by the caller and must outlive the instance plus two frames (VIF chains). */
-#define MAP_INST 16  /* = WORLD_MAX (world.h): block index = map instance */
+#define MAP_INST 32  /* = WORLD_MAX (world.h): block index = map instance */
 /* map instance of collision block col_block (-1: none on); the collision block of instance k (-1 while it is off):
  * mapblock.c; drawgrp.c dg_player reads them */
 int map_inst_of(int col_block);

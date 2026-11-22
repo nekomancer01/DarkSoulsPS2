@@ -103,7 +103,7 @@ def block_reach(sub, i, nbr, rects, maps, cross):
 
 
 def encode(dists):
-    """a triangle's reach as world.bin stores it: (u16 mask, (u8 distance in REACH_STEP per set bit, low bit first));
+    """a triangle's reach as world.bin stores it: (u32 mask, (u8 distance in REACH_STEP per set bit, low bit first));
     the REACH_N nearest blocks when more are within reach"""
     js = sorted(dists, key=lambda j: dists[j])[:REACH_N]
     mask = sum(1 << j for j in js)
@@ -114,4 +114,4 @@ def encode(dists):
 # speed covers in a lite set's turn-on time, and their reach runs were most of the table (Darkroot's six blocks: 31 k of
 # 39 k runs at 4 m steps, world.bin 265 -> 592 KB): WORLD_REACH_SAME=1 adds them
 REACH_SAME = os.environ.get("WORLD_REACH_SAME", "0") == "1"
-REACH_N = 6  # distances per reach entry (world.bin v5: u16 mask + 6 x u8)
+REACH_N = 6  # distances per reach entry (world.bin REAC v2: u32 mask + 6 x u8)

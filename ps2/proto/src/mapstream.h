@@ -48,7 +48,7 @@ static inline float cell_near_d2(const MapCell *c, const short *key, const float
 int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n);
 /* World blocks (src/world.c): instance k (0 = the boot area, which mapstream_init opens) of another map block's cell
  * table, all instances sharing the arena; mapstream_get answers for the selected instance */
-#define MS_INST 16  /* = MAP_INST (map.h) */
+#define MS_INST 32  /* = MAP_INST (map.h) */
 int mapstream_open(int k, const char *pak_path, const MapCell *cells, unsigned n);
 /* the same with a Pack the caller opened and keeps open (pack.h; no pack_open / close here: no IOP wait) */
 int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned n);

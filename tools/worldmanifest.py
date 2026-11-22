@@ -344,7 +344,7 @@ def markdown(M):
          f"build), {len(M['seams'])} seams. Collision cap {M['caps']['collision']} (cut at {M['caps']['cut']}), enemy roster {M['caps']['enemies']} "
          f"per block.", "",
          f"All of Lordran as one world: {len(M['blocks'])} blocks against WORLD_MAX {M['caps']['world_max']} "
-         f"(world.h, world.bin's u16 masks).", "",
+         f"(world.h, world.bin's u32 masks).", "",
          "| # | map | source | collision | cells | blocks | built | cells left (collision) | note |",
          "|---|---|---|---:|---:|---:|---:|---|---|"]
     for mid, m in M["maps"].items():

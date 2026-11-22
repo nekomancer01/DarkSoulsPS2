@@ -164,7 +164,7 @@ def structural(gen):
     import chunkfile as chunk
     try:
         w = chunk.read(p, b"WRLD")  # tools/export_world.py
-        bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)
+        bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 2)
     except chunk.ChunkError:
         return None
     n = len(bl) // 64
@@ -182,7 +182,7 @@ def structural(gen):
     best, at = 0, None
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
-            first, cnt, load, keep = struct.unpack_from("<I3H", lk, 12 * (lr[2 * blk] + l))
+            first, cnt, _, load, keep = struct.unpack_from("<IHHII", lk, 16 * (lr[2 * blk] + l))  # (LINK v2)
             load |= (1 << blk) if blk else 0
             keep |= load
             on = [i for i in ent if keep >> i & 1]

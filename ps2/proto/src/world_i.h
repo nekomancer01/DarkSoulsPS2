@@ -241,16 +241,18 @@ _Static_assert(sizeof(WorldBlock) == 64, "WorldBlock");
 /* triangles [first, first + n) of a block's collision.bin want the blocks in load and keep those in keep */
 typedef struct {
     unsigned first;
-    unsigned short n, load, keep, pad;  /* world.bin LINK v1: u16 masks (WORLD_MAX 16) */
+    unsigned short n, pad;
+    unsigned load, keep;  /* world.bin LINK v2: u32 masks (WORLD_MAX 32) */
 } WorldLink;
-_Static_assert(sizeof(WorldLink) == 12, "WorldLink");
-/* world.bin REAC v1 (WORLD_REACH): reach runs (u16 first triangle, u8 entry) and entries, the distances to the seams */
+_Static_assert(sizeof(WorldLink) == 16, "WorldLink");
+/* world.bin REAC v2 (WORLD_REACH): reach runs (u16 first triangle, u8 entry) and entries, the distances to the seams */
 typedef struct {
-    unsigned short mask;
+    unsigned mask;
     unsigned char d[6];  /* per set bit of mask, low bit first: distance in reach_step metres (rounded down) */
+    unsigned char pad[2];
 } WorldReach;
-_Static_assert(sizeof(WorldReach) == 8, "world.bin REAC v1");
-_Static_assert(WORLD_MAX <= 16, "world.bin LINK v1 load / keep masks are u16");
+_Static_assert(sizeof(WorldReach) == 12, "world.bin REAC v2");
+_Static_assert(WORLD_MAX <= 32, "world.bin LINK / REAC v2 masks are u32");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 

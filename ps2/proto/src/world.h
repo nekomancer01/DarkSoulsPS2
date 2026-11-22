@@ -18,7 +18,7 @@
 
 #include <gsKit.h>
 
-#define WORLD_MAX 16  /* blocks in world.bin (u16 load / keep masks, world.bin v4) */
+#define WORLD_MAX 32  /* blocks in world.bin (u32 load / keep masks, world.bin LINK / REAC v2) */
 
 /* Before main.c loads the boot area: reads world.pak and opens every block's pack.
  * 0 = no world table, or one whose block 0 is not boot_area (single-area builds): main.c loads map.bin as before and
