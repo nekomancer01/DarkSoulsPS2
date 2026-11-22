@@ -19,8 +19,9 @@ sum over every block loaded there, so a seam spot's overshoot lowers every block
 of the spot follow export_map.py WS_SHARE_TRIS). The fit is a step toward a fixed point: rows change the exports, which
 change the asks; run it again after the re-export until no row moves by more than TOL_PCT (the report says when).
 
-A row that cannot move the ask is held and listed: with --prev (the last fit's json), a row the last fit cut whose
-block's hard tier p99 at its own spots did not drop by 0.5 % keeps its value. Also listed: when the block's export reports spots at its error caps
+A row that cannot move the ask is held and listed: with --prev (the last fit's json), a row the last fit cut (to the
+value it has now) whose block's hard tier p99 at its own spots did not drop by 0.5 % keeps its value, and --write marks
+it "/* fit: held */" in residency.h; a held row stays until its block has headroom again. Also listed: when the block's export reports spots at its error caps
 (map.bin.budget.json: a level whose solve did not meet its budget within WS_PX0 / WS_PX1 in tools/recipe.toml [mapenv], hand-set per map), a smaller row
 does not shrink it. Those rows and the [mapenv] knobs they depend on are what is still hand-set.
 
@@ -57,6 +58,15 @@ def spots_of(name, L, k, wb):
     return own[np.sort(first)]
 
 
+HELD = "held: a cut did not shrink the ask (the export is at its error caps, [mapenv] WS_PX0 / WS_PX1)"
+HELD_MARK = "/* fit: held */"
+
+
+def held_in_header(path=residency.HEADER):
+    """rows an earlier fit held (marked HELD_MARK after the row in residency.h)"""
+    return set(re.findall(r"^RES_BLOCK\((\w+), \d+, \d+\) " + re.escape(HELD_MARK), open(path).read(), re.M))
+
+
 def capped(gen):
     """levels whose spot solve could not meet the budget within the error caps and left own spots over
     (map.bin.budget.json "met" false), or None when the file is missing"""
@@ -86,17 +96,21 @@ def fit(dirs, boot_map, prev_fit=None):
     page = residency.RES["RES_PAGE_KB"]
     q = residency.RES["RES_ALLOW_PCT"] / 100.0 * TARGET_SHARE
     out = []
+    tot = L["tot"]["hard"]
+    # every block's own spots (an MSB's blocks each carry all its spots: the copy owned by the block whose cells hold
+    # the position is the one with that block's links and shares)
+    own_idx = [spots_of(name, L, k, wb) for k, name in enumerate(L["names"])]
+    pool = np.concatenate(own_idx) if own_idx else np.zeros(0, int)
+    held_rows = held_in_header()
     for k, name in enumerate(L["names"]):
         row_name = boot_map if name == "gen" or os.path.normpath(dirs[0]).endswith(name) else name
         r_room, r_near, own_row = residency.block_budget(row_name)
-        idx = spots_of(name, L, k, wb)
+        idx = own_idx[k]
         own_p99 = float(np.percentile(L["tot"]["hard"][idx], 99)) if len(idx) else 0.0
         if "hard_by" in L:  # and the other blocks' spots this block holds a SEAM_SHARE of (a seam spot's overshoot
             # is cut from every block there, or a raised neighbour would undo the cut)
-            tot = L["tot"]["hard"]
-            sh = np.flatnonzero(L["hard_by"][k] > SEAM_SHARE * np.maximum(tot, 1.0))
-            _, first = np.unique(np.round(L["P"][sh], 1), axis=0, return_index=True)
-            idx = np.union1d(idx, sh[first])
+            sh = pool[L["hard_by"][k][pool] > SEAM_SHARE * np.maximum(tot[pool], 1.0)]
+            idx = np.union1d(idx, sh)
         hard = L["tot"]["hard"][idx]
         if not len(hard):
             out.append(dict(block=row_name, gen=name, spots=0, row=[r_room, r_near], fit=None, note="no spots"))
@@ -113,18 +127,20 @@ def fit(dirs, boot_map, prev_fit=None):
         cap = capped(d)
         note = ""
         prev = (prev_fit or {}).get(row_name)
-        if f < 1 and prev and prev.get("note", "").startswith("held"):
-            new, near, note = r_room, r_near, prev["note"]
-        elif f < 1 and prev and prev["row"][0] > r_room and prev.get("own_p99", prev["hard_p99"]) - own_p99 < 0.005 * own_p99:
+        if f < 1 and (row_name in held_rows or (prev and prev.get("note", "").startswith("held"))):
+            # held by an earlier fit (marked in residency.h, or the --prev fit's note): stays until it has headroom
+            new, near, note = r_room, r_near, HELD
+        elif f < 1 and prev and prev.get("cut") and prev["fit"][0] == r_room and \
+                prev.get("own_p99", prev["hard_p99"]) - own_p99 < 0.005 * own_p99:
             # the last fit cut this row and the ask did not follow: the export is at its error caps; hold the row
             new, near = r_room, r_near
-            note = "held: the last cut did not shrink the ask (the export is at its error caps, [mapenv] WS_PX0 / WS_PX1)"
+            note = HELD
         elif f < 1 and cap:
             note = f"{cap} level(s) at the export's error caps: a smaller row may not shrink them ([mapenv] WS_PX0 / WS_PX1)"
         out.append(dict(block=row_name, gen=name, spots=int(len(idx)), over_pct=round(over, 2),
                         hard_p50=round(float(np.percentile(hard, 50))), hard_p99=round(float(np.percentile(hard, 99))),
                         hard_max=round(float(hard.max())), own_p99=round(own_p99), f=round(f, 3), row=[r_room, r_near], own_row=own_row,
-                        fit=[new, near], move_pct=round(abs(new - r_room) / r_room * 100, 1), note=note))
+                        fit=[new, near], cut=new < r_room, move_pct=round(abs(new - r_room) / r_room * 100, 1), note=note))
     return dict(room_kb=room, allow_pct=q * 100, tol_pct=TOL_PCT, blocks=out,
                 settled=all(b["fit"] is None or b["move_pct"] <= TOL_PCT for b in out))
 
@@ -134,8 +150,8 @@ def write_rows(R, path=residency.HEADER):
     for b in R["blocks"]:
         if not b["fit"]:
             continue
-        new = f"RES_BLOCK({b['block']}, {b['fit'][0]}, {b['fit'][1]})"
-        pat = re.compile(rf"^RES_BLOCK\({re.escape(b['block'])}, \d+, \d+\)", re.M)
+        new = f"RES_BLOCK({b['block']}, {b['fit'][0]}, {b['fit'][1]})" + (" " + HELD_MARK if b["note"] == HELD else "")
+        pat = re.compile(rf"^RES_BLOCK\({re.escape(b['block'])}, \d+, \d+\)(?: {re.escape(HELD_MARK)})?", re.M)
         if pat.search(src):
             src = pat.sub(new, src)
         else:
@@ -146,7 +162,7 @@ def write_rows(R, path=residency.HEADER):
 
 
 def markdown(R):
-    L = [f"# Budget fit (visual room {R['room_kb']:.0f} KB, worst {R['allow_pct']:.0f} % of a block's spots may stay over)",
+    L = [f"# Budget fit (visual room {R['room_kb']:.0f} KB, worst {R['allow_pct']:.1f} % of a block's spots may stay over)",
          "", "| block | spots | hard p50 / p99 / max KB | over % | f | row room / near | fit room / near | note |",
          "|---|---:|---|---:|---:|---|---|---|"]
     for b in R["blocks"]:
@@ -162,17 +178,15 @@ def markdown(R):
 
 def main(argv):
     args = [a for a in argv if a != "--write"]
-    rep = None
-    if "--report" in args:
-        i = args.index("--report")
-        rep = args[i + 1]
-        del args[i:i + 2]
+    opts = {}
+    for o in ("--report", "--prev"):  # options anywhere; the rest is <out> <gen dirs>
+        if o in args:
+            i = args.index(o)
+            opts[o] = args[i + 1]
+            del args[i:i + 2]
+    rep = opts.get("--report")
+    prev = {b["block"]: b for b in json.load(open(opts["--prev"]))["blocks"] if b.get("fit")} if "--prev" in opts else None
     out, dirs = args[0], args[1:]
-    prev = None
-    if "--prev" in args:
-        i = args.index("--prev")
-        prev = {b["block"]: b for b in json.load(open(args[i + 1]))["blocks"] if b.get("fit")}
-        del args[i:i + 2]
     R = fit(dirs, os.environ.get("MAP", "m10_02_00_00"), prev)
     with open(out, "w") as f:
         json.dump(R, f, indent=1)

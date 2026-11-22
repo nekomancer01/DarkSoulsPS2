@@ -56,7 +56,7 @@ def run(tmp, room_kb, near_kb, coarse_kb):
 
 
 with tempfile.TemporaryDirectory() as tmp:
-    big = max(r for r, _ in residency.BLOCKS.values())
+    big = residency.block_budget("m10_01_00_00_t")[0]  # the synthetic block's row (the default: it has none of its own)
     rc, out = run(tmp, room, 1000, 1000)
     check(rc == 0, f"world_budget --strict passes a spot at 2000 KB in a {room} KB room" + ("" if rc == 0 else "\n" + out))
     rc, out = run(tmp, room, room, 1000)
