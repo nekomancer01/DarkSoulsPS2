@@ -50,26 +50,32 @@
  * blocks' draw groups and visibility come with their lite sets (WORLD_DG_LITE, they no longer cut the arena at boot)
  * and the Parish block is wanted at the Burg seams, so the structural pool grew 3284 -> 4220 KB and the visual room
  * 5770 -> 5122 KB. */
+/* Since 2026-11-23 (Polaris 4.8 step 2) the rows' numbers are fitted, not hand-set: tools/budgetfit.py --write over a
+ * world build's blocks cuts a row whose block's spots are over the visual room and raises (half way) one with headroom
+ * up to the room less a page, until no row moves; a row whose cut did not shrink its export's ask is held (the export is
+ * at its error caps). The comments below record why each row was first set. Four passes from the hand-set rows:
+ * Darkroot garden 16.6 -> 0.8 % and Darkroot bonfire block 7.7 -> 0.7 % of their spots over; Firelink held at 2.5 %
+ * (both levels at their caps); world gate 0.71 % of all spots of every block (it gated the Burg blocks only before). */
 #ifdef RES_BLOCK
-RES_BLOCK(m10_02_00_00, 4990, 2636)
-RES_BLOCK(m10_01_00_00_w, 4530, 2360)
-RES_BLOCK(m10_01_00_00_b, 4780, 2510)
-RES_BLOCK(m10_01_00_00_p, 4930, 2600)
-RES_BLOCK(m18_01_00_00_a, 4990, 2636)
+RES_BLOCK(m10_02_00_00, 4590, 2425)
+RES_BLOCK(m10_01_00_00_w, 4860, 2532)
+RES_BLOCK(m10_01_00_00_b, 4950, 2600)
+RES_BLOCK(m10_01_00_00_p, 4630, 2442)
+RES_BLOCK(m18_01_00_00_a, 5110, 2699)
 /* 2026-11-15: the rest of the Parish (seams with the Parish bridge, the bonfire block and Burg west: as the bonfire
  * block) and the Depths (the entry block at the Lower Burg's door: as the Parish bridge; the deep block alone in its MSB
  * with the entry block) */
-RES_BLOCK(m10_01_00_00_c, 4780, 2510)
-RES_BLOCK(m10_00_00_00_a, 4930, 2600)
-RES_BLOCK(m10_00_00_00_b, 4990, 2636)
+RES_BLOCK(m10_01_00_00_c, 5110, 2683)
+RES_BLOCK(m10_00_00_00_a, 5110, 2695)
+RES_BLOCK(m10_00_00_00_b, 5110, 2699)
 /* Darkroot (2026-11-15): the garden entry block seams with the Parish's (as the Parish bridge), the rest are alone in
  * their MSB (ASSUMED until a world_budget.py pass over them) */
-RES_BLOCK(m12_00_00_00_e, 4930, 2600)
-RES_BLOCK(m12_00_00_00_g, 4990, 2636)
-RES_BLOCK(m12_00_00_00_m, 4990, 2636)
-RES_BLOCK(m12_00_00_00_w, 4990, 2636)
-RES_BLOCK(m12_00_00_00_x, 4990, 2636)
-RES_BLOCK(m12_00_00_00_s, 4990, 2636)
+RES_BLOCK(m12_00_00_00_e, 5110, 2695)
+RES_BLOCK(m12_00_00_00_g, 4160, 2197)
+RES_BLOCK(m12_00_00_00_m, 4280, 2261)
+RES_BLOCK(m12_00_00_00_w, 5110, 2699)
+RES_BLOCK(m12_00_00_00_x, 5110, 2699)
+RES_BLOCK(m12_00_00_00_s, 5110, 2699)
 RES_BLOCK(default, 4990, 2636)
 #endif
 
