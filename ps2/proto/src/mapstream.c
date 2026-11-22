@@ -18,6 +18,8 @@
  *   C_PREF   near parts within MS_R0_WANT (read ahead of walking in), mip 0 textures asked for
  *   C_KEEP   loaded and within its keep radius, or anything ranked past what the arena holds: kept while there is
  *            room, never read
+ * A streaming source besides the player (a respawn point, world.h world_source) classes each item too, by a settle's
+ * rule, at most C_VIEW2 and after the player's own C_VIEW2 items; an item takes the highest class any source gives it
  *   C_FREE   dropped once no VIF chain reads it
  * The plan is cut to fit: wanted items in rank order (class, then distance) until their bytes fill the item pages; the
  * rest become C_KEEP. So the plan always fits and the reader never stalls on items it cannot place.

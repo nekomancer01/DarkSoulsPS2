@@ -215,6 +215,7 @@ extern unsigned ms_lend_room;  /* the pools' idle room at the last plan (bytes) 
 #ifndef WORLD_SOURCES
 #define WORLD_SOURCES cv_WORLD_SOURCES
 #endif
+#define MS_SRC_KEY 1e7f  /* ranks a source's C_VIEW2 items after the player's (keys are squared metres, < 1e6) */
 #define MS_NSRC 3  /* sources besides the player at most (world.h WSRC_N - 1) */
 extern float ms_src[MS_NSRC][3];
 extern int ms_nsrc;

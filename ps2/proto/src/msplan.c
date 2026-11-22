@@ -292,8 +292,15 @@ static void plan_(const float *pos)
                 ms_ahead_on = 0, ms_target = 1;
                 int c2 = plan_item(k, m, id, ms_src[s], &k2);
                 ms_ahead_on = ao, ms_target = 0;
-                if (c2 > C_VIEW2)  /* below the player's hard tier: the preload never outranks what the player sees now */
+                /* at most C_VIEW2, after all of the player's own C_VIEW2 items (MS_SRC_KEY on the key, below): the preload
+                 * never outranks the player's hard tier or what is in view; it goes before the player's coarse level
+                 * out of view and near read-ahead (the respawn is seconds away, those may never be needed). (C_FARC
+                 * was tried: instance 0's C_FARC items are lent to the pools, so a lite set, the respawn's own,
+                 * dropped Firelink's respawn cells again. Other blocks' C_VIEW2 items are lendable still: a lite set
+                 * may drop those, and they are read again) */
+                if (c2 > C_VIEW2)
                     c2 = C_VIEW2;
+
                 if (c2 > c || (c2 == c && k2 < key))
                     c = c2, key = k2, from_src = 1;
             }
@@ -303,6 +310,8 @@ static void plan_(const float *pos)
                 c = C_KEEP;
             if (m->state[id] != MS_NONE && m->state[id] != MS_FAILED)
                 key *= MS_HOLD_K;  /* in (or on its way): ranks as if nearer, so the cut does not flip at its edge */
+            if (from_src && c == C_VIEW2)
+                key += MS_SRC_KEY;  /* (after the hold factor: in or not, every source item ranks after the player's) */
             m->cls[id] = (unsigned char)c;
             if (m->state[id] == MS_FAILED && retry)
                 m->state[id] = MS_NONE;
