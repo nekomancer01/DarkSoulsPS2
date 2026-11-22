@@ -217,7 +217,12 @@ def drawn(groups, part_dg):
 
 
 # ---- enemy placements of the area (export_enemies.py, export_chr.py variants, lua50.py) ----
-MAX_ENEMIES = 32  # ps2/proto/src/enemy.h
+# The roster of a cropped area / block, at most enemy.h MAX_ENEMIES (128 slots shared by the blocks on; each block's placements are
+# kept per block up to it: enemy.c blk_slot / blk_dead; ENEMY_NEAR_PLACE places only those within 70 m, which keeps the
+# shared slots enough). 32 until
+# 2026-11-22 (TECH_DEBT world-45: the Burg and Depths blocks dropped 9-26 placements each, the farthest from their
+# spawn); AREA_MAX_ENEMIES=32 = the old roster.
+MAX_ENEMIES = int(os.environ.get("AREA_MAX_ENEMIES", 128))
 
 
 def enemy_parts(b, map_id=None):
@@ -233,8 +238,8 @@ def enemy_parts(b, map_id=None):
         out.append((p["model"], p["npc_id"], p["think_id"], p["entity_id"], p["pos"], p["rot"]))
         names.append(p["name"])
     if map_id and not is_whole(map_id):
-        # cropped area: the runtime roster holds MAX_ENEMIES (enemy.h, 32) parts incl. c0000 (skipped later), so
-        # keep the non-c0000 parts nearest to the spawn (TECH_DEBT build-6)
+        # cropped area: the runtime roster holds MAX_ENEMIES parts per block, so keep the non-c0000 parts nearest to
+        # the spawn (TECH_DEBT build-6; every placement of today's blocks fits)
         sp = spawn_part(M, map_id)["pos"]
         always = set(config(map_id).get("keep", ()))  # BLOCKS keep: first, whatever their distance
         name = {id(r): n for r, n in zip(out, names)}
@@ -260,7 +265,7 @@ def signature(map_id):
     import json, srcsum
     code = srcsum.tree_hash(open(os.path.abspath(__file__).replace(".pyc", ".py")).read(),
                             skip=("AREAS", "BLOCKS", "WORLDS", "BLOCK_OBJ_MB"))
-    env = {k: os.environ[k] for k in ("AREA_DRAW_FROM", "AREA_DG_FIELD") if k in os.environ}
+    env = {k: os.environ[k] for k in ("AREA_DRAW_FROM", "AREA_DG_FIELD", "AREA_MAX_ENEMIES") if k in os.environ}
     return json.dumps(dict(map=map_id, config=config(map_id), env=env, code=code), sort_keys=True) + "\n"
 
 

@@ -68,6 +68,7 @@ AREA_BLOCK	env	unset	config	world	-	init	area.py export_collision.py export_map.
 AREA_DG_FIELD	env	draw_groups	config	world	-	init	area.py	-
 AREA_DRAW_FROM	env	unset	config	world	-	init	area.py	experiment: only what DSR shows from these collision parts (comma list)
 AREA_MAP_RADIUS	env	unset	config	world	-	init	area.py export_collision.py	-
+AREA_MAX_ENEMIES	env	128	tune	world	32	new	area.py	enemy roster of a cropped block (enemy_parts keeps the nearest to its spawn); 32 = the roster before 2026-11-22 (TECH_DEBT world-45)
 AREA_RADIUS	env	unset	config	world	-	init	area.py export_collision.py	-
 AREA_SPAWN	env	unset	config	world	-	init	area.py export_collision.py	-
 BACKDROP	env	1	flag	world	0	init	mapsimp.py	far-only cells as the backdrop (render-distance pick A2); BACKDROP=0: old cut
