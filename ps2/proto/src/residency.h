@@ -77,6 +77,9 @@ RES_BLOCK(m12_00_00_00_m, 4280, 2261)
 RES_BLOCK(m12_00_00_00_w, 5110, 2699)
 RES_BLOCK(m12_00_00_00_x, 5110, 2699)
 RES_BLOCK(m12_00_00_00_s, 5110, 2699)
+/* Blighttown (2026-11-23): first export at the default row, then tools/budgetfit.py */
+RES_BLOCK(m14_00_00_00_a, 4990, 2636)
+RES_BLOCK(m14_00_00_00_b, 4990, 2636)
 RES_BLOCK(default, 4990, 2636)
 #endif
 

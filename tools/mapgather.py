@@ -480,6 +480,7 @@ def rigid_mesh(F, m, bind):
     return out
 
 
+_FINITE = {}  # gather: id(positions) -> (positions, mask of vertices with a finite position)
 _DEDUP = {}  # gather: (id(face set), id(positions)) -> (face set, positions, dedup_tris result)
 
 
@@ -856,6 +857,17 @@ def gather(game, map_id):
             if dk not in _DEDUP or _DEDUP[dk][0] is not fs or _DEDUP[dk][1] is not m["verts"]["pos"]:
                 _DEDUP[dk] = (fs, m["verts"]["pos"], dedup_tris(faceset_tris(fs), m["verts"]))
             tl = list(_DEDUP[dk][2])
+            fin = _FINITE.get(id(m["verts"]["pos"]))
+            fin = fin[1] if fin is not None and fin[0] is m["verts"]["pos"] else None
+            if fin is None:  # vertices with a NaN / inf position (Blighttown m14_00_00_00 map pieces): their triangles
+                # are dropped, so no chunk, cell or bound takes a NaN
+                fin = np.isfinite(_vert_np(m["verts"]["pos"])).all(1)
+                _FINITE[id(m["verts"]["pos"])] = (m["verts"]["pos"], fin)
+                if not fin.all():
+                    print(f"mapgather: {part.get('name', '?')}: {int((~fin).sum())} of {len(fin)} vertices not finite, "
+                          "their triangles dropped", file=sys.stderr)
+            if not fin.all():
+                tl = [t for t in tl if fin[list(t)].all()]
             if (map_r or mapsimp.PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
                 ui = list({i for t in tl for i in t})
                 Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))

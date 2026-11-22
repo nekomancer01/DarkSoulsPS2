@@ -98,6 +98,13 @@ BLOCKS = {
                            obj_budget=BLOCK_OBJ_MB),
     "m12_00_00_00_s": dict(map="m12_00_00_00", spawn_at=(200.0, -12.1, -200.0), cells=(-1, -15, 10, -7),
                            obj_budget=BLOCK_OBJ_MB),
+    # Blighttown (m14_00_00_00, 114.8k collision triangles; 2026-11-23, Polaris 4.8 step 3): the world manifest's
+    # automatic cut (tools/worldmanifest.py --propose m14_00_00_00) at x -6 | -5: the town's upper shacks and the swamp
+    # west of it with the entry from the Depths (player start c0000_0000 at the Depths door, bonfires o0200_0001 /
+    # o0200_0002; 57.5k collision, 104 enemies) and the swamp's east end to Quelaag's domain (player start c0000_0002 at
+    # the bonfire o0200_0000; 58.1k, 43 enemies). The deep Depths' ConnectCollision parts h0009B0 / h0020B0 load block a.
+    "m14_00_00_00_a": dict(map="m14_00_00_00", spawn="c0000_0000", cells=(-13, -2, -6, 5), obj_budget=BLOCK_OBJ_MB),
+    "m14_00_00_00_b": dict(map="m14_00_00_00", spawn="c0000_0002", cells=(-5, 0, 4, 6), obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
     # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
@@ -113,7 +120,8 @@ WORLDS = {
     # on (TECH_DEBT world-4)
     "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a",
                      "m10_01_00_00_c", "m10_00_00_00_a", "m10_00_00_00_b", "m12_00_00_00_e", "m12_00_00_00_g",
-                     "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s"],
+                     "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s", "m14_00_00_00_a",
+                     "m14_00_00_00_b"],
 }
 
 def block():
