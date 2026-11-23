@@ -305,7 +305,7 @@ WARM_DAYS	env	2	config	tools	-	#161	warmstate.py	-
 WARM_KEEP	env	60	config	tools	-	#161	warmstate.py	-
 WB_SLICE	env	2048	tune	world	-	#246	world_budget.py	-
 WORLD_BUDGET_LINKS	env	1	flag	world	0	#156	world_budget.py	-
-WORLD_BUDGET_STRICT	env	m10_01_00_00_	tune	world	-	#156	world_budget.py	-
+WORLD_BUDGET_STRICT	env	all	tune	world	m10_01_00_00_	#156	world_budget.py	blocks the world budget gate covers (comma list of name prefixes); all = every block (Polaris 4.8 step 2), m10_01_00_00_ = the Burg blocks only as before
 WORLD_DG_LITE	env	1	flag	world	0	#209	world_budget.py	world.c WORLD_DG_LITE (default 1)
 WORLD_LINK_ALL	env	1	flag	world	0	#236	worldlinks.py	-
 WORLD_LITE_DIET	env	1	flag	world	0	#147	world_budget.py	world.c WORLD_LITE_DIET

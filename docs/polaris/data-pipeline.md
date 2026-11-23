@@ -273,6 +273,18 @@ are listed in DSR's progression order with the cells no pinned block covers yet.
 (world goal, `gen/world_manifest.json` + `.md`); `--check` fails the build when a block of the world build has no
 RES_BLOCK row or spawn, pinned blocks overlap, or the world has more than WORLD_MAX blocks.
 
+## Budget fit
+
+**Budget fit** (`tools/budgetfit.py`, Polaris 4.8 step 2). The RES_BLOCK rows of `residency.h` (each block's room and
+near share, which `export_map.py`'s spot solve sizes the block's levels against) are fitted from the exported blocks:
+`world_budget.py` runs in-process over a world build, and every block's hard tier at its own spots (plus the spots of
+other blocks it holds a quarter of) gives the factor its row can grow or must shrink by so at most 0.5 % of those spots
+stay over the visual room. Cuts take the whole step, raises half of it, a block with any spot over is never raised, and
+a row whose last cut did not shrink its ask is held (the export is at its error caps, WS_PX0 / WS_PX1 in `[mapenv]`).
+`budgetfit.py <out.json> <boot gen> <block gens...> [--prev <last out.json>] [--report fit.md] [--write]`; re-export and
+run it again until it says settled. The build gate is `world_budget.py --strict`, over every block since this step
+(`WORLD_BUDGET_STRICT=m10_01_00_00_` = the Burg blocks only, as before).
+
 ## Phase 3 will change this
 
 A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the

@@ -214,13 +214,19 @@ NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (
 LINKS = os.environ.get("WORLD_BUDGET_LINKS", "1") == "1"
 # Tiers (Burg plan B3, 2026-11-08): the hard tier is what the horizon cannot stand in for (map.c HZN_R 40): near parts
 # within HARD_NEAR_R, the coarse level and kept meshes within HARD_R (coarse of cells without a near level from 0 m);
-# --strict fails on any spot of a STRICT_BLOCKS block over the room, or on a block whose solve took the seam allowance at
+# --strict fails on any spot of a STRICT_BLOCKS block (every block by default) over the room, or on a block whose solve took the seam allowance at
 # more than ALLOW_PCT % of its spots (export_map.py WS_ALLOW_PX, map.bin.budget.json). The soft tier (coarse HARD_R to
-# PIN_R, the spot's backdrop and sky) is logged. The Asylum and Firelink are reported, not gated (TECH_DEBT world-10).
+# PIN_R, the spot's backdrop and sky) is logged. Until Polaris 4.8 step 2 only the Burg blocks were gated.
 HARD_NEAR_R, HARD_R = float(RES["RES_NEAR_R"]), float(RES["RES_PIN_R"])
 ALLOW_PCT = float(RES["RES_ALLOW_PCT"])  # over + allowance spots of all gated blocks together, % of their spots
 ALLOW_BLOCK_PCT = float(RES["RES_ALLOW_BLOCK_PCT"])  # ... of one block's own spots: above it the build fails anyway
-STRICT_BLOCKS = os.environ.get("WORLD_BUDGET_STRICT", "m10_01_00_00_").split(",")
+# every block since Polaris 4.8 step 2 (the per-block budget fit, tools/budgetfit.py); WORLD_BUDGET_STRICT=m10_01_00_00_
+# = the Burg blocks only, as before
+STRICT_BLOCKS = os.environ.get("WORLD_BUDGET_STRICT", "all").split(",")
+
+
+def gated_block(name):
+    return "all" in STRICT_BLOCKS or any(name.startswith(s) for s in STRICT_BLOCKS if s)
 LOAD_CELLS = 1.0  # export_world.py
 
 
@@ -309,7 +315,7 @@ def main(argv):
     P = np.concatenate([s for _, _, _, s in blocks])
     own = np.concatenate([np.full(len(s), k) for k, (_, _, _, s) in enumerate(blocks)])
     tot = {k: np.zeros(len(P)) for k in ("near", "coarse", "kept", "far", "near_ws", "coarse_ws", "hard", "soft")}
-    per_block = []
+    per_block, hard_by = [], []  # hard_by: each block's share of every spot's hard tier (tools/budgetfit.py)
     rects = [block_rects(name) for name, *_ in blocks]
     for k, (name, c, sky, _) in enumerate(blocks):
         # LINKS: the spots whose links load this block (its own, and those of its MSB's blocks within LOAD_CELLS)
@@ -364,13 +370,14 @@ def main(argv):
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
                        ("hard", hard), ("soft", soft)):
             tot[key] += v
+        hard_by.append(hard)
         per_block.append(dict(block=name, cells=len(c), near_kb=round(float(near.sum())),
                               coarse_kb=round(float(coarse.sum())), kept_kb=round(float(kept.sum())),
                               backdrop_kb=round(float(back.sum() + sky / 1024)), spots=int((own == k).sum())))
     total = tot["near"] + tot["coarse"] + tot["kept"] + tot["far"]
-    gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if any(name.startswith(s) for s in STRICT_BLOCKS if s)])
+    gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if gated_block(name)])
     LAST.clear()
-    LAST.update(P=P, own=own, tot=tot, total=total, gated=gated, room=room, names=[b[0] for b in blocks])
+    LAST.update(hard_by=hard_by, P=P, own=own, tot=tot, total=total, gated=gated, room=room, names=[b[0] for b in blocks])
     hard_over = (tot["hard"] > room) & gated
     allow, allow_spots = {}, []  # per block and level its own spots' allowance %; the spots (x, y, z, block, level, KB)
     for d in dirs:
@@ -415,12 +422,12 @@ def main(argv):
     hd = res["hard"]
     # the gate (Burg plan B3): spots over the room or on the seam allowance, all gated blocks together, at most
     # ALLOW_PCT % of their spots; no block above ALLOW_BLOCK_PCT % of its own
-    gnames = [b[0] for b in blocks if any(b[0].startswith(s) for s in STRICT_BLOCKS if s)]
+    gnames = [b[0] for b in blocks if gated_block(b[0])]
     keys = {(round(float(P[i][0]), 1), round(float(P[i][1]), 1), round(float(P[i][2]), 1)) for i in np.flatnonzero(hard_over)}
     keys |= {tuple(s[:3]) for s in allow_spots if s[3] in gnames}
     uniq = len({tuple(np.round(P[i], 1)) for i in np.flatnonzero(gated)}) or 1
     world_pct = round(100.0 * len(keys) / uniq, 2)
-    bad_allow = {k: v for k, v in allow.items() if v > ALLOW_BLOCK_PCT and any(k.startswith(s) for s in STRICT_BLOCKS if s)}
+    bad_allow = {k: v for k, v in allow.items() if v > ALLOW_BLOCK_PCT and gated_block(k)}
     res["hard"].update(world_over_or_allowance_pct=world_pct, allowance_spots=allow_spots[:500])
     json.dump(res, open(out, "w"), indent=1)
     print(f"world budget: hard tier (near < {HARD_NEAR_R:.0f} m, coarse + kept < {HARD_R:.0f} m) of {hd['gated_spots']} "
