@@ -23,7 +23,8 @@ A row that cannot move the ask is held and listed: with --prev (the last fit's j
 value it has now) whose block's hard tier p99 at its own spots did not drop by 0.5 % keeps its value, and --write marks
 it "/* fit: held */" in residency.h; a held row stays until its block has headroom again. Also listed: when the block's export reports spots at its error caps
 (map.bin.budget.json: a level whose solve did not meet its budget within WS_PX0 / WS_PX1 in tools/recipe.toml [mapenv], hand-set per map), a smaller row
-does not shrink it. Those rows and the [mapenv] knobs they depend on are what is still hand-set.
+does not shrink it. While the world gate fails, the held block with the most of its own spots over gets coarser error caps instead (RES_CAPS in residency.h: x CAP_STEP per fit, at
+most MAX_CAPS) and loses its hold, so the next fit can cut the row against the coarser export.
 
 --write rewrites the RES_BLOCK rows of residency.h in place (only the numbers; comments and order kept; a block without
 a row gets one before the default row). Without it the file is unchanged and the fit only reported.
@@ -43,6 +44,9 @@ import residency  # noqa: E402
 TOL_PCT = 2.0     # a fit is settled when no row moves by more than this
 FLOOR_KB = 3000   # no row below this (ASSUMED: the coarse level and kept meshes of a dense block need about 2.5 MB)
 STEP_KB = 10
+DEF_CAPS = (12, 24)  # tools/mapcfg.py WS_PX0 / WS_PX1
+MAX_CAPS = (36, 54)  # the standalone Burg's caps (tools/recipe.toml [mapenv])
+CAP_STEP = 1.5
 DAMP = 0.5      # share of the headroom a raise takes per fit
 TARGET_SHARE = 0.5  # of RES_ALLOW_PCT: the blocks' spots over add up across seams in the world gate
 SEAM_SHARE = 0.25  # a block counts another block's spot when it holds this share of its hard tier
@@ -94,6 +98,10 @@ def fit(dirs, boot_map, prev_fit=None):
         wb.main([tmp] + dirs)
     wb.structural = real
     try:
+        gate_pct = float(json.load(open(tmp))["hard"].get("world_over_or_allowance_pct", 0.0))
+    except (OSError, ValueError, KeyError):
+        gate_pct = None
+    try:
         os.remove(tmp)
     except OSError:
         pass
@@ -143,12 +151,26 @@ def fit(dirs, boot_map, prev_fit=None):
             note = HELD
         elif f < 1 and cap:
             note = f"{cap} level(s) at the export's error caps: a smaller row may not shrink them ([mapenv] WS_PX0 / WS_PX1)"
-        out.append(dict(block=row_name, gen=name, spots=int(len(idx)), over_pct=round(over, 2),
+        out.append(dict(block=row_name, gen=name, spots=int(len(idx)), over_pct=round(over, 2), caps=None, own_over=int((tot[own_idx[k]] > room).sum()),
                         hard_p50=round(float(np.percentile(hard, 50))), hard_p99=round(float(np.percentile(hard, 99))),
                         hard_max=round(float(hard.max())), own_p99=round(own_p99), f=round(f, 3), row=[r_room, r_near], own_row=own_row,
                         fit=[new, near], cut=new < r_room, move_pct=round(abs(new - r_room) / r_room * 100, 1), note=note))
-    return dict(room_kb=room, allow_pct=q * 100, tol_pct=TOL_PCT, blocks=out,
-                settled=all(b["fit"] is None or b["move_pct"] <= TOL_PCT for b in out))
+    # the world gate (world_budget.py's own figure: spots over the room or on a solve's seam allowance, at most
+    # RES_ALLOW_PCT %): while it fails,
+    # the held block with the most of its own spots over gets coarser error caps (RES_CAPS) and loses its hold, so
+    # the next fit can cut its row against the coarser export; one block per fit
+    world_pct = gate_pct if gate_pct is not None else float((tot[pool] > room).mean() * 100) if len(pool) else 0.0
+    if world_pct > residency.RES["RES_ALLOW_PCT"]:
+        for b in sorted((b for b in out if b.get("note") == HELD), key=lambda b: -b["own_over"]):
+            c0 = residency.block_caps(b["block"]) or DEF_CAPS
+            nc = (min(MAX_CAPS[0], round(c0[0] * CAP_STEP)), min(MAX_CAPS[1], round(c0[1] * CAP_STEP)))
+            if nc != (round(c0[0]), round(c0[1])):
+                b["caps"] = list(nc)
+                b["note"] = (f"caps {c0[0]:.0f} / {c0[1]:.0f} -> {nc[0]} / {nc[1]} px: held at its caps with "
+                             f"{b['own_over']} of its spots over while the world gate fails ({world_pct:.2f} %)")
+                break
+    return dict(room_kb=room, allow_pct=q * 100, tol_pct=TOL_PCT, blocks=out, world_over_pct=round(world_pct, 2),
+                settled=all(b["fit"] is None or (b["move_pct"] <= TOL_PCT and not b.get("caps")) for b in out))
 
 
 def write_rows(R, path=residency.HEADER):
@@ -162,6 +184,15 @@ def write_rows(R, path=residency.HEADER):
             src = pat.sub(new, src)
         else:
             src = re.sub(r"^RES_BLOCK\(default,", new + "\nRES_BLOCK(default,", src, flags=re.M)
+    for b in R["blocks"]:
+        if not b.get("caps"):
+            continue
+        new = f"RES_CAPS({b['block']}, {b['caps'][0]}, {b['caps'][1]})"
+        pat = re.compile(rf"^RES_CAPS\({re.escape(b['block'])}, \d+, \d+\)", re.M)
+        if pat.search(src):
+            src = pat.sub(new, src)
+        else:
+            src = re.sub(r"^#ifdef RES_CAPS\n", "#ifdef RES_CAPS\n" + new + "\n", src, flags=re.M)
     with open(path + ".tmp", "w") as f:
         f.write(src)
     os.replace(path + ".tmp", path)
@@ -204,7 +235,8 @@ def main(argv):
             print(f"budget fit: {b['block']}: hard p99 {b['hard_p99']} / max {b['hard_max']} KB at {b['spots']} spots "
                   f"({b['over_pct']} % over), row {b['row'][0]} / {b['row'][1]} -> {b['fit'][0]} / {b['fit'][1]}"
                   + (f"; {b['note']}" if b["note"] else ""))
-    print(f"budget fit: room {R['room_kb']:.0f} KB, settled: {'yes' if R['settled'] else 'no'}")
+    print(f"budget fit: room {R['room_kb']:.0f} KB, {R['world_over_pct']} % of all spots over, settled: "
+          f"{'yes' if R['settled'] else 'no'}")
     if "--write" in argv:
         write_rows(R)
         print(f"budget fit: rows written to {residency.HEADER}")

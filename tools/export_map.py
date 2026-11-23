@@ -90,6 +90,10 @@ def main():
         raise SystemExit(f"export_map: world block {block} has no RES_BLOCK row in ps2/proto/src/residency.h")
     mapcfg.WS_ROOM = mapcfg.WS_ROOM or float(b_room)
     mapcfg.WS_NEAR_KB = mapcfg.WS_NEAR_KB or float(b_near)
+    caps = residency.block_caps(block)
+    if caps and "WS_PX0" not in os.environ and "WS_PX1" not in os.environ:  # the fitted error caps (RES_CAPS)
+        mapcfg.WS_PX0, mapcfg.WS_PX1 = caps
+        print(f"budget: {block}: error caps {caps[0]:.0f} / {caps[1]:.0f} px (residency.h RES_CAPS)")
     print(f"budget: {block}: room {mapcfg.WS_ROOM:.0f} KB, near {mapcfg.WS_NEAR_KB:.0f} KB "
           f"({'environment' if os.environ.get('WS_ROOM') else 'residency.h ' + (block if b_row else 'default')})")
     preview = sys.argv[4] if len(sys.argv) > 4 else None

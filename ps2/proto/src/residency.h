@@ -59,25 +59,36 @@
  * marked "fit: held" are held at their caps. */
 #ifdef RES_BLOCK
 RES_BLOCK(m10_02_00_00, 4590, 2425) /* fit: held */
-RES_BLOCK(m10_01_00_00_w, 4860, 2532)
-RES_BLOCK(m10_01_00_00_b, 4950, 2600)
+RES_BLOCK(m10_01_00_00_w, 4840, 2522)
+RES_BLOCK(m10_01_00_00_b, 4880, 2563) /* fit: held */
 RES_BLOCK(m10_01_00_00_p, 4630, 2442) /* fit: held */
-RES_BLOCK(m18_01_00_00_a, 5110, 2699)
+RES_BLOCK(m18_01_00_00_a, 5050, 2667)
 /* 2026-11-15: the rest of the Parish (seams with the Parish bridge, the bonfire block and Burg west: as the bonfire
  * block) and the Depths (the entry block at the Lower Burg's door: as the Parish bridge; the deep block alone in its MSB
  * with the entry block) */
 RES_BLOCK(m10_01_00_00_c, 5030, 2641) /* fit: held */
-RES_BLOCK(m10_00_00_00_a, 5110, 2695)
-RES_BLOCK(m10_00_00_00_b, 5110, 2699)
+RES_BLOCK(m10_00_00_00_a, 5050, 2663)
+RES_BLOCK(m10_00_00_00_b, 5050, 2667)
 /* Darkroot (2026-11-15): the garden entry block seams with the Parish's (as the Parish bridge), the rest are alone in
  * their MSB (ASSUMED until a world_budget.py pass over them) */
-RES_BLOCK(m12_00_00_00_e, 5110, 2695)
+RES_BLOCK(m12_00_00_00_e, 5050, 2663)
 RES_BLOCK(m12_00_00_00_g, 4160, 2197) /* fit: held */
-RES_BLOCK(m12_00_00_00_m, 4280, 2261)
-RES_BLOCK(m12_00_00_00_w, 5110, 2699)
-RES_BLOCK(m12_00_00_00_x, 5110, 2699)
-RES_BLOCK(m12_00_00_00_s, 5110, 2699)
+RES_BLOCK(m12_00_00_00_m, 4230, 2235) /* fit: held */
+RES_BLOCK(m12_00_00_00_w, 5050, 2667)
+RES_BLOCK(m12_00_00_00_x, 5050, 2667)
+RES_BLOCK(m12_00_00_00_s, 5050, 2667)
+/* Sen's Fortress (2026-11-23): first export at the default row, then tools/budgetfit.py */
+RES_BLOCK(m15_00_00_00_a, 5050, 2668)
+RES_BLOCK(m15_00_00_00_b, 5050, 2668)
 RES_BLOCK(default, 4990, 2636)
+#endif
+
+/* Per-block error caps of the spot solve (px at 640x448): RES_CAPS(block, near px, coarse px), for the tools only
+ * (export_map.py; tools/residency.py). A block without a row takes tools/mapcfg.py's WS_PX0 / WS_PX1 (12 / 24), or
+ * its map's [mapenv] values. tools/budgetfit.py writes a row when a held block (its row cut, its ask unchanged: at
+ * its caps) is still over: x 1.5 per fit, at most 36 / 54 (the standalone Burg's). */
+#ifdef RES_CAPS
+RES_CAPS(m18_01_00_00_a, 18, 36)
 #endif
 
 #endif

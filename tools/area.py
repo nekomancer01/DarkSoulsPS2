@@ -98,6 +98,13 @@ BLOCKS = {
                            obj_budget=BLOCK_OBJ_MB),
     "m12_00_00_00_s": dict(map="m12_00_00_00", spawn_at=(200.0, -12.1, -200.0), cells=(-1, -15, 10, -7),
                            obj_budget=BLOCK_OBJ_MB),
+    # Sen's Fortress (m15_00_00_00, 74.5k collision triangles; 2026-11-23, Polaris 4.8 step 3): the world manifest's
+    # automatic cut (tools/worldmanifest.py --propose m15_00_00_00) at z 7 | 8: the entry from the Parish bridge (player
+    # start c0000_0000), the blade bridges and the lower halls (25.8k collision, 22 enemies), and the upper fortress with
+    # the roof and the bonfire o0200_0002 (49.7k, 33). The Parish's ConnectCollision parts h1042B1 / h1080B1 load block a.
+    # Blighttown, before it in DSR's order, does not fit the arena yet (TECH_DEBT world-49).
+    "m15_00_00_00_a": dict(map="m15_00_00_00", spawn="c0000_0000", cells=(1, 3, 4, 7), obj_budget=BLOCK_OBJ_MB),
+    "m15_00_00_00_b": dict(map="m15_00_00_00", spawn_at=(112.0, 51.7, 302.4), cells=(1, 8, 4, 10), obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
     # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
@@ -113,7 +120,8 @@ WORLDS = {
     # on (TECH_DEBT world-4)
     "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a",
                      "m10_01_00_00_c", "m10_00_00_00_a", "m10_00_00_00_b", "m12_00_00_00_e", "m12_00_00_00_g",
-                     "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s"],
+                     "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s", "m15_00_00_00_a",
+                     "m15_00_00_00_b"],
 }
 
 def block():
