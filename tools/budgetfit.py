@@ -66,6 +66,18 @@ HELD = "held: a cut did not shrink the ask (the export is at its error caps, [ma
 HELD_MARK = "/* fit: held */"
 
 
+def mapenv_caps():
+    """maps whose tools/recipe.toml [mapenv] rows set WS_PX0 / WS_PX1 for every export (export_map.py then ignores
+    RES_CAPS, so the fit leaves them alone)"""
+    try:
+        import tomllib
+        rows = tomllib.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "recipe.toml"), "rb"))
+    except (OSError, ImportError, ValueError):
+        return set()
+    return {r["map"] for r in rows.get("mapenv", {}).get("area", [])
+            if "when" not in r and ("WS_PX0=" in r.get("env", "") or "WS_PX1=" in r.get("env", ""))}
+
+
 def held_row(r_room, r_near, cap):
     """a held row keeps its numbers, but never above the room less a page (the gate's bad_room)"""
     new = min(r_room, int(cap // STEP_KB * STEP_KB))
@@ -161,7 +173,9 @@ def fit(dirs, boot_map, prev_fit=None):
     # the next fit can cut its row against the coarser export; one block per fit
     world_pct = gate_pct if gate_pct is not None else float((tot[pool] > room).mean() * 100) if len(pool) else 0.0
     if world_pct > residency.RES["RES_ALLOW_PCT"]:
-        for b in sorted((b for b in out if b.get("note") == HELD), key=lambda b: -b["own_over"]):
+        env_caps = mapenv_caps()
+        for b in sorted((b for b in out if b.get("note") == HELD and b["own_over"] > 0
+                         and b["block"][:12] not in env_caps), key=lambda b: -b["own_over"]):
             c0 = residency.block_caps(b["block"]) or DEF_CAPS
             nc = (min(MAX_CAPS[0], round(c0[0] * CAP_STEP)), min(MAX_CAPS[1], round(c0[1] * CAP_STEP)))
             if nc != (round(c0[0]), round(c0[1])):
@@ -191,8 +205,10 @@ def write_rows(R, path=residency.HEADER):
         pat = re.compile(rf"^RES_CAPS\({re.escape(b['block'])}, \d+, \d+\)", re.M)
         if pat.search(src):
             src = pat.sub(new, src)
-        else:
+        elif re.search(r"^#ifdef RES_CAPS$", src, re.M):
             src = re.sub(r"^#ifdef RES_CAPS\n", "#ifdef RES_CAPS\n" + new + "\n", src, flags=re.M)
+        else:
+            raise SystemExit(f"budgetfit: {path} has no #ifdef RES_CAPS section for {new}")
     with open(path + ".tmp", "w") as f:
         f.write(src)
     os.replace(path + ".tmp", path)
