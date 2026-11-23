@@ -122,7 +122,7 @@ def fit(dirs, boot_map, prev_fit=None):
     room = float(L["room"])
     # per-spot room (world_budget.py LAST["room_spot"], when the streamer spills a 4th lite set into the item pages at
     # some spots: the room there is less by that spill); the scalar room elsewhere
-    rs = np.asarray(L["room_spot"], np.float64) if L.get("room_spot") is not None else np.full(len(L["P"]), room)
+    rs = np.broadcast_to(np.asarray(L["room_spot"] if L.get("room_spot") is not None else room, np.float64), (len(L["P"]),))
     page = residency.RES["RES_PAGE_KB"]
     q = residency.RES["RES_ALLOW_PCT"] / 100.0 * TARGET_SHARE
     out = []
