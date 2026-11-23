@@ -57,13 +57,13 @@ def world(gen):
     """world.bin -> [(pack, map, gen dir, [(first tri, tris, load mask, keep mask)])]"""
     import chunkfile as chunk
     w = chunk.read(os.path.join(gen, "world.bin"), b"WRLD")  # tools/export_world.py
-    bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 1)
+    bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 2)
     blocks = []
     for i in range(len(bl) // 64):
         pack, mp = (x.split(b"\0")[0].decode() for x in struct.unpack_from("<16s16s", bl, 64 * i))
         blocks.append([pack, mp, gen if i == 0 else os.path.join(gen, pack), []])
     ranges = [struct.unpack_from("<2I", lr, 8 * i) for i in range(len(blocks))]
-    links = [struct.unpack_from("<I3H", lk, 12 * i) for i in range(len(lk) // 12)]
+    links = [(f, c, ld, kp) for f, c, _, ld, kp in (struct.unpack_from("<IHHII", lk, 16 * i) for i in range(len(lk) // 16))]  # LINK v2
     for i, (first, cnt) in enumerate(ranges):
         blocks[i][3] = links[first:first + cnt]
     return blocks

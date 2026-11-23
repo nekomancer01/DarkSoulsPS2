@@ -49,8 +49,8 @@ BONFIRE = "o0200"
 # was in no block, so past the second bonfire the world ended (no map, no collision; user report); x 0..1, z 1..3 the
 # bridge north to the Parish courtyard (route y 16 -> 28). The Lower Burg corner under the street (x -4..-2, z -5..-4)
 # goes with Burg west. keep: parts the block's enemy roster holds whatever their distance from the spawn (the boss of
-# the bridge; enemy_parts keeps the MAX_ENEMIES nearest otherwise). Map instance / collision block / enemy block index = world block index caps a world build at WORLD_MAX 16 blocks
-# (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS, FX_SETS; world.bin v4 u16 masks; 5 until 2026-11-15, TECH_DEBT world-1).
+# the bridge; enemy_parts keeps the MAX_ENEMIES nearest otherwise). Map instance / collision block / enemy block index = world block index caps a world build at WORLD_MAX 32 blocks
+# (MAP_INST, COL_BLOCKS, ENEMY_BLOCKS, OBJ_BLOCKS, FX_SETS; world.bin LINK / REAC v2 u32 masks since 2026-11-23, 16 with v4 u16 masks before; 5 until 2026-11-15, TECH_DEBT world-1).
 # obj_budget (MB, export_objects.py): every block's breakable types load at boot with their VRAM (world.c
 # world_systems, TECH_DEBT world-4); with the default 0.4 MB the three Burg blocks left no VRAM (smoke 2026-11-01 17:00:
 # "Not enough VRAM", block 3's o1230 not loaded). ASSUMED cut until types load per block: the types with the fewest

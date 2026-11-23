@@ -584,7 +584,8 @@ unsigned mp_draw_far(const float *e)
 #define HZ_ONLY_OWN 1
 #endif
 static unsigned char *hz_skip[MAP_INST];
-static unsigned hz_skip_key[MAP_INST], hz_skip_n[MAP_INST];
+static unsigned long long hz_skip_key[MAP_INST];
+static unsigned hz_skip_n[MAP_INST];
 
 static int hz_other_map(int j, int k)
 {
@@ -595,10 +596,10 @@ static int hz_other_map(int j, int k)
 static const unsigned char *hz_skips(int k)
 {
     const MapInst *m = &mp_inst[k];
-    unsigned key = 1;
+    unsigned long long key = 1;  /* (bit j + 1 = instance j: 64 bits for MAP_INST 32) */
     for (int j = 0; j < MAP_INST; j++)
         if (j != k && mp_inst[j].on && mp_inst[j].hz_cell && hz_other_map(j, k))
-            key |= 2u << j;
+            key |= 2ull << j;
     if (hz_skip[k] && hz_skip_key[k] == key && hz_skip_n[k] == m->nctab)
         return hz_skip[k];
     free(hz_skip[k]);

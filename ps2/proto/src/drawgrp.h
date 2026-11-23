@@ -8,7 +8,7 @@
 #include "collision.h"
 #include "vmath.h"
 
-#define DG_INST 16  /* >= MAP_INST */
+#define DG_INST 32  /* >= MAP_INST */
 
 /* blob: dg.bin of instance k (kept loaded); chunks: bump.bin's global chunk count it must cover, col_tris: that block's
  * collision.bin triangles. Returns 1 when the filter is on; without a matching blob every chunk stays shown.

@@ -142,7 +142,7 @@ int world_init(const char *boot_area)
     if (chunk_open(&cf, wb, wsize, CHUNK_ID('W', 'R', 'L', 'D'), "world.bin")) {
         w_tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 1, &nb);
         w_lrange = chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'G'), 1, &nr);
-        w_links = chunk_get(&cf, CHUNK_ID('L', 'I', 'N', 'K'), 1, &nl);
+        w_links = chunk_get(&cf, CHUNK_ID('L', 'I', 'N', 'K'), 2, &nl);
         nb /= sizeof *w_tab, nl /= sizeof *w_links;
     }
     if (!w_tab || !w_lrange || !w_links || !nb || nr != 8 * nb || strncmp(w_tab[0].pack, boot_area, 16)) {
@@ -162,7 +162,7 @@ int world_init(const char *boot_area)
     w_nblk = nb < WORLD_MAX ? nb : WORLD_MAX;
     if (w_nblk > MAP_INST || w_nblk > COL_BLOCKS)
         w_nblk = MAP_INST < COL_BLOCKS ? MAP_INST : COL_BLOCKS;  /* map instance / collision block = block index */
-    const unsigned *rh = chunk_opt(&cf, CHUNK_ID('R', 'E', 'A', 'C'), 1, &nreach);
+    const unsigned *rh = chunk_opt(&cf, CHUNK_ID('R', 'E', 'A', 'C'), 2, &nreach);
     if (rh && nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; none: the links' masks alone) */
         float st;
         memcpy(&st, rh + 2, 4);

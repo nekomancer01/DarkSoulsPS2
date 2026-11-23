@@ -4,7 +4,7 @@
 #ifndef NAV_H
 #define NAV_H
 
-#define NAV_BLOCKS 16  /* = ENEMY_BLOCKS (enemy.h) */
+#define NAV_BLOCKS 32  /* = ENEMY_BLOCKS (enemy.h) */
 
 /* the NAV chunk of world block `block`'s enemies.bin (0 = the boot area; nav NULL: none): copies the navmesh into an
  * own block (the caller may free the blob). Returns the number of triangles (0: none, enemies walk straight). */
