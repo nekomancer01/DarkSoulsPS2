@@ -50,8 +50,10 @@
 #include "omit.h"
 
 /* the boot area's + every world block's (enemy_block_types, at boot). 20 ran full at block 2 of the 14-block world: the
- * Depths and Darkroot placed only characters an earlier block had (81 types, 2026-11-15) */
-#define MAX_TYPES 96
+ * Depths and Darkroot placed only characters an earlier block had (81 types, 2026-11-15); 96 ran full at block 16 of the
+ * 24-block world: Anor Londo's blocks loaded 0-3 types each and placed almost no one (2026-11-23). ~101 B of bss each;
+ * the real fix is types loaded with a block's lite set (TECH_DEBT world-46 (3)) */
+#define MAX_TYPES 192
 #define ACTIVE_DIST 45.0f   /* characters farther from the player than this are frozen (DSR: by draw group / distance) */
 /* DSR runs and draws a character only while its MSB DrawGroups meet those of the collision part under the player
  * (dg.bin per block, src/drawgrp.c: dg_mask_shown). On top of that, at most ACTIVE_MAX update a frame, the nearest

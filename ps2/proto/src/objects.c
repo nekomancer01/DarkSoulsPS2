@@ -78,8 +78,9 @@ typedef struct {
  * MSB, the same list in each block of that map; the types' groups index it. Up in VRAM while any block of the map is
  * on (the boot area's: always); its types draw with its VRAM textures (mdl_share_textures after each upload). */
 /* one per map of the world (Firelink, Burg / Parish, Asylum, Depths, Darkroot: 5; with 4 every Darkroot block logged
- * "breakable texture set did not load" and placed none, 2026-11-15) */
-#define MAX_TSETS 6
+ * "breakable texture set did not load" and placed none, 2026-11-15; with 6 Anor Londo's did the same once Sen's
+ * Fortress was the sixth map, 2026-11-23: one per map of tools/area.py WORLDS, 12 for the maps to come) */
+#define MAX_TSETS 12
 static struct {
     int key, refs;   /* area x 100 + map (0: free slot); blocks on that hold it */
     Model *m;        /* texture handles only after objects_block_types (mdl_strip) */
