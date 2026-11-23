@@ -127,6 +127,15 @@ BLOCKS = {
                            obj_budget=BLOCK_OBJ_MB),
     "m15_01_00_00_h": dict(map="m15_01_00_00", spawn_at=(225.6, 173.2, 349.1), cells=(5, 9, 10, 12),
                            obj_budget=BLOCK_OBJ_MB),
+    # The Painted World of Ariamis (m11_00_00_00, 99.4k collision triangles; 2026-11-23, Polaris 4.8 step 3): the world
+    # manifest's automatic cut (tools/worldmanifest.py --propose m11_00_00_00), three blocks south to north: the arrival
+    # under the bridge and the chapel (z 20..24; 19.4k collision, 13 enemies), the town and the courtyards (z 25..27;
+    # 46.0k, 57) and the north end with the bonfire o0200_0000 and the player start c0000_0000 by it (z 28..32; 34.7k,
+    # 40). DSR enters it through Anor Londo's painting (a warp, no ConnectCollision link); its MapOffset event is the
+    # debug map view's, the blocks keep the MSB's own frame (z 640..1056 m: north of every other built block).
+    "m11_00_00_00_a": dict(map="m11_00_00_00", spawn_at=(-20.3, 68.4, 719.3), cells=(-4, 20, 1, 24), obj_budget=BLOCK_OBJ_MB),
+    "m11_00_00_00_b": dict(map="m11_00_00_00", spawn_at=(-41.0, 50.2, 846.5), cells=(-4, 25, 2, 27), obj_budget=BLOCK_OBJ_MB),
+    "m11_00_00_00_c": dict(map="m11_00_00_00", spawn="c0000_0000", cells=(-4, 28, 2, 32), obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
     # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
@@ -144,7 +153,8 @@ WORLDS = {
                      "m10_01_00_00_c", "m10_00_00_00_a", "m10_00_00_00_b", "m12_00_00_00_e", "m12_00_00_00_g",
                      "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s", "m15_00_00_00_a",
                      "m15_00_00_00_b", "m15_01_00_00_a", "m15_01_00_00_b", "m15_01_00_00_c", "m15_01_00_00_d",
-                     "m15_01_00_00_e", "m15_01_00_00_f", "m15_01_00_00_g", "m15_01_00_00_h"],
+                     "m15_01_00_00_e", "m15_01_00_00_f", "m15_01_00_00_g", "m15_01_00_00_h",
+                     "m11_00_00_00_a", "m11_00_00_00_b", "m11_00_00_00_c"],
 }
 
 def block():
