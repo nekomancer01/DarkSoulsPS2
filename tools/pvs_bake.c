@@ -75,7 +75,7 @@ static Tri9 *tri;
 static unsigned nch, nun, ntri;
 /* blocks: 0 = the one baked, 1.. its neighbours (--with): their chunks (unit FOREIGN) occlude while the player stands
  * on them, their collision gives player positions; only block 0's units are recorded */
-#define MAXB 16  /* blocks: the one baked + its --with neighbours (world.h WORLD_MAX) */
+#define MAXB 32  /* blocks: the one baked + its --with neighbours (world.h WORLD_MAX; 16 until the 32-block world) */
 #define FOREIGN 0xFFFFFFFEu
 static int nblk = 1;
 static unsigned char *bshown[MAXB];  /* [coll][piece] per block, NULL: no draw groups */

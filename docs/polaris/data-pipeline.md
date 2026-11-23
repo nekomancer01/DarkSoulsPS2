@@ -265,7 +265,7 @@ ConnectCollision parts), every map's h collision counted per 32 m cell, and the 
 enemies. Maps with hand-set cuts in `tools/area.py` BLOCKS keep them (pinned); every other map is cut automatically by
 the same cell rules (whole 32 m cells, blocks of one MSB tile it, collision under collision.bin's u16 indices: the
 occupied rectangle is split along its longer axis at the line that balances the halves, until each is under 60000
-triangles). Per block: cells, collision, enemy roster against `area.MAX_ENEMIES`, spawn (a player start, else a floor
+triangles and at most 14 cells across, collision.bin's s16 position range; no cut leaves a strip under 3 cells). Per block: cells, collision, enemy roster against `area.MAX_ENEMIES`, spawn (a player start, else a floor
 point), its `residency.h` row (or the default row, flagged) and whether a world build holds it; per seam: the blocks of
 one MSB whose cells touch and the ConnectCollision links, with the lead `export_world.py` gives them (one cell). Maps
 are listed in DSR's progression order with the cells no pinned block covers yet. `worldmanifest.py <game> --propose

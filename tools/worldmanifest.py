@@ -26,7 +26,7 @@ Reported, not cut by: the enemy roster against area.MAX_ENEMIES (enemy_parts kee
 block to its spawn and drops the rest; cutting for it would make one-cell blocks where enemies crowd).
 Automatic cut: the occupied cells' bounding rectangle is split in two along its longer axis (the other one when the
 longer has no cut) at the cell line that balances the two halves' collision best, recursively, until every part is
-within COL_CUT; empty parts are dropped. No cut leaves a part under MIN_CELLS cells wide where the rectangle has room
+within COL_CUT and at most MAX_SPAN cells across (collision.bin's s16 positions); empty parts are dropped. No cut leaves a part under MIN_CELLS cells wide where the rectangle has room
 for two such parts: every spot of a strip that narrow is a seam spot, and export_map.py's spot solve gives a block a
 share of each seam spot's room (Blighttown's two-cell entry strip: 28 % of its spots over its share at 36 px).
 Seams: two blocks of one MSB whose cells touch (edge or corner), and the ConnectCollision links (the block of map A
@@ -45,6 +45,8 @@ VERSION = 1
 CELL = area.CELL
 COL_CAP = 65535  # collision.bin u16 triangle indices
 COL_CUT = 60000  # the automatic cut's target (a margin under COL_CAP)
+MAX_SPAN = 14  # cells across at most: collision.bin's s16 positions at 1/128 m reach +-256 m from its origin, and a
+               # block's triangles reach past its cells (a corner inside is enough): 448 m + slack (Anor Londo's 27-cell strip)
 MIN_CELLS = 3  # no cut leaves a block narrower than this many cells (when the rectangle has room for two)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -179,7 +181,7 @@ def auto_cut(sets, cells):
 
     def split(r):
         r = tight(r)
-        if load(r) <= COL_CUT or (r[0] == r[2] and r[1] == r[3]):
+        if (load(r) <= COL_CUT and max(r[2] - r[0], r[3] - r[1]) + 1 <= MAX_SPAN) or (r[0] == r[2] and r[1] == r[3]):
             out.append(r)
             return
         w, d = r[2] - r[0] + 1, r[3] - r[1] + 1
