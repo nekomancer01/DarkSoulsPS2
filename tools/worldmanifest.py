@@ -2,7 +2,8 @@
 block's collision and enemy counts, seams, lead and budget row, from the game's own data.
 
   worldmanifest.py <game dir> <out.json> [--md out.md] [--check] [--cache DIR]
-  worldmanifest.py <game dir> --propose <map>     print tools/area.py BLOCKS rows for a map's automatic cut
+  worldmanifest.py <game dir> --propose <map> [--cut N]   print tools/area.py BLOCKS rows for a map's automatic cut
+                                                          (pins of that map ignored; N: collision per block, default COL_CUT)
 
 Sources:
 - tools/worldgraph.py: the maps (WorldMsbList / area load lists / MapViewList), their MapOffset events and the
@@ -25,7 +26,9 @@ Reported, not cut by: the enemy roster against area.MAX_ENEMIES (enemy_parts kee
 block to its spawn and drops the rest; cutting for it would make one-cell blocks where enemies crowd).
 Automatic cut: the occupied cells' bounding rectangle is split in two along its longer axis (the other one when the
 longer has no cut) at the cell line that balances the two halves' collision best, recursively, until every part is
-within COL_CUT; empty parts are dropped.
+within COL_CUT; empty parts are dropped. No cut leaves a part under MIN_CELLS cells wide where the rectangle has room
+for two such parts: every spot of a strip that narrow is a seam spot, and export_map.py's spot solve gives a block a
+share of each seam spot's room (Blighttown's two-cell entry strip: 28 % of its spots over its share at 36 px).
 Seams: two blocks of one MSB whose cells touch (edge or corner), and the ConnectCollision links (the block of map A
 holding the part's collision triangles -> the block of map B holding most of them, as export_world.py links them).
 Lead: export_world.py's LOAD_CELLS (one cell, 32 m) ahead of a seam, in seconds at SPRINT_MS (ASSUMED dash speed).
@@ -42,6 +45,7 @@ VERSION = 1
 CELL = area.CELL
 COL_CAP = 65535  # collision.bin u16 triangle indices
 COL_CUT = 60000  # the automatic cut's target (a margin under COL_CAP)
+MIN_CELLS = 3  # no cut leaves a block narrower than this many cells (when the rectangle has room for two)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -187,6 +191,8 @@ def auto_cut(sets, cells):
                 b = (cut + 1, r[1], r[2], r[3]) if axis == 0 else (r[0], cut + 1, r[2], r[3])
                 if not occupied(a) or not occupied(b):
                     continue
+                if min(cut - lo + 1, hi - cut) < MIN_CELLS and hi - lo + 1 >= 2 * MIN_CELLS:
+                    continue  # no strip: a block under MIN_CELLS wide is all seam (export_map.py's spot shares)
                 score = max(load(a), load(b))
                 if best is None or score < best[0]:
                     best = (score, a, b)
@@ -392,6 +398,14 @@ if __name__ == "__main__":
     game = gamepath.game_dir(a[0] if a and not a[0].startswith("--") else None)
     cache = opt("--cache")
     if "--propose" in a:
+        # the map's automatic cut even when area.py pins it (to re-cut an area), at --cut N collision triangles
+        mid = opt("--propose")
+        if opt("--cut"):
+            COL_CUT = int(opt("--cut"))
+        for b in [b for b, c in area.BLOCKS.items() if c["map"] == mid]:
+            del area.BLOCKS[b]
+        for w in area.WORLDS.values():
+            w[:] = [b for b in w if not b.startswith(mid)]
         M = manifest(game, cache, log=lambda m: print(m, file=sys.stderr))
         print(propose(M, opt("--propose")))
         sys.exit(0)

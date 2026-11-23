@@ -59,27 +59,30 @@
  * marked "fit: held" are held at their caps. */
 #ifdef RES_BLOCK
 RES_BLOCK(m10_02_00_00, 4590, 2425) /* fit: held */
-RES_BLOCK(m10_01_00_00_w, 4860, 2532)
-RES_BLOCK(m10_01_00_00_b, 4950, 2600)
+RES_BLOCK(m10_01_00_00_w, 4650, 2423)
+RES_BLOCK(m10_01_00_00_b, 4360, 2289)
 RES_BLOCK(m10_01_00_00_p, 4630, 2442) /* fit: held */
-RES_BLOCK(m18_01_00_00_a, 5110, 2699)
+RES_BLOCK(m18_01_00_00_a, 4880, 2578)
 /* 2026-11-15: the rest of the Parish (seams with the Parish bridge, the bonfire block and Burg west: as the bonfire
  * block) and the Depths (the entry block at the Lower Burg's door: as the Parish bridge; the deep block alone in its MSB
  * with the entry block) */
-RES_BLOCK(m10_01_00_00_c, 5030, 2641) /* fit: held */
-RES_BLOCK(m10_00_00_00_a, 5110, 2695)
-RES_BLOCK(m10_00_00_00_b, 5110, 2699)
+RES_BLOCK(m10_01_00_00_c, 4880, 2562) /* fit: held */
+RES_BLOCK(m10_00_00_00_a, 4880, 2574)
+RES_BLOCK(m10_00_00_00_b, 4880, 2578)
 /* Darkroot (2026-11-15): the garden entry block seams with the Parish's (as the Parish bridge), the rest are alone in
  * their MSB (ASSUMED until a world_budget.py pass over them) */
-RES_BLOCK(m12_00_00_00_e, 5110, 2695)
+RES_BLOCK(m12_00_00_00_e, 4880, 2574)
 RES_BLOCK(m12_00_00_00_g, 4160, 2197) /* fit: held */
-RES_BLOCK(m12_00_00_00_m, 4280, 2261)
-RES_BLOCK(m12_00_00_00_w, 5110, 2699)
-RES_BLOCK(m12_00_00_00_x, 5110, 2699)
-RES_BLOCK(m12_00_00_00_s, 5110, 2699)
+RES_BLOCK(m12_00_00_00_m, 4090, 2161) /* fit: held */
+RES_BLOCK(m12_00_00_00_w, 4880, 2578)
+RES_BLOCK(m12_00_00_00_x, 4880, 2578) /* fit: held */
+RES_BLOCK(m12_00_00_00_s, 4880, 2578)
 /* Blighttown (2026-11-23): first export at the default row, then tools/budgetfit.py */
-RES_BLOCK(m14_00_00_00_a, 4990, 2636)
-RES_BLOCK(m14_00_00_00_b, 4990, 2636)
+RES_BLOCK(m14_00_00_00_a, 3000, 1584) /* fit: held */
+RES_BLOCK(m14_00_00_00_b, 3000, 1585) /* fit: held */
+RES_BLOCK(m14_00_00_00_c, 3000, 1585) /* fit: held */
+RES_BLOCK(m14_00_00_00_d, 3010, 1590) /* fit: held */
+RES_BLOCK(m14_00_00_00_e, 4880, 2578)
 RES_BLOCK(default, 4990, 2636)
 #endif
 

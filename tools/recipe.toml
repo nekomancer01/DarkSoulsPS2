@@ -147,11 +147,12 @@ env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 map = "m12_00_00_00"
 env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 
-# Blighttown (m14_00_00_00_a / _b, 2026-11-23): two levels with the Burg's errors, as the Depths and Darkroot (ASSUMED:
-# not tuned on it; TECH_DEBT world-48)
+# Blighttown (m14_00_00_00_a.._d, 2026-11-23): two levels with the Burg's errors, as the Depths and Darkroot (ASSUMED:
+# not tuned on it; TECH_DEBT world-48), and the standalone Burg's error caps 36 / 54 px: at the default 12 / 24 px the
+# entry block's near level stayed over its share at 28 % of its spots (the town's shacks are twice the Burg's density)
 [[mapenv.area]]
 map = "m14_00_00_00"
-env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
+env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446 WS_PX0=36 WS_PX1=54"
 
 # Per enemy type (export_chr.py): FLVER LOD (default 1; LOD2 for all but the two most common melee types: EE RAM, skin
 # streams) and texture height cap in px (default 64; width stays >= 128 for PSMT8: every type's textures stay in VRAM next
