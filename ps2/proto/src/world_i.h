@@ -42,6 +42,15 @@
 #ifndef WORLD_SLOT_DEFER
 #define WORLD_SLOT_DEFER 1  /* (wplan.c w_slot_deferred) */
 #endif
+/* WORLD_YIELD (default 1; 0 = off): a large temporary that found no window in the arena (an enemy model.bin,
+ * enemy.c arena_get) has the blocks whose lite sets spilled into the item pages turn off, never the player's floor
+ * or current block, and no lite set spills there for WORLD_YIELD_S (each failure renews it). The item pages are
+ * 2.2 MB on Anor Londo's build, a spilled fourth lite set held 0.8 MB of them and the 1.4-1.9 MB model temporaries
+ * found no window (the heap's largest hole 0.6-0.8 MB): c3491 never loaded in one of three iso_anor runs */
+#ifndef WORLD_YIELD
+#define WORLD_YIELD 1
+#endif
+#define WORLD_YIELD_S 5.0f
 /* Bytes per background read: one at a time through pack.c's async slot, shared with mapstream.c (a near cell waits for
  * at most one of these) */
 #define WORLD_READ (128u << 10)
@@ -346,6 +355,8 @@ extern unsigned w_far_res_size;
 extern int w_far_swap;
 void w_far_free(unsigned char *p);
 extern float w_far_retry_s;
+extern float w_yield_s;  /* WORLD_YIELD: seconds no lite set spills into the item pages (wplan.c) */
+int w_under(int i);      /* the player's floor (or a block a hold waits for) is on block i (wplan.c) */
 extern int w_boot_want, w_boot_spots;
 extern int w_warping;
 extern int w_lite_first;

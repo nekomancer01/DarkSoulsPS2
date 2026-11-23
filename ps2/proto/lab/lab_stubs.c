@@ -82,6 +82,7 @@ void *mapstream_alloc_pool_small(unsigned n, int pool) { (void)pool; return mall
 void mapstream_free(void *p, unsigned n) { (void)n, free(p); }
 unsigned mapstream_heap_release(unsigned bytes) { (void)bytes; return 0; }
 int mapstream_owns(const void *p) { (void)p; return 1; }  /* (so callers free through mapstream_free) */
+int mapstream_in_items(const void *p) { (void)p; return 0; }
 int mapstream_ready(void) { return 1; }
 void mem_release(void *p) { free(p); }
 /* paged animation reads (model.c): synchronous here */

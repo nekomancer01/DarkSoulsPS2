@@ -97,6 +97,7 @@ int mapstream_ready(void);
 /* allocate the arena now (world builds, at boot: its size must not depend on which enemy types happen to be loaded) */
 int mapstream_arena(void);
 int mapstream_owns(const void *p);  /* p lies in the arena (not in memory lent to it) */
+int mapstream_in_items(const void *p);  /* MS_POOLS: p lies in the item pages (a lite set spilled there: world-50) */
 /* Give pages the streamer borrowed from the heap (mapstream.c MS_BORROW) back, dropping their items, until about
  * `bytes` more are free (each a 64 KB block); call when a heap allocation failed, then try it again. Returns the pages
  * given back (0: none borrowed, or every one still read by a chain). */

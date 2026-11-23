@@ -372,6 +372,10 @@ int mapstream_owns(const void *p)
 {
     return arena && (const unsigned char *)p >= arena && (const unsigned char *)p < arena + arena_size;
 }
+int mapstream_in_items(const void *p)
+{
+    return mapstream_owns(p) && msa_pools_on() && msa_gran(p) / MS_GPP < msa_ipages();
+}
 
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
 {

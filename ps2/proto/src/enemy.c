@@ -37,6 +37,7 @@
 #include "collision.h"
 #include "pack.h"
 #include "mapstream.h"
+#include "world.h"  /* world_yield_spill */
 #include "drawgrp.h"
 #include "render.h"
 #include "ev_chr.h"
@@ -420,6 +421,8 @@ static void *arena_get(unsigned n)
         p = mapstream_alloc(n, last_player ? &last_player->pos.x : none);
     if (!p && !(p = memalign(128, n)) && mapstream_heap_release(n))  /* the cells in it are all being drawn: the heap */
         p = memalign(128, n);  /* after the pages the streamer borrowed from it went back */
+    if (!p)
+        world_yield_spill(n);  /* a fourth block's lite set in the item pages: it goes until the retry (world-50) */
     return p;
 }
 static void arena_put(void *p, unsigned n)

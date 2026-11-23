@@ -480,6 +480,8 @@ static void *lite_alloc(int want, unsigned sz, int *wait)
     }
     if (w_ronly_m >> want & 1)
         return NULL;  /* (wanted by the reach alone: no item pages; it tries again in WORLD_RETRY_S) */
+    if (w_yield_s > 0 && want != w_cur && !w_under(want))
+        return NULL;  /* WORLD_YIELD: an enemy model temporary waits for the item pages */
     p = mapstream_alloc(sz, w_feet_now);
     if (p)
         world_stats.pool_spills++;

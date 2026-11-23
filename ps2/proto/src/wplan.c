@@ -110,6 +110,45 @@ int w_src_only(int i) { return i > 0 && (src_only_m >> i & 1); }
  * is never deferred (Anor Londo, 2026-11-23: a warp onto block 22 with every slot kept for nearer wanted blocks left
  * it deferred and the player fell through, 3 of 3 runs) */
 static unsigned under_m;
+int w_under(int i) { return i >= 0 && (under_m >> i & 1); }
+
+/* WORLD_YIELD (world_i.h): a temporary that found no window asks; the next step turns the spilled blocks off (not
+ * here: the caller may be inside enemy.c's job, and turning a block off removes its enemies) */
+float w_yield_s;
+static int yield_req;
+static int spilled(int i)
+{
+    for (int e = 0; e < NENT; e++)
+        if (w_rt[i].blob[e] && mapstream_in_items(w_rt[i].blob[e]))
+            return 1;
+    return 0;
+}
+int world_yield_spill(unsigned bytes)
+{
+    if (!WORLD_YIELD || !mapstream_pools_on())
+        return 0;
+    int n = 0;
+    for (int i = 1; i < w_nblk; i++)
+        n += w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && spilled(i);
+    if (!yield_req && w_yield_s <= 0)
+        printf("world: %u KB found no window: %d spilled block%s off for %.0f s\n", bytes >> 10, n, n == 1 ? "" : "s",
+               (double)WORLD_YIELD_S);
+    w_yield_s = WORLD_YIELD_S;
+    yield_req = n > 0;
+    return n;
+}
+static void yield_step(void)
+{
+    if (!yield_req)
+        return;
+    yield_req = 0;
+    for (int i = 1; i < w_nblk; i++)
+        if (w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && world_stats.reading != i && spilled(i)) {
+            w_turn_off(i);
+            w_rt[i].retry_s = WORLD_YIELD_S;
+            world_stats.yields++;
+        }
+}
 /* the block room_for would turn off for block want, -1 none */
 static int room_pick(int want, const float *feet)
 {
@@ -325,6 +364,7 @@ void w_step(const float *feet, float dt)
     }
     wm |= w_hold_want, km |= w_hold_want;  /* the blocks the player is held for (world_hold) */
     under_m |= w_hold_want;
+    yield_step();  /* (after under_m: never the player's floor) */
     w_ronly_m &= ~w_hold_want;
     src_only_m &= ~w_hold_want;  /* (the player's now) */
     if (wm != w_want_m || (km | wm) != w_keep_m)
@@ -363,6 +403,7 @@ void w_step(const float *feet, float dt)
             w_boot_lean();
     }
     w_far_retry_s = w_far_retry_s > dt ? w_far_retry_s - dt : 0;
+    w_yield_s = w_yield_s > dt ? w_yield_s - dt : 0;
     if (w_far_old && (--w_far_old_drain <= 0 || w_warping)) {
         w_far_free(w_far_old);
         w_far_old = NULL;
