@@ -58,6 +58,7 @@
  * WORLD_LITE_DIET     | 1        | fallback | -DWORLD_LITE_DIET=0                           | world  | #147  | world_i.h       | kept-only blocks hold collision and events only (make WORLD_LITE_DIET=0)
  * WORLD_DG_LITE       | 1        | fallback | -DWORLD_DG_LITE=0                             | world  | #209  | world_i.h       | a block's dg.bin / pvs.bin come with its lite set (pvs.bin let go while lean); 0 = read for every block at boot
  * RES_BLOCK           | undefined | make    | -                                             | world  | #198  | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
+ * RES_CAPS            | undefined | make    | -                                             | world  | #332  | residency.h   | X-macro for the per-block error caps table (tools/budgetfit.py writes it, the tools read it; not a build switch)
  * PICKUP              | 1        | fallback | -DPICKUP=0                                    | game   | #229  | pickup.h event.c | treasure shine, pickup anim, item get dialog, enemy drops; 0 = treasures picked up with none of them, no drops
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)

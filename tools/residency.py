@@ -15,6 +15,8 @@ def _read(path=HEADER):
     src = open(path).read()
     res = {m[1]: int(m[2]) for m in re.finditer(r"^#define (RES_\w+) (\d+)\b", src, re.M)}
     blocks = {m[1]: (int(m[2]), int(m[3])) for m in re.finditer(r"^RES_BLOCK\((\w+), (\d+), (\d+)\)", src, re.M)}
+    global CAPS
+    CAPS = {m[1]: (float(m[2]), float(m[3])) for m in re.finditer(r"^RES_CAPS\((\w+), (\d+), (\d+)\)", src, re.M)}
     for k in ("RES_NEAR_R", "RES_PIN_R", "RES_HZN_R", "RES_ARENA_KB", "RES_PAGE_KB", "RES_FILL_PCT", "RES_ALLOW_PCT",
               "RES_ALLOW_BLOCK_PCT"):
         if k not in res:
@@ -24,6 +26,7 @@ def _read(path=HEADER):
     return res, blocks
 
 
+CAPS = {}
 RES, BLOCKS = _read()
 
 
@@ -32,6 +35,11 @@ def block_budget(name):
     if name in BLOCKS:
         return BLOCKS[name] + (True,)
     return BLOCKS["default"] + (False,)
+
+
+def block_caps(name):
+    """(near px, coarse px) error caps of a block's spot solve (its RES_CAPS row, tools/budgetfit.py), or None"""
+    return CAPS.get(name)
 
 
 def pages_kb(kb):

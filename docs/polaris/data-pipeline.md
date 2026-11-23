@@ -281,6 +281,8 @@ near share, which `export_map.py`'s spot solve sizes the block's levels against)
 other blocks it holds a quarter of) gives the factor its row can grow or must shrink by so at most 0.5 % of those spots
 stay over the visual room. Cuts take the whole step, raises half of it, a block with any spot over is never raised, and
 a row whose last cut did not shrink its ask is held (the export is at its error caps, WS_PX0 / WS_PX1 in `[mapenv]`).
+While the world gate fails, the held block with the most spots over also gets coarser error caps (`RES_CAPS` rows in
+`residency.h`, x 1.5 per fit up to 36 / 54 px, which `export_map.py` uses instead of `WS_PX0` / `WS_PX1`).
 `budgetfit.py <out.json> <boot gen> <block gens...> [--prev <last out.json>] [--report fit.md] [--write]`; re-export and
 run it again until it says settled. The build gate is `world_budget.py --strict`, over every block since this step
 (`WORLD_BUDGET_STRICT=m10_01_00_00_` = the Burg blocks only, as before).

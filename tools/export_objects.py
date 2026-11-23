@@ -464,8 +464,15 @@ def type_model(game, model, files, dds, shared=None, lods=(LOD_INTACT, LOD_BROKE
     intact = souls.flver(files[model + ".flver"])
     broken = souls.flver(files[model + "_1.flver"])
     pieces_hk = {b[0]: b for b in bodies(files[model + "_1.hkx"])}
-    intact_body = bodies(files[model + ".hkx"])[0]
-    _, _, rot0, pos0, _, fr, rest, shape = intact_body
+    if model + ".hkx" in files:
+        intact_body = bodies(files[model + ".hkx"])[0]
+        _, _, rot0, pos0, _, fr, rest, shape = intact_body
+    else:  # no intact body (Blighttown's o3910: the binder holds the pieces' _1.hkx only): the intact FLVER's bounds
+        # stand in for the shape, friction / restitution the pieces' mean (ASSUMED, as the "other" shapes)
+        pb = list(pieces_hk.values())
+        rot0, pos0, shape = ((1, 0, 0), (0, 1, 0), (0, 0, 1)), (0.0, 0.0, 0.0), ("other",)
+        fr = sum(b[5] for b in pb) / max(len(pb), 1)
+        rest = sum(b[6] for b in pb) / max(len(pb), 1)
     if shape[0] == "other":  # no box / cylinder: the intact FLVER's bounding box stands in for the Havok shape
         lo, hi = mesh_bounds(intact)[None]
         cylinder = (min(hi[0] - lo[0], hi[2] - lo[2]) / 2, lo[1], hi[1])
