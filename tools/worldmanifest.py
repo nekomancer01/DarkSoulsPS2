@@ -45,8 +45,9 @@ VERSION = 1
 CELL = area.CELL
 COL_CAP = 65535  # collision.bin u16 triangle indices
 COL_CUT = 60000  # the automatic cut's target (a margin under COL_CAP)
-MAX_SPAN = 14  # cells across at most: collision.bin's s16 positions at 1/128 m reach +-256 m from its origin, and a
-               # block's triangles reach past its cells (a corner inside is enough): 448 m + slack (Anor Londo's 27-cell strip)
+MAX_SPAN = 14  # cells across at most: collision.bin's s16 positions at 1/128 m reach +-256 m from its bbox midpoint, and a
+               # block's triangles reach past its cells (a corner inside is enough; m15_01 has triangles 130-160 m past their
+               # cells): 448 m leaves ~32 m a side, a likely bound, not a proof (export_collision.py asserts; y is not checked)
 MIN_CELLS = 3  # no cut leaves a block narrower than this many cells (when the rectangle has room for two)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -270,6 +271,8 @@ def manifest(game, cache=None, log=print):
                  "collision": col, "enemies": len(ens), "player_starts": bst, "bonfires": bfire, "spawn": spawn,
                  "world": built.get(name), "budget": {"room_kb": room, "near_kb": near, "own_row": own},
                  "issues": []}
+            if rects is not None and max(max(r[2] - r[0], r[3] - r[1]) + 1 for r in rects) > MAX_SPAN:
+                b["issues"].append(f"wider than {MAX_SPAN} cells (collision.bin s16 range: export_collision may assert)")
             if col > COL_CAP:
                 b["issues"].append(f"collision {col} > {COL_CAP}")
             if rects is not None and len(ens) > ENEMY_CAP:  # a whole MSB keeps every placement
@@ -281,7 +284,7 @@ def manifest(game, cache=None, log=print):
             mblocks.append(b)
             if b["world"]:
                 for i in b["issues"]:
-                    (warnings if i.startswith(("enemies", "collision")) else errors).append(f"{name}: {i}")
+                    (warnings if i.startswith(("enemies", "collision", "wider")) else errors).append(f"{name}: {i}")
         left = sorted(set(cells) - covered)
         left_col = col_count(sets, [(c[0], c[1], c[0], c[1]) for c in left]) if left else 0
         if left and any(b["world"] for b in mblocks):

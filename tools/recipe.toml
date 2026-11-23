@@ -153,7 +153,7 @@ env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 map = "m15_00_00_00"
 env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 
-# Anor Londo (m15_01_00_00_a.._d, 2026-11-23): two levels with the Burg's errors, as Sen's Fortress (ASSUMED: not tuned
+# Anor Londo (m15_01_00_00_a.._h, 2026-11-23): two levels with the Burg's errors, as Sen's Fortress (ASSUMED: not tuned
 # on it; TECH_DEBT world-48)
 [[mapenv.area]]
 map = "m15_01_00_00"
