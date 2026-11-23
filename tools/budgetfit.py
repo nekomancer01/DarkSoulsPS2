@@ -8,7 +8,8 @@ Runs tools/world_budget.py in-process over the world's exported blocks (as tools
 pool from the boot block's world.bin) and, for every block, takes the hard tier at its own navmesh spots (the spots of
 its MSB inside its cells, each once; the whole MSB for a block without cells) against the visual room:
 
-  f = the RES_ALLOW_PCT x TARGET_SHARE % quantile of room / hard over those spots (the worst 0.5 % may stay over: the world
+  f = the RES_ALLOW_PCT x TARGET_SHARE % quantile of room / hard over those spots (room: world_budget.py's per-spot
+      room_spot when it gives one, less a spilled 4th lite set there) (the worst 0.5 % may stay over: the world
       gate allows 1 % of all spots, and seam spots count for several blocks)
   fitted room = row room x f, rounded down to 10 KB, at most the visual room less RES_PAGE_KB (a lite set growing a page),
   at least FLOOR_KB (a raise takes DAMP of the step, see fit()); fitted near = row near x (fitted room / row room) (the row's near share kept)
@@ -119,6 +120,9 @@ def fit(dirs, boot_map, prev_fit=None):
         pass
     L = wb.LAST
     room = float(L["room"])
+    # per-spot room (world_budget.py LAST["room_spot"], when the streamer spills a 4th lite set into the item pages at
+    # some spots: the room there is less by that spill); the scalar room elsewhere
+    rs = np.asarray(L["room_spot"], np.float64) if L.get("room_spot") is not None else np.full(len(L["P"]), room)
     page = residency.RES["RES_PAGE_KB"]
     q = residency.RES["RES_ALLOW_PCT"] / 100.0 * TARGET_SHARE
     out = []
@@ -138,13 +142,14 @@ def fit(dirs, boot_map, prev_fit=None):
             sh = pool[L["hard_by"][k][pool] > SEAM_SHARE * np.maximum(tot[pool], 1.0)]
             idx = np.union1d(idx, sh)
         hard = L["tot"]["hard"][idx]
+        hroom = rs[idx]
         if not len(hard):
             out.append(dict(block=row_name, gen=name, spots=0, row=[r_room, r_near], fit=None, note="no spots"))
             continue
-        f = float(np.quantile(room / np.maximum(hard, 1.0), q))
+        f = float(np.quantile(hroom / np.maximum(hard, 1.0), q))
         # a raise moves half way (DAMP): every block at a seam spot is raised from the same headroom, so the full
         # step would overshoot there on the next export; a cut takes the whole step
-        over = float((hard > room).mean() * 100)
+        over = float((hard > hroom).mean() * 100)
         g = f if f < 1 else 1.0 if over > 0 else 1 + (f - 1) * DAMP  # no raise while any of its spots is over
         new = min(room - page, max(FLOOR_KB, r_room * g))
         new = int(new // STEP_KB * STEP_KB)
@@ -163,7 +168,7 @@ def fit(dirs, boot_map, prev_fit=None):
             note = HELD
         elif f < 1 and cap:
             note = f"{cap} level(s) at the export's error caps: a smaller row may not shrink them ([mapenv] WS_PX0 / WS_PX1)"
-        out.append(dict(block=row_name, gen=name, spots=int(len(idx)), over_pct=round(over, 2), caps=None, own_over=int((tot[own_idx[k]] > room).sum()),
+        out.append(dict(block=row_name, gen=name, spots=int(len(idx)), over_pct=round(over, 2), caps=None, own_over=int((tot[own_idx[k]] > rs[own_idx[k]]).sum()),
                         hard_p50=round(float(np.percentile(hard, 50))), hard_p99=round(float(np.percentile(hard, 99))),
                         hard_max=round(float(hard.max())), own_p99=round(own_p99), f=round(f, 3), row=[r_room, r_near], own_row=own_row,
                         fit=[new, near], cut=new < r_room, move_pct=round(abs(new - r_room) / r_room * 100, 1), note=note))
@@ -171,7 +176,7 @@ def fit(dirs, boot_map, prev_fit=None):
     # RES_ALLOW_PCT %): while it fails,
     # the held block with the most of its own spots over gets coarser error caps (RES_CAPS) and loses its hold, so
     # the next fit can cut its row against the coarser export; one block per fit
-    world_pct = gate_pct if gate_pct is not None else float((tot[pool] > room).mean() * 100) if len(pool) else 0.0
+    world_pct = gate_pct if gate_pct is not None else float((tot[pool] > rs[pool]).mean() * 100) if len(pool) else 0.0
     if world_pct > residency.RES["RES_ALLOW_PCT"]:
         env_caps = mapenv_caps()
         for b in sorted((b for b in out if b.get("note") == HELD and b["own_over"] > 0
