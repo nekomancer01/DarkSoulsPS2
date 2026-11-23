@@ -48,8 +48,17 @@
 /* Blocks resident besides the boot block. Their lite sets live in mapstream.c's near-cell arena (mapstream_alloc drops
  * the farthest near cells to make room), so a world build costs no RAM while no neighbour is loaded (TECH_DEBT world-5).
  * 3: the block under the player plus both neighbours at a seam inside the Burg (the bonfire / bridge block keeps Burg
- * west and the Parish block) */
-#define WORLD_SLOTS 3
+ * west and the Parish block). 4 since 2026-11-23 (TECH_DEBT world-50): 13583 of the 24 blocks' collision triangles want
+ * four blocks besides the boot block (Anor Londo's arrival block by the cathedral 5391, the Burg bonfire block by the
+ * Parish steps 3522); with three the fourth was deferred and a warp there left the player over a block that never came
+ * (Anor Londo, 3 of 3 runs). The structural pool stays sized for WORLD_POOL_SLOTS lite sets per link: sized for four it
+ * grew 4223 -> 4643 KB, taken from every block's visual room; the fourth lite set at those spots spills into the misc
+ * pool or the item pages instead (lite_alloc -> mapstream_alloc, world_stats.pool_spills). texcache.h TC_BLOCKS
+ * follows (a block's CLUTs, ~40-50 KB of the GS WORLD row each) */
+#define WORLD_SLOTS 4
+#ifndef WORLD_POOL_SLOTS
+#define WORLD_POOL_SLOTS 3  /* lite sets per link the structural pool is sized for (world_struct_bytes) */
+#endif
 /* Every loaded block draws the same way: its map's resident level streams per cell from its mapres.bin and its
  * textures' mip 0 per texture (mapstream.c mapstream_res_open via map.c), in the near arena with the near cells, so
  * there is no full pool and no full swap (Burg 4.9 MB / Firelink 8.5 MB, 5-14 s from cdrom0:, TECH_DEBT world-2 /
