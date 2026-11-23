@@ -19,7 +19,9 @@
 #define GS_BUDGET_H
 
 #define GSB_FRAME_KB 1152      /* draw buffer 448 + Z 448 (512 x 448, 16-bit) + display buffer 256 (512 x 224) */
-#define GSB_WORLD_KB 1144      /* map pixel pool 896 + its CLUTs 72 + block textures / CLUTs 149 + relief / near pools; peak 1137 (iso_burg_taurus, 2.7 census) */
+#define GSB_WORLD_KB 1144      /* map pixel pool 896 + its CLUTs 72 + block textures / CLUTs 149 + relief / near pools; peak 1137 (iso_burg_taurus, 2.7 census).
+                                * With a 4th block on (texcache TC_BLOCKS 4, Anor Londo) it peaks at 1187 (iso_anor, world.clut 291): over
+                                * the row, report only (WORLD is not enforced); no other row has 48 KB to give (TECH_DEBT world-24) */
 #define GSB_CHR_PLAYER_KB 520  /* the player's textures 485 (488 in pages): never evicted; + its silhouette target and Z 32 (shadow.c) */
 #define GSB_CHR_KB 184         /* enemies and NPCs: 58 at the VRAM low, about 150 at the heap low, 180-184 at Firelink (2.7) */
 #define GSB_OBJ_KB 528         /* objects and breakables: 528 at the VRAM low, 362 at the heap low (16 to the silhouette) */
