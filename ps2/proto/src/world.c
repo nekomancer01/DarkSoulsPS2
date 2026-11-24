@@ -66,6 +66,23 @@ static int tab_split(BlockRt *r)
  * its payload offset in OHDR), and the types were loaded at boot (world_systems), so turning a block on reads only that
  * tail (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. A file without BTEX
  * stays whole. */
+/* WORLD_FX_LITE: bytes of block r's fx.bin before its first pixel / CLUT (its header and texture table read here,
+ * once per block at boot); 0: unreadable, the block's effects then load at boot (world_systems) */
+static unsigned fx_head_size(BlockRt *r, unsigned off, unsigned size)
+{
+    static unsigned hd[16] __attribute__((aligned(64)));
+    if (size < 64 || !w_read_sync(&r->pk, off, hd, 64))
+        return 0;
+    unsigned n_tex = hd[2], off_tex = hd[8], n = (off_tex + n_tex * 16 + 63) & ~63u;  /* (FxHeader: n_tex, off_tex) */
+    if (!n_tex || off_tex > size || n > size || n > 64 * 1024)
+        return n_tex ? 0 : size;  /* (no textures: the whole file is tables) */
+    unsigned char *b = memalign(64, n);
+    /* (the header and texture table lie in the n bytes read; the file's size bounds the pixel offsets) */
+    unsigned keep = b && w_read_sync(&r->pk, off, b, n) ? fx_head_bytes(b, size) : 0;
+    free(b);
+    return keep;
+}
+
 static void obj_tail(BlockRt *r)
 {
     static unsigned hd[32] __attribute__((aligned(64)));
@@ -198,6 +215,8 @@ int world_init(const char *boot_area)
         if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
             r->open = 0;
         for (unsigned e = 0; e < NENT; e++) {
+            if (e == E_FXH)  /* (shares fx.bin with E_FX: sized after the loop) */
+                continue;
             int got = e >= E_TAB && e <= E_TABC ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TAB, &r->off[e], &r->size[e])
                 : e == E_MTX ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TEX, &r->off[e], &r->size[e])
                 : pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]);
@@ -221,6 +240,10 @@ int world_init(const char *boot_area)
                 r->total += (r->size[e] + 127) & ~127u;
         }
         r->size[E_TABB] = r->size[E_TABC] = 0;  /* (the loop above gave them the whole maptab.bin) */
+        r->off[E_FXH] = r->size[E_FXH] = 0;  /* WORLD_FX_LITE: fx.bin's tables (before world_struct_bytes sums total) */
+        if (WORLD_FX_LITE && i && r->open && r->size[E_FX] &&
+            (r->size[E_FXH] = fx_head_size(r, r->off[E_FX], r->size[E_FX])))
+            r->off[E_FXH] = r->off[E_FX], r->total += (r->size[E_FXH] + 127) & ~127u;
         if (i && r->open && !tab_split(r)) {
             printf("world: block %d %s: maptab.bin header unreadable\n", i, w_tab[i].pack);
             r->open = 0;
@@ -371,7 +394,7 @@ void world_systems(GSGLOBAL *gs)
         int no = p ? objects_block_types(gs, i, p, n0) : -1;
         free(p);
         unsigned h1 = enemy_ram_free();
-        p = read_tmp(r, "fx.bin", &n0);
+        p = r->size[E_FXH] ? NULL : read_tmp(r, "fx.bin", &n0);  /* (WORLD_FX_LITE: with the lite set) */
         int nf = p ? fx_block_load(gs, i, p, n0) : -1;
         free(p);
         unsigned h2 = enemy_ram_free();

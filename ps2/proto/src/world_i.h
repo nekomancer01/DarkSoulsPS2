@@ -248,10 +248,18 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_NAV_LITE
 #define WORLD_NAV_LITE 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_OBJ, E_FX, NENT };
+/* E_FXH (WORLD_FX_LITE, default 1; world-46 phase 2): the head of the block's fx.bin, everything before its first pixel /
+ * CLUT (the effect tables, 1-20 KB), comes with its lite set and is used in place from turn_on_col (fx_block_tables) to
+ * the turn-off (fx_block_drop), instead of a heap copy of every block's tables and runtime arrays made at boot (339 KB at
+ * 27 blocks). The pixels still come through the texture buffer (E_FX). The entry shares fx.bin with E_FX: world_init
+ * sizes it after its entry loop (fx_head_size), before world_struct_bytes. 0: tables at boot as before. */
+#ifndef WORLD_FX_LITE
+#define WORLD_FX_LITE 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "objects.bin",
-                                          "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
+                                          "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
  * read while the block draws; the draw groups stay, its collision parts' groups) */

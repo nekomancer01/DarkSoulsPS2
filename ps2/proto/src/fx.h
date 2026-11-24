@@ -30,6 +30,13 @@ int fx_lights(FxLightOut *out, int max);
 #define FX_SETS 32  /* = WORLD_MAX (world.h): set k = world block k */
 int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size);
 void fx_block_on(int block, int on, const void *blob);
+/* WORLD_FX_LITE (world_i.h): bytes of fx.bin before its first pixel / CLUT (the tables; 0: not an fx.bin v2);
+ * fx_block_tables binds block b's tables in place from that head as its lite set holds it (the caller keeps the blob
+ * until fx_block_drop; fx_block_on then hashes and uploads the textures from the whole file); fx_block_drop turns the
+ * set off and frees what fx_block_tables allocated (a no-op for a set not bound). */
+unsigned fx_head_bytes(const void *blob, unsigned size);
+int fx_block_tables(int block, const void *head, unsigned size);
+void fx_block_drop(int block);
 /* Event-owned map SFX (MSB SFX with an entity id: fog walls): an instance stops emitting while its entity is on
  * drawgrp.c's hidden list (Delete Map SFX, src/event.c) and starts again (prewarmed) when it comes off (Spawn Map SFX).
  * fx_entity_particles: alive particles of entity id's instances (-1: no loaded instance has it); kill = 1 removes
