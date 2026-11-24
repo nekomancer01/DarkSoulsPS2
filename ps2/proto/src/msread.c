@@ -231,7 +231,7 @@ int ms_issue(void)
          * them as room where the blocks wanted need less pool: mapstream.h) */
         if (!p && ms_spare_p && gb <= MS_PAGE && !nr && !lendable(w.cls) &&
             !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))) &&
-            (p = msa_alloc_small(gb, msa_spage0(), msa_spage0() + ms_spare_p)))
+            (p = msa_alloc_small(gb, ms_spare0, ms_spare0 + ms_spare_p)))
             ms_lent_n++, lent = 3;
         if (!p && sent)
             break;  /* the rest waits for its turn */

@@ -18,6 +18,8 @@ int coltile_plan(int b, const float origin_scale[4], const void *ptab);
 /* the structural pool room the pages may take at once: over every page's box centre of every planned block, the
  * pages of all blocks within the keep window (+ one map cell, pages read together stay together) */
 unsigned coltile_budget(void);
+/* MS_AREA_POOL: the same at block b's own page centres only (the tiles a player on block b may want) */
+unsigned coltile_budget_block(int b);
 /* block b's index is loaded (col_load_index): its pages read from pk at file offset base (collision.bin's raw entry) */
 void coltile_on(int b, Pack *pk, unsigned base);
 /* block b's collision goes: its pages are freed (a read in flight for it is cancelled first) */

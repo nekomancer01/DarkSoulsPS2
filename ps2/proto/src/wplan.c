@@ -58,7 +58,7 @@ unsigned world_lua_bytes(void)
  * over the blocks wanted or kept now (the reach and the sources included), so the pages above it hold map items of
  * any class until a block with a larger need is wanted (tools/world_budget.py: the same rule per spot) */
 static unsigned pool_need[WORLD_MAX];
-unsigned w_pool_cb;  /* the collision tiles' part of the pool (coltile_budget, world_init): one number for the world */
+unsigned w_pool_cb[WORLD_MAX];  /* the collision tiles' part per block (coltile_budget_block, world_init) */
 unsigned world_struct_bytes(void)
 {
     unsigned best = 0;
@@ -118,11 +118,13 @@ static void pool_need_step(void)
 {
     if (!MS_AREA_POOL || w_nblk < 2)
         return;
-    unsigned m = w_want_m | w_keep_m | (w_cur >= 0 ? 1u << w_cur : 0), need = 0;
+    unsigned m = w_want_m | w_keep_m | (w_cur >= 0 ? 1u << w_cur : 0), need = 0, col = 0;
     for (int i = 0; i < w_nblk; i++)
-        if (m >> i & 1)
+        if (m >> i & 1) {
             need = pool_need[i] > need ? pool_need[i] : need;
-    mapstream_pool_need(need + w_pool_cb);
+            col = w_pool_cb[i] > col ? w_pool_cb[i] : col;
+        }
+    mapstream_pool_need(need, col);
 }
 
 /* a wanted block's lite set is being read or could start now (start()'s conditions, room aside) */
