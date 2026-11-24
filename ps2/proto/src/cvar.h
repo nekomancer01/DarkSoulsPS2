@@ -11,14 +11,11 @@
 
 #define CVAR_LIST(X)          \
     X(CHR_OMIT, 1)            \
-    X(SEP_CARRY, 1)           \
-    X(ENEMY_WALLS, 1)         \
     X(PACK_JOB_ABANDON, 1)    \
     X(MIP_TRILINEAR, 1)       \
     X(TC_PRESS, 1)            \
     X(TC_PLAN, 1)             \
     X(LUA_POOL_GROW, 1)       \
-    X(PUSH2_CELLS, 1)         \
     X(MS_LIFE, 1)             \
     X(MS_TIDY, 1)             \
     X(MS_QSCALE, 1)           \

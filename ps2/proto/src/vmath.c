@@ -87,7 +87,7 @@ M34 m34_inv(const M34 *a)
 
 void c44_mul_skin(float (*o)[4], const float (*a)[4], const float (*b)[4], const float *l)
 {
-#if defined(_EE) && !defined(NO_VU0)
+#ifdef _EE
     /* vf1-4 = a's columns, vf5-8 = b's, vf9 = l; vf10-13 = o's columns, vf14-16 = the light products. Macro-mode
      * COP2 instructions interlock, so no manual hazard handling; the three light sums are interleaved to hide the
      * 4-cycle FMAC latency. vf0 = (0, 0, 0, 1). */

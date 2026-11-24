@@ -102,7 +102,7 @@ void flag_range_set(u32 first, u32 last, int on)
         /* LOGIC_SPREAD (Burg plan B6): clearing skips what is clear already, a section without a page or a word of 32
          * clear flags at a time (a rest's temporary flag reset, ev_temp_flags_reset: 37000 flag_set calls, 56 ms of
          * EE in one frame on the ISO, 2026-11-08) */
-        if (LOGIC_SPREAD && !on) {
+        if (!on) {
             if (page_of[s] == NO_PAGE) {
                 id = (id / 1000 + 1) * 1000;
                 continue;

@@ -27,7 +27,6 @@
  *
  * name                | default  | kind     | CI                                            | owner  | pr    | where         | what
  * ------------------- | -------- | -------- | --------------------------------------------- | ------ | ----- | ------------- | ----
- * AI_PERCEPT          | 1        | fallback | -DAI_PERCEPT=0                                | game   | #234  | ai.c          | DSR sight (FUN_140618680: eye cones as half-angles, sight ray every 0.25 s) and hearing (FUN_140623d10); 0 = flat eye_angX cone, no sight line, hearing capped at ear_dist
  * AREA                | "m10_02_00_00" | make | -                                          | main   | init  | main.c        | the area pack (make MAP=)
  * CHR_DIR             | ""       | make     | -                                             | io     | init  | pack.h        | the area's enemy / common pack folder (make MAP=)
  * MDL_MAX_BONES       | 255      | make     | -DMDL_MAX_BONES=64                            | scene  | #107  | model.h       | largest skeleton (make CHR_BONES=61: skeletons folded to 61 bones at export; the VU1 window size is make VU1_BONES)
@@ -47,7 +46,6 @@
  * PROF_GPROF_FRAMES   | 1800     | tune     | -                                             | core   | init  | prof.c        | GPROF: frames sampled
  * MAP_PANO_NEAR       | 1        | fallback | -DMAP_PANO_NEAR=0                             | world  | #249  | mappass.c     | the boot map's picture layers only while the player is in the boot block (0: from its whole draw-group area)
  * MAP_FX_FOG0         | 1        | fallback | -DMAP_FX_FOG0=0                               | world  | #286  | mappass.c     | additive and subtractive map chunks fog towards black (fade out with distance); 0 = towards the map's fog colour, as before (runtime: option set MAP_FX_FOG0 0)
- * MAP_PLIGHT          | 1        | fallback | -DMAP_PLIGHT=0                                | world  | #243  | maplight.c    | the player's point light (PointLightBank) on the map around them (0: characters only, the old path)
  * MAP_PEER_ZBIAS      | 0.02     | tune     | -DMAP_PEER_ZBIAS=0                            | world  | #257  | map.c         | other maps' blocks drawn this share further away (their copies of shared pieces lose to the player's map); 0 = no bias
  * PLIGHT_BLEND        | 0.5f     | tune     | -DPLIGHT_BLEND=0.0f                           | world  | #249  | maplight.c    | seconds a new player-light row blends in (DSR 0.5 s, FUN_1402d3970; 0: at once, the old path)
  * PLIGHT_RATIO        | 60       | tune     | -                                             | world  | #243  | maplight.c    | MAP_PLIGHT: % of the area's ambient the player's light must reach for the pass to run
@@ -60,7 +58,6 @@
  * WORLD_DG_LITE       | 1        | fallback | -DWORLD_DG_LITE=0                             | world  | #209  | world_i.h       | a block's dg.bin / pvs.bin come with its lite set (pvs.bin let go while lean); 0 = read for every block at boot
  * RES_BLOCK           | undefined | make    | -                                             | world  | #198  | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
  * RES_CAPS            | undefined | make    | -                                             | world  | #332  | residency.h   | X-macro for the per-block error caps table (tools/budgetfit.py writes it, the tools read it; not a build switch)
- * PICKUP              | 1        | fallback | -DPICKUP=0                                    | game   | #229  | pickup.h event.c | treasure shine, pickup anim, item get dialog, enemy drops; 0 = treasures picked up with none of them, no drops
  * SND_LRU             | 1        | fallback | -DSND_LRU=0                                   | snd    | new   | sound.c       | enemy sound banks cached after unload, LRU eviction skipping live / loading banks, no-room retry (TECH_DEBT audio-2); 0 = free on unload, slot order
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
@@ -102,11 +99,7 @@
  * PACK_CDROM          | probe    | debug    | -DPACK_CDROM=1                                | io     | init  | pack.c        | force disc (1) or host (0) paths
  *
  * map drawing (map.c, render.c, drawgrp.c, bump.c, main.c)
- * MAP_TILES           | 1        | fallback | -DMAP_TILES=0                                 | world  | #143  | map_i.h         | cells tested by tile first
- * MAP_NEAR_SKIP       | 1        | fallback | -DMAP_NEAR_SKIP=0                             | world  | #143  | map_i.h         | near-pass skips cells with no near level
  * MAP_TWO_PASS        | 1        | fallback | -DMAP_TWO_PASS=0                              | world  | #148  | map_i.h         | per-cell pre-pass and cached draw list, then the emit pass (off under MAP_DBG / MAP_PANO_R); 0 = the per-chunk loop
- * MAP_PASS_MS         | 1        | fallback | -DMAP_PASS_MS=0                               | world  | #143  | map.c         | "map: pass ms" timing log
- * SKY_ROWS            | 1        | fallback | -DSKY_ROWS=0                                  | world  | #183  | map_i.h         | sky chunks under their own fog row
  * ZSPLIT              | 50 m     | fallback | -DZSPLIT=0                                    | world  | #190  | mapchunk.c    | two Z ranges; 0 = one range
  * HZN_R               | 40 m     | tune     | -                                             | world  | #122  | map_i.h         | horizon radius
  * HZN_FADE            | 8 m      | fallback | -DHZN_FADE=0                                  | world  | #135  | map_i.h         | horizon fade-in; 0 = hard switch
@@ -147,13 +140,10 @@
  * DOF_BANDS           | 3        | tune     | -                                             | main   | #34   | main.c        | depth of field bands
  * FPS_CAP_FIELDS      | 2        | fallback | -DFPS_CAP_FIELDS=1                            | main   | init  | main.c        | 30 fps cap; 1 = uncapped
  * V1B_FIELD           | off      | debug    | -DV1B_FIELD                                   | main   | init  | main.c        | point-sampled field output
- * R2_OFF              | off      | fallback | -DR2_OFF                                      | main   | init  | main.c        | no VRAM layout pass after the model upload (A/B)
  *
  * textures and VU1 (texcache.c, vu1.c, vu1.h, model.c)
- * TC_RLIST            | 1        | fallback | -DTC_RLIST=0                                  | gfx    | #143  | texcache.c    | resident-level list; 0 = walk every level
  * TC_PRESS            | 1        | fallback | -DTC_PRESS=0                                  | gfx    | #163  | texcache.c    | mip 1 under pool pressure (runtime: option set TC_PRESS 0)
  * TC_PLAN             | 1        | fallback | -DTC_PLAN=0                                   | gfx    | #234  | texcache.c    | texture levels planned to the pool budget per texture (runtime: option set TC_PLAN 0)
- * TC_NO_NEAR          | off      | fallback | -DTC_NO_NEAR                                  | gfx    | init  | texcache.c    | near texture levels never drawn (A/B)
  * TC_HUD              | off      | debug    | -DTC_HUD                                      | gfx    | init  | texcache.c    | upload numbers on screen
  * TC_NEAR_KB          | 256      | tune     | -                                             | gfx    | init  | texcache.c    | near level pool
  * MIP_BIAS            | 1.0      | tune     | -                                             | gfx    | #33   | texcache.c    | LOD bias in levels
@@ -175,7 +165,6 @@
  * FX_CLOSED           | 1        | fallback | -DFX_CLOSED=0                                 | fx     | #281  | fx.c          | particles keep their spawn state, position at an age in closed form (ppos), VU1 moves them; 0 = the EE integrates each particle every frame
  * FX_CULL             | 1        | fallback | -DFX_CULL=0                                   | fx     | #281  | fx.c          | an effect instance whose bound is off screen is skipped whole (inst_class); 0 = only the per-particle near-plane test
  * FX_VU_ORIENT        | 1        | fallback | -DFX_VU_ORIENT=0                              | fx     | #281  | fx.c          | quads fixed in the effect frame (FFX orientation 2, fog walls) on VU1; 0 = always the EE path
- * V5_OFF              | off      | fallback | -DV5_OFF                                      | scene  | init  | model.c       | character CLUTs as exported (CT32)
  * MDL_SKIN_PAGE       | 64 KB    | fallback | -DMDL_SKIN_PAGE=0                             | scene  | #138  | model.c       | skin packets in pages; 0 = one block
  * OBJ_VIEW_CULL       | 1        | fallback | -DOBJ_VIEW_CULL=0                             | game   | new   | objects.c     | intact breakables outside the view (collision cylinder + 0.3 m) not drawn; 0 = distance / behind-camera tests only
  * MDL_PREBUILT        | 1        | fallback | -DMDL_PREBUILT=0                              | scene  | new   | model.c       | Polaris 2.2: a model's vu1skin2 batch headers built once and called per draw (palette + per-draw block + one CALL per segment); 0 = every batch's header written per draw
@@ -184,11 +173,8 @@
  * SHADOW_SIL          | 1        | fallback | -DSHADOW_SIL=0                                | scene  | new   | shadow.c      | Polaris 2.2: the player's shadow is its silhouette drawn from the sun into a 128 x 64 target and laid on the floor; 0 = a blob like the others
  * MDL_ANIM_PAGE       | 64 KB    | fallback | -DMDL_ANIM_PAGE=0                             | scene  | #140  | model.c       | anim section in pages; 0 = one copy
  * SPEC_TEST           | off      | debug    | -DSPEC_TEST=0.85,0.8                          | scene  | init  | model.c       | metal / specular on every vertex
- * NO_VU0              | off      | fallback | -DNO_VU0                                      | core   | #94   | vmath.c       | skin matrix product in C
  *
  * characters, logic, collision (enemy.c, ai.c, lua0.c, lpass.h, collision.c, nav.c)
- * LOGIC_SPREAD        | 1        | fallback | -DLOGIC_SPREAD=0                              | gfx    | #156  | lpass.h       | logic work spread across frames
- * LOGIC_PASS_MS       | 1        | fallback | -DLOGIC_PASS_MS=0                             | gfx    | #156  | lpass.h       | logic pass timing log
  * ACTIVE_MAX          | 16       | tune     | -                                             | game   | init  | enemy.c       | characters updated a frame
  * CHR_OMIT            | 1        | fallback | -DCHR_OMIT=0                                  | game   | #234  | omit.h enemy.c | update omission levels (DSR FUN_14036e8d0); 0 = every active character every frame (runtime: option set CHR_OMIT 0)
  * OMIT_FULL_N         | 6        | tune     | -                                             | game   | #234  | omit.h        | CHR_OMIT: in-view characters at level 0
@@ -196,29 +182,16 @@
  * OMIT_NEAR_M         | 12 m     | tune     | -                                             | game   | #234  | omit.h        | CHR_OMIT: out of view within this = level 5, not 30
  * OMIT_DT_MAX         | 0.25 s   | tune     | -                                             | game   | #234  | omit.h        | CHR_OMIT: longest step one update takes
  * DRAW_MAX            | 16       | tune     | -                                             | game   | init  | enemy.c       | characters drawn a frame
- * ENEMY_LAZY_LOAD     | 1        | fallback | -DENEMY_LAZY_LOAD=0                           | game   | #138  | enemy.c       | types loaded when near; 0 = every placement in LOAD_DIST
- * ENEMY_KEEP_DEAD     | 1        | fallback | -DENEMY_KEEP_DEAD=0                           | game   | #140  | enemy.c       | killed enemies stay dead until a rest
  * ENEMY_TMP_GENTLE    | 1        | fallback | -DENEMY_TMP_GENTLE=0                          | game   | #257  | enemy.c       | model temporaries never clear drawn cells while the heap has room; 0 = the arena at any cost first
- * DPAD_STICK          | 0        | fallback | -DDPAD_STICK=1                                | main   | #228  | main.c        | the d-pad moves like the left stick (old path); 0 = DSR's weapon / item d-pad
  * ENEMY_NEAR_PLACE    | 1        | fallback | -DENEMY_NEAR_PLACE=0                          | game   | #210  | enemy.c       | characters placed within 70 m, a few a frame; 0 = every placement of a block at once
  * POSE_SLOTS          | 40       | tune     | -                                             | game   | #212  | enemy.c       | shared pose pool slots (MAX_ENEMIES = one each, the old layout)
  * POSE_FILL           | 1        | fallback | -DPOSE_FILL=0                                 | game   | #297  | enemy.c       | a big type's pose block (above MAX_BONES bones) sampled once the type is in, reference pose without an anim, unposed characters not drawn; 0 = sampled only by place() when the type was already loaded
- * ENEMY_WALLS         | 1        | fallback | -DENEMY_WALLS=0                               | game   | #156  | enemy.c       | moves against walls and ledges; 0 = the old move (runtime: option set ENEMY_WALLS 0)
- * ENEMY_WALL_CHECK    | 1        | fallback | -DENEMY_WALL_CHECK=0                          | game   | #156  | enemy.c       | wall-hit log by move kind
  * ENEMY_ROOT_Y        | 1        | fallback | -DENEMY_ROOT_Y=0                              | game   | #248  | enemy.c       | root-motion height inside TAE IGNORE_GRAVITY windows (Taurus Demon's 9061 jump down); 0 = flat root motion
- * SEP_CARRY           | 1        | fallback | -DSEP_CARRY=0                                 | game   | #156  | enemy.c       | separation rides the next move (runtime: option set SEP_CARRY 0)
- * MOVE_PROF           | 1        | fallback | -DMOVE_PROF=0                                 | game   | #156  | enemy.c       | "enemy: moves" timing log
  * NO_AI_SCRIPTS       | off      | debug    | -DNO_AI_SCRIPTS                               | game   | init  | enemy.c       | no ESD / Lua
  * ENEMY_ONLY          | off      | debug    | -DENEMY_ONLY=c2900_c2540                      | game   | init  | enemy.c       | only these types
  * ENEMY_HIT_TEST      | off      | debug    | -DENEMY_HIT_TEST                              | game   | init  | enemy.c       | a hit on the nearest enemy every 2 s
  * LUA_GC_STEP_US      | 1000     | fallback | -DLUA_GC_STEP_US=0                            | game   | #95   | ai.c          | incremental Lua GC; 0 = stop the world
  * LUA_POOL_GROW       | 1        | fallback | -DLUA_POOL_GROW=0                             | game   | #140  | lua0.c        | Lua small objects in their own chunks (runtime: option set LUA_POOL_GROW 0)
- * COL_SCAN            | 1        | fallback | -DCOL_SCAN=0                                  | world  | #164  | collision.c   | box test before the lookups
- * PUSH2_CELLS         | 1        | fallback | -DPUSH2_CELLS=0                               | world  | #138  | collision.c   | push-out v2 by cells (runtime: option set PUSH2_CELLS 0)
- * NAV_QREJ            | 1        | fallback | -DNAV_QREJ=0                                  | world  | #164  | nav.c         | integer box reject before barycentrics
- * EV_ENT_KEEP         | 1        | fallback | -DEV_ENT_KEEP=0                               | game   | #213  | event.c       | entity switches kept by id and replayed when a block's events turn on; 0 = only the sets on at the time
- * PLAYER_RIM          | 1        | fallback | -DPLAYER_RIM=0                                | game   | #213  | player.c      | wall faces are no floor; the capsule's rim carries the player over small gaps; 0 = the centre point alone
- * PLAYER_PROXY        | 1        | fallback | -DPLAYER_PROXY=0                              | game   | #214  | player.c      | DSR's ChrProxy step (lift 0.31 m, edges ridden within 60 deg), step down 0.4 m, maxSlope 60 deg, slide over 35 deg; 0 = step 0.6 / 1.2, walls below 45 deg, no slide
  * SLIDE_SUPPORT       | 1        | fallback | -DSLIDE_SUPPORT=0                             | game   | #257  | player.c      | the slide reads the mean walkable normal under the capsule (Havok support), not one triangle; 0 = the triangle under the centre
  * CHR_PUSH_WEIGHT     | 1        | fallback | -DCHR_PUSH_WEIGHT=0                           | game   | #257  | enemy.c       | player / enemy capsule push shared by NpcParam weight (chr.bin v13); 0 = the enemy takes it all
  * RAG_CONTACTS        | 1        | fallback | -DRAG_CONTACTS=0                              | scene  | #241  | ragdoll.c     | ragdoll bodies collide with the map's walls and with each other; 0 = floor only
@@ -239,7 +212,6 @@
  * SLOW_FRAME_LOG      | off      | debug    | -DSLOW_FRAME_LOG                              | main   | #75   | main.c pack.c | frames over 100 ms in the EE log
  * NO_HUD              | off      | debug    | -DNO_HUD                                      | ui     | init  | hud.c         | HUD loaded, not drawn
  * DIED_TEST           | off      | debug    | -DDIED_TEST                                   | ui     | init  | hud.c         | YOU DIED banner after 3 s
- * LOADING_OFF         | off      | fallback | -DLOADING_OFF                                 | ui     | #67   | loading.c     | no loading screen
  * MAT_GS_TABLE        | 1        | fallback | -DMAT_GS_TABLE=0                              | gfx    | new   | material.h    | map blend state (ALPHA, Z mask, blend bit, passes) from the chunk's material class row; 0 = from the chunk flags as before (exports: env MAT_GS_TABLE=0, tools/switches.tsv)
  * MAP_BLEND_LATE      | 1        | fallback | -DMAP_BLEND_LATE=0                            | gfx    | new   | mappass.h     | blended map chunks nearer than ZSPLIT drawn after the characters and objects (OT_BLEND segment, render-19); 0 = all inside the map segment, before them
  * MAP_SPEC            | 1        | fallback | -DMAP_SPEC=0                                  | gfx    | new   | maplight.c    | runtime: the map's specular / environment pass (vu1mapspec.vsm, Polaris 2.3); 0 = none (exports: env MAP_SPEC=0 writes no data for it)

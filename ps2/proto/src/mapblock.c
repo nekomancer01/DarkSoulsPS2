@@ -46,7 +46,7 @@ static void tile_index(MapInst *mi)
 {
     free(mi->tiles), free(mi->tcell);
     mi->tiles = NULL, mi->tcell = NULL, mi->ntiles = 0;
-    if (!MAP_TILES || mi->ncells <= 0)
+    if (mi->ncells <= 0)
         return;
     unsigned (*key)[2] = malloc(mi->ncells * sizeof *key);
     mi->tcell = malloc(mi->ncells * sizeof *mi->tcell);
@@ -349,7 +349,7 @@ int map_block_init(int k, const void *tab, const void *res, int col_block)
     m->fog_ntris = ((const unsigned *)(tex_bin + hdr->fog_off))[1];
     m->fog_row = (const FogRow *)(tex_bin + hdr->fog_off + 16);
     m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
-    m->sky_rows = SKY_ROWS ? ((const unsigned *)(tex_bin + hdr->fog_off))[2] : 0;
+    m->sky_rows = ((const unsigned *)(tex_bin + hdr->fog_off))[2];
     m->sky_row = (const SkyRow *)(m->fog_tri + ((m->fog_ntris + 3) & ~3u));
     m->navv = (const float *)(tex_bin + hdr->navv_off);
     m->navt = (const unsigned short *)(tex_bin + hdr->navt_off);

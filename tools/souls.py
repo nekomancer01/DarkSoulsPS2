@@ -101,11 +101,18 @@ def wstr(b, off):
 def bnd3(b, data=None):
     """BND3 -> [(id, name, bytes)]. The format byte is stored bit-reversed (unless bit-big-endian is set).
     With `data`, b is a BHF3 header (.xxxbhd) whose file offsets point into the BDF3 `data` (.xxxbdt)."""
+    src = b if data is None else data
+    out = [(fid, name, src[off:off + size]) for fid, name, off, size in bnd3_entries(b)]
+    data = _map_undcx([d for _, _, d in out])
+    return [(fid, name, d) for (fid, name, _), d in zip(out, data)]
+
+
+def bnd3_entries(b):
+    """BND3 / BHF3 header -> [(id, name, offset, size)] (offsets into the binder, or the .xxxbdt for a BHF3)"""
     if b[:4] not in (b"BND3", b"BHF3"):
         raise UnknownVariant("binder magic", b[:4].decode("latin1"), "not a BND3/BHF3")
     if b[0xD]:  # big-endian binder (the debug map m99_99_97_00's navmeshes): the offsets below are little-endian only
         raise UnknownVariant("binder byte order", "big-endian")
-    src = b if data is None else data
     raw, bitbig = b[0xC], b[0xE]
     fmt = raw if bitbig else int(f"{raw:08b}"[::-1], 2)
     ids, names, longoff, comp = fmt & 2, fmt & 0xC, fmt & 0x10, fmt & 0x20
@@ -125,9 +132,63 @@ def bnd3(b, data=None):
             pos += 4
         if comp:
             pos += 4
-        out.append((fid, name, src[off:off + size]))
-    data = _map_undcx([d for _, _, d in out])
-    return [(fid, name, d) for (fid, name, _), d in zip(out, data)]
+        out.append((fid, name, off, size))
+    return out
+
+
+class LazyTextures(dict):
+    """{texture name: DDS bytes} of split TPF binders (.tpfbhd / .tpfbdt), read on first use (2026-11-24: every map
+    export held its whole area's textures, 420 MB for m10, of which a block uses a part: most of export_map's 1.8 GB
+    peak, and the build's map exports waited for RAM). A map binder entry is one TPF named after its one texture
+    ('\\m10_00_arch_01.tpf.dcx' -> m10_00_arch_01); an entry whose TPF holds other names is read eagerly on the
+    first miss, so the keys are always the eager ones. Plain dict entries (update()) work as before."""
+
+    def __init__(self):
+        super().__init__()
+        self._lazy = {}  # name -> (bdt path, offset, size)
+
+    def add_binder(self, bhd_path, bdt_path):
+        for _fid, name, off, size in bnd3_entries(read(bhd_path)):
+            key = (name or "").replace("\\", "/").rsplit("/", 1)[-1].split(".")[0]
+            if key and key not in self._lazy and not dict.__contains__(self, key):
+                self._lazy[key] = (bdt_path, off, size)
+            else:  # (an unexpected name: that entry as before, at once)
+                with open(bdt_path, "rb") as f:
+                    f.seek(off)
+                    for k, v in tpf(undcx(f.read(size))).items():
+                        dict.__setitem__(self, k, v)
+
+    def _load(self, key):
+        path, off, size = self._lazy.pop(key)
+        with open(path, "rb") as f:
+            f.seek(off)
+            t = tpf(undcx(f.read(size)))
+        for k, v in t.items():
+            if not dict.__contains__(self, k):
+                dict.__setitem__(self, k, v)
+        if key not in t:  # the entry's name lied: every remaining entry the eager way, so no key is missing
+            for k2 in list(self._lazy):
+                self._load(k2)
+
+    def __getitem__(self, key):
+        if not dict.__contains__(self, key) and key in self._lazy:
+            self._load(key)
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or key in self._lazy
+
+    def keys(self):
+        return list(dict.keys(self)) + [k for k in self._lazy if not dict.__contains__(self, k)]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
 
 
 _POOL = []

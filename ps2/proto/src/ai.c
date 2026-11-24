@@ -583,7 +583,6 @@ static LogicReg *logic_of(int id)
 
 int (*ai_los)(V3 from, V3 to);
 
-#if AI_PERCEPT
 /* DSR's sight test, FUN_140618680 (called per target from FUN_14061cda0):
  * - within nose_dist + both radii: noticed, whatever the direction, no sight line;
  * - else within eye_dist + both radii: the horizontal direction to the target within eye_angY degrees of the facing
@@ -623,7 +622,6 @@ static int sight(Ai *a, float d)
     }
     return 1;
 }
-#endif
 
 static void perceive(Ai *a)
 {
@@ -634,15 +632,9 @@ static void perceive(Ai *a)
     float d = v3dist(f->pos, f->target);
     int seen = 0, heard = 0;
     if (f->target_alive) {
-#if AI_PERCEPT
         seen = sight(a, d);
-#else
-        float rel = fabsf(rel_angle(a, f->target));
-        seen = d <= th->eye_dist && rel <= th->eye_ang_x * (PI / 360);
-#endif
         for (int i = 0; i < nsounds; i++) {
             float sd = v3dist(f->pos, sounds[i].pos);
-#if AI_PERCEPT
             /* DSR FUN_140623b30 -> FUN_140623d10: heard when the distance between the two capsules' surfaces is
              * under the sound's radius minus ear_soundcut_dist, plus scale * ear_dist / 100 (scale from the sound
              * record +0x2C / +0x30, not decoded: 1 here). No ear_dist cap. Narrow ear cones (ear_angX < 90 or
@@ -650,10 +642,6 @@ static void perceive(Ai *a)
             float surf = sd - f->radius - f->target_r;
             if (surf < sounds[i].r - th->ear_cut + th->ear_dist / 100.0f)
                 heard = 1, a->sound_pos = sounds[i].pos;
-#else
-            if (sd <= sounds[i].r && sd <= th->ear_dist)
-                heard = 1, a->sound_pos = sounds[i].pos;
-#endif
         }
         if (f->damaged)
             seen = 1;
