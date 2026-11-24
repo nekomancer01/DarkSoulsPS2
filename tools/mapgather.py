@@ -885,8 +885,8 @@ def gather(game, map_id):
                     for j in np.argsort(first, kind="stable").tolist():  # first-use order: the dict's key order
                         key = tuple(uk[j].tolist())
                         mapcfg.WS_SRC_TRIS[key] = mapcfg.WS_SRC_TRIS.get(key, 0) + int(cnt[j])
-                keep = in_map.many(cen)
-                tl = [t for t, k in zip(tl, keep.tolist()) if k]
+                inside = in_map.many(cen)
+                tl = [t for t, k in zip(tl, inside.tolist()) if k]
             elif map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
                 if mapcfg.WS_SHARE_TRIS:  # the whole MSB's source triangles per 32 m cell, before the cut (ws_shares)
                     G = mapcfg.CHUNK_GRID
