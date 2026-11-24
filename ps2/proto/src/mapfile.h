@@ -27,7 +27,7 @@
 int mapf_entry(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned at, unsigned *off, unsigned *size);
 /* boot / block-open check of a raw entry (reads its first `at` bytes and waits for the disc: never per frame): a chunk file of fid with pid at version
  * MAPF_VERSION starting at `at` and this ELF's VU1 layout; 0 and a "TEST error: chunk:" line when not. 1 for a
- * missing entry (the callers say what is missing) and with MAP_CHUNKS 0. */
+ * missing entry (the callers say what is missing). With MAP_CHUNKS 0: 0 for a chunk file (a pack built wrapped). */
 int mapf_check(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned at);
 /* a whole file in memory (pack_load): its payload (and its byte count in *psize); NULL and a TEST error line when it is
  * not a chunk file of fid. With MAP_CHUNKS 0: blob itself. */

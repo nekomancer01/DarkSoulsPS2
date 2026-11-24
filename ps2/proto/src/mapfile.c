@@ -23,8 +23,10 @@ int mapf_check(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned 
 {
     static unsigned char head[2048] __attribute__((aligned(64)));
     unsigned off, size, n;
-    if (!MAP_CHUNKS || !pack_entry_raw(pk, name, &off, &size) || !size)
+    if (!pack_entry_raw(pk, name, &off, &size) || !size)
         return 1;
+    if (!MAP_CHUNKS)
+        at = 16;  /* (only the magic: a wrapped file this ELF would read as exported) */
     if (at > sizeof head || size < at)
         return printf("TEST error: chunk: %s: %u bytes, too short for its header\n", name, size), 0;
     int r = 0, t;
@@ -33,6 +35,9 @@ int mapf_check(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned 
     while (!pack_req_done(t, &r))  /* (boot / block open only: it waits for the disc) */
         ;
     InvalidDCache(head, head + at - 1);  /* the header came by DMA: no stale cache lines (e.g. the last call's file) */
+    if (!MAP_CHUNKS)
+        return memcmp(head, "CHNK", 4) ? 1 :
+            (printf("TEST error: chunk: %s: a chunk file, this build (MAP_CHUNKS=0) reads the exported bytes\n", name), 0);
     if (r != (int)at)
         return printf("TEST error: chunk: %s: header not read\n", name), 0;
     ChunkFile f;

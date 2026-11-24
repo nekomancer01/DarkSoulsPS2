@@ -189,9 +189,10 @@ int world_init(const char *boot_area)
                 return 0;
             continue;
         }
-        /* map.bin's split files are chunk files: their payload is the base (src/mapfile.h); checked once here */
-        if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "maptex.bin", MAPF_TEX) ||
-            !mapf_check(&r->pk, "mapres.bin", MAPF_RES) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
+        /* map.bin's split files are chunk files: their payload is the base (src/mapfile.h). maptab.bin and cells.bin
+         * (the VIF packets: VU1L) are checked here; mapres.bin and maptex.bin come from the same pack step, so they are
+         * wrapped alike (each header read is a seek: four per block cost 0.73 s of a 16-block boot on the ISO) */
+        if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
             r->open = 0;
         for (unsigned e = 0; e < NENT; e++) {
             int got = e >= E_TAB && e <= E_TABC ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TAB, &r->off[e], &r->size[e])
