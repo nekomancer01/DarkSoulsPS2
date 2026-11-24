@@ -1,6 +1,7 @@
 /* lab_stubs.c: what the Lab's simulate modules call outside the simulate phase (Polaris 1.7b). Each stub counts its
  * calls ("stubs" command): a simulate module reaching a render, sound, streaming or UI call is a layer violation of
  * the Polaris 0.4 boundary map. Stubs with a behaviour of their own say so. */
+#include "mapfile.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,12 +46,16 @@ void map_spawn(V3 *pos, float *yaw)
         Pack pk;
         char path[128];
         snprintf(path, sizeof path, PACK_ROOT "%s.pak", lab_area);
-        const unsigned *h = pack_open(&pk, path) ? pack_load(&pk, "map.bin", NULL) : NULL;
+        unsigned n = 0;
+        void *blob = pack_open(&pk, path) ? pack_load(&pk, "map.bin", &n) : NULL;
         pack_close(&pk);
-        if (!h)
+        const unsigned *h = mapf_payload(blob, n, "map.bin", MAPF_MAP, NULL);  /* (a chunk file: src/mapfile.h) */
+        if (!h) {
+            free(blob);
             return (void)LAB_READBACK("map_spawn (no map.bin)");
+        }
         memcpy(kept, h + 5, sizeof kept);  /* (magic, chunks, textures, nav_verts, nav_tris, then spawn[3], spawn_yaw) */
-        free((void *)h);
+        free(blob);
         have = 1;
     }
     *pos = v3(kept[0], kept[1], kept[2]), *yaw = kept[3];

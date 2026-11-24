@@ -1,6 +1,7 @@
 /* World streaming (world.h): the block table, boot, the warp settle and the API. The block lifecycle is split over
  * world.c, wblock.c, wextra.c and wplan.c (Polaris 4.1, code moved as it was); world_i.h has the design notes and the
  * shared state. */
+#include "mapfile.h"
 #include "world_i.h"
 WorldStats world_stats = {.reading = -1, .full = -1};
 const WorldBlock *w_tab;
@@ -188,8 +189,15 @@ int world_init(const char *boot_area)
                 return 0;
             continue;
         }
+        /* map.bin's split files are chunk files: their payload is the base (src/mapfile.h); checked once here */
+        if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "maptex.bin", MAPF_TEX) ||
+            !mapf_check(&r->pk, "mapres.bin", MAPF_RES) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
+            r->open = 0;
         for (unsigned e = 0; e < NENT; e++) {
-            if (!pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]))
+            int got = e >= E_TAB && e <= E_TABC ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TAB, &r->off[e], &r->size[e])
+                : e == E_MTX ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TEX, &r->off[e], &r->size[e])
+                : pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]);
+            if (!got)
                 r->off[e] = r->size[e] = 0;
             if ((e == E_DG || e == E_PVS) && (!WORLD_DG_LITE || !i))  /* (the boot block's are main.c's) */
                 r->off[e] = r->size[e] = 0;
@@ -225,7 +233,7 @@ int world_init(const char *boot_area)
             r->total -= (r->mtx_full + 127) & ~127u;
         if (i && r->open)
             ev_split(r);
-        if (!pack_entry_raw(&r->pk, "mapres.bin", &r->res_off, &r->res_size)) {
+        if (!mapf_entry(&r->pk, "mapres.bin", MAPF_RES, &r->res_off, &r->res_size)) {
             printf("world: block %d %s: mapres.bin missing or not raw\n", i, w_tab[i].pack);
             r->open = 0;
         }

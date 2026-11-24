@@ -141,8 +141,11 @@ Files whose payloads hold VIF packets carry the VU1 layout stamp as a `VU1L` chu
 | `dg.bin` | `DGRP` | `DHDR`, `PMSK`, `CMSK`, `CHDG`, `TRDG`, `CHRS`, `ENTS`, `CHEN` |
 | `pvs.bin` (written by `pvs_bake.c` with `chunkw.h`) | `PVS ` | `PHDR`, `EOFF`, `ULST`, `LOC `, `KEYS`, `ROWO`, `ROWS` |
 
-The layout of each chunk is documented at the top of the exporter that writes it. Formats not yet moved (map.bin,
-cells.bin, model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they
+The layout of each chunk is documented at the top of the exporter that writes it. map.bin, maptab.bin, mapres.bin,
+maptex.bin and cells.bin are chunk files since Polaris 4.8 step 4: `tools/pack.py` wraps them on the way into the pack
+(`name=[raw:]chunk:<kind>:<file>`, `tools/mapwrap.py`: a VU1L chunk and one payload chunk holding the exporters' bytes at a
+fixed offset), and the loaders take the payload as their base (`src/mapfile.h`; `MAP_CHUNKS=0`: as exported). Formats not yet moved
+(model.bin, chr.bin and the others) keep a magic and a version field and relocate pointers in place; they
 move with their owner's rewrite (phases 4 and 5).
 
 ## Packs

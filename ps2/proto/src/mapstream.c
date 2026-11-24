@@ -40,6 +40,7 @@
  * mapstream_i.h is their shared state (names ms_*), the radii and the item helpers. msarena.c is the page arena
  * (granules, pages, pools, borrowed pages: msarena.h), which knows nothing of items and whose state the others reach
  * only through msarena.h. The numbers the export shares live in residency.h. */
+#include "mapfile.h"
 #include "mapstream_i.h"
 #ifdef MS_MEDIA_RADII  /* the media radii (mapstream_i.h) */
 #ifdef MEDIA_CD
@@ -203,7 +204,7 @@ int mapstream_init(const char *pak_path, const MapCell *cells, unsigned n)
 static int open_cells(int k, const MapCell *cells, unsigned n)
 {
     MsInst *m = &ms_inst[k];
-    if (!pack_entry_raw(&m->pk, "cells.bin", &m->base, &m->total) || !m->total) {
+    if (!mapf_entry(&m->pk, "cells.bin", MAPF_CELLS, &m->base, &m->total) || !m->total) {  /* (src/mapfile.h) */
         if (!m->borrowed)
             pack_close(&m->pk);
         return 0;

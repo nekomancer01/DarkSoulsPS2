@@ -1,6 +1,7 @@
 /* map.c's world-block side (split 2026-11-12, code moved as it was): a MapInst per loaded block (map_block_*),
  * its cell and tile indexes for culling, the miss scan, the resident items (res_open) and the block stream. map.c
  * draws them; map_i.h has the types and state both use. */
+#include "mapfile.h"
 #include "map_i.h"
 #include "chunk.h"
 #include "world.h"
@@ -710,7 +711,7 @@ static void res_open(int k, const void *pack)
     const MapCell *ctab = mi->ctab;
     unsigned nctab = mi->nctab;
     unsigned roff, rsize;
-    if (!pack_entry_raw((Pack *)pack, "mapres.bin", &roff, &rsize) || !rsize)
+    if (!mapf_entry((Pack *)pack, "mapres.bin", MAPF_RES, &roff, &rsize) || !rsize)  /* (src/mapfile.h) */
         return;
     unsigned n = hdr->chunks + 1 + 2 * (unsigned)mi->ntex;  /* (mip 0 and 1 per texture) */
     MapResItem *it = malloc(n * sizeof *it);
