@@ -116,6 +116,7 @@ int w_under(int i) { return i >= 0 && (under_m >> i & 1); }
  * here: the caller may be inside enemy.c's job, and turning a block off removes its enemies) */
 float w_yield_s;
 static int yield_req;
+static unsigned yield_m;  /* the blocks it turned off: no block goes to make room for them meanwhile */
 static int spilled(int i)
 {
     for (int e = 0; e < NENT; e++)
@@ -146,6 +147,7 @@ static void yield_step(void)
         if (w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && world_stats.reading != i && spilled(i)) {
             w_turn_off(i);
             w_rt[i].retry_s = WORLD_YIELD_S;
+            yield_m |= 1u << i;
             world_stats.yields++;
         }
 }
@@ -155,6 +157,8 @@ static int room_pick(int want, const float *feet)
     int b = -1;
     float bd = -1e30f;
     int ronly = w_ronly_m >> want & 1;
+    if (yield_m >> want & 1)
+        return -1;  /* (WORLD_YIELD turned it off: its retry wait is no failure for room; 16 and 23 went for it) */
     /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH). For a block
      * only another source wants (a respawn point), never a kept one (w_keep_m: what the player's floor and reach keep,
      * and the sources' own): the preload must not take the player's surroundings away */
@@ -404,6 +408,7 @@ void w_step(const float *feet, float dt)
     }
     w_far_retry_s = w_far_retry_s > dt ? w_far_retry_s - dt : 0;
     w_yield_s = w_yield_s > dt ? w_yield_s - dt : 0;
+    yield_m = w_yield_s > 0 ? yield_m : 0;
     if (w_far_old && (--w_far_old_drain <= 0 || w_warping)) {
         w_far_free(w_far_old);
         w_far_old = NULL;
@@ -538,7 +543,8 @@ void w_step(const float *feet, float dt)
         int src_wait = want >= 0 && (src_only_m >> want & 1) && room_pick(want, feet) < 0;
         if (want >= 0 && !src_wait && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full())) {
             int def = w_slot_deferred(want, feet);
-            w_room_stuck = !room_for(want, feet) && !def;  /* a fresh failure for room, or no slot (not a deferred one) */
+            w_room_stuck = !room_for(want, feet) && !def && !(yield_m >> want & 1);  /* a fresh failure for room, or no
+                                                                                    * slot (not a deferred or yielded one) */
             static int def_last = -1;
             if (def && def_last != want) {
                 printf("world: block %d wanted, no slot: deferred until the player moves (slots", want);
