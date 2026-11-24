@@ -307,9 +307,9 @@ def structural(gen):
                     if t <= a:
                         rm = m
                 kp |= rm | (1 << blk)
-                need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + \
-                (max((cb_of.get(i, cb) for i in range(n) if kp >> i & 1), default=cb) if cb_of else cb)
-                spare = pool_pg - (pages(need) >> 16) - 1
+                lite = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0)
+                col = max((cb_of.get(i, cb) for i in range(n) if kp >> i & 1), default=cb) if cb_of else cb
+                spare = pool_pg - (pages(lite) >> 16) - 1 - (pages(col) >> 16)  # (tiles bottom pages, lite sets top)
                 if spare > 0:
                     segs.append((a, b - a, spare * 64))
             if segs:
