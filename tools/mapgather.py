@@ -9,6 +9,7 @@ import export_normal
 import dsr_light
 import area as area_mod
 import pose_obj
+import plankshell
 import drawgroups
 import emevd
 import mapx_native
@@ -1072,8 +1073,12 @@ def gather(game, map_id):
         npd["wrgb"] = (wrgb, q)
         npd.pop("wcol", None)
         h.clear()
+        plankshell.ALB[id(wrgb)] = alb  # (the texture's mean colour: plank shells' untextured colour)
     mapcfg.TONES.update(tones)  # fog colours and the character light use the same tone maps
     mapcfg.MAIN_TONE[0] = tones[main_tone]
+    # plank shells (tools/plankshell.py, TECH_DEBT world-49): the loose pieces of a too-dense map as simplifiable shells
+    meshes[:] = plankshell.apply(meshes, map_id)
+    plankshell.ALB.clear()
 
     # navmesh: MSB navmesh parts (type 8) placing the NVM models
     nav_models = {souls.basename(n)[:-4]: d for _, n, d in

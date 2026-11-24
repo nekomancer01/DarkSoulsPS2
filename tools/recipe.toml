@@ -169,6 +169,12 @@ env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 map = "m11_00_00_00"
 env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
 
+# Blighttown (m14_00_00_00_a.._e, 2026-11-24): two levels with the Burg's errors (ASSUMED, TECH_DEBT world-48); its
+# loose planks are plank shells (tools/plankshell.py, PLANK_SHELL_MAPS' default)
+[[mapenv.area]]
+map = "m14_00_00_00"
+env = "STREAM=1 SPAWN_K=0 EPS=0.000112 EPS_FAR=0.000446"
+
 # Per enemy type (export_chr.py): FLVER LOD (default 1; LOD2 for all but the two most common melee types: EE RAM, skin
 # streams) and texture height cap in px (default 64; width stays >= 128 for PSMT8: every type's textures stay in VRAM next
 # to the map's). ASSUMED: tuned on Firelink's types (TECH_DEBT build-6); new types take the defaults.

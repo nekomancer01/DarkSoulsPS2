@@ -55,6 +55,8 @@ def lib():
                 L.mx_soften_thin.restype = ll
                 L.mx_far_cells.argtypes = [ll, vp, ll, vp, d, d, vp, vp]
                 L.mx_far_cells.restype = ll
+                L.mx_shell_field.argtypes = [ll, vp, d, d, d, d, i, i, i, d, vp, vp]  # (shell.c, tools/plankshell.py)
+                L.mx_shell_field.restype = ll
                 L.mx_chunks_st_align.argtypes = [i]
                 L.mx_chunks_st_align.restype = None
                 L.mx_simp_new.argtypes = [i, vp, vp, vp, vp, vp, vp, vp, vp, i, d, ll, vp, ll, vp, ll, vp, vp, d, d, i, vp,
