@@ -15,16 +15,13 @@ extern unsigned mp_prof_vis, mp_prof_clip;
 #define PROF_END(acc)
 #endif
 
-/* map_ms breakdown (budget doc proposals 1 and 6, default on; make DEFS=-DMAP_PASS_MS=0 = off): COP0 Count ticks
+/* map_ms breakdown (budget doc proposals 1 and 6): COP0 Count ticks
  * per part of map_draw this frame. cull = frustum / distance tests, pvs_eye, the index; tex = texcache (tc_get,
  * tc_mip, tc_begin / tc_end: uploads go into the chain there); chain = VIF / GIF packets (vu1_add_*, registers);
  * bump = relief; plan = the rest (per-cell level of detail, near parts, draw groups, visibility rows, effects sort).
  * Timed in one frame of MAP_PASS_EVERY only: each reading of the Count register costs ~0.15 us in PCSX2 and the
  * ~5000 a timed frame takes add ~0.8 ms to it. Logged every MAP_PASS_LOG frames as "map: pass ms" (average of the
  * timed frames, and the timed frame with the largest total). */
-#ifndef MAP_PASS_MS
-#define MAP_PASS_MS 1
-#endif
 #define MAP_PASS_EVERY 8
 #define MAP_PASS_LOG 120
 extern int mp_on;
@@ -39,21 +36,12 @@ extern unsigned mp_mc_cells, mp_mc_vis, mp_mc_tiles, mp_mc_tvis, mp_mc_chunks;
 
 extern unsigned mp_t[MP_N];
 static inline unsigned mp_sum(void) { return mp_t[0] + mp_t[1] + mp_t[2] + mp_t[3]; }
-#if MAP_PASS_MS
 #define MP_BEGIN unsigned _mp0 = mp_on ? ticks() : 0;
 #define MP_END(p) if (mp_on) mp_t[p] += ticks() - _mp0;
 #define MP_SPLIT(p) do { if (mp_on) { unsigned _mp1 = ticks(); mp_t[p] += _mp1 - _mp0; _mp0 = _mp1; } } while (0)
 #define MF_BEGIN unsigned _mf0 = mp_on ? ticks() : 0, _mfn = mp_on ? mp_sum() : 0;
 #define MF_END(p) if (mp_on) mf_t[p] += ticks() - _mf0 - (mp_sum() - _mfn);
 #define MF_AGAIN if (mp_on) _mf0 = ticks(), _mfn = mp_sum();
-#else
-#define MF_BEGIN
-#define MF_END(p)
-#define MF_AGAIN
-#define MP_BEGIN
-#define MP_END(p)
-#define MP_SPLIT(p) ((void)0)
-#endif
 
 #ifdef MAP_DBG  /* debug builds: chunks / tris dropped per step, printed every MAP_DBG frames (MAP_DBG_ALL: no
                  * draw-group, distance, subpixel or foliage culling, the reference render to compare with) */

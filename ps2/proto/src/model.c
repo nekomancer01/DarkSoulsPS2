@@ -600,11 +600,7 @@ int mdl_upload(Model *m, GSGLOBAL *gs, GsOwner o)
         t->Width = te[m->ntex].w;
         t->Height = te[m->ntex].h;
         t->PSM = GS_PSM_T8;
-#ifdef V5_OFF  /* A/B measurement builds: CT32 CLUTs as exported */
-        t->ClutPSM = GS_PSM_CT32;
-#else
         t->ClutPSM = GS_PSM_CT16;
-#endif
         t->ClutStorageMode = GS_CLUT_STORAGE_CSM1;
         t->Mem = (u32 *)(m->bin + te[m->ntex].pix);
         const u32 *c32 = (const u32 *)(m->bin + te[m->ntex].clut);

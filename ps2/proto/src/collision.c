@@ -54,12 +54,9 @@ typedef struct {
 _Static_assert(sizeof(ColPage) == 32, "ColPage");
 
 #define MAX_PUSH_ITERS 4
-/* COL_SCAN (frame-time pass 2026-11-09, default on; DEFS=-DCOL_SCAN=0 = the old loop): each_tri2's list loop tests the
+/* COL_SCAN (frame-time pass 2026-11-09): each_tri2's list loop tests the
  * triangle's integer box before its v1 number / stamp lookups and takes the fragment's vertex and number tables once
  * (iso_ame_report3 caves: ~5000 list entries a frame for ~250 triangles tested) */
-#ifndef COL_SCAN
-#define COL_SCAN 1
-#endif
 #define COL_MOVE_MAX 20.0f  /* metres per call; larger moves are refused */
 
 /* One collision.bin per world block (src/world.c), all in one world frame. The queries below take the block they run
@@ -754,7 +751,6 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                 ix1 = ix1 >= f->gw ? f->gw - 1 : ix1, iz1 = iz1 >= f->gd ? f->gd - 1 : iz1;
                 const unsigned char *tr = ftris(c, f), *ls = flist(c, f);
                 const unsigned short *cs = fcells(c, f);
-#if COL_SCAN
                 /* the fragment's vertices and v1 numbers once, then per list entry the integer box test first (on the
                  * fragment's own vertex bytes), before the v1-number / stamp lookups (block-wide arrays, D-cache
                  * misses on a PS2); a triangle the box rejects is rejected in every cell of this fragment, so its stamp is
@@ -795,7 +791,6 @@ static int each_tri2(ColBlock *c, const float lo[3], const float hi[3], unsigned
                         }
                     }
                 continue;
-#endif
                 for (int iz = iz0; iz <= iz1; iz++)
                     for (int ix = ix0; ix <= ix1; ix++) {
                         unsigned ck = iz * f->gw + ix;
@@ -843,18 +838,14 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
         const unsigned short *cs = fcells(cb, f);
         unsigned ck = iz * f->gw + ix;
         QBox qb;  /* the point's column [y_bottom, y_top]: a triangle beside it or wholly above / below has no h there */
-        if (LOGIC_SPREAD) {
-            const float flo[3] = {x, y_bottom, z}, fhi[3] = {x, y_top, z};
-            qbox(cb, f, flo, fhi, &qb);
-        }
+        const float flo[3] = {x, y_bottom, z}, fhi[3] = {x, y_top, z};
+        qbox(cb, f, flo, fhi, &qb);
         for (unsigned q = cs[ck]; q < cs[ck + 1]; q++) {
             const unsigned char *t = tr + ls[q] * 4;
-            if (COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))  /* the box first: no v1-number lookup */
+            if (qbox_out(cb, f, t, &qb))  /* the box first: no v1-number lookup */
                 continue;
             unsigned g = gid_of(cb, f, ls[q]);
             if (!(mask >> (cb->pat[t[3]] & 0xff) & 1) || TRI_OFF(cb, g))
-                continue;
-            if (!COL_SCAN && LOGIC_SPREAD && qbox_out(cb, f, t, &qb))
                 continue;
             float a[3], b[3], c[3];
             tri2(cb, f, t, a, b, c);
@@ -893,9 +884,6 @@ static int floor2(const ColBlock *cb, float x, float z, float y_top, float y_bot
  * its triangles by number, each once; v2 gathers the triangles of the fragments over those cells' rectangle and sorts
  * them by (first such cell whose rectangle they overlap, as export_collision.build tests it, then v1 number). */
 #define PUSH2_MAX 512
-#ifndef PUSH2_CELLS
-#define PUSH2_CELLS cv_PUSH2_CELLS  /* runtime switch, default 1 (src/cvar.h) */
-#endif
 typedef struct { unsigned key; float a[3], b[3], c[3]; } PushCand;
 typedef struct { PushCand *c; int n; int ix0, iz0, nx, nz; float x0, z0, cell, blo[3], bhi[3]; } PushGather;
 #define PUSH2_REACH 1.2f  /* m: three contacts of the player capsule (r 0.4) */
@@ -938,7 +926,7 @@ static int gather_cb(ColBlock *cb, const Frag *f, const unsigned char *t, unsign
         if ((v[0][k] < q->blo[k] && v[1][k] < q->blo[k] && v[2][k] < q->blo[k]) ||
             (v[0][k] > q->bhi[k] && v[1][k] > q->bhi[k] && v[2][k] > q->bhi[k]))
             return 0;
-    if (!PUSH2_CELLS || (q->nx == 1 && q->nz == 1)) {  /* by number (one cell, most pushes: v1's order exactly) */
+    if (q->nx == 1 && q->nz == 1) {  /* by number (one cell, most pushes: v1's order exactly) */
         c->key = g, q->n++;
         return 0;
     }
@@ -971,7 +959,7 @@ static int touch2(ColBlock *cb, const float pos[3], const float *p0, const float
     TouchQ q;
     memcpy(q.pos, pos, 12), memcpy(q.p0, p0, 12), memcpy(q.p1, p1, 12), memcpy(q.lo, lo, 12), memcpy(q.hi, hi, 12);
     q.r = r;
-    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
+    int c0 = col_contacts, hit = each_tri2(cb, lo, hi, mask, touch_cb, &q, lo, hi);
     col_contacts = c0;  /* (push_tri counts the contact it found) */
     return hit;
 }
@@ -996,7 +984,7 @@ static int push2(ColBlock *cb, float pos[3], float *p0, float *p1, float *lo, fl
     float ghi[3] = {h2->x0 + (ix1 + 1) * h2->fcell + 0.03f, hi[1], h2->z0 + (iz1 + 1) * h2->fcell + 0.03f};
     for (int k = 0; k < 3; k += 2)
         glo[k] = glo[k] > q.blo[k] ? glo[k] : q.blo[k], ghi[k] = ghi[k] < q.bhi[k] ? ghi[k] : q.bhi[k];
-    each_tri2(cb, glo, ghi, mask, gather_cb, &q, LOGIC_SPREAD ? q.blo : NULL, q.bhi);
+    each_tri2(cb, glo, ghi, mask, gather_cb, &q, q.blo, q.bhi);
     for (int i = 1; i < q.n; i++) {  /* insertion sort: a few dozen, mostly in order already */
         PushCand x = cand[i];
         int j = i;
@@ -1028,7 +1016,7 @@ static int ray2(ColBlock *cb, const float from[3], const float to[3], unsigned m
     for (int k = 0; k < 3; k++)
         lo[k] = from[k] < to[k] ? from[k] : to[k], hi[k] = from[k] < to[k] ? to[k] : from[k];
     RayQ q = {from, to, 2, -1, NULL, NULL};
-    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q, LOGIC_SPREAD ? lo : NULL, hi);
+    each_tri2(cb, lo, hi, mask, ray_tri_cb, &q, lo, hi);
     if (q.tri < 0)
         return 0;
     if (hit) {

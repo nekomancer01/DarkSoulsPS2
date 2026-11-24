@@ -131,11 +131,7 @@ void ai_end_frame(void);
 const char *ai_goal_name(const Ai *a);
 /* Allies for call-help / team records / TARGET_FRI_0 (enemy.c registers every Ai with its position) */
 void ai_team(Ai **all, const V3 *pos, int n);
-/* AI_PERCEPT (default 1; DEFS=-DAI_PERCEPT=0 = the old flat eye_angX cone without a sight line, hearing capped at
- * ear_dist): DSR's sight check FUN_140618680 and hearing check FUN_140623d10. ai_los answers whether nothing solid lies between two points (enemy.c: col_ray). */
-#ifndef AI_PERCEPT
-#define AI_PERCEPT 1
-#endif
+/* AI_PERCEPT: DSR's sight check FUN_140618680 and hearing check FUN_140623d10. ai_los answers whether nothing solid lies between two points (enemy.c: col_ray). */
 extern int (*ai_los)(V3 from, V3 to);
 extern unsigned ai_lua_heap, ai_lua_instr;
 extern int ai_lua_errors;

@@ -29,7 +29,6 @@ unsigned short mp_pop_fr;
 static unsigned pop_total;
 unsigned mp_hzx[3][3];
 
-#if MAP_PASS_MS
 /* "map: pass ms": the breakdown over 30 frames (average, and the frame with the largest map_draw) */
 void mp_log_pass_ms(unsigned mp_t0)
 {
@@ -65,7 +64,6 @@ void mp_log_pass_ms(unsigned mp_t0)
         memset(acc, 0, sizeof acc), memset(wst, 0, sizeof wst), wtot = 0, memset(facc, 0, sizeof facc);
     }
 }
-#endif
 
 /* map_draw's log lines and debug-build reports for one frame */
 void mp_log_frame(const FrameLog *lg, const float e[3], int drawn)

@@ -41,7 +41,7 @@ static void drop_remove(int i)
     drops[i] = drops[--ndrops];
 }
 
-int pickup_shine_add(const float pos[3]) { return PICKUP ? fx_shine_add(0, pos) : -1; }
+int pickup_shine_add(const float pos[3]) { return fx_shine_add(0, pos); }
 void pickup_shine_del(int h)
 {
     if (h >= 0)
@@ -51,8 +51,6 @@ void pickup_shine_del(int h)
 static void drop_lot(s32 npc, s32 lot, const float pos[3]);
 void pickup_enemy_drop(s32 npc, const float pos[3])
 {
-    if (!PICKUP)
-        return;
     s32 lot = event_npc_lot(npc);
     if (lot > 0)
         drop_lot(npc, lot, pos);
@@ -255,7 +253,7 @@ void pickup_draw(void)
 /* ---- boot / tests ---- */
 void pickup_init(GSGLOBAL *gs, void *blob, unsigned size)
 {
-    if (PICKUP && blob && !fx_shine_init(gs, blob, size))
+    if (blob && !fx_shine_init(gs, blob, size))
         printf("pickup: no shine (VRAM / RAM), items still picked up\n");
     free(blob);
 }
