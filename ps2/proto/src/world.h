@@ -61,6 +61,10 @@ int world_current(void);
 enum { WSRC_PLAYER, WSRC_WARP, WSRC_RESPAWN, WSRC_CAMERA, WSRC_N };
 void world_source(int kind, const float pos[3]);
 void world_source_off(int kind);
+/* WORLD_YIELD: a temporary of `bytes` found no window in the arena (enemy.c arena_get): the blocks whose lite sets
+ * spilled into the item pages (never the player's floor) turn off at the next world_update and no lite set spills there
+ * for a few seconds; try again later. Returns the blocks that will go. */
+int world_yield_spill(unsigned bytes);
 /* What of block k is resident now (Polaris 4.1, for the level chain in map.c): WB_ON its lite set is on (collision,
  * events, objects); WB_TABLES its map tables are in (chunk table, textures, cell table), so its levels may stream and
  * draw; WB_HORIZON its cell table and horizon are in (also while it is only kept and has let go of the rest:
@@ -80,6 +84,7 @@ typedef struct {
     unsigned full_ms;                /* last relief load: ms from its first read to drawing it */
     unsigned on_us_max;              /* longest single-frame step (turning a block on / off), microseconds */
     unsigned leans, relites;         /* WORLD_LITE_DIET: kept-only blocks that let go of their map tables / read them back */
+    unsigned yields;                 /* WORLD_YIELD: spilled blocks turned off for a temporary that found no window */
     unsigned pool_spills;            /* MS_POOLS: lite-set entries the structural pool had no room for (item pages) */
     int loads, unloads, fails;
     unsigned hold_ms;                /* time the player was held at a block still loading (world_hold) */

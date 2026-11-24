@@ -42,14 +42,32 @@
 #ifndef WORLD_SLOT_DEFER
 #define WORLD_SLOT_DEFER 1  /* (wplan.c w_slot_deferred) */
 #endif
+/* WORLD_YIELD (default 1; 0 = off): a large temporary that found no window in the arena (an enemy model.bin,
+ * enemy.c arena_get) has the blocks whose lite sets spilled into the item pages turn off, never the player's floor
+ * or current block, and no lite set spills there for WORLD_YIELD_S (each failure renews it). The item pages are
+ * 2.2 MB on Anor Londo's build, a spilled fourth lite set held 0.8 MB of them and the 1.4-1.9 MB model temporaries
+ * found no window (the heap's largest hole 0.6-0.8 MB): c3491 never loaded in one of three iso_anor runs */
+#ifndef WORLD_YIELD
+#define WORLD_YIELD 1
+#endif
+#define WORLD_YIELD_S 5.0f
 /* Bytes per background read: one at a time through pack.c's async slot, shared with mapstream.c (a near cell waits for
  * at most one of these) */
 #define WORLD_READ (128u << 10)
 /* Blocks resident besides the boot block. Their lite sets live in mapstream.c's near-cell arena (mapstream_alloc drops
  * the farthest near cells to make room), so a world build costs no RAM while no neighbour is loaded (TECH_DEBT world-5).
  * 3: the block under the player plus both neighbours at a seam inside the Burg (the bonfire / bridge block keeps Burg
- * west and the Parish block) */
-#define WORLD_SLOTS 3
+ * west and the Parish block). 4 since 2026-11-23 (TECH_DEBT world-50): 13583 of the 24 blocks' collision triangles want
+ * four blocks besides the boot block (Anor Londo's arrival block by the cathedral 5391, the Burg bonfire block by the
+ * Parish steps 3522); with three the fourth was deferred and a warp there left the player over a block that never came
+ * (Anor Londo, 3 of 3 runs). The structural pool stays sized for WORLD_POOL_SLOTS lite sets per link: sized for four it
+ * grew 4223 -> 4643 KB, taken from every block's visual room; the fourth lite set at those spots spills into the misc
+ * pool or the item pages instead (lite_alloc -> mapstream_alloc, world_stats.pool_spills). texcache.h TC_BLOCKS
+ * follows (a block's CLUTs, ~40-50 KB of the GS WORLD row each) */
+#define WORLD_SLOTS 4
+#ifndef WORLD_POOL_SLOTS
+#define WORLD_POOL_SLOTS 3  /* lite sets per link the structural pool is sized for (world_struct_bytes) */
+#endif
 /* Every loaded block draws the same way: its map's resident level streams per cell from its mapres.bin and its
  * textures' mip 0 per texture (mapstream.c mapstream_res_open via map.c), in the near arena with the near cells, so
  * there is no full pool and no full swap (Burg 4.9 MB / Firelink 8.5 MB, 5-14 s from cdrom0:, TECH_DEBT world-2 /
@@ -337,6 +355,8 @@ extern unsigned w_far_res_size;
 extern int w_far_swap;
 void w_far_free(unsigned char *p);
 extern float w_far_retry_s;
+extern float w_yield_s;  /* WORLD_YIELD: seconds no lite set spills into the item pages (wplan.c) */
+int w_under(int i);      /* the player's floor (or a block a hold waits for) is on block i (wplan.c) */
 extern int w_boot_want, w_boot_spots;
 extern int w_warping;
 extern int w_lite_first;

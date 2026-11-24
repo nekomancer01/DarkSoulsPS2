@@ -2,6 +2,8 @@
  * reach table), the structural pool's size, slots, and the order of the one background read each frame. Split from
  * world.c (Polaris 4.1, code moved as it was). */
 #include "world_i.h"
+#include "texcache.h"
+_Static_assert(WORLD_SLOTS <= TC_BLOCKS, "a block on without a texture slot is not drawn (mapblock.c)");
 unsigned w_reach_m;  /* blocks with a distance from the triangle underfoot */
 float w_clock_s;  /* seconds of world_update (ticks() wraps every 14.6 s) */
 float w_want_s[WORLD_MAX], w_on_s[WORLD_MAX];  /* clock_s when a block was first wanted while off / turned on */
@@ -31,7 +33,8 @@ static unsigned tab_bytes(const BlockRt *r)
 
 /* the structural pool's size: over every link record of every block (the triangle under the player), the lite sets
  * on at once: the blocks it loads (and the block itself) whole, those it only keeps lean (WORLD_LITE_DIET) or whole,
- * the WORLD_SLOTS largest (world.c never has more on); the boot block's tables are in the heap (world_boot_map) */
+ * the WORLD_POOL_SLOTS largest (a fourth at a spot that keeps four spills into the item pages: WORLD_SLOTS); the boot
+ * block's tables are in the heap (world_boot_map) */
 unsigned world_struct_bytes(void)
 {
     unsigned best = 0;
@@ -71,7 +74,7 @@ unsigned world_struct_bytes(void)
                             most = w_rt[j].ev_full > most ? w_rt[j].ev_full : most;
                     sum += (most + 127) & ~127u;
                 }
-            for (unsigned s = 0; s < WORLD_SLOTS && s < n; s++) {  /* the WORLD_SLOTS largest */
+            for (unsigned s = 0; s < WORLD_POOL_SLOTS && s < n; s++) {  /* the WORLD_POOL_SLOTS largest */
                 unsigned m = s;
                 for (unsigned j = s + 1; j < n; j++)
                     m = v[j] > v[m] ? j : m;
@@ -102,12 +105,60 @@ static int lite_pending(void)
 static unsigned src_only_m;  /* blocks wanted by the other sources alone (not by the player): this step's from where
                                * w_step computes it (its start reads the last step's) */
 int w_src_only(int i) { return i > 0 && (src_only_m >> i & 1); }
+/* blocks the player needs a floor from now: held for (world_hold), or holding the feet while there is no floor (a
+ * warp's spot). Such a block always gets a slot: room_pick turns off the farthest other one, margin or not, and it
+ * is never deferred (Anor Londo, 2026-11-23: a warp onto block 22 with every slot kept for nearer wanted blocks left
+ * it deferred and the player fell through, 3 of 3 runs) */
+static unsigned under_m;
+int w_under(int i) { return i >= 0 && (under_m >> i & 1); }
+
+/* WORLD_YIELD (world_i.h): a temporary that found no window asks; the next step turns the spilled blocks off (not
+ * here: the caller may be inside enemy.c's job, and turning a block off removes its enemies) */
+float w_yield_s;
+static int yield_req;
+static unsigned yield_m;  /* the blocks it turned off: no block goes to make room for them meanwhile */
+static int spilled(int i)
+{
+    for (int e = 0; e < NENT; e++)
+        if (w_rt[i].blob[e] && mapstream_in_items(w_rt[i].blob[e]))
+            return 1;
+    return 0;
+}
+int world_yield_spill(unsigned bytes)
+{
+    if (!WORLD_YIELD || !mapstream_pools_on())
+        return 0;
+    int n = 0;
+    for (int i = 1; i < w_nblk; i++)
+        n += w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && spilled(i);
+    if (!yield_req && w_yield_s <= 0)
+        printf("world: %u KB found no window: %d spilled block%s off for %.0f s\n", bytes >> 10, n, n == 1 ? "" : "s",
+               (double)WORLD_YIELD_S);
+    w_yield_s = WORLD_YIELD_S;
+    yield_req = n > 0;
+    return n;
+}
+static void yield_step(void)
+{
+    if (!yield_req)
+        return;
+    yield_req = 0;
+    for (int i = 1; i < w_nblk; i++)
+        if (w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && world_stats.reading != i && spilled(i)) {
+            w_turn_off(i);
+            w_rt[i].retry_s = WORLD_YIELD_S;
+            yield_m |= 1u << i;
+            world_stats.yields++;
+        }
+}
 /* the block room_for would turn off for block want, -1 none */
 static int room_pick(int want, const float *feet)
 {
     int b = -1;
     float bd = -1e30f;
     int ronly = w_ronly_m >> want & 1;
+    if (yield_m >> want & 1)
+        return -1;  /* (WORLD_YIELD turned it off: its retry wait is no failure for room; 16 and 23 went for it) */
     /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH). For a block
      * only another source wants (a respawn point), never a kept one (w_keep_m: what the player's floor and reach keep,
      * and the sources' own): the preload must not take the player's surroundings away */
@@ -120,6 +171,17 @@ static int room_pick(int want, const float *feet)
             if (d > bd)
                 b = i, bd = d;
         }
+    int draining = 0;  /* (a block draining frees its slot within WORLD_DRAIN steps: no second one goes for it) */
+    for (int s = 0; s < WORLD_SLOTS; s++)
+        draining |= w_slot_of[s] >= 0 && w_rt[w_slot_of[s]].state == W_DRAIN;
+    if (b < 0 && want > 0 && (under_m >> want & 1) && slots_full() && !draining) {  /* the player's floor: the farthest other goes */
+        for (int i = 1; i < w_nblk; i++)
+            if (i != want && i != w_cur && !(under_m >> i & 1) && w_rt[i].state == W_ON && world_stats.reading != i) {
+                float d = box_d(&w_tab[i], feet);
+                if (d > bd)
+                    b = i, bd = d;
+            }
+    }
     if (b < 0 && WORLD_SLOT_NEAREST && want > 0 && !ronly && slots_full()) {
         /* every slot held by a wanted block: the farthest of them gives its slot to a nearer one. On the Burg bonfire
          * block's floor by the Parish steps, the triangles want Burg west, the Parish and the Parish rest at once
@@ -154,7 +216,7 @@ static int room_for(int want, const float *feet)
  * PCSX2, 2026-11-18). 0: the settle waits for it as before */
 int w_slot_deferred(int i, const float *feet)
 {
-    if (!WORLD_SLOT_DEFER || i <= 0 || !slots_full())
+    if (!WORLD_SLOT_DEFER || i <= 0 || !slots_full() || (under_m >> i & 1))
         return 0;
     for (int s = 0; s < WORLD_SLOTS; s++)  /* a draining block frees its slot at the next step: not deferred */
         if (w_rt[w_slot_of[s]].state == W_DRAIN)
@@ -247,6 +309,7 @@ void w_step(const float *feet, float dt)
     unsigned wm = w_want_m, km = w_keep_m;
     memcpy(w_feet_now, feet, sizeof w_feet_now);
     w_room_stuck = 0;
+    under_m = 0;
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk &&
         w_rt[h.block].state == W_ON) {
         w_cur = h.block;
@@ -281,7 +344,7 @@ void w_step(const float *feet, float dt)
         for (int i = 1; i < w_nblk; i++)
             if (box_d(&w_tab[i], feet) <= 0.0f && feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
-                wm |= 1u << i, km |= 1u << i;
+                wm |= 1u << i, km |= 1u << i, under_m |= 1u << i;
     }
     {  /* the other streaming sources (a respawn point while a death plays): their blocks too, and their cells
         * (mapstream_sources) */
@@ -304,6 +367,8 @@ void w_step(const float *feet, float dt)
         mapstream_sources(ns ? sp[0] : NULL, ns);
     }
     wm |= w_hold_want, km |= w_hold_want;  /* the blocks the player is held for (world_hold) */
+    under_m |= w_hold_want;
+    yield_step();  /* (after under_m: never the player's floor) */
     w_ronly_m &= ~w_hold_want;
     src_only_m &= ~w_hold_want;  /* (the player's now) */
     if (wm != w_want_m || (km | wm) != w_keep_m)
@@ -342,6 +407,8 @@ void w_step(const float *feet, float dt)
             w_boot_lean();
     }
     w_far_retry_s = w_far_retry_s > dt ? w_far_retry_s - dt : 0;
+    w_yield_s = w_yield_s > dt ? w_yield_s - dt : 0;
+    yield_m = w_yield_s > 0 ? yield_m : 0;
     if (w_far_old && (--w_far_old_drain <= 0 || w_warping)) {
         w_far_free(w_far_old);
         w_far_old = NULL;
@@ -476,7 +543,8 @@ void w_step(const float *feet, float dt)
         int src_wait = want >= 0 && (src_only_m >> want & 1) && room_pick(want, feet) < 0;
         if (want >= 0 && !src_wait && (w_rt[want].retry_s >= WORLD_RETRY_S || w_warping || slots_full())) {
             int def = w_slot_deferred(want, feet);
-            w_room_stuck = !room_for(want, feet) && !def;  /* a fresh failure for room, or no slot (not a deferred one) */
+            w_room_stuck = !room_for(want, feet) && !def && !(yield_m >> want & 1);  /* a fresh failure for room, or no
+                                                                                    * slot (not a deferred or yielded one) */
             static int def_last = -1;
             if (def && def_last != want) {
                 printf("world: block %d wanted, no slot: deferred until the player moves (slots", want);

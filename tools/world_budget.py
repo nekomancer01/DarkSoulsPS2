@@ -43,7 +43,8 @@ WS_R0, WS_R1_IN, WS_R1 = 30.0, 16.0, 96.0  # export_map.py
 ROOM_KB = 10240 * 92 // 100 - 2064  # the budget's 10 MB arena (without world.bin)
 ARENA_KB = RES["RES_ARENA_KB"]  # world.c WORLD_ARENA_KB: the arena's build-constant size
 FILL_PCT = RES["RES_FILL_PCT"]  # mapstream.c MS_FILL_PCT
-WORLD_SLOTS = 3      # world_i.h
+WORLD_SLOTS = 4      # world_i.h: lite sets on at once
+POOL_SLOTS = 3       # world_i.h WORLD_POOL_SLOTS: the structural pool is sized for this many per link
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
@@ -155,6 +156,58 @@ def obj_tex_bytes(d):
     return len(b) if b is not None else os.path.getsize(p)
 
 
+def spot_spill(gen, spill, names, P, own):
+    """per spot the KB of lite sets its floor's link keeps past the structural pool (0 where none): the floor
+    triangle under the spot (as worldlinks.floor_tris, on the block's collision.bin) and its link record"""
+    import mapshot
+    out = np.zeros(len(P))
+    for k, name in enumerate(names):
+        if name not in spill:
+            continue
+        col = mapshot.collision(os.path.join(gen if k == 0 else os.path.join(gen, name), "collision.bin"))
+        S = np.nonzero(own == k)[0]
+        if col is None or not len(S):
+            continue
+        T, ids = col
+        kb = np.zeros(len(T))
+        for first, cnt, s in spill[name]:
+            kb[(ids >= first) & (ids < first + cnt)] = s
+        sel = np.nonzero(kb > 0)[0]
+        if not len(sel):
+            continue
+        T, kb = T[sel], kb[sel]
+        G = 4.0
+        lo = np.floor(T[:, :, [0, 2]].min(1) / G).astype(np.int64)
+        hi = np.floor(T[:, :, [0, 2]].max(1) / G).astype(np.int64)
+        grid = {}
+        for t in np.nonzero(((hi - lo) <= 64).all(1))[0]:
+            for gx in range(lo[t, 0], hi[t, 0] + 1):
+                for gz in range(lo[t, 1], hi[t, 1] + 1):
+                    grid.setdefault((gx, gz), []).append(t)
+        a, e1, e2 = T[:, 0], T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
+        for s in S:
+            p = P[s]
+            cand = grid.get((int(np.floor(p[0] / G)), int(np.floor(p[2] / G))))
+            if not cand:
+                continue
+            cand = np.asarray(cand)
+            d = p[[0, 2]] - a[cand][:, [0, 2]]
+            u1, u2 = e1[cand][:, [0, 2]], e2[cand][:, [0, 2]]
+            den = u1[:, 0] * u2[:, 1] - u1[:, 1] * u2[:, 0]
+            ok = np.abs(den) > 1e-9
+            if not ok.any():
+                continue
+            cand, d, u1, u2, den = cand[ok], d[ok], u1[ok], u2[ok], den[ok]
+            w1 = (d[:, 0] * u2[:, 1] - d[:, 1] * u2[:, 0]) / den
+            w2 = (u1[:, 0] * d[:, 1] - u1[:, 1] * d[:, 0]) / den
+            y = a[cand, 1] + w1 * e1[cand, 1] + w2 * e2[cand, 1]
+            dy = p[1] - y  # (worldlinks.floor_tris' window: the spot up to 4 m above its floor, 1.5 m below)
+            hit = (w1 >= -1e-6) & (w2 >= -1e-6) & (w1 + w2 <= 1 + 1e-6) & (dy >= -1.5) & (dy <= 4.0)
+            if hit.any():
+                out[s] = kb[cand[hit]].max()
+    return out
+
+
 def structural(gen):
     """world.bin (gen dir) -> dict(structural_kb, misc_kb, worst link) as world.c world_struct_bytes / world_init, or None"""
     import struct
@@ -180,6 +233,7 @@ def structural(gen):
             mp = os.path.join(d, "maptex.bin")
             mtxfull[i] = os.path.getsize(mp) if os.path.exists(mp) else 0
     best, at = 0, None
+    link_need = []  # (block, lite sets of every block the link keeps, up to WORLD_SLOTS): the spill past the pool
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
             first, cnt, _, load, keep = struct.unpack_from("<IHHII", lk, 16 * (lr[2 * blk] + l))  # (LINK v2)
@@ -188,8 +242,9 @@ def structural(gen):
             on = [i for i in ent if keep >> i & 1]
             lean_of = {i: ent[i][0] - ent[i][1] if LITE_DIET else ent[i][0] for i in on}
             whole = sorted((i for i in on if (load >> i & 1) or not LITE_DIET), key=lambda i: -ent[i][0])
-            v = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
-                       reverse=True)[:WORLD_SLOTS]
+            v_all = sorted([ent[i][0] for i in whole[:STRUCT_WHOLE]] + [lean_of[i] for i in on if i not in whole[:STRUCT_WHOLE]],
+                           reverse=True)
+            v, v4 = v_all[:POOL_SLOTS], v_all[:WORLD_SLOTS]
             evm = {}  # WORLD_EV_SHARED: one whole events.bin per map of the blocks on
             mtx = {}  # one maptex.bin per map (mapsplit.py TEX_PEERS, world.c mtx[])
             for i in on:
@@ -199,12 +254,20 @@ def structural(gen):
                 if mtxfull.get(i):
                     mtx[maps[i]] = max(mtx.get(maps[i], 0), r128(mtxfull[i]))
             v = v + list(evm.values()) + list(mtx.values())
+            link_need.append((blk, first, cnt, sum(v4) + sum(evm.values()) + sum(mtx.values())))
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
+    # spots of a block whose links keep more than the pool holds (WORLD_SLOTS > WORLD_POOL_SLOTS): the last lite set
+    # spills into the item pages there (world.c lite_alloc), so their room is smaller by it (pages, as the arena takes it)
+    spill = {}  # block -> [(first triangle, triangles, KB)] of its links that spill
+    for blk, first, cnt, need in link_need:
+        s = need - best
+        if s > 0:
+            spill.setdefault(names[blk], []).append((first, cnt, -(-s // (64 << 10)) * 64))
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
     cb = col_budget([cp[1] for cp in (col_pages(os.path.join(gen, names[i])) for i in ent) if cp])
     best += cb
-    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
+    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, spill_kb=spill, boot_pack=names[0], misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of
@@ -378,7 +441,19 @@ def main(argv):
     gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if gated_block(name)])
     LAST.clear()
     LAST.update(hard_by=hard_by, P=P, own=own, tot=tot, total=total, gated=gated, room=room, names=[b[0] for b in blocks])
-    hard_over = (tot["hard"] > room) & gated
+    # room per spot: less where the floor's link keeps a lite set past the structural pool (spill_kb)
+    sp = (pools or {}).get("spill_kb", {})
+    bnames = [pools["boot_pack"] if k == 0 else b[0] for k, b in enumerate(blocks)] if sp else None  # (block 0's dir is gen)
+    spill_spot = spot_spill(os.path.dirname(os.path.abspath(out)), sp, bnames, P, own) if sp else None
+    room_spot = room - spill_spot * FILL_PCT / 100 if sp else room
+    if sp:
+        hit = spill_spot > 0
+        print(f"world budget: lite sets past the structural pool (WORLD_SLOTS > WORLD_POOL_SLOTS) spill into the item "
+              f"pages at {int(hit.sum())} of {len(P)} spots (" + ", ".join(
+                  f"{k} {int((hit & (own == i)).sum())}" for i, k in enumerate(b[0] for b in blocks) if k in sp) +
+              f"), up to {int(spill_spot.max())} KB")
+    LAST.update(room_spot=room_spot)  # (tools/budgetfit.py: the room per spot)
+    hard_over = (tot["hard"] > room_spot) & gated
     allow, allow_spots = {}, []  # per block and level its own spots' allowance %; the spots (x, y, z, block, level, KB)
     for d in dirs:
         try:
@@ -390,7 +465,7 @@ def main(argv):
         except (OSError, ValueError, TypeError):
             pass
     w = int(total.argmax())
-    over = float((total > room).mean() * 100)
+    over = float((total > room_spot).mean() * 100)
     res = dict(room_kb=room, pools=pools, near_r=NEAR_R, pin_r=PIN_R, blocks=per_block, spots=len(P),
                total=pct(total), near=pct(tot["near"]), coarse=pct(tot["coarse"]), kept=pct(tot["kept"]),
                far=pct(tot["far"]), spots_over_room_pct=round(over, 1),

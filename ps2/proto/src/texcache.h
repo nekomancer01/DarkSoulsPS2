@@ -17,7 +17,7 @@ int tc_add(const unsigned char *base, const void *table, int n, int pool_kb);
 /* World blocks (src/world.c via map.c): a further map's textures in index range TC_BASE + slot x TC_BLOCK_TEX, CLUTs
  * in VRAM taken at tc_block_add and given back at tc_block_drop (one allocation each), pixels share the pool.
  * base = that map.bin (texture offsets from it). Returns the first index or -1. */
-#define TC_BLOCKS 3
+#define TC_BLOCKS 4  /* = world.c WORLD_SLOTS (4 since 2026-11-23): a block without one is on but not drawn */
 #define TC_BLOCK_TEX 192
 int tc_block_add(int slot, const unsigned char *base, const void *table, int n);
 void tc_block_drop(int slot);

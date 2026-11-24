@@ -268,8 +268,8 @@ static void *blk_dg[MAP_INST], *blk_pvs[MAP_INST];
 static unsigned blk_dg_n[MAP_INST], blk_pvs_n[MAP_INST];  /* their sizes (chunk_open checks the header's total) */
 /* blk_dg / blk_pvs of block k point into world.c's lite set (map_block_dg_set): let go with the block */
 static unsigned char blk_dg_ext[MAP_INST];
-/* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS (the Asylum is
- * a fifth block) are fine: world.c has at most WORLD_SLOTS lite sets loaded, and only loaded blocks are instances */
+/* texcache slot of instance k > 0: the first one free when it turns on. More instances than TC_BLOCKS are fine:
+ * world.c has at most WORLD_SLOTS (= TC_BLOCKS) lite sets loaded, and only loaded blocks are instances */
 static signed char tslot[MAP_INST];
 static const void *blk_tex_sh[MAP_INST];  /* map_block_shared: the map's maptex.bin per block */
 
