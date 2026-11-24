@@ -579,7 +579,61 @@ static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
 
 /* box_in_face for all six faces at once (bit f: face f): the FB axes are signed unit axes, so each face's x / y / z of a
  * corner is a component of d or its negation, exactly the value the dot product gives (adding zeros changes no compare) */
+/* FB's rows as (axis, sign): every row of FB is one signed unit axis, so a face's x / y / z of a corner is exactly
+ * +-(corner - eye)[axis], and "every corner fails test t" is a comparison of the per-axis extremes (the corners take
+ * each axis' min or max independently): x > z at all 8 corners <=> min x > max z. The same answers as the per-corner
+ * loop with 6 x 4 comparisons instead of 6 x 8 x 9 products (box_faces was 5 % of a cold world build's CPU samples,
+ * 2026-11-24); a box with a non-finite corner keeps the loop (0 x inf). PVS_BOXF_LOOP=1: always the loop. */
+static int fb_ax[6][3], fb_sg[6][3], fb_fast = -1;
+
+static void fb_axes(void)
+{
+    const char *lp = getenv("PVS_BOXF_LOOP");
+    fb_fast = !(lp && *lp == '1');
+    for (int f = 0; f < 6 && fb_fast; f++)
+        for (int r = 0; r < 3; r++) {  /* r: 0 z, 1 x, 2 y */
+            int nz = 0;
+            for (int k = 0; k < 3; k++)
+                if (FB[f][3 * r + k] != 0) {
+                    nz++, fb_ax[f][r] = k, fb_sg[f][r] = FB[f][3 * r + k] > 0 ? 1 : -1;
+                    if (FB[f][3 * r + k] != 1 && FB[f][3 * r + k] != -1)
+                        nz = 9;
+                }
+            if (nz != 1)
+                fb_fast = 0;
+        }
+}
+
+static unsigned box_faces_loop(const float *mn, const float *mx, const float *e);
+
 static unsigned box_faces(const float *mn, const float *mx, const float *e)
+{
+    if (fb_fast < 0)
+        fb_axes();
+    float lo[3], hi[3];
+    for (int k = 0; k < 3; k++)
+        lo[k] = mn[k] - e[k], hi[k] = mx[k] - e[k];
+    if (!fb_fast || !isfinite(lo[0]) || !isfinite(lo[1]) || !isfinite(lo[2]) || !isfinite(hi[0]) || !isfinite(hi[1]) ||
+        !isfinite(hi[2]))
+        return box_faces_loop(mn, mx, e);
+    unsigned m = 0;
+    for (int f = 0; f < 6; f++) {
+        float rmin[3], rmax[3];
+        for (int r = 0; r < 3; r++) {
+            int a = fb_ax[f][r];
+            if (fb_sg[f][r] > 0)
+                rmin[r] = lo[a], rmax[r] = hi[a];
+            else
+                rmin[r] = -hi[a], rmax[r] = -lo[a];
+        }
+        float zmax = rmax[0];
+        int out = zmax < 0.1f || rmin[1] > zmax || -rmax[1] > zmax || rmin[2] > zmax || -rmax[2] > zmax;
+        m |= (unsigned)!out << f;
+    }
+    return m;
+}
+
+static unsigned box_faces_loop(const float *mn, const float *mx, const float *e)
 {
     /* box_in_face per face, with the corners' offsets taken once: every FB entry is 0 or +-1, so its dot products are
      * exactly a signed component (a zero's sign never decides a comparison) */
