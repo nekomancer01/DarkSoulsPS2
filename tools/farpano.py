@@ -319,7 +319,7 @@ def sample(views, eye, deg, NV, S, f, near=None):
     c = np.stack(Cs, 1).reshape(-1, 3)
     kk = [np.stack([k[x] for k in Ks], 1).ravel() for x in range(7)]
     keys = np.stack([kk[0].astype(np.float64), kk[1].astype(np.float64), kk[2]], 1)
-    _u, first, inv = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    _u, first, inv, _c = horizon.urows(keys)
     order = np.argsort(first, kind="stable")
     rank = np.empty(len(order), np.int64)
     rank[order] = np.arange(len(order))
