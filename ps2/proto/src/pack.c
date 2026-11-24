@@ -735,7 +735,7 @@ enum { J_OPEN, J_OPENING, J_HEAD, J_HEADING, J_DATA, J_READING, J_DECODE, J_CLOS
  * frame 83.6 ms, 2026-11-04); a 64 KB block is ~1-2 ms */
 /* LOGIC_SPREAD (Burg plan B6, lpass.h): 1 ms, the logic pass's budget is 5 ms (a character type's load then takes a
  * few more frames) */
-#define PACK_JOB_DECODE_MS (LOGIC_SPREAD ? 1 : 3)
+#define PACK_JOB_DECODE_MS 1
 
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned))
 {

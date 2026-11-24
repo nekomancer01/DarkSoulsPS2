@@ -97,10 +97,7 @@ float enemy_player_push[2];  /* this frame's capsule pushes on the player (playe
  * show now (another room / level of the block: drawgrp.c). Within LOAD_DIST every such placement had its model in RAM
  * and VRAM, and walking past them loaded / unloaded types that were never seen (Ame, 2026-11-08: "enemies are being
  * allocated when unnecessary and might cause churn"). 20 m (ASSUMED): a load takes 0.2-1.5 s from cdrom0:, so a type
- * is in before the player reaches it. Default on; make DEFS=-DENEMY_LAZY_LOAD=0 = every placement within LOAD_DIST. */
-#ifndef ENEMY_LAZY_LOAD
-#define ENEMY_LAZY_LOAD 1
-#endif
+ * is in before the player reaches it. */
 #define LAZY_LOAD_DIST 20.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
@@ -339,13 +336,10 @@ static int nenemies;
 /* world blocks' placements (enemies.bin records, ENEMY_REC B), kept from boot; placed while the block is on */
 static unsigned char *blk_rec[ENEMY_BLOCKS];
 static int blk_n[ENEMY_BLOCKS];
-/* ENEMY_KEEP_DEAD (default on; 0 = the old way): placements the player killed, per block and enemies.bin index. A
+/* ENEMY_KEEP_DEAD: placements the player killed, per block and enemies.bin index. A
  * block that turns off and on again placed every one of them alive (a fresh AI, its type loaded again for a body
  * nobody had left). DSR keeps a killed enemy dead until a bonfire rest or the player's death (enemy_respawn clears
  * this), wherever the player walked meanwhile. */
-#ifndef ENEMY_KEEP_DEAD
-#define ENEMY_KEEP_DEAD 1
-#endif
 static unsigned blk_dead[ENEMY_BLOCKS][(MAX_ENEMIES + 31) / 32];
 /* ENEMY_NEAR_PLACE (default on; 0 = every placement of a block when it turns on): a block's characters are placed
  * (an Enemy slot: AI, ESD, combat body) only while their placement is within PLACE_DIST of the player, at most
@@ -519,7 +513,7 @@ static void *job_chr;   /* its chr.bin (the job's first entry), handed to the ty
 /* EE ticks per frame for building a streamed type's VU1 skin batches: in one frame mdl_load took up to 28 ms
  * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
 /* LOGIC_SPREAD: 1.5 ms (Burg plan B6: the 4 ms steps were the logic pass's spikes on every type load) */
-#define SETUP_TICKS ((LOGIC_SPREAD ? 3 : 8) * 294912u / 2)
+#define SETUP_TICKS (3 * 294912u / 2)
 static int job_arena;
 static void *heap_get(unsigned n)
 {
@@ -1116,7 +1110,7 @@ static int place_rec(int block, int k)
         nenemies++;
     place(t, blk_rec[block] + ENEMY_REC * k, i, block, k);
     Enemy *e = &enemies[i];
-    if (ENEMY_KEEP_DEAD && blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
+    if (blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
         e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;
     } else if (blk_hp[block][k] > 0 && blk_hp[block][k] < e->cc.hp_max) {
         e->cc.hp = blk_hp[block][k];  /* hurt when it was taken out */
@@ -1302,7 +1296,7 @@ static void stream_types(const Player *pl)
          * its type's model in RAM (2026-11-01: xz kept c2500 + c3491 loaded at the bonfire, 0.85 MB) */
         float d = sqrtf((e->pos.x - pl->pos.x) * (e->pos.x - pl->pos.x) + (e->pos.y - pl->pos.y) * (e->pos.y - pl->pos.y) +
                         (e->pos.z - pl->pos.z) * (e->pos.z - pl->pos.z));
-        if (ENEMY_LAZY_LOAD && d > LAZY_LOAD_DIST && (ev_off[i] || !dg_mask_shown(e->block, e->dg)))
+        if (d > LAZY_LOAD_DIST && (ev_off[i] || !dg_mask_shown(e->block, e->dg)))
             continue;
         if (e->dead_t <= CORPSE_TIME && d < e->ct->near_d)
             e->ct->near_d = d;
@@ -1399,16 +1393,10 @@ static float root_y_at(const Enemy *e, float t)
  * to the navmesh); otherwise (root motion, push-outs) a move off a ledge leaves the character airborne and it falls
  * (fall_step). Returns 1 if it moved. */
 /* wall check: which kind of move is running (the move_by callers set it; wall_check names them on a hit) */
-#ifndef ENEMY_WALL_CHECK
-#define ENEMY_WALL_CHECK 1
-#endif
 #define WC_H 1.0f        /* m above the feet: above kerbs and steps (COL_STEP_UP 0.6), below every character's top */
 #define WC_FALL_M 4.0f  /* m: a landing this far below where it left the ground is logged ("enemy: fell") */
 enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
-/* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
-#ifndef ENEMY_WALLS
-#define ENEMY_WALLS cv_ENEMY_WALLS  /* runtime switch, default 1 (src/cvar.h) */
-#endif
+/* Burg plan B7: see move_by */
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
 
@@ -1457,27 +1445,17 @@ static int wall_between(const Enemy *e, const float p[3])
     return (a[0] != b[0] || a[2] != b[2]) && col_ray(a, b, COL_SOLID, &hit) && fabsf(hit.n[1]) < COL_WALKABLE_NY;
 }
 
-/* SEP_CARRY (Burg plan B9 polish, default on; DEFS=-DSEP_CARRY=0 = each push walked on its own): the capsule pushes
+/* SEP_CARRY (Burg plan B9 polish): the capsule pushes
  * between characters (sep_flush) ride along with the character's next root motion or walk, one col_walk for both, and
  * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
  * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
-#ifndef SEP_CARRY
-#define SEP_CARRY cv_SEP_CARRY  /* runtime switch, default 1 (src/cvar.h) */
-#endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 
-#ifndef MOVE_PROF
-#define MOVE_PROF 1
-#endif
-#if MOVE_PROF && LOGIC_PASS_MS
 static unsigned mp_sub[4];  /* MOVE_PROF: ticks in col_walk / leash (nav) / wall ray / ledge floor, all moves */
 #define MP_SUB(i, x) ({ unsigned mp_t0_ = lpass_now(); __typeof__(x) mp_r_ = (x); mp_sub[i] += lpass_now() - mp_t0_; mp_r_; })
-#else
-#define MP_SUB(i, x) (x)
-#endif
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
-    if (SEP_CARRY && !e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
+    if (!e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
         dx += e->sep_c[0], dz += e->sep_c[1];
         e->sep_c[0] = e->sep_c[1] = 0;
     }
@@ -1493,7 +1471,7 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
         return 1;
     }
     int on_floor = MP_SUB(0, col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0));
-    if (ENEMY_WALLS && (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p)))) {
+    if (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p))) {
         e->wc_moves |= MV_LEASH;
         return 0;
     }
@@ -1507,7 +1485,7 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
      * with none within WALL_FLOOR_DEPTH the floor there belongs to a block that is not on (a seam): it stays, as the
      * player is held at a seam (world_hold), instead of falling through the world to FALL_KILL_Y */
     ColHit below;
-    if (ENEMY_WALLS && !MP_SUB(3, col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH,
+    if (!MP_SUB(3, col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH,
                                             COL_SOLID | COL_DEATH, &below))) {
         e->wc_moves |= MV_NO_FLOOR;
         return 0;
@@ -1515,17 +1493,16 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
     e->pos.x = p[0], e->pos.z = p[2];
     e->air = 1, e->vy = 0, e->fall_y0 = e->pos.y;
     e->wc_moves |= MV_GROUND_LOST;
-    if (ENEMY_WALL_CHECK && test_active())  /* which move took it off the ground, and where */
+    if (test_active())  /* which move took it off the ground, and where */
         printf("enemy: left the ground %d %s at %.2f %.2f %.2f by %s (%.3f %.3f)\n", e->index, e->ct->name,
                (double)p[0], (double)e->pos.y, (double)p[2], mv_tag == MV_ROOT ? "root motion" : mv_tag == MV_SEP ?
                "push-apart" : mv_tag == MV_WALK ? "walk" : "?", (double)dx, (double)dz);
     return 1;
 }
 
-/* MOVE_PROF (Burg plan B9 polish, default on; DEFS=-DMOVE_PROF=0 = off): "enemy: moves" every 120 frames, per kind of
+/* MOVE_PROF (Burg plan B9 polish): "enemy: moves" every 120 frames, per kind of
  * move (root motion, walk, separation push, airborne): calls, EE ms and wall contacts per frame, and how many of the
  * calls moved under 1 mm, to see what in the logic pass's "move" part costs at the Burg bonfires */
-#if MOVE_PROF && LOGIC_PASS_MS
 static unsigned mp_n[5], mp_t[5], mp_c[5], mp_tiny[5], mp_frames, mp_last = ~0u;
 static int move_prof(Enemy *e, float dx, float dz, int walking)
 {
@@ -1553,7 +1530,6 @@ static int move_prof(Enemy *e, float dx, float dz, int walking)
     return r;
 }
 #define move_by move_prof
-#endif
 
 
 /* Gravity for an airborne character (as the player: 9.8 m/s^2, at most 50 m/s down, collision-2): lands on the
@@ -1570,7 +1546,7 @@ static void fall_step(Enemy *e, float dt)
     float y = e->pos.y + e->vy * dt;
     ColHit hit;
     if (col_floor(e->pos.x, e->pos.z, e->pos.y + 0.05f, y, COL_SOLID | COL_DEATH, &hit)) {
-        if (ENEMY_WALL_CHECK && test_active() && e->fall_y0 - hit.y > WC_FALL_M)  /* a long fall: from where, by what move */
+        if (test_active() && e->fall_y0 - hit.y > WC_FALL_M)  /* a long fall: from where, by what move */
             printf("enemy: fell %d %s entity %d block %d %.1f m to %.2f %.2f %.2f (left the ground at y %.2f), floor tri "
                    "%d/%d filter %u, moves%s%s%s%s r %.2f\n", e->index, e->ct->name, e->entity, e->block,
                    (double)(e->fall_y0 - hit.y), (double)e->pos.x, (double)hit.y, (double)e->pos.z, (double)e->fall_y0,
@@ -1620,7 +1596,7 @@ static void root_rise(Enemy *e, float dy, int may_land)
         e->pos.y = hit.y, e->air = 0, e->vy = 0, e->root_fly = 0, e->fly_landed = e->act_serial + 1u;
         if ((1u << hit.hit_filter) & COL_DEATH && !e->cc.dead)
             e->cc.hp = -1, e->cc.dead = 1;
-        if (ENEMY_WALL_CHECK && test_active())
+        if (test_active())
             printf("enemy: root landing %d %s entity %d at %.2f %.2f %.2f, %.1f m below its take-off\n", e->index,
                    e->ct->name, e->entity, (double)e->pos.x, (double)e->pos.y, (double)e->pos.z,
                    (double)(e->fall_y0 - e->pos.y));
@@ -1967,11 +1943,11 @@ static void update_one(Enemy *e, Player *pl, float dt)
         LG_BEGIN(walk);
         mv_tag = MV_WALK;
         V3 p0 = e->pos;
-        if (LOGIC_SPREAD && e->stuck_t > 0)
+        if (e->stuck_t > 0)
             e->stuck_t -= dt, moving = 0, loco = 0;  /* against a wall it cannot pass: stands, as at a ledge */
         else if (!move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt, 1))
             moving = 0, loco = 0, e->nav_t = 0;  /* at a ledge: stands (and searches the route again) */
-        else if (LOGIC_SPREAD) {
+        else {
             /* a walk that got under a tenth of its step for STUCK_FRAMES frames in a row is pinned on a wall (no route
              * to the player, who stands above or behind it: the Burg bonfire, 2026-11-08 ISO, two hollows pushing at
              * the same wall for 20 s, each push a col_walk with contacts, ~1 ms of EE a frame). It stands STUCK_HOLD s
@@ -2080,12 +2056,8 @@ static void separate(Enemy *e, V3 other, float other_r, float share)
     if (d < 1e-3f)
         dx = sinf(e->yaw + PI), dz = cosf(e->yaw + PI), d = 1;  /* exactly on top: back off along its facing */
     float k = (min - d) * share / d;
-    if (LOGIC_SPREAD) {  /* summed over every pair, one move per character after the loop (sep_flush) */
-        e->sep[0] += dx * k, e->sep[1] += dz * k;
-        return;
-    }
-    mv_tag = MV_SEP;
-    move_by(e, dx * k, dz * k, 1);
+    /* summed over every pair, one move per character after the loop (sep_flush) */
+    e->sep[0] += dx * k, e->sep[1] += dz * k;
 }
 
 /* LOGIC_SPREAD: a character pushed by several others (a crowd at a bonfire) made one col_walk per pair, each ~0.1 ms
@@ -2094,7 +2066,7 @@ static void sep_flush(Enemy *e)
 {
     float x = e->sep[0], z = e->sep[1];
     e->sep[0] = e->sep[1] = 0;
-    if (SEP_CARRY && !e->air && !e->cc.dead) {  /* with the next root / walk move, unless it grew past SEP_CARRY_M */
+    if (!e->air && !e->cc.dead) {  /* with the next root / walk move, unless it grew past SEP_CARRY_M */
         x += e->sep_c[0], z += e->sep_c[1];
         if (x * x + z * z < SEP_CARRY_M * SEP_CARRY_M) {
             e->sep_c[0] = x, e->sep_c[1] = z;
@@ -2226,7 +2198,7 @@ void enemy_stream(const Player *pl)
     stream_types(pl);
 }
 
-/* Wall check (Burg plan B7; test runs only, make DEFS=-DENEMY_WALL_CHECK=0 = off): an active, living character whose
+/* Wall check (Burg plan B7; test runs only): an active, living character whose
  * centre crossed a wall since the last frame it was updated (a segment at WC_H above its feet, from where it stood to
  * where it stands, hits a non-floor solid triangle) went through it. Logged as "enemy: through wall" with its index,
  * type, entity, block, both positions, the triangle's block / index / hit filter / normal and the moves of the frame
@@ -2243,7 +2215,7 @@ static void wall_check(Enemy *e)
 {
     unsigned moves = e->wc_moves;
     e->wc_moves = 0;
-    if (!ENEMY_WALL_CHECK || !test_active() || e->cc.dead || (e->ev && e->ev->no_maphit)) {
+    if (!test_active() || e->cc.dead || (e->ev && e->ev->no_maphit)) {
         e->wc_ok = 0;
         return;
     }
@@ -2546,14 +2518,13 @@ void enemy_update(Player *pl, float dt)
         for (int j = 0; j < ni; j++)  /* left out this frame: they hold still, the updated one moves its share */
             if (idle[j]->ct->drawable)
                 separate(act[i], idle[j]->pos, idle[j]->var->radius, 0.5f);
-        if (LOGIC_SPREAD)
-            sep_flush(act[i]);
+        sep_flush(act[i]);
         memcpy(act[i]->cc.pos, &act[i]->pos, 12);
     }
     LG_END(sep, LG_MOVE);
     for (int i = 0; i < na; i++)
         wall_check(act[i]);
-    if (ENEMY_WALL_CHECK && test_active() && !(frame % 900))  /* every 30 s of frames: the check ran */
+    if (test_active() && !(frame % 900))  /* every 30 s of frames: the check ran */
         printf("enemy: wall check: %u segments, %u through walls, %u off the navmesh in the run\n", enemy_wall_checks,
                enemy_through_walls, enemy_off_mesh);
 }
@@ -2720,11 +2691,9 @@ float enemy_entity_anim_length(int entity, int anim)
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
 {
     int i0 = 0;
-    if (LOGIC_SPREAD) {
-        i0 = ent_slot(entity);
-        if (i0 < 0)
-            i0 = nenemies;  /* not an enemy: straight to the NPCs */
-    }
+    i0 = ent_slot(entity);
+    if (i0 < 0)
+        i0 = nenemies;  /* not an enemy: straight to the NPCs */
     for (int i = i0; i < nenemies; i++) {
         const Enemy *e = &enemies[i];
         if (e->entity != entity)
@@ -2744,7 +2713,7 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         return -1;
     const unsigned char *r = blk_rec[b] + ENEMY_REC * k;
     const EvChr *c = ev_chr_get(entity, 0);
-    int dd = (ENEMY_KEEP_DEAD && blk_dead[b][k >> 5] >> (k & 31) & 1) || (c && c->dead);
+    int dd = (blk_dead[b][k >> 5] >> (k & 31) & 1) || (c && c->dead);
     if (pos) {
         float f[3];
         memcpy(f, r + 20, 12);

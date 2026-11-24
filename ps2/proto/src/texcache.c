@@ -182,13 +182,10 @@ static void chain_levels(int i, const unsigned char *base)
     }
 }
 
-/* resident levels (TC_RLIST, default on; make DEFS=-DTC_RLIST=0 = the old walk over every texture's levels): alloc and
+/* resident levels (TC_RLIST): alloc and
  * tc_end walk this list instead of all MAX_TEX x NLV levels (3840: a texture miss cost ~0.1 ms, a few hundred of
  * them after a turn or warp up to 10 ms of map pass, rd_firelink 2026-11-08). Entries are added by load and dropped
  * lazily once their level is no longer resident (lv_reset, eviction, tc_pin set off = -1 anywhere). */
-#ifndef TC_RLIST
-#define TC_RLIST 1
-#endif
 static unsigned short rl[MAX_TEX * NLV];
 static int rl_n;
 static unsigned char rl_in[MAX_TEX * NLV];
@@ -198,7 +195,6 @@ static void rl_add(int i, int l)
     if (!rl_in[id])
         rl_in[id] = 1, rl[rl_n++] = (unsigned short)id;
 }
-#if TC_RLIST
 /* the list without entries no longer resident */
 static void rl_trim(void)
 {
@@ -210,7 +206,6 @@ static void rl_trim(void)
             j++;
     }
 }
-#endif
 
 static int cluts_sent;
 static int in_frame;
@@ -565,7 +560,6 @@ static int alloc(int s, int p)
         return -1;
     memset(score, 0, nrun * sizeof *score);
     int nall = tex_end();
-#if TC_RLIST
     rl_trim();
     for (int j = 0; j < rl_n; j++) {
         int i = rl[j] / NLV, l = rl[j] % NLV;
@@ -576,17 +570,6 @@ static int alloc(int s, int p)
         for (int r = v->off / s; r < nrun && r * s < v->off + v->size; r++)
             score[r] = sc > score[r] ? sc : score[r];
     }
-#else
-    for (int i = 0; i < nall; i++)
-        for (int l = 0; l < NLV; l++) {
-            const Level *v = &lv[i][l];
-            if (v->off < 0 || pool_of(i, l) != p)
-                continue;
-            unsigned sc = v->last == frame ? ~0u : v->last + 1;
-            for (int r = v->off / s; r < nrun && r * s < v->off + v->size; r++)
-                score[r] = sc > score[r] ? sc : score[r];
-        }
-#endif
     if (p == 0 && pin_blk)  /* runs in the lent top of the pool are taken */
         for (int r = pin_off / s; r < nrun; r++)
             score[r] = ~0u;
@@ -605,7 +588,6 @@ static int alloc(int s, int p)
         return -1;
     }
     int off = best * s;
-#if TC_RLIST
     (void)nall;
     for (int j = 0; j < rl_n; j++) {
         int i = rl[j] / NLV, l = rl[j] % NLV;
@@ -613,14 +595,6 @@ static int alloc(int s, int p)
         if (v->off >= 0 && pool_of(i, l) == p && v->off < off + s && v->off + v->size > off)
             v->off = -1;
     }
-#else
-    for (int i = 0; i < nall; i++)
-        for (int l = 0; l < NLV; l++) {
-            Level *v = &lv[i][l];
-            if (v->off >= 0 && pool_of(i, l) == p && v->off < off + s && v->off + v->size > off)
-                v->off = -1;
-        }
-#endif
     return off;
 }
 
@@ -708,10 +682,8 @@ int tc_level(int tex, float d)
     }
     if (cap >= 2 && te[tex]->levels > 1)
         return 1;  /* the plan gave its mip 0 room to a texture that needs it more */
-#ifndef TC_NO_NEAR  /* A/B builds: near levels never drawn */
     if (lv[tex][2].size && pool3_blk && d < mip_d[tex] * 0.5f && !press && !cap)
         return 2;  /* near level texels (half mip 0's) still >= 1 / MIP_K px */
-#endif
     if (press && te[tex]->levels > 1)
         return d > mip_d[tex] * 0.5f;
     if (MIP0_AHEAD > 0 && d > mip_d[tex] && d < mip_d[tex] * MIP0_AHEAD && (te[tex]->pix[0] & TC_RES) && in_frame)
@@ -894,21 +866,12 @@ void tc_end(void)
     else if (tc_stats.bytes > tc_stats.max_bytes)
         tc_stats.max_bytes = tc_stats.bytes;
     int used = 0, now = 0;
-#if TC_RLIST
     rl_trim();
     for (int j = 0; j < rl_n; j++) {
         const Level *v = &lv[rl[j] / NLV][rl[j] % NLV];
         used += v->size;
         now += v->last == frame ? v->size : 0;
     }
-#else
-    int nall = tex_end();
-    for (int i = 0; i < nall; i++)
-        for (int l = 0; l < NLV; l++) {
-            used += lv[i][l].off >= 0 ? lv[i][l].size : 0;
-            now += lv[i][l].off >= 0 && lv[i][l].last == frame ? lv[i][l].size : 0;
-        }
-#endif
     tc_stats.resident = used / 4;
     tc_stats.frame_kb = now / 4;
     if (TC_PRESS && (tc_stats.fails || (!TC_PLAN && now * 100 > pool_blk * TC_PRESS_PCT))) {

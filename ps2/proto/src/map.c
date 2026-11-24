@@ -58,7 +58,7 @@ int map_init(const void *blob)
     m->fog_ntris = ((const unsigned *)(map_bin + hdr->fog_off))[1];
     m->fog_row = (const FogRow *)(map_bin + hdr->fog_off + 16);
     m->fog_tri = (const unsigned char *)(m->fog_row + m->fog_rows);
-    m->sky_rows = SKY_ROWS ? ((const unsigned *)(map_bin + hdr->fog_off))[2] : 0;
+    m->sky_rows = ((const unsigned *)(map_bin + hdr->fog_off))[2];
     m->sky_row = (const SkyRow *)(m->fog_tri + ((m->fog_ntris + 3) & ~3u));
     /* no rows: the header's fog and the old fixed character light (0.5 + 0.75 n . L) */
     float f0[FOG_NOW] = {hdr->fog_begin, hdr->fog_end, hdr->fog_max, hdr->fog_rgb[0], hdr->fog_rgb[1], hdr->fog_rgb[2],
@@ -293,7 +293,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
                 d2 = cell_near_d2(&ctab[ci], m->ckeys + 4 * ci, e);
             near_on = r > 0 && d2 < r * r;
         }
-        int scanned = !(MAP_NEAR_SKIP && near_on);
+        int scanned = !near_on;
         if (scanned) {
             MF_AGAIN
             MISS_SCAN();
@@ -591,7 +591,7 @@ int map_draw_sky(V3 eye)
 {
     fr.drawn = 0;
     static unsigned mp_fr;
-    mp_on = MAP_PASS_MS && !(mp_fr++ % MAP_PASS_EVERY);
+    mp_on = !(mp_fr++ % MAP_PASS_EVERY);
     fr.mp_t0 = mp_on ? ticks() : 0;
     memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
     if (!mp_inst[mp_pinst].on && mp_pinst)
@@ -696,9 +696,7 @@ int map_draw_world(void)
         MP_END(MP_TEX)
     }
     fr.drawn += drawn;
-#if MAP_PASS_MS
     mp_log_pass_ms(fr.mp_t0);
-#endif
     mp_log_frame(lg, e, fr.drawn);
     return drawn;
 }

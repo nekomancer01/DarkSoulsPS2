@@ -435,8 +435,7 @@ static void phase_sim_b(Frame *f)
         MEM_LEGACY(EVENT) {
             frame_sim_check(FE_EVENT_UPDATE);
             event_update(pl, dt);    /* EMEVD instances (src/event.c); fog walls / gates push the player next frame */
-            if (PICKUP)
-                pickup_update(dt);    /* item get dialog (src/pickup.c) */
+            pickup_update(dt);    /* item get dialog (src/pickup.c) */
         }
         LG_END(events, LG_EVENTS);
         LG_BEGIN(bonfire);
@@ -526,8 +525,7 @@ static void phase_emit(Frame *f)
         debug_hud_draw(&dh, pl, dt);
         HITCH_END(dbg, HS_DBG);
     }
-    if (PICKUP)
-        pickup_draw();  /* the item get dialog (menu.drb F25) */
+    pickup_draw();  /* the item get dialog (menu.drb F25) */
     frame_draw_check(FE_MENU_DRAW);
     menu_draw(pl);
     loading_overlay(frame_det_dt > 0 && f->frozen ? 0 : dt);  /* the fade-in from black after a loading screen */

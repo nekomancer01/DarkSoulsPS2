@@ -1,4 +1,4 @@
-/* Logic pass breakdown (Burg plan B6, default on; make DEFS=-DLOGIC_PASS_MS=0 = off): COP0 Count ticks per part of
+/* Logic pass breakdown (Burg plan B6): COP0 Count ticks per part of
  * the budget's logic pass (testscript.c pb_frame: hitch sections HS_PRE + HS_LOGIC) this frame, so a bonfire's 5 to
  * 15 ms can be pinned on a part before anything is changed. Every frame is timed (about 100 Count reads with 16
  * characters active, ~15 us in PCSX2). Logged every LPASS_LOG frames as "logic: pass ms" (the average per frame, then
@@ -23,35 +23,22 @@
 #define LPASS_H
 #include "ticks.h"
 
-/* The logic pass fixes the breakdown pointed at (default on; make DEFS=-DLOGIC_SPREAD=0 = the old order and code):
+/* The logic pass fixes the breakdown pointed at (LOGIC_SPREAD):
  * collision.c skips triangles outside the tested box on the fragments' integer grid, event.c lets an instance whose
  * MAIN group is held false by a flag condition sleep until the flags change, enemy.c spreads a rest's or death's
  * respawn and budgets navmesh searches by time */
-#ifndef LOGIC_SPREAD
-#define LOGIC_SPREAD 1
-#endif
 
-#ifndef LOGIC_PASS_MS
-#define LOGIC_PASS_MS 1
-#endif
 
 enum { LG_PLAYER, LG_STREAM, LG_ENEMY, LG_AI, LG_NAV, LG_ESD, LG_MOVE, LG_RAGDOLL, LG_POSE, LG_HITS, LG_GC, LG_OBJECTS,
        LG_EVENTS, LG_BONFIRE, LG_N };
 
 extern unsigned lpass_t[LG_N];  /* EE ticks this frame */
 static inline unsigned lpass_now(void) { return ticks(); }
-#if LOGIC_PASS_MS
 #define LG_BEGIN(s) unsigned lg_t0_##s = lpass_now()
 #define LG_END(s, part) (lpass_t[part] += lpass_now() - lg_t0_##s)
 /* a part timed inside another: what the inner parts took in between comes off the outer one */
 #define LG_BEGIN_X(s) unsigned lg_t0_##s = lpass_now(), lg_in_##s = lpass_sum()
 #define LG_END_X(s, part) (lpass_t[part] += lpass_now() - lg_t0_##s - (lpass_sum() - lg_in_##s))
-#else
-#define LG_BEGIN(s) ((void)0)
-#define LG_END(s, part) ((void)0)
-#define LG_BEGIN_X(s) ((void)0)
-#define LG_END_X(s, part) ((void)0)
-#endif
 static inline unsigned lpass_sum(void)
 {
     unsigned s = 0;

@@ -703,7 +703,7 @@ static void set_hit(Set *s, const EvEnt *e, int on)
     s->ent_off[e - s->ent] = !on;
 }
 
-/* EV_ENT_KEEP (default 1; -DEV_ENT_KEEP=0 = the old behaviour): what the events switched, kept by entity id for the
+/* EV_ENT_KEEP: what the events switched, kept by entity id for the
  * blocks that are not on. A world block of a map whose events already run elsewhere turns on with entities only
  * (event_block_on_split), so the constructors that disabled its objects ran before its entity table was there: the
  * Burg's co-op checkpoint walls (11010000's 2005[03] list, e.g. 1011994 in the aqueduct doorway) stayed solid when
@@ -711,17 +711,12 @@ static void set_hit(Set *s, const EvEnt *e, int on)
  * the player could not walk from the aqueduct into the Burg. DSR holds a whole map, so a switch reaches every part of
  * it; here each block that turns on gets the switches of its entities replayed (and a block that went off and came
  * back keeps them too). */
-#ifndef EV_ENT_KEEP
-#define EV_ENT_KEEP 1
-#endif
 #define EV_KEEP_MAX 512
 static struct { s32 id; u8 kind, on, pad[2]; } kept[EV_KEEP_MAX];
 static int nkept;
 
 static void keep_entity(s32 id, int on, int kind)
 {
-    if (!EV_ENT_KEEP)
-        return;
     int i;
     for (i = 0; i < nkept && !(kept[i].id == id && kept[i].kind == kind); i++)
         ;
@@ -894,8 +889,7 @@ void event_lot_give(const PickItem *g, int n)
     for (int i = 0; i < n; i++) {
         int held = inv_add(g[i].item, g[i].num);
         printf("EVT item lot: item %08x x%d (now %d), flag %d\n", (unsigned)g[i].item, g[i].num, held, (int)g[i].flag);
-        if (PICKUP)
-            pickup_got(g[i].item, g[i].num);
+        pickup_got(g[i].item, g[i].num);
     }
     for (int i = 0; i < n; i++)
         if (g[i].flag > 0)
@@ -993,16 +987,16 @@ static void run(Inst *in)
         in->cond_t += dtime, in->cond_f++;
         if (in->flag_only && in->seen == state_key())
             return;
-        if (LOGIC_SPREAD && in->sfalse && in->seen == state_key())
+        if (in->sfalse && in->seen == state_key())
             return;
         /* LOGIC_SPREAD: the MAIN waits that read the world (areas, distances, HP, deaths) are tested on every other
          * frame, half of them on each (by slot): 33 ms more before such an event starts, ~0.7 ms of EE less a frame
          * at the Burg (217 of them, 2026-11-08 ISO). A flag change tests them at once */
-        if (LOGIC_SPREAD && !in->edge && (((unsigned)(in - inst) ^ ev_frame) & 1) && in->seen == state_key())
+        if (!in->edge && (((unsigned)(in - inst) ^ ev_frame) & 1) && in->seen == state_key())
             return;
         in->seen = state_key();
         in->sfalse = 0;
-        if (LOGIC_SPREAD && in->static_and && static_false(in, 0, 0)) {  /* AND group: false whatever the rest says */
+        if (in->static_and && static_false(in, 0, 0)) {  /* AND group: false whatever the rest says */
             in->sfalse = 1;
             return;
         }
@@ -1578,14 +1572,14 @@ static void use_action(void)
             s->tr_state[i] |= 2;
             act_used = 1;
             printf("EVT treasure at %.1f %.1f %.1f picked up\n", t[i].pos[0], t[i].pos[1], t[i].pos[2]);
-            if (PICKUP && !t[i].in_chest)  /* a chest's ObjAct already played the open anim (ASSUMED no pickup anim) */
+            if (!t[i].in_chest)  /* a chest's ObjAct already played the open anim (ASSUMED no pickup anim) */
                 pickup_anim(pl);
             for (int j = 0; j < 5; j++)
                 if (t[i].lot[j] > 0)
                     award_lot(t[i].lot[j]);
         }
     }
-    if (PICKUP && !act_used && pickup_action(pl))  /* enemy drops (src/pickup.c) */
+    if (!act_used && pickup_action(pl))  /* enemy drops (src/pickup.c) */
         act_used = 1;
     if (!act_used && ev_bonfire_action((const float[3]){pl->pos.x, pl->pos.y, pl->pos.z}, pl->yaw))  /* 2009[03] */
         act_used = 1;
@@ -1634,8 +1628,7 @@ void event_update(Player *p, float dt)
         for (int i = 0; sets[k].blob && i < NSEC(&sets[k], S_OBJACTS); i++)
             sets[k].oa_state[i] &= ~2;
     objact_flags();
-    if (PICKUP)
-        treasure_shines();
+    treasure_shines();
     act_press = 0;
     event_stats.running = act, event_stats.waiting = waiting;
     if (act > event_stats.peak)
