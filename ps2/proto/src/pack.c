@@ -1014,6 +1014,19 @@ int pack_job_has(const PackJob *j, const char *name)
     return n > cap;  /* (beyond the first sector: not known, try it) */
 }
 
+unsigned pack_job_entry_size(const PackJob *j, const char *name)
+{
+    const unsigned *head = j->head;
+    if (memcmp(head, "DSRP", 4))
+        return 0;
+    const struct PackEntry *e = (const struct PackEntry *)(head + 4);
+    unsigned n = head[2], cap = (sizeof j->head - 16) / sizeof *e;
+    for (unsigned i = 0; i < n && i < cap; i++)
+        if (!strncmp(e[i].name, name, sizeof e->name))
+            return e[i].raw;
+    return 0;
+}
+
 static void *heap_get(unsigned n) { return memalign(128, n); }
 static void heap_put(void *p, unsigned n) { (void)n; free(p); }
 /* the regions of src/mem.h: static (boot lifetime) and boot-temp, the heap once they are full or sealed */

@@ -248,6 +248,13 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_NAV_LITE
 #define WORLD_NAV_LITE 1
 #endif
+/* WORLD_CHR_LITE (default 1; world-46 phase 4): the block's placements and enemy types from E_ENM at turn-on
+ * (enemy_block_types_lite; a new type's chr.bin head read in the background, its placements waiting for it, as DSR's
+ * WorldBlockChrPrepare loads a block's characters with the block), let go at turn-off (enemy_block_untypes), instead
+ * of every block's types and placements made at boot with synchronous pack reads. 0: at boot as before. */
+#ifndef WORLD_CHR_LITE
+#define WORLD_CHR_LITE 1
+#endif
 /* E_FXH (WORLD_FX_LITE, default 1; world-46 phase 2): the head of the block's fx.bin, everything before its first pixel /
  * CLUT (the effect tables, 1-20 KB), comes with its lite set and is used in place from turn_on_col (fx_block_tables) to
  * the turn-off (fx_block_drop), instead of a heap copy of every block's tables and runtime arrays made at boot (339 KB at

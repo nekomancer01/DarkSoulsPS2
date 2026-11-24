@@ -26,6 +26,12 @@ void enemy_block_add(int block);
  * stays the lite set's; nav_unbind when it turns off). Returns the navmesh's triangles (0: none). */
 void enemy_nav_with_block(int block);
 int enemy_block_nav(int block, const void *enm, unsigned enm_size);
+/* WORLD_CHR_LITE (world_i.h): block `block`'s placements and enemy types from its enemies.bin as its lite set holds it,
+ * at turn-on before enemy_block_add (no reads now: a new type's chr.bin head is read in the background and its
+ * placements wait for it); enemy_block_untypes, after enemy_block_remove, lets them go (a type no on block places any
+ * more is freed once its model is out). Its c0000 NPCs are kept the first time only (npc.c). */
+int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size);
+void enemy_block_untypes(int block);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */
 void enemy_respawn(void);

@@ -50,6 +50,7 @@ MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
 NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
+CHR_LITE = os.environ.get("WORLD_CHR_LITE", "1") != "0"  # world_i.h WORLD_CHR_LITE (default 1): E_ENM too, E_AI
 FX_LITE = os.environ.get("WORLD_FX_LITE", "1") != "0"  # world_i.h WORLD_FX_LITE (default 1): E_FXH
 OBJ_LITE = os.environ.get("WORLD_OBJ_LITE", "1") != "0"  # world_i.h WORLD_OBJ_LITE (default 1): E_OBJH
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
@@ -139,7 +140,7 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
-    if NAV_LITE:  # world_i.h WORLD_NAV_LITE: E_ENM, the whole enemies.bin (not a lean entry)
+    if NAV_LITE or CHR_LITE:  # world_i.h WORLD_NAV_LITE / WORLD_CHR_LITE: E_ENM, the whole enemies.bin (not lean)
         total += r128(sz("enemies.bin"))
     if FX_LITE:  # world_i.h WORLD_FX_LITE: E_FXH, fx.bin before its first pixel / CLUT (world.c fx_head_size)
         total += r128(fx_head_bytes(d))
