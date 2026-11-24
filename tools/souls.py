@@ -37,7 +37,49 @@ def undcx(b):
     fmt = b[b.find(b"DCP\0") + 4:][:4]
     if fmt not in DCX_FORMATS:
         raise UnknownVariant("dcx compression", fmt.decode("latin1"))
-    return zlib.decompress(b[b.find(b"DCA\0") + 8:])
+    return _inflate(b[b.find(b"DCA\0") + 8:], b)
+
+
+def _inflate_lib():
+    """the zlib inflater (2026-11-24 build profile: undcx was ~8 % of export_map and ~40 % of export_objects): libdeflate
+    (the deflate package, ~2.2x zlib on the game's DCX files) given the header's size, else ISA-L (isal, ~1.6x), else
+    zlib; all return the same bytes. SOULS_INFLATE=zlib / isal / deflate picks one."""
+    global _INFLATE
+    if _INFLATE is None:
+        want = os.environ.get("SOULS_INFLATE", "deflate")
+        _INFLATE = ("zlib", zlib.decompress)
+        if want in ("deflate", "isal"):
+            try:
+                if want != "deflate":
+                    raise ImportError
+                import deflate
+                _INFLATE = ("deflate", deflate.zlib_decompress)
+            except ImportError:
+                try:
+                    from isal import isal_zlib
+                    _INFLATE = ("isal", isal_zlib.decompress)
+                except ImportError:
+                    pass
+    return _INFLATE
+
+
+_INFLATE = None
+
+
+def _inflate(z, dcx):
+    kind, f = _inflate_lib()
+    if kind == "deflate":
+        i = dcx.find(b"DCS\0")  # DCS: uncompressed size, compressed size (u32 big endian)
+        if 0 <= i < 64:
+            n = struct.unpack_from(">I", dcx, i + 4)[0]
+            try:
+                out = f(z, n)
+                if len(out) == n:
+                    return out
+            except Exception:
+                pass
+        return zlib.decompress(z)
+    return f(z)
 
 
 def read(path):

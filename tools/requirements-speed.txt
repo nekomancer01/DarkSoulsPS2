@@ -1,0 +1,4 @@
+# Optional speed-ups (2026-11-24): faster DCX inflate in tools/souls.py, which falls back to zlib without them
+# (same output). Separate from requirements.txt so a platform without wheels (musl, ...) still installs the base.
+deflate>=0.7
+isal>=1.6

@@ -112,9 +112,12 @@ It hashes the exe and the data files the exporters need. An unknown version stop
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+.venv/bin/pip install -r tools/requirements-speed.txt   # optional: faster reads of the game's archives
 ```
 
 The build uses `.venv` automatically. To use a different Python, put `PY = /path/to/python` in `config.local.mk`.
+`deflate` (libdeflate, MIT) and `isal` (Intel ISA-L, BSD-3 / PSF) only make reading the game's DCX archives faster
+(about 2x, `tools/requirements-speed.txt`); without them the exporters use Python's zlib and write the same files.
 
 ### 4. Turn on HostFs in PCSX2
 
