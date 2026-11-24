@@ -3,6 +3,9 @@
  * shared state. */
 #include "mapfile.h"
 #include "world_i.h"
+#include "lua0.h"
+#include "nav.h"
+extern unsigned lua0_malloc_live;  /* lua0.c: the VM's malloc fallback bytes (world_systems' type split) */
 WorldStats world_stats = {.reading = -1, .full = -1};
 const WorldBlock *w_tab;
 const unsigned *w_rrange;  /* WORLD_REACH: per block first reach run, runs (NULL: no reach table) */
@@ -372,15 +375,21 @@ void world_systems(GSGLOBAL *gs)
         unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
         unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
+        /* (TECH_DEBT world-46 split: the Lua VM's heap and its malloc spill, the navmesh copy; the rest of the enemies
+         * figure is the placements and the type heads) */
+        unsigned lh0 = lua0_heap, lm0 = lua0_malloc_live, nb0 = nav_bytes();
         int ne = p ? enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0) : -1;
+        unsigned lh1 = lua0_heap, lm1 = lua0_malloc_live, nb1 = nav_bytes();
         free(lua);
         free(p);
         unsigned h3 = enemy_ram_free();
         if (!r->size[E_DG] || !r->size[E_PVS])  /* WORLD_DG_LITE 0, or not raw in the pack: from boot, kept */
             map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c) */
-        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d\n",
+        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d; "
+               "enemies split KB: lua vm %d lua malloc %d nav %d lua0 file %u\n",
                i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
-               ((int)h3 - (int)enemy_ram_free()) >> 10);
+               ((int)h3 - (int)enemy_ram_free()) >> 10, ((int)lh1 - (int)lh0) >> 10, ((int)lm1 - (int)lm0) >> 10,
+               ((int)nb1 - (int)nb0) >> 10, lua ? n1 >> 10 : 0);
     }
     if (WORLD_FAR_RESERVE && w_nblk > 1) {  /* the panorama reserve, before the arena takes the heap */
         for (int i = 0; i < w_nblk; i++)
