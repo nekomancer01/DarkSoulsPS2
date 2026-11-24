@@ -32,6 +32,7 @@
 #include "chrstat.h"
 #include "status.h"
 #include "pack.h"
+#include "mapfile.h"
 #include "enemy.h"
 #include "objects.h"
 #include "fx.h"
@@ -394,10 +395,10 @@ int main(int argc, char **argv)
     pack_close(&pk);
     void *map_blob = 0, *col_blob = 0, *enemy_blob = 0, *lua_blob = 0, *obj_blob = 0, *bump_blob = 0, *fx_blob = 0,
          *dg_blob = 0, *ev_blob = 0, *evc_blob = 0, *pvs_blob = 0;
-    unsigned lua_size = 0, enemy_size = 0, obj_size = 0, dg_size = 0, pvs_size = 0;
+    unsigned lua_size = 0, enemy_size = 0, obj_size = 0, dg_size = 0, pvs_size = 0, map_size = 0;
     int world = world_init(AREA);  /* world build: blocks stream in by position (src/world.c, data/world.pak) */
     if (pack_open(&pk, PACK_ROOT AREA ".pak")) {
-        map_blob = world ? NULL : pack_load(&pk, "map.bin", 0);  /* world: split map, world_boot_map */
+        map_blob = world ? NULL : pack_load(&pk, "map.bin", &map_size);  /* world: split map, world_boot_map */
 #ifndef MAP_PANO_R  /* panorama capture builds (tools/pano.py): no relief or effects, their RAM goes to the far map */
         /* normal-map relief (tools/export_normal.py, src/bump.c). A world build streams the boot block's like every
          * block's (world.c bump_step, WORLD_BOOT_RELIEF): resident it kept 0.9 MB of the heap from the near arena
@@ -445,7 +446,9 @@ int main(int argc, char **argv)
                                                                      * VU1 streams and VRAM */
         printf("DSRPROTO player model compacted: RAM free %u -> %u\n", ram_before, ram_free());
 #endif
-    int map_ok = (world ? world_boot_map() : map_init(map_blob)) && map_upload(gs) == 0;
+    /* map.bin: a chunk file whose payload is the exporter's map (src/mapfile.h) */
+    const void *map_pay = map_blob ? mapf_payload(map_blob, map_size, "map.bin", MAPF_MAP, NULL) : NULL;
+    int map_ok = (world ? world_boot_map() : map_pay && map_init((void *)map_pay)) && map_upload(gs) == 0;
     if (world)
         world_stream_open(), map_pano_open(PACK_ROOT AREA ".pak");
     else

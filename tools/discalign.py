@@ -20,8 +20,13 @@ blob's offset and bytes in cells.bin at +24 / +28. Nothing else points into cell
 relative to it), so only those two words move. The offline tools (mapshot.py, lodview.py, blockreport.py) read the
 export's own cells.bin with map.bin: they are not touched.
 
-DISC_ALIGN=0 (environment, make DISC_ALIGN=0): the two files are copied unchanged (the layout before 2026-11-21)."""
+DISC_ALIGN=0 (environment, make DISC_ALIGN=0): the two files are copied unchanged (the layout before 2026-11-21).
+Since the chunk move (Polaris 4.8 step 4) the pack holds cells.bin as a chunk file (tools/mapwrap.py) whose payload
+starts mapwrap.PAYLOAD["cells"] bytes into the entry: parts are placed counting those bytes (BASE; MAP_CHUNKS=0: 0)."""
 import os, shutil, struct, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mapwrap  # noqa: E402
 
 ECC = 32768
 HDR = 80
@@ -52,6 +57,9 @@ def place(pos, n):
     return pos
 
 
+BASE = mapwrap.PAYLOAD["cells"] if mapwrap.ON else 0  # cells.bin's offset 0 in the pack entry
+
+
 def layout(maptab, cells):
     """(new maptab, new cells, parts, padding bytes)"""
     t, n = table(maptab)
@@ -69,7 +77,7 @@ def layout(maptab, cells):
             struct.pack_into("<I", mt, t + 48 * i + 24, moved[key])
             continue
         pos = (len(out) + 63) & ~63
-        at = place(pos, nb)
+        at = place(BASE + pos, nb) - BASE
         pad += at - len(out)
         out += b"\0" * (at - len(out))
         moved[key] = at
@@ -103,8 +111,8 @@ def check_pack(path):
         co, craw, cpacked, cn = ent["cells.bin"]
         if mpacked != mraw + 4 * mn or cpacked != craw + 4 * cn:
             return bad + [f"{path}: maptab.bin / cells.bin not stored raw"]
-        mt = d[mo + 4 * mn:mo + 4 * mn + mraw]
-        c0 = co + 4 * cn
+        mt = mapwrap.unwrap(d[mo + 4 * mn:mo + 4 * mn + mraw])
+        c0 = co + 4 * cn + (mapwrap.PAYLOAD["cells"] if d[co + 4 * cn:co + 4 * cn + 4] == b"CHNK" else 0)
         t, cnt = table(mt)
         over = 0
         for i in range(cnt if t is not None else 0):

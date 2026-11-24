@@ -213,7 +213,7 @@ def run_part(game, build, only=None, log=print, progress=None, lean=False, start
         args = []
         for x in s.args:  # "?name=path": a pack entry the Makefile adds with $(wildcard)
             path = x.lstrip("?").split("=", 1)[-1]
-            path = os.path.normpath(path[4:] if path.startswith("raw:") else path)
+            path = os.path.normpath(recipe.entry_path(path))
             if s.tool == "pack.py" and "=" in x and path in skipped:
                 continue
             if x.startswith("?"):

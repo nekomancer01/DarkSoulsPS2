@@ -46,6 +46,12 @@ def as_list(x):
 # --- make rendering -----------------------------------------------------------------------------------------------
 
 # template names whose make spelling is not $(NAME); CHR differs between targets (pattern) and recipes ($*)
+def entry_path(p):
+    """a pack.py entry's file: "raw:" and "chunk:<kind>:" (tools/mapwrap.py) stripped"""
+    p = p[4:] if p.startswith("raw:") else p
+    return p.split(":", 2)[2] if p.startswith("chunk:") else p
+
+
 MAKE_NAME = {"AD": "$(AREA_DATA)", "SRC": "src", "TOOLS": "../../tools", "RAW": "$(if $(BLOCK),raw:)",
              "HZN": "$(or $(HZN),1)"}
 MAKE_COND = {"block": "$(BLOCK)", "world": "$(WORLD_BLOCKS)", "world_split": "$(WORLD_SPLIT)",
@@ -89,7 +95,7 @@ class Make:
             if isinstance(x, str):
                 if x.startswith("?"):  # a pack entry kept only when its file exists when the step runs
                     path = x.split("=", 1)[1]
-                    path = path[4:] if path.startswith("raw:") else path
+                    path = entry_path(path)
                     out.append(f"$(if $(wildcard {self.s(path, target, False)}),{self.s(x[1:], target)})")
                 else:
                     out.append(self.s(x, target))
@@ -122,7 +128,7 @@ def pack_inputs(step):
             if isinstance(x, str):
                 if not x.startswith("?"):
                     p = x.split("=", 1)[1]
-                    out.append(p[4:] if p.startswith("raw:") else p)
+                    out.append(entry_path(p))
             elif "if" in x:
                 out.append({"if": x["if"], "then": strip(x.get("then", [])), "else": strip(x.get("else", []))})
             else:
@@ -377,7 +383,7 @@ class Step:
         out = set()
         for x in list(self.args) + list(self.env.values()) + self.inputs:
             x = x.lstrip("?").split("=", 1)[-1]
-            out.add(os.path.normpath(x[4:] if x.startswith("raw:") else x))
+            out.add(os.path.normpath(entry_path(x)))
         return out
 
     def need_files(self):

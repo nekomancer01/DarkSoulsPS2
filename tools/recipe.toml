@@ -46,7 +46,7 @@
 
 version = 1
 # knobs exported to every tool's environment (make: export NAME)
-export = ["BUMP_BAKE"]
+export = ["BUMP_BAKE", "MAP_CHUNKS"]
 
 # Knobs: variables that change what an export writes. Here and only here (the Makefile includes them from export.mk as
 # ?= defaults: config.local.mk or the command line override them; convert.py uses these values). Switches that also
@@ -68,6 +68,10 @@ WORLD_MIP1_OUT = "{WORLD_LITE_DIET}"
 # DISC_ALIGN: world blocks' near parts on the drive's 32 KB ECC blocks (tools/discalign.py, Polaris 4.7); 0 = packed back to
 # back as tools/mapcells.py writes them (then remove gen/*/maptab.disc.bin: the knob is not in the step's make stamps)
 DISC_ALIGN = "1"
+# MAP_CHUNKS: map.bin, maptab.bin, mapres.bin, maptex.bin and cells.bin packed as chunk files (tools/mapwrap.py, Polaris
+# 4.8 step 4; the loaders read both forms); 0 = stored as the exporters write them (a changed value re-packs and redoes
+# the disc layout: $(A)/pakenv, $(A)/discenv)
+MAP_CHUNKS = "1"
 # WORLD_TEX_SHARED: textures two or more blocks of one MSB have go to maptex.bin, read once per map (src/world.c);
 # 0 = every block's maptab holds its own copy
 WORLD_TEX_SHARED = "1"
@@ -580,7 +584,7 @@ out = ["{A}/maptab.disc.bin"]
 maybe = ["{A}/cells.disc.bin"]
 inputs = ["{A}/maptab.bin"]
 reads = ["{A}/cells.bin"]
-tools = ["discalign.py"]
+tools = ["discalign.py", "mapwrap.py"]
 
 # The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
 # (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline with their textures into 128 px
@@ -653,21 +657,21 @@ tool = "pack.py"
 args = ["{D}/{OUT}.pak"]
 out = ["{D}/{OUT}.pak"]
 entries = [{ if = "lite_run", then = [
-    "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:{A}/maptab.disc.bin",
-    { if = "tex_peers", then = "maptex.bin=raw:{A}/maptex.bin" },
+    "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:chunk:maptab:{A}/maptab.disc.bin",
+    { if = "tex_peers", then = "maptex.bin=raw:chunk:maptex:{A}/maptex.bin" },
     "?events.bin=raw:{A}/events.bin", "dg.bin=raw:{A}/dg.bin", "pvs.bin=raw:{A}/pvs.bin",
     "objects.bin=raw:{A}/objects.bin", "fx.bin=raw:{A}/fx.bin", "far.bin=raw:{A}/far.bin", "bump.bin=raw:{A}/bump.bin",
     "enemies.bin=raw:{A}/enemies.bin", "ai.lua0=raw:{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
-    "?cells.bin=raw:{A}/cells.disc.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:{A}/mapres.bin", "map.bin={A}/map.bin",
+    "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:chunk:mapres:{A}/mapres.bin", "map.bin=chunk:map:{A}/map.bin",
   ], else = [
-    "map.bin={A}/map.bin", "collision.bin={RAW}{A}/collision.bin", "enemies.bin={RAW}{A}/enemies.bin",
+    "map.bin=chunk:map:{A}/map.bin", "collision.bin={RAW}{A}/collision.bin", "enemies.bin={RAW}{A}/enemies.bin",
     "objects.bin={RAW}{A}/objects.bin", "ai.lua0={RAW}{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
     "bump.bin={RAW}{A}/bump.bin", "fx.bin={RAW}{A}/fx.bin", "dg.bin={RAW}{A}/dg.bin", "pvs.bin={RAW}{A}/pvs.bin",
-    { if = "world_split", then = "?cells.bin=raw:{A}/cells.disc.bin", else = "?cells.bin=raw:{A}/cells.bin" },
+    { if = "world_split", then = "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin", else = "?cells.bin=raw:chunk:cells:{A}/cells.bin" },
     "?pano.bin={A}/pano.bin",
-    { if = "world_split", then = ["maptab.bin=raw:{A}/maptab.disc.bin", "mapres.bin=raw:{A}/mapres.bin",
+    { if = "world_split", then = ["maptab.bin=raw:chunk:maptab:{A}/maptab.disc.bin", "mapres.bin=raw:chunk:mapres:{A}/mapres.bin",
                                   "far.bin=raw:{A}/far.bin"] },
-    { if = ["world_split", "block", "tex_peers"], then = "maptex.bin=raw:{A}/maptex.bin" },
+    { if = ["world_split", "block", "tex_peers"], then = "maptex.bin=raw:chunk:maptex:{A}/maptex.bin" },
     "?events.bin={RAW}{A}/events.bin",
   ] }]
 inputs = ["{A}/map.bin",
@@ -675,7 +679,7 @@ inputs = ["{A}/map.bin",
           { if = "world", then = "{A}/pano.bin" },
           "{A}/bump.bin", "{A}/dg.bin", "{A}/pvs.bin", "{A}/collision.bin", "{A}/enemies.bin", "{A}/objects.bin",
           "{A}/ai_map.lua0", "{A}/events.bin", "{A}/fx.bin"]
-tools = ["pack.py", "native/lz4pack.c"]
+tools = ["pack.py", "native/lz4pack.c", "mapwrap.py", "chunkfile.py", "vu1layout.py", "vu1/layout.py"]
 make = { deps = ["$(A)/pakenv"] }
 
 # ---------------------------------------------------------------------------------------------------------------------

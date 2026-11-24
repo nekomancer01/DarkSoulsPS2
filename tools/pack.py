@@ -11,7 +11,8 @@ Layout (little-endian), one pack per area (m10_02_00_00.pak: map + collision) or
            and a smaller one starts on a sector and never crosses a 32 KB boundary (it moves to the next one). An
            item straddling a block costs the drive a whole extra block (Sony measured 12-15 % of throughput).
            Readers take the offset as it is (any byte). ALIGN=0 in the environment: every entry on a sector, as before.
-Usage: pack.py <out.pak> <name>=<file> [<name>=raw:<file> ...]
+Usage: pack.py <out.pak> <name>=<file> [<name>=raw:<file> ...] [<name>=[raw:]chunk:<kind>:<file> ...]
+  chunk:<kind>: the file wrapped as a chunk file on the way in (tools/mapwrap.py: map.bin and the files split from it)
   raw: every block stored uncompressed, so byte k of the entry sits at offset + 4 x blocks + k and can be read in place
   (map cells streamed at runtime: src/mapstream.c reads byte ranges with pack.c pack_read_async)
 Compressor: tools/native/liblz4pack.so (gcc -O2 -shared -fPIC -o liblz4pack.so lz4pack.c); every block is
@@ -82,7 +83,14 @@ def main(argv=None, log=print):
     body, entries = bytearray(), []
     for name, path in items:
         store = path.startswith("raw:")
-        data = open(path[4:] if store else path, "rb").read()
+        path = path[4:] if store else path
+        if path.startswith("chunk:"):  # chunk:<kind>:<file>: wrapped as a chunk file (tools/mapwrap.py)
+            import mapwrap
+            kind, path = path[6:].split(":", 1)
+            data = open(path, "rb").read()
+            data = mapwrap.wrap(kind, data) if mapwrap.ON else data
+        else:
+            data = open(path, "rb").read()
         packed, nb = pack_entry(L, data, store)
         cur = hdr_bytes + len(body)
         off = place(cur, 4 * nb, len(packed))
