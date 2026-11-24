@@ -81,6 +81,7 @@ typedef struct {
     unsigned last_used;   /* frame_no of its last key-on (play) or stream open */
     unsigned guard_until; /* SND_GUARD_FRAMES after a retry placed it */
     int wanted;           /* enemy type loaded (snd_chr_load .. snd_chr_unload); main / area: 1 */
+    int fresh;            /* failed 2 on its first placing (never placed): its retry may still evict wanted banks */
     unsigned need;        /* VAG bytes to place (failed == 2), else 0 */
     void *blob, *cue_blob, *emit_blob;
     const SSample *smp;
@@ -309,6 +310,8 @@ static void bank_free(Bank *b)
  * one is freed. */
 static void bank_evict(Bank *b)
 {
+    printf("snd: %s (%s, %u K) evicted for %s\n", b->name, b->wanted ? "wanted" : "cached", b->vag_size >> 10,
+           placing ? placing->name : "?");
     if (!b->wanted) {
         bank_free(b);
         return;
@@ -316,40 +319,42 @@ static void bank_evict(Bank *b)
     for (int v = 0; v < SND_VOICES; v++)  /* none: a victim is never busy */
         if (voices[v].on && voices[v].bank == b)
             voice_off(v);
-    b->failed = 2, b->need = b->vag_size, b->load_id = 0, b->ready = 0;
+    b->failed = 2, b->need = b->vag_size, b->load_id = 0, b->ready = 0, b->fresh = 0;
     b->dead_frame = frame_no;
     spu_totals();
 }
 
 /* SPU2 room for size bytes for the bank being placed (placing): a free hole; else 0 with *wait 1 when one opens once
- * the quarantined ranges end (no victim freed); else the least recently used unkept bank (cached ones first; the
- * wanted ones for fresh loads only, so two retries cannot evict each other in turn) evicted, and again; 0 with *wait 0
- * when no victim is left. */
+ * the quarantined ranges end; else the least recently used unkept banks (cached ones first; the wanted ones for
+ * fresh loads only, so two retries cannot evict each other in turn) evicted, 0 with *wait 1 (their ranges are
+ * quarantined). Victims are chosen on a copy first (sndres_plan) and evicted only when they open a hole that fits:
+ * evicting into fragmentation that cannot fit the bank only sent the victims to the retry, which put them back
+ * (PCSX2 iso_burg_taurus 2026-11-25: c2500 evicting one bank every retry). 0 with *wait 0 when no victims can. */
 static unsigned spu_make_room(unsigned size, int *wait)
 {
     SndResBank v[MAX_BANKS];
-    int wanted_too = !(placing && placing->failed == 2), n = 0;  /* failed 2: placed by retry_pump */
+    int ks[MAX_BANKS];
+    /* failed 2: placed by retry_pump. An evicted bank may not evict wanted ones (two of them would take turns); one
+     * never placed may, as a fresh load (PCSX2 iso_burg_taurus 2026-11-25: c2792 / c3300 waited behind the
+     * banks they had pushed out until the end of the route) */
+    int wanted_too = !(placing && placing->failed == 2 && !placing->fresh);
     *wait = 0;
-    for (;;) {
-        res_view(v);
-        unsigned a = sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 0);
-        if (a)
-            return a;
-        if (sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 1)) {
-            *wait = 1;
-            return 0;
-        }
-        int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 1);
-        if (k < 0 && wanted_too)
-            k = sndres_victim(v, MAX_BANKS, frame_no, 1, 1);
-        if (k < 0) {
-            if (n)
-                printf("snd: evicted %d, still no room for %s\n", n, placing ? placing->name : "?");
-            return 0;
-        }
-        bank_evict(&banks[k]);
-        snd_stats.evicted++, n++;
+    res_view(v);
+    unsigned a = sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 0);
+    if (a)
+        return a;
+    if (sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 1)) {
+        *wait = 1;
+        return 0;
     }
+    int n = sndres_plan(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, wanted_too, ks);
+    if (n <= 0)
+        return 0;
+    for (int i = 0; i < n; i++)
+        bank_evict(&banks[ks[i]]);
+    snd_stats.evicted += n;
+    *wait = 1;
+    return 0;
 }
 #else
 /* Evict unkept banks (enemy types gone) until size fits; 0 if it cannot */
@@ -389,6 +394,7 @@ static Bank *bank_free_slot(void)
     res_view(v);
     int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 0);
     if (k >= 0) {
+        printf("snd: %s (cached) freed for a bank slot\n", banks[k].name);
         bank_free(&banks[k]);
         snd_stats.evicted++;
     }
@@ -479,7 +485,7 @@ static Bank *bank_setup(Bank *b, const char *name, int keep, const char *path, i
             printf("snd: %s: no SPU2 room for %u K (free %u K)\n", name, b->vag_size >> 10, snd_stats.spu_free >> 10);
             snd_stats.no_room++;
         }
-        b->need = b->vag_size, b->vag_size = 0, b->failed = 2;
+        b->need = b->vag_size, b->vag_size = 0, b->failed = 2, b->fresh = 1;
     }
 #else
     else if (!(b->spu = spu_make_room(b->vag_size))) {
@@ -1229,7 +1235,7 @@ void snd_chr_unload(const char *model)
         b->wanted = 0;
         return;
     }
-    b->wanted = 0, b->failed = 0, b->need = 0;  /* no samples placed: nothing to keep */
+    b->wanted = 0, b->failed = 0, b->need = 0, b->fresh = 0;  /* no samples placed: nothing to keep */
     if (frame_no > b->dead_frame + 2)  /* an evicted one's old range stays quarantined (bank_free keeps vag_size) */
         b->spu = 0, b->vag_size = 0;
 #endif
@@ -1248,9 +1254,11 @@ static void retry_pump(void)
     }
     if (frame_no % SND_RETRY_FRAMES)
         return;
-    for (int i = 0; i < MAX_BANKS; i++) {
-        Bank *b = &banks[i];
-        if (!b->used || b->failed != 2 || !b->wanted || b->vag_size)
+    /* never-placed (fresh) banks first: a hole a fresh bank evicted for goes to it, not back to its victims (PCSX2
+     * iso_burg_taurus 2026-11-25: c3490 evicted c1201 / c2550 / c2540 every ~18 s, each took its range back first) */
+    for (int i = 0; i < 2 * MAX_BANKS; i++) {
+        Bank *b = &banks[i % MAX_BANKS];
+        if (!b->used || b->failed != 2 || !b->wanted || b->vag_size || b->fresh != (i < MAX_BANKS))
             continue;  /* b->vag_size: still in its quarantine */
         int wait;
         placing = b;
@@ -1258,7 +1266,7 @@ static void retry_pump(void)
         placing = NULL;
         if (!a)
             continue;
-        b->spu = a, b->vag_size = b->need, b->need = 0, b->failed = 0, b->load_id = next_load_id++;
+        b->spu = a, b->vag_size = b->need, b->need = 0, b->failed = 0, b->fresh = 0, b->load_id = next_load_id++;
         b->guard_until = frame_no + SND_GUARD_FRAMES;
         snd_stats.retried++;
         printf("snd: %s: placed on retry\n", b->name);
@@ -1280,6 +1288,7 @@ static void slot_reserve(void)
     res_view(v);
     int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 0);  /* cached (not wanted), silent, not loading */
     if (k >= 0) {
+        printf("snd: %s (cached) freed for a bank slot\n", banks[k].name);
         bank_free(&banks[k]);
         snd_stats.evicted++;
     }

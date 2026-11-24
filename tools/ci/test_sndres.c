@@ -59,6 +59,29 @@ int main(void)
     assert(sndres_largest_hole(b, 3, 0x1000, 0x1500, 11) == 0x200);  /* 0x1200..0x1400 (0x1100 still quarantined) */
     assert(sndres_largest_hole(b, 3, 0x1000, 0x1500, 13) == 0x300);  /* 0x1100..0x1400 */
     assert(sndres_largest_hole(b, 0, 0x1000, 0x2000, 0) == 0x1000);
+    /* plan: evict only when the victims open a hole that fits */
+    {
+        SndResBank w[4];
+        int ks[4];
+        memset(w, 0, sizeof w);
+        for (int i = 0; i < 4; i++) {
+            w[i].used = 1; w[i].spu = 0x1000 + 0x100 * i; w[i].size = 0x100; w[i].last_used = 100 + i;
+        }
+        w[1].busy = 1;  /* splits the heap 0x1000..0x1400 into 0x1000..0x1100 | 0x1200..0x1400 */
+        SndResBank c[4];
+        memcpy(c, w, sizeof w);
+        assert(sndres_plan(c, 4, 0x1000, 0x1400, 0x300, 0, 1, ks) == -1);  /* busy bank in the way: nothing */
+        memcpy(c, w, sizeof w);
+        assert(sndres_plan(c, 4, 0x1000, 0x1400, 0x200, 0, 1, ks) == 2);   /* LRU takes 0, 2, 3; 0 is not in the hole */
+        assert(ks[0] == 2 && ks[1] == 3 && c[0].used);
+        memcpy(c, w, sizeof w);
+        assert(sndres_plan(c, 4, 0x1000, 0x1400, 0x100, 0, 1, ks) == 1 && ks[0] == 0);
+        memcpy(c, w, sizeof w);
+        assert(sndres_plan(c, 4, 0x1000, 0x1500, 0x100, 0, 1, ks) == 0);   /* free at 0x1400 already */
+        memcpy(c, w, sizeof w);
+        c[0].wanted = c[2].wanted = c[3].wanted = 1;
+        assert(sndres_plan(c, 4, 0x1000, 0x1400, 0x100, 0, 0, ks) == -1);  /* only wanted victims, not allowed */
+    }
     puts("test_sndres: ok");
     return 0;
 }

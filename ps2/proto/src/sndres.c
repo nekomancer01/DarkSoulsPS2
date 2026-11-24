@@ -44,6 +44,30 @@ unsigned sndres_hole(const SndResBank *b, int n, unsigned lo, unsigned hi, unsig
     return 0;
 }
 
+int sndres_plan(SndResBank *b, int n, unsigned lo, unsigned hi, unsigned size, unsigned frame, int wanted_too,
+                int *out)
+{
+    int m = 0;
+    while (!sndres_hole(b, n, lo, hi, size, frame, 1)) {
+        int k = sndres_victim(b, n, frame, wanted_too, 1);
+        if (k < 0)
+            return -1;
+        b[k].used = 0;
+        out[m++] = k;
+    }
+    /* only the victims inside the hole found: the LRU order may have taken others first that it does not need */
+    unsigned a = sndres_hole(b, n, lo, hi, size, frame, 1);
+    int kept = 0;
+    for (int i = 0; i < m; i++) {
+        SndResBank *k = &b[out[i]];
+        if (k->spu < a + size && a < k->spu + k->size)
+            out[kept++] = out[i];
+        else
+            k->used = 1;
+    }
+    return kept;
+}
+
 unsigned sndres_largest_hole(const SndResBank *b, int n, unsigned lo, unsigned hi, unsigned frame)
 {
     unsigned best = 0;
