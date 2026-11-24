@@ -463,6 +463,25 @@ def view_d(X, nav):
     return np.maximum(d, HZN_D)
 
 
+def urows(A):
+    """np.unique(A, axis=0, return_index=True, return_inverse=True, return_counts=True) for a 2-D integer array: the
+    same rows in the same (lexicographic) order, by a stable lexsort instead of numpy's structured-row sort (that sort
+    was ~19 % of horizon.py in the 2026-11-24 build profile) -> (u, first, inv, counts)"""
+    A = np.asarray(A)
+    if not len(A):
+        z = np.zeros(0, np.int64)
+        return A[:0], z, z, z
+    o = np.lexsort(A.T[::-1])
+    s = A[o]
+    new = np.empty(len(A), bool)
+    new[0] = True
+    new[1:] = (s[1:] != s[:-1]).any(1)
+    inv = np.empty(len(A), np.int64)
+    inv[o] = np.cumsum(new) - 1
+    starts = np.flatnonzero(new)
+    return s[new], o[new], inv, np.diff(np.append(starts, len(A)))
+
+
 def cluster(P, C, nav, px, cl=None):
     """vertex clustering on a grid of px pixels at each corner's view distance, in octaves (grid x 2 per doubling of
     the distance, so a band is one consistent grid) -> (V positions (cluster means), VC colours (area weighted),
@@ -473,8 +492,7 @@ def cluster(P, C, nav, px, cl=None):
     lv = np.floor(np.log2(d / HZN_D)).astype(np.int64)
     g = np.maximum(HZN_D * px / FOCAL * 2.0 ** lv, WELD)
     q = np.floor(X / g[:, None]).astype(np.int64)
-    _, inv = np.unique(np.concatenate([lv[:, None], q], 1), axis=0, return_inverse=True)
-    inv = inv.reshape(-1)
+    inv = urows(np.concatenate([lv[:, None], q], 1))[2]
     nv = int(inv.max()) + 1 if len(inv) else 0
     area = 0.5 * np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1) + 1e-4
     wgt = np.repeat(area, 3)
@@ -486,7 +504,7 @@ def cluster(P, C, nav, px, cl=None):
     VC /= np.bincount(inv, weights=wgt, minlength=nv)[:, None]
     if cl is not None and SRC_CELL and nv:  # each welded vertex's source cell: the one most of its corners come from
         pc = np.stack([inv, np.repeat(np.asarray(cl, np.int64), 3)], 1)
-        u, cnt = np.unique(pc, axis=0, return_counts=True)
+        u, _f, _i, cnt = urows(pc)
         o = np.lexsort((-cnt, u[:, 0]))
         u = u[o]
         firsts = np.concatenate([[True], u[1:, 0] != u[:-1, 0]])
@@ -496,7 +514,7 @@ def cluster(P, C, nav, px, cl=None):
     T = inv.reshape(-1, 3)
     ok = (T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 0] != T[:, 2])
     T = T[ok]
-    _, first = np.unique(np.sort(T, 1), axis=0, return_index=True)
+    first = urows(np.sort(T, 1))[1]
     return V, VC, T[np.sort(first)]
 
 

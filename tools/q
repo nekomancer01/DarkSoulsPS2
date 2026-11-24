@@ -43,10 +43,19 @@ COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev
 # DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
 [ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
 PEAKS=$LOGDIR/jobq-peaks.tsv  # <date time> TAB <kind> TAB <peak MB> TAB <rc>
+STEPTOOL=
 if [ -n "$IS_MAKE" ]; then
     KIND="make $(printf '%s\n' "$*" | grep -o 'MAP=[^ ]*' | head -1)"; KIND=${KIND% }
 else
     KIND=$(printf '%s\n' "$*" | grep -o '[^ /]*\.\(py\|sh\)\b' | head -1); KIND=${KIND:-${1##*/}}
+    # a recipe step wrapped in tools/stepcache.py (<build> <name> <outputs> :: ... :: <tool> <args>): the kind is the
+    # tool after the last ::. Since the wrapper (2026-11-21) every exporter shared the kind stepcache.py, so each one
+    # reserved the largest peak of any (farpano's 3-4 GB, export_map's 2 GB) and a 20 GB budget ran ~5 at once
+    # (2026-11-24 build profile: horizon waited 8 500 job-s in the queue for a ~100 MB peak)
+    if [ "$KIND" = stepcache.py ]; then
+        STEPTOOL=$(printf '%s\n' "$*" | sed 's/.* :: //' | grep -o '^[^ ]*\.\(py\|sh\)\b' | head -1)
+        [ -n "$STEPTOOL" ] && KIND=${STEPTOOL##*/}
+    fi
 fi
 # an exporter run through q by a make that holds a reservation: reserves its own peak below (DSR_Q_IN_MAKE, set by
 # the outer q of a make); anything else nested runs inside the outer job's reservation
@@ -59,6 +68,10 @@ if [ -z "$R" ]; then
     # largest of the last 20 runs of this kind that weren't killed (rc < 128)
     HIST=$(awk -F'\t' -v k="$KIND" '$2 == k && $4 < 128 {m[++n] = $3}
         END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    if [ -z "$HIST" ] && [ -n "$STEPTOOL" ]; then  # a step's first runs by its own kind: the old shared history
+        HIST=$(awk -F'\t' '$2 == "stepcache.py" && $4 < 128 {m[++n] = $3}
+            END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    fi
     if [ -n "$HIST" ]; then
         R=$(( (HIST * 11 / 10 + 1023) / 1024 )); [ "$R" -lt 1 ] && R=1
     else  # no history: a build, or test-all.sh (its builds and tests run one after another inside it)
