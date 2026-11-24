@@ -54,6 +54,7 @@ FAR_GPU	env	1	flag	world	0	new	farpano.py	-
 FAR_GPU_SOFTWARE	env	unset	opt	world	-	new	farraster.c	-
 FAR_NATIVE	env	1	flag	world	0	new	farpano.py	-
 FAR_SAMPLE_LOOP	env	unset	debug	world	-	new	farpano.py	-
+MAP_LAZY_TEX	env	1	flag	world	0	new	mapgather.py	-
 PVS_BOXF_LOOP	env	unset	debug	world	-	new	pvs_bake.c	-
 PVS_GPU_SPIN	env	unset	opt	world	-	new	pvs_gpu.c	-
 PVS_OCC_CULL	env	1	flag	world	0	new	pvs_bake.c	-
