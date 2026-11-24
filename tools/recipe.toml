@@ -343,8 +343,8 @@ args = ["{D}/snd", "{A}/snd", "{SND_MAPS}"]
 out = ["{D}/snd/main.pak"]
 # every other sound pack (mAA.pak per map, cXXXX.pak per enemy type), the work dir and the log
 maybe = ["{D}/snd/", "{A}/snd/", "{A}/snd.log"]
-tools = ["export_audio.py", "fev.py", "fsb4.py", "souls.py", "pack.py", "adpcm/adpcm.py", "adpcm/vagenc.c",
-         "native/lz4pack.c", "area.py"]
+tools = ["export_audio.py", "audio_rate.py", "fev.py", "fsb4.py", "souls.py", "pack.py", "adpcm/adpcm.py",
+         "adpcm/vagenc.c", "native/lz4pack.c", "area.py"]
 make = { target = "{A}/snd.stamp", outs = "none", mkdir = ["{D}/snd"], vars = { SHELL = "/bin/bash", ".SHELLFLAGS" = "-o pipefail -c" }, pre = ["@echo \"sound: exporting every bank of {SND_MAPS} (log in {A}/snd.log)\""], wrap = "{cmd} | tee {A}/snd.log", post = ["touch $@"] }
 
 # Treasure shine (src/fx.c fx_shine_*, src/pickup.c): DSR's item glow SFX 99001 / 99046, placed at run time on corpse

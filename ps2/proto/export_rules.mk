@@ -72,7 +72,7 @@ $(G)/enemyCommon.esd.bin: $(TS)/export_esd.py.sum $(TS)/esd.py.sum $(TS)/souls.p
 # sound (shared): tools/export_audio.py
 $(A)/snd.stamp: SHELL := /bin/bash
 $(A)/snd.stamp: .SHELLFLAGS := -o pipefail -c
-$(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
+$(A)/snd.stamp: $(TS)/export_audio.py.sum $(TS)/audio_rate.py.sum $(TS)/fev.py.sum $(TS)/fsb4.py.sum $(TS)/souls.py.sum $(TS)/pack.py.sum $(TS)/adpcm/adpcm.py.sum $(TS)/adpcm/vagenc.c.sum $(TS)/native/lz4pack.c.sum $(TS)/area.py.sum
 	@mkdir -p $(@D) $(D)/snd
 	@echo "sound: exporting every bank of $(SND_MAPS) (log in $(A)/snd.log)"
 	$(PY) -I ../../tools/export_audio.py $(D)/snd $(A)/snd $(SND_MAPS) | tee $(A)/snd.log

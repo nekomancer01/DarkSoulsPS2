@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sound.h"
+#include "sndres.h"
 #include "dsrsnd_rpc.h"
 #include "pack.h"
 #include "render.h"
@@ -40,6 +41,14 @@ extern unsigned int size_dsrsnd_irx, size_libsd_irx;
 #define EMIT_ONESHOT_VAR 8.0f
 #define MUSIC_FADE 1.0f    /* ASSUMED: music / ambience fade in and out over 1 s */
 #define MAX_ENTS 64
+#ifndef SND_LRU
+#define SND_LRU 1   /* 0: free enemy banks on unload, evict in slot order, no retry (before audio-2) */
+#endif
+#define SND_RETRY_FRAMES 30   /* ASSUMED (audio-15): a no-room wanted bank tries again every 30 frames */
+#define SND_GUARD_FRAMES 300  /* ASSUMED (audio-15): a bank placed by a retry is no victim for 10 s (no thrash) */
+#define CHR_SLOT_WAIT 6       /* frames an enemy bank waits for a bank slot (a quarantined slot frees in 3) */
+#define SND_SLOT_RESERVE 2    /* ASSUMED (audio-15): bank slots cached banks leave free for an area change (main + area
+                                 are 2 of MAX_BANKS 16; an area change frees one and loads one) */
 
 typedef struct { unsigned off, bytes; unsigned short rate; unsigned char ch, flags; unsigned chunk; } SSample;
 typedef struct {
@@ -67,8 +76,12 @@ typedef struct {
 
 typedef struct {
     char name[8];
-    int used, keep, ready, load_id, failed;
+    int used, keep, ready, load_id, failed;  /* failed: 0 ok, 1 IOP read failed, 2 waiting for SPU2 room (tables kept) */
     unsigned dead_frame;  /* unloaded: its SPU2 range is reused 2 frames later (key offs reach the IOP first) */
+    unsigned last_used;   /* frame_no of its last key-on (play) or stream open */
+    unsigned guard_until; /* SND_GUARD_FRAMES after a retry placed it */
+    int wanted;           /* enemy type loaded (snd_chr_load .. snd_chr_unload); main / area: 1 */
+    unsigned need;        /* VAG bytes to place (failed == 2), else 0 */
     void *blob, *cue_blob, *emit_blob;
     const SSample *smp;
     const SEvent *ev;
@@ -187,6 +200,40 @@ static int ops_call(int fn, unsigned size)
 
 /* ---- SPU2 heap ---- */
 
+static Bank *placing;  /* the bank spu_make_room is finding room for: never a victim (SND_LRU) */
+
+/* a voice or stream slot plays from it */
+static int bank_busy(const Bank *b)
+{
+    for (int v = 0; v < SND_VOICES; v++)
+        if (voices[v].on && voices[v].bank == b)
+            return 1;
+    for (int s = 0; s < SND_STREAMS; s++)
+        if (slots[s].on && slots[s].bank == b)
+            return 1;
+    return 0;
+}
+
+/* banks[] as sndres sees them (sndres.h) */
+static void res_view(SndResBank *v)
+{
+    for (int i = 0; i < MAX_BANKS; i++) {
+        const Bank *b = &banks[i];
+        v[i] = (SndResBank){.spu = b->spu, .size = b->vag_size, .last_used = b->last_used, .dead_frame = b->dead_frame,
+                            .guard_until = b->guard_until, .used = b->used != 0, .keep = b->keep != 0,
+                            .wanted = b->wanted != 0};
+        if (b == placing)
+            v[i].size = 0, v[i].busy = 1;
+        else if (b->used && b->failed == 2)  /* evicted wanted: its old range is occupied until its quarantine ends */
+            v[i].used = 0, v[i].size = frame_no <= b->dead_frame + 2 ? b->vag_size : 0;
+        else if (b->used) {
+            v[i].busy = bank_busy(b) != 0;
+            v[i].loading = !b->ready && !b->failed && b->load_id;
+        }
+    }
+}
+
+#if !SND_LRU
 static int range_used(unsigned a, unsigned size)
 {
     for (int i = 0; i < MAX_BANKS; i++) {
@@ -208,16 +255,21 @@ static unsigned spu_alloc(unsigned size)
     }
     return 0;
 }
+#endif
 
 static void spu_totals(void)
 {
+    SndResBank v[MAX_BANKS];
+    res_view(v);
     unsigned used = 0;
     int n = 0;
-    for (int i = 0; i < MAX_BANKS; i++)
-        if (banks[i].used) {
-            used += banks[i].vag_size, n++;
-        }
+    for (int i = 0; i < MAX_BANKS; i++) {
+        if (v[i].used)
+            used += v[i].size;
+        n += banks[i].used != 0;
+    }
     snd_stats.spu_used = used, snd_stats.spu_free = SPU_STREAMS0 - SPU_HEAP0 - used, snd_stats.banks = n;
+    snd_stats.spu_hole = sndres_largest_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, frame_no);
 }
 
 /* ---- banks ---- */
@@ -251,6 +303,55 @@ static void bank_free(Bank *b)
     spu_totals();
 }
 
+#if SND_LRU
+/* A victim's range freed. A wanted bank (its type still loaded) keeps its tables and waits for the retry (failed 2;
+ * ready 0, so play() refuses it); its range stays occupied 2 frames (quarantine), then retry_pump forgets it. A cached
+ * one is freed. */
+static void bank_evict(Bank *b)
+{
+    if (!b->wanted) {
+        bank_free(b);
+        return;
+    }
+    for (int v = 0; v < SND_VOICES; v++)  /* none: a victim is never busy */
+        if (voices[v].on && voices[v].bank == b)
+            voice_off(v);
+    b->failed = 2, b->need = b->vag_size, b->load_id = 0, b->ready = 0;
+    b->dead_frame = frame_no;
+    spu_totals();
+}
+
+/* SPU2 room for size bytes for the bank being placed (placing): a free hole; else 0 with *wait 1 when one opens once
+ * the quarantined ranges end (no victim freed); else the least recently used unkept bank (cached ones first; the
+ * wanted ones for fresh loads only, so two retries cannot evict each other in turn) evicted, and again; 0 with *wait 0
+ * when no victim is left. */
+static unsigned spu_make_room(unsigned size, int *wait)
+{
+    SndResBank v[MAX_BANKS];
+    int wanted_too = !(placing && placing->failed == 2), n = 0;  /* failed 2: placed by retry_pump */
+    *wait = 0;
+    for (;;) {
+        res_view(v);
+        unsigned a = sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 0);
+        if (a)
+            return a;
+        if (sndres_hole(v, MAX_BANKS, SPU_HEAP0, SPU_STREAMS0, size, frame_no, 1)) {
+            *wait = 1;
+            return 0;
+        }
+        int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 1);
+        if (k < 0 && wanted_too)
+            k = sndres_victim(v, MAX_BANKS, frame_no, 1, 1);
+        if (k < 0) {
+            if (n)
+                printf("snd: evicted %d, still no room for %s\n", n, placing ? placing->name : "?");
+            return 0;
+        }
+        bank_evict(&banks[k]);
+        snd_stats.evicted++, n++;
+    }
+}
+#else
 /* Evict unkept banks (enemy types gone) until size fits; 0 if it cannot */
 static unsigned spu_make_room(unsigned size)
 {
@@ -262,6 +363,7 @@ static unsigned spu_make_room(unsigned size)
         }
     return a;
 }
+#endif
 
 static Bank *bank_find(const char *name)
 {
@@ -278,6 +380,19 @@ static Bank *bank_free_slot(void)
     for (int i = 0; i < MAX_BANKS; i++)
         if (!banks[i].used && (!banks[i].vag_size || frame_no > banks[i].dead_frame + 2))
             return &banks[i];
+#if SND_LRU
+    /* none: a slot still in quarantine frees in a frame or two; else the least recently used cached bank goes */
+    for (int i = 0; i < MAX_BANKS; i++)
+        if (!banks[i].used && banks[i].vag_size && frame_no <= banks[i].dead_frame + 2)
+            return NULL;
+    SndResBank v[MAX_BANKS];
+    res_view(v);
+    int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 0);
+    if (k >= 0) {
+        bank_free(&banks[k]);
+        snd_stats.evicted++;
+    }
+#endif
     return NULL;
 }
 
@@ -298,6 +413,9 @@ static Bank *bank_load(const char *name, int keep)
         return NULL;
     }
     memset(b, 0, sizeof *b);
+#if SND_LRU
+    b->wanted = 1;  /* a keep bank with no room retries too */
+#endif
     b->blob = pack_load(&pk, "bank.bin", NULL);
     b->cue_blob = pack_load(&pk, "cue.bin", NULL);
     b->emit_blob = pack_load(&pk, "emit.bin", NULL);
@@ -345,12 +463,31 @@ static Bank *bank_setup(Bank *b, const char *name, int keep, const char *path, i
             b->nemit = 0;
     }
     b->used = 1;
+#if SND_LRU
+    int wait = 0;
+    if (b->vag_size > 64) {
+        placing = b;
+        b->spu = spu_make_room(b->vag_size, &wait);
+        placing = NULL;
+    }
+#endif
     if (b->vag_size <= 64)
         b->vag_size = 0, b->ready = 1;  /* nothing resident (cue-only packs) */
+#if SND_LRU
+    else if (!b->spu) {  /* tables stay; retry_pump places it once room exists (a wait: after the quarantine) */
+        if (!wait) {
+            printf("snd: %s: no SPU2 room for %u K (free %u K)\n", name, b->vag_size >> 10, snd_stats.spu_free >> 10);
+            snd_stats.no_room++;
+        }
+        b->need = b->vag_size, b->vag_size = 0, b->failed = 2;
+    }
+#else
     else if (!(b->spu = spu_make_room(b->vag_size))) {
         printf("snd: %s: no SPU2 room for %u K (free %u K)\n", name, b->vag_size >> 10, snd_stats.spu_free >> 10);
         b->vag_size = 0, b->failed = 1;  /* tables stay: its cues and events are known, without samples */
-    } else
+    }
+#endif
+    else
         b->load_id = next_load_id++;
     spu_totals();
     printf("snd: %s: %u samples, %u events, %u cue anims, %u emitters, SPU %u K at %#x, streams %u K\n", name,
@@ -569,8 +706,12 @@ static int play(Bank *b, const SEvent *e, const float *pos, unsigned owner, int 
         else
             voices[first].pair = v, vo->pair = first;
     }
-    if (first >= 0)
+    if (first >= 0) {
         snd_stats.played++;
+#if SND_LRU
+        b->last_used = frame_no;
+#endif
+    }
     return first;
 }
 
@@ -624,6 +765,9 @@ static void slot_start(int s, Bank *b, const SEvent *e, int smp, float vol, int 
                               .pitch = pitch_of(sm->rate), .voll = v0, .volr = v0};
     snprintf(obuf.so.path, sizeof obuf.so.path, "%s", b->path);
     ops_call(SNDF_STREAM, sizeof obuf.so);
+#if SND_LRU
+    b->last_used = frame_no;
+#endif
     printf("snd: stream %d: %c%09u (%u K, %u ch, %s)\n", s, e->type, e->id, sm->bytes >> 10, sm->ch,
            (e->flags & EF_LOOP) ? "loop" : "once");
 }
@@ -942,7 +1086,13 @@ void snd_map(const char *map_id)
 #define CHR_QUEUE 16
 static char chr_queue[CHR_QUEUE][8];
 static int chr_nq;
-static struct { char name[8]; int stage, has[3]; PackJob job; void *part[3]; unsigned xoff[2], xsize[2]; } chr_ld;
+static struct {
+    char name[8];
+    int stage, has[3], slot_wait;  /* slot_wait: frames its finished parts waited for a bank slot (SND_LRU) */
+    PackJob job;
+    void *part[3];
+    unsigned xoff[2], xsize[2];
+} chr_ld;
 static const char *const chr_part[3] = {"bank.bin", "cue.bin", "emit.bin"};
 static void *job_heap_get(unsigned n) { return memalign(128, n); }
 static void job_heap_put(void *p, unsigned n) { (void)n; free(p); }
@@ -960,10 +1110,41 @@ static void chr_part_start(void)
 
 static void chr_drop(void)
 {
-    if (chr_ld.name[0])
+    if (chr_ld.name[0] && !chr_ld.slot_wait)  /* waiting for a slot: the job is finished */
         pack_job_abandon(&chr_ld.job);
     for (int k = 0; k < 3; k++)
         free(chr_ld.part[k]);
+    memset(chr_ld.part, 0, sizeof chr_ld.part);
+    chr_ld.name[0] = 0;
+}
+
+/* The finished parts into a bank slot (and its VAG queued); dropped when the type has a bank already or (SND_LRU: after
+ * CHR_SLOT_WAIT frames, bank_free_slot evicting a cached bank each) no slot frees */
+static void chr_place(void)
+{
+    int dup = bank_find(chr_ld.name) != NULL;
+    Bank *b = dup ? NULL : bank_free_slot();
+#if SND_LRU
+    if (!b && !dup) {
+        if (++chr_ld.slot_wait <= CHR_SLOT_WAIT)
+            return;  /* parts kept; tried again next frame */
+        printf("snd: %s: no bank slot\n", chr_ld.name);
+    }
+#endif
+    if (!b) {
+        for (int k = 0; k < 3; k++)
+            free(chr_ld.part[k]);
+    } else {
+        memset(b, 0, sizeof *b);
+#if SND_LRU
+        b->wanted = 1;
+#endif
+        b->blob = chr_ld.part[0], b->cue_blob = chr_ld.part[1], b->emit_blob = chr_ld.part[2];
+        b->vag_off = chr_ld.xoff[0], b->vag_size = chr_ld.xsize[0], b->str_off = chr_ld.xoff[1], b->str_size = chr_ld.xsize[1];
+        char path[64];
+        chr_path(path, sizeof path, chr_ld.name);
+        bank_setup(b, chr_ld.name, 0, path, chr_ld.xoff[0] && chr_ld.xoff[1]);  /* both raw, as pack_entry_raw */
+    }
     memset(chr_ld.part, 0, sizeof chr_ld.part);
     chr_ld.name[0] = 0;
 }
@@ -978,6 +1159,12 @@ static void chr_pump(void)
         memmove(chr_queue[0], chr_queue[1], --chr_nq * sizeof chr_queue[0]);
         chr_part_start();
     }
+#if SND_LRU
+    if (chr_ld.slot_wait) {  /* parts read, no bank slot yet */
+        chr_place();
+        return;
+    }
+#endif
     int r = pack_job_step(&chr_ld.job);
     if (!r)
         return;
@@ -999,25 +1186,19 @@ static void chr_pump(void)
             chr_part_start();
             return;
         }
-    Bank *b = bank_find(chr_ld.name) ? NULL : bank_free_slot();
-    if (!b) {
-        for (int k = 0; k < 3; k++)
-            free(chr_ld.part[k]);
-    } else {
-        memset(b, 0, sizeof *b);
-        b->blob = chr_ld.part[0], b->cue_blob = chr_ld.part[1], b->emit_blob = chr_ld.part[2];
-        b->vag_off = chr_ld.xoff[0], b->vag_size = chr_ld.xsize[0], b->str_off = chr_ld.xoff[1], b->str_size = chr_ld.xsize[1];
-        char path[64];
-        chr_path(path, sizeof path, chr_ld.name);
-        bank_setup(b, chr_ld.name, 0, path, chr_ld.xoff[0] && chr_ld.xoff[1]);  /* both raw, as pack_entry_raw */
-    }
-    memset(chr_ld.part, 0, sizeof chr_ld.part);
-    chr_ld.name[0] = 0;
+    chr_place();
 }
 
 void snd_chr_load(const char *model)
 {
-    if (!on || !model || model[0] != 'c' || bank_find(model) || !strcmp(chr_ld.name, model))
+    if (!on || !model || model[0] != 'c')
+        return;
+    Bank *b = bank_find(model);
+#if SND_LRU
+    if (b)
+        b->wanted = 1;  /* a cached bank revived (no read); a failed == 2 one is left to the retry */
+#endif
+    if (b || !strcmp(chr_ld.name, model))
         return;
     for (int i = 0; i < chr_nq; i++)
         if (!strcmp(chr_queue[i], model))
@@ -1041,9 +1222,69 @@ void snd_chr_unload(const char *model)
         return;
     }
     Bank *b = bank_find(model);
-    if (b && !b->keep)
-        bank_free(b);
+    if (!b || b->keep)
+        return;
+#if SND_LRU
+    if (b->failed != 2) {  /* cached: found, counted and resident until a victim for room or a slot */
+        b->wanted = 0;
+        return;
+    }
+    b->wanted = 0, b->failed = 0, b->need = 0;  /* no samples placed: nothing to keep */
+    if (frame_no > b->dead_frame + 2)  /* an evicted one's old range stays quarantined (bank_free keeps vag_size) */
+        b->spu = 0, b->vag_size = 0;
+#endif
+    bank_free(b);
 }
+
+#if SND_LRU
+/* Wanted banks without samples (failed 2: no room, or evicted) placed once room exists, every SND_RETRY_FRAMES; an
+ * evicted one's old range is forgotten once its quarantine ends */
+static void retry_pump(void)
+{
+    for (int i = 0; i < MAX_BANKS; i++) {
+        Bank *b = &banks[i];
+        if (b->used && b->failed == 2 && b->vag_size && frame_no > b->dead_frame + 2)
+            b->spu = 0, b->vag_size = 0;
+    }
+    if (frame_no % SND_RETRY_FRAMES)
+        return;
+    for (int i = 0; i < MAX_BANKS; i++) {
+        Bank *b = &banks[i];
+        if (!b->used || b->failed != 2 || !b->wanted || b->vag_size)
+            continue;  /* b->vag_size: still in its quarantine */
+        int wait;
+        placing = b;
+        unsigned a = spu_make_room(b->need, &wait);
+        placing = NULL;
+        if (!a)
+            continue;
+        b->spu = a, b->vag_size = b->need, b->need = 0, b->failed = 0, b->load_id = next_load_id++;
+        b->guard_until = frame_no + SND_GUARD_FRAMES;
+        snd_stats.retried++;
+        printf("snd: %s: placed on retry\n", b->name);
+        spu_totals();
+    }
+}
+
+/* Cached banks may not hold the last SND_SLOT_RESERVE bank slots: an area change (snd_map -> bank_load) has no slot
+ * wait, and a slot freed for it would still be in its 2-frame quarantine. Frees the least recently used cached bank
+ * while fewer slots are free. */
+static void slot_reserve(void)
+{
+    int free_slots = 0;
+    for (int i = 0; i < MAX_BANKS; i++)
+        free_slots += !banks[i].used;
+    if (free_slots >= SND_SLOT_RESERVE)
+        return;
+    SndResBank v[MAX_BANKS];
+    res_view(v);
+    int k = sndres_victim(v, MAX_BANKS, frame_no, 0, 0);  /* cached (not wanted), silent, not loading */
+    if (k >= 0) {
+        bank_free(&banks[k]);
+        snd_stats.evicted++;
+    }
+}
+#endif
 
 /* ---- frame ---- */
 
@@ -1063,6 +1304,10 @@ void snd_update(float dt)
         slot_start(1, amb.b, amb.e, amb.si, amb.e->vol, 1, 0);
         amb.e = NULL;
     }
+#if SND_LRU
+    retry_pump();
+    slot_reserve();
+#endif
     loads_pump();
     if (st.late != snd_stats.late || st.underruns != snd_stats.underruns) {
         printf("snd: stream refills late %u, underruns %u\n", st.late, st.underruns);
