@@ -1045,6 +1045,25 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
 }
 
 static char blk_dir[ENEMY_BLOCKS][32];
+static unsigned char blk_nav_lite[ENEMY_BLOCKS];  /* WORLD_NAV_LITE: the navmesh is bound with the lite set */
+
+void enemy_nav_with_block(int block)
+{
+    if (block > 0 && block < ENEMY_BLOCKS)
+        blk_nav_lite[block] = 1;
+}
+
+int enemy_block_nav(int block, const void *enm, unsigned enm_size)
+{
+    unsigned count, nav_size;
+    const void *nav;
+    if (block <= 0 || block >= ENEMY_BLOCKS || !placements_of(enm, enm_size, block, &count, &nav, &nav_size))
+        return 0;
+    int n = nav ? nav_bind(block, nav, nav_size) : 0;
+    if (nav && !n)
+        printf("enemy: block %d: navmesh not bound (%u B)\n", block, nav_size);
+    return n;
+}
 static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
 
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
@@ -1089,7 +1108,8 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     if (map_lua)
         ai_scripts_add(map_lua, map_lua_size);  /* the block's map logic functions join the one VM */
 #endif
-    int ntri = nav_load(block, nav, nav_size);  /* kept for the session, as the placements */
+    int ntri = blk_nav_lite[block] ? 0 : nav_load(block, nav, nav_size);  /* kept for the session (WORLD_NAV_LITE:
+                                                                            * bound with the lite set instead) */
     printf("enemy: block %d: %d placements, %d types, navmesh %d tris (%u B all blocks), RAM free %uK\n", block,
            blk_n[block], ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
     return blk_n[block];

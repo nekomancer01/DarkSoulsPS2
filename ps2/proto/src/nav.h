@@ -10,7 +10,11 @@
  * own block (the caller may free the blob). Returns the number of triangles (0: none, enemies walk straight). */
 int nav_load(int block, const void *nav, unsigned size);
 void nav_free(int block);
-/* Navmesh bytes held (RAM report) */
+/* WORLD_NAV_LITE (world_i.h): the NAV chunk inside world block `block`'s enemies.bin as its lite set holds it, used in
+ * place (no copy; the caller keeps the blob until nav_unbind). Returns the number of triangles (0: none). */
+int nav_bind(int block, const void *nav, unsigned size);
+void nav_unbind(int block);
+/* Navmesh bytes held on the heap (RAM report; bound meshes are their lite set's) */
 unsigned nav_bytes(void);
 
 /* Triangle under p (x/z inside, surface within [-1.0, +2.0] m of p's height, the closest), -1 if none */

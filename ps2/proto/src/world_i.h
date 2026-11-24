@@ -20,6 +20,7 @@
 #include "objects.h"
 #include "fx.h"
 #include "enemy.h"
+#include "nav.h"  /* nav_unbind (WORLD_NAV_LITE) */
 #include "hitch.h"
 #include "coltile.h"
 #include "ticks.h"
@@ -238,9 +239,19 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_DG_LITE
 #define WORLD_DG_LITE 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_OBJ, E_FX, NENT };
+/* E_ENM (WORLD_NAV_LITE, default 1; TECH_DEBT world-46 item 3, phase 1): the block's enemies.bin (placements + navmesh)
+ * comes with its lite set and its navmesh is used in place while the block's enemies are on (nav_bind at turn_on_rest,
+ * nav_unbind at turn-off), instead of a heap copy of every block's navmesh made at boot and kept (772 KB of the boot
+ * heap at 27 blocks, 2026-11-25). DSR prepares a block's navmesh with the block (WorldBlockNvmPrepare in FUN_1403dac50,
+ * notes/EXE_FINDINGS.md). It sits after the map tables in the read order, so collision and maps come first; it is not
+ * a lean entry (a kept-only block keeps its enemies on). 0: copied at boot as before. */
+#ifndef WORLD_NAV_LITE
+#define WORLD_NAV_LITE 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "objects.bin", "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "objects.bin",
+                                          "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
  * read while the block draws; the draw groups stay, its collision parts' groups) */

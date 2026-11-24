@@ -21,6 +21,11 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
                       const void *map_lua, int map_lua_size);
 void enemy_block_add(int block);
+/* WORLD_NAV_LITE (world_i.h): block `block`'s navmesh comes with its lite set: enemy_block_types (at boot) skips its
+ * copy, and enemy_block_nav binds the NAV chunk of the block's enemies.bin in place when the block turns on (the blob
+ * stays the lite set's; nav_unbind when it turns off). Returns the navmesh's triangles (0: none). */
+void enemy_nav_with_block(int block);
+int enemy_block_nav(int block, const void *enm, unsigned enm_size);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */
 void enemy_respawn(void);

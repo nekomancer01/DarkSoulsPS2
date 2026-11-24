@@ -205,6 +205,8 @@ int world_init(const char *boot_area)
                 r->off[e] = r->size[e] = 0;
             if ((e == E_DG || e == E_PVS) && (!WORLD_DG_LITE || !i))  /* (the boot block's are main.c's) */
                 r->off[e] = r->size[e] = 0;
+            if (e == E_ENM && (!WORLD_NAV_LITE || !i))  /* (the boot block's enemies are main.c's: enemy_init) */
+                r->off[e] = r->size[e] = 0;
             if (!r->size[e] && !E_OPTIONAL(e) && (i || e == E_TAB)) {
                 printf("world: block %d %s: %s missing or not raw\n", i, w_tab[i].pack, ENTRIES[e]);
                 r->open = 0;
@@ -378,6 +380,8 @@ void world_systems(GSGLOBAL *gs)
         /* (TECH_DEBT world-46 split: the Lua VM's heap and its malloc spill, the navmesh copy; the rest of the enemies
          * figure is the placements and the type heads) */
         unsigned lh0 = lua0_heap, lm0 = lua0_malloc_live, nb0 = nav_bytes();
+        if (r->size[E_ENM])
+            enemy_nav_with_block(i);  /* WORLD_NAV_LITE: its navmesh comes with its lite set (nav_bind) */
         int ne = p ? enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0) : -1;
         unsigned lh1 = lua0_heap, lm1 = lua0_malloc_live, nb1 = nav_bytes();
         free(lua);
