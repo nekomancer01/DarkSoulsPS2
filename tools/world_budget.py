@@ -85,15 +85,15 @@ def col_pages(d):
     return lo_b, pages
 
 
-def col_budget(blocks):
+def col_budget(blocks, centres=None):
     """coltile.c coltile_budget: over every page's box centre, the pages of all blocks within the want window + a
-    margin (256-byte granules)"""
+    margin (256-byte granules); centres: only the centres of these pages (POOL_AREA: one block's own)"""
     allp = [pg for pages in blocks for pg in pages]
     if not allp:
         return 0
     lo = np.array([p[0] for p in allp]); hi = np.array([p[1] for p in allp])
     nb = (np.array([p[2] for p in allp]) + 255) // 256 * 256
-    C = (lo + hi) / 2
+    C = (lo + hi) / 2 if centres is None else np.array([(np.array(p[0]) + np.array(p[1])) / 2 for p in centres])
     R, Y = CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M
     best = 0
     for c in C:
@@ -269,8 +269,12 @@ def structural(gen):
         if s > 0:
             spill.setdefault(names[blk], []).append((first, cnt, -(-s // (64 << 10)) * 64))
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
-    cb = col_budget([cp[1] for cp in (col_pages(os.path.join(gen, names[i])) for i in ent) if cp])
+    cps = {i: col_pages(os.path.join(gen, names[i])) for i in ent}
+    cb = col_budget([cp[1] for cp in cps.values() if cp])
     best += cb
+    # POOL_AREA: per block the collision pages around its own pages (the runtime's coltile budget for that area)
+    cb_of = {i: col_budget([cp[1] for cp in cps.values() if cp], cps[i][1]) for i in cps if cps[i] and cps[i][1]} \
+        if POOL_AREA and COL_AREA else {}
     # POOL_AREA (streamer MS_AREA_POOL): at a link the pool needs the largest need of the blocks it keeps (+ the
     # collision tiles); the pool pages above that, less one, take items there: per link the spare KB
     slack = {}
@@ -303,7 +307,8 @@ def structural(gen):
                     if t <= a:
                         rm = m
                 kp |= rm | (1 << blk)
-                need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + cb
+                need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + \
+                (max((cb_of.get(i, cb) for i in range(n) if kp >> i & 1), default=cb) if cb_of else cb)
                 spare = pool_pg - (pages(need) >> 16) - 1
                 if spare > 0:
                     segs.append((a, b - a, spare * 64))
@@ -338,6 +343,9 @@ LOAD_CELLS = 1.0  # export_world.py
 # The pages above the largest need of a block's own links count as item room at that block's spots (the streamer lends
 # them to items there and reclaims them ahead of a seam into a block that needs more: msplan / msarena, POOL_AREA)
 POOL_AREA = os.environ.get("WORLD_POOL_AREA", "1") != "0"
+# COL_AREA (with POOL_AREA; WORLD_COL_AREA=0: the whole world's collision tile budget everywhere): the collision tiles
+# a link's blocks need around their own pages, not the world's densest spot (streamer: coltile budget per area)
+COL_AREA = os.environ.get("WORLD_COL_AREA", "1") != "0"
 
 
 def pages(b):
