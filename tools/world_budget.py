@@ -417,7 +417,8 @@ def main(argv):
         # spots in slices: the (spots x cells x 3) distance arrays of all spots at once took GBs (swapping: 60 CPU-s,
         # 300 s wall, 2026-11-17); every spot's row is the same sum either way
         step = max(1, int(os.environ.get("WB_SLICE", "2048")))
-        for s0 in range(0, len(P), step):
+
+        def one(s0):
             sl = slice(s0, s0 + step)
             d = box_d(lo, hi, P[sl])
             dn = box_d(nlo, nhi, P[sl]) if NEAR_CUBE else d
@@ -430,6 +431,17 @@ def main(argv):
             soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl] + far[sl]
             nws[sl] = (dn < WS_R0).astype(np.float64) @ near
             cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
+        # the slices on threads (numpy lets go of the GIL in these array passes): every spot's row is its own sum, and
+        # the sizes are whole KB / 1024 so any order adds them exactly (2026-11-24: one thread, 46 s at the build's end,
+        # and blockreport.py runs this main() again). WB_THREADS=1: one slice after another
+        nth = max(1, int(os.environ.get("WB_THREADS", min(8, os.cpu_count() or 1))))
+        if nth == 1:
+            for s0 in range(0, len(P), step):
+                one(s0)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(nth) as ex:
+                list(ex.map(one, range(0, len(P), step)))
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
                        ("hard", hard), ("soft", soft)):
             tot[key] += v
