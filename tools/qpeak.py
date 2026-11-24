@@ -14,6 +14,10 @@ peak = 0
 
 
 def done(*_):
+    try:
+        os.remove(f"/tmp/dsr-q-peak/{ROOT}.now")
+    except OSError:
+        pass
     print(peak)
     sys.exit(0)
 
@@ -76,7 +80,20 @@ def sample():
     return total >> 10
 
 
+# the current value too, for tools/q's admission (what a running job may still claim of its reservation)
+NOW = f"/tmp/dsr-q-peak/{ROOT}.now"
 while os.path.exists(f"/proc/{ROOT}"):
-    peak = max(peak, sample())
+    cur = sample()
+    peak = max(peak, cur)
+    try:
+        with open(NOW + ".tmp", "w") as f:
+            f.write(str(cur))
+        os.replace(NOW + ".tmp", NOW)
+    except OSError:
+        pass
     time.sleep(1)
+try:
+    os.remove(NOW)
+except OSError:
+    pass
 done()
