@@ -95,6 +95,38 @@ static unsigned grp_used(const MsInst *m, unsigned id)
         u = ms_frame - m->used[j] < ms_frame - u ? m->used[j] : u;
     return u;
 }
+/* The lent counts from what lies in the pool pages now (once a plan, after its classes). ms_lent_near is added by the
+ * class a group has when it is placed and taken off by the class it has when it goes (ms_drop), and the plan changes
+ * classes in between: a near part lent as C_NEAR2 and dropped as C_KEEP stayed counted (near lending shut off for
+ * good once the count reached the lent room), one lent as C_PREF and dropped as C_NEAR2 was taken off uncounted.
+ * Classes change only in the plan, so from here to the next plan the running counts are exact. */
+void ms_lent_recount(void)
+{
+    static unsigned log_frame;
+    if (!msa_pools_on())
+        return;
+    unsigned n = 0, nb = 0, g0 = msa_mpage0() * MS_GPP, g1 = msa_npages() * MS_GPP;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a, e;
+            if ((m->state[id] != MS_READY && m->state[id] != MS_READING) || (e = grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = msa_gran(m->buf[id]);
+            if (g == ~0u || g < g0 || g >= g1)
+                continue;
+            n++;
+            if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2)
+                nb += grp_bytes(m, a, e);
+        }
+    }
+    unsigned dn = n > ms_lent_n ? n - ms_lent_n : ms_lent_n - n, db = nb > ms_lent_near ? nb - ms_lent_near : ms_lent_near - nb;
+    if ((dn > 1 || db > MS_PAGE) && (!log_frame || ms_frame - log_frame >= 300)) {
+        log_frame = ms_frame;
+        printf("mapstream: lent recount: n %u -> %u, near KB %u -> %u\n", ms_lent_n, n, ms_lent_near >> 10, nb >> 10);
+    }
+    ms_lent_n = n, ms_lent_near = nb;
+}
 unsigned ms_rehome_n, ms_rehome_kb;
 static int lend_rehome(int k, unsigned a, unsigned e)
 {
@@ -720,7 +752,7 @@ void *mapstream_alloc(unsigned n, const float pos[3])
             for (int i = 0; i < ms_nrd; i++) {
                 pack_req_cancel(ms_rd[i].tk);  /* returns once nothing more lands in the buffer */
                 c += ms_rd[i].bytes >> 10;
-                ms_drop(ms_rd[i].k, ms_rd[i].id);
+                ms_why = MS_WHY_CANCEL, ms_drop(ms_rd[i].k, ms_rd[i].id);
             }
             printf("mapstream: alloc %u KB: %d reads in flight (%u KB) cancelled for a window\n", n >> 10, ms_nrd, c);
             ms_cancel_kb += c;

@@ -267,6 +267,7 @@ extern int ms_nblk;
 extern unsigned ms_cancel_kb;
 extern MsW ms_want[MS_WANTED];
 extern unsigned ms_lent_n, ms_items_other;  /* (msevict.c) */
+void ms_lent_recount(void);
 extern unsigned ms_lent_near;
 void ms_tidy(void);
 extern unsigned ms_tidy_moves, ms_tidy_kb;
