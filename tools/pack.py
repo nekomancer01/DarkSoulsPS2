@@ -10,7 +10,7 @@ Layout (little-endian), one pack per area (m10_02_00_00.pak: map + collision) or
            so an entry of 32 KB or more has its blocks (after the csize table) start on a 32 KB boundary of the pack,
            and a smaller one starts on a sector and never crosses a 32 KB boundary (it moves to the next one). An
            item straddling a block costs the drive a whole extra block (Sony measured 12-15 % of throughput).
-           Readers take the offset as it is (any byte). ALIGN=0 in the environment: every entry on a sector, as before.
+           Readers take the offset as it is (any byte).
 Usage: pack.py <out.pak> <name>=<file> [<name>=raw:<file> ...] [<name>=[raw:]chunk:<kind>:<file> ...]
   chunk:<kind>: the file wrapped as a chunk file on the way in (tools/mapwrap.py: map.bin and the files split from it)
   raw: every block stored uncompressed, so byte k of the entry sits at offset + 4 x blocks + k and can be read in place
@@ -26,8 +26,6 @@ ECC = 32768  # the drive's smallest read (16 sectors)
 
 def place(cur, table, n):
     """offset of an entry with a table-byte csize table and n bytes in all, at or after cur (sector aligned)"""
-    if os.environ.get("ALIGN", "1") == "0":
-        return cur
     if n >= ECC:  # its blocks from a 32 KB boundary
         return -(-(cur + table) // ECC) * ECC - table
     if cur // ECC != (cur + n - 1) // ECC:  # would cross one: from the next

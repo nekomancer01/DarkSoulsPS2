@@ -70,7 +70,6 @@ WORLD_LITE_DIET	make	1	flag	world	0	#147	recipe.toml	world builds: map.bin split
 WORLD_MIP1_OUT	make	computed	config	world	-	#147	recipe.toml	-
 WORLD_SEAM_BUNDLE	make	1	flag	world	0	#255	recipe.toml	The pack's entries (pack.py order = disc order). LITE_RUN (WORLD_SEAM_BUNDLE, default 1; world block packs): the entries src/world.c reads to turn a block on come first, in its read order (collision i
 WORLD_TEX_SHARED	make	1	flag	world	0	#162	recipe.toml	Shared textures (the cube-grid plan): the other blocks of this MSB in the world (PVS_PEERS whose directory is a block of $(MAP)); textures two or more of them have go to maptex.bin, read once per map 
-ALIGN	env	1	flag	io	0	init	pack.py	-
 ANIM_BUDGET	env	0.25	tune	game	-	#19	export_objects.py	MB per area / block
 ANIM_LOD	env	0	flag	game	1	#19	export_objects.py	-
 ANIM_OBJ	env	unset	config	world	-	#19	export_emevd.py mapcfg.py	-
@@ -113,7 +112,6 @@ CUT_CELLS	env	1	flag	world	0	#156	mapsimp.py	-
 CUT_MIN	env	4.0	tune	world	-	#156	mapsimp.py	-
 CXX	env	c++	config	world	-	#135	horizon.py	-
 DARKSCRIPT3	env	unset	config	game	-	init	emevd.py	-
-DG_GROUPS	env	1	flag	world	0	#131	drawgroups.py	-
 DISTROBOX_HOST_HOME	env	os.path.expanduser('~')	config	tools	-	init	dsr_rdc.py	-
 DRAW_GROUPS	env	1	flag	world	0	init	mapcfg.py	-
 DSR_ALLOW_UNSUPPORTED	env	unset	config	tools	-	init	verify_game.py	-
@@ -126,11 +124,9 @@ DSR_PVS_SPOOL	env	unset	config	world	-	#211	pvs_cache.py	-
 DSR_Q_BUDGET	env	20	config	tools	-	init	qstat.py	-
 DSR_REF	env	os.path.join(os.environ.get('DISTROBOX_HOST_HOME', os.path.e	config	tools	-	init	dsr_rdc.py	-
 DSR_TUI_ROOT	env	os.getcwd()	config	tools	-	#173	buildtui.py	-
-EDGE_2SIDED	env	1	flag	world	0	#243	mapgather.py	two-sided cut-out light (gather, below)
 EPS	env	unset	opt	world	-	init	mapcfg.py	-
 EPS_FAR	env	(6 / 568) ** 2	tune	world	-	init	mapcfg.py	-
 EPS_MAX	env	(24 / 568) ** 2	tune	world	-	init	mapcfg.py	-
-EVENT_PARTS	env	1	flag	world	0	#16	mapchunks.py	-
 EXPORT_GC	env	unset	opt	world	-	#41	export_map.py	-
 EXPORT_WORLD_JOBS	env	0	config	world	-	#246	export_world.py	-
 FARPANO	env	1	flag	world	0	#206	farpano.py	-
@@ -144,8 +140,6 @@ FAR_KB	env	192	tune	world	-	#156	farpano.py	-
 FAR_LOD	env	1	flag	world	0	init	mapcfg.py	map pieces beyond STREAM_FAR of the navmesh: lowest game LOD (A/B: 0)
 FAR_LOG	env	unset	debug	world	1	#206	farpano.py	-
 FAR_NEAR	env	24.0	tune	world	-	#206	farpano.py	nor nearer (ASSUMED: a block that is off is a 32 m cell away at least)
-FAR_OBJ	env	1	flag	world	0	init	mapcfg.py	-
-FAR_PANO_SET	env	1	flag	world	0	#249	farpano.py	-
 FAR_PX	env	8.0	tune	world	-	#204	farpano.py	the collapse's screen error (about one cell)
 FAR_SETS	env	3	tune	world	-	#206	farpano.py	draw-group meshes per peer at most
 FAR_STANDIN	env	6.0	tune	world	-	#206	farpano.py	-
@@ -154,11 +148,8 @@ FOL_IVY	env	1.0	tune	world	-	init	mapcfg.py	-
 FOL_XZ	env	1.0	tune	world	-	init	mapcfg.py	kept foliage tufts widened (see thin_foliage)
 FOL_Y	env	1.0	tune	world	-	init	mapcfg.py	-
 FX_ADD_CAP	env	1.0	tune	fx	-	#52	export_effects.py	-
-FX_EVENT_SFX	env	1	flag	fx	0	#16	export_effects.py	MSB SFX with an entity id (event-owned) included
 FX_EXPOSURE	env	1.0	tune	fx	-	init	export_effects.py	-
-FX_LIGHTS	env	1	flag	world	0	init	mapgather.py	-
 FX_LIGHTS_FILE	env	unset	config	world	-	#30	mapgather.py	-
-FX_LOD_ONE	env	1	flag	fx	0	#136	export_effects.py	-
 FX_ORIENT	env	1	flag	fx	0	#248	export_effects.py	Orientation 2 quads fixed in the effect frame: system()
 FX_OVERLAP	env	1.0	tune	fx	-	#52	export_effects.py	-
 FX_TEX_MAX	env	128	tune	fx	-	init	export_effects.py	px, longest side of an exported effect texture (VRAM)
@@ -174,7 +165,6 @@ HAVOK_NP	env	1	config	world	-	#64	havok_collision.py	numpy for the vertices (the
 HZN	env	1	flag	world	0	#122	horizon.py	-
 HZN_BD_KB	env	480	tune	world	-	#133	horizon.py	-
 HZN_CROWN_H	env	4.0	tune	world	-	#204	horizon.py	-
-HZN_CROWN_OWN	env	0	flag	world	1	#249	horizon.py	-
 HZN_CROWN_R	env	8.0	tune	world	-	#204	horizon.py	-
 HZN_CW	env	4.0	tune	world	-	#135	horizon.py	-
 HZN_CUT	env	1	flag	world	0	new	horizon.py	mostly transparent cut-out cards stay as solid cards shrunk to their opaque share (0: dropped)
@@ -182,9 +172,7 @@ HZN_CUT_MIN	env	0.15	tune	world	-	new	horizon.py	opaque share below which a cut-
 HZN_CUT_OFF	env	1.0	tune	world	-	new	horizon.py	metres: a cut-out card this near the opaque surfaces stays out
 HZN_CUT_SAME	env	1	flag	world	0	new	horizon.py	the horizon with its cut-out cards fits the bytes of the one without (0: on top)
 HZN_D	env	46.0	tune	world	-	#122	horizon.py	(54 before map.c HZN_R went 56 -> 40, Burg plan B3) # metres: nearest view distance the error is judged from
-HZN_DG	env	1	flag	world	0	#132	horizon.py	-
 HZN_ERR_Q	env	0.99	tune	world	-	#135	horizon.py	-
-HZN_IDX	env	1	flag	world	0	#133	horizon.py	-
 HZN_KB	env	960	tune	world	-	#122	horizon.py	-
 HZN_NATIVE	env	1	flag	world	0	#129	horizon.py	-
 HZN_PANO	env	1	flag	world	0	#135	horizon.py pano.py	(the Makefile's PANO switch: 0 = no picture layers, all horizon)
@@ -194,9 +182,7 @@ HZN_PX	env	12.0	tune	world	-	#122	horizon.py	(8 before the coarse level took the
 HZN_PX_MAX	env	32.0	tune	world	-	#122	horizon.py	the budget never pushes the error past this (ASSUMED)
 HZN_SIMP	env	auto	tune	world	-	#135	horizon.py	-
 HZN_SRC_CELL	env	1	flag	world	0	#249	horizon.py	_place by source cell (0: by centroid, as before)
-HZN_ST	env	0	flag	world	1	#122	horizon.py	write the (zero) st stream too (A/B)
 HZN_TEX_MEAN	env	1.0	tune	world	-	#204	horizon.py	-
-HZN_VIS	env	1	flag	world	0	#135	horizon.py	-
 HZN_VIS_DIRS	env	64	tune	world	-	#135	horizon.py	-
 HZN_VIS_N	env	96	tune	world	-	#135	horizon.py	navmesh eye points at most
 HZN_WELD	env	0.35	tune	world	-	#122	horizon.py	metres: the finest clustering grid (ASSUMED)
@@ -214,7 +200,6 @@ MAPX	env	1	flag	world	0	#63	mapx_native.py	-
 MAPX_CHECK	env	unset	debug	world	1	#63	export_normal.py	debugging: every C stage of the relief also run in numpy, compared
 MAPX_TEST_LIBM_LOG	env	1	debug	world	-	#63	mapx/test_mapx.py	numpy AVX-512 log differs from libm by an ulp
 MAPX_THREADS	env	unset	config	world	-	#63	mapx/common.c	-
-MAP_VBONE	env	1	flag	world	0	#205	mapcfg.py	-
 MEMWATCH_LOW_GB	env	1	config	tools	-	#9	memwatch.py	-
 MEMWATCH_PSI_CALM	env	5	config	tools	-	#14	memwatch.py	resume paused jobs below this (and no disk swap-in)
 MEMWATCH_PSI_KILL	env	30	config	tools	-	#14	memwatch.py	kill the largest job at this full avg10
@@ -222,7 +207,6 @@ MEMWATCH_PSI_PAUSE	env	10	config	tools	-	#14	memwatch.py	pause the largest job a
 MEMWATCH_SWAPIN_MB	env	20	config	tools	-	#14	memwatch.py	... or this disk swap-in rate (B/s)
 MEMWATCH_SWAP_FREE_PCT	env	20	config	tools	-	#14	memwatch.py	-
 MIP1_OUT	env	1	flag	world	0	#147	mapsplit.py	-
-MULTI_WALLS	env	0	flag	game	1	#156	export_emevd.py	-
 MX_TIME	env	unset	debug	world	1	#207	mapx/common.c mapx/simpmesh.c	-
 NAVWALLS	env	unset	opt	world	-	#123	export_collision.py	-
 NEAR	env	4.0	tune	world	-	init	mapcfg.py	-
@@ -249,7 +233,6 @@ PANO_W	env	1024	tune	world	-	#135	pano.py	texels round the cylinder (0.35 degree
 PARAMDEX	env	unset	config	game	-	init	params.py	-
 PCSX2_GS	env	-	config	tools	-	#49	test-pcsx2-ini.py	-
 PINE	env	DEFAULT_SLOT	config	tools	-	init	pine.py	-
-POSE_OBJ	env	1	flag	world	0	init	mapcfg.py	-
 PVS	env	1	flag	world	0	#116	mapcfg.py	0: chunks ignore draw groups, dg.bin shows everything (A/B)
 PVS_BLIST	env	unset	opt	world	-	#246	pvs_bake.c	-
 PVS_CACHE	env	unset	opt	world	-	#129	pvs_cache.py	-
@@ -263,7 +246,6 @@ PVS_PRETEST	env	unset	opt	world	-	#129	pvs_bake.c	-
 PVS_SIMD	env	unset	opt	world	-	#211	pvs_bake.c	-
 RDC_IN	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
 RDC_OUT	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
-SHADOWS	env	1	flag	world	0	init	mapcfg.py	bake sun shadows (dsr_light.ShadowMap)
 SHADOW_AMB	env	0.8 * 0.75	tune	world	-	init	mapcfg.py	-
 SIMPLIFY_AREA_GUARD	env	0.5	tune	world	-	#256	mapcfg.py	-
 SIMPLIFY_AREA_PIECES	env	unset	opt	world	-	#256	mapsimp.py	-
@@ -311,7 +293,6 @@ TEX_SHEET	env	unset	opt	world	-	init	texmap.py	the contact sheet needs encode's 
 TMPDIR	env	/tmp	config	game	-	init	export_objects.py	-
 TRACE_ORDER	env	1	debug	world	-	#254	mapcells.py	-
 TURBO	env	/ 1	config	tools	-	#9	test-pcsx2-ini.py test-run.py	-
-VERT_ROWS	env	1	flag	world	0	#66	mapgather.py	FLVER attributes as souls.Rows
 WARM_CACHE	env	unset	config	tools	-	#161	test-run.py warmstate.py	-
 WARM_DAYS	env	2	config	tools	-	#161	warmstate.py	-
 WARM_KEEP	env	60	config	tools	-	#161	warmstate.py	-

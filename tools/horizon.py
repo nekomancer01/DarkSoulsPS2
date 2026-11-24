@@ -28,8 +28,8 @@ stores them), so it needs no re-export:
      smaller error until the measured error (its ERR_Q quantile) is at most PX; only a block past its ceiling (KB
      kilobytes, the backdrop BD_KB apart: lite sets share the near-cell arena) goes coarser, never past PX_MAX;
   5. triangles go to the cell whose box holds their centroid (else the nearest), are sorted along a Z curve and cut
-     into VU1 batches: indexed (HZN_IDX, the default: a breadth-first walk over shared vertices, at most IDX_TRIS
-     triangles / IDX_NV vertices, each vertex stored once), else lists of CHUNK_TRIS.
+     into indexed VU1 batches (a breadth-first walk over shared vertices, at most IDX_TRIS triangles / IDX_NV
+     vertices, each vertex stored once).
 Untextured: map.c draws it with TME off (vu1.c VU1_FLAT), vertex colour = final colour.
 
 hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the section start, so it can move):
@@ -42,12 +42,12 @@ hzn.bin (little endian, 16-byte aligned throughout; stream offsets from the sect
   streams: per chunk one VIF packet: indexed (tris | nv << 16, idx_streams): pos s16x3 x nv, colour u8x4 x nv, u8x4
            triangles (map.c CHUNK_IDX); lists (chunk_streams): pos s16x3, colour u8x4 per corner; no st
 Each draw-group set of the cell's chunks (dg.bin, next to map.bin) is its own mesh, clustered and simplified apart, so
-map.c draws only what the floor's groups show (HZN_DG=0: one mesh, set 0, the old file).
+map.c draws only what the floor's groups show.
 Next to it, <hzn.bin>.far.npz (build only): the crown cards and the picture-layer backdrop left out of hzn.bin, for
 tools/farpano.py.
-Env: HZN=0 writes an empty file (the old drawing); HZN_IDX=0 lists (the old batches); HZN_SIMP=qem the old simplifier;
-HZN_VIS=0 no visibility cut; HZN_CUT=0 no cut-out cards; HZN_CUT_MIN, HZN_CUT_OFF, HZN_CUT_SAME, HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D,
-HZN_WELD, HZN_WELD_FR, HZN_CW, HZN_DG."""
+Env: HZN=0 writes an empty file (the old drawing); HZN_SIMP=qem the old simplifier;
+HZN_CUT=0 no cut-out cards; HZN_CUT_MIN, HZN_CUT_OFF, HZN_CUT_SAME, HZN_PX, HZN_ERR_Q, HZN_KB, HZN_BD_KB, HZN_D,
+HZN_WELD, HZN_WELD_FR, HZN_CW."""
 import os
 import struct
 import sys
@@ -60,7 +60,6 @@ sys.path.insert(0, HERE)
 HDR = 80
 CHUNK_CULL, CHUNK_BLEND, CHUNK_SKY, CHUNK_GRASS, CHUNK_ST1K, CHUNK_COARSE, CHUNK_BACKDROP = 1, 2, 8, 16, 32, 64, 128
 CHUNK_HZN = 256  # map.c: a horizon chunk (in hzn.bin only)
-CHUNK_TRIS = 54  # export_map.CHUNK_TRIS (VU1 buffer)
 POS_MAX = 32000
 PSMT8, PSMT4, CT16 = 0x13, 0x14, 0x02
 FOCAL = 568.0  # export_map: screen errors in pixels of a 568-pixel focal length ((px / 568)^2 = eps)
@@ -103,8 +102,6 @@ CROWN_H = float(os.environ.get("HZN_CROWN_H", 4.0))
 # ... but only in what the other blocks see (tools/farpano.py: the far panorama, 100 m and more away): in the block's
 # own horizon, drawn from 40 m and wherever its coarse level is late, the solid cards read as black boxes over Firelink's
 # graveyard (Ame's report 2026-11-17 t 85.1), where the textured cut-out leaves are drawn once the level is in.
-# HZN_CROWN_OWN=1: in the block's own horizon too (2026-11-13 .. 11-17)
-CROWN_OWN = os.environ.get("HZN_CROWN_OWN", "0") == "1"
 CROWN_R = float(os.environ.get("HZN_CROWN_R", 8.0))
 # Cut-out cards (leaves, ivy, branches: alpha-tested, not foliage chunks) mostly transparent at their corners and
 # centre were dropped whole (step 1), so wherever the horizon drew a Darkroot tree line it was trunks against the sky
@@ -127,17 +124,14 @@ CUT_OFF = float(os.environ.get("HZN_CUT_OFF", 1.0))
 CUT_SAME = os.environ.get("HZN_CUT_SAME", "1") == "1"
 CUT_N = 4  # barycentric samples per edge (15 a triangle)
 WELD = float(os.environ.get("HZN_WELD", 0.35))  # metres: the finest clustering grid (ASSUMED)
-ST = os.environ.get("HZN_ST", "0") == "1"  # write the (zero) st stream too (A/B)
-# indexed batches (HZN_IDX=0: lists, the old file): each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
+# indexed batches: each distinct vertex once (6 + 4 bytes) plus u8x4 per triangle,
 # ~18-19 bytes a triangle against ~36 (horizon meshes share fewer vertices than closed ones), about twice the triangles
-IDX = os.environ.get("HZN_IDX", "1") == "1"
 from vu1layout import L as VU1L  # the VU1 memory contract (tools/vu1/layout.py, Polaris 1.5)
 MAPI_HDR, CLIPI_MAX = VU1L.MAPI_HDR, VU1L.CLIPI_MAX
 IDX_TRIS = VU1L.IDX_TRIS
 IDX_NV = 84  # vertices per batch at most (with 64 triangles: 8 + 252 + 64 = 324 <= CLIPI_MAX)
-# bytes per triangle: 3 x (6 + 4) stream bytes, + a record, VIF codes and padding per chunk (measured ~36); indexed
-# ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
-BPT = 19 if IDX else 36
+# bytes per triangle, indexed: ~18-19 (measured 2026-11-07: Firelink 19.2, Burg west 17.7 at 12 px)
+BPT = 19
 # simplifier (HZN_SIMP): "auto", the default: both run at PX and the block takes the one with fewer triangles (the finer
 # error first if the ceiling pushed one coarser; build: per block, backdrop and map apart); "meshopt": a light weld (WELD_FR of the error's grid), then meshoptimizer's
 # attribute-aware edge collapse (tools/native/meshopt, MIT) in distance bands (mo_simplify); "qem": the old path, the
@@ -150,7 +144,6 @@ CW = float(os.environ.get("HZN_CW", 4.0))
 # visibility (HZN_VIS, tools/native/hzvis.c): triangles no view can see are dropped before simplifying (interiors,
 # undersides, faces pressed against other faces); views = cube maps at navmesh points EYE metres up (Y up) and
 # orthographic views from VIS_DIRS directions (cameras outside the block). Conservative: a doubtful triangle stays
-VIS = os.environ.get("HZN_VIS", "1") == "1"
 VIS_DIRS = int(os.environ.get("HZN_VIS_DIRS", 64))
 VIS_N = int(os.environ.get("HZN_VIS_N", 96))  # navmesh eye points at most
 VIS_RES_O, VIS_RES_P = 512, 256  # pixels: orthographic view, cube face
@@ -306,9 +299,9 @@ def coarse_tris(b):
 
 def chunk_dg(b, nch):
     """draw-group set per resident chunk (dg.bin next to map.bin, written by the same export: piece mask index per
-    chunk in bump.bin's order, resident chunks first); all 0 (always shown) without one or with HZN_DG=0"""
+    chunk in bump.bin's order, resident chunks first); all 0 (always shown) without one"""
     path = os.path.join(os.path.dirname(os.path.abspath(SRC[0])), "dg.bin") if SRC else ""
-    if os.environ.get("HZN_DG", "1") != "1" or not path or not os.path.exists(path):
+    if not path or not os.path.exists(path):
         return np.zeros(nch, np.int64)
     import drawgroups
     d = drawgroups.read(path)
@@ -671,27 +664,6 @@ def zkey(c, lo, step):
     return k
 
 
-def chunk_streams(ntri, pos, col):
-    """export_map.chunk_streams without the st stream (untextured: VU1 reads whatever its st slots hold, the GS
-    ignores ST with TME off): {NOP, NOP, STCYCL 3,1, UNPACK V3-16 n -> 7} pos, {NOP x 3, UNPACK V4-8 n -> 9} colour.
-    The st offset points at the positions (vu1.c's split path still sends an st stream: harmless bytes)."""
-    n = 3 * ntri
-    if ST:  # with a zero st stream, as export_map.chunk_streams
-        codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6500C008 | n << 16),
-                 (0, 0, 0, 0x6E00C009 | n << 16))
-        arrs = (pos, bytes(4 * n), col)
-    else:
-        codes = ((0, 0, 0x01000103, 0x69008007 | n << 16), (0, 0, 0, 0x6E00C009 | n << 16))
-        arrs = (pos, col)
-    out, offs = bytearray(), []
-    for arr, cw in zip(arrs, codes):
-        out += struct.pack("<4I", *cw)
-        offs.append(len(out))
-        out += arr
-        out.extend(b"\0" * (-len(out) % 16))
-    return out, offs if ST else [offs[0], offs[0], offs[1]]
-
-
 def idx_streams(ntri, nv, pos, col, idx):
     """an indexed horizon batch (map.c CHUNK_IDX, vu1.c vu1_add_idx): {code} pos s16x3 x nv, {code} colour u8x4 x nv,
     {code} triangles u8x4; no st stream (the st offset points at the colours: vu1mapi reads them, the GS ignores ST
@@ -834,7 +806,7 @@ def build(b):
     crown = LAST_CROWN[0] & keep if len(P) else np.zeros(0, bool)
     pano = pano_tris(P.mean(1), dg, bd, own_nav(b, SRC[0]), SRC[0]) & keep if PANO and len(P) else np.zeros(len(P), bool)
     FAR_SIDE[:] = [(P[crown], C[crown], np.asarray(dg)[crown]), (P[pano], C[pano], np.asarray(dg)[pano])]
-    if not CROWN_OWN and len(P):  # the crowns go to the other blocks' far panoramas only (tools/farpano.py)
+    if len(P):  # the crowns go to the other blocks' far panoramas only (tools/farpano.py)
         keep = keep & ~crown
     if PANO and len(P):  # the far backdrop the picture layers draw (tools/pano.py bake)
         keep = keep & ~pano
@@ -875,7 +847,7 @@ def build(b):
     # one screen error for the whole block (every set at once): the smallest at or above PX whose triangles fit the
     # budget. Shared by triangle count, each set hit its own cap apart: small sets stayed at PX while the big ones went
     # to PX_MAX (Firelink: every block at 32 px, 2026-11-07)
-    if VIS and len(P):  # visibility key: draw-group set and backdrop apart (map.c may skip either: never occluders)
+    if len(P):  # visibility key: draw-group set and backdrop apart (map.c may skip either: never occluders)
         vis = visible_tris(P[keep], dg[keep] * 2 + bd[keep], nav)
         stats["hidden"] = int((~vis).sum())
         keep = keep.copy()
@@ -907,7 +879,7 @@ def build(b):
 
         size, cap_b = ntri, None
         part = [(dset, sel & ~cards) for dset, sel in raw if (sel & ~cards).any()]
-        if not g and (selg & cards).any() and CUT_SAME and IDX and part:
+        if not g and (selg & cards).any() and CUT_SAME and part:
             # the crown cards within the bytes the horizon took without them: the fit key() below would have picked
             full, raw = raw, part
             alone = []
@@ -921,7 +893,7 @@ def build(b):
             pick = min(alone, key=lambda c: (m_(c) > PX * 1.01, round(m_(c), 1) if m_(c) > PX * 1.01 else 0, ntri(c[2]),
                                              c[3] != "meshopt"))
             # (cards are loose triangles: three vertices each, so the bytes, not the triangles, are held; nbytes
-            # counts indexed batches, hence IDX)
+            # counts indexed batches)
             cap_b = min(nbytes(pick[2]), cap * BPT)
             raw = full
             size, cap = nbytes, cap_b
@@ -957,18 +929,16 @@ def build(b):
         cmn, cmx = np.full(3, 1e9), np.full(3, -1e9)
         for V, col, T, tc, cfl in groups:
             sel = np.flatnonzero(tc == ci)
-            for t in (idx_batches(T[sel]) if IDX else [T[sel[s:s + CHUNK_TRIS]] for s in range(0, len(sel), CHUNK_TRIS)]):
-                if IDX:  # the batch's distinct vertices in first-use order, padded to a multiple of 3 (vu1mapi)
-                    u, first_use, inv = np.unique(t.reshape(-1), return_index=True, return_inverse=True)
-                    order = np.argsort(first_use, kind="stable")
-                    rank = np.empty(len(u), np.int64)
-                    rank[order] = np.arange(len(u))
-                    vs = u[order]
-                    nv = -(-len(vs) // 3) * 3
-                    vs = np.concatenate([vs, np.repeat(vs[-1:], nv - len(vs))])
-                    tri = rank[inv.reshape(-1)].reshape(-1, 3)
-                else:
-                    vs = t.reshape(-1)
+            for t in idx_batches(T[sel]):
+                # the batch's distinct vertices in first-use order, padded to a multiple of 3 (vu1mapi)
+                u, first_use, inv = np.unique(t.reshape(-1), return_index=True, return_inverse=True)
+                order = np.argsort(first_use, kind="stable")
+                rank = np.empty(len(u), np.int64)
+                rank[order] = np.arange(len(u))
+                vs = u[order]
+                nv = -(-len(vs) // 3) * 3
+                vs = np.concatenate([vs, np.repeat(vs[-1:], nv - len(vs))])
+                tri = rank[inv.reshape(-1)].reshape(-1, 3)
                 p = V[vs]
                 mn, mx = p.min(0), p.max(0)
                 org = (mn + mx) / 2
@@ -980,14 +950,10 @@ def build(b):
                 mn, mx = pq.min(0), pq.max(0)
                 cmn, cmx = np.minimum(cmn, mn), np.maximum(cmx, mx)
                 c4 = np.concatenate([col[vs], np.full((len(p), 1), 0x80, np.uint8)], 1)
-                if IDX:
-                    ix = np.zeros((len(t), 4), np.uint8)
-                    ix[:, :3] = tri
-                    pk, offs = idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
-                    ntw = len(t) | nv << 16
-                else:
-                    pk, offs = chunk_streams(len(t), qp.tobytes(), c4.tobytes())
-                    ntw = len(t)
+                ix = np.zeros((len(t), 4), np.uint8)
+                ix[:, :3] = tri
+                pk, offs = idx_streams(len(t), nv, qp.tobytes(), c4.tobytes(), ix.tobytes())
+                ntw = len(t) | nv << 16
                 recs.append((cfl, ntw, len(streams), offs, mn, mx, org, step))
                 streams += pk
                 nchk += 1

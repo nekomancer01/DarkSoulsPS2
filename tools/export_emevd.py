@@ -131,8 +131,6 @@ def map_code(map_id):
 # object (X0), delete its SFX (X4) and end; then two action buttons on the wall's line segment, a short warp and the
 # 7410 walk. Single player never sees them, so the head's skip is dropped: the wall goes off at once. The Burg's
 # aqueduct doorway (o1419, -49.8 -21.8 -33.2) was a white SFX quad with a solid collider (TECH_DEBT event-20).
-# MULTI_WALLS=1 keeps the walls (the old export).
-MULTI_WALLS = os.environ.get("MULTI_WALLS", "0") == "1"
 
 
 def multi_wall(ev):
@@ -153,7 +151,7 @@ def encode_events(E):
     nsub = 0
     for ev in E.events:
         off, first = len(ins_b), nsub
-        drop = 0 if MULTI_WALLS or not multi_wall(ev) else 1  # instructions dropped from the head (multi_wall)
+        drop = 1 if multi_wall(ev) else 0  # instructions dropped from the head (multi_wall)
         for k, ins in enumerate(ev.instrs[drop:]):
             op = OP_OF.get((ins.bank, ins.id), 0)
             if op and ins.defn is None:

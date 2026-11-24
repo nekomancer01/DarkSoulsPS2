@@ -129,8 +129,6 @@ WS_SHARE_K = float(os.environ.get("WS_SHARE_K", 1.0))
 # the code export_world.py writes the links with). Before, its 8 m navmesh voxels in the spot's disc counted whether or
 # not the runtime had it loaded, and a spot of another MSB counted for this block whether or not its links load it.
 WS_LINKS = os.environ.get("WS_LINKS", "1") == "1"
-# rigid map / object meshes: each vertex on its own bone (mapgather.rigid_mesh); 0: the mesh's default bone (A/B)
-MAP_VBONE = os.environ.get("MAP_VBONE", "1") == "1"
 # WS_DROP (default on; 0 = the old solve): loose pieces go whole before a wall bends. An edge collapse cannot remove a
 # closed shell, so barrels, ivy leaves, planks and rubble ended as lumps of a few triangles however far a cell's
 # threshold was raised, and the solve bent the structure around them instead (Undead Burg 2026-11-13: at the 12 px
@@ -185,10 +183,6 @@ KEEP_MODELS = set(os.environ.get("KEEP_MODELS", "o0200").split(","))
 KEEP_R = float(os.environ.get("KEEP_R", 2.0))
 KEEP_D = float(os.environ.get("KEEP_D", 0.5))
 KEEP_POS = []
-# area-burg-coverage (TECH_DEBT map-4, area-1): POSE_OBJ=0 skips skinned objects again, FAR_OBJ=0 keeps objects to the
-# area region instead of map_radius (A/B)
-POSE_OBJ = os.environ.get("POSE_OBJ", "1") == "1"
-FAR_OBJ = os.environ.get("FAR_OBJ", "1") == "1"
 FAR_LOD = os.environ.get("FAR_LOD", "1") == "1"  # map pieces beyond STREAM_FAR of the navmesh: lowest game LOD (A/B: 0)
 FAR_LOD_STATS = [0, 0]  # pieces with several LODs: [kept LOD0, took the lowest]
 DRAW_GROUPS = os.environ.get("DRAW_GROUPS", "1") == "1"
@@ -208,7 +202,6 @@ CHUNK_SKY_ROW = 12
 SKY_FOG_ROWS = []  # gather: FogBank row ids of the sky meshes, in slot order
 # Light, fog colour and tone map follow DSR's own math (tools/dsr_light.py), from the area's own banks and MSB.
 # CHAR_ALB: sRGB albedo the character light is fitted for.
-SHADOWS = os.environ.get("SHADOWS", "1") == "1"  # bake sun shadows (dsr_light.ShadowMap)
 # Shadow strength on probe + hemisphere light: gFC_ShadowColor 0.8 (MEASURED, RenderDoc at Firelink) x 0.75, the
 # share of DSR's camera-distance fade (full to 3 m, gone at 10 m) averaged over a 0-20 m view (ASSUMED)
 SHADOW_AMB = float(os.environ.get("SHADOW_AMB", 0.8 * 0.75))

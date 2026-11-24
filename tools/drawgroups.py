@@ -22,7 +22,7 @@ dg.bin: a chunk file (tools/chunkfile.py, file id 'DGRP'; src/drawgrp.c reads it
   CHDG v1  N x u8      piece mask per chunk, in bump.bin's global chunk order (resident chunks, then near chunks)
   TRDG v1  T x u8      collision mask per collision.bin triangle (export_collision.area_collision order)
   CHRS v1  E x {f32 x, y, z; u32 piece mask}  every enemy part of the MSB
-  ENTS v1  S x s32     entity ids of the pieces / objects events switch on / off (export_map.py EVENT_PARTS,
+  ENTS v1  S x s32     entity ids of the pieces / objects events switch on / off (mapchunks.py CHUNK_ENT,
            TECH_DEBT event-5), ascending
   CHEN v1  N x u8      per chunk: 1 + index into those ids, 0 = no switched part
 (before Polaris 3.3: one 'DGM3' blob of the same sections behind a 32-byte header, padded to 4 bytes between them)
@@ -63,10 +63,7 @@ def _arealoadlists(game):
 
 
 def area_group(game, map_id):
-    """AA of map_id when an area load list keeps it resident with other maps (m10_01_00_00 -> 10), else 0 (DG_GROUPS=0:
-    always 0)"""
-    if os.environ.get("DG_GROUPS", "1") != "1":
-        return 0
+    """AA of map_id when an area load list keeps it resident with other maps (m10_01_00_00 -> 10), else 0"""
     return int(map_id[1:3]) if any(map_id in a and len(a) > 1 for a in _arealoadlists(game)) else 0
 
 

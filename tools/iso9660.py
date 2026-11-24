@@ -432,7 +432,7 @@ def build(elf, data, out, boot_id="DSRP_000.01", media=None, layers=None, layer0
 def align_check(where, data, order, log=print):
     """the ECC block rule (Polaris 4.7): every pack starts on a 32 KB block of the disc, its entries are placed as
     tools/pack.py places them and a world block's near parts touch no more blocks than their size needs
-    (tools/discalign.py). ValueError when not, unless the build asked for the old layout (DISC_ALIGN=0 / ALIGN=0): then
+    (tools/discalign.py). ValueError when not, unless the build asked for the old layout (DISC_ALIGN=0): then
     the problems are only listed."""
     import discalign
     bad = []
@@ -446,8 +446,8 @@ def align_check(where, data, order, log=print):
         return
     for b in bad[:20]:
         log(f"align: {b}")
-    if os.environ.get("DISC_ALIGN", "1") == "0" or os.environ.get("ALIGN", "1") == "0":
-        log(f"align: {len(bad)} problems (the old layout was asked for: DISC_ALIGN=0 / ALIGN=0)")
+    if os.environ.get("DISC_ALIGN", "1") == "0":
+        log(f"align: {len(bad)} problems (the old layout was asked for: DISC_ALIGN=0)")
         return
     raise ValueError(f"{len(bad)} alignment problems on the 32 KB ECC blocks (tools/discalign.py; DISC_ALIGN=0 builds the old layout)")
 

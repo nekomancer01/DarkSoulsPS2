@@ -181,8 +181,6 @@ def _mesh_np(m):
     return _np_list(m, "pos", m["pos"], np.float64, 3), _np_list(m, "wpos", m["wpos"], np.int32, 1)
 
 
-EDGE_2SIDED = os.environ.get("EDGE_2SIDED", "1") == "1"  # two-sided cut-out light (gather, below)
-
 
 def _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd={}):
     """gather's per-wedge light (dsr_light.light_fn split=True + the static point lights) for one lit mesh ->
@@ -452,13 +450,13 @@ def rigid_mesh(F, m, bind):
     the same way), and map pieces use it to repeat a shape: the Undead Burg's arcade wall and the tower by the street
     south of the bonfire are arches drawn once and placed by bones (95k of m10_01's triangles). Placed by the mesh's
     default bone alone they all landed on the first copy, inside each other (found 2026-11-14: the wall was missing
-    against DSR). MAP_VBONE=0: the default bone for all (A/B)."""
+    against DSR)."""
     e = _RIGID.get(id(m))
     if e is not None and e[0] is m:
         return e[1]
     out = m
     bi = m["verts"]["bone_idx"]
-    if mapcfg.MAP_VBONE and len(bi) and len(bi) == len(m["verts"]["pos"]) and m["bones"]:
+    if len(bi) and len(bi) == len(m["verts"]["pos"]) and m["bones"]:
         BI = np.asarray(bi.a if isinstance(bi, souls.Rows) else bi, np.int64).reshape(len(bi), -1)[:, 0]
         fb = np.array([m["bones"][k] if k < len(m["bones"]) else m["default_bone"] for k in range(int(BI.max()) + 1)])[BI]
         if np.any(fb != m["default_bone"]) and fb.min() >= 0 and fb.max() < len(bind):
@@ -626,15 +624,14 @@ def gather(game, map_id):
     # dg.bin: DSR compares a piece's draw groups with those of the collision part under the player in whichever map
     # that part belongs to (one bit space for the maps an area load list keeps resident together: m10_00 / _01 / _02;
     # Burg collisions show 41-63 of Firelink's 67 pieces near the aqueduct, none deep inside). Pieces are merged into
-    # sets over every collision of those maps, so a set decides alike from another block's floor too (DG_GROUPS=0: the
-    # region's own collisions only, the old per-block sets)
+    # sets over every collision of those maps, so a set decides alike from another block's floor too.
     mapchunks.DG.collisions(drawgroups.group_collisions(game, map_id, M, reg_coll))
     mapchunks.DG.area = drawgroups.area_group(game, map_id)
     in_map = area_mod.map_region(M, map_id)  # map_radius around the spawn, or a world block's cells (tools/area.py)
     map_r = in_map is not None
     nav_pts = navmesh_points(game, map_id, M, keep)
     souls.VERT_NP = _VERT_NP  # filled as souls.flver parses (the values np.array gives from the lists), until the end
-    souls.VERT_ROWS = souls.FLVER_NP and os.environ.get("VERT_ROWS", "1") == "1"  # FLVER attributes as souls.Rows
+    souls.VERT_ROWS = souls.FLVER_NP  # FLVER attributes as souls.Rows
     MX = mapx_native.lib()  # tools/mapx (C): thin_foliage + is_canopy; MAPX=0 runs the Python code below
     mx_grid = None
     if MX is not None and nav_pts:
@@ -690,16 +687,14 @@ def gather(game, map_id):
     print(f"spawn collision {spawn_part}: tone map {main_tone}, scattering {sc_id}")
     near = mapcfg.SCATTER[0].near_factor() if mapcfg.SCATTER[0] else [1.0, 1.0, 1.0]
     # static point lights (visuals-effects, TECH_DEBT map-28): bonfire effect lights + MSB Light events; the
-    # PointLightBank light of the collision part follows the player (fog_section). FX_LIGHTS=0 for A/B.
+    # PointLightBank light of the collision part follows the player (fog_section).
     # static point lights (export_effects.static_lights): the Makefile passes them as a file (FX_LIGHTS_FILE, written
     # by export_effects.py --static-lights) so map.bin depends on the lights, not on export_effects.py
-    plights = []
-    if os.environ.get("FX_LIGHTS", "1") == "1":
-        if os.environ.get("FX_LIGHTS_FILE"):
-            plights = [dsr_light.cubic_light(*a) for a in json.load(open(os.environ["FX_LIGHTS_FILE"]))]
-        else:
-            import export_effects
-            plights = [dsr_light.cubic_light(*a) for a in export_effects.static_lights(game, map_id)]
+    if os.environ.get("FX_LIGHTS_FILE"):
+        plights = [dsr_light.cubic_light(*a) for a in json.load(open(os.environ["FX_LIGHTS_FILE"]))]
+    else:
+        import export_effects
+        plights = [dsr_light.cubic_light(*a) for a in export_effects.static_lights(game, map_id)]
     albedo_cache, pending = {}, []
 
     def albedo(name):
@@ -744,7 +739,7 @@ def gather(game, map_id):
         for i in lists:
             _VERT_NP.pop(i, None)
     export_normal.SRC.update(dds=dds, probes=probes, near=near)
-    switched = emevd.switched_entities(game, map_id) if mapchunks.EVENT_PARTS else set()
+    switched = emevd.switched_entities(game, map_id)
     for pi, (part, (lid, fid)) in enumerate(zip(M["parts"], ids)):
         for k in expire.get(pi - 1, ()):
             evict(k)
@@ -755,7 +750,7 @@ def gather(game, map_id):
             continue
         # objects beyond the region but inside map_radius are scenery like the map triangles around them: drawn as
         # static objects, breakables intact (the cropped collision ends at the region, nothing can reach them)
-        if far and not (mapcfg.FAR_OBJ and map_r and in_map(*part["pos"])):
+        if far and not (map_r and in_map(*part["pos"])):
             continue
         if part["type"] == 1 and nav_tree is not None and \
                 np.min(np.sum((nav_tree - np.array(part["pos"])) ** 2, axis=1)) > mapcfg.PARK_DIST ** 2:
@@ -785,7 +780,7 @@ def gather(game, map_id):
                 # in bind pose they would T-pose
                 pk = (part["model"], part.get("init_anim"))
                 if pk not in poses:
-                    poses[pk] = pose_obj.anim_bones(game, *pk) if mapcfg.POSE_OBJ else None
+                    poses[pk] = pose_obj.anim_bones(game, *pk)
                 if poses[pk] is None:
                     continue
                 sk = pose_obj.skin_mesh_np(F, m, poses[pk])  # in C; the lists from Python without it
@@ -953,13 +948,13 @@ def gather(game, map_id):
             if lit and not water:  # linear HDR irradiance now, tone mapped once the exposure is known (below)
                 # (hemisphere + probe + point lights, directional, position, unit normal) per wedge: shadowed below
                 hdr = _wedge_light(lit, wn, pos, wpos, probes, probe_at, plights, npd)
-                if EDGE_2SIDED and material.two_sided(m["mtd"]) and len(wpos):
+                if material.two_sided(m["mtd"]) and len(wpos):
                     # cut-out cards ("_Edge" MTDs: leaves, ivy, fences) are two-sided: DSR's Phn pixel shaders read
                     # SV_IsFrontFace and light the side in view with its own normal. Firelink's canopy cards (m7010B2,
                     # M_Tree[D]_Edge) have normals straight down: baked with those alone they got ~2 % light and the
                     # tone map drew them black (Ame's playtest 2026-11-16, "leaves are squares"). A vertex colour holds
                     # one side, so each wedge takes the side the light reaches more (ASSUMED: the side seen is the
-                    # lit one). EDGE_2SIDED=0: the stored normal only, as before
+                    # lit one)
                     back = _wedge_light(lit, -_np_list({"_np": npd}, "wn", wn, np.float64, 3), pos, wpos, probes, probe_at,
                                         plights, npd)
                     pick = back["E"].sum(1) + back["S"].sum(1) > hdr["E"].sum(1) + hdr["S"].sum(1)
@@ -1033,7 +1028,7 @@ def gather(game, map_id):
     sh = banks["Shadow"].get(main_tone[0]) or banks["Shadow"].get(main_light)
     # the player's reach: navmesh vertices (shadows only matter where characters and the camera go)
     nav_focus = navmesh_points(game, map_id, M, keep)
-    if sh and mapcfg.SHADOWS:
+    if sh:  # sun shadows (dsr_light.ShadowMap)
         t0 = time.time()
         occ = [_mesh_np(m)[0][_mesh_np(m)[1][_np_list(m, "tris", m["tris"], np.intp, 3)]]
                for m in meshes if not m["flags"] & (mapcfg.CHUNK_BLEND | mapcfg.CHUNK_SKY) and not m["grass"] and m["tris"]]

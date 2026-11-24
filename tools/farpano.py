@@ -530,9 +530,8 @@ def in_map(X, map_id):
 # out of its hzn.bin): a set of its own in the other blocks' panoramas, flagged FAR_PANO, which mapblock.c draws exactly
 # while map.c does not draw the pictures (the player outside the boot block). The pictures are flat sheets baked from
 # one eye at Firelink: seen from the Undead Burg they smeared and repeated their texture edges (Ame's report
-# 2026-11-17 t 245-253), and without them the Burg showed no ring walls. FAR_PANO_SET=0: none, as before
+# 2026-11-17 t 245-253), and without them the Burg showed no ring walls.
 FAR_PANO = 1
-PANO_SET = os.environ.get("FAR_PANO_SET", "1") == "1"
 
 
 def far_side(gen):
@@ -576,7 +575,7 @@ def build(own, gens):
         hp, hc, hs = hzn_tris(os.path.join(g, "hzn.bin"))
         cp, cc, cs = side["crown"]  # the peer's tree crowns (horizon.py: not in its own horizon)
         cands = [(0, np.concatenate([hp, cp]), np.concatenate([hc, cc]), np.concatenate([hs, cs]))]
-        if PANO_SET and os.path.exists(os.path.join(g, "pano.bin")) and os.path.getsize(os.path.join(g, "pano.bin")) > 16:
+        if os.path.exists(os.path.join(g, "pano.bin")) and os.path.getsize(os.path.join(g, "pano.bin")) > 16:
             cands.append((FAR_PANO, *side["pano"]))
         for fl, P, C, S in cands:
             n_in += len(P)

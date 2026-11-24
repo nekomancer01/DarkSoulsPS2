@@ -172,7 +172,6 @@ PVS_ORDER = []  # STREAM + PVS: per chunk in map.bin / dg.bin order (index in bu
 CHUNK_ENT = []  # build_chunks: MSB entity id per chunk (0 = none): the part an event switches on / off (dg.bin DGM3)
 # TECH_DEBT event-5: pieces / objects whose entity id the map's events switch ((De)activate Object, Activate Map Part,
 # tools/emevd.switched_entities) never share a chunk with anything else, so src/drawgrp.c can hide exactly them
-EVENT_PARTS = os.environ.get("EVENT_PARTS", "1") == "1"
 DG = drawgroups.Table()  # the area's piece draw-group sets (gather: one per mesh)
 
 

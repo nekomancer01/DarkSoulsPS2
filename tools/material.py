@@ -237,7 +237,7 @@ def is_ivy(mtd):
 
 def two_sided(mtd):
     """_Edge cut-out cards (leaves, ivy, fences): two-sided light (DSR's Phn pixel shaders read both faces;
-    mapgather EDGE_2SIDED)"""
+    mapgather's two-sided light)"""
     return "_edge" in mtd.lower()
 
 

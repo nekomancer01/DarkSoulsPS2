@@ -18,8 +18,8 @@ What is placed (all DATA unless marked):
   begin 0, linear colour (10.55, 4.61, 1.17) = 30 x (A x c)^2.2 at A 0.62, inside the curve's 0.565..0.753.
   The light shows while the bonfire is lit (index >= 1; ASSUMED, the exe call that spawns 90006 is not found).
 - MSB SFX events (effect_id at the region; frame = region rotation, local Y up). Ones with an entity id (fog walls
-  etc.) keep it in their instance: event scripts delete / spawn them by it (src/fx.c fx_entity; FX_EVENT_SFX=0 leaves
-  them out as before, TECH_DEBT fx-4 / event-5).
+  etc.) keep it in their instance: event scripts delete / spawn them by it (src/fx.c fx_entity;
+  TECH_DEBT fx-4 / event-5).
 - MSB Light events: PointLightBank rows at their regions = static point lights (map bake only, static_lights()).
   MEASURED: their shader colour is 3.0 x lin(col, colA) (torch row 15 at Burg, all three channels).
 
@@ -71,7 +71,6 @@ import resample  # Image.resize with a fixed pass order (TECH_DEBT build-7)
 from dsr_light import cubic_light, load_tone, write_tone  # moved there: export_map.py uses them without this file
 
 FX_VERSION = 2  # 2: FxSys orient + quad axes (FX_ORIENT)
-EVENT_SFX = os.environ.get("FX_EVENT_SFX", "1") == "1"  # MSB SFX with an entity id (event-owned) included
 BONFIRE_FIRE, BONFIRE_LIGHT = 90000, 90006   # fire = 90000 + kindle index 0..4, light (see the docstring)
 BONFIRE_BURSTS = (90007, 90010)              # one-shots: ignite (index change into 1..4), rest
 # FxInst.flags (= fx.c FXI_*): which runtime bonfire state shows an instance; 0 = always (MSB SFX)
@@ -374,13 +373,12 @@ def system(cc, xf, pxf, tone, tex_of, coverage, model_of=lambda mid: None):
                 spin=rs, frame=(fr0[0] * fr0[1], fr0[0] * fr0[2]), rate=rate, fpr=0, nframes=0, frame_t=0)
 
 
-# FX_LOD_ONE (default on; FX_LOD_ONE=0 = the old export): an effect's systems that differ only in how many particles
+# One LOD copy per effect: an effect's systems that differ only in how many particles
 # they emit (interval, count, max alive) are its quality / LOD copies; DSR plays one of them. The fog walls (81016,
 # 81018, 81019, 81021: 4 copies of base / wisp / mote systems, 60/30/20/15 motes) drew all four, the m2012 torches (530)
 # their flame twice. The first copy (the most particles) stays: 218 -> 125 particles at the Burg fog wall. (The fog
 # wall still draws as an opaque white box with one copy: its BlendMode 1 / 4 systems are exported as additive, see
 # TECH_DEBT fx-12; Ame's ISO play report 2026-11-08.)
-FX_LOD_ONE = os.environ.get("FX_LOD_ONE", "1") == "1"
 
 
 def _lod_key(s):
@@ -463,7 +461,7 @@ class Area:
             if r is None or not keep(*r["pos"]):
                 continue
             owned = ev.get("entity_id", -1) not in (-1, None)
-            if ev["type_name"] == "SFX" and (not owned or EVENT_SFX) and ev.get("effect_id", -1) > 0:
+            if ev["type_name"] == "SFX" and ev.get("effect_id", -1) > 0:  # event-owned ones (an entity id) too
                 R = _rot_part(r.get("rot", (0, 0, 0)))
                 self.inst.append((ev["effect_id"], list(r["pos"]), [[R[i][j] for i in range(3)] for j in range(3)],
                                   ev["name"], 0, ev["entity_id"] if owned else 0))
@@ -673,7 +671,7 @@ def export(game, map_id, out_path, tone_path=None, describe=False, shine=False):
         for kind, cc, xf, pxf in found:
             if kind == "ps" and len(refs) - first < MAX_SYS_PER_EFFECT:
                 s = system(cc, xf, pxf, fx_tone, tex_of, lambda i: covs[i], lib.model)
-                if s and FX_LOD_ONE:
+                if s:
                     key = _lod_key(s)
                     if key in lod_seen:
                         continue
