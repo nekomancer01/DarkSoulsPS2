@@ -870,8 +870,24 @@ def gather(game, map_id):
                 tl = [t for t in tl if fin[list(t)].all()]
             if (map_r or mapsimp.PANO_R) and not sky:  # each used vertex placed once (was 9x per triangle: 11.7M in Burg)
                 ui = list({i for t in tl for i in t})
-                Wp = dict(zip(ui, map(tuple, xf.many(_vert_np(m["verts"]["pos"])[ui]).tolist())))
-            if map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
+                Wa = xf.many(_vert_np(m["verts"]["pos"])[ui])
+                Wp = dict(zip(ui, map(tuple, Wa.tolist())))
+            if map_r and not sky and tl and hasattr(in_map, "many"):
+                # the same centroids, sums and cell keys as the loop below, at once (2026-11-24 build profile: the
+                # per-triangle loops were ~8 % of export_map)
+                lut = np.zeros(max(ui) + 1, np.int64)
+                lut[ui] = np.arange(len(ui))
+                ti = lut[np.asarray(tl, np.int64)]
+                cen = (Wa[ti[:, 0]] + Wa[ti[:, 1]] + Wa[ti[:, 2]]) / 3
+                if mapcfg.WS_SHARE_TRIS:  # the whole MSB's source triangles per 32 m cell, before the cut (ws_shares)
+                    ck = np.floor(cen / mapcfg.CHUNK_GRID).astype(np.int64)
+                    uk, first, cnt = np.unique(ck, axis=0, return_index=True, return_counts=True)
+                    for j in np.argsort(first, kind="stable").tolist():  # first-use order: the dict's key order
+                        key = tuple(uk[j].tolist())
+                        mapcfg.WS_SRC_TRIS[key] = mapcfg.WS_SRC_TRIS.get(key, 0) + int(cnt[j])
+                keep = in_map.many(cen)
+                tl = [t for t, k in zip(tl, keep.tolist()) if k]
+            elif map_r and not sky:  # area map radius (tools/area.py): triangles centred beyond it are dropped
                 if mapcfg.WS_SHARE_TRIS:  # the whole MSB's source triangles per 32 m cell, before the cut (ws_shares)
                     G = mapcfg.CHUNK_GRID
                     for t in tl:
