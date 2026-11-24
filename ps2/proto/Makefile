@@ -235,11 +235,15 @@ blockfar: $(A)/far.bin
 # window: 16 bakes share the one GPU there and left ~60 % of the CPU idle, while the chr exports ran 6 wide only after
 # the panoramas (2026-11-24 cold build: minutes 14-16 of 17.4). WORLD_EARLY_CHRS=0: in worldpacks, as before
 WORLD_EARLY_CHRS ?= 1
-worldchrs: worldexports $(if $(WORLD_BLOCKS),$(ENEMIES:%=$(A)/%/chr.bin))
+# (with them each block's other pre-bake exports: enemies, map AI, events, effects and the chr packs, which waited for
+# the bakes and ran in the build's last minute)
+EARLY_EXPORTS = $(ENEMIES:%=$(A)/%/chr.bin) $(ENEMIES:%=$(AREA_DATA)/%.pak) $(A)/enemies.bin $(A)/ai_map.lua0 \
+                $(A)/events.bin $(A)/fx.bin
+worldchrs: worldexports $(if $(WORLD_BLOCKS),$(EARLY_EXPORTS))
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldblockchrs@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblockchrs@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockchrs
-blockchrs: $(ENEMIES:%=$(A)/%/chr.bin)
+blockchrs: $(EARLY_EXPORTS)
 .PHONY: worldchrs blockchrs
 worldpacks: worldhzn $(if $(filter 1,$(WORLD_EARLY_CHRS)),worldchrs) $(if $(filter 1,$(WORLD_EARLY_BAKES)),worldpvs worldfar $(if $(WORLD_BLOCKS),$(A)/pvs.bin $(A)/far.bin)) $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
