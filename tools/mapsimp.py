@@ -1270,3 +1270,94 @@ def validate_jobs(MX, h, njobs, n, tol):
 
 
 PVSIN_MAGIC = b"PVI1"
+
+
+# PLANK_CARDS (TECH_DEBT world-49, default on; 0 = both levels from every face as before): a thin slab (a plank, a
+# board, a shutter: a connected piece of one mesh at most WS_DROP_DIAG m across whose thinnest extent is under half its
+# middle one and under PLANK_CARD_T m) keeps only its two broad faces, the ones facing along its thin axis, when half
+# its thickness seen from its view distance (view_distance, from its nearest corner) is within the level's error: the
+# coarse level's (EPS_FAR, from WS_NEAR_R = 20 m out) or the near level's (EPS). The narrow side and end faces go.
+# The simplifier cannot remove them itself: every plank edge is a UV seam, so Blighttown's scaffolding kept its boxes
+# whole at any error (thread D's plank test, 2026-11-23). The broad faces keep their own UVs and colours.
+PLANK_CARDS = os.environ.get("PLANK_CARDS", "1") == "1"
+PLANK_CARD_T = float(os.environ.get("PLANK_CARD_T", 0.5))  # m: thickest slab looked at
+PLANK_CARD_COS = 0.7  # a face is broad when its normal is within 45 degrees of the thin axis
+CARD_STATS = {}  # level -> [slab pieces, their triangles, triangles left]
+
+
+def _slabs(meshes, src):
+    """Thin slabs of meshes' src triangles -> list of (mesh index, triangle numbers, broad mask, half thickness, nearest
+    corner (world), diagonal)"""
+    out = []
+    for mi, m in enumerate(meshes):
+        tl = m[src]
+        if m["keep"] or m.get("grass") or len(tl) < 4:
+            continue
+        P, wp = mapgather._mesh_np(m)
+        T = np.asarray(tl, np.int64).reshape(-1, 3)
+        V = wp[T]  # position index per corner
+        par = np.arange(len(P))
+        while True:  # connected pieces by shared positions: min-label propagation over the triangles' corners
+            lab = par[V].min(1)
+            new = par.copy()
+            for k in range(3):
+                np.minimum.at(new, V[:, k], lab)
+            new = new[new]
+            if (new == par).all():
+                break
+            par = new
+        piece = par[V[:, 0]]
+        order = np.argsort(piece, kind="stable")
+        for ti in np.split(order, np.flatnonzero(np.diff(piece[order])) + 1):
+            if len(ti) < 4:
+                continue
+            vi = np.unique(V[ti])
+            Q = P[vi]
+            diag = float(np.linalg.norm(Q.max(0) - Q.min(0)))
+            if diag > mapcfg.WS_DROP_DIAG or len(vi) < 4:
+                continue
+            c = Q - Q.mean(0)
+            ax = np.linalg.svd(c, full_matrices=False)[2]
+            if len(ax) < 3:
+                continue
+            pr = c @ ax.T
+            e = pr.max(0) - pr.min(0)
+            if not (1e-3 < e[2] < PLANK_CARD_T and e[2] < 0.5 * e[1]):
+                continue
+            a, b, d = P[V[ti, 0]], P[V[ti, 1]], P[V[ti, 2]]
+            nr = np.cross(b - a, d - a)
+            broad = np.abs(nr @ ax[2]) > PLANK_CARD_COS * np.maximum(np.linalg.norm(nr, axis=1), 1e-12)
+            if broad.all() or not broad.any():
+                continue
+            out.append((mi, ti, broad, float(e[2]) / 2, Q, diag))
+    return out
+
+
+def plank_cards(meshes, spawn, nav_v, nav_t, src="tris_in"):
+    """m["tris_card"] (coarse level input) and m["tris_card_near"] (near level input) = m[src] without the narrow faces
+    of the thin slabs whose half thickness is within that level's error (PLANK_CARDS); m[src] itself where none go."""
+    for m in meshes:
+        m["tris_card"] = m["tris_card_near"] = m[src]
+    if not PLANK_CARDS or not nav_t:
+        return
+    sl = _slabs(meshes, src)
+    if not sl:
+        return
+    vd = np.array([min(d) for d in view_distance([s[4] for s in sl], spawn, nav_v, nav_t, floor=1e-3)])
+    eps_near = mapcfg.EPS if mapcfg.EPS is not None else mapcfg.EPS_MAX
+    for key, floor, eps in (("tris_card", mapcfg.WS_NEAR_R, mapcfg.EPS_FAR), ("tris_card_near", mapcfg.NEAR, eps_near)):
+        px = math.sqrt(eps) * 568
+        drop = {}
+        st = CARD_STATS.setdefault(key, [0, 0, 0])
+        for s, d in zip(sl, vd):
+            if s[3] * 568 / max(floor, d) <= px:
+                drop.setdefault(s[0], []).append(s[1][~s[2]])
+                st[0] += 1
+                st[1] += len(s[1])
+                st[2] += int(s[2].sum())
+        for mi, parts in drop.items():
+            keep = np.ones(len(meshes[mi][src]), bool)
+            keep[np.concatenate(parts)] = False
+            meshes[mi][key] = [t for t, k in zip(meshes[mi][src], keep.tolist()) if k]
+        print(f"plank cards ({'coarse' if key == 'tris_card' else 'near'} level, {px:.1f} px from {floor:g} m): "
+              f"{st[0]} of {len(sl)} thin slabs, {st[1]} -> {st[2]} triangles (their narrow faces left out)")

@@ -118,6 +118,7 @@ def main():
             mapchunks.rss("cut cells")
         for m in meshes_in:
             m["tris_in"] = m["tris"]
+        mapsimp.plank_cards(meshes_in, spawn["pos"], nav_v, nav_t)  # both levels' input: thin slabs without their narrow faces where within the error (PLANK_CARDS)
         far = mapsimp.far_cells(meshes_in, nav_v)
         # player positions for the spot budgets (world streaming v2): navmesh vertices, at most 4000
         ws_s = nav_v[::max(1, len(nav_v) // 4000)] if mapcfg.WS_BUDGET else None
@@ -168,18 +169,18 @@ def main():
             ws_bc = (mapcfg.WS_R1_IN, mapcfg.WS_R1, mapcfg.WS_B1, "coarse level", mapcfg.WS_PX1)
             ws_bn = (0.0, mapcfg.WS_R0, mapcfg.WS_B0, "near level", mapcfg.WS_PX0)
         if mapcfg.WS_FAR_SHAPE and ws_s and mapcfg.WS_DROP:  # the near level's geometry without the small clutter
-            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far",
+            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_card", out="tris_far",
                                     eps_fixed=(mapcfg.WS_PX0 / 568) ** 2, far=far, cells=True, area_k=0.0,
                                     eps_far=min(mapcfg.EPS_FAR, mapcfg.BACKDROP_EPS),
                                     budget=ws_bc[:4] + (mapcfg.WS_FAR_PX,), nav_s=ws_s, far_shape=True)
         else:
-            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris_far", eps_fixed=mapcfg.EPS_FAR, far=far,
+            mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_card", out="tris_far", eps_fixed=mapcfg.EPS_FAR, far=far,
                         floor=mapcfg.STREAM_D, cells=True, eps_far=min(mapcfg.EPS_FAR, mapcfg.BACKDROP_EPS),
                         budget=ws_bc if ws_s else None, nav_s=ws_s, env_pad=mapcfg.SIMPLIFY_ENV_FAR)
         mapchunks.rss("simplify coarse")
         # near level: no area term (its few px within NEAR_DRAW_R keep thin parts anyway; with it Burg's near level
         # grew 465k -> 650k tris and its largest cell 2.1 -> 3.2 MB)
-        mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_in", out="tris", cells=True, far=far, area_k=0.0,
+        mapsimp.simplify_meshes(meshes_in, spawn["pos"], nav_v, nav_t, src="tris_card_near", out="tris", cells=True, far=far, area_k=0.0,
                         budget=ws_bn if ws_s else None, nav_s=ws_s)
     else:
         mapsimp.prune_foliage(meshes_in, nav_v, nav_t)

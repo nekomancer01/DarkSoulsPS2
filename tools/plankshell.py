@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mapcfg  # noqa: E402
 import souls  # noqa: E402
 
-ON = os.environ.get("PLANK_SHELL", "1") != "0"
+ON = os.environ.get("PLANK_SHELL", "0") != "0"
 MAPS = set(m for m in os.environ.get("PLANK_SHELL_MAPS", "m14_00_00_00").split(",") if m)
 VOX = float(os.environ.get("PLANK_SHELL_VOX", 0.1))   # grid spacing (m)
 ISO = 0.75                                             # iso offset in grid steps (the research thread's choice)
