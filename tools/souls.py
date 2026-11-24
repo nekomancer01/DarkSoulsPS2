@@ -470,13 +470,16 @@ def param_rows(b, fields):
     """DS1 PARAM -> [(row id, name, {field: value})] in file order, duplicates kept. A row ends at the next row's
     data (or the names / file end): the default_* DrawParam banks store older, shorter rows than the game's paramdef
     (default_ToneCorrectBank 32 B vs TONE_CORRECT_BANK 36 B without sfxMultiplier); fields past the end are omitted."""
+    import bisect
     rows = struct.unpack_from("<H", b, 0xA)[0]
     hdr = [struct.unpack_from("<iII", b, 0x30 + 12 * r) for r in range(rows)]
     bounds = sorted({d for _, d, _ in hdr} | {n for _, _, n in hdr if n} | {len(b)})
     out = []
     for rid, doff, noff in hdr:
         name = cstr(b, noff) if noff else ""
-        end = next(x for x in bounds if x > doff)
+        # the first bound past the row's data: a bisect (the linear scan per row was O(rows^2), a quarter of every
+        # export_chr run, 2026-11-24)
+        end = bounds[bisect.bisect_right(bounds, doff)]
         vals, pos, unit, unit_bits, unit_size = {}, doff, 0, 0, None
         for fname, itype, nbytes, bits, arr in fields:
             if pos + (struct.calcsize(FIELD_FMT.get(itype, "B")) if bits is not None else nbytes) > end:
