@@ -105,6 +105,37 @@ BLOCKS = {
     # Blighttown, before it in DSR's order, does not fit the arena yet (TECH_DEBT world-49).
     "m15_00_00_00_a": dict(map="m15_00_00_00", spawn="c0000_0000", cells=(1, 3, 4, 7), obj_budget=BLOCK_OBJ_MB),
     "m15_00_00_00_b": dict(map="m15_00_00_00", spawn_at=(112.0, 51.7, 302.4), cells=(1, 8, 4, 10), obj_budget=BLOCK_OBJ_MB),
+    # Anor Londo (m15_01_00_00, 199.4k collision triangles; 2026-11-23, Polaris 4.8 step 3): the world manifest's
+    # automatic cut at 30000 collision triangles a block (tools/worldmanifest.py --propose m15_01_00_00 --cut 30000; at
+    # most 14 cells across, collision.bin's s16 positions): at the default 60000 its arrival block's lite set was 1.7 MB
+    # and the link loading three of them set the world's structural pool (room 5122 -> 4121 KB, world-49's Blighttown
+    # problem). Eight blocks: the arrival from Sen's roof (player start c0000_0000, x 4..10, z 3..8; 29.1k collision, 9
+    # enemies, with the bonfire o0200_0000) and the buildings north of it (x 5..10, z 9..12; 24.7k, 24), the rooftops with
+    # the bonfires o0200_0003 / o0200_0001 (x 11..15, z 4..7; 27.9k, 32) and the cathedral's flank (x 11..15, z 8..10; 18.8k,
+    # 7), the
+    # palace with the bonfire o0200_0002 (x 16..18; 24.6k, 19) and the long corridor east of it at y ~31 (Gwyndolin's
+    # tomb, x 19..58 = 1.3 km in three blocks of ~26k). Sen's ConnectCollision parts load the arrival block.
+    "m15_01_00_00_a": dict(map="m15_01_00_00", spawn="c0000_0000", cells=(4, 3, 10, 8), obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_b": dict(map="m15_01_00_00", spawn="c0000_0008", cells=(11, 4, 15, 7), obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_c": dict(map="m15_01_00_00", spawn="c0000_0007", cells=(16, 4, 18, 8), obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_d": dict(map="m15_01_00_00", spawn_at=(815.9, 31.4, 249.4), cells=(19, 7, 31, 8), obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_e": dict(map="m15_01_00_00", spawn_at=(1231.9, 31.4, 249.4), cells=(32, 7, 44, 8),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_f": dict(map="m15_01_00_00", spawn_at=(1649.0, 31.7, 249.2), cells=(45, 7, 58, 8),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_g": dict(map="m15_01_00_00", spawn_at=(431.9, 134.2, 271.8), cells=(11, 8, 15, 10),
+                           obj_budget=BLOCK_OBJ_MB),
+    "m15_01_00_00_h": dict(map="m15_01_00_00", spawn_at=(225.6, 173.2, 349.1), cells=(5, 9, 10, 12),
+                           obj_budget=BLOCK_OBJ_MB),
+    # The Painted World of Ariamis (m11_00_00_00, 99.4k collision triangles; 2026-11-23, Polaris 4.8 step 3): the world
+    # manifest's automatic cut (tools/worldmanifest.py --propose m11_00_00_00), three blocks south to north: the arrival
+    # under the bridge and the chapel (z 20..24; 19.4k collision, 13 enemies), the town and the courtyards (z 25..27;
+    # 46.0k, 57) and the north end with the bonfire o0200_0000 and the player start c0000_0000 by it (z 28..32; 34.7k,
+    # 40). DSR enters it through Anor Londo's painting (a warp, no ConnectCollision link); its MapOffset event is the
+    # debug map view's, the blocks keep the MSB's own frame (z 640..1056 m: north of every other built block).
+    "m11_00_00_00_a": dict(map="m11_00_00_00", spawn_at=(-20.3, 68.4, 719.3), cells=(-4, 20, 1, 24), obj_budget=BLOCK_OBJ_MB),
+    "m11_00_00_00_b": dict(map="m11_00_00_00", spawn_at=(-41.0, 50.2, 846.5), cells=(-4, 25, 2, 27), obj_budget=BLOCK_OBJ_MB),
+    "m11_00_00_00_c": dict(map="m11_00_00_00", spawn="c0000_0000", cells=(-4, 28, 2, 32), obj_budget=BLOCK_OBJ_MB),
     # Undead Asylum: the whole MSB in one block (no cells; collision 65404 triangles, just inside collision.bin's u16
     # indices). DSR loads m18 on its own (no area load list joins it to m10), but its frame is the m10 maps' one: the
     # Asylum's collision lies at y 68..239 (the cell at 185), Firelink's at y -200..43, the Burg's below 66, under an
@@ -121,7 +152,9 @@ WORLDS = {
     "m10_02_00_00": ["m10_02_00_00", "m10_01_00_00_w", "m10_01_00_00_b", "m10_01_00_00_p", "m18_01_00_00_a",
                      "m10_01_00_00_c", "m10_00_00_00_a", "m10_00_00_00_b", "m12_00_00_00_e", "m12_00_00_00_g",
                      "m12_00_00_00_m", "m12_00_00_00_w", "m12_00_00_00_x", "m12_00_00_00_s", "m15_00_00_00_a",
-                     "m15_00_00_00_b"],
+                     "m15_00_00_00_b", "m15_01_00_00_a", "m15_01_00_00_b", "m15_01_00_00_c", "m15_01_00_00_d",
+                     "m15_01_00_00_e", "m15_01_00_00_f", "m15_01_00_00_g", "m15_01_00_00_h",
+                     "m11_00_00_00_a", "m11_00_00_00_b", "m11_00_00_00_c"],
 }
 
 def block():

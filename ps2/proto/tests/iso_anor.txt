@@ -1,0 +1,60 @@
+# Anor Londo (m15_01_00_00_a.._h) as world blocks 17-24 (2026-11-23, Polaris 4.8 step 3), on the real disc with enemies
+# on: a spawn into each block (a warp: the frame waits for the blocks as behind DSR's loading screen): the arrival from
+# Sen's roof (player start c0000_0000, block a), the first bonfire o0200_0000 (a), the rooftop bonfire o0200_0003 (b),
+# the bonfire o0200_0001 (b), the palace bonfire o0200_0002 (c), Gwyndolin's corridor east of it (d, e, f), the
+# cathedral's flank (g) and the buildings north of the arrival (h), then Sen's roof bonfire and
+# the Burg.
+option hud
+option god
+option nodemo
+wait 3
+shot boot
+stats
+spawn 178.0 207.2 132.0 -1.75
+wait 4
+shot anor_arrival_a
+stats
+spawn 169.8 173.4 255.0 -1.57
+wait 4
+shot anor_bonfire_a
+stats
+spawn 392.0 69.8 255.0 -1.57
+wait 4
+shot anor_roof_bonfire_b
+stats
+spawn 504.0 135.0 174.6 -1.57
+wait 4
+shot anor_bonfire_b
+stats
+spawn 593.0 161.0 255.0 0
+wait 4
+shot anor_palace_bonfire_c
+stats
+spawn 815.9 31.4 249.4 1.57
+wait 4
+shot anor_corridor_d
+stats
+spawn 1231.9 31.4 249.4 1.57
+wait 4
+shot anor_corridor_e
+stats
+spawn 1649.0 31.7 249.2 1.57
+wait 4
+shot anor_corridor_f
+stats
+spawn 431.9 134.2 271.8 0
+wait 4
+shot anor_flank_g
+stats
+spawn 225.6 173.2 349.1 0
+wait 4
+shot anor_north_h
+stats
+spawn 72.5 60.0 301.3 0
+wait 4
+shot sens_bonfire
+stats
+spawn -48.5 -21.8 -35.5 0
+wait 4
+shot burg_start
+stats
