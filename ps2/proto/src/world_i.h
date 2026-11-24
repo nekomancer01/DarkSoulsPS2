@@ -256,10 +256,20 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_FX_LITE
 #define WORLD_FX_LITE 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_OBJ, E_FX, NENT };
+/* E_OBJH (WORLD_OBJ_LITE, default 1; world-46 phase 3): the head of the block's objects.bin (OHDR .. ATEX: the type,
+ * piece and placement tables, the animated models and their textures; export_objects.py OHDR v2) comes with its lite
+ * set; its breakable types are made from it when the objects.bin tail is in (tex_on: objects_block_types_lite), shared
+ * with the map's other on blocks and counted, and let go after its instances (objects_block_untypes). Their models
+ * stream by file offset (OBJ_STREAM). Animated types are made at the block's first turn-on and stay (as at boot). Until
+ * now every block's types were made at boot from a whole-file read (0.9-1.5 MB in the Burg; 696 KB of the boot heap at 27
+ * blocks, 2026-11-25). world_init sizes it in obj_tail. 0 (or OBJ_STREAM 0): at boot as before. */
+#ifndef WORLD_OBJ_LITE
+#define WORLD_OBJ_LITE 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_OBJH, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
                                           "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
-                                          "objects.bin", "fx.bin"};
+                                          "objects.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
  * read while the block draws; the draw groups stay, its collision parts' groups) */
@@ -303,6 +313,7 @@ typedef struct {
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned far_off, far_size;  /* far.bin (tools/farpano.py): its far panorama of the blocks that are off; 0 none */
     unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
+    unsigned obj_full;  /* WORLD_OBJ_LITE: objects.bin's whole size (E_OBJH holds its head, E_OBJ its tail) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when

@@ -135,6 +135,8 @@ static void tex_on(int i, unsigned e)
 {
     BlockRt *r = &w_rt[i];
     void *blob = r->size[e] ? r->texbuf : NULL;
+    if (e == E_OBJ && r->size[E_OBJH] && blob)  /* WORLD_OBJ_LITE: its types first, from the head and this tail */
+        objects_block_types_lite(i, r->blob[E_OBJH], r->size[E_OBJH], r->obj_full, blob);
     if (e == E_OBJ)
         objects_block_add(i, blob);
     else
@@ -242,6 +244,7 @@ void w_turn_off(int i)
     nav_unbind(i);  /* WORLD_NAV_LITE (none bound before stage 2): the blob goes with the slot */
     if (r->stage == 2 || r->ent > E_OBJ)
         objects_block_remove(i);
+    objects_block_untypes(i);  /* WORLD_OBJ_LITE: after its instances (a no-op for a block whose types are not made) */
     if (r->stage == 2 || r->ent > E_FX)
         fx_block_on(i, 0, NULL);
     fx_block_drop(i);  /* WORLD_FX_LITE: tables bound in turn_on_col, also when it goes before stage 2 */

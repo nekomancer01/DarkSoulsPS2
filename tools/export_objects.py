@@ -11,9 +11,11 @@ meshes carry group bit BITS_INTACT), bones 1..n = the pieces (bit BITS_BROKEN). 
 are the FLVER's, which equal the Havok bodies' rest transforms (checked here).
 
 objects.bin: a chunk file (tools/chunkfile.py, file id 'OBJS'; src/objects.c reads it in place), little-endian:
-  OHDR v1 u32 types, parts, anim types, anim parts, static anims, texture set key (area x 100 + map: 1001 for
+  OHDR v2 u32 types, parts, anim types, anim parts, static anims, texture set key (area x 100 + map: 1001 for
           m10_01), u32 BTEX payload's offset in the file (0 none: world.c reads only that tail when a block turns
-          on), u32 0                                                                                       (32 B)
+          on), u32 MODL payload's offset in the file (world.c WORLD_OBJ_LITE: the file's head up to MODL's chunk
+          header, OHDR .. ATEX, is a block's lite-set entry E_OBJH; the breakable models stream by offset)  (32 B)
+          (v1: word 7 was 0, ATYP offsets pointed into MODL and ATEX came after MODL)
   TYPE v1 per breakable type: i32 model id (1497 = o1497), u32 model offset (into MODL), u32 model size, u32 pieces,
           u32 piece offset (into PIEC), i32 hp, i32 defense, f32 cylinder radius, y0, y1 (intact shape, model space,
           convex radius included), f32 friction, restitution, u32 intact bits, u32 broken bits, u32 0, u32 0 (64 B)
@@ -23,7 +25,7 @@ objects.bin: a chunk file (tools/chunkfile.py, file id 'OBJS'; src/objects.c rea
   PART v1 per placement: u16 type, u16 0, f32 pos[3], q[4] (MSB placement; scale is 1 for every breakable at m10_02),
           i32 MSB entity id (-1 none: EMEVD addresses a breakable by it), u32 0 x 3                          (48 B)
   Animated objects (doors, levers, gates, chests: src/objects.c, events play their anims):
-  ATYP v1 i32 model id, u32 model offset (into MODL), u32 model size (compact anims last: mdl_compact frees the
+  ATYP v1 i32 model id, u32 model offset (into AMDL; OHDR v1: into MODL), u32 model size (compact anims last: mdl_compact frees the
           blob), u32 bodies, u32 first body, u32 EE RAM after mdl_compact (B, estimate), u32 root bones (bit per
           bone: objects.c puts the placement rotation into the roots' pose; types with more than 32 bones stay
           static), u32 0                                                                                     (32 B)
@@ -34,10 +36,12 @@ objects.bin: a chunk file (tools/chunkfile.py, file id 'OBJS'; src/objects.c rea
           u32 0 x 2 (48 B); scaled placements stay static
   SANM v1 i32 entity, u32 anims, 8 x (i32 anim id, f32 length s) (72 B): objects the events animate that stay static
           map objects (elevators, ...), so 2003[18] "wait for completion" waits as long as in DSR
-  MODL v1 (128-byte aligned in the file) the types' model.bin files (export_model.py layout), breakables then
-          animated, each 128-byte aligned
+  AMDL v1 (128-byte aligned in the file) the animated types' model.bin files, each 128-byte aligned (in the head:
+          objects.c anim_load compacts them from the blob when the block's types are made)
   ATEX v1 (128-byte aligned, optional) the animated types' texture model: their models carry no textures, their
           groups index it (one bone, no triangles), whose VRAM textures every type shares (mdl_share_textures)
+  MODL v1 (128-byte aligned in the file) the breakable types' model.bin files (export_model.py layout), each 128-byte
+          aligned (OBJ_STREAM reads one by its file offset when the type is near)
   BTEX v1 (128-byte aligned, optional, last) the breakable texture model: every breakable texture of the whole MSB,
           the same list in every block of one map; the types' models carry no textures and their groups index it
           (objects.c: one upload per map while any of its blocks is on)
@@ -942,12 +946,12 @@ def main():
     atypes, aparts, atex, astatic = anim_objects(game, map_id, msb, keep, dds)
     srcsum.write_if_changed(out_path + ".anim", "".join(p[0] + "\n" for p in aparts))
 
-    modl = bytearray()
+    modl, amdl = bytearray(), bytearray()
 
-    def model(mbin):
-        modl.extend(b"\0" * (-len(modl) % 128))
-        o = len(modl)
-        modl.extend(mbin)
+    def model(mbin, buf=modl):
+        buf.extend(b"\0" * (-len(buf) % 128))
+        o = len(buf)
+        buf.extend(mbin)
         return o
     typ, piec, pi = bytearray(), bytearray(), 0
     for k, (model_, files, mbin, pieces, cyl, fr, rest, heap) in enumerate(types):
@@ -963,7 +967,7 @@ def main():
     part = b"".join(struct.pack("<HH3f4fi3I", ti, 0, *pos, *q, ent, 0, 0, 0) for ti, pos, q, ent in parts)
     atyp, body, nb = bytearray(), bytearray(), 0
     for model_, mbin, bods, heap, roots in atypes:
-        atyp += struct.pack("<i5I2I", int(model_[1:]), model(mbin), len(mbin), len(bods), nb, heap, roots, 0)
+        atyp += struct.pack("<i5I2I", int(model_[1:]), model(mbin, amdl), len(mbin), len(bods), nb, heap, roots, 0)
         for bone, c, q, half in bods:
             body += struct.pack("<i3f4f3fI", bone, *c, *q, *half, 0)
         nb += len(bods)
@@ -978,16 +982,18 @@ def main():
         print(f"breakable textures: {len(shared[0])} shared, {len(btex)} bytes "
               f"{sorted({(t[0], t[1]) for t in shared[0]})}")
 
-    def chunks(btex_off):
-        return [(b"OHDR", 1, struct.pack("<8I", len(types), len(parts), len(atypes), len(aparts), len(astatic), key,
-                                         btex_off, 0)),
+    def chunks(btex_off, modl_off):
+        return [(b"OHDR", 2, struct.pack("<8I", len(types), len(parts), len(atypes), len(aparts), len(astatic), key,
+                                         btex_off, modl_off)),
                 (b"TYPE", 1, typ), (b"PIEC", 1, piec), (b"PART", 1, part), (b"ATYP", 1, atyp), (b"BODY", 1, body),
-                (b"APRT", 1, aprt), (b"SANM", 1, sanm), (b"MODL", 1, modl, 128)] + \
-            ([(b"ATEX", 1, atex, 128)] if atex else []) + ([(b"BTEX", 1, btex, 128)] if btex else [])
-    blob = chunkfile.pack(b"OBJS", chunks(0))
-    if btex:  # the file again with BTEX's payload offset in OHDR (BTEX is last: before the footer)
-        blob = chunkfile.pack(b"OBJS", chunks(len(blob) - 16 - (len(btex) + 15) // 16 * 16))
-    assert not btex or blob[struct.unpack_from("<I", blob, 32 + 24)[0]:][:len(btex)] == btex
+                (b"APRT", 1, aprt), (b"SANM", 1, sanm), (b"AMDL", 1, amdl, 128)] + \
+            ([(b"ATEX", 1, atex, 128)] if atex else []) + [(b"MODL", 1, modl, 128)] + \
+            ([(b"BTEX", 1, btex, 128)] if btex else [])
+    # twice: OHDR (fixed size) gets the BTEX and MODL payload offsets of the first pass, which the second keeps
+    offs = payload_offsets(chunkfile.pack(b"OBJS", chunks(0, 0)))
+    blob = chunkfile.pack(b"OBJS", chunks(offs.get(b"BTEX", 0), offs[b"MODL"]))
+    assert payload_offsets(blob) == offs
+    assert not btex or blob[offs[b"BTEX"]:][:len(btex)] == btex
     with open(out_path, "wb") as f:
         f.write(blob)
     anim_ram = sum(t[3] for t in atypes)
@@ -995,6 +1001,16 @@ def main():
           f"{anim_ram / 1048576:.3f} MB (budget {ANIM_BUDGET} MB)")
     print(f"{len(types)} breakable types, {len(parts)} parts, {len(blob)} bytes -> {out_path}; EE RAM with the skin "
           f"streams and objects.c / physics.c pools (~24 KB): {(len(blob) + sum(heaps) + 24 * 1024) / 1048576:.3f} MB")
+
+
+def payload_offsets(blob):
+    """{chunk id: its payload's offset in the file} of a packed chunk file (chunkfile.py layout)"""
+    o, out = chunkfile.HDR, {}
+    for _ in range(struct.unpack_from("<I", blob, 12)[0]):
+        cid, _v, _f, ln, _r = struct.unpack_from("<4sHHII", blob, o)
+        out.setdefault(cid, o + chunkfile.HDR)
+        o += chunkfile.HDR + ln + (-ln % 16)
+    return out
 
 
 if __name__ == "__main__":
