@@ -632,7 +632,8 @@ out = ["{A}/far.bin"]
 inputs = ["{A}/map.bin", "{A}/dg.bin", { foreach = "PVS_WITH", as = "d", do = ["{d}/hzn.bin", "{d}/dg.bin"] },
           "{G}/pano.bin"]
 reads = [{ foreach = "PVS_PEERS", as = "d", do = ["{d}/hzn.bin", "{d}/hzn.bin.far.npz", "{d}/map.bin"] }]
-tools = ["drawgroups.py", "chunkfile.py", "area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp"]
+tools = ["drawgroups.py", "chunkfile.py", "area.py", "farpano.py", "horizon.py", "mapview.py", "export_world.py", "native/meshopt/simplifier.cpp",
+         "native/farraster.c"]
 
 # Occlusion (tools/pvs_bake.c, src/pvs.c): the bake renders ID cube maps from camera samples over the walkable collision
 # and writes the visible units per 8 m camera cell, then checks PVS_VALIDATE fresh cameras for pixels the rows leave out.

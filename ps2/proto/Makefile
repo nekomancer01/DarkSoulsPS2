@@ -13,6 +13,12 @@ MAKEFLAGS += -j$(JOBS)
 endif
 # exporters run through the job queue (tools/q): one heavy job at a time, 12 GB address-space cap (OOM kills 2026-10-31)
 PY := $(abspath ../../tools/q) -m 12 $(PY)
+# numpy's OpenBLAS threads in every exporter: the build already runs one process per core, and their idle threads
+# spun for 4.5 % of a cold world build's CPU samples (2026-11-24 profile, blas_thread_server); 0 = OpenBLAS's default
+OPENBLAS_NUM_THREADS ?= 1
+ifneq ($(OPENBLAS_NUM_THREADS),0)
+export OPENBLAS_NUM_THREADS
+endif
 # Area to build and load. Firelink (the default) builds proto.elf from $(BUILD)/gen/*.bin and $(BUILD)/data/*.pak;
 # any other area (make MAP=m10_01_00_00) keeps its own outputs: gen/<MAP>/ (area bins, enemy chr.bin), data/<MAP>/
 # (enemy + common packs), data/<MAP>.pak, proto_<MAP>.elf. Only main.o / enemy.o differ per area (AREA = the area pack,
