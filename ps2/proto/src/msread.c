@@ -26,6 +26,14 @@ static int q_before(const MsQ *a, int cls, float key)
     int ra = q_rank(a->cls), rc = q_rank(cls);
     return ra > rc || (ra == rc && a->key <= key);
 }
+/* an entry issue() took at index qi and could not send goes back there: the queue stays in rank order (MS_SCAN picks
+ * from the middle; put back at the head, a read-ahead entry led the queue and q_scan_pick held every read, the hard
+ * tier's too, until the next plan) */
+static void q_put_back(const MsQ *w, int qi)
+{
+    memmove(ms_q + qi + 1, ms_q + qi, (ms_nq++ - qi) * sizeof *ms_q);
+    ms_q[qi] = *w;
+}
 void ms_q_add(int k, unsigned id, int cls, float key)
 {
     int i = ms_nq < MS_QUEUE ? ms_nq++ : MS_QUEUE;
@@ -52,7 +60,7 @@ void ms_collect(int i, int r)
     mapstream_stats.pending = ms_nrd;
     MsInst *m = &ms_inst[w.k];
     if (w.cxl) {  /* cancelled (MS_CANCEL): the buffer is free once the read stopped */
-        ms_drop(w.k, w.id);
+        ms_why = MS_WHY_CANCEL, ms_drop(w.k, w.id);
         return;
     }
     unsigned now = ticks(), t0 = (int)(w.t - land_t) > 0 ? w.t : land_t;
@@ -237,15 +245,13 @@ int ms_issue(void)
                 moving = ms_defrag(1, ilim(), MS_DEFRAG_KB);
             }
             if (moving) {
-                memmove(ms_q + 1, ms_q, ms_nq++ * sizeof *ms_q);
-                ms_q[0] = w;
+                q_put_back(&w, qi);
                 return 0;
             }
         }
         if (!p) {
             if (ms_evict_left <= 0 && !sent && ms_nq < MS_QUEUE) {  /* no clearing left this frame: first again next frame */
-                memmove(ms_q + 1, ms_q, ms_nq++ * sizeof *ms_q);
-                ms_q[0] = w;
+                q_put_back(&w, qi);
                 return 0;
             }
             if (!ms_room_fail++) {
