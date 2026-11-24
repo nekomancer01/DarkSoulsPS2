@@ -57,11 +57,32 @@ static unsigned spare_reclaim(unsigned p0, unsigned p1)
         printf("mapstream: area pool: %u items above the new need went (%u still drawn)\n", n, busy);
     return busy;
 }
+/* a lower need is taken only after it held MS_AREA_HOLD frames (the most asked meanwhile): world_route flapped between
+ * 2392 and 4203 KB within 0.2 s at a seam and sent 114 items away; a higher one at once */
+#define MS_AREA_HOLD 150
 void mapstream_pool_need(unsigned lite, unsigned col)
 {
+    static unsigned lo_lite, lo_col, lo_since;
     if (!MS_AREA_POOL || !msa_pools_on()) {
         ms_spare_p = 0;
         return;
+    }
+    if (need_now != ~0u && (lite < need_now || col < col_now) && lite <= need_now && col <= col_now) {
+        if (!lo_since)
+            lo_since = ms_frame | 1, lo_lite = lo_col = 0;
+        lo_lite = lite > lo_lite ? lite : lo_lite, lo_col = col > lo_col ? col : lo_col;
+        if (ms_frame - lo_since < MS_AREA_HOLD) {
+            lite = need_now, col = col_now;  /* (keep the higher need a while yet) */
+        } else {
+            lite = lo_lite, col = lo_col;
+            lo_since = 0;
+        }
+    } else {
+        if (need_now != ~0u) {
+            lite = lite > need_now ? lite : need_now;  /* (a rise in one part keeps the other's current need) */
+            col = col > col_now ? col : col_now;
+        }
+        lo_since = 0;
     }
     unsigned np = msa_npages() - msa_spage0(), lp = (lite + MS_PAGE - 1) / MS_PAGE + 1;  /* (+1: entries round up) */
     unsigned cp = (col + MS_PAGE - 1) / MS_PAGE, sp = np > lp + cp ? np - lp - cp : 0, s0 = msa_spage0() + cp;
