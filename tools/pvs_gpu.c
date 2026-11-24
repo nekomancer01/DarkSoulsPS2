@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "pvs_gpu.h"
 
@@ -159,8 +160,31 @@ static int soft_ok(void)
     return e && *e == '1';
 }
 
+/* Wait for the GPU without spinning a core (2026-11-24 build profile: NVIDIA's driver busy-waits inside the blocking
+ * read-back, so pvs_bake burned clock_gettime + libnvidia-eglcore for ~8 % of a world build's CPU samples while the GPU
+ * drew; the export steps beside it lost those cores): a fence polled with short sleeps, then the read-back finds the
+ * work done. PVS_GPU_SPIN=1: the old blocking wait. */
+static void gpu_wait(void)
+{
+    static int spin = -1;
+    if (spin < 0) {
+        const char *e = getenv("PVS_GPU_SPIN");
+        spin = e && *e == '1';
+    }
+    if (spin)
+        return;
+    GLsync fs = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    struct timespec ts = {0, 200000};
+    while (glClientWaitSync(fs, 0, 0) == GL_TIMEOUT_EXPIRED)
+        nanosleep(&ts, NULL);
+    glDeleteSync(fs);
+}
+
 static int egl_up(void)
 {
+    if (!getenv("PVS_GPU_SPIN"))
+        setenv("__GL_YIELD", "USLEEP", 0);  /* NVIDIA: its other internal waits sleep too */
     PFNEGLQUERYDEVICESEXTPROC qd = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
     PFNEGLGETPLATFORMDISPLAYEXTPROC gpd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
     PFNEGLQUERYDEVICESTRINGEXTPROC qs = (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
@@ -332,6 +356,7 @@ void gpu_run(int ncam, const float (*eye)[3], const float fbs[6][9], const unsig
             glBindTextureUnit(0, 0);
         }
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    gpu_wait();
     glGetNamedBufferSubData(bits_ssbo, 0, (GLsizeiptr)(nb * 4), bits);
 }
 
@@ -438,6 +463,7 @@ void gpu_collect(uint32_t *bits)
         return;
     }
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    gpu_wait();
     glGetNamedBufferSubData(bits_ssbo, 0, (GLsizeiptr)(nb * 4), bits);
 }
 
