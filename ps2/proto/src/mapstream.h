@@ -75,6 +75,16 @@ void mapstream_free(void *p, unsigned n);
  * from one pool only and never drops a map item (NULL: the pool is full); mapstream_alloc / _soft try the misc pool,
  * then clear item pages as before. */
 enum { MS_POOL_STRUCT, MS_POOL_MISC };
+/* MS_AREA_POOL (default 1; 0 = the pool's idle pages only for the lendable classes and near parts, as before): the
+ * structural pool is sized for the world's worst link (world_struct_bytes), but the blocks wanted now may need less
+ * (Blighttown's links 2458 KB of a 3067 KB pool). The pages above that need ("spare") take map items of every class
+ * (the pinned and in-view levels too), so the export may count them as visual room per area (tools/world_budget.py);
+ * when a block with a larger need is wanted (its link reach, ahead of the player) the items above the new need go.
+ * world_update calls mapstream_pool_need with the need of the blocks wanted or kept (bytes, collision tiles in). */
+#ifndef MS_AREA_POOL
+#define MS_AREA_POOL 1
+#endif
+void mapstream_pool_need(unsigned bytes);
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes);
 void *mapstream_alloc_pool(unsigned n, int pool);
 /* the same for n <= 64 KB, packed into partly used pages of the pool (collision tiles, src/coltile.c) */

@@ -307,6 +307,7 @@ int world_init(const char *boot_area)
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (w_nblk > 1) {
         unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
+        w_pool_cb = cb;
         for (int i = 0; i < w_nblk; i++)
             tmax = w_rt[i].tex_total > tmax ? w_rt[i].tex_total : tmax;
         mb = tmax + WORLD_MISC_EXTRA;  /* (the relief stays out of the pools) */

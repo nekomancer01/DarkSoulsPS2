@@ -29,6 +29,51 @@ static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_po
 unsigned ms_lend_room;
 unsigned ms_lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
 
+/* MS_AREA_POOL (mapstream.h): the spare pages, the need they were sized for, items of other classes still to leave the
+ * pages a larger need took back (a chain read them: next call) */
+unsigned ms_spare_p;
+static unsigned need_now = ~0u;
+static int need_left;
+static unsigned spare_reclaim(unsigned p0, unsigned p1)
+{
+    unsigned busy = 0, n = 0;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a;
+            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = msa_gran(m->buf[id]);
+            if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP || lendable(m->cls[id]) || m->cls[id] == C_NEAR ||
+                m->cls[id] == C_NEAR2)
+                continue;  /* (the lendable classes and near parts were lent there before: the lite sets take them) */
+            if (ms_grp_chain(m, id))
+                busy++;
+            else
+                ms_why = MS_WHY_LENT, ms_drop(k, id), n++;
+        }
+    }
+    if (n)
+        printf("mapstream: area pool: %u items above the new need went (%u still drawn)\n", n, busy);
+    return busy;
+}
+void mapstream_pool_need(unsigned bytes)
+{
+    if (!MS_AREA_POOL || !msa_pools_on()) {
+        ms_spare_p = 0;
+        return;
+    }
+    unsigned np = msa_npages() - msa_spage0(), want = (bytes + MS_PAGE - 1) / MS_PAGE + 1;  /* (+1: entries round up) */
+    unsigned sp = np > want ? np - want : 0;
+    if (bytes != need_now)
+        printf("mapstream: area pool need %u KB of %u KB: %u spare pages\n", bytes >> 10, np * (MS_PAGE >> 10), sp);
+    need_now = bytes;
+    need_left |= sp < ms_spare_p;
+    ms_spare_p = sp;
+    if (need_left)
+        need_left = spare_reclaim(msa_spage0() + sp, msa_npages()) > 0;
+}
+
 static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
 static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
 

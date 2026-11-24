@@ -227,6 +227,12 @@ int ms_issue(void)
         if (!p && lo && nr && ms_lent_near + gb <= (MS_LEND_NEAR_ALL ? ms_lend_room : MS_LEND_NEAR_KB << 10) &&
             (p = msa_alloc_lend(gb)))
             ms_lent_n++, ms_lent_near += gb, lent = 2;
+        /* MS_AREA_POOL: the pinned and in-view levels in the spare pool pages, after the item pages (the export counts
+         * them as room where the blocks wanted need less pool: mapstream.h) */
+        if (!p && ms_spare_p && gb <= MS_PAGE && !nr && !lendable(w.cls) &&
+            !(it_res(m, g) && (m->rit[g - m->ncell].tag & (MS_RES_SKY | MS_RES_FAR))) &&
+            (p = msa_alloc_small(gb, msa_spage0(), msa_spage0() + ms_spare_p)))
+            ms_lent_n++, lent = 3;
         if (!p && sent)
             break;  /* the rest waits for its turn */
         if (!p && ms_evict_left > 0) {

@@ -337,6 +337,7 @@ static inline unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
 /* the item pages now, all page slots (msarena.h) */
 static inline unsigned ilim(void) { return msa_ilim(); }
 static inline unsigned ntot(void) { return msa_ntot(); }
+extern unsigned ms_spare_p;  /* MS_AREA_POOL: structural pool pages [spage0, spage0 + ms_spare_p) any class may use */
 static inline int lendable(int cls)
 {
     /* every class but the near parts (C_NEAR, C_NEAR2): a lent coarse cell dropped for a lite set shows its horizon

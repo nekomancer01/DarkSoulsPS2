@@ -53,9 +53,16 @@ unsigned world_lua_bytes(void)
     return best;
 }
 
+/* MS_AREA_POOL: per block, what the links of its triangles keep in the structural pool (world_struct_bytes' sum, the
+ * most over the block's links); the pool's size is the most over all blocks. world_update hands the planner the most
+ * over the blocks wanted or kept now (the reach and the sources included), so the pages above it hold map items of
+ * any class until a block with a larger need is wanted (tools/world_budget.py: the same rule per spot) */
+static unsigned pool_need[WORLD_MAX];
+unsigned w_pool_cb;  /* the collision tiles' part of the pool (coltile_budget, world_init): one number for the world */
 unsigned world_struct_bytes(void)
 {
     unsigned best = 0;
+    memset(pool_need, 0, sizeof pool_need);
     for (int b = 0; b < w_nblk; b++)
         for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
             const WorldLink *k = w_links + w_lrange[2 * b] + l;
@@ -101,8 +108,21 @@ unsigned world_struct_bytes(void)
                 sum += v[s];
             }
             best = sum > best ? sum : best;
+            pool_need[b] = sum > pool_need[b] ? sum : pool_need[b];
         }
     return best;
+}
+
+/* MS_AREA_POOL: the pool the blocks wanted or kept now (and the player's) may need: links on their triangles */
+static void pool_need_step(void)
+{
+    if (!MS_AREA_POOL || w_nblk < 2)
+        return;
+    unsigned m = w_want_m | w_keep_m | (w_cur >= 0 ? 1u << w_cur : 0), need = 0;
+    for (int i = 0; i < w_nblk; i++)
+        if (m >> i & 1)
+            need = pool_need[i] > need ? pool_need[i] : need;
+    mapstream_pool_need(need + w_pool_cb);
 }
 
 /* a wanted block's lite set is being read or could start now (start()'s conditions, room aside) */
@@ -393,6 +413,7 @@ void w_step(const float *feet, float dt)
         printf("world: block %d tri %d: want %x keep %x\n", w_cur, h.tri, wm, km | wm);
     w_want_m = wm, w_keep_m = km | wm;
     world_stats.want = w_want_m;
+    pool_need_step();
     if (WORLD_BOOT_LEAN && w_rt[0].size[E_TABB]) {
         float d2 = 1e30f;  /* to the nearest remembered spot (none: a boot straight into another block) */
         int ni = 0;
