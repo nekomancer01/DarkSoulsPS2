@@ -1,6 +1,7 @@
 /* map.bin and the files split from it as chunk files: see mapfile.h */
 #include <stdio.h>
 #include <string.h>
+#include <kernel.h>
 #include "mapfile.h"
 
 int mapf_entry(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned at, unsigned *off, unsigned *size)
@@ -29,8 +30,9 @@ int mapf_check(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned 
     int r = 0, t;
     while (!(t = pack_req_read(pk, off, head, at)))
         pack_pump();
-    while (!pack_req_done(t, &r))
+    while (!pack_req_done(t, &r))  /* (boot / block open only: it waits for the disc) */
         ;
+    InvalidDCache(head, head + at - 1);  /* the header came by DMA: no stale cache lines (e.g. the last call's file) */
     if (r != (int)at)
         return printf("TEST error: chunk: %s: header not read\n", name), 0;
     ChunkFile f;

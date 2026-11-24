@@ -22,9 +22,10 @@
 #define MAPF_VERSION 1
 
 /* a raw pack entry's payload range (pack_entry_raw, then past the wrapper: offset + at, size less the wrapper; no
- * read). 0 when the entry is missing or not raw. */
+ * read: the entry must have passed mapf_check once, world.c world_init / mapstream.c mapstream_open). 0 when the entry
+ * is missing or not raw. */
 int mapf_entry(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned at, unsigned *off, unsigned *size);
-/* boot-time check of a raw entry (reads its first `at` bytes, waits): a chunk file of fid with pid at version
+/* boot / block-open check of a raw entry (reads its first `at` bytes and waits for the disc: never per frame): a chunk file of fid with pid at version
  * MAPF_VERSION starting at `at` and this ELF's VU1 layout; 0 and a "TEST error: chunk:" line when not. 1 for a
  * missing entry (the callers say what is missing) and with MAP_CHUNKS 0. */
 int mapf_check(Pack *pk, const char *name, unsigned fid, unsigned pid, unsigned at);

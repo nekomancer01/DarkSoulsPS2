@@ -239,6 +239,10 @@ int mapstream_open(int k, const char *pak_path, const MapCell *cells, unsigned n
     ms_inst[k].borrowed = 0;
     if (!n || !pack_open(&ms_inst[k].pk, pak_path))
         return 0;
+    if (!mapf_check(&ms_inst[k].pk, "cells.bin", MAPF_CELLS)) {  /* (world blocks: world.c checked theirs at boot) */
+        pack_close(&ms_inst[k].pk);
+        return 0;
+    }
     return open_cells(k, cells, n);
 }
 
