@@ -2,3 +2,4 @@
 # (same output). Separate from requirements.txt so a platform without wheels (musl, ...) still installs the base.
 deflate>=0.7
 isal>=1.6
+numba>=0.60
