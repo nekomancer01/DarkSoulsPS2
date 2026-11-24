@@ -275,7 +275,7 @@ def structural(gen):
     # collision tiles); the pool pages above that, less one, take items there: per link the spare KB
     slack = {}
     if POOL_AREA:
-        pool_pg = pages(best + cb) >> 16
+        pool_pg = pages(best) >> 16  # (best: the worst link + the collision tiles)
         rq = w.opt(b"REAC", 2) if hasattr(w, "opt") else None
         runs = {}  # block -> [(first triangle, reach mask)] (world.c WORLD_REACH: blocks its floor's reach wants)
         if rq and len(rq) >= 12 + 8 * n:
