@@ -162,9 +162,59 @@ def pano_mesh(P, C, eye, deg, memo=None, near=None):
     return sample(views, eye, deg, NV, S, f, NEAR if near is None else near)
 
 
+def _raster_lib():
+    """tools/native/libfarraster.so (fr_render: GPU over headless EGL, else C); None with FAR_NATIVE=0 or no compiler
+    (mapview.render_view, the numpy path before 2026-11-24)"""
+    if os.environ.get("FAR_NATIVE", "1") == "0":
+        return None
+
+    def setup(L):
+        import ctypes
+        vp, i = ctypes.c_void_p, ctypes.c_int
+        L.fr_render.argtypes = [i, vp, vp, vp, i, i, ctypes.c_double, i, vp, vp, vp]
+        L.fr_render.restype = i
+        L.fr_gpu_ok.argtypes = []
+        L.fr_gpu_ok.restype = i
+    return horizon._native("libfarraster", ["farraster.c"], setup, extra=("-DFR_GPU", "-lEGL", "-lOpenGL"))
+
+
+def _cam(P, eye, fwd):
+    """mapview.render_view's camera space of P for the view from eye along fwd, the same numpy operations (so the C
+    rasteriser gives its pixels to the last bit)"""
+    eye = np.array(eye, np.float64)
+    f = np.array(tuple(eye + fwd), np.float64) - eye
+    f /= np.linalg.norm(f)
+    right = np.array([f[2], 0.0, -f[0]])
+    right /= np.linalg.norm(right)
+    up = np.cross(f, right)
+    d = P.astype(np.float32).astype(np.float64) - eye
+    return np.stack([d @ right, d @ up, d @ f], -1)
+
+
 def render6(P, C, eye, n, NV, S, FOV):
-    """the six views around eye: (rgb, depth, forward) each"""
+    """the six views around eye: (rgb, depth, forward) each. tools/native/farraster.c on the GPU (FAR_GPU=1, the
+    default, when a hardware OpenGL 4.5 device comes up) or in C (the same pixels as mapview.render_view); mapview
+    with FAR_NATIVE=0"""
     import math
+    L = _raster_lib()
+    if L is not None:
+        fwds = [np.array([math.sin(2 * math.pi * k / NV), 0.0, math.cos(2 * math.pi * k / NV)]) for k in range(NV)]
+        gpu = os.environ.get("FAR_GPU", "1") == "1" and L.fr_gpu_ok() == 1
+        Vc = None if gpu else np.ascontiguousarray(np.stack([_cam(P, eye, fw) for fw in fwds]), np.float64)
+        rgb = np.zeros((NV, S, S, 3), np.uint8)
+        z = np.zeros((NV, S, S), np.float64)
+        Pf = np.ascontiguousarray(P, np.float32)
+        Cf = np.ascontiguousarray(C, np.float32)
+        e = np.ascontiguousarray(eye, np.float64)
+        f = S / 2 / math.tan(math.radians(FOV) / 2)  # (render_view's)
+        r = L.fr_render(n, Pf.ctypes.data, Cf.ctypes.data, e.ctypes.data, NV, S, f, int(gpu), rgb.ctypes.data,
+                        z.ctypes.data, None if Vc is None else Vc.ctypes.data)
+        if r < 0:
+            raise MemoryError("fr_render")
+        out = []
+        for k in range(NV):
+            out.append((rgb[k], z[k], fwds[k]))  # (uint8: 1/8 the memo)
+        return out
     import tempfile
     import mapview
     from PIL import Image
@@ -182,6 +232,9 @@ def render6(P, C, eye, n, NV, S, FOV):
     return views
 
 
+_SAMPLE_GEO = {}
+
+
 def sample(views, eye, deg, NV, S, f, near=None):
     """the panorama's quads from the six views at deg degree cells"""
     import math
@@ -190,19 +243,33 @@ def sample(views, eye, deg, NV, S, f, near=None):
     naz, nel = int(round(360.0 / deg)), int(round(2 * EL / deg))
     az = (np.arange(naz * K) + 0.5) / (naz * K) * 2 * math.pi
     el = ((np.arange(nel * K) + 0.5) / (nel * K) * 2 - 1) * math.radians(EL)
-    A, E = np.meshgrid(az, el)  # (nel K, naz K)
-    Dr = np.stack([np.sin(A) * np.cos(E), np.sin(E), np.cos(A) * np.cos(E)], -1)
-    dist = np.full(A.shape, np.inf)
-    rgb = np.zeros(A.shape + (3,))
-    vi = np.rint(A / (2 * math.pi / NV)).astype(np.int64) % NV
-    for k, (img, zb, fwd) in enumerate(views):
-        m = vi == k
-        right = np.array([fwd[2], 0.0, -fwd[0]])
-        dz = Dr[m] @ fwd
-        x = np.clip(np.floor(S / 2 + f * (Dr[m] @ right) / dz).astype(np.int64), 0, S - 1)
-        y = np.clip(np.floor(S / 2 - f * Dr[m][:, 1] / dz).astype(np.int64), 0, S - 1)
-        dist[m] = zb[y, x] / dz  # (depth along the view axis -> distance along the ray)
-        rgb[m] = img[y, x]
+    shape = (nel * K, naz * K)
+    # where each sample lands in the six views depends on the cell size alone: kept across calls (build()'s retries
+    # and every set / seam eye render the same six directions); computed per view as before, so the same pixels
+    key = (deg, NV, S, f)
+    geo = _SAMPLE_GEO.get(key)
+    if geo is None:
+        A, E = np.meshgrid(az, el)  # (nel K, naz K)
+        Dr = np.stack([np.sin(A) * np.cos(E), np.sin(E), np.cos(A) * np.cos(E)], -1)
+        vi = np.rint(A / (2 * math.pi / NV)).astype(np.int64) % NV
+        geo = []
+        for k, (_img, _zb, fwd) in enumerate(views):
+            m = np.flatnonzero(vi == k)
+            d = Dr.reshape(-1, 3)[m]
+            right = np.array([fwd[2], 0.0, -fwd[0]])
+            dz = d @ fwd
+            x = np.clip(np.floor(S / 2 + f * (d @ right) / dz).astype(np.int64), 0, S - 1)
+            y = np.clip(np.floor(S / 2 - f * d[:, 1] / dz).astype(np.int64), 0, S - 1)
+            geo.append((m, y * S + x, dz))
+        if len(_SAMPLE_GEO) > 8:
+            _SAMPLE_GEO.clear()
+        _SAMPLE_GEO[key] = geo
+    dist = np.full(shape[0] * shape[1], np.inf)
+    rgb = np.zeros((shape[0] * shape[1], 3))
+    for (img, zb, _fwd), (m, p, dz) in zip(views, geo):
+        dist[m] = zb.reshape(-1)[p] / dz  # (depth along the view axis -> distance along the ray)
+        rgb[m] = img.reshape(-1, 3)[p]
+    dist, rgb = dist.reshape(shape), rgb.reshape(shape + (3,))
     ok = np.isfinite(dist) & (dist < FAR) & (dist >= (NEAR if near is None else near))
     blk = lambda a: a.reshape(nel, K, naz, K, *a.shape[2:]).swapaxes(1, 2).reshape(nel, naz, K * K, *a.shape[2:])
     okc, dc, cc = blk(ok), blk(np.where(ok, dist, np.nan)), blk(np.where(ok[..., None], rgb, 0.0))
@@ -211,10 +278,73 @@ def sample(views, eye, deg, NV, S, f, near=None):
     import warnings
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # (cells that show nothing: all NaN)
-        cd = np.where(show, np.nanmedian(dc, 2), np.nan)                 # the cell's depth
+        cd = np.where(show, _nanmedian(dc, cnt), np.nan)                 # the cell's depth
         ccol = np.where(show[..., None], cc.sum(2) / np.maximum(cnt, 1)[..., None], 0.0)
     # corners: mean depth / colour of the cells around them within JUMP of the cell asking (a corner shared by a near
-    # and a far cell gets one position for each side)
+    # and a far cell gets one position for each side). Vectorised 2026-11-24 (the per-cell loop was ~60 % of farpano
+    # once the views came from tools/native/farraster.c); the same sums in the same order, so the same bytes
+    if os.environ.get("FAR_SAMPLE_LOOP") == "1":
+        return _corners_loop(show, cd, ccol, eye, naz, nel)
+    I, J = np.nonzero(show)
+    nc = len(I)
+    if not nc:
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3), np.int64)
+    sa = [math.sin(x) for x in (np.arange(naz + 1) / naz * 2 * math.pi).tolist()]
+    ca = [math.cos(x) for x in (np.arange(naz + 1) / naz * 2 * math.pi).tolist()]
+    elv = ((np.arange(nel + 1) / nel * 2 - 1) * math.radians(EL)).tolist()
+    se, ce = [math.sin(x) for x in elv], [math.cos(x) for x in elv]
+    sa, ca, se, ce = (np.array(x) for x in (sa, ca, se, ce))
+    me = cd[I, J]
+    Rs, Cs, Ks = [], [], []
+    for di, dj in ((0, 0), (0, 1), (1, 1), (1, 0)):
+        dsum, csum, cnt = np.zeros(nc), np.zeros((nc, 3)), np.zeros(nc, np.int64)
+        for ii in (I + di - 1, I + di):
+            for jj in ((J + dj - 1) % naz, (J + dj) % naz):
+                inr = (ii >= 0) & (ii < nel)
+                iic = np.clip(ii, 0, nel - 1)
+                nd = cd[iic, jj]
+                with np.errstate(invalid="ignore"):
+                    ok = inr & show[iic, jj] & (np.maximum(nd, me) <= JUMP * np.minimum(nd, me))
+                dsum = np.where(ok, dsum + np.where(ok, nd, 0.0), dsum)
+                csum = np.where(ok[:, None], csum + np.where(ok[:, None], ccol[iic, jj], 0.0), csum)
+                cnt += ok
+        r = dsum / cnt
+        c = csum / cnt[:, None]
+        ri, rj = I + di, (J + dj) % naz
+        ca_, sa_ = ca[J + dj], sa[J + dj]
+        Rs.append(r), Cs.append(c)
+        Ks.append((ri, rj, np.array([round(x, 2) for x in r.tolist()]), sa_, ca_, se[ri], ce[ri]))
+    # vertices in order of first use (cell by cell, corners in quad order), keyed as the loop's dict
+    r = np.stack(Rs, 1).ravel()
+    c = np.stack(Cs, 1).reshape(-1, 3)
+    kk = [np.stack([k[x] for k in Ks], 1).ravel() for x in range(7)]
+    keys = np.stack([kk[0].astype(np.float64), kk[1].astype(np.float64), kk[2]], 1)
+    _u, first, inv = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")
+    rank = np.empty(len(order), np.int64)
+    rank[order] = np.arange(len(order))
+    vid = rank[inv.ravel()]
+    f = first[order]
+    sa_, ca_, se_, ce_ = kk[3][f], kk[4][f], kk[5][f], kk[6][f]
+    dirs = np.stack([sa_ * ce_, se_, ca_ * ce_], 1)
+    V = eye + r[f][:, None] * dirs
+    VC = c[f]
+    q = vid.reshape(nc, 4)
+    T = np.stack([q[:, [0, 1, 2]], q[:, [0, 2, 3]]], 1).reshape(-1, 3)
+    return V.reshape(-1, 3), VC.reshape(-1, 3), T.astype(np.int64)
+
+
+def _nanmedian(dc, cnt):
+    """np.nanmedian(dc, 2) for (nel, naz, K*K) with cnt finite values per cell: NaN sorts last"""
+    s = np.sort(dc, 2)
+    lo = np.take_along_axis(s, np.maximum((cnt - 1) // 2, 0)[..., None], 2)[..., 0]
+    hi = np.take_along_axis(s, np.minimum(cnt // 2, s.shape[2] - 1)[..., None], 2)[..., 0]
+    return np.where(cnt > 0, (lo + hi) / 2, np.nan)
+
+
+def _corners_loop(show, cd, ccol, eye, naz, nel):
+    """sample()'s corners as the loop before 2026-11-24 (FAR_SAMPLE_LOOP=1: the reference for the vectorised one)"""
+    import math
     V, VC, T, vid = [], [], [], {}
     azc = np.arange(naz + 1) / naz * 2 * math.pi
     elc = (np.arange(nel + 1) / nel * 2 - 1) * math.radians(EL)

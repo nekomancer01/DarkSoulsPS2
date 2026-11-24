@@ -191,7 +191,7 @@ $(A)/pano.bin: $(A)/map.bin $(A)/dg.bin $(TS)/pano.py.sum $(TS)/horizon.py.sum $
 	HZN_PANO='$(HZN_PANO)' $(PY) -I ../../tools/stepcache.py $(BUILD) 'backdrop pictures' $(A)/pano.bin :: $^ :: $(A)/cells.bin $(A)/hzn.bin :: HZN_PANO BUMP_BAKE MAP_CHUNKS :: ../../tools/pano.py bake $(A) $(A)/pano.bin
 
 # far panorama (area): tools/farpano.py
-$(A)/far.bin: $(A)/map.bin $(A)/dg.bin $(foreach d,$(PVS_WITH),$(d)/hzn.bin $(d)/dg.bin) $(G)/pano.bin $(TS)/drawgroups.py.sum $(TS)/chunkfile.py.sum $(TS)/area.py.sum $(TS)/farpano.py.sum $(TS)/horizon.py.sum $(TS)/mapview.py.sum $(TS)/export_world.py.sum $(TS)/native/meshopt/simplifier.cpp.sum
+$(A)/far.bin: $(A)/map.bin $(A)/dg.bin $(foreach d,$(PVS_WITH),$(d)/hzn.bin $(d)/dg.bin) $(G)/pano.bin $(TS)/drawgroups.py.sum $(TS)/chunkfile.py.sum $(TS)/area.py.sum $(TS)/farpano.py.sum $(TS)/horizon.py.sum $(TS)/mapview.py.sum $(TS)/export_world.py.sum $(TS)/native/meshopt/simplifier.cpp.sum $(TS)/native/farraster.c.sum
 	@mkdir -p $(@D)
 	FARPANO='$(FARPANO)' $(PY) -I ../../tools/stepcache.py $(BUILD) 'far panorama' $(A)/far.bin :: $^ :: $(foreach d,$(PVS_PEERS),$(d)/hzn.bin $(d)/hzn.bin.far.npz $(d)/map.bin) :: FARPANO BUMP_BAKE MAP_CHUNKS :: ../../tools/farpano.py $(A)/far.bin $(A) $(PVS_PEERS)
 
