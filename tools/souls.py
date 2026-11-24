@@ -75,7 +75,7 @@ def _inflate(z, dcx):
             try:
                 out = f(z, n)
                 if len(out) == n:
-                    return out
+                    return bytes(out)  # (the package returns a bytearray; the readers hash and compare bytes)
             except Exception:
                 pass
         return zlib.decompress(z)
