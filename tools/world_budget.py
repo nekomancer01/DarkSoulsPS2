@@ -234,6 +234,8 @@ def structural(gen):
             mtxfull[i] = os.path.getsize(mp) if os.path.exists(mp) else 0
     best, at = 0, None
     link_need = []  # (block, lite sets of every block the link keeps, up to WORLD_SLOTS): the spill past the pool
+    area_need = {}  # POOL_AREA: per block the largest per-link pool sum over its own links (world_struct_bytes' sum)
+    link_keep = []  # (block, first triangle, triangles, keep | load | the block itself) per link
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
             first, cnt, _, load, keep = struct.unpack_from("<IHHII", lk, 16 * (lr[2 * blk] + l))  # (LINK v2)
@@ -255,6 +257,8 @@ def structural(gen):
                     mtx[maps[i]] = max(mtx.get(maps[i], 0), r128(mtxfull[i]))
             v = v + list(evm.values()) + list(mtx.values())
             link_need.append((blk, first, cnt, sum(v4) + sum(evm.values()) + sum(mtx.values())))
+            area_need[blk] = max(area_need.get(blk, 0), sum(v))
+            link_keep.append((blk, first, cnt, keep | (1 << blk)))
             if sum(v) > best:
                 best, at = sum(v), (names[blk], first, load, keep)
     # spots of a block whose links keep more than the pool holds (WORLD_SLOTS > WORLD_POOL_SLOTS): the last lite set
@@ -267,7 +271,17 @@ def structural(gen):
     misc = max((e[3] for e in ent.values()), default=0) + (MISC_EXTRA_KB << 10)
     cb = col_budget([cp[1] for cp in (col_pages(os.path.join(gen, names[i])) for i in ent) if cp])
     best += cb
-    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, spill_kb=spill, boot_pack=names[0], misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
+    # POOL_AREA (streamer MS_AREA_POOL): at a link the pool needs the largest need of the blocks it keeps (+ the
+    # collision tiles); the pool pages above that, less one, take items there: per link the spare KB
+    slack = {}
+    if POOL_AREA:
+        pool_pg = pages(best + cb) >> 16
+        for blk, first, cnt, kp in link_keep:
+            need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + cb
+            spare = pool_pg - (pages(need) >> 16) - 1
+            if spare > 0:
+                slack.setdefault(names[blk], []).append((first, cnt, spare * 64))
+    return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, spill_kb=spill, slack_kb=slack, boot_pack=names[0], misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
 # LINKS (Burg plan B3, default on; WORLD_BUDGET_LINKS=0 = every block whose cells are in range, as before): at a spot of
@@ -291,6 +305,16 @@ STRICT_BLOCKS = os.environ.get("WORLD_BUDGET_STRICT", "all").split(",")
 def gated_block(name):
     return "all" in STRICT_BLOCKS or any(name.startswith(s) for s in STRICT_BLOCKS if s)
 LOAD_CELLS = 1.0  # export_world.py
+# POOL_AREA (TECH_DEBT world-49 / world-50, 2026-11-24; WORLD_POOL_AREA=0: one room everywhere, as before): the
+# structural pool is sized for the world's worst link, but at a spot only the lite sets of its floor's links are in it.
+# The pages above the largest need of a block's own links count as item room at that block's spots (the streamer lends
+# them to items there and reclaims them ahead of a seam into a block that needs more: msplan / msarena, POOL_AREA)
+POOL_AREA = os.environ.get("WORLD_POOL_AREA", "1") != "0"
+
+
+def pages(b):
+    """bytes in whole 64 KB arena pages"""
+    return -(-int(b) // (64 << 10)) * (64 << 10)
 
 
 def block_rects(name):
@@ -446,6 +470,13 @@ def main(argv):
     bnames = [pools["boot_pack"] if k == 0 else b[0] for k, b in enumerate(blocks)] if sp else None  # (block 0's dir is gen)
     spill_spot = spot_spill(os.path.dirname(os.path.abspath(out)), sp, bnames, P, own) if sp else None
     room_spot = room - spill_spot * FILL_PCT / 100 if sp else room
+    sl = (pools or {}).get("slack_kb", {})
+    if sl:  # POOL_AREA: a spot gets the pool pages its floor's link leaves spare (streamer MS_AREA_POOL)
+        bn = [pools["boot_pack"] if k == 0 else b[0] for k, b in enumerate(blocks)]
+        add = spot_spill(os.path.dirname(os.path.abspath(out)), sl, bn, P, own)
+        room_spot = room_spot + add * FILL_PCT / 100
+        print(f"world budget: per-area pool (POOL_AREA): spare pool pages at {int((add > 0).sum())} of {len(P)} spots, "
+              + ", ".join(f"{n} up to {max(x[2] for x in sl[n])} KB" for n in bn if n in sl))
     if sp:
         hit = spill_spot > 0
         print(f"world budget: lite sets past the structural pool (WORLD_SLOTS > WORLD_POOL_SLOTS) spill into the item "
