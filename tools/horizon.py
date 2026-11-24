@@ -384,10 +384,11 @@ def nav_points(b):
 _SO = {}
 
 
-def _native(name, srcs, setup, cxx=False):
+def _native(name, srcs, setup, cxx=False, extra=()):
     """tools/native/<name>.so from srcs (paths under tools/native), built on first use or when a source is newer (an
     atomic replace: parallel exports may build at once); setup(lib) sets the argtypes. None without a compiler, with
-    HZN_NATIVE=0, or on a failed build (the caller falls back)."""
+    HZN_NATIVE=0, or on a failed build (the caller falls back). extra: optional flags and libraries (farpano's GPU path:
+    -DFR_GPU -lEGL -lOpenGL), dropped when the build fails with them."""
     if name not in _SO:
         L = None
         if os.environ.get("HZN_NATIVE", "1") != "0":
@@ -409,10 +410,18 @@ def _native(name, srcs, setup, cxx=False):
                         base = [cc, "-O2", "-ffp-contract=off", "-fno-fast-math", "-shared", "-fPIC", "-o", tmp]
                         # -fopenmp: hzvis / hzerr / nearest split their independent loops over the cores (the same
                         # bytes out; Burg block b 23 -> 11 s, Firelink area 60 -> 16 s); a compiler without OpenMP builds them serial
-                        try:
-                            subprocess.run(base + ["-fopenmp"] + src, check=True, capture_output=True)
-                        except subprocess.CalledProcessError:
-                            subprocess.run(base + src, check=True, capture_output=True)
+                        tries = [["-fopenmp"], []]
+                        if extra:
+                            tries = [t + src + list(extra) for t in tries] + [t + src for t in tries]
+                        else:
+                            tries = [t + src for t in tries]
+                        for k, t in enumerate(tries):
+                            try:
+                                subprocess.run(base + t, check=True, capture_output=True)
+                                break
+                            except subprocess.CalledProcessError:
+                                if k == len(tries) - 1:
+                                    raise
                         os.replace(tmp, so)
                     finally:
                         if os.path.exists(tmp):

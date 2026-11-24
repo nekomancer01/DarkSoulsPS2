@@ -646,6 +646,32 @@ def cell_extents(P, poff, W, woff, T, toff):
 _NAV_VOX = {}  # map id -> set of dilated 8 m voxels of its navmesh (ws_shares)
 
 
+_VOX_KEYS = {}
+
+
+def _vox_key(V):
+    """(n, 3) int voxel coordinates -> one int64 each (21 bits an axis: +-1M voxels, 8000 km at 8 m)"""
+    V = np.asarray(V, np.int64) + (1 << 20)
+    return (V[:, 0] << 42) | (V[:, 1] << 21) | V[:, 2]
+
+
+def _vox_has(vox, V):
+    """membership of the rows of V ((n, 3) int) in the voxel set vox: the per-point `(x, y, z) in vox` loop was a
+    quarter of export_map's CPU (2026-11-24 build profile); a sorted key array, the same booleans"""
+    e = _VOX_KEYS.get(id(vox))
+    if e is None or e[0] is not vox:
+        keys = np.sort(_vox_key(np.array(list(vox), np.int64).reshape(-1, 3))) if vox else np.zeros(0, np.int64)
+        if len(_VOX_KEYS) > 64:
+            _VOX_KEYS.clear()
+        e = _VOX_KEYS[id(vox)] = (vox, keys)
+    keys = e[1]
+    if not len(keys) or not len(V):
+        return np.zeros(len(V), bool)
+    q = _vox_key(V)
+    i = np.minimum(np.searchsorted(keys, q), len(keys) - 1)
+    return keys[i] == q
+
+
 def _nav_voxels(game, map_id, rects=None):
     """the 8 m voxels within one voxel of map_id's navmesh vertices (inside rects, xz metres, if given)"""
     k = (map_id, tuple(rects or ()))
@@ -762,8 +788,7 @@ def ws_shares(P, r, game=None, map_id=None, nav_v=None):
 
     def by_nav(vox):
         V = np.floor(np.stack([X, Y, Z], -1) / 8.0).astype(np.int64)
-        flat = V.reshape(-1, 3)
-        return np.fromiter(((x, y, z) in vox for x, y, z in flat.tolist()), bool, len(flat)).reshape(X.shape)
+        return _vox_has(vox, V.reshape(-1, 3)).reshape(X.shape)
     if cfg.get("cells"):
         own = by_rects(rects(cfg["cells"]))
     elif nav_v is not None and len(nav_v):

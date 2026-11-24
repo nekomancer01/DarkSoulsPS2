@@ -219,8 +219,19 @@ def cell_rects(cells):
 def in_cells(cells):
     """block cells -> keep(x, y, z)"""
     rs = cell_rects(cells)
-    return lambda x, y, z: any(r[0] <= math.floor(x / CELL) <= r[2] and r[1] <= math.floor(z / CELL) <= r[3]
+    keep = lambda x, y, z: any(r[0] <= math.floor(x / CELL) <= r[2] and r[1] <= math.floor(z / CELL) <= r[3]
                                for r in rs)
+
+    def many(P):
+        """keep() over the rows of P ((n, 3)) at once (mapgather.gather's triangle centroids)"""
+        import numpy as np
+        cx, cz = np.floor(P[:, 0] / CELL), np.floor(P[:, 2] / CELL)
+        ok = np.zeros(len(P), bool)
+        for r in rs:
+            ok |= (r[0] <= cx) & (cx <= r[2]) & (r[1] <= cz) & (cz <= r[3])
+        return ok
+    keep.many = many
+    return keep
 
 
 def region(M, map_id):
