@@ -276,11 +276,39 @@ def structural(gen):
     slack = {}
     if POOL_AREA:
         pool_pg = pages(best + cb) >> 16
+        rq = w.opt(b"REAC", 2) if hasattr(w, "opt") else None
+        runs = {}  # block -> [(first triangle, reach mask)] (world.c WORLD_REACH: blocks its floor's reach wants)
+        if rq and len(rq) >= 12 + 8 * n:
+            nruns, nreach = struct.unpack_from("<2I", rq, 0)
+            rr = struct.unpack_from(f"<{2 * n}I", rq, 12)
+            o = 12 + 8 * n
+            starts = struct.unpack_from(f"<{nruns}H", rq, o)
+            ris = rq[o + 2 * nruns:o + 3 * nruns]
+            to = o + ((3 * nruns + 3) & ~3)
+            rmask = [struct.unpack_from("<I", rq, to + 12 * r)[0] for r in range(nreach)]
+            for blk in range(n):
+                runs[blk] = [(starts[rr[2 * blk] + j], rmask[ris[rr[2 * blk] + j] - 1] if ris[rr[2 * blk] + j] else 0)
+                             for j in range(rr[2 * blk + 1])]
+        bylink = {}
         for blk, first, cnt, kp in link_keep:
-            need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + cb
-            spare = pool_pg - (pages(need) >> 16) - 1
-            if spare > 0:
-                slack.setdefault(names[blk], []).append((first, cnt, spare * 64))
+            bylink.setdefault(blk, []).append((first, cnt, kp))
+        for blk in range(n):
+            cuts = sorted({0} | {f for f, c, _ in bylink.get(blk, [])} | {f + c for f, c, _ in bylink.get(blk, [])} |
+                          {t for t, _ in runs.get(blk, [])})
+            segs = []
+            for a, b in zip(cuts, cuts[1:] + [1 << 30]):
+                kp = next((k for f, c, k in bylink.get(blk, []) if f <= a < f + c), 1 << blk)
+                rm = 0
+                for t, m in runs.get(blk, []):
+                    if t <= a:
+                        rm = m
+                kp |= rm | (1 << blk)
+                need = max((area_need.get(i, 0) for i in range(n) if kp >> i & 1), default=0) + cb
+                spare = pool_pg - (pages(need) >> 16) - 1
+                if spare > 0:
+                    segs.append((a, b - a, spare * 64))
+            if segs:
+                slack[names[blk]] = segs
     return dict(structural_kb=best >> 10, col_tiles_kb=cb >> 10, spill_kb=spill, slack_kb=slack, boot_pack=names[0], misc_kb=misc >> 10, worst_link=dict(block=at[0], tri=at[1], load=at[2], keep=at[3]) if at else None,
                 lite_kb={names[i]: dict(whole=e[0] >> 10, lean=(e[0] - e[1]) >> 10) for i, e in ent.items()})
 NEAR_CUBE = os.environ.get("NEAR_CUBE", "1") == "1"  # export_map.py NEAR_CUBE (the runtime measures near by cube when the cells carry keys)
