@@ -117,8 +117,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 The build uses `.venv` automatically. To use a different Python, put `PY = /path/to/python` in `config.local.mk`.
 `deflate` (libdeflate, MIT) and `isal` (Intel ISA-L, BSD-3 / PSF) only make reading the game's DCX archives faster
-(about 2x), and `numba` (BSD-2) compiles a few hot Python loops (tools/navwalls.py); all are in
-`tools/requirements-speed.txt`, and without them the exporters take the plain Python / zlib paths and write the same files.
+(about 2x, `tools/requirements-speed.txt`); without them the exporters use Python's zlib and write the same files.
 
 ### 4. Turn on HostFs in PCSX2
 

@@ -54,7 +54,6 @@ FAR_GPU	env	1	flag	world	0	new	farpano.py	-
 FAR_GPU_SOFTWARE	env	unset	opt	world	-	new	farraster.c	-
 FAR_NATIVE	env	1	flag	world	0	new	farpano.py	-
 FAR_SAMPLE_LOOP	env	unset	debug	world	-	new	farpano.py	-
-NAVWALLS_JIT	env	1	flag	tools	0	new	navwalls.py	-
 PVS_BOXF_LOOP	env	unset	debug	world	-	new	pvs_bake.c	-
 PVS_GPU_SPIN	env	unset	opt	world	-	new	pvs_gpu.c	-
 SOULS_INFLATE	env	deflate	config	tools	zlib	new	souls.py	-
