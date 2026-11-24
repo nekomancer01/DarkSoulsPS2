@@ -56,12 +56,15 @@ FAR_NATIVE	env	1	flag	world	0	new	farpano.py	-
 FAR_SAMPLE_LOOP	env	unset	debug	world	-	new	farpano.py	-
 PVS_BOXF_LOOP	env	unset	debug	world	-	new	pvs_bake.c	-
 PVS_GPU_SPIN	env	unset	opt	world	-	new	pvs_gpu.c	-
+PVS_OCC_CULL	env	1	flag	world	0	new	pvs_bake.c	-
+PVS_ROUNDS	env	1	flag	world	0	new	pvs_bake.c	-
 SOULS_INFLATE	env	deflate	config	tools	zlib	new	souls.py	-
 VU1_BONE_MAX	env	40	tune	scene	61	#287	vu1/layout.py	the skin palette window size the VU1 contract is generated for (make VU1_BONES sets it)
 VU1_BONES	make	40	flag	scene	61	#287	Makefile	VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default): skeletons over 40 paged through bone windows, 27-triangle batches; 61 = the old path: one 61-bone window, 23-triangle batches (24 before the light block) (vu1_layout.h and the skin programs generated into the build dir)
 WORLD_BUDGET_ARGS	make	--strict	config	world	-	#142	recipe.toml	World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at
 WORLD_EARLY_BAKES	make	1	flag	world	0	#246	Makefile:217	The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 m
 WORLD_EARLY_CHRS	make	1	flag	world	0	new	Makefile:237	The character exports of every world block run right after the map exports, alongside the occlusion bakes (which leave the CPU idle while they share the GPU), instead of in worldpacks after the panoramas; 0 = as before.
+WORLD_HZN_FIRST	make	1	flag	world	0	new	Makefile:226	The world blocks' horizons run before the occlusion bakes and chr exports start (they gate the far panoramas); 0 = all three at once, as before.
 WORLD_J	make	empty	config	world	-	#9	Makefile:197	WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB).
 WORLD_LITE_DIET	make	1	flag	world	0	#147	recipe.toml	world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every c
 WORLD_MIP1_OUT	make	computed	config	world	-	#147	recipe.toml	-
