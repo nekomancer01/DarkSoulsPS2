@@ -33,7 +33,7 @@ fail() { echo "build.sh: step $1 failed${2:+: $2}" >&2; exit 1; }
 
 # host tools the dependency script and the build need
 missing=
-for t in git curl patch pkg-config nasm cmake ninja; do command -v "$t" >/dev/null || missing="$missing $t"; done
+for t in git curl patch pkg-config nasm cmake ninja rsync; do command -v "$t" >/dev/null || missing="$missing $t"; done
 if [ -z "${CXX:-}" ] && ! command -v clang++ >/dev/null && ! command -v g++ >/dev/null; then missing="$missing c++-compiler"; fi
 [ -z "$missing" ] || { echo "build.sh: missing host tools:$missing (e.g. sudo apt install$missing)" >&2; exit 1; }
 if command -v clang >/dev/null && command -v clang++ >/dev/null; then CC=${CC:-clang} CXX=${CXX:-clang++}

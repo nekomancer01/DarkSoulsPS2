@@ -117,15 +117,24 @@ debug)  # the debugger needs the Flatpak's Qt GUI: headless on Xvfb :99 with a s
     [ -n "$KEEP" ] || { "$HX" flatpak kill "$INST" 2>/dev/null || true; rm -f "/tmp/pcsx2-headless/$INST"; }
     ;;
 *)  # run / state: the headless test runner, a child of this script
-    BIN=$PCSX2_HEADLESS
-    [ -n "$BIN" ] || BIN=$H/tools/ext/pcsx2-build/bin/pcsx2-dsrtest
-    [ -x "$BIN" ] || BIN="$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tools/ext/pcsx2-build/bin/pcsx2-dsrtest"
-    [ -x "$BIN" ] || [ -n "$DRY" ] || { echo "ps2-pcsx2.sh: no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh" >&2; exit 1; }
+    if [ -n "$PCSX2_HEADLESS" ]; then  # an explicit binary is used or the run fails, as in tools/pcsx2-run.sh
+        BIN=$PCSX2_HEADLESS
+        [ -x "$BIN" ] || [ -n "$DRY" ] || { echo "ps2-pcsx2.sh: PCSX2_HEADLESS=$BIN is not executable" >&2; exit 1; }
+    else
+        BIN=$H/tools/ext/pcsx2-build/bin/pcsx2-dsrtest
+        [ -x "$BIN" ] || BIN="$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tools/ext/pcsx2-build/bin/pcsx2-dsrtest"
+        [ -x "$BIN" ] || [ -n "$DRY" ] || { echo "ps2-pcsx2.sh: no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh" >&2; exit 1; }
+    fi
     CTL=/tmp/pcsx2-headless/ctl.$PINESLOT.sock
     RUN=/run/user/$(id -u)/app/net.pcsx2.PCSX2  # PINE socket dir (tools/pine.py)
     CMD=(env XDG_RUNTIME_DIR="$RUN" "$BIN" "${ARGS[@]}" -ctl "$CTL" -timeout "${PCSX2_TIMEOUT:-3600}" "${BOOT[@]}")
     [ -n "$DRY" ] && { printf "%q " "${CMD[@]}"; echo; exit 0; }
     mkdir -p /tmp/pcsx2-headless "$RUN"
+    # The PINE slot's lock, the one tools/test-run.py acquire_slot takes (28190/28191 lie in its 28110-28199 range):
+    # held on fd 8, which the emulator inherits, so a test-run never takes this slot, and never reaps this runner
+    # through its slot.<n>.pid note, while it is alive (KEEP=1 included).
+    exec 8> "/tmp/pcsx2-headless/slot.$PINESLOT.lock"
+    flock -w 600 8 || { echo "ps2-pcsx2.sh: PINE slot $PINESLOT busy for 600 s" >&2; exit 1; }
     : > "$C/logs/run.log"
     rm -f "$CTL"
     setsid "${CMD[@]}" > "$LOG" 2>&1 < /dev/null 9>&- &

@@ -37,16 +37,27 @@ if [ -z "$SHOT" ]; then
         setsid flatpak run '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot -elf '$ELF' > '$H/tools/pcsx2.log' 2>&1 < /dev/null &"
     exit 0
 fi
-BIN=$PCSX2_HEADLESS
-[ -n "$BIN" ] || BIN=$H/tools/ext/pcsx2-build/bin/pcsx2-dsrtest
-[ -x "$BIN" ] || BIN="$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tools/ext/pcsx2-build/bin/pcsx2-dsrtest"
-[ -x "$BIN" ] || { echo "pcsx2-run.sh: no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh" >&2; exit 1; }
+if [ -n "$PCSX2_HEADLESS" ]; then  # an explicit binary is used or the run fails (never a silent fallback in an A/B)
+    BIN=$PCSX2_HEADLESS
+    [ -x "$BIN" ] || { echo "pcsx2-run.sh: PCSX2_HEADLESS=$BIN is not executable" >&2; exit 1; }
+else
+    BIN=$H/tools/ext/pcsx2-build/bin/pcsx2-dsrtest
+    [ -x "$BIN" ] || BIN="$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tools/ext/pcsx2-build/bin/pcsx2-dsrtest"
+    [ -x "$BIN" ] || { echo "pcsx2-run.sh: no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh" >&2; exit 1; }
+fi
 SLOT=${PINE:-99}
 DP=/tmp/pcsx2-headless/data/$SLOT
 CTL=/tmp/pcsx2-headless/ctl.$SLOT.sock
 LOG=$DP/PCSX2/logs/emulog.txt
 RUN=/run/user/$(id -u)/app/net.pcsx2.PCSX2  # PINE socket dir (tools/pine.py sock_path); the Flatpak used to create it
 mkdir -p /tmp/pcsx2-headless "$RUN" "$DP/PCSX2/logs"
+if [ -z "$PINE" ]; then
+    # Runs without PINE share slot 99 (its socket, log, pid note and data dir), so they take turns: the lock is held on
+    # fd 8, which the emulator inherits, until the last of this script and its emulator (KEEP=1) is gone. PINE slots
+    # are locked by their caller (tools/test-run.py acquire_slot).
+    exec 8> /tmp/pcsx2-headless/slot.99.lock
+    flock -w 600 8 || { echo "pcsx2-run.sh: slot 99 busy for 600 s (another run without PINE)" >&2; exit 1; }
+fi
 set --
 [ -n "$ARGS" ] && set -- "$@" -gameargs "$ARGS"
 # STATEFILE=<file.p2s>: start from that savestate. The disc / ELF arguments stay: the state needs the same disc in the drive

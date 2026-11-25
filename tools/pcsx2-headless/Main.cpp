@@ -1015,8 +1015,8 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 void GSRunner::SettingsOverride()
 {
-	// Speed comes from the ini (tools/test-pcsx2-ini.py TURBO keys). GS dump replays without a data dir run unlimited.
-	if (s_datapath.empty())
+	// Speed comes from the ini (tools/test-pcsx2-ini.py TURBO keys). GS dump replays always run unlimited.
+	if (s_datapath.empty() || s_dump_mode)
 		s_si->SetBoolValue("EmuCore/GS", "FrameLimitEnable", false);
 	s_si->SetIntValue("EmuCore/GS", "VsyncEnable", false);
 
@@ -1048,7 +1048,7 @@ void GSRunner::SettingsOverride()
 	s_si->SetStringValue("SPU2/Output", "Backend", "Null");
 
 	// none of the bindings are going to resolve to anything
-	Pad::ClearPortBindings(s_settings_interface, 0);
+	Pad::ClearPortBindings(*s_si, 0);
 	s_si->ClearSection("Hotkeys");
 
 	// force logging (no timestamps in a -logfile: the harnesses read its lines as the ELF printed them)
@@ -1121,9 +1121,10 @@ void GSRunner::DumpStats()
 #if defined(__linux__)
 static int s_ctl_fd = -1;
 static std::atomic<bool> s_ctl_stop{false};
-static std::atomic<bool> s_quit_requested{false};
+static std::atomic<u32> s_ctl_seq{0}; // per-request scratch names (see shot / gsdump)
 
-// a file that exists with the same non-zero size over 3 polls 10 ms apart
+// a file that exists with the same non-zero size over 10 polls 10 ms apart (100 ms: a GS / compression thread write
+// stalled under load must not pass as a finished file)
 static bool WaitForStableFile(const std::string& path, int timeout_ms)
 {
 	s64 last = -1;
@@ -1133,7 +1134,7 @@ static bool WaitForStableFile(const std::string& path, int timeout_ms)
 		const s64 size = FileSystem::GetPathFileSize(path.c_str());
 		if (size > 0 && size == last)
 		{
-			if (++same >= 3)
+			if (++same >= 10)
 				return true;
 		}
 		else
@@ -1165,7 +1166,6 @@ static std::string HandleCtlRequest(const std::string& line)
 
 	if (verb == "quit")
 	{
-		s_quit_requested.store(true);
 		Host::RunOnCPUThread([]() {
 			if (VMManager::GetState() == VMState::Running || VMManager::GetState() == VMState::Paused)
 				VMManager::SetState(VMState::Stopping);
@@ -1178,10 +1178,15 @@ static std::string HandleCtlRequest(const std::string& line)
 	{
 		if (!StringUtil::EndsWithNoCase(arg, ".png"))
 			return "err shot path must end in .png";
+		// written under a scratch name unique to this request, then renamed: a request that timed out stays queued and
+		// may still write later, and must never land on (or race) a later request's file
+		const std::string tmp = arg.substr(0, arg.size() - 4) + fmt::format(".dsrtest{}-{}.png", getpid(), s_ctl_seq++);
 		FileSystem::DeleteFilePath(arg.c_str());
-		if (!RunOnCPUThreadWait([arg]() { MTGS::RunOnGSThread([arg]() { GSQueueSnapshot(arg, 0); }); }, WAIT_MS))
+		if (!RunOnCPUThreadWait([tmp]() { MTGS::RunOnGSThread([tmp]() { GSQueueSnapshot(tmp, 0); }); }, WAIT_MS))
 			return "err timeout (VM not running)";
-		return WaitForStableFile(arg, WAIT_MS) ? ("ok " + arg) : "err timeout";
+		if (!WaitForStableFile(tmp, WAIT_MS))
+			return "err timeout";
+		return FileSystem::RenamePath(tmp.c_str(), arg.c_str()) ? ("ok " + arg) : "err rename failed";
 	}
 	if (verb == "gsdump")
 	{
@@ -1189,7 +1194,7 @@ static std::string HandleCtlRequest(const std::string& line)
 			return "err gsdump path must end in .gs.zst";
 		// the GS writes <base>.gs.zst plus a screenshot <base>.png: use a scratch base so a shot of the same name
 		// next to the dump is not overwritten
-		const std::string base = arg.substr(0, arg.size() - 7) + fmt::format(".dsrtest{}", getpid());
+		const std::string base = arg.substr(0, arg.size() - 7) + fmt::format(".dsrtest{}-{}", getpid(), s_ctl_seq++);
 		const std::string tmp_dump = base + ".gs.zst", tmp_png = base + ".png";
 		FileSystem::DeleteFilePath(tmp_dump.c_str());
 		FileSystem::DeleteFilePath(tmp_png.c_str());

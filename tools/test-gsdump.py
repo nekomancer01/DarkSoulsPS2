@@ -35,7 +35,10 @@ def replay(dump, out, secs=6.0, slot=None):
     dump = os.path.realpath(dump)
     tmp = tempfile.mkdtemp(prefix="gsreplay.", dir="/tmp")
     try:
-        r = subprocess.run([runner(), "-surfaceless", "-renderer", "sw", "-dumpdir", tmp, "-timeout", "120", "--", dump],
+        # -datapath: the replay's logs and caches stay in its scratch dir (not the default data dir in the home,
+        # shared by parallel replays)
+        r = subprocess.run([runner(), "-surfaceless", "-renderer", "sw", "-datapath", os.path.join(tmp, "data"),
+                            "-dumpdir", tmp, "-timeout", "120", "--", dump],
                            capture_output=True, text=True, timeout=180)
         frames = sorted(glob.glob(os.path.join(tmp, "*_frame*.png")))
         if r.returncode != 0 or not frames:

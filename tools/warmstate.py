@@ -67,7 +67,10 @@ def file_hash(path):
 
 def runner_binary():
     """the pcsx2-dsrtest tools/pcsx2-run.sh starts (same lookup: PCSX2_HEADLESS, this tree, the main checkout)"""
-    for b in (os.environ.get("PCSX2_HEADLESS"), os.path.join(HERE, "ext", "pcsx2-build", "bin", "pcsx2-dsrtest"),
+    env = os.environ.get("PCSX2_HEADLESS")
+    if env:  # an explicit binary or nothing (no silent fallback, as tools/pcsx2-run.sh)
+        return env if os.access(env, os.X_OK) else None
+    for b in (os.path.join(HERE, "ext", "pcsx2-build", "bin", "pcsx2-dsrtest"),
               os.path.join(main_tree(), "tools", "ext", "pcsx2-build", "bin", "pcsx2-dsrtest")):
         if b and os.access(b, os.X_OK):
             return b
