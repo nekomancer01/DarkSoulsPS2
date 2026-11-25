@@ -5,7 +5,6 @@
 #include "world_i.h"
 #include "lua0.h"
 #include "nav.h"
-#include "ai.h"  /* ai_scripts_add (WORLD_CHR_LITE: a block's map logic at boot until its types move) */
 extern unsigned lua0_malloc_live;  /* lua0.c: the VM's malloc fallback bytes (world_systems' type split) */
 WorldStats world_stats = {.reading = -1, .full = -1};
 const WorldBlock *w_tab;
@@ -418,7 +417,7 @@ void world_systems(GSGLOBAL *gs)
         int ne = -1;
         if (WORLD_CHR_LITE && r->size[E_ENM]) {  /* its types at turn-on; its map logic still joins the VM here */
             if (lua)
-                ai_scripts_add(lua, (int)n1);
+                enemy_block_lua(lua, (int)n1);
         } else if (p) {
             ne = enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0);
         }

@@ -31,6 +31,8 @@ int enemy_block_nav(int block, const void *enm, unsigned enm_size);
  * placements wait for it); enemy_block_untypes, after enemy_block_remove, lets them go (a type no on block places any
  * more is freed once its model is out). Its c0000 NPCs are kept the first time only (npc.c). */
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size);
+/* a block's map logic (ai.lua0) into the one VM, as enemy_block_types does (a no-op without enemies) */
+void enemy_block_lua(const void *map_lua, int map_lua_size);
 void enemy_block_untypes(int block);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */

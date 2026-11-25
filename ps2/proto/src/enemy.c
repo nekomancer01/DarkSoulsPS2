@@ -1208,6 +1208,14 @@ static void head_poll(void)
     }
 }
 
+void enemy_block_lua(const void *map_lua, int map_lua_size)
+{
+#ifndef NO_AI_SCRIPTS
+    if (inited && map_lua)  /* (no VM without enemies: option noenemies never ran enemy_init) */
+        ai_scripts_add(map_lua, map_lua_size);
+#endif
+}
+
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)
 {
     unsigned count, nav_size;
