@@ -15,9 +15,10 @@
 #           Without history: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB.
 #           Kind = "make [MAP=..]" for a build, else the first *.py / *.sh in the command (test-run.py, export_map.py,
 #           test-all.sh, ...), else the command's name. tools/qpeak.py samples each job's tree (PSS + swap, plus the
-#           host PCSX2 instances its test drivers run) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
-#           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, Xvfb), so a test
-#           reserves 2 GB instead of 4.
+#           headless PCSX2 runners its test drivers start) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
+#           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, headless), so a test
+#           reserves 2 GB instead of 4. The headless runner (pcsx2-dsrtest, 2026-11-25: ~1.0 GB RSS) is a child of
+#           the test job and needs a cap of at least 8 (its address space peaks at ~6.7 GB).
 #           A make reserves only DSR_Q_MAKE_BASE_GB (default 3: compilers, pack.py, the exporters it runs without q):
 #           the exporters it runs through q (the Makefile's PY) each reserve their own measured peak (kind
 #           export_map.py, export_chr.py, ...; DSR_Q_NESTED_GB, default 6, before there is one) while the make runs, so

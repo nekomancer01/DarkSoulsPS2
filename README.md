@@ -83,7 +83,7 @@ Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or
 | Python 3.10 or newer | The tools need Pillow and numpy (step 3). |
 | gcc, g++ | Compile a few small native helpers on first use (g++: meshoptimizer's simplifier for the far horizon level). |
 | libmpg123 | Decodes the game's MP3 sound banks for the sound packs (Debian/Ubuntu `libmpg123-0`, Fedora/Arch `mpg123`). |
-| PCSX2 2.x | The Flatpak `net.pcsx2.PCSX2` is what the run scripts use. |
+| PCSX2 2.x | Flatpak `net.pcsx2.PCSX2` to play; `tools/pcsx2-headless/build.sh` builds the headless test runner from PCSX2 v2.8.2 source (GPLv3), see [Headless test runner](#headless-test-runner). |
 | RAM | The first full export needs several GB. |
 
 ### 2. Tell the build where your game is
@@ -130,6 +130,35 @@ HostFs = true
 ```
 
 You can skip this if you only play the ISO build (step 6).
+
+### Headless test runner
+
+The tests (`tools/test-run.py`, `tools/test-all.sh`, `tools/golden.py`, `tools/pcsx2-run.sh` with a screenshot path,
+the CI smoke run) don't use the Flatpak. They start `pcsx2-dsrtest`: PCSX2 v2.8.2 without its Qt interface, built from
+PCSX2's source with a small front end in `tools/pcsx2-headless/` (derived from PCSX2's `pcsx2-gsrunner`, GPLv3 like
+PCSX2 and this repository). It runs Vulkan without a window, has no sound device at all, keeps PINE for
+`tools/pine.py`, and answers screenshot / GS dump / savestate / quit requests on a control socket
+(`tools/pcsx2ctl.py`). Build it once:
+
+```bash
+tools/q -m 6 tools/pcsx2-headless/build.sh     # JOBS=8 by default
+```
+
+The first run clones PCSX2 at `v2.8.2` into `tools/ext/pcsx2-src` and downloads and builds its libraries (SDL3,
+shaderc, freetype, …, PCSX2's own `build-dependencies-runner.sh`) into `tools/ext/pcsx2-deps` once; that needs network
+and takes about 5-40 minutes. Later runs only rebuild what changed. `build.sh` checks for the host tools first: `git
+curl patch pkg-config nasm cmake ninja` and a C++ compiler (clang is used when installed, as in PCSX2's CI, else g++).
+The libraries PCSX2 takes from the system are the development packages of libjpeg, zlib, libcurl, libpcap,
+fontconfig, X11 (libx11, libxrandr), dbus, libudev, ALSA / PulseAudio headers and Vulkan / EGL headers (Debian/Ubuntu
+e.g. `sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev libx11-dev
+libxrandr-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev extra-cmake-modules`).
+The BIOS still comes from your Flatpak PCSX2's config (its `bios` folder).
+
+`tools/pcsx2-run.sh <elf> <seconds> <shot.png>` uses it; `PCSX2_HEADLESS=<binary>` picks another build and
+`PCSX2_TIMEOUT=<s>` caps a run's wall-clock time (default 3600 s; `tools/test-run.py` sets its `--timeout` + 120). A
+worktree without its own build uses the main checkout's `tools/ext/pcsx2-build/bin/pcsx2-dsrtest`. The runner reserves
+about 7 GB of address space, so PCSX2 jobs go through `tools/q -m 10` (the cap is address space, not RAM; a run uses
+about 1 GB). `tools/pcsx2-headless/selftest.sh <elf>` checks its flags, control socket and exit codes.
 
 ### 5. Build
 
@@ -248,7 +277,7 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | libimagequant (`tools/ext/`) | Palette quantisation experiments | GPL-3.0-or-later or commercial |
 | Node.js 18+, clang + wasm-ld (LLVM 17+); pyodide (npm, fetched into `build/cache/pyodide-node` on first use) | `tools/pages/convert-node.mjs` (the in-browser converter run outside a browser, to compare its packs with a native build) | Node: MIT; Pyodide: MPL-2.0 |
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
-| PCSX2 source (`tools/ext/pcsx2-src`) | Emulator debugging | GPL-3.0 |
+| PCSX2 v2.8.2 source + its libraries (`tools/ext/pcsx2-src`, `tools/ext/pcsx2-deps`) | The headless test runner `pcsx2-dsrtest` (`tools/pcsx2-headless/build.sh`), emulator debugging | GPL-3.0 (PCSX2); libraries: see PCSX2's `build-dependencies-runner.sh` |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
 | three.js 0.160 (loaded from cdn.jsdelivr.net by the page) | `tools/lodview.py` (LOD budget viewer) | MIT |
 

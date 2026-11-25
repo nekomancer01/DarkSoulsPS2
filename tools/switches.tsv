@@ -249,6 +249,7 @@ PANO_SPLIT	env	1.4	tune	world	-	#206	pano.py	depth ratio between two layers at l
 PANO_W	env	1024	tune	world	-	#135	pano.py	texels round the cylinder (0.35 degrees each, ~3 screen pixels)
 PARAMDEX	env	unset	config	game	-	init	params.py	-
 PCSX2_GS	env	-	config	tools	-	#49	test-pcsx2-ini.py	-
+PCSX2_HEADLESS	env	unset	config	tools	-	new	warmstate.py test-gsdump.py pcsx2-run.sh ps2-pcsx2.sh	pcsx2-dsrtest binary to run (default: tools/ext/pcsx2-build/bin of this tree, else of the main checkout)
 PINE	env	DEFAULT_SLOT	config	tools	-	init	pine.py	-
 POSE_OBJ	env	1	flag	world	0	init	mapcfg.py	-
 PVS	env	1	flag	world	0	#116	mapcfg.py	0: chunks ignore draw groups, dg.bin shows everything (A/B)

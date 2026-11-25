@@ -1,77 +1,79 @@
 #!/bin/bash
-# Usage: pcsx2-run.sh <file.elf> [seconds=8] [shot.png]  — boot an ELF in the PCSX2 flatpak (host).
-# With a shot path (tests): runs headless on the virtual X display :99 (Xvfb), screenshots it after
-#   N seconds and kills only that instance. Works with the monitor off and never touches a PCSX2 the user has open.
-#   KEEP=1 leaves the headless instance running (prints INST=<flatpak instance id>; stop: flatpak kill <id>).
+# Usage: pcsx2-run.sh <file.elf> [seconds=8] [shot.png]  — boot an ELF in PCSX2.
+# With a shot path (tests): runs pcsx2-dsrtest, the headless test runner (tools/pcsx2-headless/, PCSX2 v2.8.2 without
+#   Qt, Vulkan surfaceless, sound to nullout), as a child process in this container: no display, no window, no audio
+#   device. Screenshots after N seconds through its control socket (tools/pcsx2ctl.py), then stops only that instance.
+#   KEEP=1 leaves the instance running and prints PID=<pid>, CTL=<control socket>, LOG=<EE/IOP log> (stop:
+#   tools/pcsx2ctl.py --sock <CTL> quit, or kill <pid>).
 #   Test options (env, headless only; tools/test-*.sh, tools/pine.py):
-#     ARGS='test=tests/x.txt'  argv for the ELF (PCSX2 -gameargs): src/testscript.c runs that script
-#     PINE=<slot>   enable PINE on <slot> (socket /run/user/<uid>/app/net.pcsx2.PCSX2/pcsx2.sock.<slot>); the instance
-#                   then runs on its own X display :1xx (100 + slot % 100) and data dir
-#                   ~/.var/app/net.pcsx2.PCSX2/test/<slot>/PCSX2 (host home): the user's
-#                   PCSX2.ini + PINE + a GS-dump hotkey (F8), its own logs/emulog.txt, snaps/ and sstates/
+#     ARGS='test=tests/x.txt'  argv for the ELF (-gameargs): src/testscript.c runs that script
+#     PINE=<slot>   enable PINE on <slot> (socket /run/user/<uid>/app/net.pcsx2.PCSX2/pcsx2.sock.<slot>, the path the
+#                   Flatpak used, so tools/pine.py is unchanged); data dir /tmp/pcsx2-headless/data/<slot>/PCSX2: the
+#                   user's PCSX2.ini (tools/test-pcsx2-ini.py: PINE, BIOS folder, turbo, PCSX2_GS keys) and its own
+#                   logs/emulog.txt, snaps/, sstates/, memcards/. Without PINE the slot is 99.
 #     shot path '-' no screenshot (with KEEP=1 the caller drives the instance, e.g. tools/test-run.py)
 #     DISC=<image.iso>  put a disc image in the drive (-elf <elf> -- <iso>): the ELF still boots from host:, so a
 #                   test script loads, and a -DPACK_CDROM=1 build reads its packs from cdrom0:
 #     STATEFILE=<file.p2s>  load that savestate after boot (tools/warmstate.py)
 #     BOOTISO=<image.iso>  boot the disc itself the way a player does (BIOS fast boot of SYSTEM.CNF's ELF, packs
-#                   from cdrom0:); ARGS still reach that ELF (PCSX2 -gameargs) and host: (HostFs) still serves the
-#                   test script and saves from <file.elf>'s folder; <file.elf> gives that folder and nothing else
-# Without a shot path (user launch): replaces any visible PCSX2 and opens the ELF on the desktop.
+#                   from cdrom0:); ARGS still reach that ELF (-gameargs) and host: (HostFs) is the disc image's folder
+#     PCSX2_HEADLESS=<binary>  runner to use (default: tools/ext/pcsx2-build/bin/pcsx2-dsrtest of this tree, else of
+#                   the main checkout; build it with tools/pcsx2-headless/build.sh)
+#     PCSX2_TIMEOUT=<s>  hard wall-clock cap of the runner (-timeout, default 3600; exit 3): an instance whose harness
+#                   died still ends on its own
+#   /tmp/pcsx2-headless/slot.<slot>.pid holds "<pid> <starttime>" (field 22 of /proc/<pid>/stat) while it runs, for
+#   tools/test-run.py reap_slot, tools/memwatch.py and tools/qpeak.py.
+# Without a shot path (user launch): replaces any visible PCSX2 and opens the ELF on the desktop (the Flatpak
+#   net.pcsx2.PCSX2 on the host).
 ELF=$(realpath "$1"); T=${2:-8}; SHOT=$3
 H=$(cd "$(dirname "$0")/.." && pwd)
-HX=$H/tools/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
-FS="--filesystem=$(dirname "$ELF"):ro"
 # The ELF's saves (src/save.c, host:save/): the one writable folder under the ro host: root
-mkdir -p "$(dirname "$ELF")/save"; FSW="--filesystem=$(dirname "$ELF")/save"
+mkdir -p "$(dirname "$ELF")/save"
 if [ -z "$SHOT" ]; then
+    HX=$H/tools/hostexec  # runs on the host (distrobox-host-exec inside a distrobox)
+    FS="--filesystem=$(dirname "$ELF"):ro"; FSW="--filesystem=$(dirname "$ELF")/save"
     "$HX" bash -c "for i in \$(flatpak ps --columns=instance,application | awk '\$2==\"net.pcsx2.PCSX2\"{print \$1}'); do
         [ -e /tmp/pcsx2-headless/\$i ] || flatpak kill \$i; done; sleep 1
         setsid flatpak run '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot -elf '$ELF' > '$H/tools/pcsx2.log' 2>&1 < /dev/null &"
     exit 0
 fi
-# PINE runs get their own X display (:1xx from the slot) so parallel instances never overlap in screenshots
-D=:99
-[ -n "$PINE" ] && D=:$((100 + PINE % 100))
-if ! DISPLAY=$D xdpyinfo >/dev/null 2>&1; then
-    # 9>&-: never hand the job-queue lock (tools/q holds it on fd 9) to the long-lived Xvfb
-    setsid Xvfb $D -screen 0 1280x960x24 -nolisten tcp > /tmp/xvfb99.log 2>&1 < /dev/null 9>&- &
-    for _ in $(seq 50); do DISPLAY=$D xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
-fi
-mkdir -p /tmp/pcsx2-headless
-ID=/tmp/pcsx2-headless/id.$$
-EXTRA=; ENVS=; DISCARG=
-[ -n "$DISC" ] && DISCARG="-- '$(realpath "$DISC")'"
-BOOT="-elf '$ELF'"
-[ -n "$BOOTISO" ] && BOOT= DISCARG="-- '$(realpath "$BOOTISO")'"
-[ -n "$ARGS" ] && EXTRA="-gameargs '$ARGS'"
-# STATEFILE=<file.p2s>: start from that savestate (tools/warmstate.py warm starts; the file must be inside the PCSX2
-# data dir, which the flatpak sees). The disc / ELF arguments stay: the state needs the same disc in the drive
-[ -n "$STATEFILE" ] && EXTRA="$EXTRA -statefile '$STATEFILE'"
-if [ -n "$PINE" ]; then
-    # Own data dir per PINE slot: the shared ini stays untouched and parallel slots never share logs / states
-    HH=$("$HX" printenv HOME)
-    DP="$HH/.var/app/net.pcsx2.PCSX2/test/$PINE"
-    python3 -I "$H/tools/test-pcsx2-ini.py" "$HH/.var/app/net.pcsx2.PCSX2/config/PCSX2" "$DP" "$PINE"
-    EXTRA="$EXTRA -datapath '$DP'"
-    ENVS="--env=XDG_RUNTIME_DIR=/run/user/$(id -u)/app/net.pcsx2.PCSX2"
-    rm -f "/run/user/$(id -u)/app/net.pcsx2.PCSX2/pcsx2.sock.$PINE"
-fi
-# Headless tests are muted (user request 2026-10-31): sound goes to the null sink dsr_mute, created on demand.
-"$HX" bash -c "pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink \
-    sink_name=dsr_mute sink_properties=device.description=DSR-test-mute >/dev/null
-    DISPLAY=$D XAUTHORITY= WAYLAND_DISPLAY= setsid flatpak run --instance-id-fd=3 --env=PULSE_SINK=dsr_mute --socket=x11 \
-    --nosocket=wayland --env=QT_QPA_PLATFORM=xcb $ENVS '$FS' '$FSW' net.pcsx2.PCSX2 -fastboot $EXTRA $BOOT $DISCARG \
-    > '$H/tools/pcsx2-headless.log' 2>&1 < /dev/null 3> '$ID' &
-    for _ in \$(seq 50); do [ -s '$ID' ] && break; sleep 0.1; done"
-INST=$(cat "$ID"); rm -f "$ID"; touch "/tmp/pcsx2-headless/$INST"
-# the slot's note for tools/test-run.py reap_slot, written here as soon as the instance exists: a harness that dies
-# while this script is still launching leaves no PCSX2 behind that the slot's next run cannot find
-[ -n "$PINE" ] && [ -n "$INST" ] && echo "$INST" > "/tmp/pcsx2-headless/slot.$PINE.inst"
-[ -n "$KEEP" ] && echo "INST=$INST"
+BIN=$PCSX2_HEADLESS
+[ -n "$BIN" ] || BIN=$H/tools/ext/pcsx2-build/bin/pcsx2-dsrtest
+[ -x "$BIN" ] || BIN="$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tools/ext/pcsx2-build/bin/pcsx2-dsrtest"
+[ -x "$BIN" ] || { echo "pcsx2-run.sh: no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh" >&2; exit 1; }
+SLOT=${PINE:-99}
+DP=/tmp/pcsx2-headless/data/$SLOT
+CTL=/tmp/pcsx2-headless/ctl.$SLOT.sock
+LOG=$DP/PCSX2/logs/emulog.txt
+RUN=/run/user/$(id -u)/app/net.pcsx2.PCSX2  # PINE socket dir (tools/pine.py sock_path); the Flatpak used to create it
+mkdir -p /tmp/pcsx2-headless "$RUN" "$DP/PCSX2/logs"
+set --
+[ -n "$ARGS" ] && set -- "$@" -gameargs "$ARGS"
+# STATEFILE=<file.p2s>: start from that savestate. The disc / ELF arguments stay: the state needs the same disc in the drive
+[ -n "$STATEFILE" ] && set -- "$@" -statefile "$STATEFILE"
+if [ -n "$BOOTISO" ]; then set -- "$@" -- "$(realpath "$BOOTISO")"
+else set -- "$@" -elf "$ELF"; [ -n "$DISC" ] && set -- "$@" -- "$(realpath "$DISC")"; fi
+# Own data dir per slot: the user's ini stays untouched and parallel slots never share logs / states / cards
+python3 -I "$H/tools/test-pcsx2-ini.py" "${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2" "$DP" "$SLOT"
+rm -f "$RUN/pcsx2.sock.$SLOT" "$CTL" "$LOG"
+# 9>&-: never hand the job-queue lock (tools/q holds it on fd 9) to the emulator
+XDG_RUNTIME_DIR=$RUN setsid "$BIN" -datapath "$DP" -ctl "$CTL" -logfile "$LOG" -timeout "${PCSX2_TIMEOUT:-3600}" \
+    -fastboot "$@" > "$DP/stdout.log" 2>&1 < /dev/null 9>&- &
+PID=$!
+# the slot's note for tools/test-run.py reap_slot, written as soon as the process exists: a harness that dies while
+# this script is still launching leaves no emulator behind that the slot's next run cannot find. The start time
+# (clock ticks since boot) tells a reused pid apart.
+echo "$PID $(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)" > "/tmp/pcsx2-headless/slot.$SLOT.pid"
+for _ in $(seq 300); do [ -S "$CTL" ] && break; kill -0 "$PID" 2>/dev/null || break; sleep 0.05; done
+if [ -n "$KEEP" ]; then echo "PID=$PID"; echo "CTL=$CTL"; echo "LOG=$LOG"; fi
 [ "$SHOT" = "-" ] && exit 0
 sleep "$T"
-# Capture the PCSX2 main window (largest top-level window) or the whole screen.
-WIN=$(DISPLAY=$D xwininfo -root -children 2>/dev/null | awk '/^ +0x/{split($0,a,"  ");print $1}' | while read w; do
-    DISPLAY=$D xwininfo -id "$w" 2>/dev/null | awk -v w="$w" '/Width:/{x=$2}/Height:/{y=$2}END{print x*y, w}'; done | sort -n | tail -1 | cut -d' ' -f2)
-DISPLAY=$D import -window "${WIN:-root}" "$(realpath -m "$SHOT")"
-[ -n "$KEEP" ] || { "$HX" flatpak kill "$INST"; rm -f "/tmp/pcsx2-headless/$INST"; [ -z "$PINE" ] || rm -f "/tmp/pcsx2-headless/slot.$PINE.inst"; }
+python3 -I "$H/tools/pcsx2ctl.py" --sock "$CTL" shot "$(realpath -m "$SHOT")" > /dev/null; rc=$?
+if [ -z "$KEEP" ]; then
+    python3 -I "$H/tools/pcsx2ctl.py" --sock "$CTL" quit > /dev/null 2>&1
+    for _ in $(seq 100); do kill -0 "$PID" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$PID" 2>/dev/null
+    wait "$PID" 2>/dev/null
+    rm -f "/tmp/pcsx2-headless/slot.$SLOT.pid"
+fi
+exit $rc

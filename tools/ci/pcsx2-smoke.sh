@@ -46,6 +46,9 @@ cp -a "$MAIN/config.local.mk" "$TREE/" 2>/dev/null
 if [ ! -d "$TREE/build/gen" ] && [ -d "$MAIN/build/gen" ]; then
     bash "$TREE/tools/newbuild" "$TREE/build" --from "$MAIN/build" 2>&1 | hide
 fi
+# pcsx2-bin: the headless test runner is built once by hand (a 20-40 min dependency build has no place in a CI run)
+BIN=${PCSX2_HEADLESS:-$MAIN/tools/ext/pcsx2-build/bin/pcsx2-dsrtest}
+[ -x "$BIN" ] || { echo "pcsx2-smoke: pcsx2-dsrtest missing: run tools/pcsx2-headless/build.sh in $MAIN" | hide; exit 1; }
 # 3 test
 cd "$TREE" || exit 1
 echo "== $(git log -1 --format='%h %s') | areas $AREAS | max $MAX"

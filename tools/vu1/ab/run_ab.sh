@@ -1,7 +1,7 @@
 #!/bin/bash
 # A/B: build variant, run headless, screenshot; restores the plain build at the end. Usage: run_ab.sh name "flags" secs [name "flags" secs]...
 R=$(cd "$(dirname "$0")/../../.." && pwd)  # repo root
-PCSX2_LOG=${PCSX2_LOG:-${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/emulog.txt}
+PCSX2_LOG=${PCSX2_LOG:-/tmp/pcsx2-headless/data/99/PCSX2/logs/emulog.txt}  # tools/pcsx2-run.sh LOG= (no PINE)
 cd $R/ps2/proto
 source ../env.sh
 OUT=/tmp/claude-1000/ab
