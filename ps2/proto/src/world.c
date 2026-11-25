@@ -344,6 +344,7 @@ void world_stream_open(void)
 }
 
 int world_current(void) { return w_cur; }
+int world_lite_busy(void) { return w_lite_first && !w_warping; }
 
 unsigned world_block_res(int k)
 {

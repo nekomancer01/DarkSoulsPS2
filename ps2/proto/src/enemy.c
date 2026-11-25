@@ -1097,6 +1097,13 @@ static unsigned char blk_typed[ENEMY_BLOCKS], blk_npc_done[ENEMY_BLOCKS];
 /* up to HEAD_JOBS heads read at once (the disc server orders the requests by position; one at a time a 4-block warp's 29
  * heads took ~9 s on the ISO, 2026-11-25) */
 #define HEAD_JOBS 4
+/* HEAD_AFTER_LITE (default 1; 0: a head read starts as soon as its stub is made): no new head read while a wanted
+ * block's lite set loads outside a warp. The map reader is held for that set (wplan.c lite_pending); head reads at
+ * sync priority stretched it (Darkroot, iso_neighbours 2026-11-25: 13 heads, stage 1 0.7 -> 2.6 s, map reads held the
+ * whole time, Parish -> Darkroot pop-ins 12-13 -> 18-21) */
+#ifndef HEAD_AFTER_LITE
+#define HEAD_AFTER_LITE 1
+#endif
 static PackJob hjobs[HEAD_JOBS];
 static ChrType *hjob_ts[HEAD_JOBS];  /* the stub each head job reads, NULL idle */
 static int head_busy(const ChrType *t)
@@ -1224,6 +1231,8 @@ static void head_poll(void)
             }
         }
     }
+    if (HEAD_AFTER_LITE && world_lite_busy())
+        return;
     for (int j = 0; j < HEAD_JOBS; j++) {
         if (hjob_ts[j])
             continue;
