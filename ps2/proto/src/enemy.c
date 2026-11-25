@@ -1094,15 +1094,27 @@ int enemy_block_nav(int block, const void *enm, unsigned enm_size)
  * in the background (head_poll: one pack job at a time, no frame stall, as the models load), then it may be placed.
  * Same-name types of two blocks with equal chr.bin are one (twin), as at boot. Counted once per block. ---- */
 static unsigned char blk_typed[ENEMY_BLOCKS], blk_npc_done[ENEMY_BLOCKS];
-static PackJob hjob;
-static ChrType *hjob_t;  /* the stub whose chr.bin the head job reads, NULL idle */
+/* up to HEAD_JOBS heads read at once (the disc server orders the requests by position; one at a time a 4-block warp's 29
+ * heads took ~9 s on the ISO, 2026-11-25) */
+#define HEAD_JOBS 4
+static PackJob hjobs[HEAD_JOBS];
+static ChrType *hjob_ts[HEAD_JOBS];  /* the stub each head job reads, NULL idle */
+static int head_busy(const ChrType *t)
+{
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            return 1;
+    return 0;
+}
+
 
 static void type_kill(ChrType *t)
 {
     if (t->keep)
         return;
-    if (hjob_t == t)
-        pack_job_abandon(&hjob), hjob_t = NULL;
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            pack_job_abandon(&hjobs[j]), hjob_ts[j] = NULL;
     for (int i = 0; i < ntypes; i++)  /* (its aliases go with it) */
         if (types[i].alias == t)
             memset(&types[i], 0, sizeof types[i]), types[i].dead = 1;
@@ -1125,7 +1137,7 @@ static ChrType *type_stub(const char *name, const char *dir)
             return types[i].alias ? (ChrType *)types[i].alias : &types[i];
     }
     for (int i = 0; free_i < 0 && ntypes >= MAX_TYPES && i < ntypes; i++)  /* full: a head no on block places goes */
-        if (!types[i].refs && !types[i].keep && !types[i].loaded && job_t != &types[i] && hjob_t != &types[i]) {
+        if (!types[i].refs && !types[i].keep && !types[i].loaded && job_t != &types[i] && !head_busy(&types[i])) {
             type_kill(&types[i]);
             free_i = i < ntypes ? i : -1;
         }
@@ -1165,65 +1177,68 @@ static void type_merge(ChrType *t, ChrType *twin)
 
 static int place_rec(int block, int k);
 
-static void head_poll(void)
+/* one head job: its result (a twin merges, else the type gets its head; its placements may be placed from now) */
+static void head_done(PackJob *hj, ChrType *t, int r)
 {
-    if (hjob_t) {
-        int r = pack_job_step(&hjob);
-        if (!r)
-            return;
-        ChrType *t = hjob_t;
-        hjob_t = NULL;
-        if (r < 0 || !t->refs) {
-            if (r > 0)
-                hjob.put(hjob.out, hjob.alloc);
-            t->retry = frame + 60;  /* (a read error: again in 2 s) */
-            return;
-        }
-        void *cb = hjob.out;
-        unsigned csize = hjob.raw, hash = fnv1a(cb, csize);
-        ChrType *twin = NULL;
-        for (int i = 0; i < ntypes && !twin; i++)
-            if (&types[i] != t && !types[i].dead && !types[i].stub && !strncmp(types[i].name, t->name, 8) &&
-                types[i].chr_size == csize && types[i].chr_hash == hash)
-                twin = &types[i];
-        if (twin) {
-            hjob.put(cb, hjob.alloc);
-            type_merge(t, twin);
-            return;
-        }
-        t->model_raw = pack_job_entry_size(&hjob, "model.bin");
-        int ok = type_head(t, cb, csize, hash);
-        hjob.put(cb, hjob.alloc);
-        if (!ok) {
-            t->retry = frame + 3600;  /* (a bad file: not every frame) */
-            return;
-        }
-        t->stub = 0;
-        for (int b = 1; !ENEMY_NEAR_PLACE && b < ENEMY_BLOCKS; b++)  /* (all placed at once: the ones that waited) */
-            for (int k = 0; blk_on[b] && k < blk_n[b]; k++)
-                if (blk_type[b][k] == t && blk_slot[b][k] < 0)
-                    place_rec(b, k);
+    if (r < 0 || !t->refs) {
+        if (r > 0)
+            hj->put(hj->out, hj->alloc);
+        t->retry = frame + 60;  /* (a read error: again in 2 s) */
         return;
     }
-    for (int i = 0; i < ntypes; i++) {
-        ChrType *t = &types[i];
-        if (!t->stub || t->dead || !t->refs || frame < t->retry)
-            continue;
-        char path[64];
-        model_path(path, sizeof path, t);
-        pack_job_start(&hjob, path, "chr.bin", heap_get, heap_put);
-        pack_job_first(&hjob);  /* (before the map streaming's reads: its placements wait for it) */
-        hjob_t = t;
+    void *cb = hj->out;
+    unsigned csize = hj->raw, hash = fnv1a(cb, csize);
+    ChrType *twin = NULL;
+    for (int i = 0; i < ntypes && !twin; i++)
+        if (&types[i] != t && !types[i].dead && !types[i].stub && !types[i].alias && !strncmp(types[i].name, t->name, 8) &&
+            types[i].chr_size == csize && types[i].chr_hash == hash)
+            twin = &types[i];
+    if (twin) {
+        hj->put(cb, hj->alloc);
+        type_merge(t, twin);
         return;
     }
+    t->model_raw = pack_job_entry_size(hj, "model.bin");
+    int ok = type_head(t, cb, csize, hash);
+    hj->put(cb, hj->alloc);
+    if (!ok) {
+        t->retry = frame + 3600;  /* (a bad file: not every frame) */
+        return;
+    }
+    t->stub = 0;
+    for (int b = 1; !ENEMY_NEAR_PLACE && b < ENEMY_BLOCKS; b++)  /* (all placed at once: the ones that waited) */
+        for (int k = 0; blk_on[b] && k < blk_n[b]; k++)
+            if (blk_type[b][k] == t && blk_slot[b][k] < 0)
+                place_rec(b, k);
 }
 
-void enemy_block_lua(const void *map_lua, int map_lua_size)
+static void head_poll(void)
 {
-#ifndef NO_AI_SCRIPTS
-    if (inited && map_lua)  /* (no VM without enemies: option noenemies never ran enemy_init) */
-        ai_scripts_add(map_lua, map_lua_size);
-#endif
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j]) {
+            int r = pack_job_step(&hjobs[j]);
+            if (r) {
+                ChrType *t = hjob_ts[j];
+                hjob_ts[j] = NULL;
+                head_done(&hjobs[j], t, r);
+            }
+        }
+    }
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j])
+            continue;
+        ChrType *t = NULL;
+        for (int i = 0; i < ntypes && !t; i++)
+            if (types[i].stub && !types[i].dead && types[i].refs && frame >= types[i].retry && !head_busy(&types[i]))
+                t = &types[i];
+        if (!t)
+            return;
+        char path[64];
+        model_path(path, sizeof path, t);
+        pack_job_start(&hjobs[j], path, "chr.bin", heap_get, heap_put);
+        pack_job_first(&hjobs[j]);  /* (before the map streaming's reads: its placements wait for it) */
+        hjob_ts[j] = t;
+    }
 }
 
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)
@@ -1587,7 +1602,7 @@ int enemy_trace_types(char *buf, int cap, unsigned frame)
 
 int enemy_stream_settled(void)
 {
-    if (job_t || hjob_t)
+    if (job_t || hjob_ts[0] || hjob_ts[1] || hjob_ts[2] || hjob_ts[3])
         return 0;
     for (int i = 0; i < ntypes; i++)  /* (WORLD_CHR_LITE: a placed block's heads first) */
         if (types[i].stub && types[i].refs > 0 && !types[i].dead && frame >= types[i].retry)
