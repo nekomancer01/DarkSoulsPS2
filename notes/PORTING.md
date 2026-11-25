@@ -148,7 +148,7 @@ Translation and the code-index rebuild are both resumable: start Ollama (`fndb/o
   Run: `tools/pcsx2-run.sh ps2/proto/proto.elf [secs shot.png]` (PCSX2 flatpak, BIOS in its config dir).
   Demo script plays when there is no pad input for 5 s.
 - From game data: anim lengths, TAE ChrActionFlag windows (cancel/turn/i-frames), AttackBehavior hit windows, SP-regen
-  windows, Havok root motion (walk 1.50, run 3.67, dash 6.33 m/s; roll/attack lunges), R1 stamina 20 (BehaviorParam_PC
+  windows, Havok root motion (walk 1.50, run 3.67, dash 6.33 m/s (0535; 5.03 m/s since the dash is 0510, char-21); roll/attack lunges), R1 stamina 20 (BehaviorParam_PC
   1023000xx), Warrior start (CharaInitParam 3000, Longsword 201000), R1 chain 3000->3001->3002->3001 (ESD states 46/48/49).
 - Real model + animations (2026-10-30, second pass): tools/export_model.py -> src/model.bin (545 KB): c0000 Havok
   skeleton (61 bones), Hard Leather set HD/BD/AM/LG_M_9360 + Longsword WP_A_0201 at FLVER LOD2 (2,960 tris, 3,375 verts,
@@ -345,6 +345,11 @@ Translation and the code-index rebuild are both resumable: start Ollama (`fndb/o
   -21 / +13 deg. 0535 and 0536 share the leg cycle and root motion (identical foot phase), only root/spine/arms differ.
 - Fix: export_model.py TURN_PAIR {535: 536} bakes the dash as the 50/50 per-bone blend (nlerp + lerp), i.e. running
   straight; anim id stays 535, so player.c and player_data.h are unchanged. Turning still shows no lean (TECH_DEBT char-8).
+- Superseded 2026-11-25 (no footsteps while dashing, TECH_DEBT char-21): DSR's dash is not 535 but MoveParam row 0
+  superDash = a00_0510. WalkAnim's MoveParam load (FUN_1403a1cc0) puts row word 9 at WalkAnim+0xA0, the anim the dash
+  test FUN_1403a5d40 compares. 510 is straight (head 0.01 m off the feet) and carries the dash's TAE footsteps; 535 / 536
+  have no sound events. WalkAnim_Twist's lean is procedural (bone chains Upper_Root -> Spine1 and Master,
+  FUN_1403a4e30 / FUN_1403a5be0), not a clip-pair blend, so the TURN_PAIR bake is gone.
 - Ruled out, with numbers: Havok spline decode (matches SoulsAssetPipeline; loops close, run/walk bodies face -Z with the
   head over the feet), FLVER bind vs Havok reference pose (every weighted bone < 0.2 deg / 0 mm apart), VU1 skinning
   (PCSX2 frame matches the offline pose's outline), quantization. Idle stance is turned -18 deg in the data (DS idle).
