@@ -282,6 +282,10 @@ static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab
  * read while the block draws; the draw groups stay, its collision parts' groups) */
 #define LEAN_ENT(e) (((e) >= E_TAB && (e) <= LEAN_E1) || (e) == E_PVS)
 #define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
+/* first of the entries read after the floor is on (stage 1, before the textures): world-46's enemies, effect tables,
+ * object head and AI; a block's turn-on waits only for collision and maps (streamer thread, 2026-11-25: read before
+ * turn_on_col they made the Burg bonfire block's turn-on 0.5-1 s slower on the ISO) */
+#define E_LATE E_ENM
 
 #include "chunk.h"
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */

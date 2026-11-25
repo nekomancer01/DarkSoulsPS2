@@ -101,11 +101,6 @@ static void turn_on_col(int i)
     if (r->size[E_DG] && r->size[E_PVS])
         map_block_dg_set(i, r->blob[E_DG], r->size[E_DG], r->blob[E_PVS], r->size[E_PVS]);  /* WORLD_DG_LITE: lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
-    if (ok && r->size[E_ENM] && WORLD_CHR_LITE)  /* its placements and types now: new types' heads are read while its
-                                                     * textures are (placed from stage 2, enemy_block_add) */
-        enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
-    if (ok && r->size[E_FXH])  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
-        fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
                (const char *)r->blob[E_TAB]);
@@ -131,6 +126,16 @@ static void turn_on_col(int i)
            w_tab[i].pack, ok ? "" : " (FAILED)", r->total >> 10, world_stats.load_ms, col_block_tris(i), (ticks() - t0) / 295,
            world_stats.pool_used_kb, r->size[E_COL] >> 10, r->size[E_TAB] >> 10, r->size[E_TABB] >> 10,
            r->size[E_TABC] >> 10, r->size[E_EV] >> 10);
+}
+
+/* a late entry (E_LATE .. E_TEX, read in stage 1 after the floor turned on) is in its blob */
+static void late_on(int i, unsigned e)
+{
+    BlockRt *r = &w_rt[i];
+    if (e == E_ENM && WORLD_CHR_LITE)  /* its placements and types (new types' heads read while the rest comes) */
+        enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
+    else if (e == E_FXH)  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
+        fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
 }
 
 /* objects.bin (e = E_OBJ) or fx.bin (E_FX) is in texbuf, or the pack has none: its textures go up */
@@ -426,6 +431,8 @@ void w_read_step(int i, int issue)
         if ((r->done += n) == r->size[r->ent]) {
             if (r->ent >= E_TEX)
                 tex_on(i, r->ent);
+            else if (r->state == W_ON && r->ent >= E_LATE)
+                late_on(i, r->ent);
             r->ent++, r->done = 0;
         }
     }
@@ -435,13 +442,13 @@ void w_read_step(int i, int issue)
                 tex_on(i, r->ent);
             r->ent++;
         }
-        if (r->state == W_READING && (r->ent >= E_TEX || r->ent == NENT)) {
+        if (r->state == W_READING && (r->ent >= E_LATE || r->ent == NENT)) {
             turn_on_col(i);  /* collision, maptab, events read: the floor is on */
             if (r->stage == 2) {
                 free_tex(r);
                 return;
             }
-            issue = 0;  /* objects.bin / fx.bin from a later step (this one stays short) */
+            issue = 0;  /* the late entries, objects.bin / fx.bin from later steps (this one stays short) */
             continue;
         }
         if (r->ent == NENT) {
@@ -450,8 +457,8 @@ void w_read_step(int i, int issue)
         }
         break;
     }
-    if (r->state == W_ON && (!issue || world_stats.reading >= 0 || !tex_alloc(i)))
-        return;  /* stage 1: the next texture entry once a read is free and the buffer has room */
+    if (r->state == W_ON && (!issue || world_stats.reading >= 0 || (r->ent >= E_TEX && !tex_alloc(i))))
+        return;  /* stage 1: the next late / texture entry once a read is free (and the buffer has room) */
     char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
     if (!w_tk && (w_tk = (r->state == W_READING ? pack_req_read_first : pack_req_read)(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
