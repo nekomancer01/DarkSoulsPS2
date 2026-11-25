@@ -29,11 +29,14 @@ import argparse, fnmatch, hashlib, heapq, os, re, sys
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
 GAP = 600  # s: rows after a pause this long belong to a new build run
-# the world's phase steps (ps2/proto/Makefile worldexports -> worldhzn -> worldpvs / worldfar, WORLD_HZN_FIRST=1): a
-# phase's steps start only after every step of the phases before it ended. A block step not named here is a block
-# export (phase 0) unless it is a character ({CHR}: c####) or a pack; everything else has no barrier.
-PHASES = {"horizon": 1, "visibility": 2, "far panorama": 2}
-PHASE_NAMES = ["exports", "horizons", "bakes"]
+# the world's phase steps (ps2/proto/Makefile, WORLD_HZN_FIRST=1 WORLD_EARLY_CHRS=1): worldexports (blockexport:
+# objects, lights, map, collision), then worldhzn, then worldpvs / worldfar / worldchrs (the bakes and EARLY_EXPORTS,
+# order-only after worldhzn), then worldpacks (map split, disc layout and the packs, which stepcache does not time). A phase's steps start only after every step of the phases before it ended; steps not
+# named here (packs, map split, game-wide steps) have no barrier, only their prerequisites.
+PHASES = {"objects": 0, "lights": 0, "map": 0, "collision": 0, "horizon": 1,
+          "visibility": 2, "far panorama": 2, "{CHR}": 2, "enemies": 2, "map AI": 2, "events": 2, "effects": 2,
+          "map split": 3, "disc layout": 3}
+PHASE_NAMES = ["exports", "horizons", "bakes+chrs", "packs"]
 # outputs that differ between equal builds: logs, the ISO's date sectors, the timing files and the GPU-made bakes
 # (PR #338: far.bin and pvs.bin vary on the GPU; their identity is checked with FAR_GPU=0 / PVS_GPU=0)
 VOLATILE = ["snd.log", "proto.iso", "stepcache.tsv", "stepcache.hashes", "*/far.bin", "*/pvs.bin"]
@@ -62,20 +65,20 @@ class Row:
 
     @property
     def block(self):
-        """gen/<block>/... of the first output, or None (game-wide steps)"""
+        """the world block of gen/<block>/..., "boot" for the boot block's own files (gen/<file>, gen/c####/...,
+        made by the top make, not a block sub-make), None for data/ and other game-wide outputs"""
         for o in self.outs:
-            m = re.search(r"/gen/([^/]+)/", o)
+            m = re.search(r"/gen/(m\d\d_\d\d_\d\d_\d\d[^/]*)/", o)
             if m:
                 return m.group(1)
+        for o in self.outs:
+            if "/gen/" in o:
+                return "boot"
         return None
 
     @property
     def phase(self):
-        if self.name in PHASES:
-            return PHASES[self.name]
-        if self.block is None or self.group in ("{CHR}", "{CHR} pack") or "pack" in self.name:
-            return None
-        return 0
+        return PHASES.get(self.group) if self.block is not None else None
 
 
 def load(build, every=False):
@@ -136,10 +139,20 @@ def producers(rows):
     return made
 
 
-def deps(rows):
+def deps(rows, barriers=False):
+    """per row, the rows that wrote its prerequisites (by end time); barriers=True adds the step of the phase before
+    its own that ended last (the Makefile's phase sub-makes wait for it)"""
     made = producers(rows)
-    return [sorted({made[p].i for p in r.pre if p in made and made[p] is not r and made[p].t0 <= r.t0},
-                   key=lambda j: rows[j].t1) for r in rows]
+    out = [{made[p].i for p in r.pre if p in made and made[p] is not r and made[p].t0 <= r.t0} for r in rows]
+    if barriers:
+        last = {}
+        for r in rows:
+            if r.phase is not None and (r.phase not in last or r.t1 > rows[last[r.phase]].t1):
+                last[r.phase] = r.i
+        for r in rows:
+            if r.phase and r.phase - 1 in last and rows[last[r.phase - 1]].t1 <= r.t0 + 1:
+                out[r.i].add(last[r.phase - 1])
+    return [sorted(x, key=lambda j: rows[j].t1) for x in out]
 
 
 def queue_waits(build, rows):
@@ -173,7 +186,7 @@ def cmd_critical(a):
     rows = load(a.build, a.all)
     if not rows:
         return 0
-    d = deps(rows)
+    d = deps(rows, barriers=True)
     r = max(rows, key=lambda x: x.t1)
     chain = [r]
     while d[r.i]:
@@ -192,6 +205,14 @@ def cmd_critical(a):
               f"{(str(w) if w is not None else '-'):>8}  {x.result:<7} {x.name}"
               + (f" [{x.block}]" if x.block else ""))
         prev = x.t1
+    print("gap = waiting on something the rows do not show: a free job slot, a phase barrier, a step stepcache does not "
+          "time (packs, the ELF)")
+    for p in range(len(PHASE_NAMES)):
+        ph = [x for x in rows if x.phase == p]
+        if ph:
+            print(f"  phase {PHASE_NAMES[p]:<11} {min(x.t0 for x in ph) - t_begin:>7.1f} -> "
+                  f"{max(x.t1 for x in ph) - t_begin:>7.1f} s, {len(ph)} steps, {sum(x.wall for x in ph):.0f} s wall, "
+                  f"{sum(x.cpu for x in ph):.0f} s CPU")
     return 0
 
 
@@ -263,6 +284,10 @@ def replay(rows, slots, order=None, scale=None):
             if left[u] == 0:
                 waiting.add(u)
         admit()
+    stuck = [rows[i] for i in range(len(rows)) if started[i] is None]
+    if stuck:
+        print(f"replay: {len(stuck)} steps never became ready (a phase waits on a later step): "
+              + ", ".join(sorted({x.name for x in stuck})[:8]), file=sys.stderr)
     return t, ph
 
 

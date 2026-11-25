@@ -38,16 +38,16 @@ def run(*argv):
 T = 1000.0
 # (start, end, result, name, outputs, prereqs); blocks a and b, b's steps longer
 STEPS = [
-    (0, 10, "miss", "objects", "<B>/gen/a/objects.bin", ""),
-    (0, 30, "miss", "objects", "<B>/gen/b/objects.bin", ""),
-    (10, 40, "miss", "map", "<B>/gen/a/map.bin", "<B>/gen/a/objects.bin;<B>/stamp/export_map.py.sum"),
-    (30, 90, "miss", "map", "<B>/gen/b/map.bin", "<B>/gen/b/objects.bin"),
+    (0, 10, "miss", "objects", "<B>/gen/m00_00_00_00_a/objects.bin", ""),
+    (0, 30, "miss", "objects", "<B>/gen/m00_00_00_00_b/objects.bin", ""),
+    (10, 40, "miss", "map", "<B>/gen/m00_00_00_00_a/map.bin", "<B>/gen/m00_00_00_00_a/objects.bin;<B>/stamp/export_map.py.sum"),
+    (30, 90, "miss", "map", "<B>/gen/m00_00_00_00_b/map.bin", "<B>/gen/m00_00_00_00_b/objects.bin"),
     (0, 5, "hit", "menu", "<B>/data/menu.bin", ""),
-    (5, 25, "miss", "c1000", "<B>/gen/a/c1000/chr.bin", ""),
-    (90, 100, "miss", "horizon", "<B>/gen/a/hzn.bin", "<B>/gen/a/map.bin"),
-    (90, 130, "miss", "horizon", "<B>/gen/b/hzn.bin", "<B>/gen/b/map.bin"),
-    (130, 150, "miss", "visibility", "<B>/gen/a/pvs.bin", "<B>/gen/a/map.bin;<B>/gen/a/hzn.bin"),
-    (130, 170, "miss", "far panorama", "<B>/gen/b/far.bin", "<B>/gen/b/hzn.bin;<B>/gen/a/hzn.bin"),
+    (5, 25, "miss", "c1000", "<B>/gen/m00_00_00_00_a/c1000/chr.bin", ""),
+    (90, 100, "miss", "horizon", "<B>/gen/m00_00_00_00_a/hzn.bin", "<B>/gen/m00_00_00_00_a/map.bin"),
+    (90, 130, "miss", "horizon", "<B>/gen/m00_00_00_00_b/hzn.bin", "<B>/gen/m00_00_00_00_b/map.bin"),
+    (130, 150, "miss", "visibility", "<B>/gen/m00_00_00_00_a/pvs.bin", "<B>/gen/m00_00_00_00_a/map.bin;<B>/gen/m00_00_00_00_a/hzn.bin"),
+    (130, 170, "miss", "far panorama", "<B>/gen/m00_00_00_00_b/far.bin", "<B>/gen/m00_00_00_00_b/hzn.bin;<B>/gen/m00_00_00_00_a/hzn.bin"),
 ]
 
 
@@ -70,25 +70,26 @@ def profile_checks(tmp):
     check(any(ln.split()[:3] == ["map", "2", "0"] and "90.0" in ln for ln in out.splitlines()), "report map row")
     check(any(ln.startswith("{CHR}") for ln in out.splitlines()), "characters fold into {CHR}")
     rc, out = run("critical", b)
-    chain = [ln.split()[-2] + " " + ln.split()[-1] for ln in out.splitlines()[2:]]
-    check(rc == 0 and chain == ["objects [b]", "map [b]", "horizon [b]", "panorama [b]"],
+    chain = [ln.split()[-2] + " " + ln.split()[-1] for ln in out.splitlines()[2:] if ln.lstrip()[:1].isdigit()]
+    check(rc == 0 and chain == ["objects [m00_00_00_00_b]", "map [m00_00_00_00_b]", "horizon [m00_00_00_00_b]", "panorama [m00_00_00_00_b]"],
           f"critical chain objects -> map -> horizon -> far panorama of b ({chain})")
     rows = buildprof.load(b)
     t1, ph = buildprof.replay(rows, 1)
     check(abs(t1 - sum(s[1] - s[0] for s in STEPS)) < 1e-6, f"replay -j 1 = the wall sum ({t1})")
     t2, ph = buildprof.replay(rows, 2)
-    # 2 slots, a before b: exports and characters 0-90 (objects a/b, map a, c1000, menu, map b runs 30-90),
-    # horizons wait for every export: 90-130, bakes 130-170
-    check(abs(t2 - 170) < 1e-6, f"replay -j 2 = 170 s ({t2})")
+    # 2 slots, blocks a then b: exports 0-90 (map b 30-90; menu, outside the phases, fills a slot at 40), horizons
+    # wait for every export: 90-130, then phase 2 in block order: visibility a and c1000 (a) 130-150, far b 150-190
+    check(abs(t2 - 190) < 1e-6, f"replay -j 2 = 190 s ({t2})")
     check(ph[1][0] >= ph[0][1] and ph[2][0] >= ph[1][1], f"phase barriers hold ({ph})")
     t9, _ = buildprof.replay(rows, 2, scale={"map": 0.5})
     check(t9 < t2, f"--scale map=0.5 shortens the replay ({t9} < {t2})")
     rc, out = run("order", b)
-    check(out.split() == ["b", "a"], f"order: the block with more phase work first ({out.split()})")
+    check(out.split() == ["m00_00_00_00_b", "m00_00_00_00_a"], f"order: the block with more phase work first ({out.split()})")
     of = os.path.join(tmp, "order.txt")
-    open(of, "w").write("m:b\nm:a\n")
+    open(of, "w").write("m:m00_00_00_00_b\nm:m00_00_00_00_a\n")
     rc, out = run("replay", b, "-j", "2", "--order", of)
-    check(rc == 0 and out.startswith("replay -j 2: "), "replay with an order file")
+    # b first: phase 2 starts far b with visibility a, c1000 after: 130-170
+    check(rc == 0 and out.startswith("replay -j 2: 170.0 s"), f"replay with an order file, b first ({out.split(chr(10))[0]})")
     check(subprocess.run([sys.executable, os.path.join(ROOT, "tools", "buildprof.py"), "report",
                           os.path.join(tmp, "none")], capture_output=True).returncode == 2, "report without a TSV exits 2")
 
