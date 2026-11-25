@@ -273,10 +273,18 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_OBJ_LITE
 #define WORLD_OBJ_LITE 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_OBJH, E_OBJ, E_FX, NENT };
+/* E_AI (WORLD_AI_UNLOAD, default 1; world-46 phase 4b): the block's map AI (ai.lua0) comes with its lite set; its chunks
+ * are counted into the Lua VM when it is in (late_on: enemy_block_ai) and out at the turn-off, freed once no block holds
+ * them (lua0.c). Until now every block's scripts ran into the VM at boot and stayed (1044 KB of the boot heap at 27
+ * blocks, 2026-11-25). The Lua of the blocks a link keeps is reserved beside the arena (world_init: w_lua_res).
+ * 0: every block's at boot as before. */
+#ifndef WORLD_AI_UNLOAD
+#define WORLD_AI_UNLOAD 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_AI, E_FXH, E_OBJH, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
-                                          "objects.bin", "objects.bin", "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "ai.lua0",
+                                          "fx.bin", "objects.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
  * read while the block draws; the draw groups stay, its collision parts' groups) */
@@ -324,7 +332,8 @@ typedef struct {
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned far_off, far_size;  /* far.bin (tools/farpano.py): its far panorama of the blocks that are off; 0 none */
     unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
-    unsigned obj_full;  /* WORLD_OBJ_LITE: objects.bin's whole size (E_OBJH holds its head, E_OBJ its tail) */
+    unsigned obj_full;
+    unsigned char ai_on;  /* WORLD_AI_UNLOAD: its E_AI is counted into the VM (late_on .. w_turn_off) */  /* WORLD_OBJ_LITE: objects.bin's whole size (E_OBJH holds its head, E_OBJ its tail) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
@@ -406,6 +415,7 @@ extern unsigned w_hold_m, w_hold_want, w_hold_gone;
 extern WorldSrc w_src[WSRC_N];
 int w_read_sync(Pack *pk, unsigned off, void *dst, unsigned n);
 unsigned world_struct_bytes(void);
+unsigned world_lua_bytes(void);  /* wplan.c: WORLD_AI_UNLOAD reserve */
 void w_step_time(unsigned t0);
 void w_bump_free(void *p, unsigned n);
 void w_bump_drop(void);

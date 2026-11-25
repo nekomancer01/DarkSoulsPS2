@@ -235,6 +235,9 @@ int world_init(const char *boot_area)
                 r->off[e] = r->size[e] = 0;
             if (e == E_ENM && ((!WORLD_NAV_LITE && !WORLD_CHR_LITE) || !i))  /* (the boot block's: enemy_init) */
                 r->off[e] = r->size[e] = 0;
+            if (e == E_AI && (!WORLD_AI_UNLOAD || !WORLD_CHR_LITE || !i))  /* (the boot block's: enemy_init, for the run;
+                                                                             * without CHR_LITE: enemy_block_types at boot) */
+                r->off[e] = r->size[e] = 0;
             if (!r->size[e] && !E_OPTIONAL(e) && (i || e == E_TAB)) {
                 printf("world: block %d %s: %s missing or not raw\n", i, w_tab[i].pack, ENTRIES[e]);
                 r->open = 0;
@@ -291,8 +294,12 @@ int world_init(const char *boot_area)
     for (int s = 0; s < WORLD_SLOTS; s++)
         w_slot_of[s] = -1;
     world_stats.blocks = w_nblk;
-    if (w_nblk > 1)
-        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
+    if (w_nblk > 1) {
+        unsigned lua = world_lua_bytes();  /* WORLD_AI_UNLOAD: 0 without E_AI entries */
+        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS + lua);
+        if (lua)
+            printf("world: Lua reserve %u KB (the most a link keeps)\n", lua >> 10);
+    }
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (w_nblk > 1) {
         unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
@@ -409,15 +416,15 @@ void world_systems(GSGLOBAL *gs)
         free(p);
         unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
-        unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
+        unsigned char *lua = r->size[E_AI] ? NULL : read_tmp(r, "ai.lua0", &n1);
         /* (TECH_DEBT world-46 split: the Lua VM's heap and its malloc spill, the navmesh copy; the rest of the enemies
          * figure is the placements and the type heads) */
         unsigned lh0 = lua0_heap, lm0 = lua0_malloc_live, nb0 = nav_bytes();
         if (r->size[E_ENM] && WORLD_NAV_LITE)
             enemy_nav_with_block(i);  /* WORLD_NAV_LITE: its navmesh comes with its lite set (nav_bind) */
         int ne = -1;
-        if (WORLD_CHR_LITE && r->size[E_ENM]) {  /* its types at turn-on; its map logic still joins the VM here */
-            if (lua)
+        if (WORLD_CHR_LITE && r->size[E_ENM]) {  /* its types at turn-on; its map logic here (or E_AI: at turn-on) */
+            if (lua && !r->size[E_AI])
                 enemy_block_lua(lua, (int)n1);
         } else if (p) {
             ne = enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0);

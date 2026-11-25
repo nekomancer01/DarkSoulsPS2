@@ -134,6 +134,8 @@ static void late_on(int i, unsigned e)
     BlockRt *r = &w_rt[i];
     if (e == E_ENM && WORLD_CHR_LITE)  /* its placements and types (new types' heads read while the rest comes) */
         enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
+    else if (e == E_AI)  /* WORLD_AI_UNLOAD: its map AI, before its enemies are placed (turn_on_rest) */
+        r->ai_on = enemy_block_ai(r->blob[E_AI], (int)r->size[E_AI], 1);
     else if (e == E_FXH)  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
         fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
 }
@@ -250,6 +252,8 @@ void w_turn_off(int i)
         enemy_block_remove(i);
     }
     enemy_block_untypes(i);  /* WORLD_CHR_LITE: after its enemies (a no-op before stage 2) */
+    if (r->ai_on)  /* WORLD_AI_UNLOAD: after ev_off (events run Lua) and its enemies' goals */
+        r->ai_on = 0, enemy_block_ai(r->blob[E_AI], (int)r->size[E_AI], 0);
     nav_unbind(i);  /* WORLD_NAV_LITE (none bound before stage 2): the blob goes with the slot */
     if (r->stage == 2 || r->ent > E_OBJ)
         objects_block_remove(i);

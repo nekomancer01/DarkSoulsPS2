@@ -51,6 +51,7 @@ struct LTable {
     Node *node;
 };
 
+struct LChunk;
 typedef struct Proto {
     const unsigned *code;
     LVal *k;
@@ -58,7 +59,21 @@ typedef struct Proto {
     unsigned ncode, nk, np, line;
     unsigned char nups, nparams, maxstack;
     const char *chunk;
+    struct LChunk *ch;  /* the loaded chunk the proto belongs to (its closures mark it live) */
 } Proto;
+
+/* A loaded chunk (one name of a lua0 pack, TECH_DEBT world-46): loaded once by name, counted by the packs loaded
+ * (lua0_load / lua0_unload). At 0 its globals go (gl: the names its main function sets, SETGLOBAL) and its protos are
+ * freed after a whole GC cycle that started later saw no closure of it (seen != that cycle). Every chunk name of DSR's
+ * 27-32 world blocks has one body (reports/world46 luanames.py), so a name stands for its code. */
+typedef struct LChunk {
+    struct LChunk *next;
+    char *name;
+    Proto *main;
+    LStr **gl;
+    unsigned ngl, refs, seen, pend_at;
+    unsigned char pending;
+} LChunk;
 
 typedef struct UpVal {
     GCH h;
@@ -107,6 +122,9 @@ static LVal globals;
 static LVal methods[8];
 static LVal (*fallbacks[8])(int, LVal);
 static jmp_buf *err_jmp;
+static LChunk *chunks;
+static unsigned gc_cycles, npending;
+unsigned lua0_chunks_live, lua0_chunks_freed;
 char lua0_errmsg[160];
 unsigned lua0_heap, lua0_since_gc, lua0_instructions;
 
@@ -465,6 +483,30 @@ static unsigned rd_u32(Rd *r)
 }
 
 static const char *cur_chunk;
+static LChunk *cur_ch;
+
+/* the bytes of a packed proto, without loading it (a chunk already loaded) */
+static void skip_proto(Rd *r)
+{
+    rd_u32(r), rd_u32(r);
+    unsigned ncode = rd_u32(r), nk = rd_u32(r), np = rd_u32(r);
+    if (r->b + 4 * ncode > r->end)
+        lua0_error("truncated code");
+    r->b += 4 * ncode;
+    for (unsigned i = 0; i < nk; i++) {
+        unsigned t = rd_u32(r);
+        if (t == LT_NUM)
+            rd_u32(r);
+        else if (t == LT_STR) {
+            unsigned len = rd_u32(r);
+            if (r->b + len > r->end)
+                lua0_error("truncated string");
+            r->b += (len + 3) & ~3u;
+        }
+    }
+    for (unsigned i = 0; i < np; i++)
+        skip_proto(r);
+}
 
 static Proto *rd_proto(Rd *r)
 {
@@ -473,7 +515,7 @@ static Proto *rd_proto(Rd *r)
     f->nups = h & 0xFF, f->nparams = (h >> 8) & 0xFF, f->maxstack = (h >> 16) & 0xFF;
     f->line = rd_u32(r);
     f->ncode = rd_u32(r), f->nk = rd_u32(r), f->np = rd_u32(r);
-    f->chunk = cur_chunk;
+    f->chunk = cur_chunk, f->ch = cur_ch;
     if (r->b + 4 * f->ncode > r->end)
         lua0_error("truncated code");
     unsigned *code = raw_alloc(4 * f->ncode);
@@ -493,7 +535,8 @@ static Proto *rd_proto(Rd *r)
             if (r->b + len > r->end)
                 lua0_error("truncated string");
             LStr *s = new_str((const char *)r->b, len);
-            s->h.fixed = 1;
+            if (s->h.fixed < 255)  /* a count of the loaded protos holding it (255: for the run) */
+                s->h.fixed++;
             r->b += (len + 3) & ~3u;
             f->k[i] = sval(s);
         } else
@@ -512,6 +555,54 @@ static LClosure *new_lclosure(const Proto *p)
     return c;
 }
 
+static LChunk *chunk_find(const char *name, unsigned len)
+{
+    for (LChunk *c = chunks; c; c = c->next)
+        if (!strncmp(c->name, name, len) && !c->name[len])
+            return c;
+    return NULL;
+}
+
+/* the globals the chunk's main function sets (as luanames.py: SETGLOBAL's constant) */
+static void chunk_globals(LChunk *c)
+{
+    const Proto *p = c->main;
+    unsigned n = 0;
+    for (unsigned i = 0; i < p->ncode; i++)
+        n += GET_OP(p->code[i]) == OP_SETGLOBAL;
+    c->gl = raw_alloc(sizeof(LStr *) * (n ? n : 1));
+    for (unsigned i = 0; i < p->ncode; i++)
+        if (GET_OP(p->code[i]) == OP_SETGLOBAL && (unsigned)GET_BX(p->code[i]) < p->nk &&
+            p->k[GET_BX(p->code[i])].t == LT_STR) {
+            LStr *g = p->k[GET_BX(p->code[i])].u.s;
+            unsigned j = 0;
+            while (j < c->ngl && c->gl[j] != g)
+                j++;
+            if (j == c->ngl)
+                c->gl[c->ngl++] = g;
+        }
+}
+
+static int chunk_run(LChunk *c)
+{
+    LClosure *cl = new_lclosure(c->main);
+    LVal f = {LT_LFUNC, 0, {0}};
+    f.u.p = cl;
+    if (lua0_call(f, NULL, 0, NULL, 0) < 0) {
+        printf("lua0: %s: %s\n", c->name, lua0_errmsg);
+        return 0;
+    }
+    return 1;
+}
+
+static void chunk_unpend(LChunk *c)
+{
+    if (c->pending)
+        c->pending = 0, npending--;
+}
+
+/* Every chunk of the pack: a new name is loaded and run, a loaded one counted again (a chunk let go but not freed yet
+ * runs again: its globals were cleared). Returns the chunks run. */
 int lua0_load(const void *blob, int size)
 {
     Rd r = {blob, (const unsigned char *)blob + size};
@@ -519,6 +610,7 @@ int lua0_load(const void *blob, int size)
     err_jmp = &jb;
     if (setjmp(jb)) {
         err_jmp = prev;
+        cur_ch = NULL;
         printf("lua0: load error: %s\n", lua0_errmsg);
         return -1;
     }
@@ -528,24 +620,125 @@ int lua0_load(const void *blob, int size)
     unsigned n = rd_u32(&r), done = 0;
     for (unsigned i = 0; i < n; i++) {
         unsigned len = rd_u32(&r);
-        char *name = raw_alloc(len + 1);
-        memcpy(name, r.b, len);
+        if (r.b + len > r.end)
+            lua0_error("truncated name");
+        const char *nm = (const char *)r.b;
         r.b += (len + 3) & ~3u;
-        cur_chunk = name;
-        Proto *p = rd_proto(&r);
-        LClosure *cl = new_lclosure(p);
-        LVal f = {LT_LFUNC, 0, {0}};
-        f.u.p = cl;
+        LChunk *c = chunk_find(nm, len);
+        if (c) {
+            skip_proto(&r);
+            if (c->refs++)
+                continue;
+            chunk_unpend(c);  /* back before its protos went: run again (its globals were cleared) */
+        } else {
+            c = raw_alloc(sizeof *c);
+            c->name = raw_alloc(len + 1);
+            memcpy(c->name, nm, len);
+            cur_chunk = c->name, cur_ch = c;
+            c->main = rd_proto(&r);
+            cur_ch = NULL;
+            chunk_globals(c);
+            c->refs = 1;
+            c->next = chunks, chunks = c;
+            lua0_chunks_live++;
+        }
         err_jmp = prev;
-        if (lua0_call(f, NULL, 0, NULL, 0) < 0)
-            printf("lua0: %s: %s\n", name, lua0_errmsg);
-        else
-            done++;
+        done += chunk_run(c);
         err_jmp = &jb;
     }
     err_jmp = prev;
     return (int)done;
 }
+
+/* Every chunk of the pack counted down. One no pack holds any more: its globals go, except those another held chunk
+ * sets (that chunk runs again, so the global is its own closure: OnIf_231000 is set by 231000_battle and
+ * 231000_logic); its protos are freed by the GC (chunk_reap). Returns the chunks let go. */
+int lua0_unload(const void *blob, int size)
+{
+    Rd r = {blob, (const unsigned char *)blob + size};
+    jmp_buf jb, *prev = err_jmp;
+    err_jmp = &jb;
+    if (setjmp(jb)) {
+        err_jmp = prev;
+        printf("lua0: unload error: %s\n", lua0_errmsg);
+        return -1;
+    }
+    if (size < 8 || memcmp(blob, "DSRL", 4))
+        lua0_error("not a lua0 pack");
+    r.b += 4;
+    unsigned n = rd_u32(&r), gone = 0;
+    LChunk *rerun[8];
+    unsigned nrerun = 0;
+    for (unsigned i = 0; i < n; i++) {
+        unsigned len = rd_u32(&r);
+        if (r.b + len > r.end)
+            lua0_error("truncated name");
+        LChunk *c = chunk_find((const char *)r.b, len);
+        r.b += (len + 3) & ~3u;
+        skip_proto(&r);
+        if (!c || !c->refs || --c->refs)
+            continue;
+        for (unsigned g = 0; g < c->ngl; g++) {
+            LChunk *o = chunks;
+            for (; o; o = o->next)
+                if (o != c && o->refs) {
+                    unsigned j = 0;
+                    while (j < o->ngl && o->gl[j] != c->gl[g])
+                        j++;
+                    if (j < o->ngl)
+                        break;
+                }
+            if (!o)
+                tset(globals.u.h, sval(c->gl[g]), LNIL);
+            else if (nrerun < 8) {
+                unsigned j = 0;
+                while (j < nrerun && rerun[j] != o)
+                    j++;
+                if (j == nrerun)
+                    rerun[nrerun++] = o;
+            }
+        }
+        c->pending = 1, c->pend_at = gc_cycles, npending++;
+        gone++;
+    }
+    err_jmp = prev;
+    for (unsigned j = 0; j < nrerun; j++)
+        if (rerun[j]->refs)
+            chunk_run(rerun[j]);
+    return (int)gone;
+}
+
+static void free_proto(Proto *f)
+{
+    for (unsigned i = 0; i < f->np; i++)
+        free_proto(f->p[i]);
+    for (unsigned i = 0; i < f->nk; i++)
+        if (f->k[i].t == LT_STR && f->k[i].u.s->h.fixed && f->k[i].u.s->h.fixed < 255)
+            f->k[i].u.s->h.fixed--;  /* (0: a string like any other, swept once nothing marks it) */
+    raw_free((void *)f->code, 4 * f->ncode);
+    raw_free(f->k, sizeof(LVal) * (f->nk ? f->nk : 1));
+    raw_free(f->p, sizeof(Proto *) * (f->np ? f->np : 1));
+    raw_free(f, sizeof(Proto));
+}
+
+/* after a whole cycle (mark, sweep): the chunks let go before its mark whose closures it did not see are freed */
+static void chunk_reap(void)
+{
+    for (LChunk **pp = &chunks, *c; (c = *pp);) {
+        if (!c->pending || c->pend_at >= gc_cycles || c->seen == gc_cycles) {
+            pp = &c->next;
+            continue;
+        }
+        *pp = c->next;
+        npending--, lua0_chunks_live--, lua0_chunks_freed++;
+        free_proto(c->main);
+        raw_free(c->gl, sizeof(LStr *) * (c->ngl ? c->ngl : 1));
+        raw_free(c->name, strlen(c->name) + 1);
+        raw_free(c, sizeof *c);
+    }
+}
+
+unsigned lua0_chunks_pending(void) { return npending; }
 
 /* ---- upvalues ---- */
 
@@ -897,6 +1090,8 @@ static void mark_obj(GCH *o)
     }
     case GC_LCL: {
         LClosure *c = (LClosure *)o;
+        if (c->p->ch)
+            c->p->ch->seen = gc_cycles;  /* (a chunk let go stays while a closure of it lives) */
         for (int i = 0; i < c->nups; i++)
             mark_obj(&c->up[i]->h);
         break;
@@ -915,6 +1110,7 @@ static void gc_mark(void (*extra_roots)(void))
     unsigned t0 = ticks();
     gc_before = lua0_heap, gc_since = lua0_since_gc;
     gc_cur ^= 1;
+    gc_cycles++;
     lua0_mark(globals);
     for (int i = 0; i < 8; i++)
         lua0_mark(methods[i]);
@@ -975,6 +1171,8 @@ static int gc_sweep(unsigned budget)
     if (*pp)
         return 0;
     sweep_pp = NULL;
+    if (npending)
+        chunk_reap();
     /* one line per collection: the heap-drift check (TECH_DEBT world-5) reads free heap right after a sweep, where
      * the VM holds only live objects and what was allocated during the sweep; between sweeps up to LUA_GC_KB of
      * garbage (ai.c ai_end_frame) is still held. "in" = the mark (one frame) + the sweep (spread over frames) */
@@ -1002,7 +1200,7 @@ int lua0_gc_step(void (*extra_roots)(void), unsigned threshold, unsigned budget_
     if (nci)
         return 0;
     if (!sweep_pp) {
-        if (lua0_since_gc <= threshold)
+        if (lua0_since_gc <= threshold && !npending)  /* (chunks let go: freed by the next cycle) */
             return 0;
         gc_mark(extra_roots);
     }

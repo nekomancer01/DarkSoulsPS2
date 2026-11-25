@@ -38,6 +38,11 @@ int lua0_init(void);
 /* Load a lua50.py pack (all chunks) and run each main chunk in order; returns chunks run, -1 on a bad blob.
  * The blob may be freed afterwards. */
 int lua0_load(const void *blob, int size);
+/* the pack's chunks counted down; one held by no pack: its globals cleared, its code freed by a later GC cycle once no
+ * closure of it is live (world-46: a world block's map AI goes with the block). Returns the chunks let go. */
+int lua0_unload(const void *blob, int size);
+unsigned lua0_chunks_pending(void);
+extern unsigned lua0_chunks_live, lua0_chunks_freed;
 LVal lua0_str(const char *s);
 const char *lua0_cstr(LVal v);  /* string contents, or NULL */
 LVal lua0_getglobal(const char *name);

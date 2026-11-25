@@ -33,6 +33,9 @@ int enemy_block_nav(int block, const void *enm, unsigned enm_size);
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size);
 /* a block's map logic (ai.lua0) into the one VM, as enemy_block_types does (a no-op without enemies) */
 void enemy_block_lua(const void *map_lua, int map_lua_size);
+/* world-46 (WORLD_AI_UNLOAD): a block's map AI (its lite set's ai.lua0) counted into the VM at its turn-on (on 1) and
+ * out at its turn-off (0); returns 1 when it went in / out */
+int enemy_block_ai(const void *map_lua, int map_lua_size, int on);
 void enemy_block_untypes(int block);
 void enemy_block_remove(int block);
 /* Bonfire rest / death: every placed enemy back at its placement, alive, AI from the start (event state kept) */

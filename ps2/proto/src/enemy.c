@@ -1258,6 +1258,16 @@ void enemy_block_lua(const void *map_lua, int map_lua_size)
 #endif
 }
 
+int enemy_block_ai(const void *map_lua, int map_lua_size, int on)
+{
+#ifndef NO_AI_SCRIPTS
+    if (inited && map_lua)
+        return (on ? ai_block_load : ai_block_drop)(map_lua, map_lua_size) >= 0;
+#endif
+    (void)map_lua, (void)map_lua_size, (void)on;
+    return 0;
+}
+
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)
 {
     unsigned count, nav_size;
