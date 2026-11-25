@@ -39,6 +39,8 @@ void snd_update(float dt);
 typedef struct {
     int on, voices, streams, banks;     /* module up, voices playing, stream slots playing, banks loaded */
     unsigned spu_used, spu_free;        /* SPU2 sample heap bytes */
+    unsigned spu_hole;                   /* largest free SPU2 heap run, bytes (sndres_largest_hole) */
+    unsigned evicted, no_room, retried;  /* banks evicted for room / slots; placements that found none; placed on retry */
     unsigned played, missing, dropped;  /* events started; not found; found but without a sample (dropped tier) */
     unsigned errors;                    /* IOP read / open errors */
     unsigned late, underruns;           /* disc stream refills late / streams muted for want of data (dsrsnd) */

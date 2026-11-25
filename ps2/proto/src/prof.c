@@ -106,9 +106,10 @@ static void sum_block(const char *why)
     }
     unsigned l50 = pct_u(lh_tot, LB_N, n_tot, 50), l90 = pct_u(lh_tot, LB_N, n_tot, 90);
     printf("PROFSUM lua0 instr/frame p50 <=%u p90 <=%u max %u avg %u | lua heap %u KB pool %u KB malloc %u KB | spu2 "
-           "banks %u KB used %u KB free, streams %u KB\n", l50 * LB_STEP, l90 * LB_STEP, lmax_tot,
+           "banks %u KB used %u KB free (hole %u KB), streams %u KB, %u evict %u noroom %u retry\n", l50 * LB_STEP, l90 * LB_STEP, lmax_tot,
            (unsigned)(lsum_tot / n_tot), lua0_heap >> 10, lua0_pool_used >> 10, lua0_malloc_live >> 10,
-           snd_stats.spu_used >> 10, snd_stats.spu_free >> 10, (SND_STREAMS_SPU_BYTES) >> 10);
+           snd_stats.spu_used >> 10, snd_stats.spu_free >> 10, snd_stats.spu_hole >> 10, (SND_STREAMS_SPU_BYTES) >> 10,
+           snd_stats.evicted, snd_stats.no_room, snd_stats.retried);
 }
 
 void prof_gate(int state, int frozen)
@@ -219,8 +220,9 @@ void prof_frame(void)
             }
             unsigned l50 = pct_s(lh_iv, LB_N, n_iv, 50), l90 = pct_s(lh_iv, LB_N, n_iv, 90);
             printf("PROFQ lua0 instr/frame p50 <=%u p90 <=%u max %u | lua heap %u KB | spu2 banks %u KB used %u KB free, "
-                   "%u banks, %u streams\n", l50 * LB_STEP, l90 * LB_STEP, lmax_iv, lua0_heap >> 10, snd_stats.spu_used >> 10,
-                   snd_stats.spu_free >> 10, snd_stats.banks, snd_stats.streams);
+                   "hole %u KB, %u banks, %u streams, %u evict %u noroom\n", l50 * LB_STEP, l90 * LB_STEP, lmax_iv, lua0_heap >> 10,
+                   snd_stats.spu_used >> 10, snd_stats.spu_free >> 10, snd_stats.spu_hole >> 10, snd_stats.banks,
+                   snd_stats.streams, snd_stats.evicted, snd_stats.no_room);
             ai_prof_log();
         }
         memset(hi_iv, 0, sizeof hi_iv), memset(max_iv, 0, sizeof max_iv), memset(lh_iv, 0, sizeof lh_iv);

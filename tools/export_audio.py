@@ -20,10 +20,14 @@ Tiers (what goes where; SPU2 RAM is 2 MB):
   streamed  longer samples of STREAM_TYPES events, at STREAM_RATE, from disc (3 IOP stream slots)
   dropped   samples used only by s / v / p events no TAE cue names (spells, NPC voices, cutscenes: ASSUMED unneeded
             until those systems exist, TECH_DEBT audio-2), streamed-length v / p samples (voices, cutscenes)
-RATE: the highest of RATES at which main + the largest area + the CHR_MIN largest character banks fit SPU_BUDGET.
+RATE: per resident sample (SND_RATE_PICK=sample, default; TECH_DEBT audio-2): tools/audio_rate.py pick_rates steps the
+      samples with the least weighted band loss per byte saved down RATES (capped at the source rate) until main + the
+      largest area + the CHR_MIN largest character banks fit SPU_BUDGET. SND_RATE_PICK=global: one rate for every
+      sample, the highest of RATES at which those packs fit (before audio-2).
 
 bank.bin (little-endian)
-  header  "DSRB", u32 version 2, u32 nsamples, u32 nevents, u32 nwaves, u32 vag bytes, u32 str bytes, u32 rate
+  header  "DSRB", u32 version 2, u32 nsamples, u32 nevents, u32 nwaves, u32 vag bytes, u32 str bytes, u32 rate (the
+          highest resident sample rate, else the pack default)
   sample  {u32 offset (vag.bin or str.bin), u32 bytes (all channels), u16 rate, u8 channels,
            u8 flags (1 loops, 2 streamed, 4 dropped), u32 chunk (streamed: bytes per channel per chunk)}       16 B
           resident: channel c at offset + c * bytes / channels; streamed: chunks of `chunk` bytes per channel,
@@ -48,7 +52,8 @@ Usage: export_audio.py <pak dir> <work dir> <map id> [map id ...]  (the packs th
        Decoding and encoding run in DSR_AUDIO_JOBS worker processes (default: every core, at most 8); the packs are
        the same bytes whatever the count (each sample is encoded alone, results are written in order). Encoded
        samples are cached across exports and trees (cache(): tools/buildcache.py, SND_CACHE=0 = off): the packs are the same bytes either way.
-       export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)"""
+       export_audio.py --size-only <map id> [...]                 (plan + sizes, no encoding)
+       SND_RATE_PICK: sample (default) | global; read like SND_CACHE, not a stamp input: rm $(A)/snd.stamp to A/B"""
 import glob, os, re, struct, sys, time
 import multiprocessing
 
@@ -57,13 +62,15 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "adpcm"))
-import adpcm, fev, fsb4, gamepath, pack, souls
+import adpcm, audio_rate, fev, fsb4, gamepath, pack, souls
 
 SPU_RAM = 2 * 1024 * 1024
 SPU_SYSTEM = 0x5040    # bottom of SPU2 RAM: core input / output areas (libsd); sound.c starts its heap here
 SPU_STREAM = 3 * 2 * 2 * 8192  # sound.c: 3 stream slots x 2 channels x 2 ring halves x 8 KB chunks
 SPU_BUDGET = SPU_RAM - SPU_SYSTEM - SPU_STREAM  # no reverb work area: sound.c runs without reverb (TECH_DEBT audio-7)
-RATES = (22050, 16000, 11025, 8000)
+RATES = audio_rate.RATES
+WEIGHT_CUE = 2.0       # ASSUMED (TECH_DEBT audio-14): TAE-cue sounds play on every swing / step
+SPEC_VERSION = 1       # bump when band_loss changes (its source is not in the encoder cache's key)
 STREAM_RATE = 22050    # ASSUMED stream rate (CD budget: 12.6 KB/s per mono channel)
 STREAM_CHUNK = 8192    # bytes per channel per IOP read (dsrsnd_rpc.h SND_STREAM_CHUNK_MAX)
 STREAM_SECONDS = 4.0   # ASSUMED: one-shots longer than this stream from disc
@@ -333,12 +340,111 @@ def start_pool():
           " (SND_CACHE)", flush=True)
 
 
-def write_pack(out, work, name, g, rate, cue=None, emit=None):
+def loss_sample(job):
+    """one sample -> audio_rate.band_loss, from the cache when it has it; decoded like encode_sample; runs in a worker
+    process when there is a pool"""
+    path, index = job
+    b = _FSB.get(path) or _FSB.setdefault(path, fsb4.FSB4(path))
+    s = b.samples[index]
+    pcm = b.decode(s)
+    c = cache()
+    if c is None:
+        return audio_rate.band_loss(pcm, s.freq)
+    return c.cached(c.key(b"spec", SPEC_VERSION, audio_rate.RATES, 2048, 10.0, pcm.shape, s.freq, pcm),
+                    lambda: audio_rate.band_loss(pcm, s.freq))
+
+
+def loss_of(g):
+    """{(bank, idx): band_loss} for g's resident samples. Full export: over POOL (main() starts it first);
+    --size-only: serial in this process (cached after the first run)."""
+    keys, jobs = [], []
+    for b, _ in g.banks:
+        for s in b.samples:
+            k = (b.name, s.index)
+            if g.tier[k] == "res":
+                keys.append(k)
+                jobs.append((b.path, s.index))
+    results = POOL.map(loss_sample, jobs) if POOL else map(loss_sample, jobs)
+    return dict(zip(keys, results))
+
+
+def global_rate(groups, chr_groups, areas):
+    """one rate for every sample (SND_RATE_PICK=global, before audio-2): the highest of RATES at which main + the
+    largest area + the CHR_MIN largest character banks fit SPU_BUDGET, else the lowest"""
+    rate = RATES[-1]
+    for r in RATES:
+        area_max = max(groups["m" + aa].resident_bytes(r) for aa in areas)
+        chr_sz = sorted((g.resident_bytes(r) for g in chr_groups.values()), reverse=True)
+        need = groups["main"].resident_bytes(r) + area_max + sum(chr_sz[:CHR_MIN])
+        print(f"  {r:5} Hz: main {groups['main'].resident_bytes(r) / 1024:6.0f} K + area {area_max / 1024:6.0f} K + "
+              f"{CHR_MIN} chr {sum(chr_sz[:CHR_MIN]) / 1024:5.0f} K = {need / 1024:6.0f} K"
+              f"{'  fits' if need <= SPU_BUDGET else ''}")
+        if need <= SPU_BUDGET:
+            rate = r
+            break
+    return rate
+
+
+def sample_rates(groups, chr_groups, areas):
+    """{(bank, idx): rate} for every resident sample of main, the areas and the character banks: audio_rate.pick_rates
+    over the band loss, TAE-cue sounds weighted WEIGHT_CUE; budget counted as in global_rate. Prints the need and one
+    histogram line per counted pack. Even the lowest rates over budget: every sample at RATES[-1] and a warning."""
+    packs = {"main": groups["main"], **{"m" + aa: groups["m" + aa] for aa in areas}, **chr_groups}
+    items = {}
+    for name, g in packs.items():
+        loss = loss_of(g)
+        for b, _ in g.banks:
+            for s in b.samples:
+                k = (b.name, s.index)
+                if g.tier[k] != "res":
+                    continue
+                loop = k in g.loops
+                items[k] = audio_rate.Item(name, s.freq, WEIGHT_CUE if "*" in g.users.get(k, ()) else 1.0, loss[k],
+                                           lambda r, s=s, loop=loop: vag_bytes(s.length, s.freq, r, s.channels, loop))
+
+    def counted(pack_bytes):  # today's rule: main + the largest area + the CHR_MIN largest chr banks
+        area = max(("m" + aa for aa in areas), key=lambda p: pack_bytes.get(p, 0))
+        chrs = sorted(chr_groups, key=lambda p: pack_bytes.get(p, 0), reverse=True)[:CHR_MIN]
+        return {"main", area, *chrs}
+
+    def bytes_of(rate_of):
+        pack_bytes = {}
+        for k, it in items.items():
+            pack_bytes[it.pack] = pack_bytes.get(it.pack, 0) + it.size(rate_of[k])
+        return pack_bytes
+
+    try:
+        rate_of = audio_rate.pick_rates(items, SPU_BUDGET, counted)
+        over = False
+    except ValueError:
+        rate_of = {k: RATES[-1] for k in items}
+        over = True
+    pack_bytes = bytes_of(rate_of)
+    c = counted(pack_bytes)
+    need = sum(pack_bytes.get(p, 0) for p in c)
+    if over:
+        print(f"WARNING: resident samples {(need - SPU_BUDGET) / 1024:.0f} K over the SPU2 budget at the lowest rates")
+    print(f"rates (SND_RATE_PICK=sample): need {need / 1024:.0f} K {'<=' if need <= SPU_BUDGET else '>'} "
+          f"{SPU_BUDGET / 1024:.0f} K budget{', fits' if need <= SPU_BUDGET else ''}")
+    for p in packs:
+        if p not in c:
+            continue
+        keys = [k for k, it in items.items() if it.pack == p]
+        cols = []
+        for r in RATES:
+            ks = [k for k in keys if rate_of[k] == r]
+            cols.append(f"{r:5}: {len(ks):4} ({sum(items[k].size(r) for k in ks) / 1024:5.0f} K)")
+        med = float(np.median([items[k].loss.get(rate_of[k], 0.0) for k in keys])) if keys else 0.0
+        print(f"  {p:6} " + "  ".join(cols) + f"   band loss median {100 * med:.1f} %")
+    return rate_of
+
+
+def write_pack(out, work, name, g, rate, rate_of, cue=None, emit=None):
     t0 = time.time()
     samples, vag, strm, sidx = [], bytearray(), bytearray(), {}
     snr = []
-    jobs = [(b.path, s.index, g.tier[(b.name, s.index)], (b.name, s.index) in g.loops, rate)
-            for b, _ in g.banks for s in b.samples if g.tier[(b.name, s.index)] != "drop"]
+    jobs = [(b.path, s.index, g.tier[(b.name, s.index)], (b.name, s.index) in g.loops,
+             rate_of.get((b.name, s.index), rate)) for b, _ in g.banks for s in b.samples if g.tier[(b.name, s.index)] != "drop"]
     print(f"  {name:8} encoding {len(jobs)} samples ...", flush=True)
     results = POOL.imap(encode_sample, jobs) if POOL else map(encode_sample, jobs)
     done, step = 0, max(1, len(jobs) // 4)
@@ -349,7 +455,8 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
             loop = k in g.loops
             sidx[k] = len(samples)
             if t == "drop":
-                samples.append(struct.pack("<IIHBBI", 0, 0, min(rate, s.freq), s.channels, 4 | int(loop), 0))
+                samples.append(struct.pack("<IIHBBI", 0, 0, min(rate_of.get(k, rate), s.freq), s.channels,
+                                           4 | int(loop), 0))
                 continue
             chans, q = next(results)
             done += 1
@@ -361,7 +468,7 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
                     snr.append(q)
                 for a in chans:
                     vag += a + b"\0" * (-len(a) % ALIGN)
-                samples.append(struct.pack("<IIHBBI", off, len(vag) - off, min(rate, s.freq), s.channels,
+                samples.append(struct.pack("<IIHBBI", off, len(vag) - off, min(rate_of.get(k, rate), s.freq), s.channels,
                                            int(loop), 0))
             else:
                 n = max(len(a) for a in chans)
@@ -388,7 +495,10 @@ def write_pack(out, work, name, g, rate, cue=None, emit=None):
         evb.append(struct.pack("<IcBBBHHfffff", num, typ.encode(), flags, len(refs), cat.get(c, 0), first,
                                min(e["max_playbacks"], 0xFFFF), e["volume"], e["volume_rand"], e["min_distance"],
                                e["max_distance"], e["pitch_rand"]))
-    hdr = struct.pack("<4s7I", b"DSRB", 2, len(samples), len(evb), len(waves), len(vag), len(strm), rate)
+    freq = {(b.name, s.index): s.freq for b, _ in g.banks for s in b.samples}
+    res_keys = [k for k in sidx if g.tier[k] == "res"]
+    hdr = struct.pack("<4s7I", b"DSRB", 2, len(samples), len(evb), len(waves), len(vag), len(strm),
+                      max((min(rate_of[k], freq[k]) for k in res_keys if k in rate_of), default=rate))
     gen = os.path.join(work, name)
     os.makedirs(gen, exist_ok=True)
     files = {"bank.bin": hdr + b"".join(samples) + b"".join(evb) + b"".join(waves), "vag.bin": bytes(vag) or b"\0" * 64,
@@ -442,31 +552,24 @@ def main():
     chr_groups = {c: Group(c, bank_paths(snd, c), wanted) for c in models if bank_paths(snd, c)}
     print(f"SPU2 budget for resident samples: {SPU_BUDGET} B; maps {' '.join(maps)}; {len(chr_groups)} character banks"
           f" ({' '.join(c for c in models if c not in chr_groups) or 'none'} without one)")
-    rate = RATES[-1]
-    for r in RATES:
-        area_max = max(groups["m" + aa].resident_bytes(r) for aa in areas)
-        chr_sz = sorted((g.resident_bytes(r) for g in chr_groups.values()), reverse=True)
-        need = groups["main"].resident_bytes(r) + area_max + sum(chr_sz[:CHR_MIN])
-        print(f"  {r:5} Hz: main {groups['main'].resident_bytes(r) / 1024:6.0f} K + area {area_max / 1024:6.0f} K + "
-              f"{CHR_MIN} chr {sum(chr_sz[:CHR_MIN]) / 1024:5.0f} K = {need / 1024:6.0f} K"
-              f"{'  fits' if need <= SPU_BUDGET else ''}")
-        if need <= SPU_BUDGET:
-            rate = r
-            break
+    pick = os.environ.get("SND_RATE_PICK", "sample")  # "global" = one rate for every sample (before audio-2)
+    rate = global_rate(groups, chr_groups, areas)
     print(f"rate {rate} Hz; streamed: " + ", ".join(f"{n} {g.stream_bytes() / 1048576:.1f} MB" for n, g in groups.items()))
+    t0 = time.time()
+    if not size_only:
+        start_pool()  # before sample_rates: its loss pass maps over POOL
+    rate_of = {} if pick == "global" else sample_rates(groups, chr_groups, areas)
     if size_only:
         return
-    t0 = time.time()
-    start_pool()
-    write_pack(out, work, "main", groups["main"], rate, cue=cue_blob(cues["c0000"], material))
+    write_pack(out, work, "main", groups["main"], rate, rate_of, cue=cue_blob(cues["c0000"], material))
     for aa in areas:
         blob, n = emitters(game, aa)
-        write_pack(out, work, "m" + aa, groups["m" + aa], rate, emit=blob)
+        write_pack(out, work, "m" + aa, groups["m" + aa], rate, rate_of, emit=blob)
     for c, g in chr_groups.items():
-        write_pack(out, work, c, g, rate, cue=cue_blob(cues.get(c, {}), -1))
+        write_pack(out, work, c, g, rate, rate_of, cue=cue_blob(cues.get(c, {}), -1))
     for c in models:  # characters with TAE cues but no bank of their own (their cues name main-bank events)
         if c not in chr_groups and cues.get(c):
-            write_pack(out, work, c, Group(c, [], wanted), rate, cue=cue_blob(cues[c], -1))
+            write_pack(out, work, c, Group(c, [], wanted), rate, rate_of, cue=cue_blob(cues[c], -1))
     if POOL:
         POOL.close()
         POOL.join()

@@ -58,6 +58,7 @@
  * WORLD_DG_LITE       | 1        | fallback | -DWORLD_DG_LITE=0                             | world  | #209  | world_i.h       | a block's dg.bin / pvs.bin come with its lite set (pvs.bin let go while lean); 0 = read for every block at boot
  * RES_BLOCK           | undefined | make    | -                                             | world  | #198  | residency.h   | X-macro the includer defines to expand the per-block budget table (not a build switch)
  * RES_CAPS            | undefined | make    | -                                             | world  | #332  | residency.h   | X-macro for the per-block error caps table (tools/budgetfit.py writes it, the tools read it; not a build switch)
+ * SND_LRU             | 1        | fallback | -DSND_LRU=0                                   | snd    | new   | sound.c       | enemy sound banks cached after unload, LRU eviction skipping live / loading banks, no-room retry (TECH_DEBT audio-2); 0 = free on unload, slot order
  *
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | world  | #147  | mapstream_i.h   | lent room near parts may hold

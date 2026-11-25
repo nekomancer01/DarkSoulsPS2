@@ -289,6 +289,7 @@ SIMP_DUMP	env	unset	debug	world	1	#124	mapsimp.py	debugging: the simplifier's wh
 SKY_ALP_BLEND	env	1	flag	world	0	#249	material.py	sky alpha layers blended (material.classify)
 SMOKE_JOBS	env	2	config	tools	-	#9	test-smoke.py	-
 SND_CACHE	env	unset	opt	snd	-	#121	export_audio.py	-
+SND_RATE_PICK	env	sample	config	snd	global	new	export_audio.py	per-sample SPU2 rates by band loss (TECH_DEBT audio-2); global = one rate for every sample; not a stamp input: rm $(A)/snd.stamp to A/B
 SOFT_PX	env	2.0	tune	world	-	#33	mapcfg.py	-
 SOFT_R_PX	env	4.0	tune	world	-	#33	mapcfg.py	footprint radius of the colour average, px (ASSUMED)
 SOULS_NP	env	1	config	game	-	#43	souls.py	-
