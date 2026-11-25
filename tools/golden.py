@@ -19,7 +19,8 @@ must not depend on AI), booted from the ISO as a player does (tools/test-run.py 
            Prints one table; exit code 0, or with --gate the number of routes over a threshold.
 Thresholds (defaults just above the run-to-run noise of one build: record + two compares, see THRESH): a shot's
 changed pixels > --img-fail, frame p90 up > --p90-ms, worst frame up > --max-ms, refusals up > --refusals.
-Every PCSX2 job goes through tools/q (-m 2). Results stay in build/golden/ (git-ignored: game pictures)."""
+Every PCSX2 job goes through tools/q (-m 10: the headless runner is a child and needs ~6.7 GB of address space).
+Results stay in build/golden/ (git-ignored: game pictures)."""
 import argparse, glob, json, os, re, shutil, subprocess, sys
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +40,7 @@ THRESH = {"img": 0.02, "p90_ms": 1.0, "max_ms": 10.0, "refusals": 2}
 def q(cmd, log):
     """one PCSX2 job through the job queue; returns its exit code"""
     with open(log, "w") as f:
-        return subprocess.call([os.path.join(TOOLS, "q"), "-m", "2"] + cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT)
+        return subprocess.call([os.path.join(TOOLS, "q"), "-m", "10"] + cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT)
 
 
 def run_route(route, elf, iso, out):

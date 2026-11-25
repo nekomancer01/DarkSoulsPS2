@@ -1,7 +1,7 @@
 #!/bin/bash
 # usage: spots.sh tag "flags" secs spot...   (spot = A S L G E or n:x:y:z:yaw); HUD_DEBUG shots, emulog kept; restores map.bin + pak + plain build
 R=$(cd "$(dirname "$0")/../../.." && pwd)  # repo root
-PCSX2_LOG=${PCSX2_LOG:-${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/emulog.txt}
+PCSX2_LOG=${PCSX2_LOG:-/tmp/pcsx2-headless/data/99/PCSX2/logs/emulog.txt}  # tools/pcsx2-run.sh LOG= (no PINE)
 S=/tmp/claude-1000/ab; TAG=$1; FL=$2; T=$3; shift 3
 cd $R/ps2/proto; source ../env.sh
 PAK=data/m10_02_00_00.pak

@@ -52,8 +52,8 @@ Firelink Shrine is the test area, not the target.
 ## 4. Done means working, verified code
 
 - Research or a design document alone is not a finished task. Ship code that builds and runs.
-- Verify in PCSX2 headless: `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` runs on a virtual display and kills
-  only its own instance. Use the full test suite when it applies (`tools/test-all.sh`).
+- Verify in PCSX2 headless: `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` runs `pcsx2-dsrtest` (no display, no
+  sound; build it once with `tools/pcsx2-headless/build.sh`) and kills only its own instance. Use the full test suite when it applies (`tools/test-all.sh`).
 - Report numbers from before and after your change: fps at fixed spots, per-pass ms, free EE RAM and VRAM, and
   file sizes. PCSX2 doesn't time VU1, GS fill or the EE cache, so say when a gain can only be confirmed on real
   hardware.

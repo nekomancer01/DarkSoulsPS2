@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run one test script in a headless PCSX2 and collect its results (needs Pillow + numpy: the Makefile's PY venv).
+"""Run one test script in the headless PCSX2 test runner and collect its results (needs Pillow + numpy: the Makefile's PY
+venv).
 
   test-run.py <elf> <script> <outdir> [--slot N] [--timeout 300] [--gsdump] [--holes] [--name label] [--turbo [x]]
               [--realtime] [--cold] [--keep-going]
@@ -14,11 +15,15 @@ with a park script (the test's options and first spawn), saves a state while par
 runs of the same ELF / ISO / options / first spawn load that state and skip the boot (iso_ame_report3 111 -> 83 s).
 
 <script> is a src/testscript.c script (copied next to the ELF as tests/gen/<name>.txt, since host: only sees the ELF's
-folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>, own data dir and Xvfb display). Without
+folder). The ELF boots with test=<that path> via tools/pcsx2-run.sh (PINE=<slot>): pcsx2-dsrtest (tools/pcsx2-headless/,
+no display, no sound device) as a child of this process, with its own data dir /tmp/pcsx2-headless/data/<slot>. Without
 --slot a free slot in 28110-28199 is taken (lock file /tmp/pcsx2-headless/slot.<n>.lock, held while the run lasts), so
-parallel runs from several sessions never share a socket, display or data dir. Then, over PINE:
-  - every shot marker (mailbox shot_seq): screenshot of the PCSX2 window -> <outdir>/<shot>.png, optional single-frame
-    GS dump (F8 hotkey via xdotool) -> <outdir>/<shot>.gs.zst, magenta "hole" pixel count, then shot_ack
+parallel runs from several sessions never share a socket or data dir. The runner gets -timeout = --timeout + 120 s, so
+it ends on its own if this harness dies; the next run on the slot also kills what the last one left
+(/tmp/pcsx2-headless/slot.<n>.pid). Then, over PINE and the runner's control socket (tools/pcsx2ctl.py):
+  - every shot marker (mailbox shot_seq): the GS output at internal resolution -> <outdir>/<shot>.png (control socket
+    "shot"), optional single-frame GS dump ("gsdump") -> <outdir>/<shot>.gs.zst, magenta "hole" pixel count, then
+    shot_ack
   - the mailbox every ~0.1 s -> <outdir>/frames.csv (fps, ms, RAM/VRAM free, chain peaks, ...)
   - a hang (mailbox frame counter stuck 15 s), PCSX2 exiting, or the timeout = failure
   - the EE log, followed while the run lasts: the first error line (LOG_ERRORS) stops the run FAIL_GRACE s later
@@ -30,40 +35,54 @@ Exit code 0 = script ran to its end without errors."""
 import argparse, csv, fcntl, glob, json, os, re, shutil, struct, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pine, runstamp, warmstate
+import pcsx2ctl, pine, runstamp, warmstate
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-HOSTEXEC = os.path.join(TOOLS, "hostexec")  # runs on the host (distrobox-host-exec inside a distrobox)
-DISPLAY = ":99"  # set per run from the PINE slot (tools/pcsx2-run.sh: 100 + slot % 100)
-
-
-def display_for(slot):
-    return f":{100 + slot % 100}"
+CTL = None  # the run's control socket (CTL= line of tools/pcsx2-run.sh)
+RUNNER = "pcsx2-dsrtest"
 
 
 _slot_locks = []
 
 
-def reap_slot(n):
-    """kill the PCSX2 a dead run left on slot n. The flatpak runs under bwrap, which is reparented to systemd when
-    the harness dies (a session restart killed it; the emulator then held the shared PCSX2 lock queue for 37-50 min,
-    2026-11-21): whoever takes the slot's lock next kills the instance the last holder wrote down."""
-    path = f"/tmp/pcsx2-headless/slot.{n}.inst"
+def slot_pid(n):
+    """(pid, starttime) from /tmp/pcsx2-headless/slot.<n>.pid (tools/pcsx2-run.sh), or None"""
     try:
-        inst = open(path).read().strip()
-    except OSError:
-        return
-    if not inst.isdigit():  # a flatpak instance id; anything else is not this tool's note
-        inst = ""
-    if inst:
-        r = subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
-        if r.returncode == 0:
-            print(f"[test-run] slot {n}: killed PCSX2 instance {inst} left by a dead run", flush=True)
-    for f in (path, f"/tmp/pcsx2-headless/{inst}") if inst else (path,):
+        f = open(f"/tmp/pcsx2-headless/slot.{n}.pid").read().split()
+        return int(f[0]), f[1] if len(f) > 1 else ""
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def runner_alive(pid, start):
+    """pid is still the runner pcsx2-run.sh started: comm pcsx2-dsrtest and the same start time (pid reuse)"""
+    try:
+        if open(f"/proc/{pid}/comm").read().strip() != RUNNER:
+            return False
+        return not start or open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19] == start
+    except (OSError, IndexError):
+        return False
+
+
+def reap_slot(n):
+    """kill the runner a dead run left on slot n (a harness killed with -9 never reaches its finally): whoever takes
+    the slot's lock next kills the process the last holder wrote down, if it is still that pcsx2-dsrtest. The
+    runner's -timeout ends it anyway, but only after the dead run's whole budget."""
+    ps = slot_pid(n)
+    if ps and runner_alive(*ps):
         try:
-            os.remove(f)
+            os.kill(ps[0], 9)
+            print(f"[test-run] slot {n}: killed pcsx2-dsrtest {ps[0]} left by a dead run", flush=True)
+            for _ in range(50):
+                if not runner_alive(*ps):
+                    break
+                time.sleep(0.1)
         except OSError:
             pass
+    try:
+        os.remove(f"/tmp/pcsx2-headless/slot.{n}.pid")
+    except OSError:
+        pass
 
 
 def acquire_slot(slot=None, wait=600):
@@ -84,15 +103,6 @@ def acquire_slot(slot=None, wait=600):
         if time.time() - t0 > wait:
             raise RuntimeError(f"no free PINE slot after {wait} s")
         time.sleep(2)
-
-
-def x(cmd, timeout=20, **kw):
-    """subprocess.run on the run's Xvfb display with a timeout (X tools can block on a vanished window)"""
-    try:
-        return subprocess.run(cmd, env=dict(os.environ, DISPLAY=DISPLAY), capture_output=True, text=True,
-                              timeout=timeout, **kw)
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, -1, "", "timeout")
 
 
 WARM_WAIT = 60.0  # s a loaded warm state gets to show the parked ELF before the run boots cold instead
@@ -157,36 +167,22 @@ def log_error(line):
     return bool(m) and int(m[1]) > POPIN_MAX
 
 
-def host_home():
-    return subprocess.run([HOSTEXEC, "printenv", "HOME"], capture_output=True, text=True,
-                          timeout=60).stdout.strip()
-
-
-def pcsx2_window():
-    """Largest top-level window on the Xvfb display (the PCSX2 main window)."""
-    out = x(["xwininfo", "-root", "-children"]).stdout
-    best = (0, None)
-    for w in re.findall(r"^\s+(0x[0-9a-f]+)", out, re.M):
-        info = x(["xwininfo", "-id", w]).stdout
-        m = re.search(r"Width: (\d+).*?Height: (\d+)", info, re.S)
-        if m and int(m[1]) * int(m[2]) > best[0]:
-            best = (int(m[1]) * int(m[2]), w)
-    return best[1]
-
-
 def capture(path, tries=3):
-    """Screenshot of the PCSX2 window (found again each time: Qt can recreate it); returns the window id or None"""
+    """The runner's GS output at internal resolution -> path (control socket "shot", answered once the PNG is
+    written); True on success"""
     for _ in range(tries):
-        win = pcsx2_window()
-        if win and x(["import", "-window", win, path], timeout=30).returncode == 0:
-            return win
-        time.sleep(0.5)
-    return None
+        try:
+            pcsx2ctl.ctl(CTL, f"shot {os.path.abspath(path)}")
+            return True
+        except pcsx2ctl.CtlError as e:
+            print(f"[test-run] shot {os.path.basename(path)}: {e}", flush=True)
+            time.sleep(0.5)
+    return False
 
 
 def holes(path):
     """Pixels the map left uncovered: the magenta colour clear of "option holes" (CT16 dither: R,B >= 200, G < 60).
-    The PCSX2 window's menu / status bars are grey, the HUD is not magenta."""
+    The HUD is not magenta."""
     from PIL import Image
     import numpy as np
     a = np.asarray(Image.open(path).convert("RGB")).astype(int)
@@ -194,25 +190,14 @@ def holes(path):
     return int(m.sum()), int(m.size)
 
 
-def gs_dump(win, snaps, before, out, wait=20):
-    """F8 = GSDumpSingleFrame (tools/test-pcsx2-ini.py); the dump appears in the instance's snaps/ folder."""
-    x(["xdotool", "windowfocus", win], timeout=10)  # no --sync: it blocks forever on a window that went away
-    x(["xdotool", "key", "--window", win, "F8"], timeout=10)
-    t0 = time.time()
-    while time.time() - t0 < wait:
-        new = [f for f in glob.glob(os.path.join(snaps, "*.gs*")) if f not in before]
-        if new:
-            f = new[0]
-            for _ in range(50):  # written in the background: wait until the size settles
-                s = os.path.getsize(f)
-                time.sleep(0.2)
-                if s and os.path.getsize(f) == s:
-                    break
-            shutil.copy(f, out)
-            before.add(f)
-            return True
-        time.sleep(0.2)
-    return False
+def gs_dump(out, wait=20):
+    """single-frame GS dump -> out (control socket "gsdump", answered once the dump is closed); True on success"""
+    try:
+        pcsx2ctl.ctl(CTL, f"gsdump {os.path.abspath(out)}", timeout=wait)
+        return True
+    except pcsx2ctl.CtlError as e:
+        print(f"[test-run] gsdump {os.path.basename(out)}: {e}", flush=True)
+        return False
 
 
 def parse_kv(text):
@@ -248,10 +233,35 @@ def parse_shot_line(line):
     return d
 
 
+def stop_runner(slot, pid):
+    """quit over the control socket (the file log is flushed), kill -9 after 10 s, then drop the slot's pid note"""
+    try:
+        pcsx2ctl.ctl(CTL, "quit", timeout=5)
+    except pcsx2ctl.CtlError:
+        pass
+    ps = slot_pid(slot) or (pid, "")
+    for _ in range(100):
+        if not runner_alive(*ps):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    try:
+        os.waitpid(pid, os.WNOHANG)  # not our child (pcsx2-run.sh started it): nothing to reap, normally
+    except OSError:
+        pass
+    try:
+        os.remove(f"/tmp/pcsx2-headless/slot.{slot}.pid")
+    except OSError:
+        pass
+
+
 def run(a):
-    global DISPLAY
+    global CTL
     a.slot = acquire_slot(a.slot)
-    DISPLAY = display_for(a.slot)
     elf = os.path.realpath(a.elf)
     proto = os.path.dirname(elf)
     name = a.name or os.path.splitext(os.path.basename(a.script))[0]
@@ -267,23 +277,15 @@ def run(a):
             sf.write("".join(f"option set {k} {v}\n" for k, v in (x.split("=", 1) for x in a.set)) + body)
     if os.path.realpath(a.script) != os.path.join(proto, rel):
         shutil.copy(a.script, os.path.join(proto, rel))
-    hh = host_home()
-    data = f"{hh}/.var/app/net.pcsx2.PCSX2/test/{a.slot}"
-    log = f"{data}/PCSX2/logs/emulog.txt"  # -datapath <dir> -> <dir>/PCSX2
-    snaps = f"{data}/PCSX2/snaps"
-    os.makedirs(snaps, exist_ok=True)
-    before = set(glob.glob(os.path.join(snaps, "*")))
-    if os.path.exists(log):
-        os.remove(log)
-    env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}")
+    data = f"/tmp/pcsx2-headless/data/{a.slot}"  # tools/pcsx2-run.sh's data dir for the slot (-datapath)
+    # the runner's own wall-clock cap: it ends on its own if this harness dies
+    env = dict(os.environ, KEEP="1", PINE=str(a.slot), ARGS=f"test={rel}", PCSX2_TIMEOUT=str(int(a.timeout) + 120))
     # warm start (tools/warmstate.py): load a cached state of this build parked at the script's start, or boot with
     # the park script and save that state on the way (--cold / WARM_CACHE=0: boot every run)
-    warm = None if a.cold else warmstate.plan(elf, a.script, a.iso, HOSTEXEC)
+    warm = None if a.cold else warmstate.plan(elf, a.script, a.iso)
     warm_loaded = bool(warm and warm.cached)
     if warm_loaded:
-        os.makedirs(data, exist_ok=True)  # flatpak PCSX2 sees its data dir, not the cache
-        shutil.copyfile(warm.state, os.path.join(data, "warm.p2s"))
-        env["STATEFILE"] = os.path.join(data, "warm.p2s")
+        env["STATEFILE"] = warm.state
     elif warm:
         with open(os.path.join(gen, f"{name}.park.txt"), "w") as pf:
             pf.write(warm.park)
@@ -294,17 +296,17 @@ def run(a):
         env["TURBO"] = a.turbo
     out = subprocess.run([os.path.join(TOOLS, "pcsx2-run.sh"), elf, "0", "-"], env=env, capture_output=True, text=True,
                          timeout=120)
-    inst = re.search(r"INST=(\S+)", out.stdout)
+    pid = re.search(r"PID=(\d+)", out.stdout)
+    ctl = re.search(r"CTL=(\S+)", out.stdout)
+    logm = re.search(r"LOG=(\S+)", out.stdout)
     res = {"name": name, "elf": elf, "script": a.script, "shots": [], "errors": [], "log": [], "started": time.time(),
            "stamp": runstamp.stamp([elf, a.script]), "turbo": a.turbo or None,
            "warm": warm and ("loaded" if warm_loaded else "saved")}  # which tree / ELF / script this result belongs to
     print(f"[test-run] {name}: {runstamp.line(res['stamp'])}", flush=True)
-    if not inst:
+    if not (pid and ctl and logm):
         res["errors"].append("PCSX2 did not start: " + out.stdout + out.stderr)
         return res
-    inst = inst[1]
-    with open(f"/tmp/pcsx2-headless/slot.{a.slot}.inst", "w") as sf:  # reap_slot's note, removed with the instance
-        sf.write(inst)
+    pid, CTL, log = int(pid[1]), ctl[1], logm[1]
     try:
         p = pine.connect(a.slot, wait=30)
         syms = pine.elf_symbols(elf)
@@ -320,7 +322,6 @@ def run(a):
                 time.sleep(0.5)
         if addr is None:
             raise RuntimeError("test mailbox not found (no symbol, no 'TEST mailbox' log line)")
-        win = None
         f = open(os.path.join(a.outdir, "frames.csv"), "w", newline="")
         w = csv.writer(f)
         w.writerow(["t"] + pine.MAILBOX_FIELDS)
@@ -410,10 +411,9 @@ def run(a):
             if mb["shot_seq"] != acked and mb["state"] == 3:
                 pine.ack_shot(p, addr, mb["shot_seq"] | pine.SHOT_BUSY)  # ELF keeps waiting (60 s) while we capture
                 png = os.path.join(a.outdir, f"{mb['shot_name']}.png")
-                time.sleep(0.15)  # two more frames of the frozen scene reach the window
-                win = capture(png)
+                time.sleep(0.15)  # two more frames of the frozen scene are presented
                 shot = {"name": mb["shot_name"], "png": png, "seq": mb["shot_seq"]}
-                if not win:
+                if not capture(png):
                     res["errors"].append(f"screenshot failed: {mb['shot_name']}")
                     acked = mb["shot_seq"]
                     pine.ack_shot(p, addr, acked)
@@ -421,7 +421,7 @@ def run(a):
                 if a.holes:
                     shot["holes"], shot["pixels"] = holes(png)
                 if a.gsdump:
-                    shot["gsdump"] = gs_dump(win, snaps, before, os.path.join(a.outdir, f"{mb['shot_name']}.gs.zst")) \
+                    shot["gsdump"] = gs_dump(os.path.join(a.outdir, f"{mb['shot_name']}.gs.zst")) \
                         and os.path.join(a.outdir, f"{mb['shot_name']}.gs.zst")
                 res["shots"].append(shot)
                 acked = mb["shot_seq"]
@@ -429,7 +429,7 @@ def run(a):
                 last_change = time.time()
             if mb["state"] == 2:
                 # the ELF queues log text while a disc read is in flight (pack.c, cdrom0:), so "TEST DONE" can reach
-                # the EE log after the mailbox says done: wait for it before PCSX2 is killed (world_death_swap.txt
+                # the EE log after the mailbox says done: wait for it before the runner is stopped (world_death_swap.txt
                 # from the ISO lost it, 2026-11-05)
                 for _ in range(50):
                     if os.path.exists(log) and b"TEST DONE" in open(log, "rb").read():
@@ -443,12 +443,7 @@ def run(a):
         res["errors"].append(f"{type(e).__name__}: {e}")
     finally:
         time.sleep(0.5)
-        subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True, timeout=60)
-        for f in (f"/tmp/pcsx2-headless/{inst}", f"/tmp/pcsx2-headless/slot.{a.slot}.inst"):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+        stop_runner(a.slot, pid)
     time.sleep(0.5)
     if os.path.exists(log):
         shutil.copy(log, os.path.join(a.outdir, "emulog.txt"))
@@ -527,7 +522,7 @@ def _stop(sig, frame):
     import signal
     for s in (signal.SIGTERM, signal.SIGHUP):  # a second signal must not cut run()'s finally (the kill) short
         signal.signal(s, signal.SIG_IGN)
-    raise SystemExit(128 + sig)  # (run()'s finally kills the PCSX2 instance)
+    raise SystemExit(128 + sig)  # (run()'s finally stops the runner)
 
 
 def main():
@@ -575,7 +570,7 @@ def main():
     globals()["WALLS_MAX"] = a.walls_max
     res = run(a)
     if res.get("warm_failed"):  # a state that did not load: drop it and boot (this run saves a new one)
-        warm = warmstate.plan(os.path.realpath(a.elf), a.script, a.iso, HOSTEXEC)
+        warm = warmstate.plan(os.path.realpath(a.elf), a.script, a.iso)
         if warm:
             warm.drop()
         print(f"[test-run] {res['name']}: warm state failed, booting cold", flush=True)
