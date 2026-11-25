@@ -190,6 +190,7 @@ typedef struct {
     unsigned char dead;      /* a free slot (its last block let it go) */
     unsigned char doomed;    /* refs went to 0 while its model was in or loading: freed once it is out */
     unsigned char keep;      /* made at boot (the boot area's): never freed */
+    void *alias;             /* a merged stub: the twin (ChrType *) its block places; no head of its own */
 } ChrType;
 
 typedef struct {
@@ -1102,6 +1103,9 @@ static void type_kill(ChrType *t)
         return;
     if (hjob_t == t)
         pack_job_abandon(&hjob), hjob_t = NULL;
+    for (int i = 0; i < ntypes; i++)  /* (its aliases go with it) */
+        if (types[i].alias == t)
+            memset(&types[i], 0, sizeof types[i]), types[i].dead = 1;
     free((void *)t->h);
     memset(t, 0, sizeof *t);
     t->dead = 1;
@@ -1118,8 +1122,13 @@ static ChrType *type_stub(const char *name, const char *dir)
             continue;
         }
         if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
-            return &types[i];
+            return types[i].alias ? (ChrType *)types[i].alias : &types[i];
     }
+    for (int i = 0; free_i < 0 && ntypes >= MAX_TYPES && i < ntypes; i++)  /* full: a head no on block places goes */
+        if (!types[i].refs && !types[i].keep && !types[i].loaded && job_t != &types[i] && hjob_t != &types[i]) {
+            type_kill(&types[i]);
+            free_i = i < ntypes ? i : -1;
+        }
     if (free_i < 0 && ntypes >= MAX_TYPES)
         return NULL;
     ChrType *t = &types[free_i >= 0 ? free_i : ntypes++];
@@ -1151,7 +1160,7 @@ static void type_merge(ChrType *t, ChrType *twin)
             if (blk_type[b][k] == t)
                 blk_type[b][k] = twin;
     }
-    type_kill(t);
+    t->stub = 0, t->refs = 0, t->alias = twin;  /* (kept as the name + pack's alias: its next turn-on reads nothing) */
 }
 
 static int place_rec(int block, int k);
@@ -1203,6 +1212,7 @@ static void head_poll(void)
         char path[64];
         model_path(path, sizeof path, t);
         pack_job_start(&hjob, path, "chr.bin", heap_get, heap_put);
+        pack_job_first(&hjob);  /* (before the map streaming's reads: its placements wait for it) */
         hjob_t = t;
         return;
     }
@@ -1265,10 +1275,10 @@ void enemy_block_untypes(int block)
             first = blk_type[block][j] != t;
         if (!t || !first || --t->refs > 0)
             continue;
-        if (t->loaded || job_t == t)
-            t->doomed = 1;  /* (stream_types unloads it: no placement holds it near any more; then it goes) */
-        else
+        if (t->stub)  /* (its head never came: nothing to keep) */
             type_kill(t);
+        /* else its head (0.3-2 KB: 80 KB for the 137 types of 27 blocks) stays for the block's next turn-on, which then
+         * places at once; type_stub evicts it only when the table is full. Its model unloads by distance as before */
     }
     for (int k = 0; k < blk_n[block]; k++)
         blk_type[block][k] = NULL;

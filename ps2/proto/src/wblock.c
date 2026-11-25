@@ -101,6 +101,9 @@ static void turn_on_col(int i)
     if (r->size[E_DG] && r->size[E_PVS])
         map_block_dg_set(i, r->blob[E_DG], r->size[E_DG], r->blob[E_PVS], r->size[E_PVS]);  /* WORLD_DG_LITE: lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
+    if (ok && r->size[E_ENM] && WORLD_CHR_LITE)  /* its placements and types now: new types' heads are read while its
+                                                     * textures are (placed from stage 2, enemy_block_add) */
+        enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
     if (ok && r->size[E_FXH])  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
         fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
     if (!ok)
@@ -198,8 +201,6 @@ static void turn_on_rest(int i)
     free_tex(r);  /* uploaded: back to the near cells */
     if (r->size[E_ENM] && WORLD_NAV_LITE)  /* its navmesh in place, before its enemies are placed */
         enemy_block_nav(i, r->blob[E_ENM], r->size[E_ENM]);
-    if (r->size[E_ENM] && WORLD_CHR_LITE)  /* its placements and types (heads read in the background) */
-        enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
     enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
     if (r->ev_split)
         ev_on(i);
