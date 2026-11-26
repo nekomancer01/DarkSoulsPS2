@@ -605,6 +605,11 @@ static void chunk_unpend(LChunk *c)
  * runs again: its globals were cleared). Returns the chunks run. */
 int lua0_load(const void *blob, int size)
 {
+    return lua0_load_held(blob, size, NULL);
+}
+
+int lua0_load_held(const void *blob, int size, LHeld *h)
+{
     Rd r = {blob, (const unsigned char *)blob + size};
     jmp_buf jb, *prev = err_jmp;
     err_jmp = &jb;
@@ -618,6 +623,8 @@ int lua0_load(const void *blob, int size)
         lua0_error("not a lua0 pack");
     r.b += 4;
     unsigned n = rd_u32(&r), done = 0;
+    if (h && !h->ch && n && !(h->ch = malloc(n * sizeof *h->ch)))
+        lua0_error("no room for the chunk list");
     for (unsigned i = 0; i < n; i++) {
         unsigned len = rd_u32(&r);
         if (r.b + len > r.end)
@@ -627,6 +634,8 @@ int lua0_load(const void *blob, int size)
         LChunk *c = chunk_find(nm, len);
         if (c) {
             skip_proto(&r);
+            if (h)
+                h->ch[h->n++] = c;
             if (c->refs++)
                 continue;
             chunk_unpend(c);  /* back before its protos went: run again (its globals were cleared) */
@@ -641,6 +650,8 @@ int lua0_load(const void *blob, int size)
             c->refs = 1;
             c->next = chunks, chunks = c;
             lua0_chunks_live++;
+            if (h)
+                h->ch[h->n++] = c;  /* (counted from here: a load error after this still gives it back) */
         }
         err_jmp = prev;
         done += chunk_run(c);
@@ -650,33 +661,17 @@ int lua0_load(const void *blob, int size)
     return (int)done;
 }
 
-/* Every chunk of the pack counted down. One no pack holds any more: its globals go, except those another held chunk
- * sets (that chunk runs again, so the global is its own closure: OnIf_231000 is set by 231000_battle and
- * 231000_logic); its protos are freed by the GC (chunk_reap). Returns the chunks let go. */
-int lua0_unload(const void *blob, int size)
+/* Every chunk h holds counted down. One no pack holds any more: its globals go, except those another held chunk sets
+ * (that chunk runs again, so the global is its own closure: OnIf_231000 is set by 231000_battle and 231000_logic); its
+ * protos are freed by the GC (chunk_reap). Returns the chunks let go. */
+int lua0_release(LHeld *h)
 {
-    Rd r = {blob, (const unsigned char *)blob + size};
-    jmp_buf jb, *prev = err_jmp;
-    err_jmp = &jb;
-    if (setjmp(jb)) {
-        err_jmp = prev;
-        printf("lua0: unload error: %s\n", lua0_errmsg);
-        return -1;
-    }
-    if (size < 8 || memcmp(blob, "DSRL", 4))
-        lua0_error("not a lua0 pack");
-    r.b += 4;
-    unsigned n = rd_u32(&r), gone = 0;
+    unsigned gone = 0;
     LChunk *rerun[8];
     unsigned nrerun = 0;
-    for (unsigned i = 0; i < n; i++) {
-        unsigned len = rd_u32(&r);
-        if (r.b + len > r.end)
-            lua0_error("truncated name");
-        LChunk *c = chunk_find((const char *)r.b, len);
-        r.b += (len + 3) & ~3u;
-        skip_proto(&r);
-        if (!c || !c->refs || --c->refs)
+    for (unsigned i = 0; h && i < h->n; i++) {
+        LChunk *c = h->ch[i];
+        if (!c->refs || --c->refs)
             continue;
         for (unsigned g = 0; g < c->ngl; g++) {
             LChunk *o = chunks;
@@ -701,7 +696,10 @@ int lua0_unload(const void *blob, int size)
         c->pending = 1, c->pend_at = gc_cycles, npending++;
         gone++;
     }
-    err_jmp = prev;
+    if (h) {
+        free(h->ch);
+        h->ch = NULL, h->n = 0;
+    }
     for (unsigned j = 0; j < nrerun; j++)
         if (rerun[j]->refs)
             chunk_run(rerun[j]);

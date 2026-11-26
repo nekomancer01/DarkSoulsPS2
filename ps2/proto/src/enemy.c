@@ -32,6 +32,7 @@
 #include "model.h"
 #include "vu1.h"
 #include "ai.h"
+#include "lua0.h"  /* LHeld (enemy_block_ai) */
 #include "esd.h"
 #include "combat.h"
 #include "collision.h"
@@ -1258,14 +1259,25 @@ void enemy_block_lua(const void *map_lua, int map_lua_size)
 #endif
 }
 
-int enemy_block_ai(const void *map_lua, int map_lua_size, int on)
+#ifndef NO_AI_SCRIPTS
+static LHeld blk_ai[ENEMY_BLOCKS];  /* WORLD_AI_UNLOAD: the chunks each block's map AI holds */
+#endif
+
+int enemy_block_ai(int block, const void *map_lua, int map_lua_size, int on)
 {
 #ifndef NO_AI_SCRIPTS
-    if (inited && map_lua)
-        return (on ? ai_block_load : ai_block_drop)(map_lua, map_lua_size) >= 0;
-#endif
-    (void)map_lua, (void)map_lua_size, (void)on;
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS)
+        return 0;
+    LHeld *h = &blk_ai[block];
+    if (on && map_lua && !h->n)
+        ai_block_load(map_lua, map_lua_size, h);
+    else if (!on && h->n)
+        ai_block_drop(h);
+    return h->n > 0;  /* (a load error after some chunks: those are still given back at the turn-off) */
+#else
+    (void)block, (void)map_lua, (void)map_lua_size, (void)on;
     return 0;
+#endif
 }
 
 int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)

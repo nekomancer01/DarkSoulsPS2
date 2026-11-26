@@ -331,6 +331,7 @@ WORLD_DG_LITE	env	1	flag	world	0	#209	world_budget.py	world.c WORLD_DG_LITE (def
 WORLD_NAV_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_NAV_LITE (default 1): enemies.bin in the lite set
 WORLD_CHR_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_CHR_LITE (default 1): enemy types from E_ENM at turn-on
 WORLD_AI_UNLOAD	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_AI_UNLOAD (default 1): a block's map AI (E_AI) counted into the Lua VM at turn-on, freed when no block holds it
+WORLD_HEAD_TEX	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_HEAD_TEX (default 1): E_AI and E_OBJH come through the texture buffer (misc pool), not the structural pool
 WORLD_FX_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_FX_LITE (default 1): fx.bin's tables in the lite set
 WORLD_OBJ_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_OBJ_LITE (default 1): objects.bin's head in the lite set
 WORLD_LINK_ALL	env	1	flag	world	0	#236	worldlinks.py	-

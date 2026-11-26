@@ -102,7 +102,8 @@ static void obj_tail(BlockRt *r)
      * breakable models stream by their file offset, so OBJ_STREAM must be on */
     if (WORLD_OBJ_LITE && OBJ_STREAM && oh[7] > 16 && oh[7] - 16 <= at) {
         r->off[E_OBJH] = r->off[E_OBJ], r->size[E_OBJH] = oh[7] - 16, r->obj_full = r->size[E_OBJ];
-        r->total += (r->size[E_OBJH] + 127) & ~127u;  /* (before world_struct_bytes sums the lite sets) */
+        if (!WORLD_HEAD_TEX)  /* (else it comes in the texture buffer: world_init's tex_total) */
+            r->total += (r->size[E_OBJH] + 127) & ~127u;  /* (before world_struct_bytes sums the lite sets) */
     }
     r->off[E_OBJ] += at, r->size[E_OBJ] = ch[2];
 }
@@ -245,8 +246,11 @@ int world_init(const char *boot_area)
             if (i && e == E_OBJ && r->size[e] >= 64)
                 r->obj0 = r->off[e], obj_tail(r);
             if (i && e >= E_TEX) {  /* the boot block's collision, objects and effects are main.c's */
-                if (((r->size[e] + 127) & ~127u) > r->tex_total)
-                    r->tex_total = (r->size[e] + 127) & ~127u;
+                unsigned t = (r->size[e] + 127) & ~127u;
+                if (WORLD_HEAD_TEX && e == E_OBJ)  /* (obj_tail sized its head: both in at once, tex_dst) */
+                    t += (r->size[E_OBJH] + 127) & ~127u;
+                if (t > r->tex_total)
+                    r->tex_total = t;
             }
             else if (i || e == E_TAB)
                 r->total += (r->size[e] + 127) & ~127u;

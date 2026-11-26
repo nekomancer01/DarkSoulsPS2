@@ -1562,18 +1562,18 @@ static void reresolve(void)
 /* world-46 (WORLD_AI_UNLOAD): a world block's map AI with its lite set, from its turn-on to its turn-off. Chunks are
  * counted (lua0.c), so a chunk shared by blocks loads once and goes with the last of them. No collection here: the
  * frame's incremental one (ai_end_frame) frees what went. */
-int ai_block_load(const void *map, int map_size)
+int ai_block_load(const void *map, int map_size, LHeld *h)
 {
-    int k = lua0_load(map, map_size);
+    int k = lua0_load_held(map, map_size, h);
     reresolve();
     printf("ai: block +%d chunks (%u loaded, %u to free), %d goals, %d logics, Lua heap %u bytes\n", k,
            lua0_chunks_live, lua0_chunks_pending(), nregs, nlogics, lua0_heap);
     return k;
 }
 
-int ai_block_drop(const void *map, int map_size)
+int ai_block_drop(LHeld *h)
 {
-    int k = lua0_unload(map, map_size);
+    int k = lua0_release(h);
     reresolve();
     printf("ai: block -%d chunks (%u loaded, %u to free, %u freed), Lua heap %u bytes\n", k, lua0_chunks_live,
            lua0_chunks_pending(), lua0_chunks_freed, lua0_heap);
