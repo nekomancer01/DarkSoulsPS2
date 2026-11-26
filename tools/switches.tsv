@@ -55,6 +55,7 @@ FAR_GPU_SOFTWARE	env	unset	opt	world	-	new	farraster.c	-
 FAR_NATIVE	env	1	flag	world	0	new	farpano.py	-
 FAR_SAMPLE_LOOP	env	unset	debug	world	-	new	farpano.py	-
 MAP_LAZY_TEX	env	1	flag	world	0	new	mapgather.py	-
+PARAMS_CACHE	env	unset	config	tools	0	new	souls.py	parsed game params (souls.game_params) kept in the build cache's params namespace, keyed by the param files' and souls.py's bytes (0 = parse every run; a path moves the namespace)
 PVS_BOXF_LOOP	env	unset	debug	world	-	new	pvs_bake.c	-
 PVS_GPU_SPIN	env	unset	opt	world	-	new	pvs_gpu.c	-
 PVS_OCC_CULL	env	1	flag	world	0	new	pvs_bake.c	-
