@@ -203,7 +203,13 @@ WORLD_J ?=
 # Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so
 # every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexports, then the packs.
 PVS_PEERS ?= $(if $(WORLD_BLOCKS),$(G) $(foreach b,$(WORLD_BLOCKS),$(G)/$(lastword $(subst :, ,$(b)))))
-worldexports:
+# The boot block's own map export first (WORLD_BOOT_FIRST): every horizon waits for it (worldhzn), but the block
+# sub-make took the shared job slots and left the top make one, where the boot map queued behind the sound, menu and
+# chr exports (2026-11-26 cold build: ready at 13 s, started at 237 s, the horizons at 296 s). The sub-make now waits
+# for the boot map's inputs (objects, lights: ~13 s, the top make's other exports fill the slots meanwhile), so the
+# boot map starts beside it. 0: as before
+WORLD_BOOT_FIRST ?= 1
+worldexports: $(if $(and $(WORLD_BLOCKS),$(filter 1,$(WORLD_BOOT_FIRST))),| $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldexport@,$(subst :,@,$(WORLD_BLOCKS)))
 worldexport@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockexport
