@@ -107,6 +107,34 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
         for (int k = 0; k < 3; k++)
             bb[6 * i + k] = fminf(t[k], fminf(t[3 + k], t[6 + k])), bb[6 * i + 3 + k] = fmaxf(t[k], fmaxf(t[3 + k], t[6 + k]));
     }
+    /* the distinct cells (key, first pair, the union of their triangles' boxes): a cell whose union box is further than
+       the nearest so far holds no triangle that passes its own box test (the union's distance is no larger, also after
+       rounding), so it is skipped whole; the same triangles are measured in the same order */
+    size_t nc = 0;
+    for (size_t e = 0; e < n; e++)
+        nc += !e || pr[e].key != pr[e - 1].key;
+    int64_t *ck = malloc(sizeof(int64_t) * (nc ? nc : 1));
+    size_t *cst = malloc(sizeof(size_t) * (nc + 1));
+    float *cbb = malloc(sizeof(float) * 6 * (nc ? nc : 1));
+    if (!ck || !cst || !cbb) {
+        free(pr), free(bb), free(ck), free(cst), free(cbb);
+        return -1;
+    }
+    for (size_t e = 0, k = (size_t)-1; e < n; e++) {
+        const float *B = bb + 6 * (size_t)pr[e].tri;
+        if (!e || pr[e].key != pr[e - 1].key) {
+            k++;
+            ck[k] = pr[e].key, cst[k] = e;
+            for (int a = 0; a < 6; a++)
+                cbb[6 * k + a] = B[a];
+            continue;
+        }
+        for (int a = 0; a < 3; a++) {
+            if (B[a] < cbb[6 * k + a]) cbb[6 * k + a] = B[a];
+            if (B[3 + a] > cbb[6 * k + 3 + a]) cbb[6 * k + 3 + a] = B[3 + a];
+        }
+    }
+    cst[nc] = n;
     /* points are independent (each writes only out[i]): the same values with any thread count (-fopenmp, or serial) */
 #pragma omp parallel for schedule(dynamic, 512)
     for (int i = 0; i < np; i++) {
@@ -141,15 +169,26 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
                         if (z < lo[2] || z > hi[2])
                             continue;
                         int64_t key = cell_key(x, y, z);
-                        size_t a = 0, b = n;  /* first pair with this key */
+                        size_t a = 0, b = nc;  /* the cell with this key */
                         while (a < b) {
                             size_t m = (a + b) / 2;
-                            if (pr[m].key < key)
+                            if (ck[m] < key)
                                 a = m + 1;
                             else
                                 b = m;
                         }
-                        for (; a < n && pr[a].key == key; a++) {
+                        if (a == nc || ck[a] != key)
+                            continue;
+                        {
+                            const float *B = cbb + 6 * a;
+                            double e0 = p[0] < B[0] ? B[0] - p[0] : p[0] > B[3] ? p[0] - B[3] : 0,
+                                   e1 = p[1] < B[1] ? B[1] - p[1] : p[1] > B[4] ? p[1] - B[4] : 0,
+                                   e2 = p[2] < B[2] ? B[2] - p[2] : p[2] > B[5] ? p[2] - B[5] : 0;
+                            if (e0 * e0 + e1 * e1 + e2 * e2 > best * 1.000001 + 1e-12)
+                                continue;
+                        }
+                        size_t end = cst[a + 1];
+                        for (a = cst[a]; a < end; a++) {
                             const float *B = bb + 6 * (size_t)pr[a].tri;
                             double e0 = p[0] < B[0] ? B[0] - p[0] : p[0] > B[3] ? p[0] - B[3] : 0,
                                    e1 = p[1] < B[1] ? B[1] - p[1] : p[1] > B[4] ? p[1] - B[4] : 0,
@@ -166,6 +205,6 @@ int hz_dist(int nt, const float *tri, int np, const float *pts, const float *rma
         }
         out[i] = (float)sqrt(best);
     }
-    free(pr), free(bb);
+    free(pr), free(bb), free(ck), free(cst), free(cbb);
     return 0;
 }
