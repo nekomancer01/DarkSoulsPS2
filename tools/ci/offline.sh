@@ -16,6 +16,8 @@
 #     shipped settings (tools/mapx/test_simplify_golden.py, simplify_golden.json)
 #   7 tools/ci/test_scan.py: the readers raise souls.UnknownVariant on files they do not know, the coverage scan's
 #     runtime tables parse, and tools/blockreport.py --strict fails a synthetic block over its VRAM row
+#   8 tools/ci/test_buildprof.py: tools/buildprof.py (step table, critical chain, schedule replay, output identity) on
+#     a synthetic tools/stepcache.py timing file
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -75,5 +77,7 @@ echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on 
 "$PY" -I tools/ci/test_audio_rate.py || fail "tools/ci/test_audio_rate.py"
 echo "== coverage scan reader errors and the block report gate (tools/scan, tools/blockreport.py)"
 "$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
+echo "== build profiler (tools/buildprof.py on a synthetic stepcache.tsv)"
+"$PY" -I tools/ci/test_buildprof.py || fail "tools/ci/test_buildprof.py"
 echo "offline: $FAILED failed"
 exit $FAILED

@@ -301,6 +301,7 @@ SPIRV_CROSS	env	os.path.join(os.environ.get('DSR_REF', os.path.join(os.envir	con
 STATIC_OBJ	env	unset	config	world	-	init	mapcfg.py	-
 STEPCACHE	env	unset	flag	tools	0	new	stepcache.py	Export-step cache (tools/stepcache.py, Polaris 3.2 part 2): every recipe step but packs is restored from the build cache's step namespace when the same step ran before with the same inputs; 0 runs every tool (the other namespaces stay on), a path moves the namespace
 STEPCACHE_GB	env	12	config	tools	-	new	stepcache.py	Size cap of the build cache's step namespace in GB (least recently used entries go first)
+STEPCACHE_LOG	env	1	config	tools	0	new	stepcache.py	0 = no <build>/stepcache.tsv timing rows (one row per recipe step: start, end, hit / miss, wall, child CPU, outputs, prerequisites; read by tools/buildprof.py)
 STREAM	env	unset	opt	world	-	init	mapcfg.py	-
 STREAM_D	env	32.0	tune	world	-	init	mapcfg.py	-
 STREAM_FAR	env	78.0	tune	world	-	init	mapcfg.py	-

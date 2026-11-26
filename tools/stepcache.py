@@ -16,8 +16,11 @@ The entry holds every output (out and side) and the tool's output, replayed on a
   STEPCACHE=0         run every step's tool directly (the build cache's other namespaces stay on); BUILDCACHE=0 also
   BUILDCACHE_VERIFY=1 a hit runs the tool too and its outputs must equal the entry's (else the step fails)
   STEPCACHE_GB        size cap of the step namespace (default 12)
+  STEPCACHE_LOG=0     no timing row: by default each step appends one tab-separated row to <build>/stepcache.tsv
+                      (t_start t_end result name key12 wall_s cpu_s outputs prereqs; paths with <B>/<R>/<G>, lists
+                      ;-joined) for tools/buildprof.py
 Each step prints one line: "stepcache: hit|miss|verified|off <name> ..." (tools/buildtui.py counts them)."""
-import os, subprocess, sys, time
+import os, resource, subprocess, sys, time
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
@@ -57,6 +60,30 @@ def game_id():
         return None, None
 
 
+def log_row(build, t0, result, name, key, cpu, outs, prereq, norm=lambda s: s):
+    """one timing row in <build>/stepcache.tsv (one O_APPEND write: rows of parallel steps never interleave)"""
+    if os.environ.get("STEPCACHE_LOG", "1") == "0":
+        return
+    t1 = time.time()
+    clean = lambda s: s.replace("\t", " ").replace("\n", " ")
+    row = "\t".join([f"{t0:.3f}", f"{t1:.3f}", result, clean(name), key[:12], f"{t1 - t0:.3f}", f"{cpu:.3f}",
+                      ";".join(clean(norm(os.path.abspath(o))) for o in outs),
+                      ";".join(clean(norm(os.path.abspath(p))) for p in prereq)]) + "\n"
+    try:
+        fd = os.open(os.path.join(build, "stepcache.tsv"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, row.encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def child_cpu():
+    r = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return r.ru_utime + r.ru_stime
+
+
 def split(argv):
     parts, cur = [], []
     for a in argv:
@@ -73,6 +100,7 @@ def split(argv):
 
 def main(argv):
     (build, name, *outs), prereq, reads, envs, cmd = split(argv)
+    t_start = time.time()
     c = buildcache.Cache("step", VERSION, where=os.environ.get("STEPCACHE"),
                          cap_gb=os.environ.get("STEPCACHE_GB", 12))
     run = [sys.executable, "-I"] + cmd
@@ -80,7 +108,9 @@ def main(argv):
     if not c.dir or not gid:
         print(f"stepcache: off {name}" + ("" if c.dir else " (STEPCACHE / BUILDCACHE)") +
               ("" if gid or not c.dir else " (game version unknown: not cached)"), flush=True)
-        sys.exit(subprocess.run(run).returncode)
+        rc = subprocess.run(run).returncode
+        log_row(build, t_start, "fail" if rc else "off", name, "", child_cpu(), outs, prereq)
+        sys.exit(rc)
     subst = [(os.path.abspath(build), "<B>"), (ROOT, "<R>")] + ([(game, "<G>")] if game else [])
 
     def norm(s):
@@ -121,6 +151,7 @@ def main(argv):
             os.replace(tmp, o)
         sys.stdout.write(hit["log"])
         print(f"stepcache: hit {name} ({hit['secs']:.1f} s saved, key {k[:12]}, {tk:.2f} s to key)", flush=True)
+        log_row(build, t_start, "hit", name, k, child_cpu(), outs, prereq, norm)
         return 0
     t1 = time.time()
     p = subprocess.Popen(run, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
@@ -131,6 +162,7 @@ def main(argv):
         log.append(line)
     rc = p.wait()
     if rc:
+        log_row(build, t_start, "fail", name, k, child_cpu(), outs, prereq, norm)
         return rc
     data = []
     for o in outs:  # a missing file is stored as absent: make reports a missing out / side file itself
@@ -150,11 +182,14 @@ def main(argv):
             except OSError:
                 pass
             print(msg, flush=True)
+            log_row(build, t_start, "fail", name, k, child_cpu(), outs, prereq, norm)
             return 1
         print(f"stepcache: verified {name} (key {k[:12]})", flush=True)
+        log_row(build, t_start, "verified", name, k, child_cpu(), outs, prereq, norm)
         return 0
     c.put(k, {"outs": data, "log": "".join(log), "secs": secs})
     print(f"stepcache: miss {name} ({secs:.1f} s, stored {k[:12]})", flush=True)
+    log_row(build, t_start, "miss", name, k, child_cpu(), outs, prereq, norm)
     return 0
 
 
