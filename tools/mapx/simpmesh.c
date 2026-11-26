@@ -1193,6 +1193,29 @@ static void check_job(void *vc, long long i)
                 }
     }
     qsort(G, (size_t)ng, sizeof(gent), cmp_gent);
+    /* the grid's distinct cells (key, first entry, union of their triangles' boxes): a cell whose union box is further
+       than the nearest so far holds no triangle that passes its own box test (the union's distance is no larger, also
+       after rounding), so it is skipped whole; the same triangles are measured in the same order */
+    long long nc = 0;
+    for (long long e = 0; e < ng; e++)
+        nc += !e || G[e].key != G[e - 1].key;
+    unsigned long long *ck = MX_NEW(unsigned long long, nc ? nc : 1);
+    long long *cst = MX_NEW(long long, nc + 1);
+    double *cbb = MX_NEW(double, 6 * (size_t)(nc ? nc : 1));
+    for (long long e = 0, k = -1; e < ng; e++) {
+        const double *B = bb + 6 * G[e].t;
+        if (!e || G[e].key != G[e - 1].key) {
+            k++;
+            ck[k] = G[e].key, cst[k] = e;
+            for (int a = 0; a < 6; a++) cbb[6 * k + a] = B[a];
+            continue;
+        }
+        for (int a = 0; a < 3; a++) {
+            if (B[a] < cbb[6 * k + a]) cbb[6 * k + a] = B[a];
+            if (B[3 + a] > cbb[6 * k + 3 + a]) cbb[6 * k + 3 + a] = B[3 + a];
+        }
+    }
+    cst[nc] = ng;
     double worst = 0, wsq = 0;  /* the farthest point so far, in metres and squared */
     for (int t = 0; t < j->nout; t++) {
         const int *r = j->out + 6 * t, *s = R->t0 + 6 * j->oid[t];
@@ -1227,14 +1250,16 @@ static void check_job(void *vc, long long i)
             for (int dx = -1; dx <= 1; dx++)
                 for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++) {
-                        gent key = {gkey(g[0] + dx, g[1] + dy, g[2] + dz), -1};
-                        long long lo = 0, hi = ng;
+                        unsigned long long key = gkey(g[0] + dx, g[1] + dy, g[2] + dz);
+                        long long lo = 0, hi = nc;
                         while (lo < hi) {
                             long long m = (lo + hi) / 2;
-                            if (cmp_gent(G + m, &key) < 0) lo = m + 1;
+                            if (ck[m] < key) lo = m + 1;
                             else hi = m;
                         }
-                        for (long long e = lo; e < ng && G[e].key == key.key; e++) {
+                        if (lo == nc || ck[lo] != key || box_d2(p, cbb + 6 * lo) > best * 1.000001 + 1e-9)
+                            continue;
+                        for (long long e = cst[lo]; e < cst[lo + 1]; e++) {
                             const int *u = R->t0 + 6 * G[e].t;
                             if (j->amesh[u[1]] != mesh || box_d2(p, bb + 6 * G[e].t) > best * 1.000001 + 1e-9)
                                 continue;
@@ -1272,7 +1297,7 @@ static void check_job(void *vc, long long i)
         }
     }
     cnt[4] = (long long)(worst * 1000);
-    free(G), free(big), free(bb);
+    free(G), free(big), free(bb), free(ck), free(cst), free(cbb);
 }
 
 /* Check the last replay of every job: a triangle fails when it has (almost) no area left where its source triangle
