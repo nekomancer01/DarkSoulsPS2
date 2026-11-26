@@ -561,7 +561,117 @@ static void build_blists(void)
     }
 }
 
+/* drawn()'s camera-free tests (the chunk's unit, sky flag, block, and its draw group against the collision mask cm)
+ * depend only on (pb, cm): per player block one list per distinct row of bshown (masks with the same row share it)
+ * holds the blist chunks that pass them, ascending; a camera then runs only the distance tests on that list. The same
+ * chunks in the same order as the flat loop. PVS_PREFILTER=0: the flat loop; PVS_PREFILTER_CHECK=1: both, abort on a
+ * difference. Skipped for a block whose lists would pass 64 M entries. */
+/* a list entry: the chunk's box, index and what the camera tests need (bit 0 backdrop, 1 / 2 the near-level flags,
+   3 occluder: drawn() returns 2) in 32 bytes, read in order */
+typedef struct { float mn[3], mx[3]; unsigned j, meta; } PEnt;
+typedef struct { unsigned nrow, *rid; PEnt **lst; unsigned *nl; PEnt *nomask; unsigned nnm; } PreF;
+static PreF pref[MAXB];
+static int pref_check;
+
+static int static_ok(unsigned i, int pb, int cm)
+{
+    const InChunk *k = &ch[i];
+    int b = cblk[i];
+    if (k->unit == 0xFFFFFFFFu || (k->flags >> 8 & CHUNK_SKY) || (b && b != pb))
+        return 0;
+    if (b == pb && cm >= 0 && bshown[b] && !bshown[b][(size_t)cm * bnp[b] + cdg[i]])
+        return 0;
+    return 1;
+}
+
+static void build_prefilter(void)
+{
+    if (getenv("PVS_PREFILTER") && !strcmp(getenv("PVS_PREFILTER"), "0"))
+        return;
+    pref_check = getenv("PVS_PREFILTER_CHECK") && !strcmp(getenv("PVS_PREFILTER_CHECK"), "1");
+    for (int b = 0; b < nblk; b++) {
+        if (!blist[b])
+            continue;
+        PreF *f = &pref[b];
+        unsigned m = bnl[b], nc = bshown[b] ? bnc[b] : 0, np = bnp[b];
+        f->rid = malloc(sizeof(unsigned) * (nc ? nc : 1));
+        unsigned *first = malloc(sizeof(unsigned) * (nc ? nc : 1));  /* per distinct row: a mask that has it */
+        f->nrow = 0;
+        for (unsigned c = 0; c < nc; c++) {
+            unsigned r = 0;
+            for (; r < f->nrow; r++)
+                if (!memcmp(bshown[b] + (size_t)c * np, bshown[b] + (size_t)first[r] * np, np))
+                    break;
+            if (r == f->nrow)
+                first[f->nrow++] = c;
+            f->rid[c] = r;
+        }
+        if ((size_t)(f->nrow + 1) * m > (size_t)64 << 20) {
+            free(f->rid), free(first), f->rid = NULL, f->nrow = 0;
+            continue;
+        }
+        f->lst = malloc(sizeof(PEnt *) * (f->nrow ? f->nrow : 1)), f->nl = calloc(f->nrow ? f->nrow : 1, sizeof(unsigned));
+        for (unsigned r = 0; r <= f->nrow; r++) {  /* (r == nrow: cm < 0 or no draw groups) */
+            PEnt *L = malloc(sizeof(PEnt) * (m ? m : 1));
+            unsigned n = 0;
+            for (unsigned jj = 0; jj < m; jj++) {
+                unsigned j = blist[b][jj];
+                if (!static_ok(j, b, r < f->nrow ? (int)first[r] : -1))
+                    continue;
+                const InChunk *k = &ch[j];
+                memcpy(L[n].mn, k->mn, sizeof k->mn), memcpy(L[n].mx, k->mx, sizeof k->mx);
+                L[n].j = j;
+                L[n++].meta = (k->flags >> 8 & CHUNK_BACKDROP ? 1u : 0) | (k->flags & 6) |
+                              (cblk[j] == b && (k->flags & 1) ? 8u : 0);
+            }
+            if (r < f->nrow)
+                f->lst[r] = L, f->nl[r] = n;
+            else
+                f->nomask = L, f->nnm = n;
+        }
+        free(first);
+    }
+}
+
+static unsigned draw_list_flat(const float *e, int pb, int cm, unsigned *list);
+
 static unsigned draw_list(const float *e, int pb, int cm, unsigned *list)
+{
+    const PreF *f = pb >= 0 && pb < nblk && blist[pb] && pref[pb].rid ? &pref[pb] : NULL;
+    if (!f || (cm >= (int)bnc[pb] && bshown[pb]))
+        return draw_list_flat(e, pb, cm, list);
+    const PEnt *L = f->nomask;
+    unsigned nL = f->nnm;
+    if (cm >= 0 && bshown[pb])
+        L = f->lst[f->rid[cm]], nL = f->nl[f->rid[cm]];
+    unsigned n = 0;
+    for (unsigned jj = 0; jj < nL; jj++) {  /* drawn()'s distance tests, its chunk box distance computed once */
+        const PEnt *q = &L[jj];
+        float d2 = box_d2(q->mn, q->mx, e);
+        if (!(q->meta & 1) && d2 > CULL_FAR * CULL_FAR)
+            continue;
+        if (q->meta & 6) {
+            float u2 = box_d2(un[cunit[q->j]].mn, un[cunit[q->j]].mx, e);
+            if ((q->meta & 2) && u2 > NEAR_OUT * NEAR_OUT)
+                continue;
+            if ((q->meta & 4) && u2 < NEAR_IN * NEAR_IN)
+                continue;
+        }
+        list[n++] = q->j | (q->meta & 8 ? 0x80000000u : 0) | (d2 < NEAR_FIRST * NEAR_FIRST ? 0x40000000u : 0);
+    }
+    if (pref_check) {
+        unsigned *ref = malloc(sizeof(unsigned) * (nch ? nch : 1)), nr = draw_list_flat(e, pb, cm, ref);
+        if (nr != n || memcmp(ref, list, sizeof(unsigned) * n)) {
+            fprintf(stderr, "pvs_bake: PVS_PREFILTER_CHECK: list differs from the flat loop (block %d mask %d: %u vs %u)\n",
+                    pb, cm, n, nr);
+            abort();
+        }
+        free(ref);
+    }
+    return n;
+}
+
+static unsigned draw_list_flat(const float *e, int pb, int cm, unsigned *list)
 {
     unsigned n = 0;
     /* the same chunks in the same order as the full loop: a chunk of another block than 0 and pb is never drawn */
@@ -1241,6 +1351,7 @@ int main(int argc, char **argv)
     }
     build_grid();
     build_blists();
+    build_prefilter();
     TW = (R + TILE - 1) / TILE;
     const char *sd = getenv("PVS_SIMD");
     if (sd && *sd == '0')

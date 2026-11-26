@@ -260,6 +260,8 @@ PVS_GPU_INSTANCED	env	unset	opt	world	-	#211	pvs_gpu.c	-
 PVS_GPU_JOBS	env	2	config	world	-	#211	pvs_gpu_server.py	bakes at once (each one's draw lists use every core)
 PVS_GPU_LAYERED	env	unset	opt	world	-	#211	pvs_gpu.c	-
 PVS_GPU_SOFTWARE	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_PREFILTER	env	1	config	world	0	new	pvs_bake.c	the occlusion bake's draw list: drawn()'s camera-free tests run once per player block and draw-group row, each camera only the distance tests (0 = the flat loop, same pvs.bin)
+PVS_PREFILTER_CHECK	env	unset	debug	world	-	new	pvs_bake.c	1 = build the prefiltered draw list and the flat one per camera and abort if they differ
 PVS_PRETEST	env	unset	opt	world	-	#129	pvs_bake.c	-
 PVS_SIMD	env	unset	opt	world	-	#211	pvs_bake.c	-
 RDC_IN	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
