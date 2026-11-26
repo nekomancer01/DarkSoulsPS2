@@ -78,6 +78,10 @@ typedef struct {
     const double *bb;      /* per structure triangle: its box (min xyz, max xyz) */
     const pg_ent *G;
     long long ng;
+    const unsigned long long *ck;  /* distinct cell keys of G, ascending */
+    const long long *cst;          /* per distinct key: its first entry in G (cst[nc] = ng) */
+    const double *cbb;             /* per distinct key: the union of its triangles' boxes */
+    long long nc;
     const int *big;
     long long nbig;
     double cs, cap2;
@@ -100,13 +104,16 @@ static double prot_point(const prot_ctx *c, const double *q, double stop)
         for (int dy = -1; dy <= 1; dy++)
             for (int dz = -1; dz <= 1; dz++) {
                 unsigned long long key = pg_key(g[0] + dx, g[1] + dy, g[2] + dz);
-                long long lo = 0, hi = c->ng;
+                long long lo = 0, hi = c->nc;
                 while (lo < hi) {
                     long long m = (lo + hi) / 2;
-                    if (c->G[m].key < key) lo = m + 1;
+                    if (c->ck[m] < key) lo = m + 1;
                     else hi = m;
                 }
-                for (long long e = lo; e < c->ng && c->G[e].key == key; e++) {
+                /* the cell's union box: no triangle in it can pass its own box test when this fails */
+                if (lo == c->nc || c->ck[lo] != key || box_d2(q, c->cbb + 6 * lo) > best * 1.000001 + 1e-9)
+                    continue;
+                for (long long e = c->cst[lo]; e < c->cst[lo + 1]; e++) {
                     if (box_d2(q, c->bb + 6 * c->G[e].t) > best * 1.000001 + 1e-9)  /* (cannot be nearer than best) */
                         continue;
                     const long long *t = c->tg + 3 * c->G[e].t;
@@ -283,7 +290,28 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
             bb[6 * t + a] = x < y ? (x < z ? x : z) : (y < z ? y : z);
             bb[6 * t + 3 + a] = x > y ? (x > z ? x : z) : (y > z ? y : z);
         }
-    prot_ctx c = {P, tg, bb, G, ng, big, nbig, cs, cap * cap, lt, ppiece, small, td2};
+    /* the grid's distinct cells: key, first entry, union box of their triangles */
+    long long nc = 0;
+    for (long long e = 0; e < ng; e++)
+        nc += !e || G[e].key != G[e - 1].key;
+    unsigned long long *ck = MX_NEW(unsigned long long, nc ? nc : 1);
+    long long *cst = MX_NEW(long long, nc + 1);
+    double *cbb = MX_NEW(double, 6 * (nc ? nc : 1));
+    for (long long e = 0, k = -1; e < ng; e++) {
+        const double *B = bb + 6 * G[e].t;
+        if (!e || G[e].key != G[e - 1].key) {
+            k++;
+            ck[k] = G[e].key, cst[k] = e;
+            memcpy(cbb + 6 * k, B, 6 * sizeof(double));
+            continue;
+        }
+        for (int a = 0; a < 3; a++) {
+            if (B[a] < cbb[6 * k + a]) cbb[6 * k + a] = B[a];
+            if (B[3 + a] > cbb[6 * k + 3 + a]) cbb[6 * k + 3 + a] = B[3 + a];
+        }
+    }
+    cst[nc] = ng;
+    prot_ctx c = {P, tg, bb, G, ng, ck, cst, cbb, nc, big, nbig, cs, cap * cap, lt, ppiece, small, td2};
     mx_parallel_for(nlive, prot_one, &c);
     mx_tick("pieces protrusion");
     for (long long t = 0; t < nlive; t++) {
@@ -340,6 +368,6 @@ MX_API long long mx_pieces(int nm, const double *P, const long long *poff, const
         free(C);
     }
     free(tsolo), free(psolo);
-    free(kid), free(par), free(used), free(tg), free(pid), free(lo), free(hi), free(small), free(G), free(big), free(td2), free(lt), free(bb);
+    free(kid), free(par), free(used), free(tg), free(pid), free(lo), free(hi), free(small), free(G), free(big), free(td2), free(lt), free(bb), free(ck), free(cst), free(cbb);
     return np;
 }
