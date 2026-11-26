@@ -18,6 +18,8 @@
 #     runtime tables parse, and tools/blockreport.py --strict fails a synthetic block over its VRAM row
 #   8 tools/ci/test_buildprof.py: tools/buildprof.py (step table, critical chain, schedule replay, output identity) on
 #     a synthetic tools/stepcache.py timing file
+#   9 tools/ci/test_recipe_tools_audit.py: the report-only audit of tools/recipe.toml's per-step tools lists
+#     (tools/ci/recipe_tools_audit.py) on a synthetic recipe
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -79,5 +81,7 @@ echo "== coverage scan reader errors and the block report gate (tools/scan, tool
 "$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
 echo "== build profiler (tools/buildprof.py on a synthetic stepcache.tsv)"
 "$PY" -I tools/ci/test_buildprof.py || fail "tools/ci/test_buildprof.py"
+echo "== recipe tools-list audit (report only) on a synthetic recipe"
+"$PY" -I tools/ci/test_recipe_tools_audit.py || fail "tools/ci/test_recipe_tools_audit.py"
 echo "offline: $FAILED failed"
 exit $FAILED
