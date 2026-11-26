@@ -29,7 +29,7 @@ import atexit, hashlib, os, pickle, sys, zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = b"buildcache-1"  # entry format; a new value orphans every entry (the size cap removes them)
 DEFAULT_GB = 4
-NAMESPACES = ("pvs", "simplify", "snd", "tex", "step")  # the CLI's default set (build/cache/warm is warmstate.py's, not ours)
+NAMESPACES = ("pvs", "simplify", "snd", "tex", "step", "params")  # the CLI's default set (build/cache/warm is warmstate.py's, not ours)
 
 
 def main_tree():

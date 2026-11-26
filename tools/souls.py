@@ -566,18 +566,44 @@ def param_rows(b, fields):
 
 
 def game_params(game):
-    """{param file stem: {row id: (name, {field: value})}} for GameParam, using the game's own paramdefs."""
+    """{param file stem: {row id: (name, {field: value})}} for GameParam, using the game's own paramdefs. Parsed once
+    per game copy and souls.py: the result lives in the build cache's "params" namespace (tools/buildcache.py; ~0.4 s
+    of parsing vs ~0.05 s to load, in each of the ~200 exporter processes of a build), keyed by the two files' bytes
+    and this file's; a hit replays the skipped() reports of the parse. PARAMS_CACHE: 0 = parse every time, a path =
+    the namespace's directory."""
+    pd, gp = game + "/paramdef/paramdef.paramdefbnd.dcx", game + "/param/GameParam/GameParam.parambnd.dcx"
+    c = k = None
+    try:
+        import buildcache
+        c = buildcache.Cache("params", b"params-1", sources=[os.path.abspath(__file__)],
+                             where=os.environ.get("PARAMS_CACHE"))
+        k = c.key(buildcache.File(pd), buildcache.File(gp)) if c.dir else None
+    except (ImportError, OSError):
+        c = None
+    hit = c.get(k) if c is not None and k else None
+    if hit is not None and not c.verify:
+        out, skips = hit
+        for kind, value in skips:
+            skipped(kind, value)
+        return out
+    skips = []
     defs = {}
-    for _, n, d in bnd3(read(game + "/paramdef/paramdef.paramdefbnd.dcx")):
+    for _, n, d in bnd3(read(pd)):
         ptype, fields = paramdef(d)
         defs[ptype] = fields
     out = {}
-    for _, n, d in bnd3(read(game + "/param/GameParam/GameParam.parambnd.dcx")):
+    for _, n, d in bnd3(read(gp)):
         ptype = cstr(d, 0xC).strip()
         if ptype not in defs:
+            skips.append(("param without paramdef", ptype))
             skipped("param without paramdef", ptype)
         else:
             out[basename(n).rsplit(".", 1)[0]] = param(d, defs[ptype])
+    if c is not None and k:
+        if hit is not None:
+            c.check(k, hit, (out, skips))
+        else:
+            c.put(k, (out, skips))
     return out
 
 
