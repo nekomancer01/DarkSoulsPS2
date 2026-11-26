@@ -6,10 +6,12 @@ How (src/testscript.c "park", mailbox version 2):
   - cold run (no state yet): the ELF boots with a park script = the test's option lines + its first spawn + "wait 3" +
     "park". Parked (mailbox state 4), test-run.py saves a state over PINE into the cache, then names the test's own
     script in the mailbox (next, next_seq) and the run goes on in the same PCSX2: the first run costs no extra boot.
-  - warm run: PCSX2 starts with -statefile <cached state> (tools/pcsx2-run.sh STATEFILE), test-run.py finds the parked
-    ELF and hands it the script the same way. A state that does not come up parked is dropped and the run boots cold.
-The key: the ELF's and the disc image's bytes, the PCSX2 build, and the park script (options + first spawn), so a
-rebuilt ELF / ISO, another start spot or other boot options never load an old state. Scripts with "option save" (a save
+  - warm run: the runner starts with -statefile <cached state> (tools/pcsx2-run.sh STATEFILE), test-run.py finds the
+    parked ELF and hands it the script the same way. A state that does not come up parked is dropped and the run boots
+    cold.
+The key: the ELF's and the disc image's bytes, the PCSX2 build (sha256 of the pcsx2-dsrtest binary), and the park
+script (options + first spawn), so a rebuilt ELF / ISO / runner, another start spot or other boot options never load an
+old state. Keys of an older VERSION are never matched; their files age out through the pruning below. Scripts with "option save" (a save
 file read at boot) or "option demo" always boot cold, and so does every host-ELF run (no --iso): the ELF keeps its
 host: packs open from boot, and a loaded state has none of PCSX2's HostFs file handles, so the first pack read after it
 fails ("host:data/c1201.pak model.bin: read error", smoke on 2026-11-10: 19 of 20 warm host runs failed). A host boot
@@ -19,10 +21,11 @@ Cache: WARM_CACHE (a directory; 0 = off: every run boots cold, as test-run.py --
 newest WARM_KEEP (60) kept.
 
   warmstate.py list | clear     the cache's entries / delete them"""
-import glob, hashlib, json, os, re, shutil, subprocess, sys, time
+import glob, hashlib, json, os, re, shutil, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = b"warm-2"  # warm-2: ISO runs only (warm-1 also keyed host-ELF runs, whose states never worked)
+KEY_VERSION = b"warm-3"  # warm-3: keyed on the pcsx2-dsrtest binary (warm-2: the Flatpak commit; warm-1 also keyed
+# host-ELF runs, whose states never worked)
 WAIT_PARK = 3  # game seconds at the start spot before parking: the first stream-in settles
 
 
@@ -62,12 +65,22 @@ def file_hash(path):
     return _hashes[k]
 
 
-def pcsx2_build(hostexec):
-    try:
-        return subprocess.run([hostexec, "flatpak", "info", "--show-commit", "net.pcsx2.PCSX2"], capture_output=True,
-                              text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+def runner_binary():
+    """the pcsx2-dsrtest tools/pcsx2-run.sh starts (same lookup: PCSX2_HEADLESS, this tree, the main checkout)"""
+    env = os.environ.get("PCSX2_HEADLESS")
+    if env:  # an explicit binary or nothing (no silent fallback, as tools/pcsx2-run.sh)
+        return env if os.access(env, os.X_OK) else None
+    for b in (os.path.join(HERE, "ext", "pcsx2-build", "bin", "pcsx2-dsrtest"),
+              os.path.join(main_tree(), "tools", "ext", "pcsx2-build", "bin", "pcsx2-dsrtest")):
+        if b and os.access(b, os.X_OK):
+            return b
+    return None
+
+
+def pcsx2_build():
+    """first 16 hex of the runner binary's sha256 ("" when there is none: the run fails to start anyway)"""
+    b = runner_binary()
+    return file_hash(b)[:16] if b else ""
 
 
 def parks(elf):
@@ -115,7 +128,7 @@ class Plan:
         tmp = f"{self.state}.{os.getpid()}"
         shutil.copyfile(p2s, tmp)
         with open(tmp + ".json", "w") as f:
-            json.dump(dict(info, mailbox=mailbox, park=self.park, saved=time.time()), f)
+            json.dump(dict(info, mailbox=mailbox, park=self.park, saved=time.time(), version=KEY_VERSION.decode()), f)
         os.replace(tmp + ".json", self.meta)
         os.replace(tmp, self.state)
         self.cached = True
@@ -130,14 +143,14 @@ class Plan:
         self.cached = False
 
 
-def plan(elf, script, iso, hostexec):
+def plan(elf, script, iso):
     """Plan for this run, or None (cache off, or a script that boots cold)"""
     d = cache_dir()
     park = park_script(script) if d and iso and parks(elf) else None
     if park is None:
         return None
-    h = hashlib.sha256(VERSION)
-    for part in (file_hash(elf), file_hash(iso) if iso else "host", pcsx2_build(hostexec), park):
+    h = hashlib.sha256(KEY_VERSION)
+    for part in (file_hash(elf), file_hash(iso) if iso else "host", pcsx2_build(), park):
         h.update(b"\0" + part.encode())
     return Plan(h.hexdigest()[:32], park, d)
 

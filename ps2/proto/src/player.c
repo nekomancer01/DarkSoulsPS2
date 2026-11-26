@@ -1339,7 +1339,7 @@ const char *player_state_name(const Player *p)
     }
     switch (p->state) {
     case ST_IDLE: return "IDLE";
-    case ST_MOVE: return p->loco == ANIM_DASH ? "DASH A00_0535" : p->loco == ANIM_RUN ? "RUN A00_0500" : "WALK A00_0200";
+    case ST_MOVE: return p->loco == ANIM_DASH ? "DASH A00_0510" : p->loco == ANIM_RUN ? "RUN A00_0500" : "WALK A00_0200";
     default:
         snprintf(buf, sizeof buf, "%s %d", anims[p->anim].name, anims[p->anim].key);
         return buf;

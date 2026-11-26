@@ -13,15 +13,15 @@ unused memory: page cache and reclaimable memory count as available (MemAvailabl
 cheap to swap in) doesn't count. Before 2026-11-01 it fired on MemAvailable < 2.5 GB with >= 16 GB swap used, which
 was met with 20 GB in zram, 0 on disk and nothing stalling.
 Disposable = command line matches DISPOSABLE and none of PROTECT. The user's apps (Claude, browser, RuneLite,
-Steam, desktop) and the user's visible PCSX2 are never touched; headless test PCSX2 instances are (their flatpak
-instance ids are marked in /tmp/pcsx2-headless by tools/pcsx2-run.sh).
+Steam, desktop) and the user's visible PCSX2 are never touched; headless test runners are (pcsx2-dsrtest, whose pids
+tools/pcsx2-run.sh writes to /tmp/pcsx2-headless/slot.<n>.pid).
 Every action is logged to LOG with the top processes at that moment, and shown as a desktop notification.
 The service reloads itself when this file changes (a pull or merge): until 2026-11-02 the service kept running the
 code it started with, and the pre-PSI rule above (killed 4 export_map jobs on 11-02 with 20 GB idle in zram) stayed
 live for 17 h after its fix was merged. Paused jobs carry over through PAUSED.
 Usage: memwatch.py [--dry-run] [--once]
 """
-import json, os, re, signal, subprocess, sys, time
+import glob, json, os, re, signal, subprocess, sys, time
 
 GiB = 1 << 30
 POLL = 2.0
@@ -60,7 +60,7 @@ TREE_RE = "|".join([re.escape(os.path.basename(ROOT)) + r"(?:-[\w.-]+)?"] + [re.
 DISPOSABLE = re.compile(
     r"(?<![\w.-])(?:" + TREE_RE + r")/|/osrs-wiki-backup/|analyzeHeadless|ghidra|pcsx2-gsrunner|"
     r"mips64r5900el-ps2-elf-|cc1 |ld\b.*proto\.elf|DarkSoulsRemastered\.exe|wine(server|64|-preloader)|"
-    r"gamescope --backend headless|Xvfb :99|net\.pcsx2\.PCSX2|pcsx2-qt")
+    r"gamescope --backend headless|net\.pcsx2\.PCSX2|pcsx2-qt|pcsx2-dsrtest")
 JOB_CWD = re.compile(r"/(?:" + TREE_RE + r")(/|$)")
 PROTECT = re.compile(
     r"claude-desktop|/claude-code/|/claude |memwatch\.py|firefox|RuneLite|Jagex|steamwebhelper|steamrt64/steam|"
@@ -147,14 +147,15 @@ def write_state(st):
 
 
 def headless_pcsx2_pids():
-    """PIDs of the flatpak PCSX2 instances started headless by pcsx2-run.sh (never the user's visible one)."""
-    ids = set(os.listdir("/tmp/pcsx2-headless")) if os.path.isdir("/tmp/pcsx2-headless") else set()
+    """PIDs of the headless test runners (pcsx2-dsrtest) that tools/pcsx2-run.sh / ps2-pcsx2.sh started: the first
+    field of /tmp/pcsx2-headless/slot.<n>.pid, alive and still that binary (never the user's visible PCSX2)."""
     pids = set()
-    for inst in ids:
+    for f in glob.glob("/tmp/pcsx2-headless/slot.*.pid"):
         try:
-            pid = open(f"/run/user/{os.getuid()}/.flatpak/{inst}/pid").read().strip()
-            pids.add(int(pid))
-        except (OSError, ValueError):
+            pid = int(open(f).read().split()[0])
+            if open(f"/proc/{pid}/comm").read().strip() == "pcsx2-dsrtest":
+                pids.add(pid)
+        except (OSError, ValueError, IndexError):
             pass
     return pids
 

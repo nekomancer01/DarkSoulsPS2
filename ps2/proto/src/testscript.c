@@ -26,13 +26,14 @@
 #include "hitch.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
+#include "sound.h"
 #include "ticks.h"
 
 volatile TestMailbox test_mb __attribute__((aligned(64))) = {.magic = 0x4D545354, .version = 2};
 int test_god;
 
 enum { C_SPAWN, C_CAM, C_CAMOFF, C_STICK, C_RSTICK, C_CIRCLE, C_R1, C_L1, C_R2, C_L2, C_HIT, C_BEHIND, C_LOCK, C_STATUS, C_SQUARE, C_DPAD, C_TRIANGLE, C_WAIT, C_FRAMES, C_APPROACH, C_FREEZE, C_STATS, C_PITCH,
-       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK, C_PICKUP };
+       C_SHOT, C_LOG, C_LOOP, C_END, C_GAME, C_EV, C_KILL, C_PAD, C_LOADSCR, C_PARK, C_PICKUP, C_SND };
 
 typedef struct {
     unsigned short op, line;
@@ -122,6 +123,7 @@ static int parse(Prog *p, char *text)
         {"ev", C_EV, 0},
         /* world items (pickup.c pickup_test_cmd): drop NPC X Y Z, expect drops / dialog / shines N, summary */
         {"pickup", C_PICKUP, 0},
+        {"snd", C_SND, 0},  /* TEST snd line: sound.c counters (events started / not found / dropped), for muted runs */
     };
     int opts = 0, cap = 0, line = 0;
     memset(p, 0, sizeof *p);
@@ -421,6 +423,10 @@ static int step(Prog *p, Input *in, Player *pl, float dt, int is_script)
         case C_FREEZE: frozen = c->a[0] != 0; break;
         case C_STATS: seg_reset(); break;
         case C_LOG: printf("TEST log %s\n", c->text); break;
+        case C_SND:
+            printf("TEST snd played %u missing %u dropped %u voices %d [%s]\n", snd_stats.played, snd_stats.missing,
+                   snd_stats.dropped, snd_stats.voices, player_state_name(pl));
+            break;
         case C_GAME: save_test_cmd(c->text, pl); break;
         case C_EV: event_test_cmd(c->text); break;
         case C_PICKUP: pickup_test_cmd(c->text); break;

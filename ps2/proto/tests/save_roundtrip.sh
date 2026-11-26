@@ -9,12 +9,11 @@ cd "$(dirname "$0")/../../.."
 MODE=${1:-both} ELF=${2:-build/proto.elf}
 OUT=build/test/save-roundtrip; mkdir -p "$OUT"
 SLOT=28150
-HH=${DISTROBOX_HOST_HOME:-$HOME}
-CARD=$HH/.var/app/net.pcsx2.PCSX2/test/$SLOT/PCSX2/memcards/Mcd001.ps2
+CARD=/tmp/pcsx2-headless/data/$SLOT/PCSX2/memcards/Mcd001.ps2  # tools/pcsx2-run.sh data dir of the slot
 fail=0
 run() {  # $1 device line, $2 script
     sed "s/^option save .*/option save $1/" "ps2/proto/tests/$2.txt" > "$OUT/$2_${1%% *}.txt"
-    tools/q -m 4 python3 tools/test-run.py "$ELF" "$OUT/$2_${1%% *}.txt" "$OUT/run_$2_${1%% *}" --slot $SLOT \
+    tools/q -m 10 python3 tools/test-run.py "$ELF" "$OUT/$2_${1%% *}.txt" "$OUT/run_$2_${1%% *}" --slot $SLOT \
         > "$OUT/$2_${1%% *}.log" 2>&1 || { echo "FAIL $2 ($1)"; tail -5 "$OUT/$2_${1%% *}.log"; fail=1; return; }
     grep -h 'save:' "$OUT/run_$2_${1%% *}/emulog.txt" | sed 's/^/  /'
     echo "PASS $2 ($1)"

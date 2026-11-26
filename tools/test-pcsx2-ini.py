@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Data dir for one headless test PCSX2 (tools/pcsx2-run.sh PINE=<slot>): <data>/PCSX2/inis/PCSX2.ini = the user's PCSX2.ini
-with PINE on <slot>, the BIOS folder pointing at the user's, a GS-dump hotkey, no confirmation dialogs and the sound muted.
+"""Data dir for one headless test PCSX2 (tools/pcsx2-run.sh PINE=<slot>, pcsx2-dsrtest -datapath <data>):
+<data>/PCSX2/inis/PCSX2.ini = the user's PCSX2.ini with PINE on <slot>, the BIOS folder pointing at the user's, no
+confirmation dialogs and the sound muted. pcsx2-dsrtest reads it as its base settings layer and forces its own test
+overrides on top in memory (tools/pcsx2-headless/Main.cpp SettingsOverride).
   test-pcsx2-ini.py <user PCSX2 config dir> <data dir> <slot>"""
 import os, sys
 
 SET = {
     "EmuCore": {"EnablePINE": "true", "PINESlot": None, "HostFs": "true", "EnableFastBoot": "true"},
     "UI": {"ConfirmShutdown": "false", "SetupWizardIncomplete": "false", "PauseOnFocusLoss": "false"},
-    # tools/test-run.py presses these on the Xvfb display (xdotool): single-frame GS dump / screenshot into <data>/PCSX2/snaps
-    "Hotkeys": {"GSDumpSingleFrame": "Keyboard/F8", "Screenshot": "Keyboard/F9"},
     "Folders": {"Bios": None},
-    # Test runs are silent (user request 2026-10-31, again 2026-11-07): the launchers send the sound to the null sink
-    # dsr_mute, and PCSX2's own mute is on too, so a stream that falls back to the speakers (the null sink unloaded
-    # or missing, a PipeWire restart) stays silent. Same backend and sync mode as the user's, so timing is unchanged.
+    # Test runs are silent (user request 2026-10-31, again 2026-11-07): pcsx2-dsrtest forces the nullout backend (no
+    # audio device at all), and PCSX2's own mute stays on as a second guard.
     "SPU2/Output": {"OutputMuted": "true"},
 }
 
 # PCSX2_GS="key=value,..." (A/B runs of display / upscaling settings): extra [EmuCore/GS] keys for this instance only,
-# e.g. PCSX2_GS="upscale_multiplier=3,deinterlace_mode=0,ScreenshotSize=1" (2.x ini names; deinterlace_mode 0 =
-# Automatic, ScreenshotSize 1 = F9 screenshots at internal resolution)
+# e.g. PCSX2_GS="upscale_multiplier=3,deinterlace_mode=0" (2.x ini names; deinterlace_mode 0 = Automatic)
 GS = os.environ.get("PCSX2_GS", "")
 
 

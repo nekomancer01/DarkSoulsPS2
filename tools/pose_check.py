@@ -7,7 +7,7 @@ next to a PCSX2 capture of the same frame (proto built with a forced pose and th
 Also prints the body's lean: head and neck relative to the feet/pelvis in the character's own frame.
 
 Usage: pose_check.py <game dir> <anim id> <frame> <out.png> [--map map.bin] [--shot pcsx2.png] [--blend id] [--archive name --prefix aNN] [--mirror]
-  --blend   50/50 blend with another animation of the same archive (export_model.py TURN_PAIR, e.g. 535 + 536)
+  --blend   50/50 blend with another animation of the same archive (e.g. 535 + 536)
   --archive / --prefix  anim archive and file prefix (default c0000_a00_lo / a00 below id 3000, else c0000_a2x / a23;
             e.g. --archive c0000_a00_md --prefix a00 for the item-use and bonfire anims)
   --mirror  also render the model mirrored on X (left-handed data shown right-handed) for a side-by-side check"""

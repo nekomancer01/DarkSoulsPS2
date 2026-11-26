@@ -78,7 +78,7 @@ TEX_MAX = 256
 ITEM_ANIMS = (7585, 7586, 7587, 7588, 7510, 7500, 7501, 7502, 7530, 7540, 7550, 7560, 7561, 7562, 7570, 7571, 7580,
               6212, 6412)
 ANIMS = [("a00", 0, "c0000_a00_lo"), ("a00", 200, "c0000_a00_lo"), ("a00", 500, "c0000_a00_lo"),
-         ("a00", 535, "c0000_a00_lo"), ("a00", 700, "c0000_a00_lo"), ("a23", 3000, "c0000_a2x"),
+         ("a00", 510, "c0000_a00_lo"), ("a00", 700, "c0000_a00_lo"), ("a23", 3000, "c0000_a2x"),
          ("a23", 3001, "c0000_a2x"), ("a23", 3002, "c0000_a2x"), ("a00", 680, "c0000_a00_lo"),
          ("a00", 900, "c0000_a00_lo"), ("a00", 6065, "c0000_a00_md"), ("a00", 6066, "c0000_a00_md"),
          ("a00", 6067, "c0000_a00_md"), ("a00", 1550, "c0000_a00_lo"), ("a00", 1500, "c0000_a00_lo"),
@@ -122,10 +122,6 @@ COMPACT |= {701, 702, 703, 710, 711, 712, 713, 720, 721, 722, 723, 730, 731, 732
             501, 502, 503, 80, 81, 86, 85, 4000, 4001, 4002,
             4100, 4300, 4301, 4310, 4600}  # lock-on rolls / steps / strafes, weapon switch
 COMPACT |= set(ITEM_ANIMS)  # item use
-# Turn-lean pairs: DSR has no straight dash; a00_0535 leans into a left turn (head 0.20 m left of the feet, shoulders
-# rolled -21 deg on average) and a00_0536 into a right turn, and the engine blends the two by turn rate
-# (WalkAnim_Twist). Played alone, 0535 made the dash lean left. Baked here as the 50/50 blend = running straight.
-TURN_PAIR = {535: 536}
 
 
 def bake(files, prefix, aid, ref):
@@ -139,17 +135,6 @@ def bake(files, prefix, aid, ref):
                 pose[bone] = (q, t)
         baked.append(pose)
     return nf, fps, baked
-
-
-def blend_pose(a, b, k):
-    """Per bone: nlerp of the rotations (shortest path), lerp of the translations"""
-    out = []
-    for (qa, ta), (qb, tb) in zip(a, b):
-        s = 1 if sum(x * y for x, y in zip(qa, qb)) >= 0 else -1
-        q = [qa[c] * (1 - k) + s * qb[c] * k for c in range(4)]
-        l = math.sqrt(sum(c * c for c in q)) or 1.0
-        out.append((tuple(c / l for c in q), tuple(ta[c] * (1 - k) + tb[c] * k for c in range(3))))
-    return out
 
 
 def qconj(q):
@@ -410,11 +395,6 @@ def main():
     for prefix, aid, archive in ANIMS:
         files = {souls.basename(n): d for _, n, d in souls.bnd3(souls.read(f"{chr_dir}/{archive}.anibnd.dcx"))}
         nf, fps, baked = bake(files, prefix, aid, ref)
-        if aid in TURN_PAIR:
-            _, _, other = bake(files, prefix, TURN_PAIR[aid], ref)
-            n = min(len(baked), len(other))
-            baked = [blend_pose(baked[f], other[f], 0.5) for f in range(n)]
-            print(f"{prefix}_{aid:04d} blended 50/50 with {prefix}_{TURN_PAIR[aid]:04d} (straight)")
         anims.append((aid, baked))
         print(f"{prefix}_{aid:04d}: {nf} frames @ {fps:.0f} fps")
     write_model(out, names, parents, ref, mb, anims)
