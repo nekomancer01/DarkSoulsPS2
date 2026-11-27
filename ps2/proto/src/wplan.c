@@ -8,8 +8,21 @@ WMask w_reach_m;  /* blocks with a distance from the triangle underfoot */
 float w_clock_s;  /* seconds of world_update (ticks() wraps every 14.6 s) */
 float w_want_s[WORLD_MAX], w_on_s[WORLD_MAX];  /* clock_s when a block was first wanted while off / turned on */
 float w_feet_now[3];  /* for start(): mapstream_alloc evicts the cells farthest from here */
-const unsigned *w_lrange;  /* per block: first link, links */
-const WorldLink *w_links;
+const unsigned *w_lrange;  /* per block: first link, links (LRNL) */
+const WorldLinkL *w_links;
+const WorldNbrs *w_nbrs;  /* per block its neighbours: bit k of its local masks = nbr[k] */
+
+/* a local mask of block b (LNKL / RCHL) as a planner set: bit k -> WBIT(w_nbrs[b].nbr[k]) (world_init checked the
+ * list: other blocks, ascending; blocks past w_nblk are not loaded, as before) */
+static WMask w_expand(int b, unsigned m)
+{
+    const WorldNbrs *n = &w_nbrs[b];
+    WMask out = 0;
+    for (unsigned k = 0; m && k < n->count; k++, m >>= 1)
+        if ((m & 1) && n->nbr[k] < w_nblk)
+            out |= WBIT(n->nbr[k]);
+    return out;
+}
 /* wanted by the reach alone (not by the link's load mask): they start after the link-wanted ones, never take a slot or
  * pool room from them (room_for) and never spill into the item pages (lite_alloc); a link-wanted block may turn them
  * off, so the structural pool's size (world_struct_bytes, from the link masks) still holds */
@@ -43,8 +56,8 @@ unsigned world_lua_bytes(void)
     unsigned best = 0;
     for (int b = 0; b < w_nblk; b++)
         for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
-            const WorldLink *k = w_links + w_lrange[2 * b] + l;
-            WMask keep = k->keep | k->load | (b ? WBIT(b) : 0);
+            const WorldLinkL *k = w_links + w_lrange[2 * b] + l;
+            WMask keep = w_expand(b, k->keep | k->load) | (b ? WBIT(b) : 0);
             unsigned sum = 0;
             for (int i = 1; i < w_nblk; i++)
                 if (w_rt[i].open && (keep >> i & 1))
@@ -59,8 +72,8 @@ unsigned world_struct_bytes(void)
     unsigned best = 0;
     for (int b = 0; b < w_nblk; b++)
         for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
-            const WorldLink *k = w_links + w_lrange[2 * b] + l;
-            WMask load = k->load | (b ? WBIT(b) : 0), keep = k->keep | load;
+            const WorldLinkL *k = w_links + w_lrange[2 * b] + l;
+            WMask load = w_expand(b, k->load) | (b ? WBIT(b) : 0), keep = w_expand(b, k->keep) | load;
             unsigned v[WORLD_MAX], n = 0, sum = 0;
             unsigned lean_v[WORLD_MAX], whole = 0;
             for (int i = 1; i < w_nblk; i++)
@@ -245,7 +258,7 @@ int w_slot_deferred(int i, const float *feet)
 }
 
 /* WORLD_REACH: the reach entry of triangle tri of block b, or NULL (binary search as link_at) */
-static const WorldReach *reach_at(int b, unsigned tri)
+static const WorldReachL *reach_at(int b, unsigned tri)
 {
     if (!w_rrange || !WORLD_REACH)
         return NULL;
@@ -263,9 +276,9 @@ static const WorldReach *reach_at(int b, unsigned tri)
 }
 
 /* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
-static const WorldLink *link_at(int b, unsigned tri)
+static const WorldLinkL *link_at(int b, unsigned tri)
 {
-    const WorldLink *l = w_links + w_lrange[2 * b];
+    const WorldLinkL *l = w_links + w_lrange[2 * b];
     int lo = 0, hi = (int)w_lrange[2 * b + 1] - 1;
     while (lo <= hi) {
         int m = (lo + hi) >> 1;
@@ -309,9 +322,9 @@ static void src_wants(const float *p, WMask *wm, WMask *km)
     *wm = *km = 0;
     if (col_floor(p[0], p[2], p[1] + 1.0f, p[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk && w_rt[h.block].state == W_ON) {
         src_boot |= h.block == 0;
-        const WorldLink *l = link_at(h.block, h.tri);
+        const WorldLinkL *l = link_at(h.block, h.tri);
         WMask self = h.block ? WBIT(h.block) : 0;
-        *wm = (l ? l->load : 0) | self, *km = (l ? l->keep : 0) | self;
+        *wm = (l ? w_expand(h.block, l->load) : 0) | self, *km = (l ? w_expand(h.block, l->keep) : 0) | self;
         return;
     }
     for (int i = 1; i < w_nblk; i++)
@@ -333,13 +346,17 @@ void w_step(const float *feet, float dt)
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk &&
         w_rt[h.block].state == W_ON) {
         w_cur = h.block;
-        const WorldLink *l = link_at(h.block, h.tri);
-        wm = l ? l->load : 0, km = l ? l->keep : 0;
-        const WorldReach *rc = reach_at(h.block, h.tri);
+        const WorldLinkL *l = link_at(h.block, h.tri);
+        wm = l ? w_expand(h.block, l->load) : 0, km = l ? w_expand(h.block, l->keep) : 0;
+        const WorldReachL *rc = reach_at(h.block, h.tri);
+        const WorldNbrs *nb = &w_nbrs[h.block];
         WMask rm = 0;
-        for (int j = 0, k = 0; rc && j < w_nblk && k < 6; j++)
-            if (rc->mask >> j & 1) {
+        for (unsigned b = 0, k = 0; rc && b < nb->count && k < 6; b++)  /* local bit b = block nbr[b] (ascending) */
+            if (rc->mask >> b & 1) {
+                int j = nb->nbr[b];
                 float d = rc->d[k++] * w_reach_step;
+                if (j >= w_nblk)
+                    continue;
                 if (!(w_reach_m >> j & 1))  /* the way the distance went last: towards (-1) or away from (+1) */
                     w_reach_v[j] = 0;
                 else if (d != w_reach_d[j])

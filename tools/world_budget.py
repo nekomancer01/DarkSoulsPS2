@@ -271,13 +271,16 @@ def structural(gen):
     import chunkfile as chunk
     try:
         w = chunk.read(p, b"WRLD")  # tools/export_world.py
-        bl, lr, lk = w.get(b"BLKS", 1), w.get(b"LRNG", 1), w.get(b"LINK", 2)
+        bl, lr, lk = w.get(b"BLKS", 2), w.get(b"LRNL", 1), w.get(b"LNKL", 1)  # local masks: bit k = NBRS nbr[k]
+        ns = w.get(b"NBRS", 1)
     except chunk.ChunkError:
         return None
     n = len(bl) // 64
     names = [bl[64 * i:16 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     maps = [bl[16 + 64 * i:32 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
     lr = struct.unpack_from(f"<{2 * n}I", lr, 0)
+    nbrs = [list(ns[16 * i + 1:16 * i + 1 + ns[16 * i]]) for i in range(n)]
+    glob = lambda m, i: sum(1 << nbrs[i][k] for k in range(len(nbrs[i])) if m >> k & 1)  # noqa: E731
     ent, evfull, mtxfull = {}, {}, {}
     for i, nm in enumerate(names[1:], 1):
         d = os.path.join(gen, nm)
@@ -290,7 +293,8 @@ def structural(gen):
     link_need = []  # (block, lite sets of every block the link keeps, up to WORLD_SLOTS): the spill past the pool
     for blk in range(n):
         for l in range(lr[2 * blk + 1]):
-            first, cnt, _, load, keep = struct.unpack_from("<IHHII", lk, 16 * (lr[2 * blk] + l))  # (LINK v2)
+            first, cnt, load, keep, _ = struct.unpack_from("<IHHHH", lk, 12 * (lr[2 * blk] + l))  # (LNKL v1)
+            load, keep = glob(load, blk), glob(keep, blk)
             load |= (1 << blk) if blk else 0
             keep |= load
             on = [i for i in ent if keep >> i & 1]

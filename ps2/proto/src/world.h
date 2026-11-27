@@ -18,7 +18,7 @@
 
 #include <gsKit.h>
 
-#define WORLD_MAX 32  /* blocks in world.bin (u32 load / keep masks, world.bin LINK / REAC v2) */
+#define WORLD_MAX 32  /* blocks in world.bin (masks local to each block's NBRS list; the per-block tables are still 32) */
 #define WORLD_SLOTS 4  /* lite sets loaded at once besides the boot block (the history is in world_i.h) */
 #define WORLD_INSTS (WORLD_SLOTS + 1)  /* boot block + world slots */
 

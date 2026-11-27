@@ -78,6 +78,8 @@ echo "== map simplifier: simplify.c against the frozen simplify.py, golden outpu
 echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on a synthetic block)"
 "$PY" -I tools/ci/test_residency.py || fail "tools/ci/test_residency.py"
 "$PY" -I tools/ci/test_audio_rate.py || fail "tools/ci/test_audio_rate.py"
+echo "== world.bin masks written (export_world.pack_world) and read back like world.c / wplan.c do, synthetic fixture"
+"$PY" -I tools/ci/test_worldbin.py || fail "tools/ci/test_worldbin.py"
 echo "== coverage scan reader errors and the block report gate (tools/scan, tools/blockreport.py)"
 "$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
 echo "== build profiler (tools/buildprof.py on a synthetic stepcache.tsv)"
