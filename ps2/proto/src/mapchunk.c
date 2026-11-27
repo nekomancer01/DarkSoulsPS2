@@ -307,11 +307,7 @@ static void zs_clear(void)
     REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS */
     REG(gs_zbuf(gs, 0), GSR_ZBUF);
     REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
-    for (int x = 0; x < gs->Width && n < 30; x += 64) {
-        int x1 = x + 64 < gs->Width ? x + 64 : gs->Width;
-        REG(GS_SETREG_XYZ2((x << 4) + gs->OffsetX, gs->OffsetY, z), GSR_XYZ2);
-        REG(GS_SETREG_XYZ2((x1 << 4) + gs->OffsetX, (gs->Height << 4) + gs->OffsetY, z), GSR_XYZ2);
-    }
+    n = gs_fill_strips(r, n, 30, gs->OffsetX, gs->OffsetY, gs->Width << 4, 0, gs->Height << 4, z);
     REG(frame, GSR_FRAME);
 #undef REG
     vu1_gs_regs(n, r);
