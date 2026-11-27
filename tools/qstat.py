@@ -93,7 +93,8 @@ def memwatch():
 def status():
     gib = 1 << 30
     m = meminfo()
-    budget = int(os.environ.get("DSR_Q_BUDGET", 20))
+    # tools/q's default: 20/31 of MemTotal, rounded (20 GB on a 31 GB host)
+    budget = int(os.environ.get("DSR_Q_BUDGET", 0)) or max(1, int(m["MemTotal"] / gib * 20 / 31 + 0.5))
     avail = m["MemAvailable"] / gib
     swap_pct = 100.0 * (m["SwapTotal"] - m["SwapFree"]) / m["SwapTotal"] if m["SwapTotal"] else 0.0
     running, waiting, reserved = [], [], 0
