@@ -72,7 +72,8 @@ the ISO they make is yours only: never share it.
 > can't be decoded in the browser), and it may lag behind or break when the native build changes. If it fails or
 > the result misbehaves, use `./build-iso.sh` instead and please report what happened.
 
-Tested on Linux. The steps assume a Linux shell; Windows users should use WSL or a Linux VM.
+Tested on Linux. The steps assume a Linux shell. On Windows, run them in WSL2: see
+[Building on Windows (WSL2)](#building-on-windows-wsl2) for what differs there.
 
 ### 1. What you need
 
@@ -149,10 +150,11 @@ shaderc, freetype, …, PCSX2's own `build-dependencies-runner.sh`) into `tools/
 and takes about 5-40 minutes. Later runs only rebuild what changed. `build.sh` checks for the host tools first: `git
 curl patch pkg-config nasm cmake ninja` and a C++ compiler (clang is used when installed, as in PCSX2's CI, else g++).
 The libraries PCSX2 takes from the system are the development packages of libjpeg, zlib, libcurl, libpcap,
-fontconfig, X11 (libx11, libxrandr), dbus, libudev, ALSA / PulseAudio headers and Vulkan / EGL headers (Debian/Ubuntu
-e.g. `sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev libx11-dev
-libxrandr-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev extra-cmake-modules`).
-The BIOS still comes from your Flatpak PCSX2's config (its `bios` folder).
+fontconfig, X11 (libx11, libxrandr, libxi), dbus, libudev, ALSA / PulseAudio headers and Vulkan / EGL headers
+(Debian/Ubuntu e.g. `sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev
+libx11-dev libxrandr-dev libxi-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev
+extra-cmake-modules`). The BIOS and base settings come from your Flatpak PCSX2's config (its `bios` folder and
+`inis/PCSX2.ini`); `PCSX2_USERCFG=<dir>` points the runs at another PCSX2 config folder.
 
 `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` uses it; `PCSX2_HEADLESS=<binary>` picks another build and
 `PCSX2_TIMEOUT=<s>` caps a run's wall-clock time (default 3600 s; `tools/test-run.py` sets its `--timeout` + 120). A
@@ -212,6 +214,22 @@ screenshots ImageMagick and `xprop`.
 The player is always under your control. The old idle demo walk is kept for testing only: build with
 `make EE_DBGINFOFLAGS=-DIDLE_DEMO` (or put `option demo` in a test script) and it starts after 5 seconds without input;
 press any button to take over.
+
+## Building on Windows (WSL2)
+
+The build runs inside WSL2 (checked on Windows 11 with Ubuntu 24.04), and PCSX2 for Windows plays the ISO. The steps
+above apply in the Ubuntu shell, with these differences:
+
+| Step | Under WSL2 |
+|---|---|
+| Clone | Keep LF line endings. Clone with Ubuntu's `git`, or with Git for Windows as `git clone -c core.autocrlf=false ...`: its default (`autocrlf=true`) checks the scripts out with CRLF, and bash fails on them with `$'\r': command not found`. A clone in WSL's own filesystem (`~/DarkSoulsPS2`) builds fastest. One on the Windows drive (`/mnt/c/...`) works too, but then keep the build output on WSL's disk: `ln -s ~/dsrps2-build build` before the first build. |
+| Packages | `sudo apt update && sudo apt install -y build-essential python3-venv libmpg123-0t64` (Ubuntu 24.04's name for libmpg123), then the venv of step 3. |
+| ps2dev | The release tarball, unpacked where `ps2/env.sh` looks: `mkdir -p ~/tools/ps2dev-2.0.0 && curl -L https://github.com/ps2dev/ps2dev/releases/download/v2.0.0/ps2dev-ubuntu-latest.tar.gz \| tar xz -C ~/tools/ps2dev-2.0.0` |
+| The game | `tools/gamepath.py` finds the Windows Steam under `/mnt/c`, and Steam libraries on other drives as `/mnt/<drive>`. Check the copy with `verify_game.py` as in step 2. |
+| Memory | WSL2 gets half of the Windows PC's RAM by default, and `tools/q` sizes its budget from what WSL has. The first export needs several GB. On a PC with 16 GB or less, give WSL more in `%UserProfile%\.wslconfig` (`[wsl2]`, then `memory=12GB`) and run `wsl --shutdown`. |
+| Play | PCSX2 for Windows (e.g. `winget install PCSX2Team.PCSX2`) with a BIOS dumped from your own console. Copy `build/proto.iso` to a Windows folder and open it there (it is under `\\wsl.localhost\Ubuntu\...`): read across the WSL share, it is slow enough for the streaming to lag. HostFs (step 4) is not needed for the ISO. |
+| Headless tests | Build the runner in WSL as in [Headless test runner](#headless-test-runner). For the BIOS and settings, use the Windows PCSX2's config folder: `export PCSX2_USERCFG=/mnt/c/Users/<you>/Documents/PCSX2` (or `.../OneDrive/Documents/PCSX2`), with the BIOS in its `bios` folder. WSL has no Vulkan driver for the GPU, so the runner renders on the CPU (llvmpipe). Runs are slower, but the frame times they measure are the emulated PS2's and don't change. |
+| Bug reports | `play-report.sh` needs the Linux desktop (Flatpak PCSX2, X11). On Windows, attach PCSX2's log instead: `Documents\PCSX2\logs\emulog.txt`. |
 
 ## Troubleshooting
 

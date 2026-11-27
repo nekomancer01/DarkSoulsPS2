@@ -1,7 +1,8 @@
 """Where the user's copy of Dark Souls Remastered is installed. Every exporter and the Makefile get the game folder here.
 
 Order: env DSR_GAME, then DSR_GAME in config.local.mk (repo root, not in git), then an auto-detect of common Steam
-libraries on Linux (native, flatpak, distrobox host home) and Windows (every Steam library in libraryfolders.vdf).
+libraries on Linux (native, flatpak, distrobox host home), Windows (every Steam library in libraryfolders.vdf) and
+WSL (the Windows Steam under /mnt/c, its libraries' drive letters as /mnt/<drive>).
 
     python3 tools/gamepath.py            # prints the folder, exit 1 + a message on stderr if none is found
     python3 tools/gamepath.py --quiet    # prints the folder or nothing (config.mk)
@@ -33,7 +34,17 @@ def _steam_roots():
         if os.environ.get(v):
             roots.append(os.path.join(os.environ[v], "Steam"))
     roots += ["C:\\Program Files (x86)\\Steam", "C:\\Program Files\\Steam"]
+    # WSL: the Windows Steam through the drive mount (README "Building on Windows (WSL2)")
+    roots += ["/mnt/c/Program Files (x86)/Steam", "/mnt/c/Program Files/Steam"]
     return roots
+
+
+def _wsl_path(p):
+    """A Windows path from a libraryfolders.vdf (D:\\SteamLibrary) as WSL mounts it (/mnt/d/SteamLibrary); else as is."""
+    m = re.match(r"([A-Za-z]):[\\/](.*)", p)
+    if os.sep == "/" and m and os.path.isdir(f"/mnt/{m.group(1).lower()}"):
+        return f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/")
+    return p
 
 
 def _libraries():
@@ -44,7 +55,8 @@ def _libraries():
         libs = [r]
         if os.path.isfile(vdf):
             try:
-                libs += [p.replace("\\\\", "\\") for p in re.findall(r'"path"\s+"([^"]+)"', open(vdf, errors="replace").read())]
+                libs += [_wsl_path(p.replace("\\\\", "\\"))
+                         for p in re.findall(r'"path"\s+"([^"]+)"', open(vdf, errors="replace").read())]
             except OSError:
                 pass
         for l in libs:
