@@ -20,8 +20,12 @@ JOBS = int(os.environ.get("PVS_GPU_JOBS", "2"))  # bakes at once (each one's dra
 
 
 def build(out):
-    src = [os.path.join(HERE, "pvs_bake.c"), os.path.join(HERE, "pvs_gpu.c")]
-    if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(s) for s in src + [os.path.join(HERE, "pvs_gpu.h")]):
+    # the same sources as $(PVS_BAKE) in ps2/proto/export_rules.mk: keep the two lists in step
+    proto = os.path.join(HERE, "..", "ps2", "proto", "src")
+    src = [os.path.join(HERE, "pvs_bake.c"), os.path.join(HERE, "pvs_gpu.c"), os.path.join(proto, "chunk.c")]
+    deps = [os.path.join(HERE, "pvs_gpu.h"), os.path.join(HERE, "native", "chunkw.h"), os.path.join(proto, "chunk.h"),
+            os.path.join(proto, "vu1_layout.h")]
+    if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(s) for s in src + deps):
         return True
     tmp = f"{out}.{os.getpid()}"
     r = subprocess.run(["gcc", "-O3", "-march=native", "-ffp-contract=off", "-fopenmp", "-DPVS_GPU", "-o", tmp] + src +
