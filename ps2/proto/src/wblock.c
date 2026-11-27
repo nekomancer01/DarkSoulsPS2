@@ -5,7 +5,7 @@
 int w_warping;  /* inside settle(): drains and the swap delay are skipped */
 /* blocks the player is held for: found by world_hold this frame, latched for step(); blocks a settle could not load
  * (no more holding for them until they turn on); seconds held */
-unsigned w_hold_m, w_hold_want, w_hold_gone;
+WMask w_hold_m, w_hold_want, w_hold_gone;
 /* WORLD_EV_SHARED: each map's events.bin, kept under its first block's index (map_lead), with the blocks using it */
 static struct { void *buf; unsigned n; int refs; } evm[WORLD_MAX], mtx[WORLD_MAX];
 
@@ -108,7 +108,7 @@ static void turn_on_col(int i)
         map_block_stream_open(i, &r->pk);
     r->state = W_ON;
     r->stage = ok ? 1 : 2;  /* a failed block gets no objects, enemies or events */
-    w_hold_gone &= ~(1u << i);
+    w_hold_gone &= ~WBIT(i);
     world_stats.loaded++;
     world_stats.loads++;
     world_stats.load_ms = (ticks() - r->t0) / 294912;

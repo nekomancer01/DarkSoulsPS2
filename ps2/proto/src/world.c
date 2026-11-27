@@ -496,7 +496,7 @@ static void settle(const float *feet)
         else if ((ticks() - stuck_t) / 294912 >= WORLD_STUCK_MS) {
             /* no room for a wanted block and nothing to turn off: mapstream would read and drop the same cells
              * until the 30 s cap (the frame never advances) */
-            printf("world: settle stopped: no room for the wanted blocks %x\n", w_want_m);
+            printf("world: settle stopped: no room for the wanted blocks %llx\n", w_want_m);
             break;
         }
         mapstream_update(feet);  /* collects the cell reads that landed, queues the next ones */
@@ -525,7 +525,7 @@ int world_hold(const float *feet)
     ColHit h;
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - WORLD_HOLD_DROP, COL_SOLID, &h))
         return 0;
-    unsigned m = 0;
+    WMask m = 0;
     /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
     if (tile_gone_on) {  /* (a tile that did not come in a hold's loading screen: no second hold at that spot) */
         float dx = feet[0] - tile_gone[0], dy = feet[1] - tile_gone[1], dz = feet[2] - tile_gone[2];
@@ -535,11 +535,11 @@ int world_hold(const float *feet)
     if (!tile_gone_on && coltile_under(feet))
         for (int i = 1; i < w_nblk; i++)
             if (w_rt[i].state == W_ON && w_rt[i].col_full && box_d(&w_tab[i], feet) <= 0.0f)
-                m |= 1u << i;
+                m |= WBIT(i);
     for (int i = 1; i < w_nblk; i++)
         if (w_rt[i].open && w_rt[i].state != W_ON && !(w_hold_gone >> i & 1) && box_d(&w_tab[i], feet) <= 0.0f &&
             feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
-            m |= 1u << i;
+            m |= WBIT(i);
     w_hold_m |= m;
     world_stats.holds += m != 0;
     return m != 0;
@@ -554,7 +554,7 @@ void world_update(const float *feet, float dt)
     int warp = dx * dx + dy * dy + dz * dz > WORLD_WARP * WORLD_WARP;  /* also the first frame: boot settles */
     memcpy(last_feet, feet, sizeof last_feet);
     if (w_hold_m && !w_hold_want) {
-        printf("world: player held at %.1f %.1f %.1f for blocks %x\n", feet[0], feet[1], feet[2], w_hold_m);
+        printf("world: player held at %.1f %.1f %.1f for blocks %llx\n", feet[0], feet[1], feet[2], w_hold_m);
         for (int i = 1; i < w_nblk; i++)  /* what each waits on (B2 hold check): slot / pool / lean / room, or the disc */
             if (w_hold_m >> i & 1)
                 printf("world: hold block %d: %s, wanted %u ms ago, last wait %s, retry %.2f s, reading %d (%u of %u KB), "
@@ -577,7 +577,7 @@ void world_update(const float *feet, float dt)
             world_stats.hold_settles++;
             for (int i = 1; i < w_nblk; i++)
                 if ((w_hold_want >> i & 1) && w_rt[i].state != W_ON) {
-                    w_hold_gone |= 1u << i;  /* could not load: the player walks / falls on as before */
+                    w_hold_gone |= WBIT(i);  /* could not load: the player walks / falls on as before */
                     printf("world: block %d did not load under the player: no more holding for it\n", i);
                 }
             w_hold_want = 0, hold_s = 0;
