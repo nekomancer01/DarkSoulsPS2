@@ -19,9 +19,20 @@ int objects_init(GSGLOBAL *gs, const void *blob, unsigned size);
  * takes them away (broken pieces included) when it turns off and gives those textures back. Animated types keep
  * theirs from boot (each pack's shared texture model). */
 #define OBJ_BLOCKS 32  /* = WORLD_MAX (world.h) */
+/* OBJ_STREAM (objects.c): breakable models streamed by distance (default 1); WORLD_OBJ_LITE (world_i.h) needs it */
+#ifndef OBJ_STREAM
+#define OBJ_STREAM 1
+#endif
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob, unsigned size);
 void objects_block_add(int block, const void *blob);
 void objects_block_remove(int block);
+/* WORLD_OBJ_LITE (world_i.h): block `block`'s breakable types and placements from the head of its objects.bin as its
+ * lite set holds it (E_OBJH: OHDR .. ATEX, head_size bytes of the file_size-byte file; btex: the BTEX tail the texture
+ * buffer holds), at turn-on before objects_block_add; types other on blocks of the map hold are shared and counted.
+ * Its animated types are made the first time only and stay. objects_block_untypes, after objects_block_remove, lets its
+ * types go (a type no on block lists any more is freed) and its placements (a no-op for a block not typed this way). */
+int objects_block_types_lite(int block, const void *head, unsigned head_size, unsigned file_size, const void *btex);
+void objects_block_untypes(int block);
 /* Per frame after player_update: player push-out from intact objects, roll / dash / landing breaks, piece sim */
 void objects_update(struct Player *p, float dt);
 /* Draw intact objects and live pieces near the camera (inside the VU1 skin chain, like the characters) */

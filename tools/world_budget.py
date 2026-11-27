@@ -51,6 +51,7 @@ KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
 NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
 FX_LITE = os.environ.get("WORLD_FX_LITE", "1") != "0"  # world_i.h WORLD_FX_LITE (default 1): E_FXH
+OBJ_LITE = os.environ.get("WORLD_OBJ_LITE", "1") != "0"  # world_i.h WORLD_OBJ_LITE (default 1): E_OBJH
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -142,6 +143,8 @@ def lite_entries(d):
         total += r128(sz("enemies.bin"))
     if FX_LITE:  # world_i.h WORLD_FX_LITE: E_FXH, fx.bin before its first pixel / CLUT (world.c fx_head_size)
         total += r128(fx_head_bytes(d))
+    if OBJ_LITE:  # world_i.h WORLD_OBJ_LITE: E_OBJH, objects.bin up to MODL's chunk header (world.c obj_tail)
+        total += r128(obj_head_bytes(d))
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     if DG_LITE:  # (world.c LEAN_ENT)
@@ -166,6 +169,22 @@ def fx_head_bytes(d):
         pix, clut = struct.unpack_from("<2I", b, off_tex + 16 * i + 8)
         keep = min(keep, pix, clut)
     return keep
+
+
+def obj_head_bytes(d):
+    """bytes of a block's objects.bin before MODL's chunk header (OHDR v2 word 7 - 16) when it has a BTEX tail, as
+    world.c obj_tail sizes E_OBJH; else 0 (its types are made at boot)"""
+    import chunkfile
+    p = os.path.join(d, "objects.bin")
+    if not os.path.exists(p):
+        return 0
+    try:
+        f = chunkfile.read(p, b"OBJS")
+        oh = f.get(b"OHDR", 2)
+    except chunkfile.ChunkError:
+        return 0
+    at = struct.unpack_from("<I", oh, 28)[0]
+    return at - 16 if f.opt(b"BTEX", 1) is not None and at > 16 else 0
 
 
 def obj_tex_bytes(d):

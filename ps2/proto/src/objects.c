@@ -51,9 +51,7 @@
  * near-cell arena is made from (PR #186: visual room 4160 -> 2816 KB against the export's 4317, near cells refused at
  * the player's feet). Within 45 m of the 38 Burg report spots their types are 38 % of the Burg's bytes on average,
  * 92 % at most (2026-11-10). DSR loads every objbnd of the map at map load (dsr-load-model memory). */
-#ifndef OBJ_STREAM
-#define OBJ_STREAM 1
-#endif
+/* (the switch's default is in objects.h: world.c reads it too, WORLD_OBJ_LITE) */
 #define OBJ_LOAD_DIST 50.0f    /* DRAW_DIST + ~1.5 s of running for the read (ASSUMED) */
 #define OBJ_DROP_DIST 64.0f
 #define PUSH_OUT 2.0f          /* ASSUMED: m/s away from the hit */
@@ -72,6 +70,9 @@ typedef struct {
     int src_blk;               /* OBJ_STREAM: block whose objects.bin holds its model (0: loaded once, never dropped) */
     unsigned src_off, src_len; /* its model.bin there */
     unsigned char src_fails;   /* OBJ_STREAM: reads of it that came back short (a disc error is tried again) */
+    short refs;                /* WORLD_OBJ_LITE: on blocks whose types list it (objects_block_types_lite .. _untypes) */
+    unsigned char dead;        /* a free slot (its last block let it go): load_block_type reuses it */
+    unsigned char free_pending;  /* refs went to 0 while obj_stream read its model: freed when the read lands */
 } Type;
 
 /* objects.bin v4 (export_objects.py OBJ_TEX_SHARED): one texture model per map holds every breakable texture of the
@@ -115,7 +116,10 @@ static int blk_nparts[OBJ_BLOCKS];
 /* a block's breakable types and their model.bin offsets in its objects.bin (textures from there when it turns on) */
 static struct { short type; unsigned off; } blk_tm[OBJ_BLOCKS][MAX_TYPES];
 static int blk_ntm[OBJ_BLOCKS];
+static unsigned char blk_typed[OBJ_BLOCKS];  /* WORLD_OBJ_LITE: its types were made at turn-on (objects_block_untypes) */
+static unsigned char ablk_done[OBJ_BLOCKS];  /* its animated types and statics were made (once: they stay, as at boot) */
 static GSGLOBAL *obj_gs;
+static int st_type = -1, st_tk;  /* OBJ_STREAM: the type whose model is being read, its request */
 static Body bodies[MAX_BODIES];
 ObjectsStats objects_stats;
 
@@ -153,24 +157,27 @@ static int ablk_nparts[OBJ_BLOCKS];
 
 /* objects.bin: a chunk file 'OBJS' (tools/export_objects.py), read in place */
 typedef struct {
-    unsigned types, parts, atypes, aparts, statics, key, btex_off, pad;
-} ObjHeader;  /* OHDR v1 */
+    unsigned types, parts, atypes, aparts, statics, key, btex_off, modl_at;
+} ObjHeader;  /* OHDR v2 (modl_at: MODL's payload offset in the file; the head before its chunk header holds OHDR .. ATEX) */
 typedef struct {
     const ObjHeader *h;
-    const unsigned char *type, *piec, *part, *atyp, *body, *aprt, *sanm, *modl, *atex, *btex;
+    const unsigned char *type, *piec, *part, *atyp, *body, *aprt, *sanm, *amdl, *modl, *atex, *btex;
     unsigned modl_off;  /* MODL's payload offset in the file: model offsets are relative to it */
 } ObjFile;
 
-static int obj_open(ObjFile *o, const void *blob, unsigned size, int block)
+/* have < size: blob is only the file's head (WORLD_OBJ_LITE's E_OBJH: OHDR .. ATEX), MODL is not in it (models stream
+ * by their file offset) and BTEX comes apart (btex) */
+static int obj_open_ex(ObjFile *o, const void *blob, unsigned have, unsigned size, const void *btex, int block)
 {
     ChunkFile f;
     char nm[32];
     unsigned n[8];
     memset(o, 0, sizeof *o);
     snprintf(nm, sizeof nm, "objects.bin (block %d)", block);
-    if (!chunk_open(&f, blob, size, CHUNK_ID('O', 'B', 'J', 'S'), nm))
+    if (!(have < size ? chunk_open_part(&f, blob, have, size, CHUNK_ID('O', 'B', 'J', 'S'), nm)
+                      : chunk_open(&f, blob, size, CHUNK_ID('O', 'B', 'J', 'S'), nm)))
         return 0;
-    o->h = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
+    o->h = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 2, NULL);
     o->type = chunk_get(&f, CHUNK_ID('T', 'Y', 'P', 'E'), 1, &n[0]);
     o->piec = chunk_get(&f, CHUNK_ID('P', 'I', 'E', 'C'), 1, &n[1]);
     o->part = chunk_get(&f, CHUNK_ID('P', 'A', 'R', 'T'), 1, &n[2]);
@@ -178,18 +185,25 @@ static int obj_open(ObjFile *o, const void *blob, unsigned size, int block)
     o->body = chunk_get(&f, CHUNK_ID('B', 'O', 'D', 'Y'), 1, &n[4]);
     o->aprt = chunk_get(&f, CHUNK_ID('A', 'P', 'R', 'T'), 1, &n[5]);
     o->sanm = chunk_get(&f, CHUNK_ID('S', 'A', 'N', 'M'), 1, &n[6]);
-    o->modl = chunk_get(&f, CHUNK_ID('M', 'O', 'D', 'L'), 1, &n[7]);
+    o->amdl = chunk_get(&f, CHUNK_ID('A', 'M', 'D', 'L'), 1, NULL);
+    o->modl = have < size ? NULL : chunk_get(&f, CHUNK_ID('M', 'O', 'D', 'L'), 1, &n[7]);
     o->atex = chunk_opt(&f, CHUNK_ID('A', 'T', 'E', 'X'), 1, NULL);
-    o->btex = chunk_opt(&f, CHUNK_ID('B', 'T', 'E', 'X'), 1, NULL);
-    if (!o->h || !o->type || !o->piec || !o->part || !o->atyp || !o->body || !o->aprt || !o->sanm || !o->modl ||
+    o->btex = have < size ? btex : chunk_opt(&f, CHUNK_ID('B', 'T', 'E', 'X'), 1, NULL);
+    if (!o->h || !o->type || !o->piec || !o->part || !o->atyp || !o->body || !o->aprt || !o->sanm || !o->amdl ||
+        (have >= size && !o->modl) || (have < size && (o->h->modl_at < 16 || o->h->modl_at - 16 > have)) ||
         n[0] != 64 * o->h->types || n[2] != 48 * o->h->parts || n[3] != 32 * o->h->atypes || n[5] != 48 * o->h->aparts ||
         n[6] != 72 * o->h->statics) {
         printf("TEST error: chunk: %s: tables do not match OHDR\n", nm);
         memset(o, 0, sizeof *o);
         return 0;
     }
-    o->modl_off = chunk_offset(&f, o->modl);
+    o->modl_off = o->modl ? chunk_offset(&f, o->modl) : o->h->modl_at;
     return 1;
+}
+
+static int obj_open(ObjFile *o, const void *blob, unsigned size, int block)
+{
+    return obj_open_ex(o, blob, size, size, NULL, block);
 }
 
 /* animated types of a pack (block 0: the boot area, blob kept; compact: a block's, blob freed after) and its
@@ -230,7 +244,7 @@ static int anim_load(GSGLOBAL *gs, int block, const ObjFile *o, int compact)
         memset(ty, 0, sizeof *ty);
         ty->id = (int)t[0], ty->nbodies = (int)t[3], ty->roots = t[6];
         ty->body = malloc(ty->nbodies * sizeof(ABody) + 1);
-        ty->model = mdl_load_tex(o->modl + t[1], tex);
+        ty->model = mdl_load_tex(o->amdl + t[1], tex);
         int up = 0;  /* its textures went up: a failure after that gives the VRAM back (mdl_free keeps it) */
         if (!ty->body || !ty->model || mdl_bones(ty->model) > AMAX_BONES || !(up = mdl_upload(ty->model, gs, GSO_OBJ) >= 0) ||
             (compact && !mdl_compact(ty->model, t[2]))) {
@@ -569,7 +583,12 @@ int objects_init(GSGLOBAL *gs, const void *blob, unsigned size)
 static int load_block_type(int block, const ObjFile *o, const unsigned *t, int set, const Model *tm)
 {
     const float *f = (const float *)t;
-    Type *ty = &types[ntypes];
+    int slot = 0;
+    while (slot < ntypes && !types[slot].dead)  /* (WORLD_OBJ_LITE: a type its last block let go) */
+        slot++;
+    if (slot == MAX_TYPES)
+        return -1;
+    Type *ty = &types[slot];
     memset(ty, 0, sizeof *ty);
     ty->id = (int)t[0];
     ty->pieces = t[3] < MAX_PIECES ? (int)t[3] : MAX_PIECES;
@@ -582,7 +601,12 @@ static int load_block_type(int block, const ObjFile *o, const unsigned *t, int s
         ty->src_blk = block, ty->src_off = o->modl_off + t[1], ty->src_len = t[2];  /* (file offset) */
         memcpy(pc, o->piec + t[4], ty->pieces * 20 * sizeof *pc);
         ty->piece = pc;
-        return ntypes++;
+        return slot < ntypes ? slot : ntypes++;
+    }
+    if (!o->modl) {  /* (the head only: a type that cannot stream has no model to load) */
+        printf("objects: block %d: o%04d not streamable, left out\n", block, ty->id);
+        free(pc);
+        return -1;
     }
     ty->model = tm ? mdl_load_tex(o->modl + t[1], tm) : mdl_load(o->modl + t[1]);
     if (!pc || !ty->model || mdl_bones(ty->model) != ty->pieces + 1 || !mdl_compact(ty->model, t[2])) {
@@ -594,16 +618,67 @@ static int load_block_type(int block, const ObjFile *o, const unsigned *t, int s
     }
     memcpy(pc, o->piec + t[4], ty->pieces * 20 * sizeof *pc);
     ty->piece = pc;
-    return ntypes++;
+    return slot < ntypes ? slot : ntypes++;
 }
+
+static int block_types(int block, ObjFile o);
 
 int objects_block_types(GSGLOBAL *gs, int block, const void *blob, unsigned size)
 {
     ObjFile o;
     if (block <= 0 || block >= OBJ_BLOCKS || !obj_open(&o, blob, size, block))
         return 0;
-    const ObjHeader *h = o.h;
     obj_gs = gs;
+    return block_types(block, o);
+}
+
+int objects_block_types_lite(int block, const void *head, unsigned head_size, unsigned file_size, const void *btex)
+{
+    ObjFile o;
+    if (block <= 0 || block >= OBJ_BLOCKS || blk_typed[block] ||
+        !obj_open_ex(&o, head, head_size, file_size, btex, block))
+        return 0;
+    int n = block_types(block, o);
+    for (int k = 0; k < blk_ntm[block]; k++)
+        types[blk_tm[block][k].type].refs++;
+    blk_typed[block] = 1;
+    return n;
+}
+
+static void type_free(int j)
+{
+    Type *ty = &types[j];
+    if (j >= 0 && st_type == j) {  /* its model is being read: obj_stream frees it when the read lands (j >= 0:
+                                     * with OBJ_STREAM 0, st_type stays -1 and gcc saw types[-1] here) */
+        ty->free_pending = 1;
+        return;
+    }
+    if (ty->model)
+        mdl_free(ty->model);
+    free((void *)ty->piece);
+    memset(ty, 0, sizeof *ty);
+    ty->dead = 1;
+    while (ntypes && types[ntypes - 1].dead)
+        ntypes--;
+}
+
+void objects_block_untypes(int block)
+{
+    if (block <= 0 || block >= OBJ_BLOCKS || !blk_typed[block])
+        return;
+    for (int k = 0; k < blk_ntm[block]; k++) {
+        int j = blk_tm[block][k].type;
+        if (types[j].refs > 0 && !--types[j].refs)
+            type_free(j);
+    }
+    blk_ntm[block] = 0;
+    free(blk_part[block]), blk_part[block] = NULL, blk_nparts[block] = 0;
+    blk_typed[block] = 0;
+}
+
+static int block_types(int block, ObjFile o)
+{
+    const ObjHeader *h = o.h;
     int map[MAX_TYPES * 2];
     blk_ntm[block] = 0;
     /* v4: the map's texture set; this block's copy of its texture model for the type loads (st per texture size) */
@@ -655,7 +730,9 @@ int objects_block_types(GSGLOBAL *gs, int block, const void *blob, unsigned size
     else if (tm)
         mdl_free(tm);
     printf("objects: block %d: %d placements, %d types loaded\n", block, blk_nparts[block], ntypes);
-    return blk_nparts[block] + anim_load(gs, block, &o, 1);
+    int na = ablk_done[block] ? ablk_nparts[block] : anim_load(obj_gs, block, &o, 1);
+    ablk_done[block] = 1;  /* (animated types and statics stay once made, as when they were all made at boot) */
+    return blk_nparts[block] + na;
 }
 
 static void retire(Inst *in);
@@ -915,7 +992,6 @@ int objects_push_capsule(float pos[3], float r, float h)
 
 
 /* OBJ_STREAM: one model read at a time, the nearest wanted type first; types far from every placement go */
-static int st_type = -1, st_tk;
 static unsigned char *st_buf;
 static void obj_stream(const float *f)
 {
@@ -945,6 +1021,19 @@ static void obj_stream(const float *f)
             m = mdl_load_tex(st_buf, tset[ty->set].m);
             if (m && (mdl_bones(m) != ty->pieces + 1 || !mdl_compact(m, ty->src_len)))
                 mdl_free(m), m = NULL;
+        }
+        if (m && ty->free_pending) {  /* its last block let it go while it was read */
+            mdl_free(m), m = NULL;
+            ty->free_pending = 0;
+            free(st_buf), st_buf = NULL, st_type = -1;
+            type_free((int)(ty - types));
+            return;
+        }
+        if (!m && ty->free_pending) {
+            ty->free_pending = 0;
+            free(st_buf), st_buf = NULL, st_type = -1;
+            type_free((int)(ty - types));
+            return;
         }
         if (m) {
             mdl_share_textures(m, tset[ty->set].m);

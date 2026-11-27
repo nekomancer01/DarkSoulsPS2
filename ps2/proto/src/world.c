@@ -90,13 +90,20 @@ static void obj_tail(BlockRt *r)
     const unsigned *oh = NULL;  /* objects.bin: chunk file 'OBJS'; OHDR word 6 = BTEX's payload offset (0: none) */
     if (w_read_sync(&r->pk, r->off[E_OBJ], hd, 64) &&
         chunk_open_part(&f, hd, 64, r->size[E_OBJ], CHUNK_ID('O', 'B', 'J', 'S'), "objects.bin"))
-        oh = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
+        oh = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 2, NULL);
     unsigned at = oh ? oh[6] : 0;
     if (!at || at & 127 || at >= r->size[E_OBJ] || !w_read_sync(&r->pk, r->off[E_OBJ] + at - 64, hd + 16, 64))
         return;
     const unsigned *ch = hd + 16 + 12;  /* BTEX's chunk header: the 16 bytes before its payload */
     if (ch[0] != CHUNK_ID('B', 'T', 'E', 'X') || (ch[1] & 0xFFFF) != 1 || ch[2] > r->size[E_OBJ] - at)
         return;
+    /* WORLD_OBJ_LITE: the head (OHDR .. ATEX, up to MODL's chunk header; OHDR word 7 = MODL's payload offset) is the
+     * block's E_OBJH; its types are made from it at turn-on (objects_block_types_lite), with this tail as BTEX. Its
+     * breakable models stream by their file offset, so OBJ_STREAM must be on */
+    if (WORLD_OBJ_LITE && OBJ_STREAM && oh[7] > 16 && oh[7] - 16 <= at) {
+        r->off[E_OBJH] = r->off[E_OBJ], r->size[E_OBJH] = oh[7] - 16, r->obj_full = r->size[E_OBJ];
+        r->total += (r->size[E_OBJH] + 127) & ~127u;  /* (before world_struct_bytes sums the lite sets) */
+    }
     r->off[E_OBJ] += at, r->size[E_OBJ] = ch[2];
 }
 
@@ -215,8 +222,10 @@ int world_init(const char *boot_area)
         if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
             r->open = 0;
         for (unsigned e = 0; e < NENT; e++) {
-            if (e == E_FXH)  /* (shares fx.bin with E_FX: sized after the loop) */
+            if (e == E_FXH || e == E_OBJH) {  /* (share fx.bin / objects.bin with E_FX / E_OBJ: sized apart) */
+                r->off[e] = r->size[e] = 0;
                 continue;
+            }
             int got = e >= E_TAB && e <= E_TABC ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TAB, &r->off[e], &r->size[e])
                 : e == E_MTX ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TEX, &r->off[e], &r->size[e])
                 : pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]);
@@ -390,7 +399,7 @@ void world_systems(GSGLOBAL *gs)
         if (!r->open)
             continue;
         unsigned h0 = enemy_ram_free();
-        unsigned char *p = read_tmp(r, "objects.bin", &n0);
+        unsigned char *p = r->size[E_OBJH] ? NULL : read_tmp(r, "objects.bin", &n0);  /* (WORLD_OBJ_LITE: turn-on) */
         int no = p ? objects_block_types(gs, i, p, n0) : -1;
         free(p);
         unsigned h1 = enemy_ram_free();
