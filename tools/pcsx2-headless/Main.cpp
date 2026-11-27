@@ -1055,6 +1055,10 @@ void GSRunner::SettingsOverride()
 	s_si->SetBoolValue("Logging", "EnableSystemConsole", !s_no_console);
 	s_si->SetBoolValue("Logging", "EnableTimestamps", s_logfile.empty());
 	s_si->SetBoolValue("Logging", "EnableVerbose", true);
+	// the ELF's printf (its TEST lines, which every harness parses) and the IOP modules' output reach the log only through
+	// these; PCSX2 defaults both off, so a tester's ini without them gave runs with no TEST line at all
+	s_si->SetBoolValue("Logging", "EnableEEConsole", true);
+	s_si->SetBoolValue("Logging", "EnableIOPConsole", true);
 
 	// no OSD: screenshots must show the game's frame only
 	s_si->SetBoolValue("EmuCore/GS", "OsdShowFPS", false);

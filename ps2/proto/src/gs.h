@@ -78,6 +78,35 @@ static inline u64 gs_trxreg(int w, int h) { return GS_SETREG_TRXREG(w, h); }
 #define GS_TRXDIR_HOST (GS_SETREG_TRXDIR(0))   /* host -> local (upload) */
 #define GS_TRXDIR_LOCAL (GS_SETREG_TRXDIR(2))  /* local -> local (copy) */
 
+/* Packet helpers for A+D register lists (two u64 per register: value, address; n counts registers) */
+/* a colour word: the BGR bytes of col (0xBBGGRR) with alpha a */
+static inline u64 gs_colour(u32 col, int a) { return GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, a, 0); }
+/* append the fade band (alpha 0 at iy1, opaque at iy0) to r[] from n; returns the new n. Coordinates in 1/16 pixel */
+static inline int gs_fade_band(u64 *r, int n, int ox, int oy, int w, int iy0, int iy1, u64 c0, u64 c1)
+{
+    r[2 * n] = GS_SETREG_PRIM(GS_PRIM_PRIM_TRISTRIP, 1, 0, 0, 1, 0, 0, 0, 0), r[2 * n + 1] = GSR_PRIM, n++;
+    r[2 * n] = c1, r[2 * n + 1] = GSR_RGBAQ, n++;
+    r[2 * n] = GS_SETREG_XYZ2(ox, oy + iy1, 0), r[2 * n + 1] = GSR_XYZ2, n++;
+    r[2 * n] = c1, r[2 * n + 1] = GSR_RGBAQ, n++;
+    r[2 * n] = GS_SETREG_XYZ2(ox + w, oy + iy1, 0), r[2 * n + 1] = GSR_XYZ2, n++;
+    r[2 * n] = c0, r[2 * n + 1] = GSR_RGBAQ, n++;
+    r[2 * n] = GS_SETREG_XYZ2(ox, oy + iy0, 0), r[2 * n + 1] = GSR_XYZ2, n++;
+    r[2 * n] = c0, r[2 * n + 1] = GSR_RGBAQ, n++;
+    r[2 * n] = GS_SETREG_XYZ2(ox + w, oy + iy0, 0), r[2 * n + 1] = GSR_XYZ2, n++;
+    return n;
+}
+/* 64-pixel sprite strips (x 0..w, y0..y1, all in 1/16 pixel) at depth z while two more registers fit in max; the
+ * caller has set the sprite PRIM (and colour); returns the new n */
+static inline int gs_fill_strips(u64 *r, int n, int max, int ox, int oy, int w, int y0, int y1, unsigned z)
+{
+    for (int x = 0; x < w && n + 2 <= max; x += 64 << 4) {
+        int x1 = x + (64 << 4) < w ? x + (64 << 4) : w;
+        r[2 * n] = GS_SETREG_XYZ2(ox + x, oy + y0, z), r[2 * n + 1] = GSR_XYZ2, n++;
+        r[2 * n] = GS_SETREG_XYZ2(ox + x1, oy + y1, z), r[2 * n + 1] = GSR_XYZ2, n++;
+    }
+    return n;
+}
+
 /* the 2D layer's state calls (g2d.c, Polaris 1.6: gsKit's queue is gone) */
 void g2d_set_test(GSGLOBAL *gs, u64 which);
 void g2d_set_primalpha(GSGLOBAL *gs, u64 alpha);

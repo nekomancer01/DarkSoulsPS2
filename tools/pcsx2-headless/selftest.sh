@@ -2,8 +2,8 @@
 # Usage: tools/pcsx2-headless/selftest.sh <proto.sym.elf>   — scripted check of pcsx2-dsrtest's flags, control socket
 # and exit codes (tools/q -m 12 tools/pcsx2-headless/selftest.sh build/proto.sym.elf). The ELF needs its build's data/
 # next to it (host:data/). Binary: $PCSX2_HEADLESS, else tools/ext/pcsx2-build/bin/pcsx2-dsrtest of this tree or of the
-# main checkout. Data dir /tmp/pcsx2-headless/selftest (PINE slot 28150), the ini from the user's Flatpak PCSX2 config
-# (BIOS folder) via tools/test-pcsx2-ini.py. Exit code = number of failed checks.
+# main checkout. Data dir /tmp/pcsx2-headless/selftest (PINE slot 28150), the ini from the user's PCSX2 config
+# ($PCSX2_USERCFG, default the Flatpak's; BIOS folder) via tools/test-pcsx2-ini.py. Exit code = number of failed checks.
 set -u
 H=$(cd "$(dirname "$0")/../.." && pwd)
 ELF=$(realpath "${1:?usage: selftest.sh <proto.sym.elf>}")
@@ -16,7 +16,7 @@ OUT=$D/out
 CTL=/tmp/pcsx2-headless/ctl.selftest.sock
 LOG=$D/PCSX2/logs/emulog.txt
 RUN=/run/user/$(id -u)/app/net.pcsx2.PCSX2
-HH=${DISTROBOX_HOST_HOME:-$HOME}
+USERCFG=${PCSX2_USERCFG:-${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2}
 FAIL=0
 ok() { echo "PASS $*"; }
 bad() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
@@ -24,7 +24,7 @@ pactl_() { if command -v pactl >/dev/null; then pactl "$@"; else "$H/tools/hoste
 ctl() { python3 -I "$H/tools/pcsx2ctl.py" --sock "$CTL" "$@"; }
 
 rm -rf "$D"; mkdir -p "$OUT" "$RUN"
-python3 -I "$H/tools/test-pcsx2-ini.py" "$HH/.var/app/net.pcsx2.PCSX2/config/PCSX2" "$D" "$SLOT" || { echo "selftest: ini failed"; exit 1; }
+python3 -I "$H/tools/test-pcsx2-ini.py" "$USERCFG" "$D" "$SLOT" || { echo "selftest: ini failed"; exit 1; }
 # a test script that idles: the checks below drive the instance
 mkdir -p "$(dirname "$ELF")/tests/gen"
 printf 'option nodemo\nwait 600\nend\n' > "$(dirname "$ELF")/tests/gen/dsrtest-selftest.txt"

@@ -34,6 +34,7 @@
  * PROFILE             | off      | make     | -DPROFILE                                     | core   | init  | prof.h        | per-pass EE cycles and cache misses (make PROFILE=1)
  * GPROF               | off      | make     | -DPROFILE -DGPROF                             | core   | init  | prof.c        | gprof sampling build (make GPROF=1, tools/ps2-gprof.sh)
  * HEAPMAP             | off      | make     | -DHEAPMAP                                     | core   | #203  | hitch.c       | heap census per caller in the EE log (make HEAPMAP=1, tools/heapmap.py)
+ * HITCH_MISS          | 1        | debug    | -DHITCH_MISS=0                                | core   | new   | hitch.c       | "hitch: miss" line (section split) for a frame at or over FB_OVER_MS while a test script runs, at most one a second
  * LAB                 | off      | make     | -                                             | tools  | new   | ticks.h       | the Lab's host build (make lab, ps2/proto/lab): ticks() moves 1 ms per read (lab_stubs.c lab_ticks)
  * MEM_STRICT          | off      | debug    | -DMEM_STRICT                                  | core   | new   | mem.c         | TEST error on a heap allocation in play outside a legacy tag (mem.h MEM_TAGS) or off the main thread
  * FRAME_STRICT        | off      | debug    | -DFRAME_STRICT                                | main   | new   | frame.c vu1.c | TEST error on a draw call in a simulate phase or a simulate call in an emit phase (frame.h), every vu1_add* checked
@@ -170,6 +171,7 @@
  * TEXQ_SLICE          | 512      | tune     | -                                             | gfx    | #104  | vu1.c         | IMAGE qwords per GIF packet
  * SKIN_CLIP_MARGIN    | 1.5 m    | tune     | -                                             | gfx    | init  | vu1.c         | bone origin to farthest vertex
  * FX_VU1              | 1        | fallback | -DFX_VU1=0                                    | fx     | #106  | fx.c          | particles on VU1; 0 = EE billboards
+ * FX_QCLIP            | 1        | fallback | -DFX_QCLIP=0                                  | fx     | new   | fx.c          | an EE billboard past the guard band (in front of the near plane) clipped once as a flat polygon in the current batch; 0 = r_tri_clip per triangle, own GS packets
  * FX_CLOSED           | 1        | fallback | -DFX_CLOSED=0                                 | fx     | #281  | fx.c          | particles keep their spawn state, position at an age in closed form (ppos), VU1 moves them; 0 = the EE integrates each particle every frame
  * FX_CULL             | 1        | fallback | -DFX_CULL=0                                   | fx     | #281  | fx.c          | an effect instance whose bound is off screen is skipped whole (inst_class); 0 = only the per-particle near-plane test
  * FX_VU_ORIENT        | 1        | fallback | -DFX_VU_ORIENT=0                              | fx     | #281  | fx.c          | quads fixed in the effect frame (FFX orientation 2, fog walls) on VU1; 0 = always the EE path

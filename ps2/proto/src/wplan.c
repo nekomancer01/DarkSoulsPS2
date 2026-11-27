@@ -4,17 +4,30 @@
 #include "world_i.h"
 #include "texcache.h"
 _Static_assert(WORLD_SLOTS <= TC_BLOCKS, "a block on without a texture slot is not drawn (mapblock.c)");
-unsigned w_reach_m;  /* blocks with a distance from the triangle underfoot */
+WMask w_reach_m;  /* blocks with a distance from the triangle underfoot */
 float w_clock_s;  /* seconds of world_update (ticks() wraps every 14.6 s) */
 float w_want_s[WORLD_MAX], w_on_s[WORLD_MAX];  /* clock_s when a block was first wanted while off / turned on */
 float w_feet_now[3];  /* for start(): mapstream_alloc evicts the cells farthest from here */
-const unsigned *w_lrange;  /* per block: first link, links */
-const WorldLink *w_links;
+const unsigned *w_lrange;  /* per block: first link, links (LRNL) */
+const WorldLinkL *w_links;
+const WorldNbrs *w_nbrs;  /* per block its neighbours: bit k of its local masks = nbr[k] */
+
+/* a local mask of block b (LNKL / RCHL) as a planner set: bit k -> WBIT(w_nbrs[b].nbr[k]) (world_init checked the
+ * list: other blocks, ascending; blocks past w_nblk are not loaded, as before) */
+static WMask w_expand(int b, unsigned m)
+{
+    const WorldNbrs *n = &w_nbrs[b];
+    WMask out = 0;
+    for (unsigned k = 0; m && k < n->count; k++, m >>= 1)
+        if ((m & 1) && n->nbr[k] < w_nblk)
+            out |= WBIT(n->nbr[k]);
+    return out;
+}
 /* wanted by the reach alone (not by the link's load mask): they start after the link-wanted ones, never take a slot or
  * pool room from them (room_for) and never spill into the item pages (lite_alloc); a link-wanted block may turn them
  * off, so the structural pool's size (world_struct_bytes, from the link masks) still holds */
-unsigned w_ronly_m;
-unsigned w_want_m, w_keep_m;  /* blocks the triangle under the player loads / keeps */
+WMask w_ronly_m;
+WMask w_want_m, w_keep_m;  /* blocks the triangle under the player loads / keeps */
 static float unkept_s[WORLD_MAX];  /* seconds a loaded block has not been in keep_m */
 /* WORLD_BOOT_LEAN: the last spots the boot block was underfoot or kept from (one per seam: spots WORLD_BOOT_SPOT_D
  * apart; the nearest one follows the player while the block is underfoot or kept); the boot block is wanted back */
@@ -43,8 +56,9 @@ unsigned world_lua_bytes(void)
     unsigned best = 0;
     for (int b = 0; b < w_nblk; b++)
         for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
-            const WorldLink *k = w_links + w_lrange[2 * b] + l;
-            unsigned keep = k->keep | k->load | (b ? 1u << b : 0), sum = 0;
+            const WorldLinkL *k = w_links + w_lrange[2 * b] + l;
+            WMask keep = w_expand(b, k->keep | k->load) | (b ? WBIT(b) : 0);
+            unsigned sum = 0;
             for (int i = 1; i < w_nblk; i++)
                 if (w_rt[i].open && (keep >> i & 1))
                     sum += (w_rt[i].size[E_AI] + 127) & ~127u;
@@ -65,8 +79,9 @@ unsigned world_struct_bytes(void)
     memset(pool_need, 0, sizeof pool_need);
     for (int b = 0; b < w_nblk; b++)
         for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
-            const WorldLink *k = w_links + w_lrange[2 * b] + l;
-            unsigned load = k->load | (b ? 1u << b : 0), keep = k->keep | load, v[WORLD_MAX], n = 0, sum = 0;
+            const WorldLinkL *k = w_links + w_lrange[2 * b] + l;
+            WMask load = w_expand(b, k->load) | (b ? WBIT(b) : 0), keep = w_expand(b, k->keep) | load;
+            unsigned v[WORLD_MAX], n = 0, sum = 0;
             unsigned lean_v[WORLD_MAX], whole = 0;
             for (int i = 1; i < w_nblk; i++)
                 if (w_rt[i].open && (keep >> i & 1)) {
@@ -118,7 +133,8 @@ static void pool_need_step(void)
 {
     if (!MS_AREA_POOL || w_nblk < 2)
         return;
-    unsigned m = w_want_m | w_keep_m | (w_cur >= 0 ? 1u << w_cur : 0), need = 0, col = 0;
+    WMask m = w_want_m | w_keep_m | (w_cur >= 0 ? WBIT(w_cur) : 0);
+    unsigned need = 0, col = 0;
     for (int i = 0; i < w_nblk; i++)
         if (m >> i & 1) {
             need = pool_need[i] > need ? pool_need[i] : need;
@@ -142,21 +158,21 @@ static int lite_pending(void)
     return 0;
 }
 
-static unsigned src_only_m;  /* blocks wanted by the other sources alone (not by the player): this step's from where
+static WMask src_only_m;  /* blocks wanted by the other sources alone (not by the player): this step's from where
                                * w_step computes it (its start reads the last step's) */
 int w_src_only(int i) { return i > 0 && (src_only_m >> i & 1); }
 /* blocks the player needs a floor from now: held for (world_hold), or holding the feet while there is no floor (a
  * warp's spot). Such a block always gets a slot: room_pick turns off the farthest other one, margin or not, and it
  * is never deferred (Anor Londo, 2026-11-23: a warp onto block 22 with every slot kept for nearer wanted blocks left
  * it deferred and the player fell through, 3 of 3 runs) */
-static unsigned under_m;
+static WMask under_m;
 int w_under(int i) { return i >= 0 && (under_m >> i & 1); }
 
 /* WORLD_YIELD (world_i.h): a temporary that found no window asks; the next step turns the spilled blocks off (not
  * here: the caller may be inside enemy.c's job, and turning a block off removes its enemies) */
 float w_yield_s;
 static int yield_req;
-static unsigned yield_m;  /* the blocks it turned off: no block goes to make room for them meanwhile */
+static WMask yield_m;  /* the blocks it turned off: no block goes to make room for them meanwhile */
 static int spilled(int i)
 {
     for (int e = 0; e < NENT; e++)
@@ -187,7 +203,7 @@ static void yield_step(void)
         if (w_rt[i].state == W_ON && i != w_cur && !(under_m >> i & 1) && world_stats.reading != i && spilled(i)) {
             w_turn_off(i);
             w_rt[i].retry_s = WORLD_YIELD_S;
-            yield_m |= 1u << i;
+            yield_m |= WBIT(i);
             world_stats.yields++;
         }
 }
@@ -202,7 +218,7 @@ static int room_pick(int want, const float *feet)
     /* blocks not wanted; for a block the links want, also those wanted by the reach alone (WORLD_REACH). For a block
      * only another source wants (a respawn point), never a kept one (w_keep_m: what the player's floor and reach keep,
      * and the sources' own): the preload must not take the player's surroundings away */
-    unsigned firm = ronly ? w_want_m : w_want_m & ~w_ronly_m;
+    WMask firm = ronly ? w_want_m : w_want_m & ~w_ronly_m;
     if (src_only_m >> want & 1)
         firm |= w_keep_m;
     for (int i = 1; i < w_nblk; i++)
@@ -265,7 +281,7 @@ int w_slot_deferred(int i, const float *feet)
 }
 
 /* WORLD_REACH: the reach entry of triangle tri of block b, or NULL (binary search as link_at) */
-static const WorldReach *reach_at(int b, unsigned tri)
+static const WorldReachL *reach_at(int b, unsigned tri)
 {
     if (!w_rrange || !WORLD_REACH)
         return NULL;
@@ -283,9 +299,9 @@ static const WorldReach *reach_at(int b, unsigned tri)
 }
 
 /* the link record of triangle tri of block b, or NULL (binary search: links are sorted by first triangle) */
-static const WorldLink *link_at(int b, unsigned tri)
+static const WorldLinkL *link_at(int b, unsigned tri)
 {
-    const WorldLink *l = w_links + w_lrange[2 * b];
+    const WorldLinkL *l = w_links + w_lrange[2 * b];
     int lo = 0, hi = (int)w_lrange[2 * b + 1] - 1;
     while (lo <= hi) {
         int m = (lo + hi) >> 1;
@@ -323,20 +339,20 @@ void world_source_off(int kind)
 /* the blocks a source other than the player wants: those its floor's links load / keep (the block it stands in too)
  * when that block is on, else every block whose bounds and height range hold it (as the player without a floor) */
 static int src_boot;  /* a source stands in the boot block (its tables come back: boot_want) */
-static void src_wants(const float *p, unsigned *wm, unsigned *km)
+static void src_wants(const float *p, WMask *wm, WMask *km)
 {
     ColHit h = {.tri = -1};
     *wm = *km = 0;
     if (col_floor(p[0], p[2], p[1] + 1.0f, p[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk && w_rt[h.block].state == W_ON) {
         src_boot |= h.block == 0;
-        const WorldLink *l = link_at(h.block, h.tri);
-        unsigned self = h.block ? 1u << h.block : 0;
-        *wm = (l ? l->load : 0) | self, *km = (l ? l->keep : 0) | self;
+        const WorldLinkL *l = link_at(h.block, h.tri);
+        WMask self = h.block ? WBIT(h.block) : 0;
+        *wm = (l ? w_expand(h.block, l->load) : 0) | self, *km = (l ? w_expand(h.block, l->keep) : 0) | self;
         return;
     }
     for (int i = 1; i < w_nblk; i++)
         if (box_d(&w_tab[i], p) <= 0.0f && p[1] >= w_tab[i].y0 - WORLD_Y_MARGIN && p[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
-            *wm |= 1u << i, *km |= 1u << i;
+            *wm |= WBIT(i), *km |= WBIT(i);
 }
 
 void w_step(const float *feet, float dt)
@@ -346,33 +362,37 @@ void w_step(const float *feet, float dt)
      * wanted (world.bin links) */
     ColHit h = {.tri = -1};
     int was = w_cur;
-    unsigned wm = w_want_m, km = w_keep_m;
+    WMask wm = w_want_m, km = w_keep_m;
     memcpy(w_feet_now, feet, sizeof w_feet_now);
     w_room_stuck = 0;
     under_m = 0;
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - 3.0f, COL_SOLID, &h) && h.block < w_nblk &&
         w_rt[h.block].state == W_ON) {
         w_cur = h.block;
-        const WorldLink *l = link_at(h.block, h.tri);
-        wm = l ? l->load : 0, km = l ? l->keep : 0;
-        const WorldReach *rc = reach_at(h.block, h.tri);
-        unsigned rm = 0;
-        for (int j = 0, k = 0; rc && j < w_nblk && k < 6; j++)
-            if (rc->mask >> j & 1) {
+        const WorldLinkL *l = link_at(h.block, h.tri);
+        wm = l ? w_expand(h.block, l->load) : 0, km = l ? w_expand(h.block, l->keep) : 0;
+        const WorldReachL *rc = reach_at(h.block, h.tri);
+        const WorldNbrs *nb = &w_nbrs[h.block];
+        WMask rm = 0;
+        for (unsigned b = 0, k = 0; rc && b < nb->count && k < 6; b++)  /* local bit b = block nbr[b] (ascending) */
+            if (rc->mask >> b & 1) {
+                int j = nb->nbr[b];
                 float d = rc->d[k++] * w_reach_step;
+                if (j >= w_nblk)
+                    continue;
                 if (!(w_reach_m >> j & 1))  /* the way the distance went last: towards (-1) or away from (+1) */
                     w_reach_v[j] = 0;
                 else if (d != w_reach_d[j])
                     w_reach_v[j] = d > w_reach_d[j] ? 1.0f : -1.0f;
-                w_reach_d[j] = d, rm |= 1u << j;
+                w_reach_d[j] = d, rm |= WBIT(j);
             }
         w_reach_m = rm;
-        unsigned lm = wm;
+        WMask lm = wm;
         for (int j = 1; j < w_nblk; j++)  /* reachable before it would be on: wanted; within reach: kept */
             if ((rm >> j & 1) && reach_t(j) * 1000.0f < w_on_est[j] + WORLD_REACH_MARGIN_S * 1000.0f)
-                wm |= 1u << j;
+                wm |= WBIT(j);
         w_ronly_m = wm & ~lm;
-        km |= rm & ~1u;  /* (the boot block comes back by its own spots: boot_step) */
+        km |= rm & ~WBIT(0);  /* (the boot block comes back by its own spots: boot_step) */
     } else {  /* no floor: the blocks around the feet as well (a warp settles them, as DSR's loading screen). Their
                * height range too: the Asylum lies over the Burg and Firelink in x / z, and loading all three at once
                * left no room in the near arena (settle looped, 2026-11-02) */
@@ -384,18 +404,18 @@ void w_step(const float *feet, float dt)
         for (int i = 1; i < w_nblk; i++)
             if (box_d(&w_tab[i], feet) <= 0.0f && feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN &&
                 feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
-                wm |= 1u << i, km |= 1u << i, under_m |= 1u << i;
+                wm |= WBIT(i), km |= WBIT(i), under_m |= WBIT(i);
     }
     {  /* the other streaming sources (a respawn point while a death plays): their blocks too, and their cells
         * (mapstream_sources) */
         float sp[WSRC_N][3];
         int ns = 0;
         src_boot = 0;
-        unsigned pw = wm;  /* the player's wants */
+        WMask pw = wm;  /* the player's wants */
         src_only_m = 0;
         for (int s = WSRC_PLAYER + 1; WORLD_SOURCES && s < WSRC_N; s++)
             if (w_src[s].on) {
-                unsigned sw, sk;
+                WMask sw, sk;
                 src_wants(w_src[s].pos, &sw, &sk);
                 /* wanted as by the reach alone (w_ronly_m): after the player's, never taking a slot or pool room
                  * from a block the player's floor wants, never spilling into the item pages */
@@ -412,9 +432,9 @@ void w_step(const float *feet, float dt)
     w_ronly_m &= ~w_hold_want;
     src_only_m &= ~w_hold_want;  /* (the player's now) */
     if (wm != w_want_m || (km | wm) != w_keep_m)
-        printf("world: block %d tri %d: want %x keep %x\n", w_cur, h.tri, wm, km | wm);
+        printf("world: block %d tri %d: want %llx keep %llx\n", w_cur, h.tri, wm, km | wm);
     w_want_m = wm, w_keep_m = km | wm;
-    world_stats.want = w_want_m;
+    world_stats.want = (unsigned)w_want_m;
     pool_need_step();
     if (WORLD_BOOT_LEAN && w_rt[0].size[E_TABB]) {
         float d2 = 1e30f;  /* to the nearest remembered spot (none: a boot straight into another block) */

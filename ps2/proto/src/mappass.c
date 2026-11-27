@@ -162,28 +162,20 @@ static void draw_void_ring(u32 col)
     int ox = gs->OffsetX, oy = gs->OffsetY, w = gs->Width << 4, h = gs->Height << 4;
     int iy0 = y0 > 0 ? (int)(y0 * 16) : 0, iy1 = y1 > 0 ? (int)(y1 * 16) : 0;
     iy0 = iy0 > h ? h : iy0, iy1 = iy1 > h ? h : iy1;
-    u64 c0 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x80, 0);
-    u64 c1 = GS_SETREG_RGBAQ(col & 0xFF, col >> 8 & 0xFF, col >> 16 & 0xFF, 0x00, 0);
+    u64 c0 = gs_colour(col, 0x80);
+    u64 c1 = gs_colour(col, 0x00);
 #define REG(v, a) (r[2 * n] = (v), r[2 * n + 1] = (a), n++)
     REG(GS_TEST_ZALWAYS, GSR_TEST);  /* ZTE, ZTST ALWAYS (the sky's own state) */
     REG(zbuf | 1ull << 32, GSR_ZBUF);                    /* Z not written */
     REG(GS_ALPHA_MIX, GSR_ALPHA);                        /* (Cs - Cd) As + Cd */
     if (iy1 < iy0) {  /* the fade band: alpha 0 at its top, opaque at its foot (gouraud) */
-        REG(GS_SETREG_PRIM(GS_PRIM_PRIM_TRISTRIP, 1, 0, 0, 1, 0, 0, 0, 0), GSR_PRIM);
-        REG(c1, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox, oy + iy1, 0), GSR_XYZ2);
-        REG(c1, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox + w, oy + iy1, 0), GSR_XYZ2);
-        REG(c0, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox, oy + iy0, 0), GSR_XYZ2);
-        REG(c0, GSR_RGBAQ), REG(GS_SETREG_XYZ2(ox + w, oy + iy0, 0), GSR_XYZ2);
+        n = gs_fade_band(r, n, ox, oy, w, iy0, iy1, c0, c1);
     }
     if (iy0 < h) {  /* opaque from there to the bottom */
         REG(GS_PRIM_SPRITE_FLAT, GSR_PRIM);
         REG(c0, GSR_RGBAQ);
-        for (int x = 0; x < w && n + 4 <= (int)(sizeof r / sizeof r[0] / 2); x += 64 << 4) {  /* 64-pixel strips
-                                                                                     (z_clear's page-friendly pattern) */
-            int x1 = x + (64 << 4) < w ? x + (64 << 4) : w;
-            REG(GS_SETREG_XYZ2(ox + x, oy + iy0, 0), GSR_XYZ2);
-            REG(GS_SETREG_XYZ2(ox + x1, oy + h, 0), GSR_XYZ2);
-        }
+        /* 64-pixel strips (z_clear's page-friendly pattern); the last 2 registers are the restore */
+        n = gs_fill_strips(r, n, (int)(sizeof r / sizeof r[0] / 2) - 2, ox, oy, w, iy0, h, 0);
     }
     REG(gs->PrimAlpha, GSR_ALPHA);
     REG(zbuf, GSR_ZBUF);

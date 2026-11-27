@@ -19,7 +19,7 @@ item is still missing (named in the Left column).
 
 | # | Item | Status | Left / where |
 |---|---|---|---|
-| 1 | VU1 renderer | Done | VU1 skinning, clipping and indexed map batches are in (vu1skin2 / vu1clip / vu1mapi). The frame target is 30 fps (tools/budget.py), not 60: render-5, vu1-1..5, hw-7 |
+| 1 | VU1 renderer | Done | VU1 skinning, clipping and indexed map batches are in (vu1skin2 / vu1clip / vu1mapi). The frame target is 30 fps, not 60: its numbers are in ps2/proto/src/frame_budget.h, gated in CI by tools/budget.py --ratchet tools/ci/budget_ratchet.json (render-5, hw-3), vu1-1..5, hw-7 |
 | 2 | Better mesh simplification | Done | QEM with structure weight, shape envelope and triangle guard (tools/native/simplify.c, simplify.py): map-36..44 |
 | 3 | Memory and streaming plan | Done | World blocks (src/world.c) and the map streamer (src/mapstream.c), texture pool (texcache.c). Detail vs memory is still short in the Burg: world-10, world-14 (H) |
 | 4 | Real collision | Done | Havok collision decoded, capsule controller, falls, 16 m collision tiles: collision-1..10, world-15 |

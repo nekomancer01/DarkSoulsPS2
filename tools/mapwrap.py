@@ -53,6 +53,49 @@ def unwrap(data, kind=None):
     return data[o:o + n]
 
 
+SECTION_IDS = (b"MHDR", b"CHKT", b"STRM", b"TEXS", b"NAVV", b"NAVT", b"FOGS", b"CELT", b"HZNB")
+HDR = 80  # map_i.h Header: magic, counts, spawn, chunk_off / tex_off / navv_off / navt_off at 36, fog_off / cell_off at 72
+
+
+def sections(kind, payload):
+    """the sections of a stage-1 payload as [(id, offset, size)] in payload order, cut by the header's offsets
+    (map_i.h Header; empty sections left out). The sections are contiguous and join to the payload.
+      map     MHDR header | STRM resident vertex streams | CHKT chunk table | TEXS texture table + pixels | NAVV | NAVT |
+              FOGS fog section | CELT cell table (DSM5)
+      maptab  MHDR | CHKT | TEXS | NAVV | NAVT | FOGS | CELT | HZNB (the horizon appended behind the cell table; the
+              header's offsets stay in map.bin's address space: a payload offset is the header offset - chunk_off + HDR)
+      mapres  MHDR | STRM | TEXS (the mips cut from maptab, after the streams)
+      maptex  TEXS (the shared textures)      cells  STRM (the near parts' blobs)"""
+    n = len(payload)
+    if kind == "maptex":
+        return [(b"TEXS", 0, n)] if n else []
+    if kind == "cells":
+        return [(b"STRM", 0, n)] if n else []
+    assert kind in ("map", "maptab", "mapres"), f"mapwrap.sections: unknown kind {kind}"
+    assert payload[:4] in (b"DSM4", b"DSM5"), f"mapwrap.sections: {kind}: not a DSM map header"
+    chunk_off, tex_off, navv_off, navt_off = struct.unpack_from("<4I", payload, 36)
+    fog_off, cell_off = struct.unpack_from("<2I", payload, 72)
+    if kind == "mapres":
+        marks = [(b"MHDR", 0), (b"STRM", HDR), (b"TEXS", chunk_off)]
+    else:
+        base = chunk_off - HDR if kind == "maptab" else 0
+        marks = [(b"MHDR", 0)] + ([(b"STRM", HDR)] if kind == "map" else []) + [
+            (b"CHKT", chunk_off - base), (b"TEXS", tex_off - base), (b"NAVV", navv_off - base),
+            (b"NAVT", navt_off - base), (b"FOGS", fog_off - base)]
+        if cell_off:
+            marks.append((b"CELT", cell_off - base))
+            hz_off, hz_n = struct.unpack_from("<2I", payload, cell_off - base + 8)
+            if hz_n:
+                marks.append((b"HZNB", hz_off - base))
+    ends = [o for _, o in marks[1:]] + [n]
+    out = []
+    for (sid, o), e in zip(marks, ends):
+        assert 0 <= o <= e <= n, f"mapwrap.sections: {kind}: section {sid.decode()} at {o}..{e} outside the payload ({n})"
+        if e > o:
+            out.append((sid, o, e - o))
+    return out
+
+
 if __name__ == "__main__":
     kind, src, dst = sys.argv[1:4]
     out = wrap(kind, open(src, "rb").read())

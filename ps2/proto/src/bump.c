@@ -14,6 +14,7 @@
 #include "map.h"
 #include "vu1.h"
 #include "gs.h"
+#include "governor.h"
 #ifndef BUMP_BAKED
 #define BUMP_BAKED 1  /* = the Makefile's BUMP_BAKE default */
 #endif
@@ -44,6 +45,11 @@ typedef struct { unsigned short tex; unsigned char cluster, spread; } BumpChunk;
 #ifndef BUMP_CAP
 #define BUMP_CAP 1536
 #endif
+/* the frame governor's relief cut (governor.h, gov_level 0-3): the batch cap divided by bump_gov_cap (0 = no relief)
+ * and no relief beyond bump_gov_far metres. Relief is the first work shed: a flatter far wall for a few frames.
+ * ASSUMED steps (frame-time plan Task 9), checked by the GOV A/B runs */
+static const unsigned char bump_gov_cap[4] = {1, 2, 4, 0};
+static const float bump_gov_far[4] = {BUMP_FAR, 24.0f, 20.0f, 0.0f};
 /* VRAM pool of the normal maps (texcache tc_add): their own, so they never evict map textures (Undead Burg's map
  * working set fills the 640 KB map pool: shared, the relief made 30-145 misses a frame and halved the fps) */
 #ifndef BUMP_POOL_KB
@@ -159,7 +165,8 @@ void bump_add(int k, unsigned chunk, float d, int cull, int clip, int tris, int 
               const void *col, const void *idx, const float *org, float st_k)
 {
     const BumpSet *b = &set[k];
-    if (k != owner || !b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= BUMP_FAR || nitems >= MAX_CAND)
+    if (k != owner || !b->on || chunk >= b->bh->chunks || b->bc[chunk].tex == 0xFFFF || d >= bump_gov_far[gov_level & 3] ||
+        nitems >= MAX_CAND)
         return;
     int level = d < BUMP_NEAR ? 0 : 1;
     if (level >= (int)b->bh->levels || b->bc[chunk].spread >> level < BUMP_MIN_SPREAD)
@@ -198,6 +205,7 @@ void bump_draw(void)
         vu1_clut_reload();
     }
     int cap = b->bh->cap && b->bh->cap < BUMP_CAP ? (int)b->bh->cap : BUMP_CAP;
+    cap = bump_gov_cap[gov_level & 3] ? cap / bump_gov_cap[gov_level & 3] : 0;
     if (nitems > cap) {  /* keep the cap nearest: distance histogram, cut inside the bin that crosses the cap */
         enum { BINS = 64 };
         int hist[BINS] = {0}, cut = BINS, room = cap;

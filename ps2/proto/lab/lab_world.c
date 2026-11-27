@@ -118,6 +118,22 @@ void loading_end(void) {}
 void loading_tick(int can_read) { (void)can_read; }
 int fx_block_load(GSGLOBAL *gs, int block, const void *blob, unsigned size) { (void)gs, (void)block, (void)blob, (void)size; return 1; }
 void fx_block_on(int block, int on, const void *blob) { (void)block, (void)on, (void)blob; }
+/* WORLD_FX_LITE: fx.c's fx_head_bytes (the same size as on the console, so the lite set's budget matches): fx.bin v2's
+ * bytes before its first pixel / CLUT. FxHeader words: magic, version, n_tex (2), off_tex (8); FxTex 16 B, pix / clut
+ * at words 2 / 3. The tables themselves are not bound (no effects in the Lab). */
+unsigned fx_head_bytes(const void *blob, unsigned size)
+{
+    const unsigned *h = blob;
+    if (!blob || size < 64 || memcmp(h, "DSFX", 4) || h[1] != 2 || h[8] > size || h[2] > (size - h[8]) / 16)
+        return 0;
+    const unsigned *t = (const unsigned *)((const char *)blob + h[8]);
+    unsigned keep = size;
+    for (unsigned i = 0; i < h[2]; i++)
+        keep = t[i * 4 + 3] < keep ? t[i * 4 + 3] : keep, keep = t[i * 4 + 2] < keep ? t[i * 4 + 2] : keep;
+    return keep;
+}
+int fx_block_tables(int block, const void *head, unsigned size) { (void)block, (void)head, (void)size; return 1; }
+void fx_block_drop(int block) { (void)block; }
 void fx_bonfire_burst(int entity, int n) { (void)entity, (void)n, LAB_COUNT("fx_bonfire_burst"); }
 int fx_entity_particles(int id, int kill) { (void)id, (void)kill, LAB_COUNT("fx_entity_particles"); return 0; }
 static int shines;

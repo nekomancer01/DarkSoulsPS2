@@ -32,11 +32,16 @@ ADDR = re.compile(r"(?:\b(?:REG|q64)\(.*,\s*|\*p\+\+ = |p\[\d+\] = |\{.*,\s*|^\s
                   r"0x(42|47|4[cC]|4[eE]|14|08|3[bB]|34|5[0-3])\s*[)};,]")
 
 
+# the map files' packets: vertex words (PRIM / RGBAQ / XYZ2) also come from gs.h's helpers (gs_fade_band, gs_fill_strips)
+VERTEX = re.compile(r"\bGS_SETREG_(PRIM|RGBAQ|XYZ2)\b")
+
+
 def scan(path):
     n, hits = 0, []
+    is_map = os.path.basename(path).startswith("map")
     for i, line in enumerate(open(path, errors="replace"), 1):
         code = re.sub(r"/\*.*?\*/|//.*", "", line)
-        if STATE.search(code) or ADDR.search(code):
+        if STATE.search(code) or ADDR.search(code) or (is_map and VERTEX.search(code)):
             n += 1
             hits.append(f"{os.path.basename(path)}:{i}: {line.strip()}")
     return n, hits

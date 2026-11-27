@@ -11,7 +11,7 @@ const WorldBlock *w_tab;
 const unsigned *w_rrange;  /* WORLD_REACH: per block first reach run, runs (NULL: no reach table) */
 const unsigned short *w_rfirst;  /* per run its first triangle; rent: its entry (1-based, 0 none) */
 const unsigned char *w_rent;
-const WorldReach *w_reach_tab;
+const WorldReachL *w_reach_tab;
 unsigned w_reach_n;
 float w_reach_step;
 float w_reach_d[WORLD_MAX], w_reach_v[WORLD_MAX];  /* m to each block's seam from the floor; last change's sign */
@@ -163,42 +163,55 @@ static void ev_split(BlockRt *r)
 int world_init(const char *boot_area)
 {
     Pack pk;
-    unsigned wsize = 0, nb = 0, nr = 0, nl = 0, nreach = 0;
+    unsigned wsize = 0, nb = 0, nr = 0, nl = 0, nn = 0, nreach = 0;
+    const unsigned *rh = NULL;
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", &wsize) : NULL;
     pack_close(&pk);
-    /* world.bin: a chunk file (tools/export_world.py, src/chunk.h), read in place */
+    /* world.bin: a chunk file (tools/export_world.py, src/chunk.h), read in place. The links and reach are the
+     * block-local chunks (NBRS v1: up to 15 neighbours, u16 masks); a missing one or another version is refused */
     ChunkFile cf;
     if (chunk_open(&cf, wb, wsize, CHUNK_ID('W', 'R', 'L', 'D'), "world.bin")) {
-        w_tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 1, &nb);
-        w_lrange = chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'G'), 1, &nr);
-        w_links = chunk_get(&cf, CHUNK_ID('L', 'I', 'N', 'K'), 2, &nl);
+        w_tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 2, &nb);
+        w_nbrs = w_tab ? chunk_get(&cf, CHUNK_ID('N', 'B', 'R', 'S'), 1, &nn) : NULL;
+        w_lrange = w_nbrs ? chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'L'), 1, &nr) : NULL;
+        w_links = w_lrange ? chunk_get(&cf, CHUNK_ID('L', 'N', 'K', 'L'), 1, &nl) : NULL;
+        rh = w_links ? chunk_get(&cf, CHUNK_ID('R', 'C', 'H', 'L'), 1, &nreach) : NULL;
         nb /= sizeof *w_tab, nl /= sizeof *w_links;
     }
-    if (!w_tab || !w_lrange || !w_links || !nb || nr != 8 * nb || strncmp(w_tab[0].pack, boot_area, 16)) {
+    if (!w_tab || !w_nbrs || !w_lrange || !w_links || !rh || !nb || nr != 8 * nb || nn != sizeof *w_nbrs * nb ||
+        strncmp(w_tab[0].pack, boot_area, 16)) {
         free(wb);
         w_tab = NULL;
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
     }
-    for (unsigned i = 0; i < nb; i++)
-        if (w_lrange[2 * i] > nl || w_lrange[2 * i + 1] > nl - w_lrange[2 * i]) {
-            printf("TEST error: chunk: world.bin: block %u's links %u + %u past the %u links\n", i, w_lrange[2 * i],
-                   w_lrange[2 * i + 1], nl);
+    for (unsigned i = 0; i < nb; i++) {
+        const WorldNbrs *n = &w_nbrs[i];
+        int bad = n->count > sizeof n->nbr || n->count != w_tab[i].nbr_n;
+        for (unsigned k = 0; k < n->count && !bad; k++)
+            bad = n->nbr[k] >= nb || n->nbr[k] == i || (k && n->nbr[k] <= n->nbr[k - 1]);
+        if (bad || w_lrange[2 * i] > nl || w_lrange[2 * i + 1] > nl - w_lrange[2 * i]) {
+            if (bad)
+                printf("TEST error: chunk: world.bin: block %u's NBRS (%u of %u neighbours) is not an ascending list of "
+                       "other blocks\n", i, n->count, w_tab[i].nbr_n);
+            else
+                printf("TEST error: chunk: world.bin: block %u's links %u + %u past the %u links\n", i, w_lrange[2 * i],
+                       w_lrange[2 * i + 1], nl);
             free(wb);
             w_tab = NULL;
             return 0;
         }
+    }
     w_nblk = nb < WORLD_MAX ? nb : WORLD_MAX;
     if (w_nblk > MAP_INST || w_nblk > COL_BLOCKS)
         w_nblk = MAP_INST < COL_BLOCKS ? MAP_INST : COL_BLOCKS;  /* map instance / collision block = block index */
-    const unsigned *rh = chunk_opt(&cf, CHUNK_ID('R', 'E', 'A', 'C'), 2, &nreach);
-    if (rh && nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; none: the links' masks alone) */
+    if (nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; no entries: the links' masks alone) */
         float st;
         memcpy(&st, rh + 2, 4);
         w_rrange = rh + 3;
         w_rfirst = (const unsigned short *)(w_rrange + 2 * nb);
         w_rent = (const unsigned char *)(w_rfirst + rh[0]);
-        w_reach_tab = (const WorldReach *)((const unsigned char *)w_rfirst + ((3 * rh[0] + 3) & ~3u));
+        w_reach_tab = (const WorldReachL *)((const unsigned char *)w_rfirst + ((3 * rh[0] + 3) & ~3u));
         w_reach_n = rh[1], w_reach_step = st;
         if (!w_reach_n || (const unsigned char *)(w_reach_tab + w_reach_n) > (const unsigned char *)rh + nreach)
             w_rrange = NULL;
@@ -319,8 +332,8 @@ int world_init(const char *boot_area)
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", w_nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
     for (int i = 0; i < w_nblk; i++)
-        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %x links %u lite %u KB res %u KB%s\n", i,
-               w_tab[i].pack, w_tab[i].map, w_tab[i].mn[0], w_tab[i].mx[0], w_tab[i].mn[1], w_tab[i].mx[1], w_tab[i].nbr, w_lrange[2 * i + 1],
+        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %u links %u lite %u KB res %u KB%s\n", i,
+               w_tab[i].pack, w_tab[i].map, w_tab[i].mn[0], w_tab[i].mx[0], w_tab[i].mn[1], w_tab[i].mx[1], w_tab[i].nbr_n, w_lrange[2 * i + 1],
                w_rt[i].total >> 10, w_rt[i].res_size >> 10, w_rt[i].open ? "" : " (no pack)");
     w_cur = 0;
     return 1;
@@ -498,7 +511,7 @@ static void settle(const float *feet)
         else if ((ticks() - stuck_t) / 294912 >= WORLD_STUCK_MS) {
             /* no room for a wanted block and nothing to turn off: mapstream would read and drop the same cells
              * until the 30 s cap (the frame never advances) */
-            printf("world: settle stopped: no room for the wanted blocks %x\n", w_want_m);
+            printf("world: settle stopped: no room for the wanted blocks %llx\n", w_want_m);
             break;
         }
         mapstream_update(feet);  /* collects the cell reads that landed, queues the next ones */
@@ -527,7 +540,7 @@ int world_hold(const float *feet)
     ColHit h;
     if (col_floor(feet[0], feet[2], feet[1] + 1.0f, feet[1] - WORLD_HOLD_DROP, COL_SOLID, &h))
         return 0;
-    unsigned m = 0;
+    WMask m = 0;
     /* COL_TILES: no floor and a collision tile around the feet still to come: held as for a block (its block is on) */
     if (tile_gone_on) {  /* (a tile that did not come in a hold's loading screen: no second hold at that spot) */
         float dx = feet[0] - tile_gone[0], dy = feet[1] - tile_gone[1], dz = feet[2] - tile_gone[2];
@@ -537,11 +550,11 @@ int world_hold(const float *feet)
     if (!tile_gone_on && coltile_under(feet))
         for (int i = 1; i < w_nblk; i++)
             if (w_rt[i].state == W_ON && w_rt[i].col_full && box_d(&w_tab[i], feet) <= 0.0f)
-                m |= 1u << i;
+                m |= WBIT(i);
     for (int i = 1; i < w_nblk; i++)
         if (w_rt[i].open && w_rt[i].state != W_ON && !(w_hold_gone >> i & 1) && box_d(&w_tab[i], feet) <= 0.0f &&
             feet[1] >= w_tab[i].y0 - WORLD_Y_MARGIN && feet[1] <= w_tab[i].y1 + WORLD_Y_MARGIN)
-            m |= 1u << i;
+            m |= WBIT(i);
     w_hold_m |= m;
     world_stats.holds += m != 0;
     return m != 0;
@@ -556,7 +569,7 @@ void world_update(const float *feet, float dt)
     int warp = dx * dx + dy * dy + dz * dz > WORLD_WARP * WORLD_WARP;  /* also the first frame: boot settles */
     memcpy(last_feet, feet, sizeof last_feet);
     if (w_hold_m && !w_hold_want) {
-        printf("world: player held at %.1f %.1f %.1f for blocks %x\n", feet[0], feet[1], feet[2], w_hold_m);
+        printf("world: player held at %.1f %.1f %.1f for blocks %llx\n", feet[0], feet[1], feet[2], w_hold_m);
         for (int i = 1; i < w_nblk; i++)  /* what each waits on (B2 hold check): slot / pool / lean / room, or the disc */
             if (w_hold_m >> i & 1)
                 printf("world: hold block %d: %s, wanted %u ms ago, last wait %s, retry %.2f s, reading %d (%u of %u KB), "
@@ -579,7 +592,7 @@ void world_update(const float *feet, float dt)
             world_stats.hold_settles++;
             for (int i = 1; i < w_nblk; i++)
                 if ((w_hold_want >> i & 1) && w_rt[i].state != W_ON) {
-                    w_hold_gone |= 1u << i;  /* could not load: the player walks / falls on as before */
+                    w_hold_gone |= WBIT(i);  /* could not load: the player walks / falls on as before */
                     printf("world: block %d did not load under the player: no more holding for it\n", i);
                 }
             w_hold_want = 0, hold_s = 0;

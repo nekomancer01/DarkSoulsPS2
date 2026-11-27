@@ -157,3 +157,16 @@ int pack_entry_raw(Pack *p, const char *name, unsigned *offset, unsigned *size)
     *offset = e->offset + e->blocks * 4, *size = e->raw;
     return 1;
 }
+/* pack.c's pack_job_entry_size: entry name's decoded size from the first sector a job read (lab_stubs.c pack_job_start) */
+unsigned pack_job_entry_size(const PackJob *j, const char *name)
+{
+    const unsigned *head = j->head;
+    if (memcmp(head, "DSRP", 4))
+        return 0;
+    const struct PackEntry *e = (const struct PackEntry *)(head + 4);
+    unsigned n = head[2], cap = (sizeof j->head - 16) / sizeof *e;
+    for (unsigned i = 0; i < n && i < cap; i++)
+        if (!strncmp(e[i].name, name, sizeof e->name))
+            return e[i].raw;
+    return 0;
+}

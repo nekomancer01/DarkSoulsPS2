@@ -40,9 +40,13 @@ def _world_blocks(data):
         p += k
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import chunkfile as chunk
-    bl = chunk.File(w, b"WRLD", "world.pak world.bin").get(b"BLKS", 1)  # tools/export_world.py
+    f = chunk.File(w, b"WRLD", "world.pak world.bin")
+    bl = f.get(b"BLKS", 2)  # tools/export_world.py (BLKS v2: the neighbour list is NBRS)
     rows = [struct.unpack_from("<16s16s6f2I", bl, 64 * i) for i in range(len(bl) // 64)]
-    return [(r[0].rstrip(b"\0").decode(), r[-2] & 1, r[-1]) for r in rows]
+    v = f.chunks[b"NBRS"][0]
+    n, ns = (16 if v == 1 else 32), f.get(b"NBRS", v)
+    mask = lambda i: sum(1 << j for j in ns[n * i + 1:n * i + 1 + ns[n * i]])  # noqa: E731
+    return [(r[0].rstrip(b"\0").decode(), r[-2] & 1, mask(i)) for i, r in enumerate(rows)]
 
 
 def _lz4(src, n):

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Frame and disc budget check of tools/test-run.py results (the budget doc's "Frame time budget (final)", 2026-11-08).
 
-  budget.py <run dir | result.json> ... [--json out.json] [--no-disc]
+  budget.py <run dir | result.json> ... [--json out.json] [--no-disc] [--ratchet tools/ci/budget_ratchet.json]
 Every result.json under each argument (a test-run.py out dir, a test-all.sh run, a folder of ISO runs) is checked; the
 exit code is the number of results that fail. tools/test-report.py shows the same table in report.html.
 
 Per shot (the ELF's "TEST passes" line, src/testscript.c pb_print: p50 / p90 of each pass over the shot's segment):
-  each pass at or under its budget at p90 (PASS_MS); no more than 1 % of frames over 34 ms; the frame's p99 at or under
-  FRAME_P99_MS (one NTSC vsync is 33.37 ms, so the doc's 33.3 ms reads as "never a second vsync": 34 ms);
+  each pass at or under its budget at p90 (PASS_MS); no more than 1 % of frames over FB_OVER_MS; the frame's p99 at or
+  under FRAME_P99_MS (frame_budget.h: 41.7 ms = 2.5 fields, "never a second vsync"; on-time frames read 33.4-34.2 ms
+  in these logs, a missed vsync 50 ms; the "over34" field keeps its name);
   RAM >= 1.5 MB free (ram_min), VRAM >= 128 KB free; with the disc server (ISO runs) IOP RAM >= 250 KB free.
 Per run (EE log): no disc layer change during play (the "disc:" lines without "(load)"), seeks <= 2 a second on average
   while playing, no stream underruns (dsrsnd "UNDERRUN"). The "map: pass ms" lines (map.c, every 120 frames: the
@@ -22,15 +23,46 @@ Per run, the Burg plan's streamer gates (step B0; the hitch monitor's "stream:" 
   lower one (they ratchet one way). The "logic: pass ms" lines (lpass.c, every 120
   frames: player, stream, enemy, ai, nav, esd, move, ragdoll, pose, hits, gc, objects, events, bonfire, other, total)
   the same way (p90 of the averages, the largest single-frame value of each part), not gated: the logic pass is.
-Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle)."""
+Segments shorter than MIN_FRAMES frames are listed, not gated (a teleport's settle).
+The frame numbers come from ps2/proto/src/frame_budget.h (load_budget), the game's own copy. Per shot also: the longest
+  run of missed vsyncs (miss_run <= FB_MISS_RUN) and the worst frame (frame_max <= FB_FRAME_MAX_MS); busy p50/p90/p99
+  (the frame minus its vsync waits) is listed, not gated.
+--ratchet FILE (CI, tools/ci/pcsx2-smoke.sh): a failing gate passes when FILE allows at least the measured value for its
+  (test script, shot or "*" or "run", gate key: map_p90 .. vuw_p90, p99, over34_pct, miss_run, frame_max, *_short_kb,
+  the run gates); the exit code is the number of failing gates no entry covers, and "can lower" lines name entries the
+  run beat. Entries only go down. gov_pct (the share of frames the frame governor, src/governor.c, spent at level >= 1;
+  from the gov1..3 fields) has no budget of its own: a shot fails it only over its ratchet entry."""
 import argparse, glob, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# budget doc, "EE per frame" and "VU1, GS and DMA per frame" (ms at p90 per shot)
-PASS_MS = {"map": 14.0, "chr": 5.0, "logic": 5.0, "world": 2.0, "fxhud": 1.5, "vuw": 0.5}
-FRAME_P99_MS = 34.0
-OVER34_PCT = 1.0
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRAME_BUDGET_H = os.path.join(ROOT, "ps2", "proto", "src", "frame_budget.h")
+FB_DEFINE = re.compile(r"^#define\s+FB_(\w+)\s+(-?[\d.]+)f?\b", re.M)
+FB_PASS = re.compile(r"X\((\w+),\s*(-?[\d.]+)f?\)")
+
+
+def load_budget(path=FRAME_BUDGET_H):
+    """the frame budget of ps2/proto/src/frame_budget.h (the game's own numbers) -> {"frame_ms", "over_ms", "over_pct",
+    "p99_ms", "miss_run", "frame_max_ms", "passes": {name: ms at p90}}; every other FB_ number too, lower case"""
+    try:
+        src = open(path).read()
+    except OSError as e:
+        raise SystemExit(f"budget: {path}: {e.strerror}")
+    m = re.search(r"^#define\s+FB_PASSES\(X\)(.*)$", src, re.M)
+    if not m:
+        raise SystemExit(f"budget: {path}: no FB_PASSES")
+    out = {k.lower(): float(v) for k, v in FB_DEFINE.findall(src)}
+    out["miss_run"] = int(out.get("miss_run", 1))
+    out["passes"] = {k: float(v) for k, v in FB_PASS.findall(m[1])}
+    return out
+
+
+# the gated numbers: src/frame_budget.h (budget doc, "EE per frame" and "VU1, GS and DMA per frame"; ms at p90 per shot)
+FB = load_budget()
+PASS_MS = FB["passes"]
+FRAME_P99_MS = FB["p99_ms"]
+OVER34_PCT = FB["over_pct"]
 RAM_MIN_KB = 1536
 VRAM_MIN_KB = 128
 IOP_MIN_KB = 250
@@ -171,7 +203,7 @@ def check_result(path, disc_gates=True):
                    frame_p99=p.get("frame_p99"), over34=int(p.get("over34", 0)), ram_min=st.get("ram_min"),
                    vram=st.get("vram"), secs=p.get("secs"))
         for k in ("disc_kb", "seeks", "far_seeks", "layer_changes", "wait_avg", "cache_hits", "cache_miss", "iop_free",
-                  "media"):
+                  "media", "miss_run", "frame_max", "busy_p50", "busy_p90", "busy_p99", "gov1", "gov2", "gov3"):
             if k in p:
                 row[k] = p[k]
         if row.get("secs"):
@@ -181,35 +213,62 @@ def check_result(path, disc_gates=True):
             row["note"] = f"{n} frames: not gated"
             out["shots"].append(row)
             continue
-        f = row["fails"]
+        f, gates = row["fails"], row.setdefault("gates", {})
+
+        def gate(key, value, bad, msg):  # every frame gate's measured value (the ratchet's "can lower"), its fail
+            if value is None:
+                return
+            gates[key] = value
+            if bad:
+                f.append(msg)
+                row.setdefault("fail_gates", {})[key] = value
         for k, b in PASS_MS.items():
             v = p.get(k + "_p90")
-            if v is not None and v > b:
-                f.append(f"{k} p90 {v:.2f} > {b} ms")
-        if (row["frame_p99"] or 0) > FRAME_P99_MS:
-            f.append(f"frame p99 {row['frame_p99']:.1f} > {FRAME_P99_MS} ms")
-        if row["over34"] * 100 > OVER34_PCT * n:
-            f.append(f"{row['over34']} of {n} frames over 34 ms ({100 * row['over34'] / n:.1f} % > {OVER34_PCT} %)")
-        ram = row["ram_min"]
+            gate(k + "_p90", v, v is not None and v > b, v is not None and f"{k} p90 {v:.2f} > {b} ms")
+        gate("p99", row["frame_p99"] or 0, (row["frame_p99"] or 0) > FRAME_P99_MS,
+             f"frame p99 {row['frame_p99'] or 0:.1f} > {FRAME_P99_MS} ms")
+        # stutter (testscript.c pb_frame; absent in logs of ELFs before it: not gated): missed vsyncs in a row, and the
+        # worst frame of the segment (settles excluded like over34)
+        mr = int(row["miss_run"]) if row.get("miss_run") is not None else None
+        gate("miss_run", mr, mr is not None and mr > FB["miss_run"],
+             f"miss_run {mr} missed vsyncs in a row > {FB['miss_run']}")
+        fm = row.get("frame_max")
+        gate("frame_max", fm, fm is not None and fm > FB["frame_max_ms"],
+             fm is not None and f"frame_max {fm:.1f} > {FB['frame_max_ms']:g} ms")
+        if row.get("gov1") is not None:  # the frame governor (governor.c): % of frames at level >= 1, gated by the ratchet only
+            row["gov_pct"] = gates["gov_pct"] = int(row["gov1"]) + int(row.get("gov2", 0)) + int(row.get("gov3", 0))
+        o_pct = round(100 * row["over34"] / n, 2)
+        gate("over34_pct", o_pct, row["over34"] * 100 > OVER34_PCT * n,
+             f"{row['over34']} of {n} frames over {FB['over_ms']:g} ms ({100 * row['over34'] / n:.1f} % > {OVER34_PCT} %)")
+        ram = row["ram_min"]  # (memory gates: the KB short of the floor, so a larger value is worse like the others)
         if ram is not None and 0 < ram < 0x7FFFFFFF and ram / 1024 < RAM_MIN_KB:
-            f.append(f"RAM free {ram / 1024:.0f} KB < {RAM_MIN_KB} KB")
+            gate("ram_short_kb", round(RAM_MIN_KB - ram / 1024), True, f"RAM free {ram / 1024:.0f} KB < {RAM_MIN_KB} KB")
         if row["vram"] is not None and 0 <= row["vram"] / 1024 < VRAM_MIN_KB:
-            f.append(f"VRAM free {row['vram'] / 1024:.0f} KB < {VRAM_MIN_KB} KB")
+            gate("vram_short_kb", round(VRAM_MIN_KB - row["vram"] / 1024), True,
+                 f"VRAM free {row['vram'] / 1024:.0f} KB < {VRAM_MIN_KB} KB")
         if disc_gates and row.get("iop_free") and row["iop_free"] < IOP_MIN_KB:
-            f.append(f"IOP free {row['iop_free']:.0f} KB < {IOP_MIN_KB} KB")
+            gate("iop_short_kb", round(IOP_MIN_KB - row["iop_free"]), True,
+                 f"IOP free {row['iop_free']:.0f} KB < {IOP_MIN_KB} KB")
         out["shots"].append(row)
         out["fails"] += [f"{s['name']}: {x}" for x in f]
     run = log_summary(os.path.join(d, "emulog.txt")) or {}
     out["run"] = run
+    out["script"] = script_key(res, d)
+    run_gates = out["run_gates"] = {}
+
+    def rfail(key, value, msg):  # a run gate's fail (the ratchet's shot key "run")
+        out["fails"].append(msg)
+        run_gates[key] = value
     if disc_gates and run.get("disc"):
         dd = run["disc"]
         if dd["layer_play"]:
-            out["fails"].append(f"run: {dd['layer_play']} disc layer changes during play (budget: none)")
+            rfail("layer_play", dd["layer_play"], f"run: {dd['layer_play']} disc layer changes during play (budget: none)")
         if dd.get("est_p90", 0) > DISC_BUSY_PCT:
-            out["fails"].append(f"run: drive time p90 {dd['est_p90']} % of the periods in play > {DISC_BUSY_PCT} % (seeks "
-                                f"x {SEEK_MS} ms, far x {FAR_SEEK_MS} ms, bytes at {DRIVE_KBPS} KB/s; max {dd['est_max']} %)")
+            rfail("drive_p90", dd["est_p90"],
+                  f"run: drive time p90 {dd['est_p90']} % of the periods in play > {DISC_BUSY_PCT} % (seeks "
+                  f"x {SEEK_MS} ms, far x {FAR_SEEK_MS} ms, bytes at {DRIVE_KBPS} KB/s; max {dd['est_max']} %)")
         if dd.get("far_play"):
-            out["fails"].append(f"run: {dd['far_play']} far seeks in play (budget: none)")
+            rfail("far_play", dd["far_play"], f"run: {dd['far_play']} far seeks in play (budget: none)")
         if dd["seeks_s"] > SEEKS_PER_S:
             out.setdefault("notes", []).append(f"run: {dd['seeks_s']} seeks/s while playing (was gated at {SEEKS_PER_S})")
     try:
@@ -223,10 +282,11 @@ def check_result(path, disc_gates=True):
         out["script"] = key
         for k, b in (STREAM_GATES.get(key) or {}).items():
             if k != "hard_items" and b is not None and (st.get(k) or 0) > b:
-                out["fails"].append(f"run: {STREAM_GATE_KEYS[k]} {st[k]} > {b} ({key})")
+                rfail(k, st[k], f"run: {STREAM_GATE_KEYS[k]} {st[k]} > {b} ({key})")
     if run.get("underruns"):
-        out["fails"].append(f"run: {run['underruns']} stream underruns")
-    out["fails"] += residency_gates(d, run, st, out)
+        rfail("underruns", run["underruns"], f"run: {run['underruns']} stream underruns")
+    for k, v, msg in residency_gates(d, run, st, out):
+        rfail(k, v, msg)
     return out
 
 
@@ -238,7 +298,7 @@ NO_ROOM = re.compile(r"mapstream: no room for item (\d+\.\d+) \(\d+ KB, class \d
 def residency_gates(d, run, st, out):
     """The residency design's runtime checks (ps2/proto/src/residency.h, TECH_DEBT world-14): the arena came out at
     RES_ARENA_KB, its visual room x RES_FILL_PCT holds the largest per-block budget the export was solved against, and
-    the hard tier's refusals (STREAM_GATES hard_items). Returns the fails."""
+    the hard tier's refusals (STREAM_GATES hard_items). Returns the fails as (ratchet gate key, value, message)."""
     import residency
     try:
         log = open(os.path.join(d, "emulog.txt"), errors="replace").read()
@@ -247,21 +307,23 @@ def residency_gates(d, run, st, out):
     fails = []
     m = ARENA_UNDER.search(log)
     if m:
-        fails.append(f"run: arena {m[1]} KB under the build's {m[2]} KB (residency.h RES_ARENA_KB: the heap at boot)")
+        fails.append(("arena_short_kb", int(m[2]) - int(m[1]),
+                      f"run: arena {m[1]} KB under the build's {m[2]} KB (residency.h RES_ARENA_KB: the heap at boot)"))
     m = ARENA_POOLS.search(log)
     if m:
         room = int(m[3]) * residency.RES["RES_FILL_PCT"] // 100
         need = max(r for r, _ in residency.BLOCKS.values())
         run["visual_room_kb"] = room
         if room < need:
-            fails.append(f"run: visual room {room} KB < the {need} KB the export's blocks were budgeted (residency.h)")
+            fails.append(("visual_short_kb", need - room,
+                          f"run: visual room {room} KB < the {need} KB the export's blocks were budgeted (residency.h)"))
     hard = {i for i, h in NO_ROOM.findall(log) if h}
     run["hard_items"] = len(hard)
     if st is not None and st:
         st["hard_items"] = len(hard)
         b = (STREAM_GATES.get(out.get("script")) or {}).get("hard_items")
         if b is not None and len(hard) > b:
-            fails.append(f"run: {STREAM_GATE_KEYS['hard_items']} {len(hard)} > {b} ({out.get('script')})")
+            fails.append(("hard_items", len(hard), f"run: {STREAM_GATE_KEYS['hard_items']} {len(hard)} > {b} ({out.get('script')})"))
     return fails
 
 
@@ -282,9 +344,12 @@ def table(r):
             continue
         disc = f" disc {s.get('kbps')} KB/s {s.get('seeks_s')} seeks/s layer {int(s.get('layer_changes', 0))} " \
                f"hits {int(s.get('cache_hits', 0))}" if "disc_kb" in s else ""
+        stutter = f" run {int(s['miss_run'])} max {s['frame_max']:5.1f} busy {s.get('busy_p50', 0):5.2f}/" \
+                  f"{s.get('busy_p90', 0):5.2f}/{s.get('busy_p99', 0):5.2f}" if s.get("miss_run") is not None else ""
+        stutter += f" gov {s['gov_pct']:3d} %" if s.get("gov_pct") is not None else ""
         o.append(f"  {s['shot']:24s} n {s['n']:4d} map {s['map_p90']:5.2f} chr {s['chr_p90']:5.2f} logic "
                  f"{s['logic_p90']:5.2f} world {s['world_p90']:5.2f} fx {s['fxhud_p90']:4.2f} vuw {s['vuw_p90']:4.2f} "
-                 f"p99 {s['frame_p99']:5.1f} >34 {s['over34']:3d}{disc}{'  ' + s['note'] if s.get('note') else ''}")
+                 f"p99 {s['frame_p99']:5.1f} >34 {s['over34']:3d}{stutter}{disc}{'  ' + s['note'] if s.get('note') else ''}")
     run = r.get("run", {})
     if run.get("disc"):
         d = run["disc"]
@@ -314,11 +379,71 @@ def table(r):
     return "\n".join(o)
 
 
+def load_ratchet(path):
+    """tools/ci/budget_ratchet.json: {script: {shot | "*" | "run": {gate: allowed value}}}; "_" keys are comments"""
+    t = json.load(open(path))
+    return {k: {s: g for s, g in v.items() if not s.startswith("_")} for k, v in t.items()
+            if not k.startswith("_") and isinstance(v, dict)}
+
+
+RATCHET_ONLY = ("gov_pct",)  # gates with no budget of their own (the governor's share of frames at level >= 1)
+
+
+def ratchet_entry(script, shot, gate, table):
+    """the allowed value of (script, shot, gate), or None; the shot key "*" matches every shot (not "run")"""
+    shots = table.get(script) or {}
+    for k in (shot, "*") if shot != "run" else (shot,):
+        v = (shots.get(k) or {}).get(gate)
+        if v is not None:
+            return v
+    return None
+
+
+def ratchet_ok(script, shot, gate, value, table):
+    """a failing gate is covered when the ratchet allows at least the measured value"""
+    v = ratchet_entry(script, shot, gate, table)
+    return v is not None and value is not None and value <= v
+
+
+def ratchet(rs, table):
+    """-> (uncovered fail lines, "can lower" notes) of checked results against the ratchet table"""
+    bad, notes, worst, failed = [], [], {}, {}
+    for r in rs:
+        sc = r.get("script") or r["name"]
+        items = [(s["shot"], s.get("fail_gates", {}), s.get("gates", {})) for s in r["shots"]]
+        items.append(("run", r.get("run_gates", {}), r.get("run_gates", {})))
+        for shot, fails, vals in items:
+            for gate in RATCHET_ONLY:  # (no frame budget of their own: only a ratchet entry gates them)
+                allowed = ratchet_entry(sc, shot, gate, table)
+                if allowed is not None and vals.get(gate) is not None and vals[gate] > allowed:
+                    bad.append(f"{sc}/{shot}/{gate} {vals[gate]} > ratchet {allowed} ({r['dir']})")
+            for gate, value in fails.items():
+                if not ratchet_ok(sc, shot, gate, value, table):
+                    allowed = ratchet_entry(sc, shot, gate, table)
+                    bad.append(f"{sc}/{shot}/{gate} {value}" + (f" > ratchet {allowed}" if allowed is not None
+                                                                 else " (no ratchet entry)") + f" ({r['dir']})")
+            for gate in ((table.get(sc) or {}).get(shot) or {}):
+                v = vals.get(gate, 0 if shot == "run" else None)
+                if v is not None:
+                    k = (sc, shot, gate)
+                    worst[k] = max(worst.get(k, v), v)
+                    failed[k] = failed.get(k, False) or gate in fails
+    for (sc, shot, gate), v in sorted(worst.items()):  # (the worst of the reps: an entry is the worse of them)
+        allowed = table[sc][shot][gate]
+        if not failed[sc, shot, gate]:
+            notes.append(f"ratchet: {sc}/{shot}/{gate} passes ({v}): remove the entry")
+        elif v < allowed:
+            notes.append(f"ratchet: can lower {sc}/{shot}/{gate} to {v}")
+    return bad, notes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--json")
     ap.add_argument("--no-disc", action="store_true", help="skip the disc gates (layer changes, seeks, IOP RAM)")
+    ap.add_argument("--ratchet", metavar="FILE", help="allowed misses (tools/ci/budget_ratchet.json): the exit code "
+                    "counts only the failing gates no entry covers")
     a = ap.parse_args()
     rs = [check_result(p, not a.no_disc) for p in results(a.paths)]
     for r in rs:
@@ -327,6 +452,14 @@ def main():
         json.dump(rs, open(a.json, "w"), indent=1)
     nf = sum(1 for r in rs if r["fails"])
     print(f"budget: {len(rs)} runs, {nf} over budget")
+    if a.ratchet:
+        bad, notes = ratchet(rs, load_ratchet(a.ratchet))
+        for x in sorted(set(notes)):
+            print(x)
+        for x in bad:
+            print(f"ratchet: FAIL {x}")
+        print(f"ratchet: {len(bad)} failing gates not covered by {os.path.basename(a.ratchet)}")
+        sys.exit(min(len(bad), 125))
     sys.exit(min(nf, 125))
 
 

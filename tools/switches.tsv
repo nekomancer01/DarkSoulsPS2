@@ -126,7 +126,7 @@ DSR_GAME	env	unset	config	tools	-	init	gamepath.py test-smoke.py	-
 DSR_HANG_STATE	env	unset	config	tools	-	#141	test-run.py	a savestate of the hang (slot 9) for tools/hangstate.py
 DSR_MEMWATCH_TREES	env	-	config	tools	-	#4	memwatch.py	-
 DSR_PVS_SPOOL	env	unset	config	world	-	#211	pvs_cache.py	-
-DSR_Q_BUDGET	env	20	config	tools	-	init	qstat.py	-
+DSR_Q_BUDGET	env	20/31 of MemTotal	config	tools	-	init	qstat.py	tools/q's RAM budget in GB (20 on a 31 GB host)
 DSR_REF	env	os.path.join(os.environ.get('DISTROBOX_HOST_HOME', os.path.e	config	tools	-	init	dsr_rdc.py	-
 DSR_TUI_ROOT	env	os.getcwd()	config	tools	-	#173	buildtui.py	-
 EDGE_2SIDED	env	1	flag	world	0	#243	mapgather.py	two-sided cut-out light (gather, below)

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "prof.h"
+#include "frame_budget.h"
 #include "render.h"
 #include "ticks.h"
 #include "lua0.h"
@@ -16,7 +17,7 @@
 void ai_prof_log(void);  /* ai.c (PROFILE): lua0 instructions per battle goal script this interval */
 
 #ifndef PROF_LOG_FRAMES
-#define PROF_LOG_FRAMES 300  /* log line every 5 s at 60 fps */
+#define PROF_LOG_FRAMES 300  /* log line every 10 s at 30 fps */
 #endif
 #ifndef PROF_GPROF_START
 #define PROF_GPROF_START 120  /* GPROF: frames after the first loop frame before sampling starts (load excluded) */
@@ -33,10 +34,11 @@ void ai_prof_log(void);  /* ai.c (PROFILE): lua0 instructions per battle goal sc
 
 static const char *const names[PROF_PASSES + 1] = {"INPUT", "PLAYER", "ENEMY", "OBJ", "CAMERA", "STREAM", "SOUND", "MAP",
                                                    "CHARS", "HUD", "VU1WAIT", "FLIP", "FRAME"};
-/* Per-pass EE budget at 60 fps (ms; 16.67 per frame). ASSUMED: first split of the frame by the tools-hwperf thread
- * from the PCSX2 HUD timings (MAP / CHR / VUW ms) of 2026-10-31, to be re-cut from real-PS2 numbers (TECH_DEBT hw-3).
- * VU1WAIT and FLIP are idle time, budget 0 = not checked. */
-static const float budget_ms[PROF_PASSES] = {0.3f, 1.0f, 3.0f, 0.5f, 0.5f, 0, 0, 4.0f, 3.0f, 1.5f, 0, 0};
+/* Per-pass EE budget at 30 fps (ms; frame_budget.h FB_PROF_*: the gated passes of tools/budget.py, logic split over
+ * INPUT..CAMERA), PCSX2 emulated time, to be re-cut from real-PS2 numbers (TECH_DEBT hw-3). STREAM / SOUND are part
+ * of the world pass (not split here), VU1WAIT and FLIP are idle time: budget 0 = not checked. */
+static const float budget_ms[PROF_PASSES] = {FB_PROF_INPUT, FB_PROF_PLAYER, FB_PROF_ENEMY, FB_PROF_OBJ,
+                                             FB_PROF_CAMERA, 0, 0, FB_PROF_MAP, FB_PROF_CHARS, FB_PROF_HUD, 0, 0};
 
 typedef struct { unsigned cyc, im, dm; } Sample;
 static Sample cur[PROF_PASSES], peak[PROF_PASSES], frame_peak;
@@ -185,8 +187,9 @@ void prof_frame(void)
         }
     }
     if (frames % PROF_LOG_FRAMES == PROF_LOG_FRAMES - 1) {
-        printf("PROF frame %u: %d.%02d ms avg, %d.%02d peak (budget 16.67)\n", frames + 1, (int)ms(avg_frame),
-               (int)(ms(avg_frame) * 100) % 100, (int)ms(frame_peak.cyc), (int)(ms(frame_peak.cyc) * 100) % 100);
+        printf("PROF frame %u: %d.%02d ms avg, %d.%02d peak (budget %d.%02d)\n", frames + 1, (int)ms(avg_frame),
+               (int)(ms(avg_frame) * 100) % 100, (int)ms(frame_peak.cyc), (int)(ms(frame_peak.cyc) * 100) % 100,
+               (int)FB_FRAME_MS, (int)(FB_FRAME_MS * 100 + 0.5f) % 100);
         for (int p = 0; p < PROF_PASSES; p++) {
             float a = ms(avg_cyc[p]), k = ms(peak[p].cyc), b = budget_ms[p];
             printf("PROF %-7s avg %2d.%02d ms peak %2d.%02d budget %2d.%01d over %3u/%u  I$miss %6u D$miss %6u%s\n",
