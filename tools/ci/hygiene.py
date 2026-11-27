@@ -4,7 +4,9 @@ Fails when a tracked file is, or looks like, game data or personal data, or when
     .png .elf .iso ...; screenshots and exports belong in build/, which is git-ignored)
     The exceptions are the README screenshots (.jpg files directly in docs/screenshots/) and the README logo (README_IMAGES)
   - files over 256 KB (a large blob is almost always generated), except ALLOW_LARGE
-  - home-directory paths of a real user (/home/<name>/, /Users/<name>/, C:\\Users\\<name>\\); $HOME and ~ are fine
+  - home-directory paths of a real user (/home/<name>/, /var/home/<name>/, /Users/<name>/ also under a Windows drive
+    mount /mnt/c/ or /c/, C:\\Users\\<name>\\ or C:/Users/<name>/, \\\\wsl.localhost\\<distro>\\home\\<name>); $HOME and ~
+    are fine
   - the same TECH_DEBT ID twice in "## Open", twice in "## Resolved", or in both
 Usage: python3 tools/ci/hygiene.py   (from anywhere; checks `git ls-files` of the repo)"""
 import os
@@ -32,8 +34,13 @@ README_IMAGES = {'docs/logo.png'}
 ALLOW_LARGE = {
     'notes/TECH_DEBT.md',  # hand-written debt register, not generated data
 }
-HOME_RE = re.compile(r'(?<![\w$])(/home/(?!runner/|user/|you/|<)[A-Za-z0-9_.-]+/|/Users/(?!<)[A-Za-z0-9_.-]+/'
-                     r'|[A-Za-z]:\\\\?Users\\\\?(?!<)[A-Za-z0-9_.-]+)')
+# Windows / WSL forms too: under WSL the Windows drive is /mnt/c/, under Git Bash /c/, Git for Windows prints C:/Users/,
+# and Windows reaches WSL's files as \\wsl.localhost\<distro>\home\<name> (\\wsl$ before WSL 0.70); Fedora Atomic
+# desktops (Silverblue, Bazzite) keep homes in /var/home/. Backslashes may be doubled (escaped in source strings).
+HOME_RE = re.compile(r'(?<![\w$])((?:/var)?/home/(?!runner/|user/|you/|<)[A-Za-z0-9_.-]+/'
+                     r'|(?:/mnt/[A-Za-z]|/[A-Za-z])?/Users/(?!<)[A-Za-z0-9_.-]+/'
+                     r'|[A-Za-z]:(?:\\{1,2}|/)Users(?:\\{1,2}|/)(?!<)[A-Za-z0-9_.-]+'
+                     r'|\\{2,4}wsl(?:\.localhost|\$)\\{1,2}[^\\\s]+\\{1,2}home\\{1,2}(?!<)[A-Za-z0-9_.-]+)')
 
 
 def tracked():
