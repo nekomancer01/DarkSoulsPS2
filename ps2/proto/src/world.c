@@ -11,7 +11,7 @@ const WorldBlock *w_tab;
 const unsigned *w_rrange;  /* WORLD_REACH: per block first reach run, runs (NULL: no reach table) */
 const unsigned short *w_rfirst;  /* per run its first triangle; rent: its entry (1-based, 0 none) */
 const unsigned char *w_rent;
-const WorldReach *w_reach_tab;
+const WorldReachL *w_reach_tab;
 unsigned w_reach_n;
 float w_reach_step;
 float w_reach_d[WORLD_MAX], w_reach_v[WORLD_MAX];  /* m to each block's seam from the floor; last change's sign */
@@ -163,42 +163,55 @@ static void ev_split(BlockRt *r)
 int world_init(const char *boot_area)
 {
     Pack pk;
-    unsigned wsize = 0, nb = 0, nr = 0, nl = 0, nreach = 0;
+    unsigned wsize = 0, nb = 0, nr = 0, nl = 0, nn = 0, nreach = 0;
+    const unsigned *rh = NULL;
     void *wb = pack_open(&pk, PACK_ROOT "world.pak") ? pack_load(&pk, "world.bin", &wsize) : NULL;
     pack_close(&pk);
-    /* world.bin: a chunk file (tools/export_world.py, src/chunk.h), read in place */
+    /* world.bin: a chunk file (tools/export_world.py, src/chunk.h), read in place. The links and reach are the
+     * block-local chunks (NBRS v1: up to 15 neighbours, u16 masks); a missing one or another version is refused */
     ChunkFile cf;
     if (chunk_open(&cf, wb, wsize, CHUNK_ID('W', 'R', 'L', 'D'), "world.bin")) {
-        w_tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 1, &nb);
-        w_lrange = chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'G'), 1, &nr);
-        w_links = chunk_get(&cf, CHUNK_ID('L', 'I', 'N', 'K'), 2, &nl);
+        w_tab = chunk_get(&cf, CHUNK_ID('B', 'L', 'K', 'S'), 2, &nb);
+        w_nbrs = w_tab ? chunk_get(&cf, CHUNK_ID('N', 'B', 'R', 'S'), 1, &nn) : NULL;
+        w_lrange = w_nbrs ? chunk_get(&cf, CHUNK_ID('L', 'R', 'N', 'L'), 1, &nr) : NULL;
+        w_links = w_lrange ? chunk_get(&cf, CHUNK_ID('L', 'N', 'K', 'L'), 1, &nl) : NULL;
+        rh = w_links ? chunk_get(&cf, CHUNK_ID('R', 'C', 'H', 'L'), 1, &nreach) : NULL;
         nb /= sizeof *w_tab, nl /= sizeof *w_links;
     }
-    if (!w_tab || !w_lrange || !w_links || !nb || nr != 8 * nb || strncmp(w_tab[0].pack, boot_area, 16)) {
+    if (!w_tab || !w_nbrs || !w_lrange || !w_links || !rh || !nb || nr != 8 * nb || nn != sizeof *w_nbrs * nb ||
+        strncmp(w_tab[0].pack, boot_area, 16)) {
         free(wb);
         w_tab = NULL;
         printf("world: no world table for %s, single area\n", boot_area);
         return 0;
     }
-    for (unsigned i = 0; i < nb; i++)
-        if (w_lrange[2 * i] > nl || w_lrange[2 * i + 1] > nl - w_lrange[2 * i]) {
-            printf("TEST error: chunk: world.bin: block %u's links %u + %u past the %u links\n", i, w_lrange[2 * i],
-                   w_lrange[2 * i + 1], nl);
+    for (unsigned i = 0; i < nb; i++) {
+        const WorldNbrs *n = &w_nbrs[i];
+        int bad = n->count > sizeof n->nbr || n->count != w_tab[i].nbr_n;
+        for (unsigned k = 0; k < n->count && !bad; k++)
+            bad = n->nbr[k] >= nb || n->nbr[k] == i || (k && n->nbr[k] <= n->nbr[k - 1]);
+        if (bad || w_lrange[2 * i] > nl || w_lrange[2 * i + 1] > nl - w_lrange[2 * i]) {
+            if (bad)
+                printf("TEST error: chunk: world.bin: block %u's NBRS (%u of %u neighbours) is not an ascending list of "
+                       "other blocks\n", i, n->count, w_tab[i].nbr_n);
+            else
+                printf("TEST error: chunk: world.bin: block %u's links %u + %u past the %u links\n", i, w_lrange[2 * i],
+                       w_lrange[2 * i + 1], nl);
             free(wb);
             w_tab = NULL;
             return 0;
         }
+    }
     w_nblk = nb < WORLD_MAX ? nb : WORLD_MAX;
     if (w_nblk > MAP_INST || w_nblk > COL_BLOCKS)
         w_nblk = MAP_INST < COL_BLOCKS ? MAP_INST : COL_BLOCKS;  /* map instance / collision block = block index */
-    const unsigned *rh = chunk_opt(&cf, CHUNK_ID('R', 'E', 'A', 'C'), 2, &nreach);
-    if (rh && nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; none: the links' masks alone) */
+    if (nreach >= 12 + 8 * nb) {  /* the reach table (WORLD_REACH; no entries: the links' masks alone) */
         float st;
         memcpy(&st, rh + 2, 4);
         w_rrange = rh + 3;
         w_rfirst = (const unsigned short *)(w_rrange + 2 * nb);
         w_rent = (const unsigned char *)(w_rfirst + rh[0]);
-        w_reach_tab = (const WorldReach *)((const unsigned char *)w_rfirst + ((3 * rh[0] + 3) & ~3u));
+        w_reach_tab = (const WorldReachL *)((const unsigned char *)w_rfirst + ((3 * rh[0] + 3) & ~3u));
         w_reach_n = rh[1], w_reach_step = st;
         if (!w_reach_n || (const unsigned char *)(w_reach_tab + w_reach_n) > (const unsigned char *)rh + nreach)
             w_rrange = NULL;
@@ -317,8 +330,8 @@ int world_init(const char *boot_area)
     printf("world: %d blocks, resident levels per cell, lite sets up to %u KB from the near arena (%d slot%s)\n", w_nblk,
            slot_size >> 10, WORLD_SLOTS, WORLD_SLOTS > 1 ? "s" : "");
     for (int i = 0; i < w_nblk; i++)
-        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %x links %u lite %u KB res %u KB%s\n", i,
-               w_tab[i].pack, w_tab[i].map, w_tab[i].mn[0], w_tab[i].mx[0], w_tab[i].mn[1], w_tab[i].mx[1], w_tab[i].nbr, w_lrange[2 * i + 1],
+        printf("world: block %d %s (%s) x %.0f..%.0f z %.0f..%.0f nbr %u links %u lite %u KB res %u KB%s\n", i,
+               w_tab[i].pack, w_tab[i].map, w_tab[i].mn[0], w_tab[i].mx[0], w_tab[i].mn[1], w_tab[i].mx[1], w_tab[i].nbr_n, w_lrange[2 * i + 1],
                w_rt[i].total >> 10, w_rt[i].res_size >> 10, w_rt[i].open ? "" : " (no pack)");
     w_cur = 0;
     return 1;

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """world.bin's masks written and read back (tools/ci/offline.sh; Polaris 4 finish).
 
-tools/export_world.py pack_world writes the per-block LINK (load / keep) and REAC (reach) runs, src/world.c +
-src/wplan.c read them. This decodes a world.bin the way the C side does (the Python decoder mirrors world.c world_init
-and wplan.c; it does not import them) and compares every triangle's (load, keep, reach) with the masks the builders
-(export_world.block_masks: worldlinks / worldreach.encode) gave, and the block-local copies (NBRS / LRNL / LNKL /
-RCHL, decode_local turns them back to global masks through NBRS) with the v2 ones on every triangle.
+tools/export_world.py pack_world writes the per-block block-local LNKL (load / keep) and RCHL (reach) runs and each
+block's neighbour list (NBRS), src/world.c + src/wplan.c read them. This decodes a world.bin the way the C side does
+(the Python decoder mirrors world.c world_init and wplan.c w_expand; it does not import them): every triangle's local
+(load, keep, reach) masks, expanded through NBRS, are compared with the global masks the builders
+(export_world.block_masks: worldlinks / worldreach.encode) gave.
 
   test_worldbin.py                       the synthetic fixture tools/ci/fixtures/world3.json through pack_world
   test_worldbin.py --world world.bin --gen <gen dir> --game <game dir> [--boot <map>]
@@ -31,12 +31,12 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "
 
 def _chunks(blob):
     f = chunk.File(blob, b"WRLD", "world.bin")
-    return f, f.get(b"BLKS", 1), f.get(b"LRNG", 1), f.get(b"LINK", 2)
+    return f, f.get(b"BLKS", 2)
 
 
 def decode_blocks(blob):
-    """[(pack, map, bounds (4), heights (2), flags, neighbour mask)] from BLKS v1 (64 B per block)"""
-    _, blks, _, _ = _chunks(blob)
+    """[(pack, map, bounds (4), heights (2), flags, neighbour count)] from BLKS v2 (64 B per block)"""
+    _, blks = _chunks(blob)
     out = []
     for o in range(0, len(blks), 64):
         p, m, *v = struct.unpack_from("<16s16s6f2I", blks, o)
@@ -44,52 +44,12 @@ def decode_blocks(blob):
     return out
 
 
-def decode_v2(blob):
-    """LRNG v1 + LINK v2: [(block, first triangle, triangles, load mask, keep mask)] in file order"""
-    _, blks, lrng, link = _chunks(blob)
-    nb = len(blks) // 64
-    assert len(lrng) == 8 * nb, "world.bin: LRNG is not 8 B per block"
-    out = []
-    for b in range(nb):
-        first, n = struct.unpack_from("<2I", lrng, 8 * b)
-        assert first + n <= len(link) // 16, f"block {b}: links {first} + {n} past the {len(link) // 16} links"
-        for k in range(first, first + n):
-            t0, nt, _z, load, keep = struct.unpack_from("<IHHII", link, 16 * k)
-            out.append((b, t0, nt, load, keep))
-    return out
-
-
-def decode_reach_v2(blob, ntris=None):
-    """REAC v2: [(block, first triangle, triangles, mask, distances)] per reach run, mask 0 / () for a run with none.
-    A run covers its first triangle up to the next run's first; the last one up to ntris[block] (None: n = 0 there)"""
-    f, blks, _, _ = _chunks(blob)
-    nb = len(blks) // 64
-    rh = f.get(b"REAC", 2)
-    nruns, nent = struct.unpack_from("<2I", rh, 0)
-    assert len(rh) >= 12 + 8 * nb, "world.bin: REAC too short"
-    o = 12
-    rr = [struct.unpack_from("<2I", rh, o + 8 * b) for b in range(nb)]
-    o += 8 * nb
-    firsts = struct.unpack_from(f"<{nruns}H", rh, o)
-    ents = rh[o + 2 * nruns:o + 3 * nruns]
-    o += (3 * nruns + 3) & ~3  # u16 firsts, u8 entries, padded together to 4 B (world.c w_reach_tab)
-    tab = [(struct.unpack_from("<I", rh, o + 12 * k)[0], tuple(rh[o + 12 * k + 4:o + 12 * k + 10])) for k in range(nent)]
-    assert o + 12 * nent <= len(rh), "world.bin: REAC entries past the chunk"
-    out = []
-    for b, (r0, rn) in enumerate(rr):
-        for k in range(r0, r0 + rn):
-            end = firsts[k + 1] if k + 1 < r0 + rn else (ntris[b] if ntris else firsts[k])
-            e = ents[k]
-            mask, ds = tab[e - 1] if e else (0, ())
-            out.append((b, firsts[k], end - firsts[k], mask, ds[:bin(mask).count("1")]))
-    return out
-
-
 def decode_local(blob, ntris=None):
     """NBRS + LRNL + LNKL + RCHL (v1, or v2 the wide layout) decoded and turned back to global masks through NBRS:
-    (nbrs per block, [(block, first, triangles, load, keep)], [(block, first, triangles, mask, distances)]) in the
-    shapes of decode_v2 / decode_reach_v2"""
-    f, blks, _, _ = _chunks(blob)
+    (nbrs per block, [(block, first, triangles, load, keep)] per link, [(block, first, triangles, mask, distances)] per
+    reach run, mask 0 / () for a run with none). A reach run covers its first triangle up to the next run's first; the
+    last one up to ntris[block] (None: n = 0 there)"""
+    f, blks = _chunks(blob)
     nb = len(blks) // 64
     v = f.chunks[b"NBRS"][0]
     assert v in (1, 2), f"world.bin: NBRS version {v}"
@@ -101,6 +61,8 @@ def decode_local(blob, ntris=None):
         c = nbrs_b[(nmax + 1) * b]
         ns = list(nbrs_b[(nmax + 1) * b + 1:(nmax + 1) * b + 1 + c])
         assert c <= nmax and ns == sorted(set(ns)) and b not in ns, f"block {b}: NBRS {ns} not ascending / has itself"
+        assert c == struct.unpack_from("<I", blks, 64 * b + 60)[0], f"block {b}: BLKS neighbour count is not NBRS's"
+        assert all(j < nb for j in ns), f"block {b}: NBRS {ns} names a block past the {nb} blocks"
         nbrs.append(ns)
     glob = lambda m, b: sum(1 << nbrs[b][k] for k in range(m.bit_length()) if m >> k & 1)
     links = []
@@ -137,18 +99,19 @@ def decode_local(blob, ntris=None):
     return nbrs, links, reach
 
 
-def decoded_links(blob, ntris, rows=None):
-    """per block per triangle (load, keep) from decode_v2 (or rows in its shape: decode_local's)"""
+def decoded_links(ntris, rows):
+    """per block per triangle (load, keep) from decode_local's link rows"""
     got = [[(0, 0)] * n for n in ntris]
-    for b, t0, nt, load, keep in decode_v2(blob) if rows is None else rows:
+    for b, t0, nt, load, keep in rows:
         for t in range(t0, t0 + nt):
             got[b][t] = (load, keep)
     return got
 
 
-def decoded_reach(blob, ntris, rows=None):
+def decoded_reach(ntris, rows):
+    """per block per triangle (mask, distances) from decode_local's reach rows"""
     got = [[(0, ())] * n for n in ntris]
-    for b, t0, nt, mask, ds in decode_reach_v2(blob, ntris) if rows is None else rows:
+    for b, t0, nt, mask, ds in rows:
         for t in range(t0, t0 + nt):
             got[b][t] = (mask, ds)
     return got
@@ -182,25 +145,18 @@ def runs(want, got):
 
 
 def compare(blob, names, per):
-    """per: export_world.block_masks' (masks, reach) per block. Returns the mismatch lines"""
+    """per: export_world.block_masks' (masks, reach) per block (global masks). Returns the mismatch lines"""
     ntris = [len(m) for m, _ in per]
     bad = []
-    links = decoded_links(blob, ntris)
-    reach = decoded_reach(blob, ntris)
-    # the local chunks decoded through NBRS: equal to the v2 global masks on every triangle (and so to the builders')
+    # the local chunks decoded through NBRS: equal to the builders' global masks on every triangle
     _, lrows, rrows = decode_local(blob, ntris)
-    llinks = decoded_links(blob, ntris, lrows)
-    lreach = decoded_reach(blob, ntris, rrows)
+    links = decoded_links(ntris, lrows)
+    reach = decoded_reach(ntris, rrows)
     for b, (masks, rc) in enumerate(per):
         for t0, t1, w, g in runs([tuple(m) for m in masks], links[b]):
             bad.append(f"block {names[b]} tris {t0}..{t1}: want load/keep {w[0]:#x}/{w[1]:#x} got {g[0]:#x}/{g[1]:#x}")
         for t0, t1, w, g in runs(resolve_reach(rc), reach[b]):
             bad.append(f"block {names[b]} tris {t0}..{t1}: want reach {w[0]:#x} {list(w[1])} got {g[0]:#x} {list(g[1])}")
-        for t0, t1, w, g in runs(links[b], llinks[b]):
-            bad.append(f"block {names[b]} tris {t0}..{t1}: LINK load/keep {w[0]:#x}/{w[1]:#x} "
-                       f"LNKL {g[0]:#x}/{g[1]:#x}")
-        for t0, t1, w, g in runs(reach[b], lreach[b]):
-            bad.append(f"block {names[b]} tris {t0}..{t1}: REAC {w[0]:#x} {list(w[1])} RCHL {g[0]:#x} {list(g[1])}")
     return bad
 
 
@@ -227,7 +183,6 @@ def real(args):
     blob = open(args.world, "rb").read()
     bl = decode_blocks(blob)
     names = [b[0] for b in bl]
-    nbr = [b[5] for b in bl]
     blocks = []
     for i, b in enumerate(names):
         m = area.BLOCKS[b]["map"] if b in area.BLOCKS else b
@@ -236,6 +191,7 @@ def real(args):
         c = area.CELL
         rect = [(r[0] * c, r[1] * c, (r[2] + 1) * c, (r[3] + 1) * c) for r in area.cell_rects(cells)] if cells else None
         blocks.append((b, m, export_world.col_bounds(col), rect))
+    nbr = export_world.block_nbr(args.game, blocks)  # (BLKS v2 holds only the count)
     per = [export_world.block_masks(args.game, names, nbr, blocks, i) for i in range(len(names))]
     return compare(blob, names, per)
 
@@ -255,14 +211,19 @@ def main():
         with redirect_stdout(io.StringIO()):  # pack_world's per-block summary
             blob = export_world.pack_world(blocks, heights, nbr, per)
         bad = compare(blob, [b[0] for b in blocks], per)
-        # the table side too: names, bounds, neighbours
-        for i, (b, m, bb, hh, fl, nb) in enumerate(decode_blocks(blob)):
-            if (b, m, bb, hh, fl, nb) != (blocks[i][0], blocks[i][1], blocks[i][2], heights[i], int(i == 0), nbr[i]):
-                bad.append(f"block {blocks[i][0]}: BLKS row differs: got {(b, m, bb, hh, fl, nb)}")
+        # the table side too: names, bounds, neighbour lists (BLKS v2's count is NBRS's, decode_local asserts it)
         nbrs = decode_local(blob)[0]
+        for i, (b, m, bb, hh, fl, nb) in enumerate(decode_blocks(blob)):
+            if (b, m, bb, hh, fl, nb) != (blocks[i][0], blocks[i][1], blocks[i][2], heights[i], int(i == 0),
+                                          len(nbrs[i])):
+                bad.append(f"block {blocks[i][0]}: BLKS row differs: got {(b, m, bb, hh, fl, nb)}")
         for i, (masks, rc) in enumerate(per):
             if nbrs[i] != export_world.worldlinks.neighbours(i, nbr[i], masks, rc):
                 bad.append(f"block {blocks[i][0]}: NBRS {nbrs[i]}")
+        # only the block-local chunks (the global LRNG / LINK / REAC are gone; world.c refuses a file without NBRS)
+        ids = set(chunk.File(blob, b"WRLD").chunks)
+        if ids != {b"BLKS", b"NBRS", b"LRNL", b"LNKL", b"RCHL"}:
+            bad.append(f"world.bin chunks {sorted(ids)}")
         # the wide layout (a block over NBR_MAX neighbours) read back the same way
         old = export_world.NBR_MAX
         export_world.NBR_MAX = max(len(x) for x in nbrs) - 1
