@@ -50,6 +50,9 @@ MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
 NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
+CHR_LITE = os.environ.get("WORLD_CHR_LITE", "1") != "0"  # world_i.h WORLD_CHR_LITE (default 1): E_ENM too, E_AI
+AI_UNLOAD = os.environ.get("WORLD_AI_UNLOAD", "1") != "0"  # world_i.h WORLD_AI_UNLOAD (default 1, with CHR_LITE): E_AI
+HEAD_TEX = os.environ.get("WORLD_HEAD_TEX", "1") != "0"  # world_i.h WORLD_HEAD_TEX: E_AI / E_OBJH in the texture buffer
 FX_LITE = os.environ.get("WORLD_FX_LITE", "1") != "0"  # world_i.h WORLD_FX_LITE (default 1): E_FXH
 OBJ_LITE = os.environ.get("WORLD_OBJ_LITE", "1") != "0"  # world_i.h WORLD_OBJ_LITE (default 1): E_OBJH
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
@@ -139,17 +142,23 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
-    if NAV_LITE:  # world_i.h WORLD_NAV_LITE: E_ENM, the whole enemies.bin (not a lean entry)
+    if NAV_LITE or CHR_LITE:  # world_i.h WORLD_NAV_LITE / WORLD_CHR_LITE: E_ENM, the whole enemies.bin (not lean)
         total += r128(sz("enemies.bin"))
+    ai = r128(sz("ai_map.lua0")) if AI_UNLOAD and CHR_LITE else 0  # world_i.h WORLD_AI_UNLOAD: E_AI (its map AI)
+    if not HEAD_TEX:
+        total += ai
     if FX_LITE:  # world_i.h WORLD_FX_LITE: E_FXH, fx.bin before its first pixel / CLUT (world.c fx_head_size)
         total += r128(fx_head_bytes(d))
-    if OBJ_LITE:  # world_i.h WORLD_OBJ_LITE: E_OBJH, objects.bin up to MODL's chunk header (world.c obj_tail)
-        total += r128(obj_head_bytes(d))
+    objh = r128(obj_head_bytes(d)) if OBJ_LITE else 0  # world_i.h WORLD_OBJ_LITE: E_OBJH (world.c obj_tail)
+    if not HEAD_TEX:
+        total += objh
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     if DG_LITE:  # (world.c LEAN_ENT)
         tabs += r128(sz("pvs.bin"))
-    return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
+    # the texture buffer (world.c tex_total): objects.bin's tail (with its head: WORLD_HEAD_TEX), fx.bin, the map AI
+    texbuf = max(r128(obj_tex_bytes(d)) + (objh if HEAD_TEX else 0), r128(sz("fx.bin")), ai if HEAD_TEX else 0)
+    return total, tabs, r128(sz("bump.bin")), texbuf
 
 
 def fx_head_bytes(d):

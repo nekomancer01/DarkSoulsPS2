@@ -743,9 +743,11 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
     const char *q = pack_path(path, j->path, sizeof j->path);  /* cdrom0: name, or path itself for host: */
     if (q != j->path)
         snprintf(j->path, sizeof j->path, "%s", q);
-    j->name = name, j->get = get, j->put = put, j->fd = -1, j->fdc = -1;
+    j->name = name, j->get = get, j->put = put, j->fd = -1, j->fdc = -1, j->prio = SNDD_PRIO_BG;
     j->state = J_OPEN;
 }
+
+void pack_job_first(PackJob *j) { j->prio = SNDD_PRIO_SYNC; }
 
 /* Handles of packs jobs read, with the pack's first sector (header + entry table): the next job on the same pack skips
  * the open and the header read. From cdrom0: an open is an ISO directory search and the header a seek + read, ~0.1-0.3
@@ -830,7 +832,7 @@ int pack_job_step(PackJob *j)
                 j->res = sizeof j->head, j->tk = 0, j->state = J_HEADING;
                 return pack_job_step(j);
             }
-        if (!(j->tk = io_submit(SNDD_OPEN, SNDD_PRIO_BG, -1, j->path, 0, NULL, 0)))
+        if (!(j->tk = io_submit(SNDD_OPEN, j->prio, -1, j->path, 0, NULL, 0)))
             return 0;  /* every request slot taken: next frame */
         j->state = J_OPENING;
         return 0;
@@ -848,7 +850,7 @@ int pack_job_step(PackJob *j)
         j->state = J_HEAD;
         /* fall through */
     case J_HEAD:
-        if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, 0, head, sizeof j->head)))
+        if (!(j->tk = io_submit(SNDD_READ, j->prio, j->fd, NULL, 0, head, sizeof j->head)))
             return 0;
         j->state = J_HEADING;
         return 0;
@@ -892,7 +894,7 @@ int pack_job_step(PackJob *j)
                 return job_fail(j, j->out ? "entry grows on decode" : "OUT OF RAM");
         }
         j->in = j->out + ((j->alloc - j->packed) & ~63u);
-        if (!(j->tk = io_submit(SNDD_READ, SNDD_PRIO_BG, j->fd, NULL, j->off, j->in, j->packed)))
+        if (!(j->tk = io_submit(SNDD_READ, j->prio, j->fd, NULL, j->off, j->in, j->packed)))
             return 0;
         j->state = J_READING;
         return 0;
@@ -1012,6 +1014,19 @@ int pack_job_has(const PackJob *j, const char *name)
         if (!strncmp(e[i].name, name, sizeof e->name))
             return 1;
     return n > cap;  /* (beyond the first sector: not known, try it) */
+}
+
+unsigned pack_job_entry_size(const PackJob *j, const char *name)
+{
+    const unsigned *head = j->head;
+    if (memcmp(head, "DSRP", 4))
+        return 0;
+    const struct PackEntry *e = (const struct PackEntry *)(head + 4);
+    unsigned n = head[2], cap = (sizeof j->head - 16) / sizeof *e;
+    for (unsigned i = 0; i < n && i < cap; i++)
+        if (!strncmp(e[i].name, name, sizeof e->name))
+            return e[i].raw;
+    return 0;
 }
 
 static void *heap_get(unsigned n) { return memalign(128, n); }

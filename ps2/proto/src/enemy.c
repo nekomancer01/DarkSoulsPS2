@@ -32,6 +32,7 @@
 #include "model.h"
 #include "vu1.h"
 #include "ai.h"
+#include "lua0.h"  /* LHeld (enemy_block_ai) */
 #include "esd.h"
 #include "combat.h"
 #include "collision.h"
@@ -184,6 +185,13 @@ typedef struct {
     float walk_speed, run_speed;
     const RagBody *rag;  /* hkx ragdoll bodies (hit capsules, death ragdoll); NULL none (c1000) */
     int nrag;
+    /* WORLD_CHR_LITE (world_i.h): types made when a block turns on (enemy_block_types_lite) */
+    short refs;              /* on blocks placing it (counted once per block) */
+    unsigned char stub;      /* name + pack only: its chr.bin head is still to be read (head_poll); never placed */
+    unsigned char dead;      /* a free slot (its last block let it go) */
+    unsigned char doomed;    /* refs went to 0 while its model was in or loading: freed once it is out */
+    unsigned char keep;      /* made at boot (the boot area's): never freed */
+    void *alias;             /* a merged stub: the twin (ChrType *) its block places; no head of its own */
 } ChrType;
 
 typedef struct {
@@ -644,11 +652,45 @@ static int chr_same(const ChrType *t, const void *cb, unsigned size)
     return cb && size == t->chr_size && fnv1a(cb, size) == t->chr_hash;
 }
 
+/* t's resident chr.bin part (header + variants) and walk / run speeds from the whole file cb (the caller frees cb);
+ * 0: a bad file or no RAM */
+static int type_head(ChrType *t, void *cb, unsigned csize, unsigned hash)
+{
+    const ChrHdr *h = cb;
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
+        !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
+        printf("enemy: %.8s: bad chr.bin\n", t->name);
+        return 0;
+    }
+    /* the resident part: header + variants */
+    unsigned head_n = sizeof *h + h->variants * sizeof(ChrVar);
+    char *head = malloc(head_n);
+    if (!head) {
+        printf("enemy: %.8s: no RAM for its chr.bin header\n", t->name);
+        return 0;
+    }
+    memcpy(head, h, sizeof *h);
+    memcpy(head + sizeof *h, (const char *)cb + h->var_off, h->variants * sizeof(ChrVar));
+    t->chr_size = csize;
+    t->chr_hash = hash;
+    t->h = (const ChrHdr *)head;
+    t->vars = (const ChrVar *)(head + sizeof *h);
+    t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
+    chr_attach(t, cb);  /* the speeds from the whole file, once */
+    t->walk_speed = loop_speed(t, 200);
+    t->run_speed = loop_speed(t, 500);
+    chr_attach(t, NULL);
+    t->near_d = 1e9f;
+    printf("enemy: %.8s %u variants, %u anims, chr.bin %u B (%u resident), RAM free %uK\n", t->name, t->h->variants,
+           t->h->anims, csize, head_n, enemy_ram_free() >> 10);
+    return 1;
+}
+
 static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
 {
     (void)gs;
     for (int i = 0; i < ntypes; i++)
-        if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
+        if (!types[i].dead && !strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
             return &types[i];
     if (ntypes >= MAX_TYPES)
         return NULL;
@@ -662,46 +704,25 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     pack_close(&pk);
     unsigned hash = cb ? fnv1a(cb, csize) : 0;
     for (int i = 0; cb && i < ntypes; i++)  /* the same character with the same variants in another block: one type */
-        if (!strncmp(types[i].name, name, 8) && types[i].chr_size == csize && types[i].chr_hash == hash) {
+        if (!types[i].dead && !types[i].stub && !strncmp(types[i].name, name, 8) && types[i].chr_size == csize &&
+            types[i].chr_hash == hash) {
             free(cb);
             return &types[i];
         }
-    const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
-        !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
-        printf("enemy: %s: bad chr.bin\n", name);
+    if (!cb || ntypes >= MAX_TYPES) {
         free(cb);
         return NULL;
     }
-    /* the resident part: header + variants */
-    unsigned head_n = sizeof *h + h->variants * sizeof(ChrVar);
-    char *head = malloc(head_n);
-    if (!head) {
-        printf("enemy: %s: no RAM for its chr.bin header\n", name);
-        free(cb);
-        return NULL;
-    }
-    memcpy(head, h, sizeof *h);
-    memcpy(head + sizeof *h, (const char *)cb + h->var_off, h->variants * sizeof(ChrVar));
     ChrType *t = &types[ntypes];
     memset(t, 0, sizeof *t);
     memcpy(t->name, name, 8);
     t->dir = dir;
-    t->chr_size = csize;
-    t->chr_hash = hash;
     t->model_raw = model_raw;
-    ntypes++;  /* its model.bin, chr.bin tail and textures load once a placement comes near (stream_types) */
-    t->h = (const ChrHdr *)head;
-    t->vars = (const ChrVar *)(head + sizeof *h);
-    t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
-    chr_attach(t, cb);  /* the speeds from the whole file, once */
-    t->walk_speed = loop_speed(t, 200);
-    t->run_speed = loop_speed(t, 500);
-    chr_attach(t, NULL);
+    int ok = type_head(t, cb, csize, hash);
     free(cb);
-    t->near_d = 1e9f;
-    printf("enemy: %s %u variants, %u anims, chr.bin %u B (%u resident), RAM free %uK\n", name, t->h->variants,
-           t->h->anims, csize, head_n, enemy_ram_free() >> 10);
+    if (!ok)
+        return NULL;
+    ntypes++;  /* its model.bin, chr.bin tail and textures load once a placement comes near (stream_types) */
     return t;
 }
 
@@ -1038,6 +1059,8 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
         place(t, r, nenemies++, 0, i);
     }
     int ntri = nav_load(0, nav, nav_size);
+    for (int i = 0; i < ntypes; i++)  /* (the boot area's types stay: WORLD_CHR_LITE never lets them go) */
+        types[i].keep = 1;
     /* every type starts unloaded; enemy_update loads the ones near the player */
     printf("enemy: %d characters of %d types, navmesh %d tris (%u B), RAM free %uK after unloading\n", nenemies,
            ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
@@ -1045,6 +1068,7 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
 }
 
 static char blk_dir[ENEMY_BLOCKS][32];
+static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
 static unsigned char blk_nav_lite[ENEMY_BLOCKS];  /* WORLD_NAV_LITE: the navmesh is bound with the lite set */
 
 void enemy_nav_with_block(int block)
@@ -1064,7 +1088,257 @@ int enemy_block_nav(int block, const void *enm, unsigned enm_size)
         printf("enemy: block %d: navmesh not bound (%u B)\n", block, nav_size);
     return n;
 }
-static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
+
+/* ---- WORLD_CHR_LITE (world_i.h): a block's enemy types made when it turns on, from its enemies.bin in its lite set,
+ * and let go when it turns off. DSR loads a block's characters with the block (WorldBlockChrPrepare in FUN_1403dac50,
+ * notes/EXE_FINDINGS.md). A type starts as a stub (name + pack); its chr.bin head (header + variants, 0.3-2 KB) is read
+ * in the background (head_poll: one pack job at a time, no frame stall, as the models load), then it may be placed.
+ * Same-name types of two blocks with equal chr.bin are one (twin), as at boot. Counted once per block. ---- */
+static unsigned char blk_typed[ENEMY_BLOCKS], blk_npc_done[ENEMY_BLOCKS];
+/* up to HEAD_JOBS heads read at once (the disc server orders the requests by position; one at a time a 4-block warp's 29
+ * heads took ~9 s on the ISO, 2026-11-25) */
+#define HEAD_JOBS 4
+/* HEAD_AFTER_LITE (default 1; 0: a head read starts as soon as its stub is made): no new head read while a wanted
+ * block's lite set loads outside a warp. The map reader is held for that set (wplan.c lite_pending); head reads at
+ * sync priority stretched it (Darkroot, iso_neighbours 2026-11-25: 13 heads, stage 1 0.7 -> 2.6 s, map reads held the
+ * whole time, Parish -> Darkroot pop-ins 12-13 -> 18-21) */
+#ifndef HEAD_AFTER_LITE
+#define HEAD_AFTER_LITE 1
+#endif
+static PackJob hjobs[HEAD_JOBS];
+static ChrType *hjob_ts[HEAD_JOBS];  /* the stub each head job reads, NULL idle */
+static int head_busy(const ChrType *t)
+{
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            return 1;
+    return 0;
+}
+
+
+static void type_kill(ChrType *t)
+{
+    if (t->keep)
+        return;
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            pack_job_abandon(&hjobs[j]), hjob_ts[j] = NULL;
+    for (int i = 0; i < ntypes; i++)  /* (its aliases go with it) */
+        if (types[i].alias == t)
+            memset(&types[i], 0, sizeof types[i]), types[i].dead = 1;
+    free((void *)t->h);
+    memset(t, 0, sizeof *t);
+    t->dead = 1;
+    while (ntypes && types[ntypes - 1].dead)
+        ntypes--;
+}
+
+static ChrType *type_stub(const char *name, const char *dir)
+{
+    int free_i = -1;
+    for (int i = 0; i < ntypes; i++) {
+        if (types[i].dead) {
+            free_i = free_i < 0 ? i : free_i;
+            continue;
+        }
+        if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
+            return types[i].alias ? (ChrType *)types[i].alias : &types[i];
+    }
+    for (int i = 0; free_i < 0 && ntypes >= MAX_TYPES && i < ntypes; i++)  /* full: a head no on block places goes */
+        if (!types[i].refs && !types[i].keep && !types[i].loaded && job_t != &types[i] && !head_busy(&types[i])) {
+            type_kill(&types[i]);
+            free_i = i < ntypes ? i : -1;
+        }
+    if (free_i < 0 && ntypes >= MAX_TYPES)
+        return NULL;
+    ChrType *t = &types[free_i >= 0 ? free_i : ntypes++];
+    memset(t, 0, sizeof *t);
+    memcpy(t->name, name, 8);
+    t->dir = dir;
+    t->stub = 1;
+    t->near_d = 1e9f;
+    return t;
+}
+
+static int blk_uses(int b, const ChrType *t)
+{
+    for (int k = 0; k < blk_n[b]; k++)
+        if (blk_type[b][k] == t)
+            return 1;
+    return 0;
+}
+
+/* stub t is the same character as twin (equal chr.bin): every block placing t places twin, t goes */
+static void type_merge(ChrType *t, ChrType *twin)
+{
+    for (int b = 1; b < ENEMY_BLOCKS; b++) {
+        if (!blk_typed[b] || !blk_uses(b, t))
+            continue;
+        if (!blk_uses(b, twin))
+            twin->refs++;
+        for (int k = 0; k < blk_n[b]; k++)
+            if (blk_type[b][k] == t)
+                blk_type[b][k] = twin;
+    }
+    t->stub = 0, t->refs = 0, t->alias = twin;  /* (kept as the name + pack's alias: its next turn-on reads nothing) */
+}
+
+static int place_rec(int block, int k);
+
+/* one head job: its result (a twin merges, else the type gets its head; its placements may be placed from now) */
+static void head_done(PackJob *hj, ChrType *t, int r)
+{
+    if (r < 0 || !t->refs) {
+        if (r > 0)
+            hj->put(hj->out, hj->alloc);
+        t->retry = frame + 60;  /* (a read error: again in 2 s) */
+        return;
+    }
+    void *cb = hj->out;
+    unsigned csize = hj->raw, hash = fnv1a(cb, csize);
+    ChrType *twin = NULL;
+    for (int i = 0; i < ntypes && !twin; i++)
+        if (&types[i] != t && !types[i].dead && !types[i].stub && !types[i].alias && !strncmp(types[i].name, t->name, 8) &&
+            types[i].chr_size == csize && types[i].chr_hash == hash)
+            twin = &types[i];
+    if (twin) {
+        hj->put(cb, hj->alloc);
+        type_merge(t, twin);
+        return;
+    }
+    t->model_raw = pack_job_entry_size(hj, "model.bin");
+    int ok = type_head(t, cb, csize, hash);
+    hj->put(cb, hj->alloc);
+    if (!ok) {
+        t->retry = frame + 3600;  /* (a bad file: not every frame) */
+        return;
+    }
+    t->stub = 0;
+    for (int b = 1; !ENEMY_NEAR_PLACE && b < ENEMY_BLOCKS; b++)  /* (all placed at once: the ones that waited) */
+        for (int k = 0; blk_on[b] && k < blk_n[b]; k++)
+            if (blk_type[b][k] == t && blk_slot[b][k] < 0)
+                place_rec(b, k);
+}
+
+static void head_poll(void)
+{
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j]) {
+            int r = pack_job_step(&hjobs[j]);
+            if (r) {
+                ChrType *t = hjob_ts[j];
+                hjob_ts[j] = NULL;
+                head_done(&hjobs[j], t, r);
+            }
+        }
+    }
+    if (HEAD_AFTER_LITE && world_lite_busy())
+        return;
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j])
+            continue;
+        ChrType *t = NULL;
+        for (int i = 0; i < ntypes && !t; i++)
+            if (types[i].stub && !types[i].dead && types[i].refs && frame >= types[i].retry && !head_busy(&types[i]))
+                t = &types[i];
+        if (!t)
+            return;
+        char path[64];
+        model_path(path, sizeof path, t);
+        pack_job_start(&hjobs[j], path, "chr.bin", heap_get, heap_put);
+        pack_job_first(&hjobs[j]);  /* (before the map streaming's reads: its placements wait for it) */
+        hjob_ts[j] = t;
+    }
+}
+
+void enemy_block_lua(const void *map_lua, int map_lua_size)
+{
+#ifndef NO_AI_SCRIPTS
+    if (inited && map_lua)  /* (no VM without enemies: option noenemies never ran enemy_init) */
+        ai_scripts_add(map_lua, map_lua_size);
+#endif
+}
+
+#ifndef NO_AI_SCRIPTS
+static LHeld blk_ai[ENEMY_BLOCKS];  /* WORLD_AI_UNLOAD: the chunks each block's map AI holds */
+#endif
+
+int enemy_block_ai(int block, const void *map_lua, int map_lua_size, int on)
+{
+#ifndef NO_AI_SCRIPTS
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS)
+        return 0;
+    LHeld *h = &blk_ai[block];
+    if (on && map_lua && !h->n)
+        ai_block_load(map_lua, map_lua_size, h);
+    else if (!on && h->n)
+        ai_block_drop(h);
+    return h->n > 0;  /* (a load error after some chunks: those are still given back at the turn-off) */
+#else
+    (void)block, (void)map_lua, (void)map_lua_size, (void)on;
+    return 0;
+#endif
+}
+
+int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)
+{
+    unsigned count, nav_size;
+    const void *nav;
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS || blk_typed[block])
+        return 0;
+    const unsigned char *b = placements_of(enm, enm_size, block, &count, &nav, &nav_size);
+    if (!b)
+        return 0;
+    snprintf(blk_dir[block], sizeof blk_dir[block], "%s/", dir);
+    free(blk_rec[block]);
+    blk_rec[block] = malloc(count * ENEMY_REC + 1);
+    blk_n[block] = 0;
+    int stubs = 0;
+    for (unsigned i = 0; blk_rec[block] && i < count && i < MAX_ENEMIES; i++) {
+        const unsigned char *r = b + ENEMY_REC * i;
+        char name[9] = {0};
+        memcpy(name, r, 8);
+        if (!strcmp(name, "c0000")) {  /* human NPCs (npc.c): kept once, as at boot */
+            if (!blk_npc_done[block])
+                npc_keep(block, r);
+            continue;
+        }
+        ChrType *t = type_stub(name, blk_dir[block]);
+        if (!t)
+            continue;
+        if (!blk_uses(block, t))
+            t->refs++, stubs += t->stub;
+        blk_type[block][blk_n[block]] = t;
+        memcpy(blk_rec[block] + ENEMY_REC * blk_n[block]++, r, ENEMY_REC);
+    }
+    blk_npc_done[block] = 1;
+    blk_typed[block] = 1;
+    printf("enemy: block %d types: %d placements, %d types (%d heads to read), RAM free %uK\n", block, blk_n[block],
+           ntypes, stubs, enemy_ram_free() >> 10);
+    return blk_n[block];
+}
+
+void enemy_block_untypes(int block)
+{
+    if (block <= 0 || block >= ENEMY_BLOCKS || !blk_typed[block])
+        return;
+    for (int k = 0; k < blk_n[block]; k++) {
+        ChrType *t = blk_type[block][k];
+        int first = 1;
+        for (int j = 0; j < k && first; j++)
+            first = blk_type[block][j] != t;
+        if (!t || !first || --t->refs > 0)
+            continue;
+        if (t->stub)  /* (its head never came: nothing to keep) */
+            type_kill(t);
+        /* else its head (0.3-2 KB: 80 KB for the 137 types of 27 blocks) stays for the block's next turn-on, which then
+         * places at once; type_stub evicts it only when the table is full. Its model unloads by distance as before */
+    }
+    for (int k = 0; k < blk_n[block]; k++)
+        blk_type[block][k] = NULL;
+    free(blk_rec[block]), blk_rec[block] = NULL, blk_n[block] = 0;
+    blk_typed[block] = 0;
+}
 
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
                       const void *map_lua, int map_lua_size)
@@ -1119,7 +1393,7 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
 static int place_rec(int block, int k)
 {
     ChrType *t = blk_type[block][k];
-    if (!t)
+    if (!t || t->stub)  /* (WORLD_CHR_LITE: its head is still being read) */
         return -1;
     int i = 0;
     while (i < nenemies && !(ev_off[i] & EV_FREE))
@@ -1204,7 +1478,7 @@ static void place_near(const Player *pl)
         float best = PLACE_DIST * PLACE_DIST;
         for (int b = 1; b < ENEMY_BLOCKS; b++)
             for (int k = 0; blk_on[b] && k < blk_n[b]; k++) {
-                if (blk_slot[b][k] >= 0 || !blk_type[b][k])
+                if (blk_slot[b][k] >= 0 || !blk_type[b][k] || blk_type[b][k]->stub)
                     continue;
                 float f[3];
                 memcpy(f, blk_rec[b] + ENEMY_REC * k + 20, 12);
@@ -1321,7 +1595,11 @@ static void stream_types(const Player *pl)
         if (e->dead_t <= CORPSE_TIME && d < e->ct->near_d)
             e->ct->near_d = d;
     }
+    head_poll();
     job_poll();
+    for (int i = 0; i < ntypes; i++)  /* WORLD_CHR_LITE: let go by its last block, now out */
+        if (types[i].doomed && !types[i].loaded && job_t != &types[i])
+            type_kill(&types[i]);
     ChrType *next = NULL;
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
@@ -1363,8 +1641,11 @@ int enemy_trace_types(char *buf, int cap, unsigned frame)
 
 int enemy_stream_settled(void)
 {
-    if (job_t)
+    if (job_t || hjob_ts[0] || hjob_ts[1] || hjob_ts[2] || hjob_ts[3])
         return 0;
+    for (int i = 0; i < ntypes; i++)  /* (WORLD_CHR_LITE: a placed block's heads first) */
+        if (types[i].stub && types[i].refs > 0 && !types[i].dead && frame >= types[i].retry)
+            return 0;
     for (int i = 0; i < ntypes; i++)
         if (wants_load(&types[i]))
             return 0;
@@ -2744,7 +3025,7 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         const ChrType *t = blk_type[b][k];
         int npc, think, hp = blk_hp[b][k], hpm = 0;
         memcpy(&npc, r + 8, 4), memcpy(&think, r + 12, 4);
-        for (unsigned v = 0; v < t->h->variants; v++)
+        for (unsigned v = 0; t->h && v < t->h->variants; v++)
             if (!v || (t->vars[v].npc == npc && t->vars[v].think == think))
                 hpm = t->vars[v].hp;
         *hp_ratio = dd ? 0 : hp > 0 && hpm > 0 ? (float)hp / hpm : 1;
