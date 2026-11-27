@@ -33,7 +33,7 @@ unsigned ms_lent_near;  /* bytes of near parts placed in pool pages (approximate
  * pages a larger need took back (a chain read them: next call) */
 unsigned ms_spare0, ms_spare_p;
 static unsigned need_now = ~0u, col_now = ~0u;
-static int need_left;
+static unsigned rec_a0, rec_a1, rec_b0, rec_b1;  /* pages the spare range gave up: [a0, a1) below, [b0, b1) above */
 static unsigned spare_reclaim(unsigned p0, unsigned p1)
 {
     unsigned busy = 0, n = 0;
@@ -90,10 +90,23 @@ void mapstream_pool_need(unsigned lite, unsigned col)
         printf("mapstream: area pool need %u KB (lite sets %u, collision tiles %u) of %u KB: %u spare pages\n",
                (lite + col) >> 10, lite >> 10, col >> 10, np * (MS_PAGE >> 10), sp);
     need_now = lite, col_now = col;
-    need_left |= s0 > ms_spare0 || s0 + sp < ms_spare0 + ms_spare_p;  /* (the spare range shrank at either end) */
+    /* only the pages the spare range gave up are cleared, once (a chain's still: next call): clearing the whole pool
+     * outside the range each step dropped lent items whose class had risen since, in view at the Taurus fog wall
+     * (iso_burg_taurus failed twice) */
+    unsigned o0 = ms_spare0, o1 = ms_spare0 + ms_spare_p, n1 = s0 + sp;
+    if (ms_spare_p && s0 > o0) {  /* gave up [o0, min(o1, s0)) at the bottom */
+        unsigned e = o1 < s0 ? o1 : s0;
+        rec_a0 = rec_a1 > rec_a0 && rec_a0 < o0 ? rec_a0 : o0, rec_a1 = e > rec_a1 ? e : rec_a1;
+    }
+    if (ms_spare_p && n1 < o1) {  /* gave up [max(o0, n1), o1) at the top */
+        unsigned b = o0 > n1 ? o0 : n1;
+        rec_b0 = rec_b1 > rec_b0 && rec_b0 < b ? rec_b0 : b, rec_b1 = o1 > rec_b1 ? o1 : rec_b1;
+    }
     ms_spare0 = s0, ms_spare_p = sp;
-    if (need_left)
-        need_left = (spare_reclaim(msa_spage0(), s0) + spare_reclaim(s0 + sp, msa_npages())) > 0;
+    if (rec_a1 > rec_a0 && !spare_reclaim(rec_a0, rec_a1))
+        rec_a0 = rec_a1 = 0;
+    if (rec_b1 > rec_b0 && !spare_reclaim(rec_b0, rec_b1))
+        rec_b0 = rec_b1 = 0;
 }
 
 static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
