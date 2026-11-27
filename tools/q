@@ -25,12 +25,14 @@
 #           a no-op or C-only build no longer waits for a world build's 12 GB (2026-11-02: a no-op make waited 38 min
 #           behind tests), and the -j exports of one build queue against the budget instead of all starting at once.
 #           Their lines in jobq.log say "in make".
-# Env: DSR_Q_BUDGET (default 20 GB of the 31 GB host: leaves room for the desktop, browser, RuneLite and Claude),
+# Env: DSR_Q_BUDGET (default 20/31 of MemTotal, rounded: 20 GB on the 31 GB host it was tuned on, which leaves room
+#      for the desktop, browser, RuneLite and Claude; ~10 GB under WSL2, which gets half of a 31 GB Windows host, and
+#      on 16 GB machines),
 #      DSR_Q_MAKE_GB (default 8), DSR_Q_MAKE_BASE_GB (3), DSR_Q_NESTED_GB (6). memwatch stays the backstop.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 GB=10
 R=
-Q_BUDGET=${DSR_Q_BUDGET:-20}
+Q_BUDGET=${DSR_Q_BUDGET:-$(awk '/^MemTotal:/ {b = int($2 / 1048576 * 20 / 31 + 0.5); print (b < 1 ? 1 : b)}' /proc/meminfo)}
 while :; do
     case "$1" in -m) GB=$2; shift 2 ;; -r) R=$2; shift 2 ;; *) break ;; esac
 done
