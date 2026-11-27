@@ -47,6 +47,8 @@ RUN=$BUILD/test/runs/$(date +%Y%m%d-%H%M%S)
 mkdir -p "$RUN"
 STEPS=$RUN/steps.txt
 FAILED=0
+# the budget step's allowed misses (tools/budget.py --ratchet; the CI gate): only the failing gates no entry covers fail it
+RATCHET=; [ -f "${BUDGET_RATCHET:-tools/ci/budget_ratchet.json}" ] && RATCHET="--ratchet ${BUDGET_RATCHET:-tools/ci/budget_ratchet.json}"
 step() {  # step <name> <command...>: run, log status + time to steps.txt
     local name=$1; shift
     local t0=$(date +%s)
@@ -96,7 +98,7 @@ if [ -n "$BURG" ]; then
         cat "$f" >> "$STEPS"
         grep -q ' FAIL(' "$f" && FAILED=$((FAILED + 1))
     done
-    step budget "$PY" tools/budget.py "$RUN/burg" --json "$RUN/budget.json"
+    step budget "$PY" tools/budget.py "$RUN/burg" --json "$RUN/budget.json" $RATCHET
     "$PY" tools/runstamp.py "$ELF" > "$RUN/stamp.json" 2>/dev/null
     "$PY" tools/test-report.py "$RUN" > /dev/null
     echo
@@ -134,7 +136,7 @@ if [ -f "$RUN/smoke/smoke.json" ] && [ -n "$ELFS" ]; then
     step perf "$PY" tools/test-perf.py check "$BUILD/test/perf-history.csv" $ELFS --json "$RUN/perf.json"
 fi
 # the frame budget per shot (tools/budget.py; host ELF runs: no disc server, so no disc gates)
-[ -d "$RUN/smoke" ] && step budget "$PY" tools/budget.py "$RUN/smoke"
+[ -d "$RUN/smoke" ] && step budget "$PY" tools/budget.py "$RUN/smoke" --json "$RUN/budget.json" $RATCHET
 # what this run tested (tools/runstamp.py): git revision + uncommitted-change hash, ELF hashes; shown in report.html
 "$PY" tools/runstamp.py $ELFS > "$RUN/stamp.json" 2>/dev/null
 ln -sfn "$RUN" "$BUILD/test/last"

@@ -36,6 +36,7 @@ enum {
     HS_FX,     /* inside HS_CHR: fx_update + fx_draw (the budget's effects pass) */
     HS_HUD,    /* inside HS_CHR: HUD, menu, overlays */
     HS_DBG,    /* inside HS_HUD: the debug overlay (option hud in the tests; not part of the budget) */
+    HS_VSYNC,  /* inside HS_FLIP: main.c flip()'s vsync waits (EE idle; frame minus this = busy time) */
     HS_N
 };
 
@@ -49,6 +50,12 @@ static inline unsigned hitch_now(void) { return ticks(); }
 void hitch_loadscreen(void);
 /* end of a frame: dt_real = the whole frame (s) */
 void hitch_frame(float dt_real);
+/* EE busy ms of the frame hitch_frame() closed last: dt_real minus its vsync waits (HS_VSYNC); the frame time itself
+ * is quantised to whole fields by the vsync cap, this is what the frame needed (testscript.c busy_p*, governor.c) */
+extern float hitch_busy_ms;
+/* 1 when the frame hitch_frame() closed last showed a loading screen (hitch_loadscreen: warps, holds, deaths): the
+ * stutter stats skip it like a teleport's settle (testscript.c miss_run / frame_max) */
+extern int hitch_load_frame;
 /* mapstream.c: an item read (again: it was loaded before in this run) */
 void hitch_load(int again, int thrash, unsigned bytes);
 /* mapstream.c: an item dropped; wanted = it still had a class that wanted it (evicted for something else) */

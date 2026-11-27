@@ -192,6 +192,8 @@ int frame_det_buffers(void) { return 1; }
 FxStats fx_stats;
 Vu1Stats vu1_stats;
 unsigned hitch_acc[HS_N];
+float hitch_busy_ms;
+int hitch_load_frame;
 int map_vu1_batches, map_ee_tris;
 char _stack_size[1];
 int pack_cdrom;

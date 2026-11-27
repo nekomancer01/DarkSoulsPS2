@@ -12,6 +12,8 @@
 #include "mapstream.h"
 #include "pack.h"
 #include "dsrsnd_rpc.h"
+#include "frame_budget.h"
+#include "testscript.h"
 #ifdef HEAPMAP
 #include "render.h"  /* r_vram_census */
 #endif
@@ -20,6 +22,12 @@
 #define TPMS 294912u  /* EE ticks per ms */
 #define HITCH_SPIKE_MS 150   /* a single frame this long (outside a loading screen) gets its own "spike:" line */
 #define HITCH_SPIKES_MAX 6   /* "spike:" lines a period at most (the rest only counted) */
+/* HITCH_MISS (debug, default on): while a test script runs, a frame at or over FB_OVER_MS (a missed vsync) prints its
+ * section split as one "hitch: miss" line, at most one a second (the frame-time plan's over34 table,
+ * reports/frametime/over34.md; tools/hitchsum.py reads "hitch: t" lines only). DEFS=-DHITCH_MISS=0: none */
+#ifndef HITCH_MISS
+#define HITCH_MISS 1
+#endif
 
 /* the real allocators (-Wl,--wrap=malloc,...: the wrappers below count the failures) */
 void *__real_malloc(size_t n);
@@ -30,6 +38,8 @@ void __real_free(void *p);
 
 unsigned hitch_acc[HS_N];
 HitchTotals hitch_total;
+float hitch_busy_ms;
+int hitch_load_frame;
 
 static float per_s, run_s;
 static unsigned n_fr, o50, o100, o200, worst_ms, worst_sec[HS_N], sum_ms;
@@ -340,6 +350,8 @@ void hitch_loadscreen(void) { load_fr = 1; }
 void hitch_frame(float dt_real)
 {
     unsigned ms = (unsigned)(dt_real * 1000.0f + 0.5f);
+    hitch_busy_ms = dt_real * 1000.0f - hitch_acc[HS_VSYNC] * (1.0f / TPMS);
+    hitch_load_frame = load_fr;
     if (load_fr) {  /* behind a loading screen: its own count */
         load_fr = 0;
         n_load++, hitch_total.loads++;
@@ -351,6 +363,21 @@ void hitch_frame(float dt_real)
     }
     n_fr++, sum_ms += ms;
     hitch_total.frames++;
+#if HITCH_MISS
+    static float miss_t = -1;
+    if (dt_real * 1000.0f >= FB_OVER_MS && run_s - miss_t >= 1.0f && test_active()) {
+        const float k = 1.0f / TPMS;
+        miss_t = run_s;
+        printf("hitch: miss t %u ms %.2f map %.2f chr %.2f logic %.2f world %.2f fx %.2f vu1 %.2f flip %.2f vsync %.2f "
+               "busy %.2f at %.1f %.1f %.1f block %d\n", (unsigned)run_s, (double)(dt_real * 1000.0f),
+               (double)(hitch_acc[HS_MAP] * k), (double)((hitch_acc[HS_CHR] - hitch_acc[HS_FX] - hitch_acc[HS_HUD]) * k),
+               (double)((hitch_acc[HS_PRE] + hitch_acc[HS_LOGIC]) * k),
+               (double)((hitch_acc[HS_WORLD] + hitch_acc[HS_SND]) * k),
+               (double)((hitch_acc[HS_FX] + hitch_acc[HS_HUD] - hitch_acc[HS_DBG]) * k),
+               (double)(hitch_acc[HS_WAIT] * k), (double)(hitch_acc[HS_FLIP] * k), (double)(hitch_acc[HS_VSYNC] * k),
+               (double)hitch_busy_ms, (double)where[0], (double)where[1], (double)where[2], where_blk);
+    }
+#endif
     o50 += ms > 50, o100 += ms > 100, o200 += ms > 200;
     hitch_total.over50 += ms > 50, hitch_total.over100 += ms > 100, hitch_total.over200 += ms > 200;
     if (ms > hitch_total.max_ms && run_s > 20.0f)  /* (not the boot) */

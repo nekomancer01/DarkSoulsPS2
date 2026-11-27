@@ -10,6 +10,8 @@
 #include <string.h>
 #include <unistd.h>
 #include "testscript.h"
+#include "frame_budget.h"
+#include "governor.h"
 #include "frame.h"
 #include "cvar.h"
 #include "fx.h"  /* TEST fx line per shot */
@@ -303,6 +305,10 @@ static const char *const pb_name[PB_N] = {"map", "chr", "fxhud", "logic", "world
 #define PB_BINS 256
 #define PB_BIN 0.25f  /* ms: up to 64 ms, the last bin above */
 static unsigned short pb_hist[PB_N][PB_BINS];
+static unsigned short pb_busy[PB_BINS];  /* the frame's EE busy time (hitch_busy_ms: the frame minus its vsync waits) */
+static unsigned pb_run, pb_run_max;  /* frames in a row at or over FB_OVER_MS (missed vsyncs), now and the longest */
+static float pb_frame_max;  /* the segment's worst frame (the histogram tops out at 64 ms) */
+static unsigned pb_gov[4];  /* frames at each governor level (governor.c) */
 static float pb_secs;
 static SndDiscStat pb_disc0;
 
@@ -328,18 +334,38 @@ static void pb_frame(float frame_ms)
         if (pb_hist[i][b] < 0xFFFF)
             pb_hist[i][b]++;
     }
+    int b = hitch_busy_ms < 0 ? 0 : (int)(hitch_busy_ms / PB_BIN);
+    b = b >= PB_BINS ? PB_BINS - 1 : b;
+    if (pb_busy[b] < 0xFFFF)
+        pb_busy[b]++;
     pb_secs += frame_ms * 0.001f;
+    if (hitch_load_frame) {  /* a loading screen (hold, warp): a settle, not a stutter (FB_FRAME_MAX_MS) */
+        pb_run = 0;
+    } else {
+        pb_run = frame_ms >= FB_OVER_MS ? pb_run + 1 : 0;
+        pb_run_max = pb_run > pb_run_max ? pb_run : pb_run_max;
+        pb_frame_max = frame_ms > pb_frame_max ? frame_ms : pb_frame_max;
+    }
+    pb_gov[gov_level & 3]++;
 }
 
 static void pb_print(const char *name)
 {
     unsigned n = 0, over = 0;
     for (int b = 0; b < PB_BINS; b++)
-        n += pb_hist[PB_FRAME][b], over += b * PB_BIN >= 34.0f ? pb_hist[PB_FRAME][b] : 0;
+        n += pb_hist[PB_FRAME][b], over += b * PB_BIN >= FB_OVER_MS ? pb_hist[PB_FRAME][b] : 0;
     printf("TEST passes %s n %u", name, n);
     for (int i = 0; i < PB_N && n; i++)
         printf(" %s_p50 %.2f %s_p90 %.2f", pb_name[i], pb_pct(pb_hist[i], n, 50), pb_name[i], pb_pct(pb_hist[i], n, 90));
-    printf(" frame_p99 %.2f over34 %u secs %.2f", n ? pb_pct(pb_hist[PB_FRAME], n, 99) : 0, over, pb_secs);
+    /* (over34 keeps its name: a stable log key, whatever FB_OVER_MS says) */
+    printf(" frame_p99 %.2f over34 %u miss_run %u frame_max %.2f", n ? pb_pct(pb_hist[PB_FRAME], n, 99) : 0, over,
+           pb_run_max, (double)pb_frame_max);
+    if (n)
+        printf(" busy_p50 %.2f busy_p90 %.2f busy_p99 %.2f", pb_pct(pb_busy, n, 50), pb_pct(pb_busy, n, 90),
+               pb_pct(pb_busy, n, 99));
+    printf(" gov1 %u gov2 %u gov3 %u", n ? pb_gov[1] * 100 / n : 0, n ? pb_gov[2] * 100 / n : 0,
+           n ? pb_gov[3] * 100 / n : 0);  /* % of the frames at each governor level */
+    printf(" secs %.2f", pb_secs);
     SndDiscStat d;
     if (pack_disc_stats(&d)) {
         const SndDiscStat *a = &pb_disc0;
@@ -358,7 +384,10 @@ static void pb_print(const char *name)
 static void seg_reset(void)
 {
     memset(pb_hist, 0, sizeof pb_hist);
+    memset(pb_busy, 0, sizeof pb_busy);
     pb_secs = 0;
+    pb_run = pb_run_max = 0, pb_frame_max = 0;
+    memset(pb_gov, 0, sizeof pb_gov);
     pack_disc_stats(&pb_disc0);
     pack_disc_poll();
     memset(ft_seg, 0, sizeof ft_seg);

@@ -27,6 +27,7 @@
 #include "gs.h"
 #include "ot.h"
 #include "ticks.h"
+#include "governor.h"
 
 /* FX_VU1 1 (default): particles away from the near plane and the guard band go to VU1 (vu1fx.vsm, renderer plan
  * PR 7, Polaris 2.6): the EE sends one 3-qword vertex per particle (spawn state and age), VU1 does the motion, curves,
@@ -35,7 +36,18 @@
 #ifndef FX_VU1
 #define FX_VU1 1
 #endif
-/* Polaris 2.6 fallbacks (each 1 by default; 0 = the path before it):
+/* FX_QCLIP (frame-time pass, default on; =0: r_tri_clip per triangle): an EE billboard past the guard band but in front
+ * of the near plane is clipped as one flat polygon and drawn in the current batch instead of two r_tri_clip calls with
+ * their own GS packets. Measured on the u3f69w thread (2026-11-09, iso_burg_taurus bonfire_o0002): 141 of 227
+ * particles a frame took the per-triangle clip, fx draw 1.86 -> 1.23 ms */
+#ifndef FX_QCLIP
+#define FX_QCLIP 1
+#endif
+/* the frame governor's particle cut (governor.h, gov_level 0-3): % of the particles an emission spawns (a running
+ * remainder over all emitters, so a 1-particle emitter still spawns every few emissions). Particles already alive
+ * finish; ASSUMED steps (frame-time plan Task 9) */
+static const unsigned char fx_gov_spawn[4] = {100, 75, 50, 35};
+static unsigned fx_gov_acc;/* Polaris 2.6 fallbacks (each 1 by default; 0 = the path before it):
  * FX_CLOSED  particles keep their spawn state and ppos gives the position at an age (VU1 moves them); 0 = the EE
  *            integrates every particle each frame (v = (v + a dt)(1 - drag dt), p += v dt, roll += spin dt) and VU1
  *            only expands what the EE moved
@@ -681,8 +693,12 @@ static void step(float dt, int emit_on)
             while (es->timer - s->delay >= s->interval) {
                 es->timer -= s->interval;
                 es->emitted++;
-                for (int n = 0; n < s->per_emit && es->alive < s->max_alive; n++, es->alive++)
+                for (int n = 0; n < s->per_emit && es->alive < s->max_alive; n++) {
+                    if ((fx_gov_acc += fx_gov_spawn[gov_level & 3]) < 100)
+                        continue;  /* (level 0: never) */
+                    fx_gov_acc -= 100, es->alive++;
                     spawn(ii, si);
+                }
             }
         }
     }
@@ -1037,7 +1053,8 @@ void fx_draw(void)
             bind(p->set);
         const FxSys *s = p ? &sys[p->sys] : 0;
         int mode = s ? (R_BLEND | (s->blend ? R_FOG : R_ADD)) : 0;
-        if (nv && (!p || &gtex[s->tex] != cur_gt || mode != cur_mode || nv >= FX_BATCH * 6)) {
+        /* (flushed while there is no room for one more quad: FX_QCLIP polygons add 3 vertices a triangle) */
+        if (nv && (!p || &gtex[s->tex] != cur_gt || mode != cur_mode || nv > FX_BATCH * 6 - 6)) {
             r_tri_list(cur_gt, cur_mode, nv, cv, (const float (*)[3])sc);
             nv = 0, batches++;
         }
@@ -1120,6 +1137,55 @@ void fx_draw(void)
             }
         }
         drawn++, model_drawn += s->model;
+        if (!inside && FX_QCLIP && !s->orient && c.z >= R_NEAR) {
+            /* FX_QCLIP: past the guard band only. The corners share one view depth (camera-facing quads; the
+             * orient-2 sheets have their own), so the guard planes cut the quad as a flat polygon: clipped once (not
+             * as two triangles), projected per vertex, and drawn in this batch instead of its own GS packets */
+            ClipVert pb[2][12];
+            int pn = 4, cur = 0;
+            memcpy(pb[0], q, sizeof q);
+            float lim = r_guard_k() * 0.98f * c.z;
+            for (int pl = 0; pl < 4 && pn >= 3; pl++) {
+                ClipVert *in = pb[cur], *out = pb[cur ^ 1];
+                int m = 0;
+                for (int k = 0; k < pn; k++) {
+                    const ClipVert *a = &in[k], *b = &in[(k + 1) % pn];
+                    float da = pl == 0 ? lim - a->x : pl == 1 ? lim + a->x : pl == 2 ? lim - a->y : lim + a->y;
+                    float db = pl == 0 ? lim - b->x : pl == 1 ? lim + b->x : pl == 2 ? lim - b->y : lim + b->y;
+                    if (da >= 0 && m < 12)
+                        out[m++] = *a;
+                    if ((da >= 0) != (db >= 0) && m < 12) {
+                        float w = da / (da - db);
+                        const float *fa = &a->x, *fb = &b->x;
+                        float *fo = &out[m].x;
+                        for (int e = 0; e < 9; e++)
+                            fo[e] = fa[e] + (fb[e] - fa[e]) * w;
+                        m++;
+                    }
+                }
+                pn = m, cur ^= 1;
+            }
+            if (pn < 3)
+                continue;
+            if (nv + 3 * (pn - 2) > FX_BATCH * 6) {
+                r_tri_list(cur_gt, cur_mode, nv, cv, (const float (*)[3])sc);
+                nv = 0, batches++;
+            }
+            float ps[12][3];
+            for (int k = 0; k < pn; k++) {
+                V3 v = v3(pb[cur][k].x, pb[cur][k].y, pb[cur][k].z);
+                r_view_to_screen(&v, ps[k]);
+            }
+            for (int k = 1; k + 1 < pn; k++) {
+                const int t3[3] = {0, k, k + 1};
+                for (int j = 0; j < 3; j++) {
+                    cv[nv] = pb[cur][t3[j]];
+                    memcpy(sc[nv], ps[t3[j]], sizeof sc[nv]);
+                    nv++;
+                }
+            }
+            continue;
+        }
         if (!inside) {  /* near the camera: clipped triangles, own packets */
             r_tri_clip(&gtex[s->tex], &q[0], &q[1], &q[2], 0, mode);
             r_tri_clip(&gtex[s->tex], &q[0], &q[2], &q[3], 0, mode);

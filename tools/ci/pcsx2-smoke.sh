@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: tools/ci/pcsx2-smoke.sh <commit> [--max N] [--areas a,b]
+# Usage: tools/ci/pcsx2-smoke.sh <commit> [--max N] [--areas a,b] [--burg]
 # The PCSX2 smoke run for the self-hosted runner on the maintainer's PC (.github/workflows/pcsx2-smoke.yml): nightly and
 # after each merge to main. The game data never leaves that PC (AGENTS.md section 1): the job builds and tests in a
 # dedicated worktree of the maintainer's main checkout and publishes only the step summary and the budget table.
@@ -10,18 +10,24 @@
 #              CI run, perf history, budget (everything goes through tools/q, so it waits for other jobs on the PC)
 #   4 golden   make iso, then tools/golden.py compare --record-missing: the golden routes (ps2/proto/tests/golden_*.txt)
 #              on the disc vs the base in build/golden/base (recorded by the first run), picture / frame time / refusals
-# Exit code: 0 when every gating step (build-*, smoke) passed. render / perf / budget / golden are reported, not gating: their
-# limits are tuned per change, and a red nightly that nobody can fix in one PR would hide the breakages this run is for.
+#   --burg     instead of 3 + 4: tools/test-all.sh --iso --burg (builds the world ELF + ISO itself, then the Burg ISO
+#              routes, ~1.5 h, one PCSX2 at a time): the manual gate before merging a perf change, not run per push
+# Exit code: 0 when every gating step passed: build-* / build, smoke, the Burg routes (iso_* / world_*) and budget. The
+# budget step gates through tools/budget.py --ratchet tools/ci/budget_ratchet.json: a frame / memory / disc gate of
+# ps2/proto/src/frame_budget.h fails the run only when the ratchet has no entry at or above the measured value (today's
+# known misses are entries; they only go down). tools/ci/test_budget.py (the ratchet's own test) gates too. render /
+# perf / golden are reported, not gating: their limits are tuned per change.
 # Home paths are printed as ~ (the run log and summary are public).
 # Env: DSR_MAIN (main checkout, default ~/DarkSoulsPS2), DSR_CI_TREE, CI_AREAS (default Firelink + Burg).
 set -o pipefail
 SHA=$1; shift
 [ -n "$SHA" ] || { sed -n '2p' "$0"; exit 2; }
-MAX=20; AREAS=${CI_AREAS:-m10_02_00_00,m10_01_00_00}
+MAX=20; AREAS=${CI_AREAS:-m10_02_00_00,m10_01_00_00}; BURG=
 while [ $# -gt 0 ]; do
     case $1 in
         --max) MAX=$2; shift ;;
         --areas) AREAS=$2; shift ;;
+        --burg) BURG=1 ;;
         *) echo "unknown option $1"; exit 2 ;;
     esac
     shift
@@ -51,9 +57,15 @@ BIN=${PCSX2_HEADLESS:-$MAIN/tools/ext/pcsx2-build/bin/pcsx2-dsrtest}
 [ -x "$BIN" ] || { echo "pcsx2-smoke: pcsx2-dsrtest missing: run tools/pcsx2-headless/build.sh in $MAIN" | hide; exit 1; }
 # 3 test
 cd "$TREE" || exit 1
-echo "== $(git log -1 --format='%h %s') | areas $AREAS | max $MAX"
+PY=$(sed -n 's/^PY *= *//p' config.local.mk 2>/dev/null | tail -1); PY=${PY:-python3}
 T0=$(date +%s)
-tools/test-all.sh --areas "$AREAS" --max "$MAX" 2>&1 | hide
+if [ -n "$BURG" ]; then
+    echo "== $(git log -1 --format='%h %s') | Burg ISO routes"
+    tools/test-all.sh --iso --burg --jobs 1 2>&1 | hide
+else
+    echo "== $(git log -1 --format='%h %s') | areas $AREAS | max $MAX"
+    SMOKE_JOBS=${SMOKE_JOBS:-1} tools/test-all.sh --areas "$AREAS" --max "$MAX" 2>&1 | hide
+fi
 RUN=$(readlink -f build/test/last)
 STEPS=$RUN/steps.txt
 [ -f "$STEPS" ] || { echo "pcsx2-smoke: no steps.txt (test-all.sh did not get to the tests)"; exit 1; }
@@ -61,22 +73,30 @@ STEPS=$RUN/steps.txt
 # which then reported an old pass for this commit
 [ "$(stat -c %Y "$RUN")" -ge "$T0" ] || { echo "pcsx2-smoke: build/test/last is an older run (test-all.sh ended early)"; exit 1; }
 GATE=0
+gating() { case $1 in build|build-*|smoke|budget|iso_*|world_*) return 0 ;; esac; return 1; }
 while read -r name status rest; do
-    case $name in build-*|smoke) [ "$status" = PASS ] || GATE=1 ;; esac
-    case $status in FAIL*) echo "::$([ "${name%%-*}" = build ] || [ "$name" = smoke ] && echo error || echo warning)::$name $status" ;; esac
+    gating "$name" && { [ "$status" = PASS ] || GATE=1; }
+    case $status in FAIL*) echo "::$(gating "$name" && echo error || echo warning)::$name $status" ;; esac
 done < "$STEPS"
+# the ratchet's own test (fixture results): a broken gate must not pass everything
+"$PY" -I tools/ci/test_budget.py > "$RUN/test_budget.log" 2>&1 || { GATE=1; echo "::error::tools/ci/test_budget.py failed"; }
 # 4 golden (reported, not gating; the base is this PC's first run, rebuilt by deleting build/golden/base)
-PY=$(sed -n 's/^PY *= *//p' config.local.mk 2>/dev/null | tail -1); PY=${PY:-python3}
 GOLDEN=$RUN/golden.txt
-if tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto sym iso" > "$RUN/golden-iso.log" 2>&1; then
+if [ -n "$BURG" ]; then
+    :  # (the Burg run is the ISO gate itself)
+elif tools/q -m 12 bash -c "source ps2/env.sh && make -C ps2/proto sym iso" > "$RUN/golden-iso.log" 2>&1; then
     "$PY" tools/golden.py compare --record-missing > "$GOLDEN" 2>&1
     echo "golden $(grep -q 'route(s) over' "$GOLDEN" && grep -o '[0-9]* route(s) over' "$GOLDEN" || echo 'no table')" | hide
 else
     echo "golden FAIL (make iso, $RUN/golden-iso.log)" > "$GOLDEN"
 fi
 {
-    echo "### PCSX2 smoke: $([ $GATE = 0 ] && echo pass || echo FAIL) ($(git log -1 --format=%h), $AREAS, max $MAX)"
+    echo "### PCSX2 smoke: $([ $GATE = 0 ] && echo pass || echo FAIL) ($(git log -1 --format=%h), $([ -n "$BURG" ] && echo "Burg ISO routes" || echo "$AREAS, max $MAX"))"
     echo; echo '```'; hide < "$STEPS" | cut -c1-60; echo '```'
+    if grep -q '^ratchet: ' "$RUN/budget.log" 2>/dev/null; then  # the budget gate's verdict, outside the folded table
+        echo; echo '**Frame budget** (ps2/proto/src/frame_budget.h, ratchet tools/ci/budget_ratchet.json):'
+        echo; echo '```'; grep '^ratchet: ' "$RUN/budget.log" | hide; echo '```'
+    fi
     if [ -f "$GOLDEN" ]; then
         echo; echo '<details><summary>golden routes</summary>'; echo; echo '```'; hide < "$GOLDEN"; echo '```'; echo '</details>'
     fi

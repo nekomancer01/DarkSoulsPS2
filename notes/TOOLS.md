@@ -97,7 +97,9 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `pine.py` | EE memory by symbol, savestates, test mailbox |
 | `pose_check.py` | Offline reference pose for the character |
 | `golden.py` | Golden routes (Polaris 0.3): `record` runs the six short ISO routes `ps2/proto/tests/golden_*.txt` (Asylum, Firelink, Burg west, Burg bonfire, Taurus tower / bridge, Parish seam) with GS dumps into `build/golden/base/`; `compare` runs them again into `build/golden/new/` and reports per route the GS dump replay diff (test-gsdump.py), frame p50 / p90 / max and streamer refusals vs the base (`--gate`: exit code = routes over the noise thresholds). Reported, not gating, in `tools/ci/pcsx2-smoke.sh` |
-| `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`) |
+| `budget.py` | Frame and disc budget check of test-run results (the gate table of `test-all.sh --iso --burg`). The frame numbers come from `ps2/proto/src/frame_budget.h` (`load_budget()`); per shot also `miss_run` (missed vsyncs in a row), `frame_max`, busy p50 / p90 / p99 and the governor share `gov_pct`. `--ratchet tools/ci/budget_ratchet.json`: a failing gate passes when the file allows at least the measured value (script / shot or `*` or `run` / gate), the exit code counts the rest, "can lower" lines name entries a run beat (entries only go down); `test-all.sh` passes it to both budget steps when the file exists (`BUDGET_RATCHET=` another file) |
+| `ci/budget_ratchet.json` | The frame budget's allowed misses per test script and shot (CI gate of `ci/pcsx2-smoke.sh`); seeded from the baseline of the frame-time plan, lowered as fixes land |
+| `ci/test_budget.py` | Offline test of `budget.py`'s header parse and `--ratchet` gate on fixture results (run by `ci/offline.sh` and `ci/pcsx2-smoke.sh`) |
 | `gs_budget.py` | GS memory (VRAM) budget per owner from `ps2/proto/src/gs_budget.h` (Polaris 1.1); `tools/ci/gsown.py` (CI hygiene) checks the rows sum to 4096 KB and that GS register words are written only through `src/gs.h` |
 | `hitchsum.py` | Summary of the hitch monitor's EE log lines over a run |
 | `heapdrift.py` | EE heap drift from an EE log: GC sawtooth or a real leak |
@@ -106,6 +108,7 @@ run through the job queue, `tools/q [-m GB] <command>`, which waits for free RAM
 | `colcheck.c` | Host harness: two collision.bin files of one block give the same answers |
 | `gamedata_test.py` | Offline test of `gamedata.py` (run by `ci/offline.sh`) |
 | `ci/offline.sh` | PR check: VU1 emulator tests, generated `.vsm` up to date, Python compiles (no game data) |
+| `ci/pcsx2-smoke.sh` | Self-hosted CI run after each merge to main and nightly: build + smoke (Firelink + Burg areas, one PCSX2 at a time) + golden; gates build, smoke and the frame budget (`budget.py --ratchet ci/budget_ratchet.json`); `--burg` runs the Burg ISO routes (`test-all.sh --iso --burg`, ~30 min with warm starts) instead, the manual gate before merging a perf change |
 | `ci/hygiene.py` | PR check: no game data, screenshots, binaries or home paths tracked; TECH_DEBT IDs unique |
 | `ci/test_chunk.sh` | PR check (hygiene): the chunk reader and C writer built 64-bit, every refusal (bumped version, missing chunk, other file, truncated), and `tools/chunkfile.py` writing the same bytes as `chunkw.h` |
 | `ci/compile.sh` | PR check: compile the engine sources that need no generated header with `-Werror` (ps2dev container) |

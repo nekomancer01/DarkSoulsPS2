@@ -24,7 +24,10 @@
     X(WORLD_SOURCES, 1)       \
     X(MAP_SPEC, 1)            \
     X(MAP_FX_FOG0, 1)         \
-    X(FRAME_SKIP_MAP, 0)
+    X(FRAME_SKIP_MAP, 0)      \
+    X(GOV, 0)                 \
+    X(GOV_MAX, 3)             \
+    X(GOV_FORCE, -1)
 
 #define CVAR_EXTERN(name, def) extern int cv_##name;
 CVAR_LIST(CVAR_EXTERN)

@@ -1,0 +1,254 @@
+{
+ "_doc": "allowed misses of ps2/proto/src/frame_budget.h per test script / shot (\"*\" every shot, \"run\" the run gates): tools/budget.py --ratchet; seeded from the worse of 2 reps of main 905d16e (reports/frametime/baseline.md, over34 / p99 then measured at 34 ms), smoke entries cut after FX_QCLIP and FB_OVER_MS 41.7; values only go down",
+ "autotest_m10_01_00_00": {
+  "p00_079": {
+   "logic_p90": 5.5
+  },
+  "p00_081": {
+   "fxhud_p90": 2.0
+  },
+  "p00_082": {
+   "fxhud_p90": 1.75
+  },
+  "p00_086": {
+   "fxhud_p90": 1.75
+  },
+  "p00_087": {
+   "fxhud_p90": 2.0
+  },
+  "p00_088": {
+   "fxhud_p90": 2.5
+  }
+ },
+ "autotest_m10_02_00_00": {
+  "run": {
+   "arena_short_kb": 3712,
+   "visual_short_kb": 3343
+  }
+ },
+ "iso_ame_report3": {
+  "bonfire": {
+   "fxhud_p90": 2.0,
+   "logic_p90": 7.75
+  },
+  "burg_a": {
+   "fxhud_p90": 2.0,
+   "logic_p90": 5.25
+  },
+  "burg_b": {
+   "fxhud_p90": 2.25
+  },
+  "burg_c": {
+   "chr_p90": 5.25,
+   "fxhud_p90": 1.75,
+   "logic_p90": 7.25
+  },
+  "burg_d": {
+   "chr_p90": 5.25,
+   "fxhud_p90": 1.75,
+   "logic_p90": 6.25
+  },
+  "cave_a": {
+   "logic_p90": 7.25,
+   "over34_pct": 1.7,
+   "p99": 50.25
+  },
+  "cave_b": {
+   "logic_p90": 5.25
+  },
+  "fl_path": {
+   "over34_pct": 1.72,
+   "p99": 50.25
+  },
+  "hall_a": {
+   "logic_p90": 5.25
+  },
+  "hall_b": {
+   "logic_p90": 5.75,
+   "over34_pct": 1.15,
+   "p99": 34.25
+  },
+  "run": {
+   "drive_p90": 148.6,
+   "far_play": 85,
+   "hard_items": 22,
+   "hzn_pct": 99.6,
+   "popins": 13
+  }
+ },
+ "iso_burg_soak2": {
+  "end": {
+   "chr_p90": 5.25,
+   "frame_max": 367.71,
+   "logic_p90": 8.0,
+   "miss_run": 2,
+   "over34_pct": 1.95,
+   "p99": 50.25
+  },
+  "run": {
+   "drive_p90": 126.8,
+   "far_play": 418
+  }
+ },
+ "iso_burg_taurus": {
+  "bonfire_o0001": {
+   "logic_p90": 10.25,
+   "over34_pct": 1.6,
+   "p99": 50.25
+  },
+  "bonfire_o0002": {
+   "fxhud_p90": 2.5,
+   "logic_p90": 8.75,
+   "over34_pct": 1.9,
+   "p99": 50.25
+  },
+  "burg_start": {
+   "over34_pct": 1.16,
+   "p99": 34.25
+  },
+  "run": {
+   "arena_short_kb": 3712,
+   "drive_p90": 146.8,
+   "far_play": 327,
+   "hard_items": 73,
+   "visual_short_kb": 3343
+  },
+  "street_1": {
+   "fxhud_p90": 2.0,
+   "logic_p90": 6.25,
+   "ram_short_kb": 293
+  },
+  "street_2": {
+   "logic_p90": 8.0,
+   "miss_run": 2,
+   "ram_short_kb": 490
+  },
+  "street_3": {
+   "fxhud_p90": 1.75,
+   "logic_p90": 19.5,
+   "miss_run": 9,
+   "over34_pct": 16.07,
+   "p99": 64.0,
+   "ram_short_kb": 493
+  },
+  "street_end": {
+   "chr_p90": 5.25,
+   "logic_p90": 22.25,
+   "miss_run": 2,
+   "over34_pct": 45.45,
+   "p99": 50.25,
+   "ram_short_kb": 206
+  },
+  "taurus_arrives": {
+   "logic_p90": 5.75
+  },
+  "taurus_bridge": {
+   "logic_p90": 5.75
+  },
+  "taurus_fight": {
+   "logic_p90": 5.25
+  },
+  "taurus_fog": {
+   "logic_p90": 7.25
+  },
+  "taurus_fog_near": {
+   "logic_p90": 8.5
+  },
+  "tower_1": {
+   "logic_p90": 14.25,
+   "miss_run": 2,
+   "over34_pct": 4.85,
+   "p99": 50.25,
+   "ram_short_kb": 39
+  },
+  "tower_2": {
+   "logic_p90": 8.0
+  },
+  "tower_base": {
+   "logic_p90": 23.25,
+   "over34_pct": 15.05,
+   "p99": 51.0,
+   "ram_short_kb": 206
+  }
+ },
+ "world_route": {
+  "aqueduct_back": {
+   "miss_run": 2
+  },
+  "back_bonfire": {
+   "fxhud_p90": 1.75,
+   "map_p90": 15.5,
+   "miss_run": 2,
+   "over34_pct": 1.31,
+   "p99": 34.25
+  },
+  "back_burg_entry": {
+   "map_p90": 15.0,
+   "over34_pct": 1.12,
+   "p99": 34.25
+  },
+  "burg_bonfire": {
+   "miss_run": 2
+  },
+  "firelink_back": {
+   "frame_max": 234.0
+  },
+  "parish": {
+   "fxhud_p90": 2.0,
+   "miss_run": 2
+  },
+  "parish_look": {
+   "map_p90": 16.75
+  },
+  "run": {
+   "drive_p90": 139.1,
+   "far_play": 543
+  },
+  "stairs": {
+   "world_p90": 2.5
+  }
+ },
+ "world_sprint": {
+  "aqueduct_back": {
+   "frame_max": 150.43
+  },
+  "back_bonfire": {
+   "fxhud_p90": 1.75,
+   "map_p90": 15.25,
+   "miss_run": 2,
+   "over34_pct": 1.44,
+   "p99": 50.25
+  },
+  "back_burg_entry": {
+   "map_p90": 15.0,
+   "miss_run": 2,
+   "over34_pct": 1.42,
+   "p99": 50.25
+  },
+  "burg_entry": {
+   "miss_run": 2
+  },
+  "firelink_back": {
+   "frame_max": 5549.06,
+   "miss_run": 2,
+   "over34_pct": 1.02,
+   "p99": 34.25
+  },
+  "parish": {
+   "fxhud_p90": 2.0
+  },
+  "parish_look": {
+   "map_p90": 17.25,
+   "miss_run": 2,
+   "over34_pct": 3.57,
+   "p99": 51.0
+  },
+  "run": {
+   "drive_p90": 144.0,
+   "far_play": 484
+  },
+  "stairs": {
+   "world_p90": 2.5
+  }
+ }
+}

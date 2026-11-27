@@ -283,9 +283,11 @@ static void flip(GSGLOBAL *gs)
 {
     static u64 pk[2 * 64 + 2 * 128 * DOF_BANDS] __attribute__((aligned(64)));
     static unsigned last_flip;
+    unsigned tv = ticks();
     gsKit_vsync_wait();
     for (int f = 1; f < FPS_CAP_FIELDS && ticks() - last_flip < (unsigned)(f * FIELD_TICKS + FIELD_TICKS / 2); f++)
         gsKit_vsync_wait();
+    hitch_acc[HS_VSYNC] += ticks() - tv;  /* EE idle: the frame minus this is its busy time (hitch_busy_ms) */
     last_flip = ticks();
 #ifdef V1B_FIELD
     int odd = (*GS_CSR >> 13) & 1, filter = 0, v0 = odd * 16 + 8;  /* texel centre of line 2y + field */
