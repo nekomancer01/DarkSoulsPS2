@@ -50,6 +50,7 @@
 #include "testscript.h"
 #include "ticks.h"
 #include "omit.h"
+#include "governor.h"
 
 /* the boot area's + every world block's (enemy_block_types, at boot). 20 ran full at block 2 of the 14-block world: the
  * Depths and Darkroot placed only characters an earlier block had (81 types, 2026-11-15); 96 ran full at block 16 of the
@@ -101,6 +102,9 @@ float enemy_player_push[2];  /* this frame's capsule pushes on the player (playe
  * is in before the player reaches it. */
 #define LAZY_LOAD_DIST 20.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
+/* the frame governor's pose cut (governor.h, gov_level 0-3): the every-other-frame distance. The pose still updates
+ * (half rate), so nothing freezes; ASSUMED steps (frame-time plan Task 9) */
+static const float enemy_gov_pose_m[4] = {ANIM_LOD_DIST, 10.0f, 6.0f, 3.0f};
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
 
 /* chr.bin v13 (tools/export_chr.py) */
@@ -2300,7 +2304,8 @@ static void update_one(Enemy *e, Player *pl, float dt)
     int on_screen = z > -(e->var->height + 2) && dd < DRAW_DIST * DRAW_DIST;
     int attacking = e->act >= 0 && e->act_info && t->anims[e->act_info - 1].nwin > 0;
     /* with CHR_OMIT a character past level 0 already updates every few frames: no parity skip on top */
-    int lod_skip = !(CHR_OMIT && e->om.level > 0) && dd > ANIM_LOD_DIST * ANIM_LOD_DIST && ((frame + e->index) & 1);
+    float lod_m = enemy_gov_pose_m[gov_level & 3];  /* ANIM_LOD_DIST at governor level 0 */
+    int lod_skip = !(CHR_OMIT && e->om.level > 0) && dd > lod_m * lod_m && ((frame + e->index) & 1);
     if (!attacking && (!on_screen || lod_skip)) {
         memcpy(e->cc.pos, &e->pos, 12);
         e->cc.yaw = e->yaw;

@@ -34,6 +34,7 @@
 #include "lpass.h"
 #include "prof.h"
 #include "hitch.h"
+#include "governor.h"  /* sheds optional work before a missed vsync (src/governor.c) */
 #include "testscript.h"
 #include "trail.h"
 #include "pickup.h"
@@ -263,6 +264,7 @@ static void phase_begin(Frame *f)
     f->dt_real = f->dt;  /* test stats: the frame time before the clamps */
     hitch_where(&f->pl->pos.x, world_current());  /* hitch / spike lines say where (src/hitch.c) */
     hitch_frame(f->dt_real);  /* the last pass of this loop, its sections (src/hitch.c) */
+    gov_update(hitch_busy_ms);  /* the EE busy ms of the frame just done (hitch_frame) */
 #ifdef SLOW_FRAME_LOG  /* make EE_DBGINFOFLAGS=-DSLOW_FRAME_LOG: frames over 100 ms in the EE log (ISO stalls) */
     if (f->dt_real > 0.1f)
         printf("DSRPROTO slow frame %d ms\n", (int)(f->dt_real * 1000));

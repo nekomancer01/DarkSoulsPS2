@@ -20,6 +20,7 @@
 #     a synthetic tools/stepcache.py timing file
 #   9 tools/ci/test_recipe_tools_audit.py: the report-only audit of tools/recipe.toml's per-step tools lists
 #     (tools/ci/recipe_tools_audit.py) on a synthetic recipe
+#   10 tools/ci/test_budget.py: tools/budget.py reads ps2/proto/src/frame_budget.h and its --ratchet gate (fixture results)
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -83,5 +84,7 @@ echo "== build profiler (tools/buildprof.py on a synthetic stepcache.tsv)"
 "$PY" -I tools/ci/test_buildprof.py || fail "tools/ci/test_buildprof.py"
 echo "== recipe tools-list audit (report only) on a synthetic recipe"
 "$PY" -I tools/ci/test_recipe_tools_audit.py || fail "tools/ci/test_recipe_tools_audit.py"
+echo "== frame budget and its CI ratchet (tools/budget.py on fixture results)"
+"$PY" -I tools/ci/test_budget.py || fail "tools/ci/test_budget.py"
 echo "offline: $FAILED failed"
 exit $FAILED

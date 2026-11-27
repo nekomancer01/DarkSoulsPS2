@@ -51,6 +51,7 @@ typedef struct { float x, y, z, u, v, r, g, b, a; } ClipVert;
 V3 r_view(V3 p);
 /* True if a view-space point is in front of the near plane and inside the guard band */
 int r_point_inside(const V3 *v);
+float r_guard_k(void);  /* guard band half width / focal length: view-space limit per metre of depth */
 /* View-space point -> screen x, y, z (only for points r_point_inside accepts) */
 void r_view_to_screen(const V3 *v, float out[3]);
 /* Clip a view-space triangle against the near plane and guard band, then draw it (textured if t != NULL; mode: R_FOG,

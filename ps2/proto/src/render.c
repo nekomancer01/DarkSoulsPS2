@@ -307,6 +307,8 @@ void r_line(V3 a, V3 b, int r, int g, int bl)
 }
 
 /* White plane with a light grid every `cell` metres, centred on the origin */
+float r_guard_k(void) { return GUARD / FOCAL; }
+
 int r_point_inside(const V3 *v)
 {
     float lim = GUARD / FOCAL * v->z;
