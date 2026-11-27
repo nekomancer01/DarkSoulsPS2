@@ -48,6 +48,7 @@ POOL_SLOTS = 3       # world_i.h WORLD_POOL_SLOTS: the structural pool is sized 
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
+NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -135,6 +136,8 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
+    if NAV_LITE:  # world_i.h WORLD_NAV_LITE: E_ENM, the whole enemies.bin (not a lean entry)
+        total += r128(sz("enemies.bin"))
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     if DG_LITE:  # (world.c LEAN_ENT)

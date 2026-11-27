@@ -192,6 +192,8 @@ static void turn_on_rest(int i)
     BlockRt *r = &w_rt[i];
     unsigned t0 = ticks();
     free_tex(r);  /* uploaded: back to the near cells */
+    if (r->size[E_ENM])  /* WORLD_NAV_LITE: its navmesh in place, before its enemies are placed */
+        enemy_block_nav(i, r->blob[E_ENM], r->size[E_ENM]);
     enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
     if (r->ev_split)
         ev_on(i);
@@ -235,6 +237,7 @@ void w_turn_off(int i)
         ev_off(i);           /* (after: another block of the map may take its running events over, event.c) */
         enemy_block_remove(i);
     }
+    nav_unbind(i);  /* WORLD_NAV_LITE (none bound before stage 2): the blob goes with the slot */
     if (r->stage == 2 || r->ent > E_OBJ)
         objects_block_remove(i);
     if (r->stage == 2 || r->ent > E_FX)

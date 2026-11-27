@@ -19,7 +19,8 @@ typedef struct { unsigned short v[3], nbr[3]; } NavTri;
 
 typedef struct {
     void *mem;
-    unsigned bytes;
+    unsigned bytes;  /* heap bytes (nav_load's copy); 0 for a mesh bound in place */
+    int bound;       /* nav_bind: mem points into the block's enemies.bin in its lite set (not ours to free) */
     NavHdr h;
     const short (*v)[3];
     const NavTri *t;
@@ -28,38 +29,71 @@ typedef struct {
 static Nav navs[NAV_BLOCKS];
 int nav_searches, nav_searches_total;
 
-int nav_load(int block, const void *nav, unsigned size)
+/* the mesh's bytes after its header, 0 when the header does not fit the chunk */
+static unsigned body_bytes(const void *nav, unsigned size, NavHdr *h)
 {
-    if (block < 0 || block >= NAV_BLOCKS || !nav || size < sizeof(NavHdr))
+    if (!nav || size < sizeof(NavHdr))
         return 0;
-    nav_free(block);
-    const unsigned char *b = nav;
-    NavHdr h;
-    memcpy(&h, b, sizeof h);
-    unsigned vbytes = (h.verts * 6 + 3) & ~3u, tbytes = h.tris * sizeof(NavTri), gbytes = (h.gw * h.gh + 1) * 2,
-             n = vbytes + tbytes + gbytes + h.list * 2;
-    if (!h.tris || sizeof h + n > size)
-        return 0;
-    Nav *nv = &navs[block];
-    nv->mem = malloc(n);
-    if (!nv->mem)
-        return 0;
-    memcpy(nv->mem, b + sizeof h, n);
-    nv->bytes = n;
-    nv->h = h;
+    memcpy(h, nav, sizeof *h);
+    unsigned vbytes = (h->verts * 6 + 3) & ~3u, tbytes = h->tris * sizeof(NavTri), gbytes = (h->gw * h->gh + 1) * 2,
+             n = vbytes + tbytes + gbytes + h->list * 2;
+    return h->tris && sizeof *h + n <= size ? n : 0;
+}
+
+static void set_tables(Nav *nv)
+{
+    unsigned vbytes = (nv->h.verts * 6 + 3) & ~3u, tbytes = nv->h.tris * sizeof(NavTri);
     const unsigned char *m = nv->mem;
     nv->v = (const short (*)[3])m;
     nv->t = (const NavTri *)(m + vbytes);
     nv->start = (const unsigned short *)(m + vbytes + tbytes);
-    nv->list = nv->start + h.gw * h.gh + 1;
+    nv->list = nv->start + nv->h.gw * nv->h.gh + 1;
+}
+
+int nav_load(int block, const void *nav, unsigned size)
+{
+    NavHdr h;
+    unsigned n;
+    if (block < 0 || block >= NAV_BLOCKS || !(n = body_bytes(nav, size, &h)))
+        return 0;
+    nav_free(block);
+    Nav *nv = &navs[block];
+    nv->mem = malloc(n);
+    if (!nv->mem)
+        return 0;
+    memcpy(nv->mem, (const unsigned char *)nav + sizeof h, n);
+    nv->bytes = n;
+    nv->h = h;
+    set_tables(nv);
     return h.tris;
+}
+
+int nav_bind(int block, const void *nav, unsigned size)
+{
+    NavHdr h;
+    if (block < 0 || block >= NAV_BLOCKS || !body_bytes(nav, size, &h) || ((unsigned)nav & 3))
+        return 0;
+    nav_free(block);
+    Nav *nv = &navs[block];
+    nv->mem = (void *)((const unsigned char *)nav + sizeof h);  /* (the 44-byte header after a 16-aligned chunk payload: 4-aligned) */
+    nv->bound = 1;
+    nv->h = h;
+    set_tables(nv);
+    return h.tris;
+}
+
+void nav_unbind(int block)
+{
+    if (block >= 0 && block < NAV_BLOCKS && navs[block].bound)
+        memset(&navs[block], 0, sizeof navs[block]);
 }
 
 void nav_free(int block)
 {
     if (block < 0 || block >= NAV_BLOCKS)
         return;
-    free(navs[block].mem);
+    if (!navs[block].bound)  /* (a bound mesh is its lite set's: nav_unbind) */
+        free(navs[block].mem);
     memset(&navs[block], 0, sizeof navs[block]);
 }
 
