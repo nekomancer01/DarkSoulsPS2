@@ -19,6 +19,8 @@
 #include <gsKit.h>
 
 #define WORLD_MAX 32  /* blocks in world.bin (u32 load / keep masks, world.bin LINK / REAC v2) */
+#define WORLD_SLOTS 4  /* lite sets loaded at once besides the boot block (the history is in world_i.h) */
+#define WORLD_INSTS (WORLD_SLOTS + 1)  /* boot block + world slots */
 
 /* Before main.c loads the boot area: reads world.pak and opens every block's pack.
  * 0 = no world table, or one whose block 0 is not boot_area (single-area builds): main.c loads map.bin as before and

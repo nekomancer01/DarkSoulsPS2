@@ -64,8 +64,7 @@
  * (Anor Londo, 3 of 3 runs). The structural pool stays sized for WORLD_POOL_SLOTS lite sets per link: sized for four it
  * grew 4223 -> 4643 KB, taken from every block's visual room; the fourth lite set at those spots spills into the misc
  * pool or the item pages instead (lite_alloc -> mapstream_alloc, world_stats.pool_spills). texcache.h TC_BLOCKS
- * follows (a block's CLUTs, ~40-50 KB of the GS WORLD row each) */
-#define WORLD_SLOTS 4
+ * follows (a block's CLUTs, ~40-50 KB of the GS WORLD row each). WORLD_SLOTS itself is defined in world.h */
 #ifndef WORLD_POOL_SLOTS
 #define WORLD_POOL_SLOTS 3  /* lite sets per link the structural pool is sized for (world_struct_bytes) */
 #endif
@@ -328,6 +327,10 @@ typedef struct {
 } WorldReach;
 _Static_assert(sizeof(WorldReach) == 12, "world.bin REAC v2");
 _Static_assert(WORLD_MAX <= 32, "world.bin LINK / REAC v2 masks are u32");
+/* the planner's block sets in RAM (want / keep / hold / yield): u64, the stored masks above stay u32 until the format moves */
+typedef unsigned long long WMask;
+#define WBIT(b) ((WMask)1 << (b))
+_Static_assert(WORLD_MAX <= 64, "planner sets are u64");
 
 enum { W_OFF, W_READING, W_ON, W_DRAIN };
 
@@ -391,12 +394,12 @@ extern const WorldReach *w_reach_tab;
 extern unsigned w_reach_n;
 extern float w_reach_step;
 extern float w_reach_d[WORLD_MAX], w_reach_v[WORLD_MAX];
-extern unsigned w_reach_m;
-extern unsigned w_ronly_m;
+extern WMask w_reach_m;
+extern WMask w_ronly_m;
 extern float w_on_est[WORLD_MAX];
 extern float w_clock_s;
 extern float w_want_s[WORLD_MAX], w_on_s[WORLD_MAX];
-extern unsigned w_want_m, w_keep_m;
+extern WMask w_want_m, w_keep_m;
 extern BlockRt w_rt[WORLD_MAX];
 extern int w_nblk, w_cur, w_slot_of[WORLD_SLOTS];
 extern float w_feet_now[3];
@@ -420,7 +423,7 @@ extern int w_boot_want, w_boot_spots;
 extern int w_warping;
 extern int w_lite_first;
 extern int w_room_stuck;
-extern unsigned w_hold_m, w_hold_want, w_hold_gone;
+extern WMask w_hold_m, w_hold_want, w_hold_gone;
 extern WorldSrc w_src[WSRC_N];
 int w_read_sync(Pack *pk, unsigned off, void *dst, unsigned n);
 unsigned world_struct_bytes(void);
