@@ -58,41 +58,41 @@
  * (both levels at their caps); world gate 0.71 % of all spots of every block (it gated the Burg blocks only before). Rows
  * marked "fit: held" are held at their caps. */
 #ifdef RES_BLOCK
-RES_BLOCK(m10_02_00_00, 4400, 2325)
-RES_BLOCK(m10_01_00_00_w, 4750, 2475)
-RES_BLOCK(m10_01_00_00_b, 4880, 2563) /* fit: held */
-RES_BLOCK(m10_01_00_00_p, 4630, 2442) /* fit: held */
-RES_BLOCK(m18_01_00_00_a, 5050, 2667)
+RES_BLOCK(m10_02_00_00, 3480, 1839) /* fit: held */
+RES_BLOCK(m10_01_00_00_w, 4350, 2267) /* fit: held */
+RES_BLOCK(m10_01_00_00_b, 4640, 2437) /* fit: held */
+RES_BLOCK(m10_01_00_00_p, 3770, 1988) /* fit: held */
+RES_BLOCK(m18_01_00_00_a, 4700, 2482)
 /* 2026-11-15: the rest of the Parish (seams with the Parish bridge, the bonfire block and Burg west: as the bonfire
  * block) and the Depths (the entry block at the Lower Burg's door: as the Parish bridge; the deep block alone in its MSB
  * with the entry block) */
-RES_BLOCK(m10_01_00_00_c, 4940, 2594) /* fit: held */
-RES_BLOCK(m10_00_00_00_a, 5050, 2663)
-RES_BLOCK(m10_00_00_00_b, 5050, 2667)
+RES_BLOCK(m10_01_00_00_c, 4640, 2436) /* fit: held */
+RES_BLOCK(m10_00_00_00_a, 4700, 2479)
+RES_BLOCK(m10_00_00_00_b, 4700, 2482)
 /* Darkroot (2026-11-15): the garden entry block seams with the Parish's (as the Parish bridge), the rest are alone in
  * their MSB (ASSUMED until a world_budget.py pass over them) */
-RES_BLOCK(m12_00_00_00_e, 5050, 2663)
-RES_BLOCK(m12_00_00_00_g, 4160, 2197) /* fit: held */
-RES_BLOCK(m12_00_00_00_m, 4230, 2235) /* fit: held */
-RES_BLOCK(m12_00_00_00_w, 5050, 2667)
-RES_BLOCK(m12_00_00_00_x, 4940, 2609)
-RES_BLOCK(m12_00_00_00_s, 5050, 2667)
+RES_BLOCK(m12_00_00_00_e, 4700, 2479)
+RES_BLOCK(m12_00_00_00_g, 3720, 1965)
+RES_BLOCK(m12_00_00_00_m, 3440, 1817)
+RES_BLOCK(m12_00_00_00_w, 4700, 2482)
+RES_BLOCK(m12_00_00_00_x, 4620, 2440) /* fit: held */
+RES_BLOCK(m12_00_00_00_s, 4700, 2482)
 /* Sen's Fortress (2026-11-23): first export at the default row, then tools/budgetfit.py */
-RES_BLOCK(m15_00_00_00_a, 5050, 2668)
-RES_BLOCK(m15_00_00_00_b, 5050, 2668)
+RES_BLOCK(m15_00_00_00_a, 4700, 2483)
+RES_BLOCK(m15_00_00_00_b, 4700, 2483)
 /* Anor Londo (2026-11-23): first export at the default row, then tools/budgetfit.py */
-RES_BLOCK(m15_01_00_00_a, 5050, 2668)
-RES_BLOCK(m15_01_00_00_b, 3820, 2018)
-RES_BLOCK(m15_01_00_00_c, 3800, 2007)
-RES_BLOCK(m15_01_00_00_d, 5050, 2668)
-RES_BLOCK(m15_01_00_00_e, 5050, 2668)
-RES_BLOCK(m15_01_00_00_f, 5050, 2668)
-RES_BLOCK(m15_01_00_00_g, 3800, 2007)
-RES_BLOCK(m15_01_00_00_h, 5050, 2668)
+RES_BLOCK(m15_01_00_00_a, 4700, 2483)
+RES_BLOCK(m15_01_00_00_b, 3490, 1843) /* fit: held */
+RES_BLOCK(m15_01_00_00_c, 3500, 1849)
+RES_BLOCK(m15_01_00_00_d, 4700, 2483)
+RES_BLOCK(m15_01_00_00_e, 4700, 2483)
+RES_BLOCK(m15_01_00_00_f, 4700, 2483)
+RES_BLOCK(m15_01_00_00_g, 3430, 1812) /* fit: held */
+RES_BLOCK(m15_01_00_00_h, 4700, 2483)
 /* The Painted World (2026-11-23): first export at the default row, then tools/budgetfit.py */
-RES_BLOCK(m11_00_00_00_a, 4990, 2636)
-RES_BLOCK(m11_00_00_00_b, 4990, 2636)
-RES_BLOCK(m11_00_00_00_c, 4990, 2636)
+RES_BLOCK(m11_00_00_00_a, 4700, 2483)
+RES_BLOCK(m11_00_00_00_b, 4700, 2483)
+RES_BLOCK(m11_00_00_00_c, 4700, 2483)
 RES_BLOCK(default, 4990, 2636)
 #endif
 
@@ -101,6 +101,10 @@ RES_BLOCK(default, 4990, 2636)
  * its map's [mapenv] values. tools/budgetfit.py writes a row when a held block (its row cut, its ask unchanged: at
  * its caps) is still over: x 1.5 per fit, at most 36 / 54 (the standalone Burg's). */
 #ifdef RES_CAPS
+RES_CAPS(m12_00_00_00_x, 18, 36)
+RES_CAPS(m12_00_00_00_g, 18, 36)
+RES_CAPS(m12_00_00_00_m, 18, 36)
+RES_CAPS(m10_01_00_00_p, 27, 54)
 RES_CAPS(m10_02_00_00, 18, 36)
 RES_CAPS(m18_01_00_00_a, 18, 36)
 #endif

@@ -141,6 +141,9 @@ See PORTING.md "ESD runtime" and TECH_DEBT esd-1..7.
 - Ported as far as it helps (TECH_DEBT world-16, world-32): lite sets (collision index + tables) and the collision
   tiles within 16 m go out ahead of map reads; a strict queue order and "map waits for the tiles under it" were
   measured and not adopted (thread el8v8a 2026-11-10, world-32).
+- The port now follows WorldBlockNvmPrepare / WorldBlockChrPrepare (2026-11-27, world-46 item 3): a block's navmesh,
+  enemy placements and types, effect tables, object types and map AI load with that block (its lite set) at turn-on
+  and are let go at its turn-off, instead of every block's at boot.
 
 ## Still unknown
 - Slot priority inside the anim player (ChrCtrl vt+0x38) when both ESD groups play anims; what f0 sees then (esd-9).
