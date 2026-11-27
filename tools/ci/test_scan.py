@@ -3,6 +3,7 @@
 
   1 every reader raises souls.UnknownVariant (an AssertionError and a ValueError, as before) on a file it does not
     know, and souls.skipped() reaches the scan's hook, or raises under SOULS_STRICT
+  1b havok_collision.convex_hull_tris triangulates a synthetic convex hull (scan-8)
   2 tools/scan/support.py reads the runtime's handler tables (lua0.c opcodes, ESD handlers, export_emevd classes)
   3 tools/blockreport.py --strict on a synthetic block passes, and fails when the block's effect textures exceed
     gs_budget.h's FX row or its Lua pack holds an opcode lua0.c lacks; it reads the Polaris 3.3 chunked objects.bin
@@ -70,6 +71,34 @@ r("k", 1, "ok")
 r("k", 1, "unknown")
 r("k", 1, "ok", 2)
 check(r.rows()[0][2:4] == ["unknown", 4], "scan recorder: the worst status wins, counts add")
+
+import havok_collision  # noqa: E402
+# scan-8: a synthetic hkpConvexVerticesShape hull (a 2 x 1 x 3 box off the origin, a repeated padding point) -> 12
+# triangles, every one wound as DS collision (cross product into the hull); a flat quad (two opposite face planes, as
+# m13_02's NPC wall) -> both sides; a rounded hull -> UnknownVariant
+box = [(x, y, z) for x in (10, 12) for y in (-1, 0) for z in (5, 8)]
+planes = [(1, 0, 0, -12), (-1, 0, 0, 10), (0, 1, 0, 0), (0, -1, 0, -1), (0, 0, 1, -8), (0, 0, -1, 5)]
+tris = havok_collision.convex_hull_tris(dict(vertices=box + box[:2], planes=planes, radius=0.0))
+ctr = (11, -0.5, 6.5)
+
+
+def tcross(t):
+    u, v = [t[1][i] - t[0][i] for i in range(3)], [t[2][i] - t[0][i] for i in range(3)]
+    return u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]
+
+
+inward = lambda t: sum(tcross(t)[i] * (ctr[i] - t[0][i]) for i in range(3)) > 0
+area = sum(sum(x * x for x in tcross(t)) ** 0.5 / 2 for t in tris)
+check(len(tris) == 12 and all(inward(t) for t in tris) and abs(area - 2 * (2 * 1 + 2 * 3 + 1 * 3)) < 1e-9
+      and {p for t in tris for p in t} == set(box),
+      f"convex_hull_tris: a box hull -> 12 inward-wound triangles covering its surface ({len(tris)})")
+quad = [(0, 0, 0), (2, 0, 0), (2, 3, 0), (0, 3, 0)]
+qp = [(0, 0, 1, 0), (0, 0, -1, 0), (1, 0, 0, -2), (-1, 0, 0, 0), (0, 1, 0, -3), (0, -1, 0, 0)]
+qt = havok_collision.convex_hull_tris(dict(vertices=quad, planes=qp, radius=0.0))
+nz = sorted(tcross(t)[2] for t in qt)
+check(len(qt) == 4 and nz[0] < 0 < nz[-1] and nz[1] < 0 < nz[2], f"convex_hull_tris: a flat hull -> both sides ({len(qt)})")
+check(raises_unknown(havok_collision.convex_hull_tris, dict(vertices=box, planes=planes, radius=0.05))
+      == "havok convex radius", "convex_hull_tris on a rounded hull: UnknownVariant")
 
 
 def block(tmp, fx_tex, lua_op):
