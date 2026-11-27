@@ -116,6 +116,33 @@ def cross_masks(game, names, nbr, i, sub=None):
     return out
 
 
+def neighbours(i, nbr_i, masks, reach):
+    """world.bin NBRS: block i's neighbour list (global block numbers, ascending): the union of every block in a load,
+    keep or reach mask of its triangles (export_world.block_masks' masks / reach) and its own neighbour mask nbr_i (the
+    LINK_GAP / ConnectCollision neighbours), without i"""
+    u = nbr_i
+    for mk in masks:
+        for x in mk:
+            u |= int(x)
+    for r in reach:
+        if r:
+            u |= int(r[0])
+    u &= ~(1 << i)
+    return [j for j in range(u.bit_length()) if u >> j & 1]
+
+
+def to_local(mask, nbrs):
+    """a global block mask (cross_masks / block_masks / worldreach.encode) in a block's local bits: bit k = nbrs[k]
+    (its neighbours() list). Every set bit has to be in the list (nothing dropped)"""
+    mask = int(mask)
+    out = 0
+    for k, j in enumerate(nbrs):
+        if mask >> j & 1:
+            out |= 1 << k
+    assert not mask & ~sum(1 << j for j in nbrs), f"mask {mask:#x} has blocks outside neighbours {nbrs}"
+    return out
+
+
 def floor_tris(game, name, P):
     """index (collision.bin order) of the floor triangle of block `name` under each spot of P (m, 3), -1 for none"""
     T = np.asarray([t for _, ts in crop(game, name) for t in ts], np.float64).reshape(-1, 3, 3)

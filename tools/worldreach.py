@@ -110,6 +110,14 @@ def encode(dists):
     return mask, tuple(min(255, int(dists[j] / REACH_STEP)) for j in sorted(js))
 
 
+def encode_local(enc, nbrs):
+    """encode's (mask, distances) with the mask in block-local bits (world.bin RCHL; worldlinks.to_local, bit k =
+    nbrs[k]). nbrs is ascending, so the distances keep their order (low bit first)"""
+    import worldlinks
+    mask, ds = enc
+    return worldlinks.to_local(mask, nbrs), ds
+
+
 # Seams inside one MSB already load the neighbour within 32 m in x / z (export_world.py LOAD_CELLS), more than dash
 # speed covers in a lite set's turn-on time, and their reach runs were most of the table (Darkroot's six blocks: 31 k of
 # 39 k runs at 4 m steps, world.bin 265 -> 592 KB): WORLD_REACH_SAME=1 adds them

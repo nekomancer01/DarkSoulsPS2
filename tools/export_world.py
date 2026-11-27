@@ -24,6 +24,16 @@ world.bin: a chunk file (tools/chunkfile.py, file id 'WRLD'; src/world.c reads i
            first (or the last), sorted by first triangle; per entry (12 B) u32 block mask, u8 distance[6], 2 B 0: walking
            distance in worldreach.REACH_STEP units (rounded down) from the run's triangles to the seam of each block in
            the mask, low bit first
+  The same links and reach again with block-local masks (Polaris 4 finish; written after REAC, the runtime reads the
+  v2 chunks until world_i.h switches over): bit k of a block's local mask = its NBRS entry nbr[k]
+  NBRS v1  per block (16 B) u8 count, u8 nbr[15]: the block's neighbours (global block numbers, ascending, 0 padded):
+           every block in a load, keep or reach mask of its triangles plus its BLKS neighbour mask, itself excluded
+  LRNL v1  per block: u32 first link, u32 links (into LNKL), as LRNG
+  LNKL v1  per link (12 B) u32 first triangle, u16 triangles, u16 load mask, u16 keep mask, u16 0 (local masks; runs
+           cut on the local masks, as LINK)
+  RCHL v1  as REAC v2 (same header, ranges, runs) with 8 B entries: u16 local block mask, u8 distance[6]
+  A block with more than NBR_MAX neighbours switches all three to the wide layout: NBRS v2 (32 B: u8 count,
+  u8 nbr[31]), LNKL v2 (16 B: u32 first, u16 n, u16 0, u32 load, u32 keep), RCHL v2 (12 B entries, u32 mask, as REAC v2)
   (before Polaris 3.3: one 'DSW1' blob, version 5, of the same sections behind a 16-byte header)
 Links (TECH_DEBT world-3):
 - between two MSBs, DSR's own rule: a ConnectCollision part (MSB type 11) names a collision part of map A and a map B;
@@ -43,6 +53,8 @@ LOAD_CELLS, KEEP_CELLS = 1.0, 2.0  # in area.CELL units, see above
 # REAC (world.c WORLD_REACH): the reach table, walking distances to the seams (tools/worldreach.py). WORLD_REACH=0
 # (env): no reach entries (the links alone)
 REACH = os.environ.get("WORLD_REACH", "1") != "0"
+NBR_MAX = 15  # neighbours per block in NBRS v1 (u16 local masks: LNKL v1, RCHL v1; world_i.h)
+NBR_WIDE = 31  # the wide layout's (NBRS / LNKL / RCHL v2, u32 local masks)
 
 
 def col_bounds(path):
@@ -144,6 +156,11 @@ def pack_world(blocks, heights, nbr, per):
     and per block block_masks' (masks, reach) (the LINK / REAC runs are cut here; tools/ci/test_worldbin.py reads
     them back). Prints the per-block link summary and the totals."""
     n = len(blocks)
+    # the local chunks' neighbour lists first: their largest count picks the layout (NBR_MAX)
+    nbrs = [worldlinks.neighbours(i, nbr[i], *per[i]) for i in range(n)]
+    top = max(map(len, nbrs), default=0)
+    print(f"world.bin: neighbours max {top}")
+    assert top <= NBR_WIDE, f"world.bin: {top} neighbours, NBRS holds {NBR_WIDE}"
     links, ranges, reach, reach_ix, rruns, rranges = [], [], [], {}, [], []
     for i, (b, m, bb, rect) in enumerate(blocks):
         masks, rc = per[i]
@@ -194,9 +211,60 @@ def pack_world(blocks, heights, nbr, per):
     reac += bytes(r[1] for r in rruns) + bytes(-(3 * len(rruns)) % 4)
     for mask, ds in reach:
         reac += struct.pack("<I6B2x", mask, *(ds + (0,) * (worldreach.REACH_N - len(ds))))  # REAC v2: u32 mask
-    blob = chunk.pack(b"WRLD", [(b"BLKS", 1, blks), (b"LRNG", 1, lrng), (b"LINK", 2, link), (b"REAC", 2, reac)])
+    loc = local_chunks(per, nbrs, top > NBR_MAX, rruns, rranges, reach)
+    blob = chunk.pack(b"WRLD", [(b"BLKS", 1, blks), (b"LRNG", 1, lrng), (b"LINK", 2, link), (b"REAC", 2, reac)] + loc)
     print(f"world.bin: {len(links)} links, {len(rruns)} reach runs, {len(reach)} reach entries, {len(blob)} bytes")
     return blob
+
+
+def local_chunks(per, nbrs, wide, rruns, rranges, reach):
+    """NBRS, LRNL, LNKL, RCHL (see the top) from block_masks' per-block (masks, reach), the neighbour lists and
+    pack_world's REAC runs / ranges / entries (global masks). The triangle masks turn local before the runs are cut"""
+    nmax = NBR_WIDE if wide else NBR_MAX
+    nb = b"".join(struct.pack(f"<B{nmax}B", len(ns), *(ns + [0] * (nmax - len(ns)))) for ns in nbrs)
+    lrnl, lnkl = [], []
+    for i, (masks, _) in enumerate(per):
+        loc = [[worldlinks.to_local(x, nbrs[i]) for x in mk] for mk in masks]
+        first = len(lnkl)
+        t = 0
+        while t < len(loc):
+            e = t
+            while e < len(loc) and loc[e] == loc[t] and e - t < 0xffff:
+                e += 1
+            if any(loc[t]):
+                lnkl.append((t, e - t, *loc[t]))
+            t = e
+        lrnl.append((first, len(lnkl) - first))
+    # reach: REAC's runs as they are (within a block the local mapping is one to one, so the runs do not change), each
+    # run's entry turned local; entries shared by equal local (mask, distances)
+    lent, lix, lruns = [], {}, []
+    for i, (r0, rn) in enumerate(rranges):
+        for t0, ri in rruns[r0:r0 + rn]:
+            li = 0
+            if ri:
+                e = worldreach.encode_local(reach[ri - 1], nbrs[i])
+                if e not in lix:
+                    lent.append(e)
+                    lix[e] = len(lent)
+                li = lix[e]
+            lruns.append((t0, li))
+    assert len(lent) < 256, "RCHL: u8 entries"
+    rchl = bytearray(struct.pack("<2If", len(lruns), len(lent), worldreach.REACH_STEP))
+    for r in rranges:
+        rchl += struct.pack("<2I", *r)
+    rchl += b"".join(struct.pack("<H", r[0]) for r in lruns)
+    rchl += bytes(r[1] for r in lruns) + bytes(-(3 * len(lruns)) % 4)
+    pad = (0,) * worldreach.REACH_N
+    if wide:
+        lnk = b"".join(struct.pack("<IHHII", l[0], l[1], 0, l[2], l[3]) for l in lnkl)
+        rchl += b"".join(struct.pack("<I6B2x", m, *(ds + pad)[:worldreach.REACH_N]) for m, ds in lent)
+    else:
+        lnk = b"".join(struct.pack("<IHHHH", l[0], l[1], l[2], l[3], 0) for l in lnkl)
+        rchl += b"".join(struct.pack("<H6B", m, *(ds + pad)[:worldreach.REACH_N]) for m, ds in lent)
+    v = 2 if wide else 1
+    print(f"world.bin: local chunks v{v}: {len(lnkl)} links, {len(lent)} reach entries")
+    return [(b"NBRS", v, nb), (b"LRNL", 1, struct.pack(f"<{2 * len(lrnl)}I", *(x for r in lrnl for x in r))),
+            (b"LNKL", v, lnk), (b"RCHL", v, bytes(rchl))]
 
 
 def main():
