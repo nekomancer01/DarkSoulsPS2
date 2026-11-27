@@ -19,6 +19,8 @@
 #                   from cdrom0:); ARGS still reach that ELF (-gameargs) and host: (HostFs) is the disc image's folder
 #     PCSX2_HEADLESS=<binary>  runner to use (default: tools/ext/pcsx2-build/bin/pcsx2-dsrtest of this tree, else of
 #                   the main checkout; build it with tools/pcsx2-headless/build.sh)
+#     PCSX2_USERCFG=<dir>  the PCSX2 config the runs start from (<dir>/inis/PCSX2.ini, BIOS in <dir>/bios; default
+#                   the Flatpak's, as tools/ps2-pcsx2.sh): e.g. under WSL a Windows PCSX2's Documents/PCSX2 folder
 #     PCSX2_TIMEOUT=<s>  hard wall-clock cap of the runner (-timeout, default 3600; exit 3): an instance whose harness
 #                   died still ends on its own
 #   /tmp/pcsx2-headless/slot.<slot>.pid holds "<pid> <starttime>" (field 22 of /proc/<pid>/stat) while it runs, for
@@ -65,7 +67,8 @@ set --
 if [ -n "$BOOTISO" ]; then set -- "$@" -- "$(realpath "$BOOTISO")"
 else set -- "$@" -elf "$ELF"; [ -n "$DISC" ] && set -- "$@" -- "$(realpath "$DISC")"; fi
 # Own data dir per slot: the user's ini stays untouched and parallel slots never share logs / states / cards
-python3 -I "$H/tools/test-pcsx2-ini.py" "${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2" "$DP" "$SLOT"
+python3 -I "$H/tools/test-pcsx2-ini.py" "${PCSX2_USERCFG:-${DISTROBOX_HOST_HOME:-$HOME}/.var/app/net.pcsx2.PCSX2/config/PCSX2}" \
+    "$DP" "$SLOT" || exit 1
 rm -f "$RUN/pcsx2.sock.$SLOT" "$CTL" "$LOG"
 # 9>&-: never hand the job-queue lock (tools/q holds it on fd 9) to the emulator
 XDG_RUNTIME_DIR=$RUN setsid "$BIN" -datapath "$DP" -ctl "$CTL" -logfile "$LOG" -timeout "${PCSX2_TIMEOUT:-3600}" \

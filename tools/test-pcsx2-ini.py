@@ -3,7 +3,9 @@
 <data>/PCSX2/inis/PCSX2.ini = the user's PCSX2.ini with PINE on <slot>, the BIOS folder pointing at the user's, no
 confirmation dialogs and the sound muted. pcsx2-dsrtest reads it as its base settings layer and forces its own test
 overrides on top in memory (tools/pcsx2-headless/Main.cpp SettingsOverride).
-  test-pcsx2-ini.py <user PCSX2 config dir> <data dir> <slot>"""
+  test-pcsx2-ini.py <user PCSX2 config dir> <data dir> <slot>
+The config dir is the callers' $PCSX2_USERCFG (default the Flatpak's ~/.var/app/net.pcsx2.PCSX2/config/PCSX2); the
+BIOS is read from its bios/ folder."""
 import os, sys
 
 SET = {
@@ -39,7 +41,12 @@ def main():
         k, v = kv.split("=", 1)
         SET.setdefault("EmuCore/GS", {})[k.strip()] = v.strip()
     secs, order, cur = {}, [], None
-    for line in open(os.path.join(user, "inis", "PCSX2.ini"), encoding="utf-8"):
+    ini = os.path.join(user, "inis", "PCSX2.ini")
+    if not os.path.isfile(ini):
+        sys.exit(f"test-pcsx2-ini.py: no PCSX2 settings at {ini} (start PCSX2 once and finish its setup, or point "
+                 "PCSX2_USERCFG at a PCSX2 config folder)")
+    # (text mode reads a Windows PCSX2's CRLF ini as well: PCSX2_USERCFG=/mnt/c/.../Documents/PCSX2 under WSL)
+    for line in open(ini, encoding="utf-8"):
         line = line.rstrip("\n")
         if line.startswith("[") and line.endswith("]"):
             cur = line[1:-1]
