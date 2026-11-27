@@ -27,6 +27,7 @@ coarse within WS_R1_IN..WS_R1 against WS_B1) to show what the seams add. Writes 
 Numbers are box distances, as mapstream.c ranks items."""
 import json
 import os
+import struct
 import sys
 
 import numpy as np
@@ -49,6 +50,7 @@ MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
 NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
+FX_LITE = os.environ.get("WORLD_FX_LITE", "1") != "0"  # world_i.h WORLD_FX_LITE (default 1): E_FXH
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -138,11 +140,32 @@ def lite_entries(d):
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
     if NAV_LITE:  # world_i.h WORLD_NAV_LITE: E_ENM, the whole enemies.bin (not a lean entry)
         total += r128(sz("enemies.bin"))
+    if FX_LITE:  # world_i.h WORLD_FX_LITE: E_FXH, fx.bin before its first pixel / CLUT (world.c fx_head_size)
+        total += r128(fx_head_bytes(d))
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     if DG_LITE:  # (world.c LEAN_ENT)
         tabs += r128(sz("pvs.bin"))
     return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
+
+
+def fx_head_bytes(d):
+    """bytes of a block's fx.bin before its first pixel / CLUT (fx.c fx_head_bytes; the whole file when it has no
+    textures; 0 without an fx.bin v2)"""
+    p = os.path.join(d, "fx.bin")
+    if not os.path.exists(p):
+        return 0
+    b = open(p, "rb").read()
+    if len(b) < 64 or b[:4] != b"DSFX" or struct.unpack_from("<I", b, 4)[0] != 2:
+        return 0
+    n_tex, off_tex = struct.unpack_from("<I", b, 8)[0], struct.unpack_from("<I", b, 32)[0]
+    if not n_tex:
+        return len(b)
+    keep = len(b)
+    for i in range(n_tex):
+        pix, clut = struct.unpack_from("<2I", b, off_tex + 16 * i + 8)
+        keep = min(keep, pix, clut)
+    return keep
 
 
 def obj_tex_bytes(d):

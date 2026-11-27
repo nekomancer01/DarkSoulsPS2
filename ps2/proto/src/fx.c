@@ -163,6 +163,7 @@ typedef struct {
     float *vtab, *kmax, *srad, *irad;
     u8 *icls;
     int on;
+    int bound;  /* WORLD_FX_LITE: tables in place in the block's lite set (fx_block_tables .. fx_block_drop) */
 } FxSet;
 static FxSet fset[FX_NSETS];
 static int cur_set;
@@ -287,8 +288,24 @@ static int bounds(void)
     return vu_n;
 }
 
-/* upload = 0: tables only, the textures go up with fx_block_on */
-static int load_set(GSGLOBAL *gs, const void *blob, int upload)
+/* the bound set's texture content keys (FNV-1a over the pixels and the CLUT) from b, its whole fx.bin */
+static void hash_tex(const u8 *b)
+{
+    for (u32 i = 0; tkey && i < hdr->n_tex; i++) {
+        u32 k = 2166136261u;
+        for (u32 j = 0; j < (u32)tex[i].w * tex[i].h; j++)
+            k = (k ^ b[tex[i].pix + j]) * 16777619u;
+        for (u32 j = 0; j < 1024; j++)
+            k = (k ^ b[tex[i].clut + j]) * 16777619u;
+        tkey[i] = k;
+    }
+}
+
+/* upload = 0: tables only, the textures go up with fx_block_on; hash = 0: blob is only the tables (fx_block_tables:
+ * the pixels are hashed by fx_block_on, from the whole file) */
+static int load_set_ex(GSGLOBAL *gs, const void *blob, int upload, int hash);
+static int load_set(GSGLOBAL *gs, const void *blob, int upload) { return load_set_ex(gs, blob, upload, 1); }
+static int load_set_ex(GSGLOBAL *gs, const void *blob, int upload, int hash)
 {
     hdr = blob;
     if (!blob || memcmp(hdr->magic, "DSFX", 4) || hdr->version != 2 || sizeof(FxSys) != 304 ||
@@ -306,14 +323,8 @@ static int load_set(GSGLOBAL *gs, const void *blob, int upload)
     light = (const FxLight *)(b + hdr->off_light);
     gtex = calloc(hdr->n_tex ? hdr->n_tex : 1, sizeof *gtex);  /* (0 textures: calloc(0) may give NULL, read as out of RAM) */
     tkey = calloc(hdr->n_tex ? hdr->n_tex : 1, sizeof *tkey);
-    for (u32 i = 0; tkey && i < hdr->n_tex; i++) {  /* FNV-1a over the pixels and the CLUT */
-        u32 k = 2166136261u;
-        for (u32 j = 0; j < (u32)tex[i].w * tex[i].h; j++)
-            k = (k ^ b[tex[i].pix + j]) * 16777619u;
-        for (u32 j = 0; j < 1024; j++)
-            k = (k ^ b[tex[i].clut + j]) * 16777619u;
-        tkey[i] = k;
-    }
+    if (hash)
+        hash_tex(b);
     emit_first = calloc(hdr->n_inst + 1, sizeof *emit_first);
     inst_on = calloc(hdr->n_inst ? hdr->n_inst : 1, 1);
     int ns = 0;
@@ -420,6 +431,8 @@ void fx_block_on(int block, int on, const void *blob)
     bind(block);
     memset(inst_on, 0, hdr->n_inst);  /* prewarmed again when it comes back */
     memset(emit, 0, emit_first[hdr->n_inst] * sizeof *emit);
+    if (on && blob && fset[block].bound)
+        hash_tex(blob);  /* (WORLD_FX_LITE: the tables came without the pixels) */
     if (!on)
         free_tex();  /* its particles are gone: nothing draws them after this frame */
     else if (!blob || !upload_tex(fx_gs, blob))
@@ -427,6 +440,61 @@ void fx_block_on(int block, int on, const void *blob)
                r_vram_avail(fx_gs)), on = 0;
     fset[block].on = on;
     bind(was);
+}
+
+unsigned fx_head_bytes(const void *blob, unsigned size)
+{
+    const FxHeader *h = blob;
+    if (!blob || size < sizeof *h || memcmp(h->magic, "DSFX", 4) || h->version != 2 || h->off_tex > size ||
+        h->n_tex > (size - h->off_tex) / sizeof(FxTex))
+        return 0;
+    const FxTex *t = (const FxTex *)((const u8 *)blob + h->off_tex);
+    u32 keep = size;
+    for (u32 i = 0; i < h->n_tex; i++)
+        keep = t[i].clut < keep ? t[i].clut : keep, keep = t[i].pix < keep ? t[i].pix : keep;
+    return keep;
+}
+
+int fx_block_tables(int block, const void *head, unsigned size)
+{
+    if (block <= 0 || block >= FX_SETS || !head || fset[block].hdr)
+        return 0;
+    const FxHeader *h = head;
+    if (size < sizeof *h || h->off_tex > size || h->off_sys > size || h->off_eff > size || h->off_ref > size ||
+        h->off_inst > size || h->off_light > size) {
+        printf("fx: block %d: tables FAILED (head %u B)\n", block, size);
+        return 0;
+    }
+    int was = cur_set;
+    bind(block);
+    int r = load_set_ex(fx_gs, head, 0, 0);  /* (tables in place: the lite set keeps the blob until fx_block_drop) */
+    if (!r) {
+        hdr = 0;
+        printf("fx: block %d: tables FAILED\n", block);
+    }
+    fset[block].on = 0;
+    bind(was);
+    fset[block].bound = r;
+    return r;
+}
+
+void fx_block_drop(int block)
+{
+    if (block <= 0 || block >= FX_SETS || !fset[block].bound)
+        return;
+    fx_block_on(block, 0, NULL);  /* (no-op when it is off: its particles and textures went with it) */
+    for (int b = 0; b < FX_BURSTS; b++)
+        if (bursts[b].set == block)
+            bursts[b].t = 0;
+    int was = cur_set;
+    bind(block);
+    free(gtex), free(tkey), free(emit_first), free(inst_on), free(emit), free(kmax), free(vtab);
+    free(srad), free(irad), free(icls);
+    gtex = NULL, tkey = NULL, emit_first = NULL, inst_on = NULL, emit = NULL, kmax = NULL, vtab = NULL;
+    srad = irad = NULL, icls = NULL;
+    hdr = 0, tex = 0, sys = 0, eff = 0, ref = 0, inst = 0, light = 0;
+    bind(was);
+    fset[block].bound = 0;
 }
 
 int fx_entity_particles(int id, int kill)

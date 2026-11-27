@@ -101,6 +101,8 @@ static void turn_on_col(int i)
     if (r->size[E_DG] && r->size[E_PVS])
         map_block_dg_set(i, r->blob[E_DG], r->size[E_DG], r->blob[E_PVS], r->size[E_PVS]);  /* WORLD_DG_LITE: lite set */
     ok &= map_block_init(i, r->blob[E_TAB], NULL, i);
+    if (ok && r->size[E_FXH])  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
+        fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
     if (!ok)
         printf("world: block %d: collision %s (%.4s), map %.4s\n", i, cok ? "ok" : "FAILED", (const char *)r->blob[E_COL],
                (const char *)r->blob[E_TAB]);
@@ -242,6 +244,7 @@ void w_turn_off(int i)
         objects_block_remove(i);
     if (r->stage == 2 || r->ent > E_FX)
         fx_block_on(i, 0, NULL);
+    fx_block_drop(i);  /* WORLD_FX_LITE: tables bound in turn_on_col, also when it goes before stage 2 */
     r->stage = 0;
     r->lean = r->lean_drain = 0;  /* (free_slot frees whatever tables are still held) */
     coltile_off(i);
