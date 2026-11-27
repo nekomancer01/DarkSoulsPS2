@@ -20,6 +20,7 @@
 #include "objects.h"
 #include "fx.h"
 #include "enemy.h"
+#include "nav.h"  /* nav_unbind (WORLD_NAV_LITE) */
 #include "hitch.h"
 #include "coltile.h"
 #include "ticks.h"
@@ -238,14 +239,70 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_DG_LITE
 #define WORLD_DG_LITE 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_OBJ, E_FX, NENT };
+/* E_ENM (WORLD_NAV_LITE, default 1; TECH_DEBT world-46 item 3, phase 1): the block's enemies.bin (placements + navmesh)
+ * comes with its lite set and its navmesh is used in place while the block's enemies are on (nav_bind at turn_on_rest,
+ * nav_unbind at turn-off), instead of a heap copy of every block's navmesh made at boot and kept (772 KB of the boot
+ * heap at 27 blocks, 2026-11-25). DSR prepares a block's navmesh with the block (WorldBlockNvmPrepare in FUN_1403dac50,
+ * notes/EXE_FINDINGS.md). It sits after the map tables in the read order, so collision and maps come first; it is not
+ * a lean entry (a kept-only block keeps its enemies on). 0: copied at boot as before. */
+#ifndef WORLD_NAV_LITE
+#define WORLD_NAV_LITE 1
+#endif
+/* WORLD_CHR_LITE (default 1; world-46 phase 4): the block's placements and enemy types from E_ENM at turn-on
+ * (enemy_block_types_lite; a new type's chr.bin head read in the background, its placements waiting for it, as DSR's
+ * WorldBlockChrPrepare loads a block's characters with the block), let go at turn-off (enemy_block_untypes), instead
+ * of every block's types and placements made at boot with synchronous pack reads. 0: at boot as before. */
+#ifndef WORLD_CHR_LITE
+#define WORLD_CHR_LITE 1
+#endif
+/* E_FXH (WORLD_FX_LITE, default 1; world-46 phase 2): the head of the block's fx.bin, everything before its first pixel /
+ * CLUT (the effect tables, 1-20 KB), comes with its lite set and is used in place from turn_on_col (fx_block_tables) to
+ * the turn-off (fx_block_drop), instead of a heap copy of every block's tables and runtime arrays made at boot (339 KB at
+ * 27 blocks). The pixels still come through the texture buffer (E_FX). The entry shares fx.bin with E_FX: world_init
+ * sizes it after its entry loop (fx_head_size), before world_struct_bytes. 0: tables at boot as before. */
+#ifndef WORLD_FX_LITE
+#define WORLD_FX_LITE 1
+#endif
+/* E_OBJH (WORLD_OBJ_LITE, default 1; world-46 phase 3): the head of the block's objects.bin (OHDR .. ATEX: the type,
+ * piece and placement tables, the animated models and their textures; export_objects.py OHDR v2) comes with its lite
+ * set; its breakable types are made from it when the objects.bin tail is in (tex_on: objects_block_types_lite), shared
+ * with the map's other on blocks and counted, and let go after its instances (objects_block_untypes). Their models
+ * stream by file offset (OBJ_STREAM). Animated types are made at the block's first turn-on and stay (as at boot). Until
+ * now every block's types were made at boot from a whole-file read (0.9-1.5 MB in the Burg; 696 KB of the boot heap at 27
+ * blocks, 2026-11-25). world_init sizes it in obj_tail. 0 (or OBJ_STREAM 0): at boot as before. */
+#ifndef WORLD_OBJ_LITE
+#define WORLD_OBJ_LITE 1
+#endif
+/* E_AI (WORLD_AI_UNLOAD, default 1; world-46 phase 4b): the block's map AI (ai.lua0) comes with its lite set; its chunks
+ * are counted into the Lua VM when it is in (late_on: enemy_block_ai) and out at the turn-off, freed once no block holds
+ * them (lua0.c). Until now every block's scripts ran into the VM at boot and stayed (1044 KB of the boot heap at 27
+ * blocks, 2026-11-25). The Lua of the blocks a link keeps is reserved beside the arena (world_init: w_lua_res).
+ * 0: every block's at boot as before. */
+#ifndef WORLD_AI_UNLOAD
+#define WORLD_AI_UNLOAD 1
+#endif
+/* WORLD_HEAD_TEX (default 1; world-46 Task 10): E_AI and E_OBJH are read into the block's texture buffer (the misc pool)
+ * at turn-on instead of the structural pool. Both are used only there: lua0_load copies the protos to the Lua heap
+ * (reserved apart), objects_block_types_lite copies the placements and makes the types and animated models; after that
+ * their bytes were dead pool room for as long as the block was on (Burg's four lite sets carried 770 KB of them: the
+ * visual room went 5122 -> 4180 KB, 2026-11-25). The texture buffer then holds the object head and its BTEX tail at
+ * once (tex_total). 0: both in the structural pool as before. */
+#ifndef WORLD_HEAD_TEX
+#define WORLD_HEAD_TEX 1
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_AI, E_OBJH, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "objects.bin", "fx.bin"};
+                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
+                                          "ai.lua0", "objects.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only
  * read while the block draws; the draw groups stay, its collision parts' groups) */
 #define LEAN_ENT(e) (((e) >= E_TAB && (e) <= LEAN_E1) || (e) == E_PVS)
-#define E_TEX E_OBJ  /* first of the texture entries (their own arena block) */
+#define E_TEX (WORLD_HEAD_TEX ? E_AI : E_OBJ)  /* first of the texture entries (the texture buffer, misc pool) */
+/* first of the entries read after the floor is on (stage 1, before the textures): world-46's enemies, effect tables,
+ * object head and AI; a block's turn-on waits only for collision and maps (streamer thread, 2026-11-25: read before
+ * turn_on_col they made the Burg bonfire block's turn-on 0.5-1 s slower on the ISO) */
+#define E_LATE E_ENM
 
 #include "chunk.h"
 #include "event.h"  /* event_block_on / _off (A2): the blob stays world.c's (arena) until _off */
@@ -284,6 +341,8 @@ typedef struct {
     unsigned off[NENT], size[NENT], total, tex_total, res_off, res_size, bump_off, bump_size;
     unsigned far_off, far_size;  /* far.bin (tools/farpano.py): its far panorama of the blocks that are off; 0 none */
     unsigned obj0;  /* objects.bin's own offset in the pack (obj_tail moves off[E_OBJ] to its texture tail) */
+    unsigned obj_full;  /* WORLD_OBJ_LITE: objects.bin's whole size (E_OBJH holds its head, E_OBJ its tail) */
+    unsigned char ai_on;  /* WORLD_AI_UNLOAD: its E_AI is counted into the VM (turn-on .. w_turn_off) */
     unsigned cut[2];  /* WORLD_TAB_SPLIT: where E_TABB / E_TABC start in maptab.bin */
     unsigned col_full;  /* COL_TILES: collision.bin's whole size when it is paged (size[E_COL] = its index), else 0 */
     /* WORLD_EV_SHARED: the events.bin is split (E_EV = its middle from ev_mid, E_EVM = the whole file, read only when
@@ -365,6 +424,7 @@ extern unsigned w_hold_m, w_hold_want, w_hold_gone;
 extern WorldSrc w_src[WSRC_N];
 int w_read_sync(Pack *pk, unsigned off, void *dst, unsigned n);
 unsigned world_struct_bytes(void);
+unsigned world_lua_bytes(void);  /* wplan.c: WORLD_AI_UNLOAD reserve */
 void w_step_time(unsigned t0);
 void w_bump_free(void *p, unsigned n);
 void w_bump_drop(void);

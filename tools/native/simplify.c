@@ -78,7 +78,9 @@ static double area3(v3 a, v3 b, v3 c) {
 static double pmax(double a, double b) { return b > a ? b : a; } /* Python max(a, b) */
 /* source triangles by grid cell (the triangle guard's shape check, sg_build) */
 typedef struct { unsigned long long key; int t; } sgent;
-typedef struct { double cs; sgent *g; long long ng; int *big, nbig; double *bb; } sgrid;  /* bb: per triangle its box (min xyz, max xyz) */
+/* bb: per triangle its box (min xyz, max xyz); ck / cst / cbb: the distinct cells of g (key, first entry, cst[nc] = ng,
+   the union of their triangles' boxes) */
+typedef struct { double cs; sgent *g; long long ng; int *big, nbig; double *bb; unsigned long long *ck; long long *cst, nc; double *cbb; } sgrid;
 
 static void plane(double *q, v3 n, v3 p, double w) { /* _plane */
     double a = n.x, b = n.y, c = n.z;
@@ -421,6 +423,25 @@ static void sg_build(sgrid *g, int nv, const v3 *pos, int nt, int (*TP)[3], doub
                 }
     }
     if (g->ng > 1) qsort(g->g, (size_t)g->ng, sizeof(sgent), sg_cmp);
+    g->nc = 0;
+    for (long long e = 0; e < g->ng; e++) g->nc += !e || g->g[e].key != g->g[e - 1].key;
+    g->ck = malloc(sizeof(unsigned long long) * (size_t)(g->nc ? g->nc : 1));
+    g->cst = malloc(sizeof(long long) * (size_t)(g->nc + 1));
+    g->cbb = malloc(sizeof(double) * 6 * (size_t)(g->nc ? g->nc : 1));
+    for (long long e = 0, k = -1; e < g->ng; e++) {
+        const double *B = g->bb + 6 * g->g[e].t;
+        if (!e || g->g[e].key != g->g[e - 1].key) {
+            k++;
+            g->ck[k] = g->g[e].key, g->cst[k] = e;
+            for (int a = 0; a < 6; a++) g->cbb[6 * k + a] = B[a];
+            continue;
+        }
+        for (int a = 0; a < 3; a++) {
+            if (B[a] < g->cbb[6 * k + a]) g->cbb[6 * k + a] = B[a];
+            if (B[3 + a] > g->cbb[6 * k + 3 + a]) g->cbb[6 * k + 3 + a] = B[3 + a];
+        }
+    }
+    g->cst[g->nc] = g->ng;
 }
 /* Whether p is within sqrt(t2) of a source triangle t (T0 positions P0) with tmesh[t] == mesh (sg_off's test). Only the
    comparison matters, so the search stops at the first triangle found within; a triangle whose box is further from p
@@ -443,9 +464,17 @@ static int sg_near(const sgrid *g, v3 p, const v3 *pos, int (*P0)[3], const int 
         for (int dy = -1; dy <= 1; dy++)
             for (int dz = -1; dz <= 1; dz++) {
                 unsigned long long key = sg_key(c[0] + dx, c[1] + dy, c[2] + dz);
-                long long lo = 0, hi = g->ng;
-                while (lo < hi) { long long m = (lo + hi) / 2; if (g->g[m].key < key) lo = m + 1; else hi = m; }
-                for (long long e = lo; e < g->ng && g->g[e].key == key; e++) { int t = g->g[e].t; SG_TRY(t); }
+                long long lo = 0, hi = g->nc;
+                while (lo < hi) { long long m = (lo + hi) / 2; if (g->ck[m] < key) lo = m + 1; else hi = m; }
+                if (lo == g->nc || g->ck[lo] != key) continue;
+                {   /* the cell's union box: no triangle in it passes its own box test when this fails */
+                    const double *B = g->cbb + 6 * lo;
+                    double ex = p.x < B[0] ? B[0] - p.x : p.x > B[3] ? p.x - B[3] : 0,
+                           ey = p.y < B[1] ? B[1] - p.y : p.y > B[4] ? p.y - B[4] : 0,
+                           ez = p.z < B[2] ? B[2] - p.z : p.z > B[5] ? p.z - B[5] : 0;
+                    if (ex * ex + ey * ey + ez * ez > lim) continue;
+                }
+                for (long long e = g->cst[lo]; e < g->cst[lo + 1]; e++) { int t = g->g[e].t; SG_TRY(t); }
             }
     for (int e = 0; e < g->nbig; e++) { int t = g->big[e]; SG_TRY(t); }
 #undef SG_TRY
@@ -910,7 +939,7 @@ result *simplify_run_grp(int nv, const double *posd, int nw, const int *wpos, in
     free(s.snb);
     free(s.n0);
     free(s.l0);
-    if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); free(s.sg.bb); }
+    if (s.P0) { free(s.P0); free(s.tmesh); free(s.sg.g); free(s.sg.big); free(s.sg.bb); free(s.sg.ck); free(s.sg.cst); free(s.sg.cbb); }
     free(s.vt); free(s.bnb); free(s.TP); free(s.TA); free(s.lock); free(s.border); free(s.dead); free(s.Q);
     free(s.errm); free(s.alost); free(s.aown); free(s.ver); free(h.a); free(chg.a);
     free(s.pm); free(s.vkeep.a);

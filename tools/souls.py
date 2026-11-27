@@ -37,7 +37,49 @@ def undcx(b):
     fmt = b[b.find(b"DCP\0") + 4:][:4]
     if fmt not in DCX_FORMATS:
         raise UnknownVariant("dcx compression", fmt.decode("latin1"))
-    return zlib.decompress(b[b.find(b"DCA\0") + 8:])
+    return _inflate(b[b.find(b"DCA\0") + 8:], b)
+
+
+def _inflate_lib():
+    """the zlib inflater (2026-11-24 build profile: undcx was ~8 % of export_map and ~40 % of export_objects): libdeflate
+    (the deflate package, ~2.2x zlib on the game's DCX files) given the header's size, else ISA-L (isal, ~1.6x), else
+    zlib; all return the same bytes. SOULS_INFLATE=zlib / isal / deflate picks one."""
+    global _INFLATE
+    if _INFLATE is None:
+        want = os.environ.get("SOULS_INFLATE", "deflate")
+        _INFLATE = ("zlib", zlib.decompress)
+        if want in ("deflate", "isal"):
+            try:
+                if want != "deflate":
+                    raise ImportError
+                import deflate
+                _INFLATE = ("deflate", deflate.zlib_decompress)
+            except ImportError:
+                try:
+                    from isal import isal_zlib
+                    _INFLATE = ("isal", isal_zlib.decompress)
+                except ImportError:
+                    pass
+    return _INFLATE
+
+
+_INFLATE = None
+
+
+def _inflate(z, dcx):
+    kind, f = _inflate_lib()
+    if kind == "deflate":
+        i = dcx.find(b"DCS\0")  # DCS: uncompressed size, compressed size (u32 big endian)
+        if 0 <= i < 64:
+            n = struct.unpack_from(">I", dcx, i + 4)[0]
+            try:
+                out = f(z, n)
+                if len(out) == n:
+                    return bytes(out)  # (the package returns a bytearray; the readers hash and compare bytes)
+            except Exception:
+                pass
+        return zlib.decompress(z)
+    return f(z)
 
 
 def read(path):
@@ -59,11 +101,18 @@ def wstr(b, off):
 def bnd3(b, data=None):
     """BND3 -> [(id, name, bytes)]. The format byte is stored bit-reversed (unless bit-big-endian is set).
     With `data`, b is a BHF3 header (.xxxbhd) whose file offsets point into the BDF3 `data` (.xxxbdt)."""
+    src = b if data is None else data
+    out = [(fid, name, src[off:off + size]) for fid, name, off, size in bnd3_entries(b)]
+    data = _map_undcx([d for _, _, d in out])
+    return [(fid, name, d) for (fid, name, _), d in zip(out, data)]
+
+
+def bnd3_entries(b):
+    """BND3 / BHF3 header -> [(id, name, offset, size)] (offsets into the binder, or the .xxxbdt for a BHF3)"""
     if b[:4] not in (b"BND3", b"BHF3"):
         raise UnknownVariant("binder magic", b[:4].decode("latin1"), "not a BND3/BHF3")
     if b[0xD]:  # big-endian binder (the debug map m99_99_97_00's navmeshes): the offsets below are little-endian only
         raise UnknownVariant("binder byte order", "big-endian")
-    src = b if data is None else data
     raw, bitbig = b[0xC], b[0xE]
     fmt = raw if bitbig else int(f"{raw:08b}"[::-1], 2)
     ids, names, longoff, comp = fmt & 2, fmt & 0xC, fmt & 0x10, fmt & 0x20
@@ -83,9 +132,63 @@ def bnd3(b, data=None):
             pos += 4
         if comp:
             pos += 4
-        out.append((fid, name, src[off:off + size]))
-    data = _map_undcx([d for _, _, d in out])
-    return [(fid, name, d) for (fid, name, _), d in zip(out, data)]
+        out.append((fid, name, off, size))
+    return out
+
+
+class LazyTextures(dict):
+    """{texture name: DDS bytes} of split TPF binders (.tpfbhd / .tpfbdt), read on first use (2026-11-24: every map
+    export held its whole area's textures, 420 MB for m10, of which a block uses a part: most of export_map's 1.8 GB
+    peak, and the build's map exports waited for RAM). A map binder entry is one TPF named after its one texture
+    ('\\m10_00_arch_01.tpf.dcx' -> m10_00_arch_01); an entry whose TPF holds other names is read eagerly on the
+    first miss, so the keys are always the eager ones. Plain dict entries (update()) work as before."""
+
+    def __init__(self):
+        super().__init__()
+        self._lazy = {}  # name -> (bdt path, offset, size)
+
+    def add_binder(self, bhd_path, bdt_path):
+        for _fid, name, off, size in bnd3_entries(read(bhd_path)):
+            key = (name or "").replace("\\", "/").rsplit("/", 1)[-1].split(".")[0]
+            if key and key not in self._lazy and not dict.__contains__(self, key):
+                self._lazy[key] = (bdt_path, off, size)
+            else:  # (an unexpected name: that entry as before, at once)
+                with open(bdt_path, "rb") as f:
+                    f.seek(off)
+                    for k, v in tpf(undcx(f.read(size))).items():
+                        dict.__setitem__(self, k, v)
+
+    def _load(self, key):
+        path, off, size = self._lazy.pop(key)
+        with open(path, "rb") as f:
+            f.seek(off)
+            t = tpf(undcx(f.read(size)))
+        for k, v in t.items():
+            if not dict.__contains__(self, k):
+                dict.__setitem__(self, k, v)
+        if key not in t:  # the entry's name lied: every remaining entry the eager way, so no key is missing
+            for k2 in list(self._lazy):
+                self._load(k2)
+
+    def __getitem__(self, key):
+        if not dict.__contains__(self, key) and key in self._lazy:
+            self._load(key)
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or key in self._lazy
+
+    def keys(self):
+        return list(dict.keys(self)) + [k for k in self._lazy if not dict.__contains__(self, k)]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
 
 
 _POOL = []
@@ -428,13 +531,16 @@ def param_rows(b, fields):
     """DS1 PARAM -> [(row id, name, {field: value})] in file order, duplicates kept. A row ends at the next row's
     data (or the names / file end): the default_* DrawParam banks store older, shorter rows than the game's paramdef
     (default_ToneCorrectBank 32 B vs TONE_CORRECT_BANK 36 B without sfxMultiplier); fields past the end are omitted."""
+    import bisect
     rows = struct.unpack_from("<H", b, 0xA)[0]
     hdr = [struct.unpack_from("<iII", b, 0x30 + 12 * r) for r in range(rows)]
     bounds = sorted({d for _, d, _ in hdr} | {n for _, _, n in hdr if n} | {len(b)})
     out = []
     for rid, doff, noff in hdr:
         name = cstr(b, noff) if noff else ""
-        end = next(x for x in bounds if x > doff)
+        # the first bound past the row's data: a bisect (the linear scan per row was O(rows^2), a quarter of every
+        # export_chr run, 2026-11-24)
+        end = bounds[bisect.bisect_right(bounds, doff)]
         vals, pos, unit, unit_bits, unit_size = {}, doff, 0, 0, None
         for fname, itype, nbytes, bits, arr in fields:
             if pos + (struct.calcsize(FIELD_FMT.get(itype, "B")) if bits is not None else nbytes) > end:
@@ -460,18 +566,44 @@ def param_rows(b, fields):
 
 
 def game_params(game):
-    """{param file stem: {row id: (name, {field: value})}} for GameParam, using the game's own paramdefs."""
+    """{param file stem: {row id: (name, {field: value})}} for GameParam, using the game's own paramdefs. Parsed once
+    per game copy and souls.py: the result lives in the build cache's "params" namespace (tools/buildcache.py; ~0.4 s
+    of parsing vs ~0.05 s to load, in each of the ~200 exporter processes of a build), keyed by the two files' bytes
+    and this file's; a hit replays the skipped() reports of the parse. PARAMS_CACHE: 0 = parse every time, a path =
+    the namespace's directory."""
+    pd, gp = game + "/paramdef/paramdef.paramdefbnd.dcx", game + "/param/GameParam/GameParam.parambnd.dcx"
+    c = k = None
+    try:
+        import buildcache
+        c = buildcache.Cache("params", b"params-1", sources=[os.path.abspath(__file__)],
+                             where=os.environ.get("PARAMS_CACHE"))
+        k = c.key(buildcache.File(pd), buildcache.File(gp)) if c.dir else None
+    except (ImportError, OSError):
+        c = None
+    hit = c.get(k) if c is not None and k else None
+    if hit is not None and not c.verify:
+        out, skips = hit
+        for kind, value in skips:
+            skipped(kind, value)
+        return out
+    skips = []
     defs = {}
-    for _, n, d in bnd3(read(game + "/paramdef/paramdef.paramdefbnd.dcx")):
+    for _, n, d in bnd3(read(pd)):
         ptype, fields = paramdef(d)
         defs[ptype] = fields
     out = {}
-    for _, n, d in bnd3(read(game + "/param/GameParam/GameParam.parambnd.dcx")):
+    for _, n, d in bnd3(read(gp)):
         ptype = cstr(d, 0xC).strip()
         if ptype not in defs:
+            skips.append(("param without paramdef", ptype))
             skipped("param without paramdef", ptype)
         else:
             out[basename(n).rsplit(".", 1)[0]] = param(d, defs[ptype])
+    if c is not None and k:
+        if hit is not None:
+            c.check(k, hit, (out, skips))
+        else:
+            c.put(k, (out, skips))
     return out
 
 

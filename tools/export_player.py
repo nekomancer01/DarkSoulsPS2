@@ -16,7 +16,9 @@ MOVE_SETS = (0, 5, 10, 15)
 ANIMS = [
     ("WALK", "a00", 200, True),
     ("RUN", "a00", 500, True),
-    ("DASH", "a00", 535, True),
+    # Dash (Circle held) = MoveParam row 0 superDash 510: WalkAnim's MoveParam load FUN_1403a1cc0 puts row word 9
+    # (superDash) at WalkAnim+0xA0, the anim FUN_1403a5d40 tests as "dashing". 510 carries the dash's TAE footsteps.
+    ("DASH", "a00", 510, True),
     ("ROLL", "a00", 700, False),
     ("R1_1", "a23", 3000, False),
     ("R1_2", "a23", 3001, False),

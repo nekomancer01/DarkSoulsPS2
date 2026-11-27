@@ -54,11 +54,20 @@ FAR_GPU	env	1	flag	world	0	new	farpano.py	-
 FAR_GPU_SOFTWARE	env	unset	opt	world	-	new	farraster.c	-
 FAR_NATIVE	env	1	flag	world	0	new	farpano.py	-
 FAR_SAMPLE_LOOP	env	unset	debug	world	-	new	farpano.py	-
+MAP_LAZY_TEX	env	1	flag	world	0	new	mapgather.py	-
+PARAMS_CACHE	env	unset	config	tools	0	new	souls.py	parsed game params (souls.game_params) kept in the build cache's params namespace, keyed by the param files' and souls.py's bytes (0 = parse every run; a path moves the namespace)
+PVS_BOXF_LOOP	env	unset	debug	world	-	new	pvs_bake.c	-
 PVS_GPU_SPIN	env	unset	opt	world	-	new	pvs_gpu.c	-
+PVS_OCC_CULL	env	1	flag	world	0	new	pvs_bake.c	-
+PVS_ROUNDS	env	1	flag	world	0	new	pvs_bake.c	-
+SOULS_INFLATE	env	deflate	config	tools	zlib	new	souls.py	-
 VU1_BONE_MAX	env	40	tune	scene	61	#287	vu1/layout.py	the skin palette window size the VU1 contract is generated for (make VU1_BONES sets it)
 VU1_BONES	make	40	flag	scene	61	#287	Makefile	VU1_BONES: bones in the VU1 skin palette window (tools/vu1/layout.py BONE_MAX). 40 (default): skeletons over 40 paged through bone windows, 27-triangle batches; 61 = the old path: one 61-bone window, 23-triangle batches (24 before the light block) (vu1_layout.h and the skin programs generated into the build dir)
+WORLD_BOOT_FIRST	make	1	config	world	0	new	Makefile	the world block sub-make waits for the boot block's objects and lights so the boot map export (which every horizon waits for) starts beside it instead of queuing behind the top make's other exports (0 = as before; scheduling only)
 WORLD_BUDGET_ARGS	make	--strict	config	world	-	#142	recipe.toml	World budget check (tools/world_budget.py, TECH_DEBT world-10): every block's map export sizes its levels on its own (export_map.py solve_budget); this sums what all blocks ask of mapstream's arena at
 WORLD_EARLY_BAKES	make	1	flag	world	0	#246	Makefile:217	The two long bakes of every block start as soon as their inputs are there, ahead of the packs' smaller exports (2026-11-17: in worldpacks the bakes queued behind each block's chr exports for up to 2 m
+WORLD_EARLY_CHRS	make	1	flag	world	0	new	Makefile:237	The character exports of every world block run right after the map exports, alongside the occlusion bakes (which leave the CPU idle while they share the GPU), instead of in worldpacks after the panoramas; 0 = as before.
+WORLD_HZN_FIRST	make	1	flag	world	0	new	Makefile:226	The world blocks' horizons run before the occlusion bakes and chr exports start (they gate the far panoramas); 0 = all three at once, as before.
 WORLD_J	make	empty	config	world	-	#9	Makefile:197	WORLD_J: jobs for the block sub-makes (default: share this make's jobs). Their exporters run inside this make's queue job and reserve no RAM of their own (each block adds one export_map, up to ~5 GB).
 WORLD_LITE_DIET	make	1	flag	world	0	#147	recipe.toml	world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every c
 WORLD_MIP1_OUT	make	computed	config	world	-	#147	recipe.toml	-
@@ -242,6 +251,7 @@ PANO_SPLIT	env	1.4	tune	world	-	#206	pano.py	depth ratio between two layers at l
 PANO_W	env	1024	tune	world	-	#135	pano.py	texels round the cylinder (0.35 degrees each, ~3 screen pixels)
 PARAMDEX	env	unset	config	game	-	init	params.py	-
 PCSX2_GS	env	-	config	tools	-	#49	test-pcsx2-ini.py	-
+PCSX2_HEADLESS	env	unset	config	tools	-	new	warmstate.py test-gsdump.py pcsx2-run.sh ps2-pcsx2.sh	pcsx2-dsrtest binary to run (default: tools/ext/pcsx2-build/bin of this tree, else of the main checkout)
 PINE	env	DEFAULT_SLOT	config	tools	-	init	pine.py	-
 POSE_OBJ	env	1	flag	world	0	init	mapcfg.py	-
 PVS	env	1	flag	world	0	#116	mapcfg.py	0: chunks ignore draw groups, dg.bin shows everything (A/B)
@@ -253,6 +263,8 @@ PVS_GPU_INSTANCED	env	unset	opt	world	-	#211	pvs_gpu.c	-
 PVS_GPU_JOBS	env	2	config	world	-	#211	pvs_gpu_server.py	bakes at once (each one's draw lists use every core)
 PVS_GPU_LAYERED	env	unset	opt	world	-	#211	pvs_gpu.c	-
 PVS_GPU_SOFTWARE	env	unset	opt	world	-	#211	pvs_gpu.c	-
+PVS_PREFILTER	env	1	config	world	0	new	pvs_bake.c	the occlusion bake's draw list: drawn()'s camera-free tests run once per player block and draw-group row, each camera only the distance tests (0 = the flat loop, same pvs.bin)
+PVS_PREFILTER_CHECK	env	unset	debug	world	-	new	pvs_bake.c	1 = build the prefiltered draw list and the flat one per camera and abort if they differ
 PVS_PRETEST	env	unset	opt	world	-	#129	pvs_bake.c	-
 PVS_SIMD	env	unset	opt	world	-	#211	pvs_bake.c	-
 RDC_IN	env	unset	config	tools	-	init	dsr_rdc_replay.py	-
@@ -282,6 +294,7 @@ SIMP_DUMP	env	unset	debug	world	1	#124	mapsimp.py	debugging: the simplifier's wh
 SKY_ALP_BLEND	env	1	flag	world	0	#249	material.py	sky alpha layers blended (material.classify)
 SMOKE_JOBS	env	2	config	tools	-	#9	test-smoke.py	-
 SND_CACHE	env	unset	opt	snd	-	#121	export_audio.py	-
+SND_RATE_PICK	env	sample	config	snd	global	new	export_audio.py	per-sample SPU2 rates by band loss (TECH_DEBT audio-2); global = one rate for every sample; not a stamp input: rm $(A)/snd.stamp to A/B
 SOFT_PX	env	2.0	tune	world	-	#33	mapcfg.py	-
 SOFT_R_PX	env	4.0	tune	world	-	#33	mapcfg.py	footprint radius of the colour average, px (ASSUMED)
 SOULS_NP	env	1	config	game	-	#43	souls.py	-
@@ -292,6 +305,7 @@ SPIRV_CROSS	env	os.path.join(os.environ.get('DSR_REF', os.path.join(os.envir	con
 STATIC_OBJ	env	unset	config	world	-	init	mapcfg.py	-
 STEPCACHE	env	unset	flag	tools	0	new	stepcache.py	Export-step cache (tools/stepcache.py, Polaris 3.2 part 2): every recipe step but packs is restored from the build cache's step namespace when the same step ran before with the same inputs; 0 runs every tool (the other namespaces stay on), a path moves the namespace
 STEPCACHE_GB	env	12	config	tools	-	new	stepcache.py	Size cap of the build cache's step namespace in GB (least recently used entries go first)
+STEPCACHE_LOG	env	1	config	tools	0	new	stepcache.py	0 = no <build>/stepcache.tsv timing rows (one row per recipe step: start, end, hit / miss, wall, child CPU, outputs, prerequisites; read by tools/buildprof.py)
 STREAM	env	unset	opt	world	-	init	mapcfg.py	-
 STREAM_D	env	32.0	tune	world	-	init	mapcfg.py	-
 STREAM_FAR	env	78.0	tune	world	-	init	mapcfg.py	-
@@ -310,9 +324,16 @@ WARM_CACHE	env	unset	config	tools	-	#161	test-run.py warmstate.py	-
 WARM_DAYS	env	2	config	tools	-	#161	warmstate.py	-
 WARM_KEEP	env	60	config	tools	-	#161	warmstate.py	-
 WB_SLICE	env	2048	tune	world	-	#246	world_budget.py	-
+WB_THREADS	env	computed	config	world	-	new	world_budget.py	-
 WORLD_BUDGET_LINKS	env	1	flag	world	0	#156	world_budget.py	-
 WORLD_BUDGET_STRICT	env	all	tune	world	m10_01_00_00_	#156	world_budget.py	blocks the world budget gate covers (comma list of name prefixes); all = every block (Polaris 4.8 step 2), m10_01_00_00_ = the Burg blocks only as before
 WORLD_DG_LITE	env	1	flag	world	0	#209	world_budget.py	world.c WORLD_DG_LITE (default 1)
+WORLD_NAV_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_NAV_LITE (default 1): enemies.bin in the lite set
+WORLD_CHR_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_CHR_LITE (default 1): enemy types from E_ENM at turn-on
+WORLD_AI_UNLOAD	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_AI_UNLOAD (default 1): a block's map AI (E_AI) counted into the Lua VM at turn-on, freed when no block holds it
+WORLD_HEAD_TEX	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_HEAD_TEX (default 1): E_AI and E_OBJH come through the texture buffer (misc pool), not the structural pool
+WORLD_FX_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_FX_LITE (default 1): fx.bin's tables in the lite set
+WORLD_OBJ_LITE	env	1	flag	world	0	new	world_budget.py	world_i.h WORLD_OBJ_LITE (default 1): objects.bin's head in the lite set
 WORLD_LINK_ALL	env	1	flag	world	0	#236	worldlinks.py	-
 WORLD_LITE_DIET	env	1	flag	world	0	#147	world_budget.py	world.c WORLD_LITE_DIET
 WORLD_REACH	env	1	flag	world	0	#253	export_world.py	-

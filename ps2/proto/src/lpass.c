@@ -7,14 +7,11 @@
 
 unsigned lpass_t[LG_N];
 
-#if LOGIC_PASS_MS
 static const char *const lg_name[LG_N] = {"player", "stream", "enemy", "ai", "nav", "esd", "move", "ragdoll", "pose",
                                           "hits", "gc", "objects", "events", "bonfire"};
-#endif
 
 void lpass_frame(unsigned total)
 {
-#if LOGIC_PASS_MS
     static unsigned fr, acc[LG_N + 1], wst[LG_N + 1], mx[LG_N + 1], wtot;
     unsigned v[LG_N + 1], sub = 0;
     for (int i = 0; i < LG_N; i++)
@@ -52,8 +49,5 @@ void lpass_frame(unsigned total)
         fr = wtot = 0;
         memset(acc, 0, sizeof acc), memset(mx, 0, sizeof mx), memset(wst, 0, sizeof wst);
     }
-#else
-    (void)total;
-#endif
     memset(lpass_t, 0, sizeof lpass_t);
 }

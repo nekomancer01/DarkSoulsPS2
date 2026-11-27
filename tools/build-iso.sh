@@ -120,6 +120,8 @@ if [ "$ENGINE" = native ]; then
     . ps2/env.sh
     if [ -z "${XORRISO:-}" ] && command -v xorriso >/dev/null; then export XORRISO=xorriso; fi
     [ -x "$SRC/.venv/bin/python" ] || { python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt; }
+    # optional speed-ups (tools/requirements-speed.txt): installed once, a platform without wheels goes on without them
+    [ -e "$SRC/.venv/.speed" ] || { .venv/bin/pip install -q -r tools/requirements-speed.txt 2>/dev/null; touch "$SRC/.venv/.speed"; }
     make "${MAKE_ARGS[@]}" "DSR_GAME=$GAME" "BUILD=$BUILD"
     rm -f "$BUILD/proto.iso"
     make "${MAKE_ARGS[@]}" "DSR_GAME=$GAME" "BUILD=$BUILD" ${ISO_ARGS[@]+"${ISO_ARGS[@]}"} iso

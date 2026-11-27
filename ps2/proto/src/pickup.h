@@ -3,7 +3,7 @@
  * pickup anim, then DSR's item get dialog: menu.drb F25, FrpgMenuDlgItemGet FUN_140727f00), and enemy drops (exe
  * FUN_1403fc600: NpcParam.itemLotId_1 rolled on the death, one record per item at the corpse; MapItemMan keeps 30,
  * FUN_1403f9050 drops the oldest past that). Treasures themselves live in src/event.c (their state, get flags, the
- * lot draw); this file owns the shines' placement, the drops and the dialog. Switch PICKUP (src/switches.h). */
+ * lot draw); this file owns the shines' placement, the drops and the dialog. */
 #ifndef PICKUP_H
 #define PICKUP_H
 
@@ -11,9 +11,6 @@
 #include <gsKit.h>
 #include "player.h"
 
-#ifndef PICKUP
-#define PICKUP 1  /* 0: the old path (treasures picked up with no glow, anim or dialog; enemies drop nothing) */
-#endif
 
 /* One item of a lot draw (src/event.c event_lot_roll): the item id (progress.h category | row), count, the get flag
  * its pickup sets (<= 0 none) */

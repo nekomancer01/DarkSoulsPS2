@@ -3,6 +3,9 @@
  * shared state. */
 #include "mapfile.h"
 #include "world_i.h"
+#include "lua0.h"
+#include "nav.h"
+extern unsigned lua0_malloc_live;  /* lua0.c: the VM's malloc fallback bytes (world_systems' type split) */
 WorldStats world_stats = {.reading = -1, .full = -1};
 const WorldBlock *w_tab;
 const unsigned *w_rrange;  /* WORLD_REACH: per block first reach run, runs (NULL: no reach table) */
@@ -63,6 +66,23 @@ static int tab_split(BlockRt *r)
  * its payload offset in OHDR), and the types were loaded at boot (world_systems), so turning a block on reads only that
  * tail (Burg blocks: 272 KB instead of 0.75-1.2 MB of models); objects_block_add gets the tail. A file without BTEX
  * stays whole. */
+/* WORLD_FX_LITE: bytes of block r's fx.bin before its first pixel / CLUT (its header and texture table read here,
+ * once per block at boot); 0: unreadable, the block's effects then load at boot (world_systems) */
+static unsigned fx_head_size(BlockRt *r, unsigned off, unsigned size)
+{
+    static unsigned hd[16] __attribute__((aligned(64)));
+    if (size < 64 || !w_read_sync(&r->pk, off, hd, 64))
+        return 0;
+    unsigned n_tex = hd[2], off_tex = hd[8], n = (off_tex + n_tex * 16 + 63) & ~63u;  /* (FxHeader: n_tex, off_tex) */
+    if (!n_tex || off_tex > size || n > size || n > 64 * 1024)
+        return n_tex ? 0 : size;  /* (no textures: the whole file is tables) */
+    unsigned char *b = memalign(64, n);
+    /* (the header and texture table lie in the n bytes read; the file's size bounds the pixel offsets) */
+    unsigned keep = b && w_read_sync(&r->pk, off, b, n) ? fx_head_bytes(b, size) : 0;
+    free(b);
+    return keep;
+}
+
 static void obj_tail(BlockRt *r)
 {
     static unsigned hd[32] __attribute__((aligned(64)));
@@ -70,13 +90,21 @@ static void obj_tail(BlockRt *r)
     const unsigned *oh = NULL;  /* objects.bin: chunk file 'OBJS'; OHDR word 6 = BTEX's payload offset (0: none) */
     if (w_read_sync(&r->pk, r->off[E_OBJ], hd, 64) &&
         chunk_open_part(&f, hd, 64, r->size[E_OBJ], CHUNK_ID('O', 'B', 'J', 'S'), "objects.bin"))
-        oh = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 1, NULL);
+        oh = chunk_get(&f, CHUNK_ID('O', 'H', 'D', 'R'), 2, NULL);
     unsigned at = oh ? oh[6] : 0;
     if (!at || at & 127 || at >= r->size[E_OBJ] || !w_read_sync(&r->pk, r->off[E_OBJ] + at - 64, hd + 16, 64))
         return;
     const unsigned *ch = hd + 16 + 12;  /* BTEX's chunk header: the 16 bytes before its payload */
     if (ch[0] != CHUNK_ID('B', 'T', 'E', 'X') || (ch[1] & 0xFFFF) != 1 || ch[2] > r->size[E_OBJ] - at)
         return;
+    /* WORLD_OBJ_LITE: the head (OHDR .. ATEX, up to MODL's chunk header; OHDR word 7 = MODL's payload offset) is the
+     * block's E_OBJH; its types are made from it at turn-on (objects_block_types_lite), with this tail as BTEX. Its
+     * breakable models stream by their file offset, so OBJ_STREAM must be on */
+    if (WORLD_OBJ_LITE && OBJ_STREAM && oh[7] > 16 && oh[7] - 16 <= at) {
+        r->off[E_OBJH] = r->off[E_OBJ], r->size[E_OBJH] = oh[7] - 16, r->obj_full = r->size[E_OBJ];
+        if (!WORLD_HEAD_TEX)  /* (else it comes in the texture buffer: world_init's tex_total) */
+            r->total += (r->size[E_OBJH] + 127) & ~127u;  /* (before world_struct_bytes sums the lite sets) */
+    }
     r->off[E_OBJ] += at, r->size[E_OBJ] = ch[2];
 }
 
@@ -195,12 +223,21 @@ int world_init(const char *boot_area)
         if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
             r->open = 0;
         for (unsigned e = 0; e < NENT; e++) {
+            if (e == E_FXH || e == E_OBJH) {  /* (share fx.bin / objects.bin with E_FX / E_OBJ: sized apart) */
+                r->off[e] = r->size[e] = 0;
+                continue;
+            }
             int got = e >= E_TAB && e <= E_TABC ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TAB, &r->off[e], &r->size[e])
                 : e == E_MTX ? mapf_entry(&r->pk, ENTRIES[e], MAPF_TEX, &r->off[e], &r->size[e])
                 : pack_entry_raw(&r->pk, ENTRIES[e], &r->off[e], &r->size[e]);
             if (!got)
                 r->off[e] = r->size[e] = 0;
             if ((e == E_DG || e == E_PVS) && (!WORLD_DG_LITE || !i))  /* (the boot block's are main.c's) */
+                r->off[e] = r->size[e] = 0;
+            if (e == E_ENM && ((!WORLD_NAV_LITE && !WORLD_CHR_LITE) || !i))  /* (the boot block's: enemy_init) */
+                r->off[e] = r->size[e] = 0;
+            if (e == E_AI && (!WORLD_AI_UNLOAD || !WORLD_CHR_LITE || !i))  /* (the boot block's: enemy_init, for the run;
+                                                                             * without CHR_LITE: enemy_block_types at boot) */
                 r->off[e] = r->size[e] = 0;
             if (!r->size[e] && !E_OPTIONAL(e) && (i || e == E_TAB)) {
                 printf("world: block %d %s: %s missing or not raw\n", i, w_tab[i].pack, ENTRIES[e]);
@@ -209,13 +246,20 @@ int world_init(const char *boot_area)
             if (i && e == E_OBJ && r->size[e] >= 64)
                 r->obj0 = r->off[e], obj_tail(r);
             if (i && e >= E_TEX) {  /* the boot block's collision, objects and effects are main.c's */
-                if (((r->size[e] + 127) & ~127u) > r->tex_total)
-                    r->tex_total = (r->size[e] + 127) & ~127u;
+                unsigned t = (r->size[e] + 127) & ~127u;
+                if (WORLD_HEAD_TEX && e == E_OBJ)  /* (obj_tail sized its head: both in at once, tex_dst) */
+                    t += (r->size[E_OBJH] + 127) & ~127u;
+                if (t > r->tex_total)
+                    r->tex_total = t;
             }
             else if (i || e == E_TAB)
                 r->total += (r->size[e] + 127) & ~127u;
         }
         r->size[E_TABB] = r->size[E_TABC] = 0;  /* (the loop above gave them the whole maptab.bin) */
+        r->off[E_FXH] = r->size[E_FXH] = 0;  /* WORLD_FX_LITE: fx.bin's tables (before world_struct_bytes sums total) */
+        if (WORLD_FX_LITE && i && r->open && r->size[E_FX] &&
+            (r->size[E_FXH] = fx_head_size(r, r->off[E_FX], r->size[E_FX])))
+            r->off[E_FXH] = r->off[E_FX], r->total += (r->size[E_FXH] + 127) & ~127u;
         if (i && r->open && !tab_split(r)) {
             printf("world: block %d %s: maptab.bin header unreadable\n", i, w_tab[i].pack);
             r->open = 0;
@@ -254,8 +298,12 @@ int world_init(const char *boot_area)
     for (int s = 0; s < WORLD_SLOTS; s++)
         w_slot_of[s] = -1;
     world_stats.blocks = w_nblk;
-    if (w_nblk > 1)
-        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS);
+    if (w_nblk > 1) {
+        unsigned lua = world_lua_bytes();  /* WORLD_AI_UNLOAD: 0 without E_AI entries */
+        mapstream_reserve(WORLD_ENEMY_RESERVE + WORLD_ARENA_LESS + lua);
+        if (lua)
+            printf("world: Lua reserve %u KB (the most a link keeps)\n", lua >> 10);
+    }
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (w_nblk > 1) {
         unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
@@ -307,6 +355,7 @@ void world_stream_open(void)
 }
 
 int world_current(void) { return w_cur; }
+int world_lite_busy(void) { return w_lite_first && !w_warping; }
 
 unsigned world_block_res(int k)
 {
@@ -362,25 +411,39 @@ void world_systems(GSGLOBAL *gs)
         if (!r->open)
             continue;
         unsigned h0 = enemy_ram_free();
-        unsigned char *p = read_tmp(r, "objects.bin", &n0);
+        unsigned char *p = r->size[E_OBJH] ? NULL : read_tmp(r, "objects.bin", &n0);  /* (WORLD_OBJ_LITE: turn-on) */
         int no = p ? objects_block_types(gs, i, p, n0) : -1;
         free(p);
         unsigned h1 = enemy_ram_free();
-        p = read_tmp(r, "fx.bin", &n0);
+        p = r->size[E_FXH] ? NULL : read_tmp(r, "fx.bin", &n0);  /* (WORLD_FX_LITE: with the lite set) */
         int nf = p ? fx_block_load(gs, i, p, n0) : -1;
         free(p);
         unsigned h2 = enemy_ram_free();
         p = read_tmp(r, "enemies.bin", &n0);
-        unsigned char *lua = read_tmp(r, "ai.lua0", &n1);
-        int ne = p ? enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0) : -1;
+        unsigned char *lua = r->size[E_AI] ? NULL : read_tmp(r, "ai.lua0", &n1);
+        /* (TECH_DEBT world-46 split: the Lua VM's heap and its malloc spill, the navmesh copy; the rest of the enemies
+         * figure is the placements and the type heads) */
+        unsigned lh0 = lua0_heap, lm0 = lua0_malloc_live, nb0 = nav_bytes();
+        if (r->size[E_ENM] && WORLD_NAV_LITE)
+            enemy_nav_with_block(i);  /* WORLD_NAV_LITE: its navmesh comes with its lite set (nav_bind) */
+        int ne = -1;
+        if (WORLD_CHR_LITE && r->size[E_ENM]) {  /* its types at turn-on; its map logic here (or E_AI: at turn-on) */
+            if (lua && !r->size[E_AI])
+                enemy_block_lua(lua, (int)n1);
+        } else if (p) {
+            ne = enemy_block_types(gs, i, w_tab[i].pack, p, n0, lua, lua ? (int)n1 : 0);
+        }
+        unsigned lh1 = lua0_heap, lm1 = lua0_malloc_live, nb1 = nav_bytes();
         free(lua);
         free(p);
         unsigned h3 = enemy_ram_free();
         if (!r->size[E_DG] || !r->size[E_PVS])  /* WORLD_DG_LITE 0, or not raw in the pack: from boot, kept */
             map_block_dg(i, &r->pk);  /* its draw groups (map.c, src/drawgrp.c) */
-        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d\n",
+        printf("world: block %d types: objects %d, effects %d, enemies %d; heap KB objects %d fx %d enemies %d dg %d; "
+               "enemies split KB: lua vm %d lua malloc %d nav %d lua0 file %u\n",
                i, no, nf, ne, ((int)h0 - (int)h1) >> 10, ((int)h1 - (int)h2) >> 10, ((int)h2 - (int)h3) >> 10,
-               ((int)h3 - (int)enemy_ram_free()) >> 10);
+               ((int)h3 - (int)enemy_ram_free()) >> 10, ((int)lh1 - (int)lh0) >> 10, ((int)lm1 - (int)lm0) >> 10,
+               ((int)nb1 - (int)nb0) >> 10, lua ? n1 >> 10 : 0);
     }
     if (WORLD_FAR_RESERVE && w_nblk > 1) {  /* the panorama reserve, before the arena takes the heap */
         for (int i = 0; i < w_nblk; i++)

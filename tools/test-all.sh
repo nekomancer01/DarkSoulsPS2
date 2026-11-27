@@ -16,8 +16,10 @@
 #   4 perf     tools/test-perf.py: per-spot stats appended to build/test/perf-history.csv, compared with the previous build
 #   5 budget   tools/budget.py: each shot's passes at p90 against the budget doc's frame budget
 #   --accept   make this run the baseline for step 3
-# Each PCSX2 step runs through tools/q with a small memory cap (one headless PCSX2 ~1.5 GB host RAM, outside the cap:
-# the flatpak runs on the host). Exit code = number of failed steps.
+# Each PCSX2 step runs through tools/q with a 10 GB address-space cap: the headless runner (pcsx2-dsrtest of
+# tools/pcsx2-headless/, ~1.0 GB RSS) is a child of the step and inherits the cap, and it reserves ~6.7 GB of address
+# space (fastmem, recompiler caches, the Vulkan driver), so a smaller -m fails its boot with "Failed to allocate
+# fastmem area". The reservation against the queue budget stays the measured peak. Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 1
 BUILD=${BUILD:-$ROOT/build}
@@ -71,7 +73,7 @@ if [ -n "$BURG" ]; then
         [ -e "$sc" ] || sc=$RUN/burg/$1.txt
         local t0 rc
         t0=$(date +%s)
-        tools/q -m 2 "$PY" tools/test-run.py "$ELF" "$sc" "$RUN/burg/$1-$3" --iso "$IMG" --timeout "$2" --keep-going \
+        tools/q -m 10 "$PY" tools/test-run.py "$ELF" "$sc" "$RUN/burg/$1-$3" --iso "$IMG" --timeout "$2" --keep-going \
             --hitch --name "$1-$3" > "$RUN/burg/$1-$3.log" 2>&1
         rc=$?
         echo "$1-$3 rc $rc"
@@ -114,13 +116,13 @@ for A in ${AREAS//,/ }; do
     fi
 done
 # areas side by side (SMOKE_JOBS, default 2; tools/test-smoke.py --jobs): one headless PCSX2 each
-step smoke tools/q -m 4 "$PY" tools/test-smoke.py "$RUN/smoke" --areas "$AREAS" --max "$MAX" $GSDUMP
+step smoke tools/q -m 10 "$PY" tools/test-smoke.py "$RUN/smoke" --areas "$AREAS" --max "$MAX" $GSDUMP
 LAST=$(readlink -f "$BUILD/test/last" 2>/dev/null)
 if [ -n "$LAST" ] && [ -d "$LAST/smoke" ]; then
-    step render-last tools/q -m 3 "$PY" tools/test-gsdump.py compare "$RUN/smoke" "$LAST/smoke" "$RUN/regress-last.html"
+    step render-last tools/q -m 10 "$PY" tools/test-gsdump.py compare "$RUN/smoke" "$LAST/smoke" "$RUN/regress-last.html"
 fi
 if [ -d "$BUILD/test/baseline/smoke" ]; then
-    step render-base tools/q -m 3 "$PY" tools/test-gsdump.py compare "$RUN/smoke" "$BUILD/test/baseline/smoke" "$RUN/regress-baseline.html"
+    step render-base tools/q -m 10 "$PY" tools/test-gsdump.py compare "$RUN/smoke" "$BUILD/test/baseline/smoke" "$RUN/regress-baseline.html"
 fi
 ELFS=
 for A in ${AREAS//,/ }; do

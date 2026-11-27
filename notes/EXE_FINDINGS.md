@@ -18,7 +18,7 @@ TurnAnim = PlayerCtrl+0x308. Frame time `dt` = chr+0x458.
 | **Stamina regen, player** = 45 + Σ SpEffectParam.staminaRecoverChangeSpeed | stamina/s | PlayerIns vtable slot +0x1F0 = `FUN_14035ed00`; 45.0 at **0x141A2BE40**; sum `FUN_1404034b0` (SpEffectParam +0xB8 over active effects, skipping entry flags 0x800C0003) | vtable xref (PlayerIns::vftable 0x1413251F0 +0x1F0, also ReplayGhostIns); ChrIns base slot uses NpcParam staminaRecoverBaseVel (`FUN_14034af40`), the player override ignores the param | high |
 | Regen formula per frame | — | `FUN_14031fca0` (ChrIns update) at 0x14031FDE0: `rate = slot1F0() * (ctx byte +0x9C / 100.0 [0x1412B2334]) * chr float +0x1E4`; `acc(chr+0x1E0) += rate*dt`, integer part added via `FUN_140339680` | disassembly | high |
 | Regen % window (the "regen delay") | % of rate | ctx+0x9C byte, written by TAE event **225** SetSPRegenRatePercent: TAE handler `FUN_14033fd90` case 0xE1 | decompile of the TAE event switch | high |
-| Regen % in c0000 TAEs (a00) | % | roll 700-703 0% for 0–1.10 s, 710-713 0% 0–1.37 s, 720-723 0–1.67 s, 730-733 0–2.17 s; backstep 680 0% 0–0.80 s; dash 535/536 and run-stop 510-519 0% whole anim; a00 1/3/5, 100-138, 210-214 and the tail of 140-152 20%; R1 a23 3000-3002 0% 0–1.0..1.1 s. No event → presumably 100% (reset not located) | `fndb/work/tae_dump.py`, full list in `fndb/work/tae_events.txt` | high (100% default: medium) |
+| Regen % in c0000 TAEs (a00) | % | roll 700-703 0% for 0–1.10 s, 710-713 0% 0–1.37 s, 720-723 0–1.67 s, 730-733 0–2.17 s; backstep 680 0% 0–0.80 s; dash 510 (MoveParam superDash) and 511-519, lean variants 535/536 0% whole anim; a00 1/3/5, 100-138, 210-214 and the tail of 140-152 20%; R1 a23 3000-3002 0% 0–1.0..1.1 s. No event → presumably 100% (reset not located) | `fndb/work/tae_dump.py`, full list in `fndb/work/tae_events.txt` | high (100% default: medium) |
 | Regen off | — | ctx+0x1DC bit 3 (ESD command c1_110) or WalkAnim dash active → no regen that frame | `FUN_14031fca0` | high |
 | **Dash drain** = 1 stamina per 0.1 s → **10 stamina/s** | stamina/s | `FUN_14031fca0` 0x14031FD40: while WalkAnim vt+0x40 (`FUN_1403a5d40` = current loco anim is the dash anim WalkAnim+0xA0), `chr+0x1F0 += dt`; when ≥ 0.1 (**0x141A2BC28**) add −1 (`FUN_140339680(chr,-1)`) and reset | disassembly | high |
 | Dash lockout after running dry | 3.0 s | same place: if stamina ≤ 0 after the tick, chr+0x1F4 = 3.0 (**0x141A2BC2C**), counts down by dt | disassembly | high |
@@ -141,6 +141,9 @@ See PORTING.md "ESD runtime" and TECH_DEBT esd-1..7.
 - Ported as far as it helps (TECH_DEBT world-16, world-32): lite sets (collision index + tables) and the collision
   tiles within 16 m go out ahead of map reads; a strict queue order and "map waits for the tiles under it" were
   measured and not adopted (thread el8v8a 2026-11-10, world-32).
+- The port now follows WorldBlockNvmPrepare / WorldBlockChrPrepare (2026-11-27, world-46 item 3): a block's navmesh,
+  enemy placements and types, effect tables, object types and map AI load with that block (its lite set) at turn-on
+  and are let go at its turn-off, instead of every block's at boot.
 
 ## Still unknown
 - Slot priority inside the anim player (ChrCtrl vt+0x38) when both ESD groups play anims; what f0 sees then (esd-9).

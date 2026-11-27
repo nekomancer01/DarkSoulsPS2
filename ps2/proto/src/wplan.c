@@ -35,6 +35,24 @@ static unsigned tab_bytes(const BlockRt *r)
  * on at once: the blocks it loads (and the block itself) whole, those it only keeps lean (WORLD_LITE_DIET) or whole,
  * the WORLD_POOL_SLOTS largest (a fourth at a spot that keeps four spills into the item pages: WORLD_SLOTS); the boot
  * block's tables are in the heap (world_boot_map) */
+/* WORLD_AI_UNLOAD: the Lua heap the blocks a link keeps can hold at once, by their ai.lua0 sizes (a block's chunks
+ * took 77-97 KB of VM heap and malloc for an 89 KB file at boot, 2026-11-25; shared chunks count in every block: an upper
+ * bound). Reserved beside the arena (streamer thread, coord.md: max over links of the summed Lua of its keep | load). */
+unsigned world_lua_bytes(void)
+{
+    unsigned best = 0;
+    for (int b = 0; b < w_nblk; b++)
+        for (unsigned l = 0; l < w_lrange[2 * b + 1]; l++) {
+            const WorldLink *k = w_links + w_lrange[2 * b] + l;
+            unsigned keep = k->keep | k->load | (b ? 1u << b : 0), sum = 0;
+            for (int i = 1; i < w_nblk; i++)
+                if (w_rt[i].open && (keep >> i & 1))
+                    sum += (w_rt[i].size[E_AI] + 127) & ~127u;
+            best = sum > best ? sum : best;
+        }
+    return best;
+}
+
 unsigned world_struct_bytes(void)
 {
     unsigned best = 0;

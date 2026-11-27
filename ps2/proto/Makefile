@@ -72,7 +72,7 @@ A = $(AREA_SRC)
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapvis.o maplight.o mapchunk.o mappass.o maplog.o mapblock.o mapstream.o msplan.o msread.o msevict.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o trail.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o lpass.o world.o wblock.o wextra.o wplan.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
-	gamedata.o chunk.o mapfile.o ragdoll.o nav.o items.o drb.o loading.o sound.o vmath.o pickup.o)
+	gamedata.o chunk.o mapfile.o ragdoll.o nav.o items.o drb.o loading.o sound.o sndres.o vmath.o pickup.o)
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -203,7 +203,13 @@ WORLD_J ?=
 # Occlusion bakes see every block (tools/pvs_bake.c --with: a neighbour's floors place cameras, its walls occlude), so
 # every block's map export (pvsin.bin, dg.bin, collision.bin) comes first: worldexports, then the packs.
 PVS_PEERS ?= $(if $(WORLD_BLOCKS),$(G) $(foreach b,$(WORLD_BLOCKS),$(G)/$(lastword $(subst :, ,$(b)))))
-worldexports:
+# The boot block's own map export first (WORLD_BOOT_FIRST): every horizon waits for it (worldhzn), but the block
+# sub-make took the shared job slots and left the top make one, where the boot map queued behind the sound, menu and
+# chr exports (2026-11-26 cold build: ready at 13 s, started at 237 s, the horizons at 296 s). The sub-make now waits
+# for the boot map's inputs (objects, lights: ~13 s, the top make's other exports fill the slots meanwhile), so the
+# boot map starts beside it. 0: as before
+WORLD_BOOT_FIRST ?= 1
+worldexports: $(if $(and $(WORLD_BLOCKS),$(filter 1,$(WORLD_BOOT_FIRST))),| $(A)/objects.bin.static $(A)/objects.bin.anim $(A)/lights.json)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldexport@,$(subst :,@,$(WORLD_BLOCKS)))
 worldexport@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockexport
@@ -220,7 +226,12 @@ blockhzn: $(A)/hzn.bin
 # waited for every horizon though they need none; the bakes, the GPU's turn per block, are the build's critical path):
 # worldpvs right after worldexports (alongside worldhzn), worldfar right after worldhzn. WORLD_EARLY_BAKES=0: as before
 WORLD_EARLY_BAKES ?= 1
-worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+# The horizons first (WORLD_HZN_FIRST): they gate every far panorama, and with the bakes and chr exports started beside
+# them they ran ~1.5 at a time for 5 minutes (2026-11-24 timeline: horizons 309-601 s, panoramas only from 601 s);
+# alone they take ~1.5 min, then bakes (GPU), panoramas and chr exports share the CPU. 0: all three at once, as before
+WORLD_HZN_FIRST ?= 1
+HZN_FIRST = $(if $(filter 1,$(WORLD_HZN_FIRST)),| worldhzn)
+worldpvs: worldexports $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin) $(HZN_FIRST)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblockpvs@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblockpvs@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpvs
@@ -231,7 +242,21 @@ worldblockfar@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockfar
 blockfar: $(A)/far.bin
 .PHONY: worldpvs blockpvs worldfar blockfar
-worldpacks: worldhzn $(if $(filter 1,$(WORLD_EARLY_BAKES)),worldpvs worldfar $(if $(WORLD_BLOCKS),$(A)/pvs.bin $(A)/far.bin)) $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
+# The character exports (export_chr.py: game data only, no map export input) of every block, in the occlusion bakes'
+# window: 16 bakes share the one GPU there and left ~60 % of the CPU idle, while the chr exports ran 6 wide only after
+# the panoramas (2026-11-24 cold build: minutes 14-16 of 17.4). WORLD_EARLY_CHRS=0: in worldpacks, as before
+WORLD_EARLY_CHRS ?= 1
+# (with them each block's other pre-bake exports: enemies, map AI, events, effects and the chr packs, which waited for
+# the bakes and ran in the build's last minute)
+EARLY_EXPORTS = $(ENEMIES:%=$(A)/%/chr.bin) $(ENEMIES:%=$(AREA_DATA)/%.pak) $(A)/enemies.bin $(A)/ai_map.lua0 \
+                $(A)/events.bin $(A)/fx.bin
+worldchrs: worldexports $(if $(WORLD_BLOCKS),$(EARLY_EXPORTS)) $(HZN_FIRST)
+	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) $(addprefix worldblockchrs@,$(subst :,@,$(WORLD_BLOCKS)))
+worldblockchrs@%:
+	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} blockchrs
+blockchrs: $(EARLY_EXPORTS)
+.PHONY: worldchrs blockchrs
+worldpacks: worldhzn $(if $(filter 1,$(WORLD_EARLY_CHRS)),worldchrs) $(if $(filter 1,$(WORLD_EARLY_BAKES)),worldpvs worldfar $(if $(WORLD_BLOCKS),$(A)/pvs.bin $(A)/far.bin)) $(if $(WORLD_BLOCKS),$(A)/pvsin.bin $(A)/dg.bin $(A)/collision.bin)
 	@$(MAKE) --no-print-directory $(if $(WORLD_J),-j$(WORLD_J)) PVS_PEERS='$(PVS_PEERS)' $(addprefix worldblock@,$(subst :,@,$(WORLD_BLOCKS)))
 worldblock@%:
 	@b='$*'; $(MAKE) --no-print-directory MAP=$${b%%@*} BLOCK=$${b#*@} PVS_PEERS='$(PVS_PEERS)' blockpacks

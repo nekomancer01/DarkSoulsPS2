@@ -19,9 +19,6 @@
 #include "frame.h"
 #include "g2d.h"
 #include "player.h"
-#ifndef DPAD_STICK
-#define DPAD_STICK 0  /* 1 = the d-pad moves (the old path, keyboard-mapped emulators) */
-#endif
 #include "model.h"
 #include "map.h"
 #include "bump.h"
@@ -111,17 +108,9 @@ static int pad_input(Input *in, unsigned short *prev)
     in->my = -axis(st.ljoy_v);
     in->cx = axis(st.rjoy_h);
     in->cy = axis(st.rjoy_v);
-#if DPAD_STICK
-    /* DPAD_STICK=1 (the old path): the d-pad works as a digital left stick (keyboard-mapped emulators) */
-    if (btn & PAD_UP) in->my = 1;
-    if (btn & PAD_DOWN) in->my = -1;
-    if (btn & PAD_LEFT) in->mx = -1;
-    if (btn & PAD_RIGHT) in->mx = 1;
-#else
     /* the d-pad as in DSR: left / right switch the hand's weapon, down cycles the quick items, up the spells */
     in->dpad = ((btn & PAD_UP) && !(*prev & PAD_UP) ? 1 : 0) | ((btn & PAD_DOWN) && !(*prev & PAD_DOWN) ? 2 : 0) |
                ((btn & PAD_LEFT) && !(*prev & PAD_LEFT) ? 4 : 0) | ((btn & PAD_RIGHT) && !(*prev & PAD_RIGHT) ? 8 : 0);
-#endif
     in->r1 = (btn & PAD_R1) && !(*prev & PAD_R1);
     in->circle = (btn & PAD_CIRCLE) != 0;
     in->r1_held = (btn & PAD_R1) != 0, in->r2_held = (btn & PAD_R2) != 0;
@@ -423,7 +412,7 @@ int main(int argc, char **argv)
     unsigned shine_size = 0, menu_size = 0, help_size = 0;
     if (pack_open(&pk, PACK_ROOT "menu.pak")) {
         menu_blob = pack_load_static(&pk, "menu.bin", &menu_size);
-        shine_blob = PICKUP ? pack_load(&pk, "shine.bin", &shine_size) : NULL;  /* treasure shine (src/pickup.c) */
+        shine_blob = pack_load(&pk, "shine.bin", &shine_size);  /* treasure shine (src/pickup.c) */
         void *help = pack_load_static(&pk, "help.bin", &help_size);
         hud_help_init(help, help_size);  /* action prompt texts (kept) */
     }
@@ -440,12 +429,10 @@ int main(int argc, char **argv)
     HM_TAG("player");  /* HEAPMAP: the player's textures in the VRAM census (render.c) */
     int vram_free = model_ok ? model_upload(gs) : -1;
     HM_TAG0();
-#ifndef R2_OFF
     unsigned ram_before = ram_free();
     if (vram_free >= 0 && model_compact(model_blob, model_size))  /* R2: verts / tris / UVs / pixels now live in the
                                                                      * VU1 streams and VRAM */
         printf("DSRPROTO player model compacted: RAM free %u -> %u\n", ram_before, ram_free());
-#endif
     /* map.bin: a chunk file whose payload is the exporter's map (src/mapfile.h) */
     const void *map_pay = map_blob ? mapf_payload(map_blob, map_size, "map.bin", MAPF_MAP, NULL) : NULL;
     int map_ok = (world ? world_boot_map() : map_pay && map_init((void *)map_pay)) && map_upload(gs) == 0;

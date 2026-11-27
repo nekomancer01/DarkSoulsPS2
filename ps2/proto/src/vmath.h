@@ -135,7 +135,7 @@ static inline void c44_from_qt(const float *q, const float *t, float (*c)[4])
 /* o = a b for affine a, b (only a's and b's xyz are read; b's w row is taken as 0 0 0 1), as one skin palette
  * entry: o's rotation columns get .w = column . l (l: the light direction in o's output space, xyz, 16-byte aligned)
  * and the translation .w = 0. o may be a or b. A parent palette entry works as a (its .w are ignored). VU0 macro
- * mode on the EE (vmath.c); -DNO_VU0 builds the C version. */
+ * mode on the EE (vmath.c); the C version is the host build's. */
 void c44_mul_skin(float (*o)[4], const float (*a)[4], const float (*b)[4], const float *l);
 
 #endif

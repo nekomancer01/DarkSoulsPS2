@@ -15,9 +15,10 @@
 #           Without history: the cap; a make job or test-all.sh: at most DSR_Q_MAKE_GB.
 #           Kind = "make [MAP=..]" for a build, else the first *.py / *.sh in the command (test-run.py, export_map.py,
 #           test-all.sh, ...), else the command's name. tools/qpeak.py samples each job's tree (PSS + swap, plus the
-#           host PCSX2 instances its test drivers run) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
-#           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, Xvfb), so a test
-#           reserves 2 GB instead of 4.
+#           headless PCSX2 runners its test drivers start) and the peak goes to notes/jobq-peaks.tsv and the jobq.log end line.
+#           Peaks 2026-11-01: a full make ~6 GB, test-run.py 1.2-1.5 GB (PCSX2 ~1 GB RSS + driver, headless), so a test
+#           reserves 2 GB instead of 4. The headless runner (pcsx2-dsrtest, 2026-11-25: ~1.0 GB RSS) is a child of
+#           the test job and needs a cap of at least 8 (its address space peaks at ~6.7 GB).
 #           A make reserves only DSR_Q_MAKE_BASE_GB (default 3: compilers, pack.py, the exporters it runs without q):
 #           the exporters it runs through q (the Makefile's PY) each reserve their own measured peak (kind
 #           export_map.py, export_chr.py, ...; DSR_Q_NESTED_GB, default 6, before there is one) while the make runs, so
@@ -43,10 +44,19 @@ COMMON=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev
 # DSR_Q_LOGDIR: a delegated job (tools/qd) logs into the receiving machine's main checkout
 [ -n "$DSR_Q_LOGDIR" ] && [ -d "$DSR_Q_LOGDIR" ] && LOGDIR=$DSR_Q_LOGDIR
 PEAKS=$LOGDIR/jobq-peaks.tsv  # <date time> TAB <kind> TAB <peak MB> TAB <rc>
+STEPTOOL=
 if [ -n "$IS_MAKE" ]; then
     KIND="make $(printf '%s\n' "$*" | grep -o 'MAP=[^ ]*' | head -1)"; KIND=${KIND% }
 else
     KIND=$(printf '%s\n' "$*" | grep -o '[^ /]*\.\(py\|sh\)\b' | head -1); KIND=${KIND:-${1##*/}}
+    # a recipe step wrapped in tools/stepcache.py (<build> <name> <outputs> :: ... :: <tool> <args>): the kind is the
+    # tool after the last ::. Since the wrapper (2026-11-21) every exporter shared the kind stepcache.py, so each one
+    # reserved the largest peak of any (farpano's 3-4 GB, export_map's 2 GB) and a 20 GB budget ran ~5 at once
+    # (2026-11-24 build profile: horizon waited 8 500 job-s in the queue for a ~100 MB peak)
+    if [ "$KIND" = stepcache.py ]; then
+        STEPTOOL=$(printf '%s\n' "$*" | sed 's/.* :: //' | grep -o '^[^ ]*\.\(py\|sh\)\b' | head -1)
+        [ -n "$STEPTOOL" ] && KIND=${STEPTOOL##*/}
+    fi
 fi
 # an exporter run through q by a make that holds a reservation: reserves its own peak below (DSR_Q_IN_MAKE, set by
 # the outer q of a make); anything else nested runs inside the outer job's reservation
@@ -59,6 +69,10 @@ if [ -z "$R" ]; then
     # largest of the last 20 runs of this kind that weren't killed (rc < 128)
     HIST=$(awk -F'\t' -v k="$KIND" '$2 == k && $4 < 128 {m[++n] = $3}
         END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    if [ -z "$HIST" ] && [ -n "$STEPTOOL" ]; then  # a step's first runs by its own kind: the old shared history
+        HIST=$(awk -F'\t' '$2 == "stepcache.py" && $4 < 128 {m[++n] = $3}
+            END {for (i = n > 20 ? n - 19 : 1; i <= n; i++) if (m[i] > x) x = m[i]; if (n) print x + 0}' "$PEAKS" 2>/dev/null)
+    fi
     if [ -n "$HIST" ]; then
         R=$(( (HIST * 11 / 10 + 1023) / 1024 )); [ "$R" -lt 1 ] && R=1
     else  # no history: a build, or test-all.sh (its builds and tests run one after another inside it)
@@ -116,15 +130,26 @@ GOT=
 exec 9>"$RES/.mutex"
 for i in $(seq 1800); do
     flock 9
-    USED=0
+    USED=0; OWE=0
     for f in "$RES"/*; do
         [ -e "$f" ] || continue
         p=${f##*/}; p=${p%%.*}
-        if [ -d "/proc/$p" ]; then USED=$((USED + ${f##*.})); else rm -f "$f"; fi
+        if [ -d "/proc/$p" ]; then
+            USED=$((USED + ${f##*.}))
+            # what this running job may still claim: its reservation less what it uses now (tools/qpeak.py's .now, MB)
+            # (no .now: a q without it, another tree's older copy: counted as before, by MemAvailable alone)
+            if cur=$(cat "/tmp/dsr-q-peak/$p.now" 2>/dev/null) && [ -n "$cur" ]; then
+                owe=$(( ${f##*.} * 1024 - cur )); [ "$owe" -gt 0 ] && OWE=$((OWE + owe))
+            fi
+        else rm -f "$f"; fi
     done
     AV=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
+    # free memory the running jobs have not claimed yet: jobs admitted together each saw the same free GBs before any
+    # of them grew, and the build swapped (2026-11-24 cold build: 6 map exports at ~1.7 GB and 25-64 MB/s to zram in
+    # its first 5 minutes). DSR_Q_OWE=0: MemAvailable alone, as before
+    AVF=$AV; [ "${DSR_Q_OWE:-1}" != 0 ] && AVF=$(( AV - OWE / 1024 ))
     # admit when it fits the budget and the host has room; a job bigger than the budget runs alone
-    if { [ $((USED + R)) -le "$Q_BUDGET" ] || [ "$USED" -eq 0 ]; } && [ "$AV" -ge "$R" -o "$USED" -eq 0 ]; then
+    if { [ $((USED + R)) -le "$Q_BUDGET" ] || [ "$USED" -eq 0 ]; } && [ "$AVF" -ge "$R" -o "$USED" -eq 0 ]; then
         if [ -z "$IS_MAKE" ] || flock -n 8; then touch "$RES/$$.$R"; GOT=1; flock -u 9; break; fi
     fi
     flock -u 9; sleep 2

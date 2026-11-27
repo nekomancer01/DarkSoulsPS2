@@ -27,6 +27,7 @@ coarse within WS_R1_IN..WS_R1 against WS_B1) to show what the seams add. Writes 
 Numbers are box distances, as mapstream.c ranks items."""
 import json
 import os
+import struct
 import sys
 
 import numpy as np
@@ -48,6 +49,12 @@ POOL_SLOTS = 3       # world_i.h WORLD_POOL_SLOTS: the structural pool is sized 
 MISC_EXTRA_KB = 640  # world.c WORLD_MISC_EXTRA
 KEPT_HZN = True  # world.c: a kept-only block keeps its horizon
 DG_LITE = os.environ.get("WORLD_DG_LITE", "1") != "0"  # world.c WORLD_DG_LITE (default 1)
+NAV_LITE = os.environ.get("WORLD_NAV_LITE", "1") != "0"  # world_i.h WORLD_NAV_LITE (default 1): E_ENM
+CHR_LITE = os.environ.get("WORLD_CHR_LITE", "1") != "0"  # world_i.h WORLD_CHR_LITE (default 1): E_ENM too, E_AI
+AI_UNLOAD = os.environ.get("WORLD_AI_UNLOAD", "1") != "0"  # world_i.h WORLD_AI_UNLOAD (default 1, with CHR_LITE): E_AI
+HEAD_TEX = os.environ.get("WORLD_HEAD_TEX", "1") != "0"  # world_i.h WORLD_HEAD_TEX: E_AI / E_OBJH in the texture buffer
+FX_LITE = os.environ.get("WORLD_FX_LITE", "1") != "0"  # world_i.h WORLD_FX_LITE (default 1): E_FXH
+OBJ_LITE = os.environ.get("WORLD_OBJ_LITE", "1") != "0"  # world_i.h WORLD_OBJ_LITE (default 1): E_OBJH
 STRUCT_WHOLE = int(os.environ.get("WORLD_STRUCT_WHOLE", 2))  # world.c WORLD_STRUCT_WHOLE
 LITE_DIET = os.environ.get("WORLD_LITE_DIET", "1") != "0"  # world.c WORLD_LITE_DIET
 
@@ -135,11 +142,58 @@ def lite_entries(d):
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
     if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
+    if NAV_LITE or CHR_LITE:  # world_i.h WORLD_NAV_LITE / WORLD_CHR_LITE: E_ENM, the whole enemies.bin (not lean)
+        total += r128(sz("enemies.bin"))
+    ai = r128(sz("ai_map.lua0")) if AI_UNLOAD and CHR_LITE else 0  # world_i.h WORLD_AI_UNLOAD: E_AI (its map AI)
+    if not HEAD_TEX:
+        total += ai
+    if FX_LITE:  # world_i.h WORLD_FX_LITE: E_FXH, fx.bin before its first pixel / CLUT (world.c fx_head_size)
+        total += r128(fx_head_bytes(d))
+    objh = r128(obj_head_bytes(d)) if OBJ_LITE else 0  # world_i.h WORLD_OBJ_LITE: E_OBJH (world.c obj_tail)
+    if not HEAD_TEX:
+        total += objh
     if KEPT_HZN:  # world.c WORLD_KEPT_HZN: a lean block keeps the cell table + horizon piece
         tabs -= r128(full - c0)
     if DG_LITE:  # (world.c LEAN_ENT)
         tabs += r128(sz("pvs.bin"))
-    return total, tabs, r128(sz("bump.bin")), max(r128(obj_tex_bytes(d)), r128(sz("fx.bin")))
+    # the texture buffer (world.c tex_total): objects.bin's tail (with its head: WORLD_HEAD_TEX), fx.bin, the map AI
+    texbuf = max(r128(obj_tex_bytes(d)) + (objh if HEAD_TEX else 0), r128(sz("fx.bin")), ai if HEAD_TEX else 0)
+    return total, tabs, r128(sz("bump.bin")), texbuf
+
+
+def fx_head_bytes(d):
+    """bytes of a block's fx.bin before its first pixel / CLUT (fx.c fx_head_bytes; the whole file when it has no
+    textures; 0 without an fx.bin v2)"""
+    p = os.path.join(d, "fx.bin")
+    if not os.path.exists(p):
+        return 0
+    b = open(p, "rb").read()
+    if len(b) < 64 or b[:4] != b"DSFX" or struct.unpack_from("<I", b, 4)[0] != 2:
+        return 0
+    n_tex, off_tex = struct.unpack_from("<I", b, 8)[0], struct.unpack_from("<I", b, 32)[0]
+    if not n_tex:
+        return len(b)
+    keep = len(b)
+    for i in range(n_tex):
+        pix, clut = struct.unpack_from("<2I", b, off_tex + 16 * i + 8)
+        keep = min(keep, pix, clut)
+    return keep
+
+
+def obj_head_bytes(d):
+    """bytes of a block's objects.bin before MODL's chunk header (OHDR v2 word 7 - 16) when it has a BTEX tail, as
+    world.c obj_tail sizes E_OBJH; else 0 (its types are made at boot)"""
+    import chunkfile
+    p = os.path.join(d, "objects.bin")
+    if not os.path.exists(p):
+        return 0
+    try:
+        f = chunkfile.read(p, b"OBJS")
+        oh = f.get(b"OHDR", 2)
+    except chunkfile.ChunkError:
+        return 0
+    at = struct.unpack_from("<I", oh, 28)[0]
+    return at - 16 if f.opt(b"BTEX", 1) is not None and at > 16 else 0
 
 
 def obj_tex_bytes(d):
@@ -477,7 +531,8 @@ def main(argv):
         # spots in slices: the (spots x cells x 3) distance arrays of all spots at once took GBs (swapping: 60 CPU-s,
         # 300 s wall, 2026-11-17); every spot's row is the same sum either way
         step = max(1, int(os.environ.get("WB_SLICE", "2048")))
-        for s0 in range(0, len(P), step):
+
+        def one(s0):
             sl = slice(s0, s0 + step)
             d = box_d(lo, hi, P[sl])
             dn = box_d(nlo, nhi, P[sl]) if NEAR_CUBE else d
@@ -490,6 +545,17 @@ def main(argv):
             soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl] + far[sl]
             nws[sl] = (dn < WS_R0).astype(np.float64) @ near
             cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
+        # the slices on threads (numpy lets go of the GIL in these array passes): every spot's row is its own sum, and
+        # the sizes are whole KB / 1024 so any order adds them exactly (2026-11-24: one thread, 46 s at the build's end,
+        # and blockreport.py runs this main() again). WB_THREADS=1: one slice after another
+        nth = max(1, int(os.environ.get("WB_THREADS", min(8, os.cpu_count() or 1))))
+        if nth == 1:
+            for s0 in range(0, len(P), step):
+                one(s0)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(nth) as ex:
+                list(ex.map(one, range(0, len(P), step)))
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
                        ("hard", hard), ("soft", soft)):
             tot[key] += v

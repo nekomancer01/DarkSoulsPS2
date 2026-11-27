@@ -78,6 +78,7 @@ typedef struct {
     unsigned off, packed, raw, blocks, bsize, alloc;
     int res, tk;      /* the ticket of its request in flight (0 none); res: a cached header's size */
     int fdc, reopen;  /* its fd's slot in pack.c's handle cache (-1 none); an open retried after closing cached ones */
+    int prio;         /* its requests' priority: SNDD_PRIO_BG (pack_job_start), or pack_job_first's SNDD_PRIO_SYNC */
     unsigned cs[64], b, pos;  /* decode: block sizes (the output overwrites the table in the buffer), next block */
     const char *xname[2];     /* set after pack_job_start: other entries to look up in the pack's table, found ... */
     unsigned xoff[2], xsize[2];  /* ... as pack_entry_raw would (offset / size of a raw entry; size 0 missing / packed) */
@@ -91,12 +92,17 @@ typedef struct {
 } PackJob;
 void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)(unsigned), void (*put)(void *, unsigned));
 int pack_job_step(PackJob *j);
+/* after pack_job_start: its requests go before the background ones (small reads a turn-on waits for: a block's enemy
+ * type heads, WORLD_CHR_LITE), as pack_req_read_first */
+void pack_job_first(PackJob *j);
 void pack_job_cancel(PackJob *j);
 /* as pack_job_cancel without waiting for a read in flight: the job is left as cancelled at once, its buffer and file go
  * back once the read lands (PACK_JOB_ABANDON) */
 void pack_job_abandon(PackJob *j);
 /* after a job's header read (pack_job_step past it): 1 if its pack has entry name (the first sector's table only) */
 int pack_job_has(const PackJob *j, const char *name);
+/* after a job's header read: entry name's decoded size from the pack's first sector (0: not there / not known) */
+unsigned pack_job_entry_size(const PackJob *j, const char *name);
 /* Kept for its callers: there is no shared async slot any more, every request has its own */
 void pack_async_free(void);
 /* Wait for pack_read_async's read (its result stays for pack_async_done) and, from host:, for fio's request in flight

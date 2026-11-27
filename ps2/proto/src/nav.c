@@ -13,16 +13,14 @@ typedef struct {
 _Static_assert(sizeof(NavHdr) == 44, "export_enemies.py NAV header");
 typedef struct { unsigned short v[3], nbr[3]; } NavTri;
 #define NONE 0xFFFF
-/* NAV_QREJ (frame-time pass 2026-11-09, default on; DEFS=-DNAV_QREJ=0 = off): tri_at rejects a cell's triangles by
+/* NAV_QREJ (frame-time pass 2026-11-09): tri_at rejects a cell's triangles by
  * their integer vertex box before the float barycentric test (the ENEMY_WALLS leash calls it twice per enemy move) */
-#ifndef NAV_QREJ
-#define NAV_QREJ 1
-#endif
 #define NAV_Q 16.0f  /* export_enemies.py NAV_Q: 1/16 m vertex grid */
 
 typedef struct {
     void *mem;
-    unsigned bytes;
+    unsigned bytes;  /* heap bytes (nav_load's copy); 0 for a mesh bound in place */
+    int bound;       /* nav_bind: mem points into the block's enemies.bin in its lite set (not ours to free) */
     NavHdr h;
     const short (*v)[3];
     const NavTri *t;
@@ -31,38 +29,71 @@ typedef struct {
 static Nav navs[NAV_BLOCKS];
 int nav_searches, nav_searches_total;
 
-int nav_load(int block, const void *nav, unsigned size)
+/* the mesh's bytes after its header, 0 when the header does not fit the chunk */
+static unsigned body_bytes(const void *nav, unsigned size, NavHdr *h)
 {
-    if (block < 0 || block >= NAV_BLOCKS || !nav || size < sizeof(NavHdr))
+    if (!nav || size < sizeof(NavHdr))
         return 0;
-    nav_free(block);
-    const unsigned char *b = nav;
-    NavHdr h;
-    memcpy(&h, b, sizeof h);
-    unsigned vbytes = (h.verts * 6 + 3) & ~3u, tbytes = h.tris * sizeof(NavTri), gbytes = (h.gw * h.gh + 1) * 2,
-             n = vbytes + tbytes + gbytes + h.list * 2;
-    if (!h.tris || sizeof h + n > size)
-        return 0;
-    Nav *nv = &navs[block];
-    nv->mem = malloc(n);
-    if (!nv->mem)
-        return 0;
-    memcpy(nv->mem, b + sizeof h, n);
-    nv->bytes = n;
-    nv->h = h;
+    memcpy(h, nav, sizeof *h);
+    unsigned vbytes = (h->verts * 6 + 3) & ~3u, tbytes = h->tris * sizeof(NavTri), gbytes = (h->gw * h->gh + 1) * 2,
+             n = vbytes + tbytes + gbytes + h->list * 2;
+    return h->tris && sizeof *h + n <= size ? n : 0;
+}
+
+static void set_tables(Nav *nv)
+{
+    unsigned vbytes = (nv->h.verts * 6 + 3) & ~3u, tbytes = nv->h.tris * sizeof(NavTri);
     const unsigned char *m = nv->mem;
     nv->v = (const short (*)[3])m;
     nv->t = (const NavTri *)(m + vbytes);
     nv->start = (const unsigned short *)(m + vbytes + tbytes);
-    nv->list = nv->start + h.gw * h.gh + 1;
+    nv->list = nv->start + nv->h.gw * nv->h.gh + 1;
+}
+
+int nav_load(int block, const void *nav, unsigned size)
+{
+    NavHdr h;
+    unsigned n;
+    if (block < 0 || block >= NAV_BLOCKS || !(n = body_bytes(nav, size, &h)))
+        return 0;
+    nav_free(block);
+    Nav *nv = &navs[block];
+    nv->mem = malloc(n);
+    if (!nv->mem)
+        return 0;
+    memcpy(nv->mem, (const unsigned char *)nav + sizeof h, n);
+    nv->bytes = n;
+    nv->h = h;
+    set_tables(nv);
     return h.tris;
+}
+
+int nav_bind(int block, const void *nav, unsigned size)
+{
+    NavHdr h;
+    if (block < 0 || block >= NAV_BLOCKS || !body_bytes(nav, size, &h) || ((unsigned)nav & 3))
+        return 0;
+    nav_free(block);
+    Nav *nv = &navs[block];
+    nv->mem = (void *)((const unsigned char *)nav + sizeof h);  /* (the 44-byte header after a 16-aligned chunk payload: 4-aligned) */
+    nv->bound = 1;
+    nv->h = h;
+    set_tables(nv);
+    return h.tris;
+}
+
+void nav_unbind(int block)
+{
+    if (block >= 0 && block < NAV_BLOCKS && navs[block].bound)
+        memset(&navs[block], 0, sizeof navs[block]);
 }
 
 void nav_free(int block)
 {
     if (block < 0 || block >= NAV_BLOCKS)
         return;
-    free(navs[block].mem);
+    if (!navs[block].bound)  /* (a bound mesh is its lite set's: nav_unbind) */
+        free(navs[block].mem);
     memset(&navs[block], 0, sizeof navs[block]);
 }
 
@@ -125,7 +156,6 @@ static int tri_at(const Nav *nv, const float p[3], float below, float above)
     if (c < 0)
         return -1;
     float bd = 1e9f;
-#if NAV_QREJ
     /* the point and its height window on the 1/16 m vertex grid, a unit wider each side (tri_height's 1e-3
      * barycentric margin is ~1 mm on a 1 m triangle): a triangle with all three vertices to one side never holds it */
     const float q = NAV_Q;
@@ -133,17 +163,14 @@ static int tri_at(const Nav *nv, const float p[3], float below, float above)
     float fy0 = (p[1] - below - nv->h.org[1]) * q, fy1 = (p[1] + above - nv->h.org[1]) * q;
     int qx0 = (int)floorf(fx) - 1, qx1 = (int)ceilf(fx) + 1, qz0 = (int)floorf(fz) - 1, qz1 = (int)ceilf(fz) + 1;
     int qy0 = (int)floorf(fy0) - 1, qy1 = (int)ceilf(fy1) + 1;
-#endif
     for (unsigned k = nv->start[c]; k < nv->start[c + 1]; k++) {
         int t = nv->list[k];
         float y;
-#if NAV_QREJ
         const short *a = nv->v[nv->t[t].v[0]], *b = nv->v[nv->t[t].v[1]], *e = nv->v[nv->t[t].v[2]];
         if ((a[0] < qx0 && b[0] < qx0 && e[0] < qx0) || (a[0] > qx1 && b[0] > qx1 && e[0] > qx1) ||
             (a[2] < qz0 && b[2] < qz0 && e[2] < qz0) || (a[2] > qz1 && b[2] > qz1 && e[2] > qz1) ||
             (a[1] < qy0 && b[1] < qy0 && e[1] < qy0) || (a[1] > qy1 && b[1] > qy1 && e[1] > qy1))
             continue;
-#endif
         if (!tri_height(nv, t, p[0], p[2], &y) || y < p[1] - below || y > p[1] + above)
             continue;
         float d = fabsf(y - p[1]);

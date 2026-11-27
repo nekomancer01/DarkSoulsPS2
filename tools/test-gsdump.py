@@ -4,71 +4,49 @@
   test-gsdump.py replay <dump.gs.zst> <out.png> [--secs 6] [--slot N]
   test-gsdump.py compare <new run dir> <old run dir> <report.html> [--fail 0.01] [--no-replay]
 
-Dumps come from tools/test-run.py --gsdump (single-frame dumps, F8 hotkey, one per shot marker). A dump holds the GS
-packet stream + registers + VRAM of one frame, so its replay does not depend on EE timing or game state: the same dump
-always renders the same picture, and two builds' dumps of the same shot differ only where the GS input differs.
-Replays run in the flatpak PCSX2 (v2.8.2, the same GS code that captured them; software renderer from the user's ini),
-which boots .gs.zst files directly (GSDumpReplayer). pcsx2-gsrunner is the upstream batch tool for this; building it
-from PCSX2 source is not done yet (TECH_DEBT test-2).
+Dumps come from tools/test-run.py --gsdump (single-frame dumps, control socket "gsdump", one per shot marker). A dump
+holds the GS packet stream + registers + VRAM of one frame, so its replay does not depend on EE timing or game state:
+the same dump always renders the same picture, and two builds' dumps of the same shot differ only where the GS input
+differs. Replays run in pcsx2-dsrtest (tools/pcsx2-headless/, PCSX2 v2.8.2: the same GS code that captured them) with
+the software renderer: `pcsx2-dsrtest -renderer sw -dumpdir <dir> -- <dump>` plays the dump once and writes each frame
+at internal resolution as a PNG; the last one is the replay picture. --secs and --slot are kept for old command lines
+and ignored (no window, no PINE slot).
 
 compare: shots are matched by name (<area>/<shot>.png in both run dirs). For each it diffs the replayed dumps when
 both runs have them (else the screenshots): RMSE and the fraction of pixels whose max channel difference > 24.
 A shot over --fail changed pixels is a regression. The report shows new / old / amplified difference per shot."""
-import argparse, glob, html, json, os, shutil, subprocess, sys, time
+import argparse, glob, html, json, os, shutil, subprocess, sys, tempfile, time
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-HOSTEXEC = os.path.join(TOOLS, "hostexec")  # runs on the host (distrobox-host-exec inside a distrobox)
 
 
-_tr = _slot = None
-
-
-def test_run():
-    """tools/test-run.py as a module (slot locks, window capture)"""
-    global _tr
-    if not _tr:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("test_run", os.path.join(TOOLS, "test-run.py"))
-        _tr = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_tr)
-    return _tr
+def runner():
+    """the pcsx2-dsrtest binary (tools/pcsx2-run.sh's lookup: PCSX2_HEADLESS, this tree, the main checkout)"""
+    sys.path.insert(0, TOOLS)
+    import warmstate
+    b = warmstate.runner_binary()
+    if not b:
+        raise RuntimeError("no pcsx2-dsrtest; run tools/pcsx2-headless/build.sh")
+    return b
 
 
 def replay(dump, out, secs=6.0, slot=None):
-    """Boot the dump in a headless PCSX2 (own data dir, muted), screenshot the window after secs, kill it."""
-    global _slot
-    tr = test_run()
+    """Replay the dump once in pcsx2-dsrtest (software renderer, no window, no sound); its last frame -> out."""
     dump = os.path.realpath(dump)
-    slot = _slot = _slot or tr.acquire_slot(slot)  # free slot -> own Xvfb display + data dir, kept for every replay
-    DISPLAY = tr.DISPLAY = tr.display_for(slot)  # own Xvfb per slot, as tools/pcsx2-run.sh
-    hh = tr.host_home()
-    data = f"{hh}/.var/app/net.pcsx2.PCSX2/test/{slot}"
-    subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "test-pcsx2-ini.py"),
-                    f"{hh}/.var/app/net.pcsx2.PCSX2/config/PCSX2", data, str(slot)], check=True)
-    if not subprocess.run(["xdpyinfo"], env=dict(os.environ, DISPLAY=DISPLAY), capture_output=True).returncode == 0:
-        subprocess.Popen(["setsid", "Xvfb", DISPLAY, "-screen", "0", "1280x960x24", "-nolisten", "tcp"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=())
-        time.sleep(1)
-    os.makedirs("/tmp/pcsx2-headless", exist_ok=True)
-    idf = f"/tmp/pcsx2-headless/id.gs.{os.getpid()}"
-    # muted like every headless run (null sink dsr_mute, tools/pcsx2-run.sh)
-    sh = (f"pactl list short sinks | grep -q dsr_mute || pactl load-module module-null-sink sink_name=dsr_mute "
-          f"sink_properties=device.description=DSR-test-mute >/dev/null; "
-          f"DISPLAY={DISPLAY} XAUTHORITY= WAYLAND_DISPLAY= setsid flatpak run --instance-id-fd=3 "
-          f"--env=PULSE_SINK=dsr_mute --socket=x11 --nosocket=wayland --env=QT_QPA_PLATFORM=xcb "
-          f"'--filesystem={os.path.dirname(dump)}:ro' net.pcsx2.PCSX2 -datapath '{data}' -batch -- '{dump}' "
-          f"> /dev/null 2>&1 < /dev/null 3> '{idf}' & for _ in $(seq 50); do [ -s '{idf}' ] && break; sleep 0.1; done")
-    subprocess.run([HOSTEXEC, "bash", "-c", sh])
-    inst = open(idf).read().strip()
-    os.remove(idf)
-    open(f"/tmp/pcsx2-headless/{inst}", "w").close()
+    tmp = tempfile.mkdtemp(prefix="gsreplay.", dir="/tmp")
     try:
-        time.sleep(secs)
-        if not tr.capture(out):
-            raise RuntimeError(f"replay screenshot failed: {dump}")
+        # -datapath: the replay's logs and caches stay in its scratch dir (not the default data dir in the home,
+        # shared by parallel replays)
+        r = subprocess.run([runner(), "-surfaceless", "-renderer", "sw", "-datapath", os.path.join(tmp, "data"),
+                            "-dumpdir", tmp, "-timeout", "120", "--", dump],
+                           capture_output=True, text=True, timeout=180)
+        frames = sorted(glob.glob(os.path.join(tmp, "*_frame*.png")))
+        if r.returncode != 0 or not frames:
+            raise RuntimeError(f"replay failed (exit {r.returncode}, {len(frames)} frames): {dump}\n"
+                               + "\n".join((r.stdout + r.stderr).splitlines()[-5:]))
+        shutil.move(frames[-1], out)
     finally:
-        subprocess.run([HOSTEXEC, "flatpak", "kill", inst], capture_output=True)
-        os.remove(f"/tmp/pcsx2-headless/{inst}")
+        shutil.rmtree(tmp, ignore_errors=True)
     return out
 
 

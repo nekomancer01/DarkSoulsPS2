@@ -348,9 +348,13 @@ void mapstream_close(int k)
              * of the world step whenever a block let go of its map tables (iso_neighbours, 2026-11-15); such a read
              * keeps its buffer (an orphan) until it lands, collected by orphan_pump */
             unsigned a, e = grp_of(m, ms_rd[i].id, &a);
-            if (!MS_ORPHAN || pack_req_cancel_async(ms_rd[i].tk) || n_orphan == MS_INFLIGHT) {
-                if (MS_ORPHAN && n_orphan == MS_INFLIGHT)
-                    pack_req_cancel(ms_rd[i].tk);
+            if (!MS_ORPHAN) {
+                pack_req_cancel(ms_rd[i].tk);  /* the fallback waits for the read to stop (it did not cancel at all:
+                                                * the read went on landing in buffers freed below) */
+            } else if (pack_req_cancel_async(ms_rd[i].tk)) {
+                /* never sent: gone now, its items go below */
+            } else if (n_orphan == MS_INFLIGHT) {
+                pack_req_cancel(ms_rd[i].tk);
             } else {
                 orphan[n_orphan++] = (Orphan){ms_rd[i].tk, m->buf[a], grp_bytes(m, a, e)};
                 ms_keep_buf = 1, ms_drop(k, a), ms_keep_buf = 0;  /* its items go; the buffer stays the read's */

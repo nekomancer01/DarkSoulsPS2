@@ -10,11 +10,16 @@
 #   4b tools/material.py test (the classifier against the exporter's old per-mesh checks) and material_table.h up to date
 #   5 tools/ci/test_residency.py: the per-block budgets of ps2/proto/src/residency.h fit the arena, and
 #     tools/world_budget.py --strict fails a spot over the room (synthetic block, no game data)
+#   5b tools/ci/test_audio_rate.py: the sound exporter's band loss and per-sample rate pick (synthetic signals)
 #   6 libmapx against the Python code (tools/mapx/test_mapx.py); the map simplifier: tools/native/simplify.c (the source
 #     of truth) against its frozen reference tools/simplify.py with its own rules off, and its golden outputs at the
 #     shipped settings (tools/mapx/test_simplify_golden.py, simplify_golden.json)
 #   7 tools/ci/test_scan.py: the readers raise souls.UnknownVariant on files they do not know, the coverage scan's
 #     runtime tables parse, and tools/blockreport.py --strict fails a synthetic block over its VRAM row
+#   8 tools/ci/test_buildprof.py: tools/buildprof.py (step table, critical chain, schedule replay, output identity) on
+#     a synthetic tools/stepcache.py timing file
+#   9 tools/ci/test_recipe_tools_audit.py: the report-only audit of tools/recipe.toml's per-step tools lists
+#     (tools/ci/recipe_tools_audit.py) on a synthetic recipe
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -71,7 +76,12 @@ echo "== map simplifier: simplify.c against the frozen simplify.py, golden outpu
 "$PY" -I tools/mapx/test_simplify_golden.py || fail "tools/mapx/test_simplify_golden.py (intended change: check it, then --update)"
 echo "== residency budgets (ps2/proto/src/residency.h, tools/world_budget.py on a synthetic block)"
 "$PY" -I tools/ci/test_residency.py || fail "tools/ci/test_residency.py"
+"$PY" -I tools/ci/test_audio_rate.py || fail "tools/ci/test_audio_rate.py"
 echo "== coverage scan reader errors and the block report gate (tools/scan, tools/blockreport.py)"
 "$PY" -I tools/ci/test_scan.py || fail "tools/ci/test_scan.py"
+echo "== build profiler (tools/buildprof.py on a synthetic stepcache.tsv)"
+"$PY" -I tools/ci/test_buildprof.py || fail "tools/ci/test_buildprof.py"
+echo "== recipe tools-list audit (report only) on a synthetic recipe"
+"$PY" -I tools/ci/test_recipe_tools_audit.py || fail "tools/ci/test_recipe_tools_audit.py"
 echo "offline: $FAILED failed"
 exit $FAILED

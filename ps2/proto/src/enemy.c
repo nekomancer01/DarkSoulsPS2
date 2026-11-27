@@ -32,6 +32,7 @@
 #include "model.h"
 #include "vu1.h"
 #include "ai.h"
+#include "lua0.h"  /* LHeld (enemy_block_ai) */
 #include "esd.h"
 #include "combat.h"
 #include "collision.h"
@@ -97,10 +98,7 @@ float enemy_player_push[2];  /* this frame's capsule pushes on the player (playe
  * show now (another room / level of the block: drawgrp.c). Within LOAD_DIST every such placement had its model in RAM
  * and VRAM, and walking past them loaded / unloaded types that were never seen (Ame, 2026-11-08: "enemies are being
  * allocated when unnecessary and might cause churn"). 20 m (ASSUMED): a load takes 0.2-1.5 s from cdrom0:, so a type
- * is in before the player reaches it. Default on; make DEFS=-DENEMY_LAZY_LOAD=0 = every placement within LOAD_DIST. */
-#ifndef ENEMY_LAZY_LOAD
-#define ENEMY_LAZY_LOAD 1
-#endif
+ * is in before the player reaches it. */
 #define LAZY_LOAD_DIST 20.0f
 #define ANIM_LOD_DIST 15.0f  /* beyond this, a character's pose is resampled every other frame */
 #define TEAM_NEUTRAL 2      /* NpcParam teamType of the bonfire dummy, NPCs and Frampt */
@@ -187,6 +185,13 @@ typedef struct {
     float walk_speed, run_speed;
     const RagBody *rag;  /* hkx ragdoll bodies (hit capsules, death ragdoll); NULL none (c1000) */
     int nrag;
+    /* WORLD_CHR_LITE (world_i.h): types made when a block turns on (enemy_block_types_lite) */
+    short refs;              /* on blocks placing it (counted once per block) */
+    unsigned char stub;      /* name + pack only: its chr.bin head is still to be read (head_poll); never placed */
+    unsigned char dead;      /* a free slot (its last block let it go) */
+    unsigned char doomed;    /* refs went to 0 while its model was in or loading: freed once it is out */
+    unsigned char keep;      /* made at boot (the boot area's): never freed */
+    void *alias;             /* a merged stub: the twin (ChrType *) its block places; no head of its own */
 } ChrType;
 
 typedef struct {
@@ -339,13 +344,10 @@ static int nenemies;
 /* world blocks' placements (enemies.bin records, ENEMY_REC B), kept from boot; placed while the block is on */
 static unsigned char *blk_rec[ENEMY_BLOCKS];
 static int blk_n[ENEMY_BLOCKS];
-/* ENEMY_KEEP_DEAD (default on; 0 = the old way): placements the player killed, per block and enemies.bin index. A
+/* ENEMY_KEEP_DEAD: placements the player killed, per block and enemies.bin index. A
  * block that turns off and on again placed every one of them alive (a fresh AI, its type loaded again for a body
  * nobody had left). DSR keeps a killed enemy dead until a bonfire rest or the player's death (enemy_respawn clears
  * this), wherever the player walked meanwhile. */
-#ifndef ENEMY_KEEP_DEAD
-#define ENEMY_KEEP_DEAD 1
-#endif
 static unsigned blk_dead[ENEMY_BLOCKS][(MAX_ENEMIES + 31) / 32];
 /* ENEMY_NEAR_PLACE (default on; 0 = every placement of a block when it turns on): a block's characters are placed
  * (an Enemy slot: AI, ESD, combat body) only while their placement is within PLACE_DIST of the player, at most
@@ -519,7 +521,7 @@ static void *job_chr;   /* its chr.bin (the job's first entry), handed to the ty
 /* EE ticks per frame for building a streamed type's VU1 skin batches: in one frame mdl_load took up to 28 ms
  * (c2750), the smoke's worst frame 83.6 ms with the decode (2026-11-04) */
 /* LOGIC_SPREAD: 1.5 ms (Burg plan B6: the 4 ms steps were the logic pass's spikes on every type load) */
-#define SETUP_TICKS ((LOGIC_SPREAD ? 3 : 8) * 294912u / 2)
+#define SETUP_TICKS (3 * 294912u / 2)
 static int job_arena;
 static void *heap_get(unsigned n)
 {
@@ -650,11 +652,45 @@ static int chr_same(const ChrType *t, const void *cb, unsigned size)
     return cb && size == t->chr_size && fnv1a(cb, size) == t->chr_hash;
 }
 
+/* t's resident chr.bin part (header + variants) and walk / run speeds from the whole file cb (the caller frees cb);
+ * 0: a bad file or no RAM */
+static int type_head(ChrType *t, void *cb, unsigned csize, unsigned hash)
+{
+    const ChrHdr *h = cb;
+    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
+        !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
+        printf("enemy: %.8s: bad chr.bin\n", t->name);
+        return 0;
+    }
+    /* the resident part: header + variants */
+    unsigned head_n = sizeof *h + h->variants * sizeof(ChrVar);
+    char *head = malloc(head_n);
+    if (!head) {
+        printf("enemy: %.8s: no RAM for its chr.bin header\n", t->name);
+        return 0;
+    }
+    memcpy(head, h, sizeof *h);
+    memcpy(head + sizeof *h, (const char *)cb + h->var_off, h->variants * sizeof(ChrVar));
+    t->chr_size = csize;
+    t->chr_hash = hash;
+    t->h = (const ChrHdr *)head;
+    t->vars = (const ChrVar *)(head + sizeof *h);
+    t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
+    chr_attach(t, cb);  /* the speeds from the whole file, once */
+    t->walk_speed = loop_speed(t, 200);
+    t->run_speed = loop_speed(t, 500);
+    chr_attach(t, NULL);
+    t->near_d = 1e9f;
+    printf("enemy: %.8s %u variants, %u anims, chr.bin %u B (%u resident), RAM free %uK\n", t->name, t->h->variants,
+           t->h->anims, csize, head_n, enemy_ram_free() >> 10);
+    return 1;
+}
+
 static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
 {
     (void)gs;
     for (int i = 0; i < ntypes; i++)
-        if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
+        if (!types[i].dead && !strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
             return &types[i];
     if (ntypes >= MAX_TYPES)
         return NULL;
@@ -668,46 +704,25 @@ static ChrType *load_type(GSGLOBAL *gs, const char *name, const char *dir)
     pack_close(&pk);
     unsigned hash = cb ? fnv1a(cb, csize) : 0;
     for (int i = 0; cb && i < ntypes; i++)  /* the same character with the same variants in another block: one type */
-        if (!strncmp(types[i].name, name, 8) && types[i].chr_size == csize && types[i].chr_hash == hash) {
+        if (!types[i].dead && !types[i].stub && !strncmp(types[i].name, name, 8) && types[i].chr_size == csize &&
+            types[i].chr_hash == hash) {
             free(cb);
             return &types[i];
         }
-    const ChrHdr *h = cb;
-    if (!h || csize < sizeof *h || memcmp(h->magic, "DSRC", 4) || h->version != 13 || h->bones > MDL_MAX_BONES ||
-        !h->variants || h->var_off + h->variants * sizeof(ChrVar) > csize) {
-        printf("enemy: %s: bad chr.bin\n", name);
+    if (!cb || ntypes >= MAX_TYPES) {
         free(cb);
         return NULL;
     }
-    /* the resident part: header + variants */
-    unsigned head_n = sizeof *h + h->variants * sizeof(ChrVar);
-    char *head = malloc(head_n);
-    if (!head) {
-        printf("enemy: %s: no RAM for its chr.bin header\n", name);
-        free(cb);
-        return NULL;
-    }
-    memcpy(head, h, sizeof *h);
-    memcpy(head + sizeof *h, (const char *)cb + h->var_off, h->variants * sizeof(ChrVar));
     ChrType *t = &types[ntypes];
     memset(t, 0, sizeof *t);
     memcpy(t->name, name, 8);
     t->dir = dir;
-    t->chr_size = csize;
-    t->chr_hash = hash;
     t->model_raw = model_raw;
-    ntypes++;  /* its model.bin, chr.bin tail and textures load once a placement comes near (stream_types) */
-    t->h = (const ChrHdr *)head;
-    t->vars = (const ChrVar *)(head + sizeof *h);
-    t->nrag = h->rag_n > RAG_MAX ? RAG_MAX : h->rag_n;
-    chr_attach(t, cb);  /* the speeds from the whole file, once */
-    t->walk_speed = loop_speed(t, 200);
-    t->run_speed = loop_speed(t, 500);
-    chr_attach(t, NULL);
+    int ok = type_head(t, cb, csize, hash);
     free(cb);
-    t->near_d = 1e9f;
-    printf("enemy: %s %u variants, %u anims, chr.bin %u B (%u resident), RAM free %uK\n", name, t->h->variants,
-           t->h->anims, csize, head_n, enemy_ram_free() >> 10);
+    if (!ok)
+        return NULL;
+    ntypes++;  /* its model.bin, chr.bin tail and textures load once a placement comes near (stream_types) */
     return t;
 }
 
@@ -1044,6 +1059,8 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
         place(t, r, nenemies++, 0, i);
     }
     int ntri = nav_load(0, nav, nav_size);
+    for (int i = 0; i < ntypes; i++)  /* (the boot area's types stay: WORLD_CHR_LITE never lets them go) */
+        types[i].keep = 1;
     /* every type starts unloaded; enemy_update loads the ones near the player */
     printf("enemy: %d characters of %d types, navmesh %d tris (%u B), RAM free %uK after unloading\n", nenemies,
            ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
@@ -1052,6 +1069,276 @@ int enemy_init(GSGLOBAL *gs, const void *placements, unsigned placements_size, c
 
 static char blk_dir[ENEMY_BLOCKS][32];
 static ChrType *blk_type[ENEMY_BLOCKS][MAX_ENEMIES];  /* per kept placement (may be another block's identical type) */
+static unsigned char blk_nav_lite[ENEMY_BLOCKS];  /* WORLD_NAV_LITE: the navmesh is bound with the lite set */
+
+void enemy_nav_with_block(int block)
+{
+    if (block > 0 && block < ENEMY_BLOCKS)
+        blk_nav_lite[block] = 1;
+}
+
+int enemy_block_nav(int block, const void *enm, unsigned enm_size)
+{
+    unsigned count, nav_size;
+    const void *nav;
+    if (block <= 0 || block >= ENEMY_BLOCKS || !placements_of(enm, enm_size, block, &count, &nav, &nav_size))
+        return 0;
+    int n = nav ? nav_bind(block, nav, nav_size) : 0;
+    if (nav && !n)
+        printf("enemy: block %d: navmesh not bound (%u B)\n", block, nav_size);
+    return n;
+}
+
+/* ---- WORLD_CHR_LITE (world_i.h): a block's enemy types made when it turns on, from its enemies.bin in its lite set,
+ * and let go when it turns off. DSR loads a block's characters with the block (WorldBlockChrPrepare in FUN_1403dac50,
+ * notes/EXE_FINDINGS.md). A type starts as a stub (name + pack); its chr.bin head (header + variants, 0.3-2 KB) is read
+ * in the background (head_poll: one pack job at a time, no frame stall, as the models load), then it may be placed.
+ * Same-name types of two blocks with equal chr.bin are one (twin), as at boot. Counted once per block. ---- */
+static unsigned char blk_typed[ENEMY_BLOCKS], blk_npc_done[ENEMY_BLOCKS];
+/* up to HEAD_JOBS heads read at once (the disc server orders the requests by position; one at a time a 4-block warp's 29
+ * heads took ~9 s on the ISO, 2026-11-25) */
+#define HEAD_JOBS 4
+/* HEAD_AFTER_LITE (default 1; 0: a head read starts as soon as its stub is made): no new head read while a wanted
+ * block's lite set loads outside a warp. The map reader is held for that set (wplan.c lite_pending); head reads at
+ * sync priority stretched it (Darkroot, iso_neighbours 2026-11-25: 13 heads, stage 1 0.7 -> 2.6 s, map reads held the
+ * whole time, Parish -> Darkroot pop-ins 12-13 -> 18-21) */
+#ifndef HEAD_AFTER_LITE
+#define HEAD_AFTER_LITE 1
+#endif
+static PackJob hjobs[HEAD_JOBS];
+static ChrType *hjob_ts[HEAD_JOBS];  /* the stub each head job reads, NULL idle */
+static int head_busy(const ChrType *t)
+{
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            return 1;
+    return 0;
+}
+
+
+static void type_kill(ChrType *t)
+{
+    if (t->keep)
+        return;
+    for (int j = 0; j < HEAD_JOBS; j++)
+        if (hjob_ts[j] == t)
+            pack_job_abandon(&hjobs[j]), hjob_ts[j] = NULL;
+    for (int i = 0; i < ntypes; i++)  /* (its aliases go with it) */
+        if (types[i].alias == t)
+            memset(&types[i], 0, sizeof types[i]), types[i].dead = 1;
+    free((void *)t->h);
+    memset(t, 0, sizeof *t);
+    t->dead = 1;
+    while (ntypes && types[ntypes - 1].dead)
+        ntypes--;
+}
+
+static ChrType *type_stub(const char *name, const char *dir)
+{
+    int free_i = -1;
+    for (int i = 0; i < ntypes; i++) {
+        if (types[i].dead) {
+            free_i = free_i < 0 ? i : free_i;
+            continue;
+        }
+        if (!strncmp(types[i].name, name, 8) && !strcmp(types[i].dir, dir))
+            return types[i].alias ? (ChrType *)types[i].alias : &types[i];
+    }
+    for (int i = 0; free_i < 0 && ntypes >= MAX_TYPES && i < ntypes; i++)  /* full: a head no on block places goes */
+        if (!types[i].refs && !types[i].keep && !types[i].loaded && job_t != &types[i] && !head_busy(&types[i])) {
+            type_kill(&types[i]);
+            free_i = i < ntypes ? i : -1;
+        }
+    if (free_i < 0 && ntypes >= MAX_TYPES)
+        return NULL;
+    ChrType *t = &types[free_i >= 0 ? free_i : ntypes++];
+    memset(t, 0, sizeof *t);
+    memcpy(t->name, name, 8);
+    t->dir = dir;
+    t->stub = 1;
+    t->near_d = 1e9f;
+    return t;
+}
+
+static int blk_uses(int b, const ChrType *t)
+{
+    for (int k = 0; k < blk_n[b]; k++)
+        if (blk_type[b][k] == t)
+            return 1;
+    return 0;
+}
+
+/* stub t is the same character as twin (equal chr.bin): every block placing t places twin, t goes */
+static void type_merge(ChrType *t, ChrType *twin)
+{
+    for (int b = 1; b < ENEMY_BLOCKS; b++) {
+        if (!blk_typed[b] || !blk_uses(b, t))
+            continue;
+        if (!blk_uses(b, twin))
+            twin->refs++;
+        for (int k = 0; k < blk_n[b]; k++)
+            if (blk_type[b][k] == t)
+                blk_type[b][k] = twin;
+    }
+    t->stub = 0, t->refs = 0, t->alias = twin;  /* (kept as the name + pack's alias: its next turn-on reads nothing) */
+}
+
+static int place_rec(int block, int k);
+
+/* one head job: its result (a twin merges, else the type gets its head; its placements may be placed from now) */
+static void head_done(PackJob *hj, ChrType *t, int r)
+{
+    if (r < 0 || !t->refs) {
+        if (r > 0)
+            hj->put(hj->out, hj->alloc);
+        t->retry = frame + 60;  /* (a read error: again in 2 s) */
+        return;
+    }
+    void *cb = hj->out;
+    unsigned csize = hj->raw, hash = fnv1a(cb, csize);
+    ChrType *twin = NULL;
+    for (int i = 0; i < ntypes && !twin; i++)
+        if (&types[i] != t && !types[i].dead && !types[i].stub && !types[i].alias && !strncmp(types[i].name, t->name, 8) &&
+            types[i].chr_size == csize && types[i].chr_hash == hash)
+            twin = &types[i];
+    if (twin) {
+        hj->put(cb, hj->alloc);
+        type_merge(t, twin);
+        return;
+    }
+    t->model_raw = pack_job_entry_size(hj, "model.bin");
+    int ok = type_head(t, cb, csize, hash);
+    hj->put(cb, hj->alloc);
+    if (!ok) {
+        t->retry = frame + 3600;  /* (a bad file: not every frame) */
+        return;
+    }
+    t->stub = 0;
+    for (int b = 1; !ENEMY_NEAR_PLACE && b < ENEMY_BLOCKS; b++)  /* (all placed at once: the ones that waited) */
+        for (int k = 0; blk_on[b] && k < blk_n[b]; k++)
+            if (blk_type[b][k] == t && blk_slot[b][k] < 0)
+                place_rec(b, k);
+}
+
+static void head_poll(void)
+{
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j]) {
+            int r = pack_job_step(&hjobs[j]);
+            if (r) {
+                ChrType *t = hjob_ts[j];
+                hjob_ts[j] = NULL;
+                head_done(&hjobs[j], t, r);
+            }
+        }
+    }
+    if (HEAD_AFTER_LITE && world_lite_busy())
+        return;
+    for (int j = 0; j < HEAD_JOBS; j++) {
+        if (hjob_ts[j])
+            continue;
+        ChrType *t = NULL;
+        for (int i = 0; i < ntypes && !t; i++)
+            if (types[i].stub && !types[i].dead && types[i].refs && frame >= types[i].retry && !head_busy(&types[i]))
+                t = &types[i];
+        if (!t)
+            return;
+        char path[64];
+        model_path(path, sizeof path, t);
+        pack_job_start(&hjobs[j], path, "chr.bin", heap_get, heap_put);
+        pack_job_first(&hjobs[j]);  /* (before the map streaming's reads: its placements wait for it) */
+        hjob_ts[j] = t;
+    }
+}
+
+void enemy_block_lua(const void *map_lua, int map_lua_size)
+{
+#ifndef NO_AI_SCRIPTS
+    if (inited && map_lua)  /* (no VM without enemies: option noenemies never ran enemy_init) */
+        ai_scripts_add(map_lua, map_lua_size);
+#endif
+}
+
+#ifndef NO_AI_SCRIPTS
+static LHeld blk_ai[ENEMY_BLOCKS];  /* WORLD_AI_UNLOAD: the chunks each block's map AI holds */
+#endif
+
+int enemy_block_ai(int block, const void *map_lua, int map_lua_size, int on)
+{
+#ifndef NO_AI_SCRIPTS
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS)
+        return 0;
+    LHeld *h = &blk_ai[block];
+    if (on && map_lua && !h->n)
+        ai_block_load(map_lua, map_lua_size, h);
+    else if (!on && h->n)
+        ai_block_drop(h);
+    return h->n > 0;  /* (a load error after some chunks: those are still given back at the turn-off) */
+#else
+    (void)block, (void)map_lua, (void)map_lua_size, (void)on;
+    return 0;
+#endif
+}
+
+int enemy_block_types_lite(int block, const char *dir, const void *enm, unsigned enm_size)
+{
+    unsigned count, nav_size;
+    const void *nav;
+    if (!inited || block <= 0 || block >= ENEMY_BLOCKS || blk_typed[block])
+        return 0;
+    const unsigned char *b = placements_of(enm, enm_size, block, &count, &nav, &nav_size);
+    if (!b)
+        return 0;
+    snprintf(blk_dir[block], sizeof blk_dir[block], "%s/", dir);
+    free(blk_rec[block]);
+    blk_rec[block] = malloc(count * ENEMY_REC + 1);
+    blk_n[block] = 0;
+    int stubs = 0;
+    for (unsigned i = 0; blk_rec[block] && i < count && i < MAX_ENEMIES; i++) {
+        const unsigned char *r = b + ENEMY_REC * i;
+        char name[9] = {0};
+        memcpy(name, r, 8);
+        if (!strcmp(name, "c0000")) {  /* human NPCs (npc.c): kept once, as at boot */
+            if (!blk_npc_done[block])
+                npc_keep(block, r);
+            continue;
+        }
+        ChrType *t = type_stub(name, blk_dir[block]);
+        if (!t)
+            continue;
+        if (!blk_uses(block, t))
+            t->refs++, stubs += t->stub;
+        blk_type[block][blk_n[block]] = t;
+        memcpy(blk_rec[block] + ENEMY_REC * blk_n[block]++, r, ENEMY_REC);
+    }
+    blk_npc_done[block] = 1;
+    blk_typed[block] = 1;
+    printf("enemy: block %d types: %d placements, %d types (%d heads to read), RAM free %uK\n", block, blk_n[block],
+           ntypes, stubs, enemy_ram_free() >> 10);
+    return blk_n[block];
+}
+
+void enemy_block_untypes(int block)
+{
+    if (block <= 0 || block >= ENEMY_BLOCKS || !blk_typed[block])
+        return;
+    for (int k = 0; k < blk_n[block]; k++) {
+        ChrType *t = blk_type[block][k];
+        int first = 1;
+        for (int j = 0; j < k && first; j++)
+            first = blk_type[block][j] != t;
+        if (!t || !first || --t->refs > 0)
+            continue;
+        if (t->stub)  /* (its head never came: nothing to keep) */
+            type_kill(t);
+        /* else its head (0.3-2 KB: 80 KB for the 137 types of 27 blocks) stays for the block's next turn-on, which then
+         * places at once; type_stub evicts it only when the table is full. Its model unloads by distance as before */
+    }
+    for (int k = 0; k < blk_n[block]; k++)
+        blk_type[block][k] = NULL;
+    free(blk_rec[block]), blk_rec[block] = NULL, blk_n[block] = 0;
+    blk_typed[block] = 0;
+}
 
 int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *placements, unsigned placements_size,
                       const void *map_lua, int map_lua_size)
@@ -1095,7 +1382,8 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
     if (map_lua)
         ai_scripts_add(map_lua, map_lua_size);  /* the block's map logic functions join the one VM */
 #endif
-    int ntri = nav_load(block, nav, nav_size);  /* kept for the session, as the placements */
+    int ntri = blk_nav_lite[block] ? 0 : nav_load(block, nav, nav_size);  /* kept for the session (WORLD_NAV_LITE:
+                                                                            * bound with the lite set instead) */
     printf("enemy: block %d: %d placements, %d types, navmesh %d tris (%u B all blocks), RAM free %uK\n", block,
            blk_n[block], ntypes, ntri, nav_bytes(), enemy_ram_free() >> 10);
     return blk_n[block];
@@ -1105,7 +1393,7 @@ int enemy_block_types(GSGLOBAL *gs, int block, const char *dir, const void *plac
 static int place_rec(int block, int k)
 {
     ChrType *t = blk_type[block][k];
-    if (!t)
+    if (!t || t->stub)  /* (WORLD_CHR_LITE: its head is still being read) */
         return -1;
     int i = 0;
     while (i < nenemies && !(ev_off[i] & EV_FREE))
@@ -1116,7 +1404,7 @@ static int place_rec(int block, int k)
         nenemies++;
     place(t, blk_rec[block] + ENEMY_REC * k, i, block, k);
     Enemy *e = &enemies[i];
-    if (ENEMY_KEEP_DEAD && blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
+    if (blk_dead[block][k >> 5] >> (k & 31) & 1) {  /* killed since the last rest / death */
         e->cc.hp = -1, e->cc.dead = 1, e->dead_t = CORPSE_TIME + 1, e->awarded = 1;
     } else if (blk_hp[block][k] > 0 && blk_hp[block][k] < e->cc.hp_max) {
         e->cc.hp = blk_hp[block][k];  /* hurt when it was taken out */
@@ -1190,7 +1478,7 @@ static void place_near(const Player *pl)
         float best = PLACE_DIST * PLACE_DIST;
         for (int b = 1; b < ENEMY_BLOCKS; b++)
             for (int k = 0; blk_on[b] && k < blk_n[b]; k++) {
-                if (blk_slot[b][k] >= 0 || !blk_type[b][k])
+                if (blk_slot[b][k] >= 0 || !blk_type[b][k] || blk_type[b][k]->stub)
                     continue;
                 float f[3];
                 memcpy(f, blk_rec[b] + ENEMY_REC * k + 20, 12);
@@ -1302,12 +1590,16 @@ static void stream_types(const Player *pl)
          * its type's model in RAM (2026-11-01: xz kept c2500 + c3491 loaded at the bonfire, 0.85 MB) */
         float d = sqrtf((e->pos.x - pl->pos.x) * (e->pos.x - pl->pos.x) + (e->pos.y - pl->pos.y) * (e->pos.y - pl->pos.y) +
                         (e->pos.z - pl->pos.z) * (e->pos.z - pl->pos.z));
-        if (ENEMY_LAZY_LOAD && d > LAZY_LOAD_DIST && (ev_off[i] || !dg_mask_shown(e->block, e->dg)))
+        if (d > LAZY_LOAD_DIST && (ev_off[i] || !dg_mask_shown(e->block, e->dg)))
             continue;
         if (e->dead_t <= CORPSE_TIME && d < e->ct->near_d)
             e->ct->near_d = d;
     }
+    head_poll();
     job_poll();
+    for (int i = 0; i < ntypes; i++)  /* WORLD_CHR_LITE: let go by its last block, now out */
+        if (types[i].doomed && !types[i].loaded && job_t != &types[i])
+            type_kill(&types[i]);
     ChrType *next = NULL;
     for (int i = 0; i < ntypes; i++) {
         ChrType *t = &types[i];
@@ -1349,8 +1641,11 @@ int enemy_trace_types(char *buf, int cap, unsigned frame)
 
 int enemy_stream_settled(void)
 {
-    if (job_t)
+    if (job_t || hjob_ts[0] || hjob_ts[1] || hjob_ts[2] || hjob_ts[3])
         return 0;
+    for (int i = 0; i < ntypes; i++)  /* (WORLD_CHR_LITE: a placed block's heads first) */
+        if (types[i].stub && types[i].refs > 0 && !types[i].dead && frame >= types[i].retry)
+            return 0;
     for (int i = 0; i < ntypes; i++)
         if (wants_load(&types[i]))
             return 0;
@@ -1399,16 +1694,10 @@ static float root_y_at(const Enemy *e, float t)
  * to the navmesh); otherwise (root motion, push-outs) a move off a ledge leaves the character airborne and it falls
  * (fall_step). Returns 1 if it moved. */
 /* wall check: which kind of move is running (the move_by callers set it; wall_check names them on a hit) */
-#ifndef ENEMY_WALL_CHECK
-#define ENEMY_WALL_CHECK 1
-#endif
 #define WC_H 1.0f        /* m above the feet: above kerbs and steps (COL_STEP_UP 0.6), below every character's top */
 #define WC_FALL_M 4.0f  /* m: a landing this far below where it left the ground is logged ("enemy: fell") */
 enum { MV_ROOT = 1, MV_WALK = 2, MV_SEP = 4, MV_AIR = 8, MV_FALL = 16, MV_GROUND_LOST = 32, MV_NO_FLOOR = 64, MV_LEASH = 128 };
-/* Burg plan B7 (default on; DEFS=-DENEMY_WALLS=0 = the old move): see move_by */
-#ifndef ENEMY_WALLS
-#define ENEMY_WALLS cv_ENEMY_WALLS  /* runtime switch, default 1 (src/cvar.h) */
-#endif
+/* Burg plan B7: see move_by */
 #define WALL_FLOOR_DEPTH 60.0f  /* m: deeper than any drop in DSR's maps a character survives or dies of (ASSUMED) */
 static unsigned mv_tag;
 
@@ -1457,27 +1746,17 @@ static int wall_between(const Enemy *e, const float p[3])
     return (a[0] != b[0] || a[2] != b[2]) && col_ray(a, b, COL_SOLID, &hit) && fabsf(hit.n[1]) < COL_WALKABLE_NY;
 }
 
-/* SEP_CARRY (Burg plan B9 polish, default on; DEFS=-DSEP_CARRY=0 = each push walked on its own): the capsule pushes
+/* SEP_CARRY (Burg plan B9 polish): the capsule pushes
  * between characters (sep_flush) ride along with the character's next root motion or walk, one col_walk for both, and
  * walk on their own only past SEP_CARRY_M. At the Burg bonfire crowd ~5 push walks a frame took 4.4 ms (0.85 ms each,
  * ~2 wall contacts each), beside 8 walks for 2.4 ms ("enemy: moves", iso_ame_report3 on the ISO, 2026-11-09) */
-#ifndef SEP_CARRY
-#define SEP_CARRY cv_SEP_CARRY  /* runtime switch, default 1 (src/cvar.h) */
-#endif
 #define SEP_CARRY_M 0.15f  /* m (ASSUMED: under a capsule radius, a frame late at most a few cm) */
 
-#ifndef MOVE_PROF
-#define MOVE_PROF 1
-#endif
-#if MOVE_PROF && LOGIC_PASS_MS
 static unsigned mp_sub[4];  /* MOVE_PROF: ticks in col_walk / leash (nav) / wall ray / ledge floor, all moves */
 #define MP_SUB(i, x) ({ unsigned mp_t0_ = lpass_now(); __typeof__(x) mp_r_ = (x); mp_sub[i] += lpass_now() - mp_t0_; mp_r_; })
-#else
-#define MP_SUB(i, x) (x)
-#endif
 static int move_by(Enemy *e, float dx, float dz, int walking)
 {
-    if (SEP_CARRY && !e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
+    if (!e->air && (mv_tag == MV_ROOT || mv_tag == MV_WALK) && (e->sep_c[0] != 0 || e->sep_c[1] != 0)) {
         dx += e->sep_c[0], dz += e->sep_c[1];
         e->sep_c[0] = e->sep_c[1] = 0;
     }
@@ -1493,7 +1772,7 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
         return 1;
     }
     int on_floor = MP_SUB(0, col_walk(p, dx, dz, e->var->radius, e->var->height, COL_STEP_UP, COL_STEP_DOWN, COL_SOLID, 0));
-    if (ENEMY_WALLS && (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p)))) {
+    if (!MP_SUB(1, leash_ok(e, p, on_floor)) || MP_SUB(2, wall_between(e, p))) {
         e->wc_moves |= MV_LEASH;
         return 0;
     }
@@ -1507,7 +1786,7 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
      * with none within WALL_FLOOR_DEPTH the floor there belongs to a block that is not on (a seam): it stays, as the
      * player is held at a seam (world_hold), instead of falling through the world to FALL_KILL_Y */
     ColHit below;
-    if (ENEMY_WALLS && !MP_SUB(3, col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH,
+    if (!MP_SUB(3, col_floor(p[0], p[2], e->pos.y + COL_STEP_UP, e->pos.y - WALL_FLOOR_DEPTH,
                                             COL_SOLID | COL_DEATH, &below))) {
         e->wc_moves |= MV_NO_FLOOR;
         return 0;
@@ -1515,17 +1794,16 @@ static int move_by(Enemy *e, float dx, float dz, int walking)
     e->pos.x = p[0], e->pos.z = p[2];
     e->air = 1, e->vy = 0, e->fall_y0 = e->pos.y;
     e->wc_moves |= MV_GROUND_LOST;
-    if (ENEMY_WALL_CHECK && test_active())  /* which move took it off the ground, and where */
+    if (test_active())  /* which move took it off the ground, and where */
         printf("enemy: left the ground %d %s at %.2f %.2f %.2f by %s (%.3f %.3f)\n", e->index, e->ct->name,
                (double)p[0], (double)e->pos.y, (double)p[2], mv_tag == MV_ROOT ? "root motion" : mv_tag == MV_SEP ?
                "push-apart" : mv_tag == MV_WALK ? "walk" : "?", (double)dx, (double)dz);
     return 1;
 }
 
-/* MOVE_PROF (Burg plan B9 polish, default on; DEFS=-DMOVE_PROF=0 = off): "enemy: moves" every 120 frames, per kind of
+/* MOVE_PROF (Burg plan B9 polish): "enemy: moves" every 120 frames, per kind of
  * move (root motion, walk, separation push, airborne): calls, EE ms and wall contacts per frame, and how many of the
  * calls moved under 1 mm, to see what in the logic pass's "move" part costs at the Burg bonfires */
-#if MOVE_PROF && LOGIC_PASS_MS
 static unsigned mp_n[5], mp_t[5], mp_c[5], mp_tiny[5], mp_frames, mp_last = ~0u;
 static int move_prof(Enemy *e, float dx, float dz, int walking)
 {
@@ -1553,7 +1831,6 @@ static int move_prof(Enemy *e, float dx, float dz, int walking)
     return r;
 }
 #define move_by move_prof
-#endif
 
 
 /* Gravity for an airborne character (as the player: 9.8 m/s^2, at most 50 m/s down, collision-2): lands on the
@@ -1570,7 +1847,7 @@ static void fall_step(Enemy *e, float dt)
     float y = e->pos.y + e->vy * dt;
     ColHit hit;
     if (col_floor(e->pos.x, e->pos.z, e->pos.y + 0.05f, y, COL_SOLID | COL_DEATH, &hit)) {
-        if (ENEMY_WALL_CHECK && test_active() && e->fall_y0 - hit.y > WC_FALL_M)  /* a long fall: from where, by what move */
+        if (test_active() && e->fall_y0 - hit.y > WC_FALL_M)  /* a long fall: from where, by what move */
             printf("enemy: fell %d %s entity %d block %d %.1f m to %.2f %.2f %.2f (left the ground at y %.2f), floor tri "
                    "%d/%d filter %u, moves%s%s%s%s r %.2f\n", e->index, e->ct->name, e->entity, e->block,
                    (double)(e->fall_y0 - hit.y), (double)e->pos.x, (double)hit.y, (double)e->pos.z, (double)e->fall_y0,
@@ -1620,7 +1897,7 @@ static void root_rise(Enemy *e, float dy, int may_land)
         e->pos.y = hit.y, e->air = 0, e->vy = 0, e->root_fly = 0, e->fly_landed = e->act_serial + 1u;
         if ((1u << hit.hit_filter) & COL_DEATH && !e->cc.dead)
             e->cc.hp = -1, e->cc.dead = 1;
-        if (ENEMY_WALL_CHECK && test_active())
+        if (test_active())
             printf("enemy: root landing %d %s entity %d at %.2f %.2f %.2f, %.1f m below its take-off\n", e->index,
                    e->ct->name, e->entity, (double)e->pos.x, (double)e->pos.y, (double)e->pos.z,
                    (double)(e->fall_y0 - e->pos.y));
@@ -1967,11 +2244,11 @@ static void update_one(Enemy *e, Player *pl, float dt)
         LG_BEGIN(walk);
         mv_tag = MV_WALK;
         V3 p0 = e->pos;
-        if (LOGIC_SPREAD && e->stuck_t > 0)
+        if (e->stuck_t > 0)
             e->stuck_t -= dt, moving = 0, loco = 0;  /* against a wall it cannot pass: stands, as at a ledge */
         else if (!move_by(e, sinf(o->move_yaw) * speed * dt, cosf(o->move_yaw) * speed * dt, 1))
             moving = 0, loco = 0, e->nav_t = 0;  /* at a ledge: stands (and searches the route again) */
-        else if (LOGIC_SPREAD) {
+        else {
             /* a walk that got under a tenth of its step for STUCK_FRAMES frames in a row is pinned on a wall (no route
              * to the player, who stands above or behind it: the Burg bonfire, 2026-11-08 ISO, two hollows pushing at
              * the same wall for 20 s, each push a col_walk with contacts, ~1 ms of EE a frame). It stands STUCK_HOLD s
@@ -2080,12 +2357,8 @@ static void separate(Enemy *e, V3 other, float other_r, float share)
     if (d < 1e-3f)
         dx = sinf(e->yaw + PI), dz = cosf(e->yaw + PI), d = 1;  /* exactly on top: back off along its facing */
     float k = (min - d) * share / d;
-    if (LOGIC_SPREAD) {  /* summed over every pair, one move per character after the loop (sep_flush) */
-        e->sep[0] += dx * k, e->sep[1] += dz * k;
-        return;
-    }
-    mv_tag = MV_SEP;
-    move_by(e, dx * k, dz * k, 1);
+    /* summed over every pair, one move per character after the loop (sep_flush) */
+    e->sep[0] += dx * k, e->sep[1] += dz * k;
 }
 
 /* LOGIC_SPREAD: a character pushed by several others (a crowd at a bonfire) made one col_walk per pair, each ~0.1 ms
@@ -2094,7 +2367,7 @@ static void sep_flush(Enemy *e)
 {
     float x = e->sep[0], z = e->sep[1];
     e->sep[0] = e->sep[1] = 0;
-    if (SEP_CARRY && !e->air && !e->cc.dead) {  /* with the next root / walk move, unless it grew past SEP_CARRY_M */
+    if (!e->air && !e->cc.dead) {  /* with the next root / walk move, unless it grew past SEP_CARRY_M */
         x += e->sep_c[0], z += e->sep_c[1];
         if (x * x + z * z < SEP_CARRY_M * SEP_CARRY_M) {
             e->sep_c[0] = x, e->sep_c[1] = z;
@@ -2226,7 +2499,7 @@ void enemy_stream(const Player *pl)
     stream_types(pl);
 }
 
-/* Wall check (Burg plan B7; test runs only, make DEFS=-DENEMY_WALL_CHECK=0 = off): an active, living character whose
+/* Wall check (Burg plan B7; test runs only): an active, living character whose
  * centre crossed a wall since the last frame it was updated (a segment at WC_H above its feet, from where it stood to
  * where it stands, hits a non-floor solid triangle) went through it. Logged as "enemy: through wall" with its index,
  * type, entity, block, both positions, the triangle's block / index / hit filter / normal and the moves of the frame
@@ -2243,7 +2516,7 @@ static void wall_check(Enemy *e)
 {
     unsigned moves = e->wc_moves;
     e->wc_moves = 0;
-    if (!ENEMY_WALL_CHECK || !test_active() || e->cc.dead || (e->ev && e->ev->no_maphit)) {
+    if (!test_active() || e->cc.dead || (e->ev && e->ev->no_maphit)) {
         e->wc_ok = 0;
         return;
     }
@@ -2546,14 +2819,13 @@ void enemy_update(Player *pl, float dt)
         for (int j = 0; j < ni; j++)  /* left out this frame: they hold still, the updated one moves its share */
             if (idle[j]->ct->drawable)
                 separate(act[i], idle[j]->pos, idle[j]->var->radius, 0.5f);
-        if (LOGIC_SPREAD)
-            sep_flush(act[i]);
+        sep_flush(act[i]);
         memcpy(act[i]->cc.pos, &act[i]->pos, 12);
     }
     LG_END(sep, LG_MOVE);
     for (int i = 0; i < na; i++)
         wall_check(act[i]);
-    if (ENEMY_WALL_CHECK && test_active() && !(frame % 900))  /* every 30 s of frames: the check ran */
+    if (test_active() && !(frame % 900))  /* every 30 s of frames: the check ran */
         printf("enemy: wall check: %u segments, %u through walls, %u off the navmesh in the run\n", enemy_wall_checks,
                enemy_through_walls, enemy_off_mesh);
 }
@@ -2720,11 +2992,9 @@ float enemy_entity_anim_length(int entity, int anim)
 int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
 {
     int i0 = 0;
-    if (LOGIC_SPREAD) {
-        i0 = ent_slot(entity);
-        if (i0 < 0)
-            i0 = nenemies;  /* not an enemy: straight to the NPCs */
-    }
+    i0 = ent_slot(entity);
+    if (i0 < 0)
+        i0 = nenemies;  /* not an enemy: straight to the NPCs */
     for (int i = i0; i < nenemies; i++) {
         const Enemy *e = &enemies[i];
         if (e->entity != entity)
@@ -2744,7 +3014,7 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         return -1;
     const unsigned char *r = blk_rec[b] + ENEMY_REC * k;
     const EvChr *c = ev_chr_get(entity, 0);
-    int dd = (ENEMY_KEEP_DEAD && blk_dead[b][k >> 5] >> (k & 31) & 1) || (c && c->dead);
+    int dd = (blk_dead[b][k >> 5] >> (k & 31) & 1) || (c && c->dead);
     if (pos) {
         float f[3];
         memcpy(f, r + 20, 12);
@@ -2755,7 +3025,7 @@ int enemy_entity(int entity, V3 *pos, int *dead, float *hp_ratio, int *active)
         const ChrType *t = blk_type[b][k];
         int npc, think, hp = blk_hp[b][k], hpm = 0;
         memcpy(&npc, r + 8, 4), memcpy(&think, r + 12, 4);
-        for (unsigned v = 0; v < t->h->variants; v++)
+        for (unsigned v = 0; t->h && v < t->h->variants; v++)
             if (!v || (t->vars[v].npc == npc && t->vars[v].think == think))
                 hpm = t->vars[v].hp;
         *hp_ratio = dd ? 0 : hp > 0 && hpm > 0 ? (float)hp / hpm : 1;

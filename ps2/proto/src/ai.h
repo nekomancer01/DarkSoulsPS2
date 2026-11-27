@@ -103,6 +103,10 @@ enum { AIS_NORMAL, AIS_CAUTION, AIS_FIND, AIS_BATTLE };
 int ai_scripts(const void *common, int common_size, const void *map, int map_size);
 /* a further map's ai_map.lua0 (world blocks) into the same VM */
 int ai_scripts_add(const void *map, int map_size);
+struct LHeld;
+/* world-46: a block's map AI at turn-on (counted chunks, listed in *h) and at its turn-off (h's chunks) */
+int ai_block_load(const void *map, int map_size, struct LHeld *h);
+int ai_block_drop(struct LHeld *h);
 void ai_init(Ai *a, const AiThink *th, int index, unsigned seed);
 /* One think step + goal update; fills a->out */
 void ai_update(Ai *a, const AiFrame *f);
@@ -131,11 +135,7 @@ void ai_end_frame(void);
 const char *ai_goal_name(const Ai *a);
 /* Allies for call-help / team records / TARGET_FRI_0 (enemy.c registers every Ai with its position) */
 void ai_team(Ai **all, const V3 *pos, int n);
-/* AI_PERCEPT (default 1; DEFS=-DAI_PERCEPT=0 = the old flat eye_angX cone without a sight line, hearing capped at
- * ear_dist): DSR's sight check FUN_140618680 and hearing check FUN_140623d10. ai_los answers whether nothing solid lies between two points (enemy.c: col_ray). */
-#ifndef AI_PERCEPT
-#define AI_PERCEPT 1
-#endif
+/* AI_PERCEPT: DSR's sight check FUN_140618680 and hearing check FUN_140623d10. ai_los answers whether nothing solid lies between two points (enemy.c: col_ray). */
 extern int (*ai_los)(V3 from, V3 to);
 extern unsigned ai_lua_heap, ai_lua_instr;
 extern int ai_lua_errors;

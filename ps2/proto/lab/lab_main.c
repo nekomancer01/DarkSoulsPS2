@@ -247,8 +247,7 @@ static void step(void)
     enemy_update(&pl, dt);
     objects_update(&pl, dt);
     event_update(&pl, dt);
-    if (PICKUP)
-        pickup_update(dt);
+    pickup_update(dt);
     bonfire_update(&pl, dt);
     frame++;
 }

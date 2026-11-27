@@ -353,17 +353,14 @@ static void land(Player *p, float y)
         p->state = ST_IDLE;
 }
 
-/* PLAYER_RIM (default 1; -DPLAYER_RIM=0 = the centre point alone, as before 2026-11-16): the player's floor is what the
+/* PLAYER_RIM (2026-11-16; before it the centre point alone): the player's floor is what the
  * proxy's capsule rests on, not only the triangle under its axis. A wall triangle is no floor (the Burg stairs walkway
  * below the second bonfire: the walkway's side face, normal y 0.02, read as a floor 0.4 m below the stone and the
  * walkway 0.2 m above it, with a 0.25-0.35 m strip of nothing between them; the player stepped down the face, went
  * airborne and fell to the kill plane in about half the iso_burg_taurus runs, TECH_DEBT collision-11). When the
  * centre has no walkable floor, points around it carry the capsule: the highest walkable floor at RIM_R. */
-#ifndef PLAYER_RIM
-#define PLAYER_RIM 1
-#endif
-/* PLAYER_PROXY (default 1; -DPLAYER_PROXY=0 = the estimates used until 2026-11-16: step up 0.6, down 1.2, walls
- * below 45 deg, rim 0.2 m, no slide): the ground handling of DSR's character proxy (ChrProxy, exe):
+/* PLAYER_PROXY (replaced the estimates used until 2026-11-16: step up 0.6, down 1.2, walls below 45 deg, rim 0.2 m,
+ * no slide): the ground handling of DSR's character proxy (ChrProxy, exe):
  * - ChrProxy ctor (thunk 0x1402BA730 -> 0x142276EBB) sets +0xE0 0.8, +0xE4 0.31, +0xE8 0.8. FUN_1402BC650 lifts the
  *   capsule by +0xE4 (+0xE8 while +0x6C is set: not seen for the player, not modelled) before hkpCharacterProxy::
  *   integrate. The lifted capsule's rounded bottom rides over an edge while the contact normal stays within maxSlope
@@ -381,10 +378,6 @@ static void land(Player *p, float y)
  *   (DAT_141A2AE48), clamped to |x|, |z| <= 35, |y| <= 60 m/s; on other frames +0x120 *= 0.65 (DAT_141A2AE4C) and is
  *   zeroed below 0.005 squared (DAT_14130AD10). +0x120 adds to the move's velocity. These are per proxy update:
  *   ASSUMED 60 updates a second (DSR's frame rate), scaled by dt here. Flags +0xEC / +0xED (no slide) are not decoded. */
-#ifndef PLAYER_PROXY
-#define PLAYER_PROXY 1
-#endif
-#if PLAYER_PROXY
 #define PROXY_LIFT 0.31f
 #define PROXY_STEP_UP (PROXY_LIFT + COL_PLAYER_R * (1 - PROXY_WALL_NY))
 #define PROXY_STEP_DOWN COL_PLAYER_R
@@ -392,14 +385,6 @@ static void land(Player *p, float y)
 #define PROXY_WALL_NY 0.5f      /* cos(maxSlope 60 deg) */
 #define FLOOR_NY 0.5f
 #define SLIDE_NY 0.81915204f    /* cos 35 deg */
-#else
-#define PROXY_STEP_UP COL_STEP_UP
-#define PROXY_STEP_DOWN COL_STEP_DOWN
-#define RIM_R (COL_PLAYER_R * 0.5f)
-#define PROXY_WALL_NY COL_WALKABLE_NY
-#define FLOOR_NY 0.5f
-#define SLIDE_NY 0.0f           /* never */
-#endif
 #define SLIDE_G 0.5f
 #define SLIDE_DECAY 0.65f
 #define SLIDE_STOP2 0.005f
@@ -411,7 +396,7 @@ static int player_floor(float x, float z, float y_top, float y_bottom, ColHit *h
 {
     ColHit h;
     int ok = col_floor(x, z, y_top, y_bottom, COL_SOLID, &h);
-    if (!PLAYER_RIM || (ok && h.n[1] >= FLOOR_NY)) {
+    if (ok && h.n[1] >= FLOOR_NY) {
         if (ok && hit)
             *hit = h;
         return ok;
@@ -511,7 +496,7 @@ static void constrain(Player *p, V3 old)
     enemy_player_push[0] = enemy_player_push[1] = 0;
     float wall = col_wall_ny;
     col_wall_ny = PROXY_WALL_NY;
-    col_ride = PLAYER_PROXY;  /* edges under the capsule within maxSlope are ridden over (the spiral stairs of the
+    col_ride = 1;  /* edges under the capsule within maxSlope are ridden over (the spiral stairs of the
                                * Taurus tower: risers of the steps beside the walker pushed it back) */
     col_move(pos, dx, dz, COL_PLAYER_R, COL_PLAYER_H, PROXY_STEP_UP, COL_SOLID);
     col_wall_ny = wall;
@@ -1354,7 +1339,7 @@ const char *player_state_name(const Player *p)
     }
     switch (p->state) {
     case ST_IDLE: return "IDLE";
-    case ST_MOVE: return p->loco == ANIM_DASH ? "DASH A00_0535" : p->loco == ANIM_RUN ? "RUN A00_0500" : "WALK A00_0200";
+    case ST_MOVE: return p->loco == ANIM_DASH ? "DASH A00_0510" : p->loco == ANIM_RUN ? "RUN A00_0500" : "WALK A00_0200";
     default:
         snprintf(buf, sizeof buf, "%s %d", anims[p->anim].name, anims[p->anim].key);
         return buf;

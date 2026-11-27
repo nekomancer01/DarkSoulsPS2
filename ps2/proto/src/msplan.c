@@ -539,6 +539,7 @@ static void plan_(const float *pos)
                 hitch_drop(0, 0), ms_drop(k, id);
         }
     }
+    ms_lent_recount();  /* classes are fixed until the next plan: the lent counts match ms_drop's from here */
     for (int k = 0; !ms_settling && k < MS_INST; k++) {  /* near parts the cut left wanted and not in: their wait starts */
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->wq && id < m->ncell; id++)

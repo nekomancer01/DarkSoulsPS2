@@ -49,9 +49,6 @@ void map_set_floor(V3 feet, int k, int block, int tri)
  * back to the row it came from runs the elapsed part backwards). It switched at once before, for the characters and
  * the map pass alike (Ame's report 2026-11-17 t 72.8: "the light turns on too jarringly"). pl_cur: map rgb (0 where
  * MAP_PLIGHT's ratio gate leaves the pass off, so it fades out instead of cutting), character rgb, begin, end (m). */
-#ifndef MAP_PLIGHT
-#define MAP_PLIGHT 1  /* the player's light on the map (pl_draw below); 0 = characters only, the old path */
-#endif
 #ifndef PLIGHT_BLEND
 #define PLIGHT_BLEND 0.5f
 #endif
@@ -71,7 +68,7 @@ static void pl_step(void)
     pl_max = pl_max > r->pl_rgb[2] ? pl_max : r->pl_rgb[2], amb_max = amb_max > r->amb[2] ? amb_max : r->amb[2];
     /* the map pass only where the light is a real share of the area's light (PLIGHT_RATIO): ~2-6 ms of EE a frame at
      * Firelink for a faint glow (light 49 on ambient 120), the Depths' sewers 100 on 8 */
-    int gate = MAP_PLIGHT && r->pl_end > r->pl_begin && pl_max * 100 >= amb_max * PLIGHT_RATIO;
+    int gate = r->pl_end > r->pl_begin && pl_max * 100 >= amb_max * PLIGHT_RATIO;
     float t[8];
     for (int c = 0; c < 3; c++)
         t[c] = gate ? r->pl_rgb[c] : 0, t[3 + c] = r->pl_rgb[c];
@@ -138,7 +135,7 @@ void map_char_light(V3 pos, float amb[3], float sun[3], float dir[3])
     fx_char_light(pos, amb);  /* effect lights: the bonfire's flickering point light (src/fx.c) */
 }
 
-/* The player's light on the map (MAP_PLIGHT, default on; 0 = the old path: characters only). DSR attaches the area's
+/* The player's light on the map (MAP_PLIGHT). DSR attaches the area's
  * PointLightBank row (the collision part's MSB lantern id) to the player and its deferred point light shader
  * (FRPG_Deferred_PointLight, dsr_light.py: saturate((end - d) / (end - begin)) x colour x N.L) lights every surface
  * around them, the map included: in the Depths' sewers (ambient ~(3, 8, 6), light 1.5-5.5 m (100, 77, 33)) it is the
@@ -166,7 +163,7 @@ void mp_pl_begin(void)
 {
     pl_n = pl_on = 0;
     pl_step();
-    if (!MAP_PLIGHT || !mp_pfog_rows || !pl_init)
+    if (!mp_pfog_rows || !pl_init)
         return;
     pl_b = pl_cur[6], pl_e = pl_cur[7];
     for (int c = 0; c < 3; c++)

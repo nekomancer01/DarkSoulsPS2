@@ -50,6 +50,8 @@ int world_hold(const float *feet);
 int world_settled(const float *feet);
 /* Block whose collision the player stood on last (0 = boot block), -1 without a world */
 int world_current(void);
+/* a wanted block's lite set is loading outside a warp (wplan.c lite_pending: map reads are held for it) */
+int world_lite_busy(void);
 /* Streaming sources (Polaris 4.3): every place the world streams for, each with a position and a velocity (from
  * its last positions), all through one planner (wplan.c for the blocks, msplan.c for the cells). The player is one
  * (world_update's feet), planned by the walking rule; the others are targets, planned by the rule a warp's spot has

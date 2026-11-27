@@ -65,7 +65,7 @@ typedef struct {
     int id, native;
     char name[40];
     LVal act, upd, term, intr;
-    unsigned char resolved, no_update, no_interupt, combo_cancel;
+    unsigned char resolved, no_update, no_interupt, combo_cancel, lua;  /* lua: registered with a Lua body's name */
     float ut_min, ut_max;
 } GoalReg;
 
@@ -583,7 +583,6 @@ static LogicReg *logic_of(int id)
 
 int (*ai_los)(V3 from, V3 to);
 
-#if AI_PERCEPT
 /* DSR's sight test, FUN_140618680 (called per target from FUN_14061cda0):
  * - within nose_dist + both radii: noticed, whatever the direction, no sight line;
  * - else within eye_dist + both radii: the horizontal direction to the target within eye_angY degrees of the facing
@@ -623,7 +622,6 @@ static int sight(Ai *a, float d)
     }
     return 1;
 }
-#endif
 
 static void perceive(Ai *a)
 {
@@ -634,15 +632,9 @@ static void perceive(Ai *a)
     float d = v3dist(f->pos, f->target);
     int seen = 0, heard = 0;
     if (f->target_alive) {
-#if AI_PERCEPT
         seen = sight(a, d);
-#else
-        float rel = fabsf(rel_angle(a, f->target));
-        seen = d <= th->eye_dist && rel <= th->eye_ang_x * (PI / 360);
-#endif
         for (int i = 0; i < nsounds; i++) {
             float sd = v3dist(f->pos, sounds[i].pos);
-#if AI_PERCEPT
             /* DSR FUN_140623b30 -> FUN_140623d10: heard when the distance between the two capsules' surfaces is
              * under the sound's radius minus ear_soundcut_dist, plus scale * ear_dist / 100 (scale from the sound
              * record +0x2C / +0x30, not decoded: 1 here). No ear_dist cap. Narrow ear cones (ear_angX < 90 or
@@ -650,10 +642,6 @@ static void perceive(Ai *a)
             float surf = sd - f->radius - f->target_r;
             if (surf < sounds[i].r - th->ear_cut + th->ear_dist / 100.0f)
                 heard = 1, a->sound_pos = sounds[i].pos;
-#else
-            if (sd <= sounds[i].r && sd <= th->ear_dist)
-                heard = 1, a->sound_pos = sounds[i].pos;
-#endif
         }
         if (f->damaged)
             seen = 1;
@@ -916,6 +904,7 @@ static int f_register_goal(LVal *a, int n, LVal *o, const LVal *up)
     for (int i = 1; i < N_UNKNOWN; i++)
         if (!strcmp(name, NATIVE[i]))
             r->native = i;
+    r->lua = r->native == N_LUA;
     return 0;
 }
 
@@ -958,9 +947,17 @@ static int f_combo_cancel(LVal *a, int n, LVal *o, const LVal *up)
 static int f_register_logic(LVal *a, int n, LVal *o, const LVal *up)
 {
     (void)o, (void)up;
-    if (nlogics >= MAX_LOGICS || n < 2)
+    if (n < 2)
         return 0;
-    LogicReg *l = &logics[nlogics++];
+    LogicReg *l = NULL;  /* (one entry per id: a chunk that runs again registers its logic again) */
+    for (int i = 0; i < nlogics && !l; i++)
+        if (logics[i].id == ARGI(0))
+            l = &logics[i];
+    if (!l) {
+        if (nlogics >= MAX_LOGICS)
+            return 0;
+        l = &logics[nlogics++];
+    }
     memset(l, 0, sizeof *l);
     l->id = ARGI(0);
     snprintf(l->fn, sizeof l->fn, "%s", lua0_cstr(a[1]) ? lua0_cstr(a[1]) : "");
@@ -1545,6 +1542,42 @@ int ai_scripts(const void *common, int common_size, const void *map, int map_siz
     ai_lua_heap = lua0_heap;
     printf("ai: %d chunks, %d goals, %d logics, Lua heap %u bytes\n", n, nregs, nlogics, lua0_heap);
     return scripts_ok ? n : -1;
+}
+
+/* the registry's functions from the globals again, after chunks came or went (a goal registered with a Lua body whose
+ * chunk was not loaded when it resolved was left N_UNKNOWN; one whose chunk went is now) */
+static void reresolve(void)
+{
+    for (int i = 0; i < nregs; i++) {
+        GoalReg *r = &regs[i];
+        r->resolved = 0, r->act = r->upd = r->term = r->intr = LNIL;
+        if (r->lua)
+            r->native = N_LUA;
+        reg_resolve(r);
+    }
+    for (int i = 0; i < nlogics; i++)
+        logics[i].resolved = 0, logics[i].f = logics[i].i = LNIL;
+}
+
+/* world-46 (WORLD_AI_UNLOAD): a world block's map AI with its lite set, from its turn-on to its turn-off. Chunks are
+ * counted (lua0.c), so a chunk shared by blocks loads once and goes with the last of them. No collection here: the
+ * frame's incremental one (ai_end_frame) frees what went. */
+int ai_block_load(const void *map, int map_size, LHeld *h)
+{
+    int k = lua0_load_held(map, map_size, h);
+    reresolve();
+    printf("ai: block +%d chunks (%u loaded, %u to free), %d goals, %d logics, Lua heap %u bytes\n", k,
+           lua0_chunks_live, lua0_chunks_pending(), nregs, nlogics, lua0_heap);
+    return k;
+}
+
+int ai_block_drop(LHeld *h)
+{
+    int k = lua0_release(h);
+    reresolve();
+    printf("ai: block -%d chunks (%u loaded, %u to free, %u freed), Lua heap %u bytes\n", k, lua0_chunks_live,
+           lua0_chunks_pending(), lua0_chunks_freed, lua0_heap);
+    return k;
 }
 
 int ai_scripts_add(const void *map, int map_size)

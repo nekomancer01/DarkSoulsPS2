@@ -716,9 +716,13 @@ def gather(game, map_id):
         return albedo_cache[name]
 
     # texture name -> DDS, from every TPF binder of the area
-    dds = {}
+    # (read as used: souls.LazyTextures; MAP_LAZY_TEX=0 reads every one up front, as before)
+    dds = souls.LazyTextures() if os.environ.get("MAP_LAZY_TEX", "1") != "0" else {}
     for f in sorted(os.listdir(f"{mdir}/{area}")):
         if f.endswith(".tpfbhd") and f.startswith(area + "_"):
+            if isinstance(dds, souls.LazyTextures):
+                dds.add_binder(f"{mdir}/{area}/{f}", f"{mdir}/{area}/{f[:-3]}bdt")
+                continue
             for _, _, d in souls.bxf3(f"{mdir}/{area}/{f}", f"{mdir}/{area}/{f[:-3]}bdt"):
                 dds.update(souls.tpf(d))
 

@@ -1,0 +1,25 @@
+# Player loco sounds (TAE cues, src/sound.c snd_anim): sound counters after standing, running and dashing at
+# Firelink (run out, then dash back: dashing on runs off the ledge). Dash = MoveParam superDash a00_0510 with x 2001 footsteps + b 100 armor cues; it played 0535 before (no
+# cues: the "played" count did not move while dashing). Runs muted (test-run.py); read the TEST snd lines.
+option noenemies
+option nodemo
+wait 3
+spawn -47.41 -59.82 53.3 5.2185
+cam 5.2185 0.1
+wait 3
+snd
+wait 3
+snd
+stick 0 1
+wait 3
+snd
+stick 0 -1
+wait 0.5
+circle 1
+wait 3
+snd
+circle 0
+stick 0 0
+wait 1
+snd
+end

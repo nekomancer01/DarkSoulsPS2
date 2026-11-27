@@ -115,8 +115,19 @@ def _kmeans(px, pal, iters=10):
     """Lloyd refinement of a palette (k,3) on texels (N,3): median cut averages whole boxes, which pulls saturated
     minorities (moss, teal) towards grey."""
     pal = pal.astype(np.float32)
+    # whole-number texels (uint8 values as float32): every cluster's float32 sum is exact (at most 8192 x 255 < 2^24)
+    # in any order, so bincount's sums divided in float32 give px[m].mean(0)'s bits without a pass per entry
+    # (2026-11-24: that loop was ~4 % of export_map)
+    exact = px.dtype == np.float32 and len(px) * 255 < (1 << 24) and bool((px == np.floor(px)).all()) and \
+        bool((px >= 0).all() and (px <= 255).all())
     for _ in range(iters):
         idx = _nearest(px, pal.astype(np.int32))
+        if exact:
+            cnt = np.bincount(idx, minlength=len(pal))[:len(pal)]
+            for c in range(px.shape[1]):
+                sm = np.bincount(idx, weights=px[:, c], minlength=len(pal))[:len(pal)].astype(np.float32)
+                pal[:, c] = np.where(cnt > 0, sm / np.maximum(cnt, 1).astype(np.float32), pal[:, c])
+            continue
         for k in range(len(pal)):
             m = idx == k
             if m.any():

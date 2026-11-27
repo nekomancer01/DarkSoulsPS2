@@ -52,9 +52,6 @@ _Static_assert(sizeof(FogRow) == 48, "FogRow");
  * the row of its own MSB FogID through the one curve (exe FUN_140565600 reads the row by id, no sky case; a RenderDoc
  * frame of Firelink holds three rows, TECH_DEBT map-15). rgb as the header's fog colour. */
 typedef struct { float begin, end, max; unsigned char rgb[4]; } SkyRow;
-#ifndef SKY_ROWS
-#define SKY_ROWS 1  /* make DEFS=-DSKY_ROWS=0: every sky chunk under the header's one sky row at full density, as before */
-#endif
 /* VU1 batch: unindexed quantised streams pos s16x3 (world = org + n x step), st u16x2 (normalized x 4096, or x 1024
  * with CHUNK_ST1K), colour u8x4 (light, 0x80 = 1.0) */
 /* tris | nv << 16 on disc: nv = 0: unindexed lists (pos / st / col: one entry per corner); nv > 0: an indexed chunk
@@ -184,13 +181,10 @@ typedef struct {
     unsigned lkey[2], lgen, lcut;        /* key, pool generation, triangles the visibility rows left out */
     unsigned short loff, ln;             /* its entries in the pool */
 } Cell;
-/* MAP_TILES (budget doc proposal 6, default on; make DEFS=-DMAP_TILES=0 = every cell tested): the cells grouped by
+/* MAP_TILES (budget doc proposal 6): the cells grouped by
  * MAP_TILE_M x MAP_TILE_M metre squares of their box centres (x, z), each group's box (cells and horizons) tested
  * first. The Burg's 5 blocks have ~1230 cells and ~200-550 of them in view: the cells of a tile out of view are no
  * longer tested one by one (~1 us each, with the box set-up) */
-#ifndef MAP_TILES
-#define MAP_TILES 1
-#endif
 #define MAP_TILE_M 128.0f
 typedef struct {
     float mn[3], mx[3];
@@ -255,10 +249,6 @@ extern int map_vu1_batches, map_ee_tris;
 /* The fog / light rows follow the instance the player stands in (pfog_*) */
 
 /* instance m's streams for resident chunk j, or NULL while its item is not in (mapstream.c: m selected) */
-/* MAP_NEAR_SKIP (budget doc proposal 6, default on; make DEFS=-DMAP_NEAR_SKIP=0 = scan every visible cell) */
-#ifndef MAP_NEAR_SKIP
-#define MAP_NEAR_SKIP 1
-#endif
 /* MAP_TWO_PASS (Burg plan B5, default on; make DEFS=-DMAP_TWO_PASS=0 = the per-chunk loop as before): map_draw splits
  * each visible cell into a pre-pass and an emit pass. The pre-pass decides the cell's level (near / coarse / horizon),
  * asks for its resident items once each instead of once per chunk, and takes the cell's draw list (the chunks that pass

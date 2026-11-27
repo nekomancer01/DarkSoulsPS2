@@ -128,11 +128,45 @@ static void turn_on_col(int i)
            r->size[E_TABC] >> 10, r->size[E_EV] >> 10);
 }
 
-/* objects.bin (e = E_OBJ) or fx.bin (E_FX) is in texbuf, or the pack has none: its textures go up */
+/* a late entry (E_LATE .. E_TEX, read in stage 1 after the floor turned on) is in its blob */
+static void late_on(int i, unsigned e)
+{
+    BlockRt *r = &w_rt[i];
+    if (e == E_ENM && WORLD_CHR_LITE)  /* its placements and types (new types' heads read while the rest comes) */
+        enemy_block_types_lite(i, w_tab[i].pack, r->blob[E_ENM], r->size[E_ENM]);
+    else if (e == E_AI)  /* WORLD_AI_UNLOAD (WORLD_HEAD_TEX 0): its map AI, before its enemies are placed */
+        r->ai_on = enemy_block_ai(i, r->blob[E_AI], (int)r->size[E_AI], 1);
+    else if (e == E_FXH)  /* WORLD_FX_LITE: its effect tables in place (the pixels follow in the E_FX read) */
+        fx_block_tables(i, r->blob[E_FXH], r->size[E_FXH]);
+}
+
+/* where texture entry e lands: the texture buffer; WORLD_HEAD_TEX: objects.bin's tail after its head (both are in at
+ * once for objects_block_types_lite) */
+static char *tex_dst(const BlockRt *r, unsigned e)
+{
+    return (char *)r->texbuf + (WORLD_HEAD_TEX && e == E_OBJ ? (r->size[E_OBJH] + 127) & ~127u : 0);
+}
+
+static char *ent_dst(const BlockRt *r, unsigned e)
+{
+    return e >= E_TEX ? tex_dst(r, e) : (char *)r->blob[e];
+}
+
+/* a texture entry is in texbuf, or the pack has none: WORLD_HEAD_TEX's map AI goes into the VM (its chunks are listed:
+ * the buffer goes at turn_on_rest), objects.bin (e = E_OBJ) or fx.bin (E_FX) put their textures up */
 static void tex_on(int i, unsigned e)
 {
     BlockRt *r = &w_rt[i];
-    void *blob = r->size[e] ? r->texbuf : NULL;
+    if (e == E_AI) {
+        if (r->size[E_AI])
+            r->ai_on = enemy_block_ai(i, r->texbuf, (int)r->size[E_AI], 1);
+        return;
+    }
+    if (e == E_OBJH)  /* (with the tail: E_OBJ) */
+        return;
+    void *blob = r->size[e] ? tex_dst(r, e) : NULL;
+    if (e == E_OBJ && r->size[E_OBJH] && blob)  /* WORLD_OBJ_LITE: its types first, from the head and this tail */
+        objects_block_types_lite(i, WORLD_HEAD_TEX ? r->texbuf : r->blob[E_OBJH], r->size[E_OBJH], r->obj_full, blob);
     if (e == E_OBJ)
         objects_block_add(i, blob);
     else
@@ -192,6 +226,8 @@ static void turn_on_rest(int i)
     BlockRt *r = &w_rt[i];
     unsigned t0 = ticks();
     free_tex(r);  /* uploaded: back to the near cells */
+    if (r->size[E_ENM] && WORLD_NAV_LITE)  /* its navmesh in place, before its enemies are placed */
+        enemy_block_nav(i, r->blob[E_ENM], r->size[E_ENM]);
     enemy_block_add(i);  /* before event_block_on: its constructors may disable these characters (A2) */
     if (r->ev_split)
         ev_on(i);
@@ -235,10 +271,16 @@ void w_turn_off(int i)
         ev_off(i);           /* (after: another block of the map may take its running events over, event.c) */
         enemy_block_remove(i);
     }
+    enemy_block_untypes(i);  /* WORLD_CHR_LITE: after its enemies (a no-op before stage 2) */
+    if (r->ai_on)  /* WORLD_AI_UNLOAD: after ev_off (events run Lua) and its enemies' goals */
+        r->ai_on = 0, enemy_block_ai(i, NULL, 0, 0);  /* (its chunks as listed at the turn-on) */
+    nav_unbind(i);  /* WORLD_NAV_LITE (none bound before stage 2): the blob goes with the slot */
     if (r->stage == 2 || r->ent > E_OBJ)
         objects_block_remove(i);
+    objects_block_untypes(i);  /* WORLD_OBJ_LITE: after its instances (a no-op for a block whose types are not made) */
     if (r->stage == 2 || r->ent > E_FX)
         fx_block_on(i, 0, NULL);
+    fx_block_drop(i);  /* WORLD_FX_LITE: tables bound in turn_on_col, also when it goes before stage 2 */
     r->stage = 0;
     r->lean = r->lean_drain = 0;  /* (free_slot frees whatever tables are still held) */
     coltile_off(i);
@@ -408,11 +450,13 @@ void w_read_step(int i, int issue)
                 w_free_slot(i);
             return;
         }
-        char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
+        char *dst = ent_dst(r, r->ent);
         InvalidDCache(dst + r->done, dst + r->done + n - 1);
         if ((r->done += n) == r->size[r->ent]) {
             if (r->ent >= E_TEX)
                 tex_on(i, r->ent);
+            else if (r->state == W_ON && r->ent >= E_LATE)
+                late_on(i, r->ent);
             r->ent++, r->done = 0;
         }
     }
@@ -422,13 +466,13 @@ void w_read_step(int i, int issue)
                 tex_on(i, r->ent);
             r->ent++;
         }
-        if (r->state == W_READING && (r->ent >= E_TEX || r->ent == NENT)) {
+        if (r->state == W_READING && (r->ent >= E_LATE || r->ent == NENT)) {
             turn_on_col(i);  /* collision, maptab, events read: the floor is on */
             if (r->stage == 2) {
                 free_tex(r);
                 return;
             }
-            issue = 0;  /* objects.bin / fx.bin from a later step (this one stays short) */
+            issue = 0;  /* the late entries, objects.bin / fx.bin from later steps (this one stays short) */
             continue;
         }
         if (r->ent == NENT) {
@@ -437,9 +481,9 @@ void w_read_step(int i, int issue)
         }
         break;
     }
-    if (r->state == W_ON && (!issue || world_stats.reading >= 0 || !tex_alloc(i)))
-        return;  /* stage 1: the next texture entry once a read is free and the buffer has room */
-    char *dst = r->ent >= E_TEX ? r->texbuf : r->blob[r->ent];
+    if (r->state == W_ON && (!issue || world_stats.reading >= 0 || (r->ent >= E_TEX && !tex_alloc(i))))
+        return;  /* stage 1: the next late / texture entry once a read is free (and the buffer has room) */
+    char *dst = ent_dst(r, r->ent);
     unsigned n = r->size[r->ent] - r->done < WORLD_READ ? r->size[r->ent] - r->done : WORLD_READ;
     if (!w_tk && (w_tk = (r->state == W_READING ? pack_req_read_first : pack_req_read)(&r->pk, r->off[r->ent] + r->done, dst + r->done, n)))
         world_stats.reading = i, hitch_block_read(n);  /* else every request slot is taken: try next frame */

@@ -77,9 +77,6 @@ static float post_t = -1;
 
 void loading_init(GSGLOBAL *g, void (*p)(GSGLOBAL *), unsigned disp)
 {
-#ifdef LOADING_OFF  /* A/B builds (make EE_DBGINFOFLAGS=-DLOADING_OFF): no loading screen, loads leave the frame waiting */
-    return;
-#endif
     gs = g, present = p, disp_vram = disp;
     srand(frame_det_seeded ? frame_det_seed : ticks());  /* FUN_1406fea10 draws the first hint at random (MT19937 in DSR);
                                                          * option seed (frame.h) fixes it */
