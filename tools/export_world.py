@@ -139,37 +139,12 @@ def block_masks(game, names, nbr, blocks, i):
     return masks, reach
 
 
-def main():
-    game, out, boot, gen = sys.argv[1:5]
-    names = area.WORLDS.get(boot, [boot])
-    blocks, heights = [], []
-    for i, b in enumerate(names):
-        m = area.BLOCKS[b]["map"] if b in area.BLOCKS else b
-        col = os.path.join(gen, "collision.bin") if i == 0 else os.path.join(gen, b, "collision.bin")
-        cells = area.BLOCKS.get(b, {}).get("cells")
-        c = area.CELL
-        rect = [(r[0] * c, r[1] * c, (r[2] + 1) * c, (r[3] + 1) * c) for r in area.cell_rects(cells)] if cells else None
-        blocks.append((b, m, col_bounds(col), rect))
-        heights.append(col_height(col))
+def pack_world(blocks, heights, nbr, per):
+    """world.bin's bytes from blocks [(name, map, xz bounds, cell rects)], heights [(min y, max y)], neighbour masks
+    and per block block_masks' (masks, reach) (the LINK / REAC runs are cut here; tools/ci/test_worldbin.py reads
+    them back). Prints the per-block link summary and the totals."""
     n = len(blocks)
-    assert n <= 32, "load / keep masks are u32 (world.h WORLD_MAX, world.bin LINK / REAC v2)"
-    nbr = [0] * n
-    for i, (a, ma, ba, _) in enumerate(blocks):
-        for j, (b, mb, bb, _) in enumerate(blocks):
-            gap = max(ba[0] - bb[2], bb[0] - ba[2], ba[1] - bb[3], bb[1] - ba[3])
-            if i != j and gap <= LINK_GAP and (ma == mb or connect_parts(game, ma, mb) or connect_parts(game, mb, ma)):
-                nbr[i] |= 1 << j
     links, ranges, reach, reach_ix, rruns, rranges = [], [], [], {}, [], []
-    # the blocks' link masks are independent of each other (each block's collision crop is ~1-10 s of Python): worked
-    # out side by side in forked processes, put together in block order as before. EXPORT_WORLD_JOBS=1: one at a time
-    jobs = int(os.environ.get("EXPORT_WORLD_JOBS", "0")) or min(n, os.cpu_count() or 1)
-    args = [(game, names, nbr, blocks, i) for i in range(n)]
-    if jobs > 1 and n > 1:
-        import multiprocessing
-        with multiprocessing.get_context("fork").Pool(min(jobs, n)) as pool:
-            per = pool.starmap(block_masks, args, chunksize=1)
-    else:
-        per = [block_masks(*a) for a in args]
     for i, (b, m, bb, rect) in enumerate(blocks):
         masks, rc = per[i]
         # reach runs: a wall triangle (None) joins the run it lies in
@@ -219,8 +194,44 @@ def main():
     reac += bytes(r[1] for r in rruns) + bytes(-(3 * len(rruns)) % 4)
     for mask, ds in reach:
         reac += struct.pack("<I6B2x", mask, *(ds + (0,) * (worldreach.REACH_N - len(ds))))  # REAC v2: u32 mask
-    size = chunk.write(out, b"WRLD", [(b"BLKS", 1, blks), (b"LRNG", 1, lrng), (b"LINK", 2, link), (b"REAC", 2, reac)])
-    print(f"world.bin: {len(links)} links, {len(rruns)} reach runs, {len(reach)} reach entries, {size} bytes")
+    blob = chunk.pack(b"WRLD", [(b"BLKS", 1, blks), (b"LRNG", 1, lrng), (b"LINK", 2, link), (b"REAC", 2, reac)])
+    print(f"world.bin: {len(links)} links, {len(rruns)} reach runs, {len(reach)} reach entries, {len(blob)} bytes")
+    return blob
+
+
+def main():
+    game, out, boot, gen = sys.argv[1:5]
+    names = area.WORLDS.get(boot, [boot])
+    blocks, heights = [], []
+    for i, b in enumerate(names):
+        m = area.BLOCKS[b]["map"] if b in area.BLOCKS else b
+        col = os.path.join(gen, "collision.bin") if i == 0 else os.path.join(gen, b, "collision.bin")
+        cells = area.BLOCKS.get(b, {}).get("cells")
+        c = area.CELL
+        rect = [(r[0] * c, r[1] * c, (r[2] + 1) * c, (r[3] + 1) * c) for r in area.cell_rects(cells)] if cells else None
+        blocks.append((b, m, col_bounds(col), rect))
+        heights.append(col_height(col))
+    n = len(blocks)
+    assert n <= 32, "load / keep masks are u32 (world.h WORLD_MAX, world.bin LINK / REAC v2)"
+    nbr = [0] * n
+    for i, (a, ma, ba, _) in enumerate(blocks):
+        for j, (b, mb, bb, _) in enumerate(blocks):
+            gap = max(ba[0] - bb[2], bb[0] - ba[2], ba[1] - bb[3], bb[1] - ba[3])
+            if i != j and gap <= LINK_GAP and (ma == mb or connect_parts(game, ma, mb) or connect_parts(game, mb, ma)):
+                nbr[i] |= 1 << j
+    # the blocks' link masks are independent of each other (each block's collision crop is ~1-10 s of Python): worked
+    # out side by side in forked processes, put together in block order as before. EXPORT_WORLD_JOBS=1: one at a time
+    jobs = int(os.environ.get("EXPORT_WORLD_JOBS", "0")) or min(n, os.cpu_count() or 1)
+    args = [(game, names, nbr, blocks, i) for i in range(n)]
+    if jobs > 1 and n > 1:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(min(jobs, n)) as pool:
+            per = pool.starmap(block_masks, args, chunksize=1)
+    else:
+        per = [block_masks(*a) for a in args]
+    blob = pack_world(blocks, heights, nbr, per)
+    with open(out, "wb") as f:
+        f.write(blob)
 
 if __name__ == "__main__":
     main()
