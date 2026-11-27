@@ -19,6 +19,7 @@
 #include "enemy.h"
 #include "objects.h"
 #include "testscript.h"
+#include "sound.h"
 
 FramePhase frame_phase;
 /* ticks.h in the Lab: 1 ms of EE ticks per read. Deterministic (the same calls give the same times on every run), and
@@ -110,14 +111,20 @@ void pack_job_start(PackJob *j, const char *path, const char *name, void *(*get)
     Pack p;
     unsigned raw = 0;
     j->out = NULL, j->raw = 0, j->state = -1;
+    j->get = get, j->put = put, j->name = name;  /* (enemy.c head_done gives the buffer back through j->put) */
     if (pack_open(&p, path)) {
         j->out = pack_load_with(&p, name, &raw, get, put);
         j->raw = raw, j->alloc = (raw + 127) & ~127u, j->state = j->out ? 1 : -1;
+        extern int lab_pack_read(Pack *p, unsigned offset, void *dst, unsigned bytes);
+        memset(j->head, 0, sizeof j->head);  /* the pack's first sector, as pack.c's header read (pack_job_entry_size) */
+        lab_pack_read(&p, 0, j->head, sizeof j->head);
         pack_close(&p);
     }
 }
 int pack_job_step(PackJob *j) { return j->state; }
 void pack_job_cancel(PackJob *j) { (void)j; }
+void pack_job_first(PackJob *j) { (void)j; }  /* (no request queue: the job is done already) */
+void pack_job_abandon(PackJob *j) { pack_job_cancel(j); }
 /* render and VU1: nothing to draw */
 int r_vram_avail(const GSGLOBAL *gs) { (void)gs; return 4 << 20; }
 u32 r_vram_tex(GSGLOBAL *gs, int w, int h, int psm, GsOwner o) { (void)gs, (void)w, (void)h, (void)psm, (void)o; return 256; }
@@ -190,6 +197,7 @@ void frame_det_record(const char *path) { (void)path, LAB_COUNT("frame_det_recor
 int frame_det_buffers(void) { return 1; }
 /* the stats testscript.c prints per shot: zero here (nothing is drawn or streamed) */
 FxStats fx_stats;
+SndStats snd_stats;  /* (no sound module: all 0, testscript.c "snd" prints it) */
 Vu1Stats vu1_stats;
 unsigned hitch_acc[HS_N];
 float hitch_busy_ms;
