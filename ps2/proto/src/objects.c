@@ -648,7 +648,8 @@ int objects_block_types_lite(int block, const void *head, unsigned head_size, un
 static void type_free(int j)
 {
     Type *ty = &types[j];
-    if (st_type == j) {  /* its model is being read: obj_stream frees it when the read lands */
+    if (j >= 0 && st_type == j) {  /* its model is being read: obj_stream frees it when the read lands (j >= 0:
+                                     * with OBJ_STREAM 0, st_type stays -1 and gcc saw types[-1] here) */
         ty->free_pending = 1;
         return;
     }
