@@ -112,11 +112,24 @@ def check_pack(path):
         if mpacked != mraw + 4 * mn or cpacked != craw + 4 * cn:
             return bad + [f"{path}: maptab.bin / cells.bin not stored raw"]
         mt = mapwrap.unwrap(d[mo + 4 * mn:mo + 4 * mn + mraw])
-        c0 = co + 4 * cn + (mapwrap.PAYLOAD["cells"] if d[co + 4 * cn:co + 4 * cn + 4] == b"CHNK" else 0)
-        t, cnt = table(mt)
+        if "lzidx.bin" in ent:  # MAP_LZ4: cells.bin holds the packed parts, lzidx.bin's CELI where and how long
+            io, iraw, ipacked, inb = ent["lzidx.bin"]
+            if ipacked != iraw + 4 * inb:
+                return bad + [f"{path}: lzidx.bin not stored raw"]
+            import chunkfile
+            try:
+                celi = chunkfile.File(d[io + 4 * inb:io + 4 * inb + iraw], "LZIX", "lzidx.bin").get("CELI", 1)
+            except chunkfile.ChunkError as e:
+                return bad + [f"{path}: {e}"]
+            c0 = co + 4 * cn + (mapwrap.PAYLOAD.get("cellsz", mapwrap.PAYLOAD["cells"])
+                                if d[co + 4 * cn:co + 4 * cn + 4] == b"CHNK" else 0)
+            rows = [(a, b & 0x7FFFFFFF) for a, b in struct.iter_unpack("<2I", celi)]
+        else:
+            c0 = co + 4 * cn + (mapwrap.PAYLOAD["cells"] if d[co + 4 * cn:co + 4 * cn + 4] == b"CHNK" else 0)
+            t, cnt = table(mt)
+            rows = [struct.unpack_from("<2I", mt, t + 48 * i + 24) for i in range(cnt if t is not None else 0)]
         over = 0
-        for i in range(cnt if t is not None else 0):
-            off, nb = struct.unpack_from("<2I", mt, t + 48 * i + 24)
+        for i, (off, nb) in enumerate(rows):
             if blocks(c0 + off, nb) > -(-nb // ECC):
                 over += 1
                 if over <= 5:

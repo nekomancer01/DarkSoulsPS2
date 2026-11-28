@@ -627,6 +627,14 @@ static int lz4_decode(const unsigned char *s, unsigned n, unsigned char *dst, un
     return o - dst;
 }
 
+#if MAP_LZ4
+/* The streamed map items' LZ4 frames (src/mslz.c) decode with this one decoder: the same in-place rule as above */
+int pack_lz4_decode(const unsigned char *s, unsigned n, unsigned char *dst, unsigned cap)
+{
+    return lz4_decode(s, n, dst, cap);
+}
+#endif
+
 /* Blocks [b, end) whose compressed sizes fit one staging buffer */
 static unsigned batch_end(const unsigned *cs, unsigned b, unsigned nb, unsigned *bytes, unsigned stage)
 {

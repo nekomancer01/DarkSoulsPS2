@@ -41,7 +41,7 @@ static unsigned spare_reclaim(unsigned p0, unsigned p1)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->state && id < it_n(m); id++) {
             unsigned a;
-            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+            if (!ms_landed(m->state[id]) || (grp_of(m, id, &a), a != id) || !m->buf[id])
                 continue;
             unsigned g = msa_gran(m->buf[id]);
             if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP || lendable(m->cls[id]) || m->cls[id] == C_NEAR ||
@@ -125,12 +125,16 @@ void ms_drop(int k, unsigned id)
         int in_pool = g != ~0u && g >= msa_mpage0() * MS_GPP && g < msa_npages() * MS_GPP;
         ms_lent_n -= in_pool;
         if (in_pool && (m->cls[a] == C_NEAR || m->cls[a] == C_NEAR2)) {
-            unsigned b = grp_bytes(m, a, e);
+            unsigned b = grp_slot(m, a, e);
             ms_lent_near = ms_lent_near > b ? ms_lent_near - b : 0;
         }
     }
+#if MAP_LZ4
+    if (m->state[a] == MS_PACKED)
+        ms_lz_forget(k, a);  /* (out of the decode ring) */
+#endif
     if (!ms_keep_buf)
-        msa_free(m->buf[a], grp_bytes(m, a, e));
+        msa_free(m->buf[a], grp_slot(m, a, e));
     for (unsigned j = a; j < e; j++) {
         if (it_tex(m, j) && ms_tex_set)
             ms_tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, NULL);
@@ -191,14 +195,14 @@ void ms_lent_recount(void)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->state && id < it_n(m); id++) {
             unsigned a, e;
-            if ((m->state[id] != MS_READY && m->state[id] != MS_READING) || (e = grp_of(m, id, &a), a != id) || !m->buf[id])
+            if ((!ms_landed(m->state[id]) && m->state[id] != MS_READING) || (e = grp_of(m, id, &a), a != id) || !m->buf[id])  /* (MS_PACKED: ms_landed) */
                 continue;
             unsigned g = msa_gran(m->buf[id]);
             if (g == ~0u || g < g0 || g >= g1)
                 continue;
             n++;
             if (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2)
-                nb += grp_bytes(m, a, e);
+                nb += grp_slot(m, a, e);
         }
     }
     unsigned dn = n > ms_lent_n ? n - ms_lent_n : ms_lent_n - n, db = nb > ms_lent_near ? nb - ms_lent_near : ms_lent_near - nb;
@@ -212,9 +216,13 @@ unsigned ms_rehome_n, ms_rehome_kb;
 static int lend_rehome(int k, unsigned a, unsigned e)
 {
     MsInst *m = &ms_inst[k];
-    unsigned n = grp_bytes(m, a, e);
+    unsigned n = grp_slot(m, a, e);
     if (!MS_LEND_REHOME || n > MS_PAGE)
         return 0;
+#if MAP_LZ4
+    if (m->state[a] == MS_PACKED)
+        return 0;  /* (never moved while packed: dropped) */
+#endif
     unsigned char *src = m->buf[a], *dst = msa_alloc_k(n, MS_K_SHORT);
     if (!dst && ms_make_window(1, (n + MS_GRAN - 1) / MS_GRAN, C_NEAR2, NULL))
         dst = msa_alloc_k(n, MS_K_SHORT);
@@ -245,7 +253,7 @@ static unsigned lend_reclaim_(unsigned p0, unsigned p1, int keep_near)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->state && id < it_n(m); id++) {
             unsigned a;
-            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+            if (!ms_landed(m->state[id]) || (grp_of(m, id, &a), a != id) || !m->buf[id])
                 continue;
             unsigned g = msa_gran(m->buf[id]);
             if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
@@ -282,13 +290,13 @@ static unsigned lend_reclaim_n(unsigned n, unsigned p0, unsigned p1, int keep_ne
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->state && id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id) || !m->buf[id])
+            if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id) || !m->buf[id])
                 continue;
             unsigned g = msa_gran(m->buf[id]);
             if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP)
                 continue;
             unsigned p = g / MS_GPP - p0;
-            ig[p] += (unsigned short)((grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN);
+            ig[p] += (unsigned short)((grp_slot(m, a, e) + MS_GRAN - 1) / MS_GRAN);
             if (keep_near && (m->cls[id] == C_NEAR || m->cls[id] == C_NEAR2))
                 bz[p] |= 2;  /* stays */
             else if (!ms_settling && ms_grp_chain(m, id))
@@ -314,7 +322,7 @@ static unsigned lend_reclaim_n(unsigned n, unsigned p0, unsigned p1, int keep_ne
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->state && id < it_n(m); id++) {
             unsigned a;
-            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+            if (!ms_landed(m->state[id]) || (grp_of(m, id, &a), a != id) || !m->buf[id])
                 continue;
             unsigned g = msa_gran(m->buf[id]);
             if (g == ~0u || g < w0 || g >= w1)
@@ -374,10 +382,10 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+            if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id))
                 continue;
             int c = ms_grp_cls(m, id);
-            unsigned u = grp_used(m, id), n = grp_bytes(m, a, e);
+            unsigned u = grp_used(m, id), n = grp_slot(m, a, e);
             unsigned g0 = msa_gran(m->buf[a]), ng = (n + MS_GRAN - 1) / MS_GRAN;
             int ok = c < below && !ms_grp_chain(m, id);
             unsigned age = ms_frame - u > 1000 ? 1000 : ms_frame - u;  /* cost: bytes, older groups cheaper */
@@ -438,13 +446,13 @@ static int make_window_(unsigned need, unsigned ng_need, int below, unsigned *kb
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+            if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id))
                 continue;
             unsigned o = msa_gran(m->buf[a]);
-            if (o < w1 && o + (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN > w0 && ms_grp_cls(m, id) < below && !ms_grp_chain(m, id)) {
+            if (o < w1 && o + (grp_slot(m, a, e) + MS_GRAN - 1) / MS_GRAN > w0 && ms_grp_cls(m, id) < below && !ms_grp_chain(m, id)) {
                 if (kb)
-                    *kb += grp_bytes(m, a, e) >> 10;
-                hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
+                    *kb += grp_slot(m, a, e) >> 10;
+                hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_slot(m, a, e));
                 ms_why = MS_WHY_WINDOW, ms_drop(k, id);
             }
         }
@@ -490,9 +498,9 @@ int ms_defrag_(unsigned need, unsigned lim, unsigned max_kb, int pool)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))  /* lz: n/a (MS_PACKED never moves) */
                 continue;
-            unsigned n = grp_bytes(m, a, e), g0 = msa_gran(m->buf[a]);
+            unsigned n = grp_slot(m, a, e), g0 = msa_gran(m->buf[a]);
             unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
             if (g0 / MS_GPP == (g0 + ng - 1) / MS_GPP)
                 pitem[g0 / MS_GPP] += ng;
@@ -528,10 +536,10 @@ int ms_defrag_(unsigned need, unsigned lim, unsigned max_kb, int pool)
             MsInst *m = &ms_inst[k];
             for (unsigned id = 0; id < it_n(m) && ok; id++) {
                 unsigned a, e;
-                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))  /* lz: n/a (MS_PACKED never moves) */
                     continue;
                 unsigned char *src = m->buf[a];
-                unsigned n = grp_bytes(m, a, e), g0 = msa_gran(src), ng = (n + MS_GRAN - 1) / MS_GRAN;
+                unsigned n = grp_slot(m, a, e), g0 = msa_gran(src), ng = (n + MS_GRAN - 1) / MS_GRAN;
                 if (g0 < w0 || g0 >= w1)
                     continue;
                 unsigned char *dst = ms_npend < MS_DEFRAG_PEND ? msa_alloc_ex(n, (unsigned)best, (unsigned)best + need) : NULL;
@@ -605,12 +613,12 @@ static int x_release(int force)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+            if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id))
                 continue;
             unsigned g0 = msa_gran(m->buf[a]);
             if (g0 / MS_GPP < msa_npages() || g0 == ~0u || ms_grp_chain(m, id))
                 continue;
-            ok[g0 / MS_GPP - msa_npages()] += (grp_bytes(m, a, e) + MS_GRAN - 1) / MS_GRAN;
+            ok[g0 / MS_GPP - msa_npages()] += (grp_slot(m, a, e) + MS_GRAN - 1) / MS_GRAN;
         }
     }
     int best = -1;
@@ -640,12 +648,12 @@ static int x_release(int force)
             MsInst *m = &ms_inst[k];
             for (unsigned id = 0; id < it_n(m); id++) {
                 unsigned a, e;
-                if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+                if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id))
                     continue;
                 unsigned g0 = msa_gran(m->buf[a]);
                 if (g0 < w0 || g0 >= w1)
                     continue;
-                unsigned n = grp_bytes(m, a, e), ng = (n + MS_GRAN - 1) / MS_GRAN;
+                unsigned n = grp_slot(m, a, e), ng = (n + MS_GRAN - 1) / MS_GRAN;
                 int chain = ms_grp_chain(m, id);
                 xstat_drop_kb += n >> 10;
                 hitch_drop(ms_grp_cls(m, id) >= C_PREF, n);
@@ -663,12 +671,12 @@ static int x_release(int force)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a, e;
-            if (m->state[id] != MS_READY || (e = grp_of(m, id, &a), a != id))
+            if (!ms_landed(m->state[id]) || (e = grp_of(m, id, &a), a != id))
                 continue;
             unsigned g0 = msa_gran(m->buf[a]);
             if (g0 >= w0 && g0 < w1) {
-                xstat_drop_kb += grp_bytes(m, a, e) >> 10;
-                hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_bytes(m, a, e));
+                xstat_drop_kb += grp_slot(m, a, e) >> 10;
+                hitch_drop(ms_grp_cls(m, id) >= C_PREF, grp_slot(m, a, e));
                 ms_why = MS_WHY_BORROW, ms_drop(k, id);
             }
         }

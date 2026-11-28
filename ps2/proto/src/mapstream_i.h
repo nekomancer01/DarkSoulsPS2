@@ -18,6 +18,9 @@
 #include "hitch.h"
 #include "ticks.h"
 #include "cvar.h"
+#if MAP_LZ4
+#include "mslz.h"
+#endif
 
 /* Radii (box distance, m). Near: map.c draws a cell's near level within NEAR_DRAW_R + NEAR_HYST = 26 m; read 4 m
  * ahead (~1 s of running, ASSUMED), kept 6 m more against reading again on a turn back. Coarse: pinned within
@@ -132,7 +135,13 @@ extern float ms_r0_want, ms_r0_keep;
 #define MS_FAIL_FRAMES 90u
 #define MS_FAIL_FRAMES_MAX (16 * MS_FAIL_FRAMES)
 
+#if MAP_LZ4
+/* MS_PACKED: the read of a group with an LZ4 frame landed at its slot's tail, not decoded yet (mslz_decode: then
+ * MS_READY); a group of raw frames only goes to MS_READY on landing */
+enum { MS_NONE, MS_READING, MS_READY, MS_FAILED, MS_PACKED };
+#else
 enum { MS_NONE, MS_READING, MS_READY, MS_FAILED };
+#endif
 /* classes, lowest first (the header comment lists them). Coarse cells in view within MS_R1_VIEW rank above near
  * parts: a missing near part draws its cell's coarse level, a missing coarse cell is a hole (with near parts first, the
  * route's worst frame had 211 cells missing instead of 42, ISO 2026-11-06) */
@@ -169,6 +178,11 @@ typedef struct {
     unsigned char *visv;
     unsigned short *vist;
     unsigned visg, visn, vish, viskb;  /* + items outside it now, their KB */
+#if MAP_LZ4
+    MsLz lzv;         /* the index (mapstream_lz_attach) */
+    const MsLz *lz;   /* &lzv, NULL: raw items (the paths without MAP_LZ4) */
+    unsigned *lzat;   /* per item, set at its group head: where the group's read lands in its slot (MsRead.at) */
+#endif
 } MsInst;
 /* MS_LEND_NEAR_ALL (default 1; -DMS_LEND_NEAR_ALL=0 = at most MS_LEND_NEAR_KB): near parts may take all of the pools'
  * idle room (what their own blocks' lite sets leave, the plan's "lend"), not only 900 KB of it. The long pop-ins at the
@@ -259,7 +273,12 @@ extern float ms_qs;  /* the scale now (1 = full) */
 #define MS_HOLE_DEFRAG 0
 #endif
 #define MS_DEFRAG_HOLE_KB 256u       /* most KB copied a frame for hole refusals (MS_DEFRAG_KB's EE cost, ASSUMED) */
+#if MAP_LZ4
+/* bytes: the slot (it_slot); dbytes: the disc bytes read, landing at slot + at (it_disc; = bytes and 0 for raw items) */
+typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; unsigned dbytes, at; } MsRead;
+#else
 typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; } MsRead;  /* cxl: cancelled, still landing; cls: the class it went out at (MS_SCAN) */
+#endif
 typedef struct { int k; unsigned id; int cls; float key; } MsQ;
 typedef struct { int k, fresh; unsigned id, g, nh, kb; } MsVisJob;  /* the visibility refresh (msplan.c vis_step) */
 #define MS_WANTED 4096  /* wanted items of all blocks at once (~2000 seen at the Burg entry); 32 KB */
@@ -344,6 +363,55 @@ static inline unsigned grp_bytes(const MsInst *m, unsigned a, unsigned e)
     const MapResItem *r = m->rit;
     return r[e - 1 - m->ncell].rel + r[e - 1 - m->ncell].bytes - r[a - m->ncell].rel;
 }
+#if MAP_LZ4
+/* the disc range of the group [a, e) (a near part: e = a + 1): *off in the pack, *bytes read, *run its frames (run.raw
+ * = grp_bytes). 1 when a frame of it is LZ4 (decode after landing), 0 when all raw or no index (the read is the raw
+ * range), -1 when the index has no run for it (mapstream_lz_attach / mapstream_res_open refuse such a block: not seen
+ * once attached). Resident items: the mapres payload starts at an item's off - rel; near parts: the cells payload at
+ * m->base. */
+static inline int it_disc(const MsInst *m, unsigned a, unsigned e, unsigned *off, unsigned *bytes, MsLzRun *run)
+{
+    unsigned raw = grp_bytes(m, a, e);
+    *run = (MsLzRun){0, raw, 0, 0, raw};
+    *off = it_off(m, a), *bytes = raw;
+    if (!m->lz)
+        return 0;
+    const MapResItem *r = it_res(m, a) ? &m->rit[a - m->ncell] : NULL;
+    MsLzRun z;
+    if (!(r ? mslz_res(m->lz, r->rel, raw, &z) : mslz_cell(m->lz, a, raw, &z)))
+        return -1;
+    *run = z;
+    *off = (r ? r->off - r->rel : m->base) + z.off, *bytes = z.packed;
+    return mslz_any_packed(m->lz, &z);
+}
+/* the slot (arena bytes) of the group [a, e): its raw bytes, + LZ_SLACK(packed) when a frame of it is LZ4 */
+static inline unsigned it_slot(const MsInst *m, unsigned a, unsigned e)
+{
+    unsigned off, bytes;
+    MsLzRun z;
+    return it_disc(m, a, e, &off, &bytes, &z) > 0 ? z.raw + LZ_SLACK(z.packed) : z.raw;
+}
+/* MS_LZ_MS (default 1): EE ms of LZ4 decode per frame (ms_lz_step, after the reads went out; the oldest group's next
+ * frame always runs). A 64 KB frame is ~1-2 ms (pack.c PACK_JOB_DECODE_MS, the same budget) */
+#ifndef MS_LZ_MS
+#define MS_LZ_MS 1
+#endif
+/* the decode ring (mapstream.c): ms_collect pushes a group that landed MS_PACKED (its head), ms_drop takes one out,
+ * ms_lz_step decodes the oldest first within MS_LZ_MS (then MS_READY, SyncDCache, ms_tex_set); 1 while any is packed */
+int ms_lz_step(void);
+void ms_lz_push(int k, unsigned id);
+void ms_lz_forget(int k, unsigned id);
+#endif
+/* the arena bytes of the group [a, e) (what it allocated, frees and moves): MAP_LZ4 its slot (it_slot: + the in-place
+ * slack of a packed group, kept after the decode), else its bytes. ms_landed: the group's read is in its slot (memory
+ * like MS_READY: sized, freed, evicted, counted as room; only MS_READY draws or moves) */
+#if MAP_LZ4
+#define grp_slot it_slot
+#define ms_landed(s) ((s) == MS_READY || (s) == MS_PACKED)
+#else
+#define grp_slot grp_bytes
+#define ms_landed(s) ((s) == MS_READY)
+#endif
 
 /* the item pages now, all page slots (msarena.h) */
 static inline unsigned ilim(void) { return msa_ilim(); }

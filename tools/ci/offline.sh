@@ -23,6 +23,10 @@
 #   tools/ci/test_refusals.py: the TEST refusals: line and its gates (budget.py)
 #   tools/ci/chunkver.py: every chunk_get / chunk_opt version in ps2/proto/src equals its writer's
 #   10 tools/ci/test_budget.py: tools/budget.py reads ps2/proto/src/frame_budget.h and its --ratchet gate (fixture results)
+#   11 tools/ci/test_lz4items.py: tools/lz4items.py write mode (mapres.lz.bin, cells.lz.bin, lzidx.bin) round trip and
+#     layout rules on a synthetic block (tools/ci/fixtures/lz4items), tools/discalign.py check_pack reading CELI
+#   12 tools/ci/test_mslz.sh: ps2/proto/src/mslz.c (lzidx.bin reader, in-place frame decoder, its refusals) built 64-bit on
+#     the files tools/lz4items.py writes for the same synthetic block
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PY=${PY:-python3}
@@ -94,5 +98,9 @@ echo "== frame budget and its CI ratchet (tools/budget.py on fixture results)"
 "$PY" -I tools/ci/test_budget.py || fail "tools/ci/test_budget.py"
 "$PY" -I tools/ci/test_refusals.py || fail "tools/ci/test_refusals.py"
 "$PY" -I tools/ci/chunkver.py || fail "tools/ci/chunkver.py"
+echo "== LZ4 frames for streamed map items (tools/lz4items.py write mode on a synthetic block, discalign.check_pack on lzidx.bin)"
+"$PY" -I tools/ci/test_lz4items.py || fail "tools/ci/test_lz4items.py"
+echo "== streamed items' LZ4 reader and in-place decoder (ps2/proto/src/mslz.c, host build, synthetic block)"
+sh tools/ci/test_mslz.sh || fail "tools/ci/test_mslz.sh"
 echo "offline: $FAILED failed"
 exit $FAILED

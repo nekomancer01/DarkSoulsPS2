@@ -391,3 +391,7 @@ DISC_ALIGN	make	1	flag	io	0	new	recipe.toml	World blocks' near parts placed on t
 DISC_ALIGN	env	1	flag	io	0	new	discalign.py iso9660.py	the same for the tools: discalign.py copies its inputs, iso9660.py lists alignment problems without failing
 MAP_CHUNKS	make	1	flag	world	0	new	recipe.toml	map.bin and the files split from it packed as chunk files (tools/mapwrap.py, src/mapfile.h); 0 = stored as exported, with an ELF built the same way
 MAP_CHUNKS	env	1	flag	world	0	new	mapwrap.py pack.py discalign.py	the same for the tools: pack.py stores the files unwrapped, discalign.py places parts from the entry's start
+MAP_LZ4	make	0	flag	world	0	new	recipe.toml	World block packs' streamed map items as LZ4 frames (tools/lz4items.py, src/mslz.c; TECH_DEBT stream-lz4): ISO A/B iso_burg_taurus 2026-11-28 map disc MB -22 %, seeks / late(disc) / frame time flat, world_budget --strict 1.51 % over (needs BLOCKREPORT_STRICT=0 until refit); 0 = raw, as before, with an ELF built the same way
+MAP_LZ4	env	0	flag	world	0	new	world_budget.py	the same for the budget tool: slots counted with their in-place slack, lzidx.bin in the lite set, disc rows packed
+LZ4_OPT	env	0	opt	tools	0	new	lz4items.py	1 = lz4opt compressor (tools/lz4hc/lz4opt.c)
+LZ4_STORE	env	0	debug	tools	0	new	lz4items.py	1 = every frame stored raw (test packs for the read path)

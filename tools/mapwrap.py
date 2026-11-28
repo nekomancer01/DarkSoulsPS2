@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chunkfile as chunk  # noqa: E402
 
 KINDS = {"map": (b"MAPF", b"MAPD", 128), "maptab": (b"MTAB", b"TABD", 2048), "mapres": (b"MRES", b"RESD", 2048),
-         "maptex": (b"MTEX", b"TEXD", 2048), "cells": (b"CELF", b"CBLB", 2048)}
+         "maptex": (b"MTEX", b"TEXD", 2048), "cells": (b"CELF", b"CBLB", 2048),
+         "mapresz": (b"MRES", b"RESZ", 2048), "cellsz": (b"CELF", b"CBLZ", 2048)}  # MAP_LZ4 (tools/lz4items.py)
 VERSION = 1  # the payload's layout: the exporters' bytes as of main 02d7984 (DSM5 / cells.bin / mapsplit / discalign)
 PAYLOAD = {k: v[2] for k, v in KINDS.items()}  # the payload's offset in the wrapped file
 # MAP_CHUNKS=0 (environment, make MAP_CHUNKS=0): tools/pack.py stores the files as before (the loaders read both)

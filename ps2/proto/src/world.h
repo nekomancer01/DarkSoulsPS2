@@ -78,6 +78,11 @@ enum { WB_ON = 1, WB_TABLES = 2, WB_HORIZON = 4, WB_FAR = 8 };
 unsigned world_block_res(int k);
 /* MSB map id (mAA_BB_CC_DD) of a block, NULL if none (sound.c: area banks and ambience per map) */
 const char *world_map(int block);
+#if MAP_LZ4
+/* MAP_LZ4: the lzidx.bin of the block whose pack is pack, as read with its tables (kept while the block is on, like its
+ * cell table); NULL and *size 0 when it has none (or the pack is no world block's) */
+const void *world_lz_blob(const void *pack, unsigned *size);
+#endif
 
 typedef struct {
     int blocks, loaded, reading;     /* table size, blocks on (incl. boot), block being read (-1 none) */

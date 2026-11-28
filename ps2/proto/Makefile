@@ -69,10 +69,15 @@ AREA_OBJS = $(O)/$(MAP)/main.o $(O)/$(MAP)/enemy.o
 endif
 A = $(AREA_SRC)
 
+# MAP_LZ4 (knob, tools/recipe.toml): streamed map items as LZ4 frames (src/mslz.c, tools/lz4items.py); 0 = raw, as before
+MAP_LZ4 ?= 0
 EE_OBJS = $(AREA_OBJS) $(addprefix $(O)/,render.o player.o model.o map.o mapvis.o maplight.o mapchunk.o mappass.o maplog.o mapblock.o mapstream.o msplan.o msread.o msevict.o msarena.o vu1.o vu1skin2.o vu1clip.o \
 	vu1map2.o vu1mapi.o vu1mapspec.o vu1skinclip.o vu1fx.o collision.o coltile.o esd.o esd_env_move.o combat.o trail.o chrstat.o omit.o cvar.o status.o pack.o hud.o menu.o lua0.o ai.o objects.o physics.o \
 	texcache.o gs.o material.o mem.o frame.o cam_input.o camera.o ot.o gstrace.o g2d.o testscript.o debug_hud.o bump.o fx.o chrlight.o shadow.o drawgrp.o pvs.o hitch.o governor.o lpass.o world.o wblock.o wextra.o wplan.o flags.o progress.o save.o event.o ev_chr.o ev_obj.o ev_misc.o bonfire.o npc.o \
 	gamedata.o chunk.o mapfile.o ragdoll.o nav.o items.o drb.o loading.o sound.o sndres.o vmath.o pickup.o)
+ifeq ($(MAP_LZ4),1)
+EE_OBJS += $(O)/mslz.o
+endif
 EE_INCS += -I$(GSKIT)/include -I$(G) -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LDFLAGS += -Wl,--wrap=_write  # src/pack.c: writes wait for a pending async read
@@ -274,7 +279,7 @@ LITE_RUN = $(and $(filter 1,$(WORLD_SEAM_BUNDLE)),$(BLOCK),$(WORLD_SPLIT))
 # (a changed order re-packs: $(A)/pakenv; a tree without it that packs in the old order keeps its packs)
 $(A)/pakenv: FORCE
 	@mkdir -p $(@D)
-	@v='LITE_RUN=$(if $(LITE_RUN),1,0) MAP_CHUNKS=$(MAP_CHUNKS)'; if [ ! -e $@ ]; then echo "$$v" > $@; [ -n "$(LITE_RUN)" ] || touch -d @0 $@; \
+	@v='LITE_RUN=$(if $(LITE_RUN),1,0) MAP_CHUNKS=$(MAP_CHUNKS)$(if $(filter 1,$(MAP_LZ4)), MAP_LZ4=1)'; if [ ! -e $@ ]; then echo "$$v" > $@; [ -n "$(LITE_RUN)" ] || touch -d @0 $@; \
 	else echo "$$v" | cmp -s - $@ || echo "$$v" > $@; fi
 # world builds: map.bin split for lite / full blocks (tools/mapsplit.py, src/world.c), read raw in the background
 # + the resident far backdrop (tools/horizon.py: a very coarse untextured level of every cell, appended to maptab.bin so
@@ -296,6 +301,8 @@ EE_CFLAGS += -DBUMP_BAKED=$(BUMP_BAKE)
 EE_CFLAGS += -DCOL_TILES=$(COL_TILES)
 # MAP_CHUNKS (knob, tools/recipe.toml): map.bin / maptab / mapres / maptex / cells.bin as chunk files (src/mapfile.h)
 EE_CFLAGS += -DMAP_CHUNKS=$(MAP_CHUNKS)
+# MAP_LZ4 (knob, tools/recipe.toml): streamed map items as LZ4 frames (src/mslz.c, tools/lz4items.py); 0 = raw, as before
+EE_CFLAGS += -DMAP_LZ4=$(MAP_LZ4)
 # DISC_ALIGN (tools/recipe.toml): a changed value redoes the disc layout of the near parts (a new file starts old, so a
 # tree built before keeps its layout until the value changes)
 $(A)/discenv: FORCE
@@ -472,6 +479,9 @@ LAB_CFLAGS ?= -std=gnu99 -O2 -g -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-
 LAB_SRCS = lab/lab_main.c lab/lab_pack.c lab/lab_stubs.c lab/lab_fio.c lab/lab_world.c $(addprefix src/,gamedata.c chunk.c mapfile.c flags.c progress.c chrstat.c \
 	items.c player.c esd.c esd_env_move.c combat.c physics.c collision.c coltile.c nav.c status.c cvar.c vmath.c \
 	model.c omit.c testscript.c save.c cam_input.c objects.c event.c ev_chr.c ev_obj.c ev_misc.c bonfire.c pickup.c world.c wblock.c wextra.c wplan.c enemy.c ai.c lua0.c npc.c camera.c ragdoll.c drawgrp.c governor.c)
+ifeq ($(MAP_LZ4),1)
+LAB_SRCS += src/mslz.c
+endif
 LAB_BIN = $(BUILD)/host/lab
 lab: $(LAB_BIN)
 $(LAB_BIN): $(LAB_SRCS) $(wildcard lab/*.h lab/stub/*.h src/*.h)

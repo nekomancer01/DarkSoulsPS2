@@ -33,6 +33,17 @@ for name, (r, n) in residency.BLOCKS.items():
     check(r <= room, f"residency.h {name}: room {r} KB fits the visual room {room} KB of the {residency.RES['RES_ARENA_KB']} KB arena")
 check(residency.RES["RES_NEAR_R"] < residency.RES["RES_PIN_R"] < residency.RES["RES_HZN_R"],
       "radii: near < pin < horizon")
+# MAP_LZ4: RES_LZIDX_KB is the largest lzidx.bin (world_budget.py prints the per-block "lzidx" KB); it is for the MAP_LZ4
+# build only: no source may use it outside #if MAP_LZ4 (the MAP_LZ4=0 ELF stays identical)
+check(residency.RES.get("RES_LZIDX_KB", 0) > 0, f"residency.h RES_LZIDX_KB {residency.RES.get('RES_LZIDX_KB')} KB parses")
+_unguarded = []
+for _dir, _, _fs in os.walk(os.path.join(ROOT, "ps2", "proto", "src")):
+    for _f in _fs:
+        if _f.endswith((".c", ".h")) and _f != "residency.h":
+            _t = open(os.path.join(_dir, _f), errors="replace").read()
+            if "RES_LZIDX_KB" in _t and "#if MAP_LZ4" not in _t:
+                _unguarded.append(_f)
+check(not _unguarded, f"RES_LZIDX_KB only used under #if MAP_LZ4 ({_unguarded or 'unused'})")
 
 
 def world(tmp, near_kb, coarse_kb):
@@ -74,5 +85,16 @@ with tempfile.TemporaryDirectory() as tmp:
           + ("" if rc == 0 else "\n" + out))
     rc, out = run(tmp, pg_room + 64, pg_near, 0)
     check(rc == 0, f"world_budget --strict passes it with one page more room ({pg_room + 64} KB)" + ("" if rc == 0 else "\n" + out))
+    # MAP_LZ4 report lines (lz slack / lzidx / disc) only with MAP_LZ4=1; without an lzidx.bin the block has no slack
+    d = world(tmp, 100, 100)
+    outs = {}
+    for lz in ("0", "1"):
+        p = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "world_budget.py"),
+                            os.path.join(tmp, "wb.json"), d, "--room", str(room)], capture_output=True, text=True,
+                           env=dict(os.environ, MAP="default", MAP_LZ4=lz))
+        outs[lz] = p.stdout + p.stderr
+    check("lz slack" not in outs["0"], "world_budget prints no lz line without MAP_LZ4")
+    check("lz slack 0 KB  lzidx 0 KB  disc" in outs["1"], "world_budget prints lz slack / lzidx / disc with MAP_LZ4=1"
+          + ("" if "lz slack" in outs["1"] else "\n" + outs["1"]))
 print(f"test_residency: {len(FAILS)} failed")
 sys.exit(len(FAILS))
