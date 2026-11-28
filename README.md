@@ -1,4 +1,5 @@
 <p align="center"><img src="docs/logo.png" alt="Dark Souls PS2" width="600"></p>
+<p align="center"><a href="https://discord.gg/V4zMzPyQhs"><img src="https://img.shields.io/badge/Join_the_Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord"></a></p>
 
 A homebrew port of **Dark Souls Remastered** to the PlayStation 2. It's a C engine for the PS2 (`ps2/proto`, built
 with ps2dev and gsKit, with hand-written VU1 microprograms), plus Python tools (`tools/`) that read **your own copy**
@@ -268,6 +269,7 @@ and the `proto*.elf` files. `ps2/proto/proto.elf` and `ps2/proto/data` are links
 | Understand file formats and engine decisions | `notes/PORTING.md` |
 | Look up values found in the game's exe | `notes/EXE_FINDINGS.md` |
 | Contribute (people and AI agents) | `AGENTS.md` |
+| Ask questions, share test results or follow progress | [Join the Discord](https://discord.gg/V4zMzPyQhs) |
 
 ## Repository layout
 
