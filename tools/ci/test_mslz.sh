@@ -58,7 +58,7 @@ for name, tab, res, cells in blocks:
     n += 1
 open(os.path.join(out, "count"), "w").write("%d\n" % n)
 PYEOF
-${CC:-cc} -std=gnu11 -Wall -Werror -O1 -I"$ROOT/ps2/proto/src" "$ROOT/tools/ci/test_mslz.c" "$ROOT/ps2/proto/src/mslz.c" \
+${CC:-cc} -std=gnu11 -Wall -Werror -O1 -DMAP_LZ4=1 -I"$ROOT/ps2/proto/src" "$ROOT/tools/ci/test_mslz.c" "$ROOT/ps2/proto/src/mslz.c" \
     "$ROOT/ps2/proto/src/chunk.c" "$OUT/dec.c" -o "$OUT/test_mslz" || exit 1
 N=$(cat "$OUT/count")
 i=0

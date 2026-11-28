@@ -1,4 +1,6 @@
-/* LZ4 frames for the streamed map items: index reader and in-place decoder (mslz.h) */
+/* LZ4 frames for the streamed map items: index reader and in-place decoder (mslz.h). Only with MAP_LZ4 (the Makefile
+ * links it then; tools/ci/switches.sh compiles every .c of src, and pack_lz4_decode exists only with MAP_LZ4) */
+#if MAP_LZ4
 #include <stdio.h>
 #include <string.h>
 #include "mslz.h"
@@ -136,3 +138,4 @@ int mslz_decode(const MsLz *z, int res, const MsLzRun *r, unsigned char *slot, u
     }
     return *done >= r->frames;
 }
+#endif
