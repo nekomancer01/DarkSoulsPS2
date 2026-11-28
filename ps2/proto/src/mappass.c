@@ -269,6 +269,7 @@ int mp_draw_sky(int sk, const float e[3], u32 col, float a, float b, float fmin)
 int mp_draw_pictures(int sk, const float e[3])
 {
     int drawn = 0;
+    MO_BEGIN
     if (map_pano_shown() && (mp_inst[0].on ? dg_area(mp_pinst) == dg_area(0) : !sk)) {
         mp_zs_edge(0);
         for (int i = 0; i < pano_n; i++) {
@@ -283,6 +284,7 @@ int mp_draw_pictures(int sk, const float e[3])
         }
         mp_zs_edge(mp_edge_a2);
     }
+    MO_END(MO_PICT)
     return drawn;
 }
 

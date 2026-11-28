@@ -118,7 +118,7 @@ float mp_box_depth(const Chunk *c, const float *e, float *zmax, float *r2)
 
 /* the last chunk visible_ measured and its box's farthest view depth (draw_chunk's edge fog test, same eye) */
 const Chunk *mp_vis_c;
-float mp_vis_zmax;
+float mp_vis_zmax, mp_vis_zmin;
 
 /* the frustum test of render.c r_box_classify (the box's bounding sphere against the view planes with a 40 px margin,
  * then the near plane and guard band) fused with the distance tests: one view transform of the box centre. Its plane
@@ -140,7 +140,7 @@ int mp_vis_test(const Chunk *c, const float *e, int sky)
     if (!sky && !(c->flags & CHUNK_BACKDROP)) {  /* beyond FAR the edge fog is complete: blended mist / shafts end there (a fog-coloured card would show
                   * on the sky), opaque pieces at CULL_FAR (a fog-coloured silhouette, like DSR's distant background) */
         float ext = fabsf(mp_cam[9]) * h0 + fabsf(mp_cam[10]) * h1 + fabsf(mp_cam[11]) * h2, z = vz - ext;
-        mp_vis_zmax = vz + ext, mp_vis_c = c;
+        mp_vis_zmax = vz + ext, mp_vis_zmin = z, mp_vis_c = c;
 #ifndef MAP_DBG_ALL
         float zcut = c->flags & CHUNK_BLEND ? FAR : CULL_FAR;
         if (z > zcut || (z > SMALL_Z && r2 * mp_cam_f * mp_cam_f < SMALL_PX * SMALL_PX * z * z)) {

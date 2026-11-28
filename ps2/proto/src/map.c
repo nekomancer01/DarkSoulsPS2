@@ -44,6 +44,7 @@ int map_init(const void *blob)
 {
     if (!blob)
         return 0;
+    mp_tick_calibrate();
     MapInst *m = &mp_inst[0];
     const unsigned char *map_bin = m->map_bin = m->tex_bin = m->cel_bin = blob;
     const Header *hdr = m->hdr = (const Header *)map_bin;
@@ -205,13 +206,18 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
     for (int ti = 0; ti < ntl; ti++) {
     const MapTile *tl = m->tiles ? &m->tiles[ti] : NULL;
     if (tl) {
+        MO_BEGIN
         Chunk tb = {.flags = tl->flags, .mn = {tl->mn[0], tl->mn[1], tl->mn[2]}, .mx = {tl->mx[0], tl->mx[1], tl->mx[2]}};
         mp_mc_tiles++;
-        if (!mp_visible(&tb, e, 0))
+        if (!mp_visible(&tb, e, 0)) {
+            MO_END(MO_PRO)
             continue;
+        }
         mp_mc_tvis++;
+        MO_END(MO_PRO)
     }
     for (int ii = 0, nci = tl ? tl->count : m->ncells; ii < nci; ii++) {
+        MO_BEGIN  /* the cell's prologue: its tests, the horizon box, the item lookups (to the plan split's first MF_) */
         const int ci = tl ? m->tcell[tl->first + ii] : ii;
         Cell *ce = &m->cells[ci];
         /* the cell's box, tested as opaque (out to CULL_FAR); its blended chunks end at FAR on their own test. A
@@ -234,14 +240,17 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             for (unsigned j = ce->first; j < ce->first + ce->count; j++)
                 DBGW(mp_vis_why - D_FAR + D_CELL_FAR, chunks[order[j]].tris, order[j]);
 #endif
+            MO_END(MO_PRO)
             continue;
         }
         mp_mc_vis++;
 
         /* DSM5: the near level when its blob is loaded (then the coarse chunks are skipped), else the coarse one;
          * a world block's resident chunks once their item's streams are in (mapstream_res) */
-        if (ctab && (ctab[ci].near & CELL_PART))
+        if (ctab && (ctab[ci].near & CELL_PART)) {
+            MO_END(MO_PRO)
             continue;  /* a later part of the cell before it: drawn with it */
+        }
         const unsigned char *nb = NULL, *nbp[NEAR_PARTS] = {0};
         unsigned np = 1, nnear = 0;  /* the cell's near parts (export_map.py NEAR_PART), their chunks */
         int miss = 0;  /* a resident chunk of the cell is not in yet: its near cell draws as far as it is loaded */
@@ -279,6 +288,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
         /* the near switch first (MAP_NEAR_SKIP): a cell inside the near radius needs the resident-miss scan only
          * when its near level is not drawn after all (the scan decides holes and the horizon stand-in, nothing
          * else once the near level draws; its mapstream_res calls are made again by the chunk loop) */
+        MO_END(MO_PRO)
         MF_BEGIN
         int near_on = 0;
         float d2 = 0;  /* (ctab) the near level's distance */
@@ -351,6 +361,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             MF_END(MF_NEAR)
         }
         /* the cell's level (the level chain above); the horizon is never mixed with the coarse level */
+        MO_AGAIN  /* the level, hole counters, horizon / near fades and level flips of the cell */
         const int lv = cell_level(nd, hc != NULL, hzf, miss, mcov);
         int use_hz = lv == LV_HZN;
         {
@@ -387,6 +398,7 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             }
             ce->lv = lv, ce->lv_seen = mp_pop_fr;
         }
+        MO_END(MO_LVL)
         MF_AGAIN
 #if MAP_TWO_PASS
         if (two && hzf && nd)  /* (the near level beyond HZN_R: the chunk loop asked for every item) */
@@ -555,18 +567,21 @@ static int draw_block(int k, const float e[3], int fog, FrameLog *lg)
             }
         }
         MF_END(MF_CHUNKS)
+        MO_AGAIN
         for (unsigned j = 0; use_hz && j < hc->count; j++) {  /* the horizon (no pvs rows: merged) */
             const Chunk *c = &m->hz_chunk[hc->first + j];
             /* one mesh per draw-group set (horizon.py, flags >> 16 = dg.bin piece mask; 0 always drawn): only
              * the sets the floor's groups show, as the chunks it stands for */
             if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
                 continue;
+            MW_ADD(MW_HZ);
             int cls = mp_visible(c, e, 0);
             if (cls) {
                 unsigned dn = mp_draw_hz(m, c, cls, 0, 0);
                 drawn += dn, lg->k_drawn[k] += dn, lg->hz_tris += dn;
             }
         }
+        MO_END(MO_HZCELL)
     }
     }
     return drawn;
@@ -594,6 +609,8 @@ int map_draw_sky(V3 eye)
     mp_on = !(mp_fr++ % MAP_PASS_EVERY);
     fr.mp_t0 = mp_on ? ticks() : 0;
     memset(mp_t, 0, sizeof mp_t), memset(mf_t, 0, sizeof mf_t);
+    WALL_BEGIN
+    MO_BEGIN
     if (!mp_inst[mp_pinst].on && mp_pinst)
         mp_pinst = 0;
     /* sky and fog colours from the player's block; while its sky streams are not in yet the sky of one that has them */
@@ -635,24 +652,33 @@ int map_draw_sky(V3 eye)
     mp_fog_terms(&fr.a, &fr.b, &fr.fmin);
     fr.col = (u32)mp_fog_now[3] | (u32)mp_fog_now[4] << 8 | (u32)mp_fog_now[5] << 16;
     mp_pass_reset();  /* before the sky pass: the pictures count pano_drawn (the far panorama log line) */
+    MO_END(MO_SETUP)
+    MO_AGAIN
     int dn = mp_draw_sky(sk, e, fr.col, fr.a, fr.b, fr.fmin);
+    MO_END(MO_SKY)
     fr.drawn += dn;
+    WALL_END
     return dn;
 }
 
 int map_draw_pano(void)
 {
+    WALL_BEGIN
     int dn = mp_draw_pictures(fr.sk, fr.e);
     fr.lg = (FrameLog){.hole_ex = {~0u, 0}, .pop_d = 1e9f};
     /* the far panorama: the blocks that are not loaded, as seen from the player's block (mapblock.c) */
+    MO_BEGIN
     int fd = (int)mp_draw_far(fr.e);
+    MO_END(MO_FAR)
     fr.lg.hz_tris += fd, fr.lg.far_tris += fd;
     fr.drawn += dn + fd;
+    WALL_END
     return dn + fd;
 }
 
 int map_draw_world(void)
 {
+    WALL_BEGIN
     const float *e = fr.e;
     int drawn = 0;
     int fog = R_FOG;  /* the edge fog needs FGE even where the row has no fog */
@@ -676,10 +702,12 @@ int map_draw_world(void)
     }
     mapstream_select(0);
     {
+        MO_BEGIN
         int dn = mp_draw_hz_fades(e, fr.a, fr.b, fr.fmin);
         drawn += dn, lg->hz_tris += dn;
+        drawn += mp_draw_near_fades(e);
+        MO_END(MO_FADES)
     }
-    drawn += mp_draw_near_fades(e);
     {
         MP_BEGIN
         mp_zs_relief();  /* relief, the player's light and the specular pass over the opaque map */
@@ -689,13 +717,18 @@ int map_draw_world(void)
     MF_BEGIN
     drawn += mp_draw_effects(fog, MAP_BLEND_LATE ? 1 : 0, fr.col);  /* the rest after the characters: map_draw_blend */
     MF_END(MF_FX)
-    mp_zs_end();
+    {
+        MO_BEGIN
+        mp_zs_end();
+        MO_END(MO_ZSEND)
+    }
     {
         MP_BEGIN
         tc_end();
         MP_END(MP_TEX)
     }
     fr.drawn += drawn;
+    WALL_END
     mp_log_pass_ms(fr.mp_t0);
     mp_log_frame(lg, e, fr.drawn);
     return drawn;

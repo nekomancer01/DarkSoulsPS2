@@ -7,9 +7,10 @@
 /* camera (mp_cam_set, once per map_draw): eye, right, up, forward; focal length in pixels (x, y) */
 extern float mp_cam[12], mp_cam_f, mp_cam_fy;
 void mp_cam_set(void);
-/* the last chunk mp_vis_test measured and its box's farthest view depth (mp_draw_chunk's edge fog test, same eye) */
+/* the last chunk mp_vis_test measured and its box's farthest / nearest view depth (mp_draw_chunk's edge fog test and
+ * mp_zs_route, same eye) */
 extern const Chunk *mp_vis_c;
-extern float mp_vis_zmax;
+extern float mp_vis_zmax, mp_vis_zmin;
 /* box c against the view from e: 0 out, 1 inside the guard band, 2 crossing the near plane / guard band; sky: no
  * distance tests. mp_visible times it (MP_CULL), mp_vis_test does not */
 int mp_vis_test(const Chunk *c, const float *e, int sky);

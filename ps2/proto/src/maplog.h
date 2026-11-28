@@ -34,14 +34,50 @@ extern unsigned mf_t[MF_N];
 extern unsigned mp_mc_cells, mp_mc_vis, mp_mc_tiles, mp_mc_tvis, mp_mc_chunks;
 
 
+/* "map: other ms" (the same log): what plan other holds, by part, in ticks per timed frame. The parts are the map
+ * functions' own work outside the MP_ / MF_ regions: the sky call, the backdrop pictures, the far panorama, the
+ * horizon of a kept-only block, the tile / cell prologue (tests, horizon box, item lookups), the horizon chunk loop of
+ * a cell, the fades, mp_zs_end (the replayed near pass); rest = plan other less their sum. A part subtracts mp_sum()
+ * only (no MO_ region holds an MF_ region). Every timer read costs time inside the interval it ends: mo_reads[p] counts
+ * the reads whose cost lands in part p (its own 2, plus 1 per MP_ pair nested in it: the pair's other read is inside
+ * the interval mp_sum() removes), mp_cull_reads those of the MP_CULL pairs; mp_tick_n counts every read of the frame,
+ * mp_tick_us is the measured cost of one (mp_tick_calibrate, map_init) and the "_c" values subtract it. */
+enum { MO_SKY, MO_PICT, MO_FAR, MO_HZONLY, MO_PRO, MO_HZCELL, MO_FADES, MO_ZSEND, MO_LVL, MO_SETUP, MO_N };
+extern unsigned mo_t[MO_N], mo_reads[MO_N], mp_cull_reads, mp_tick_n, mp_np;
+extern unsigned mp_wall;  /* a timed frame's wall clock outside MP_ / MF_ in the three map_draw_* functions (the check line) */
+extern float mp_tick_us;  /* one ticks() read, us (mp_tick_calibrate: 1000 back-to-back reads at map init) */
+void mp_tick_calibrate(void);
+/* operation counts of a frame ("map: work" line), counted on every frame: box depth calls, tc_level calls, sqrtf calls
+ * of map_draw's files (almost all draw_chunk_'s), far panorama chunks tested, horizon chunks tested */
+enum { MW_BOX, MW_TCL, MW_SQRT, MW_FAR, MW_HZ, MW_N };
+extern unsigned mw_n[MW_N];
+#define MW_ADD(i) (mw_n[i]++)
 extern unsigned mp_t[MP_N];
 static inline unsigned mp_sum(void) { return mp_t[0] + mp_t[1] + mp_t[2] + mp_t[3]; }
-#define MP_BEGIN unsigned _mp0 = mp_on ? ticks() : 0;
-#define MP_END(p) if (mp_on) mp_t[p] += ticks() - _mp0;
-#define MP_SPLIT(p) do { if (mp_on) { unsigned _mp1 = ticks(); mp_t[p] += _mp1 - _mp0; _mp0 = _mp1; } } while (0)
-#define MF_BEGIN unsigned _mf0 = mp_on ? ticks() : 0, _mfn = mp_on ? mp_sum() : 0;
-#define MF_END(p) if (mp_on) mf_t[p] += ticks() - _mf0 - (mp_sum() - _mfn);
-#define MF_AGAIN if (mp_on) _mf0 = ticks(), _mfn = mp_sum();
+#define MP_BEGIN unsigned _mp0 = mp_on ? (mp_tick_n++, ticks()) : 0;
+#define MP_END(p) if (mp_on) { mp_t[p] += ticks() - _mp0; mp_tick_n++, mp_np++; if ((p) == MP_CULL) mp_cull_reads += 2; }
+#define MP_SPLIT(p) do { if (mp_on) { unsigned _mp1 = ticks(); mp_t[p] += _mp1 - _mp0; _mp0 = _mp1; mp_tick_n++; } } while (0)
+#define MF_BEGIN unsigned _mf0 = mp_on ? (mp_tick_n++, ticks()) : 0, _mfn = mp_on ? mp_sum() : 0;
+#define MF_END(p) if (mp_on) { mf_t[p] += ticks() - _mf0 - (mp_sum() - _mfn); mp_tick_n++; }
+#define MF_AGAIN if (mp_on) _mf0 = ticks(), _mfn = mp_sum(), mp_tick_n++;
+#define MO_BEGIN unsigned _mo0 = mp_on ? (mp_tick_n++, ticks()) : 0, _mos = mp_on ? mp_sum() : 0, _mon = mp_on ? mp_np : 0;
+#define MO_END(p) if (mp_on) { unsigned _mo1 = ticks(); mo_t[p] += _mo1 - _mo0 - (mp_sum() - _mos); \
+                               mo_reads[p] += 2 + mp_np - _mon; mp_tick_n++; }
+#define MO_AGAIN if (mp_on) _mo0 = ticks(), _mos = mp_sum(), _mon = mp_np, mp_tick_n++;
+
+/* the check: a map_draw_* function's wall clock outside the MP_ / MF_ regions (mp_wall) */
+#define MW_SUM() (mp_sum() + mf_t[0] + mf_t[1] + mf_t[2] + mf_t[3])
+#define WALL_BEGIN unsigned _mw0 = mp_on ? (mp_tick_n++, ticks()) : 0, _mws = mp_on ? MW_SUM() : 0;
+#define WALL_END if (mp_on) { mp_wall += ticks() - _mw0 - (MW_SUM() - _mws); mp_tick_n++; }
+
+/* counted calls (the files that include mapchunk.h before this: map.c, mappass.c, mapchunk.c; not mapvis.c, whose
+ * definition of mp_box_depth the macro would rewrite). The declarations come first. */
+#include "mapvis.h"
+#ifdef MAPCHUNK_H
+#define mp_box_depth(c, e, zmax, r2) (MW_ADD(MW_BOX), (mp_box_depth)(c, e, zmax, r2))
+#define tc_level(tex, d) (MW_ADD(MW_TCL), (tc_level)(tex, d))
+#define sqrtf(x) (MW_ADD(MW_SQRT), (sqrtf)(x))
+#endif
 
 #ifdef MAP_DBG  /* debug builds: chunks / tris dropped per step, printed every MAP_DBG frames (MAP_DBG_ALL: no
                  * draw-group, distance, subpixel or foliage culling, the reference render to compare with) */

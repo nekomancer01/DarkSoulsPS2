@@ -1600,10 +1600,73 @@ void ot_hash_frame(int log)  /* frame.c, after the flip */
 }
 #endif
 
+#ifdef MAP_CHAIN_HASH
+/* mapdraw A/B (make DEFS=-DMAP_CHAIN_HASH): FNV-1a 32 over the u32 words of every map chain send between
+ * vu1_hash_frame(1) and (0): each tag's QWC / ID word (not its ADDR) and its two VIF words, the data after a CNT / END
+ * tag, and the data a REF tag points to (so no address enters the hash). One "mapchain:" line per frame. */
+#include "testscript.h"
+void vu1_hash_frame(int on);
+#ifdef MAP_HASH_PAD
+static volatile u8 mh_pad[4096] __attribute__((used));  /* cross-build check: shifts the data / heap addresses */
+#endif
+static int mh_on;
+static u32 mh_h, mh_qw, mh_ref;
+
+static void mh_words(const u32 *p, u32 n)
+{
+    u32 h = mh_h;
+    for (; n; n--, p++)
+        h = (h ^ *p) * 16777619u;
+    mh_h = h;
+}
+
+/* one segment [start, end): ends at its END tag or at end */
+static void mh_run(const u128 *start, const u128 *end)
+{
+    const u64 *t = (const u64 *)start;
+    while ((const u128 *)t < end) {
+        u64 tg = t[0];
+        u32 qwc = tg & 0xFFFF, id = (tg >> 28) & 7, addr = (u32)(tg >> 32);
+        u32 hd[3] = {(u32)tg, (u32)t[1], (u32)(t[1] >> 32)};
+        mh_words(hd, 3);
+        mh_qw++;
+        if (id == T_CNT || id == T_END) {
+            mh_words((const u32 *)(t + 2), 4 * qwc);
+            mh_qw += qwc;
+        } else if (id == T_REF || id == T_REFE) {
+            mh_words((const u32 *)addr, 4 * qwc);
+            mh_ref++;
+        } else
+            break;  /* never sent in the map chain */
+        if (id == T_END || id == T_REFE)
+            break;
+        t = id == T_CNT ? t + 2 + 2 * qwc : t + 2;
+    }
+}
+
+void vu1_hash_frame(int on)
+{
+    if (on) {
+        mh_on = 1, mh_h = 2166136261u, mh_qw = mh_ref = 0;
+        return;
+    }
+    if (!mh_on)
+        return;
+    mh_on = 0;
+    if (cur == 0)
+        mh_run(chain, (const u128 *)cp);  /* the part not kicked yet (ot_flush sends it after the window) */
+    printf("mapchain: f %u qw %u ref %u h %08x\n", (unsigned)test_mb.frame + 1, mh_qw, mh_ref, mh_h);
+}
+#endif
+
 void vu1_kick(void)
 {
     /* FLUSH: wait for the last program and its PATH1 transfer before the DMA counts as finished */
     tag(0, T_END, 0, VIF(V_FLUSH, 0, 0), VIF(V_NOP, 0, 0));
+#ifdef MAP_CHAIN_HASH
+    if (mh_on && cur == 0)
+        mh_run(chain, (const u128 *)cp);
+#endif
 #ifdef OT_HASH
     if (ot_nkicks < OT_KICKS)
         ot_kicks[ot_nkicks].buf = cur, ot_kicks[ot_nkicks++].h = hash_chain(chain);

@@ -128,6 +128,10 @@
  * MAP_DBG_ALL         | off      | debug    | (with MAP_DBG)                                | world  | init  | map.c         | MAP_DBG: no frustum skip
  * MAP_DBG_FLIP        | off      | debug    | (with MAP_DBG)                                | world  | init  | maplog.c      | MAP_DBG: chunks drawn last frame, not now
  * MAP_TWO_PASS_CHECK  | off      | debug    | -DMAP_TWO_PASS_CHECK                          | world  | #148  | map.c mapblock.c         | two-pass lists compared with one pass
+ * MAP_REUSE_CHECK     | off      | debug    | -DMAP_REUSE_CHECK                             | world  | #382  | mapchunk.c    | every reused box depth / distance / mip level compared bit for bit with a fresh one ("map: reuse check" line)
+ * MAP_WATER_CHECK     | off      | debug    | -DMAP_WATER_CHECK                             | world  | #382  | mapchunk.c    | water Fresnel table vs powf per vertex, output bytes compared ("map: water check" line)
+ * MAP_CHAIN_HASH      | off      | debug    | -DMAP_CHAIN_HASH; -DMAP_CHAIN_HASH -DMAP_HASH_PAD | gfx | #382  | vu1.c frame.c | "mapchain:" content hash of the map chain per frame (tag ADDR skipped, REF data hashed); tools/mapperf.py hash
+ * MAP_HASH_PAD        | off      | debug    | (with MAP_CHAIN_HASH)                         | gfx    | #382  | vu1.c         | MAP_CHAIN_HASH: an unused 4 KB static array (layout-only change, for the cross-build hash check)
  * MAP_PROF            | off      | debug    | -DMAP_PROF                                    | world  | init  | maplog.c      | visibility / EE clip time on the HUD
  * MAP_STATS           | off      | debug    | -DMAP_STATS                                   | world  | init  | maplog.c      | batches, pool traffic, streamed cells every 60 frames
  * MAP_POP_LOG         | 1        | debug    | -DMAP_POP_LOG=0                               | world  | #244  | maplog.c      | "map: pop cell" line per pop-in in test runs (in-view wait, why, draws after a settle)
