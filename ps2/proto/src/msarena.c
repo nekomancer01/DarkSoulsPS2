@@ -29,6 +29,8 @@ static unsigned char *pkind;         /* MS_LIFE: per page the kind (MS_K_*) of t
 /* MS_POOLS: bytes asked for the structural / misc pools (mapstream_pools), their first pages once the arena exists
  * (struct: [spage0, npages), misc: [mpage0, spage0), items below mpage0 = ipages) */
 static unsigned pool_req[2], spage0, mpage0;
+/* MS_POOL_TILE: pages asked (mapstream_tile_pool) and the region's pages now, [spage0, spage0 + tile_pages) */
+static unsigned tile_want, tile_pages;
 static int pools_on;
 static unsigned reserve_extra, pool_max = MS_POOL;
 /* the planner's page scores (msevict.c make_window: bits 0-7 highest class + 1 of its clearable groups, 0x200 not
@@ -308,6 +310,7 @@ int msa_ensure(void)
             if (sp && sp + mp + 16 < npages) {  /* (16: at least 1 MB of items) */
                 pools_on = 1;
                 spage0 = npages - sp, mpage0 = spage0 - mp, ipages = mpage0;
+                tile_pages = tile_want < sp ? tile_want : sp;
             }
         }
     }
@@ -316,8 +319,9 @@ int msa_ensure(void)
         printf("mapstream: arena %u KB is under the build's %u KB (heap): the visual room is smaller\n",
                arena_size >> 10, pool_max >> 10);
     if (pools_on)
-        printf("mapstream: arena structural %u KB, misc %u KB, visual %u KB\n", (npages - spage0) * (MS_PAGE >> 10),
-               (spage0 - mpage0) * (MS_PAGE >> 10), ipages * (MS_PAGE >> 10));
+        printf("mapstream: arena structural %u KB (collision tiles %u KB), misc %u KB, visual %u KB\n",
+               (npages - spage0) * (MS_PAGE >> 10), tile_pages * (MS_PAGE >> 10), (spage0 - mpage0) * (MS_PAGE >> 10),
+               ipages * (MS_PAGE >> 10));
     else if (arena && pool_req[0])
         printf("mapstream: arena pools off (structural %u KB + misc %u KB asked of %u KB)\n",
                pool_req[0] >> 10, pool_req[1] >> 10, arena_size >> 10);
@@ -331,6 +335,21 @@ unsigned msa_ntot(void) { return ntot(); }
 unsigned msa_ilim(void) { return ilim(); }
 unsigned msa_mpage0(void) { return mpage0; }
 unsigned msa_spage0(void) { return spage0; }
+unsigned msa_tpage0(void) { return spage0; }
+unsigned msa_tile_pages(void) { return tile_pages; }
+/* The region's top moves only over pages with nothing in them: a tile above a new, lower top or a lite-set entry
+ * below a new, higher one would sit in the other's range (still freed by mapstream_free wherever it lies, but the
+ * range would no longer be one user's). A page in use stops the move; the next call goes on. */
+void msa_tile_settle(void)
+{
+    if (!arena || !pools_on)
+        return;
+    unsigned want = tile_want < npages - spage0 ? tile_want : npages - spage0;
+    while (tile_pages < want && pfree[spage0 + tile_pages] == MS_GPP)
+        tile_pages++;
+    while (tile_pages > want && pfree[spage0 + tile_pages - 1] == MS_GPP)
+        tile_pages--;
+}
 int msa_pools_on(void) { return pools_on; }
 unsigned msa_pfree(unsigned p) { return pfree[p]; }
 unsigned *msa_scratch(int which) { return which == 0 ? pcls : which == 1 ? pcost : pitem; }
@@ -381,6 +400,13 @@ void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes)
 {
     if (!arena)
         pool_req[0] = struct_bytes, pool_req[1] = misc_bytes;
+}
+
+unsigned mapstream_tile_pool(unsigned bytes)
+{
+    tile_want = (bytes + MS_PAGE - 1) / MS_PAGE;
+    msa_tile_settle();  /* (before the arena: msa_ensure sizes it) */
+    return tile_want * MS_PAGE;
 }
 
 int mapstream_pools_on(void) { return pools_on; }

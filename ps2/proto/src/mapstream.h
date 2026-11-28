@@ -74,7 +74,13 @@ void mapstream_free(void *p, unsigned n);
  * spot; the boot log prints "mapstream: arena structural X KB, misc Y KB, visual Z KB". mapstream_alloc_pool takes
  * from one pool only and never drops a map item (NULL: the pool is full); mapstream_alloc / _soft try the misc pool,
  * then clear item pages as before. */
-enum { MS_POOL_STRUCT, MS_POOL_MISC };
+enum { MS_POOL_STRUCT, MS_POOL_MISC, MS_POOL_TILE };
+/* MS_POOL_TILE: the structural pool's bottom pages are the collision tiles' alone (src/coltile.c), so a lite set's
+ * holes never split them: a 66 KB tile under the Taurus tower spawn needed two pages in a row while the mixed pool was
+ * in holes (warp / hold loop, 2026-11-11). MS_POOL_STRUCT is the pages above. world.c asks for coltile_budget() bytes
+ * (whole pages; the return value, which the structural pool's size includes) at boot. Asked again once the arena
+ * exists, the region's top moves over free pages only (msarena.c msa_tile_settle). */
+unsigned mapstream_tile_pool(unsigned bytes);
 /* MS_AREA_POOL (default 1; 0 = the pool's idle pages only for the lendable classes and near parts, as before): the
  * structural pool is sized for the world's worst link (world_struct_bytes), but the blocks wanted now may need less
  * (Blighttown's links 2458 KB of a 3067 KB pool). The pages above that need ("spare") take map items of every class
@@ -190,10 +196,10 @@ int mapstream_why(unsigned i);
 int mapstream_settling(void);
 
 /* cells / bytes: every loaded item (near cells, resident cells, textures); res_kb / tex_kb: the resident cells' and
- * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: pages borrowed from the heap (MS_BORROW); room_fails: a wanted item found no room;
+ * mip 0 textures' share; other_kb: mapstream_alloc, lent_kb: pages borrowed from the heap (MS_BORROW); room_fails: a wanted item found no room; soft_drop: a soft want dropped for room (not a refusal);
  * vis_items / vis_kb: items (loaded or not) the visibility leaves out now (pvs.c) */
 typedef struct {
-    unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails, vis_items, vis_kb;
+    unsigned cells, bytes, loads, fails, pending, ms_last, other_kb, lent_kb, res_kb, tex_kb, room_fails, vis_items, vis_kb, soft_drop;
 } MapStreamStats;
 extern MapStreamStats mapstream_stats;
 

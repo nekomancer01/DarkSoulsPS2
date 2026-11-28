@@ -27,3 +27,17 @@ for bad, what in ((lambda: f.get(b"HEAD", 3), "version"), (lambda: chunk.File(c[
         pass
 print("test_chunk: tools/chunkfile.py = chunkw.h, reader refusals ok")
 PYEOF
+# chunkver.py (tools/ci/chunkver.py): the current tree passes, and a reader / writer pair with different versions fails
+${PY:-python3} -I "$ROOT/tools/ci/chunkver.py" >/dev/null || { echo "test_chunk: chunkver.py fails on the tree"; exit 1; }
+mkdir -p "$OUT/fx/ps2/proto/src" "$OUT/fx/tools"
+cat > "$OUT/fx/ps2/proto/src/a.c" <<'CEOF'
+void f(void) { chunk_open(&f, b, n, CHUNK_ID('T', 'E', 'S', 'T'), "t"); chunk_get(&f, CHUNK_ID('D', 'A', 'T', 'A'), 2, &n); }
+CEOF
+echo 'x = chunkfile.pack(b"TEST", [(b"DATA", 1, b"")])' > "$OUT/fx/tools/w.py"
+if ${PY:-python3} -I "$ROOT/tools/ci/chunkver.py" --root "$OUT/fx" >"$OUT/fx.out"; then
+    echo "test_chunk: chunkver.py accepted a reader v2 / writer v1 mismatch"; exit 1
+fi
+grep -q "TEST/DATA reader v2" "$OUT/fx.out" || { echo "test_chunk: chunkver.py row missing"; cat "$OUT/fx.out"; exit 1; }
+echo 'x = chunkfile.pack(b"TEST", [(b"DATA", 2, b"")])' > "$OUT/fx/tools/w.py"
+${PY:-python3} -I "$ROOT/tools/ci/chunkver.py" --root "$OUT/fx" >/dev/null || { echo "test_chunk: chunkver.py rejected matching versions"; exit 1; }
+echo "test_chunk: chunkver.py catches a version mismatch"

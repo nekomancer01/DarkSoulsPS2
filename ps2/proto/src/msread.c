@@ -311,27 +311,65 @@ int ms_issue(void)
                 q_put_back(&w, qi);
                 return 0;
             }
+            /* ", hard": an item of residency.h's hard tier (the near level within RES_NEAR_R, the pinned coarse
+             * level within RES_PIN_R) the export budgeted for: tools/budget.py counts those per run */
+            float d = sqrtf(w.key);
+            int hard = ((w.cls == C_NEAR || w.cls == C_NEAR2) && d <= MS_R0_DRAW) ||
+                       ((w.cls == C_PIN || w.cls == C_PIN0) && d <= MS_R1_PIN);
+            unsigned fr = 0, fr3[3][3];
+            for (unsigned i = 0; i < ntot(); i++)
+                fr += msa_pfree(i);
+            msa_free_report(fr3);
+            /* the cause (tools/budget.py's refusal split): a lendable / read-ahead class is expected to wait; else
+             * the item pool had the room in total (a hole: free granules, no run of the size) or not (short) */
+            int soft = lendable(w.cls) && w.cls != C_NEAR && w.cls != C_NEAR2 && w.cls != C_PIN && w.cls != C_PIN0;
+            int cause = soft ? HR_SOFT : (unsigned long long)fr3[0][0] << 10 >= gb ? HR_HOLE : HR_SHORT;
+            /* MS_HOLE_DEFRAG (mapstream_i.h): a hard hole refusal empties a window of the item's size (MS_DEFRAG) and
+             * waits at the queue head while the old copies go (MS_DEFRAG_WAIT, as the page move above). One move per
+             * item: back after the wait with still no room (or the moves gone and no run), it is refused as before,
+             * so no item holds the head longer than MS_DEFRAG_WAIT frames; ms_hole_kb caps the copying per frame */
+            if (MS_HOLE_DEFRAG && hard && cause == HR_HOLE && ms_nq < MS_QUEUE) {
+                static int hd_k = -1;
+                static unsigned hd_id, hd_frame, hole_frame, ms_hole_kb;
+                if (hole_frame != ms_frame)
+                    hole_frame = ms_frame, ms_hole_kb = 0;
+                int same = hd_k == w.k && hd_id == w.id;
+                if (same && ms_npend && ms_frame - hd_frame <= MS_DEFRAG_WAIT) {
+                    q_put_back(&w, qi);
+                    return 0;
+                }
+                unsigned k0 = ms_defrag_kb;
+                if (!same && ms_hole_kb < MS_DEFRAG_HOLE_KB &&
+                    ms_defrag((gb + MS_PAGE - 1) / MS_PAGE, ilim(), MS_DEFRAG_HOLE_KB - ms_hole_kb)) {
+                    ms_hole_kb += ms_defrag_kb - k0 + 1;  /* (+1: a move under 1 KB still counts) */
+                    hd_k = w.k, hd_id = w.id, hd_frame = ms_frame;
+                    q_put_back(&w, qi);
+                    return 0;
+                }
+                if (same)
+                    hd_k = -1;  /* refused below: a later return may move once more */
+            }
+            hitch_total.hard += hard;  /* (after the waits: one count per refusal) */
+            if (cause == HR_SOFT) {
+                /* a soft want (lendable, read-ahead) with no room is dropped, not refused: it is blocked like a refusal
+                 * so the plan asks again later, counted apart (the stream: line's soft_drop) */
+                mapstream_stats.soft_drop++;
+                if (ms_nblk == MS_BLOCKED)
+                    memmove(ms_blk, ms_blk + 1, --ms_nblk * sizeof *ms_blk);
+                ms_blk[ms_nblk++] = (MsQ){w.k, w.id, 0, (float)ms_frame};
+                return 1;
+            }
             if (!ms_room_fail++) {
-                unsigned fr = 0;
-                for (unsigned i = 0; i < ntot(); i++)
-                    fr += msa_pfree(i);
-                /* ", hard": an item of residency.h's hard tier (the near level within RES_NEAR_R, the pinned coarse
-                 * level within RES_PIN_R) the export budgeted for: tools/budget.py counts those per run */
-                float d = sqrtf(w.key);
-                int hard = ((w.cls == C_NEAR || w.cls == C_NEAR2) && d <= MS_R0_DRAW) ||
-                           ((w.cls == C_PIN || w.cls == C_PIN0) && d <= MS_R1_PIN);
                 printf("mapstream: no room for item %d.%u (%u KB, class %d, %.0f m%s): nothing of a lower class to drop; "
                        "%u KB free, items %u KB (resident %u, mip 0 %u), other %u KB, borrowed %u KB\n", w.k, w.id,
                        gb >> 10, w.cls, d, hard ? ", hard" : "", fr * MS_GRAN >> 10, mapstream_stats.bytes >> 10,
                        mapstream_stats.res_kb, mapstream_stats.tex_kb, mapstream_stats.other_kb, mapstream_stats.lent_kb);
-                unsigned fr3[3][3];
-                msa_free_report(fr3);
                 printf("mapstream: free room (KB, whole pages, largest run in a page KB): items %u %u %u | misc %u %u %u | "
                        "structural %u %u %u; lent near %u KB, inflight %d\n", fr3[0][0], fr3[0][1], fr3[0][2],
                        fr3[1][0], fr3[1][1], fr3[1][2], fr3[2][0], fr3[2][1], fr3[2][2], ms_lent_near >> 10, ms_nrd);
             }
             mapstream_stats.room_fails++;
-            hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2, w.k, w.id);
+            hitch_room(w.cls == C_NEAR || w.cls == C_NEAR2, w.k, w.id, cause);
             if (ms_nblk == MS_BLOCKED)
                 memmove(ms_blk, ms_blk + 1, --ms_nblk * sizeof *ms_blk);
             ms_blk[ms_nblk++] = (MsQ){w.k, w.id, 0, (float)ms_frame};

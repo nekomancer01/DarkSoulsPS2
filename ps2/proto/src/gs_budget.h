@@ -13,7 +13,7 @@
  * GS_VRAM_ENFORCE=0 builds report only.
  * Row ownership with the player's silhouette shadow (Polaris 2.2 PR 6, which pays its 32 KB from CHR_PLAYER's slack,
  * OBJ and UI): this step changes only WORLD, CHR, FX and FREE, that one only CHR_PLAYER, OBJ and UI, so the two merge to
- * 4096 by taking each side's rows (1152 + 1144 + 520 + 184 + 528 + 352 + 216 + 0). Running out of the 4096 KB stays a hard failure as before ("Not enough VRAM",
+ * 4096 by taking each side's rows (1152 + 1144 + 520 + 184 + 528 + 352 + 216 + 0; since the zero-refusals plan CHR 168, FX 368). Running out of the 4096 KB stays a hard failure as before ("Not enough VRAM",
  * the GS draws nothing new). */
 #ifndef GS_BUDGET_H
 #define GS_BUDGET_H
@@ -23,9 +23,13 @@
                                 * With a 4th block on (texcache TC_BLOCKS 4, Anor Londo) it peaks at 1187 (iso_anor, world.clut 291): over
                                 * the row, report only (WORLD is not enforced); no other row has 48 KB to give (TECH_DEBT world-24) */
 #define GSB_CHR_PLAYER_KB 520  /* the player's textures 485 (488 in pages): never evicted; + its silhouette target and Z 32 (shadow.c) */
-#define GSB_CHR_KB 184         /* enemies and NPCs: 58 at the VRAM low, about 150 at the heap low, 180-184 at Firelink (2.7) */
+#define GSB_CHR_KB 168         /* enemies and NPCs: 58 at the VRAM low, about 150 at the heap low, 180-184 at Firelink (2.7);
+                               * peak 166 over 565 ISO runs (TECH_DEBT world-24, 2026-11-24), 140 logged on the Burg ISO routes and golden
+                               * routes 2026-11-28: 16 KB to FX (zero-refusals plan) */
 #define GSB_OBJ_KB 528         /* objects and breakables: 528 at the VRAM low, 362 at the heap low (16 to the silhouette) */
-#define GSB_FX_KB 352          /* effect textures: 311 / 285; 345 on the golden taurus route (2.7 census: 8 from WORLD, 24 from FREE) */
+#define GSB_FX_KB 368          /* effect textures: 311 / 285; 345 on the golden taurus route (2.7 census: 8 from WORLD, 24 from FREE);
+                               * + 16 from CHR: block 11 (m12_00) asked 1 KB past 352 ("gs vram refused fx", effects off there);
+                               * unenforced (GS_VRAM_ENFORCE=0) golden taurus peaks at 362 KB there, 2026-11-28 */
 #define GSB_UI_KB 216          /* HUD atlases 209, menu DRB, font (8 to the silhouette) */
 #define GSB_HOLES_KB 0         /* free blocks inside pages already taken (r_vram's first fit fills them) */
 #define GSB_FREE_KB 0          /* pages never taken: 233 / 360 measured; the slack after the rows above (to CHR and FX, 2.7) */
@@ -33,6 +37,6 @@
                                 * not part of the sum; it must come back to 0 after every loading screen */
 /* The player's silhouette shadow (Polaris 2.2 PR 6) pays its 32 KB from CHR_PLAYER's page slack (8), OBJ (16) and UI
  * (8) and leaves FREE alone: Polaris 2.7's rebalance changes only WORLD, CHR, FX and FREE, so the two merge to 4096 by
- * taking each side's rows (1152 + 1144 + 520 + 184 + 528 + 352 + 216 + 0). */
+ * taking each side's rows (1152 + 1144 + 520 + 184 + 528 + 352 + 216 + 0; since the zero-refusals plan CHR 168, FX 368). */
 
 #endif

@@ -29,7 +29,9 @@ run of world_budget.py computed (blocks, room, tiers, contract); exit 1 when it 
 
 --strict exits 1 on a miss: world_budget.py's own --strict verdict (hard tier over the room or on the seam
 allowance past RES_ALLOW_PCT / RES_ALLOW_BLOCK_PCT, a RES_BLOCK row over the visual room), a block whose FX or OBJ
-textures exceed their gs_budget.h row (the runtime refuses those uploads past the row, gs.c gs_vram_admit), a packed
+textures exceed their gs_budget.h row (the runtime refuses those uploads past the row, gs.c gs_vram_admit), a set of
+blocks on together at a seam spot (world.bin links, spot_live_vram) whose FX / OBJ / CHR textures add up past the row
+("spot a+b fx live n KB > row r KB"; an upper bound: whole per-block sets, CHR = every enemy type of the block), a packed
 Lua opcode lua0.c does not execute. EMEVD instructions export_emevd.py does not support are reported (Depths and
 Darkroot blocks have some today: TECH_DEBT scan-2), not gated.
 BLOCKREPORT_STRICT=0 in the environment turns --strict into a report (the registered fallback switch)."""
@@ -47,7 +49,10 @@ import mapcfg  # noqa: E402
 import residency  # noqa: E402
 
 CELL_PART = 0x80000000  # cells.bin: a later part of the cell before it (mapshot.py)
-GATED_VRAM = ("fx", "obj")  # owners the runtime refuses past their row (gs_budget.h)
+# owners the runtime refuses past their row (gs_budget.h) whose sets here are what is live at once. CHR is refused too
+# but reported only: its figure sums every enemy type's model.bin textures of a block, which the runtime pages in by
+# distance (enemy.c), so the sum is no live set (boot block 277 KB, Parish 224 KB against the 176 KB row, 2026-11-28)
+GATED_VRAM = ("fx", "obj")
 
 
 def _u32(b, o, n=1):
@@ -211,6 +216,57 @@ def vram(gen):
         v["row_kb"] = gs_budget.GSB.get(k)
         v["gated"] = k in GATED_VRAM
         v["over"] = bool(v["gated"] and v["row_kb"] is not None and v["kb"] is not None and v["kb"] > v["row_kb"])
+    return out
+
+
+def spot_on_sets(boot):
+    """world.bin of the boot gen dir -> (block names, [on set of every link as a sorted tuple of block indices]) or None.
+    The same masks tools/world_budget.py structural() reads (LNKL: per link the blocks it loads and keeps, as local bits
+    of the block's NBRS list): a link's on set = load + keep + the block itself, the blocks resident at that spot"""
+    p = os.path.join(boot, "world.bin")
+    if not os.path.exists(p):
+        return None
+    import chunkfile as chunk
+    try:
+        w = chunk.read(p, b"WRLD")
+        bl, lr, lk, ns = w.get(b"BLKS", 2), w.get(b"LRNL", 1), w.get(b"LNKL", 1), w.get(b"NBRS", 1)
+    except chunk.ChunkError:
+        return None
+    n = len(bl) // 64
+    names = [bl[64 * i:16 + 64 * i].split(b"\0")[0].decode() for i in range(n)]
+    lr = struct.unpack_from(f"<{2 * n}I", lr, 0)
+    nbrs = [list(ns[16 * i + 1:16 * i + 1 + ns[16 * i]]) for i in range(n)]
+    sets = set()
+    for blk in range(n):
+        for l in range(lr[2 * blk + 1]):
+            _, _, load, keep, _ = struct.unpack_from("<IHHHH", lk, 12 * (lr[2 * blk] + l))
+            on = {blk} | {nbrs[blk][k] for k in range(len(nbrs[blk])) if (load | keep) >> k & 1}
+            sets.add(tuple(sorted(on)))
+    return names, sorted(sets)
+
+
+def spot_live_vram(boot, per_block):
+    """the sets of blocks that are on together at a seam spot (world.bin links) against the gs_budget.h rows.
+    per_block: {block name: vram() result}. Returns [(blocks, owner, live_kb, row_kb)], one per on set and gated owner
+    whose sum is over its row, over two or more blocks (a single block is vram()'s own row check). The sum is an upper
+    bound: it counts every on block's whole set, not only what is drawn at that spot. [] without world.bin"""
+    r = spot_on_sets(boot)
+    if r is None:
+        return []
+    names, sets = r
+    out = []
+    for on in sets:
+        if len(on) < 2:
+            continue
+        for owner in GATED_VRAM:
+            row = gs_budget.GSB.get(owner)
+            kbs = [per_block.get(names[i] if i else os.path.basename(os.path.normpath(boot)), {}).get(owner, {})
+                   .get("kb") for i in on]  # block 0 is the boot gen dir, whatever world.bin calls it
+            if row is None or any(k is None for k in kbs):
+                continue
+            tot = round(sum(kbs), 1)
+            if tot > row:
+                out.append(([names[i] for i in on], owner, tot, row))
     return out
 
 
@@ -396,10 +452,15 @@ def report(argv, written):
         written.append(bp)
         with open(bp, "w") as f:
             json.dump(r, f, indent=1)
+    # the seam spots report only: whole per-block sets summed count a texture shared by several blocks' sets (fx.c vtex
+    # reference counts, the shared ATEX object textures) once per block. On the 26-block world 2026-11-28 this listed 25
+    # spots at 368-808 KB while the game logged one 1 KB FX refusal; gate it once the sets carry texture ids to dedupe
+    spot_notes = [f"spot {'+'.join(on)} {owner} live {tot} KB > row {row} KB (upper bound)"
+                  for on, owner, tot, row in spot_live_vram(boot, {r["block"]: r["vram"] for r in blocks})]
     if wb_rc:
         misses.insert(0, "world_budget.py --strict: " + next((ln for ln in log.getvalue().splitlines()
                                                             if "FAIL" in ln), "failed"))
-    summary = dict(room_kb=room, world_budget_rc=wb_rc, gsb=gs_budget.GSB, misses=misses, blocks=blocks)
+    summary = dict(room_kb=room, world_budget_rc=wb_rc, gsb=gs_budget.GSB, misses=misses, spot_notes=spot_notes, blocks=blocks)
     written.append(out + ".tmp")
     with open(out + ".tmp", "w") as f:
         json.dump(summary, f, indent=1)
@@ -414,6 +475,8 @@ def report(argv, written):
     print(f"block report: {len(blocks)} blocks, {len(misses)} budget misses -> {out}")
     for m in misses:
         print(f"block report: MISS {m}")
+    for m in spot_notes:
+        print(f"block report: note {m}")
     if check:
         ref = json.load(open(check))
         diff = sorted(k for k in set(ref) | set(res) if ref.get(k) != res.get(k))

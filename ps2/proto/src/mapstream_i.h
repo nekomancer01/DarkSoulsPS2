@@ -262,6 +262,17 @@ extern float ms_qs;  /* the scale now (1 = full) */
 #define MS_DEFRAG_PEND 64            /* old copies waiting for their chains */
 #define MS_DEFRAG_KB 256u            /* most KB copied for a read (~2 ms of EE memcpy, ASSUMED); 3x for a relief window */
 #define MS_DEFRAG_WAIT 8u            /* frames a read waits at the queue head for a page being emptied */
+/* MS_HOLE_DEFRAG (default 0 = refused at once; 1 = the move below): a hard-tier item (residency.h) refused for a hole
+ * (the room free in total, no run of its size) empties a window of its size first and waits for the move, at most
+ * MS_DEFRAG_HOLE_KB copied a frame. Waiting at the head for every move cost taurus pop-ins 35 -> 47, never waiting
+ * walls refusals 102 -> 118 (mapstream.c): the per-frame budget and the hard tier only (read-ahead never waits) sit
+ * between the two. Off by default: iso_burg_taurus ISO A/B 2026-11-28, 3 runs each, refusals 649/499/554 on vs
+ * 599/667/669 off (-12 %), but street_3 missed-vsync runs 16/35/76 on vs 45/2/4 off and street_end logic p90
+ * 19.5-22.75 vs 13.25-19.25 ms */
+#ifndef MS_HOLE_DEFRAG
+#define MS_HOLE_DEFRAG 0
+#endif
+#define MS_DEFRAG_HOLE_KB 256u       /* most KB copied a frame for hole refusals (MS_DEFRAG_KB's EE cost, ASSUMED) */
 #if MAP_LZ4
 /* bytes: the slot (it_slot); dbytes: the disc bytes read, landing at slot + at (it_disc; = bytes and 0 for raw items) */
 typedef struct { int k; unsigned id, n, bytes, t; int tk, cxl, cls; unsigned dbytes, at; } MsRead;

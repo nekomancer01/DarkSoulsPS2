@@ -131,12 +131,21 @@ void gs_vram_credit(u32 vram, unsigned blocks);
 /* Polaris 2.7: may owner o take `blocks` more? 0 = refused (characters / objects / effects past their gs_budget.h row;
  * logged and counted per owner in the "gsvram:" line); the r_vram_* allocators ask before placing */
 int gs_vram_admit(GsOwner o, unsigned blocks);
+/* Before refusing, gs_vram_admit (GS_VRAM_RECLAIM) asks the (parent) owner's reclaimer for at least blocks_wanted: it
+ * frees sets not drawn in GS_RECLAIM_FRAMES frames, least recently drawn first, each one coming back by upload (or not
+ * drawn) like a set VRAM was full for. It only frees (r_vram_free_*), never allocates: no gs_vram_admit inside */
+typedef unsigned (*GsReclaim)(unsigned blocks_wanted);  /* frees idle sets; returns blocks freed */
+void gs_vram_reclaimer(GsOwner o, GsReclaim fn);
+#define GS_RECLAIM_FRAMES 2  /* a set drawn this frame or the last is kept */
+unsigned gs_vram_blocks(GsOwner o);  /* blocks (parent) owner o has in use, its sub-rows folded */
 /* gsKit_vram_alloc charged to an owner: the bytes gsKit's pointer moved (its rounding included) */
 u32 gs_vram_fixed(GSGLOBAL *g, u32 size, u8 type, GsOwner o, const char *where);
 /* the loading screen's borrowed bytes (+ when it places itself, - when it lets go) */
 void gs_vram_borrow(int bytes);
 int gs_vram_borrowed(void);
 /* KB in use per owner (sub-rows folded into WORLD when fold), and the high-water mark */
+/* gs_vram_admit refusals of (parent) owner o so far (the TEST refusals: line, hitch.c) */
+unsigned gs_vram_refused(GsOwner o);
 unsigned gs_vram_kb(GsOwner o, int fold);
 unsigned gs_vram_peak_kb(GsOwner o, int fold);
 /* one "gsvram:" log line: every owner's KB / budget, page slack, never-taken pages, sum (4096) */

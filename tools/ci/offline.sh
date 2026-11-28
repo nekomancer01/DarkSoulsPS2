@@ -20,6 +20,8 @@
 #     a synthetic tools/stepcache.py timing file
 #   9 tools/ci/test_recipe_tools_audit.py: the report-only audit of tools/recipe.toml's per-step tools lists
 #     (tools/ci/recipe_tools_audit.py) on a synthetic recipe
+#   tools/ci/test_refusals.py: the TEST refusals: line and its gates (budget.py)
+#   tools/ci/chunkver.py: every chunk_get / chunk_opt version in ps2/proto/src equals its writer's
 #   10 tools/ci/test_budget.py: tools/budget.py reads ps2/proto/src/frame_budget.h and its --ratchet gate (fixture results)
 #   11 tools/ci/test_lz4items.py: tools/lz4items.py write mode (mapres.lz.bin, cells.lz.bin, lzidx.bin) round trip and
 #     layout rules on a synthetic block (tools/ci/fixtures/lz4items), tools/discalign.py check_pack reading CELI
@@ -94,6 +96,8 @@ echo "== recipe tools-list audit (report only) on a synthetic recipe"
 "$PY" -I tools/ci/test_recipe_tools_audit.py || fail "tools/ci/test_recipe_tools_audit.py"
 echo "== frame budget and its CI ratchet (tools/budget.py on fixture results)"
 "$PY" -I tools/ci/test_budget.py || fail "tools/ci/test_budget.py"
+"$PY" -I tools/ci/test_refusals.py || fail "tools/ci/test_refusals.py"
+"$PY" -I tools/ci/chunkver.py || fail "tools/ci/chunkver.py"
 echo "== LZ4 frames for streamed map items (tools/lz4items.py write mode on a synthetic block, discalign.check_pack on lzidx.bin)"
 "$PY" -I tools/ci/test_lz4items.py || fail "tools/ci/test_lz4items.py"
 echo "== streamed items' LZ4 reader and in-place decoder (ps2/proto/src/mslz.c, host build, synthetic block)"

@@ -7,7 +7,7 @@
 #include "mapstream.h"
 
 /* Which pages a block holds: those whose box lies within CT_WANT_R (xz) / CT_WANT_Y (y) of the feet are read; those past
- * CT_KEEP_R / CT_KEEP_Y go. In between they stay while there is room: a wanted page with no room in the structural pool
+ * CT_KEEP_R / CT_KEEP_Y go. In between they stay while there is room: a wanted page with no room in the tiles' region
  * first frees the held ones outside the want window, farthest first. ASSUMED radii: enemies freeze beyond 45 m (enemy.c
  * ACTIVE_DIST), so no character queries collision farther out; the keep ring is half a tile wider so a player walking
  * along a tile edge reads nothing twice. Heights: the Burg's levels lie 8-16 m apart (the cube-grid measurements,
@@ -20,9 +20,9 @@
  * a tile's width, so the floor under the player and the next step in any direction) */
 #define CT_MUST_R 16.0f
 #define CT_BUDGET_M 4.0f  /* coltile_budget: the feet are not only at page centres (ASSUMED margin) */
-/* coltile_budget: + 1/CT_PACK_K for the pages' packing into the pool's 64 KB pages (mapstream_alloc_pool_small: a page
- * never straddles two; ASSUMED, the log's "coltile:" line prints the pool pages the tiles touch) */
-#define CT_PACK_K 8
+/* coltile_budget: the tiles packed into the region's 64 KB pages page by page (msarena.h MS_PAGE; MS_POOL_TILE is whole
+ * pages, mapstream_alloc_pool_small never lets a tile straddle two, one over a page takes whole pages of its own) */
+#define CT_PAGE_G ((64u << 10) / 256)  /* granules per arena page */
 /* One run: the wanted page nearest the feet and the absent pages after it in the same 32 m map cell, which lie next to
  * each other on the disc, as back-to-back requests (one seek; Sony DevCon 2002 "Why Do My Load Times Suck": a short DVD
  * seek ~40 ms costs about as much as reading 100 KB). Each page has its own pool block, so pages go one by one. */
@@ -98,21 +98,59 @@ int coltile_plan(int b, const float os[4], const void *ptab)
     return 1;
 }
 
+static int g_desc(const void *a, const void *b) { return *(const unsigned short *)b - *(const unsigned short *)a; }
+/* pages n tiles of g[] granules take: first fit, largest first (g sorted here; fr: n scratch entries) */
+static unsigned pack_pages(unsigned short *g, unsigned n, unsigned short *fr)
+{
+    unsigned np = 0, big = 0;
+    qsort(g, n, sizeof *g, g_desc);
+    for (unsigned i = 0; i < n; i++) {
+        if (g[i] > CT_PAGE_G) {
+            big += (g[i] + CT_PAGE_G - 1) / CT_PAGE_G;
+            continue;
+        }
+        unsigned k = 0;
+        while (k < np && fr[k] < g[i])
+            k++;
+        if (k == np)
+            fr[np++] = CT_PAGE_G;
+        fr[k] -= g[i];
+    }
+    return big + np;
+}
+
 static unsigned budget_at(int b0, int b1)
 {
-    unsigned best = 0;
+    unsigned best = 0, tot = 0;  /* best: pages */
+    for (int o = 0; o < COL_BLOCKS; o++)
+        tot += tb[o].planned ? tb[o].npg : 0;
+    unsigned short *g = tot ? malloc(2 * tot * sizeof *g) : NULL;
+    if (!g)
+        return 0;
     for (int b = b0; b < b1; b++)
         for (unsigned i = 0; tb[b].planned && i < tb[b].npg; i++) {
             const Page *c = &tb[b].pg[i];
             float f[3] = {(c->lo[0] + c->hi[0]) * 0.5f, (c->lo[1] + c->hi[1]) * 0.5f, (c->lo[2] + c->hi[2]) * 0.5f};
-            unsigned sum = 0;
+            unsigned n = 0, small = 0, big = 0;
             for (int o = 0; o < COL_BLOCKS; o++)
                 for (unsigned j = 0; tb[o].planned && j < tb[o].npg; j++)
-                    if (within(&tb[o].pg[j], f, CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M))
-                        sum += gran(tb[o].pg[j].bytes);
-            best = sum > best ? sum : best;
+                    if (within(&tb[o].pg[j], f, CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M)) {
+                        unsigned q = gran(tb[o].pg[j].bytes) / 256;
+                        g[n++] = (unsigned short)q;
+                        if (q > CT_PAGE_G)
+                            big += (q + CT_PAGE_G - 1) / CT_PAGE_G;
+                        else
+                            small += q;
+                    }
+            /* first fit leaves at most one page half empty or less: a window under that bound cannot beat best
+             * (the pack is ~10k steps; ~3000 windows at boot) */
+            if (big + 2 * small / CT_PAGE_G + 1 <= best)
+                continue;
+            unsigned np = pack_pages(g, n, g + tot);
+            best = np > best ? np : best;
         }
-    return best + best / CT_PACK_K;
+    free(g);
+    return best * CT_PAGE_G * 256;
 }
 unsigned coltile_budget(void) { return budget_at(0, COL_BLOCKS); }
 unsigned coltile_budget_block(int b) { return b >= 0 && b < COL_BLOCKS ? budget_at(b, b + 1) : 0; }
@@ -204,19 +242,21 @@ static int start(int b, int i, const float *f, int wanted)
 {
     Page *p = &tb[b].pg[i];
     void *buf;
-    while (!(buf = mapstream_alloc_pool_small(gran(p->bytes), MS_POOL_STRUCT)))
-        if (!wanted || !evict(f)) {
-            /* The floor comes before the scenery: a wanted page within CT_MUST_R of the feet that finds no room in the
-             * structural pool takes map item pages (mapstream_alloc clears the cheapest window). A 66 KB tile under the
-             * Taurus tower spawn needs two pool pages in a row; with the pool in holes it was refused for good, the
-             * player was held for it, the hold's loading screen ended without it and held again: a warp / hold loop
-             * (iso_burg_taurus on the ISO, 1 run in ~6, 2026-11-11). */
-            if (wanted && within(p, f, CT_MUST_R, CT_WANT_Y) && (buf = mapstream_alloc(gran(p->bytes), f))) {
-                coltile_stats.must++;
-                printf("coltile: block %d page %d (%u bytes) took map room: none in the structural pool (%u times)\n",
-                       b, i, p->bytes, coltile_stats.must);
-                break;
-            }
+    /* MS_POOL_TILE first (a region no lite set holes), freeing the held pages outside the want window for a wanted one;
+     * then the structural pool above it */
+    while (!(buf = mapstream_alloc_pool_small(gran(p->bytes), MS_POOL_TILE)) && wanted && evict(f))
+        ;
+    if (!buf && !(buf = mapstream_alloc_pool_small(gran(p->bytes), MS_POOL_STRUCT))) {
+        /* The floor comes before the scenery: a wanted page within CT_MUST_R of the feet that finds no room in either
+         * takes map item pages (mapstream_alloc clears the cheapest window). A 66 KB tile under the Taurus tower spawn
+         * needs two pool pages in a row; with the (then mixed) pool in holes it was refused for good, the player was
+         * held for it, the hold's loading screen ended without it and held again: a warp / hold loop (iso_burg_taurus
+         * on the ISO, 1 run in ~6, 2026-11-11). */
+        if (wanted && within(p, f, CT_MUST_R, CT_WANT_Y) && (buf = mapstream_alloc(gran(p->bytes), f))) {
+            coltile_stats.must++;
+            printf("coltile: block %d page %d (%u bytes) took map room: none in the tile region or structural pool (%u "
+                   "times)\n", b, i, p->bytes, coltile_stats.must);
+        } else {
             if (wanted) {
                 if (!coltile_stats.noroom++ || !(coltile_stats.noroom & 63))
                     printf("coltile: no room for block %d page %d (%u bytes), %u KB of tiles in, %d pages (%u refusals)\n",
@@ -225,6 +265,7 @@ static int start(int b, int i, const float *f, int wanted)
             }
             return 0;
         }
+    }
     /* the floor before the scenery, close by; the rest of the want window in the background (a block turning on wants
      * ~180 tiles at once: all first, they held every map read back for ~10 s) */
     int t = (within(p, f, CT_MUST_R, CT_WANT_Y) ? pack_req_read_first : pack_req_read)(tb[b].pk, tb[b].base + p->off, buf, p->bytes);
