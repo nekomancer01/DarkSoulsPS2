@@ -63,8 +63,29 @@ def r128(n):
     return (n + 127) & ~127
 
 
+MS_PAGE_KB, MS_GRAN_B, MS_SMALL_KB = 64.0, 256, 8.0  # msarena.h MS_PAGE / MS_GRAN, mapstream_i.h MS_SMALL_KB
+
+
+def group_kb(kb):
+    """KB of what the arena takes for items of `kb` KB (an array): a group over a page takes whole pages
+    (ceil(bytes / 65536) * 65536, msread.c msa_alloc_range), one of a page or less whole granules (msa_alloc_k packs
+    those side by side in a page; rounding them to pages failed 38565 spots on the 26-block world, 2026-11-28). The cells
+    sidecar has one size per cell and level, so this rounds that sum: a level of several groups may take a little more."""
+    b = np.asarray(kb, np.float64) * 1024
+    pg = np.ceil(b / (MS_PAGE_KB * 1024)) * MS_PAGE_KB
+    gr = np.ceil(b / MS_GRAN_B) * MS_GRAN_B / 1024
+    return np.where(b > MS_PAGE_KB * 1024, pg, gr)
+
+
+def spot_hard_want(near_kb, coarse_kb, kept_kb):
+    """a spot's hard tier in KB, page-rounded: the sum of group_kb over each in-range (cell, level) item's sizes, the
+    arrays being the sizes of the items in range of the spot (tools/world_budget.py --strict gates it against the room)"""
+    return float(group_kb(near_kb).sum() + group_kb(coarse_kb).sum() + group_kb(kept_kb).sum())
+
+
 COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
-CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 8  # coltile.c
+CT_WANT_R, CT_WANT_Y, CT_BUDGET_M = 48.0, 16.0, 4.0  # coltile.c
+CT_PAGE_G = (64 << 10) // 256  # granules per arena page (msarena.h MS_PAGE / MS_GRAN)
 
 
 def col_pages(d):
@@ -92,23 +113,45 @@ def col_pages(d):
     return lo_b, pages
 
 
+def col_pack_pages(g):
+    """coltile.c pack_pages: arena pages tiles of g granules take, first fit largest first (one over a page: whole
+    pages of its own)"""
+    big, fr = 0, []
+    for q in sorted(g, reverse=True):
+        if q > CT_PAGE_G:
+            big += -(-q // CT_PAGE_G)
+            continue
+        for k, f in enumerate(fr):
+            if f >= q:
+                fr[k] -= q
+                break
+        else:
+            fr.append(CT_PAGE_G - q)
+    return big + len(fr)
+
+
 def col_budget(blocks):
     """coltile.c coltile_budget: over every page's box centre, the pages of all blocks within the want window + a
-    margin (256-byte granules)"""
+    margin, packed into the tiles' region (MS_POOL_TILE) page by page: bytes, whole 64 KB pages"""
     allp = [pg for pages in blocks for pg in pages]
     if not allp:
         return 0
     lo = np.array([p[0] for p in allp]); hi = np.array([p[1] for p in allp])
-    nb = (np.array([p[2] for p in allp]) + 255) // 256 * 256
+    ng = (np.array([p[2] for p in allp]) + 255) // 256
     C = (lo + hi) / 2
     R, Y = CT_WANT_R + CT_BUDGET_M, CT_WANT_Y + CT_BUDGET_M
-    best = 0
+    best = 0  # pages
     for c in C:
         dx = np.maximum(0, np.maximum(lo[:, 0] - c[0], c[0] - hi[:, 0]))
         dz = np.maximum(0, np.maximum(lo[:, 2] - c[2], c[2] - hi[:, 2]))
         dy = np.maximum(0, np.maximum(lo[:, 1] - c[1], c[1] - hi[:, 1]))
-        best = max(best, int(nb[(dx * dx + dz * dz <= R * R) & (dy <= Y)].sum()))
-    return best + best // CT_PACK_K
+        g = ng[(dx * dx + dz * dz <= R * R) & (dy <= Y)]
+        big = g > CT_PAGE_G
+        # first fit leaves at most one page half empty or less: a window under that bound cannot beat best (coltile.c)
+        if int((-(-g[big] // CT_PAGE_G)).sum()) + 2 * int(g[~big].sum()) // CT_PAGE_G + 1 <= best:
+            continue
+        best = max(best, col_pack_pages([int(q) for q in g]))
+    return best * CT_PAGE_G * 256
 
 
 EV_SHARED = True  # world.c: one events.bin per map
@@ -348,6 +391,7 @@ STRICT_BLOCKS = os.environ.get("WORLD_BUDGET_STRICT", "all").split(",")
 
 def gated_block(name):
     return "all" in STRICT_BLOCKS or any(name.startswith(s) for s in STRICT_BLOCKS if s)
+PG_LINES = 20  # page-rounded over-room spots printed (the rest are counted)
 LOAD_CELLS = 1.0  # export_world.py
 
 
@@ -435,7 +479,7 @@ def main(argv):
         return 0
     P = np.concatenate([s for _, _, _, s in blocks])
     own = np.concatenate([np.full(len(s), k) for k, (_, _, _, s) in enumerate(blocks)])
-    tot = {k: np.zeros(len(P)) for k in ("near", "coarse", "kept", "far", "near_ws", "coarse_ws", "hard", "soft")}
+    tot = {k: np.zeros(len(P)) for k in ("near", "coarse", "kept", "far", "near_ws", "coarse_ws", "hard", "soft", "hard_pg")}
     per_block, hard_by = [], []  # hard_by: each block's share of every spot's hard tier (tools/budgetfit.py)
     rects = [block_rects(name) for name, *_ in blocks]
     for k, (name, c, sky, _) in enumerate(blocks):
@@ -471,7 +515,8 @@ def main(argv):
             nhi = np.maximum(np.minimum(hi, k0 + 32.0), nlo)
         has_near = near > 0
         far = np.where(own == k, back.sum() + sky / 1024, 0.0)
-        n, co, ke, hard, soft, nws, cws = (np.zeros(len(P)) for _ in range(7))
+        n, co, ke, hard, soft, nws, cws, hpg = (np.zeros(len(P)) for _ in range(8))
+        near_g, coarse_g, kept_g = group_kb(near), group_kb(coarse), group_kb(kept)  # (spot_hard_want's items, per cell)
         # spots in slices: the (spots x cells x 3) distance arrays of all spots at once took GBs (swapping: 60 CPU-s,
         # 300 s wall, 2026-11-17); every spot's row is the same sum either way
         step = max(1, int(os.environ.get("WB_SLICE", "2048")))
@@ -486,6 +531,9 @@ def main(argv):
             hard[sl] = (((dn < HARD_NEAR_R).astype(np.float64) @ near) +
                         (((dn >= HARD_NEAR_R) | ~has_near[None]) & (d < HARD_R)).astype(np.float64) @ coarse +
                         (d < HARD_R).astype(np.float64) @ kept) * on[sl]
+            hpg[sl] = (((dn < HARD_NEAR_R).astype(np.float64) @ near_g) +
+                       (((dn >= HARD_NEAR_R) | ~has_near[None]) & (d < HARD_R)).astype(np.float64) @ coarse_g +
+                       (d < HARD_R).astype(np.float64) @ kept_g) * on[sl]
             soft[sl] = (((d >= HARD_R) & (d < PIN_R)).astype(np.float64) @ coarse) * on[sl] + far[sl]
             nws[sl] = (dn < WS_R0).astype(np.float64) @ near
             cws[sl] = ((d >= WS_R1_IN) & (d < WS_R1)).astype(np.float64) @ coarse
@@ -501,7 +549,7 @@ def main(argv):
             with ThreadPoolExecutor(nth) as ex:
                 list(ex.map(one, range(0, len(P), step)))
         for key, v in (("near", n), ("coarse", co), ("kept", ke), ("far", far), ("near_ws", nws), ("coarse_ws", cws),
-                       ("hard", hard), ("soft", soft)):
+                       ("hard", hard), ("soft", soft), ("hard_pg", hpg)):
             tot[key] += v
         hard_by.append(hard)
         per_block.append(dict(block=name, cells=len(c), near_kb=round(float(near.sum())),
@@ -601,6 +649,20 @@ def main(argv):
     print(f"world budget: per-block budgets (residency.h) " + ", ".join(f"{k} {v['room_kb']} KB" for k, v in contract.items())
           + f" against the visual room {room:.0f} KB" + (f": OVER in {bad_room}" if bad_room else ": all fit"))
     json.dump(res, open(out, "w"), indent=1)
+    # the page-rounded hard tier (spot_hard_want): what the arena takes for the hard tier's groups must fit the room
+    # where the raw sum does; spots over raw are the hard tier gate's above (its seam allowance), not counted twice
+    pg_over = np.flatnonzero((tot["hard_pg"] > room_spot) & (tot["hard"] <= room_spot) & gated)
+    res["hard"].update(page_over_spots=int(len(pg_over)))
+    json.dump(res, open(out, "w"), indent=1)
+    for i in pg_over[:PG_LINES].tolist():
+        r_i = float(room_spot[i]) if np.ndim(room_spot) else float(room_spot)
+        print(f"world_budget: spot {blocks[own[i]][0]} ({P[i][0]:.1f},{P[i][2]:.1f}) hard want "
+              f"{tot['hard_pg'][i]:.0f} KB (page-rounded) > room {r_i:.0f} KB")
+    if len(pg_over) > PG_LINES:
+        print(f"world_budget: ... and {len(pg_over) - PG_LINES} more spots over the room page-rounded")
+    # (the page-rounded check reports only: the cells sidecar has one size per (cell, level), and a level of several
+    # groups of a page or less is rounded here as one group over a page, which over-counts; gate it once map.bin.cells.json
+    # carries per-group sizes. 2026-11-28, 26-block world: boot block spots 4862-4888 KB against the 4769 KB room)
     fail = world_pct > ALLOW_PCT or bool(bad_allow) or bool(bad_room)
     if fail and strict:
         print(f"world budget: FAIL (--strict): hard tier {world_pct} % of the spots over or on the allowance"

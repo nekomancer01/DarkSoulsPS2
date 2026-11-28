@@ -15,8 +15,9 @@
 /* boot: block b's page table (the 16-byte 'CTP1' record + its pages, collision.c ColPage) and the file's origin /
  * scale (DCOL header bytes 16..31). Copies what it needs. 0 = not a page table. */
 int coltile_plan(int b, const float origin_scale[4], const void *ptab);
-/* the structural pool room the pages may take at once: over every page's box centre of every planned block, the
- * pages of all blocks within the keep window (+ one map cell, pages read together stay together) */
+/* the tile region's room (MS_POOL_TILE, the structural pool's bottom pages) the pages may take at once: over every
+ * page's box centre of every planned block, the pages of all blocks within the keep window (+ one map cell, pages read
+ * together stay together), packed first fit into whole 64 KB pages; bytes, a multiple of 64 KB */
 unsigned coltile_budget(void);
 /* MS_AREA_POOL: the same at block b's own page centres only (the tiles a player on block b may want) */
 unsigned coltile_budget_block(int b);

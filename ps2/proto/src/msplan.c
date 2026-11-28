@@ -249,6 +249,10 @@ unsigned ms_cancel_kb;
 /* the plan's wanted items, sorted by rank; MS_FILL_PCT: the share (%) of the item pages the plan may fill (granule rounding,
  * read groups not filling their page, ASSUMED) */
 MsW ms_want[MS_WANTED];
+/* a soft want (lendable, not near / pinned) goes into the plan only if its bytes fit the room the classes before it left
+ * (free): a soft want that does not fit is cut here, as a plan cut (hitch_cut), not refused later by the reader as "no
+ * room" (zero refusals) */
+static inline int ms_plan_soft_fit(unsigned bytes, unsigned free) { return bytes <= free; }
 static int w_cmp(const void *a, const void *b)
 {
     const MsW *x = a, *y = b;
@@ -412,8 +416,9 @@ static void plan_(const float *pos)
         } else {
             unsigned b = (it_bytes(m, id) + MS_GRAN - 1) & ~(MS_GRAN - 1);
             int lo = lendable(ms_want[i].cls) && ms_want[i].cls != C_NEAR && ms_want[i].cls != C_NEAR2;
+            unsigned lim = lo && near_missing ? cap_hi : cap, fit = lo ? ms_plan_soft_fit(b, lim > sum ? lim - sum : 0) : 1;
             sum += b, sum_hi += lo ? 0 : b;  /* (counted when cut too, as before: past the cap, the rest is cut) */
-            if (sum > cap || (!lo && sum_hi > cap_hi) || (lo && near_missing && sum > cap_hi)) {
+            if ((!lo && (sum > cap || sum_hi > cap_hi)) || (lo && (sum > cap || !fit))) {
                 m->cls[id] = C_KEEP;
                 cut++, cut_near += id < m->ncell && (ms_want[i].cls == C_NEAR || ms_want[i].cls == C_NEAR2);
                 continue;

@@ -47,6 +47,12 @@ unsigned msa_ntot(void);
 unsigned msa_ilim(void);
 unsigned msa_mpage0(void);
 unsigned msa_spage0(void);
+/* MS_POOL_TILE: the collision tiles' region, the structural pool's bottom [msa_tpage0(), + msa_tile_pages()); the
+ * pool's other users take the pages above it */
+unsigned msa_tpage0(void);
+unsigned msa_tile_pages(void);
+/* move the region's top toward the size asked (mapstream_tile_pool) over whole free pages only */
+void msa_tile_settle(void);
 int msa_pools_on(void);
 /* free granules in page p; granule of a pointer (~0u: not the arena's) and back; a granule's bit */
 unsigned msa_pfree(unsigned p);

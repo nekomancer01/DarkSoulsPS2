@@ -20,6 +20,8 @@
 #     a synthetic tools/stepcache.py timing file
 #   9 tools/ci/test_recipe_tools_audit.py: the report-only audit of tools/recipe.toml's per-step tools lists
 #     (tools/ci/recipe_tools_audit.py) on a synthetic recipe
+#   tools/ci/test_refusals.py: the TEST refusals: line and its gates (budget.py)
+#   tools/ci/chunkver.py: every chunk_get / chunk_opt version in ps2/proto/src equals its writer's
 #   10 tools/ci/test_budget.py: tools/budget.py reads ps2/proto/src/frame_budget.h and its --ratchet gate (fixture results)
 # Usage: tools/ci/offline.sh   Exit code = number of failed steps.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -90,5 +92,7 @@ echo "== recipe tools-list audit (report only) on a synthetic recipe"
 "$PY" -I tools/ci/test_recipe_tools_audit.py || fail "tools/ci/test_recipe_tools_audit.py"
 echo "== frame budget and its CI ratchet (tools/budget.py on fixture results)"
 "$PY" -I tools/ci/test_budget.py || fail "tools/ci/test_budget.py"
+"$PY" -I tools/ci/test_refusals.py || fail "tools/ci/test_refusals.py"
+"$PY" -I tools/ci/chunkver.py || fail "tools/ci/chunkver.py"
 echo "offline: $FAILED failed"
 exit $FAILED

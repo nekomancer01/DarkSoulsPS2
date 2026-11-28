@@ -64,7 +64,10 @@ void hitch_drop(int wanted, unsigned bytes);
 void hitch_flip(int k, unsigned ci, int flop);
 /* mapstream.c: a wanted item found no room in the arena ("mapstream: no room"); near = a near-level class (C_NEAR,
  * C_NEAR2: the Burg plan's gated refusals, B0) */
-void hitch_room(int near, int k, unsigned id);
+enum { HR_HOLE, HR_SHORT, HR_SOFT };  /* the cause of a refusal (hitch_room) */
+/* cause: HR_SOFT = a lendable / read-ahead class (not near or pinned), else HR_HOLE = the pool had the free granules
+ * (fragmented: no run big enough), HR_SHORT = it had fewer free than the item needs */
+void hitch_room(int near, int k, unsigned id, int cause);
 /* mapstream.c MS_LEND: a near part lent an idle pool page was dropped for a lite set */
 void hitch_lent_near(void);
 /* mapstream.c plan cut (Burg plan B4): wanted items the plan had to leave out for room (near: near parts among them),
@@ -82,6 +85,10 @@ void hitch_where(const float *pos, int block);
 /* the arena's free granules (256 B) and its largest run of free 64 KB pages (mapstream.c) */
 void mapstream_free_info(unsigned *free_kb, unsigned *run_kb, unsigned *other_kb);
 
+/* testscript.c, before each "TEST DONE": one "TEST refusals:" line with the four refusal counters (streamer "no room",
+ * gs_vram_admit, collision tiles, chunk files) for tools/budget.py */
+void refusals_print(void);
+
 /* totals over the run (test gates) */
 typedef struct {
     unsigned frames, over50, over100, over200, max_ms, flips, flops, rereads, thrash, evicts, loads, load_max_ms, allocfail;
@@ -89,6 +96,8 @@ typedef struct {
     unsigned room, room_near, popins, room_items, lent_near;  /* "no room" refusals (all, near attempts, near items),
                                                                * near pop-ins, lent near parts dropped (stream: lines) */
     unsigned cut;  /* the most wanted items one plan cut for room (hitch_cut) */
+    unsigned hard;  /* "no room" refusals of residency.h's hard tier (msread.c: near within MS_R0_DRAW, pinned within MS_R1_PIN) */
+    unsigned hole, short_, soft;  /* "no room" refusals by cause (HR_*); hole + short_ + soft == room */
     float hzn_s;  /* seconds with a cell inside HZN_R drawn by its horizon */
 } HitchTotals;
 extern HitchTotals hitch_total;

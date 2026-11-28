@@ -176,8 +176,11 @@ typedef struct {
     u8 *icls;
     int on;
     int bound;  /* WORLD_FX_LITE: tables in place in the block's lite set (fx_block_tables .. fx_block_drop) */
+    unsigned drawn;  /* fx_frame a particle of it last drew */
+    int gone;        /* set 0: fx_vram_reclaim took its textures (its particles are not drawn until restore0) */
 } FxSet;
 static FxSet fset[FX_NSETS];
+static unsigned fx_frame;  /* fx_draw calls */
 static int cur_set;
 static struct { int set, inst; float t; } bursts[FX_BURSTS];  /* bursts emitting (t > 0) */
 static u8 *shine_on;          /* per FX_SHINE instance: 0 free, 1 placed, 2 placed and near enough to emit */
@@ -261,6 +264,54 @@ static int upload_tex(GSGLOBAL *gs, const u8 *b)
         vtex[free_k].w = t->Width, vtex[free_k].h = t->Height, vtex[free_k].refs = 1;
     }
     return 1;
+}
+
+/* gs.h GsReclaim: set 0's textures when it had no live particle (drawn or culled) in GS_RECLAIM_FRAMES fx_draw frames:
+ * the eye is out of FX_RANGE of all its instances. Only set 0 can come
+ * back: the boot area's fx.bin stays in RAM (main.c), so restore0 uploads it again. The world blocks' and the shine's
+ * pixels went with their reads (wblock.c frees the texture buffer after the upload), and taking theirs would turn that
+ * block's effects off until it turns on again: the refusal moved, not avoided. Textures another set shares stay
+ * (vtex refs), so this frees only set 0's own. Called inside an upload (gs_vram_admit): bind restores the globals. */
+static unsigned fx_vram_reclaim(unsigned want)
+{
+    (void)want;  /* (one set: all or nothing) */
+    FxSet *s = &fset[0];
+    if (!s->on || s->gone || !s->hdr || fx_frame - s->drawn < GS_RECLAIM_FRAMES)
+        return 0;
+    unsigned b0 = gs_vram_blocks(GSO_FX);
+    int was = cur_set;
+    bind(0);
+    free_tex();
+    bind(was);
+    s->gone = 1;
+    return b0 - gs_vram_blocks(GSO_FX);
+}
+
+/* set 0 back in VRAM from the boot fx.bin once a particle of it is alive again. From fx_block_on only: it runs in
+ * world_update, where texture uploads may go (the GIF channel idle, g2d.h), and a block going off is when room comes
+ * back. Tried only when its textures not already up fit the FX row (a refusal would count against the route) */
+static void restore0(void)
+{
+    FxSet *s = &fset[0];
+    int alive = 0;
+    for (int i = 0; s->gone && i < n_alive && !alive; i++)
+        alive = pool[i].set == 0;
+    if (!alive)
+        return;
+    int was = cur_set;
+    bind(0);
+    unsigned need = 0;  /* blocks: PSMT8 pixels + a CT32 CLUT (4) per texture no set holds now (a lower bound) */
+    for (u32 i = 0; i < hdr->n_tex; i++) {
+        int k = 0;
+        while (k < FX_VTEX && !(vtex[k].refs && vtex[k].key == tkey[i] && vtex[k].w == tex[i].w && vtex[k].h == tex[i].h))
+            k++;
+        need += k < FX_VTEX ? 0 : ((u32)tex[i].w * tex[i].h + 255) / 256 + 4;
+    }
+    if ((gs_vram_blocks(GSO_FX) + need) / 4 <= GSB_FX_KB && upload_tex(fx_gs, (const u8 *)hdr)) {
+        s->gone = 0, s->drawn = fx_frame;
+        printf("fx: boot set textures back in VRAM\n");
+    }
+    bind(was);
 }
 
 static float len3(const float *v) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
@@ -393,7 +444,8 @@ int fx_init(GSGLOBAL *gs, const void *blob)
     fx_gs = gs;
     bind(0);
     int r = load_set(gs, blob, 1);
-    fset[0].on = r;
+    fset[0].on = r, fset[0].gone = 0, fset[0].drawn = fx_frame;
+    gs_vram_reclaimer(GSO_FX, fx_vram_reclaim);
     bind(0);
     return r;
 }
@@ -452,6 +504,7 @@ void fx_block_on(int block, int on, const void *blob)
                r_vram_avail(fx_gs)), on = 0;
     fset[block].on = on;
     bind(was);
+    restore0();
 }
 
 unsigned fx_head_bytes(const void *blob, unsigned size)
@@ -976,6 +1029,7 @@ void fx_kick(void)
 void fx_draw(void)
 {
     bind(0);
+    fx_frame++;
     if (!n_alive) {
         fx_stats.drawn = fx_stats.batches = fx_stats.vu1 = fx_stats.culled = fx_stats.model = 0;
         return;
@@ -1000,6 +1054,9 @@ void fx_draw(void)
         head[t] = -1;
     for (int i = 0; i < n_alive; i++) {
         Particle *p = &pool[i];
+        if (fset[p->set].gone)  /* its textures reclaimed (fx_vram_reclaim): not drawn until restore0 */
+            continue;
+        fset[p->set].drawn = fx_frame;  /* (culled ones too: one behind the camera is a turn away from drawing) */
         if (p->set != cur_set)
             bind(p->set);
         u8 *cl = &icls[p->inst];

@@ -158,5 +158,28 @@ with tempfile.TemporaryDirectory() as tmp:
     check(v.get("kb") == 9.0 and v.get("textures") == 1, f"blockreport reads a chunked objects.bin's BTEX textures ({v})")
     open(os.path.join(tmp, "objects.bin"), "wb").write(b"NEW?" + bytes(60))
     check(blockreport.vram(tmp)["obj"].get("unread") == "NEW?", "blockreport flags an objects.bin format it cannot read")
+# the sets of blocks on together at a seam spot (world.bin links) against the rows: two blocks whose FX sets fit alone
+# but not together fail; fit together, pass; blocks never on together are not summed
+import chunkfile  # noqa: E402
+with tempfile.TemporaryDirectory() as tmp:
+    boot = os.path.join(tmp, "gen")
+    os.makedirs(boot)
+    blks = b"".join(struct.pack("<16s16sII24x", nm, mp, 1 if i == 0 else 0, nb)
+                    for i, (nm, mp, nb) in enumerate(((b"boot", b"m10_02_00_00", 0), (b"m10_01_00_00_b", b"m10_01_00_00", 1),
+                                                      (b"m10_01_00_00_p", b"m10_01_00_00", 0))))
+    nbrs = bytes([0]) + bytes(15) + bytes([1, 0]) + bytes(14) + bytes([0]) + bytes(15)
+    lrnl = struct.pack("<6I", 0, 0, 0, 1, 1, 0)  # block 1: one link (loads its neighbour 0); block 2: none
+    lnkl = struct.pack("<IHHHH", 0, 1, 1, 0, 0)
+    chunkfile.write(os.path.join(boot, "world.bin"), b"WRLD", [(b"BLKS", 2, blks), (b"NBRS", 1, nbrs),
+                                                              (b"LRNL", 1, lrnl), (b"LNKL", 1, lnkl)])
+    fxrow = gs_budget.GSB["fx"]
+    half = fxrow * 0.6
+    vr = lambda kb: dict(fx=dict(kb=kb), obj=dict(kb=1.0), chr=dict(kb=1.0))  # noqa: E731
+    spots = blockreport.spot_live_vram(boot, {"gen": vr(half), "m10_01_00_00_b": vr(half), "m10_01_00_00_p": vr(half)})
+    check(half <= fxrow and len(spots) == 1 and spots[0][1] == "fx" and spots[0][0] == ["boot", "m10_01_00_00_b"]
+          and spots[0][2] > fxrow, f"blockreport: two blocks on together whose FX sets fit alone but not together fail ({spots})")
+    spots = blockreport.spot_live_vram(boot, {"gen": vr(fxrow * 0.4), "m10_01_00_00_b": vr(fxrow * 0.4),
+                                              "m10_01_00_00_p": vr(fxrow * 0.9)})
+    check(not spots, f"blockreport: two blocks whose FX sets fit together pass, a block never on with them is not summed ({spots})")
 print(f"test_scan: {len(FAILS)} failed")
 sys.exit(len(FAILS))
