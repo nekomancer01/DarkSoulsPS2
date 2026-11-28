@@ -1,6 +1,6 @@
 """Bootable PS2 disc image in pure Python: the disc tools/ps2-iso.sh makes (SYSTEM.CNF, the ELF under its boot id,
-every pack in data/ under DATA\\, ISO9660 level 1 names), for make iso, the in-browser converter (tools/pages,
-Pyodide) and anywhere xorriso is missing. The layer plan (plan(): budget doc proposal 3) decides the sector order.
+every pack in data/ under DATA\\, ISO9660 level 1 names), for make iso and anywhere xorriso
+is missing. The layer plan (plan(): budget doc proposal 3) decides the sector order.
 
     python3 tools/iso9660.py <proto.elf> <data dir> <out.iso> [boot id=DSRP_000.01]
 

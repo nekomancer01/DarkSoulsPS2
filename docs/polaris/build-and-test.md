@@ -176,7 +176,6 @@ Every pull request runs `.github/workflows/pr-checks.yml`, with no game data. Ru
 | Offline | `tools/ci/offline.sh` | VU1 emulator tests, generated `.vsm` / `vu1_layout.h` / `*_data.h` out of date, Python that does not compile |
 | Compile | `tools/ci/compile.sh` | a warning or error in the data-free ELF build (ps2dev v2.0.0, `-Werror`) |
 | Switch builds | `tools/ci/switches.sh` | any fallback or debug switch build that no longer compiles and links |
-| WebAssembly | `tools/native/build-wasm.sh` | the browser converter's native helpers |
 
 After each merge to `main` and nightly, `.github/workflows/pcsx2-smoke.yml` runs the Firelink and Burg smoke test on
 the maintainer's PC (`tools/ci/pcsx2-smoke.sh`, self-hosted runner); only the step summary and budget table are
