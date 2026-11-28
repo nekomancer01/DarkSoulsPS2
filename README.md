@@ -1,168 +1,117 @@
 <p align="center"><img src="docs/logo.png" alt="Dark Souls PS2" width="600"></p>
 <p align="center"><a href="https://discord.gg/V4zMzPyQhs"><img src="https://img.shields.io/badge/Join_the_Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord"></a></p>
 
-A homebrew port of **Dark Souls Remastered** to the PlayStation 2. It's a C engine for the PS2 (`ps2/proto`, built
-with ps2dev and gsKit, with hand-written VU1 microprograms), plus Python tools (`tools/`) that read **your own copy**
-of the PC game and convert its maps, characters, animations, collision, AI scripts and menus into PS2-sized files.
+A homebrew port of **Dark Souls Remastered** to the PlayStation 2.
 
-You build it yourself from your own copy of the game, and it runs in the PCSX2 emulator. Running it on a real PS2 is
-set up but hasn't been tested.
+- `ps2/proto`: the engine, in C, built with ps2dev and gsKit, with hand-written VU1 microprograms.
+- `tools/`: Python tools that read **your own copy** of the PC game and convert its maps, characters, animations,
+  collision, AI scripts and menus into PS2-sized files.
+
+You build it from your own copy of the game and play it in PCSX2. Real PS2 hardware is set up but untested.
 
 > [!WARNING]
-> **This is a heavy work in progress.** It is an early prototype, not a playable game: only the first few areas load,
-> most of the game's systems are missing or partly done, and things change (and break) from one day to the next.
-> Expect bugs, crashes, missing sounds and visuals that don't match DSR yet. The in-browser converter on the project
-> page is especially experimental (see [Quick start](#quick-start)).
+> **Early prototype, not a playable game.** Only the first few areas load, most systems are missing or partial, and
+> things break from day to day. Expect bugs, crashes, missing sounds and visuals that don't match DSR yet.
 
 ## What works today
 
 | Works (partly, see `notes/PLAYTHROUGH.md`) | Not yet |
 |---|---|
-| Firelink Shrine, Undead Burg and the Undead Asylum as one world, with seamless walking between them (no loading screen). Each area's scenery streams from the disc cell by cell, nearest first. As in DSR, each block's enemies, navmeshes, effects, objects and map AI scripts load with its scenery and are freed when you leave, instead of all at boot, and the scenery memory is sized for the blocks around you, so what isn't needed there goes to more detail | Every other area; some scenery still pops in late when read from the disc |
+| Firelink Shrine, Undead Burg and the Undead Asylum as one world, with no loading screens between them. Scenery streams from the disc, nearest first. Each block's enemies, navmeshes, effects, objects and AI scripts load with it and unload when you leave | Every other area. Some scenery still pops in late |
 | The Warrior: walking, running, rolling, dashing, R1 attacks, falling | Lock-on, blocking, parries, magic, two-handing, levelling |
-| Enemies with their own AI scripts and navmesh routes, taking and dealing damage, ragdoll deaths | Line of sight, guarding, item drops, most enemy types |
-| Event scripts: chests, item pickups, fog walls, doors, levers and gates, event warps (the crow from the Asylum to Firelink), boss fog walls and health bar (tested on the Taurus Demon) | Boss fights as in DSR, NPC dialogue, shops, cutscenes |
-| Bonfires: lighting, resting (HP, Estus and enemies reset), kindling and Reverse Hollowing from the rest menu | Level up, attune and warp at bonfires |
-| Death: YOU DIED, the player turns Hollow and returns to the last bonfire, a bloodstain holds the lost souls and humanity | The Hollow look, a full area reload on death |
-| Souls and humanity from kills, humanity items, the HUD humanity counter (grey while Hollow) | Stats used by combat, rings and other SpEffects |
-| DSR's own Start menu screens: Equipment, Inventory (Use / Discard), Status and System, with the game's item names, help text and icons. DSR's loading screen | Title screen, item pickup prompts, the other menus |
+| Enemies with their own AI scripts and navmesh routes, damage both ways, ragdoll deaths | Line of sight, guarding, item drops, most enemy types |
+| Chests, item pickups, fog walls, doors, levers, gates, event warps (the crow to Firelink), boss fog walls and health bar | Boss fights as in DSR, NPC dialogue, shops, cutscenes |
+| Bonfires: lighting, resting, kindling, Reverse Hollowing | Level up, attune, warp |
+| Death: YOU DIED, Hollowing, respawn at the bonfire, bloodstains | The Hollow look, a full area reload on death |
+| Souls and humanity from kills, humanity items, the HUD counter | Stats in combat, rings and other SpEffects |
+| DSR's Start menu: Equipment, Inventory, Status, System. DSR's loading screen | Title screen, pickup prompts, other menus |
 | Saving and loading on the memory card | Saving in the background |
-| Sound effects, footsteps by floor, music, boss music and area ambience | Effects at a higher sample rate (8 kHz now), reverb, voices |
-| HUD (health, stamina, Estus, souls, humanity), 30 fps in PCSX2. The tests time every frame against the 30 fps budget (missed frames, the worst frame, p99) and fail when a spot does worse than the numbers recorded for it, which only ever go down | Testing on a real PS2 |
+| Sound effects, footsteps by floor, music, boss music, ambience | Higher sample rate (8 kHz now), reverb, voices |
+| HUD, 30 fps in PCSX2. Tests fail if any spot gets slower than its recorded frame times | Testing on a real PS2 |
 
 ### Screenshots
-
-The port running in PCSX2:
 
 | Firelink Shrine bonfire | Firelink Shrine graveyard |
 |---|---|
 | ![The Warrior standing by the Firelink Shrine bonfire, with the HUD showing health, stamina and Estus Flasks](docs/screenshots/firelink-bonfire.jpg) | ![The Warrior in the Firelink Shrine graveyard among the gravestones](docs/screenshots/firelink-graveyard.jpg) |
 
-`notes/PLAYTHROUGH.md` lists every system still needed for a full playthrough, with its status.
-`notes/TECH_DEBT.md` lists every known way the port differs from the original game.
-
 ## Legal note
 
-This repository contains **no game data**: no textures, models, maps, sounds, text, scripts, params or executable
-code from Dark Souls Remastered, and nothing derived from them, apart from the two screenshots above and the logo
-at the top (the Dark Souls logo recoloured, with "PS2" added). It contains no
-decompiled code either. You need your own legally bought copy of Dark Souls Remastered for PC (Steam). The build
-reads that copy and writes every game-derived file into `build/`, which is git-ignored. **Never share or commit
-anything in `build/`.**
+This repository has **no game data** and no decompiled code. The only exceptions are the two screenshots above and
+the logo (the Dark Souls logo recoloured, with "PS2" added). You need your own copy of Dark Souls Remastered for PC
+(Steam). The build reads it and writes everything game-derived into `build/`, which git ignores. **Never share or
+commit anything in `build/`.**
 
 Dark Souls is a trademark of FromSoftware / Bandai Namco. This project isn't affiliated with or endorsed by them.
-`notes/EXE_FINDINGS.md` records only facts about the game's executable (addresses, offsets, field names, constants,
-formulas), each with its source.
+`notes/EXE_FINDINGS.md` holds only facts about the game's exe (addresses, offsets, field names, constants), each with
+its source.
 
 ## Quick start
 
-There are three ways to get a disc image (ISO) of the latest `main`. All of them read your own copy of the game, and
-the ISO they make is yours only: never share it.
+There are three ways to make a disc image (ISO). Each reads your own copy of the game. Never share the ISO.
 
-| Way | What it takes | Notes |
+| Way | Needs | Notes |
 |---|---|---|
-| `./build-iso.sh` in the repository root | A Linux shell; the steps below, or Docker / Podman | The recommended way. One command exports the game data, builds the ELF and writes `build/proto.iso`. Without a ps2dev toolchain it pulls the official ps2dev image (`ps2dev/ps2dev`) and builds in it with Docker / Podman (`tools/build-iso.sh`). `./build-iso.sh --help` lists the options |
-| The project page, https://nekomancer01.github.io/DarkSoulsPS2/ | A desktop browser (Chrome, Edge or Firefox) and plenty of memory | Converts your game folder into an ISO inside the browser tab; nothing is uploaded. **Very much a work in progress**, see below |
-| The full developer setup (steps 1 to 6 below) | Linux, ps2dev, Python, PCSX2 | For changing the code and running the tests |
+| `./build-iso.sh` | Linux, plus ps2dev or Docker / Podman | Recommended. One command writes `build/proto.iso`. Without ps2dev it builds in the official `ps2dev/ps2dev` container |
+| [The project page](https://nekomancer01.github.io/DarkSoulsPS2/) | Chrome, Edge or Firefox on a desktop, lots of RAM | Converts the game in the browser. Nothing is uploaded. **Experimental**, see below |
+| Developer setup (steps 1 to 6) | Linux, ps2dev, Python, PCSX2 | For changing code and running tests |
 
 > [!CAUTION]
-> **The in-browser converter is a heavy work in progress.** It runs the port's own Python converter
-> (`tools/convert.py`) in WebAssembly (Pyodide, with its C helpers built by `tools/native/build-wasm.sh`) and packs the
-> game-free ELF from CI with `tools/iso9660.py`. It is slow (about 10 to 20 minutes), each worker needs up to about
-> 2.5 GB of memory and can fail on PCs with less, the ISO it makes has **no sound yet** (the game's MP3 sound banks
-> can't be decoded in the browser), and it may lag behind or break when the native build changes. If it fails or
-> the result misbehaves, use `./build-iso.sh` instead and please report what happened.
+> **The in-browser converter is experimental.** It takes 10 to 20 minutes, each worker needs up to 2.5 GB of RAM,
+> and its ISO has **no sound** (the browser can't decode the game's MP3 banks). It can lag behind the native build.
+> If it fails, use `./build-iso.sh` and tell us what happened.
 
-Tested on Linux. The steps assume a Linux shell. On Windows, run them in WSL2: see
-[Building on Windows (WSL2)](#building-on-windows-wsl2) for what differs there.
+The steps below are for Linux. On Windows, use WSL2: see [Building on Windows (WSL2)](#building-on-windows-wsl2).
 
 ### 1. What you need
 
 | Need | Notes |
 |---|---|
-| Dark Souls Remastered, Steam PC version | Build 10943698 with English data is the one that's checked. `python3 tools/verify_game.py` lists supported versions. |
-| ps2dev toolchain with gsKit | Get a ps2dev release from https://github.com/ps2dev/ps2dev. `ps2/env.sh` looks for it in `~/tools/ps2dev-2.0.0/ps2dev`; set `PS2DEV=/your/path` if it's elsewhere. |
-| Python 3.10 or newer | The tools need Pillow and numpy (step 3). |
-| gcc, g++ | Compile a few small native helpers on first use (g++: meshoptimizer's simplifier for the far horizon level). |
-| libmpg123 | Decodes the game's MP3 sound banks for the sound packs (Debian/Ubuntu `libmpg123-0`, Fedora/Arch `mpg123`). |
-| PCSX2 2.x | Flatpak `net.pcsx2.PCSX2` to play; `tools/pcsx2-headless/build.sh` builds the headless test runner from PCSX2 v2.8.2 source (GPLv3), see [Headless test runner](#headless-test-runner). |
-| RAM | The first full export needs several GB. |
+| Dark Souls Remastered, Steam PC | Build 10943698, English, is the checked one. `python3 tools/verify_game.py` lists the others |
+| ps2dev with gsKit | A release from https://github.com/ps2dev/ps2dev. Looked for in `~/tools/ps2dev-2.0.0/ps2dev`, or set `PS2DEV` |
+| Python 3.10+ | With Pillow and numpy (step 3) |
+| gcc, g++ | For a few small native helpers |
+| libmpg123 | Decodes the sound banks (`libmpg123-0` on Debian/Ubuntu, `mpg123` on Fedora/Arch) |
+| PCSX2 2.x | Flatpak `net.pcsx2.PCSX2` to play. The tests use their own runner, see [Headless test runner](#headless-test-runner) |
+| RAM | Several GB for the first export |
 
-### 2. Tell the build where your game is
+### 2. Point the build at your game
 
-The game folder is the one that holds `DarkSoulsRemastered.exe`. Usually you don't need to do anything:
-`tools/gamepath.py` searches the usual Steam libraries (native, Flatpak and Snap Steam, and every library in
-`libraryfolders.vdf`). If yours is somewhere else, use one of these:
+`tools/gamepath.py` finds the game in the usual Steam libraries (native, Flatpak, Snap and every library in
+`libraryfolders.vdf`). If yours is elsewhere, set the folder that holds `DarkSoulsRemastered.exe`:
 
 ```bash
 export DSR_GAME="$HOME/.local/share/Steam/steamapps/common/DARK SOULS REMASTERED"
 ```
 
-or put `DSR_GAME = /path/to/DARK SOULS REMASTERED` in `config.local.mk` at the repo root (git-ignored), or pass
-`make DSR_GAME=...`.
-
-Then check your copy:
+`DSR_GAME = ...` in `config.local.mk` (git-ignored) or `make DSR_GAME=...` also work. Then check your copy:
 
 ```bash
 python3 tools/verify_game.py
 ```
 
-It hashes the exe and the data files the exporters need. An unknown version stops the build with a message;
-`DSR_ALLOW_UNSUPPORTED=1` builds anyway, for trying a newer patch.
+An unknown version stops the build. `DSR_ALLOW_UNSUPPORTED=1` builds anyway.
 
 ### 3. Install the Python packages
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
-.venv/bin/pip install -r tools/requirements-speed.txt   # optional: faster reads of the game's archives
+.venv/bin/pip install -r tools/requirements-speed.txt   # optional: reads the game's archives about 2x faster
 ```
 
-The build uses `.venv` automatically. To use a different Python, put `PY = /path/to/python` in `config.local.mk`.
-`deflate` (libdeflate, MIT) and `isal` (Intel ISA-L, BSD-3 / PSF) only make reading the game's DCX archives faster
-(about 2x, `tools/requirements-speed.txt`); without them the exporters use Python's zlib and write the same files.
+The build uses `.venv` by itself. For another Python, put `PY = /path/to/python` in `config.local.mk`.
 
 ### 4. Turn on HostFs in PCSX2
 
-The game loads its files from your disk through PCSX2's `host:` device. In PCSX2's `PCSX2.ini` (Flatpak:
-`~/.var/app/net.pcsx2.PCSX2/config/PCSX2/inis/PCSX2.ini`), set:
+The ELF build loads its files through PCSX2's `host:` device. In `PCSX2.ini` (Flatpak:
+`~/.var/app/net.pcsx2.PCSX2/config/PCSX2/inis/PCSX2.ini`):
 
 ```ini
 [EmuCore]
 HostFs = true
 ```
 
-You can skip this if you only play the ISO build (step 6).
-
-### Headless test runner
-
-The tests (`tools/test-run.py`, `tools/test-all.sh`, `tools/golden.py`, `tools/pcsx2-run.sh` with a screenshot path,
-the CI smoke run) don't use the Flatpak. They start `pcsx2-dsrtest`: PCSX2 v2.8.2 without its Qt interface, built from
-PCSX2's source with a small front end in `tools/pcsx2-headless/` (derived from PCSX2's `pcsx2-gsrunner`, GPLv3 like
-PCSX2 and this repository). It runs Vulkan without a window, has no sound device at all, keeps PINE for
-`tools/pine.py`, and answers screenshot / GS dump / savestate / quit requests on a control socket
-(`tools/pcsx2ctl.py`). Build it once:
-
-```bash
-tools/q -m 6 tools/pcsx2-headless/build.sh     # JOBS=8 by default
-```
-
-The first run clones PCSX2 at `v2.8.2` into `tools/ext/pcsx2-src` and downloads and builds its libraries (SDL3,
-shaderc, freetype, …, PCSX2's own `build-dependencies-runner.sh`) into `tools/ext/pcsx2-deps` once; that needs network
-and takes about 5-40 minutes. Later runs only rebuild what changed. `build.sh` checks for the host tools first: `git
-curl patch pkg-config nasm cmake ninja` and a C++ compiler (clang is used when installed, as in PCSX2's CI, else g++).
-The libraries PCSX2 takes from the system are the development packages of libjpeg, zlib, libcurl, libpcap,
-fontconfig, X11 (libx11, libxrandr, libxi), dbus, libudev, ALSA / PulseAudio headers and Vulkan / EGL headers
-(Debian/Ubuntu e.g. `sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev
-libx11-dev libxrandr-dev libxi-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev
-extra-cmake-modules`). The BIOS and base settings come from your Flatpak PCSX2's config (its `bios` folder and
-`inis/PCSX2.ini`); `PCSX2_USERCFG=<dir>` points the runs at another PCSX2 config folder. The runner turns on PCSX2's EE
-and IOP console log itself, so the tests read the game's TEST lines whatever your own settings say.
-
-`tools/pcsx2-run.sh <elf> <seconds> <shot.png>` uses it; `PCSX2_HEADLESS=<binary>` picks another build and
-`PCSX2_TIMEOUT=<s>` caps a run's wall-clock time (default 3600 s; `tools/test-run.py` sets its `--timeout` + 120). A
-worktree without its own build uses the main checkout's `tools/ext/pcsx2-build/bin/pcsx2-dsrtest`. The runner reserves
-about 7 GB of address space, so PCSX2 jobs go through `tools/q -m 10` (the cap is address space, not RAM; a run uses
-about 1 GB). `tools/pcsx2-headless/selftest.sh <elf>` checks its flags, control socket and exit codes.
+Skip this if you only play the ISO.
 
 ### 5. Build
 
@@ -171,8 +120,11 @@ source ps2/env.sh
 make -C ps2/proto
 ```
 
-The first build converts the game data. It takes several minutes and several GB of RAM. Later builds only redo what
-changed, and export steps whose inputs haven't changed are restored from the build cache. `make` uses every CPU core by default; `make -j4` (or `JOBS=4`) limits it. `python3 tools/buildprof.py report build` shows where the last build spent its time (`critical` gives the longest chain of steps). The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
+The first build converts the game data and takes several minutes. After that, only what changed is redone, and
+unchanged export steps come from the build cache. `make` uses every core; `JOBS=4` limits it. The result is
+`build/proto.elf`, which starts at the Firelink Shrine bonfire.
+
+`python3 tools/buildprof.py report build` shows where the last build spent its time.
 
 ### 6. Play
 
@@ -180,73 +132,103 @@ changed, and export steps whose inputs haven't changed are restored from the bui
 tools/pcsx2-run.sh build/proto.elf
 ```
 
-Or build a disc image and open it in PCSX2 like any game (HostFs isn't needed for this):
+Or make an ISO and open it in PCSX2 like any game (no HostFs needed):
 
 ```bash
 make -C ps2/proto iso      # writes build/proto.iso
 ```
 
-`./build-iso.sh` in the repository root does steps 5 and 6 in one command: it exports the game data, builds the ELF
-and writes `build/proto.iso`. `-i DIR` picks the game folder, `-o FILE` also copies the ISO elsewhere, `-c N` sets
-how many CPU threads it uses; `--help` lists every option. In a terminal it shows a progress view (a progress bar,
-the current step and the latest output line) and writes the full log to `build/build-iso.log`; `--plain` (or
-`DSR_TUI=0`, or output to a file or pipe) prints the plain log instead. Without a ps2dev toolchain on the host it pulls the official
-ps2dev image (`ps2dev/ps2dev:v2.0.0`) and builds in a container on it with Docker or Podman (`tools/build-iso.sh`).
-The occlusion (PVS) bakes run on the GPU when there is one (NVIDIA, AMD or Intel with OpenGL 4.5; in the container
-build, through a side container); the progress view says which it uses. `PVS_GPU=0` (or
-`tools/build-iso.sh --no-gpu` for the container build) bakes on the CPU.
+`./build-iso.sh` does steps 5 and 6 in one go. Useful options: `-i DIR` (game folder), `-o FILE` (copy the ISO),
+`-c N` (threads), `--plain` (plain log), `--help` (all). The full log goes to `build/build-iso.log`.
 
-To report a problem, play with `./play-report.sh` instead of opening the ISO yourself. It starts PCSX2 with
-`build/proto.iso` and your own settings and memory cards, records PCSX2's log with the game's, and takes a screenshot of
-the window every 2 seconds. Type a note in its terminal and press Enter to mark the moment something goes wrong (it also
-saves a savestate there). When you close PCSX2 it writes one zip to `build/play-reports/` (a summary, the log, the
-screenshots, your marks): attach that file to the report. `--help` lists the options. It needs `python3`, and for the
-screenshots ImageMagick and `xprop`.
+The occlusion (PVS) bakes use the GPU when one is found (NVIDIA, AMD or Intel with OpenGL 4.5), also in the container
+build. `PVS_GPU=0`, or `tools/build-iso.sh --no-gpu`, bakes on the CPU.
+
+**To report a bug**, play with `./play-report.sh`. It runs `build/proto.iso` with your settings, records the logs,
+and takes a screenshot every 2 seconds. Type a note and press Enter to mark a moment (this also saves a savestate).
+When you close PCSX2 it writes a zip to `build/play-reports/`. Attach that. It needs `python3`, ImageMagick and
+`xprop`.
 
 ### Controls (DualShock 2)
 
 | Button | Action |
 |---|---|
-| Left stick or d-pad | Move (a light tilt walks) |
+| Left stick or d-pad | Move (tilt lightly to walk) |
 | Right stick | Camera |
 | Circle | Tap to roll, hold to dash |
 | R1 | Attack |
-| Cross | Action: open chests, pick up items, go through fog walls |
+| Cross | Open chests, pick up items, go through fog walls |
 | Start | Menu |
 | Select | Debug HUD (fps, timings, free memory) |
 | L3 | Debug: helmet off / on |
 
-The player is always under your control. The old idle demo walk is kept for testing only: build with
-`make EE_DBGINFOFLAGS=-DIDLE_DEMO` (or put `option demo` in a test script) and it starts after 5 seconds without input;
-press any button to take over.
+For testing, `make EE_DBGINFOFLAGS=-DIDLE_DEMO` (or `option demo` in a test script) starts a demo walk after 5
+seconds without input. Any button takes over.
+
+### Headless test runner
+
+The tests (`tools/test-run.py`, `tools/test-all.sh`, `tools/golden.py`, CI smoke runs) use `pcsx2-dsrtest`, PCSX2
+v2.8.2 with no window and no sound, built from source with the front end in `tools/pcsx2-headless/` (GPLv3). It
+renders with Vulkan, keeps PINE (`tools/pine.py`) and takes screenshot, GS dump, savestate and quit requests over a
+control socket (`tools/pcsx2ctl.py`). Build it once:
+
+```bash
+tools/q -m 6 tools/pcsx2-headless/build.sh
+```
+
+The first run downloads PCSX2 and its libraries into `tools/ext/` and takes 5 to 40 minutes. Later runs only rebuild
+what changed.
+
+<details>
+<summary>Host packages, settings and limits</summary>
+
+`build.sh` needs `git curl patch pkg-config nasm cmake ninja` and a C++ compiler (clang if installed, else g++), plus
+the dev packages for libjpeg, zlib, libcurl, libpcap, fontconfig, X11, dbus, libudev, ALSA / PulseAudio, Vulkan and
+EGL. On Debian/Ubuntu:
+
+```bash
+sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev libx11-dev \
+  libxrandr-dev libxi-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev \
+  extra-cmake-modules
+```
+
+- The BIOS and base settings come from your Flatpak PCSX2 config. `PCSX2_USERCFG=<dir>` picks another one. The
+  runner turns on the console log itself, so tests work with any settings.
+- `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` runs a test. `PCSX2_HEADLESS=<binary>` picks another build,
+  `PCSX2_TIMEOUT=<s>` caps the run (default 3600 s).
+- A worktree without its own runner uses the main checkout's.
+- Each run reserves about 7 GB of address space (it uses about 1 GB of RAM), so runs go through `tools/q -m 10`.
+- `tools/pcsx2-headless/selftest.sh <elf>` checks the runner.
+
+</details>
 
 ## Building on Windows (WSL2)
 
-The build runs inside WSL2 (checked on Windows 11 with Ubuntu 24.04), and PCSX2 for Windows plays the ISO. The steps
-above apply in the Ubuntu shell, with these differences:
+Build inside WSL2 (checked on Windows 11 with Ubuntu 24.04) and play the ISO in PCSX2 for Windows. The steps above
+apply, with these differences:
 
 | Step | Under WSL2 |
 |---|---|
-| Clone | With Ubuntu's `git` or Git for Windows. `.gitattributes` keeps every text file LF on any clone, so Git for Windows' default `core.autocrlf=true` no longer checks the scripts out with CRLF (bash would fail on them with `$'\r': command not found`). A clone in WSL's own filesystem (`~/DarkSoulsPS2`) builds fastest. One on the Windows drive (`/mnt/c/...`) works too, but then keep the build output on WSL's disk: `ln -s ~/dsrps2-build build` before the first build. |
-| Packages | `sudo apt update && sudo apt install -y build-essential python3-venv libmpg123-0t64` (Ubuntu 24.04's name for libmpg123), then the venv of step 3. |
-| ps2dev | The release tarball, unpacked where `ps2/env.sh` looks: `mkdir -p ~/tools/ps2dev-2.0.0 && curl -L https://github.com/ps2dev/ps2dev/releases/download/v2.0.0/ps2dev-ubuntu-latest.tar.gz \| tar xz -C ~/tools/ps2dev-2.0.0` |
-| The game | `tools/gamepath.py` finds the Windows Steam under `/mnt/c`, and Steam libraries on other drives as `/mnt/<drive>`. Check the copy with `verify_game.py` as in step 2. |
-| Memory | WSL2 gets half of the Windows PC's RAM by default, and `tools/q` sizes its budget from what WSL has. The first export needs several GB. On a PC with 16 GB or less, give WSL more in `%UserProfile%\.wslconfig` (`[wsl2]`, then `memory=12GB`) and run `wsl --shutdown`. |
-| Play | PCSX2 for Windows (e.g. `winget install PCSX2Team.PCSX2`) with a BIOS dumped from your own console. Copy `build/proto.iso` to a Windows folder and open it there (it is under `\\wsl.localhost\Ubuntu\...`): read across the WSL share, it is slow enough for the streaming to lag. HostFs (step 4) is not needed for the ISO. |
-| Headless tests | Build the runner in WSL as in [Headless test runner](#headless-test-runner). For the BIOS and settings, use the Windows PCSX2's config folder: `export PCSX2_USERCFG=/mnt/c/Users/<you>/Documents/PCSX2` (or `.../OneDrive/Documents/PCSX2`), with the BIOS in its `bios` folder. WSL has no Vulkan driver for the GPU, so the runner renders on the CPU (llvmpipe). Runs are slower, but the frame times they measure are the emulated PS2's and don't change. |
-| Bug reports | `play-report.sh` needs the Linux desktop (Flatpak PCSX2, X11). On Windows, attach PCSX2's log instead: `Documents\PCSX2\logs\emulog.txt`. |
+| Clone | Ubuntu's `git` or Git for Windows both work. Clone into WSL's own disk (`~/DarkSoulsPS2`) for speed. On `/mnt/c/...`, keep the build on WSL's disk: `ln -s ~/dsrps2-build build` |
+| Packages | `sudo apt update && sudo apt install -y build-essential python3-venv libmpg123-0t64`, then step 3 |
+| ps2dev | `mkdir -p ~/tools/ps2dev-2.0.0 && curl -L https://github.com/ps2dev/ps2dev/releases/download/v2.0.0/ps2dev-ubuntu-latest.tar.gz \| tar xz -C ~/tools/ps2dev-2.0.0` |
+| The game | Found under `/mnt/c`, and other drives as `/mnt/<drive>`. Check it as in step 2 |
+| Memory | WSL2 gets half the PC's RAM. With 16 GB or less, raise it in `%UserProfile%\.wslconfig` (`[wsl2]`, `memory=12GB`), then `wsl --shutdown` |
+| Play | PCSX2 for Windows (`winget install PCSX2Team.PCSX2`) with a BIOS from your own console. Copy `build/proto.iso` to a Windows folder first: read over the WSL share, streaming lags |
+| Headless tests | `export PCSX2_USERCFG=/mnt/c/Users/<you>/Documents/PCSX2` (or `.../OneDrive/Documents/PCSX2`). WSL has no GPU Vulkan, so runs render on the CPU. They are slower, but the frame times they measure don't change |
+| Bug reports | `play-report.sh` needs Linux. Attach `Documents\PCSX2\logs\emulog.txt` instead |
 
 ## Troubleshooting
 
-| Problem | Cause and fix |
+| Problem | Fix |
 |---|---|
-| `make` stops at once with a message about the game | It can't find your game folder, or the version isn't supported. See step 2. |
-| PCSX2 shows a black screen or loads nothing | HostFs is off (step 4), or you started PCSX2 yourself without the run script. Use `tools/pcsx2-run.sh`. |
-| The picture goes black while the game keeps running | Video memory ran out. PCSX2's log (`emulog.txt`) says `ERROR: Not enough VRAM`. Please report it with the spot. |
-| `OUT OF RAM: ...` in the PCSX2 log | The PS2 has 32 MB of RAM and the port runs close to it. Please report it with the spot. |
-| The build is killed or the PC slows down | The export needs a lot of RAM. Close other programs and run it again; heavy jobs go through `tools/q`, which waits for free RAM. Its budget is about two thirds of the machine's RAM (20 GB of 31, 10 of 16); `DSR_Q_BUDGET=<GB>` sets another. |
+| `make` stops with a message about the game | It can't find the game, or the version isn't supported. See step 2 |
+| Black screen, nothing loads | HostFs is off (step 4), or PCSX2 wasn't started with `tools/pcsx2-run.sh` |
+| The picture goes black, the game keeps running | Out of video memory (`ERROR: Not enough VRAM` in `emulog.txt`). Please report the spot |
+| `OUT OF RAM: ...` in the log | The PS2 has 32 MB and the port runs close to it. Please report the spot |
+| The build is killed or the PC slows down | The export needs a lot of RAM. Close other programs and retry. `tools/q` waits for free RAM with a budget of about two thirds of it; `DSR_Q_BUDGET=<GB>` changes that |
 
-For a report, `./play-report.sh` collects all of this for you (see step 6). The PCSX2 log is `emulog.txt` in PCSX2's `logs` folder (Flatpak: `~/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/`).
+The PCSX2 log is `emulog.txt` in PCSX2's `logs` folder (Flatpak: `~/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/`).
 
 ## More build options
 
@@ -254,77 +236,78 @@ For a report, `./play-report.sh` collects all of this for you (see step 6). The 
 make -C ps2/proto MAP=m10_01_00_00   # start in Undead Burg: build/proto_m10_01_00_00.elf
 make -C ps2/proto clean              # remove compiled code only
 make -C ps2/proto distclean          # also remove everything exported from the game
-tools/pcsx2-run.sh build/proto.elf 8 shot.png   # headless test: run 8 s, save a screenshot
-tools/test-all.sh                    # full test suite: builds, smoke tests, render and perf checks
+tools/pcsx2-run.sh build/proto.elf 8 shot.png   # headless: run 8 s, save a screenshot
+tools/test-all.sh                    # full test suite
 ```
 
-`build/` holds `gen/` (exported data and generated headers), `obj/`, `data/` (the compressed packs the game loads)
-and the `proto*.elf` files. `ps2/proto/proto.elf` and `ps2/proto/data` are links into `build/`.
+`build/` holds `gen/` (exported data, generated headers), `obj/`, `data/` (the packs the game loads) and the ELFs.
 
 ## Where to read next
 
-| If you want to… | Read |
+| To… | Read |
 |---|---|
-| See what's missing before the whole game plays | `notes/PLAYTHROUGH.md` |
-| See the plan by priority | `notes/ROADMAP.md` |
-| Know how the port differs from the original | `notes/TECH_DEBT.md` |
-| Find a tool or script | `notes/TOOLS.md` |
-| Understand the engine (Polaris): architecture, subsystems, data pipeline, testing, adding a mechanic | `docs/polaris/README.md` |
-| Understand file formats and engine decisions | `notes/PORTING.md` |
-| Look up values found in the game's exe | `notes/EXE_FINDINGS.md` |
+| See what's missing for a full playthrough | `notes/PLAYTHROUGH.md` |
+| See the plan | `notes/ROADMAP.md` |
+| See how the port differs from DSR | `notes/TECH_DEBT.md` |
+| Find a tool | `notes/TOOLS.md` |
+| Understand the engine (Polaris) | `docs/polaris/README.md` |
+| Look up file formats and engine decisions | `notes/PORTING.md` |
+| Look up values from the game's exe | `notes/EXE_FINDINGS.md` |
 | Contribute (people and AI agents) | `AGENTS.md` |
-| Ask questions, share test results or follow progress | [Join the Discord](https://discord.gg/V4zMzPyQhs) |
+| Ask questions or share test results | [Join the Discord](https://discord.gg/V4zMzPyQhs) |
 
 ## Repository layout
 
 | Path | What |
 |---|---|
-| `ps2/proto/` | The PS2 engine (C99; the VU1 `.vsm` programs are generated by `tools/vu1/gen.py`) |
-| `tools/` | Exporters (`export_*.py`), file readers (`souls.py`, `havok_*.py`, `esd.py`, `lua50.py`), test and reference tools |
-| `config.mk`, `tools/gamepath.py`, `tools/verify_game.py` | Finding and checking your game folder |
-| `ghidra/scripts/`, `fndb/` | Scripts for studying the game's exe (no exe data included) |
-| `notes/` | Design notes, plans and status |
-| `AGENTS.md` | Rules for contributors, people and AI agents alike (the legal rules are in section 1) |
+| `ps2/proto/` | The PS2 engine (C99; VU1 `.vsm` programs generated by `tools/vu1/gen.py`) |
+| `tools/` | Exporters (`export_*.py`), file readers (`souls.py`, `havok_*.py`, `esd.py`, `lua50.py`), test tools |
+| `config.mk`, `tools/gamepath.py`, `tools/verify_game.py` | Finding and checking your game |
+| `ghidra/scripts/`, `fndb/` | Scripts for studying the exe (no exe data) |
+| `notes/` | Design notes, plans, status |
+| `AGENTS.md` | Rules for contributors (legal rules in section 1) |
 
 ## Optional development dependencies
 
-You don't need these to build or play. Some cross-check and research tools use them. Fetch them yourself into `ext/`
-or `tools/ext/` (git-ignored), and check each project's licence before sharing anything built with them.
+Not needed to build or play. Some research and cross-check tools use them.
+
+<details>
+<summary>The list, and how to fetch the name references</summary>
+
+Fetch them into `ext/` or `tools/ext/` (git-ignored). Check each licence before sharing anything built with them.
 
 | Dependency | Used by | Licence |
 |---|---|---|
-| soulstruct 2.3.2, soulstruct-havok 1.2.2 (PyPI) + data files from the soulstruct git repo (`ext/soulstruct`) | `tools/xcheck.py` etc. (format cross-checks) | GPL-3.0-or-later |
-| SoulsFormatsNEXT, DSAnimStudio (`ext/`) | Reference for file layouts | GPL-3.0 |
-| Paramdex, DarkScript3 (`ext/`) | Param / EMEVD names | See upstream |
+| soulstruct 2.3.2, soulstruct-havok 1.2.2 + soulstruct's data files (`ext/soulstruct`) | `tools/xcheck.py` | GPL-3.0-or-later |
+| SoulsFormatsNEXT, DSAnimStudio (`ext/`) | File layout references | GPL-3.0 |
+| Paramdex, DarkScript3 (`ext/`) | Param and EMEVD names | See upstream |
 | meshoptimizer (`tools/ext/`) | Mesh experiments | MIT |
-| lz4, lz4ultra (`tools/ext/`) | Compressor experiments | BSD-2 (lib) / zlib |
-| libimagequant (`tools/ext/`) | Palette quantisation experiments | GPL-3.0-or-later or commercial |
-| Node.js 18+, clang + wasm-ld (LLVM 17+); pyodide (npm, fetched into `build/cache/pyodide-node` on first use) | `tools/pages/convert-node.mjs` (the in-browser converter run outside a browser, to compare its packs with a native build) | Node: MIT; Pyodide: MPL-2.0 |
+| lz4, lz4ultra (`tools/ext/`) | Compressor experiments | BSD-2 / zlib |
+| libimagequant (`tools/ext/`) | Palette experiments | GPL-3.0-or-later or commercial |
+| Node.js 18+, clang + wasm-ld (LLVM 17+), pyodide | `tools/pages/convert-node.mjs` (the browser converter, run outside a browser) | MIT; Pyodide MPL-2.0 |
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
-| PCSX2 v2.8.2 source + its libraries (`tools/ext/pcsx2-src`, `tools/ext/pcsx2-deps`) | The headless test runner `pcsx2-dsrtest` (`tools/pcsx2-headless/build.sh`), emulator debugging | GPL-3.0 (PCSX2); libraries: see PCSX2's `build-dependencies-runner.sh` |
-| Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
-| three.js 0.160 (loaded from cdn.jsdelivr.net by the page) | `tools/lodview.py` (LOD budget viewer) | MIT |
+| PCSX2 v2.8.2 source + libraries (`tools/ext/pcsx2-*`) | The headless test runner | GPL-3.0 |
+| Ghidra | Exe research | Apache-2.0 |
+| three.js 0.160 (from cdn.jsdelivr.net) | `tools/lodview.py` | MIT |
 
-The name and layout references are read from fixed paths under `ext/` (or the environment variable, if set). Without
-them the tools still run: param rows keep their Japanese names, TAE events stay raw words, and EMEVD instructions keep
-their Japanese names (106 instruction uses that DSR's own `common.emedf` lacks don't decode). To fetch them:
+Without the name references the tools still run, but params keep their Japanese names and TAE events stay raw. To
+fetch them:
 
 ```sh
-git clone --depth 1 https://github.com/soulsmods/Paramdex ext/Paramdex          # tools/params.py: DS1R/Names, DS1R/Defs ($PARAMDEX)
-git clone --depth 1 https://github.com/AinTunez/DarkScript3 ext/DarkScript3     # tools/emevd.py: DarkScript3/Resources/ds1-common.emedf.json ($DARKSCRIPT3)
-git clone --depth 1 https://github.com/Meowmaritus/DSAnimStudio ext/DSAnimStudio # souls.tae_template, xcheck.py tae: DSAnimStudioNETCore/Res/TAE.Template.DS1*.xml
+git clone --depth 1 https://github.com/soulsmods/Paramdex ext/Paramdex          # tools/params.py ($PARAMDEX)
+git clone --depth 1 https://github.com/AinTunez/DarkScript3 ext/DarkScript3     # tools/emevd.py ($DARKSCRIPT3)
+git clone --depth 1 https://github.com/Meowmaritus/DSAnimStudio ext/DSAnimStudio # TAE templates
 ```
 
-`tools/xcheck.py` also needs soulstruct in `.venv-tools`: the install steps are at the top of
-`tools/requirements-xcheck.txt` (the PyPI wheel lacks soulstruct's data files, so they come from a clone in
-`ext/soulstruct`). Checked 2026-11-01 against Paramdex ff7245e, DarkScript3 733f024, DSAnimStudio f1bff06.
+`tools/xcheck.py` also needs soulstruct in `.venv-tools` (steps at the top of `tools/requirements-xcheck.txt`).
+Checked 2026-11-01 against Paramdex ff7245e, DarkScript3 733f024, DSAnimStudio f1bff06.
 
-`tools/native/bcdec.h` (BC texture decoder, MIT / Unlicense) is included with its licence header.
-`tools/native/meshopt/` holds meshoptimizer 1.3's simplifier (https://github.com/zeux/meshoptimizer, MIT, `LICENSE.md`
-beside it), used by `tools/horizon.py`; built into `tools/native/libmeshopt.so` on first use.
+Included third-party code: `tools/native/bcdec.h` (MIT / Unlicense) and meshoptimizer 1.3's simplifier in
+`tools/native/meshopt/` (MIT, `LICENSE.md` beside it).
+
+</details>
 
 ## Licence
 
-GPL-3.0-or-later (`LICENSE`). It covers only the original code and docs in this repository. No game files are
-included, and it grants no rights to FromSoftware / Bandai Namco material. You need your own copy of Dark Souls
-Remastered.
+GPL-3.0-or-later (`LICENSE`), for the original code and docs here only. It grants no rights to FromSoftware / Bandai
+Namco material.
