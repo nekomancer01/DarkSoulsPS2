@@ -18,7 +18,7 @@ set up but hasn't been tested.
 
 | Works (partly, see `notes/PLAYTHROUGH.md`) | Not yet |
 |---|---|
-| Firelink Shrine, Undead Burg and the Undead Asylum as one world, with seamless walking between them (no loading screen). Each area's scenery streams from the disc cell by cell, nearest first | Every other area; some scenery still pops in late when read from the disc |
+| Firelink Shrine, Undead Burg and the Undead Asylum as one world, with seamless walking between them (no loading screen). Each area's scenery streams from the disc cell by cell, nearest first. As in DSR, each block's enemies, navmeshes, effects, objects and map AI scripts load with its scenery and are freed when you leave, instead of all at boot, and the scenery memory is sized for the blocks around you, so what isn't needed there goes to more detail | Every other area; some scenery still pops in late when read from the disc |
 | The Warrior: walking, running, rolling, dashing, R1 attacks, falling | Lock-on, blocking, parries, magic, two-handing, levelling |
 | Enemies with their own AI scripts and navmesh routes, taking and dealing damage, ragdoll deaths | Line of sight, guarding, item drops, most enemy types |
 | Event scripts: chests, item pickups, fog walls, doors, levers and gates, event warps (the crow from the Asylum to Firelink), boss fog walls and health bar (tested on the Taurus Demon) | Boss fights as in DSR, NPC dialogue, shops, cutscenes |
@@ -28,7 +28,7 @@ set up but hasn't been tested.
 | DSR's own Start menu screens: Equipment, Inventory (Use / Discard), Status and System, with the game's item names, help text and icons. DSR's loading screen | Title screen, item pickup prompts, the other menus |
 | Saving and loading on the memory card | Saving in the background |
 | Sound effects, footsteps by floor, music, boss music and area ambience | Effects at a higher sample rate (8 kHz now), reverb, voices |
-| HUD (health, stamina, Estus, souls, humanity), 30 fps in PCSX2 | Testing on a real PS2 |
+| HUD (health, stamina, Estus, souls, humanity), 30 fps in PCSX2. The tests time every frame against the 30 fps budget (missed frames, the worst frame, p99) and fail when a spot does worse than the numbers recorded for it, which only ever go down | Testing on a real PS2 |
 
 ### Screenshots
 
@@ -155,7 +155,8 @@ fontconfig, X11 (libx11, libxrandr, libxi), dbus, libudev, ALSA / PulseAudio hea
 (Debian/Ubuntu e.g. `sudo apt install clang lld nasm libjpeg-dev libcurl4-openssl-dev libpcap-dev libfontconfig-dev
 libx11-dev libxrandr-dev libxi-dev libdbus-1-dev libudev-dev libasound2-dev libpulse-dev libegl-dev libvulkan-dev
 extra-cmake-modules`). The BIOS and base settings come from your Flatpak PCSX2's config (its `bios` folder and
-`inis/PCSX2.ini`); `PCSX2_USERCFG=<dir>` points the runs at another PCSX2 config folder.
+`inis/PCSX2.ini`); `PCSX2_USERCFG=<dir>` points the runs at another PCSX2 config folder. The runner turns on PCSX2's EE
+and IOP console log itself, so the tests read the game's TEST lines whatever your own settings say.
 
 `tools/pcsx2-run.sh <elf> <seconds> <shot.png>` uses it; `PCSX2_HEADLESS=<binary>` picks another build and
 `PCSX2_TIMEOUT=<s>` caps a run's wall-clock time (default 3600 s; `tools/test-run.py` sets its `--timeout` + 120). A
@@ -171,7 +172,7 @@ make -C ps2/proto
 ```
 
 The first build converts the game data. It takes several minutes and several GB of RAM. Later builds only redo what
-changed. `make` uses every CPU core by default; `make -j4` (or `JOBS=4`) limits it. The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
+changed, and export steps whose inputs haven't changed are restored from the build cache. `make` uses every CPU core by default; `make -j4` (or `JOBS=4`) limits it. `python3 tools/buildprof.py report build` shows where the last build spent its time (`critical` gives the longest chain of steps). The result is `build/proto.elf`, which starts at the Firelink Shrine bonfire.
 
 ### 6. Play
 
@@ -191,6 +192,9 @@ how many CPU threads it uses; `--help` lists every option. In a terminal it show
 the current step and the latest output line) and writes the full log to `build/build-iso.log`; `--plain` (or
 `DSR_TUI=0`, or output to a file or pipe) prints the plain log instead. Without a ps2dev toolchain on the host it pulls the official
 ps2dev image (`ps2dev/ps2dev:v2.0.0`) and builds in a container on it with Docker or Podman (`tools/build-iso.sh`).
+The occlusion (PVS) bakes run on the GPU when there is one (NVIDIA, AMD or Intel with OpenGL 4.5; in the container
+build, through a side container); the progress view says which it uses. `PVS_GPU=0` (or
+`tools/build-iso.sh --no-gpu` for the container build) bakes on the CPU.
 
 To report a problem, play with `./play-report.sh` instead of opening the ISO yourself. It starts PCSX2 with
 `build/proto.iso` and your own settings and memory cards, records PCSX2's log with the game's, and takes a screenshot of
@@ -223,7 +227,7 @@ above apply in the Ubuntu shell, with these differences:
 
 | Step | Under WSL2 |
 |---|---|
-| Clone | Keep LF line endings. Clone with Ubuntu's `git`, or with Git for Windows as `git clone -c core.autocrlf=false ...`: its default (`autocrlf=true`) checks the scripts out with CRLF, and bash fails on them with `$'\r': command not found`. A clone in WSL's own filesystem (`~/DarkSoulsPS2`) builds fastest. One on the Windows drive (`/mnt/c/...`) works too, but then keep the build output on WSL's disk: `ln -s ~/dsrps2-build build` before the first build. |
+| Clone | With Ubuntu's `git` or Git for Windows. `.gitattributes` keeps every text file LF on any clone, so Git for Windows' default `core.autocrlf=true` no longer checks the scripts out with CRLF (bash would fail on them with `$'\r': command not found`). A clone in WSL's own filesystem (`~/DarkSoulsPS2`) builds fastest. One on the Windows drive (`/mnt/c/...`) works too, but then keep the build output on WSL's disk: `ln -s ~/dsrps2-build build` before the first build. |
 | Packages | `sudo apt update && sudo apt install -y build-essential python3-venv libmpg123-0t64` (Ubuntu 24.04's name for libmpg123), then the venv of step 3. |
 | ps2dev | The release tarball, unpacked where `ps2/env.sh` looks: `mkdir -p ~/tools/ps2dev-2.0.0 && curl -L https://github.com/ps2dev/ps2dev/releases/download/v2.0.0/ps2dev-ubuntu-latest.tar.gz \| tar xz -C ~/tools/ps2dev-2.0.0` |
 | The game | `tools/gamepath.py` finds the Windows Steam under `/mnt/c`, and Steam libraries on other drives as `/mnt/<drive>`. Check the copy with `verify_game.py` as in step 2. |
@@ -240,7 +244,7 @@ above apply in the Ubuntu shell, with these differences:
 | PCSX2 shows a black screen or loads nothing | HostFs is off (step 4), or you started PCSX2 yourself without the run script. Use `tools/pcsx2-run.sh`. |
 | The picture goes black while the game keeps running | Video memory ran out. PCSX2's log (`emulog.txt`) says `ERROR: Not enough VRAM`. Please report it with the spot. |
 | `OUT OF RAM: ...` in the PCSX2 log | The PS2 has 32 MB of RAM and the port runs close to it. Please report it with the spot. |
-| The build is killed or the PC slows down | The export needs a lot of RAM. Close other programs and run it again; heavy jobs go through `tools/q`, which waits for free RAM. |
+| The build is killed or the PC slows down | The export needs a lot of RAM. Close other programs and run it again; heavy jobs go through `tools/q`, which waits for free RAM. Its budget is about two thirds of the machine's RAM (20 GB of 31, 10 of 16); `DSR_Q_BUDGET=<GB>` sets another. |
 
 For a report, `./play-report.sh` collects all of this for you (see step 6). The PCSX2 log is `emulog.txt` in PCSX2's `logs` folder (Flatpak: `~/.var/app/net.pcsx2.PCSX2/config/PCSX2/logs/`).
 
