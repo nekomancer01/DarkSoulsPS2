@@ -1,5 +1,5 @@
 """Game values the engine reads at runtime instead of compiling them in, so the PS2 ELF holds no game data and can be
-built once (CI) for every player (tools/pages: the in-browser converter only has to produce the packs).
+built once (CI) for every player, whose own export only has to produce the packs.
 
 An exporter (export_player.py, export_combat.py, export_progress.py) declares its record with the types below and
 writes it with write(); the matching C header (ps2/proto/src/<name>_data.h) is generated from the same declaration

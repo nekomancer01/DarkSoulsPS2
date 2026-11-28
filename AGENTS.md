@@ -126,7 +126,7 @@ Agent context is a shared, limited budget (usage limits stop every agent at once
 - PR description: what changed, how it was verified (spots, numbers, the headless command), and the TECH_DEBT IDs
   it opens or resolves.
 - Every PR runs `.github/workflows/pr-checks.yml`: `tools/ci/hygiene.py`, `tools/ci/switches.py`, `tools/ci/offline.sh`,
-  `tools/ci/compile.sh`, `tools/ci/switches.sh` and `tools/native/build-wasm.sh` (no game data, so no PCSX2). Run them locally before pushing.
+  `tools/ci/compile.sh` and `tools/ci/switches.sh` (no game data, so no PCSX2). Run them locally before pushing.
   A new compile-time switch (`#if` / `#ifdef` on a name the sources don't define) needs a row in
   `ps2/proto/src/switches.h`: its default, kind, the build CI makes of its fallback, its owner module and the PR that
   adds it. A new Makefile variable or environment variable read by a tool needs a row in `tools/switches.tsv` the

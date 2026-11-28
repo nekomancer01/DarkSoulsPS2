@@ -2,16 +2,15 @@
 # Usage: build-iso.sh [--game DIR] [--out FILE] [--ref REF] [--work DIR] [--engine auto|docker|podman|native] [--jobs N]
 #                     [--build DIR] [--syms]
 #
-# One-step build of a playable disc image of the port from the player's own Dark Souls Remastered: what the project's
-# web page (tools/pages/) hands out. Everything runs on this machine. The game folder is mounted read-only and never
+# One-step build of a playable disc image of the port from the player's own Dark Souls Remastered. Everything runs on this machine. The game folder is mounted read-only and never
 # leaves the PC; nothing is uploaded anywhere. The only downloads are the port's source (codeload.github.com) and,
 # the first time, the build container (ps2dev/ps2dev from Docker Hub plus Alpine packages, tools/iso-builder/Dockerfile).
 #
 #   --game DIR   the folder that holds DarkSoulsRemastered.exe. Default: $DSR_GAME, else tools/gamepath.py's Steam
 #                auto-detect (needs python3 on the host), else ask.
 #   --out FILE   where the ISO goes (default ./DarkSoulsPS2.iso)
-#   --ref REF    which source to build: a commit, branch or tag of the repo (default: the commit the web page was
-#                built from, or main). Ignored when the script runs from a checkout: the checkout is built.
+#   --ref REF    which source to build: a commit, branch or tag of the repo (default: $DSR_REF, else
+#                main). Ignored when the script runs from a checkout: the checkout is built.
 #   --work DIR   source + build cache (default ~/.cache/darksoulsps2). The build dir is kept between runs, so an
 #                update re-exports only what the new source changes; delete DIR to start over.
 #   --engine     container engine (default: docker if it answers, else podman). native = no container: the host
@@ -30,7 +29,7 @@
 set -euo pipefail
 
 REPO=${DSR_REPO:-nekomancer01/DarkSoulsPS2}
-REF=${DSR_REF:-main}  # the Pages workflow (tools/pages/build.py) pins this to the commit the page was built from
+REF=${DSR_REF:-main}
 GAME=${DSR_GAME:-}
 OUT=$PWD/DarkSoulsPS2.iso
 WORK=${XDG_CACHE_HOME:-$HOME/.cache}/darksoulsps2

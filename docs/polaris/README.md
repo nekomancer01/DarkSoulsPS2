@@ -51,7 +51,7 @@ Each numbered step is about one PR, on by default with one fallback switch. Phas
 | 0 Ground | Memory and frame census, switch registry, golden routes, module boundary map, Lua translation trial (translation dropped: the trial's C was 2 to 3 times the bytecode's size and no faster) | Merged: census counters (`PROFILE` / `HEAPMAP` builds), switch registry (`src/switches.h`, `tools/switches.tsv`, CI checks) |
 | 1 Frame | GS and VRAM ownership, memory regions, simulate and emit phases, order table, VU1 memory contract, own 2D writer, the Lab | Merged (steps 1.1 to 1.7): see [architecture.md](architecture.md) |
 | 2 Renderer | Material table from MTD, prebuilt character packets, env and specular, character lights, shadows, effects on VU1, VRAM enforcement and mips | In progress |
-| 3 Pipeline | One recipe file for every export step, a shared cache, versioned chunk streams, coverage scan, browser converter on the recipe, report gates | Planned |
+| 3 Pipeline | One recipe file for every export step, a shared cache, versioned chunk streams, coverage scan, report gates (the browser converter on the recipe is retired for now, TECH_DEBT build-23) | Planned |
 | 4 World and disc | Split of `world.c` / `map.c` / `mapstream.c`, one level chain, streaming sources, DSR's read priority, IOP split, disc alignment, whole-game manifest | Planned |
 | 5 Characters and scripting | Handles, one character table, shared animation / TAE / control / hit, live Lua with hot reload, SpEffect system, full damage and poise | Planned |
 | 6 Parity | Throws, bullets and magic, part assembly, human NPCs, EMEVD op table, talk ESD and shops, objects, bosses, a vertical slice from the Asylum to the Bell Gargoyles | Planned |

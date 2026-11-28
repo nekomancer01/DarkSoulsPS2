@@ -11,8 +11,7 @@ set up but hasn't been tested.
 > [!WARNING]
 > **This is a heavy work in progress.** It is an early prototype, not a playable game: only the first few areas load,
 > most of the game's systems are missing or partly done, and things change (and break) from one day to the next.
-> Expect bugs, crashes, missing sounds and visuals that don't match DSR yet. The in-browser converter on the project
-> page is especially experimental (see [Quick start](#quick-start)).
+> Expect bugs, crashes, missing sounds and visuals that don't match DSR yet.
 
 ## What works today
 
@@ -56,22 +55,13 @@ formulas), each with its source.
 
 ## Quick start
 
-There are three ways to get a disc image (ISO) of the latest `main`. All of them read your own copy of the game, and
+There are two ways to get a disc image (ISO) of the latest `main`. Both read your own copy of the game, and
 the ISO they make is yours only: never share it.
 
 | Way | What it takes | Notes |
 |---|---|---|
 | `./build-iso.sh` in the repository root | A Linux shell; the steps below, or Docker / Podman | The recommended way. One command exports the game data, builds the ELF and writes `build/proto.iso`. Without a ps2dev toolchain it pulls the official ps2dev image (`ps2dev/ps2dev`) and builds in it with Docker / Podman (`tools/build-iso.sh`). `./build-iso.sh --help` lists the options |
-| The project page, https://nekomancer01.github.io/DarkSoulsPS2/ | A desktop browser (Chrome, Edge or Firefox) and plenty of memory | Converts your game folder into an ISO inside the browser tab; nothing is uploaded. **Very much a work in progress**, see below |
 | The full developer setup (steps 1 to 6 below) | Linux, ps2dev, Python, PCSX2 | For changing the code and running the tests |
-
-> [!CAUTION]
-> **The in-browser converter is a heavy work in progress.** It runs the port's own Python converter
-> (`tools/convert.py`) in WebAssembly (Pyodide, with its C helpers built by `tools/native/build-wasm.sh`) and packs the
-> game-free ELF from CI with `tools/iso9660.py`. It is slow (about 10 to 20 minutes), each worker needs up to about
-> 2.5 GB of memory and can fail on PCs with less, the ISO it makes has **no sound yet** (the game's MP3 sound banks
-> can't be decoded in the browser), and it may lag behind or break when the native build changes. If it fails or
-> the result misbehaves, use `./build-iso.sh` instead and please report what happened.
 
 Tested on Linux. The steps assume a Linux shell. On Windows, run them in WSL2: see
 [Building on Windows (WSL2)](#building-on-windows-wsl2) for what differs there.
@@ -299,7 +289,6 @@ or `tools/ext/` (git-ignored), and check each project's licence before sharing a
 | meshoptimizer (`tools/ext/`) | Mesh experiments | MIT |
 | lz4, lz4ultra (`tools/ext/`) | Compressor experiments | BSD-2 (lib) / zlib |
 | libimagequant (`tools/ext/`) | Palette quantisation experiments | GPL-3.0-or-later or commercial |
-| Node.js 18+, clang + wasm-ld (LLVM 17+); pyodide (npm, fetched into `build/cache/pyodide-node` on first use) | `tools/pages/convert-node.mjs` (the in-browser converter run outside a browser, to compare its packs with a native build) | Node: MIT; Pyodide: MPL-2.0 |
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 v2.8.2 source + its libraries (`tools/ext/pcsx2-src`, `tools/ext/pcsx2-deps`) | The headless test runner `pcsx2-dsrtest` (`tools/pcsx2-headless/build.sh`), emulator debugging | GPL-3.0 (PCSX2); libraries: see PCSX2's `build-dependencies-runner.sh` |
 | Ghidra | Exe research (`ghidra/scripts`) | Apache-2.0 |
