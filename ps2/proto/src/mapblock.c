@@ -3,6 +3,7 @@
  * draws them; map_i.h has the types and state both use. */
 #include "mapfile.h"
 #include "map_i.h"
+#include "maplog.h"
 #include "chunk.h"
 #include "world.h"
 #include "material.h"
@@ -568,6 +569,7 @@ unsigned mp_draw_far(const float *e)
             continue;
         for (unsigned j = 0; j < f->n; j++) {
             const Chunk *c = &far_chunk[f->first + j];
+            MW_ADD(MW_FAR);
             int cls = mp_visible(c, e, 0);
             if (cls)
                 n += mp_draw_hz(&far_inst, c, cls, 0, 0);
@@ -638,6 +640,7 @@ unsigned mp_draw_hz_only(int k, const float *e)
 {
     const MapInst *m = &mp_inst[k];
     unsigned n = 0;
+    MO_BEGIN
     const unsigned char *skip = HZ_ONLY_OWN ? hz_skips(k) : NULL;
     for (unsigned ci = 0; ci < m->nctab; ci++) {
         const HzCell *hc = &m->hz_cell[ci];
@@ -647,11 +650,13 @@ unsigned mp_draw_hz_only(int k, const float *e)
             const Chunk *c = &m->hz_chunk[hc->first + j];
             if (!dg_mask_shown(k, (int)(c->flags >> 16 & 0xFF)))
                 continue;
+            MW_ADD(MW_HZ);
             int cls = mp_visible(c, e, 0);
             if (cls)
                 n += mp_draw_hz(m, c, cls, 0, 0);
         }
     }
+    MO_END(MO_HZONLY)
     return n;
 }
 

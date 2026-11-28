@@ -8,6 +8,20 @@ int mp_on;  /* this frame is timed */
 unsigned mf_t[MF_N];
 unsigned mp_mc_cells, mp_mc_vis, mp_mc_tiles, mp_mc_tvis, mp_mc_chunks;  /* per frame: cells tested / visible, tiles tested / visible, chunks reached */
 unsigned mp_t[MP_N];
+unsigned mo_t[MO_N], mo_reads[MO_N], mp_cull_reads, mp_tick_n, mp_np, mp_wall, mw_n[MW_N];
+float mp_tick_us;
+
+/* the cost of one ticks() read: 1000 back-to-back reads (PCSX2 ends the recompiler block at each, so it depends on
+ * the settings) */
+void mp_tick_calibrate(void)
+{
+    unsigned sink = 0, t0 = ticks();
+    for (int i = 0; i < 1000; i++)
+        sink ^= ticks();
+    unsigned t1 = ticks();
+    (void)sink;
+    mp_tick_us = (float)(t1 - t0) / 1000.0f / 294.912f;
+}
 #ifdef MAP_PROF
 unsigned mp_prof_vis, mp_prof_clip;
 #endif
@@ -33,9 +47,20 @@ unsigned mp_hzx[3][3];
 void mp_log_pass_ms(unsigned mp_t0)
 {
     static unsigned fr, nt, acc[MP_N + 1], wst[MP_N + 1], wtot, facc[MF_N];
+    static unsigned oacc[MO_N], oreads[MO_N], creads, nreads, wacc, wfr, wwork[MW_N];
     unsigned tot = mp_on ? ticks() - mp_t0 : 0, v[MP_N + 1], sub = 0;
+    if (mp_tick_us <= 0)
+        mp_tick_calibrate();
     for (int i = 0; i < MF_N; i++)
         facc[i] += mf_t[i];
+    for (int i = 0; i < MO_N; i++)
+        oacc[i] += mo_t[i], oreads[i] += mo_reads[i];
+    creads += mp_cull_reads, nreads += mp_tick_n + (mp_on ? 2 : 0), wacc += mp_wall;
+    for (int i = 0; i < MW_N; i++)
+        wwork[i] += mw_n[i];
+    wfr++;
+    memset(mo_t, 0, sizeof mo_t), memset(mo_reads, 0, sizeof mo_reads), memset(mw_n, 0, sizeof mw_n);
+    mp_cull_reads = mp_tick_n = mp_np = mp_wall = 0;
     nt += mp_on;
     for (int i = 0; i < MP_N; i++)
         v[i] = mp_t[i], sub += mp_t[i];
@@ -58,6 +83,28 @@ void mp_log_pass_ms(unsigned mp_t0)
                MPMS(facc[MF_CHUNKS]), MPMS(facc[MF_FX]), MPMS(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]),
                mp_mc_tiles / MAP_PASS_LOG, mp_mc_tvis / MAP_PASS_LOG, mp_mc_cells / MAP_PASS_LOG, mp_mc_vis / MAP_PASS_LOG,
                mp_mc_chunks / MAP_PASS_LOG);
+        {  /* "map: other ms": plan other by part, the same values less their own timer reads, the work counts */
+            static const char *const on[MO_N] = {"sky", "pict", "far", "hzonly", "prologue", "hzcell", "fades", "zsend", "lvl", "setup"};
+            float tk = mp_tick_us * 294.912f;  /* ticks per read */
+            double sum = 0, c[MO_N];
+            char b[256];
+            int k = 0;
+            for (int i = 0; i < MO_N; i++) {
+                sum += MPMS(oacc[i]);
+                c[i] = MPMS(oacc[i]) - (double)oreads[i] / (double)nt * (double)tk / 294912.0;
+                k += snprintf(b + k, sizeof b - k, " %s %.2f", on[i], MPMS(oacc[i]));
+            }
+            double other = MPMS(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]);
+            printf("map: other ms%s rest %.2f; corrected cull_c %.2f far_c %.2f hzonly_c %.2f prologue_c %.2f; timer reads "
+                   "%u x %.3f us\n", b, other - sum, MPMS(acc[MP_CULL]) - (double)creads / (double)nt * (double)tk / 294912.0,
+                   c[MO_FAR], c[MO_HZONLY], c[MO_PRO], nreads / nt, (double)mp_tick_us);
+            printf("map: other check ms wall %.2f parts %.2f diff %.2f (plan other %.2f, outside the map functions %.2f)\n",
+                   MPMS(wacc), sum, MPMS(wacc) - sum, other, other - MPMS(wacc));
+            printf("map: work per frame boxdepth %u tclevel %u sqrt %u far_tested %u hz_tested %u\n", wwork[MW_BOX] / wfr,
+                   wwork[MW_TCL] / wfr, wwork[MW_SQRT] / wfr, wwork[MW_FAR] / wfr, wwork[MW_HZ] / wfr);
+            memset(oacc, 0, sizeof oacc), memset(oreads, 0, sizeof oreads), memset(wwork, 0, sizeof wwork);
+            creads = nreads = wacc = wfr = 0;
+        }
         mp_mc_cells = mp_mc_vis = mp_mc_tiles = mp_mc_tvis = mp_mc_chunks = 0, nt = 0;
 #undef MPMS
 #undef MPMS1

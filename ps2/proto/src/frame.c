@@ -23,6 +23,9 @@
 #include "chrlight.h"
 #include "shadow.h"
 #include "vu1.h"
+#ifdef MAP_CHAIN_HASH
+void vu1_hash_frame(int on);  /* vu1.c: the map chain content hash of this frame's window (MAP_CHAIN_HASH builds) */
+#endif
 #include "collision.h"
 #include "combat.h"
 #include "status.h"
@@ -395,6 +398,9 @@ static void phase_emit_map(Frame *f)
             ot_open(OT_SKY, OT_SKY);
             f->b->z_clear(gs);
             frame_draw_check(FE_MAP_DRAW);
+#ifdef MAP_CHAIN_HASH
+            vu1_hash_frame(1);
+#endif
             MEM_LEGACY(WORLD) f->tris_drawn = map_draw_sky(f->eye);
             ot_close();
             ot_open(OT_PANO, OT_PANO);
@@ -402,6 +408,9 @@ static void phase_emit_map(Frame *f)
             ot_close();
             ot_open(OT_HORIZON, OT_WORLD);  /* (cells interleave their horizon, coarse and near levels) */
             MEM_LEGACY(WORLD) f->tris_drawn += map_draw_world();
+#ifdef MAP_CHAIN_HASH
+            vu1_hash_frame(0);
+#endif
             ot_close();
             ot_flush();  /* VU1 draws the map while the EE runs the game logic and poses the characters below */
         }

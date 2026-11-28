@@ -1,0 +1,6 @@
+TEST passes a n 100 map_p50 8.00 map_p90 10.00 chr_p50 1.00
+TEST passes b n 300 map_p50 11.00 map_p90 13.00 chr_p50 1.00
+map: pass ms cull 1.00 plan 5.1 chain 2.00 tex 1.00 bump 1.00 total 10.1 | worst cull 2.00 plan 9.00 chain 3.00 tex 2.00 bump 1.00 total 17.00 (15 timed frames)
+map: pass ms cull 1.00 plan 7.1 chain 2.00 tex 1.00 bump 1.00 total 12.1 | worst cull 2.00 plan 9.00 chain 3.00 tex 2.00 bump 1.00 total 17.00 (15 timed frames)
+map: other ms sky 0.15 pict 0.10 far 0.05 hzonly 0.00 prologue 1.10 hzcell 0.41 fades 0.02 zsend 0.86 lvl 0.09 setup 0.22 rest 0.84; corrected cull_c 1.96 far_c 0.05 hzonly_c 0.00 prologue_c 1.06; timer reads 17057 x 0.017 us
+map: work per frame boxdepth 1000 tclevel 500 sqrt 2000 far_tested 10 hz_tested 20

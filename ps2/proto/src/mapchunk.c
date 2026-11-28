@@ -29,6 +29,12 @@ static unsigned zs_n, zs_cap, zs_lost;  /* words used / available; near records 
 static unsigned zs_st[4];  /* frames: chunks far only, near only, both; peak words */
 static int zs_nobump;  /* draw_chunk_ for the far pass: the relief pass is the near pass's (BUMP_FAR < ZSPLIT) */
 
+#ifdef MAP_REUSE_CHECK
+/* debug build: every reused depth / distance / level is compared bit for bit with a fresh computation in the same frame */
+static unsigned rc_hit, rc_hz, rc_miss, rc_bad, rc_fx, rc_zs, rc_lvl, rc_dd;
+#endif
+static float zs_route_zmax;  /* mp_zs_route's box depth of the chunk it routed last (farthest point) */
+
 static int zs_room(unsigned w)
 {
     if (zs_n + w <= zs_cap)
@@ -105,6 +111,54 @@ void mp_row_regs(GSGLOBAL *gs, const MatRow *row)
 static u32 water_col[256] __attribute__((aligned(16)));
 static unsigned char water_srgb[256];
 
+/* counters of water_colours (logged by mp_zs_begin every MAP_PASS_LOG frames, "map: water vertices"): vertices,
+ * powf calls, table lookups, fallback powf (a table was wanted, none free); wl_t: ticks inside the per-vertex loop on
+ * timed frames (mp_on) */
+static unsigned wl_v, wl_pf, wl_tab, wl_fb, wl_t;
+
+/* x^pw for a non-integer pw (the CLUT pow byte k[13], 1/32 steps; the Darkroot lake has 0xFF = 7.97): a table per power
+ * instead of a powf per vertex (~2 us each on the EE). Entry i = powf(i / 1024, pw), x in [0, 1], linear between. At most
+ * two powers a block; a third falls back to powf (counted) */
+#define WATER_TAB_N 256
+static struct { unsigned char key; float t[WATER_TAB_N + 1]; } water_tab[2];
+
+static const float *water_tab_get(unsigned char key, float pw)
+{
+    for (int i = 0; i < 2; i++) {
+        if (water_tab[i].key == key)
+            return water_tab[i].t;
+        if (!water_tab[i].key) {
+            for (int j = 0; j <= WATER_TAB_N; j++)
+                water_tab[i].t[j] = powf(j / (float)WATER_TAB_N, pw);
+            water_tab[i].key = key;
+            return water_tab[i].t;
+        }
+    }
+    return NULL;
+}
+
+static inline float water_pow(const float *t, float x)
+{
+    x = x < 0 ? 0 : x > 1 ? 1 : x;
+    float fx = x * WATER_TAB_N;
+    int i = (int)fx;
+    if (i >= WATER_TAB_N)
+        return t[WATER_TAB_N];
+    return t[i] + (t[i + 1] - t[i]) * (fx - (float)i);
+}
+
+/* the 4 output bytes of a vertex from F = bias + scale x^pw (clamped) */
+static inline void water_bytes(unsigned char *o, const float *wc, const float *fc, float f)
+{
+    f = f < 0 ? 0 : f > 1 ? 1 : f;
+    for (int i = 0; i < 3; i++)
+        o[i] = (unsigned char)((water_srgb[(int)((wc[i] * (1 - f) + fc[i] * f) * 255 + 0.5f)] * 128 + 127) / 255);
+    o[3] = (unsigned char)((wc[3] + (1 - wc[3]) * f) * 128 + 0.5f);
+}
+#ifdef MAP_WATER_CHECK
+static unsigned wk_v, wk_c, wk_d, wk_s;  /* table vertices, channels (4 each), channels that differ, largest byte step */
+#endif
+
 static const void *water_colours(const GSTEXTURE *t, const unsigned char *base, const Chunk *c, unsigned n)
 {
     const unsigned char *k = t ? (const unsigned char *)t->Clut : NULL;
@@ -122,6 +176,9 @@ static const void *water_colours(const GSTEXTURE *t, const unsigned char *base, 
     int ip = (int)pw;
     const short *p = (const short *)(base + c->pos);
     float s = c->step;
+    const float *tab = pw == (float)ip ? NULL : water_tab_get(k[13], pw);  /* x^pw table of this power (NULL: no slot) */
+    unsigned wl0 = mp_on ? ticks() : 0;
+    wl_v += nv;
     for (unsigned v = 0; v < nv; v++, p += 3) {
         float dx = mp_cam[0] - (c->org[0] + s * p[0]), dy = mp_cam[1] - (c->org[1] + s * p[1]),
               dz = mp_cam[2] - (c->org[2] + s * p[2]), l2 = dx * dx + dy * dy + dz * dz;
@@ -129,25 +186,40 @@ static const void *water_colours(const GSTEXTURE *t, const unsigned char *base, 
         if (pw == (float)ip)
             for (int i = 0; i < ip; i++)
                 xp *= x;
+        else if (tab)
+            xp = water_pow(tab, x), wl_tab++;
         else
-            xp = powf(x, pw);
-        float f = bias + scale * xp;
-        f = f < 0 ? 0 : f > 1 ? 1 : f;
+            xp = powf(x, pw), wl_pf++, wl_fb++;
         unsigned char *o = (unsigned char *)&water_col[v];
-        for (int i = 0; i < 3; i++)
-            o[i] = (unsigned char)((water_srgb[(int)((wc[i] * (1 - f) + fc[i] * f) * 255 + 0.5f)] * 128 + 127) / 255);
-        o[3] = (unsigned char)((wc[3] + (1 - wc[3]) * f) * 128 + 0.5f);
+        water_bytes(o, wc, fc, bias + scale * xp);
+#ifdef MAP_WATER_CHECK
+        if (tab) {  /* the same vertex with powf (x clamped to [0, 1] like the table) */
+            unsigned char r[4];
+            float xc = x < 0 ? 0 : x > 1 ? 1 : x;
+            water_bytes(r, wc, fc, bias + scale * powf(xc, pw));
+            wk_v++, wk_c += 4;
+            for (int i = 0; i < 4; i++) {
+                unsigned d = o[i] > r[i] ? o[i] - r[i] : r[i] - o[i];
+                wk_d += d != 0;
+                wk_s = d > wk_s ? d : wk_s;
+            }
+        }
+#endif
     }
+    if (mp_on)
+        wl_t += ticks() - wl0;
     return water_col;
 }
 
 static GSTEXTURE *late_tex;  /* map_draw_blend: the texture the map pass resolved for the chunk being drawn */
 
+/* zm: the box's farthest view depth when the caller has it (mp_zs_route's, stored in the near record), else NULL */
 static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
-                       unsigned no)
+                       unsigned no, const float *zm)
 {
     GSTEXTURE *t = late_tex;
-    float d2 = 0;
+    float d2 = 0, dd = 0;  /* d2: squared distance to the box, dd its root (0 for a late texture) */
+    int lvl = -1;  /* tc_level of the chunk's texture at dd (when tested at the top) */
     if (!t && c->tex >= 0 && c->tex < m->ntex) {  /* mip level from the distance to the chunk's box */
         int tx = m->tex_base + c->tex;
         for (int k = 0; k < 3; k++) {
@@ -155,7 +227,9 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
             d2 += o * o;
         }
         MP_BEGIN
-        t = tc_get(tx, tc_level(tx, sqrtf(d2)));
+        dd = sqrtf(d2);
+        lvl = tc_level(tx, dd);
+        t = tc_get(tx, lvl);
         MP_END(MP_TEX)
         if (!t) {
             DBGW(D_TEX, n, no);
@@ -173,7 +247,14 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
             float zmax;
             if (mp_emit_close)  /* (MAP_TWO_PASS: the cell lies nearer than the edge fog's start) */
                 zmax = 0;
-            else if (c == mp_vis_c)  /* map_draw's eye is the camera's */
+            else if (zm) {
+                zmax = *zm;
+#ifdef MAP_REUSE_CHECK
+                float fz;
+                mp_box_depth(c, mp_cam, &fz, NULL);
+                rc_zs++, rc_bad += memcmp(&fz, &zmax, sizeof fz) != 0;
+#endif
+            } else if (c == mp_vis_c)  /* map_draw's eye is the camera's */
                 zmax = mp_vis_zmax;
             else
                 mp_box_depth(c, mp_cam, &zmax, NULL);
@@ -204,14 +285,22 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
         map_vu1_batches++;
         DBGW(D_DRAWN, 0, no);
         MP_SPLIT(MP_CHAIN);
+#ifdef MAP_REUSE_CHECK
+        {
+            float fd = sqrtf(d2);
+            rc_dd++, rc_bad += memcmp(&fd, &dd, sizeof fd) != 0;
+            if (lvl >= 0 && c->tex >= 0)
+                rc_lvl++, rc_bad += tc_level(m->tex_base + c->tex, fd) != lvl;
+        }
+#endif
         if ((passes & MP_PLAYER_LIGHT) && !zs_nobump && c->tex >= 0)  /* the player's light */
-            mp_pl_add(base, c, n, vclip, m->tex_base + c->tex, tc_level(m->tex_base + c->tex, sqrtf(d2)));
+            mp_pl_add(base, c, n, vclip, m->tex_base + c->tex, lvl >= 0 ? lvl : tc_level(m->tex_base + c->tex, dd));
         if ((passes & MP_RELIEF) && !zs_nobump)  /* normal-map relief pass (bump.c: the boot
                                                                             * block, and a world block while it is full) */
-            bump_add((int)(m - mp_inst), no, sqrtf(d2), c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
+            bump_add((int)(m - mp_inst), no, dd, c->flags & CHUNK_CULL, vclip | pkt, n, c->nv, base + c->pos,
                      base + c->st, base + c->col, c->nv ? base + CHUNK_IDX(c) : NULL, c->org, st_k);
         if ((passes & MP_ENV_SPEC) && !zs_nobump && !vclip && n == c->tris)  /* the specular pass (spec_draw) */
-            mp_spec_add(m, base, c, sqrtf(d2));
+            mp_spec_add(m, base, c, dd);
         MP_END(MP_BUMP)
     }
     return n;
@@ -220,11 +309,19 @@ static int draw_chunk_(const MapInst *m, const unsigned char *base, const Chunk 
 /* a horizon chunk (untextured, double-sided, its packet without st: vu1.c VU1_FLAT). The clipping program (VU1_CLIP)
  * gets a zero st stream sent on its own: with the packet's two streams alone it hung PCSX2 2 s into the Burg on the
  * first ISO run (2026-11-06; a full st stream on disc, +10 bytes a triangle, ran the route) */
-static int draw_hz_(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
+static int draw_hz_(const MapInst *m, const Chunk *c, int cls, int mode, int cull, const float *zm)
 {
     static unsigned char zero_st[CHUNK_HZN_TRIS * 12] __attribute__((aligned(16)));
     float zmax;
-    mp_box_depth(c, mp_cam, &zmax, NULL);
+    if (zm) {  /* mp_zs_route's depth of this box */
+        zmax = *zm;
+#ifdef MAP_REUSE_CHECK
+        float fz;
+        mp_box_depth(c, mp_cam, &fz, NULL);
+        rc_zs++, rc_bad += memcmp(&fz, &zmax, sizeof fz) != 0;
+#endif
+    } else
+        mp_box_depth(c, mp_cam, &zmax, NULL);
     int edge = zmax > mp_edge_z && !(c->flags & CHUNK_BACKDROP) ? VU1_EDGE : 0;
     if (c->nv) {  /* indexed (horizon.py HZN_IDX, the default): vu1mapi, or vu1clip's indexed entry at the near plane;
                    * the st stream is the colours (read, unused with TME off) */
@@ -249,30 +346,49 @@ static int draw_hz_(const MapInst *m, const Chunk *c, int cls, int mode, int cul
 
 /* ZSPLIT routing: the far pass draws the part of a box beyond ZSPLIT now (clipped at ZSPLIT where the box starts
  * nearer), the part nearer than ZSPLIT is recorded for the near pass. cls is visible_'s, for the normal near plane. */
-int mp_zs_route(const Chunk *c, int *far_cls, int cls)
+static int zs_route(const Chunk *c, int *far_cls, int cls, int kind)  /* kind: 0 chunk, 1 horizon chunk, 2 effect */
 {
-    float zmax, zmin = mp_box_depth(c, mp_cam, &zmax, NULL);
+    float zmax, zmin;
+    if (c == mp_vis_c) {  /* the view test measured this box this frame, same eye */
+        zmin = mp_vis_zmin, zmax = mp_vis_zmax;
+#ifdef MAP_REUSE_CHECK
+        float fz, fn = mp_box_depth(c, mp_cam, &fz, NULL);
+        rc_hit++, rc_hz += kind == 1, rc_fx += kind == 2;
+        rc_bad += memcmp(&fz, &zmax, sizeof fz) != 0 || memcmp(&fn, &zmin, sizeof fn) != 0;
+#endif
+    } else {
+        zmin = mp_box_depth(c, mp_cam, &zmax, NULL);
+#ifdef MAP_REUSE_CHECK
+        rc_miss++;
+#endif
+    }
+    (void)kind;
+    zs_route_zmax = zmax;
     int r = (zmax > ZSPLIT) | (zmin < ZSPLIT) << 1;
     *far_cls = cls == 1 && zmin >= ZSPLIT * 1.001f ? 1 : 2;
     zs_st[r - 1]++;
     return r;
 }
 
+int mp_zs_route(const Chunk *c, int *far_cls, int cls) { return zs_route(c, far_cls, cls, 2); }
+
 int mp_draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *c, unsigned n, int cls, int mode,
                       unsigned no)
 {
     if (zs_pass != 1 || (c->flags & CHUNK_SKY))  /* the sky (1-3 km): the far pass */
-        return draw_chunk_(m, base, c, n, cls, mode, no);
-    int fc, r = mp_zs_route(c, &fc, cls), dn = 0;
-    if ((r & 2) && zs_room(8)) {
+        return draw_chunk_(m, base, c, n, cls, mode, no, NULL);
+    int fc, r = zs_route(c, &fc, cls, 0), dn = 0;
+    const float zmax = zs_route_zmax;
+    if ((r & 2) && zs_room(9)) {
         u32 *w = zs_buf + zs_n;
         w[0] = ZS_CHUNK, w[1] = (u32)(m - mp_inst), w[2] = (u32)c, w[3] = (u32)base, w[4] = n, w[5] = (u32)cls;
         w[6] = (u32)mode, w[7] = no;
-        zs_n += 8, dn = (int)n;
+        memcpy(w + 8, &zmax, 4);  /* the box's farthest depth: the replay's edge test */
+        zs_n += 9, dn = (int)n;
     }
     if (r & 1) {
         zs_nobump = 1;
-        dn = draw_chunk_(m, base, c, n, fc, mode, no);
+        dn = draw_chunk_(m, base, c, n, fc, mode, no, &zmax);
         zs_nobump = 0;
     }
     return dn;
@@ -281,15 +397,17 @@ int mp_draw_chunk(const MapInst *m, const unsigned char *base, const Chunk *c, u
 int mp_draw_hz(const MapInst *m, const Chunk *c, int cls, int mode, int cull)
 {
     if (zs_pass != 1)
-        return draw_hz_(m, c, cls, mode, cull);
-    int fc, r = mp_zs_route(c, &fc, cls), dn = 0;
-    if ((r & 2) && zs_room(6)) {
+        return draw_hz_(m, c, cls, mode, cull, NULL);
+    int fc, r = zs_route(c, &fc, cls, 1), dn = 0;
+    const float zmax = zs_route_zmax;
+    if ((r & 2) && zs_room(7)) {
         u32 *w = zs_buf + zs_n;
         w[0] = ZS_HZ, w[1] = (u32)m, w[2] = (u32)c,  /* (m: a map instance, or the far panorama's base, mapblock.c) */ w[3] = (u32)cls, w[4] = (u32)mode, w[5] = (u32)cull;
-        zs_n += 6, dn = (int)c->tris;
+        memcpy(w + 6, &zmax, 4);
+        zs_n += 7, dn = (int)c->tris;
     }
     if (r & 1)
-        dn = draw_hz_(m, c, fc, mode, cull);
+        dn = draw_hz_(m, c, fc, mode, cull, &zmax);
     return dn;
 }
 
@@ -317,6 +435,19 @@ static void zs_clear(void)
 void mp_zs_begin(void)
 {
     int bytes = 0;
+    static unsigned wfr, wnt;  /* frames, timed frames since the last "map: water vertices" line */
+    if (wfr == MAP_PASS_LOG) {
+        unsigned nt = wnt ? wnt : 1;
+        printf("map: water vertices %u powf %u table %u fallback %u loop ms %.2f (per frame, %u timed frames)\n",
+               wl_v / wfr, wl_pf / wfr, wl_tab / wfr, wl_fb / wfr, (double)((float)wl_t / 294912.0f / (float)nt), wnt);
+        wfr = wnt = wl_v = wl_pf = wl_tab = wl_fb = wl_t = 0;
+    }
+#ifdef MAP_WATER_CHECK
+    static unsigned wkf;
+    if (++wkf % 600 == 0)
+        printf("map: water check: vertices %u channels %u diff %u maxstep %u\n", wk_v, wk_c, wk_d, wk_s);
+#endif
+    wfr++, wnt += mp_on;
     zs_pass = 0;
     zs_n = zs_lost = 0;
     if (ZSPLIT <= 0 || !(zs_buf = vu1_scratch(&bytes)) || bytes < 4096)
@@ -339,12 +470,14 @@ void mp_zs_end(void)
         float f[4];
         switch (w[0]) {
         case ZS_CHUNK:
-            draw_chunk_(&mp_inst[w[1]], (const unsigned char *)w[3], (const Chunk *)w[2], w[4], (int)w[5], (int)w[6], w[7]);
-            i += 8;
+            memcpy(f, w + 8, 4);
+            draw_chunk_(&mp_inst[w[1]], (const unsigned char *)w[3], (const Chunk *)w[2], w[4], (int)w[5], (int)w[6], w[7], f);
+            i += 9;
             break;
         case ZS_HZ:
-            draw_hz_((const MapInst *)w[1], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5]);
-            i += 6;
+            memcpy(f, w + 6, 4);
+            draw_hz_((const MapInst *)w[1], (const Chunk *)w[2], (int)w[3], (int)w[4], (int)w[5], f);
+            i += 7;
             break;
         case ZS_REGS: {
             u64 r[2 * 8];
@@ -386,6 +519,10 @@ void mp_zs_end(void)
         printf("map: zsplit %.0f m: far %u near %u both %u, peak %u words of %u\n", (double)ZSPLIT, zs_st[0], zs_st[1],
                zs_st[2], zs_st[3], zs_cap);
         memset(zs_st, 0, sizeof zs_st);
+#ifdef MAP_REUSE_CHECK
+        printf("map: reuse check: hits %u (hz %u) misses %u bad %u fx %u zs %u lvl %u dd %u\n", rc_hit, rc_hz, rc_miss, rc_bad,
+               rc_fx, rc_zs, rc_lvl, rc_dd);
+#endif
     }
     zs_pass = 0;
 }
@@ -395,7 +532,7 @@ int mp_draw_chunk_far(const MapInst *m, const unsigned char *base, const Chunk *
                       unsigned no)
 {
     zs_nobump = 1;
-    int dn = draw_chunk_(m, base, c, n, cls, mode, no);
+    int dn = draw_chunk_(m, base, c, n, cls, mode, no, NULL);
     zs_nobump = 0;
     return dn;
 }
