@@ -186,7 +186,7 @@ all: $(PACKS) $(EE_BIN)
 	$(EE_STRIP) --strip-all $(EE_BIN)
 	@# the links (the user's launch path) follow the default build only: scratch / variant BUILD= dirs leave them alone
 	@$(if $(filter $(abspath $(DSR_ROOT)/build),$(abspath $(BUILD))),ln -sfn $(EE_BIN) $(notdir $(EE_BIN)); [ -e data ] && [ ! -L data ] || ln -sfn $(D) data,true)
-# make elf: only the ELF, without the game (CI release, tools/pages): it holds no game data, the values it needs come
+# make elf: only the ELF, without the game (CI): it holds no game data, the values it needs come
 # from the packs at boot (src/gamedata.c), so one build runs with every player's own packs of the same layout
 elf: $(EE_BIN)
 	$(EE_STRIP) --strip-all $(EE_BIN)

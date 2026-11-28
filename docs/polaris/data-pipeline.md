@@ -16,8 +16,8 @@ game folder (DSR_GAME)
 ```
 
 The ELF holds no game data. Game values the code needs are loaded at boot from packs, so one ELF built on CI (no game
-data) serves every player's own packs; the in-browser converter (`tools/pages`, `tools/convert.py`) relies on this
-and only produces the packs.
+data) serves every player's own packs (the retired in-browser converter relied on this and only produced the packs, TECH_DEBT
+build-23).
 
 ## Finding the game
 
@@ -187,10 +187,9 @@ reads, the `tools/` sources it runs and, for packs, the entries. It also holds e
   stale. The ELF, IOP module, ISO and the world sub-make orchestration (`worldexports`, `worldhzn`, ...) stay
   hand-written in `ps2/proto/Makefile`, with the small "derived" values both sides compute (PVS_PEERS, TEX_PEERS,
   LITE_RUN, ...; their Python twins are `recipe.Plan.ctx`).
-- **The converter.** `tools/convert.py` (and through it the in-browser converter) runs the same step instances in one
-  process, ordered by their files, the steps the goals need and nothing else. Steps that run a host program (the
-  occlusion bake) or need the MP3 decoder (sound) are skipped in the browser and their pack entries left out
-  (TECH_DEBT build-18).
+- **The converter.** `tools/convert.py` runs the same step instances in one process, ordered by their files, the
+  steps the goals need and nothing else (`--compare` checks its packs against make's). It was the engine of the
+  in-browser converter, retired for now (TECH_DEBT build-23).
 - **Tools that look at steps.** `python3 tools/recipe.py list <game> <build> --json` prints every step instance of
   the default build with its inputs, outputs, tools and environment: the hook for the export cache and the build
   gates.
@@ -258,7 +257,7 @@ effect coverage of the block's FFX bundle from the scan. `--strict` fails the bu
 verdict, FX or OBJ textures over their rows, or a Lua opcode `lua0.c` lacks (`BLOCKREPORT_STRICT=0` reports only).
 
 Both are world goals of the default build (recipe steps "coverage scan" and "block report", after "world
-budget"); the browser converter skips the scan (the report then shows no effect coverage).
+budget").
 
 ## World manifest
 
@@ -292,6 +291,5 @@ run it again until it says settled. The build gate is `world_budget.py --strict`
 
 ## Phase 3 will change this
 
-A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules and drive the
-browser converter, a shared cache keyed by input hashes, versioned chunk streams, a coverage scan of every reader over
+A single recipe file listing every export step (inputs, outputs, tool) will generate the Makefile rules, a shared cache keyed by input hashes, versioned chunk streams, a coverage scan of every reader over
 every game file, and report gates that fail the build on a budget miss.

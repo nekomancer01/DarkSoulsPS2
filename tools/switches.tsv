@@ -168,8 +168,6 @@ FX_TEX_MAX	env	128	tune	fx	-	init	export_effects.py	px, longest side of an expor
 FX_WALL_ALPHA	env	1	flag	fx	0	#248	export_effects.py	BlendMode 1 (light / fog walls) alpha blended: system()
 GAME_LOD	env	unset	opt	world	-	init	mapcfg.py	-
 GEOM_NATIVE	env	1	flag	world	0	#41	geom_native.py	-
-GITHUB_REPOSITORY	env	unset	config	tools	-	#35	pages/build.py	-
-GITHUB_SHA	env	unset	config	tools	-	#35	pages/build.py	-
 GRASS_D0	env	10.0	tune	world	-	init	mapchunks.py	-
 GRASS_KEEP	env	16	tune	world	-	init	mapcfg.py	-
 GRASS_NEAR_D	env	22.0	tune	world	-	init	mapchunks.py	metres: full exported foliage density up to here, then (D0 / d)^2 (map.c)

@@ -1,6 +1,6 @@
 """The default build's packs (`make -C ps2/proto`: Firelink + its world blocks) without make, the shell or a compiler:
-every export runs in this Python process. The project page's in-browser converter (tools/pages, Pyodide) runs this;
-natively it is the check that both builds write the same packs.
+every export runs in this Python process. It is the check that both builds write the same packs (it was also the engine
+of the in-browser converter, retired for now: notes/TECH_DEBT.md build-23).
 
     python3 tools/convert.py <game dir> <build dir> [--lean] [--only STEP...] [--list] [--groups]
     python3 tools/convert.py --compare <build dir> <make's build dir>     (same packs, byte for byte)

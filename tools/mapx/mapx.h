@@ -22,8 +22,8 @@
 #ifndef MX_THREADS
 #define MX_THREADS 1
 #endif
-/* MX_TIME profiling (mx_tick, per-job timings) needs <time.h> / <stdio.h>: native builds only, the browser build is
-   freestanding (-nostdinc, tools/native/wasm) and has neither */
+/* MX_TIME profiling (mx_tick, per-job timings) needs <time.h> / <stdio.h>: native builds only (the retired browser
+   build was freestanding, -nostdinc, and had neither; TECH_DEBT build-23) */
 #ifndef MX_TIMING
 #define MX_TIMING MX_THREADS
 #endif

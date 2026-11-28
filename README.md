@@ -48,18 +48,12 @@ its source.
 
 ## Quick start
 
-There are three ways to make a disc image (ISO). Each reads your own copy of the game. Never share the ISO.
+There are two ways to make a disc image (ISO). Both read your own copy of the game. Never share the ISO.
 
 | Way | Needs | Notes |
 |---|---|---|
 | `./build-iso.sh` | Linux, plus ps2dev or Docker / Podman | Recommended. One command writes `build/proto.iso`. Without ps2dev it builds in the official `ps2dev/ps2dev` container |
-| [The project page](https://nekomancer01.github.io/DarkSoulsPS2/) | Chrome, Edge or Firefox on a desktop, lots of RAM | Converts the game in the browser. Nothing is uploaded. **Experimental**, see below |
 | Developer setup (steps 1 to 6) | Linux, ps2dev, Python, PCSX2 | For changing code and running tests |
-
-> [!CAUTION]
-> **The in-browser converter is experimental.** It takes 10 to 20 minutes, each worker needs up to 2.5 GB of RAM,
-> and its ISO has **no sound** (the browser can't decode the game's MP3 banks). It can lag behind the native build.
-> If it fails, use `./build-iso.sh` and tell us what happened.
 
 The steps below are for Linux. On Windows, use WSL2: see [Building on Windows (WSL2)](#building-on-windows-wsl2).
 
@@ -284,7 +278,6 @@ Fetch them into `ext/` or `tools/ext/` (git-ignored). Check each licence before 
 | meshoptimizer (`tools/ext/`) | Mesh experiments | MIT |
 | lz4, lz4ultra (`tools/ext/`) | Compressor experiments | BSD-2 / zlib |
 | libimagequant (`tools/ext/`) | Palette experiments | GPL-3.0-or-later or commercial |
-| Node.js 18+, clang + wasm-ld (LLVM 17+), pyodide | `tools/pages/convert-node.mjs` (the browser converter, run outside a browser) | MIT; Pyodide MPL-2.0 |
 | vgmstream (`tools/ext/`) | Audio experiments | ISC-style |
 | PCSX2 v2.8.2 source + libraries (`tools/ext/pcsx2-*`) | The headless test runner | GPL-3.0 |
 | Ghidra | Exe research | Apache-2.0 |
