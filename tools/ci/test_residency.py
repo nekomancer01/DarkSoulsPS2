@@ -65,5 +65,14 @@ with tempfile.TemporaryDirectory() as tmp:
     check(rc == 1 and "lower RES_BLOCK" in out,
           f"world_budget --strict fails when the room ({big - 1} KB) is under a block's budget ({big} KB)"
           + ("" if rc == 1 else "\n" + out))
+    # page rounding: a spot whose raw sum fits the room but whose group, rounded up to whole 64 KB pages, is one page over
+    m = big // 64 + 1
+    pg_room, pg_near = 64 * m + 32, 64 * m + 1  # raw 64m + 1 KB <= room < page-rounded 64(m + 1) KB
+    rc, out = run(tmp, pg_room, pg_near, 0)
+    check(rc == 0 and f"hard want {64 * (m + 1)} KB (page-rounded) > room {pg_room} KB" in out,  # reported, not failed
+          f"world_budget --strict reports (does not fail) a spot short by a page ({pg_near} KB raw, {64 * (m + 1)} KB page-rounded, room {pg_room} KB)"
+          + ("" if rc == 0 else "\n" + out))
+    rc, out = run(tmp, pg_room + 64, pg_near, 0)
+    check(rc == 0, f"world_budget --strict passes it with one page more room ({pg_room + 64} KB)" + ("" if rc == 0 else "\n" + out))
 print(f"test_residency: {len(FAILS)} failed")
 sys.exit(len(FAILS))

@@ -98,6 +98,21 @@ STREAM_GATES = {
     "iso_burg_soak": None,  # (the 8-lap soak: not measured for the baseline)
 }
 MEDIA = {0: "-", 1: "cd", 2: "dvd", 3: "dvd9"}
+# the "TEST refusals:" line (src/hitch.c refusals_print, once before each "TEST DONE"): the four refusal counters of the
+# run (the streamer's "no room", gs_vram_admit, collision tiles, chunk files) as run gate keys
+REFUSALS = re.compile(r"TEST refusals: room (\d+) near (\d+) items (\d+) hard (\d+) \| vram chr (\d+) obj (\d+) fx (\d+) "
+                      r"\| coltile (\d+) \| chunk (\d+)")
+REFUSAL_KEYS = ("ref_room", "ref_near", "ref_items", "ref_hard", "ref_vram_chr", "ref_vram_obj", "ref_vram_fx", "ref_coltile",
+                "ref_chunk")
+# the most allowed per run for each key (None: reported, not gated); the zero-refusals plan lowers these to 0 as each
+# kind is fixed (reports/plans/2026-11-28-zero-refusals.md), never raises them
+REFUSAL_ALLOW = {k: None for k in REFUSAL_KEYS}
+REFUSAL_ALLOW["ref_chunk"] = 0  # a chunk refusal is a stale or mismatched export (tools/ci/chunkver.py), never a room problem
+# VRAM refusals (gs_vram_admit, CHR / OBJ / FX past their gs_budget.h row): 0 on every Burg ISO route, 2 runs each, after
+# FX 352 -> 368 KB and CHR 184 -> 168 KB (2026-11-28; FX peaks at 362 KB on golden taurus with the rows unenforced). The streamer's and the collision tiles' counts stay reported:
+# 0-1490 and 3-29 a run on the same routes (the zero-refusals plan's report)
+for _k in ("ref_vram_chr", "ref_vram_obj", "ref_vram_fx"):
+    REFUSAL_ALLOW[_k] = 0
 
 MAP_PASS = re.compile(r"map: pass ms (.*)")
 LOGIC_PASS = re.compile(r"logic: pass ms (.*)")  # lpass.c (Burg plan B6): averages | worst frame | each part's max
@@ -113,7 +128,7 @@ def pct(vals, p):
 
 def log_summary(log):
     """the run's "disc:" and "map: pass ms" lines -> dict"""
-    disc, mp, lp, under, gs_warn = [], {}, {}, 0, []
+    disc, mp, lp, under, gs_warn, refusals = [], {}, {}, 0, [], None
     try:
         lines = open(log, errors="replace").read().splitlines()
     except OSError:
@@ -149,6 +164,9 @@ def log_summary(log):
                         pass
         if "UNDERRUN" in line and "dsrsnd" in line:
             under += 1
+        m = REFUSALS.search(line)
+        if m:  # the last line counts (a parked run prints one per script; the counters run over the whole ELF run)
+            refusals = dict(zip(REFUSAL_KEYS, map(int, m.groups())))
         if line.startswith("TEST warn: gs vram"):  # gs.c / loading.c: an owner over gs_budget.h, or LOAD left borrowed
             gs_warn.append(line[len("TEST warn: gs vram "):].strip())
     for i, d in enumerate(disc):  # estimated drive time of each period (the gate above)
@@ -157,7 +175,7 @@ def log_summary(log):
         d["est_pct"] = round(100 * ((d["seeks"] - d["far"]) * SEEK_MS + d["far"] * FAR_SEEK_MS +
                                     1000 * d["kbps"] * span / DRIVE_KBPS) / (1000 * span), 1)
     play = [d for d in disc if not d["load"]]
-    out = {"underruns": under, "gs_vram_warn": gs_warn, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
+    out = {"underruns": under, "gs_vram_warn": gs_warn, "refusals": refusals, "map_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
                                             for k, v in mp.items()},
            "logic_pass": {k: {"p90_avg": pct(v["avg"], 90), "max": max(v["max"]) if v["max"] else None}
                           for k, v in lp.items()}}
@@ -287,7 +305,19 @@ def check_result(path, disc_gates=True):
         rfail("underruns", run["underruns"], f"run: {run['underruns']} stream underruns")
     for k, v, msg in residency_gates(d, run, st, out):
         rfail(k, v, msg)
+    for k, v, msg in refusal_gates(run):
+        rfail(k, v, msg)
     return out
+
+
+def refusal_gates(run):
+    """the "TEST refusals:" line's counts against REFUSAL_ALLOW: (ratchet gate key, value, message) per key over its
+    allowance; a log without the line (an ELF before it) gates nothing"""
+    ref = run.get("refusals")
+    if not ref:
+        return []
+    return [(k, ref[k], f"run: {k} {ref[k]} refusals > {REFUSAL_ALLOW[k]} (TEST refusals: line)")
+            for k in REFUSAL_KEYS if REFUSAL_ALLOW.get(k) is not None and ref.get(k, 0) > REFUSAL_ALLOW[k]]
 
 
 ARENA_UNDER = re.compile(r"mapstream: arena (\d+) KB is under the build's (\d+) KB")
@@ -373,6 +403,8 @@ def table(r):
         o.append("  logic pass p90 (120-frame avgs)/max frame: " + " ".join(
             f"{k} {v['p90_avg']:.2f}" + (f"/{v['max']:.1f}" if v["max"] is not None else "")
             for k, v in run["logic_pass"].items() if v["p90_avg"] is not None))
+    if run.get("refusals"):
+        o.append("  refusals: " + " ".join(f"{k[4:]} {v}" for k, v in run["refusals"].items()))
     if run.get("gs_vram_warn"):  # Polaris 1.1: VRAM owner budgets report only (gs_budget.h); 2.7 enforces
         o.append(f"  gs vram over budget ({len(run['gs_vram_warn'])} warn lines): " + "; ".join(run["gs_vram_warn"][:4]))
     o += [f"  FAIL {x}" for x in r["fails"]]

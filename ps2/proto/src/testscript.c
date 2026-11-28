@@ -559,6 +559,7 @@ static void unpark(void)
     if (load_script(full) < 0) {
         test_mb.state = 2;
         script.done = 1;
+        refusals_print();
         printf("TEST DONE frames %u\n", test_mb.frame);
         return;
     }
@@ -580,6 +581,7 @@ int test_input(Input *in, Player *pl, float *cam_yaw, float *cam_pitch, float dt
         frozen = 0;
         test_mb.state = 2;
         ft_print("all", ft_all);
+        refusals_print();
         printf("TEST DONE frames %u\n", test_mb.frame);
     }
     *in = p->held;

@@ -87,6 +87,19 @@ void gs_vram_charge(GsOwner o, u32 vram, unsigned blocks)
 #ifndef GS_VRAM_ENFORCE
 #define GS_VRAM_ENFORCE 1
 #endif
+/* GS_VRAM_RECLAIM=0: refused at once, the idle sets keep their VRAM (Polaris 2.7) */
+#ifndef GS_VRAM_RECLAIM
+#define GS_VRAM_RECLAIM 1
+#endif
+static GsReclaim reclaim[GSO_N];
+static int reclaiming;  /* (a reclaimer that allocated would come back here: refused instead of reclaiming again) */
+
+void gs_vram_reclaimer(GsOwner o, GsReclaim fn)
+{
+    if (o < GSO_N)
+        reclaim[parent[o]] = fn;
+}
+
 int gs_vram_admit(GsOwner o, unsigned blocks)
 {
     if (o >= GSO_N)
@@ -94,6 +107,15 @@ int gs_vram_admit(GsOwner o, unsigned blocks)
     GsOwner p = parent[o];
     if (!GS_VRAM_ENFORCE || !(p == GSO_CHR || p == GSO_OBJ || p == GSO_FX) || (folded(p) + blocks) / 4 <= budget_kb[p])
         return 1;
+    if (GS_VRAM_RECLAIM && reclaim[p] && !reclaiming) {
+        reclaiming = 1;
+        unsigned got = reclaim[p]((folded(p) + blocks) - budget_kb[p] * 4);
+        reclaiming = 0;
+        if (got)
+            printf("gsvram: reclaimed %s %u KB of idle sets for %u KB\n", gs_owner_name[p], got / 4, blocks / 4);
+        if ((folded(p) + blocks) / 4 <= budget_kb[p])
+            return 1;
+    }
     refused[p]++, refused_kb[p] += blocks / 4;
     printf("TEST warn: gs vram refused %s %u KB: %u of its %u KB in use (gs_budget.h)\n", gs_owner_name[p], blocks / 4,
            folded(p) / 4, budget_kb[p]);
@@ -135,6 +157,8 @@ u32 gs_vram_fixed(GSGLOBAL *g, u32 size, u8 type, GsOwner o, const char *where)
 void gs_vram_borrow(int bytes) { borrowed += bytes; }
 int gs_vram_borrowed(void) { return borrowed; }
 
+unsigned gs_vram_refused(GsOwner o) { return o < GSO_N ? refused[o] : 0; }
+unsigned gs_vram_blocks(GsOwner o) { return o < GSO_N ? folded(o) : 0; }
 unsigned gs_vram_kb(GsOwner o, int fold) { return (fold ? folded(o) : used[o]) / 4; }
 unsigned gs_vram_peak_kb(GsOwner o, int fold) { return (fold ? fold_peak[o] : peak[o]) / 4; }
 

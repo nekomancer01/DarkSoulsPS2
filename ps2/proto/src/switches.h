@@ -73,6 +73,7 @@
  * MS_LEND_NEAR_ALL    | 1        | fallback | -DMS_LEND_NEAR_ALL=0                          | world  | #245  | mapstream_i.h   | near parts may take all the pools' idle room; 0 = at most MS_LEND_NEAR_KB
  * MS_AREA_POOL        | 1        | fallback | -DMS_AREA_POOL=0                              | world  | new   | mapstream.h     | structural pool pages above the need of the blocks wanted now take map items of every class (pinned / in-view too); a larger need wanted takes them back ahead; 0 = only lendable classes and near parts there
  * MS_DEFRAG_LEND      | 1        | fallback | -DMS_DEFRAG_LEND=0                            | world  | #245  | mapstream_i.h   | MS_DEFRAG moves groups into the pools' idle room too; 0 = item pages only
+ * MS_HOLE_DEFRAG      | 0        | fallback | -DMS_HOLE_DEFRAG=1                            | world  | new   | mapstream_i.h   | a hard-tier item refused for a hole first empties a window of its size (MS_DEFRAG, MS_DEFRAG_HOLE_KB a frame) and waits MS_DEFRAG_WAIT frames (off: -12 % refusals, slower Burg streets)
  * MS_LEND_REHOME      | 1        | fallback | -DMS_LEND_REHOME=0                            | world  | #257  | mapstream_i.h       | a lent near group a lite set needs moves into the item pages instead of being dropped; 0 = dropped
  * MS_LIFE             | 1        | fallback | -DMS_LIFE=0                                   | world  | new   | msarena.h       | pinned coarse, near / read-ahead and small textures in pages of their own kind (runtime: option set MS_LIFE 0)
  * MS_TIDY             | 1        | fallback | -DMS_TIDY=0                                   | world  | new   | mapstream_i.h   | quiet frames compact the item pages to keep 4-8 whole free (runtime: option set MS_TIDY 0)
@@ -228,7 +229,8 @@
  * SPEC_DIST           | 24.0f    | tune     | -                                             | gfx    | new   | maplight.c    | metres: the specular pass's reach (ASSUMED, VU1 cost)
  * MAP_WATER           | 1        | fallback | -DMAP_WATER=0                                 | gfx    | new   | mapchunk.c    | water colour / opacity per vertex from DSR's Fresnel at the eye's angle (Polaris 2.6); 0 = the fixed 60 deg angle of the old export (exports: env MAP_WATER=0 bakes it into the texture again)
  * GS_VRAM_ENFORCE     | 1        | fallback | -DGS_VRAM_ENFORCE=0                           | gfx    | new   | gs.c          | characters / objects / effects refused past their gs_budget.h row; 0 = report only (Polaris 1.1)
- * TRAIL               | 1        | fallback | -DTRAIL=0                                     | fx     | new   | trail.c       | player weapon trail (FFX tracer 250); 0 = none
+ * GS_VRAM_RECLAIM     | 1        | fallback | -DGS_VRAM_RECLAIM=0                           | gfx    | new   | gs.c          | before a refusal the owner's reclaimer frees sets idle GS_RECLAIM_FRAMES frames (fx.c: the boot set, put back by fx_block_on); 0 = refused at once
+ * TRAIL               | 1      | fallback | -DTRAIL=0                                     | fx     | new   | trail.c       | player weapon trail (FFX tracer 250); 0 = none
  */
 #ifndef SWITCHES_H
 #define SWITCHES_H

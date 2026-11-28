@@ -63,6 +63,7 @@ static unsigned spare_reclaim(unsigned p0, unsigned p1)
 void mapstream_pool_need(unsigned lite, unsigned col)
 {
     static unsigned lo_lite, lo_col, lo_since;
+    msa_tile_settle();  /* (MS_POOL_TILE: a resize a page in use stopped goes on) */
     if (!MS_AREA_POOL || !msa_pools_on()) {
         ms_spare_p = 0;
         return;
@@ -723,11 +724,21 @@ unsigned mapstream_heap_release(unsigned bytes)
 int mapstream_pool_wait(void) { return pool_busy; }
 unsigned mapstream_lend_early(void) { unsigned n = early_n; early_n = 0; return n; }
 
+/* a pool's pages [*p0, *p1): misc [mpage0, spage0), the collision tiles' region at the structural pool's bottom, the
+ * structural pool's other users above it (MS_POOL_TILE, mapstream.h) */
+static void pool_range(int pool, unsigned *p0, unsigned *p1)
+{
+    unsigned t1 = msa_tpage0() + msa_tile_pages();
+    *p0 = pool == MS_POOL_MISC ? msa_mpage0() : pool == MS_POOL_TILE ? msa_tpage0() : t1;
+    *p1 = pool == MS_POOL_MISC ? msa_spage0() : pool == MS_POOL_TILE ? t1 : msa_npages();
+}
+
 int mapstream_pool_prepare(int pool, unsigned n)
 {
     if (!msa_pools_on() || !ms_lent_n)
         return 1;
-    unsigned p0 = pool == MS_POOL_STRUCT ? msa_spage0() : msa_mpage0(), p1 = pool == MS_POOL_STRUCT ? msa_npages() : msa_spage0();
+    unsigned p0, p1;
+    pool_range(pool, &p0, &p1);
     void *p = msa_alloc_range(n, p0, p1);
     if (p) {
         msa_free(p, n);
@@ -743,7 +754,8 @@ void *mapstream_alloc_pool(unsigned n, int pool)
 {
     if (!mapstream_arena() || !msa_pools_on())
         return NULL;
-    unsigned p0 = pool == MS_POOL_STRUCT ? msa_spage0() : msa_mpage0(), p1 = pool == MS_POOL_STRUCT ? msa_npages() : msa_spage0();
+    unsigned p0, p1;
+    pool_range(pool, &p0, &p1);
     void *p = msa_alloc_range(n, p0, p1);
     pool_busy = 0;
     if (!p && ms_lent_n) {  /* MS_LEND: the lent items go */
@@ -764,14 +776,16 @@ void *mapstream_alloc_pool(unsigned n, int pool)
 }
 
 /* mapstream_alloc_pool for blocks of at most a page (collision tiles, src/coltile.c: 1-55 KB each): granules inside
- * one page of the pool, pages already in use from the pool's bottom first, so whole pages stay free at its top for the
- * lite sets (g_alloc_range takes whole pages: a 3 KB tile there held a 64 KB page) */
+ * one page of the pool, pages already in use from the pool's bottom first, so whole pages stay free at its top (the
+ * lite sets', when tiles spill into the structural pool; g_alloc_range takes whole pages: a 3 KB tile there held a
+ * 64 KB page) */
 void *mapstream_alloc_pool_small(unsigned n, int pool)
 {
     unsigned ng = (n + MS_GRAN - 1) / MS_GRAN;
     if (!mapstream_arena() || !msa_pools_on() || !ng || ng > MS_GPP)
         return mapstream_alloc_pool(n, pool);
-    unsigned p0 = pool == MS_POOL_STRUCT ? msa_spage0() : msa_mpage0(), p1 = pool == MS_POOL_STRUCT ? msa_npages() : msa_spage0();
+    unsigned p0, p1;
+    pool_range(pool, &p0, &p1);
     void *p = msa_alloc_small(n, p0, p1);
     if (p) {
         mapstream_stats.other_kb += (n + 1023) >> 10;

@@ -14,6 +14,9 @@
 #include "dsrsnd_rpc.h"
 #include "frame_budget.h"
 #include "testscript.h"
+#include "gs.h"
+#include "coltile.h"
+#include "chunk.h"
 #ifdef HEAPMAP
 #include "render.h"  /* r_vram_census */
 #endif
@@ -112,9 +115,12 @@ static float hz_s;
  * as new */
 #define ROOM_SEEN 4096
 static unsigned room_seen[ROOM_SEEN], room_new;
-void hitch_room(int near, int k, unsigned id)
+static unsigned cause_n[3];  /* this period's refusals by cause (stream: line) */
+void hitch_room(int near, int k, unsigned id, int cause)
 {
     room_n++, hitch_total.room++;
+    cause_n[cause]++;
+    (cause == HR_HOLE ? &hitch_total.hole : cause == HR_SHORT ? &hitch_total.short_ : &hitch_total.soft)[0]++;
     if (!near)
         return;
     room_near++, hitch_total.room_near++;
@@ -126,6 +132,13 @@ void hitch_room(int near, int k, unsigned id)
     if (n < ROOM_SEEN)
         room_seen[h % ROOM_SEEN] = key;
     room_new++, hitch_total.room_items++;
+}
+void refusals_print(void)
+{
+    printf("TEST refusals: room %u near %u items %u hard %u | vram chr %u obj %u fx %u | coltile %u | chunk %u | hole %u short %u soft %u\n",
+           hitch_total.room, hitch_total.room_near, hitch_total.room_items, hitch_total.hard, gs_vram_refused(GSO_CHR),
+           gs_vram_refused(GSO_OBJ), gs_vram_refused(GSO_FX), coltile_stats.noroom, chunk_refusals, hitch_total.hole,
+           hitch_total.short_, hitch_total.soft);
 }
 void hitch_cut(unsigned items, unsigned near)
 {
@@ -147,15 +160,19 @@ static void stream_frame(float dt)
         hz_s += dt, hitch_total.hzn_s += dt;
     map_due = map_hz = 0;  /* (a frame without a map draw counts 0) */
 }
+static unsigned sd_last;  /* mapstream_stats.soft_drop at the last stream: line */
 static void stream_line(void)
 {
     unsigned med = 0, acc = 0;
     while (med < DUE_BINS - 1 && (acc += due_hist[med]) * 2 < due_fr)
         med++;
     printf("stream: t %u s room %u near %u items %u | due near drawn coarse median %u max %u | hzn inside %.1f s | "
-           "pop-ins %u | lent near dropped %u | plan cut %u near %u\n", (unsigned)run_s, room_n, room_near, room_new,
-           due_fr ? med : 0, due_max, (double)hz_s, pop_n, lent_near_n, cut_n, cut_near);
+           "pop-ins %u | lent near dropped %u | plan cut %u near %u | hole %u short %u soft %u | soft_drop %u\n", (unsigned)run_s, room_n,
+           room_near, room_new, due_fr ? med : 0, due_max, (double)hz_s, pop_n, lent_near_n, cut_n, cut_near, cause_n[HR_HOLE],
+           cause_n[HR_SHORT], cause_n[HR_SOFT], mapstream_stats.soft_drop - sd_last);
+    sd_last = mapstream_stats.soft_drop;
     room_new = 0;
+    memset(cause_n, 0, sizeof cause_n);
     room_n = room_near = pop_n = due_max = due_fr = lent_near_n = cut_n = cut_near = 0, hz_s = 0;
     memset(due_hist, 0, sizeof due_hist);
 }

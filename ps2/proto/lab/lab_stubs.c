@@ -85,6 +85,7 @@ void map_char_spec(float env_up[3], float env_down[3], float spec_i[3], float sp
 /* memory: the streamer's arena and the regions are the heap here */
 void *mapstream_alloc(unsigned n, const float pos[3]) { (void)pos; return malloc(n); }
 void *mapstream_alloc_pool_small(unsigned n, int pool) { (void)pool; return malloc(n); }
+unsigned mapstream_tile_pool(unsigned bytes) { return (bytes + 0xffffu) & ~0xffffu; }  /* (world.c: whole 64 KB pages) */
 void mapstream_free(void *p, unsigned n) { (void)n, free(p); }
 unsigned mapstream_heap_release(unsigned bytes) { (void)bytes; return 0; }
 int mapstream_owns(const void *p) { (void)p; return 1; }  /* (so callers free through mapstream_free) */
@@ -209,3 +210,6 @@ int pack_disc_stats(void *out) { (void)out; return 0; }
 void pack_disc_poll(void) {}
 void trail_tick(float dt) { (void)dt; }
 void trail_sample(const float base[3], const float tip[3]) { (void)base, (void)tip; }
+
+/* hitch.c (not in the Lab): the TEST refusals: line before TEST DONE */
+void refusals_print(void) {}

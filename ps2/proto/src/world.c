@@ -319,7 +319,8 @@ int world_init(const char *boot_area)
     }
     mapstream_pool(mapstream_pools_on_build() ? WORLD_ARENA_KB << 10 : WORLD_POOL);
     if (w_nblk > 1) {
-        unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
+        /* MS_POOL_TILE: the tiles' region is whole pages at the structural pool's bottom, the lite sets' room above it */
+        unsigned cb = mapstream_tile_pool(coltile_budget()), sb = world_struct_bytes() + cb, mb, tmax = 0;
         for (int i = 0; i < w_nblk; i++)
             w_pool_cb[i] = coltile_budget_block(i);
         for (int i = 0; i < w_nblk; i++)
