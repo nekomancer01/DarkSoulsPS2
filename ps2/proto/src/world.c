@@ -3,6 +3,9 @@
  * shared state. */
 #include "mapfile.h"
 #include "world_i.h"
+#if MAP_LZ4
+#include "mslz.h"
+#endif
 #include "lua0.h"
 #include "nav.h"
 extern unsigned lua0_malloc_live;  /* lua0.c: the VM's malloc fallback bytes (world_systems' type split) */
@@ -233,8 +236,28 @@ int world_init(const char *boot_area)
         /* map.bin's split files are chunk files: their payload is the base (src/mapfile.h). maptab.bin and cells.bin
          * (the VIF packets: VU1L) are checked here; mapres.bin and maptex.bin come from the same pack step, so they are
          * wrapped alike (each header read is a seek: four per block cost 0.73 s of a 16-block boot on the ISO) */
+#if MAP_LZ4
+        /* a pack with an lzidx.bin has CBLZ cells (compressed near parts), one without CBLB (tools/mapwrap.py) */
+        {
+            unsigned zo, zs;
+            int lz = pack_entry_raw(&r->pk, "lzidx.bin", &zo, &zs) && zs;
+            if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB))
+                r->open = 0;
+            else if (!(lz ? mapf_check(&r->pk, "cells.bin", MAPF_CELLSZ) : mapf_check(&r->pk, "cells.bin", MAPF_CELLS))) {
+                r->open = 0;
+                if (lz && mapf_check(&r->pk, "cells.bin", MAPF_CELLS)) {
+                    chunk_refusals++;
+                    printf("TEST error: lz4: %s: lzidx.bin with raw cells.bin\n", w_tab[i].pack);
+                } else if (!lz && mapf_check(&r->pk, "cells.bin", MAPF_CELLSZ)) {
+                    chunk_refusals++;
+                    printf("TEST error: lz4: %s: compressed items without lzidx.bin\n", w_tab[i].pack);
+                }
+            }
+        }
+#else
         if (!mapf_check(&r->pk, "maptab.bin", MAPF_TAB) || !mapf_check(&r->pk, "cells.bin", MAPF_CELLS))
             r->open = 0;
+#endif
         for (unsigned e = 0; e < NENT; e++) {
             if (e == E_FXH || e == E_OBJH) {  /* (share fx.bin / objects.bin with E_FX / E_OBJ: sized apart) */
                 r->off[e] = r->size[e] = 0;
@@ -351,6 +374,11 @@ int world_boot_map(void)
     for (int e = E_TAB; e <= E_TABC && ok; e++)  /* one piece, or three (WORLD_BOOT_LEAN: tab_split at world_init) */
         if (r->size[e])
             ok = (r->blob[e] = memalign(128, (r->size[e] + 127) & ~127u)) && w_read_sync(&r->pk, r->off[e], r->blob[e], r->size[e]);
+#if MAP_LZ4
+    if (ok && r->size[E_LZIDX])  /* its lzidx.bin (kept: the block stays on) */
+        ok = (r->blob[E_LZIDX] = memalign(128, (r->size[E_LZIDX] + 127) & ~127u)) &&
+             w_read_sync(&r->pk, r->off[E_LZIDX], r->blob[E_LZIDX], r->size[E_LZIDX]);
+#endif
     if (ok && r->size[E_TABB])
         map_block_split(0, r->blob[E_TABB], r->cut[0], r->blob[E_TABC], r->cut[1]);
     if (!ok || !map_block_init(0, r->blob[E_TAB], NULL, 0)) {
@@ -389,6 +417,19 @@ unsigned world_block_res(int k)
 }
 
 const char *world_map(int block) { return w_tab && block >= 0 && block < w_nblk ? w_tab[block].map : NULL; }
+
+#if MAP_LZ4
+const void *world_lz_blob(const void *pack, unsigned *size)
+{
+    *size = 0;
+    for (int i = 0; i < w_nblk; i++)
+        if (pack == (const void *)&w_rt[i].pk && w_rt[i].blob[E_LZIDX]) {
+            *size = w_rt[i].size[E_LZIDX];
+            return w_rt[i].blob[E_LZIDX];
+        }
+    return NULL;
+}
+#endif
 
 /* every block's enemy / breakable / effect types, once, at boot before the near-cell arena exists (DSR keeps a whole
  * area's resources loaded; the PS2 keeps the types and places the instances per block): each raw entry read into a

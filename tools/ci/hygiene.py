@@ -8,6 +8,9 @@ Fails when a tracked file is, or looks like, game data or personal data, or when
     mount /mnt/c/ or /c/, C:\\Users\\<name>\\ or C:/Users/<name>/, \\\\wsl.localhost\\<distro>\\home\\<name>); $HOME and ~
     are fine
   - the same TECH_DEBT ID twice in "## Open", twice in "## Resolved", or in both
+  - mspacked (MAP_LZ4): a line of ps2/proto/src/ms*.c or mapstream.c whose code (comments left out) tests or sets
+    MS_READY / MS_READING without naming MS_PACKED and without the comment "/* lz: n/a */" (a group waiting for its LZ4
+    decode is memory like MS_READY and not drawable like MS_READING: every state site says which it treats it as)
 Usage: python3 tools/ci/hygiene.py   (from anywhere; checks `git ls-files` of the repo)"""
 import os
 import re
@@ -61,8 +64,55 @@ def techdebt_ids(text):
     return ids
 
 
-def main():
+MSPACKED_STATE = re.compile(r'\bMS_(READY|READING)\b')
+MSPACKED_MARK = '/* lz: n/a */'
+
+
+def code_lines(text):
+    """(line number, code with comments blanked, raw line) per line of a C file."""
+    in_block = False
+    for n, raw in enumerate(text.splitlines(), 1):
+        out, i = [], 0
+        while i < len(raw):
+            if in_block:
+                j = raw.find('*/', i)
+                if j < 0:
+                    i = len(raw)
+                else:
+                    in_block, i = False, j + 2
+            elif raw.startswith('/*', i):
+                in_block, i = True, i + 2
+            elif raw.startswith('//', i):
+                break
+            elif raw[i] == '"':  # a string literal: kept, a comment opener inside it is not one
+                j = i + 1
+                while j < len(raw) and raw[j] != '"':
+                    j += 2 if raw[j] == '\\' else 1
+                out.append(raw[i:j + 1])
+                i = j + 1
+            else:
+                out.append(raw[i])
+                i += 1
+        yield n, ''.join(out), raw
+
+
+def mspacked_errors(root=ROOT):
+    """The mspacked check (module docstring): its problems as 'file:line: ...' strings."""
+    src = os.path.join(root, 'ps2', 'proto', 'src')
+    paths = sorted(p for p in os.listdir(src) if (p.startswith('ms') and p.endswith('.c')) or p == 'mapstream.c')
     errors = []
+    for p in paths:
+        with open(os.path.join(src, p), encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        for n, code, raw in code_lines(text):
+            if MSPACKED_STATE.search(code) and 'MS_PACKED' not in raw and MSPACKED_MARK not in raw:
+                errors.append('ps2/proto/src/%s:%d: mspacked: MS_READY / MS_READING without MS_PACKED; name it or '
+                              'add %s' % (p, n, MSPACKED_MARK))
+    return errors
+
+
+def main():
+    errors = mspacked_errors()
     files = tracked()
     for p in files:
         full = os.path.join(ROOT, p)

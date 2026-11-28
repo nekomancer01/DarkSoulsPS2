@@ -713,6 +713,10 @@ static void res_open(int k, const void *pack)
     unsigned roff, rsize;
     if (!mapf_entry((Pack *)pack, "mapres.bin", MAPF_RES, &roff, &rsize) || !rsize)  /* (src/mapfile.h) */
         return;
+#if MAP_LZ4
+    if (mapstream_lz_raw(k))  /* the pack's mapres.bin is the packed file: its raw size is the index's */
+        rsize = mapstream_lz_raw(k);
+#endif
     unsigned n = hdr->chunks + 1 + 2 * (unsigned)mi->ntex;  /* (mip 0 and 1 per texture) */
     MapResItem *it = malloc(n * sizeof *it);
     unsigned short *citem = mi->citem = malloc((hdr->chunks + 1) * sizeof *citem);
@@ -782,6 +786,16 @@ int map_block_stream_open(int k, const void *pack)
     const MapInst *m = &mp_inst[k];
     mapstream_select(k);
     int r = m->ctab ? mapstream_open_pack(k, pack, m->ctab, m->nctab) : 0;
+#if MAP_LZ4
+    if (r) {  /* the block's lzidx.bin (world.c reads it with the tables; NULL: raw items) before the first read */
+        unsigned zsz;
+        const void *zb = world_lz_blob(pack, &zsz);
+        if (!mapstream_lz_attach(k, zb, zsz)) {
+            mapstream_select(0);
+            return 0;
+        }
+    }
+#endif
     mapstream_vis_hooks(mp_vis, mp_vis_gen);
     if (r && !m->streams)
         res_open(k, pack);

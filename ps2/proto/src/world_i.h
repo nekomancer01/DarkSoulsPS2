@@ -289,9 +289,19 @@ typedef struct { float pos[3], vel[3]; int on; } WorldSrc;
 #ifndef WORLD_HEAD_TEX
 #define WORLD_HEAD_TEX 1
 #endif
-enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_AI, E_OBJH, E_OBJ, E_FX, NENT };
+/* MAP_LZ4 (src/mslz.h): E_LZIDX is the block's lzidx.bin (the index of its LZ4 frames), read with the tables and freed with
+ * them (the stream reads it in place while the block's map stream is open); optional (a block without cells.bin has none).
+ * Without MAP_LZ4 the entry is not in the table. */
+#if MAP_LZ4
+#define E_LZ_ENUM E_LZIDX,
+#define E_LZ_NAME "lzidx.bin",
+#else
+#define E_LZ_ENUM
+#define E_LZ_NAME
+#endif
+enum { E_COL, E_TAB, E_TABB, E_TABC, E_MTX, E_LZ_ENUM E_EV, E_EVM, E_DG, E_PVS, E_ENM, E_FXH, E_AI, E_OBJH, E_OBJ, E_FX, NENT };
 static const char *const ENTRIES[NENT] = {"collision.bin", "maptab.bin", "maptab.bin", "maptab.bin", "maptex.bin",
-                                          "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
+                                          E_LZ_NAME "events.bin", "events.bin", "dg.bin", "pvs.bin", "enemies.bin", "fx.bin",
                                           "ai.lua0", "objects.bin", "objects.bin", "fx.bin"};
 #define E_OPTIONAL(e) ((e) >= E_MTX)
 /* what a lean block lets go (WORLD_LITE_DIET): its map tables up to LEAN_E1 and its visibility (E_PVS: pvs.c is only

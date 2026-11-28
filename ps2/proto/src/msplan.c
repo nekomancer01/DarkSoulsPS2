@@ -78,7 +78,7 @@ int ms_near_in(const MsInst *m, unsigned c)
     if (!(m->tab[c].near & ~CELL_PART) || (m->tab[c].near & CELL_PART))
         return 0;
     for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++)
-        if (m->state[p] != MS_READY && !vis_off(m, p))  /* such a part is not read (pvs.c) */
+        if (m->state[p] != MS_READY && !vis_off(m, p))  /* such a part is not read (pvs.c); MS_PACKED: not drawn */
             return 0;
     return 1;
 }
@@ -334,12 +334,12 @@ static void plan_(const float *pos)
                 if (m->cls[id] > C_KEEP)
                     m->cls[id] = C_KEEP;
                 onelod_n++, onelod_kb += it_bytes(m, id) >> 10;
-            } else if (m->state[id] == MS_READY) {
+            } else if (ms_landed(m->state[id])) {
                 continue;  /* back in: the near parts go by their own class */
             }
             /* the near parts are the cell's only level in memory: they keep the coarse level's class */
             for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++) {
-                if (m->state[p] != MS_READY || m->cls[p] >= cc)
+                if (!ms_landed(m->state[p]) || m->cls[p] >= cc)
                     continue;
                 if (m->cls[p] < C_PREF && cc >= C_PREF && nw < MS_WANTED)
                     ms_want[nw++] = (MsW){(unsigned char)k, (unsigned char)cc, (unsigned short)p,
@@ -401,7 +401,7 @@ static void plan_(const float *pos)
                 if (m->cmark[h] == 1) {
                     sum += need, sum_hi += need;
                     for (unsigned p = h; !near_missing && p < m->ncell && (p == h || (m->tab[p].near & CELL_PART)); p++)
-                        near_missing = m->cls[p] >= C_PREF && m->state[p] != MS_READY;
+                        near_missing = m->cls[p] >= C_PREF && !ms_landed(m->state[p]);
                 }
             }
             if (m->cmark[h] == 2) {
@@ -534,7 +534,7 @@ static void plan_(const float *pos)
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; id < it_n(m); id++) {
             unsigned a;
-            if (m->state[id] == MS_READY && (grp_of(m, id, &a), a == id) && ms_grp_cls(m, id) == C_FREE &&
+            if (ms_landed(m->state[id]) && (grp_of(m, id, &a), a == id) && ms_grp_cls(m, id) == C_FREE &&
                 !ms_grp_chain(m, id))
                 hitch_drop(0, 0), ms_drop(k, id);
         }
@@ -543,7 +543,7 @@ static void plan_(const float *pos)
     for (int k = 0; !ms_settling && k < MS_INST; k++) {  /* near parts the cut left wanted and not in: their wait starts */
         MsInst *m = &ms_inst[k];
         for (unsigned id = 0; m->wq && id < m->ncell; id++)
-            if (m->cls[id] < C_PREF || m->state[id] == MS_READY)
+            if (m->cls[id] < C_PREF || ms_landed(m->state[id]))  /* (landed: its wait ended in ms_collect) */
                 m->wq[id] = 0;
             else if (!m->wq[id])
                 m->wq[id] = ms_clk_ms + 1;

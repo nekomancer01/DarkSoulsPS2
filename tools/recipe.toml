@@ -72,6 +72,9 @@ DISC_ALIGN = "1"
 # 4.8 step 4; the loaders read both forms); 0 = stored as the exporters write them (a changed value re-packs and redoes
 # the disc layout: $(A)/pakenv, $(A)/discenv)
 MAP_CHUNKS = "1"
+# MAP_LZ4: the streamed map items (cells.bin near parts, mapres.bin resident items / mips) as LZ4 frames with an lzidx.bin index,
+# decoded in place in their arena slot (tools/lz4items.py, src/mslz.c); world block packs of a WORLD_SPLIT build only. 0 = as before
+MAP_LZ4 = "0"
 # WORLD_TEX_SHARED: textures two or more blocks of one MSB have go to maptex.bin, read once per map (src/world.c);
 # 0 = every block's maptab holds its own copy
 WORLD_TEX_SHARED = "1"
@@ -598,6 +601,26 @@ inputs = ["{A}/maptab.bin"]
 reads = ["{A}/cells.bin"]
 tools = ["discalign.py", "mapwrap.py"]
 
+# MAP_LZ4 (tools/lz4items.py, src/mslz.c): the streamed items of a world block as LZ4 frames. mapres.lz.bin = mapres.bin cut at
+# the edges of the items mapblock.c res_open builds; cells.lz.bin = the near parts of cells.disc.bin compressed and on the
+# drive's blocks again; lzidx.bin = the index the loader reads (LZHD / CELI / RESF). maptab.disc.bin stays as it is (raw sizes).
+# A block without a cell table writes none of the three: its pack takes the raw files (the pack entries test for lzidx.bin).
+# $(A)/lzitems.stamp is the make target (a block with no outputs would re-run a missing target on every build). The step
+# is a pack prerequisite only under MAP_LZ4=1 (condition lz4: block of a WORLD_SPLIT build).
+[[step]]
+name = "lz4items"
+scope = "area"
+stage = "late"
+when = "lz4"
+tool = "lz4items.py"
+args = ["{A}/maptab.disc.bin", "{A}/mapres.bin", "{A}/cells.disc.bin", "{A}/mapres.lz.bin", "{A}/cells.lz.bin", "{A}/lzidx.bin"]
+out = ["{A}/lzidx.bin"]
+maybe = ["{A}/mapres.lz.bin", "{A}/cells.lz.bin"]
+inputs = ["{A}/maptab.disc.bin", "{A}/mapres.bin"]
+reads = ["{A}/cells.disc.bin"]
+tools = ["lz4items.py", "discalign.py", "mapwrap.py", "chunkfile.py", "native/lz4pack.c", "lz4hc/lz4opt.c"]
+make = { target = "{A}/lzitems.stamp", outs = "none", post = ["@touch $@"] }
+
 # The boot map's far backdrop as picture layers (tools/pano.py bake, src/map.c map_pano_open): its distant pieces
 # (CHUNK_BACKDROP, beyond horizon.py's HZN_PANO_D of the walkable ground) rendered offline with their textures into 128 px
 # tiles on sheets at the depth seen; horizon.py leaves those triangles out of hzn.bin (one rule, pano_tris). Only the
@@ -672,25 +695,29 @@ args = ["{D}/{OUT}.pak"]
 out = ["{D}/{OUT}.pak"]
 entries = [{ if = "lite_run", then = [
     "collision.bin=raw:{A}/collision.bin", "maptab.bin=raw:chunk:maptab:{A}/maptab.disc.bin",
+    { if = "lz4", then = "?lzidx.bin=raw:{A}/lzidx.bin" },
     { if = "tex_peers", then = "maptex.bin=raw:chunk:maptex:{A}/maptex.bin" },
     "?events.bin=raw:{A}/events.bin", "dg.bin=raw:{A}/dg.bin", "pvs.bin=raw:{A}/pvs.bin",
     "enemies.bin=raw:{A}/enemies.bin", "fx.bin=raw:{A}/fx.bin", "ai.lua0=raw:{A}/ai_map.lua0",
     "objects.bin=raw:{A}/objects.bin", "far.bin=raw:{A}/far.bin", "bump.bin=raw:{A}/bump.bin",
     "evcommon.bin={A}/evcommon.bin",
-    "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin", "?pano.bin={A}/pano.bin", "mapres.bin=raw:chunk:mapres:{A}/mapres.bin", "map.bin=chunk:map:{A}/map.bin",
+    { if = ["lz4", "exists:{A}/lzidx.bin"], then = "?cells.bin=raw:chunk:cellsz:{A}/cells.lz.bin", else = "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin" }, "?pano.bin={A}/pano.bin",
+    { if = ["lz4", "exists:{A}/lzidx.bin"], then = "mapres.bin=raw:chunk:mapresz:{A}/mapres.lz.bin", else = "mapres.bin=raw:chunk:mapres:{A}/mapres.bin" }, "map.bin=chunk:map:{A}/map.bin",
   ], else = [
     "map.bin=chunk:map:{A}/map.bin", "collision.bin={RAW}{A}/collision.bin", "enemies.bin={RAW}{A}/enemies.bin",
     "objects.bin={RAW}{A}/objects.bin", "ai.lua0={RAW}{A}/ai_map.lua0", "evcommon.bin={A}/evcommon.bin",
     "bump.bin={RAW}{A}/bump.bin", "fx.bin={RAW}{A}/fx.bin", "dg.bin={RAW}{A}/dg.bin", "pvs.bin={RAW}{A}/pvs.bin",
-    { if = "world_split", then = "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin", else = "?cells.bin=raw:chunk:cells:{A}/cells.bin" },
+    { if = ["lz4", "exists:{A}/lzidx.bin"], then = "?cells.bin=raw:chunk:cellsz:{A}/cells.lz.bin", else = { if = "world_split", then = "?cells.bin=raw:chunk:cells:{A}/cells.disc.bin", else = "?cells.bin=raw:chunk:cells:{A}/cells.bin" } },
     "?pano.bin={A}/pano.bin",
-    { if = "world_split", then = ["maptab.bin=raw:chunk:maptab:{A}/maptab.disc.bin", "mapres.bin=raw:chunk:mapres:{A}/mapres.bin",
+    { if = "world_split", then = ["maptab.bin=raw:chunk:maptab:{A}/maptab.disc.bin",
+                                  { if = "lz4", then = "?lzidx.bin=raw:{A}/lzidx.bin" }, { if = ["lz4", "exists:{A}/lzidx.bin"], then = "mapres.bin=raw:chunk:mapresz:{A}/mapres.lz.bin", else = "mapres.bin=raw:chunk:mapres:{A}/mapres.bin" },
                                   "far.bin=raw:{A}/far.bin"] },
     { if = ["world_split", "block", "tex_peers"], then = "maptex.bin=raw:chunk:maptex:{A}/maptex.bin" },
     "?events.bin={RAW}{A}/events.bin",
   ] }]
 inputs = ["{A}/map.bin",
           { if = "world_split", then = ["{A}/maptab.disc.bin", "{A}/far.bin"] }, { if = "tex_peers", then = "{A}/maptex.bin" },
+          { if = "lz4", then = "{A}/lzitems.stamp" },
           { if = "world", then = "{A}/pano.bin" },
           "{A}/bump.bin", "{A}/dg.bin", "{A}/pvs.bin", "{A}/collision.bin", "{A}/enemies.bin", "{A}/objects.bin",
           "{A}/ai_map.lua0", "{A}/events.bin", "{A}/fx.bin"]

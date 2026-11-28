@@ -55,7 +55,8 @@ def entry_path(p):
 MAKE_NAME = {"AD": "$(AREA_DATA)", "SRC": "src", "TOOLS": "../../tools", "RAW": "$(if $(BLOCK),raw:)",
              "HZN": "$(or $(HZN),1)"}
 MAKE_COND = {"block": "$(BLOCK)", "world": "$(WORLD_BLOCKS)", "world_split": "$(WORLD_SPLIT)",
-             "lite_run": "$(LITE_RUN)", "tex_peers": "$(TEX_PEERS)"}
+             "lite_run": "$(LITE_RUN)", "tex_peers": "$(TEX_PEERS)",
+             "lz4": "$(and $(filter 1,$(MAP_LZ4)),$(BLOCK),$(WORLD_SPLIT))"}
 
 
 class Make:
@@ -442,6 +443,7 @@ class Plan:
                  HZN=os.environ.get("HZN") or "1", HZN_PANO="1" if world and self.k["PANO"] == "1" else "0",
                  RAW="raw:" if block else "")
         c["lite_run"] = self.k["WORLD_SEAM_BUNDLE"] == "1" and bool(block) and split
+        c["lz4"] = self.k["MAP_LZ4"] == "1" and bool(block) and split
         tex = [os.path.join(p, "map.bin") for p in self.peers if os.path.basename(p).startswith(msb + "_")] \
             if self.k["WORLD_TEX_SHARED"] == "1" and block else []
         c["TEX_PEERS"] = tex

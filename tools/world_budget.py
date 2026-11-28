@@ -63,6 +63,16 @@ def r128(n):
     return (n + 127) & ~127
 
 
+# MAP_LZ4 (Makefile MAP_LZ4, default 0; only then does anything below change): the streamed items are LZ4 frames decoded in
+# place in the arena, so a compressed item's slot is raw + LZ_SLACK(packed) (src/mslz.h; tools/lz4items.py), counted in
+# the hard tier with the items; the block's lzidx.bin comes with its tables (world.c E_LZIDX, kept while the block is on:
+# the lean set keeps it too); the disc rows are the packed sizes. Frames are cut so a slot stays <= one arena page
+# (LZ_GRP_CAP: bigger ones are stored raw, no slack); the per-frame slack is summed from the block's lzidx.bin and applied
+# as a ratio to the cells.json byte columns (the near column by the near parts' ratio, coarse + kept by the res frames')
+MAP_LZ4 = os.environ.get("MAP_LZ4", "0") == "1"
+LZ_SCALE = {}  # block -> dict(near, res (slack / raw), slack_kb, lzidx_kb, disc_raw_kb, disc_kb) from lz_info
+
+
 COL_TILES = os.environ.get("COL_TILES", "1") != "0"  # world.c / coltile.c (Makefile COL_TILES)
 CT_WANT_R, CT_WANT_Y, CT_BUDGET_M, CT_PACK_K = 48.0, 16.0, 4.0, 8  # coltile.c
 
@@ -127,6 +137,38 @@ def ev_parts(d):
     return (m1 - m0, len(b)) if 96 <= m0 <= m1 <= len(b) else (len(b), 0)
 
 
+def lz_info(d):
+    """MAP_LZ4: a block's gen dir -> dict(near, res, slack_kb, lzidx_kb, disc_raw_kb, disc_kb) from its lzidx.bin and the
+    packed / raw files next to it, or None without MAP_LZ4 (a block without an lzidx.bin has no slack: its disc rows equal)"""
+    if not MAP_LZ4:
+        return None
+    import lz4items
+    sz = lambda f: os.path.getsize(os.path.join(d, f)) if os.path.exists(os.path.join(d, f)) else 0
+    raw = sz("cells.disc.bin") + sz("mapres.bin")
+    p = os.path.join(d, "lzidx.bin")
+    if not os.path.exists(p):
+        return dict(near=0.0, res=0.0, slack_kb=0, lzidx_kb=0, disc_raw_kb=raw >> 10, disc_kb=raw >> 10)
+    ix = lz4items.read_index(open(p, "rb").read())
+    rows, _ = lz4items.cell_table(open(os.path.join(d, "maptab.bin"), "rb").read())
+    near_raw = near_slack = 0
+    for (_, pk, st), r in zip(ix["celi"], rows):
+        near_raw += r[1]
+        if r[1] and not st:
+            near_slack += lz4items.LZ_SLACK(pk)
+    res_raw = res_slack = 0
+    fr = ix["resf"]
+    for i, (rel, dd, st) in enumerate(fr):
+        rend = fr[i + 1][0] if i + 1 < len(fr) else ix["res_raw"]
+        dend = fr[i + 1][1] if i + 1 < len(fr) else ix["res_lz"]
+        res_raw += rend - rel
+        if not st:
+            res_slack += lz4items.LZ_SLACK(dend - dd)
+    packed = sz("cells.lz.bin") + sz("mapres.lz.bin") if sz("cells.lz.bin") else raw
+    return dict(near=near_slack / near_raw if near_raw else 0.0, res=res_slack / res_raw if res_raw else 0.0,
+                slack_kb=(near_slack + res_slack + 1023) >> 10, lzidx_kb=(sz("lzidx.bin") + 1023) >> 10,
+                disc_raw_kb=raw >> 10, disc_kb=packed >> 10)
+
+
 def lite_entries(d):
     """a block's gen dir -> (lite set bytes as world.c counts them, its map tables' bytes, relief, texture buffer)"""
     import struct
@@ -140,6 +182,8 @@ def lite_entries(d):
     tabs = r128(tex) + r128(cell - b0) + r128(full - c0)
     cp = col_pages(d)
     total = r128(cp[0] if cp else sz("collision.bin")) + tabs + r128(ev_parts(d)[0])
+    if MAP_LZ4:  # world.c E_LZIDX: lzidx.bin with the tables, kept while the block is on (a lean set keeps it: not in tabs)
+        total += r128(sz("lzidx.bin"))
     if DG_LITE:  # world.c WORLD_DG_LITE: dg.bin and pvs.bin come with the lite set; a lean block lets go of pvs.bin
         total += r128(sz("dg.bin")) + r128(sz("pvs.bin"))
     if NAV_LITE or CHR_LITE:  # world_i.h WORLD_NAV_LITE / WORLD_CHR_LITE: E_ENM, the whole enemies.bin (not lean)
@@ -385,6 +429,7 @@ def load(d):
     c = np.asarray(j["cells"], np.float64).reshape(len(j["cells"]), -1)
     name = os.path.basename(os.path.normpath(d))
     LINK_SIDE[name] = (j["world"], np.asarray(j["links"], np.int64)) if "links" in j else None
+    LZ_SCALE[name] = lz_info(d)
     return name, c, float(j.get("sky", 0)), np.asarray(j["spots"], np.float64).reshape(-1, 3)
 
 
@@ -465,6 +510,9 @@ def main(argv):
                 on[own == j] = dmin <= LOAD_CELLS * 32.0
         lo, hi = c[:, 3:6], c[:, 6:9]
         near, coarse, kept, back = (c[:, 9 + i] / 1024 for i in range(4))
+        lz = LZ_SCALE.get(name)
+        if lz:  # MAP_LZ4: the slots carry the decode slack (hard tier included: near parts cannot be refused for it)
+            near, coarse, kept = near * (1 + lz["near"]), coarse * (1 + lz["res"]), kept * (1 + lz["res"])
         if NEAR_CUBE:  # the near level by the box clipped to the cell's cube (mapstream.h cell_near_d2)
             k0 = c[:, 0:3] * 32.0
             nlo = np.maximum(lo, k0)
@@ -506,7 +554,8 @@ def main(argv):
         hard_by.append(hard)
         per_block.append(dict(block=name, cells=len(c), near_kb=round(float(near.sum())),
                               coarse_kb=round(float(coarse.sum())), kept_kb=round(float(kept.sum())),
-                              backdrop_kb=round(float(back.sum() + sky / 1024)), spots=int((own == k).sum())))
+                              backdrop_kb=round(float(back.sum() + sky / 1024)), spots=int((own == k).sum()),
+                              **({"lz": {k2: lz[k2] for k2 in ("slack_kb", "lzidx_kb", "disc_raw_kb", "disc_kb")}} if lz else {})))
     total = tot["near"] + tot["coarse"] + tot["kept"] + tot["far"]
     gated = np.isin(own, [k for k, (name, *_) in enumerate(blocks) if gated_block(name)])
     LAST.clear()
@@ -560,6 +609,11 @@ def main(argv):
           f"{t['max']} KB (near within {NEAR_R:.0f} m p90 {res['near']['p90']}, coarse to {PIN_R:.0f} m p90 "
           f"{res['coarse']['p90']}, kept p90 {res['kept']['p90']}, backdrop + sky p90 {res['far']['p90']}) against "
           f"{room:.0f} KB room: {over:.1f} % of the spots over (worst {res['worst']['block']} {res['worst']['pos']})")
+    for b in per_block:  # MAP_LZ4 only: per block the decode slack in the items' slots, its lzidx.bin, the disc rows
+        if "lz" in b:
+            z = b["lz"]
+            print(f"world budget: {b['block']}  lz slack {z['slack_kb']} KB  lzidx {z['lzidx_kb']} KB  "
+                  f"disc {z['disc_raw_kb']} -> {z['disc_kb']} KB")
     print(f"world budget: blocks summed, near within {WS_R0:.0f} m p90 {res['near_ws']['p90']} / max "
           f"{res['near_ws']['max']} KB ({res['near_ws']['over_pct']} % over WS_B0 {b0:.0f}), coarse "
           f"{WS_R1_IN:.0f}-{WS_R1:.0f} m p90 {res['coarse_ws']['p90']} / max {res['coarse_ws']['max']} KB "

@@ -30,6 +30,8 @@
 #define RES_FILL_PCT 92    /* share of the item pages the plan fills (granule rounding, groups not filling a page) */
 #define RES_ALLOW_PCT 1    /* % of a world's gated spots that may be over the room or on the seam allowance */
 #define RES_ALLOW_BLOCK_PCT 5  /* % of one block's own spots that may be over its budget after the solve */
+#define RES_LZIDX_KB 16    /* MAP_LZ4 only (never used with MAP_LZ4 0): the largest block's lzidx.bin (15376 B, m18_01_00_00_a, build-lz1),
+                            * read with the block's tables (world.c E_LZIDX) and counted in its lite set by tools/world_budget.py */
 
 /* Per-block budgets (KB): RES_BLOCK(block, room, near). room: the hard tier of a spot of the block (all blocks
  * loaded there together, the block's share at a seam); near: of it for the near level, the rest for the coarse level

@@ -92,6 +92,95 @@ unsigned ms_clk_ms, ms_clk_last, ms_clk_frac, ms_st_t0, ms_st_t1, ms_st_first, m
 
 static void orphan_pump(void);
 
+#if MAP_LZ4
+/* The decode ring (Key Decision 7): groups whose read landed with an LZ4 frame (ms_collect: MS_PACKED), oldest first.
+ * ms_lz_step decodes them in place in their slots a frame at a time within MS_LZ_MS a game frame (pack_job_step's
+ * budget); a group is MS_READY once its last frame is out (SyncDCache first: the VIF / GIF DMA reads RAM), and only
+ * then are its textures handed over. A group dropped while packed leaves the ring (ms_drop: ms_lz_forget). */
+#define MS_LZQ 256
+static struct { int k; unsigned id, done; } lzq[MS_LZQ];
+static int lzq_n;
+static unsigned lz_n, lz_kb, lz_t, lz_tmax, lz_fail, lz_frames;  /* the lz row (lz_log) */
+
+static void lzq_pop(int i) { memmove(lzq + i, lzq + i + 1, (--lzq_n - i) * sizeof *lzq); }
+
+/* up to max frames of the oldest group; 1 when it left the ring (ready or failed) */
+static int lz_run(unsigned max)
+{
+    int k = lzq[0].k;
+    MsInst *m = &ms_inst[k];
+    unsigned a = lzq[0].id, a0, e, o, b;
+    MsLzRun z;
+    if (a >= it_n(m) || m->state[a] != MS_PACKED || !m->lz || (e = grp_of(m, a, &a0), a0 != a)) {
+        lzq_pop(0);  /* (cannot happen: ms_drop takes a group out) */
+        return 1;
+    }
+    it_disc(m, a, e, &o, &b, &z);
+    int r = mslz_decode(m->lz, it_res(m, a), &z, m->buf[a], m->lzat[a], &lzq[0].done, max);
+    if (!r)
+        return 0;
+    lzq_pop(0);
+    if (r < 0) {  /* (mslz_decode printed the "TEST error: lz4:" line): read again after the failure wait, as a failed read */
+        ms_drop(k, a);
+        for (unsigned j = a; j < e; j++)
+            m->state[j] = MS_FAILED;
+        mapstream_stats.fails++, lz_fail++;
+        ms_failed = 1, ms_fail_frame = ms_frame;
+        return 1;
+    }
+    unsigned char *p = m->buf[a];
+    SyncDCache(p, p + z.raw - 1);
+    for (unsigned j = a; j < e; j++) {
+        m->state[j] = MS_READY;  /* (from MS_PACKED) */
+        if (it_tex(m, j) && ms_tex_set)
+            ms_tex_set(k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
+    }
+    lz_n++, lz_kb += z.raw >> 10;
+    return 1;
+}
+
+int ms_lz_step(void)
+{
+    if (!lzq_n)
+        return 0;
+    HITCH_BEGIN(lz);
+    unsigned t0 = ticks();
+    do
+        lz_run(1);
+    while (lzq_n && ticks() - t0 < MS_LZ_MS * 294912u);
+    unsigned t = ticks() - t0;
+    lz_t += t, lz_tmax = t > lz_tmax ? t : lz_tmax;
+    HITCH_END(lz, HS_MSIO);
+    return lzq_n != 0;
+}
+
+void ms_lz_push(int k, unsigned id)
+{
+    while (lzq_n == MS_LZQ)  /* full: the oldest decodes now */
+        lz_run(~0u);
+    lzq[lzq_n++] = (typeof(lzq[0])){k, id, 0};
+}
+
+void ms_lz_forget(int k, unsigned id)
+{
+    for (int i = 0; i < lzq_n; i++)
+        if (lzq[i].k == k && lzq[i].id == id)
+            lzq_pop(i--);
+}
+
+/* the lz row, every 300 frames (~10 s) that decoded: groups and KB made ready, EE ms (all, the most in a frame), still
+ * packed, failed decodes */
+static void lz_log(void)
+{
+    if (++lz_frames < 300)
+        return;
+    if (lz_n || lz_fail)
+        printf("mapstream: lz 300 frames: %u groups %u KB decoded in %u ms (most in a frame %u.%u ms), %d packed, "
+               "%u failed\n", lz_n, lz_kb, lz_t / 294912, lz_tmax / 294912, lz_tmax % 294912 / 29492, lzq_n, lz_fail);
+    lz_frames = lz_n = lz_kb = lz_t = lz_tmax = lz_fail = 0;
+}
+#endif
+
 void mapstream_update(const float pos[3])
 {
 #if defined MS_MEDIA_RADII && !defined MEDIA_CD
@@ -159,6 +248,10 @@ void mapstream_update(const float pos[3])
     while ((!ms_hold || ms_nrd < MS_HOLD_INFLIGHT) && ms_nq && ms_nrd < MS_INFLIGHT && ms_issue())
         ;
     HITCH_END(is, HS_MSIO);
+#if MAP_LZ4
+    ms_lz_step();  /* (after the reads went out: the drive works while the EE decodes) */
+    lz_log();
+#endif
     /* MS_TIDY: a quiet frame (no plan, no move for a read, no near part waiting to be read: a pending tidy move
      * made a refused near read wait MS_DEFRAG_WAIT frames at the queue head, taurus pop-ins 35 -> 47; with no read
      * waiting at all it seldom ran in the Burg and walls refusals rose 102 -> 118, 2026-11-20) keeps whole pages free */
@@ -257,6 +350,66 @@ int mapstream_open_pack(int k, const void *pack, const MapCell *cells, unsigned 
     return open_cells(k, cells, n);
 }
 
+#if MAP_LZ4
+/* MAP_LZ4: every item with bytes lies on frame edges of the index (mslz_res: its refusal line), and one that fits a
+ * page raw fits it with its slack (the export stores items over LZ_GRP_CAP raw) */
+static int lz_res_ok(const MsLz *z, const MapResItem *items, unsigned nitems)
+{
+    for (unsigned j = 0; j < nitems; j++) {
+        MsLzRun r;
+        if (!items[j].bytes)
+            continue;
+        if (!mslz_res(z, items[j].rel, items[j].bytes, &r))
+            return 0;
+        if (r.raw <= MS_PAGE && mslz_any_packed(z, &r) && r.raw + LZ_SLACK(r.packed) > MS_PAGE) {
+            chunk_refusals++;
+            printf("TEST error: lz4: %s: item %u (%u bytes, %u packed) over a page with its slack (re-export it with this "
+                   "build's tools)\n", z->name ? z->name : "?", j, r.raw, r.packed);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int mapstream_lz_attach(int k, const void *blob, unsigned size)
+{
+    if (k < 0 || k >= MS_INST)
+        return 0;
+    MsInst *m = &ms_inst[k];
+    free(m->lzat);
+    m->lzat = NULL, m->lz = NULL;
+    if (!blob)
+        return 1;
+    if (!m->ncell || !mslz_open(&m->lzv, blob, size, m->ncell, "lzidx.bin"))
+        return 0;
+    for (unsigned c = 0; c < m->ncell; c++) {  /* every near part has its run, and fits its page with the slack */
+        MsLzRun r;
+        unsigned b = m->tab[c].bytes;
+        if (!b)
+            continue;
+        if (!mslz_cell(&m->lzv, c, b, &r) ||
+            (b <= MS_PAGE && mslz_any_packed(&m->lzv, &r) && b + LZ_SLACK(r.packed) > MS_PAGE)) {
+            chunk_refusals++;
+            printf("TEST error: lz4: lzidx.bin: cell %u (%u bytes) has no run or is over a page with its slack "
+                   "(re-export it with this build's tools)\n", c, b);
+            return 0;
+        }
+    }
+    if (m->rit && !lz_res_ok(&m->lzv, m->rit, m->nres))
+        return 0;
+    m->lzat = calloc(it_n(m), sizeof *m->lzat);
+    if (!m->lzat)
+        return 0;
+    m->lz = &m->lzv;
+    return 1;
+}
+
+unsigned mapstream_lz_raw(int k)
+{
+    return k >= 0 && k < MS_INST && ms_inst[k].lz ? ms_inst[k].lz->rraw : 0;
+}
+#endif
+
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems)
 {
     if (k < 0 || k >= MS_INST || !nitems)
@@ -264,6 +417,17 @@ int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nite
     MsInst *m = &ms_inst[k];
     if (!m->ncell || n != m->ncell || m->rit || m->ncell + nitems > 65535)  /* ids are u16 in the plan */
         return 0;
+#if MAP_LZ4
+    if (m->lz && !lz_res_ok(m->lz, items, nitems))  /* (as res_open's "bad": the resident level is not opened) */
+        return 0;
+    if (m->lzat) {
+        unsigned *a = realloc(m->lzat, (m->ncell + nitems) * sizeof *a);
+        if (!a)
+            return 0;
+        memset(a + m->ncell, 0, nitems * sizeof *a);
+        m->lzat = a;
+    }
+#endif
     unsigned t = m->ncell + nitems;
     unsigned char *s = realloc(m->state, t), *c = s ? (m->state = s, realloc(m->cls, t)) : NULL;
     void **b = c ? (m->cls = c, realloc(m->buf, t * sizeof *m->buf)) : NULL;
@@ -356,7 +520,11 @@ void mapstream_close(int k)
             } else if (n_orphan == MS_INFLIGHT) {
                 pack_req_cancel(ms_rd[i].tk);
             } else {
+#if MAP_LZ4
+                orphan[n_orphan++] = (Orphan){ms_rd[i].tk, m->buf[a], it_slot(m, a, e)};  /* (the slot it allocated) */
+#else
                 orphan[n_orphan++] = (Orphan){ms_rd[i].tk, m->buf[a], grp_bytes(m, a, e)};
+#endif
                 ms_keep_buf = 1, ms_drop(k, a), ms_keep_buf = 0;  /* its items go; the buffer stays the read's */
             }
             memmove(ms_rd + i, ms_rd + i + 1, (--ms_nrd - i) * sizeof *ms_rd);
@@ -365,9 +533,17 @@ void mapstream_close(int k)
     mapstream_stats.pending = ms_nrd;
     for (unsigned id = 0; id < it_n(m); id++) {
         unsigned a;
-        if ((m->state[id] == MS_READY || m->state[id] == MS_READING) && (grp_of(m, id, &a), a == id))
+#if MAP_LZ4
+        if ((m->state[id] == MS_READY || m->state[id] == MS_READING || m->state[id] == MS_PACKED) &&
+            (grp_of(m, id, &a), a == id))
+#else
+        if ((m->state[id] == MS_READY || m->state[id] == MS_READING) && (grp_of(m, id, &a), a == id))  /* lz: n/a */
+#endif
             ms_drop(k, id);
     }
+#if MAP_LZ4
+    free(m->lzat);  /* (lz: cleared with the rest below) */
+#endif
     if (!m->borrowed)
         pack_close(&m->pk);
     free(m->state), free(m->cls), free(m->buf), free(m->used), free(m->rit), free(m->rgrp), free(m->ld), free(m->dw), free(m->cmark);
@@ -405,7 +581,7 @@ int mapstream_why(unsigned c)
         return 5;
     int why = 0;
     for (unsigned p = c; p < m->ncell && (p == c || (m->tab[p].near & CELL_PART)); p++) {
-        if (!m->tab[p].bytes || m->state[p] == MS_READY)
+        if (!m->tab[p].bytes || m->state[p] == MS_READY)  /* (MS_PACKED: not drawn yet) */
             continue;
         int w = vis_cut(m, p) ? 1 : ms_blocked(sel, p) ? 2 : m->cls[p] < C_PREF ? 3 : 4;
         why = w > why ? w : why;  /* (the slowest reason of the cell's parts) */
@@ -488,14 +664,24 @@ int mapstream_busy(const float pos[3], float r, float r_focus)
         for (int k = 0; k < MS_INST; k++) {
             const MsInst *m = &ms_inst[k];
             for (unsigned c = 0; c < m->ncell; c++)
-                if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING ||
+#if MAP_LZ4
+                if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING || m->state[c] == MS_PACKED ||
                     (m->state[c] == MS_NONE && !ms_blocked(k, c))) && !vis_off(m, c) &&
+#else
+                if (m->tab[c].bytes && m->cls[c] >= C_PREF && (m->state[c] == MS_READING ||  /* lz: n/a */
+                    (m->state[c] == MS_NONE && !ms_blocked(k, c))) && !vis_off(m, c) &&
+#endif
                     near_d2(m, c, pos) < sq(MS_R0_DRAW))
                     return 1;
         }
     for (int k = 0; k < MS_INST; k++) {
         const MsInst *m = &ms_inst[k];
         for (unsigned j = 0; j < m->nres; j++)
+#if MAP_LZ4
+            if (m->state[m->ncell + j] == MS_PACKED && settle_item(k, m, j, pos, r, r_focus))
+                return 1;  /* (landed, its decode still to run) */
+            else
+#endif
             if (m->state[m->ncell + j] == MS_NONE && m->rit[j].bytes && m->cls[m->ncell + j] >= C_PREF &&
                 settle_item(k, m, j, pos, r, r_focus) && !ms_blocked(k, m->ncell + j))  /* (not what the cut left out) */
                 return 1;
@@ -510,7 +696,7 @@ const void *mapstream_get(unsigned i)
         return NULL;
     drawn();
     m->used[i] = ms_frame;  /* asked for: in view (a missing one too) */
-    return m->state[i] == MS_READY ? m->buf[i] : NULL;
+    return m->state[i] == MS_READY ? m->buf[i] : NULL;  /* lz: n/a (MS_PACKED is not drawable) */
 }
 
 const unsigned char *mapstream_res(unsigned i)
@@ -520,6 +706,6 @@ const unsigned char *mapstream_res(unsigned i)
         return NULL;
     drawn();
     m->used[m->ncell + i] = ms_frame;
-    return m->state[m->ncell + i] == MS_READY ? (const unsigned char *)m->buf[m->ncell + i] - m->rit[i].rel : NULL;
+    return m->state[m->ncell + i] == MS_READY ? (const unsigned char *)m->buf[m->ncell + i] - m->rit[i].rel : NULL;  /* lz: n/a */
 }
 int ms_keep_buf;  /* ms_drop leaves the buffer allocated (mapstream_close: a cancelled read still lands in it) */

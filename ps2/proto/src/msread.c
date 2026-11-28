@@ -65,8 +65,20 @@ void ms_collect(int i, int r)
     }
     unsigned now = ticks(), t0 = (int)(w.t - land_t) > 0 ? w.t : land_t;
     land_t = now;
+#if MAP_LZ4
+    int lzp = 0;  /* a frame of it is LZ4: MS_PACKED until decoded */
+    if (r == (int)w.dbytes) {
+        /* the landed range only (slot + at: the read went to the slot's tail) */
+        InvalidDCache((char *)m->buf[w.id] + w.at, (char *)m->buf[w.id] + w.at + w.dbytes - 1);
+        {
+            unsigned o, b;
+            MsLzRun z;
+            lzp = it_disc(m, w.id, w.id + w.n, &o, &b, &z) > 0;
+        }
+#else
     if (r == (int)w.bytes) {
         InvalidDCache(m->buf[w.id], (char *)m->buf[w.id] + w.bytes - 1);
+#endif
         int want = 0;
         for (unsigned j = w.id; j < w.id + w.n; j++)
             want |= m->cls[j] >= C_PREF;
@@ -101,19 +113,35 @@ void ms_collect(int i, int r)
         for (unsigned j = w.id; j < w.id + w.n; j++) {
             if (m->ld)
                 m->ld[j] = 1;
-            m->state[j] = MS_READY;
+#if MAP_LZ4
+            m->state[j] = lzp ? MS_PACKED : MS_READY;
+#else
+            m->state[j] = MS_READY;  /* lz: n/a */
+#endif
             m->used[j] = ms_frame;
             mapstream_stats.loads++;
+#if MAP_LZ4
+            if (!lzp && it_tex(m, j) && ms_tex_set)  /* (a packed texture: handed over once decoded) */
+#else
             if (it_tex(m, j) && ms_tex_set)
+#endif
                 ms_tex_set(w.k, m->rit[j - m->ncell].tag & ~MS_RES_TEX, m->buf[j]);
         }
+#if MAP_LZ4
+        if (lzp)
+            ms_lz_push(w.k, w.id);  /* the decode ring (ms_lz_step: then MS_READY and the textures) */
+#endif
         if (!it_tex(m, w.id))
             printf("mapstream: %s %d.%u (%u items) %u KB in %u ms, %u items %u KB loaded (resident %u KB, mip 0 %u KB)\n",
                    it_res(m, w.id) ? "resident cell" : "cell", w.k, it_res(m, w.id) ? w.id - m->ncell : w.id, w.n,
                    w.bytes >> 10, mapstream_stats.ms_last, mapstream_stats.cells, mapstream_stats.bytes >> 10,
                    mapstream_stats.res_kb, mapstream_stats.tex_kb);
     } else {
+#if MAP_LZ4
+        printf("mapstream: item %d.%u (%u items) read %d of %u bytes\n", w.k, w.id, w.n, r, w.dbytes);
+#else
         printf("mapstream: item %d.%u (%u items) read %d of %u bytes\n", w.k, w.id, w.n, r, w.bytes);
+#endif
         ms_drop(w.k, w.id);
         for (unsigned j = w.id; j < w.id + w.n; j++)
             m->state[j] = MS_FAILED;
@@ -194,11 +222,34 @@ int ms_issue(void)
             unsigned r0 = m->rit[g - m->ncell].rel;
             /* coarse items in groups of their own (they go first once the near level is in), except in a settle,
              * where split groups took 2.5x the reads (v1, ISO boot 6.0 -> 7.8 s) */
+#if MAP_LZ4
+            /* (a group's slot, with its in-place slack when a frame is LZ4, within a page; raw items: its bytes) */
+            (void)r0;
+            while (e < w.id + wn && it_slot(m, g, e + 1) <= MS_PAGE &&
+#else
             while (e < w.id + wn && m->rit[e - m->ncell].rel + m->rit[e - m->ncell].bytes - r0 <= MS_PAGE &&
+#endif
                    (ms_settling || !(m->rit[e - m->ncell].tag & MS_RES_COARSE) == !(m->rit[g - m->ncell].tag & MS_RES_COARSE)))
                 e++;
             gb = grp_bytes(m, g, e);
         }
+#if MAP_LZ4
+        /* the disc range (doff, db) and where it lands in the slot (at: its tail, 64-aligned, when a frame is LZ4: the
+         * frames decode forward over it); gb is the slot from here on: every page check and allocation takes it */
+        unsigned doff, db, at = 0;
+        MsLzRun lzr;
+        int lzp = it_disc(m, g, e, &doff, &db, &lzr);
+        if (lzp < 0) {  /* (no run in the index: refused at attach, not seen) */
+            for (unsigned j = g; j < e; j++)
+                m->state[j] = MS_FAILED;
+            mapstream_stats.fails++;
+            return 1;
+        }
+        if (lzp) {
+            gb = lzr.raw + LZ_SLACK(lzr.packed);
+            at = (gb - lzr.packed) & ~63u;
+        }
+#endif
         /* MS_LEND: a lendable item goes to an idle pool page first, so the item pages stay for the near parts (in
          * the item pages first, coarse cells of classes above them took the room the near parts could not clear:
          * taurus near refusals 165 -> 876) */
@@ -287,12 +338,24 @@ int ms_issue(void)
             return 1;  /* the next queued one may still fit */
         }
         ms_room_fail = 0;
+#if MAP_LZ4
+        int tk = (first && !sent ? pack_req_read_first : pack_req_read)(&m->pk, doff, (unsigned char *)p + at, db);
+#else
         int tk = (first && !sent ? pack_req_read_first : pack_req_read)(&m->pk, it_off(m, g), p, gb);
+#endif
         dl_first += tk && first && !sent;
         if (tk) {
+#if MAP_LZ4
+            unsigned o = doff;  /* (disc offsets and bytes) */
+            rs_reads++, rs_kb += db >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
+            rs_last_end = o + db, rs_last_k = w.k;
+            if (m->lzat)
+                m->lzat[g] = at;
+#else
             unsigned o = it_off(m, g);
             rs_reads++, rs_kb += gb >> 10, rs_contig += rs_last_k == w.k && o >= rs_last_end && o - rs_last_end < 2048;
             rs_last_end = o + gb, rs_last_k = w.k;
+#endif
             unsigned tg = it_res(m, g) ? m->rit[g - m->ncell].tag : 0;
             rk[w.k][RK_N]++;
             rk[w.k][tg & MS_RES_TEX ? (tg & MS_RES_MIP1 ? RK_MIP1 : RK_TEX) : tg & MS_RES_SKY ? RK_SKY :
@@ -312,7 +375,7 @@ int ms_issue(void)
         for (unsigned j = g; j < e; j++) {
             unsigned b = it_bytes(m, j);
             m->buf[j] = (unsigned char *)p + (it_res(m, j) ? m->rit[j - m->ncell].rel - m->rit[g - m->ncell].rel : 0);
-            m->state[j] = MS_READING;
+            m->state[j] = MS_READING;  /* lz: n/a */
             if (it_res(m, j)) {
                 m->rgrp[j - m->ncell] = (unsigned short)(g - m->ncell);
                 *(it_tex(m, j) ? &mapstream_stats.tex_kb : &mapstream_stats.res_kb) += (b + 1023) >> 10;
@@ -322,12 +385,21 @@ int ms_issue(void)
         }
         {  /* the flow line's reads by kind: near parts, resident geometry, textures */
             int kd = !it_res(m, g) ? 0 : it_tex(m, g) ? 2 : 1;
+#if MAP_LZ4
+            flow_rd[kd]++, flow_kb[kd] += db >> 10;
+#else
             flow_rd[kd]++, flow_kb[kd] += gb >> 10;
+#endif
         }
         if (!ms_nrd)
             land_t = ticks();
+#if MAP_LZ4
+        ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls, db, at};
+        scan_k = w.k, scan_end = doff + db;  /* MS_SCAN: the head after this read */
+#else
         ms_rd[ms_nrd++] = (MsRead){w.k, g, e - g, gb, ticks(), tk, 0, w.cls};
         scan_k = w.k, scan_end = it_off(m, g) + gb;  /* MS_SCAN: the head after this read */
+#endif
         mapstream_stats.pending = ms_nrd;
         sent++;
         g = e;
@@ -338,12 +410,26 @@ int ms_issue(void)
 /* MS_SCAN: the queue entry issue() takes (-1: none may go now). The queue is in rank order, so the urgent entries
  * lead it; once the head is a read-ahead class, every queued read-ahead entry (the rest of the queue) is a candidate.
  * ra_ok: a read-ahead entry may go (MS_RA_INFLIGHT). *first: send it ahead of the disc server's queue (MS_DL_FIRST). */
+#if MAP_LZ4
+/* MS_SCAN's offsets are on the disc: an item's start in the .lz payload when an index is attached */
+static unsigned q_off(const MsInst *m, unsigned id)
+{
+    unsigned o, b;
+    MsLzRun z;
+    it_disc(m, id, id + 1, &o, &b, &z);
+    return o;
+}
+#endif
 static unsigned scan_key(const MsQ *e, int *rk_out)
 {
     const MsInst *m = &ms_inst[e->k];
     if (e->id >= it_n(m))
         return *rk_out = 3, ~0u;
+#if MAP_LZ4
+    unsigned o = q_off(m, e->id);
+#else
     unsigned o = it_off(m, e->id);
+#endif
     int rk = e->k != scan_k ? 2 : o >= scan_end ? 0 : 1;  /* ahead of the head, behind it (wrap), other pack */
     if (rk == 2)
         o = (unsigned)e->k << 26 | (o >> 6);  /* other packs: by block, then offset */
@@ -368,7 +454,11 @@ static int q_scan_pick(int ra_ok, int *first)
         const MsInst *m = &ms_inst[ms_q[i].k];
         if (ms_q[i].k != scan_k || ms_q[i].id >= it_n(m) || (i >= nh && !ra_ok))
             continue;
+#if MAP_LZ4
+        unsigned o = q_off(m, ms_q[i].id);
+#else
         unsigned o = it_off(m, ms_q[i].id);
+#endif
         if (o >= scan_end && o - scan_end <= (unsigned)MS_GAP_KB << 10 && o < go)
             gi = i, go = o;
     }
@@ -442,7 +532,7 @@ void ms_flow_log(const float *pos)
     for (int k = 0; k < MS_INST; k++) {
         const MsInst *m = &ms_inst[k];
         for (unsigned c = 0; c < m->ncell; c++) {
-            if (!m->tab[c].bytes || m->state[c] == MS_READY || near_d2(m, c, pos) >= sq(MS_R0_DRAW))
+            if (!m->tab[c].bytes || m->state[c] == MS_READY || near_d2(m, c, pos) >= sq(MS_R0_DRAW))  /* lz: n/a */
                 continue;
             kb += m->tab[c].bytes >> 10;
             if (vis_cut(m, c))

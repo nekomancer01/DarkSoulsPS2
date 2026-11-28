@@ -139,6 +139,17 @@ unsigned mapstream_heap_release(unsigned bytes);
 #define MS_RES_MIP1 0x00800000u
 typedef struct { unsigned off, rel, bytes, tag; } MapResItem;
 int mapstream_res_open(int k, const MapResItem *items, unsigned n, unsigned nitems);
+#if MAP_LZ4
+/* MAP_LZ4 (src/mslz.h): instance k's items are LZ4 frames indexed by blob (the block's lzidx.bin as read, size or
+ * CHUNK_SIZE_UNKNOWN; read in place, so it stays allocated while the instance is open). Call after mapstream_open_pack
+ * and before its first read (mapstream_res_open before or after). The near parts then come from the cells.bin payload
+ * (CBLZ) at the index's offsets, the resident items from the mapres.bin payload (RESZ, its pack offset = an item's off
+ * - rel). 1 ok (blob NULL: raw items, as without MAP_LZ4); 0 refused (a "TEST error: lz4:" line): the caller does not
+ * turn the block on, as for a failed mapf_check. */
+int mapstream_lz_attach(int k, const void *blob, unsigned size);
+/* the raw (decoded) bytes of instance k's mapres.bin (the index's LZHD), 0 when no index is attached */
+unsigned mapstream_lz_raw(int k);
+#endif
 /* the selected instance's item i as a base to add its chunk records' stream offsets to, or NULL while it is not
  * loaded; marks it used this frame */
 const unsigned char *mapstream_res(unsigned i);
