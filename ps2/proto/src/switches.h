@@ -71,6 +71,7 @@
  * map streaming (mapstream.c, mapstream.h, world.c, world.h)
  * MS_LEND_NEAR_KB     | 900      | tune     | -                                             | world  | #147  | mapstream_i.h   | lent room near parts may hold
  * MS_LEND_NEAR_ALL    | 1        | fallback | -DMS_LEND_NEAR_ALL=0                          | world  | #245  | mapstream_i.h   | near parts may take all the pools' idle room; 0 = at most MS_LEND_NEAR_KB
+ * MS_AREA_POOL        | 1        | fallback | -DMS_AREA_POOL=0                              | world  | new   | mapstream.h     | structural pool pages above the need of the blocks wanted now take map items of every class (pinned / in-view too); a larger need wanted takes them back ahead; 0 = only lendable classes and near parts there
  * MS_DEFRAG_LEND      | 1        | fallback | -DMS_DEFRAG_LEND=0                            | world  | #245  | mapstream_i.h   | MS_DEFRAG moves groups into the pools' idle room too; 0 = item pages only
  * MS_LEND_REHOME      | 1        | fallback | -DMS_LEND_REHOME=0                            | world  | #257  | mapstream_i.h       | a lent near group a lite set needs moves into the item pages instead of being dropped; 0 = dropped
  * MS_LIFE             | 1        | fallback | -DMS_LIFE=0                                   | world  | new   | msarena.h       | pinned coarse, near / read-ahead and small textures in pages of their own kind (runtime: option set MS_LIFE 0)

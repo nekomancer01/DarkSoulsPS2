@@ -421,6 +421,7 @@ extern unsigned w_far_res_size;
 extern int w_far_swap;
 void w_far_free(unsigned char *p);
 extern float w_far_retry_s;
+extern unsigned w_pool_cb[WORLD_MAX];  /* MS_AREA_POOL: collision tiles' part of the pool per block (wplan.c) */
 extern float w_yield_s;  /* WORLD_YIELD: seconds no lite set spills into the item pages (wplan.c) */
 int w_under(int i);      /* the player's floor (or a block a hold waits for) is on block i (wplan.c) */
 extern int w_boot_want, w_boot_spots;

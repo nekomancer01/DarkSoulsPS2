@@ -98,10 +98,10 @@ int coltile_plan(int b, const float os[4], const void *ptab)
     return 1;
 }
 
-unsigned coltile_budget(void)
+static unsigned budget_at(int b0, int b1)
 {
     unsigned best = 0;
-    for (int b = 0; b < COL_BLOCKS; b++)
+    for (int b = b0; b < b1; b++)
         for (unsigned i = 0; tb[b].planned && i < tb[b].npg; i++) {
             const Page *c = &tb[b].pg[i];
             float f[3] = {(c->lo[0] + c->hi[0]) * 0.5f, (c->lo[1] + c->hi[1]) * 0.5f, (c->lo[2] + c->hi[2]) * 0.5f};
@@ -114,6 +114,8 @@ unsigned coltile_budget(void)
         }
     return best + best / CT_PACK_K;
 }
+unsigned coltile_budget(void) { return budget_at(0, COL_BLOCKS); }
+unsigned coltile_budget_block(int b) { return b >= 0 && b < COL_BLOCKS ? budget_at(b, b + 1) : 0; }
 
 void coltile_on(int b, Pack *pk, unsigned base)
 {

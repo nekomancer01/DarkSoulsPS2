@@ -29,6 +29,86 @@ static unsigned early_n;  /* lent items let go ahead of a lite set (mapstream_po
 unsigned ms_lend_room;
 unsigned ms_lent_near;  /* bytes of near parts placed in pool pages (approximate: decremented on drop) */
 
+/* MS_AREA_POOL (mapstream.h): the spare pages, the need they were sized for, items of other classes still to leave the
+ * pages a larger need took back (a chain read them: next call) */
+unsigned ms_spare0, ms_spare_p;
+static unsigned need_now = ~0u, col_now = ~0u;
+static unsigned rec_a0, rec_a1, rec_b0, rec_b1;  /* pages the spare range gave up: [a0, a1) below, [b0, b1) above */
+static unsigned spare_reclaim(unsigned p0, unsigned p1)
+{
+    unsigned busy = 0, n = 0;
+    for (int k = 0; k < MS_INST; k++) {
+        MsInst *m = &ms_inst[k];
+        for (unsigned id = 0; m->state && id < it_n(m); id++) {
+            unsigned a;
+            if (m->state[id] != MS_READY || (grp_of(m, id, &a), a != id) || !m->buf[id])
+                continue;
+            unsigned g = msa_gran(m->buf[id]);
+            if (g == ~0u || g < p0 * MS_GPP || g >= p1 * MS_GPP || lendable(m->cls[id]) || m->cls[id] == C_NEAR ||
+                m->cls[id] == C_NEAR2)
+                continue;  /* (the lendable classes and near parts were lent there before: the lite sets take them) */
+            if (ms_grp_chain(m, id))
+                busy++;
+            else
+                ms_why = MS_WHY_LENT, ms_drop(k, id), n++;
+        }
+    }
+    if (n)
+        printf("mapstream: area pool: %u items above the new need went (%u still drawn)\n", n, busy);
+    return busy;
+}
+/* a lower need is taken only after it held MS_AREA_HOLD frames (the most asked meanwhile): world_route flapped between
+ * 2392 and 4203 KB within 0.2 s at a seam and sent 114 items away; a higher one at once */
+#define MS_AREA_HOLD 150
+void mapstream_pool_need(unsigned lite, unsigned col)
+{
+    static unsigned lo_lite, lo_col, lo_since;
+    if (!MS_AREA_POOL || !msa_pools_on()) {
+        ms_spare_p = 0;
+        return;
+    }
+    if (need_now != ~0u && (lite < need_now || col < col_now) && lite <= need_now && col <= col_now) {
+        if (!lo_since)
+            lo_since = ms_frame | 1, lo_lite = lo_col = 0;
+        lo_lite = lite > lo_lite ? lite : lo_lite, lo_col = col > lo_col ? col : lo_col;
+        if (ms_frame - lo_since < MS_AREA_HOLD) {
+            lite = need_now, col = col_now;  /* (keep the higher need a while yet) */
+        } else {
+            lite = lo_lite, col = lo_col;
+            lo_since = 0;
+        }
+    } else {
+        if (need_now != ~0u) {
+            lite = lite > need_now ? lite : need_now;  /* (a rise in one part keeps the other's current need) */
+            col = col > col_now ? col : col_now;
+        }
+        lo_since = 0;
+    }
+    unsigned np = msa_npages() - msa_spage0(), lp = (lite + MS_PAGE - 1) / MS_PAGE + 1;  /* (+1: entries round up) */
+    unsigned cp = (col + MS_PAGE - 1) / MS_PAGE, sp = np > lp + cp ? np - lp - cp : 0, s0 = msa_spage0() + cp;
+    if (lite != need_now || col != col_now)
+        printf("mapstream: area pool need %u KB (lite sets %u, collision tiles %u) of %u KB: %u spare pages\n",
+               (lite + col) >> 10, lite >> 10, col >> 10, np * (MS_PAGE >> 10), sp);
+    need_now = lite, col_now = col;
+    /* only the pages the spare range gave up are cleared, once (a chain's still: next call): clearing the whole pool
+     * outside the range each step dropped lent items whose class had risen since, in view at the Taurus fog wall
+     * (iso_burg_taurus failed twice) */
+    unsigned o0 = ms_spare0, o1 = ms_spare0 + ms_spare_p, n1 = s0 + sp;
+    if (ms_spare_p && s0 > o0) {  /* gave up [o0, min(o1, s0)) at the bottom */
+        unsigned e = o1 < s0 ? o1 : s0;
+        rec_a0 = rec_a1 > rec_a0 && rec_a0 < o0 ? rec_a0 : o0, rec_a1 = e > rec_a1 ? e : rec_a1;
+    }
+    if (ms_spare_p && n1 < o1) {  /* gave up [max(o0, n1), o1) at the top */
+        unsigned b = o0 > n1 ? o0 : n1;
+        rec_b0 = rec_b1 > rec_b0 && rec_b0 < b ? rec_b0 : b, rec_b1 = o1 > rec_b1 ? o1 : rec_b1;
+    }
+    ms_spare0 = s0, ms_spare_p = sp;
+    if (rec_a1 > rec_a0 && !spare_reclaim(rec_a0, rec_a1))
+        rec_a0 = rec_a1 = 0;
+    if (rec_b1 > rec_b0 && !spare_reclaim(rec_b0, rec_b1))
+        rec_b0 = rec_b1 = 0;
+}
+
 static unsigned x_want;  /* heap free a caller of mapstream_heap_release waits for (x_update drains pages until) */
 static unsigned xstat_borrow, xstat_back, xstat_drop_kb;
 

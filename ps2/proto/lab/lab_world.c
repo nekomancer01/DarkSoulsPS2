@@ -98,6 +98,7 @@ void mapstream_pool(unsigned max) { (void)max; }
 int mapstream_pool_prepare(int pool, unsigned n) { (void)pool, (void)n; return 1; }
 void mapstream_pools(unsigned struct_bytes, unsigned misc_bytes) { (void)struct_bytes, (void)misc_bytes; }
 int mapstream_pools_on(void) { return 0; }  /* (no pools: lite sets come from mapstream_alloc, the heap) */
+void mapstream_pool_need(unsigned lite, unsigned col) { (void)lite, (void)col; }
 int mapstream_pools_on_build(void) { return 0; }
 int mapstream_pool_wait(void) { return 0; }
 int mapstream_reading(int k) { (void)k; return 0; }

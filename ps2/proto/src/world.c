@@ -321,6 +321,8 @@ int world_init(const char *boot_area)
     if (w_nblk > 1) {
         unsigned cb = coltile_budget(), sb = world_struct_bytes() + cb, mb, tmax = 0;
         for (int i = 0; i < w_nblk; i++)
+            w_pool_cb[i] = coltile_budget_block(i);
+        for (int i = 0; i < w_nblk; i++)
             tmax = w_rt[i].tex_total > tmax ? w_rt[i].tex_total : tmax;
         mb = tmax + WORLD_MISC_EXTRA;  /* (the relief stays out of the pools) */
         mapstream_pools(sb, mb);
