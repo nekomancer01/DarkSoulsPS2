@@ -85,21 +85,25 @@ void mp_log_pass_ms(unsigned mp_t0)
                mp_mc_chunks / MAP_PASS_LOG);
         {  /* "map: other ms": plan other by part, the same values less their own timer reads, the work counts */
             static const char *const on[MO_N] = {"sky", "pict", "far", "hzonly", "prologue", "hzcell", "fades", "zsend", "lvl", "setup"};
+            /* (float maths: the EE has no double FPU; doubles only as printf arguments) */
+#define MSF(x) ((float)(x) / 294912.0f / (float)nt)
             float tk = mp_tick_us * 294.912f;  /* ticks per read */
-            double sum = 0, c[MO_N];
+            float sum = 0, c[MO_N];
             char b[256];
             int k = 0;
             for (int i = 0; i < MO_N; i++) {
-                sum += MPMS(oacc[i]);
-                c[i] = MPMS(oacc[i]) - (double)oreads[i] / (double)nt * (double)tk / 294912.0;
+                sum += MSF(oacc[i]);
+                c[i] = MSF(oacc[i]) - (float)oreads[i] / (float)nt * tk / 294912.0f;
                 k += snprintf(b + k, sizeof b - k, " %s %.2f", on[i], MPMS(oacc[i]));
             }
-            double other = MPMS(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]);
+            float other = MSF(acc[MP_N] - facc[0] - facc[1] - facc[2] - facc[3]);
+            float cull_c = MSF(acc[MP_CULL]) - (float)creads / (float)nt * tk / 294912.0f, wall = MSF(wacc);
             printf("map: other ms%s rest %.2f; corrected cull_c %.2f far_c %.2f hzonly_c %.2f prologue_c %.2f; timer reads "
-                   "%u x %.3f us\n", b, other - sum, MPMS(acc[MP_CULL]) - (double)creads / (double)nt * (double)tk / 294912.0,
-                   c[MO_FAR], c[MO_HZONLY], c[MO_PRO], nreads / nt, (double)mp_tick_us);
+                   "%u x %.3f us\n", b, (double)(other - sum), (double)cull_c, (double)c[MO_FAR], (double)c[MO_HZONLY],
+                   (double)c[MO_PRO], nreads / nt, (double)mp_tick_us);
             printf("map: other check ms wall %.2f parts %.2f diff %.2f (plan other %.2f, outside the map functions %.2f)\n",
-                   MPMS(wacc), sum, MPMS(wacc) - sum, other, other - MPMS(wacc));
+                   (double)wall, (double)sum, (double)(wall - sum), (double)other, (double)(other - wall));
+#undef MSF
             printf("map: work per frame boxdepth %u tclevel %u sqrt %u far_tested %u hz_tested %u\n", wwork[MW_BOX] / wfr,
                    wwork[MW_TCL] / wfr, wwork[MW_SQRT] / wfr, wwork[MW_FAR] / wfr, wwork[MW_HZ] / wfr);
             memset(oacc, 0, sizeof oacc), memset(oreads, 0, sizeof oreads), memset(wwork, 0, sizeof wwork);
